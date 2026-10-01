@@ -2198,7 +2198,7 @@ export class ExactReviewQueue {
             decision,
             Math.max(
               sourceDriftLoopParked.createdAt,
-              this.reviewLoopStore.sourceDriftLoopSync(loopKey)?.updatedAt ?? 0,
+              this.reviewLoopStore.sourceDriftLoopSync(loopKey, now)?.updatedAt ?? 0,
             ),
           ),
         );
@@ -2494,7 +2494,7 @@ export class ExactReviewQueue {
           const sourceDriftRequeueLimit = exactReviewSourceDriftRequeueLimit(this.env);
           const sourceDriftLoop =
             loopKey && sourceDriftRequeueLimit > 0 && exactReviewSourceDriftLoopCounted(decision)
-              ? this.reviewLoopStore.sourceDriftLoopSync(loopKey)
+              ? this.reviewLoopStore.sourceDriftLoopSync(loopKey, now)
               : null;
           if (
             loopKey &&

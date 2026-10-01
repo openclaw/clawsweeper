@@ -16,7 +16,7 @@ export const EXACT_REVIEW_RUNAWAY_WINDOW_MS = 24 * 60 * 60 * 1000;
 /** Private /stats sample size; the public projection keeps at most five public keys. */
 export const EXACT_REVIEW_RUNAWAY_SAMPLE_LIMIT = 20;
 // A loop counter idle this long is no longer a consecutive loop.
-const EXACT_REVIEW_SOURCE_DRIFT_LOOP_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
+export const EXACT_REVIEW_SOURCE_DRIFT_LOOP_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 const PRUNE_BATCH = 500;
 const PRUNE_MAX_BATCHES = 5;
 const ITEM_KEY_PATTERN = /^[a-z0-9_.-]+\/[a-z0-9_.-]+#[1-9]\d*$/;
@@ -166,7 +166,12 @@ export class ExactReviewReviewLoopStore {
     this.schemaReady = true;
   }
 
-  sourceDriftLoopSync(itemKey: string): ExactReviewSourceDriftLoop | null {
+  /**
+   * An idle counter is no longer a consecutive loop. Expiry is applied on this
+   * read, so an old exhausted counter can never deny admission even when no
+   * pruning write ran in between.
+   */
+  sourceDriftLoopSync(itemKey: string, now: number): ExactReviewSourceDriftLoop | null {
     this.ensureSchemaSync();
     const row = Array.from(
       this.storage.sql.exec(
@@ -176,35 +181,51 @@ export class ExactReviewReviewLoopStore {
       ),
     )[0] as { consecutive?: number; updated_at?: number } | undefined;
     if (!row) return null;
-    return { consecutive: Number(row.consecutive || 0), updatedAt: Number(row.updated_at || 0) };
+    const updatedAt = Number(row.updated_at || 0);
+    if (updatedAt <= sourceDriftLoopExpiryCutoff(now)) {
+      this.storage.sql.exec(
+        `DELETE FROM ${EXACT_REVIEW_SOURCE_DRIFT_LOOP_TABLE} WHERE item_key = ? AND updated_at <= ?`,
+        itemKey,
+        sourceDriftLoopExpiryCutoff(now),
+      );
+      return null;
+    }
+    return { consecutive: Number(row.consecutive || 0), updatedAt };
   }
 
   /** Records one admitted source-drift review generation and returns the new count. */
   recordSourceDriftGenerationSync(itemKey: string, now: number): number {
     this.ensureSchemaSync();
     this.pruneSourceDriftLoopsSync(now);
+    // An expired row restarts at one even if the bounded prune missed it.
     const row = Array.from(
       this.storage.sql.exec(
         `INSERT INTO ${EXACT_REVIEW_SOURCE_DRIFT_LOOP_TABLE} (item_key, consecutive, updated_at)
          VALUES (?, 1, ?)
          ON CONFLICT(item_key) DO UPDATE SET
-           consecutive = consecutive + 1,
+           consecutive = CASE WHEN updated_at <= ? THEN 1 ELSE consecutive + 1 END,
            updated_at = excluded.updated_at
          RETURNING consecutive`,
         itemKey,
         now,
+        sourceDriftLoopExpiryCutoff(now),
       ),
     )[0] as { consecutive?: number } | undefined;
     return Number(row?.consecutive || 0);
   }
 
-  /** The breaker's observation time anchors the scheduled-offer release check. */
+  /**
+   * The breaker's observation time anchors the scheduled-offer release check.
+   * Only a live counter is refreshed; parking never resurrects an expired row.
+   */
   markSourceDriftLoopParkedSync(itemKey: string, now: number) {
     this.ensureSchemaSync();
     this.storage.sql.exec(
-      `UPDATE ${EXACT_REVIEW_SOURCE_DRIFT_LOOP_TABLE} SET updated_at = ? WHERE item_key = ?`,
+      `UPDATE ${EXACT_REVIEW_SOURCE_DRIFT_LOOP_TABLE} SET updated_at = ?
+        WHERE item_key = ? AND updated_at > ?`,
       now,
       itemKey,
+      sourceDriftLoopExpiryCutoff(now),
     );
   }
 
@@ -293,7 +314,7 @@ export class ExactReviewReviewLoopStore {
     this.pruneSync(
       EXACT_REVIEW_SOURCE_DRIFT_LOOP_TABLE,
       "updated_at",
-      now - EXACT_REVIEW_SOURCE_DRIFT_LOOP_RETENTION_MS,
+      sourceDriftLoopExpiryCutoff(now),
     );
   }
 
@@ -323,6 +344,11 @@ export class ExactReviewReviewLoopStore {
       if (deleted.length < PRUNE_BATCH) break;
     }
   }
+}
+
+/** Counters last touched at or before this instant are expired. */
+export function sourceDriftLoopExpiryCutoff(now: number) {
+  return now - EXACT_REVIEW_SOURCE_DRIFT_LOOP_RETENTION_MS;
 }
 
 function boundedInteger(value: unknown, fallback: number, minimum: number, maximum: number) {

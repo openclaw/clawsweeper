@@ -3,6 +3,8 @@ import test from "node:test";
 import type { ExactReviewQueueState } from "../dashboard/exact-review-queue.ts";
 import {
   EXACT_REVIEW_REVIEW_GENERATION_TABLE,
+  EXACT_REVIEW_SOURCE_DRIFT_LOOP_RETENTION_MS,
+  EXACT_REVIEW_SOURCE_DRIFT_LOOP_TABLE,
   ExactReviewReviewLoopStore,
   exactReviewSourceDriftRequeueLimit,
 } from "../dashboard/exact-review-review-loop.ts";
@@ -93,7 +95,10 @@ function sourceDriftRequeue(claimed: Record<string, unknown>) {
 }
 
 function loopRow(h: Harness, number: number) {
-  return new ExactReviewReviewLoopStore(h.storage).sourceDriftLoopSync(`${repo}#${number}`);
+  return new ExactReviewReviewLoopStore(h.storage).sourceDriftLoopSync(
+    `${repo}#${number}`,
+    Date.now(),
+  );
 }
 
 async function driveToParked(
@@ -335,6 +340,53 @@ test("a newer scheduled offer releases one review without resetting the loop", a
     );
     assert.equal(stale.dedupe_reason, "source_drift_loop");
     assert.equal(loopRow(h, scheduledNumber)?.consecutive, 3);
+  });
+});
+
+test("an expired exhausted counter never denies admission and is not resurrected", async () => {
+  const h = harness();
+  await withExactReviewAdmissionHarness(h, async () => {
+    const number = 97624;
+    const key = `${repo}#${number}`;
+    const store = new ExactReviewReviewLoopStore(h.storage);
+    store.ensureSchemaSync();
+    const stale = Date.now() - EXACT_REVIEW_SOURCE_DRIFT_LOOP_RETENTION_MS - 60_000;
+    const seed = () =>
+      h.storage.sql.exec(
+        `INSERT OR REPLACE INTO ${EXACT_REVIEW_SOURCE_DRIFT_LOOP_TABLE}
+           (item_key, consecutive, updated_at) VALUES (?, 3, ?)`,
+        key,
+        stale,
+      );
+    // Parking must not refresh an expired row back to life.
+    seed();
+    store.markSourceDriftLoopParkedSync(key, Date.now());
+    const stored = () =>
+      Array.from(
+        h.storage.sql.exec(
+          `SELECT consecutive, updated_at FROM ${EXACT_REVIEW_SOURCE_DRIFT_LOOP_TABLE} WHERE item_key = ?`,
+          key,
+        ),
+      )[0] as { consecutive: number; updated_at: number } | undefined;
+    assert.equal(stored()?.updated_at, stale);
+    assert.equal(store.sourceDriftLoopSync(key, Date.now()), null, "expired counter reads absent");
+    assert.equal(stored(), undefined, "expired lookup deletes the row");
+
+    // The live path: an exhausted counter older than retention, with no
+    // pruning write in between, admits the next drift requeue as generation 1.
+    seed();
+    const admitted = await enqueue(
+      h,
+      "source-drift-after-idle",
+      decision(number, "source_drift_requeue", { supersedesInProgress: true }),
+    );
+    assert.equal(admitted.queued, true, JSON.stringify(admitted));
+    assert.equal((await queueState(h)).items[key]?.state, "pending");
+    assert.equal(loopRow(h, number)?.consecutive, 1);
+
+    // The bounded prune cannot leave an expired count to be incremented.
+    seed();
+    assert.equal(store.recordSourceDriftGenerationSync(key, Date.now()), 1);
   });
 });
 

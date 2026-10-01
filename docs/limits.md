@@ -284,7 +284,8 @@ lifecycle, so it is neither counted nor parked. The parked item spends no review
 capacity, appears under `parked_reasons.source_drift_loop`, is operator-listable
 through the parked-review routes, and still receives the five-minute terminal
 check that removes closed or advanced targets. Set the limit to `0` to disable
-the breaker; idle counters expire after seven days.
+the breaker. A counter idle for seven days expires: the admission lookup treats
+it as absent before the limit check, and parking never refreshes an expired row.
 
 The same queue keeps a trailing 24-hour history of claimed review runs per item
 (`exact_review_queue_review_generations`, keyed by item, run ID, and attempt;
