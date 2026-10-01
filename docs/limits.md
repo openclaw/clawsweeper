@@ -251,18 +251,22 @@ events, commands, and publications remain admitted. The queue reports shed
 counts under `lanes.review.shed_reasons_since_reset` and the rolling flow by
 `backpressure` versus `scheduled_rate`; pre-migration totals remain
 `unattributed`. Executed reviews debit a durable 220-review/hour
-scheduled budget with a 24-item burst. The budget meters review executions, not
-admissions: every new claim of a review lease by a workflow run (`/claim`
-starting a new claim generation) debits one token, so organic work consumes the
-budget first, once per run that actually starts. Organic admission itself is
-free and always admitted. Work that never claims a lease is never charged: items
-superseded or coalesced before claim, dedupes, items completed at the
-dispatch-time live check without a run, publication work, and acknowledgement-only
-finalizers. A same-attempt claim retry is the same execution; a rerun attempt,
-retry, or requeue that claims again is another execution. A scheduled admission
-debits its token when admitted, because admission is where scheduled work is
-gated, and marks the item prepaid so its first claim is not charged again; later
-claims of that item are charged like organic ones.
+scheduled budget with a 24-item burst. The budget meters started review
+generations, not admissions or claims: a claim records that its claim generation
+owes one token, and the workflow's startup ownership check, immediately before
+Codex generation, sends `generation_start: true` on the lease heartbeat to pay
+it. Organic work therefore consumes the budget first, once per run that actually
+reaches generation. Organic admission itself is free and always admitted. Work
+that never starts generation is never charged: items superseded or coalesced
+before claim, dedupes, items completed at the dispatch-time live check without a
+run, runs that claim and then exit at live-item admission or lose the lease
+during setup, publication work, and acknowledgement-only finalizers. A retried
+generation-start heartbeat for the same claim generation is the same execution;
+a rerun attempt, retry, or requeue that claims and starts again is another
+execution. A scheduled admission debits its token when admitted, because
+admission is where scheduled work is gated, and marks the item prepaid so its
+first started generation is not charged again; later starts of that item are
+charged like organic ones.
 Organic debt carries on the global bucket down to minus the burst, so scheduled
 work is admitted only after that bounded debt is repaid. Further organic debits
 at the floor are forgotten, so this is not a total-work or spend cap. Scheduled work fills
