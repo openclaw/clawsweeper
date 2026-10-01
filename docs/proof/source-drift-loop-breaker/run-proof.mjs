@@ -10,6 +10,8 @@
 //   self_requeue  organic review, then the publisher's remote-newer
 //                 `source_drift_requeue` after every successful generation
 //   release       an organic `edited` webhook decision after the loop
+//   scheduled     a newer scheduled offer after the park releases one review,
+//                 and that review's drift requeue re-parks without a reset
 //   command       an explicit `re_review` command on a looping item
 //   runaway       25 claimed reviews of one item inside 24 hours, read through
 //                 the real public `/api/exact-review-queue` route
@@ -94,7 +96,7 @@ const address = `127.0.0.1:${server.address().port}`;
 
 const receipt = {
   claim:
-    "origin/main admits a source-drift requeue after every successful review generation forever; the branch parks the item as source_drift_loop after three consecutive automatic generations, an organic event or explicit command admits it normally, and /api/exact-review-queue reports review_runaway_health degraded for an item past 24 claimed reviews per day.",
+    "origin/main admits a source-drift requeue after every successful review generation forever; the branch parks the item as source_drift_loop after three consecutive automatic generations, an organic event or explicit command admits it normally, a newer scheduled offer releases one review whose next drift requeue re-parks immediately, and /api/exact-review-queue reports review_runaway_health degraded for an item past 24 claimed reviews per day.",
   base: git("rev-parse", baseRef),
   head: git("rev-parse", "HEAD"),
   working_tree_dirty: Boolean(git("status", "--porcelain", "--", ...FILES)),
@@ -109,6 +111,8 @@ const receipt = {
     source_drift_requeue:
       "after each generation the harness sends the payload of sweep.yml 'Queue fresh review after source drift': the claimed decision with sourceAction=source_drift_requeue, supersedesInProgress=true, delivery publisher-source-drift:<run>:1",
     organic_release: "issues/edited webhook decision for the same item",
+    scheduled_release:
+      "scheduled_normal_backfill offer whose sourceUpdatedAt is one minute after the park, then the publisher's drift requeue after that review",
     command_release:
       "re_review decision with a clawsweeper-command-status marker and status comment id",
     runaway: `${RUNAWAY_REVIEWS} organic edits, each claimed and completed, within 4 simulated hours`,
@@ -220,6 +224,7 @@ export default {
     };
     for (const [name, scenario] of Object.entries({
       self_requeue_then_release: selfRequeueThenRelease,
+      scheduled_release: scheduledRelease,
       command: commandPath,
       runaway: runawayAlert,
     })) {
@@ -395,6 +400,46 @@ async function selfRequeueThenRelease(driver) {
   };
 }
 
+async function scheduledRelease(driver) {
+  const itemNumber = 97618;
+  assert.equal(
+    disposition(await driver.enqueue("organic-opened", issue(itemNumber, "opened"))),
+    "queued",
+  );
+  const loop = await selfRequeue(driver, itemNumber, 4);
+  // A scheduled backfill offer whose source update is later than the park, as
+  // hot intake would send after ClawSweeper's own post-review writes.
+  driver.now += MINUTE;
+  const offer = await driver.enqueue(
+    "scheduled-newer",
+    issue(itemNumber, "scheduled_normal_backfill", {
+      sourceUpdatedAt: new Date(driver.now).toISOString(),
+    }),
+  );
+  const afterOffer = await driver.item(itemNumber);
+  const reviewed = await driver.runDispatchedReview(itemNumber);
+  const requeue = reviewed
+    ? await driver.enqueue(`publisher-source-drift:${reviewed.runId}:after-scheduled`, {
+        ...reviewed.decision,
+        sourceAction: "source_drift_requeue",
+        supersedesInProgress: true,
+      })
+    : null;
+  const afterRequeue = await driver.item(itemNumber);
+  const further = await driver.runDispatchedReview(itemNumber);
+  return {
+    item: `${REPO}#${itemNumber}`,
+    source_drift_cycles: loop.steps.map((step) => step.requeue),
+    scheduled_offer: disposition(offer),
+    after_offer: afterOffer,
+    scheduled_review_dispatched: Boolean(reviewed),
+    drift_after_scheduled_review: requeue ? disposition(requeue) : null,
+    after_drift: afterRequeue,
+    further_review_dispatched: Boolean(further),
+    review_generations_spent: loop.reviews + (reviewed ? 1 : 0) + (further ? 1 : 0),
+  };
+}
+
 async function commandPath(driver) {
   const itemNumber = 123774;
   assert.equal(
@@ -490,6 +535,20 @@ function verify(variants) {
       cand.self_requeue_then_release.after_release.queue_state === "pending" &&
       cand.self_requeue_then_release.released_review_dispatched &&
       cand.self_requeue_then_release.next_source_drift_after_release === "queued",
+    baseline_scheduled_then_requeues:
+      base.scheduled_release.scheduled_offer === "queued" &&
+      base.scheduled_release.drift_after_scheduled_review === "queued" &&
+      base.scheduled_release.further_review_dispatched,
+    candidate_scheduled_releases_one_review_then_reparks:
+      cand.scheduled_release.source_drift_cycles[3] ===
+        "deduped:source_drift_loop:requeue_limit_reached" &&
+      cand.scheduled_release.scheduled_offer === "queued" &&
+      cand.scheduled_release.after_offer.queue_state === "pending" &&
+      cand.scheduled_release.scheduled_review_dispatched &&
+      cand.scheduled_release.drift_after_scheduled_review ===
+        "deduped:source_drift_loop:requeue_limit_reached" &&
+      cand.scheduled_release.after_drift.queue_state === "parked" &&
+      !cand.scheduled_release.further_review_dispatched,
     candidate_command_release:
       cand.command.command === "queued" &&
       cand.command.after_command.queue_state === "pending" &&
@@ -509,6 +568,7 @@ function verify(variants) {
     candidate_runaway_ages_out: cand.runaway.after_25_hours?.status === "healthy",
   };
   assert.equal(checks.baseline_requeues_every_cycle, true, "baseline must requeue forever");
+  assert.equal(checks.baseline_scheduled_then_requeues, true, "baseline keeps requeueing");
   for (const [name, value] of Object.entries(checks)) {
     if (name.startsWith("candidate_") && typeof value === "boolean")
       assert.equal(value, true, name);

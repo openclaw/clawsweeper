@@ -82,8 +82,8 @@ EXACT_REVIEW_DISPATCH_DEBOUNCE_MAX_MS = "180000"
 EXACT_REVIEW_RETRY_POLICY_EPOCH = "1"
 EXACT_REVIEW_PENDING_SOFT_LIMIT = "600"
 # Park an item after this many consecutive automatic source-drift review
-# generations without organic input, a command, or a newer scheduled offer.
-# "0" disables the breaker.
+# generations without organic input or a command (a newer scheduled offer
+# releases one review but keeps the count). "0" disables the breaker.
 EXACT_REVIEW_SOURCE_DRIFT_REQUEUE_LIMIT = "3"
 # Queue health degrades with review_runaway when an item claims more than this
 # many full reviews in a trailing 24 hours.

@@ -288,12 +288,13 @@ test("an explicit command releases a parked loop", async () => {
   });
 });
 
-test("only a scheduled offer with newer source releases a parked loop", async () => {
+test("a newer scheduled offer releases one review without resetting the loop", async () => {
   const h = harness();
   await withExactReviewAdmissionHarness(h, async () => {
     const scheduledNumber = 97618;
+    const key = `${repo}#${scheduledNumber}`;
     await driveToParked(h, scheduledNumber);
-    const parked = (await queueState(h)).items[`${repo}#${scheduledNumber}`]!;
+    const parked = (await queueState(h)).items[key]!;
     const scheduled = await enqueue(
       h,
       "scheduled-newer",
@@ -302,11 +303,38 @@ test("only a scheduled offer with newer source releases a parked loop", async ()
       }),
     );
     assert.equal(scheduled.queued, true);
-    const replaced = (await queueState(h)).items[`${repo}#${scheduledNumber}`]!;
+    const replaced = (await queueState(h)).items[key]!;
     assert.equal(replaced.state, "pending");
     assert.equal(replaced.decision.sourceAction, "scheduled_normal_backfill");
     assert.ok(replaced.revision > parked.revision);
-    assert.equal(loopRow(h, scheduledNumber), null);
+    assert.equal(loopRow(h, scheduledNumber)?.consecutive, 3, "scheduled release keeps the count");
+
+    // The one released review ends in another drift requeue: it re-parks at
+    // once instead of spending three more generations.
+    const dispatches = h.dispatched.length;
+    const released = await reviewOnce(h, scheduledNumber);
+    assert.equal(h.dispatched.length, dispatches + 1);
+    const reparked = await enqueue(
+      h,
+      "publisher-source-drift:after-scheduled",
+      sourceDriftRequeue(released),
+    );
+    assert.equal(reparked.dedupe_reason, "requeue_limit_reached");
+    const again = (await queueState(h)).items[key]!;
+    assert.equal(again.parkedReason, "source_drift_loop");
+    await h.queue.alarm();
+    assert.equal(h.dispatched.length, dispatches + 1, "no further review after re-park");
+
+    // The re-parked row needs another offer newer than its own park.
+    const stale = await enqueue(
+      h,
+      "scheduled-stale-after-repark",
+      decision(scheduledNumber, "scheduled_normal_backfill", {
+        sourceUpdatedAt: new Date(again.createdAt - 1_000).toISOString(),
+      }),
+    );
+    assert.equal(stale.dedupe_reason, "source_drift_loop");
+    assert.equal(loopRow(h, scheduledNumber)?.consecutive, 3);
   });
 });
 

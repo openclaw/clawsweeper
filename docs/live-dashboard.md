@@ -491,8 +491,10 @@ Review items parked as `source_drift_loop` have no automatic recovery ladder.
 They used `EXACT_REVIEW_SOURCE_DRIFT_REQUEUE_LIMIT` consecutive automatic
 source-drift review generations without organic input; see
 [Automation limits](limits.md) for the counter and its reset rules. The next
-organic webhook event, explicit command, manual review, or scheduled offer with a
-newer `sourceUpdatedAt` admits the item normally. Operators can list, resolve,
+organic webhook event, explicit command, or manual review admits the item
+normally and resets the counter. A scheduled offer with a newer `sourceUpdatedAt`
+admits one review without resetting it, so another drift requeue re-parks the
+item at once. Operators can list, resolve,
 or `recover-fresh` these rows through the signed parked-review routes, and the
 periodic terminal check still removes closed or head-advanced targets. The lane
 breakdown counts them under `parked_reasons.source_drift_loop`.

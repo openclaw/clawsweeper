@@ -2188,6 +2188,9 @@ export class ExactReviewQueue {
           current?.state === "parked" && current.parkedReason === "source_drift_loop"
             ? current
             : undefined;
+        // A newer scheduled offer may spend one review on the parked item, but
+        // never resets the counter: ClawSweeper's own post-review writes move
+        // updated_at and feed hot intake, so the next drift requeue re-parks.
         const releasesSourceDriftLoopBySchedule = Boolean(
           sourceDriftLoopParked &&
           loopKey &&
@@ -2652,15 +2655,7 @@ export class ExactReviewQueue {
         if (ingressAdmitted && loopKey) {
           if (exactReviewSourceDriftLoopCounted(decision)) {
             this.reviewLoopStore.recordSourceDriftGenerationSync(loopKey, now);
-          } else if (
-            exactReviewSourceDriftLoopReleases(decision) ||
-            releasesSourceDriftLoopBySchedule ||
-            (scheduledLane &&
-              exactReviewScheduledOfferReleasesSourceDriftLoop(
-                decision,
-                this.reviewLoopStore.sourceDriftLoopSync(loopKey)?.updatedAt ?? Infinity,
-              ))
-          ) {
+          } else if (exactReviewSourceDriftLoopReleases(decision)) {
             this.reviewLoopStore.resetSourceDriftLoopSync(loopKey);
           }
         }

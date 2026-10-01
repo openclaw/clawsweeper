@@ -84,7 +84,10 @@ export function exactReviewSourceDriftLoopCounted(decision: ExactReviewDecision)
   );
 }
 
-/** Organic source events, explicit commands, and explicit manual reviews end a loop. */
+/**
+ * Organic source events, explicit commands, and explicit manual reviews end a
+ * loop and reset its counter. Scheduled offers never reset it.
+ */
 export function exactReviewSourceDriftLoopReleases(decision: ExactReviewDecision): boolean {
   if (decision.publication || isLowPriorityExactReviewDecision(decision)) return false;
   if (EXACT_REVIEW_ORGANIC_SOURCE_ACTIONS.has(decision.sourceAction)) return true;
@@ -93,9 +96,10 @@ export function exactReviewSourceDriftLoopReleases(decision: ExactReviewDecision
 }
 
 /**
- * A scheduled offer ends a loop only when GitHub reports a source update after
- * the breaker's last observation. ClawSweeper's own review edits stop once the
- * item is parked, so a later update is new input rather than the loop itself.
+ * A scheduled offer releases a parked loop for one review generation only when
+ * GitHub reports a source update after the park. It never resets the counter:
+ * ClawSweeper's own post-review writes can move updated_at, so if that review
+ * ends in another source-drift requeue the item re-parks immediately.
  */
 export function exactReviewScheduledOfferReleasesSourceDriftLoop(
   decision: ExactReviewDecision,

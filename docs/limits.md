@@ -272,9 +272,13 @@ next source-drift requeue is not admitted: the item is parked with reason
 dedupe, so the parked item is the only new state. An organic webhook item action
 (`opened`, `reopened`, `edited`, `synchronize`, `ready_for_review`,
 `converted_to_draft`, `unlocked`, `unlabeled`), an explicit command, a manual
-review, an operator `recover-fresh`, or a scheduled offer whose `sourceUpdatedAt`
-is later than the park both resets the counter and admits the item normally.
-Older scheduled offers dedupe with reason `source_drift_loop`. A source-drift
+review, or an operator `recover-fresh` both resets the counter and admits the
+item normally. A scheduled offer whose `sourceUpdatedAt` is later than the park
+releases it for one review generation but does not reset the counter:
+ClawSweeper's own post-review writes, such as lease-comment cleanup and label
+syncs, move `updated_at` and feed hot intake. If that review ends in another
+source-drift requeue, the item re-parks immediately. Older scheduled offers
+dedupe with reason `source_drift_loop`. A source-drift
 requeue that still carries command context continues that command's status
 lifecycle, so it is neither counted nor parked. The parked item spends no review
 capacity, appears under `parked_reasons.source_drift_loop`, is operator-listable
