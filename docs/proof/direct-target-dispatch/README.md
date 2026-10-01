@@ -6,9 +6,9 @@
   [OIDC verifier](../../../dashboard/github-actions-oidc.ts),
   [dispatcher workflow](../../../.github/workflows/clawsweeper-dispatch.yml), and
   [target dispatcher](../../target-dispatcher.md#direct-queue-intake)
-- Baseline: `1c3eea1da162cf6cc9d2b607ac2ca3212755fa66` (`origin/main`)
+- Baseline: `cac974b3e1da900cac3e7480b91d02a36ca60163` (`origin/main`)
 - Candidate (clean, committed, with that main merged):
-  `c4ed347928f43bd1d93f9173829f41903548edbd`
+  `8c66d243208da8e99946e09535af8b9bbd4061ec`
 - Update when: the dispatcher step, the relay job, the OIDC claim binding, or
   the queue's ingress dedupe changes
 
@@ -71,16 +71,19 @@ App webhook only produced a `cross_route` dedupe, which is the redundancy the
 direct route removes.
 
 - Receipt: [`result.json`](result.json), SHA-256
-  `990c063e9c659238c62c76f9cd4673ca8abfef59d749e5b9a2a830f2c1825d8d`
+  `a9c7225a2b7802937e7576eea780a5b2692948ff646040dc8c752c230ce0e83d`
 - Harness at the candidate head: SHA-256
   `2e9510280dff6be08dfcbaecdbd6339a256d7d2df5267858d0ac145e4d3d335b`
 - Per-file source SHA-256s for both variants are inside the receipt;
   `sweep.yml` and `exact-review-queue.ts` are identical in both.
-- The same harness first passed against base
-  `65f9c3a3057621385b6c4f52640a2ce190c18c57` and candidate
+- The same harness passed with identical outcomes at two earlier
+  base/candidate pairs as main advanced:
+  `65f9c3a3057621385b6c4f52640a2ce190c18c57` /
   `393e5cad76ecd743baffccd09d0c8bc77b05e2bd` (receipt SHA-256
-  `cd832763f558fad3bf2b51f5515b07d84644c43d8b5cfa4b87cffac20b9be79a`) with
-  identical outcomes, before the branch merged main.
+  `cd832763f558fad3bf2b51f5515b07d84644c43d8b5cfa4b87cffac20b9be79a`) and
+  `1c3eea1da162cf6cc9d2b607ac2ca3212755fa66` /
+  `c4ed347928f43bd1d93f9173829f41903548edbd` (receipt SHA-256
+  `990c063e9c659238c62c76f9cd4673ca8abfef59d749e5b9a2a830f2c1825d8d`).
 
 An earlier run against the intermediate commit
 `2ce92f7ad80244cd80e34d8e99c41235fa353c96` answered every direct request with
