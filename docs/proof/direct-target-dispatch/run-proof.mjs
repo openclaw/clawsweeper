@@ -269,7 +269,15 @@ let workerOrigin = "";
 function recordingProxy(records) {
   return async (request, response) => {
     const body = await readBody(request);
-    const upstream = await fetch(new URL(request.url, workerOrigin), {
+    // Forward only the path and query to the local Worker; an absolute request URL must not pick the upstream.
+    const incoming = new URL(request.url, "http://proxy.invalid");
+    const target = new URL(`${incoming.pathname}${incoming.search}`, workerOrigin);
+    if (target.origin !== new URL(workerOrigin).origin) {
+      response.writeHead(400, { "content-type": "application/json" });
+      response.end(JSON.stringify({ error: "proxy target must be the local Worker" }));
+      return;
+    }
+    const upstream = await fetch(target, {
       method: request.method,
       headers: Object.fromEntries(
         Object.entries(request.headers).filter(
