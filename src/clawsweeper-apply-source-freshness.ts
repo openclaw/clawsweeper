@@ -1,5 +1,12 @@
 import type { CreateApplyDecisionWorkflowDependencies } from "./clawsweeper-apply-dependencies.js";
+import { completeActivityContextSymbol } from "./clawsweeper-types.js";
 import type { ApplyResult, Item, ItemContext } from "./clawsweeper-types.js";
+
+/**
+ * A released review lease leaves no live timestamp. Its deletion must follow the review
+ * generation's last recorded ClawSweeper write within the shortest apply-lease hold.
+ */
+export const OWNED_LEASE_RELEASE_RECEIPT_WINDOW_MS = 5 * 60 * 1000;
 
 type ApplySourceFreshnessDependencies = Pick<
   CreateApplyDecisionWorkflowDependencies,
@@ -268,29 +275,102 @@ export function createApplySourceFreshness(
     retryCloseCoverageCommandStatusOnlyUpdate(item, currentItemContext());
   const completeAutomationReceiptMatchesReview = (): boolean =>
     completeReviewActivityReceiptMatches(currentItemContext());
-  // Exact review marks ClawSweeper's acknowledgement comment complete after the review snapshot
-  // and before publication, which moves updated_at without changing reviewed source. Accept that
-  // edit only as the latest item update and only with a matching complete activity receipt.
-  const reviewAcknowledgementMarker = new RegExp(
-    `<!--\\s*clawsweeper-pr-ack:[^>]+\\s+item=${number}\\s*-->`,
+  // ClawSweeper's own writes after the review snapshot (acknowledgement progress, durable review
+  // sync, review/apply lease create and release, managed label edits) move updated_at without
+  // changing the reviewed source. A later apply of the same review, such as the deferred batch
+  // publisher, accepts such an update only when a receipt ClawSweeper recorded for this item
+  // accounts for the latest updated_at and the review's complete activity receipt still matches.
+  const itemUpdatedAtMs = timestampMs(item.updatedAt);
+  const isClawSweeperLogin = (value: string | undefined): boolean =>
+    CLAWSWEEPER_BOT_AUTHORS.has((value ?? "").trim().toLowerCase());
+  const ownedItemMarker = new RegExp(
+    `<!--\\s*clawsweeper-[\\w:-]+\\s[^>]*?\\bitem=${number}(?![0-9])`,
   );
-  const ownedReviewAcknowledgementOnlyUpdate = (): boolean =>
+  const ownedCommentWriteTimes = comments.flatMap((comment) => {
+    const at = timestampMs(commentUpdatedAt(comment));
+    return at !== null &&
+      isClawSweeperLogin(login(asRecord(comment).user)) &&
+      ownedItemMarker.test(commentBody(comment) ?? "")
+      ? [at]
+      : [];
+  });
+  // GitHub's timeline records ClawSweeper's label edits with their actor and time.
+  const ownedTimelineWriteTimes = (): number[] =>
+    (currentItemContext()[completeActivityContextSymbol]?.timeline ?? []).flatMap((event) => {
+      const record = asRecord(event);
+      const at = timestampMs(stringOrUndefined(record.createdAt));
+      return at !== null && isClawSweeperLogin(stringOrUndefined(record.actor)) ? [at] : [];
+    });
+  const exactOwnedWriteAccountsForUpdate = (): boolean =>
+    itemUpdatedAtMs !== null &&
+    (ownedCommentWriteTimes.includes(itemUpdatedAtMs) ||
+      ownedTimelineWriteTimes().includes(itemUpdatedAtMs));
+  const reviewVersionAttribute = (marker: string, name: string): string | undefined =>
+    marker.match(new RegExp(`\\b${name}=([^\\s>]+)`))?.[1];
+  const durableCommentRecordsReviewGeneration = (): boolean => {
+    if (!isClawSweeperLogin(login(asRecord(existingReviewComment).user))) return false;
+    const marker = (commentBody(existingReviewComment) ?? "")
+      .match(/<!--\s+clawsweeper-review-version\b[^>]*-->/g)
+      ?.at(-1);
+    if (!marker) return false;
+    const reviewedAtMs = timestampMs(
+      frontMatterValue(markdownBeforeApplyDecisionMutations, "reviewed_at"),
+    );
+    const sourceRevision = frontMatterValue(
+      markdownBeforeApplyDecisionMutations,
+      "item_source_revision",
+    );
+    return (
+      Number(reviewVersionAttribute(marker, "item")) === number &&
+      reviewVersionAttribute(marker, "v") === "1" &&
+      reviewedAtMs !== null &&
+      timestampMs(reviewVersionAttribute(marker, "reviewed_at")) === reviewedAtMs &&
+      Boolean(sourceRevision) &&
+      reviewVersionAttribute(marker, "source_revision") === sourceRevision &&
+      reviewVersionAttribute(marker, "lease_owner") === reportReviewLeaseOwner &&
+      Number(reviewVersionAttribute(marker, "lease_comment_id")) === reportReviewLeaseCommentId
+    );
+  };
+  // Releasing the review generation's own lease deletes its comment and leaves no live timestamp.
+  // The durable review comment names that generation and lease, so accept the deletion only when
+  // it follows the generation's last recorded write within the apply-lease hold window.
+  const releasedReviewLeaseAccountsForUpdate = (): boolean => {
+    if (!requiresApplyMutationLease || itemUpdatedAtMs === null || storedUpdatedAtMs === null) {
+      return false;
+    }
+    if (comments.some((comment) => commentId(comment) === reportReviewLeaseCommentId)) return false;
+    if (!durableCommentRecordsReviewGeneration()) return false;
+    const syncedAtMs = timestampMs(existingReviewCommentUpdatedAt);
+    if (syncedAtMs === null || syncedAtMs < storedUpdatedAtMs) return false;
+    const latestOwnedWriteMs = Math.max(
+      syncedAtMs,
+      ...ownedCommentWriteTimes,
+      ...ownedTimelineWriteTimes(),
+    );
+    return (
+      latestOwnedWriteMs <= itemUpdatedAtMs &&
+      itemUpdatedAtMs - latestOwnedWriteMs <= OWNED_LEASE_RELEASE_RECEIPT_WINDOW_MS
+    );
+  };
+  // Every receipt also requires that no non-automation comment, review comment, or timeline
+  // event (including a human edit of a managed label) is visible after the review snapshot.
+  const ownedAutomationReceiptOnlyUpdate = (): boolean =>
     updatedSinceReview &&
     reviewHasCompleteActivityIdentity &&
-    comments.some(
-      (comment) =>
-        commentUpdatedAt(comment) === item.updatedAt &&
-        CLAWSWEEPER_BOT_AUTHORS.has((login(asRecord(comment).user) ?? "").trim().toLowerCase()) &&
-        reviewAcknowledgementMarker.test(commentBody(comment) ?? ""),
-    ) &&
-    completeAutomationReceiptMatchesReview();
+    storedUpdatedAtMs !== null &&
+    (exactOwnedWriteAccountsForUpdate() || releasedReviewLeaseAccountsForUpdate()) &&
+    completeAutomationReceiptMatchesReview() &&
+    !contextHasNonAutomationActivityAfter(currentItemContext(), storedUpdatedAtMs - 1, {
+      truncationCountsAsActivity: true,
+      useCompleteActivityContext: true,
+    });
   const { isCloseProposal } = currentState();
   const automationOnlyUpdate = Boolean(
     (reviewCommentOnlyUpdate ||
       labelSyncOnlyUpdate ||
       ownedIssueReviewLeaseOnlyUpdate ||
       commandStatusOnlyUpdate ||
-      ownedReviewAcknowledgementOnlyUpdate()) &&
+      ownedAutomationReceiptOnlyUpdate()) &&
     (!isCloseProposal ||
       !reviewHasCompleteActivityIdentity ||
       completeAutomationReceiptMatchesReview()),

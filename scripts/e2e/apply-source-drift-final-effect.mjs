@@ -8,6 +8,8 @@
  * snapshot writes through native gh (ClawSweeper's own acknowledgement edit uses the compiled
  * `update-review-status` CLI), then runs the compiled `apply-decisions` CLI in non-dry-run
  * mode with the exact-event publication arguments. Every request and GitHub effect is traced.
+ * `batch-*` scenarios then re-apply the same pre-apply review, as the deferred batch publisher
+ * does, after the producer's own writes and an optional external change.
  *
  *   node scripts/e2e/apply-source-drift-final-effect.mjs capture --out <seed-dir>
  *   node scripts/e2e/apply-source-drift-final-effect.mjs run --seed-dir <seed-dir> \
@@ -115,6 +117,50 @@ const ITEMS = {
     },
   },
 };
+// openclaw/openclaw#143911: the producer exact-review run synced the durable comment, kept the
+// implemented-on-main close proposal open, and released (deleted) its review lease. Its direct
+// publication was deferred, so the batch publisher re-applied the same review against the
+// producer's own writes and requeued it as source drift (runs 36671559049 -> 36672608523).
+ITEMS[143911] = {
+  runId: 36671559049,
+  headSha: "2f7d3084fce5e3f2887b7091a75da22dfd247108",
+  leaseCommentId: 5904434723,
+  leaseOwner: "github-run-36671559049-1",
+  leaseAt: "2026-09-30T05:03:06Z",
+  acknowledgementCommentId: 5616537937,
+  durableCommentId: 5616705068,
+  durableUpdatedAt: "2026-09-30T04:55:10Z",
+  labels: [
+    "docs",
+    "agents",
+    "size: S",
+    "extensions: codex",
+    "P2",
+    "rating: 🦪 silver shellfish",
+    "status: 📣 needs proof",
+    "extensions: copilot",
+    "extensions: active-memory",
+  ],
+  // The fixing PR is also read through the issues API.
+  related: { issues: [143821, 143903], pulls: [143903] },
+  scenarios: ["batch-after-producer", "batch-human-comment", "batch-new-head", "batch-title-edit"],
+  records: {
+    recorded: {
+      close_reason: "implemented_on_main",
+      fixed_pr_url: `https://github.com/${REPO}/pull/143903`,
+      fixed_pr_number: "143903",
+      fixed_pr_merged_at: "2026-09-10T14:20:40Z",
+      fixed_pr_confidence: "high",
+      fixed_pr_source: '"GitHub merged pull request"',
+      triage_priority: "P2",
+      rating: { overall: "D", proof: "D", patch: "C" },
+      proof: "missing",
+      evidence:
+        "The merged canonical PR #143903 implements the same inter-session recall exclusion on main.",
+      closeComment: "Closing this as already implemented on main by the merged canonical PR.",
+    },
+  },
+};
 const SCENARIOS = ["ack-only", "human-comment", "new-head", "title-edit"];
 
 const source = path.resolve(fileURLToPath(new URL("../..", import.meta.url)));
@@ -194,6 +240,11 @@ async function capture() {
     for (const kind of ["issues", "pulls"])
       for (const related of spec.related[kind])
         seed.related[kind][related] = get(`${base}/${kind}/${related}`);
+    // Later reviews edit the durable comment in place. Read-only GraphQL edit history restores
+    // the body it held at the review snapshot, so a newer generation cannot leak into replay.
+    const durable = seed.comments.find((comment) => comment.id === spec.durableCommentId);
+    const atReview = durable && durableCommentAtSnapshot(durable.node_id, spec.leaseAt);
+    if (atReview) seed.durableCommentAtReview = atReview;
     for (const file of seed.files) delete file.patch;
     const target = path.join(values.out, `seed-${number}.json`);
     fs.writeFileSync(target, JSON.stringify(seed, null, 1) + "\n");
@@ -201,6 +252,38 @@ async function capture() {
       JSON.stringify({ captured: number, target, sha256: sha256(fs.readFileSync(target)) }),
     );
   }
+}
+
+// Newest durable-comment edit at or before the snapshot (GitHub returns each edit's full body).
+function durableCommentAtSnapshot(nodeId, snapshotAt) {
+  let best = null;
+  let after = null;
+  do {
+    const page = JSON.parse(
+      execFileSync(
+        values.gh,
+        [
+          "api",
+          "graphql",
+          "-f",
+          `query=query($id: ID!, $after: String) { node(id: $id) { ... on IssueComment { userContentEdits(first: 100, after: $after) { pageInfo { hasNextPage endCursor } nodes { editedAt diff } } } } }`,
+          "-f",
+          `id=${nodeId}`,
+          ...(after ? ["-f", `after=${after}`] : []),
+        ],
+        { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 },
+      ),
+    ).data.node.userContentEdits;
+    for (const edit of page.nodes)
+      if (
+        typeof edit.diff === "string" &&
+        Date.parse(edit.editedAt) <= Date.parse(snapshotAt) &&
+        (!best || Date.parse(edit.editedAt) > Date.parse(best.updated_at))
+      )
+        best = { body: edit.diff, updated_at: edit.editedAt };
+    after = page.pageInfo.hasNextPage ? page.pageInfo.endCursor : null;
+  } while (after);
+  return best;
 }
 
 async function run() {
@@ -241,7 +324,7 @@ async function run() {
       );
       for (const record of Object.keys(spec.records)) {
         if (values.record && values.record !== record) continue;
-        for (const scenario of SCENARIOS) {
+        for (const scenario of spec.scenarios ?? SCENARIOS) {
           if (values.scenario && values.scenario !== scenario) continue;
           for (const build of ["baseline", "candidate"]) {
             const result = await runScenario({
@@ -285,6 +368,15 @@ function summarize(result) {
     scenario: result.scenario,
     build: result.build,
     head: result.head,
+    ...summarizeApply(result),
+    // Batch scenarios: `result` is the producer run; `batch` re-applies the same review.
+    ...(result.batch ? { batch: summarizeApply(result.batch) } : {}),
+    serverErrors: result.serverErrors,
+  };
+}
+
+function summarizeApply(result) {
+  return {
     exit: result.exit,
     applyActions: result.actions.map((entry) => `${entry.action}: ${entry.reason}`),
     disposition: result.disposition,
@@ -295,7 +387,6 @@ function summarize(result) {
       (effect) =>
         `${effect.method} ${effect.path} -> ${effect.status} ${effect.kind}${effect.role ? `(${effect.role})` : ""}${effect.labels ? ` ${JSON.stringify(effect.labels)}` : ""}`,
     ),
-    serverErrors: result.serverErrors,
   };
 }
 
@@ -317,6 +408,9 @@ async function runScenario({
     fs.mkdirSync(path.join(root, dir), { recursive: true });
   const dist = (file) => import(pathToFileURL(path.join(runtime, "dist", file)).href);
   const { renderReviewStartStatusComment } = await dist("clawsweeper.js");
+  // The apply elects the review's own lease only while its marker window is live (at most 2h),
+  // as in production; the lease comment keeps its captured snapshot creation time.
+  const leaseStartedAt = new Date(Date.now() - 60_000).toISOString();
   const leaseExpiresAt = new Date(Date.now() + 30 * 60_000).toISOString();
   const beforeSnapshot = (entry) =>
     !entry.created_at || Date.parse(entry.created_at) <= Date.parse(spec.leaseAt);
@@ -326,7 +420,7 @@ async function runScenario({
       return {
         ...comment,
         body: seed.durableCommentAtReview?.body ?? comment.body,
-        updated_at: spec.durableUpdatedAt,
+        updated_at: seed.durableCommentAtReview?.updated_at ?? spec.durableUpdatedAt,
       };
     if (comment.id === spec.acknowledgementCommentId)
       return { ...comment, updated_at: spec.leaseAt };
@@ -345,7 +439,7 @@ async function runScenario({
       kind: "pull_request",
       title: seed.issue.title,
       headSha: spec.headSha,
-      startedAt: spec.leaseAt,
+      startedAt: leaseStartedAt,
       leaseExpiresAt,
       leaseOwner: spec.leaseOwner,
     }),
@@ -519,112 +613,161 @@ async function runScenario({
     reviewStatus("complete");
     await sleep(1100);
 
-    await control("/__proof/phase", { phase: "apply" });
-    const reportPath = path.join(root, "apply-report.json");
-    // Arguments of src/repair/publish-event-result.ts runApplyDecisions (non-dry-run).
-    const applyArgs = [
-      path.join(runtime, "dist/clawsweeper.js"),
-      "apply-decisions",
-      "--target-repo",
-      REPO,
-      "--item-numbers",
-      String(number),
-      "--apply-kind",
-      "all",
-      "--apply-close-reasons",
-      "all",
-      "--stale-min-age-days",
-      "60",
-      "--limit",
-      "1",
-      "--processed-limit",
-      "20",
-      "--min-age-minutes",
-      "0",
-      "--close-delay-ms",
-      "1000",
-      "--comment-sync-min-age-days",
-      "0",
-      "--progress-every",
-      "1",
-      "--event-apply-proof",
-      "--exact-event-publication",
-      "--skip-dashboard",
-      "--report-path",
-      reportPath,
-      "--record-root",
-      root,
-      "--items-dir",
-      path.join(root, "items"),
-      "--closed-dir",
-      path.join(root, "closed"),
-      "--plans-dir",
-      path.join(root, "plans"),
-      "--decision-packets-dir",
-      path.join(root, "decision-packets"),
-    ];
-    const apply = spawnSync(process.execPath, applyArgs, {
-      cwd: runtime,
-      env: { ...env(TOKENS.bot), CLAWSWEEPER_ACTION_LEDGER_OUTPUT_ROOT: path.join(root, "ledger") },
-      encoding: "utf8",
-      timeout: 180_000,
-      maxBuffer: 32 * 1024 * 1024,
-    });
-    await control("/__proof/phase", { phase: "done" });
-    const trace = fs
-      .readFileSync(path.join(root, "trace.jsonl"), "utf8")
-      .trim()
-      .split("\n")
-      .map((line) => JSON.parse(line));
-    const actions = fs.existsSync(reportPath)
-      ? JSON.parse(fs.readFileSync(reportPath, "utf8"))
-      : [];
+    const dir = path.join(output, tag);
+    fs.mkdirSync(dir, { recursive: true });
     const { exactEventApplyProof, eventApplyRequeueLatestExpected } = await dist(
       "repair/event-apply-proof.js",
     );
-    const proof = exactEventApplyProof(actions, number, "proposed_close");
-    const applyTrace = trace.filter((entry) => entry.phase === "apply");
-    const effects = applyTrace
-      .filter((entry) => entry.effect)
-      .map((entry) => ({
-        method: entry.method,
-        path: entry.path,
-        status: entry.status,
-        ...entry.effect,
-      }));
-    const dir = path.join(output, tag);
-    fs.mkdirSync(dir, { recursive: true });
+    const readTrace = () =>
+      fs
+        .readFileSync(path.join(root, "trace.jsonl"), "utf8")
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line));
+    const applyPhase = async (phase) => {
+      await control("/__proof/phase", { phase });
+      const reportPath = path.join(root, `${phase}-report.json`);
+      // Arguments of src/repair/publish-event-result.ts runApplyDecisions (non-dry-run).
+      const applyArgs = [
+        path.join(runtime, "dist/clawsweeper.js"),
+        "apply-decisions",
+        "--target-repo",
+        REPO,
+        "--item-numbers",
+        String(number),
+        "--apply-kind",
+        "all",
+        "--apply-close-reasons",
+        "all",
+        "--stale-min-age-days",
+        "60",
+        "--limit",
+        "1",
+        "--processed-limit",
+        "20",
+        "--min-age-minutes",
+        "0",
+        "--close-delay-ms",
+        "1000",
+        "--comment-sync-min-age-days",
+        "0",
+        "--progress-every",
+        "1",
+        "--event-apply-proof",
+        "--exact-event-publication",
+        "--skip-dashboard",
+        "--report-path",
+        reportPath,
+        "--record-root",
+        root,
+        "--items-dir",
+        path.join(root, "items"),
+        "--closed-dir",
+        path.join(root, "closed"),
+        "--plans-dir",
+        path.join(root, "plans"),
+        "--decision-packets-dir",
+        path.join(root, "decision-packets"),
+      ];
+      const apply = spawnSync(process.execPath, applyArgs, {
+        cwd: runtime,
+        env: {
+          ...env(TOKENS.bot),
+          CLAWSWEEPER_ACTION_LEDGER_OUTPUT_ROOT: path.join(root, `ledger-${phase}`),
+        },
+        encoding: "utf8",
+        timeout: 180_000,
+        maxBuffer: 32 * 1024 * 1024,
+      });
+      await control("/__proof/phase", { phase: `${phase}-done` });
+      const actions = fs.existsSync(reportPath)
+        ? JSON.parse(fs.readFileSync(reportPath, "utf8"))
+        : [];
+      const proof = exactEventApplyProof(actions, number, "proposed_close");
+      const applyTrace = readTrace().filter((entry) => entry.phase === phase);
+      const prefix = phase === "apply" ? "apply" : `${phase}-apply`;
+      fs.writeFileSync(path.join(dir, `${prefix}.stdout.log`), apply.stdout ?? "");
+      fs.writeFileSync(path.join(dir, `${prefix}.stderr.log`), apply.stderr ?? "");
+      fs.writeFileSync(
+        path.join(dir, `${prefix}-report.json`),
+        JSON.stringify(actions, null, 2) + "\n",
+      );
+      for (const [folder, name] of [
+        ["items", "report-after.md"],
+        ["closed", "report-after-archived.md"],
+      ]) {
+        const after = path.join(root, folder, `${number}.md`);
+        if (fs.existsSync(after))
+          fs.copyFileSync(after, path.join(dir, phase === "apply" ? name : `${phase}-${name}`));
+      }
+      return {
+        exit: apply.status,
+        actions,
+        disposition: proof.disposition,
+        requeue: eventApplyRequeueLatestExpected({
+          disposition: proof.disposition,
+          exactEventPublication: true,
+          legacyTuplelessReviewLease: proof.legacyTuplelessReviewLease,
+        }),
+        applyRequests: applyTrace.length,
+        effects: applyTrace
+          .filter((entry) => entry.effect)
+          .map((entry) => ({
+            method: entry.method,
+            path: entry.path,
+            status: entry.status,
+            ...entry.effect,
+          })),
+      };
+    };
+
+    // The exact-review producer applies first: durable comment sync, close gates, lease release.
+    const producer = await applyPhase("apply");
+    let batch;
+    if (scenario.startsWith("batch-")) {
+      // Its direct publication was deferred. Optional external change before the batch publisher.
+      await control("/__proof/phase", { phase: "after-producer" });
+      if (scenario === "batch-human-comment")
+        nativeGh(TOKENS.author, [
+          "api",
+          `repos/${REPO}/issues/${number}/comments`,
+          "-f",
+          "body=Synthetic proof: this still reproduces for me on current main.",
+        ]);
+      if (scenario === "batch-title-edit")
+        nativeGh(TOKENS.author, [
+          "api",
+          "--method",
+          "PATCH",
+          `repos/${REPO}/issues/${number}`,
+          "-f",
+          `title=${seed.issue.title} (synthetic edit)`,
+        ]);
+      if (scenario === "batch-new-head")
+        await control("/__proof/push-head", { sha: "3".repeat(40) });
+      await sleep(1100);
+      // The batch publisher re-applies the same immutable review artifact, not the producer's
+      // post-apply record (the deferred publication never reached the canonical store).
+      for (const folder of ["items", "closed", "plans", "decision-packets"])
+        fs.rmSync(path.join(root, folder, `${number}.md`), { force: true });
+      fs.writeFileSync(path.join(root, "items", `${number}.md`), reportBefore);
+      batch = await applyPhase("batch");
+    }
+    await control("/__proof/phase", { phase: "done" });
+    const trace = readTrace();
     fs.writeFileSync(
       path.join(dir, "http-trace.jsonl"),
       trace.map((entry) => JSON.stringify(entry)).join("\n") + "\n",
     );
-    fs.writeFileSync(path.join(dir, "apply.stdout.log"), apply.stdout ?? "");
-    fs.writeFileSync(path.join(dir, "apply.stderr.log"), apply.stderr ?? "");
-    fs.writeFileSync(path.join(dir, "apply-report.json"), JSON.stringify(actions, null, 2) + "\n");
     fs.copyFileSync(path.join(root, "state.json"), path.join(dir, "final-state.json"));
     fs.writeFileSync(path.join(dir, "report-before.md"), reportBefore);
-    for (const [folder, name] of [
-      ["items", "report-after.md"],
-      ["closed", "report-after-archived.md"],
-    ]) {
-      const after = path.join(root, folder, `${number}.md`);
-      if (fs.existsSync(after)) fs.copyFileSync(after, path.join(dir, name));
-    }
     return {
       number,
       record,
       scenario,
       build,
-      exit: apply.status,
-      actions,
-      disposition: proof.disposition,
-      requeue: eventApplyRequeueLatestExpected({
-        disposition: proof.disposition,
-        exactEventPublication: true,
-        legacyTuplelessReviewLease: proof.legacyTuplelessReviewLease,
-      }),
-      applyRequests: applyTrace.length,
-      effects,
+      ...producer,
+      ...(batch ? { batch } : {}),
       serverErrors: trace
         .filter((entry) => entry.error)
         .map((entry) => `${entry.phase} ${entry.method} ${entry.path}: ${entry.error}`),
