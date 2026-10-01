@@ -4051,7 +4051,7 @@ test("visualize assist dispatch payload stays within repository_dispatch key lim
   assert.equal(clientPayload.assist.mode, "visual");
   assert.equal(clientPayload.assist.lens, "state");
   assert.equal(clientPayload.assist.model, "internal");
-  assert.equal(clientPayload.assist.reasoning_effort, "high");
+  assert.equal(clientPayload.assist.reasoning_effort, "medium");
   assert.equal(clientPayload.assist.timeout_ms, "120000");
   assert.equal("mode" in clientPayload, false);
   assert.equal("lens" in clientPayload, false);

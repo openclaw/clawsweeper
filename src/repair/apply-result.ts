@@ -1442,7 +1442,7 @@ function prCloseCoverageProofRuntime() {
     reasoningEffort: stringSetting(
       args["pr-close-coverage-proof-reasoning-effort"] ??
         process.env.CLAWSWEEPER_PR_CLOSE_COVERAGE_PROOF_REASONING_EFFORT,
-      "high",
+      "medium",
     ),
     sandboxMode: stringSetting(
       args["pr-close-coverage-proof-sandbox"] ??

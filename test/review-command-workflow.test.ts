@@ -812,7 +812,7 @@ else {
           assert.equal(serviceTier, "");
         }
         if (scenario === "changed-pr-proof-maintainer-change") {
-          assert.equal(reasoningEffort, "high");
+          assert.equal(reasoningEffort, "medium");
           assert.equal(serviceTier, "fast");
         }
         generationCalls += 1;

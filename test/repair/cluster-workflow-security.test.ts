@@ -62,7 +62,7 @@ test("generated issue workers can create PRs but never inherit the maintainer me
 
   assert.match(
     workflow.jobs?.execute?.env?.CLAWSWEEPER_OPENCLAW_MODEL ?? "",
-    /CLAWSWEEPER_FIX_PR_MODEL \|\| 'gpt-6-sol'/,
+    /CLAWSWEEPER_FIX_PR_MODEL \|\| 'gpt-6\.1-sol'/,
   );
   assert.equal(workflow.jobs?.execute?.env?.CLAWSWEEPER_CODEX_REASONING_EFFORT, undefined);
 });

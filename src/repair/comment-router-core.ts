@@ -63,7 +63,7 @@ export function repositoryRepairCommandBlockReason(repo: JsonValue, intent: Json
 }
 export const TERMINAL_COMMAND_REACTION_STATUSES = new Set(["executed", "skipped"]);
 export const DEFAULT_ASSIST_MODEL = "internal";
-export const DEFAULT_ASSIST_REASONING_EFFORT = "high";
+export const DEFAULT_ASSIST_REASONING_EFFORT = "medium";
 export const DEFAULT_ASSIST_TIMEOUT_MS = "120000";
 const REPAIR_LOOP_PAUSE_LABELS = [HUMAN_REVIEW_LABEL, MANUAL_ONLY_LABEL, MERGE_READY_LABEL];
 const TRUSTED_CLOSE_PROTECTED_LABELS = new Set<string>(CLOSE_PROTECTED_LABEL_NAMES);

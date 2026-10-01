@@ -268,7 +268,7 @@ Common commands:
   current state: `👀` for acknowledgement, `🧹` for review, `🔧` for repair, and
   `✅` for completed/paused work.
 - Freeform `@clawsweeper ...` mentions and explicit `ask ...` questions dispatch
-  the maintainer-only assist lane. Assist runs the internal model with high reasoning,
+  the maintainer-only assist lane. Assist runs the internal model with medium reasoning,
   a 120-second per-item timeout, and its own five-job cap. It posts a separate
   non-durable answer comment and never edits the durable ClawSweeper review
   comment, closes, merges, labels, pushes, repairs, or emits review/apply
@@ -440,9 +440,9 @@ Review is proposal-only. It never closes items.
   and `apply_after_review` inputs are retired. Use the separate `apply_existing`
   lane to apply eligible proposals.
 - Each admitted item gets its own review workflow for the selected target.
-- Codex reviews use the configured model profiles. OWNER, MEMBER, and COLLABORATOR-authored issues
-  and pull requests use high reasoning with fast service; other items use medium
-  reasoning with standard service. Sweep planning, assist answers, and
+- Codex reviews use `gpt-6.1-sol` with medium reasoning. OWNER, MEMBER, and
+  COLLABORATOR-authored issues and pull requests use fast service; other items use
+  standard service. Sweep planning, assist answers, and
   close-coverage proofs use the configured ordinary-item defaults. Reviews have
   a 10-minute per-item timeout.
 - Each item becomes a flat report under

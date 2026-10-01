@@ -264,7 +264,7 @@ export async function selectClusterCandidateWithModel(options: {
     signal: AbortSignal.timeout(OPENAI_CLUSTER_SELECTION_TIMEOUT_MS),
     body: JSON.stringify({
       model: internalCodexModel(options.model),
-      reasoning: { effort: "high" },
+      reasoning: { effort: "medium" },
       input: [
         { role: "system", content: CLUSTER_SELECTION_SYSTEM_PROMPT },
         { role: "user", content: renderClusterSelectionPrompt(options.repo, options.evidence) },

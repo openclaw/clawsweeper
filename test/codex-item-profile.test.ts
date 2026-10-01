@@ -2,10 +2,10 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { canonicalItemAuthorAssociations, codexItemProfile } from "../dist/codex-item-profile.js";
 
-test("maintainer-authored items use high reasoning and fast service", () => {
+test("maintainer-authored items use medium reasoning and fast service", () => {
   for (const association of ["OWNER", "member", "COLLABORATOR"]) {
     assert.deepEqual(codexItemProfile(association), {
-      reasoningEffort: "high",
+      reasoningEffort: "medium",
       serviceTier: "fast",
     });
   }
@@ -48,7 +48,7 @@ test("repair routing promotes a cluster when any canonical item is maintainer-au
   );
   assert.deepEqual(associations, ["CONTRIBUTOR", "OWNER"]);
   assert.deepEqual(codexItemProfile(associations), {
-    reasoningEffort: "high",
+    reasoningEffort: "medium",
     serviceTier: "fast",
   });
 });
@@ -61,7 +61,7 @@ test("repair routing normalizes accepted numeric canonical refs", () => {
     );
     assert.deepEqual(associations, ["MEMBER"]);
     assert.deepEqual(codexItemProfile(associations), {
-      reasoningEffort: "high",
+      reasoningEffort: "medium",
       serviceTier: "fast",
     });
   }
