@@ -23,6 +23,8 @@ const BULK_FILER_EXEMPT_AUTHOR_ASSOCIATIONS = new Set(["OWNER", "MEMBER"]);
 // readable admin/maintain permissions provide the narrow fallback.
 const BULK_FILER_EXEMPT_REPOSITORY_PERMISSIONS = new Set(["admin", "maintain"]);
 
+const WRITE_ACCESS_REPOSITORY_PERMISSIONS = new Set(["admin", "maintain", "write"]);
+
 export function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" ? (value as Record<string, unknown>) : {};
 }
@@ -60,6 +62,12 @@ export function isBulkFilerExemptRepositoryPermission(value: unknown): boolean {
   return (
     typeof value === "string" &&
     BULK_FILER_EXEMPT_REPOSITORY_PERMISSIONS.has(value.trim().toLowerCase())
+  );
+}
+
+export function isWriteAccessRepositoryPermission(value: unknown): boolean {
+  return (
+    typeof value === "string" && WRITE_ACCESS_REPOSITORY_PERMISSIONS.has(value.trim().toLowerCase())
   );
 }
 

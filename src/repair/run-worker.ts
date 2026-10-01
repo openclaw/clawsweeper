@@ -4,7 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import { runAgentProcess } from "../agent-runner.js";
-import { canonicalItemAuthorAssociations, codexItemProfile } from "../codex-item-profile.js";
+import { canonicalItemCodexProfile } from "../codex-item-profile.js";
 import { codexAppServerProcessOptionsFromEnv } from "../codex-process.js";
 import { deterministicAutomergeResult } from "./deterministic-automerge-result.js";
 import {
@@ -142,9 +142,7 @@ const clusterPlanPath = path.join(runDir, "cluster-plan.json");
 const clusterPlan = fs.existsSync(clusterPlanPath)
   ? JSON.parse(fs.readFileSync(clusterPlanPath, "utf8"))
   : null;
-const codexProfile = codexItemProfile(
-  canonicalItemAuthorAssociations(job.frontmatter, clusterPlan),
-);
+const codexProfile = canonicalItemCodexProfile(job.frontmatter, clusterPlan);
 const codexReasoningEffort = codexProfile.reasoningEffort;
 const codexServiceTier = codexProfile.serviceTier;
 
