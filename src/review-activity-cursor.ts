@@ -1,7 +1,7 @@
 import { recordOrEmpty as record } from "./value-coerce.js";
 import { createHash } from "node:crypto";
 
-import { stableJsonCodeUnit } from "./stable-json.js";
+import { compareCodeUnits, stableJsonCodeUnit } from "./stable-json.js";
 
 export const MAX_REVIEWED_PR_ACTIVITY = 1_000;
 export const MAX_REVIEWED_PR_ACTIVITY_CURSOR_BYTES = 1024 * 1024;
@@ -517,8 +517,4 @@ function scalar(value: unknown): string {
 
 function digestScalar(value: unknown): string {
   return createHash("sha256").update(scalar(value)).digest("hex");
-}
-
-function compareCodeUnits(left: string, right: string): number {
-  return left < right ? -1 : left > right ? 1 : 0;
 }
