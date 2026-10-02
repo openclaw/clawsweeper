@@ -250,6 +250,9 @@ const CRON_FTP_SOURCE_SHA256S = [
 
 // oxfmt-ignore
 const REVIEWED_ATTRIBUTIONS: readonly ReviewedAttribution[] = [
+  // Existing OCE proxy/API URL rejection fixtures from the initial release (6f7be4679e50).
+  [17, "URI", "PLAIN", "fde443718383531e2fc52a8324fc644f1c45c1c766afd11da028368831e0f457", "fde443718383531e2fc52a8324fc644f1c45c1c766afd11da028368831e0f457", "6c17481ec8ebdfc543923950c2959e58568b8ad6daddabf26ce870e7a5d69274", "tests/conformance/kubernetes-compute.test.mjs", "100644"],
+  [17, "URI", "PLAIN", "18e186031a746783f43d3002e63b775b6e28acef5d60825a82c418ad3e603b5b", "18e186031a746783f43d3002e63b775b6e28acef5d60825a82c418ad3e603b5b", "fb50a8d4a7885dd59938f6421133018054740ef7a91dd01b62b9c109bb4c471c", "tests/conformance/kubernetes-compute.test.mjs", "100644"],
   // OpenClaw catalog-icon rejection fixture: observed native prefixes bind the complete source line.
   [17, "URI", "PLAIN", "580f7a7c0ff4d88005bb0a7ad56ab18f84dc6ba38060fd35914e020e8b581a6a", "02fcb6434869afdf5b29773aad1295172012f6445975eba685b873c79e4567b9", "6c9cdafa1ff07a62a8ffc88c6b8d5d377becfb6fc09c3709d997dcc9ca890469", "src/plugins/catalog-icon-registry.test.ts", "100644"],
   [17, "URI", "HTML", "580f7a7c0ff4d88005bb0a7ad56ab18f84dc6ba38060fd35914e020e8b581a6a", "02fcb6434869afdf5b29773aad1295172012f6445975eba685b873c79e4567b9", "6c9cdafa1ff07a62a8ffc88c6b8d5d377becfb6fc09c3709d997dcc9ca890469", "src/plugins/catalog-icon-registry.test.ts", "100644"],
@@ -432,6 +435,10 @@ function validateReviewedAttributions(rows: readonly ReviewedAttribution[]): voi
       ![raw, rawV2, ...lines].every((digest) => sha256Pattern.test(digest)) ||
       !(
         (source === "src/plugin-sdk/browser-subpaths.test.ts" &&
+          detectorType === 17 &&
+          detectorName === "URI" &&
+          decoder === "PLAIN") ||
+        (source === "tests/conformance/kubernetes-compute.test.mjs" &&
           detectorType === 17 &&
           detectorName === "URI" &&
           decoder === "PLAIN") ||

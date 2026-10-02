@@ -729,6 +729,36 @@ function exactUriFixtureTests(
   }
 }
 
+exactUriFixtureTests(
+  "Existing OCE proxy URL rejection",
+  "tests/conformance/kubernetes-compute.test.mjs",
+  () => {
+    // Reconstruct the rejected synthetic URI without introducing another scanner literal.
+    const raw = ["https://", "operator", ":", "secret", "@", "10.42.0.15:3128"].join("");
+    return {
+      raw,
+      rawV2: raw,
+      line: '    "' + raw + '",',
+      decoders: ["PLAIN"],
+    };
+  },
+);
+
+exactUriFixtureTests(
+  "Existing OCE API URL rejection",
+  "tests/conformance/kubernetes-compute.test.mjs",
+  () => {
+    // Native URI matching omits the single-digit port; the whole-line witness retains it.
+    const raw = ["https://", "user", ":", "password", "@", "127.0.0.1"].join("");
+    return {
+      raw,
+      rawV2: raw,
+      line: '    { name: "embedded-api-credentials", server: "' + raw + ':1" },',
+      decoders: ["PLAIN"],
+    };
+  },
+);
+
 function catalogIconUriFixture(): ReturnType<typeof autoreviewFixtures>[number] {
   const raw = ["https://", "user", ":", "password", "@", "cdn.example.com"].join("");
   const rawV2 = raw + "/icon";
