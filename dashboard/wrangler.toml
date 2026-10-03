@@ -98,9 +98,10 @@ EXACT_REVIEW_LIFECYCLE_BAY_CACHE_MS = "30000"
 # exact ingress, comment routing, apply proof, publication, planner scans, and
 # support lanes, and below the ~300 reviews/hour that previously hit org rate
 # limits. Organic work is always admitted for free and debits this budget first
-# when a workflow run claims its review lease (each new claim generation), so
-# organic items closed, superseded, coalesced, or deduped before they run cost
-# nothing. Scheduled work debits when admitted and prepays its first claim.
+# when a claimed run starts Codex generation (once per claim generation), so
+# organic items closed, superseded, coalesced, deduped, or skipped before
+# generation cost nothing. Scheduled work debits when admitted and prepays its
+# first started generation.
 # Debt stops at minus
 # the burst; further organic debits at the floor are forgotten, so organic load
 # may exceed these estimates. A 24-item scheduled burst (8 hot, 16 normal)
