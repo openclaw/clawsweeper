@@ -11,6 +11,7 @@ import {
   dispatchClaimDecision,
   dispatchClaimLookupKeys,
   dispatchReceiptKeyMaterial,
+  endorReviewRevisionDeliveryId,
   exactCommentVersionFastPathDecision,
   exactCommentVersionMatchesLive,
   hasSuccessfulDispatchExecutionJob,
@@ -334,6 +335,38 @@ test("synthetic dispatch receipt material is stable within an attempt and change
   assert.notEqual(
     dispatchReceiptKeyMaterial(command, firstClaim),
     dispatchReceiptKeyMaterial(command, nextClaim),
+  );
+});
+
+test("Endor review identity follows the current source, not the delivery attempt", () => {
+  const input = {
+    repo: "openclaw/endor-clawsweeper-e2e",
+    issueNumber: 42,
+    intent: "automerge",
+    headSha: "a".repeat(40),
+    sourceRevision: "b".repeat(64),
+  };
+  const identity = endorReviewRevisionDeliveryId(input);
+  assert.match(identity, /^endor-review-revision:[0-9a-f]{64}$/);
+  assert.equal(endorReviewRevisionDeliveryId({ ...input }), identity);
+  for (const change of [
+    { sourceRevision: "c".repeat(64) },
+    { headSha: "d".repeat(40) },
+    { intent: "autofix" },
+    { issueNumber: 43 },
+  ]) {
+    assert.notEqual(endorReviewRevisionDeliveryId({ ...input, ...change }), identity);
+  }
+  assert.throws(() => endorReviewRevisionDeliveryId({ ...input, repo: "openclaw/openclaw" }));
+  assert.throws(() => endorReviewRevisionDeliveryId({ ...input, headSha: "missing" }));
+  const command = {
+    idempotency_key: "repair-loop-label-sweep:openclaw/endor-clawsweeper-e2e:automerge:42",
+    automation_source: "repair_loop_label_sweep",
+    source_delivery_id: identity,
+  };
+  assert.notEqual(
+    routerDispatchReceiptKey(command, { processed_at: "2026-09-23T01:00:00Z" }),
+    routerDispatchReceiptKey(command, { processed_at: "2026-09-23T02:00:00Z" }),
   );
 });
 

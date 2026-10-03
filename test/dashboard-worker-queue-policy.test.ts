@@ -2924,6 +2924,397 @@ test("explicit pull request commands bind to pending source authority", async ()
   }
 });
 
+function endorContinuation(intent = "automerge", head = "a".repeat(40), revision = "b".repeat(64)) {
+  return {
+    sourceEvent: "issues",
+    sourceDeliveryId: `endor-review-revision:${revision}`,
+    commandStatusMarker: `<!-- clawsweeper-command-status:42:${intent}:${head} -->`,
+    statusCommentId: 9001,
+  };
+}
+
+function enqueueEndor(
+  queue: ExactReviewQueue,
+  delivery: string,
+  decision: Record<string, unknown>,
+) {
+  return queue.fetch(
+    buildExactReviewQueueRequest(
+      delivery,
+      42,
+      "legacy_dispatch",
+      "pull_request",
+      "openclaw/endor-clawsweeper-e2e",
+      decision,
+    ),
+  );
+}
+
+test("Endor redelivery preserves ownership and retry state, including late status-ID resolution", async () => {
+  const key = "openclaw/endor-clawsweeper-e2e#42";
+  for (const intent of ["autofix", "automerge"]) {
+    for (const { failures, hasStatusId, coalesced } of [
+      { failures: 0, hasStatusId: true, coalesced: false },
+      { failures: 7, hasStatusId: true, coalesced: false },
+      { failures: 0, hasStatusId: false, coalesced: false },
+      { failures: 7, hasStatusId: false, coalesced: false },
+      { failures: 0, hasStatusId: true, coalesced: true },
+      { failures: 7, hasStatusId: true, coalesced: true },
+    ]) {
+      const storage = new MemoryDurableStorage();
+      const queue = new ExactReviewQueue({ storage }, {});
+      await queue.fetch(
+        buildExactReviewQueueRequest(
+          "webhook",
+          42,
+          "opened",
+          "pull_request",
+          "openclaw/endor-clawsweeper-e2e",
+          {
+            sourceHeadSha: "a".repeat(40),
+            sourceHeadVerified: true,
+            sourceAuthoritySeq: 1,
+          },
+        ),
+      );
+      const continuation = endorContinuation(intent);
+      const { statusCommentId: _statusCommentId, ...withoutStatusId } = continuation;
+      await enqueueEndor(queue, "first", hasStatusId ? continuation : withoutStatusId);
+      if (coalesced) {
+        const delayed = await queue.fetch(
+          buildExactReviewQueueRequest(
+            "delayed-webhook",
+            42,
+            "edited",
+            "pull_request",
+            "openclaw/endor-clawsweeper-e2e",
+            {
+              sourceHeadSha: "a".repeat(40),
+              sourceHeadVerified: true,
+              sourceAuthoritySeq: 2,
+            },
+          ),
+        );
+        assert.equal((await delayed.json()).queued, true);
+      }
+      for (let attempt = 0; attempt < (coalesced ? failures + 1 : 1); attempt += 1) {
+        const priorFailures = coalesced ? attempt : failures;
+        const state = await storage.get<{ items: Record<string, ExactReviewQueueItem> }>(
+          "exact-review-queue",
+        );
+        assert.ok(state);
+        const item = state.items[key];
+        assert.equal(item.decision.sourceAction, coalesced ? "edited" : "legacy_dispatch");
+        assert.equal(item.decision.sourceDeliveryId, continuation.sourceDeliveryId);
+        const lease = leasedExactReviewQueueItem(42, String(4242 + attempt));
+        Object.assign(item, {
+          state: "leased",
+          leaseId: lease.leaseId,
+          leaseExpiresAt: lease.leaseExpiresAt,
+          claimedRunId: lease.claimedRunId,
+          claimedRunAttempt: lease.claimedRunAttempt,
+          claimGeneration: lease.claimGeneration,
+          claimProtocolVersion: lease.claimProtocolVersion,
+          leaseRevision: item.revision,
+          leaseDecision: { ...item.decision },
+          ...(coalesced ? {} : { attempts: failures, reviewFailureAttempts: failures }),
+        });
+        await storage.put("exact-review-queue", state);
+        const active = structuredClone(item);
+        assert.equal(
+          (await (await enqueueEndor(queue, `active-repeat-${attempt}`, continuation)).json())
+            .semantic_deduped,
+          true,
+        );
+        assert.deepEqual(
+          (await storage.get<typeof state>("exact-review-queue"))?.items[key],
+          active,
+        );
+        const completed = await queue.fetch(
+          new Request("https://clawsweeper-exact-review-queue/complete", {
+            method: "POST",
+            body: JSON.stringify({
+              item_key: key,
+              lease_id: item.leaseId,
+              lease_revision: item.leaseRevision,
+              claim_generation: item.claimGeneration,
+              run_id: item.claimedRunId,
+              run_attempt: item.claimedRunAttempt,
+              outcome: "failure",
+            }),
+          }),
+        );
+        assert.equal(completed.status, 200);
+        const failed = (await storage.get<typeof state>("exact-review-queue"))?.items[key];
+        assert.ok(failed);
+        assert.equal(failed.reviewFailureAttempts, priorFailures + 1);
+        assert.equal(failed.state, priorFailures === 7 ? "parked" : "pending");
+        if (priorFailures === 7) assert.equal(failed.parkedReason, "review_retry_exhausted");
+        else assert.ok(failed.nextAttemptAt > Date.now());
+        const before = structuredClone(failed);
+        assert.equal(
+          (await (await enqueueEndor(queue, `failed-repeat-${attempt}`, continuation)).json())
+            .semantic_deduped,
+          true,
+        );
+        assert.deepEqual(
+          (await storage.get<typeof state>("exact-review-queue"))?.items[key],
+          before,
+        );
+        if (coalesced && intent === "autofix" && priorFailures === 7) {
+          const changedBody = endorContinuation(intent, "a".repeat(40), "c".repeat(64));
+          assert.equal(
+            (await (await enqueueEndor(queue, "changed-body", changedBody)).json()).queued,
+            true,
+          );
+          const changed = (await storage.get<typeof state>("exact-review-queue"))?.items[key];
+          assert.ok(changed);
+          assert.equal(changed.state, "pending");
+          assert.equal(changed.reviewFailureAttempts, 0);
+          assert.equal(changed.decision.sourceDeliveryId, changedBody.sourceDeliveryId);
+          const nextHead = "d".repeat(40);
+          const sourceChange = await queue.fetch(
+            buildExactReviewQueueRequest(
+              "new-head",
+              42,
+              "synchronize",
+              "pull_request",
+              "openclaw/endor-clawsweeper-e2e",
+              {
+                sourceHeadSha: nextHead,
+                sourceHeadVerified: true,
+                sourceAuthoritySeq: 3,
+              },
+            ),
+          );
+          assert.equal((await sourceChange.json()).queued, true);
+          const source = (await storage.get<typeof state>("exact-review-queue"))?.items[key];
+          assert.ok(source);
+          assert.equal(source.revision, changed.revision + 1);
+          assert.equal(source.decision.sourceHeadSha, nextHead);
+          assert.equal(source.decision.commandStatusMarker, changedBody.commandStatusMarker);
+        }
+        if (intent === "automerge" && priorFailures === 7 && hasStatusId) {
+          const deployed = new ExactReviewQueue(
+            { storage },
+            { EXACT_REVIEW_RETRY_POLICY_EPOCH: "2" },
+          );
+          assert.equal(
+            (await (await enqueueEndor(deployed, "policy-reset", continuation)).json()).queued,
+            true,
+          );
+          const reset = (await storage.get<typeof state>("exact-review-queue"))?.items[key];
+          assert.ok(reset);
+          assert.equal(reset.state, "pending");
+          assert.equal(reset.revision, before.revision + 1);
+          assert.equal(reset.reviewRetryPolicyEpoch, "2");
+          assert.equal(reset.reviewFailureAttempts, 0);
+          assert.equal(reset.parkedReason, undefined);
+          assert.equal(reset.decision.commandStatusMarker, continuation.commandStatusMarker);
+        }
+      }
+    }
+  }
+});
+
+test("Endor semantic dedupe persists expired dispatch and execution lease recovery", async () => {
+  const key = "openclaw/endor-clawsweeper-e2e#42";
+  for (const phase of ["dispatching", "leased"] as const) {
+    const storage = new MemoryDurableStorage();
+    const queue = new ExactReviewQueue({ storage }, {});
+    const continuation = endorContinuation();
+    await enqueueEndor(queue, "first", continuation);
+    const state = await storage.get<{ items: Record<string, ExactReviewQueueItem> }>(
+      "exact-review-queue",
+    );
+    assert.ok(state);
+    const item = state.items[key];
+    Object.assign(item, {
+      state: phase,
+      leaseId: "expired-lease",
+      leaseRevision: item.revision,
+      leaseExpiresAt: Date.now() - 1,
+      leaseDecision: { ...item.decision },
+      reviewFailureAttempts: 3,
+      ...(phase === "leased"
+        ? {
+            claimedRunId: "4242",
+            claimedRunAttempt: 1,
+            claimGeneration: 1,
+            claimProtocolVersion: 2,
+          }
+        : {}),
+    });
+    await storage.put("exact-review-queue", state);
+    assert.equal(
+      (await (await enqueueEndor(queue, "repeat", continuation)).json()).semantic_deduped,
+      true,
+    );
+    const recovered = (await storage.get<typeof state>("exact-review-queue"))?.items[key];
+    assert.ok(recovered);
+    assert.equal(recovered.state, "pending");
+    assert.equal(recovered.leaseId, undefined);
+    assert.equal(recovered.revision, item.revision);
+    assert.equal(recovered.reviewFailureAttempts, 3);
+    assert.equal(
+      recovered.reviewRecoveryReason,
+      phase === "dispatching" ? "claim_timeout" : "execution_timeout",
+    );
+  }
+});
+
+test("Endor continuation admits source changes, restored sources and explicit replay", async () => {
+  const storage = new MemoryDurableStorage();
+  const queue = new ExactReviewQueue({ storage }, {});
+  const first = endorContinuation();
+  const changedBody = endorContinuation("automerge", "a".repeat(40), "c".repeat(64));
+  const changedHead = endorContinuation("automerge", "d".repeat(40), "e".repeat(64));
+  const { sourceDeliveryId: _identity, ...forced } = first;
+  const decisions = [first, changedBody, first, changedHead, forced];
+  for (const [index, decision] of decisions.entries()) {
+    const body = await (await enqueueEndor(queue, `attempt-${index}`, decision)).json();
+    assert.equal(body.queued, true);
+    const state = await storage.get<{ items: Record<string, ExactReviewQueueItem> }>(
+      "exact-review-queue",
+    );
+    assert.equal(state?.items["openclaw/endor-clawsweeper-e2e#42"].revision, index + 1);
+  }
+});
+
+test("a changed Endor body survives success or exhausted failure of its active predecessor", async () => {
+  const key = "openclaw/endor-clawsweeper-e2e#42";
+  for (const outcome of ["success", "failure"]) {
+    const storage = new MemoryDurableStorage();
+    const queue = new ExactReviewQueue({ storage }, {});
+    await enqueueEndor(queue, "first", endorContinuation());
+    const state = await storage.get<{ items: Record<string, ExactReviewQueueItem> }>(
+      "exact-review-queue",
+    );
+    assert.ok(state);
+    const item = state.items[key];
+    const lease = leasedExactReviewQueueItem(42, "4242");
+    Object.assign(item, {
+      state: "leased",
+      leaseId: lease.leaseId,
+      leaseExpiresAt: lease.leaseExpiresAt,
+      claimedRunId: lease.claimedRunId,
+      claimedRunAttempt: lease.claimedRunAttempt,
+      claimGeneration: lease.claimGeneration,
+      claimProtocolVersion: lease.claimProtocolVersion,
+      leaseRevision: item.revision,
+      leaseDecision: { ...item.decision },
+      attempts: 7,
+      reviewFailureAttempts: 7,
+    });
+    await storage.put("exact-review-queue", state);
+    const changedBody = endorContinuation("automerge", "a".repeat(40), "c".repeat(64));
+    assert.equal(
+      (await (await enqueueEndor(queue, "changed-body", changedBody)).json()).queued,
+      true,
+    );
+    const active = (await storage.get<typeof state>("exact-review-queue"))?.items[key];
+    assert.ok(active);
+    assert.equal(active.revision, 2);
+    assert.equal(active.leaseRevision, 1);
+    assert.equal(active.leaseDecision?.sourceDeliveryId, endorContinuation().sourceDeliveryId);
+    assert.equal(active.decision.sourceDeliveryId, changedBody.sourceDeliveryId);
+    const completion = await queue.fetch(
+      new Request("https://clawsweeper-exact-review-queue/complete", {
+        method: "POST",
+        body: JSON.stringify({
+          item_key: key,
+          lease_id: item.leaseId,
+          lease_revision: item.leaseRevision,
+          claim_generation: item.claimGeneration,
+          run_id: item.claimedRunId,
+          run_attempt: item.claimedRunAttempt,
+          outcome,
+        }),
+      }),
+    );
+    assert.equal(completion.status, 200);
+    assert.deepEqual(await completion.json(), { ok: true, requeued: true });
+    const successor = (await storage.get<typeof state>("exact-review-queue"))?.items[key];
+    assert.ok(successor);
+    assert.equal(successor.state, "pending");
+    assert.equal(successor.revision, 2);
+    assert.equal(successor.decision.sourceDeliveryId, changedBody.sourceDeliveryId);
+    assert.equal(successor.decision.commandStatusMarker, changedBody.commandStatusMarker);
+    assert.equal(successor.decision.statusCommentId, changedBody.statusCommentId);
+    assert.equal(successor.leaseDecision, undefined);
+    assert.equal(successor.leaseId, undefined);
+    assert.equal(successor.attempts, 0);
+    assert.equal(successor.reviewFailureAttempts, 0);
+    assert.equal(successor.parkedReason, undefined);
+    assert.equal(successor.backoffReason, undefined);
+  }
+});
+
+test("Endor replay keeps changed status ownership fresh and rejects invalid status IDs", async () => {
+  const key = "openclaw/endor-clawsweeper-e2e#42";
+  const storage = new MemoryDurableStorage();
+  const queue = new ExactReviewQueue({ storage }, {});
+  const first = { ...endorContinuation(), statusCommentId: 100 };
+  await enqueueEndor(queue, "first", first);
+  assert.equal(
+    (await (await enqueueEndor(queue, "changed-owner", { ...first, statusCommentId: 101 })).json())
+      .queued,
+    true,
+  );
+  const state = await storage.get<{ items: Record<string, ExactReviewQueueItem> }>(
+    "exact-review-queue",
+  );
+  assert.ok(state);
+  assert.equal(state.items[key].revision, 2);
+  assert.equal(state.items[key].decision.statusCommentId, 101);
+  for (const statusCommentId of [0, -1]) {
+    const rejected = await enqueueEndor(queue, `invalid-${statusCommentId}`, {
+      ...first,
+      statusCommentId,
+    });
+    assert.equal(rejected.status, 400);
+    assert.deepEqual(
+      (await storage.get<typeof state>("exact-review-queue"))?.items[key],
+      state.items[key],
+    );
+  }
+});
+
+test("Endor dedupe cannot swallow terminal acknowledgement or another repository's command", async () => {
+  for (const repo of ["openclaw/endor-clawsweeper-e2e", "openclaw/openclaw"]) {
+    const storage = new MemoryDurableStorage();
+    const queue = new ExactReviewQueue({ storage }, {});
+    const request = (delivery: string) =>
+      buildExactReviewQueueRequest(
+        delivery,
+        42,
+        "legacy_dispatch",
+        "pull_request",
+        repo,
+        endorContinuation(),
+      );
+    await queue.fetch(request("first"));
+    if (repo === "openclaw/endor-clawsweeper-e2e") {
+      const state = await storage.get<{ items: Record<string, ExactReviewQueueItem> }>(
+        "exact-review-queue",
+      );
+      assert.ok(state);
+      state.items[`${repo}#42`].terminalFinalization = {
+        disposition: "review_completed_routed",
+        statusState: "Complete",
+        statusDetail: "acknowledgement pending",
+      };
+      await storage.put("exact-review-queue", state);
+    }
+    const result = await (await queue.fetch(request("repeat"))).json();
+    assert.equal(result.semantic_deduped, undefined);
+    const state = await storage.get<{ items: Record<string, ExactReviewQueueItem> }>(
+      "exact-review-queue",
+    );
+    assert.equal(state?.items[`${repo}#42`].revision, 2);
+  }
+});
+
 test("Endor repair reviews retain their owner when ordinary PR events supersede them", async () => {
   const repo = "openclaw/endor-clawsweeper-e2e";
   const head = "b".repeat(40);

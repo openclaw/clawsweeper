@@ -46,7 +46,12 @@ requests still run. The central admission check completes ordinary event and
 scheduled deliveries without reviewing or publishing a competing verdict. Held
 PRs stay held, and explicit review requests still work. Repair follow-ups carry
 their existing command status identity; the Worker queue preserves that request
-when ordinary PR events replace a pending or active review. Endor enrollment and
+when ordinary PR events replace a pending or active review. Label-sweep
+continuations review the current head and body, including contributor updates
+after a completed review. Repeat deliveries preserve the queue's current
+command, lease, backoff and failure budget; a changed or restored source requests
+a fresh review. Human-review and protected-label holds remain read-only,
+including when they arrive before a continuation dispatch. Endor enrollment and
 ordinary-review skipping remain limited to this test repository. Existing
 human-review holds are not cleared. Skipped admissions send the existing
 `policy_noop` completion to OpenClaw Bay so their journeys finish rather than

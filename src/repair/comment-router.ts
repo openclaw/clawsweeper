@@ -104,6 +104,7 @@ import {
   planCommandAckConvergence,
 } from "./command-ack-convergence.js";
 import { mergeAutomergeTimelineSection } from "./automerge-status-timeline.js";
+import { isEndorPullRequest } from "./endor-automerge-intake.js";
 import {
   automergeSessionId,
   automergeMetricEvent,
@@ -117,6 +118,7 @@ import {
   commentBodySha256,
   dispatchClaimDecision,
   dispatchClaimLookupKeys,
+  endorReviewRevisionDeliveryId,
   exactCommentVersionFastPathDecision,
   exactCommentVersionMatchesLive,
   hasSuccessfulDispatchExecutionJob,
@@ -927,6 +929,7 @@ function classifyCommand(command: LooseRecord): JsonValue {
     target,
     maintainer_authorized: Boolean(authorization?.allowed),
     author_readonly_authorized: Boolean(authorReadOnlyAllowed),
+    endor_review_continuation: false,
   };
   if (!command.trusted_bot && authorization && !authorization.allowed && !authorReadOnlyAllowed) {
     return {
@@ -985,7 +988,17 @@ function classifyCommand(command: LooseRecord): JsonValue {
       };
     }
   }
+  const endorReviewContinuation =
+    command.trusted_bot === true &&
+    command.automation_source === "repair_loop_label_sweep" &&
+    isEndorPullRequest(String(command.repo ?? ""), issue);
+  next.endor_review_continuation = endorReviewContinuation;
+  if (endorReviewContinuation) {
+    const labelBlock = repairLoopDispatchLabelBlockReason(next, target);
+    if (labelBlock) return { ...next, status: "skipped", reason: labelBlock };
+  }
   if (
+    !endorReviewContinuation &&
     existingCommandStatusBlocksReplay({
       hasExistingResponse: hasExistingResponse(
         command.issue_number,
@@ -1212,7 +1225,8 @@ function classifyCommand(command: LooseRecord): JsonValue {
         ),
         forceReprocess,
       });
-    if (existingEnabledMode && command.trusted_bot) {
+    // Endor's ordinary events are suppressed; its enrolled sweep owns new heads too.
+    if (existingEnabledMode && command.trusted_bot && !endorReviewContinuation) {
       // Label sweeps may stop at an already-armed plan, but a fresh maintainer
       // resume must still coordinate an exact-head completed or active review.
       return {
@@ -2067,7 +2081,9 @@ function isRepairLoopControlIntent(command: LooseRecord) {
 
 function executeCommand(command: LooseRecord) {
   try {
-    const trustedAutomationLeaseBlock = trustedAutomationReviewLeaseBlockReason(command);
+    const trustedAutomationLeaseBlock =
+      trustedAutomationReviewLeaseBlockReason(command) ??
+      endorContinuationPreMutationBlockReason(command);
     if (trustedAutomationLeaseBlock) {
       const status = trustedAutomationLeaseBlock.retryable ? "waiting" : "skipped";
       command.status = status;
@@ -2277,6 +2293,17 @@ function executeCommand(command: LooseRecord) {
           };
         }
       } else {
+        if (command.endor_review_continuation === true && command.forced_replay !== true) {
+          command.source_delivery_id = endorReviewRevisionDeliveryId({
+            repo: String(command.repo),
+            issueNumber: Number(command.issue_number),
+            intent: String(command.intent),
+            headSha: dispatchDecision.headSha,
+            sourceRevision: dispatchDecision.sourceRevision,
+          });
+        } else if (command.endor_review_continuation === true) {
+          delete command.source_delivery_id;
+        }
         const clawsweeper = dispatchClawSweeperReview(command);
         dispatched = { ...dispatched, clawsweeper };
         command.actions = command.actions.map((action: JsonValue) => {
@@ -3073,6 +3100,9 @@ function repairJobModeForCommand(command: LooseRecord) {
 }
 
 type ReviewLeaseGuardBlock = { reason: string; retryable: boolean };
+type VerifiedReviewDispatchDecision =
+  | Exclude<ReviewDispatchCoordinationDecision, { action: "dispatch" }>
+  | { action: "dispatch"; headSha: string; sourceRevision: string };
 type FinalAutomergeSnapshot =
   | { status: "blocked"; block: ReviewLeaseGuardBlock }
   | { status: "not_ready"; block: string }
@@ -3090,9 +3120,40 @@ function repairLoopPreMutationReviewDispatchDecision(
   return reviewDispatchDecisionForCommand(command);
 }
 
-function reviewDispatchDecisionForCommand(
+function repairLoopDispatchLabelBlockReason(command: LooseRecord, target: LooseRecord) {
+  const modeLabel = command.intent === "autofix" ? AUTOFIX_LABEL : AUTOMERGE_LABEL;
+  const blockingLabels = command.endor_review_continuation
+    ? AUTOMERGE_BLOCKING_LABEL_NAMES.filter(
+        (label) => label !== modeLabel && hasLabel(target, label),
+      )
+    : pauseLabelsOn(target);
+  if (blockingLabels.length > 0) return `PR is paused by ${blockingLabels.join(", ")}`;
+  const oppositeModeLabel = command.intent === "autofix" ? AUTOMERGE_LABEL : AUTOFIX_LABEL;
+  if (!hasLabel(target, modeLabel)) return `${modeLabel} is no longer enabled`;
+  if (hasLabel(target, oppositeModeLabel)) return `${oppositeModeLabel} now owns the repair loop`;
+  return null;
+}
+
+function endorContinuationPreMutationBlockReason(
   command: LooseRecord,
-): ReviewDispatchCoordinationDecision {
+): ReviewLeaseGuardBlock | null {
+  if (command.endor_review_continuation !== true) return null;
+  try {
+    const view = fetchPullRequestView(Number(command.issue_number));
+    const reason =
+      String(view.state ?? "").toUpperCase() !== "OPEN"
+        ? "target is no longer an open PR"
+        : repairLoopDispatchLabelBlockReason(command, latestAutomergeTarget(command, view));
+    return reason ? { reason, retryable: false } : null;
+  } catch (error) {
+    return {
+      reason: `Endor continuation label check failed; next sweep will retry: ${compactGhError(error)}`,
+      retryable: true,
+    };
+  }
+}
+
+function reviewDispatchDecisionForCommand(command: LooseRecord): VerifiedReviewDispatchDecision {
   const number = Number(command.issue_number);
   if (!Number.isInteger(number) || number <= 0) {
     return { action: "stop", reason: "review dispatch target is invalid" };
@@ -3103,18 +3164,7 @@ function reviewDispatchDecisionForCommand(
       .trim()
       .toLowerCase();
     if (String(before.state ?? "").toUpperCase() !== "OPEN") {
-      return decideReviewDispatchCoordination({
-        stateBefore: String(before.state ?? ""),
-        stateAfter: String(before.state ?? ""),
-        headBefore,
-        headAfter: headBefore,
-        activeLeaseExpiresAt: null,
-        completedReviewAt: null,
-        completedReviewCommentId: null,
-        completedReviewSourceRevision: null,
-        sourceRevisionBefore: issueSourceRevisionSha256(before, []),
-        sourceRevisionAfter: issueSourceRevisionSha256(before, []),
-      });
+      return { action: "stop", reason: "target is no longer an open PR" };
     }
     const commentsBefore = ghPaged<JsonValue>(
       `repos/${targetRepo}/issues/${number}/comments?per_page=100`,
@@ -3144,7 +3194,9 @@ function reviewDispatchDecisionForCommand(
       trustedAuthors: trustedBots,
       sinceMs: commandStartedAtMs,
     });
-    return decideReviewDispatchCoordination({
+    const sourceRevisionBefore = issueSourceRevisionSha256(before, commentsBefore);
+    const sourceRevisionAfter = issueSourceRevisionSha256(after, commentsAfter);
+    const decision = decideReviewDispatchCoordination({
       stateBefore: String(before.state ?? ""),
       stateAfter: String(after.state ?? ""),
       headBefore,
@@ -3156,9 +3208,19 @@ function reviewDispatchDecisionForCommand(
         (completedReview ? "recently" : null),
       completedReviewCommentId: completedReview?.commentId ?? null,
       completedReviewSourceRevision: completedReview?.sourceRevision ?? null,
-      sourceRevisionBefore: issueSourceRevisionSha256(before, commentsBefore),
-      sourceRevisionAfter: issueSourceRevisionSha256(after, commentsAfter),
+      sourceRevisionBefore,
+      sourceRevisionAfter,
     });
+    if (decision.action === "retry" || decision.action === "stop") return decision;
+    if (command.automation_source === "repair_loop_label_sweep") {
+      const labelBlock = repairLoopDispatchLabelBlockReason(
+        command,
+        latestAutomergeTarget(command, after),
+      );
+      if (labelBlock) return { action: "stop", reason: labelBlock };
+    }
+    if (decision.action !== "dispatch") return decision;
+    return { ...decision, headSha: headAfter, sourceRevision: sourceRevisionAfter };
   } catch (error) {
     return {
       action: "retry",

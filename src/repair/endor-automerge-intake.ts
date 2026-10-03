@@ -17,9 +17,7 @@ export function skipAutomaticEndorReview(
 ): boolean {
   // The repair loop owns Endor reviews, including after automerge enrollment.
   return (
-    repo === TARGET_REPO &&
-    Boolean(issue.pull_request) &&
-    isEndor(issue.user) &&
+    isEndorPullRequest(repo, issue) &&
     !decision.commandStatusMarker &&
     !decision.statusCommentId &&
     [
@@ -36,6 +34,10 @@ export function skipAutomaticEndorReview(
       "scheduled_normal_backfill",
     ].includes(String(decision.sourceAction))
   );
+}
+
+export function isEndorPullRequest(repo: string, issue: Record<string, unknown>): boolean {
+  return repo === TARGET_REPO && Boolean(issue.pull_request) && isEndor(issue.user);
 }
 
 export function enrollEndorPullRequests({

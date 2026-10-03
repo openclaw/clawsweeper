@@ -2366,12 +2366,13 @@ test("review dispatch coordination guards label sweeps and maintainer mode comma
   assert.equal(dispatchGuard.match(/issues\/\$\{number\}\/comments\?per_page=100/g)?.length, 2);
   assert.match(
     dispatchGuard,
-    /sourceRevisionBefore: issueSourceRevisionSha256\(before, commentsBefore\)/,
+    /const sourceRevisionBefore = issueSourceRevisionSha256\(before, commentsBefore\)/,
   );
   assert.match(
     dispatchGuard,
-    /sourceRevisionAfter: issueSourceRevisionSha256\(after, commentsAfter\)/,
+    /const sourceRevisionAfter = issueSourceRevisionSha256\(after, commentsAfter\)/,
   );
+  assert.match(dispatchGuard, /sourceRevisionBefore,\s*sourceRevisionAfter,/);
   assert.match(dispatchGuard, /nowMs:\s*Date\.now\(\)/);
   assert.match(dispatchGuard, /trustedExactHeadReviewCompletionSince\(\{/);
   assert.match(dispatchGuard, /sinceMs:\s*commandStartedAtMs/);

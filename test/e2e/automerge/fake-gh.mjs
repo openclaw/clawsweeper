@@ -60,7 +60,7 @@ if (args[0] === "pr" && args[1] === "view") {
   const hold = state.finalLabelHold;
   if (hold && !hold.applied) {
     hold.viewReads = Number(hold.viewReads ?? 0) + 1;
-    if (hold.viewReads === hold.triggerViewRead) {
+    if (hold.viewReads === hold.triggerViewRead && !hold.afterSnapshot) {
       state.pr.labels.push(hold.label);
       hold.applied = true;
       hold.appliedAtCall = state.calls.length;
@@ -95,6 +95,12 @@ if (args[0] === "pr" && args[1] === "view") {
     updatedAt: state.pr.updatedAt,
     url: `https://github.com/${state.repo}/pull/${state.pr.number}`,
   };
+  if (hold?.afterSnapshot && !hold.applied && hold.viewReads === hold.triggerViewRead) {
+    state.pr.labels.push(hold.label);
+    hold.applied = true;
+    hold.appliedAtCall = state.calls.length;
+    saveState();
+  }
   respondJson(Object.fromEntries([...fields].filter(Boolean).map((field) => [field, view[field]])));
 }
 
