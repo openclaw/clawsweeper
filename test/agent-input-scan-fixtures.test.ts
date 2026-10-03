@@ -651,26 +651,41 @@ function exactUriFixtureTests(
   name: string,
   source: string,
   makeFixture: () => ReturnType<typeof autoreviewFixtures>[number],
+  options: {
+    admittedChanges?: readonly ("add" | "remove" | "context")[];
+    mutationChange?: "add" | "remove" | "context";
+  } = {},
 ) {
   for (const change of ["add", "remove", "context"] as const) {
-    test(name + " fixture admits exact Git-generated " + change + " attribution", (t) => {
-      const patch = fixturePatch(t, source, [makeFixture()], change);
-      for (const decoder of makeFixture().decoders) {
-        const result = patch.classify(decoder);
-        assert.equal(result.kind, "classified", JSON.stringify(result));
-        if (result.kind !== "classified") continue;
-        assert.ok(result.notices.every((notice) => notice.source === source));
-        const findings = result.notices.flatMap((notice) => notice.findings);
-        assert.ok(findings.some((finding) => finding.patch));
-        assert.ok(findings.every((finding) => finding.decoder === decoder));
-        if (change === "context") {
-          assert.ok(findings.some((finding) => finding.role === "base"));
-          assert.ok(findings.some((finding) => finding.role === "head"));
-        } else {
-          assert.ok(findings.every((finding) => finding.role === patch.role));
+    const admitted = options.admittedChanges?.includes(change) ?? true;
+    test(
+      name +
+        ` fixture ${admitted ? "admits" : "refuses"} exact Git-generated ` +
+        change +
+        " attribution",
+      (t) => {
+        const patch = fixturePatch(t, source, [makeFixture()], change);
+        for (const decoder of makeFixture().decoders) {
+          const result = patch.classify(decoder);
+          if (!admitted) {
+            assert.equal(result.kind, "refused", JSON.stringify(result));
+            continue;
+          }
+          assert.equal(result.kind, "classified", JSON.stringify(result));
+          if (result.kind !== "classified") continue;
+          assert.ok(result.notices.every((notice) => notice.source === source));
+          const findings = result.notices.flatMap((notice) => notice.findings);
+          assert.ok(findings.some((finding) => finding.patch));
+          assert.ok(findings.every((finding) => finding.decoder === decoder));
+          if (change === "context") {
+            assert.ok(findings.some((finding) => finding.role === "base"));
+            assert.ok(findings.some((finding) => finding.role === "head"));
+          } else {
+            assert.ok(findings.every((finding) => finding.role === patch.role));
+          }
         }
-      }
-    });
+      },
+    );
   }
   for (const variant of [
     "literal",
@@ -697,7 +712,12 @@ function exactUriFixtureTests(
         variant === "extra-occurrence"
           ? [entry, { ...entry, line: entry.line + " // extra" }]
           : [entry];
-      const patch = fixturePatch(t, variant === "path" ? source + ".other" : source, entries);
+      const patch = fixturePatch(
+        t,
+        variant === "path" ? source + ".other" : source,
+        entries,
+        options.mutationChange,
+      );
       if (variant === "mode" || variant === "role" || variant === "revision") {
         for (const [file, input] of patch.inputs) {
           if (input.kind !== "blob") continue;
@@ -728,6 +748,36 @@ function exactUriFixtureTests(
     });
   }
 }
+
+exactUriFixtureTests(
+  "Historical OCE proxy URL rejection",
+  "tests/conformance/kubernetes-compute.test.mjs",
+  () => {
+    const raw = ["https://", "operator", ":", "secret", "@", "10.42.0.15:3128"].join("");
+    return {
+      raw,
+      rawV2: raw,
+      line: '    "' + raw + '",',
+      decoders: ["PLAIN"],
+    };
+  },
+  { admittedChanges: ["remove"], mutationChange: "remove" },
+);
+
+exactUriFixtureTests(
+  "Historical OCE API URL rejection",
+  "tests/conformance/kubernetes-compute.test.mjs",
+  () => {
+    const raw = ["https://", "user", ":", "password", "@", "127.0.0.1"].join("");
+    return {
+      raw,
+      rawV2: raw,
+      line: '    { name: "embedded-api-credentials", server: "' + raw + ':1" },',
+      decoders: ["PLAIN"],
+    };
+  },
+  { admittedChanges: ["remove"], mutationChange: "remove" },
+);
 
 function catalogIconUriFixture(): ReturnType<typeof autoreviewFixtures>[number] {
   const raw = ["https://", "user", ":", "password", "@", "cdn.example.com"].join("");

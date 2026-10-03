@@ -23,7 +23,8 @@ export type ReviewedAttribution = readonly [
   lineSha256: string | readonly string[],
   source: string,
   mode: "100644",
-  sourceSha256s?: readonly string[],
+  sourceSha256s?: readonly string[] | undefined,
+  roles?: readonly ("base" | "head")[],
 ];
 
 // This is host policy, never an allowlist loaded from the reviewed checkout.
@@ -250,6 +251,9 @@ const CRON_FTP_SOURCE_SHA256S = [
 
 // oxfmt-ignore
 const REVIEWED_ATTRIBUTIONS: readonly ReviewedAttribution[] = [
+  // Retain the removed OCE fixtures only for historical base blobs after OCE #955.
+  [17, "URI", "PLAIN", "fde443718383531e2fc52a8324fc644f1c45c1c766afd11da028368831e0f457", "fde443718383531e2fc52a8324fc644f1c45c1c766afd11da028368831e0f457", "6c17481ec8ebdfc543923950c2959e58568b8ad6daddabf26ce870e7a5d69274", "tests/conformance/kubernetes-compute.test.mjs", "100644", undefined, ["base"]],
+  [17, "URI", "PLAIN", "18e186031a746783f43d3002e63b775b6e28acef5d60825a82c418ad3e603b5b", "18e186031a746783f43d3002e63b775b6e28acef5d60825a82c418ad3e603b5b", "fb50a8d4a7885dd59938f6421133018054740ef7a91dd01b62b9c109bb4c471c", "tests/conformance/kubernetes-compute.test.mjs", "100644", undefined, ["base"]],
   // OpenClaw catalog-icon rejection fixture: observed native prefixes bind the complete source line.
   [17, "URI", "PLAIN", "580f7a7c0ff4d88005bb0a7ad56ab18f84dc6ba38060fd35914e020e8b581a6a", "02fcb6434869afdf5b29773aad1295172012f6445975eba685b873c79e4567b9", "6c9cdafa1ff07a62a8ffc88c6b8d5d377becfb6fc09c3709d997dcc9ca890469", "src/plugins/catalog-icon-registry.test.ts", "100644"],
   [17, "URI", "HTML", "580f7a7c0ff4d88005bb0a7ad56ab18f84dc6ba38060fd35914e020e8b581a6a", "02fcb6434869afdf5b29773aad1295172012f6445975eba685b873c79e4567b9", "6c9cdafa1ff07a62a8ffc88c6b8d5d377becfb6fc09c3709d997dcc9ca890469", "src/plugins/catalog-icon-registry.test.ts", "100644"],
@@ -421,11 +425,27 @@ const detectorNames = { 17: "URI", 895: "MongoDB", 899: "FTP", 968: "Postgres" }
 function validateReviewedAttributions(rows: readonly ReviewedAttribution[]): void {
   const seen = new Set<string>();
   for (const row of rows) {
-    const [detectorType, detectorName, decoder, raw, rawV2, line, source, mode, sourceSha256s] =
-      row;
+    const [
+      detectorType,
+      detectorName,
+      decoder,
+      raw,
+      rawV2,
+      line,
+      source,
+      mode,
+      sourceSha256s,
+      roles,
+    ] = row;
     const lines = typeof line === "string" ? [line] : line;
+    const validRoleRestriction =
+      roles === undefined ||
+      (source === "tests/conformance/kubernetes-compute.test.mjs" &&
+        roles.length === 1 &&
+        roles[0] === "base");
     if (
-      row.length !== (detectorType === 899 ? 9 : 8) ||
+      row.length !== (roles === undefined ? (detectorType === 899 ? 9 : 8) : 10) ||
+      !validRoleRestriction ||
       detectorNames[detectorType] !== detectorName ||
       !Array.isArray(lines) ||
       !lines.length ||
@@ -435,6 +455,12 @@ function validateReviewedAttributions(rows: readonly ReviewedAttribution[]): voi
           detectorType === 17 &&
           detectorName === "URI" &&
           decoder === "PLAIN") ||
+        (source === "tests/conformance/kubernetes-compute.test.mjs" &&
+          detectorType === 17 &&
+          detectorName === "URI" &&
+          decoder === "PLAIN" &&
+          sourceSha256s === undefined &&
+          roles !== undefined) ||
         (source === "src/gateway/server-cron-notifications.test.ts" &&
           detectorType === 899 &&
           Array.isArray(sourceSha256s) &&
@@ -1141,10 +1167,11 @@ function classifyReviewedFindings(
           ({ source, mode, role }) =>
             (role !== "base" && role !== "head") ||
             matchingMetadata.every(
-              ([, , , , , , expectedSource, expectedMode], index) =>
+              ([, , , , , , expectedSource, expectedMode, , expectedRoles], index) =>
                 !matchesWitness(expectedDigests[index]!) ||
                 expectedSource !== source ||
-                expectedMode !== mode,
+                expectedMode !== mode ||
+                (expectedRoles !== undefined && !expectedRoles.includes(role)),
             ),
         )
       )
