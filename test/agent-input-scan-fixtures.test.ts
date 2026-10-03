@@ -761,7 +761,7 @@ exactUriFixtureTests(
       decoders: ["PLAIN"],
     };
   },
-  { admittedChanges: ["remove"], mutationChange: "remove" },
+  { admittedChanges: [], mutationChange: "remove" },
 );
 
 exactUriFixtureTests(
@@ -776,8 +776,46 @@ exactUriFixtureTests(
       decoders: ["PLAIN"],
     };
   },
-  { admittedChanges: ["remove"], mutationChange: "remove" },
+  { admittedChanges: [], mutationChange: "remove" },
 );
+
+test("Historical OCE URI fixture admits only an exact reviewed source blob", (t) => {
+  const source = "tests/conformance/kubernetes-compute.test.mjs";
+  const raw = ["https://", "operator", ":", "secret", "@", "10.42.0.15:3128"].join("");
+  const entry = {
+    raw,
+    rawV2: raw,
+    line: '    "' + raw + '",',
+    decoders: ["PLAIN"] as const,
+  };
+  const fixture = fixturePatch(t, source, [entry], "remove");
+  const hash = (bytes: string | Uint8Array) => createHash("sha256").update(bytes).digest("hex");
+  const reviewedInput = [...fixture.inputs.values()].find(
+    (input) => input.kind === "blob" && input.bytes?.includes(raw),
+  );
+  assert.equal(reviewedInput?.kind, "blob");
+  assert.ok(reviewedInput.bytes);
+  const reviewedAttributions: ReviewedAttribution[] = [
+    [
+      17,
+      "URI",
+      "PLAIN",
+      hash(raw),
+      hash(raw),
+      hash(entry.line),
+      source,
+      "100644",
+      [hash(reviewedInput.bytes)],
+    ],
+  ];
+  const classified = fixture.classify("PLAIN", {}, { blobOnly: true, reviewedAttributions });
+  assert.equal(classified.kind, "classified", JSON.stringify(classified));
+
+  reviewedInput.bytes = Buffer.concat([reviewedInput.bytes, Buffer.from("# unrelated change\n")]);
+  const refused = fixture.classify("PLAIN", {}, { blobOnly: true, reviewedAttributions });
+  assert.equal(refused.kind, "refused", JSON.stringify(refused));
+  if (refused.kind === "refused") assert.equal(refused.diagnostic.reason, "source_not_reviewed");
+});
 
 function catalogIconUriFixture(): ReturnType<typeof autoreviewFixtures>[number] {
   const raw = ["https://", "user", ":", "password", "@", "cdn.example.com"].join("");

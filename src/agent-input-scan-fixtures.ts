@@ -23,8 +23,7 @@ export type ReviewedAttribution = readonly [
   lineSha256: string | readonly string[],
   source: string,
   mode: "100644",
-  sourceSha256s?: readonly string[] | undefined,
-  roles?: readonly ("base" | "head")[],
+  sourceSha256s?: readonly string[],
 ];
 
 // This is host policy, never an allowlist loaded from the reviewed checkout.
@@ -249,11 +248,36 @@ const CRON_FTP_SOURCE_SHA256S = [
   "e181c69bd874b3e50d70631a6f1a94eed2308d765f05046ec66a84089a62c7cb",
 ] as const;
 
+// Historical OCE source blobs still referenced by open PRs #14, #115, #252, #253, #307,
+// #662, #830, #875, #883, #906, #913, #920, and #925 after OCE #955 removed both fixtures.
+const OCE_KUBERNETES_COMPUTE_SOURCE_SHA256S = [
+  "3462e0f0b029cd5ad78fe375519662b12b13e6330b00482d9d1462a311362dc2",
+  "78705455eefed216f4e81b484e4b3c8a08e5a65d1b823e541e8e183032350a90",
+  "40b7c343094691da580162a72fb697eb74ab931d8269560b7b3df669ddc1ee20",
+  "95e2d48246f57d772af1f08afe54b9c8043a5d670a2055c564baf091d95dc2ee",
+  "b1ef5abdc59e491f87dfece12066913a569cf164b9e760ffe9af986e006ce0ef",
+  "7678c21e320c8577971b8bd0afcc8d480b167980fa5bc640c0108bb5c3ccd90a",
+  "fffc0ef3c36c0b27aecb96c9a2c245a4e9c609029f742b8e9cb831c1fee07c55",
+  "c8f927a474c80b77238d83da3efe430ce6b08d91fc103209c133251845656669",
+  "11dd85cb3a80583434da36b8c3d9ebfecfd2afaaa846f027d4fc12ae8b0139f1",
+  "c68e00042f03fb044245378e2e150d6f38424d47955b0b2866454fd38fcfdeca",
+  "9068494145950efbb8b959403503cd464b69c1cb002e451f95ff3042a4d3398a",
+  "9d2b8b526f60fd7f14409a26b79a090f23b5326a73d96d1116031b5973312587",
+  "b8111c493de9b07f7fcfb464eb98c76032dd569f651aa3c6187517634575e703",
+  "a6069e9731cdcb93cff0b392edc51fd04a6fe0f0052900a9a95a4f358dc1218e",
+  "66fd290aa785025f8d611d1766a483626b560d274546ef702c366372df61eefa",
+  "7833f728b3a38e75cc0b03c24879510d4703ae53f737d8766f6aba8bdd4468c0",
+  "af0022dda2a4baf0f47d59540902fd150a073d4548bfcb5ae958dd986cffd359",
+  "79b2db37a4d4cf8f60a8b57b29040c2568f549d6240581be20069b66a62e11a0",
+  "f829a098c19a85602acadd89c09753a0bc0d2e211d4e0b9103b7311b295379a6",
+  "86d8796503f73136ce0d5bd3377ff7a9df0963f61c03a98f93ee667d254242bb",
+] as const;
+
 // oxfmt-ignore
 const REVIEWED_ATTRIBUTIONS: readonly ReviewedAttribution[] = [
-  // Retain the removed OCE fixtures only for historical base blobs after OCE #955.
-  [17, "URI", "PLAIN", "fde443718383531e2fc52a8324fc644f1c45c1c766afd11da028368831e0f457", "fde443718383531e2fc52a8324fc644f1c45c1c766afd11da028368831e0f457", "6c17481ec8ebdfc543923950c2959e58568b8ad6daddabf26ce870e7a5d69274", "tests/conformance/kubernetes-compute.test.mjs", "100644", undefined, ["base"]],
-  [17, "URI", "PLAIN", "18e186031a746783f43d3002e63b775b6e28acef5d60825a82c418ad3e603b5b", "18e186031a746783f43d3002e63b775b6e28acef5d60825a82c418ad3e603b5b", "fb50a8d4a7885dd59938f6421133018054740ef7a91dd01b62b9c109bb4c471c", "tests/conformance/kubernetes-compute.test.mjs", "100644", undefined, ["base"]],
+  // Retain the removed OCE fixtures only in source blobs already held by open OCE PRs.
+  [17, "URI", "PLAIN", "fde443718383531e2fc52a8324fc644f1c45c1c766afd11da028368831e0f457", "fde443718383531e2fc52a8324fc644f1c45c1c766afd11da028368831e0f457", "6c17481ec8ebdfc543923950c2959e58568b8ad6daddabf26ce870e7a5d69274", "tests/conformance/kubernetes-compute.test.mjs", "100644", OCE_KUBERNETES_COMPUTE_SOURCE_SHA256S],
+  [17, "URI", "PLAIN", "18e186031a746783f43d3002e63b775b6e28acef5d60825a82c418ad3e603b5b", "18e186031a746783f43d3002e63b775b6e28acef5d60825a82c418ad3e603b5b", "fb50a8d4a7885dd59938f6421133018054740ef7a91dd01b62b9c109bb4c471c", "tests/conformance/kubernetes-compute.test.mjs", "100644", OCE_KUBERNETES_COMPUTE_SOURCE_SHA256S],
   // OpenClaw catalog-icon rejection fixture: observed native prefixes bind the complete source line.
   [17, "URI", "PLAIN", "580f7a7c0ff4d88005bb0a7ad56ab18f84dc6ba38060fd35914e020e8b581a6a", "02fcb6434869afdf5b29773aad1295172012f6445975eba685b873c79e4567b9", "6c9cdafa1ff07a62a8ffc88c6b8d5d377becfb6fc09c3709d997dcc9ca890469", "src/plugins/catalog-icon-registry.test.ts", "100644"],
   [17, "URI", "HTML", "580f7a7c0ff4d88005bb0a7ad56ab18f84dc6ba38060fd35914e020e8b581a6a", "02fcb6434869afdf5b29773aad1295172012f6445975eba685b873c79e4567b9", "6c9cdafa1ff07a62a8ffc88c6b8d5d377becfb6fc09c3709d997dcc9ca890469", "src/plugins/catalog-icon-registry.test.ts", "100644"],
@@ -425,27 +449,11 @@ const detectorNames = { 17: "URI", 895: "MongoDB", 899: "FTP", 968: "Postgres" }
 function validateReviewedAttributions(rows: readonly ReviewedAttribution[]): void {
   const seen = new Set<string>();
   for (const row of rows) {
-    const [
-      detectorType,
-      detectorName,
-      decoder,
-      raw,
-      rawV2,
-      line,
-      source,
-      mode,
-      sourceSha256s,
-      roles,
-    ] = row;
+    const [detectorType, detectorName, decoder, raw, rawV2, line, source, mode, sourceSha256s] =
+      row;
     const lines = typeof line === "string" ? [line] : line;
-    const validRoleRestriction =
-      roles === undefined ||
-      (source === "tests/conformance/kubernetes-compute.test.mjs" &&
-        roles.length === 1 &&
-        roles[0] === "base");
     if (
-      row.length !== (roles === undefined ? (detectorType === 899 ? 9 : 8) : 10) ||
-      !validRoleRestriction ||
+      row.length !== (sourceSha256s === undefined ? 8 : 9) ||
       detectorNames[detectorType] !== detectorName ||
       !Array.isArray(lines) ||
       !lines.length ||
@@ -459,8 +467,9 @@ function validateReviewedAttributions(rows: readonly ReviewedAttribution[]): voi
           detectorType === 17 &&
           detectorName === "URI" &&
           decoder === "PLAIN" &&
-          sourceSha256s === undefined &&
-          roles !== undefined) ||
+          Array.isArray(sourceSha256s) &&
+          sourceSha256s.length > 0 &&
+          sourceSha256s.every((digest) => sha256Pattern.test(digest))) ||
         (source === "src/gateway/server-cron-notifications.test.ts" &&
           detectorType === 899 &&
           Array.isArray(sourceSha256s) &&
@@ -1074,9 +1083,11 @@ function classifyReviewedFindings(
       const [detectorType, detectorName, decoder] = matchingMetadata[0]!;
       if (typeof file !== "string" || scannerLine === null) return refuse("metadata_mismatch");
       if (staged?.kind !== "blob" || !staged.bytes) return refuse("material_not_reviewed");
-      if (detectorType === 899) {
+      if (matchingMetadata.some((row) => row[8] !== undefined)) {
         const sourceSha256 = createHash("sha256").update(staged.bytes).digest("hex");
-        matchingMetadata = matchingMetadata.filter((row) => row[8]?.includes(sourceSha256));
+        matchingMetadata = matchingMetadata.filter(
+          (row) => row[8] === undefined || row[8].includes(sourceSha256),
+        );
         if (matchingMetadata.length === 0) return refuse("source_not_reviewed");
       }
       const parts = object(finding.SecretParts);
@@ -1167,11 +1178,10 @@ function classifyReviewedFindings(
           ({ source, mode, role }) =>
             (role !== "base" && role !== "head") ||
             matchingMetadata.every(
-              ([, , , , , , expectedSource, expectedMode, , expectedRoles], index) =>
+              ([, , , , , , expectedSource, expectedMode], index) =>
                 !matchesWitness(expectedDigests[index]!) ||
                 expectedSource !== source ||
-                expectedMode !== mode ||
-                (expectedRoles !== undefined && !expectedRoles.includes(role)),
+                expectedMode !== mode,
             ),
         )
       )
