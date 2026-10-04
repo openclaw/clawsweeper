@@ -2576,6 +2576,81 @@ test("exact event review heartbeats its queue lease while Codex runs", () => {
   );
 });
 
+test("exact-review startup ownership check charges generation start on the lease heartbeat", () => {
+  type Step = { name?: string; run?: string };
+  const workflow = YAML.parse(readText(".github/workflows/sweep.yml")) as {
+    jobs: Record<string, { steps: Step[] }>;
+  };
+  const run =
+    workflow.jobs["event-review-apply"]!.steps.find(
+      (candidate) => candidate.name === "Review exact event item",
+    )?.run ?? "";
+  const start = run.indexOf("verify_startup_authority() {");
+  const verify = run.slice(start, run.indexOf("\nadmission_args=()", start));
+  assert.ok(start >= 0 && verify.endsWith("}"));
+  // Both generation paths verify ownership immediately before Codex starts.
+  assert.equal(run.split(/^\s*verify_startup_authority\s*$/m).length - 1, 2);
+
+  for (const scenario of ["owned", "superseded"] as const) {
+    const root = mkdtempSync(tmpPrefix);
+    try {
+      const output = join(root, "output");
+      const sent = join(root, "sent.json");
+      execFileSync(
+        "bash",
+        [
+          "-e",
+          "-u",
+          "-c",
+          `
+        control_plane_curl() {
+          local body="" out=""
+          while [ "$#" -gt 0 ]; do
+            case "$1" in
+              --data-binary) body="$2"; shift ;;
+              --output) out="$2"; shift ;;
+            esac
+            shift
+          done
+          printf '%s' "$body" > "$MOCK_SENT"
+          printf '%s' "$MOCK_BODY" > "$out"
+          printf '%s' "$MOCK_HTTP_STATUS"
+        }
+        heartbeat_payload='{"item_key":"openclaw/openclaw#1","lease_id":"lease-1","lease_revision":1,"claim_generation":1,"run_id":"10","run_attempt":1}'
+        ${verify}
+        verify_startup_authority
+        echo verified >> "$GITHUB_OUTPUT"
+      `,
+        ],
+        {
+          cwd: root,
+          env: {
+            ...process.env,
+            GITHUB_OUTPUT: output,
+            MOCK_SENT: sent,
+            MOCK_HTTP_STATUS: scenario === "owned" ? "200" : "409",
+            MOCK_BODY: scenario === "owned" ? '{"ok":true}' : '{"error":"lease_superseded"}',
+            QUEUE_URL: "http://127.0.0.1",
+          },
+        },
+      );
+      assert.deepEqual(JSON.parse(readText(sent)), {
+        item_key: "openclaw/openclaw#1",
+        lease_id: "lease-1",
+        lease_revision: 1,
+        claim_generation: 1,
+        run_id: "10",
+        run_attempt: 1,
+        generation_start: true,
+      });
+      if (scenario === "owned") assert.equal(readText(output), "verified\n");
+      else assert.match(readText(output), /^superseded=true$/m);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }
+});
+
 test("exact-review lease competition skips only known conflicts and gates both owners", () => {
   type Step = { name?: string; uses?: string; if?: string; run?: string };
   const workflow = YAML.parse(readText(".github/workflows/sweep.yml")) as {

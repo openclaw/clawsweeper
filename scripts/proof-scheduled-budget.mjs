@@ -5,8 +5,10 @@
 // Drives the real ExactReviewQueue Durable Object (workerd + SQLite) with a fake
 // clock: organic new items (some closed before dispatch), superseding revisions
 // of dispatching or leased owners, requeue_latest completions, scheduled
-// hot/normal offers at each revision's cron cadence, dispatch, claim,
-// completion, and a GitHub throttle signal. Executions are counted at claim.
+// hot/normal offers at each revision's cron cadence, dispatch, claim, the
+// workflow's generation-start heartbeat or an exit before generation,
+// completion, and a GitHub throttle signal. Executions are counted at
+// generation start; claims are reported separately.
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createHash, generateKeyPairSync } from "node:crypto";
@@ -38,6 +40,8 @@ const DIRECT_OFFER_CANDIDATES = 50;
 const HOT_FANOUT_OFFER_CANDIDATES = 20;
 const NORMAL_FANOUT_OFFER_CANDIDATES = 50;
 const CLAIM_LATENCY = MINUTE;
+// Checkout and setup between the claim and the startup ownership check.
+const GENERATION_START_LATENCY = MINUTE;
 const THROTTLE_COOLDOWN = 15 * MINUTE;
 // Organic admissions/hour split into new keys, superseding revisions of an
 // active owner, and completion requeues (requeue_latest). The requeue share is
@@ -81,6 +85,22 @@ const ALL_SCENARIOS = [
     supersedeOwner: "dispatching",
     requeueProbability: 0.055,
     target: { new: 215, supersede: 12, requeue: 6, closed_before_dispatch: "52%" },
+  }),
+  // Production after #1736 (2026-10-01): organic runs claim ~220 leases/hour
+  // and about a third exit before Codex generation (live-item admission skips,
+  // setup supersession), so claim-time charging spends the whole budget.
+  mix("production_2026_10_01_claims", 3, 230, 12, 0, {
+    closedBeforeDispatchFraction: 0.05,
+    exitBeforeGenerationFraction: 1 / 3,
+    supersedeOwner: "dispatching",
+    requeueProbability: 0.055,
+    target: {
+      new: 230,
+      supersede: 12,
+      requeue: 8,
+      closed_before_dispatch: "5%",
+      exit_before_generation: "33%",
+    },
   }),
 ];
 // Optional comma-separated scenario filter for quick local iteration.
@@ -284,7 +304,7 @@ const address = `127.0.0.1:${server.address().port}`;
 
 const receipt = {
   claim:
-    "Scheduled admission with bounded organic debt: per-hour organic admissions, claimed review executions, scheduled admissions and sheds, rolling execution totals, organic overload, and throttle pause for origin/main versus this branch.",
+    "Scheduled admission with bounded organic debt, charged at generation start: per-hour organic admissions, claims, claims that exit before generation, started review executions, scheduled admissions and sheds, rolling execution totals, organic overload, and throttle pause for the base versus this branch.",
   base: git("rev-parse", baseRef),
   head: git("rev-parse", "HEAD"),
   working_tree_dirty: Boolean(git("status", "--porcelain", "--", ...FILES)),
@@ -301,7 +321,11 @@ const receipt = {
       "an organic completion reports requeue_latest with the scenario's probability, as source-drift completions do",
     organic_closed_before_dispatch:
       "production_2026_10_01 only: a seeded share of new organic items reads closed at the queue's dispatch-time live check and is completed without a run",
-    execution: "a successful /claim of a dispatched review lease (one workflow run attempt)",
+    claim: "a successful /claim of a dispatched review lease (one workflow run attempt)",
+    exit_before_generation:
+      "production_2026_10_01_claims only: a seeded share of organic claims completes without generation, as live-item admission skips and setup supersession do",
+    execution:
+      "a successful generation-start heartbeat (generation_start: true) for a claimed lease, sent by both variants; the base ignores the field and charged at claim",
     offers:
       "each offer follows scheduled-review-enqueue: fresh candidates until the first shed; direct planners +3 min, fanout planners +6 min after cron",
     candidates_per_offer: {
@@ -310,6 +334,7 @@ const receipt = {
       normal_fanout: NORMAL_FANOUT_OFFER_CANDIDATES,
     },
     claim_latency_minutes: CLAIM_LATENCY / MINUTE,
+    generation_start_latency_minutes: GENERATION_START_LATENCY / MINUTE,
     review_minutes: "uniform 4-10 (mean 7) per execution",
     alarms:
       "delivered at the queue's own requested wake time (min 1 s apart); stats sampled each simulated minute",
@@ -433,10 +458,40 @@ export default { fetch(request, env) { return env.QUEUE.get(env.QUEUE.idFromName
     }
     receipt.variants[variant] = result;
   }
+  receipt.comparison = Object.fromEntries(
+    SCENARIOS.map(({ name }) => {
+      const [base, head] = ["baseline", "candidate"].map(
+        (variant) => receipt.variants[variant].scenarios[name].totals,
+      );
+      return [
+        name,
+        {
+          base_scheduled_admissions: base.scheduled_admissions,
+          head_scheduled_admissions: head.scheduled_admissions,
+          base_executions: base.executions,
+          head_executions: head.executions,
+          base_claims: base.claims,
+          head_claims: head.claims,
+          exited_before_generation: head.exited_before_generation,
+        },
+      ];
+    }),
+  );
+  const early = receipt.comparison.production_2026_10_01_claims;
+  if (early) {
+    assert.ok(
+      early.exited_before_generation > 0,
+      "the early-exit scenario exits before generation",
+    );
+    assert.ok(
+      early.head_scheduled_admissions > early.base_scheduled_admissions,
+      "claims that never start generation stop starving scheduled admission",
+    );
+  }
   receipt.upgrade_rollback = await provePersistedBudgetCompatibility(runtimeFactories);
   assert.deepEqual(unexpected, [], "unexpected external fixture route");
   receipt.limits =
-    "Synthetic GitHub fixture, RSA credential, organic arrival process and mix, closed-before-dispatch share, planner latency and review durations. Real queue admission, token buckets, supersession, requeue, dispatch-time live checks, dispatch, claim, completion, reconciliation, throttle feedback, alarms and SQLite storage. An execution is a successful claim; a run that claims and then exits early is still counted. No live inference, production state or GitHub mutations. clawhub/other-target supply, stale-head pull request deletes and GitHub Actions scheduling jitter are not modeled. Candidate supply is unlimited, the pessimistic case for the budget and for normal-backfill share.";
+    "Synthetic GitHub fixture, RSA credential, organic arrival process and mix, closed-before-dispatch and exit-before-generation shares, planner and setup latency and review durations. Real queue admission, token buckets, supersession, requeue, dispatch-time live checks, dispatch, claim, generation-start heartbeat, completion, reconciliation, throttle feedback, alarms and SQLite storage. The workflow shell that sends generation_start is covered by test/sweep-workflow.test.ts, not this harness. No live inference, production state or GitHub mutations. clawhub/other-target supply, stale-head pull request deletes and GitHub Actions scheduling jitter are not modeled. Candidate supply is unlimited, the pessimistic case for the budget and for normal-backfill share.";
   writeFileSync(path.join(out, "result.json"), JSON.stringify(receipt, null, 2) + "\n");
   console.log(JSON.stringify(summary(receipt), null, 2));
 } finally {
@@ -444,197 +499,189 @@ export default { fetch(request, env) { return env.QUEUE.get(env.QUEUE.idFromName
   await new Promise((resolve) => server.close(resolve));
 }
 
-// Upgrade from the base revision to the candidate and roll back again,
-// reopening the same SQLite Durable Object each time. Work the base admitted
-// (and charged at admission) is still in flight across the upgrade.
+// Upgrade from the claim-charging base to generation-start charging and roll
+// back again, reopening the same SQLite Durable Object each time. Leases the
+// base already charged at claim are never charged again at generation start.
 async function provePersistedBudgetCompatibility(factories) {
   const results = [];
   for (const profile of [
     {
       name: "rate_60_burst_6",
-      burst: 6,
       overrides: {
         EXACT_REVIEW_TARGET_RATE_PER_HOUR: "60",
         EXACT_REVIEW_TARGET_BURST: "6",
         EXACT_REVIEW_HOT_INTAKE_RATE_PER_HOUR: "",
       },
     },
-    { name: "production_220_24", burst: 24, overrides: {} },
+    { name: "production_220_24", overrides: {} },
   ]) {
-    for (const seed of [
-      { name: "positive", organic: 2, scheduled: 0 },
-      { name: "exhausted", organic: profile.burst, scheduled: 0 },
-      { name: "persisted_lanes", organic: 1, scheduled: 2 },
-    ]) {
-      const persist = path.join(out, "persisted-budget", `${profile.name}-${seed.name}`);
-      let mf;
-      let now = T0;
-      dispatches = [];
-      closedItems = new Set();
-      const call = async (op, body) => {
-        const response = await mf.dispatchFetch(`http://proof/persisted-budget/${op}`, {
-          method: body ? "POST" : "GET",
-          headers: { "x-proof-now": String(now), "content-type": "application/json" },
-          ...(body ? { body: JSON.stringify(body) } : {}),
-        });
-        const value = await response.json();
-        assert.ok(response.ok, `${op}: ${JSON.stringify(value)}`);
-        return value;
-      };
-      const open = async (variant) => {
-        mf = factories[variant](persist, profile.overrides);
-        await mf.ready;
-        return (await call("stats")).scheduled_feed;
-      };
-      const balance = async () => (await call("stats")).scheduled_feed.token_balance;
-      const claim = (dispatch) =>
-        call("claim", {
-          item_key: dispatch.queue_claim.item_key,
-          lease_id: dispatch.queue_lease_id,
-          lease_revision: dispatch.queue_claim.lease_revision,
-          run_id: String(1_700_000 + Number(dispatch.item_number) - 700_000),
-          run_attempt: 1,
-        });
-      const itemRow = (rows, itemNumber) =>
-        JSON.parse(
-          rows.items.find((row) => row.item_key === `openclaw/openclaw#${itemNumber}`).item_json,
-        );
-      const close = async () => {
-        await mf.dispose();
-        mf = undefined;
-      };
-      const offer = (number, action = "opened") =>
-        call("enqueue", {
-          delivery_id: `persisted-${number}`,
-          decision: {
-            targetRepo: "openclaw/openclaw",
-            targetBranch: "main",
-            itemNumber: number,
-            itemKind: "issue",
-            sourceEvent: "issues",
-            sourceAction: action,
-            sourceUpdatedAt: new Date(T0 - HOUR).toISOString(),
-            supersedesInProgress: false,
-          },
-        });
-      const rowsDigest = (value) =>
-        createHash("sha256")
-          .update(
-            JSON.stringify({
-              items: value.items,
-              deliveries: value.deliveries,
-            }),
-          )
-          .digest("hex");
-      try {
-        // 1. The base admits the seed work.
-        await open("baseline");
-        for (let index = 0; index < seed.organic; index++) {
-          assert.equal((await offer(700_000 + index)).queued, true);
-        }
-        for (let index = 0; index < seed.scheduled; index++) {
-          const action = index === 0 ? "scheduled_hot_intake" : "scheduled_normal_backfill";
-          assert.equal((await offer(705_000 + index, action)).queued, true);
-        }
-        const baseBalance = await balance();
-        const stored = await call("__persisted-budget");
-        assert.equal(stored.items.length, seed.organic + seed.scheduled);
-        await close();
-
-        // 2. Upgrade at the same instant: identical records, no fresh burst.
-        const upgraded = await open("candidate");
-        assert.deepEqual(
-          await call("__persisted-budget"),
-          stored,
-          "upgrade preserves bucket, item and delivery records",
-        );
-        assert.equal(upgraded.token_balance, baseBalance, "upgrade does not mint a fresh burst");
-
-        // 3. Candidate admissions: organic is free until it runs; a scheduled
-        // admission debits once and marks its item prepaid.
-        assert.equal((await offer(710_000)).queued, true);
-        assert.equal(await balance(), baseBalance, "candidate organic admission is free");
-        const prepaid = (await offer(715_000, "scheduled_normal_backfill")).queued === true;
-        const afterAdmissions = await balance();
-        assert.equal(baseBalance - afterAdmissions, prepaid ? 1 : 0);
-        if (prepaid) {
-          assert.equal(
-            itemRow(await call("__persisted-budget"), 715_000).reviewBudgetPrepaid,
-            true,
-          );
-        }
-
-        // 4. Dispatch everything, then claim all but the prepaid scheduled
-        // lease at one frozen instant. Base-admitted work is charged again.
-        const expectedDispatches = seed.organic + seed.scheduled + 1 + (prepaid ? 1 : 0);
-        for (let tick = 0; tick < 60 && dispatches.length < expectedDispatches; tick++) {
-          now += 30_000;
-          await call("__tick");
-        }
-        assert.equal(dispatches.length, expectedDispatches, "every admitted item dispatches");
-        const prepaidDispatch = dispatches.find(
-          (payload) => Number(payload.item_number) === 715_000,
-        );
-        const claimed = dispatches.filter((payload) => payload !== prepaidDispatch);
-        const beforeClaims = await balance();
-        for (const payload of claimed) assert.equal((await claim(payload)).claimed, true);
-        const afterClaims = await balance();
-        const expectedDebits = Math.min(claimed.length, beforeClaims + profile.burst);
-        assert.equal(
-          beforeClaims - afterClaims,
-          expectedDebits,
-          "one debit per claim to the floor",
-        );
-        assert.ok(afterClaims >= -profile.burst);
-        const upgradedRows = await call("__persisted-budget");
-        await close();
-
-        // 5. Roll back at the same instant: the base reads the same records and
-        // the same carried debt, ignores the prepaid marker, and charges its own
-        // new admissions again.
-        const rolledBack = await open("baseline");
-        assert.deepEqual(
-          await call("__persisted-budget"),
-          upgradedRows,
-          "rollback reads the same persisted records",
-        );
-        assert.equal(rolledBack.token_balance, afterClaims, "rollback keeps the carried balance");
-        if (prepaidDispatch) {
-          assert.equal((await claim(prepaidDispatch)).claimed, true);
-          assert.equal(await balance(), afterClaims, "the base does not charge claims");
-          assert.equal(
-            itemRow(await call("__persisted-budget"), 715_000).reviewBudgetPrepaid,
-            true,
-            "the base preserves the unknown marker",
-          );
-        }
-        const beforeBaseAdmission = await balance();
-        assert.equal((await offer(720_000)).queued, true);
-        const baseAdmissionDebit = beforeBaseAdmission - (await balance());
-        results.push({
-          profile: profile.name,
-          seed: seed.name,
-          base_admitted: { organic: seed.organic, scheduled: seed.scheduled },
-          base_balance: baseBalance,
-          upgraded_balance: upgraded.token_balance,
-          candidate_organic_admission_debit: 0,
-          candidate_scheduled_admitted_prepaid: prepaid,
-          claims_after_upgrade: claimed.length,
-          balance_before_claims: beforeClaims,
-          balance_after_claims: afterClaims,
-          base_admitted_work_charged_again_at_claim: seed.organic + seed.scheduled,
-          rollback_balance: rolledBack.token_balance,
-          rollback_prepaid_claim_debit: prepaidDispatch ? 0 : null,
-          rollback_organic_admission_debit: baseAdmissionDebit,
-          upgrade_rows_sha256: rowsDigest(stored),
-          rollback_rows_sha256: rowsDigest(upgradedRows),
-          item_records_preserved: true,
-          delivery_records_preserved: true,
-          lane_buckets_preserved: seed.scheduled > 0,
-        });
-      } finally {
-        if (mf) await mf.dispose();
+    const persist = path.join(out, "persisted-budget", profile.name);
+    let mf;
+    let now = T0;
+    dispatches = [];
+    closedItems = new Set();
+    const call = async (op, body) => {
+      const response = await mf.dispatchFetch(`http://proof/persisted-budget/${op}`, {
+        method: body ? "POST" : "GET",
+        headers: { "x-proof-now": String(now), "content-type": "application/json" },
+        ...(body ? { body: JSON.stringify(body) } : {}),
+      });
+      const value = await response.json();
+      assert.ok(response.ok, `${op}: ${JSON.stringify(value)}`);
+      return value;
+    };
+    const open = async (variant) => {
+      mf = factories[variant](persist, profile.overrides);
+      await mf.ready;
+      return (await call("stats")).scheduled_feed;
+    };
+    const close = async () => {
+      await mf.dispose();
+      mf = undefined;
+    };
+    const balance = async () => (await call("stats")).scheduled_feed.token_balance;
+    const debit = async (action) => {
+      const before = await balance();
+      await action();
+      return before - (await balance());
+    };
+    const offer = (number, action = "opened") =>
+      call("enqueue", {
+        delivery_id: `persisted-${number}`,
+        decision: {
+          targetRepo: "openclaw/openclaw",
+          targetBranch: "main",
+          itemNumber: number,
+          itemKind: "issue",
+          sourceEvent: "issues",
+          sourceAction: action,
+          sourceUpdatedAt: new Date(T0 - HOUR).toISOString(),
+          supersedesInProgress: false,
+        },
+      });
+    const dispatchAll = async (count) => {
+      for (let tick = 0; tick < 60 && dispatches.length < count; tick++) {
+        now += 30_000;
+        await call("__tick");
       }
+      assert.equal(dispatches.length, count, "every admitted item dispatches");
+    };
+    const leaseOf = (itemNumber) =>
+      dispatches.find((payload) => Number(payload.item_number) === itemNumber);
+    const generations = new Map();
+    const claim = async (itemNumber) => {
+      const dispatch = leaseOf(itemNumber);
+      const value = await call("claim", {
+        item_key: dispatch.queue_claim.item_key,
+        lease_id: dispatch.queue_lease_id,
+        lease_revision: dispatch.queue_claim.lease_revision,
+        run_id: String(1_700_000 + itemNumber - 700_000),
+        run_attempt: 1,
+      });
+      assert.equal(value.claimed, true);
+      generations.set(itemNumber, value.claim_generation);
+    };
+    const start = (itemNumber) => {
+      const dispatch = leaseOf(itemNumber);
+      return call("heartbeat", {
+        item_key: dispatch.queue_claim.item_key,
+        lease_id: dispatch.queue_lease_id,
+        lease_revision: dispatch.queue_claim.lease_revision,
+        run_id: String(1_700_000 + itemNumber - 700_000),
+        run_attempt: 1,
+        claim_generation: generations.get(itemNumber),
+        generation_start: true,
+      });
+    };
+    const item = async (itemNumber) =>
+      JSON.parse(
+        (await call("__persisted-budget")).items.find(
+          (row) => row.item_key === `openclaw/openclaw#${itemNumber}`,
+        ).item_json,
+      );
+    try {
+      // 1. The base admits organic and scheduled work, then claims two
+      // organic leases; it charges each claim.
+      await open("baseline");
+      for (const number of [700_000, 700_001, 700_002, 700_003, 700_004]) {
+        assert.equal((await offer(number)).queued, true);
+      }
+      assert.equal((await offer(705_000, "scheduled_normal_backfill")).queued, true);
+      await dispatchAll(6);
+      const baseClaimDebits = await debit(async () => {
+        await claim(700_000);
+        await claim(700_001);
+      });
+      assert.equal(baseClaimDebits, 2, "the base charges at claim");
+      const baseBalance = await balance();
+      const stored = await call("__persisted-budget");
+      await close();
+
+      // 2. Upgrade at the same instant: identical records and balance. The
+      // leases the base charged at claim reach generation start for free.
+      const upgraded = await open("candidate");
+      assert.deepEqual(await call("__persisted-budget"), stored, "upgrade preserves records");
+      assert.equal(upgraded.token_balance, baseBalance, "upgrade does not mint a fresh burst");
+      const inFlightStartDebits = await debit(async () => {
+        await start(700_000);
+        await start(700_001);
+      });
+      assert.equal(inFlightStartDebits, 0, "a lease charged at claim is not charged again");
+      // New claims are free; generation start charges organic once and
+      // consumes the scheduled prepayment instead.
+      const candidateClaimDebits = await debit(async () => {
+        await claim(700_002);
+        await claim(700_003);
+        await claim(705_000);
+      });
+      assert.equal(candidateClaimDebits, 0, "candidate claims are free");
+      const organicStartDebits = await debit(async () => {
+        await start(700_002);
+        await start(700_002);
+      });
+      assert.equal(organicStartDebits, 1, "one organic generation start, retried, costs one");
+      assert.equal((await item(705_000)).reviewBudgetPrepaid, true);
+      const scheduledStartDebits = await debit(() => start(705_000));
+      assert.equal(scheduledStartDebits, 0, "a scheduled start consumes its prepayment");
+      assert.equal((await item(705_000)).reviewBudgetPrepaid, undefined);
+      // 700_003 claimed under the candidate is still in setup at rollback.
+      assert.equal((await item(700_003)).reviewBudgetChargeGeneration, 1);
+      const upgradedBalance = await balance();
+      const upgradedRows = await call("__persisted-budget");
+      await close();
+
+      // 3. Roll back at the same instant: the base reads the same records and
+      // balance, ignores the pending-charge marker and generation_start, and
+      // charges its own new claims again.
+      const rolledBack = await open("baseline");
+      assert.deepEqual(
+        await call("__persisted-budget"),
+        upgradedRows,
+        "rollback reads the same persisted records",
+      );
+      assert.equal(rolledBack.token_balance, upgradedBalance, "rollback keeps the balance");
+      // Known rollback limit: a lease claimed under the candidate and still in
+      // setup is never charged by the base, which only charges at claim.
+      const rollbackInSetupStartDebits = await debit(() => start(700_003));
+      assert.equal(rollbackInSetupStartDebits, 0);
+      const rollbackClaimDebits = await debit(() => claim(700_004));
+      assert.equal(rollbackClaimDebits, 1, "the rolled-back base charges at claim again");
+      results.push({
+        profile: profile.name,
+        base_claim_debits: baseClaimDebits,
+        base_balance: baseBalance,
+        upgraded_balance: upgraded.token_balance,
+        upgrade_in_flight_generation_start_debits: inFlightStartDebits,
+        candidate_claim_debits: candidateClaimDebits,
+        candidate_organic_generation_start_and_retry_debits: organicStartDebits,
+        candidate_scheduled_prepaid_generation_start_debits: scheduledStartDebits,
+        rollback_balance: rolledBack.token_balance,
+        rollback_in_setup_generation_start_debits: rollbackInSetupStartDebits,
+        rollback_claim_debits: rollbackClaimDebits,
+        item_and_delivery_records_preserved: true,
+      });
+    } finally {
+      if (mf) await mf.dispose();
     }
   }
   return results;
@@ -681,6 +728,16 @@ async function proveReconciliationDebit(mf) {
       run_id: runId,
       run_attempt: 1,
     });
+  const start = (dispatch, runId, claimGeneration) =>
+    call("heartbeat", {
+      item_key: dispatch.queue_claim.item_key,
+      lease_id: dispatch.queue_lease_id,
+      lease_revision: dispatch.queue_claim.lease_revision,
+      run_id: runId,
+      run_attempt: 1,
+      claim_generation: claimGeneration,
+      generation_start: true,
+    });
   const decision = {
     targetRepo: "openclaw/openclaw",
     targetBranch: "main",
@@ -697,6 +754,8 @@ async function proveReconciliationDebit(mf) {
   const first = await dispatchNext(1);
   const claimed = await step("claim", () => claim(first, "1999913"));
   assert.equal(claimed.claimed, true);
+  await step("generation_start", () => start(first, "1999913", claimed.claim_generation));
+  await step("generation_start_retry", () => start(first, "1999913", claimed.claim_generation));
   const edited = await step("changed_input_follow_up", () =>
     call("enqueue", {
       delivery_id: "reconcile-edit",
@@ -716,15 +775,21 @@ async function proveReconciliationDebit(mf) {
   assert.equal((await step("reconcile_requeue", () => call("reconcile", { runs }))).requeued, 1);
   assert.equal((await step("reconcile_replay", () => call("reconcile", { runs }))).reconciled, 0);
   const successor = await dispatchNext(2);
-  assert.equal((await step("successor_claim", () => claim(successor, "1999914"))).claimed, true);
+  const successorClaim = await step("successor_claim", () => claim(successor, "1999914"));
+  assert.equal(successorClaim.claimed, true);
   assert.equal(
     (await step("successor_claim_retry", () => claim(successor, "1999914"))).claimed,
     true,
   );
+  for (const name of ["successor_generation_start", "successor_generation_start_retry"]) {
+    await step(name, () => start(successor, "1999914", successorClaim.claim_generation));
+  }
   const total = Object.values(debits).reduce((sum, value) => sum + value, 0);
   assert.equal(total, 2, `two executions cost two tokens: ${JSON.stringify(debits)}`);
   assert.equal(debits.reconcile_replay, 0);
   assert.equal(debits.successor_claim_retry, 0);
+  assert.equal(debits.generation_start_retry, 0);
+  assert.equal(debits.successor_generation_start_retry, 0);
   const charged = Object.fromEntries(Object.entries(debits).filter(([, value]) => value !== 0));
   return { executions: 2, total_debits: total, charged_steps: charged, replay_debits: 0 };
 }
@@ -735,7 +800,16 @@ async function runScenario(mf, scenario, cadence, vars) {
   const rate = Number(vars.EXACT_REVIEW_TARGET_RATE_PER_HOUR);
   const burst = Number(vars.EXACT_REVIEW_TARGET_BURST);
   const queue = plannedEvents(cadence, scenario);
-  const order = { complete: 0, claim: 1, organic: 2, supersede: 2, offer: 3, tick: 4, sample: 5 };
+  const order = {
+    complete: 0,
+    claim: 1,
+    start: 1,
+    organic: 2,
+    supersede: 2,
+    offer: 3,
+    tick: 4,
+    sample: 5,
+  };
   const hours = Array.from({ length: scenario.hours }, () => ({
     organic: { new: 0, supersede: 0, requeue: 0 },
     organic_attempted: { new: 0, supersede: 0 },
@@ -745,6 +819,8 @@ async function runScenario(mf, scenario, cadence, vars) {
     offer_sequences_fully_shed: 0,
     shed: { scheduled_rate: 0, backpressure: 0 },
     dispatched: { organic: 0, scheduled: 0 },
+    claimed: { organic: 0, scheduled: 0 },
+    exited_before_generation: 0,
     executed: { organic: 0, scheduled: 0 },
     completed: 0,
     min_token_balance: null,
@@ -760,7 +836,9 @@ async function runScenario(mf, scenario, cadence, vars) {
   const requeueRandom = mulberry32(0x7e9 + scenario.newPerHour);
   const supersedeRandom = mulberry32(0x5b + scenario.newPerHour);
   const closedRandom = mulberry32(0xc105ed + scenario.newPerHour);
+  const exitRandom = mulberry32(0xe817 + scenario.newPerHour);
   let staleClaims = 0;
+  let staleStarts = 0;
   let staleCompletions = 0;
   let supersedeSkipped = 0;
   let maxScheduledActive = 0;
@@ -932,6 +1010,30 @@ async function runScenario(mf, scenario, cadence, vars) {
       }
       assert.equal(status, 200, `claim failed: ${JSON.stringify(body)}`);
       const kind = kindOf(event.itemNumber);
+      bucket.claimed[kind]++;
+      const run = { ...claimBody, claim_generation: body.claim_generation };
+      const exitsEarly =
+        kind === "organic" && exitRandom() < (scenario.exitBeforeGenerationFraction ?? 0);
+      if (exitsEarly) bucket.exited_before_generation++;
+      queue.push({
+        at: event.at + GENERATION_START_LATENCY,
+        kind: exitsEarly ? "complete" : "start",
+        itemNumber: event.itemNumber,
+        leaseId,
+        completion: run,
+        exitedBeforeGeneration: exitsEarly,
+      });
+    } else if (event.kind === "start") {
+      const { status, body } = await call("heartbeat", event.at, {
+        ...event.completion,
+        generation_start: true,
+      });
+      if (status !== 200 && revokedLeases.has(event.leaseId)) {
+        staleStarts++;
+        continue;
+      }
+      assert.equal(status, 200, `generation start failed: ${JSON.stringify(body)}`);
+      const kind = kindOf(event.itemNumber);
       bucket.executed[kind]++;
       executions.push({ at: event.at, kind });
       const attempt = (executionAttempts.get(event.itemNumber) ?? 0) + 1;
@@ -940,16 +1042,21 @@ async function runScenario(mf, scenario, cadence, vars) {
         at: event.at + reviewDuration(event.itemNumber, attempt),
         kind: "complete",
         itemNumber: event.itemNumber,
-        leaseId,
-        completion: { ...claimBody, claim_generation: body.claim_generation },
+        leaseId: event.leaseId,
+        completion: event.completion,
       });
     } else if (event.kind === "complete") {
       const organic = kindOf(event.itemNumber) === "organic";
       const throttleNow =
+        !event.exitedBeforeGeneration &&
         scenario.throttleAtMinute !== undefined &&
         !throttle &&
         event.at >= T0 + scenario.throttleAtMinute * MINUTE;
-      const requeue = !throttleNow && organic && requeueRandom() < scenario.requeueProbability;
+      const requeue =
+        !throttleNow &&
+        organic &&
+        !event.exitedBeforeGeneration &&
+        requeueRandom() < scenario.requeueProbability;
       const { status, body } = await call("complete", event.at, {
         ...event.completion,
         ...(throttleNow
@@ -1017,6 +1124,7 @@ async function runScenario(mf, scenario, cadence, vars) {
       ...hour,
       organic_total: organic,
       total_admissions: organic + scheduled,
+      total_claims: hour.claimed.organic + hour.claimed.scheduled,
       total_executions: hour.executed.organic + hour.executed.scheduled,
     };
   });
@@ -1027,7 +1135,25 @@ async function runScenario(mf, scenario, cadence, vars) {
       ? { closed_before_dispatch_fraction: scenario.closedBeforeDispatchFraction }
       : {}),
     ...(scenario.supersedeOwner ? { supersede_owner: scenario.supersedeOwner } : {}),
+    ...(scenario.exitBeforeGenerationFraction
+      ? { exit_before_generation_fraction: scenario.exitBeforeGenerationFraction }
+      : {}),
     hours: perHour,
+    totals: {
+      organic_admissions: perHour.reduce((sum, hour) => sum + hour.organic_total, 0),
+      scheduled_admissions: perHour.reduce(
+        (sum, hour) => sum + hour.scheduled.hot_intake + hour.scheduled.normal_backfill,
+        0,
+      ),
+      claims: perHour.reduce((sum, hour) => sum + hour.total_claims, 0),
+      exited_before_generation: perHour.reduce(
+        (sum, hour) => sum + hour.exited_before_generation,
+        0,
+      ),
+      executions: perHour.reduce((sum, hour) => sum + hour.total_executions, 0),
+      organic_executions: perHour.reduce((sum, hour) => sum + hour.executed.organic, 0),
+      scheduled_executions: perHour.reduce((sum, hour) => sum + hour.executed.scheduled, 0),
+    },
     max_rolling_hour_admissions: rollingAdmissions.max,
     max_rolling_hour_window: rollingAdmissions.window,
     max_rolling_hour_executions: rollingExecutions.max,
@@ -1038,6 +1164,7 @@ async function runScenario(mf, scenario, cadence, vars) {
     scheduled_cap: Number(vars.EXACT_REVIEW_SCHEDULED_MAX_CONCURRENT),
     max_review_active: maxReviewActive,
     stale_claims_after_supersede: staleClaims,
+    stale_generation_starts_after_supersede: staleStarts,
     stale_completions_after_supersede: staleCompletions,
     supersede_skipped_no_active_owner: supersedeSkipped,
     dispatch_delay_minutes: Object.fromEntries(
@@ -1103,8 +1230,9 @@ function summary(receiptValue) {
       rows[`${variant}/${name}`] = {
         hours: scenario.hours.map(
           (hour) =>
-            `organic ${hour.organic_total} (new ${hour.organic.new}, supersede ${hour.organic.supersede}, requeue ${hour.organic.requeue}; closed before dispatch ${hour.organic_closed_before_dispatch}) + hot ${hour.scheduled.hot_intake} + normal ${hour.scheduled.normal_backfill} = ${hour.total_admissions} admissions; executed organic ${hour.executed.organic} + scheduled ${hour.executed.scheduled} = ${hour.total_executions}; shed ${hour.shed.scheduled_rate} (offer sequences fully shed ${hour.offer_sequences_fully_shed}/${hour.scheduled_offers.hot_intake + hour.scheduled_offers.normal_backfill}); min balance ${hour.min_token_balance}`,
+            `organic ${hour.organic_total} (new ${hour.organic.new}, supersede ${hour.organic.supersede}, requeue ${hour.organic.requeue}; closed before dispatch ${hour.organic_closed_before_dispatch}) + hot ${hour.scheduled.hot_intake} + normal ${hour.scheduled.normal_backfill} = ${hour.total_admissions} admissions; claims ${hour.total_claims} (exited before generation ${hour.exited_before_generation}); executed organic ${hour.executed.organic} + scheduled ${hour.executed.scheduled} = ${hour.total_executions}; shed ${hour.shed.scheduled_rate} (offer sequences fully shed ${hour.offer_sequences_fully_shed}/${hour.scheduled_offers.hot_intake + hour.scheduled_offers.normal_backfill}); min balance ${hour.min_token_balance}`,
         ),
+        totals: scenario.totals,
         max_rolling_hour_admissions: scenario.max_rolling_hour_admissions,
         max_rolling_hour_executions: scenario.max_rolling_hour_executions,
         scheduled_allowance: scenario.scheduled_allowance_rate_plus_burst,
@@ -1128,6 +1256,13 @@ function summary(receiptValue) {
     base: receiptValue.base,
     head: receiptValue.head,
     rows,
+    comparison: receiptValue.comparison,
+    reconciliation: Object.fromEntries(
+      Object.entries(receiptValue.variants).map(([variant, value]) => [
+        variant,
+        value.reconciliation,
+      ]),
+    ),
     upgrade_rollback: receiptValue.upgrade_rollback,
   };
 }
