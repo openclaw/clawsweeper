@@ -21,10 +21,10 @@ unless a newer push revoked it. Scenarios:
 
 ```sh
 npm install --prefix /tmp/clawsweeper-active-item-proof-tools --no-save --no-audit --no-fund --ignore-scripts wrangler@4.107.0
-node scripts/proof-active-item-debounce.mjs 8d659e7cb903370596e26acea5b81399f291c174 /tmp/clawsweeper-active-item-proof-tools .artifacts/active-item-debounce
+node scripts/proof-active-item-debounce.mjs c46e375c825223a7b3fbcf592794dc949065f0f8 /tmp/clawsweeper-active-item-proof-tools .artifacts/active-item-debounce
 ```
 
-Observed with workerd 1.20260701.1 and Node 24.21.0:
+Observed with workerd 1.20260701.1, Miniflare 4.20260701.0 and Node 24.21.0. The baseline is `c46e375c82` (main with the generation-start budget charging from https://github.com/openclaw/clawsweeper/pull/1738), and the candidate is the integrated head `e78f8bf0ec`. The earlier run against `8d659e7cb9` produced the same table:
 
 | Measure                               | Baseline           | Candidate             |
 | ------------------------------------- | ------------------ | --------------------- |
