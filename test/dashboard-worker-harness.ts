@@ -939,6 +939,9 @@ function createExactReviewAdmissionHarness(
           ? { hostedPublicTargetProbe: options.hostedPublicTargetProbe }
           : {}),
       EXACT_REVIEW_DISPATCH_DEBOUNCE_MS: "0",
+      // Like the ordinary debounce above, the active-item hold is off unless a
+      // test opts in; repeated-review tests expect the next dispatch at once.
+      EXACT_REVIEW_ACTIVE_ITEM_WINDOW_MS: "0",
       EXACT_REVIEW_QUEUE_MAX_CONCURRENT: options.maxConcurrent ?? "1",
       ...(options.retryPolicyEpoch
         ? { EXACT_REVIEW_RETRY_POLICY_EPOCH: options.retryPolicyEpoch }
