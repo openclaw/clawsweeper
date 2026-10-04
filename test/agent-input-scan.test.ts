@@ -1397,8 +1397,9 @@ test("reviewed Signal fixtures preserve exact source, line, decoder, and verific
   const sources = [
     "extensions/signal/src/client.test.ts",
     "extensions/signal/src/client-container.test.ts",
+    "extensions/signal/src/client-container.test.ts",
   ];
-  for (const [index, host] of ["127.0.0.1", "localhost"].entries()) {
+  for (const [index, host] of ["127.0.0.1", "localhost", "localhost"].entries()) {
     const url = new URL(`http://${host}:8080`);
     url.username = "user";
     url.password = "pass";
@@ -1406,7 +1407,9 @@ test("reviewed Signal fixtures preserve exact source, line, decoder, and verific
     const line =
       index === 0
         ? `        baseUrl: "${raw}",`
-        : `    await expect(containerCheck("${raw}")).rejects.toThrow(`;
+        : index === 1
+          ? `    await expect(containerCheck("${raw}")).rejects.toThrow(`
+          : `    ["${raw}", "Signal base URL must not include credentials"],`;
     const file = `/private/scanner/${String(index).repeat(40)}`;
     const input: StagedScanInput = {
       kind: "blob",
@@ -1444,7 +1447,7 @@ test("reviewed Signal fixtures preserve exact source, line, decoder, and verific
     }
     const otherSource: StagedScanInput = {
       ...input,
-      references: [{ ...input.references[0]!, source: sources[1 - index]! }],
+      references: [{ ...input.references[0]!, source: sources[index === 0 ? 1 : 0]! }],
     };
     for (const [name, changedFinding, changedInput, reason] of [
       ["other approved path", finding, otherSource, "source_not_reviewed"],

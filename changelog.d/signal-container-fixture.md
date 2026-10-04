@@ -1,0 +1,1 @@
+- Recognize the exact table-driven Signal URL-rejection fixture without weakening source-line, path, decoder, or verification checks.

@@ -656,7 +656,8 @@ the [MCP Apps sandbox-origin rejection fixture](https://github.com/openclaw/open
 the [Gateway config CDP-redaction fixture](https://github.com/openclaw/openclaw/blob/4b5987829d0f82ea44ae50f2f418ffe5ea445e7f/src/gateway/server.config-patch.test.ts),
 the [mocked marketplace telemetry-redaction fixture](https://github.com/openclaw/openclaw/blob/9c5ee4676d0732e72ee9a939ae4918dc89bcaab8/src/cli/plugins-cli.marketplace-refresh.test.ts),
 the Signal URL-rejection fixtures in [client tests](https://github.com/openclaw/openclaw/blob/75d633a7b97240280ebf13e121a1960eb2ec2765/extensions/signal/src/client.test.ts#L172)
-and [container tests](https://github.com/openclaw/openclaw/blob/41dd2e04897b9bdbde971cad8c6ff21ecccd38b7/extensions/signal/src/client-container.test.ts#L1461),
+and [container tests](https://github.com/openclaw/openclaw/blob/41dd2e04897b9bdbde971cad8c6ff21ecccd38b7/extensions/signal/src/client-container.test.ts#L1461)
+(including the exact [table-driven replacement](https://github.com/openclaw/openclaw/blob/1e49231d063bad36e4b6b187727d957fbfc7fdfb/extensions/signal/src/client-container.test.ts#L78)),
 and the OpenClaw config [URL-redaction](https://github.com/openclaw/openclaw/blob/5fe22a7d88919f260e7999fc775733feff3cb1fa/src/config/redact-snapshot.test.ts)
 and [restoration fixtures](https://github.com/openclaw/openclaw/blob/5fe22a7d88919f260e7999fc775733feff3cb1fa/src/config/redact-snapshot.restore.test.ts)
 after a complete scan. Static host policy associates each

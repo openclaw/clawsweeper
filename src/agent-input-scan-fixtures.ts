@@ -39,7 +39,10 @@ const REVIEWED_FIXTURES: readonly ReviewedFixture[] = [
   {
     fixtureSha256: "7849c0ac39a4f42a5cd5cb1b029c7132193f270454865f2f4a49a83da3444665",
     rawSha256: "7849c0ac39a4f42a5cd5cb1b029c7132193f270454865f2f4a49a83da3444665",
-    lineSha256s: ["281f664b2e7f36e82ef38d0a36bb791ec8a70b4a4afca470847d4699573b338d"],
+    lineSha256s: [
+      "281f664b2e7f36e82ef38d0a36bb791ec8a70b4a4afca470847d4699573b338d",
+      "2bb262c7e534fd60ddf4c06843f2246146b89cd0c94f42be9f46045be7132f84",
+    ],
     decoders: ["PLAIN", "HTML"],
     sources: ["extensions/signal/src/client-container.test.ts"],
   },
