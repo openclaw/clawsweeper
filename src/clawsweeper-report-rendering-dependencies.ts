@@ -29,7 +29,6 @@ import type {
   SecurityReview,
   TriagePriority,
 } from "./clawsweeper-types.js";
-import type { AttachedLiveVerification } from "./live-proof/verification.js";
 import { type PrSurfaceFile } from "./pr-surface-stats.js";
 import { type ReviewStructuralPullState } from "./review-structural-cache.js";
 
@@ -176,7 +175,6 @@ export interface CreateReportRenderingDependencies {
   reportOverallCorrectness: (markdown: string) => OverallCorrectness;
   reportPrRating: (markdown: string) => PrRating;
   reportRealBehaviorProofPolicy: (markdown: string) => RealBehaviorProofPolicy;
-  reportAttachedLiveVerification: (markdown: string) => AttachedLiveVerification;
   reportReviewFindings: (markdown: string) => ReviewFinding[];
   reportRootCauseCluster: (markdown: string) => RootCauseClusterAssessment;
   reportSecurityReview: (markdown: string) => SecurityReview;
@@ -227,7 +225,6 @@ export interface CreateReportRenderingDependencies {
   sentence: (value: string) => string;
   sha256: (text: string) => string;
   shouldRenderWorkPlanFromReport: (markdown: string) => boolean;
-  splitFileAndLine: (file: string, explicitLine?: number | null) => { file: string; line?: number };
   stripPriorityPrefix: (text: string) => string;
   targetRepo: () => string;
   timestampMs: (iso: string | undefined) => number | null;

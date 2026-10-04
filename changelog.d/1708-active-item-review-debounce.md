@@ -1,0 +1,1 @@
+- Coalesce organic pushes and edits for 10 minutes (capped at 15) on items that already completed two exact reviews in the last hour, so churning PRs get one review of their latest revision instead of one per push; commands, publication, scheduled, and recovery work keep their timing.

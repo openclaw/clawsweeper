@@ -919,7 +919,6 @@ const reportOrchestration = createReportOrchestration({
   isBulkFilerExemptAuthorAssociation,
   isBulkFilerExemptRepositoryPermission,
   isDocsOnlyPullRequestReport,
-  isExternalPullRequestReport,
   isFresh,
   isImplementationCloseReason: (...args) => isImplementationCloseReason(...args),
   isIssueAdvisoryLabel: (...args) => isIssueAdvisoryLabel(...args),

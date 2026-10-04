@@ -65,6 +65,7 @@ import {
   reviewOnlyRepairLoopTerminalChecks,
   repairLoopPauseLabels,
   repairLoopStopPauseReason,
+  repositoryRepairCommandBlockReason,
   reviewSummaryFromCommentBody,
   reviewedHeadShaBlockReason,
   renderAutomergeJob,
@@ -4050,7 +4051,7 @@ test("visualize assist dispatch payload stays within repository_dispatch key lim
   assert.equal(clientPayload.assist.mode, "visual");
   assert.equal(clientPayload.assist.lens, "state");
   assert.equal(clientPayload.assist.model, "internal");
-  assert.equal(clientPayload.assist.reasoning_effort, "high");
+  assert.equal(clientPayload.assist.reasoning_effort, "medium");
   assert.equal(clientPayload.assist.timeout_ms, "120000");
   assert.equal("mode" in clientPayload, false);
   assert.equal("lens" in clientPayload, false);
@@ -4336,6 +4337,27 @@ test("repair intent set documents executable repair commands", () => {
     "implement_issue",
     "rebase",
   ]);
+});
+
+test("Enterprise permits read-only commands and blocks every repair command family", () => {
+  for (const intent of [...REPAIR_INTENTS, ...MERGE_INTENTS, "autofix", "automerge"]) {
+    assert.match(
+      repositoryRepairCommandBlockReason("openclaw/openclaw-enterprise", intent) ?? "",
+      /repair commands are disabled/,
+    );
+  }
+  for (const intent of [
+    "status",
+    "help",
+    "explain",
+    "re_review",
+    "request_proof",
+    "freeform_assist",
+    "visualize",
+  ]) {
+    assert.equal(repositoryRepairCommandBlockReason("openclaw/openclaw-enterprise", intent), null);
+  }
+  assert.equal(repositoryRepairCommandBlockReason("openclaw/openclaw", "autofix"), null);
 });
 
 test("merge intent set documents ClawSweeper pass automerge", () => {
@@ -4723,7 +4745,7 @@ test("maintainer command authorization requires maintainer repository permission
   );
 });
 
-test("organization members can explicitly request issue implementation", () => {
+test("issue implementation requires current write permission", () => {
   const allowedAssociations = new Set(["OWNER", "MEMBER", "COLLABORATOR"]);
   assert.equal(
     isIssueImplementationCommandAllowed({
@@ -4731,12 +4753,20 @@ test("organization members can explicitly request issue implementation", () => {
       repositoryPermission: "read",
       allowedAssociations,
     }),
+    false,
+  );
+  assert.equal(
+    isIssueImplementationCommandAllowed({
+      authorAssociation: "MEMBER",
+      repositoryPermission: "maintain",
+      allowedAssociations,
+    }),
     true,
   );
   assert.equal(
     isIssueImplementationCommandAllowed({
-      authorAssociation: "COLLABORATOR",
-      repositoryPermission: "read",
+      authorAssociation: "MEMBER",
+      repositoryPermission: null,
       allowedAssociations,
     }),
     false,
@@ -4745,6 +4775,14 @@ test("organization members can explicitly request issue implementation", () => {
     isIssueImplementationCommandAllowed({
       authorAssociation: "CONTRIBUTOR",
       repositoryPermission: "write",
+      allowedAssociations,
+    }),
+    true,
+  );
+  assert.equal(
+    isIssueImplementationCommandAllowed({
+      authorAssociation: "OWNER",
+      repositoryPermission: null,
       allowedAssociations,
     }),
     true,

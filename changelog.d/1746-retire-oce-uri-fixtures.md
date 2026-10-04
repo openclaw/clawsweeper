@@ -1,0 +1,1 @@
+- Restrict obsolete OCE URL-rejection fixture qualifications to exact historical source blobs still held by open pull requests after the source fixtures stopped embedding credential-like URLs.

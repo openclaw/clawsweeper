@@ -4,7 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import { runAgentProcess } from "../agent-runner.js";
-import { canonicalItemAuthorAssociations, codexItemProfile } from "../codex-item-profile.js";
+import { canonicalItemCodexProfile } from "../codex-item-profile.js";
 import { codexAppServerProcessOptionsFromEnv } from "../codex-process.js";
 import { deterministicAutomergeResult } from "./deterministic-automerge-result.js";
 import {
@@ -16,7 +16,7 @@ import {
   repoRoot,
   validateJob,
 } from "./lib.js";
-import { codexLoginConfig, codexSubprocessEnv, codexModelArgs } from "./process-env.js";
+import { repairCodexConfigArgs, codexSubprocessEnv, codexModelArgs } from "./process-env.js";
 import { prepareTargetCheckout } from "./target-checkout.js";
 import { sanitizeResultEvidence } from "./url-safety.js";
 
@@ -142,9 +142,7 @@ const clusterPlanPath = path.join(runDir, "cluster-plan.json");
 const clusterPlan = fs.existsSync(clusterPlanPath)
   ? JSON.parse(fs.readFileSync(clusterPlanPath, "utf8"))
   : null;
-const codexProfile = codexItemProfile(
-  canonicalItemAuthorAssociations(job.frontmatter, clusterPlan),
-);
+const codexProfile = canonicalItemCodexProfile(job.frontmatter, clusterPlan);
 const codexReasoningEffort = codexProfile.reasoningEffort;
 const codexServiceTier = codexProfile.serviceTier;
 
@@ -230,7 +228,7 @@ function runCodex({
     ...codexModelArgs(String(model)),
     "--sandbox",
     codexPlannerSandbox,
-    ...codexConfigArgs(),
+    ...repairCodexConfigArgs(codexReasoningEffort, codexServiceTier),
     "--output-schema",
     path.join(repoRoot(), "schema", "repair", "codex-result.schema.json"),
     "--output-last-message",
@@ -305,16 +303,6 @@ setInterval(() => {
 
 function codexWorkspaceRoot(): string {
   return targetCheckout || repoRoot();
-}
-
-function codexConfigArgs() {
-  const configs = [
-    'approval_policy="never"',
-    codexLoginConfig(),
-    `model_reasoning_effort=${JSON.stringify(codexReasoningEffort)}`,
-  ];
-  if (codexServiceTier) configs.push(`service_tier=${JSON.stringify(codexServiceTier)}`);
-  return configs.flatMap((config: JsonValue) => ["-c", config]);
 }
 
 async function repairResultIfNeeded() {

@@ -350,6 +350,24 @@ test("replacement recovery materializes the fetched commit before branch attachm
   assert.match(recovery, /expectedHeadSha: recoveredHeadSha/);
 });
 
+test("replacement final-base sync hydrates from the materialized pre-edit head", () => {
+  const source = readText(path.join(process.cwd(), "src/repair/execute-fix-artifact.ts"));
+  const replacementStart = source.indexOf("function executeReplacementBranch(");
+  const replacementEnd = source.indexOf("function mergedReplacementSourcePr(", replacementStart);
+  const replacement = source.slice(replacementStart, replacementEnd);
+  const recoveryStart = source.indexOf("function checkoutRecoverableReplacementBranch(");
+  const recoveryEnd = source.indexOf(
+    "function materializeFetchedReplacementCommit(",
+    recoveryStart,
+  );
+  const recovery = source.slice(recoveryStart, recoveryEnd);
+
+  assert.match(replacement, /sourceHead: branchState\.source_head/);
+  assert.match(recovery, /source_head: recoveredHeadSha/);
+  assert.match(recovery, /source_head: currentHead\(targetDir\)/);
+  assert.match(recovery, /source_head: fetchedBaseSha/);
+});
+
 test("final publication rebase uses the verified isolated Git path", () => {
   const source = readText(path.join(process.cwd(), "src/repair/execute-fix-artifact.ts"));
   const reconcileStart = source.indexOf("function reconcileLatestBaseBeforePush(");
@@ -366,15 +384,7 @@ test("final publication rebase uses the verified isolated Git path", () => {
   assert.match(codexReconcile, /completeTargetRebaseWithIsolation\(\{/);
   assert.match(codexReconcile, /expectedBaseRef: baseSha/);
   assert.match(codexReconcile, /requireInProgress: true/);
-  assert.match(
-    codexReconcile,
-    /do not run git rebase --continue, git rebase --skip, or git rebase --abort/,
-  );
-  assert.match(codexReconcile, /leave the rebase pending/);
-  assert.match(
-    codexReconcile,
-    /prompt\.replace\(NORMAL_REBASE_COMPLETION_RULE, FINAL_REBASE_HANDOFF_RULE\)/,
-  );
+  assert.match(codexReconcile, /rewriteFinalBaseReconcilePrompt\(prompt\)/);
   assert.doesNotMatch(
     codexReconcile,
     /Resolve this final rebase so the branch is mergeable on current main, then leave the checkout in a normal non-rebasing state/,
@@ -539,4 +549,55 @@ test("repair workflow renews target credentials before deferred outcome publicat
     /GH_TOKEN: \${{ steps\.target_post_flight_token\.outputs\.token }}/,
   );
   assert.match(workflow.slice(publishIndex, postFlightIndex), /--latest --publish-report-only/);
+});
+
+test("repair workflow rechecks repository policy before planning and replayed execution effects", () => {
+  const workflow = readText(
+    path.join(process.cwd(), ".github/workflows/repair-cluster-worker.yml"),
+  );
+  const clusterIndex = workflow.indexOf("name: Plan and review cluster");
+  const executeIndex = workflow.indexOf("name: Execute and apply cluster actions");
+  assert.ok(clusterIndex >= 0 && executeIndex > clusterIndex);
+
+  const cluster = workflow.slice(clusterIndex, executeIndex);
+  const planningGate = cluster.indexOf("name: Enforce repository repair policy");
+  const planningSession = cluster.indexOf("name: Register steerable Action session");
+  const planningStatus = cluster.indexOf("name: Publish automatic implementation planning status");
+  const planningWorker = cluster.indexOf("name: Run worker");
+  assert.ok(
+    planningGate >= 0 &&
+      planningGate < planningSession &&
+      planningSession < planningStatus &&
+      planningStatus < planningWorker,
+  );
+  assert.match(
+    cluster.slice(planningSession, planningStatus),
+    /steps\.repair_policy\.outputs\.allowed == '1'/,
+  );
+  assert.match(
+    cluster.slice(planningStatus, planningWorker),
+    /steps\.repair_policy\.outputs\.allowed == '1'/,
+  );
+  assert.match(cluster.slice(planningWorker), /steps\.repair_policy\.outputs\.allowed == '1'/);
+
+  const execute = workflow.slice(executeIndex);
+  const executionGate = execute.indexOf("name: Enforce repository repair policy");
+  const executionSession = execute.indexOf("name: Resume steerable Action session");
+  const buildStatus = execute.indexOf("name: Publish automatic implementation build status");
+  const fixExecution = execute.indexOf("name: Execute credited fix artifact");
+  const completionStatus = execute.indexOf(
+    "name: Publish automatic implementation completion status",
+  );
+  assert.ok(
+    executionGate >= 0 &&
+      executionGate < executionSession &&
+      executionSession < buildStatus &&
+      buildStatus < fixExecution &&
+      fixExecution < completionStatus,
+  );
+  assert.match(
+    execute.slice(executionSession, buildStatus),
+    /steps\.repair_policy\.outputs\.allowed == '1'/,
+  );
+  assert.match(execute.slice(completionStatus), /env\.CLAWSWEEPER_ALLOW_EXECUTE == '1'/);
 });

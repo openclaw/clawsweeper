@@ -1646,6 +1646,8 @@ test("public queue projection retains only closed operational aggregates", async
     max_concurrent: 8,
     active: 3,
     enqueue_replay: "scheduled_disposition_v1",
+    burst: 50,
+    token_balance: 42,
   });
   assert.deepEqual(projected.bay_projection.activity, {
     complete: false,
@@ -1701,6 +1703,8 @@ test("public queue projection retains only closed operational aggregates", async
     max_concurrent: 8,
     active: 3,
     enqueue_replay: "scheduled_disposition_v1",
+    burst: 50,
+    token_balance: 42,
   });
   assert.deepEqual(statusProjected.exact_review_queue.handoff_health.phases, {
     pending: { count: 7, oldest_at: null, oldest_age_seconds: null },
@@ -1742,6 +1746,76 @@ test("public queue projection retains only closed operational aggregates", async
       null,
     );
   }
+
+  // Scheduled admission telemetry: organic debt makes balances negative, both lanes are
+  // required, throttle timestamps travel together, and review sheds are attributed.
+  const scheduledTelemetry = publicExactReviewQueueProjection({
+    ...source,
+    scheduled_feed: {
+      target_rate_per_hour: 220,
+      enqueue_replay: "scheduled_disposition_v1",
+      max_concurrent: 32,
+      active: 0,
+      burst: 24,
+      token_balance: -24,
+      throttle_source: sentinel,
+      throttle_observed_at: "2026-08-15T11:40:00.000Z",
+      throttle_recovery_at: "2026-08-15T11:55:00.000Z",
+      lanes: {
+        hot_intake: { target_rate_per_hour: 30, burst: 8, token_balance: 8, sentinel },
+        normal_backfill: { target_rate_per_hour: 190, burst: 16, token_balance: 0 },
+      },
+    },
+    lanes: {
+      ...source.lanes,
+      review: {
+        ...source.lanes.review,
+        shed_reasons_since_reset: {
+          backpressure: 3,
+          scheduled_rate: 9,
+          unattributed: 1,
+          sentinel: 7,
+        },
+      },
+    },
+  });
+  assert.deepEqual(scheduledTelemetry.scheduled_feed, {
+    target_rate_per_hour: 220,
+    enqueue_replay: "scheduled_disposition_v1",
+    max_concurrent: 32,
+    active: 0,
+    burst: 24,
+    token_balance: -24,
+    throttle_observed_at: "2026-08-15T11:40:00.000Z",
+    throttle_recovery_at: "2026-08-15T11:55:00.000Z",
+    lanes: {
+      hot_intake: { target_rate_per_hour: 30, burst: 8, token_balance: 8 },
+      normal_backfill: { target_rate_per_hour: 190, burst: 16, token_balance: 0 },
+    },
+  });
+  assert.deepEqual(scheduledTelemetry.lanes.review.shed_reasons_since_reset, {
+    backpressure: 3,
+    scheduled_rate: 9,
+    unattributed: 1,
+  });
+  assert.equal(scheduledTelemetry.lanes.publication.shed_reasons_since_reset, undefined);
+  assert.equal(JSON.stringify(scheduledTelemetry).includes(sentinel), false);
+  assert.deepEqual(publicExactReviewQueueProjection(scheduledTelemetry), scheduledTelemetry);
+  const malformedTelemetry = publicExactReviewQueueProjection({
+    ...source,
+    scheduled_feed: {
+      target_rate_per_hour: 220,
+      enqueue_replay: "scheduled_disposition_v1",
+      token_balance: 1.5,
+      burst: -1,
+      throttle_recovery_at: "2026-08-15T11:55:00.000Z",
+      lanes: { hot_intake: { target_rate_per_hour: 30, burst: 8, token_balance: 8 } },
+    },
+  });
+  assert.deepEqual(malformedTelemetry.scheduled_feed, {
+    target_rate_per_hour: 220,
+    enqueue_replay: "scheduled_disposition_v1",
+  });
 
   const mismatches = [
     (value) => {
@@ -2013,4 +2087,63 @@ test("public queue HTTP route applies the closed projector before serialization"
     },
   ]);
   assert.equal(serialized.includes("private-owner"), false);
+});
+
+test("status reprojection keeps the closed runaway alert and only public sample keys", () => {
+  const queue = publicExactReviewQueueProjection(
+    {
+      review_runaway_health: {
+        status: "degraded",
+        reason: "review_runaway",
+        window_hours: 24,
+        threshold_reviews_per_day: 24,
+        runaway_items: 2,
+        sample_item_keys: ["private-owner/secret#9", "openclaw/openclaw#97616"],
+        private_counts: { "private-owner/secret#9": 120 },
+      },
+    },
+    new Set(["openclaw/openclaw"]),
+  );
+  assert.deepEqual(queue.review_runaway_health, {
+    status: "degraded",
+    reason: "review_runaway",
+    window_hours: 24,
+    threshold_reviews_per_day: 24,
+    runaway_items: 2,
+    sample_item_keys: ["openclaw/openclaw#97616"],
+  });
+  const allowed = new Set(["openclaw/openclaw"]);
+  let status = strictPublicStatusProjection(
+    {
+      schema_version: 1,
+      generated_at: STATUS_NOW,
+      source: { target_repository_count: 0 },
+      fleet: {},
+      workers: [],
+      automatic_work: [],
+      pipeline: [],
+      bay: {},
+      recent: {},
+      diagnostics: { errors: [], error_count: 0 },
+      exact_review_queue: queue,
+      dashboard_health: {
+        conclusion: "needs_attention",
+        severity: "amber",
+        reasons: ["review_runaway"],
+      },
+    },
+    allowed,
+  );
+  for (let pass = 0; pass < 2; pass += 1) {
+    assert.deepEqual(status.exact_review_queue.review_runaway_health, queue.review_runaway_health);
+    assert.deepEqual(status.dashboard_health.reasons, ["review_runaway"]);
+    assert.equal(JSON.stringify(status).includes("private-owner"), false);
+    status = strictPublicStatusProjection(status, allowed);
+  }
+  // Without a verified-public allowlist the sample is empty; counts remain.
+  assert.deepEqual(
+    publicStatusProjection({ exact_review_queue: queue }).exact_review_queue.review_runaway_health
+      .sample_item_keys,
+    [],
+  );
 });

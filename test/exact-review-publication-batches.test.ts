@@ -18,7 +18,7 @@ import {
   ExactReviewLifecycleProjectionStore,
 } from "../dashboard/exact-review-lifecycle.ts";
 import { ExactReviewQueue as RuntimeExactReviewQueue } from "../dashboard/exact-review-queue.ts";
-import worker from "../dashboard/worker.ts";
+import worker, { publicExactReviewQueueProjection } from "../dashboard/worker.ts";
 
 class ExactReviewQueue extends RuntimeExactReviewQueue {
   constructor(
@@ -1313,9 +1313,10 @@ for (const [limit, command] of [
       await h.queue.alarm();
       const after = await h.publicationStats();
       const protectedCommand = command === "producer";
+      // An unpruned stale row is excluded from claims, so stats hold it as parked.
       assert.deepEqual(
-        [after.pending, after.completed_total],
-        limit === 1 ? [protectedCommand ? 4 : 3, 1] : [2, 2],
+        [after.pending, after.completed_total, after.parked_reasons.stale_revision ?? 0],
+        limit === 1 ? [protectedCommand ? 3 : 2, 1, 1] : [2, 2, 0],
       );
       const remaining = await h.post("/publications/reconcile");
       assert.equal(remaining.stale_revision_eligible, limit === 1 ? 1 : 0);
@@ -2450,6 +2451,57 @@ test("historical missing successor evidence is not reconstructed after completio
   await f.assertRetained();
   const result = await f.h.post("/publications/reconcile", { max_items: 1 });
   assert.equal(result.sample[0].successor_fence_state, "missing");
+});
+
+test("a retained stale command row is reported as parked stale_revision, not ready", async (t) => {
+  const f = await successorGuardFixture(t, 108769);
+  // A non-command successor leaves no acknowledgement driver behind.
+  const b = await f.enqueue("b", 2, { address: null });
+  const legacy = await f.state();
+  delete legacy.items[f.a.key].publicationSuccessorWitness;
+  await f.h.storage.put("exact-review-queue", legacy);
+  f.h.restart();
+  await f.publish(b);
+  await f.expire();
+  await f.assertRetained();
+  const heldCreatedAt = (await f.state()).items[f.a.key].createdAt;
+  const publicationLane = async () =>
+    (await (await f.h.queue.fetch(new Request("https://queue/stats"))).json()).lanes.publication;
+
+  f.h.now = heldCreatedAt + 90 * 60_000;
+  await f.h.queue.alarm();
+  assert.equal((await publicationLane()).health.reason, "stale_revision_over_1h");
+
+  f.h.now = heldCreatedAt + 7 * 60 * 60_000;
+  await f.h.queue.alarm();
+  await f.assertRetained();
+  const claim = await f.h.claim({ claim_id: "guard-108769-held", lease_owner: "held-worker" });
+  assert.equal(claim.claimed, false, JSON.stringify(claim));
+  const stats = await (await f.h.queue.fetch(new Request("https://queue/stats"))).json();
+  const lane = stats.lanes.publication;
+  assert.equal(Object.keys((await f.state()).items).length, 1);
+  assert.equal(lane.pending, 0);
+  assert.equal(lane.ready, 0);
+  assert.equal(lane.backoff, 0);
+  assert.equal(lane.oldest_ready_at, null);
+  assert.equal(lane.next_attempt_at, null);
+  assert.equal(lane.parked, 1);
+  assert.deepEqual(lane.parked_reasons, { stale_revision: 1 });
+  assert.deepEqual(lane.health, { status: "critical", reason: "stale_revision_over_6h" });
+  // The public lane keeps its closed-reason totals; this fixture's 1970 clock
+  // cannot make the whole public projection complete.
+  const projected = publicExactReviewQueueProjection(stats).lanes.publication;
+  assert.equal(projected.parked, 1);
+  assert.equal(projected.parked_reasons.stale_revision, 1);
+  assert.equal(projected.parked_reasons.unknown, 0);
+  assert.equal(projected.pending, projected.ready + projected.backoff);
+
+  // Observation only: a newer revision still owns the fenced cleanup.
+  await f.enqueue("d", 4);
+  await f.h.queue.alarm();
+  assert.equal(f.projectionA()?.terminalDisposition?.kind, "superseded");
+  assert.equal((await f.state()).items[f.a.key], undefined);
+  assert.equal((await publicationLane()).parked_reasons.stale_revision, undefined);
 });
 
 test("retained successor resolves the exact mixed-case lifecycle admission target", async (t) => {

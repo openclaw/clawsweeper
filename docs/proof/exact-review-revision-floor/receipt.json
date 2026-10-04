@@ -1,0 +1,429 @@
+{
+  "claim": "A re-admitted exact-review item never reuses a revision that a retained direct-publication receipt, lifecycle projection, or refreshed publication head already owns.",
+  "runtime": "workerd / SQLite Durable Object (Miniflare); real signed Worker direct-publication route; synthetic 2030 clock; synthetic GitHub fixture on loopback",
+  "node": "v24.21.0",
+  "workerd": "1.20260701.1",
+  "miniflare": "4.20260701.0",
+  "variants": {
+    "before": {
+      "source": "<checkout>",
+      "head": "cac974b3e1da900cac3e7480b91d02a36ca60163",
+      "working_tree_dirty": false,
+      "source_sha256": {
+        "dashboard/exact-review-queue.ts": "a1ff68d15b46f8fec2717221d10b15e5e44553023b461260bc0547200ecd3cd3",
+        "dashboard/exact-review-command-intake.ts": "af174d217e9337303e97ebaa0894e251e77a1a39f0aca9446512fbde64092b38",
+        "dashboard/exact-review-direct-publication.ts": "46366391b2cb678bf2afaa1dbbcb107b50730180e7bbb5d1416656bf8519e0ae",
+        "dashboard/exact-review-lifecycle.ts": "1edad478e31647d53770be6b309d998521a7cc9c2ba4542e2e72af7e4276321b",
+        "dashboard/worker.ts": "935140fa3c06cc27cd3b5a898304101d9168048ac608612bb5786d0fc9d90eba",
+        "dashboard/wrangler.toml": "90db5d9b3093c7edc647b3329ffde989603d1c8b9fe68d76058336b6289ed673"
+      },
+      "scenarios": {
+        "direct_readmission": {
+          "item": "openclaw/openclaw#N",
+          "first_revision": 1,
+          "first_publication": {
+            "status": 202,
+            "accepted": true,
+            "error": null,
+            "detail": null
+          },
+          "first_completion": {
+            "ok": true,
+            "requeued": false
+          },
+          "queue_row_deleted_after_completion": true,
+          "readmission_queued": true,
+          "readmitted_revision": 1,
+          "claimed_revision": 1,
+          "second_publication": {
+            "status": 400,
+            "accepted": null,
+            "error": "invalid_direct_publication_plan",
+            "detail": "conflicting direct publication retry"
+          },
+          "tuples": {
+            "direct_receipts": [
+              {
+                "revision": 1,
+                "state": "published"
+              }
+            ],
+            "lifecycle_revisions": [
+              1
+            ],
+            "durable_counter": null
+          }
+        },
+        "mixed_case_direct_readmission": {
+          "item": "openclaw/Peekaboo#N",
+          "first_revision": 1,
+          "first_publication": {
+            "status": 202,
+            "accepted": true,
+            "error": null,
+            "detail": null
+          },
+          "first_completion": {
+            "ok": true,
+            "requeued": false
+          },
+          "queue_row_deleted_after_completion": true,
+          "readmission_queued": true,
+          "readmitted_revision": 1,
+          "claimed_revision": 1,
+          "second_publication": {
+            "status": 400,
+            "accepted": null,
+            "error": "invalid_direct_publication_plan",
+            "detail": "conflicting direct publication retry"
+          },
+          "tuples": {
+            "direct_receipts": [
+              {
+                "revision": 1,
+                "state": "published"
+              }
+            ],
+            "lifecycle_revisions": [
+              1
+            ],
+            "durable_counter": null
+          }
+        },
+        "artifact_refresh": {
+          "producer_revision": 2,
+          "publication_queued": true,
+          "producer_completion": {
+            "ok": true,
+            "requeued": false
+          },
+          "batch_refresh_accepted": 1,
+          "recreated": {
+            "state": "pending",
+            "revision": 1,
+            "source_action": "artifact_retention_recovery"
+          },
+          "recovery_claimed_revision": 1,
+          "republication": {
+            "queued": false,
+            "superseded": true,
+            "deduped": true
+          }
+        },
+        "control_fresh_item_revision": 1,
+        "control_publication_head": {
+          "publication_queued": true,
+          "head_source_revision": 12,
+          "admitted_revision": 13
+        },
+        "control_command_readmission": {
+          "item": "openclaw/openclaw#N",
+          "first_revision": 1,
+          "first_publication": {
+            "status": 202,
+            "accepted": true,
+            "error": null,
+            "detail": null
+          },
+          "first_completion": {
+            "ok": true,
+            "requeued": false
+          },
+          "queue_row_deleted_after_completion": true,
+          "readmission_queued": true,
+          "readmitted_revision": 2,
+          "claimed_revision": 2,
+          "second_publication": {
+            "status": 202,
+            "accepted": true,
+            "error": null,
+            "detail": null
+          },
+          "tuples": {
+            "direct_receipts": [
+              {
+                "revision": 1,
+                "state": "published"
+              },
+              {
+                "revision": 2,
+                "state": "published"
+              }
+            ],
+            "lifecycle_revisions": [
+              1,
+              2
+            ],
+            "durable_counter": 2
+          }
+        }
+      }
+    },
+    "after": {
+      "source": "<checkout>",
+      "head": "ad1b80e4d6aec86247bf1b0437299a4bd7544612",
+      "working_tree_dirty": false,
+      "source_sha256": {
+        "dashboard/exact-review-queue.ts": "2ebbcd93dd2612cfbbd3527abe81a637e55c15b3031385a2561c807c86a445f1",
+        "dashboard/exact-review-command-intake.ts": "1c0033bd5fff54fa793ea88825b78b0c4eb9b9812387f8d4ed8ac635cc0746e0",
+        "dashboard/exact-review-direct-publication.ts": "fc9973d66d34d4e6f9432a453a7fb4c2c507cbba6b0571e8805dc56806d75524",
+        "dashboard/exact-review-lifecycle.ts": "1edad478e31647d53770be6b309d998521a7cc9c2ba4542e2e72af7e4276321b",
+        "dashboard/worker.ts": "935140fa3c06cc27cd3b5a898304101d9168048ac608612bb5786d0fc9d90eba",
+        "dashboard/wrangler.toml": "90db5d9b3093c7edc647b3329ffde989603d1c8b9fe68d76058336b6289ed673"
+      },
+      "scenarios": {
+        "direct_readmission": {
+          "item": "openclaw/openclaw#N",
+          "first_revision": 1,
+          "first_publication": {
+            "status": 202,
+            "accepted": true,
+            "error": null,
+            "detail": null
+          },
+          "first_completion": {
+            "ok": true,
+            "requeued": false
+          },
+          "queue_row_deleted_after_completion": true,
+          "readmission_queued": true,
+          "readmitted_revision": 2,
+          "claimed_revision": 2,
+          "second_publication": {
+            "status": 202,
+            "accepted": true,
+            "error": null,
+            "detail": null
+          },
+          "tuples": {
+            "direct_receipts": [
+              {
+                "revision": 1,
+                "state": "published"
+              },
+              {
+                "revision": 2,
+                "state": "published"
+              }
+            ],
+            "lifecycle_revisions": [
+              1,
+              2
+            ],
+            "durable_counter": 2
+          }
+        },
+        "mixed_case_direct_readmission": {
+          "item": "openclaw/Peekaboo#N",
+          "first_revision": 1,
+          "first_publication": {
+            "status": 202,
+            "accepted": true,
+            "error": null,
+            "detail": null
+          },
+          "first_completion": {
+            "ok": true,
+            "requeued": false
+          },
+          "queue_row_deleted_after_completion": true,
+          "readmission_queued": true,
+          "readmitted_revision": 2,
+          "claimed_revision": 2,
+          "second_publication": {
+            "status": 202,
+            "accepted": true,
+            "error": null,
+            "detail": null
+          },
+          "tuples": {
+            "direct_receipts": [
+              {
+                "revision": 1,
+                "state": "published"
+              },
+              {
+                "revision": 2,
+                "state": "published"
+              }
+            ],
+            "lifecycle_revisions": [
+              1,
+              2
+            ],
+            "durable_counter": 2
+          }
+        },
+        "artifact_refresh": {
+          "producer_revision": 2,
+          "publication_queued": true,
+          "producer_completion": {
+            "ok": true,
+            "requeued": false
+          },
+          "batch_refresh_accepted": 1,
+          "recreated": {
+            "state": "pending",
+            "revision": 3,
+            "source_action": "artifact_retention_recovery"
+          },
+          "recovery_claimed_revision": 3,
+          "republication": {
+            "queued": true,
+            "superseded": false,
+            "deduped": false
+          }
+        },
+        "control_fresh_item_revision": 1,
+        "control_publication_head": {
+          "publication_queued": true,
+          "head_source_revision": 12,
+          "admitted_revision": 13
+        },
+        "control_command_readmission": {
+          "item": "openclaw/openclaw#N",
+          "first_revision": 1,
+          "first_publication": {
+            "status": 202,
+            "accepted": true,
+            "error": null,
+            "detail": null
+          },
+          "first_completion": {
+            "ok": true,
+            "requeued": false
+          },
+          "queue_row_deleted_after_completion": true,
+          "readmission_queued": true,
+          "readmitted_revision": 2,
+          "claimed_revision": 2,
+          "second_publication": {
+            "status": 202,
+            "accepted": true,
+            "error": null,
+            "detail": null
+          },
+          "tuples": {
+            "direct_receipts": [
+              {
+                "revision": 1,
+                "state": "published"
+              },
+              {
+                "revision": 2,
+                "state": "published"
+              }
+            ],
+            "lifecycle_revisions": [
+              1,
+              2
+            ],
+            "durable_counter": 2
+          }
+        }
+      }
+    }
+  },
+  "upgrade_base_state_then_head": {
+    "base_build": {
+      "mixed_case": {
+        "revision": 1,
+        "publication": {
+          "status": 202,
+          "accepted": true,
+          "error": null,
+          "detail": null
+        },
+        "completion": {
+          "ok": true,
+          "requeued": false
+        },
+        "tuples_after_retention": {
+          "direct_receipts": [],
+          "lifecycle_revisions": [
+            1
+          ],
+          "durable_counter": null
+        }
+      },
+      "retained": {
+        "revision": 1,
+        "publication": {
+          "status": 202,
+          "accepted": true,
+          "error": null,
+          "detail": null
+        },
+        "completion": {
+          "ok": true,
+          "requeued": false
+        },
+        "tuples": {
+          "direct_receipts": [
+            {
+              "revision": 1,
+              "state": "published"
+            }
+          ],
+          "lifecycle_revisions": [
+            1
+          ],
+          "durable_counter": null
+        }
+      }
+    },
+    "head_build": {
+      "retained": {
+        "readmitted_revision": 2,
+        "publication": {
+          "status": 202,
+          "accepted": true,
+          "error": null,
+          "detail": null
+        },
+        "tuples": {
+          "direct_receipts": [
+            {
+              "revision": 1,
+              "state": "published"
+            },
+            {
+              "revision": 2,
+              "state": "published"
+            }
+          ],
+          "lifecycle_revisions": [
+            1,
+            2
+          ],
+          "durable_counter": 2
+        }
+      },
+      "mixed_case": {
+        "readmitted_revision": 2,
+        "publication": {
+          "status": 202,
+          "accepted": true,
+          "error": null,
+          "detail": null
+        },
+        "tuples": {
+          "direct_receipts": [
+            {
+              "revision": 2,
+              "state": "published"
+            }
+          ],
+          "lifecycle_revisions": [
+            1,
+            2
+          ],
+          "durable_counter": 2
+        }
+      }
+    }
+  },
+  "batch_publisher_dispatches": 4,
+  "unexpected_github_requests": [],
+  "limits": "Synthetic inputs, 2030 clock and GitHub fixture; hosted-target probes are injected as public. The proof drives the queue's own alarm, dispatch, claim, completion, publication-batch and signed direct-publication routes, but not the sweep workflow, the review model, or the deferred batch publisher that production falls back to after a rejected direct publication. No production state, GitHub writes or inference."
+}

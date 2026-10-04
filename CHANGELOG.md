@@ -7,7 +7,17 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ## 0.3.1 - Unreleased
 
-- Coalesce organic pushes and edits for 10 minutes (capped at 15) on items that already completed two exact reviews in the last hour, so churning PRs get one review of their latest revision instead of one per push; commands, publication, scheduled, and recovery work keep their timing.
+- Give authors with live `write`, `maintain`, or `admin` repository permission the same priority (fast) Codex service as OWNER/MEMBER/COLLABORATOR authors in review and repair, even when GitHub redacts their association, and run maintainer-only assist answers on priority service.
+- Move every ClawSweeper Codex lane in the direct API auth modes to `gpt-6.1-sol` with medium reasoning (maintainer-authored items keep fast service; `clawrouter` mode keeps its private alias) and update the pinned Codex CLI to 0.159.3 with the Responses proxy at 0.159.2.
+- Let scheduled normal backfill use the review budget: charge new organic admissions and successors (including reconciled completions) against a 220/hour, 24-burst scheduled budget with bounded organic debt, cap hot intake at 30/hour, and offer `openclaw/openclaw` normal backfill every 20 minutes. Organic work remains unconditional; this is not a total-work cap.
+- Requalify OpenClaw's rewritten `src/logging/redact.test.ts` connection-string fixtures for the exact-review input scan, so pull requests touching that file are no longer refused before review; each exact post-rewrite identity may carry the `PLAIN`, `ESCAPED_UNICODE`, or `HTML` label the pinned scanner assigns nondeterministically.
+- Report retained stale-revision publication rows as parked (`stale_revision`) instead of ready, so the publication lane no longer advertises a weeks-old ready head that no batch can claim; health keeps age-based severity with `stale_revision_over_1h`/`_over_6h`, and fail-closed command retention and cleanup are unchanged.
+- Qualify the exact OpenClaw SDK browser CDP fixtures by their observed native URI identities, complete source lines, and committed path while preserving scanning and changed-input refusal.
+
+- Requalify the unchanged OpenClaw Cron notification redaction fixture for expanded routing/webhook coverage and its canonical review base, preserving complete-source and native-finding checks.
+
+- Stop endless `source_drift_requeue` reviews of PR close proposals: apply no longer treats ClawSweeper's own review-acknowledgement progress edit as source drift when it is the latest item update and the reviewed source, timeline, head, and review-activity receipt still match. Human comments, title/body edits, non-managed label changes, PR reviews, and new heads still block apply and requeue.
+- Speed up exact-review target checkouts by restoring an hourly blobless cache that already holds the branch-tip blobs and cloning it locally, keeping at most two target cache entries per branch instead of saving a new ~1 GB entry on every review run; warm checkouts refresh moved/deleted tags and rebuild after branch rewinds, and the pinned Codex source cache is now saved once per Codex version.
 
 - Admit the existing OpenClaw completion-webhook FTP redaction fixture only when its exact native finding and complete committed source bytes match the reviewed qualification, keeping scanning and verification enabled.
 

@@ -1,0 +1,1 @@
+- Expose the scheduled review budget in the public exact-review queue status: the global and per-lane token balances (negative while organic debt is outstanding), burst, GitHub-throttle pause timestamps, and review shed counts by reason, so operators can see why scheduled backfill is or is not being admitted.

@@ -205,6 +205,30 @@ Producer `selection.json`, `codex/`, `review-trees/`, and sibling reports stay
 outside the selected bundle. The importer still rejects
 unexpected files, symlinks, and directories in its publication input.
 
+Exact-item review jobs materialize the target with
+`scripts/review-target-checkout.sh`. Its cache is a blobless bare repository
+holding the target branch's full commit and tree history, the tags on that
+history, and every blob of the branch tip. Actions cache keys are
+`<target-slug>-review-target-git-v1-<os>-<branch>-<YYYYMMDD>-<HH>` (UTC). A run
+restores the newest entry from the same UTC day, fetches only the branch delta
+and the missing tip blobs, and clones the checkout locally with hardlinked
+objects. The first run of each hour saves the refreshed cache right after
+checkout, before any review input touches the workspace, and then deletes all
+but the two newest entries for that target branch; the first run of each day
+builds from GitHub again, which bounds pack and blob growth. Tip blobs fetched by
+id are the slow part (about 250 blobs/s from GitHub), and `openclaw/openclaw`
+changes roughly 7,800 tip blobs a day, which is why the cache is refreshed hourly
+rather than daily. The checkout keeps the contract of a direct
+`git clone --filter=blob:none --single-branch`: the branch at the current remote
+head, full non-shallow history, branch tags, and a promisor `origin` for lazy
+blob fetches. Cached tag refs are rebuilt through Git's normal tag auto-follow
+on every warm fetch, so deleted or moved tags cannot survive in the checkout.
+A non-fast-forward branch update rebuilds the cache so its old history cannot
+retain tags outside the current branch. A failed or partial restore is discarded,
+a failed cache fetch rebuilds the cache, and a failed local clone falls back to a clean clone without
+saving. The pinned Codex source cache is keyed by the Codex version pinned in the
+target checkout and is saved once per version.
+
 The receiver workflow is `.github/workflows/sweep.yml`.
 
 Important source files:
@@ -391,7 +415,7 @@ cleanup is idempotent and cannot duplicate accounting.
 `openclaw/openclaw`:
 
 - hot intake: `*/5 * * * *`
-- normal backfill: `1 * * * *`
+- normal backfill: `9/20 * * * *` (minutes 9, 29, and 49)
 - apply: `3,18,33,48 * * * *`
 - audit: `7 */6 * * *`
 
@@ -454,7 +478,8 @@ manual workflow inputs. Scheduled fanout uses:
   intentionally moved this selector from every 15 minutes to every 5 minutes;
   this containment adjusts that current cadence without attributing the
   self-feedback defect to PR #959.
-- normal review: `41 * * * *`, 12 target repositories per cursor step
+- normal review: `14/20 * * * *` (minutes 14, 34, and 54), 12 target
+  repositories per cursor step
 - audit: `37 */6 * * *`, 12 target repositories per cursor step
 
 Audit fanout keeps at most 3 target audits in flight using
@@ -558,6 +583,44 @@ manual and broad dispatch behavior, the independent proof cursor, and close
 policy are unchanged. OpenClaw Bay needs no change: this producer reuses existing
 queue/lifecycle fields and adds no published schema, status field, or control.
 
+Both source-drift producers, the publisher's remote-newer requeue and this apply
+refresh, are bounded by the queue's source-drift loop breaker: after
+`EXACT_REVIEW_SOURCE_DRIFT_REQUEUE_LIMIT` consecutive automatic generations
+without organic input or a command, the item parks as `source_drift_loop`
+instead of spending another review. The producer still receives a successful
+dedupe. A newer scheduled offer releases one review but keeps the count, because
+ClawSweeper's own post-review writes can feed hot intake. Separately, `review_runaway_health` alerts when
+any item claims more than `EXACT_REVIEW_RUNAWAY_REVIEWS_PER_DAY` reviews in a
+trailing day. [Automation limits](limits.md) owns both rules.
+
+Exact PR review marks ClawSweeper's own acknowledgement comment
+(`clawsweeper-pr-ack`) complete after the review snapshot and before direct
+publication, and GitHub moves the PR's `updated_at` for that edit. The producer's
+apply then syncs the durable review comment, may edit managed labels, and
+releases (deletes) its review lease comment. When direct publication is
+deferred, the batch publisher re-applies the same review against those writes.
+Apply freshness treats such an update as automation-only only when a receipt
+ClawSweeper recorded for the item accounts for the latest `updated_at` and the
+review's complete source, timeline, PR head, and review-activity receipt still
+matches the live item:
+
+- a live ClawSweeper-authored comment carrying a marker for the item, or a
+  ClawSweeper-actor timeline event (a managed label edit), has exactly the
+  item's latest `updated_at`; or
+- the review generation's own lease comment (`review_lease_comment_id`) is gone,
+  the live durable review comment carries this generation's
+  `clawsweeper-review-version` marker (item, `reviewed_at`, source revision,
+  lease owner, and lease comment id) and was synced after the review snapshot,
+  the latest update follows the generation's last recorded ClawSweeper write by
+  at most five minutes (the shortest apply-lease hold), and no non-automation
+  comment, review comment, or timeline event is visible after the snapshot.
+
+Any other change in the window, including a human comment, title/body or label
+edit, PR review, or new head, still records `skipped_changed_since_review` and
+requeues a fresh `source_drift_requeue` review. Without these receipts, a close
+proposal kept open by its producer made every deferred re-apply drift and
+requeue indefinitely.
+
 ## Automerge Fast Path
 
 Automerge is an exact-item event path. A maintainer command dispatches one
@@ -654,15 +717,26 @@ Current defaults:
   candidates per selected target and apportions that pool by backlog. Each
   selected item enters the durable exact-review queue, and every admitted item
   receives its own parallel workflow
-- total review admission target: 60 items/hour across the fleet; organic work
-  consumes the budget first and scheduled backfill fills the remainder, split
-  35% hot intake and 65% normal backfill, with a 6-item burst and at most 32
-  scheduled reviews dispatching or leased across both lanes
+- scheduled review admission target: 220 items/hour across the fleet, with a
+  24-item burst. The budget meters executed reviews: every organic review
+  that starts (a workflow run claiming a new review lease generation)
+  consumes the budget first. Organic admission is free, so work superseded or
+  coalesced before claim, deduped, or completed at the dispatch-time live check
+  without a run costs nothing. A scheduled admission pays when admitted and
+  prepays its own first claim; later claims of the same item (reruns, retries,
+  requeues) are charged when they start. Organic debt carries down to minus
+  the burst; further debits at that floor are forgotten. Organic work remains
+  unconditional, so this target does not cap total executions. Within the scheduled
+  remainder, hot intake is capped at 30 items/hour by
+  `EXACT_REVIEW_HOT_INTAKE_RATE_PER_HOUR` and normal backfill may use the rest
+  (190 items/hour of lane rate), so the more frequent hot offers cannot take
+  the remainder oldest-first backfill needs. At most 32 scheduled reviews are
+  dispatching or leased across both lanes
 - review admission and pressure are computed independently from publication;
   top-level queue health describes reviews while `lanes.publication` retains
   publication backlog, retry, DLQ, and health telemetry
 - fleet fanout: 20 hot targets every 20 minutes as temporary self-feedback
-  containment, and 12 normal targets hourly;
+  containment, and 12 normal targets every 20 minutes;
   each target cycle can offer up to 50 due items to the shared admission budget
 - broad manual runs use the same queue capacity as scheduled feeds; normal
   planning scans at most 250 GitHub pages and hot intake at most 10
@@ -681,8 +755,8 @@ items. The public queue projection exposes the configured rate and replay
 contract under `scheduled_feed` in `GET /api/exact-review-queue`; private bucket
 balances are omitted. Queue telemetry distinguishes backpressure from
 scheduled-rate shedding so an operator can distinguish a full review queue
-from intentional 60/hour pacing. The
-six-item burst bounds a cold-start cohort to roughly 180 GitHub requests at the
+from intentional 220/hour pacing. The
+24-item burst bounds a cold-start cohort to roughly 720 GitHub requests at the
 observed planning average of 30 requests per completed review.
 Before its first enqueue, the producer reads the queue-owned contract through
 signed `POST /internal/exact-review/admission-capabilities`. Dashboard telemetry cannot
@@ -701,25 +775,33 @@ Legacy lifecycle payloads without replay identities remain single-attempt as wel
 Normal fanout ordinarily divides one live queue-advertised candidate-capacity
 budget across the selected repositories; it does not grant 50 candidates to
 each target. If that capacity probe is unavailable, the bounded fallback for a
-hourly cycle is `50 items/target * 12 targets = 600 items/cycle`. Its fallback
-therefore offers at most 600 candidates/hour before due filtering, planner
-capacity clamping, dedupe, and Worker admission. The direct hourly normal
-schedule also uses live advertised capacity; its fallback offers 50 items/hour before
-the same bounds. These paths therefore have enough candidates to keep the
+20-minute cycle is `50 items/target * 12 targets = 600 items/cycle`. Its fallback
+therefore offers at most 1,800 candidates/hour before due filtering, planner
+capacity clamping, dedupe, and Worker admission. The direct 20-minute normal
+schedule also uses live advertised capacity; its fallback offers 150 items/hour
+before the same bounds. These paths therefore have enough candidates to keep the
 shared token bucket fed despite dedupe or uneven fleet distribution. The queue
-admits at most 60 scheduled reviews/hour, which needs
-about `60 * 4.1 / 60 = 4.1` concurrent review workers at a 4.1-minute mean
-service time and budgets roughly 1,800 GitHub requests/hour. The separate
+refills scheduled admission credit at 220/hour after bounded debits for
+claimed organic reviews. A combined load near 220 executed reviews/hour would need
+about `220 * 4.1 / 60 ≈ 15` concurrent review workers at a 4.1-minute mean
+service time and budgets roughly 6,600 GitHub requests/hour. With organic
+work near 110 executed reviews/hour, scheduled work receives roughly 110/hour:
+hot intake up to its 30/hour cap and normal backfill the rest, however many
+more organic items were admitted and then closed or superseded before they ran.
+The separate
 32-slot scheduled cap also bounds old queued work and slower reviews while
-organic/manual requests retain admission priority. Rate and burst reduce request
+organic/manual requests retain admission priority. Organic overload can exceed
+these estimates indefinitely. Rate and burst reduce scheduled request
 and inference demand; the pending soft limit remains a separate queue
 backpressure bound and should change only when queue-memory or latency evidence
 requires it, not automatically with the request budget.
 
 On saturated queues, normal planning reads the complete bounded open-item scan
 before selecting candidates. For the current largest repository this is about
-60 REST pages per hourly normal tick, or roughly 60 installation-token
-requests per hour; that bounded cost is necessary for oldest-review fairness.
+60 REST pages per normal tick. `openclaw/openclaw` receives up to six normal
+ticks per hour (three direct, plus three fleet fanout ticks while it holds the
+largest untracked backlog), or roughly 360 installation-token requests per
+hour; that bounded cost is necessary for oldest-review fairness.
 
 Optional planning-started and in-progress dashboard publishes in the plan job
 are capped at 20 seconds. They are useful telemetry, but they must not delay
@@ -1038,6 +1120,8 @@ can be newer than local files.
 To change review spend, set
 `EXACT_REVIEW_TARGET_RATE_PER_HOUR`; the Worker applies the fleet-wide rate
 while scheduled planners size their candidate batch to free review capacity.
+To rebalance scheduled work, set `EXACT_REVIEW_HOT_INTAKE_RATE_PER_HOUR`;
+normal backfill receives the remaining lane rate.
 Target fanout divides that capacity by untracked backlog after reserving its
 round-robin fairness slice. To change manual normal Codex sessions, update the
 worker limits and workflow defaults together.

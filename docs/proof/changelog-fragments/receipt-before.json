@@ -1,0 +1,62 @@
+{
+  "proof": "changelog-fragments",
+  "revision": "65f9c3a3057621385b6c4f52640a2ce190c18c57",
+  "mechanism": "direct CHANGELOG.md insertion",
+  "environment": {
+    "node": "v24.21.0",
+    "git": "git version 2.54.0 (Apple Git-157)",
+    "pnpm": "12.4.1",
+    "platform": "darwin-arm64"
+  },
+  "changelog_sha256": "0734c09981f8c9d641c3b5b58a3ad3f0785583769d7b04926fef36f95ff8b373",
+  "unreleased_heading": "## 0.3.1 - Unreleased",
+  "concurrent_pull_requests": {
+    "pr_entry_file": "CHANGELOG.md",
+    "merge_exit_status": 1,
+    "merge_conflicted": true,
+    "conflicted_paths": [
+      "CHANGELOG.md"
+    ]
+  },
+  "stitch": {
+    "first_run": {
+      "command": "node scripts/changelog-stitch.mjs",
+      "status": 1,
+      "stdout": "",
+      "stderr": "node:internal/modules/cjs/loader:1568\n  throw err;\n  ^\n\nError: Cannot find module '<tmp>/stitch-first/scripts/changelog-stitch.mjs'\n    at Module._resolveFilename (node:internal/modules/cjs/loader:1564:15)\n    at wrapResolveFilename (node:internal/modules/cjs/loader:1118:27)\n    at defaultResolveImplForCJSLoading (node:internal/modules/cjs/loader:1142:10)"
+    },
+    "stitched": false
+  },
+  "validation": {
+    "check_static_runs_check_changelog": false,
+    "clean_tree": {
+      "command": "pnpm run --silent check:changelog",
+      "status": 1,
+      "stdout": "",
+      "stderr": "Error: ERR_PNPM_NO_SCRIPT\n\n  × Missing script: check:changelog\n  help: Command \"check:changelog\" not found."
+    },
+    "stale_entry_sha256": "1e87897b5679b1ea1e3cbf8acbd28919d643cdbc57976e6db6f4b7ac58a6f043",
+    "malformed_and_stale_fragments": {
+      "command": "pnpm run --silent check:changelog",
+      "status": 1,
+      "stdout": "",
+      "stderr": "Error: ERR_PNPM_NO_SCRIPT\n\n  × Missing script: check:changelog\n  help: Command \"check:changelog\" not found."
+    }
+  },
+  "diagnostic_merge_only_carry_forward": {
+    "changelog_conflict_merge": {
+      "merge_conflicted": true,
+      "patch_id_equal": false,
+      "pr_files_changed_between_merge_bases": [
+        "CHANGELOG.md"
+      ],
+      "carry_forward_preconditions_hold": false
+    },
+    "unrelated_base_merge": {
+      "merge_conflicted": false,
+      "patch_id_equal": true,
+      "pr_files_changed_between_merge_bases": [],
+      "carry_forward_preconditions_hold": true
+    }
+  }
+}

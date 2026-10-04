@@ -313,7 +313,7 @@ test("scheduled, manual, target-sweep, and comment workflows admit targets befor
   const dispatcher = readFileSync(".github/workflows/clawsweeper-dispatch.yml", "utf8");
   assert.match(
     dispatcher,
-    /hosted-target-admission:[\s\S]*?uses: openclaw\/clawsweeper\/\.github\/workflows\/hosted-target-admission\.yml@main[\s\S]*?target_repo: \$\{\{ github\.repository \}\}/,
+    /hosted-target-admission:[\s\S]*?uses: openclaw\/clawsweeper\/\.github\/workflows\/hosted-target-admission\.yml@174a2c9c903323eb9387d030748ed2b41824a7be[\s\S]*?target_repo: \$\{\{ github\.repository \}\}/,
   );
   assert.match(dispatcher, /dispatch:\s+needs: hosted-target-admission/);
   assert.match(dispatcher, /reject-hosted-target:\s+needs: hosted-target-admission/);

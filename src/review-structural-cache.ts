@@ -3,7 +3,7 @@ import { sha256 } from "./content-hash.js";
 import { escapeRegExp } from "./clawsweeper-text.js";
 
 import { REVIEW_CACHE_MAX_AGE_DAYS } from "./scheduler-policy.js";
-import { stableJsonCodeUnit as stableJson } from "./stable-json.js";
+import { compareCodeUnits, stableJsonCodeUnit as stableJson } from "./stable-json.js";
 
 export const REVIEW_STRUCTURAL_CACHE_VERSION = 6;
 export const REVIEW_STRUCTURAL_CACHE_MAX_AGE_DAYS = REVIEW_CACHE_MAX_AGE_DAYS;
@@ -722,10 +722,6 @@ export function reviewStructuralRecordFromGraphql(
     reviewPolicy: options.reviewPolicy,
     reviewModel: options.reviewModel,
   });
-}
-
-function compareCodeUnits(left: string, right: string): number {
-  return left < right ? -1 : left > right ? 1 : 0;
 }
 
 function validTimestamp(value: string): boolean {

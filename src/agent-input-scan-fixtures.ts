@@ -39,7 +39,10 @@ const REVIEWED_FIXTURES: readonly ReviewedFixture[] = [
   {
     fixtureSha256: "7849c0ac39a4f42a5cd5cb1b029c7132193f270454865f2f4a49a83da3444665",
     rawSha256: "7849c0ac39a4f42a5cd5cb1b029c7132193f270454865f2f4a49a83da3444665",
-    lineSha256s: ["281f664b2e7f36e82ef38d0a36bb791ec8a70b4a4afca470847d4699573b338d"],
+    lineSha256s: [
+      "281f664b2e7f36e82ef38d0a36bb791ec8a70b4a4afca470847d4699573b338d",
+      "2bb262c7e534fd60ddf4c06843f2246146b89cd0c94f42be9f46045be7132f84",
+    ],
     decoders: ["PLAIN", "HTML"],
     sources: ["extensions/signal/src/client-container.test.ts"],
   },
@@ -243,10 +246,48 @@ const CRABBOX_POSTGRES_DOC_ATTRIBUTIONS: readonly ReviewedAttribution[] = [
 const CRON_FTP_SOURCE_SHA256S = [
   "9e80ccc47c8373fc9b22c64d1297c8e21a74aba226fe84781256a3fcf4786ac4",
   "82b5327be49d6e7f9b046c43e3d77a30af33baa8a532d4f9357870a30c4d46a9",
+  "9e9ec747fe268991cde3f65280c0b4480e9d7748b9e9ce4d539a28f6f8fc23a1",
+  "64919155ae619bb0159a37d7ea97b6aba473671c50120cf78be7c27f8a15dae4",
+  "e181c69bd874b3e50d70631a6f1a94eed2308d765f05046ec66a84089a62c7cb",
+] as const;
+
+// Historical OCE source blobs still referenced by open PRs #14, #115, #252, #253, #307,
+// #662, #830, #875, #883, #906, #913, #920, and #925 after OCE #955 removed both fixtures.
+const OCE_KUBERNETES_COMPUTE_SOURCE_SHA256S = [
+  "3462e0f0b029cd5ad78fe375519662b12b13e6330b00482d9d1462a311362dc2",
+  "78705455eefed216f4e81b484e4b3c8a08e5a65d1b823e541e8e183032350a90",
+  "40b7c343094691da580162a72fb697eb74ab931d8269560b7b3df669ddc1ee20",
+  "95e2d48246f57d772af1f08afe54b9c8043a5d670a2055c564baf091d95dc2ee",
+  "b1ef5abdc59e491f87dfece12066913a569cf164b9e760ffe9af986e006ce0ef",
+  "7678c21e320c8577971b8bd0afcc8d480b167980fa5bc640c0108bb5c3ccd90a",
+  "fffc0ef3c36c0b27aecb96c9a2c245a4e9c609029f742b8e9cb831c1fee07c55",
+  "c8f927a474c80b77238d83da3efe430ce6b08d91fc103209c133251845656669",
+  "11dd85cb3a80583434da36b8c3d9ebfecfd2afaaa846f027d4fc12ae8b0139f1",
+  "c68e00042f03fb044245378e2e150d6f38424d47955b0b2866454fd38fcfdeca",
+  "9068494145950efbb8b959403503cd464b69c1cb002e451f95ff3042a4d3398a",
+  "9d2b8b526f60fd7f14409a26b79a090f23b5326a73d96d1116031b5973312587",
+  "b8111c493de9b07f7fcfb464eb98c76032dd569f651aa3c6187517634575e703",
+  "a6069e9731cdcb93cff0b392edc51fd04a6fe0f0052900a9a95a4f358dc1218e",
+  "66fd290aa785025f8d611d1766a483626b560d274546ef702c366372df61eefa",
+  "7833f728b3a38e75cc0b03c24879510d4703ae53f737d8766f6aba8bdd4468c0",
+  "af0022dda2a4baf0f47d59540902fd150a073d4548bfcb5ae958dd986cffd359",
+  "79b2db37a4d4cf8f60a8b57b29040c2568f549d6240581be20069b66a62e11a0",
+  "f829a098c19a85602acadd89c09753a0bc0d2e211d4e0b9103b7311b295379a6",
+  "86d8796503f73136ce0d5bd3377ff7a9df0963f61c03a98f93ee667d254242bb",
+  "fa7f7f34b57faf013f53bbd8824cf9a2263c02a42a481282ae3d7d8be29184a2",
 ] as const;
 
 // oxfmt-ignore
 const REVIEWED_ATTRIBUTIONS: readonly ReviewedAttribution[] = [
+  // Retain the removed OCE fixtures only in source blobs already held by open OCE PRs.
+  [17, "URI", "PLAIN", "fde443718383531e2fc52a8324fc644f1c45c1c766afd11da028368831e0f457", "fde443718383531e2fc52a8324fc644f1c45c1c766afd11da028368831e0f457", "6c17481ec8ebdfc543923950c2959e58568b8ad6daddabf26ce870e7a5d69274", "tests/conformance/kubernetes-compute.test.mjs", "100644", OCE_KUBERNETES_COMPUTE_SOURCE_SHA256S],
+  [17, "URI", "PLAIN", "18e186031a746783f43d3002e63b775b6e28acef5d60825a82c418ad3e603b5b", "18e186031a746783f43d3002e63b775b6e28acef5d60825a82c418ad3e603b5b", "fb50a8d4a7885dd59938f6421133018054740ef7a91dd01b62b9c109bb4c471c", "tests/conformance/kubernetes-compute.test.mjs", "100644", OCE_KUBERNETES_COMPUTE_SOURCE_SHA256S],
+  // OpenClaw catalog-icon rejection fixture: observed native prefixes bind the complete source line.
+  [17, "URI", "PLAIN", "580f7a7c0ff4d88005bb0a7ad56ab18f84dc6ba38060fd35914e020e8b581a6a", "02fcb6434869afdf5b29773aad1295172012f6445975eba685b873c79e4567b9", "6c9cdafa1ff07a62a8ffc88c6b8d5d377becfb6fc09c3709d997dcc9ca890469", "src/plugins/catalog-icon-registry.test.ts", "100644"],
+  [17, "URI", "HTML", "580f7a7c0ff4d88005bb0a7ad56ab18f84dc6ba38060fd35914e020e8b581a6a", "02fcb6434869afdf5b29773aad1295172012f6445975eba685b873c79e4567b9", "6c9cdafa1ff07a62a8ffc88c6b8d5d377becfb6fc09c3709d997dcc9ca890469", "src/plugins/catalog-icon-registry.test.ts", "100644"],
+  // OpenClaw SDK CDP fixtures: observed native PLAIN identities and complete source lines.
+  [17, "URI", "PLAIN", "87c268ea768beeb60885ffe0d9168e807d77c7f512aea8823703046c734cbdbf", "87c268ea768beeb60885ffe0d9168e807d77c7f512aea8823703046c734cbdbf", "808983a7a484c49a6b2a47f9696e4e86ecff5880d1fd2d76b081734e75a9e7fc", "src/plugin-sdk/browser-subpaths.test.ts", "100644"],
+  [17, "URI", "PLAIN", "d85938093727ccf6959e1199023569dcfaa302bf5e86a28aa3ea9e011b7c1224", "069a918f1609e9f5c0f688d50e234f9b021eae193b573c2312355703eb2fa414", "e22c3375ec9e03b63845c873a0aa46c844ef5c3c9afa087d0b93d53e0fc4af64", "src/plugin-sdk/browser-subpaths.test.ts", "100644"],
   // OpenClaw completion-webhook redaction fixture; only observed native blob findings qualify.
   [899, "FTP", "PLAIN", "927664cc6f3d082fb8acb9e01b47942d21d8043ddf150a6d833b5660bc240e07", "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "47389a842fa9b1a3cb74c54ab2455b02b9cb0bd41c4b832eaf83aa52fbccbdc8", "src/gateway/server-cron-notifications.test.ts", "100644", CRON_FTP_SOURCE_SHA256S],
   [899, "FTP", "HTML", "927664cc6f3d082fb8acb9e01b47942d21d8043ddf150a6d833b5660bc240e07", "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "47389a842fa9b1a3cb74c54ab2455b02b9cb0bd41c4b832eaf83aa52fbccbdc8", "src/gateway/server-cron-notifications.test.ts", "100644", CRON_FTP_SOURCE_SHA256S],
@@ -370,6 +411,14 @@ const REVIEWED_ATTRIBUTIONS: readonly ReviewedAttribution[] = [
   [968, "Postgres", "PLAIN", "4734d8b7c6e9bf96ae464bfc45b1482e00caaedea951cb96b9e88a92ba37a00f", "4734d8b7c6e9bf96ae464bfc45b1482e00caaedea951cb96b9e88a92ba37a00f", "252d197820142c40bc8701a8b1400f28a3224f305f37fd65cd2e6bfbe48d9fb1", "src/logging/redact.test.ts", "100644"],
   [968, "Postgres", "PLAIN", "8be6f6c2f1e50f070e97e4b46fce7e7ad499a6bc0c145e8bdd4fc0a6ee4b5565", "8be6f6c2f1e50f070e97e4b46fce7e7ad499a6bc0c145e8bdd4fc0a6ee4b5565", "6a9d1339c87f11af0ba4e7ef89a77ea8eb8e7f7ac48fdec0abb19d9138821d18", "src/logging/redact.test.ts", "100644"],
   [968, "Postgres", "PLAIN", "f2e76a2fe75ea0d64265b2a61462f1d8026a2286e3030077b4f3972fc0df3b70", "f2e76a2fe75ea0d64265b2a61462f1d8026a2286e3030077b4f3972fc0df3b70", "2020783f7b14c74d2d6960efca4ca82727980494ddef883f15ae9980141662ec", "src/logging/redact.test.ts", "100644"],
+  // Logging fixtures rewritten by OpenClaw #160879: native 3.97.4 labels each identity PLAIN, ESCAPED_UNICODE, or HTML.
+  [17, "URI", "HTML", "de7dcbd8612764d80691e85407d899f6e3686afd9ab40964943c3874ffe9571c", "198d323e34c2a045b86adbc72b8cd54bb8f9582175c5c25e6c68b4e374d8873f", "8ff8c788b296b7eb81abaf7f2f48bb4be717f6e8bef76200e7c842dbeea8a15c", "src/logging/redact.test.ts", "100644"],
+  [17, "URI", "HTML", "a460200b4a488bc178d0dac30bc5fe027ff86d9c7c94554f5c9d915580bc4239", "839b16fa1dd892daf47ab10d50f7c1957a16ace282fe9e6df67fefc40f7f06ff", "232cce5bf0c7b495e2f008fdc45cbd2bd9afc5394906576e4466411f6841d260", "src/logging/redact.test.ts", "100644"],
+  [895, "MongoDB", "HTML", "087c10edd5d21290a4a8695083ff8c42554fc1d1a1becea9053b11c4790b859c", "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "0aeba0d1b540784464c2a230b589a48d3f062d0dbbb2d9669450ff4ee2176218", "src/logging/redact.test.ts", "100644"],
+  [968, "Postgres", "HTML", "39a0315176e45802aaa3c5c40c2a717e2fde14e99567c38b5640fe16138710fa", "39a0315176e45802aaa3c5c40c2a717e2fde14e99567c38b5640fe16138710fa", "4b03f485ba97fd1aea07f64e978e9a961179dbbb766828f20fc8a2401812a858", "src/logging/redact.test.ts", "100644"],
+  [968, "Postgres", "ESCAPED_UNICODE", "050c1ddf61dd8b806e1a75cbe572669f8fa546e4ba36d03454377ba7a2c05d66", "050c1ddf61dd8b806e1a75cbe572669f8fa546e4ba36d03454377ba7a2c05d66", "cc1376c8d49155ce16404253e7957c99072041985583907e88c87d5d3195a97a", "src/logging/redact.test.ts", "100644"],
+  [968, "Postgres", "HTML", "050c1ddf61dd8b806e1a75cbe572669f8fa546e4ba36d03454377ba7a2c05d66", "050c1ddf61dd8b806e1a75cbe572669f8fa546e4ba36d03454377ba7a2c05d66", "cc1376c8d49155ce16404253e7957c99072041985583907e88c87d5d3195a97a", "src/logging/redact.test.ts", "100644"],
+  [968, "Postgres", "PLAIN", "050c1ddf61dd8b806e1a75cbe572669f8fa546e4ba36d03454377ba7a2c05d66", "050c1ddf61dd8b806e1a75cbe572669f8fa546e4ba36d03454377ba7a2c05d66", "cc1376c8d49155ce16404253e7957c99072041985583907e88c87d5d3195a97a", "src/logging/redact.test.ts", "100644"],
   // Maintainer-qualified Git-remote rejection fixtures; only observed native PLAIN tuples.
   [17, "URI", "PLAIN", "609f5f8c987b35e0d48b35e8463574db63b84c087e79d4189ef6fea5979f7609", "8074e19d513f3bdb60156065af46081e407232026590b37476c5b7745db3d776", ["f0144dec37814ca30e23745ffff253f710c20e51e4ac2fbdf3ae4b82afb17e10", "b59f02752a9188dc4d89ebf86442a3af3c2c49a64a217614fb29e9d0d1b88f88"], "internal/cli/repo_test.go", "100644"],
   [17, "URI", "PLAIN", "4b113e9ace3e5b41991d62d947eb1bb8251c904aded634c011eac87f7011c518", "4b113e9ace3e5b41991d62d947eb1bb8251c904aded634c011eac87f7011c518", ["f0144dec37814ca30e23745ffff253f710c20e51e4ac2fbdf3ae4b82afb17e10", "b59f02752a9188dc4d89ebf86442a3af3c2c49a64a217614fb29e9d0d1b88f88"], "internal/cli/repo_test.go", "100644"],
@@ -408,12 +457,23 @@ function validateReviewedAttributions(rows: readonly ReviewedAttribution[]): voi
       row;
     const lines = typeof line === "string" ? [line] : line;
     if (
-      row.length !== (detectorType === 899 ? 9 : 8) ||
+      row.length !== (sourceSha256s === undefined ? 8 : 9) ||
       detectorNames[detectorType] !== detectorName ||
       !Array.isArray(lines) ||
       !lines.length ||
       ![raw, rawV2, ...lines].every((digest) => sha256Pattern.test(digest)) ||
       !(
+        (source === "src/plugin-sdk/browser-subpaths.test.ts" &&
+          detectorType === 17 &&
+          detectorName === "URI" &&
+          decoder === "PLAIN") ||
+        (source === "tests/conformance/kubernetes-compute.test.mjs" &&
+          detectorType === 17 &&
+          detectorName === "URI" &&
+          decoder === "PLAIN" &&
+          Array.isArray(sourceSha256s) &&
+          sourceSha256s.length > 0 &&
+          sourceSha256s.every((digest) => sha256Pattern.test(digest))) ||
         (source === "src/gateway/server-cron-notifications.test.ts" &&
           detectorType === 899 &&
           Array.isArray(sourceSha256s) &&
@@ -422,7 +482,7 @@ function validateReviewedAttributions(rows: readonly ReviewedAttribution[]): voi
           (decoder === "PLAIN" || decoder === "HTML")) ||
         (source === "src/logging/redact.test.ts" &&
           detectorType !== 899 &&
-          (decoder === "PLAIN" || decoder === "ESCAPED_UNICODE")) ||
+          (decoder === "PLAIN" || decoder === "ESCAPED_UNICODE" || decoder === "HTML")) ||
         (source === "src/infra/git-source.test.ts" &&
           detectorType === 17 &&
           detectorName === "URI" &&
@@ -441,6 +501,7 @@ function validateReviewedAttributions(rows: readonly ReviewedAttribution[]): voi
           detectorName === "URI" &&
           decoder === "BASE64") ||
         ((source === "extensions/browser/src/browser/profiles-service.test.ts" ||
+          source === "src/plugins/catalog-icon-registry.test.ts" ||
           source === "extensions/crabbox/src/crabbox-model-run.test.ts" ||
           source === "extensions/session-share/src/session-catalog.test.ts" ||
           source === "ui/src/components/app-sidebar-catalog-menu.test.ts" ||
@@ -1026,9 +1087,11 @@ function classifyReviewedFindings(
       const [detectorType, detectorName, decoder] = matchingMetadata[0]!;
       if (typeof file !== "string" || scannerLine === null) return refuse("metadata_mismatch");
       if (staged?.kind !== "blob" || !staged.bytes) return refuse("material_not_reviewed");
-      if (detectorType === 899) {
+      if (matchingMetadata.some((row) => row[8] !== undefined)) {
         const sourceSha256 = createHash("sha256").update(staged.bytes).digest("hex");
-        matchingMetadata = matchingMetadata.filter((row) => row[8]?.includes(sourceSha256));
+        matchingMetadata = matchingMetadata.filter(
+          (row) => row[8] === undefined || row[8].includes(sourceSha256),
+        );
         if (matchingMetadata.length === 0) return refuse("source_not_reviewed");
       }
       const parts = object(finding.SecretParts);

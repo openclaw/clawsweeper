@@ -2021,7 +2021,7 @@ test("spam scanner exact dispatches publish only per-comment audit records", () 
   );
   assert.match(workflow, /--path results\/spam-scanner\.json/);
   assert.match(workflow, /cancel-in-progress: false/);
-  assert.match(scanner, /reasoning: \{ effort: "high" \}/);
+  assert.match(scanner, /reasoning: \{ effort: "medium" \}/);
 });
 
 // Workflow guard: dispatch credentials must belong to the target owner.
@@ -2283,12 +2283,12 @@ test("agent workflows install pinned CLI releases and keep runner models secret"
     ".github/workflows/sweep.yml",
   ].map((file) => readText(file));
 
-  assert.match(action, /codex-version:[\s\S]*default: "0\.158\.0-alpha\.2"/);
-  assert.match(action, /proxy-version:[\s\S]*default: "0\.158\.0-alpha\.2"/);
+  assert.match(action, /codex-version:[\s\S]*default: "0\.159\.3"/);
+  assert.match(action, /proxy-version:[\s\S]*default: "0\.159\.2"/);
   assert.ok(ciWorkflow.includes("(?:-[\\w.-]+)?"));
   assert.doesNotMatch(action, /@latest/);
-  assert.match(localCheck, /CLAWSWEEPER_LOCAL_CODEX_MODEL \?\? "gpt-5\.6-sol"/);
-  assert.match(localCheck, /model_reasoning_effort="high"/);
+  assert.match(localCheck, /CLAWSWEEPER_LOCAL_CODEX_MODEL \?\? "gpt-6\.1-sol"/);
+  assert.match(localCheck, /model_reasoning_effort="medium"/);
   assert.doesNotMatch(localCheck, /CLAWSWEEPER_PREFER_WINDOWS_CODEX_APP/);
   assert.doesNotMatch(localCheck, /gpt-5\.5/);
   assert.match(action, /env -u OPENAI_API_KEY[\s\S]*-u CLAWSWEEPER_INTERNAL_MODEL/);

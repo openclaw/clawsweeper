@@ -41,7 +41,6 @@ import type {
   TriagePriority,
   VisionFitStatus,
 } from "./clawsweeper-types.js";
-import type { AttachedLiveVerification } from "./live-proof/verification.js";
 import { type RepositoryProfile } from "./repository-profiles.js";
 import { type ReviewStructuralPullState } from "./review-structural-cache.js";
 
@@ -119,7 +118,6 @@ export interface CreateReportOrchestrationDependencies {
   isBulkFilerExemptRepositoryPermission: (value: unknown) => boolean;
   isDigitsOnly: (value: string) => boolean;
   isDocsOnlyPullRequestReport: (markdown: string) => boolean;
-  isExternalPullRequestReport: (markdown: string) => boolean;
   isFresh: (
     review: { reviewedAt: string | undefined; reviewStatus: string | undefined } | null,
   ) => boolean;
@@ -351,7 +349,6 @@ export interface CreateReportOrchestrationDependencies {
   reportPrRating: (markdown: string) => PrRating;
   reportRealBehaviorProof: (markdown: string) => RealBehaviorProof;
   reportRealBehaviorProofPolicy: (markdown: string) => RealBehaviorProofPolicy;
-  reportAttachedLiveVerification: (markdown: string) => AttachedLiveVerification;
   reportReviewFindings: (markdown: string) => ReviewFinding[];
   reportRootCauseCluster: (markdown: string) => RootCauseClusterAssessment;
   reportSecurityReview: (markdown: string) => SecurityReview;
@@ -418,7 +415,6 @@ export interface CreateReportOrchestrationDependencies {
     securityReview: Pick<SecurityReview, "status">;
     overallCorrectness: OverallCorrectness;
   }) => boolean;
-  splitFileAndLine: (file: string, explicitLine?: number | null) => { file: string; line?: number };
   stringOrUndefined: (value: unknown) => string | undefined;
   stripPriorityPrefix: (text: string) => string;
   targetProfile: () => RepositoryProfile;

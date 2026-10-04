@@ -1,0 +1,775 @@
+{
+  "claim": "A target dispatcher issue/PR event is enqueued into the real exact-review queue without any repository_dispatch (so no `Review event item` relay run); a replay of the same run dedupes; any direct failure falls back to the unchanged repository_dispatch, whose relay still enqueues the event.",
+  "base": "cac974b3e1da900cac3e7480b91d02a36ca60163",
+  "head": "8451be295b242754cf95fcf10feec476be7092e4",
+  "working_tree_dirty": false,
+  "node": "v24.21.0",
+  "miniflare": "4.20260701.0",
+  "workerd": "1.20260701.1",
+  "gh": "gh version 2.101.0 (2026-09-15)",
+  "curl": "curl 8.7.1",
+  "runtime": "workerd/SQLite (Miniflare) running the variant's dashboard/worker.ts and ExactReviewQueue; dispatcher and relay step scripts from the variant's workflows under bash; native gh over http_unix_socket",
+  "variants": {
+    "baseline": {
+      "ref": "cac974b3e1da900cac3e7480b91d02a36ca60163",
+      "dispatch_job_id_token_write": false,
+      "source_sha256": {
+        ".github/workflows/clawsweeper-dispatch.yml": "890f0fb5c838fd0d7e4c0b04f85281bf90bdf54e93bc6b6a91cadd15b9e3d83f",
+        ".github/workflows/sweep.yml": "60ed1e5b2130a7522e404cd0dfb358ae7cd60d819652a367711f56bc619801f1",
+        "dashboard/worker.ts": "935140fa3c06cc27cd3b5a898304101d9168048ac608612bb5786d0fc9d90eba",
+        "dashboard/exact-review-queue.ts": "a1ff68d15b46f8fec2717221d10b15e5e44553023b461260bc0547200ecd3cd3"
+      },
+      "scenarios": {
+        "pr_opened": {
+          "app_webhook": null,
+          "oidc_tokens_minted": 0,
+          "oidc_audiences": [],
+          "direct_requests": [],
+          "direct_unreachable": false,
+          "repository_dispatches": 1,
+          "relay_runs": 1,
+          "relay_run_exit_codes": [
+            0
+          ],
+          "relay_queue_responses": [
+            {
+              "status": 202,
+              "body": {
+                "ok": true,
+                "queued": true,
+                "item_key": "openclaw/openclaw#900001",
+                "superseded_publications": 0
+              }
+            }
+          ],
+          "jwks_fetches": 0,
+          "queue_item": {
+            "key": "openclaw/openclaw#900001",
+            "state": "pending",
+            "revision": 1,
+            "source_action": "opened",
+            "ingress_fingerprint": true
+          },
+          "queue_deliveries": [
+            "legacy:9001:1"
+          ]
+        },
+        "same_run_replayed": {
+          "app_webhook": null,
+          "oidc_tokens_minted": 0,
+          "oidc_audiences": [],
+          "direct_requests": [],
+          "direct_unreachable": false,
+          "repository_dispatches": 1,
+          "relay_runs": 1,
+          "relay_run_exit_codes": [
+            0
+          ],
+          "relay_queue_responses": [
+            {
+              "status": 202,
+              "body": {
+                "ok": true,
+                "deduped": true,
+                "item_key": "openclaw/openclaw#900001",
+                "stale_source": true
+              }
+            }
+          ],
+          "jwks_fetches": 0,
+          "queue_item": {
+            "key": "openclaw/openclaw#900001",
+            "state": "pending",
+            "revision": 1,
+            "source_action": "opened",
+            "ingress_fingerprint": true
+          },
+          "queue_deliveries": [
+            "legacy:9001:1",
+            "legacy:9002:1"
+          ]
+        },
+        "issue_opened": {
+          "app_webhook": null,
+          "oidc_tokens_minted": 0,
+          "oidc_audiences": [],
+          "direct_requests": [],
+          "direct_unreachable": false,
+          "repository_dispatches": 1,
+          "relay_runs": 1,
+          "relay_run_exit_codes": [
+            0
+          ],
+          "relay_queue_responses": [
+            {
+              "status": 202,
+              "body": {
+                "ok": true,
+                "queued": true,
+                "item_key": "openclaw/openclaw#900002",
+                "superseded_publications": 0
+              }
+            }
+          ],
+          "jwks_fetches": 0,
+          "queue_item": {
+            "key": "openclaw/openclaw#900002",
+            "state": "pending",
+            "revision": 1,
+            "source_action": "opened",
+            "ingress_fingerprint": false
+          },
+          "queue_deliveries": [
+            "legacy:9001:1",
+            "legacy:9002:1",
+            "legacy:9003:1"
+          ]
+        },
+        "app_webhook_first_then_dispatcher": {
+          "app_webhook": {
+            "status": 202,
+            "body": {
+              "ok": true,
+              "queued": true,
+              "item_key": "openclaw/openclaw#900003",
+              "superseded_publications": 0
+            }
+          },
+          "oidc_tokens_minted": 0,
+          "oidc_audiences": [],
+          "direct_requests": [],
+          "direct_unreachable": false,
+          "repository_dispatches": 1,
+          "relay_runs": 1,
+          "relay_run_exit_codes": [
+            0
+          ],
+          "relay_queue_responses": [
+            {
+              "status": 202,
+              "body": {
+                "ok": true,
+                "deduped": true,
+                "item_key": "openclaw/openclaw#900003",
+                "dedupe_scope": "cross_route"
+              }
+            }
+          ],
+          "jwks_fetches": 0,
+          "queue_item": {
+            "key": "openclaw/openclaw#900003",
+            "state": "pending",
+            "revision": 1,
+            "source_action": "opened",
+            "ingress_fingerprint": true
+          },
+          "queue_deliveries": [
+            "legacy:9001:1",
+            "legacy:9002:1",
+            "legacy:9003:1",
+            "legacy:9004:1"
+          ]
+        },
+        "forced_enqueue_failure_falls_back": {
+          "app_webhook": null,
+          "oidc_tokens_minted": 0,
+          "oidc_audiences": [],
+          "direct_requests": [],
+          "direct_unreachable": false,
+          "repository_dispatches": 1,
+          "relay_runs": 1,
+          "relay_run_exit_codes": [
+            0
+          ],
+          "relay_queue_responses": [
+            {
+              "status": 202,
+              "body": {
+                "ok": true,
+                "queued": true,
+                "item_key": "openclaw/gogcli#77",
+                "superseded_publications": 0
+              }
+            }
+          ],
+          "jwks_fetches": 0,
+          "queue_item": {
+            "key": "openclaw/gogcli#77",
+            "state": "pending",
+            "revision": 1,
+            "source_action": "opened",
+            "ingress_fingerprint": true
+          },
+          "queue_deliveries": [
+            "legacy:9001:1",
+            "legacy:9002:1",
+            "legacy:9003:1",
+            "legacy:9004:1",
+            "legacy:9005:1"
+          ]
+        },
+        "worker_unreachable_falls_back": {
+          "app_webhook": null,
+          "oidc_tokens_minted": 0,
+          "oidc_audiences": [],
+          "direct_requests": [],
+          "direct_unreachable": false,
+          "repository_dispatches": 1,
+          "relay_runs": 1,
+          "relay_run_exit_codes": [
+            0
+          ],
+          "relay_queue_responses": [
+            {
+              "status": 202,
+              "body": {
+                "ok": true,
+                "queued": true,
+                "item_key": "openclaw/openclaw#900005",
+                "superseded_publications": 0
+              }
+            }
+          ],
+          "jwks_fetches": 0,
+          "queue_item": {
+            "key": "openclaw/openclaw#900005",
+            "state": "pending",
+            "revision": 1,
+            "source_action": "opened",
+            "ingress_fingerprint": true
+          },
+          "queue_deliveries": [
+            "legacy:9001:1",
+            "legacy:9002:1",
+            "legacy:9003:1",
+            "legacy:9004:1",
+            "legacy:9005:1",
+            "legacy:9006:1"
+          ]
+        },
+        "non_default_base_falls_back": {
+          "app_webhook": null,
+          "oidc_tokens_minted": 0,
+          "oidc_audiences": [],
+          "direct_requests": [],
+          "direct_unreachable": false,
+          "repository_dispatches": 1,
+          "relay_runs": 1,
+          "relay_run_exit_codes": [
+            0
+          ],
+          "relay_queue_responses": [
+            {
+              "status": 202,
+              "body": {
+                "ok": true,
+                "queued": true,
+                "item_key": "openclaw/openclaw#900006",
+                "superseded_publications": 0
+              }
+            }
+          ],
+          "jwks_fetches": 0,
+          "queue_item": {
+            "key": "openclaw/openclaw#900006",
+            "state": "pending",
+            "revision": 1,
+            "source_action": "opened",
+            "ingress_fingerprint": true
+          },
+          "queue_deliveries": [
+            "legacy:9001:1",
+            "legacy:9002:1",
+            "legacy:9003:1",
+            "legacy:9004:1",
+            "legacy:9005:1",
+            "legacy:9006:1",
+            "legacy:9007:1"
+          ]
+        },
+        "final_queue": {
+          "items": [
+            {
+              "key": "openclaw/gogcli#77",
+              "state": "pending",
+              "revision": 1,
+              "source_action": "opened",
+              "ingress_fingerprint": true
+            },
+            {
+              "key": "openclaw/openclaw#900001",
+              "state": "pending",
+              "revision": 1,
+              "source_action": "opened",
+              "ingress_fingerprint": true
+            },
+            {
+              "key": "openclaw/openclaw#900002",
+              "state": "pending",
+              "revision": 1,
+              "source_action": "opened",
+              "ingress_fingerprint": false
+            },
+            {
+              "key": "openclaw/openclaw#900003",
+              "state": "pending",
+              "revision": 1,
+              "source_action": "opened",
+              "ingress_fingerprint": true
+            },
+            {
+              "key": "openclaw/openclaw#900005",
+              "state": "pending",
+              "revision": 1,
+              "source_action": "opened",
+              "ingress_fingerprint": true
+            },
+            {
+              "key": "openclaw/openclaw#900006",
+              "state": "pending",
+              "revision": 1,
+              "source_action": "opened",
+              "ingress_fingerprint": true
+            }
+          ],
+          "deliveries": [
+            "7f630ec1-da43-4175-a0cd-479b39d87a9d",
+            "legacy:9001:1",
+            "legacy:9002:1",
+            "legacy:9003:1",
+            "legacy:9004:1",
+            "legacy:9005:1",
+            "legacy:9006:1",
+            "legacy:9007:1"
+          ],
+          "ingress": [
+            {
+              "route": "direct_webhook",
+              "admitted": true
+            },
+            {
+              "route": "target_dispatcher",
+              "admitted": true
+            },
+            {
+              "route": "target_dispatcher",
+              "admitted": false
+            },
+            {
+              "route": "target_dispatcher",
+              "admitted": true
+            },
+            {
+              "route": "target_dispatcher",
+              "admitted": true
+            },
+            {
+              "route": "target_dispatcher",
+              "admitted": true
+            }
+          ]
+        }
+      },
+      "totals": {
+        "repository_dispatches": 7,
+        "relay_runs": 7,
+        "queue_items": 6
+      }
+    },
+    "candidate": {
+      "ref": "8451be295b242754cf95fcf10feec476be7092e4",
+      "dispatch_job_id_token_write": true,
+      "source_sha256": {
+        ".github/workflows/clawsweeper-dispatch.yml": "ae46574ef2811f892c3efb2c15963acab5adb4950d2454a2bc5878d36f5b457c",
+        ".github/workflows/sweep.yml": "60ed1e5b2130a7522e404cd0dfb358ae7cd60d819652a367711f56bc619801f1",
+        "dashboard/worker.ts": "420b18728fb1a371cd02bd6f0c4dd21ae26834e47343bd07cd52dbc8f22ca1d0",
+        "dashboard/exact-review-queue.ts": "a1ff68d15b46f8fec2717221d10b15e5e44553023b461260bc0547200ecd3cd3",
+        "dashboard/target-dispatch-ingress.ts": "8e778addf74fc5dd83d985a8f974847bd3ac03e3799dc78cdc027622e282ad34",
+        "dashboard/github-actions-oidc.ts": "0c3e01ed3c75ebea789219c539af98d002daca932240c4abae5d39b6ea169c50"
+      },
+      "scenarios": {
+        "pr_opened": {
+          "app_webhook": null,
+          "oidc_tokens_minted": 1,
+          "oidc_audiences": [
+            "https://clawsweeper.openclaw.ai/github/target-dispatch"
+          ],
+          "direct_requests": [
+            {
+              "status": 202,
+              "body": {
+                "ok": true,
+                "queued": true,
+                "item_key": "openclaw/openclaw#900001",
+                "superseded_publications": 0
+              }
+            }
+          ],
+          "direct_unreachable": false,
+          "repository_dispatches": 0,
+          "relay_runs": 0,
+          "relay_run_exit_codes": [],
+          "relay_queue_responses": [],
+          "jwks_fetches": 1,
+          "queue_item": {
+            "key": "openclaw/openclaw#900001",
+            "state": "pending",
+            "revision": 1,
+            "source_action": "opened",
+            "ingress_fingerprint": true
+          },
+          "queue_deliveries": [
+            "target-dispatch:1000001:501:1"
+          ]
+        },
+        "same_run_replayed": {
+          "app_webhook": null,
+          "oidc_tokens_minted": 1,
+          "oidc_audiences": [
+            "https://clawsweeper.openclaw.ai/github/target-dispatch"
+          ],
+          "direct_requests": [
+            {
+              "status": 202,
+              "body": {
+                "ok": true,
+                "deduped": true,
+                "item_key": "openclaw/openclaw#900001"
+              }
+            }
+          ],
+          "direct_unreachable": false,
+          "repository_dispatches": 0,
+          "relay_runs": 0,
+          "relay_run_exit_codes": [],
+          "relay_queue_responses": [],
+          "jwks_fetches": 1,
+          "queue_item": {
+            "key": "openclaw/openclaw#900001",
+            "state": "pending",
+            "revision": 1,
+            "source_action": "opened",
+            "ingress_fingerprint": true
+          },
+          "queue_deliveries": [
+            "target-dispatch:1000001:501:1"
+          ]
+        },
+        "issue_opened": {
+          "app_webhook": null,
+          "oidc_tokens_minted": 1,
+          "oidc_audiences": [
+            "https://clawsweeper.openclaw.ai/github/target-dispatch"
+          ],
+          "direct_requests": [
+            {
+              "status": 202,
+              "body": {
+                "ok": true,
+                "queued": true,
+                "item_key": "openclaw/openclaw#900002",
+                "superseded_publications": 0
+              }
+            }
+          ],
+          "direct_unreachable": false,
+          "repository_dispatches": 0,
+          "relay_runs": 0,
+          "relay_run_exit_codes": [],
+          "relay_queue_responses": [],
+          "jwks_fetches": 1,
+          "queue_item": {
+            "key": "openclaw/openclaw#900002",
+            "state": "pending",
+            "revision": 1,
+            "source_action": "opened",
+            "ingress_fingerprint": false
+          },
+          "queue_deliveries": [
+            "target-dispatch:1000001:501:1",
+            "target-dispatch:1000001:502:1"
+          ]
+        },
+        "app_webhook_first_then_dispatcher": {
+          "app_webhook": {
+            "status": 202,
+            "body": {
+              "ok": true,
+              "queued": true,
+              "item_key": "openclaw/openclaw#900003",
+              "superseded_publications": 0
+            }
+          },
+          "oidc_tokens_minted": 1,
+          "oidc_audiences": [
+            "https://clawsweeper.openclaw.ai/github/target-dispatch"
+          ],
+          "direct_requests": [
+            {
+              "status": 202,
+              "body": {
+                "ok": true,
+                "deduped": true,
+                "item_key": "openclaw/openclaw#900003",
+                "dedupe_scope": "cross_route"
+              }
+            }
+          ],
+          "direct_unreachable": false,
+          "repository_dispatches": 0,
+          "relay_runs": 0,
+          "relay_run_exit_codes": [],
+          "relay_queue_responses": [],
+          "jwks_fetches": 1,
+          "queue_item": {
+            "key": "openclaw/openclaw#900003",
+            "state": "pending",
+            "revision": 1,
+            "source_action": "opened",
+            "ingress_fingerprint": true
+          },
+          "queue_deliveries": [
+            "target-dispatch:1000001:501:1",
+            "target-dispatch:1000001:502:1",
+            "target-dispatch:1000001:503:1"
+          ]
+        },
+        "forced_enqueue_failure_falls_back": {
+          "app_webhook": null,
+          "oidc_tokens_minted": 1,
+          "oidc_audiences": [
+            "https://clawsweeper.openclaw.ai/github/target-dispatch"
+          ],
+          "direct_requests": [
+            {
+              "status": 503,
+              "body": {
+                "error": "target_visibility_unverified",
+                "retryable": true
+              }
+            }
+          ],
+          "direct_unreachable": false,
+          "repository_dispatches": 1,
+          "relay_runs": 1,
+          "relay_run_exit_codes": [
+            0
+          ],
+          "relay_queue_responses": [
+            {
+              "status": 202,
+              "body": {
+                "ok": true,
+                "queued": true,
+                "item_key": "openclaw/gogcli#77",
+                "superseded_publications": 0
+              }
+            }
+          ],
+          "jwks_fetches": 1,
+          "queue_item": {
+            "key": "openclaw/gogcli#77",
+            "state": "pending",
+            "revision": 1,
+            "source_action": "opened",
+            "ingress_fingerprint": true
+          },
+          "queue_deliveries": [
+            "legacy:9008:1",
+            "target-dispatch:1000001:501:1",
+            "target-dispatch:1000001:502:1",
+            "target-dispatch:1000001:503:1"
+          ]
+        },
+        "worker_unreachable_falls_back": {
+          "app_webhook": null,
+          "oidc_tokens_minted": 1,
+          "oidc_audiences": [
+            "https://clawsweeper.openclaw.ai/github/target-dispatch"
+          ],
+          "direct_requests": [],
+          "direct_unreachable": true,
+          "repository_dispatches": 1,
+          "relay_runs": 1,
+          "relay_run_exit_codes": [
+            0
+          ],
+          "relay_queue_responses": [
+            {
+              "status": 202,
+              "body": {
+                "ok": true,
+                "queued": true,
+                "item_key": "openclaw/openclaw#900005",
+                "superseded_publications": 0
+              }
+            }
+          ],
+          "jwks_fetches": 0,
+          "queue_item": {
+            "key": "openclaw/openclaw#900005",
+            "state": "pending",
+            "revision": 1,
+            "source_action": "opened",
+            "ingress_fingerprint": true
+          },
+          "queue_deliveries": [
+            "legacy:9008:1",
+            "legacy:9009:1",
+            "target-dispatch:1000001:501:1",
+            "target-dispatch:1000001:502:1",
+            "target-dispatch:1000001:503:1"
+          ]
+        },
+        "non_default_base_falls_back": {
+          "app_webhook": null,
+          "oidc_tokens_minted": 1,
+          "oidc_audiences": [
+            "https://clawsweeper.openclaw.ai/github/target-dispatch"
+          ],
+          "direct_requests": [
+            {
+              "status": 403,
+              "body": {
+                "error": "target_dispatch_identity_mismatch"
+              }
+            }
+          ],
+          "direct_unreachable": false,
+          "repository_dispatches": 1,
+          "relay_runs": 1,
+          "relay_run_exit_codes": [
+            0
+          ],
+          "relay_queue_responses": [
+            {
+              "status": 202,
+              "body": {
+                "ok": true,
+                "queued": true,
+                "item_key": "openclaw/openclaw#900006",
+                "superseded_publications": 0
+              }
+            }
+          ],
+          "jwks_fetches": 1,
+          "queue_item": {
+            "key": "openclaw/openclaw#900006",
+            "state": "pending",
+            "revision": 1,
+            "source_action": "opened",
+            "ingress_fingerprint": true
+          },
+          "queue_deliveries": [
+            "legacy:9008:1",
+            "legacy:9009:1",
+            "legacy:9010:1",
+            "target-dispatch:1000001:501:1",
+            "target-dispatch:1000001:502:1",
+            "target-dispatch:1000001:503:1"
+          ]
+        },
+        "final_queue": {
+          "items": [
+            {
+              "key": "openclaw/gogcli#77",
+              "state": "pending",
+              "revision": 1,
+              "source_action": "opened",
+              "ingress_fingerprint": true
+            },
+            {
+              "key": "openclaw/openclaw#900001",
+              "state": "pending",
+              "revision": 1,
+              "source_action": "opened",
+              "ingress_fingerprint": true
+            },
+            {
+              "key": "openclaw/openclaw#900002",
+              "state": "pending",
+              "revision": 1,
+              "source_action": "opened",
+              "ingress_fingerprint": false
+            },
+            {
+              "key": "openclaw/openclaw#900003",
+              "state": "pending",
+              "revision": 1,
+              "source_action": "opened",
+              "ingress_fingerprint": true
+            },
+            {
+              "key": "openclaw/openclaw#900005",
+              "state": "pending",
+              "revision": 1,
+              "source_action": "opened",
+              "ingress_fingerprint": true
+            },
+            {
+              "key": "openclaw/openclaw#900006",
+              "state": "pending",
+              "revision": 1,
+              "source_action": "opened",
+              "ingress_fingerprint": true
+            }
+          ],
+          "deliveries": [
+            "033b5e3e-f8f9-4e3f-b74e-8122045abf64",
+            "legacy:9008:1",
+            "legacy:9009:1",
+            "legacy:9010:1",
+            "target-dispatch:1000001:501:1",
+            "target-dispatch:1000001:502:1",
+            "target-dispatch:1000001:503:1"
+          ],
+          "ingress": [
+            {
+              "route": "direct_webhook",
+              "admitted": true
+            },
+            {
+              "route": "target_dispatcher",
+              "admitted": true
+            },
+            {
+              "route": "target_dispatcher",
+              "admitted": false
+            },
+            {
+              "route": "target_dispatcher",
+              "admitted": true
+            },
+            {
+              "route": "target_dispatcher",
+              "admitted": true
+            },
+            {
+              "route": "target_dispatcher",
+              "admitted": true
+            }
+          ]
+        }
+      },
+      "totals": {
+        "repository_dispatches": 3,
+        "relay_runs": 3,
+        "queue_items": 6
+      }
+    }
+  },
+  "checks": {
+    "baseline_relays_every_event": true,
+    "baseline_relay_after_app_webhook_is_cross_route_dedupe": true,
+    "direct_pr_queued_without_dispatch": true,
+    "replay_dedupes_without_dispatch": true,
+    "direct_issue_queued_without_dispatch": true,
+    "app_webhook_counterpart_is_cross_route_dedupe": true,
+    "forced_enqueue_failure_falls_back_and_relay_queues": true,
+    "worker_unreachable_falls_back_and_relay_queues": true,
+    "non_default_base_refused_and_relay_queues": true,
+    "same_queue_items_in_both_variants": true
+  },
+  "pass": true,
+  "limits": "Synthetic GitHub API, GitHub App credential, and Actions OIDC issuer/JWKS (real GitHub OIDC signing and claim shapes are not exercised); the dispatcher and relay step scripts run under local bash, not a GitHub Actions runner; curl reaches the local Worker under the production hostname via ~/.curlrc connect-to with a proof-only certificate; queue alarms (executor dispatch) are disabled; the PR acknowledgement step is not exercised. Production relay volume drops only after each target repository adopts the updated dispatcher; openclaw/openclaw's own dispatcher is not part of this repository."
+}

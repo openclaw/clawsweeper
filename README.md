@@ -268,8 +268,8 @@ Common commands:
   current state: `👀` for acknowledgement, `🧹` for review, `🔧` for repair, and
   `✅` for completed/paused work.
 - Freeform `@clawsweeper ...` mentions and explicit `ask ...` questions dispatch
-  the maintainer-only assist lane. Assist runs the internal model with high reasoning,
-  a 120-second per-item timeout, and its own five-job cap. It posts a separate
+  the maintainer-only assist lane. Assist runs the internal model with medium reasoning and priority (fast)
+  service, a 120-second per-item timeout, and its own five-job cap. It posts a separate
   non-durable answer comment and never edits the durable ClawSweeper review
   comment, closes, merges, labels, pushes, repairs, or emits review/apply
   markers. The model job has read-only GitHub access and emits a bounded artifact;
@@ -303,8 +303,9 @@ Common commands:
   review dispatch, automatic merge, human-review pause, stale-review rejection,
   all late automerge-blocking labels, and replay without duplicate merge calls.
 - `implement issue` on an open issue creates or reuses one issue implementation
-  job and dispatches the issue-to-PR lane. OpenClaw organization members may
-  request this explicitly even without repository write permission.
+  job and dispatches the issue-to-PR lane. The requester must have current
+  repository `admin`, `maintain`, or `write` permission; organization membership
+  alone does not authorize the write action.
 - With automatic issue implementation enabled, newly reviewed issues and
   existing eligible open issue reports enter the enabled bounded lanes. Codex
   inspects the issue and repository, chooses the
@@ -331,8 +332,10 @@ Common commands:
   immediately before every branch push and before PR creation.
 
 Only maintainers are accepted for write actions. The router checks repository
-collaborator permission (`admin`, `maintain`, or `write`) and falls back to
-trusted `author_association` values when permission lookup is unavailable.
+collaborator permission (`admin`, `maintain`, or `write`) and falls back to the
+`OWNER` author association only when permission lookup is unavailable. Issue
+implementation uses the same fail-closed rule; organization membership alone
+does not authorize a write action.
 Users with repository write access and issue/PR authors may ask
 `@clawsweeper re-review` or `@clawsweeper re-run` for a fresh read-only review.
 Other contributor commands are ignored without a reply. Scheduled comment routing is dry unless
@@ -437,10 +440,15 @@ Review is proposal-only. It never closes items.
   and `apply_after_review` inputs are retired. Use the separate `apply_existing`
   lane to apply eligible proposals.
 - Each admitted item gets its own review workflow for the selected target.
-- Codex reviews use the configured model profiles. OWNER, MEMBER, and COLLABORATOR-authored issues
-  and pull requests use high reasoning with fast service; other items use medium
-  reasoning with standard service. Sweep planning, assist answers, and
-  close-coverage proofs use the configured ordinary-item defaults. Reviews have
+- Codex reviews use `gpt-6.1-sol` with medium reasoning in the direct API auth
+  modes (`login` and `proxy`); `clawrouter` mode instead runs its private
+  inference alias. Issues and pull requests authored by an OWNER, MEMBER, or
+  COLLABORATOR, or by anyone whose live repository permission is `write`,
+  `maintain`, or `admin`, use priority (fast) service; other items use standard
+  service. Write access alone does not make an item maintainer-authored for
+  close policy. Assist answers always use priority service because only
+  write-access maintainers can request them. Sweep planning and close-coverage
+  proofs use the configured ordinary-item defaults. Reviews have
   a 10-minute per-item timeout.
 - Each item becomes a flat report under
   `records/<repo-slug>/items/<number>.md` with the decision, evidence,
@@ -561,9 +569,10 @@ appropriate repair job.
   that head changed. It also refuses to push when the PR closed during the
   wait. Override the window with `CLAWSWEEPER_BRANCH_PUSH_SETTLE_SECONDS`
   (bounded to 0-120 seconds) when a manual backfill is already settled.
-- An OpenClaw organization member can comment `@clawsweeper implement issue`;
-  ClawSweeper refuses when an open PR already mentions the issue, a generated
-  branch PR is already open, the issue is paused, or security blockers remain.
+- A repository maintainer with current `admin`, `maintain`, or `write`
+  permission can comment `@clawsweeper implement issue`; ClawSweeper refuses
+  when an open PR already mentions the issue, a generated branch PR is already
+  open, the issue is paused, or security blockers remain.
 - `CLAWSWEEPER_AUTO_IMPLEMENT_ISSUES=1` enables newly reviewed issues and
   bounded backfill from existing eligible open issue reports. General viable
   implementation remains limited to public sibling repositories;
@@ -647,7 +656,8 @@ the [MCP Apps sandbox-origin rejection fixture](https://github.com/openclaw/open
 the [Gateway config CDP-redaction fixture](https://github.com/openclaw/openclaw/blob/4b5987829d0f82ea44ae50f2f418ffe5ea445e7f/src/gateway/server.config-patch.test.ts),
 the [mocked marketplace telemetry-redaction fixture](https://github.com/openclaw/openclaw/blob/9c5ee4676d0732e72ee9a939ae4918dc89bcaab8/src/cli/plugins-cli.marketplace-refresh.test.ts),
 the Signal URL-rejection fixtures in [client tests](https://github.com/openclaw/openclaw/blob/75d633a7b97240280ebf13e121a1960eb2ec2765/extensions/signal/src/client.test.ts#L172)
-and [container tests](https://github.com/openclaw/openclaw/blob/41dd2e04897b9bdbde971cad8c6ff21ecccd38b7/extensions/signal/src/client-container.test.ts#L1461),
+and [container tests](https://github.com/openclaw/openclaw/blob/41dd2e04897b9bdbde971cad8c6ff21ecccd38b7/extensions/signal/src/client-container.test.ts#L1461)
+(including the exact [table-driven replacement](https://github.com/openclaw/openclaw/blob/1e49231d063bad36e4b6b187727d957fbfc7fdfb/extensions/signal/src/client-container.test.ts#L78)),
 and the OpenClaw config [URL-redaction](https://github.com/openclaw/openclaw/blob/5fe22a7d88919f260e7999fc775733feff3cb1fa/src/config/redact-snapshot.test.ts)
 and [restoration fixtures](https://github.com/openclaw/openclaw/blob/5fe22a7d88919f260e7999fc775733feff3cb1fa/src/config/redact-snapshot.restore.test.ts)
 after a complete scan. Static host policy associates each
@@ -678,7 +688,10 @@ and the reviewed Crabbox PostgreSQL operations example use a separate flat
 attribution table without changing the legacy URI policy above. Each row binds
 the exact detector ID and name, observed native decoder, `Raw`, `RawV2`, and
 complete source-line SHA-256 digests, path, and mode. The logging rows permit
-only their observed `PLAIN` or `ESCAPED_UNICODE` variants; the Crabbox
+only their observed `PLAIN`, `ESCAPED_UNICODE`, or `HTML` variants. `HTML` is
+qualified only for the [rewritten fixtures](https://github.com/openclaw/openclaw/blob/58b18602329e5f6113056aa34c6daba0ecddd7f8/src/logging/redact.test.ts)
+from OpenClaw #160879; the pre-rewrite rows remain for merge bases that predate
+it ([proof](docs/proof/logging-redaction-fixtures/README.md)). The Crabbox
 documentation row permits only its observed `PLAIN` or `HTML` variants. These
 exact attribution rows are role-neutral; every logical staged reference must
 independently match the row and have a committed `base` or `head` role. URI
@@ -688,7 +701,10 @@ every occurrence exactly; missing, extra, reordered, or changed lines refuse
 admission. Derived host, username, and password fields must match native metadata;
 the host preserves explicit default ports and original spelling, as TruffleHog
 does. MongoDB and Postgres findings bind the scanner-reported line
-and their exact native metadata shape. Any emitted subset and order may qualify;
+and their exact native metadata shape. URI findings are attributed to the plain
+literal wherever it occurs in the blob or patch; a decoded finding is not yet
+bound to its own source location ([#1724](https://github.com/openclaw/clawsweeper/issues/1724)).
+Any emitted subset and order may qualify;
 duplicate exact findings, unknown variants, lossy decoder buckets, or an
 unqualified deduplicated blob reference refuse admission.
 
@@ -726,6 +742,14 @@ The browser CDP discovery fixture in
 exact table for its observed URI detector 17 `PLAIN` and `HTML` findings. Both
 raw-value digests, the complete source line, original path, regular-file mode,
 and committed base/head references must match. See [the native proof](docs/proof/agent-input-scan-context/README.md#browser-cdp-discovery-fixture).
+
+The CDP authentication and explicit-port fixtures in OpenClaw's
+[SDK browser tests](https://github.com/openclaw/openclaw/blob/38d949a549dbb8f9376d5d08a96422615c8e7ab0/src/plugin-sdk/browser-subpaths.test.ts) qualify only for their observed URI
+detector 17 `PLAIN` findings. Both native value digests, each complete source
+line (including the path suffix beyond the native match), the original path,
+regular-file mode, and every committed base/head reference must match. Other
+decoders and changed source lines remain blocking; the WebSocket fixture has
+no qualification because the pinned scanner did not emit a finding for it.
 
 The TypeSafe local-transport URL-rejection fixture in
 `extensions/typesafe/src/local.transport.test.ts` binds its exact URI detector 17
@@ -1104,7 +1128,7 @@ default, subject to the selected repository profile; pass `target_repo`,
 `apply_kind=issue`, or `apply_kind=pull_request` to narrow a manual run.
 
 Scheduled runs cover the configured product profiles. `openclaw/openclaw` runs
-normal backfill hourly; scheduled hot intake and normal backfill share a
+normal backfill every 20 minutes; scheduled hot intake and normal backfill share a
 32-worker cap in the durable review queue. `openclaw/clawhub` runs on offset review/apply/audit crons so its reports
 live under `records/openclaw-clawhub/` without colliding with default repo
 records. `openclaw/clawsweeper` has a scheduled read-only audit row and is
@@ -1126,7 +1150,9 @@ control-plane workflows and do not consume these 128 slots.
 Lane limits are derived from that number: manual normal review defaults to 89
 requested shards and hot intake to 44; the interactive and expansion reserves
 leave 104 background slots when quiet. Scheduled work has a separate
-32-slot admission cap and a 60-review/hour target with a six-item burst. The
+32-slot admission cap and fills what organic reviews leave of a 220-review/hour
+admission target with a 24-item burst; hot intake is capped at 30/hour. Organic
+work remains unconditional, so this is not a total-execution or spend cap. The
 existing repair/issue implementation lanes use 40% of `workers.max`, currently
 51 live workers. Imported gitcrawl cluster repair allows 2 live workers by default.
 Exact-item review, repair, and issue implementation are priority work; normal

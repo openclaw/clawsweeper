@@ -1981,7 +1981,8 @@ const STATUS_TEXT_VALUES = new Set([
   "queue_handoff_degraded", "queue_handoff_unavailable", "publication_critical",
   "publication_degraded", "publication_health_unavailable", "publication_dlq_open",
   "review_failures_repeated", "review_failures_recent", "review_failure_telemetry_unavailable", "review_status_delivery_failed",
-  "review_retries_exhausted", "workflow_execution_stalled", "workflow_execution_degraded",
+  "review_retries_exhausted", "review_runaway", "review_runaway_telemetry_unavailable",
+  "workflow_execution_stalled", "workflow_execution_degraded",
   "worker_failures_unresolved", "apply_health_attention", "automerge_attention"
 ]);
 const STATUS_TIME_FIELDS = new Set([
@@ -2024,7 +2025,8 @@ const STATUS_NUMBER_FIELDS = new Set([
   "scan_limit", "bucket_seconds", "bucket_count", "rows", "retention_seconds", "index",
   "dispatch_debounce", "dispatcher_backoff", "admission_retry", "coordination_retry",
   "throttle_retry", "review_retry", "publication_retry", "dead_letter_capacity",
-  "dispatch_rejected", "review_retry_exhausted", "direct_publication", "claim_timeout",
+  "dispatch_rejected", "review_retry_exhausted", "direct_publication", "stale_revision",
+  "source_drift_loop", "claim_timeout",
   "execution_timeout", "workflow_cancelled", "workflow_failed", "affected_targets",
   "retryable_attempts", "terminal_attempts", "terminal_status_observed", "terminal_status_failed", "repeated_identities", "agent_input_scan",
   "source_preparation", "provider_or_model", "workflow"

@@ -1,0 +1,254 @@
+{
+  "claim": "Pending, leased, and parked SQLite queue records survive origin/main -> branch -> origin/main byte-for-byte; the branch finishes baseline work and parks, lists, and recovers source_drift_loop rows; origin/main reopened afterwards reads every record, ignores the two new tables, finishes branch work, and releases still-parked loop rows through an ordinary organic event or command.",
+  "base": "cac974b3e1da900cac3e7480b91d02a36ca60163",
+  "head": "2f91363b9d6081ea7ae4e4ea31450e3a3ec5feb7",
+  "working_tree_dirty": false,
+  "node": "v24.21.0",
+  "workerd": "1.20260701.1",
+  "miniflare": "4.20260701.0",
+  "runtime": "workerd / real dashboard Worker + ExactReviewQueue SQLite Durable Object persisted on disk / loopback GitHub fixture / fake clock",
+  "source_sha256": {
+    "baseline": {
+      "dashboard/exact-review-queue.ts": "a1ff68d15b46f8fec2717221d10b15e5e44553023b461260bc0547200ecd3cd3",
+      "dashboard/exact-review-read-model.ts": "c0decb1737c1042ac756e95396d17ee379f32a70132710a69dac638744be4b3d",
+      "dashboard/worker.ts": "935140fa3c06cc27cd3b5a898304101d9168048ac608612bb5786d0fc9d90eba",
+      "dashboard/wrangler.toml": "90db5d9b3093c7edc647b3329ffde989603d1c8b9fe68d76058336b6289ed673"
+    },
+    "candidate": {
+      "dashboard/exact-review-queue.ts": "88c4679c05778f93f74598b971c41720dc75b1a924bb6ccfe8cf2d70447b6c01",
+      "dashboard/exact-review-read-model.ts": "0f00ee4d882781a6d76dcc6db55567b247d620e1fa7c93b4fa6062c9f4a1259a",
+      "dashboard/worker.ts": "7712ee6bc17d6a9e3bf9ccd9bd131e6e684761a63aa8f29e6407b067c664430d",
+      "dashboard/wrangler.toml": "2b2503f81cdb85466e8961d4f57ca9b7200467a05061e6e2575934fa63e33702"
+    }
+  },
+  "phases": {
+    "baseline_create": {
+      "review_lane": {
+        "pending": 2,
+        "leased": 1,
+        "parked": 1,
+        "parked_reasons": {
+          "scanner_refused": 1
+        }
+      },
+      "item_states": {
+        "300001": {
+          "state": "pending",
+          "parked_reason": null,
+          "source_action": "opened"
+        },
+        "300002": {
+          "state": "leased",
+          "parked_reason": null,
+          "source_action": "opened"
+        },
+        "300003": {
+          "state": "parked",
+          "parked_reason": "scanner_refused",
+          "source_action": "opened"
+        },
+        "300004": {
+          "state": "pending",
+          "parked_reason": null,
+          "source_action": "source_drift_requeue"
+        }
+      },
+      "new_tables_present": [],
+      "items_sha256": "bb1be102b61e72d144bf60e46804920a550c46e5ac4755f697f0456fe8395d6b",
+      "deliveries_sha256": "a6e14aeffc1d9fe60a6c355b39986ad33d86db055a41285afbcd2179bafaf4c0"
+    },
+    "candidate_upgrade": {
+      "raw_rows_preserved_on_open": true,
+      "rows_preserved_after_first_read": true,
+      "review_lane_on_open": {
+        "pending": 2,
+        "leased": 1,
+        "parked": 1,
+        "parked_reasons": {
+          "scanner_refused": 1
+        }
+      },
+      "baseline_lease_completed": true,
+      "baseline_pending_items_dispatched": {
+        "organic": true,
+        "source_drift": true
+      },
+      "loop_dispositions": {
+        "300005": [
+          "queued",
+          "queued",
+          "queued",
+          "source_drift_loop:requeue_limit_reached"
+        ],
+        "300006": [
+          "queued",
+          "queued",
+          "queued",
+          "source_drift_loop:requeue_limit_reached"
+        ],
+        "300010": [
+          "queued",
+          "queued",
+          "queued",
+          "source_drift_loop:requeue_limit_reached"
+        ]
+      },
+      "loop_reviews_spent": 12,
+      "review_lane_with_parked_loops": {
+        "pending": 0,
+        "leased": 0,
+        "parked": 4,
+        "parked_reasons": {
+          "scanner_refused": 1,
+          "source_drift_loop": 3
+        }
+      },
+      "listed_source_drift_loops": [
+        "openclaw/openclaw#300005",
+        "openclaw/openclaw#300006",
+        "openclaw/openclaw#300010"
+      ],
+      "recover_fresh": {
+        "recovered": 1,
+        "skipped": 0
+      },
+      "recovered_item_state": {
+        "state": "pending",
+        "parked_reason": null,
+        "source_action": "source_drift_requeue"
+      },
+      "item_states_at_close": {
+        "300003": {
+          "state": "parked",
+          "parked_reason": "scanner_refused",
+          "source_action": "opened"
+        },
+        "300005": {
+          "state": "leased",
+          "parked_reason": null,
+          "source_action": "source_drift_requeue"
+        },
+        "300006": {
+          "state": "parked",
+          "parked_reason": "source_drift_loop",
+          "source_action": "source_drift_requeue"
+        },
+        "300007": {
+          "state": "leased",
+          "parked_reason": null,
+          "source_action": "opened"
+        },
+        "300008": {
+          "state": "pending",
+          "parked_reason": null,
+          "source_action": "opened"
+        },
+        "300010": {
+          "state": "parked",
+          "parked_reason": "source_drift_loop",
+          "source_action": "source_drift_requeue"
+        }
+      },
+      "new_tables_present": [
+        "exact_review_queue_review_generations",
+        "exact_review_queue_source_drift_loops"
+      ],
+      "source_drift_loops": [
+        {
+          "item_key": "openclaw/openclaw#300006",
+          "consecutive": 3,
+          "updated_at": 1893456690000
+        },
+        {
+          "item_key": "openclaw/openclaw#300010",
+          "consecutive": 3,
+          "updated_at": 1893456690000
+        }
+      ],
+      "review_generation_rows": 16,
+      "items_sha256": "acfe23c230ed62813e88ddfc4a9851f5cd12fd200a4f9f37009ae28b383e642e",
+      "deliveries_sha256": "d640dbfff6fdf32c54c5b75a6ccbe3215472e305f26183a9a64458267e59c517"
+    },
+    "baseline_rollback": {
+      "raw_rows_preserved_on_open": true,
+      "rows_preserved_after_first_read": true,
+      "new_tables_still_present_and_ignored": [
+        "exact_review_queue_review_generations",
+        "exact_review_queue_source_drift_loops"
+      ],
+      "stats_review_lane": {
+        "pending": 1,
+        "leased": 2,
+        "parked": 3,
+        "parked_reasons": {
+          "scanner_refused": 1,
+          "source_drift_loop": 2
+        }
+      },
+      "public_route": {
+        "status": 200,
+        "collection": {
+          "state": "complete"
+        },
+        "review_parked_reasons": {
+          "scanner_refused": 1,
+          "unknown": 2
+        },
+        "review_runaway_health": "absent"
+      },
+      "candidate_lease_completed": true,
+      "recovered_loop_lease_completed": true,
+      "parked_loop_automatic_requeue": {
+        "response": "queued",
+        "state_after": {
+          "state": "parked",
+          "parked_reason": "source_drift_loop",
+          "source_action": "source_drift_requeue"
+        }
+      },
+      "parked_loop_organic_release": {
+        "response": "queued",
+        "state_after": {
+          "state": "pending",
+          "parked_reason": null,
+          "source_action": "edited"
+        }
+      },
+      "parked_loop_command_release": {
+        "response": "queued",
+        "state_after": {
+          "state": "pending",
+          "parked_reason": null,
+          "source_action": "re_review"
+        }
+      },
+      "dispatched_after_rollback": [
+        300006,
+        300008,
+        300010
+      ],
+      "remaining_item_keys": [
+        "openclaw/openclaw#300003",
+        "openclaw/openclaw#300010"
+      ],
+      "final_items_sha256": "5cbd4faea88174ec5572540a6afbfbe44158b57ec1c1de7acf5a70ae13c0b351"
+    }
+  },
+  "assertions": {
+    "baseline_state_has_pending_leased_parked": true,
+    "upgrade_rows_byte_identical": true,
+    "upgrade_finishes_baseline_work": true,
+    "upgrade_parks_loops_after_three": true,
+    "upgrade_lists_and_recovers_loop": true,
+    "upgrade_creates_new_tables": true,
+    "rollback_rows_byte_identical": true,
+    "rollback_ignores_new_tables": true,
+    "rollback_reads_parked_loops": true,
+    "rollback_finishes_branch_work": true,
+    "rollback_automatic_requeue_keeps_park": true,
+    "rollback_organic_releases_parked_loop": true,
+    "rollback_command_releases_parked_loop": true,
+    "rollback_dispatches_released_and_pending": true
+  },
+  "limits": "Synthetic GitHub fixture and RSA credential; issue items only; review execution is replaced by claim plus completion; alarms are delivered only by explicit fake-clock ticks; one Durable Object instance persisted by Miniflare on local disk, not a production Cloudflare deployment. No live inference, production state, or GitHub mutation."
+}

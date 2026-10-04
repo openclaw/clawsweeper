@@ -3,10 +3,10 @@ description: Cache, install, and authenticate the OpenAI Codex CLI.
 inputs:
   codex-version:
     description: Exact Codex CLI npm package version.
-    default: "0.158.0-alpha.2"
+    default: "0.159.3"
   proxy-version:
     description: Exact Codex Responses proxy npm package version.
-    default: "0.158.0-alpha.2"
+    default: "0.159.2"
   auth-mode:
     description: Authentication mode. Use clawrouter for private alias inference, proxy for an isolated API-key proxy, or login for legacy codex login.
     default: "proxy"
@@ -118,7 +118,7 @@ runs:
         export CODEX_HOME="${CODEX_HOME:?}"
         test -n "${CLAWSWEEPER_INTERNAL_MODEL:-}"
         model_json="$(node -e 'process.stdout.write(JSON.stringify(process.argv[1]))' "$CLAWSWEEPER_INTERNAL_MODEL")"
-        printf 'model = %s\n' "$model_json" > "$CODEX_HOME/config.toml"
+        printf 'model = %s\nmodel_reasoning_effort = "medium"\n' "$model_json" > "$CODEX_HOME/config.toml"
         chmod 600 "$CODEX_HOME/config.toml"
 
     - name: Configure private ClawRouter inference
@@ -151,6 +151,7 @@ runs:
         model_json="$(node -e 'process.stdout.write(JSON.stringify(process.argv[1]))' "$CLAWSWEEPER_INTERNAL_MODEL")"
         cat > "$CODEX_HOME/config.toml" <<EOF
         model = ${model_json}
+        model_reasoning_effort = "medium"
         model_provider = "clawsweeper-responses-proxy"
 
         [model_providers.clawsweeper-responses-proxy]

@@ -1,0 +1,42 @@
+{
+  "targetHead": "c07112b4c58763176de2021f1c310641b2a8ab81",
+  "base": "b9a2236578c39079b067a642f0956638567fe7ba",
+  "source": "complete committed range, canonical pinned native scanner",
+  "prompt": {
+    "kind": "supplied",
+    "bytes": 84,
+    "sha256": "10eebbb774ea1d09259ccb36dd1217c5f9f8613181c7e31079f7f88a24f1b568"
+  },
+  "schema": null,
+  "limits": "No model execution; hosted review must rescan its own prompt, schema, and source inputs.",
+  "verification": "canonical enabled",
+  "result": "admitted",
+  "elapsedMs": 10741,
+  "notices": [
+    {
+      "event": "agent_input_scan_classified",
+      "notice": "Reviewed synthetic fixture findings classified as non-sensitive.",
+      "fixtureSha256": "927664cc6f3d082fb8acb9e01b47942d21d8043ddf150a6d833b5660bc240e07",
+      "source": "src/gateway/server-cron-notifications.test.ts",
+      "detector": "FTP",
+      "findings": [
+        {
+          "blob": "2857b14ddb1bc55a54eb2912ccc2c6a657076d9a",
+          "scannerLine": 769,
+          "literalLine": 769,
+          "decoder": "HTML",
+          "role": "base",
+          "occurrences": 1
+        },
+        {
+          "blob": "7c239a4e400c7299aa6b4d8d9c04f2fbe60c7d63",
+          "scannerLine": 844,
+          "literalLine": 844,
+          "decoder": "HTML",
+          "role": "head",
+          "occurrences": 1
+        }
+      ]
+    }
+  ]
+}

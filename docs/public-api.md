@@ -73,7 +73,11 @@ false. OpenClaw Bay does not consume this route and needs no corresponding chang
 
 `/api/exact-review-queue` retains closed recovery-reason counts for
 `claim_timeout`, `execution_timeout`, `workflow_cancelled`, and
-`workflow_failed`, but omits per-member, per-target, ownership, fingerprint,
+`workflow_failed`, review shed counts by `backpressure`, `scheduled_rate`, and
+`unattributed`, and the scheduled admission budget: global and per-lane
+`token_balance` (signed), `burst`, lane `target_rate_per_hour`, and the
+throttle pause timestamps (see [Automation limits](limits.md)). It omits the
+throttle source label, and it omits per-member, per-target, ownership, fingerprint,
 detail, raw timing, and internal-key records. Bay activity is producer-composed
 from a complete census so queue/live overlap is counted once; incomplete or
 legacy shapes cannot claim a complete activity aggregate. Its optional bounded
@@ -109,6 +113,14 @@ first/last timestamps. It never publishes repository, item, run, revision,
 fingerprint, path, detector, or scanner-output detail. The signed operator-only
 `/internal/exact-review/review-failures/list` route retains those bounded
 identities for incident investigation without storing raw failure text.
+
+The optional `review_runaway_health` object is a closed trailing-24-hour alert:
+`status` (`healthy`, `degraded`, or `unknown`), `reason`, `window_hours`,
+`threshold_reviews_per_day`, `runaway_items`, and `sample_item_keys`. Samples are
+at most five canonical `owner/repo#number` keys for repositories in
+`PUBLIC_BAY_REPOS`; private-repository runaways are counted but not named, and
+run, revision, and per-item review counts are not projected. A missing or
+malformed object projects as `null`.
 
 The GitHub-egress response exposes only revision-independent closed dimensions
 and sanitized retention watermarks. `query_complete` describes retained
