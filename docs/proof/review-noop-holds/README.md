@@ -99,7 +99,24 @@ including that the baseline claims every offer.
 
 ## Recorded run
 
-RECORDED_RUN_PLACEHOLDER
+- base: `c46e375c825223a7b3fbcf592794dc949065f0f8` (origin/main)
+- head: `863f74476a178ac1e53a8e5f4b6cb65491f09bb2`, `working_tree_dirty: false`
+- runtime: Node v24.21.0, workerd 1.20260701.1, Miniflare 4.20260701.0
+- `result.json` SHA-256:
+  `35fee44d087d85e4fa9c137703bc232e05dff56b42dfda5b90e5250379292973`
+  (copied byte-for-byte from the run output)
+- `run-proof.mjs` SHA-256:
+  `38a4af8f50b140922d91d4e40abcf5187f8f32b8b1a6b7807eac9201ac719802`
+- candidate source SHA-256: `dashboard/exact-review-queue.ts`
+  `e07da8d64c87eb6e1c64bbc98b7905e91ceeae0ebbdf6f8241521e738ff1ec2e`,
+  `.github/workflows/sweep.yml`
+  `1b384c455470b758cceef72802c26d60e4bb7704adab8b845a7cbd18205f9181`
+  (all hashed files are listed in the receipt)
+
+All 16 assertions pass. The receipt contains no local paths, credentials, or
+tokens. One of nine local runs on this loaded host (load average 30-60) exited
+during the candidate phase without a receipt or diagnostic; the other eight,
+including this recorded run, passed.
 
 ## OpenClaw Bay
 
