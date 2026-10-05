@@ -99,24 +99,73 @@ including that the baseline claims every offer.
 
 ## Recorded run
 
-- base: `c46e375c825223a7b3fbcf592794dc949065f0f8` (origin/main)
-- head: `863f74476a178ac1e53a8e5f4b6cb65491f09bb2`, `working_tree_dirty: false`
+- base: `dd58d9ec74fbfa5f757caab1b24c07194bef6f2b` (origin/main)
+- head: `56214cc1928851cf8f1fc3501a375cc2d38c1045`, `working_tree_dirty: false`
 - runtime: Node v24.21.0, workerd 1.20260701.1, Miniflare 4.20260701.0
 - `result.json` SHA-256:
-  `35fee44d087d85e4fa9c137703bc232e05dff56b42dfda5b90e5250379292973`
+  `e8412a5bfaf18a6e56029281550afc3b300b108cd075140e697dd7eb16d0c17b`
   (copied byte-for-byte from the run output)
 - `run-proof.mjs` SHA-256:
   `38a4af8f50b140922d91d4e40abcf5187f8f32b8b1a6b7807eac9201ac719802`
 - candidate source SHA-256: `dashboard/exact-review-queue.ts`
-  `e07da8d64c87eb6e1c64bbc98b7905e91ceeae0ebbdf6f8241521e738ff1ec2e`,
+  `9b9c70aa4b7ee80e698bab796b7480605d79f6d3d49bef8efbdddad7f6862560`,
   `.github/workflows/sweep.yml`
   `1b384c455470b758cceef72802c26d60e4bb7704adab8b845a7cbd18205f9181`
   (all hashed files are listed in the receipt)
 
 All 16 assertions pass. The receipt contains no local paths, credentials, or
-tokens. One of nine local runs on this loaded host (load average 30-60) exited
-during the candidate phase without a receipt or diagnostic; the other eight,
-including this recorded run, passed.
+tokens. Across twelve local runs of this harness on this loaded host (load
+average 30-60), one exited during the candidate phase without a receipt or
+diagnostic; the other eleven, including this recorded run, passed.
+
+## Persisted upgrade and rollback proof
+
+[`upgrade-and-rollback.mjs`](upgrade-and-rollback.mjs) persists one
+SQLite-backed `ExactReviewQueue` Durable Object on disk and reopens it with the
+real dashboard Worker three times: origin/main, then the branch, then
+origin/main again. Raw item and delivery rows are read directly from SQLite
+before and after each variant's first queue request.
+
+| Phase | What happens | Result |
+| --- | --- | --- |
+| origin/main creates state | #400001 pending, #400002 leased, #400003 parked `scanner_refused` | lane: 1 pending, 1 leased, 1 parked |
+| Branch reopens | raw item and delivery rows before and after the first queue read | byte-identical to the origin/main snapshot |
+| Branch finishes origin/main work | completes the #400002 lease, dispatches and completes #400001 | both completed |
+| Branch holds no-ops | scheduled offers for locked #56312, #38283, #40088 and oversized #119055, #119056, completed with `review_hold` | three `locked_conversation`, two `oversized_pull_request`; `scanner_refused` kept |
+| Branch dedupes and lists | a repeat scheduled offer per held item; `/parked-reviews/list` | every offer `deduped:scheduled_queue_item:<reason>`; all five holds listed |
+| Branch leaves work | #400007 leased, #400008 pending | as left |
+| origin/main reopens | raw rows before and after the first read; `/stats` and public `GET /api/exact-review-queue` | byte-identical; stats count both reasons; public route 200, collection `complete`, holds folded into `unknown: 5` |
+| origin/main finishes branch work | completes the #400007 lease | completed |
+| Retained holds, scheduled offers | a scheduled offer per held item | every offer `deduped:scheduled_queue_item:item_already_pending_or_active`; no run |
+| Retained hold, automatic recovery | `failed_review_shard_recovery` for #40088 | answered `queued`, but the row stays parked and nothing dispatches |
+| Releases on origin/main | `issues/unlocked` for #56312, `synchronize` to a new head for #119055, `re_review` command for #38283 | each `queued` and pending; all three plus #400008 dispatched, #119055 on the new head |
+| End state | remaining rows | #40088 and #119056 still held, #400003 still `scanner_refused`, #38283 dispatching; nothing lost |
+
+All 16 assertions pass. One rollback-window limit is recorded rather than
+hidden: a byte-identical retry of a branch-era scheduled delivery whose stored
+disposition names a hold reason is answered by origin/main as an unscoped
+`deduped` (it cannot parse the new reason), so a scheduled producer retrying
+that exact delivery across the rollback would report an ambiguous dedupe for
+that one offer. The source-drift loop breaker's `source_drift_loop` reason has
+the same property. Reproduce with:
+
+```sh
+node docs/proof/review-noop-holds/upgrade-and-rollback.mjs origin/main ~/.cache/clawsweeper-proof-tools .artifacts/review-noop-holds-upgrade
+```
+
+- base `dd58d9ec74fbfa5f757caab1b24c07194bef6f2b`, head
+  `56214cc1928851cf8f1fc3501a375cc2d38c1045`, `working_tree_dirty: false`
+- [`upgrade-and-rollback.json`](upgrade-and-rollback.json) SHA-256:
+  `669a2e5bb39dc6a8e8f95c3f3d7b1b9fd63a6e93b00e9a5551c4d2c114be0e38`
+  (copied byte-for-byte from the run output)
+- `upgrade-and-rollback.mjs` SHA-256:
+  `91e19b3633743e55306dce9e97a7b7ca92690414799a120480040c41d5a08d9e`
+- baseline and candidate source hashes are listed in the receipt
+
+Limits: one Durable Object persisted by Miniflare on local disk, not a
+production Cloudflare deployment; synthetic GitHub fixture; completions carry
+the updated sweep.yml payload instead of running Actions; review execution is
+replaced by claim plus completion; alarms only by explicit fake-clock ticks.
 
 ## OpenClaw Bay
 

@@ -1,7 +1,7 @@
 {
   "claim": "origin/main claims a new review run for every scheduled offer of an open-but-locked issue and of an oversized PR on an unchanged head, so both exceed the 24/day runaway threshold; the branch keeps each completed no-op parked as locked_conversation or oversized_pull_request, dedupes every later scheduled offer and automatic recovery without a run, and releases the hold on an organic unlock or a pushed head.",
-  "base": "c46e375c825223a7b3fbcf592794dc949065f0f8",
-  "head": "863f74476a178ac1e53a8e5f4b6cb65491f09bb2",
+  "base": "dd58d9ec74fbfa5f757caab1b24c07194bef6f2b",
+  "head": "56214cc1928851cf8f1fc3501a375cc2d38c1045",
   "working_tree_dirty": false,
   "node": "v24.21.0",
   "workerd": "1.20260701.1",
@@ -19,11 +19,11 @@
     "baseline": {
       "source_sha256": {
         ".github/workflows/sweep.yml": "41c5114c24b5b673c1003aab018a3f53e8938b4f94291d6ec6998a83ee84cde5",
-        "dashboard/exact-review-queue.ts": "e92f51e77a4ac9d9f7ba64483e183de4df8b620499498a0c9c442f0a3582585f",
+        "dashboard/exact-review-queue.ts": "3eb1ede675c1831cbb23ccbea524c16097d7f311c91f4e7d25788863cc3497fd",
         "dashboard/exact-review-read-model.ts": "0f00ee4d882781a6d76dcc6db55567b247d620e1fa7c93b4fa6062c9f4a1259a",
         "dashboard/exact-review-review-loop.ts": "031ca8e51017bf27b152513d9c53eaa76f77f61dfa1b4d665e4e34bce5dd931a",
         "dashboard/worker.ts": "1732e988f8d445aeb030504293eea042b8778dbaeeb131117ab249cb56157dcc",
-        "dashboard/wrangler.toml": "1cca65608e6a408974d854dbf62d4639906bee8290a019869521408ee22d6e75"
+        "dashboard/wrangler.toml": "921780efd70c1d80cb629f25a43427bb54691feae53947cbf60b4e58c8bc84ff"
       },
       "config": {
         "EXACT_REVIEW_RUNAWAY_REVIEWS_PER_DAY": "24",
@@ -90,11 +90,11 @@
     "candidate": {
       "source_sha256": {
         ".github/workflows/sweep.yml": "1b384c455470b758cceef72802c26d60e4bb7704adab8b845a7cbd18205f9181",
-        "dashboard/exact-review-queue.ts": "e07da8d64c87eb6e1c64bbc98b7905e91ceeae0ebbdf6f8241521e738ff1ec2e",
+        "dashboard/exact-review-queue.ts": "9b9c70aa4b7ee80e698bab796b7480605d79f6d3d49bef8efbdddad7f6862560",
         "dashboard/exact-review-read-model.ts": "7e026c89be074ece4af896a5095e9717301c4af54e94b3f3effb6feef3055fad",
         "dashboard/exact-review-review-loop.ts": "9629f9675e9c6d0353c3ee4acdac6186cc4d169566f023300081d20079a60021",
         "dashboard/worker.ts": "f9015c5db9492d6c9572fb6354b41109d2cd663fafb4ceef475c030560f38598",
-        "dashboard/wrangler.toml": "1cca65608e6a408974d854dbf62d4639906bee8290a019869521408ee22d6e75"
+        "dashboard/wrangler.toml": "921780efd70c1d80cb629f25a43427bb54691feae53947cbf60b4e58c8bc84ff"
       },
       "config": {
         "EXACT_REVIEW_RUNAWAY_REVIEWS_PER_DAY": "24",

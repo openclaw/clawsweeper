@@ -1,0 +1,261 @@
+{
+  "claim": "Pending, leased, and parked SQLite queue records survive origin/main -> branch -> origin/main byte-for-byte; the branch finishes baseline work and holds locked and oversized no-ops as locked_conversation / oversized_pull_request; origin/main reopened afterwards reads every record, finishes branch work, still dedupes scheduled offers against the retained holds, and releases them through an organic unlock, a pushed head, and a command.",
+  "base": "dd58d9ec74fbfa5f757caab1b24c07194bef6f2b",
+  "head": "56214cc1928851cf8f1fc3501a375cc2d38c1045",
+  "working_tree_dirty": false,
+  "node": "v24.21.0",
+  "workerd": "1.20260701.1",
+  "miniflare": "4.20260701.0",
+  "runtime": "workerd / real dashboard Worker + ExactReviewQueue SQLite Durable Object persisted on disk / loopback GitHub fixture / fake clock",
+  "source_sha256": {
+    "baseline": {
+      "dashboard/exact-review-queue.ts": "3eb1ede675c1831cbb23ccbea524c16097d7f311c91f4e7d25788863cc3497fd",
+      "dashboard/exact-review-read-model.ts": "0f00ee4d882781a6d76dcc6db55567b247d620e1fa7c93b4fa6062c9f4a1259a",
+      "dashboard/exact-review-review-loop.ts": "031ca8e51017bf27b152513d9c53eaa76f77f61dfa1b4d665e4e34bce5dd931a",
+      "dashboard/worker.ts": "1732e988f8d445aeb030504293eea042b8778dbaeeb131117ab249cb56157dcc",
+      "dashboard/wrangler.toml": "921780efd70c1d80cb629f25a43427bb54691feae53947cbf60b4e58c8bc84ff"
+    },
+    "candidate": {
+      "dashboard/exact-review-queue.ts": "9b9c70aa4b7ee80e698bab796b7480605d79f6d3d49bef8efbdddad7f6862560",
+      "dashboard/exact-review-read-model.ts": "7e026c89be074ece4af896a5095e9717301c4af54e94b3f3effb6feef3055fad",
+      "dashboard/exact-review-review-loop.ts": "9629f9675e9c6d0353c3ee4acdac6186cc4d169566f023300081d20079a60021",
+      "dashboard/worker.ts": "f9015c5db9492d6c9572fb6354b41109d2cd663fafb4ceef475c030560f38598",
+      "dashboard/wrangler.toml": "921780efd70c1d80cb629f25a43427bb54691feae53947cbf60b4e58c8bc84ff"
+    }
+  },
+  "phases": {
+    "baseline_create": {
+      "review_lane": {
+        "pending": 1,
+        "leased": 1,
+        "parked": 1,
+        "parked_reasons": {
+          "scanner_refused": 1
+        }
+      },
+      "item_states": {
+        "400001": {
+          "state": "pending",
+          "parked_reason": null,
+          "source_action": "opened",
+          "source_head_sha": null
+        },
+        "400002": {
+          "state": "leased",
+          "parked_reason": null,
+          "source_action": "opened",
+          "source_head_sha": null
+        },
+        "400003": {
+          "state": "parked",
+          "parked_reason": "scanner_refused",
+          "source_action": "opened",
+          "source_head_sha": null
+        }
+      },
+      "items_sha256": "c035bb5ab0bfdf57d84398502b27390d8b5f5add056b8f345dfe857b8eb30f7d",
+      "deliveries_sha256": "9552243ca4f37ef84a803d0ecb0aab04524838fae9afb07f71ddf4ef00ab2d8c"
+    },
+    "candidate_upgrade": {
+      "raw_rows_preserved_on_open": true,
+      "rows_preserved_after_first_read": true,
+      "review_lane_on_open": {
+        "pending": 1,
+        "leased": 1,
+        "parked": 1,
+        "parked_reasons": {
+          "scanner_refused": 1
+        }
+      },
+      "baseline_lease_completed": true,
+      "baseline_pending_dispatched": true,
+      "hold_responses": {
+        "38283": "locked_conversation",
+        "40088": "locked_conversation",
+        "56312": "locked_conversation",
+        "119055": "oversized_pull_request",
+        "119056": "oversized_pull_request"
+      },
+      "repeat_scheduled_offers": {
+        "38283": "deduped:scheduled_queue_item:locked_conversation",
+        "40088": "deduped:scheduled_queue_item:locked_conversation",
+        "56312": "deduped:scheduled_queue_item:locked_conversation",
+        "119055": "deduped:scheduled_queue_item:oversized_pull_request",
+        "119056": "deduped:scheduled_queue_item:oversized_pull_request"
+      },
+      "review_lane_with_holds": {
+        "pending": 0,
+        "leased": 0,
+        "parked": 6,
+        "parked_reasons": {
+          "scanner_refused": 1,
+          "locked_conversation": 3,
+          "oversized_pull_request": 2
+        }
+      },
+      "listed_holds": [
+        "openclaw/openclaw#119055:oversized_pull_request",
+        "openclaw/openclaw#119056:oversized_pull_request",
+        "openclaw/openclaw#38283:locked_conversation",
+        "openclaw/openclaw#40088:locked_conversation",
+        "openclaw/openclaw#56312:locked_conversation"
+      ],
+      "item_states_at_close": {
+        "38283": {
+          "state": "parked",
+          "parked_reason": "locked_conversation",
+          "source_action": "scheduled_normal_backfill",
+          "source_head_sha": null
+        },
+        "40088": {
+          "state": "parked",
+          "parked_reason": "locked_conversation",
+          "source_action": "scheduled_normal_backfill",
+          "source_head_sha": null
+        },
+        "56312": {
+          "state": "parked",
+          "parked_reason": "locked_conversation",
+          "source_action": "scheduled_normal_backfill",
+          "source_head_sha": null
+        },
+        "119055": {
+          "state": "parked",
+          "parked_reason": "oversized_pull_request",
+          "source_action": "scheduled_hot_intake",
+          "source_head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "119056": {
+          "state": "parked",
+          "parked_reason": "oversized_pull_request",
+          "source_action": "scheduled_hot_intake",
+          "source_head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "400003": {
+          "state": "parked",
+          "parked_reason": "scanner_refused",
+          "source_action": "opened",
+          "source_head_sha": null
+        },
+        "400007": {
+          "state": "leased",
+          "parked_reason": null,
+          "source_action": "opened",
+          "source_head_sha": null
+        },
+        "400008": {
+          "state": "pending",
+          "parked_reason": null,
+          "source_action": "opened",
+          "source_head_sha": null
+        }
+      },
+      "items_sha256": "a8984f458aed47972a50b62016ae4ee0a0d91e3446d23ce99b5e8a9731a7b004",
+      "deliveries_sha256": "16bdad88521b262f908a1bb4f91ecf7360c9921c57abc43ae157a66991084ac9"
+    },
+    "baseline_rollback": {
+      "raw_rows_preserved_on_open": true,
+      "rows_preserved_after_first_read": true,
+      "stats_review_lane": {
+        "pending": 1,
+        "leased": 1,
+        "parked": 6,
+        "parked_reasons": {
+          "scanner_refused": 1,
+          "locked_conversation": 3,
+          "oversized_pull_request": 2
+        }
+      },
+      "public_route": {
+        "status": 200,
+        "collection": "complete",
+        "review_parked_reasons": {
+          "scanner_refused": 1,
+          "unknown": 5
+        }
+      },
+      "candidate_lease_completed": true,
+      "scheduled_offers_on_retained_holds": {
+        "38283": "deduped:scheduled_queue_item:item_already_pending_or_active",
+        "40088": "deduped:scheduled_queue_item:item_already_pending_or_active",
+        "56312": "deduped:scheduled_queue_item:item_already_pending_or_active",
+        "119055": "deduped:scheduled_queue_item:item_already_pending_or_active",
+        "119056": "deduped:scheduled_queue_item:item_already_pending_or_active"
+      },
+      "replayed_branch_disposition": {
+        "status": 202,
+        "body": {
+          "ok": true,
+          "deduped": true,
+          "item_key": "openclaw/openclaw#40088"
+        }
+      },
+      "automatic_recovery": {
+        "response": "queued",
+        "state_after": {
+          "state": "parked",
+          "parked_reason": "locked_conversation",
+          "source_action": "scheduled_normal_backfill",
+          "source_head_sha": null
+        }
+      },
+      "releases": {
+        "unlocked": "queued",
+        "synchronize": "queued",
+        "command": "queued",
+        "states_after": {
+          "38283": {
+            "state": "pending",
+            "parked_reason": null,
+            "source_action": "re_review",
+            "source_head_sha": null
+          },
+          "56312": {
+            "state": "pending",
+            "parked_reason": null,
+            "source_action": "unlocked",
+            "source_head_sha": null
+          },
+          "119055": {
+            "state": "pending",
+            "parked_reason": null,
+            "source_action": "synchronize",
+            "source_head_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+          }
+        }
+      },
+      "dispatched_after_rollback": [
+        38283,
+        56312,
+        119055,
+        400008
+      ],
+      "dispatched_pushed_head": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "remaining_item_states": {
+        "openclaw/openclaw#119056": "parked:oversized_pull_request",
+        "openclaw/openclaw#38283": "dispatching",
+        "openclaw/openclaw#400003": "parked:scanner_refused",
+        "openclaw/openclaw#40088": "parked:locked_conversation"
+      }
+    }
+  },
+  "assertions": {
+    "baseline_state_has_pending_leased_parked": true,
+    "upgrade_rows_byte_identical": true,
+    "upgrade_finishes_baseline_work": true,
+    "upgrade_holds_all_five": true,
+    "upgrade_dedupes_scheduled_offers": true,
+    "upgrade_lists_holds": true,
+    "upgrade_keeps_scanner_hold": true,
+    "rollback_rows_byte_identical": true,
+    "rollback_reads_holds": true,
+    "rollback_finishes_branch_work": true,
+    "rollback_still_dedupes_scheduled": true,
+    "rollback_replay_is_unscoped_dedupe": true,
+    "rollback_unlock_releases": true,
+    "rollback_push_releases": true,
+    "rollback_command_releases": true,
+    "rollback_dispatches_released_and_pending": true
+  },
+  "limits": "Synthetic GitHub fixture and RSA credential; completions carry the updated sweep.yml payload instead of running GitHub Actions; review execution is replaced by claim plus completion; alarms are delivered only by explicit fake-clock ticks; one Durable Object instance persisted by Miniflare on local disk, not a production Cloudflare deployment. No live inference, production state, or GitHub mutation."
+}
