@@ -325,6 +325,21 @@ check that removes closed or advanced targets. Set the limit to `0` to disable
 the breaker. A counter idle for seven days expires: the admission lookup treats
 it as absent before the limit check, and parking never refreshes an expired row.
 
+Deterministic no-op holds stop the other observed self-feeding shape without a
+counter. When a review run completes successfully on the guarded locked-conversation
+path or on the oversized PR path, sweep.yml sends `review_hold`
+(`locked_conversation` or `oversized_pull_request`) with the lease completion.
+Without command context, without input that arrived during the lease, and (for
+oversized PRs) with a pinned head, the queue keeps the row parked under that
+reason instead of deleting it. Scheduled offers then dedupe with that
+`dedupe_reason`, automatic recoveries dedupe with `dedupe_scope: review_hold`,
+and neither claims a run, so neither debits the scheduled budget nor counts
+toward `review_runaway_health`. Organic events, commands, manual reviews, the
+parked terminal check, and parked-review fresh recovery release it exactly as
+for `source_drift_loop`. Older Workers ignore the field, and older workflows do
+not send it, so either deploy order keeps the previous behavior until both sides
+are current.
+
 The same queue keeps a trailing 24-hour history of claimed review runs per item
 (`exact_review_queue_review_generations`, keyed by item, run ID, and attempt;
 publication and finalizer-only claims are excluded). An item with more than

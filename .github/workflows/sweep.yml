@@ -2422,6 +2422,8 @@ jobs:
           DIRECT_PUBLICATION_SUPERSEDED: ${{ steps.direct-exact-review-publication.outputs.superseded }}
           DIRECT_LIFECYCLE_OUTCOME: ${{ steps.finalize-direct-exact-review-lifecycle.outcome }}
           DIRECT_LIFECYCLE_REQUEUE: ${{ steps.exact-review-generation-result.outputs.direct_lifecycle_requeue }}
+          # Deterministic no-ops the queue holds until the target changes.
+          REVIEW_HOLD: ${{ (steps.live-item.outputs.guarded_open_action == 'skipped_locked_conversation' && 'locked_conversation') || (steps.live-item.outputs.oversized == 'true' && steps.review-exact-event-item.outcome == 'success' && steps.review-exact-event-item.outputs.superseded != 'true' && 'oversized_pull_request') || '' }}
           RUN_ATTEMPT: ${{ github.run_attempt }}
         run: |
           set -euo pipefail
@@ -2490,6 +2492,14 @@ jobs:
                 !["true", "false"].includes(reviewFailureRetryable))
             ) process.exit(1);
             if (requeueLatest && directLifecycleRequeue) process.exit(1);
+            const reviewHold =
+              outcome === "success" &&
+              !requeueLatest &&
+              !retryKind &&
+              !directPublicationCompleted &&
+              process.env.HAS_COMMAND_CONTEXT !== "true"
+                ? String(process.env.REVIEW_HOLD || "").trim()
+                : "";
             process.stdout.write(JSON.stringify({
               lease_id: process.env.QUEUE_LEASE_ID,
               ...(protocolVersion === 2
@@ -2514,6 +2524,7 @@ jobs:
                 : {}),
               ...(directLifecycleRequeue ? { direct_lifecycle_requeue: true } : {}),
               ...(retryAt ? { retry_at: retryAt } : {}),
+              ...(reviewHold ? { review_hold: reviewHold } : {}),
               ...(process.env.REVIEW_FAILURE_REASON
                 ? {
                     review_failure_reason: process.env.REVIEW_FAILURE_REASON,

@@ -233,6 +233,7 @@ export interface GitHubIssueListItem {
   user?: GitHubUser;
   labels?: string[];
   pull_request?: unknown;
+  locked?: boolean;
 }
 
 export interface Item {

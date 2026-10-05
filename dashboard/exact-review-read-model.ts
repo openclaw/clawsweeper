@@ -9,6 +9,7 @@ import {
   isLowPriorityExactReviewDecision,
 } from "./exact-review-decision.ts";
 import { exactReviewScheduledLane, numberFrom } from "./exact-review-queue-shared.ts";
+import { exactReviewHoldReason } from "./exact-review-review-loop.ts";
 import type {
   ExactReviewDispatchFailureDetail,
   ExactReviewGithubCredentialCircuit,
@@ -101,6 +102,7 @@ export function exactReviewParkedOperatorEligible(item: ExactReviewQueueItem) {
     !exactReviewQueueIsPublication(item) &&
     (item.parkedReason === "source_incompatible" ||
       item.parkedReason === "source_drift_loop" ||
+      exactReviewHoldReason(item.parkedReason) !== null ||
       ((item.parkedReason === "dispatch_rejected" ||
         item.parkedReason === "review_retry_exhausted") &&
         exactReviewParkedRecoveryAttempts(item.parkedRecoveryAttempts) >=
@@ -706,6 +708,8 @@ function observeExactReviewBayCandidate(
   // The retained refusal is a terminal failure, not a waiting review. Bay's
   // lifecycle projection owns its failed card; the queue only retains the hold.
   if (item.state === "parked" && item.parkedReason === "scanner_refused") return true;
+  // A held no-op already completed; the lifecycle projection owns its card.
+  if (item.state === "parked" && exactReviewHoldReason(item.parkedReason) !== null) return true;
   // Show the publication while its settlement still gates the retained recovery.
   if (deferredShardRecovery) return true;
   const canonicalRepository = repository.toLowerCase();

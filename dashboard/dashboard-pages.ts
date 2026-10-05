@@ -2026,7 +2026,7 @@ const STATUS_NUMBER_FIELDS = new Set([
   "dispatch_debounce", "dispatcher_backoff", "admission_retry", "coordination_retry",
   "throttle_retry", "review_retry", "publication_retry", "dead_letter_capacity",
   "dispatch_rejected", "review_retry_exhausted", "direct_publication", "stale_revision",
-  "source_drift_loop", "claim_timeout",
+  "source_drift_loop", "locked_conversation", "oversized_pull_request", "claim_timeout",
   "execution_timeout", "workflow_cancelled", "workflow_failed", "affected_targets",
   "retryable_attempts", "terminal_attempts", "terminal_status_observed", "terminal_status_failed", "repeated_identities", "agent_input_scan",
   "source_preparation", "provider_or_model", "workflow"

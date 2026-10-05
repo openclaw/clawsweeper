@@ -35,6 +35,10 @@ export function createReviewPlanningSelection(
     fetchItem,
     shouldSkipScheduledHotIntakeExactReview,
   } = dependencies;
+  // An open-but-locked conversation can only complete as a guarded no-op, and
+  // nothing durable records that skip, so scanning it would re-offer it every
+  // tick. Unlocking is an organic webhook event that admits it again.
+  const shouldPlanScannedItem = (item: Item) => !item.locked && shouldPlanItem(item);
 
   function selectCandidates(options: {
     batchSize: number;
@@ -70,7 +74,7 @@ export function createReviewPlanningSelection(
       const { items, pagesScanned } = fetchHotIntakeItems(options.maxPages);
       for (const item of items) {
         if (item.number % options.shardCount !== options.shardIndex) continue;
-        if (!shouldPlanItem(item)) continue;
+        if (!shouldPlanScannedItem(item)) continue;
         const candidate = dueCandidate(
           item,
           options.itemsDir,
@@ -94,7 +98,7 @@ export function createReviewPlanningSelection(
       if (items.length === 0) break;
       for (const item of items) {
         if (item.number % options.shardCount !== options.shardIndex) continue;
-        if (!shouldPlanItem(item)) continue;
+        if (!shouldPlanScannedItem(item)) continue;
         const candidate = dueCandidate(
           item,
           options.itemsDir,
@@ -303,7 +307,7 @@ export function createReviewPlanningSelection(
     if (options.hotIntake) {
       const { items, pagesScanned } = fetchHotIntakeItems(options.maxPages);
       for (const item of items) {
-        if (!shouldPlanItem(item)) continue;
+        if (!shouldPlanScannedItem(item)) continue;
         const candidate = dueCandidate(
           item,
           options.itemsDir,
@@ -357,7 +361,7 @@ export function createReviewPlanningSelection(
       scannedPages = page;
       if (items.length === 0) break;
       for (const item of items) {
-        if (!shouldPlanItem(item)) continue;
+        if (!shouldPlanScannedItem(item)) continue;
         const candidate = dueCandidate(
           item,
           options.itemsDir,

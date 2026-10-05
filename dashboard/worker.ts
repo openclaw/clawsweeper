@@ -2171,6 +2171,8 @@ const PUBLIC_STATUS_COUNT_FIELDS = new Set([
   "review_retry_exhausted",
   "direct_publication",
   "source_drift_loop",
+  "locked_conversation",
+  "oversized_pull_request",
   "claim_timeout",
   "execution_timeout",
   "workflow_cancelled",
@@ -5529,6 +5531,8 @@ const PUBLIC_QUEUE_PARKED_REASONS = [
   "direct_publication",
   "stale_revision",
   "source_drift_loop",
+  "locked_conversation",
+  "oversized_pull_request",
   "unknown",
 ] as const;
 const PUBLIC_QUEUE_SHED_REASONS = ["backpressure", "scheduled_rate", "unattributed"] as const;

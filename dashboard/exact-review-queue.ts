@@ -222,12 +222,15 @@ import {
 } from "./exact-review-queue-shared.ts";
 import {
   ExactReviewReviewLoopStore,
+  exactReviewHoldApplies,
+  exactReviewHoldReason,
   exactReviewLoopItemKey,
   exactReviewRunawayReviewsPerDay,
   exactReviewScheduledOfferReleasesSourceDriftLoop,
   exactReviewSourceDriftLoopCounted,
   exactReviewSourceDriftLoopReleases,
   exactReviewSourceDriftRequeueLimit,
+  type ExactReviewHoldReason,
   type ExactReviewRunawayHealth,
 } from "./exact-review-review-loop.ts";
 
@@ -308,7 +311,8 @@ type ExactReviewParkedReason =
   | "source_incompatible"
   | "scanner_refused"
   | "direct_publication"
-  | "source_drift_loop";
+  | "source_drift_loop"
+  | ExactReviewHoldReason;
 type ExactReviewLifecycleProjectionIdentity = {
   canonicalTargetKey: string;
   fenceKey: string;
@@ -780,7 +784,8 @@ type ExactReviewScheduledDisposition =
         | "item_already_pending_or_active"
         | "source_incompatible"
         | "scanner_refused"
-        | "source_drift_loop";
+        | "source_drift_loop"
+        | ExactReviewHoldReason;
     }
   | {
       ok: true;
@@ -2223,6 +2228,10 @@ export class ExactReviewQueue {
           current?.state === "parked" && current.parkedReason === "source_drift_loop"
             ? current
             : undefined;
+        // A deterministic no-op hold is released like a loop park: scheduled
+        // offers and automatic recoveries dedupe, any other admitted input wins.
+        const reviewHold =
+          current?.state === "parked" ? exactReviewHoldReason(current.parkedReason) : null;
         // A newer scheduled offer may spend one review on the parked item, but
         // never resets the counter: ClawSweeper's own post-review writes move
         // updated_at and feed hot intake, so the next drift requeue re-parks.
@@ -2254,7 +2263,7 @@ export class ExactReviewQueue {
               current.parkedReason === "scanner_refused" ||
               current.parkedReason === "source_drift_loop"
                 ? current.parkedReason
-                : "item_already_pending_or_active",
+                : (reviewHold ?? "item_already_pending_or_active"),
           };
           return {
             deduped: true as const,
@@ -2284,6 +2293,11 @@ export class ExactReviewQueue {
               key,
               state,
             };
+          }
+          if (ignoredRecovery && reviewHold) {
+            // Recovering the held source would repeat the same no-op.
+            this.writeStateSync(state);
+            return { deduped: true as const, reviewHold, key, state };
           }
           // A recovery is only a one-shot repair of a failed shard. It may create a queue item,
           // but must never supersede an existing pending, dispatching, or leased decision: doing
@@ -2450,6 +2464,7 @@ export class ExactReviewQueue {
             const preserveReviewRetryBudget =
               mergeable &&
               !sourceDriftLoopParked &&
+              !reviewHold &&
               !exactReviewQueueIsPublication(current) &&
               !exactReviewDecisionHasCommandContext(decision) &&
               !exactReviewRetryIdentityChanged(current, current.decision, nextDecision, this.env);
@@ -2787,6 +2802,9 @@ export class ExactReviewQueue {
               : {}),
             ...("sourceDriftLoop" in accepted && accepted.sourceDriftLoop
               ? { dedupe_scope: "source_drift_loop", dedupe_reason: accepted.sourceDriftLoop }
+              : {}),
+            ...("reviewHold" in accepted && accepted.reviewHold
+              ? { dedupe_scope: "review_hold", dedupe_reason: accepted.reviewHold }
               : {}),
             ...("staleSource" in accepted && accepted.staleSource ? { stale_source: true } : {}),
             ...("staleCommand" in accepted && accepted.staleCommand ? { stale_command: true } : {}),
@@ -3323,6 +3341,17 @@ export class ExactReviewQueue {
       if (reviewFailureReason && retryKind) {
         return json({ error: "review_failure_reason_with_retry" }, 400);
       }
+      const reviewHold =
+        body.review_hold === undefined ? undefined : exactReviewHoldReason(body.review_hold);
+      if (body.review_hold !== undefined && !reviewHold) {
+        return json({ error: "invalid_review_hold" }, 400);
+      }
+      if (
+        reviewHold &&
+        (outcome !== "success" || requeueLatest || retryKind || hasStructuredCompletion)
+      ) {
+        return json({ error: "review_hold_without_terminal_success" }, 400);
+      }
       const state = this.readStateSync();
       const item = tupleCompletion ? state.items[itemKey] : exactReviewItemForLease(state, leaseId);
       if (
@@ -3379,6 +3408,9 @@ export class ExactReviewQueue {
       }
       if (reviewFailureReason && publicationItem) {
         return json({ error: "review_failure_reason_for_publication" }, 400);
+      }
+      if (reviewHold && publicationItem) {
+        return json({ error: "review_hold_for_publication" }, 400);
       }
       const reviewFailureDecision = item.leaseDecision ?? item.decision;
       const reviewAcknowledgementCommentId =
@@ -3520,6 +3552,7 @@ export class ExactReviewQueue {
                 reviewFailureReason,
                 this.random,
                 this.env,
+                reviewHold ?? undefined,
               ),
               retried: outcome !== "success" && reviewFailureReason === undefined,
               refreshed: false,
@@ -3536,8 +3569,11 @@ export class ExactReviewQueue {
           : completionResult.requeued;
       // A pinned-source refusal remains discoverable for source recovery, but
       // retaining its queue row must not turn its terminal failure into a retry.
+      const heldReview =
+        Boolean(completionResult.parked) && exactReviewHoldReason(item.parkedReason) !== null;
       const parkedForRetry =
         Boolean(completionResult.parked) &&
+        !heldReview &&
         item.parkedReason !== "source_incompatible" &&
         item.parkedReason !== "scanner_refused";
       const lifecycleIdentity: ExactReviewLifecycleProjectionIdentity = {
@@ -3618,7 +3654,7 @@ export class ExactReviewQueue {
       // drift. That work did not leave its lane, so it must not improve the
       // operator-facing net speed until a later revision actually completes.
       const completedLane =
-        !requeued && !completionResult.parked ? exactReviewQueueLane(item) : null;
+        !requeued && (!completionResult.parked || heldReview) ? exactReviewQueueLane(item) : null;
       const structuredTerminal = publicationCompletion && !requeued && !completionResult.parked;
       await this.writeState(
         state,
@@ -3698,6 +3734,7 @@ export class ExactReviewQueue {
         ok: true,
         requeued,
         ...(terminalFinalization ? { terminal_finalization: true } : {}),
+        ...(heldReview ? { review_hold: item.parkedReason } : {}),
       });
     }
 
@@ -16106,6 +16143,7 @@ function finishExactReviewQueueItem(
   reviewFailureReason?: ExactReviewFailureReason,
   random: () => number = Math.random,
   env: unknown = {},
+  reviewHold?: ExactReviewHoldReason,
 ) {
   if (outcome === "success") {
     delete item.reviewFailure;
@@ -16173,6 +16211,25 @@ function finishExactReviewQueueItem(
     (retryingFailure && retryPolicyChanged) ||
     requeueLatest;
   if (!requeued) {
+    const leaseDecision = item.leaseDecision ?? item.decision;
+    if (
+      reviewHold &&
+      outcome === "success" &&
+      !hasNewerRevision &&
+      exactReviewHoldApplies(reviewHold, leaseDecision)
+    ) {
+      // Input that arrived during the lease is a real change and is not held.
+      // Organic events, commands, and parked-review reconciliation release it.
+      item.decision = leaseDecision;
+      clearExactReviewLease(item);
+      item.state = "parked";
+      item.parkedReason = reviewHold;
+      item.parkedRecoveryAt = undefined;
+      item.parkedTerminalCheckedAt = now;
+      item.backoffReason = undefined;
+      item.updatedAt = now;
+      return { requeued: false, parked: true };
+    }
     if (
       reviewFailureReason === "source_incompatible" &&
       item.decision.itemKind === "pull_request" &&
@@ -17587,6 +17644,13 @@ function exactReviewScheduledDispositionFromJson(
   try {
     const parsed: unknown = JSON.parse(value);
     const body = objectValue(parsed);
+    const dedupeReason =
+      body.dedupe_reason === "item_already_pending_or_active" ||
+      body.dedupe_reason === "source_incompatible" ||
+      body.dedupe_reason === "scanner_refused" ||
+      body.dedupe_reason === "source_drift_loop"
+        ? body.dedupe_reason
+        : exactReviewHoldReason(body.dedupe_reason);
     let disposition: ExactReviewScheduledDisposition | null = null;
     if (
       body.ok === true &&
@@ -17608,17 +17672,14 @@ function exactReviewScheduledDispositionFromJson(
       typeof body.item_key === "string" &&
       /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+#[1-9]\d*$/.test(body.item_key) &&
       body.dedupe_scope === "scheduled_queue_item" &&
-      (body.dedupe_reason === "item_already_pending_or_active" ||
-        body.dedupe_reason === "source_incompatible" ||
-        body.dedupe_reason === "scanner_refused" ||
-        body.dedupe_reason === "source_drift_loop")
+      dedupeReason
     ) {
       disposition = {
         ok: true,
         deduped: true,
         item_key: body.item_key,
         dedupe_scope: "scheduled_queue_item",
-        dedupe_reason: body.dedupe_reason,
+        dedupe_reason: dedupeReason,
       };
     } else if (
       body.ok === true &&

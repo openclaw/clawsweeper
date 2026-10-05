@@ -111,6 +111,37 @@ export function exactReviewScheduledOfferReleasesSourceDriftLoop(
 }
 
 /**
+ * Deterministic automatic outcomes that cannot change until the target does: a
+ * locked conversation completes as a guarded no-op, and an oversized PR head
+ * always takes the metadata-only size policy. Nothing durable records either
+ * outcome, so the completed row stays parked under this reason and scheduled
+ * offers dedupe against it instead of claiming another run.
+ */
+export const EXACT_REVIEW_HOLD_REASONS = ["locked_conversation", "oversized_pull_request"] as const;
+export type ExactReviewHoldReason = (typeof EXACT_REVIEW_HOLD_REASONS)[number];
+
+export function exactReviewHoldReason(value: unknown): ExactReviewHoldReason | null {
+  return EXACT_REVIEW_HOLD_REASONS.find((reason) => reason === value) ?? null;
+}
+
+/**
+ * A completed generation may keep its row as a hold only without command
+ * context (commands own their status lifecycle). The oversized hold also needs
+ * the pinned PR head, so a pushed head can be told apart from the held one.
+ */
+export function exactReviewHoldApplies(
+  reason: ExactReviewHoldReason,
+  decision: ExactReviewDecision,
+): boolean {
+  if (decision.publication || exactReviewDecisionHasCommandContext(decision)) return false;
+  if (reason === "locked_conversation") return true;
+  return (
+    decision.itemKind === "pull_request" &&
+    /^[0-9a-f]{40}$/.test(String(decision.sourceHeadSha || ""))
+  );
+}
+
+/**
  * Additive, advisory loop and review-generation history. Both tables live
  * outside queue item JSON because completed items are deleted between review
  * generations. Older code ignores them; a missing row means no loop history.

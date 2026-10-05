@@ -593,6 +593,14 @@ ClawSweeper's own post-review writes can feed hot intake. Separately, `review_ru
 any item claims more than `EXACT_REVIEW_RUNAWAY_REVIEWS_PER_DAY` reviews in a
 trailing day. [Automation limits](limits.md) owns both rules.
 
+Two deterministic no-ops are held instead of re-offered. Scheduled planning
+skips open-but-locked conversations, because their review run can only
+complete as a guarded no-op. The queue also keeps a completed locked or
+oversized-PR generation parked as `locked_conversation` or
+`oversized_pull_request`, so other automatic producers and ClawSweeper's own
+lease-comment writes on an oversized PR cannot reclaim it. Organic events,
+commands, a pushed head, and parked-review reconciliation release the hold.
+
 Exact PR review marks ClawSweeper's own acknowledgement comment
 (`clawsweeper-pr-ack`) complete after the review snapshot and before direct
 publication, and GitHub moves the PR's `updated_at` for that edit. The producer's
@@ -819,7 +827,8 @@ active status is paginated so fleets above 100 runs remain fully counted.
 
 The planner considers only open issues and PRs that pass `shouldPlanItem`.
 Protected labels and other non-reviewable items are skipped before Codex work is
-allocated.
+allocated. Scheduled scans also skip open-but-locked conversations; an
+`unlocked` webhook event admits the item again.
 
 Review cadence:
 
