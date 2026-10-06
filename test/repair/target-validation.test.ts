@@ -2658,6 +2658,173 @@ test("bun-based target toolchain installs deps and runs configured validation", 
   ]);
 });
 
+test("Go targets get GOROOT derived from the validation PATH so trimmed go binaries can run", () => {
+  const cwd = gitGoModuleFixture();
+  git(cwd, "add", ".");
+  git(cwd, "commit", "-m", "initial");
+  attachOrigin(cwd);
+
+  const { goRoot, envLogPath } = fakeGoToolchainFixture();
+  // The runner's own GOROOT is one of the stripped toolchain-steering names;
+  // the derived root must come from the `go` on PATH, not from this value.
+  const previousGoRoot = process.env.GOROOT;
+  process.env.GOROOT = path.join(goRoot, "runner-provided-root");
+  try {
+    withPathOnlyPrefix(path.join(goRoot, "bin"), () => {
+      assert.deepEqual(
+        runAllowedValidationCommands(
+          ["go version"],
+          cwd,
+          validationOptions("openclaw/crabbox", goToolchain()),
+        ),
+        ["go version"],
+      );
+    });
+  } finally {
+    restoreEnv("GOROOT", previousGoRoot);
+  }
+
+  const invocations = fs
+    .readFileSync(envLogPath, "utf8")
+    .trim()
+    .split(/\r?\n/)
+    .map((line) => JSON.parse(line));
+  assert.deepEqual(invocations, [
+    {
+      GOROOT: fs.realpathSync(goRoot),
+      GOTOOLCHAIN: "local",
+      args: ["version"],
+      telemetryMode: "off",
+    },
+  ]);
+});
+
+test("Go targets fall back to the runner tool-cache GOROOT_<version>_<arch> root when go is installed outside its tree", () => {
+  const cwd = gitGoModuleFixture();
+  git(cwd, "add", ".");
+  git(cwd, "commit", "-m", "initial");
+  attachOrigin(cwd);
+
+  const { goRoot, envLogPath } = fakeGoToolchainFixture();
+  // A `go` copied under a plain bin directory, as /usr/bin/go is on hosted
+  // runner images, with the real tree published only through the tool-cache
+  // variable. An older published root must lose to the newer one.
+  const binDir = makeFixtureDir("clawsweeper-fake-go-copy-bin-");
+  for (const name of ["go", "go.js"]) {
+    fs.copyFileSync(path.join(goRoot, "bin", name), path.join(binDir, name));
+    fs.chmodSync(path.join(binDir, name), 0o755);
+  }
+  const { goRoot: olderRoot } = fakeGoToolchainFixture({ version: "go1.22.9" });
+  const previous = {
+    GOROOT: process.env.GOROOT,
+    GOROOT_1_26_X64: process.env.GOROOT_1_26_X64,
+    GOROOT_1_22_X64: process.env.GOROOT_1_22_X64,
+  };
+  process.env.GOROOT = path.join(goRoot, "runner-provided-root");
+  process.env.GOROOT_1_26_X64 = goRoot;
+  process.env.GOROOT_1_22_X64 = olderRoot;
+  try {
+    withPathOnlyPrefix(binDir, () => {
+      assert.deepEqual(
+        runAllowedValidationCommands(
+          ["go version"],
+          cwd,
+          validationOptions("openclaw/crabbox", goToolchain()),
+        ),
+        ["go version"],
+      );
+    });
+  } finally {
+    for (const [key, value] of Object.entries(previous)) restoreEnv(key, value);
+  }
+
+  const invocations = fs
+    .readFileSync(envLogPath, "utf8")
+    .trim()
+    .split(/\r?\n/)
+    .map((line) => JSON.parse(line));
+  assert.deepEqual(invocations, [
+    {
+      GOROOT: fs.realpathSync(goRoot),
+      GOTOOLCHAIN: "local",
+      args: ["version"],
+      telemetryMode: "off",
+    },
+  ]);
+});
+
+test("Go targets switch to a tool-cache Go that satisfies go.mod when the go on PATH is too old", () => {
+  const cwd = gitGoModuleFixture();
+  git(cwd, "add", ".");
+  git(cwd, "commit", "-m", "initial");
+  attachOrigin(cwd);
+
+  // go.mod declares `toolchain go1.26.5`; the PATH tree is 1.24.12 and the
+  // sandbox has no network for an automatic download.
+  const older = fakeGoToolchainFixture({ version: "go1.24.12" });
+  const newer = fakeGoToolchainFixture({ version: "go1.26.5" });
+  const previous = { GOROOT_1_26_X64: process.env.GOROOT_1_26_X64 };
+  process.env.GOROOT_1_26_X64 = newer.goRoot;
+  try {
+    withPathOnlyPrefix(path.join(older.goRoot, "bin"), () => {
+      assert.deepEqual(
+        runAllowedValidationCommands(
+          ["go version"],
+          cwd,
+          validationOptions("openclaw/crabbox", goToolchain()),
+        ),
+        ["go version"],
+      );
+    });
+  } finally {
+    for (const [key, value] of Object.entries(previous)) restoreEnv(key, value);
+  }
+
+  assert.equal(fs.existsSync(older.envLogPath), false, "the 1.24 tree on PATH must not run");
+  const invocations = fs
+    .readFileSync(newer.envLogPath, "utf8")
+    .trim()
+    .split(/\r?\n/)
+    .map((line) => JSON.parse(line));
+  assert.deepEqual(invocations, [
+    {
+      GOROOT: fs.realpathSync(newer.goRoot),
+      GOTOOLCHAIN: "local",
+      args: ["version"],
+      telemetryMode: "off",
+    },
+  ]);
+});
+
+test("Go toolchain preparation leaves GOROOT unset when the go on PATH is not inside a Go tree", () => {
+  const cwd = gitGoModuleFixture();
+  git(cwd, "add", ".");
+  git(cwd, "commit", "-m", "initial");
+  attachOrigin(cwd);
+
+  const { goRoot, envLogPath } = fakeGoToolchainFixture({ trimmed: false });
+  fs.rmSync(path.join(goRoot, "src"), { recursive: true, force: true });
+  withPathOnlyPrefix(path.join(goRoot, "bin"), () => {
+    assert.deepEqual(
+      runAllowedValidationCommands(
+        ["go version"],
+        cwd,
+        validationOptions("openclaw/crabbox", goToolchain()),
+      ),
+      ["go version"],
+    );
+  });
+
+  const invocations = fs
+    .readFileSync(envLogPath, "utf8")
+    .trim()
+    .split(/\r?\n/)
+    .map((line) => JSON.parse(line));
+  assert.deepEqual(invocations, [
+    { GOROOT: null, GOTOOLCHAIN: "local", args: ["version"], telemetryMode: "off" },
+  ]);
+});
+
 test("dependency setup permits install-safe package-manager config files", () => {
   for (const [configName, contents] of [
     [".npmrc", ""],
@@ -10104,6 +10271,55 @@ if (${JSON.stringify(failRun)} && process.argv[2] === "run") { console.error("sr
 `,
   );
   return { binDir, logPath };
+}
+
+function gitGoModuleFixture() {
+  const cwd = makeFixtureDir("clawsweeper-validation-go-");
+  fs.writeFileSync(
+    path.join(cwd, "go.mod"),
+    "module example.invalid/fixture\n\ngo 1.26.0\n\ntoolchain go1.26.5\n",
+  );
+  fs.writeFileSync(path.join(cwd, "main.go"), "package main\n\nfunc main() {}\n");
+  git(cwd, "init", "-b", "main");
+  git(cwd, "config", "user.email", "clawsweeper@example.invalid");
+  git(cwd, "config", "user.name", "ClawSweeper Test");
+  return cwd;
+}
+
+function goToolchain() {
+  return {
+    toolchain: {
+      packageManager: "pnpm",
+      baseValidationCommands: [],
+      changedGate: null,
+    },
+  };
+}
+
+// A Go tree whose `go` behaves like a -trimpath build: it refuses to run
+// without GOROOT and records the environment it was given.
+function fakeGoToolchainFixture({ trimmed = true, version = "go1.26.5" } = {}) {
+  const goRoot = makeFixtureDir("clawsweeper-fake-goroot-");
+  fs.writeFileSync(path.join(goRoot, "VERSION"), `${version}\ntime 2026-10-01T00:00:00Z\n`);
+  fs.mkdirSync(path.join(goRoot, "src", "runtime"), { recursive: true });
+  fs.mkdirSync(path.join(goRoot, "pkg", "tool"), { recursive: true });
+  fs.mkdirSync(path.join(goRoot, "bin"), { recursive: true });
+  const envLogPath = path.join(goRoot, "fake-go-env.log");
+  writeNodeCommandShim(
+    path.join(goRoot, "bin"),
+    "go",
+    `#!/usr/bin/env node
+const fs = require("node:fs");
+const telemetryMode = (() => { try { return fs.readFileSync(require("node:path").join(process.env.XDG_CONFIG_HOME, "go", "telemetry", "mode"), "utf8").trim(); } catch { return null; } })();
+fs.appendFileSync(${JSON.stringify(envLogPath)}, JSON.stringify({ GOROOT: process.env.GOROOT ?? null, GOTOOLCHAIN: process.env.GOTOOLCHAIN ?? null, args: process.argv.slice(2), telemetryMode }) + "\\n");
+if (${JSON.stringify(trimmed)} && !process.env.GOROOT) {
+  console.error("go: cannot find GOROOT directory: 'go' binary is trimmed and GOROOT is not set");
+  process.exit(2);
+}
+if (process.argv[2] === "version") console.log("go version go1.26.5 linux/amd64");
+`,
+  );
+  return { goRoot, envLogPath };
 }
 
 function envLoggingBunFixture() {
