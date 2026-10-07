@@ -303,7 +303,7 @@ export interface CreateReportOrchestrationDependencies {
   publicPriorityBulletFromText: (text: string, fallback: PublicPriority) => string;
   publicPriorityBulletIfActionable: (text: string, fallback: PublicPriority) => string;
   publicPriorityFromText: (text: string, fallback: PublicPriority) => PublicPriority;
-  publicRankDetailsBlock: () => string;
+  publicRankScaleLine: () => string;
   publicRealBehaviorProofLine: (policy: RealBehaviorProofPolicy) => string;
   publicReviewScoresBlock: (
     rating: PrRating,
@@ -316,12 +316,6 @@ export interface CreateReportOrchestrationDependencies {
   publicRiskBulletsFromText: (text: string, fallback: PublicPriority) => string;
   publicSecurityReviewLine: (review: SecurityReview) => string;
   publicTableCell: (value: string) => string;
-  publicVerificationBlock: (
-    policy: RealBehaviorProofPolicy,
-    evidence: readonly Evidence[],
-    findings: readonly ReviewFinding[],
-    securityReview: SecurityReview,
-  ) => string;
   pullHeadShaFromContext: (context: ItemContext) => string | null;
   pullHeadShaFromReport: (markdown: string) => string | null;
   pullRequestHeadActivity: (

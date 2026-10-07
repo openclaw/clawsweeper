@@ -564,8 +564,8 @@ Adds a small runtime change with tests and docs.
     evidenceDetails,
     /\| \*\*Total\*\* \| \*\*3\*\* \| \*\*21\*\* \| \*\*3\*\* \| \*\*\+18\*\* \|/,
   );
-  assert.match(evidenceDetails, /### Review metrics\n\nNone\./);
-  assert.ok(comment.indexOf("### PR surface") < comment.indexOf("### Review metrics"));
+  // An empty metrics digest is omitted rather than rendered as "None.".
+  assert.doesNotMatch(evidenceDetails, /### Review metrics/);
 });
 
 test("pull request comments render one review metric digest item", () => {

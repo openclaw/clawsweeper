@@ -149,7 +149,7 @@ For a PR that needs work, the visible comment starts with:
 Codex review: needs changes before merge.
 ```
 
-The visible `Summary` also includes `Reviewed head: <full-sha>`. This makes the
+The visible `Merge readiness` also includes `Reviewed head: <full-sha>`. This makes the
 human-facing verdict self-identifying without requiring maintainers to inspect
 hidden markers. Publication still verifies the durable tuple against live state;
 the visible SHA is evidence of the captured review revision, not a substitute
@@ -162,33 +162,42 @@ starts with:
 Codex review: needs real behavior proof before merge.
 ```
 
-PR comments use a human-first shape:
+PR comments use a verdict-first shape. The visible part answers "should this
+merge, and why not yet" in this order:
 
-1. `## What this changes` is first. It comes from the typed `changeSummary`
-   field and should define unfamiliar subsystem terms briefly and explain the
-   effect in plain language.
-2. `## Merge readiness` comes directly after the change summary. It leads with
-   one dynamic plain-language outcome, the number of real items remaining, a
-   short bottom line, priority, and an owner-decision pointer only when a
-   decision packet exists.
-3. `## Review scores` separates the three ratings into a scannable
-   `Measure | Result | What it means` table. Crab ranks stay visible, but every
-   ranked value also shows its six-point score: S is `6/6`, A is `5/6`, B is
-   `4/6`, C is `3/6`, D is `2/6`, and F is `1/6`.
-4. `## Verification` folds proof, concrete evidence/checks, findings, and
-   security into one compact `Check | Result | Evidence` table. Uneventful
-   findings and security rows say `None.`
-5. `## How this fits together` appears when the review can establish concrete
-   system context. It uses one or two plain-language sentences plus a compact
-   Mermaid flowchart showing the changed subsystem's inputs, decisions, and
-   outputs.
+1. The verdict line (`Codex review: ...`).
+2. `## What this changes` comes from the typed `changeSummary` field and
+   should define unfamiliar subsystem terms briefly and explain the effect in
+   plain language.
+3. `## Product` shows the typed `productReview` in one compact block: kind,
+   worth it, fix scope (omitted when not applicable), user problem, and reason.
+   Reports written before `productReview` existed omit the section.
+4. `## Regression provenance` appears only when a verified or suspected
+   regression source exists.
+5. `## Merge readiness` leads with one dynamic plain-language outcome, the
+   number of real items remaining, a short bottom line, priority, the reviewed
+   head, and an owner-decision pointer only when a decision packet exists.
 6. `## Decision needed` appears only when a maintainer decision packet exists.
    It shows the concrete question and recommended option in a table.
 7. `## Before merge` uses native Markdown task checkboxes for real remaining
    actions or risks. Routine CI, ordinary maintainer review, and no-op guidance
    collapse to `None.`
-8. `## Findings` appears only when actionable review or security findings need
-   a little more visible detail.
+8. `## Findings` always renders for completed reviews. Its leading block lists
+   up to three review findings and three security concerns as
+   `- [P1] title — \`file:line\``, or `None.`; review history and the comment
+   router parse only this block. A `### Provenance` subsection lists
+   `overrides_without_reason` and `unknown` provenance entries, and a
+   `### Tests` subsection lists low-value tests (file and reason) and the
+   missing end-to-end scenario. Neither subsection uses P-severity labels, so
+   neither starts repair routing.
+9. `## Review scores` separates the three ratings into a scannable
+   `Measure | Result | What it means` table. Crab ranks stay visible, and every
+   ranked value also shows its six-point score: S is `6/6`, A is `5/6`, B is
+   `4/6`, C is `3/6`, D is `2/6`, and F is `1/6`. The `Proof confidence` row
+   carries the real behavior proof statement. Evidence entries that only repeat
+   it are dropped, and proof labels show only their meaning; a status label
+   repeats the proof statement only when missing proof is the reason for that
+   status. The rating scale and workflow notes in the details are one line each.
 
 Maintainer decision packets are reserved for unresolved choices between at least
 two distinct viable options that evidence cannot settle and a maintainer has not
@@ -284,11 +293,16 @@ The [next-step intent proof recipe](proof/review-next-step-intent/README.md)
 compares identical synthetic reports against pinned baseline and candidate
 renderers and exercises producer-to-report persistence without live publication.
 
-Everything primarily useful to agents or deep reviewers lives under one
-collapsed `Agent review details` section: security evidence, PR surface,
-review metrics, stored-data warnings, root-cause clusters, proof suggestions,
-merge-risk options, full review comments, labels, evidence, optional rank-up
-moves, the rank legend, workflow notes, and review history.
+Everything else lives under one collapsed `Agent review details` section, in
+this order: how this fits together (system context and Mermaid flowchart), live
+verification, technical review (best solution, reproduction and solution
+questions, full review comments, AGENTS.md status, remaining risk), merge-risk
+options, provenance entries that respect or explain the original intent, the
+testing proof path, security, evidence (security concern detail, acceptance
+criteria, what was checked, likely related people), PR surface, review metrics
+(only when present), stored-data warnings, root-cause clusters, proof
+suggestions, labels, optional rank-up moves, a one-line rating scale, a
+one-line workflow note, and review history.
 
 The label section explicitly says `No label changes.` when the publisher supplies
 confirmed previous labels, the review is not failed, and owned-label

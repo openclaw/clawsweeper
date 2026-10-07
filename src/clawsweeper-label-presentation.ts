@@ -243,7 +243,7 @@ export function createReportLabelPresentation(
     }
     if (label === PROOF_SUFFICIENT_LABEL) {
       return action === "add"
-        ? `${PROOF_SUFFICIENT_LABEL_DESCRIPTION} ${sentence(realBehaviorProof.summary)}`
+        ? PROOF_SUFFICIENT_LABEL_DESCRIPTION
         : `Current real behavior proof status is ${realBehaviorProof.status}, not sufficient.`;
     }
     if (PROOF_MEDIA_LABEL_NAMES.has(label)) {
@@ -251,7 +251,7 @@ export function createReportLabelPresentation(
         (candidate) => candidate.evidenceKind === realBehaviorProof.evidenceKind,
       );
       return action === "add" && mediaLabel
-        ? `${mediaLabel.description} ${sentence(realBehaviorProof.summary)}`
+        ? mediaLabel.description
         : `Current real behavior proof evidence kind is ${realBehaviorProof.evidenceKind}.`;
     }
     if (label === TELEGRAM_VISIBLE_PROOF_LABEL) {
@@ -359,28 +359,26 @@ export function createReportLabelPresentation(
       }
       const statusKind = options.prStatusKind ?? prStatusLabelKindFromReportLabels(markdown);
       if (statusKind) {
+        // A proof blocker is the status label's reason; otherwise the proof sentence
+        // renders once, in the Review scores table, and labels carry only their meaning.
         add(
           prStatusLabelForKind(statusKind).name,
-          `${prStatusLabelForKind(statusKind).description} ${publicRealBehaviorProofLine(
-            proofPolicy,
-          )}${proofPolicy.verificationBlocksMerge ? ` ${publicHistoricalVerificationBlockerLine()}` : ""}`,
+          [
+            prStatusLabelForKind(statusKind).description,
+            proofPolicy.proofBlocksMerge ? publicRealBehaviorProofLine(proofPolicy) : "",
+            proofPolicy.verificationBlocksMerge ? publicHistoricalVerificationBlockerLine() : "",
+          ]
+            .filter(Boolean)
+            .join(" "),
         );
       }
       if (realBehaviorProof.status === "sufficient") {
-        add(
-          PROOF_SUFFICIENT_LABEL,
-          `${PROOF_SUFFICIENT_LABEL_DESCRIPTION} ${sentence(realBehaviorProof.summary)}`,
-        );
+        add(PROOF_SUFFICIENT_LABEL, PROOF_SUFFICIENT_LABEL_DESCRIPTION);
       }
       const proofMediaLabel = PROOF_MEDIA_LABELS.find(
         (label) => label.evidenceKind === realBehaviorProof.evidenceKind,
       );
-      if (proofMediaLabel) {
-        add(
-          proofMediaLabel.name,
-          `${proofMediaLabel.description} ${sentence(realBehaviorProof.summary)}`,
-        );
-      }
+      if (proofMediaLabel) add(proofMediaLabel.name, proofMediaLabel.description);
       const telegramProof = reportTelegramVisibleProof(markdown);
       if (telegramProof.status === "needed") {
         add(

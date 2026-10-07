@@ -833,6 +833,12 @@ export function createReportCommentHelpers(
     return [collapsedDetailsBlock("How this review workflow works", reviewWorkflowLines()), ""];
   }
 
+  // PR comments keep the workflow to one line inside the collapsed details; issue
+  // comments keep the full callout.
+  function reviewWorkflowSummaryLine(): string {
+    return "ClawSweeper edits this one comment on every review. Comment `@clawsweeper re-review` for a fresh review only; repair and merge need explicit maintainer commands such as `@clawsweeper autofix` or `@clawsweeper automerge`.";
+  }
+
   function reviewFreshnessText(markdown: string, revision?: number): string {
     const timestamp = formatReviewFreshnessTimestamp(frontMatterValue(markdown, "reviewed_at"));
     if (!timestamp) return "";
@@ -845,6 +851,7 @@ export function createReportCommentHelpers(
   const OWNED_REVIEW_SECTION_HEADINGS = new Set([
     "summary",
     "what this changes",
+    "product",
     "merge readiness",
     "review scores",
     "verification",
@@ -918,8 +925,8 @@ export function createReportCommentHelpers(
     mergeRiskAutomergeInstructionBlock,
     normalizeMergeRiskAutomergeInstruction,
     appendReviewQuestionDetails,
-    reviewWorkflowLines,
     reviewWorkflowCallout,
+    reviewWorkflowSummaryLine,
     reviewFreshnessText,
     REVIEW_HISTORY_RENDER_SLOT,
     OWNED_REVIEW_SECTION_HEADINGS,

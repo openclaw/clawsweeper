@@ -1270,45 +1270,20 @@ Full review comments:
   assert.doesNotMatch(comment, /\| \| \|\n\|---\|---\|/);
   assert.match(comment, /## Review scores\n\n\| Measure \| Result \| What it means \|/);
   assert.match(comment, /\| \*\*Overall readiness\*\* \| .* \*\*\(5\/6\)\*\* \|/);
-  assert.match(comment, /## Verification\n\n\| Check \| Result \| Evidence \|/);
-  assert.match(comment, /\| \*\*Real behavior\*\* \| Verified \| Sufficient \(terminal\):/);
-  assert.match(comment, /\| \*\*Evidence reviewed\*\* \| 1 item \| targeted lane:/);
+  assert.doesNotMatch(comment, /## Verification/);
+  assert.match(comment, /\| \*\*Proof confidence\*\* \| [^|]+ \| Sufficient \(terminal\):/);
+  assert.match(detailsBody(comment, "Agent review details"), /- \*\*targeted lane:\*\*/);
   assert.match(
-    comment,
-    /## How this fits together\n\nOpenClaw resolves a session's model override before sending the next agent request\.\n\n```mermaid\nflowchart LR/,
+    detailsBody(comment, "Agent review details"),
+    /### How this fits together\n\nOpenClaw resolves a session's model override before sending the next agent request\.\n\n```mermaid\nflowchart LR/,
   );
-  assert.ok(comment.indexOf("## Verification") < comment.indexOf("## How this fits together"));
+  assert.doesNotMatch(comment, /^## How this fits together/m);
   assert.doesNotMatch(comment, /## Proof/);
   assert.match(comment, /\*\*Reviewed head:\*\* `abc123def456abc123def456abc123def456abcd`/);
   assert.doesNotMatch(comment, /\*\*Workflow note:\*\*/);
-  assert.match(comment, /### Workflow/);
   assert.match(
     comment,
-    /- Re-runs edit this comment so the latest verdict, findings, and automation markers stay together instead of adding duplicate bot comments\./,
-  );
-  assert.match(
-    comment,
-    /- A fresh review can be triggered by eligible `@clawsweeper re-review` comments, exact-item GitHub events, scheduled\/background review runs, or manual workflow dispatch\./,
-  );
-  assert.match(
-    comment,
-    /- PR\/issue authors and users with repository write access can comment `@clawsweeper re-review` or `@clawsweeper re-run` on an open PR or issue to request a fresh review only\./,
-  );
-  assert.match(
-    comment,
-    /- Maintainers can also comment `@clawsweeper review` to request a fresh review only\./,
-  );
-  assert.match(
-    comment,
-    /- Fresh-review commands do not start repair, autofix, rebase, CI repair, or automerge\./,
-  );
-  assert.match(
-    comment,
-    /- Maintainer-only repair and merge flows require explicit commands such as `@clawsweeper autofix`, `@clawsweeper automerge`, `@clawsweeper fix ci`, or `@clawsweeper address review`\./,
-  );
-  assert.match(
-    comment,
-    /- Maintainers can comment `@clawsweeper explain` to ask for more context, or `@clawsweeper stop` to stop active automation\./,
+    /### Workflow\n\nClawSweeper edits this one comment on every review\. Comment `@clawsweeper re-review` for a fresh review only; repair and merge need explicit maintainer commands/,
   );
   // Ordinary maintainer review guidance collapses out of the checklist.
   assert.match(comment, /## Before merge\n\nNone\./);
@@ -1337,6 +1312,132 @@ Full review comments:
     comment,
     /<!-- clawsweeper-verdict:needs-human item=74265 sha=abc123def456abc123def456abc123def456abcd/,
   );
+});
+
+test("ready zero-finding PR comments show verdict, product, readiness, findings and scores before details", () => {
+  const proof =
+    "A terminal transcript from a real gateway shows the Telegram reply keeps its final attachment.";
+  const comment = renderReviewCommentFromReport(
+    `${reportFrontMatter({
+      type: "pull_request",
+      number: "74270",
+      decision: "keep_open",
+      close_reason: "none",
+      review_status: "complete",
+      work_candidate: "none",
+      pull_head_sha: "abc123def456abc123def456abc123def456abcd",
+      reviewed_at: "2026-05-22T04:43:12.000Z",
+      labels: JSON.stringify(["P2"]),
+    })}
+
+## Summary
+
+The fix is narrow and proven on a real gateway.
+
+## What This Changes
+
+Telegram replies with several attachments now send every attachment.
+
+## System Context
+
+The Telegram channel batches outbound attachments before the gateway sends the reply.
+
+## Architecture Diagram
+
+flowchart LR
+    agent["Agent reply"] --> telegram["Telegram sendMediaGroup"]
+
+${realBehaviorProofReportSection({ summary: proof })}
+${prRatingReportSection({ nextSteps: "- Add a channel e2e scenario for three-attachment replies." })}
+## Product Review
+
+Kind: bug_fix
+
+Worth it: yes
+
+Fix scope: complete
+
+User problem: Telegram users lose the last attachment of a multi-file reply.
+
+Reason: Restores the documented media-group behavior with a narrow change.
+
+## Provenance
+
+- Area: src/telegram/media-group.ts
+  - Introduced by: https://github.com/openclaw/openclaw/pull/70001
+  - Original reason: Batch attachments to stay under the Telegram rate limit.
+  - Verdict: respects
+
+## Testing Review
+
+Proof path: shipped_entry_point
+
+Added test files: 1
+
+Missing E2E:
+
+Low-value tests:
+
+- none
+
+## Best Possible Solution
+
+Merge after required checks are green.
+
+## Evidence
+
+- **real behavior proof:** ${proof}
+- **diff:** The batcher flushes the pending attachment before sending.
+
+## Security Review
+
+Status: cleared
+
+Summary: The change only reorders attachment flushing.
+
+Concerns:
+
+- none
+
+## Review Findings
+
+Overall correctness: patch is correct
+
+Overall confidence: 0.9
+
+Full review comments:
+
+- none
+`,
+    "none",
+    { prStatusKind: "ready_for_maintainer_look" },
+  );
+
+  const visible = comment.slice(0, comment.indexOf("\n<details>"));
+  assert.match(visible, /^Codex review: needs maintainer review before merge\./);
+  assert.deepEqual(
+    [...visible.matchAll(/^## (.+)$/gm)].map((match) => match[1]),
+    [
+      "What this changes",
+      "Product",
+      "Merge readiness",
+      "Before merge",
+      "Findings",
+      "Review scores",
+    ],
+  );
+  assert.equal(comment.match(/^<details>$/gm)?.length, 1);
+  assert.match(
+    comment.slice(visible.length),
+    /^\n<details>\n<summary><strong>Agent review details<\/strong><\/summary>/,
+  );
+  assert.match(
+    visible,
+    /## Product\n\n\*\*Kind:\*\* Bug fix · \*\*Worth it:\*\* Yes · \*\*Fix scope:\*\* Complete\n\*\*User problem:\*\* Telegram users lose the last attachment of a multi-file reply\.\n\*\*Reason:\*\* Restores the documented media-group behavior with a narrow change\./,
+  );
+  assert.match(visible, /## Before merge\n\nNone\.\n\n## Findings\n\nNone\.\n\n## Review scores/);
+  assert.equal(comment.split(proof).length - 1, 1);
+  assert.match(visible, /\| \*\*Proof confidence\*\* \| [^|]+ \| Sufficient \(terminal\): /);
 });
 
 test("review comments include the UTC date when ET and UTC calendar dates differ", () => {
@@ -2095,7 +2196,10 @@ Reason: Normal maintainer review is sufficient.
     "none",
   );
 
-  assert.match(comment, /\| \*\*Security\*\* \| Needs attention \|/);
+  assert.match(
+    comment,
+    /## Findings\n\n- \[medium\] Confirm issue write scope — `\.github\/workflows\/sweep\.yml:652`/,
+  );
   assert.match(comment, /### Security/);
   assert.match(comment, /Needs attention:/);
   assert.match(comment, /Confirm issue write scope/);

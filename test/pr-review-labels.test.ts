@@ -319,8 +319,8 @@ Full review comments:
   assert.doesNotMatch(comment, /\*\*PR rating\*\*/);
   assert.doesNotMatch(comment, /\*\*Real behavior proof\*\*/);
   assert.match(comment, /<summary><strong>Agent review details<\/strong><\/summary>/);
-  assert.match(comment, /\| \*\*6\/6\*\* \| S \| 🦀 challenger crab \|/);
-  assert.match(comment, /\| \*\*1\/6\*\* \| F \| 🧂 unranked krab \|/);
+  assert.match(comment, /### Rating scale\n\n6\/6 🦀 challenger crab · 5\/6 🦞 diamond lobster ·/);
+  assert.match(comment, /· 1\/6 🧂 unranked krab\. Overall follows the weaker of proof/);
   assert.match(markers, /clawsweeper-verdict:pass/);
   assert.doesNotMatch(markers, /clawsweeper-verdict:needs-human/);
 });

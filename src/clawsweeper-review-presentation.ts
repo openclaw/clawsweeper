@@ -466,21 +466,12 @@ export function createReviewPresentation({
     }
   }
 
-  function publicRankDetailsBlock(): string {
-    return [
-      "| Score | Internal tier | Crab rank | Meaning |",
-      "|---:|:---:|---|---|",
-      "| **6/6** | S | 🦀 challenger crab | Exceptional readiness |",
-      "| **5/6** | A | 🦞 diamond lobster | Very strong readiness |",
-      "| **4/6** | B | 🐚 platinum hermit | Good normal PR; ordinary maintainer review |",
-      "| **3/6** | C | 🦐 gold shrimp | Useful, but confidence is limited |",
-      "| **2/6** | D | 🦪 silver shellfish | Proof or implementation needs work |",
-      "| **1/6** | F | 🧂 unranked krab | Not merge-ready |",
-      "| N/A | NA | 🌊 off-meta tidepool | Rating does not apply |",
-      "",
-      "Overall follows the weaker of proof and patch quality.",
-      "Shiny media proof means a screenshot, video, or linked artifact directly shows the changed behavior. Runtime, network, CSP, and security claims still need visible diagnostics.",
-    ].join("\n");
+  function publicRankScaleLine(): string {
+    const tiers: readonly PrRatingTier[] = ["S", "A", "B", "C", "D", "F"];
+    const scale = tiers
+      .map((tier) => `${publicRatingScore(tier)}/6 ${themedRatingName(tier)}`)
+      .join(" · ");
+    return `${scale}. Overall follows the weaker of proof and patch quality; ✨ marks media proof (a screenshot, video, or linked artifact) that directly shows the changed behavior.`;
   }
 
   function publicRatingScore(tier: PrRatingTier): number | null {
@@ -538,80 +529,6 @@ export function createReviewPresentation({
       `| **Overall readiness** | ${publicRatedName(rating.overallTier)} | ${publicTableCell(overallMeaning)} |`,
       `| **Proof confidence** | ${publicRatedName(rating.proofTier)}${shiny} | ${publicTableCell(proofMeaning)} |`,
       `| **Patch quality** | ${publicRatedName(rating.patchTier)} | ${publicTableCell(patchMeaning)} |`,
-    ].join("\n");
-  }
-
-  function publicVerificationBlock(
-    policy: RealBehaviorProofPolicy,
-    evidence: readonly Evidence[],
-    findings: readonly ReviewFinding[],
-    securityReview: SecurityReview,
-  ): string {
-    const proof = policy.assessment;
-    const proofResult =
-      policy.proofBlocksMerge && proof.status === "not_applicable"
-        ? "Required by policy"
-        : proof.status === "sufficient"
-          ? "Verified"
-          : proof.status === "override"
-            ? "Overridden"
-            : proof.status === "not_applicable"
-              ? "Not applicable"
-              : "Needs proof";
-    const proofEvidence =
-      publicRealBehaviorProofLine(policy) || "Real behavior proof does not apply to this change.";
-    const evidenceResult =
-      evidence.length === 0
-        ? "None listed"
-        : `${evidence.length} ${evidence.length === 1 ? "item" : "items"}`;
-    const evidenceSummary =
-      evidence.length === 0
-        ? "None."
-        : evidence
-            .slice(0, 3)
-            .map((entry) =>
-              publicTableCell(
-                `${entry.label.trim() ? `${entry.label.trim()}: ` : ""}${sentence(entry.detail)}`,
-              ),
-            )
-            .join("<br>");
-    const findingResult =
-      findings.length === 0
-        ? "None"
-        : `${findings.length} actionable ${findings.length === 1 ? "finding" : "findings"}`;
-    const findingEvidence =
-      findings.length === 0
-        ? "None."
-        : findings
-            .slice(0, 3)
-            .map((finding) =>
-              publicTableCell(`[${priorityLabel(finding.priority)}] ${finding.title.trim()}`),
-            )
-            .join("<br>");
-    const securityNeedsAttention =
-      securityReview.status === "needs_attention" || securityReview.concerns.length > 0;
-    // Each report-provided entry is sanitized individually; the <br> separators are
-    // renderer-owned and must stay unescaped.
-    const securityEvidence = securityNeedsAttention
-      ? securityReview.concerns.length > 0
-        ? securityReview.concerns
-            .slice(0, 3)
-            .map((concern) => publicTableCell(`${concern.title.trim()}: ${sentence(concern.body)}`))
-            .join("<br>")
-        : publicTableCell(sentence(securityReview.summary))
-      : "None.";
-    return [
-      "| Check | Result | Evidence |",
-      "|---|---|---|",
-      `| **Real behavior** | ${proofResult} | ${publicTableCell(proofEvidence)} |`,
-      ...(policy.verificationBlocksMerge
-        ? [
-            `| **Historical verification** | Needs maintainer review | ${publicTableCell(publicHistoricalVerificationBlockerLine())} |`,
-          ]
-        : []),
-      `| **Evidence reviewed** | ${evidenceResult} | ${evidenceSummary} |`,
-      `| **Findings** | ${findingResult} | ${findingEvidence} |`,
-      `| **Security** | ${securityNeedsAttention ? "Needs attention" : "None"} | ${securityEvidence} |`,
     ].join("\n");
   }
 
@@ -846,14 +763,13 @@ export function createReviewPresentation({
     publicPriorityBulletFromText,
     publicPriorityBulletIfActionable,
     publicPriorityFromText,
-    publicRankDetailsBlock,
+    publicRankScaleLine,
     publicRealBehaviorProofLine,
     publicReviewScoresBlock,
     publicReviewTextDiffers,
     publicReviewTextIsSame,
     publicRiskBulletsFromText,
     publicSecurityReviewLine,
-    publicVerificationBlock,
     reviewFindingDetailedLine,
     reviewFindingLocation,
     reviewFindingSummaryLine,

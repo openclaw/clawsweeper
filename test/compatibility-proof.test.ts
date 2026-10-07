@@ -35,7 +35,7 @@ test("accepted persistent-state design needs no landing sign-off but still needs
       comment,
       /## Decision needed|Resolve maintainer decision|Complete next step/,
     );
-    assert.match(comment, /\*\*Findings\*\*.*None/);
+    assert.match(comment, /## Findings\n\nNone\./);
     assertHold(report, compatibility === "insufficient");
     if (compatibility === "sufficient") {
       assert.match(comment, /## Before merge\s+None\./);
