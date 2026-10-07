@@ -804,6 +804,47 @@ function fetchMissingReviewTreeBlobs(
   if (!complete) throw reviewTreeBudgetError(headSha, "fetched blob metadata is incomplete");
 }
 
+/**
+ * Fetch named blobs in one noop-negotiation request through the review fetch
+ * owner. Returns false when the remote left some of them missing.
+ */
+export function fetchReviewBlobs(
+  targetDir: string,
+  objectIds: readonly string[],
+  deadlineAt: number,
+): boolean {
+  const pending = new Set(objectIds);
+  return fetchReviewObjects({
+    targetDir,
+    deadlineAt,
+    reason: "review_blobs_unavailable",
+    remainingInput: () => `${[...pending].join("\n")}\n`,
+    complete: (remainingMs) => {
+      const present = readReviewGit(targetDir, ["cat-file", "--batch-check"], {
+        input: Buffer.from(`${[...pending].join("\n")}\n`),
+        deadlineAt: Date.now() + remainingMs(),
+        maxBytes: MAX_GIT_OUTPUT_BYTES,
+      });
+      for (const line of present?.toString("utf8").split("\n") ?? []) {
+        const match = /^([0-9a-f]{40}(?:[0-9a-f]{24})?) blob \d+$/.exec(line);
+        if (match) pending.delete(match[1]!);
+      }
+      return pending.size === 0;
+    },
+    args: [
+      "-c",
+      "fetch.negotiationAlgorithm=noop",
+      "fetch",
+      "origin",
+      "--no-tags",
+      "--no-write-fetch-head",
+      "--recurse-submodules=no",
+      "--filter=blob:none",
+      "--stdin",
+    ],
+  });
+}
+
 function assertReviewTreeHasBoundedTransforms(
   targetDir: string,
   headSha: string,

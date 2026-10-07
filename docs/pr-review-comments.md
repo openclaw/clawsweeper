@@ -230,9 +230,15 @@ The review sandbox runs on a partial clone without network, so `git blame` and
 `gh api` usually fail there. Before the model runs, the host therefore computes
 the PR prompt's `## Provenance Evidence`: from the merge-base to head diff it
 takes up to 12 files that existed on the merge base (most modified or deleted
-base lines first, at most 4 hunks each), runs `git blame --porcelain` on those
-base lines at the merge base (lazy blob fetch allowed, one 45-second deadline),
-and resolves up to 15 distinct introducing commits through
+base lines first, at most 4 hunks each; a pure insertion contributes the up to
+three unchanged base lines around it as `insertion_context`). It lists those
+files' history blobs from the last 300 commits with `git log --raw`, keeps the
+locally missing ones, and fetches them in one noop-negotiation request per 400
+blobs, so blame does not lazily fetch one blob per round trip; a path whose
+estimated history exceeds 64 MiB (such as a lockfile) and any failed prefetch
+fall back to lazy fetch. It then runs `git blame --porcelain` on those base
+lines at the merge base, all within one 45-second deadline, and resolves up to
+15 distinct introducing commits through
 `GET /repos/{owner}/{repo}/commits/{sha}/pulls` with the same `gh` reader that
 collects item context (title, URL, merge time, 1,200-character body excerpt,
 cached per run). Deadlines, Git errors, and API errors degrade the evidence to

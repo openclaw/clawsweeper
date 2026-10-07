@@ -65,7 +65,9 @@ change to it.
 2. For each area, find the commit that introduced the behavior:
    - Start with `## Provenance Evidence`. The host already ran `git blame` on
      the base lines that the diff changes or removes, and found the pull
-     request of each commit.
+     request of each commit. An area with `change: insertion_context` gives
+     the unchanged lines next to an insertion. Use it when the inserted code
+     changes the behavior of those lines.
    - When the evidence names a pull request, read its stated reason in the
      `title` and `bodyExcerpt` of that pull request.
    - Use local git commands only to extend the evidence: for an area that it

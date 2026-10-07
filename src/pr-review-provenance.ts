@@ -1,4 +1,5 @@
 import type { ItemContext } from "./clawsweeper-types.js";
+import { fetchReviewBlobs, ReviewGitError } from "./clawsweeper-review-blobs.js";
 import { readReviewGit, reviewMergeBase, type ReviewGitReadOptions } from "./pr-review-evidence.js";
 
 // Host-side provenance facts for the reviewer. The model keeps the judgement;
@@ -15,6 +16,10 @@ const MAX_BODY_EXCERPT_CHARS = 1_200;
 const MAX_SUMMARY_CHARS = 200;
 const MAX_REASON_DETAIL_CHARS = 200;
 const ZERO_OBJECT_ID = /^0+$/;
+const BLOB_MODE = /^(?:100644|100755|120000)$/;
+const MAX_HISTORY_COMMITS = 300;
+const MAX_PREFETCH_OBJECTS = 400;
+const MAX_PREFETCH_BYTES = 64 * 1024 * 1024;
 
 export type ProvenancePullRequest = {
   number: number;
@@ -31,9 +36,13 @@ export type ProvenanceCommit = {
   pr?: ProvenancePullRequest;
 };
 
+export type ProvenanceChange = "modified" | "insertion_context";
+
 export type ProvenanceArea = {
   path: string;
   baseLines: string;
+  // `insertion_context` blames unchanged base lines around a pure insertion.
+  change: ProvenanceChange;
   commits: ProvenanceCommit[];
 };
 
@@ -43,9 +52,11 @@ export type ProvenanceEvidence = {
   areas: ProvenanceArea[];
 };
 
-export type ProvenanceHunk = { path: string; start: number; end: number };
+export type ProvenanceHunk = { path: string; start: number; end: number; change: ProvenanceChange };
 
 export type BlameCommit = { sha: string; date: string; summary: string; lines: number };
+
+export type ProvenanceBlobFetch = (objectIds: string[], deadlineAt: number) => unknown;
 
 export type ProvenanceGitRead = (args: string[], options: ReviewGitReadOptions) => string | null;
 
@@ -66,15 +77,17 @@ function collapse(text: string, limit: number): string {
 }
 
 /**
- * Base-side line ranges that a zero-context diff modifies or deletes, on files
- * that existed on the merge base. Files rank by modified or deleted base lines;
- * each keeps its largest hunks.
+ * Base-side line ranges from a zero-context diff, on files that existed on the
+ * merge base: modified or deleted lines, and up to three unchanged lines around
+ * each pure insertion. Files and hunks rank by modified or deleted base lines,
+ * then by inserted lines.
  */
 export function selectProvenanceHunks(patch: string): {
   hunks: ProvenanceHunk[];
   omitted: number;
 } {
-  const files = new Map<string, Array<{ start: number; end: number }>>();
+  type Ranked = Omit<ProvenanceHunk, "path"> & { removed: number; added: number };
+  const files = new Map<string, Ranked[]>();
   const lines = patch.split("\n");
   let path: string | null = null;
   for (let index = 0; index < lines.length; index += 1) {
@@ -93,32 +106,49 @@ export function selectProvenanceHunks(patch: string): {
     if (!header) continue;
     const start = Number(header[1]);
     const removed = Number(header[2] ?? 1);
+    const added = Number(header[3] ?? 1);
     // Skip the hunk body by its counted lines so `--- ` content is not a header.
-    let remaining = removed + Number(header[3] ?? 1);
+    let remaining = removed + added;
     while (index + 1 < lines.length && (remaining > 0 || lines[index + 1]!.startsWith("\\"))) {
       index += 1;
       if (!lines[index]!.startsWith("\\")) remaining -= 1;
     }
-    if (!path || removed === 0 || start < 1) continue;
+    if (!path || (removed > 0 && start < 1)) continue;
     const hunks = files.get(path) ?? [];
-    hunks.push({ start, end: start + removed - 1 });
+    // `-N,0` inserts after base line N; blame N-1..N+1. Blame clips the end to the file.
+    hunks.push(
+      removed > 0
+        ? { start, end: start + removed - 1, change: "modified", removed, added }
+        : {
+            start: Math.max(1, start - 1),
+            end: Math.max(1, start + 1),
+            change: "insertion_context",
+            removed,
+            added,
+          },
+    );
     files.set(path, hunks);
   }
-  const size = (hunk: { start: number; end: number }) => hunk.end - hunk.start + 1;
   const ranked = [...files]
     .map(([file, hunks]) => ({
       file,
       hunks,
-      lines: hunks.reduce((total, hunk) => total + size(hunk), 0),
+      removed: hunks.reduce((total, hunk) => total + hunk.removed, 0),
+      added: hunks.reduce((total, hunk) => total + hunk.added, 0),
     }))
-    .sort((a, b) => b.lines - a.lines || (a.file < b.file ? -1 : a.file > b.file ? 1 : 0));
+    .sort(
+      (a, b) =>
+        b.removed - a.removed ||
+        b.added - a.added ||
+        (a.file < b.file ? -1 : a.file > b.file ? 1 : 0),
+    );
   const total = ranked.reduce((count, file) => count + file.hunks.length, 0);
   const hunks = ranked.slice(0, MAX_FILES).flatMap(({ file, hunks: fileHunks }) =>
     [...fileHunks]
-      .sort((a, b) => size(b) - size(a) || a.start - b.start)
+      .sort((a, b) => b.removed - a.removed || b.added - a.added || a.start - b.start)
       .slice(0, MAX_HUNKS_PER_FILE)
       .sort((a, b) => a.start - b.start)
-      .map((hunk) => ({ path: file, ...hunk })),
+      .map(({ start, end, change }) => ({ path: file, start, end, change })),
   );
   return { hunks, omitted: total - hunks.length };
 }
@@ -202,11 +232,96 @@ export function createCommitPullResolver(
   };
 }
 
+// List history blobs without reading them, keep the missing ones, and fetch
+// those in bulk. Blame then reads local blobs instead of fetching one per trip.
+// A path whose estimated history (largest local version x missing versions)
+// exceeds the byte budget, such as a lockfile, stays on the time-bounded lazy path.
+function prefetchHistoryBlobs(options: {
+  git: ProvenanceGitRead;
+  fetchBlobs: ProvenanceBlobFetch;
+  mergeBaseSha: string;
+  paths: string[];
+  deadlineAt: number;
+  now: () => number;
+}): void {
+  const { git, deadlineAt } = options;
+  if (options.paths.length === 0) return;
+  const history = git(
+    [
+      "--literal-pathspecs",
+      "log",
+      "--format=",
+      "--raw",
+      "--no-abbrev",
+      // Rename detection would read blob contents.
+      "--no-renames",
+      "-n",
+      String(MAX_HISTORY_COMMITS),
+      options.mergeBaseSha,
+      "--",
+      ...options.paths,
+    ],
+    { deadlineAt, maxBytes: MAX_DIFF_BYTES, lazyFetch: false },
+  );
+  if (history === null) return;
+  const blobsByPath = new Map<string, Set<string>>();
+  for (const line of history.split("\n")) {
+    const raw =
+      /^:(\d{6}) (\d{6}) ([0-9a-f]{40}(?:[0-9a-f]{24})?) ([0-9a-f]{40}(?:[0-9a-f]{24})?) [A-Z]\d*\t(.+)$/.exec(
+        line,
+      );
+    if (!raw) continue;
+    const blobs = blobsByPath.get(raw[5]!) ?? new Set<string>();
+    if (BLOB_MODE.test(raw[1]!) && !ZERO_OBJECT_ID.test(raw[3]!)) blobs.add(raw[3]!);
+    if (BLOB_MODE.test(raw[2]!) && !ZERO_OBJECT_ID.test(raw[4]!)) blobs.add(raw[4]!);
+    blobsByPath.set(raw[5]!, blobs);
+  }
+  const listed = new Set([...blobsByPath.values()].flatMap((blobs) => [...blobs]));
+  if (listed.size === 0) return;
+  const check = git(["cat-file", "--batch-check"], {
+    deadlineAt,
+    maxBytes: MAX_DIFF_BYTES,
+    input: Buffer.from(`${[...listed].join("\n")}\n`),
+    lazyFetch: false,
+  });
+  // Git before 2.45 exits without batch output when lazy fetch is blocked;
+  // without sizes the byte budget cannot hold, so blame stays on the lazy path.
+  if (check === null) return;
+  const sizes = new Map<string, number>();
+  const missing = new Set<string>();
+  for (const line of check.split("\n")) {
+    const entry = /^([0-9a-f]{40}(?:[0-9a-f]{24})?) (?:blob (\d+)|(missing))$/.exec(line);
+    if (!entry || !listed.has(entry[1]!)) continue;
+    if (entry[3]) missing.add(entry[1]!);
+    else sizes.set(entry[1]!, Number(entry[2]));
+  }
+  const plans = [...blobsByPath.values()]
+    .map((blobs) => {
+      const absent = [...blobs].filter((objectId) => missing.has(objectId));
+      const largest = Math.max(0, ...[...blobs].map((objectId) => sizes.get(objectId) ?? 0));
+      return { absent, bytes: largest * absent.length };
+    })
+    .sort((a, b) => a.bytes - b.bytes);
+  let budget = MAX_PREFETCH_BYTES;
+  const wanted = new Set<string>();
+  for (const plan of plans) {
+    if (plan.bytes > budget) continue;
+    budget -= plan.bytes;
+    for (const objectId of plan.absent) wanted.add(objectId);
+  }
+  const objectIds = [...wanted];
+  for (let offset = 0; offset < objectIds.length; offset += MAX_PREFETCH_OBJECTS) {
+    if (options.now() >= deadlineAt) return;
+    options.fetchBlobs(objectIds.slice(offset, offset + MAX_PREFETCH_OBJECTS), deadlineAt);
+  }
+}
+
 export function buildProvenanceEvidence(options: {
   repo: string;
   mergeBaseSha: string;
   headSha: string;
   git: ProvenanceGitRead;
+  fetchBlobs: ProvenanceBlobFetch;
   resolvePull: CommitPullResolver;
   now?: () => number;
 }): ProvenanceEvidence {
@@ -240,8 +355,21 @@ export function buildProvenanceEvidence(options: {
     const { hunks, omitted } = selectProvenanceHunks(patch);
     if (omitted > 0)
       reasons.push(
-        `${omitted} modified base hunks omitted by the ${MAX_FILES}-file and ${MAX_HUNKS_PER_FILE}-hunk-per-file caps.`,
+        `${omitted} base hunks omitted by the ${MAX_FILES}-file and ${MAX_HUNKS_PER_FILE}-hunk-per-file caps.`,
       );
+    try {
+      prefetchHistoryBlobs({
+        git: options.git,
+        fetchBlobs: options.fetchBlobs,
+        mergeBaseSha: options.mergeBaseSha,
+        paths: [...new Set(hunks.map((hunk) => hunk.path))],
+        deadlineAt,
+        now,
+      });
+    } catch (error) {
+      // An unsettled Git process must stop the workspace; other failures leave blame to lazy fetch.
+      if (error instanceof ReviewGitError && error.errorCode === "EPROCESSSETTLEMENT") throw error;
+    }
     const blamed: Array<{ hunk: ProvenanceHunk; commits: BlameCommit[] }> = [];
     const failed: string[] = [];
     let unblamed = 0;
@@ -305,6 +433,7 @@ export function buildProvenanceEvidence(options: {
     const areas = blamed.map(({ hunk, commits }) => ({
       path: hunk.path,
       baseLines: `${hunk.start}-${hunk.end}`,
+      change: hunk.change,
       commits: commits.map(({ sha, date, summary }) => {
         const pr = pulls.get(sha);
         return pr ? { sha, date, summary, pr } : { sha, date, summary };
@@ -314,6 +443,7 @@ export function buildProvenanceEvidence(options: {
       ? { status: "partial", reason: reasons.join(" "), areas }
       : { status: "complete", areas };
   } catch (error) {
+    if (error instanceof ReviewGitError && error.errorCode === "EPROCESSSETTLEMENT") throw error;
     return {
       status: "unavailable",
       reason: `Host provenance step failed: ${collapse(error instanceof Error ? error.message : String(error), MAX_REASON_DETAIL_CHARS)}`,
@@ -351,7 +481,8 @@ export function pullRequestProvenanceEvidence(options: {
     mergeBaseSha: mergeBase.sha,
     headSha,
     git: (args, readOptions) =>
-      readReviewGit(targetDir, args, { ...readOptions, lazyFetch: true })?.toString("utf8") ?? null,
+      readReviewGit(targetDir, args, { lazyFetch: true, ...readOptions })?.toString("utf8") ?? null,
+    fetchBlobs: (objectIds, deadlineAt) => fetchReviewBlobs(targetDir, objectIds, deadlineAt),
     resolvePull: options.resolvePull,
   });
 }
