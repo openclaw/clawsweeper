@@ -1106,7 +1106,7 @@ test("decision schema keeps draft and protected workflow state out of PR rank", 
   const prRating = schema.properties.prRating;
 
   assert.match(prRating.description, /Calibrated PR quality rating/);
-  assert.match(prRating.description, /Rate the PR evidence and patch quality/);
+  assert.match(prRating.description, /Rate the PR evidence, patch quality, and product value/);
   assert.match(prRating.description, /Do not lower any tier solely because the PR is draft/);
   assert.match(prRating.description, /has protected labels/);
   assert.match(prRating.description, /not automerge-eligible/);

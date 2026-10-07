@@ -893,23 +893,23 @@
     "prRating": {
       "type": "object",
       "additionalProperties": false,
-      "description": "Calibrated PR quality rating per the Review Rules rating rubric. Use boring internal tiers S/A/B/C/D/F/NA; public rendering maps them to funny crustacean labels. Rate the PR evidence and patch quality, not the contributor or workflow state. Most PRs are B or C. B means worth merging, correct, and proven end to end. A requires testingReview.proofPath shipped_entry_point, productReview.worthIt yes, no open review finding, and no lowValueTests. S is rare and exceptional. C is useful with limited confidence, D is thin signal, F is not quality-ready, and NA is only for non-PR items. Code enforces these caps: in_process_harness proof at most C, unit_only proof at most D, proofPath none is F when proof is required; any lowValueTests cap patch at B; worthIt no caps overall at D; needs_maintainer, fixScope partial, or any overrides_without_reason provenance caps overall at C. Real screenshots, recordings, or linked media that directly show the changed behavior are strong boosters, but screenshots alone are not enough for browser runtime, network, CSP, or security claims unless diagnostics are visible. Do not lower any tier solely because the PR is draft, has protected labels, is not automerge-eligible, or is waiting on a maintainer decision.",
+      "description": "Calibrated PR quality rating; your judgement, per the Review Rules rating rubric. Use boring internal tiers S/A/B/C/D/F/NA; public rendering maps them to funny crustacean labels. Rate the PR evidence, patch quality, and product value, not the contributor or workflow state. Most PRs are B or C. B means worth merging, correct, and proven end to end. A needs end-to-end proof through the shipped entry point, a change clearly worth merging, no open review finding, and no low-value tests. S is rare and exceptional. C is useful with limited confidence, D is thin signal, F is not quality-ready, and NA is only for non-PR items. Harness-only or unit-only proof, low-value tests, a change not worth merging, a pending owner decision, a partial fix, or an unexplained override of original intent all weigh the rating down. Real screenshots, recordings, or linked media that directly show the changed behavior are strong boosters, but screenshots alone are not enough for browser runtime, network, CSP, or security claims unless diagnostics are visible. Do not lower any tier solely because the PR is draft, has protected labels, is not automerge-eligible, or is waiting on a maintainer action.",
       "required": ["proofTier", "patchTier", "overallTier", "summary", "nextSteps"],
       "properties": {
         "proofTier": {
           "type": "string",
           "enum": ["S", "A", "B", "C", "D", "F", "NA"],
-          "description": "Rating for real behavior proof quality only. End-to-end proof through the shipped entry point can earn A or S; in_process_harness proof is at most C and unit_only proof is at most D."
+          "description": "Rating for real behavior proof quality only. End-to-end proof through the shipped entry point can earn A or S; harness-only or unit-only proof is weak proof."
         },
         "patchTier": {
           "type": "string",
           "enum": ["S", "A", "B", "C", "D", "F", "NA"],
-          "description": "Rating for implementation quality, review findings, security concerns, scope, and validation. Any lowValueTests cap this tier at B."
+          "description": "Rating for implementation quality, review findings, security concerns, scope, and validation. Low-value tests weigh this tier down."
         },
         "overallTier": {
           "type": "string",
           "enum": ["S", "A", "B", "C", "D", "F", "NA"],
-          "description": "Overall PR quality tier: the weaker of proofTier and patchTier after the product, provenance, and testing caps. Missing, mock-only, or insufficient proof must cap or lower the overall rating because real behavior proof remains a merge gate. A or S requires proofPath shipped_entry_point and worthIt yes. Draft, protected-label, automerge eligibility, and maintainer-waiting workflow states must not lower this tier by themselves."
+          "description": "Overall PR quality tier: the weaker of proofTier and patchTier, also carrying your product judgement. Missing, mock-only, or insufficient proof must cap or lower the overall rating because real behavior proof remains a merge gate. Draft, protected-label, automerge eligibility, and maintainer-waiting workflow states must not lower this tier by themselves."
         },
         "summary": {
           "type": "string",

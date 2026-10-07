@@ -217,14 +217,12 @@ or PR and stated reason for each changed behavior), and `testingReview` (proof
 path, low-value tests, missing end-to-end scenario). `worthIt: no` and
 `worthIt: needs_maintainer` add blocked Before-merge items; each
 `overrides_without_reason` provenance entry adds a needs-changes item asking the
-author to explain or restore the original intent. Low-value tests never block;
-they cap the rating. Rating caps are deterministic in `src/clawsweeper-rating.ts`:
-in-process harness proof caps proof at C, unit-only at D, and no proof at F when
-proof is required; any low-value test caps the patch (and so an A or S overall)
-at B; `worthIt: no` caps the overall rating at D; a product call, partial fix, or
-unexplained provenance override caps it at C; A and S need shipped entry-point
-proof and `worthIt: yes`. Reports written before these fields existed parse as
-`not_applicable` and keep their stored rating and readiness.
+author to explain or restore the original intent. Low-value tests never block.
+The rating is the reviewer's judgement: the rules rubric tells the model how
+weak proof, low-value tests, product calls, partial fixes, and unexplained
+overrides should weigh, and code applies no tier caps from these fields. Reports
+written before these fields existed parse as `not_applicable` and keep their
+stored rating and readiness.
 
 The parser rejects required packets with fewer than two options or duplicate
 options; malformed reports remain fail-closed and need a fresh review, rather

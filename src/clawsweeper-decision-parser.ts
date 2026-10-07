@@ -101,11 +101,7 @@ import type {
   TelegramVisibleProof,
   TestingReview,
 } from "./clawsweeper-types.js";
-import {
-  derivedPrRating,
-  normalizePrRating,
-  type PrRatingReviewSignals,
-} from "./clawsweeper-rating.js";
+import { derivedPrRating, normalizePrRating } from "./clawsweeper-rating.js";
 import { parseNextStep } from "./clawsweeper-next-step.js";
 import { parseMaintainerDecision } from "./decision-packets.js";
 import { DEFAULT_TARGET_REPO, normalizeRepo } from "./repository-profiles.js";
@@ -576,7 +572,6 @@ export function createDecisionParser({
         securityReview: decision.securityReview,
         overallCorrectness,
         overallConfidenceScore: decision.overallConfidenceScore,
-        signals: decision,
       }),
       workCandidate: "none",
       workConfidence: "low",
@@ -648,24 +643,16 @@ export function createDecisionParser({
     };
   }
 
-  function parsePrRating(
-    value: unknown,
-    path: string,
-    signals: PrRatingReviewSignals | undefined,
-  ): PrRating {
+  function parsePrRating(value: unknown, path: string): PrRating {
     const record = requireRecord(value, path);
     rejectUnexpectedKeys(record, PR_RATING_SCHEMA_KEYS, path);
-    return normalizePrRating(
-      {
-        proofTier: requireEnum(record.proofTier, PR_RATING_TIERS, `${path}.proofTier`),
-        patchTier: requireEnum(record.patchTier, PR_RATING_TIERS, `${path}.patchTier`),
-        overallTier: requireEnum(record.overallTier, PR_RATING_TIERS, `${path}.overallTier`),
-        summary: requireReportText(record.summary, `${path}.summary`),
-        nextSteps: requireReportTextArray(record.nextSteps, `${path}.nextSteps`).slice(0, 3),
-      },
-      undefined,
-      signals,
-    );
+    return normalizePrRating({
+      proofTier: requireEnum(record.proofTier, PR_RATING_TIERS, `${path}.proofTier`),
+      patchTier: requireEnum(record.patchTier, PR_RATING_TIERS, `${path}.patchTier`),
+      overallTier: requireEnum(record.overallTier, PR_RATING_TIERS, `${path}.overallTier`),
+      summary: requireReportText(record.summary, `${path}.summary`),
+      nextSteps: requireReportTextArray(record.nextSteps, `${path}.nextSteps`).slice(0, 3),
+    });
   }
 
   function parseProductReview(value: unknown, path: string): ProductReview {
@@ -1125,10 +1112,6 @@ export function createDecisionParser({
     const productReview = parseProductReview(record.productReview, "decision.productReview");
     const provenance = parseProvenance(record.provenance, "decision.provenance");
     const testingReview = parseTestingReview(record.testingReview, "decision.testingReview");
-    const realBehaviorProof = parseRealBehaviorProof(
-      record.realBehaviorProof,
-      "decision.realBehaviorProof",
-    );
     const nextStep =
       record.nextStep === undefined
         ? undefined
@@ -1233,14 +1216,11 @@ export function createDecisionParser({
       testingReview,
       reviewFindings,
       securityReview: parseSecurityReview(record.securityReview, "decision.securityReview"),
-      realBehaviorProof,
-      prRating: parsePrRating(
-        record.prRating,
-        "decision.prRating",
-        item?.kind === "pull_request"
-          ? { productReview, provenance, testingReview, realBehaviorProof }
-          : undefined,
+      realBehaviorProof: parseRealBehaviorProof(
+        record.realBehaviorProof,
+        "decision.realBehaviorProof",
       ),
+      prRating: parsePrRating(record.prRating, "decision.prRating"),
       telegramVisibleProof: parseTelegramVisibleProof(
         record.telegramVisibleProof,
         "decision.telegramVisibleProof",

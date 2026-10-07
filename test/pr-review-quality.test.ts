@@ -5,7 +5,6 @@ import {
   renderReviewCommentFromReport,
   reviewAutomationMarkersFromReport,
 } from "../dist/clawsweeper.js";
-import { normalizePrRating } from "../dist/clawsweeper-rating.js";
 import { createRecordMetadata } from "../dist/clawsweeper-record-metadata.js";
 import { createReportHelpers } from "../dist/clawsweeper-report-helpers.js";
 import {
@@ -80,79 +79,9 @@ const lowValueTest = (index: number) => ({
   reason: "Asserts mock call counts instead of behavior.",
 });
 
-function capped(
-  options: {
-    product?: Partial<ProductReview>;
-    testing?: Partial<TestingReview>;
-    provenance?: ProvenanceEntry[];
-    proof?: Partial<RealBehaviorProof>;
-  } = {},
-  rating: PrRating = topRating,
-): PrRating {
-  return normalizePrRating(rating, undefined, {
-    productReview: { ...worthyProduct, ...options.product },
-    provenance: options.provenance ?? [],
-    testingReview: { ...shippedTesting, ...options.testing },
-    realBehaviorProof: { ...sufficientProof, ...options.proof },
-  });
-}
-
 function tiers(rating: PrRating) {
   return `${rating.proofTier}/${rating.patchTier}/${rating.overallTier}`;
 }
-
-test("S and A survive only with shipped end-to-end proof and a worthwhile product", () => {
-  assert.equal(tiers(capped()), "S/S/S");
-  assert.equal(tiers(capped({ product: { worthIt: "not_applicable" } })), "S/S/B");
-  assert.equal(
-    tiers(capped({ testing: { proofPath: "none" }, proof: { status: "override" } })),
-    "S/S/B",
-  );
-});
-
-test("proof path caps the proof tier and the overall tier", () => {
-  assert.equal(tiers(capped({ testing: { proofPath: "in_process_harness" } })), "C/S/C");
-  assert.equal(tiers(capped({ testing: { proofPath: "unit_only" } })), "D/S/D");
-  assert.equal(tiers(capped({ testing: { proofPath: "none" } })), "F/S/F");
-  assert.equal(
-    tiers(capped({ testing: { proofPath: "none" }, proof: { status: "not_applicable" } })),
-    "S/S/B",
-  );
-  const notApplicableProof = { ...topRating, proofTier: "NA" as const };
-  assert.equal(
-    tiers(capped({ testing: { proofPath: "in_process_harness" } }, notApplicableProof)),
-    "NA/S/B",
-  );
-});
-
-test("product, provenance, and test value cap the overall tier", () => {
-  assert.equal(tiers(capped({ product: { worthIt: "no" } })), "S/S/D");
-  assert.equal(tiers(capped({ product: { worthIt: "needs_maintainer" } })), "S/S/C");
-  assert.equal(tiers(capped({ product: { fixScope: "partial" } })), "S/S/C");
-  assert.equal(tiers(capped({ provenance: [overridesIntent] })), "S/S/C");
-  assert.equal(
-    tiers(capped({ provenance: [{ ...overridesIntent, verdict: "overrides_with_reason" }] })),
-    "S/S/S",
-  );
-  assert.equal(tiers(capped({ testing: { lowValueTests: [lowValueTest(1)] } })), "S/B/B");
-  assert.equal(
-    tiers(capped({ testing: { lowValueTests: [1, 2, 3, 4].map(lowValueTest) } })),
-    "S/B/B",
-  );
-  const weak = { ...topRating, proofTier: "F" as const, overallTier: "F" as const };
-  assert.equal(tiers(capped({ product: { worthIt: "no" } }, weak)), "F/S/F");
-});
-
-test("ratings without an assessed product review stay unchanged", () => {
-  assert.deepEqual(normalizePrRating(topRating), topRating);
-  assert.deepEqual(
-    normalizePrRating(topRating, undefined, {
-      ...notApplicableReview,
-      realBehaviorProof: sufficientProof,
-    }),
-    topRating,
-  );
-});
 
 function pullRequestDecision(overrides: Record<string, unknown> = {}) {
   return closeDecision({
@@ -167,11 +96,9 @@ function pullRequestDecision(overrides: Record<string, unknown> = {}) {
   });
 }
 
-test("decision parsing caps pull request ratings but not issue ratings", () => {
+test("decision parsing keeps the reviewer's rating instead of capping it in code", () => {
   const pull = parseDecision(pullRequestDecision(), item({ kind: "pull_request" }));
-  assert.equal(tiers(pull.prRating), "C/A/C");
-  const issue = parseDecision(pullRequestDecision(), item({ kind: "issue" }));
-  assert.equal(tiers(issue.prRating), "A/A/A");
+  assert.equal(tiers(pull.prRating), "A/A/A");
 });
 
 test("decision parsing rejects invalid product, provenance, and testing values", () => {
@@ -255,9 +182,6 @@ test("old reports read as not applicable and keep their stored rating", () => {
   assert.deepEqual(reportProvenance(old), []);
   assert.deepEqual(reportTestingReview(old), notApplicableReview.testingReview);
   assert.equal(tiers(reportParser.reportPrRating(old)), "A/A/A");
-
-  const assessed = `${old}\n## Testing Review\n\nProof path: unit_only\n\nAdded test files: 1\n`;
-  assert.equal(tiers(reportParser.reportPrRating(assessed)), "D/A/D");
 });
 
 function readiness(overrides: Record<string, unknown>) {
@@ -328,7 +252,7 @@ test("an unexplained provenance override needs changes, not a block", () => {
   assert.equal(result.state, "needs-changes");
 });
 
-test("low-value tests lower the rating without blocking readiness", () => {
+test("low-value tests are listed without blocking readiness", () => {
   const result = readiness({
     testingReview: { ...shippedTesting, lowValueTests: [lowValueTest(1)] },
   });

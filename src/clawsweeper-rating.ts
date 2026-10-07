@@ -1,6 +1,5 @@
 import { PR_RATING_LABEL_NAMES, PR_RATING_LABELS } from "./clawsweeper-policy.js";
 import type {
-  Decision,
   OverallCorrectness,
   PrRating,
   PrRatingTier,
@@ -8,15 +7,6 @@ import type {
   ReviewFinding,
   SecurityReview,
 } from "./clawsweeper-types.js";
-
-/**
- * Product, provenance, and testing assessments that cap a PR rating. Callers pass
- * them only for pull requests.
- */
-export type PrRatingReviewSignals = Pick<
-  Decision,
-  "productReview" | "provenance" | "testingReview" | "realBehaviorProof"
->;
 
 /** Classify proof quality and synthesize the single maintainer-facing PR rating. */
 
@@ -66,64 +56,6 @@ function lowerRatingTier(a: PrRatingTier, b: PrRatingTier): PrRatingTier {
   if (a === "NA") return b;
   if (b === "NA") return a;
   return ratingIndex(a) >= ratingIndex(b) ? a : b;
-}
-
-function capRatingTier(tier: PrRatingTier, max: PrRatingTier): PrRatingTier {
-  if (tier === "NA") return tier;
-  return ratingIndex(tier) < ratingIndex(max) ? max : tier;
-}
-
-function proofPathCap(signals: PrRatingReviewSignals): PrRatingTier | undefined {
-  switch (signals.testingReview.proofPath) {
-    case "in_process_harness":
-      return "C";
-    case "unit_only":
-      return "D";
-    case "none": {
-      const status = signals.realBehaviorProof.status;
-      return status === "not_applicable" || status === "override" ? undefined : "F";
-    }
-    default:
-      return undefined;
-  }
-}
-
-function overallReviewCap(signals: PrRatingReviewSignals): PrRatingTier | undefined {
-  const { productReview, provenance, testingReview } = signals;
-  if (productReview.worthIt === "no") return "D";
-  if (
-    productReview.worthIt === "needs_maintainer" ||
-    productReview.fixScope === "partial" ||
-    provenance.some((entry) => entry.verdict === "overrides_without_reason")
-  ) {
-    return "C";
-  }
-  // Old reports parse to not_applicable shapes; only an assessed PR review gates A and S.
-  const assessed =
-    productReview.worthIt !== "not_applicable" || testingReview.proofPath !== "not_applicable";
-  if (
-    assessed &&
-    (testingReview.proofPath !== "shipped_entry_point" || productReview.worthIt !== "yes")
-  ) {
-    return "B";
-  }
-  return undefined;
-}
-
-function applyReviewSignalCaps(rating: PrRating, signals: PrRatingReviewSignals): PrRating {
-  let { proofTier, patchTier, overallTier } = rating;
-  const proofCap = proofPathCap(signals);
-  if (proofCap && proofTier !== "NA") {
-    proofTier = capRatingTier(proofTier, proofCap);
-    overallTier = capRatingTier(overallTier, proofCap);
-  }
-  if (signals.testingReview.lowValueTests.length >= 1) {
-    patchTier = capRatingTier(patchTier, "B");
-    overallTier = capRatingTier(overallTier, "B");
-  }
-  const overallCap = overallReviewCap(signals);
-  if (overallCap) overallTier = capRatingTier(overallTier, overallCap);
-  return { ...rating, proofTier, patchTier, overallTier };
 }
 
 function proofTierFromRealBehaviorProof(proof: RealBehaviorProof): PrRatingTier {
@@ -229,17 +161,12 @@ function defaultRatingNextSteps(options: {
   return steps.slice(0, 3);
 }
 
-export function normalizePrRating(
-  rating: PrRating,
-  proof?: RealBehaviorProof,
-  signals?: PrRatingReviewSignals,
-): PrRating {
+export function normalizePrRating(rating: PrRating, proof?: RealBehaviorProof): PrRating {
   if (proof) {
     // Cap stale receipt-era proof credit without regrading the reviewer's patch or rank-up advice.
     const proofTier = lowerRatingTier(rating.proofTier, proofTierFromRealBehaviorProof(proof));
     rating = { ...rating, proofTier, overallTier: lowerRatingTier(rating.overallTier, proofTier) };
   }
-  if (signals) rating = applyReviewSignalCaps(rating, signals);
   if (rating.overallTier === "S" || rating.overallTier === "A" || rating.overallTier === "NA") {
     return { ...rating, nextSteps: [] };
   }
@@ -253,26 +180,21 @@ export function derivedPrRating(options: {
   securityReview: SecurityReview;
   overallCorrectness: OverallCorrectness;
   overallConfidenceScore: number;
-  signals?: PrRatingReviewSignals | undefined;
 }): PrRating {
   const proofTier = proofTierFromRealBehaviorProof(options.proof);
   const patchTier = patchTierFromReview(options);
   const overallTier =
     proofTier === "NA" && patchTier === "NA" ? "NA" : lowerRatingTier(proofTier, patchTier);
-  return normalizePrRating(
-    {
-      proofTier,
-      patchTier,
-      overallTier,
-      summary:
-        overallTier === "NA"
-          ? "PR readiness rating is not applicable to this item."
-          : "PR readiness rating was derived from proof quality, review findings, security review, and reviewer confidence.",
-      nextSteps: defaultRatingNextSteps({ ...options, overallTier }),
-    },
-    undefined,
-    options.isPullRequest ? options.signals : undefined,
-  );
+  return normalizePrRating({
+    proofTier,
+    patchTier,
+    overallTier,
+    summary:
+      overallTier === "NA"
+        ? "PR readiness rating is not applicable to this item."
+        : "PR readiness rating was derived from proof quality, review findings, security review, and reviewer confidence.",
+    nextSteps: defaultRatingNextSteps({ ...options, overallTier }),
+  });
 }
 
 export function nextPrRatingLabels(

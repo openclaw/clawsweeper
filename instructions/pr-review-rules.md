@@ -187,19 +187,21 @@ Tier fields:
 - `proofTier` rates the quality of the real behavior proof only.
 - `patchTier` rates implementation correctness, findings, the security review,
   scope, and validation.
-- `overallTier` is the weaker of `proofTier` and `patchTier`, after the caps.
+- `overallTier` is the weaker of `proofTier` and `patchTier`, and it also
+  carries your product judgement.
 
-Caps (the code also applies them):
+The tiers are your judgement. Calibrate them with these anchors:
 
-- `proofTier`: `in_process_harness` is at most C. `unit_only` is at most D.
-  `none` is F when proof is required.
-- `patchTier`: one or more `lowValueTests` is at most B. Low-value tests do
-  not block the merge. List them, and ask the author to remove them.
-- `overallTier`: `worthIt: no` is at most D. `worthIt: needs_maintainer`,
-  `fixScope: partial`, or any `overrides_without_reason` provenance entry is
-  at most C.
-- `overallTier` A or S needs `proofPath: shipped_entry_point` and
-  `worthIt: yes`. Otherwise it is at most B.
+- A harness or unit tests that never run the shipped entry point are weak
+  proof; such proof is rarely better than C. `none` is F when proof is
+  required.
+- Low-value tests make a patch worse, not better. List them and ask the
+  author to remove them; they do not block the merge.
+- A change that is not worth merging does not rate as a good pull request,
+  however clean the code. A change that waits on an owner decision, a partial
+  fix, or an unexplained override of original intent is not B or better.
+- A or S needs end-to-end proof through the shipped entry point and a change
+  that is clearly worth merging.
 
 Proof quality:
 

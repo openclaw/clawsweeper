@@ -2,7 +2,6 @@ import {
   derivedPrRating,
   normalizePrRating,
   normalizeRealBehaviorProof,
-  type PrRatingReviewSignals,
 } from "./clawsweeper-rating.js";
 import { createDecisionParser } from "./clawsweeper-decision-parser.js";
 import { publicLikelyOwner } from "./clawsweeper-regression-provenance.js";
@@ -860,14 +859,6 @@ export function createReportParser({
     const proof = reportRealBehaviorProof(markdown);
     const attached = reportAttachedLiveVerification(markdown);
     const isPullRequest = frontMatterValue(markdown, "type") === "pull_request";
-    const signals: PrRatingReviewSignals | undefined = isPullRequest
-      ? {
-          productReview: reportProductReview(markdown),
-          provenance: reportProvenance(markdown),
-          testingReview: reportTestingReview(markdown),
-          realBehaviorProof: proof,
-        }
-      : undefined;
     const proofTierField = frontMatterField(markdown, "pr_rating_proof");
     const patchTierField = frontMatterField(markdown, "pr_rating_patch");
     const overallTierField = frontMatterField(markdown, "pr_rating_overall");
@@ -885,7 +876,6 @@ export function createReportParser({
         securityReview: reportSecurityReview(markdown),
         overallCorrectness: reportOverallCorrectness(markdown),
         overallConfidenceScore: reportOverallConfidenceScore(markdown),
-        signals,
       });
     }
     const proofTierValue =
@@ -923,7 +913,6 @@ export function createReportParser({
           nextSteps,
         },
         attached.status === "absent" ? undefined : proof,
-        signals,
       );
     }
     return derivedPrRating({
@@ -933,7 +922,6 @@ export function createReportParser({
       securityReview: reportSecurityReview(markdown),
       overallCorrectness: reportOverallCorrectness(markdown),
       overallConfidenceScore: reportOverallConfidenceScore(markdown),
-      signals,
     });
   }
 
