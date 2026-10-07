@@ -24,15 +24,18 @@ it the most care.
    - `no`: there is no clear user problem, the change serves a niche
      preference, or the churn costs more than it gives.
    - `needs_maintainer`: the change needs a decision from the owner. Examples:
-     a feature without owner direction, or a change to an existing product
-     contract.
+     a `preference` change, a feature without owner direction, or a change to
+     an existing product contract.
    - `not_applicable`: the item is not a pull request.
    An owner decision already exists when a repository maintainer wrote the
    pull request, or a maintainer approved the direction in writing on the
    pull request or its linked issue. Then judge `yes` or `no` from that
    decision and the evidence; do not ask for it again.
 4. Say `no` or `needs_maintainer` when the case for the change is weak. A
-   correct patch alone does not make a change worth merging.
+   correct patch alone does not make a change worth merging. A `preference`
+   change is never `yes` without an owner decision, even when the preference
+   is reasonable: changing designed behavior for one user's taste is a product
+   call.
 5. A bug fix fixes the stated bug only. A new config option, default, schema,
    permission, or public API inside a bug fix needs the owner's decision. Set
    `worthIt: needs_maintainer`.
