@@ -562,8 +562,9 @@ export function createReportCommentHelpers(
         "Product: not worth merging",
         product.reason || "The review found no user problem that justifies this change.",
       );
+      // A maintainer decision packet already asks the owner; one blocker is enough.
       block(
-        product.worthIt === "needs_maintainer",
+        product.worthIt === "needs_maintainer" && !decisionPending,
         "Product call needed",
         product.reason || "An owner must decide whether this change belongs in the product.",
       );

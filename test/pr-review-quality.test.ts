@@ -298,6 +298,26 @@ test("product verdicts block merge readiness", () => {
   assert.equal(productCall.state, "blocked");
 });
 
+test("a product call with a maintainer decision packet asks the owner once", () => {
+  const result = readiness({
+    productReview: { ...worthyProduct, worthIt: "needs_maintainer", reason: "Adds a new setting." },
+    maintainerDecision: {
+      required: true,
+      kind: "product_direction",
+      question: "Should the product add this setting?",
+      rationale: "No maintainer has accepted the new setting.",
+      options: [
+        { title: "Accept the setting", body: "Ship it default-off.", recommended: true },
+        { title: "Decline the setting", body: "Keep current behavior.", recommended: false },
+      ],
+      likelyOwner: { person: "unknown", reason: "Owner is not identified.", confidence: "low" },
+    },
+  });
+  assert.match(result.comment, /Resolve maintainer decision/);
+  assert.doesNotMatch(result.comment, /Product call needed/);
+  assert.equal(result.state, "blocked");
+});
+
 test("an unexplained provenance override needs changes, not a block", () => {
   const result = readiness({ provenance: [overridesIntent] });
   assert.match(
