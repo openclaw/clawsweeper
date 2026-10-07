@@ -759,12 +759,13 @@ test("PR prompts carry the review rules after the static template; issue prompts
   assert.ok(prompt.startsWith(reviewPromptTemplate()));
   assert.ok(prompt.includes(rulesSection));
   assert.equal(
-    prompt.indexOf("## Review Rules"),
-    reviewPromptTemplate().length + 2,
+    prompt.indexOf(rulesSection),
+    reviewPromptTemplate().length,
     "rules follow the static template",
   );
   const issuePrompt = reviewPromptForTest(item({ kind: "issue" }), context, git);
-  assert.ok(!issuePrompt.includes("## Review Rules"));
+  assert.ok(!issuePrompt.includes(rules));
+  assert.ok(!issuePrompt.includes("\n\n## Review Rules\n\n"));
 });
 
 test("review policy hash changes when the review rules change", () => {

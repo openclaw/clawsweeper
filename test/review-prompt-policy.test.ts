@@ -1086,18 +1086,19 @@ test("media proof URL discovery excludes persistence-only hydration snapshots", 
   assert.deepEqual(proofMediaUrlsFromContextForTest(context), []);
 });
 
-test("review prompt keeps draft and protected workflow state out of PR rank", () => {
-  const prompt = readFileSync("prompts/review-item.md", "utf8");
+test("review rules keep draft and protected workflow state out of PR rank", () => {
+  const rules = readFileSync("instructions/pr-review-rules.md", "utf8");
 
-  assert.match(prompt, /Rate PR evidence\s+and patch quality/);
-  assert.match(prompt, /weaker proof-or-patch quality signal/);
+  assert.match(rules, /Rate the\s+evidence and the patch, not the contributor/);
+  assert.match(rules, /`overallTier` is the weaker of `proofTier` and `patchTier`/);
   assert.match(
-    prompt,
-    /Do not lower `proofTier`, `patchTier`,\s+or `overallTier` solely because the PR is draft/,
+    rules,
+    /A draft state, protected labels, automerge eligibility,\s+or a pending maintainer action is workflow state\. These never lower a\s+tier\./,
   );
-  assert.match(prompt, /has protected labels/);
-  assert.match(prompt, /not\s+automerge-eligible/);
-  assert.match(prompt, /workflow\s+state signals, not proof or patch quality defects/);
+  assert.match(
+    readFileSync("prompts/review-item.md", "utf8"),
+    /rate it with the `### Rating rubric` in `## Review Rules`/,
+  );
 });
 
 test("decision schema keeps draft and protected workflow state out of PR rank", () => {
