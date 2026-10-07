@@ -1,8 +1,4 @@
-import {
-  derivedPrRating,
-  normalizePrRating,
-  normalizeRealBehaviorProof,
-} from "./clawsweeper-rating.js";
+import { derivedPrRating, normalizePrRating } from "./clawsweeper-rating.js";
 import { createDecisionParser } from "./clawsweeper-decision-parser.js";
 import { publicLikelyOwner } from "./clawsweeper-regression-provenance.js";
 import {
@@ -774,12 +770,12 @@ export function createReportParser({
       ? (evidenceKindValue as RealBehaviorProofEvidenceKind)
       : undefined;
     if (!status || !evidenceKind || !summary) return defaultRealBehaviorProof(markdown);
-    const proof = normalizeRealBehaviorProof({
+    const proof: RealBehaviorProof = {
       status,
       summary,
       evidenceKind,
       needsContributorAction: /^true$/i.test(needsContributorActionValue ?? ""),
-    });
+    };
     const authorityChainProofRequired = summary.startsWith(AUTHORITY_CHAIN_PROOF_MARKER);
     if (
       frontMatterValue(markdown, "type") !== "pull_request" ||

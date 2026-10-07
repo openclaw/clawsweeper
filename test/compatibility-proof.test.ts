@@ -5,7 +5,6 @@ import {
   renderReviewCommentFromReport,
   reviewAutomationMarkersFromReport,
 } from "../dist/clawsweeper.js";
-import { normalizeRealBehaviorProof } from "../dist/clawsweeper-rating.js";
 import {
   compatibilityField,
   compatibilityReport,
@@ -199,17 +198,4 @@ test("decision parser and canonical report writer preserve the dedicated assessm
       ),
     /dataModelCompatibility/,
   );
-});
-
-test("unrelated proof normalization retains compatibility without clearing its own blocker", () => {
-  const proof = normalizeRealBehaviorProof({
-    status: "sufficient",
-    summary: "No CSP violation is visible in the screenshot.",
-    evidenceKind: "screenshot",
-    needsContributorAction: false,
-    dataModelCompatibility: "sufficient",
-  });
-  assert.equal(proof.dataModelCompatibility, "sufficient");
-  assert.equal(proof.status, "insufficient");
-  assert.equal(proof.needsContributorAction, true);
 });

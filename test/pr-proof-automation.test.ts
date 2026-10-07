@@ -863,33 +863,6 @@ Full review comments:
     /clawsweeper-verdict:needs-human/,
   );
 
-  const normalizedAuthoritySensitiveReport = reportFor({
-    author: "maintainer",
-    association: "MEMBER",
-    status: "sufficient",
-  })
-    .replace("Evidence kind: terminal", "Evidence kind: screenshot")
-    .replace(
-      "Summary: The maintainer supplied terminal output from the changed production path.",
-      "Summary: Authority-chain proof required: a screenshot claims no visible console errors.",
-    );
-  const normalizedAuthoritySensitiveComment = renderReviewCommentFromReport(
-    normalizedAuthoritySensitiveReport,
-    "none",
-  );
-  assert.match(
-    normalizedAuthoritySensitiveComment,
-    /Needs stronger real behavior proof before merge/i,
-  );
-  assert.match(
-    reviewAutomationMarkersFromReport(normalizedAuthoritySensitiveReport),
-    /clawsweeper-verdict:needs-human/,
-  );
-  assert.doesNotMatch(
-    reviewAutomationMarkersFromReport(normalizedAuthoritySensitiveReport),
-    /clawsweeper-verdict:pass/,
-  );
-
   const contributorReport = reportFor({ author: "contributor", association: "CONTRIBUTOR" });
   const contributorComment = renderReviewCommentFromReport(contributorReport, "none");
   assert.match(contributorComment, /needs real behavior proof before merge/i);
@@ -996,64 +969,6 @@ Full review comments:
   assert.match(mockOnlyComment, /needs real behavior proof before merge/i);
   assert.match(mockOnlyMarkers, /clawsweeper-verdict:needs-human/);
   assert.doesNotMatch(mockOnlyMarkers, /clawsweeper-verdict:pass/);
-});
-
-test("screenshot-only browser runtime proof blocks pass markers", () => {
-  const report = `${reportFrontMatter({
-    type: "pull_request",
-    number: "74460",
-    decision: "keep_open",
-    close_reason: "none",
-    review_status: "complete",
-    confidence: "high",
-    author: "contributor",
-    author_association: "CONTRIBUTOR",
-    labels: JSON.stringify(["clawsweeper:automerge"]),
-    work_candidate: "none",
-    pull_head_sha: "abc123def456abc123def456abc123def456abcd",
-  })}
-
-## Summary
-
-Keep this focused PR open for automerge.
-
-## What This Changes
-
-Adds tweakcn.com to the Control UI connect-src directive.
-
-## Best Possible Solution
-
-Ask the contributor to add browser runtime proof from their real setup.
-
-${realBehaviorProofReportSection({
-  status: "sufficient",
-  evidenceKind: "screenshot",
-  needsContributorAction: false,
-  summary:
-    "The inspected screenshot shows an after-fix Control UI import success state for a tweakcn theme, with no visible console CSP violation.",
-})}
-
-## Review Findings
-
-Overall correctness: patch is correct
-
-Overall confidence: 0.9
-
-Full review comments:
-
-- none
-`;
-
-  const comment = renderReviewCommentFromReport(report, "none");
-  const markers = reviewAutomationMarkersFromReport(report);
-
-  assert.match(comment, /Codex review: needs real behavior proof before merge\./);
-  assert.match(comment, /Needs stronger real behavior proof before merge:/);
-  assert.match(comment, /not enough for browser runtime or security behavior/);
-  assert.match(comment, /console, network, terminal, live output, or logs/);
-  assert.match(markers, /clawsweeper-verdict:needs-human/);
-  assert.doesNotMatch(markers, /clawsweeper-verdict:pass/);
-  assert.doesNotMatch(markers, /proof: sufficient/);
 });
 
 test("missing real behavior proof blocks pass and repair markers", () => {
