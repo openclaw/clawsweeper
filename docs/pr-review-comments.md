@@ -204,7 +204,12 @@ still block. Readiness does not itself grant merge authority.
 The parser rejects required packets with fewer than two options or duplicate
 options; malformed reports remain fail-closed and need a fresh review, rather
 than silently losing a possible real blocker. Semantic intent belongs to the
-review producer, not keyword filtering in comment rendering. OpenClaw Bay needs
+review producer, not keyword filtering in comment rendering. Packet synchronization
+removes an invalid report's derived sidecar and pointer without changing its
+decision or hold, so legacy packets cannot abort archive, reopen, or closed-sidecar
+reconciliation for other records. Filesystem errors still propagate.
+Issue comments render a fresh-review notice for invalid stored decisions; PRs
+retain their malformed-report blocker. OpenClaw Bay needs
 no code or schema change: the packet fields and observer projection are unchanged.
 
 New reviewer output requires a producer-owned `nextStep` assessment. Issues use

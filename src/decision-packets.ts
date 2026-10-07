@@ -270,7 +270,12 @@ export function buildDecisionPacketFromReport(
 }
 
 export function renderDecisionPacketPublicBlock(markdown: string): string {
-  const packet = buildDecisionPacketFromReport(markdown);
+  let packet: DecisionPacket | null;
+  try {
+    packet = buildDecisionPacketFromReport(markdown);
+  } catch {
+    return "The stored maintainer decision is invalid. Run a fresh review before resolving it.";
+  }
   if (!packet) return "";
   const recommendation = packet.options.find((option) => option.recommended);
   const tableCell = (value: string) =>
@@ -308,12 +313,19 @@ export function renderDecisionPacketPublicBlock(markdown: string): string {
 export function syncDecisionPacketRecord(
   options: DecisionPacketSyncOptions,
 ): DecisionPacketSyncResult {
-  const packet = buildDecisionPacketFromReport(options.markdown, {
-    reportPath: repoRelativePath(options.repoRoot, options.reportPath),
-    ...(options.generatedAt ? { generatedAt: options.generatedAt } : {}),
-    ...(options.reportUrl ? { reportUrl: options.reportUrl } : {}),
-    ...(options.subjectState ? { subjectState: options.subjectState } : {}),
-  });
+  let packet: DecisionPacket | null;
+  try {
+    packet = buildDecisionPacketFromReport(options.markdown, {
+      reportPath: repoRelativePath(options.repoRoot, options.reportPath),
+      ...(options.generatedAt ? { generatedAt: options.generatedAt } : {}),
+      ...(options.reportUrl ? { reportUrl: options.reportUrl } : {}),
+      ...(options.subjectState ? { subjectState: options.subjectState } : {}),
+    });
+  } catch {
+    // Legacy decisions can fail current validation. Drop only the derived
+    // sidecar; keep the report's invalid decision and its fresh-review hold.
+    packet = null;
+  }
   const frontmatter = readFrontMatter(options.markdown);
   const reportNumber = reportNumberFromPath(options.reportPath);
   const metadataNumber = frontmatter.ambiguous ? null : numberValue(frontmatter.values.number);
