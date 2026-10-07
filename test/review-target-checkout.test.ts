@@ -286,3 +286,35 @@ test("rejects option-shaped or traversal branch names before running Git", (t) =
     assert.equal(existsSync(fixture.cache), false);
   }
 });
+
+test("a stalled network clone stops at the checkout deadline", (t) => {
+  const fixture = createFixture(t);
+  const bin = join(fixture.root, "bin");
+  mkdirSync(bin, { recursive: true });
+  writeFileSync(
+    join(bin, "git"),
+    `#!/usr/bin/env bash
+for arg in "$@"; do
+  if [[ "$arg" == "clone" || "$arg" == "fetch" ]]; then
+    sleep 30
+    exit 1
+  fi
+done
+exec "$REAL_GIT" "$@"
+`,
+  );
+  chmodSync(join(bin, "git"), 0o755);
+  const started = Date.now();
+  const result = runCheckout(fixture, "target", {
+    env: {
+      PATH: `${bin}:${process.env.PATH}`,
+      REAL_GIT: realGit,
+      CLAWSWEEPER_REVIEW_TARGET_CHECKOUT_TIMEOUT_MS: "2000",
+    },
+  });
+  const elapsed = Date.now() - started;
+  assert.equal(result.status, 124, result.stderr);
+  assert.match(result.stderr ?? "", /timed out after 2s/);
+  assert.ok(elapsed < 15_000, `elapsed ${elapsed}`);
+  assert.equal(existsSync(fixture.cache), false);
+});

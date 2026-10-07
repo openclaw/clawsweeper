@@ -7,9 +7,11 @@
 # of the branch tip. A restored cache fetches only the delta, then the checkout is
 # cloned locally (hardlinked objects) and configured like a direct
 # `git clone --filter=blob:none --single-branch` of the branch. Any cache problem
-# falls back to rebuilding the cache or to a clean clone. The script appends
-# `cache_ready=true` to GITHUB_OUTPUT only when the checkout came from a cache
-# that holds every tip blob and is therefore worth saving.
+# falls back to rebuilding the cache or to a clean clone. Network git commands stop
+# at their own deadline so a stalled connection cannot hold the review slot until
+# the job timeout. The script appends `cache_ready=true` to GITHUB_OUTPUT only when
+# the checkout came from a cache that holds every tip blob and is therefore worth
+# saving.
 set -euo pipefail
 
 url="${1:?repository URL is required}"
@@ -19,6 +21,12 @@ branch="${4:?target branch is required}"
 
 if ! [[ "$branch" =~ ^[A-Za-z0-9_./-]+$ ]] || [[ "$branch" == -* || "$branch" == *..* ]]; then
   echo "Unsafe target branch: $branch" >&2
+  exit 1
+fi
+
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if ! command -v node >/dev/null 2>&1; then
+  echo "node is required to bound target checkout git commands." >&2
   exit 1
 fi
 
@@ -33,6 +41,11 @@ record_output() {
   fi
 }
 
+# Network git dies with its transport children. Local clones from the cache do not use this.
+git_network() {
+  node "$script_dir/git-network-deadline.mjs" "$@"
+}
+
 # Restored caches carry only objects and refs forward; hooks and local config are
 # rebuilt so every run fetches with the same settings.
 reset_cache_config() {
@@ -45,7 +58,7 @@ reset_cache_config() {
 
 build_cache() {
   rm -rf "$cache_dir"
-  git -c gc.auto=0 clone --bare --filter=blob:none --single-branch --branch "$branch" "$url" "$cache_dir" &&
+  git_network -c gc.auto=0 clone --bare --filter=blob:none --single-branch --branch "$branch" "$url" "$cache_dir" &&
     reset_cache_config
 }
 
@@ -56,7 +69,8 @@ refresh_cache() {
   # are refreshed too, without --tags fetching unrelated branch histories.
   cache_git for-each-ref --format='delete %(refname)' refs/tags/ |
     cache_git update-ref --no-deref --stdin || return 1
-  cache_git fetch --quiet --filter=blob:none origin "+refs/heads/$branch:refs/heads/$branch" &&
+  git_network -C "$cache_dir" -c core.hooksPath=/dev/null -c gc.auto=0 -c maintenance.auto=false \
+    fetch --quiet --filter=blob:none origin "+refs/heads/$branch:refs/heads/$branch" &&
     # After a rewind, old cached objects can make auto-follow include tags no
     # longer on this branch. A cold rebuild restores single-branch tag scope.
     cache_git merge-base --is-ancestor "$previous_head" "refs/heads/$branch"
@@ -74,7 +88,8 @@ fill_tip_blobs() {
   [ -n "$missing" ] || return 0
   missing_blob_count="$(printf '%s\n' "$missing" | wc -l | tr -d ' ')"
   printf '%s\n' "$missing" |
-    cache_git -c fetch.negotiationAlgorithm=noop fetch --quiet --no-tags --no-write-fetch-head \
+    git_network -C "$cache_dir" -c core.hooksPath=/dev/null -c gc.auto=0 -c maintenance.auto=false \
+      -c fetch.negotiationAlgorithm=noop fetch --quiet --no-tags --no-write-fetch-head \
       --recurse-submodules=no --filter=blob:none --stdin origin || return 1
   missing="$(missing_tip_blobs)" || return 1
   [ -z "$missing" ]
@@ -117,7 +132,7 @@ if ! materialize_checkout; then
   rm -rf "$checkout_dir" "$cache_dir"
   cache_ready=false
   mode=fallback
-  git clone --filter=blob:none --branch "$branch" --single-branch "$url" "$checkout_dir"
+  git_network clone --filter=blob:none --branch "$branch" --single-branch "$url" "$checkout_dir"
 fi
 
 record_output "cache_ready=$cache_ready"

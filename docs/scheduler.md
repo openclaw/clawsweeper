@@ -226,7 +226,10 @@ on every warm fetch, so deleted or moved tags cannot survive in the checkout.
 A non-fast-forward branch update rebuilds the cache so its old history cannot
 retain tags outside the current branch. A failed or partial restore is discarded,
 a failed cache fetch rebuilds the cache, and a failed local clone falls back to a clean clone without
-saving. The pinned Codex source cache is keyed by the Codex version pinned in the
+saving. Each network clone or fetch stops after `CLAWSWEEPER_REVIEW_TARGET_CHECKOUT_TIMEOUT_MS`
+(default 30 minutes, at most 120) and its git process group is killed. Local clones from the cache
+are not under that deadline. Git's `http.lowSpeedLimit` stays at its default so a quiet tip-blob
+negotiation is not aborted before the deadline. The pinned Codex source cache is keyed by the Codex version pinned in the
 target checkout and is saved once per version.
 
 The receiver workflow is `.github/workflows/sweep.yml`.
