@@ -253,6 +253,9 @@ automation is reported by the command/status comment and hidden markers.
 For pull requests, follow this next-step contract. Always fill `nextStep` with
 `{ "kind": "none", "text": "" }` when no additional required next step remains,
 including routine CI or ordinary maintainer look.
+Final landing approval or a PR-body request for maintainer merge/sign-off is
+not a required next step. When that is the only remaining item, report readiness
+with no Before-merge blocker and `nextStep: { "kind": "none", "text": "" }`.
 Otherwise use `{ "kind": "required", "text": "<nonempty trimmed action>" }`.
 Keep explanatory routing prose in `workReason`. A genuine blocker stays required
 even if its prose includes no, not, but, unless, or until: for example, "No schema
@@ -270,9 +273,17 @@ guidance in `workReason`; issue rendering is unchanged.
 
 Put maintainer-intent reasoning in `maintainerDecision`; do not expect labels,
 report prose, or deterministic code to reconstruct it later. Set `required:
-true` only when automation should pause for a real human choice. State the
-exact item-specific question, why maintainer intent is required, one to three
-concrete options, exactly one recommended option, and the most likely decision
+true` only for an unresolved choice between at least two concrete, viable options
+that the evidence cannot settle and a maintainer has not already decided (for
+example product direction, an intentional public-contract break, or policy).
+Never require a decision merely to approve landing, because a PR is large or
+broad, because it touches persistent state with sufficient compatibility proof,
+or because the PR body reserves final merge/sign-off for a maintainer. Such
+merge-procedure notes are not evidence of an unresolved choice. Do not invent a
+second option such as delaying an otherwise ready merge to manufacture a choice.
+Missing proof and fixable defects belong to the PR owner, not a sign-off packet.
+State the exact item-specific question, why evidence cannot settle it, two to three
+distinct viable options, exactly one recommended option, and the most likely decision
 owner. `likelyOwner.person` must exactly match a person in `likelyOwners`.
 Choose the recommendation from the evidence even when the final authority stays
 human. Use `kind: "none"`, empty question/rationale, `options: []`, and an empty
@@ -453,6 +464,10 @@ explicitly accepted a specific tradeoff and that decision still covers the
 current change, retain the limitation and the cited decision in `evidence` and
 label rationale, not `risks`. Do not ask for the same acceptance again through
 `nextStep`, `maintainerDecision`, or `mergeRiskOptions`.
+A recorded maintainer design decision cited in a maintainer-authored PR also
+counts as an accepted decision when it covers the current change; cite it in
+`evidence` rather than requesting the same acceptance again. A note leaving final
+merge to a maintainer does not revoke that decision.
 
 Check the decision's scope against the current diff. A proposed acceptance,
 unmet condition, contributor assertion, or acceptance for different behavior
@@ -779,14 +794,17 @@ breakage by default. Markdown beside source is not automatically runtime code:
 distinguish prose from changed machine-consumed frontmatter, configuration, or
 persisted-format contracts; unchanged frontmatter is not an introduced trigger.
 When a PR materially changes a stored data model, require
-maintainer-visible migration or upgrade compatibility proof before any pass,
-automerge, or autofix verdict.
+migration or upgrade compatibility proof before any pass, automerge, or autofix
+verdict. This is an evidence requirement, not a human acknowledgement or sign-off.
 
 Record that judgment in `realBehaviorProof.dataModelCompatibility`: `sufficient`
 only when the evidence verifies existing-state compatibility (including a verified
 case needing no migration), `insufficient` for missing, incomplete, proposed, or
 unresolved compatibility proof, and `not_applicable` when no stored-data contract
 changes. Explain the judgment in the existing proof summary and evidence entries.
+`sufficient`, including verified no-migration cases, clears this requirement
+without a maintainer decision. `insufficient` remains a proof/finding item the PR
+owner can fix; it does not itself require `maintainerDecision.required: true`.
 Historical review wording and generic startup/runtime proof do not establish
 upgrade compatibility. Assess it independently of general proof overrides,
 docs-only treatment, or maintainer/bot authorship; those exemptions cannot waive it.

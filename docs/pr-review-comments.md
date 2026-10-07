@@ -190,6 +190,23 @@ PR comments use a human-first shape:
 8. `## Findings` appears only when actionable review or security findings need
    a little more visible detail.
 
+Maintainer decision packets are reserved for unresolved choices between at least
+two distinct viable options that evidence cannot settle and a maintainer has not
+already decided. Routine landing approval, PR size, and PR-body merge/sign-off
+notes do not create decisions or Before-merge blockers. A recorded design decision
+cited in a maintainer-authored PR counts as accepted within its current scope.
+Stored-data changes require compatibility evidence, not human acknowledgement:
+`dataModelCompatibility: sufficient` (including verified no-migration cases)
+clears that gate; insufficient evidence remains a PR-owner proof item. Defects,
+security concerns, missing proof, and undecided product or plugin API direction
+still block. Readiness does not itself grant merge authority.
+
+The parser rejects required packets with fewer than two options or duplicate
+options; malformed reports remain fail-closed and need a fresh review, rather
+than silently losing a possible real blocker. Semantic intent belongs to the
+review producer, not keyword filtering in comment rendering. OpenClaw Bay needs
+no code or schema change: the packet fields and observer projection are unchanged.
+
 New reviewer output requires a producer-owned `nextStep` assessment. Issues use
 none and retain their existing next-action guidance in `workReason`. Canonical
 report frontmatter stores `next_step` as JSON: `{"kind":"none","text":""}` means

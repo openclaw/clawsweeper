@@ -77,7 +77,10 @@ Full review comments:
 }
 
 // Use the real decision parser and report writer; only surrounding context/formatting is synthetic.
-export function generatedCompatibilityReport(compatibility: DataModelCompatibility): string {
+export function generatedCompatibilityReport(
+  compatibility: DataModelCompatibility,
+  decisionOverrides: Record<string, unknown> = {},
+): string {
   const document = createReportDocumentRendering({
     ...createRepositoryLinks({
       reportRepo: "openclaw/clawsweeper-state",
@@ -135,6 +138,7 @@ export function generatedCompatibilityReport(compatibility: DataModelCompatibili
         summary: "Synthetic readiness.",
         nextSteps: [],
       },
+      ...decisionOverrides,
     }),
   );
   return document.markdownFor({

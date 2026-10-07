@@ -398,7 +398,14 @@ test("explicit none leaves independent blockers, decision counts and low ratings
     kind: "product_direction",
     question: "Which compatibility contract should ship?",
     rationale: "This needs an owner ruling.",
-    options: [{ title: "Keep compatibility", body: "Retain the old contract.", recommended: true }],
+    options: [
+      { title: "Keep compatibility", body: "Retain the old contract.", recommended: true },
+      {
+        title: "Adopt the new contract",
+        body: "Document the intentional break.",
+        recommended: false,
+      },
+    ],
     likelyOwner: { person: "@owner", reason: "Owns the contract.", confidence: "high" },
   };
   const cases: {

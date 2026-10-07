@@ -1,0 +1,1 @@
+- Reserve maintainer decisions for concrete unresolved choices, honor recorded design acceptance, and keep stored-state compatibility proof separate from routine landing sign-off.

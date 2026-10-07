@@ -218,7 +218,7 @@
       "properties": {
         "required": {
           "type": "boolean",
-          "description": "True only when automation should pause for a maintainer choice that Codex can state precisely."
+          "description": "True only for an unresolved choice between at least two concrete viable options that evidence cannot settle and a maintainer has not already decided. Never for landing approval, PR size, sufficient stored-state compatibility proof, or a PR-body merge/sign-off request. Missing proof and fixable defects remain PR-owner work."
         },
         "kind": {
           "type": "string",
@@ -239,12 +239,12 @@
         },
         "rationale": {
           "type": "string",
-          "description": "Why model judgment cannot safely resolve this choice without maintainer intent, or an empty string when required is false."
+          "description": "Why evidence cannot settle this choice and no recorded maintainer decision covers it, or an empty string when required is false. A recorded design decision cited in a maintainer-authored PR counts as accepted within its scope."
         },
         "options": {
           "type": "array",
           "maxItems": 3,
-          "description": "One to three item-specific choices when required is true; [] otherwise. Exactly one choice must be recommended when required is true.",
+          "description": "Two to three distinct viable item-specific choices when required is true; [] otherwise. Exactly one choice must be recommended. Do not invent a defer-merge option to turn routine landing approval into a choice.",
           "items": {
             "type": "object",
             "additionalProperties": false,
@@ -765,7 +765,7 @@
         "dataModelCompatibility": {
           "type": "string",
           "enum": ["sufficient", "insufficient", "not_applicable"],
-          "description": "Independent assessment of existing-state migration or upgrade compatibility. Use sufficient only for verified compatible behavior, insufficient when required compatibility evidence is missing or unresolved, and not_applicable when no stored-data contract changes. General proof exemptions do not waive this assessment; explain it in the existing summary and evidence."
+          "description": "Independent assessment of existing-state migration or upgrade compatibility. Use sufficient only for verified compatible behavior (including a verified no-migration case), insufficient when required compatibility evidence is missing or unresolved, and not_applicable when no stored-data contract changes. Sufficient clears this gate without human acknowledgement; insufficient is a PR-owner proof/finding item, not itself a maintainer decision. General proof exemptions do not waive this assessment; explain it in the existing summary and evidence."
         }
       }
     },

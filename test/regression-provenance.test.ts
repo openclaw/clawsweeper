@@ -600,7 +600,18 @@ test("required decision owner remains in the bounded normalized routing set", ()
         kind: "manual_review",
         question: "Which repair should proceed?",
         rationale: "A maintainer must select the repair scope.",
-        options: [{ title: "Review", body: "Inspect the relevant source.", recommended: true }],
+        options: [
+          {
+            title: "Preserve behavior",
+            body: "Keep the existing public contract.",
+            recommended: true,
+          },
+          {
+            title: "Change behavior",
+            body: "Adopt the proposed public contract.",
+            recommended: false,
+          },
+        ],
         likelyOwner: {
           person: selected.person,
           reason: "This person introduced the feature.",
@@ -692,7 +703,16 @@ process.stdout.write(fs.readFileSync(process.env.FIXTURE_DECISION, 'utf8') + '\\
               question: "Which repair should proceed?",
               rationale: "A maintainer must select the repair scope.",
               options: [
-                { title: "Review", body: "Inspect the relevant source.", recommended: true },
+                {
+                  title: "Preserve behavior",
+                  body: "Keep the existing public contract.",
+                  recommended: true,
+                },
+                {
+                  title: "Change behavior",
+                  body: "Adopt the proposed public contract.",
+                  recommended: false,
+                },
               ],
               likelyOwner: {
                 person: "Model Guessed Person",

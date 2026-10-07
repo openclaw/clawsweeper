@@ -13,6 +13,66 @@ import {
   neutralCompatibility,
 } from "./compatibility-proof-fixture.ts";
 import { closeDecision } from "./helpers.ts";
+import {
+  buildDecisionPacketFromReport,
+  emptyMaintainerDecision,
+} from "../dist/decision-packets.js";
+
+test("accepted persistent-state design needs no landing sign-off but still needs compatibility proof", () => {
+  // Faithful review facts from https://github.com/openclaw/openclaw/pull/166060.
+  for (const compatibility of ["sufficient", "insufficient"] as const) {
+    const report = generatedCompatibilityReport(compatibility, {
+      changeSummary: "Persist pending-slot reservations for parallel worktree creation.",
+      workReason: "The final merge is left to the maintainer.",
+      bestSolution: "Use the recorded maintainer-approved coordination design.",
+      maintainerDecision: emptyMaintainerDecision(),
+      nextStep: { kind: "none", text: "" },
+      reviewFindings: [],
+    });
+    const comment = renderReviewCommentFromReport(report, "none");
+    assert.equal(buildDecisionPacketFromReport(report), null);
+    assert.doesNotMatch(
+      comment,
+      /## Decision needed|Resolve maintainer decision|Complete next step/,
+    );
+    assert.match(comment, /\*\*Findings\*\*.*None/);
+    assertHold(report, compatibility === "insufficient");
+    if (compatibility === "sufficient") {
+      assert.match(comment, /## Before merge\s+None\./);
+    }
+  }
+});
+
+test("sufficient compatibility preserves an undecided plugin API direction", () => {
+  const report = generatedCompatibilityReport("sufficient", {
+    maintainerDecision: {
+      required: true,
+      kind: "product_direction",
+      question: "Should plugins retain the old API or adopt the replacement contract?",
+      rationale: "Both contracts are viable and no maintainer has selected a direction.",
+      options: [
+        {
+          title: "Retain the API",
+          body: "Preserve existing plugin compatibility.",
+          recommended: true,
+        },
+        {
+          title: "Replace the API",
+          body: "Adopt the documented intentional break.",
+          recommended: false,
+        },
+      ],
+      likelyOwner: {
+        person: "unknown",
+        reason: "Contract owner is not identified.",
+        confidence: "low",
+      },
+    },
+  });
+  assert.equal(buildDecisionPacketFromReport(report)?.options.length, 2);
+  assert.match(renderReviewCommentFromReport(report, "none"), /Resolve maintainer decision/);
+  assert.doesNotMatch(reviewAutomationMarkersFromReport(report), /clawsweeper-verdict:pass/);
+});
 
 function assertHold(report: string, held: boolean) {
   const comment = renderReviewCommentFromReport(report, "none");

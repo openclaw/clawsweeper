@@ -315,6 +315,28 @@ test("review prompt treats duplicated behavior as a P1 PR finding", () => {
   assert.match(prompt, /maintenance drift, conflicting behavior,\s+or user confusion/);
 });
 
+test("review prompt and schema reserve maintainer decisions for unresolved choices", () => {
+  const prompt = readFileSync("prompts/review-item.md", "utf8");
+  const schema = JSON.parse(readFileSync("schema/clawsweeper-decision.schema.json", "utf8"));
+  assert.match(prompt, /at least two concrete, viable options/);
+  assert.match(prompt, /evidence cannot settle and a maintainer has not already decided/);
+  assert.match(prompt, /Never require a decision merely to approve landing/);
+  assert.match(prompt, /PR body reserves final merge\/sign-off/);
+  assert.match(prompt, /no Before-merge blocker/);
+  assert.match(prompt, /recorded maintainer design decision cited in a maintainer-authored PR/);
+  assert.match(prompt, /does not revoke that decision/);
+  assert.match(prompt, /including verified no-migration cases/);
+  assert.match(prompt, /proof\/finding item the PR\s+owner can fix/);
+  assert.match(
+    schema.properties.maintainerDecision.properties.required.description,
+    /evidence cannot settle/,
+  );
+  assert.match(
+    schema.properties.maintainerDecision.properties.options.description,
+    /Two to three distinct viable/,
+  );
+});
+
 test("review prompt treats plugin API changes as compatibility-sensitive P1 repair work", () => {
   const prompt = readFileSync("prompts/review-item.md", "utf8");
 

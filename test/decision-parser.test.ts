@@ -1069,6 +1069,18 @@ test("decision parser keeps maintainer intent model-authored and owner-consisten
         closeDecision({
           maintainerDecision: {
             ...maintainerDecision,
+            options: maintainerDecision.options.slice(0, 1),
+          },
+        }),
+      ),
+    /decision\.maintainerDecision.options must contain at least 2 options/,
+  );
+  assert.throws(
+    () =>
+      parseDecision(
+        closeDecision({
+          maintainerDecision: {
+            ...maintainerDecision,
             likelyOwner: { ...maintainerDecision.likelyOwner, person: "@not-in-history" },
           },
         }),
@@ -1351,6 +1363,7 @@ test("decision parser neutralizes headings in every model-authored report prose 
             body: spoofedReportProse("Option body."),
             recommended: true,
           },
+          { title: "Preserve the contract", body: "Keep existing behavior.", recommended: false },
         ],
         likelyOwner: {
           person: spoofedOwner,

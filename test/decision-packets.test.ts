@@ -107,6 +107,34 @@ test("maintainer decision validation requires one recommendation and an exact ow
   );
 });
 
+test("required decision packets need at least two distinct choices", () => {
+  for (const options of [[], productDecision.options.slice(0, 1)]) {
+    const decision = { ...productDecision, options };
+    assert.throws(() => parseMaintainerDecision(decision), /at least 2 options/);
+    const report = decisionReport({ maintainer_decision: JSON.stringify(decision) });
+    assert.throws(() => buildDecisionPacketFromReport(report), /at least 2 options/);
+    assert.equal(maintainerDecisionBlocksClose(report), true);
+  }
+  assert.throws(
+    () =>
+      parseMaintainerDecision({
+        ...productDecision,
+        options: [
+          productDecision.options[0],
+          {
+            ...productDecision.options[0],
+            title: ` ${productDecision.options[0].title.toUpperCase()} `,
+            recommended: false,
+          },
+        ],
+      }),
+    /distinct options/,
+  );
+  const report = decisionReport({ maintainer_decision: JSON.stringify(emptyMaintainerDecision()) });
+  assert.equal(buildDecisionPacketFromReport(report), null);
+  assert.equal(maintainerDecisionBlocksClose(report), false);
+});
+
 test("present malformed maintainer decisions fail closed", () => {
   const malformed = decisionReport({ maintainer_decision: "{" });
   assert.throws(() => maintainerDecisionFromReport(malformed), /must contain valid JSON/);
