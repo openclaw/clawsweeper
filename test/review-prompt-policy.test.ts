@@ -1192,7 +1192,7 @@ test("review prompt and generation schema constrain live proof to the retired co
   assert.match(prompt, /empty `entry`/);
   assert.match(prompt, /empty `steps` array/);
   assert.match(prompt, /Do not recommend or plan proof execution/);
-  assert.match(prompt, /fixed retired compatibility shape/);
+  assert.match(prompt, /Always fill `liveProofPlan` with the retired compatibility shape/);
   assert.match(prompt, /Do not derive commands, steps, or another demonstration plan/);
   assert.doesNotMatch(prompt, /Always fill `liveProofPlan` using the user-visible behavior/);
   assert.doesNotMatch(prompt, /This is a read-only demonstration plan/);
@@ -1228,6 +1228,25 @@ test("review prompt and generation schema constrain live proof to the retired co
   const liveProofIndex = requiredOrder.indexOf("liveProofPlan");
   assert.equal(requiredOrder[liveProofIndex - 1], "telegramVisibleProof");
   assert.equal(requiredOrder[liveProofIndex + 1], "mantisRecommendation");
+});
+
+test("review prompt states each always-fill field contract once", () => {
+  const prompt = readFileSync("prompts/review-item.md", "utf8");
+  for (const field of [
+    "liveProofPlan",
+    "telegramVisibleProof",
+    "mantisRecommendation",
+    "triagePriority",
+    "securityReview",
+    "realBehaviorProof",
+    "reviewMetrics",
+    "prRating",
+  ]) {
+    assert.equal(prompt.split(`Always fill \`${field}\``).length - 1, 1, field);
+  }
+  for (const label of ["merge-risk: 🚨 compatibility", "impact:data-loss"]) {
+    assert.equal(prompt.split(`\`${label}\`: `).length - 1, 1, label);
+  }
 });
 
 test("pull request comments render live verification with optional recording", () => {

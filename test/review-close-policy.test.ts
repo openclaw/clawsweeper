@@ -56,7 +56,7 @@ test("review prompt documents gated backlog close policies", () => {
 test("review prompt closes independently disproven nonexistent-source bug reports", () => {
   const prompt = readFileSync(new URL("../prompts/review-item.md", import.meta.url), "utf8");
 
-  assert.match(prompt, /For `cannot_reproduce`, distinguish missing reporter evidence/);
+  assert.match(prompt, /`cannot_reproduce`: [^\n]*Distinguish missing reporter evidence/);
   assert.match(prompt, /Search the complete current tree,\s+source history, renamed paths/);
   assert.match(prompt, /actual owner, callers, dependency contract, and relevant regression tests/);
   assert.match(prompt, /named implementation never existed or cannot perform the alleged/);
@@ -106,6 +106,16 @@ test("close-first triage keeps actionable upstream work and invites better repor
   const prompt = readFileSync(new URL("../prompts/review-item.md", import.meta.url), "utf8");
 
   assert.match(prompt, /Maintainer attention is scarce/);
+  assert.match(prompt, /the first rule that applies wins/);
+  assert.match(prompt, /1\. Keep-open guards win over every close rule/);
+  assert.ok(
+    prompt.indexOf("Keep-open guards win") < prompt.indexOf("Default to closure"),
+    "keep-open guards must take precedence over the closure default",
+  );
+  assert.doesNotMatch(
+    prompt,
+    /Close only when the evidence is strong and the repository policy allows it/,
+  );
   assert.match(prompt, /Default to closure when an unprotected item does not establish/);
   assert.match(
     prompt,
