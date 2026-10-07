@@ -278,36 +278,29 @@ export function renderDecisionPacketPublicBlock(markdown: string): string {
   }
   if (!packet) return "";
   const recommendation = packet.options.find((option) => option.recommended);
-  const tableCell = (value: string) =>
+  // Report-provided text renders inline: escape HTML openers and keep each value on one line.
+  const inline = (value: string) =>
     value
-      .replace(/\\/g, "\\\\")
       .replace(/<(?=[a-z/!?])/gi, "&lt;")
-      .replace(/\r?\n|\r/g, "<br>")
-      .replace(/\|/g, "\\|")
+      .replace(/\s+/g, " ")
       .trim();
-  if (!recommendation) {
+  const lines = [`- **Question:** ${inline(packet.question)}`];
+  if (recommendation) {
+    lines.push(
+      `- **Recommendation:** **${inline(recommendation.title)}:** ${inline(recommendation.body)}`,
+    );
+  } else if (packet.options.length) {
     // A packet without a flagged recommendation is still an outstanding maintainer
-    // choice; show the question and any available options instead of hiding it.
-    const optionCells = packet.options.length
-      ? packet.options
-          .map((option) => `**${tableCell(option.title)}:** ${tableCell(option.body)}`)
-          .join("<br>")
-      : "Maintainer decision needed.";
-    return [
-      "| Question | Options |",
-      "|---|---|",
-      `| ${tableCell(packet.question)} | ${optionCells} |`,
-      "",
-      `Why: ${packet.rationale}`,
-    ].join("\n");
+    // choice; show the options instead of hiding it.
+    lines.push(
+      "- **Options:**",
+      ...packet.options.map((option) => `  - **${inline(option.title)}:** ${inline(option.body)}`),
+    );
+  } else {
+    lines.push("- **Options:** Maintainer decision needed.");
   }
-  return [
-    "| Question | Recommendation |",
-    "|---|---|",
-    `| ${tableCell(packet.question)} | **${tableCell(recommendation.title)}:** ${tableCell(recommendation.body)} |`,
-    "",
-    `Why: ${packet.rationale}`,
-  ].join("\n");
+  lines.push(`- **Why:** ${inline(packet.rationale)}`);
+  return lines.join("\n");
 }
 
 export function syncDecisionPacketRecord(

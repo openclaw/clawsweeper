@@ -187,7 +187,8 @@ merge, and why not yet" in this order:
    repeats the proof statement only when missing proof is the reason for that
    status. The rating scale and workflow notes in the details are one line each.
 7. `## Decision needed` appears only when a maintainer decision packet exists.
-   It shows the concrete question and recommended option in a table.
+   It lists the concrete question, the recommended option (or every option when
+   none is recommended), and why, as bullet points.
 8. `## Before merge` uses native Markdown task checkboxes for real remaining
    actions or risks. Routine CI, ordinary maintainer review, and no-op guidance
    collapse to `None.`

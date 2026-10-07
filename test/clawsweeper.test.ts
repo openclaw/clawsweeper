@@ -106,9 +106,11 @@ test("review comments include a compact maintainer decision packet block", () =>
   );
 
   assert.match(comment, /\*\*Maintainer decision needed\*\*/);
-  assert.match(comment, /Should this product contract be accepted\?/);
-  assert.match(comment, /\| Question \| Recommendation \|/);
-  assert.match(comment, /\*\*Accept the contract:\*\* Adopt and document the proposed behavior\./);
+  assert.match(comment, /- \*\*Question:\*\* Should this product contract be accepted\?/);
+  assert.match(
+    comment,
+    /- \*\*Recommendation:\*\* \*\*Accept the contract:\*\* Adopt and document the proposed behavior\./,
+  );
   assert.doesNotMatch(comment, /Likely owner: @owner/);
 });
 
@@ -126,9 +128,11 @@ test("close proposals that require maintainer decisions render as kept open", ()
   );
 
   assert.match(comment, /## Decision needed/);
-  assert.match(comment, /Should this product contract be accepted\?/);
-  assert.match(comment, /\| Question \| Recommendation \|/);
-  assert.match(comment, /\*\*Accept the contract:\*\* Adopt and document the proposed behavior\./);
+  assert.match(comment, /- \*\*Question:\*\* Should this product contract be accepted\?/);
+  assert.match(
+    comment,
+    /- \*\*Recommendation:\*\* \*\*Accept the contract:\*\* Adopt and document the proposed behavior\./,
+  );
   assert.doesNotMatch(comment, /Likely owner: @owner/);
   assert.match(comment, /clawsweeper-verdict:needs-human/);
   assert.doesNotMatch(comment, /Closing this PR/);
