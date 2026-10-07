@@ -1211,6 +1211,9 @@ ${extra}
     const result = runAgentProcess({
       scanSource,
       ...(options.promptFileBytes === 0 ? {} : { diagnosticPromptPath: promptPath }),
+      ...(options.promptFileBytes === undefined
+        ? {}
+        : { promptFileBytes: options.promptFileBytes }),
       label: `review-${options.item.number}-attempt-1`,
       prompt,
       model: options.model,

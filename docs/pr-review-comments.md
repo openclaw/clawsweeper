@@ -22,23 +22,40 @@ inside this repo.
 
 ## Review procedure
 
-The runtime composes a kind-specific procedure before the shared rules in
-[`prompts/review-item.md`](../prompts/review-item.md).
-[`prompts/review-pr.md`](../prompts/review-pr.md) leads PR reviews through
-before/after system understanding, integrated scenarios, source-challenged
-findings, and a whole-patch judgment before proof/readiness assessment.
-[`prompts/review-issue.md`](../prompts/review-issue.md) preserves issue triage.
-This is ordered guidance inside the existing model call, not an enforced
-multi-call pipeline or a guarantee of reviewer accuracy.
+The `review_procedure` opening slot in
+[`prompts/review-item.md`](../prompts/review-item.md) selects the outcome-oriented
+engineering contract in [`prompts/review-pr.md`](../prompts/review-pr.md) for PRs.
+It asks for coherent before/after system understanding, relevant end-to-end paths,
+source-challenged findings, and a grounded whole-patch judgment without prescribing
+an investigation itinerary. It does not replace the shared review policy.
 
-PRs record the concise behavioral account in `summary`, source-backed path
-observations in `evidence`, and the integrated judgment in `solutionAssessment`
-and the existing correctness/finding fields. The decision schema, durable
-comment contract, mandatory safety/policy gates, and publication authority are
-unchanged. All prompt assets participate in the review policy hash.
+The existing core, [`PR template`](../prompts/review-item-pr.md),
+[`issue template`](../prompts/review-item-issue.md),
+[`close-reason guidance`](../prompts/review-close-reasons.md), and
+[`repository profiles`](../src/repository-profiles.ts) remain the policy owners.
+Profiles select the applicable close reasons and repository instructions; PR
+readiness and re-review continuity remain in the canonical PR template. The issue
+opening in [`prompts/review-issue.md`](../prompts/review-issue.md) reproduces the
+upstream opening, preserving assembled issue instructions.
 
-The [controlled proof](proof/holistic-pr-review/README.md) records the actual
-local-range model runs and their deliberately narrow evaluation limits.
+The current decision schema owns field definitions and descriptions; retired
+fields are not restored. `summary` remains the verdict and rationale, with
+source-backed behavioral observations in `evidence`. Native Codex retains its
+original prompt bytes and output-schema transport. OpenClaw already receives an
+inline schema; it now captures a bounded schema once, resolves relative paths
+against the target cwd, validates the captured bytes, and includes them in the
+complete message before admission. The complete message and captured schema are
+scanned before diagnostics or invocation, without a post-scan file reread.
+Prompt quotas, the admission deadline, and the CLI message-file limit include
+the full message. This applies to existing schema-using OpenClaw callers, not
+only PR reviews.
+
+Both opening assets and all canonical templates participate in the review policy
+hash. The durable comment contract, mandatory policy gates, publication authority,
+model defaults, and call count are unchanged. There is no new Bay data contract.
+The [proof notes](proof/holistic-pr-review/README.md) distinguish historical
+receipts from the current opt-in harness; historical results do not validate the
+rebased source or establish improved review accuracy.
 
 ## Durable Comment Shape
 

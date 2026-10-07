@@ -1,132 +1,103 @@
-# Code-first PR review: controlled model proof
+# Engineering-review integration proof
 
-> Historical pre-rebase evidence: the receipt below records the earlier source,
-> not the candidate rebased onto fe750d1779208b067c1f694dba70f494cb29c401. The
-> replay harness now builds that selected baseline from its pinned source and
-> renders the current procedure slot. Rebased validation must be recorded
-> separately before publication; old results are not relabeled.
-
-- Status: historical proof, not an operator runbook or a production trigger
+- Status: current opt-in harness; checked-in receipts are historical
 - Owner: ClawSweeper review maintainers
-- Surface: `buildReviewPrompt` through `review --local-range`, including the
-  normal input scanner, native Codex process, decision parser, and local report
-- Source baseline: `34cc1aa014a16295779cdca4e336479bad5636ec`
+- Selected main: fe750d1779208b067c1f694dba70f494cb29c401
+- Current execution: not performed by this conflict-resolution pass
 
-## Claim and limits
+## Current source contract
 
-The production PR prompt now leads with understand → integrated behavior →
-challenge/verify → synthesize, before proof/readiness policy. The output contract
-remains unchanged, and issue prompt composition is byte-for-byte equal to the
-baseline. This proof exercises that prompt with a real model and real source
-inspection; string assertions and schema validation alone cannot demonstrate
-holistic reasoning.
+The engineering opening asks for coherent before/after system behavior, relevant
+end-to-end paths, source-challenged findings, and a grounded completion decision.
+It leaves the investigation to the reviewer. The existing core, PR/issue templates,
+close-reason guidance, repository profiles, standing rules, and current schema
+remain authoritative. The branch's duplicate policy files are removed; policy
+is not conditionally hidden by a new protection or continuity router.
 
-Two small, self-authored, three-module PR fixtures exercise the same cancellation
-feature. One loses the signal between queue draining and execution even though
-the immediate path forwards it; the other preserves the task across both paths.
-The queue itself preserves tasks and isolates failures, so the reviewer must
-trace the caller/queue/worker contract rather than blame the queue or transport.
-Expected observations and the evaluator remain outside the reviewer checkout.
-`openclaw/review-fixture` is a synthetic local identity, not a GitHub repository.
+The issue opening uses the `review_procedure` slot to reproduce selected main's
+core. Both complete issue prompts and the slot reconstruction are compared by
+the harness. The schema is read from each built variant; its field count is
+measured, not pinned to an earlier branch value. The
+[ownership inventory](policy-map.md) records what is unique and what main already
+owns. No model default, permission, queue, apply, publication, or Bay contract
+changes are part of this integration.
 
-This is a bounded integration/coverage example, not a representative accuracy
-benchmark, a measured improvement in recall/precision, or proof that a model
-always follows the intended stages. There is one review per fixture/prompt, no
-seed control or repeated trials, and no blinded human adjudication. No extra
-model call, provider, confidence threshold, or fan-out is added to production.
+OpenClaw already appends the output schema on main. The retained transport change
+makes that a bounded, validated capture before admission: one complete message
+is scanned and then delivered, with no post-scan schema reread. The message's
+schema and framing count toward quotas, deadline, and CLI size limits. Native
+Codex retains its original prompt bytes and output-schema transport.
 
-## Environment and reproduction
+## Proof contract
 
-Executed on Linux x64 with Node 26.8.2, pnpm 12.4.1, Codex CLI 0.147.0, model
-`gpt-6.1-sol`, medium reasoning effort, read-only sandbox, and approval policy
-`never`. The existing author-association profile selects the same effort and
-service tier for every run. The runner withholds GitHub credentials, isolates
-GitHub configuration, and disables model web search. It still calls the model
-service: this is not air-gapped.
+- Claim: current production prompt composition retains canonical policy and
+  unchanged issue instructions while adding the engineering opening; schema
+  delivery admits the same complete bytes the OpenClaw consumer receives.
+- Surfaces: production prompt assembly, native local-range review, and
+  `runAgentProcess` through the OpenClaw worker's message-file boundary.
+- Scenarios: a queued cancellation defect, a clean signal-forwarding control,
+  and an apparent signal-loss path disproved by the queue's captured callback;
+  separate delivery checks cover schema passthrough and refusals.
+- Environment: Node 24 or newer and existing installed dependencies. The model
+  harness retains its explicit native model selection, read-only sandbox,
+  normal admission, and fixed per-review timeout. It is opt-in and paid, not CI.
+- Observable results: completed decisions, source-backed findings or refutations,
+  unchanged target checkouts, exact issue-prompt equality, captured prompt/schema
+  sizes, and byte-identical admitted/delivered schema messages.
+- Artifacts: new output-directory receipts, source and prompt hashes, complete
+  prompts/results, process logs, and actual environment identifiers. Do not
+  overwrite the historical receipts to imply they describe the rebased source.
+- Limits: three self-authored fixtures are not a review-quality benchmark.
+  Delivery to a controlled consumer proves transport, not model compliance or
+  semantic review quality. A successful source trace is not execution of the
+  candidate behavior. Current runtime proof and native review remain owner work.
 
-No container was used: this is a Linux host, Docker is unavailable, and the
-Windows-specific local-container instruction does not describe this environment.
-Provider/image/lease: native host / not applicable / not applicable. No GitHub
-review, comment, label, merge, deployment, apply, or queue operation was issued.
+## Running current proof
 
-After `pnpm install --frozen-lockfile` and `pnpm run build`:
+With dependencies already installed, use fresh output directories:
 
-```sh
-node docs/proof/holistic-pr-review/run-proof.mjs .artifacts/holistic-pr-review/isolated gpt-6.1-sol
+```bash
+node docs/proof/holistic-pr-review/run-proof.mjs .artifacts/astra-review/controlled
+node docs/proof/holistic-pr-review/schema-delivery.mjs .artifacts/astra-review/schema-delivery
 ```
 
-Choose a new output directory for another run. This is an opt-in paid model
-experiment, not part of tests or CI. The harness constructs deterministic Git
-fixture histories and clones a fresh target for every review, so previous review
-history cannot inform the comparison. It retains exact commands, times, pinned
-fixture revisions, prompt/result hashes, decisions, and target-clean checks.
+`run-proof.mjs` archives selected main's real source, configuration, schema, and
+four canonical templates into a separate runner directory and compiles it with
+the existing dependencies. It also builds the current candidate. It does not
+swap old monolithic assets into the new compositor. Before invoking a model,
+it checks slot reconstruction and compares complete issue prompts for OpenClaw,
+ClawSweeper, and ClawHub using both production runtimes.
 
-The legacy comparison uses the baseline `review-item.md` under the same current
-runner (with an empty PR procedure, adding only leading blank lines). It compares
-prompt content, not two different execution engines. The normal scanner/bootstrap
-is retained in both runners; no admission guard is mocked or disabled.
+Both variants use the same three request-service fixtures and fresh clones,
+excluding prior local review history. The synthetic `openclaw/review-fixture`
+identity names no live GitHub repository. The harness records actual static
+instructions, schema size and field count, and runtime/context bytes separately.
+There is no assumed reduction relative to a superseded baseline. The optional
+`--candidate-only` argument retains the baseline build and equivalence checks;
+an optional case number 1–3 selects one candidate case.
 
-## Evidence
+The schema-delivery harness uses the freshly built candidate, normal mandatory
+admission, and a controlled message-file consumer without inference credentials.
+It records message/schema hashes and checks no-schema passthrough, a complete
+message quota refusal, and malformed-schema refusal. The consumer is not an
+OpenClaw model. Standalone use requires a fresh `pnpm run build` first.
 
-See [receipt.json](receipt.json) for exact input identities, UTC run windows,
-commands, result digests, and the selected final decision fields. Local paths in
-that published receipt are normalized to `$WORKTREE`/`$OUTPUT`; raw prompts,
-model tool transcripts, reports, and process logs remain in the ignored output
-directory. No hidden reasoning transcript is published.
+Neither harness is executed automatically. The owner records the actual host
+or validation provider, image/lease when applicable, current head, artifacts,
+and limits for a new run; an earlier native-host environment is not evidence of
+the environment used now.
 
-The fixtures deliberately omit contributor runtime proof. The model must keep
-that policy assessment separate from its source-backed correctness judgment;
-`realBehaviorProof: missing` for a fixture is not a failed model integration.
+## Historical receipts
 
-## Observed comparison
+[receipt.json](receipt.json) preserves the pre-rebase native model experiment
+against the additive branch baseline
+`cdb49e07f72207aec7a198eb86b5479b29a9edb5`, including its original prompts, schema
+count, source identities, outcomes, and development attempts.
+[schema-delivery-receipt.json](schema-delivery-receipt.json) preserves the earlier
+controlled delivery experiment. Neither receipt is relabeled or used as proof
+of current main's templates, schema, instruction sizes, or this resolution.
 
-| Prompt | Cross-path defect | Clean control |
-| --- | --- | --- |
-| Candidate | One P2 signal-forwarding finding; incorrect | No findings; correct |
-| Legacy | One P2 signal-forwarding finding; incorrect | No findings; correct |
-
-All four local-range runs exited successfully and left their target checkouts
-clean. Both candidate summaries explain before/after behavior; their evidence
-traces the immediate and queued paths and failure isolation. The candidate
-rejects the suspected queue-loss explanation by observing that the queue retains
-the complete task and the service drain drops the signal. The clean control
-keeps missing contributor proof separate from a correct patch verdict.
-
-The legacy prompt also catches this defect and accepts the control. This sample
-therefore demonstrates integration and the requested output coverage, **not an
-accuracy improvement over the legacy prompt**. An evaluator-only execution of
-the fixture independently confirmed pre-aborted immediate rejection, loss versus
-preservation of queued cancellation and signal identity, and successful later
-queued work; those observations were not placed in model context.
-
-## Validation scope
-
-Production-construction tests distinguish PR and issue paths, stage ordering,
-static-prompt telemetry, intact shared guards, source context, and maintainer
-input. Existing prompt/closure regressions exercise policy preservation. The
-controlled runs add observed model behavior and source inspection on top of
-those deterministic checks.
-
-Focused production/policy regression run: **148 passed, 0 failed**.
-`pnpm run check` completed static checks, all builds, lint, and the focused
-coverage gate; the full coverage run reported **7,194 passed, 4 failed, 19
-skipped (7,217 total)**. All four failures reproduce against an isolated archive
-of the unchanged source baseline on this host:
-
-- `apply-drift-refresh`: shell fixture resolves real pnpm and fails without a
-  package manifest in its temporary directory.
-- `exact-review-queue-maintenance-workflow`: shell fixture invokes the real CLI
-  rather than its expected argument recorder and reports `retirement_failed`.
-- `setup-codex-action`: corrupt-download fixture unexpectedly exits zero.
-- `target-dispatcher-workflow`: dispatcher fixture fails its worker-rejection
-  scenario.
-
-These are not waived or repaired by this prompt change; the aggregate gate is
-**not green**. Baseline reproduction used the same Node/pnpm dependencies,
-baseline source compiled with the repository tsconfigs, and the four named test
-files. Raw receipts remain in the task artifacts (`check.log`, `base-check.log`,
-and `base-dispatcher-check.log`). No live mutation was authorized by these
-fixture tests.
-
-OpenClaw Bay is unaffected: no decision schema, report field, publication
-contract, lifecycle, queue, or public observer data contract changes.
+Historical test totals, native reviews, and instruction-size reductions do not
+establish current results. Run focused prompt/context/policy/provenance and
+agent/schema-delivery coverage, then `pnpm run check`, current controlled proof,
+and the required fresh native review before publication or landing.

@@ -1,15 +1,31 @@
 import { randomInt } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { lstatSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import {
+  closeSync,
+  constants,
+  fstatSync,
+  lstatSync,
+  openSync,
+  readFileSync,
+  readSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { join, resolve } from "node:path";
 import { codexModelArgs, redactInternalCodexModel } from "./codex-env.js";
 import {
   runCodexProcess,
   type CodexAppServerProcessOptions,
   type CodexProcessResult,
 } from "./codex-process.js";
-import { runOpenclawProcess } from "./openclaw-process.js";
-import { AgentInputScanError, scanAgentInput, type AgentScanSource } from "./agent-input-scan.js";
+import { OPENCLAW_MESSAGE_FILE_MAX_BYTES, runOpenclawProcess } from "./openclaw-process.js";
+import {
+  AgentInputScanError,
+  MAX_SCAN_BYTES,
+  scanAgentInput,
+  type AgentScanSource,
+} from "./agent-input-scan.js";
+import { UserFacingCommandError } from "./command.js";
 
 export type AgentRunner = "codex" | "openclaw";
 
@@ -18,6 +34,9 @@ export interface RunAgentProcessOptions {
   prompt: string;
   // Generated diagnostic copy only; never an original input or requested export.
   diagnosticPromptPath?: string;
+  // Positive values bound the complete delivered prompt and its diagnostic copy.
+  // Zero disables this optional quota; review callers also omit the diagnostic path.
+  promptFileBytes?: number;
   scanSource: AgentScanSource;
   model: string;
   reasoningEffort?: string;
@@ -59,11 +78,88 @@ export function reviewNetworkCapability(
   };
 }
 
+function readOpenclawSchema(
+  path: string,
+  maxBytes: number,
+  deadlineAt: number,
+  promptFileBytes: number | undefined,
+  prefixBytes: number,
+): Buffer {
+  const remaining = () => {
+    if (!Number.isFinite(deadlineAt) || Date.now() >= deadlineAt)
+      throw new AgentInputScanError("deadline");
+  };
+  let descriptor: number | undefined;
+  try {
+    remaining();
+    if (maxBytes < 0) throw new AgentInputScanError("staging_limit");
+    // Nonblocking open prevents a FIFO/device from hanging before the regular-file check.
+    descriptor = openSync(path, constants.O_RDONLY | (constants.O_NONBLOCK ?? 0));
+    const before = fstatSync(descriptor);
+    if (!before.isFile()) throw new AgentInputScanError("unsafe_path");
+    if (before.size > maxBytes) throw new AgentInputScanError("staging_limit");
+    if (
+      promptFileBytes !== undefined &&
+      promptFileBytes > 0 &&
+      prefixBytes + before.size > promptFileBytes
+    ) {
+      throw new UserFacingCommandError(
+        `Review prompt exceeded its ${promptFileBytes}-byte output budget.`,
+      );
+    }
+    // One extra byte detects growth without an unbounded readFileSync after stat.
+    const buffer = Buffer.alloc(before.size + 1);
+    let size = 0;
+    while (size < buffer.length) {
+      remaining();
+      const count = readSync(descriptor, buffer, size, buffer.length - size, null);
+      if (count === 0) break;
+      size += count;
+    }
+    const after = fstatSync(descriptor);
+    if (size !== before.size || after.size !== before.size || after.mtimeMs !== before.mtimeMs) {
+      throw new AgentInputScanError("source_drift");
+    }
+    const bytes = buffer.subarray(0, size);
+    const text = bytes.toString("utf8");
+    if (!Buffer.from(text).equals(bytes)) throw new AgentInputScanError("unsupported_content");
+    let schema: unknown;
+    try {
+      schema = JSON.parse(text);
+    } catch {
+      throw new AgentInputScanError("unsupported_content");
+    }
+    if (
+      typeof schema !== "boolean" &&
+      (schema === null || typeof schema !== "object" || Array.isArray(schema))
+    ) {
+      throw new AgentInputScanError("unsupported_content");
+    }
+    remaining();
+    return bytes;
+  } catch (error) {
+    if (error instanceof AgentInputScanError || error instanceof UserFacingCommandError)
+      throw error;
+    // Do not expose schema content or filesystem diagnostics in a refusal.
+    throw new AgentInputScanError("incomplete_source");
+  } finally {
+    if (descriptor !== undefined) closeSync(descriptor);
+  }
+}
+
 export function runAgentProcess(options: RunAgentProcessOptions): CodexProcessResult {
   if (options.diagnosticPromptPath) rmSync(options.diagnosticPromptPath, { force: true });
   const runner = agentRunner(options.env);
   if (runner === "openclaw") openclawModel(options.env);
   const startedAt = Date.now();
+  if (
+    options.promptFileBytes !== undefined &&
+    (!Number.isSafeInteger(options.promptFileBytes) || options.promptFileBytes < 0)
+  ) {
+    throw new UserFacingCommandError(
+      "Review prompt output budget must be a nonnegative safe integer.",
+    );
+  }
   const outputPath = codexOutputLastMessagePath(options.codexExtraArgs);
   if (
     options.outputLastMessageBytes !== undefined &&
@@ -77,19 +173,50 @@ export function runAgentProcess(options: RunAgentProcessOptions): CodexProcessRe
   if (outputPath) rmSync(outputPath, { force: true });
   const schemaIndex = options.codexExtraArgs?.lastIndexOf("--output-schema") ?? -1;
   const schemaPath = schemaIndex >= 0 ? options.codexExtraArgs?.[schemaIndex + 1] : undefined;
+  let prompt = options.prompt;
+  let schemaBytes: Buffer | undefined;
+  if (runner === "openclaw" && schemaIndex >= 0) {
+    if (!schemaPath || schemaPath.startsWith("--"))
+      throw new AgentInputScanError("incomplete_source");
+    prompt = prompt.trimEnd();
+    const prefix =
+      "\n\n## Output schema\n\nReturn one JSON object that matches this JSON Schema. The field descriptions are part of the review contract.\n\n```json\n";
+    const suffix = "\n```\n";
+    const promptBytes = Buffer.byteLength(prompt) + Buffer.byteLength(prefix + suffix);
+    // Admission stages both the exact delivered message and the captured schema.
+    const scanCapacity = Math.min(
+      Math.floor((MAX_SCAN_BYTES - promptBytes) / 2),
+      OPENCLAW_MESSAGE_FILE_MAX_BYTES - promptBytes,
+    );
+    schemaBytes = readOpenclawSchema(
+      resolve(options.cwd, schemaPath),
+      scanCapacity,
+      startedAt + options.timeoutMs,
+      options.promptFileBytes,
+      promptBytes,
+    );
+    prompt += prefix + schemaBytes.toString("utf8") + suffix;
+  }
+  if (
+    options.promptFileBytes !== undefined &&
+    options.promptFileBytes > 0 &&
+    Buffer.byteLength(prompt) > options.promptFileBytes
+  ) {
+    throw new UserFacingCommandError(
+      `Review prompt exceeded its ${options.promptFileBytes}-byte output budget.`,
+    );
+  }
+  if (runner === "openclaw" && Buffer.byteLength(prompt) > OPENCLAW_MESSAGE_FILE_MAX_BYTES) {
+    throw new AgentInputScanError("staging_limit");
+  }
   scanAgentInput({
     cwd: options.cwd,
-    prompt: options.prompt,
+    prompt,
     source: options.scanSource,
-    timeoutMs: options.timeoutMs,
-    ...(schemaPath ? { schemaPath } : {}),
+    timeoutMs:
+      runner === "openclaw" ? options.timeoutMs - (Date.now() - startedAt) : options.timeoutMs,
+    ...(schemaBytes !== undefined ? { schemaBytes } : schemaPath ? { schemaPath } : {}),
   });
-  // OpenClaw has no structured-output option, so it reads the same schema file that Codex
-  // receives through --output-schema as a prompt section.
-  const prompt =
-    runner === "openclaw" && schemaPath
-      ? `${options.prompt.trimEnd()}\n\n## Output schema\n\nReturn one JSON object that matches this JSON Schema. The field descriptions are part of the review contract.\n\n\`\`\`json\n${readFileSync(schemaPath, "utf8").trim()}\n\`\`\`\n`
-      : options.prompt;
   if (options.diagnosticPromptPath) {
     writeFileSync(options.diagnosticPromptPath, prompt, { mode: 0o600, flag: "wx" });
   }
