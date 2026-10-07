@@ -177,20 +177,7 @@ merge, and why not yet" in this order:
 5. `## Merge readiness` leads with one dynamic plain-language outcome, the
    number of real items remaining, a short bottom line, priority, the reviewed
    head, and an owner-decision pointer only when a decision packet exists.
-6. `## Decision needed` appears only when a maintainer decision packet exists.
-   It shows the concrete question and recommended option in a table.
-7. `## Before merge` uses native Markdown task checkboxes for real remaining
-   actions or risks. Routine CI, ordinary maintainer review, and no-op guidance
-   collapse to `None.`
-8. `## Findings` always renders for completed reviews. Its leading block lists
-   up to three review findings and three security concerns as
-   `- [P1] title — \`file:line\``, or `None.`; review history and the comment
-   router parse only this block. A `### Provenance` subsection lists
-   `overrides_without_reason` and `unknown` provenance entries, and a
-   `### Tests` subsection lists low-value tests (file and reason) and the
-   missing end-to-end scenario. Neither subsection uses P-severity labels, so
-   neither starts repair routing.
-9. `## Review scores` separates the three ratings into a scannable
+6. `## Review scores` separates the three ratings into a scannable
    `Measure | Result | What it means` table. Crab ranks stay visible, and every
    ranked value also shows its six-point score: S is `6/6`, A is `5/6`, B is
    `4/6`, C is `3/6`, D is `2/6`, and F is `1/6`. The `Proof confidence` row
@@ -198,6 +185,19 @@ merge, and why not yet" in this order:
    it are dropped, and proof labels show only their meaning; a status label
    repeats the proof statement only when missing proof is the reason for that
    status. The rating scale and workflow notes in the details are one line each.
+7. `## Decision needed` appears only when a maintainer decision packet exists.
+   It shows the concrete question and recommended option in a table.
+8. `## Before merge` uses native Markdown task checkboxes for real remaining
+   actions or risks. Routine CI, ordinary maintainer review, and no-op guidance
+   collapse to `None.`
+9. `## Findings` always renders for completed reviews. Its leading block lists
+   up to three review findings and three security concerns as
+   `- [P1] title — \`file:line\``, or `None.`; review history and the comment
+   router parse only this block. A `### Provenance` subsection lists
+   `overrides_without_reason` and `unknown` provenance entries, and a
+   `### Tests` subsection lists low-value tests (file and reason) and the
+   missing end-to-end scenario. Neither subsection uses P-severity labels, so
+   neither starts repair routing.
 
 Maintainer decision packets are reserved for unresolved choices between at least
 two distinct viable options that evidence cannot settle and a maintainer has not

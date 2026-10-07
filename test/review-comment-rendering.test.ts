@@ -1420,9 +1420,9 @@ Full review comments:
       "What this changes",
       "Product",
       "Merge readiness",
+      "Review scores",
       "Before merge",
       "Findings",
-      "Review scores",
     ],
   );
   assert.equal(comment.match(/^<details>$/gm)?.length, 1);
@@ -1434,7 +1434,7 @@ Full review comments:
     visible,
     /## Product\n\n\*\*Kind:\*\* Bug fix · \*\*Worth it:\*\* Yes · \*\*Fix scope:\*\* Complete\n\*\*User problem:\*\* Telegram users lose the last attachment of a multi-file reply\.\n\*\*Reason:\*\* Restores the documented media-group behavior with a narrow change\./,
   );
-  assert.match(visible, /## Before merge\n\nNone\.\n\n## Findings\n\nNone\.\n\n## Review scores/);
+  assert.match(visible, /## Before merge\n\nNone\.\n\n## Findings\n\nNone\.\n/);
   assert.equal(comment.split(proof).length - 1, 1);
   assert.match(visible, /\| \*\*Proof confidence\*\* \| [^|]+ \| Sufficient \(terminal\): /);
 

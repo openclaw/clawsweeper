@@ -490,6 +490,14 @@ export function createReportCommentPresentation(
               pullHeadShaFromReport(markdown) ?? "",
             ),
       );
+      if (!reviewFailed) {
+        // The proof sentence renders here and nowhere else in the comment.
+        appendHeadingSection(
+          lines,
+          "Review scores",
+          publicReviewScoresBlock(prRating, proofPolicy, reviewFindings, securityReview),
+        );
+      }
       if (decisionPacketBlock) {
         appendHeadingSection(lines, "Decision needed", decisionPacketBlock);
       }
@@ -501,12 +509,6 @@ export function createReportCommentPresentation(
           lines,
           "Findings",
           publicFindingsBlock(reviewFindings, securityReview, provenance, testingReview),
-        );
-        // The proof sentence renders here and nowhere else in the comment.
-        appendHeadingSection(
-          lines,
-          "Review scores",
-          publicReviewScoresBlock(prRating, proofPolicy, reviewFindings, securityReview),
         );
       }
 
