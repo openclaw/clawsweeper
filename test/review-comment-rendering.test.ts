@@ -1317,18 +1317,17 @@ Full review comments:
 test("ready zero-finding PR comments show verdict, product, readiness, findings and scores before details", () => {
   const proof =
     "A terminal transcript from a real gateway shows the Telegram reply keeps its final attachment.";
-  const comment = renderReviewCommentFromReport(
-    `${reportFrontMatter({
-      type: "pull_request",
-      number: "74270",
-      decision: "keep_open",
-      close_reason: "none",
-      review_status: "complete",
-      work_candidate: "none",
-      pull_head_sha: "abc123def456abc123def456abc123def456abcd",
-      reviewed_at: "2026-05-22T04:43:12.000Z",
-      labels: JSON.stringify(["P2"]),
-    })}
+  const report = `${reportFrontMatter({
+    type: "pull_request",
+    number: "74270",
+    decision: "keep_open",
+    close_reason: "none",
+    review_status: "complete",
+    work_candidate: "none",
+    pull_head_sha: "abc123def456abc123def456abc123def456abcd",
+    reviewed_at: "2026-05-22T04:43:12.000Z",
+    labels: JSON.stringify(["P2"]),
+  })}
 
 ## Summary
 
@@ -1408,10 +1407,10 @@ Overall confidence: 0.9
 Full review comments:
 
 - none
-`,
-    "none",
-    { prStatusKind: "ready_for_maintainer_look" },
-  );
+`;
+  const comment = renderReviewCommentFromReport(report, "none", {
+    prStatusKind: "ready_for_maintainer_look",
+  });
 
   const visible = comment.slice(0, comment.indexOf("\n<details>"));
   assert.match(visible, /^Codex review: needs maintainer review before merge\./);
@@ -1438,6 +1437,17 @@ Full review comments:
   assert.match(visible, /## Before merge\n\nNone\.\n\n## Findings\n\nNone\.\n\n## Review scores/);
   assert.equal(comment.split(proof).length - 1, 1);
   assert.match(visible, /\| \*\*Proof confidence\*\* \| [^|]+ \| Sufficient \(terminal\): /);
+
+  // An evidence entry that repeats the proof but carries its supporting link stays.
+  const linked = renderReviewCommentFromReport(
+    report.replace(
+      "- **diff:**",
+      `- **proof run:** ${proof} https://example.com/runs/1\n- **diff:**`,
+    ),
+    "none",
+    { prStatusKind: "ready_for_maintainer_look" },
+  );
+  assert.match(linked, /https:\/\/example\.com\/runs\/1/);
 });
 
 test("review comments include the UTC date when ET and UTC calendar dates differ", () => {

@@ -149,10 +149,13 @@ proof. They never replace it.
 
 ### Findings discipline
 
-1. Use P0, P1, or P2 only for a concrete defect with a failing scenario: the
-   input and the wrong result.
-2. Process, style, naming, and test-only concerns are P3 or a note. They do
-   not block the merge.
+1. Every `reviewFindings` entry is required work before merge, at every
+   priority. Add an entry only for a concrete defect with a failing scenario:
+   the input and the wrong result. P0 to P2 rank defects by impact; P3 is a
+   real defect with low impact.
+2. Keep process, style, naming, and taste concerns out of `reviewFindings`.
+   Leave them out, or name the one that matters in the summary. Low-value
+   tests go in `testingReview.lowValueTests`, not in `reviewFindings`.
 3. Report every blocking finding in the first review. On a re-review, a new
    blocking finding needs new evidence or new code. A second look at unchanged
    code is not new evidence.
@@ -168,7 +171,7 @@ Tier meanings:
 - S: rare. Exceptional proof, a clean implementation, convincing validation,
   and no meaningful blockers. S also needs everything that A needs.
 - A: clearly better than B. A requires `proofPath: shipped_entry_point`,
-  `worthIt: yes`, no finding above P3, and no low-value tests.
+  `worthIt: yes`, no open review finding, and no low-value tests.
 - B: worth merging, correct, and proven end to end.
 - C: useful, with limited confidence.
 - D: the proof, validation, or implementation signal is thin.

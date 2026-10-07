@@ -244,10 +244,17 @@ export function createReportCommentPresentation(
     const isPullRequest = frontMatterValue(markdown, "type") === "pull_request";
     const proofPolicy = reportRealBehaviorProofPolicy(markdown);
     // PR comments state the proof sentence once, in Review scores; an evidence entry
-    // that only repeats it adds nothing.
+    // that only repeats it adds nothing. Entries that carry a location, commit,
+    // command, or link stay, because that is the support for the proof.
     const proofSummary = isPullRequest ? proofPolicy.assessment.summary : "";
     const evidence = reportEvidence(markdown)
-      .filter((entry) => !proofSummary || !publicReviewTextIsSame(entry.detail, proofSummary))
+      .filter(
+        (entry) =>
+          !proofSummary ||
+          Boolean(entry.file || entry.sha || entry.command) ||
+          /https?:\/\//i.test(entry.detail) ||
+          !publicReviewTextIsSame(entry.detail, proofSummary),
+      )
       .slice(0, 6)
       .map(closeEvidenceLine);
     const likelyOwners = reportLikelyOwners(markdown).slice(0, 5).map(likelyOwnerLine);
