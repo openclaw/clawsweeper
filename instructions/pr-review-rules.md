@@ -27,10 +27,13 @@ it the most care.
      a `preference` change, a feature without owner direction, or a change to
      an existing product contract.
    - `not_applicable`: the item is not a pull request.
-   An owner decision already exists when a repository maintainer wrote the
-   pull request, or a maintainer approved the direction in writing on the
-   pull request or its linked issue. Then judge `yes` or `no` from that
-   decision and the evidence; do not ask for it again.
+   An owner decision already exists when an owner of the touched product area
+   wrote the pull request, or approved the direction in writing on the pull
+   request or its linked issue. An owner is named by CODEOWNERS, maintainer
+   notes, or the area's maintainers in history. An `OWNER`, `MEMBER`, or
+   `COLLABORATOR` author association alone does not make the author an owner
+   of the area. When an owner decision exists, judge `yes` or `no` from it and
+   the evidence; do not ask for it again.
 4. Say `no` or `needs_maintainer` when the case for the change is weak. A
    correct patch alone does not make a change worth merging. A `preference`
    change is never `yes` without an owner decision, even when the preference
