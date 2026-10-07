@@ -685,6 +685,7 @@ ${extra}
       confidence: "low",
       summary: `Codex review failed: ${reason}${status === null ? "" : ` (exit ${status})`}.`,
       changeSummary: "Review failed before ClawSweeper could summarize the requested change.",
+      changeExample: { scenario: "", before: "", after: "" },
       systemContext: "",
       architectureDiagram: "",
       evidence: [

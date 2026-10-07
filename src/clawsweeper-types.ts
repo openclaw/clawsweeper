@@ -447,6 +447,12 @@ export interface PrRating {
   nextSteps: string[];
 }
 
+export interface ChangeExample {
+  scenario: string;
+  before: string;
+  after: string;
+}
+
 export interface ProductReview {
   kind: ProductReviewKind;
   userProblem: string;
@@ -625,6 +631,7 @@ export interface Decision {
   confidence: Confidence;
   summary: string;
   changeSummary: string;
+  changeExample: ChangeExample;
   systemContext: string;
   architectureDiagram: string;
   evidence: Evidence[];

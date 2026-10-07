@@ -8,6 +8,7 @@
     "confidence",
     "summary",
     "changeSummary",
+    "changeExample",
     "systemContext",
     "architectureDiagram",
     "evidence",
@@ -105,6 +106,17 @@
     "changeSummary": {
       "type": "string",
       "description": "Neutral one-sentence summary of the requested change or PR diff. For pull requests, describe what the branch changes, not the merge verdict, maintainer next action, risk, or whether the PR is redundant."
+    },
+    "changeExample": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "A concrete example of the user-visible change. scenario is the situation in one short clause (what the user does), before is what happens today on the base branch, after is what happens with this PR. Use real values from the diff, tests, or proof (inputs, messages, outputs), user terms, one sentence each. Use empty strings for all three when the change has no user-visible behavior (pure refactor, test-only, docs, internal performance) or for issues.",
+      "required": ["scenario", "before", "after"],
+      "properties": {
+        "scenario": { "type": "string" },
+        "before": { "type": "string" },
+        "after": { "type": "string" }
+      }
     },
     "systemContext": {
       "type": "string",

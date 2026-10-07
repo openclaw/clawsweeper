@@ -1337,6 +1337,14 @@ The fix is narrow and proven on a real gateway.
 
 Telegram replies with several attachments now send every attachment.
 
+## Change Example
+
+Scenario: An agent replies in Telegram with three attachments
+
+Before: Telegram shows only the first two attachments.
+
+After: Telegram shows all three attachments.
+
 ## System Context
 
 The Telegram channel batches outbound attachments before the gateway sends the reply.
@@ -1433,6 +1441,10 @@ Full review comments:
   assert.match(
     visible,
     /## Product\n\n\*\*Kind:\*\* Bug fix · \*\*Worth it:\*\* Yes · \*\*Fix scope:\*\* Complete\n\*\*User problem:\*\* Telegram users lose the last attachment of a multi-file reply\.\n\*\*Reason:\*\* Restores the documented media-group behavior with a narrow change\./,
+  );
+  assert.match(
+    visible,
+    /## What this changes\n\nTelegram replies with several attachments now send every attachment\.\n\n\*\*Example:\*\* An agent replies in Telegram with three attachments\n- \*\*Before:\*\* Telegram shows only the first two attachments\.\n- \*\*After:\*\* Telegram shows all three attachments\.\n\n## Product/,
   );
   assert.match(visible, /## Before merge\n\nNone\.\n\n## Findings\n\nNone\.\n/);
   assert.equal(comment.split(proof).length - 1, 1);

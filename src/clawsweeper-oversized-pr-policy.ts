@@ -138,6 +138,7 @@ export function oversizedPullRequestDecision(
     ...(source ? { oversizedPullRequestSource: source } : {}),
     summary: `Pull request changes ${size.additions + size.deletions} lines, exceeding the ${size.threshold}-line review limit.`,
     changeSummary: unassessed,
+    changeExample: { scenario: "", before: "", after: "" },
     systemContext: "",
     architectureDiagram: "",
     evidence: [

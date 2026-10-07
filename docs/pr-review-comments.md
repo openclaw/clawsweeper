@@ -168,7 +168,8 @@ merge, and why not yet" in this order:
 1. The verdict line (`Codex review: ...`).
 2. `## What this changes` comes from the typed `changeSummary` field and
    should define unfamiliar subsystem terms briefly and explain the effect in
-   plain language.
+   plain language. When the typed `changeExample` has a scenario, before,
+   and after, an `Example:` block shows that concrete case under the summary.
 3. `## Product` shows the typed `productReview` in one compact block: kind,
    worth it, fix scope (omitted when not applicable), user problem, and reason.
    Reports written before `productReview` existed omit the section.

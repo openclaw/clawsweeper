@@ -5,6 +5,7 @@ import { isDocsPath } from "./clawsweeper-change-detection.js";
 import { AUTHOR_PR_BUDGET_MIN_INACTIVE_DAYS, REVIEW_SECTIONS } from "./clawsweeper-policy.js";
 import { createPullRequestReferenceParser } from "./clawsweeper-pr-references.js";
 import {
+  reportChangeExample,
   reportProductReview,
   reportProvenance,
   reportTestingReview,
@@ -108,6 +109,7 @@ export function createPullRequestPromotionFacts(
       confidence: "high",
       summary: reviewSectionValue(markdown, "summary"),
       changeSummary: reviewSectionValue(markdown, "changeSummary"),
+      changeExample: reportChangeExample(markdown),
       systemContext: reviewSectionValue(markdown, "systemContext"),
       architectureDiagram: reviewSectionValue(markdown, "architectureDiagram"),
       evidence: reportEvidence(markdown),

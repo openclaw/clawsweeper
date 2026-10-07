@@ -212,6 +212,17 @@ export function createReportDocumentRendering(
     return lines.join("\n");
   }
 
+  function renderChangeExampleReportSection(decision: Decision): string {
+    const example = decision.changeExample;
+    return [
+      `Scenario: ${example.scenario}`.trimEnd(),
+      "",
+      `Before: ${example.before}`.trimEnd(),
+      "",
+      `After: ${example.after}`.trimEnd(),
+    ].join("\n");
+  }
+
   function renderProductReviewReportSection(decision: Decision): string {
     const product = decision.productReview;
     return [
@@ -847,6 +858,10 @@ ${options.decision.summary}
 ## ${REVIEW_SECTIONS.changeSummary}
 
 ${options.decision.changeSummary}
+
+## ${REVIEW_SECTIONS.changeExample}
+
+${renderChangeExampleReportSection(options.decision)}
 
 ## ${REVIEW_SECTIONS.systemContext}
 

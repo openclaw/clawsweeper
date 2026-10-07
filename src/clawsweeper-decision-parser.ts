@@ -37,6 +37,7 @@ import {
   PR_RATING_TIERS,
   PRODUCT_FIX_SCOPES,
   PRODUCT_REVIEW_KINDS,
+  CHANGE_EXAMPLE_SCHEMA_KEYS,
   PRODUCT_REVIEW_SCHEMA_KEYS,
   PRODUCT_WORTH_IT_VALUES,
   PROVENANCE_ENTRY_SCHEMA_KEYS,
@@ -84,6 +85,7 @@ import type {
   MergeRiskOption,
   ParsedGitHubItemRef,
   PrRating,
+  ChangeExample,
   ProductReview,
   ProvenanceEntry,
   RealBehaviorProof,
@@ -667,6 +669,16 @@ export function createDecisionParser({
     };
   }
 
+  function parseChangeExample(value: unknown, path: string): ChangeExample {
+    const record = requireRecord(value, path);
+    rejectUnexpectedKeys(record, CHANGE_EXAMPLE_SCHEMA_KEYS, path);
+    return {
+      scenario: requireReportLine(record.scenario, `${path}.scenario`),
+      before: requireReportLine(record.before, `${path}.before`),
+      after: requireReportLine(record.after, `${path}.after`),
+    };
+  }
+
   function parseProvenance(value: unknown, path: string): ProvenanceEntry[] {
     if (!Array.isArray(value)) throw new Error(`${path} must be an array`);
     return value.slice(0, MAX_PROVENANCE_ENTRIES).map((entry, index) => {
@@ -1122,6 +1134,7 @@ export function createDecisionParser({
       confidence: requireEnum(record.confidence, CONFIDENCES, "decision.confidence"),
       summary: requireReportText(record.summary, "decision.summary"),
       changeSummary: requireReportText(record.changeSummary, "decision.changeSummary"),
+      changeExample: parseChangeExample(record.changeExample, "decision.changeExample"),
       systemContext: requireReportText(record.systemContext, "decision.systemContext"),
       architectureDiagram: sanitizeArchitectureDiagram(
         requireString(record.architectureDiagram, "decision.architectureDiagram"),

@@ -43,6 +43,7 @@ export function closeDecision(overrides = {}) {
     confidence: "high",
     summary: "Current main already implements this.",
     changeSummary: "Requests confirmation that the feature works on current main.",
+    changeExample: { scenario: "", before: "", after: "" },
     systemContext: "",
     architectureDiagram: "",
     evidence: [

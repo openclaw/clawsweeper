@@ -23,6 +23,7 @@ import {
   renderDecisionPacketPublicBlock,
 } from "./decision-packets.js";
 import {
+  reportChangeExample,
   reportProductReview,
   reportProvenance,
   reportTestingReview,
@@ -309,9 +310,20 @@ export function createReportCommentPresentation(
       isPullRequest && !reviewFailed && proofPolicy.proofBlocksMerge;
     const summaryLine =
       neutralizeOwnedSectionSpoofing(sentence(summary)) || "_No summary provided._";
-    const changeSummaryLine =
+    const changeSummarySentence =
       neutralizeOwnedSectionSpoofing(sentence(changeSummary || summary)) ||
       "_No change summary provided._";
+    const changeExample = reportChangeExample(markdown);
+    const changeSummaryLine =
+      changeExample.scenario && changeExample.before && changeExample.after
+        ? [
+            changeSummarySentence,
+            "",
+            `**Example:** ${neutralizeOwnedSectionSpoofing(changeExample.scenario)}`,
+            `- **Before:** ${neutralizeOwnedSectionSpoofing(changeExample.before)}`,
+            `- **After:** ${neutralizeOwnedSectionSpoofing(changeExample.after)}`,
+          ].join("\n")
+        : changeSummarySentence;
     const fallbackNextStep =
       "Continue tracking this item until the missing behavior is implemented or a maintainer decides the product direction.";
     const nextStepLine = sentence(

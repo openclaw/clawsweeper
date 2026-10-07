@@ -9,6 +9,7 @@ import { createRecordMetadata } from "../dist/clawsweeper-record-metadata.js";
 import { createReportHelpers } from "../dist/clawsweeper-report-helpers.js";
 import {
   createReportParser,
+  reportChangeExample,
   reportProductReview,
   reportProvenance,
   reportTestingReview,
@@ -151,11 +152,18 @@ test("report round trip preserves product, provenance, and testing reviews", () 
     } satisfies ProvenanceEntry,
   ];
   const productReview = { ...worthyProduct, kind: "preference", worthIt: "no" } as const;
+  const changeExample = {
+    scenario: "A user reloads the page with an unsaved draft",
+    before: "The draft is lost.",
+    after: "The draft is restored.",
+  };
   const report = generatedCompatibilityReport("sufficient", {
+    changeExample: { ...changeExample, before: "The draft\n  is lost." },
     productReview: { ...productReview, reason: "Works as designed;\nthe user prefers a change." },
     provenance,
     testingReview,
   });
+  assert.deepEqual(reportChangeExample(report), changeExample);
   assert.deepEqual(reportProductReview(report), {
     ...productReview,
     reason: "Works as designed; the user prefers a change.",
@@ -178,6 +186,7 @@ test("old reports read as not applicable and keep their stored rating", () => {
   const old = `${compatibilityReport({
     metadata: { pr_rating_overall: "A", pr_rating_proof: "A", pr_rating_patch: "A" },
   })}\n${prRatingReportSection({ overallTier: "A", proofTier: "A", patchTier: "A" })}`;
+  assert.deepEqual(reportChangeExample(old), { scenario: "", before: "", after: "" });
   assert.deepEqual(reportProductReview(old), notApplicableReview.productReview);
   assert.deepEqual(reportProvenance(old), []);
   assert.deepEqual(reportTestingReview(old), notApplicableReview.testingReview);

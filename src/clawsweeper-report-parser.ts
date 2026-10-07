@@ -65,6 +65,7 @@ import type {
   PrRating,
   PrRatingTier,
   ProductFixScope,
+  ChangeExample,
   ProductReview,
   ProductReviewKind,
   ProductWorthIt,
@@ -191,6 +192,16 @@ function reportEnumValue<T extends string>(
   fallback: T,
 ): T {
   return allowed.has(value as T) ? (value as T) : fallback;
+}
+
+/** Change example recorded in a report; reports without one read as empty strings. */
+export function reportChangeExample(markdown: string): ChangeExample {
+  const section = reportSectionValue(markdown, REVIEW_SECTIONS.changeExample);
+  return {
+    scenario: reportSectionLineValue(section, "Scenario") ?? "",
+    before: reportSectionLineValue(section, "Before") ?? "",
+    after: reportSectionLineValue(section, "After") ?? "",
+  };
 }
 
 /** Product review recorded in a report; reports without one read as not_applicable. */

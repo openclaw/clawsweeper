@@ -89,7 +89,7 @@ export const DEFAULT_REASONING_EFFORT = "medium";
 // per item to high reasoning and fast service.
 export const DEFAULT_SERVICE_TIER = "";
 export const DEFAULT_REVIEW_CODEX_TIMEOUT_MS = 1_200_000;
-export const REVIEW_POLICY_VERSION = "2026-10-08-policy-v27";
+export const REVIEW_POLICY_VERSION = "2026-10-08-policy-v28";
 export const REVIEW_COMMENT_MARKER_PREFIX = "<!-- clawsweeper-review";
 export const REVIEW_START_STATUS_MARKER_PREFIX = "<!-- clawsweeper-review-status";
 export const ACCEPTED_LARGE_LABEL_DEFINITION = {
@@ -781,6 +781,7 @@ export const DECISION_SCHEMA_KEYS = new Set([
   "confidence",
   "summary",
   "changeSummary",
+  "changeExample",
   "systemContext",
   "architectureDiagram",
   "evidence",
@@ -880,6 +881,7 @@ export const PR_RATING_SCHEMA_KEYS = new Set([
   "nextSteps",
 ]);
 export const TELEGRAM_VISIBLE_PROOF_SCHEMA_KEYS = new Set(["status", "summary"]);
+export const CHANGE_EXAMPLE_SCHEMA_KEYS = new Set(["scenario", "before", "after"]);
 export const PRODUCT_REVIEW_SCHEMA_KEYS = new Set([
   "kind",
   "userProblem",
@@ -982,6 +984,7 @@ export const LIKELY_OWNER_SCHEMA_KEYS = new Set([
 export const REVIEW_SECTIONS = {
   summary: "Summary",
   changeSummary: "What This Changes",
+  changeExample: "Change Example",
   systemContext: "System Context",
   architectureDiagram: "Architecture Diagram",
   bestSolution: "Best Possible Solution",
