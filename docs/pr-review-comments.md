@@ -20,6 +20,26 @@ that the repair lane can parse without relying on prose. ClawSweeper owns review
 marker emission, branch mutation, duplicate guards, audit logging, and PR repair
 inside this repo.
 
+## Review procedure
+
+The runtime composes a kind-specific procedure before the shared rules in
+[`prompts/review-item.md`](../prompts/review-item.md).
+[`prompts/review-pr.md`](../prompts/review-pr.md) leads PR reviews through
+before/after system understanding, integrated scenarios, source-challenged
+findings, and a whole-patch judgment before proof/readiness assessment.
+[`prompts/review-issue.md`](../prompts/review-issue.md) preserves issue triage.
+This is ordered guidance inside the existing model call, not an enforced
+multi-call pipeline or a guarantee of reviewer accuracy.
+
+PRs record the concise behavioral account in `summary`, source-backed path
+observations in `evidence`, and the integrated judgment in `solutionAssessment`
+and the existing correctness/finding fields. The decision schema, durable
+comment contract, mandatory safety/policy gates, and publication authority are
+unchanged. All prompt assets participate in the review policy hash.
+
+The [controlled proof](proof/holistic-pr-review/README.md) records the actual
+local-range model runs and their deliberately narrow evaluation limits.
+
 ## Durable Comment Shape
 
 Each synced comment includes the durable identity marker:

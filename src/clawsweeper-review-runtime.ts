@@ -129,6 +129,7 @@ export function createReviewRuntime({
   ensureDir,
 }: ReviewRuntimeDependencies) {
   let reviewPromptTemplatesCache: ReviewItemPrompts | undefined;
+  const reviewProcedureCache = new Map<Item["kind"], string>();
   let reviewDecisionSchemaCache: string | undefined;
   let prCloseCoverageProofPromptTemplateCache: string | undefined;
 
@@ -483,6 +484,21 @@ export function createReviewRuntime({
     return reviewPromptTemplatesCache;
   }
 
+  function reviewProcedureTemplate(kind: Item["kind"]): string {
+    let procedure = reviewProcedureCache.get(kind);
+    if (procedure === undefined) {
+      procedure = readFileSync(
+        join(
+          dirname(REVIEW_ITEM_PROMPT_PATHS.core),
+          kind === "pull_request" ? "review-pr.md" : "review-issue.md",
+        ),
+        "utf8",
+      );
+      reviewProcedureCache.set(kind, procedure);
+    }
+    return procedure;
+  }
+
   // Keep only the close reasons that the repository profile enables for this item kind.
   function closeReasonsPrompt(guidance: string, reasons: readonly string[]): string {
     const lines = guidance.trim().split("\n");
@@ -537,8 +553,13 @@ export function createReviewRuntime({
   ): ReviewPromptBuild {
     const templates = reviewPromptTemplates();
     const profile = repositoryProfileFor(item.repo);
+    const core = fillPromptSlot(
+      templates.core,
+      "{{review_procedure}}",
+      reviewProcedureTemplate(item.kind).trimEnd(),
+    );
     const prompt = fillPromptSlot(
-      fillPromptSlot(templates.core, "{{item_kind_review}}", templates[item.kind].trim()),
+      fillPromptSlot(core, "{{item_kind_review}}", templates[item.kind].trim()),
       "{{close_reasons}}",
       closeReasonsPrompt(templates.closeReasons, profile.applyCloseRules[item.kind] ?? []),
     );
@@ -1338,6 +1359,7 @@ ${extra}
     reviewPromptForTest,
     reviewPromptTelemetryForTest,
     reviewPromptTemplates,
+    reviewProcedureTemplate,
     runCodexForTest,
     buildReviewPrompt,
     reviewEnvironment,

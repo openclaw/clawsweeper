@@ -375,6 +375,10 @@ function reviewPolicyHash(
         : {}),
       repositoryProfile: targetProfile(),
       prompts,
+      procedures: {
+        issue: reviewProcedureTemplate("issue"),
+        pullRequest: reviewProcedureTemplate("pull_request"),
+      },
       schema: reviewDecisionSchemaText(),
     }),
   ).slice(0, 16);
@@ -593,8 +597,12 @@ export const {
   reviewPromptTemplates,
   runCodexForTest,
 } = reviewRuntime;
-const { codexFailureReason, isSafeGitBranchName, prCloseCoverageProofPromptTemplate } =
-  reviewRuntime;
+const {
+  codexFailureReason,
+  isSafeGitBranchName,
+  prCloseCoverageProofPromptTemplate,
+  reviewProcedureTemplate,
+} = reviewRuntime;
 
 const assistWorkflow = createAssistWorkflow({
   root: ROOT,
