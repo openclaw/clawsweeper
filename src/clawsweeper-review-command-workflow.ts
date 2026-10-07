@@ -58,6 +58,7 @@ import { reviewContentCacheHit } from "./scheduler-policy.js";
 import type { CreateReviewCommandWorkflowDependencies } from "./clawsweeper-review-command-dependencies.js";
 import { prepareReviewCommand } from "./clawsweeper-review-preparation.js";
 import { parsePrHydrationSnapshot } from "./pr-hydration-snapshot.js";
+import { createCommitPullResolver, pullRequestProvenanceEvidence } from "./pr-review-provenance.js";
 import { ReviewSourcePreparationError } from "./review-source-preparation.js";
 import { validationRecoveryRequired } from "./repair/validation-recovery.js";
 import { commandProofBinding, assertCommandProofSubject } from "./command-proof-assessment.js";
@@ -242,6 +243,15 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
       publicationPolicy
         ? replaceFrontMatterValue(markdown, "publication_policy", publicationPolicy)
         : markdown;
+    // One cache per review run: items often share introducing commits.
+    const resolveProvenancePull = createCommitPullResolver((repo, sha) =>
+      dependencies.ghJson([
+        "api",
+        `repos/${repo}/commits/${sha}/pulls`,
+        "-H",
+        "Accept: application/vnd.github+json",
+      ]),
+    );
     const preparation = prepareReviewCommand(args, dependencies);
     const {
       prAdmissionInput,
@@ -1445,6 +1455,16 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
               writeOutputMetadata,
             );
         const reviewEnv = reviewEnvironment(localOnly);
+        // Host-side blame and GitHub reads; the review sandbox has neither old blobs nor the API.
+        const provenanceEvidence =
+          item.kind === "pull_request"
+            ? pullRequestProvenanceEvidence({
+                targetDir: reviewOpenclawDir,
+                repo: item.repo,
+                context,
+                resolvePull: resolveProvenancePull,
+              })
+            : undefined;
         const prompt = buildReviewPrompt(
           item,
           context,
@@ -1454,6 +1474,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
             ...mediaProofRuntimeHints(proofScratchDir, preparedMediaProof),
             targetDir: reviewOpenclawDir,
             ...reviewNetworkCapability(sandboxMode, reviewEnv),
+            ...(provenanceEvidence ? { provenanceEvidence } : {}),
           },
         );
         diagnosticPrompt = prompt.text;

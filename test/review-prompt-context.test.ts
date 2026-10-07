@@ -95,7 +95,9 @@ test("GitHub review context omits complete reviewed URI quotations and preserves
   assert.equal(JSON.stringify(context), original);
   assert.equal(prompt.split("## Maintainer Request\n\n")[1]?.trim(), additionalPrompt);
   const introduction =
-    prompt.match(/\n\n## PR Introduction Evidence\n[\s\S]*?\n\x60{3}\n/)?.[0] ?? "";
+    prompt.match(
+      /\n\n## PR Introduction Evidence\n[\s\S]*?\n\x60{3}\n\n## Provenance Evidence\n[\s\S]*?\n\x60{3}\n/,
+    )?.[0] ?? "";
   assert.equal(
     reviewPromptTelemetryForTest(target, context, git).contextChars,
     jsonText.length + introduction.length,
@@ -135,7 +137,9 @@ for (const kind of ["issue", "pull_request"] as const) {
     assert.doesNotMatch(prompt, new RegExp(scriptSentinel));
     assert.doesNotMatch(prompt, /PERSISTENCE_ONLY_|prHydrationSnapshot|pullCommitsRevision/);
     const introduction =
-      prompt.match(/\n\n## PR Introduction Evidence\n[\s\S]*?\n```\n/)?.[0] ?? "";
+      prompt.match(
+        /\n\n## PR Introduction Evidence\n[\s\S]*?\n```\n\n## Provenance Evidence\n[\s\S]*?\n```\n/,
+      )?.[0] ?? "";
     assert.equal(
       reviewPromptTelemetryForTest(target, context, git).contextChars,
       jsonText.length + introduction.length,

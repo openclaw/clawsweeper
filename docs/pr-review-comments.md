@@ -226,6 +226,19 @@ overrides should weigh, and code applies no tier caps from these fields. Reports
 written before these fields existed parse as `not_applicable` and keep their
 stored rating and readiness.
 
+The review sandbox runs on a partial clone without network, so `git blame` and
+`gh api` usually fail there. Before the model runs, the host therefore computes
+the PR prompt's `## Provenance Evidence`: from the merge-base to head diff it
+takes up to 12 files that existed on the merge base (most modified or deleted
+base lines first, at most 4 hunks each), runs `git blame --porcelain` on those
+base lines at the merge base (lazy blob fetch allowed, one 45-second deadline),
+and resolves up to 15 distinct introducing commits through
+`GET /repos/{owner}/{repo}/commits/{sha}/pulls` with the same `gh` reader that
+collects item context (title, URL, merge time, 1,200-character body excerpt,
+cached per run). Deadlines, Git errors, and API errors degrade the evidence to
+`partial` or `unavailable` with a reason; the review still runs. The evidence
+supplies facts only: the model still decides each provenance verdict.
+
 The parser rejects required packets with fewer than two options or duplicate
 options; malformed reports remain fail-closed and need a fresh review, rather
 than silently losing a possible real blocker. Semantic intent belongs to the

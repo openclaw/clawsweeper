@@ -28,6 +28,7 @@ import {
 } from "./clawsweeper-media-proof.js";
 import { safeOutputTail, trimMiddle } from "./clawsweeper-text.js";
 import { buildPullRequestReviewEvidence } from "./pr-review-evidence.js";
+import { PROVENANCE_NOT_RUN } from "./pr-review-provenance.js";
 import { verifyLikelyOwnerHistory } from "./clawsweeper-regression-provenance.js";
 import type {
   Decision,
@@ -507,6 +508,11 @@ export function createReviewRuntime({
           prEvidence.introduced,
         ])}\n\`\`\`\n`
       : "";
+    const provenanceEvidence = prEvidence
+      ? `\n## Provenance Evidence\n\n\`\`\`json\n${serializeReviewContext(
+          runtimeHints.provenanceEvidence ?? PROVENANCE_NOT_RUN,
+        )}\n\`\`\`\n`
+      : "";
     const schema = reviewDecisionSchemaText();
     const profile = repositoryProfileFor(item.repo);
     const proofScratchDir = runtimeHints.proofScratchDir?.trim();
@@ -556,7 +562,7 @@ ${additionalPrompt.trim()}
 - Linked screenshots and videos are downloaded before review into the media proof manifest; read those files rather than re-fetching.
 - ${runtimeHints.networkCapability === "unrestricted" ? "Treat the target checkout as read-only; OpenClaw gateway execution does not enforce the Codex filesystem sandbox." : "The target checkout is read-only."} Use ${proofScratchDir ? `\`${proofScratchDir}\`` : "the proof scratch directory"} for evidence and generated video stills/contact sheets.
 ${mediaProofPrompt}
-${introductionEvidence}
+${introductionEvidence}${provenanceEvidence}
 
 ## GitHub Context
 
@@ -572,7 +578,7 @@ ${extra}
       telemetry: {
         promptChars: text.length,
         staticPromptChars: prompt.length + rules.length,
-        contextChars: contextJson.length + introductionEvidence.length,
+        contextChars: contextJson.length + introductionEvidence.length + provenanceEvidence.length,
         schemaChars: schema.length,
         additionalPromptChars: additionalPrompt.trim().length,
       },

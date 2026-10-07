@@ -73,9 +73,13 @@ export interface ReviewGitReadOptions {
   maxBytes?: number;
   input?: Buffer;
   configuration?: "normalization";
+  // Host-only provenance reads may fetch missing historical blobs from the
+  // promisor remote. Transport then needs the same environment as a fetch.
+  lazyFetch?: boolean;
 }
 
-// Read raw objects without target callbacks, replacement objects, grafts, or lazy fetches.
+// Read raw objects without target callbacks, replacement objects, or grafts.
+// Lazy fetches stay blocked unless the host caller opts in with `lazyFetch`.
 export function readReviewGit(
   targetDir: string | undefined,
   args: string[],
@@ -89,6 +93,7 @@ export function readReviewGit(
       args.includes("--get") &&
       ["core.autocrlf", "core.eol", "core.symlinks"].includes(args.at(-1) ?? ""));
   if (normalizationQuery && !readsNormalization) return null;
+  const lazyFetch = options.lazyFetch === true && !normalizationQuery;
   const timeout =
     options.deadlineAt === null
       ? undefined
@@ -98,8 +103,7 @@ export function readReviewGit(
   const result = spawnSync(
     options.executable ?? "git",
     [
-      "-c",
-      "protocol.allow=never",
+      ...(lazyFetch ? [] : ["-c", "protocol.allow=never"]),
       "-c",
       "core.fsmonitor=false",
       "-c",
@@ -111,32 +115,43 @@ export function readReviewGit(
     {
       cwd: targetDir,
       ...(options.input ? { input: options.input } : {}),
-      env: {
-        PATH: process.env.PATH,
-        SystemRoot: process.env.SystemRoot,
-        ...options.objectEnv,
-        // Configuration/attribute queries do not execute filters. Honor the
-        // host settings that produced a clean checkout, but never inherit them
-        // for object reads or canonicalization where callbacks could execute.
-        ...(normalizationQuery
-          ? {
-              HOME: process.env.HOME,
-              USERPROFILE: process.env.USERPROFILE,
-              XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME,
-            }
-          : {
-              GIT_CONFIG_NOSYSTEM: "1",
-              GIT_CONFIG_GLOBAL: gitNullDevice,
-              GIT_ATTR_NOSYSTEM: "1",
-            }),
-        GIT_NO_LAZY_FETCH: "1",
-        GIT_OPTIONAL_LOCKS: "0",
-        GIT_NO_REPLACE_OBJECTS: "1",
-        // Legacy graft files alter ancestry independently of replacement refs.
-        GIT_GRAFT_FILE: gitNullDevice,
-        GIT_TERMINAL_PROMPT: "0",
-        GIT_LFS_SKIP_SMUDGE: "1",
-      },
+      env: lazyFetch
+        ? {
+            ...process.env,
+            ...options.objectEnv,
+            GIT_NO_LAZY_FETCH: "0",
+            GIT_OPTIONAL_LOCKS: "0",
+            GIT_NO_REPLACE_OBJECTS: "1",
+            GIT_GRAFT_FILE: gitNullDevice,
+            GIT_TERMINAL_PROMPT: "0",
+            GIT_LFS_SKIP_SMUDGE: "1",
+          }
+        : {
+            PATH: process.env.PATH,
+            SystemRoot: process.env.SystemRoot,
+            ...options.objectEnv,
+            // Configuration/attribute queries do not execute filters. Honor the
+            // host settings that produced a clean checkout, but never inherit them
+            // for object reads or canonicalization where callbacks could execute.
+            ...(normalizationQuery
+              ? {
+                  HOME: process.env.HOME,
+                  USERPROFILE: process.env.USERPROFILE,
+                  XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME,
+                }
+              : {
+                  GIT_CONFIG_NOSYSTEM: "1",
+                  GIT_CONFIG_GLOBAL: gitNullDevice,
+                  GIT_ATTR_NOSYSTEM: "1",
+                }),
+            GIT_NO_LAZY_FETCH: "1",
+            GIT_OPTIONAL_LOCKS: "0",
+            GIT_NO_REPLACE_OBJECTS: "1",
+            // Legacy graft files alter ancestry independently of replacement refs.
+            GIT_GRAFT_FILE: gitNullDevice,
+            GIT_TERMINAL_PROMPT: "0",
+            GIT_LFS_SKIP_SMUDGE: "1",
+          },
       stdio: ["pipe", "pipe", "ignore"],
       maxBuffer: maxBytes,
       timeout,

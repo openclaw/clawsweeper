@@ -63,15 +63,19 @@ change to it.
 1. List each touched area where the diff changes or removes existing behavior.
    Pure additions do not need an entry.
 2. For each area, find the commit that introduced the behavior:
-   - Start with `git log --format='%H %s' -- <path>`. It reads commit and
-     tree data only, so it also works in a partial clone that has no old file
-     contents.
-   - When old file contents are readable, narrow with `git log -L` for a line
-     range, `git log -S` for a string, or `git blame`.
-   - When local history is not enough, use the read-only GitHub CLI:
-     `gh api repos/<owner>/<repo>/commits?path=<path>` for the history and
-     `gh api repos/<owner>/<repo>/commits/<sha>/pulls` for the pull request.
-   - Then read the pull request of that commit and its stated reason.
+   - Start with `## Provenance Evidence`. The host already ran `git blame` on
+     the base lines that the diff changes or removes, and found the pull
+     request of each commit.
+   - When the evidence names a pull request, read its stated reason in the
+     `title` and `bodyExcerpt` of that pull request.
+   - Use local git commands only to extend the evidence: for an area that it
+     does not cover, or when its `status` is `partial` or `unavailable`.
+     `git log --format='%H %s' -- <path>` reads commit and tree data only, so
+     it also works in a partial clone. `git log -L`, `git log -S` and
+     `git blame` need old file contents.
+   - When network access is available, `gh api
+     repos/<owner>/<repo>/commits/<sha>/pulls` finds the pull request of a
+     commit.
    - When every method fails, write the failed method in `originalReason`.
 3. Record each area in `provenance`, with a maximum of 8 entries:
    - `area`: the path or symbol.
