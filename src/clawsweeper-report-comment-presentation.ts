@@ -194,7 +194,7 @@ export function createReportCommentPresentation(
       case "overrides_without_reason":
         return `- ${area} changes intended behavior without addressing why it exists (${origin})`;
       case "unknown":
-        return `- ${area}: why the current behavior exists is unknown after search.`;
+        return `- ${area}: original intent not found (${origin})`;
       case "overrides_with_reason":
         return `- ${area} changes intended behavior with a stated reason (${origin})`;
       case "respects":
