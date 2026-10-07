@@ -190,6 +190,20 @@ export function oversizedPullRequestDecision(
       status: "unreadable_or_unclear",
       summary: unassessed,
     },
+    productReview: {
+      kind: "not_applicable",
+      userProblem: "",
+      fixScope: "not_applicable",
+      worthIt: "not_applicable",
+      reason: unassessed,
+    },
+    provenance: [],
+    testingReview: {
+      proofPath: "not_applicable",
+      addedTestFiles: 0,
+      lowValueTests: [],
+      missingE2e: "",
+    },
     reviewFindings: [],
     securityReview: { status: "not_applicable", summary: unassessed, concerns: [] },
     realBehaviorProof: {

@@ -70,6 +70,7 @@ import { readBoundedReviewResult } from "./review-output-policy.js";
 
 interface ReviewRuntimeDependencies {
   reviewItemPromptPath: string;
+  reviewRulesPath: string;
   decisionSchemaPath: string;
   prCloseCoverageProofPromptPath: string;
   targetRepo: () => string;
@@ -93,6 +94,7 @@ interface ReviewRuntimeDependencies {
 
 export function createReviewRuntime({
   reviewItemPromptPath: REVIEW_ITEM_PROMPT_PATH,
+  reviewRulesPath: REVIEW_RULES_PATH,
   decisionSchemaPath: CLAWSWEEPER_DECISION_SCHEMA_PATH,
   prCloseCoverageProofPromptPath: PR_CLOSE_COVERAGE_PROOF_PROMPT_PATH,
   targetRepo,
@@ -107,6 +109,7 @@ export function createReviewRuntime({
   stringOrUndefined,
 }: ReviewRuntimeDependencies) {
   let reviewPromptTemplateCache: string | undefined;
+  let reviewRulesCache: string | undefined;
   let reviewDecisionSchemaCache: string | undefined;
   let prCloseCoverageProofPromptTemplateCache: string | undefined;
 
@@ -456,6 +459,11 @@ export function createReviewRuntime({
     return reviewPromptTemplateCache;
   }
 
+  function reviewRulesText(): string {
+    reviewRulesCache ??= readFileSync(REVIEW_RULES_PATH, "utf8");
+    return reviewRulesCache;
+  }
+
   function prCloseCoverageProofPromptTemplate(): string {
     prCloseCoverageProofPromptTemplateCache ??= readFileSync(
       PR_CLOSE_COVERAGE_PROOF_PROMPT_PATH,
@@ -482,6 +490,9 @@ export function createReviewRuntime({
     runtimeHints: ReviewPromptRuntimeHints = {},
   ): ReviewPromptBuild {
     const prompt = reviewPromptTemplate();
+    // Review rules judge pull requests only; issue triage keeps the static template.
+    const rules =
+      item.kind === "pull_request" ? `\n\n## Review Rules\n\n${reviewRulesText().trim()}` : "";
     const contextJson = contextJsonForPrompt(context, item.kind);
     const prEvidence =
       item.kind === "pull_request"
@@ -521,7 +532,7 @@ ${additionalPrompt.trim()}
     const tokenDescription = runtimeHints.hasGitHubToken
       ? "A read-only GitHub App token for the target repository is available as `GH_TOKEN` (contents, issues, and pull requests read; expires within the hour); use it for `gh api`/authenticated GitHub reads so public rate limits do not apply; it cannot write. Never place it in a URL, log it, or send it to any non-GitHub host."
       : "No GitHub token is supplied to the review process; use public endpoints or pre-fetched context.";
-    const text = `${prompt}
+    const text = `${prompt}${rules}
 
 ## Repository State
 
@@ -560,7 +571,7 @@ ${extra}
       text,
       telemetry: {
         promptChars: text.length,
-        staticPromptChars: prompt.length,
+        staticPromptChars: prompt.length + rules.length,
         contextChars: contextJson.length + introductionEvidence.length,
         schemaChars: schema.length,
         additionalPromptChars: additionalPrompt.trim().length,
@@ -748,6 +759,20 @@ ${extra}
         applied: false,
         status: "unreadable_or_unclear",
         summary: "AGENTS.md policy status was not assessed because the Codex review failed.",
+      },
+      productReview: {
+        kind: "not_applicable",
+        userProblem: "",
+        fixScope: "not_applicable",
+        worthIt: "not_applicable",
+        reason: "Product review was not assessed because the Codex review failed.",
+      },
+      provenance: [],
+      testingReview: {
+        proofPath: "not_applicable",
+        addedTestFiles: 0,
+        lowValueTests: [],
+        missingE2e: "",
       },
       reviewFindings: [],
       securityReview: {
@@ -1264,6 +1289,7 @@ ${extra}
     reviewPromptForTest,
     reviewPromptTelemetryForTest,
     reviewPromptTemplate,
+    reviewRulesText,
     runCodexForTest,
     CodexReviewError,
     buildReviewPrompt,

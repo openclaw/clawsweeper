@@ -194,6 +194,7 @@ let activeRepositoryProfile = repositoryProfileFor(
   process.env.CLAWSWEEPER_TARGET_REPO ?? DEFAULT_TARGET_REPO,
 );
 const REVIEW_ITEM_PROMPT_PATH = join(ROOT, "prompts", "review-item.md");
+const REVIEW_RULES_PATH = join(ROOT, "instructions", "pr-review-rules.md");
 const CLAWSWEEPER_DECISION_SCHEMA_PATH = join(ROOT, "schema", "clawsweeper-decision.schema.json");
 const PR_CLOSE_COVERAGE_PROOF_PROMPT_PATH = join(ROOT, "prompts", "pr-close-coverage-proof.md");
 const PR_CLOSE_COVERAGE_PROOF_SCHEMA_PATH = join(
@@ -390,7 +391,10 @@ const {
   reviewCommentContentRevision,
 } = sourceRevisionTools;
 
-function reviewPolicyHash(options: { model?: string; sandboxMode?: string }): string {
+function reviewPolicyHash(
+  options: { model?: string; sandboxMode?: string },
+  reviewRules = reviewRulesText(),
+): string {
   const policyTargetRepo = targetRepo();
   return sha256(
     stableJson({
@@ -410,6 +414,7 @@ function reviewPolicyHash(options: { model?: string; sandboxMode?: string }): st
         : {}),
       repositoryProfile: targetProfile(),
       prompt: reviewPromptTemplate(),
+      reviewRules,
       schema: reviewDecisionSchemaText(),
     }),
   ).slice(0, 16);
@@ -420,8 +425,9 @@ export function reviewPolicyHashForTest(
     model?: string;
     sandboxMode?: string;
   } = {},
+  reviewRules?: string,
 ): string {
-  return reviewPolicyHash(options);
+  return reviewPolicyHash(options, reviewRules);
 }
 
 const decisionParser = createDecisionParser({
@@ -729,6 +735,7 @@ const { collectItemContext } = createItemContext({
 
 const reviewRuntime = createReviewRuntime({
   reviewItemPromptPath: REVIEW_ITEM_PROMPT_PATH,
+  reviewRulesPath: REVIEW_RULES_PATH,
   decisionSchemaPath: CLAWSWEEPER_DECISION_SCHEMA_PATH,
   prCloseCoverageProofPromptPath: PR_CLOSE_COVERAGE_PROOF_PROMPT_PATH,
   targetRepo,
@@ -756,6 +763,7 @@ export const {
   reviewPromptForTest,
   reviewPromptTelemetryForTest,
   reviewPromptTemplate,
+  reviewRulesText,
   runCodexForTest,
 } = reviewRuntime;
 const { codexFailureReason, isSafeGitBranchName, prCloseCoverageProofPromptTemplate } =

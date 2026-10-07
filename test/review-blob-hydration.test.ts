@@ -623,6 +623,7 @@ function reviewRuntime(releaseTag?: string) {
   };
   return createReviewRuntime({
     reviewItemPromptPath: "",
+    reviewRulesPath: "",
     decisionSchemaPath: "",
     prCloseCoverageProofPromptPath: "",
     targetRepo: () => "fixture/repository",

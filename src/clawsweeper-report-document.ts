@@ -212,6 +212,56 @@ export function createReportDocumentRendering(
     return lines.join("\n");
   }
 
+  function renderProductReviewReportSection(decision: Decision): string {
+    const product = decision.productReview;
+    return [
+      `Kind: ${product.kind}`,
+      "",
+      `Worth it: ${product.worthIt}`,
+      "",
+      `Fix scope: ${product.fixScope}`,
+      "",
+      `User problem: ${product.userProblem}`.trimEnd(),
+      "",
+      `Reason: ${product.reason}`.trimEnd(),
+    ].join("\n");
+  }
+
+  function renderProvenanceReportSection(decision: Decision): string {
+    if (!decision.provenance.length) return "- none";
+    return decision.provenance
+      .map((entry) =>
+        [
+          `- Area: ${entry.area}`.trimEnd(),
+          `  - Introduced by: ${entry.introducedBy}`.trimEnd(),
+          `  - Original reason: ${entry.originalReason}`.trimEnd(),
+          `  - Verdict: ${entry.verdict}`,
+        ].join("\n"),
+      )
+      .join("\n");
+  }
+
+  function renderTestingReviewReportSection(decision: Decision): string {
+    const testing = decision.testingReview;
+    return [
+      `Proof path: ${testing.proofPath}`,
+      "",
+      `Added test files: ${testing.addedTestFiles}`,
+      "",
+      `Missing E2E: ${testing.missingE2e}`.trimEnd(),
+      "",
+      "Low-value tests:",
+      "",
+      testing.lowValueTests.length
+        ? testing.lowValueTests
+            .map((test) =>
+              [`- File: ${test.file}`.trimEnd(), `  - Reason: ${test.reason}`.trimEnd()].join("\n"),
+            )
+            .join("\n")
+        : "- none",
+    ].join("\n");
+  }
+
   function renderSecurityReviewReportSection(decision: Decision): string {
     const lines = [
       `Status: ${decision.securityReview.status}`,
@@ -548,6 +598,19 @@ export function createReportDocumentRendering(
     const solutionAssessment = options.decision.solutionAssessment.trim() || "_Not provided._";
     const visionFit = renderVisionFitReportSection(options.decision);
     const rootCauseCluster = renderRootCauseClusterReportSection(options.decision);
+    // Product, provenance, and testing reviews judge pull requests only.
+    const pullRequestReviewSections =
+      options.item.kind === "pull_request"
+        ? [
+            `## ${REVIEW_SECTIONS.productReview}`,
+            renderProductReviewReportSection(options.decision),
+            `## ${REVIEW_SECTIONS.provenance}`,
+            renderProvenanceReportSection(options.decision),
+            `## ${REVIEW_SECTIONS.testingReview}`,
+            renderTestingReviewReportSection(options.decision),
+            "",
+          ].join("\n\n")
+        : "";
     const reviewFindings = renderReviewFindingsReportSection(options.decision);
     const securityReview = renderSecurityReviewReportSection(options.decision);
     const realBehaviorProof = renderRealBehaviorProofReportSection(options.decision);
@@ -724,6 +787,15 @@ mantis_recommendation_status: ${options.decision.mantisRecommendation.status}
 mantis_recommendation_scenario: ${options.decision.mantisRecommendation.scenario}
 feature_showcase_status: ${options.decision.featureShowcase.status}
 agents_policy_status: ${options.decision.agentsPolicyStatus.status}
+product_kind: ${options.decision.productReview.kind}
+product_worth: ${options.decision.productReview.worthIt}
+product_fix_scope: ${options.decision.productReview.fixScope}
+testing_proof_path: ${options.decision.testingReview.proofPath}
+low_value_tests: ${options.decision.testingReview.lowValueTests.length}
+provenance_overrides_without_reason: ${
+      options.decision.provenance.filter((entry) => entry.verdict === "overrides_without_reason")
+        .length
+    }
 ---
 
 # ${markdownLink(`#${options.item.number}: ${options.item.title}`, options.item.url)}
@@ -808,7 +880,7 @@ ${visionFit}
 
 ${rootCauseCluster}
 
-## ${REVIEW_SECTIONS.reviewFindings}
+${pullRequestReviewSections}## ${REVIEW_SECTIONS.reviewFindings}
 
 ${reviewFindings}
 

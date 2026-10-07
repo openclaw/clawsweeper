@@ -26,6 +26,10 @@ import type {
   MergeRiskOptionCategory,
   OverallCorrectness,
   PrRatingTier,
+  ProductFixScope,
+  ProductReviewKind,
+  ProductWorthIt,
+  ProvenanceVerdict,
   PrStatusLabelKind,
   RealBehaviorProofEvidenceKind,
   RealBehaviorProofStatus,
@@ -35,6 +39,7 @@ import type {
   SecurityConcernSeverity,
   SecurityReviewStatus,
   TelegramVisibleProofStatus,
+  TestingProofPath,
   TriagePriority,
   VisionFitStatus,
   WorkCandidateKind,
@@ -84,7 +89,7 @@ export const DEFAULT_REASONING_EFFORT = "medium";
 // per item to high reasoning and fast service.
 export const DEFAULT_SERVICE_TIER = "";
 export const DEFAULT_REVIEW_CODEX_TIMEOUT_MS = 1_200_000;
-export const REVIEW_POLICY_VERSION = "2026-09-23-policy-v26";
+export const REVIEW_POLICY_VERSION = "2026-10-08-policy-v27";
 export const REVIEW_COMMENT_MARKER_PREFIX = "<!-- clawsweeper-review";
 export const REVIEW_START_STATUS_MARKER_PREFIX = "<!-- clawsweeper-review-status";
 export const ACCEPTED_LARGE_LABEL_DEFINITION = {
@@ -672,6 +677,43 @@ export const TELEGRAM_VISIBLE_PROOF_STATUSES = new Set<TelegramVisibleProofStatu
   "needed",
   "not_needed",
 ]);
+export const PRODUCT_REVIEW_KINDS = new Set<ProductReviewKind>([
+  "bug_fix",
+  "preference",
+  "feature",
+  "refactor",
+  "performance",
+  "test_only",
+  "docs",
+  "maintenance",
+  "not_applicable",
+]);
+export const PRODUCT_FIX_SCOPES = new Set<ProductFixScope>([
+  "complete",
+  "partial",
+  "not_applicable",
+]);
+export const PRODUCT_WORTH_IT_VALUES = new Set<ProductWorthIt>([
+  "yes",
+  "no",
+  "needs_maintainer",
+  "not_applicable",
+]);
+export const PROVENANCE_VERDICTS = new Set<ProvenanceVerdict>([
+  "respects",
+  "overrides_with_reason",
+  "overrides_without_reason",
+  "unknown",
+]);
+export const TESTING_PROOF_PATHS = new Set<TestingProofPath>([
+  "shipped_entry_point",
+  "in_process_harness",
+  "unit_only",
+  "none",
+  "not_applicable",
+]);
+export const MAX_PROVENANCE_ENTRIES = 8;
+export const MAX_LOW_VALUE_TESTS = 10;
 export const LIVE_PROOF_PLAN_STATUSES = new Set<LiveProofPlanStatus>([
   "recommended",
   "not_applicable",
@@ -768,6 +810,9 @@ export const DECISION_SCHEMA_KEYS = new Set([
   "autoImplementationCandidate",
   "rootCauseCluster",
   "agentsPolicyStatus",
+  "productReview",
+  "provenance",
+  "testingReview",
   "reviewFindings",
   "securityReview",
   "realBehaviorProof",
@@ -835,6 +880,26 @@ export const PR_RATING_SCHEMA_KEYS = new Set([
   "nextSteps",
 ]);
 export const TELEGRAM_VISIBLE_PROOF_SCHEMA_KEYS = new Set(["status", "summary"]);
+export const PRODUCT_REVIEW_SCHEMA_KEYS = new Set([
+  "kind",
+  "userProblem",
+  "fixScope",
+  "worthIt",
+  "reason",
+]);
+export const PROVENANCE_ENTRY_SCHEMA_KEYS = new Set([
+  "area",
+  "introducedBy",
+  "originalReason",
+  "verdict",
+]);
+export const TESTING_REVIEW_SCHEMA_KEYS = new Set([
+  "proofPath",
+  "addedTestFiles",
+  "lowValueTests",
+  "missingE2e",
+]);
+export const LOW_VALUE_TEST_SCHEMA_KEYS = new Set(["file", "reason"]);
 export const LIVE_PROOF_PLAN_SCHEMA_KEYS = new Set([
   "status",
   "surface",
@@ -925,6 +990,9 @@ export const REVIEW_SECTIONS = {
   solutionAssessment: "Solution Assessment",
   visionFit: "Vision Fit",
   rootCauseCluster: "Root-Cause Cluster",
+  productReview: "Product Review",
+  provenance: "Provenance",
+  testingReview: "Testing Review",
   reviewFindings: "Review Findings",
   securityReview: "Security Review",
   realBehaviorProof: "Real Behavior Proof",

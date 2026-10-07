@@ -2,6 +2,7 @@ import {
   derivedPrRating,
   normalizePrRating,
   normalizeRealBehaviorProof,
+  type PrRatingReviewSignals,
 } from "./clawsweeper-rating.js";
 import { createDecisionParser } from "./clawsweeper-decision-parser.js";
 import { publicLikelyOwner } from "./clawsweeper-regression-provenance.js";
@@ -21,12 +22,17 @@ import {
   MERGE_RISK_LABEL_NAMES,
   OVERALL_CORRECTNESS_VALUES,
   PR_RATING_TIERS,
+  PRODUCT_FIX_SCOPES,
+  PRODUCT_REVIEW_KINDS,
+  PRODUCT_WORTH_IT_VALUES,
+  PROVENANCE_VERDICTS,
   PROOF_OVERRIDE_LABEL,
   REAL_BEHAVIOR_PROOF_EVIDENCE_KINDS,
   REAL_BEHAVIOR_PROOF_STATUSES,
   REVIEW_SECTIONS,
   SECURITY_REVIEW_STATUSES,
   TELEGRAM_VISIBLE_PROOF_STATUSES,
+  TESTING_PROOF_PATHS,
   TRIAGE_PRIORITIES,
   VISION_FIT_STATUSES,
 } from "./clawsweeper-policy.js";
@@ -59,6 +65,12 @@ import type {
   OverallCorrectness,
   PrRating,
   PrRatingTier,
+  ProductFixScope,
+  ProductReview,
+  ProductReviewKind,
+  ProductWorthIt,
+  ProvenanceEntry,
+  ProvenanceVerdict,
   RealBehaviorProof,
   RealBehaviorProofEvidenceKind,
   RealBehaviorProofStatus,
@@ -71,6 +83,8 @@ import type {
   SecurityReviewStatus,
   TelegramVisibleProof,
   TelegramVisibleProofStatus,
+  TestingProofPath,
+  TestingReview,
   LiveProofPlan,
   TriagePriority,
   VisionFitStatus,
@@ -170,6 +184,91 @@ export function reportLiveProofPlan(markdown: string): LiveProofPlan {
       steps: [],
     };
   }
+}
+
+function reportEnumValue<T extends string>(
+  value: string | undefined,
+  allowed: Set<T>,
+  fallback: T,
+): T {
+  return allowed.has(value as T) ? (value as T) : fallback;
+}
+
+/** Product review recorded in a report; reports without one read as not_applicable. */
+export function reportProductReview(markdown: string): ProductReview {
+  const section = reportSectionValue(markdown, REVIEW_SECTIONS.productReview);
+  return {
+    kind: reportEnumValue<ProductReviewKind>(
+      reportSectionLineValue(section, "Kind"),
+      PRODUCT_REVIEW_KINDS,
+      "not_applicable",
+    ),
+    userProblem: reportSectionLineValue(section, "User problem") ?? "",
+    fixScope: reportEnumValue<ProductFixScope>(
+      reportSectionLineValue(section, "Fix scope"),
+      PRODUCT_FIX_SCOPES,
+      "not_applicable",
+    ),
+    worthIt: reportEnumValue<ProductWorthIt>(
+      reportSectionLineValue(section, "Worth it"),
+      PRODUCT_WORTH_IT_VALUES,
+      "not_applicable",
+    ),
+    reason: reportSectionLineValue(section, "Reason") ?? "",
+  };
+}
+
+/** Provenance entries recorded in a report; reports without them read as empty. */
+export function reportProvenance(markdown: string): ProvenanceEntry[] {
+  const entries: ProvenanceEntry[] = [];
+  for (const line of reportSectionValue(markdown, REVIEW_SECTIONS.provenance).split(/\r?\n/)) {
+    const area = line.match(/^- Area:(.*)$/);
+    if (area) {
+      entries.push({
+        area: area[1]!.trim(),
+        introducedBy: "unknown",
+        originalReason: "",
+        verdict: "unknown",
+      });
+      continue;
+    }
+    const entry = entries.at(-1);
+    const field = line.match(/^ {2}- (Introduced by|Original reason|Verdict):(.*)$/);
+    if (!entry || !field) continue;
+    const value = field[2]!.trim();
+    if (field[1] === "Introduced by") entry.introducedBy = value || "unknown";
+    else if (field[1] === "Original reason") entry.originalReason = value;
+    else entry.verdict = reportEnumValue<ProvenanceVerdict>(value, PROVENANCE_VERDICTS, "unknown");
+  }
+  return entries;
+}
+
+/** Testing review recorded in a report; reports without one read as not_applicable. */
+export function reportTestingReview(markdown: string): TestingReview {
+  const section = reportSectionValue(markdown, REVIEW_SECTIONS.testingReview);
+  const addedTestFiles = Number(reportSectionLineValue(section, "Added test files"));
+  const lowValueTests: TestingReview["lowValueTests"] = [];
+  for (const line of section.split(/\r?\n/)) {
+    const file = line.match(/^- File:(.*)$/);
+    if (file) {
+      lowValueTests.push({ file: file[1]!.trim(), reason: "" });
+      continue;
+    }
+    const reason = line.match(/^ {2}- Reason:(.*)$/);
+    const test = lowValueTests.at(-1);
+    if (reason && test) test.reason = reason[1]!.trim();
+  }
+  return {
+    proofPath: reportEnumValue<TestingProofPath>(
+      reportSectionLineValue(section, "Proof path"),
+      TESTING_PROOF_PATHS,
+      "not_applicable",
+    ),
+    addedTestFiles:
+      Number.isSafeInteger(addedTestFiles) && addedTestFiles >= 0 ? addedTestFiles : 0,
+    lowValueTests,
+    missingE2e: reportSectionLineValue(section, "Missing E2E") ?? "",
+  };
 }
 
 function reportSectionValue(markdown: string, heading: string): string {
@@ -760,6 +859,15 @@ export function createReportParser({
     const section = reviewSectionValue(markdown, "prRating");
     const proof = reportRealBehaviorProof(markdown);
     const attached = reportAttachedLiveVerification(markdown);
+    const isPullRequest = frontMatterValue(markdown, "type") === "pull_request";
+    const signals: PrRatingReviewSignals | undefined = isPullRequest
+      ? {
+          productReview: reportProductReview(markdown),
+          provenance: reportProvenance(markdown),
+          testingReview: reportTestingReview(markdown),
+          realBehaviorProof: proof,
+        }
+      : undefined;
     const proofTierField = frontMatterField(markdown, "pr_rating_proof");
     const patchTierField = frontMatterField(markdown, "pr_rating_patch");
     const overallTierField = frontMatterField(markdown, "pr_rating_overall");
@@ -771,12 +879,13 @@ export function createReportParser({
       )
     ) {
       return derivedPrRating({
-        isPullRequest: frontMatterValue(markdown, "type") === "pull_request",
+        isPullRequest,
         proof,
         findings: reportReviewFindings(markdown),
         securityReview: reportSecurityReview(markdown),
         overallCorrectness: reportOverallCorrectness(markdown),
         overallConfidenceScore: reportOverallConfidenceScore(markdown),
+        signals,
       });
     }
     const proofTierValue =
@@ -799,7 +908,7 @@ export function createReportParser({
       PR_RATING_TIERS.has(overallTierValue as PrRatingTier) &&
       summary &&
       !(
-        frontMatterValue(markdown, "type") === "pull_request" &&
+        isPullRequest &&
         !isExternalPullRequestReport(markdown) &&
         proof.status === "not_applicable" &&
         (proofTierValue === "D" || proofTierValue === "F")
@@ -814,15 +923,17 @@ export function createReportParser({
           nextSteps,
         },
         attached.status === "absent" ? undefined : proof,
+        signals,
       );
     }
     return derivedPrRating({
-      isPullRequest: frontMatterValue(markdown, "type") === "pull_request",
+      isPullRequest,
       proof,
       findings: reportReviewFindings(markdown),
       securityReview: reportSecurityReview(markdown),
       overallCorrectness: reportOverallCorrectness(markdown),
       overallConfidenceScore: reportOverallConfidenceScore(markdown),
+      signals,
     });
   }
 

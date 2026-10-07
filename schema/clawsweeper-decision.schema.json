@@ -37,6 +37,9 @@
     "autoImplementationCandidate",
     "rootCauseCluster",
     "agentsPolicyStatus",
+    "productReview",
+    "provenance",
+    "testingReview",
     "reviewFindings",
     "securityReview",
     "realBehaviorProof",
@@ -610,6 +613,124 @@
         }
       }
     },
+    "productReview": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Product judgement, done first: decide whether the change should exist before judging the code. Good code is common; product judgement is the weak point. For non-PR items use kind, fixScope, and worthIt not_applicable with an empty userProblem.",
+      "required": ["kind", "userProblem", "fixScope", "worthIt", "reason"],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "bug_fix",
+            "preference",
+            "feature",
+            "refactor",
+            "performance",
+            "test_only",
+            "docs",
+            "maintenance",
+            "not_applicable"
+          ],
+          "description": "Use bug_fix only when behavior differs from the designed or documented behavior. A stated user preference about behavior that works as designed is preference, not a bug. Use not_applicable only for non-PR items."
+        },
+        "userProblem": {
+          "type": "string",
+          "description": "The observed user-facing problem in user terms: what the user sees, not what the code does. Empty when there is no user-facing problem."
+        },
+        "fixScope": {
+          "type": "string",
+          "enum": ["complete", "partial", "not_applicable"],
+          "description": "complete when the change delivers the linked issue's stated expected behavior, so Fixes or Closes is correct. partial when it delivers only part of it, so the PR must use Related: instead of Fixes or Closes. not_applicable when no stated expected behavior applies, or for non-PR items."
+        },
+        "worthIt": {
+          "type": "string",
+          "enum": ["yes", "no", "needs_maintainer", "not_applicable"],
+          "description": "yes only for a clear user problem whose value exceeds the cost of the change. no for no clear user problem, a niche preference, or churn whose cost exceeds its value. needs_maintainer for a feature without owner direction; a new config option, default, schema, permission, or public API inside a bug fix; a change to behavior an area owner built; or an issue expectation that conflicts with an existing product contract. A correct patch alone does not make a change worth merging. Use not_applicable only for non-PR items."
+        },
+        "reason": {
+          "type": "string",
+          "description": "One or two sentences that explain kind and worthIt."
+        }
+      }
+    },
+    "provenance": {
+      "type": "array",
+      "maxItems": 8,
+      "description": "Why each touched area is the way it is. Add one entry for each area whose existing behavior the diff changes or removes. Find the introducing commit with git log -L (line range), git log -S (string), or git blame, then read the introducing PR and its stated reason. Code that looks wrong often has a reason. Use an empty array when the diff changes no existing behavior, or for non-PR items.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["area", "introducedBy", "originalReason", "verdict"],
+        "properties": {
+          "area": {
+            "type": "string",
+            "description": "Repository-relative path or symbol whose behavior the diff changes."
+          },
+          "introducedBy": {
+            "type": "string",
+            "description": "Commit SHA or PR URL that introduced the behavior; unknown when a real search finds none."
+          },
+          "originalReason": {
+            "type": "string",
+            "description": "The reason stated by the introducing commit or PR; empty when the search finds none."
+          },
+          "verdict": {
+            "type": "string",
+            "enum": ["respects", "overrides_with_reason", "overrides_without_reason", "unknown"],
+            "description": "respects when the diff keeps the original intent. overrides_with_reason when the PR explains why it changes the intent. overrides_without_reason when the diff overrides the intent and the PR does not address it; the author must explain or restore it. unknown when a real search found no reason; never guess."
+          }
+        }
+      }
+    },
+    "testingReview": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Test value. End-to-end proof through the shipped entry point (real CLI, real server or gateway, real UI in a browser, real channel) is the proof that counts. In-process harnesses and unit tests support it and never replace it. For non-PR items use proofPath not_applicable, addedTestFiles 0, empty lowValueTests, and empty missingE2e.",
+      "required": ["proofPath", "addedTestFiles", "lowValueTests", "missingE2e"],
+      "properties": {
+        "proofPath": {
+          "type": "string",
+          "enum": [
+            "shipped_entry_point",
+            "in_process_harness",
+            "unit_only",
+            "none",
+            "not_applicable"
+          ],
+          "description": "Strongest proof of the changed behavior. shipped_entry_point: the shipped entry point ran the changed behavior. in_process_harness: real code driven inside one process with synthetic input. unit_only: unit tests only. none: no proof. not_applicable: non-PR items only."
+        },
+        "addedTestFiles": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Number of test files that the PR adds or changes."
+        },
+        "lowValueTests": {
+          "type": "array",
+          "maxItems": 10,
+          "description": "Tests added by the PR that have negative value: they mirror the implementation, assert mocks or call counts, duplicate existing coverage, pin incidental wording or defaults, or test a helper instead of a behavior. Ask the author to remove them. Empty when none.",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["file", "reason"],
+            "properties": {
+              "file": {
+                "type": "string",
+                "description": "Repository-relative test file path, with the test name when the file also holds useful tests."
+              },
+              "reason": {
+                "type": "string",
+                "description": "Which low-value criterion applies and why."
+              }
+            }
+          }
+        },
+        "missingE2e": {
+          "type": "string",
+          "description": "The missing end-to-end scenario through the shipped entry point. A regression test must fail on the base and pass on the head; state here when that cannot be shown. Empty when nothing is missing."
+        }
+      }
+    },
     "reviewFindings": {
       "type": "array",
       "description": "Codex /review-style PR findings introduced by the proposed patch. Use an empty array for issues, close decisions, or PRs where there is no discrete actionable bug.",
@@ -772,23 +893,23 @@
     "prRating": {
       "type": "object",
       "additionalProperties": false,
-      "description": "Calibrated PR quality rating. Use boring internal tiers S/A/B/C/D/F/NA; public rendering maps them to funny crustacean labels. Rate the PR evidence and patch quality, not the contributor or workflow state. S is rare and exceptional, A is clearly above average, B is the normal good/mergeable quality rating, C is useful but uncertain, D is weak/thin signal, F is not quality-ready, and NA is only for non-PR or not-applicable items. Real screenshots, recordings, or linked media that directly show the changed behavior are strong boosters, but screenshots alone are not enough for browser runtime, network, CSP, or security claims unless diagnostics are visible. Do not lower any tier solely because the PR is draft, has protected labels, is not automerge-eligible, or is waiting on a maintainer decision.",
+      "description": "Calibrated PR quality rating per the Review Rules rating rubric. Use boring internal tiers S/A/B/C/D/F/NA; public rendering maps them to funny crustacean labels. Rate the PR evidence and patch quality, not the contributor or workflow state. Most PRs are B or C. B means worth merging, correct, and proven end to end. A requires testingReview.proofPath shipped_entry_point, productReview.worthIt yes, no finding above P3, and no lowValueTests. S is rare and exceptional. C is useful with limited confidence, D is thin signal, F is not quality-ready, and NA is only for non-PR items. Code enforces these caps: in_process_harness proof at most C, unit_only proof at most D, proofPath none is F when proof is required; any lowValueTests cap patch at B; worthIt no caps overall at D; needs_maintainer, fixScope partial, or any overrides_without_reason provenance caps overall at C. Real screenshots, recordings, or linked media that directly show the changed behavior are strong boosters, but screenshots alone are not enough for browser runtime, network, CSP, or security claims unless diagnostics are visible. Do not lower any tier solely because the PR is draft, has protected labels, is not automerge-eligible, or is waiting on a maintainer decision.",
       "required": ["proofTier", "patchTier", "overallTier", "summary", "nextSteps"],
       "properties": {
         "proofTier": {
           "type": "string",
           "enum": ["S", "A", "B", "C", "D", "F", "NA"],
-          "description": "Rating for real behavior proof quality only."
+          "description": "Rating for real behavior proof quality only. End-to-end proof through the shipped entry point can earn A or S; in_process_harness proof is at most C and unit_only proof is at most D."
         },
         "patchTier": {
           "type": "string",
           "enum": ["S", "A", "B", "C", "D", "F", "NA"],
-          "description": "Rating for implementation quality, review findings, security concerns, scope, and validation."
+          "description": "Rating for implementation quality, review findings, security concerns, scope, and validation. Any lowValueTests cap this tier at B."
         },
         "overallTier": {
           "type": "string",
           "enum": ["S", "A", "B", "C", "D", "F", "NA"],
-          "description": "Overall PR quality tier after combining proof and patch quality. Missing, mock-only, or insufficient proof must cap or lower the overall rating because real behavior proof remains a merge gate. Draft, protected-label, automerge eligibility, and maintainer-waiting workflow states must not lower this tier by themselves."
+          "description": "Overall PR quality tier: the weaker of proofTier and patchTier after the product, provenance, and testing caps. Missing, mock-only, or insufficient proof must cap or lower the overall rating because real behavior proof remains a merge gate. A or S requires proofPath shipped_entry_point and worthIt yes. Draft, protected-label, automerge eligibility, and maintainer-waiting workflow states must not lower this tier by themselves."
         },
         "summary": {
           "type": "string",

@@ -11,6 +11,7 @@ import {
   reviewDecisionSchemaText,
   reviewPromptForTest,
   reviewPromptTelemetryForTest,
+  reviewPolicyHashForTest,
   reviewPromptTemplate,
   extractLatestClawSweeperReviewForTest,
   filterReviewContextCommentsForTest,
@@ -743,4 +744,34 @@ test("PR prompt omits only source patch fields without mutating policy evidence"
   assert.equal(JSON.stringify(context), original);
   const issuePrompt = reviewPromptForTest(item({ kind: "issue" }), context, git);
   assert.ok(issuePrompt.includes("SOURCE_PATCH_SENTINEL"));
+});
+
+test("PR prompts carry the review rules after the static template; issue prompts do not", () => {
+  const rules = readFileSync("instructions/pr-review-rules.md", "utf8").trim();
+  const context = {
+    issue: { number: 123, title: "Sample item" },
+    comments: [],
+    timeline: [],
+    counts: { comments: 0, timeline: 0 },
+  };
+  const prompt = reviewPromptForTest(item({ kind: "pull_request" }), context, git);
+  const rulesSection = `\n\n## Review Rules\n\n${rules}\n\n## Repository State\n`;
+  assert.ok(prompt.startsWith(reviewPromptTemplate()));
+  assert.ok(prompt.includes(rulesSection));
+  assert.equal(
+    prompt.indexOf("## Review Rules"),
+    reviewPromptTemplate().length + 2,
+    "rules follow the static template",
+  );
+  const issuePrompt = reviewPromptForTest(item({ kind: "issue" }), context, git);
+  assert.ok(!issuePrompt.includes("## Review Rules"));
+});
+
+test("review policy hash changes when the review rules change", () => {
+  const rules = readFileSync("instructions/pr-review-rules.md", "utf8");
+  assert.equal(reviewPolicyHashForTest({}, rules), reviewPolicyHashForTest());
+  assert.notEqual(
+    reviewPolicyHashForTest({}, `${rules}\nOne more rule.\n`),
+    reviewPolicyHashForTest(),
+  );
 });

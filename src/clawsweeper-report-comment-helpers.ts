@@ -27,6 +27,7 @@ import type { RealBehaviorProofPolicy } from "./clawsweeper-proof-policy.js";
 import { nextStepFromReport } from "./clawsweeper-next-step.js";
 import { validReviewLeaseIdentity } from "./review-comment-markers.js";
 import { maintainerDecisionFromReport } from "./decision-packets.js";
+import { reportProductReview, reportProvenance } from "./clawsweeper-report-parser.js";
 import { AUTOFIX_LABEL, AUTOMERGE_LABEL } from "./repair/exact-review-guard-labels.js";
 import {
   isRegressionAssessment,
@@ -555,6 +556,17 @@ export function createReportCommentHelpers(
         "Resolve maintainer decision",
         "Resolve the maintainer decision shown above before merge.",
       );
+      const product = reportProductReview(markdown);
+      block(
+        product.worthIt === "no",
+        "Product: not worth merging",
+        product.reason || "The review found no user problem that justifies this change.",
+      );
+      block(
+        product.worthIt === "needs_maintainer",
+        "Product call needed",
+        product.reason || "An owner must decide whether this change belongs in the product.",
+      );
       block(
         configSurfaceReviewRequired(markdown),
         "Review config compatibility",
@@ -597,6 +609,14 @@ export function createReportCommentHelpers(
           state: "needs-changes",
           label: "Complete the queued repair",
           detail: "Apply the queued review repair and run a fresh exact-head review before merge.",
+        });
+      }
+      for (const entry of reportProvenance(markdown)) {
+        if (entry.verdict !== "overrides_without_reason") continue;
+        items.push({
+          state: "needs-changes",
+          label: `Explain or restore the original intent of ${entry.area}`,
+          detail: `${entry.introducedBy}: ${entry.originalReason || "reason not recorded"}`,
         });
       }
       return {
