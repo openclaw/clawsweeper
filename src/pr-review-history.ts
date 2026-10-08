@@ -47,7 +47,7 @@ export type ReviewHistoryCoverage = {
 type RawEntry = {
   commit: string;
   date: string;
-  parents: number;
+  parents: string[];
   status: string;
   path: string;
   // Destination of a rename; only `diff-tree -M` output carries one.
@@ -64,13 +64,13 @@ export function parseRawHistory(output: string): RawEntry[] {
   const entries: RawEntry[] = [];
   let commit = "";
   let date = "";
-  let parents = 0;
+  let parents: string[] = [];
   for (let index = 0; index < tokens.length; index++) {
     const token = tokens[index]!.replace(/^\n/, "");
     if (token.startsWith("\x01")) {
       const [sha = "", ...parentShas] = token.slice(1).split(" ");
       commit = sha;
-      parents = parentShas.filter(Boolean).length;
+      parents = parentShas.filter(Boolean);
       date = tokens[++index] ?? "";
       continue;
     }
@@ -241,7 +241,6 @@ export function prefetchReviewHistory(options: {
     // Newest first: a global cap cuts every path at one date; a per-path cap
     // cuts only that path.
     const creations: Array<{ commit: string; date: string; path: string; oid: string }> = [];
-    const oldestEntry = new Map(entries.map((entry) => [entry.path, entry]));
     for (const entry of entries) {
       if (!estimates.has(entry.path) || truncated.has(entry.path)) continue;
       const wanted = [entry.newOid, entry.oldOid].filter(
@@ -265,12 +264,20 @@ export function prefetchReviewHistory(options: {
       estimatedBytes += bytes;
       pathBytes.set(entry.path, (pathBytes.get(entry.path) ?? 0) + bytes);
       if (entry.status !== "A" || !entry.newOid) continue;
-      // A merge adds a path that came from its other parent, whose history the
-      // walk continues. Only a merge that ends the path's history may have
-      // renamed it while resolving; that earlier name is not searched.
-      if (entry.parents > 1) {
-        if (oldestEntry.get(entry.path) === entry) truncated.set(entry.path, entry.date);
-      } else if (entry.parents === 1)
+      // A merge adds a path from its other parent, whose history the walk
+      // continues. A merge whose other parents lack the path created it, maybe
+      // renaming while resolving; that earlier name is not searched.
+      if (entry.parents.length > 1) {
+        // ls-tree reads only trees; `cat-file -e rev:path` also needs the blob.
+        if (
+          entry.parents
+            .slice(1)
+            .every(
+              (parent) => !git(["--literal-pathspecs", "ls-tree", "-z", parent, "--", entry.path]),
+            )
+        )
+          truncated.set(entry.path, entry.date);
+      } else if (entry.parents.length === 1)
         creations.push({
           commit: entry.commit,
           date: entry.date,

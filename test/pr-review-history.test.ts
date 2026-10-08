@@ -255,6 +255,8 @@ for (const [deletions, parents] of [
           return `\x01${commit}\0${"2026-02-03T00:00:00Z"}\0\n:000000 100644 ${"0".repeat(40)} ${created} A\0src/new.ts\0`;
         // Rename detection fails, as on a timeout.
         if (args[1] === "diff-tree") return null;
+        // The merge's other parent lacks the path: the merge created it.
+        if (args[1] === "ls-tree") return "";
         const ids = input!.trim().split("\n");
         if (args[0] === "rev-list")
           return ids.map((id) => (present.has(id) ? id : `?${id}`)).join("\n");
