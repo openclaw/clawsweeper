@@ -87,6 +87,10 @@ function keepOpenPullReport(overrides = {}): string {
     work_candidate: "none",
     pull_head_sha: CURRENT_REVIEW_HEAD_SHA,
     reviewed_at: "2026-06-24T12:00:00.000Z",
+    next_step: JSON.stringify({
+      kind: "required",
+      text: "Fix the remaining finding before merge.",
+    }),
     ...overrides,
   })}
 
@@ -555,7 +559,10 @@ test("previous durable comment converts into a ledger cycle", () => {
 
 test("next-step priority bullets do not become review findings", () => {
   const comment = renderReviewCommentFromReport(keepOpenPullReport(), "none");
-  assert.match(comment, /## Before merge[\s\S]*- \[ \] \*\*Complete next step \(P2\)\*\*/);
+  assert.match(
+    comment,
+    /## Before merge[\s\S]*- \[ \] \*\*Complete next step\*\* - Fix the remaining/,
+  );
   assert.deepEqual(reviewHistoryCycleFromCommentBody(comment)?.findings, []);
 });
 

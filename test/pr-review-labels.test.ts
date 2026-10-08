@@ -376,7 +376,7 @@ Full review comments:
   assert.match(comment, /\| \*\*Overall readiness\*\* \| 🧂 unranked krab \*\*\(1\/6\)\*\* \|/);
   assert.match(comment, /\| \*\*Proof confidence\*\* \| 🧂 unranked krab \*\*\(1\/6\)\*\* \|/);
   assert.match(comment, /\| \*\*Patch quality\*\* \| 🦞 diamond lobster \*\*\(5\/6\)\*\* \|/);
-  assert.match(comment, /⛔ \*\*Blocked before merge - 2 items remain\*\*/);
+  assert.match(comment, /⛔ \*\*Blocked before merge - 1 item remains\*\*/);
   assert.match(
     comment,
     /- \[ \] \*\*Add real behavior proof\*\* - The PR has no real ingestion-run proof yet\./,

@@ -94,7 +94,6 @@ export function generatedCompatibilityReport(
     fixedInText: () => "unknown",
     formatTimestamp: String,
     labelJustificationsMarkdown: () => "- none",
-    publicLikelyOwnerRole: String,
     pullHeadShaFromContext: () => "a".repeat(40),
     reviewStructuralPullStateFromContext: () => null,
     sentence: String,

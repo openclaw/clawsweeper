@@ -15,7 +15,6 @@ import type {
   MergeRiskOption,
   OverallCorrectness,
   PrRating,
-  PublicPriority,
   PullRequestReviewReadiness,
   PullRequestReviewState,
   RegressionAssessment,
@@ -90,11 +89,9 @@ export interface CreateReportRenderingDependencies {
   }) => string;
   hasUsableCloseComment: (closeComment: string) => boolean;
   inlineCode: (value: string) => string;
-  isActionablePriorityText: (text: string) => boolean;
   isImplementationCloseReason: (reason: CloseReason) => boolean;
   isMaintainerAuthored: (item: Pick<Item, "authorAssociation">) => boolean;
   isReportNoneList: (value: string) => boolean;
-  isRoutineCiOrReviewText: (text: string) => boolean;
   isVerifiedFixedCloseReason: (reason: unknown) => boolean;
   jsonFrontMatterValue: (value: readonly unknown[]) => string;
   labelJustificationsFromPublicReport: (
@@ -122,7 +119,6 @@ export interface CreateReportRenderingDependencies {
   prSurfaceFilesFromContext: (context: ItemContext) => PrSurfaceFile[] | null;
   publicFailedReviewReadinessBlock: (markdown: string) => string;
   publicHistoricalVerificationBlockerLine: () => string;
-  publicLikelyOwnerRole: (role: string) => string;
   publicMergeReadinessBlock: (
     reviewState: PullRequestReviewState,
     priority: TriagePriority,
@@ -131,9 +127,6 @@ export interface CreateReportRenderingDependencies {
     decisionNeeded: boolean,
     reviewedHeadSha: string,
   ) => string;
-  publicPriorityBulletFromText: (text: string, fallback: PublicPriority) => string;
-  publicPriorityBulletIfActionable: (text: string, fallback: PublicPriority) => string;
-  publicPriorityFromText: (text: string, fallback: PublicPriority) => PublicPriority;
   publicRankScaleLine: () => string;
   publicRealBehaviorProofLine: (policy: RealBehaviorProofPolicy) => string;
   publicReviewScoresBlock: (
@@ -144,7 +137,7 @@ export interface CreateReportRenderingDependencies {
   ) => string;
   publicReviewTextDiffers: (left: string, right: string) => boolean;
   publicReviewTextIsSame: (left: string, right: string) => boolean;
-  publicRiskBulletsFromText: (text: string, fallback: PublicPriority) => string;
+  publicRiskBullets: (text: string) => string;
   publicSecurityReviewLine: (review: SecurityReview) => string;
   pullHeadShaFromContext: (context: ItemContext) => string | null;
   pullHeadShaFromReport: (markdown: string) => string | null;
@@ -163,6 +156,7 @@ export interface CreateReportRenderingDependencies {
   reportRealBehaviorProofPolicy: (markdown: string) => RealBehaviorProofPolicy;
   reportReviewFindings: (markdown: string) => ReviewFinding[];
   reportRootCauseCluster: (markdown: string) => RootCauseClusterAssessment;
+  reportRiskEntries: (text: string) => string[];
   reportSecurityReview: (markdown: string) => SecurityReview;
   reviewAutomationMarkersFromReport: (
     markdown: string,
@@ -210,7 +204,7 @@ export interface CreateReportRenderingDependencies {
   sentence: (value: string) => string;
   sha256: (text: string) => string;
   shouldRenderWorkPlanFromReport: (markdown: string) => boolean;
-  stripPriorityPrefix: (text: string) => string;
+  stripListMarker: (text: string) => string;
   targetRepo: () => string;
   timestampMs: (iso: string | undefined) => number | null;
   triagePriorityFromReport: (markdown: string) => TriagePriority;

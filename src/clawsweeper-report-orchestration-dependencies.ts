@@ -26,7 +26,6 @@ import type {
   PrRating,
   PrStatusLabelKind,
   PublicBeforeMergeItem,
-  PublicPriority,
   PullRequestReviewState,
   RegressionAssessment,
   PullRequestLiveActivity,
@@ -110,7 +109,6 @@ export interface CreateReportOrchestrationDependencies {
   GitHubRuntimeBudgetError: new (reason: string) => Error & { readonly reason: string };
   hasUsableCloseComment: (closeComment: string) => boolean;
   impactLabelsFromReport: (markdown: string) => ImpactLabelName[];
-  isActionablePriorityText: (text: string) => boolean;
   isAfterReview: (value: unknown, reviewedAtMs: number | null) => boolean;
   isAutomationReportAuthor: (author: string | undefined) => boolean;
   isBulkFilerExemptAuthorAssociation: (value: unknown) => boolean;
@@ -125,7 +123,6 @@ export interface CreateReportOrchestrationDependencies {
   isMaintainerAuthored: (item: Pick<Item, "authorAssociation">) => boolean;
   isOlderThanDays: (isoTimestamp: string, days: number, now?: number) => boolean;
   isReportNoneList: (value: string) => boolean;
-  isRoutineCiOrReviewText: (text: string) => boolean;
   issueAdvisoryLabelStateFromReport: (
     markdown: string,
     options?: {
@@ -287,7 +284,6 @@ export interface CreateReportOrchestrationDependencies {
   prStatusLabelKindFromReportLabels: (markdown: string) => PrStatusLabelKind | null;
   publicFailedReviewReadinessBlock: (markdown: string) => string;
   publicHistoricalVerificationBlockerLine: () => string;
-  publicLikelyOwnerRole: (role: string) => string;
   publicMergeReadinessBlock: (
     reviewState: PullRequestReviewState,
     priority: TriagePriority,
@@ -296,9 +292,6 @@ export interface CreateReportOrchestrationDependencies {
     decisionNeeded: boolean,
     reviewedHeadSha: string,
   ) => string;
-  publicPriorityBulletFromText: (text: string, fallback: PublicPriority) => string;
-  publicPriorityBulletIfActionable: (text: string, fallback: PublicPriority) => string;
-  publicPriorityFromText: (text: string, fallback: PublicPriority) => PublicPriority;
   publicRankScaleLine: () => string;
   publicRealBehaviorProofLine: (policy: RealBehaviorProofPolicy) => string;
   publicReviewScoresBlock: (
@@ -309,7 +302,7 @@ export interface CreateReportOrchestrationDependencies {
   ) => string;
   publicReviewTextDiffers: (left: string, right: string) => boolean;
   publicReviewTextIsSame: (left: string, right: string) => boolean;
-  publicRiskBulletsFromText: (text: string, fallback: PublicPriority) => string;
+  publicRiskBullets: (text: string) => string;
   publicSecurityReviewLine: (review: SecurityReview) => string;
   publicTableCell: (value: string) => string;
   pullHeadShaFromContext: (context: ItemContext) => string | null;
@@ -339,6 +332,7 @@ export interface CreateReportOrchestrationDependencies {
   reportRealBehaviorProofPolicy: (markdown: string) => RealBehaviorProofPolicy;
   reportReviewFindings: (markdown: string) => ReviewFinding[];
   reportRootCauseCluster: (markdown: string) => RootCauseClusterAssessment;
+  reportRiskEntries: (text: string) => string[];
   reportSecurityReview: (markdown: string) => SecurityReview;
   reportTelegramVisibleProof: (markdown: string) => TelegramVisibleProof;
   reportVisionFit: (markdown: string) => {
@@ -403,7 +397,7 @@ export interface CreateReportOrchestrationDependencies {
     overallCorrectness: OverallCorrectness;
   }) => boolean;
   stringOrUndefined: (value: unknown) => string | undefined;
-  stripPriorityPrefix: (text: string) => string;
+  stripListMarker: (text: string) => string;
   targetProfile: () => RepositoryProfile;
   targetRepo: () => string;
   timeoutWithinRuntimeBudget: (

@@ -9,7 +9,6 @@ import type {
   PrRating,
   PrRatingTier,
   PrStatusLabelKind,
-  PublicPriority,
   PullRequestReviewState,
   ReviewFinding,
   SecurityConcern,
@@ -165,17 +164,6 @@ export function createReviewPresentation({
     return `- ${prefix}${detail}${evidenceLocation(evidence)}`;
   }
 
-  function publicLikelyOwnerRole(role: string): string {
-    return role
-      .trim()
-      .replace(/\brecent workflow maintainers\b/gi, "recent workflow contributors")
-      .replace(/\brecent workflow maintainer\b/gi, "recent workflow contributor")
-      .replace(/\brecent adjacent maintainers\b/gi, "recent adjacent contributors")
-      .replace(/\brecent adjacent maintainer\b/gi, "recent adjacent contributor")
-      .replace(/\brecent maintainers\b/gi, "recent area contributors")
-      .replace(/\brecent maintainer\b/gi, "recent area contributor");
-  }
-
   // Publish only people tied to a verified commit. An unverified routing candidate is not a fact.
   function likelyOwnerLines(owners: readonly LikelyOwner[]): string[] {
     return owners
@@ -186,7 +174,7 @@ export function createReviewPresentation({
       )
       .slice(0, 5)
       .map((owner) => {
-        const role = publicLikelyOwnerRole(owner.role);
+        const role = owner.role.trim();
         const reason = sentence(owner.reason.trim() || "Related by repository history.");
         const commits = owner.commits
           .map((commit) => commit.trim())
@@ -213,118 +201,16 @@ export function createReviewPresentation({
     return `P${priority}`;
   }
 
-  function publicPriorityFromText(text: string, fallback: PublicPriority): PublicPriority {
-    if (/\b(?:outage|data loss|security exposure|release blocker|widespread)\b/i.test(text)) {
-      return "P0";
-    }
-    if (
-      /\b(?:major regression|blocked workflow|compatibility(?:\s+|-)?break|fail(?:\s+|-)?closed|lifecycle break)\b/i.test(
-        text,
-      )
-    ) {
-      return "P1";
-    }
-    if (/\b(?:localized|non-blocking|nonblocking|recoverable|fallback|timeout)\b/i.test(text)) {
-      return "P2";
-    }
-    return fallback;
-  }
-
-  function stripPriorityPrefix(text: string): string {
+  function stripListMarker(text: string): string {
     return text
       .trim()
       .replace(/^[-*]\s+/, "")
-      .replace(/^(?:\*\*)?\[P[0-2]\](?:\*\*)?\s*/i, "")
       .trim();
   }
 
-  function publicPriorityBullet(priority: PublicPriority, text: string): string {
-    return `- [${priority}] ${stripPriorityPrefix(sentence(text))}`;
-  }
-
-  function publicPriorityBulletFromText(text: string, fallback: PublicPriority): string {
-    return publicPriorityBullet(publicPriorityFromText(text, fallback), text);
-  }
-
-  function publicPlainBullet(text: string): string {
-    return `- ${stripPriorityPrefix(sentence(text))}`;
-  }
-
-  function isActionablePriorityText(text: string): boolean {
-    const body = stripPriorityPrefix(text);
-    if (!body || isReportNoneList(body)) return false;
-    if (isRoutineCiOrReviewText(body)) {
-      return false;
-    }
-    return /\b(?:add|block|blocked|break|fail(?:\s+|-)?closed|fix|implement|missing|must|need(?:s|ed)?|prove|reject|repair|required|validate|before merge)\b/i.test(
-      body,
-    );
-  }
-
-  function isRoutineCiOrReviewText(text: string): boolean {
-    const body = stripPriorityPrefix(text);
-    const mentionsCheckState =
-      /\b(?:ci|status|required(?: status)?)(?:\/status)? checks?(?:(?:\s+(?:are|were|is|was|remain|remains))?\s+(?:green|passing|pass(?:es|ed|ing)?)|\s+(?:have|has)\s+passed|\s+to\s+pass)\b/i.test(
-        body,
-      );
-    const hasCheckStateContrast = /\b(?:although|but|despite|even though|even when|while)\b/i.test(
-      body,
-    );
-    const checkContrastRemainder = body
-      .replace(
-        /\b(?:ci|status|required(?: status)?)(?:\/status)? checks?(?:(?:\s+(?:are|were|is|was|remain|remains))?\s+(?:green|passing|pass(?:es|ed|ing)?)|\s+(?:have|has)\s+passed|\s+to\s+pass)?\b/gi,
-        "",
-      )
-      .replace(/\b(?:no|without) (?:any )?(?:test )?failures?\b/gi, "")
-      .replace(
-        /\b(?:maintainer review is still required|required approvals? (?:are )?complete)\b/gi,
-        "",
-      );
-    const hasSeparateContrastBlocker =
-      /\b(?:add|before merge|block(?:s|ed|ing)?|blocker|break(?:s|ing)?|broken|cover(?:s|ed|ing)?|coverage|crash(?:es|ed|ing)?|data loss|exposure|fail(?:s|ed|ing)?|fix|gap|implement|low|missing|must|need(?:s|ed)?|quality|required|risk|security|test-gap|unsafe|untested|validate|vulnerab(?:le|ility))\b/i.test(
-        checkContrastRemainder,
-      );
-    const isRoutineReviewOrApprovalGate =
-      !hasSeparateContrastBlocker &&
-      /\b(?:maintainer review is still required|required approvals? (?:are )?complete)\b/i.test(
-        body,
-      );
-    if (
-      mentionsCheckState &&
-      (/\b(?:break(?:s|ing)?|broken|bypass(?:es|ed|ing)?|incorrect(?:ly)?|unsafe)\b/i.test(body) ||
-        /\b(?:disabled|did not run|do not run|not run(?:ning)?|skipp(?:ed|ing))\b/i.test(body) ||
-        /\bno\b.*\b(?:test(?:s|ing)?|validat(?:e|ed|es|ing|ion))\b.*\bruns?\b/i.test(body) ||
-        /\bwithout\b(?!\s+(?:any\s+)?(?:test\s+)?failures?\b)/i.test(body) ||
-        /\bwith (?:only )?(?:insufficient|limited|mock(?:ed)?|stub(?:bed)?|weak)\b.*\b(?:coverage|test(?:s|ing)?|validat(?:e|ed|es|ing|ion))\b/i.test(
-          body,
-        ) ||
-        /\bwith no\b.*\b(?:coverage|test(?:s|ing)?|validat(?:e|ed|es|ing|ion))\b/i.test(body) ||
-        /\bbecause\b.*\b(?:mock(?:ed|-only)?|stub(?:bed)?|test(?:s|ing)?|validat(?:e|ed|es|ing|ion))\b/i.test(
-          body,
-        ) ||
-        hasSeparateContrastBlocker ||
-        (hasCheckStateContrast &&
-          !isRoutineReviewOrApprovalGate &&
-          (!/\b(?:no|without) (?:any )?(?:test )?failures?\b/i.test(body) ||
-            hasSeparateContrastBlocker)))
-    ) {
-      return false;
-    }
-    if (mentionsCheckState && isRoutineReviewOrApprovalGate) {
-      return true;
-    }
-    return /\b(?:no automated repair|no clawsweeper repair|normal maintainer review|maintainer review and ci|ready for maintainer review|flaky ci|red ci|unrelated (?:ci|status checks?)|(?:ci|status|required(?: status)?)(?:\/status)? checks?(?:(?=\s*(?:and (?:maintainer review|required approvals?)|[.!?;,)]|$))| (?:(?:are|were|is|was|remain|remains) (?:green|passing|pass|red|failing|pending|missing|flaky|unrelated)|pass(?:es|ed)?|(?:have|has) passed|to pass)))\b/i.test(
-      body,
-    );
-  }
-
-  function publicPriorityBulletIfActionable(text: string, fallback: PublicPriority): string {
-    return isActionablePriorityText(text)
-      ? publicPriorityBulletFromText(text, fallback)
-      : publicPlainBullet(text);
-  }
-
-  function publicRiskBulletsFromText(text: string, fallback: PublicPriority): string {
+  // The report stores each `risks` entry as one list item; a long entry can wrap
+  // onto more lines. This returns one string for each entry.
+  function reportRiskEntries(text: string): string[] {
     const entries: string[] = [];
     let current: string[] = [];
     const flush = () => {
@@ -340,18 +226,18 @@ export function createReviewPresentation({
       }
       if (/^[-*]\s+/.test(line)) {
         flush();
-        current.push(stripPriorityPrefix(line));
+        current.push(stripListMarker(line));
         continue;
       }
       current.push(line);
     }
     flush();
-    return entries
-      .map((entry) =>
-        isRoutineCiOrReviewText(entry)
-          ? publicPlainBullet(entry)
-          : publicPriorityBulletFromText(entry, fallback),
-      )
+    return entries.filter((entry) => !isReportNoneList(entry) && !/^none[.!]?$/i.test(entry));
+  }
+
+  function publicRiskBullets(text: string): string {
+    return reportRiskEntries(text)
+      .map((entry) => `- ${sentence(entry)}`)
       .join("\n");
   }
 
@@ -609,27 +495,22 @@ export function createReviewPresentation({
   return {
     closeEvidenceLine,
     confidenceText,
-    isActionablePriorityText,
     isReportNoneList,
-    isRoutineCiOrReviewText,
     likelyOwnerLines,
     normalizePublicReviewText,
     prStatusLabelKindFromReportLabels,
     priorityLabel,
     publicFailedReviewReadinessBlock,
     publicHistoricalVerificationBlockerLine,
-    publicLikelyOwnerRole,
     publicMergeReadinessBlock,
-    publicPriorityBulletFromText,
-    publicPriorityBulletIfActionable,
-    publicPriorityFromText,
     publicRankScaleLine,
     publicRealBehaviorProofLine,
     publicReviewScoresBlock,
     publicReviewTextDiffers,
     publicReviewTextIsSame,
-    publicRiskBulletsFromText,
+    publicRiskBullets,
     publicSecurityReviewLine,
+    reportRiskEntries,
     reviewFindingDetailedLine,
     reviewFindingLocation,
     reviewFindingSummaryLine,
@@ -637,6 +518,6 @@ export function createReviewPresentation({
     securityConcernSummaryLine,
     securityReviewLine,
     sentence,
-    stripPriorityPrefix,
+    stripListMarker,
   };
 }

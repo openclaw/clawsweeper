@@ -1344,8 +1344,6 @@ export interface FileModeSnapshot {
   mode: number;
 }
 
-export type PublicPriority = "P0" | "P1" | "P2";
-
 export interface IssueAdvisoryLabelState {
   type: string | undefined;
   itemCategory: string | undefined;

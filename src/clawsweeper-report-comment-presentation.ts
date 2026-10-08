@@ -1,6 +1,5 @@
 import type {
   CloseReason,
-  ItemKind,
   ProductFixScope,
   ProductReview,
   ProductReviewKind,
@@ -96,13 +95,11 @@ export function createReportCommentPresentation(
     publicFailedReviewReadinessBlock,
     publicMergeReadinessBlock,
     publicMergeRiskLine,
-    publicPriorityBulletFromText,
-    publicPriorityBulletIfActionable,
     publicRankScaleLine,
     publicReviewScoresBlock,
     publicReviewTextDiffers,
     publicReviewTextIsSame,
-    publicRiskBulletsFromText,
+    publicRiskBullets,
     publicRootCauseClusterBlock,
     publicSecurityReviewLine,
     publicSummaryBody,
@@ -137,11 +134,10 @@ export function createReportCommentPresentation(
     reviewWorkflowCallout,
     reviewWorkflowSummaryLine,
     sanitizeArchitectureDiagram,
-    sanitizePublicSelfReferences,
     securityConcernDetailedLine,
     securityConcernSummaryLine,
     sentence,
-    stripPriorityPrefix,
+    stripListMarker,
     triagePriorityFromReport,
   } = dependencies;
 
@@ -297,9 +293,7 @@ export function createReportCommentPresentation(
     const reviewFailed = frontMatterValue(markdown, "review_status") === "failed";
     const validation = frontMatterStringArray(markdown, "work_validation")
       .slice(0, 5)
-      .map((step) =>
-        isPullRequest ? publicPriorityBulletFromText(step, "P1") : `- ${stripPriorityPrefix(step)}`,
-      );
+      .map((step) => `- ${stripListMarker(step)}`);
     const isRepairLoopPass = isPullRequest && Boolean(repairLoopPassModeFromReport(markdown));
     const hasRealBehaviorProofBlocker =
       isPullRequest && !reviewFailed && proofPolicy.proofBlocksMerge;
@@ -324,11 +318,6 @@ export function createReportCommentPresentation(
     const nextStepLine = sentence(
       workReason || bestSolution || (isPullRequest ? "" : fallbackNextStep),
     );
-    const publicNextStepLine = isPullRequest
-      ? hasRealBehaviorProofBlocker
-        ? publicPriorityBulletFromText(nextStepLine, "P1")
-        : publicPriorityBulletIfActionable(nextStepLine, "P2")
-      : nextStepLine;
     const bestSolutionLine = sentence(bestSolution);
     const mergeRiskLine = isPullRequest
       ? publicMergeRiskLine(risks, nextStepLine, bestSolutionLine, mergeRiskOptions)
@@ -451,7 +440,7 @@ export function createReportCommentPresentation(
         ...(reviewDetails.length ? [""] : []),
         "Remaining risk / open question:",
         "",
-        isPullRequest ? publicRiskBulletsFromText(risks, "P2") : risks,
+        isPullRequest ? publicRiskBullets(risks) : risks,
       );
     }
     const reviewLine = closeReviewLineFromReport(markdown);
@@ -521,20 +510,7 @@ export function createReportCommentPresentation(
       }
       if (liveProofRecordingBlock) appendDetails("Live Verification", liveProofRecordingBlock);
       if (reviewDetails.length) appendDetails("Technical review", ...reviewDetails);
-      if (mergeRiskLine) {
-        // Routine risks are not counted as Before-merge work, so keep their text
-        // visible next to the maintainer options even when actionable risks coexist.
-        const riskBullets = !isReportNoneList(risks) ? publicRiskBulletsFromText(risks, "P1") : "";
-        const routineRiskContext = riskBullets
-          .split("\n")
-          .filter((line) => line.startsWith("- ") && !/^- \[P[0-2]\]/.test(line))
-          .join("\n");
-        appendDetails(
-          "Merge-risk options",
-          ...(routineRiskContext ? [routineRiskContext, ""] : []),
-          mergeRiskLine,
-        );
-      }
+      if (mergeRiskLine) appendDetails("Merge-risk options", mergeRiskLine);
       const checkedProvenance = provenance.filter(
         (entry) => entry.verdict === "respects" || entry.verdict === "overrides_with_reason",
       );
@@ -581,7 +557,7 @@ export function createReportCommentPresentation(
       if (decisionPacketBlock) {
         appendPublicSection(lines, "Maintainer decision needed", decisionPacketBlock);
       }
-      appendPublicSection(lines, "Next step", publicNextStepLine);
+      appendPublicSection(lines, "Next step", nextStepLine);
       if (securityReview.status !== "not_applicable" || securityReview.concerns.length > 0) {
         appendPublicSection(lines, "Security", securityLine);
       }
@@ -595,13 +571,7 @@ export function createReportCommentPresentation(
     }
     const freshness = reviewFreshnessText(markdown, revision);
     if (freshness) lines.push("", freshness);
-    const publicBody = neutralizeReviewControlMarkers(
-      sanitizePublicSelfReferences(
-        lines.join("\n"),
-        Number(frontMatterValue(markdown, "number")),
-        (frontMatterValue(markdown, "type") as ItemKind | undefined) ?? "issue",
-      ),
-    );
+    const publicBody = neutralizeReviewControlMarkers(lines.join("\n"));
     if (!reviewHistoryBlock) return publicBody;
     // Issues keep the pre-redesign trailing history block; only PRs moved it into the
     // collapsed details slot.

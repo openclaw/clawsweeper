@@ -1007,7 +1007,6 @@ export const {
   renderWorkPlanFromReport,
   reviewActionForDecision,
   reviewContextLedgerForTest,
-  sanitizePublicSelfReferences,
   syncBulkFilerLabelForTest,
   telegramVisibleProofLabelsForTest,
 } = reportOrchestration;

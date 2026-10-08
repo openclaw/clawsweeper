@@ -354,7 +354,7 @@ ${scenario === "concrete" ? "- **[P1] Invalidate revoked credentials:** `src/cac
     if (scenario === "optional") {
       assert.match(rerendered, /## Before merge\n\nNone\./);
     } else {
-      assert.ok(rerendered.includes(`- [ ] **Resolve merge risk (P1)** - ${risk}`));
+      assert.ok(rerendered.includes(`- [ ] **Resolve merge risk** - ${risk}`));
       if (scenario === "recursive") assert.equal(previous.nextStep, recursiveWarning);
     }
   });

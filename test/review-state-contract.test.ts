@@ -146,17 +146,16 @@ test("structured next-step intent controls readiness independently of advice wor
   }
 });
 
-test("historical reports retain the existing conservative next-step interpretation", () => {
+test("historical reports without a typed next step fail closed instead of reading advice prose", () => {
   const report = reviewReport()
     .replace(/^next_step:.*\n/m, "")
     .replace(
       "Merge after required checks are green.",
       "Fix the durable publication path before merge.",
     );
-  assert.match(
-    assertReadiness(report, "needs-changes"),
-    /Fix the durable publication path before merge/,
-  );
+  const comment = assertReadiness(report, "blocked");
+  assert.match(comment, /Run a fresh ClawSweeper review/);
+  assert.doesNotMatch(comment, /- \[ \] .*Fix the durable publication path/);
 });
 
 test("queued repairs stay actionable without classifying their explanation", () => {
@@ -338,11 +337,26 @@ test("host path classifiers no longer add Before-merge items or warnings", () =>
   // A risk the model reports still blocks.
   assert.match(
     assertReadiness(
-      reviewReport({}, "## Risks / Open Questions\n\n[P1] Existing session rows lose their owner."),
+      reviewReport({}, "## Risks / Open Questions\n\n- Existing session rows lose their owner."),
       "blocked",
     ),
-    /Resolve merge risk \(P1\)\*\* - Existing session rows lose their owner\./,
+    /Resolve merge risk\*\* - Existing session rows lose their owner\./,
   );
+});
+
+test("every rank-up step of a D or F patch rating is required work, whatever its wording", () => {
+  const steps = [
+    "Merge after required checks are green.",
+    "Wait for CI and ordinary maintainer review.",
+  ];
+  const report = reviewReport({ pr_rating_patch: "D", pr_rating_overall: "D" }).replace(
+    "Next rank-up steps:\n\n- none",
+    `Next rank-up steps:\n\n${steps.map((step) => `- ${step}`).join("\n")}`,
+  );
+  const comment = assertReadiness(report, "needs-changes");
+  for (const step of steps) {
+    assert.ok(comment.includes(`- [ ] **Improve patch quality** - ${step}`), step);
+  }
 });
 
 test("host blockers name the real owner and reason", () => {

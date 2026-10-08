@@ -14,7 +14,6 @@ import type {
   MergeRiskOption,
   NextStepAssessment,
   PublicBeforeMergeItem,
-  PublicPriority,
   PullRequestReviewReadiness,
   RegressionAssessment,
   ReviewFinding,
@@ -63,20 +62,17 @@ export function createReportCommentHelpers(
     formatReviewFreshnessTimestamp,
     frontMatterStringArray,
     frontMatterValue,
-    isActionablePriorityText,
     isReportNoneList,
-    isRoutineCiOrReviewText,
     likelyOwnerLines,
     markdownLink,
     markdownRepository,
     normalizePublicReviewText,
     priorityLabel,
     publicHistoricalVerificationBlockerLine,
-    publicPriorityFromText,
     publicRealBehaviorProofLine,
     publicReviewTextDiffers,
     publicReviewTextIsSame,
-    publicRiskBulletsFromText,
+    reportRiskEntries,
     pullHeadShaFromReport,
     reportAgentsPolicyStatus,
     reportEvidence,
@@ -92,7 +88,7 @@ export function createReportCommentHelpers(
     securityConcernDetailedLine,
     securityReviewLine,
     sentence,
-    stripPriorityPrefix,
+    stripListMarker,
     timestampMs,
     workCandidateReasonText,
   } = dependencies;
@@ -195,57 +191,28 @@ export function createReportCommentHelpers(
         : "";
     }
     return neutralizeReviewControlMarkers(
-      sanitizePublicSelfReferences(
-        renderCloseComment({
-          reason,
-          summary: reviewSectionValue(markdown, "summary"),
-          bestSolution: reviewSectionValue(markdown, "bestSolution"),
-          reproductionAssessment: reviewSectionValue(markdown, "reproductionAssessment"),
-          solutionAssessment: reviewSectionValue(markdown, "solutionAssessment"),
-          agentsPolicyStatus: reportAgentsPolicyStatus(markdown),
-          evidence: reportEvidence(markdown),
-          likelyOwners: reportLikelyOwners(markdown),
-          fixedPullRequest: fixedPullRequestFromReport(markdown),
-          regressionAssessment: dependencies.regressionAssessmentFromReport(markdown),
-          regressionProvenance: dependencies.regressionProvenanceFromReport(markdown),
-          securityReview: reportSecurityReview(markdown),
-          rootCauseCluster: reportRootCauseCluster(markdown),
-          reviewLine: closeReviewLineFromReport(markdown),
-          currentItem: {
-            repo: markdownRepository(markdown),
-            number: Number(frontMatterValue(markdown, "number")),
-            kind: (frontMatterValue(markdown, "type") as ItemKind | undefined) ?? "issue",
-          },
-        }),
-        Number(frontMatterValue(markdown, "number")),
-        (frontMatterValue(markdown, "type") as ItemKind | undefined) ?? "issue",
-      ),
+      renderCloseComment({
+        reason,
+        summary: reviewSectionValue(markdown, "summary"),
+        bestSolution: reviewSectionValue(markdown, "bestSolution"),
+        reproductionAssessment: reviewSectionValue(markdown, "reproductionAssessment"),
+        solutionAssessment: reviewSectionValue(markdown, "solutionAssessment"),
+        agentsPolicyStatus: reportAgentsPolicyStatus(markdown),
+        evidence: reportEvidence(markdown),
+        likelyOwners: reportLikelyOwners(markdown),
+        fixedPullRequest: fixedPullRequestFromReport(markdown),
+        regressionAssessment: dependencies.regressionAssessmentFromReport(markdown),
+        regressionProvenance: dependencies.regressionProvenanceFromReport(markdown),
+        securityReview: reportSecurityReview(markdown),
+        rootCauseCluster: reportRootCauseCluster(markdown),
+        reviewLine: closeReviewLineFromReport(markdown),
+        currentItem: {
+          repo: markdownRepository(markdown),
+          number: Number(frontMatterValue(markdown, "number")),
+          kind: (frontMatterValue(markdown, "type") as ItemKind | undefined) ?? "issue",
+        },
+      }),
     );
-  }
-
-  function sanitizePublicSelfReferences(text: string, number: number, kind: ItemKind): string {
-    if (!Number.isInteger(number) || number <= 0) return text;
-    const noun = kind === "pull_request" ? "this PR" : "this issue";
-    const escapedNumber = String(number).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    const selfRefSource = `#${escapedNumber}\\b`;
-    const typedSelfRef = new RegExp(
-      `\\b(?:Issue|issue|PR|pr|Pull request|pull request)\\s+${selfRefSource}`,
-      "g",
-    );
-    const closingVerbSelfRef = new RegExp(
-      `\\b(Fixes|fixes|Fix|fix|Closes|closes|Resolves|resolves)\\s+${selfRefSource}`,
-      "g",
-    );
-    const selfRef = new RegExp(selfRefSource, "g");
-    return text
-      .replace(closingVerbSelfRef, (_match, verb: string) => `${verb} ${noun}`)
-      .replace(typedSelfRef, noun)
-      .replace(selfRef, noun)
-      .replace(
-        /(^|[.!?]\s+)(this issue|this PR)/g,
-        (_match, prefix: string, value: string) =>
-          `${prefix}${value[0]?.toUpperCase()}${value.slice(1)}`,
-      );
   }
 
   function normalizeComment(
@@ -302,25 +269,6 @@ export function createReportCommentHelpers(
     lines.push(`## ${heading}`, "", body, "");
   }
 
-  function isRoutineBeforeMergeStep(value: string): boolean {
-    const text = value.trim();
-    if (!text) return false;
-    if (
-      !/\b(?:merge after (?:required )?checks are green|merge after maintainer review|normal (?:ci|maintainer review)|routine (?:ci|maintainer review)|ordinary (?:ci|maintainer review)|wait for (?:required |status )?(?:ci|checks|status checks)|no further action)\b/i.test(
-        text,
-      ) &&
-      !/^(?:land|merge|ship|proceed|continue|wait)\b[^\n]{0,120}\bafter (?:normal |ordinary |routine )?maintainer review\b/i.test(
-        text,
-      )
-    ) {
-      return false;
-    }
-    if (/\b(?:do not|don['’]t|must not|never|not merge|except|unless|until)\b/i.test(text)) {
-      return false;
-    }
-    return !isActionablePriorityText(text);
-  }
-
   function publicBeforeMergeItems(options: {
     reviewFailed: boolean;
     proofPolicy: RealBehaviorProofPolicy;
@@ -328,9 +276,7 @@ export function createReportCommentHelpers(
     securityReview: SecurityReview;
     securityRepairAllowed: boolean;
     risks: string;
-    nextStep: string;
     nextStepAssessment: NextStepAssessment | undefined;
-    decisionPending: boolean;
     patchQualityBlocked: boolean;
     requiredRatingSteps: readonly string[];
   }): PublicBeforeMergeItem[] {
@@ -342,8 +288,8 @@ export function createReportCommentHelpers(
       identity?: { distinctKey: string },
       state: PublicBeforeMergeItem["state"] = "needs-changes",
     ) => {
-      const rawDetail = stripPriorityPrefix(detail);
-      const cleanDetail = sentence(stripPriorityPrefix(detail));
+      const rawDetail = stripListMarker(detail);
+      const cleanDetail = sentence(rawDetail);
       // Typed findings pass a distinct key (title and location) so independent
       // findings that share remediation wording are all kept; free-form guidance
       // still de-duplicates on the detail text across sections.
@@ -363,16 +309,6 @@ export function createReportCommentHelpers(
       const item = { label, detail: cleanDetail, state };
       seen.set(key, item);
       items.push(item);
-    };
-    const addPrioritized = (text: string, fallback: PublicPriority, label: string) => {
-      for (const line of publicRiskBulletsFromText(text, fallback).split("\n")) {
-        const match = line.match(/^-[ \t]+\[(P[0-2])\][ \t]+(\S.*)$/);
-        // Unprioritized bullets are the ones classified as routine CI or ordinary
-        // maintainer review; they are not remaining merge work.
-        if (match?.[1] && match[2]) {
-          add(`${label} (${match[1]})`, match[2], undefined, "blocked");
-        }
-      }
     };
 
     if (options.reviewFailed) {
@@ -434,34 +370,31 @@ export function createReportCommentHelpers(
         options.securityRepairAllowed ? "needs-changes" : "blocked",
       );
     }
-    if (!isReportNoneList(options.risks)) addPrioritized(options.risks, "P1", "Resolve merge risk");
-    // Producer intent controls only this item; older reports retain prose inference.
+    // Each `risks` entry is unresolved merge work; the prompt keeps settled points out.
+    for (const risk of reportRiskEntries(options.risks)) {
+      add("Resolve merge risk", risk, undefined, "blocked");
+    }
+    // The model owns next-step intent. A report without a typed next step fails closed.
     if (options.nextStepAssessment?.kind === "required") {
       add(
-        `Complete next step (${publicPriorityFromText(options.nextStepAssessment.text, "P2")})`,
+        "Complete next step",
         typedBlockerDetail(
           options.nextStepAssessment.text,
           "Complete the required follow-up from this review before merge.",
         ),
       );
-    } else if (
-      options.nextStepAssessment === undefined &&
-      !isRoutineBeforeMergeStep(options.nextStep) &&
-      !isRoutineCiOrReviewText(options.nextStep) &&
-      isActionablePriorityText(options.nextStep) &&
-      !(options.decisionPending && /\bdecision\b/i.test(options.nextStep))
-    ) {
+    } else if (!options.reviewFailed && options.nextStepAssessment === undefined) {
       add(
-        `Complete next step (${publicPriorityFromText(options.nextStep, "P2")})`,
-        options.nextStep,
+        "Run a fresh ClawSweeper review",
+        "This review report has no valid next-step record. Run a fresh exact-head review before merge.",
+        undefined,
+        "blocked",
       );
     }
-    // Routine advice never becomes a merge blocker; a step that deduplicates against
-    // an existing item still counts as represented remediation.
+    // A step that deduplicates against an existing item still counts as represented remediation.
     let ratingRemediationRepresented = false;
     for (const step of options.requiredRatingSteps) {
-      if (isRoutineBeforeMergeStep(step) || isRoutineCiOrReviewText(step)) continue;
-      const cleanStep = sentence(stripPriorityPrefix(step));
+      const cleanStep = sentence(stripListMarker(step));
       if (!cleanStep || /^none[.!]?$/i.test(cleanStep) || isReportNoneList(cleanStep)) continue;
       ratingRemediationRepresented = true;
       add("Improve patch quality", step);
@@ -515,11 +448,7 @@ export function createReportCommentHelpers(
         securityReview: reportSecurityReview(markdown),
         securityRepairAllowed: securitySensitiveRepairAllowed(markdown),
         risks: reviewSectionValue(markdown, "risks"),
-        nextStep: sentence(
-          reportWorkCandidateReason(markdown) || reviewSectionValue(markdown, "bestSolution"),
-        ),
         nextStepAssessment: nextStepFromReport(markdown),
-        decisionPending,
         patchQualityBlocked,
         requiredRatingSteps: patchQualityBlocked ? rating.nextSteps : [],
       });
@@ -903,13 +832,11 @@ export function createReportCommentHelpers(
   return {
     renderCloseComment,
     renderCloseCommentFromReport,
-    sanitizePublicSelfReferences,
     normalizeComment,
     reportWorkCandidateReason,
     collapsedDetailsBlock,
     appendPublicSection,
     appendHeadingSection,
-    isRoutineBeforeMergeStep,
     publicBeforeMergeItems,
     pullRequestReviewReadinessFromReport,
     securitySensitiveRepairAllowed,

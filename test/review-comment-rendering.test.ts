@@ -108,7 +108,6 @@ function evidenceReport(
     fixedInText: () => "unknown",
     formatTimestamp: String,
     labelJustificationsMarkdown: () => "- none",
-    publicLikelyOwnerRole: String,
     pullHeadShaFromContext: () => "c".repeat(40),
     reviewStructuralPullStateFromContext: () => null,
     sentence: String,
@@ -143,7 +142,7 @@ function evidenceReport(
 }
 
 function nextStepReport(
-  metadata: Record<string, string> = {},
+  metadata: Record<string, string | undefined> = {},
   sections = "",
   reason = "No concrete repair remains after this review.",
 ) {
@@ -189,44 +188,46 @@ function publicSection(comment: string, title: string): string {
   );
 }
 
-test("explicit next-step none removes the false repair checkbox and updates readiness", () => {
-  const legacy = nextStepReport();
+test("a report without a typed next step fails closed; explicit none is ready", () => {
+  const legacy = nextStepReport({ next_step: undefined });
   const report = nextStepReport({ next_step: JSON.stringify({ kind: "none", text: "" }) });
   const before = renderReviewCommentFromReport(legacy, "none");
   const after = renderReviewCommentFromReport(report, "none");
-  assert.match(before, /Complete next step.*No concrete repair remains after this review\./);
+  assert.match(
+    publicSection(before, "Before merge"),
+    /^- \[ \] \*\*Run a fresh ClawSweeper review\*\* - This review report has no valid next-step record\./,
+  );
+  assert.doesNotMatch(before, /Complete next step|No concrete repair remains/);
   assert.match(before, /1 item remains/);
+  assert.match(reviewAutomationMarkersFromReport(legacy), /clawsweeper-review-state:blocked/);
   assert.equal(publicSection(after, "Before merge"), "None.");
-  assert.doesNotMatch(after, /Complete next step|1 item remains/);
+  assert.doesNotMatch(after, /Run a fresh ClawSweeper review|1 item remains/);
   assert.equal(publicSection(after, "Review scores"), publicSection(before, "Review scores"));
   assert.match(reviewAutomationMarkersFromReport(report), /clawsweeper-review-state:ready/);
-  assert.match(reviewAutomationMarkersFromReport(legacy), /clawsweeper-review-state:needs-changes/);
   for (const comment of [before, after]) {
-    assert.match(comment, /clawsweeper-verdict:needs-human/);
     assert.doesNotMatch(comment, /clawsweeper-verdict:pass/);
   }
 });
 
-test("explicit required actions bypass prose heuristics even for human-owned workCandidate none", () => {
+test("a required next step is one Before-merge item without a priority, whatever its wording", () => {
   for (const text of [
     "No schema change is needed, but repair the retry guard before merge.",
     "Do not merge until the owner approves the compatibility contract.",
     "Owner approval.",
     "Wait for CI and ordinary maintainer review.",
     "A decision on ownership is still outstanding.",
+    "A data loss outage is possible.",
   ]) {
     const report = nextStepReport({ next_step: JSON.stringify({ kind: "required", text }) });
     const comment = renderReviewCommentFromReport(report, "none");
-    assert.ok(publicSection(comment, "Before merge").includes(text), text);
-    assert.equal(
-      (publicSection(comment, "Before merge").match(/^- \[ \]/gm) ?? []).length,
-      1,
-      text,
-    );
+    const beforeMerge = publicSection(comment, "Before merge");
+    assert.ok(beforeMerge.includes(`- [ ] **Complete next step** - ${text}`), text);
+    assert.equal((beforeMerge.match(/^- \[ \]/gm) ?? []).length, 1, text);
     assert.match(comment, /1 item remains/);
-    assert.equal(
+    assert.match(
       reviewAutomationMarkersFromReport(report),
-      reviewAutomationMarkersFromReport(nextStepReport()),
+      /clawsweeper-review-state:needs-changes/,
+      text,
     );
   }
 });
@@ -242,8 +243,13 @@ test("canonical next-step report round-trip preserves explicit intent and legacy
     if (nextStep === undefined) assert.doesNotMatch(report, /^next_step:/m);
     else assert.ok(report.split("\n---")[0]!.includes(`next_step: ${JSON.stringify(nextStep)}`));
     const comment = renderReviewCommentFromReport(report, "none");
+    if (nextStep === undefined)
+      assert.match(publicSection(comment, "Before merge"), /Run a fresh ClawSweeper review/);
     if (nextStep?.kind === "none")
-      assert.doesNotMatch(publicSection(comment, "Before merge"), /Complete next step/);
+      assert.doesNotMatch(
+        publicSection(comment, "Before merge"),
+        /Complete next step|Run a fresh ClawSweeper review/,
+      );
     if (nextStep?.kind === "required")
       assert.match(publicSection(comment, "Before merge"), /Owner approval\./);
   }
@@ -334,9 +340,13 @@ test("accepted labeled risk survives decision and report parsing without reopeni
   assert.doesNotMatch(independent, /clawsweeper-review-state:ready/);
 });
 
-test("absent, malformed, duplicate and spoofed next-step metadata cannot suppress legacy action", () => {
+test("absent, malformed, duplicate and spoofed next-step metadata fail closed", () => {
   const none = 'next_step: {"kind":"none","text":""}';
-  const legacy = nextStepReport({}, "", "Repair the retry guard before merge.");
+  const legacy = nextStepReport(
+    { next_step: undefined },
+    "",
+    "Repair the retry guard before merge.",
+  );
   const reports = [
     legacy,
     ...[
@@ -364,12 +374,11 @@ test("absent, malformed, duplicate and spoofed next-step metadata cannot suppres
   for (const report of reports) {
     assert.equal(nextStepFromReport(report), undefined, report);
     const comment = renderReviewCommentFromReport(report, "none");
-    assert.match(
-      publicSection(comment, "Before merge"),
-      /Repair the retry guard before merge\./,
-      report.split("\n---")[0],
-    );
+    const beforeMerge = publicSection(comment, "Before merge");
+    assert.match(beforeMerge, /Run a fresh ClawSweeper review/, report.split("\n---")[0]);
+    assert.doesNotMatch(beforeMerge, /Repair the retry guard/, report.split("\n---")[0]);
     assert.match(comment, /1 item remains/);
+    assert.match(reviewAutomationMarkersFromReport(report), /clawsweeper-review-state:blocked/);
   }
   for (const ambiguous of [
     legacy.replace("---\n", `---\n${none}\n${none}\n`),
@@ -425,7 +434,7 @@ test("explicit none leaves independent blockers, decision counts and low ratings
       label: "Resolve security concern",
     },
     {
-      sections: "## Risks / Open Questions\n\n- [P1] Repair the compatibility break before merge.",
+      sections: "## Risks / Open Questions\n\n- Repair the compatibility break before merge.",
       label: "Resolve merge risk",
     },
     {
@@ -449,28 +458,15 @@ test("explicit none leaves independent blockers, decision counts and low ratings
     { metadata: { review_status: "failed" }, label: "Retry ClawSweeper review", count: 0 },
   ];
   for (const scenario of cases) {
-    const legacy = nextStepReport(scenario.metadata, scenario.sections, "None.");
-    const report = legacy.replace("---\n", '---\nnext_step: {"kind":"none","text":""}\n');
-    const before = renderReviewCommentFromReport(legacy, "none");
-    const after = renderReviewCommentFromReport(report, "none");
-    assert.ok(after.includes(scenario.label), scenario.label);
-    assert.doesNotMatch(publicSection(after, "Before merge"), /Complete next step/);
-    if (scenario.count !== 0) assert.match(after, /1 item remains/, scenario.label);
-    assert.equal(
-      publicSection(after, "Before merge"),
-      publicSection(before, "Before merge"),
-      scenario.label,
+    const report = nextStepReport(scenario.metadata, scenario.sections, "None.");
+    assert.match(report, /^next_step: \{"kind":"none","text":""\}$/m);
+    const comment = renderReviewCommentFromReport(report, "none");
+    assert.ok(comment.includes(scenario.label), scenario.label);
+    assert.doesNotMatch(
+      publicSection(comment, "Before merge"),
+      /Complete next step|Run a fresh ClawSweeper review/,
     );
-    assert.equal(
-      publicSection(after, "Review scores"),
-      publicSection(before, "Review scores"),
-      scenario.label,
-    );
-    assert.equal(
-      reviewAutomationMarkersFromReport(report),
-      reviewAutomationMarkersFromReport(legacy),
-      scenario.label,
-    );
+    if (scenario.count !== 0) assert.match(comment, /1 item remains/, scenario.label);
   }
   const withDecision = nextStepReport({
     maintainer_decision: JSON.stringify(decision),
@@ -2393,39 +2389,6 @@ Full review comments:
   assert.doesNotMatch(comment, /No ClawSweeper repair lane is needed/);
   assert.doesNotMatch(comment, /\[P2\] none/);
   assert.doesNotMatch(comment, /\[P2\] No ClawSweeper repair lane is needed/);
-});
-
-test("pull request next-step priority prefixes classify fail-closed work as P1", () => {
-  const comment = renderReviewCommentFromReport(
-    `${reportFrontMatter({
-      type: "pull_request",
-      number: "74268",
-      decision: "keep_open",
-      close_reason: "none",
-      work_candidate: "none",
-      pull_head_sha: "abc123def456abc123def456abc123def456abcd",
-    })}
-
-## Summary
-
-Keep this compatibility PR open for maintainer review.
-
-## What This Changes
-
-Changes relay restart handling.
-
-## Best Possible Solution
-
-Prove the fail-closed compatibility break is handled before merge.
-`,
-    "none",
-  );
-
-  assert.match(
-    comment,
-    /- \[ \] \*\*Complete next step \(P1\)\*\* - Prove the fail-closed compatibility break is handled before merge\./,
-  );
-  assert.doesNotMatch(comment, /\*\*\[P1\]\*\*/);
 });
 
 test("pull request automerge review comments can emit pass verdicts", () => {

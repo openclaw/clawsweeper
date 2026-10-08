@@ -160,7 +160,6 @@ test("renderer-produced reports preserve nested statistics and authoritative met
     labelJustificationsMarkdown: () => "- none",
     linkedSha: String,
     markdownLink: (label, url) => `[${label}](${url})`,
-    publicLikelyOwnerRole: String,
     pullHeadShaFromContext: () => null,
     reviewStructuralPullStateFromContext: () => null,
     sentence: String,
@@ -2138,7 +2137,6 @@ function renderedPullRequestReport(
     linkedSha: String,
     markdownLink: (label, url) => `[${label}](${url})`,
     priorityLabel: (priority: number) => `P${priority}`,
-    publicLikelyOwnerRole: String,
     pullHeadShaFromContext: () => null,
     reviewFindingLocation: (finding: { file: string; lineStart: number; lineEnd: number }) =>
       `${finding.file}:${

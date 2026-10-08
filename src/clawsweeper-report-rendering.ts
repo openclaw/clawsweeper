@@ -39,7 +39,6 @@ export function createReportRendering(dependencies: CreateReportRenderingDepende
     reviewActionForDecision: tools.reviewActionForDecision,
     reviewContextLedgerForTest: tools.reviewContextLedgerForTest,
     reviewHistoryForStaleComment: tools.reviewHistoryForStaleComment,
-    sanitizePublicSelfReferences: tools.sanitizePublicSelfReferences,
     securitySensitiveRepairAllowed: tools.securitySensitiveRepairAllowed,
     syncWorkPlanFromReport: tools.syncWorkPlanFromReport,
     updateReviewStructuralFrontMatter: tools.updateReviewStructuralFrontMatter,

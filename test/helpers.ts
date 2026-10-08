@@ -298,8 +298,13 @@ export function reportFrontMatter(overrides = {}) {
   if (values.type === "pull_request" && !Object.hasOwn(values, "reviewed_at")) {
     Object.assign(values, { reviewed_at: "2026-05-01T00:00:00Z" });
   }
+  // Current reports always carry a typed next step. Pass `next_step: undefined` for a legacy report.
+  if (values.type === "pull_request" && !Object.hasOwn(values, "next_step")) {
+    Object.assign(values, { next_step: JSON.stringify({ kind: "none", text: "" }) });
+  }
   return `---
 ${Object.entries(values)
+  .filter(([, value]) => value !== undefined)
   .map(([key, value]) => `${key}: ${value}`)
   .join("\n")}
 ---

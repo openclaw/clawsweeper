@@ -20,7 +20,6 @@ import {
   referencingMergedPullRequestsForIssueForTest,
   reviewActionForDecision,
   sameAuthorCounterpartApplyReason,
-  sanitizePublicSelfReferences,
   stalledUnprovenPrAgeSkipReason,
   stalledUnprovenProofRequestBlockReason,
   staleVersionBugAgeSkipReason,
@@ -1337,19 +1336,6 @@ test("close reason labels keep incoherent distinct from not actionable in repo",
   assert.match(rows, /too unclear to act on/);
   assert.match(rows, /not actionable in this repository/);
   assert.doesNotMatch(rows, /\|\s*not actionable\s*\|/);
-});
-
-test("public comments avoid self-referencing the current item number", () => {
-  const comment = sanitizePublicSelfReferences(
-    "Issue #69400 is tracked by PR #69425, which says Fixes #69400. Close #69400 later.",
-    69400,
-    "issue",
-  );
-
-  assert.equal(
-    comment,
-    "This issue is tracked by PR #69425, which says Fixes this issue. Close this issue later.",
-  );
 });
 
 function stalledUnprovenDecision(overrides = {}) {

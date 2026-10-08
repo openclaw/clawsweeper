@@ -82,7 +82,6 @@ export function createReportDocumentRendering(
     markdownLink,
     prSurfaceFilesFromContext,
     priorityLabel,
-    publicLikelyOwnerRole,
     pullHeadShaFromContext,
     renderReviewContextBudget,
     replaceFrontMatterValue,
@@ -548,7 +547,7 @@ export function createReportDocumentRendering(
       ? options.decision.likelyOwners
           .map(publicLikelyOwner)
           .map((owner) => {
-            const bits = [`- **${owner.person}:** ${publicLikelyOwnerRole(owner.role)}`];
+            const bits = [`- **${owner.person}:** ${owner.role.trim()}`];
             if (owner.attributionSource)
               bits.push(`  - attribution source: ${owner.attributionSource}`);
             bits.push(`  - reason: ${owner.reason}`);
