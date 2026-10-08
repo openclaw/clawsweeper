@@ -46,11 +46,19 @@ type GitHubCommandOptions = {
 interface CreateGitHubRuntimeDependencies {
   ROOT: string;
   run: (command: string, args: string[], options?: GitHubCommandOptions) => string;
-  /** `run` for independent commands, at most `concurrency` at once; one result each. */
+  /**
+   * `run` for independent commands, at most `concurrency` at once. A command
+   * gets the time left before its `deadlineAt` when it starts; one whose
+   * deadline passes while it waits for a slot is `expired` and never starts.
+   */
   runConcurrently: (
-    commands: ReadonlyArray<{ command: string; args: string[]; options: GitHubCommandOptions }>,
+    commands: ReadonlyArray<{
+      command: string;
+      args: string[];
+      options: { env?: NodeJS.ProcessEnv; deadlineAt?: number | undefined };
+    }>,
     concurrency: number,
-  ) => GitHubFirstAttempt[];
+  ) => Array<GitHubFirstAttempt | { expired: true }>;
   targetRepo: () => string;
 }
 
@@ -838,8 +846,10 @@ export function createGitHubRuntime(dependencies: CreateGitHubRuntimeDependencie
 
   /**
    * The first attempt `gh(args)` would make for each request, with the
-   * commands running concurrently. Preparation, circuit checks, timeouts and
-   * request metrics are `gh`'s; retries stay with the caller. `null` leaves a
+   * commands running concurrently. Preparation, circuit checks and request
+   * metrics are `gh`'s; the runtime budget is one absolute deadline, so a
+   * command still queued when it runs out fails with the budget error `gh`
+   * gives before dispatch. Retries stay with the caller. `null` leaves a
    * request to `gh` itself (conditional ETag reads in the publication lane).
    */
   function ghFirstAttemptsConcurrently(
@@ -850,7 +860,7 @@ export function createGitHubRuntime(dependencies: CreateGitHubRuntimeDependencie
       index: number;
       args: string[];
       scope: GitHubCredentialScope;
-      options: GitHubCommandOptions;
+      options: { env?: NodeJS.ProcessEnv; deadlineAt?: number | undefined };
     }> = [];
     for (const [index, args] of requests.entries()) {
       try {
@@ -880,7 +890,10 @@ export function createGitHubRuntime(dependencies: CreateGitHubRuntimeDependencie
             index,
             args: resolvedArgs,
             scope,
-            options: { timeoutMs, ...(preparedEnv ? { env: preparedEnv } : {}) },
+            options: {
+              ...(timeoutMs === undefined ? {} : { deadlineAt: Date.now() + timeoutMs }),
+              ...(preparedEnv ? { env: preparedEnv } : {}),
+            },
           });
         }
         attempts.push(null);
@@ -895,6 +908,10 @@ export function createGitHubRuntime(dependencies: CreateGitHubRuntimeDependencie
     );
     for (const [position, { index, args, scope }] of dispatched.entries()) {
       const result = results[position]!;
+      if ("expired" in result) {
+        attempts[index] = { error: githubRuntimeBudgetError("before GitHub operation") };
+        continue;
+      }
       if ("error" in result) {
         const retryKind = ghRetryKind(result.error);
         if (retryKind !== "throttle") {

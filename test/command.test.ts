@@ -142,22 +142,23 @@ test("runTextConcurrently runs commands together and reports each result as runT
   const failing = ["-e", "process.stderr.write('HTTP 404: Not Found'); process.exit(1)"];
   const slow = ["-e", "setTimeout(() => {}, 10_000)"];
   try {
+    const startedAt = Date.now();
     const results = runTextConcurrently(
       [
         ...["a", "b", "c"].map((name) => ({
           command: process.execPath,
           args: rendezvous(name),
-          options: { timeoutMs: 10_000 },
+          options: { deadlineAt: startedAt + 10_000 },
         })),
         { command: process.execPath, args: failing },
-        { command: process.execPath, args: slow, options: { timeoutMs: 50 } },
+        { command: process.execPath, args: slow, options: { deadlineAt: startedAt + 500 } },
         {
           command: "clawsweeper-missing-command-for-test",
           args: [],
           options: { env: { PATH: "" } },
         },
       ],
-      3,
+      6,
     );
 
     assert.deepEqual(results.slice(0, 3), [{ output: "a" }, { output: "b" }, { output: "c" }]);
@@ -184,6 +185,28 @@ test("runTextConcurrently runs commands together and reports each result as runT
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+test("runTextConcurrently does not start a queued command whose deadline has passed", () => {
+  const startedAt = Date.now();
+  // A real 300 ms command holds the only slot past the second command's deadline.
+  const results = runTextConcurrently(
+    [
+      {
+        command: process.execPath,
+        args: ["-e", "setTimeout(() => process.stdout.write('first'), 300)"],
+        options: { deadlineAt: startedAt + 10_000 },
+      },
+      {
+        command: process.execPath,
+        args: ["-e", "process.stdout.write('late')"],
+        options: { deadlineAt: startedAt + 150 },
+      },
+    ],
+    1,
+  );
+
+  assert.deepEqual(results, [{ output: "first" }, { expired: true }]);
 });
 
 test("review CLI suppresses stack traces for missing local target checkout", () => {

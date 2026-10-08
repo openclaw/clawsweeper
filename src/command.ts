@@ -73,19 +73,29 @@ export function runText(
   return text;
 }
 
-export type ConcurrentRunResult = { output: string } | { error: unknown };
+/** A command that reached its deadline while queued never starts (`expired`). */
+export type ConcurrentRunResult = { output: string } | { error: unknown } | { expired: true };
 
-interface SpawnedCommandResult {
-  status: number | null;
-  signal: NodeJS.Signals | null;
-  stdout: string;
-  stderr: string;
-  errorCode?: string;
-}
+/** `runText` options, with an absolute deadline in place of a relative timeout. */
+export type ConcurrentRunOptions = Omit<RunTextOptions, "timeoutMs"> & {
+  deadlineAt?: number | undefined;
+};
+
+type SpawnedCommandResult =
+  | { expired: true }
+  | {
+      expired?: undefined;
+      status: number | null;
+      signal: NodeJS.Signals | null;
+      stdout: string;
+      stderr: string;
+      errorCode?: string;
+    };
 
 // Runs in a short-lived Node child: starts at most `concurrency` commands at a
-// time and reports spawnSync-style results (timeout ETIMEDOUT, output limit
-// ENOBUFS, spawn failures by code) in input order.
+// time, each with the time left before its deadline when it starts, and reports
+// spawnSync-style results (timeout ETIMEDOUT, output limit ENOBUFS, spawn
+// failures by code) in input order.
 const CONCURRENT_RUN_SCRIPT = `
 const { spawn } = require("node:child_process");
 let input = "";
@@ -109,6 +119,11 @@ process.stdin.on("end", () => {
   for (let slot = 0; slot < Math.min(concurrency, commands.length); slot += 1) startNext();
 });
 function run(command, done) {
+  const timeoutMs = command.deadlineAt === undefined ? undefined : command.deadlineAt - Date.now();
+  if (timeoutMs !== undefined && timeoutMs <= 0) {
+    done({ expired: true });
+    return;
+  }
   const stdout = [];
   const stderr = [];
   let bytes = 0;
@@ -130,7 +145,7 @@ function run(command, done) {
   };
   child.stdout.on("data", collect(stdout));
   if (child.stderr) child.stderr.on("data", collect(stderr));
-  const timer = command.timeoutMs === undefined ? undefined : setTimeout(() => fail("ETIMEDOUT"), command.timeoutMs);
+  const timer = timeoutMs === undefined ? undefined : setTimeout(() => fail("ETIMEDOUT"), timeoutMs);
   child.on("error", (error) => { errorCode ??= error.code ?? "EUNKNOWN"; });
   child.on("close", (status, signal) => {
     clearTimeout(timer);
@@ -147,11 +162,12 @@ function run(command, done) {
 
 /**
  * `runText` for independent commands, at most `concurrency` running at once.
- * Blocks until all finish; each result has `runText`'s output trimming or
- * the error `runText` would have thrown for that command.
+ * Blocks until all finish; each result has `runText`'s output trimming, the
+ * error `runText` would have thrown, or `expired` when the command's deadline
+ * passed before a slot was free.
  */
 export function runTextConcurrently(
-  commands: ReadonlyArray<{ command: string; args: string[]; options?: RunTextOptions }>,
+  commands: ReadonlyArray<{ command: string; args: string[]; options?: ConcurrentRunOptions }>,
   concurrency: number,
 ): ConcurrentRunResult[] {
   const prepared = commands.map(({ command, args, options = {} }) => {
@@ -173,7 +189,7 @@ export function runTextConcurrently(
         env,
         maxBuffer: options.maxBuffer ?? 64 * 1024 * 1024,
         stderr: options.stdio?.[2] ?? "pipe",
-        timeoutMs: options.timeoutMs,
+        deadlineAt: options.deadlineAt,
       })),
     }),
     // JSON escaping can double the commands' combined output; stay under one string's limit.
@@ -187,6 +203,7 @@ export function runTextConcurrently(
   }
   const results = JSON.parse(batch.stdout) as SpawnedCommandResult[];
   return results.map((result, index): ConcurrentRunResult => {
+    if (result.expired) return { expired: true };
     const { resolved, options } = prepared[index]!;
     const details = {
       status: result.status,

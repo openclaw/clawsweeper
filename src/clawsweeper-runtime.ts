@@ -299,7 +299,7 @@ function evidenceEntry(options: Partial<Evidence> & Pick<Evidence, "label" | "de
   };
 }
 
-type RunOptions = { cwd?: string; env?: NodeJS.ProcessEnv; timeoutMs?: number | undefined };
+type RunOptions = { cwd?: string; env?: NodeJS.ProcessEnv };
 
 function runTextOptions(options: RunOptions) {
   return {
@@ -307,13 +307,16 @@ function runTextOptions(options: RunOptions) {
     env: options.env,
     maxBuffer: SWEEPER_COMMAND_MAX_BUFFER_BYTES,
     stdio: ["ignore", "pipe", "pipe"] as ["ignore", "pipe", "pipe"],
-    timeoutMs: options.timeoutMs,
     trim: "both" as const,
   };
 }
 
-function run(command: string, args: string[], options: RunOptions = {}): string {
-  return runText(command, args, runTextOptions(options));
+function run(
+  command: string,
+  args: string[],
+  options: RunOptions & { timeoutMs?: number | undefined } = {},
+): string {
+  return runText(command, args, { ...runTextOptions(options), timeoutMs: options.timeoutMs });
 }
 
 const gitHubRuntime = createGitHubRuntime({
@@ -324,7 +327,7 @@ const gitHubRuntime = createGitHubRuntime({
       commands.map(({ command, args, options }) => ({
         command,
         args,
-        options: runTextOptions(options),
+        options: { ...runTextOptions(options), deadlineAt: options.deadlineAt },
       })),
       concurrency,
     ),

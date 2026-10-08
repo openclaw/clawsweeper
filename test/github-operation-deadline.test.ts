@@ -579,13 +579,16 @@ test("ghJsonEach dispatches first attempts together and finishes each through gh
   let nowMs = 1_000_000;
   t.mock.method(Date, "now", () => nowMs);
   t.mock.method(console, "error", () => {});
-  const batches: Array<Array<{ args: string[]; timeoutMs: number | undefined }>> = [];
+  const batches: Array<Array<{ args: string[]; deadlineAt: number | undefined }>> = [];
   const retried: string[][] = [];
-  const firstOutcomes: Record<string, { output: string } | { error: Error }> = {
+  const firstOutcomes: Record<string, { output: string } | { error: Error } | { expired: true }> = {
     "repos/openclaw/openclaw/issues/1": { output: '{"number":1}' },
     "repos/openclaw/openclaw/issues/2": { error: new Error("HTTP 502: Bad Gateway") },
     "repos/openclaw/openclaw/issues/3": { error: new Error("HTTP 404: Not Found") },
+    // Still queued for a slot when the runtime budget ran out.
+    "repos/openclaw/openclaw/issues/4": { expired: true },
   };
+  let batchDurationMs = 0;
   const runtime = createGitHubRuntime({
     ROOT: process.cwd(),
     targetRepo: () => "openclaw/openclaw",
@@ -594,7 +597,8 @@ test("ghJsonEach dispatches first attempts together and finishes each through gh
       return '{"number":2}';
     },
     runConcurrently: (commands) => {
-      batches.push(commands.map(({ args, options }) => ({ args, timeoutMs: options.timeoutMs })));
+      batches.push(commands.map(({ args, options }) => ({ args, deadlineAt: options.deadlineAt })));
+      nowMs += batchDurationMs;
       return commands.map(({ args }) => firstOutcomes[args[1]!]!);
     },
   });
@@ -608,15 +612,17 @@ test("ghJsonEach dispatches first attempts together and finishes each through gh
     gitHubRuntime: runtime,
     labelAlreadyExistsError: () => false,
   });
-  const requests = [1, 2, 3].map((number) => ["api", `repos/openclaw/openclaw/issues/${number}`]);
+  const issues = (...numbers: number[]) =>
+    numbers.map((number) => ["api", `repos/openclaw/openclaw/issues/${number}`]);
+  const requests = issues(1, 2, 3);
 
   const results = runtime.withGitHubRuntimeBudget(
     { startedAtMs: nowMs, maxRuntimeMs: 15_000 },
     () => execution.ghJsonEach(requests),
   );
 
-  // One concurrent dispatch, each command bounded by the active runtime budget.
-  assert.deepEqual(batches, [requests.map((args) => ({ args, timeoutMs: 14_000 }))]);
+  // One concurrent dispatch; every command shares the budget's absolute deadline.
+  assert.deepEqual(batches, [requests.map((args) => ({ args, deadlineAt: 1_014_000 }))]);
   // Only the transient failure goes through the existing retry path.
   assert.deepEqual(retried, [requests[1]]);
   assert.deepEqual(waits, [2_000]);
@@ -628,13 +634,22 @@ test("ghJsonEach dispatches first attempts together and finishes each through gh
   assert.ok(notFound && !notFound.ok);
   assert.match(String(notFound.error), /HTTP 404/);
 
+  // The budget runs out while the queue drains: the command still waiting for
+  // a slot fails as an exhausted budget, as `gh` would before dispatch.
+  const budget: GitHubRuntimeBudget = { startedAtMs: nowMs, maxRuntimeMs: 15_000 };
+  batchDurationMs = 20_000;
+  const drained = runtime.withGitHubRuntimeBudget(budget, () => execution.ghJsonEach(issues(1, 4)));
+  assert.deepEqual(drained[0], { ok: true, value: { number: 1 } });
+  const expired = drained[1];
+  assert.ok(expired && !expired.ok && expired.error instanceof runtime.GitHubRuntimeBudgetError);
+  assert.match(budget.yieldReason ?? "", /max runtime 15000ms reached before GitHub operation/);
+
   // An exhausted budget stops every read before any process starts.
-  nowMs += 20_000;
   const exhausted = runtime.withGitHubRuntimeBudget(
     { startedAtMs: nowMs - 20_000, maxRuntimeMs: 15_000 },
     () => execution.ghJsonEach(requests),
   );
-  assert.equal(batches.length, 1);
+  assert.equal(batches.length, 2);
   assert.ok(
     exhausted.every(
       (result) => !result.ok && result.error instanceof runtime.GitHubRuntimeBudgetError,
