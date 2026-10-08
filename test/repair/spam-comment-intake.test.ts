@@ -40,7 +40,7 @@ function spamActivity() {
   };
 }
 
-test("spam comment intake dispatches exact scans for deterministic candidates", () => {
+test("spam comment intake dispatches exact scans with deterministic facts as context", () => {
   const decision = classifySpamCommentActivity({
     eventName: "repository_dispatch",
     payload: spamActivity(),
@@ -150,6 +150,38 @@ test("spam comment intake skips protected authors before dispatch", () => {
 
   assert.equal(decision.accepted, false);
   assert.match(decision.reason, /protected/);
+});
+
+test("spam comment intake admits keyword-free outside comments for the model to judge", () => {
+  const payload = spamActivity();
+  payload.client_payload.activity.comment.body = "Still hangs for me on the latest release.";
+
+  const decision = classifySpamCommentActivity({
+    eventName: "repository_dispatch",
+    payload,
+  });
+
+  assert.equal(decision.accepted, true);
+  assert.equal(decision.reason, "model spam scan admitted");
+});
+
+test("spam comment intake admits a short comment only with a link or minimization fact", () => {
+  const short = spamActivity();
+  short.client_payload.activity.comment.body = "buy now";
+  assert.equal(
+    classifySpamCommentActivity({ eventName: "repository_dispatch", payload: short }).accepted,
+    false,
+  );
+
+  const minimized = spamActivity();
+  minimized.client_payload.activity.comment.body = "buy now";
+  minimized.client_payload.activity.comment.minimized_reason = "spam";
+  const decision = classifySpamCommentActivity({
+    eventName: "repository_dispatch",
+    payload: minimized,
+  });
+  assert.equal(decision.accepted, true);
+  assert.match(decision.reason, /github_minimized_spam/);
 });
 
 test("runSpamCommentIntake posts repository dispatch for accepted comments", async () => {

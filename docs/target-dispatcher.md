@@ -676,9 +676,9 @@ An ordinary comment should produce no ClawSweeper comment dispatch and no
 target-token step. If the target app secret is absent, the workflow should
 finish with a notice rather than fall back to a maintainer PAT.
 
-The ClawSweeper `github-activity` workflow performs spam-candidate
-classification in-process and only dispatches the scanner for an accepted
-candidate. This keeps ordinary comments to one activity run instead of an
-activity run plus a second intake workflow. Preserve the source delivery or
+The ClawSweeper `github-activity` workflow runs the fact-only spam admission
+in-process and dispatches the scanner only for an admitted comment (an
+unprotected author with a body of at least 12 characters, a link, or a GitHub
+minimization). Protected authors stay at one activity run. Preserve the source delivery or
 comment id in every payload so receiver-side deduplication can collapse
 redeliveries.

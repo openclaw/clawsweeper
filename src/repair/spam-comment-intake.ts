@@ -220,20 +220,18 @@ export function classifySpamCommentActivity({
       target_repo: targetRepo,
     };
   }
-  const deterministic = deterministicSpamSignals(comment);
   if (!shouldSendToCheapModel(comment)) {
     return {
       accepted: false,
-      reason: deterministic.signals.length
-        ? `protected or low-value candidate: ${deterministic.signals.join(", ")}`
-        : "no deterministic spam signal",
+      reason: "protected author, or short comment without a link",
       comment,
       target_repo: targetRepo,
     };
   }
+  const facts = deterministicSpamSignals(comment).signals;
   return {
     accepted: true,
-    reason: `spam candidate: ${deterministic.signals.join(", ")}`,
+    reason: `model spam scan admitted${facts.length ? `; facts: ${facts.join(", ")}` : ""}`,
     target_repo: targetRepo,
     comment,
     dispatch_payload: {
@@ -333,6 +331,8 @@ function spamCommentFromActivity(
     ).toUpperCase(),
     created_at: stringOrNull(comment.created_at ?? activity.created_at),
     updated_at: stringOrNull(comment.updated_at ?? activity.updated_at),
+    // Webhooks do not carry minimization; keep it when a forwarder supplies it.
+    minimized_reason: stringOrNull(comment.minimized_reason ?? activity.minimized_reason),
   };
 }
 

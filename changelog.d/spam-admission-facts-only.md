@@ -1,0 +1,1 @@
+- Spam scanning sends every unprotected comment of at least 12 characters (or with a link or GitHub minimization) to the model and passes keyword hits as labelled facts; keyword patterns no longer decide which comments the model sees.
