@@ -896,7 +896,6 @@ const reviewPresentation = createReviewPresentation({
   docsPageUrl,
   fileUrl,
   frontMatterStringArray,
-  frontMatterValue,
   hasRepairLoopPauseLabel,
   isCommitSha,
   latestFileUrl,

@@ -22,7 +22,6 @@ interface ReviewPresentationDependencies {
   fileUrl: (file: string, sha: string, line?: number, repo?: string) => string;
   normalizeEvidence: (entry: Evidence) => Evidence;
   frontMatterStringArray: (markdown: string, key: string) => string[];
-  frontMatterValue: (markdown: string, key: string) => string | undefined;
   hasRepairLoopPauseLabel: (labels: readonly string[]) => boolean;
   isCommitSha: (value: string) => boolean;
   latestFileUrl: (file: string, repo?: string) => string;
@@ -45,7 +44,6 @@ export function createReviewPresentation({
   fileUrl,
   normalizeEvidence,
   frontMatterStringArray,
-  frontMatterValue,
   hasRepairLoopPauseLabel,
   isCommitSha,
   latestFileUrl,
