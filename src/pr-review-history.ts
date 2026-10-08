@@ -255,7 +255,11 @@ export function prefetchReviewHistory(options: {
       for (const oid of wanted) selected.add(oid);
       estimatedBytes += bytes;
       pathBytes.set(entry.path, (pathBytes.get(entry.path) ?? 0) + bytes);
-      if (entry.status === "A" && entry.parents === 1 && entry.newOid)
+      if (entry.status !== "A" || !entry.newOid) continue;
+      // A merge that creates a path may rename it while resolving; its earlier
+      // name is not searched, so that history counts as not local.
+      if (entry.parents > 1) truncated.set(entry.path, entry.date);
+      else if (entry.parents === 1)
         creations.push({
           commit: entry.commit,
           date: entry.date,

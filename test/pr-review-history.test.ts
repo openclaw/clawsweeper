@@ -224,11 +224,15 @@ test("a large hot file keeps only its newest versions within the per-path budget
   );
 });
 
-for (const deletions of [250, 1]) {
-  test(`unchecked rename candidates report earlier history as not local: ${deletions} deletions`, () => {
+for (const [deletions, parents] of [
+  [250, 1],
+  [1, 1],
+  [1, 2],
+]) {
+  test(`unchecked rename candidates report earlier history as not local: ${deletions} deletions, ${parents} parents`, () => {
     const created = oid("a", 1);
     const deleted = Array.from({ length: deletions }, (_, index) => oid("b", index));
-    const commit = oid("c", 1);
+    const commit = `${oid("c", 1)} ${Array.from({ length: parents }, (_, index) => oid("d", index)).join(" ")}`;
     const present = new Set([created]);
     const fetched: string[][] = [];
     const coverage = prefetchReviewHistory({
@@ -236,11 +240,11 @@ for (const deletions of [250, 1]) {
         if (args[0] === "diff")
           return `:000000 100644 ${"0".repeat(40)} ${created} A\0src/new.ts\0`;
         if (args.includes("--diff-filter=D"))
-          return `\x01${commit} ${oid("d", 1)}\0${"2026-02-03T00:00:00Z"}\0\n${deleted
+          return `\x01${commit}\0${"2026-02-03T00:00:00Z"}\0\n${deleted
             .map((id, index) => `:100644 000000 ${id} ${"0".repeat(40)} D\0src/old${index}.ts\0`)
             .join("")}`;
         if (args[1] === "log")
-          return `\x01${commit} ${oid("d", 1)}\0${"2026-02-03T00:00:00Z"}\0\n:000000 100644 ${"0".repeat(40)} ${created} A\0src/new.ts\0`;
+          return `\x01${commit}\0${"2026-02-03T00:00:00Z"}\0\n:000000 100644 ${"0".repeat(40)} ${created} A\0src/new.ts\0`;
         // Rename detection fails, as on a timeout.
         if (args[1] === "diff-tree") return null;
         const ids = input!.trim().split("\n");
@@ -258,8 +262,9 @@ for (const deletions of [250, 1]) {
       tips: [],
       deadlineAt: Date.now() + 60_000,
     });
-    // Past the candidate cap, deletions with other names are not fetched.
-    assert.deepEqual(fetched, deletions > 200 ? [] : [deleted]);
+    // Past the candidate cap, deletions with other names are not fetched; a
+    // merge-created path is not searched for an earlier name at all.
+    assert.deepEqual(fetched, deletions > 200 || parents > 1 ? [] : [deleted]);
     assert.equal(coverage.status, "partial");
     assert.deepEqual(coverage.truncated, [{ path: "src/new.ts", before: "2026-02-03T00:00:00Z" }]);
   });
