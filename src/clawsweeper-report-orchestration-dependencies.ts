@@ -114,7 +114,6 @@ export interface CreateReportOrchestrationDependencies {
   isBulkFilerExemptAuthorAssociation: (value: unknown) => boolean;
   isBulkFilerExemptRepositoryPermission: (value: unknown) => boolean;
   isDigitsOnly: (value: string) => boolean;
-  isDocsOnlyPullRequestReport: (markdown: string) => boolean;
   isFresh: (
     review: { reviewedAt: string | undefined; reviewStatus: string | undefined } | null,
   ) => boolean;

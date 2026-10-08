@@ -1,4 +1,4 @@
-import { derivedPrRating, normalizePrRating } from "./clawsweeper-rating.js";
+import { normalizePrRating } from "./clawsweeper-rating.js";
 import { createDecisionParser } from "./clawsweeper-decision-parser.js";
 import { publicLikelyOwner } from "./clawsweeper-regression-provenance.js";
 import {
@@ -90,7 +90,6 @@ interface ReportParsingDependencies {
   frontMatterField: (markdown: string, key: string) => FrontMatterField;
   frontMatterStringArray: (markdown: string, key: string) => string[];
   frontMatterValue: (markdown: string, key: string) => string | undefined;
-  isDocsOnlyPullRequestReport: (markdown: string) => boolean;
   isExternalPullRequestReport: (markdown: string) => boolean;
   markdownRepository: (markdown: string, file?: string) => string;
   parseBoldListHeading: (line: string) => { label: string; detail: string } | null;
@@ -131,7 +130,6 @@ const LIVE_PROOF_OWNED_HEADINGS = new Set(
   Object.values(REVIEW_SECTIONS).map((heading) => heading.toLowerCase()),
 );
 const parseRecordedLiveProofPlan = createDecisionParser({
-  isMaintainerAuthorAssociation: () => false,
   neutralizeOwnedSectionSpoofing: neutralizeLiveProofText,
   sanitizeArchitectureDiagram: (value) => value,
 }).parseLiveProofPlan;
@@ -350,7 +348,6 @@ export function createReportParser({
   frontMatterField,
   frontMatterStringArray,
   frontMatterValue,
-  isDocsOnlyPullRequestReport,
   isExternalPullRequestReport,
   markdownRepository,
   parseBoldListHeading,
@@ -654,15 +651,6 @@ export function createReportParser({
         needsContributorAction: false,
       };
     }
-    if (isDocsOnlyPullRequestReport(markdown)) {
-      return {
-        status: "not_applicable",
-        summary:
-          "Real behavior proof is not required because this PR only changes files under docs/.",
-        evidenceKind: "not_applicable",
-        needsContributorAction: false,
-      };
-    }
     return {
       status: "not_applicable",
       summary:
@@ -692,9 +680,7 @@ export function createReportParser({
   function reportGeneralBehaviorProof(markdown: string): RealBehaviorProof {
     // Historical execution receipts do not assess relevance to the changed behavior.
     const defaultProof = defaultRealBehaviorProof(markdown);
-    if (defaultProof.status === "override" || isDocsOnlyPullRequestReport(markdown)) {
-      return defaultProof;
-    }
+    if (defaultProof.status === "override") return defaultProof;
     const statusField = frontMatterField(markdown, "real_behavior_proof_status");
     const evidenceKindField = frontMatterField(markdown, "real_behavior_proof_evidence_kind");
     const needsContributorActionField = frontMatterField(
@@ -730,18 +716,17 @@ export function createReportParser({
       };
     }
     const section = reviewSectionValue(markdown, "realBehaviorProof");
-    if (!section.trim()) {
-      if (isExternalPullRequestReport(markdown)) {
-        return {
-          status: "missing",
-          summary:
-            "No after-fix real behavior proof was recorded for this external PR; screenshots or videos are preferred when they can show the behavior, and terminal screenshots, console output, copied live output, linked artifacts, recordings, and redacted logs count. Redact private information like IP addresses, API keys, phone numbers, non-public endpoints, and other private details before posting evidence.",
-          evidenceKind: "none",
-          needsContributorAction: true,
-        };
-      }
-      return defaultProof;
-    }
+    const unrecordedProof = (): RealBehaviorProof =>
+      isExternalPullRequestReport(markdown)
+        ? {
+            status: "missing",
+            summary:
+              "No after-fix real behavior proof was recorded for this external PR; screenshots or videos are preferred when they can show the behavior, and terminal screenshots, console output, copied live output, linked artifacts, recordings, and redacted logs count. Redact private information like IP addresses, API keys, phone numbers, non-public endpoints, and other private details before posting evidence.",
+            evidenceKind: "none",
+            needsContributorAction: true,
+          }
+        : defaultProof;
+    if (!section.trim()) return unrecordedProof();
     const statusValue =
       statusField.status === "value" ? statusField.value : sectionLineValue(section, "Status");
     const evidenceKindValue =
@@ -761,7 +746,7 @@ export function createReportParser({
     )
       ? (evidenceKindValue as RealBehaviorProofEvidenceKind)
       : undefined;
-    if (!status || !evidenceKind || !summary) return defaultRealBehaviorProof(markdown);
+    if (!status || !evidenceKind || !summary) return unrecordedProof();
     const proof: RealBehaviorProof = {
       status,
       summary,
@@ -855,28 +840,9 @@ export function createReportParser({
 
   function reportPrRating(markdown: string): PrRating {
     const section = reviewSectionValue(markdown, "prRating");
-    const proof = reportRealBehaviorProof(markdown);
-    const attached = reportAttachedLiveVerification(markdown);
-    const isPullRequest = frontMatterValue(markdown, "type") === "pull_request";
     const proofTierField = frontMatterField(markdown, "pr_rating_proof");
     const patchTierField = frontMatterField(markdown, "pr_rating_patch");
     const overallTierField = frontMatterField(markdown, "pr_rating_overall");
-    if (
-      [proofTierField, patchTierField, overallTierField].some(
-        (field) =>
-          field.status === "ambiguous" ||
-          (field.status === "value" && !PR_RATING_TIERS.has(field.value as PrRatingTier)),
-      )
-    ) {
-      return derivedPrRating({
-        isPullRequest,
-        proof,
-        findings: reportReviewFindings(markdown),
-        securityReview: reportSecurityReview(markdown),
-        overallCorrectness: reportOverallCorrectness(markdown),
-        overallConfidenceScore: reportOverallConfidenceScore(markdown),
-      });
-    }
     const proofTierValue =
       proofTierField.status === "value"
         ? proofTierField.value
@@ -890,38 +856,34 @@ export function createReportParser({
         ? overallTierField.value
         : sectionLineValue(section, "Overall tier");
     const summary = sectionLineValue(section, "Summary");
-    const nextSteps = sectionList(section, "Next rank-up steps").slice(0, 3);
     if (
+      [proofTierField, patchTierField, overallTierField].every(
+        (field) => field.status !== "ambiguous",
+      ) &&
       PR_RATING_TIERS.has(proofTierValue as PrRatingTier) &&
       PR_RATING_TIERS.has(patchTierValue as PrRatingTier) &&
       PR_RATING_TIERS.has(overallTierValue as PrRatingTier) &&
-      summary &&
-      !(
-        isPullRequest &&
-        !isExternalPullRequestReport(markdown) &&
-        proof.status === "not_applicable" &&
-        (proofTierValue === "D" || proofTierValue === "F")
-      )
+      summary
     ) {
-      return normalizePrRating(
-        {
-          proofTier: proofTierValue as PrRatingTier,
-          patchTier: patchTierValue as PrRatingTier,
-          overallTier: overallTierValue as PrRatingTier,
-          summary,
-          nextSteps,
-        },
-        attached.status === "absent" ? undefined : proof,
-      );
+      return normalizePrRating({
+        proofTier: proofTierValue as PrRatingTier,
+        patchTier: patchTierValue as PrRatingTier,
+        overallTier: overallTierValue as PrRatingTier,
+        summary,
+        nextSteps: sectionList(section, "Next rank-up steps").slice(0, 3),
+      });
     }
-    return derivedPrRating({
-      isPullRequest,
-      proof,
-      findings: reportReviewFindings(markdown),
-      securityReview: reportSecurityReview(markdown),
-      overallCorrectness: reportOverallCorrectness(markdown),
-      overallConfidenceScore: reportOverallConfidenceScore(markdown),
-    });
+    // A missing or malformed model rating gives no tier. Rating-gated automation stays off.
+    return {
+      proofTier: "NA",
+      patchTier: "NA",
+      overallTier: "NA",
+      summary:
+        frontMatterValue(markdown, "type") === "pull_request"
+          ? "This report has no valid PR rating. A fresh review must rate this PR."
+          : "PR readiness rating is not applicable to this item.",
+      nextSteps: [],
+    };
   }
 
   function reportFeatureShowcase(markdown: string): FeatureShowcase {

@@ -33,7 +33,6 @@ import { reviewPromptContext } from "./clawsweeper-prompt-context.js";
 import { verifyLikelyOwnerHistory } from "./clawsweeper-regression-provenance.js";
 import type {
   Decision,
-  DecisionNormalizationItem,
   Evidence,
   FileModeSnapshot,
   GitInfo,
@@ -48,6 +47,7 @@ import type {
   ReviewPromptRuntimeHints,
   ReviewPromptTelemetry,
   RootCauseClusterAssessment,
+  RootCauseNormalizationItem,
 } from "./clawsweeper-types.js";
 import { codexLoginConfig, redactInternalCodexModel } from "./codex-env.js";
 import { codexProcessErrorCode, type CodexProcessResult } from "./codex-process.js";
@@ -89,7 +89,7 @@ interface ReviewRuntimeDependencies {
   ghJson: <T>(args: string[]) => T;
   asRecord: (value: unknown) => Record<string, unknown>;
   defaultRootCauseCluster: () => RootCauseClusterAssessment;
-  parseDecision: (value: unknown, item?: DecisionNormalizationItem) => Decision;
+  parseDecision: (value: unknown, item?: RootCauseNormalizationItem) => Decision;
   ensureDir: (path: string) => void;
   stringOrUndefined: (value: unknown) => string | undefined;
 }

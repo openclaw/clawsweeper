@@ -203,9 +203,7 @@ merge, and why not yet" in this order:
 9. `## Findings` always renders for completed reviews. Its leading block lists
    up to three review findings and three security concerns as
    `- [P1] title — \`file:line\``, or `None.`; review history and the comment
-   router parse only this block. A `### Provenance` subsection lists
-   `overrides_without_reason` and `unknown` provenance entries, and a
-   `### Tests` subsection lists low-value tests (file and reason) and the
+router parse only this block. A `### Provenance`subsection lists`overrides_without_reason`and`unknown`provenance entries, and a`### Tests` subsection lists low-value tests (file and reason) and the
    missing end-to-end scenario. Neither subsection uses P-severity labels, so
    neither starts repair routing.
 
@@ -274,8 +272,8 @@ One PR readiness calculation supplies the visible checklist, its count, the
 readiness state, and repair-loop pass eligibility. Explicit none suppresses only
 the derived next-step item, while required actions survive
 negation, contrast, routine-sounding prose, or lack of action keywords. Human-owned
-actions may be required even when `workCandidate` is none. Contributor changelog
-requests remain subject to OpenClaw's release-owned changelog normalization.
+actions may be required even when `workCandidate` is none. Code does not remove
+or rewrite model findings, next steps, risks, correctness, or ratings.
 
 Historical Decisions may omit the assessment, and reports are not migrated or
 rewritten. An unusable next-step field retains conservative legacy prose
@@ -355,19 +353,19 @@ Codex assesses stored-data compatibility in
 `realBehaviorProof.dataModelCompatibility`, independently of general behavior
 proof. The report writer persists it as the canonical
 `real_behavior_proof_data_model_compatibility` field. Summaries, evidence prose,
-ratings, general proof sufficiency, `proof: override`, and maintainer/bot or
-docs-only exemptions cannot waive an `insufficient` assessment. Reports without
+ratings, general proof sufficiency, `proof: override`, maintainer/bot authorship,
+and a `not_applicable` proof status cannot waive an `insufficient` assessment. Reports without
 the field add no stored-data blocker.
 
-The recorded reviewer proof assessment and the host's existing proof requirement
-are separate. An applicable external PR assessed as `not_applicable` still needs
-proof: the verdict, readiness, verification, checklist, and status label explain
-that the assessment does not satisfy current policy. Put relevant after-change
-evidence in the main PR body, then request a fresh review. This includes root
-`README.md` changes; the existing docs exemption requires a complete, nonempty
-file list entirely under `docs/`. Recorded proof fields, summaries, ratings, and
-rating labels remain unchanged; the comment identifies reviewer context without
-presenting it as a host exemption.
+The reviewer model decides whether real behavior proof applies. For an external
+PR, the proof gate accepts `sufficient`, `override`, or `not_applicable`, unless
+the model also sets `needsContributorAction` or starts the proof summary with the
+authority-chain marker. File paths do not change this decision; the review rules
+tell the model to use `not_applicable` for docs-only PRs. A report without a
+usable proof assessment for an external PR counts as `missing` proof. A report
+without a usable PR rating shows `NA` tiers and asks for a fresh review; code does
+not compute a replacement rating, and an attached verification receipt does not
+change the model's tiers.
 
 Failed or malformed historical verification receipts remain separate,
 maintainer-owned blockers. They do not erase independently sufficient contributor

@@ -25,7 +25,6 @@ import {
   itemSourceRevisionSha256ForTest,
   itemNumbersArg,
   lockedConversationApplyReason,
-  parseDecision,
   relatedGitHubIssueSearchQueryForTest,
   relatedTitleSearchTerms,
   recordedLabelSyncCoversUpdate,
@@ -46,7 +45,6 @@ import { GitHubRateLimitError } from "../dist/github-retry.js";
 import { AUTOMATION_LIMITS } from "../dist/limits.js";
 import {
   auditRecord,
-  closeDecision,
   implementedCloseReport,
   item,
   markedReviewCommentForTest,
@@ -2779,18 +2777,6 @@ test("sweep dashboard status writes are scoped to the target repository", () => 
     const block = workflow.slice(match.index, match.index + 220);
     assert.match(block, /--target-repo /);
   }
-});
-
-test("review parser strips environment access caveats from risks", () => {
-  const parsed = parseDecision(
-    closeDecision({
-      risks: [
-        "GH_TOKEN was unavailable, so authenticated gh could not be used.",
-        "A real product uncertainty remains.",
-      ],
-    }),
-  );
-  assert.deepEqual(parsed.risks, ["A real product uncertainty remains."]);
 });
 
 test("Codex login method defaults to API and accepts explicit local OAuth", () => {

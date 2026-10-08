@@ -173,7 +173,7 @@ function assertChangedReviewNeverRepublishes(action: string): void {
     for (const directory of [itemsDir, closedDir, plansDir])
       mkdirSync(directory, { recursive: true });
     const number = 336;
-    const labels = ["proof: override", "rating: 🦞 diamond lobster"];
+    const labels = ["proof: override", "rating: 🌊 off-meta tidepool"];
     const reviewed = reportWithSyncedReviewComment(
       lowSignalCloseReport({
         number,
@@ -327,7 +327,7 @@ test("unchanged changed-duplicate records do not consume a bounded comment-sync 
       mkdirSync(directory, { recursive: true });
     const number = 338;
     const canonicalUrl = "https://github.com/openclaw/openclaw/pull/400";
-    const labels = ["proof: override", "rating: 🦞 diamond lobster"];
+    const labels = ["proof: override", "rating: 🌊 off-meta tidepool"];
     const reviewed = reportWithSyncedReviewComment(
       lowSignalCloseReport({
         number,

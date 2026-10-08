@@ -1,7 +1,6 @@
 import { parseOversizedPullRequestEvidence } from "./clawsweeper-oversized-pr-policy.js";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { isDocsPath } from "./openclaw-file-role.js";
 import { AUTHOR_PR_BUDGET_MIN_INACTIVE_DAYS, REVIEW_SECTIONS } from "./clawsweeper-policy.js";
 import { createPullRequestReferenceParser } from "./clawsweeper-pr-references.js";
 import {
@@ -51,7 +50,6 @@ export function createPullRequestPromotionFacts(
     impactLabelsFromReport,
     isAfterReview,
     isAutomationReportAuthor,
-    isDocsOnlyPullRequestReport,
     itemSnapshotHash,
     labelJustificationsFromReport,
     labelNames,
@@ -464,7 +462,6 @@ export function createPullRequestPromotionFacts(
         const state = stringOrUndefined(pull.state)?.toLowerCase() ?? "";
         const mergedAt = stringOrUndefined(pull.merged_at) ?? null;
         if (!hasSupersessionSignal) continue;
-        const linkedFiles = linkedPullRequestFiles(number);
         const linkedPull: LinkedPullRequestSupersession = {
           number,
           title: stringOrUndefined(pull.title) ?? `PR #${number}`,
@@ -474,10 +471,7 @@ export function createPullRequestPromotionFacts(
           mergeableState: stringOrUndefined(pull.mergeable_state)?.toLowerCase() ?? null,
           draft: pull.draft === true,
           labels: linkedPullRequestLabels(number, pull),
-          files: linkedFiles.files,
-          filesKnown: linkedFiles.known,
         };
-        if (linkedPullCannotSupersedeDocsOnlySource(markdown, linkedPull)) continue;
         const candidateUnsafeReason = unsafeCanonicalPullRequestReason(linkedPull, options);
         if (candidateUnsafeReason !== null) {
           unsafeReason ??= candidateUnsafeReason;
@@ -504,32 +498,6 @@ export function createPullRequestPromotionFacts(
     } catch {
       return [];
     }
-  }
-
-  function linkedPullRequestFiles(number: number): { files: string[]; known: boolean } {
-    try {
-      const files = ghJson<unknown[]>([
-        "api",
-        `repos/${targetRepo()}/pulls/${number}/files?per_page=100`,
-        "--jq",
-        "[.[].filename]",
-      ]);
-      return {
-        files: files.filter((file): file is string => typeof file === "string"),
-        known: true,
-      };
-    } catch {
-      return { files: [], known: false };
-    }
-  }
-
-  function linkedPullCannotSupersedeDocsOnlySource(
-    sourceMarkdown: string,
-    linkedPull: LinkedPullRequestSupersession,
-  ): boolean {
-    if (!isDocsOnlyPullRequestReport(sourceMarkdown)) return false;
-    if (!linkedPull.filesKnown) return true;
-    return linkedPull.files.length === 0 || !linkedPull.files.every(isDocsPath);
   }
 
   function linkedPullRequestReportMarkdown(
@@ -642,8 +610,6 @@ export function createPullRequestPromotionFacts(
     linkedPullRequestHasSupersessionSignal,
     linkedPullRequestSupersession,
     linkedPullRequestLabels,
-    linkedPullRequestFiles,
-    linkedPullCannotSupersedeDocsOnlySource,
     linkedPullRequestReportMarkdown,
     proofPassedInReport,
     proofPassedInLabels,

@@ -54,13 +54,11 @@ for (const proofStatus of ["missing", "not_applicable"] as const) {
         OWNED_REVIEW_SECTION_HEADINGS: new Set(),
         parseBacktickLocation: () => null,
       }),
-      isDocsOnlyPullRequestReport: () => false,
       isExternalPullRequestReport: () => true,
     } as Parameters<typeof createReportParser>[0]);
     const reportRealBehaviorProofPolicy = createRealBehaviorProofPolicy({
       ...metadata,
       ...parser,
-      isDocsOnlyPullRequestReport: () => false,
       isExternalPullRequestReport: () => true,
     });
     const policy = createLabelPolicy({
@@ -178,20 +176,20 @@ Full review comments:
   });
 }
 
-test("report-based status selection requires external N/A proof without an action flag", () => {
+test("report-based status selection follows the model proof assessment for external PRs", () => {
   const metadata = createRecordMetadata({} as never);
+  let assessment = {
+    status: "not_applicable",
+    evidenceKind: "not_applicable",
+    needsContributorAction: false,
+    summary: "Recorded reviewer assessment.",
+  };
   const reportRealBehaviorProofPolicy = createRealBehaviorProofPolicy({
     ...metadata,
-    isDocsOnlyPullRequestReport: () => false,
     isExternalPullRequestReport: (markdown) =>
       metadata.frontMatterValue(markdown, "author_association") === "CONTRIBUTOR",
     reportAttachedLiveVerification: () => ({ status: "absent" }),
-    reportRealBehaviorProof: () => ({
-      status: "not_applicable",
-      evidenceKind: "not_applicable",
-      needsContributorAction: false,
-      summary: "Recorded reviewer assessment.",
-    }),
+    reportRealBehaviorProof: () => assessment as never,
   });
   const policy = createLabelPolicy({
     ...metadata,
@@ -214,93 +212,14 @@ test("report-based status selection requires external N/A proof without an actio
       pull_files_truncated: false,
       reviewed_at: "2026-08-30T12:00:00Z",
     });
-    assert.equal(
+    const statusKind = () =>
       policy.prStatusLabelKindFromReport(report, { comments: [], timeline: [] }, [
         "clawsweeper:automerge",
-      ]),
-      "needs_proof",
-      path,
-    );
-    for (const [labels, comments, expected] of [
-      [["clawsweeper:human-review"], [], null],
-      [["clawsweeper:manual-only"], [], null],
-      [["clawsweeper:merge-ready"], [], null],
-      [
-        [],
-        [
-          {
-            author: "contributor",
-            body: "@clawsweeper re-review",
-            createdAt: "2026-08-30T13:00:00Z",
-          },
-        ],
-        "re_review_loop",
-      ],
-      [
-        [],
-        [{ author: "contributor", body: "Added evidence", createdAt: "2026-08-30T13:00:00Z" }],
-        "actively_grinding",
-      ],
-    ] as const) {
-      assert.equal(
-        policy.prStatusLabelKindFromReport(
-          report,
-          { comments: [...comments], timeline: [] },
-          labels,
-        ),
-        expected,
-      );
-    }
-    const commands: string[][] = [];
-    const synchronization = createLabelSynchronization({
-      ...metadata,
-      ghObservedMutationCommand: ({ args }) => {
-        commands.push(args);
-        return "";
-      },
-      hasNormalizedLabel: (labels, label) => labels.includes(label),
-      normalizeLabelName: (label) => label.toLowerCase(),
-      protectedLabels: () => [],
-      isBulkFilerExemptAuthorAssociation: () => false,
-      isBulkFilerExemptRepositoryPermission: () => false,
-      reportSecurityReview: () => ({ status: "cleared", summary: "", concerns: [] }),
-      labelPolicy: policy,
-    } as Parameters<typeof createLabelSynchronization>[0]);
-    const decision = closeDecision();
-    const result = syncApplyPullRequestLabels(
-      {
-        ...metadata,
-        ...synchronization,
-        prStatusLabelKindFromReport: policy.prStatusLabelKindFromReport,
-        reportRealBehaviorProof: (markdown) => reportRealBehaviorProofPolicy(markdown).assessment,
-        reportPrRating: () => decision.prRating,
-        reportFeatureShowcase: () => decision.featureShowcase,
-        reportOverallCorrectness: () => "patch is correct",
-        reportSecurityReview: () => decision.securityReview,
-        reportTelegramVisibleProof: () => decision.telegramVisibleProof,
-      },
-      {
-        markdown: report,
-        item: item({ kind: "pull_request", labels: ["clawsweeper:automerge"] }),
-        number: 74465,
-        currentItemContext: () => ({ comments: [], timeline: [] }) as never,
-        dryRun: false,
-        labelSyncFreshEnough: () => true,
-        staleReviewHead: null,
-        onMutation: () => {},
-      },
-    );
-    assert.equal(result.currentPrStatusKind, "needs_proof", path);
-    assert.ok(result.labels.includes("status: 📣 needs proof"), path);
-    assert.ok(!result.labels.includes("proof: sufficient"), path);
-    assert.equal(result.markdown, report, path);
-    assert.ok(
-      commands.some(
-        (args) => args.includes("--add-label") && args.includes("status: 📣 needs proof"),
-      ),
-      path,
-    );
-    assert.ok(!commands.some((args) => args.includes("status: 🚀 automerge armed")), path);
+      ]);
+    assessment = { ...assessment, status: "not_applicable", needsContributorAction: false };
+    assert.notEqual(statusKind(), "needs_proof", path);
+    assessment = { ...assessment, status: "missing", needsContributorAction: true };
+    assert.equal(statusKind(), "needs_proof", path);
   }
 });
 
@@ -465,7 +384,6 @@ test("historical receipt failures route to the proof owner without erasing indep
     frontMatterValue: (_markdown, key) =>
       key === "review_status" && reviewFailed ? "failed" : undefined,
     frontMatterStringArray: () => [],
-    isDocsOnlyPullRequestReport: () => false,
     isExternalPullRequestReport: () => true,
     reviewSectionValue: () => "",
     reportAttachedLiveVerification: () => ({ status: receiptStatus }) as never,

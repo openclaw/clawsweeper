@@ -60,119 +60,29 @@ test("next-step parsing preserves absent legacy intent and validates supplied as
   assert.doesNotMatch(guarded.text, /^## Work Candidate$/m);
 });
 
-test("next-step instructions respect contributor changelog normalization without erasing other actions", () => {
-  const contributor = item({ kind: "pull_request" });
-  for (const reviewFindings of [[], changelogReviewDecision().reviewFindings]) {
-    assert.deepEqual(
-      parseDecision(
-        changelogReviewDecision({
-          reviewFindings,
-          nextStep: { kind: "required", text: "Add the required changelog entry." },
-        }),
-        contributor,
-      ).nextStep,
-      { kind: "none", text: "" },
-    );
-  }
-  for (const text of [
-    "Repair the retry guard.",
-    "Add the required changelog entry. Repair the retry guard.",
-    "Add the required changelog entry; Repair the retry guard.",
-    "Add the required changelog entry and Repair the retry guard.",
-    "Add the required changelog entry but Repair the retry guard.",
-  ]) {
-    const parsed = parseDecision(
-      changelogReviewDecision({ nextStep: { kind: "required", text } }),
-      contributor,
-    );
-    assert.deepEqual(parsed.nextStep, { kind: "required", text: "Repair the retry guard." });
-    assert.equal(parsed.workCandidate, "none");
-  }
+test("decision parser keeps model findings, next step, correctness, rating, and risks as written", () => {
+  const nextStep = { kind: "required", text: "Add the required changelog entry." };
+  const risks = ["GH_TOKEN was unavailable, so authenticated gh could not be used."];
+  const prRating = {
+    proofTier: "D",
+    patchTier: "D",
+    overallTier: "D",
+    summary: "The model rated this PR.",
+    nextSteps: ["Add the required changelog entry."],
+  };
+  const raw = changelogReviewDecision({ nextStep, risks, prRating });
   for (const target of [
+    item({ kind: "pull_request" }),
     item({ kind: "pull_request", authorAssociation: "MEMBER" }),
-    item({ kind: "pull_request", repo: "openclaw/clawsweeper" }),
   ]) {
-    const nextStep = { kind: "required", text: "Add the required changelog entry." };
-    assert.deepEqual(
-      parseDecision(changelogReviewDecision({ nextStep }), target).nextStep,
-      nextStep,
-    );
-  }
-  const nextStep = { kind: "required", text: "Add changelog parser coverage." };
-  assert.deepEqual(
-    parseDecision(changelogReviewDecision({ nextStep }), contributor).nextStep,
-    nextStep,
-  );
-  assert.equal(parseDecision(changelogReviewDecision(), contributor).nextStep, undefined);
-  const finding = reviewFinding({ title: "Retry race", body: "Repair concurrent retry handling." });
-  const parsed = parseDecision(
-    changelogReviewDecision({
-      reviewFindings: [...changelogReviewDecision().reviewFindings, finding],
-      nextStep: { kind: "required", text: "Add the required changelog entry." },
-    }),
-    contributor,
-  );
-  assert.deepEqual(parsed.reviewFindings, [finding]);
-  assert.equal(parsed.workCandidate, "queue_fix_pr");
-});
-
-test("next-step changelog normalization preserves other or ambiguous required instructions verbatim", () => {
-  const contributor = item({ kind: "pull_request" });
-  for (const text of [
-    "Add the missing retry test, not a changelog entry.",
-    "Repair retry ownership rather than add a changelog entry.",
-    "Do not merge until retry ownership is proven.",
-    "Do not merge until retry ownership is proven, not merely a changelog entry added.",
-    "Add a changelog entry rather than repair retry ownership.",
-    "Add a changelog entry only after repairing retry ownership.",
-    "Add a changelog entry documenting the unresolved retry guard defect.",
-    "Add a changelog entry and a retry test.",
-    "Add a changelog entry and retry coverage.",
-    "Add a changelog entry and repair notes.",
-    "Add a changelog entry but ownership approval is still missing.",
-    "No changelog entry is required; repair retry ownership.",
-    "Add the missing retry test, not a changelog entry; confirm owner approval.",
-    "Add the missing retry test, not a changelog entry and confirm owner approval.",
-    "Repair retry ownership rather than add a changelog entry but confirm owner approval.",
-    "Add changelog parser coverage.",
-  ]) {
-    const nextStep = { kind: "required", text };
-    const parsed = parseDecision(
-      changelogReviewDecision({ reviewFindings: [], nextStep }),
-      contributor,
-    );
-    assert.deepEqual(parsed.nextStep, nextStep, text);
-  }
-  for (const separator of ["; ", " and ", " but "]) {
-    for (const action of [
-      "Add the missing retry test, not a changelog entry.",
-      "Repair the retry guard and confirm compatibility; add the missing retry test.",
-    ]) {
-      const parsed = parseDecision(
-        changelogReviewDecision({
-          reviewFindings: [],
-          nextStep: {
-            kind: "required",
-            text: `Add the required changelog entry${separator}${action}`,
-          },
-        }),
-        contributor,
-      );
-      assert.deepEqual(parsed.nextStep, { kind: "required", text: action });
-    }
-  }
-  for (const text of [
-    "Add the required changelog entry.",
-    "Include a release note before merge.",
-  ]) {
-    const parsed = parseDecision(
-      changelogReviewDecision({
-        reviewFindings: [],
-        nextStep: { kind: "required", text },
-      }),
-      contributor,
-    );
-    assert.deepEqual(parsed.nextStep, { kind: "none", text: "" }, text);
+    const parsed = parseDecision(raw, target);
+    assert.deepEqual(parsed.reviewFindings, raw.reviewFindings);
+    assert.deepEqual(parsed.nextStep, nextStep);
+    assert.equal(parsed.overallCorrectness, "patch is incorrect");
+    assert.equal(parsed.bestSolution, raw.bestSolution);
+    assert.equal(parsed.workCandidate, "queue_fix_pr");
+    assert.deepEqual(parsed.risks, risks);
+    assert.deepEqual(parsed.prRating, prRating);
   }
 });
 

@@ -68,7 +68,6 @@ import {
 import type {
   AgentsPolicyStatus,
   Decision,
-  DecisionNormalizationItem,
   Evidence,
   FeatureShowcase,
   ImpactLabelName,
@@ -99,19 +98,17 @@ import type {
   TelegramVisibleProof,
   TestingReview,
 } from "./clawsweeper-types.js";
-import { derivedPrRating, normalizePrRating } from "./clawsweeper-rating.js";
+import { normalizePrRating } from "./clawsweeper-rating.js";
 import { parseNextStep } from "./clawsweeper-next-step.js";
 import { parseMaintainerDecision } from "./decision-packets.js";
-import { DEFAULT_TARGET_REPO, normalizeRepo } from "./repository-profiles.js";
+import { normalizeRepo } from "./repository-profiles.js";
 
 export interface DecisionParserDependencies {
-  isMaintainerAuthorAssociation: (value: unknown) => boolean;
   neutralizeOwnedSectionSpoofing: (value: string) => string;
   sanitizeArchitectureDiagram: (value: string) => string;
 }
 
 export function createDecisionParser({
-  isMaintainerAuthorAssociation,
   neutralizeOwnedSectionSpoofing,
   sanitizeArchitectureDiagram,
 }: DecisionParserDependencies) {
@@ -397,12 +394,6 @@ export function createDecisionParser({
     }
   }
 
-  function isEnvironmentAccessCaveat(value: string): boolean {
-    return /(?:GH_TOKEN|GITHUB_TOKEN|authenticated gh|gh (?:was |is )?unavailable|unauthenticated gh|shallow clone|GitHub auth(?:entication)? (?:was |is )?unavailable|could not use authenticated GitHub)/i.test(
-      value,
-    );
-  }
-
   function parseEvidence(value: unknown, path: string): Evidence {
     const record = requireRecord(value, path);
     rejectUnexpectedKeys(record, EVIDENCE_SCHEMA_KEYS, path);
@@ -483,102 +474,6 @@ export function createDecisionParser({
       currentItemRelationship: "independent",
       summary: "No evidence-backed root-cause cluster was established.",
       members: [],
-    };
-  }
-
-  const CHANGELOG_ENTRY_REVIEW_PATTERN =
-    /\b(?:changelog\.md|changelog\s+entry|release[- ]?note)\b/i;
-  const MISSING_CHANGELOG_ACTION_PATTERN =
-    /\b(?:add|include|missing|no|lacks?|needs?|requires?|required|without)\b/i;
-  const CHANGELOG_TOOLING_PATTERN =
-    /\b(?:coverage|duplicate|generator|malformed|parser|validation|validator|wrong\s+section)\b/i;
-
-  function isOpenClawContributorPullRequest(item: DecisionNormalizationItem | undefined): boolean {
-    return (
-      item !== undefined &&
-      normalizeRepo(item.repo) === DEFAULT_TARGET_REPO &&
-      item.kind === "pull_request" &&
-      !isMaintainerAuthorAssociation(item.authorAssociation)
-    );
-  }
-
-  function isContributorChangelogEntryFinding(
-    item: DecisionNormalizationItem | undefined,
-    finding: ReviewFinding,
-  ): boolean {
-    const text = `${finding.title}\n${finding.body}`;
-    return (
-      isOpenClawContributorPullRequest(item) &&
-      CHANGELOG_ENTRY_REVIEW_PATTERN.test(text) &&
-      MISSING_CHANGELOG_ACTION_PATTERN.test(text) &&
-      !CHANGELOG_TOOLING_PATTERN.test(text)
-    );
-  }
-
-  const CLEAN_OPENCLAW_PR_REVIEW_NEXT_STEP =
-    "Continue normal maintainer review; ClawSweeper found no patch-correctness issue.";
-
-  const STANDALONE_CHANGELOG_ENTRY_REQUEST =
-    /^(?:please\s+)?(?:add|include)\s+(?:(?:a|an|the)\s+)?(?:(?:missing|required)\s+)?(?:changelog(?:\.md)?\s+entr(?:y|ies)|release[- ]notes?)(?:\s+before\s+merge)?[.!]?\s*$/i;
-  const NEXT_STEP_CLAUSE_SEPARATOR =
-    /([.;]\s+|\n+|\s+(?:and|but)\s+(?=(?:add|include|repair|fix|verify|confirm|resolve|prove|run)\s+(?:the|a|an|this|that)\s+\S))/i;
-
-  function normalizeDecisionForItem(
-    decision: Decision,
-    item: DecisionNormalizationItem | undefined,
-  ): Decision {
-    if (decision.nextStep?.kind === "required" && isOpenClawContributorPullRequest(item)) {
-      // Unlike findings, action prose must directly request only a changelog entry;
-      // mentions in a different or ambiguous instruction retain required intent.
-      // Split conjunctions only before clear imperative clauses, not compound
-      // objects such as "a changelog entry and repair notes". Unrecognized forms
-      // stay together so an ambiguous additional action cannot be stripped.
-      const parts = decision.nextStep.text.split(NEXT_STEP_CLAUSE_SEPARATOR);
-      const retained = parts.flatMap((text, index) =>
-        index % 2 === 0 && !STANDALONE_CHANGELOG_ENTRY_REQUEST.test(text) ? [index] : [],
-      );
-      if (retained.length !== (parts.length + 1) / 2) {
-        const text = retained
-          .map((index, position) => `${position === 0 ? "" : parts[index - 1]}${parts[index]}`)
-          .join("")
-          .trim();
-        decision = { ...decision, nextStep: { kind: text ? "required" : "none", text } };
-      }
-    }
-    const reviewFindings = decision.reviewFindings.filter(
-      (finding) => !isContributorChangelogEntryFinding(item, finding),
-    );
-    if (reviewFindings.length === decision.reviewFindings.length) return decision;
-    if (reviewFindings.length > 0) return { ...decision, reviewFindings };
-    const overallCorrectness =
-      decision.overallCorrectness === "patch is incorrect"
-        ? "patch is correct"
-        : decision.overallCorrectness;
-
-    return {
-      ...decision,
-      reviewFindings,
-      bestSolution: CLEAN_OPENCLAW_PR_REVIEW_NEXT_STEP,
-      triagePriority: decision.triagePriority,
-      mergeRiskOptions: decision.mergeRiskOptions,
-      labelJustifications: decision.labelJustifications,
-      overallCorrectness,
-      prRating: derivedPrRating({
-        isPullRequest: item?.kind === "pull_request",
-        proof: decision.realBehaviorProof,
-        findings: reviewFindings,
-        securityReview: decision.securityReview,
-        overallCorrectness,
-        overallConfidenceScore: decision.overallConfidenceScore,
-      }),
-      workCandidate: "none",
-      workConfidence: "low",
-      workPriority: "low",
-      workReason: "",
-      workPrompt: "",
-      workClusterRefs: [],
-      workValidation: [],
-      workLikelyFiles: [],
     };
   }
 
@@ -1076,7 +971,7 @@ export function createDecisionParser({
     throw new Error(`${path} has invalid value`);
   }
 
-  function parseDecision(value: unknown, item?: DecisionNormalizationItem): Decision {
+  function parseDecision(value: unknown, item?: RootCauseNormalizationItem): Decision {
     const record = requireRecord(value, "decision");
     rejectUnexpectedKeys(record, DECISION_SCHEMA_KEYS, "decision");
     const evidence = Array.isArray(record.evidence)
@@ -1123,9 +1018,7 @@ export function createDecisionParser({
       ),
       evidence,
       likelyOwners,
-      risks: requireReportTextArray(record.risks, "decision.risks").filter(
-        (risk) => !isEnvironmentAccessCaveat(risk),
-      ),
+      risks: requireReportTextArray(record.risks, "decision.risks"),
       bestSolution: requireReportText(record.bestSolution, "decision.bestSolution"),
       maintainerDecision: {
         ...maintainerDecision,
@@ -1271,7 +1164,7 @@ export function createDecisionParser({
     validateMergeRiskOptions(decision);
     validateMaintainerDecisionOwner(decision);
     validateLabelJustifications(decision);
-    return normalizeDecisionForItem(decision, item);
+    return decision;
   }
 
   return {

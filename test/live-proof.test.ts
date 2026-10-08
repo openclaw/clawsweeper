@@ -55,7 +55,6 @@ import {
 
 const HEAD = "0123456789abcdef0123456789abcdef01234567";
 const liveProofPlanParser = createDecisionParser({
-  isMaintainerAuthorAssociation: () => false,
   neutralizeOwnedSectionSpoofing: (value) => value,
   sanitizeArchitectureDiagram: (value) => value,
 }).parseLiveProofPlan;

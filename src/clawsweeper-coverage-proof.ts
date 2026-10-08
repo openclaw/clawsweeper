@@ -51,8 +51,6 @@ export function createPullRequestCoverageProof(
     ghJson,
     ghPagedContextWindow,
     ghPagedLinkHeaderContextWindow,
-    linkedPullCannotSupersedeDocsOnlySource,
-    linkedPullRequestFiles,
     linkedPullRequestHasSupersessionSignal,
     linkedPullRequestLabels,
     linkedPullRequestRefsFromReport,
@@ -91,7 +89,6 @@ export function createPullRequestCoverageProof(
       const { number } = ref;
       try {
         const pull = asRecord(ghJson<unknown>(["api", `repos/${targetRepo()}/pulls/${number}`]));
-        const linkedFiles = linkedPullRequestFiles(number);
         const linkedPull: LinkedPullRequestSupersession = {
           number,
           title: stringOrUndefined(pull.title) ?? `PR #${number}`,
@@ -101,12 +98,7 @@ export function createPullRequestCoverageProof(
           mergeableState: stringOrUndefined(pull.mergeable_state)?.toLowerCase() ?? null,
           draft: pull.draft === true,
           labels: linkedPullRequestLabels(number, pull),
-          files: linkedFiles.files,
-          filesKnown: linkedFiles.known,
         };
-        if (linkedPullCannotSupersedeDocsOnlySource(markdown, linkedPull)) {
-          return `linked canonical PR #${number} does not cover the docs-only source diff; refusing duplicate/superseded auto-close`;
-        }
         const reason = unsafeCanonicalPullRequestReason(linkedPull, options);
         if (reason) return `${reason}; refusing duplicate/superseded auto-close`;
       } catch (error) {

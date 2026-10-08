@@ -1199,6 +1199,16 @@ Needs contributor action: false
 
 Summary: A live session confirmed the override reaches the next request.
 
+## PR Rating
+
+Overall tier: A
+
+Proof tier: A
+
+Patch tier: A
+
+Summary: The focused test change is ready for maintainer review.
+
 ## Best Possible Solution
 
 Merge after required checks are green.

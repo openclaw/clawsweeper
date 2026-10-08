@@ -28,7 +28,6 @@ import { createApplyDecisionWorkflow } from "./clawsweeper-apply-decision-workfl
 import { implementedOnMainCloseProvenanceBlock } from "./clawsweeper-apply-close-execution.js";
 import { createApplyGuards } from "./clawsweeper-apply-guards.js";
 import { createAssistWorkflow } from "./clawsweeper-assist.js";
-import { isDocsPath } from "./openclaw-file-role.js";
 import { createCloseDecisionWorkflow } from "./clawsweeper-close-decision.js";
 import { createCommandOperations } from "./clawsweeper-command-operations.js";
 import { createContextHydration } from "./clawsweeper-context-hydration.js";
@@ -108,13 +107,13 @@ import {
 import { createSweepStatus } from "./clawsweeper-sweep-status.js";
 import type {
   Decision,
-  DecisionNormalizationItem,
   Evidence,
   GitInfo,
   Item,
   ItemContext,
   MutationRunner,
   ReportEntry,
+  RootCauseNormalizationItem,
   SecurityConcern,
 } from "./clawsweeper-types.js";
 export {
@@ -440,13 +439,12 @@ export function reviewPolicyHashForTest(
 }
 
 const decisionParser = createDecisionParser({
-  isMaintainerAuthorAssociation,
   neutralizeOwnedSectionSpoofing: (...args) => neutralizeOwnedSectionSpoofing(...args),
   sanitizeArchitectureDiagram: (...args) => sanitizeArchitectureDiagram(...args),
 });
 const { defaultRootCauseCluster, parseGitHubItemRef } = decisionParser;
 
-export function parseDecision(value: unknown, item?: DecisionNormalizationItem): Decision {
+export function parseDecision(value: unknown, item?: RootCauseNormalizationItem): Decision {
   return decisionParser.parseDecision(value, item);
 }
 
@@ -471,14 +469,13 @@ export const {
   reviewReportCanPromoteToCloseForTest,
   shouldSyncReviewComment,
 } = recordMetadata;
-const { frontMatterBoolean, frontMatterStringArray, frontMatterValue } = recordMetadata;
+const { frontMatterStringArray, frontMatterValue } = recordMetadata;
 
 const reportParser = createReportParser({
   agentsPolicyStatusLine: (...args) => agentsPolicyStatusLine(...args),
   ...decisionParser,
   evidenceEntry,
   ...recordMetadata,
-  isDocsOnlyPullRequestReport,
   isExternalPullRequestReport,
   markdownRepository,
   parseBoldListHeading: (...args) => parseBoldListHeading(...args),
@@ -502,7 +499,6 @@ const {
 
 const reportRealBehaviorProofPolicy = createRealBehaviorProofPolicy({
   ...recordMetadata,
-  isDocsOnlyPullRequestReport,
   isExternalPullRequestReport,
   reportAttachedLiveVerification,
   reportRealBehaviorProof,
@@ -933,7 +929,6 @@ const reportOrchestration = createReportOrchestration({
   isAutomationReportAuthor,
   isBulkFilerExemptAuthorAssociation,
   isBulkFilerExemptRepositoryPermission,
-  isDocsOnlyPullRequestReport,
   isFresh,
   isImplementationCloseReason: (...args) => isImplementationCloseReason(...args),
   isIssueAdvisoryLabel: (...args) => isIssueAdvisoryLabel(...args),
@@ -1014,18 +1009,10 @@ const {
   OWNED_REVIEW_SECTION_HEADINGS,
   labelSynchronization,
   parseBacktickLocation,
-  pullRequestFilePathsFromReport,
   pullRequestReviewReadinessFromReport,
   syncWorkPlanFromReport,
   workPlanPathForReport,
 } = reportOrchestration;
-
-function isDocsOnlyPullRequestReport(markdown: string): boolean {
-  if (frontMatterValue(markdown, "type") !== "pull_request") return false;
-  if (frontMatterBoolean(markdown, "pull_files_truncated")) return false;
-  const files = pullRequestFilePathsFromReport(markdown);
-  return files.length > 0 && files.every(isDocsPath);
-}
 
 const {
   isIssueAdvisoryLabel,

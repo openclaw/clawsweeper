@@ -233,10 +233,6 @@ export function createReportOrchestrationFoundation(
     return `${links.slice(0, -1).join(", ")}, and ${links[links.length - 1]}`;
   }
 
-  function pullRequestFilePathsFromReport(markdown: string): string[] {
-    return frontMatterStringArray(markdown, "pull_files");
-  }
-
   function prSurfaceFilesFromContext(context: ItemContext): PrSurfaceFile[] | null {
     const entries = context.pullFiles ?? [];
     if (
@@ -445,7 +441,6 @@ export function createReportOrchestrationFoundation(
     duplicateCanonicalLinks,
     duplicateCanonicalPathLine,
     formatCanonicalLinks,
-    pullRequestFilePathsFromReport,
     prSurfaceFilesFromContext,
     nonNegativeInteger,
     prSurfaceFilesFromReport,

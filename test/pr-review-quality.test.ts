@@ -127,7 +127,6 @@ const reportParser = createReportParser({
     OWNED_REVIEW_SECTION_HEADINGS: new Set(),
     parseBacktickLocation: () => null,
   }),
-  isDocsOnlyPullRequestReport: () => false,
   isExternalPullRequestReport: () => true,
 } as Parameters<typeof createReportParser>[0]);
 

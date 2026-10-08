@@ -243,7 +243,6 @@ export function parseLegacyLiveProofPlan(value: unknown): LiveProofPlan {
 }
 
 const legacyDecisionParser = createDecisionParser({
-  isMaintainerAuthorAssociation: () => false,
   neutralizeOwnedSectionSpoofing: (value: string) => value,
   sanitizeArchitectureDiagram: (value: string) => value,
 });

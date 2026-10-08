@@ -176,44 +176,44 @@ ${malformedReceipt ? `## Live Proof\n\n${LIVE_VERIFICATION_MARKER}\nResult: inva
 test("report proof requirements preserve workflow precedence and contributor ownership", () => {
   for (const fixture of [
     {
-      status: "not_applicable",
-      action: false,
+      status: "missing",
+      action: true,
       labels: ["clawsweeper:automerge"],
       expected: "status: 📣 needs proof",
     },
     {
-      status: "not_applicable",
-      action: false,
+      status: "missing",
+      action: true,
       labels: ["status: 📣 needs proof"],
       expected: "status: 📣 needs proof",
     },
     {
-      status: "not_applicable",
-      action: false,
+      status: "missing",
+      action: true,
       labels: ["status: 🔁 re-review loop"],
       expected: "status: 🔁 re-review loop",
     },
     {
-      status: "not_applicable",
-      action: false,
+      status: "missing",
+      action: true,
       labels: ["status: 🛠️ actively grinding"],
       expected: "status: 🛠️ actively grinding",
     },
     {
-      status: "not_applicable",
-      action: false,
+      status: "missing",
+      action: true,
       labels: ["clawsweeper:human-review"],
       expected: null,
     },
     {
-      status: "not_applicable",
-      action: false,
+      status: "missing",
+      action: true,
       labels: ["clawsweeper:manual-only"],
       expected: null,
     },
     {
-      status: "not_applicable",
-      action: false,
+      status: "missing",
+      action: true,
       labels: ["clawsweeper:merge-ready"],
       expected: null,
     },
@@ -247,7 +247,7 @@ test("report proof requirements preserve workflow precedence and contributor own
     })}
 ${realBehaviorProofReportSection({
   status: fixture.status,
-  evidenceKind: fixture.status === "not_applicable" ? "not_applicable" : "none",
+  evidenceKind: "none",
   needsContributorAction: fixture.action,
   summary: "Recorded assessment for the changed path.",
 })}`;
@@ -260,7 +260,7 @@ ${realBehaviorProofReportSection({
     );
     assert.match(reviewAutomationMarkersFromReport(report), /clawsweeper-verdict:needs-human/);
     assert.match(comment, /⛔ \*\*Blocked before merge/);
-    if (fixture.status !== "not_applicable") {
+    if (!fixture.action) {
       assert.doesNotMatch(comment, /\*\*Add real behavior proof\*\*/);
       assert.match(comment, /\*\*Resolve real behavior proof assessment\*\*/);
     }
@@ -295,6 +295,8 @@ Merge after required checks are green.
 
 ${realBehaviorProofReportSection()}
 
+${prRatingReportSection({ overallTier: "A", proofTier: "A", patchTier: "A" })}
+
 ## Review Findings
 
 Overall correctness: patch is correct
@@ -325,7 +327,7 @@ Full review comments:
   assert.doesNotMatch(markers, /clawsweeper-verdict:needs-human/);
 });
 
-test("proof-blocked PR comments show proof cap while preserving patch quality", () => {
+test("proof-blocked PR comments show the model rating while preserving patch quality", () => {
   const report = `${reportFrontMatter({
     type: "pull_request",
     number: "74460",
@@ -358,6 +360,8 @@ ${realBehaviorProofReportSection({
   needsContributorAction: true,
   summary: "The PR has no real ingestion-run proof yet.",
 })}
+
+${prRatingReportSection({ overallTier: "F", proofTier: "F", patchTier: "A", nextSteps: "- none" })}
 
 ## Review Findings
 
@@ -812,7 +816,7 @@ Full review comments:
   );
 });
 
-test("public PR review details justify derived rating label changes", () => {
+test("public PR review details justify model rating label changes", () => {
   const report = `${reportFrontMatter({
     type: "pull_request",
     number: "84006",
@@ -847,6 +851,8 @@ ${realBehaviorProofReportSection({
   needsContributorAction: true,
   summary: "The PR still needs current real-environment proof for the changed behavior.",
 })}
+
+${prRatingReportSection({ overallTier: "D", proofTier: "D", patchTier: "A", nextSteps: "- none" })}
 
 ## Review Findings
 

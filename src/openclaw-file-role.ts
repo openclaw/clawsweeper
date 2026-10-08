@@ -9,7 +9,3 @@ export function isOpenClawTestRolePath(path: string): boolean {
     /(?:^|\/)(?:[A-Za-z]*Tests|src\/(?:test|androidTest)(?:[A-Z][A-Za-z]*)?)\//.test(path)
   );
 }
-
-export function isDocsPath(file: string): boolean {
-  return file.startsWith("docs/");
-}

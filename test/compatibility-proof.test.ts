@@ -92,13 +92,16 @@ for (const metadata of [
   { labels: '["clawsweeper:automerge","proof: override"]' },
   { author_association: "MEMBER" },
   { author_association: "NONE", author: "synthetic[bot]" },
-  { pull_files: '["docs/example.md"]', pull_files_truncated: "false" },
+  {
+    real_behavior_proof_status: "not_applicable",
+    real_behavior_proof_needs_contributor_action: "false",
+  },
 ]) {
   test(`general proof exemption cannot waive compatibility: ${JSON.stringify(metadata)}`, () => {
     const exempt = {
-      ...metadata,
       real_behavior_proof_status: "missing",
       real_behavior_proof_needs_contributor_action: "true",
+      ...metadata,
     };
     assertHold(compatibilityReport({ compatibility: "insufficient", metadata: exempt }), true);
     assertHold(

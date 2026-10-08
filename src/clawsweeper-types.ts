@@ -1196,10 +1196,6 @@ export type GitHubDispatchOutcome =
   | "ambiguous_transport"
   | "accepted";
 
-export type DecisionNormalizationItem = Pick<
-  Item,
-  "repo" | "number" | "kind" | "authorAssociation"
->;
 export type RootCauseNormalizationItem = Pick<Item, "repo" | "number" | "kind">;
 
 export interface ParsedGitHubItemRef {
@@ -1384,8 +1380,6 @@ export interface LinkedPullRequestSupersession {
   mergeableState: string | null;
   draft: boolean;
   labels: string[];
-  files: string[];
-  filesKnown: boolean;
 }
 
 export interface LinkedPullRequestSupersessionResolution {

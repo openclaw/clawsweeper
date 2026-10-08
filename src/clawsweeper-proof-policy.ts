@@ -14,7 +14,6 @@ export interface RealBehaviorProofPolicy {
 interface ProofPolicyDependencies {
   frontMatterValue: (markdown: string, key: string) => string | undefined;
   frontMatterStringArray: (markdown: string, key: string) => string[];
-  isDocsOnlyPullRequestReport: (markdown: string) => boolean;
   isExternalPullRequestReport: (markdown: string) => boolean;
   reportAttachedLiveVerification: (markdown: string) => AttachedLiveVerification;
   reportRealBehaviorProof: (markdown: string) => RealBehaviorProof;
@@ -25,7 +24,6 @@ export function createRealBehaviorProofPolicy(dependencies: ProofPolicyDependenc
   const {
     frontMatterValue,
     frontMatterStringArray,
-    isDocsOnlyPullRequestReport,
     isExternalPullRequestReport,
     reportAttachedLiveVerification,
     reportRealBehaviorProof,
@@ -42,18 +40,20 @@ export function createRealBehaviorProofPolicy(dependencies: ProofPolicyDependenc
     const required =
       frontMatterValue(markdown, "review_status") !== "failed" &&
       !frontMatterStringArray(markdown, "labels").includes(PROOF_OVERRIDE_LABEL) &&
-      !isDocsOnlyPullRequestReport(markdown) &&
       (isExternalPullRequestReport(markdown) || authorityChainProofRequired);
-    const proofBlocksMerge =
-      required &&
-      (assessment.needsContributorAction ||
-        (assessment.status !== "sufficient" && assessment.status !== "override"));
+    // The reviewer model decides when proof does not apply, for example for a docs-only PR.
+    // A not-applicable status cannot clear the authority-chain proof that the model itself requires.
+    const proofSatisfied =
+      assessment.status === "sufficient" ||
+      assessment.status === "override" ||
+      (assessment.status === "not_applicable" && !authorityChainProofRequired);
+    const proofBlocksMerge = required && (assessment.needsContributorAction || !proofSatisfied);
     return {
       assessment,
       required,
       proofBlocksMerge,
       verificationBlocksMerge,
-      // N/A cannot exempt applicable PRs. Receipt failures remain maintainer-owned.
+      // Receipt failures remain maintainer-owned.
       needsContributorAction:
         proofBlocksMerge &&
         (assessment.needsContributorAction || assessment.status === "not_applicable"),
