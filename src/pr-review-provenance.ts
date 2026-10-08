@@ -1,6 +1,11 @@
 import type { ItemContext } from "./clawsweeper-types.js";
 import { fetchReviewBlobs, ReviewGitError } from "./clawsweeper-review-blobs.js";
-import { readReviewGit, reviewMergeBase, type ReviewGitReadOptions } from "./pr-review-evidence.js";
+import {
+  readReviewGit,
+  reviewMergeBase,
+  reviewRecord as record,
+  type ReviewGitReadOptions,
+} from "./pr-review-evidence.js";
 
 // Host-side provenance facts for the reviewer. The model keeps the judgement;
 // this step only reports which commits and pull requests introduced the base
@@ -71,10 +76,6 @@ export const PROVENANCE_NOT_RUN: ProvenanceEvidence = {
   reason: "The host provenance step did not run for this review.",
   areas: [],
 };
-
-function record(value: unknown): Record<string, unknown> {
-  return value && typeof value === "object" ? (value as Record<string, unknown>) : {};
-}
 
 function collapse(text: string, limit: number): string {
   return text.replace(/\s+/g, " ").trim().slice(0, limit);

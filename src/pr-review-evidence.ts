@@ -61,6 +61,8 @@ function record(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" ? (value as Record<string, unknown>) : {};
 }
 
+export { record as reviewRecord };
+
 function objectId(value: unknown): string | null {
   return typeof value === "string" && OBJECT_ID.test(value) ? value : null;
 }

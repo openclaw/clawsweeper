@@ -217,6 +217,25 @@ test("pull request resolution prefers the merged PR, collapses the body, and cac
   assert.deepEqual(calls, [`o/r@${A}`, `o/r@${ROOT}`, `o/other@${A}`, `o/r@${B}`, `o/r@${B}`]);
 });
 
+test("pull request resolution retains named properties on arrays and null-prototype objects", () => {
+  const fields = {
+    number: 8,
+    html_url: "https://github.com/o/r/pull/8",
+    title: "  Keep the guard  ",
+    merged_at: "2024-01-02T00:00:00Z",
+    body: "Why:\n  keep the guard",
+  };
+  for (const pull of [Object.assign([], fields), Object.assign(Object.create(null), fields)]) {
+    assert.deepEqual(commitPullRequest([null, undefined, false, 0, "pull", pull]), {
+      number: 8,
+      url: fields.html_url,
+      title: "Keep the guard",
+      mergedAt: fields.merged_at,
+      bodyExcerpt: "Why: keep the guard",
+    });
+  }
+});
+
 function fakeGit(
   blame: Record<string, string | null>,
   diff: string | null = samplePatch,

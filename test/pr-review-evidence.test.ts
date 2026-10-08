@@ -5,7 +5,64 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-import { readReviewGit } from "../dist/pr-review-evidence.js";
+import {
+  buildPullRequestReviewEvidence,
+  readReviewGit,
+  reviewRecord,
+} from "../dist/pr-review-evidence.js";
+
+test("reviewRecord preserves object identity, including arrays and null prototypes", () => {
+  for (const value of [{}, [], Object.assign([], { sha: "a".repeat(40) }), Object.create(null)]) {
+    assert.equal(reviewRecord(value), value);
+  }
+});
+
+test("reviewRecord returns a fresh plain object for null and non-object values", () => {
+  for (const value of [
+    null,
+    undefined,
+    false,
+    true,
+    0,
+    1,
+    NaN,
+    "",
+    "head",
+    1n,
+    Symbol(),
+    () => {},
+  ]) {
+    const first = reviewRecord(value);
+    const second = reviewRecord(value);
+    assert.deepEqual(first, {});
+    assert.deepEqual(second, {});
+    assert.notEqual(first, second);
+  }
+});
+
+test("review evidence retains pinned identities on array-backed records", () => {
+  const sha = "a".repeat(40);
+  const pullRequest = Object.assign([], {
+    base: Object.assign([], { sha }),
+    head: Object.assign([], { sha }),
+  });
+  const evidence = buildPullRequestReviewEvidence({ context: { pullRequest }, mainSha: sha });
+  assert.equal(evidence.baseSha, sha);
+  assert.equal(evidence.originalHead.sha, sha);
+});
+
+test("reviewRecord does not read accessors, while review callers preserve their errors", () => {
+  const value = Object.defineProperty({}, "base", {
+    get() {
+      throw new TypeError("fixture base access");
+    },
+  });
+  assert.equal(reviewRecord(value), value);
+  assert.throws(
+    () => buildPullRequestReviewEvidence({ context: { pullRequest: value }, mainSha: "" }),
+    { name: "TypeError", message: "fixture base access" },
+  );
+});
 
 test("readReviewGit keeps raw reads isolated with a Git-compatible null device", () => {
   const root = mkdtempSync(join(tmpdir(), "clawsweeper-review-git-"));
