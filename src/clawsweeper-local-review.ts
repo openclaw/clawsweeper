@@ -11,6 +11,14 @@ interface LocalRangeReviewDependencies {
   reviewCommentContentRevision: (entries: readonly unknown[]) => string;
 }
 
+const GITHUB_FILE_STATUSES: Readonly<Record<string, string>> = {
+  A: "added",
+  C: "copied",
+  D: "removed",
+  M: "modified",
+  R: "renamed",
+};
+
 function localRangeFiles(targetDir: string, diffArgs: string[]) {
   const invalid = () =>
     new UserFacingCommandError("Could not read complete local-range Git file list.");
@@ -40,7 +48,12 @@ function localRangeFiles(targetDir: string, diffArgs: string[]) {
     const filename = renamed ? names[index++] : first;
     if (!first || !filename || filenames.has(filename)) throw invalid();
     filenames.add(filename);
-    files.push({ filename, ...(renamed ? { previous_filename: first } : {}), status });
+    // Local pull files follow the GitHub pull files contract, so status uses GitHub words.
+    files.push({
+      filename,
+      ...(renamed ? { previous_filename: first } : {}),
+      status: GITHUB_FILE_STATUSES[status[0]!] ?? "changed",
+    });
   }
   const identity = (filename: string, previous?: string) => JSON.stringify([previous, filename]);
   function readStatistics() {

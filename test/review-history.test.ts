@@ -463,7 +463,7 @@ test("durable review identity changes with every verdict-bearing section", () =>
     ],
     [
       "likely owner",
-      `${base}\n## Likely Related People\n\n- **@cache-team:** owns cache invalidation\n  - reason: Maintains the review cache.\n  - confidence: high\n`,
+      `${base}\n## Likely Related People\n\n- **Cache Author:** source-line author\n  - attribution source: raw_parent_line_v1\n  - reason: Raw commit adds src/cache.ts:1.\n  - confidence: high\n  - commits: ${"c".repeat(40)}\n  - files: src/cache.ts\n`,
     ],
     [
       "label rationale",
