@@ -3027,7 +3027,7 @@ if (args[0] === "api" && /\\/issues\\/74484$/.test(path)) {
   }
 });
 
-test("apply-decisions routes parsed security owner acceptance to maintainer review", () => {
+test("apply-decisions keeps a listed security owner acceptance out of ready and author wait", () => {
   const root = mkdtempSync(tmpPrefix);
   try {
     const { itemsDir, closedDir, plansDir, reportPath } = createApplyDirectories(root);
@@ -3113,12 +3113,13 @@ Full review comments:
       },
     );
 
+    // The acceptance is still a Before-merge item, so no status label claims readiness.
     const updatedReport = readFileSync(itemPath, "utf8");
-    assert.match(updatedReport, /status: 👀 ready for maintainer look/);
+    assert.doesNotMatch(updatedReport, /status: 👀 ready for maintainer look/);
     assert.doesNotMatch(updatedReport, /status: ⏳ waiting on author/);
     const labelCalls = readFileSync(labelLogPath, "utf8");
     assert.match(labelCalls, /--remove-label status: ⏳ waiting on author/);
-    assert.match(labelCalls, /--add-label status: 👀 ready for maintainer look/);
+    assert.doesNotMatch(labelCalls, /--add-label status:/);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
