@@ -136,7 +136,7 @@ for (const kind of ["issue", "pull_request"] as const) {
     }
     if (kind === "issue") {
       assert.equal(rendered.closingPullRequests[0].bodyCoverage, undefined);
-      assert.ok(rendered.closingPullRequests[0].body.endsWith("[truncated 48641 chars]"));
+      assert.equal(rendered.closingPullRequests[0].body, undefined);
     }
     assert.doesNotMatch(prompt, new RegExp(scriptSentinel));
     assert.doesNotMatch(prompt, /PERSISTENCE_ONLY_|prHydrationSnapshot|pullCommitsRevision/);
@@ -618,7 +618,7 @@ test("review prompt excludes persistence-only PR hydration snapshots", () => {
   assert.doesNotMatch(prompt, /PERSISTED_FULL_COMMENT_MUST_STAY_PRIVATE/);
 });
 
-test("review prompt points at linked-item bodies only when the reviewer can read GitHub", () => {
+test("review prompt keeps the primary body and indexes linked items without their bodies", () => {
   const context = {
     issue: { number: 123, title: "Sample PR", body: "PRIMARY_BODY" },
     comments: [],
@@ -634,17 +634,11 @@ test("review prompt points at linked-item bodies only when the reviewer can read
   };
   const target = item({ kind: "pull_request", number: 123 });
 
-  const online = reviewPromptForTest(target, context, git, "", {
-    networkCapability: "allowlisted-proxy",
-  });
-  assert.match(online, /PRIMARY_BODY/);
-  assert.match(online, /"title": "Linked"/);
-  assert.match(online, /"merged": true/);
-  assert.doesNotMatch(online, /LINKED_ISSUE_BODY|LINKED_PR_BODY|CLOSING_PR_BODY/);
-
-  const offline = reviewPromptForTest(target, context, git, "", { networkCapability: "none" });
-  assert.match(offline, /LINKED_ISSUE_BODY/);
-  assert.match(offline, /CLOSING_PR_BODY/);
+  const prompt = reviewPromptForTest(target, context, git);
+  assert.match(prompt, /PRIMARY_BODY/);
+  assert.match(prompt, /"title": "Linked"/);
+  assert.match(prompt, /"merged": true/);
+  assert.doesNotMatch(prompt, /LINKED_ISSUE_BODY|LINKED_PR_BODY|CLOSING_PR_BODY/);
 });
 
 test("review prompt counts passing checks and lists only the ones that did not pass", () => {

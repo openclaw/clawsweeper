@@ -479,15 +479,11 @@ export function createReviewRuntime({
     return reviewDecisionSchemaCache;
   }
 
-  function contextJsonForPrompt(
-    context: ItemContext,
-    kind: Item["kind"],
-    networkCapability: ReviewPromptRuntimeHints["networkCapability"],
-  ): string {
-    const promptContext = reviewPromptContext(context, {
-      agentCanReadGitHub: networkCapability !== undefined && networkCapability !== "none",
-    });
-    return serializeReviewContext(promptContext, kind === "pull_request" ? context.pullFiles : []);
+  function contextJsonForPrompt(context: ItemContext, kind: Item["kind"]): string {
+    return serializeReviewContext(
+      reviewPromptContext(context),
+      kind === "pull_request" ? context.pullFiles : [],
+    );
   }
 
   function buildReviewPrompt(
@@ -501,7 +497,7 @@ export function createReviewRuntime({
     // Review rules judge pull requests only; issue triage keeps the static template.
     const rules =
       item.kind === "pull_request" ? `\n\n## Review Rules\n\n${reviewRulesText().trim()}` : "";
-    const contextJson = contextJsonForPrompt(context, item.kind, runtimeHints.networkCapability);
+    const contextJson = contextJsonForPrompt(context, item.kind);
     const prEvidence =
       item.kind === "pull_request"
         ? buildPullRequestReviewEvidence({
