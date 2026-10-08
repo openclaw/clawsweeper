@@ -1,0 +1,1 @@
+- Teach PR reviews the maintainers' standing rules: root cause over symptom patches, fixes in the shared owner, model judgement over regex judges, no restrictions without a trust boundary, helpful user messages, public-text hygiene, upgrade proof from the latest stable release, and one place per remaining gap so a proof gap no longer repeats as a merge risk.

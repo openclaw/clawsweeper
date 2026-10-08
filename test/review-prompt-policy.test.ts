@@ -386,9 +386,8 @@ test("review prompt requires upgrade and preference overwrite checks", () => {
   );
   assert.match(prompt, /Call out upgrade and settings breakage directly in `reviewFindings`/);
   assert.match(prompt, /existing config\/preferences can be overwritten/);
-  assert.match(prompt, /preserving the existing\s+behavior as the default/);
-  assert.match(prompt, /explicit strict config option/);
-  assert.match(prompt, /default compatibility mode and the\s+opt-in strict mode/);
+  assert.match(prompt, /keeps existing setups working without a new config option/);
+  assert.doesNotMatch(prompt, /strict config option/);
   assert.match(prompt, /require evidence for both fresh-install behavior and upgrade\s+behavior/);
   assert.match(prompt, /If upgrade behavior is ambiguous, mark the PR incorrect/);
 });

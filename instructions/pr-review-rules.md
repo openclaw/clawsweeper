@@ -40,9 +40,11 @@ it the most care.
    change is never `yes` without an owner decision, even when the preference
    is reasonable: changing designed behavior for one user's taste is a product
    call.
-5. A bug fix fixes the stated bug only. A new config option, default, schema,
-   permission, or public API inside a bug fix needs the owner's decision. Set
-   `worthIt: needs_maintainer`.
+5. A bug fix fixes the stated bug only. Each changed hunk serves the user
+   problem in `productReview.userProblem`; unrelated cleanup, refactors or
+   features belong in a separate pull request. A new config option, default,
+   schema, permission, or public API inside a bug fix needs the owner's
+   decision. Set `worthIt: needs_maintainer`.
 6. When the expected behavior in the linked issue conflicts with an existing
    product contract, the change is a product call, not a fix. Set
    `worthIt: needs_maintainer`.
@@ -129,6 +131,10 @@ proof. They never replace it.
    review cannot show this, state why in `testingReview.missingE2e`.
 6. Name the missing end-to-end scenario in `testingReview.missingE2e`. Leave it
    empty when the end-to-end proof is complete.
+7. When the diff changes config loading, defaults, stored data, migrations,
+   Doctor, or a protocol, the proof includes an upgrade from the latest stable
+   release to the head with existing settings and data intact. Name a missing
+   upgrade run in `testingReview.missingE2e`.
 
 ### Change rules
 
@@ -138,9 +144,36 @@ proof. They never replace it.
    is a product call: set `worthIt: needs_maintainer`, unless an owner
    decision already exists (Product review rule 3).
 2. Clean cutover: each decision has one owner. The change removes the path
-   that it replaces.
-3. The claims in the pull request body match the diff that the pull request
-   introduces. Report each claim that the diff does not support.
+   that it replaces. Production growth fits the problem: a new owner, manager,
+   wrapper, layer, or parallel path needs a stated reason why the existing
+   owner cannot hold the change. Prefer a change that removes more code than
+   it adds.
+3. Root cause: the change removes the cause of the failure. A retry, guard,
+   catch, filter, timeout, or message that hides the failure while the cause
+   stays is a symptom patch: report it in `reviewFindings` with the input that
+   still reaches the cause, and name the owner of the cause in
+   `bestSolution`.
+4. Shared owner: when the defect is in shared behavior, the fix goes in the
+   shared owner (core, the plugin SDK, a shared channel layer, a provider
+   registry). A fix in one channel, provider, or consumer says why the other
+   consumers of the same path do not have the defect.
+5. Model judgement: a semantic decision (intent, similarity, quality,
+   relevance, a score) that the diff makes with regex, keyword lists, or
+   string matching is a finding; recommend that the model decide. Exact
+   parsing of a fixed format (IDs, flags, protocol fields) is not semantic.
+6. Agent capability: a change that removes or limits what the agent or the
+   operator can do (a tool, command, skill, config edit, or model action)
+   names the trust boundary that it protects. Without a real boundary, the
+   restriction is friction, not security: report it as a regression.
+7. User messages: each user-visible message that the diff adds or changes
+   says what happened and the next action, in user terms. A generic failure
+   text, a status message after a successful operation, or a fix that needs a
+   normal user to edit config or read logs is a finding.
+8. The claims in the pull request body match the diff that the pull request
+   introduces. Report each claim that the diff does not support. Public text
+   (body, commits, comments) names no private deployment, private bot or host,
+   personal data, or outside project used as a design source, and has no
+   AI-disclosure or workflow boilerplate.
 
 ### CI and base
 
@@ -171,6 +204,22 @@ proof. They never replace it.
    concern back for a later cycle. When a re-review finds a real defect in
    code that an earlier review could already see, report it and set
    `lateFinding: true`; a late defect is still a defect.
+4. One gap, one place. Each piece of remaining work appears once in the
+   comment, in the field that owns it:
+   - missing or weak proof: `realBehaviorProof` and
+     `testingReview.missingE2e`;
+   - a patch defect: `reviewFindings`;
+   - an owner or product call: `productReview` or `maintainerDecision`;
+   - a stored-data or config upgrade question: its compatibility field.
+   `risks` holds only an unresolved merge concern that none of these fields
+   already states, and `nextStep` names only the next action, not a list of
+   the items above. A proof gap is never also a `risks` entry.
+5. Ask only for work that a real input needs. `nextStep`, `risks`,
+   `bestSolution`, `mergeRiskOptions`, and `prRating.nextSteps` do not ask for
+   extra guards, allowlists, deny rules, fallbacks, config options, or
+   edge-case handling unless you name the real input and the wrong result. A
+   simpler change that handles every shown case beats a larger change that
+   also handles hypothetical ones.
 
 ### Rating rubric
 
