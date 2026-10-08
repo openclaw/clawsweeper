@@ -24,7 +24,7 @@ import {
   reviewPolicyHashForTest,
   reviewLeaseStillMatchesContextForTest,
 } from "../dist/clawsweeper.js";
-import { runText, UserFacingCommandError } from "../dist/command.js";
+import { runText, runTextConcurrently, UserFacingCommandError } from "../dist/command.js";
 import { reviewMergeBase } from "../dist/pr-review-evidence.js";
 import { reviewStructuralPullStateDigest } from "../dist/review-structural-cache.js";
 import { mockGhBinEnv, workPlanCandidateReport } from "./helpers.ts";
@@ -122,6 +122,68 @@ test("runText explains missing executables", () => {
       return true;
     },
   );
+});
+
+test("runTextConcurrently runs commands together and reports each result as runText would", () => {
+  const root = mkdtempSync(join(tmpdir(), "cmd-concurrent-"));
+  // Each command waits until all three have started, so they finish only if
+  // they run at the same time; the timeout turns a serial run into a failure.
+  const rendezvous = (name: string) => [
+    "-e",
+    `const fs = require("node:fs");
+     fs.writeFileSync(${JSON.stringify(join(root, name))}, "");
+     const poll = setInterval(() => {
+       if (fs.readdirSync(${JSON.stringify(root)}).length >= 3) {
+         clearInterval(poll);
+         process.stdout.write(${JSON.stringify(`${name}\n`)});
+       }
+     }, 5);`,
+  ];
+  const failing = ["-e", "process.stderr.write('HTTP 404: Not Found'); process.exit(1)"];
+  const slow = ["-e", "setTimeout(() => {}, 10_000)"];
+  try {
+    const results = runTextConcurrently(
+      [
+        ...["a", "b", "c"].map((name) => ({
+          command: process.execPath,
+          args: rendezvous(name),
+          options: { timeoutMs: 10_000 },
+        })),
+        { command: process.execPath, args: failing },
+        { command: process.execPath, args: slow, options: { timeoutMs: 50 } },
+        {
+          command: "clawsweeper-missing-command-for-test",
+          args: [],
+          options: { env: { PATH: "" } },
+        },
+      ],
+      3,
+    );
+
+    assert.deepEqual(results.slice(0, 3), [{ output: "a" }, { output: "b" }, { output: "c" }]);
+    const sameFailure = (
+      result: (typeof results)[number] | undefined,
+      sequential: () => string,
+    ) => {
+      assert.ok(result && "error" in result);
+      const concurrentError = result.error as Error & Record<string, unknown>;
+      assert.throws(sequential, (error: Error & Record<string, unknown>) => {
+        assert.equal(concurrentError.constructor, error.constructor);
+        assert.equal(concurrentError.message, error.message);
+        for (const field of ["code", "status", "stdout", "stderr"]) {
+          assert.equal(concurrentError[field], error[field], field);
+        }
+        return true;
+      });
+    };
+    sameFailure(results[3], () => runText(process.execPath, failing));
+    sameFailure(results[4], () => runText(process.execPath, slow, { timeoutMs: 50 }));
+    sameFailure(results[5], () =>
+      runText("clawsweeper-missing-command-for-test", [], { env: { PATH: "" } }),
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test("review CLI suppresses stack traces for missing local target checkout", () => {

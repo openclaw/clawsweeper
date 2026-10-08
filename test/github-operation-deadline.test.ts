@@ -574,3 +574,70 @@ for (const expiry of ["before", "after"] as const) {
     assert.equal(appDispatches, 1);
   });
 }
+
+test("ghJsonEach dispatches first attempts together and finishes each through ghJson", (t) => {
+  let nowMs = 1_000_000;
+  t.mock.method(Date, "now", () => nowMs);
+  t.mock.method(console, "error", () => {});
+  const batches: Array<Array<{ args: string[]; timeoutMs: number | undefined }>> = [];
+  const retried: string[][] = [];
+  const firstOutcomes: Record<string, { output: string } | { error: Error }> = {
+    "repos/openclaw/openclaw/issues/1": { output: '{"number":1}' },
+    "repos/openclaw/openclaw/issues/2": { error: new Error("HTTP 502: Bad Gateway") },
+    "repos/openclaw/openclaw/issues/3": { error: new Error("HTTP 404: Not Found") },
+  };
+  const runtime = createGitHubRuntime({
+    ROOT: process.cwd(),
+    targetRepo: () => "openclaw/openclaw",
+    run: (_command, requestArgs) => {
+      retried.push(requestArgs);
+      return '{"number":2}';
+    },
+    runConcurrently: (commands) => {
+      batches.push(commands.map(({ args, options }) => ({ args, timeoutMs: options.timeoutMs })));
+      return commands.map(({ args }) => firstOutcomes[args[1]!]!);
+    },
+  });
+  const waits: number[] = [];
+  t.mock.method(runtime, "sleepBeforeGitHubRetry", (waitMs: number) => {
+    waits.push(waitMs);
+    nowMs += waitMs;
+  });
+  const execution = createGitHubExecution({
+    ROOT: process.cwd(),
+    gitHubRuntime: runtime,
+    labelAlreadyExistsError: () => false,
+  });
+  const requests = [1, 2, 3].map((number) => ["api", `repos/openclaw/openclaw/issues/${number}`]);
+
+  const results = runtime.withGitHubRuntimeBudget(
+    { startedAtMs: nowMs, maxRuntimeMs: 15_000 },
+    () => execution.ghJsonEach(requests),
+  );
+
+  // One concurrent dispatch, each command bounded by the active runtime budget.
+  assert.deepEqual(batches, [requests.map((args) => ({ args, timeoutMs: 14_000 }))]);
+  // Only the transient failure goes through the existing retry path.
+  assert.deepEqual(retried, [requests[1]]);
+  assert.deepEqual(waits, [2_000]);
+  assert.deepEqual(results.slice(0, 2), [
+    { ok: true, value: { number: 1 } },
+    { ok: true, value: { number: 2 } },
+  ]);
+  const notFound = results[2];
+  assert.ok(notFound && !notFound.ok);
+  assert.match(String(notFound.error), /HTTP 404/);
+
+  // An exhausted budget stops every read before any process starts.
+  nowMs += 20_000;
+  const exhausted = runtime.withGitHubRuntimeBudget(
+    { startedAtMs: nowMs - 20_000, maxRuntimeMs: 15_000 },
+    () => execution.ghJsonEach(requests),
+  );
+  assert.equal(batches.length, 1);
+  assert.ok(
+    exhausted.every(
+      (result) => !result.ok && result.error instanceof runtime.GitHubRuntimeBudgetError,
+    ),
+  );
+});

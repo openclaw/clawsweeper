@@ -7,7 +7,7 @@ import { flushWorkflowActionEvents } from "./action-ledger-runtime.js";
 import { boolArg, itemNumbersArg, parseArgs, stringArg, type Args } from "./clawsweeper-args.js";
 import { dispatchCommand, type CommandHandler } from "./clawsweeper-command-dispatch.js";
 import { createDecisionParser } from "./clawsweeper-decision-parser.js";
-import { runText, SWEEPER_COMMAND_MAX_BUFFER_BYTES } from "./command.js";
+import { runText, runTextConcurrently, SWEEPER_COMMAND_MAX_BUFFER_BYTES } from "./command.js";
 import { AUTOMATION_LIMITS } from "./limits.js";
 import {
   DEFAULT_TARGET_REPO,
@@ -299,24 +299,35 @@ function evidenceEntry(options: Partial<Evidence> & Pick<Evidence, "label" | "de
   };
 }
 
-function run(
-  command: string,
-  args: string[],
-  options: { cwd?: string; env?: NodeJS.ProcessEnv; timeoutMs?: number | undefined } = {},
-): string {
-  return runText(command, args, {
+type RunOptions = { cwd?: string; env?: NodeJS.ProcessEnv; timeoutMs?: number | undefined };
+
+function runTextOptions(options: RunOptions) {
+  return {
     cwd: options.cwd ?? ROOT,
     env: options.env,
     maxBuffer: SWEEPER_COMMAND_MAX_BUFFER_BYTES,
-    stdio: ["ignore", "pipe", "pipe"],
+    stdio: ["ignore", "pipe", "pipe"] as ["ignore", "pipe", "pipe"],
     timeoutMs: options.timeoutMs,
-    trim: "both",
-  });
+    trim: "both" as const,
+  };
+}
+
+function run(command: string, args: string[], options: RunOptions = {}): string {
+  return runText(command, args, runTextOptions(options));
 }
 
 const gitHubRuntime = createGitHubRuntime({
   ROOT,
   run,
+  runConcurrently: (commands, concurrency) =>
+    runTextConcurrently(
+      commands.map(({ command, args, options }) => ({
+        command,
+        args,
+        options: runTextOptions(options),
+      })),
+      concurrency,
+    ),
   targetRepo,
 });
 export const { untrustedCodexEnvForTest } = gitHubRuntime;
@@ -333,6 +344,7 @@ const {
   ApplyMutationReviewGuardError,
   GitHubDispatchError,
   ghJson,
+  ghJsonEach,
   ghJsonLines,
   ghJsonOnce,
   ghObservedMutationCommand,
@@ -352,7 +364,7 @@ const CLAWSWEEPER_BOT_AUTHORS = new Set(
     .map((login) => login.toLowerCase()),
 );
 
-const githubContext = createGitHubContext({ ghJson, ghWithRetry, targetRepo });
+const githubContext = createGitHubContext({ ghJson, ghJsonEach, ghWithRetry, targetRepo });
 export const {
   ghPagedContextWindow,
   ghPagedLinkHeaderContextWindow,
@@ -569,6 +581,7 @@ const contextHydration = createContextHydration({
   fetchIssueReviewComments: (number) => fetchIssueReviewComments(number),
   ghJson,
   ghJsonOnce,
+  ghJsonEach,
   githubCount,
   GitHubRuntimeBudgetError,
   isAutomationReportAuthor,

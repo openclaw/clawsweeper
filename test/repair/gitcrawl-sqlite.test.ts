@@ -428,9 +428,8 @@ function relatedContextFor(root: string, dbPath: string) {
     defaultClosedDir: () => path.join(root, "closed"),
     isMarkdownForActiveRepo: () => false,
     gitHubRuntimeBudgetError: class GitHubRuntimeBudgetError extends Error {},
-    ghJson: () => {
-      throw new Error("unexpected GitHub request");
-    },
+    ghJsonEach: (requests: readonly string[][]) =>
+      requests.map(() => ({ ok: false as const, error: new Error("unexpected GitHub request") })),
     ghJsonOnce: () => {
       throw new Error("unexpected GitHub request");
     },

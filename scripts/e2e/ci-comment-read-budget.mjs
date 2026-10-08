@@ -112,6 +112,7 @@ if (process.argv.includes("--server")) {
   process.env.CLAWSWEEPER_WEBHOOK_SECRET = "synthetic-loopback-only";
   const github = createGitHubContext({
     ghJson: (args) => get(args[1]),
+    ghJsonEach: (requests) => requests.map((args) => ({ ok: true, value: get(args[1]) })),
     ghWithRetry: () => {
       throw new Error("unexpected transport");
     },

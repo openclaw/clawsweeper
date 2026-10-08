@@ -13,16 +13,19 @@ import type {
   ContextHydration,
   GithubContextWindowPlan,
   GithubPageWithHeaders,
+  GitHubJsonResult,
 } from "./clawsweeper-types.js";
 
 interface GitHubContextDependencies {
   ghJson: <T>(args: string[]) => T;
+  ghJsonEach: <T>(requests: readonly string[][]) => GitHubJsonResult<T>[];
   ghWithRetry: (args: string[]) => string;
   targetRepo: () => string;
 }
 
 export function createGitHubContext({
   ghJson,
+  ghJsonEach,
   ghWithRetry,
   targetRepo,
 }: GitHubContextDependencies) {
@@ -318,14 +321,26 @@ export function createGitHubContext({
     }
 
     const plan = githubContextWindowPlan(total, boundedLimit);
-    const firstPage = plan.keepStart > 0 ? fetchPage(path, 1) : [];
-    const headItems = firstPage.slice(0, plan.keepStart);
-    const tailPages: T[] = [];
+    const tailPageNumbers: number[] = [];
     if (plan.keepEnd > 0) {
       for (let page = plan.tailFirstPageNumber; page <= plan.lastPageNumber; page += 1) {
-        tailPages.push(...(page === 1 && plan.keepStart > 0 ? firstPage : fetchPage(path, page)));
+        tailPageNumbers.push(page);
       }
     }
+    const pageNumbers = [...new Set([...(plan.keepStart > 0 ? [1] : []), ...tailPageNumbers])];
+    // Head and tail pages are independent reads; the first failure in page order is thrown.
+    const pages = fetchers.page
+      ? new Map(pageNumbers.map((page) => [page, fetchPage(path, page)] as const))
+      : new Map(
+          ghJsonEach<unknown>(pageNumbers.map((page) => ["api", githubPagePath(path, page)])).map(
+            (read, index) => {
+              if (!read.ok) throw read.error;
+              return [pageNumbers[index]!, Array.isArray(read.value) ? (read.value as T[]) : []];
+            },
+          ),
+        );
+    const headItems = (pages.get(1) ?? []).slice(0, plan.keepStart);
+    const tailPages = tailPageNumbers.flatMap((page) => pages.get(page) ?? []);
     const tailItems = tailPages.slice(plan.tailOffset, plan.tailOffset + plan.keepEnd);
     const items = [...headItems, ...tailItems];
     return {

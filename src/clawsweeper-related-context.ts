@@ -5,6 +5,7 @@ import { escapeRegExp, truncateText } from "./clawsweeper-text.js";
 import { querySqliteRows, querySqliteScalar } from "./sqlite-readonly.js";
 import type {
   GitcrawlClusterSource,
+  GitHubJsonResult,
   Item,
   ItemKind,
   LocalRelatedTitleEntry,
@@ -31,7 +32,7 @@ interface RelatedContextDependencies {
   defaultClosedDir: () => string;
   isMarkdownForActiveRepo: (markdown: string, file?: string) => boolean;
   gitHubRuntimeBudgetError: new (reason: string) => Error;
-  ghJson: <T>(args: string[]) => T;
+  ghJsonEach: <T>(requests: readonly string[][]) => GitHubJsonResult<T>[];
   ghJsonOnce: <T>(args: string[], timeoutMs: number) => T;
   asRecord: (value: unknown) => Record<string, unknown>;
   login: (value: unknown) => string | undefined;
@@ -56,7 +57,7 @@ export function createRelatedContext({
   defaultClosedDir,
   isMarkdownForActiveRepo,
   gitHubRuntimeBudgetError: GitHubRuntimeBudgetError,
-  ghJson,
+  ghJsonEach,
   ghJsonOnce,
   asRecord,
   login,
@@ -136,37 +137,54 @@ export function createRelatedContext({
       : value;
   }
 
-  function compactRelatedItem(
-    number: number,
-    mentionedIn: string[],
-  ): Record<string, unknown> | null {
-    try {
-      const issue = ghJson<unknown>(["api", `repos/${targetRepo()}/issues/${number}`]);
-      const issueRecord = asRecord(issue);
-      const related: Record<string, unknown> = {
-        mentionedIn: mentionedIn.slice(0, 6),
-        issue: redactRelatedBody(compactIssue(issue)),
-        commentCount: issueRecord.comments,
-      };
+  // Mentioned items are independent reads: all issues together, then the pull
+  // requests among them together. Each entry still fails on its own.
+  function compactRelatedItems(
+    mentioned: ReadonlyArray<readonly [number, string[]]>,
+  ): Record<string, unknown>[] {
+    const issueReads = ghJsonEach<unknown>(
+      mentioned.map(([number]) => ["api", `repos/${targetRepo()}/issues/${number}`]),
+    );
+    const pullNumbers = mentioned.flatMap(([number], index) => {
+      const issueRead = issueReads[index];
+      return issueRead?.ok && asRecord(issueRead.value).pull_request ? [number] : [];
+    });
+    const pullReads = ghJsonEach<unknown>(
+      pullNumbers.map((number) => ["api", `repos/${targetRepo()}/pulls/${number}`]),
+    );
+    const pullReadsByNumber = new Map(
+      pullNumbers.map((number, index) => [number, pullReads[index]] as const),
+    );
+    return mentioned.map(([number, mentionedIn], index) => {
+      try {
+        const issueRead = issueReads[index];
+        if (!issueRead?.ok) throw issueRead?.error;
+        const issueRecord = asRecord(issueRead.value);
+        const related: Record<string, unknown> = {
+          mentionedIn: mentionedIn.slice(0, 6),
+          issue: redactRelatedBody(compactIssue(issueRead.value)),
+          commentCount: issueRecord.comments,
+        };
 
-      if (issueRecord.pull_request) {
-        try {
-          related.pullRequest = redactRelatedBody(
-            compactPullRequest(ghJson<unknown>(["api", `repos/${targetRepo()}/pulls/${number}`])),
-          );
-        } catch (error) {
-          related.pullRequestError = error instanceof Error ? error.message : String(error);
+        if (pullReadsByNumber.has(number)) {
+          try {
+            const pullRead = pullReadsByNumber.get(number);
+            if (!pullRead?.ok) throw pullRead?.error;
+            related.pullRequest = redactRelatedBody(compactPullRequest(pullRead.value));
+          } catch (error) {
+            related.pullRequestError = error instanceof Error ? error.message : String(error);
+          }
         }
-      }
 
-      return related;
-    } catch (error) {
-      return {
-        number,
-        mentionedIn: mentionedIn.slice(0, 6),
-        error: error instanceof Error ? error.message : String(error),
-      };
-    }
+        return related;
+      } catch (error) {
+        return {
+          number,
+          mentionedIn: mentionedIn.slice(0, 6),
+          error: error instanceof Error ? error.message : String(error),
+        };
+      }
+    });
   }
 
   const RELATED_TITLE_STOP_WORDS = new Set([
@@ -769,11 +787,9 @@ export function createRelatedContext({
     pullReviewComments?: unknown[];
   }): unknown[] {
     const mentions = collectRelatedMentions(options);
-    const explicitRelated = [...mentions.entries()]
-      .sort(([left], [right]) => left - right)
-      .slice(0, 10)
-      .map(([number, mentionedIn]) => compactRelatedItem(number, mentionedIn))
-      .filter((entry) => entry !== null);
+    const explicitRelated = compactRelatedItems(
+      [...mentions.entries()].sort(([left], [right]) => left - right).slice(0, 10),
+    );
     const seen = new Set<number>([options.item.number]);
     const related: unknown[] = [];
     appendUniqueRelatedItems(related, seen, explicitRelated);

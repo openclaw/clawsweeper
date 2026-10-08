@@ -40,6 +40,7 @@ import type {
   ContextHydration,
   GoodFirstIssueHumanLabelState,
   GitHubDeadlineOptions,
+  GitHubJsonResult,
   Item,
   ItemKind,
   PreviousClawSweeperReview,
@@ -66,6 +67,7 @@ interface CreateContextHydrationDependencies {
   frontMatterValue: (markdown: string, key: string) => string | undefined;
   ghJson: <T>(args: string[], options?: GitHubDeadlineOptions) => T;
   ghJsonOnce: <T>(args: string[], timeoutMs: number) => T;
+  ghJsonEach: <T>(requests: readonly string[][]) => GitHubJsonResult<T>[];
   githubCount: (value: unknown) => number | null;
   GitHubRuntimeBudgetError: new (reason: string) => Error & { readonly reason: string };
   isAutomationReportAuthor: (author: string | undefined) => boolean;
@@ -126,6 +128,7 @@ export function createContextHydration(dependencies: CreateContextHydrationDepen
     frontMatterValue,
     ghJson,
     ghJsonOnce,
+    ghJsonEach,
     githubCount,
     GitHubRuntimeBudgetError,
     isAutomationReportAuthor,
@@ -421,15 +424,16 @@ export function createContextHydration(dependencies: CreateContextHydrationDepen
 
   function pullChecksContext(number: number, headSha: string): unknown {
     try {
-      const checkResponse = asRecord(
-        ghJson<unknown>([
-          "api",
-          `repos/${targetRepo()}/commits/${headSha}/check-runs?per_page=100`,
-        ]),
-      );
-      const statusResponse = asRecord(
-        ghJson<unknown>([`api`, `repos/${targetRepo()}/commits/${headSha}/status?per_page=100`]),
-      );
+      // Both reads run together; the first failure in request order is reported.
+      const [checkPayload, statusPayload] = ghJsonEach<unknown>([
+        ["api", `repos/${targetRepo()}/commits/${headSha}/check-runs?per_page=100`],
+        [`api`, `repos/${targetRepo()}/commits/${headSha}/status?per_page=100`],
+      ]).map((read) => {
+        if (!read.ok) throw read.error;
+        return read.value;
+      });
+      const checkResponse = asRecord(checkPayload);
+      const statusResponse = asRecord(statusPayload);
       const rawCheckRuns = Array.isArray(checkResponse.check_runs)
         ? checkResponse.check_runs
         : null;
@@ -579,8 +583,8 @@ export function createContextHydration(dependencies: CreateContextHydrationDepen
     defaultClosedDir,
     isMarkdownForActiveRepo,
     gitHubRuntimeBudgetError: GitHubRuntimeBudgetError,
-    ghJson,
     ghJsonOnce,
+    ghJsonEach,
     asRecord,
     login,
     compactIssue,

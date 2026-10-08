@@ -10,6 +10,8 @@ import {
 import type {
   GitHubDeadlineOptions,
   GitHubDispatchOutcome,
+  GitHubFirstAttempt,
+  GitHubJsonResult,
   GitHubRetryOptions,
   MutationRunner,
 } from "./clawsweeper-types.js";
@@ -32,6 +34,7 @@ export function createGitHubExecution(dependencies: CreateGitHubExecutionDepende
     ensureGitHubRetryFits,
     ensureGitHubRuntimeAvailable,
     gh,
+    ghFirstAttemptsConcurrently,
     ghOnce,
     ghWithPreparedTimeout,
     githubCommandTimeoutMs,
@@ -70,7 +73,13 @@ export function createGitHubExecution(dependencies: CreateGitHubExecutionDepende
         if (deadlineAt !== undefined) {
           ensureGitHubRuntimeAvailable("before GitHub operation", deadlineAt);
         }
-        const result = options.request?.(args, attempt) ?? request();
+        let result: string;
+        if (attempt === 0 && options.firstAttempt) {
+          if ("error" in options.firstAttempt) throw options.firstAttempt.error;
+          result = options.firstAttempt.output;
+        } else {
+          result = options.request?.(args, attempt) ?? request();
+        }
         if (deadlineAt !== undefined) {
           ensureGitHubRuntimeAvailable("after GitHub operation", deadlineAt);
         }
@@ -385,22 +394,61 @@ export function createGitHubExecution(dependencies: CreateGitHubExecutionDepende
   }
 
   function ghJson<T>(args: string[], options: GitHubDeadlineOptions = {}): T {
-    const result = parseGhJsonWithRetry<T>(() => ghWithRetry(args, undefined, options), args, {
-      onRetry: (_error, attempt) => {
-        const waitMs = ghRetryWaitMs("transient", attempt - 1);
-        if (options.deadlineAt !== undefined) {
-          ensureGitHubRetryFits(waitMs, options.deadlineAt);
-        }
-        console.error(
-          `Malformed GitHub JSON response; retrying ${summarizeGhArgs(args)} in ${Math.round(waitMs / 1000)}s`,
-        );
-        sleepBeforeGitHubRetry(waitMs, options.deadlineAt);
+    return readJson<T>(args, options);
+  }
+
+  function readJson<T>(
+    args: string[],
+    options: GitHubDeadlineOptions,
+    firstAttempt?: GitHubFirstAttempt | null,
+  ): T {
+    // A replayed first attempt belongs to the first load only; malformed-JSON
+    // retries request fresh output.
+    let pendingFirstAttempt = firstAttempt ?? undefined;
+    const result = parseGhJsonWithRetry<T>(
+      () => {
+        const retryOptions = pendingFirstAttempt
+          ? { ...options, firstAttempt: pendingFirstAttempt }
+          : options;
+        pendingFirstAttempt = undefined;
+        return ghWithRetry(args, undefined, retryOptions);
       },
-    });
+      args,
+      {
+        onRetry: (_error, attempt) => {
+          const waitMs = ghRetryWaitMs("transient", attempt - 1);
+          if (options.deadlineAt !== undefined) {
+            ensureGitHubRetryFits(waitMs, options.deadlineAt);
+          }
+          console.error(
+            `Malformed GitHub JSON response; retrying ${summarizeGhArgs(args)} in ${Math.round(waitMs / 1000)}s`,
+          );
+          sleepBeforeGitHubRetry(waitMs, options.deadlineAt);
+        },
+      },
+    );
     if (options.deadlineAt !== undefined) {
       ensureGitHubRuntimeAvailable("after GitHub JSON response", options.deadlineAt);
     }
     return result;
+  }
+
+  /**
+   * Independent `ghJson` reads whose first attempts run concurrently. Each
+   * read then finishes through `ghJson`'s own retry, rate-limit fallback,
+   * budget and malformed-JSON handling, in request order. One read failing
+   * does not affect the others.
+   */
+  function ghJsonEach<T>(requests: readonly string[][]): GitHubJsonResult<T>[] {
+    const firstAttempts =
+      requests.length > 1 ? ghFirstAttemptsConcurrently(requests) : requests.map(() => null);
+    return requests.map((args, index) => {
+      try {
+        return { ok: true, value: readJson<T>(args, {}, firstAttempts[index]) };
+      } catch (error) {
+        return { ok: false, error };
+      }
+    });
   }
 
   function ghJsonOnce<T>(args: string[], timeoutMs: number): T {
@@ -424,6 +472,7 @@ export function createGitHubExecution(dependencies: CreateGitHubExecutionDepende
     GitHubDispatchError,
     classifyGitHubDispatchResultForTest,
     ghJson,
+    ghJsonEach,
     ghJsonLines,
     ghJsonOnce,
     ghObservedMutationCommand,

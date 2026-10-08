@@ -1171,9 +1171,17 @@ export type GitHubFallbackClaim = GitHubRequestReservation & {
   env: NodeJS.ProcessEnv;
 };
 
+/** The outcome of a request's first attempt, already dispatched elsewhere. */
+export type GitHubFirstAttempt = { output: string } | { error: unknown };
+
+/** One read of a `ghJsonEach` batch: its value, or the error `ghJson` threw. */
+export type GitHubJsonResult<T> = { ok: true; value: T } | { ok: false; error: unknown };
+
 export type GitHubRetryOptions = GitHubDeadlineOptions & {
   request?: ((args: string[], attempt: number) => string) | undefined;
   sleepBeforeRetry?: ((waitMs: number) => void) | undefined;
+  /** Replayed as attempt one; later attempts, fallbacks and checks are unchanged. */
+  firstAttempt?: GitHubFirstAttempt | undefined;
 };
 
 export type MutationRunner = <T>(options: {

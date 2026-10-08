@@ -3,6 +3,7 @@ import { createHmac } from "node:crypto";
 import { appendFileSync, closeSync, fstatSync, lstatSync, openSync, unlinkSync } from "node:fs";
 import type {
   GitHubFallbackClaim,
+  GitHubFirstAttempt,
   GitHubRequestReservation,
   GitHubRuntimeBudget,
 } from "./clawsweeper-types.js";
@@ -36,15 +37,25 @@ import {
 } from "./github-retry.js";
 import { recordOrEmpty as objectValue } from "./value-coerce.js";
 
+type GitHubCommandOptions = {
+  cwd?: string;
+  env?: NodeJS.ProcessEnv;
+  timeoutMs?: number | undefined;
+};
+
 interface CreateGitHubRuntimeDependencies {
   ROOT: string;
-  run: (
-    command: string,
-    args: string[],
-    options?: { cwd?: string; env?: NodeJS.ProcessEnv; timeoutMs?: number | undefined },
-  ) => string;
+  run: (command: string, args: string[], options?: GitHubCommandOptions) => string;
+  /** `run` for independent commands, at most `concurrency` at once; one result each. */
+  runConcurrently: (
+    commands: ReadonlyArray<{ command: string; args: string[]; options: GitHubCommandOptions }>,
+    concurrency: number,
+  ) => GitHubFirstAttempt[];
   targetRepo: () => string;
 }
+
+/** Independent GitHub reads in flight together. */
+export const GITHUB_CONCURRENT_READS = 8;
 
 const claimedPublicReadFallbackTokens = new Set<string>();
 const RATE_LIMIT_LOOKUP_TIMEOUT_MS = 20_000;
@@ -108,7 +119,7 @@ function reserveGitHubRequest<Key>(
 }
 
 export function createGitHubRuntime(dependencies: CreateGitHubRuntimeDependencies) {
-  const { ROOT, run, targetRepo } = dependencies;
+  const { ROOT, run, runConcurrently, targetRepo } = dependencies;
   const inspectedRateLimitScopes = new Set<GitHubCredentialScope>();
   const retainedEtagResponses = createRetainedGithubEtagResponses();
 
@@ -825,6 +836,78 @@ export function createGitHubRuntime(dependencies: CreateGitHubRuntimeDependencie
     return ghWithPreparedTimeout(args, githubCommandTimeoutMs());
   }
 
+  /**
+   * The first attempt `gh(args)` would make for each request, with the
+   * commands running concurrently. Preparation, circuit checks, timeouts and
+   * request metrics are `gh`'s; retries stay with the caller. `null` leaves a
+   * request to `gh` itself (conditional ETag reads in the publication lane).
+   */
+  function ghFirstAttemptsConcurrently(
+    requests: readonly string[][],
+  ): Array<GitHubFirstAttempt | null> {
+    const attempts: Array<GitHubFirstAttempt | null> = [];
+    const dispatched: Array<{
+      index: number;
+      args: string[];
+      scope: GitHubCredentialScope;
+      options: GitHubCommandOptions;
+    }> = [];
+    for (const [index, args] of requests.entries()) {
+      try {
+        const timeoutMs = githubCommandTimeoutMs();
+        const resolvedArgs = args[0] === "api" ? args : ["--repo", targetRepo(), ...args];
+        const preparedEnv = preparedGitHubEnv(resolvedArgs);
+        const scope = githubRequestScope(resolvedArgs);
+        const observationPath = rateLimitObservationPath();
+        if (
+          process.env.EXACT_EVENT_PUBLICATION === "true" &&
+          observationPath &&
+          isPublicOpenClawReadOnlyRequest(resolvedArgs)
+        ) {
+          ensureGitHubRuntimeAvailable("before GitHub operation");
+          const circuit = activeGitHubRateLimitCircuit(
+            observationPath,
+            scope,
+            targetRepo().split("/", 1)[0] || "",
+          );
+          if (circuit) {
+            recordGitHubRequest(resolvedArgs, scope, "skipped_by_circuit");
+            throw circuit;
+          }
+        }
+        if (!githubEtagKeyForArgs(resolvedArgs, preparedEnv, {})) {
+          dispatched.push({
+            index,
+            args: resolvedArgs,
+            scope,
+            options: { timeoutMs, ...(preparedEnv ? { env: preparedEnv } : {}) },
+          });
+        }
+        attempts.push(null);
+      } catch (error) {
+        attempts.push({ error });
+      }
+    }
+    if (dispatched.length === 0) return attempts;
+    const results = runConcurrently(
+      dispatched.map(({ args, options }) => ({ command: "gh", args, options })),
+      GITHUB_CONCURRENT_READS,
+    );
+    for (const [position, { index, args, scope }] of dispatched.entries()) {
+      const result = results[position]!;
+      if ("error" in result) {
+        const retryKind = ghRetryKind(result.error);
+        if (retryKind !== "throttle") {
+          recordGitHubRequest(args, scope, retryKind === "transient" ? "transient" : "error");
+        }
+      } else {
+        recordGitHubRequest(args, scope, "success");
+      }
+      attempts[index] = result;
+    }
+    return attempts;
+  }
+
   function ghOnce(args: string[], timeoutMs: number): string {
     const resolvedArgs = args[0] === "api" ? args : ["--repo", targetRepo(), ...args];
     const env = {
@@ -900,6 +983,7 @@ export function createGitHubRuntime(dependencies: CreateGitHubRuntimeDependencie
     ensureGitHubRuntimeAvailable,
     ensureRuntimeDelayFits,
     gh,
+    ghFirstAttemptsConcurrently,
     ghOnce,
     ghWithPreparedTimeout,
     githubRateLimitError,
