@@ -565,6 +565,8 @@ function routedCommandForComment(comment: JsonValue): LooseRecord | null {
     automation_source: parsed.automation_source ?? null,
     repair_reason: parsed.repair_reason ?? null,
     live_verification: parsed.live_verification ?? null,
+    needs_human_hold: parsed.needs_human_hold ?? null,
+    review_findings: parsed.review_findings ?? null,
     review_summary: reviewSummaryFromCommentBody(comment.body),
     review_followup: reviewFollowupFromCommentBody(comment.body),
     freeform_prompt: parsed.freeform_prompt ?? null,
