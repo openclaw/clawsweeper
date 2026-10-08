@@ -6,7 +6,11 @@ import type { CreateApplyDecisionWorkflowDependencies } from "./clawsweeper-appl
 import { liveApplyCloseReasonPolicyBlock } from "./clawsweeper-apply-close-policies.js";
 import { closeReasonText } from "./clawsweeper-close-reasons.js";
 import { linkedIssueNumbersForImplementationProvenance } from "./clawsweeper-status-context.js";
-import { EVENT_GUARDED_OPEN_ACTIONS, REVIEW_SECTIONS } from "./clawsweeper-policy.js";
+import {
+  EVENT_GUARDED_OPEN_ACTIONS,
+  REVIEW_SECTIONS,
+  isGitHubVerifiedFixedPullRequestSource,
+} from "./clawsweeper-policy.js";
 import type {
   ActionTaken,
   ApplyKind,
@@ -90,7 +94,7 @@ export function implementedOnMainCloseProvenanceBlock(
   const repository = markdown.match(/^repository: (.+)$/m)?.[1]?.trim();
   const fixedPrNumber = markdown.match(/^fixed_pr_number: (\d+)$/m)?.[1]?.trim();
   const fixedPrConfidence = markdown.match(/^fixed_pr_confidence: (.+)$/m)?.[1]?.trim();
-  const fixedPrSource = markdown.match(/^fixed_pr_source: (.+)$/m)?.[1]?.trim();
+  const fixedPrSource = markdown.match(/^fixed_pr_source: "?([^"\n]+)"?$/m)?.[1];
   const fixedPrMergedAt = markdown.match(/^fixed_pr_merged_at: (.+)$/m)?.[1]?.trim();
   if (
     fixedPrUrl &&
@@ -99,9 +103,7 @@ export function implementedOnMainCloseProvenanceBlock(
     fixedPrNumber !== String(itemNumber) &&
     fixedPrUrl === `https://github.com/${repository}/pull/${fixedPrNumber}` &&
     fixedPrConfidence === "high" &&
-    fixedPrSource &&
-    fixedPrSource !== "unknown" &&
-    fixedPrSource.includes("GitHub ") &&
+    isGitHubVerifiedFixedPullRequestSource(fixedPrSource) &&
     fixedPrMergedAt &&
     fixedPrMergedAt !== "unknown"
   ) {

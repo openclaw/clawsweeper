@@ -4,6 +4,7 @@ import { join } from "node:path";
 import test from "node:test";
 
 import {
+  canonicalPullRequestClusterForTest,
   lowSignalCloseReport,
   promotionGhMock,
   reportWithSyncedReviewComment,
@@ -122,7 +123,13 @@ function assertResolvedPromotionRespectsCloseReasonFilter(options: {
       title: "Ambiguous stale promotion",
       pull_files: JSON.stringify(options.sourceFiles),
       pull_files_truncated: false,
-      work_cluster_refs: JSON.stringify(options.linkedFiles ? ["Superseded by #400"] : []),
+      ...(options.linkedFiles
+        ? {
+            root_cause_cluster: canonicalPullRequestClusterForTest(
+              "https://github.com/openclaw/openclaw/pull/400",
+            ),
+          }
+        : {}),
     }).replace(
       "## Summary\n\nThe dashboard has queue_fix_pr candidates but no generated coding plan.",
       `## Summary\n\n${keepOpenSummary}`,

@@ -7,6 +7,7 @@ import test from "node:test";
 import { createApplyProofFreshnessGuards } from "../dist/clawsweeper-apply-proof-freshness.js";
 import { completeActivityContextSymbol } from "../dist/clawsweeper-types.js";
 import {
+  canonicalPullRequestClusterForTest,
   emptyReviewedPrActivityCursor,
   lowSignalCloseReport,
   promotionGhMock,
@@ -160,28 +161,6 @@ function timelineRevisionForTest(
     sourceIssue: null,
   }));
   return createHash("sha256").update(JSON.stringify(digestParts)).digest("hex");
-}
-
-function boundDuplicateCloseComment(number: number, canonicalUrl: string): string {
-  const markerFields = [
-    `item=${number}`,
-    "sha=head-sha",
-    "confidence=high",
-    "updated_at=2026-05-01T00:00:00.000Z",
-    "reviewed_at=2026-05-01T00:00:00.000Z",
-    "source_revision=reviewed-source",
-    "action_taken=proposed_close",
-    "reason=duplicate_or_superseded",
-  ].join(" ");
-  return [
-    "Codex review: close this as superseded.",
-    "",
-    `Canonical: ${canonicalUrl}`,
-    "",
-    `<!-- clawsweeper-verdict:close ${markerFields} -->`,
-    `<!-- clawsweeper-action:close-required ${markerFields} -->`,
-    `<!-- clawsweeper-review item=${number} -->`,
-  ].join("\n");
 }
 
 test("apply-decisions fails closed when a self-mutation receipt is truncated", () => {
@@ -381,6 +360,9 @@ test("apply-decisions accepts same-second human activity already captured by the
         work_cluster_refs: JSON.stringify([
           "Superseded by https://github.com/openclaw/openclaw/pull/400",
         ]),
+        root_cause_cluster: canonicalPullRequestClusterForTest(
+          "https://github.com/openclaw/openclaw/pull/400",
+        ),
       }).replace(
         "Closing this PR because the branch is not a useful landing base.",
         "Closing this PR as superseded by https://github.com/openclaw/openclaw/pull/400.",
@@ -455,6 +437,9 @@ test("apply-decisions keeps existing duplicate PR close proposals open when cove
         work_cluster_refs: JSON.stringify([
           "Superseded by https://github.com/openclaw/openclaw/pull/400",
         ]),
+        root_cause_cluster: canonicalPullRequestClusterForTest(
+          "https://github.com/openclaw/openclaw/pull/400",
+        ),
       }).replace(
         "Closing this PR because the branch is not a useful landing base.",
         "Closing this PR as superseded by https://github.com/openclaw/openclaw/pull/400.",
@@ -523,6 +508,9 @@ test("apply-decisions retries transient duplicate PR coverage proof failures", (
         work_cluster_refs: JSON.stringify([
           "Superseded by https://github.com/openclaw/openclaw/pull/400",
         ]),
+        root_cause_cluster: canonicalPullRequestClusterForTest(
+          "https://github.com/openclaw/openclaw/pull/400",
+        ),
       }).replace(
         "Closing this PR because the branch is not a useful landing base.",
         "Closing this PR as superseded by https://github.com/openclaw/openclaw/pull/400.",
@@ -658,6 +646,9 @@ test("apply-decisions checks age before duplicate PR coverage proof", () => {
         work_cluster_refs: JSON.stringify([
           "Superseded by https://github.com/openclaw/openclaw/pull/400",
         ]),
+        root_cause_cluster: canonicalPullRequestClusterForTest(
+          "https://github.com/openclaw/openclaw/pull/400",
+        ),
       }).replace(
         "Closing this PR because the branch is not a useful landing base.",
         "Closing this PR as superseded by https://github.com/openclaw/openclaw/pull/400.",
@@ -733,7 +724,11 @@ test("apply-decisions ignores unrelated unsafe PR links when canonical PR is saf
       number: 347,
       title: "Already proposed duplicate close",
       close_reason: "duplicate_or_superseded",
+      // PR 401 appears only in prose, so its unsafe state does not block the close.
       work_cluster_refs: JSON.stringify(["https://github.com/openclaw/openclaw/pull/401"]),
+      root_cause_cluster: canonicalPullRequestClusterForTest(
+        "https://github.com/openclaw/openclaw/pull/400",
+      ),
     }).replace(
       "Closing this PR because the branch is not a useful landing base.",
       [
@@ -799,63 +794,6 @@ test("apply-decisions ignores unrelated unsafe PR links when canonical PR is saf
   });
 });
 
-test("apply-decisions blocks duplicate close when canonical PR is a bare cluster ref", () => {
-  withApplyTestWorkspace(tmpPrefix, ({ root, itemsDir, closedDir, plansDir, reportPath }) => {
-    const synced = reportWithSyncedReviewComment(
-      lowSignalCloseReport({
-        number: 341,
-        title: "Already proposed duplicate close",
-        close_reason: "duplicate_or_superseded",
-        work_cluster_refs: JSON.stringify(["https://github.com/openclaw/openclaw/pull/400"]),
-      }),
-      341,
-      "duplicate_or_superseded",
-    );
-    writeFileSync(join(itemsDir, "341.md"), synced.report, "utf8");
-
-    withMockGh(
-      root,
-      promotionGhMock({
-        number: 341,
-        title: "Already proposed duplicate close",
-        comment: boundDuplicateCloseComment(341, "https://github.com/openclaw/openclaw/pull/400"),
-        linkedPulls: {
-          400: {
-            number: 400,
-            title: "Closed unmerged canonical PR",
-            html_url: "https://github.com/openclaw/openclaw/pull/400",
-            state: "closed",
-            merged_at: null,
-            labels: [],
-          },
-        },
-      }),
-      () => {
-        runOpenClawApplyDecisionsForTest({
-          itemsDir,
-          closedDir,
-          plansDir,
-          reportPath,
-          dryRun: true,
-        });
-      },
-    );
-
-    const report = JSON.parse(readFileSync(reportPath, "utf8")) as Array<{
-      action: string;
-      reason: string;
-    }>;
-    assert.equal(
-      report.some((entry) => entry.action === "closed"),
-      false,
-    );
-    assert.match(
-      report.find((entry) => entry.action === "kept_open")?.reason ?? "",
-      /closed and unmerged/,
-    );
-  });
-});
-
 test("apply-decisions retries duplicate close when linked canonical PR comments cannot be read", () => {
   withApplyTestWorkspace(tmpPrefix, ({ root, itemsDir, closedDir, plansDir, reportPath }) => {
     const synced = reportWithSyncedReviewComment(
@@ -866,6 +804,9 @@ test("apply-decisions retries duplicate close when linked canonical PR comments 
         work_cluster_refs: JSON.stringify([
           "Superseded by https://github.com/openclaw/openclaw/pull/400",
         ]),
+        root_cause_cluster: canonicalPullRequestClusterForTest(
+          "https://github.com/openclaw/openclaw/pull/400",
+        ),
       }),
       340,
       "duplicate_or_superseded",

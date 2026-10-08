@@ -52,6 +52,7 @@ import {
   DEFAULT_REASONING_EFFORT,
   DEFAULT_SERVICE_TIER,
   STALE_INSUFFICIENT_INFO_MIN_AGE_DAYS,
+  isGitHubVerifiedFixedPullRequestSource,
 } from "./clawsweeper-policy.js";
 import { rawCommentBody } from "./clawsweeper-review-comments.js";
 import { DurableReviewPublicationBlockedError } from "./clawsweeper-review-comment-publication.js";
@@ -833,7 +834,7 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
           !parentFixedPrUrl ||
           parentFixedPrUrl !== pairedFixedPrUrl ||
           pairedFixedPrConfidence !== "high" ||
-          !pairedFixedPrSource?.includes("GitHub ") ||
+          !isGitHubVerifiedFixedPullRequestSource(pairedFixedPrSource) ||
           !pairedFixedPrMergedAt ||
           pairedFixedPrMergedAt === "unknown"
         ) {

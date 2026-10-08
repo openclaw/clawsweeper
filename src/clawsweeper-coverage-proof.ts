@@ -9,7 +9,6 @@ import type {
   PrCloseCoverageProofGateResult,
   PrCloseCoverageRuntimeBudget,
   PrRating,
-  PullRequestRef,
 } from "./clawsweeper-types.js";
 import {
   compactPrCloseCoverageProofComment,
@@ -44,6 +43,7 @@ export function createPullRequestCoverageProof(
   const {
     GitHubRuntimeBudgetError,
     asRecord,
+    canonicalPullRequestNumbersFromReport,
     defaultRootCauseCluster,
     filterReviewContextComments,
     frontMatterStringArray,
@@ -51,13 +51,10 @@ export function createPullRequestCoverageProof(
     ghJson,
     ghPagedContextWindow,
     ghPagedLinkHeaderContextWindow,
-    linkedPullRequestHasSupersessionSignal,
     linkedPullRequestLabels,
-    linkedPullRequestRefsFromReport,
     linkedPullRequestSignalContextsFromText,
     mergeRiskOptionsFromReport,
     numberOrUndefined,
-    parseGitHubItemRef,
     pullHeadShaFromContext,
     pullRequestUrlForNumber,
     renderPrRatingAssessmentReportSection,
@@ -85,8 +82,15 @@ export function createPullRequestCoverageProof(
     options: { reportDirs?: readonly string[] } = {},
   ): string | null {
     if (item.kind !== "pull_request") return null;
-    for (const ref of prCloseCoverageProofCandidateRefs(markdown, item)) {
-      const { number } = ref;
+    const candidateNumbers = prCloseCoverageProofCandidateNumbers(markdown, item);
+    if (
+      candidateNumbers.length === 0 &&
+      frontMatterValue(markdown, "pr_close_requires_canonical_pr") !== "false" &&
+      !reportRootCauseCluster(markdown).canonicalRef
+    ) {
+      return "duplicate/superseded PR close has no rootCauseCluster.canonicalRef; refusing duplicate/superseded auto-close";
+    }
+    for (const number of candidateNumbers) {
       try {
         const pull = asRecord(ghJson<unknown>(["api", `repos/${targetRepo()}/pulls/${number}`]));
         const linkedPull: LinkedPullRequestSupersession = {
@@ -103,80 +107,29 @@ export function createPullRequestCoverageProof(
         if (reason) return `${reason}; refusing duplicate/superseded auto-close`;
       } catch (error) {
         if (error instanceof GitHubRuntimeBudgetError) throw error;
-        if (ref.kind !== "pull_url" && shorthandRefIsIssue(number)) continue;
         return `linked canonical PR #${number} could not be read; refusing duplicate/superseded auto-close`;
       }
     }
     return null;
   }
 
-  function shorthandRefIsIssue(number: number): boolean {
-    try {
-      const issue = asRecord(ghJson<unknown>(["api", `repos/${targetRepo()}/issues/${number}`]));
-      return !issue.pull_request;
-    } catch {
-      return false;
-    }
-  }
-
-  function linkedRefCanBePullRequest(ref: PullRequestRef): boolean {
-    if (ref.kind === "pull_url") return true;
-    try {
-      ghJson<unknown>(["api", `repos/${targetRepo()}/pulls/${ref.number}`]);
-      return true;
-    } catch {
-      return !shorthandRefIsIssue(ref.number);
-    }
-  }
-
-  const PR_CLOSE_COVERAGE_PROOF_MAX_CANDIDATES_PER_ITEM = 4;
-
-  function prCloseCoverageProofCandidateRefs(markdown: string, item: Item): PullRequestRef[] {
+  function prCloseCoverageProofCandidateNumbers(markdown: string, item: Item): number[] {
     if (item.kind !== "pull_request") return [];
-    const linkedRefs = linkedPullRequestRefsFromReport(markdown, item.number);
-    const canonicalRefs = linkedRefs
-      .filter((ref) => linkedPullRequestHasSupersessionSignal(markdown, item.number, ref.number))
-      .filter(linkedRefCanBePullRequest);
-    if (canonicalRefs.length > 0) {
-      return canonicalRefs.slice(0, PR_CLOSE_COVERAGE_PROOF_MAX_CANDIDATES_PER_ITEM);
-    }
-    if (frontMatterValue(markdown, "pr_close_coverage_proof_fallback_refs") === "false") return [];
-    const possiblePullRequestRefs = linkedRefs.filter(linkedRefCanBePullRequest);
-    return possiblePullRequestRefs.length === 1 ? possiblePullRequestRefs : [];
+    return canonicalPullRequestNumbersFromReport(markdown, item.number);
   }
 
-  function possibleCanonicalPullRequestRefsFromReport(
-    markdown: string,
-    item: Item,
-  ): PullRequestRef[] {
+  function possibleCanonicalPullRequestNumbersFromReport(markdown: string, item: Item): number[] {
     if (item.kind !== "pull_request") return [];
     const pendingCanonicalNumber = staleCanonicalPullRequestNumber(markdown);
-    if (pendingCanonicalNumber) {
-      return [{ number: pendingCanonicalNumber, kind: "pull_url" }];
-    }
-    const structuredCanonicalRef = reportRootCauseCluster(markdown).canonicalRef;
-    if (structuredCanonicalRef) {
-      const parsed = parseGitHubItemRef(structuredCanonicalRef, "root_cause_cluster.canonicalRef");
-      if (parsed.kind === "pull_request" && parsed.number !== item.number) {
-        return [{ number: parsed.number, kind: "pull_url" }];
-      }
-    }
-    const linkedRefs = linkedPullRequestRefsFromReport(markdown, item.number);
-    const canonicalRefs = linkedRefs
-      .filter((ref) => linkedPullRequestHasSupersessionSignal(markdown, item.number, ref.number))
-      .filter(linkedRefCanBePullRequest);
-    if (canonicalRefs.length > 0) return canonicalRefs;
-    if (frontMatterValue(markdown, "pr_close_coverage_proof_fallback_refs") === "false") return [];
-    const possiblePullRequestRefs = linkedRefs.filter(linkedRefCanBePullRequest);
-    return possiblePullRequestRefs.length === 1 ? possiblePullRequestRefs : [];
+    if (pendingCanonicalNumber) return [pendingCanonicalNumber];
+    return canonicalPullRequestNumbersFromReport(markdown, item.number);
   }
 
   function canonicalPullRequestCommentSyncBlock(
     markdown: string,
     item: Item,
   ): CanonicalPullRequestCommentSyncBlock | null {
-    for (const ref of possibleCanonicalPullRequestRefsFromReport(markdown, item)) {
-      const { number } = ref;
+    for (const number of possibleCanonicalPullRequestNumbersFromReport(markdown, item)) {
       try {
         const pull = asRecord(ghJson<unknown>(["api", `repos/${targetRepo()}/pulls/${number}`]));
         const state = stringOrUndefined(pull.state)?.toLowerCase() ?? "";
@@ -190,7 +143,6 @@ export function createPullRequestCoverageProof(
         }
       } catch (error) {
         if (error instanceof GitHubRuntimeBudgetError) throw error;
-        if (ref.kind !== "pull_url" && shorthandRefIsIssue(number)) continue;
         return {
           kind: "unreadable",
           number,
@@ -326,13 +278,13 @@ export function createPullRequestCoverageProof(
       "before resolving",
     );
     if (beforeCandidateResolution) return beforeCandidateResolution;
-    const candidateRefs = prCloseCoverageProofCandidateRefs(options.markdown, options.item);
+    const candidateNumbers = prCloseCoverageProofCandidateNumbers(options.markdown, options.item);
     const afterCandidateResolution = prCloseCoverageRuntimeBudgetBlock(
       options.runtimeBudget,
       "while resolving",
     );
     if (afterCandidateResolution) return afterCandidateResolution;
-    if (candidateRefs.length === 0) return null;
+    if (candidateNumbers.length === 0) return null;
 
     const source = sourcePrCloseCoveragePullRequestView(options.item, options.context);
     const coveringViews = new Map<number, PrCloseCoverageProofPullRequestView>();
@@ -345,8 +297,7 @@ export function createPullRequestCoverageProof(
     };
     let firstKeepOpenBlock: PrCloseCoverageProofGateBlock | null = null;
     let checkedPullRequestCandidate = false;
-    for (const candidateRef of candidateRefs) {
-      const linkedNumber = candidateRef.number;
+    for (const linkedNumber of candidateNumbers) {
       const beforeHydration = prCloseCoverageRuntimeBudgetBlock(
         options.runtimeBudget,
         "before hydrating",
@@ -362,7 +313,6 @@ export function createPullRequestCoverageProof(
           "while hydrating",
         );
         if (hydrationBudgetBlock) return hydrationBudgetBlock;
-        if (candidateRef.kind !== "pull_url" && shorthandRefIsIssue(linkedNumber)) continue;
         return {
           status: "blocked",
           block: {
@@ -682,11 +632,8 @@ export function createPullRequestCoverageProof(
 
   return {
     duplicateCanonicalPullRequestBlockReason,
-    shorthandRefIsIssue,
-    linkedRefCanBePullRequest,
-    PR_CLOSE_COVERAGE_PROOF_MAX_CANDIDATES_PER_ITEM,
-    prCloseCoverageProofCandidateRefs,
-    possibleCanonicalPullRequestRefsFromReport,
+    prCloseCoverageProofCandidateNumbers,
+    possibleCanonicalPullRequestNumbersFromReport,
     canonicalPullRequestCommentSyncBlock,
     prCloseCoverageRuntimeBudgetBlock,
     prCloseCoverageRuntime,

@@ -6,6 +6,7 @@ import {
   DAY_MS,
   OBSOLETE_FIX_PR_MIN_AGE_DAYS,
   PROTECTED_LABELS,
+  SECURITY_PROTECTED_LABELS,
   STALE_VERSION_BUG_MIN_AGE_DAYS,
   UNCONFIRMED_PRODUCT_DIRECTION_MIN_AGE_DAYS,
   UNCONFIRMED_PRODUCT_DIRECTION_MIN_INACTIVE_DAYS,
@@ -102,7 +103,7 @@ export function protectedLabels(labels: readonly string[]): string[] {
     .map((label) => normalizeLabelName(label))
     .filter(
       (label, index, normalized) =>
-        (PROTECTED_LABELS.has(label) || label.includes("security")) &&
+        (PROTECTED_LABELS.has(label) || SECURITY_PROTECTED_LABELS.has(label)) &&
         normalized.indexOf(label) === index,
     );
 }
@@ -119,7 +120,7 @@ export function applyBlockingProtectedLabels(
     .map((label) => normalizeLabelName(label))
     .filter(
       (label, index, normalized) =>
-        (APPLY_PROTECTED_LABELS.has(label) || label.includes("security")) &&
+        (APPLY_PROTECTED_LABELS.has(label) || SECURITY_PROTECTED_LABELS.has(label)) &&
         normalized.indexOf(label) === index,
     );
   if (!isVerifiedFixedCloseReason(closeReason) && closeReason !== "oversized_pull_request")

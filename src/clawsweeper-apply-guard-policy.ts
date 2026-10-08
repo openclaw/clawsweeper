@@ -1,6 +1,7 @@
 import { ideaRevivalReactionThreshold, positiveReactionCount } from "./idea-archive-revival.js";
 import {
   PR_AUTO_CLOSE_EXEMPT_LABELS,
+  SECURITY_PROTECTED_LABELS,
   STALE_VERSION_BUG_MIN_INACTIVE_DAYS,
   UNSPONSORED_FEATURE_MIN_INACTIVE_DAYS,
 } from "./clawsweeper-policy.js";
@@ -189,7 +190,7 @@ export function createApplyGuardPolicy(
     if (
       labelNames(issue.labels)
         .map(normalizeLabelName)
-        .some((label) => label.includes("security"))
+        .some((label) => SECURITY_PROTECTED_LABELS.has(label))
     ) {
       return "security-labeled issue requires human triage";
     }
@@ -255,9 +256,6 @@ export function createApplyGuardPolicy(
       protectedLabels(labelNames(issue.labels))[0] ??
       prAutoCloseExemptLabel(labelNames(issue.labels));
     if (protectedLabel) return `protected label: ${protectedLabel}`;
-    if (labels.some((label) => label.includes("security"))) {
-      return "security-labeled issue requires human triage";
-    }
     if ((issue.assignees ?? []).length > 0) return "assigned issue has maintainer engagement";
     if (issue.milestone) return "milestoned issue has maintainer engagement";
     const totalReactions = asRecord(issue.reactions).total_count;

@@ -106,7 +106,6 @@ export function createPullRequestClosePromotion(
       closeReason: "low_signal_unmergeable_pr",
       summary:
         "Close this stale PR: the latest review rated it F, it still lacks merge-ready proof, and there has been no human follow-up after the durable review.",
-      coverageProofFallbackRefs: false,
       bestSolution:
         "Close this stale PR. The latest review rated it F, the branch still lacks merge-ready proof, and there has been no human follow-up after the durable review.",
       evidence: [
@@ -129,7 +128,6 @@ export function createPullRequestClosePromotion(
     return {
       closeReason: "duplicate_or_superseded",
       summary: `Close this stale PR as superseded: ${option.title}.`,
-      coverageProofFallbackRefs: false,
       bestSolution: `Close this stale PR as superseded: ${option.title}. ${option.body}`,
       evidence: [
         `- **recommended close path:** the latest review's recommended merge-risk option is \`${option.title}\`, categorized as \`pause_or_close\`.`,
@@ -156,8 +154,8 @@ export function createPullRequestClosePromotion(
     const linkedSupersession = linkedPullRequestSupersession(markdown, item, options);
     const pauseOrClose = pauseOrClosePromotion(markdown, item, staleMinAgeDays);
     if (pauseOrClose) return pauseOrClose;
-    // Removing supersession promotion must not turn its candidates into generic
-    // low-signal closures. Missing or non-covering references can still qualify.
+    // A PR whose review names a canonical PR is a supersession candidate. Do not
+    // close it as a generic low-signal PR. Unreadable canonical PRs still qualify.
     if (linkedSupersession.candidate || linkedSupersession.unsafeReason) return null;
     return staleFRatedPullRequestPromotion(markdown, item, context, staleMinAgeDays);
   }

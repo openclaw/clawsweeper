@@ -19,6 +19,7 @@ import {
   referencingMergedPullRequestsForIssueForTest,
 } from "../dist/clawsweeper.js";
 import {
+  canonicalPullRequestClusterForTest,
   implementedCloseReport,
   lowSignalCloseReport,
   promotionGhMock,
@@ -368,9 +369,9 @@ test("apply-decisions preserves a runtime yield through post-proof freshness han
       number: 723,
       title: "Provider route fallback",
       close_reason: "duplicate_or_superseded",
-      work_cluster_refs: JSON.stringify([
-        "Superseded by https://github.com/openclaw/openclaw/pull/400",
-      ]),
+      root_cause_cluster: canonicalPullRequestClusterForTest(
+        "https://github.com/openclaw/openclaw/pull/400",
+      ),
     }).replace(
       "Closing this PR because the branch is not a useful landing base.",
       "Closing this PR as superseded by https://github.com/openclaw/openclaw/pull/400.",
@@ -504,9 +505,9 @@ test("apply-decisions yields before closing when its post-close delay cannot fit
       number: 725,
       title: "Provider route fallback",
       close_reason: "duplicate_or_superseded",
-      work_cluster_refs: JSON.stringify([
-        "Superseded by https://github.com/openclaw/openclaw/pull/400",
-      ]),
+      root_cause_cluster: canonicalPullRequestClusterForTest(
+        "https://github.com/openclaw/openclaw/pull/400",
+      ),
     }).replace(
       "Closing this PR because the branch is not a useful landing base.",
       "Closing this PR as superseded by https://github.com/openclaw/openclaw/pull/400.",
@@ -606,9 +607,9 @@ test("apply-decisions records a successful close before yielding after it", () =
       title: "Provider route fallback",
       pull_head_sha: "head-sha",
       close_reason: "duplicate_or_superseded",
-      work_cluster_refs: JSON.stringify([
-        "Superseded by https://github.com/openclaw/openclaw/pull/400",
-      ]),
+      root_cause_cluster: canonicalPullRequestClusterForTest(
+        "https://github.com/openclaw/openclaw/pull/400",
+      ),
     }).replace(
       "Closing this PR because the branch is not a useful landing base.",
       "Closing this PR as superseded by https://github.com/openclaw/openclaw/pull/400.",

@@ -14,6 +14,7 @@ import {
   CLOSE_PROTECTED_LABEL_NAMES,
   HUMAN_REVIEW_LABEL,
   MANUAL_ONLY_LABEL,
+  SECURITY_PROTECTED_LABEL_NAMES,
 } from "./exact-review-guard-labels.js";
 export {
   AUTOMERGE_LABEL,
@@ -66,7 +67,10 @@ export const DEFAULT_ASSIST_MODEL = "internal";
 export const DEFAULT_ASSIST_REASONING_EFFORT = "medium";
 export const DEFAULT_ASSIST_TIMEOUT_MS = "120000";
 const REPAIR_LOOP_PAUSE_LABELS = [HUMAN_REVIEW_LABEL, MANUAL_ONLY_LABEL, MERGE_READY_LABEL];
-const TRUSTED_CLOSE_PROTECTED_LABELS = new Set<string>(CLOSE_PROTECTED_LABEL_NAMES);
+const TRUSTED_CLOSE_PROTECTED_LABELS = new Set<string>([
+  ...CLOSE_PROTECTED_LABEL_NAMES,
+  ...SECURITY_PROTECTED_LABEL_NAMES,
+]);
 const MAINTAINER_AUTHOR_ASSOCIATIONS = new Set(["OWNER", "MEMBER", "COLLABORATOR"]);
 const DAY_MS = 24 * 60 * 60 * 1000;
 const UNCONFIRMED_PRODUCT_DIRECTION_MIN_AGE_DAYS = 14;
@@ -1582,8 +1586,8 @@ function trustedCloseRepositoryProfile(repo: JsonValue) {
 }
 
 function trustedCloseBlockingProtectedLabels(labels: JsonValue, closeReason: JsonValue): string[] {
-  const blocked = normalizedLabels(labels).filter(
-    (label) => TRUSTED_CLOSE_PROTECTED_LABELS.has(label) || label.includes("security"),
+  const blocked = normalizedLabels(labels).filter((label) =>
+    TRUSTED_CLOSE_PROTECTED_LABELS.has(label),
   );
   if (!isVerifiedFixedCloseReason(closeReason)) return unique(blocked);
   return unique(blocked.filter((label) => label !== "maintainer"));

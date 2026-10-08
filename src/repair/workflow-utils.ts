@@ -1,5 +1,4 @@
 #!/usr/bin/env node
-import { stringOrEmpty as stringValue } from "../value-coerce.js";
 import { escapeRegExp } from "../clawsweeper-text.js";
 import type { JsonValue, LooseRecord } from "./json-types.js";
 import fs from "node:fs";
@@ -1448,7 +1447,7 @@ function selectedProposedItemCandidates(
           const selectableProofPromotion =
             selectablePromotion &&
             selectedPromotionCloseReasons.includes("duplicate_or_superseded") &&
-            hasLinkedPullRequestSupersessionSignal(markdown, options.targetRepo);
+            hasCanonicalPullRequest(markdown, options.targetRepo);
           if (!selectableClose && !selectablePromotion) return [];
           const prCloseCoverageProofCanRun =
             type === "pull_request" &&
@@ -1769,7 +1768,7 @@ function hasPullRequestClosePromotionSignal(
   return (
     (hasAuthorPrBudgetPromotionSignal(markdown) &&
       olderThan(frontMatterValue(markdown, "item_created_at"), 7 * 24 * 60 * 60 * 1000)) ||
-    hasLinkedPullRequestSupersessionSignal(markdown, targetRepo) ||
+    hasCanonicalPullRequest(markdown, targetRepo) ||
     ((hasRecommendedPauseOrCloseOption(markdown) ||
       hasLowSignalPullRequestPromotionSignal(markdown)) &&
       olderThan(frontMatterValue(markdown, "item_created_at"), options.staleMinAgeMs))
@@ -1781,7 +1780,7 @@ function pullRequestClosePromotionReasons(
   targetRepo: string,
   options: { staleMinAgeMs: number },
 ): Array<"author_pr_budget_exceeded" | "duplicate_or_superseded" | "low_signal_unmergeable_pr"> {
-  const linkedSupersession = hasLinkedPullRequestSupersessionSignal(markdown, targetRepo);
+  const canonicalPullRequest = hasCanonicalPullRequest(markdown, targetRepo);
   const recommendedPauseOrClose = hasRecommendedPauseOrCloseOption(markdown);
   const reasons: Array<
     "author_pr_budget_exceeded" | "duplicate_or_superseded" | "low_signal_unmergeable_pr"
@@ -1792,10 +1791,10 @@ function pullRequestClosePromotionReasons(
   ) {
     reasons.push("author_pr_budget_exceeded");
   }
-  if (linkedSupersession || recommendedPauseOrClose) reasons.push("duplicate_or_superseded");
-  // Pause-or-close is a deterministic duplicate promotion. A linked PR is only
+  if (canonicalPullRequest || recommendedPauseOrClose) reasons.push("duplicate_or_superseded");
+  // Pause-or-close is a deterministic duplicate promotion. A canonical PR is only
   // speculative until live hydration, so an F-rated report can still fall back
-  // to the low-signal promotion when that linked candidate does not cover it.
+  // to the low-signal promotion when that canonical PR does not cover it.
   if (
     !recommendedPauseOrClose &&
     hasLowSignalPullRequestPromotionSignal(markdown) &&
@@ -1806,48 +1805,21 @@ function pullRequestClosePromotionReasons(
   return reasons;
 }
 
-function hasLinkedPullRequestSupersessionSignal(markdown: string, targetRepo: string): boolean {
-  const pullRef = sameRepoPullRequestRefRegex(targetRepo);
-  if (!pullRef) return false;
-  const signal =
-    /\b(supersed(?:e|ed|es|ing)|replace(?:s|d|ment)?|duplicate|duplicated|canonical|covered by|landed in)\b/i;
-  return closePromotionSignalTexts(markdown).some(
-    (text) =>
-      pullRef.test(normalizePullRequestMarkdownLinks(text, targetRepo)) && signal.test(text),
-  );
-}
-
-function normalizePullRequestMarkdownLinks(value: string, targetRepo: string): string {
-  const sameRepoPullRequestUrl = sameRepoPullRequestUrlRegex(targetRepo);
-  if (!sameRepoPullRequestUrl) return value;
-  return value.replace(markdownLinkRegex(), (_link, target: string) =>
-    sameRepoPullRequestUrl.test(target) ? target : " ",
-  );
-}
-
-function markdownLinkRegex(): RegExp {
-  return /\[[^\]\n]{1,200}\]\(([^\s)]{1,1000})\)/gi;
-}
-
-function sameRepoPullRequestUrlRegex(targetRepo: string): RegExp | null {
-  const [owner, repo] = targetRepo.split("/");
-  if (!owner || !repo) return null;
-  const escapedRepo = `${escapeRegExp(owner)}\\/${escapeRegExp(repo)}`;
-  return new RegExp(`^https:\\/\\/github\\.com\\/${escapedRepo}\\/pull\\/\\d+\\b`, "i");
-}
-
-function sameRepoPullRequestRefRegex(targetRepo: string): RegExp | null {
-  const [owner, repo] = targetRepo.split("/");
-  if (!owner || !repo) return null;
-  const escapedRepo = `${escapeRegExp(owner)}\\/${escapeRegExp(repo)}`;
-  return new RegExp(
-    [
-      `https:\\/\\/github\\.com\\/${escapedRepo}\\/pull\\/\\d+\\b`,
-      `(?:^|[^\\w/.-])${escapedRepo}#\\d+\\b`,
-      "(?:^|[^\\w/#-])#\\d+\\b",
-    ].join("|"),
-    "i",
-  );
+// The review model names the covering PR in `root_cause_cluster.canonicalRef`.
+// Report prose never selects a supersession candidate.
+function hasCanonicalPullRequest(markdown: string, targetRepo: string): boolean {
+  let cluster: unknown;
+  try {
+    cluster = JSON.parse(frontMatterValue(markdown, "root_cause_cluster"));
+  } catch {
+    return false;
+  }
+  const canonicalRef = isJsonObject(cluster) ? cluster.canonicalRef : null;
+  if (typeof canonicalRef !== "string") return false;
+  const canonicalNumber = canonicalRef.match(
+    new RegExp(`^https://github\\.com/${escapeRegExp(targetRepo)}/pull/(\\d+)$`, "i"),
+  )?.[1];
+  return Boolean(canonicalNumber) && canonicalNumber !== frontMatterValue(markdown, "number");
 }
 
 function hasRecommendedPauseOrCloseOption(markdown: string): boolean {
@@ -1944,18 +1916,6 @@ export function pullRequestClosePromotionSignalsForTest(markdown: string): {
     authorBudget: hasAuthorPrBudgetPromotionSignal(markdown),
     lowSignal: hasLowSignalPullRequestPromotionSignal(markdown),
   };
-}
-
-function closePromotionSignalTexts(markdown: string): string[] {
-  return [
-    ...stringArrayFrontMatter(markdown, "work_cluster_refs"),
-    ...jsonArrayFrontMatter(markdown, "merge_risk_options").flatMap((entry) =>
-      isJsonObject(entry) ? [stringValue(entry.title), stringValue(entry.body)] : [],
-    ),
-    sectionValue(markdown, "Best Possible Solution"),
-    sectionValue(markdown, "Evidence"),
-    sectionValue(markdown, "Close Comment"),
-  ].filter(Boolean);
 }
 
 export function commentSyncBatchOutput(options: CommentSyncBatchOptions): Record<string, string> {
@@ -2613,12 +2573,6 @@ function jsonArrayFrontMatter(markdown: string, key: string): JsonValue[] {
   } catch {
     return [];
   }
-}
-
-function stringArrayFrontMatter(markdown: string, key: string): string[] {
-  return jsonArrayFrontMatter(markdown, key).filter(
-    (entry): entry is string => typeof entry === "string",
-  );
 }
 
 function sectionValue(markdown: string, heading: string): string {

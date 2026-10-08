@@ -6,6 +6,7 @@ import test from "node:test";
 import { renderReviewStartStatusComment } from "../dist/clawsweeper.js";
 
 import {
+  canonicalPullRequestClusterForTest,
   implementedCloseReport,
   lowSignalCloseReport,
   reportWithSyncedReviewComment,
@@ -402,6 +403,9 @@ test("apply-decisions records PR coverage proof retry before same-author pair sk
         work_cluster_refs: JSON.stringify([
           "Superseded by https://github.com/openclaw/openclaw/pull/400",
         ]),
+        root_cause_cluster: canonicalPullRequestClusterForTest(
+          "https://github.com/openclaw/openclaw/pull/400",
+        ),
       }),
       321,
       "duplicate_or_superseded",

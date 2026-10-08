@@ -75,17 +75,6 @@ test("invalid close semantics are rejected", () => {
   assert.equal(missingEvidence.ok, false);
   assert.equal(missingEvidence.actionTaken, "skipped_invalid_decision");
 
-  const contradictoryClose = validateCloseDecision(
-    item(),
-    closeDecision({
-      summary: "Keep open: this is useful but needs a wording fix before merge.",
-      closeReason: "duplicate_or_superseded",
-    }),
-  );
-  assert.equal(contradictoryClose.ok, false);
-  assert.equal(contradictoryClose.actionTaken, "skipped_invalid_decision");
-  assert.equal(contradictoryClose.reason, "close decision contains Keep open guidance");
-
   const missingSource = validateCloseDecision(
     item(),
     closeDecision({
@@ -424,7 +413,8 @@ test("stale_version_bug is issue-only, bug-only, and security-safe", () => {
     /requires bug item category/,
   );
   assert.match(
-    staleVersionBugDecisionBlockReason(item({ labels: ["topic:security-review"] }), decision) ?? "",
+    staleVersionBugDecisionBlockReason(item({ labels: ["Security-Review-Required"] }), decision) ??
+      "",
     /blocks stale-version bug auto-close/,
   );
   assert.deepEqual(closeReasonsArg("stale_version_bug"), new Set(["stale_version_bug"]));
@@ -546,56 +536,6 @@ test("implemented-on-main closes require fix provenance", () => {
   assert.equal(
     missingReleaseOrTimestamp.reason,
     "implemented_on_main requires fixedRelease or fixedAt",
-  );
-
-  const missingProvenanceEvidence = validateCloseDecision(
-    item(),
-    closeDecision({
-      evidence: [
-        {
-          label: "implementation",
-          detail: "The feature is present in source.",
-          file: "src/example.ts",
-          line: 12,
-          command: null,
-          sha: "abcdef1234567890",
-        },
-      ],
-    }),
-  );
-  assert.equal(missingProvenanceEvidence.ok, false);
-  assert.equal(
-    missingProvenanceEvidence.reason,
-    "implemented_on_main requires git history provenance evidence",
-  );
-
-  const missingReleaseStateEvidence = validateCloseDecision(
-    item(),
-    closeDecision({
-      evidence: [
-        {
-          label: "implementation",
-          detail: "The feature is present in source.",
-          file: "src/example.ts",
-          line: 12,
-          command: null,
-          sha: "abcdef1234567890",
-        },
-        {
-          label: "git history provenance",
-          detail: "git blame traced this line to the fixed commit.",
-          file: "src/example.ts",
-          line: 12,
-          command: "git blame -L 12,12 -- src/example.ts",
-          sha: "abcdef1234567890",
-        },
-      ],
-    }),
-  );
-  assert.equal(missingReleaseStateEvidence.ok, false);
-  assert.equal(
-    missingReleaseStateEvidence.reason,
-    "implemented_on_main requires release or main-only provenance evidence",
   );
 
   const blameAndMainTimestamp = validateCloseDecision(

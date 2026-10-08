@@ -69,8 +69,6 @@ export function createReviewCommentState(
     parseGitHubItemRef,
     frontMatterValue,
     timestampMs,
-    linkedPullRequestRefsFromText,
-    linkedPullRequestSignalContextsFromText,
     reviewCommentMarker,
     pullHeadShaFromContext,
     pullHeadShaFromReport,
@@ -658,39 +656,26 @@ export function createReviewCommentState(
         reason: attributes.match(/\breason=([^\s>]+)/)?.[1],
       };
     }
-    const supersessionSignal =
-      /\b(supersed(?:e|ed|es|ing)|replace(?:s|d|ment)?|duplicate|duplicated|canonical|covered by|landed in)\b/i;
-    const signaledRefs = linkedPullRequestRefsFromText(body, number).filter((ref) =>
-      linkedPullRequestSignalContextsFromText(body, number, ref.number).some((context) =>
-        supersessionSignal.test(context),
-      ),
-    );
+    // The comment binds to a canonical PR only through the rendered
+    // `Canonical:` line of the typed root-cause cluster, never through prose.
     const explicitCanonicalRefs = [...body.matchAll(/^Canonical:\s+(\S+)\s*$/gm)];
-    let commentCanonicalNumber: number | undefined;
-    if (explicitCanonicalRefs.length > 0) {
-      const canonicalNumbers = new Set<number>();
-      for (const match of explicitCanonicalRefs) {
-        try {
-          const parsed = parseGitHubItemRef(
-            match[1] ?? "",
-            "durable review comment root-cause canonical",
-          );
-          // The explicit public canonical is authoritative; never reinterpret a member PR as it.
-          if (parsed.kind !== "pull_request") return false;
-          if (normalizeRepo(parsed.repo) !== normalizeRepo(targetRepo())) return false;
-          canonicalNumbers.add(parsed.number);
-        } catch {
-          return false;
-        }
+    const canonicalNumbers = new Set<number>();
+    for (const match of explicitCanonicalRefs) {
+      try {
+        const parsed = parseGitHubItemRef(
+          match[1] ?? "",
+          "durable review comment root-cause canonical",
+        );
+        // The explicit public canonical is authoritative; never reinterpret a member PR as it.
+        if (parsed.kind !== "pull_request") return false;
+        if (normalizeRepo(parsed.repo) !== normalizeRepo(targetRepo())) return false;
+        canonicalNumbers.add(parsed.number);
+      } catch {
+        return false;
       }
-      if (canonicalNumbers.size !== 1) return false;
-      commentCanonicalNumber = [...canonicalNumbers][0];
     }
-    if (explicitCanonicalRefs.length === 0) {
-      const signaledCanonicalNumbers = new Set(signaledRefs.map((ref) => ref.number));
-      if (signaledCanonicalNumbers.size !== 1) return false;
-      commentCanonicalNumber = [...signaledCanonicalNumbers][0];
-    }
+    if (canonicalNumbers.size !== 1) return false;
+    const commentCanonicalNumber = [...canonicalNumbers][0];
     return (
       latestVerdict?.verdict === "close" &&
       latestVerdict.reason === reason &&

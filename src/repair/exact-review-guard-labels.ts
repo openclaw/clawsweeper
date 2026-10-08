@@ -11,6 +11,18 @@ export const CLOSE_PROTECTED_LABEL_NAMES = [
   "maintainer",
 ] as const;
 
+// Every live security label in the target repositories. Auto-close never runs
+// on an item with one of these labels.
+export const SECURITY_PROTECTED_LABEL_NAMES = [
+  "security",
+  "area: security",
+  "impact:security",
+  "security-review-required",
+  "security-sensitive-changed",
+  "merge-risk: 🚨 security-boundary",
+  "clawsweeper:needs-security-review",
+] as const;
+
 export const AUTOMERGE_BLOCKING_LABEL_NAMES = [
   ...CLOSE_PROTECTED_LABEL_NAMES,
   AUTOFIX_LABEL,

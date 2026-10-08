@@ -3,9 +3,14 @@ import {
   ACCEPTED_LARGE_LABEL,
 } from "./clawsweeper-oversized-pr-policy.js";
 import { STALLED_UNPROVEN_PROOF_STATUSES } from "./clawsweeper-apply-guards.js";
-import { ALLOWED_REASONS, PR_AUTO_CLOSE_EXEMPT_LABELS } from "./clawsweeper-policy.js";
+import {
+  ALLOWED_REASONS,
+  PR_AUTO_CLOSE_EXEMPT_LABELS,
+  SECURITY_PROTECTED_LABELS,
+  isGitHubVerifiedFixedPullRequestSource,
+} from "./clawsweeper-policy.js";
 import { isAutoCloseAllowed, repositoryProfileFor } from "./repository-profiles.js";
-import type { ActionTaken, CloseReason, Decision, Evidence, Item } from "./clawsweeper-types.js";
+import type { ActionTaken, CloseReason, Decision, Item } from "./clawsweeper-types.js";
 
 interface CloseDecisionWorkflowDependencies {
   targetRepo: () => string;
@@ -40,24 +45,6 @@ export function createCloseDecisionWorkflow({
     );
   }
 
-  function evidenceText(entry: Evidence): string {
-    return [entry.label, entry.detail, entry.command ?? ""].join("\n");
-  }
-
-  function hasImplementationHistoryEvidence(decision: Decision): boolean {
-    return decision.evidence.some((entry) =>
-      evidenceText(entry).match(/\b(?:git (?:blame|show|log)|blame)\b/i),
-    );
-  }
-
-  function hasImplementationReleaseStateEvidence(decision: Decision): boolean {
-    return decision.evidence.some((entry) =>
-      evidenceText(entry).match(
-        /\b(?:release|tag|changelog|CHANGELOG|git (?:tag|describe|branch)|gh release|main-only|unreleased|published)\b/i,
-      ),
-    );
-  }
-
   function hasValidFixedAt(decision: Decision): boolean {
     const value = decision.fixedAt?.trim();
     return Boolean(
@@ -82,7 +69,7 @@ export function createCloseDecisionWorkflow({
     if (item.number === pull.number) {
       return "implemented-on-main fixing pull request cannot be the pull request being closed";
     }
-    if (!pull.mergedAt || !pull.source.startsWith("GitHub ")) {
+    if (!pull.mergedAt || !isGitHubVerifiedFixedPullRequestSource(pull.source)) {
       return "implemented-on-main fixing pull request must be GitHub-verified and merged";
     }
     if (pull.url !== `https://github.com/${repo}/pull/${pull.number}`) {
@@ -96,12 +83,6 @@ export function createCloseDecisionWorkflow({
       decision.decision === "close" &&
       decision.confidence === "high" &&
       ALLOWED_REASONS.has(decision.closeReason)
-    );
-  }
-
-  function closeDecisionHasKeepOpenContradiction(decision: Decision): boolean {
-    return [decision.summary, decision.bestSolution, decision.closeComment].some((text) =>
-      /^\s*Keep open\s*:/im.test(text),
     );
   }
 
@@ -267,7 +248,7 @@ export function createCloseDecisionWorkflow({
     if (decision.itemCategory !== "bug") return "stale_version_bug requires bug item category";
     const securityLabel = item.labels
       .map(normalizeLabelName)
-      .find((label) => label.includes("security"));
+      .find((label) => SECURITY_PROTECTED_LABELS.has(label));
     if (securityLabel) return `${securityLabel} blocks stale-version bug auto-close`;
     return null;
   }
@@ -434,13 +415,6 @@ export function createCloseDecisionWorkflow({
     if (!decision.summary.trim()) {
       return { ok: false, actionTaken: "skipped_invalid_decision", reason: "missing summary" };
     }
-    if (closeDecisionHasKeepOpenContradiction(decision)) {
-      return {
-        ok: false,
-        actionTaken: "skipped_invalid_decision",
-        reason: "close decision contains Keep open guidance",
-      };
-    }
     if (requireCloseComment && !hasUsableCloseComment(decision.closeComment)) {
       return {
         ok: false,
@@ -501,26 +475,6 @@ export function createCloseDecisionWorkflow({
         ok: false,
         actionTaken: "skipped_invalid_decision",
         reason: `${decision.closeReason} requires fixedRelease or fixedAt`,
-      };
-    }
-    if (
-      isImplementationCloseReason(decision.closeReason) &&
-      !hasImplementationHistoryEvidence(decision)
-    ) {
-      return {
-        ok: false,
-        actionTaken: "skipped_invalid_decision",
-        reason: `${decision.closeReason} requires git history provenance evidence`,
-      };
-    }
-    if (
-      isImplementationCloseReason(decision.closeReason) &&
-      !hasImplementationReleaseStateEvidence(decision)
-    ) {
-      return {
-        ok: false,
-        actionTaken: "skipped_invalid_decision",
-        reason: `${decision.closeReason} requires release or main-only provenance evidence`,
       };
     }
     return { ok: true };

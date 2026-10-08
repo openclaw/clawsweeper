@@ -1,17 +1,15 @@
-import type { PullRequestRef, PullRequestRefKind } from "./clawsweeper-types.js";
+import type { PullRequestRef } from "./clawsweeper-types.js";
 import { escapeRegExp } from "./clawsweeper-text.js";
 
 export interface PullRequestReferenceParserDependencies {
   targetRepo: () => string;
   repoUrlFor: (repo: string, path: string) => string;
-  reportReferenceTexts: (markdown: string) => readonly string[];
 }
 
 /** Resolve same-repository PR references without trusting Markdown link labels. */
 export function createPullRequestReferenceParser({
   targetRepo,
   repoUrlFor,
-  reportReferenceTexts,
 }: PullRequestReferenceParserDependencies) {
   function pullRequestUrlForNumber(number: number): string {
     return repoUrlFor(targetRepo(), `/pull/${number}`);
@@ -82,22 +80,6 @@ export function createPullRequestReferenceParser({
     return { number, kind: "bare" };
   }
 
-  function pullRequestRefKindRank(kind: PullRequestRefKind): number {
-    if (kind === "pull_url") return 3;
-    if (kind === "same_repo_shorthand") return 2;
-    return 1;
-  }
-
-  function setStrongestPullRequestRef(
-    refs: Map<number, PullRequestRef>,
-    ref: PullRequestRef,
-  ): void {
-    const existing = refs.get(ref.number);
-    if (!existing || pullRequestRefKindRank(ref.kind) > pullRequestRefKindRank(existing.kind)) {
-      refs.set(ref.number, ref);
-    }
-  }
-
   function pullRequestRefMatchIndex(match: RegExpMatchArray): number {
     const matchStart = match.index ?? 0;
     const matchedText = match[0] ?? "";
@@ -113,18 +95,6 @@ export function createPullRequestReferenceParser({
       return matchStart + (offset >= 0 ? offset : Math.max(0, matchedText.length - needle.length));
     }
     return matchStart;
-  }
-
-  function linkedPullRequestRefsFromText(text: string, currentNumber: number): PullRequestRef[] {
-    const regex = sameRepoPullRequestRefRegex();
-    if (!regex) return [];
-    const normalizedText = normalizePullRequestMarkdownLinks(text);
-    const refs = new Map<number, PullRequestRef>();
-    for (const match of normalizedText.matchAll(regex)) {
-      const ref = pullRequestRefFromMatch(match);
-      if (ref && ref.number !== currentNumber) setStrongestPullRequestRef(refs, ref);
-    }
-    return [...refs.values()];
   }
 
   function relationshipClauseContainingIndex(text: string, index: number): string {
@@ -223,28 +193,7 @@ export function createPullRequestReferenceParser({
     return contexts;
   }
 
-  function linkedPullRequestRefsFromReport(
-    markdown: string,
-    currentNumber: number,
-  ): PullRequestRef[] {
-    const texts = reportReferenceTexts(markdown);
-    const refs = new Map<number, PullRequestRef>();
-    for (const text of texts) {
-      for (const ref of linkedPullRequestRefsFromText(text, currentNumber)) {
-        setStrongestPullRequestRef(refs, ref);
-      }
-    }
-    return [...refs.values()];
-  }
-
-  function linkedPullRequestNumbersFromReport(markdown: string, currentNumber: number): number[] {
-    return linkedPullRequestRefsFromReport(markdown, currentNumber).map((ref) => ref.number);
-  }
-
   return {
-    linkedPullRequestNumbersFromReport,
-    linkedPullRequestRefsFromReport,
-    linkedPullRequestRefsFromText,
     linkedPullRequestSignalContextsFromText,
     pullRequestUrlForNumber,
   };

@@ -544,6 +544,23 @@ export function stripProofAndRatingFrontMatter(report: string): string {
   );
 }
 
+// Front matter value for a typed root-cause cluster that names one canonical PR.
+// A duplicate/superseded PR close needs this; prose PR links never count.
+export function canonicalPullRequestClusterForTest(
+  canonicalUrl: string,
+  currentItemRelationship: "duplicate" | "superseded" = "superseded",
+): string {
+  return JSON.stringify({
+    confidence: "high",
+    canonicalRef: canonicalUrl,
+    currentItemRelationship,
+    summary: "The canonical PR carries the same change.",
+    members: [
+      { ref: canonicalUrl, relationship: "canonical", reason: "Canonical PR for this work." },
+    ],
+  });
+}
+
 export function lowSignalCloseReport(overrides = {}) {
   return `${workPlanCandidateReport({
     repository: "openclaw/openclaw",

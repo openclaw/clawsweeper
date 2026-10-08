@@ -1,7 +1,11 @@
 import { parseOversizedPullRequestEvidence } from "./clawsweeper-oversized-pr-policy.js";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { AUTHOR_PR_BUDGET_MIN_INACTIVE_DAYS, REVIEW_SECTIONS } from "./clawsweeper-policy.js";
+import {
+  AUTHOR_PR_BUDGET_MIN_INACTIVE_DAYS,
+  REVIEW_SECTIONS,
+  isGitHubVerifiedFixedPullRequestSource,
+} from "./clawsweeper-policy.js";
 import { createPullRequestReferenceParser } from "./clawsweeper-pr-references.js";
 import {
   reportChangeExample,
@@ -42,6 +46,7 @@ export function createPullRequestPromotionFacts(
   const {
     asRecord,
     defaultAgentsPolicyStatus,
+    defaultRootCauseCluster,
     eventTimestampMs,
     fixedPullRequestFromReport,
     frontMatterStringArray,
@@ -57,6 +62,7 @@ export function createPullRequestPromotionFacts(
     mergeRiskLabelsFromReport,
     mergeRiskOptionsFromReport,
     normalizeLabelName,
+    parseGitHubItemRef,
     renderCloseCommentFromReport,
     replaceFrontMatterValue,
     replaceSectionValue,
@@ -186,7 +192,16 @@ export function createPullRequestPromotionFacts(
     upgraded = replaceFrontMatterValue(upgraded, "close_reason", "duplicate_or_superseded");
     upgraded = replaceFrontMatterValue(upgraded, "confidence", "high");
     upgraded = replaceFrontMatterValue(upgraded, "action_taken", "proposed_close");
-    upgraded = replaceFrontMatterValue(upgraded, "pr_close_coverage_proof_fallback_refs", "false");
+    // GitHub's zero-file diff is the close evidence. Clear the typed canonical
+    // and fixing-PR candidates so no coverage proof can block this close.
+    upgraded = replaceFrontMatterValue(upgraded, "pr_close_requires_canonical_pr", "false");
+    upgraded = replaceFrontMatterValue(
+      upgraded,
+      "root_cause_cluster",
+      JSON.stringify(defaultRootCauseCluster()),
+    );
+    upgraded = replaceFrontMatterValue(upgraded, "fixed_pr_url", "unknown");
+    upgraded = replaceFrontMatterValue(upgraded, "fixed_pr_number", "unknown");
     upgraded = replaceFrontMatterValue(upgraded, "work_cluster_refs", "[]");
     upgraded = replaceFrontMatterValue(upgraded, "merge_risk_options", "[]");
     upgraded = replaceFrontMatterValue(upgraded, "work_candidate", "none");
@@ -225,11 +240,9 @@ export function createPullRequestPromotionFacts(
     upgraded = replaceFrontMatterValue(upgraded, "close_reason", promotion.closeReason);
     upgraded = replaceFrontMatterValue(upgraded, "confidence", "high");
     upgraded = replaceFrontMatterValue(upgraded, "action_taken", "proposed_close");
-    upgraded = replaceFrontMatterValue(
-      upgraded,
-      "pr_close_coverage_proof_fallback_refs",
-      promotion.coverageProofFallbackRefs ? "true" : "false",
-    );
+    // A promotion closes on GitHub facts or a typed review field, not on a model
+    // duplicate claim, so it does not need rootCauseCluster.canonicalRef.
+    upgraded = replaceFrontMatterValue(upgraded, "pr_close_requires_canonical_pr", "false");
     upgraded = replaceFrontMatterValue(upgraded, "work_candidate", "none");
     upgraded = replaceFrontMatterValue(upgraded, "work_status", "none");
     upgraded = replaceFrontMatterValue(upgraded, "item_updated_at", item.updatedAt);
@@ -261,7 +274,6 @@ export function createPullRequestPromotionFacts(
     return {
       closeReason: "author_pr_budget_exceeded",
       summary,
-      coverageProofFallbackRefs: false,
       bestSolution:
         "Close this lowest-signal PR for now. Finish or close other open PRs to free review budget, then reopen this PR once the author is under budget; adding real behavior proof also makes it eligible for reconsideration.",
       evidence: [
@@ -402,47 +414,33 @@ export function createPullRequestPromotionFacts(
     });
   }
 
-  const pullRequestReferenceParser = createPullRequestReferenceParser({
-    targetRepo,
-    repoUrlFor,
-    reportReferenceTexts(markdown) {
-      return [
-        ...frontMatterStringArray(markdown, "work_cluster_refs"),
-        ...mergeRiskOptionsFromReport(markdown).flatMap((option) => [option.title, option.body]),
-        reviewSectionValue(markdown, "bestSolution"),
-        reviewSectionValue(markdown, "evidence"),
-        reviewSectionValue(markdown, "closeComment"),
-      ];
-    },
-  });
+  const pullRequestReferenceParser = createPullRequestReferenceParser({ targetRepo, repoUrlFor });
 
-  const {
-    linkedPullRequestNumbersFromReport,
-    linkedPullRequestRefsFromReport,
-    linkedPullRequestRefsFromText,
-    linkedPullRequestSignalContextsFromText,
-    pullRequestUrlForNumber,
-  } = pullRequestReferenceParser;
+  const { linkedPullRequestSignalContextsFromText, pullRequestUrlForNumber } =
+    pullRequestReferenceParser;
 
-  function linkedPullRequestHasSupersessionSignal(
+  // The review model names the canonical item in `rootCauseCluster.canonicalRef`,
+  // and the runtime records a GitHub-verified merged fixing PR in `fixed_pr_*`.
+  // Only these typed facts name a PR that can cover this one; report prose never does.
+  function canonicalPullRequestNumbersFromReport(
     markdown: string,
     currentNumber: number,
-    linkedNumber: number,
-  ): boolean {
-    const signal =
-      /\b(supersed(?:e|ed|es|ing)|replace(?:s|d|ment)?|duplicate|duplicated|canonical|covered by|landed in)\b/i;
-    const texts = [
-      ...frontMatterStringArray(markdown, "work_cluster_refs"),
-      ...mergeRiskOptionsFromReport(markdown).flatMap((option) => [option.title, option.body]),
-      reviewSectionValue(markdown, "bestSolution"),
-      reviewSectionValue(markdown, "evidence"),
-      reviewSectionValue(markdown, "closeComment"),
-    ];
-    return texts.some((text) =>
-      linkedPullRequestSignalContextsFromText(text, currentNumber, linkedNumber).some((context) =>
-        signal.test(context),
-      ),
-    );
+  ): number[] {
+    const numbers = new Set<number>();
+    const canonicalRef = reportRootCauseCluster(markdown).canonicalRef;
+    if (canonicalRef) {
+      const parsed = parseGitHubItemRef(canonicalRef, "root_cause_cluster.canonicalRef");
+      if (parsed.kind === "pull_request") numbers.add(parsed.number);
+    }
+    const fixedPullRequest = fixedPullRequestFromReport(markdown);
+    if (
+      fixedPullRequest?.confidence === "high" &&
+      isGitHubVerifiedFixedPullRequestSource(fixedPullRequest.source)
+    ) {
+      numbers.add(fixedPullRequest.number);
+    }
+    numbers.delete(currentNumber);
+    return [...numbers];
   }
 
   function linkedPullRequestSupersession(
@@ -451,17 +449,11 @@ export function createPullRequestPromotionFacts(
     options: { reportDirs?: readonly string[] } = {},
   ): LinkedPullRequestSupersessionResolution {
     let unsafeReason: string | null = null;
-    for (const number of linkedPullRequestNumbersFromReport(markdown, item.number)) {
+    for (const number of canonicalPullRequestNumbersFromReport(markdown, item.number)) {
       try {
-        const hasSupersessionSignal = linkedPullRequestHasSupersessionSignal(
-          markdown,
-          item.number,
-          number,
-        );
         const pull = asRecord(ghJson<unknown>(["api", `repos/${targetRepo()}/pulls/${number}`]));
         const state = stringOrUndefined(pull.state)?.toLowerCase() ?? "";
         const mergedAt = stringOrUndefined(pull.merged_at) ?? null;
-        if (!hasSupersessionSignal) continue;
         const linkedPull: LinkedPullRequestSupersession = {
           number,
           title: stringOrUndefined(pull.title) ?? `PR #${number}`,
@@ -602,12 +594,9 @@ export function createPullRequestPromotionFacts(
     contextHasNonAutomationActivityAfter,
     contextHasNonAutomationActivityAfterForTest,
     pullRequestReferenceParser,
-    linkedPullRequestNumbersFromReport,
-    linkedPullRequestRefsFromReport,
-    linkedPullRequestRefsFromText,
     linkedPullRequestSignalContextsFromText,
     pullRequestUrlForNumber,
-    linkedPullRequestHasSupersessionSignal,
+    canonicalPullRequestNumbersFromReport,
     linkedPullRequestSupersession,
     linkedPullRequestLabels,
     linkedPullRequestReportMarkdown,

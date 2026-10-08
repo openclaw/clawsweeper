@@ -128,8 +128,6 @@ function reviewCommentState(comments: () => Record<string, unknown>[]) {
       const parsed = Date.parse(value ?? "");
       return Number.isFinite(parsed) ? parsed : null;
     },
-    linkedPullRequestRefsFromText: () => [],
-    linkedPullRequestSignalContextsFromText: () => [],
     reviewCommentMarker: () => reviewMarker,
     pullHeadShaFromContext: () => headSha,
     pullHeadShaFromReport: () => headSha,
@@ -647,8 +645,6 @@ test("newest exact durable comment wins over older trusted duplicates", () => {
       const parsed = Date.parse(value ?? "");
       return Number.isFinite(parsed) ? parsed : null;
     },
-    linkedPullRequestRefsFromText: () => [],
-    linkedPullRequestSignalContextsFromText: () => [],
     reviewCommentMarker: () => reviewMarker,
     pullHeadShaFromContext: () => headSha,
     pullHeadShaFromReport: () => headSha,

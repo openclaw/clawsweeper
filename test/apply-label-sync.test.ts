@@ -81,7 +81,7 @@ fixed_pr_merged_at: unknown`;
 fixed_pr_url: https://github.com/openclaw/openclaw/pull/456
 fixed_pr_number: 456
 fixed_pr_confidence: high
-fixed_pr_source: GitHub linked-issue closing PR reference
+fixed_pr_source: "GitHub linked-issue current closing PR"
 fixed_pr_merged_at: 2026-08-18T12:00:00Z`;
   assert.equal(
     implementedOnMainCloseProvenanceBlock(verified, "pull_request", 118679, "implemented_on_main"),
@@ -3880,7 +3880,7 @@ for (const scenario of [
           : `https://github.com/openclaw/clawsweeper/pull/${mismatchedCanonical ? "901" : "900"}`,
         fixed_pr_number: mismatchedCanonical ? "901" : "900",
         fixed_pr_confidence: "high",
-        fixed_pr_source: "GitHub verified implementation landing",
+        fixed_pr_source: "GitHub reviewed implementation landing",
         fixed_pr_merged_at: "2026-05-01T02:00:00Z",
         fixed_sha: "1234567890abcdef1234567890abcdef12345678",
         fixed_at: "2026-05-01T02:00:00Z",
@@ -3894,7 +3894,7 @@ for (const scenario of [
         fixed_pr_url: "https://github.com/openclaw/clawsweeper/pull/900",
         fixed_pr_number: "900",
         fixed_pr_confidence: "high",
-        fixed_pr_source: "GitHub verified implementation landing",
+        fixed_pr_source: "GitHub reviewed implementation landing",
         fixed_pr_merged_at: missingCanonicalMerge ? "unknown" : "2026-05-01T02:00:00Z",
       }).replaceAll("openclaw/openclaw", "openclaw/clawsweeper");
       const linkedIssueSynced = reportWithSyncedReviewComment(

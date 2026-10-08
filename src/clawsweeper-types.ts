@@ -510,6 +510,14 @@ export interface RootCauseClusterAssessment {
   members: RootCauseClusterMember[];
 }
 
+/** Who identified the fixing PR. Only the "GitHub ..." sources are GitHub-verified. */
+export type FixedPullRequestSource =
+  | "GitHub closing PR reference"
+  | "GitHub linked-issue current closing PR"
+  | "GitHub reviewed implementation landing"
+  | "GitHub commit PR lookup"
+  | "report metadata";
+
 export interface FixedPullRequest {
   repo: string;
   number: number;
@@ -518,7 +526,7 @@ export interface FixedPullRequest {
   mergedAt: string | null;
   sha: string | null;
   confidence: Confidence;
-  source: string;
+  source: FixedPullRequestSource;
 }
 
 /**
@@ -1368,7 +1376,6 @@ export interface PullRequestClosePromotion {
   bestSolution: string;
   evidence: string;
   closeComment: string;
-  coverageProofFallbackRefs: boolean;
 }
 
 export interface LinkedPullRequestSupersession {

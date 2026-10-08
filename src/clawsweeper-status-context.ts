@@ -1,10 +1,11 @@
 import { existsSync, readFileSync } from "node:fs";
-import { CONFIDENCES } from "./clawsweeper-policy.js";
+import { CONFIDENCES, isGitHubVerifiedFixedPullRequestSource } from "./clawsweeper-policy.js";
 import { escapeRegExp } from "./clawsweeper-text.js";
 import type {
   Confidence,
   Decision,
   FixedPullRequest,
+  FixedPullRequestSource,
   Item,
   ItemContext,
   RegressionAssessment,
@@ -556,7 +557,10 @@ ${profileStatusEnd(profile)}`;
     return parts.length ? parts.join(", ") : "not determined";
   }
 
-  function fixedPullRequestFromUnknown(value: unknown, source: string): FixedPullRequest | null {
+  function fixedPullRequestFromUnknown(
+    value: unknown,
+    source: FixedPullRequestSource,
+  ): FixedPullRequest | null {
     const pull = asRecord(value);
     const number = pull.number;
     if (typeof number !== "number" || !Number.isInteger(number) || number <= 0) return null;
@@ -685,7 +689,7 @@ ${profileStatusEnd(profile)}`;
 
   function verifiedFixedPullRequestForNumber(
     number: number,
-    source: string,
+    source: FixedPullRequestSource,
   ): FixedPullRequest | null {
     try {
       const defaultBranch = defaultBranchForFixedSha();
@@ -867,7 +871,7 @@ ${profileStatusEnd(profile)}`;
 
   function fixedPullRequestFromCommitPulls(
     pulls: readonly unknown[],
-    source: string,
+    source: FixedPullRequestSource,
     issueNumber: number,
     commitMessage = "",
     defaultBranch = "main",
@@ -1115,6 +1119,7 @@ ${profileStatusEnd(profile)}`;
     const number = rawNumber ? Number(rawNumber) : NaN;
     if (!url || url === "unknown" || !Number.isInteger(number) || number <= 0) return null;
     const confidence = frontMatterValue(markdown, "fixed_pr_confidence") as Confidence | undefined;
+    const fixedPullRequestSource = frontMatterValue(markdown, "fixed_pr_source");
     return {
       repo: markdownRepository(markdown),
       number,
@@ -1123,7 +1128,9 @@ ${profileStatusEnd(profile)}`;
       mergedAt: nonUnknownFrontMatter(markdown, "fixed_pr_merged_at"),
       sha: nonUnknownFrontMatter(markdown, "fixed_pr_sha"),
       confidence: confidence && CONFIDENCES.has(confidence) ? confidence : "low",
-      source: nonUnknownFrontMatter(markdown, "fixed_pr_source") ?? "report metadata",
+      source: isGitHubVerifiedFixedPullRequestSource(fixedPullRequestSource)
+        ? fixedPullRequestSource
+        : "report metadata",
     };
   }
 

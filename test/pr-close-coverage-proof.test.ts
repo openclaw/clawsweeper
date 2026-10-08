@@ -235,21 +235,6 @@ test("PR close coverage proof envelope parser is strict", () => {
   assert.throws(() => prCloseCoverageProofEnvelopePath("proofs", -1, 20), /positive integer/);
 });
 
-test("PR close coverage proof can close concrete loopback embeddings bypass work", () => {
-  const decision = prCloseCoverageProofCloseDecision({
-    sourceSummary: "PR A covers the Ollama managed-proxy loopback transport gap.",
-    coveringSummary: "PR B is the replacement PR carrying the loopback embeddings bypass work.",
-    coveredWork: ["PR B carries the loopback embeddings bypass work from PR A."],
-    uniqueSourceWork: [],
-    decision: "covered",
-    reason:
-      "PR B carries the loopback embeddings bypass work and PR A has no unique remaining work.",
-  });
-
-  assert.equal(decision.close, true);
-  assert.equal(decision.proof.decision, "covered");
-});
-
 test("PR close coverage proof keeps open when source work remains unique", () => {
   const decision = prCloseCoverageProofCloseDecision({
     sourceSummary: "PR A fixes the auth route.",
@@ -265,82 +250,20 @@ test("PR close coverage proof keeps open when source work remains unique", () =>
   assert.match(decision.reason, /incomplete/);
 });
 
-test("PR close coverage proof rejects generic covered work before closing", () => {
+test("PR close coverage proof trusts the model covered decision regardless of wording", () => {
   const decision = prCloseCoverageProofCloseDecision({
-    sourceSummary: "PR A fixes the auth route guard.",
-    coveringSummary: "PR B changes nearby auth files.",
-    coveredWork: ["PR B touches the same auth package."],
-    uniqueSourceWork: [],
-    decision: "covered",
-    reason: "The PRs touch the same area.",
-  });
-
-  assert.equal(decision.close, false);
-  assert.equal(decision.proof.decision, "keep_open");
-  assert.match(decision.reason, /incomplete/);
-});
-
-test("PR close coverage proof rejects same-fix covered work before closing", () => {
-  const decision = prCloseCoverageProofCloseDecision({
-    sourceSummary: "PR A fixes the auth route guard.",
-    coveringSummary: "PR B says it covers PR A.",
-    coveredWork: ["PR B covers the same fix."],
+    sourceSummary: "PR A fixes legacy config validation.",
+    coveringSummary: "PR B fixes legacy config validation.",
+    coveredWork: ["config"],
     uniqueSourceWork: [],
     decision: "covered",
     reason: "PR B covers PR A.",
   });
 
-  assert.equal(decision.close, false);
-  assert.equal(decision.proof.decision, "keep_open");
-  assert.match(decision.reason, /incomplete/);
+  assert.equal(decision.close, true);
+  assert.equal(decision.proof.decision, "covered");
+  assert.deepEqual(decision.proof.coveredWork, ["config"]);
 });
-
-test("PR close coverage proof rejects same-behavior covered work before closing", () => {
-  const decision = prCloseCoverageProofCloseDecision({
-    sourceSummary: "PR A fixes the auth route guard.",
-    coveringSummary: "PR B says it covers PR A.",
-    coveredWork: ["PR B covers PR A's same behavior."],
-    uniqueSourceWork: [],
-    decision: "covered",
-    reason: "PR B covers PR A.",
-  });
-
-  assert.equal(decision.close, false);
-  assert.equal(decision.proof.decision, "keep_open");
-  assert.match(decision.reason, /incomplete/);
-});
-
-test("PR close coverage proof rejects supported same-behavior covered work", () => {
-  const decision = prCloseCoverageProofCloseDecision({
-    sourceSummary: "PR A fixes the auth route guard.",
-    coveringSummary: "PR B says it supports PR A.",
-    coveredWork: ["PR B supports PR A same behavior."],
-    uniqueSourceWork: [],
-    decision: "covered",
-    reason: "PR B covers PR A.",
-  });
-
-  assert.equal(decision.close, false);
-  assert.equal(decision.proof.decision, "keep_open");
-  assert.match(decision.reason, /incomplete/);
-});
-
-for (const coveredWork of ["config", "proof", "legacy"]) {
-  test(`PR close coverage proof rejects terse covered work: ${coveredWork}`, () => {
-    const decision = prCloseCoverageProofCloseDecision({
-      sourceSummary: "PR A fixes legacy config validation.",
-      coveringSummary: "PR B fixes legacy config validation.",
-      coveredWork: [coveredWork],
-      uniqueSourceWork: [],
-      decision: "covered",
-      reason: "PR B covers PR A.",
-    });
-
-    assert.equal(decision.close, false);
-    assert.equal(decision.proof.decision, "keep_open");
-    assert.match(decision.reason, /incomplete/);
-  });
-}
 
 test("PR close coverage proof parser rejects unexpected model fields", () => {
   assert.throws(

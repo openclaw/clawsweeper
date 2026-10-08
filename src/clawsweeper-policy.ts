@@ -3,6 +3,7 @@ import {
   ACCEPTED_LARGE_LABEL,
   CLOSE_PROTECTED_LABEL_NAMES,
   PR_AUTO_CLOSE_EXEMPT_LABEL_NAMES,
+  SECURITY_PROTECTED_LABEL_NAMES,
 } from "./repair/exact-review-guard-labels.js";
 import type {
   AgentsPolicyStatusKind,
@@ -12,6 +13,7 @@ import type {
   DataModelCompatibility,
   DecisionKind,
   FeatureShowcaseStatus,
+  FixedPullRequestSource,
   ImpactLabelName,
   ImplementationComplexity,
   ItemCategory,
@@ -87,7 +89,7 @@ export const DEFAULT_REASONING_EFFORT = "medium";
 // per item to high reasoning and fast service.
 export const DEFAULT_SERVICE_TIER = "";
 export const DEFAULT_REVIEW_CODEX_TIMEOUT_MS = 1_200_000;
-export const REVIEW_POLICY_VERSION = "2026-10-08-policy-v34";
+export const REVIEW_POLICY_VERSION = "2026-10-08-policy-v35";
 export const REVIEW_COMMENT_MARKER_PREFIX = "<!-- clawsweeper-review";
 export const REVIEW_START_STATUS_MARKER_PREFIX = "<!-- clawsweeper-review-status";
 export const ACCEPTED_LARGE_LABEL_DEFINITION = {
@@ -528,6 +530,19 @@ export const APPLY_PROTECTED_LABELS = new Set<string>([
   "clawsweeper:needs-maintainer-review",
   "clawsweeper:needs-product-decision",
 ]);
+export const SECURITY_PROTECTED_LABELS = new Set<string>(SECURITY_PROTECTED_LABEL_NAMES);
+// The runtime sets these sources only after GitHub confirms the merged fixing PR.
+export const GITHUB_VERIFIED_FIXED_PULL_REQUEST_SOURCES = new Set<FixedPullRequestSource>([
+  "GitHub closing PR reference",
+  "GitHub linked-issue current closing PR",
+  "GitHub reviewed implementation landing",
+  "GitHub commit PR lookup",
+]);
+export function isGitHubVerifiedFixedPullRequestSource(
+  value: unknown,
+): value is FixedPullRequestSource {
+  return GITHUB_VERIFIED_FIXED_PULL_REQUEST_SOURCES.has(value as FixedPullRequestSource);
+}
 export const ALLOWED_REASONS = new Set<CloseReason>([
   "implemented_on_main",
   "mostly_implemented_on_main",

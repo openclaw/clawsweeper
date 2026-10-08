@@ -89,40 +89,6 @@ const PR_CLOSE_COVERAGE_PROOF_ENVELOPE_KEYS = new Set([
   "proof",
 ]);
 const PR_CLOSE_COVERAGE_PROOF_SNAPSHOT_KEYS = new Set(["number", "snapshotSha256"]);
-const PR_CLOSE_COVERAGE_PROOF_GENERIC_WORDS = new Set([
-  "a",
-  "an",
-  "and",
-  "b",
-  "behavior",
-  "candidate",
-  "carries",
-  "carry",
-  "close",
-  "cover",
-  "covered",
-  "covering",
-  "covers",
-  "fix",
-  "fixed",
-  "fixes",
-  "forward",
-  "from",
-  "includes",
-  "intent",
-  "it",
-  "pr",
-  "proposed",
-  "same",
-  "source",
-  "support",
-  "supported",
-  "supports",
-  "that",
-  "the",
-  "this",
-  "work",
-]);
 
 export function parsePrCloseCoverageProofModelResult(
   value: unknown,
@@ -158,12 +124,12 @@ export function normalizedPrCloseCoverageProofModelResult(
     reason: proof.reason.trim(),
   };
   if (normalizedProof.decision !== "covered") return normalizedProof;
-  if (prCloseCoverageProofHasConcreteCloseEvidence(normalizedProof)) return normalizedProof;
+  if (prCloseCoverageProofHasRequiredCloseFields(normalizedProof)) return normalizedProof;
   return {
     ...normalizedProof,
     decision: "keep_open",
     reason: `model PR close coverage proof was incomplete: ${
-      normalizedProof.reason || "missing concrete coverage proof"
+      normalizedProof.reason || "missing required coverage proof fields"
     }`,
   };
 }
@@ -522,37 +488,17 @@ export function readPrCloseCoverageProofModelOutput(
   );
 }
 
-function prCloseCoverageProofHasConcreteCloseEvidence(
+// A `covered` decision must fill every field the close comment needs. The model
+// alone judges whether the covered work is concrete enough.
+function prCloseCoverageProofHasRequiredCloseFields(
   proof: PrCloseCoverageProofModelResult,
 ): boolean {
   return (
-    proof.sourceSummary.trim().length > 0 &&
-    proof.coveringSummary.trim().length > 0 &&
+    proof.sourceSummary.length > 0 &&
+    proof.coveringSummary.length > 0 &&
     proof.coveredWork.length > 0 &&
-    proof.coveredWork.some(prCloseCoverageProofCoveredWorkIsConcrete) &&
     proof.uniqueSourceWork.length === 0 &&
-    proof.reason.trim().length > 0
-  );
-}
-
-function prCloseCoverageProofCoveredWorkIsConcrete(value: string): boolean {
-  const normalized = value.trim().toLowerCase();
-  if (!normalized) return false;
-  const words = normalized.match(/\b[a-z0-9][a-z0-9'-]*\b/g) ?? [];
-  if (words.length < 4) return false;
-  const concreteWords = words
-    .map((word) => word.replace(/'s$/, ""))
-    .filter((word) => !PR_CLOSE_COVERAGE_PROOF_GENERIC_WORDS.has(word));
-  if (concreteWords.length < 2) return false;
-  if (
-    /\b(?:touch(?:es|ed)?|chang(?:es|ed|ing)|modif(?:ies|ied)|updates?|mentions?|references?)\b.*\b(?:same|nearby|related|shared)\b.*\b(?:file|files|package|module|area|code|path|component|discussion)\b/.test(
-      normalized,
-    )
-  ) {
-    return false;
-  }
-  return /\b(?:behavior|intent|review concern|fix(?:es|ed)?|handling|support|validation|proof|guard|route|transport|proxy|bypass|loopback|embeddings?|restart|drain|legacy|config)\b/.test(
-    normalized,
+    proof.reason.length > 0
   );
 }
 

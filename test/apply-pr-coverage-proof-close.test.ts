@@ -13,6 +13,7 @@ import { join } from "node:path";
 import test from "node:test";
 
 import {
+  canonicalPullRequestClusterForTest,
   lowSignalCloseReport,
   markedReviewCommentForTest,
   promotionGhMock,
@@ -139,6 +140,9 @@ test("apply-decisions checks duplicate PR coverage proof before syncing correcte
       work_cluster_refs: JSON.stringify([
         "Superseded by https://github.com/openclaw/openclaw/pull/400",
       ]),
+      root_cause_cluster: canonicalPullRequestClusterForTest(
+        "https://github.com/openclaw/openclaw/pull/400",
+      ),
     }).replace(
       "Closing this PR because the branch is not a useful landing base.",
       "Closing this PR as superseded by https://github.com/openclaw/openclaw/pull/400.",
@@ -221,6 +225,9 @@ test("apply-decisions closes existing duplicate PR close proposals when coverage
         work_cluster_refs: JSON.stringify([
           "Superseded by https://github.com/openclaw/openclaw/pull/400",
         ]),
+        root_cause_cluster: canonicalPullRequestClusterForTest(
+          "https://github.com/openclaw/openclaw/pull/400",
+        ),
       }).replace(
         "Closing this PR because the branch is not a useful landing base.",
         "Closing this PR as superseded by https://github.com/openclaw/openclaw/pull/400.",
@@ -298,6 +305,9 @@ test("apply-decisions permits a trusted deferred close-proof command status thro
         work_cluster_refs: JSON.stringify([
           "Superseded by https://github.com/openclaw/openclaw/pull/400",
         ]),
+        root_cause_cluster: canonicalPullRequestClusterForTest(
+          "https://github.com/openclaw/openclaw/pull/400",
+        ),
       }).replace(
         "Closing this PR because the branch is not a useful landing base.",
         "Closing this PR as superseded by https://github.com/openclaw/openclaw/pull/400.",
@@ -494,6 +504,9 @@ test("apply-decisions records successful duplicate PR coverage proof for closed 
         work_cluster_refs: JSON.stringify([
           "Superseded by https://github.com/openclaw/openclaw/pull/400",
         ]),
+        root_cause_cluster: canonicalPullRequestClusterForTest(
+          "https://github.com/openclaw/openclaw/pull/400",
+        ),
       }).replace(
         "Closing this PR because the branch is not a useful landing base.",
         "Closing this PR as superseded by https://github.com/openclaw/openclaw/pull/400.",
@@ -579,6 +592,9 @@ test("apply-decisions consumes a bound precomputed proof without invoking Codex"
         work_cluster_refs: JSON.stringify([
           "Superseded by https://github.com/openclaw/openclaw/pull/400",
         ]),
+        root_cause_cluster: canonicalPullRequestClusterForTest(
+          "https://github.com/openclaw/openclaw/pull/400",
+        ),
       }).replace(
         "Closing this PR because the branch is not a useful landing base.",
         "Closing this PR as superseded by https://github.com/openclaw/openclaw/pull/400.",
@@ -714,7 +730,7 @@ test("apply-decisions consumes a bound precomputed proof without invoking Codex"
   }
 });
 
-test("apply-decisions bounds proof envelopes for reports with many canonical PR refs", () => {
+test("apply-decisions runs coverage proof only for the typed canonical PR and the verified fixed PR", () => {
   const root = mkdtempSync(tmpPrefix);
   try {
     const itemsDir = join(root, "items");
@@ -731,11 +747,20 @@ test("apply-decisions bounds proof envelopes for reports with many canonical PR 
         number: 365,
         title: "Provider route fallback",
         close_reason: "duplicate_or_superseded",
+        // PRs 402-404 appear only in prose, so they are never proof candidates.
         work_cluster_refs: JSON.stringify(
           coveringNumbers.map(
             (number) => `Superseded by https://github.com/openclaw/openclaw/pull/${number}`,
           ),
         ),
+        root_cause_cluster: canonicalPullRequestClusterForTest(
+          "https://github.com/openclaw/openclaw/pull/400",
+        ),
+        fixed_pr_url: "https://github.com/openclaw/openclaw/pull/401",
+        fixed_pr_number: "401",
+        fixed_pr_merged_at: "2026-05-02T00:00:00Z",
+        fixed_pr_confidence: "high",
+        fixed_pr_source: "GitHub commit PR lookup",
       }).replace(
         "Closing this PR because the branch is not a useful landing base.",
         "Closing this PR as superseded by the linked canonical pull requests.",
@@ -801,11 +826,11 @@ test("apply-decisions bounds proof envelopes for reports with many canonical PR 
       },
     );
 
-    assert.equal(readFileSync(proofLogPath, "utf8").trim().split("\n").length, 4);
+    assert.equal(readFileSync(proofLogPath, "utf8").trim().split("\n").length, 2);
     const proofFiles = readdirSync(join(artifactDir, "pr-close-coverage-proof")).filter((name) =>
       name.endsWith(".proof.json"),
     );
-    assert.equal(proofFiles.length, 4);
+    assert.deepEqual(proofFiles.sort(), ["365-400.proof.json", "365-401.proof.json"]);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -829,6 +854,9 @@ test("apply-decisions fails closed when a required precomputed proof is missing"
         work_cluster_refs: JSON.stringify([
           "Superseded by https://github.com/openclaw/openclaw/pull/400",
         ]),
+        root_cause_cluster: canonicalPullRequestClusterForTest(
+          "https://github.com/openclaw/openclaw/pull/400",
+        ),
       }).replace(
         "Closing this PR because the branch is not a useful landing base.",
         "Closing this PR as superseded by https://github.com/openclaw/openclaw/pull/400.",
@@ -921,6 +949,9 @@ test("apply-decisions filters covering PR bot comments from coverage proof", () 
         work_cluster_refs: JSON.stringify([
           "Superseded by https://github.com/openclaw/openclaw/pull/400",
         ]),
+        root_cause_cluster: canonicalPullRequestClusterForTest(
+          "https://github.com/openclaw/openclaw/pull/400",
+        ),
       }).replace(
         "Closing this PR because the branch is not a useful landing base.",
         "Closing this PR as superseded by https://github.com/openclaw/openclaw/pull/400.",
@@ -1014,6 +1045,9 @@ test("apply-decisions rechecks duplicate PR freshness after coverage proof passe
         work_cluster_refs: JSON.stringify([
           "Superseded by https://github.com/openclaw/openclaw/pull/400",
         ]),
+        root_cause_cluster: canonicalPullRequestClusterForTest(
+          "https://github.com/openclaw/openclaw/pull/400",
+        ),
       }).replace(
         "Closing this PR because the branch is not a useful landing base.",
         "Closing this PR as superseded by https://github.com/openclaw/openclaw/pull/400.",
@@ -1092,6 +1126,9 @@ test("apply-decisions rejects a same-timestamp covering PR snapshot change after
         work_cluster_refs: JSON.stringify([
           "Superseded by https://github.com/openclaw/openclaw/pull/400",
         ]),
+        root_cause_cluster: canonicalPullRequestClusterForTest(
+          "https://github.com/openclaw/openclaw/pull/400",
+        ),
       }).replace(
         "Closing this PR because the branch is not a useful landing base.",
         "Closing this PR as superseded by https://github.com/openclaw/openclaw/pull/400.",

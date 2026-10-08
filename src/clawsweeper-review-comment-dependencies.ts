@@ -7,7 +7,6 @@ import type {
   OverallCorrectness,
   PrRating,
   PullRequestReviewReadiness,
-  PullRequestRef,
   ReviewFinding,
   ReviewStartStatusCommentResult,
   SecurityReview,
@@ -60,12 +59,6 @@ export interface ReviewCommentWorkflowDependencies {
   reportAttachedLiveVerification: (markdown: string) => AttachedLiveVerification;
   normalizedLabelSet: (labels: readonly string[]) => Set<string>;
   sectionLineValue: (section: string, label: string) => string | undefined;
-  linkedPullRequestRefsFromText: (text: string, currentNumber: number) => PullRequestRef[];
-  linkedPullRequestSignalContextsFromText: (
-    text: string,
-    currentNumber: number,
-    linkedNumber: number,
-  ) => string[];
   isClawSweeperOwnedLabel: (label: string) => boolean;
   reviewHistoryForStaleComment: (body: string | undefined) => ReviewHistoryLedger;
   currentReviewRevision: (item: Item) => string;
