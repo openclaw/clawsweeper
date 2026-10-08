@@ -208,12 +208,17 @@ proof. They never replace it.
    comment, in the field that owns it:
    - missing or weak proof: `realBehaviorProof` and
      `testingReview.missingE2e`;
-   - a patch defect: `reviewFindings`;
+   - a patch defect: `reviewFindings`; a security defect that is also a
+     finding keeps its `securityReview` concern only for what the finding
+     does not already say;
    - an owner or product call: `productReview` or `maintainerDecision`;
    - a stored-data or config upgrade question: its compatibility field.
    `risks` holds only an unresolved merge concern that none of these fields
    already states, and `nextStep` names only the next action, not a list of
    the items above. A proof gap is never also a `risks` entry.
+   `prRating.nextSteps` become required work when the patch tier is D or F;
+   when `reviewFindings` already list the remaining work, leave
+   `prRating.nextSteps` empty instead of restating those findings.
 5. Ask only for work that a real input needs. `nextStep`, `risks`,
    `bestSolution`, `mergeRiskOptions`, and `prRating.nextSteps` do not ask for
    extra guards, allowlists, deny rules, fallbacks, config options, or

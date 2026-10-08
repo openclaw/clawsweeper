@@ -1,0 +1,1 @@
+- Stop low patch ratings and security concerns from restating typed findings as extra Before-merge items.
