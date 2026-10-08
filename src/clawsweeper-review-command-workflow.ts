@@ -243,14 +243,13 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
       publicationPolicy
         ? replaceFrontMatterValue(markdown, "publication_policy", publicationPolicy)
         : markdown;
-    // One cache per review run: items often share introducing commits.
-    const resolveProvenancePull = createCommitPullResolver((repo, sha) =>
-      dependencies.ghJson([
-        "api",
-        `repos/${repo}/commits/${sha}/pulls`,
-        "-H",
-        "Accept: application/vnd.github+json",
-      ]),
+    // One cache per review run: items often share introducing commits. The provenance
+    // deadline bounds each lookup, including retries.
+    const resolveProvenancePull = createCommitPullResolver((repo, sha, deadlineAt) =>
+      dependencies.ghJson(
+        ["api", `repos/${repo}/commits/${sha}/pulls`, "-H", "Accept: application/vnd.github+json"],
+        { deadlineAt },
+      ),
     );
     const preparation = prepareReviewCommand(args, dependencies);
     const {

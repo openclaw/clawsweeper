@@ -33,7 +33,8 @@ it the most care.
    notes, or the area's maintainers in history. An `OWNER`, `MEMBER`, or
    `COLLABORATOR` author association alone does not make the author an owner
    of the area. When an owner decision exists, judge `yes` or `no` from it and
-   the evidence; do not ask for it again.
+   the evidence; do not ask for it again. This exception applies to every rule
+   in this file that asks for `needs_maintainer`.
 4. Say `no` or `needs_maintainer` when the case for the change is weak. A
    correct patch alone does not make a change worth merging. A `preference`
    change is never `yes` without an owner decision, even when the preference
@@ -134,7 +135,8 @@ proof. They never replace it.
 1. Owner intent: when the diff changes behavior that an area owner built, the
    diff keeps that output and those defaults. Find the owner from CODEOWNERS,
    maintainer notes, or recent owner commits. A change to owner-built behavior
-   is a product call: set `worthIt: needs_maintainer`.
+   is a product call: set `worthIt: needs_maintainer`, unless an owner
+   decision already exists (Product review rule 3).
 2. Clean cutover: each decision has one owner. The change removes the path
    that it replaces.
 3. The claims in the pull request body match the diff that the pull request
@@ -165,9 +167,10 @@ proof. They never replace it.
 2. Keep process, style, naming, and taste concerns out of `reviewFindings`.
    Leave them out, or name the one that matters in the summary. Low-value
    tests go in `testingReview.lowValueTests`, not in `reviewFindings`.
-3. Report every blocking finding in the first review. On a re-review, a new
-   blocking finding needs new evidence or new code. A second look at unchanged
-   code is not new evidence.
+3. Report every blocking finding in the first review. Never hold a visible
+   concern back for a later cycle. When a re-review finds a real defect in
+   code that an earlier review could already see, report it and set
+   `lateFinding: true`; a late defect is still a defect.
 
 ### Rating rubric
 

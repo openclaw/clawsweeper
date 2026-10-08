@@ -13,6 +13,7 @@ import type {
   ExistingReview,
   ExpectedIssueSourceRevisionOptions,
   FileModeSnapshot,
+  GitHubDeadlineOptions,
   GitInfo,
   Item,
   ItemContext,
@@ -112,7 +113,7 @@ export interface CreateReviewCommandWorkflowDependencies {
     readonly retryHint?: string;
   };
   codexReviewFailureRetryable: (error: unknown) => boolean;
-  ghJson: <T>(args: string[]) => T;
+  ghJson: <T>(args: string[], options?: GitHubDeadlineOptions) => T;
   collectItemContext: (
     item: Item,
     options?: {

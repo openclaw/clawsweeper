@@ -60,7 +60,11 @@ export type ProvenanceBlobFetch = (objectIds: string[], deadlineAt: number) => u
 
 export type ProvenanceGitRead = (args: string[], options: ReviewGitReadOptions) => string | null;
 
-export type CommitPullResolver = (repo: string, sha: string) => ProvenancePullRequest | null;
+export type CommitPullResolver = (
+  repo: string,
+  sha: string,
+  deadlineAt: number,
+) => ProvenancePullRequest | null;
 
 export const PROVENANCE_NOT_RUN: ProvenanceEvidence = {
   status: "unavailable",
@@ -220,13 +224,13 @@ export function commitPullRequest(pulls: unknown): ProvenancePullRequest | null 
 
 /** Caches lookups by repository and commit for one review run; failures are not cached. */
 export function createCommitPullResolver(
-  fetchPulls: (repo: string, sha: string) => unknown,
+  fetchPulls: (repo: string, sha: string, deadlineAt: number) => unknown,
 ): CommitPullResolver {
   const cache = new Map<string, ProvenancePullRequest | null>();
-  return (repo, sha) => {
+  return (repo, sha, deadlineAt) => {
     const key = `${repo}@${sha}`;
     if (cache.has(key)) return cache.get(key)!;
-    const pull = commitPullRequest(fetchPulls(repo, sha));
+    const pull = commitPullRequest(fetchPulls(repo, sha, deadlineAt));
     cache.set(key, pull);
     return pull;
   };
@@ -417,7 +421,7 @@ export function buildProvenanceEvidence(options: {
         break;
       }
       try {
-        pulls.set(sha, options.resolvePull(options.repo, sha));
+        pulls.set(sha, options.resolvePull(options.repo, sha, deadlineAt));
       } catch (error) {
         // Stop on the first API failure; later lookups would spend the same budget.
         lookupFailure = `GitHub pull request lookup failed: ${collapse(error instanceof Error ? error.message : String(error), MAX_REASON_DETAIL_CHARS)}`;
