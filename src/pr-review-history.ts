@@ -189,6 +189,8 @@ export function prefetchReviewHistory(options: {
     );
 
   const tips = [...new Set([options.headSha, ...options.tips])];
+  // Budgets count only blobs to fetch; local versions are free.
+  let queued = 0;
   let estimatedBytes = 0;
   let budgetExhausted = false;
   const pathBytes = new Map<string, number>();
@@ -239,27 +241,36 @@ export function prefetchReviewHistory(options: {
     // Newest first: a global cap cuts every path at one date; a per-path cap
     // cuts only that path.
     const creations: Array<{ commit: string; date: string; path: string; oid: string }> = [];
+    const oldestEntry = new Map(entries.map((entry) => [entry.path, entry]));
     for (const entry of entries) {
       if (!estimates.has(entry.path) || truncated.has(entry.path)) continue;
       const wanted = [entry.newOid, entry.oldOid].filter(
         (oid): oid is string => oid !== null && !selected.has(oid),
       );
-      const estimate = estimates.get(entry.path) || UNKNOWN_BLOB_BYTES;
-      const bytes = wanted.reduce((sum, oid) => sum + (local.sizes.get(oid) ?? estimate), 0);
-      budgetExhausted ||=
-        selected.size + wanted.length > MAX_OBJECTS || estimatedBytes + bytes > MAX_ESTIMATED_BYTES;
-      if (budgetExhausted || (pathBytes.get(entry.path) ?? 0) + bytes > MAX_PATH_ESTIMATED_BYTES) {
-        truncated.set(entry.path, entry.date);
-        continue;
+      const absent = wanted.filter((oid) => !local.sizes.has(oid));
+      const bytes = absent.length * (estimates.get(entry.path) || UNKNOWN_BLOB_BYTES);
+      if (absent.length > 0) {
+        budgetExhausted ||=
+          queued + absent.length > MAX_OBJECTS || estimatedBytes + bytes > MAX_ESTIMATED_BYTES;
+        if (
+          budgetExhausted ||
+          (pathBytes.get(entry.path) ?? 0) + bytes > MAX_PATH_ESTIMATED_BYTES
+        ) {
+          truncated.set(entry.path, entry.date);
+          continue;
+        }
       }
       for (const oid of wanted) selected.add(oid);
+      queued += absent.length;
       estimatedBytes += bytes;
       pathBytes.set(entry.path, (pathBytes.get(entry.path) ?? 0) + bytes);
       if (entry.status !== "A" || !entry.newOid) continue;
-      // A merge that creates a path may rename it while resolving; its earlier
-      // name is not searched, so that history counts as not local.
-      if (entry.parents > 1) truncated.set(entry.path, entry.date);
-      else if (entry.parents === 1)
+      // A merge adds a path that came from its other parent, whose history the
+      // walk continues. Only a merge that ends the path's history may have
+      // renamed it while resolving; that earlier name is not searched.
+      if (entry.parents > 1) {
+        if (oldestEntry.get(entry.path) === entry) truncated.set(entry.path, entry.date);
+      } else if (entry.parents === 1)
         creations.push({
           commit: entry.commit,
           date: entry.date,
@@ -312,9 +323,10 @@ export function prefetchReviewHistory(options: {
           continue;
         }
         budgetExhausted ||=
-          selected.size >= MAX_OBJECTS || estimatedBytes + UNKNOWN_BLOB_BYTES > MAX_ESTIMATED_BYTES;
+          queued >= MAX_OBJECTS || estimatedBytes + UNKNOWN_BLOB_BYTES > MAX_ESTIMATED_BYTES;
         if (budgetExhausted) break;
         selected.add(source.oldOid!);
+        queued += 1;
         estimatedBytes += UNKNOWN_BLOB_BYTES;
         kept.push(source);
       }

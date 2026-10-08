@@ -169,60 +169,68 @@ test("history prefetch reports an unusable checkout instead of throwing", () => 
 
 const oid = (prefix: string, index: number) => prefix + index.toString(16).padStart(39, "0");
 
-test("a large hot file keeps only its newest versions within the per-path budget", () => {
-  const lock = Array.from({ length: 200 }, (_, index) => oid("a", index));
-  const small = Array.from({ length: 3 }, (_, index) => oid("b", index));
-  const commits = Array.from({ length: 200 }, (_, index) => oid("c", index));
-  const date = (index: number) => `2026-01-01T00:00:${String(index % 60).padStart(2, "0")}Z`;
-  // Newest first: commit i changes the lockfile from version i+1 to version i.
-  const history = commits
-    .map((commit, index) => {
-      const entries = [
-        `:100644 100644 ${lock[index + 1] ?? lock[index]} ${lock[index]} M\0pnpm-lock.yaml\0`,
-      ];
-      if (index < 2)
-        entries.push(`:100644 100644 ${small[index + 1]} ${small[index]} M\0src/a.ts\0`);
-      return `\x01${commit} ${oid("d", index)}\0${date(index)}\0\n${entries.join("")}`;
-    })
-    .join("");
-  const present = new Set([lock[0]!, small[0]!]);
-  const fetched: string[][] = [];
-  const coverage = prefetchReviewHistory({
-    git: (args, input) => {
-      if (args[0] === "diff")
-        return `:100644 100644 ${lock[1]} ${lock[0]} M\0pnpm-lock.yaml\0:100644 100644 ${small[1]} ${small[0]} M\0src/a.ts\0`;
-      if (args.includes("--diff-filter=D")) return "";
-      if (args[1] === "log") return history;
-      const ids = input!.trim().split("\n");
-      if (args[0] === "rev-list")
-        return ids.map((id) => (present.has(id) ? id : `?${id}`)).join("\n");
-      if (args[0] === "cat-file")
-        return ids.map((id) => `${id} blob ${id === lock[0] ? 1024 * 1024 : 100}`).join("\n");
-      return null;
-    },
-    fetchBlobs: (ids) => {
-      fetched.push(ids);
-      for (const id of ids) present.add(id);
-    },
-    mergeBaseSha: oid("e", 0),
-    headSha: oid("e", 1),
-    tips: [],
-    deadlineAt: Date.now() + 60_000,
+for (const allLocal of [false, true]) {
+  test(`a large hot file keeps only its newest missing versions within the per-path budget, local=${allLocal}`, () => {
+    const lock = Array.from({ length: 200 }, (_, index) => oid("a", index));
+    const small = Array.from({ length: 3 }, (_, index) => oid("b", index));
+    const commits = Array.from({ length: 200 }, (_, index) => oid("c", index));
+    const date = (index: number) => `2026-01-01T00:00:${String(index % 60).padStart(2, "0")}Z`;
+    // Newest first: commit i changes the lockfile from version i+1 to version i.
+    const history = commits
+      .map((commit, index) => {
+        const entries = [
+          `:100644 100644 ${lock[index + 1] ?? lock[index]} ${lock[index]} M\0pnpm-lock.yaml\0`,
+        ];
+        if (index < 2)
+          entries.push(`:100644 100644 ${small[index + 1]} ${small[index]} M\0src/a.ts\0`);
+        return `\x01${commit} ${oid("d", index)}\0${date(index)}\0\n${entries.join("")}`;
+      })
+      .join("");
+    const present = new Set(allLocal ? [...lock, ...small] : [lock[0]!, small[0]!]);
+    const fetched: string[][] = [];
+    const coverage = prefetchReviewHistory({
+      git: (args, input) => {
+        if (args[0] === "diff")
+          return `:100644 100644 ${lock[1]} ${lock[0]} M\0pnpm-lock.yaml\0:100644 100644 ${small[1]} ${small[0]} M\0src/a.ts\0`;
+        if (args.includes("--diff-filter=D")) return "";
+        if (args[1] === "log") return history;
+        const ids = input!.trim().split("\n");
+        if (args[0] === "rev-list")
+          return ids.map((id) => (present.has(id) ? id : `?${id}`)).join("\n");
+        if (args[0] === "cat-file")
+          return ids.map((id) => `${id} blob ${id.startsWith("a") ? 1024 * 1024 : 100}`).join("\n");
+        return null;
+      },
+      fetchBlobs: (ids) => {
+        fetched.push(ids);
+        for (const id of ids) present.add(id);
+      },
+      mergeBaseSha: oid("e", 0),
+      headSha: oid("e", 1),
+      tips: [],
+      deadlineAt: Date.now() + 60_000,
+    });
+    if (allLocal) {
+      // Local versions cost nothing, so a populated checkout is never cut.
+      assert.deepEqual(fetched, []);
+      assert.equal(coverage.status, "complete");
+      return;
+    }
+    assert.equal(coverage.status, "partial");
+    assert.equal(fetched.length, 1, "one batched fetch");
+    const lockVersions = fetched[0]!.filter((id) => id.startsWith("a")).length;
+    assert.equal(lockVersions, 128);
+    assert.ok(small.every((id) => id === small[0] || fetched[0]!.includes(id)));
+    assert.deepEqual(
+      coverage.truncated.map(({ path }) => path),
+      ["pnpm-lock.yaml"],
+    );
+    assert.match(
+      reviewHistoryCapability(coverage),
+      /Not local: `pnpm-lock\.yaml` from 2026-01-01 back\./,
+    );
   });
-  assert.equal(coverage.status, "partial");
-  assert.equal(fetched.length, 1, "one batched fetch");
-  const lockVersions = fetched[0]!.filter((id) => id.startsWith("a")).length;
-  assert.ok(lockVersions >= 120 && lockVersions < 130, String(lockVersions));
-  assert.ok(small.every((id) => id === small[0] || fetched[0]!.includes(id)));
-  assert.deepEqual(
-    coverage.truncated.map(({ path }) => path),
-    ["pnpm-lock.yaml"],
-  );
-  assert.match(
-    reviewHistoryCapability(coverage),
-    /Not local: `pnpm-lock\.yaml` from 2026-01-01 back\./,
-  );
-});
+}
 
 for (const [deletions, parents] of [
   [250, 1],
