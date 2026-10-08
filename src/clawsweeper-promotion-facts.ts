@@ -1,7 +1,7 @@
 import { parseOversizedPullRequestEvidence } from "./clawsweeper-oversized-pr-policy.js";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { isDocsPath } from "./clawsweeper-change-detection.js";
+import { isDocsPath } from "./openclaw-file-role.js";
 import { AUTHOR_PR_BUDGET_MIN_INACTIVE_DAYS, REVIEW_SECTIONS } from "./clawsweeper-policy.js";
 import { createPullRequestReferenceParser } from "./clawsweeper-pr-references.js";
 import {

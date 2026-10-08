@@ -516,13 +516,13 @@ Result: ${encodeLiveVerificationReportPayload({
       labels: ["status: 📣 needs proof"],
       stale: "status: 📣 needs proof",
       expected: "status: 📣 needs proof",
-      resolvedExpected: null,
+      resolvedExpected: "status: 👀 ready for maintainer look",
     },
     {
       labels: ["status: needs maintainer proof decision"],
       stale: "status: needs maintainer proof decision",
       expected: "status: 📣 needs proof",
-      resolvedExpected: null,
+      resolvedExpected: "status: 👀 ready for maintainer look",
     },
     {
       labels: ["status: 🚀 automerge armed", "status: 📣 needs proof", "status: 🔁 re-review loop"],

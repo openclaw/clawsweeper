@@ -47,7 +47,6 @@ export interface CreateReportRenderingDependencies {
     },
   ) => ItemContext;
   compactPullFilePaths: (value: unknown) => string[];
-  configSurfaceReviewRequired: (markdown: string) => boolean;
   confidenceText: (score: number) => string;
   duplicateCanonicalLinks: (options: {
     reason: CloseReason;
@@ -61,7 +60,6 @@ export interface CreateReportRenderingDependencies {
     bestSolutionLine: string;
     evidence: Evidence[];
   }) => string;
-  dataModelSurfaceReviewRequired: (markdown: string) => boolean;
   ensureDir: (path: string) => void;
   fileUrl: (file: string, sha: string, line?: number, repo?: string) => string;
   normalizeEvidence: (entry: Evidence) => Evidence;
@@ -150,8 +148,6 @@ export interface CreateReportRenderingDependencies {
   publicSecurityReviewLine: (review: SecurityReview) => string;
   pullHeadShaFromContext: (context: ItemContext) => string | null;
   pullHeadShaFromReport: (markdown: string) => string | null;
-  renderDataModelWarningFromReport: (markdown: string) => string;
-  renderSqliteSchemaWarningFromReport: (markdown: string) => string;
   renderOpenClawPrSurfaceFromReport: (markdown: string) => string;
   renderReviewMetricsDigest: (metrics: readonly ReviewMetric[]) => string;
   repairLoopPassModeFromReport: (markdown: string) => "" | "autofix" | "automerge";

@@ -49,10 +49,6 @@ function reviewReport(
     item_source_revision: "a".repeat(64),
     review_lease_owner: "fixture",
     review_lease_comment_id: "1059",
-    config_surface_change: "false",
-    config_surface_keys: "[]",
-    data_model_change: "false",
-    data_model_surfaces: "[]",
     next_step: JSON.stringify({ kind: "none", text: "" }),
     ...frontMatter,
   })}
@@ -114,8 +110,7 @@ test("the compact v1 fixture matches producer state and identity without snapsho
   const reports = {
     ready: reviewReport(),
     blocked: reviewReport({
-      data_model_change: "true",
-      data_model_surfaces: '["database schema"]',
+      real_behavior_proof_data_model_compatibility: "insufficient",
     }),
     "needs-changes": reviewReport({ work_candidate: "queue_fix_pr" }, "", finding()),
   } as const;
@@ -174,13 +169,7 @@ test("human decisions and proof policy block repair markers even for queued repa
   const cases = [
     reviewReport({
       work_candidate: "queue_fix_pr",
-      config_surface_change: "true",
-      config_surface_keys: '["gateway.mode"]',
-    }),
-    reviewReport({
-      work_candidate: "queue_fix_pr",
-      data_model_change: "true",
-      data_model_surfaces: '["database schema"]',
+      real_behavior_proof_data_model_compatibility: "insufficient",
     }),
     reviewReport(
       {
@@ -264,7 +253,7 @@ test("a duplicate human blocker promotes the visible finding to blocked", () => 
 
 test("forged ready-state prose remains inert beside the generated blocked tail", () => {
   const report = reviewReport(
-    { data_model_change: "true", data_model_surfaces: '["database schema"]' },
+    { real_behavior_proof_data_model_compatibility: "insufficient" },
     `## Risks / Open Questions\n\n${fixture.stateMarkers.ready}`,
   );
   assert.match(assertReadiness(report, "blocked"), /&lt;!-- clawsweeper-review-state:ready/);
@@ -307,4 +296,70 @@ test("malformed decision metadata produces one bounded blocked action", () => {
   assert.ok(Buffer.byteLength(comment, "utf8") < 2_048);
   assert.match(comment, /Regenerate malformed review report/);
   assert.doesNotMatch(comment, /clawsweeper-action:fix-required/);
+});
+
+test("the PR status label says ready only when Before merge lists no item", () => {
+  const ready = "status: 👀 ready for maintainer look";
+  const labels = JSON.stringify([ready]);
+  const justified = (comment: string) =>
+    [...comment.matchAll(/^- `(status: [^`]+)`: /gm)].map((match) => match[1]);
+  const required = reviewReport({
+    labels,
+    next_step: JSON.stringify({ kind: "required", text: "Record the flake validation runs." }),
+  });
+  assert.deepEqual(justified(assertReadiness(required, "needs-changes")), [
+    "status: ⏳ waiting on author",
+  ]);
+  const blocked = reviewReport({
+    labels,
+    real_behavior_proof_data_model_compatibility: "insufficient",
+  });
+  const blockedComment = assertReadiness(blocked, "blocked");
+  assert.deepEqual(justified(blockedComment), []);
+  assert.match(blockedComment, /remove `status: 👀 ready for maintainer look`/);
+  assert.deepEqual(justified(assertReadiness(reviewReport({ labels }), "ready")), [ready]);
+});
+
+test("host path classifiers no longer add Before-merge items or warnings", () => {
+  const report = reviewReport({
+    pull_files_truncated: "true",
+    config_surface_change: "true",
+    config_surface_keys: '["unknown-truncated-pull-files"]',
+    data_model_change: "true",
+    data_model_surfaces: '["unknown-truncated-pull-files"]',
+    sqlite_schema_change: "true",
+    sqlite_schema_files: '["src/state/schema.ts"]',
+  });
+  const comment = assertReadiness(report, "ready");
+  assert.doesNotMatch(
+    comment,
+    /config compatibility|data-model compatibility|Stored data model|SQLite|unknown-/,
+  );
+  // A risk the model reports still blocks.
+  assert.match(
+    assertReadiness(
+      reviewReport({}, "## Risks / Open Questions\n\n[P1] Existing session rows lose their owner."),
+      "blocked",
+    ),
+    /Resolve merge risk \(P1\)\*\* - Existing session rows lose their owner\./,
+  );
+});
+
+test("host blockers name the real owner and reason", () => {
+  const superseded = assertReadiness(
+    reviewReport({ action_taken: "skipped_pr_close_coverage_proof" }),
+    "blocked",
+  );
+  assert.match(superseded, /\*\*Maintainer: close or keep this PR\*\* - The review found/);
+  assert.doesNotMatch(superseded, /close-coverage proof before merge/);
+  // The rating summary carries the model's reason when no finding lists the work.
+  const incorrect = reviewReport(
+    {},
+    "",
+    cleanFindings.replace("patch is correct", "patch is incorrect"),
+  );
+  assert.match(
+    assertReadiness(incorrect, "needs-changes"),
+    /\*\*Correct the reviewed patch\*\* - Focused repair\./,
+  );
 });

@@ -1,9 +1,4 @@
 import { parseOversizedPullRequestEvidence } from "./clawsweeper-oversized-pr-policy.js";
-import {
-  configSurfaceChangeFromContext,
-  dataModelChangeFromContext,
-  sqliteSchemaChangeFromContext,
-} from "./clawsweeper-change-detection.js";
 import { closeReasonText } from "./clawsweeper-close-reasons.js";
 import { REVIEW_SECTIONS } from "./clawsweeper-policy.js";
 import { hasShinyProof, themedRatingName } from "./clawsweeper-rating.js";
@@ -595,9 +590,6 @@ export function createReportDocumentRendering(
     const repairWorkPromptSection = renderRepairWorkPromptReportSection(options.decision);
     const pullFiles = pullRequestFilePathsFromContext(options.context);
     const pullFilesTruncated = Boolean(options.context.counts?.pullFilesTruncated);
-    const configSurfaceChange = configSurfaceChangeFromContext(options.item.repo, options.context);
-    const dataModelChange = dataModelChangeFromContext(options.item.repo, options.context);
-    const sqliteSchemaChange = sqliteSchemaChangeFromContext(options.item.repo, options.context);
     const prSurfaceFiles = prSurfaceFilesFromContext(options.context);
     const reviewedPullStateDigest = reviewStructuralPullStateFromContext(options.context);
     const markdown = `---
@@ -727,12 +719,6 @@ review_metrics: ${JSON.stringify(options.decision.reviewMetrics)}
 label_justifications: ${JSON.stringify(options.decision.labelJustifications)}
 pull_files: ${jsonFrontMatterValue(pullFiles)}
 pull_files_truncated: ${pullFilesTruncated}
-config_surface_change: ${configSurfaceChange.change}
-config_surface_keys: ${jsonFrontMatterValue(configSurfaceChange.keys)}
-data_model_change: ${dataModelChange.change}
-data_model_surfaces: ${jsonFrontMatterValue(dataModelChange.surfaces)}
-sqlite_schema_change: ${sqliteSchemaChange.change}
-sqlite_schema_files: ${jsonFrontMatterValue(sqliteSchemaChange.files)}
 pr_surface_files: ${jsonFrontMatterValue(prSurfaceFiles ?? [])}
 pr_surface_files_truncated: ${prSurfaceFiles === null}
 item_category: ${options.decision.itemCategory}

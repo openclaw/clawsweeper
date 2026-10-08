@@ -52,8 +52,6 @@ export interface ReviewCommentWorkflowDependencies {
   timestampMs: (timestamp: string | undefined) => number | null;
   stringOrUndefined: (value: unknown) => string | undefined;
   sentence: ReturnType<typeof createReviewPresentation>["sentence"];
-  configSurfaceReviewRequired: (markdown: string) => boolean;
-  dataModelSurfaceReviewRequired: (markdown: string) => boolean;
   pullRequestReviewReadinessFromReport: (markdown: string) => PullRequestReviewReadiness;
   securitySensitiveRepairAllowed: (markdown: string) => boolean;
   isIssueAdvisoryLabel: ReturnType<typeof createLabelSynchronization>["isIssueAdvisoryLabel"];

@@ -21,7 +21,8 @@ import type {
   MergeRiskOptionCategory,
   OverallCorrectness,
   PrStatusLabelKind,
-  ReviewFinding,
+  PublicBeforeMergeItem,
+  PullRequestReviewReadiness,
   SecurityReview,
   SecurityReviewStatus,
 } from "./clawsweeper-types.js";
@@ -31,9 +32,8 @@ interface LabelPolicyDependencies {
   frontMatterValue: (markdown: string, key: string) => string | undefined;
   isAutomationReportAuthor: (author: string | undefined) => boolean;
   mergeRiskOptionsFromReport: (markdown: string) => MergeRiskOption[];
-  reportOverallCorrectness: (markdown: string) => OverallCorrectness;
+  pullRequestReviewReadinessFromReport: (markdown: string) => PullRequestReviewReadiness;
   reportRealBehaviorProofPolicy: (markdown: string) => RealBehaviorProofPolicy;
-  reportReviewFindings: (markdown: string) => ReviewFinding[];
   reportSecurityReview: (markdown: string) => SecurityReview;
   stringOrUndefined: (value: unknown) => string | undefined;
   timestampMs: (iso: string | undefined) => number | null;
@@ -44,9 +44,8 @@ export function createLabelPolicy({
   frontMatterValue,
   isAutomationReportAuthor,
   mergeRiskOptionsFromReport,
-  reportOverallCorrectness,
+  pullRequestReviewReadinessFromReport,
   reportRealBehaviorProofPolicy,
-  reportReviewFindings,
   reportSecurityReview,
   stringOrUndefined,
   timestampMs,
@@ -122,12 +121,6 @@ export function createLabelPolicy({
     });
   }
 
-  function hasBlockingReviewFindings(
-    findings: readonly Pick<ReviewFinding, "priority">[],
-  ): boolean {
-    return findings.some((finding) => finding.priority <= 2);
-  }
-
   function recommendedMergeRiskOptionCategory(
     options: readonly Pick<MergeRiskOption, "category" | "recommended">[],
   ): MergeRiskOptionCategory | null {
@@ -142,49 +135,23 @@ export function createLabelPolicy({
     return recommendedMergeRiskOptionCategory(options.mergeRiskOptions) !== "accept_risk";
   }
 
-  function hasUnresolvedContributorWork(options: {
-    proofPolicy: Pick<RealBehaviorProofPolicy, "blocksMerge" | "needsContributorAction">;
-    reviewFindings: readonly Pick<ReviewFinding, "priority">[];
-    securityReview: Pick<SecurityReview, "status">;
-    mergeRiskOptions: readonly Pick<MergeRiskOption, "category" | "recommended">[];
-    overallCorrectness: OverallCorrectness;
-  }): boolean {
-    return (
-      options.proofPolicy.needsContributorAction ||
-      hasBlockingReviewFindings(options.reviewFindings) ||
-      securityReviewNeedsContributorWork(options) ||
-      options.overallCorrectness === "patch is incorrect"
-    );
-  }
-
-  function isReadyForMaintainerLook(options: {
-    proofPolicy: Pick<RealBehaviorProofPolicy, "blocksMerge" | "needsContributorAction">;
-    reviewFindings: readonly Pick<ReviewFinding, "priority">[];
-    securityReview: Pick<SecurityReview, "status">;
-    mergeRiskOptions: readonly Pick<MergeRiskOption, "category" | "recommended">[];
-    overallCorrectness: OverallCorrectness;
-  }): boolean {
-    return (
-      !hasBlockingReviewFindings(options.reviewFindings) &&
-      !securityReviewNeedsContributorWork(options) &&
-      !options.proofPolicy.blocksMerge &&
-      options.overallCorrectness === "patch is correct"
-    );
-  }
-
+  // The Before-merge items own merge readiness. The status label only routes them:
+  // it is "ready" only when the published comment lists no Before-merge item.
   function prStatusLabelKind(options: {
     reviewFailed: boolean;
     proofPolicy: Pick<RealBehaviorProofPolicy, "blocksMerge" | "needsContributorAction">;
-    reviewFindings: readonly Pick<ReviewFinding, "priority">[];
+    beforeMergeItems: readonly Pick<PublicBeforeMergeItem, "state">[];
     securityReview: Pick<SecurityReview, "status">;
     mergeRiskOptions: readonly Pick<MergeRiskOption, "category" | "recommended">[];
-    overallCorrectness: OverallCorrectness;
     hasAutomergeLabel: boolean;
     hasRepairLoopPauseLabel: boolean;
     hasRecentReReviewRequest: boolean;
     hasRecentAuthorActivity: boolean;
   }): PrStatusLabelKind | null {
-    const unresolvedWork = hasUnresolvedContributorWork(options);
+    const unresolvedWork =
+      options.proofPolicy.needsContributorAction ||
+      options.beforeMergeItems.some((item) => item.state === "needs-changes") ||
+      securityReviewNeedsContributorWork(options);
     if (options.hasRepairLoopPauseLabel) return null;
     if (options.hasRecentReReviewRequest) return "re_review_loop";
     if (options.hasRecentAuthorActivity && unresolvedWork) return "actively_grinding";
@@ -193,7 +160,7 @@ export function createLabelPolicy({
     if (options.reviewFailed) return null;
     if (unresolvedWork) return "waiting_on_author";
     if (options.hasAutomergeLabel) return "automerge_armed";
-    if (isReadyForMaintainerLook(options)) return "ready_for_maintainer_look";
+    if (options.beforeMergeItems.length === 0) return "ready_for_maintainer_look";
     return null;
   }
 
@@ -287,17 +254,16 @@ export function createLabelPolicy({
 
   function prStatusLabelKindFromReport(
     markdown: string,
-    context: ItemContext,
+    context: Pick<ItemContext, "comments" | "timeline">,
     currentLabels: readonly string[],
   ): PrStatusLabelKind | null {
     if (frontMatterValue(markdown, "type") !== "pull_request") return null;
     return prStatusLabelKind({
       reviewFailed: frontMatterValue(markdown, "review_status") === "failed",
       proofPolicy: reportRealBehaviorProofPolicy(markdown),
-      reviewFindings: reportReviewFindings(markdown),
+      beforeMergeItems: pullRequestReviewReadinessFromReport(markdown).items,
       securityReview: reportSecurityReview(markdown),
       mergeRiskOptions: mergeRiskOptionsFromReport(markdown),
-      overallCorrectness: reportOverallCorrectness(markdown),
       hasAutomergeLabel: currentLabels.includes(AUTOMERGE_LABEL),
       hasRepairLoopPauseLabel: hasRepairLoopPauseLabel(currentLabels),
       hasRecentReReviewRequest: hasRecentReReviewRequest(
@@ -315,13 +281,11 @@ export function createLabelPolicy({
     labels: readonly string[],
     options: {
       isPullRequest?: boolean;
-      nextSteps?: readonly string[];
       proofStatus?: string;
       needsContributorAction?: boolean;
-      findingPriorities?: readonly number[];
+      beforeMergeItems?: readonly PublicBeforeMergeItem["state"][];
       securityStatus?: string;
       mergeRiskOptions?: readonly Pick<MergeRiskOption, "category" | "recommended">[];
-      overallCorrectness?: string;
       hasAutomergeLabel?: boolean;
       hasRecentReReviewRequest?: boolean;
       hasRecentAuthorActivity?: boolean;
@@ -350,20 +314,13 @@ export function createLabelPolicy({
         blocksMerge: unresolvedProof,
         needsContributorAction: unresolvedProof && (options.needsContributorAction ?? true),
       },
-      reviewFindings: (options.findingPriorities ?? [])
-        .filter((priority): priority is 0 | 1 | 2 | 3 => [0, 1, 2, 3].includes(priority))
-        .map((priority) => ({ priority })),
+      beforeMergeItems: (options.beforeMergeItems ?? []).map((state) => ({ state })),
       securityReview: {
         status: SECURITY_REVIEW_STATUSES.has(options.securityStatus as SecurityReviewStatus)
           ? (options.securityStatus as SecurityReviewStatus)
           : "cleared",
       },
       mergeRiskOptions: options.mergeRiskOptions ?? [],
-      overallCorrectness: OVERALL_CORRECTNESS_VALUES.has(
-        options.overallCorrectness as OverallCorrectness,
-      )
-        ? (options.overallCorrectness as OverallCorrectness)
-        : "patch is correct",
       hasAutomergeLabel: options.hasAutomergeLabel ?? labels.includes(AUTOMERGE_LABEL),
       hasRepairLoopPauseLabel: hasRepairLoopPauseLabel(labels),
       hasRecentReReviewRequest: hasRecentReReviewRequestValue,

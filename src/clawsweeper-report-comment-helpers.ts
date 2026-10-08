@@ -57,8 +57,6 @@ export function createReportCommentHelpers(
     closeOutro,
     closeReviewLineFromDecision,
     closeReviewLineFromReport,
-    configSurfaceReviewRequired,
-    dataModelSurfaceReviewRequired,
     duplicateCanonicalLinks,
     duplicateCanonicalPathLine,
     fixedPullRequestFromReport,
@@ -568,20 +566,18 @@ export function createReportCommentHelpers(
         "Product call needed",
         product.reason || "An owner must decide whether this change belongs in the product.",
       );
+      // The model owns the stored-data judgement; the host only shows its verdict.
       block(
-        configSurfaceReviewRequired(markdown),
-        "Review config compatibility",
-        "Confirm compatibility and upgrade impact for the changed config or default surface before merge.",
-      );
-      block(
-        dataModelSurfaceReviewRequired(markdown),
+        reportRealBehaviorProofPolicy(markdown).assessment.dataModelCompatibility ===
+          "insufficient",
         "Add data-model compatibility proof",
-        "Confirm migration or upgrade compatibility proof before merge.",
+        "The review found that existing stored data may not work after upgrade. Show that existing data still loads and works with this change.",
       );
+      // The close path failed, not the patch. A maintainer decides between close and land.
       block(
         frontMatterValue(markdown, "action_taken") === "skipped_pr_close_coverage_proof",
-        "Complete close-coverage proof",
-        "Complete the pull request close-coverage proof before merge.",
+        "Maintainer: close or keep this PR",
+        "The review found that this PR may be superseded, but the close check did not confirm that the other PR covers all of its work. A maintainer must close this PR or confirm that it still has work to land.",
       );
       const correctness = reportOverallCorrectness(markdown);
       if (
@@ -591,7 +587,10 @@ export function createReportCommentHelpers(
         items.push({
           state: "needs-changes",
           label: "Correct the reviewed patch",
-          detail: "Address the incorrect patch assessment before merge.",
+          detail: typedBlockerDetail(
+            rating.summary,
+            "The review found the patch incorrect. See the merge readiness summary above for the reason.",
+          ),
         });
       } else {
         block(

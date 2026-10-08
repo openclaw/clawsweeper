@@ -38,6 +38,13 @@ import {
   reportFrontMatter,
 } from "./helpers.ts";
 
+const readyReadiness = {
+  headSha: null,
+  state: "ready",
+  items: [],
+  normalizationFailed: false,
+} as const;
+
 for (const proofStatus of ["missing", "not_applicable"] as const) {
   test(`failed ${proofStatus} reports remove positive statuses through apply label sync`, () => {
     const metadata = createRecordMetadata({} as never);
@@ -60,6 +67,18 @@ for (const proofStatus of ["missing", "not_applicable"] as const) {
       ...metadata,
       ...parser,
       reportRealBehaviorProofPolicy,
+      // Mirrors the readiness owner: an incorrect patch leaves a contributor item.
+      pullRequestReviewReadinessFromReport: (markdown) => ({
+        headSha: null,
+        state: "blocked",
+        normalizationFailed: false,
+        items: [
+          { state: "blocked", label: "Retry ClawSweeper review", detail: "Retry." },
+          ...(markdown.includes("patch is incorrect")
+            ? [{ state: "needs-changes", label: "Correct the reviewed patch", detail: "Fix." }]
+            : []),
+        ],
+      }),
       asRecord: (value) => value as Record<string, unknown>,
       isAutomationReportAuthor: () => false,
       stringOrUndefined: (value) => (typeof value === "string" ? value : undefined),
@@ -179,9 +198,8 @@ test("report-based status selection requires external N/A proof without an actio
     asRecord: (value) => value as Record<string, unknown>,
     isAutomationReportAuthor: () => false,
     mergeRiskOptionsFromReport: () => [],
-    reportOverallCorrectness: () => "patch is correct",
+    pullRequestReviewReadinessFromReport: () => readyReadiness,
     reportRealBehaviorProofPolicy,
-    reportReviewFindings: () => [],
     reportSecurityReview: () => ({ status: "cleared", summary: "", concerns: [] }),
     stringOrUndefined: (value) => (typeof value === "string" ? value : undefined),
     timestampMs: (value) => (value ? Date.parse(value) : null),
@@ -379,7 +397,7 @@ test("ClawSweeper feature showcase label does not apply to unsafe or non-feature
 test("ClawSweeper PR status labels use one current workflow status", () => {
   assert.deepEqual(
     prStatusLabelsForTest(["bug", "status: ⏳ waiting on author"], {
-      findingPriorities: [2],
+      beforeMergeItems: ["needs-changes"],
       hasRecentAuthorActivity: true,
     }),
     ["bug", "status: 🛠️ actively grinding"],
@@ -387,51 +405,39 @@ test("ClawSweeper PR status labels use one current workflow status", () => {
   assert.deepEqual(
     prStatusLabelsForTest(["bug", "status: 🛠️ actively grinding"], {
       proofStatus: "sufficient",
-      overallCorrectness: "patch is correct",
     }),
     ["bug", "status: 👀 ready for maintainer look"],
   );
 });
 
-test("ClawSweeper PR status routes security owner acceptance to maintainer look", () => {
-  const ownerAcceptanceLabels = prStatusLabelsForTest([], {
-    proofStatus: "sufficient",
-    securityStatus: "needs_attention",
-    mergeRiskOptions: [{ category: "accept_risk", recommended: true }],
-    overallCorrectness: "patch is correct",
-  });
-
-  assert.equal(
-    ownerAcceptanceLabels.some((label) => label.endsWith("ready for maintainer look")),
-    true,
+test("ClawSweeper PR status is ready only when Before merge lists no item", () => {
+  const readyLabel = "status: 👀 ready for maintainer look";
+  assert.deepEqual(prStatusLabelsForTest([readyLabel], { beforeMergeItems: [] }), [readyLabel]);
+  assert.deepEqual(prStatusLabelsForTest([readyLabel], { beforeMergeItems: ["blocked"] }), []);
+  assert.deepEqual(prStatusLabelsForTest([readyLabel], { beforeMergeItems: ["needs-changes"] }), [
+    "status: ⏳ waiting on author",
+  ]);
+  // A maintainer-owned security acceptance is still a Before-merge item.
+  assert.deepEqual(
+    prStatusLabelsForTest([readyLabel], {
+      proofStatus: "sufficient",
+      securityStatus: "needs_attention",
+      mergeRiskOptions: [{ category: "accept_risk", recommended: true }],
+      beforeMergeItems: ["blocked"],
+    }),
+    [],
   );
-  assert.equal(
-    ownerAcceptanceLabels.some((label) => label.endsWith("waiting on author")),
-    false,
-  );
-
-  const authorFixLabels = prStatusLabelsForTest([], {
-    proofStatus: "sufficient",
-    securityStatus: "needs_attention",
-    mergeRiskOptions: [{ category: "fix_before_merge", recommended: true }],
-    overallCorrectness: "patch is correct",
-  });
-
-  assert.equal(
-    authorFixLabels.some((label) => label.endsWith("waiting on author")),
-    true,
-  );
-
-  const ambiguousSecurityLabels = prStatusLabelsForTest([], {
-    proofStatus: "sufficient",
-    securityStatus: "needs_attention",
-    overallCorrectness: "patch is correct",
-  });
-
-  assert.equal(
-    ambiguousSecurityLabels.some((label) => label.endsWith("waiting on author")),
-    true,
-  );
+  for (const mergeRiskOptions of [[{ category: "fix_before_merge", recommended: true }], []]) {
+    assert.deepEqual(
+      prStatusLabelsForTest([], {
+        proofStatus: "sufficient",
+        securityStatus: "needs_attention",
+        mergeRiskOptions,
+        beforeMergeItems: ["blocked"],
+      }),
+      ["status: ⏳ waiting on author"],
+    );
+  }
 });
 
 test("unresolved proof routes contributors and maintainers to distinct owners", () => {
@@ -482,9 +488,8 @@ test("historical receipt failures route to the proof owner without erasing indep
             : undefined,
     isAutomationReportAuthor: () => false,
     mergeRiskOptionsFromReport: () => [],
-    reportOverallCorrectness: () => "patch is correct",
+    pullRequestReviewReadinessFromReport: () => readyReadiness,
     reportRealBehaviorProofPolicy,
-    reportReviewFindings: () => [],
     reportSecurityReview: () => ({ status: "cleared", summary: "", concerns: [] }),
     stringOrUndefined: (value) => (typeof value === "string" ? value : undefined),
     timestampMs: (value) => (value ? Date.parse(value) : null),
@@ -603,7 +608,7 @@ test("ClawSweeper PR status labels respect priority ordering", () => {
   );
   assert.deepEqual(
     prStatusLabelsForTest([], {
-      findingPriorities: [2],
+      beforeMergeItems: ["needs-changes"],
     }),
     ["status: ⏳ waiting on author"],
   );
@@ -640,24 +645,10 @@ test("ClawSweeper PR status ignores bot-authored re-review guidance", () => {
   );
 });
 
-test("ClawSweeper PR status treats maintainer-only rank-up moves as ready", () => {
-  assert.deepEqual(
-    prStatusLabelsForTest([], {
-      nextSteps: [
-        "Maintainer accepts the relative details.reportPath contract change before merge.",
-      ],
-      proofStatus: "sufficient",
-      overallCorrectness: "patch is correct",
-    }),
-    ["status: 👀 ready for maintainer look"],
-  );
-});
-
 test("ClawSweeper PR status labels are PR-only", () => {
   assert.deepEqual(
     prStatusLabelsForTest(["bug", "status: ⏳ waiting on author"], {
       isPullRequest: false,
-      nextSteps: ["Add proof."],
     }),
     ["bug"],
   );

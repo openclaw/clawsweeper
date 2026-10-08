@@ -14,8 +14,6 @@ export function createReviewCommentAutomation(
     reportReviewFindings,
     frontMatterValue,
     frontMatterStringArray,
-    configSurfaceReviewRequired,
-    dataModelSurfaceReviewRequired,
     realBehaviorProofBlocksMerge,
     reportAttachedLiveVerification,
     pullHeadShaFromReport,
@@ -145,15 +143,6 @@ export function createReviewCommentAutomation(
       return humanReviewMarkers();
     }
     if (frontMatterValue(markdown, "review_status") === "failed") {
-      return humanReviewMarkers();
-    }
-    if (configSurfaceReviewRequired(markdown)) {
-      return humanReviewMarkers();
-    }
-    if (dataModelSurfaceReviewRequired(markdown)) {
-      return humanReviewMarkers();
-    }
-    if (frontMatterValue(markdown, "action_taken") === "skipped_pr_close_coverage_proof") {
       return humanReviewMarkers();
     }
     const hasRealBehaviorProofBlocker = realBehaviorProofBlocksMerge(markdown);

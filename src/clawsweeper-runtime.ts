@@ -28,7 +28,7 @@ import { createApplyDecisionWorkflow } from "./clawsweeper-apply-decision-workfl
 import { implementedOnMainCloseProvenanceBlock } from "./clawsweeper-apply-close-execution.js";
 import { createApplyGuards } from "./clawsweeper-apply-guards.js";
 import { createAssistWorkflow } from "./clawsweeper-assist.js";
-import { isDocsPath } from "./clawsweeper-change-detection.js";
+import { isDocsPath } from "./openclaw-file-role.js";
 import { createCloseDecisionWorkflow } from "./clawsweeper-close-decision.js";
 import { createCommandOperations } from "./clawsweeper-command-operations.js";
 import { createContextHydration } from "./clawsweeper-context-hydration.js";
@@ -140,11 +140,6 @@ export type {
 } from "./clawsweeper-types.js";
 
 export { itemNumbersArg } from "./clawsweeper-args.js";
-export {
-  configSurfaceChangeFromPullFilesForTest,
-  dataModelChangeFromPullFilesForTest,
-  sqliteSchemaChangeFromPullFilesForTest,
-} from "./clawsweeper-change-detection.js";
 export {
   prepareMediaProofArtifactsForTest,
   proofMediaUrlsFromContextForTest,
@@ -497,7 +492,6 @@ export const { reportLiveProofPlan, rootCauseClusterFromReportForTest } = report
 export const reportLiveProofPlanForTest = reportLiveProofPlan;
 const {
   reportEvidence,
-  reportOverallCorrectness,
   reportAttachedLiveVerification,
   mergeRiskOptionsFromReport,
   reportReviewFindings,
@@ -519,9 +513,9 @@ const labelPolicy = createLabelPolicy({
   frontMatterValue,
   isAutomationReportAuthor,
   mergeRiskOptionsFromReport,
-  reportOverallCorrectness,
+  pullRequestReviewReadinessFromReport: (markdown) =>
+    pullRequestReviewReadinessFromReport(markdown),
   reportRealBehaviorProofPolicy,
-  reportReviewFindings,
   reportSecurityReview,
   stringOrUndefined,
   timestampMs: (value) => timestampMs(value),
@@ -908,9 +902,9 @@ const reviewPresentation = createReviewPresentation({
   latestFileUrl,
   linkedSha,
   markdownLink,
+  prStatusLabelKindFromReport,
   publicTableCell: (...args) => publicTableCell(...args),
   reportEvidence,
-  reportRealBehaviorProofPolicy,
   securityConcernLocation,
   splitFileAndLine,
   targetRepo,
@@ -1023,6 +1017,7 @@ const {
   labelSynchronization,
   parseBacktickLocation,
   pullRequestFilePathsFromReport,
+  pullRequestReviewReadinessFromReport,
   syncWorkPlanFromReport,
   workPlanPathForReport,
 } = reportOrchestration;

@@ -33,8 +33,6 @@ export function compatibilityReport({
     work_candidate: "none",
     pull_head_sha: "a".repeat(40),
     labels: JSON.stringify(["clawsweeper:automerge"]),
-    data_model_change: "true",
-    data_model_surfaces: '["database schema: src/db/schema.sql"]',
     real_behavior_proof_status: "sufficient",
     real_behavior_proof_evidence_kind: "terminal",
     real_behavior_proof_needs_contributor_action: "false",

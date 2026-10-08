@@ -25,6 +25,7 @@ import type {
   ParsedGitHubItemRef,
   PrRating,
   PrStatusLabelKind,
+  PublicBeforeMergeItem,
   PublicPriority,
   PullRequestReviewState,
   RegressionAssessment,
@@ -177,19 +178,18 @@ export interface CreateReportOrchestrationDependencies {
     prStatusLabelForKind: (kind: PrStatusLabelKind) => (typeof PR_STATUS_LABELS)[number];
     prStatusLabelKindFromReport: (
       markdown: string,
-      context: ItemContext,
+      context: Pick<ItemContext, "comments" | "timeline">,
       currentLabels: readonly string[],
     ) => PrStatusLabelKind | null;
     prStatusLabelsForTest: (
       labels: readonly string[],
       options: {
         isPullRequest?: boolean;
-        nextSteps?: readonly string[];
         proofStatus?: string;
-        findingPriorities?: readonly number[];
+        needsContributorAction?: boolean;
+        beforeMergeItems?: readonly PublicBeforeMergeItem["state"][];
         securityStatus?: string;
         mergeRiskOptions?: readonly Pick<MergeRiskOption, "category" | "recommended">[];
-        overallCorrectness?: string;
         hasAutomergeLabel?: boolean;
         hasRecentReReviewRequest?: boolean;
         hasRecentAuthorActivity?: boolean;

@@ -1346,21 +1346,6 @@ export interface FileModeSnapshot {
 
 export type PublicPriority = "P0" | "P1" | "P2";
 
-export interface ConfigSurfaceChange {
-  change: boolean;
-  keys: string[];
-}
-
-export interface DataModelChange {
-  change: boolean;
-  surfaces: string[];
-}
-
-export interface SqliteSchemaChange {
-  change: boolean;
-  files: string[];
-}
-
 export interface IssueAdvisoryLabelState {
   type: string | undefined;
   itemCategory: string | undefined;

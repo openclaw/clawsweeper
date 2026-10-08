@@ -1,14 +1,10 @@
 import { hasShinyProof, themedRatingName } from "./clawsweeper-rating.js";
 import { publicLikelyOwner } from "./clawsweeper-regression-provenance.js";
-import { MERGE_READY_LABEL, PR_STATUS_LABELS } from "./clawsweeper-policy.js";
-import {
-  AUTOMERGE_LABEL,
-  HUMAN_REVIEW_LABEL,
-  MANUAL_ONLY_LABEL,
-} from "./repair/exact-review-guard-labels.js";
+import { PR_STATUS_LABELS } from "./clawsweeper-policy.js";
 import type { RealBehaviorProofPolicy } from "./clawsweeper-proof-policy.js";
 import type {
   Evidence,
+  ItemContext,
   LikelyOwner,
   PrRating,
   PrRatingTier,
@@ -32,9 +28,13 @@ interface ReviewPresentationDependencies {
   latestFileUrl: (file: string, repo?: string) => string;
   linkedSha: (sha: string, repo?: string) => string;
   markdownLink: (label: string, url: string) => string;
+  prStatusLabelKindFromReport: (
+    markdown: string,
+    context: Pick<ItemContext, "comments" | "timeline">,
+    currentLabels: readonly string[],
+  ) => PrStatusLabelKind | null;
   publicTableCell: (value: string) => string;
   reportEvidence: (markdown: string) => Evidence[];
-  reportRealBehaviorProofPolicy: (markdown: string) => RealBehaviorProofPolicy;
   securityConcernLocation: (concern: SecurityConcern) => string;
   splitFileAndLine: (file: string) => { file: string; line?: number };
   targetRepo: () => string;
@@ -51,9 +51,9 @@ export function createReviewPresentation({
   latestFileUrl,
   linkedSha,
   markdownLink,
+  prStatusLabelKindFromReport,
   publicTableCell,
   reportEvidence,
-  reportRealBehaviorProofPolicy,
   securityConcernLocation,
   splitFileAndLine,
   targetRepo,
@@ -589,13 +589,6 @@ export function createReviewPresentation({
     ].join("\n");
   }
 
-  function prStatusLabelKindFromLabels(labels: readonly string[]): PrStatusLabelKind | null {
-    for (const label of PR_STATUS_LABELS) {
-      if (labels.includes(label.name)) return label.kind;
-    }
-    return null;
-  }
-
   function activeRepairStatusFromLabels(labels: readonly string[]): PrStatusLabelKind | null {
     for (const kind of ["re_review_loop", "actively_grinding"] as const) {
       const status = PR_STATUS_LABELS.find((candidate) => candidate.kind === kind);
@@ -604,41 +597,14 @@ export function createReviewPresentation({
     return null;
   }
 
-  function isProofSpecificStatus(kind: PrStatusLabelKind): boolean {
-    return kind === "needs_proof" || kind === "needs_maintainer_proof_decision";
-  }
-
+  // Without live context, keep the repair-loop status from the current labels.
+  // The label policy owns every other status, so it agrees with Before merge.
   function prStatusLabelKindFromReportLabels(markdown: string): PrStatusLabelKind | null {
     const parsedLabels = frontMatterStringArray(markdown, "labels");
     if (hasRepairLoopPauseLabel(parsedLabels)) return null;
-    const activeRepairStatus = activeRepairStatusFromLabels(parsedLabels);
-    if (activeRepairStatus) return activeRepairStatus;
-    const policy = reportRealBehaviorProofPolicy(markdown);
-    if (policy.needsContributorAction) return "needs_proof";
-    if (policy.blocksMerge) return "needs_maintainer_proof_decision";
-    if (frontMatterValue(markdown, "review_status") === "failed") return null;
-    const fromParsedLabels = prStatusLabelKindFromLabels(
-      parsedLabels.filter(
-        (label) =>
-          !PR_STATUS_LABELS.some(
-            (status) => status.name === label && isProofSpecificStatus(status.kind),
-          ),
-      ),
-    );
-    if (fromParsedLabels) return fromParsedLabels;
-    if (parsedLabels.includes(AUTOMERGE_LABEL)) return "automerge_armed";
-    const rawLabels = frontMatterValue(markdown, "labels") ?? "";
-    if (
-      rawLabels.includes(HUMAN_REVIEW_LABEL) ||
-      rawLabels.includes(MANUAL_ONLY_LABEL) ||
-      rawLabels.includes(MERGE_READY_LABEL)
-    )
-      return null;
-    if (rawLabels.includes(AUTOMERGE_LABEL)) return "automerge_armed";
     return (
-      PR_STATUS_LABELS.find(
-        (label) => rawLabels.includes(label.name) && !isProofSpecificStatus(label.kind),
-      )?.kind ?? null
+      activeRepairStatusFromLabels(parsedLabels) ??
+      prStatusLabelKindFromReport(markdown, { comments: [], timeline: [] }, parsedLabels)
     );
   }
 

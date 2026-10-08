@@ -194,7 +194,12 @@ merge, and why not yet" in this order:
    none is recommended), and why, as bullet points.
 8. `## Before merge` uses native Markdown task checkboxes for real remaining
    actions or risks. Routine CI, ordinary maintainer review, and no-op guidance
-   collapse to `None.`
+   collapse to `None.` These items are the one source of merge readiness: the
+   PR status label is `status: 👀 ready for maintainer look` only when this
+   section is `None.`, and `status: ⏳ waiting on author` when an item needs
+   changes from the author. When a duplicate close is kept open because the
+   close check did not confirm coverage, the item asks a maintainer to close or
+   keep the PR, not the author.
 9. `## Findings` always renders for completed reviews. Its leading block lists
    up to three review findings and three security concerns as
    `- [P1] title — \`file:line\``, or `None.`; review history and the comment
@@ -209,9 +214,10 @@ two distinct viable options that evidence cannot settle and a maintainer has not
 already decided. Routine landing approval, PR size, and PR-body merge/sign-off
 notes do not create decisions or Before-merge blockers. A recorded design decision
 cited in a maintainer-authored PR counts as accepted within its current scope.
-Stored-data changes require compatibility evidence, not human acknowledgement:
-`dataModelCompatibility: sufficient` (including verified no-migration cases)
-clears that gate; insufficient evidence remains a PR-owner proof item. Defects,
+Stored-data changes require compatibility evidence, not human acknowledgement.
+Codex records this in `realBehaviorProof.dataModelCompatibility`; only
+`insufficient` adds the `Add data-model compatibility proof` blocker. The host
+does not classify paths or patches for config or stored-data changes. Defects,
 security concerns, missing proof, and undecided product or plugin API direction
 still block. Readiness does not itself grant merge authority.
 
@@ -333,40 +339,25 @@ justifications remain but there are no add/remove transitions. Report metadata
 alone does not establish this no-op claim. Existing nonempty transitions and
 automation markers are unchanged.
 
-For OpenClaw, the PR surface table and config detector share explicit test-role
-names: test/spec code leaves, Go `*_test.go` files, terminal dotted or hyphenated
-`test-support`, `test-helpers`, `test-utils`, `test-harness`, and `test-fixtures`
-code suffixes, explicit test directories, and native app test targets (Swift
-`*Tests/` directories and Gradle `src/test*/` and `src/androidTest*/` source
-sets). Source roots are `src/`, `ui/`, `packages/`, `extensions/`, and `apps/`
-(native Swift and Kotlin apps). The summary line adds `Added test files: N`,
-counting only test-role files whose GitHub status is `added`; reports written
-before file status was stored omit it. Generic support/helper names remain production
-candidates. Generated files retain table precedence; config detection filters
-each rename side before patch uncertainty, retaining production or semantic docs
-evidence and truncated-list warnings. Reviewer production/test metrics remain
-separately assessed. Test roles grant no contributor-proof exemption. Storage
-warnings retain their separate persistence-evidence and upgrade-proof rules.
+For OpenClaw, the PR surface table uses explicit test-role names: test/spec code
+leaves, Go `*_test.go` files, terminal dotted or hyphenated `test-support`,
+`test-helpers`, `test-utils`, `test-harness`, and `test-fixtures` code suffixes,
+explicit test directories, and native app test targets (Swift `*Tests/`
+directories and Gradle `src/test*/` and `src/androidTest*/` source sets). Source
+roots are `src/`, `ui/`, `packages/`, `extensions/`, and `apps/` (native Swift and
+Kotlin apps). The summary line adds `Added test files: N`, counting only test-role
+files whose GitHub status is `added`; reports written before file status was
+stored omit it. Generic support/helper names remain production candidates.
+Generated files retain table precedence. Reviewer production/test metrics remain
+separately assessed. Test roles grant no contributor-proof exemption.
 
 Codex assesses stored-data compatibility in
 `realBehaviorProof.dataModelCompatibility`, independently of general behavior
 proof. The report writer persists it as the canonical
-`real_behavior_proof_data_model_compatibility` field. Only a unique, valid
-`sufficient` value clears a detected data-model compatibility hold. Missing,
-malformed, duplicate, `insufficient`, and contradictory `not_applicable` values
-retain the hold. Summaries, evidence prose, ratings, general proof sufficiency,
-`proof: override`, and maintainer/bot or docs-only exemptions cannot grant it.
-
-Historical reports remain readable. A report with a stored-data change but no
-typed compatibility assessment requires a fresh Codex review; deployment alone
-does not reinterpret its old prose or markers. Prompt/schema changes use the
-existing review policy hash to invalidate cached assessments.
-Run `pnpm run build` followed by `node scripts/e2e/data-model-proof.ts` to exercise
-the compiled parser, report writer, reader and renderer with synthetic assessments.
-The proof retains input/output Markdown and receipts under
-`.artifacts/typed-compatibility-proof/`, without publishing to GitHub or claiming
-to exercise an actual database upgrade.
-OpenClaw Bay needs no change because its observer API and data contract are unchanged.
+`real_behavior_proof_data_model_compatibility` field. Summaries, evidence prose,
+ratings, general proof sufficiency, `proof: override`, and maintainer/bot or
+docs-only exemptions cannot waive an `insufficient` assessment. Reports without
+the field add no stored-data blocker.
 
 The recorded reviewer proof assessment and the host's existing proof requirement
 are separate. An applicable external PR assessed as `not_applicable` still needs

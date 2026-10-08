@@ -42,7 +42,6 @@ export function createReportOrchestrationFoundation(
     publicReviewTextDiffers,
     publicTableCell,
     repoUrlFor,
-    reportRealBehaviorProof,
     reportRealBehaviorProofPolicy,
     reportSecurityReview,
     reviewSectionValue,
@@ -238,31 +237,6 @@ export function createReportOrchestrationFoundation(
     return frontMatterStringArray(markdown, "pull_files");
   }
 
-  function configSurfaceReviewRequired(markdown: string): boolean {
-    return (
-      frontMatterBoolean(markdown, "config_surface_change") ||
-      frontMatterStringArray(markdown, "config_surface_keys").length > 0
-    );
-  }
-
-  function dataModelSurfaceReviewRequired(markdown: string): boolean {
-    return dataModelSurfaceChangeFromReport(markdown) && !dataModelUpgradeProofFromReport(markdown);
-  }
-
-  function dataModelSurfaceChangeFromReport(markdown: string): boolean {
-    return (
-      frontMatterBoolean(markdown, "data_model_change") ||
-      frontMatterStringArray(markdown, "data_model_surfaces").length > 0
-    );
-  }
-
-  function dataModelUpgradeProofFromReport(markdown: string): boolean {
-    return (
-      dataModelSurfaceChangeFromReport(markdown) &&
-      reportRealBehaviorProof(markdown).dataModelCompatibility === "sufficient"
-    );
-  }
-
   function prSurfaceFilesFromContext(context: ItemContext): PrSurfaceFile[] | null {
     const entries = context.pullFiles ?? [];
     if (
@@ -336,72 +310,6 @@ export function createReportOrchestrationFoundation(
       renderOpenClawPrSurfaceTable(stats),
     ]);
     return details ? `${summaryLine}\n\n${details}` : summaryLine;
-  }
-
-  function renderDataModelWarningFromReport(markdown: string): string {
-    if (
-      frontMatterValue(markdown, "type") !== "pull_request" ||
-      normalizeRepo(markdownRepository(markdown)) !== "openclaw/openclaw" ||
-      !dataModelSurfaceChangeFromReport(markdown)
-    ) {
-      return "";
-    }
-    const surfaces = frontMatterStringArray(markdown, "data_model_surfaces");
-    const surfaceText = surfaces.length
-      ? surfaces
-          .slice(0, 6)
-          .map((surface) => trustedCommentCodeSpan(surface))
-          .join(", ")
-      : "an unknown persistent surface";
-    const overflow = surfaces.length > 6 ? `, and ${surfaces.length - 6} more` : "";
-    const proofLine = dataModelUpgradeProofFromReport(markdown)
-      ? "Migration or upgrade compatibility proof is recorded; maintainers should verify it before merge."
-      : "Confirm migration or upgrade compatibility proof before merge.";
-    return `Persistent data-model change detected: ${surfaceText}${overflow}. ${proofLine}`;
-  }
-
-  function renderSqliteSchemaWarningFromReport(markdown: string): string {
-    if (
-      frontMatterValue(markdown, "type") !== "pull_request" ||
-      normalizeRepo(markdownRepository(markdown)) !== "openclaw/openclaw" ||
-      (!frontMatterBoolean(markdown, "sqlite_schema_change") &&
-        frontMatterStringArray(markdown, "sqlite_schema_files").length === 0)
-    ) {
-      return "";
-    }
-
-    const files = frontMatterStringArray(markdown, "sqlite_schema_files");
-    const fileText = files.length
-      ? files
-          .slice(0, 4)
-          .map((file) => trustedCommentCodeSpan(file))
-          .join(", ")
-      : "an unidentified schema file";
-    const overflow = files.length > 4 ? `, and ${files.length - 4} more` : "";
-    const proofLine = dataModelUpgradeProofFromReport(markdown)
-      ? "Migration or upgrade compatibility proof is recorded, but maintainers should still confirm that the schema change is necessary."
-      : "If the change is necessary, verify migration and upgrade compatibility against an existing database before merge.";
-    return [
-      "> [!WARNING]",
-      "> **SQLite table change**",
-      ">",
-      `> This PR modifies persisted SQLite tables in ${fileText}${overflow}. Prefer a design that avoids changing persisted SQLite tables. ${proofLine}`,
-    ].join("\n");
-  }
-
-  function trustedCommentCodeSpan(value: string): string {
-    const escaped = value
-      .replace(/&/g, "&amp;")
-      .replace(/</g, "&lt;")
-      .replace(/>/g, "&gt;")
-      .replace(/\r?\n|\r/g, " ");
-    const longestBacktickRun = Math.max(
-      0,
-      ...(escaped.match(/`+/g) ?? []).map((run) => run.length),
-    );
-    const fence = "`".repeat(longestBacktickRun + 1);
-    const padding = escaped.startsWith("`") || escaped.endsWith("`") ? " " : "";
-    return `${fence}${padding}${escaped}${padding}${fence}`;
   }
 
   function reviewMetricsFromReport(markdown: string): ReviewMetric[] {
@@ -538,18 +446,11 @@ export function createReportOrchestrationFoundation(
     duplicateCanonicalPathLine,
     formatCanonicalLinks,
     pullRequestFilePathsFromReport,
-    configSurfaceReviewRequired,
-    dataModelSurfaceReviewRequired,
-    dataModelSurfaceChangeFromReport,
-    dataModelUpgradeProofFromReport,
     prSurfaceFilesFromContext,
     nonNegativeInteger,
     prSurfaceFilesFromReport,
     shouldRenderOpenClawPrSurface,
     renderOpenClawPrSurfaceFromReport,
-    renderDataModelWarningFromReport,
-    renderSqliteSchemaWarningFromReport,
-    trustedCommentCodeSpan,
     reviewMetricsFromReport,
     renderReviewMetricsDigest,
     labelSynchronization,
