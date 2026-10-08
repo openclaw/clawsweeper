@@ -113,25 +113,25 @@ proof. They never replace it.
    - `in_process_harness`: a harness drove the real code inside one process
      with synthetic input.
    - `unit_only`: only unit tests exercise the change.
-   - `none`: nothing exercises the change.
+   - `none`: nothing exercises the change. A test in the pull request that
+     runs the changed code is `in_process_harness` or `unit_only`, not
+     `none`, also when it is not end to end.
    - `not_applicable`: the item is not a pull request.
-2. Set `testingReview.addedTestFiles` to the number of test files that the
-   pull request adds or changes.
-3. A unit test that the pull request adds has negative value when it does one
+2. A unit test that the pull request adds has negative value when it does one
    of these:
    - it mirrors the implementation;
    - it asserts mocks or call counts;
    - it duplicates existing coverage;
    - it pins incidental wording or defaults;
    - it tests a helper instead of a behavior.
-4. List each negative-value test in `testingReview.lowValueTests`, with the
+3. List each negative-value test in `testingReview.lowValueTests`, with the
    `file` and the `reason`, with a maximum of 10 entries. Ask the author to
    remove these tests.
-5. A regression test must fail on the base and pass on the head. When the
+4. A regression test must fail on the base and pass on the head. When the
    review cannot show this, state why in `testingReview.missingE2e`.
-6. Name the missing end-to-end scenario in `testingReview.missingE2e`. Leave it
+5. Name the missing end-to-end scenario in `testingReview.missingE2e`. Leave it
    empty when the end-to-end proof is complete.
-7. When the diff changes config loading, defaults, stored data, migrations,
+6. When the diff changes config loading, defaults, stored data, migrations,
    Doctor, or a protocol, the proof includes an upgrade from the latest stable
    release to the head with existing settings and data intact. Name a missing
    upgrade run in `testingReview.missingE2e`.
@@ -197,17 +197,23 @@ proof. They never replace it.
    priority. Add an entry only for a concrete defect with a failing scenario:
    the input and the wrong result. P0 to P2 rank defects by impact; P3 is a
    real defect with low impact.
-2. Keep process, style, naming, and taste concerns out of `reviewFindings`.
-   Leave them out, or name the one that matters in the summary. Low-value
-   tests go in `testingReview.lowValueTests`, not in `reviewFindings`.
+2. Process, style, naming, and taste concerns are not merge work. Keep them
+   out of `reviewFindings`, `risks`, and a required `nextStep`. Name the one
+   that matters in the summary, or leave them out. PR-body paperwork is a
+   process concern: timings, CI seconds, section headings, or a new record of
+   a command that already passed. This applies also when the target
+   `AGENTS.md` asks for it or a PR-body check fails on it. Missing proof of
+   the changed behavior is not paperwork. Low-value tests go in
+   `testingReview.lowValueTests`, not in `reviewFindings`.
 3. Report every blocking finding in the first review. Never hold a visible
    concern back for a later cycle. When a re-review finds a real defect in
    code that an earlier review could already see, report it and set
    `lateFinding: true`; a late defect is still a defect.
 4. One gap, one place. Each piece of remaining work appears once in the
    comment, in the field that owns it:
-   - missing or weak proof: `realBehaviorProof` and
-     `testingReview.missingE2e`;
+   - missing or weak proof: `realBehaviorProof.summary` judges the proof, and
+     `testingReview.missingE2e` names the missing scenario in one sentence.
+     `summary` does not repeat them;
    - a patch defect: `reviewFindings`; a security defect that is also a
      finding keeps its `securityReview` concern only for what the finding
      does not already say;
@@ -225,6 +231,10 @@ proof. They never replace it.
    edge-case handling unless you name the real input and the wrong result. A
    simpler change that handles every shown case beats a larger change that
    also handles hypothetical ones.
+6. Each Before-merge item (a `risks` entry, a required `nextStep`, a finding
+   title) is one concrete author action in plain words: what to change or
+   add, and where. Do not use internal process names, such as "validation
+   handoff", "close-coverage proof", or "missing-method".
 
 ### Rating rubric
 

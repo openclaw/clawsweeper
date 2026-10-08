@@ -255,6 +255,10 @@ test("review prompts treat target AGENTS as optional review policy", () => {
     /route the\s+concern through the existing `risks`, `bestSolution`, `solutionAssessment`, or\s+`workReason` fields/,
   );
   assert.match(
+    readFileSync("instructions/pr-review-rules.md", "utf8"),
+    /PR-body paperwork is a\s+process concern/,
+  );
+  assert.match(
     commitPrompt,
     /Report an AGENTS-policy conflict only when the commit creates a\s+concrete bug/,
   );
@@ -419,7 +423,7 @@ test("review prompt requires real behavior proof for PR reviews", () => {
   assert.match(prompt, /screenshot-only proof sufficient/);
   assert.match(prompt, /no visible console violation/);
   assert.match(prompt, /scratch directory/);
-  assert.match(prompt, /@clawsweeper re-review/);
+  assert.match(prompt, /do not write "needs real behavior proof before merge" or re-review steps/);
   assert.match(
     prompt,
     /Unit tests, mocks, snapshots, lint, typechecks, and CI are supplemental only/,

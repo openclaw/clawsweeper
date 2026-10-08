@@ -726,7 +726,8 @@ test("review prompt includes merge state and guards clean behind-branch drift", 
 
   assert.deepEqual((compactPullRequest as { mergeableState?: unknown }).mergeableState, "clean");
   assert.match(prompt, /"mergeableState": "clean"/);
-  assert.match(prompt, /Do not treat a branch being behind the current base as proof/);
+  assert.match(prompt, /Claim a merge conflict only when the context's `pullRequest\.mergeable`/);
+  assert.match(prompt, /A branch behind the base is not a conflict/);
   assert.match(prompt, /actual three-way merge result/);
 });
 
