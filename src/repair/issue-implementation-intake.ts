@@ -19,7 +19,6 @@ import { ghErrorText, ghJsonWithRetry } from "./github-cli.js";
 import {
   issueImplementationJobBranch,
   issueImplementationJobPath,
-  issueImplementationBlockerClass,
   issueImplementationOverrideAction,
   renderIssueImplementationJob,
   REVIEW_REPRODUCIBLE_BUG_TRIGGER_SOURCE,
@@ -613,6 +612,12 @@ function eligibilityDecision({
   }
   const fm = report.frontmatter;
   const blockers: string[] = [];
+  // The code that writes a hard blocker records the class here. Do not derive it from blocker text.
+  let hardBlocked = false;
+  const blockHard = (reason: string) => {
+    blockers.push(reason);
+    hardBlocked = true;
+  };
   if (Number(fm.number) !== itemNumber)
     blockers.push(`report item number is ${fm.number || "unknown"}`);
   if (
@@ -620,9 +625,9 @@ function eligibilityDecision({
       .trim()
       .toLowerCase() !== normalizedTargetRepo
   )
-    blockers.push(`report repository is ${fm.repository || "unknown"}`);
+    blockHard(`report repository is ${fm.repository || "unknown"}`);
   if (fm.type !== "issue") blockers.push(`report type is ${fm.type || "unknown"}`);
-  if (fm.state_at_review !== "open") blockers.push("item was not open at review");
+  if (fm.state_at_review !== "open") blockHard("item was not open at review");
   if (fm.review_status !== "complete")
     blockers.push(`review status is ${fm.review_status || "unknown"}`);
   if (fm.decision !== "keep_open") blockers.push(`decision is ${fm.decision || "unknown"}`);
@@ -675,24 +680,26 @@ function eligibilityDecision({
   ) {
     blockers.push("bulk-filed issues are not eligible for automatic implementation");
   }
-  if (reportLabels.some(isProtectedLabel)) blockers.push("protected label present");
+  if (reportLabels.some(isProtectedLabel)) blockHard("protected label present");
   const reportPauseLabels = reportLabels.filter(isAutomaticImplementationPauseLabel);
   if (reportPauseLabels.length > 0)
     blockers.push(`automatic issue implementation is paused by ${reportPauseLabels.join(", ")}`);
-  if (reportSecurityNeedsAttention(reportMarkdown))
-    blockers.push("security-sensitive signal present");
+  const securityStatus = reportSecurityReviewStatus(reportMarkdown);
+  if (securityStatus === "needs_attention") blockHard("security-sensitive signal present");
+  else if (securityStatus !== "cleared" && securityStatus !== "not_applicable") {
+    blockHard(`security review status is ${securityStatus || "missing"}`);
+  }
   if (candidateKind !== "viable") {
-    if (!section(report.body, "Repair Work Prompt").trim())
-      blockers.push("missing repair work prompt");
+    if (!section(report.body, "Repair Work Prompt").trim()) blockHard("missing repair work prompt");
     if (frontMatterStringArray(fm.work_validation).length === 0)
       blockers.push("missing validation commands");
   }
   if (live) {
     const issue = asRecord(live.issue);
     const labels = (issue.labels ?? []).map((label: JsonValue) => String(label?.name ?? label));
-    if (issue.state !== "open") blockers.push(`live issue state is ${issue.state || "unknown"}`);
-    if (issue.locked === true) blockers.push("live issue is locked");
-    if (labels.some(isProtectedLabel)) blockers.push("live issue has protected label");
+    if (issue.state !== "open") blockHard(`live issue state is ${issue.state || "unknown"}`);
+    if (issue.locked === true) blockHard("live issue is locked");
+    if (labels.some(isProtectedLabel)) blockHard("live issue has protected label");
     if (labels.some((label: string) => label.trim().toLowerCase() === "clawsweeper:bulk-filed")) {
       blockers.push("live issue is bulk-filed and is not eligible for automatic implementation");
     }
@@ -704,19 +711,18 @@ function eligibilityDecision({
         labels: Array.isArray(issue.labels) ? issue.labels : [],
         comments: Array.isArray(live.comments) ? live.comments : [],
         text: [issue.title, issue.body],
-      }) ||
-      liveSecuritySensitiveText([issue.title, issue.body].join("\n"))
+      })
     ) {
-      blockers.push("live issue has security-sensitive signal");
+      blockHard("live issue has security-sensitive signal");
     }
     if (Array.isArray(live.existingPrs) && live.existingPrs.length > 0) {
-      blockers.push("open PR already mentions this issue");
+      blockHard("open PR already mentions this issue");
     }
     if (Array.isArray(live.existingBranchPrs) && live.existingBranchPrs.length > 0) {
-      blockers.push("existing ClawSweeper issue implementation PR is open");
+      blockHard("existing ClawSweeper issue implementation PR is open");
     }
     if (Array.isArray(live.clusterExistingPrs) && live.clusterExistingPrs.length > 0) {
-      blockers.push("open PR already covers a related issue in this work cluster");
+      blockHard("open PR already covers a related issue in this work cluster");
     }
     const explicitPullReferences = referencedPullRequestCoordinates({
       targetRepo,
@@ -737,16 +743,12 @@ function eligibilityDecision({
           (pullRequest: JsonValue) => asRecord(pullRequest).state !== "closed",
         ))
     ) {
-      blockers.push("review report references an open or unverifiable pull request");
+      blockHard("review report references an open or unverifiable pull request");
     }
   }
 
   if (blockers.length) {
-    const blockerClass = blockers.some(
-      (blocker) => issueImplementationBlockerClass(blocker) === "hard",
-    )
-      ? "hard"
-      : "soft";
+    const blockerClass = hardBlocked ? "hard" : "soft";
     if (operatorOverride) {
       return {
         status: blockerClass === "hard" ? "override_handoff" : "override_queued_for_repair",
@@ -805,7 +807,7 @@ function writeJob(context: IntakeContext) {
     overrideBlockerClass: context.decision.blockerClass,
     overrideAction:
       context.operatorOverride === true
-        ? issueImplementationOverrideAction(context.decision.reason)
+        ? issueImplementationOverrideAction(context.decision.blockerClass)
         : null,
     sourceIssueRevision: issueSourceRevisionSha256(
       issue,
@@ -1441,30 +1443,13 @@ function visionFitItemCategoryAllowed(value: string | undefined): boolean {
   return ["bug", "regression", "feature", "skill", "docs", "cleanup"].includes(value ?? "");
 }
 
-function securitySensitiveText(text: string): boolean {
-  return /\b(?:security|vulnerability|cve|ghsa|secret|credential|token|exploit|xss|csrf|ssrf|rce)\b/i.test(
-    text,
-  );
-}
-
-function liveSecuritySensitiveText(text: string): boolean {
+// The review model owns the security judgement. Read only its typed status line.
+function reportSecurityReviewStatus(markdown: string): string {
   return (
-    /\b(?:vulnerability|exploit|xss|csrf|ssrf|rce)\b/i.test(text) ||
-    /\b(?:secret|credential|token)s?\b.{0,40}\b(?:exfiltrat(?:e|ed|ion)|expos(?:e|ed|ure)|leak(?:ed|age)?|steal|stolen|theft)\b/i.test(
-      text,
-    ) ||
-    /\b(?:exfiltrat(?:e|ed|ion)|expos(?:e|ed|ure)|leak(?:ed|age)?|steal|stolen|theft)\b.{0,40}\b(?:secret|credential|token)s?\b/i.test(
-      text,
-    )
+    section(markdown, "Security Review")
+      .match(/^Status:\s*([a-z_]+)\s*$/im)?.[1]
+      ?.toLowerCase() ?? ""
   );
-}
-
-function reportSecurityNeedsAttention(markdown: string): boolean {
-  const securityReview = section(markdown, "Security Review");
-  const status = securityReview.match(/^Status:\s*([a-z_]+)\s*$/im)?.[1]?.toLowerCase();
-  if (status === "needs_attention") return true;
-  if (["not_applicable", "clear", "cleared", "none"].includes(status ?? "")) return false;
-  return securitySensitiveText(securityReview || markdown);
 }
 
 function stringArg(key: string, fallback = ""): string {

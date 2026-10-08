@@ -69,7 +69,6 @@ import {
   maintainerModeCommandCanResumePausedMode,
   maintainerApprovalAppliesToExactHeadReview,
   maintainerAutomergeOptInApprovesNeedsHuman as maintainerAutomergeOptInApprovesNeedsHumanReason,
-  missingProofNeedsHumanReason,
   latestRepairLoopResumeTime,
   parseRoutedCommentCommand,
   pausedModeStatusBlocksReplay,
@@ -153,6 +152,7 @@ import {
 } from "./github-cli.js";
 import { GitHubRateLimitError, ghRetryKind, ghRetryWaitMs } from "../github-retry.js";
 import { issueSourceRevisionSha256 } from "./issue-source-guard.js";
+import { hasSecuritySignal } from "./security-signals.js";
 import { compactText, escapeRegExp } from "./text-utils.js";
 import {
   flushCommandActionEvents,
@@ -1098,6 +1098,7 @@ function classifyCommand(command: LooseRecord): JsonValue {
         ...next,
         status: "ready",
         reason: "implementation PR creation requires an open issue",
+        issue_implementation_blocker_class: "hard",
         actions: [{ action: "comment", status: execute ? "pending" : "planned" }],
       };
     }
@@ -1107,6 +1108,7 @@ function classifyCommand(command: LooseRecord): JsonValue {
         status: "ready",
         reason:
           "implementation PR creation must be requested on an issue; use autofix or automerge for pull requests",
+        issue_implementation_blocker_class: "hard",
         actions: [{ action: "comment", status: execute ? "pending" : "planned" }],
       };
     }
@@ -1116,6 +1118,7 @@ function classifyCommand(command: LooseRecord): JsonValue {
         ...next,
         status: "ready",
         reason: `issue implementation is paused by ${pauseLabels.join(", ")}`,
+        issue_implementation_blocker_class: "soft",
         actions: [{ action: "comment", status: execute ? "pending" : "planned" }],
       };
     }
@@ -1133,6 +1136,7 @@ function classifyCommand(command: LooseRecord): JsonValue {
         reason: `implementation PR creation is blocked by an existing linked PR${
           linkedPrs.length ? ` (${linkedPrs.join(", ")})` : ""
         }`,
+        issue_implementation_blocker_class: "hard",
         actions: [{ action: "comment", status: execute ? "pending" : "planned" }],
       };
     }
@@ -1819,7 +1823,7 @@ function classifyNeedsHuman(
               },
             ]
           : []),
-        ...(missingProofNeedsHumanReason(command.repair_reason)
+        ...(command.needs_human_hold === "proof"
           ? [
               {
                 action: "update_description_note",
@@ -1846,14 +1850,14 @@ function classifyNeedsHuman(
 function maintainerAutomergeOptInApprovesNeedsHuman(command: LooseRecord) {
   if (!command.trusted_bot) return false;
   if (!hasLabel(command.target, AUTOMERGE_LABEL)) return false;
-  const liveVerification = String(command.live_verification ?? "");
   return maintainerAutomergeOptInApprovesNeedsHumanReason({
-    reason: command.repair_reason,
+    hold: command.needs_human_hold,
+    findings: command.review_findings,
+    liveVerification: command.live_verification,
     commentCreatedAt: command.comment_created_at,
     commentUpdatedAt: command.comment_updated_at,
     optInTime: latestAutomergeResumeAt(command),
     replacementAutomergeRequestedBy: automergeRequestedByFromBody(command.target?.body),
-    liveVerification,
   });
 }
 
@@ -1862,10 +1866,12 @@ function approvedMissingProofNeedsHuman(command: LooseRecord, target: LooseRecor
   const comments = cachedIssueComments(command.issue_number);
   const trusted = comments
     .map((comment: JsonValue) => {
-      const parsed = parseTrustedAutomation(comment, { trustedAuthors: trustedBots });
+      const parsed = parseTrustedAutomation(comment, {
+        trustedAuthors: trustedBots,
+      }) as LooseRecord | null;
       if (!parsed || parsed.intent !== "clawsweeper_needs_human") return null;
-      if ((parsed as LooseRecord).live_verification !== "absent") return null;
-      if (!missingProofNeedsHumanReason(parsed.repair_reason)) return null;
+      if (parsed.live_verification !== "absent") return null;
+      if (parsed.needs_human_hold !== "proof") return null;
       if (
         reviewedHeadShaBlockReason({
           expectedHeadSha: parsed.expected_head_sha,
@@ -1892,12 +1898,13 @@ function approvedMissingProofNeedsHuman(command: LooseRecord, target: LooseRecor
   const reason = `${latest.parsed.repair_reason}; maintainer automerge opt-in records proof: override and approves landing the canonical PR`;
   if (
     !maintainerAutomergeOptInApprovesNeedsHumanReason({
-      reason,
+      hold: latest.parsed.needs_human_hold,
+      findings: latest.parsed.review_findings,
+      liveVerification: latest.parsed.live_verification,
       commentCreatedAt: latest.commentCreatedAt,
       commentUpdatedAt: latest.commentUpdatedAt,
       optInTime: command.comment_updated_at ?? command.comment_created_at,
       replacementAutomergeRequestedBy: automergeRequestedByFromBody(target.body),
-      liveVerification: "absent",
     })
   ) {
     return null;
@@ -3031,11 +3038,9 @@ function issueImplementationOverrideBlockerClass(command: LooseRecord) {
   if (target.kind === "issue" && target.locked === true) return "hard";
   const labels = (target.labels ?? []).map((label: JsonValue) => String(label));
   if (labels.some(isIssueImplementationProtectedLabel)) return "hard";
-  if (
-    issueImplementationSecuritySignal([target.title, target.body, labels.join("\n")].join("\n"))
-  ) {
-    return "hard";
-  }
+  // Only explicit security labels, ClawSweeper security markers and advisory IDs count here.
+  // The review model judges security risk; do not grep the issue prose for risk words.
+  if (hasSecuritySignal({ labels, text: [target.title, target.body] })) return "hard";
   return "soft";
 }
 
@@ -3057,12 +3062,6 @@ const ISSUE_IMPLEMENTATION_PROTECTED_LABELS = new Set<string>(CLOSE_PROTECTED_LA
 
 function isIssueImplementationProtectedLabel(label: string) {
   return ISSUE_IMPLEMENTATION_PROTECTED_LABELS.has(label.trim().toLowerCase());
-}
-
-function issueImplementationSecuritySignal(text: string) {
-  return /\b(?:security|vulnerability|cve|ghsa|secret|credential|token|exploit|xss|csrf|ssrf|rce)\b/i.test(
-    text,
-  );
 }
 
 function repairJobModeForCommand(command: LooseRecord) {

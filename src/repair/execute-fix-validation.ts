@@ -137,32 +137,9 @@ export function validateAutonomousFixScope({
 
   const likelyFiles = fixArtifact.likely_files ?? [];
   const affectedSurfaces = fixArtifact.affected_surfaces ?? [];
-  const text = [
-    fixArtifact.pr_title,
-    fixArtifact.summary,
-    fixArtifact.pr_body,
-    ...affectedSurfaces,
-    ...likelyFiles,
-  ].join("\n");
-  const featureSignal =
-    /\bfeat(?:\(|:)|\bfeature\b|add(?:s|ing)?\s+(?:a |an )?(?:new |explicit )?|new config|configuration surface|public .*docs?|schema/i.test(
-      text,
-    );
-  const crossesDocs = likelyFiles.some((file: JsonValue) => String(file).startsWith("docs/"));
-  const crossesConfig = likelyFiles.some((file: JsonValue) =>
-    /\bconfig\b|schema|labels|help/i.test(String(file)),
-  );
-  const crossesTests = likelyFiles.some((file: JsonValue) =>
-    /\.test\.[cm]?[jt]s$|\.spec\.[cm]?[jt]s$/i.test(String(file)),
-  );
-  const crossesCore = likelyFiles.some((file: JsonValue) => String(file).startsWith("src/"));
-  const crossSurfaceCount = [crossesDocs, crossesConfig, crossesTests, crossesCore].filter(
-    Boolean,
-  ).length;
   const tooManyFiles = likelyFiles.length > maxAutonomousFixFiles;
   const tooManySurfaces = affectedSurfaces.length > maxAutonomousFixSurfaces;
-
-  if (!featureSignal || (!tooManyFiles && !tooManySurfaces && crossSurfaceCount < 3)) return null;
+  if (!tooManyFiles && !tooManySurfaces) return null;
 
   return {
     reason:
@@ -171,7 +148,6 @@ export function validateAutonomousFixScope({
       `pr_title=${fixArtifact.pr_title}`,
       `likely_files=${likelyFiles.length}/${maxAutonomousFixFiles}`,
       `affected_surfaces=${affectedSurfaces.length}/${maxAutonomousFixSurfaces}`,
-      `cross_surface_count=${crossSurfaceCount}`,
       `sample_files=${likelyFiles.slice(0, 8).join(", ")}`,
     ],
   };

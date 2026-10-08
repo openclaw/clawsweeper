@@ -56,8 +56,9 @@ import {
   automergePlanningHeadBlock,
 } from "./automerge-outcome.js";
 import {
-  isCanonicalLandingNeedsHumanText,
   isTrustedStatusCommentAuthor,
+  needsHumanHoldAllowsAutomergeOptIn,
+  parseTrustedAutomation,
 } from "./comment-router-core.js";
 import { parsePullRequestUrl, pullRequestNumberFromUrl, sameRepoSlug } from "./github-ref.js";
 import {
@@ -99,7 +100,7 @@ import {
   reviewAfterFinalBaseSync,
 } from "./execution-finalization.js";
 import { tryResolveMechanicalRebaseConflicts } from "./mechanical-rebase-conflicts.js";
-import { compactText, escapeRegExp } from "./text-utils.js";
+import { compactText } from "./text-utils.js";
 import {
   shouldCloseSupersededSourcePrs,
   shouldSeedReplacementBranchFromSource,
@@ -461,11 +462,10 @@ function defaultTargetDir(repo: string) {
   );
 }
 
-const rawFixArtifact = result.fix_artifact;
-const executableFixArtifact = executableReplacementFixArtifact(rawFixArtifact, result);
-const promotedReplacement = executableFixArtifact !== rawFixArtifact;
-const plannedFixActions = (result.actions ?? []).filter((action: JsonValue) =>
-  isExecutableFixAction(action, promotedReplacement),
+const workerFixArtifact = result.fix_artifact;
+const plannedFixActions = (result.actions ?? []).filter(
+  (action: JsonValue) =>
+    FIX_ACTIONS.has(String(action.action ?? "")) && action.status === "planned",
 );
 const report: LooseRecord = {
   repo: result.repo,
@@ -474,9 +474,6 @@ const report: LooseRecord = {
   result_path: path.relative(repoRoot(), resultPath),
   executed_at: new Date().toISOString(),
   automerge_session_id: process.env.CLAWSWEEPER_AUTOMERGE_SESSION_ID || null,
-  policy_override: promotedReplacement
-    ? "promoted needs_human uneditable-source fix artifact to replace_uneditable_branch"
-    : null,
   actions: [],
 };
 
@@ -522,7 +519,7 @@ if (
   throw new Error("refusing fix execution: fix is blocked by job frontmatter");
 }
 
-const repairStrategy = String(executableFixArtifact?.repair_strategy ?? "");
+const repairStrategy = String(workerFixArtifact?.repair_strategy ?? "");
 if (NON_EXECUTABLE_REPAIR_STRATEGIES.has(repairStrategy)) {
   report.status = "skipped";
   report.reason = `fix_artifact.repair_strategy ${repairStrategy} is not executable`;
@@ -536,7 +533,7 @@ if (NON_EXECUTABLE_REPAIR_STRATEGIES.has(repairStrategy)) {
   process.exit(0);
 }
 
-let fixArtifact = validateFixArtifact(executableFixArtifact);
+let fixArtifact = validateFixArtifact(workerFixArtifact);
 const securityBlock = validateFixSecurityScope({ job, resultPath, fixArtifact, plannedFixActions });
 if (securityBlock) {
   report.status = "skipped";
@@ -792,66 +789,6 @@ function shouldFallbackToReplacementAfterRepairError(error: JsonValue) {
   return /maintainer_can_modify=false|missing head repo\/ref|source PR #\d+ is (?:closed|merged)|permission denied|permission to [^\s]+ denied|remote rejected|could not push|repository not found|not found/i.test(
     message,
   );
-}
-
-function isExecutableFixAction(action: LooseRecord, promotedReplacement: JsonValue) {
-  if (!FIX_ACTIONS.has(String(action.action ?? ""))) return false;
-  return (
-    action.status === "planned" || (Boolean(promotedReplacement) && action.status === "blocked")
-  );
-}
-
-function executableReplacementFixArtifact(fixArtifact: LooseRecord, workerResult: JsonValue) {
-  if (!shouldPromoteNeedsHumanReplacement(fixArtifact, workerResult)) return fixArtifact;
-  return {
-    ...fixArtifact,
-    repair_strategy: "replace_uneditable_branch",
-    branch_update_blockers: uniqueStrings([
-      ...(fixArtifact.branch_update_blockers ?? []),
-      "ClawSweeper policy: useful uneditable or unsafe source PRs are replaced with a narrow credited PR when fix execution is explicitly enabled.",
-    ]),
-    credit_notes: uniqueStrings([
-      ...(fixArtifact.credit_notes ?? []),
-      ...fixArtifact.source_prs.map(
-        (source: JsonValue) => `Replacement preserves source PR credit: ${source}`,
-      ),
-    ]),
-  };
-}
-
-function shouldPromoteNeedsHumanReplacement(fixArtifact: LooseRecord, workerResult: JsonValue) {
-  if (!fixArtifact || typeof fixArtifact !== "object") return false;
-  if (fixArtifact.repair_strategy !== "needs_human") return false;
-  if (!Array.isArray(fixArtifact.source_prs) || fixArtifact.source_prs.length === 0) return false;
-  if (
-    !fixArtifact.source_prs.every((source: JsonValue) =>
-      sameRepoSlug(parsePullRequestUrl(source)?.repo, workerResult.repo),
-    )
-  )
-    return false;
-
-  const text = [
-    fixArtifact.summary,
-    fixArtifact.pr_body,
-    ...(fixArtifact.branch_update_blockers ?? []),
-    ...(fixArtifact.credit_notes ?? []),
-    ...(workerResult.needs_human ?? []),
-    ...(workerResult.actions ?? []).map(
-      (action: JsonValue) => `${action.action ?? ""} ${action.status ?? ""} ${action.reason ?? ""}`,
-    ),
-  ].join("\n");
-  const hasReplacementDecision =
-    /replace(?:ment)?(?: PR| fix| path)?|open a replacement|cannot safely update/i.test(text);
-  const hasUneditableOrUnsafeSource =
-    /maintainer_can_modify\s*=\s*false|uneditable|cannot safely update|branch is unsafe|draft|mergeability unknown|checks? (?:are )?(?:skipped|failing)/i.test(
-      text,
-    );
-  const hasBlockedFixAction = (workerResult.actions ?? []).some(
-    (action: JsonValue) =>
-      ["fix_needed", "build_fix_artifact", "open_fix_pr"].includes(String(action.action ?? "")) &&
-      action.status === "blocked",
-  );
-  return hasReplacementDecision && hasUneditableOrUnsafeSource && hasBlockedFixAction;
 }
 
 function preflightRepairSourceBranchWrite(fixArtifact: LooseRecord) {
@@ -1404,9 +1341,11 @@ function openReplacementPrFromPreparedRepairCheckout({
       })
     : { status: "blocked", reason: "replacement PR URL did not include a PR number" };
 
-  const supersededSources = supersededReplacementSources({ fixArtifact, repo: result.repo }).filter(
-    (source: JsonValue) => pullRequestNumberFromUrl(source) !== prNumber,
-  );
+  const supersededSources = supersededReplacementSources({
+    fixArtifact,
+    actions: result.actions ?? [],
+    repo: result.repo,
+  }).filter((source: JsonValue) => pullRequestNumberFromUrl(source) !== prNumber);
   const supersededSourceActions: JsonValue[] = [];
   for (const source of supersededSources) {
     const parsed = parsePullRequestUrl(source);
@@ -1858,9 +1797,11 @@ function executeReplacementBranch({
     : { status: "blocked", reason: "replacement PR URL did not include a PR number" };
 
   const supersededSources = supersedeSources
-    ? supersededReplacementSources({ fixArtifact, repo: result.repo }).filter(
-        (source: JsonValue) => pullRequestNumberFromUrl(source) !== prNumber,
-      )
+    ? supersededReplacementSources({
+        fixArtifact,
+        actions: result.actions ?? [],
+        repo: result.repo,
+      }).filter((source: JsonValue) => pullRequestNumberFromUrl(source) !== prNumber)
     : [];
   const supersededSourceActions: JsonValue[] = [];
   if (supersededSources.length > 0) {
@@ -4135,15 +4076,18 @@ function continueAutomergeAfterNoopRepair({ target, comments, statusComment }: L
 function maintainerApprovedNeedsHumanComment({ comments, headSha }: LooseRecord) {
   return [...(comments ?? [])].reverse().find((comment: LooseRecord) => {
     if (!isTrustedStatusComment(comment)) return false;
-    const body = String(comment.body ?? "");
-    if (
-      !new RegExp(
-        `clawsweeper-verdict:needs-human[^>]*\\bsha=${escapeRegExp(String(headSha))}\\b`,
-        "i",
-      ).test(body)
-    )
+    const verdict = parseTrustedAutomation(comment, {
+      trustedAuthors: new Set([String(comment.user?.login ?? "").toLowerCase()]),
+    }) as LooseRecord | null;
+    if (verdict?.intent !== "clawsweeper_needs_human") return false;
+    if (String(verdict.expected_head_sha ?? "").toLowerCase() !== String(headSha).toLowerCase()) {
       return false;
-    return isCanonicalLandingNeedsHumanText(body);
+    }
+    return needsHumanHoldAllowsAutomergeOptIn({
+      hold: verdict.needs_human_hold,
+      findings: verdict.review_findings,
+      liveVerification: verdict.live_verification,
+    });
   });
 }
 

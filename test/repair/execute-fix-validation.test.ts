@@ -62,6 +62,43 @@ test("autonomous scope validation blocks broad untrusted repair artifacts", () =
   assert.match(block.reason, /too broad for autonomous execution/);
 });
 
+const manualJob = {
+  frontmatter: {
+    source: "manual",
+    allow_fix_pr: true,
+    allowed_actions: ["fix", "raise_pr"],
+    target_branch: "clawsweeper/example",
+  },
+};
+
+test("autonomous scope validation ignores feature wording and file roles within the caps", () => {
+  const block = validate(manualJob, {
+    repair_strategy: "new_fix_pr",
+    pr_title: "feat(config): add a new configuration surface with public docs and schema",
+    summary: "Add a new config schema.",
+    pr_body: "Adds public docs.",
+    affected_surfaces: ["config schema", "docs"],
+    likely_files: ["docs/config.md", "src/config/schema.ts", "src/config/schema.test.ts"],
+    source_prs: [],
+  });
+
+  assert.equal(block, null);
+});
+
+test("autonomous scope validation blocks fix artifacts over the file cap without feature wording", () => {
+  const block = validate(manualJob, {
+    repair_strategy: "new_fix_pr",
+    pr_title: "fix(gateway): keep retry state",
+    summary: "Keep retry state.",
+    pr_body: "Keeps retry state.",
+    affected_surfaces: ["gateway"],
+    likely_files: ["src/a.ts", "src/b.ts", "src/c.ts", "src/d.ts"],
+    source_prs: [],
+  });
+
+  assert.match(block.reason, /too broad for autonomous execution/);
+});
+
 test("autonomous scope validation allows trusted adopted PR branch refreshes", () => {
   const block = validate({
     frontmatter: {

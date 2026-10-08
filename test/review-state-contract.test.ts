@@ -120,7 +120,15 @@ test("the compact v1 fixture matches producer state and identity without snapsho
       fixture.identityMarker,
     ]);
   }
-  assert.match(reviewAutomationMarkersFromReport(reports.ready), /clawsweeper-verdict:needs-human/);
+  // The router routes needs-human verdicts on these typed attributes, never on comment prose.
+  assert.match(
+    reviewAutomationMarkersFromReport(reports.ready),
+    /clawsweeper-verdict:needs-human [^>]* hold=not_opted_in findings=0 -->/,
+  );
+  assert.match(
+    reviewAutomationMarkersFromReport(reports.blocked),
+    /clawsweeper-verdict:needs-human [^>]* hold=blocked findings=0 -->/,
+  );
   assert.match(
     reviewAutomationMarkersFromReport(reports["needs-changes"]),
     /clawsweeper-action:fix-required/,

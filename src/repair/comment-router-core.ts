@@ -826,40 +826,31 @@ export function isTrustedStatusCommentAuthor(
   return !!author && (author === "clawsweeper" || trustedAuthors.has(author));
 }
 
-export function isCanonicalLandingNeedsHumanText(value: JsonValue) {
-  const text = String(value ?? "");
-  if (!text) return false;
-  if (/security-sensitive|needs attention|review finding/i.test(text)) return false;
-  // Review prose sometimes prefixes its non-finding landing conclusion with a
-  // priority token. Keep rejecting actual prioritized findings while allowing
-  // the canonical "No repair lane" conclusion to reach the exact-head gate.
-  if (/\[P[0-3]\](?!\s*No repair lane is needed\b)/i.test(text)) return false;
-  return (
-    /no repair lane is needed|maintainer action is to land|land .*canonical|canonical .*fix/i.test(
-      text,
-    ) || /active automerge candidate with no code finding/i.test(text)
-  );
-}
-
-export function missingProofNeedsHumanReason(value: JsonValue) {
-  const text = String(value ?? "");
-  return /missing (?:real behavior )?proof|missing proof|proof needs maintainer handling|missing.*proof/i.test(
-    text,
-  );
+// A later maintainer automerge opt-in can approve a needs-human verdict only when
+// the review found no findings and the hold is one the opt-in can waive: the PR was
+// not opted in at review time, or real behavior proof is missing. This reads the
+// typed marker attributes from the review comment, not the review prose.
+export function needsHumanHoldAllowsAutomergeOptIn({
+  hold,
+  findings,
+  liveVerification,
+}: LooseRecord): boolean {
+  if (String(findings ?? "") !== "0") return false;
+  const verificationState = String(liveVerification ?? "");
+  if (hold === "not_opted_in") return ["absent", "passed"].includes(verificationState);
+  return hold === "proof" && verificationState === "absent";
 }
 
 export function maintainerAutomergeOptInApprovesNeedsHuman({
-  reason,
+  hold,
+  findings,
   commentCreatedAt,
   commentUpdatedAt,
   optInTime,
   replacementAutomergeRequestedBy,
   liveVerification,
 }: LooseRecord) {
-  const verificationState = String(liveVerification ?? "");
-  if (!["absent", "passed"].includes(verificationState)) return false;
-  if (verificationState !== "absent" && missingProofNeedsHumanReason(reason)) return false;
-  if (!isCanonicalLandingNeedsHumanText(reason)) return false;
+  if (!needsHumanHoldAllowsAutomergeOptIn({ hold, findings, liveVerification })) return false;
   if (replacementAutomergeRequestedBy && maintainerCredit(replacementAutomergeRequestedBy)) {
     return true;
   }
@@ -1874,10 +1865,10 @@ export function parseTrustedAutomation(
       marker: verdict,
     });
   }
-  if (verdict?.action === "needs-human" && trustedCommentHasPriorityFinding(body)) {
+  if (verdict?.action === "needs-human" && Number(verdict.attrs.findings) > 0) {
     return trustedCommand("clawsweeper_auto_repair", {
       author,
-      reason: `structured ClawSweeper needs-human verdict with repairable P-severity findings${markerReasonSuffix(verdict.attrs)}`,
+      reason: `structured ClawSweeper needs-human verdict with repairable review findings${markerReasonSuffix(verdict.attrs)}`,
       marker: verdict,
     });
   }
@@ -1911,13 +1902,6 @@ export function parseTrustedAutomation(
     return trustedCommand("clawsweeper_auto_repair", {
       author,
       reason: `structured ClawSweeper verdict: ${verdict.action}${markerReasonSuffix(verdict.attrs)}`,
-      marker: verdict,
-    });
-  }
-  if (trustedCommentHasPriorityFinding(body)) {
-    return trustedCommand("clawsweeper_auto_repair", {
-      author,
-      reason: `trusted ClawSweeper review contains P-severity findings${markerReasonSuffix(verdict?.attrs)}`,
       marker: verdict,
     });
   }
@@ -2364,12 +2348,6 @@ export function reviewSummaryFromCommentBody(body: JsonValue): string | null {
   );
 }
 
-function trustedCommentHasPriorityFinding(body: string) {
-  const reviewFindings =
-    markdownSection(body, "Findings") || markdownSection(body, "Review findings");
-  return /(?:^|;|\n)\s*(?:[-*]\s*)?(?:\*\*)?\[P[0-3]\]/i.test(reviewFindings);
-}
-
 function decisionNeededReason(body: string): string {
   const section = extractMarkdownSection(body, "Decision needed");
   return section ? compactReason(`Maintainer decision needed: ${section}`, 220) : "";
@@ -2560,7 +2538,7 @@ export function renderResponse(command: LooseRecord, dispatched: LooseRecord) {
             "I queued the repair worker to verify this issue on latest `main` and open or update one narrow implementation PR if it is safe.",
             repairDispatchLine(dispatched, "Action"),
           ].join("\n")
-        : renderIssueImplementationRefusal(refusal),
+        : renderIssueImplementationRefusal(refusal, command.issue_implementation_blocker_class),
       "",
       "After opening, the PR enters bounded review/autofix and remains open after an exact-head pass. This lane does not merge or close the issue.",
     ].join("\n");
@@ -2661,7 +2639,7 @@ export function renderResponse(command: LooseRecord, dispatched: LooseRecord) {
   }
   if (command.intent === "clawsweeper_needs_human") {
     const reason = command.repair_reason ?? "ClawSweeper requested human review.";
-    const nextAction = humanReviewNextAction(reason);
+    const guidance = humanReviewGuidance(command.needs_human_hold);
     return [
       marker,
       "ClawSweeper is pausing this repair loop for human review.",
@@ -2670,8 +2648,10 @@ export function renderResponse(command: LooseRecord, dispatched: LooseRecord) {
       `Reason: ${reason}`,
       "",
       "Why human review is needed:",
-      humanReviewJustification(reason),
-      ...(nextAction ? ["", "What the maintainer can do as a next step:", nextAction] : []),
+      guidance.why,
+      "",
+      "What the maintainer can do as a next step:",
+      guidance.next,
       "",
       `I added \`${HUMAN_REVIEW_LABEL}\` and left the final call with a maintainer.`,
     ].join("\n");
@@ -2842,31 +2822,26 @@ function implementationPromptFromCommand(command: LooseRecord) {
     .trim();
 }
 
-export function issueImplementationBlockerClass(reason: LooseRecord) {
-  return isHardIssueImplementationBlocker(String(reason ?? "")) ? "hard" : "soft";
-}
+export type IssueImplementationBlockerClass = "hard" | "soft";
 
-export function issueImplementationOverrideAction(reason: LooseRecord) {
-  return issueImplementationBlockerClass(reason) === "hard"
+// The code that writes a blocker also sets its class. Do not derive it from the reason text.
+export function issueImplementationOverrideAction(
+  blockerClass: IssueImplementationBlockerClass | null | undefined,
+) {
+  return blockerClass === "hard"
     ? "produce a safe non-code plan, decomposition, or human-review handoff instead of a code PR"
     : "allow one bounded attempt to create or update a reviewable implementation PR";
 }
 
-function renderIssueImplementationRefusal(reason: string) {
-  const blockerClass = issueImplementationBlockerClass(reason);
+function renderIssueImplementationRefusal(reason: string, blockerClass: JsonValue) {
+  if (blockerClass !== "hard" && blockerClass !== "soft") return `Reason: ${reason}.`;
   return [
     `Reason: ${reason}.`,
     `Blocker: ${blockerClass}.`,
     `Evidence: ${reason}.`,
     "Override: `/clawsweeper build override`.",
-    `Override behavior: ${issueImplementationOverrideAction(reason)}.`,
+    `Override behavior: ${issueImplementationOverrideAction(blockerClass)}.`,
   ].join("\n");
-}
-
-function isHardIssueImplementationBlocker(reason: string) {
-  return /\b(?:security|protected label|locked|closed|not open|open issue|pull request|pr reference|references a pr|has a pr|open pr|existing .*pr|already .*pr|unsupported target repo|report repository is|no usable request|missing repair work prompt)\b/i.test(
-    reason,
-  );
 }
 
 function isIssueImplementationOverride(command: string) {
@@ -3118,7 +3093,11 @@ function trustedCommand(
           close_action_taken: attrs?.action_taken ?? null,
           expected_item_updated_at: attrs?.updated_at ?? null,
         }
-      : { live_verification: markerLiveVerificationState(marker) }),
+      : {
+          live_verification: markerLiveVerificationState(marker),
+          needs_human_hold: attrs?.hold ?? null,
+          review_findings: attrs?.findings ?? null,
+        }),
   };
 }
 
@@ -3156,7 +3135,8 @@ export function maintainerApprovalAppliesToExactHeadReview({
 }) {
   if (!approvalValidated || review?.decision !== "human") return false;
   return maintainerAutomergeOptInApprovesNeedsHuman({
-    reason: review.command?.repair_reason,
+    hold: review.command?.needs_human_hold,
+    findings: review.command?.review_findings,
     commentCreatedAt: review.commentCreatedAt,
     commentUpdatedAt: review.commentUpdatedAt,
     optInTime,
@@ -3353,62 +3333,48 @@ function renderStatusBody(command: LooseRecord) {
   return lines.join("\n");
 }
 
-function humanReviewJustification(reason: JsonValue) {
-  const text = String(reason ?? "");
-  if (/proof-label automation|proof[- ]label|proof gate|proof sufficien/i.test(text)) {
-    return [
-      "This PR affects proof-label or proof-gate automation. ClawSweeper can identify the risk,",
-      "but a maintainer needs to decide whether the available proof is enough before automation continues.",
-    ].join(" ");
-  }
-  if (/protected maintainer|maintainer validation|maintainer label/i.test(text)) {
-    return [
-      "This item touches a maintainer-protected decision point. ClawSweeper is keeping the item open",
-      "so a maintainer can own the final validation choice.",
-    ].join(" ");
-  }
-  if (/security|secret|credential|permission/i.test(text)) {
-    return [
-      "This item has security-sensitive risk. ClawSweeper is pausing instead of making an autonomous",
-      "change that could affect trust, credentials, permissions, or exposure.",
-    ].join(" ");
-  }
-  return [
-    "ClawSweeper found a blocker that should be resolved or accepted by a maintainer before the",
-    "repair or automerge loop continues.",
-  ].join(" ");
-}
-
-function humanReviewNextAction(reason: JsonValue) {
-  const text = String(reason ?? "");
+// The typed `hold` marker attribute selects the guidance. Do not pick it from reason prose.
+function humanReviewGuidance(hold: JsonValue): { why: string; next: string } {
   const approveInstruction =
     "If the maintainer accepts the current risk and wants ClawSweeper to continue merge gates, comment `@clawsweeper approve`.";
-  if (/proof-label automation|proof[- ]label|proof gate|proof sufficien/i.test(text)) {
-    return [
-      approveInstruction,
-      "If proof is still missing, add redacted real behavior proof for the affected proof-label workflow, then comment `@clawsweeper automerge` to re-review and continue.",
-      "If automation should not continue, leave `clawsweeper:human-review` in place or comment `@clawsweeper stop`.",
-    ].join(" ");
+  if (hold === "proof") {
+    return {
+      why: "The review did not find enough real behavior proof. A maintainer needs to decide whether the available proof is enough before automation continues.",
+      next: [
+        approveInstruction,
+        "If proof is still missing, add redacted real behavior proof, then comment `@clawsweeper automerge` to re-review and continue.",
+        "If automation should not continue, leave `clawsweeper:human-review` in place or comment `@clawsweeper stop`.",
+      ].join(" "),
+    };
   }
-  if (/protected maintainer|maintainer validation|maintainer label/i.test(text)) {
-    return [
-      approveInstruction,
-      "If the flagged decision needs more evidence first, add the missing proof or resolve the maintainer-owned blocker, then comment `@clawsweeper automerge`.",
-      "If the maintainer wants to own landing outside automation, merge manually after repository gates pass.",
-    ].join(" ");
+  if (hold === "maintainer_decision") {
+    return {
+      why: "The review asks for a maintainer decision. ClawSweeper is keeping the item open so a maintainer can make the final choice.",
+      next: [
+        approveInstruction,
+        "If the decision needs more evidence first, add it or resolve the maintainer-owned blocker, then comment `@clawsweeper automerge`.",
+        "If the maintainer wants to own landing outside automation, merge manually after repository gates pass.",
+      ].join(" "),
+    };
   }
-  if (/security|secret|credential|permission/i.test(text)) {
-    return [
-      approveInstruction,
-      "If the security-sensitive detail still needs changes, describe the safe path or push the fix, then comment `@clawsweeper automerge`.",
-      "If the risk should not be automated, keep the PR paused for manual review or comment `@clawsweeper stop`.",
-    ].join(" ");
+  if (hold === "security") {
+    return {
+      why: "The security review needs attention. ClawSweeper is pausing instead of making an autonomous change that could affect trust, credentials, permissions, or exposure.",
+      next: [
+        approveInstruction,
+        "If the security-sensitive detail still needs changes, describe the safe path or push the fix, then comment `@clawsweeper automerge`.",
+        "If the risk should not be automated, keep the PR paused for manual review or comment `@clawsweeper stop`.",
+      ].join(" "),
+    };
   }
-  return [
-    approveInstruction,
-    "If more work is needed, resolve the blocker first, then comment `@clawsweeper automerge` to re-review and continue.",
-    "If automation should stay paused, leave `clawsweeper:human-review` in place or comment `@clawsweeper stop`.",
-  ].join(" ");
+  return {
+    why: "ClawSweeper found a blocker that should be resolved or accepted by a maintainer before the repair or automerge loop continues.",
+    next: [
+      approveInstruction,
+      "If more work is needed, resolve the blocker first, then comment `@clawsweeper automerge` to re-review and continue.",
+      "If automation should stay paused, leave `clawsweeper:human-review` in place or comment `@clawsweeper stop`.",
+    ].join(" "),
+  };
 }
 
 function automergeLabelState(labels: JsonValue[]) {

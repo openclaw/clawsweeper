@@ -388,6 +388,40 @@ test("repair apply filters automation comments from coverage proof prompts", () 
   }
 });
 
+test("repair apply does not read close classification from reason prose", () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-apply-result-"));
+  try {
+    const paths = writeApplyFixture(tmp, {
+      action: "close",
+      classification: null,
+      canonical: "#202",
+      reason: "Duplicate of #202; superseded by the canonical fix.",
+    });
+    writeFakeGh(paths.binDir, {
+      issues: {
+        101: issue({ number: 101, title: "Add config validation", pullRequest: true }),
+        202: issue({ number: 202, title: "Rewrite config validation", pullRequest: true }),
+      },
+      pulls: {
+        101: pull({ number: 101, title: "Add config validation" }),
+        202: pull({ number: 202, title: "Rewrite config validation" }),
+      },
+      comments: {},
+      logPath: paths.ghLogPath,
+    });
+    writeFakeCodex(paths.binDir);
+
+    runApplyResult(paths, { proofDecision: "covered", failIfProofRuns: true });
+
+    const report = JSON.parse(fs.readFileSync(paths.reportPath, "utf8"));
+    assert.equal(report.actions[0].status, "blocked");
+    assert.match(report.actions[0].reason, /auto-closure requires duplicate, superseded/);
+    assert.equal(fs.existsSync(paths.ghLogPath), false);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
 for (const scenario of [
   {
     name: "superseded",
@@ -1209,7 +1243,7 @@ type ApplyFixturePaths = {
 
 type ApplyFixtureAction = {
   action: string;
-  classification: string;
+  classification: string | null;
   canonical?: string;
   duplicate_of?: string;
   candidate_fix?: string;

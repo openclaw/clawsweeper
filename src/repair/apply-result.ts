@@ -61,6 +61,13 @@ const CLOSE_CLASSIFICATIONS = new Set([
   "fixed_by_candidate",
   "low_signal",
 ]);
+const CLOSE_CLASSIFICATION_BY_ACTION: Record<string, string> = {
+  close_duplicate: "duplicate",
+  close_superseded: "superseded",
+  close_fixed_by_candidate: "fixed_by_candidate",
+  close_low_signal: "low_signal",
+  post_merge_close: "fixed_by_candidate",
+};
 const PASSING_CHECK_CONCLUSIONS = new Set(["SUCCESS", "SKIPPED", "NEUTRAL"]);
 const CLEAN_MERGE_STATES = new Set(["CLEAN"]);
 // A covering PR may need a base update, but actual merge actions remain CLEAN-only.
@@ -1521,21 +1528,12 @@ function normalizeIssueRef(value: JsonValue, expectedRepo: JsonValue = "") {
   return issueNumberFromRef(value, String(expectedRepo ?? ""));
 }
 
+// The worker classification is a typed enum. When it is null, the close action name gives it.
 function normalizeClassification(action: LooseRecord) {
-  const raw = String(
-    action.classification ?? action.close_reason ?? action.reason ?? "",
-  ).toLowerCase();
-  if (raw.includes("low_signal") || raw.includes("low-signal") || raw.includes("low signal"))
-    return "low_signal";
-  if (raw.includes("fixed") || raw.includes("candidate")) return "fixed_by_candidate";
-  if (raw.includes("superseded") || raw.includes("supersede")) return "superseded";
-  if (raw.includes("duplicate") || raw.includes("dupe")) return "duplicate";
-  if (action.action === "close_fixed_by_candidate") return "fixed_by_candidate";
-  if (action.action === "close_low_signal") return "low_signal";
-  if (action.action === "close_superseded") return "superseded";
-  if (action.action === "close_duplicate") return "duplicate";
-  if (action.action === "post_merge_close") return "fixed_by_candidate";
-  return raw;
+  if (typeof action.classification === "string" && action.classification) {
+    return action.classification;
+  }
+  return CLOSE_CLASSIFICATION_BY_ACTION[String(action.action ?? "")] ?? "";
 }
 
 function defaultIdempotencyKey(

@@ -37,11 +37,9 @@ import {
   freshExactHeadReviewStartLease,
   hasCommandResponseMarker,
   issueImplementationClusterId,
-  issueImplementationBlockerClass,
   issueImplementationJobBranch,
   issueImplementationJobPath,
   latestTrustedExactHeadReview,
-  isCanonicalLandingNeedsHumanText,
   isReadyHumanReviewPause,
   pendingRepairLoopOptIns,
   isTrustedStatusCommentAuthor,
@@ -1084,13 +1082,6 @@ test("renderIssueImplementationJob records maintainer build override metadata", 
   assert.doesNotMatch(job.body, /repair_strategy: "new_fix_pr"/);
 });
 
-test("issue implementation blocker classifier treats linked PR evidence as hard", () => {
-  assert.equal(issueImplementationBlockerClass("open PR already mentions this issue"), "hard");
-  assert.equal(issueImplementationBlockerClass("work cluster references a PR"), "hard");
-  assert.equal(issueImplementationBlockerClass("report repository is openclaw/other"), "hard");
-  assert.equal(issueImplementationBlockerClass("missing validation commands"), "soft");
-});
-
 test("automerge changelog gate does not block user-facing OpenClaw changes", () => {
   assert.equal(
     automergeChangelogBlockReason({
@@ -1736,7 +1727,7 @@ test("maintainer approval does not transfer to a newer same-head human blocker",
       "",
       "No repair lane is needed: the PR already contains the narrow fix, but missing real behavior proof needs maintainer handling.",
       "",
-      `<!-- clawsweeper-verdict:needs-human live_verification=absent sha=${headSha} -->`,
+      `<!-- clawsweeper-verdict:needs-human live_verification=absent sha=${headSha} hold=proof findings=0 -->`,
     ].join("\n"),
   };
   const blocker = {
@@ -1748,7 +1739,7 @@ test("maintainer approval does not transfer to a newer same-head human blocker",
       "Needs attention: security-sensitive policy review is required before merge.",
       "",
       `<!-- clawsweeper-security:security-sensitive sha=${headSha} -->`,
-      `<!-- clawsweeper-verdict:needs-human live_verification=absent sha=${headSha} -->`,
+      `<!-- clawsweeper-verdict:needs-human live_verification=absent sha=${headSha} hold=security findings=0 -->`,
     ].join("\n"),
   };
   const approval = {
@@ -3054,27 +3045,6 @@ test("trusted close gates block protected labels, source drift, and unsupported 
   );
 });
 
-test("parseTrustedAutomation repairs trusted pass verdicts that still contain P findings", () => {
-  const trustedAuthors = new Set(["clawsweeper[bot]"]);
-  const parsed = parseTrustedAutomation(
-    {
-      user: { login: "clawsweeper[bot]" },
-      body: [
-        "ClawSweeper review passed.",
-        "",
-        "**Review findings**",
-        "- **[P2] Preserve queued delivery:** `src/queue.ts:42`",
-        "<!-- clawsweeper-verdict:pass live_verification=absent sha=abc123 -->",
-      ].join("\n"),
-    },
-    { trustedAuthors },
-  );
-
-  assert.equal(parsed.intent, "clawsweeper_auto_repair");
-  assert.equal(parsed.expected_head_sha, "abc123");
-  assert.match(parsed.repair_reason, /P-severity findings/);
-});
-
 test("parseTrustedAutomation does not treat pass verdict risk notes as repair findings", () => {
   const trustedAuthors = new Set(["clawsweeper[bot]"]);
   const parsed = parseTrustedAutomation(
@@ -3121,41 +3091,11 @@ test("parseTrustedAutomation treats trusted ClawSweeper needs-human as a pause",
   assert.match(parsed.repair_reason, /needs-human/);
 });
 
-test("canonical landing needs-human text can be approved by active automerge opt-in", () => {
-  assert.equal(
-    isCanonicalLandingNeedsHumanText(
-      "- [P2] No repair lane is needed: the PR already contains the narrow fix and should proceed through normal merge gates.",
-    ),
-    true,
-  );
-  assert.equal(
-    isCanonicalLandingNeedsHumanText(
-      "No repair lane is needed because the PR already contains the narrow fix; maintainer action is to land one canonical fix.",
-    ),
-    true,
-  );
-  assert.equal(
-    isCanonicalLandingNeedsHumanText(
-      "The PR is an active automerge candidate with no code finding, but the protected label and missing real behavior proof require maintainer handling.",
-    ),
-    true,
-  );
-  assert.equal(
-    isCanonicalLandingNeedsHumanText(
-      "No repair lane is needed, but Security needs attention before merge.",
-    ),
-    false,
-  );
-  assert.equal(
-    isCanonicalLandingNeedsHumanText(
-      "Maintainer action is to land the canonical fix.\n- [P1] Still broken",
-    ),
-    false,
-  );
+test("needs-human proof hold can be approved by active automerge opt-in", () => {
+  const proofHold = { hold: "proof", findings: "0" };
   assert.equal(
     maintainerAutomergeOptInApprovesNeedsHuman({
-      reason:
-        "The PR is an active automerge candidate with no code finding, but missing proof needs maintainer handling.",
+      ...proofHold,
       commentCreatedAt: "2026-05-17T00:45:00Z",
       commentUpdatedAt: "2026-05-17T00:55:00Z",
       optInTime: "2026-05-17T00:50:00Z",
@@ -3165,8 +3105,7 @@ test("canonical landing needs-human text can be approved by active automerge opt
   );
   assert.equal(
     maintainerAutomergeOptInApprovesNeedsHuman({
-      reason:
-        "The PR is an active automerge candidate with no code finding, but missing proof needs maintainer handling.",
+      ...proofHold,
       commentCreatedAt: "2026-05-17T00:55:00Z",
       optInTime: "2026-05-17T00:50:00Z",
       liveVerification: "absent",
@@ -3175,8 +3114,7 @@ test("canonical landing needs-human text can be approved by active automerge opt
   );
   assert.equal(
     maintainerAutomergeOptInApprovesNeedsHuman({
-      reason:
-        "The PR is an active automerge candidate with no code finding, but missing proof needs maintainer handling.",
+      ...proofHold,
       commentCreatedAt: "2026-05-17T00:55:00Z",
       optInTime: 0,
       liveVerification: "absent",
@@ -3185,8 +3123,7 @@ test("canonical landing needs-human text can be approved by active automerge opt
   );
   assert.equal(
     maintainerAutomergeOptInApprovesNeedsHuman({
-      reason:
-        "The PR is an active automerge candidate with no code finding, but missing proof needs maintainer handling.",
+      ...proofHold,
       commentCreatedAt: "2026-05-17T00:55:00Z",
       optInTime: "2026-05-17T00:50:00Z",
       liveVerification: "passed",
@@ -3229,8 +3166,8 @@ test("canonical landing needs-human accepts waiting automerge opt-in as active r
   assert.equal(optInTime, Date.parse("2026-05-17T17:09:01Z"));
   assert.equal(
     maintainerAutomergeOptInApprovesNeedsHuman({
-      reason:
-        "No repair lane is needed; the open PR already contains the focused implementation and this review found no actionable blocker for automation to fix.",
+      hold: "not_opted_in",
+      findings: "0",
       commentCreatedAt: "2026-05-17T16:54:05Z",
       optInTime,
       liveVerification: "passed",
@@ -3285,7 +3222,8 @@ test("bot label sweeps cannot authorize a needs-human proof override", () => {
     assert.equal(optInTime, 0);
     assert.equal(
       maintainerAutomergeOptInApprovesNeedsHuman({
-        reason: "No repair lane is needed, but missing proof needs maintainer handling.",
+        hold: "proof",
+        findings: "0",
         commentCreatedAt: "2026-09-10T12:01:00Z",
         liveVerification: "absent",
         optInTime,
@@ -3348,8 +3286,8 @@ test("canonical landing needs-human accepts replacement PR automerge requester m
   });
   assert.equal(
     maintainerAutomergeOptInApprovesNeedsHuman({
-      reason:
-        "No repair lane is needed; this automerge-opted replacement PR should proceed through exact-head checks and normal merge gates.",
+      hold: "not_opted_in",
+      findings: "0",
       commentCreatedAt: "2026-05-17T18:03:35Z",
       optInTime: 0,
       replacementAutomergeRequestedBy: automergeRequestedByFromBody(replacementBody),
@@ -3362,8 +3300,8 @@ test("canonical landing needs-human accepts replacement PR automerge requester m
 test("canonical landing needs-human ignores bot replacement PR automerge requester markers", () => {
   assert.equal(
     maintainerAutomergeOptInApprovesNeedsHuman({
-      reason:
-        "No repair lane is needed; this automerge-opted replacement PR should proceed through exact-head checks and normal merge gates.",
+      hold: "not_opted_in",
+      findings: "0",
       commentCreatedAt: "2026-05-17T18:03:35Z",
       optInTime: 0,
       replacementAutomergeRequestedBy: {
@@ -3408,17 +3346,20 @@ test("parseTrustedAutomation explains security-sensitive human-review pauses", (
   assert.match(parsed.repair_reason, /sha=abc123/);
 });
 
-test("parseTrustedAutomation repairs needs-human verdicts with concrete P findings", () => {
+test("parseTrustedAutomation repairs needs-human verdicts that carry typed review findings", () => {
   const trustedAuthors = new Set(["clawsweeper[bot]"]);
+  const body = [
+    "ClawSweeper says this needs maintainer judgment.",
+    "",
+    "**Review findings**",
+    "- **[P1] Unwrap sudo reset-timestamp carriers:** `src/infra/command-carriers.ts:74`",
+  ];
   const parsed = parseTrustedAutomation(
     {
       user: { login: "clawsweeper[bot]" },
       body: [
-        "ClawSweeper says this needs maintainer judgment.",
-        "",
-        "**Review findings**",
-        "- **[P1] Unwrap sudo reset-timestamp carriers:** `src/infra/command-carriers.ts:74`",
-        "<!-- clawsweeper-verdict:needs-human sha=abc123 -->",
+        ...body,
+        "<!-- clawsweeper-verdict:needs-human sha=abc123 hold=blocked findings=1 -->",
       ].join("\n"),
     },
     { trustedAuthors },
@@ -3426,7 +3367,17 @@ test("parseTrustedAutomation repairs needs-human verdicts with concrete P findin
 
   assert.equal(parsed.intent, "clawsweeper_auto_repair");
   assert.equal(parsed.expected_head_sha, "abc123");
-  assert.match(parsed.repair_reason, /repairable P-severity findings/);
+  assert.match(parsed.repair_reason, /repairable review findings/);
+
+  // Finding prose without the typed count stays a human pause.
+  const legacy = parseTrustedAutomation(
+    {
+      user: { login: "clawsweeper[bot]" },
+      body: [...body, "<!-- clawsweeper-verdict:needs-human sha=abc123 -->"].join("\n"),
+    },
+    { trustedAuthors },
+  );
+  assert.equal(legacy.intent, "clawsweeper_needs_human");
 });
 
 test("parseTrustedAutomation accepts explicit repair verdicts", () => {
@@ -3969,6 +3920,7 @@ test("renderResponse includes build override path for issue implementation refus
       intent: "implement_issue",
       issue_number: 74113,
       reason: "implementation PR creation requires an open issue",
+      issue_implementation_blocker_class: "hard",
       target: { kind: "issue", head_sha: null },
     },
     null,
@@ -4209,14 +4161,15 @@ test("automerge loop intents share one status comment thread", () => {
   );
 });
 
-test("renderResponse reports explicit human-review pause actions", () => {
+test("renderResponse picks human-review guidance from the typed hold", () => {
   const body = renderResponse(
     {
       comment_id: "458",
       intent: "clawsweeper_needs_human",
       trusted_bot_author: "clawsweeper[bot]",
-      repair_reason:
-        "Protected maintainer labeling plus proof-label automation risk make this a maintainer validation item rather than a ClawSweeper repair job.",
+      // The reason prose names security; the typed hold says proof and wins.
+      repair_reason: "Security wording in a proof review.",
+      needs_human_hold: "proof",
       target: { head_sha: "def458" },
     },
     null,
@@ -4224,7 +4177,8 @@ test("renderResponse reports explicit human-review pause actions", () => {
 
   assert.match(body, /pausing this repair loop/);
   assert.match(body, /Why human review is needed:/);
-  assert.match(body, /proof-label or proof-gate automation/);
+  assert.match(body, /did not find enough real behavior proof/);
+  assert.doesNotMatch(body, /security-sensitive/);
   assert.match(body, /What the maintainer can do as a next step:/);
   assert.match(body, /@clawsweeper approve/);
   assert.match(body, /add redacted real behavior proof/);

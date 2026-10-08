@@ -709,8 +709,7 @@ function isSecurityRoutedAction(action: LooseRecord) {
   if (!action) return false;
   return (
     String(action.action ?? "") === "route_security" ||
-    String(action.classification ?? "") === "security_sensitive" ||
-    /security-sensitive|central .*security|security triage/i.test(String(action.reason ?? ""))
+    String(action.classification ?? "") === "security_sensitive"
   );
 }
 

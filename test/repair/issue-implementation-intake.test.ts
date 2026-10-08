@@ -33,7 +33,7 @@ import {
 } from "../../dist/repair/comment-router-core.js";
 import { readText } from "../helpers.ts";
 
-function report(overrides = {}) {
+function report(overrides = {}, securityStatus = "not_applicable") {
   const fields = {
     number: "123",
     repository: "openclaw/openclaw",
@@ -60,7 +60,7 @@ function report(overrides = {}) {
   const frontmatter = Object.entries(fields)
     .map(([key, value]) => `${key}: ${value}`)
     .join("\n");
-  return `---\n${frontmatter}\n---\n\n## Repair Work Prompt\n\nFix the reproduced existing-behavior bug and add a regression test.\n`;
+  return `---\n${frontmatter}\n---\n\n## Security Review\n\nStatus: ${securityStatus}\n\nSummary: No patch security review is needed for this issue.\n\n## Repair Work Prompt\n\nFix the reproduced existing-behavior bug and add a regression test.\n`;
 }
 
 test("implementation discovery refuses persisted manual and ambiguous policies with automation enabled", () => {
@@ -760,7 +760,7 @@ test("issue implementation deduplicates work across related issue references", (
   assert.match(decision.reason, /related issue in this work cluster/);
 });
 
-test("viable live intake allows auth-provider prose but blocks explicit security signals", () => {
+test("issue intake reads the review security status and explicit security signals, not prose", () => {
   const markdown = report({
     number: "241",
     repository: "steipete/oracle",
@@ -798,37 +798,33 @@ test("viable live intake allows auth-provider prose but blocks explicit security
       issue: { ...live.issue, labels: [{ name: "security:sensitive" }] },
     },
   });
-  const vulnerability = reportOnlyDecision({
-    targetRepo: "steipete/oracle",
-    itemNumber: 241,
-    report: parseReviewReport(markdown),
-    reportMarkdown: markdown,
-    candidateKind: "viable",
-    live: {
-      ...live,
-      issue: { ...live.issue, title: "Stored XSS in browser output", body: "" },
-    },
-  });
-  const credentialExposure = reportOnlyDecision({
-    targetRepo: "steipete/oracle",
-    itemNumber: 241,
-    report: parseReviewReport(markdown),
-    reportMarkdown: markdown,
-    candidateKind: "viable",
-    live: {
-      ...live,
-      issue: { ...live.issue, title: "Leaked access token in browser output", body: "" },
-    },
-  });
+  const decide = (reportMarkdown: string, issue = live.issue) =>
+    reportOnlyDecision({
+      targetRepo: "steipete/oracle",
+      itemNumber: 241,
+      report: parseReviewReport(reportMarkdown),
+      reportMarkdown,
+      candidateKind: "viable",
+      live: { ...live, issue },
+    });
+  // The review model judged this issue; risk words in the live title do not override it.
+  const riskWords = decide(markdown, { ...live.issue, title: "Stored XSS in browser output" });
+  const needsAttention = decide(
+    report({ number: "241", repository: "steipete/oracle" }, "needs_attention"),
+  );
+  const missingStatus = decide(markdown.replace(/## Security Review[\s\S]*?(?=## Repair)/, ""));
 
   assert.equal(viable.shouldRepair, true);
   assert.equal(viable.status, "queued_for_repair");
   assert.equal(security.shouldRepair, false);
   assert.match(security.reason, /security-sensitive signal/);
-  assert.equal(vulnerability.shouldRepair, false);
-  assert.match(vulnerability.reason, /security-sensitive signal/);
-  assert.equal(credentialExposure.shouldRepair, false);
-  assert.match(credentialExposure.reason, /security-sensitive signal/);
+  assert.equal(riskWords.shouldRepair, true);
+  assert.equal(needsAttention.shouldRepair, false);
+  assert.equal(needsAttention.blockerClass, "hard");
+  assert.match(needsAttention.reason, /security-sensitive signal present/);
+  assert.equal(missingStatus.shouldRepair, false);
+  assert.equal(missingStatus.blockerClass, "hard");
+  assert.match(missingStatus.reason, /security review status is missing/);
 });
 
 test("viable review routing excludes protected repositories and invalid review identity", () => {

@@ -103,18 +103,13 @@ function reviewResult(resultPath: string): JsonValue {
   const closeActions: LooseRecord[] = [];
   const fixActions: LooseRecord[] = [];
   const mergeActions: LooseRecord[] = [];
-  const hasFixPath = actions.some(
-    (action: JsonValue) =>
-      FIX_ACTIONS.has(String(action.action ?? "")) &&
-      ["planned", "blocked"].includes(action.status),
-  );
   for (const action of actions) {
     const name = String(action.action ?? "");
     actionCounts[name] = (actionCounts[name] ?? 0) + 1;
     const target = String(action.target ?? "");
     const item = itemByRef.get(target);
     const clusterScopedAction = isClusterScopedAction(action, result);
-    const unavailableNeedsHuman = isUnavailableNeedsHumanAction(action);
+    const unavailableNeedsHuman = isUnavailableNeedsHumanAction(action, item);
 
     if (!target) failures.push("action missing target");
     if (target.includes(","))
@@ -156,12 +151,7 @@ function reviewResult(resultPath: string): JsonValue {
         );
       }
     }
-    if (
-      name === "needs_human" &&
-      /security-sensitive|security boundary|central .*security|security triage/i.test(
-        String(action.reason ?? ""),
-      )
-    ) {
+    if (name === "needs_human" && action.classification === "security_sensitive") {
       failures.push(`${target} security routing must use route_security instead of needs_human`);
     }
 
@@ -184,8 +174,8 @@ function reviewResult(resultPath: string): JsonValue {
       if (!item) failures.push(`${target} close action missing preflight item`);
       if (item && item.state !== "open")
         failures.push(`${target} close action targets ${item.state} item`);
-      if (action.status !== "planned" && !isFixFirstBlockedCloseAction(action, hasFixPath)) {
-        failures.push(`${target} close action status must be planned or fix-first blocked`);
+      if (action.status !== "planned" && action.status !== "blocked") {
+        failures.push(`${target} close action status must be planned or blocked`);
       }
       const canonicalRef = normalizeRef(action.canonical ?? action.duplicate_of);
       const candidateRef = normalizeRef(
@@ -198,21 +188,8 @@ function reviewResult(resultPath: string): JsonValue {
         if (action.target_kind !== "pull_request") {
           failures.push(`${target} low-signal close action must target a pull request`);
         }
-      } else if (
-        !canonicalRef &&
-        !candidateRef &&
-        !isFixFirstBlockedCloseAction(action, hasFixPath)
-      ) {
+      } else if (!canonicalRef && !candidateRef && action.status !== "blocked") {
         failures.push(`${target} close action missing canonical/duplicate/candidate target`);
-      }
-      if (
-        item?.kind === "pull_request" &&
-        ["close_superseded", "close_fixed_by_candidate", "post_merge_close"].includes(name)
-      ) {
-        const comment = String(action.comment ?? "");
-        if (!/\bcredit|attribut|thanks @|thank you @|source PR\b/i.test(comment)) {
-          failures.push(`${target} PR closeout comment must preserve contributor credit`);
-        }
       }
       if (canonicalRef) {
         const canonicalItem = itemByRef.get(canonicalRef);
@@ -353,30 +330,15 @@ function isClusterScopedAction(action: LooseRecord, result: LooseRecord) {
   );
 }
 
-function isUnavailableNeedsHumanAction(action: LooseRecord) {
+// A needs_human action on a target that preflight did not hydrate has no target_kind or
+// target_updated_at to copy.
+function isUnavailableNeedsHumanAction(action: LooseRecord, item: LooseRecord | undefined) {
   if (action.action !== "needs_human") return false;
   if (action.status !== "planned" && action.status !== "blocked") return false;
-  const text = [action.reason, action.comment, ...(action.evidence ?? [])].join("\n");
-  return /\b(404|not found|unavailable|could not hydrate|missing live|refreshed hydration)\b/i.test(
-    text,
-  );
+  return !item;
 }
 
-function isFixFirstBlockedCloseAction(action: LooseRecord, hasClusterFixPath: JsonValue) {
-  if (action.status !== "blocked") return false;
-  const text = [
-    action.reason,
-    action.comment,
-    action.idempotency_key,
-    ...(action.evidence ?? []),
-  ].join("\n");
-  const hasFixFirstText =
-    /fix[- ]first|blocked-by-fix-first|requires? a fix|requires? ClawSweeper Repair fix|fix PR|fix path|canonical fix (?:path|landing|lands?)|canonical repair (?:path|landing|lands?)|merged canonical fix|hydrated merged fix PR|replacement PR|replacement fix|pending .*fix|after .*fix .*lands?|open_fix_pr|build_fix_artifact/i.test(
-      text,
-    );
-  return hasFixFirstText || (hasClusterFixPath && /blocked|wait|pending/i.test(text));
-}
-
+// A fixed-by-current-main closeout has no candidate PR, so its canonical ref is the target.
 function allowsSelfCanonicalCurrentMainCloseout(action: LooseRecord) {
   if (action.action !== "close_fixed_by_candidate" && action.action !== "post_merge_close")
     return false;
@@ -384,16 +346,7 @@ function allowsSelfCanonicalCurrentMainCloseout(action: LooseRecord) {
   const candidateRef = normalizeRef(
     action.candidate_fix ?? action.fixed_by ?? action.fix_candidate,
   );
-  if (candidateRef) return false;
-  const text = [
-    action.reason,
-    action.comment,
-    action.idempotency_key,
-    ...(action.evidence ?? []),
-  ].join("\n");
-  return /\b(current main|already fixed|already covered|fixed-by-current-main|main already)\b/i.test(
-    text,
-  );
+  return !candidateRef;
 }
 
 function validateMergePreflight(
@@ -452,12 +405,6 @@ function validateMergePreflight(
     }
     if (!Array.isArray(codexReview.evidence) || codexReview.evidence.length === 0) {
       failures.push(`${target} merge_preflight.codex_review.evidence must be a non-empty list`);
-    } else if (
-      !codexReview.evidence.some((entry: JsonValue) => /\/review|codex review/i.test(String(entry)))
-    ) {
-      failures.push(
-        `${target} merge_preflight.codex_review.evidence must mention /review or Codex review`,
-      );
     }
   }
 }
@@ -490,11 +437,7 @@ function allowsHistoricalCanonicalForCloseout(action: LooseRecord) {
   const candidateRef = normalizeRef(
     action.candidate_fix ?? action.fixed_by ?? action.fix_candidate,
   );
-  if (!candidateRef) return false;
-  const evidenceText = [action.reason, action.comment, ...(action.evidence ?? [])].join("\n");
-  return /\b(fixed|implemented|merged|landed|current main|already present|closeout)\b/i.test(
-    evidenceText,
-  );
+  return Boolean(candidateRef);
 }
 
 function validateFixArtifact(fixArtifact: LooseRecord, failures: LooseRecord[]) {

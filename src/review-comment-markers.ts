@@ -1,3 +1,16 @@
+// Why a review comment carries a needs-human verdict (`hold=` marker attribute).
+// The repair router routes on this value. It must not read review prose for this decision.
+export type NeedsHumanHold =
+  | "normalization_failed"
+  | "review_identity"
+  | "maintainer_decision"
+  | "review_failed"
+  | "security"
+  | "proof"
+  | "not_opted_in"
+  | "blocked"
+  | "undecided";
+
 export function validReviewLeaseIdentity(
   owner: string | null | undefined,
   commentId: string | null | undefined,
