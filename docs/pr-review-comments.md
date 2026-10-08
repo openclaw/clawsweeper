@@ -170,15 +170,7 @@ merge, and why not yet" in this order:
    should define unfamiliar subsystem terms briefly and explain the effect in
    plain language. When the typed `changeExample` has a scenario, before,
    and after, an `Example:` block shows that concrete case under the summary.
-3. `## Product` shows the typed `productReview` in one compact block: kind,
-   worth it, fix scope (omitted when not applicable), user problem, and reason.
-   Reports written before `productReview` existed omit the section.
-4. `## Regression provenance` appears only when a verified or suspected
-   regression source exists.
-5. `## Merge readiness` leads with one dynamic plain-language outcome, the
-   number of real items remaining, a short bottom line, priority, the reviewed
-   head, and an owner-decision pointer only when a decision packet exists.
-6. `## Review scores` separates the three ratings into a scannable
+3. `## Review scores` separates the three ratings into a scannable
    `Measure | Result | What it means` table. Crab ranks stay visible, and every
    ranked value also shows its six-point score: S is `6/6`, A is `5/6`, B is
    `4/6`, C is `3/6`, D is `2/6`, and F is `1/6`. The `Proof confidence` row
@@ -186,6 +178,14 @@ merge, and why not yet" in this order:
    it are dropped, and proof labels show only their meaning; a status label
    repeats the proof statement only when missing proof is the reason for that
    status. The rating scale and workflow notes in the details are one line each.
+4. `## Product` shows the typed `productReview` in one compact block: kind,
+   worth it, fix scope (omitted when not applicable), user problem, and reason.
+   Reports written before `productReview` existed omit the section.
+5. `## Regression provenance` appears only when a verified or suspected
+   regression source exists.
+6. `## Merge readiness` leads with one dynamic plain-language outcome, the
+   number of real items remaining, a short bottom line, priority, the reviewed
+   head, and an owner-decision pointer only when a decision packet exists.
 7. `## Decision needed` appears only when a maintainer decision packet exists.
    It lists the concrete question, the recommended option (or every option when
    none is recommended), and why, as bullet points.

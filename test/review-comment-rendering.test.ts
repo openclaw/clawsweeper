@@ -1426,9 +1426,9 @@ Full review comments:
     [...visible.matchAll(/^## (.+)$/gm)].map((match) => match[1]),
     [
       "What this changes",
+      "Review scores",
       "Product",
       "Merge readiness",
-      "Review scores",
       "Before merge",
       "Findings",
     ],
@@ -1444,7 +1444,7 @@ Full review comments:
   );
   assert.match(
     visible,
-    /## What this changes\n\nTelegram replies with several attachments now send every attachment\.\n\n\*\*Example:\*\* An agent replies in Telegram with three attachments\n- \*\*Before:\*\* Telegram shows only the first two attachments\.\n- \*\*After:\*\* Telegram shows all three attachments\.\n\n## Product/,
+    /## What this changes\n\nTelegram replies with several attachments now send every attachment\.\n\n\*\*Example:\*\* An agent replies in Telegram with three attachments\n- \*\*Before:\*\* Telegram shows only the first two attachments\.\n- \*\*After:\*\* Telegram shows all three attachments\.\n\n## Review scores/,
   );
   assert.match(visible, /## Before merge\n\nNone\.\n\n## Findings\n\nNone\.\n/);
   assert.equal(comment.split(proof).length - 1, 1);

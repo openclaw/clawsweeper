@@ -483,6 +483,14 @@ export function createReportCommentPresentation(
       lines.push("# ClawSweeper review", "");
       appendHeadingSection(lines, "What this changes", changeSummaryLine);
       if (sqliteSchemaWarning) lines.push(sqliteSchemaWarning, "");
+      if (!reviewFailed) {
+        // The proof sentence renders here and nowhere else in the comment.
+        appendHeadingSection(
+          lines,
+          "Review scores",
+          publicReviewScoresBlock(prRating, proofPolicy, reviewFindings, securityReview),
+        );
+      }
       const productBlock = publicProductBlock(reportProductReview(markdown));
       if (productBlock) appendHeadingSection(lines, "Product", productBlock);
       if (regressionPublicLine) {
@@ -502,14 +510,6 @@ export function createReportCommentPresentation(
               pullHeadShaFromReport(markdown) ?? "",
             ),
       );
-      if (!reviewFailed) {
-        // The proof sentence renders here and nowhere else in the comment.
-        appendHeadingSection(
-          lines,
-          "Review scores",
-          publicReviewScoresBlock(prRating, proofPolicy, reviewFindings, securityReview),
-        );
-      }
       if (decisionPacketBlock) {
         appendHeadingSection(lines, "Decision needed", decisionPacketBlock);
       }

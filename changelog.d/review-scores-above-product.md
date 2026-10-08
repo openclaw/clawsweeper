@@ -1,0 +1,1 @@
+- Show review scores right under What this changes, above the product verdict, in PR review comments.
