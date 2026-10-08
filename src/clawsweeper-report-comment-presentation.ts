@@ -88,7 +88,7 @@ export function createReportCommentPresentation(
     labelJustificationsMarkdown,
     labelTransitionJustificationsFromPublicReport,
     labelTransitionJustificationsMarkdown,
-    likelyOwnerLine,
+    likelyOwnerLines,
     mergeRiskOptionsFromReport,
     neutralizeOwnedSectionSpoofing,
     publicBeforeMergeBlock,
@@ -241,9 +241,10 @@ export function createReportCommentPresentation(
   ): string {
     const isPullRequest = frontMatterValue(markdown, "type") === "pull_request";
     const proofPolicy = reportRealBehaviorProofPolicy(markdown);
-    // PR comments state the proof sentence once, in Review scores; an evidence entry
-    // that only repeats it adds nothing. Entries that carry a location, commit,
-    // command, or link stay, because that is the support for the proof.
+    // PR comments state the proof sentence once: in Review scores, or in Before merge
+    // when proof blocks merge. An evidence entry that only repeats it adds nothing.
+    // Entries that carry a location, commit, command, or link stay, because that is
+    // the support for the proof.
     const proofSummary = isPullRequest ? proofPolicy.assessment.summary : "";
     const evidence = reportEvidence(markdown)
       .filter(
@@ -255,7 +256,7 @@ export function createReportCommentPresentation(
       )
       .slice(0, 6)
       .map(closeEvidenceLine);
-    const likelyOwners = reportLikelyOwners(markdown).slice(0, 5).map(likelyOwnerLine);
+    const likelyOwners = likelyOwnerLines(reportLikelyOwners(markdown));
     const reviewFindings = reportReviewFindings(markdown);
     const securityReview = reportSecurityReview(markdown);
     const prRating = reportPrRating(markdown);
@@ -474,7 +475,7 @@ export function createReportCommentPresentation(
       appendHeadingSection(lines, "What this changes", changeSummaryLine);
       if (sqliteSchemaWarning) lines.push(sqliteSchemaWarning, "");
       if (!reviewFailed) {
-        // The proof sentence renders here and nowhere else in the comment.
+        // The proof summary renders here, or only in Before merge when proof blocks merge.
         appendHeadingSection(
           lines,
           "Review scores",
@@ -510,7 +511,13 @@ export function createReportCommentPresentation(
         appendHeadingSection(
           lines,
           "Findings",
-          publicFindingsBlock(reviewFindings, securityReview, provenance, testingReview),
+          publicFindingsBlock(
+            reviewFindings,
+            securityReview,
+            provenance,
+            // The Before merge proof item already states the missing end-to-end proof.
+            hasRealBehaviorProofBlocker ? { ...testingReview, missingE2e: "" } : testingReview,
+          ),
         );
       }
 
@@ -549,7 +556,7 @@ export function createReportCommentPresentation(
       if (testingReview.proofPath !== "not_applicable") {
         appendDetails(
           "Testing",
-          `Proof path: ${TESTING_PROOF_PATH_TEXT[testingReview.proofPath]}. Added test files: ${testingReview.addedTestFiles}.`,
+          `Proof path: ${TESTING_PROOF_PATH_TEXT[testingReview.proofPath]}.`,
         );
       }
       appendDetails("Security", securityLine || "None.");

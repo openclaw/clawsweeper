@@ -400,12 +400,8 @@ test("review actions only propose valid closes and never apply directly", () => 
     action.closeComment.indexOf("Is this the best way to solve the issue?") <
       action.closeComment.indexOf("What I checked:"),
   );
-  assert.match(action.closeComment, /Likely related people:/);
-  for (const person of ["alice", "bob"]) {
-    assert.match(action.closeComment, new RegExp(`@${String.fromCodePoint(0x200b)}${person}`));
-  }
-  assert.doesNotMatch(action.closeComment, /@alice|@bob|role: introduced behavior|role: recent/);
-  assert.match(action.closeComment, /role: unverified routing candidate; confidence: low/);
+  // closeDecision owners carry no verified history, so no names are published.
+  assert.doesNotMatch(action.closeComment, /Likely related people:|alice|bob|routing candidate/);
   assert.match(action.closeComment, /Codex review notes: model gpt-5\.6-sol, reasoning high;/);
 });
 

@@ -6,6 +6,7 @@ import { pullRequestFilePathsFromContextForTest } from "../dist/clawsweeper.js";
 
 import {
   buildOpenClawPrSurfaceStats,
+  countOpenClawAddedTestFiles,
   openClawPrSurfaceBucket,
   renderOpenClawPrSurfaceSummary,
   renderOpenClawPrSurfaceTable,
@@ -42,7 +43,7 @@ test("surface counts use only the current rename path while proof retains both s
     };
     const files = prSurfaceFilesFromContext(context);
     assert.ok(files);
-    assert.deepEqual(files, [{ path: filename, additions: 57, deletions: 0 }]);
+    assert.deepEqual(files, [{ path: filename, additions: 57, deletions: 0, status: "renamed" }]);
     const stats = buildOpenClawPrSurfaceStats(files);
     assert.ok(stats);
     const populated = stats.filter((row) => row.files > 0);
@@ -101,7 +102,7 @@ test("test-role sharing preserves bucket precedence, source roots, and normaliza
     ["scripts/translation/diagnostics.go", "other"],
     ["src/runtime/store_test.go", "tests"],
     ["src/runtime/store.go", "source"],
-    ["apps/runtime.ts", "other"],
+    ["apps/runtime.ts", "source"],
     ["fixtures/runtime.ts", "other"],
     ["scripts/check-harness.ts", "other"],
     [" src\\config\\test-support\\schema.ts ", "tests"],
@@ -122,6 +123,70 @@ test("OpenClaw PR surface buckets classify changed paths", () => {
   assert.equal(openClawPrSurfaceBucket("src/config/schema.base.generated.test.ts"), "generated");
   assert.equal(openClawPrSurfaceBucket("protocol-generated/json/frame.json"), "generated");
   assert.equal(openClawPrSurfaceBucket("fixtures/sample.txt"), "other");
+});
+
+test("OpenClaw PR surface counts native app code as source and native test targets as tests", () => {
+  // #167378: two Kotlin production files and one Kotlin test.
+  for (const [path, bucket] of [
+    ["apps/android/app/src/main/java/ai/openclaw/app/chat/ChatController.kt", "source"],
+    ["apps/shared/OpenClawKit/Sources/OpenClawChatUI/ChatComposer.swift", "source"],
+    ["apps/android/app/src/test/java/ai/openclaw/app/chat/ChatControllerOutboxTest.kt", "tests"],
+    ["apps/android/app/src/testThirdParty/java/ai/openclaw/app/node/SmsManagerTest.kt", "tests"],
+    ["apps/android/app/src/androidTest/java/ai/openclaw/app/ui/SidebarTest.kt", "tests"],
+    ["apps/ios/Tests/ChatTests.swift", "tests"],
+    ["apps/ios/UITests/ChatCatalogUITests.swift", "tests"],
+    ["apps/macos/Tests/OpenClawIPCTests/DashboardTests.swift", "tests"],
+    ["apps/android/app/src/testing/Helper.kt", "source"],
+  ] as const) {
+    assert.equal(openClawPrSurfaceBucket(path), bucket, path);
+  }
+  const stats = buildOpenClawPrSurfaceStats([
+    {
+      path: "apps/android/app/src/main/java/ai/openclaw/app/chat/ChatCommandOutbox.kt",
+      additions: 3,
+      deletions: 0,
+    },
+    {
+      path: "apps/android/app/src/main/java/ai/openclaw/app/chat/ChatController.kt",
+      additions: 38,
+      deletions: 5,
+    },
+    {
+      path: "apps/android/app/src/test/java/ai/openclaw/app/chat/ChatControllerOutboxTest.kt",
+      additions: 105,
+      deletions: 0,
+    },
+  ]);
+  assert.ok(stats);
+  assert.equal(
+    renderOpenClawPrSurfaceSummary(stats),
+    "Source +36, Tests +105. Total +141 across 3 files.",
+  );
+});
+
+test("added test files count only test files GitHub reports as added", () => {
+  // #165844: four changed test files and no new test file.
+  const modified = (path: string) => ({ path, additions: 1, deletions: 0, status: "modified" });
+  assert.equal(
+    countOpenClawAddedTestFiles([
+      modified("src/agents/run/attempt-stream-custody.test.ts"),
+      modified("src/agents/run/attempt-stream-prepare.test-support.ts"),
+      modified("src/agents/runs.ts"),
+    ]),
+    0,
+  );
+  assert.equal(
+    countOpenClawAddedTestFiles([
+      { ...modified("src/agents/run/new.test.ts"), status: "added" },
+      { ...modified("src/agents/run/new-source.ts"), status: "added" },
+      modified("src/agents/run/old.test.ts"),
+    ]),
+    1,
+  );
+  assert.equal(
+    countOpenClawAddedTestFiles([{ path: "src/a.test.ts", additions: 1, deletions: 0 }]),
+    null,
+  );
 });
 
 test("OpenClaw PR surface stats aggregate rows and totals", () => {

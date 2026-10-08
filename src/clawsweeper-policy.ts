@@ -879,12 +879,7 @@ export const PROVENANCE_ENTRY_SCHEMA_KEYS = new Set([
   "originalReason",
   "verdict",
 ]);
-export const TESTING_REVIEW_SCHEMA_KEYS = new Set([
-  "proofPath",
-  "addedTestFiles",
-  "lowValueTests",
-  "missingE2e",
-]);
+export const TESTING_REVIEW_SCHEMA_KEYS = new Set(["proofPath", "lowValueTests", "missingE2e"]);
 export const LOW_VALUE_TEST_SCHEMA_KEYS = new Set(["file", "reason"]);
 export const LIVE_PROOF_PLAN_SCHEMA_KEYS = new Set([
   "status",

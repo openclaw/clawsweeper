@@ -68,7 +68,7 @@ export function createReportCommentHelpers(
     isActionablePriorityText,
     isReportNoneList,
     isRoutineCiOrReviewText,
-    likelyOwnerLine,
+    likelyOwnerLines,
     markdownLink,
     markdownRepository,
     normalizePublicReviewText,
@@ -117,7 +117,7 @@ export function createReportCommentHelpers(
     currentItem?: { repo?: string; kind?: ItemKind; number?: number } | undefined;
   }): string {
     const evidence = options.evidence.slice(0, 6).map(closeEvidenceLine);
-    const likelyOwners = (options.likelyOwners ?? []).slice(0, 5).map(likelyOwnerLine);
+    const likelyOwners = likelyOwnerLines(options.likelyOwners ?? []);
     const summaryLine = sentence(options.summary);
     const lines = [closeIntro(options.reason), "", summaryLine];
     if (options.fixedPullRequest?.confidence === "high") {

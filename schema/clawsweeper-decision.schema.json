@@ -696,8 +696,8 @@
     "testingReview": {
       "type": "object",
       "additionalProperties": false,
-      "description": "Test value. End-to-end proof through the shipped entry point (real CLI, real server or gateway, real UI in a browser, real channel) is the proof that counts. In-process harnesses and unit tests support it and never replace it. For non-PR items use proofPath not_applicable, addedTestFiles 0, empty lowValueTests, and empty missingE2e.",
-      "required": ["proofPath", "addedTestFiles", "lowValueTests", "missingE2e"],
+      "description": "Test value. End-to-end proof through the shipped entry point (real CLI, real server or gateway, real UI in a browser, real channel) is the proof that counts. In-process harnesses and unit tests support it and never replace it. For non-PR items use proofPath not_applicable, empty lowValueTests, and empty missingE2e.",
+      "required": ["proofPath", "lowValueTests", "missingE2e"],
       "properties": {
         "proofPath": {
           "type": "string",
@@ -709,11 +709,6 @@
             "not_applicable"
           ],
           "description": "Strongest proof of the changed behavior. shipped_entry_point: the shipped entry point ran the changed behavior. in_process_harness: real code driven inside one process with synthetic input. unit_only: unit tests only. none: no proof. not_applicable: non-PR items only."
-        },
-        "addedTestFiles": {
-          "type": "integer",
-          "minimum": 0,
-          "description": "Number of test files that the PR adds or changes."
         },
         "lowValueTests": {
           "type": "array",

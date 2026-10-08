@@ -377,8 +377,10 @@ Full review comments:
   assert.match(comment, /\| \*\*Proof confidence\*\* \| 🧂 unranked krab \*\*\(1\/6\)\*\* \|/);
   assert.match(comment, /\| \*\*Patch quality\*\* \| 🦞 diamond lobster \*\*\(5\/6\)\*\* \|/);
   assert.match(comment, /⛔ \*\*Blocked before merge - 2 items remain\*\*/);
-  assert.match(comment, /- \[ \] \*\*Add real behavior proof\*\* - Needs real behavior proof/);
-  assert.match(comment, /The PR has no real ingestion-run proof yet\./);
+  assert.match(
+    comment,
+    /- \[ \] \*\*Add real behavior proof\*\* - The PR has no real ingestion-run proof yet\./,
+  );
   assert.match(comment, /After adding proof, update the PR body/);
   assert.match(comment, /@clawsweeper re-review/);
   assert.match(

@@ -52,8 +52,6 @@ export function createReportLabelPresentation(
     nextTelegramVisibleProofLabels,
     prStatusLabelForKind,
     prStatusLabelKindFromReportLabels,
-    publicHistoricalVerificationBlockerLine,
-    publicRealBehaviorProofLine,
     reportFeatureShowcase,
     reportOverallCorrectness,
     reportPrRating,
@@ -359,18 +357,8 @@ export function createReportLabelPresentation(
       }
       const statusKind = options.prStatusKind ?? prStatusLabelKindFromReportLabels(markdown);
       if (statusKind) {
-        // A proof blocker is the status label's reason; otherwise the proof sentence
-        // renders once, in the Review scores table, and labels carry only their meaning.
-        add(
-          prStatusLabelForKind(statusKind).name,
-          [
-            prStatusLabelForKind(statusKind).description,
-            proofPolicy.proofBlocksMerge ? publicRealBehaviorProofLine(proofPolicy) : "",
-            proofPolicy.verificationBlocksMerge ? publicHistoricalVerificationBlockerLine() : "",
-          ]
-            .filter(Boolean)
-            .join(" "),
-        );
+        // A label justification states the label meaning. The proof ask renders once, in Before merge.
+        add(prStatusLabelForKind(statusKind).name, prStatusLabelForKind(statusKind).description);
       }
       if (realBehaviorProof.status === "sufficient") {
         add(PROOF_SUFFICIENT_LABEL, PROOF_SUFFICIENT_LABEL_DESCRIPTION);

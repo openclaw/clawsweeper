@@ -178,29 +178,37 @@ export function createReviewPresentation({
       .replace(/\brecent maintainer\b/gi, "recent area contributor");
   }
 
-  function likelyOwnerLine(owner: LikelyOwner): string {
-    owner = publicLikelyOwner(owner);
-    const person = owner.person.trim() || "unknown";
-    const role = publicLikelyOwnerRole(owner.role);
-    const reason = sentence(owner.reason.trim() || "Related by repository history.");
-    const commits = owner.commits
-      .map((commit) => commit.trim())
-      .filter(isCommitSha)
-      .slice(0, 3)
-      .map((commit) => linkedSha(commit))
-      .join(", ");
-    const files = owner.files
-      .filter(Boolean)
-      .slice(0, 3)
-      .map((file) => `\`${file}\``)
-      .join(", ");
-    const suffix = [
-      role ? `role: ${role}` : "",
-      `confidence: ${owner.confidence}`,
-      commits ? `commits: ${commits}` : "",
-      files ? `files: ${files}` : "",
-    ].filter(Boolean);
-    return `- **${person}:** ${reason}${suffix.length ? ` (${suffix.join("; ")})` : ""}`;
+  // Publish only people tied to a verified commit. An unverified routing candidate is not a fact.
+  function likelyOwnerLines(owners: readonly LikelyOwner[]): string[] {
+    return owners
+      .map(publicLikelyOwner)
+      .filter(
+        (owner) =>
+          owner.person.trim() && owner.commits.some((commit) => isCommitSha(commit.trim())),
+      )
+      .slice(0, 5)
+      .map((owner) => {
+        const role = publicLikelyOwnerRole(owner.role);
+        const reason = sentence(owner.reason.trim() || "Related by repository history.");
+        const commits = owner.commits
+          .map((commit) => commit.trim())
+          .filter(isCommitSha)
+          .slice(0, 3)
+          .map((commit) => linkedSha(commit))
+          .join(", ");
+        const files = owner.files
+          .filter(Boolean)
+          .slice(0, 3)
+          .map((file) => `\`${file}\``)
+          .join(", ");
+        const suffix = [
+          role ? `role: ${role}` : "",
+          `confidence: ${owner.confidence}`,
+          `commits: ${commits}`,
+          files ? `files: ${files}` : "",
+        ].filter(Boolean);
+        return `- **${owner.person.trim()}:** ${reason} (${suffix.join("; ")})`;
+      });
   }
 
   function priorityLabel(priority: ReviewFinding["priority"]): string {
@@ -431,34 +439,41 @@ export function createReviewPresentation({
     return "A historical verification receipt failed or is malformed. A maintainer must resolve that verification blocker before merge; independently assessed contributor proof remains valid.";
   }
 
+  // The Before merge item owns the proof ask. Other sections point to it.
   function publicRealBehaviorProofLine(policy: RealBehaviorProofPolicy): string {
     const proof = policy.assessment;
     const summary = sentence(proof.summary);
-    if (policy.proofBlocksMerge && proof.status === "not_applicable") {
+    if (proof.status === "not_applicable") {
       return `Required by policy: the recorded not-applicable assessment does not satisfy the current PR proof policy. Put relevant after-change evidence in the main PR body, then request a fresh review with \`@clawsweeper re-review\`.${summary ? ` Recorded reviewer context: ${summary}` : ""}`;
+    }
+    return realBehaviorProofBlockerSummary(
+      summary,
+      proof.status === "mock_only"
+        ? "Tests, mocks, snapshots, lint, typechecks, and CI are supplemental only. Screenshots or videos are preferred when they can show the behavior; terminal screenshots, console output, copied live output, linked artifacts, and redacted logs count. Redact private information like IP addresses, API keys, phone numbers, non-public endpoints, and other private details before posting evidence."
+        : "The PR must include after-fix evidence from a real setup. Screenshots or videos are preferred when they can show the behavior; terminal screenshots, console output, copied live output, linked artifacts, and redacted logs count. Redact private information like IP addresses, API keys, phone numbers, non-public endpoints, and other private details before posting evidence.",
+    );
+  }
+
+  // The proof tier stays rated when the contributor proof gate does not apply,
+  // so the row shows what proof exists, not the gate status.
+  function publicProofMeaning(rating: PrRating, policy: RealBehaviorProofPolicy): string {
+    if (policy.proofBlocksMerge) {
+      return "Real behavior proof is necessary before merge. See [Before merge](#before-merge).";
+    }
+    const proof = policy.assessment;
+    const summary = sentence(proof.summary);
+    if (rating.proofTier === "NA") {
+      return summary
+        ? `Not applicable: ${summary}`
+        : "Real behavior proof does not apply to this change.";
     }
     switch (proof.status) {
       case "sufficient":
         return `Sufficient (${proof.evidenceKind}): ${summary}`;
       case "override":
         return `Override: ${summary || "A maintainer applied proof: override."}`;
-      case "missing":
-        return `Needs real behavior proof before merge: ${realBehaviorProofBlockerSummary(
-          summary,
-          "The PR must include after-fix evidence from a real setup. Screenshots or videos are preferred when they can show the behavior; terminal screenshots, console output, copied live output, linked artifacts, and redacted logs count. Redact private information like IP addresses, API keys, phone numbers, non-public endpoints, and other private details before posting evidence.",
-        )}`;
-      case "mock_only":
-        return `Needs real behavior proof before merge: ${realBehaviorProofBlockerSummary(
-          summary,
-          "Tests, mocks, snapshots, lint, typechecks, and CI are supplemental only. Screenshots or videos are preferred when they can show the behavior; terminal screenshots, console output, copied live output, linked artifacts, and redacted logs count. Redact private information like IP addresses, API keys, phone numbers, non-public endpoints, and other private details before posting evidence.",
-        )}`;
-      case "insufficient":
-        return `Needs stronger real behavior proof before merge: ${realBehaviorProofBlockerSummary(
-          summary,
-          "Include after-fix evidence from a real setup. Screenshots or videos are preferred when they can show the behavior; terminal screenshots, console output, copied live output, linked artifacts, and redacted logs count. Redact private information like IP addresses, API keys, phone numbers, non-public endpoints, and other private details before posting evidence.",
-        )}`;
-      case "not_applicable":
-        return summary ? `Not applicable: ${summary}` : "";
+      default:
+        return summary || "No real behavior proof was supplied.";
     }
   }
 
@@ -504,11 +519,9 @@ export function createReviewPresentation({
     let overallMeaning =
       sentence(rating.summary) ||
       "Overall readiness follows the weaker of proof and patch quality.";
-    let proofMeaning =
-      publicRealBehaviorProofLine(policy) || "Real behavior proof does not apply to this change.";
+    const proofMeaning = publicProofMeaning(rating, policy);
     if (policy.proofBlocksMerge && policy.assessment.status === "not_applicable") {
       overallMeaning = `Recorded reviewer rating: ${overallMeaning} Real behavior proof remains required by host policy.`;
-      proofMeaning = `Recorded reviewer rating; ${proofMeaning}`;
     }
     const patchMeaning =
       securityReview.status === "needs_attention" || securityReview.concerns.length > 0
@@ -635,7 +648,7 @@ export function createReviewPresentation({
     isActionablePriorityText,
     isReportNoneList,
     isRoutineCiOrReviewText,
-    likelyOwnerLine,
+    likelyOwnerLines,
     normalizePublicReviewText,
     prStatusLabelKindFromReportLabels,
     priorityLabel,

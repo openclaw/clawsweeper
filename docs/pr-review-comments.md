@@ -174,10 +174,13 @@ merge, and why not yet" in this order:
    `Measure | Result | What it means` table. Crab ranks stay visible, and every
    ranked value also shows its six-point score: S is `6/6`, A is `5/6`, B is
    `4/6`, C is `3/6`, D is `2/6`, and F is `1/6`. The `Proof confidence` row
-   carries the real behavior proof statement. Evidence entries that only repeat
-   it are dropped, and proof labels show only their meaning; a status label
-   repeats the proof statement only when missing proof is the reason for that
-   status. The rating scale and workflow notes in the details are one line each.
+   shows the rated proof summary. When the contributor proof gate does not
+   apply, the tier stays rated and the row says what proof exists, not "Not
+   applicable"; only an `NA` tier reads "Not applicable". When missing proof
+   blocks merge, the row only points to `Before merge`, which owns the proof
+   ask. Evidence entries that only repeat the proof statement are dropped, and
+   label justifications state only the label meaning. The rating scale and
+   workflow notes in the details are one line each.
 4. `## Product` shows the typed `productReview` in one compact block: kind,
    worth it, fix scope (omitted when not applicable), user problem, and reason.
    Reports written before `productReview` existed omit the section.
@@ -198,8 +201,9 @@ merge, and why not yet" in this order:
    router parse only this block. A `### Provenance` subsection lists
    `overrides_without_reason` and `unknown` provenance entries, and a
    `### Tests` subsection lists low-value tests (file and reason) and the
-   missing end-to-end scenario. Neither subsection uses P-severity labels, so
-   neither starts repair routing.
+   missing end-to-end scenario; the scenario is left out when missing proof
+   already blocks merge in `Before merge`. Neither subsection uses P-severity
+   labels, so neither starts repair routing.
 
 Maintainer decision packets are reserved for unresolved choices between at least
 two distinct viable options that evidence cannot settle and a maintainer has not
@@ -318,7 +322,8 @@ verification, technical review (best solution, reproduction and solution
 questions, full review comments, AGENTS.md status, remaining risk), merge-risk
 options, provenance entries that respect or explain the original intent, the
 testing proof path, security, evidence (security concern detail, acceptance
-criteria, what was checked, likely related people), PR surface, review metrics
+criteria, what was checked, likely related people tied to a verified commit;
+unverified routing candidates are not published), PR surface, review metrics
 (only when present), stored-data warnings, root-cause clusters, proof
 suggestions, labels, optional rank-up moves, a one-line rating scale, a
 one-line workflow note, and review history.
@@ -332,7 +337,12 @@ automation markers are unchanged.
 For OpenClaw, the PR surface table and config detector share explicit test-role
 names: test/spec code leaves, Go `*_test.go` files, terminal dotted or hyphenated
 `test-support`, `test-helpers`, `test-utils`, `test-harness`, and `test-fixtures`
-code suffixes, and explicit test directories. Generic support/helper names remain production
+code suffixes, explicit test directories, and native app test targets (Swift
+`*Tests/` directories and Gradle `src/test*/` and `src/androidTest*/` source
+sets). Source roots are `src/`, `ui/`, `packages/`, `extensions/`, and `apps/`
+(native Swift and Kotlin apps). The summary line adds `Added test files: N`,
+counting only test-role files whose GitHub status is `added`; reports written
+before file status was stored omit it. Generic support/helper names remain production
 candidates. Generated files retain table precedence; config detection filters
 each rename side before patch uncertainty, retaining production or semantic docs
 evidence and truncated-list warnings. Reviewer production/test metrics remain

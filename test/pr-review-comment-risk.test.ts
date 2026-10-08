@@ -727,6 +727,27 @@ test("PR surface context and report normalization preserve strict counts and exa
   assert.match(zero, /\| \*\*Total\*\* \| \*\*1\*\* \| \*\*0\*\* \| \*\*0\*\* \| \*\*0\*\* \|/);
 });
 
+test("PR surface states added test files from GitHub file status only", () => {
+  const files = surfaceFoundation.prSurfaceFilesFromContext({
+    issue: {},
+    comments: [],
+    timeline: [],
+    pullFiles: [
+      { filename: "src/runtime.ts", additions: 4, deletions: 1, status: "modified" },
+      { filename: "src/runtime.test.ts", additions: 9, deletions: 2, status: "modified" },
+      { filename: "src/owner.test.ts", additions: 30, deletions: 0, status: "added" },
+    ],
+  });
+  const comment = renderReviewCommentFromReport(surfaceReport(files), "none");
+  assert.match(comment, /Total \+40 across 3 files\. Added test files: 1\./);
+  // Reports written before file status was stored cannot tell added from changed.
+  const legacy = files!.map(({ status: _status, ...file }) => file);
+  assert.doesNotMatch(
+    renderReviewCommentFromReport(surfaceReport(legacy), "none"),
+    /Added test files/,
+  );
+});
+
 test("PR surface missing or invalid statistics round-trip as unknown, never partial totals", () => {
   for (const value of [
     undefined,

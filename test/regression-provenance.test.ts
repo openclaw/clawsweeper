@@ -574,15 +574,12 @@ test("rewrite equivalence retains only exact location-and-context-preserving pat
   }
 });
 
-test("legacy public reports cannot promote unverified owner prose", () => {
+test("legacy public reports cannot publish unverified owner prose", () => {
   const report = `${reportFrontMatter({ number: 946, repository: "openclaw/clawsweeper" })}\n## Likely Related People\n\n- **Mobile Author:** introduced the target structure\n  - reason: Blame proves feature introduction.\n  - confidence: high\n  - commits: ${"a".repeat(40)}\n  - files: target.ts\n`;
   for (const reason of ["none", "duplicate_or_superseded"]) {
     const comment = renderReviewCommentFromReport(report, reason);
-    assert.match(comment, /Mobile Author/);
-    assert.match(comment, /unverified routing candidate/);
-    assert.match(comment, /confidence: low/);
+    assert.doesNotMatch(comment, /Mobile Author|Likely related people/);
     assert.doesNotMatch(comment, /introduced the target|Blame proves|confidence: high/);
-    assert.doesNotMatch(comment, /\/commit\/|commits:/);
   }
 });
 
@@ -772,10 +769,11 @@ process.stdout.write(fs.readFileSync(process.env.FIXTURE_DECISION, 'utf8') + '\\
       assert.match(text, /source-line author/);
       assert.match(text, /Fixture Committer/);
       assert.match(text, /source-line committer/);
-      assert.match(text, /@​reviewer/);
-      assert.match(text, /unverified routing candidate/);
       assert.doesNotMatch(text, /Model Guessed Person|introduced everything|Blame alone/);
     }
+    assert.match(positive.report, /@​reviewer/);
+    assert.match(positive.report, /unverified routing candidate/);
+    assert.doesNotMatch(positive.comment, /@​reviewer|unverified routing candidate/);
     assert.match(positive.report, /attribution source: raw_parent_line_v1/);
     assert.equal(maintainerDecisionFromReport(positive.report)?.likelyOwner.person, "Code Author");
     assert.match(
@@ -787,8 +785,9 @@ process.stdout.write(fs.readFileSync(process.env.FIXTURE_DECISION, 'utf8') + '\\
     const negative = runReview(checkout, [owner(f, f.unrelated)], "negative");
     assert.equal(maintainerDecisionFromReport(negative.report)?.likelyOwner.person, "unknown");
     assert.equal(maintainerDecisionFromReport(negative.report)?.likelyOwner.confidence, "low");
+    assert.match(negative.report, /carried-forward source line/);
+    assert.doesNotMatch(negative.comment, /carried-forward source line|Likely related people/);
     for (const text of [negative.report, negative.comment]) {
-      assert.match(text, /carried-forward source line/);
       assert.doesNotMatch(text, /Mobile Author|Model Guessed Person|introduced the feature/);
     }
     assert.equal(f.git(f.source, "status", "--porcelain"), "");

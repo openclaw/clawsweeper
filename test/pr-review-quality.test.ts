@@ -36,7 +36,6 @@ const worthyProduct: ProductReview = {
 };
 const shippedTesting: TestingReview = {
   proofPath: "shipped_entry_point",
-  addedTestFiles: 1,
   lowValueTests: [],
   missingE2e: "",
 };
@@ -57,7 +56,6 @@ const notApplicableReview = {
   provenance: [] as ProvenanceEntry[],
   testingReview: {
     proofPath: "not_applicable",
-    addedTestFiles: 0,
     lowValueTests: [],
     missingE2e: "",
   } satisfies TestingReview,
@@ -112,8 +110,6 @@ test("decision parsing rejects invalid product, provenance, and testing values",
     [{ provenance: [{ ...overridesIntent, verdict: "fine" }] }, /provenance\[0\]\.verdict/],
     [{ provenance: {} }, /provenance must be an array/],
     [{ testingReview: { ...shippedTesting, proofPath: "e2e" } }, /testingReview\.proofPath/],
-    [{ testingReview: { ...shippedTesting, addedTestFiles: -1 } }, /addedTestFiles/],
-    [{ testingReview: { ...shippedTesting, addedTestFiles: 1.5 } }, /addedTestFiles/],
     [
       { testingReview: { ...shippedTesting, lowValueTests: [{ file: "a.test.ts" }] } },
       /lowValueTests\[0\]\.reason/,
@@ -138,7 +134,6 @@ const reportParser = createReportParser({
 test("report round trip preserves product, provenance, and testing reviews", () => {
   const testingReview = {
     proofPath: "in_process_harness",
-    addedTestFiles: 3,
     lowValueTests: [1, 2].map(lowValueTest),
     missingE2e: "Reload the real web UI with an unsaved draft.",
   } satisfies TestingReview;

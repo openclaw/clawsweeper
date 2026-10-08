@@ -156,7 +156,6 @@ export function closeDecision(overrides = {}) {
     provenance: [],
     testingReview: {
       proofPath: "not_applicable",
-      addedTestFiles: 0,
       lowValueTests: [],
       missingE2e: "",
     },

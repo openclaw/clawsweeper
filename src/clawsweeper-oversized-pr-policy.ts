@@ -201,7 +201,6 @@ export function oversizedPullRequestDecision(
     provenance: [],
     testingReview: {
       proofPath: "not_applicable",
-      addedTestFiles: 0,
       lowValueTests: [],
       missingE2e: "",
     },

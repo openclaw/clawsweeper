@@ -112,7 +112,7 @@ export interface CreateReportRenderingDependencies {
   labelTransitionJustificationsMarkdown: (
     justifications: readonly LabelTransitionJustification[],
   ) => string;
-  likelyOwnerLine: (owner: LikelyOwner) => string;
+  likelyOwnerLines: (owners: readonly LikelyOwner[]) => string[];
   linkedRelease: (tag: string) => string;
   linkedSha: (sha: string, repo?: string) => string;
   markdownLink: (label: string, url: string) => string;

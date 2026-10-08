@@ -468,7 +468,6 @@ export interface LowValueTest {
 
 export interface TestingReview {
   proofPath: TestingProofPath;
-  addedTestFiles: number;
   lowValueTests: LowValueTest[];
   missingE2e: string;
 }

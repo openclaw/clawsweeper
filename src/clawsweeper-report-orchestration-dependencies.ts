@@ -217,7 +217,7 @@ export interface CreateReportOrchestrationDependencies {
       overallCorrectness: OverallCorrectness;
     }) => boolean;
   };
-  likelyOwnerLine: (owner: LikelyOwner) => string;
+  likelyOwnerLines: (owners: readonly LikelyOwner[]) => string[];
   linkedRelease: (tag: string) => string;
   linkedSha: (sha: string, repo?: string) => string;
   lowSignalUnmergeablePrAuthorActivityBlockReason: (options: {

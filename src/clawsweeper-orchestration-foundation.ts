@@ -9,6 +9,7 @@ import type {
 import { ideaRevivalReactionThreshold } from "./idea-archive-revival.js";
 import {
   buildOpenClawPrSurfaceStats,
+  countOpenClawAddedTestFiles,
   renderOpenClawPrSurfaceSummary,
   renderOpenClawPrSurfaceTable,
   type PrSurfaceFile,
@@ -292,6 +293,7 @@ export function createReportOrchestrationFoundation(
         path,
         additions: nonNegativeInteger(file.additions),
         deletions: nonNegativeInteger(file.deletions),
+        ...(typeof file.status === "string" ? { status: file.status } : {}),
       });
     }
     return files;
@@ -327,10 +329,13 @@ export function createReportOrchestrationFoundation(
     }
     const summary = renderOpenClawPrSurfaceSummary(stats);
     if (!summary) return "";
+    const addedTestFiles = countOpenClawAddedTestFiles(files);
+    const summaryLine =
+      addedTestFiles === null ? summary : `${summary} Added test files: ${addedTestFiles}.`;
     const details = collapsedDetailsBlock("View PR surface stats", [
       renderOpenClawPrSurfaceTable(stats),
     ]);
-    return details ? `${summary}\n\n${details}` : summary;
+    return details ? `${summaryLine}\n\n${details}` : summaryLine;
   }
 
   function renderDataModelWarningFromReport(markdown: string): string {

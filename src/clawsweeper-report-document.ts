@@ -257,8 +257,6 @@ export function createReportDocumentRendering(
     return [
       `Proof path: ${testing.proofPath}`,
       "",
-      `Added test files: ${testing.addedTestFiles}`,
-      "",
       `Missing E2E: ${testing.missingE2e}`.trimEnd(),
       "",
       "Low-value tests:",

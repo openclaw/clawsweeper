@@ -1379,8 +1379,6 @@ Reason: Restores the documented media-group behavior with a narrow change.
 
 Proof path: shipped_entry_point
 
-Added test files: 1
-
 Missing E2E:
 
 Low-value tests:
@@ -2226,9 +2224,10 @@ Reason: Normal maintainer review is sufficient.
   assert.match(comment, /Needs attention:/);
   assert.match(comment, /Confirm issue write scope/);
   assert.match(comment, /Agent review details/);
-  assert.doesNotMatch(comment, /recent workflow maintainer/);
-  assert.match(comment, /unverified routing candidate/);
-  assert.doesNotMatch(comment, /touched the workflow recently/);
+  assert.doesNotMatch(
+    comment,
+    /recent workflow maintainer|alice|routing candidate|touched the workflow recently/,
+  );
   assert.match(
     comment,
     /<!-- clawsweeper-security:security-sensitive item=74265 sha=abc123def456abc123def456abc123def456abcd/,

@@ -693,14 +693,11 @@ export function createDecisionParser({
   function parseTestingReview(value: unknown, path: string): TestingReview {
     const record = requireRecord(value, path);
     rejectUnexpectedKeys(record, TESTING_REVIEW_SCHEMA_KEYS, path);
-    const addedTestFiles = requireInteger(record.addedTestFiles, `${path}.addedTestFiles`);
-    if (addedTestFiles < 0) throw new Error(`${path}.addedTestFiles must not be negative`);
     if (!Array.isArray(record.lowValueTests)) {
       throw new Error(`${path}.lowValueTests must be an array`);
     }
     return {
       proofPath: requireEnum(record.proofPath, TESTING_PROOF_PATHS, `${path}.proofPath`),
-      addedTestFiles,
       lowValueTests: record.lowValueTests.slice(0, MAX_LOW_VALUE_TESTS).map((entry, index) => {
         const entryPath = `${path}.lowValueTests[${index}]`;
         const test = requireRecord(entry, entryPath);

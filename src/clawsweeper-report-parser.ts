@@ -247,7 +247,6 @@ export function reportProvenance(markdown: string): ProvenanceEntry[] {
 /** Testing review recorded in a report; reports without one read as not_applicable. */
 export function reportTestingReview(markdown: string): TestingReview {
   const section = reportSectionValue(markdown, REVIEW_SECTIONS.testingReview);
-  const addedTestFiles = Number(reportSectionLineValue(section, "Added test files"));
   const lowValueTests: TestingReview["lowValueTests"] = [];
   for (const line of section.split(/\r?\n/)) {
     const file = line.match(/^- File:(.*)$/);
@@ -265,8 +264,6 @@ export function reportTestingReview(markdown: string): TestingReview {
       TESTING_PROOF_PATHS,
       "not_applicable",
     ),
-    addedTestFiles:
-      Number.isSafeInteger(addedTestFiles) && addedTestFiles >= 0 ? addedTestFiles : 0,
     lowValueTests,
     missingE2e: reportSectionLineValue(section, "Missing E2E") ?? "",
   };

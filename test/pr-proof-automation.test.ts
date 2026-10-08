@@ -267,20 +267,22 @@ for (const path of ["README.md", "src/arbitrary.ts"]) {
     const comment = renderReviewCommentFromReport(report, "none");
     assert.ok(comment.includes(markers));
     assert.match(comment, /^Codex review: needs real behavior proof before merge\./);
+    // The proof row points to Before merge; the Before merge item owns the proof ask.
     assert.match(
       comment,
-      /\| \*\*Proof confidence\*\* \| [^|]+ \| Recorded reviewer rating; Required by policy/,
+      /\| \*\*Proof confidence\*\* \| [^|]+ \| Real behavior proof is necessary before merge\. See \[Before merge\]\(#before-merge\)\. \|/,
     );
     assert.match(comment, /⛔ \*\*Blocked before merge/);
-    for (const line of comment
+    const proofItems = comment
       .split("\n")
-      .filter((line) => /\*\*(?:Proof confidence|Add real behavior proof)\*\*/.test(line))) {
-      assert.match(line, /required|policy/i);
-      assert.match(line, /recorded.*not.applicable/i);
-      assert.match(line, /main PR body/);
-      assert.match(line, /fresh review|re-review/);
-      assert.doesNotMatch(line, /\| Not applicable \|| - Not applicable:/);
-    }
+      .filter((line) => line.includes("**Add real behavior proof**"));
+    assert.equal(proofItems.length, 1);
+    const proofItem = proofItems[0]!;
+    assert.match(proofItem, /policy/i);
+    assert.match(proofItem, /recorded.*not.applicable/i);
+    assert.match(proofItem, /main PR body/);
+    assert.match(proofItem, /fresh review|re-review/);
+    assert.doesNotMatch(proofItem, /- Not applicable:/);
     assert.match(comment, /\| \*\*Proof confidence\*\* \| 🌊 off-meta tidepool \|/);
     assert.match(comment, /recorded reviewer rating/i);
     assert.ok(comment.includes(recordedNotApplicableProof.summary));
@@ -301,9 +303,82 @@ for (const path of ["README.md", "src/arbitrary.ts"]) {
     const labels = detailsBody(renderReviewCommentFromReport(report, "none"), "Label changes");
     assert.match(labels, /add `status: 📣 needs proof`/);
     assert.doesNotMatch(labels, /add `status: 🚀 automerge armed`|add `proof: sufficient`/);
-    assert.match(labels, /recorded.*not.applicable.*policy/i);
+    // Label justifications state label meaning; the proof ask stays in Before merge.
+    assert.match(labels, /recorded reviewer rating; real behavior proof remains required/i);
+    assert.doesNotMatch(labels, /main PR body|Recorded reviewer context/);
   });
 }
+
+test("maintainer PR proof row keeps the rated tier and proof summary, not Not applicable", () => {
+  // #167367, #167372: the contributor proof gate does not apply, but proof quality is still rated.
+  const report = notApplicableProofReport(
+    { author_association: "MEMBER", pull_files: JSON.stringify(["src/arbitrary.ts"]) },
+    { overallTier: "C", proofTier: "C", patchTier: "B" },
+  );
+  const proofRow = renderReviewCommentFromReport(report, "none")
+    .split("\n")
+    .find((line) => line.startsWith("| **Proof confidence** |"));
+  assert.equal(
+    proofRow,
+    `| **Proof confidence** | 🦐 gold shrimp **(3/6)** | ${recordedNotApplicableProof.summary} |`,
+  );
+});
+
+test("blocking proof gap renders once, in Before merge, without a doubled prefix", () => {
+  // #167360: one proof ask rendered in the proof row, Before merge, Tests, and the status label.
+  const summary =
+    "Needs real behavior proof before merge: the updated output mocks the transport client, so it does not establish production reconnect recovery.";
+  const report = `${reportFrontMatter({
+    type: "pull_request",
+    number: "74466",
+    review_status: "complete",
+    author: "contributor",
+    author_association: "CONTRIBUTOR",
+    labels: JSON.stringify(["status: 📣 needs proof"]),
+    pull_head_sha: "0123456789abcdef0123456789abcdef01234567",
+    pull_files: JSON.stringify(["src/arbitrary.ts"]),
+    pull_files_truncated: false,
+    real_behavior_proof_status: "mock_only",
+    real_behavior_proof_evidence_kind: "terminal",
+    real_behavior_proof_needs_contributor_action: true,
+  })}
+
+## Summary
+
+The patch needs real behavior proof.
+
+${realBehaviorProofReportSection({ status: "mock_only", evidenceKind: "terminal", needsContributorAction: true, summary })}
+
+${prRatingReportSection({ overallTier: "C", proofTier: "C", patchTier: "C" })}
+
+## Testing Review
+
+Proof path: in_process_harness
+
+Missing E2E: Run the real Gateway reconnect after the credential drain times out.
+
+Low-value tests:
+
+- none
+
+## Review Findings
+
+Overall correctness: patch is correct
+
+Full review comments:
+
+- none
+`;
+  const comment = renderReviewCommentFromReport(report, "none");
+  assert.equal(comment.split(summary).length, 2, "the proof ask renders exactly once");
+  assert.ok(comment.includes(`- [ ] **Add real behavior proof** - ${summary}`));
+  assert.doesNotMatch(comment, /before merge: Needs real behavior proof before merge/i);
+  assert.match(
+    comment,
+    /\| \*\*Proof confidence\*\* \| 🦐 gold shrimp \*\*\(3\/6\)\*\* \| Real behavior proof is necessary before merge\. See \[Before merge\]\(#before-merge\)\. \|/,
+  );
+  assert.doesNotMatch(comment, /Missing end-to-end proof/);
+});
 
 test("N/A projection preserves scope, trust, authority, and exact override boundaries", () => {
   for (const [name, metadata, blocked] of [
