@@ -165,9 +165,10 @@ for (const kind of ["issue", "pull_request"] as const) {
   });
 }
 
-test("separate issue/pull body reads retain their own source identity", () => {
+test("separate issue/pull body reads retain their own source identity in context and prompt", () => {
   const body = longProofBody();
-  const { context } = hydratePrimaryBody(body, "pull_request", {
+  // Same opening prefix; only the late proof trace differs between the two reads.
+  const { target, context } = hydratePrimaryBody(body, "pull_request", {
     pullBody: body.slice(0, -1) + "!",
   });
   assert.notEqual(
@@ -175,6 +176,16 @@ test("separate issue/pull body reads retain their own source identity", () => {
     context.pullRequest.bodyCoverage.sourceBodySha256,
   );
   assert.deepEqual(context.issue.bodyCoverage.excerpts, context.pullRequest.bodyCoverage.excerpts);
+
+  const prompt = reviewPromptForTest(target, context, git);
+  const rendered = JSON.parse(
+    prompt.split("## GitHub Context\n")[1]!.match(/```json\n([\s\S]*?)\n```/)![1]!,
+  );
+  assert.equal(rendered.issue.body, rendered.pullRequest.body);
+  assert.equal(
+    rendered.pullRequest.bodyCoverage.sourceBodySha256,
+    context.pullRequest.bodyCoverage.sourceBodySha256,
+  );
 });
 
 for (const [layout, body] of [

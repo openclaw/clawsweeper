@@ -1,4 +1,5 @@
 import { asRecord } from "./clawsweeper-item-policy.js";
+import { primaryBodySourceSha256 } from "./clawsweeper-primary-body.js";
 import type { ItemContext } from "./clawsweeper-types.js";
 
 const PASSED_CHECK_OUTCOMES = new Set(["success", "neutral", "skipped"]);
@@ -55,7 +56,9 @@ export function reviewPromptContext(
 ): Omit<ItemContext, "pullCommitsRevision" | "prHydrationSnapshot"> {
   const { pullCommitsRevision: _, prHydrationSnapshot: __, ...view } = context;
   const pullRequest = asRecord(context.pullRequest);
-  if (typeof pullRequest.body === "string" && pullRequest.body === asRecord(context.issue).body) {
+  // `body` is only a prefix for long bodies; compare full-source identities, not prefixes.
+  const pullBodySha256 = context.pullRequest ? primaryBodySourceSha256(pullRequest) : null;
+  if (pullBodySha256 && pullBodySha256 === primaryBodySourceSha256(context.issue)) {
     const { bodyCoverage: _coverage, ...rest } = pullRequest;
     view.pullRequest = { ...rest, body: "[same as issue.body]" };
   }
