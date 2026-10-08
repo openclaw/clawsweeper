@@ -68,6 +68,51 @@ test("pr repair intake writes PR repair jobs for failed checks", () => {
   assert.match(job, /pnpm check: conclusion=FAILURE/);
 });
 
+test("pr repair intake selects on typed state and passes comments as plain context", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-pr-intake-"));
+  const bin = path.join(root, "bin");
+  const outDir = path.join(root, "jobs", "openclaw", "inbox");
+  fs.mkdirSync(bin);
+  const comment = (body: string, createdAt: string) => ({
+    body,
+    author: { login: "reviewer" },
+    createdAt,
+    url: `https://github.com/openclaw/clawsweeper/pull/1#${createdAt}`,
+  });
+  writeFakeGh(bin, [
+    {
+      number: 292,
+      title: "keyword comment only",
+      url: "https://github.com/openclaw/clawsweeper/pull/292",
+      mergeStateStatus: "CLEAN",
+      reviewDecision: "",
+      statusCheckRollup: [],
+      // Words like "please fix" and "blocking" no longer create a repair job.
+      comments: [comment("Please fix this, it is blocking.", "2026-06-15T00:00:00Z")],
+      reviews: [],
+      updatedAt: "2026-06-15T00:00:00Z",
+    },
+    {
+      number: 293,
+      title: "failed check with plain comment",
+      url: "https://github.com/openclaw/clawsweeper/pull/293",
+      mergeStateStatus: "CLEAN",
+      reviewDecision: "",
+      statusCheckRollup: [{ name: "pnpm check", conclusion: "FAILURE", status: "COMPLETED" }],
+      comments: [comment("The cache key looks off on Windows.", "2026-06-15T00:00:00Z")],
+      reviews: [],
+      updatedAt: "2026-06-15T00:00:00Z",
+    },
+  ]);
+
+  const parsed = JSON.parse(runIntake(root, ["--out-dir", outDir], { comments: true }));
+  assert.equal(parsed.candidates, 1);
+  assert.equal(parsed.jobs[0].number, 293);
+  const job = fs.readFileSync(path.join(outDir, "repair-pr-openclaw-clawsweeper-293.md"), "utf8");
+  assert.match(job, /Recent PR comments and reviews \(plain context/);
+  assert.match(job, /comment by reviewer: The cache key looks off on Windows\./);
+});
+
 test("pr repair intake supports author-wide open PR discovery", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-pr-intake-"));
   const bin = path.join(root, "bin");
@@ -124,7 +169,7 @@ test("pr repair intake supports author-wide open PR discovery", () => {
   assert.equal(fs.existsSync(path.join(outDir, "openclaw-clawhub")), false);
 });
 
-function runIntake(root: string, extraArgs: string[]): string {
+function runIntake(root: string, extraArgs: string[], { comments = false } = {}): string {
   return execFileSync(
     process.execPath,
     [
@@ -135,7 +180,7 @@ function runIntake(root: string, extraArgs: string[]): string {
       "Jhacarreiro",
       "--limit",
       "10",
-      "--no-comments",
+      ...(comments ? [] : ["--no-comments"]),
       ...extraArgs,
     ],
     {

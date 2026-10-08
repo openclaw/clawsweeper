@@ -1,0 +1,1 @@
+- PR repair intake selects PRs on typed GitHub state (failed checks, DIRTY/BLOCKED merge state, changes requested, unresolved threads) and passes recent comment and review bodies to the worker as plain context; comment keyword matching and `--include-review-comments-only` are removed.
