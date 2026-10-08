@@ -70,7 +70,9 @@ for (const [repo, kind] of [
       path.join(reports, `${number}.md`),
       `---\n${Object.entries(fields)
         .map(([key, value]) => `${key}: ${value}`)
-        .join("\n")}\n---\n\n## Repair Work Prompt\n\nImplement the narrow reviewed behavior.\n`,
+        .join(
+          "\n",
+        )}\n---\n\n## Security Review\n\nStatus: not_applicable\n\nSummary: No patch security review is needed for this issue.\n\n## Repair Work Prompt\n\nImplement the narrow reviewed behavior.\n`,
     );
   }
   fs.writeFileSync(capture, "");
