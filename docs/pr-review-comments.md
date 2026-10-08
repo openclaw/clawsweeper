@@ -720,15 +720,27 @@ repair or pass marker:
 
 ```html
 <!-- clawsweeper-security:security-sensitive item=<number> sha=<pull-head-sha> confidence=<confidence> -->
-<!-- clawsweeper-verdict:needs-human item=<number> sha=<pull-head-sha> confidence=<confidence> -->
+<!-- clawsweeper-verdict:needs-human item=<number> sha=<pull-head-sha> confidence=<confidence> hold=security findings=<count> -->
 ```
 
 For failed reviews, ambiguous reviews, or PR comments that should stay in human
 hands, ClawSweeper emits a human-only verdict:
 
 ```html
-<!-- clawsweeper-verdict:needs-human item=<number> sha=<pull-head-sha> confidence=<confidence> -->
+<!-- clawsweeper-verdict:needs-human item=<number> sha=<pull-head-sha> confidence=<confidence> hold=<hold> findings=<count> -->
 ```
+
+Every PR `needs-human` verdict has two typed attributes. The repair router
+routes on these attributes. It does not read the comment prose.
+
+- `hold` tells why the verdict is human-only: `normalization_failed`,
+  `review_identity`, `maintainer_decision`, `review_failed`, `security`,
+  `proof`, `not_opted_in` (the review is ready, but the PR has no repair-loop
+  label), `blocked`, or `undecided`.
+- `findings` is the number of typed review findings. It is `0` for a failed
+  review. A value above `0` sends the PR to the repair lane.
+
+A `needs-human` verdict without these attributes stays a human pause.
 
 Missing, mock-only, or insufficient `realBehaviorProof` is always human-only:
 ClawSweeper must not emit `clawsweeper-action:fix-required` or pass/automerge
