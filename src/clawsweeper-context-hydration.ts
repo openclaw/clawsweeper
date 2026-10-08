@@ -100,7 +100,6 @@ interface CreateContextHydrationDependencies {
       | "realBehaviorProof"
       | "prRating"
       | "telegramVisibleProof"
-      | "mantisRecommendation"
       | "featureShowcase"
       | "agentsPolicyStatus"
       | "workCandidate"

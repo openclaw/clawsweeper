@@ -12,7 +12,6 @@ import type {
   LabelJustification,
   LabelTransitionJustification,
   LikelyOwner,
-  MantisRecommendation,
   MergeRiskOption,
   OverallCorrectness,
   PrRating,
@@ -126,7 +125,6 @@ export interface CreateReportRenderingDependencies {
   publicFailedReviewReadinessBlock: (markdown: string) => string;
   publicHistoricalVerificationBlockerLine: () => string;
   publicLikelyOwnerRole: (role: string) => string;
-  publicMantisRecommendationBlock: (recommendation: MantisRecommendation) => string;
   publicMergeReadinessBlock: (
     reviewState: PullRequestReviewState,
     priority: TriagePriority,
@@ -135,7 +133,6 @@ export interface CreateReportRenderingDependencies {
     decisionNeeded: boolean,
     reviewedHeadSha: string,
   ) => string;
-  publicNonDispatchableMantisRecommendationBlock: (recommendation: MantisRecommendation) => string;
   publicPriorityBulletFromText: (text: string, fallback: PublicPriority) => string;
   publicPriorityBulletIfActionable: (text: string, fallback: PublicPriority) => string;
   publicPriorityFromText: (text: string, fallback: PublicPriority) => PublicPriority;
@@ -164,7 +161,6 @@ export interface CreateReportRenderingDependencies {
   reportEvidence: (markdown: string) => Evidence[];
   reportLikelyOwners: (markdown: string) => LikelyOwner[];
   reportLiveProofRecordingBlock: (markdown: string) => string;
-  reportMantisRecommendation: (markdown: string) => MantisRecommendation;
   reportOverallConfidenceScore: (markdown: string) => number;
   reportOverallCorrectness: (markdown: string) => OverallCorrectness;
   reportPrRating: (markdown: string) => PrRating;
@@ -198,7 +194,6 @@ export interface CreateReportRenderingDependencies {
       | "realBehaviorProof"
       | "prRating"
       | "telegramVisibleProof"
-      | "mantisRecommendation"
       | "featureShowcase"
       | "agentsPolicyStatus"
       | "workCandidate"

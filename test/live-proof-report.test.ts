@@ -4,11 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-import {
-  parseDecision,
-  renderLiveProofReportSectionForTest,
-  reportLiveProofPlan,
-} from "../dist/clawsweeper.js";
+import { reportLiveProofPlan } from "../dist/clawsweeper.js";
 import {
   LIVE_PROOF_RECORDING_MARKER,
   LIVE_VERIFICATION_MARKER,
@@ -24,7 +20,7 @@ import {
   parseAttachedLiveVerification,
 } from "../dist/live-proof/verification.js";
 import { repositoryProfileFor } from "../dist/repository-profiles.js";
-import { closeDecision, reportFrontMatter } from "./helpers.ts";
+import { legacyLiveProofSection, parseLegacyLiveProofPlan, reportFrontMatter } from "./helpers.ts";
 
 const HEAD = "a".repeat(40);
 const EMPTY_INSPECTION = {
@@ -47,9 +43,8 @@ function noExecutionPlan(status: "declined_suspicious" | "not_applicable"): Live
 }
 
 function renderedReport(plan: LiveProofPlan, suffix = ""): string {
-  const decision = parseDecision(closeDecision({ liveProofPlan: plan }));
-  assert.deepEqual(decision.liveProofPlan, plan);
-  return `${reportFrontMatter({ repository: "openclaw/clawsweeper", type: "pull_request", number: 42, pull_head_sha: HEAD })}\n## Live Proof\n\n${renderLiveProofReportSectionForTest(decision)}${suffix}\n\n## Work Candidate\n\nCandidate: none\n`;
+  assert.deepEqual(parseLegacyLiveProofPlan(plan), plan);
+  return `${reportFrontMatter({ repository: "openclaw/clawsweeper", type: "pull_request", number: 42, pull_head_sha: HEAD })}\n## Live Proof\n\n${legacyLiveProofSection(plan)}${suffix}\n\n## Work Candidate\n\nCandidate: none\n`;
 }
 
 function withSteps(report: string, payload: string): string {
@@ -316,10 +311,7 @@ test("recommended plans still reject both empty report formats", (t) => {
       entry: surface === "terminal" ? "must-never-execute" : "/synthetic",
       steps: [],
     };
-    assert.throws(
-      () => parseDecision(closeDecision({ liveProofPlan: plan })),
-      /steps must not be empty/,
-    );
+    assert.throws(() => parseLegacyLiveProofPlan(plan), /steps must not be empty/);
     const report = renderedReport({
       ...plan,
       steps: [

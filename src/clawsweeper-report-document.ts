@@ -358,42 +358,6 @@ export function createReportDocumentRendering(
     ].join("\n");
   }
 
-  function renderLiveProofReportSection(decision: Decision): string {
-    return [
-      `Status: ${decision.liveProofPlan.status}`,
-      "",
-      `Surface: ${decision.liveProofPlan.surface}`,
-      "",
-      `Terminal completion: ${decision.liveProofPlan.terminalCompletion}`,
-      "",
-      `Reason: ${sentence(decision.liveProofPlan.reason)}`,
-      "",
-      `Payoff: ${decision.liveProofPlan.payoff.kind}`,
-      "",
-      `Payoff justification: ${sentence(decision.liveProofPlan.payoff.justification)}`,
-      "",
-      `Entry: ${decision.liveProofPlan.entry.trim()}`,
-      "",
-      "Steps:",
-      "",
-      decision.liveProofPlan.steps.length
-        ? markdownList(decision.liveProofPlan.steps.map((step) => JSON.stringify(step)))
-        : "[]",
-    ].join("\n");
-  }
-
-  function renderMantisRecommendationReportSection(decision: Decision): string {
-    return [
-      `Status: ${decision.mantisRecommendation.status}`,
-      "",
-      `Scenario: ${decision.mantisRecommendation.scenario}`,
-      "",
-      `Reason: ${sentence(decision.mantisRecommendation.reason)}`,
-      "",
-      `Maintainer comment: ${decision.mantisRecommendation.maintainerComment.trim()}`,
-    ].join("\n");
-  }
-
   function renderFeatureShowcaseReportSection(decision: Decision): string {
     return [
       `Status: ${decision.featureShowcase.status}`,
@@ -627,8 +591,6 @@ export function createReportDocumentRendering(
     const realBehaviorProof = renderRealBehaviorProofReportSection(options.decision);
     const prRating = renderPrRatingReportSection(options.decision);
     const telegramVisibleProof = renderTelegramVisibleProofReportSection(options.decision);
-    const liveProof = renderLiveProofReportSection(options.decision);
-    const mantisRecommendation = renderMantisRecommendationReportSection(options.decision);
     const featureShowcase = renderFeatureShowcaseReportSection(options.decision);
     const agentsPolicyStatus = renderAgentsPolicyStatusReportSection(options.decision);
     const workCandidateSection = renderWorkCandidateReportSection(options.decision);
@@ -792,10 +754,6 @@ ${options.decision.realBehaviorProof.dataModelCompatibility ? `real_behavior_pro
 pr_rating_proof: ${options.decision.prRating.proofTier}
 pr_rating_patch: ${options.decision.prRating.patchTier}
 telegram_visible_proof_status: ${options.decision.telegramVisibleProof.status}
-live_proof_status: ${options.decision.liveProofPlan.status}
-live_proof_surface: ${options.decision.liveProofPlan.surface}
-mantis_recommendation_status: ${options.decision.mantisRecommendation.status}
-mantis_recommendation_scenario: ${options.decision.mantisRecommendation.scenario}
 feature_showcase_status: ${options.decision.featureShowcase.status}
 agents_policy_status: ${options.decision.agentsPolicyStatus.status}
 product_kind: ${options.decision.productReview.kind}
@@ -915,14 +873,6 @@ ${prRating}
 
 ${telegramVisibleProof}
 
-## ${REVIEW_SECTIONS.liveProof}
-
-${liveProof}
-
-## ${REVIEW_SECTIONS.mantisRecommendation}
-
-${mantisRecommendation}
-
 ## ${REVIEW_SECTIONS.featureShowcase}
 
 ${featureShowcase}
@@ -1014,8 +964,6 @@ ${renderReviewContextBudget(options.context)}
     renderPrRatingAssessmentReportSection,
     renderPrRatingReportSection,
     renderTelegramVisibleProofReportSection,
-    renderLiveProofReportSection,
-    renderMantisRecommendationReportSection,
     renderFeatureShowcaseReportSection,
     renderRootCauseClusterAssessmentReportSection,
     renderRootCauseClusterReportSection,

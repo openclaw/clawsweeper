@@ -8,6 +8,8 @@ import { writeFakeScanner } from "./agent-input-scan-helpers.ts";
 
 import { renderReviewCommentFromReport } from "../dist/clawsweeper.js";
 import { createReviewedPrActivityCursor } from "../dist/review-activity-cursor.js";
+import { createDecisionParser } from "../dist/clawsweeper-decision-parser.js";
+import type { LiveProofPlan } from "../dist/clawsweeper-types.js";
 
 export const tmpPrefix = join(tmpdir(), "clawsweeper-test-");
 export const emptyReviewedPrActivityCursor =
@@ -181,24 +183,6 @@ export function closeDecision(overrides = {}) {
       status: "not_needed",
       summary: "This non-PR issue triage does not need Telegram visible proof.",
     },
-    liveProofPlan: {
-      status: "not_applicable",
-      surface: "none",
-      terminalCompletion: "not_applicable",
-      reason: "This non-PR issue triage does not need live proof.",
-      payoff: {
-        kind: "static_text",
-        justification: "No recording payoff exists for this non-PR issue triage.",
-      },
-      entry: "",
-      steps: [],
-    },
-    mantisRecommendation: {
-      status: "not_recommended",
-      scenario: "none",
-      reason: "Mantis proof is not useful for this issue triage.",
-      maintainerComment: "",
-    },
     featureShowcase: {
       status: "none",
       reason: "This item is not an unusually compelling feature idea.",
@@ -252,6 +236,45 @@ export function changelogReviewDecision(overrides = {}) {
     workLikelyFiles: ["CHANGELOG.md"],
     ...overrides,
   });
+}
+
+/** Parses a historical live-proof plan the way the retained live-proof commands do. */
+export function parseLegacyLiveProofPlan(value: unknown): LiveProofPlan {
+  return legacyDecisionParser.parseLiveProofPlan(value, "liveProofPlan");
+}
+
+const legacyDecisionParser = createDecisionParser({
+  isMaintainerAuthorAssociation: () => false,
+  neutralizeOwnedSectionSpoofing: (value: string) => value,
+  sanitizeArchitectureDiagram: (value: string) => value,
+});
+
+/** Historical `## Live Proof` section body, as reports written before the field was retired. */
+export function legacyLiveProofSection(plan: LiveProofPlan): string {
+  const sentence = (value: string) => {
+    const trimmed = value.trim();
+    if (!trimmed) return "";
+    return /[.!?)]$/.test(trimmed) ? trimmed : `${trimmed}.`;
+  };
+  return [
+    `Status: ${plan.status}`,
+    "",
+    `Surface: ${plan.surface}`,
+    "",
+    `Terminal completion: ${plan.terminalCompletion}`,
+    "",
+    `Reason: ${sentence(plan.reason)}`,
+    "",
+    `Payoff: ${plan.payoff.kind}`,
+    "",
+    `Payoff justification: ${sentence(plan.payoff.justification)}`,
+    "",
+    `Entry: ${plan.entry.trim()}`,
+    "",
+    "Steps:",
+    "",
+    plan.steps.length ? plan.steps.map((step) => `- ${JSON.stringify(step)}`).join("\n") : "[]",
+  ].join("\n");
 }
 
 export function reportFrontMatter(overrides = {}) {

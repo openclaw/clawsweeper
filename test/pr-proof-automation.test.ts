@@ -951,7 +951,6 @@ Full review comments:
   const markers = reviewAutomationMarkersFromReport(report);
 
   assert.doesNotMatch(comment, /needs real behavior proof before merge/i);
-  assert.doesNotMatch(comment, /Mantis proof suggestion/);
   assert.match(markers, /clawsweeper-verdict:pass/);
   assert.doesNotMatch(markers, /clawsweeper-verdict:needs-human/);
 

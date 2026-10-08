@@ -354,11 +354,9 @@ test("review prompt assets match tracked files", () => {
   );
 });
 
-test("assembled review prompt retires executable live-proof guidance", () => {
+test("assembled review prompt carries no retired live-proof or Mantis guidance", () => {
   const prompt = reviewPromptForTest(item({ kind: "pull_request" }), {}, git);
-  assert.match(prompt, /Always fill `liveProofPlan` with the retired compatibility shape/);
-  assert.match(prompt, /automatic live\s+proof is retired/);
-  assert.match(prompt, /Do not recommend or plan proof execution/);
+  assert.doesNotMatch(prompt, /liveProofPlan|mantisRecommendation/);
   assert.doesNotMatch(prompt, /Keep `entry` and\s+every terminal `run\.command` on one line/);
   assert.doesNotMatch(prompt, /## Maintainer Request/);
 });

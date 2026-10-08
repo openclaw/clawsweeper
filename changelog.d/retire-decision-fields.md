@@ -1,0 +1,1 @@
+- Retire the dead `liveProofPlan` and `mantisRecommendation` review decision fields: the model no longer fills them, new reports drop their sections and front matter, and review comments stop suggesting `@openclaw-mantis` comments that no OpenClaw workflow answers; stored reports still parse and keep their automation markers.

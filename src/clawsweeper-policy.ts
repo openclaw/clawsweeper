@@ -19,8 +19,6 @@ import type {
   LiveProofPayoffKind,
   LiveProofSurface,
   LiveProofTerminalCompletion,
-  MantisRecommendationScenario,
-  MantisRecommendationStatus,
   MaturityLabelName,
   MergeRiskLabelName,
   MergeRiskOptionCategory,
@@ -89,7 +87,7 @@ export const DEFAULT_REASONING_EFFORT = "medium";
 // per item to high reasoning and fast service.
 export const DEFAULT_SERVICE_TIER = "";
 export const DEFAULT_REVIEW_CODEX_TIMEOUT_MS = 1_200_000;
-export const REVIEW_POLICY_VERSION = "2026-10-08-policy-v28";
+export const REVIEW_POLICY_VERSION = "2026-10-08-policy-v29";
 export const REVIEW_COMMENT_MARKER_PREFIX = "<!-- clawsweeper-review";
 export const REVIEW_START_STATUS_MARKER_PREFIX = "<!-- clawsweeper-review-status";
 export const ACCEPTED_LARGE_LABEL_DEFINITION = {
@@ -732,18 +730,6 @@ export const LIVE_PROOF_PAYOFF_KINDS = new Set<LiveProofPayoffKind>([
   "animation",
   "static_text",
 ]);
-export const MANTIS_RECOMMENDATION_STATUSES = new Set<MantisRecommendationStatus>([
-  "recommended",
-  "not_recommended",
-]);
-export const MANTIS_RECOMMENDATION_SCENARIOS = new Set<MantisRecommendationScenario>([
-  "none",
-  "discord_status_reactions",
-  "discord_thread_attachment",
-  "web_ui_chat_proof",
-  "slack_desktop_smoke",
-  "visual_task",
-]);
 export const FEATURE_SHOWCASE_STATUSES = new Set<FeatureShowcaseStatus>(["showcase", "none"]);
 export const OVERALL_CORRECTNESS_VALUES = new Set<OverallCorrectness>([
   "patch is correct",
@@ -819,8 +805,6 @@ export const DECISION_SCHEMA_KEYS = new Set([
   "realBehaviorProof",
   "prRating",
   "telegramVisibleProof",
-  "liveProofPlan",
-  "mantisRecommendation",
   "featureShowcase",
   "overallCorrectness",
   "overallConfidenceScore",
@@ -923,12 +907,6 @@ export const LIVE_PROOF_STEP_SCHEMA_KEYS = {
   run: new Set(["action", "command"]),
   expect_output: new Set(["action", "text"]),
 } as const;
-export const MANTIS_RECOMMENDATION_SCHEMA_KEYS = new Set([
-  "status",
-  "scenario",
-  "reason",
-  "maintainerComment",
-]);
 export const FEATURE_SHOWCASE_SCHEMA_KEYS = new Set(["status", "reason"]);
 export const ROOT_CAUSE_CLUSTER_SCHEMA_KEYS = new Set([
   "confidence",
@@ -1002,7 +980,6 @@ export const REVIEW_SECTIONS = {
   prRating: "PR Rating",
   telegramVisibleProof: "Telegram Visible Proof",
   liveProof: "Live Proof",
-  mantisRecommendation: "Mantis Recommendation",
   featureShowcase: "Feature Showcase",
   agentsPolicyStatus: "AGENTS.md Policy Status",
   workCandidate: "Work Candidate",

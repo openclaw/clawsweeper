@@ -113,7 +113,6 @@ import type {
   GitInfo,
   Item,
   ItemContext,
-  MantisRecommendation,
   MutationRunner,
   ReportEntry,
   SecurityConcern,
@@ -888,7 +887,6 @@ const reviewPresentation = createReviewPresentation({
   fileUrl,
   frontMatterStringArray,
   frontMatterValue,
-  hasDispatchableMantisScenario,
   hasRepairLoopPauseLabel,
   isCommitSha,
   latestFileUrl,
@@ -901,7 +899,7 @@ const reviewPresentation = createReviewPresentation({
   splitFileAndLine,
   targetRepo,
 });
-const { isSupportedMantisScenario, sentence, validMantisMaintainerComment } = reviewPresentation;
+const { sentence } = reviewPresentation;
 
 const reportOrchestration = createReportOrchestration({
   reportRealBehaviorProofPolicy,
@@ -995,7 +993,6 @@ export const {
   pullRequestFilePathsFromContextForTest,
   realBehaviorProofMediaLabelsForTest,
   realBehaviorProofSufficientLabelsForTest,
-  renderLiveProofReportSection: renderLiveProofReportSectionForTest,
   renderReviewCommentFromReport,
   renderReviewContextBudgetForTest,
   renderWorkPlanFromReport,
@@ -1046,14 +1043,6 @@ function isExternalPullRequestReport(markdown: string): boolean {
   if (!authorAssociation) return false;
   if (isMaintainerAuthorAssociation(authorAssociation)) return false;
   return !isAutomationReportAuthor(frontMatterValue(markdown, "author"));
-}
-
-function hasDispatchableMantisScenario(recommendation: MantisRecommendation): boolean {
-  return (
-    recommendation.status === "recommended" &&
-    isSupportedMantisScenario(recommendation.scenario) &&
-    Boolean(validMantisMaintainerComment(recommendation))
-  );
 }
 
 const reportHelpers = createReportHelpers({

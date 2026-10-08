@@ -176,14 +176,6 @@ export type LiveProofTerminalStep =
   | { action: "wait"; seconds: number }
   | { action: "expect_output"; text: string };
 export type LiveProofStep = LiveProofBrowserStep | LiveProofTerminalStep;
-export type MantisRecommendationStatus = "recommended" | "not_recommended";
-export type MantisRecommendationScenario =
-  | "none"
-  | "discord_status_reactions"
-  | "discord_thread_attachment"
-  | "web_ui_chat_proof"
-  | "slack_desktop_smoke"
-  | "visual_task";
 export type VisionFitStatus = "aligned" | "rejected" | "unclear" | "not_applicable";
 export type ImplementationComplexity = "small" | "medium" | "large" | "unclear" | "not_applicable";
 export type AutoImplementationCandidate = "none" | "strict_bug" | "vision_fit";
@@ -500,13 +492,6 @@ export interface LiveProofPlan {
   steps: LiveProofStep[];
 }
 
-export interface MantisRecommendation {
-  status: MantisRecommendationStatus;
-  scenario: MantisRecommendationScenario;
-  reason: string;
-  maintainerComment: string;
-}
-
 export interface FeatureShowcase {
   status: FeatureShowcaseStatus;
   reason: string;
@@ -670,8 +655,6 @@ export interface Decision {
   realBehaviorProof: RealBehaviorProof;
   prRating: PrRating;
   telegramVisibleProof: TelegramVisibleProof;
-  liveProofPlan: LiveProofPlan;
-  mantisRecommendation: MantisRecommendation;
   featureShowcase: FeatureShowcase;
   overallCorrectness: OverallCorrectness;
   overallConfidenceScore: number;

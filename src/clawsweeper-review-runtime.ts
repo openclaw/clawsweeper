@@ -804,24 +804,6 @@ ${extra}
         status: "not_needed",
         summary: "Telegram visible proof was not assessed because the Codex review failed.",
       },
-      liveProofPlan: {
-        status: "not_applicable",
-        surface: "none",
-        terminalCompletion: "not_applicable",
-        reason: "Live proof was not assessed because the Codex review failed.",
-        payoff: {
-          kind: "static_text",
-          justification: "No recording payoff was assessed because the Codex review failed.",
-        },
-        entry: "",
-        steps: [],
-      },
-      mantisRecommendation: {
-        status: "not_recommended",
-        scenario: "none",
-        reason: "Mantis was not assessed because the Codex review failed.",
-        maintainerComment: "",
-      },
       featureShowcase: {
         status: "none",
         reason: "Feature showcase was not assessed because the Codex review failed.",

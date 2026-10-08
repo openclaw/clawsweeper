@@ -22,9 +22,6 @@ import {
   LIVE_PROOF_STEP_SCHEMA_KEYS,
   LIVE_PROOF_SURFACES,
   LIVE_PROOF_TERMINAL_COMPLETIONS,
-  MANTIS_RECOMMENDATION_SCENARIOS,
-  MANTIS_RECOMMENDATION_SCHEMA_KEYS,
-  MANTIS_RECOMMENDATION_STATUSES,
   MATURITY_LABEL_VALUES,
   MERGE_RISK_LABEL_VALUES,
   MERGE_RISK_OPTION_CATEGORIES,
@@ -79,7 +76,6 @@ import type {
   LiveProofPlan,
   LiveProofStep,
   LikelyOwner,
-  MantisRecommendation,
   MaturityLabelName,
   MergeRiskLabelName,
   MergeRiskOption,
@@ -846,17 +842,6 @@ export function createDecisionParser({
     return { status, surface, terminalCompletion, reason, payoff, entry, steps };
   }
 
-  function parseMantisRecommendation(value: unknown, path: string): MantisRecommendation {
-    const record = requireRecord(value, path);
-    rejectUnexpectedKeys(record, MANTIS_RECOMMENDATION_SCHEMA_KEYS, path);
-    return {
-      status: requireEnum(record.status, MANTIS_RECOMMENDATION_STATUSES, `${path}.status`),
-      scenario: requireEnum(record.scenario, MANTIS_RECOMMENDATION_SCENARIOS, `${path}.scenario`),
-      reason: requireReportText(record.reason, `${path}.reason`),
-      maintainerComment: requireReportText(record.maintainerComment, `${path}.maintainerComment`),
-    };
-  }
-
   function parseFeatureShowcase(value: unknown, path: string): FeatureShowcase {
     const record = requireRecord(value, path);
     rejectUnexpectedKeys(record, FEATURE_SHOWCASE_SCHEMA_KEYS, path);
@@ -1237,11 +1222,6 @@ export function createDecisionParser({
       telegramVisibleProof: parseTelegramVisibleProof(
         record.telegramVisibleProof,
         "decision.telegramVisibleProof",
-      ),
-      liveProofPlan: parseLiveProofPlan(record.liveProofPlan, "decision.liveProofPlan"),
-      mantisRecommendation: parseMantisRecommendation(
-        record.mantisRecommendation,
-        "decision.mantisRecommendation",
       ),
       featureShowcase: parseFeatureShowcase(record.featureShowcase, "decision.featureShowcase"),
       overallCorrectness: requireEnum(

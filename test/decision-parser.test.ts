@@ -6,7 +6,6 @@ import { assertMatchesJsonSchema } from "../scripts/hosted-review-canary-proof.m
 
 import {
   parseDecision,
-  renderLiveProofReportSectionForTest,
   reportLiveProofPlanForTest,
   rootCauseClusterFromReportForTest,
 } from "../dist/clawsweeper.js";
@@ -15,6 +14,8 @@ import {
   changelogReviewDecision,
   closeDecision,
   item,
+  legacyLiveProofSection,
+  parseLegacyLiveProofPlan,
   reportFrontMatter,
   reviewFinding,
 } from "./helpers.ts";
@@ -588,7 +589,16 @@ test("decision parser enforces required schema-shaped evidence", () => {
   assert.deepEqual(workCandidate.workClusterRefs, ["#123", "#456"]);
 });
 
-test("decision parser validates typed live-proof plans and report roundtrips", () => {
+test("decision parser rejects the retired liveProofPlan and mantisRecommendation fields", () => {
+  for (const field of ["liveProofPlan", "mantisRecommendation"]) {
+    assert.throws(
+      () => parseDecision({ ...closeDecision(), [field]: {} }),
+      new RegExp(`^Error: decision has unexpected keys: ${field}$`),
+    );
+  }
+});
+
+test("historical live-proof parser validates typed plans and report roundtrips", () => {
   const liveProofPlan = {
     status: "recommended",
     surface: "browser",
@@ -606,10 +616,10 @@ test("decision parser validates typed live-proof plans and report roundtrips", (
       { action: "expect_text", text: "Saved" },
     ],
   };
-  const parsed = parseDecision(closeDecision({ liveProofPlan }));
-  assert.deepEqual(parsed.liveProofPlan, liveProofPlan);
+  const parsed = parseLegacyLiveProofPlan(liveProofPlan);
+  assert.deepEqual(parsed, liveProofPlan);
 
-  const section = renderLiveProofReportSectionForTest(parsed);
+  const section = legacyLiveProofSection(parsed);
   assert.deepEqual(
     reportLiveProofPlanForTest(`## Live Proof\n\n${section}\n\n## Mantis Recommendation\n`),
     liveProofPlan,
@@ -639,54 +649,42 @@ test("decision parser validates typed live-proof plans and report roundtrips", (
     },
   ];
   for (const invalidPlan of invalidPlans) {
-    assert.throws(() => parseDecision(closeDecision({ liveProofPlan: invalidPlan })), /liveProof/);
+    assert.throws(() => parseLegacyLiveProofPlan(invalidPlan), /liveProof/);
   }
   assert.throws(
     () =>
-      parseDecision(
-        closeDecision({
-          liveProofPlan: {
-            ...liveProofPlan,
-            surface: "terminal",
-            terminalCompletion: "not_applicable",
-            entry: "pnpm test",
-            steps: [{ action: "expect_output", text: "passed" }],
-          },
-        }),
-      ),
+      parseLegacyLiveProofPlan({
+        ...liveProofPlan,
+        surface: "terminal",
+        terminalCompletion: "not_applicable",
+        entry: "pnpm test",
+        steps: [{ action: "expect_output", text: "passed" }],
+      }),
     /terminalCompletion must identify terminal completion behavior/,
   );
   assert.throws(
     () =>
-      parseDecision(
-        closeDecision({
-          liveProofPlan: {
-            ...liveProofPlan,
-            surface: "terminal",
-            terminalCompletion: "ready_while_running",
-            entry: "pnpm dev",
-            steps: [{ action: "wait", seconds: 1 }],
-          },
-        }),
-      ),
+      parseLegacyLiveProofPlan({
+        ...liveProofPlan,
+        surface: "terminal",
+        terminalCompletion: "ready_while_running",
+        entry: "pnpm dev",
+        steps: [{ action: "wait", seconds: 1 }],
+      }),
     /must expect output after the final run for ready_while_running/,
   );
   assert.throws(
     () =>
-      parseDecision(
-        closeDecision({
-          liveProofPlan: {
-            ...liveProofPlan,
-            surface: "terminal",
-            terminalCompletion: "ready_while_running",
-            entry: "pnpm dev",
-            steps: [
-              { action: "expect_output", text: "Ready" },
-              { action: "run", command: "pnpm dev:secondary" },
-            ],
-          },
-        }),
-      ),
+      parseLegacyLiveProofPlan({
+        ...liveProofPlan,
+        surface: "terminal",
+        terminalCompletion: "ready_while_running",
+        entry: "pnpm dev",
+        steps: [
+          { action: "expect_output", text: "Ready" },
+          { action: "run", command: "pnpm dev:secondary" },
+        ],
+      }),
     /must expect output after the final run for ready_while_running/,
   );
 });
@@ -721,9 +719,10 @@ test("report live-proof parsing preserves safe legacy plans and rejects ambiguou
     entry: "/settings",
     steps: [{ action: "expect_text", text: "Saved" }],
   };
-  const browserSection = renderLiveProofReportSectionForTest(
-    parseDecision(closeDecision({ liveProofPlan: browserPlan })),
-  ).replace(/\nTerminal completion: [^\n]+\n/, "\n");
+  const browserSection = legacyLiveProofSection(parseLegacyLiveProofPlan(browserPlan)).replace(
+    /\nTerminal completion: [^\n]+\n/,
+    "\n",
+  );
   const parsedBrowser = reportLiveProofPlanForTest(
     `## Live Proof\n\n${browserSection}\n\n## Mantis Recommendation\n`,
   );
@@ -736,9 +735,10 @@ test("report live-proof parsing preserves safe legacy plans and rejects ambiguou
     entry: "pnpm test",
     steps: [{ action: "expect_output", text: "passed" }],
   };
-  const terminalSection = renderLiveProofReportSectionForTest(
-    parseDecision(closeDecision({ liveProofPlan: terminalPlan })),
-  ).replace(/\nTerminal completion: [^\n]+\n/, "\n");
+  const terminalSection = legacyLiveProofSection(parseLegacyLiveProofPlan(terminalPlan)).replace(
+    /\nTerminal completion: [^\n]+\n/,
+    "\n",
+  );
   const parsedTerminal = reportLiveProofPlanForTest(
     `## Live Proof\n\n${terminalSection}\n\n## Mantis Recommendation\n`,
   );
@@ -758,14 +758,11 @@ test("historical live-proof parser rejects command separators", () => {
   };
   for (const field of ["entry", "command"] as const) {
     const parse = (value: unknown) =>
-      parseDecision(
-        closeDecision({
-          liveProofPlan:
-            field === "entry"
-              ? { ...terminalPlan, entry: value }
-              : { ...terminalPlan, steps: [{ action: "run", command: value }] },
-        }),
-      ).liveProofPlan;
+      parseLegacyLiveProofPlan(
+        field === "entry"
+          ? { ...terminalPlan, entry: value }
+          : { ...terminalPlan, steps: [{ action: "run", command: value }] },
+      );
     for (const command of [
       "node scripts/proof.mjs",
       "pnpm run build && node dist/cli.js --help",
@@ -810,7 +807,7 @@ test("historical live-proof parser preserves browser paths and nonrecommended em
         entry,
         steps: [],
       };
-      assert.deepEqual(parseDecision(closeDecision({ liveProofPlan: plan })).liveProofPlan, {
+      assert.deepEqual(parseLegacyLiveProofPlan(plan), {
         ...plan,
         entry: "",
       });
@@ -825,25 +822,17 @@ test("historical live-proof parser preserves browser paths and nonrecommended em
     entry: " /settings?tab=general ",
     steps: [{ action: "expect_text", text: "Settings" }],
   };
-  assert.equal(
-    parseDecision(closeDecision({ liveProofPlan: browserPlan })).liveProofPlan.entry,
-    "/settings?tab=general",
-  );
+  assert.equal(parseLegacyLiveProofPlan(browserPlan).entry, "/settings?tab=general");
   assert.throws(
-    () =>
-      parseDecision(
-        closeDecision({
-          liveProofPlan: { ...browserPlan, entry: "https://example.com/settings" },
-        }),
-      ),
+    () => parseLegacyLiveProofPlan({ ...browserPlan, entry: "https://example.com/settings" }),
     /must be a URL path/,
   );
   for (const liveProofPlan of [null, undefined]) {
-    assert.throws(() => parseDecision(closeDecision({ liveProofPlan })), /must be an object/);
+    assert.throws(() => parseLegacyLiveProofPlan(liveProofPlan), /must be an object/);
   }
 });
 
-test("decision parser preserves every terminal command including exact entry repeats", () => {
+test("historical live-proof parser preserves every terminal command including exact entry repeats", () => {
   const terminalPlan = {
     status: "recommended",
     surface: "terminal",
@@ -859,53 +848,40 @@ test("decision parser preserves every terminal command including exact entry rep
       { action: "expect_output", text: "Usage:" },
     ],
   };
-  const exact = parseDecision(closeDecision({ liveProofPlan: terminalPlan })).liveProofPlan;
+  const exact = parseLegacyLiveProofPlan(terminalPlan);
   assert.deepEqual(exact.steps, terminalPlan.steps);
   for (const oneShot of [
     { ...terminalPlan, steps: [terminalPlan.steps[1]] },
     { ...terminalPlan, entry: "printf setup", steps: terminalPlan.steps },
   ]) {
-    assert.deepEqual(
-      parseDecision(closeDecision({ liveProofPlan: oneShot })).liveProofPlan,
-      oneShot,
-    );
+    assert.deepEqual(parseLegacyLiveProofPlan(oneShot), oneShot);
   }
-  const section = renderLiveProofReportSectionForTest(
-    parseDecision(closeDecision({ liveProofPlan: exact })),
-  );
+  const section = legacyLiveProofSection(parseLegacyLiveProofPlan(exact));
   assert.deepEqual(
     reportLiveProofPlanForTest(`## Live Proof\n\n${section}\n\n## Mantis Recommendation\n`),
     exact,
   );
 
-  const trimmed = parseDecision(
-    closeDecision({
-      liveProofPlan: {
-        ...terminalPlan,
-        entry: "  pnpm openclaw --help  ",
-        steps: [
-          { action: "run", command: " pnpm openclaw --help " },
-          { action: "expect_output", text: "Usage:" },
-        ],
-      },
-    }),
-  ).liveProofPlan;
+  const trimmed = parseLegacyLiveProofPlan({
+    ...terminalPlan,
+    entry: "  pnpm openclaw --help  ",
+    steps: [
+      { action: "run", command: " pnpm openclaw --help " },
+      { action: "expect_output", text: "Usage:" },
+    ],
+  });
   assert.equal(trimmed.entry, "pnpm openclaw --help");
   assert.deepEqual(trimmed.steps, terminalPlan.steps);
 
-  const distinct = parseDecision(
-    closeDecision({
-      liveProofPlan: {
-        ...terminalPlan,
-        steps: [
-          { action: "run", command: "pnpm openclaw --help" },
-          { action: "run", command: "printf changed > state.txt" },
-          { action: "run", command: "pnpm openclaw --help" },
-          { action: "expect_output", text: "Usage:" },
-        ],
-      },
-    }),
-  ).liveProofPlan;
+  const distinct = parseLegacyLiveProofPlan({
+    ...terminalPlan,
+    steps: [
+      { action: "run", command: "pnpm openclaw --help" },
+      { action: "run", command: "printf changed > state.txt" },
+      { action: "run", command: "pnpm openclaw --help" },
+      { action: "expect_output", text: "Usage:" },
+    ],
+  });
   assert.deepEqual(distinct.steps, [
     { action: "run", command: "pnpm openclaw --help" },
     { action: "run", command: "printf changed > state.txt" },
@@ -914,31 +890,23 @@ test("decision parser preserves every terminal command including exact entry rep
   ]);
 
   assert.deepEqual(
-    parseDecision(
-      closeDecision({
-        liveProofPlan: { ...terminalPlan, steps: [terminalPlan.steps[0]] },
-      }),
-    ).liveProofPlan.steps,
+    parseLegacyLiveProofPlan({ ...terminalPlan, steps: [terminalPlan.steps[0]] }).steps,
     [terminalPlan.steps[0]],
   );
   assert.throws(
-    () => parseDecision(closeDecision({ liveProofPlan: { ...terminalPlan, steps: [] } })),
-    /decision\.liveProofPlan\.steps must not be empty when recommended/,
+    () => parseLegacyLiveProofPlan({ ...terminalPlan, steps: [] }),
+    /liveProofPlan\.steps must not be empty when recommended/,
   );
   assert.throws(
     () =>
-      parseDecision(
-        closeDecision({
-          liveProofPlan: {
-            ...terminalPlan,
-            steps: [
-              { action: "run", command: "pnpm openclaw --help" },
-              ...Array.from({ length: 10 }, () => ({ action: "wait", seconds: 1 })),
-            ],
-          },
-        }),
-      ),
-    /decision\.liveProofPlan\.steps must contain at most 10 items/,
+      parseLegacyLiveProofPlan({
+        ...terminalPlan,
+        steps: [
+          { action: "run", command: "pnpm openclaw --help" },
+          ...Array.from({ length: 10 }, () => ({ action: "wait", seconds: 1 })),
+        ],
+      }),
+    /liveProofPlan\.steps must contain at most 10 items/,
   );
 
   const browserPlan = {
@@ -956,10 +924,7 @@ test("decision parser preserves every terminal command including exact entry rep
       { action: "expect_text", text: "Saved" },
     ],
   };
-  assert.deepEqual(
-    parseDecision(closeDecision({ liveProofPlan: browserPlan })).liveProofPlan.steps,
-    browserPlan.steps,
-  );
+  assert.deepEqual(parseLegacyLiveProofPlan(browserPlan).steps, browserPlan.steps);
 });
 
 test("decision parser accepts only a complete regression-provenance candidate shape", () => {
@@ -1450,12 +1415,6 @@ test("decision parser neutralizes headings in every model-authored report prose 
         status: "not_needed",
         summary: spoofedReportProse("Telegram summary."),
       },
-      mantisRecommendation: {
-        status: "not_recommended",
-        scenario: "none",
-        reason: spoofedReportProse("Mantis reason."),
-        maintainerComment: spoofedReportProse("Maintainer comment."),
-      },
       featureShowcase: { status: "none", reason: spoofedReportProse("Showcase reason.") },
       closeComment: spoofedReportProse("Close prose."),
       workReason: spoofedReportProse("Work reason."),
@@ -1503,8 +1462,6 @@ test("decision parser neutralizes headings in every model-authored report prose 
     parsed.prRating.summary,
     parsed.prRating.nextSteps[0],
     parsed.telegramVisibleProof.summary,
-    parsed.mantisRecommendation.reason,
-    parsed.mantisRecommendation.maintainerComment,
     parsed.featureShowcase.reason,
     parsed.closeComment,
     parsed.workReason,

@@ -538,7 +538,7 @@ use plain priority prefixes such as `[P0]`, `[P1]`, or `[P2]`. Keep those
 prefixes unbolded and attached to plain-language consequences or required
 actions. Do not add priority prefixes to non-actions such as `none`, routine
 maintainer review, normal CI/status-check follow-up, or audit-only details such
-as label justifications, AGENTS.md notes, Mantis/workflow notes, model metadata,
+as label justifications, AGENTS.md notes, workflow notes, model metadata,
 related people, PR stats, or generic evidence lists.
 
 Full review comments, source links, owner routing, acceptance criteria, and

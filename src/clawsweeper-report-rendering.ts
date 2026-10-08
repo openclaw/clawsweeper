@@ -30,7 +30,6 @@ export function createReportRendering(dependencies: CreateReportRenderingDepende
     pullRequestHeadSha: tools.pullRequestHeadSha,
     pullRequestReviewReadinessFromReport: tools.pullRequestReviewReadinessFromReport,
     renderCloseCommentFromReport: tools.renderCloseCommentFromReport,
-    renderLiveProofReportSection: tools.renderLiveProofReportSection,
     renderPrRatingAssessmentReportSection: tools.renderPrRatingAssessmentReportSection,
     renderReviewCommentFromReport: tools.renderReviewCommentFromReport,
     renderReviewContextBudgetForTest: tools.renderReviewContextBudgetForTest,

@@ -18,8 +18,6 @@ import type {
   ItemContext,
   LabelJustification,
   LikelyOwner,
-  LiveProofPlan,
-  MantisRecommendation,
   MaturityLabelName,
   MergeRiskLabelName,
   MergeRiskOption,
@@ -290,7 +288,6 @@ export interface CreateReportOrchestrationDependencies {
   publicFailedReviewReadinessBlock: (markdown: string) => string;
   publicHistoricalVerificationBlockerLine: () => string;
   publicLikelyOwnerRole: (role: string) => string;
-  publicMantisRecommendationBlock: (recommendation: MantisRecommendation) => string;
   publicMergeReadinessBlock: (
     reviewState: PullRequestReviewState,
     priority: TriagePriority,
@@ -299,7 +296,6 @@ export interface CreateReportOrchestrationDependencies {
     decisionNeeded: boolean,
     reviewedHeadSha: string,
   ) => string;
-  publicNonDispatchableMantisRecommendationBlock: (recommendation: MantisRecommendation) => string;
   publicPriorityBulletFromText: (text: string, fallback: PublicPriority) => string;
   publicPriorityBulletIfActionable: (text: string, fallback: PublicPriority) => string;
   publicPriorityFromText: (text: string, fallback: PublicPriority) => PublicPriority;
@@ -335,9 +331,7 @@ export interface CreateReportOrchestrationDependencies {
   reportFeatureShowcase: (markdown: string) => FeatureShowcase;
   reportFileName: (repo: string, number: number) => string;
   reportLikelyOwners: (markdown: string) => LikelyOwner[];
-  reportLiveProofPlan: (markdown: string) => LiveProofPlan;
   reportLiveProofRecordingBlock: (markdown: string) => string;
-  reportMantisRecommendation: (markdown: string) => MantisRecommendation;
   reportOverallConfidenceScore: (markdown: string) => number;
   reportOverallCorrectness: (markdown: string) => OverallCorrectness;
   reportPrRating: (markdown: string) => PrRating;
@@ -378,7 +372,6 @@ export interface CreateReportOrchestrationDependencies {
       | "realBehaviorProof"
       | "prRating"
       | "telegramVisibleProof"
-      | "mantisRecommendation"
       | "featureShowcase"
       | "agentsPolicyStatus"
       | "workCandidate"

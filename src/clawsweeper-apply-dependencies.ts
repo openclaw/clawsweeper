@@ -427,7 +427,6 @@ export interface CreateApplyDecisionWorkflowDependencies {
       | "realBehaviorProof"
       | "prRating"
       | "telegramVisibleProof"
-      | "mantisRecommendation"
       | "featureShowcase"
       | "agentsPolicyStatus"
       | "workCandidate"

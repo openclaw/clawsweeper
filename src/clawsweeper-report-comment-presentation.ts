@@ -94,10 +94,8 @@ export function createReportCommentPresentation(
     publicBeforeMergeBlock,
     publicChecklistText,
     publicFailedReviewReadinessBlock,
-    publicMantisRecommendationBlock,
     publicMergeReadinessBlock,
     publicMergeRiskLine,
-    publicNonDispatchableMantisRecommendationBlock,
     publicPriorityBulletFromText,
     publicPriorityBulletIfActionable,
     publicRankScaleLine,
@@ -120,7 +118,6 @@ export function createReportCommentPresentation(
     reportEvidence,
     reportLikelyOwners,
     reportLiveProofRecordingBlock,
-    reportMantisRecommendation,
     reportOverallConfidenceScore,
     reportOverallCorrectness,
     reportPrRating,
@@ -263,7 +260,6 @@ export function createReportCommentPresentation(
     const securityReview = reportSecurityReview(markdown);
     const prRating = reportPrRating(markdown);
     const liveProofRecordingBlock = reportLiveProofRecordingBlock(markdown);
-    const mantisRecommendation = reportMantisRecommendation(markdown);
     const agentsPolicyStatus = reportAgentsPolicyStatus(markdown);
     const rootCauseCluster = reportRootCauseCluster(markdown);
     const regressionProvenance = regressionProvenanceFromReport(markdown);
@@ -364,12 +360,6 @@ export function createReportCommentPresentation(
     const dataModelWarning = renderDataModelWarningFromReport(markdown);
     const sqliteSchemaWarning = renderSqliteSchemaWarningFromReport(markdown);
     const rootCauseClusterBlock = publicRootCauseClusterBlock(rootCauseCluster);
-    const mantisSuggestion = isPullRequest
-      ? publicMantisRecommendationBlock(mantisRecommendation)
-      : "";
-    const unsupportedMantisSuggestion = isPullRequest
-      ? publicNonDispatchableMantisRecommendationBlock(mantisRecommendation)
-      : "";
     // The decision rationale is model text rendered above owned sections; escape
     // heading-shaped lines so it cannot spoof them.
     const decisionPacketBlock = neutralizeOwnedSectionSpoofing(
@@ -570,10 +560,6 @@ export function createReportCommentPresentation(
       }
       if (dataModelWarning) appendDetails("Stored data model", dataModelWarning);
       if (rootCauseClusterBlock) appendDetails("Root-cause cluster", rootCauseClusterBlock);
-      if (mantisSuggestion) appendDetails("Mantis proof suggestion", mantisSuggestion);
-      if (unsupportedMantisSuggestion) {
-        appendDetails("Proof path suggestion", unsupportedMantisSuggestion);
-      }
       if (labelDetails.length) appendDetails("Labels", ...labelDetails);
       const rankUpMoves = prRating.nextSteps
         .map((step) => sentence(step))

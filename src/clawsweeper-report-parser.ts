@@ -11,8 +11,6 @@ import {
   IMPACT_LABEL_NAMES,
   LIVE_PROOF_RECORDING_MARKER,
   LIVE_VERIFICATION_MARKER,
-  MANTIS_RECOMMENDATION_SCENARIOS,
-  MANTIS_RECOMMENDATION_STATUSES,
   MATURITY_LABEL_NAMES,
   MERGE_RISK_LABEL_NAMES,
   OVERALL_CORRECTNESS_VALUES,
@@ -51,9 +49,6 @@ import type {
   ItemKind,
   LabelJustification,
   LikelyOwner,
-  MantisRecommendation,
-  MantisRecommendationScenario,
-  MantisRecommendationStatus,
   MaturityLabelName,
   MergeRiskLabelName,
   MergeRiskOption,
@@ -932,28 +927,6 @@ export function createReportParser({
     });
   }
 
-  function reportMantisRecommendation(markdown: string): MantisRecommendation {
-    const section = reviewSectionValue(markdown, "mantisRecommendation");
-    const statusValue = sectionLineValue(section, "Status");
-    const scenarioValue = sectionLineValue(section, "Scenario");
-    const status = MANTIS_RECOMMENDATION_STATUSES.has(statusValue as MantisRecommendationStatus)
-      ? (statusValue as MantisRecommendationStatus)
-      : "not_recommended";
-    const scenario = MANTIS_RECOMMENDATION_SCENARIOS.has(
-      scenarioValue as MantisRecommendationScenario,
-    )
-      ? (scenarioValue as MantisRecommendationScenario)
-      : "none";
-    return {
-      status,
-      scenario,
-      reason:
-        sectionLineValue(section, "Reason") ??
-        "No Mantis recommendation was recorded in this report.",
-      maintainerComment: sectionLineValue(section, "Maintainer comment") ?? "",
-    };
-  }
-
   function reportFeatureShowcase(markdown: string): FeatureShowcase {
     const section = reviewSectionValue(markdown, "featureShowcase");
     const statusValue =
@@ -1086,7 +1059,6 @@ export function createReportParser({
     reportLiveProofPlan,
     reportLiveProofRecordingBlock,
     reportPrRating,
-    reportMantisRecommendation,
     reportFeatureShowcase,
     reportRootCauseCluster,
     rootCauseClusterFromReportForTest,
