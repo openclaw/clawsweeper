@@ -107,6 +107,8 @@ process.stdin.on("end", () => {
   let started = 0;
   let finished = 0;
   const startNext = () => {
+    // An expired command completes synchronously and may already have started the rest.
+    if (started >= commands.length) return;
     const index = started++;
     run(commands[index], (result) => {
       results[index] = result;

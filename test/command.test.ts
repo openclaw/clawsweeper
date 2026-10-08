@@ -209,6 +209,27 @@ test("runTextConcurrently does not start a queued command whose deadline has pas
   assert.deepEqual(results, [{ output: "first" }, { expired: true }]);
 });
 
+test("runTextConcurrently keeps a live command when an earlier one has already expired", () => {
+  const startedAt = Date.now();
+  const results = runTextConcurrently(
+    [
+      {
+        command: process.execPath,
+        args: ["-e", "process.stdout.write('never')"],
+        options: { deadlineAt: startedAt - 1 },
+      },
+      {
+        command: process.execPath,
+        args: ["-e", "process.stdout.write('live')"],
+        options: { deadlineAt: startedAt + 10_000 },
+      },
+    ],
+    2,
+  );
+
+  assert.deepEqual(results, [{ expired: true }, { output: "live" }]);
+});
+
 test("review CLI suppresses stack traces for missing local target checkout", () => {
   const root = mkdtempSync(join(tmpdir(), "cmd-"));
   const missing = join(root, "missing-target");
