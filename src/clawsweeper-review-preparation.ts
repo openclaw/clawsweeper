@@ -10,7 +10,6 @@ import {
   localReviewAdditionalPrompt,
   scrubGitHubCredentialEnv,
 } from "./commit-sweeper.js";
-import { prepareLocalReviewCodexHome } from "./local-review-codex-home.js";
 import type { Args } from "./clawsweeper-args.js";
 import type { CreateReviewCommandWorkflowDependencies } from "./clawsweeper-review-command-dependencies.js";
 import { parsePrCommentActivityRevisionMap } from "./pr-hydration-snapshot.js";
@@ -168,16 +167,7 @@ export function prepareReviewCommand(
         "--codex-reasoning-effort and --codex-service-tier are retired for item reviews; author association selects the fixed profile.",
       );
     }
-    // Exact-item local reviews default to the hosted reviewer profile so their evidence and
-    // verdicts match hosted ones. Committed-range reviews stay offline by contract.
-    const localExact = localOnly && !localRange;
-    const sandboxMode = stringArg(
-      args.codex_sandbox,
-      localExact ? "clawsweeper-review" : "read-only",
-    );
-    if (localExact && sandboxMode === "clawsweeper-review") {
-      process.env.CODEX_HOME = prepareLocalReviewCodexHome(reviewWorkspace.path);
-    }
+    const sandboxMode = stringArg(args.codex_sandbox, "read-only");
     const timeoutMs = numberArg(args.codex_timeout_ms, DEFAULT_REVIEW_CODEX_TIMEOUT_MS);
     const expectedSourceRevision = stringArg(args.expected_source_revision, "").trim();
     if (expectedSourceRevision && !/^[0-9a-f]{64}$/.test(expectedSourceRevision)) {
