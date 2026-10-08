@@ -211,12 +211,28 @@ for (const path of ["README.md", "src/arbitrary.ts", "docs/usage.md"]) {
   });
 }
 
-test("missing proof plus another blocker is not a waivable proof hold", () => {
-  const report = notApplicableProofReport({
-    pull_files: JSON.stringify(["src/arbitrary.ts"]),
-    confidence: "medium",
-  });
-  const markers = reviewAutomationMarkersFromReport(report);
+test("missing proof is a waivable proof hold only when it is the one blocker", () => {
+  const mockOnly = (overrides = {}) =>
+    notApplicableProofReport({
+      pull_files: JSON.stringify(["src/arbitrary.ts"]),
+      real_behavior_proof_status: "mock_only",
+      real_behavior_proof_evidence_kind: "terminal",
+      real_behavior_proof_needs_contributor_action: true,
+      ...overrides,
+    }).replace(
+      /## Real Behavior Proof[\s\S]*?(?=\n## )/,
+      realBehaviorProofReportSection({
+        status: "mock_only",
+        evidenceKind: "terminal",
+        needsContributorAction: true,
+        summary: "The output mocks the transport client.",
+      }),
+    );
+  assert.match(
+    reviewAutomationMarkersFromReport(mockOnly()),
+    /clawsweeper-verdict:needs-human [^>]* hold=proof findings=0 -->/,
+  );
+  const markers = reviewAutomationMarkersFromReport(mockOnly({ confidence: "medium" }));
   assert.match(markers, /clawsweeper-verdict:needs-human [^>]* hold=blocked findings=0 -->/);
   assert.doesNotMatch(markers, /hold=proof/);
 });
