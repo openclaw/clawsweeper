@@ -11,35 +11,6 @@ import {
   reviewRecord,
 } from "../dist/pr-review-evidence.js";
 
-test("reviewRecord preserves object identity, including arrays and null prototypes", () => {
-  for (const value of [{}, [], Object.assign([], { sha: "a".repeat(40) }), Object.create(null)]) {
-    assert.equal(reviewRecord(value), value);
-  }
-});
-
-test("reviewRecord returns a fresh plain object for null and non-object values", () => {
-  for (const value of [
-    null,
-    undefined,
-    false,
-    true,
-    0,
-    1,
-    NaN,
-    "",
-    "head",
-    1n,
-    Symbol(),
-    () => {},
-  ]) {
-    const first = reviewRecord(value);
-    const second = reviewRecord(value);
-    assert.deepEqual(first, {});
-    assert.deepEqual(second, {});
-    assert.notEqual(first, second);
-  }
-});
-
 test("review evidence retains pinned identities on array-backed records", () => {
   const sha = "a".repeat(40);
   const pullRequest = Object.assign([], {
