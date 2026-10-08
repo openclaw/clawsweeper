@@ -1761,7 +1761,8 @@ function classifyMaintainerApprovedAutomerge(
   const validatedMaintainerHumanApproval =
     review?.decision === "human" &&
     maintainerAutomergeOptInApprovesNeedsHumanReason({
-      reason: review.command?.repair_reason,
+      hold: review.command?.needs_human_hold,
+      findings: review.command?.review_findings,
       commentCreatedAt: review.commentCreatedAt,
       commentUpdatedAt: review.commentUpdatedAt,
       optInTime: command.comment_updated_at ?? command.comment_created_at,

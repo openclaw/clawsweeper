@@ -211,6 +211,16 @@ for (const path of ["README.md", "src/arbitrary.ts", "docs/usage.md"]) {
   });
 }
 
+test("missing proof plus another blocker is not a waivable proof hold", () => {
+  const report = notApplicableProofReport({
+    pull_files: JSON.stringify(["src/arbitrary.ts"]),
+    confidence: "medium",
+  });
+  const markers = reviewAutomationMarkersFromReport(report);
+  assert.match(markers, /clawsweeper-verdict:needs-human [^>]* hold=blocked findings=0 -->/);
+  assert.doesNotMatch(markers, /hold=proof/);
+});
+
 test("maintainer PR proof row keeps the rated tier and proof summary, not Not applicable", () => {
   // #167367, #167372: the contributor proof gate does not apply, but proof quality is still rated.
   const report = notApplicableProofReport(

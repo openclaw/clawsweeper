@@ -124,8 +124,10 @@ export function createReviewCommentAutomation(
     const withReviewState = (...markers: string[]): string =>
       [...markers.filter(Boolean), reviewStateMarker].join("\n");
     // The router reads `hold` and `findings` to route a needs-human verdict.
-    // It must not read the review prose for this decision.
+    // It must not read the review prose for this decision. A failed or unnormalized
+    // review has no findings that automation can act on.
     const findingCount =
+      reviewReadiness.normalizationFailed ||
       frontMatterValue(markdown, "review_status") === "failed"
         ? 0
         : reportReviewFindings(markdown).length;
@@ -172,7 +174,9 @@ export function createReviewCommentAutomation(
       return withReviewState(...markers, needsHumanVerdict("security"));
     }
     if (hasRealBehaviorProofBlocker) {
-      return withReviewState(needsHumanVerdict("proof"));
+      // A maintainer opt-in can waive missing proof only when proof is the one remaining blocker.
+      const proofIsOnlyBlocker = reviewReadiness.items.length === 1;
+      return withReviewState(needsHumanVerdict(proofIsOnlyBlocker ? "proof" : "blocked"));
     }
     if (decision === "keep_open") {
       if (reviewReadiness.state === "ready" && repairLoopPassModeFromReport(markdown)) {
