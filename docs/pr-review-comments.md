@@ -201,9 +201,8 @@ merge, and why not yet" in this order:
    router parse only this block. A `### Provenance` subsection lists
    `overrides_without_reason` and `unknown` provenance entries, and a
    `### Tests` subsection lists low-value tests (file and reason) and the
-   missing end-to-end scenario; the scenario is left out when missing proof
-   already blocks merge in `Before merge`. Neither subsection uses P-severity
-   labels, so neither starts repair routing.
+   missing end-to-end scenario. Neither subsection uses P-severity labels, so
+   neither starts repair routing.
 
 Maintainer decision packets are reserved for unresolved choices between at least
 two distinct viable options that evidence cannot settle and a maintainer has not

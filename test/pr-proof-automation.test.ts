@@ -377,7 +377,8 @@ Full review comments:
     comment,
     /\| \*\*Proof confidence\*\* \| 🦐 gold shrimp \*\*\(3\/6\)\*\* \| Real behavior proof is necessary before merge\. See \[Before merge\]\(#before-merge\)\. \|/,
   );
-  assert.doesNotMatch(comment, /Missing end-to-end proof/);
+  // The required scenario is a different fact from the proof assessment, so Tests keeps it.
+  assert.match(comment, /Missing end-to-end proof: Run the real Gateway reconnect/);
 });
 
 test("N/A projection preserves scope, trust, authority, and exact override boundaries", () => {

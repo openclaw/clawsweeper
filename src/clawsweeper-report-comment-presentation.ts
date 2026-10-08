@@ -511,13 +511,7 @@ export function createReportCommentPresentation(
         appendHeadingSection(
           lines,
           "Findings",
-          publicFindingsBlock(
-            reviewFindings,
-            securityReview,
-            provenance,
-            // The Before merge proof item already states the missing end-to-end proof.
-            hasRealBehaviorProofBlocker ? { ...testingReview, missingE2e: "" } : testingReview,
-          ),
+          publicFindingsBlock(reviewFindings, securityReview, provenance, testingReview),
         );
       }
 
