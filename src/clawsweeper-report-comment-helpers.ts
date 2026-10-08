@@ -844,7 +844,7 @@ export function createReportCommentHelpers(
     const timestamp = formatReviewFreshnessTimestamp(frontMatterValue(markdown, "reviewed_at"));
     if (!timestamp) return "";
     const revisionSuffix = revision !== undefined && revision >= 2 ? ` (Revision ${revision})` : "";
-    return ` _Reviewed ${timestamp}${revisionSuffix}._`;
+    return `_Reviewed ${timestamp}${revisionSuffix}._`;
   }
 
   const REVIEW_HISTORY_RENDER_SLOT = "CLAWSWEEPER_REVIEW_HISTORY_RENDER_SLOT";

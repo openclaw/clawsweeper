@@ -1,0 +1,1 @@
+- Drop the `# ClawSweeper review` heading from review comments and move the `Reviewed <time>` stamp from the verdict line to the end of the comment.

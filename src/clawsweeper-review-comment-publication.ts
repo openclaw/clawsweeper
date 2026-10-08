@@ -217,8 +217,6 @@ export function createReviewCommentPublication(
       [
         "Codex review: publication failed closed.",
         "",
-        "# ClawSweeper review",
-        "",
         "## Merge readiness",
         "",
         "**Blocked by review publication failure.**",

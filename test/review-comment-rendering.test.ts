@@ -1256,10 +1256,14 @@ Full review comments:
     "none",
   );
 
+  // The verdict leads; the review time closes the visible comment, after the details.
   assert.match(
     comment,
-    /Codex review: needs maintainer review before merge\. _Reviewed May 22, 2026, 12:43 AM ET \/ 04:43 UTC\._/,
+    /^Codex review: needs maintainer review before merge\.\n\n## What this changes\n/,
   );
+  assert.doesNotMatch(comment, /^# ClawSweeper review$/m);
+  const reviewedAt = comment.indexOf("_Reviewed May 22, 2026, 12:43 AM ET / 04:43 UTC._");
+  assert.ok(reviewedAt > comment.lastIndexOf("</details>"), comment);
   assert.doesNotMatch(comment, /\*\*Latest ClawSweeper review:\*\*/);
   assert.match(
     comment,
@@ -1498,10 +1502,7 @@ Full review comments:
     "none",
   );
 
-  assert.match(
-    comment,
-    /Codex review: needs maintainer review before merge\. _Reviewed July 8, 2026, 11:00 PM ET \/ July 9, 2026, 03:00 UTC\._/,
-  );
+  assert.match(comment, /_Reviewed July 8, 2026, 11:00 PM ET \/ July 9, 2026, 03:00 UTC\._/);
 });
 
 test("issue keep-open review comments surface reproducibility in the summary", () => {

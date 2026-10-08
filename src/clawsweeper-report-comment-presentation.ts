@@ -356,7 +356,7 @@ export function createReportCommentPresentation(
               : "Codex review: this still needs some work.";
     const reviewHistory = reviewHistoryForRender(markdown, options.previousReviewCommentBody);
     const revision = reviewHistory.totalCompletedCycles + 1;
-    const lines = [`${verdictLine}${reviewFreshnessText(markdown, revision)}`, ""];
+    const lines = [verdictLine, ""];
     const prSurface = renderOpenClawPrSurfaceFromReport(markdown);
     const dataModelWarning = renderDataModelWarningFromReport(markdown);
     const sqliteSchemaWarning = renderSqliteSchemaWarningFromReport(markdown);
@@ -471,7 +471,6 @@ export function createReportCommentPresentation(
       const patchQualityBlocked =
         !reviewFailed && (prRating.patchTier === "F" || prRating.patchTier === "D");
       const beforeMergeItems = reviewReadiness.items;
-      lines.push("# ClawSweeper review", "");
       appendHeadingSection(lines, "What this changes", changeSummaryLine);
       if (sqliteSchemaWarning) lines.push(sqliteSchemaWarning, "");
       if (!reviewFailed) {
@@ -600,6 +599,8 @@ export function createReportCommentPresentation(
       if (evidenceDetailsBlock) lines.push("", evidenceDetailsBlock);
       lines.push("", ...reviewWorkflowCallout());
     }
+    const freshness = reviewFreshnessText(markdown, revision);
+    if (freshness) lines.push("", freshness);
     const publicBody = neutralizeReviewControlMarkers(
       sanitizePublicSelfReferences(
         lines.join("\n"),
@@ -646,8 +647,6 @@ export function createReportCommentPresentation(
         : "The exact reviewed head could not be recovered.";
       const body = [
         "Codex review: blocked before merge.",
-        "",
-        "# ClawSweeper review",
         "",
         "## What this changes",
         "",
