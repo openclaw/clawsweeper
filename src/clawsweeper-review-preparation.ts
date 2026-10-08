@@ -168,12 +168,14 @@ export function prepareReviewCommand(
         "--codex-reasoning-effort and --codex-service-tier are retired for item reviews; author association selects the fixed profile.",
       );
     }
-    // Local reviews default to the hosted reviewer profile so their evidence and verdicts match.
+    // Exact-item local reviews default to the hosted reviewer profile so their evidence and
+    // verdicts match hosted ones. Committed-range reviews stay offline by contract.
+    const localExact = localOnly && !localRange;
     const sandboxMode = stringArg(
       args.codex_sandbox,
-      localOnly ? "clawsweeper-review" : "read-only",
+      localExact ? "clawsweeper-review" : "read-only",
     );
-    if (localOnly && sandboxMode === "clawsweeper-review") {
+    if (localExact && sandboxMode === "clawsweeper-review") {
       process.env.CODEX_HOME = prepareLocalReviewCodexHome(reviewWorkspace.path);
     }
     const timeoutMs = numberArg(args.codex_timeout_ms, DEFAULT_REVIEW_CODEX_TIMEOUT_MS);

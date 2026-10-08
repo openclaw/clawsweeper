@@ -48,10 +48,11 @@ function checksOutline(value: unknown): unknown {
 
 /**
  * The prompt is an index, not an archive: it carries the item under review in full and points
- * at everything else, which the reviewer reads from GitHub when it matters.
+ * at everything else. Linked-item bodies stay inline only when the agent cannot read GitHub.
  */
 export function reviewPromptContext(
   context: ItemContext,
+  options: { agentCanReadGitHub: boolean },
 ): Omit<ItemContext, "pullCommitsRevision" | "prHydrationSnapshot"> {
   const { pullCommitsRevision: _, prHydrationSnapshot: __, ...view } = context;
   const pullRequest = asRecord(context.pullRequest);
@@ -62,8 +63,10 @@ export function reviewPromptContext(
     view.pullRequest = { ...rest, body: "[same as issue.body]" };
   }
   if (context.pullChecks !== undefined) view.pullChecks = checksOutline(context.pullChecks);
-  for (const key of LINKED_ITEM_KEYS) {
-    if (context[key]) view[key] = withoutBodies(context[key]) as unknown[];
+  if (options.agentCanReadGitHub) {
+    for (const key of LINKED_ITEM_KEYS) {
+      if (context[key]) view[key] = withoutBodies(context[key]) as unknown[];
+    }
   }
   return view;
 }

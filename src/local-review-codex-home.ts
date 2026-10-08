@@ -1,5 +1,12 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -23,8 +30,18 @@ export function prepareLocalReviewCodexHome(workspaceDir: string): string {
     process.env.CODEX_HOME?.trim() || join(homedir(), ".codex"),
     "auth.json",
   );
-  // A link keeps token refreshes in the operator's login instead of a copy that goes stale.
-  if (existsSync(operatorAuth)) symlinkSync(operatorAuth, join(home, "auth.json"));
+  const auth = join(home, "auth.json");
+  if (existsSync(operatorAuth)) {
+    // A link keeps token refreshes in the operator's login. Windows refuses file links
+    // without Developer Mode, so a private copy in the run's scratch serves there.
+    try {
+      symlinkSync(operatorAuth, auth);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EPERM") throw error;
+      copyFileSync(operatorAuth, auth);
+      chmodSync(auth, 0o600);
+    }
+  }
   execFileSync(process.execPath, [CONFIGURE_REVIEW_NETWORK], {
     env: { ...process.env, CODEX_HOME: home },
     stdio: "ignore",
