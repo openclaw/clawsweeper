@@ -59,6 +59,7 @@ import type { CreateReviewCommandWorkflowDependencies } from "./clawsweeper-revi
 import { prepareReviewCommand } from "./clawsweeper-review-preparation.js";
 import { parsePrHydrationSnapshot } from "./pr-hydration-snapshot.js";
 import { createCommitPullResolver, pullRequestProvenanceEvidence } from "./pr-review-provenance.js";
+import { pullRequestHistoryCoverage } from "./pr-review-history.js";
 import { ReviewSourcePreparationError } from "./review-source-preparation.js";
 import { validationRecoveryRequired } from "./repair/validation-recovery.js";
 import { commandProofBinding, assertCommandProofSubject } from "./command-proof-assessment.js";
@@ -1454,7 +1455,18 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
               writeOutputMetadata,
             );
         const reviewEnv = reviewEnvironment(localOnly);
-        // Host-side blame and GitHub reads; the review sandbox has neither old blobs nor the API.
+        // The review sandbox cannot fetch old blobs: make the changed files'
+        // history local first, so host blame and the reviewer both read it.
+        const historyCoverage =
+          item.kind === "pull_request"
+            ? pullRequestHistoryCoverage({ targetDir: reviewOpenclawDir, context, mainSha: git.mainSha })
+            : undefined;
+        if (historyCoverage) {
+          console.error(
+            `[review] ${new Date().toISOString()} shard=${shardIndex}/${shardCount} history-prefetch=${historyCoverage.status} #${item.number} paths=${historyCoverage.changedPaths} renames=${historyCoverage.renames.length} blobs=${historyCoverage.blobs} fetched=${historyCoverage.fetched} truncated=${historyCoverage.truncated.length} ms=${historyCoverage.elapsedMs}`,
+          );
+        }
+        // Host-side blame and GitHub reads, recorded as evidence before review.
         const provenanceEvidence =
           item.kind === "pull_request"
             ? pullRequestProvenanceEvidence({
@@ -1474,6 +1486,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
             targetDir: reviewOpenclawDir,
             ...reviewNetworkCapability(sandboxMode, reviewEnv),
             ...(provenanceEvidence ? { provenanceEvidence } : {}),
+            ...(historyCoverage ? { historyCoverage } : {}),
           },
         );
         diagnosticPrompt = prompt.text;

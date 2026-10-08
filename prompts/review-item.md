@@ -40,7 +40,7 @@ Use `originalHead.parents` only when `originalHead.status` is `verified`: they a
 
 For every issue or PR, trace the people most likely connected to the relevant code or behavior. Do a feature-history hunt, not just latest-line blame, against the concrete files, symbols, docs, workflow steps, or tests involved; for a broad item, sample the most central files rather than skipping provenance.
 
-1. Find where the behavior came from: `git log -L <start>,<end>:<file>` for lines, `git log -S <string>` or `git log -G <regex>` for a symbol, and `git log --follow -- <file>` across renamed files, moved helpers, old names, and refactored call sites. Use `git blame`, `git show`, and nearby commit/PR history to walk back from the last edit.
+1. Find where the behavior came from: `git log -L <start>,<end>:<file>` for lines, `git log -S <string> -- <files>` or `git log -G <regex> -- <files>` for a symbol, and the earlier names in Runtime Capabilities across renamed files, moved helpers, old names, and refactored call sites. Use `git blame`, `git show`, and nearby commit/PR history to walk back from the last edit.
 2. Identify who introduced the feature, who spent the most time on that area, who carried major refactors, and who most recently maintained the path (`git shortlog`). Include several people when the trail is shared or ambiguous. These people feed `likelyOwners`.
 3. If history stays ambiguous, say so and mark confidence low.
 

@@ -8,6 +8,7 @@ import type {
 } from "./review-history.js";
 import type { ReviewStructuralRecord } from "./review-structural-cache.js";
 import type { PrHydrationSnapshot } from "./pr-hydration-snapshot.js";
+import type { ReviewHistoryCoverage } from "./pr-review-history.js";
 import type { ProvenanceEvidence } from "./pr-review-provenance.js";
 import type { SchedulerDueCandidate } from "./scheduler-policy.js";
 
@@ -839,6 +840,8 @@ export interface ReviewPromptRuntimeHints {
   mediaProofSummary?: string;
   // Host-computed before the review; pull request prompts render it as evidence.
   provenanceEvidence?: ProvenanceEvidence;
+  // Host-prefetched Git history; pull request prompts state what is local.
+  historyCoverage?: ReviewHistoryCoverage;
 }
 
 export interface DashboardItem {

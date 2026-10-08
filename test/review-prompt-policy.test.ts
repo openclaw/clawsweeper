@@ -183,7 +183,8 @@ test("review prompt routes PR likely owners through feature history", () => {
 
   assert.match(prompt, /feature-history hunt/);
   assert.match(prompt, /who introduced the feature/);
-  assert.match(prompt, /git log --follow -- <file>/);
+  assert.match(prompt, /git log -S <string> -- <files>/);
+  assert.match(prompt, /earlier names in Runtime Capabilities/);
   assert.match(prompt, /do not list the PR author solely/);
   assert.match(prompt, /not to the PR\s+author merely for writing the proposal/);
   assert.match(prompt, /Do\s+not use `maintainer` as a likely-owner role/);

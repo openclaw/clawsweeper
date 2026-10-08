@@ -28,6 +28,7 @@ import {
 } from "./clawsweeper-media-proof.js";
 import { safeOutputTail, trimMiddle } from "./clawsweeper-text.js";
 import { buildPullRequestReviewEvidence } from "./pr-review-evidence.js";
+import { reviewHistoryCapability } from "./pr-review-history.js";
 import { PROVENANCE_NOT_RUN } from "./pr-review-provenance.js";
 import { reviewPromptContext } from "./clawsweeper-prompt-context.js";
 import { verifyLikelyOwnerHistory } from "./clawsweeper-regression-provenance.js";
@@ -567,7 +568,7 @@ ${additionalPrompt.trim()}
 - ${networkDescription}
 - ${tokenDescription}
 - Linked screenshots and videos are downloaded before review into the media proof manifest; read those files rather than re-fetching.
-- ${runtimeHints.networkCapability === "unrestricted" ? "Treat the target checkout as read-only; OpenClaw gateway execution does not enforce the Codex filesystem sandbox." : "The target checkout is read-only."} Use ${proofScratchDir ? `\`${proofScratchDir}\`` : "the proof scratch directory"} for evidence and generated video stills/contact sheets.
+- ${runtimeHints.networkCapability === "unrestricted" ? "Treat the target checkout as read-only; OpenClaw gateway execution does not enforce the Codex filesystem sandbox." : "The target checkout is read-only."} Use ${proofScratchDir ? `\`${proofScratchDir}\`` : "the proof scratch directory"} for evidence and generated video stills/contact sheets.${prEvidence && runtimeHints.historyCoverage ? `\n- ${reviewHistoryCapability(runtimeHints.historyCoverage)}` : ""}
 ${mediaProofPrompt}
 ${introductionEvidence}${provenanceEvidence}
 
@@ -1008,10 +1009,15 @@ ${extra}
   }
 
   function reviewEnvironment(preserveCodexAuth?: boolean): NodeJS.ProcessEnv {
-    return untrustedCodexEnv({
-      ghToken: process.env.CLAWSWEEPER_PROOF_INSPECTION_TOKEN,
-      preserveCodexAuth,
-    });
+    return {
+      ...untrustedCodexEnv({
+        ghToken: process.env.CLAWSWEEPER_PROOF_INSPECTION_TOKEN,
+        preserveCodexAuth,
+      }),
+      // The review proxy rejects Git's POST object fetch with HTTP 403. The host
+      // prefetches the history the reviewer needs; any other miss fails at once.
+      GIT_NO_LAZY_FETCH: "1",
+    };
   }
 
   function runCodex(options: {

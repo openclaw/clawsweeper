@@ -236,30 +236,16 @@ test("pull request resolution retains named properties on arrays and null-protot
   }
 });
 
-function fakeGit(
-  blame: Record<string, string | null>,
-  diff: string | null = samplePatch,
-  history: { log: string | null; check: string | null } = { log: null, check: null },
-) {
+function fakeGit(blame: Record<string, string | null>, diff: string | null = samplePatch) {
   const calls: string[][] = [];
-  const inputs: string[] = [];
   const read: ProvenanceGitRead = (args, options) => {
     calls.push(args);
     assert.ok(typeof options.deadlineAt === "number");
     if (args[0] === "diff") return diff;
-    if (args.includes("log")) {
-      assert.equal(options.lazyFetch, false, "history listing must not fetch blobs");
-      return history.log;
-    }
-    if (args[0] === "cat-file") {
-      assert.equal(options.lazyFetch, false, "the missing filter must not fetch blobs");
-      inputs.push(options.input!.toString("utf8"));
-      return history.check;
-    }
     const range = args[args.indexOf("-L") + 1]!;
     return blame[`${args.at(-1)}:${range}`] ?? null;
   };
-  return { calls, inputs, read };
+  return { calls, read };
 }
 
 const blameB = [
@@ -280,8 +266,6 @@ const blameByArea = {
   "src/added-only.ts:3,5": blameB,
 };
 
-const noFetch = () => assert.fail("no blob fetch expected");
-
 test("provenance evidence attaches resolved pull requests to blamed areas", () => {
   const { calls, read } = fakeGit(blameByArea);
   const resolved: string[] = [];
@@ -290,7 +274,6 @@ test("provenance evidence attaches resolved pull requests to blamed areas", () =
     mergeBaseSha: MERGE_BASE,
     headSha: HEAD,
     git: read,
-    fetchBlobs: noFetch,
     resolvePull: (repo, sha) => {
       resolved.push(`${repo}@${sha}`);
       return sha === A
@@ -338,119 +321,7 @@ test("provenance evidence attaches resolved pull requests to blamed areas", () =
   assert.ok(calls[0]!.includes("--unified=0"));
 });
 
-function objectIds(count: number, prefix: string): string[] {
-  return Array.from(
-    { length: count },
-    (_, index) => prefix + (index + 1).toString(16).padStart(39, "0"),
-  );
-}
-
-test("history blobs are listed, filtered to missing ones, and fetched in 400-object chunks before blame", () => {
-  const source = objectIds(450, "d");
-  const lock = objectIds(101, "f");
-  const gitlink = objectIds(2, "9");
-  const log = [
-    `:000000 100644 ${ZERO} ${source[0]} A\tsrc/many.ts`,
-    ...source
-      .slice(1)
-      .map((objectId, index) => `:100644 100755 ${source[index]} ${objectId} M\tsrc/many.ts`),
-    "",
-    `:160000 160000 ${gitlink[0]} ${gitlink[1]} M\tsrc/many.ts`,
-    ...lock
-      .slice(1)
-      .map((objectId, index) => `:100644 100644 ${lock[index]} ${objectId} M\tpnpm-lock.yaml`),
-    `:100644 000000 ${source[449]} ${ZERO} D\tsrc/gone.ts`,
-  ].join("\n");
-  const check = [
-    `${source[0]} blob 100`,
-    ...source.slice(1).map((objectId) => `${objectId} missing`),
-    // One local lockfile version of 1 MiB: 100 missing versions exceed the 64 MiB budget.
-    `${lock[0]} blob ${1024 * 1024}`,
-    ...lock.slice(1).map((objectId) => `${objectId} missing`),
-  ].join("\n");
-  const events: string[] = [];
-  const fake = fakeGit(blameByArea, samplePatch, { log, check });
-  const fetched: string[][] = [];
-  const evidence = buildProvenanceEvidence({
-    repo: "o/r",
-    mergeBaseSha: MERGE_BASE,
-    headSha: HEAD,
-    git: (args, options) => {
-      events.push(args.includes("log") ? "log" : args[0]!);
-      return fake.read(args, options);
-    },
-    fetchBlobs: (ids, deadlineAt) => {
-      assert.ok(deadlineAt > 0);
-      events.push("fetch");
-      fetched.push(ids);
-    },
-    resolvePull: () => null,
-  });
-  const history = fake.calls.find((args) => args.includes("log"))!;
-  assert.deepEqual(history.slice(0, 9), [
-    "--literal-pathspecs",
-    "log",
-    "--format=",
-    "--raw",
-    "--no-abbrev",
-    "--no-renames",
-    "-n",
-    "300",
-    MERGE_BASE,
-  ]);
-  assert.deepEqual(history.slice(10), ["src/many.ts", "src/gone.ts", "src/added-only.ts"]);
-  const listed = fake.inputs[0]!.trim().split("\n");
-  assert.equal(new Set(listed).size, listed.length);
-  assert.deepEqual(new Set(listed), new Set([...source, ...lock]));
-  assert.deepEqual(
-    fetched.map((chunk) => chunk.length),
-    [400, 49],
-  );
-  assert.deepEqual(new Set(fetched.flat()), new Set(source.slice(1)));
-  assert.deepEqual(events.slice(0, 5), ["diff", "log", "cat-file", "fetch", "fetch"]);
-  assert.equal(events[5], "blame");
-  assert.equal(evidence.areas.length, 6);
-});
-
-test("prefetch failures fall back to lazy blame; an unsettled Git process still stops", () => {
-  const history = {
-    log: `:100644 100644 ${A} ${B} M\tsrc/many.ts`,
-    check: `${A} blob 10\n${B} missing`,
-  };
-  const baseline = buildProvenanceEvidence({
-    repo: "o/r",
-    mergeBaseSha: MERGE_BASE,
-    headSha: HEAD,
-    git: fakeGit(blameByArea).read,
-    fetchBlobs: noFetch,
-    resolvePull: () => null,
-  });
-  let attempts = 0;
-  const failed = buildProvenanceEvidence({
-    repo: "o/r",
-    mergeBaseSha: MERGE_BASE,
-    headSha: HEAD,
-    git: fakeGit(blameByArea, samplePatch, history).read,
-    fetchBlobs: (ids) => {
-      attempts += 1;
-      assert.deepEqual(ids, [B]);
-      throw new Error("fetch failed: remote end hung up");
-    },
-    resolvePull: () => null,
-  });
-  assert.equal(attempts, 1);
-  assert.deepEqual(failed, baseline);
-
-  const noSizes = buildProvenanceEvidence({
-    repo: "o/r",
-    mergeBaseSha: MERGE_BASE,
-    headSha: HEAD,
-    git: fakeGit(blameByArea, samplePatch, { log: history.log, check: null }).read,
-    fetchBlobs: noFetch,
-    resolvePull: () => null,
-  });
-  assert.deepEqual(noSizes, baseline);
-
+test("an unsettled Git process stops provenance instead of failing soft", () => {
   const unsettled = new ReviewGitError(
     "review_blobs_unavailable",
     Object.assign(new Error("settlement"), {
@@ -463,8 +334,7 @@ test("prefetch failures fall back to lazy blame; an unsettled Git process still 
         repo: "o/r",
         mergeBaseSha: MERGE_BASE,
         headSha: HEAD,
-        git: fakeGit(blameByArea, samplePatch, history).read,
-        fetchBlobs: () => {
+        git: () => {
           throw unsettled;
         },
         resolvePull: () => null,
@@ -480,7 +350,6 @@ test("provenance evidence fails soft on resolver, blame, diff, and deadline fail
     mergeBaseSha: MERGE_BASE,
     headSha: HEAD,
     git: fakeGit({ ...blameByArea, "src/many.ts:90,93": null }).read,
-    fetchBlobs: noFetch,
     resolvePull: () => {
       lookups += 1;
       throw new Error("gh: HTTP 403\n  rate limit exceeded");
@@ -504,7 +373,6 @@ test("provenance evidence fails soft on resolver, blame, diff, and deadline fail
     mergeBaseSha: MERGE_BASE,
     headSha: HEAD,
     git: fakeGit({}, null).read,
-    fetchBlobs: noFetch,
     resolvePull: () => null,
   });
   assert.equal(noDiff.status, "unavailable");
@@ -517,7 +385,6 @@ test("provenance evidence fails soft on resolver, blame, diff, and deadline fail
     git: () => {
       throw new Error("spawn git ENOENT");
     },
-    fetchBlobs: noFetch,
     resolvePull: () => null,
   });
   assert.deepEqual(gitThrows, {
@@ -533,12 +400,8 @@ test("provenance evidence fails soft on resolver, blame, diff, and deadline fail
     headSha: HEAD,
     git: (args, options) => {
       if (args[0] === "diff") clock = 46_000;
-      return fakeGit(blameByArea, samplePatch, {
-        log: `:100644 100644 ${A} ${B} M\tsrc/many.ts`,
-        check: `${B} missing`,
-      }).read(args, options);
+      return fakeGit(blameByArea).read(args, options);
     },
-    fetchBlobs: noFetch,
     resolvePull: () => null,
     now: () => clock,
   });
@@ -551,7 +414,6 @@ test("provenance evidence fails soft on resolver, blame, diff, and deadline fail
     mergeBaseSha: MERGE_BASE,
     headSha: HEAD,
     git: fakeGit({}, fileDiff("src/new.ts", [hunk(0, 0, 3)], "/dev/null")).read,
-    fetchBlobs: noFetch,
     resolvePull: () => null,
   });
   assert.deepEqual(complete, { status: "complete", areas: [] });

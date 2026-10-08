@@ -233,18 +233,32 @@ overrides should weigh, and code applies no tier caps from these fields. Reports
 written before these fields existed parse as `not_applicable` and keep their
 stored rating and readiness.
 
-The review sandbox runs on a partial clone without network, so `git blame` and
-`gh api` usually fail there. Before the model runs, the host therefore computes
-the PR prompt's `## Provenance Evidence`: from the merge-base to head diff it
+The review checkout is a `blob:none` partial clone, and the review proxy allows
+only read methods, so Git's lazy object fetch (a smart-HTTP `POST`) fails there
+with HTTP 403. Before the model runs, the host makes the history of the PR's
+changed files local: one `git log --raw` walk from the head, base, GitHub test
+merge, and fetched main tip lists every version of the changed files (up to
+100), newest first, and one noop-negotiation fetch downloads the missing blobs.
+It also fetches the files deleted in each file's creation commit, detects renames
+among them, and repeats the walk for up to two generations of earlier names, so
+`git log -S/-G/-L`, `git show <old>:<path>`, and `git blame` work in the sandbox.
+The bound is 5,000 blobs, 1 GiB estimated (the largest local version of a path
+times its versions), 128 MiB estimated per path, and 60 seconds; a path cut by a
+bound keeps its newest versions. On openclaw/openclaw the full history of 2 to 20
+changed files is 160 to 1,058 blobs, a 0.3 to 5.6 MiB pack, in 2.5 to 12 seconds.
+The prompt's Runtime Capabilities line names the earlier file names and any
+history that is not local. The reviewer runs with `GIT_NO_LAZY_FETCH=1`, so any
+other missing blob fails at once with `lazy fetching disabled` instead of a 403.
+`git log --follow` still ends with that error at a file's creation commit: its
+copy detection reads the whole parent tree.
+
+The host also computes the PR prompt's `## Provenance Evidence`: from the merge-base to head diff it
 takes up to 12 files that existed on the merge base (most modified or deleted
 base lines first, at most 4 hunks each; a pure insertion contributes the up to
-three unchanged base lines around it as `insertion_context`). It lists those
-files' history blobs from the last 300 commits with `git log --raw`, keeps the
-locally missing ones, and fetches them in one noop-negotiation request per 400
-blobs, so blame does not lazily fetch one blob per round trip; a path whose
-estimated history exceeds 64 MiB (such as a lockfile) and any failed prefetch
-fall back to lazy fetch. It then runs `git blame --porcelain` on those base
-lines at the merge base, all within one 45-second deadline, and resolves up to
+three unchanged base lines around it as `insertion_context`). It runs
+`git blame --porcelain` on those base lines at the merge base, reading the
+prefetched history (lazily fetching anything beyond its bounds on the host),
+all within one 45-second deadline, and resolves up to
 15 distinct introducing commits through
 `GET /repos/{owner}/{repo}/commits/{sha}/pulls` with the same `gh` reader that
 collects item context (title, URL, merge time, 1,200-character body excerpt,

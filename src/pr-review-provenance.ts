@@ -1,5 +1,5 @@
 import type { ItemContext } from "./clawsweeper-types.js";
-import { fetchReviewBlobs, ReviewGitError } from "./clawsweeper-review-blobs.js";
+import { ReviewGitError } from "./clawsweeper-review-blobs.js";
 import {
   readReviewGit,
   reviewMergeBase,
@@ -21,10 +21,6 @@ const MAX_BODY_EXCERPT_CHARS = 1_200;
 const MAX_SUMMARY_CHARS = 200;
 const MAX_REASON_DETAIL_CHARS = 200;
 const ZERO_OBJECT_ID = /^0+$/;
-const BLOB_MODE = /^(?:100644|100755|120000)$/;
-const MAX_HISTORY_COMMITS = 300;
-const MAX_PREFETCH_OBJECTS = 400;
-const MAX_PREFETCH_BYTES = 64 * 1024 * 1024;
 
 export type ProvenancePullRequest = {
   number: number;
@@ -60,8 +56,6 @@ export type ProvenanceEvidence = {
 export type ProvenanceHunk = { path: string; start: number; end: number; change: ProvenanceChange };
 
 export type BlameCommit = { sha: string; date: string; summary: string; lines: number };
-
-export type ProvenanceBlobFetch = (objectIds: string[], deadlineAt: number) => unknown;
 
 export type ProvenanceGitRead = (args: string[], options: ReviewGitReadOptions) => string | null;
 
@@ -237,96 +231,11 @@ export function createCommitPullResolver(
   };
 }
 
-// List history blobs without reading them, keep the missing ones, and fetch
-// those in bulk. Blame then reads local blobs instead of fetching one per trip.
-// A path whose estimated history (largest local version x missing versions)
-// exceeds the byte budget, such as a lockfile, stays on the time-bounded lazy path.
-function prefetchHistoryBlobs(options: {
-  git: ProvenanceGitRead;
-  fetchBlobs: ProvenanceBlobFetch;
-  mergeBaseSha: string;
-  paths: string[];
-  deadlineAt: number;
-  now: () => number;
-}): void {
-  const { git, deadlineAt } = options;
-  if (options.paths.length === 0) return;
-  const history = git(
-    [
-      "--literal-pathspecs",
-      "log",
-      "--format=",
-      "--raw",
-      "--no-abbrev",
-      // Rename detection would read blob contents.
-      "--no-renames",
-      "-n",
-      String(MAX_HISTORY_COMMITS),
-      options.mergeBaseSha,
-      "--",
-      ...options.paths,
-    ],
-    { deadlineAt, maxBytes: MAX_DIFF_BYTES, lazyFetch: false },
-  );
-  if (history === null) return;
-  const blobsByPath = new Map<string, Set<string>>();
-  for (const line of history.split("\n")) {
-    const raw =
-      /^:(\d{6}) (\d{6}) ([0-9a-f]{40}(?:[0-9a-f]{24})?) ([0-9a-f]{40}(?:[0-9a-f]{24})?) [A-Z]\d*\t(.+)$/.exec(
-        line,
-      );
-    if (!raw) continue;
-    const blobs = blobsByPath.get(raw[5]!) ?? new Set<string>();
-    if (BLOB_MODE.test(raw[1]!) && !ZERO_OBJECT_ID.test(raw[3]!)) blobs.add(raw[3]!);
-    if (BLOB_MODE.test(raw[2]!) && !ZERO_OBJECT_ID.test(raw[4]!)) blobs.add(raw[4]!);
-    blobsByPath.set(raw[5]!, blobs);
-  }
-  const listed = new Set([...blobsByPath.values()].flatMap((blobs) => [...blobs]));
-  if (listed.size === 0) return;
-  const check = git(["cat-file", "--batch-check"], {
-    deadlineAt,
-    maxBytes: MAX_DIFF_BYTES,
-    input: Buffer.from(`${[...listed].join("\n")}\n`),
-    lazyFetch: false,
-  });
-  // Git before 2.45 exits without batch output when lazy fetch is blocked;
-  // without sizes the byte budget cannot hold, so blame stays on the lazy path.
-  if (check === null) return;
-  const sizes = new Map<string, number>();
-  const missing = new Set<string>();
-  for (const line of check.split("\n")) {
-    const entry = /^([0-9a-f]{40}(?:[0-9a-f]{24})?) (?:blob (\d+)|(missing))$/.exec(line);
-    if (!entry || !listed.has(entry[1]!)) continue;
-    if (entry[3]) missing.add(entry[1]!);
-    else sizes.set(entry[1]!, Number(entry[2]));
-  }
-  const plans = [...blobsByPath.values()]
-    .map((blobs) => {
-      const absent = [...blobs].filter((objectId) => missing.has(objectId));
-      const largest = Math.max(0, ...[...blobs].map((objectId) => sizes.get(objectId) ?? 0));
-      return { absent, bytes: largest * absent.length };
-    })
-    .sort((a, b) => a.bytes - b.bytes);
-  let budget = MAX_PREFETCH_BYTES;
-  const wanted = new Set<string>();
-  for (const plan of plans) {
-    if (plan.bytes > budget) continue;
-    budget -= plan.bytes;
-    for (const objectId of plan.absent) wanted.add(objectId);
-  }
-  const objectIds = [...wanted];
-  for (let offset = 0; offset < objectIds.length; offset += MAX_PREFETCH_OBJECTS) {
-    if (options.now() >= deadlineAt) return;
-    options.fetchBlobs(objectIds.slice(offset, offset + MAX_PREFETCH_OBJECTS), deadlineAt);
-  }
-}
-
 export function buildProvenanceEvidence(options: {
   repo: string;
   mergeBaseSha: string;
   headSha: string;
   git: ProvenanceGitRead;
-  fetchBlobs: ProvenanceBlobFetch;
   resolvePull: CommitPullResolver;
   now?: () => number;
 }): ProvenanceEvidence {
@@ -362,19 +271,6 @@ export function buildProvenanceEvidence(options: {
       reasons.push(
         `${omitted} base hunks omitted by the ${MAX_FILES}-file and ${MAX_HUNKS_PER_FILE}-hunk-per-file caps.`,
       );
-    try {
-      prefetchHistoryBlobs({
-        git: options.git,
-        fetchBlobs: options.fetchBlobs,
-        mergeBaseSha: options.mergeBaseSha,
-        paths: [...new Set(hunks.map((hunk) => hunk.path))],
-        deadlineAt,
-        now,
-      });
-    } catch (error) {
-      // An unsettled Git process must stop the workspace; other failures leave blame to lazy fetch.
-      if (error instanceof ReviewGitError && error.errorCode === "EPROCESSSETTLEMENT") throw error;
-    }
     const blamed: Array<{ hunk: ProvenanceHunk; commits: BlameCommit[] }> = [];
     const failed: string[] = [];
     let unblamed = 0;
@@ -487,7 +383,6 @@ export function pullRequestProvenanceEvidence(options: {
     headSha,
     git: (args, readOptions) =>
       readReviewGit(targetDir, args, { lazyFetch: true, ...readOptions })?.toString("utf8") ?? null,
-    fetchBlobs: (objectIds, deadlineAt) => fetchReviewBlobs(targetDir, objectIds, deadlineAt),
     resolvePull: options.resolvePull,
   });
 }
