@@ -118,7 +118,11 @@ for (const kind of ["issue", "pull_request"] as const) {
     const jsonText = prompt.split("## GitHub Context\n")[1]?.match(/```json\n([\s\S]*?)\n```/)?.[1];
     assert.ok(jsonText);
     const rendered = JSON.parse(jsonText);
-    for (const key of kind === "issue" ? ["issue"] : ["issue", "pullRequest"]) {
+    if (kind === "pull_request") {
+      assert.equal(rendered.pullRequest.body, "[same as issue.body]");
+      assert.equal(rendered.pullRequest.bodyCoverage, undefined);
+    }
+    for (const key of ["issue"] as const) {
       const compact = rendered[key] as PrimaryBodyContext;
       assertBodyCoverage(body, compact);
       assert.ok(compact.bodyCoverage?.excerpts.some(({ text }) => text.includes(inertTrace)));
@@ -187,12 +191,11 @@ for (const [layout, body] of [
     const rendered = JSON.parse(
       prompt.split("## GitHub Context\n")[1]!.match(/```json\n([\s\S]*?)\n```/)![1]!,
     );
-    for (const compact of [rendered.issue, rendered.pullRequest]) {
-      assertBodyCoverage(body, compact);
-      assert.ok(compact.bodyCoverage.omittedUnits > 0);
-      assert.equal(compact.bodyCoverage.complete, false);
-      assert.equal(compact.bodyCoverage.status, undefined);
-    }
+    assertBodyCoverage(body, rendered.issue);
+    assert.ok(rendered.issue.bodyCoverage.omittedUnits > 0);
+    assert.equal(rendered.issue.bodyCoverage.complete, false);
+    assert.equal(rendered.issue.bodyCoverage.status, undefined);
+    assert.equal(rendered.pullRequest.body, "[same as issue.body]");
   });
 }
 
@@ -602,6 +605,85 @@ test("review prompt excludes persistence-only PR hydration snapshots", () => {
   assert.match(prompt, /COMPACT_REVIEW_COMMENT_REMAINS_VISIBLE/);
   assert.doesNotMatch(prompt, /prHydrationSnapshot/);
   assert.doesNotMatch(prompt, /PERSISTED_FULL_COMMENT_MUST_STAY_PRIVATE/);
+});
+
+test("review prompt points at linked-item bodies only when the reviewer can read GitHub", () => {
+  const context = {
+    issue: { number: 123, title: "Sample PR", body: "PRIMARY_BODY" },
+    comments: [],
+    timeline: [],
+    relatedItems: [
+      {
+        mentionedIn: ["body"],
+        issue: { number: 7, title: "Linked", body: "LINKED_ISSUE_BODY" },
+        pullRequest: { number: 7, merged: true, body: "LINKED_PR_BODY" },
+      },
+    ],
+    closingPullRequests: [{ number: 8, title: "Closer", body: "CLOSING_PR_BODY" }],
+  };
+  const target = item({ kind: "pull_request", number: 123 });
+
+  const online = reviewPromptForTest(target, context, git, "", {
+    networkCapability: "allowlisted-proxy",
+  });
+  assert.match(online, /PRIMARY_BODY/);
+  assert.match(online, /"title": "Linked"/);
+  assert.match(online, /"merged": true/);
+  assert.doesNotMatch(online, /LINKED_ISSUE_BODY|LINKED_PR_BODY|CLOSING_PR_BODY/);
+
+  const offline = reviewPromptForTest(target, context, git, "", { networkCapability: "none" });
+  assert.match(offline, /LINKED_ISSUE_BODY/);
+  assert.match(offline, /CLOSING_PR_BODY/);
+});
+
+test("review prompt counts passing checks and lists only the ones that did not pass", () => {
+  const context = {
+    issue: { number: 123, title: "Sample PR" },
+    comments: [],
+    timeline: [],
+    pullChecks: {
+      complete: true,
+      checkRuns: [
+        { name: "PASSING_LINT", status: "completed", conclusion: "success", app: "github-actions" },
+        {
+          name: "SKIPPED_SMOKE",
+          status: "completed",
+          conclusion: "skipped",
+          app: "github-actions",
+        },
+        { name: "FAILING_TEST", status: "completed", conclusion: "failure", app: "github-actions" },
+        { name: "PENDING_BUILD", status: "in_progress", conclusion: null, app: "github-actions" },
+      ],
+      checkRunsTruncated: false,
+      statuses: [
+        { context: "PASSING_STATUS", state: "success", description: null },
+        { context: "PENDING_STATUS", state: "pending", description: null },
+      ],
+      statusesTruncated: false,
+    },
+  };
+
+  const prompt = reviewPromptForTest(item({ kind: "pull_request", number: 123 }), context, git);
+  const rendered = JSON.parse(
+    prompt.split("## GitHub Context\n")[1]!.match(/```json\n([\s\S]*?)\n```/)![1]!,
+  );
+
+  assert.deepEqual(rendered.pullChecks.checkRunCounts, {
+    success: 1,
+    skipped: 1,
+    failure: 1,
+    in_progress: 1,
+  });
+  assert.deepEqual(
+    rendered.pullChecks.checkRunsNotPassed.map((run: { name: string }) => run.name),
+    ["FAILING_TEST", "PENDING_BUILD"],
+  );
+  assert.deepEqual(rendered.pullChecks.statusCounts, { success: 1, pending: 1 });
+  assert.deepEqual(
+    rendered.pullChecks.statusesNotPassed.map((status: { context: string }) => status.context),
+    ["PENDING_STATUS"],
+  );
+  assert.equal(rendered.pullChecks.complete, true);
 });
 
 test("review prompt includes merge state and guards clean behind-branch drift", () => {

@@ -29,6 +29,7 @@ import {
 import { safeOutputTail, trimMiddle } from "./clawsweeper-text.js";
 import { buildPullRequestReviewEvidence } from "./pr-review-evidence.js";
 import { PROVENANCE_NOT_RUN } from "./pr-review-provenance.js";
+import { reviewPromptContext } from "./clawsweeper-prompt-context.js";
 import { verifyLikelyOwnerHistory } from "./clawsweeper-regression-provenance.js";
 import type {
   Decision,
@@ -478,8 +479,14 @@ export function createReviewRuntime({
     return reviewDecisionSchemaCache;
   }
 
-  function contextJsonForPrompt(context: ItemContext, kind: Item["kind"]): string {
-    const { pullCommitsRevision: __, prHydrationSnapshot: ___, ...promptContext } = context;
+  function contextJsonForPrompt(
+    context: ItemContext,
+    kind: Item["kind"],
+    networkCapability: ReviewPromptRuntimeHints["networkCapability"],
+  ): string {
+    const promptContext = reviewPromptContext(context, {
+      agentCanReadGitHub: networkCapability !== undefined && networkCapability !== "none",
+    });
     return serializeReviewContext(promptContext, kind === "pull_request" ? context.pullFiles : []);
   }
 
@@ -494,7 +501,7 @@ export function createReviewRuntime({
     // Review rules judge pull requests only; issue triage keeps the static template.
     const rules =
       item.kind === "pull_request" ? `\n\n## Review Rules\n\n${reviewRulesText().trim()}` : "";
-    const contextJson = contextJsonForPrompt(context, item.kind);
+    const contextJson = contextJsonForPrompt(context, item.kind, runtimeHints.networkCapability);
     const prEvidence =
       item.kind === "pull_request"
         ? buildPullRequestReviewEvidence({
