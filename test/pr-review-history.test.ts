@@ -192,6 +192,37 @@ test("a large hot file keeps only its newest versions within the per-path budget
   assert.match(reviewHistoryCapability(coverage), /Not local: `pnpm-lock\.yaml` from 2026-01-01 back\./);
 });
 
+test("unchecked rename candidates report the file's earlier history as not local", () => {
+  const created = oid("a", 1);
+  const deleted = Array.from({ length: 250 }, (_, index) => oid("b", index));
+  const commit = oid("c", 1);
+  const fetched: string[][] = [];
+  const coverage = prefetchReviewHistory({
+    git: (args, input) => {
+      if (args[0] === "diff") return `:000000 100644 ${"0".repeat(40)} ${created} A\0src/new.ts\0`;
+      if (args.includes("--diff-filter=D"))
+        return `\x01${commit} ${oid("d", 1)}\0${"2026-02-03T00:00:00Z"}\0\n${deleted
+          .map((id, index) => `:100644 000000 ${id} ${"0".repeat(40)} D\0src/old${index}.ts\0`)
+          .join("")}`;
+      if (args[1] === "log")
+        return `\x01${commit} ${oid("d", 1)}\0${"2026-02-03T00:00:00Z"}\0\n:000000 100644 ${"0".repeat(40)} ${created} A\0src/new.ts\0`;
+      const ids = input!.trim().split("\n");
+      if (args[0] === "rev-list") return ids.map((id) => (id === created ? id : `?${id}`)).join("\n");
+      if (args[0] === "cat-file") return ids.map((id) => `${id} blob 100`).join("\n");
+      return null;
+    },
+    fetchBlobs: (ids) => fetched.push(ids),
+    mergeBaseSha: oid("e", 0),
+    headSha: oid("e", 1),
+    tips: [],
+    deadlineAt: Date.now() + 60_000,
+  });
+  // 250 deletions with other names exceed the candidate cap; none are fetched.
+  assert.deepEqual(fetched, []);
+  assert.equal(coverage.status, "partial");
+  assert.deepEqual(coverage.truncated, [{ path: "src/new.ts", before: "2026-02-03T00:00:00Z" }]);
+});
+
 test("pull request prompts state local history; the reviewer cannot lazily fetch", () => {
   const coverage: ReviewHistoryCoverage = {
     status: "complete",

@@ -232,7 +232,7 @@ export function prefetchReviewHistory(options: {
 
     // Newest first: a global cap cuts every path at one date; a per-path cap
     // cuts only that path.
-    const creations: Array<{ commit: string; path: string; oid: string }> = [];
+    const creations: Array<{ commit: string; date: string; path: string; oid: string }> = [];
     for (const entry of entries) {
       if (!estimates.has(entry.path) || truncated.has(entry.path)) continue;
       const wanted = [entry.newOid, entry.oldOid].filter(
@@ -250,7 +250,7 @@ export function prefetchReviewHistory(options: {
       estimatedBytes += bytes;
       pathBytes.set(entry.path, (pathBytes.get(entry.path) ?? 0) + bytes);
       if (entry.status === "A" && entry.parents === 1 && entry.newOid)
-        creations.push({ commit: entry.commit, path: entry.path, oid: entry.newOid });
+        creations.push({ commit: entry.commit, date: entry.date, path: entry.path, oid: entry.newOid });
     }
 
     // Files deleted in a creation commit are the rename candidates that
@@ -279,16 +279,30 @@ export function prefetchReviewHistory(options: {
     for (const creation of creations) {
       const sources = renameSources.get(creation.commit) ?? [];
       const name = creation.path.slice(creation.path.lastIndexOf("/") + 1);
-      const kept = (
+      const named =
         sources.length <= MAX_RENAME_SOURCES
           ? sources
           : sources.filter(
               (source) =>
                 source.oldOid === creation.oid ||
                 source.path.slice(source.path.lastIndexOf("/") + 1) === name,
-            )
-      ).slice(0, Math.max(0, MAX_OBJECTS - selected.size));
-      for (const source of kept) selected.add(source.oldOid!);
+            );
+      const kept: RawEntry[] = [];
+      for (const source of named) {
+        if (selected.has(source.oldOid!)) {
+          kept.push(source);
+          continue;
+        }
+        budgetExhausted ||=
+          selected.size >= MAX_OBJECTS || estimatedBytes + UNKNOWN_BLOB_BYTES > MAX_ESTIMATED_BYTES;
+        if (budgetExhausted) break;
+        selected.add(source.oldOid!);
+        estimatedBytes += UNKNOWN_BLOB_BYTES;
+        kept.push(source);
+      }
+      // Unchecked candidates may hide an earlier name: its history is not local.
+      if (deletions === null || kept.length < sources.length)
+        truncated.set(creation.path, creation.date);
       if (kept.length > 0) candidates.set(creation, kept);
     }
 
