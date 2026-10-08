@@ -45,7 +45,7 @@ test("replacement supersedes the first source PR and close_superseded targets on
         branch_update_blockers: ["#102 maintainer_can_modify=false and the branch is uneditable"],
       },
       actions: [
-        { action: "close_superseded", target: "#103" },
+        { action: "close_superseded", status: "blocked", target: "#103", candidate_fix: null },
         { action: "keep_related", target: "#102" },
       ],
       repo: "openclaw/openclaw",
@@ -59,6 +59,20 @@ test("replacement without close_superseded actions supersedes only the first sou
     supersededReplacementSources({
       fixArtifact: { source_prs: replacementSources, branch_update_blockers: [] },
       actions: [],
+      repo: "openclaw/openclaw",
+    }),
+    [replacementSources[0]],
+  );
+});
+
+test("replacement leaves close_superseded actions bound to another fix to the applicator", () => {
+  assert.deepEqual(
+    supersededReplacementSources({
+      fixArtifact: { source_prs: replacementSources, branch_update_blockers: [] },
+      actions: [
+        { action: "close_superseded", status: "blocked", target: "#102", candidate_fix: "#900" },
+        { action: "close_superseded", status: "blocked", target: "#103", canonical: "#901" },
+      ],
       repo: "openclaw/openclaw",
     }),
     [replacementSources[0]],

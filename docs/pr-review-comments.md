@@ -736,9 +736,12 @@ routes on these attributes. It does not read the comment prose.
 - `hold` tells why the verdict is human-only: `normalization_failed`,
   `review_identity`, `maintainer_decision`, `review_failed`, `security`,
   `proof`, `not_opted_in` (the review is ready, but the PR has no repair-loop
-  label), `blocked`, or `undecided`.
-- `findings` is the number of typed review findings. It is `0` for a failed
-  review. A value above `0` sends the PR to the repair lane.
+  label), `blocked`, or `undecided`. `maintainer_decision` and `proof` appear
+  only when that hold is the one Before-merge item; otherwise the hold is
+  `blocked`. A maintainer can waive `not_opted_in`, `maintainer_decision` and
+  `proof`; see [auto-update-prs.md](repair/auto-update-prs.md).
+- `findings` is the number of typed review findings. It is `0` for a failed or
+  unnormalized review. A value above `0` sends the PR to the repair lane.
 
 A `needs-human` verdict without these attributes stays a human pause.
 

@@ -826,10 +826,12 @@ export function isTrustedStatusCommentAuthor(
   return !!author && (author === "clawsweeper" || trustedAuthors.has(author));
 }
 
-// A later maintainer automerge opt-in can approve a needs-human verdict only when
-// the review found no findings and the hold is one the opt-in can waive: the PR was
-// not opted in at review time, or real behavior proof is missing. This reads the
-// typed marker attributes from the review comment, not the review prose.
+// A later maintainer automerge opt-in or `@clawsweeper approve` can approve a needs-human
+// verdict only when the review found no findings and the hold is one a maintainer can
+// waive: the PR was not opted in at review time, the review asked for a maintainer
+// decision, or real behavior proof is missing. Security and integrity holds
+// (review identity, normalization, failed review) stay hard. This reads the typed
+// marker attributes from the review comment, not the review prose.
 export function needsHumanHoldAllowsAutomergeOptIn({
   hold,
   findings,
@@ -837,7 +839,9 @@ export function needsHumanHoldAllowsAutomergeOptIn({
 }: LooseRecord): boolean {
   if (String(findings ?? "") !== "0") return false;
   const verificationState = String(liveVerification ?? "");
-  if (hold === "not_opted_in") return ["absent", "passed"].includes(verificationState);
+  if (hold === "not_opted_in" || hold === "maintainer_decision") {
+    return ["absent", "passed"].includes(verificationState);
+  }
   return hold === "proof" && verificationState === "absent";
 }
 

@@ -147,12 +147,17 @@ export function createReviewCommentAutomation(
     };
 
     if (!hasDurableReviewIdentity) return humanReviewMarkers("review_identity");
+    // A maintainer opt-in can waive a hold only when that hold is the one Before-merge item.
+    // Security attention is never waivable.
+    const onlyBlocker = reviewReadiness.items.length === 1;
     try {
       if (maintainerDecisionFromReport(markdown)?.required) {
-        return humanReviewMarkers("maintainer_decision");
+        return humanReviewMarkers(
+          securityNeedsAttention ? "security" : onlyBlocker ? "maintainer_decision" : "blocked",
+        );
       }
     } catch {
-      return humanReviewMarkers("maintainer_decision");
+      return humanReviewMarkers("normalization_failed");
     }
     if (frontMatterValue(markdown, "review_status") === "failed") {
       return humanReviewMarkers("review_failed");
@@ -174,9 +179,7 @@ export function createReviewCommentAutomation(
       return withReviewState(...markers, needsHumanVerdict("security"));
     }
     if (hasRealBehaviorProofBlocker) {
-      // A maintainer opt-in can waive missing proof only when proof is the one remaining blocker.
-      const proofIsOnlyBlocker = reviewReadiness.items.length === 1;
-      return withReviewState(needsHumanVerdict(proofIsOnlyBlocker ? "proof" : "blocked"));
+      return withReviewState(needsHumanVerdict(onlyBlocker ? "proof" : "blocked"));
     }
     if (decision === "keep_open") {
       if (reviewReadiness.state === "ready" && repairLoopPassModeFromReport(markdown)) {

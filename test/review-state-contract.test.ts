@@ -135,6 +135,42 @@ test("the compact v1 fixture matches producer state and identity without snapsho
   );
 });
 
+test("a maintainer decision is a waivable hold only when it is the one blocker", () => {
+  const maintainer_decision = JSON.stringify({
+    required: true,
+    kind: "product_direction",
+    question: "Which compatibility contract should ship?",
+    rationale: "This needs an owner ruling.",
+    options: [
+      { title: "Keep compatibility", body: "Retain the old contract.", recommended: true },
+      { title: "Adopt the new contract", body: "Document the break.", recommended: false },
+    ],
+    likelyOwner: { person: "@owner", reason: "Owns the contract.", confidence: "high" },
+  });
+  assert.match(
+    reviewAutomationMarkersFromReport(reviewReport({ maintainer_decision })),
+    /clawsweeper-verdict:needs-human [^>]* hold=maintainer_decision findings=0 -->/,
+  );
+  assert.match(
+    reviewAutomationMarkersFromReport(
+      reviewReport({
+        maintainer_decision,
+        real_behavior_proof_data_model_compatibility: "insufficient",
+      }),
+    ),
+    /clawsweeper-verdict:needs-human [^>]* hold=blocked findings=0 -->/,
+  );
+  assert.match(
+    reviewAutomationMarkersFromReport(
+      reviewReport(
+        { maintainer_decision },
+        "## Security Review\n\nStatus: needs_attention\n\nSummary: Confirm the token boundary.\n\nConcerns:\n\n- none",
+      ),
+    ),
+    /clawsweeper-verdict:needs-human [^>]* hold=security findings=0 -->/,
+  );
+});
+
 test("structured next-step intent controls readiness independently of advice wording", () => {
   const optedIn = { labels: '["clawsweeper:automerge"]' };
   const ready = reviewReport(optedIn).replace(

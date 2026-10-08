@@ -1,6 +1,12 @@
 #!/usr/bin/env node
 import { sha256 } from "../content-hash.js";
 import { normalizeAuthorAssociation } from "../clawsweeper-item-policy.js";
+import {
+  PROOF_OVERRIDE_LABEL,
+  PROOF_SUFFICIENT_LABEL,
+  PR_RATING_LABELS,
+  PR_STATUS_LABELS,
+} from "../clawsweeper-policy.js";
 import { repositoryManagedPullRequestCloseReason } from "../repository-profiles.js";
 import type { JsonValue, LooseRecord } from "./json-types.js";
 import fs from "node:fs";
@@ -74,6 +80,12 @@ const CLEAN_MERGE_STATES = new Set(["CLEAN"]);
 const VIABLE_COVERING_PR_MERGE_STATES = new Set(["CLEAN", "BEHIND"]);
 const PR_CLOSE_COVERAGE_PROOF_COMMENT_LIMIT = 50;
 const GITHUB_MAX_PAGE_SIZE = 100;
+const PROOF_PASSED_LABELS = new Set([PROOF_SUFFICIENT_LABEL, PROOF_OVERRIDE_LABEL]);
+const NEEDS_PROOF_LABELS = new Set([
+  "triage: needs-real-behavior-proof",
+  ...PR_STATUS_LABELS.filter((label) => label.kind === "needs_proof").map((label) => label.name),
+]);
+const F_RATING_LABEL = PR_RATING_LABELS.find((label) => label.tier === "F")!.name;
 const CLAWSWEEPER_COMMAND_ONLY_PATTERN = /^@clawsweeper\s+(?:re-review|re-run|review)\s*$/i;
 const CLAWSWEEPER_BOT_AUTHORS = new Set(
   [
@@ -1113,14 +1125,11 @@ function validatePrCloseCoverageCoveringSafety({
     return `linked canonical PR #${coveringRef} is itself proposed for close`;
   }
 
+  // Exact ClawSweeper-owned label names only.
   const labels = labelNames(coveringIssue.labels).map(normalizeLabelName);
-  const proofPassed = labels.some((label) => /^proof:\s*(sufficient|override)\b/i.test(label));
-  const needsProof = labels.some(
-    (label) =>
-      label === "triage: needs-real-behavior-proof" ||
-      (label.startsWith("status:") && label.includes("needs proof")),
-  );
-  if (labels.some((label) => label.startsWith("rating:") && label.includes("unranked"))) {
+  const proofPassed = labels.some((label) => PROOF_PASSED_LABELS.has(label));
+  const needsProof = labels.some((label) => NEEDS_PROOF_LABELS.has(label));
+  if (labels.includes(F_RATING_LABEL)) {
     return `linked canonical PR #${coveringRef} is F-rated`;
   }
   if (needsProof && !proofPassed) {

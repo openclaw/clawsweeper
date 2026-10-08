@@ -132,8 +132,10 @@ export function publicContributorCredit(credit: JsonValue): LooseRecord {
   };
 }
 
-// The replacement PR takes the place of the first same-repo source PR.
-// The worker marks each other replaced source PR with a close_superseded action.
+// The replacement PR takes the place of the first same-repo source PR. Another source PR
+// is closed with it only when its close_superseded action names no other fix or canonical
+// PR (the worker keeps candidate_fix null until the replacement exists). A close bound
+// to another PR stays with the guarded applicator.
 export function supersededReplacementSources({
   fixArtifact,
   actions,
@@ -145,7 +147,15 @@ export function supersededReplacementSources({
 }): JsonValue[] {
   const supersededNumbers = new Set(
     actions
-      .filter((action) => action?.action === "close_superseded")
+      .filter(
+        (action) =>
+          action?.action === "close_superseded" &&
+          !action.candidate_fix &&
+          !action.fixed_by &&
+          !action.fix_candidate &&
+          !action.canonical &&
+          !action.duplicate_of,
+      )
       .map((action) => issueNumberFromRef(action.target, repo))
       .filter((number) => number > 0),
   );
