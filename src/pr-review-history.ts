@@ -9,8 +9,8 @@ import { readReviewGit, reviewMergeBase, reviewRecord as record } from "./pr-rev
 // and the reviewer runs with lazy fetch disabled so any other miss fails fast.
 const DEADLINE_MS = 60_000;
 const MAX_PATHS = 100;
-// Measured on openclaw/openclaw: the full history of 2-20 changed files is
-// 77-944 blobs, a 0.2-4.7 MiB pack fetched in 1.3-2.2 s.
+// Measured on openclaw/openclaw: the full history of 2-20 changed files and
+// their earlier names is 160-1,058 blobs, 0.3-6.6 MiB, in 2.5-12 s.
 const MAX_OBJECTS = 5_000;
 // Uncompressed estimates from the largest local version of each path. The
 // per-path cap keeps one hot large file, such as a lockfile, from spending
@@ -150,7 +150,11 @@ export function prefetchReviewHistory(options: {
   const renames: ReviewHistoryCoverage["renames"] = [];
   let changedPaths = 0;
   const finish = (): ReviewHistoryCoverage => ({
-    status: failed ? "unavailable" : reasons.length > 0 || truncated.size > 0 ? "partial" : "complete",
+    status: failed
+      ? "unavailable"
+      : reasons.length > 0 || truncated.size > 0
+        ? "partial"
+        : "complete",
     changedPaths,
     renames,
     blobs: selected.size,
@@ -220,7 +224,9 @@ export function prefetchReviewHistory(options: {
     }
     const entries = parseRawHistory(history);
     const local = localBlobs(git, [
-      ...new Set(entries.flatMap((entry) => [entry.newOid, entry.oldOid]).filter((oid) => oid !== null)),
+      ...new Set(
+        entries.flatMap((entry) => [entry.newOid, entry.oldOid]).filter((oid) => oid !== null),
+      ),
     ]);
     const estimates = new Map(round.map(({ path, estimate }) => [path, estimate]));
     for (const entry of entries)
@@ -250,7 +256,12 @@ export function prefetchReviewHistory(options: {
       estimatedBytes += bytes;
       pathBytes.set(entry.path, (pathBytes.get(entry.path) ?? 0) + bytes);
       if (entry.status === "A" && entry.parents === 1 && entry.newOid)
-        creations.push({ commit: entry.commit, date: entry.date, path: entry.path, oid: entry.newOid });
+        creations.push({
+          commit: entry.commit,
+          date: entry.date,
+          path: entry.path,
+          oid: entry.newOid,
+        });
     }
 
     // Files deleted in a creation commit are the rename candidates that
@@ -275,7 +286,10 @@ export function prefetchReviewHistory(options: {
     for (const entry of deletions === null ? [] : parseRawHistory(deletions))
       if (entry.oldOid)
         renameSources.set(entry.commit, [...(renameSources.get(entry.commit) ?? []), entry]);
-    const candidates = new Map<(typeof creations)[number], RawEntry[]>();
+    const candidates = new Map<
+      (typeof creations)[number],
+      { sources: RawEntry[]; unchecked: boolean }
+    >();
     for (const creation of creations) {
       const sources = renameSources.get(creation.commit) ?? [];
       const name = creation.path.slice(creation.path.lastIndexOf("/") + 1);
@@ -300,10 +314,10 @@ export function prefetchReviewHistory(options: {
         estimatedBytes += UNKNOWN_BLOB_BYTES;
         kept.push(source);
       }
-      // Unchecked candidates may hide an earlier name: its history is not local.
-      if (deletions === null || kept.length < sources.length)
-        truncated.set(creation.path, creation.date);
-      if (kept.length > 0) candidates.set(creation, kept);
+      // Unchecked candidates may hide the earlier name unless a kept one is it.
+      const unchecked = deletions === null || kept.length < sources.length;
+      if (kept.length > 0) candidates.set(creation, { sources: kept, unchecked });
+      else if (unchecked) truncated.set(creation.path, creation.date);
     }
 
     const missing = localBlobs(git, [...selected]).missing;
@@ -321,25 +335,32 @@ export function prefetchReviewHistory(options: {
 
     // Exact pathspecs keep rename detection on the fetched candidates.
     const next: typeof round = [];
-    for (const [creation, sources] of candidates) {
-      if (now() >= deadlineAt) break;
-      const detected = git([
-        "--literal-pathspecs",
-        "diff-tree",
-        "-r",
-        "-z",
-        "-M",
-        "--raw",
-        "--no-abbrev",
-        "--no-commit-id",
-        creation.commit,
-        "--",
-        creation.path,
-        ...sources.map(({ path }) => path),
-      ]);
-      for (const rename of detected === null ? [] : parseRawHistory(detected)) {
-        if (rename.status !== "R" || rename.renamedTo !== creation.path || seenPaths.has(rename.path))
-          continue;
+    for (const [creation, { sources, unchecked }] of candidates) {
+      const detected =
+        now() < deadlineAt
+          ? git([
+              "--literal-pathspecs",
+              "diff-tree",
+              "-r",
+              "-z",
+              "-M",
+              "--raw",
+              "--no-abbrev",
+              "--no-commit-id",
+              creation.commit,
+              "--",
+              creation.path,
+              ...sources.map(({ path }) => path),
+            ])
+          : null;
+      const earlier = (detected === null ? [] : parseRawHistory(detected)).filter(
+        (rename) => rename.status === "R" && rename.renamedTo === creation.path,
+      );
+      // An unknown earlier name leaves the history before this commit unfetched.
+      if (detected === null || (unchecked && earlier.length === 0))
+        truncated.set(creation.path, creation.date);
+      for (const rename of earlier) {
+        if (seenPaths.has(rename.path)) continue;
         seenPaths.add(rename.path);
         renames.push({ from: rename.path, to: creation.path, commit: creation.commit });
         next.push({ path: rename.path, estimate: estimates.get(creation.path) ?? 0 });

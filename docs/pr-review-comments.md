@@ -244,8 +244,9 @@ among them, and repeats the walk for up to two generations of earlier names, so
 `git log -S/-G/-L`, `git show <old>:<path>`, and `git blame` work in the sandbox.
 The bound is 5,000 blobs, 1 GiB estimated (the largest local version of a path
 times its versions), 128 MiB estimated per path, and 60 seconds; a path cut by a
-bound keeps its newest versions. On openclaw/openclaw the full history of 2 to 20
-changed files is 160 to 1,058 blobs, a 0.3 to 5.6 MiB pack, in 2.5 to 12 seconds.
+bound keeps its newest versions, and an earlier name that could not be checked
+counts as a cut. On openclaw/openclaw the full history of 2 to 20 changed files
+and their earlier names is 160 to 1,058 blobs, 0.3 to 6.6 MiB, in 2.5 to 12 seconds.
 The prompt's Runtime Capabilities line names the earlier file names and any
 history that is not local. The reviewer runs with `GIT_NO_LAZY_FETCH=1`, so any
 other missing blob fails at once with `lazy fetching disabled` instead of a 403.
