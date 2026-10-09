@@ -1,0 +1,1 @@
+- Stop parallel issue intakes from deleting each other's queued jobs: intake now publishes only the job and audit files it wrote, not the whole `jobs` and `results` directories from its older checkout.

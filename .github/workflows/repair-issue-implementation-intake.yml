@@ -204,13 +204,28 @@ jobs:
         if: always()
         env:
           CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
+          JOB_PATH: ${{ steps.prepare.outputs.job_path }}
+          AUDIT_PATH: ${{ steps.prepare.outputs.audit_path }}
         run: |
           set -euo pipefail
+          # Publish only the files that this intake wrote. A whole jobs or
+          # results directory from this checkout is older than the state
+          # branch, so it removes the jobs of intakes that ran at the same time.
+          paths=()
+          if [ -n "$JOB_PATH" ]; then
+            paths+=(--path "$JOB_PATH")
+          fi
+          if [ -n "$AUDIT_PATH" ]; then
+            paths+=(--path "$AUDIT_PATH")
+          fi
+          if [ "${#paths[@]}" -eq 0 ]; then
+            echo "Intake wrote no files; skipping state publication."
+            exit 0
+          fi
           for attempt in 1 2 3; do
             if pnpm run repair:publish-main -- \
               --message "chore: record issue implementation intake" \
-              --path jobs \
-              --path results \
+              "${paths[@]}" \
               --max-attempts 12 \
               --push-attempts 4; then
               exit 0
