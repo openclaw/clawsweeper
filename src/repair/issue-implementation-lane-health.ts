@@ -1,7 +1,8 @@
 import { escapeRegExp } from "../clawsweeper-markdown.js";
 import { repoSlug } from "./comment-router/dispatch.js";
-import { recentIssueImplementationWorkflowRuns } from "./issue-worker-recovery.js";
+import { ghJsonWithRetry } from "./github-cli.js";
 import type { LooseRecord } from "./json-types.js";
+import { currentProjectRepo } from "./project-repo.js";
 
 // Automatic issue implementation pauses itself when its own worker runs keep
 // failing. The gate counts finished repair-cluster-worker runs by GitHub run
@@ -13,6 +14,7 @@ export const ISSUE_IMPLEMENTATION_HEALTH_OVERRIDE_VARIABLE =
   "CLAWSWEEPER_AUTO_IMPLEMENT_MIN_SUCCESS_PERCENT";
 
 const WINDOW_MS = ISSUE_IMPLEMENTATION_HEALTH_WINDOW_DAYS * 24 * 60 * 60 * 1000;
+const RUN_PAGE_SIZE = 100;
 // Cancelled and skipped runs are superseded or stopped work, not worker failures.
 const FAILED_CONCLUSIONS: Record<string, true> = {
   failure: true,
@@ -51,19 +53,18 @@ export function issueImplementationLaneHealth({
   let failed = 0;
   for (const run of runs) {
     if (run.status !== "completed") continue;
-    if (!title.test(String(run.display_title ?? run.displayTitle ?? ""))) continue;
-    const createdMs = Date.parse(String(run.created_at ?? run.createdAt ?? ""));
-    if (!Number.isFinite(createdMs) || createdMs < nowMs - WINDOW_MS || createdMs > nowMs) continue;
-    const conclusion = String(run.conclusion ?? "");
-    if (conclusion === "success") succeeded += 1;
-    else if (FAILED_CONCLUSIONS[conclusion]) failed += 1;
+    if (!title.test(String(run.display_title))) continue;
+    const createdMs = Date.parse(String(run.created_at));
+    if (!(createdMs >= nowMs - WINDOW_MS && createdMs <= nowMs)) continue;
+    if (run.conclusion === "success") succeeded += 1;
+    else if (FAILED_CONCLUSIONS[String(run.conclusion)]) failed += 1;
   }
   const finished = succeeded + failed;
   const successRate = finished ? Math.round((succeeded / finished) * 1000) / 10 : null;
+  // The floor compares exact counts; the rounded rate is for display only.
   const paused =
-    successRate !== null &&
     finished >= ISSUE_IMPLEMENTATION_HEALTH_MIN_FINISHED_RUNS &&
-    successRate < minSuccessPercent;
+    succeeded * 100 < minSuccessPercent * finished;
   return {
     target_repo: targetRepo,
     window_days: ISSUE_IMPLEMENTATION_HEALTH_WINDOW_DAYS,
@@ -88,15 +89,28 @@ export function currentIssueImplementationLaneHealth({
   targetRepo,
   minSuccessPercent,
   nowMs = Date.now(),
+  fetchPage = (args) => ghJsonWithRetry<LooseRecord>(args),
 }: {
   targetRepo: string;
   minSuccessPercent?: number;
   nowMs?: number;
+  fetchPage?: (args: string[]) => LooseRecord;
 }): IssueImplementationLaneHealth {
+  // GitHub returns at most 1,000 runs for a `created` filter, so page the
+  // unfiltered newest-first list until it passes the start of the window.
+  const runs: LooseRecord[] = [];
+  for (let page = 1; ; page += 1) {
+    const response = fetchPage([
+      "api",
+      `repos/${currentProjectRepo()}/actions/workflows/repair-cluster-worker.yml/runs?per_page=${RUN_PAGE_SIZE}&page=${page}`,
+    ]);
+    const pageRuns: LooseRecord[] = response.workflow_runs;
+    runs.push(...pageRuns);
+    const oldestMs = Date.parse(String(pageRuns.at(-1)?.created_at));
+    if (pageRuns.length < RUN_PAGE_SIZE || !(oldestMs >= nowMs - WINDOW_MS)) break;
+  }
   return issueImplementationLaneHealth({
-    runs: recentIssueImplementationWorkflowRuns({
-      since: new Date(nowMs - WINDOW_MS).toISOString(),
-    }),
+    runs,
     targetRepo,
     nowMs,
     ...(minSuccessPercent === undefined ? {} : { minSuccessPercent }),

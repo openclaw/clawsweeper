@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  currentIssueImplementationLaneHealth,
   issueImplementationLaneHealth,
   issueImplementationLaneHealthSummary,
 } from "../../dist/repair/issue-implementation-lane-health.js";
@@ -109,6 +110,49 @@ test("lane health pauses below the floor once enough runs have finished", () => 
     }).paused,
     true,
   );
+  const justBelow = issueImplementationLaneHealth({
+    targetRepo: "openclaw/openclaw",
+    nowMs,
+    runs: runs(233, 100),
+    minSuccessPercent: 70,
+  });
+  assert.equal(justBelow.success_rate_percent, 70, "the displayed rate rounds");
+  assert.equal(justBelow.paused, true, "69.97% is below a 70% floor");
+});
+
+test("lane health reads the whole window past 1,000 newer worker runs", () => {
+  const day = 24 * hour;
+  // 1,050 recent automerge runs, then this target's failures, then old runs.
+  const history = [
+    ...Array.from({ length: 1050 }, (_, index) =>
+      workerRun(index, "success", {
+        title: `automerge repair jobs/openclaw/inbox/automerge-openclaw-openclaw-${index}.md`,
+        createdMs: nowMs - hour - index * 60_000,
+      }),
+    ),
+    ...Array.from({ length: 12 }, (_, index) =>
+      workerRun(index, "failure", { createdMs: nowMs - 6 * day + index * 60_000 }),
+    ),
+    ...Array.from({ length: 300 }, (_, index) =>
+      workerRun(index, "success", { createdMs: nowMs - 8 * day - index * 60_000 }),
+    ),
+  ].sort((left, right) => Date.parse(right.created_at) - Date.parse(left.created_at));
+  const requests: string[] = [];
+  const health = currentIssueImplementationLaneHealth({
+    targetRepo: "openclaw/openclaw",
+    nowMs,
+    fetchPage: (args) => {
+      const url = args[1] ?? "";
+      requests.push(url);
+      const page = Number(new URL(url, "https://api.github.test/").searchParams.get("page"));
+      return { workflow_runs: history.slice((page - 1) * 100, page * 100) };
+    },
+  });
+  assert.equal(health.failed_runs, 12);
+  assert.equal(health.succeeded_runs, 0);
+  assert.equal(health.paused, true);
+  assert.equal(requests.length, 11, "paging stops at the first page older than the window");
+  assert.ok(requests.every((url) => !url.includes("created=")));
 });
 
 test("lane health summary publishes the rate and the pause notice", () => {
