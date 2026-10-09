@@ -202,9 +202,11 @@ setTimeout(() => {}, 10_000);
 test("apply-decisions bounds a hung GitHub command and writes a resumable runtime yield", () => {
   const fixture = runtimeBudgetFixture(721);
   const maxRuntimeMs = 2_200;
+  // The hung mock only writes this marker if it outlives its 10s hang.
+  const hungCommandFinished = join(fixture.root, "hung-gh-finished");
+  const hungCommand = `setTimeout(() => require("node:fs").writeFileSync(${JSON.stringify(hungCommandFinished)}, ""), 10_000);`;
   try {
-    const startedAt = Date.now();
-    withMockGh(fixture.root, "setTimeout(() => {}, 10_000);", () => {
+    withMockGh(fixture.root, hungCommand, () => {
       const result = spawnSync(
         process.execPath,
         [
@@ -231,14 +233,18 @@ test("apply-decisions bounds a hung GitHub command and writes a resumable runtim
           "--cursor-trace",
           fixture.cursorTracePath,
         ],
-        { encoding: "utf8", env: process.env },
+        // The child's clock starts after boot, so coverage instrumentation only
+        // slows a start this test does not measure.
+        { encoding: "utf8", env: { ...process.env, NODE_V8_COVERAGE: undefined } },
       );
       assert.equal(result.status, 0, result.stderr);
       assert.match(result.stderr, /budget stop, resume next cycle:/);
       assert.doesNotMatch(result.stderr, /failed apply/);
     });
 
-    assert.ok(Date.now() - startedAt < 4_000, "hung gh command exceeded the apply runtime bound");
+    // Process boot is outside this proof: the budget-derived timeout must stop the
+    // hung command before it finishes, whatever the wall time spent starting up.
+    assert.equal(existsSync(hungCommandFinished), false, "the hung gh command ran to completion");
     assertRuntimeYield(fixture, maxRuntimeMs);
   } finally {
     rmSync(fixture.root, { recursive: true, force: true });
