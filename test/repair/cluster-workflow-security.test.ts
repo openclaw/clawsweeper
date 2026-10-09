@@ -10,6 +10,7 @@ type Workflow = {
   jobs?: Record<
     string,
     {
+      if?: string;
       env?: Record<string, string>;
       "timeout-minutes"?: number;
       steps?: Array<{
@@ -21,6 +22,7 @@ type Workflow = {
         uses?: string;
         with?: Record<string, string>;
         "timeout-minutes"?: string;
+        "continue-on-error"?: unknown;
       }>;
     }
   >;
@@ -577,6 +579,27 @@ function repairWorkerJob(job: "cluster" | "execute") {
   ) as Workflow;
   return workflow.jobs?.[job];
 }
+
+// Fix execution runs target code, so the containment preflight must pass first under the same gate.
+test("containment preflight gates every fix execution", () => {
+  const steps = repairWorkerJob("execute")?.steps ?? [];
+  const preflight = steps.findIndex((step) => step.run === "pnpm run repair:containment-smoke");
+  const execute = steps.findIndex((step) => step.name === "Execute credited fix artifact");
+  assert.ok(preflight >= 0 && preflight < execute);
+  assert.equal(steps[preflight]!.if, steps[execute]!.if);
+  assert.equal(steps[preflight]!["continue-on-error"], undefined);
+});
+
+// A plan-only or unauthorized planning run must never reach the execute job.
+test("execute job runs only after allowed execute or autonomous planning", () => {
+  const condition = repairWorkerJob("execute")?.if ?? "";
+  assert.ok(condition.includes("needs.cluster.outputs.allow_execute == '1'"));
+  assert.ok(
+    condition.includes(
+      "(needs.cluster.outputs.effective_mode == 'execute' || needs.cluster.outputs.effective_mode == 'autonomous')",
+    ),
+  );
+});
 
 test("repair policy gates every planning and execution effect", () => {
   for (const [job, effects] of [

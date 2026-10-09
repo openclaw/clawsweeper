@@ -7,6 +7,7 @@ import test from "node:test";
 
 import { LINUX_SUBREAPER_SCRIPT } from "../../dist/repair/process-tree-containment.js";
 import { parseContainmentProtocol } from "../../dist/repair/contained-command-worker.js";
+import { readText } from "../helpers.ts";
 
 const MS_RDONLY = 1;
 const MS_NOSUID = 2;
@@ -14,6 +15,23 @@ const MS_NODEV = 4;
 const MS_NOEXEC = 8;
 const MS_REMOUNT = 32;
 const MS_BIND = 4096;
+
+// Linux behavior tests skip on runners without delegated namespaces, so pin the namespace set.
+test("validation worker enters fresh user, mount, PID and network namespaces", () => {
+  const worker = readText("src/repair/contained-command-worker.ts");
+  for (const flag of [
+    "--user",
+    "--map-root-user",
+    "--mount",
+    "--pid",
+    "--fork",
+    "--mount-proc",
+    "--kill-child=SIGKILL",
+  ]) {
+    assert.ok(worker.includes(`"${flag}"`), flag);
+  }
+  assert.match(worker, /input\.isolateNetwork \? \["--net"\] : \[\]/);
+});
 
 test("namespace init applies every fail-closed stage before it spawns the target", () => {
   assert.deepEqual(runLandlockScenario("main_ok"), {
