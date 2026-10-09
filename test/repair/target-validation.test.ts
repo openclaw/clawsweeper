@@ -3805,6 +3805,79 @@ child.unref();
   },
 );
 
+test(
+  "contained pnpm setup and validation can open the fixed pnpm 12.7 store operation lock",
+  { skip: process.platform !== "linux" },
+  (context) => {
+    if (!linuxValidationContainmentAvailable()) {
+      context.skip("runner does not provide delegated user namespaces and Landlock ABI 3+");
+      return;
+    }
+    const cwd = gitPackageFixture({ verify: "node check.js" });
+    const packagePath = path.join(cwd, "package.json");
+    const packageJson = JSON.parse(fs.readFileSync(packagePath, "utf8"));
+    packageJson.packageManager = "pnpm@12.7.0";
+    fs.writeFileSync(packagePath, `${JSON.stringify(packageJson, null, 2)}\n`);
+    fs.writeFileSync(path.join(cwd, "check.js"), "process.exit(0);\n");
+    git(cwd, "add", ".");
+    git(cwd, "commit", "-m", "initial");
+    attachOrigin(cwd);
+
+    // pnpm 12.7 opens "/tmp/pnpm-store-operation-locks-<euid>" before it installs
+    // or runs a command. These are the same checks that its secure lock code does.
+    const targetPnpm = `#!/usr/bin/env node
+const fs = require("node:fs");
+const directory = "/tmp/pnpm-store-operation-locks-" + process.geteuid();
+fs.mkdirSync(directory, { recursive: true });
+const metadata = fs.lstatSync(directory);
+if (!metadata.isDirectory() || metadata.uid !== process.geteuid()) process.exit(3);
+fs.chmodSync(directory, 0o700);
+fs.closeSync(fs.openSync(directory + "/all-stores.lock", "a"));
+if (process.argv[2] === "install") fs.mkdirSync("node_modules", { recursive: true });
+`;
+    const hostBin = makeFixtureDir("clawsweeper-pnpm-store-lock-");
+    writeNodeCommandShim(
+      hostBin,
+      "corepack",
+      `#!/usr/bin/env node
+const fs = require("node:fs");
+const path = require("node:path");
+const args = process.argv.slice(2);
+if (args[0] === "enable") {
+  const destination = args[args.indexOf("--install-directory") + 1];
+  fs.mkdirSync(destination, { recursive: true });
+  fs.writeFileSync(path.join(destination, "pnpm"), ${JSON.stringify(targetPnpm)}, { mode: 0o755 });
+}
+`,
+    );
+    const options = {
+      ...validationOptions("steipete/example", {
+        toolchain: {
+          packageManager: "pnpm",
+          baseValidationCommands: ["pnpm verify"],
+          changedGate: null,
+        },
+      }),
+      installTargetDeps: true,
+      installTimeoutMs: FAKE_TOOLCHAIN_TIMEOUT_MS,
+      setupTimeoutMs: FAKE_TOOLCHAIN_TIMEOUT_MS,
+    };
+
+    const previousForceContainment = process.env.CLAWSWEEPER_TEST_FORCE_LINUX_CONTAINMENT;
+    process.env.CLAWSWEEPER_TEST_FORCE_LINUX_CONTAINMENT = "1";
+    try {
+      withPreparedPnpmToolchain(cwd, hostBin, options, () => {
+        assert.equal(fs.existsSync(path.join(cwd, "node_modules")), true);
+        assert.deepEqual(runAllowedValidationCommands(["pnpm verify"], cwd, options), [
+          "pnpm verify",
+        ]);
+      });
+    } finally {
+      restoreEnv("CLAWSWEEPER_TEST_FORCE_LINUX_CONTAINMENT", previousForceContainment);
+    }
+  },
+);
+
 test("pnpm validation reuses the prepared target version and rejects stale setup", () => {
   const cwd = gitPackageFixture({ verify: "node check.js" });
   const packagePath = path.join(cwd, "package.json");

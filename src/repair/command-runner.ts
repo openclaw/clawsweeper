@@ -25,6 +25,8 @@ export type CommandRunOptions = {
   killSignal?: NodeJS.Signals;
   isolateNetwork?: boolean;
   maxBuffer?: number;
+  /** Contained commands only: sandbox paths under /tmp that get private writable storage. */
+  privateDirectories?: readonly string[];
   timeoutMs?: number;
   writableRoots?: readonly string[];
 };
@@ -204,6 +206,7 @@ export function runContainedCommandResult(
         input: options.input,
         isolateNetwork: options.isolateNetwork !== false,
         maxBuffer,
+        privateDirectories: options.privateDirectories ?? [],
         timeoutMs: options.timeoutMs,
         writableRoots: options.writableRoots?.map((root) => fs.realpathSync(root)) ?? [],
         windowsVerbatimArguments: invocation.windowsVerbatimArguments === true,

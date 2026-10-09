@@ -6,6 +6,7 @@ import { isDeepStrictEqual } from "node:util";
 import { parse as parseYaml } from "yaml";
 
 import { runContainedCommand } from "./command-runner.js";
+import { PNPM_CONTAINED_PRIVATE_DIRECTORIES } from "./target-toolchain-config.js";
 
 const PINNED_OPENCLAW_KNIP_RELEASES: Record<string, string> = {
   "6.8.0": "2026-04-29T06:27:29.928Z",
@@ -95,6 +96,7 @@ export function preparePinnedOpenClawValidationHelper({
       env: { ...validationEnv, XDG_CACHE_HOME: helperCache },
       isolateNetwork: false,
       timeoutMs: remainingTimeoutMs(),
+      privateDirectories: PNPM_CONTAINED_PRIVATE_DIRECTORIES,
       writableRoots: [profileRoot],
     },
   );

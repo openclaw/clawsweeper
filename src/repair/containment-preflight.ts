@@ -6,13 +6,16 @@ import { fileURLToPath } from "node:url";
 
 import { runContainedCommandResult } from "./command-runner.js";
 
+const PREFLIGHT_PRIVATE_DIRECTORY = "/tmp/clawsweeper-containment-preflight-private";
+
 const PREFLIGHT_PROBE = [
   "import os, socket, sys",
-  "host_marker, work, profile = sys.argv[1:]",
+  "host_marker, work, profile, private = sys.argv[1:]",
   "assert not os.path.exists(host_marker), 'host marker remained visible'",
   "assert os.listdir('/run') == [], 'host /run entries remained visible'",
   "open(os.path.join(work, 'work-write'), 'w').write('ok')",
   "open(os.path.join(profile, 'profile-write'), 'w').write('ok')",
+  "open(os.path.join(private, 'private-write'), 'w').write('ok')",
   "try:",
   "    open('/tmp/escape', 'w').write('unsafe')",
   "    raise AssertionError('non-writable path accepted a write')",
@@ -45,7 +48,7 @@ export function runContainmentPreflight(): string {
     fs.writeFileSync(hostMarker, "host-visible\n");
     const result = runContainedCommandResult(
       "/usr/bin/python3",
-      ["-c", PREFLIGHT_PROBE, hostMarker, work, profile],
+      ["-c", PREFLIGHT_PROBE, hostMarker, work, profile, PREFLIGHT_PRIVATE_DIRECTORY],
       {
         cwd: work,
         env: {
@@ -59,6 +62,7 @@ export function runContainmentPreflight(): string {
         },
         isolateNetwork: true,
         maxBuffer: 1024 * 1024,
+        privateDirectories: [PREFLIGHT_PRIVATE_DIRECTORY],
         timeoutMs: 30_000,
         writableRoots: [work, profile],
       },

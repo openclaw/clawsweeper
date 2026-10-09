@@ -77,6 +77,32 @@ test("filesystem isolation rejects unsafe writable roots before any mount", () =
   });
 });
 
+test("private directories accept only new direct children of /tmp outside writable roots", () => {
+  assert.deepEqual(runLandlockScenario("private_directories"), {
+    lock: ["/tmp/pnpm-store-operation-locks-0"],
+    not_list: "validation private directories are invalid",
+    outside_tmp: "validation private directory is invalid",
+    nested: "validation private directory is invalid",
+    traversal: "validation private directory is invalid",
+    tmp_itself: "validation private directory is invalid",
+    duplicate: "validation private directory is invalid",
+    covers_root: "validation private directory overlaps a writable root",
+    same_as_root: "validation private directory overlaps a writable root",
+  });
+});
+
+test("private directories get a small writable tmpfs inside the read-only sandbox", () => {
+  const lock = "<base>/sandbox/tmp/pnpm-store-operation-locks-0";
+  assert.deepEqual(runLandlockScenario("private_directory_mount"), {
+    events: [
+      ["mount", "tmpfs", lock, MS_NOSUID | MS_NODEV | MS_NOEXEC, "tmpfs", "mode=0700,size=1m"],
+      ["readonly", "<base>/sandbox", true],
+      ["readonly", lock, false, false],
+    ],
+    mode: "0o700",
+  });
+});
+
 test("legacy read-only remounts keep the existing nosuid, nodev and noexec flags", () => {
   assert.deepEqual(runLandlockScenario("legacy_flags"), {
     mounts: [
@@ -153,6 +179,11 @@ test("Landlock enforcement remains fail closed after a successful probe", () => 
     stage: "landlock_capability_probe",
     status: "error",
     syscall: 444,
+  });
+  assert.deepEqual(runLandlockScenario("success_private"), {
+    calls: [444, 444, 445, 445, 446],
+    result: "abi-3",
+    status: "ok",
   });
   assert.deepEqual(runLandlockScenario("success"), {
     calls: [444, 444, 445, 446],
@@ -306,7 +337,7 @@ if scenario.startswith("main_"):
     module.terminate_and_reap_descendants = lambda *_arguments: 0
     module.write_protocol = events.append
     module.sys.exit = lambda code: events.append(["exit", code])
-    module.sys.argv = ["init", json.dumps([work]), "true", work, "/bin/echo", "ok"]
+    module.sys.argv = ["init", json.dumps([work]), "true", "[]", work, "/bin/echo", "ok"]
     os.chdir(work)
     module.run_entrypoint()
     print(json.dumps({"events": events}, separators=(",", ":")))
@@ -331,6 +362,49 @@ if scenario.startswith("filesystem_"):
     except RuntimeError as error:
         payload = {"error": str(error), "events": events}
     print(json.dumps(payload, separators=(",", ":")).replace(base, "<base>"))
+    raise SystemExit(0)
+
+if scenario == "private_directories":
+    results = {}
+    for name, directories in (
+        ("lock", ["/tmp/pnpm-store-operation-locks-0"]),
+        ("not_list", "/tmp/pnpm-store-operation-locks-0"),
+        ("outside_tmp", ["/var/tmp/locks"]),
+        ("nested", ["/tmp/locks/inner"]),
+        ("traversal", ["/tmp/../etc"]),
+        ("tmp_itself", ["/tmp"]),
+        ("duplicate", ["/tmp/locks", "/tmp/locks"]),
+        ("covers_root", ["/tmp/work"]),
+        ("same_as_root", ["/tmp/work"]),
+    ):
+        roots = ["/tmp/work/checkout"] if name == "covers_root" else ["/tmp/work"]
+        try:
+            results[name] = module.validate_private_directories(directories, roots)
+        except RuntimeError as error:
+            results[name] = str(error)
+    print(json.dumps(results, separators=(",", ":")))
+    raise SystemExit(0)
+
+if scenario == "private_directory_mount":
+    base = os.path.realpath(os.path.dirname(module_path))
+    work = os.path.join(base, "work")
+    sandbox = os.path.join(base, "sandbox")
+    os.makedirs(work)
+    os.makedirs(sandbox)
+    events = []
+    module.checked_mount = lambda *arguments: events.append(["mount", *arguments])
+    module.set_mount_readonly = lambda *arguments: events.append(["readonly", *arguments]) or "native"
+    module.os.chroot = lambda path: None
+    module.os.chdir = lambda path: None
+    module.normalized_runtime_paths = lambda *_arguments: []
+    module.recreate_system_links = lambda _sandbox: None
+    module.bind_mount = lambda sandbox_root, source: (module.root_path(sandbox_root, source), True)
+    module.isolate_filesystem([work], sandbox, work, ["/bin/true"], ["/tmp/pnpm-store-operation-locks-0"])
+    lock = os.path.join(sandbox, "tmp", "pnpm-store-operation-locks-0")
+    print(json.dumps({
+        "events": [event for event in events if lock in event or sandbox in event[1:2]],
+        "mode": oct(os.stat(lock).st_mode & 0o777),
+    }, separators=(",", ":")).replace(base, "<base>"))
     raise SystemExit(0)
 
 if scenario == "legacy_flags":
@@ -453,7 +527,8 @@ module.os.close = lambda _fd: None
 module.os.path.exists = lambda _path: False
 module.libc.prctl = lambda *_arguments: 0
 try:
-    result = module.restrict_filesystem_writes(["/work"])
+    private_directories = ["/tmp/pnpm-store-operation-locks-0"] if scenario == "success_private" else []
+    result = module.restrict_filesystem_writes(["/work"], private_directories)
     payload = {"calls": calls, "result": result, "status": "ok"}
 except module.ContainmentStageError as error:
     payload = error_payload(error)

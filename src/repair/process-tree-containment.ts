@@ -424,7 +424,44 @@ def validate_filesystem_roots(canonical_roots, sandbox_root, original_cwd):
             raise RuntimeError("validation writable root is unsafe: " + root)
 
 
-def isolate_filesystem(canonical_roots, sandbox_root, original_cwd, command):
+def validate_private_directories(private_directories, canonical_roots):
+    if not isinstance(private_directories, list):
+        raise RuntimeError("validation private directories are invalid")
+    validated = []
+    for directory in private_directories:
+        if (
+            not isinstance(directory, str)
+            or os.path.normpath(directory) != directory
+            or os.path.dirname(directory) != "/tmp"
+            or os.path.basename(directory) in {"", ".", ".."}
+            or directory in validated
+        ):
+            raise RuntimeError("validation private directory is invalid")
+        if any(
+            path_within(directory, root) or path_within(root, directory)
+            for root in canonical_roots
+        ):
+            raise RuntimeError("validation private directory overlaps a writable root")
+        validated.append(directory)
+    return validated
+
+
+def mount_private_directory(sandbox_root, directory):
+    # Each private directory is a new small tmpfs in this mount namespace.
+    # It is not a host path, and it goes away when the command stops.
+    target = root_path(sandbox_root, directory)
+    os.makedirs(target, mode=0o700)
+    checked_mount(
+        "tmpfs",
+        target,
+        MS_NOSUID | MS_NODEV | MS_NOEXEC,
+        "tmpfs",
+        "mode=0700,size=1m",
+    )
+    return target
+
+
+def isolate_filesystem(canonical_roots, sandbox_root, original_cwd, command, private_directories=()):
     validate_filesystem_roots(canonical_roots, sandbox_root, original_cwd)
     checked_mount(None, "/", MS_REC | MS_PRIVATE)
     checked_mount(
@@ -462,6 +499,10 @@ def isolate_filesystem(canonical_roots, sandbox_root, original_cwd, command):
         "mode=0755,size=1m",
     )
     recreate_system_links(sandbox_root)
+    private_targets = [
+        mount_private_directory(sandbox_root, directory)
+        for directory in private_directories
+    ]
     writable_targets = [
         bind_mount(sandbox_root, root)
         for root in canonical_roots
@@ -487,6 +528,8 @@ def isolate_filesystem(canonical_roots, sandbox_root, original_cwd, command):
         if os.path.exists(device)
     ]
     readonly_modes = {set_mount_readonly(sandbox_root, True)}
+    for target in private_targets:
+        readonly_modes.add(set_mount_readonly(target, False, False))
     for target, recursive in writable_targets:
         readonly_modes.add(set_mount_readonly(target, False, recursive))
     for target, recursive in runtime_targets:
@@ -548,7 +591,7 @@ def canonical_writable_roots(writable_roots):
     return canonical_roots
 
 
-def restrict_filesystem_writes(canonical_roots):
+def restrict_filesystem_writes(canonical_roots, private_directories=()):
     abi = landlock_abi()
     if abi is None:
         return "unavailable"
@@ -574,7 +617,7 @@ def restrict_filesystem_writes(canonical_roots):
             SYS_LANDLOCK_CREATE_RULESET,
         ) from error
     try:
-        for root in canonical_roots:
+        for root in [*canonical_roots, *private_directories]:
             add_writable_path(ruleset_fd, root, LANDLOCK_WRITE_ACCESS)
         for device in ("/dev/null", "/dev/zero", "/dev/full", "/dev/random", "/dev/urandom"):
             if os.path.exists(device):
@@ -778,13 +821,14 @@ def main():
     isolate_network = json.loads(sys.argv[2])
     if not isinstance(isolate_network, bool):
         raise RuntimeError("validation network isolation flag is invalid")
-    sandbox_root = os.path.realpath(sys.argv[3])
+    sandbox_root = os.path.realpath(sys.argv[4])
     if not stat.S_ISDIR(os.stat(sandbox_root).st_mode):
         raise RuntimeError("validation sandbox root is not a directory")
-    command = sys.argv[4:]
+    command = sys.argv[5:]
     if not command:
         raise RuntimeError("validation command is missing")
     canonical_roots = canonical_writable_roots(writable_roots)
+    private_directories = validate_private_directories(json.loads(sys.argv[3]), canonical_roots)
     original_cwd = os.path.realpath(os.getcwd())
     if isolate_network:
         run_stage("namespace_setup", bring_up_loopback)
@@ -795,9 +839,10 @@ def main():
             sandbox_root,
             original_cwd,
             command,
+            private_directories,
         ),
     )
-    landlock = restrict_filesystem_writes(canonical_roots)
+    landlock = restrict_filesystem_writes(canonical_roots, private_directories)
     run_stage("capability_drop", drop_capabilities)
     child = subprocess.Popen(command, close_fds=True)
     background_pids = set()

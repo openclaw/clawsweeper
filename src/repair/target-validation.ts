@@ -50,7 +50,11 @@ import {
   preparePinnedOpenClawValidationHelper,
   restorePinnedOpenClawValidationHelperCache,
 } from "./pinned-openclaw-validation-helper.js";
-import { resolveTargetRepoToolchain, type TargetRepoToolchain } from "./target-toolchain-config.js";
+import {
+  PNPM_CONTAINED_PRIVATE_DIRECTORIES,
+  resolveTargetRepoToolchain,
+  type TargetRepoToolchain,
+} from "./target-toolchain-config.js";
 import { compactText } from "./text-utils.js";
 import {
   isExpensivePnpmValidation,
@@ -539,6 +543,7 @@ function preparePnpmToolchain({
       env: validationEnv,
       isolateNetwork: false,
       timeoutMs: targetToolchainCommandTimeout(deadlineAt, installTimeoutMs, operation),
+      privateDirectories: PNPM_CONTAINED_PRIVATE_DIRECTORIES,
       writableRoots: [cwd, path.dirname(String(validationEnv.HOME))],
     });
   const lockfileSnapshot = captureTargetFile(cwd, "pnpm-lock.yaml");
@@ -3094,6 +3099,9 @@ function runRestorableValidationCommand({
           cwd,
           env: validationEnv,
           timeoutMs,
+          ...(getToolchain(options).packageManager === "pnpm"
+            ? { privateDirectories: PNPM_CONTAINED_PRIVATE_DIRECTORIES }
+            : {}),
           writableRoots: [cwd, path.dirname(String(validationEnv.HOME))],
           includeStderr: logTimings,
         });

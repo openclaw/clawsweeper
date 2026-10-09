@@ -6,6 +6,14 @@ import { repoRoot } from "./paths.js";
 
 export type TargetPackageManager = "pnpm" | "bun" | "npm";
 
+// pnpm 12.6 through 12.8 open the store operation lock in the fixed directory
+// "/tmp/pnpm-store-operation-locks-<euid>". They do not read TMPDIR or
+// XDG_RUNTIME_DIR. Contained commands run as uid 0 in their user namespace and
+// see a read-only /tmp, so give that one directory private writable storage.
+export const PNPM_CONTAINED_PRIVATE_DIRECTORIES: readonly string[] = [
+  "/tmp/pnpm-store-operation-locks-0",
+];
+
 export interface TargetChangedGate {
   /** Full command string the gate should resolve to, e.g. "pnpm check:changed". */
   command: string;
