@@ -2158,7 +2158,10 @@ test("sweep workflow executes only durable queue leases without runner-side admi
   assert.match(legacyIntakeBlock, /Queue legacy exact-review event/);
   assert.match(legacyIntakeBlock, /\/internal\/exact-review\/enqueue/);
   assert.match(legacyIntakeBlock, /\/internal\/exact-review\/branch-authority/);
-  assert.match(legacyIntakeBlock, /x-clawsweeper-exact-review-signature/);
+  assert.match(
+    legacyIntakeBlock,
+    /control_plane_signed_post "\$queue_url\$queue_path" "\$payload"/,
+  );
   assert.match(legacyIntakeBlock, /CLAWSWEEPER_WEBHOOK_SECRET/);
   assert.doesNotMatch(legacyIntakeBlock, /gh api "repos\/\$target_repo" --jq \.default_branch/);
   assert.match(legacyIntakeBlock, /targetBranch \? \{ targetBranch \} : \{\}/);
