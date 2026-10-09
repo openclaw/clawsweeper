@@ -55,8 +55,9 @@ import {
   type MaintainerDecision,
 } from "./decision-packets.js";
 import type { CreateReportOrchestrationDependencies } from "./clawsweeper-report-orchestration-dependencies.js";
-import type { createReportOrchestrationFoundation } from "./clawsweeper-orchestration-foundation.js";
 import type { createReportRendering } from "./clawsweeper-report-rendering.js";
+import { reviewMetricsFromReport } from "./clawsweeper-orchestration-foundation.js";
+import { fixedPullRequestFromReport } from "./clawsweeper-status-context.js";
 import { asRecord, nonBlankStringOrUndefined } from "./value-coerce.js";
 import { parseIsoMs } from "./iso-time.js";
 import {
@@ -72,12 +73,10 @@ import { eventTimestampMs, isAfterReview } from "./clawsweeper-label-policy.js";
 
 export function createPullRequestPromotionFacts(
   dependencies: CreateReportOrchestrationDependencies &
-    ReturnType<typeof createReportOrchestrationFoundation> &
     Pick<ReturnType<typeof createReportRendering>, "renderCloseCommentFromReport">,
 ) {
   const {
     defaultRootCauseCluster,
-    fixedPullRequestFromReport,
     ghJson,
     itemSnapshotHash,
     labelNames,
@@ -85,7 +84,6 @@ export function createPullRequestPromotionFacts(
     parseGitHubItemRef,
     renderCloseCommentFromReport,
     repoUrlFor,
-    reviewMetricsFromReport,
     targetRepo,
   } = dependencies;
 

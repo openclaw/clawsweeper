@@ -46,6 +46,7 @@ import type { createReportCommentHelpers } from "./clawsweeper-report-comment-he
 import { frontMatterStringArray, frontMatterValue } from "./report-front-matter.js";
 import {
   agentsPolicyStatusLine,
+  collapsedDetailsBlock,
   neutralizeOwnedSectionSpoofing,
   sanitizeArchitectureDiagram,
 } from "./clawsweeper-report-helpers.js";
@@ -72,6 +73,16 @@ import {
   sentence,
   stripListMarker,
 } from "./clawsweeper-review-presentation.js";
+import { closeReviewLineFromReport } from "./clawsweeper-report-context.js";
+import {
+  renderOpenClawPrSurfaceFromReport,
+  renderReviewMetricsDigest,
+  reviewMetricsFromReport,
+} from "./clawsweeper-orchestration-foundation.js";
+import {
+  regressionAssessmentFromReport,
+  regressionProvenanceFromReport,
+} from "./clawsweeper-status-context.js";
 
 const PRODUCT_KIND_TEXT: Record<ProductReviewKind, string> = {
   bug_fix: "Bug fix",
@@ -116,8 +127,6 @@ export function createReportCommentPresentation(
     appendHeadingSection,
     appendPublicSection,
     appendReviewQuestionDetails,
-    closeReviewLineFromReport,
-    collapsedDetailsBlock,
     labelJustificationsFromPublicReport,
     labelJustificationsMarkdown,
     labelTransitionJustificationsFromPublicReport,
@@ -128,16 +137,11 @@ export function createReportCommentPresentation(
     publicRootCauseClusterBlock,
     publicSummaryBody,
     renderCloseCommentFromReport,
-    renderOpenClawPrSurfaceFromReport,
-    renderReviewMetricsDigest,
     repairLoopPassModeFromReport,
     reportWorkCandidateReason,
-    regressionAssessmentFromReport,
-    regressionProvenanceFromReport,
     reviewAutomationMarkersFromReport,
     reviewFreshnessText,
     reviewHistoryForRender,
-    reviewMetricsFromReport,
     reviewVersionMarkerFromReport,
     reviewWorkflowCallout,
     reviewWorkflowSummaryLine,
@@ -447,7 +451,7 @@ export function createReportCommentPresentation(
         isPullRequest ? publicRiskBullets(risks) : risks,
       );
     }
-    const reviewLine = closeReviewLineFromReport(markdown);
+    const reviewLine = closeReviewLineFromReport(markdown, profile);
     if (reviewLine) reviewDetails.push(...(reviewDetails.length ? [""] : []), reviewLine);
     const reviewHistoryBlock = renderReviewHistorySection(reviewHistory);
 

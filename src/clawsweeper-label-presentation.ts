@@ -22,7 +22,6 @@ import type {
   ReviewCommentRenderOptions,
 } from "./clawsweeper-types.js";
 import type { CreateReportOrchestrationDependencies } from "./clawsweeper-report-orchestration-dependencies.js";
-import type { createReportOrchestrationFoundation } from "./clawsweeper-orchestration-foundation.js";
 import { frontMatterStringArray, frontMatterValue } from "./report-front-matter.js";
 import { effectiveReviewStatus } from "./clawsweeper-record-metadata.js";
 import {
@@ -59,10 +58,7 @@ import {
 } from "./clawsweeper-label-selection.js";
 import { prStatusLabelKindFromReportLabels, sentence } from "./clawsweeper-review-presentation.js";
 
-export function createReportLabelPresentation(
-  dependencies: CreateReportOrchestrationDependencies &
-    ReturnType<typeof createReportOrchestrationFoundation>,
-) {
+export function createReportLabelPresentation(dependencies: CreateReportOrchestrationDependencies) {
   const { defaultPlansDir, isFresh } = dependencies;
 
   function workPlanPathForReport(file: string, plansDir = defaultPlansDir()): string {

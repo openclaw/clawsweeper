@@ -72,10 +72,28 @@ import {
   type ReviewHistoryLedger,
 } from "./review-history.js";
 import type { CreateReportRenderingDependencies } from "./clawsweeper-report-rendering-dependencies.js";
-import type { createReportContextRendering } from "./clawsweeper-report-context.js";
+import {
+  closeReviewLineFromDecision,
+  closeReviewLineFromReport,
+} from "./clawsweeper-report-context.js";
 import { parseIsoMs } from "./iso-time.js";
 import { frontMatterStringArray, frontMatterValue } from "./report-front-matter.js";
-import { agentsPolicyStatusLine } from "./clawsweeper-report-helpers.js";
+import { agentsPolicyStatusLine, collapsedDetailsBlock } from "./clawsweeper-report-helpers.js";
+import { markdownLink } from "./clawsweeper-links.js";
+import {
+  closeClawHubHandoffBlock,
+  closeIntro,
+  closeOutro,
+  duplicateCanonicalLinks,
+  duplicateCanonicalPathLine,
+  workCandidateReasonText,
+} from "./clawsweeper-orchestration-foundation.js";
+import {
+  fixedPullRequestFromReport,
+  formatReviewFreshnessTimestamp,
+  regressionAssessmentFromReport,
+  regressionProvenanceFromReport,
+} from "./clawsweeper-status-context.js";
 import { markdownRepository } from "./clawsweeper-repository-paths.js";
 import { pullHeadShaFromReport, reviewSectionValue } from "./clawsweeper-record-metadata.js";
 
@@ -384,23 +402,8 @@ export function pullRequestReviewReadinessFromReport(markdown: string): PullRequ
   }
 }
 
-export function createReportCommentHelpers(
-  dependencies: CreateReportRenderingDependencies & ReturnType<typeof createReportContextRendering>,
-) {
-  const {
-    closeClawHubHandoffBlock,
-    closeIntro,
-    closeOutro,
-    closeReviewLineFromDecision,
-    closeReviewLineFromReport,
-    duplicateCanonicalLinks,
-    duplicateCanonicalPathLine,
-    fixedPullRequestFromReport,
-    formatReviewFreshnessTimestamp,
-    markdownLink,
-    targetProfile,
-    workCandidateReasonText,
-  } = dependencies;
+export function createReportCommentHelpers(dependencies: CreateReportRenderingDependencies) {
+  const { targetProfile } = dependencies;
 
   function renderCloseComment(options: {
     reason: CloseReason;
@@ -423,7 +426,7 @@ export function createReportCommentHelpers(
     const evidence = options.evidence.slice(0, 6).map((entry) => closeEvidenceLine(entry, profile));
     const likelyOwners = likelyOwnerLines(options.likelyOwners ?? [], profile);
     const summaryLine = sentence(options.summary);
-    const lines = [closeIntro(options.reason), "", summaryLine];
+    const lines = [closeIntro(options.reason, profile), "", summaryLine];
     if (options.fixedPullRequest?.confidence === "high") {
       lines.push(
         "",
@@ -447,12 +450,15 @@ export function createReportCommentHelpers(
     const rootCauseCluster = publicRootCauseClusterBlock(options.rootCauseCluster);
     if (rootCauseCluster) lines.push("", "**Root-cause cluster**", rootCauseCluster);
     const bestSolutionLine = sentence(options.bestSolution ?? "");
-    const canonicalLinks = duplicateCanonicalLinks({
-      reason: options.reason,
-      bestSolutionLine,
-      evidence: options.evidence,
-      currentItem: options.currentItem,
-    });
+    const canonicalLinks = duplicateCanonicalLinks(
+      {
+        reason: options.reason,
+        bestSolutionLine,
+        evidence: options.evidence,
+        currentItem: options.currentItem,
+      },
+      profile,
+    );
     const canonicalPathLine = duplicateCanonicalPathLine({
       reason: options.reason,
       summaryLine,
@@ -482,7 +488,7 @@ export function createReportCommentHelpers(
 
     const clawhubHandoff = closeClawHubHandoffBlock(options.reason);
     if (clawhubHandoff) lines.push("", "**ClawHub handoff**", clawhubHandoff);
-    const outro = closeOutro(options.reason, canonicalLinks);
+    const outro = closeOutro(options.reason, canonicalLinks, profile);
     if (outro) lines.push("", outro);
     if (options.reviewLine) details.push("", options.reviewLine);
     const detailsBlock = collapsedDetailsBlock("Review details", details);
@@ -511,11 +517,11 @@ export function createReportCommentHelpers(
         evidence: reportEvidence(markdown),
         likelyOwners: reportLikelyOwners(markdown),
         fixedPullRequest: fixedPullRequestFromReport(markdown),
-        regressionAssessment: dependencies.regressionAssessmentFromReport(markdown),
-        regressionProvenance: dependencies.regressionProvenanceFromReport(markdown),
+        regressionAssessment: regressionAssessmentFromReport(markdown),
+        regressionProvenance: regressionProvenanceFromReport(markdown),
         securityReview: reportSecurityReview(markdown),
         rootCauseCluster: reportRootCauseCluster(markdown),
-        reviewLine: closeReviewLineFromReport(markdown),
+        reviewLine: closeReviewLineFromReport(markdown, targetProfile()),
         currentItem: {
           repo: markdownRepository(markdown),
           number: Number(frontMatterValue(markdown, "number")),
@@ -553,7 +559,7 @@ export function createReportCommentHelpers(
         : null,
       securityReview: decision.securityReview,
       rootCauseCluster: decision.rootCauseCluster,
-      reviewLine: closeReviewLineFromDecision(decision, git, runtime),
+      reviewLine: closeReviewLineFromDecision(decision, git, runtime, targetProfile()),
       currentItem: item,
     });
   }
@@ -563,12 +569,6 @@ export function createReportCommentHelpers(
     const reason = workCandidateReasonText(workCandidate);
     if (!reason || reason.startsWith("_No work-lane recommendation")) return "";
     return reason;
-  }
-
-  function collapsedDetailsBlock(summary: string, lines: readonly string[]): string {
-    const body = lines.join("\n").trim();
-    if (!body) return "";
-    return ["<details>", `<summary>${summary}</summary>`, "", body, "", "</details>"].join("\n");
   }
 
   function appendPublicSection(lines: string[], heading: string, body: string): void {
@@ -817,7 +817,6 @@ export function createReportCommentHelpers(
     renderCloseCommentFromReport,
     normalizeComment,
     reportWorkCandidateReason,
-    collapsedDetailsBlock,
     appendPublicSection,
     appendHeadingSection,
     publicChecklistText,

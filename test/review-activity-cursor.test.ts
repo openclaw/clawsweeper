@@ -391,13 +391,12 @@ test("the review report persists the cursor that apply revalidates", () => {
     }),
     ...createReportContextRendering({} as never),
     ...createDashboardPresentation({} as never),
-    prSurfaceFilesFromContext: () => [],
     compactPullFilePaths: () => [],
-    fixedInText: () => "unknown",
     formatTimestamp: String,
     labelJustificationsMarkdown: () => "- none",
     pullHeadShaFromContext: () => "c".repeat(40),
     reviewStructuralPullStateFromContext: () => null,
+    targetProfile: () => repositoryProfileFor("openclaw/openclaw"),
   } as Parameters<typeof createReportDocumentRendering>[0]);
   const report = document.markdownFor({
     item: item({ kind: "pull_request", number: 42 }),

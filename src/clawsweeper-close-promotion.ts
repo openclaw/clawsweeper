@@ -6,7 +6,6 @@ import type {
   PullRequestClosePromotion,
 } from "./clawsweeper-types.js";
 import type { CreateReportOrchestrationDependencies } from "./clawsweeper-report-orchestration-dependencies.js";
-import type { createReportOrchestrationFoundation } from "./clawsweeper-orchestration-foundation.js";
 import type { createPullRequestPromotionFacts } from "./clawsweeper-promotion-facts.js";
 import type { createPullRequestCoverageProof } from "./clawsweeper-coverage-proof.js";
 import { isOlderThanDays } from "./iso-time.js";
@@ -24,7 +23,6 @@ import {
 
 export function createPullRequestClosePromotion(
   dependencies: CreateReportOrchestrationDependencies &
-    ReturnType<typeof createReportOrchestrationFoundation> &
     ReturnType<typeof createPullRequestPromotionFacts> &
     ReturnType<typeof createPullRequestCoverageProof>,
 ) {

@@ -158,6 +158,12 @@ export function agentsPolicyStatusLine(status: AgentsPolicyStatus | undefined): 
   }
 }
 
+export function collapsedDetailsBlock(summary: string, lines: readonly string[]): string {
+  const body = lines.join("\n").trim();
+  if (!body) return "";
+  return ["<details>", `<summary>${summary}</summary>`, "", body, "", "</details>"].join("\n");
+}
+
 export function publicTableCell(value: string): string {
   // Escape report-provided HTML (tags and comment openers) before inserting the
   // renderer-owned <br> tags; &lt; renders identically to a literal <.

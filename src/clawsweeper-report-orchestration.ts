@@ -1,6 +1,5 @@
 import type { CreateReportOrchestrationDependencies } from "./clawsweeper-report-orchestration-dependencies.js";
 import { createReportRendering } from "./clawsweeper-report-rendering.js";
-import { createReportOrchestrationFoundation } from "./clawsweeper-orchestration-foundation.js";
 import { createPullRequestPromotionFacts } from "./clawsweeper-promotion-facts.js";
 import { createPullRequestCoverageProof } from "./clawsweeper-coverage-proof.js";
 import { createPullRequestClosePromotion } from "./clawsweeper-close-promotion.js";
@@ -9,9 +8,6 @@ import { createReportLabelPresentation } from "./clawsweeper-label-presentation.
 export function createReportOrchestration(dependencies: CreateReportOrchestrationDependencies) {
   let reportRendering: ReturnType<typeof createReportRendering>;
   const renderingReferences = {
-    collapsedDetailsBlock: (
-      ...args: Parameters<ReturnType<typeof createReportRendering>["collapsedDetailsBlock"]>
-    ) => reportRendering.collapsedDetailsBlock(...args),
     renderCloseCommentFromReport: (
       ...args: Parameters<ReturnType<typeof createReportRendering>["renderCloseCommentFromReport"]>
     ) => reportRendering.renderCloseCommentFromReport(...args),
@@ -26,44 +22,26 @@ export function createReportOrchestration(dependencies: CreateReportOrchestratio
       >
     ) => reportRendering.renderRootCauseClusterAssessmentReportSection(...args),
   };
-  const orchestrationFoundation = createReportOrchestrationFoundation({
-    ...dependencies,
-    ...renderingReferences,
-  });
   const promotionFacts = createPullRequestPromotionFacts({
     ...dependencies,
     ...renderingReferences,
-    ...orchestrationFoundation,
   });
   const coverageProof = createPullRequestCoverageProof({
     ...dependencies,
     ...renderingReferences,
-    ...orchestrationFoundation,
     ...promotionFacts,
   });
   const closePromotion = createPullRequestClosePromotion({
     ...dependencies,
-    ...renderingReferences,
-    ...orchestrationFoundation,
     ...promotionFacts,
     ...coverageProof,
   });
-  const labelPresentation = createReportLabelPresentation({
-    ...dependencies,
-    ...renderingReferences,
-    ...orchestrationFoundation,
-  });
+  const labelPresentation = createReportLabelPresentation(dependencies);
   const {
     collectItemContext,
     compactPullFilePaths,
     ensureDir,
     fileUrl,
-    fixedInReportText,
-    fixedInText,
-    fixedPullRequestFromReport,
-    regressionAssessmentFromReport,
-    regressionProvenanceFromReport,
-    formatReviewFreshnessTimestamp,
     formatTimestamp,
     ghJson,
     ghObservedMutationCommand,
@@ -77,7 +55,6 @@ export function createReportOrchestration(dependencies: CreateReportOrchestratio
     markdownLink,
     pullHeadShaFromContext,
     repairLoopPassModeFromReport,
-    repoRelativePath,
     reviewAutomationMarkersFromReport,
     reviewStructuralPullStateFromContext,
     reviewVersionMarkerFromReport,
@@ -88,17 +65,6 @@ export function createReportOrchestration(dependencies: CreateReportOrchestratio
     workStatusForDecision,
   } = dependencies;
   const {
-    closeIntro,
-    closeOutro,
-    closeClawHubHandoffBlock,
-    duplicateCanonicalLinks,
-    duplicateCanonicalPathLine,
-    prSurfaceFilesFromContext,
-    renderOpenClawPrSurfaceFromReport,
-    reviewMetricsFromReport,
-    renderReviewMetricsDigest,
-    realBehaviorProofBlocksMerge,
-    workCandidateReasonText,
     reportDecision,
     livePullRequestHasNoDiff,
     upgradeNoDiffPullRequestReport,
@@ -129,7 +95,6 @@ export function createReportOrchestration(dependencies: CreateReportOrchestratio
     labelJustificationsFromPublicReport,
     inlineCode,
   } = {
-    ...orchestrationFoundation,
     ...promotionFacts,
     ...coverageProof,
     ...closePromotion,
@@ -137,21 +102,10 @@ export function createReportOrchestration(dependencies: CreateReportOrchestratio
   };
 
   reportRendering = createReportRendering({
-    closeClawHubHandoffBlock,
-    closeIntro,
-    closeOutro,
     collectItemContext,
     compactPullFilePaths,
-    duplicateCanonicalLinks,
-    duplicateCanonicalPathLine,
     ensureDir,
     fileUrl,
-    fixedInReportText,
-    fixedInText,
-    fixedPullRequestFromReport,
-    regressionAssessmentFromReport,
-    regressionProvenanceFromReport,
-    formatReviewFreshnessTimestamp,
     formattedMarkdownList,
     formatTimestamp,
     ghJson,
@@ -169,14 +123,9 @@ export function createReportOrchestration(dependencies: CreateReportOrchestratio
     linkedRelease,
     linkedSha,
     markdownLink,
-    prSurfaceFilesFromContext,
     pullHeadShaFromContext,
-    renderOpenClawPrSurfaceFromReport,
-    renderReviewMetricsDigest,
     repairLoopPassModeFromReport,
-    repoRelativePath,
     reviewAutomationMarkersFromReport,
-    reviewMetricsFromReport,
     reviewStructuralPullStateFromContext,
     reviewVersionMarkerFromReport,
     ROOT,
@@ -184,7 +133,6 @@ export function createReportOrchestration(dependencies: CreateReportOrchestratio
     targetProfile,
     targetRepo,
     validateCloseDecision,
-    workCandidateReasonText,
     workPlanPathForReport,
     workStatusForDecision,
   });
@@ -226,7 +174,6 @@ export function createReportOrchestration(dependencies: CreateReportOrchestratio
     pullRequestClosePromotion,
     pullRequestFilePathsFromContextForTest,
     pullRequestHeadSha,
-    realBehaviorProofBlocksMerge,
     renderReviewCommentFromReport,
     renderReviewContextBudgetForTest,
     renderWorkPlanFromReport,

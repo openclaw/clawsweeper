@@ -17,11 +17,12 @@ import {
   pullRequestReviewReadinessFromReport,
   securitySensitiveRepairAllowed,
 } from "./clawsweeper-report-comment-helpers.js";
+import { realBehaviorProofBlocksMerge } from "./clawsweeper-orchestration-foundation.js";
 
 export function createReviewCommentAutomation(
   dependencies: ReviewCommentWorkflowDependencies & ReturnType<typeof createReviewCommentIdentity>,
 ) {
-  const { realBehaviorProofBlocksMerge, markerAttributeValue } = dependencies;
+  const { markerAttributeValue } = dependencies;
 
   function canonicalReviewTimestamp(value: string | undefined): string | null {
     const parsed = parseIsoMs(value);

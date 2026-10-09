@@ -28,7 +28,6 @@ import {
   type PrCloseCoverageProofRuntime,
 } from "./pr-close-coverage-proof.js";
 import type { CreateReportOrchestrationDependencies } from "./clawsweeper-report-orchestration-dependencies.js";
-import type { createReportOrchestrationFoundation } from "./clawsweeper-orchestration-foundation.js";
 import type { createPullRequestPromotionFacts } from "./clawsweeper-promotion-facts.js";
 import type { createReportRendering } from "./clawsweeper-report-rendering.js";
 import { asRecord, nonBlankStringOrUndefined } from "./value-coerce.js";
@@ -51,7 +50,6 @@ import { sentence } from "./clawsweeper-review-presentation.js";
 
 export function createPullRequestCoverageProof(
   dependencies: CreateReportOrchestrationDependencies &
-    ReturnType<typeof createReportOrchestrationFoundation> &
     ReturnType<typeof createPullRequestPromotionFacts> &
     Pick<
       ReturnType<typeof createReportRendering>,

@@ -44,6 +44,9 @@ import {
   securityConcernLocation,
   sentence,
 } from "./clawsweeper-review-presentation.js";
+import { runtimeReviewText } from "./clawsweeper-report-context.js";
+import { prSurfaceFilesFromContext } from "./clawsweeper-orchestration-foundation.js";
+import { fixedInText } from "./clawsweeper-status-context.js";
 
 export function localCheckoutAccessForDecision(
   decision: Pick<Decision, "localCheckoutAccess">,
@@ -81,19 +84,17 @@ export function createReportDocumentRendering(
     compactPullFilePaths,
     contextCountText,
     fileUrl,
-    fixedInText,
     formatTimestamp,
     jsonFrontMatterValue,
     labelJustificationsMarkdown,
     linkedRelease,
     linkedSha,
     markdownLink,
-    prSurfaceFilesFromContext,
     pullHeadShaFromContext,
     renderReviewContextBudget,
     reviewStructuralPullStateFromContext,
     reviewTelemetryNumber,
-    runtimeReviewText,
+    targetProfile,
     workStatusForDecision,
   } = dependencies;
 
@@ -778,7 +779,7 @@ Latest release at review time: ${
         : "unknown"
     }${options.git.latestRelease?.sha ? ` (${linkedSha(options.git.latestRelease.sha)})` : ""}
 
-Fixed in: ${fixedInText(options.decision)}
+Fixed in: ${fixedInText(options.decision, targetProfile())}
 
 ${regressionPublicLines || "Regression provenance: not assessed."}
 

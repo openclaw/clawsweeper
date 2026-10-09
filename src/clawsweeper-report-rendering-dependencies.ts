@@ -2,27 +2,17 @@ import type {
   ActionTaken,
   CloseReason,
   Decision,
-  Evidence,
-  FixedPullRequest,
   Item,
   ItemContext,
-  ItemKind,
   LabelJustification,
   LabelTransitionJustification,
   PullRequestReviewReadiness,
-  RegressionAssessment,
-  PublicRegressionProvenance,
   ReviewCommentRenderOptions,
-  ReviewMetric,
 } from "./clawsweeper-types.js";
-import { type PrSurfaceFile } from "./pr-surface-stats.js";
 import { type ReviewStructuralPullState } from "./review-structural-cache.js";
 import type { RepositoryProfile } from "./repository-profiles.js";
 
 export interface CreateReportRenderingDependencies {
-  closeClawHubHandoffBlock: (reason: CloseReason) => string;
-  closeIntro: (reason: CloseReason) => string;
-  closeOutro: (reason: CloseReason, canonicalLinks?: string[]) => string;
   collectItemContext: (
     item: Item,
     options?: {
@@ -32,26 +22,8 @@ export interface CreateReportRenderingDependencies {
     },
   ) => ItemContext;
   compactPullFilePaths: (value: unknown) => string[];
-  duplicateCanonicalLinks: (options: {
-    reason: CloseReason;
-    bestSolutionLine: string;
-    evidence: Evidence[];
-    currentItem?: { repo?: string; kind?: ItemKind; number?: number } | undefined;
-  }) => string[];
-  duplicateCanonicalPathLine: (options: {
-    reason: CloseReason;
-    summaryLine: string;
-    bestSolutionLine: string;
-    evidence: Evidence[];
-  }) => string;
   ensureDir: (path: string) => void;
   fileUrl: (file: string, sha: string, line?: number, repo?: string) => string;
-  fixedInReportText: (markdown: string) => string;
-  fixedInText: (decision: Decision) => string;
-  fixedPullRequestFromReport: (markdown: string) => FixedPullRequest | null;
-  regressionAssessmentFromReport: (markdown: string) => RegressionAssessment | null;
-  regressionProvenanceFromReport: (markdown: string) => PublicRegressionProvenance | null;
-  formatReviewFreshnessTimestamp: (iso: string | undefined) => string;
   formattedMarkdownList: (
     values: readonly string[],
     formatter: (value: string) => string,
@@ -91,17 +63,12 @@ export interface CreateReportRenderingDependencies {
   linkedRelease: (tag: string) => string;
   linkedSha: (sha: string, repo?: string) => string;
   markdownLink: (label: string, url: string) => string;
-  prSurfaceFilesFromContext: (context: ItemContext) => PrSurfaceFile[] | null;
   pullHeadShaFromContext: (context: ItemContext) => string | null;
-  renderOpenClawPrSurfaceFromReport: (markdown: string) => string;
-  renderReviewMetricsDigest: (metrics: readonly ReviewMetric[]) => string;
   repairLoopPassModeFromReport: (markdown: string) => "" | "autofix" | "automerge";
-  repoRelativePath: (path: string) => string;
   reviewAutomationMarkersFromReport: (
     markdown: string,
     readiness?: PullRequestReviewReadiness,
   ) => string;
-  reviewMetricsFromReport: (markdown: string) => ReviewMetric[];
   reviewStructuralPullStateFromContext: (context: ItemContext) => ReviewStructuralPullState | null;
   reviewVersionMarkerFromReport: (markdown: string) => string;
   ROOT: string;
@@ -113,7 +80,6 @@ export interface CreateReportRenderingDependencies {
     decision: Decision,
     options?: { requireCloseComment?: boolean },
   ) => { ok: true } | { ok: false; actionTaken: ActionTaken; reason: string };
-  workCandidateReasonText: (section: string) => string;
   workPlanPathForReport: (file: string, plansDir?: string) => string;
   workStatusForDecision: (decision: Decision) => string;
 }

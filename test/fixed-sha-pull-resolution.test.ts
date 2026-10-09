@@ -164,8 +164,6 @@ function statusContextWithCalls(
     targetRepo: () => "openclaw/openclaw",
     markdownLink: (label) => label,
     repoUrlFor: () => "",
-    linkedRelease: (tag) => tag,
-    linkedSha: (sha) => sha,
     profileStatusStart: () => "",
     profileStatusEnd: () => "",
     sweepStatusPath: () => "",

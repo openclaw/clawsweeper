@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createReportOrchestrationFoundation } from "../dist/clawsweeper-orchestration-foundation.js";
+import { prSurfaceFilesFromContext } from "../dist/clawsweeper-orchestration-foundation.js";
 import { pullRequestFilePathsFromContextForTest } from "../dist/clawsweeper.js";
 
 import {
@@ -13,18 +13,6 @@ import {
 import { pinnedTestRolePaths } from "./openclaw-file-role-fixture.ts";
 
 test("surface counts use only the current rename path while proof retains both sides", () => {
-  const { prSurfaceFilesFromContext } = createReportOrchestrationFoundation(
-    new Proxy(
-      {},
-      {
-        get: (target, key) =>
-          Reflect.get(target, key) ??
-          (() => {
-            throw new Error(`Unexpected surface projection dependency: ${String(key)}`);
-          }),
-      },
-    ) as Parameters<typeof createReportOrchestrationFoundation>[0],
-  );
   for (const [previous_filename, filename, bucket] of [
     ["src/config/schema.ts", "src/config/schema.test-support.ts", "tests"],
     ["src/config/schema.test-support.ts", "src/config/schema.ts", "source"],

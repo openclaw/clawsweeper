@@ -86,13 +86,12 @@ export function generatedCompatibilityReport(
     }),
     ...createReportContextRendering({} as never),
     ...createDashboardPresentation({} as never),
-    prSurfaceFilesFromContext: () => [{ path: "src/db/schema.sql", additions: 1, deletions: 0 }],
     compactPullFilePaths: (file) => [file.filename],
-    fixedInText: () => "unknown",
     formatTimestamp: String,
     labelJustificationsMarkdown: () => "- none",
     pullHeadShaFromContext: () => "a".repeat(40),
     reviewStructuralPullStateFromContext: () => null,
+    targetProfile: () => repositoryProfileFor("openclaw/openclaw"),
   } as Parameters<typeof createReportDocumentRendering>[0]);
   const decision = parseDecision(
     closeDecision({

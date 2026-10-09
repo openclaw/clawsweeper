@@ -22,7 +22,6 @@ export function createReportRendering(dependencies: CreateReportRenderingDepende
   const tools = { ...context, ...commentHelpers, ...commentPresentation, ...actions, ...document };
   return {
     closeItem: tools.closeItem,
-    collapsedDetailsBlock: tools.collapsedDetailsBlock,
     currentReviewRevision: tools.currentReviewRevision,
     markdownFor: tools.markdownFor,
     pullRequestFilePathsFromContextForTest: tools.pullRequestFilePathsFromContextForTest,

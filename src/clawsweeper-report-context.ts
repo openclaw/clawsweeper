@@ -9,19 +9,61 @@ import type {
 } from "./clawsweeper-types.js";
 import type { CreateReportRenderingDependencies } from "./clawsweeper-report-rendering-dependencies.js";
 import { frontMatterStringArray, frontMatterValue } from "./report-front-matter.js";
-import { markdownRepository } from "./clawsweeper-repository-paths.js";
+import { markdownRepository, repoRelativePath } from "./clawsweeper-repository-paths.js";
 import { reviewSectionValue } from "./clawsweeper-record-metadata.js";
+import { linkedSha, markdownLink } from "./clawsweeper-links.js";
+import { fixedInReportText, fixedInText } from "./clawsweeper-status-context.js";
+import type { RepositoryProfile } from "./repository-profiles.js";
+
+export function runtimeReviewText(runtime?: {
+  model?: string | undefined;
+  reasoningEffort?: string | undefined;
+}): string {
+  const model = runtime?.model?.trim();
+  const reasoningEffort = runtime?.reasoningEffort?.trim();
+  if (model && reasoningEffort) return `model ${model}, reasoning ${reasoningEffort}`;
+  if (model) return `model ${model}`;
+  if (reasoningEffort) return `reasoning ${reasoningEffort}`;
+  return "";
+}
+
+function runtimeReviewTextFromReport(markdown: string): string {
+  return runtimeReviewText({
+    model: frontMatterValue(markdown, "review_model") ?? "",
+    reasoningEffort: frontMatterValue(markdown, "review_reasoning_effort") ?? "",
+  });
+}
+
+export function closeReviewLineFromDecision(
+  decision: Decision,
+  git: GitInfo,
+  runtime: Pick<ReviewRuntime, "model" | "reasoningEffort"> | undefined,
+  profile: RepositoryProfile,
+): string {
+  const fixed = fixedInText(decision, profile);
+  const parts = [
+    runtimeReviewText(runtime),
+    `reviewed against ${linkedSha(git.mainSha, profile.targetRepo)}`,
+  ].filter(Boolean);
+  if (fixed !== "not determined") parts.push(`fix evidence: ${fixed}`);
+  return `Codex review notes: ${parts.join("; ")}.`;
+}
+
+export function closeReviewLineFromReport(markdown: string, profile: RepositoryProfile): string {
+  const mainSha = frontMatterValue(markdown, "main_sha");
+  const fixed = fixedInReportText(markdown, profile);
+  const parts: string[] = [runtimeReviewTextFromReport(markdown)].filter(Boolean);
+  if (mainSha && mainSha !== "unknown")
+    parts.push(`reviewed against ${linkedSha(mainSha, profile.targetRepo)}`);
+  if (fixed !== "not determined") parts.push(`fix evidence: ${fixed}`);
+  return parts.length ? `Codex review notes: ${parts.join("; ")}.` : "";
+}
 
 export function createReportContextRendering(dependencies: CreateReportRenderingDependencies) {
   const {
     ensureDir,
-    fixedInReportText,
-    fixedInText,
     formattedMarkdownList,
     inlineCode,
-    linkedSha,
-    markdownLink,
-    repoRelativePath,
     shouldRenderWorkPlanFromReport,
     workPlanPathForReport,
   } = dependencies;
@@ -101,18 +143,6 @@ ${formattedMarkdownList(clusterRefs, (value) => value)}
       writeFileSync(planPath, plan, "utf8");
     }
     return true;
-  }
-
-  function runtimeReviewText(runtime?: {
-    model?: string | undefined;
-    reasoningEffort?: string | undefined;
-  }): string {
-    const model = runtime?.model?.trim();
-    const reasoningEffort = runtime?.reasoningEffort?.trim();
-    if (model && reasoningEffort) return `model ${model}, reasoning ${reasoningEffort}`;
-    if (model) return `model ${model}`;
-    if (reasoningEffort) return `reasoning ${reasoningEffort}`;
-    return "";
   }
 
   function reviewTelemetryNumber(value: number | undefined): string {
@@ -289,39 +319,9 @@ ${formattedMarkdownList(clusterRefs, (value) => value)}
     return renderReviewContextBudget(context);
   }
 
-  function runtimeReviewTextFromReport(markdown: string): string {
-    return runtimeReviewText({
-      model: frontMatterValue(markdown, "review_model") ?? "",
-      reasoningEffort: frontMatterValue(markdown, "review_reasoning_effort") ?? "",
-    });
-  }
-
-  function closeReviewLineFromDecision(
-    decision: Decision,
-    git: GitInfo,
-    runtime?: Pick<ReviewRuntime, "model" | "reasoningEffort">,
-  ): string {
-    const fixed = fixedInText(decision);
-    const parts = [runtimeReviewText(runtime), `reviewed against ${linkedSha(git.mainSha)}`].filter(
-      Boolean,
-    );
-    if (fixed !== "not determined") parts.push(`fix evidence: ${fixed}`);
-    return `Codex review notes: ${parts.join("; ")}.`;
-  }
-
-  function closeReviewLineFromReport(markdown: string): string {
-    const mainSha = frontMatterValue(markdown, "main_sha");
-    const fixed = fixedInReportText(markdown);
-    const parts: string[] = [runtimeReviewTextFromReport(markdown)].filter(Boolean);
-    if (mainSha && mainSha !== "unknown") parts.push(`reviewed against ${linkedSha(mainSha)}`);
-    if (fixed !== "not determined") parts.push(`fix evidence: ${fixed}`);
-    return parts.length ? `Codex review notes: ${parts.join("; ")}.` : "";
-  }
-
   return {
     renderWorkPlanFromReport,
     syncWorkPlanFromReport,
-    runtimeReviewText,
     reviewTelemetryNumber,
     contextCountText,
     promptJsonChars,
@@ -332,8 +332,5 @@ ${formattedMarkdownList(clusterRefs, (value) => value)}
     reviewContextLedgerCountText,
     renderReviewContextBudget,
     renderReviewContextBudgetForTest,
-    runtimeReviewTextFromReport,
-    closeReviewLineFromDecision,
-    closeReviewLineFromReport,
   };
 }

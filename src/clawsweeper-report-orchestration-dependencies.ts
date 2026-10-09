@@ -3,14 +3,11 @@ import type {
   CloseReason,
   ContextHydration,
   Decision,
-  FixedPullRequest,
   GithubPageWithHeaders,
   Item,
   ItemContext,
   ParsedGitHubItemRef,
-  RegressionAssessment,
   PullRequestLiveActivity,
-  PublicRegressionProvenance,
   RootCauseClusterAssessment,
 } from "./clawsweeper-types.js";
 import { type RepositoryProfile } from "./repository-profiles.js";
@@ -34,12 +31,6 @@ export interface CreateReportOrchestrationDependencies {
     comments: readonly unknown[],
     number: number,
   ) => { included: unknown[]; filtered: number };
-  fixedInReportText: (markdown: string) => string;
-  fixedInText: (decision: Decision) => string;
-  fixedPullRequestFromReport: (markdown: string) => FixedPullRequest | null;
-  regressionAssessmentFromReport: (markdown: string) => RegressionAssessment | null;
-  regressionProvenanceFromReport: (markdown: string) => PublicRegressionProvenance | null;
-  formatReviewFreshnessTimestamp: (iso: string | undefined) => string;
   formatTimestamp: (iso: string | undefined) => string;
   ghJson: <T>(args: string[]) => T;
   ghObservedMutationCommand: (options: {
@@ -95,7 +86,6 @@ export interface CreateReportOrchestrationDependencies {
     timeline?: unknown[],
   ) => Pick<PullRequestLiveActivity, "headSha" | "headActivityAtMs">;
   repairLoopPassModeFromReport: (markdown: string) => "" | "autofix" | "automerge";
-  repoRelativePath: (path: string) => string;
   repoUrlFor: (repo: string, path?: string) => string;
   reviewAutomationMarkersFromReport: (markdown: string) => string;
   reviewStructuralPullStateFromContext: (context: ItemContext) => ReviewStructuralPullState | null;

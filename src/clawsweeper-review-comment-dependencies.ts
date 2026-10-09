@@ -29,7 +29,6 @@ export interface ReviewCommentWorkflowDependencies {
   parseGitHubItemRef: ReturnType<typeof createDecisionParser>["parseGitHubItemRef"];
   ensureDir: (path: string) => void;
   removeIssueLabel: LabelMutations["removeIssueLabel"];
-  realBehaviorProofBlocksMerge: (markdown: string) => boolean;
   isClawSweeperOwnedLabel: (label: string) => boolean;
   reviewHistoryForStaleComment: (body: string | undefined) => ReviewHistoryLedger;
   currentReviewRevision: (item: Item) => string;

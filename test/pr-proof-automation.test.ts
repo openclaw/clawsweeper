@@ -4,6 +4,7 @@ import { frontMatterJsonArray, frontMatterValue } from "../dist/report-front-mat
 import { createReportDocumentRendering } from "../dist/clawsweeper-report-document.js";
 import { createReportContextRendering } from "../dist/clawsweeper-report-context.js";
 import { createDashboardPresentation } from "../dist/clawsweeper-dashboard.js";
+import { repositoryProfileFor } from "../dist/repository-profiles.js";
 import {
   buildDecisionPacketFromReport,
   maintainerDecisionBlocksClose,
@@ -130,18 +131,14 @@ test("renderer-produced reports preserve nested statistics and authoritative met
   const document = createReportDocumentRendering({
     ...createReportContextRendering({} as never),
     ...createDashboardPresentation({} as never),
-    prSurfaceFilesFromContext: () => [
-      { path: "src/a.ts", additions: 1, deletions: 0 },
-      { path: "src/b.ts", additions: 2, deletions: 1 },
-    ],
     compactPullFilePaths: (file) => [file.filename],
-    fixedInText: () => "unknown",
     formatTimestamp: String,
     labelJustificationsMarkdown: () => "- none",
     linkedSha: String,
     markdownLink: (label, url) => `[${label}](${url})`,
     pullHeadShaFromContext: () => null,
     reviewStructuralPullStateFromContext: () => null,
+    targetProfile: () => repositoryProfileFor("openclaw/clawsweeper"),
   } as Parameters<typeof createReportDocumentRendering>[0]);
   const report = document.markdownFor({
     item: subject,
@@ -1758,15 +1755,14 @@ function renderedPullRequestReport(
   const document = createReportDocumentRendering({
     ...createReportContextRendering({} as never),
     ...createDashboardPresentation({} as never),
-    prSurfaceFilesFromContext: () => [{ path: "src/runtime.ts", additions: 1, deletions: 0 }],
     compactPullFilePaths: (file) => [file.filename],
-    fixedInText: () => "unknown",
     formatTimestamp: String,
     labelJustificationsMarkdown: () => "- none",
     linkedSha: String,
     markdownLink: (label, url) => `[${label}](${url})`,
     pullHeadShaFromContext: () => null,
     reviewStructuralPullStateFromContext: () => null,
+    targetProfile: () => repositoryProfileFor("openclaw/clawsweeper"),
   } as Parameters<typeof createReportDocumentRendering>[0]);
   return document.markdownFor({
     item: subject,

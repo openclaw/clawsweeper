@@ -725,7 +725,6 @@ const reportOrchestration = createReportOrchestration({
   parseGitHubItemRef,
   pullHeadShaFromContext: (...args) => pullHeadShaFromContext(...args),
   repairLoopPassModeFromReport: (...args) => repairLoopPassModeFromReport(...args),
-  repoRelativePath,
   reviewAutomationMarkersFromReport: (...args) => reviewAutomationMarkersFromReport(...args),
   reviewStructuralPullStateFromContext: (...args) => reviewStructuralPullStateFromContext(...args),
   reviewVersionMarkerFromReport: (...args) => reviewVersionMarkerFromReport(...args),
