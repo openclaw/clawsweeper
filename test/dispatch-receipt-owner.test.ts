@@ -69,6 +69,18 @@ test("dispatch receipt gate keeps an older active run as owner", () => {
   );
 });
 
+test("dispatch receipt gate lets the oldest run proceed while a newer duplicate is pending", () => {
+  assert.equal(
+    runGate({
+      runs: [
+        { id: 300, display_title: EXPECTED_TITLE, status: "in_progress" },
+        { id: 301, display_title: EXPECTED_TITLE, status: "completed", conclusion: "success" },
+      ],
+    }),
+    "none",
+  );
+});
+
 test("dispatch receipt gate allows retry after failed owner and receipt-only success", () => {
   for (const requiredJobName of ["assist", "Plan and review cluster"]) {
     assert.equal(

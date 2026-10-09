@@ -128,7 +128,10 @@ const executionCommands = {
   }),
   5: commandComment({ id: 500, issueNumber: 5 }),
   6: commandComment({ id: 600, issueNumber: 6, body: "/clawsweeper autofix" }),
+  7: commandComment({ id: 700, issueNumber: 7, body: "/clawsweeper implement" }),
 };
+// Dispatch keys that GitHub accepted. Each one starts a successful assist run.
+const acceptedDispatchKeys = [];
 // The status comment that an earlier autofix command on pull request 6 left behind.
 const retainedStatus = {
   id: 650,
@@ -149,6 +152,28 @@ const deletedAck = {
 const server = http.createServer(async (request, response) => {
   const url = new URL(request.url || "/", "http://loopback.invalid");
   requests.push(`${request.method} ${url.pathname}${url.search}`);
+  if (mode === "dispatch-lost-response" && url.pathname.endsWith("/dispatches")) {
+    // GitHub accepts the dispatch, but the router does not get the response.
+    let body = "";
+    for await (const chunk of request) body += chunk;
+    acceptedDispatchKeys.push(JSON.parse(body).client_payload.dispatch_key);
+    return json(response, 502, { message: "Bad Gateway" });
+  }
+  if (url.pathname === "/repos/openclaw/clawsweeper/actions/workflows/assist.yml/runs") {
+    return json(response, 200, {
+      workflow_runs: acceptedDispatchKeys.map((key, index) => ({
+        id: 900 + index,
+        display_title: `Assist ${targetRepo}#4 [${key}]`,
+        status: "completed",
+        conclusion: "success",
+        created_at: new Date().toISOString(),
+        html_url: `https://github.com/openclaw/clawsweeper/actions/runs/${900 + index}`,
+      })),
+    });
+  }
+  if (/^\/repos\/openclaw\/clawsweeper\/actions\/runs\/9\d\d\/jobs$/.test(url.pathname)) {
+    return json(response, 200, { jobs: [{ name: "assist", conclusion: "success" }] });
+  }
   if (mode === "before-discovery") {
     return json(response, 429, { message: "Too Many Requests" });
   }
@@ -213,13 +238,22 @@ const server = http.createServer(async (request, response) => {
         state: "open",
         locked: false,
         title: "Executed command issue",
-        body: "Router mutation throttle fixture",
+        // Issue 7 names issue 8, which is an open pull request.
+        body: issueNumber === "7" ? "Follow-up to #8." : "Router mutation throttle fixture",
         user: { login: "reporter" },
         labels: [],
         ...(issueNumber === "6" ? { pull_request: { url: `${issuePath}/pull` } } : {}),
       });
     }
     if (url.pathname === `${issuePath}/comments`) return json(response, 200, [comment]);
+  }
+  if (url.pathname === `/repos/${targetRepo}/issues/8`) {
+    return json(response, 200, {
+      number: 8,
+      state: "open",
+      title: "Open fix",
+      pull_request: { url: `https://api.github.com/repos/${targetRepo}/pulls/8` },
+    });
   }
   if (url.pathname === "/repos/openclaw/router-throttle-proof/issues/comments/100") {
     return json(response, 200, commandComment());
@@ -468,6 +502,42 @@ try {
       ?.dispatch_key,
   );
 
+  // The dispatch claim is durable before the dispatch. After a lost dispatch response,
+  // the next run finds the accepted run and records it without a second dispatch.
+  mode = "dispatch-lost-response";
+  const lost = await runExecutedCommand(apiUrl, 4);
+  assert.notEqual(lost.status, 0, "a lost dispatch response must fail the run");
+  assert.ok(acceptedDispatchKeys.length > 0);
+  const claim = JSON.parse(fs.readFileSync(ledgerPath, "utf8")).commands.find(
+    (entry) => String(entry.comment_id) === "400",
+  );
+  assert.equal(claim?.status, "claimed");
+  mode = "success";
+  const recovered = await runExecutedCommand(apiUrl, 4);
+  assert.equal(recovered.status, 0, recovered.stderr || recovered.stdout);
+  assert.deepEqual(
+    recovered.writes.filter((request) => request.endsWith("/dispatches")),
+    [],
+  );
+  assert.equal(recovered.command?.status, "executed");
+  assert.equal(
+    recovered.command?.actions.find((action) => action.action === "dispatch_assist")?.recovered,
+    true,
+  );
+
+  // An implementation request stops when the issue names an open pull request.
+  const linked = await runRouter(apiUrl, {
+    selection: ["--comment-ids", "700", "--item-numbers", "7"],
+  });
+  assert.equal(linked.status, 0, linked.stderr || linked.stdout);
+  const linkedCommand = JSON.parse(fs.readFileSync(resultPath, "utf8")).commands[0];
+  assert.equal(linkedCommand.intent, "implement_issue");
+  assert.match(linkedCommand.reason, /blocked by an existing linked PR \(#8\)/);
+  assert.deepEqual(
+    linkedCommand.actions.map((action) => action.action),
+    ["comment"],
+  );
+
   process.stdout.write(
     `${JSON.stringify(
       {
@@ -502,6 +572,8 @@ try {
           deleted_ack_converges_without_write: true,
           forced_replay_attempt_routed: true,
           review_dispatch_keeps_status_comment: true,
+          claimed_dispatch_recovered: true,
+          linked_pr_blocks_implementation: true,
         },
         requests,
       },

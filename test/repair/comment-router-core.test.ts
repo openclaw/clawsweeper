@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 
+import { parse as parseYaml } from "yaml";
+
 import {
   AUTOCLOSE_INTENTS,
   MERGE_INTENTS,
@@ -14,8 +16,10 @@ import {
   automergeRequestedByFromComments,
   automergeRequestedByFromBody,
   automergeGateBlockReason,
+  automergeJobRepairPlan,
   automergeJobBranch,
   automergeJobPath,
+  automergeReadinessBlockReason,
   automergeReadinessRepairReason,
   automergeTransientWaitConfig,
   buildClawSweeperAssistDispatchPayload,
@@ -85,6 +89,14 @@ import {
 import { CLAWSWEEPER_CO_AUTHOR_TRAILER } from "../../dist/repair/co-author-credit.js";
 import { issueSourceRevisionSha256 } from "../../dist/repair/issue-source-guard.js";
 import { parseSimpleYaml, validateJob } from "../../dist/repair/lib.js";
+import {
+  AUTOFIX_LABEL,
+  AUTOMERGE_BLOCKING_LABEL_NAMES,
+  AUTOMERGE_LABEL,
+  HUMAN_REVIEW_LABEL,
+  MANUAL_ONLY_LABEL,
+  MERGE_READY_LABEL,
+} from "../../dist/repair/exact-review-guard-labels.js";
 
 test("status comment authors fail closed even when the allowlist contains an empty login", () => {
   const trusted = new Set(["", "clawsweeper[bot]", "openclaw-clawsweeper[bot]"]);
@@ -1264,79 +1276,6 @@ test("existing repair jobs migrate and follow explicit maintainer mode changes",
     assert.doesNotMatch(literal, /actual approving maintainer's instructions/);
   }
 
-  const source = readFileSync("src/repair/comment-router.ts", "utf8");
-  const ensure = source.slice(
-    source.indexOf("function ensureAutomergeJob"),
-    source.indexOf("function ensureIssueImplementationJob"),
-  );
-  assert.match(ensure, /syncAutomergeJobRepairMode\(current, repairMode, authorization\)/);
-  assert.match(ensure, /command\.trusted_bot !== true/);
-  assert.match(ensure, /command\.trusted_bot === true/);
-  assert.match(ensure, /repairMode = String\(currentJob\.frontmatter\.repair_mode\)/);
-  assert.match(ensure, /\["autofix", "automerge", "maintainer_approve_automerge"\]/);
-  const routed = source.slice(
-    source.indexOf("function routedCommandForComment"),
-    source.indexOf("function", source.indexOf("function routedCommandForComment") + 1),
-  );
-  assert.match(routed, /automerge_instructions: parsed\.automerge_instructions \?\? null/);
-  assert.match(routed, /live_verification: parsed\.live_verification \?\? null/);
-  const needsHuman = source.slice(
-    source.indexOf("function classifyNeedsHuman"),
-    source.indexOf("function maintainerAutomergeOptInApprovesNeedsHuman"),
-  );
-  assert.match(needsHuman, /validated_maintainer_human_approval: true/);
-  const approvedMissingProof = source.slice(
-    source.indexOf("const approvedProofOverride ="),
-    source.indexOf("if (AUTOCLOSE_INTENTS.has(command.intent))"),
-  );
-  assert.match(
-    approvedMissingProof,
-    /validated_maintainer_human_approval: true/,
-    "late maintainer missing-proof approval must reach the final exact-head gate",
-  );
-  const maintainerApproval = source.slice(
-    source.indexOf("function classifyMaintainerApprovedAutomerge"),
-    source.indexOf("function classifyNeedsHuman"),
-  );
-  assert.doesNotMatch(
-    maintainerApproval,
-    /trustedExactHeadReviewBlockReason/,
-    "repairable maintainer approvals must reach execution before exact-review merge gating",
-  );
-  const readiness = source.slice(
-    source.indexOf("function validateAutomergeReadiness"),
-    source.indexOf("function trustedExactHeadReviewBlockReason"),
-  );
-  assert.match(
-    readiness,
-    /command\.validated_maintainer_human_approval !== true/,
-    "validated approval must pass the pause label without removing it before merge",
-  );
-  assert.ok(
-    readiness.indexOf("const review = latestTrustedExactHeadReview") >
-      readiness.indexOf("const mergeStateStatus"),
-    "repairable readiness states must classify before the final exact-review merge gate",
-  );
-  assert.match(readiness, /maintainerApprovalAppliesToExactHeadReview\(\{/);
-  assert.match(
-    readiness,
-    /approvalValidated: command\.validated_maintainer_human_approval === true/,
-  );
-  assert.match(readiness, /optInTime: authoritativeMaintainerHumanApprovalTime\(command\)/);
-  assert.doesNotMatch(
-    readiness,
-    /allowHumanApproval: command\.validated_maintainer_human_approval === true/,
-  );
-  assert.doesNotMatch(readiness, /allowHumanApproval: command\.intent/);
-  assert.doesNotMatch(ensure, /if \(command\.target\?\.has_automerge_job[\s\S]*?return \{/);
-  const modeSelection = source.slice(
-    source.indexOf("function repairJobModeForCommand"),
-    source.indexOf("type ReviewLeaseGuardBlock"),
-  );
-  assert.ok(
-    modeSelection.indexOf('command.intent === "automerge"') < modeSelection.indexOf("hasLabel"),
-  );
-
   assert.throws(() => syncAutomergeJobRepairMode(existing, "unknown"), /Invalid repair mode/);
   assert.throws(
     () =>
@@ -1350,6 +1289,64 @@ test("existing repair jobs migrate and follow explicit maintainer mode changes",
     () => syncAutomergeJobRepairMode("no frontmatter", "autofix"),
     /must contain YAML frontmatter/,
   );
+});
+
+test("automerge job writes keep maintainer-chosen modes and record only maintainer authorization", () => {
+  const maintainer = {
+    trusted_bot: false,
+    author: "maintainer",
+    author_id: "7",
+    comment_url: "https://github.com/openclaw/openclaw/pull/42#issuecomment-1",
+    automerge_instructions: "Keep the API stable.",
+  };
+  const authorization = {
+    author: "maintainer",
+    authorId: "7",
+    commentUrl: "https://github.com/openclaw/openclaw/pull/42#issuecomment-1",
+    automergeInstructions: "Keep the API stable.",
+  };
+  const autofixTarget = { labels: [AUTOFIX_LABEL] };
+
+  // An explicit maintainer mode command wins over the current label and job mode.
+  assert.deepEqual(
+    automergeJobRepairPlan(
+      { ...maintainer, intent: "automerge", target: autofixTarget },
+      "autofix",
+    ),
+    { repairMode: "automerge", authorization },
+  );
+  assert.deepEqual(
+    automergeJobRepairPlan(
+      { ...maintainer, intent: "autofix", target: { labels: [] } },
+      "automerge",
+    ),
+    { repairMode: "autofix", authorization },
+  );
+  // Without an explicit mode, the label picks the mode for a new job.
+  for (const [target, repairMode] of [
+    [autofixTarget, "autofix"],
+    [{ labels: [] }, "automerge"],
+  ] as const) {
+    assert.deepEqual(
+      automergeJobRepairPlan({ ...maintainer, intent: "maintainer_approve_automerge", target }),
+      { repairMode, authorization },
+    );
+  }
+  // A trusted bot verdict keeps the existing mode and records no authorization.
+  for (const existing of ["autofix", "automerge"]) {
+    assert.deepEqual(
+      automergeJobRepairPlan(
+        {
+          ...maintainer,
+          trusted_bot: true,
+          intent: "clawsweeper_auto_repair",
+          target: { labels: [] },
+        },
+        existing,
+      ),
+      { repairMode: existing, authorization: undefined },
+    );
+  }
 });
 
 test("parseCommand recognizes ClawSweeper bot mentions", () => {
@@ -1868,16 +1865,7 @@ test("ready human-review commands block same-run label sweeps", () => {
     }),
     false,
   );
-});
-
-test("router classifies fresh human-review pauses before label sweeps", () => {
-  const source = readFileSync("src/repair/comment-router.ts", "utf8");
-  const classifyComments = source.indexOf("const classifiedCommentCommands");
-  const repairLoopSweeps = source.indexOf("listRepairLoopSweepCommands(classifiedCommentCommands)");
-
-  assert.ok(classifyComments >= 0);
-  assert.ok(repairLoopSweeps > classifyComments);
-  assert.match(source, /pendingRepairLoopOptIns\(existingCommands, optedIn\)/);
+  // A ready human-review pause on the same item suppresses its repair-loop opt-in sweep.
   assert.deepEqual(
     pendingRepairLoopOptIns(
       [
@@ -2289,413 +2277,106 @@ test("active review comments cannot replay their previous trusted verdict", () =
   );
 });
 
-test("review dispatch coordination guards label sweeps and maintainer mode commands", () => {
-  const source = readFileSync("src/repair/comment-router.ts", "utf8");
-  const activeLease = source.indexOf("freshExactHeadReviewStartLease({");
-  const repairPlanning = source.indexOf("const failedChecksRepairReason", activeLease);
+test("merge readiness keeps safety holds ahead of maintainer approval", () => {
+  const headSha = "abc123";
+  const trustedAuthors = new Set(["clawsweeper[bot]"]);
+  const pass = {
+    user: { login: "clawsweeper[bot]" },
+    created_at: "2026-08-27T12:00:00Z",
+    body: `<!-- clawsweeper-verdict:pass live_verification=passed sha=${headSha} -->`,
+  };
+  const proofHold = {
+    user: { login: "clawsweeper[bot]" },
+    created_at: "2026-08-27T12:00:00Z",
+    body: [
+      "## Next step before merge",
+      "",
+      "No repair lane is needed: the PR already contains the narrow fix, but missing real behavior proof needs maintainer handling.",
+      "",
+      `<!-- clawsweeper-verdict:needs-human live_verification=absent sha=${headSha} hold=proof findings=0 -->`,
+    ].join("\n"),
+  };
+  const readyView = {
+    state: "OPEN",
+    isDraft: false,
+    baseRefName: "main",
+    headRefOid: headSha,
+    mergeable: "MERGEABLE",
+    mergeStateStatus: "CLEAN",
+    reviewDecision: "APPROVED",
+    statusCheckRollup: [{ name: "build", status: "COMPLETED", conclusion: "SUCCESS" }],
+  };
+  const approval = {
+    intent: "maintainer_approve_automerge",
+    comment_created_at: "2026-08-27T12:01:00Z",
+  };
+  const readiness = ({
+    labels = [] as string[],
+    command = {},
+    comments = [pass] as unknown[],
+    view = {},
+  }) =>
+    automergeReadinessBlockReason({
+      command: {
+        repo: "openclaw/openclaw",
+        issue_number: 42,
+        expected_head_sha: headSha,
+        ...command,
+      },
+      view: { ...readyView, ...view },
+      target: { labels: [AUTOMERGE_LABEL, ...labels], body: "" },
+      comments,
+      trustedAuthors,
+      ledgerCommands: [],
+    });
 
-  assert.ok(activeLease >= 0);
-  assert.ok(repairPlanning > activeLease);
-  assert.match(source, /same-head ClawSweeper review is active until/);
-  assert.match(
-    source,
-    /prehydrate_comment_commands[\s\S]*?prehydrateCommandLookups\(rawCommands,\s*\{\s*refreshIssueComments:\s*true\s*\}\)/,
+  assert.equal(readiness({}), "");
+  assert.equal(
+    readiness({
+      labels: [MANUAL_ONLY_LABEL],
+      command: { ...approval, validated_maintainer_human_approval: true },
+    }),
+    "PR is marked manual-only; merge is disabled",
   );
-  assert.match(
-    source,
-    /prehydrate_repair_loop_sweeps[\s\S]*?prehydrateCommandLookups\(sweepCommands,\s*\{\s*refreshIssueComments:\s*true\s*\}\)/,
-  );
-  const prehydrate = source.slice(
-    source.indexOf("async function prehydrateCommandLookups"),
-    source.indexOf("function classifyCommand"),
-  );
-  assert.ok(prehydrate.indexOf("issueCommentsCache.delete(number)") >= 0);
-  assert.ok(
-    prehydrate.indexOf("issueCommentsCache.delete(number)") <
-      prehydrate.indexOf("cachedIssueCommentsAsync(number)"),
-  );
+  for (const label of AUTOMERGE_BLOCKING_LABEL_NAMES) {
+    const blocked = readiness({ labels: [label] });
+    const approved = readiness({ labels: [label], command: approval });
+    assert.notEqual(blocked, "", label);
+    if (label === HUMAN_REVIEW_LABEL || label === MERGE_READY_LABEL) {
+      assert.equal(approved, "", label);
+    } else {
+      assert.equal(approved, blocked, label);
+    }
+  }
 
-  const executeCommand = source.slice(
-    source.indexOf("function executeCommand"),
-    source.indexOf("function applyRemoveLabelActions"),
+  // Repairable live states win over a missing exact-head review.
+  assert.equal(
+    readiness({ comments: [], view: { mergeable: "CONFLICTING" } }),
+    "mergeable state is CONFLICTING",
   );
-  const trustedVerdictCheck = executeCommand.indexOf(
-    "trustedAutomationReviewLeaseBlockReason(command)",
-  );
-  const preMutationCheck = executeCommand.indexOf(
-    "repairLoopPreMutationReviewDispatchDecision(command)",
-  );
-  const firstMutation = executeCommand.indexOf("ensureAutomergeJob(command)", preMutationCheck);
-  const dispatchRecheck = executeCommand.indexOf(
-    "reviewDispatchDecisionForCommand(command)",
-    preMutationCheck + 1,
-  );
-  const dispatch = executeCommand.indexOf("dispatchClawSweeperReview(command)", dispatchRecheck);
-  assert.ok(trustedVerdictCheck >= 0);
-  assert.ok(trustedVerdictCheck < executeCommand.indexOf("let dispatched"));
-  assert.ok(preMutationCheck >= 0);
-  assert.ok(firstMutation > preMutationCheck);
-  assert.ok(dispatchRecheck > firstMutation);
-  assert.ok(dispatch > dispatchRecheck);
-  const postMutationCoordination = executeCommand.slice(dispatchRecheck, dispatch);
-  assert.match(postMutationCoordination, /markCoordinatedReviewDispatchActions\(\{/);
+  assert.equal(readiness({ comments: [] }), "no trusted exact-head ClawSweeper review found");
 
-  const dispatchGuard = source.slice(
-    source.indexOf("function repairLoopPreMutationReviewDispatchDecision"),
-    source.indexOf("function trustedAutomationSourceRevisionBlockReason"),
-  );
-  assert.match(
-    dispatchGuard,
-    /automation_source !== "repair_loop_label_sweep"[\s\S]*?return \{ action: "dispatch" \}/,
-  );
-  assert.equal(dispatchGuard.match(/fetchPullRequestView\(number\)/g)?.length, 2);
-  assert.equal(dispatchGuard.match(/issues\/\$\{number\}\/comments\?per_page=100/g)?.length, 2);
-  assert.match(
-    dispatchGuard,
-    /sourceRevisionBefore: issueSourceRevisionSha256\(before, commentsBefore\)/,
-  );
-  assert.match(
-    dispatchGuard,
-    /sourceRevisionAfter: issueSourceRevisionSha256\(after, commentsAfter\)/,
-  );
-  assert.match(dispatchGuard, /nowMs:\s*Date\.now\(\)/);
-  assert.match(dispatchGuard, /trustedExactHeadReviewCompletionSince\(\{/);
-  assert.match(dispatchGuard, /sinceMs:\s*commandStartedAtMs/);
-  assert.match(dispatchGuard, /decideReviewDispatchCoordination\(\{/);
-  assert.match(dispatchGuard, /completedReviewAt:/);
-  const coordinatedActions = source.slice(
-    source.indexOf("function markCoordinatedReviewDispatchActions"),
-    source.indexOf("function trustedAutomationSourceRevisionBlockReason"),
-  );
-  assert.match(coordinatedActions, /ensure_automerge_job/);
-  assert.match(coordinatedActions, /status:\s*"executed"/);
-  assert.match(coordinatedActions, /coordination_action:\s*decision\.action/);
-  const sourceRevisionGuard = source.slice(
-    source.indexOf("function trustedAutomationSourceRevisionBlockReason"),
-    source.indexOf("function trustedAutomationReviewLeaseBlockReason"),
-  );
-  const issueBefore = sourceRevisionGuard.indexOf("const before = fetchIssue(number)");
-  const commentsBetween = sourceRevisionGuard.indexOf(
-    "issues/${number}/comments?per_page=100",
-    issueBefore,
-  );
-  const issueAfter = sourceRevisionGuard.indexOf("const after = fetchIssue(number)");
-  assert.ok(issueBefore >= 0);
-  assert.ok(commentsBetween > issueBefore);
-  assert.ok(issueAfter > commentsBetween);
-  assert.match(sourceRevisionGuard, /revisionBefore !== revisionAfter/);
-  assert.match(sourceRevisionGuard, /revisionAfter !== expectedRevision/);
-  assert.match(sourceRevisionGuard, /same-revision ClawSweeper review is active until/);
-  const classify = source.slice(
-    source.indexOf("function classifyCommand"),
-    source.indexOf("function classifyAutoclose"),
-  );
-  assert.ok(
-    classify.indexOf("trustedAutomationSourceRevisionBlockReason") <
-      classify.indexOf("if (command.trusted_bot && pull)"),
-  );
-  const trustedVerdictGuard = source.slice(
-    source.indexOf("function trustedAutomationReviewLeaseBlockReason"),
-    source.indexOf("function dispatchClawSweeperReview"),
-  );
-  assert.equal(trustedVerdictGuard.match(/fetchPullRequestView\(number\)/g)?.length, 2);
-  assert.ok(
-    trustedVerdictGuard.indexOf('command.target?.kind !== "pull_request"') <
-      trustedVerdictGuard.indexOf("fetchPullRequestView(number)"),
-  );
-  assert.match(trustedVerdictGuard, /trustedAutomationPredatesReviewStartLease\(\{/);
-});
-
-test("manual-only holds block merge before maintainer approval exemptions", () => {
-  const source = readFileSync("src/repair/comment-router.ts", "utf8");
-  const readiness = source.slice(
-    source.indexOf("function validateAutomergeReadiness"),
-    source.indexOf("function authoritativeMaintainerHumanApprovalTime"),
-  );
-  assert.match(
-    readiness,
-    /if \(hasLabel\(target, MANUAL_ONLY_LABEL\)\) return "PR is marked manual-only; merge is disabled";/,
-  );
-  assert.ok(
-    readiness.indexOf("MANUAL_ONLY_LABEL") <
-      readiness.indexOf("validated_maintainer_human_approval"),
-  );
-});
-
-test("fresh merge readiness checks the full blocking-label policy", () => {
-  const source = readFileSync("src/repair/comment-router.ts", "utf8");
-  const readiness = source.slice(
-    source.indexOf("function validateAutomergeReadiness"),
-    source.indexOf("function authoritativeMaintainerHumanApprovalTime"),
-  );
-  assert.match(readiness, /AUTOMERGE_BLOCKING_LABEL_NAMES\.find/);
-  assert.match(readiness, /return hasLabel\(target, label\)/);
-  assert.match(readiness, /label === MERGE_READY_LABEL/);
-  assert.match(readiness, /protected or paused repair label/);
-});
-
-test("proof override authorization is durable before merge while pause labels remain success-only", () => {
-  const source = readFileSync("src/repair/comment-router.ts", "utf8");
-  const mergeExecution = source.slice(
-    source.indexOf("if (\n      MERGE_INTENTS.has(command.intent)"),
-    source.indexOf('if (\n      ["clawsweeper_needs_human", "stop"].includes(command.intent)'),
-  );
-  const executeIndex = mergeExecution.indexOf("const merge = executeAutomerge(command)");
-  const successIndex = mergeExecution.indexOf('if (merge.status === "executed")');
-  const labelRemovalIndex = mergeExecution.indexOf("applyRemoveLabelActions(command)");
-  const automergeOwner = source.slice(
-    source.indexOf("function executeAutomerge"),
-    source.indexOf("function latestAutomergeTarget"),
-  );
-  const initialReadinessIndex = automergeOwner.indexOf("validateAutomergeReadiness");
-  const descriptionIndex = automergeOwner.indexOf("applyDescriptionNoteActions(command)");
-  const finalSnapshotIndex = automergeOwner.indexOf(
-    "const finalSnapshot = finalAutomergeSnapshot(command)",
-  );
-  const mergeMessageIndex = automergeOwner.indexOf(
-    "const mergeMessage = buildAutomergeSquashMessage",
-  );
-  const mergeIndex = automergeOwner.indexOf("runGitHubSpawnMutation");
-  const finalSnapshotOwner = source.slice(
-    source.indexOf("function finalAutomergeSnapshot"),
-    source.indexOf("function blockedAutomergeResult"),
-  );
-  const pullBeforeIndex = finalSnapshotOwner.indexOf(
-    "const before = fetchPullRequestView(command.issue_number)",
-  );
-  const commentsIndex = finalSnapshotOwner.indexOf(
-    "const comments = freshIssueCommentsFor(command.issue_number)",
-  );
-  const pullAfterIndex = finalSnapshotOwner.indexOf(
-    "const after = fetchPullRequestView(command.issue_number)",
-  );
-  const leaseIndex = finalSnapshotOwner.indexOf("trustedAutomationPullReviewLeaseBlockReason");
-  const readinessIndex = finalSnapshotOwner.indexOf("validateAutomergeReadiness");
-
-  assert.ok(executeIndex >= 0);
-  assert.ok(successIndex > executeIndex);
-  assert.ok(labelRemovalIndex > successIndex);
-  assert.doesNotMatch(mergeExecution, /applyDescriptionNoteActions/);
-  assert.ok(initialReadinessIndex >= 0);
-  assert.ok(descriptionIndex > initialReadinessIndex);
-  assert.ok(finalSnapshotIndex > descriptionIndex);
-  assert.ok(mergeMessageIndex > finalSnapshotIndex);
-  assert.ok(mergeIndex > mergeMessageIndex);
-  assert.ok(pullBeforeIndex >= 0);
-  assert.ok(commentsIndex > pullBeforeIndex);
-  assert.ok(pullAfterIndex > commentsIndex);
-  assert.ok(leaseIndex > pullAfterIndex);
-  assert.ok(readinessIndex > leaseIndex);
-  assert.match(finalSnapshotOwner, /status: "not_ready"/);
-  assert.doesNotMatch(
-    automergeOwner.slice(mergeMessageIndex, mergeIndex),
-    /trustedAutomationReviewLeaseBlockReason/,
-  );
-  assert.doesNotMatch(automergeOwner, /applyRemoveLabelActions/);
-  assert.match(source, /waive only the missing real behavior proof requirement/);
-  assert.match(source, /does not state that the PR is ready or merged/);
-  assert.match(source, /does not bypass any current or later review finding/);
-});
-
-test("comment router durably claims dispatch commands and recovers exact workflow receipts", () => {
-  const source = readFileSync("src/repair/comment-router.ts", "utf8");
-  const sweepWorkflow = readFileSync(".github/workflows/sweep.yml", "utf8");
-  const assistWorkflow = readFileSync(".github/workflows/assist.yml", "utf8");
-  const repairWorkflow = readFileSync(".github/workflows/repair-cluster-worker.yml", "utf8");
-  const executeBlock = source.slice(
-    source.indexOf('await measureAsync("execute_commands"'),
-    source.indexOf('report.ledger_changed = measure("append_ledger"'),
-  );
-  const claimIndex = executeBlock.indexOf("claimDispatchCommands(actionable)");
-  const ackIndex = executeBlock.indexOf("convergePrecreatedCommandAckComments(command)");
-  const executeIndex = executeBlock.indexOf("executeCommandWithReceipt(command)");
-  const claimFunction = source.slice(
-    source.indexOf("function claimDispatchCommands"),
-    source.indexOf("function assertMutationActorIsClawsweeperBot"),
-  );
-
-  assert.ok(claimIndex >= 0);
-  assert.ok(ackIndex > claimIndex);
-  assert.ok(executeIndex > claimIndex);
-  assert.match(claimFunction, /status:\s*"claimed"/);
-  assert.match(claimFunction, /commandHasAction\(command,\s*"dispatch_clawsweeper"\)/);
-  assert.match(claimFunction, /commandHasAction\(command,\s*"dispatch_repair"\)/);
-  assert.match(claimFunction, /commandHasAction\(command,\s*"dispatch_assist"\)/);
-  assert.match(source, /function claimedDispatchState/);
-  assert.match(source, /function refreshDispatchClaim/);
-  const reviewDispatch = source.slice(
-    source.indexOf("function dispatchClawSweeperReview"),
-    source.indexOf("function dispatchCompletedReviewVerdict"),
-  );
-  assert.ok(
-    reviewDispatch.indexOf("claimedDispatchState({") <
-      reviewDispatch.indexOf("findExistingCommandStatusComment(command)"),
-    "existing durable dispatch claims must short-circuit before status-comment lookup",
-  );
-  const statusCommentLookup = source.slice(
-    source.indexOf("function findExistingCommandStatusComment"),
-    source.indexOf("function isTrustedStatusComment"),
-  );
-  assert.match(statusCommentLookup, /cachedIssueComments\(command\.issue_number\)/);
-  assert.doesNotMatch(statusCommentLookup, /ghPaged\(/);
-  const statusCommentWriter = source.slice(
-    source.indexOf("function postComment"),
-    source.indexOf("function findPrecreatedCommandStatusComment"),
+  // Only a validated approval lets a proof-hold human review through, and only for its head.
+  const humanReview = { labels: [HUMAN_REVIEW_LABEL], comments: [proofHold] };
+  assert.equal(
+    readiness({ ...humanReview, command: approval }),
+    "exact-head ClawSweeper review decision is human",
   );
   assert.equal(
-    statusCommentWriter.match(/issueCommentsCache\.delete\(Number\(command\.issue_number\)\)/g)
-      ?.length,
-    3,
-    "both successful mutations and optional temporary-comment deletion invalidate stale history",
-  );
-  assert.match(source, /writeLedger\(ledgerPath\(\), ledger\)/);
-  assert.match(source, /function verifyDispatchExecutionRuns/);
-  assert.match(source, /actions\/runs\/\$\{runId\}\/jobs\?per_page=100/);
-  assert.match(source, /Plan and review cluster/);
-  assert.match(source, /dispatch_execution_verified/);
-  assert.match(source, /dispatchClaimDecision\(\{/);
-  assert.match(source, /dispatchClaimLookupKeys\(entry\)/);
-  assert.match(claimFunction, /dispatchClaimLookupKeys\(command\)/);
-  assert.match(source, /\/runs\?per_page=100&page=\$\{page\}/);
-  assert.match(source, /status:\s*"recovered"/);
-  assert.doesNotMatch(reviewDispatch, /item_count=/);
-  assert.doesNotMatch(reviewDispatch, /event:\s*"workflow_dispatch"/);
-  assert.match(reviewDispatch, /Review manual item/);
-  assert.match(sweepWorkflow, /Review event item \{0\}#\{1\} \[\{2\}\]/);
-  assert.match(sweepWorkflow, /startsWith\(github\.event\.inputs\.item_numbers, 'router-'\)/);
-  assert.match(assistWorkflow, /Assist \{0\}#\{1\} \[\{2\}\]/);
-  assert.match(sweepWorkflow, /delivery_id: dispatchKey/);
-  assert.match(sweepWorkflow, /`router:\$\{dispatchKey\}`/);
-  assert.match(assistWorkflow, /dispatch-receipt-owner\.sh/);
-  assert.match(assistWorkflow, /assist\.yml.*assist/s);
-  assert.match(repairWorkflow, /dispatch-receipt-owner\.sh/);
-  assert.match(repairWorkflow, /repair-cluster-worker\.yml.*Plan and review cluster/s);
-  assert.match(repairWorkflow, /dispatch_key:/);
-});
-
-test("exact comment fast path converges terminal acknowledgement before own reaction cleanup", () => {
-  const source = readFileSync("src/repair/comment-router.ts", "utf8");
-  const retryConstant = source.indexOf("const TARGET_LOOKUP_RETRY_ATTEMPTS = 3");
-  const preflightBlock = source.slice(
-    source.indexOf("const exactCommentVersionFastPathCommand"),
-    source.indexOf("const priorDispatchClaims"),
-  );
-  const cleanupBlock = source.slice(
-    source.indexOf('measure("verify_exact_comment_version_cleanup"'),
-    source.indexOf("if (execute && !exactCommentVersionFastPath.suppress)"),
-  );
-
-  assert.match(
-    preflightBlock,
-    /!exactCommentVersionStillCurrent\(exactCommentVersionFastPathCommand\)/,
-  );
-  assert.ok(retryConstant < source.indexOf("const exactCommentVersionFastPathCommand"));
-  assert.match(preflightBlock, /reason: "source_drift"/);
-  assert.ok(
-    source.indexOf("!exactCommentVersionStillCurrent(exactCommentVersionFastPathCommand)") <
-      source.indexOf('measure("list_candidate_comments"'),
+    readiness({
+      ...humanReview,
+      command: { ...approval, validated_maintainer_human_approval: true },
+    }),
+    "",
   );
   assert.match(
-    cleanupBlock,
-    /exactCommentVersionStillCurrent\(exactCommentVersionFastPathCommand\)/,
+    readiness({
+      ...humanReview,
+      command: { ...approval, validated_maintainer_human_approval: true },
+      view: { headRefOid: "def456" },
+    }),
+    /head/i,
   );
-  assert.match(cleanupBlock, /convergeExactCommentVersionFastPathAck\(/);
-  assert.match(cleanupBlock, /statusCommentId/);
-  assert.match(cleanupBlock, /clear_exact_comment_version_reaction/);
-  assert.match(
-    cleanupBlock,
-    /removeOwnCommentReaction\(exactCommentVersionFastPathCommand,\s*"eyes"\)/,
-  );
-  assert.match(cleanupBlock, /skipped_source_drift/);
-  assert.match(cleanupBlock, /reason: "cleanup_source_drift"/);
-  assert.match(cleanupBlock, /exactCommentVersionAckFailed\(ackConvergence\)/);
-  assert.match(cleanupBlock, /if \(versionStillCurrent\) assertMutationActorIsClawsweeperBot\(\)/);
-  assert.match(cleanupBlock, /throw new Error/);
-  assert.ok(
-    cleanupBlock.indexOf("exactCommentVersionAckFailed(ackConvergence)") <
-      cleanupBlock.indexOf('measure("clear_exact_comment_version_reaction"'),
-  );
-  assert.match(cleanupBlock, /list_candidate_comments_after_cleanup_drift/);
-  assert.match(cleanupBlock, /prehydrate_cleanup_drift_commands/);
-  assert.match(cleanupBlock, /classify_cleanup_drift_commands/);
-  assert.match(cleanupBlock, /commands\.push/);
-  assert.match(cleanupBlock, /report\.short_circuited = false/);
-  assert.doesNotMatch(
-    cleanupBlock,
-    /cleanupTerminalCommentAck\(exactCommentVersionFastPathCommand\)/,
-  );
-  assert.doesNotMatch(
-    cleanupBlock,
-    /clearTerminalMaintainerCommandReaction\(exactCommentVersionFastPathCommand\)/,
-  );
-  assert.doesNotMatch(source, /function cleanupTerminalCommentAck/);
-  const ackConvergence = source.slice(
-    source.indexOf("function convergeExactCommentVersionFastPathAck"),
-    source.indexOf("function convergePrecreatedCommandAckCommentsInner"),
-  );
-  assert.match(ackConvergence, /isTrustedStatusComment\(comment\)/);
-  assert.match(ackConvergence, /issueNumberFromUrl\(comment\.issue_url\)/);
-  assert.match(ackConvergence, /commandAckMarkerFromBody\(comment\.body\)/);
-  assert.match(ackConvergence, /commandStatusMarkerFromBody\(comment\.body\)/);
-  assert.match(ackConvergence, /exactCommentVersionTerminalResponse\(command, id\)/);
-  assert.match(ackConvergence, /hasCommandResponseMarker\(comment\.body/);
-  assert.match(ackConvergence, /exactCommentVersionMissingTerminalBody\(command\)/);
-  assert.match(ackConvergence, /commandResponseMarker\(/);
-  assert.match(ackConvergence, /"--method",\s*"PATCH"/);
-  assert.match(ackConvergence, /githubNotFoundNoMutation/);
-  assert.doesNotMatch(ackConvergence, /renderResponse\(/);
-  assert.doesNotMatch(ackConvergence, /"DELETE"/);
-  assert.doesNotMatch(ackConvergence, /clearTerminalMaintainerCommandReaction/);
-  const reactionCleanup = source.slice(
-    source.indexOf("function removeOwnCommentReaction"),
-    source.indexOf("function ensureRepairLoopLabel"),
-  );
-  assert.match(reactionCleanup, /isOwnCommentReaction\(reaction, content\)/);
-  assert.match(reactionCleanup, /reactions\/\$\{reaction\.id\}/);
-  assert.match(reactionCleanup, /"--method",\s*"DELETE"/);
-  assert.match(reactionCleanup, /isAllowedMutationActor\(login, DEFAULT_TRUSTED_BOTS\)/);
-  assert.doesNotMatch(reactionCleanup, /isAllowedMutationActor\(login, trustedBots\)/);
-});
-
-test("command receipt gates let the oldest same-key run proceed when a newer duplicate is pending", () => {
-  const receiptGate = readFileSync("scripts/dispatch-receipt-owner.sh", "utf8");
-
-  assert.match(receiptGate, /\.display_title == \$title and \.id < \(\$current \| tonumber\)/);
-  assert.match(receiptGate, /\.status == "in_progress"/);
-  assert.match(receiptGate, /\.conclusion == "success"/);
-  assert.match(receiptGate, /actions\/runs\/\$\{run_id\}\/jobs\?per_page=100/);
-  assert.match(receiptGate, /\.name == \$required and \.conclusion == "success"/);
-  assert.doesNotMatch(receiptGate, /\(\.id \| tostring\) != \$current/);
-});
-
-test("trusted autoclose markers are live close gated before close execution", () => {
-  const source = readFileSync("src/repair/comment-router.ts", "utf8");
-  const autocloseClassifier = source.slice(
-    source.indexOf("function classifyAutoclose"),
-    source.indexOf("function executeAutoclose"),
-  );
-  const autocloseExecutor = source.slice(
-    source.indexOf("function executeAutoclose"),
-    source.indexOf("function discoverAutocloseTargets"),
-  );
-  const coreSource = readFileSync("src/repair/comment-router-core.ts", "utf8");
-  const trustedCloseGate = coreSource.slice(
-    coreSource.indexOf("export function trustedCloseBlockReason"),
-    coreSource.indexOf("type AutoRepairDispatchEntry"),
-  );
-
-  assert.match(autocloseClassifier, /command\.trusted_bot && pull/);
-  assert.match(autocloseClassifier, /trustedCloseBlockReason\(\{/);
-  assert.match(autocloseClassifier, /createdAt:\s*issue\.created_at/);
-  assert.match(autocloseClassifier, /fetchPullRequestApi\(command\.issue_number\)/);
-  assert.match(autocloseClassifier, /requestedReviewers:\s*pullApi\.requested_reviewers/);
-  assert.match(autocloseExecutor, /liveTrustedCloseBlockReason\(command,\s*liveTarget\)/);
-  assert.match(trustedCloseGate, /reviewedHeadShaBlockReason\(\{/);
-  assert.match(trustedCloseGate, /markerName:\s*"close"/);
-  assert.match(autocloseClassifier, /status:\s*"skipped"/);
-  assert.match(autocloseClassifier, /unsponsoredFeatureLinkedPrBlockReason/);
-  assert.match(source, /"closedByPullRequestsReferences"/);
-  assert.ok((source.match(/unsponsoredFeatureLinkedPrBlockReason\(/g) ?? []).length >= 3);
 });
 
 test("trusted close gates block protected labels, source drift, and unsupported reasons", () => {
@@ -4033,29 +3714,63 @@ test("bare visualize dispatch defaults to auto lens within repository_dispatch k
   assert.equal("lens" in clientPayload, false);
 });
 
-test("assist workflow preserves flat field fallbacks after nested dispatch fields", () => {
-  const workflow = readFileSync(".github/workflows/assist.yml", "utf8");
+test("assist workflow reads nested dispatch fields first and keeps flat fallbacks", () => {
+  const workflow = parseYaml(readFileSync(".github/workflows/assist.yml", "utf8")) as {
+    jobs: Record<string, { steps?: Array<{ env?: Record<string, string> }> }>;
+  };
+  const envs = Object.values(workflow.jobs)
+    .flatMap((job) => job.steps ?? [])
+    .flatMap((step) => (step.env?.MODE ? [step.env] : []));
+  const nested = buildClawSweeperAssistDispatchPayload({
+    repo: "openclaw/clawsweeper",
+    issue_number: 202,
+    target: { kind: "issue" },
+    comment_id: "4545883320",
+    author: "maintainer",
+    command: "visualize state",
+    intent: "visualize",
+    visual_lens: "state",
+  }).client_payload;
+  const flat = { mode: "visual", lens: "risk", timeout_ms: "90000" };
 
-  assert.match(
-    workflow,
-    /MODE: \$\{\{ github\.event\.client_payload\.assist\.mode \|\| github\.event\.client_payload\.mode \|\| inputs\.mode \|\| 'assist' \}\}/,
-  );
-  assert.match(
-    workflow,
-    /LENS: \$\{\{ github\.event\.client_payload\.assist\.lens \|\| github\.event\.client_payload\.lens \|\| inputs\.lens \|\| 'auto' \}\}/,
-  );
-  assert.match(workflow, /MODEL: internal/);
-  assert.match(
-    workflow,
-    /CLAWSWEEPER_INTERNAL_MODEL: \$\{\{ vars\.CLAWSWEEPER_CODEX_AUTH_MODE != 'clawrouter' && secrets\.CLAWSWEEPER_MODEL \|\| '' \}\}/,
-  );
-  assert.doesNotMatch(workflow, /REASONING_EFFORT|--codex-reasoning-effort/);
-  assert.doesNotMatch(workflow, /client_payload\.(?:assist\.)?reasoning_effort/);
-  assert.match(
-    workflow,
-    /TIMEOUT_MS: \$\{\{ github\.event\.client_payload\.assist\.timeout_ms \|\| github\.event\.client_payload\.timeout_ms \|\| '120000' \}\}/,
-  );
+  assert.ok(envs.length > 0);
+  for (const env of envs) {
+    const resolve = (name: string, clientPayload: unknown) =>
+      env[name]
+        ? githubOrChain(env[name], { github: { event: { client_payload: clientPayload } } })
+        : null;
+    assert.equal(resolve("MODE", nested), "visual");
+    assert.equal(resolve("LENS", nested), "state");
+    assert.equal(resolve("MODE", flat), "visual");
+    assert.equal(resolve("LENS", flat), "risk");
+    assert.equal(resolve("MODE", {}), "assist");
+    assert.equal(resolve("LENS", {}), "auto");
+    if (env.TIMEOUT_MS) {
+      assert.equal(resolve("TIMEOUT_MS", nested), "120000");
+      assert.equal(resolve("TIMEOUT_MS", flat), "90000");
+    }
+    // The workflow owns the reasoning effort. A dispatch payload cannot set it.
+    assert.doesNotMatch(JSON.stringify(env), /reasoning_effort|REASONING_EFFORT/i);
+  }
 });
+
+// Resolve a GitHub expression made only of `a || b || 'literal'` terms.
+function githubOrChain(expression: string, context: unknown): string {
+  const inner = /^\$\{\{(.*)\}\}$/.exec(expression.trim())?.[1];
+  assert.ok(inner, `unsupported expression: ${expression}`);
+  for (const term of inner.split("||").map((part) => part.trim())) {
+    const literal = /^'(.*)'$/.exec(term);
+    if (literal) return literal[1]!;
+    const value = term
+      .split(".")
+      .reduce<unknown>(
+        (node, key) => (node as Record<string, unknown> | undefined)?.[key],
+        context,
+      );
+    if (value) return String(value);
+  }
+  return "";
+}
 
 test("renderResponse reports maintainer autoclose results", () => {
   const body = renderResponse(
@@ -4733,18 +4448,6 @@ test("issue implementation requires current write permission", () => {
     }),
     true,
   );
-});
-
-test("manual issue implementation blocks linked pull requests before dispatch", () => {
-  const source = readFileSync("src/repair/comment-router.ts", "utf8");
-
-  assert.match(
-    source,
-    /issueImplementationLinkedPrSignal\(target\) && command\.operator_override !== true/,
-  );
-  assert.match(source, /implementation PR creation is blocked by an existing linked PR/);
-  assert.match(source, /addIssueReferenceNumbersFromText\(relatedIssues, text\)/);
-  assert.match(source, /searchOpenPullRequestsMentioningIssue\(relatedNumber\)/);
 });
 
 test("issue authors can request read-only re-review with trailing context", () => {
