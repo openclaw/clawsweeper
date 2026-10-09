@@ -1,0 +1,1 @@
+- Focus pull request reviews on integrated system behavior while preserving canonical review policy and issue triage; capture and admit complete schema-bearing OpenClaw messages before delivery. Thanks @hannesrudolph.

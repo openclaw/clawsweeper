@@ -1,0 +1,92 @@
+{
+  "startedAt": "2026-10-07T23:17:29.556Z",
+  "finishedAt": "2026-10-07T23:17:32.765Z",
+  "head": "cdb49e07f72207aec7a198eb86b5479b29a9edb5",
+  "node": "v26.8.2",
+  "platform": "linux",
+  "command": [
+    "/usr/bin/node",
+    "$WORKTREE/docs/proof/holistic-pr-review/schema-delivery.mjs"
+  ],
+  "scanner": "Normal mandatory native TruffleHog admission; no scanner substitute or admission override",
+  "surface": "runAgentProcess -> runOpenclawProcess -> worker -> controlled CLI --message-file consumer",
+  "limits": "The controlled consumer is not the OpenClaw model. This proves delivery and filesystem/process integration only, not OpenClaw model quality or schema enforcement by a model.",
+  "auth": "No inference keys or workflow credentials supplied to the controlled consumer",
+  "input": {
+    "authoredPromptBytes": 46022,
+    "schemaBytes": 58410,
+    "deliveredMessageBytes": 104531,
+    "headerBytes": 99,
+    "deliveredSha256": "0b9c71abe77941302c43436dbdf07cd396f240fbb0a0f4e97af036b0d48b9779",
+    "schemaSha256": "5a5dab0aefdd983faede5cea6ffa3c9f34777a2762c51497b1810db79c5da7d6"
+  },
+  "checks": [
+    "schema absent: exact original message, no added header",
+    "full delivered message counted against prompt-file quota before invocation/persistence",
+    "malformed schema refused before consumer invocation"
+  ],
+  "sourceSha256": {
+    "src/agent-runner.ts": "007fcc33c5791f952f5ba02262db63ff72d8aeab78b95516e20bd3506b9e5d8f",
+    "src/agent-input-scan.ts": "9d4d71793cf2c182e84380ca9787cd3957008220475dc9fabb8701a66df139bb",
+    "src/openclaw-process.ts": "d1f5cf30e28215c904cb05e1d9fcb882c1e952bd1f5680dfa98fdad4d332503c",
+    "src/clawsweeper-review-runtime.ts": "55721ca4017658f87ef36c8c344befccaf9b3df6ee62e5d16537a193538bdf18"
+  },
+  "liveSchemaProbe": {
+    "status": 0,
+    "error": false,
+    "validAnswer": true,
+    "effectiveModel": "openai/gpt-6-astra",
+    "prompt": "Return only JSON conforming to the supplied output schema. Do not use any tools.",
+    "observed": {
+      "proofMarker": "schema-delivered-via-message"
+    },
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "proofMarker": {
+          "type": "string",
+          "const": "schema-delivered-via-message"
+        }
+      },
+      "required": [
+        "proofMarker"
+      ],
+      "additionalProperties": false
+    },
+    "limits": "Small-schema consumption through the real OpenClaw CLI, not a PR-quality evaluation; isolated state and existing inference credential, no persistent configuration change."
+  },
+  "liveLocalReview": {
+    "startedAt": "2026-10-07T23:21:40.466Z",
+    "finishedAt": "2026-10-07T23:21:50.341Z",
+    "command": [
+      "/usr/bin/node",
+      "dist/clawsweeper.js",
+      "review",
+      "--local-range",
+      "--target-repo",
+      "openclaw/review-fixture",
+      "--target-dir",
+      "$WORKTREE/.artifacts/astra-review/openclaw-live-range/target",
+      "--base",
+      "d024763f8a0f8db37666631f1c467210006b90cb",
+      "--codex-model",
+      "gpt-6-astra",
+      "--codex-timeout-ms",
+      "180000",
+      "--output-retention",
+      "debug",
+      "--artifact-dir",
+      "$WORKTREE/.artifacts/astra-review/openclaw-live-range/result"
+    ],
+    "exitCode": 1,
+    "signal": null,
+    "source": {
+      "base": "d024763f8a0f8db37666631f1c467210006b90cb",
+      "head": "5cdfd7e76f27fcd77787fd3e108a07798dde1709"
+    },
+    "targetClean": true,
+    "decisionPresent": false,
+    "result": null,
+    "blocker": "Read-only checkout inspection sets tools.exec.mode=deny; the selected Codex app-server harness refuses local execution under that policy. The guard was left intact. No review decision was produced."
+  }
+}

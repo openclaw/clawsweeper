@@ -12,6 +12,8 @@ const OPENCLAW_PROCESS_WORKER_PATH = fileURLToPath(
   new URL("./openclaw-process-worker.js", import.meta.url),
 );
 const STDERR_FAILURE_TAIL_BYTES = 8 * 1024;
+// The supported CLI --message-file contract accepts at most 4 MiB.
+export const OPENCLAW_MESSAGE_FILE_MAX_BYTES = 4 * 1024 * 1024;
 
 interface SerializedProcessResult {
   status: number | null;
@@ -37,6 +39,9 @@ export interface OpenClawProcessOptions {
 }
 
 export function runOpenclawProcess(options: OpenClawProcessOptions): CodexProcessResult {
+  if (Buffer.byteLength(options.prompt) > OPENCLAW_MESSAGE_FILE_MAX_BYTES) {
+    return failedResult(new Error("OpenClaw message file exceeded its 4 MiB input limit."));
+  }
   const stateDir = mkdtempSync(join(tmpdir(), "clawsweeper-openclaw-process-"));
   const configPath = join(stateDir, "openclaw.json");
   const promptPath = join(stateDir, "prompt.md");

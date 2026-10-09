@@ -262,6 +262,8 @@ export function scanAgentInput(options: {
   source: AgentScanSource;
   timeoutMs: number;
   schemaPath?: string;
+  // Host-captured immutable schema used when the runner delivers it inline.
+  schemaBytes?: Buffer;
   additionalBytes?: readonly Buffer[];
 }): void {
   const deadlineAt = Date.now() + options.timeoutMs;
@@ -301,7 +303,11 @@ export function scanAgentInput(options: {
       });
     };
     stage(Buffer.from(options.prompt), { kind: "prompt" }, "prompt");
-    if (options.schemaPath) {
+    if (options.schemaPath && options.schemaBytes !== undefined)
+      throw new AgentInputScanError("incomplete_source");
+    if (options.schemaBytes !== undefined) {
+      stage(options.schemaBytes, { kind: "schema" }, "schema");
+    } else if (options.schemaPath) {
       if (statSync(options.schemaPath).size > MAX_SCAN_BYTES - staged)
         throw new AgentInputScanError("staging_limit");
       stage(readFileSync(options.schemaPath), { kind: "schema" }, "schema");

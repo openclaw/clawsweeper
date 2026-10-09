@@ -124,7 +124,7 @@ test("external desktop-product bugs close without inventing upstream maintainer 
   );
 });
 
-test("close-first triage keeps actionable upstream work and invites better reports", () => {
+test("close-first issue triage keeps actionable upstream work and invites better reports", () => {
   const prompt = reviewPrompt("issue");
 
   assert.match(prompt, /Maintainer attention is scarce/);

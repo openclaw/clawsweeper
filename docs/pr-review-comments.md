@@ -20,6 +20,43 @@ that the repair lane can parse without relying on prose. ClawSweeper owns review
 marker emission, branch mutation, duplicate guards, audit logging, and PR repair
 inside this repo.
 
+## Review procedure
+
+The `review_procedure` opening slot in
+[`prompts/review-item.md`](../prompts/review-item.md) selects the outcome-oriented
+engineering contract in [`prompts/review-pr.md`](../prompts/review-pr.md) for PRs.
+It asks for coherent before/after system understanding, relevant end-to-end paths,
+source-challenged findings, and a grounded whole-patch judgment without prescribing
+an investigation itinerary. It does not replace the shared review policy.
+
+The existing core, [`PR template`](../prompts/review-item-pr.md),
+[`issue template`](../prompts/review-item-issue.md),
+[`close-reason guidance`](../prompts/review-close-reasons.md), and
+[`repository profiles`](../src/repository-profiles.ts) remain the policy owners.
+Profiles select the applicable close reasons and repository instructions; PR
+readiness and re-review continuity remain in the canonical PR template. The issue
+opening in [`prompts/review-issue.md`](../prompts/review-issue.md) reproduces the
+upstream opening, preserving assembled issue instructions.
+
+The current decision schema owns field definitions and descriptions; retired
+fields are not restored. `summary` remains the verdict and rationale, with
+source-backed behavioral observations in `evidence`. Native Codex retains its
+original prompt bytes and output-schema transport. OpenClaw already receives an
+inline schema; it now captures a bounded schema once, resolves relative paths
+against the target cwd, validates the captured bytes, and includes them in the
+complete message before admission. The complete message and captured schema are
+scanned before diagnostics or invocation, without a post-scan file reread.
+Prompt quotas, the admission deadline, and the CLI message-file limit include
+the full message. This applies to existing schema-using OpenClaw callers, not
+only PR reviews.
+
+Both opening assets and all canonical templates participate in the review policy
+hash. The durable comment contract, mandatory policy gates, publication authority,
+model defaults, and call count are unchanged. There is no new Bay data contract.
+The [proof notes](proof/holistic-pr-review/README.md) distinguish historical
+receipts from the current opt-in harness; historical results do not validate the
+rebased source or establish improved review accuracy.
+
 ## Durable Comment Shape
 
 Each synced comment includes the durable identity marker:
