@@ -1,6 +1,9 @@
 import { readFileSync } from "node:fs";
 import type { CreateApplyDecisionWorkflowDependencies } from "./clawsweeper-apply-dependencies.js";
-import { validateReportClose } from "./clawsweeper-apply-close-decision.js";
+import {
+  unreadableReviewRecordReason,
+  validateReportClose,
+} from "./clawsweeper-apply-close-decision.js";
 import { liveApplyCloseReasonPolicyBlock } from "./clawsweeper-apply-close-policies.js";
 import type {
   ActionTaken,
@@ -311,6 +314,9 @@ export function createApplyCloseGuards(
               fileEntries.push(counterpartEntry);
             return true;
           }
+          // The comment render stops on a record that does not read. Such a counterpart
+          // does not close, because its close check fails on the same record.
+          if (unreadableReviewRecordReason(counterpartMarkdown)) return false;
           const counterpartReviewedAuthorAssociation = normalizeAuthorAssociation(
             frontMatterValue(counterpartMarkdown, "author_association"),
           );

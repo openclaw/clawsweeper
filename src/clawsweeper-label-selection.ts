@@ -39,9 +39,8 @@ import {
   normalizeLabelName,
   protectedLabels,
 } from "./clawsweeper-item-policy.js";
-import { reportSecurityReview } from "./clawsweeper-report-parser.js";
-import { reviewSectionValue } from "./clawsweeper-record-metadata.js";
-import { frontMatterStringArray, frontMatterValue } from "./report-front-matter.js";
+import { frontMatterValue } from "./report-front-matter.js";
+import type { ReportReviewDecision } from "./report-review-decision.js";
 
 export function nextRealBehaviorProofSufficientLabels(
   labels: readonly string[],
@@ -304,34 +303,36 @@ export function nextIssueAdvisoryLabels(
   }
   return nextLabels;
 }
-export function issueAdvisoryLabelStateFromReport(
+/** The issue advisory label state of a report. The report gives the host fields. */
+export function issueAdvisoryLabelState(
   markdown: string,
+  decision: ReportReviewDecision,
   options: {
     goodFirstIssueOptedOut?: boolean;
     hasOpenLinkedPullRequest?: boolean;
     locked?: boolean;
   } = {},
 ): IssueAdvisoryLabelState {
-  const workLikelyFiles = frontMatterStringArray(markdown, "work_likely_files");
-  const workValidation = frontMatterStringArray(markdown, "work_validation");
-  const workPrompt = reviewSectionValue(markdown, "repairWorkPrompt").trim();
+  const workPrompt = decision.workPrompt.trim();
   return {
     type: frontMatterValue(markdown, "type"),
-    itemCategory: frontMatterValue(markdown, "item_category"),
-    reproductionStatus: frontMatterValue(markdown, "reproduction_status"),
-    reproductionConfidence: frontMatterValue(markdown, "reproduction_confidence"),
-    requiresNewFeature: frontMatterValue(markdown, "requires_new_feature") === "true",
-    requiresNewConfigOption: frontMatterValue(markdown, "requires_new_config_option") === "true",
-    requiresProductDecision: frontMatterValue(markdown, "requires_product_decision") === "true",
-    implementationComplexity: frontMatterValue(markdown, "implementation_complexity"),
-    autoImplementationCandidate: frontMatterValue(markdown, "auto_implementation_candidate"),
-    securityReviewStatus: reportSecurityReview(markdown).status,
-    workCandidate: frontMatterValue(markdown, "work_candidate"),
+    itemCategory: decision.itemCategory,
+    reproductionStatus: decision.reproductionStatus,
+    reproductionConfidence: decision.reproductionConfidence,
+    requiresNewFeature: decision.requiresNewFeature,
+    requiresNewConfigOption: decision.requiresNewConfigOption,
+    requiresProductDecision: decision.requiresProductDecision,
+    implementationComplexity: decision.implementationComplexity,
+    autoImplementationCandidate: decision.autoImplementationCandidate,
+    securityReviewStatus: decision.securityReview.status,
+    workCandidate: decision.workCandidate,
     workStatus: frontMatterValue(markdown, "work_status"),
-    workConfidence: frontMatterValue(markdown, "work_confidence"),
-    hasWorkShape: Boolean(workPrompt || workLikelyFiles.length || workValidation.length),
+    workConfidence: decision.workConfidence,
+    hasWorkShape: Boolean(
+      workPrompt || decision.workLikelyFiles.length || decision.workValidation.length,
+    ),
     hasWorkPrompt: Boolean(workPrompt),
-    hasWorkValidation: workValidation.length > 0,
+    hasWorkValidation: decision.workValidation.length > 0,
     goodFirstIssueOptedOut: options.goodFirstIssueOptedOut === true,
     locked: options.locked === true,
     hasOpenLinkedPullRequest: options.hasOpenLinkedPullRequest === true,

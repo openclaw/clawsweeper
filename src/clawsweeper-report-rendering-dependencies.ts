@@ -11,6 +11,7 @@ import type {
 } from "./clawsweeper-types.js";
 import { type ReviewStructuralPullState } from "./review-structural-cache.js";
 import type { RepositoryProfile } from "./repository-profiles.js";
+import type { ReportReviewDecision } from "./report-review-decision.js";
 
 export interface CreateReportRenderingDependencies {
   collectItemContext: (
@@ -49,11 +50,13 @@ export interface CreateReportRenderingDependencies {
   jsonFrontMatterValue: (value: readonly unknown[]) => string;
   labelJustificationsFromPublicReport: (
     markdown: string,
+    decision: ReportReviewDecision,
     options?: ReviewCommentRenderOptions,
   ) => LabelJustification[];
   labelJustificationsMarkdown: (justifications: readonly LabelJustification[]) => string;
   labelTransitionJustificationsFromPublicReport: (
     markdown: string,
+    decision: ReportReviewDecision,
     finalJustifications: readonly LabelJustification[],
     options?: ReviewCommentRenderOptions,
   ) => LabelTransitionJustification[];

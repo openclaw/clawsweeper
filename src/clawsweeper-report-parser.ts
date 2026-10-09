@@ -485,8 +485,7 @@ export function labelJustificationsFromReport(
   markdown: string,
   labels: Pick<Decision, "triagePriority" | "impactLabels" | "mergeRiskLabels" | "maturityLabels">,
 ): LabelJustification[] {
-  const selected = new Set<string>(selectedReviewLabels(labels));
-  const fromFrontMatter = frontMatterJsonArray(markdown, "label_justifications")
+  const stored = frontMatterJsonArray(markdown, "label_justifications")
     .map((entry, index) => {
       try {
         return parseLabelJustification(entry, `label_justifications[${index}]`);
@@ -494,14 +493,20 @@ export function labelJustificationsFromReport(
         return null;
       }
     })
-    .filter((entry): entry is LabelJustification => Boolean(entry))
-    .filter((entry) => selected.has(entry.label));
-  const byLabel = new Map(fromFrontMatter.map((entry) => [entry.label, entry]));
+    .filter((entry): entry is LabelJustification => Boolean(entry));
+  return selectedLabelJustifications(stored, labels);
+}
+
+/** One justification for each label that the review selected, in the order of the labels. */
+export function selectedLabelJustifications(
+  justifications: readonly LabelJustification[],
+  labels: Pick<Decision, "triagePriority" | "impactLabels" | "mergeRiskLabels" | "maturityLabels">,
+): LabelJustification[] {
+  const reasons = new Map(justifications.map((entry) => [entry.label, entry.reason]));
   return selectedReviewLabels(labels).map((label) => ({
     label,
     reason:
-      byLabel.get(label)?.reason ??
-      "Older review report did not store a label-specific justification.",
+      reasons.get(label) ?? "Older review report did not store a label-specific justification.",
   }));
 }
 

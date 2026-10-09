@@ -597,15 +597,20 @@ test("apply-decisions promotes old F-rated stale PRs with low-signal close seman
 
 test("apply-decisions does not promote a report whose review record does not read", () => {
   withApplyTestWorkspace(tmpPrefix, ({ root, itemsDir, closedDir, plansDir, reportPath }) => {
+    // The comment renderer stops on a record that does not read, so break the record after sync.
     const synced = reportWithSyncedReviewComment(
       withReviewRecord(stalePullRequestReport({ pull_head_sha: "head-sha" }), {
         decision: "keep_open",
         closeReason: "none",
-      }).replace(/^review_record: \{/m, "review_record: {broken"),
+      }),
       330,
       "none",
     );
-    writeFileSync(join(itemsDir, "330.md"), synced.report, "utf8");
+    writeFileSync(
+      join(itemsDir, "330.md"),
+      synced.report.replace(/^review_record: \{/m, "review_record: {broken"),
+      "utf8",
+    );
 
     withMockGh(
       root,

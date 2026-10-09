@@ -24,20 +24,15 @@ import type {
 import type { CreateReportOrchestrationDependencies } from "./clawsweeper-report-orchestration-dependencies.js";
 import { frontMatterStringArray, frontMatterValue } from "./report-front-matter.js";
 import { effectiveReviewStatus } from "./clawsweeper-record-metadata.js";
+import { reportRealBehaviorProofPolicy } from "./clawsweeper-proof-policy.js";
 import {
-  impactLabelsFromReport,
-  labelJustificationsFromReport,
-  maturityLabelsFromReport,
-  mergeRiskLabelsFromReport,
   reportFeatureShowcase,
   reportOverallCorrectness,
   reportPrRating,
   reportRealBehaviorProof,
   reportSecurityReview,
-  reportTelegramVisibleProof,
-  triagePriorityFromReport,
 } from "./clawsweeper-report-parser.js";
-import { reportRealBehaviorProofPolicy } from "./clawsweeper-proof-policy.js";
+import type { ReportReviewDecision } from "./report-review-decision.js";
 import {
   nextFeatureShowcaseLabels,
   nextPrStatusLabels,
@@ -46,7 +41,7 @@ import {
 } from "./clawsweeper-label-policy.js";
 import {
   isIssueAdvisoryLabel,
-  issueAdvisoryLabelStateFromReport,
+  issueAdvisoryLabelState,
   nextImpactLabels,
   nextIssueAdvisoryLabels,
   nextMaturityLabels,
@@ -125,17 +120,20 @@ export function createReportLabelPresentation(dependencies: CreateReportOrchestr
 
   function desiredClawSweeperLabelsFromPublicReport(
     markdown: string,
+    decision: ReportReviewDecision,
     currentLabels: readonly string[],
     options: ReviewCommentRenderOptions = {},
   ): string[] {
     const isPullRequest = frontMatterValue(markdown, "type") === "pull_request";
     const reviewFailed = frontMatterValue(markdown, "review_status") === "failed";
-    let labels = nextPriorityLabels(currentLabels, triagePriorityFromReport(markdown));
-    labels = nextImpactLabels(labels, isPullRequest ? [] : impactLabelsFromReport(markdown));
-    labels = nextMaturityLabels(labels, isPullRequest ? [] : maturityLabelsFromReport(markdown));
+    let labels = nextPriorityLabels(currentLabels, decision.triagePriority);
+    labels = nextImpactLabels(labels, isPullRequest ? [] : decision.impactLabels);
+    labels = nextMaturityLabels(labels, isPullRequest ? [] : decision.maturityLabels);
     if (isPullRequest) {
+      // Proof, rating, feature showcase, and status labels read the report text with PR
+      // merge readiness, which reads the same fields.
       const realBehaviorProof = reportRealBehaviorProof(markdown);
-      labels = nextMergeRiskLabels(labels, mergeRiskLabelsFromReport(markdown));
+      labels = nextMergeRiskLabels(labels, decision.mergeRiskLabels);
       labels = nextRealBehaviorProofSufficientLabels(labels, realBehaviorProof);
       labels = nextRealBehaviorProofMediaLabels(labels, realBehaviorProof);
       labels = nextPrRatingLabels(labels, reportPrRating(markdown), reviewFailed);
@@ -151,7 +149,7 @@ export function createReportLabelPresentation(dependencies: CreateReportOrchestr
         labels,
         options.prStatusKind ?? prStatusLabelKindFromReportLabels(markdown),
       );
-      labels = nextTelegramVisibleProofLabels(labels, reportTelegramVisibleProof(markdown));
+      labels = nextTelegramVisibleProofLabels(labels, decision.telegramVisibleProof);
     } else {
       const issueOptions: { hasOpenLinkedPullRequest?: boolean } = {};
       if (options.hasOpenLinkedPullRequest !== undefined) {
@@ -159,7 +157,7 @@ export function createReportLabelPresentation(dependencies: CreateReportOrchestr
       }
       labels = nextIssueAdvisoryLabels(
         labels,
-        issueAdvisoryLabelStateFromReport(markdown, issueOptions),
+        issueAdvisoryLabelState(markdown, decision, issueOptions),
       );
     }
     return labels;
@@ -167,6 +165,7 @@ export function createReportLabelPresentation(dependencies: CreateReportOrchestr
 
   function labelTransitionReason(
     markdown: string,
+    decision: ReportReviewDecision,
     label: string,
     action: LabelTransitionJustification["action"],
     finalJustifications: ReadonlyMap<string, string>,
@@ -179,7 +178,7 @@ export function createReportLabelPresentation(dependencies: CreateReportOrchestr
       if (finalReason) return finalReason;
     }
     if (PRIORITY_LABEL_NAMES.has(label)) {
-      const priority = triagePriorityFromReport(markdown);
+      const priority = decision.triagePriority;
       return action === "add"
         ? `Current review triage priority is ${priority}.`
         : priority === "none"
@@ -187,7 +186,7 @@ export function createReportLabelPresentation(dependencies: CreateReportOrchestr
           : `Current review triage priority is ${priority}, so this older priority label is no longer current.`;
     }
     if (IMPACT_LABEL_NAMES.has(label)) {
-      const labels = impactLabelsFromReport(markdown);
+      const labels = decision.impactLabels;
       return action === "add"
         ? "Current review selected this impact label."
         : labels.length
@@ -195,7 +194,7 @@ export function createReportLabelPresentation(dependencies: CreateReportOrchestr
           : "Current review selected no impact labels.";
     }
     if (MERGE_RISK_LABEL_NAMES.has(label)) {
-      const labels = mergeRiskLabelsFromReport(markdown);
+      const labels = decision.mergeRiskLabels;
       return action === "add"
         ? "Current PR review selected this merge-risk label."
         : labels.length
@@ -203,7 +202,7 @@ export function createReportLabelPresentation(dependencies: CreateReportOrchestr
           : "Current PR review selected no merge-risk labels.";
     }
     if (MATURITY_LABEL_NAMES.has(label)) {
-      const labels = maturityLabelsFromReport(markdown);
+      const labels = decision.maturityLabels;
       return action === "add"
         ? "Current issue review matched this item to a stable maturity scorecard feature."
         : labels.length
@@ -250,7 +249,7 @@ export function createReportLabelPresentation(dependencies: CreateReportOrchestr
         : `Current real behavior proof evidence kind is ${realBehaviorProof.evidenceKind}.`;
     }
     if (label === TELEGRAM_VISIBLE_PROOF_LABEL) {
-      const proof = reportTelegramVisibleProof(markdown);
+      const proof = decision.telegramVisibleProof;
       return action === "add"
         ? `${TELEGRAM_VISIBLE_PROOF_LABEL_DESCRIPTION} ${sentence(proof.summary)}`
         : `Current Telegram visible-proof status is ${proof.status}.`;
@@ -269,13 +268,14 @@ export function createReportLabelPresentation(dependencies: CreateReportOrchestr
 
   function labelTransitionJustificationsFromPublicReport(
     markdown: string,
+    decision: ReportReviewDecision,
     finalJustifications: readonly LabelJustification[],
     options: ReviewCommentRenderOptions = {},
   ): LabelTransitionJustification[] {
     const currentLabels = options.previousLabels ?? frontMatterStringArray(markdown, "labels");
     const desiredLabels =
       options.publishedLabels ??
-      desiredClawSweeperLabelsFromPublicReport(markdown, currentLabels, options);
+      desiredClawSweeperLabelsFromPublicReport(markdown, decision, currentLabels, options);
     const currentKeys = new Set(currentLabels.map((label) => label.toLowerCase()));
     const desiredKeys = new Set(desiredLabels.map((label) => label.toLowerCase()));
     const finalByLabel = new Map(finalJustifications.map((entry) => [entry.label, entry.reason]));
@@ -285,7 +285,7 @@ export function createReportLabelPresentation(dependencies: CreateReportOrchestr
       transitions.push({
         action: "add",
         label,
-        reason: labelTransitionReason(markdown, label, "add", finalByLabel, options),
+        reason: labelTransitionReason(markdown, decision, label, "add", finalByLabel, options),
       });
     }
     for (const label of currentLabels) {
@@ -293,7 +293,7 @@ export function createReportLabelPresentation(dependencies: CreateReportOrchestr
       transitions.push({
         action: "remove",
         label,
-        reason: labelTransitionReason(markdown, label, "remove", finalByLabel, options),
+        reason: labelTransitionReason(markdown, decision, label, "remove", finalByLabel, options),
       });
     }
     return transitions;
@@ -301,15 +301,10 @@ export function createReportLabelPresentation(dependencies: CreateReportOrchestr
 
   function labelJustificationsFromPublicReport(
     markdown: string,
+    decision: ReportReviewDecision,
     options: ReviewCommentRenderOptions = {},
   ): LabelJustification[] {
-    const justifications = labelJustificationsFromReport(markdown, {
-      triagePriority: triagePriorityFromReport(markdown),
-      impactLabels: impactLabelsFromReport(markdown),
-      mergeRiskLabels: mergeRiskLabelsFromReport(markdown),
-      maturityLabels: maturityLabelsFromReport(markdown),
-    });
-    const byLabel = new Map(justifications.map((entry) => [entry.label, entry]));
+    const byLabel = new Map(decision.labelJustifications.map((entry) => [entry.label, entry]));
     const add = (label: string | null | undefined, reason: string): void => {
       if (!label || byLabel.has(label)) return;
       byLabel.set(label, { label, reason });
@@ -364,7 +359,7 @@ export function createReportLabelPresentation(dependencies: CreateReportOrchestr
         (label) => label.evidenceKind === realBehaviorProof.evidenceKind,
       );
       if (proofMediaLabel) add(proofMediaLabel.name, proofMediaLabel.description);
-      const telegramProof = reportTelegramVisibleProof(markdown);
+      const telegramProof = decision.telegramVisibleProof;
       if (telegramProof.status === "needed") {
         add(
           TELEGRAM_VISIBLE_PROOF_LABEL,

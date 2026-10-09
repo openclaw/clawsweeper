@@ -2648,7 +2648,14 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
         const storedHash = frontMatterValue(reviewMarkdown, "review_comment_sha256");
         const storedId = Number(frontMatterValue(reviewMarkdown, "review_comment_id"));
         const storedUrl = frontMatterValue(reviewMarkdown, "review_comment_url");
-        if (!storedHash || !Number.isSafeInteger(storedId) || storedId <= 0 || !storedUrl) {
+        // A paired report whose record does not read has no comment that apply can verify.
+        if (
+          !storedHash ||
+          !Number.isSafeInteger(storedId) ||
+          storedId <= 0 ||
+          !storedUrl ||
+          unreadableReviewRecordReason(reviewMarkdown)
+        ) {
           return null;
         }
         const reviewComment = issueReviewComment(reviewNumber, [

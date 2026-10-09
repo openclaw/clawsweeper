@@ -37,8 +37,8 @@ import {
   reportRootCauseCluster,
   reportSecurityReview,
   reportTestingReview,
-  triagePriorityFromReport,
 } from "./clawsweeper-report-parser.js";
+import { reportReviewDecision } from "./report-review-decision.js";
 import { neutralizeReviewControlMarkers, renderReviewHistorySection } from "./review-history.js";
 import type { CreateReportRenderingDependencies } from "./clawsweeper-report-rendering-dependencies.js";
 import {
@@ -238,6 +238,7 @@ export function createReportCommentPresentation(dependencies: CreateReportRender
   ): string {
     const profile = targetProfile();
     const isPullRequest = frontMatterValue(markdown, "type") === "pull_request";
+    const reviewDecision = reportReviewDecision(markdown);
     const proofPolicy = reportRealBehaviorProofPolicy(markdown);
     // PR comments state the proof sentence once: in Review scores, or in Before merge
     // when proof blocks merge. An evidence entry that only repeats it adds nothing.
@@ -329,7 +330,7 @@ export function createReportCommentPresentation(dependencies: CreateReportRender
     const reviewDetails: string[] = [];
     const labelDetails: string[] = [];
     const evidenceDetails: string[] = [];
-    const triagePriority = triagePriorityFromReport(markdown);
+    const { triagePriority } = reviewDecision;
     const verdictLine = reviewFailed
       ? "ClawSweeper review: did not complete due to Codex infrastructure failure."
       : reviewReadiness?.state === "blocked"
@@ -360,9 +361,14 @@ export function createReportCommentPresentation(dependencies: CreateReportRender
       reviewDetails.push("Best possible solution:", "", bestSolutionLine);
     }
     appendReviewQuestionDetails(reviewDetails, reproductionAssessment, solutionAssessment);
-    const labelJustifications = labelJustificationsFromPublicReport(markdown, options);
+    const labelJustifications = labelJustificationsFromPublicReport(
+      markdown,
+      reviewDecision,
+      options,
+    );
     const labelTransitionJustifications = labelTransitionJustificationsFromPublicReport(
       markdown,
+      reviewDecision,
       labelJustifications,
       options,
     );
