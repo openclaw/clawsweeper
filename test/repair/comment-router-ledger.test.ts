@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { mergeCommentRouterLedgers } from "../../dist/repair/comment-router-ledger-merge.js";
+import { mergeCommentRouterLedgers } from "../../dist/repair/comment-router/ledger.js";
 
 test("comment router ledger merge preserves disjoint concurrent commands", () => {
   const local = ledger([

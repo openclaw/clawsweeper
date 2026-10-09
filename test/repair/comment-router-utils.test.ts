@@ -6,7 +6,6 @@ import test from "node:test";
 
 import {
   SUPERSEDED_RE_REVIEW_REASON,
-  appendLedger,
   commentBodySha256,
   dispatchClaimDecision,
   dispatchClaimLookupKeys,
@@ -17,7 +16,6 @@ import {
   isGitHubAppIntegrationAuthError,
   isAllowedMutationActor,
   normalizeGitHubActor,
-  readLedger,
   routerDispatchReceiptKey,
   routedCommentSourceDeliveryId,
   selectCommentsForRouting,
@@ -25,8 +23,8 @@ import {
   sortCommentsForRouting,
   supersededReReviewCommentVersions,
   summarizeChecks,
-  writeLedger,
 } from "../../dist/repair/comment-router-utils.js";
+import { appendLedger, readLedger, writeLedger } from "../../dist/repair/comment-router/ledger.js";
 import { forcedReplayCommandFields, readCommentRouterConfig } from "../../dist/repair/config.js";
 
 test("exact terminal comment versions short-circuit duplicate created deliveries", () => {

@@ -113,7 +113,6 @@ import {
 
 import {
   SUPERSEDED_RE_REVIEW_REASON,
-  appendLedger,
   commentBodySha256,
   dispatchClaimDecision,
   dispatchClaimLookupKeys,
@@ -123,7 +122,6 @@ import {
   issueNumberFromUrl,
   isAllowedMutationActor,
   isGitHubAppIntegrationAuthError,
-  readLedger,
   routerDispatchReceiptKey,
   routedCommentSourceDeliveryId,
   selectCommentsForRouting,
@@ -131,10 +129,10 @@ import {
   stripAnsi,
   supersededReReviewCommentVersions,
   summarizeChecks,
-  writeLedger,
   writePayload,
   writeReportFile,
 } from "./comment-router-utils.js";
+import { appendLedger, readLedger, writeLedger } from "./comment-router/ledger.js";
 import {
   DEFAULT_TRUSTED_BOTS,
   forcedReplayCommandFields,

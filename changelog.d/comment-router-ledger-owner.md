@@ -1,0 +1,1 @@
+- Move the comment-router ledger (read, append, atomic write and the state-branch merge) into one `src/repair/comment-router/ledger.ts` owner, and delete `comment-router-ledger-merge.ts` and its duplicate entry-key rule; the stored ledger format is unchanged.

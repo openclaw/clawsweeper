@@ -2,7 +2,7 @@ import type { SpawnSyncReturns } from "node:child_process";
 import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, relative, resolve } from "node:path";
 
-import { mergeCommentRouterLedgers } from "./comment-router-ledger-merge.js";
+import { mergeCommentRouterLedgers } from "./comment-router/ledger.js";
 import { runGitResult } from "./git.js";
 import { clawsweeperGitUserEmail, clawsweeperGitUserName } from "./process-env.js";
 import { mergeSweepStatusJson } from "./sweep-status-merge.js";
