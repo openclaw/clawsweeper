@@ -528,9 +528,19 @@ export async function stopHostedTerminal({ path, nonce, tmux }) {
     assert.deepEqual(fresh, records);
     await assertHostedTerminalQuiescent(fresh);
   };
-  if (hostedProcessIdentity(armed.server.pid)) {
-    assert.deepEqual(hostedProcessIdentity(armed.server.pid), armed.server);
-    const socket = lstatSync(armed.socket);
+  // After DONE the controller's final kill-pane can end the server between any two
+  // reads, so act on one identity read and let the socket vanish the same way.
+  const server = hostedProcessIdentity(armed.server.pid);
+  if (server) {
+    assert.deepEqual(server, armed.server);
+    let socket;
+    try {
+      socket = lstatSync(armed.socket);
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error;
+      await proveCompleted();
+      return;
+    }
     assert.ok(socket.isSocket());
     assert.equal(`${socket.dev}:${socket.ino}`, armed.socketIdentity);
     let paneIdentity;
