@@ -20,6 +20,25 @@ type ExactReviewHeartbeat =
   | { phase: "status"; reviewAcknowledgementCommentId?: number }
   | { phase: "finalizing" };
 
+// One review revision in the publication lifecycle of one target item.
+type ExactReviewLifecycleTarget = {
+  canonical_target_key: string;
+  fence_key: string;
+  revision: number;
+};
+
+// The values that the queue accepts for each lifecycle record.
+const ROUTER_OUTCOMES = ["durable", "not_required"] as const;
+const CANONICAL_OUTCOMES = ["accepted", "deduped", "superseded"] as const;
+// The terminal dispositions that workflow steps record.
+const TERMINAL_DISPOSITIONS = [
+  "requeue",
+  "target_missing",
+  "target_closed",
+  "guarded_open",
+  "policy_noop",
+] as const;
+
 try {
   process.stdout.write(JSON.stringify(exactReviewQueueRequest(process.argv.slice(2), process.env)));
 } catch (error) {
@@ -29,20 +48,25 @@ try {
 
 function exactReviewQueueRequest(argv: string[], env: NodeJS.ProcessEnv) {
   const [command, ...args] = argv;
-  if (command !== "heartbeat") {
-    throw new Error("usage: heartbeat --phase <review|status|finalizing>");
+  switch (command) {
+    case "heartbeat":
+      return exactReviewHeartbeatBody(exactReviewLeaseFromEnv(env), heartbeatFromArgs(args));
+    case "lifecycle":
+      return exactReviewLifecycleBody(args, env);
+    default:
+      throw new Error(
+        "usage: heartbeat --phase <review|status|finalizing> | lifecycle <router-receipt|canonical-receipt|terminal-disposition>",
+      );
   }
-  return exactReviewHeartbeatBody(exactReviewLeaseFromEnv(env), heartbeatFromArgs(args));
 }
 
 // Reads the lease tuple that the claim step exports to each lease-holding step.
 function exactReviewLeaseFromEnv(env: NodeJS.ProcessEnv): ExactReviewLease {
   const itemKey = env.EXACT_REVIEW_ITEM_KEY ?? "";
   const leaseId = env.EXACT_REVIEW_LEASE_ID ?? "";
-  const runId = env.GITHUB_RUN_ID ?? "";
   const sourceHeadSha = (env.EXACT_REVIEW_SOURCE_HEAD_SHA ?? "").trim().toLowerCase();
   if (!itemKey || !leaseId) throw new Error("missing exact-review lease tuple");
-  if (!/^\d+$/.test(runId)) throw new Error("invalid GITHUB_RUN_ID");
+  const { runId, runAttempt } = githubRun(env);
   if (sourceHeadSha && !/^[0-9a-f]{40}$/.test(sourceHeadSha)) {
     throw new Error("invalid EXACT_REVIEW_SOURCE_HEAD_SHA");
   }
@@ -55,7 +79,7 @@ function exactReviewLeaseFromEnv(env: NodeJS.ProcessEnv): ExactReviewLease {
       "EXACT_REVIEW_CLAIM_GENERATION",
     ),
     runId,
-    runAttempt: positiveInteger(env.GITHUB_RUN_ATTEMPT, "GITHUB_RUN_ATTEMPT"),
+    runAttempt,
     sourceHeadSha: sourceHeadSha || null,
   };
 }
@@ -113,6 +137,88 @@ function heartbeatFromArgs(args: string[]): ExactReviewHeartbeat {
     default:
       throw new Error("--phase must be review, status or finalizing");
   }
+}
+
+function exactReviewLifecycleBody(args: string[], env: NodeJS.ProcessEnv) {
+  const [record, ...options] = args;
+  switch (record) {
+    case "router-receipt": {
+      const { values } = parseArgs({
+        args: options,
+        options: { outcome: { type: "string" }, "receipt-id-prefix": { type: "string" } },
+      });
+      // The queue reads a missing outcome as "durable".
+      const outcome =
+        values.outcome === undefined
+          ? undefined
+          : oneOf(values.outcome, ROUTER_OUTCOMES, "--outcome");
+      return {
+        ...exactReviewLifecycleTarget(env),
+        ...(outcome === undefined ? {} : { outcome }),
+        receipt_id: receiptId(values["receipt-id-prefix"], env),
+      };
+    }
+    case "canonical-receipt": {
+      const { values } = parseArgs({
+        args: options,
+        options: { outcome: { type: "string" }, "receipt-id-prefix": { type: "string" } },
+      });
+      return {
+        ...exactReviewLifecycleTarget(env),
+        outcome: oneOf(values.outcome, CANONICAL_OUTCOMES, "--outcome"),
+        receipt_id: receiptId(values["receipt-id-prefix"], env),
+      };
+    }
+    case "terminal-disposition": {
+      const { values } = parseArgs({ args: options, options: { kind: { type: "string" } } });
+      return {
+        ...exactReviewLifecycleTarget(env),
+        kind: oneOf(values.kind, TERMINAL_DISPOSITIONS, "--kind"),
+      };
+    }
+    default:
+      throw new Error(
+        "lifecycle record must be router-receipt, canonical-receipt or terminal-disposition",
+      );
+  }
+}
+
+// Reads the target item and the publisher fence that each lifecycle step receives.
+function exactReviewLifecycleTarget(env: NodeJS.ProcessEnv): ExactReviewLifecycleTarget {
+  const targetRepo = env.TARGET_REPO ?? "";
+  const fenceKey = env.FENCE_KEY ?? "";
+  if (!/^[^/\s]+\/[^/\s]+$/.test(targetRepo)) throw new Error("invalid TARGET_REPO");
+  if (!fenceKey) throw new Error("missing FENCE_KEY");
+  return {
+    canonical_target_key: `${targetRepo}#${positiveInteger(env.ITEM_NUMBER, "ITEM_NUMBER")}`,
+    fence_key: fenceKey,
+    revision: positiveInteger(env.REVISION, "REVISION"),
+  };
+}
+
+// A receipt id names the step and the workflow run attempt that sent it.
+function receiptId(prefix: string | undefined, env: NodeJS.ProcessEnv) {
+  if (!prefix || !/^[a-z]+(?:-[a-z]+)*$/.test(prefix)) {
+    throw new Error("invalid --receipt-id-prefix");
+  }
+  const { runId, runAttempt } = githubRun(env);
+  return `${prefix}:${runId}:${runAttempt}`;
+}
+
+function githubRun(env: NodeJS.ProcessEnv) {
+  const runId = env.GITHUB_RUN_ID ?? "";
+  if (!/^\d+$/.test(runId)) throw new Error("invalid GITHUB_RUN_ID");
+  return { runId, runAttempt: positiveInteger(env.GITHUB_RUN_ATTEMPT, "GITHUB_RUN_ATTEMPT") };
+}
+
+function oneOf<T extends string>(
+  value: string | undefined,
+  allowed: readonly T[],
+  name: string,
+): T {
+  const match = allowed.find((entry) => entry === value);
+  if (match === undefined) throw new Error(`${name} must be ${allowed.join(", ")}`);
+  return match;
 }
 
 function positiveInteger(value: string | undefined, name: string) {

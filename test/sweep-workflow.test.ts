@@ -2289,8 +2289,10 @@ test("exact event publication derives lifecycle receipt and final command acknow
   const router = step("Queue deferred exact verdict router");
   const canonical = step("Record fallback canonical exact review lifecycle receipt");
   assert.match(canonical.if ?? "", /remote_tuple_verified == 'true'/);
-  assert.match(canonical.run ?? "", /outcome: "accepted"/);
-  assert.match(canonical.run ?? "", /fallback:/);
+  assert.match(
+    canonical.run ?? "",
+    /lifecycle canonical-receipt \\\n\s*--outcome accepted --receipt-id-prefix fallback\)/,
+  );
   assert.match(canonical.run ?? "", /internal\/exact-review\/lifecycle\/canonical-receipt/);
   assert.ok(steps.indexOf(canonical) < steps.indexOf(router));
   assert.equal(
@@ -2302,19 +2304,23 @@ test("exact event publication derives lifecycle receipt and final command acknow
     "${{ steps.publication-context.outputs.publisher_lease_revision }}",
   );
   assert.match(router.run ?? "", /internal\/exact-review\/lifecycle\/router-receipt/);
-  assert.match(router.run ?? "", /canonical_target_key/);
-  assert.match(router.run ?? "", /receipt_id: `router:\$\{process\.env\.GITHUB_RUN_ID\}/);
+  assert.match(router.run ?? "", /lifecycle router-receipt \\\n\s*--receipt-id-prefix router\)/);
 
   const deferredCloseProof = step("Record deferred close-proof exact review lifecycle receipt");
   assert.match(deferredCloseProof.if ?? "", /completion_kind == 'deferred'/);
   assert.match(deferredCloseProof.if ?? "", /reason_code == 'close_coverage_deferred'/);
-  assert.match(deferredCloseProof.run ?? "", /outcome: "durable"/);
-  assert.match(deferredCloseProof.run ?? "", /router-proof:/);
+  assert.match(
+    deferredCloseProof.run ?? "",
+    /lifecycle router-receipt \\\n\s*--outcome durable --receipt-id-prefix router-proof\)/,
+  );
   assert.match(deferredCloseProof.run ?? "", /internal\/exact-review\/lifecycle\/router-receipt/);
 
   const noRouter = step("Record no-router exact review lifecycle receipt");
   assert.match(noRouter.if ?? "", /failed_review_shard_recovery/);
-  assert.match(noRouter.run ?? "", /outcome: "not_required"/);
+  assert.match(
+    noRouter.run ?? "",
+    /lifecycle router-receipt \\\n\s*--outcome not_required --receipt-id-prefix router-not-required\)/,
+  );
   assert.match(noRouter.run ?? "", /internal\/exact-review\/lifecycle\/router-receipt/);
 
   const deferredDispatch = step("Dispatch deferred high-confidence bug implementation");

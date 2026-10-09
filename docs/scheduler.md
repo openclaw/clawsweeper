@@ -156,6 +156,14 @@ environment, validates it, and prints the JSON body for `control_plane_curl`.
 `--generation-start` only with `--phase review`, as the queue requires. An
 invalid tuple stops the step before any request.
 
+After checkout, the direct lifecycle step in `event-review-apply` and the
+receipt steps in `event-review-publish` build their lifecycle bodies with
+`exact-review-queue-request.js lifecycle <router-receipt|canonical-receipt|terminal-disposition>`.
+The command reads `TARGET_REPO`, `ITEM_NUMBER`, `FENCE_KEY` and `REVISION`, and
+accepts only the outcomes and terminal kinds that the queue accepts. A receipt id
+is `--receipt-id-prefix` plus the run id and run attempt. The pre-checkout
+direct-lifecycle replay in `event-review-publish` still builds its bodies inline.
+
 The terminal-run observer (`scripts/review-run-observer.mjs`) uses plain Node
 after checkout and retries its telemetry POST up to three times. Each attempt
 retains the 20-second deadline. Connection resets and other recognized transient

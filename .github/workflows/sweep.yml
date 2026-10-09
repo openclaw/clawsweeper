@@ -1847,39 +1847,20 @@ jobs:
             fi
           fi
           if [ -n "$lifecycle_router_outcome" ]; then
-            export LIFECYCLE_ROUTER_OUTCOME="$lifecycle_router_outcome"
-            export LIFECYCLE_DEFERRED_COVERAGE="$lifecycle_deferred_coverage"
-            lifecycle_payload="$(node -e '
-              const revision = Number(process.env.REVISION);
-              if (!Number.isInteger(revision) || revision < 1 || !process.env.FENCE_KEY) process.exit(1);
-              const prefix = process.env.LIFECYCLE_DEFERRED_COVERAGE === "true"
-                ? "router-direct-proof"
-                : process.env.LIFECYCLE_ROUTER_OUTCOME === "not_required"
-                  ? "router-direct-not-required"
-                  : "router-direct";
-              process.stdout.write(JSON.stringify({
-                canonical_target_key: `${process.env.TARGET_REPO}#${process.env.ITEM_NUMBER}`,
-                fence_key: process.env.FENCE_KEY,
-                revision,
-                outcome: process.env.LIFECYCLE_ROUTER_OUTCOME,
-                receipt_id: `${prefix}:${process.env.GITHUB_RUN_ID}:${process.env.GITHUB_RUN_ATTEMPT}`,
-              }));
-            ')"
+            receipt_id_prefix="router-direct"
+            if [ "$lifecycle_deferred_coverage" = "true" ]; then
+              receipt_id_prefix="router-direct-proof"
+            elif [ "$lifecycle_router_outcome" = "not_required" ]; then
+              receipt_id_prefix="router-direct-not-required"
+            fi
+            lifecycle_payload="$(node dist/repair/exact-review-queue-request.js lifecycle router-receipt \
+              --outcome "$lifecycle_router_outcome" --receipt-id-prefix "$receipt_id_prefix")"
             lifecycle_response="$(control_plane_signed_post "$queue_url/internal/exact-review/lifecycle/router-receipt" "$lifecycle_payload" \
               --fail --silent --show-error --connect-timeout 5 --max-time 20)"
             jq -e '.ok == true' <<<"$lifecycle_response" >/dev/null
           elif [ -n "$lifecycle_terminal" ]; then
-            export LIFECYCLE_TERMINAL="$lifecycle_terminal"
-            lifecycle_payload="$(node -e '
-              const revision = Number(process.env.REVISION);
-              if (!Number.isInteger(revision) || revision < 1 || !process.env.FENCE_KEY || !process.env.LIFECYCLE_TERMINAL) process.exit(1);
-              process.stdout.write(JSON.stringify({
-                canonical_target_key: `${process.env.TARGET_REPO}#${process.env.ITEM_NUMBER}`,
-                fence_key: process.env.FENCE_KEY,
-                revision,
-                kind: process.env.LIFECYCLE_TERMINAL,
-              }));
-            ')"
+            lifecycle_payload="$(node dist/repair/exact-review-queue-request.js lifecycle terminal-disposition \
+              --kind "$lifecycle_terminal")"
             lifecycle_response="$(control_plane_signed_post "$queue_url/internal/exact-review/lifecycle/terminal-disposition" "$lifecycle_payload" \
               --fail --silent --show-error --connect-timeout 5 --max-time 20)"
             jq -e '.ok == true' <<<"$lifecycle_response" >/dev/null
@@ -3195,17 +3176,8 @@ jobs:
         run: |
           set -euo pipefail
           source scripts/control-plane-curl.sh
-          payload="$(node -e '
-            const revision = Number(process.env.REVISION);
-            if (!Number.isInteger(revision) || revision < 1 || !process.env.FENCE_KEY) process.exit(1);
-            process.stdout.write(JSON.stringify({
-              canonical_target_key: `${process.env.TARGET_REPO}#${process.env.ITEM_NUMBER}`,
-              fence_key: process.env.FENCE_KEY,
-              revision,
-              outcome: "accepted",
-              receipt_id: `fallback:${process.env.GITHUB_RUN_ID}:${process.env.GITHUB_RUN_ATTEMPT}`,
-            }));
-          ')"
+          payload="$(node dist/repair/exact-review-queue-request.js lifecycle canonical-receipt \
+            --outcome accepted --receipt-id-prefix fallback)"
           queue_url="${QUEUE_URL%/}"
           control_plane_signed_post "$queue_url/internal/exact-review/lifecycle/canonical-receipt" "$payload" \
             --fail --silent --show-error --connect-timeout 5 --max-time 20 >/dev/null
@@ -3238,16 +3210,8 @@ jobs:
             -f lookback_minutes="$CLAWSWEEPER_COMMENT_LOOKBACK_MINUTES" \
             -f max_comments="$CLAWSWEEPER_COMMENT_MAX_COMMENTS"
 
-          payload="$(node -e '
-            const revision = Number(process.env.REVISION);
-            if (!Number.isInteger(revision) || revision < 1 || !process.env.FENCE_KEY) process.exit(1);
-            process.stdout.write(JSON.stringify({
-              canonical_target_key: `${process.env.TARGET_REPO}#${process.env.ITEM_NUMBER}`,
-              fence_key: process.env.FENCE_KEY,
-              revision,
-              receipt_id: `router:${process.env.GITHUB_RUN_ID}:${process.env.GITHUB_RUN_ATTEMPT}`,
-            }));
-          ')"
+          payload="$(node dist/repair/exact-review-queue-request.js lifecycle router-receipt \
+            --receipt-id-prefix router)"
           queue_url="${QUEUE_URL%/}"
           control_plane_signed_post "$queue_url/internal/exact-review/lifecycle/router-receipt" "$payload" \
             --fail --silent --show-error --connect-timeout 5 --max-time 20 >/dev/null
@@ -3265,17 +3229,8 @@ jobs:
         run: |
           set -euo pipefail
           source scripts/control-plane-curl.sh
-          payload="$(node -e '
-            const revision = Number(process.env.REVISION);
-            if (!Number.isInteger(revision) || revision < 1 || !process.env.FENCE_KEY) process.exit(1);
-            process.stdout.write(JSON.stringify({
-              canonical_target_key: process.env.TARGET_REPO + "#" + process.env.ITEM_NUMBER,
-              fence_key: process.env.FENCE_KEY,
-              revision,
-              outcome: "durable",
-              receipt_id: "router-proof:" + process.env.GITHUB_RUN_ID + ":" + process.env.GITHUB_RUN_ATTEMPT,
-            }));
-          ')"
+          payload="$(node dist/repair/exact-review-queue-request.js lifecycle router-receipt \
+            --outcome durable --receipt-id-prefix router-proof)"
           queue_url="${QUEUE_URL%/}"
           control_plane_signed_post "$queue_url/internal/exact-review/lifecycle/router-receipt" "$payload" \
             --fail --silent --show-error --connect-timeout 5 --max-time 20 >/dev/null
@@ -3293,17 +3248,8 @@ jobs:
         run: |
           set -euo pipefail
           source scripts/control-plane-curl.sh
-          payload="$(node -e '
-            const revision = Number(process.env.REVISION);
-            if (!Number.isInteger(revision) || revision < 1 || !process.env.FENCE_KEY) process.exit(1);
-            process.stdout.write(JSON.stringify({
-              canonical_target_key: `${process.env.TARGET_REPO}#${process.env.ITEM_NUMBER}`,
-              fence_key: process.env.FENCE_KEY,
-              revision,
-              outcome: "not_required",
-              receipt_id: `router-not-required:${process.env.GITHUB_RUN_ID}:${process.env.GITHUB_RUN_ATTEMPT}`,
-            }));
-          ')"
+          payload="$(node dist/repair/exact-review-queue-request.js lifecycle router-receipt \
+            --outcome not_required --receipt-id-prefix router-not-required)"
           queue_url="${QUEUE_URL%/}"
           control_plane_signed_post "$queue_url/internal/exact-review/lifecycle/router-receipt" "$payload" \
             --fail --silent --show-error --connect-timeout 5 --max-time 20 >/dev/null
