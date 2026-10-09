@@ -31,7 +31,10 @@ test("state hydration retains canonical defaults with an explicit operational-on
     }
   }
 
-  assert.equal(setups.length, 20, "setup-state site count is an audited invariant");
+  // review-record-backfill.yml:write writes report records like apply's reconcile and
+  // needs the hydrated tuples, the state token and the writer coordinator; its
+  // dry-run job stays outside setup-state.
+  assert.equal(setups.length, 21, "setup-state site count is an audited invariant");
   assert.deepEqual(
     setups.filter(({ step }) => step.with?.["hydrate-records"] === "false").map(({ site }) => site),
     [".github/workflows/repair-publish-results.yml:publish"],
@@ -90,6 +93,7 @@ test("per-target state hydration is slug-scoped while fleet lanes retain discove
       ".github/workflows/repair-conflict-self-heal.yml:self-heal",
       ".github/workflows/repair-issue-implementation-backfill.yml:backfill",
       ".github/workflows/repair-issue-implementation-intake.yml:intake",
+      ".github/workflows/review-record-backfill.yml:write",
       ".github/workflows/spam-scanner.yml:scan",
       ".github/workflows/sweep.yml:event-review-apply",
       ".github/workflows/sweep.yml:event-review-publish",
@@ -165,7 +169,7 @@ test("all remaining git publishers join setup-state and receive a step-scoped co
     /repair:publish-main\b/,
     /repair:publish-cluster-intake\b/,
     /repair:conflict-self-heal\b(?![^\n]*--verify-job-head)/,
-    /\b(?:persist_reconciliation|publish_changes|publish_status)\b/,
+    /\b(?:persist_reconciliation|publish_reconciled_records|publish_changes|publish_status)\b/,
   ];
   let publishers = 0;
   for (const { file, workflow } of workflows()) {
@@ -183,7 +187,7 @@ test("all remaining git publishers join setup-state and receive a step-scoped co
       }
     }
   }
-  assert.equal(publishers, 18, "git publisher count is an audited invariant");
+  assert.equal(publishers, 19, "git publisher count is an audited invariant");
 });
 
 test("post-side-effect git bookkeeping is non-fatal while durability fences stay strict", () => {

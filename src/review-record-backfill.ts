@@ -1,7 +1,7 @@
 import { readdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { basename, join, resolve } from "node:path";
 import { isDeepStrictEqual } from "node:util";
-import { stringArg, type Args } from "./clawsweeper-args.js";
+import { argNumber, boolArg, stringArg, type Args } from "./clawsweeper-args.js";
 import { reviewMetricsFromReport } from "./clawsweeper-orchestration-foundation.js";
 import { parseOversizedPrSourceSnapshot } from "./clawsweeper-oversized-pr-freshness.js";
 import { parseOversizedPullRequestEvidence } from "./clawsweeper-oversized-pr-policy.js";
@@ -51,7 +51,10 @@ import type {
   ItemContext,
   ReviewRuntime,
 } from "./clawsweeper-types.js";
+import { numberForMarkdownFile } from "./clawsweeper-repository-paths.js";
 import { UserFacingCommandError } from "./command.js";
+import { sha256 } from "./content-hash.js";
+import { captureCanonicalRecordBaseline } from "./repair/canonical-record-baseline.js";
 import { frontMatterStringArray, frontMatterValue, sectionValue } from "./report-front-matter.js";
 import {
   readReviewRecord,
@@ -507,6 +510,67 @@ function sameJson(left: string, right: string): boolean {
   }
 }
 
+// A report that the backfill writes: its path under the records directory, the sha256
+// of the content that was classified, and that content with the record line.
+export interface ReviewRecordBackfillWrite {
+  path: string;
+  classifiedSha256: string;
+  markdown: string;
+}
+
+/**
+ * Writes each report whose content is still the classified content (compare-and-swap),
+ * after it captures the canonical tuple baseline that the reconcile publication checks
+ * against the Worker. A report that changed since classification is not written.
+ */
+export function writeReviewRecordBackfills(options: {
+  recordsDir: string;
+  baselineDir: string;
+  writes: readonly ReviewRecordBackfillWrite[];
+}): { changedRecordFiles: string[]; changedSinceClassification: string[] } {
+  const repositorySlug = basename(resolve(options.recordsDir));
+  const changedRecordFiles: string[] = [];
+  const changedSinceClassification: string[] = [];
+  for (const write of options.writes) {
+    const reportPath = join(options.recordsDir, write.path);
+    let current: string | null;
+    try {
+      current = readFileSync(reportPath, "utf8");
+    } catch {
+      current = null;
+    }
+    if (current === null || sha256(current) !== write.classifiedSha256) {
+      changedSinceClassification.push(write.path);
+      continue;
+    }
+    const name = basename(write.path);
+    const number = numberForMarkdownFile(name);
+    const packetName = `${number}.json`;
+    captureCanonicalRecordBaseline({
+      baselineRoot: options.baselineDir,
+      repositorySlug,
+      itemNumber: number,
+      sources: [
+        { section: "items", name, path: join(options.recordsDir, "items", name) },
+        { section: "closed", name, path: join(options.recordsDir, "closed", name) },
+        { section: "plans", name, path: join(options.recordsDir, "plans", name) },
+        {
+          section: "decision-packets",
+          name: packetName,
+          path: join(options.recordsDir, "decision-packets", packetName),
+        },
+      ],
+    });
+    writeFileSync(reportPath, write.markdown, "utf8");
+    changedRecordFiles.push(name);
+  }
+  return { changedRecordFiles, changedSinceClassification };
+}
+
+// The command classifies this many reports to write, then writes them, so a stop part
+// way leaves whole batches written. Publication batches tuples on its own.
+const WRITE_BATCH_SIZE = 50;
+
 export function createReviewRecordBackfill(dependencies: { markdownFor: MarkdownFor }) {
   function backfillReviewRecord(markdown: string): ReviewRecordBackfill {
     try {
@@ -553,6 +617,13 @@ export function createReviewRecordBackfill(dependencies: { markdownFor: Markdown
   /**
    * `backfill-review-records --records-dir <records/<slug>> --output <json>`: reports
    * what the backfill would do for every items and closed report. It writes nothing.
+   *
+   * With `--write [--limit <n>]` it also adds the record line to lossless and filled
+   * reports (at most n), captures each tuple in the canonical baseline directory
+   * (`--canonical-record-baseline-dir` or CLAWSWEEPER_CANONICAL_RECORD_BASELINE_DIR),
+   * and lists the written reports in `changedRecordFiles` for the reconcile
+   * publication. Lossy, unparseable, invalid_record and typed reports stay as they
+   * are. A written report is typed, so a second run writes nothing more.
    */
   function backfillReviewRecordsCommand(args: Args): void {
     const recordsDir = stringArg(args.records_dir, "");
@@ -560,6 +631,26 @@ export function createReviewRecordBackfill(dependencies: { markdownFor: Markdown
     if (!recordsDir || !output) {
       throw new UserFacingCommandError("backfill-review-records needs --records-dir and --output");
     }
+    const write = boolArg(args.write);
+    const limit = argNumber(args, "limit", 0);
+    const baselineDir = stringArg(
+      args.canonical_record_baseline_dir,
+      process.env.CLAWSWEEPER_CANONICAL_RECORD_BASELINE_DIR ?? "",
+    ).trim();
+    if (write && !baselineDir) {
+      throw new UserFacingCommandError(
+        "backfill-review-records --write needs a canonical record baseline directory",
+      );
+    }
+    const changedRecordFiles: string[] = [];
+    const changedSinceClassification: string[] = [];
+    let pending: ReviewRecordBackfillWrite[] = [];
+    const flush = () => {
+      const written = writeReviewRecordBackfills({ recordsDir, baselineDir, writes: pending });
+      changedRecordFiles.push(...written.changedRecordFiles);
+      changedSinceClassification.push(...written.changedSinceClassification);
+      pending = [];
+    };
     const counts: Record<ReviewRecordBackfill["status"], number> = {
       typed: 0,
       invalid_record: 0,
@@ -589,12 +680,21 @@ export function createReviewRecordBackfill(dependencies: { markdownFor: Markdown
       }
       for (const name of names.sort()) {
         const path = `${section}/${name}`;
-        const result = backfillReviewRecord(readFileSync(join(recordsDir, path), "utf8"));
+        const markdown = readFileSync(join(recordsDir, path), "utf8");
+        const result = backfillReviewRecord(markdown);
         total += 1;
         counts[result.status] += 1;
         const sample = (examples[result.status] ??= []);
         if (sample.length < 20) sample.push(path);
         if ("reason" in result) reasons[result.reason] = (reasons[result.reason] ?? 0) + 1;
+        if (
+          write &&
+          (result.status === "lossless" || result.status === "filled") &&
+          (!limit || changedRecordFiles.length + pending.length < limit)
+        ) {
+          pending.push({ path, classifiedSha256: sha256(markdown), markdown: result.markdown });
+          if (pending.length >= WRITE_BATCH_SIZE) flush();
+        }
         if ("differences" in result) {
           for (const difference of result.differences) {
             const fields = fieldCounts[difference.kind];
@@ -620,21 +720,35 @@ export function createReviewRecordBackfill(dependencies: { markdownFor: Markdown
         }
       }
     }
+    if (pending.length > 0) flush();
     const byCount = (record: Record<string, number>) =>
       Object.fromEntries(Object.entries(record).sort(([, left], [, right]) => right - left));
+    const writeSummary = write
+      ? {
+          written: changedRecordFiles.length,
+          changedSinceClassification: changedSinceClassification.length,
+        }
+      : {};
     const summary = {
       recordsDir,
       total,
       counts,
+      ...writeSummary,
       changedFields: byCount(fieldCounts.changed),
       renderedFields: byCount(fieldCounts.rendered),
       filledFields: byCount(fieldCounts.filled),
       reasons: byCount(reasons),
       examples,
       differenceSamples,
+      ...(write
+        ? {
+            changedSinceClassificationExamples: changedSinceClassification.slice(0, 20),
+            changedRecordFiles,
+          }
+        : {}),
     };
     writeFileSync(output, `${JSON.stringify(summary, null, 2)}\n`);
-    console.log(JSON.stringify({ recordsDir, total, counts }));
+    console.log(JSON.stringify({ recordsDir, total, counts, ...writeSummary }));
   }
 
   return { backfillReviewRecord, backfillReviewRecordsCommand };

@@ -1,8 +1,19 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { execFile, execFileSync } from "node:child_process";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
+import { createServer } from "node:http";
+import { join, resolve } from "node:path";
 import test from "node:test";
+import { promisify } from "node:util";
+import { parse } from "yaml";
 import { codexFailureDecisionForTest, parseDecision } from "../dist/clawsweeper.js";
 import { createReportDocumentRendering } from "../dist/clawsweeper-report-document.js";
 import { createReportContextRendering } from "../dist/clawsweeper-report-context.js";
@@ -11,7 +22,11 @@ import { createRepositoryLinks } from "../dist/clawsweeper-links.js";
 import { oversizedPullRequestDecision } from "../dist/clawsweeper-oversized-pr-policy.js";
 import { repositoryProfileFor } from "../dist/repository-profiles.js";
 import { readReviewRecord } from "../dist/review-record.js";
-import { createReviewRecordBackfill } from "../dist/review-record-backfill.js";
+import {
+  createReviewRecordBackfill,
+  writeReviewRecordBackfills,
+} from "../dist/review-record-backfill.js";
+import { sha256 } from "../dist/content-hash.js";
 import { defaultAgentsPolicyStatus } from "../dist/clawsweeper-report-parser.js";
 import type { Decision } from "../src/clawsweeper-types.ts";
 import {
@@ -426,6 +441,294 @@ test("backfill-review-records reports counts for a records directory and writes 
     assert.equal(readFileSync(join(recordsDir, "items", "7.md"), "utf8"), typed);
     assert.equal(readFileSync(join(recordsDir, "closed", "8.md"), "utf8"), unparseable);
   } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+function runBackfill(recordsDir: string, output: string, extra: string[]) {
+  execFileSync(process.execPath, [
+    "dist/clawsweeper.js",
+    "backfill-review-records",
+    "--records-dir",
+    recordsDir,
+    "--output",
+    output,
+    ...extra,
+  ]);
+  return JSON.parse(readFileSync(output, "utf8"));
+}
+
+test("backfill-review-records --write adds the record to lossless and filled reports only, once", () => {
+  const root = mkdtempSync(tmpPrefix);
+  try {
+    const recordsDir = join(root, "records", "openclaw-openclaw");
+    for (const section of ["items", "closed"])
+      mkdirSync(join(recordsDir, section), { recursive: true });
+    const reportFor = (number: number) => {
+      const subject = item({ kind: "pull_request", number });
+      return legacyReport(
+        parseDecision(closeDecision({ decision: "keep_open", closeReason: "none" }), subject),
+        subject,
+      );
+    };
+    const reports: Record<string, string> = {
+      "items/11.md": reportFor(11),
+      "closed/12.md": reportFor(12).replace(/^product_kind: .*\n/m, ""),
+      "items/13.md": reportFor(13).replace(
+        "\n  - repo: openclaw/openclaw\n",
+        "\n  - repo: openclaw/openclaw\n  - note: kept by an older writer\n",
+      ),
+      "items/7.md": withReviewRecord(lowSignalCloseReport({ number: 7 })),
+      "closed/8.md": lowSignalCloseReport({ number: 8 }).replace(/^decision: .*\n/m, ""),
+      "items/9.md": withReviewRecord(lowSignalCloseReport({ number: 9 })).replace(
+        /^review_record: \{/m,
+        "review_record: [",
+      ),
+    };
+    for (const [path, markdown] of Object.entries(reports)) {
+      writeFileSync(join(recordsDir, path), markdown);
+    }
+    const statuses = Object.fromEntries(
+      Object.entries(reports).map(([path, markdown]) => [
+        path,
+        backfillReviewRecord(markdown).status,
+      ]),
+    );
+    assert.deepEqual(statuses, {
+      "items/11.md": "lossless",
+      "closed/12.md": "filled",
+      "items/13.md": "lossy",
+      "items/7.md": "typed",
+      "closed/8.md": "unparseable",
+      "items/9.md": "invalid_record",
+    });
+
+    // A limited run writes part of the reports; the next run writes the rest.
+    const first = runBackfill(recordsDir, join(root, "first.json"), [
+      "--write",
+      "--limit",
+      "1",
+      "--canonical-record-baseline-dir",
+      join(root, "baseline-1"),
+    ]);
+    assert.equal(first.written, 1);
+    assert.deepEqual(first.changedRecordFiles, ["11.md"]);
+    const second = runBackfill(recordsDir, join(root, "second.json"), [
+      "--write",
+      "--canonical-record-baseline-dir",
+      join(root, "baseline-2"),
+    ]);
+    assert.equal(second.counts.typed, 2);
+    assert.equal(second.written, 1);
+    assert.equal(second.changedSinceClassification, 0);
+    assert.deepEqual(second.changedRecordFiles, ["12.md"]);
+    // The baseline holds the tuple as it was before the write, for the publication's
+    // compare-and-swap.
+    assert.equal(
+      readFileSync(
+        join(root, "baseline-2", "records", "openclaw-openclaw", "closed", "12.md"),
+        "utf8",
+      ),
+      reports["closed/12.md"],
+    );
+
+    for (const [path, original] of Object.entries(reports)) {
+      const stored = readFileSync(join(recordsDir, path), "utf8");
+      if (statuses[path] !== "lossless" && statuses[path] !== "filled") {
+        assert.equal(stored, original, path);
+        continue;
+      }
+      const lines = stored.split("\n");
+      const added = lines.filter((line) => !original.split("\n").includes(line));
+      assert.equal(added.length, 1, path);
+      assert.match(added[0]!, /^review_record: \{.*"origin":"backfill"/, path);
+      assert.equal(lines.filter((line) => line !== added[0]).join("\n"), original, path);
+      const record = readReviewRecord(stored);
+      assert.equal(record?.origin, "backfill", path);
+      assert.deepEqual(record!.decision, recordDecision(original), path);
+      assert.equal(record!.decision.decision, "keep_open", path);
+    }
+
+    const after = Object.fromEntries(
+      Object.keys(reports).map((path) => [path, readFileSync(join(recordsDir, path), "utf8")]),
+    );
+    const third = runBackfill(recordsDir, join(root, "third.json"), [
+      "--write",
+      "--canonical-record-baseline-dir",
+      join(root, "baseline-3"),
+    ]);
+    assert.equal(third.written, 0);
+    assert.deepEqual(third.changedRecordFiles, []);
+    assert.deepEqual(third.counts, {
+      typed: 3,
+      invalid_record: 1,
+      unparseable: 1,
+      lossless: 0,
+      filled: 0,
+      lossy: 1,
+    });
+    for (const [path, markdown] of Object.entries(after)) {
+      assert.equal(readFileSync(join(recordsDir, path), "utf8"), markdown, path);
+    }
+    assert.equal(existsSync(join(root, "baseline-3", "records")), false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("the backfill does not write a report that changed after classification", () => {
+  const root = mkdtempSync(tmpPrefix);
+  try {
+    const recordsDir = join(root, "records", "openclaw-openclaw");
+    mkdirSync(join(recordsDir, "items"), { recursive: true });
+    const classified = legacyReport(
+      parseDecision(closeDecision({ decision: "keep_open", closeReason: "none" }), pullRequest),
+    );
+    writeFileSync(join(recordsDir, "items", "42.md"), classified);
+    const result = backfillReviewRecord(classified);
+    assert.ok("markdown" in result);
+    const write = {
+      path: "items/42.md",
+      classifiedSha256: sha256(classified),
+      markdown: result.markdown,
+    };
+    // A fresh review rewrites the report between classification and the write.
+    const reviewed = withReviewRecord(lowSignalCloseReport({ number: 42 }));
+    writeFileSync(join(recordsDir, "items", "42.md"), reviewed);
+
+    const baselineDir = join(root, "baseline");
+    assert.deepEqual(writeReviewRecordBackfills({ recordsDir, baselineDir, writes: [write] }), {
+      changedRecordFiles: [],
+      changedSinceClassification: ["items/42.md"],
+    });
+    assert.equal(readFileSync(join(recordsDir, "items", "42.md"), "utf8"), reviewed);
+    assert.equal(existsSync(baselineDir), false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("backfill-review-records --write needs a canonical baseline directory", () => {
+  const root = mkdtempSync(tmpPrefix);
+  try {
+    assert.throws(
+      () =>
+        execFileSync(
+          process.execPath,
+          [
+            "dist/clawsweeper.js",
+            "backfill-review-records",
+            "--records-dir",
+            root,
+            "--output",
+            join(root, "out.json"),
+            "--write",
+          ],
+          { stdio: "pipe", env: { ...process.env, CLAWSWEEPER_CANONICAL_RECORD_BASELINE_DIR: "" } },
+        ),
+      /canonical record baseline directory/,
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("the write job publishes only the written tuples, with the classified digest as its expectation", async () => {
+  const workflow = parse(readFileSync(".github/workflows/review-record-backfill.yml", "utf8"));
+  assert.equal(workflow.on.workflow_dispatch.inputs.mode.default, "dry-run");
+  assert.equal(workflow.jobs["dry-run"].if, "${{ inputs.mode == 'dry-run' }}");
+  assert.equal(workflow.jobs.write.if, "${{ inputs.mode == 'write' }}");
+  type Step = { uses?: string; name?: string; run?: string };
+  const steps: Step[] = workflow.jobs.write.steps;
+  const setupState = steps.findIndex((step) => step.uses === "./.github/actions/setup-state");
+  const writeStep = steps.findIndex((step) => step.name === "Write and publish review records");
+  assert.ok(setupState >= 0 && setupState < writeStep);
+  assert.equal(
+    (workflow.jobs["dry-run"].steps as Step[]).some((step) => step.uses?.includes("setup-state")),
+    false,
+  );
+
+  const root = mkdtempSync(tmpPrefix);
+  const requests: Array<Record<string, any>> = [];
+  const server = createServer((request, response) => {
+    let body = "";
+    request.on("data", (chunk) => (body += chunk));
+    request.on("end", () => {
+      requests.push({ url: request.url, ...JSON.parse(body) });
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({ ok: true, revision: requests.length }));
+    });
+  });
+  await new Promise<void>((done) => server.listen(0, "127.0.0.1", done));
+  try {
+    const recordsDir = join(root, "records", "openclaw-openclaw");
+    mkdirSync(join(recordsDir, "items"), { recursive: true });
+    const subject = item({ kind: "pull_request", number: 11 });
+    const lossless = legacyReport(
+      parseDecision(closeDecision({ decision: "keep_open", closeReason: "none" }), subject),
+      subject,
+    );
+    const lossy = lossless.replace(
+      "\n  - repo: openclaw/openclaw\n",
+      "\n  - repo: openclaw/openclaw\n  - note: kept by an older writer\n",
+    );
+    writeFileSync(join(recordsDir, "items", "11.md"), lossless);
+    writeFileSync(join(recordsDir, "items", "13.md"), lossy);
+    symlinkSync(resolve("scripts"), join(root, "scripts"));
+    const address = server.address();
+    assert.ok(address && typeof address === "object");
+    await promisify(execFile)(
+      "bash",
+      [
+        "-c",
+        [
+          // The job runs from the checkout; here the records are in a temporary
+          // directory, so node runs the built entry points of this checkout.
+          'node() { local script="$1"; shift; command node "$CHECKOUT/$script" "$@"; }',
+          'pnpm() { shift 3; node dist/repair/publish-main.js "$@"; }',
+          steps[writeStep]!.run!,
+        ].join("\n"),
+      ],
+      {
+        cwd: root,
+        env: {
+          ...process.env,
+          CLAWSWEEPER_WEBHOOK_SECRET: "secret",
+          QUEUE_URL: `http://127.0.0.1:${address.port}`,
+          TARGET_REPO: "openclaw/openclaw",
+          TARGET_SLUG: "openclaw-openclaw",
+          WRITE_LIMIT: "",
+          CHECKOUT: process.cwd(),
+        },
+      },
+    );
+
+    const written = readFileSync(join(recordsDir, "items", "11.md"), "utf8");
+    assert.equal(readReviewRecord(written)?.origin, "backfill");
+    assert.equal(readFileSync(join(recordsDir, "items", "13.md"), "utf8"), lossy);
+    assert.equal(requests.length, 1);
+    const [tuple] = requests;
+    assert.equal(tuple!.url, "/internal/state/records/tuples");
+    assert.equal(tuple!.key, "openclaw-openclaw/11");
+    assert.match(tuple!.deliveryId, /^record-reconcile:openclaw-openclaw:11:/);
+    const operations = Object.fromEntries(
+      tuple!.operations.map((operation: Record<string, string | null>) => [
+        operation.path,
+        operation,
+      ]),
+    );
+    const item11 = operations["records/openclaw-openclaw/items/11.md"];
+    assert.equal(item11.expectedDigest, sha256(lossless));
+    assert.equal(Buffer.from(item11.contentBase64, "base64").toString("utf8"), written);
+    for (const path of [
+      "records/openclaw-openclaw/closed/11.md",
+      "records/openclaw-openclaw/plans/11.md",
+      "records/openclaw-openclaw/decision-packets/11.json",
+    ]) {
+      assert.deepEqual(operations[path], { path, expectedDigest: null });
+    }
+  } finally {
+    server.close();
     rmSync(root, { recursive: true, force: true });
   }
 });
