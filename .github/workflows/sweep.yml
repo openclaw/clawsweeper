@@ -3173,7 +3173,9 @@ jobs:
               outcome=success
             fi
           fi
-          if [ "$outcome" = "success" ] && [ "$completion_kind" != "superseded" ] && [ "$completion_kind" != "deferred" ] && [ "$completion_kind" != "refresh_required" ] && [ "$completion_kind" != "retryable_failure" ]; then
+          # A direct lifecycle recovery skips the artifact publication. Keep the
+          # completion that it replayed; only an artifact publication result maps here.
+          if [ "$DIRECT_RECOVERY_OUTCOME" != "success" ] && [ "$outcome" = "success" ] && [ "$completion_kind" != "superseded" ] && [ "$completion_kind" != "deferred" ] && [ "$completion_kind" != "refresh_required" ] && [ "$completion_kind" != "retryable_failure" ]; then
             if [ "$PUBLISH_COMPLETION_KIND" = "published" ] && [ "$PUBLISH_REASON_CODE" = "publication_applied" ]; then
               completion_kind=published
               reason_code=publication_applied

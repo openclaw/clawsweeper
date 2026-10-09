@@ -2012,7 +2012,10 @@ test("exact event review publishes directly with a queue-bounded canonical fallb
     publishResult.run ?? "",
     /LIVE_PROOF_RESULT.*invalid_artifact[\s\S]*completion_kind=refresh_required[\s\S]*reason_code=invalid_artifact/,
   );
-  const runPublicationResult = (liveProofResult: string) => {
+  const runPublicationResult = (
+    liveProofResult: string,
+    overrides: Record<string, string> = {},
+  ) => {
     const publicationResultRoot = mkdtempSync(`${tmpPrefix}live-proof-result-`);
     const publicationResultOutput = join(publicationResultRoot, "github-output");
     try {
@@ -2045,6 +2048,7 @@ test("exact event review publishes directly with a queue-bounded canonical fallb
           DIRECT_RECOVERY_REQUEUE_LATEST: "",
           DIRECT_RECOVERY_DIRECT_REQUEUE: "",
           REVIEW_ONLY: "false",
+          ...overrides,
           GITHUB_OUTPUT: publicationResultOutput,
         },
       });
@@ -2075,6 +2079,39 @@ test("exact event review publishes directly with a queue-bounded canonical fallb
     requeue_latest: "",
     direct_requeue: "false",
   });
+  // A direct lifecycle recovery skips the artifact publication. Its replayed
+  // result is the completion, and the queue accepts a direct requeue only on a
+  // published completion.
+  const directRecovery = {
+    PRIOR_JOB_STATUS: "success",
+    PUBLISH_OUTCOME: "skipped",
+    DOWNLOAD_OUTCOME: "skipped",
+    VALIDATE_OUTCOME: "skipped",
+    DIRECT_RECOVERY_OUTCOME: "success",
+    DIRECT_RECOVERY_REQUEUE_LATEST: "false",
+  };
+  for (const [directRequeue, completionKind, reasonCode] of [
+    ["true", "published", "publication_applied"],
+    ["false", "published", "publication_applied"],
+    ["false", "superseded", "remote_newer_tuple"],
+  ]) {
+    assert.deepEqual(
+      runPublicationResult("", {
+        ...directRecovery,
+        DIRECT_RECOVERY_COMPLETION_KIND: completionKind!,
+        DIRECT_RECOVERY_REASON_CODE: reasonCode!,
+        DIRECT_RECOVERY_DIRECT_REQUEUE: directRequeue!,
+      }),
+      {
+        outcome: "success",
+        completion_kind: completionKind,
+        reason_code: reasonCode,
+        requeue_latest: "",
+        direct_requeue: directRequeue,
+      },
+      `${completionKind} direct_requeue=${directRequeue}`,
+    );
+  }
   assert.doesNotMatch(publishResult.run ?? "", /LIVE_TERMINAL_NOOP/);
   assert.match(publishComplete.run ?? "", /internal\/exact-review\/complete/);
   assert.match(publishComplete.env?.FAILURE_KIND ?? "", /exact-review-publication-result/);
