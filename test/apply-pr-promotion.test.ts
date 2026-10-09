@@ -595,6 +595,42 @@ test("apply-decisions promotes old F-rated stale PRs with low-signal close seman
   });
 });
 
+test("apply-decisions does not promote a report whose review record does not read", () => {
+  withApplyTestWorkspace(tmpPrefix, ({ root, itemsDir, closedDir, plansDir, reportPath }) => {
+    const synced = reportWithSyncedReviewComment(
+      withReviewRecord(stalePullRequestReport({ pull_head_sha: "head-sha" }), {
+        decision: "keep_open",
+        closeReason: "none",
+      }).replace(/^review_record: \{/m, "review_record: {broken"),
+      330,
+      "none",
+    );
+    writeFileSync(join(itemsDir, "330.md"), synced.report, "utf8");
+
+    withMockGh(
+      root,
+      promotionGhMock({ number: 330, comment: synced.comment, headRunPullRequests: [] }),
+      () => {
+        withMockCodexProof(root, { type: "failure", message: "proof should not run" }, () => {
+          runOpenClawApplyDecisionsForTest({ itemsDir, closedDir, plansDir, reportPath });
+        });
+      },
+    );
+
+    assert.deepEqual(JSON.parse(readFileSync(reportPath, "utf8")), [
+      {
+        number: 330,
+        action: "skipped_changed_since_review",
+        reason: "review_record: the value is not JSON; fresh review required",
+      },
+    ]);
+    assert.equal(existsSync(join(closedDir, "330.md")), false);
+    const report = readFileSync(join(itemsDir, "330.md"), "utf8");
+    assert.match(report, /^action_taken: skipped_changed_since_review$/m);
+    assert.match(report, /^review_record: \{broken/m);
+  });
+});
+
 test("apply-decisions keeps MERGEABLE UNSTABLE low-signal proposals open", () => {
   const report = runLowSignalApplyFixture({
     number: 341,

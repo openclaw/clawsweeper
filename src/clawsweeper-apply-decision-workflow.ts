@@ -14,7 +14,10 @@ import { dirname, join, resolve } from "node:path";
 import { reportPublicationPolicy } from "./manual-publication-policy.js";
 import { assertManualPublicationAuthority } from "./manual-publication-authority.js";
 import { createApplyCandidateGuards } from "./clawsweeper-apply-candidate-guards.js";
-import { validateReportClose } from "./clawsweeper-apply-close-decision.js";
+import {
+  unreadableReviewRecordReason,
+  validateReportClose,
+} from "./clawsweeper-apply-close-decision.js";
 import { executeApplyClose } from "./clawsweeper-apply-close-execution.js";
 import {
   createApplyCloseGuards,
@@ -925,6 +928,12 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
         ) {
           break;
         }
+        continue;
+      }
+      // A promotion removes a record that does not read, so do this check before a promotion.
+      const unreadableRecordReason = unreadableReviewRecordReason(markdown);
+      if (unreadableRecordReason) {
+        if (markApplySkipped("skipped_changed_since_review", unreadableRecordReason)) break;
         continue;
       }
       const markLabelSyncAuthSkipped = (labelKind: string): boolean => {

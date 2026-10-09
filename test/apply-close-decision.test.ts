@@ -46,7 +46,10 @@ test("the apply validates the close from the review record", () => {
     ["implementation", "git history provenance", "release provenance"],
   );
   // The apply posts the close comment of the report, not the model text.
-  assert.equal(decision?.closeComment, "Closing this because the requested behavior is already on main.");
+  assert.equal(
+    decision?.closeComment,
+    "Closing this because the requested behavior is already on main.",
+  );
 });
 
 test("the record decides the close when the report text disagrees", () => {

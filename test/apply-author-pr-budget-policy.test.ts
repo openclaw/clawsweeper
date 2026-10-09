@@ -103,7 +103,29 @@ function runBudgetApply(options: RunOptions = {}) {
     const reportPath = join(root, "apply-report.json");
     mkdirSync(itemsDir, { recursive: true });
     mkdirSync(plansDir, { recursive: true });
-    const source = withReviewRecord(budgetCandidateReport(options));
+    const rating = options.rating ?? "D";
+    const proof = options.proof ?? "missing";
+    // The record holds the same review as the report text.
+    const source = withReviewRecord(budgetCandidateReport(options), {
+      decision: options.proposed ? "close" : "keep_open",
+      closeReason: options.proposed ? "author_pr_budget_exceeded" : "none",
+      realBehaviorProof: {
+        status: proof,
+        summary:
+          proof === "sufficient"
+            ? "A real live run proves the behavior."
+            : "No adequate live proof was supplied.",
+        evidenceKind: proof === "sufficient" ? "terminal" : "none",
+        needsContributorAction: proof !== "sufficient" && proof !== "override",
+      },
+      prRating: {
+        proofTier: rating,
+        patchTier: rating,
+        overallTier: rating,
+        summary: "The latest review assigned this readiness tier.",
+        nextSteps: ["Add real behavior proof."],
+      },
+    });
     const reason = options.proposed ? "author_pr_budget_exceeded" : "none";
     const synced = reportWithSyncedReviewComment(source, 321, reason);
     writeFileSync(join(itemsDir, "321.md"), synced.report, "utf8");

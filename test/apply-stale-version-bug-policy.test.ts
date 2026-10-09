@@ -221,7 +221,12 @@ test("a review record that does not read keeps the item open for a fresh review"
   });
   assert.deepEqual(
     result.entries.map((entry) => [entry.action, entry.reason]),
-    [["skipped_changed_since_review", "review_record: the value is not JSON; fresh review required"]],
+    [
+      [
+        "skipped_changed_since_review",
+        "review_record: the value is not JSON; fresh review required",
+      ],
+    ],
   );
   assert.equal(result.closed, false);
 });
