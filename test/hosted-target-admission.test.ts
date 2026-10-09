@@ -278,13 +278,20 @@ globalThis.fetch = async (url, init) => {
       );
     }
 
-    const repository = (visibility: string) => ({
+    const repository = (visibility: string, overrides = {}) => ({
       status: 200,
-      body: { full_name: "Partner/Configured", private: visibility !== "public", visibility },
+      body: {
+        full_name: "Partner/Configured",
+        private: visibility !== "public",
+        visibility,
+        ...overrides,
+      },
     });
     for (const [reply, outcome] of [
       [repository("public"), "public"],
       [repository("private"), "terminal"],
+      [repository("public", { private: true }), "terminal"],
+      [repository("public", { full_name: "partner/renamed" }), "terminal"],
       [{ status: 404, body: {} }, "terminal"],
       [{ status: 500, body: {} }, "retryable"],
     ] as const) {
