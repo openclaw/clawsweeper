@@ -36,6 +36,10 @@ import {
   nextIssueImplementationWorkerRetry,
   recoverableIssueImplementationWorker,
 } from "./issue-worker-recovery.js";
+import {
+  currentIssueImplementationLaneHealth,
+  issueImplementationLaneHealthSummary,
+} from "./issue-implementation-lane-health.js";
 import { hasSecuritySignal } from "./security-signals.js";
 import {
   BULK_FILED_LABEL,
@@ -100,6 +104,7 @@ function main() {
   else if (command === "candidates") candidates();
   else if (command === "mark-dispatched") markDispatched();
   else if (command === "restore-job") restoreJob();
+  else if (command === "lane-health") laneHealth();
   else die(`unknown command: ${command}`);
 }
 
@@ -385,6 +390,28 @@ function prepare() {
   };
   writeStepOutputs(out);
   console.log(JSON.stringify(out, null, 2));
+}
+
+function laneHealth() {
+  const floor = stringArg("min-success-percent", "").trim();
+  const minSuccessPercent = floor === "" ? undefined : Number(floor);
+  if (
+    minSuccessPercent !== undefined &&
+    (!Number.isInteger(minSuccessPercent) || minSuccessPercent < 0 || minSuccessPercent > 100)
+  ) {
+    die(`invalid minimum success percent: ${floor}`);
+  }
+  const health = currentIssueImplementationLaneHealth({
+    targetRepo: stringArg("target-repo", "openclaw/openclaw"),
+    ...(minSuccessPercent === undefined ? {} : { minSuccessPercent }),
+  });
+  if (process.env.GITHUB_STEP_SUMMARY) {
+    fs.appendFileSync(
+      process.env.GITHUB_STEP_SUMMARY,
+      issueImplementationLaneHealthSummary(health),
+    );
+  }
+  console.log(JSON.stringify(health));
 }
 
 function candidates() {

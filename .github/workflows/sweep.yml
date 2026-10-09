@@ -1690,6 +1690,7 @@ jobs:
           TARGET_REPO: ${{ steps.target.outputs.target_repo }}
           ITEM_NUMBER: ${{ steps.target.outputs.item_number }}
           MAX_DISPATCH: ${{ vars.CLAWSWEEPER_AUTO_IMPLEMENT_MAX_DISPATCH_PER_SWEEP || '' }}
+          MIN_SUCCESS_PERCENT: ${{ vars.CLAWSWEEPER_AUTO_IMPLEMENT_MIN_SUCCESS_PERCENT || '' }}
         run: |
           node scripts/dispatch-issue-implementation-candidates.mjs \
             --target-repo "$TARGET_REPO" \
@@ -2875,6 +2876,7 @@ jobs:
           TARGET_REPO: ${{ steps.publication-context.outputs.target_repo }}
           ITEM_NUMBER: ${{ steps.publication-context.outputs.item_number }}
           MAX_DISPATCH: ${{ vars.CLAWSWEEPER_AUTO_IMPLEMENT_MAX_DISPATCH_PER_SWEEP || '' }}
+          MIN_SUCCESS_PERCENT: ${{ vars.CLAWSWEEPER_AUTO_IMPLEMENT_MIN_SUCCESS_PERCENT || '' }}
         run: |
           node scripts/dispatch-issue-implementation-candidates.mjs \
             --target-repo "$TARGET_REPO" \
@@ -3967,6 +3969,7 @@ jobs:
           TARGET_REPO: ${{ steps.target.outputs.target_repo }}
           CANDIDATE_KIND: ${{ steps.target.outputs.target_repo == 'openclaw/openclaw' && 'vision_fit' || 'viable' }}
           MAX_DISPATCH: ${{ steps.target.outputs.target_repo == 'openclaw/openclaw' && vars.CLAWSWEEPER_AUTO_IMPLEMENT_VISION_FIT_MAX_DISPATCH_PER_SWEEP || vars.CLAWSWEEPER_AUTO_IMPLEMENT_MAX_DISPATCH_PER_SWEEP || '' }}
+          MIN_SUCCESS_PERCENT: ${{ vars.CLAWSWEEPER_AUTO_IMPLEMENT_MIN_SUCCESS_PERCENT || '' }}
         run: |
           set -euo pipefail
           target_slug="${TARGET_REPO//\//-}"

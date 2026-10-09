@@ -828,6 +828,7 @@ Issue implementation controls:
 | `CLAWSWEEPER_AUTO_IMPLEMENT_VISION_FIT` | Small vision-aligned automatic lane. |
 | `CLAWSWEEPER_AUTO_IMPLEMENT_MAX_LIVE_WORKERS` | Issue implementation live-worker override. |
 | `CLAWSWEEPER_AUTO_IMPLEMENT_MAX_DISPATCH_PER_SWEEP` | Per-publish dispatch cap. |
+| `CLAWSWEEPER_AUTO_IMPLEMENT_MIN_SUCCESS_PERCENT` | 7-day worker run success floor for automatic dispatch (default 50); `0` overrides the pause. |
 
 GitCrawl controls:
 

@@ -625,5 +625,10 @@ These limits are owned by `dashboard/exact-review-queue.ts`, implemented in
 - Each enabled automatic issue intake lane scans durable open reports and
   dispatches at most `issue_implementation.dispatches_per_sweep_default`
   candidates per target sweep.
+- `CLAWSWEEPER_AUTO_IMPLEMENT_MIN_SUCCESS_PERCENT` sets the 7-day worker run
+  success floor for automatic issue dispatch (default 50). With at least 10
+  finished issue implementation worker runs below the floor, automatic dispatch
+  pauses and the dispatcher's run summary shows the rate; `0` overrides the
+  pause. See [Automatic issue PRs](repair/automatic-issue-prs.md).
 - Broad `sweep.yml` dispatches use queue-advertised candidate capacity, bounded
   by `review_shards.hard_cap`; there is no per-run shard override.

@@ -698,6 +698,35 @@ test("issue implementation dispatches omit the deleted model input", () => {
   }
 });
 
+test("every automatic issue dispatcher receives the lane health floor override", () => {
+  const dispatches = [
+    ".github/workflows/sweep.yml",
+    ".github/workflows/exact-review-batch-publish.yml",
+    ".github/workflows/repair-issue-implementation-backfill.yml",
+  ].flatMap((file) => {
+    const workflow = YAML.parse(readText(file)) as {
+      jobs: Record<
+        string,
+        { steps?: Array<{ name?: string; run?: string; env?: Record<string, string> }> }
+      >;
+    };
+    return Object.values(workflow.jobs).flatMap((job) =>
+      (job.steps ?? [])
+        .filter((step) => step.run?.includes("dispatch-issue-implementation-candidates.mjs"))
+        .map((step) => ({ file, step })),
+    );
+  });
+
+  assert.equal(dispatches.length, 5);
+  for (const { file, step } of dispatches) {
+    assert.equal(
+      step.env?.MIN_SUCCESS_PERCENT,
+      "${{ vars.CLAWSWEEPER_AUTO_IMPLEMENT_MIN_SUCCESS_PERCENT || '' }}",
+      `${file}: ${step.name}`,
+    );
+  }
+});
+
 test("automatic bug backfill runs independently of queue-fed scheduled sweeps", () => {
   const workflow = YAML.parse(
     readText(".github/workflows/repair-issue-implementation-backfill.yml"),
