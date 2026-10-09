@@ -290,29 +290,3 @@ test("production code launches Codex only through the agent runner", () => {
   });
   assert.deepEqual(offenders, []);
 });
-
-// clawsweeper-action-ledger.test.ts guards
-
-test("a blocked exact close discards staged labels before it writes the report", () => {
-  // Staged labels must not reach GitHub when the close is blocked and only the report changes.
-  const source = readText("src/clawsweeper-apply-decision-workflow.ts");
-  const start = source.indexOf("if (closeBlockedForCommentSync) {");
-  const blocked = source.slice(start, source.indexOf("clawSweeperLabelsChanged &&", start));
-  assert.match(blocked, /discardIssueLabelBatch\(\);[^]*writeReportMarkdown\(path, markdown\)/);
-});
-
-test("labels_synced_at is recorded only after a confirmed label mutation", () => {
-  // An unconfirmed label write must not claim that the labels are in sync.
-  assert.match(
-    readText("src/clawsweeper-apply-decision-workflow.ts"),
-    /if \(confirmed\) rememberPublishedLabelSync\(\);/,
-  );
-});
-
-test("apply-artifacts records an interrupted publication before it rethrows", () => {
-  // A failed publication must leave a terminal ledger receipt for the item in flight.
-  assert.match(
-    readText("src/clawsweeper-command-operations.ts"),
-    /if \(activePublication\) \{\s*recordPublication\(\{[^]*?finishPublication\(error, interruptedMutation\);\s*throw error;/,
-  );
-});

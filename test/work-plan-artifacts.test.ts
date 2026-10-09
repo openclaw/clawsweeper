@@ -6,7 +6,7 @@ import test from "node:test";
 
 import { renderWorkPlanFromReport } from "../dist/clawsweeper.js";
 import { capturedCanonicalRecordBaselineKeys } from "../dist/repair/canonical-record-baseline.js";
-import { tmpPrefix, workPlanCandidateReport } from "./helpers.ts";
+import { readText, tmpPrefix, workPlanCandidateReport } from "./helpers.ts";
 
 test("renderWorkPlanFromReport renders dashboard plan artifacts for fresh queue_fix_pr candidates", () => {
   const plan = renderWorkPlanFromReport(workPlanCandidateReport(), {
@@ -218,4 +218,12 @@ if (args.includes("/comments")) {
     rmSync(root, { recursive: true, force: true });
     rmSync(defaultPlanPath, { force: true });
   }
+});
+
+test("apply-artifacts records an interrupted publication before it rethrows", () => {
+  // A failed publication must leave a terminal ledger receipt for the item in flight.
+  assert.match(
+    readText("src/clawsweeper-command-operations.ts"),
+    /if \(activePublication\) \{\s*recordPublication\(\{[^]*?finishPublication\(error, interruptedMutation\);\s*throw error;/,
+  );
 });

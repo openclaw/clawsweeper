@@ -20,6 +20,7 @@ import {
   prRatingReportSection,
   promotionGhMock,
   realBehaviorProofReportSection,
+  readText,
   reportFrontMatter,
   reportWithSyncedReviewComment,
   runApplyDecisionsForTest,
@@ -4729,4 +4730,20 @@ if (args[0] === "api" && args[1] === "-i" && /\\/issues\\/322\\/timeline(?:\\?|$
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+test("a blocked exact close discards staged labels before it writes the report", () => {
+  // Staged labels must not reach GitHub when the close is blocked and only the report changes.
+  const source = readText("src/clawsweeper-apply-decision-workflow.ts");
+  const start = source.indexOf("if (closeBlockedForCommentSync) {");
+  const blocked = source.slice(start, source.indexOf("clawSweeperLabelsChanged &&", start));
+  assert.match(blocked, /discardIssueLabelBatch\(\);[^]*writeReportMarkdown\(path, markdown\)/);
+});
+
+test("labels_synced_at is recorded only after a confirmed label mutation", () => {
+  // An unconfirmed label write must not claim that the labels are in sync.
+  assert.match(
+    readText("src/clawsweeper-apply-decision-workflow.ts"),
+    /if \(confirmed\) rememberPublishedLabelSync\(\);/,
+  );
 });
