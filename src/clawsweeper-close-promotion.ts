@@ -11,6 +11,7 @@ import type { createPullRequestCoverageProof } from "./clawsweeper-coverage-proo
 import { isOlderThanDays } from "./iso-time.js";
 import { frontMatterValue } from "./report-front-matter.js";
 import {
+  evidenceEntry,
   mergeRiskOptionsFromReport,
   reportPrRating,
   reportRealBehaviorProof,
@@ -34,6 +35,12 @@ export function createPullRequestClosePromotion(
     pullRequestHeadActivity,
     targetRepo,
   } = dependencies;
+
+  const noHumanFollowUpEvidence = evidenceEntry({
+    label: "no human follow-up",
+    detail:
+      "live comments and timeline hydrated by apply contain no non-automation activity after the ClawSweeper review.",
+  });
 
   function recommendedPauseOrCloseOption(markdown: string): MergeRiskOption | null {
     return (
@@ -111,10 +118,16 @@ export function createPullRequestClosePromotion(
       bestSolution:
         "Close this stale PR. The latest review rated it F, the branch still lacks merge-ready proof, and there has been no human follow-up after the durable review.",
       evidence: [
-        `- **stale F-rated PR:** PR was opened ${item.createdAt}, is older than ${staleMinAgeDays} days, and the latest review rated it \`F\`.`,
-        `- **proof blocker:** real behavior proof is \`${proof.status}\` and proof tier is \`${rating.proofTier}\`, so this branch is not merge-ready without contributor follow-up.`,
-        "- **no human follow-up:** live comments and timeline hydrated by apply contain no non-automation activity after the ClawSweeper review.",
-      ].join("\n"),
+        evidenceEntry({
+          label: "stale F-rated PR",
+          detail: `PR was opened ${item.createdAt}, is older than ${staleMinAgeDays} days, and the latest review rated it \`F\`.`,
+        }),
+        evidenceEntry({
+          label: "proof blocker",
+          detail: `real behavior proof is \`${proof.status}\` and proof tier is \`${rating.proofTier}\`, so this branch is not merge-ready without contributor follow-up.`,
+        }),
+        noHumanFollowUpEvidence,
+      ],
       closeComment:
         "Thanks for the contribution. I’m closing this stale PR because the latest ClawSweeper review rated it F, it still lacks the proof or branch shape needed for merge, and there has been no human follow-up after the review. A fresh PR against current `main` with the requested proof is the right next step.",
     };
@@ -132,10 +145,16 @@ export function createPullRequestClosePromotion(
       summary: `Close this stale PR as superseded: ${option.title}.`,
       bestSolution: `Close this stale PR as superseded: ${option.title}. ${option.body}`,
       evidence: [
-        `- **recommended close path:** the latest review's recommended merge-risk option is \`${option.title}\`, categorized as \`pause_or_close\`.`,
-        `- **stale PR:** PR was opened ${item.createdAt}, which is older than the ${staleMinAgeDays}-day stale promotion threshold.`,
-        "- **no human follow-up:** live comments and timeline hydrated by apply contain no non-automation activity after the ClawSweeper review.",
-      ].join("\n"),
+        evidenceEntry({
+          label: "recommended close path",
+          detail: `the latest review's recommended merge-risk option is \`${option.title}\`, categorized as \`pause_or_close\`.`,
+        }),
+        evidenceEntry({
+          label: "stale PR",
+          detail: `PR was opened ${item.createdAt}, which is older than the ${staleMinAgeDays}-day stale promotion threshold.`,
+        }),
+        noHumanFollowUpEvidence,
+      ],
       closeComment: `Thanks for the contribution. I’m closing this stale PR because the latest ClawSweeper review recommended the pause/close path: ${option.title}. ${option.body}`,
     };
   }

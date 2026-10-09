@@ -16,6 +16,7 @@ import {
   mergeRiskOptionsFromReport,
   reportAgentsPolicyStatus,
   reportChangeExample,
+  evidenceEntry,
   reportEvidence,
   reportFeatureShowcase,
   reportLikelyOwners,
@@ -60,6 +61,8 @@ import { reviewMetricsFromReport } from "./clawsweeper-orchestration-foundation.
 import { fixedPullRequestFromReport } from "./clawsweeper-status-context.js";
 import { asRecord, nonBlankStringOrUndefined } from "./value-coerce.js";
 import { parseIsoMs } from "./iso-time.js";
+import { hostEvidenceMarkdown } from "./clawsweeper-report-helpers.js";
+import { updateReviewRecordDecision } from "./review-record.js";
 import {
   frontMatterStringArray,
   frontMatterValue,
@@ -185,6 +188,19 @@ export function createPullRequestPromotionFacts(
 
   function upgradeNoDiffPullRequestReport(markdown: string, item: Item): string {
     const command = `gh api repos/${item.repo}/pulls/${item.number} --jq '{state:.state,changed_files:.changed_files,base:.base.ref,head:.head.sha}'`;
+    const summary =
+      "Close this PR: GitHub reports no changed files against the current base branch.";
+    const bestSolution =
+      "Close this PR: GitHub reports no changed files against the current base branch, so the branch is already empty or superseded by `main`.";
+    const evidence = [
+      evidenceEntry({
+        label: "live no-diff PR",
+        detail:
+          "GitHub reports `changed_files: 0` for this open PR, so there is no remaining branch diff to merge.",
+        command,
+      }),
+    ];
+    const rootCauseCluster = defaultRootCauseCluster();
     let upgraded = markdown;
     upgraded = replaceFrontMatterValue(upgraded, "decision", "close");
     upgraded = replaceFrontMatterValue(upgraded, "close_reason", "duplicate_or_superseded");
@@ -196,7 +212,7 @@ export function createPullRequestPromotionFacts(
     upgraded = replaceFrontMatterValue(
       upgraded,
       "root_cause_cluster",
-      JSON.stringify(defaultRootCauseCluster()),
+      JSON.stringify(rootCauseCluster),
     );
     upgraded = replaceFrontMatterValue(upgraded, "fixed_pr_url", "unknown");
     upgraded = replaceFrontMatterValue(upgraded, "fixed_pr_number", "unknown");
@@ -204,27 +220,29 @@ export function createPullRequestPromotionFacts(
     upgraded = replaceFrontMatterValue(upgraded, "merge_risk_options", "[]");
     upgraded = replaceFrontMatterValue(upgraded, "work_candidate", "none");
     upgraded = replaceFrontMatterValue(upgraded, "work_status", "none");
-    upgraded = replaceSectionValue(
-      upgraded,
-      REVIEW_SECTIONS.summary,
-      "Close this PR: GitHub reports no changed files against the current base branch.",
-    );
-    upgraded = replaceSectionValue(
-      upgraded,
-      REVIEW_SECTIONS.bestSolution,
-      "Close this PR: GitHub reports no changed files against the current base branch, so the branch is already empty or superseded by `main`.",
-    );
+    upgraded = replaceSectionValue(upgraded, REVIEW_SECTIONS.summary, summary);
+    upgraded = replaceSectionValue(upgraded, REVIEW_SECTIONS.bestSolution, bestSolution);
     upgraded = replaceSectionValue(
       upgraded,
       REVIEW_SECTIONS.evidence,
-      `- **live no-diff PR:** GitHub reports \`changed_files: 0\` for this open PR, so there is no remaining branch diff to merge.\n  - command: \`${command}\``,
+      hostEvidenceMarkdown(evidence),
     );
-    upgraded = replaceSectionValue(
-      upgraded,
-      REVIEW_SECTIONS.closeComment,
-      renderCloseCommentFromReport(upgraded, "duplicate_or_superseded"),
-    );
-    return upgraded;
+    const closeComment = renderCloseCommentFromReport(upgraded, "duplicate_or_superseded");
+    upgraded = replaceSectionValue(upgraded, REVIEW_SECTIONS.closeComment, closeComment);
+    return updateReviewRecordDecision(upgraded, () => ({
+      decision: "close",
+      closeReason: "duplicate_or_superseded",
+      confidence: "high",
+      rootCauseCluster,
+      fixedPullRequest: null,
+      workClusterRefs: [],
+      mergeRiskOptions: [],
+      workCandidate: "none",
+      summary,
+      bestSolution,
+      evidence,
+      closeComment,
+    }));
   }
 
   function upgradePullRequestClosePromotionReport(
@@ -256,9 +274,22 @@ export function createPullRequestPromotionFacts(
     );
     upgraded = replaceSectionValue(upgraded, REVIEW_SECTIONS.summary, promotion.summary);
     upgraded = replaceSectionValue(upgraded, REVIEW_SECTIONS.bestSolution, promotion.bestSolution);
-    upgraded = replaceSectionValue(upgraded, REVIEW_SECTIONS.evidence, promotion.evidence);
+    upgraded = replaceSectionValue(
+      upgraded,
+      REVIEW_SECTIONS.evidence,
+      hostEvidenceMarkdown(promotion.evidence),
+    );
     upgraded = replaceSectionValue(upgraded, REVIEW_SECTIONS.closeComment, promotion.closeComment);
-    return upgraded;
+    return updateReviewRecordDecision(upgraded, () => ({
+      decision: "close",
+      closeReason: promotion.closeReason,
+      confidence: "high",
+      workCandidate: "none",
+      summary: promotion.summary,
+      bestSolution: promotion.bestSolution,
+      evidence: promotion.evidence,
+      closeComment: promotion.closeComment,
+    }));
   }
 
   function authorPrBudgetPromotion(
@@ -275,10 +306,19 @@ export function createPullRequestPromotionFacts(
       bestSolution:
         "Close this lowest-signal PR for now. Finish or close other open PRs to free review budget, then reopen this PR once the author is under budget; adding real behavior proof also makes it eligible for reconsideration.",
       evidence: [
-        `- **live author budget:** ${author} has ${state.openPrCount} open PRs in this repository; the configured budget is ${state.budget}.`,
-        `- **lowest-signal classification:** overall PR rating is \`${rating.overallTier}\` and real behavior proof is \`${proof.status}\`.`,
-        `- **inactivity floor:** the PR and its current-head commit, status, and check-run activity are all older than ${AUTHOR_PR_BUDGET_MIN_INACTIVE_DAYS} days.`,
-      ].join("\n"),
+        evidenceEntry({
+          label: "live author budget",
+          detail: `${author} has ${state.openPrCount} open PRs in this repository; the configured budget is ${state.budget}.`,
+        }),
+        evidenceEntry({
+          label: "lowest-signal classification",
+          detail: `overall PR rating is \`${rating.overallTier}\` and real behavior proof is \`${proof.status}\`.`,
+        }),
+        evidenceEntry({
+          label: "inactivity floor",
+          detail: `the PR and its current-head commit, status, and check-run activity are all older than ${AUTHOR_PR_BUDGET_MIN_INACTIVE_DAYS} days.`,
+        }),
+      ],
       closeComment: `Thanks for the contribution. ${summary}`,
     };
   }
@@ -290,8 +330,18 @@ export function createPullRequestPromotionFacts(
     const promotion = authorPrBudgetPromotion(markdown, state);
     let next = replaceSectionValue(markdown, REVIEW_SECTIONS.summary, promotion.summary);
     next = replaceSectionValue(next, REVIEW_SECTIONS.bestSolution, promotion.bestSolution);
-    next = replaceSectionValue(next, REVIEW_SECTIONS.evidence, promotion.evidence);
-    return replaceSectionValue(next, REVIEW_SECTIONS.closeComment, promotion.closeComment);
+    next = replaceSectionValue(
+      next,
+      REVIEW_SECTIONS.evidence,
+      hostEvidenceMarkdown(promotion.evidence),
+    );
+    next = replaceSectionValue(next, REVIEW_SECTIONS.closeComment, promotion.closeComment);
+    return updateReviewRecordDecision(next, () => ({
+      summary: promotion.summary,
+      bestSolution: promotion.bestSolution,
+      evidence: promotion.evidence,
+      closeComment: promotion.closeComment,
+    }));
   }
 
   function closePromotionHasNonAutomationActivityAfterReview(

@@ -7,6 +7,8 @@ import {
   renderReviewCommentFromReport,
   renderReviewStartStatusComment,
 } from "../dist/clawsweeper.js";
+import { frontMatterValue, sectionValue } from "../dist/report-front-matter.js";
+import { readReviewRecord } from "../dist/review-record.js";
 import {
   canonicalPullRequestClusterForTest,
   lowSignalCloseReport,
@@ -19,6 +21,7 @@ import {
   withApplyTestWorkspace,
   withMockCodexProof,
   withMockGh,
+  withReviewRecord,
 } from "./helpers.ts";
 
 function boundDuplicateCloseComment(number: number, canonicalUrl: string): string {
@@ -117,13 +120,19 @@ test("locked duplicate reviews retain newly discovered canonical correction work
     }
     const canonicalUrl = "https://github.com/openclaw/openclaw/pull/400";
     const synced = reportWithSyncedReviewComment(
-      lowSignalCloseReport({
-        number: 336,
-        title: "Locked duplicate review",
-        close_reason: "duplicate_or_superseded",
-        work_cluster_refs: JSON.stringify([`Superseded by ${canonicalUrl}`]),
-        root_cause_cluster: canonicalPullRequestClusterForTest(canonicalUrl),
-      }),
+      withReviewRecord(
+        lowSignalCloseReport({
+          number: 336,
+          title: "Locked duplicate review",
+          close_reason: "duplicate_or_superseded",
+          work_cluster_refs: JSON.stringify([`Superseded by ${canonicalUrl}`]),
+          root_cause_cluster: canonicalPullRequestClusterForTest(canonicalUrl),
+        }),
+        {
+          closeReason: "duplicate_or_superseded",
+          rootCauseCluster: JSON.parse(canonicalPullRequestClusterForTest(canonicalUrl)),
+        },
+      ),
       336,
       "duplicate_or_superseded",
     );
@@ -163,6 +172,23 @@ test("locked duplicate reviews retain newly discovered canonical correction work
     const report = readFileSync(join(itemsDir, "336.md"), "utf8");
     assert.match(report, /^action_taken: retry_stale_canonical_comment_sync$/m);
     assert.match(report, /^stale_canonical_pull_request_number: 400$/m);
+    const record = readReviewRecord(report)?.decision;
+    assert.equal(record?.decision, "keep_open");
+    assert.equal(record?.closeReason, "none");
+    assert.equal(record?.confidence, "low");
+    assert.deepEqual(
+      record?.rootCauseCluster,
+      JSON.parse(frontMatterValue(report, "root_cause_cluster")!),
+    );
+    assert.equal(record?.summary, sectionValue(report, "Summary"));
+    assert.equal(record?.bestSolution, record?.workReason);
+    assert.match(record?.prRating.summary ?? "", /close path is no longer valid/);
+    assert.deepEqual(record?.likelyOwners, []);
+    assert.deepEqual(
+      record?.evidence.map((entry) => entry.label),
+      ["live canonical state"],
+    );
+    assert.equal(record?.closeComment, "");
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -406,19 +432,27 @@ test("apply-decisions keeps existing duplicate PR close proposals open when cove
   withApplyTestWorkspace(tmpPrefix, ({ root, itemsDir, closedDir, plansDir, reportPath }) => {
     const commentWriteLogPath = join(root, "comment-write.log");
     const synced = reportWithSyncedReviewComment(
-      lowSignalCloseReport({
-        number: 348,
-        title: "Provider route fallback",
-        close_reason: "duplicate_or_superseded",
-        work_cluster_refs: JSON.stringify([
-          "Superseded by https://github.com/openclaw/openclaw/pull/400",
-        ]),
-        root_cause_cluster: canonicalPullRequestClusterForTest(
-          "https://github.com/openclaw/openclaw/pull/400",
+      withReviewRecord(
+        lowSignalCloseReport({
+          number: 348,
+          title: "Provider route fallback",
+          close_reason: "duplicate_or_superseded",
+          work_cluster_refs: JSON.stringify([
+            "Superseded by https://github.com/openclaw/openclaw/pull/400",
+          ]),
+          root_cause_cluster: canonicalPullRequestClusterForTest(
+            "https://github.com/openclaw/openclaw/pull/400",
+          ),
+        }).replace(
+          "Closing this PR because the branch is not a useful landing base.",
+          "Closing this PR as superseded by https://github.com/openclaw/openclaw/pull/400.",
         ),
-      }).replace(
-        "Closing this PR because the branch is not a useful landing base.",
-        "Closing this PR as superseded by https://github.com/openclaw/openclaw/pull/400.",
+        {
+          closeReason: "duplicate_or_superseded",
+          rootCauseCluster: JSON.parse(
+            canonicalPullRequestClusterForTest("https://github.com/openclaw/openclaw/pull/400"),
+          ),
+        },
       ),
       348,
       "duplicate_or_superseded",
@@ -499,6 +533,14 @@ test("apply-decisions keeps existing duplicate PR close proposals open when cove
     assert.match(blockedReport, /^close_reason: none$/m);
     assert.match(blockedReport, /## PR Close Coverage Proof\n\nDecision: keep_open/);
     assert.match(blockedReport, /unique fallback route behavior/);
+    const record = readReviewRecord(blockedReport)?.decision;
+    assert.equal(record?.decision, "keep_open");
+    assert.equal(record?.closeReason, "none");
+    assert.equal(record?.summary, sectionValue(blockedReport, "Summary"));
+    assert.equal(record?.bestSolution, sectionValue(blockedReport, "Best Possible Solution"));
+    assert.equal(record?.evidence[0]?.label, "PR close coverage proof");
+    assert.equal(record?.evidence.length, 4);
+    assert.equal(record?.closeComment, "");
     assert.match(readFileSync(commentWriteLogPath, "utf8"), /issues\/comments\/9348/);
     assert.doesNotMatch(
       renderReviewCommentFromReport(blockedReport, "none"),

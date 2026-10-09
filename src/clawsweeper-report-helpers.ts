@@ -1,6 +1,7 @@
 import { SECURITY_CONCERN_SEVERITIES } from "./clawsweeper-policy.js";
 import type {
   AgentsPolicyStatus,
+  Evidence,
   ReviewFinding,
   SecurityConcernSeverity,
 } from "./clawsweeper-types.js";
@@ -139,6 +140,18 @@ export function sectionList(section: string, label: string): string[] {
     if (item) values.push(item);
   }
   return values;
+}
+
+/** Renders evidence that apply adds to a report: label, detail and an optional command. */
+export function hostEvidenceMarkdown(entries: readonly Evidence[]): string {
+  return entries
+    .map((entry) =>
+      [
+        `- **${entry.label}:** ${entry.detail}`,
+        ...(entry.command ? [`  - command: \`${entry.command}\``] : []),
+      ].join("\n"),
+    )
+    .join("\n");
 }
 
 export function agentsPolicyStatusLine(status: AgentsPolicyStatus | undefined): string {

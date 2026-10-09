@@ -36,6 +36,7 @@ import {
 } from "./pr-hydration-snapshot.js";
 import { parseNextStep } from "./clawsweeper-next-step.js";
 import { replaceFrontMatterValue } from "./report-front-matter.js";
+import { reviewRecordFrontMatterLine } from "./review-record.js";
 import { normalizeEvidence } from "./clawsweeper-links.js";
 import {
   confidenceText,
@@ -594,6 +595,7 @@ export function createReportDocumentRendering(
     const pullFilesTruncated = Boolean(options.context.counts?.pullFilesTruncated);
     const prSurfaceFiles = prSurfaceFilesFromContext(options.context);
     const reviewedPullStateDigest = reviewStructuralPullStateFromContext(options.context);
+    const reviewRecordLine = reviewRecordFrontMatterLine(options.decision, options.item);
     const markdown = `---
 number: ${options.item.number}
 repository: ${options.item.repo}
@@ -751,7 +753,7 @@ provenance_overrides_without_reason: ${
       options.decision.provenance.filter((entry) => entry.verdict === "overrides_without_reason")
         .length
     }
----
+${reviewRecordLine === null ? "" : `${reviewRecordLine}\n`}---
 
 # ${markdownLink(`#${options.item.number}: ${options.item.title}`, options.item.url)}
 

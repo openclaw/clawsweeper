@@ -1370,7 +1370,7 @@ export interface PullRequestClosePromotion {
   closeReason: CloseReason;
   summary: string;
   bestSolution: string;
-  evidence: string;
+  evidence: Evidence[];
   closeComment: string;
 }
 

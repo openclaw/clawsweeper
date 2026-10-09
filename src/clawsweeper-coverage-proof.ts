@@ -39,14 +39,17 @@ import {
   sectionValue,
 } from "./report-front-matter.js";
 import {
+  evidenceEntry,
   mergeRiskOptionsFromReport,
   reportPrRating,
   reportRealBehaviorProof,
   reportRootCauseCluster,
 } from "./clawsweeper-report-parser.js";
 import { reviewSectionValue } from "./clawsweeper-record-metadata.js";
-import { sectionLineValue } from "./clawsweeper-report-helpers.js";
+import { hostEvidenceMarkdown, sectionLineValue } from "./clawsweeper-report-helpers.js";
 import { sentence } from "./clawsweeper-review-presentation.js";
+import { normalizePrRating } from "./clawsweeper-rating.js";
+import { updateReviewRecordDecision } from "./review-record.js";
 
 export function createPullRequestCoverageProof(
   dependencies: CreateReportOrchestrationDependencies &
@@ -480,31 +483,38 @@ export function createPullRequestCoverageProof(
     block: PrCloseCoverageProofGateBlock,
   ): string {
     const previousEvidence = reviewSectionValue(markdown, "evidence");
+    const coverageEvidence = evidenceEntry({
+      label: "PR close coverage proof",
+      detail: block.reason,
+    });
+    const summary = `Keep this PR open. ${sentence(block.reason)}`;
+    const bestSolution =
+      "Keep this PR open until a linked canonical PR proves it covers this PR's unique work, or a maintainer confirms closure.";
     let next = replaceFrontMatterValue(markdown, "decision", "keep_open");
     next = replaceFrontMatterValue(next, "close_reason", "none");
-    next = replaceSectionValue(
-      next,
-      REVIEW_SECTIONS.summary,
-      `Keep this PR open. ${sentence(block.reason)}`,
-    );
-    next = replaceSectionValue(
-      next,
-      REVIEW_SECTIONS.bestSolution,
-      "Keep this PR open until a linked canonical PR proves it covers this PR's unique work, or a maintainer confirms closure.",
-    );
+    next = replaceSectionValue(next, REVIEW_SECTIONS.summary, summary);
+    next = replaceSectionValue(next, REVIEW_SECTIONS.bestSolution, bestSolution);
     next = replaceSectionValue(
       next,
       REVIEW_SECTIONS.evidence,
-      [`- **PR close coverage proof:** ${block.reason}`, previousEvidence.trim()]
+      [hostEvidenceMarkdown([coverageEvidence]), previousEvidence.trim()]
         .filter(Boolean)
         .join("\n"),
     );
     next = replaceSectionValue(next, REVIEW_SECTIONS.closeComment, "_No close comment posted._");
-    return replaceSectionValue(
+    next = replaceSectionValue(
       next,
       PR_CLOSE_COVERAGE_PROOF_SECTION,
       ["Decision: keep_open", `Reason: ${block.reason}`].join("\n"),
     );
+    return updateReviewRecordDecision(next, (decision) => ({
+      decision: "keep_open",
+      closeReason: "none",
+      summary,
+      bestSolution,
+      evidence: [coverageEvidence, ...decision.evidence],
+      closeComment: "",
+    }));
   }
 
   function applyClosedUnmergedCanonicalBlockedReport(
@@ -515,12 +525,20 @@ export function createPullRequestCoverageProof(
     const rootCauseCluster = defaultRootCauseCluster();
     const nextStep =
       "Run a fresh review against current main and the current related PR state before choosing a landing or close path.";
-    const rating: PrRating = {
-      ...reportPrRating(markdown),
+    const summary = `Keep this PR open. ${sentence(block.reason)}`;
+    const solutionAssessment =
+      "Needs a fresh assessment because the prior canonical PR is closed without merge.";
+    const canonicalEvidence = evidenceEntry({
+      label: "live canonical state",
+      detail: block.reason,
+    });
+    const risk = "The current branch and related work need a fresh review before merge or closure.";
+    const ratingUpdate = {
       summary:
         "The prior duplicate or superseded close path is no longer valid; retain the existing readiness tiers until a fresh review.",
       nextSteps: [nextStep],
     };
+    const rating: PrRating = { ...reportPrRating(markdown), ...ratingUpdate };
     let next = replaceFrontMatterValue(markdown, "decision", "keep_open");
     next = replaceFrontMatterValue(next, "close_reason", "none");
     next = replaceFrontMatterValue(next, "confidence", "low");
@@ -554,17 +572,9 @@ export function createPullRequestCoverageProof(
         "Action taken: retry_stale_canonical_comment_sync",
       ].join("\n"),
     );
-    next = replaceSectionValue(
-      next,
-      REVIEW_SECTIONS.summary,
-      `Keep this PR open. ${sentence(block.reason)}`,
-    );
+    next = replaceSectionValue(next, REVIEW_SECTIONS.summary, summary);
     next = replaceSectionValue(next, REVIEW_SECTIONS.bestSolution, nextStep);
-    next = replaceSectionValue(
-      next,
-      REVIEW_SECTIONS.solutionAssessment,
-      "Needs a fresh assessment because the prior canonical PR is closed without merge.",
-    );
+    next = replaceSectionValue(next, REVIEW_SECTIONS.solutionAssessment, solutionAssessment);
     next = replaceSectionValue(
       next,
       REVIEW_SECTIONS.rootCauseCluster,
@@ -593,20 +603,40 @@ export function createPullRequestCoverageProof(
     next = replaceSectionValue(
       next,
       REVIEW_SECTIONS.evidence,
-      `- **live canonical state:** ${block.reason}`,
+      hostEvidenceMarkdown([canonicalEvidence]),
     );
     next = replaceSectionValue(next, REVIEW_SECTIONS.likelyOwners, "- none");
-    next = replaceSectionValue(
-      next,
-      REVIEW_SECTIONS.risks,
-      "- The current branch and related work need a fresh review before merge or closure.",
-    );
+    next = replaceSectionValue(next, REVIEW_SECTIONS.risks, `- ${risk}`);
     next = replaceSectionValue(next, REVIEW_SECTIONS.closeComment, "_No close comment posted._");
-    return replaceSectionValue(
+    next = replaceSectionValue(
       next,
       PR_CLOSE_COVERAGE_PROOF_SECTION,
       ["Decision: keep_open", `Reason: ${block.reason}`].join("\n"),
     );
+    return updateReviewRecordDecision(next, (decision) => ({
+      decision: "keep_open",
+      closeReason: "none",
+      confidence: "low",
+      workCandidate: "none",
+      workConfidence: "low",
+      workPriority: "low",
+      workReason: nextStep,
+      workClusterRefs: [],
+      workValidation: [],
+      workLikelyFiles: [],
+      mergeRiskOptions: [],
+      labelJustifications: [],
+      reviewMetrics: [],
+      rootCauseCluster,
+      summary,
+      bestSolution: nextStep,
+      solutionAssessment,
+      prRating: normalizePrRating({ ...decision.prRating, ...ratingUpdate }),
+      evidence: [canonicalEvidence],
+      likelyOwners: [],
+      risks: [risk],
+      closeComment: "",
+    }));
   }
 
   function staleCanonicalCommentSyncPendingReason(markdown: string): string | null {

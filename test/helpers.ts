@@ -6,7 +6,13 @@ import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { writeFakeScanner } from "./agent-input-scan-helpers.ts";
 
-import { renderReviewCommentFromReport, reviewPromptForTest } from "../dist/clawsweeper.js";
+import {
+  parseDecision,
+  renderReviewCommentFromReport,
+  reviewPromptForTest,
+} from "../dist/clawsweeper.js";
+import { frontMatterValue } from "../dist/report-front-matter.js";
+import { reviewRecordFrontMatterLine } from "../dist/review-record.js";
 import { createReviewedPrActivityCursor } from "../dist/review-activity-cursor.js";
 import { createDecisionParser } from "../dist/clawsweeper-decision-parser.js";
 import type { LiveProofPlan } from "../dist/clawsweeper-types.js";
@@ -1150,6 +1156,21 @@ export function reportWithSyncedReviewComment(
     ),
     comment,
   };
+}
+
+/** Adds the typed record that the review writes as the last front-matter line. */
+export function withReviewRecord(report: string, decision: Record<string, unknown> = {}): string {
+  const subject = {
+    repo: frontMatterValue(report, "repository"),
+    number: Number(frontMatterValue(report, "number")),
+    kind: frontMatterValue(report, "type"),
+  };
+  const line = reviewRecordFrontMatterLine(
+    parseDecision(closeDecision(decision), subject),
+    subject,
+  );
+  assert.ok(line, "fixture decision must be a valid review record");
+  return report.replace(/\n---\n/, () => `\n${line}\n---\n`);
 }
 
 export function withMockCodexProof(

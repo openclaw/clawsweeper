@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
+import { sectionValue } from "../dist/report-front-matter.js";
+import { readReviewRecord } from "../dist/review-record.js";
 
 import {
   canonicalPullRequestClusterForTest,
@@ -15,6 +17,7 @@ import {
   withApplyTestWorkspace,
   withMockCodexProof,
   withMockGh,
+  withReviewRecord,
   workPlanCandidateReport,
 } from "./helpers.ts";
 
@@ -499,7 +502,11 @@ test("apply-decisions promotes old F-rated stale PRs with low-signal close seman
       "## Summary\n\nThe dashboard has queue_fix_pr candidates but no generated coding plan.",
       "## Summary\n\nKeep open: this branch needs contributor follow-up before any close decision.",
     );
-    const synced = reportWithSyncedReviewComment(staleReport, 330, "none");
+    const synced = reportWithSyncedReviewComment(
+      withReviewRecord(staleReport, { decision: "keep_open", closeReason: "none" }),
+      330,
+      "none",
+    );
     writeFileSync(join(itemsDir, "330.md"), synced.report, "utf8");
 
     withMockGh(
@@ -563,6 +570,22 @@ test("apply-decisions promotes old F-rated stale PRs with low-signal close seman
       /## Summary\n\nClose this stale PR: the latest review rated it F, it still lacks merge-ready proof, and there has been no human follow-up after the durable review\./,
     );
     assert.doesNotMatch(promoted, /## Summary\n\nKeep open:/);
+    const record = readReviewRecord(promoted)?.decision;
+    assert.equal(record?.decision, "close");
+    assert.equal(record?.closeReason, "low_signal_unmergeable_pr");
+    assert.equal(record?.workCandidate, "none");
+    assert.equal(record?.summary, sectionValue(promoted, "Summary"));
+    assert.equal(record?.bestSolution, sectionValue(promoted, "Best Possible Solution"));
+    // Close execution later replaces the Close Comment section with the posted review
+    // comment. The record keeps the close comment of the promotion.
+    assert.match(
+      record?.closeComment ?? "",
+      /^Thanks for the contribution\. I’m closing this stale PR/,
+    );
+    assert.deepEqual(
+      record?.evidence.map((entry) => entry.label),
+      ["stale F-rated PR", "proof blocker", "no human follow-up"],
+    );
     const closeAppliedBody = readFileSync(closeAppliedBodyLogPath, "utf8");
     assert.match(closeAppliedBody, /Close reason: low-signal unmergeable PR\./);
     assert.match(closeAppliedBody, /recorded closeout evidence/);
