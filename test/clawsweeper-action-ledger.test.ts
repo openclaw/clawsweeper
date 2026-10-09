@@ -422,7 +422,7 @@ function ledgerFixture(t: TestContext) {
     process.env = previousEnv;
     rmSync(root, { recursive: true, force: true });
   });
-  const repoRelativePath = (filePath: string) => relative(root, filePath);
+  const repoRelativePath = (filePath: string) => relative(root, filePath).replaceAll("\\", "/");
   const reviewLedger = createReviewActionLedger({
     root,
     targetRepo: () => "openclaw/openclaw",
