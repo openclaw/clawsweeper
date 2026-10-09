@@ -10,15 +10,10 @@ import type {
   ReviewRuntime,
 } from "./clawsweeper-types.js";
 import type { CreateReportRenderingDependencies } from "./clawsweeper-report-rendering-dependencies.js";
-import type { createReportContextRendering } from "./clawsweeper-report-context.js";
-import type { createReportCommentHelpers } from "./clawsweeper-report-comment-helpers.js";
+import { normalizeComment } from "./clawsweeper-report-comment-helpers.js";
 import { asRecord } from "./value-coerce.js";
 
-export function createReportActionRendering(
-  dependencies: CreateReportRenderingDependencies &
-    ReturnType<typeof createReportContextRendering> &
-    ReturnType<typeof createReportCommentHelpers>,
-) {
+export function createReportActionRendering(dependencies: CreateReportRenderingDependencies) {
   const {
     ROOT,
     collectItemContext,
@@ -28,7 +23,7 @@ export function createReportActionRendering(
     isImplementationCloseReason,
     isMaintainerAuthored,
     isVerifiedFixedCloseReason,
-    normalizeComment,
+    targetProfile,
     targetRepo,
     validateCloseDecision,
   } = dependencies;
@@ -97,6 +92,7 @@ export function createReportActionRendering(
       options.git,
       options.runtime,
       options.item,
+      targetProfile(),
     );
     if (!hasUsableCloseComment(closeComment)) {
       return { actionTaken: "skipped_invalid_decision", closeComment: "" };

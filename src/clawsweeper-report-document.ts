@@ -29,7 +29,6 @@ import {
 } from "./review-structural-cache.js";
 import type { CreateReportRenderingDependencies } from "./clawsweeper-report-rendering-dependencies.js";
 import type { createReportContextRendering } from "./clawsweeper-report-context.js";
-import type { createReportCommentHelpers } from "./clawsweeper-report-comment-helpers.js";
 import {
   fitPrHydrationSnapshotToPublicationLimit,
   serializePrHydrationSnapshot,
@@ -77,9 +76,7 @@ export function reviewStatusForDecision(
 }
 
 export function createReportDocumentRendering(
-  dependencies: CreateReportRenderingDependencies &
-    ReturnType<typeof createReportContextRendering> &
-    ReturnType<typeof createReportCommentHelpers>,
+  dependencies: CreateReportRenderingDependencies & ReturnType<typeof createReportContextRendering>,
 ) {
   const {
     compactPullFilePaths,

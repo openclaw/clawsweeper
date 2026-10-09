@@ -2,7 +2,6 @@ import type { createDecisionParser } from "./clawsweeper-decision-parser.js";
 import type { createGitHubContext } from "./clawsweeper-github-context.js";
 import type { LabelMutations } from "./clawsweeper-label-mutations.js";
 import type { Item, ReviewStartStatusCommentResult } from "./clawsweeper-types.js";
-import { type ReviewHistoryLedger } from "./review-history.js";
 
 export interface ReviewCommentWorkflowDependencies {
   root: string;
@@ -30,7 +29,6 @@ export interface ReviewCommentWorkflowDependencies {
   ensureDir: (path: string) => void;
   removeIssueLabel: LabelMutations["removeIssueLabel"];
   isClawSweeperOwnedLabel: (label: string) => boolean;
-  reviewHistoryForStaleComment: (body: string | undefined) => ReviewHistoryLedger;
   currentReviewRevision: (item: Item) => string;
   pullRequestHeadSha: (number: number) => string;
   markdownLink: (label: string, url: string) => string;

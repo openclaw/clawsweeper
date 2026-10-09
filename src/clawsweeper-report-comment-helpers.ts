@@ -71,7 +71,6 @@ import {
   reviewHistoryCycleFromCommentBody,
   type ReviewHistoryLedger,
 } from "./review-history.js";
-import type { CreateReportRenderingDependencies } from "./clawsweeper-report-rendering-dependencies.js";
 import {
   closeReviewLineFromDecision,
   closeReviewLineFromReport,
@@ -79,15 +78,9 @@ import {
 import { parseIsoMs } from "./iso-time.js";
 import { frontMatterStringArray, frontMatterValue } from "./report-front-matter.js";
 import { agentsPolicyStatusLine, collapsedDetailsBlock } from "./clawsweeper-report-helpers.js";
-import { markdownLink } from "./clawsweeper-links.js";
-import {
-  closeClawHubHandoffBlock,
-  closeIntro,
-  closeOutro,
-  duplicateCanonicalLinks,
-  duplicateCanonicalPathLine,
-  workCandidateReasonText,
-} from "./clawsweeper-orchestration-foundation.js";
+import { markdownLink, repoUrlFor } from "./clawsweeper-links.js";
+import { ideaRevivalReactionThreshold } from "./idea-archive-revival.js";
+import type { RepositoryProfile } from "./repository-profiles.js";
 import {
   fixedPullRequestFromReport,
   formatReviewFreshnessTimestamp,
@@ -402,10 +395,214 @@ export function pullRequestReviewReadinessFromReport(markdown: string): PullRequ
   }
 }
 
-export function createReportCommentHelpers(dependencies: CreateReportRenderingDependencies) {
-  const { targetProfile } = dependencies;
+function closeIntro(reason: CloseReason, profile: RepositoryProfile): string {
+  switch (reason) {
+    case "oversized_pull_request":
+      return "Pull request exceeds the review size limit.";
+    case "implemented_on_main":
+      return "Thanks for the context here. I did a careful shell check against current `main`, and this is already implemented.";
+    case "mostly_implemented_on_main":
+      return "Thanks for the context here. I did a careful shell check against current `main`, and the useful part of this older PR is already implemented there.";
+    case "cannot_reproduce":
+      return "Thanks for the report. I gave this a fresh shell check against current `main`, and I could not reproduce it anymore.";
+    case "clawhub":
+      return `Thanks for the idea. I checked the current extension path, and this is a better fit for ${markdownLink("ClawHub.com", profile.communityUrl ?? "https://clawhub.ai/")} than OpenClaw core.`;
+    case "duplicate_or_superseded":
+      return "Thanks for the context here. I swept through the related work, and this is now duplicate or superseded.";
+    case "low_signal_unmergeable_pr":
+      return "Thanks for the contribution. I reviewed the branch, and this PR is not a good landing base for OpenClaw.";
+    case "stalled_unproven_pr":
+      return "Thanks for the contribution. This PR still needs the requested real-behavior proof, and the branch has been idle since that ask.";
+    case "abandoned_pr":
+      return "Thanks for the contribution. This PR has been inactive for a while and still is not in a landable state.";
+    case "unconfirmed_product_direction":
+      return "Thanks for the contribution. ClawSweeper proposes closing this for now: the implementation may be reasonable, but passing review and proof does not establish that OpenClaw should add this product surface.";
+    case "unsponsored_feature_request":
+      return "Thanks for sharing this idea. ClawSweeper is parking it in the idea archive because no maintainer has confirmed this product direction yet.";
+    case "author_pr_budget_exceeded":
+      return "Thanks for the contribution. ClawSweeper is trimming this lowest-signal PR because the author is over the repository's open-PR budget.";
+    case "stale_version_bug":
+      return "Thanks for the report. This was filed against an older version, and the relevant code has changed substantially since then.";
+    case "obsolete_fix_pr":
+      return "Thanks for the contribution. The target code has since been rewritten or removed on `main`, so this fix no longer applies in its original form.";
+    case "not_actionable_in_repo":
+      return "Thanks for writing this up. I checked the repo boundary, and this lives outside the OpenClaw source shell.";
+    case "incoherent":
+      return "Thanks for the note. I could not crack enough detail here to turn it into a concrete OpenClaw code or docs action.";
+    case "stale_insufficient_info":
+      return "Thanks for the report. I checked current `main`, but this shell is missing enough reproduction detail to verify a current bug.";
+    case "none":
+      return "Thanks for the context here. I checked this with Codex and am closing it based on the evidence below.";
+  }
+}
 
-  function renderCloseComment(options: {
+function closeOutro(
+  reason: CloseReason,
+  canonicalLinks: readonly string[],
+  profile: RepositoryProfile,
+): string {
+  switch (reason) {
+    case "implemented_on_main":
+      return "So I’m closing this as already implemented rather than keeping a duplicate issue open.";
+    case "mostly_implemented_on_main":
+      return "So I’m closing this older PR as already covered on `main` rather than keeping a mostly-duplicated branch open.";
+    case "clawhub":
+      return `So I’m closing this as a scope-fit item for the plugin/community path. Please upload or publish it through ${markdownLink("ClawHub.com", profile.communityUrl ?? "https://clawhub.ai/")} so it can live as an installable ClawHub package instead of a bundled OpenClaw core change.`;
+    case "duplicate_or_superseded":
+      return canonicalLinks.length
+        ? `So I’m closing this here and keeping the remaining discussion on ${formatCanonicalLinks(canonicalLinks)}.`
+        : "So I’m closing this here because the remaining work is already tracked in the canonical issue.";
+    case "low_signal_unmergeable_pr":
+      return "So I’m closing this PR rather than keeping an unmergeable branch open. A new narrow PR that carries only the useful part is welcome.";
+    case "stalled_unproven_pr":
+      return "So I’m closing this for now to keep the review queue honest. Please reopen or open a fresh PR with real-behavior proof (a live run, logs, or a reproducible validation transcript) and it will be reviewed again.";
+    case "abandoned_pr":
+      return "So I’m closing this as inactive for now. If you pick the work back up, push a rebased branch with green checks and reopen (or open a fresh PR) and it will be reviewed again.";
+    case "unconfirmed_product_direction":
+      return "This is a proposal only until the separate default-off apply policy is enabled and all live maintainer-signal checks pass. A maintainer can sponsor the direction, request a narrower version, or apply `clawsweeper:human-review` to keep it open.";
+    case "unsponsored_feature_request":
+      return `This idea is parked, not rejected. A maintainer can comment \`@clawsweeper revive\` on this closed issue to bring it back automatically. It will also reopen when it reaches at least ${ideaRevivalReactionThreshold()} positive reactions (thumbs-up, heart, or hooray). When the idea fits an extension, ${markdownLink("ClawHub.com", profile.communityUrl ?? "https://clawhub.ai/")} remains the self-serve path.`;
+    case "author_pr_budget_exceeded":
+      return "Closing or finishing other open PRs frees review budget. This PR can be reopened once the author is under budget, or sooner when real behavior proof is added.";
+    case "stale_version_bug":
+      return "Please retest on the current release. If the problem still reproduces, add a fresh reproduction with the current version and this issue will be reopened.";
+    case "obsolete_fix_pr":
+      return "If the original problem still reproduces on current `main`, a fresh PR against the current code is very welcome.";
+    case "not_actionable_in_repo":
+      return "So I’m closing this as outside the OpenClaw source repository rather than keeping it open as core work.";
+    default:
+      return "";
+  }
+}
+
+function closeClawHubHandoffBlock(reason: CloseReason): string {
+  if (reason !== "clawhub") return "";
+  return [
+    "If you want to carry this forward, package it as a self-serve ClawHub item rather than a core patch:",
+    "",
+    "- Scope: choose the smallest skill, plugin, provider, channel, bundle, or MCP integration that matches the requested capability.",
+    "- Checklist: include package metadata/manifest, entrypoint, required permissions, secrets/config notes, install/update docs, example usage, and a smoke test or proof command.",
+    "- Boundary: ClawSweeper will not open a ClawHub issue or PR, create a tracking issue, or publish the package automatically; the contributor should create that ClawHub work separately.",
+  ].join("\n");
+}
+
+function issueOrPullReferenceNumbers(value: string): string[] {
+  return [
+    ...value.matchAll(
+      /https:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/(?:issues|pull)\/(\d+)|#(\d+)\b/g,
+    ),
+  ].map((match) => match[1] ?? match[2] ?? "");
+}
+
+function issueOrPullReferenceUrls(value: string): string[] {
+  return [
+    ...value.matchAll(
+      /https:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/(?:issues|pull)\/\d+/g,
+    ),
+  ].map((match) => match[0]);
+}
+
+function itemPublicUrl(
+  item: { repo?: string; kind?: ItemKind; number?: number } | undefined,
+  profile: RepositoryProfile,
+): string {
+  if (!item?.number || !Number.isInteger(item.number) || item.number <= 0) return "";
+  return repoUrlFor(
+    item.repo ?? profile.targetRepo,
+    `/${item.kind === "pull_request" ? "pull" : "issues"}/${item.number}`,
+  );
+}
+
+function addsIssueOrPullReference(candidate: string, summaryLine: string): boolean {
+  const summaryRefs = new Set(issueOrPullReferenceNumbers(summaryLine));
+  return issueOrPullReferenceNumbers(candidate).some((ref) => ref && !summaryRefs.has(ref));
+}
+
+function duplicateCanonicalTexts(options: {
+  reason: CloseReason;
+  bestSolutionLine: string;
+  evidence: Evidence[];
+}): string[] {
+  if (options.reason !== "duplicate_or_superseded") return [];
+  return [
+    options.bestSolutionLine,
+    ...options.evidence
+      .filter((entry) => /\b(?:canonical|duplicate|superseded|implementation)\b/i.test(entry.label))
+      .map((entry) => sentence(entry.detail)),
+  ];
+}
+
+function duplicateCanonicalLinks(
+  options: {
+    reason: CloseReason;
+    bestSolutionLine: string;
+    evidence: Evidence[];
+    currentItem?: { repo?: string; kind?: ItemKind; number?: number } | undefined;
+  },
+  profile: RepositoryProfile,
+): string[] {
+  const seen = new Set<string>();
+  const links: string[] = [];
+  const currentItemUrl = itemPublicUrl(options.currentItem, profile);
+  for (const text of duplicateCanonicalTexts(options)) {
+    for (const link of issueOrPullReferenceUrls(text)) {
+      if (link === currentItemUrl) continue;
+      if (seen.has(link)) continue;
+      seen.add(link);
+      links.push(link);
+    }
+  }
+  return links;
+}
+
+function duplicateCanonicalPathLine(options: {
+  reason: CloseReason;
+  summaryLine: string;
+  bestSolutionLine: string;
+  evidence: Evidence[];
+}): string {
+  const candidates = duplicateCanonicalTexts(options);
+  const canonical =
+    candidates.find(
+      (candidate) => candidate && addsIssueOrPullReference(candidate, options.summaryLine),
+    ) ??
+    candidates.find(
+      (candidate) => candidate && publicReviewTextDiffers(candidate, options.summaryLine),
+    );
+  return canonical ? `Canonical path: ${canonical}` : "";
+}
+
+function formatCanonicalLinks(links: readonly string[]): string {
+  if (links.length <= 1) return links[0] ?? "the canonical issue";
+  if (links.length === 2) return `${links[0]} and ${links[1]}`;
+  return `${links.slice(0, -1).join(", ")}, and ${links[links.length - 1]}`;
+}
+
+function workCandidateReasonText(section: string): string {
+  const lines = section.split("\n");
+  const reasonStart = lines.findIndex((line) => line.startsWith("Reason:"));
+  if (reasonStart === -1) return "";
+
+  const reasonLines = [lines[reasonStart]!.slice("Reason:".length).trimStart()];
+  for (let index = reasonStart + 1; index < lines.length; index += 1) {
+    const line = lines[index]!;
+    const nextLine = lines[index + 1] ?? "";
+    if (
+      line.trim() === "" &&
+      (nextLine.startsWith("Cluster refs:") ||
+        nextLine.startsWith("Likely files:") ||
+        nextLine.startsWith("Validation:"))
+    ) {
+      break;
+    }
+    reasonLines.push(line);
+  }
+
+  return reasonLines.join("\n").trim();
+}
+
+function renderCloseComment(
+  options: {
     reason: CloseReason;
     summary: string;
     bestSolution?: string;
@@ -421,93 +618,95 @@ export function createReportCommentHelpers(dependencies: CreateReportRenderingDe
     rootCauseCluster?: RootCauseClusterAssessment;
     reviewLine: string;
     currentItem?: { repo?: string; kind?: ItemKind; number?: number } | undefined;
-  }): string {
-    const profile = targetProfile();
-    const evidence = options.evidence.slice(0, 6).map((entry) => closeEvidenceLine(entry, profile));
-    const likelyOwners = likelyOwnerLines(options.likelyOwners ?? [], profile);
-    const summaryLine = sentence(options.summary);
-    const lines = [closeIntro(options.reason, profile), "", summaryLine];
-    if (options.fixedPullRequest?.confidence === "high") {
-      lines.push(
-        "",
-        `I found the merged PR that appears to have closed this: ${markdownLink(
-          `#${options.fixedPullRequest.number}: ${options.fixedPullRequest.title}`,
-          options.fixedPullRequest.url,
-        )}.`,
-      );
-    }
-    const regressionProvenanceLine = regressionProvenancePublicLine(
-      options.regressionProvenance,
-      options.regressionAssessment,
+  },
+  profile: RepositoryProfile,
+): string {
+  const evidence = options.evidence.slice(0, 6).map((entry) => closeEvidenceLine(entry, profile));
+  const likelyOwners = likelyOwnerLines(options.likelyOwners ?? [], profile);
+  const summaryLine = sentence(options.summary);
+  const lines = [closeIntro(options.reason, profile), "", summaryLine];
+  if (options.fixedPullRequest?.confidence === "high") {
+    lines.push(
+      "",
+      `I found the merged PR that appears to have closed this: ${markdownLink(
+        `#${options.fixedPullRequest.number}: ${options.fixedPullRequest.title}`,
+        options.fixedPullRequest.url,
+      )}.`,
     );
-    const regressionAssessmentLine = regressionAssessmentPublicLine(options.regressionAssessment, {
-      predecessorAttributed: options.regressionProvenance?.evidenceType === "rewrite_equivalent",
-    });
-    if (regressionProvenanceLine) lines.push("", regressionProvenanceLine);
-    if (regressionAssessmentLine && !isVerifiedRegressionProvenance(options.regressionProvenance)) {
-      lines.push("", regressionAssessmentLine);
-    }
-    const rootCauseCluster = publicRootCauseClusterBlock(options.rootCauseCluster);
-    if (rootCauseCluster) lines.push("", "**Root-cause cluster**", rootCauseCluster);
-    const bestSolutionLine = sentence(options.bestSolution ?? "");
-    const canonicalLinks = duplicateCanonicalLinks(
-      {
-        reason: options.reason,
-        bestSolutionLine,
-        evidence: options.evidence,
-        currentItem: options.currentItem,
-      },
-      profile,
-    );
-    const canonicalPathLine = duplicateCanonicalPathLine({
+  }
+  const regressionProvenanceLine = regressionProvenancePublicLine(
+    options.regressionProvenance,
+    options.regressionAssessment,
+  );
+  const regressionAssessmentLine = regressionAssessmentPublicLine(options.regressionAssessment, {
+    predecessorAttributed: options.regressionProvenance?.evidenceType === "rewrite_equivalent",
+  });
+  if (regressionProvenanceLine) lines.push("", regressionProvenanceLine);
+  if (regressionAssessmentLine && !isVerifiedRegressionProvenance(options.regressionProvenance)) {
+    lines.push("", regressionAssessmentLine);
+  }
+  const rootCauseCluster = publicRootCauseClusterBlock(options.rootCauseCluster);
+  if (rootCauseCluster) lines.push("", "**Root-cause cluster**", rootCauseCluster);
+  const bestSolutionLine = sentence(options.bestSolution ?? "");
+  const canonicalLinks = duplicateCanonicalLinks(
+    {
       reason: options.reason,
-      summaryLine,
       bestSolutionLine,
       evidence: options.evidence,
-    });
-    if (canonicalPathLine) lines.push("", canonicalPathLine);
-    const details: string[] = [];
-    if (bestSolutionLine && publicReviewTextDiffers(bestSolutionLine, summaryLine)) {
-      details.push("Best possible solution:", "", bestSolutionLine);
-    }
-    appendReviewQuestionDetails(
-      details,
-      options.reproductionAssessment,
-      options.solutionAssessment,
-    );
-    if (options.securityReview) {
-      details.push("", "Security review:", "", securityReviewLine(options.securityReview));
-      if (options.securityReview.concerns.length) {
-        details.push("", ...options.securityReview.concerns.map(securityConcernDetailedLine));
-      }
-    }
-    const agentsPolicyLine = agentsPolicyStatusLine(options.agentsPolicyStatus);
-    if (agentsPolicyLine) details.push("", agentsPolicyLine);
-    if (evidence.length) details.push("", "What I checked:", "", ...evidence);
-    if (likelyOwners.length) details.push("", "Likely related people:", "", ...likelyOwners);
-
-    const clawhubHandoff = closeClawHubHandoffBlock(options.reason);
-    if (clawhubHandoff) lines.push("", "**ClawHub handoff**", clawhubHandoff);
-    const outro = closeOutro(options.reason, canonicalLinks, profile);
-    if (outro) lines.push("", outro);
-    if (options.reviewLine) details.push("", options.reviewLine);
-    const detailsBlock = collapsedDetailsBlock("Review details", details);
-    if (detailsBlock) lines.push("", detailsBlock);
-
-    return lines.join("\n");
+      currentItem: options.currentItem,
+    },
+    profile,
+  );
+  const canonicalPathLine = duplicateCanonicalPathLine({
+    reason: options.reason,
+    summaryLine,
+    bestSolutionLine,
+    evidence: options.evidence,
+  });
+  if (canonicalPathLine) lines.push("", canonicalPathLine);
+  const details: string[] = [];
+  if (bestSolutionLine && publicReviewTextDiffers(bestSolutionLine, summaryLine)) {
+    details.push("Best possible solution:", "", bestSolutionLine);
   }
-
-  function renderCloseCommentFromReport(markdown: string, reason: CloseReason): string {
-    if (reason === "oversized_pull_request") {
-      const size = parseOversizedPullRequestEvidence(
-        frontMatterValue(markdown, "oversized_pull_request"),
-      );
-      return size
-        ? oversizedPullRequestComment(size, frontMatterValue(markdown, "action_taken") === "closed")
-        : "";
+  appendReviewQuestionDetails(details, options.reproductionAssessment, options.solutionAssessment);
+  if (options.securityReview) {
+    details.push("", "Security review:", "", securityReviewLine(options.securityReview));
+    if (options.securityReview.concerns.length) {
+      details.push("", ...options.securityReview.concerns.map(securityConcernDetailedLine));
     }
-    return neutralizeReviewControlMarkers(
-      renderCloseComment({
+  }
+  const agentsPolicyLine = agentsPolicyStatusLine(options.agentsPolicyStatus);
+  if (agentsPolicyLine) details.push("", agentsPolicyLine);
+  if (evidence.length) details.push("", "What I checked:", "", ...evidence);
+  if (likelyOwners.length) details.push("", "Likely related people:", "", ...likelyOwners);
+
+  const clawhubHandoff = closeClawHubHandoffBlock(options.reason);
+  if (clawhubHandoff) lines.push("", "**ClawHub handoff**", clawhubHandoff);
+  const outro = closeOutro(options.reason, canonicalLinks, profile);
+  if (outro) lines.push("", outro);
+  if (options.reviewLine) details.push("", options.reviewLine);
+  const detailsBlock = collapsedDetailsBlock("Review details", details);
+  if (detailsBlock) lines.push("", detailsBlock);
+
+  return lines.join("\n");
+}
+
+export function renderCloseCommentFromReport(
+  markdown: string,
+  reason: CloseReason,
+  profile: RepositoryProfile,
+): string {
+  if (reason === "oversized_pull_request") {
+    const size = parseOversizedPullRequestEvidence(
+      frontMatterValue(markdown, "oversized_pull_request"),
+    );
+    return size
+      ? oversizedPullRequestComment(size, frontMatterValue(markdown, "action_taken") === "closed")
+      : "";
+  }
+  return neutralizeReviewControlMarkers(
+    renderCloseComment(
+      {
         reason,
         summary: reviewSectionValue(markdown, "summary"),
         bestSolution: reviewSectionValue(markdown, "bestSolution"),
@@ -521,27 +720,31 @@ export function createReportCommentHelpers(dependencies: CreateReportRenderingDe
         regressionProvenance: regressionProvenanceFromReport(markdown),
         securityReview: reportSecurityReview(markdown),
         rootCauseCluster: reportRootCauseCluster(markdown),
-        reviewLine: closeReviewLineFromReport(markdown, targetProfile()),
+        reviewLine: closeReviewLineFromReport(markdown, profile),
         currentItem: {
           repo: markdownRepository(markdown),
           number: Number(frontMatterValue(markdown, "number")),
           kind: (frontMatterValue(markdown, "type") as ItemKind | undefined) ?? "issue",
         },
-      }),
-    );
-  }
+      },
+      profile,
+    ),
+  );
+}
 
-  function normalizeComment(
-    decision: Decision,
-    git: GitInfo,
-    runtime?: Pick<ReviewRuntime, "model" | "reasoningEffort">,
-    item?: { repo?: string; kind?: ItemKind; number?: number },
-  ): string {
-    if (decision.closeReason === "oversized_pull_request") {
-      const size = parseOversizedPullRequestEvidence(decision.oversizedPullRequest);
-      return size ? oversizedPullRequestComment(size) : "";
-    }
-    return renderCloseComment({
+export function normalizeComment(
+  decision: Decision,
+  git: GitInfo,
+  runtime: Pick<ReviewRuntime, "model" | "reasoningEffort"> | undefined,
+  item: { repo?: string; kind?: ItemKind; number?: number } | undefined,
+  profile: RepositoryProfile,
+): string {
+  if (decision.closeReason === "oversized_pull_request") {
+    const size = parseOversizedPullRequestEvidence(decision.oversizedPullRequest);
+    return size ? oversizedPullRequestComment(size) : "";
+  }
+  return renderCloseComment(
+    {
       reason: decision.closeReason,
       summary: decision.summary,
       bestSolution: decision.bestSolution,
@@ -559,283 +762,258 @@ export function createReportCommentHelpers(dependencies: CreateReportRenderingDe
         : null,
       securityReview: decision.securityReview,
       rootCauseCluster: decision.rootCauseCluster,
-      reviewLine: closeReviewLineFromDecision(decision, git, runtime, targetProfile()),
+      reviewLine: closeReviewLineFromDecision(decision, git, runtime, profile),
       currentItem: item,
-    });
+    },
+    profile,
+  );
+}
+
+export function reportWorkCandidateReason(markdown: string): string {
+  const workCandidate = reviewSectionValue(markdown, "workCandidate");
+  const reason = workCandidateReasonText(workCandidate);
+  if (!reason || reason.startsWith("_No work-lane recommendation")) return "";
+  return reason;
+}
+
+export function appendPublicSection(lines: string[], heading: string, body: string): void {
+  lines.push(`**${heading}**`, body, "");
+}
+
+export function appendHeadingSection(lines: string[], heading: string, body: string): void {
+  lines.push(`## ${heading}`, "", body, "");
+}
+
+export function publicChecklistText(value: string): string {
+  // Flatten line breaks (with their surrounding layout indentation) only; interior
+  // runs of spaces inside commands, quoted arguments, and paths stay exact.
+  return value
+    .replace(/<(?=[a-z/!?])/gi, "&lt;")
+    .replace(/[ \t]*(?:\r?\n|\r)+[ \t]*/g, " ")
+    .trim();
+}
+
+function publicChecklistLabel(value: string): string {
+  return publicChecklistText(value)
+    .replace(/\\/g, "\\\\")
+    .replace(/([*_`[\]])/g, "\\$1");
+}
+
+export function publicBeforeMergeBlock(items: readonly PublicBeforeMergeItem[]): string {
+  if (items.length === 0) return "None.";
+  return items
+    .map(
+      (item) =>
+        `- [ ] **${publicChecklistLabel(item.label)}** - ${publicChecklistText(item.detail)}`,
+    )
+    .join("\n");
+}
+
+export function publicRootCauseClusterBlock(
+  cluster: RootCauseClusterAssessment | undefined,
+): string {
+  if (
+    !cluster ||
+    cluster.confidence !== "high" ||
+    !cluster.canonicalRef ||
+    cluster.members.length === 0 ||
+    ["independent", "security_route", "needs_human"].includes(cluster.currentItemRelationship)
+  ) {
+    return "";
   }
-
-  function reportWorkCandidateReason(markdown: string): string {
-    const workCandidate = reviewSectionValue(markdown, "workCandidate");
-    const reason = workCandidateReasonText(workCandidate);
-    if (!reason || reason.startsWith("_No work-lane recommendation")) return "";
-    return reason;
+  const visibleMembers = cluster.members.slice(0, 5);
+  const memberLines = visibleMembers.map(
+    (member) => `- \`${member.relationship}\`: ${member.ref} - ${sentence(member.reason)}`,
+  );
+  if (cluster.members.length > visibleMembers.length) {
+    memberLines.push(`- ${cluster.members.length - visibleMembers.length} more in the report.`);
   }
+  return [
+    `Relationship: \`${cluster.currentItemRelationship}\``,
+    `Canonical: ${cluster.canonicalRef}`,
+    `Summary: ${sentence(cluster.summary)}`,
+    "",
+    "Members:",
+    ...memberLines,
+    "",
+    "Proposal only: this assessment does not dispatch repair, suppress jobs, mutate sibling items, close, or merge anything.",
+  ].join("\n");
+}
 
-  function appendPublicSection(lines: string[], heading: string, body: string): void {
-    lines.push(`**${heading}**`, body, "");
+function publicReproducibilityLine(reproductionAssessment: string): string {
+  const assessmentLine = sentence(reproductionAssessment);
+  if (!assessmentLine) return "";
+  const match = assessmentLine.match(/^(yes|no|unclear|not applicable)\b/i);
+  if (!match) return `Reproducibility: ${assessmentLine}`;
+  const status = match[1]?.toLowerCase() ?? "";
+  const detail = sentence(assessmentLine.slice(match[0].length).replace(/^[\s,.:;-]+/, ""));
+  return `Reproducibility: ${status}.${detail ? ` ${detail}` : ""}`;
+}
+
+export function publicSummaryBody(summaryLine: string, reproductionAssessment: string): string {
+  return [summaryLine, publicReproducibilityLine(reproductionAssessment)]
+    .filter(Boolean)
+    .join("\n\n");
+}
+
+export function publicMergeRiskLine(
+  risks: string,
+  nextStepLine: string,
+  bestSolutionLine: string,
+  options: readonly MergeRiskOption[],
+): string {
+  if (isReportNoneList(risks)) return "";
+  if (publicReviewTextIsSame(risks, nextStepLine)) return "";
+  if (bestSolutionLine && publicReviewTextIsSame(risks, bestSolutionLine)) return "";
+  const choices = options.length
+    ? mergeRiskOptionsLines(options)
+    : mergeRiskFallbackOptionsLines(bestSolutionLine, nextStepLine);
+  return choices.length ? ["**Maintainer options:**", ...choices].join("\n") : "";
+}
+
+function mergeRiskFallbackOptionsLines(bestSolutionLine: string, nextStepLine: string): string[] {
+  const recommended = sentence(bestSolutionLine) || sentence(nextStepLine);
+  const instruction = recommended || "Decide whether the merge risk is acceptable before merging.";
+  return mergeRiskOptionsLines([
+    {
+      title: "Decide the mitigation before merge",
+      body: instruction,
+      category: "fix_before_merge",
+      recommended: false,
+      automergeInstruction: "",
+    },
+    {
+      title: "Pause or close",
+      body: "Do not merge this PR until maintainers decide whether the risk is worth taking.",
+      category: "pause_or_close",
+      recommended: false,
+      automergeInstruction: "",
+    },
+  ]);
+}
+
+function mergeRiskOptionsLines(options: readonly MergeRiskOption[]): string[] {
+  const lines = options.flatMap((option, index) => [
+    `${index + 1}. **${option.title}${option.recommended ? " (recommended)" : ""}**  `,
+    `   ${option.body}`,
+  ]);
+  const recommendedRepair = options.find(
+    (option) =>
+      option.recommended &&
+      option.category === "fix_before_merge" &&
+      option.automergeInstruction.trim(),
+  );
+  if (recommendedRepair) {
+    lines.push("", mergeRiskAutomergeInstructionBlock(recommendedRepair.automergeInstruction));
   }
+  return lines;
+}
 
-  function appendHeadingSection(lines: string[], heading: string, body: string): void {
-    lines.push(`## ${heading}`, "", body, "");
-  }
+function mergeRiskAutomergeInstructionBlock(instruction: string): string {
+  const specialInstructions = normalizeMergeRiskAutomergeInstruction(instruction);
+  if (!specialInstructions) return "";
+  return [
+    "<details>",
+    "<summary>Copy recommended automerge instruction</summary>",
+    "",
+    "```text",
+    "@clawsweeper automerge",
+    "",
+    "Special instructions:",
+    specialInstructions,
+    "```",
+    "",
+    "</details>",
+  ].join("\n");
+}
 
-  function publicChecklistText(value: string): string {
-    // Flatten line breaks (with their surrounding layout indentation) only; interior
-    // runs of spaces inside commands, quoted arguments, and paths stay exact.
-    return value
-      .replace(/<(?=[a-z/!?])/gi, "&lt;")
-      .replace(/[ \t]*(?:\r?\n|\r)+[ \t]*/g, " ")
-      .trim();
-  }
+function normalizeMergeRiskAutomergeInstruction(instruction: string): string {
+  return instruction
+    .trim()
+    .replace(/^@clawsweeper\s+(?:automerge|autofix)\b[:\s-]*/i, "")
+    .replace(/^special instructions:\s*/i, "")
+    .replace(/^this PR:\s*/i, "")
+    .trim();
+}
 
-  function publicChecklistLabel(value: string): string {
-    return publicChecklistText(value)
-      .replace(/\\/g, "\\\\")
-      .replace(/([*_`[\]])/g, "\\$1");
-  }
-
-  function publicBeforeMergeBlock(items: readonly PublicBeforeMergeItem[]): string {
-    if (items.length === 0) return "None.";
-    return items
-      .map(
-        (item) =>
-          `- [ ] **${publicChecklistLabel(item.label)}** - ${publicChecklistText(item.detail)}`,
-      )
-      .join("\n");
-  }
-
-  function publicRootCauseClusterBlock(cluster: RootCauseClusterAssessment | undefined): string {
-    if (
-      !cluster ||
-      cluster.confidence !== "high" ||
-      !cluster.canonicalRef ||
-      cluster.members.length === 0 ||
-      ["independent", "security_route", "needs_human"].includes(cluster.currentItemRelationship)
-    ) {
-      return "";
-    }
-    const visibleMembers = cluster.members.slice(0, 5);
-    const memberLines = visibleMembers.map(
-      (member) => `- \`${member.relationship}\`: ${member.ref} - ${sentence(member.reason)}`,
-    );
-    if (cluster.members.length > visibleMembers.length) {
-      memberLines.push(`- ${cluster.members.length - visibleMembers.length} more in the report.`);
-    }
-    return [
-      `Relationship: \`${cluster.currentItemRelationship}\``,
-      `Canonical: ${cluster.canonicalRef}`,
-      `Summary: ${sentence(cluster.summary)}`,
-      "",
-      "Members:",
-      ...memberLines,
-      "",
-      "Proposal only: this assessment does not dispatch repair, suppress jobs, mutate sibling items, close, or merge anything.",
-    ].join("\n");
-  }
-
-  function publicReproducibilityLine(reproductionAssessment: string): string {
-    const assessmentLine = sentence(reproductionAssessment);
-    if (!assessmentLine) return "";
-    const match = assessmentLine.match(/^(yes|no|unclear|not applicable)\b/i);
-    if (!match) return `Reproducibility: ${assessmentLine}`;
-    const status = match[1]?.toLowerCase() ?? "";
-    const detail = sentence(assessmentLine.slice(match[0].length).replace(/^[\s,.:;-]+/, ""));
-    return `Reproducibility: ${status}.${detail ? ` ${detail}` : ""}`;
-  }
-
-  function publicSummaryBody(summaryLine: string, reproductionAssessment: string): string {
-    return [summaryLine, publicReproducibilityLine(reproductionAssessment)]
-      .filter(Boolean)
-      .join("\n\n");
-  }
-
-  function publicMergeRiskLine(
-    risks: string,
-    nextStepLine: string,
-    bestSolutionLine: string,
-    options: readonly MergeRiskOption[],
-  ): string {
-    if (isReportNoneList(risks)) return "";
-    if (publicReviewTextIsSame(risks, nextStepLine)) return "";
-    if (bestSolutionLine && publicReviewTextIsSame(risks, bestSolutionLine)) return "";
-    const choices = options.length
-      ? mergeRiskOptionsLines(options)
-      : mergeRiskFallbackOptionsLines(bestSolutionLine, nextStepLine);
-    return choices.length ? ["**Maintainer options:**", ...choices].join("\n") : "";
-  }
-
-  function mergeRiskFallbackOptionsLines(bestSolutionLine: string, nextStepLine: string): string[] {
-    const recommended = sentence(bestSolutionLine) || sentence(nextStepLine);
-    const instruction =
-      recommended || "Decide whether the merge risk is acceptable before merging.";
-    return mergeRiskOptionsLines([
-      {
-        title: "Decide the mitigation before merge",
-        body: instruction,
-        category: "fix_before_merge",
-        recommended: false,
-        automergeInstruction: "",
-      },
-      {
-        title: "Pause or close",
-        body: "Do not merge this PR until maintainers decide whether the risk is worth taking.",
-        category: "pause_or_close",
-        recommended: false,
-        automergeInstruction: "",
-      },
-    ]);
-  }
-
-  function mergeRiskOptionsLines(options: readonly MergeRiskOption[]): string[] {
-    const lines = options.flatMap((option, index) => [
-      `${index + 1}. **${option.title}${option.recommended ? " (recommended)" : ""}**  `,
-      `   ${option.body}`,
-    ]);
-    const recommendedRepair = options.find(
-      (option) =>
-        option.recommended &&
-        option.category === "fix_before_merge" &&
-        option.automergeInstruction.trim(),
-    );
-    if (recommendedRepair) {
-      lines.push("", mergeRiskAutomergeInstructionBlock(recommendedRepair.automergeInstruction));
-    }
-    return lines;
-  }
-
-  function mergeRiskAutomergeInstructionBlock(instruction: string): string {
-    const specialInstructions = normalizeMergeRiskAutomergeInstruction(instruction);
-    if (!specialInstructions) return "";
-    return [
-      "<details>",
-      "<summary>Copy recommended automerge instruction</summary>",
-      "",
-      "```text",
-      "@clawsweeper automerge",
-      "",
-      "Special instructions:",
-      specialInstructions,
-      "```",
-      "",
-      "</details>",
-    ].join("\n");
-  }
-
-  function normalizeMergeRiskAutomergeInstruction(instruction: string): string {
-    return instruction
-      .trim()
-      .replace(/^@clawsweeper\s+(?:automerge|autofix)\b[:\s-]*/i, "")
-      .replace(/^special instructions:\s*/i, "")
-      .replace(/^this PR:\s*/i, "")
-      .trim();
-  }
-
-  function appendReviewQuestionDetails(
-    details: string[],
-    reproductionAssessment: string | undefined,
-    solutionAssessment: string | undefined,
-  ): void {
-    const append = (heading: string, body: string) => {
-      if (details.length) details.push("");
-      details.push(heading, "", body);
-    };
-    const reproductionLine = sentence(reproductionAssessment ?? "");
-    if (reproductionLine) {
-      append("Do we have a high-confidence way to reproduce the issue?", reproductionLine);
-    }
-    const solutionLine = sentence(solutionAssessment ?? "");
-    if (solutionLine) {
-      append("Is this the best way to solve the issue?", solutionLine);
-    }
-  }
-
-  function reviewWorkflowLines(): string[] {
-    return [
-      "- ClawSweeper keeps one durable marker-backed review comment per issue or PR.",
-      "- Re-runs edit this comment so the latest verdict, findings, and automation markers stay together instead of adding duplicate bot comments.",
-      "- A fresh review can be triggered by eligible `@clawsweeper re-review` comments, exact-item GitHub events, scheduled/background review runs, or manual workflow dispatch.",
-      "- PR/issue authors and users with repository write access can comment `@clawsweeper re-review` or `@clawsweeper re-run` on an open PR or issue to request a fresh review only.",
-      "- Maintainers can also comment `@clawsweeper review` to request a fresh review only.",
-      "- Fresh-review commands do not start repair, autofix, rebase, CI repair, or automerge.",
-      "- Maintainer-only repair and merge flows require explicit commands such as `@clawsweeper autofix`, `@clawsweeper automerge`, `@clawsweeper fix ci`, or `@clawsweeper address review`.",
-      "- Maintainers can comment `@clawsweeper explain` to ask for more context, or `@clawsweeper stop` to stop active automation.",
-    ];
-  }
-
-  function reviewWorkflowCallout(): string[] {
-    return [collapsedDetailsBlock("How this review workflow works", reviewWorkflowLines()), ""];
-  }
-
-  // PR comments keep the workflow to one line inside the collapsed details; issue
-  // comments keep the full callout.
-  function reviewWorkflowSummaryLine(): string {
-    return "ClawSweeper edits this one comment on every review. Comment `@clawsweeper re-review` for a fresh review only; repair and merge need explicit maintainer commands such as `@clawsweeper autofix` or `@clawsweeper automerge`.";
-  }
-
-  function reviewFreshnessText(markdown: string, revision?: number): string {
-    const timestamp = formatReviewFreshnessTimestamp(frontMatterValue(markdown, "reviewed_at"));
-    if (!timestamp) return "";
-    const revisionSuffix = revision !== undefined && revision >= 2 ? ` (Revision ${revision})` : "";
-    return `_Reviewed ${timestamp}${revisionSuffix}._`;
-  }
-
-  const REVIEW_HISTORY_RENDER_SLOT = "CLAWSWEEPER_REVIEW_HISTORY_RENDER_SLOT";
-
-  function reviewHistoryForRender(
-    markdown: string,
-    previousReviewCommentBody: string | undefined,
-  ): ReviewHistoryLedger {
-    if (frontMatterValue(markdown, "type") !== "pull_request") {
-      return { cycles: [], totalCompletedCycles: 0 };
-    }
-    const body = previousReviewCommentBody ?? "";
-    if (!body.trim()) return { cycles: [], totalCompletedCycles: 0 };
-    const history = parseReviewHistory(body);
-    const previousCycle = reviewHistoryCycleFromCommentBody(body);
-    if (!previousCycle) return history;
-    const reviewedAt = frontMatterValue(markdown, "reviewed_at");
-    if (
-      reviewedAt &&
-      (previousCycle.reviewedAt === reviewedAt ||
-        Date.parse(previousCycle.reviewedAt) === Date.parse(reviewedAt))
-    ) {
-      return history;
-    }
-    return appendReviewHistoryCycle(history, previousCycle);
-  }
-
-  function reviewHistoryForStaleComment(
-    previousReviewCommentBody: string | undefined,
-  ): ReviewHistoryLedger {
-    const body = previousReviewCommentBody ?? "";
-    const history = parseReviewHistory(body);
-    return appendReviewHistoryCycle(history, reviewHistoryCycleFromCommentBody(body));
-  }
-
-  return {
-    renderCloseComment,
-    renderCloseCommentFromReport,
-    normalizeComment,
-    reportWorkCandidateReason,
-    appendPublicSection,
-    appendHeadingSection,
-    publicChecklistText,
-    publicChecklistLabel,
-    publicBeforeMergeBlock,
-    publicRootCauseClusterBlock,
-    publicReproducibilityLine,
-    publicSummaryBody,
-    publicMergeRiskLine,
-    mergeRiskFallbackOptionsLines,
-    mergeRiskOptionsLines,
-    mergeRiskAutomergeInstructionBlock,
-    normalizeMergeRiskAutomergeInstruction,
-    appendReviewQuestionDetails,
-    reviewWorkflowCallout,
-    reviewWorkflowSummaryLine,
-    reviewFreshnessText,
-    REVIEW_HISTORY_RENDER_SLOT,
-    reviewHistoryForRender,
-    reviewHistoryForStaleComment,
+export function appendReviewQuestionDetails(
+  details: string[],
+  reproductionAssessment: string | undefined,
+  solutionAssessment: string | undefined,
+): void {
+  const append = (heading: string, body: string) => {
+    if (details.length) details.push("");
+    details.push(heading, "", body);
   };
+  const reproductionLine = sentence(reproductionAssessment ?? "");
+  if (reproductionLine) {
+    append("Do we have a high-confidence way to reproduce the issue?", reproductionLine);
+  }
+  const solutionLine = sentence(solutionAssessment ?? "");
+  if (solutionLine) {
+    append("Is this the best way to solve the issue?", solutionLine);
+  }
+}
+
+function reviewWorkflowLines(): string[] {
+  return [
+    "- ClawSweeper keeps one durable marker-backed review comment per issue or PR.",
+    "- Re-runs edit this comment so the latest verdict, findings, and automation markers stay together instead of adding duplicate bot comments.",
+    "- A fresh review can be triggered by eligible `@clawsweeper re-review` comments, exact-item GitHub events, scheduled/background review runs, or manual workflow dispatch.",
+    "- PR/issue authors and users with repository write access can comment `@clawsweeper re-review` or `@clawsweeper re-run` on an open PR or issue to request a fresh review only.",
+    "- Maintainers can also comment `@clawsweeper review` to request a fresh review only.",
+    "- Fresh-review commands do not start repair, autofix, rebase, CI repair, or automerge.",
+    "- Maintainer-only repair and merge flows require explicit commands such as `@clawsweeper autofix`, `@clawsweeper automerge`, `@clawsweeper fix ci`, or `@clawsweeper address review`.",
+    "- Maintainers can comment `@clawsweeper explain` to ask for more context, or `@clawsweeper stop` to stop active automation.",
+  ];
+}
+
+export function reviewWorkflowCallout(): string[] {
+  return [collapsedDetailsBlock("How this review workflow works", reviewWorkflowLines()), ""];
+}
+
+// PR comments keep the workflow to one line inside the collapsed details; issue
+// comments keep the full callout.
+export function reviewWorkflowSummaryLine(): string {
+  return "ClawSweeper edits this one comment on every review. Comment `@clawsweeper re-review` for a fresh review only; repair and merge need explicit maintainer commands such as `@clawsweeper autofix` or `@clawsweeper automerge`.";
+}
+
+export function reviewFreshnessText(markdown: string, revision?: number): string {
+  const timestamp = formatReviewFreshnessTimestamp(frontMatterValue(markdown, "reviewed_at"));
+  if (!timestamp) return "";
+  const revisionSuffix = revision !== undefined && revision >= 2 ? ` (Revision ${revision})` : "";
+  return `_Reviewed ${timestamp}${revisionSuffix}._`;
+}
+
+export const REVIEW_HISTORY_RENDER_SLOT = "CLAWSWEEPER_REVIEW_HISTORY_RENDER_SLOT";
+
+export function reviewHistoryForRender(
+  markdown: string,
+  previousReviewCommentBody: string | undefined,
+): ReviewHistoryLedger {
+  if (frontMatterValue(markdown, "type") !== "pull_request") {
+    return { cycles: [], totalCompletedCycles: 0 };
+  }
+  const body = previousReviewCommentBody ?? "";
+  if (!body.trim()) return { cycles: [], totalCompletedCycles: 0 };
+  const history = parseReviewHistory(body);
+  const previousCycle = reviewHistoryCycleFromCommentBody(body);
+  if (!previousCycle) return history;
+  const reviewedAt = frontMatterValue(markdown, "reviewed_at");
+  if (
+    reviewedAt &&
+    (previousCycle.reviewedAt === reviewedAt ||
+      Date.parse(previousCycle.reviewedAt) === Date.parse(reviewedAt))
+  ) {
+    return history;
+  }
+  return appendReviewHistoryCycle(history, previousCycle);
+}
+
+export function reviewHistoryForStaleComment(
+  previousReviewCommentBody: string | undefined,
+): ReviewHistoryLedger {
+  const body = previousReviewCommentBody ?? "";
+  const history = parseReviewHistory(body);
+  return appendReviewHistoryCycle(history, reviewHistoryCycleFromCommentBody(body));
 }

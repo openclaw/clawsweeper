@@ -41,8 +41,24 @@ import {
 } from "./clawsweeper-report-parser.js";
 import { neutralizeReviewControlMarkers, renderReviewHistorySection } from "./review-history.js";
 import type { CreateReportRenderingDependencies } from "./clawsweeper-report-rendering-dependencies.js";
-import type { createReportContextRendering } from "./clawsweeper-report-context.js";
-import type { createReportCommentHelpers } from "./clawsweeper-report-comment-helpers.js";
+import {
+  appendHeadingSection,
+  appendPublicSection,
+  appendReviewQuestionDetails,
+  publicBeforeMergeBlock,
+  publicChecklistText,
+  publicMergeRiskLine,
+  publicRootCauseClusterBlock,
+  publicSummaryBody,
+  pullRequestReviewReadinessFromReport,
+  renderCloseCommentFromReport,
+  reportWorkCandidateReason,
+  REVIEW_HISTORY_RENDER_SLOT,
+  reviewFreshnessText,
+  reviewHistoryForRender,
+  reviewWorkflowCallout,
+  reviewWorkflowSummaryLine,
+} from "./clawsweeper-report-comment-helpers.js";
 import { frontMatterStringArray, frontMatterValue } from "./report-front-matter.js";
 import {
   agentsPolicyStatusLine,
@@ -52,7 +68,6 @@ import {
 } from "./clawsweeper-report-helpers.js";
 import { pullHeadShaFromReport, reviewSectionValue } from "./clawsweeper-record-metadata.js";
 import { reportRealBehaviorProofPolicy } from "./clawsweeper-proof-policy.js";
-import { pullRequestReviewReadinessFromReport } from "./clawsweeper-report-comment-helpers.js";
 import {
   closeEvidenceLine,
   confidenceText,
@@ -117,34 +132,15 @@ const TESTING_PROOF_PATH_TEXT: Record<TestingProofPath, string> = {
   not_applicable: "not applicable",
 };
 
-export function createReportCommentPresentation(
-  dependencies: CreateReportRenderingDependencies &
-    ReturnType<typeof createReportContextRendering> &
-    ReturnType<typeof createReportCommentHelpers>,
-) {
+export function createReportCommentPresentation(dependencies: CreateReportRenderingDependencies) {
   const {
-    REVIEW_HISTORY_RENDER_SLOT,
-    appendHeadingSection,
-    appendPublicSection,
-    appendReviewQuestionDetails,
     labelJustificationsFromPublicReport,
     labelJustificationsMarkdown,
     labelTransitionJustificationsFromPublicReport,
     labelTransitionJustificationsMarkdown,
-    publicBeforeMergeBlock,
-    publicChecklistText,
-    publicMergeRiskLine,
-    publicRootCauseClusterBlock,
-    publicSummaryBody,
-    renderCloseCommentFromReport,
     repairLoopPassModeFromReport,
-    reportWorkCandidateReason,
     reviewAutomationMarkersFromReport,
-    reviewFreshnessText,
-    reviewHistoryForRender,
     reviewVersionMarkerFromReport,
-    reviewWorkflowCallout,
-    reviewWorkflowSummaryLine,
     targetProfile,
   } = dependencies;
 
@@ -602,7 +598,7 @@ export function createReportCommentPresentation(
   ): string {
     if (reason === "oversized_pull_request") {
       return [
-        renderCloseCommentFromReport(markdown, reason),
+        renderCloseCommentFromReport(markdown, reason, targetProfile()),
         reviewVersionMarkerFromReport(markdown),
       ]
         .filter(Boolean)
@@ -651,7 +647,7 @@ export function createReportCommentPresentation(
       (!requiresMaintainerDecision ||
         reason === "unsponsored_feature_request" ||
         reason === "author_pr_budget_exceeded")
-        ? renderCloseCommentFromReport(markdown, reason)
+        ? renderCloseCommentFromReport(markdown, reason, targetProfile())
         : renderKeepOpenCommentFromReport(markdown, options, reviewReadiness);
     const markers = options.suppressAutomationMarkers
       ? ""

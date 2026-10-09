@@ -56,7 +56,7 @@ import {
   type MaintainerDecision,
 } from "./decision-packets.js";
 import type { CreateReportOrchestrationDependencies } from "./clawsweeper-report-orchestration-dependencies.js";
-import type { createReportRendering } from "./clawsweeper-report-rendering.js";
+import { renderCloseCommentFromReport } from "./clawsweeper-report-comment-helpers.js";
 import { reviewMetricsFromReport } from "./clawsweeper-orchestration-foundation.js";
 import { fixedPullRequestFromReport } from "./clawsweeper-status-context.js";
 import { asRecord, nonBlankStringOrUndefined } from "./value-coerce.js";
@@ -75,8 +75,7 @@ import { reviewSectionValue } from "./clawsweeper-record-metadata.js";
 import { eventTimestampMs, isAfterReview } from "./clawsweeper-label-policy.js";
 
 export function createPullRequestPromotionFacts(
-  dependencies: CreateReportOrchestrationDependencies &
-    Pick<ReturnType<typeof createReportRendering>, "renderCloseCommentFromReport">,
+  dependencies: CreateReportOrchestrationDependencies,
 ) {
   const {
     defaultRootCauseCluster,
@@ -85,8 +84,8 @@ export function createPullRequestPromotionFacts(
     labelNames,
     normalizeLabelName,
     parseGitHubItemRef,
-    renderCloseCommentFromReport,
     repoUrlFor,
+    targetProfile,
     targetRepo,
   } = dependencies;
 
@@ -227,7 +226,11 @@ export function createPullRequestPromotionFacts(
       REVIEW_SECTIONS.evidence,
       hostEvidenceMarkdown(evidence),
     );
-    const closeComment = renderCloseCommentFromReport(upgraded, "duplicate_or_superseded");
+    const closeComment = renderCloseCommentFromReport(
+      upgraded,
+      "duplicate_or_superseded",
+      targetProfile(),
+    );
     upgraded = replaceSectionValue(upgraded, REVIEW_SECTIONS.closeComment, closeComment);
     return updateReviewRecordDecision(upgraded, () => ({
       decision: "close",

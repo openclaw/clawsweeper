@@ -8,9 +8,6 @@ import { createReportLabelPresentation } from "./clawsweeper-label-presentation.
 export function createReportOrchestration(dependencies: CreateReportOrchestrationDependencies) {
   let reportRendering: ReturnType<typeof createReportRendering>;
   const renderingReferences = {
-    renderCloseCommentFromReport: (
-      ...args: Parameters<ReturnType<typeof createReportRendering>["renderCloseCommentFromReport"]>
-    ) => reportRendering.renderCloseCommentFromReport(...args),
     renderPrRatingAssessmentReportSection: (
       ...args: Parameters<
         ReturnType<typeof createReportRendering>["renderPrRatingAssessmentReportSection"]
@@ -22,10 +19,7 @@ export function createReportOrchestration(dependencies: CreateReportOrchestratio
       >
     ) => reportRendering.renderRootCauseClusterAssessmentReportSection(...args),
   };
-  const promotionFacts = createPullRequestPromotionFacts({
-    ...dependencies,
-    ...renderingReferences,
-  });
+  const promotionFacts = createPullRequestPromotionFacts(dependencies);
   const coverageProof = createPullRequestCoverageProof({
     ...dependencies,
     ...renderingReferences,
@@ -147,7 +141,6 @@ export function createReportOrchestration(dependencies: CreateReportOrchestratio
     renderWorkPlanFromReport,
     reviewActionForDecision,
     reviewContextLedgerForTest,
-    reviewHistoryForStaleComment,
     syncWorkPlanFromReport,
     updateReviewStructuralFrontMatter,
   } = reportRendering;
@@ -180,7 +173,6 @@ export function createReportOrchestration(dependencies: CreateReportOrchestratio
     reportDecision,
     reviewActionForDecision,
     reviewContextLedgerForTest,
-    reviewHistoryForStaleComment,
     staleCanonicalCommentSyncPendingReason,
     staleCanonicalPullRequestNumber,
     syncWorkPlanFromReport,
