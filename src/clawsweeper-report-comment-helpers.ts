@@ -26,7 +26,18 @@ import type { RealBehaviorProofPolicy } from "./clawsweeper-proof-policy.js";
 import { nextStepFromReport } from "./clawsweeper-next-step.js";
 import { validReviewLeaseIdentity } from "./review-comment-markers.js";
 import { maintainerDecisionFromReport } from "./decision-packets.js";
-import { reportProductReview, reportProvenance } from "./clawsweeper-report-parser.js";
+import {
+  reportAgentsPolicyStatus,
+  reportEvidence,
+  reportLikelyOwners,
+  reportOverallCorrectness,
+  reportProductReview,
+  reportProvenance,
+  reportPrRating,
+  reportReviewFindings,
+  reportRootCauseCluster,
+  reportSecurityReview,
+} from "./clawsweeper-report-parser.js";
 import { AUTOFIX_LABEL, AUTOMERGE_LABEL } from "./repair/exact-review-guard-labels.js";
 import {
   isRegressionAssessment,
@@ -46,12 +57,14 @@ import type { CreateReportRenderingDependencies } from "./clawsweeper-report-ren
 import type { createReportContextRendering } from "./clawsweeper-report-context.js";
 import { parseIsoMs } from "./iso-time.js";
 import { frontMatterStringArray, frontMatterValue } from "./report-front-matter.js";
+import { agentsPolicyStatusLine } from "./clawsweeper-report-helpers.js";
+import { markdownRepository } from "./clawsweeper-repository-paths.js";
+import { pullHeadShaFromReport, reviewSectionValue } from "./clawsweeper-record-metadata.js";
 
 export function createReportCommentHelpers(
   dependencies: CreateReportRenderingDependencies & ReturnType<typeof createReportContextRendering>,
 ) {
   const {
-    agentsPolicyStatusLine,
     closeClawHubHandoffBlock,
     closeEvidenceLine,
     closeIntro,
@@ -65,7 +78,6 @@ export function createReportCommentHelpers(
     isReportNoneList,
     likelyOwnerLines,
     markdownLink,
-    markdownRepository,
     normalizePublicReviewText,
     priorityLabel,
     publicHistoricalVerificationBlockerLine,
@@ -73,18 +85,8 @@ export function createReportCommentHelpers(
     publicReviewTextDiffers,
     publicReviewTextIsSame,
     reportRiskEntries,
-    pullHeadShaFromReport,
-    reportAgentsPolicyStatus,
-    reportEvidence,
-    reportLikelyOwners,
-    reportOverallCorrectness,
-    reportPrRating,
     reportRealBehaviorProofPolicy,
-    reportReviewFindings,
-    reportRootCauseCluster,
-    reportSecurityReview,
     reviewFindingLocation,
-    reviewSectionValue,
     securityConcernDetailedLine,
     securityReviewLine,
     sentence,
@@ -776,27 +778,6 @@ export function createReportCommentHelpers(
 
   const REVIEW_HISTORY_RENDER_SLOT = "CLAWSWEEPER_REVIEW_HISTORY_RENDER_SLOT";
 
-  const OWNED_REVIEW_SECTION_HEADINGS = new Set([
-    "summary",
-    "what this changes",
-    "product",
-    "merge readiness",
-    "review scores",
-    "verification",
-    "live proof",
-    "how this fits together",
-    "decision needed",
-    "before merge",
-    "next step",
-    "next step before merge",
-    "automerge follow-up",
-    "autofix follow-up",
-    "findings",
-    "review findings",
-    "security",
-    "label changes",
-  ]);
-
   function reviewHistoryForRender(
     markdown: string,
     previousReviewCommentBody: string | undefined,
@@ -855,7 +836,6 @@ export function createReportCommentHelpers(
     reviewWorkflowSummaryLine,
     reviewFreshnessText,
     REVIEW_HISTORY_RENDER_SLOT,
-    OWNED_REVIEW_SECTION_HEADINGS,
     reviewHistoryForRender,
     reviewHistoryForStaleComment,
   };

@@ -1,9 +1,4 @@
-import type {
-  ExistingReview,
-  ExistingReviewIndex,
-  FailedReviewRetryState,
-  Item,
-} from "./clawsweeper-types.js";
+import type { FailedReviewRetryState, Item } from "./clawsweeper-types.js";
 
 export interface ReviewPlanningDependencies {
   maxPlanShardCount: number;
@@ -19,14 +14,6 @@ export interface ReviewPlanningDependencies {
   itemSourceRevisionSha256: (issue: unknown, comments?: unknown[]) => string;
   normalizeAuthorAssociation: (value: unknown) => string;
   shouldPlanItem: (item: Pick<Item, "authorAssociation" | "labels">) => boolean;
-  buildExistingReviewIndex: (itemsDir: string) => ExistingReviewIndex;
-  indexedExistingReview: (
-    item: Pick<Item, "number" | "repo">,
-    itemsDir: string,
-    reviewIndex?: ExistingReviewIndex,
-  ) => ExistingReview | null;
-  effectiveReviewStatus: (markdown: string) => string;
-  pullHeadShaFromReport: (markdown: string) => string | null;
   failedReviewRetryStatePath: (stateDir: string, number: number) => string;
   readFailedReviewRetryState: (statePath: string) => FailedReviewRetryState | null;
   failedReviewRetryMarkdownWithState: (

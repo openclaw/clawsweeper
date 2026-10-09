@@ -21,14 +21,10 @@ import { ReviewLeaseSupersededError } from "./clawsweeper-review-comment-leases.
 import type {
   ExactReviewQueueAuthority,
   ExpectedIssueSourceRevisionOptions,
-  FailedReviewRetryResult,
-  FailedReviewRetryRevision,
-  FailedReviewRetryRevisionKind,
   GitHubDispatchOutcome,
   GitHubRetryOptions,
   GitHubRuntimeBudget,
   Item,
-  ItemKind,
   MutationRunner,
   ReconcileResult,
   ReviewActionLedger,
@@ -46,6 +42,13 @@ import {
   type LiveReadOptions,
 } from "./live-read-generation.js";
 import { frontMatterValue } from "./report-front-matter.js";
+import { reportItemKind, reviewLeaseRevisionFromReport } from "./clawsweeper-record-metadata.js";
+import {
+  markdownRepository,
+  numberForMarkdownFile,
+  parseReportFileName,
+  reportFileName,
+} from "./clawsweeper-repository-paths.js";
 
 interface CreateCommandOperationsDependencies {
   actionLedgerFailureDisposition: (error: unknown) => {
@@ -66,28 +69,9 @@ interface CreateCommandOperationsDependencies {
   defaultClosedDir: (profile?: RepositoryProfile) => string;
   defaultItemsDir: (profile?: RepositoryProfile) => string;
   defaultPlansDir: (profile?: RepositoryProfile) => string;
-  effectiveReviewStatus: (markdown: string) => string;
   ensureDir: (path: string) => void;
   ensureGitHubRuntimeAvailable: (phase: string) => void;
   exactReviewQueueAuthorityFromEnv: (env?: NodeJS.ProcessEnv) => ExactReviewQueueAuthority | null;
-  failedReviewFailureDetail: (markdown: string) => string;
-  failedReviewRetryEligibility: (options: {
-    markdown: string;
-    liveState: string;
-    liveLocked?: boolean;
-    liveActiveLockReason?: string | null;
-    liveHeadSha?: string | null;
-    liveSourceRevision?: string | null;
-    now: number;
-    maxAttempts: number;
-    cooldownMs: number;
-  }) => FailedReviewRetryResult;
-  failedReviewRetryResultRevision: (revision: FailedReviewRetryRevision) => {
-    headSha?: string;
-    revisionKind: FailedReviewRetryRevisionKind;
-    revision: string;
-  };
-  failedReviewRetryRevisionForReport: (markdown: string) => FailedReviewRetryRevision | null;
   fetchItem: (number: number) => { item: Item; state: string };
   fetchOpenItemNumbers: (maxPages: number) => { numbers: Set<number>; pagesScanned: number };
   ghJson: <T>(args: string[]) => T;
@@ -105,17 +89,8 @@ interface CreateCommandOperationsDependencies {
     readonly cause: unknown;
   };
   GitHubRuntimeBudgetError: new (reason: string) => Error & { readonly reason: string };
-  isFailedReviewRetryAlreadyExhausted: (
-    markdown: string,
-    revision: FailedReviewRetryRevision,
-  ) => boolean;
   isMarkdownForActiveRepo: (markdown: string, file?: string) => boolean;
   itemSourceRevisionSha256: (issue: unknown, comments?: unknown[]) => string;
-  lockedConversationApplyReason: (item: Pick<Item, "activeLockReason" | "locked">) => string | null;
-  markdownFiles: (dir: string) => string[];
-  markdownRepository: (markdown: string, file?: string) => string;
-  numberForMarkdownFile: (file: string) => number;
-  parseReportFileName: (file: string) => { repo: string | undefined; number: number } | null;
   postReviewStartStatusComment: (options: {
     item: Item;
     headSha?: string;
@@ -142,8 +117,6 @@ interface CreateCommandOperationsDependencies {
   }) => ReconcileResult;
   repoFromArgs: (args: Args) => RepositoryProfile;
   repoRelativePath: (path: string) => string;
-  reportFileName: (repo: string, number: number) => string;
-  reportItemKind: (markdown: string) => ItemKind | undefined;
   reviewActionLedger: {
     actionLedgerFailureDisposition: (error: unknown) => {
       status: ActionEventStatus;
@@ -206,14 +179,7 @@ interface CreateCommandOperationsDependencies {
     action: string | undefined,
     itemIsOpen: boolean,
   ) => ReviewArtifactDestination;
-  reviewLeaseRevisionFromReport: (markdown: string) => string | null;
   ROOT: string;
-  sameFailedReviewRetryRevision: (
-    left: FailedReviewRetryRevision,
-    right: FailedReviewRetryRevision,
-  ) => boolean;
-
-  storedFailedReviewRetryRevision: (markdown: string) => FailedReviewRetryRevision | null;
   syncWorkPlanFromReport: (options: {
     markdown: string;
     reportPath: string;
@@ -238,14 +204,9 @@ export function createCommandOperations(dependencies: CreateCommandOperationsDep
     defaultClosedDir,
     defaultItemsDir,
     defaultPlansDir,
-    effectiveReviewStatus,
     ensureDir,
     ensureGitHubRuntimeAvailable,
     exactReviewQueueAuthorityFromEnv,
-    failedReviewFailureDetail,
-    failedReviewRetryEligibility,
-    failedReviewRetryResultRevision,
-    failedReviewRetryRevisionForReport,
     fetchItem,
     fetchOpenItemNumbers,
     ghJson,
@@ -254,27 +215,15 @@ export function createCommandOperations(dependencies: CreateCommandOperationsDep
     ghWithRetry,
     GitHubDispatchError,
     GitHubRuntimeBudgetError,
-    isFailedReviewRetryAlreadyExhausted,
     isMarkdownForActiveRepo,
     itemSourceRevisionSha256,
-    lockedConversationApplyReason,
-    markdownFiles,
-    markdownRepository,
-    numberForMarkdownFile,
-    parseReportFileName,
     postReviewStartStatusComment,
     reconcileFolders,
     repoFromArgs,
     repoRelativePath,
-    reportFileName,
-    reportItemKind,
     reviewActionLedger,
     reviewArtifactDestination,
-    reviewLeaseRevisionFromReport,
     ROOT,
-    sameFailedReviewRetryRevision,
-
-    storedFailedReviewRetryRevision,
     syncWorkPlanFromReport,
     targetRepo,
     withGitHubRuntimeBudget,
@@ -466,13 +415,8 @@ export function createCommandOperations(dependencies: CreateCommandOperationsDep
     root: ROOT,
     codexFailureReason,
     defaultItemsDir,
-    effectiveReviewStatus,
     ensureDir,
     ensureGitHubRuntimeAvailable,
-    failedReviewFailureDetail,
-    failedReviewRetryEligibility,
-    failedReviewRetryResultRevision,
-    failedReviewRetryRevisionForReport,
     fetchItem,
     ghRawOnceWithCheckpoint,
     ghWithRetry,
@@ -480,7 +424,6 @@ export function createCommandOperations(dependencies: CreateCommandOperationsDep
       error,
     ): error is InstanceType<CreateCommandOperationsDependencies["GitHubDispatchError"]> =>
       error instanceof GitHubDispatchError,
-    isFailedReviewRetryAlreadyExhausted,
     isMarkdownForActiveRepo,
     isRuntimeBudgetError: (
       error,
@@ -488,16 +431,9 @@ export function createCommandOperations(dependencies: CreateCommandOperationsDep
       error instanceof GitHubRuntimeBudgetError,
     liveIssueSourceRevision,
     livePullHeadSha,
-    lockedConversationApplyReason,
-    markdownFiles,
-    numberForMarkdownFile,
     repoFromArgs,
     repoRelativePath,
-    reportItemKind,
-    reviewLeaseRevisionFromReport,
     reviewLedger: reviewActionLedger,
-    sameFailedReviewRetryRevision,
-    storedFailedReviewRetryRevision,
     targetRepo,
     withGitHubRuntimeBudget,
   });
@@ -523,8 +459,6 @@ export function createCommandOperations(dependencies: CreateCommandOperationsDep
     targetRepo,
     repoRelativePath,
 
-    reviewLeaseRevisionFromReport,
-    reportItemKind,
     reviewLedger: reviewActionLedger,
   });
 

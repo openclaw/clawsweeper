@@ -5,8 +5,8 @@ import { reviewContentCacheHit } from "../dist/scheduler-policy.js";
 import {
   itemContentDigestForTest,
   reviewCommentContentRevisionForTest,
-  reviewReportCanPromoteToCloseForTest,
 } from "../dist/clawsweeper.js";
+import { reviewReportCanPromoteToClose } from "../dist/clawsweeper-record-metadata.js";
 import { item } from "./helpers.ts";
 import { hydratePrimaryBody, longProofBody, sourceTools } from "./primary-body-fixture.ts";
 
@@ -589,20 +589,15 @@ test("verdict without a decision is never cached", () => {
 });
 
 test("cache-carried reports cannot be promoted to close", () => {
-  assert.equal(reviewReportCanPromoteToCloseForTest("---\nreview_cache_hit: true\n---\n"), false);
+  assert.equal(reviewReportCanPromoteToClose("---\nreview_cache_hit: true\n---\n"), false);
   assert.equal(
-    reviewReportCanPromoteToCloseForTest(
-      "---\nreview_cache_hit: false\nreview_cache_hit: false\n---\n",
-    ),
+    reviewReportCanPromoteToClose("---\nreview_cache_hit: false\nreview_cache_hit: false\n---\n"),
     false,
   );
-  assert.equal(
-    reviewReportCanPromoteToCloseForTest("---\nreview_cache_hit: invalid\n---\n"),
-    false,
-  );
+  assert.equal(reviewReportCanPromoteToClose("---\nreview_cache_hit: invalid\n---\n"), false);
 });
 
 test("fresh and legacy reports retain existing close promotion behavior", () => {
-  assert.equal(reviewReportCanPromoteToCloseForTest("---\nreview_cache_hit: false\n---\n"), true);
-  assert.equal(reviewReportCanPromoteToCloseForTest("---\ndecision: keep_open\n---\n"), true);
+  assert.equal(reviewReportCanPromoteToClose("---\nreview_cache_hit: false\n---\n"), true);
+  assert.equal(reviewReportCanPromoteToClose("---\ndecision: keep_open\n---\n"), true);
 });

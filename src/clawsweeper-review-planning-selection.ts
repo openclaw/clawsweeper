@@ -16,6 +16,7 @@ import type { ReviewPlanningDependencies } from "./clawsweeper-review-planning-d
 import type { createReviewPlanningInventory } from "./clawsweeper-review-planning-inventory.js";
 import type { createReviewPlanningHotIntake } from "./clawsweeper-review-planning-hot-intake.js";
 import type { createReviewPlanningDashboard } from "./clawsweeper-review-planning-dashboard.js";
+import { buildExistingReviewIndex } from "./clawsweeper-record-metadata.js";
 
 export function createReviewPlanningSelection(
   dependencies: ReviewPlanningDependencies &
@@ -27,7 +28,6 @@ export function createReviewPlanningSelection(
     maxPlanShardCount: MAX_PLAN_SHARD_COUNT,
     targetRepo,
     shouldPlanItem,
-    buildExistingReviewIndex,
     dueCandidate,
     reviewBackfillCandidate,
     fetchOpenItemPage,

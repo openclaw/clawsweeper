@@ -36,11 +36,7 @@ function relatedContextWith(records: Record<string, unknown>) {
     },
     compactIssue: (value: unknown) => value,
     compactPullRequest: (value: unknown) => value,
-    reviewSectionValue: () => "",
-    effectiveReviewStatus: () => "",
     displayTitle: (value: string) => value,
-    markdownFiles: () => [],
-    numberForMarkdownFile: () => 0,
     repoRelativePath: (value: string) => value,
   });
   return { context, requested, batches };

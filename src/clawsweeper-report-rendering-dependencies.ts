@@ -1,7 +1,6 @@
 import type { RealBehaviorProofPolicy } from "./clawsweeper-proof-policy.js";
 import type {
   ActionTaken,
-  AgentsPolicyStatus,
   CloseReason,
   Decision,
   Evidence,
@@ -12,8 +11,6 @@ import type {
   LabelJustification,
   LabelTransitionJustification,
   LikelyOwner,
-  MergeRiskOption,
-  OverallCorrectness,
   PrRating,
   PullRequestReviewReadiness,
   PullRequestReviewState,
@@ -22,7 +19,6 @@ import type {
   ReviewCommentRenderOptions,
   ReviewFinding,
   ReviewMetric,
-  RootCauseClusterAssessment,
   SecurityConcern,
   SecurityReview,
   TriagePriority,
@@ -31,7 +27,6 @@ import { type PrSurfaceFile } from "./pr-surface-stats.js";
 import { type ReviewStructuralPullState } from "./review-structural-cache.js";
 
 export interface CreateReportRenderingDependencies {
-  agentsPolicyStatusLine: (status: AgentsPolicyStatus | undefined) => string;
   closeClawHubHandoffBlock: (reason: CloseReason) => string;
   closeEvidenceLine: (evidence: Evidence) => string;
   closeIntro: (reason: CloseReason) => string;
@@ -60,7 +55,6 @@ export interface CreateReportRenderingDependencies {
   }) => string;
   ensureDir: (path: string) => void;
   fileUrl: (file: string, sha: string, line?: number, repo?: string) => string;
-  normalizeEvidence: (entry: Evidence) => Evidence;
   fixedInReportText: (markdown: string) => string;
   fixedInText: (decision: Decision) => string;
   fixedPullRequestFromReport: (markdown: string) => FixedPullRequest | null;
@@ -108,9 +102,6 @@ export interface CreateReportRenderingDependencies {
   linkedRelease: (tag: string) => string;
   linkedSha: (sha: string, repo?: string) => string;
   markdownLink: (label: string, url: string) => string;
-  markdownRepository: (markdown: string, file?: string) => string;
-  mergeRiskOptionsFromReport: (markdown: string) => MergeRiskOption[];
-  neutralizeOwnedSectionSpoofing: (value: string) => string;
   normalizePublicReviewText: (value: string) => string;
   priorityLabel: (priority: ReviewFinding["priority"]) => string;
   prSurfaceFilesFromContext: (context: ItemContext) => PrSurfaceFile[] | null;
@@ -137,23 +128,12 @@ export interface CreateReportRenderingDependencies {
   publicRiskBullets: (text: string) => string;
   publicSecurityReviewLine: (review: SecurityReview) => string;
   pullHeadShaFromContext: (context: ItemContext) => string | null;
-  pullHeadShaFromReport: (markdown: string) => string | null;
   renderOpenClawPrSurfaceFromReport: (markdown: string) => string;
   renderReviewMetricsDigest: (metrics: readonly ReviewMetric[]) => string;
   repairLoopPassModeFromReport: (markdown: string) => "" | "autofix" | "automerge";
   repoRelativePath: (path: string) => string;
-  reportAgentsPolicyStatus: (markdown: string) => AgentsPolicyStatus | undefined;
-  reportEvidence: (markdown: string) => Evidence[];
-  reportLikelyOwners: (markdown: string) => LikelyOwner[];
-  reportLiveProofRecordingBlock: (markdown: string) => string;
-  reportOverallConfidenceScore: (markdown: string) => number;
-  reportOverallCorrectness: (markdown: string) => OverallCorrectness;
-  reportPrRating: (markdown: string) => PrRating;
   reportRealBehaviorProofPolicy: (markdown: string) => RealBehaviorProofPolicy;
-  reportReviewFindings: (markdown: string) => ReviewFinding[];
-  reportRootCauseCluster: (markdown: string) => RootCauseClusterAssessment;
   reportRiskEntries: (text: string) => string[];
-  reportSecurityReview: (markdown: string) => SecurityReview;
   reviewAutomationMarkersFromReport: (
     markdown: string,
     readiness?: PullRequestReviewReadiness,
@@ -162,37 +142,9 @@ export interface CreateReportRenderingDependencies {
   reviewFindingLocation: (finding: Pick<ReviewFinding, "file" | "lineStart" | "lineEnd">) => string;
   reviewFindingSummaryLine: (finding: ReviewFinding) => string;
   reviewMetricsFromReport: (markdown: string) => ReviewMetric[];
-  reviewSectionValue: (
-    markdown: string,
-    section:
-      | "summary"
-      | "changeSummary"
-      | "systemContext"
-      | "architectureDiagram"
-      | "bestSolution"
-      | "maintainerDecision"
-      | "reproductionAssessment"
-      | "solutionAssessment"
-      | "visionFit"
-      | "rootCauseCluster"
-      | "reviewFindings"
-      | "securityReview"
-      | "realBehaviorProof"
-      | "prRating"
-      | "telegramVisibleProof"
-      | "featureShowcase"
-      | "agentsPolicyStatus"
-      | "workCandidate"
-      | "repairWorkPrompt"
-      | "evidence"
-      | "likelyOwners"
-      | "risks"
-      | "closeComment",
-  ) => string;
   reviewStructuralPullStateFromContext: (context: ItemContext) => ReviewStructuralPullState | null;
   reviewVersionMarkerFromReport: (markdown: string) => string;
   ROOT: string;
-  sanitizeArchitectureDiagram: (value: string) => string;
   securityConcernDetailedLine: (concern: SecurityConcern) => string;
   securityConcernLocation: (concern: SecurityConcern) => string;
   securityConcernSummaryLine: (concern: SecurityConcern) => string;
@@ -201,7 +153,6 @@ export interface CreateReportRenderingDependencies {
   shouldRenderWorkPlanFromReport: (markdown: string) => boolean;
   stripListMarker: (text: string) => string;
   targetRepo: () => string;
-  triagePriorityFromReport: (markdown: string) => TriagePriority;
   validateCloseDecision: (
     item: Pick<Item, "kind" | "labels"> & Partial<Pick<Item, "repo" | "authorAssociation">>,
     decision: Decision,

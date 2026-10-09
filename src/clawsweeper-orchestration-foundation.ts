@@ -23,6 +23,10 @@ import {
   frontMatterJsonArray,
   frontMatterValue,
 } from "./report-front-matter.js";
+import { markdownRepository } from "./clawsweeper-repository-paths.js";
+import { publicTableCell } from "./clawsweeper-report-helpers.js";
+import { reportSecurityReview } from "./clawsweeper-report-parser.js";
+import { reviewSectionValue } from "./clawsweeper-record-metadata.js";
 
 export function createReportOrchestrationFoundation(
   dependencies: CreateReportOrchestrationDependencies &
@@ -34,18 +38,13 @@ export function createReportOrchestrationFoundation(
     ghObservedMutationCommand,
     isBulkFilerExemptAuthorAssociation,
     isBulkFilerExemptRepositoryPermission,
-    isDigitsOnly,
     labelPolicy,
     markdownLink,
-    markdownRepository,
     normalizeLabelName,
     protectedLabels,
     publicReviewTextDiffers,
-    publicTableCell,
     repoUrlFor,
     reportRealBehaviorProofPolicy,
-    reportSecurityReview,
-    reviewSectionValue,
     sentence,
     targetProfile,
     targetRepo,
@@ -380,30 +379,6 @@ export function createReportOrchestrationFoundation(
     return normalizedLabelSet(labels).has(normalizeLabelName(label));
   }
 
-  function parseBacktickLocation(value: string): {
-    file: string;
-    lineStart: number;
-    lineEnd: number;
-  } | null {
-    if (!value.startsWith("`") || !value.endsWith("`")) return null;
-    const location = value.slice(1, -1);
-    const separator = location.lastIndexOf(":");
-    if (separator <= 0) return null;
-    const file = location.slice(0, separator);
-    const range = parseLineRange(location.slice(separator + 1));
-    return range ? { file, ...range } : null;
-  }
-
-  function parseLineRange(value: string): { lineStart: number; lineEnd: number } | null {
-    const separator = value.indexOf("-");
-    const lineStartText = separator === -1 ? value : value.slice(0, separator);
-    const lineEndText = separator === -1 ? value : value.slice(separator + 1);
-    if (!isDigitsOnly(lineStartText) || !isDigitsOnly(lineEndText)) return null;
-    const lineStart = Number(lineStartText);
-    const lineEnd = Number(lineEndText);
-    return lineStart > 0 && lineEnd >= lineStart ? { lineStart, lineEnd } : null;
-  }
-
   function workCandidateReasonText(section: string): string {
     const lines = section.split("\n");
     const reasonStart = lines.findIndex((line) => line.startsWith("Reason:"));
@@ -469,8 +444,6 @@ export function createReportOrchestrationFoundation(
     realBehaviorProofBlocksMerge,
     normalizedLabelSet,
     hasNormalizedLabel,
-    parseBacktickLocation,
-    parseLineRange,
     workCandidateReasonText,
   };
 }

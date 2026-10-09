@@ -24,6 +24,20 @@ import type {
 import type { CreateReportOrchestrationDependencies } from "./clawsweeper-report-orchestration-dependencies.js";
 import type { createReportOrchestrationFoundation } from "./clawsweeper-orchestration-foundation.js";
 import { frontMatterStringArray, frontMatterValue } from "./report-front-matter.js";
+import { effectiveReviewStatus } from "./clawsweeper-record-metadata.js";
+import {
+  impactLabelsFromReport,
+  labelJustificationsFromReport,
+  maturityLabelsFromReport,
+  mergeRiskLabelsFromReport,
+  reportFeatureShowcase,
+  reportOverallCorrectness,
+  reportPrRating,
+  reportRealBehaviorProof,
+  reportSecurityReview,
+  reportTelegramVisibleProof,
+  triagePriorityFromReport,
+} from "./clawsweeper-report-parser.js";
 
 export function createReportLabelPresentation(
   dependencies: CreateReportOrchestrationDependencies &
@@ -31,14 +45,9 @@ export function createReportLabelPresentation(
 ) {
   const {
     defaultPlansDir,
-    effectiveReviewStatus,
-    impactLabelsFromReport,
     isFresh,
     isIssueAdvisoryLabel,
     issueAdvisoryLabelStateFromReport,
-    labelJustificationsFromReport,
-    maturityLabelsFromReport,
-    mergeRiskLabelsFromReport,
     nextFeatureShowcaseLabels,
     nextImpactLabels,
     nextIssueAdvisoryLabels,
@@ -51,16 +60,9 @@ export function createReportLabelPresentation(
     nextTelegramVisibleProofLabels,
     prStatusLabelForKind,
     prStatusLabelKindFromReportLabels,
-    reportFeatureShowcase,
-    reportOverallCorrectness,
-    reportPrRating,
-    reportRealBehaviorProof,
     reportRealBehaviorProofPolicy,
-    reportSecurityReview,
-    reportTelegramVisibleProof,
     sentence,
     shouldApplyFeatureShowcaseLabel,
-    triagePriorityFromReport,
   } = dependencies;
 
   function workPlanPathForReport(file: string, plansDir = defaultPlansDir()): string {

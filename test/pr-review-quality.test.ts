@@ -5,11 +5,9 @@ import {
   renderReviewCommentFromReport,
   reviewAutomationMarkersFromReport,
 } from "../dist/clawsweeper.js";
-import { createRecordMetadata } from "../dist/clawsweeper-record-metadata.js";
-import { createReportHelpers } from "../dist/clawsweeper-report-helpers.js";
 import {
-  createReportParser,
   reportChangeExample,
+  reportPrRating,
   reportProductReview,
   reportProvenance,
   reportTestingReview,
@@ -121,15 +119,6 @@ test("decision parsing rejects invalid product, provenance, and testing values",
   }
 });
 
-const reportParser = createReportParser({
-  ...createRecordMetadata({} as never),
-  ...createReportHelpers({
-    OWNED_REVIEW_SECTION_HEADINGS: new Set(),
-    parseBacktickLocation: () => null,
-  }),
-  isExternalPullRequestReport: () => true,
-} as Parameters<typeof createReportParser>[0]);
-
 test("report round trip preserves product, provenance, and testing reviews", () => {
   const testingReview = {
     proofPath: "in_process_harness",
@@ -184,7 +173,7 @@ test("old reports read as not applicable and keep their stored rating", () => {
   assert.deepEqual(reportProductReview(old), notApplicableReview.productReview);
   assert.deepEqual(reportProvenance(old), []);
   assert.deepEqual(reportTestingReview(old), notApplicableReview.testingReview);
-  assert.equal(tiers(reportParser.reportPrRating(old)), "A/A/A");
+  assert.equal(tiers(reportPrRating(old)), "A/A/A");
 });
 
 function readiness(overrides: Record<string, unknown>) {

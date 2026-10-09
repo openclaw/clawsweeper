@@ -10,18 +10,13 @@ import type { ReviewPlanningDependencies } from "./clawsweeper-review-planning-d
 import type { createReviewPlanningInventory } from "./clawsweeper-review-planning-inventory.js";
 import { asRecord, nonBlankStringOrUndefined } from "./value-coerce.js";
 import { frontMatterValue } from "./report-front-matter.js";
+import { pullHeadShaFromReport } from "./clawsweeper-record-metadata.js";
 
 export function createReviewPlanningHotIntake(
   dependencies: ReviewPlanningDependencies & ReturnType<typeof createReviewPlanningInventory>,
 ) {
-  const {
-    ghJson,
-    fetchReviewedPrActivityCursor,
-    ghPaged,
-    githubCount,
-    itemSourceRevisionSha256,
-    pullHeadShaFromReport,
-  } = dependencies;
+  const { ghJson, fetchReviewedPrActivityCursor, ghPaged, githubCount, itemSourceRevisionSha256 } =
+    dependencies;
 
   type HotIntakeExactReviewSnapshot = {
     headSha: string;

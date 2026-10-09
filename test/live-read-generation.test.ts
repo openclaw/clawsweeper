@@ -56,7 +56,6 @@ test("fetchItem shares the full issue read and normalizes live label objects", (
     },
     ghJsonLines: () => [],
     normalizeAuthorAssociation: () => "CONTRIBUTOR",
-    indexedExistingReview: () => null,
   });
   const generation = new LiveReadGeneration();
 
@@ -89,7 +88,6 @@ test("planning snapshot is decision-equivalent, repairs gaps, and mutation gener
     },
     ghJsonLines: () => [],
     normalizeAuthorAssociation: () => "CONTRIBUTOR",
-    indexedExistingReview: () => null,
     githubReadModelRequestSync: (operation, payload) => {
       if (operation === "item") {
         return snapshot ? { usable: true, item: structuredClone(snapshot) } : { usable: false };

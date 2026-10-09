@@ -743,7 +743,6 @@ test("GitHub throttles abort apply lease checks and preserve durable lease owner
     postReviewStartStatusComment: () => ({ status: "posted", lease }),
     reportReviewRevision: null,
     requiresApplyMutationLease: true,
-    reviewLeaseRevisionFromReport: () => null,
     setActiveApplyMutationLease: () => undefined,
     shouldPreserveReviewStartLease: () => false,
     targetRepo: () => "openclaw/openclaw",

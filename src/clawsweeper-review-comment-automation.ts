@@ -7,16 +7,18 @@ import type { createReviewCommentIdentity } from "./clawsweeper-review-comment-i
 import type { PullRequestReviewReadiness } from "./clawsweeper-types.js";
 import { parseIsoMs } from "./iso-time.js";
 import { frontMatterStringArray, frontMatterValue } from "./report-front-matter.js";
+import { pullHeadShaFromReport } from "./clawsweeper-record-metadata.js";
+import {
+  reportAttachedLiveVerification,
+  reportReviewFindings,
+  reportSecurityReview,
+} from "./clawsweeper-report-parser.js";
 
 export function createReviewCommentAutomation(
   dependencies: ReviewCommentWorkflowDependencies & ReturnType<typeof createReviewCommentIdentity>,
 ) {
   const {
-    reportSecurityReview,
-    reportReviewFindings,
     realBehaviorProofBlocksMerge,
-    reportAttachedLiveVerification,
-    pullHeadShaFromReport,
     pullRequestReviewReadinessFromReport,
     securitySensitiveRepairAllowed,
     markerAttributeValue,

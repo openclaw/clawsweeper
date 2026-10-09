@@ -9,6 +9,8 @@ import type {
 } from "./clawsweeper-types.js";
 import type { CreateReportRenderingDependencies } from "./clawsweeper-report-rendering-dependencies.js";
 import { frontMatterStringArray, frontMatterValue } from "./report-front-matter.js";
+import { markdownRepository } from "./clawsweeper-repository-paths.js";
+import { reviewSectionValue } from "./clawsweeper-record-metadata.js";
 
 export function createReportContextRendering(dependencies: CreateReportRenderingDependencies) {
   const {
@@ -19,9 +21,7 @@ export function createReportContextRendering(dependencies: CreateReportRendering
     inlineCode,
     linkedSha,
     markdownLink,
-    markdownRepository,
     repoRelativePath,
-    reviewSectionValue,
     shouldRenderWorkPlanFromReport,
     workPlanPathForReport,
   } = dependencies;

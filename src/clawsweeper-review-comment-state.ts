@@ -10,7 +10,6 @@ import {
 } from "./clawsweeper-policy.js";
 import type {
   CloseReason,
-  Item,
   ItemContext,
   ReviewStartStatusCommentOptions,
 } from "./clawsweeper-types.js";
@@ -35,6 +34,10 @@ export function normalizeNoopReviewMarkerMetadata(body: string): string {
 import type { createReviewCommentIdentity } from "./clawsweeper-review-comment-identity.js";
 import { parseIsoMs } from "./iso-time.js";
 import { frontMatterValue } from "./report-front-matter.js";
+import {
+  pullHeadShaFromReport,
+  reviewLeaseRevisionFromReport,
+} from "./clawsweeper-record-metadata.js";
 
 export function expireReviewStartStatusLease(
   body: string,
@@ -72,8 +75,6 @@ export function createReviewCommentState(
     parseGitHubItemRef,
     reviewCommentMarker,
     pullHeadShaFromContext,
-    pullHeadShaFromReport,
-    reviewLeaseRevisionFromReport,
     markerAttributeValue,
   } = dependencies;
 
@@ -880,13 +881,6 @@ export function createReviewCommentState(
     return Boolean(login && PATCHABLE_REVIEW_COMMENT_AUTHORS.has(login));
   }
 
-  function lockedConversationApplyReason(
-    item: Pick<Item, "activeLockReason" | "locked">,
-  ): string | null {
-    if (!item.locked) return null;
-    return `conversation is locked${item.activeLockReason ? ` (${item.activeLockReason})` : ""}`;
-  }
-
   return {
     markedReviewCommentBody,
     reviewStartLeaseCommentMarker,
@@ -927,6 +921,5 @@ export function createReviewCommentState(
     PATCHABLE_REVIEW_COMMENT_AUTHORS,
     commentAuthorLogin,
     canPatchReviewComment,
-    lockedConversationApplyReason,
   };
 }

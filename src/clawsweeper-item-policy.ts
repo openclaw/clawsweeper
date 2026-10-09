@@ -47,6 +47,17 @@ export function isMaintainerAuthorAssociation(value: unknown): boolean {
   return MAINTAINER_AUTHOR_ASSOCIATIONS.has(normalizeAuthorAssociation(value));
 }
 
+export function isAutomationReportAuthor(author: string | undefined): boolean {
+  return Boolean(author && (/\[bot\]$/i.test(author) || author.startsWith("app/")));
+}
+
+export function lockedConversationApplyReason(
+  item: Pick<Item, "activeLockReason" | "locked">,
+): string | null {
+  if (!item.locked) return null;
+  return `conversation is locked${item.activeLockReason ? ` (${item.activeLockReason})` : ""}`;
+}
+
 export function isBulkFilerExemptAuthorAssociation(value: unknown): boolean {
   return BULK_FILER_EXEMPT_AUTHOR_ASSOCIATIONS.has(normalizeAuthorAssociation(value));
 }

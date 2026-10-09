@@ -11,6 +11,7 @@ import {
 } from "./clawsweeper-apply-guard-dependencies.js";
 import { asRecord, login, nonBlankStringOrUndefined } from "./value-coerce.js";
 import { isOlderThanDays } from "./iso-time.js";
+import { reportPrRating, reportRealBehaviorProof } from "./clawsweeper-report-parser.js";
 
 export function createApplyGuardActivity(dependencies: ApplyGuardDependencies) {
   const {
@@ -19,8 +20,6 @@ export function createApplyGuardActivity(dependencies: ApplyGuardDependencies) {
     isMaintainerAuthorAssociation,
     normalizeLabelName,
     quoteGitHubSearchTerm,
-    reportPrRating,
-    reportRealBehaviorProof,
     targetRepo,
   } = dependencies;
 

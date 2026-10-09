@@ -10,18 +10,21 @@ import type {
 import { isGitHubRequiresAuthenticationError } from "./github-retry.js";
 import { reportAllowsAutomation } from "./manual-publication-policy.js";
 import { frontMatterBoolean, replaceFrontMatterValue } from "./report-front-matter.js";
+import {
+  impactLabelsFromReport,
+  maturityLabelsFromReport,
+  mergeRiskLabelsFromReport,
+  triagePriorityFromReport,
+} from "./clawsweeper-report-parser.js";
 
 type ApplyReportLabelDependencies = Pick<
   CreateApplyDecisionWorkflowDependencies,
   | "bulkFilerRepositoryPermission"
   | "closingPullRequestsForIssue"
   | "hasNormalizedLabel"
-  | "impactLabelsFromReport"
   | "isBulkFilerExemptAuthorAssociation"
   | "isGoodFirstIssue"
   | "issueAdvisoryLabelStateFromReport"
-  | "maturityLabelsFromReport"
-  | "mergeRiskLabelsFromReport"
   | "openClosingPullRequestApplyReason"
   | "syncBulkFilerLabel"
   | "syncImpactLabels"
@@ -29,7 +32,6 @@ type ApplyReportLabelDependencies = Pick<
   | "syncMaturityLabels"
   | "syncMergeRiskLabels"
   | "syncPriorityLabel"
-  | "triagePriorityFromReport"
 >;
 
 interface ApplyReportLabelOptions {
@@ -72,12 +74,9 @@ export function syncApplyReportLabels(
     bulkFilerRepositoryPermission,
     closingPullRequestsForIssue,
     hasNormalizedLabel,
-    impactLabelsFromReport,
     isBulkFilerExemptAuthorAssociation,
     isGoodFirstIssue,
     issueAdvisoryLabelStateFromReport,
-    maturityLabelsFromReport,
-    mergeRiskLabelsFromReport,
     openClosingPullRequestApplyReason,
     syncBulkFilerLabel,
     syncImpactLabels,
@@ -85,7 +84,6 @@ export function syncApplyReportLabels(
     syncMaturityLabels,
     syncMergeRiskLabels,
     syncPriorityLabel,
-    triagePriorityFromReport,
   } = dependencies;
   const {
     bulkFilerRepositoryPermissionCache,

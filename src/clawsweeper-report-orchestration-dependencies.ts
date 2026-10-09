@@ -2,8 +2,6 @@ import type { RealBehaviorProofPolicy } from "./clawsweeper-proof-policy.js";
 import { PR_STATUS_LABELS, type MergeRiskLabelName } from "./clawsweeper-policy.js";
 import type {
   ActionTaken,
-  AgentsPolicyStatus,
-  AutoImplementationCandidate,
   CloseReason,
   ContextHydration,
   Decision,
@@ -12,11 +10,9 @@ import type {
   FixedPullRequest,
   GithubPageWithHeaders,
   ImpactLabelName,
-  ImplementationComplexity,
   IssueAdvisoryLabelState,
   Item,
   ItemContext,
-  LabelJustification,
   LikelyOwner,
   MaturityLabelName,
   MergeRiskOption,
@@ -36,13 +32,11 @@ import type {
   SecurityReview,
   TelegramVisibleProof,
   TriagePriority,
-  VisionFitStatus,
 } from "./clawsweeper-types.js";
 import { type RepositoryProfile } from "./repository-profiles.js";
 import { type ReviewStructuralPullState } from "./review-structural-cache.js";
 
 export interface CreateReportOrchestrationDependencies {
-  agentsPolicyStatusLine: (status: AgentsPolicyStatus | undefined) => string;
   closeEvidenceLine: (evidence: Evidence) => string;
   collectItemContext: (
     item: Item,
@@ -54,14 +48,11 @@ export interface CreateReportOrchestrationDependencies {
   ) => ItemContext;
   compactPullFilePaths: (value: unknown) => string[];
   confidenceText: (score: number) => string;
-  defaultAgentsPolicyStatus: () => AgentsPolicyStatus;
   defaultPlansDir: (profile?: RepositoryProfile) => string;
   defaultRootCauseCluster: () => RootCauseClusterAssessment;
-  effectiveReviewStatus: (markdown: string) => string;
   ensureDir: (path: string) => void;
   eventTimestampMs: (value: unknown) => number | null;
   fileUrl: (file: string, sha: string, line?: number, repo?: string) => string;
-  normalizeEvidence: (entry: Evidence) => Evidence;
   filterReviewContextComments: (
     comments: readonly unknown[],
     number: number,
@@ -102,12 +93,9 @@ export interface CreateReportOrchestrationDependencies {
   ) => ContextHydration<T>;
   GitHubRuntimeBudgetError: new (reason: string) => Error & { readonly reason: string };
   hasUsableCloseComment: (closeComment: string) => boolean;
-  impactLabelsFromReport: (markdown: string) => ImpactLabelName[];
   isAfterReview: (value: unknown, reviewedAtMs: number | null) => boolean;
-  isAutomationReportAuthor: (author: string | undefined) => boolean;
   isBulkFilerExemptAuthorAssociation: (value: unknown) => boolean;
   isBulkFilerExemptRepositoryPermission: (value: unknown) => boolean;
-  isDigitsOnly: (value: string) => boolean;
   isFresh: (
     review: { reviewedAt: string | undefined; reviewStatus: string | undefined } | null,
   ) => boolean;
@@ -126,13 +114,6 @@ export interface CreateReportOrchestrationDependencies {
   isVerifiedFixedCloseReason: (reason: unknown) => boolean;
   itemSnapshotHash: (item: Item, context: ItemContext) => string;
   jsonFrontMatterValue: (value: readonly unknown[]) => string;
-  labelJustificationsFromReport: (
-    markdown: string,
-    labels: Pick<
-      Decision,
-      "triagePriority" | "impactLabels" | "mergeRiskLabels" | "maturityLabels"
-    >,
-  ) => LabelJustification[];
   labelNames: (value: unknown) => string[];
   labelPolicy: {
     eventTimestampMs: (value: unknown) => number | null;
@@ -223,11 +204,6 @@ export interface CreateReportOrchestrationDependencies {
   }) => string | null;
   lowSignalUnmergeablePrConflictBlockReason: (pullValue: unknown) => string | null;
   markdownLink: (label: string, url: string) => string;
-  markdownRepository: (markdown: string, file?: string) => string;
-  maturityLabelsFromReport: (markdown: string) => MaturityLabelName[];
-  mergeRiskLabelsFromReport: (markdown: string) => MergeRiskLabelName[];
-  mergeRiskOptionsFromReport: (markdown: string) => MergeRiskOption[];
-  neutralizeOwnedSectionSpoofing: (value: string) => string;
   nextFeatureShowcaseLabels: (
     labels: readonly string[],
     options: {
@@ -296,9 +272,7 @@ export interface CreateReportOrchestrationDependencies {
   publicReviewTextIsSame: (left: string, right: string) => boolean;
   publicRiskBullets: (text: string) => string;
   publicSecurityReviewLine: (review: SecurityReview) => string;
-  publicTableCell: (value: string) => string;
   pullHeadShaFromContext: (context: ItemContext) => string | null;
-  pullHeadShaFromReport: (markdown: string) => string | null;
   pullRequestHeadActivity: (
     number: number,
     pull: {
@@ -309,68 +283,17 @@ export interface CreateReportOrchestrationDependencies {
   ) => Pick<PullRequestLiveActivity, "headSha" | "headActivityAtMs">;
   repairLoopPassModeFromReport: (markdown: string) => "" | "autofix" | "automerge";
   repoRelativePath: (path: string) => string;
-  reportAgentsPolicyStatus: (markdown: string) => AgentsPolicyStatus | undefined;
-  reportEvidence: (markdown: string) => Evidence[];
-  reportFeatureShowcase: (markdown: string) => FeatureShowcase;
-  reportFileName: (repo: string, number: number) => string;
-  reportLikelyOwners: (markdown: string) => LikelyOwner[];
-  reportLiveProofRecordingBlock: (markdown: string) => string;
-  reportOverallConfidenceScore: (markdown: string) => number;
-  reportOverallCorrectness: (markdown: string) => OverallCorrectness;
-  reportPrRating: (markdown: string) => PrRating;
-  reportRealBehaviorProof: (markdown: string) => RealBehaviorProof;
   reportRealBehaviorProofPolicy: (markdown: string) => RealBehaviorProofPolicy;
-  reportReviewFindings: (markdown: string) => ReviewFinding[];
-  reportRootCauseCluster: (markdown: string) => RootCauseClusterAssessment;
   reportRiskEntries: (text: string) => string[];
-  reportSecurityReview: (markdown: string) => SecurityReview;
-  reportTelegramVisibleProof: (markdown: string) => TelegramVisibleProof;
-  reportVisionFit: (markdown: string) => {
-    visionFit: VisionFitStatus;
-    visionFitReason: string;
-    visionFitEvidence: string[];
-    implementationComplexity: ImplementationComplexity;
-    autoImplementationCandidate: AutoImplementationCandidate;
-  };
   repoUrlFor: (repo: string, path?: string) => string;
   reviewAutomationMarkersFromReport: (markdown: string) => string;
   reviewFindingDetailedLine: (finding: ReviewFinding) => string;
   reviewFindingLocation: (finding: Pick<ReviewFinding, "file" | "lineStart" | "lineEnd">) => string;
   reviewFindingSummaryLine: (finding: ReviewFinding) => string;
-  reviewReportCanPromoteToClose: (markdown: string) => boolean;
-  reviewSectionValue: (
-    markdown: string,
-    section:
-      | "summary"
-      | "changeSummary"
-      | "systemContext"
-      | "architectureDiagram"
-      | "bestSolution"
-      | "maintainerDecision"
-      | "reproductionAssessment"
-      | "solutionAssessment"
-      | "visionFit"
-      | "rootCauseCluster"
-      | "reviewFindings"
-      | "securityReview"
-      | "realBehaviorProof"
-      | "prRating"
-      | "telegramVisibleProof"
-      | "featureShowcase"
-      | "agentsPolicyStatus"
-      | "workCandidate"
-      | "repairWorkPrompt"
-      | "evidence"
-      | "likelyOwners"
-      | "risks"
-      | "closeComment",
-  ) => string;
   reviewStructuralPullStateFromContext: (context: ItemContext) => ReviewStructuralPullState | null;
   reviewVersionMarkerFromReport: (markdown: string) => string;
   ROOT: string;
   runtimeBudgetExceeded: (startedAtMs: number, maxRuntimeMs: number, nowMs: number) => boolean;
-  sanitizeArchitectureDiagram: (value: string) => string;
-  sectionLineValue: (section: string, label: string) => string | undefined;
   securityConcernDetailedLine: (concern: SecurityConcern) => string;
   securityConcernLocation: (concern: SecurityConcern) => string;
   securityConcernSummaryLine: (concern: SecurityConcern) => string;
@@ -393,7 +316,6 @@ export interface CreateReportOrchestrationDependencies {
     requestedTimeoutMs: number,
     nowMs: number,
   ) => number | null;
-  triagePriorityFromReport: (markdown: string) => TriagePriority;
   validateCloseDecision: (
     item: Pick<Item, "kind" | "labels"> & Partial<Pick<Item, "repo" | "authorAssociation">>,
     decision: Decision,

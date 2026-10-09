@@ -21,7 +21,6 @@ export function createReportRendering(dependencies: CreateReportRenderingDepende
   });
   const tools = { ...context, ...commentHelpers, ...commentPresentation, ...actions, ...document };
   return {
-    OWNED_REVIEW_SECTION_HEADINGS: tools.OWNED_REVIEW_SECTION_HEADINGS,
     closeItem: tools.closeItem,
     collapsedDetailsBlock: tools.collapsedDetailsBlock,
     currentReviewRevision: tools.currentReviewRevision,

@@ -11,6 +11,12 @@ import type { createPullRequestPromotionFacts } from "./clawsweeper-promotion-fa
 import type { createPullRequestCoverageProof } from "./clawsweeper-coverage-proof.js";
 import { isOlderThanDays } from "./iso-time.js";
 import { frontMatterValue } from "./report-front-matter.js";
+import {
+  mergeRiskOptionsFromReport,
+  reportPrRating,
+  reportRealBehaviorProof,
+} from "./clawsweeper-report-parser.js";
+import { reviewReportCanPromoteToClose } from "./clawsweeper-record-metadata.js";
 
 export function createPullRequestClosePromotion(
   dependencies: CreateReportOrchestrationDependencies &
@@ -25,11 +31,7 @@ export function createPullRequestClosePromotion(
     linkedPullRequestSupersession,
     lowSignalUnmergeablePrAuthorActivityBlockReason,
     lowSignalUnmergeablePrConflictBlockReason,
-    mergeRiskOptionsFromReport,
     pullRequestHeadActivity,
-    reportPrRating,
-    reportRealBehaviorProof,
-    reviewReportCanPromoteToClose,
     targetRepo,
   } = dependencies;
 

@@ -5,10 +5,12 @@ import type { ApplyKind, ReportEntry } from "./clawsweeper-types.js";
 import { syncDecisionPacketRecord, type DecisionPacketSubjectState } from "./decision-packets.js";
 import { captureCanonicalRecordBaseline } from "./repair/canonical-record-baseline.js";
 import type { RepositoryProfile } from "./repository-profiles.js";
+import { applyQueueSortFields } from "./clawsweeper-record-metadata.js";
+import { numberForMarkdownFile } from "./clawsweeper-repository-paths.js";
 
 type ApplyRecordDependencies = Pick<
   CreateApplyDecisionWorkflowDependencies,
-  "applyQueueSortFields" | "numberForMarkdownFile" | "reportEntriesForDir" | "targetRepo"
+  "reportEntriesForDir" | "targetRepo"
 > & {
   applyKind: ApplyKind;
   canonicalBaselineDir: string;
@@ -25,13 +27,11 @@ type ApplyRecordDependencies = Pick<
 
 export function createApplyRecordOperations({
   applyKind,
-  applyQueueSortFields,
   canonicalBaselineDir,
   closedDir,
   decisionPacketsDir,
   dryRun,
   itemsDir,
-  numberForMarkdownFile,
   plansDir,
   profile,
   recordRoot,

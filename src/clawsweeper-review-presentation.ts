@@ -16,13 +16,14 @@ import type {
   TriagePriority,
 } from "./clawsweeper-types.js";
 import { frontMatterStringArray } from "./report-front-matter.js";
+import { isCommitSha, normalizeEvidence, splitFileAndLine } from "./clawsweeper-links.js";
+import { publicTableCell } from "./clawsweeper-report-helpers.js";
+import { reportEvidence } from "./clawsweeper-report-parser.js";
 
 interface ReviewPresentationDependencies {
   docsPageUrl: (file: string, repo?: string) => string | null;
   fileUrl: (file: string, sha: string, line?: number, repo?: string) => string;
-  normalizeEvidence: (entry: Evidence) => Evidence;
   hasRepairLoopPauseLabel: (labels: readonly string[]) => boolean;
-  isCommitSha: (value: string) => boolean;
   latestFileUrl: (file: string, repo?: string) => string;
   linkedSha: (sha: string, repo?: string) => string;
   markdownLink: (label: string, url: string) => string;
@@ -31,27 +32,19 @@ interface ReviewPresentationDependencies {
     context: Pick<ItemContext, "comments" | "timeline">,
     currentLabels: readonly string[],
   ) => PrStatusLabelKind | null;
-  publicTableCell: (value: string) => string;
-  reportEvidence: (markdown: string) => Evidence[];
   securityConcernLocation: (concern: SecurityConcern) => string;
-  splitFileAndLine: (file: string) => { file: string; line?: number };
   targetRepo: () => string;
 }
 
 export function createReviewPresentation({
   docsPageUrl,
   fileUrl,
-  normalizeEvidence,
   hasRepairLoopPauseLabel,
-  isCommitSha,
   latestFileUrl,
   linkedSha,
   markdownLink,
   prStatusLabelKindFromReport,
-  publicTableCell,
-  reportEvidence,
   securityConcernLocation,
-  splitFileAndLine,
   targetRepo,
 }: ReviewPresentationDependencies) {
   function sentence(value: string): string {

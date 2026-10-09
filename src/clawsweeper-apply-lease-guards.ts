@@ -6,6 +6,7 @@ import { freshExactHeadReviewStartLease } from "./repair/comment-router-core.js"
 import { generationReadKey, type LiveReadGeneration } from "./live-read-generation.js";
 import { asRecord } from "./value-coerce.js";
 import { frontMatterValue } from "./report-front-matter.js";
+import { reviewLeaseRevisionFromReport } from "./clawsweeper-record-metadata.js";
 
 type ActiveApplyMutationLease = { itemNumber: number; lease: AcquiredReviewStartLease } | null;
 
@@ -17,7 +18,6 @@ type ApplyLeaseGuardDependencies = Pick<
   | "liveIssueSourceRevision"
   | "PATCHABLE_REVIEW_COMMENT_AUTHORS"
   | "postReviewStartStatusComment"
-  | "reviewLeaseRevisionFromReport"
   | "shouldPreserveReviewStartLease"
   | "targetRepo"
 > & {
@@ -58,7 +58,6 @@ export function createApplyLeaseGuards({
   postReviewStartStatusComment,
   reportReviewRevision,
   requiresApplyMutationLease,
-  reviewLeaseRevisionFromReport,
   setActiveApplyMutationLease,
   shouldPreserveReviewStartLease,
   targetRepo,

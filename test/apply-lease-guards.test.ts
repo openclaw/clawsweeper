@@ -56,7 +56,6 @@ function leaseGuards(calls: string[], activityBlock: string | null = null) {
     postReviewStartStatusComment: () => ({ status: "posted", lease }),
     reportReviewRevision: headSha,
     requiresApplyMutationLease: true,
-    reviewLeaseRevisionFromReport: () => headSha,
     setActiveApplyMutationLease: () => undefined,
     shouldPreserveReviewStartLease: () => false,
     targetRepo: () => "openclaw/openclaw",

@@ -8,6 +8,7 @@ import type {
   ItemContext,
   PullRequestClosePromotion,
 } from "./clawsweeper-types.js";
+import { reviewReportCanPromoteToClose } from "./clawsweeper-record-metadata.js";
 
 type ApplyPullRequestPromotionDependencies = Pick<
   CreateApplyDecisionWorkflowDependencies,
@@ -18,7 +19,6 @@ type ApplyPullRequestPromotionDependencies = Pick<
   | "itemSnapshotHash"
   | "livePullRequestHasNoDiff"
   | "pullRequestClosePromotion"
-  | "reviewReportCanPromoteToClose"
   | "upgradeNoDiffPullRequestReport"
   | "upgradePullRequestClosePromotionReport"
 >;
@@ -54,7 +54,6 @@ export function promoteApplyPullRequest(
     itemSnapshotHash,
     livePullRequestHasNoDiff,
     pullRequestClosePromotion,
-    reviewReportCanPromoteToClose,
     upgradeNoDiffPullRequestReport,
     upgradePullRequestClosePromotionReport,
   } = dependencies;

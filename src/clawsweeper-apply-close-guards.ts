@@ -13,6 +13,18 @@ import type {
 } from "./clawsweeper-types.js";
 import { maintainerDecisionBlocksClose, type MaintainerDecision } from "./decision-packets.js";
 import { frontMatterValue } from "./report-front-matter.js";
+import {
+  hasAutoCloseAllowedMetadata,
+  hasVerifiedLocalCheckoutAccess,
+  isApplyCloseCandidateReport,
+  isRetryableCloseSkipReport,
+  reportCloseReason,
+  reportItemKind,
+  reviewSectionValue,
+  shouldSyncReviewComment,
+} from "./clawsweeper-record-metadata.js";
+import { lockedConversationApplyReason } from "./clawsweeper-item-policy.js";
+import { markdownRepository } from "./clawsweeper-repository-paths.js";
 
 export function markLockedConversationApplySkipped(
   reason: string | null,
@@ -51,14 +63,12 @@ export function requiresLockedReviewCommentMutation(
     commentBodyMatches,
     markedReviewCommentBody,
     renderReviewCommentFromReport,
-    shouldSyncReviewComment,
   }: Pick<
     CreateApplyDecisionWorkflowDependencies,
     | "commentBody"
     | "commentBodyMatches"
     | "markedReviewCommentBody"
     | "renderReviewCommentFromReport"
-    | "shouldSyncReviewComment"
   >,
   options: {
     action: string | undefined;
@@ -187,28 +197,18 @@ export function createApplyCloseGuards(
     commentUpdatedAt,
     duplicateCanonicalPullRequestBlockReason,
     fetchItem,
-    hasAutoCloseAllowedMetadata,
-    hasVerifiedLocalCheckoutAccess,
-    isApplyCloseCandidateReport,
     isMaintainerAuthorAssociation,
-    isRetryableCloseSkipReport,
     issueReviewCommentState,
-    lockedConversationApplyReason,
     isVerifiedFixedCloseReason,
     itemSnapshotHash,
-    markdownRepository,
     markedReviewCommentBody,
     normalizeAuthorAssociation,
     openClosingPullRequestApplyReason,
     renderReviewCommentFromReport,
-    reportCloseReason,
     reportDecision,
-    reportItemKind,
     reviewCommentBodyDigest,
     reviewCommentHashMatches,
-    reviewSectionValue,
     sameAuthorCounterpartApplyReason,
-    shouldSyncReviewComment,
     validateCloseDecision,
   } = dependencies;
 

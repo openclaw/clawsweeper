@@ -36,6 +36,7 @@ import {
 } from "./pr-hydration-snapshot.js";
 import { parseNextStep } from "./clawsweeper-next-step.js";
 import { replaceFrontMatterValue } from "./report-front-matter.js";
+import { normalizeEvidence } from "./clawsweeper-links.js";
 
 export function localCheckoutAccessForDecision(
   decision: Pick<Decision, "localCheckoutAccess">,
@@ -74,7 +75,6 @@ export function createReportDocumentRendering(
     confidenceText,
     contextCountText,
     fileUrl,
-    normalizeEvidence,
     fixedInText,
     formatTimestamp,
     jsonFrontMatterValue,

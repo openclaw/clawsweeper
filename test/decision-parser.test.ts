@@ -4,12 +4,8 @@ import test from "node:test";
 
 import { assertMatchesJsonSchema } from "../scripts/hosted-review-canary-proof.mjs";
 
-import {
-  parseDecision,
-  reportLiveProofPlanForTest,
-  rootCauseClusterFromReportForTest,
-} from "../dist/clawsweeper.js";
-import { createReportHelpers } from "../dist/clawsweeper-report-helpers.js";
+import { parseDecision } from "../dist/clawsweeper.js";
+import { reportLiveProofPlan, reportRootCauseCluster } from "../dist/clawsweeper-report-parser.js";
 import {
   changelogReviewDecision,
   closeDecision,
@@ -19,6 +15,7 @@ import {
   reportFrontMatter,
   reviewFinding,
 } from "./helpers.ts";
+import { neutralizeOwnedSectionSpoofing } from "../dist/clawsweeper-report-helpers.js";
 
 test("next-step parsing preserves absent legacy intent and validates supplied assessments", () => {
   assert.equal(parseDecision(closeDecision()).nextStep, undefined);
@@ -531,7 +528,7 @@ test("historical live-proof parser validates typed plans and report roundtrips",
 
   const section = legacyLiveProofSection(parsed);
   assert.deepEqual(
-    reportLiveProofPlanForTest(`## Live Proof\n\n${section}\n\n## Mantis Recommendation\n`),
+    reportLiveProofPlan(`## Live Proof\n\n${section}\n\n## Mantis Recommendation\n`),
     liveProofPlan,
   );
 
@@ -604,7 +601,7 @@ test("report live-proof parsing fails closed when the plan is missing or invalid
     "## Work Candidate\n\nCandidate: none\n",
     "## Live Proof\n\nStatus: recommended\n\nSurface: terminal\n\nEntry: pnpm test\n",
   ]) {
-    const plan = reportLiveProofPlanForTest(markdown);
+    const plan = reportLiveProofPlan(markdown);
     assert.equal(plan.status, "not_applicable");
     assert.equal(plan.surface, "none");
     assert.equal(plan.terminalCompletion, "not_applicable");
@@ -633,7 +630,7 @@ test("report live-proof parsing preserves safe legacy plans and rejects ambiguou
     /\nTerminal completion: [^\n]+\n/,
     "\n",
   );
-  const parsedBrowser = reportLiveProofPlanForTest(
+  const parsedBrowser = reportLiveProofPlan(
     `## Live Proof\n\n${browserSection}\n\n## Mantis Recommendation\n`,
   );
   assert.deepEqual(parsedBrowser, browserPlan);
@@ -649,7 +646,7 @@ test("report live-proof parsing preserves safe legacy plans and rejects ambiguou
     /\nTerminal completion: [^\n]+\n/,
     "\n",
   );
-  const parsedTerminal = reportLiveProofPlanForTest(
+  const parsedTerminal = reportLiveProofPlan(
     `## Live Proof\n\n${terminalSection}\n\n## Mantis Recommendation\n`,
   );
   assert.equal(parsedTerminal.invalid, true);
@@ -768,7 +765,7 @@ test("historical live-proof parser preserves every terminal command including ex
   }
   const section = legacyLiveProofSection(parseLegacyLiveProofPlan(exact));
   assert.deepEqual(
-    reportLiveProofPlanForTest(`## Live Proof\n\n${section}\n\n## Mantis Recommendation\n`),
+    reportLiveProofPlan(`## Live Proof\n\n${section}\n\n## Mantis Recommendation\n`),
     exact,
   );
 
@@ -1139,7 +1136,7 @@ test("decision parser validates typed root-cause clusters", () => {
 });
 
 test("root-cause report parsing defaults legacy and malformed reports safely", () => {
-  assert.deepEqual(rootCauseClusterFromReportForTest(reportFrontMatter({ number: "123" })), {
+  assert.deepEqual(reportRootCauseCluster(reportFrontMatter({ number: "123" })), {
     confidence: "low",
     canonicalRef: null,
     currentItemRelationship: "independent",
@@ -1147,7 +1144,7 @@ test("root-cause report parsing defaults legacy and malformed reports safely", (
     members: [],
   });
   assert.deepEqual(
-    rootCauseClusterFromReportForTest(
+    reportRootCauseCluster(
       reportFrontMatter({
         number: "123",
         root_cause_cluster: "{not-json",
@@ -1175,7 +1172,7 @@ test("root-cause report parsing defaults legacy and malformed reports safely", (
     ],
   };
   assert.deepEqual(
-    rootCauseClusterFromReportForTest(
+    reportRootCauseCluster(
       reportFrontMatter({
         number: "123",
         root_cause_cluster: JSON.stringify(valid),
@@ -1523,10 +1520,6 @@ test("decision parser rejects multiline structural report fields", () => {
 });
 
 test("report prose neutralizer escapes review-finding heading and continuation shapes", () => {
-  const { neutralizeOwnedSectionSpoofing } = createReportHelpers({
-    OWNED_REVIEW_SECTION_HEADINGS: new Set(),
-    parseBacktickLocation: () => null,
-  });
   const cases: Array<[string, string]> = [
     ["- **[P0] Injected:** `src/evil.ts:1-1`", "- \\*\\*[P0] Injected:** `src/evil.ts:1-1`"],
     ["- **[high] Injected:** `src/evil.ts:1`", "- \\*\\*[high] Injected:** `src/evil.ts:1`"],
@@ -1604,10 +1597,6 @@ test("decision parser neutralizes finding-list grammar inside finding and concer
 });
 
 test("report prose neutralizer escapes renderer-owned list labels", () => {
-  const { neutralizeOwnedSectionSpoofing } = createReportHelpers({
-    OWNED_REVIEW_SECTION_HEADINGS: new Set(),
-    parseBacktickLocation: () => null,
-  });
   const cases: Array<[string, string]> = [
     ["Next rank-up steps:", "Next rank-up steps&#58;"],
     ["next rank-up steps:  ", "next rank-up steps&#58;"],

@@ -21,18 +21,15 @@ import type {
   ApplyPhaseCursor,
   ApplyResult,
   CloseReason,
-  ItemKind,
   ReportEntry,
 } from "./clawsweeper-types.js";
 import { frontMatterValue } from "./report-front-matter.js";
+import { reportItemKind, reviewLeaseRevisionFromReport } from "./clawsweeper-record-metadata.js";
 
 interface ApplyActionLedgerDependencies {
   root: string;
   targetRepo: () => string;
   repoRelativePath: (filePath: string) => string;
-
-  reviewLeaseRevisionFromReport: (markdown: string) => string | null;
-  reportItemKind: (markdown: string) => ItemKind | undefined;
   reviewLedger: ReturnType<typeof createReviewActionLedger>;
 }
 
@@ -40,9 +37,6 @@ export function createApplyActionLedger({
   root,
   targetRepo,
   repoRelativePath,
-
-  reviewLeaseRevisionFromReport,
-  reportItemKind,
   reviewLedger,
 }: ApplyActionLedgerDependencies) {
   const {

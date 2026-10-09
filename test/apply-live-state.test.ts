@@ -9,8 +9,8 @@ import {
   itemSourceRevisionSha256ForTest,
   renderReviewCommentFromReport,
   renderReviewStartStatusComment,
-  shouldSyncReviewComment,
 } from "../dist/clawsweeper.js";
+import { shouldSyncReviewComment } from "../dist/clawsweeper-record-metadata.js";
 import { capturedCanonicalRecordBaselineKeys } from "../dist/repair/canonical-record-baseline.js";
 import { createReviewedPrActivityCursor } from "../dist/review-activity-cursor.js";
 import { shouldReviewItem } from "../dist/scheduler-policy.js";

@@ -34,7 +34,6 @@ import { reviewPromptContext } from "./clawsweeper-prompt-context.js";
 import { verifyLikelyOwnerHistory } from "./clawsweeper-regression-provenance.js";
 import type {
   Decision,
-  Evidence,
   FileModeSnapshot,
   GitInfo,
   Item,
@@ -71,6 +70,7 @@ import { repositoryProfileFor, type RepositoryProfile } from "./repository-profi
 import { reviewProofCapabilityFromEnv } from "./review-proof-client.js";
 import { readBoundedReviewResult } from "./review-output-policy.js";
 import { asRecord, nonBlankStringOrUndefined } from "./value-coerce.js";
+import { evidenceEntry } from "./clawsweeper-report-parser.js";
 
 /** Prompt sources for an item review: the shared core, one template per item kind, and close reasons. */
 export type ReviewItemPrompts = Readonly<Record<"core" | Item["kind"] | "closeReasons", string>>;
@@ -101,7 +101,6 @@ interface ReviewRuntimeDependencies {
   decisionSchemaPath: string;
   prCloseCoverageProofPromptPath: string;
   targetRepo: () => string;
-  evidenceEntry: (options: Partial<Evidence> & Pick<Evidence, "label" | "detail">) => Evidence;
   run: (
     command: string,
     args: string[],
@@ -122,7 +121,6 @@ export function createReviewRuntime({
   decisionSchemaPath: CLAWSWEEPER_DECISION_SCHEMA_PATH,
   prCloseCoverageProofPromptPath: PR_CLOSE_COVERAGE_PROOF_PROMPT_PATH,
   targetRepo,
-  evidenceEntry,
   run,
   untrustedCodexEnv,
   ghJson,

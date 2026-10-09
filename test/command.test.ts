@@ -16,7 +16,6 @@ import { fileURLToPath } from "node:url";
 
 import {
   defaultReviewArtifactDirForTest,
-  exactEventReviewLeaseDispositionForTest,
   itemSourceRevisionSha256ForTest,
   isSuppliedReviewStartLeaseForTest,
   localExactReviewHistoryPathForTest,
@@ -24,6 +23,7 @@ import {
   reviewPolicyHashForTest,
   reviewLeaseStillMatchesContextForTest,
 } from "../dist/clawsweeper.js";
+import { exactEventReviewLeaseDisposition } from "../dist/clawsweeper-record-metadata.js";
 import { runText, runTextConcurrently, UserFacingCommandError } from "../dist/command.js";
 import { reviewMergeBase } from "../dist/pr-review-evidence.js";
 import { reviewStructuralPullStateDigest } from "../dist/review-structural-cache.js";
@@ -585,17 +585,17 @@ process.exit(1);
 test("exact event publication requeues legacy tuples and source drift before mutation", () => {
   const revision = "0123456789abcdef0123456789abcdef01234567";
   const base = `---\nitem_source_revision: ${revision}\n---\n`;
-  assert.deepEqual(exactEventReviewLeaseDispositionForTest(base, revision), {
+  assert.deepEqual(exactEventReviewLeaseDisposition(base, revision), {
     status: "legacy_tupleless",
     reason: "local report has no durable lease identity",
   });
-  assert.deepEqual(exactEventReviewLeaseDispositionForTest(base, "f".repeat(40)), {
+  assert.deepEqual(exactEventReviewLeaseDisposition(base, "f".repeat(40)), {
     status: "source_drift",
     reportRevision: revision,
     liveRevision: "f".repeat(40),
   });
   assert.deepEqual(
-    exactEventReviewLeaseDispositionForTest(
+    exactEventReviewLeaseDisposition(
       `---\nitem_source_revision: ${revision}\nreview_lease_owner: run-123\nreview_lease_comment_id: 99\n---\n`,
       revision,
     ),

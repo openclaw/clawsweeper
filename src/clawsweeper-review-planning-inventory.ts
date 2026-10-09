@@ -33,6 +33,7 @@ import {
   usableGithubReadModelResponse,
 } from "./github-webhook-read-model-client.js";
 import { asRecord as jsonRecord } from "./value-coerce.js";
+import { indexedExistingReview } from "./clawsweeper-record-metadata.js";
 
 export {
   PR_ACTIVITY_REVISION_CONNECTION_LIMIT,
@@ -47,8 +48,7 @@ export interface PlannedPrActivityRevisions {
 }
 
 export function createReviewPlanningInventory(dependencies: ReviewPlanningDependencies) {
-  const { targetRepo, ghJson, ghJsonLines, normalizeAuthorAssociation, indexedExistingReview } =
-    dependencies;
+  const { targetRepo, ghJson, ghJsonLines, normalizeAuthorAssociation } = dependencies;
   const readModelRequest = dependencies.githubReadModelRequestSync ?? githubReadModelRequestSync;
 
   function isFresh(

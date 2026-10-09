@@ -435,11 +435,7 @@ function relatedContextFor(root: string, dbPath: string) {
     },
     compactIssue: (value: unknown) => value,
     compactPullRequest: (value: unknown) => value,
-    reviewSectionValue: () => "",
-    effectiveReviewStatus: () => "",
     displayTitle: (value: string) => value,
-    markdownFiles: () => [],
-    numberForMarkdownFile: () => 0,
     repoRelativePath: (value: string) => value,
   });
   const withDatabase = <T>(operation: () => T): T => {

@@ -1,4 +1,4 @@
-import type { Item, PrRating, RealBehaviorProof } from "./clawsweeper-types.js";
+import type { Item } from "./clawsweeper-types.js";
 
 export interface ApplyGuardDependencies {
   authorPrBudget: () => number;
@@ -14,8 +14,6 @@ export interface ApplyGuardDependencies {
   obsoleteFixPrCloseEnabled: () => boolean;
   protectedLabels: (labels: readonly string[]) => string[];
   quoteGitHubSearchTerm: (term: string) => string;
-  reportPrRating: (markdown: string) => PrRating;
-  reportRealBehaviorProof: (markdown: string) => RealBehaviorProof;
   staleVersionBugAgeSkipReason: (item: Pick<Item, "createdAt">, now?: number) => string | null;
   staleVersionBugCloseEnabled: () => boolean;
   targetRepo: () => string;

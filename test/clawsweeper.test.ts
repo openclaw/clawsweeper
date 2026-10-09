@@ -5,7 +5,6 @@ import test from "node:test";
 import { parse as parseYaml } from "yaml";
 
 import {
-  applyDecisionPriority,
   auditFromSnapshot,
   auditHasStrictFailures,
   auditHealthSection,
@@ -24,7 +23,6 @@ import {
   isLockedConversationCommentError,
   itemSourceRevisionSha256ForTest,
   itemNumbersArg,
-  lockedConversationApplyReason,
   relatedGitHubIssueSearchQueryForTest,
   relatedTitleSearchTerms,
   recordedLabelSyncCoversUpdate,
@@ -36,10 +34,14 @@ import {
   runtimeBudgetExceeded,
   safeOutputTail,
   shardItemNumbers,
-  shouldSyncReviewComment,
   shouldRetryGh,
   timeoutWithinRuntimeBudget,
 } from "../dist/clawsweeper.js";
+import {
+  applyDecisionPriority,
+  shouldSyncReviewComment,
+} from "../dist/clawsweeper-record-metadata.js";
+import { lockedConversationApplyReason } from "../dist/clawsweeper-item-policy.js";
 import { parseArgs as parseClawsweeperArgs } from "../dist/clawsweeper-args.js";
 import { GitHubRateLimitError } from "../dist/github-retry.js";
 import { AUTOMATION_LIMITS } from "../dist/limits.js";

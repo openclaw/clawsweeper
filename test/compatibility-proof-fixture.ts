@@ -3,7 +3,7 @@ import { createReportDocumentRendering } from "../dist/clawsweeper-report-docume
 import { createReportContextRendering } from "../dist/clawsweeper-report-context.js";
 import { createDashboardPresentation } from "../dist/clawsweeper-dashboard.js";
 import { createRepositoryLinks } from "../dist/clawsweeper-links.js";
-import { normalizeRepo, repositoryProfileFor } from "../dist/repository-profiles.js";
+import { repositoryProfileFor } from "../dist/repository-profiles.js";
 import type { DataModelCompatibility } from "../src/clawsweeper-types.ts";
 import { closeDecision, item, reviewReportFrontMatter } from "./helpers.ts";
 
@@ -81,7 +81,6 @@ export function generatedCompatibilityReport(
   const document = createReportDocumentRendering({
     ...createRepositoryLinks({
       reportRepo: "openclaw/clawsweeper-state",
-      normalizeRepo,
       targetRepo: () => "openclaw/openclaw",
       targetProfile: () => repositoryProfileFor("openclaw/openclaw"),
     }),

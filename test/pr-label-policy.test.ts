@@ -3,10 +3,9 @@ import test from "node:test";
 
 import { createLabelPolicy } from "../dist/clawsweeper-label-policy.js";
 import { createLabelSynchronization } from "../dist/clawsweeper-label-sync.js";
-import { createRecordMetadata } from "../dist/clawsweeper-record-metadata.js";
+import * as metadata from "../dist/clawsweeper-record-metadata.js";
 import { frontMatterValue } from "../dist/report-front-matter.js";
-import { createReportParser } from "../dist/clawsweeper-report-parser.js";
-import { createReportHelpers } from "../dist/clawsweeper-report-helpers.js";
+import * as parser from "../dist/clawsweeper-report-parser.js";
 import { createRealBehaviorProofPolicy } from "../dist/clawsweeper-proof-policy.js";
 import { syncApplyPullRequestLabels } from "../dist/clawsweeper-apply-pull-request-labels.js";
 import type { RealBehaviorProof } from "../dist/clawsweeper-types.js";
@@ -48,15 +47,6 @@ const readyReadiness = {
 
 for (const proofStatus of ["missing", "not_applicable"] as const) {
   test(`failed ${proofStatus} reports remove positive statuses through apply label sync`, () => {
-    const metadata = createRecordMetadata({} as never);
-    const parser = createReportParser({
-      ...metadata,
-      ...createReportHelpers({
-        OWNED_REVIEW_SECTION_HEADINGS: new Set(),
-        parseBacktickLocation: () => null,
-      }),
-      isExternalPullRequestReport: () => true,
-    } as Parameters<typeof createReportParser>[0]);
     const reportRealBehaviorProofPolicy = createRealBehaviorProofPolicy({
       ...metadata,
       ...parser,
@@ -175,7 +165,6 @@ Full review comments:
 }
 
 test("report-based status selection follows the model proof assessment for external PRs", () => {
-  const metadata = createRecordMetadata({} as never);
   let assessment = {
     status: "not_applicable",
     evidenceKind: "not_applicable",

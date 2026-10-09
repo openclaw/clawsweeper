@@ -12,8 +12,10 @@ import type {
   ItemKind,
   LocalRelatedTitleEntry,
 } from "./clawsweeper-types.js";
-import { asRecord, login } from "./value-coerce.js";
+import { asRecord, isDigitsOnly, login } from "./value-coerce.js";
 import { frontMatterValue } from "./report-front-matter.js";
+import { effectiveReviewStatus, reviewSectionValue } from "./clawsweeper-record-metadata.js";
+import { markdownFiles, numberForMarkdownFile } from "./clawsweeper-repository-paths.js";
 
 const CREDENTIAL_URI =
   /(https?:\/\/)[\w!#$%&()*+,\-./;<=>?@[\\\]^_{|}~]{0,50}:[\w!#$%&()*+,\-./:;<=>?[\\\]^_{|}~]{3,50}@([a-zA-Z0-9.-]+)/g;
@@ -40,11 +42,7 @@ interface RelatedContextDependencies {
   ghJsonOnce: <T>(args: string[], timeoutMs: number) => T;
   compactIssue: (value: unknown) => unknown;
   compactPullRequest: (value: unknown) => unknown;
-  reviewSectionValue: (markdown: string, section: "summary") => string;
-  effectiveReviewStatus: (markdown: string) => string;
   displayTitle: (title: string) => string;
-  markdownFiles: (dir: string) => string[];
-  numberForMarkdownFile: (file: string) => number;
   repoRelativePath: (filePath: string) => string;
 }
 
@@ -60,11 +58,7 @@ export function createRelatedContext({
   ghJsonOnce,
   compactIssue,
   compactPullRequest,
-  reviewSectionValue,
-  effectiveReviewStatus,
   displayTitle,
-  markdownFiles,
-  numberForMarkdownFile,
   repoRelativePath,
 }: RelatedContextDependencies) {
   function collectRelatedMentions(options: {
@@ -354,15 +348,6 @@ export function createRelatedContext({
     while (start < end && value[start] === char) start += 1;
     while (end > start && value[end - 1] === char) end -= 1;
     return value.slice(start, end);
-  }
-
-  function isDigitsOnly(value: string): boolean {
-    if (!value) return false;
-    for (const char of value) {
-      const code = char.charCodeAt(0);
-      if (code < 48 || code > 57) return false;
-    }
-    return true;
   }
 
   function localRelatedTitleIndex(): LocalRelatedTitleEntry[] {
@@ -809,7 +794,6 @@ export function createRelatedContext({
     referencingMergedPullRequestsForIssueForTest,
     relatedGitHubIssueSearchQueryForTest,
     relatedTitleSearchTerms,
-    isDigitsOnly,
     quoteGitHubSearchTerm,
     referencingMergedPullRequestsForIssue,
     relatedItemsContext,

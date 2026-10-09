@@ -52,6 +52,12 @@ import {
   frontMatterValue,
   replaceFrontMatterValue,
 } from "./report-front-matter.js";
+import { effectiveReviewStatus } from "./clawsweeper-record-metadata.js";
+import {
+  markdownFiles,
+  markdownRepository,
+  numberForMarkdownFile,
+} from "./clawsweeper-repository-paths.js";
 
 interface CreateDashboardAuditDependencies {
   addDashboardCadenceBucket: (
@@ -77,7 +83,6 @@ interface CreateDashboardAuditDependencies {
   defaultItemsDir: (profile?: RepositoryProfile) => string;
   defaultPlansDir: (profile?: RepositoryProfile) => string;
   displayTitle: (title: string) => string;
-  effectiveReviewStatus: (markdown: string) => string;
   emptyDashboardActivityStats: () => DashboardActivityStats;
   emptyDashboardCadenceBucket: () => DashboardCadenceBucket;
   emptyDashboardKindStats: () => DashboardKindStats;
@@ -110,10 +115,7 @@ interface CreateDashboardAuditDependencies {
     current: string | undefined,
     candidate: string | undefined,
   ) => string | undefined;
-  markdownFiles: (dir: string) => string[];
   markdownLink: (label: string, url: string) => string;
-  markdownRepository: (markdown: string, file?: string) => string;
-  numberForMarkdownFile: (file: string) => number;
   profileAuditEnd: (profile?: RepositoryProfile) => string;
   profileAuditStart: (profile?: RepositoryProfile) => string;
   recordDashboardActivity: (
@@ -177,7 +179,6 @@ export function createDashboardAudit(dependencies: CreateDashboardAuditDependenc
     defaultItemsDir,
     defaultPlansDir,
     displayTitle,
-    effectiveReviewStatus,
     emptyDashboardActivityStats,
     emptyDashboardCadenceBucket,
     emptyDashboardKindStats,
@@ -200,10 +201,7 @@ export function createDashboardAudit(dependencies: CreateDashboardAuditDependenc
     isProtectedItem,
     itemUrlFor,
     latestTimestamp,
-    markdownFiles,
     markdownLink,
-    markdownRepository,
-    numberForMarkdownFile,
     profileAuditEnd,
     profileAuditStart,
     recordDashboardActivity,

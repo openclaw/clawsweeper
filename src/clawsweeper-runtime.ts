@@ -1,17 +1,15 @@
 #!/usr/bin/env node
 import { sha256 } from "./content-hash.js";
-import { existsSync, mkdirSync, readdirSync, readFileSync } from "node:fs";
-import { dirname, join, relative, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { existsSync, mkdirSync, readFileSync } from "node:fs";
+import { join, resolve } from "node:path";
 import { flushWorkflowActionEvents } from "./action-ledger-runtime.js";
 import { boolArg, itemNumbersArg, parseArgs, stringArg, type Args } from "./clawsweeper-args.js";
 import { dispatchCommand, type CommandHandler } from "./clawsweeper-command-dispatch.js";
-import { createDecisionParser } from "./clawsweeper-decision-parser.js";
+import { reviewDecisionParser } from "./clawsweeper-decision-parser.js";
 import { runText, runTextConcurrently, SWEEPER_COMMAND_MAX_BUFFER_BYTES } from "./command.js";
 import { AUTOMATION_LIMITS } from "./limits.js";
 import {
   DEFAULT_TARGET_REPO,
-  normalizeRepo,
   repositoryProfileFor,
   type RepositoryProfile,
 } from "./repository-profiles.js";
@@ -54,6 +52,7 @@ import {
   closeReasonEnabled,
   closeReasonFilterText,
   closeReasonsArg,
+  isAutomationReportAuthor,
   isBulkFilerExemptAuthorAssociation,
   isBulkFilerExemptRepositoryPermission,
   isMaintainerAuthorAssociation,
@@ -71,7 +70,6 @@ import {
   unsponsoredFeatureAgeSkipReason,
 } from "./clawsweeper-item-policy.js";
 import { createLabelPolicy } from "./clawsweeper-label-policy.js";
-import { createRealBehaviorProofPolicy } from "./clawsweeper-proof-policy.js";
 import { createLiveProofCommands } from "./live-proof/commands.js";
 import { publishReviewLiveProofArtifacts } from "./live-proof/publication-artifacts.js";
 import { executeReviewLiveProofs, inspectReviewLiveProofs } from "./live-proof/review-artifacts.js";
@@ -85,12 +83,31 @@ import {
   REVIEW_POLICY_VERSION,
   CLAWSWEEPER_BOT_LOGINS,
 } from "./clawsweeper-policy.js";
-import { createRecordMetadata } from "./clawsweeper-record-metadata.js";
 import { createRegressionProvenanceVerifier } from "./clawsweeper-regression-provenance.js";
-import { createReportHelpers } from "./clawsweeper-report-helpers.js";
 import { createReportOrchestration } from "./clawsweeper-report-orchestration.js";
-import { createReportParser } from "./clawsweeper-report-parser.js";
-import { createRepositoryPaths } from "./clawsweeper-repository-paths.js";
+import {
+  mergeRiskOptionsFromReport,
+  reportAttachedLiveVerification,
+  reportLiveProofPlan,
+  reportRealBehaviorProof,
+  reportReviewFindings,
+  reportSecurityReview,
+} from "./clawsweeper-report-parser.js";
+import {
+  existingReview,
+  isExternalPullRequestReport,
+  reviewSectionValue,
+} from "./clawsweeper-record-metadata.js";
+import { createRealBehaviorProofPolicy } from "./clawsweeper-proof-policy.js";
+import {
+  createRepositoryPaths,
+  markdownFiles,
+  markdownRepository,
+  numberForMarkdownFile,
+  repoRelativePath,
+  reportFileName,
+  ROOT,
+} from "./clawsweeper-repository-paths.js";
 import { createReviewCommandWorkflow } from "./clawsweeper-review-command-workflow.js";
 import { createReviewCommentWorkflow } from "./clawsweeper-review-comments-workflow.js";
 import {
@@ -113,7 +130,6 @@ import {
 import { createSweepStatus } from "./clawsweeper-sweep-status.js";
 import type {
   Decision,
-  Evidence,
   GitInfo,
   Item,
   ItemContext,
@@ -187,9 +203,7 @@ const DEFAULT_PLAN_BATCH_SIZE = 3;
 const DEFAULT_PLAN_SHARD_COUNT = AUTOMATION_LIMITS.review_shards.normal_default;
 const MAX_PLAN_SHARD_COUNT = AUTOMATION_LIMITS.review_shards.hard_cap;
 
-const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const REPORT_REPO = "openclaw/clawsweeper";
-const RECORDS_ROOT = join(ROOT, "records");
 let activeRepositoryProfile = repositoryProfileFor(
   process.env.CLAWSWEEPER_TARGET_REPO ?? DEFAULT_TARGET_REPO,
 );
@@ -228,20 +242,10 @@ function targetRepo(): string {
 
 const repositoryLinks = createRepositoryLinks({
   reportRepo: REPORT_REPO,
-  normalizeRepo,
   targetProfile,
   targetRepo,
 });
-const {
-  docsPageUrl,
-  fileUrl,
-  isCommitSha,
-  latestFileUrl,
-  linkedSha,
-  markdownLink,
-  reportUrl,
-  splitFileAndLine,
-} = repositoryLinks;
+const { docsPageUrl, fileUrl, latestFileUrl, linkedSha, markdownLink, reportUrl } = repositoryLinks;
 
 function setTargetRepo(targetRepoName: string): RepositoryProfile {
   activeRepositoryProfile = repositoryProfileFor(targetRepoName);
@@ -276,32 +280,8 @@ const sweepStatus = createSweepStatus({
   targetProfile,
 });
 export const { sweepStatusApplyHealthForTest } = sweepStatus;
-const repositoryPaths = createRepositoryPaths({
-  RECORDS_ROOT,
-  repoRelativePath,
-  ROOT,
-  targetProfile,
-  targetRepo,
-});
-const {
-  defaultClosedDir,
-  defaultItemsDir,
-  markdownRepository,
-  parseReportFileName,
-  reportFileName,
-} = repositoryPaths;
-
-function evidenceEntry(options: Partial<Evidence> & Pick<Evidence, "label" | "detail">): Evidence {
-  return {
-    label: options.label,
-    repo: options.repo ?? null,
-    detail: options.detail,
-    file: options.file ?? null,
-    line: options.line ?? null,
-    command: options.command ?? null,
-    sha: options.sha ?? null,
-  };
-}
+const repositoryPaths = createRepositoryPaths({ targetProfile, targetRepo });
+const { defaultClosedDir, defaultItemsDir } = repositoryPaths;
 
 type RunOptions = { cwd?: string; env?: NodeJS.ProcessEnv };
 
@@ -438,67 +418,17 @@ export function reviewPolicyHashForTest(
   return reviewPolicyHash(options, prompts);
 }
 
-const decisionParser = createDecisionParser({
-  neutralizeOwnedSectionSpoofing: (...args) => neutralizeOwnedSectionSpoofing(...args),
-  sanitizeArchitectureDiagram: (...args) => sanitizeArchitectureDiagram(...args),
-});
-const { defaultRootCauseCluster, parseGitHubItemRef } = decisionParser;
+const { defaultRootCauseCluster, parseGitHubItemRef } = reviewDecisionParser;
 
 export function parseDecision(value: unknown, item?: RootCauseNormalizationItem): Decision {
-  return decisionParser.parseDecision(value, item);
+  return reviewDecisionParser.parseDecision(value, item);
 }
 
-const recordMetadata = createRecordMetadata({
-  reportFileName,
-  markdownRepository,
-  isVerifiedFixedCloseReason,
-  pullHeadShaFromReport: (markdown) => pullHeadShaFromReport(markdown),
-  reviewLeaseRevisionFromReport: (markdown) => reviewLeaseRevisionFromReport(markdown),
-  lockedConversationApplyReason: (item) => lockedConversationApplyReason(item),
-  markdownFiles,
-  numberForMarkdownFile,
-});
-export const {
-  applyDecisionPriority,
-  effectiveReviewStatus: effectiveReviewStatusForTest,
-  exactEventReviewLeaseDispositionForTest,
-  failedReviewRetryEligibilityForTest,
-  isInfrastructureFailedReviewForTest,
-  reviewReportCanPromoteToCloseForTest,
-  shouldSyncReviewComment,
-} = recordMetadata;
-
-const reportParser = createReportParser({
-  agentsPolicyStatusLine: (...args) => agentsPolicyStatusLine(...args),
-  ...decisionParser,
-  evidenceEntry,
-  ...recordMetadata,
-  isExternalPullRequestReport,
-  markdownRepository,
-  parseBoldListHeading: (...args) => parseBoldListHeading(...args),
-  parseReviewFindingHeading: (...args) => parseReviewFindingHeading(...args),
-  parseSecurityConcernHeading: (...args) => parseSecurityConcernHeading(...args),
-  sectionLineValue: (...args) => sectionLineValue(...args),
-  sectionList: (...args) => sectionList(...args),
-  normalizeEvidence: repositoryLinks.normalizeEvidence,
-});
-export const { reportLiveProofPlan, rootCauseClusterFromReportForTest } = reportParser;
-export const reportLiveProofPlanForTest = reportLiveProofPlan;
-const {
-  reportEvidence,
-  reportAttachedLiveVerification,
-  mergeRiskOptionsFromReport,
-  reportReviewFindings,
-  reportSecurityReview,
-  reportRealBehaviorProof,
-  reportPrRating,
-} = reportParser;
-
 const reportRealBehaviorProofPolicy = createRealBehaviorProofPolicy({
-  ...recordMetadata,
   isExternalPullRequestReport,
   reportAttachedLiveVerification,
   reportRealBehaviorProof,
+  reviewSectionValue,
 });
 
 const labelPolicy = createLabelPolicy({
@@ -530,8 +460,6 @@ const applyGuards = createApplyGuards({
   obsoleteFixPrCloseEnabled,
   protectedLabels,
   quoteGitHubSearchTerm: (term) => quoteGitHubSearchTerm(term),
-  reportPrRating,
-  reportRealBehaviorProof,
   staleVersionBugAgeSkipReason,
   staleVersionBugCloseEnabled,
   targetRepo,
@@ -558,21 +486,17 @@ const contextHydration = createContextHydration({
   CLAWSWEEPER_BOT_AUTHORS,
   ...repositoryPaths,
   displayTitle: (title) => displayTitle(title),
-  ...recordMetadata,
   fetchIssueReviewComments: (number) => fetchIssueReviewComments(number),
   ghJson,
   ghJsonOnce,
   ghJsonEach,
   githubCount,
   GitHubRuntimeBudgetError,
-  isAutomationReportAuthor,
   isBulkFilerExemptAuthorAssociation,
   isSafeGitBranchName: (branch) => isSafeGitBranchName(branch),
   labelNames,
-  markdownFiles,
   normalizeAuthorAssociation,
   normalizeLabelName,
-  numberForMarkdownFile,
   repoRelativePath,
   reportUrl,
   reviewCommentBodyDigest,
@@ -625,8 +549,6 @@ const reviewPlanning = createReviewPlanning({
   itemSourceRevisionSha256,
   normalizeAuthorAssociation,
   shouldPlanItem,
-  ...recordMetadata,
-  pullHeadShaFromReport: (markdown) => pullHeadShaFromReport(markdown),
   failedReviewRetryStatePath: (stateDir, number) => failedReviewRetryStatePath(stateDir, number),
   readFailedReviewRetryState: (statePath) => readFailedReviewRetryState(statePath),
   failedReviewRetryMarkdownWithState: (markdown, state) =>
@@ -719,7 +641,6 @@ const reviewRuntime = createReviewRuntime({
   decisionSchemaPath: CLAWSWEEPER_DECISION_SCHEMA_PATH,
   prCloseCoverageProofPromptPath: PR_CLOSE_COVERAGE_PROOF_PROMPT_PATH,
   targetRepo,
-  evidenceEntry,
   run,
   untrustedCodexEnv,
   ghJson,
@@ -777,7 +698,6 @@ const statusContext = createStatusContext({
   targetRepo,
   ...repositoryLinks,
   ...sweepStatus,
-  markdownRepository,
   ghJson,
   GitHubRuntimeBudgetError,
   numberOrUndefined,
@@ -851,33 +771,25 @@ function recordOrUndefined(value: unknown): Record<string, unknown> | undefined 
 }
 
 const reviewPresentation = createReviewPresentation({
-  normalizeEvidence: repositoryLinks.normalizeEvidence,
   docsPageUrl,
   fileUrl,
   hasRepairLoopPauseLabel,
-  isCommitSha,
   latestFileUrl,
   linkedSha,
   markdownLink,
   prStatusLabelKindFromReport,
-  publicTableCell: (...args) => publicTableCell(...args),
-  reportEvidence,
   securityConcernLocation,
-  splitFileAndLine,
   targetRepo,
 });
 const { sentence } = reviewPresentation;
 
 const reportOrchestration = createReportOrchestration({
-  reportRealBehaviorProofPolicy,
-  agentsPolicyStatusLine: (...args) => agentsPolicyStatusLine(...args),
   ...reviewPresentation,
+  reportRealBehaviorProofPolicy,
   collectItemContext,
   ...contextHydration,
-  ...reportParser,
   ...repositoryPaths,
   defaultRootCauseCluster,
-  ...recordMetadata,
   ensureDir,
   ...labelPolicy,
   ...repositoryLinks,
@@ -887,7 +799,6 @@ const reportOrchestration = createReportOrchestration({
   ...githubContext,
   GitHubRuntimeBudgetError,
   hasUsableCloseComment: (...args) => hasUsableCloseComment(...args),
-  isAutomationReportAuthor,
   isBulkFilerExemptAuthorAssociation,
   isBulkFilerExemptRepositoryPermission,
   isFresh,
@@ -901,7 +812,6 @@ const reportOrchestration = createReportOrchestration({
   labelNames,
   labelPolicy,
   ...applyGuards,
-  neutralizeOwnedSectionSpoofing: (...args) => neutralizeOwnedSectionSpoofing(...args),
   nextImpactLabels: (...args) => nextImpactLabels(...args),
   nextIssueAdvisoryLabels: (...args) => nextIssueAdvisoryLabels(...args),
   nextMaturityLabels: (...args) => nextMaturityLabels(...args),
@@ -915,9 +825,7 @@ const reportOrchestration = createReportOrchestration({
   numberOrUndefined,
   parseGitHubItemRef,
   protectedLabels,
-  publicTableCell: (...args) => publicTableCell(...args),
   pullHeadShaFromContext: (...args) => pullHeadShaFromContext(...args),
-  pullHeadShaFromReport: (...args) => pullHeadShaFromReport(...args),
   repairLoopPassModeFromReport: (...args) => repairLoopPassModeFromReport(...args),
   repoRelativePath,
   reviewAutomationMarkersFromReport: (...args) => reviewAutomationMarkersFromReport(...args),
@@ -925,8 +833,6 @@ const reportOrchestration = createReportOrchestration({
   reviewVersionMarkerFromReport: (...args) => reviewVersionMarkerFromReport(...args),
   ROOT,
   runtimeBudgetExceeded: (...args) => runtimeBudgetExceeded(...args),
-  sanitizeArchitectureDiagram: (...args) => sanitizeArchitectureDiagram(...args),
-  sectionLineValue: (...args) => sectionLineValue(...args),
   securityConcernLocation,
 
   targetProfile,
@@ -964,9 +870,7 @@ export const {
   telegramVisibleProofLabelsForTest,
 } = reportOrchestration;
 const {
-  OWNED_REVIEW_SECTION_HEADINGS,
   labelSynchronization,
-  parseBacktickLocation,
   pullRequestReviewReadinessFromReport,
   syncWorkPlanFromReport,
   workPlanPathForReport,
@@ -986,34 +890,6 @@ const {
   nextTelegramVisibleProofLabels,
   removeIssueLabel,
 } = labelSynchronization;
-
-function isAutomationReportAuthor(author: string | undefined): boolean {
-  return Boolean(author && (/\[bot\]$/i.test(author) || author.startsWith("app/")));
-}
-
-function isExternalPullRequestReport(markdown: string): boolean {
-  if (frontMatterValue(markdown, "type") !== "pull_request") return false;
-  const authorAssociation = frontMatterValue(markdown, "author_association");
-  if (!authorAssociation) return false;
-  if (isMaintainerAuthorAssociation(authorAssociation)) return false;
-  return !isAutomationReportAuthor(frontMatterValue(markdown, "author"));
-}
-
-const reportHelpers = createReportHelpers({
-  OWNED_REVIEW_SECTION_HEADINGS,
-  parseBacktickLocation,
-});
-const {
-  agentsPolicyStatusLine,
-  neutralizeOwnedSectionSpoofing,
-  parseBoldListHeading,
-  parseReviewFindingHeading,
-  parseSecurityConcernHeading,
-  publicTableCell,
-  sanitizeArchitectureDiagram,
-  sectionLineValue,
-  sectionList,
-} = reportHelpers;
 
 const closeDecisionWorkflow = createCloseDecisionWorkflow({
   targetRepo,
@@ -1041,21 +917,17 @@ const reviewCommentWorkflow = createReviewCommentWorkflow({
   ghPaged,
   reviewCommentBodyDigest,
   parseGitHubItemRef,
-  ...reportParser,
   ensureDir,
-  ...recordMetadata,
   sentence,
   ...reportOrchestration,
   isIssueAdvisoryLabel,
   removeIssueLabel,
-  sectionLineValue,
   markdownLink,
 });
 export const {
   canPatchReviewComment,
   coverageProofRetryExhaustedRuntimeBudget,
   isCodexReviewCommentBody,
-  lockedConversationApplyReason,
   newReviewStartLeaseOwnerForTest,
   recordedLabelSyncCoversUpdate,
   removeCurrentCursorTraceItem,
@@ -1071,8 +943,6 @@ export const {
 const {
   pullHeadShaFromContext,
   fetchIssueReviewComments,
-  reviewLeaseRevisionFromReport,
-  pullHeadShaFromReport,
   writeCommentPayload,
   repairLoopPassModeFromReport,
   reviewVersionMarkerFromReport,
@@ -1120,7 +990,6 @@ const { actionLedgerItemKey } = reviewActionLedger;
 
 const commandOperations = createCommandOperations({
   ...reviewActionLedger,
-  ...recordMetadata,
   applyDecisionsCommandInner: (...args) => applyDecisionsCommandInner(...args),
   artifactTargetIsOpen,
   codexFailureReason,
@@ -1137,8 +1006,6 @@ const commandOperations = createCommandOperations({
   ghWithRetry,
   GitHubDispatchError,
   itemSourceRevisionSha256,
-  markdownFiles,
-  numberForMarkdownFile,
   reconcileFolders: (...args) => reconcileFolders(...args),
   repoFromArgs,
   repoRelativePath,
@@ -1175,6 +1042,9 @@ const {
 
 const { reviewCommand } = createReviewCommandWorkflow({
   ghJson,
+  existingReview,
+  reportFileName,
+  reportReviewFindings,
   ...reviewActionLedger,
   get activeReviewMutationRunner() {
     return githubExecution.activeReviewMutationRunner;
@@ -1194,7 +1064,6 @@ const { reviewCommand } = createReviewCommandWorkflow({
   enforceExpectedIssueSourceRevision,
   ensureDir,
   exactLocalReviewNoCandidateError,
-  ...recordMetadata,
   fetchReviewStructuralRecord,
   isBulkFilerExemptAuthorAssociation,
   isBulkFilerExemptRepositoryPermission,
@@ -1203,8 +1072,6 @@ const { reviewCommand } = createReviewCommandWorkflow({
   itemSnapshotHash,
   ...reportOrchestration,
   repoFromArgs,
-  reportFileName,
-  reportReviewFindings,
   reviewLeaseStillMatchesContext,
   reviewPolicyHash,
   selectCandidates,
@@ -1227,7 +1094,6 @@ const { applyDecisionsCommandInner } = createApplyDecisionWorkflow({
   applyKindArg,
   ApplyMutationReviewGuardError,
   applyProtectedLabelReason,
-  ...recordMetadata,
   ...commandOperations,
   authorPrBudgetAgeSkipReason,
   ...contextHydration,
@@ -1245,7 +1111,6 @@ const { applyDecisionsCommandInner } = createApplyDecisionWorkflow({
   fetchReviewedPrActivityCursor,
   ghJson,
   guardedOpenApplyProofFields,
-  ...reportParser,
   isBulkFilerExemptAuthorAssociation,
   ...sourceRevisionTools,
   isMaintainerAuthorAssociation,
@@ -1254,7 +1119,6 @@ const { applyDecisionsCommandInner } = createApplyDecisionWorkflow({
   mutationErrorMessage,
   normalizeAuthorAssociation,
   normalizeLabelName,
-  numberForMarkdownFile,
   PR_CLOSE_COVERAGE_PROOF_SCHEMA_PATH,
   prCloseCoverageProofPromptTemplate,
   prStatusLabelKindFromReport,
@@ -1269,22 +1133,6 @@ const { applyDecisionsCommandInner } = createApplyDecisionWorkflow({
 function artifactTargetIsOpen(number: number, openNumbers: Set<number> | null): boolean {
   if (openNumbers) return openNumbers.has(number);
   return fetchItem(number).state === "open";
-}
-
-function markdownFiles(dir: string): string[] {
-  return existsSync(dir)
-    ? readdirSync(dir)
-        .filter((name) => parseReportFileName(name) !== null)
-        .sort((left, right) => {
-          const leftParsed = parseReportFileName(left);
-          const rightParsed = parseReportFileName(right);
-          return (
-            (leftParsed?.repo ?? DEFAULT_TARGET_REPO).localeCompare(
-              rightParsed?.repo ?? DEFAULT_TARGET_REPO,
-            ) || (leftParsed?.number ?? 0) - (rightParsed?.number ?? 0)
-          );
-        })
-    : [];
 }
 
 function reportEntriesForDir(dir: string, itemNumbers?: ReadonlySet<number>): ReportEntry[] {
@@ -1303,16 +1151,6 @@ function reportEntriesForDir(dir: string, itemNumbers?: ReadonlySet<number>): Re
     });
 }
 
-function numberForMarkdownFile(file: string): number {
-  const parsed = parseReportFileName(file);
-  if (!parsed) throw new Error(`Invalid report filename: ${file}`);
-  return parsed.number;
-}
-
-function repoRelativePath(path: string): string {
-  return relative(ROOT, path).replaceAll("\\", "/");
-}
-
 const dashboardAudit = createDashboardAudit({
   ...reviewPlanning,
   applyBlockingProtectedLabels,
@@ -1320,14 +1158,11 @@ const dashboardAudit = createDashboardAudit({
   ...sweepStatus,
   ...statusContext,
   ...repositoryPaths,
-  ...recordMetadata,
   ensureDir,
   ghJson,
   isMaintainerAuthored,
   isProtectedItem,
   ...repositoryLinks,
-  markdownFiles,
-  numberForMarkdownFile,
   repoFromArgs,
   repoRelativePath,
   reportEntriesForDir,
@@ -1395,7 +1230,7 @@ const {
 } = actionCommands;
 
 const liveProofAttachDependencies = {
-  reportLiveProofPlan: reportParser.reportLiveProofPlan,
+  reportLiveProofPlan,
   reviewSections: REVIEW_SECTIONS,
   renderReviewCommentFromReport: reportOrchestration.renderReviewCommentFromReport,
   markedReviewCommentBody: reviewCommentWorkflow.markedReviewCommentBody,
@@ -1405,8 +1240,8 @@ const liveProofAttachDependencies = {
 
 const liveProofCommands = createLiveProofCommands({
   repositoryProfileFor,
-  reportLiveProofPlan: reportParser.reportLiveProofPlan,
-  parseLiveProofPlan: (value) => decisionParser.parseLiveProofPlan(value, "liveProofPlan"),
+  reportLiveProofPlan,
+  parseLiveProofPlan: (value) => reviewDecisionParser.parseLiveProofPlan(value, "liveProofPlan"),
   attach: liveProofAttachDependencies,
 });
 
@@ -1443,7 +1278,7 @@ function liveProofReviewCommand(args: Args): void {
       withTargetProfile(repositoryProfileFor(repo), () =>
         contextHydration.materializePullRequestReviewTree(options),
       ),
-    reportLiveProofPlan: reportParser.reportLiveProofPlan,
+    reportLiveProofPlan,
     repositoryProfileFor,
   };
   const result = boolArg(args.inspect)

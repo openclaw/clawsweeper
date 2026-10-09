@@ -39,6 +39,14 @@ import {
   replaceSectionValue,
   sectionValue,
 } from "./report-front-matter.js";
+import {
+  mergeRiskOptionsFromReport,
+  reportPrRating,
+  reportRealBehaviorProof,
+  reportRootCauseCluster,
+} from "./clawsweeper-report-parser.js";
+import { reviewSectionValue } from "./clawsweeper-record-metadata.js";
+import { sectionLineValue } from "./clawsweeper-report-helpers.js";
 
 export function createPullRequestCoverageProof(
   dependencies: CreateReportOrchestrationDependencies &
@@ -59,20 +67,13 @@ export function createPullRequestCoverageProof(
     ghPagedLinkHeaderContextWindow,
     linkedPullRequestLabels,
     linkedPullRequestSignalContextsFromText,
-    mergeRiskOptionsFromReport,
     numberOrUndefined,
     pullHeadShaFromContext,
     pullRequestUrlForNumber,
     renderPrRatingAssessmentReportSection,
     renderRootCauseClusterAssessmentReportSection,
-    reportPrRating,
-    reportRealBehaviorProof,
-    reportRootCauseCluster,
-    reviewSectionValue,
     runtimeBudgetExceeded,
-    sectionLineValue,
     sentence,
-
     targetRepo,
     timeoutWithinRuntimeBudget,
     unsafeCanonicalPullRequestReason,

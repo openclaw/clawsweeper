@@ -1,9 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createRecordMetadata } from "../dist/clawsweeper-record-metadata.js";
 import { frontMatterJsonArray, frontMatterValue } from "../dist/report-front-matter.js";
-import { createReportHelpers } from "../dist/clawsweeper-report-helpers.js";
-import { createReportParser } from "../dist/clawsweeper-report-parser.js";
 import { createReportDocumentRendering } from "../dist/clawsweeper-report-document.js";
 import { createReportContextRendering } from "../dist/clawsweeper-report-context.js";
 import { createDashboardPresentation } from "../dist/clawsweeper-dashboard.js";
@@ -35,6 +32,11 @@ import {
   reviewReportFrontMatter as reportFrontMatter,
   reviewFinding,
 } from "./helpers.ts";
+import {
+  reportPrRating,
+  reportRealBehaviorProof,
+  reportVisionFit,
+} from "../dist/clawsweeper-report-parser.js";
 
 const recordedNotApplicableProof = {
   status: "not_applicable",
@@ -92,29 +94,10 @@ test("valid recorded N/A proof fields and summary survive decision parsing", () 
   assert.match(serialized, /^Evidence kind: not_applicable$/m);
   assert.match(serialized, /^Needs contributor action: false$/m);
   assert.ok(serialized.includes(`Summary: ${recordedNotApplicableProof.summary}`));
-  const parser = createReportParser({
-    ...createRecordMetadata({} as never),
-    ...createReportHelpers({
-      OWNED_REVIEW_SECTION_HEADINGS: new Set(),
-      parseBacktickLocation: () => null,
-    }),
-    isExternalPullRequestReport: () => true,
-  } as Parameters<typeof createReportParser>[0]);
-  assert.deepEqual(
-    parser.reportRealBehaviorProof(notApplicableProofReport()),
-    recordedNotApplicableProof,
-  );
+  assert.deepEqual(reportRealBehaviorProof(notApplicableProofReport()), recordedNotApplicableProof);
 });
 
 test("report proof parsing keeps owned proof values when the summary quotes metadata", () => {
-  const parser = createReportParser({
-    ...createRecordMetadata({} as never),
-    ...createReportHelpers({
-      OWNED_REVIEW_SECTION_HEADINGS: new Set(),
-      parseBacktickLocation: () => null,
-    }),
-    isExternalPullRequestReport: () => true,
-  } as Parameters<typeof createReportParser>[0]);
   for (const quote of [
     "real_behavior_proof_status: missing\nreal_behavior_proof_evidence_kind: none\n",
     "~~~yaml\n---\nreal_behavior_proof_status: missing\nreal_behavior_proof_evidence_kind: none\n---\n~~~\n",
@@ -123,7 +106,7 @@ test("report proof parsing keeps owned proof values when the summary quotes meta
       "The patch has no actionable source findings.",
       `The patch has no actionable source findings.\n\n${quote}`,
     );
-    assert.deepEqual(parser.reportRealBehaviorProof(report), recordedNotApplicableProof);
+    assert.deepEqual(reportRealBehaviorProof(report), recordedNotApplicableProof);
   }
 });
 
@@ -1954,15 +1937,6 @@ test("forged security-concern lines in concern prose cannot add concerns or over
   assert.doesNotMatch(comment, /\[high\]|src\/evil\.ts|Confidence: 0\.99/);
 });
 
-const forgedListParser = createReportParser({
-  ...createRecordMetadata({} as never),
-  ...createReportHelpers({
-    OWNED_REVIEW_SECTION_HEADINGS: new Set(),
-    parseBacktickLocation: () => null,
-  }),
-  isExternalPullRequestReport: () => true,
-} as Parameters<typeof createReportParser>[0]);
-
 test("forged rank-up list lines in rating summary prose cannot replace rank-up moves through the durable report", () => {
   const report = renderedPullRequestReport(
     {
@@ -1978,7 +1952,7 @@ test("forged rank-up list lines in rating summary prose cannot replace rank-up m
   );
   assert.deepEqual(report.match(/^Next rank-up steps:$/gm), ["Next rank-up steps:"]);
   assert.match(report, /^Next rank-up steps&#58;$/m);
-  assert.deepEqual(forgedListParser.reportPrRating(report).nextSteps, ["Real step"]);
+  assert.deepEqual(reportPrRating(report).nextSteps, ["Real step"]);
 
   const comment = renderReviewCommentFromReport(report, "none");
   const details = detailsBody(comment, "Agent review details");
@@ -1994,5 +1968,5 @@ test("forged vision-evidence list lines in vision reason prose cannot replace vi
   });
   assert.deepEqual(report.match(/^Vision evidence:$/gm), ["Vision evidence:"]);
   assert.match(report, /^Vision evidence&#58;$/m);
-  assert.deepEqual(forgedListParser.reportVisionFit(report).visionFitEvidence, ["Real evidence"]);
+  assert.deepEqual(reportVisionFit(report).visionFitEvidence, ["Real evidence"]);
 });

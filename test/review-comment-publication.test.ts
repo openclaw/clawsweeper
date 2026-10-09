@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-import { shouldSyncReviewComment } from "../dist/clawsweeper.js";
+import { shouldSyncReviewComment } from "../dist/clawsweeper-record-metadata.js";
 import { createReviewCommentLeases } from "../dist/clawsweeper-review-comment-leases.js";
 import {
   createReviewCommentPublication,
@@ -124,8 +124,6 @@ function reviewCommentState(comments: () => Record<string, unknown>[]) {
     parseGitHubItemRef: () => ({ repo: "openclaw/openclaw", kind: "pull_request", number: 1 }),
     reviewCommentMarker: () => reviewMarker,
     pullHeadShaFromContext: () => headSha,
-    pullHeadShaFromReport: () => headSha,
-    reviewLeaseRevisionFromReport: () => headSha,
     markerAttributeValue: (value: string) => value,
   } as never);
 }
@@ -145,7 +143,6 @@ function reviewCommentPublication(options: {
     ensureDir: (path: string) => mkdirSync(path, { recursive: true }),
     sentence: (value: string) => value,
     normalizedLabelSet: () => new Set<string>(),
-    sectionLineValue: () => undefined,
     markdownLink: (label: string) => label,
     closeAppliedCommentMarker: () => "",
     ...options.state,
@@ -220,6 +217,7 @@ test("review version timestamps round-trip through the durable parser", () => {
   const fields: Record<string, string> = {
     type: "pull_request",
     number: String(itemNumber),
+    pull_head_sha: headSha,
     reviewed_at: "2026-08-08T20:00:00+02:00",
     item_source_revision: "a".repeat(64),
     review_lease_owner: "fixture",
@@ -233,7 +231,6 @@ test("review version timestamps round-trip through the durable parser", () => {
     "",
   ].join("\n");
   const automation = createReviewCommentAutomation({
-    pullHeadShaFromReport: () => headSha,
     markerAttributeValue: (value: string) => value.trim().replace(/[^\w./:@-]/g, "_") || "unknown",
   } as never);
   const versionMarker = automation.reviewVersionMarkerFromReport(report);
@@ -328,7 +325,6 @@ test("oversized durable review publication replaces ready state with a verified 
       ensureDir: (path: string) => mkdirSync(path, { recursive: true }),
       sentence: (value: string) => value,
       normalizedLabelSet: () => new Set<string>(),
-      sectionLineValue: () => undefined,
       markdownLink: (label: string) => label,
       closeAppliedCommentMarker: () => "",
       ...state,
@@ -619,8 +615,6 @@ test("newest exact durable comment wins over older trusted duplicates", () => {
     parseGitHubItemRef: () => ({ repo: "openclaw/openclaw", kind: "pull_request", number: 1 }),
     reviewCommentMarker: () => reviewMarker,
     pullHeadShaFromContext: () => headSha,
-    pullHeadShaFromReport: () => headSha,
-    reviewLeaseRevisionFromReport: () => headSha,
     markerAttributeValue: (value: string) => value,
   } as never);
 

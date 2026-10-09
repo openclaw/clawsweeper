@@ -8,10 +8,30 @@ import {
 } from "./clawsweeper-policy.js";
 import { createPullRequestReferenceParser } from "./clawsweeper-pr-references.js";
 import {
+  defaultAgentsPolicyStatus,
+  impactLabelsFromReport,
+  labelJustificationsFromReport,
+  maturityLabelsFromReport,
+  mergeRiskLabelsFromReport,
+  mergeRiskOptionsFromReport,
+  reportAgentsPolicyStatus,
   reportChangeExample,
+  reportEvidence,
+  reportFeatureShowcase,
+  reportLikelyOwners,
+  reportOverallConfidenceScore,
+  reportOverallCorrectness,
   reportProductReview,
   reportProvenance,
+  reportPrRating,
+  reportRealBehaviorProof,
+  reportReviewFindings,
+  reportRootCauseCluster,
+  reportSecurityReview,
+  reportTelegramVisibleProof,
   reportTestingReview,
+  reportVisionFit,
+  triagePriorityFromReport,
 } from "./clawsweeper-report-parser.js";
 import type {
   AuthorPrBudgetApplyState,
@@ -45,6 +65,9 @@ import {
   replaceFrontMatterValue,
   replaceSectionValue,
 } from "./report-front-matter.js";
+import { isAutomationReportAuthor } from "./clawsweeper-item-policy.js";
+import { reportFileName } from "./clawsweeper-repository-paths.js";
+import { reviewSectionValue } from "./clawsweeper-record-metadata.js";
 
 export function createPullRequestPromotionFacts(
   dependencies: CreateReportOrchestrationDependencies &
@@ -52,42 +75,19 @@ export function createPullRequestPromotionFacts(
     Pick<ReturnType<typeof createReportRendering>, "renderCloseCommentFromReport">,
 ) {
   const {
-    defaultAgentsPolicyStatus,
     defaultRootCauseCluster,
     eventTimestampMs,
     fixedPullRequestFromReport,
     ghJson,
-    impactLabelsFromReport,
     isAfterReview,
-    isAutomationReportAuthor,
     itemSnapshotHash,
-    labelJustificationsFromReport,
     labelNames,
-    maturityLabelsFromReport,
-    mergeRiskLabelsFromReport,
-    mergeRiskOptionsFromReport,
     normalizeLabelName,
     parseGitHubItemRef,
     renderCloseCommentFromReport,
     repoUrlFor,
-    reportAgentsPolicyStatus,
-    reportEvidence,
-    reportFeatureShowcase,
-    reportFileName,
-    reportLikelyOwners,
-    reportOverallConfidenceScore,
-    reportOverallCorrectness,
-    reportPrRating,
-    reportRealBehaviorProof,
-    reportReviewFindings,
-    reportRootCauseCluster,
-    reportSecurityReview,
-    reportTelegramVisibleProof,
-    reportVisionFit,
     reviewMetricsFromReport,
-    reviewSectionValue,
     targetRepo,
-    triagePriorityFromReport,
   } = dependencies;
 
   function reportDecision(markdown: string, closeReason: CloseReason): Decision {

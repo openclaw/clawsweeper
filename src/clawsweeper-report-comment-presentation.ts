@@ -22,16 +22,34 @@ import {
   renderDecisionPacketPublicBlock,
 } from "./decision-packets.js";
 import {
+  mergeRiskOptionsFromReport,
+  reportAgentsPolicyStatus,
   reportChangeExample,
+  reportEvidence,
+  reportLikelyOwners,
+  reportLiveProofRecordingBlock,
+  reportOverallConfidenceScore,
+  reportOverallCorrectness,
   reportProductReview,
   reportProvenance,
+  reportPrRating,
+  reportReviewFindings,
+  reportRootCauseCluster,
+  reportSecurityReview,
   reportTestingReview,
+  triagePriorityFromReport,
 } from "./clawsweeper-report-parser.js";
 import { neutralizeReviewControlMarkers, renderReviewHistorySection } from "./review-history.js";
 import type { CreateReportRenderingDependencies } from "./clawsweeper-report-rendering-dependencies.js";
 import type { createReportContextRendering } from "./clawsweeper-report-context.js";
 import type { createReportCommentHelpers } from "./clawsweeper-report-comment-helpers.js";
 import { frontMatterStringArray, frontMatterValue } from "./report-front-matter.js";
+import {
+  agentsPolicyStatusLine,
+  neutralizeOwnedSectionSpoofing,
+  sanitizeArchitectureDiagram,
+} from "./clawsweeper-report-helpers.js";
+import { pullHeadShaFromReport, reviewSectionValue } from "./clawsweeper-record-metadata.js";
 
 const PRODUCT_KIND_TEXT: Record<ProductReviewKind, string> = {
   bug_fix: "Bug fix",
@@ -73,7 +91,6 @@ export function createReportCommentPresentation(
 ) {
   const {
     REVIEW_HISTORY_RENDER_SLOT,
-    agentsPolicyStatusLine,
     appendHeadingSection,
     appendPublicSection,
     appendReviewQuestionDetails,
@@ -87,8 +104,6 @@ export function createReportCommentPresentation(
     labelTransitionJustificationsFromPublicReport,
     labelTransitionJustificationsMarkdown,
     likelyOwnerLines,
-    mergeRiskOptionsFromReport,
-    neutralizeOwnedSectionSpoofing,
     publicBeforeMergeBlock,
     publicChecklistText,
     publicFailedReviewReadinessBlock,
@@ -102,23 +117,12 @@ export function createReportCommentPresentation(
     publicRootCauseClusterBlock,
     publicSecurityReviewLine,
     publicSummaryBody,
-    pullHeadShaFromReport,
     pullRequestReviewReadinessFromReport,
     renderCloseCommentFromReport,
     renderOpenClawPrSurfaceFromReport,
     renderReviewMetricsDigest,
     repairLoopPassModeFromReport,
-    reportAgentsPolicyStatus,
-    reportEvidence,
-    reportLikelyOwners,
-    reportLiveProofRecordingBlock,
-    reportOverallConfidenceScore,
-    reportOverallCorrectness,
-    reportPrRating,
     reportRealBehaviorProofPolicy,
-    reportReviewFindings,
-    reportRootCauseCluster,
-    reportSecurityReview,
     reportWorkCandidateReason,
     regressionAssessmentFromReport,
     regressionProvenanceFromReport,
@@ -128,16 +132,13 @@ export function createReportCommentPresentation(
     reviewFreshnessText,
     reviewHistoryForRender,
     reviewMetricsFromReport,
-    reviewSectionValue,
     reviewVersionMarkerFromReport,
     reviewWorkflowCallout,
     reviewWorkflowSummaryLine,
-    sanitizeArchitectureDiagram,
     securityConcernDetailedLine,
     securityConcernSummaryLine,
     sentence,
     stripListMarker,
-    triagePriorityFromReport,
   } = dependencies;
 
   function publicInlineText(value: string): string {

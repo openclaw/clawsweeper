@@ -50,6 +50,7 @@ import { type RepositoryProfile } from "./repository-profiles.js";
 import { compareCodeUnits, stableJson } from "./stable-json.js";
 import { asRecord, login, nonBlankStringOrUndefined } from "./value-coerce.js";
 import { frontMatterValue, replaceFrontMatterValue } from "./report-front-matter.js";
+import { isAutomationReportAuthor } from "./clawsweeper-item-policy.js";
 
 const REVIEW_TREE_METADATA_JQ =
   '{truncated, tree: (.tree | if type == "array" then map(if type == "object" then {type, sha, size} else . end) else . end)}';
@@ -63,52 +64,21 @@ interface CreateContextHydrationDependencies {
   defaultClosedDir: (profile?: RepositoryProfile) => string;
   defaultItemsDir: (profile?: RepositoryProfile) => string;
   displayTitle: (title: string) => string;
-  effectiveReviewStatus: (markdown: string) => string;
   fetchIssueReviewComments: (number: number) => Record<string, unknown>[];
   ghJson: <T>(args: string[], options?: GitHubDeadlineOptions) => T;
   ghJsonOnce: <T>(args: string[], timeoutMs: number) => T;
   ghJsonEach: <T>(requests: readonly string[][]) => GitHubJsonResult<T>[];
   githubCount: (value: unknown) => number | null;
   GitHubRuntimeBudgetError: new (reason: string) => Error & { readonly reason: string };
-  isAutomationReportAuthor: (author: string | undefined) => boolean;
   isBulkFilerExemptAuthorAssociation: (value: unknown) => boolean;
   isMarkdownForActiveRepo: (markdown: string, file?: string) => boolean;
   isSafeGitBranchName: (branch: string) => boolean;
   labelNames: (value: unknown) => string[];
-  markdownFiles: (dir: string) => string[];
   normalizeAuthorAssociation: (value: unknown) => string;
   normalizeLabelName: (label: string) => string;
-  numberForMarkdownFile: (file: string) => number;
   repoRelativePath: (path: string) => string;
   reportUrl: (path?: string) => string;
   reviewCommentBodyDigest: (body: string) => string;
-  reviewSectionValue: (
-    markdown: string,
-    section:
-      | "summary"
-      | "changeSummary"
-      | "systemContext"
-      | "architectureDiagram"
-      | "bestSolution"
-      | "maintainerDecision"
-      | "reproductionAssessment"
-      | "solutionAssessment"
-      | "visionFit"
-      | "rootCauseCluster"
-      | "reviewFindings"
-      | "securityReview"
-      | "realBehaviorProof"
-      | "prRating"
-      | "telegramVisibleProof"
-      | "featureShowcase"
-      | "agentsPolicyStatus"
-      | "workCandidate"
-      | "repairWorkPrompt"
-      | "evidence"
-      | "likelyOwners"
-      | "risks"
-      | "closeComment",
-  ) => string;
   ROOT: string;
   targetRepo: () => string;
 }
@@ -119,26 +89,21 @@ export function createContextHydration(dependencies: CreateContextHydrationDepen
     defaultClosedDir,
     defaultItemsDir,
     displayTitle,
-    effectiveReviewStatus,
     fetchIssueReviewComments,
     ghJson,
     ghJsonOnce,
     ghJsonEach,
     githubCount,
     GitHubRuntimeBudgetError,
-    isAutomationReportAuthor,
     isBulkFilerExemptAuthorAssociation,
     isMarkdownForActiveRepo,
     isSafeGitBranchName,
     labelNames,
-    markdownFiles,
     normalizeAuthorAssociation,
     normalizeLabelName,
-    numberForMarkdownFile,
     repoRelativePath,
     reportUrl,
     reviewCommentBodyDigest,
-    reviewSectionValue,
     ROOT,
     targetRepo,
   } = dependencies;
@@ -581,11 +546,7 @@ export function createContextHydration(dependencies: CreateContextHydrationDepen
     ghJsonEach,
     compactIssue,
     compactPullRequest,
-    reviewSectionValue,
-    effectiveReviewStatus,
     displayTitle: (title) => displayTitle(title),
-    markdownFiles,
-    numberForMarkdownFile,
     repoRelativePath,
   });
 
@@ -598,7 +559,6 @@ export function createContextHydration(dependencies: CreateContextHydrationDepen
   } = relatedContext;
 
   const {
-    isDigitsOnly,
     quoteGitHubSearchTerm,
     referencingMergedPullRequestsForIssue,
     relatedItemsContext,
@@ -1055,7 +1015,6 @@ export function createContextHydration(dependencies: CreateContextHydrationDepen
     goodFirstIssueHumanLabelState,
     goodFirstIssueLabelOptedOutForTest,
     isClawSweeperComment,
-    isDigitsOnly,
     liveClawSweeperReviewDigest,
     openClosingPullRequestApplyReason,
     pairCloseKey,

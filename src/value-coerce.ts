@@ -52,6 +52,15 @@ export function rejectUnexpectedKeys(
   if (unexpected.length) throw new Error(`${label} has unexpected keys: ${unexpected.join(", ")}`);
 }
 
+export function isDigitsOnly(value: string): boolean {
+  if (!value) return false;
+  for (const char of value) {
+    const code = char.charCodeAt(0);
+    if (code < 48 || code > 57) return false;
+  }
+  return true;
+}
+
 export function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }

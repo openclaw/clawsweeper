@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-import { reportLiveProofPlan } from "../dist/clawsweeper.js";
+import { reportLiveProofPlan } from "../dist/clawsweeper-report-parser.js";
 import {
   LIVE_PROOF_RECORDING_MARKER,
   LIVE_VERIFICATION_MARKER,

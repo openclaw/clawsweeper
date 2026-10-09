@@ -20,6 +20,7 @@ import { GitHubRateLimitError, isGitHubNotFoundError } from "./github-retry.js";
 import type { RepositoryProfile } from "./repository-profiles.js";
 import { asRecord, nonBlankStringOrUndefined } from "./value-coerce.js";
 import { frontMatterValue } from "./report-front-matter.js";
+import { markdownRepository } from "./clawsweeper-repository-paths.js";
 
 export const MAX_IMPLEMENTATION_LINKED_ISSUE_REFERENCES = 5;
 
@@ -235,7 +236,6 @@ interface StatusContextDependencies {
   profileStatusStart: (profile?: RepositoryProfile) => string;
   profileStatusEnd: (profile?: RepositoryProfile) => string;
   sweepStatusPath: (profile?: RepositoryProfile) => string;
-  markdownRepository: (markdown: string, file?: string) => string;
   ghJson: <T>(args: string[]) => T;
   GitHubRuntimeBudgetError: new (reason: string) => Error & { readonly reason: string };
   numberOrUndefined: (value: unknown) => number | undefined;
@@ -252,7 +252,6 @@ export function createStatusContext({
   profileStatusStart,
   profileStatusEnd,
   sweepStatusPath,
-  markdownRepository,
   ghJson,
   GitHubRuntimeBudgetError,
   numberOrUndefined,

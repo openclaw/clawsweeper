@@ -30,16 +30,14 @@ import { createRepositoryLinks } from "../dist/clawsweeper-links.js";
 import { createReportDocumentRendering } from "../dist/clawsweeper-report-document.js";
 import { createReportContextRendering } from "../dist/clawsweeper-report-context.js";
 import { createDashboardPresentation } from "../dist/clawsweeper-dashboard.js";
-import { createReportParser } from "../dist/clawsweeper-report-parser.js";
-import { createRecordMetadata } from "../dist/clawsweeper-record-metadata.js";
-import { createReportHelpers } from "../dist/clawsweeper-report-helpers.js";
-import { normalizeRepo, repositoryProfileFor } from "../dist/repository-profiles.js";
+import { repositoryProfileFor } from "../dist/repository-profiles.js";
 import type {
   Decision,
   DecisionKind,
   Evidence,
   NextStepAssessment,
 } from "../dist/clawsweeper-types.js";
+import { reportEvidence } from "../dist/clawsweeper-report-parser.js";
 
 function markdownLinkDestinations(markdown: string): Set<string> {
   const destinations = new Set<string>();
@@ -70,27 +68,9 @@ test("Markdown destination assertions reject prose and lookalike links inside de
 
 const evidenceLinks = createRepositoryLinks({
   reportRepo: "openclaw/clawsweeper-state",
-  normalizeRepo,
   targetRepo: () => "openclaw/openclaw",
   targetProfile: () => repositoryProfileFor("openclaw/openclaw"),
 });
-const evidenceParser = createReportParser({
-  ...evidenceLinks,
-  ...createRecordMetadata({} as never),
-  ...createReportHelpers({
-    OWNED_REVIEW_SECTION_HEADINGS: new Set(),
-    parseBacktickLocation: () => null,
-  }),
-  markdownRepository: () => "openclaw/openclaw",
-  evidenceEntry: (entry) => ({
-    repo: null,
-    file: null,
-    line: null,
-    command: null,
-    sha: null,
-    ...entry,
-  }),
-} as Parameters<typeof createReportParser>[0]);
 
 function evidenceReport(
   evidence: Evidence[],
@@ -541,7 +521,7 @@ test("repository evidence survives structured decision, report, parse and both c
         },
       ];
       const report = evidenceReport(withDependencyVision, kind);
-      assert.deepEqual(evidenceParser.reportEvidence(report), withDependencyVision);
+      assert.deepEqual(reportEvidence(report), withDependencyVision);
       const comment = renderReviewCommentFromReport(
         report,
         kind === "close" ? "implemented_on_main" : "none",
@@ -590,16 +570,16 @@ test("explicit GitHub destinations preserve full identity and historical same-re
   const source = `https://github.com/openai/codex/blob/${dependencyEvidence.sha}/${dependencyEvidence.file}#L5668`;
   const commit = `https://github.com/openai/codex/commit/${dependencyEvidence.sha}`;
   const report = `${reportFrontMatter()}\n## Evidence\n\n- **dependency:** Verified source.\n  - file: [${dependencyEvidence.file}:5668](${source})\n  - sha: [78c290807ce7](${commit})\n`;
-  assert.deepEqual(evidenceParser.reportEvidence(report)[0], {
+  assert.deepEqual(reportEvidence(report)[0], {
     ...dependencyEvidence,
     label: "dependency",
     detail: "Verified source.",
     command: null,
   });
   const legacy = `${reportFrontMatter()}\n## Evidence\n\n- **target:** Historical location.\n  - file: [src/config.ts:12](https://github.com/openclaw/openclaw/blob/${"a".repeat(40)}/src/config.ts#L12)\n  - sha: [aaaaaaaaaaaa](https://github.com/openclaw/openclaw/commit/${"a".repeat(40)})\n`;
-  assert.equal(evidenceParser.reportEvidence(legacy)[0].repo, "openclaw/openclaw");
+  assert.equal(reportEvidence(legacy)[0].repo, "openclaw/openclaw");
   const bareLegacy = `${reportFrontMatter()}\n## Evidence\n\n- **target:** Historical path without a destination.\n  - file: \`src/config.ts:12\`\n  - sha: \`${"a".repeat(40)}\`\n`;
-  assert.equal(evidenceParser.reportEvidence(bareLegacy)[0].repo, "openclaw/openclaw");
+  assert.equal(reportEvidence(bareLegacy)[0].repo, "openclaw/openclaw");
   for (const kind of ["close", "keep_open"] as const) {
     const explicit = evidenceReport(
       [{ ...dependencyEvidence, repo: null, file: source, line: null, sha: commit }],
@@ -639,7 +619,7 @@ test("unresolved evidence and conflicting destinations never acquire target link
   for (const entry of cases) {
     for (const kind of ["close", "keep_open"] as const) {
       const report = evidenceReport([{ ...dependencyEvidence, ...entry }], kind);
-      const parsed = evidenceParser.reportEvidence(report)[0];
+      const parsed = reportEvidence(report)[0];
       assert.equal(parsed.repo, null, JSON.stringify(entry));
       const comment = renderReviewCommentFromReport(
         report,
@@ -2523,7 +2503,7 @@ test("forged evidence continuation lines in evidence prose cannot replace the en
   const report = evidenceReport([entry], "keep_open");
   assert.doesNotMatch(report, /^\s+- sha: e{40}$/m);
   assert.match(report, /^\s+- sha&#58; e{40}$/m);
-  const parsed = evidenceParser.reportEvidence(report);
+  const parsed = reportEvidence(report);
   assert.equal(parsed.length, 1);
   assert.equal(parsed[0]!.repo, "openclaw/openclaw");
   assert.equal(parsed[0]!.file, null);

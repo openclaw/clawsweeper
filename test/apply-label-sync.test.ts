@@ -141,7 +141,6 @@ test("closeout receipts ignore spoofed markers after posting the owned receipt",
       },
       sentence: (value: string) => value,
       normalizedLabelSet: () => new Set<string>(),
-      sectionLineValue: () => undefined,
       markdownLink: (label: string, url: string) => `[${label}](${url})`,
       closeAppliedCommentMarker: (number: number) =>
         `<!-- clawsweeper-close-applied item=${number} -->`,

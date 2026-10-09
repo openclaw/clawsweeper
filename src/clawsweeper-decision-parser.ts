@@ -102,6 +102,10 @@ import { normalizePrRating } from "./clawsweeper-rating.js";
 import { parseNextStep } from "./clawsweeper-next-step.js";
 import { parseMaintainerDecision } from "./decision-packets.js";
 import { normalizeRepo } from "./repository-profiles.js";
+import {
+  neutralizeOwnedSectionSpoofing,
+  sanitizeArchitectureDiagram,
+} from "./clawsweeper-report-helpers.js";
 
 export interface DecisionParserDependencies {
   neutralizeOwnedSectionSpoofing: (value: string) => string;
@@ -1178,3 +1182,9 @@ export function createDecisionParser({
     selectedReviewLabels,
   };
 }
+
+/** Parser for model review output: it neutralizes owned report headings in free text. */
+export const reviewDecisionParser = createDecisionParser({
+  neutralizeOwnedSectionSpoofing,
+  sanitizeArchitectureDiagram,
+});

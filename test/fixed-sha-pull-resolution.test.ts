@@ -169,7 +169,6 @@ function statusContextWithCalls(
     profileStatusStart: () => "",
     profileStatusEnd: () => "",
     sweepStatusPath: () => "",
-    markdownRepository: () => "openclaw/openclaw",
     ghJson,
     GitHubRuntimeBudgetError: TestGitHubRuntimeBudgetError,
     numberOrUndefined: (value) => (typeof value === "number" ? value : undefined),

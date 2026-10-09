@@ -7,7 +7,6 @@ import {
 } from "../dist/clawsweeper.js";
 import { detailsBody, reviewReportFrontMatter as reportFrontMatter } from "./helpers.ts";
 import { createReportOrchestrationFoundation } from "../dist/clawsweeper-orchestration-foundation.js";
-import { createRecordMetadata } from "../dist/clawsweeper-record-metadata.js";
 import { pinnedTestRolePaths } from "./openclaw-file-role-fixture.ts";
 
 test("support-only surface moves +57 to Tests while the reviewer production metric stays intact", () => {
@@ -429,7 +428,6 @@ function surfaceReport(files: unknown, truncated = false): string {
 
 // Use the existing production factories; the CLI regression covers actual report persistence.
 const surfaceFoundation = createReportOrchestrationFoundation({
-  ...createRecordMetadata({} as Parameters<typeof createRecordMetadata>[0]),
   labelPolicy: {},
 } as Parameters<typeof createReportOrchestrationFoundation>[0]);
 
