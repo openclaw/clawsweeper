@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
-import { existsSync, readFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 import { parse } from "yaml";
+import { zip } from "./helpers/command-proof-fixtures.ts";
 import {
   classifyReviewRun,
   REVIEW_RUN_OBSERVER_TITLE_LANES,
@@ -65,11 +69,6 @@ test("queued workflow remediation shares the guarded dead-letter cadence", () =>
   assert.equal(workflow.concurrency.group, "exact-review-dead-letter-operator");
   assert.equal(workflow.concurrency["cancel-in-progress"], false);
   assert.equal(workflow.permissions.actions, "write");
-  const restore = workflow.jobs.reconcile.steps.find(
-    (step: Record<string, unknown>) => step.name === "Restore permanent queued-run zombie state",
-  );
-  assert.match(String(restore.run), /actions\/artifacts/);
-  assert.match(String(restore.run), /stuck-queued-zombies\.json/);
   const remediate = workflow.jobs.reconcile.steps.find(
     (step: Record<string, unknown>) => step.name === "Remediate demonstrably stuck queued runs",
   );
@@ -105,6 +104,123 @@ test("queued workflow remediation shares the guarded dead-letter cadence", () =>
   assert.match(String(upload.with.path), /stuck-queued-runs\.json/);
   assert.match(String(upload.with.path), /stuck-queued-zombies\.json/);
   assert.equal(upload.with["if-no-files-found"], "ignore");
+});
+
+test("dead-letter reconcile restores zombie state from the newest live artifact by exact name", () => {
+  const job = parse(
+    readFileSync(".github/workflows/exact-review-dead-letter-reconcile.yml", "utf8"),
+  ).jobs.reconcile as Record<string, any>;
+  const steps = job.steps as Array<Record<string, any>>;
+  const restore = steps.find((step) => step.name === "Restore permanent queued-run zombie state");
+  const upload = steps.find((step) => step.name === "Upload sanitized inventory");
+  assert.ok(restore && upload);
+  const artifactName = String(job.env.EXACT_REVIEW_DLQ_ARTIFACT);
+  assert.equal(upload.with.name, "${{ env.EXACT_REVIEW_DLQ_ARTIFACT }}");
+  assert.equal(upload.with.overwrite, true);
+  const zombies = '{"schema_version":1,"zombies":[{"run_id":"7"}]}\n';
+  // Mirrors `gh api --include`: CRLF headers, then the raw body; non-2xx exits 1.
+  const fixture = [
+    "gh() {",
+    '  printf "gh %s\\n" "$*" >> "$CALLS"',
+    '  if [ "$2" != "--include" ]; then cat "$MOCK_ZIP"; return; fi',
+    '  if [ -z "$MOCK_STATUS" ]; then echo "dial tcp: connection refused" >&2; return 1; fi',
+    '  printf "HTTP/2.0 %s Fixture\\r\\nContent-Type: application/json\\r\\n\\r\\n%s" "$MOCK_STATUS" "$MOCK_BODY"',
+    '  case "$MOCK_STATUS" in 2??) ;; *) echo "unexpected end of JSON input" >&2; return 1 ;; esac',
+    "}",
+  ].join("\n");
+  const artifact = (id: number, name: string, createdAt: string, expired = false) => ({
+    id,
+    name,
+    expired,
+    created_at: createdAt,
+  });
+  const run = (status: string, body: string, archive = zip([])) => {
+    const root = mkdtempSync(join(tmpdir(), "dead-letter-restore-"));
+    try {
+      writeFileSync(join(root, "prior.zip"), archive);
+      const result = spawnSync("bash", ["-c", `${fixture}\n${restore.run}`], {
+        cwd: root,
+        encoding: "utf8",
+        timeout: 10_000,
+        env: {
+          PATH: process.env.PATH,
+          CALLS: join(root, "calls"),
+          EXACT_REVIEW_DLQ_ARTIFACT: artifactName,
+          GH_TOKEN: "fixture-token",
+          GITHUB_REPOSITORY: "openclaw/clawsweeper",
+          MOCK_BODY: body,
+          MOCK_STATUS: status,
+          MOCK_ZIP: join(root, "prior.zip"),
+          RUNNER_TEMP: root,
+        },
+      });
+      const restored = join(root, ".artifacts/exact-review-dlq/prior-stuck-queued-zombies.json");
+      return {
+        ...result,
+        calls: existsSync(join(root, "calls"))
+          ? readFileSync(join(root, "calls"), "utf8").trim().split("\n")
+          : [],
+        restored: existsSync(restored) ? readFileSync(restored, "utf8") : undefined,
+      };
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  };
+
+  const listed = run(
+    "200",
+    JSON.stringify({
+      total_count: 4,
+      artifacts: [
+        artifact(4, `${artifactName}-99-1`, "2026-10-04T00:00:00Z"),
+        artifact(3, artifactName, "2026-10-03T00:00:00Z", true),
+        artifact(1, artifactName, "2026-10-01T00:00:00Z"),
+        artifact(2, artifactName, "2026-10-02T00:00:00Z"),
+      ],
+    }),
+    zip([{ name: "stuck-queued-zombies.json", content: Buffer.from(zombies), compressed: true }]),
+  );
+  assert.equal(listed.status, 0, listed.stderr);
+  assert.deepEqual(listed.calls, [
+    `gh api --include -X GET repos/openclaw/clawsweeper/actions/artifacts -f name=${artifactName} -F per_page=100`,
+    "gh api repos/openclaw/clawsweeper/actions/artifacts/2/zip",
+  ]);
+  assert.equal(listed.restored, zombies);
+  assert.match(listed.stdout, /restored queued-run zombie state from artifact 2/);
+
+  const unrelated = run(
+    "200",
+    JSON.stringify({
+      total_count: 1,
+      artifacts: [artifact(2, artifactName, "2026-10-02T00:00:00Z")],
+    }),
+    zip([{ name: "inventory.json", content: Buffer.from("{}") }]),
+  );
+  assert.equal(unrelated.status, 0, unrelated.stderr);
+  assert.equal(unrelated.restored, undefined);
+  assert.match(unrelated.stdout, /no queued-run zombie state; using checked-in seed/);
+
+  const none = run("200", JSON.stringify({ total_count: 0, artifacts: [] }));
+  assert.equal(none.status, 0, none.stderr);
+  assert.equal(none.calls.length, 1);
+  assert.equal(none.restored, undefined);
+  assert.match(none.stdout, /no prior reconcile artifact; using checked-in zombie seed/);
+
+  for (const [status, body, message] of [
+    ["", "", /got no HTTP response \(gh exit 1: dial tcp: connection refused/],
+    ["500", "", /returned HTTP 500 \(empty body\)/],
+    ["502", '{"message":"Server Error"}', /returned HTTP 502 \(\{"message":"Server Error"\}\)/],
+    ["200", "", /returned HTTP 200 with an empty body/],
+    ["200", "<html>", /returned HTTP 200 with an unreadable artifact list/],
+    ["200", '{"message":"ok"}', /returned HTTP 200 with an unreadable artifact list/],
+  ] as const) {
+    const failed = run(status, body);
+    assert.equal(failed.status, 1, `${status} ${body}`);
+    assert.match(failed.stderr, message);
+    assert.doesNotMatch(failed.stderr, /unexpected end of JSON input/);
+    assert.equal(failed.calls.length, 1);
+    assert.equal(failed.restored, undefined);
+  }
 });
 
 test("exact review generation enters finalization before state hydration", () => {

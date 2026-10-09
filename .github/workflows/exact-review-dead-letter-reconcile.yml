@@ -44,6 +44,7 @@ jobs:
     env:
       EXACT_REVIEW_QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
       CLAWSWEEPER_APP_CLIENT_ID: Iv23liOECG0slfuhz093
+      EXACT_REVIEW_DLQ_ARTIFACT: exact-review-dlq-reconcile
     steps:
       - name: Establish reconciliation deadline
         run: |
@@ -68,8 +69,38 @@ jobs:
           set -euo pipefail
           artifact_dir=.artifacts/exact-review-dlq
           mkdir -p "$artifact_dir"
-          artifact_id="$(gh api -X GET "repos/${GITHUB_REPOSITORY}/actions/artifacts" -F per_page=100 \
-            --jq '[.artifacts[] | select(.expired == false) | select(.name | startswith("exact-review-dlq-reconcile-"))] | sort_by(.created_at) | reverse | .[0].id // empty')"
+          # GitHub returns HTTP 500 with an empty body for this repository's unfiltered
+          # artifact listing, so look the reconcile artifact up by its exact name.
+          response="$RUNNER_TEMP/exact-review-dlq-artifacts.http"
+          listing="$RUNNER_TEMP/exact-review-dlq-artifacts.json"
+          gh_exit=0
+          gh api --include -X GET "repos/${GITHUB_REPOSITORY}/actions/artifacts" \
+            -f name="$EXACT_REVIEW_DLQ_ARTIFACT" -F per_page=100 \
+            > "$response" 2> "$response.stderr" || gh_exit=$?
+          status="$(awk 'NR == 1 && /^HTTP\// { print $2 }' "$response")"
+          if [[ -z "$status" ]]; then
+            echo "::error::Listing ${EXACT_REVIEW_DLQ_ARTIFACT} artifacts got no HTTP response (gh exit ${gh_exit}: $(tr -d '\r' < "$response.stderr" | paste -sd ' ' -))" >&2
+            exit 1
+          fi
+          awk 'body { print; next } { sub(/\r$/, "") } $0 == "" { body = 1 }' "$response" > "$listing"
+          if [[ ! "$status" =~ ^2[0-9][0-9]$ ]]; then
+            detail="empty body"
+            if [[ -s "$listing" ]]; then detail="$(head -c 300 "$listing" | tr -d '\r' | paste -sd ' ' -)"; fi
+            echo "::error::Listing ${EXACT_REVIEW_DLQ_ARTIFACT} artifacts returned HTTP ${status} (${detail})" >&2
+            exit 1
+          fi
+          if [[ ! -s "$listing" ]]; then
+            echo "::error::Listing ${EXACT_REVIEW_DLQ_ARTIFACT} artifacts returned HTTP ${status} with an empty body" >&2
+            exit 1
+          fi
+          if ! artifact_id="$(jq -r --arg name "$EXACT_REVIEW_DLQ_ARTIFACT" '
+            if (.artifacts | type) != "array" then error("no artifacts array") else
+              [.artifacts[] | select(.expired == false) | select(.name == $name)]
+              | sort_by(.created_at) | reverse | .[0].id // empty
+            end' "$listing")"; then
+            echo "::error::Listing ${EXACT_REVIEW_DLQ_ARTIFACT} artifacts returned HTTP ${status} with an unreadable artifact list" >&2
+            exit 1
+          fi
           if [ -z "$artifact_id" ]; then
             echo "no prior reconcile artifact; using checked-in zombie seed"
             exit 0
@@ -180,7 +211,10 @@ jobs:
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: exact-review-dlq-reconcile-${{ github.run_id }}-${{ github.run_attempt }}
+          # One fixed name keeps the next run's exact-name lookup possible; a re-run
+          # attempt replaces its own run's artifact instead of failing on the name.
+          name: ${{ env.EXACT_REVIEW_DLQ_ARTIFACT }}
+          overwrite: true
           path: |
             .artifacts/exact-review-dlq/inventory.json
             .artifacts/exact-review-dlq/parked-reviews.json
