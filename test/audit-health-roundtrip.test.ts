@@ -62,7 +62,6 @@ test("extracted dashboard preserves flush Markdown headings, tables, and embedde
     repoUrlFor: (repo) => `https://github.com/${repo}`,
     reportFileUrl: (_, reportPath) => reportPath ?? "report",
     targetRepo: () => "openclaw/openclaw",
-    timestampMs: () => null,
   });
   const snapshot = {
     profile: { displayName: "OpenClaw", targetRepo: "openclaw/openclaw" },

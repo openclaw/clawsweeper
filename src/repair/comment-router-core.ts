@@ -34,6 +34,7 @@ import {
   unconfirmedProductDirectionCloseEnabled,
   unsponsoredFeatureCloseEnabled,
 } from "../policy-flags.js";
+import { isOlderThanDays } from "../iso-time.js";
 export const REPAIR_INTENTS = new Set([
   "fix_ci",
   "address_review",
@@ -1494,11 +1495,6 @@ function unconfirmedProductDirectionTrustedCloseAgeBlock({
     return `unconfirmed_product_direction requires ${UNCONFIRMED_PRODUCT_DIRECTION_MIN_INACTIVE_DAYS} days without source activity before review`;
   }
   return null;
-}
-
-function isOlderThanDays(value: JsonValue, days: number, now: number): boolean {
-  const timestamp = Date.parse(String(value ?? ""));
-  return Number.isFinite(timestamp) && now - timestamp > days * DAY_MS;
 }
 
 function trustedCloseHumanSignalBlock({

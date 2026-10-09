@@ -15,6 +15,7 @@ import type {
   ItemKind,
   RepoDashboardSnapshot,
 } from "./clawsweeper-types.js";
+import { parseIsoMs } from "./iso-time.js";
 
 interface DashboardDependencies {
   closeReasonText: (reason: CloseReason) => string;
@@ -36,7 +37,6 @@ interface DashboardDependencies {
   repoUrlFor: (repo: string) => string;
   reportFileUrl: (number: number, path?: string) => string;
   targetRepo: () => string;
-  timestampMs: (iso: string | undefined) => number | null;
 }
 
 function flushDashboardMarkdown(strings: TemplateStringsArray, ...values: unknown[]): string {
@@ -64,7 +64,6 @@ export function createDashboardPresentation({
   repoUrlFor,
   reportFileUrl,
   targetRepo,
-  timestampMs,
 }: DashboardDependencies) {
   function workPriorityScore(priority: string): number {
     if (priority === "high") return 3;
@@ -387,8 +386,8 @@ export function createDashboardPresentation({
       .flatMap((snapshot) => snapshot.stats.recentClosed)
       .sort(
         (a, b) =>
-          (timestampMs(b.closedAt ?? b.appliedAt) ?? Number.NEGATIVE_INFINITY) -
-            (timestampMs(a.closedAt ?? a.appliedAt) ?? Number.NEGATIVE_INFINITY) ||
+          (parseIsoMs(b.closedAt ?? b.appliedAt) ?? Number.NEGATIVE_INFINITY) -
+            (parseIsoMs(a.closedAt ?? a.appliedAt) ?? Number.NEGATIVE_INFINITY) ||
           b.number - a.number,
       );
     const totals = snapshots.reduce(

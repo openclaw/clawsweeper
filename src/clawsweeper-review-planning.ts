@@ -42,6 +42,5 @@ export function createReviewPlanning(dependencies: ReviewPlanningDependencies) {
     planCandidates: tools.planCandidates,
     recordDashboardActivity: tools.recordDashboardActivity,
     selectCandidates: tools.selectCandidates,
-    timestampMs: tools.timestampMs,
   };
 }

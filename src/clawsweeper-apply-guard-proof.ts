@@ -14,6 +14,7 @@ import type { ApplyGuardDependencies } from "./clawsweeper-apply-guard-dependenc
 import type { createApplyGuardActivity } from "./clawsweeper-apply-guard-activity.js";
 import type { createApplyGuardPolicy } from "./clawsweeper-apply-guard-policy.js";
 import { asRecord } from "./value-coerce.js";
+import { isOlderThanDays } from "./iso-time.js";
 
 export function createApplyGuardProof(
   dependencies: ApplyGuardDependencies &
@@ -22,7 +23,6 @@ export function createApplyGuardProof(
 ) {
   const {
     ghPaged,
-    isOlderThanDays,
     normalizeLabelName,
     targetRepo,
     pullRequestHumanEngagementBlockReason,

@@ -8,11 +8,11 @@ import type {
   SuspectedRegressionProvenance,
   VerifiedRegressionProvenance,
 } from "./clawsweeper-types.js";
+import { isIsoTimestamp } from "./iso-time.js";
 
 const fullShaPattern = /^[0-9a-f]{40}$/i;
 const repositoryPattern = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
 const safeBranchPattern = /^[A-Za-z0-9][A-Za-z0-9._/-]*$/;
-const isoTimestampPattern = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$/;
 const MAX_SOURCE_PATH_LENGTH = 4_096;
 const MAX_SOURCE_LINE = 1_000_000;
 const regressionSupportingEvidence = new Set<RegressionSupportingEvidence>([
@@ -361,7 +361,7 @@ export function isVerifiedRegressionProvenance(
     candidate.verificationSource === "raw_parent_line_v1" &&
     candidate.evidenceType === "blame_to_merge_commit" &&
     typeof candidate.mergedAt === "string" &&
-    isIsoTimestamp(candidate.mergedAt) &&
+    isIsoTimestamp(candidate.mergedAt, { allowOffset: false }) &&
     typeof candidate.reviewedCommitSha === "string" &&
     fullSha(candidate.reviewedCommitSha) !== null &&
     ((candidate.sourceCommitSha === undefined && candidate.sourceAuthor === undefined) ||
@@ -522,7 +522,7 @@ function verifiedPullMetadata(
     pull.html_url !== candidate.pullRequestUrl ||
     pull.merged !== true ||
     typeof pull.merged_at !== "string" ||
-    !isIsoTimestamp(pull.merged_at) ||
+    !isIsoTimestamp(pull.merged_at, { allowOffset: false }) ||
     fullSha(typeof pull.merge_commit_sha === "string" ? pull.merge_commit_sha : "") !==
       candidate.mergeCommitSha ||
     !pull.base ||
@@ -646,8 +646,4 @@ function regressionEvidenceLabel(value: RegressionSupportingEvidence): string {
     case "known_regression_link":
       return "known regression link";
   }
-}
-
-function isIsoTimestamp(value: string): boolean {
-  return isoTimestampPattern.test(value) && Number.isFinite(Date.parse(value));
 }

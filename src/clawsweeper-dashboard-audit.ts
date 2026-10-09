@@ -46,6 +46,7 @@ import {
   type RepositoryProfile,
 } from "./repository-profiles.js";
 import { WEEKLY_COVERAGE_REVIEW_DAYS } from "./scheduler-policy.js";
+import { parseIsoMs } from "./iso-time.js";
 
 interface CreateDashboardAuditDependencies {
   addDashboardCadenceBucket: (
@@ -134,7 +135,6 @@ interface CreateDashboardAuditDependencies {
   }) => boolean;
   targetProfile: () => RepositoryProfile;
   targetRepo: () => string;
-  timestampMs: (iso: string | undefined) => number | null;
   withTargetProfile: <T>(profile: RepositoryProfile, fn: () => T) => T;
   workflowStatusSummary: (block: string) => WorkflowStatusSummary;
   workPlanPathForReport: (file: string, plansDir?: string) => string;
@@ -219,7 +219,6 @@ export function createDashboardAudit(dependencies: CreateDashboardAuditDependenc
     syncWorkPlanFromReport,
     targetProfile,
     targetRepo,
-    timestampMs,
     withTargetProfile,
     workflowStatusSummary,
     workPlanPathForReport,
@@ -796,8 +795,8 @@ export function createDashboardAudit(dependencies: CreateDashboardAuditDependenc
     );
     recentClosed.sort(
       (a, b) =>
-        (timestampMs(b.closedAt ?? b.appliedAt) ?? Number.NEGATIVE_INFINITY) -
-          (timestampMs(a.closedAt ?? a.appliedAt) ?? Number.NEGATIVE_INFINITY) ||
+        (parseIsoMs(b.closedAt ?? b.appliedAt) ?? Number.NEGATIVE_INFINITY) -
+          (parseIsoMs(a.closedAt ?? a.appliedAt) ?? Number.NEGATIVE_INFINITY) ||
         b.number - a.number,
     );
     const open = fetchDashboardOpenItemCounts(profile, {
@@ -869,7 +868,6 @@ export function createDashboardAudit(dependencies: CreateDashboardAuditDependenc
     repoUrlFor,
     reportFileUrl,
     targetRepo,
-    timestampMs,
   });
 
   const { dashboardClosedAt, formatRecentClosedRows } = dashboardPresentation;

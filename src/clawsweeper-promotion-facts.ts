@@ -38,6 +38,7 @@ import type { CreateReportOrchestrationDependencies } from "./clawsweeper-report
 import type { createReportOrchestrationFoundation } from "./clawsweeper-orchestration-foundation.js";
 import type { createReportRendering } from "./clawsweeper-report-rendering.js";
 import { asRecord } from "./value-coerce.js";
+import { parseIsoMs } from "./iso-time.js";
 
 export function createPullRequestPromotionFacts(
   dependencies: CreateReportOrchestrationDependencies &
@@ -85,7 +86,6 @@ export function createPullRequestPromotionFacts(
     reviewSectionValue,
     stringOrUndefined,
     targetRepo,
-    timestampMs,
     triagePriorityFromReport,
   } = dependencies;
 
@@ -300,7 +300,7 @@ export function createPullRequestPromotionFacts(
     markdown: string,
     context: ItemContext,
   ): boolean {
-    const reviewedAtMs = timestampMs(frontMatterValue(markdown, "reviewed_at"));
+    const reviewedAtMs = parseIsoMs(frontMatterValue(markdown, "reviewed_at"));
     if (reviewedAtMs === null) return true;
     return contextHasNonAutomationActivityAfter(context, reviewedAtMs);
   }
@@ -344,7 +344,7 @@ export function createPullRequestPromotionFacts(
       if (
         stringOrUndefined(record.event) === "commented" &&
         trustedTimelineComment &&
-        eventTimestampMs(event) === timestampMs(trustedTimelineComment.createdAt) &&
+        eventTimestampMs(event) === parseIsoMs(trustedTimelineComment.createdAt) &&
         trustedTimelineComment.authors.has(eventActor)
       ) {
         return false;

@@ -14,6 +14,7 @@ import {
 } from "./clawsweeper-policy.js";
 import type { ApplyKind, CloseReason, Item } from "./clawsweeper-types.js";
 import { asRecord } from "./value-coerce.js";
+import { isOlderThanDays, isOlderThanMs } from "./iso-time.js";
 
 const MAINTAINER_AUTHOR_ASSOCIATIONS = new Set(["OWNER", "MEMBER", "COLLABORATOR"]);
 
@@ -125,17 +126,6 @@ export function applyProtectedLabelReason(labels: readonly string[], closeReason
 
 export function shouldPlanItem(item: Pick<Item, "authorAssociation" | "labels">): boolean {
   return protectedLabels(item.labels).every((label) => label === "maintainer");
-}
-
-export function isOlderThanDays(isoTimestamp: string, days: number, now = Date.now()): boolean {
-  return isOlderThanMs(isoTimestamp, days * DAY_MS, now);
-}
-
-function isOlderThanMs(isoTimestamp: string, milliseconds: number, now = Date.now()): boolean {
-  if (milliseconds <= 0) return true;
-  const timestamp = Date.parse(isoTimestamp);
-  if (!Number.isFinite(timestamp)) return false;
-  return now - timestamp > milliseconds;
 }
 
 export function applyKindArg(value: string | boolean | string[] | undefined): ApplyKind {

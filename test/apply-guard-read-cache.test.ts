@@ -17,7 +17,6 @@ function createGuards({ ghJson = () => ({}), ghPaged = () => [] } = {}) {
     ghPaged,
     isMaintainerAuthorAssociation: (value) => ["MEMBER", "OWNER", "COLLABORATOR"].includes(value),
     isMaintainerAuthored: () => false,
-    isOlderThanDays: () => true,
     labelNames: (value) =>
       Array.isArray(value)
         ? value.flatMap((label) => {

@@ -123,10 +123,6 @@ function reviewCommentState(comments: () => Record<string, unknown>[]) {
     reviewCommentBodyDigest: sha256,
     parseGitHubItemRef: () => ({ repo: "openclaw/openclaw", kind: "pull_request", number: 1 }),
     frontMatterValue: () => undefined,
-    timestampMs: (value: string | undefined) => {
-      const parsed = Date.parse(value ?? "");
-      return Number.isFinite(parsed) ? parsed : null;
-    },
     reviewCommentMarker: () => reviewMarker,
     pullHeadShaFromContext: () => headSha,
     pullHeadShaFromReport: () => headSha,
@@ -152,10 +148,6 @@ function reviewCommentPublication(options: {
     frontMatterValue: () => undefined,
     replaceFrontMatterValue: (markdown: string) => markdown,
     sectionValue: () => "",
-    timestampMs: (value: string | undefined) => {
-      const parsed = Date.parse(value ?? "");
-      return Number.isFinite(parsed) ? parsed : null;
-    },
     sentence: (value: string) => value,
     normalizedLabelSet: () => new Set<string>(),
     sectionLineValue: () => undefined,
@@ -242,10 +234,6 @@ test("review version timestamps round-trip through the durable parser", () => {
     frontMatterValue: (_markdown: string, key: string) => fields[key],
     pullHeadShaFromReport: () => headSha,
     markerAttributeValue: (value: string) => value.trim().replace(/[^\w./:@-]/g, "_") || "unknown",
-    timestampMs: (value: string | undefined) => {
-      const parsed = Date.parse(value ?? "");
-      return Number.isFinite(parsed) ? parsed : null;
-    },
   } as never);
   const versionMarker = automation.reviewVersionMarkerFromReport("report");
   const comment = {
@@ -341,10 +329,6 @@ test("oversized durable review publication replaces ready state with a verified 
       frontMatterValue: () => undefined,
       replaceFrontMatterValue: (markdown: string) => markdown,
       sectionValue: () => "",
-      timestampMs: (value: string | undefined) => {
-        const parsed = Date.parse(value ?? "");
-        return Number.isFinite(parsed) ? parsed : null;
-      },
       sentence: (value: string) => value,
       normalizedLabelSet: () => new Set<string>(),
       sectionLineValue: () => undefined,
@@ -637,10 +621,6 @@ test("newest exact durable comment wins over older trusted duplicates", () => {
     reviewCommentBodyDigest: sha256,
     parseGitHubItemRef: () => ({ repo: "openclaw/openclaw", kind: "pull_request", number: 1 }),
     frontMatterValue: () => undefined,
-    timestampMs: (value: string | undefined) => {
-      const parsed = Date.parse(value ?? "");
-      return Number.isFinite(parsed) ? parsed : null;
-    },
     reviewCommentMarker: () => reviewMarker,
     pullHeadShaFromContext: () => headSha,
     pullHeadShaFromReport: () => headSha,

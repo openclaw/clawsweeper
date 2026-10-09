@@ -33,6 +33,7 @@ export function normalizeNoopReviewMarkerMetadata(body: string): string {
   );
 }
 import type { createReviewCommentIdentity } from "./clawsweeper-review-comment-identity.js";
+import { parseIsoMs } from "./iso-time.js";
 
 export function expireReviewStartStatusLease(
   body: string,
@@ -69,7 +70,6 @@ export function createReviewCommentState(
     reviewCommentBodyDigest,
     parseGitHubItemRef,
     frontMatterValue,
-    timestampMs,
     reviewCommentMarker,
     pullHeadShaFromContext,
     pullHeadShaFromReport,
@@ -227,11 +227,11 @@ export function createReviewCommentState(
     comments: readonly Record<string, unknown>[],
   ): Record<string, unknown> | undefined {
     return [...comments].sort((left, right) => {
-      const leftReviewedAt = timestampMs(durableReviewVersion(left, number)?.reviewedAt) ?? -1;
-      const rightReviewedAt = timestampMs(durableReviewVersion(right, number)?.reviewedAt) ?? -1;
+      const leftReviewedAt = parseIsoMs(durableReviewVersion(left, number)?.reviewedAt) ?? -1;
+      const rightReviewedAt = parseIsoMs(durableReviewVersion(right, number)?.reviewedAt) ?? -1;
       if (leftReviewedAt !== rightReviewedAt) return rightReviewedAt - leftReviewedAt;
-      const leftUpdatedAt = timestampMs(commentUpdatedAt(left)) ?? -1;
-      const rightUpdatedAt = timestampMs(commentUpdatedAt(right)) ?? -1;
+      const leftUpdatedAt = parseIsoMs(commentUpdatedAt(left)) ?? -1;
+      const rightUpdatedAt = parseIsoMs(commentUpdatedAt(right)) ?? -1;
       if (leftUpdatedAt !== rightUpdatedAt) return rightUpdatedAt - leftUpdatedAt;
       const leftId = commentId(left) ?? -1;
       const rightId = commentId(right) ?? -1;
@@ -514,7 +514,7 @@ export function createReviewCommentState(
         attributes.match(new RegExp(`\\b${name}=([^\\s>]+)`))?.[1] ?? null;
       if (Number(attribute("item")) !== number || attribute("v") !== "1") continue;
       const reviewedAt = attribute("reviewed_at");
-      if (!reviewedAt || timestampMs(reviewedAt) === null) continue;
+      if (!reviewedAt || parseIsoMs(reviewedAt) === null) continue;
       const headSha = attribute("sha");
       const sourceRevision = attribute("source_revision");
       return {
@@ -704,8 +704,8 @@ export function createReviewCommentState(
         ? newestReviewMarkerAttribute(existingReviewComment, number, "sha")
         : undefined);
     const reportReviewedAt = frontMatterValue(markdown, "reviewed_at");
-    const liveReviewedAtMs = timestampMs(liveReviewedAt);
-    const reportReviewedAtMs = timestampMs(reportReviewedAt);
+    const liveReviewedAtMs = parseIsoMs(liveReviewedAt);
+    const reportReviewedAtMs = parseIsoMs(reportReviewedAt);
     if (liveReviewedAtMs === null) return null;
     const reportLeaseOwner = frontMatterValue(markdown, "review_lease_owner");
     const reportLeaseCommentId = frontMatterValue(markdown, "review_lease_comment_id");
@@ -743,7 +743,7 @@ export function createReviewCommentState(
       if (reportReviewedAtMs !== null && liveReviewedAtMs > reportReviewedAtMs) {
         return `live durable review comment is newer than the local report: comment reviewed_at=${liveReviewedAt}, report reviewed_at=${reportReviewedAt}`;
       }
-      const liveCommentUpdatedAtMs = timestampMs(commentUpdatedAt(existingReviewComment));
+      const liveCommentUpdatedAtMs = parseIsoMs(commentUpdatedAt(existingReviewComment));
       if (
         reportReviewedAtMs !== null &&
         liveCommentUpdatedAtMs !== null &&

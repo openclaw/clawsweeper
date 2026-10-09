@@ -633,7 +633,6 @@ export interface CreateApplyDecisionWorkflowDependencies {
     requestedTimeoutMs: number,
     nowMs: number,
   ) => number | null;
-  timestampMs: (iso: string | undefined) => number | null;
   triagePriorityFromReport: (markdown: string) => TriagePriority;
   unconfirmedProductDirectionApplyBlockReasonSafe: (
     number: number,

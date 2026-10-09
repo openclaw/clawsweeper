@@ -57,7 +57,6 @@ import {
   isBulkFilerExemptRepositoryPermission,
   isMaintainerAuthorAssociation,
   isMaintainerAuthored,
-  isOlderThanDays,
   isProtectedItem,
   isVerifiedFixedCloseReason,
   labelNames,
@@ -455,8 +454,6 @@ const recordMetadata = createRecordMetadata({
   reportFileName,
   markdownRepository,
   isVerifiedFixedCloseReason,
-  isOlderThanDays,
-  timestampMs: (timestamp) => timestampMs(timestamp),
   pullHeadShaFromReport: (markdown) => pullHeadShaFromReport(markdown),
   reviewLeaseRevisionFromReport: (markdown) => reviewLeaseRevisionFromReport(markdown),
   lockedConversationApplyReason: (item) => lockedConversationApplyReason(item),
@@ -516,7 +513,6 @@ const labelPolicy = createLabelPolicy({
   reportRealBehaviorProofPolicy,
   reportSecurityReview,
   stringOrUndefined,
-  timestampMs: (value) => timestampMs(value),
 });
 export const { featureShowcaseLabelsForTest, prStatusLabelsForTest, prStatusLabelSchemeForTest } =
   labelPolicy;
@@ -533,7 +529,6 @@ const applyGuards = createApplyGuards({
   ghPaged: <T>(path: string): T[] => ghPaged<T>(path, { requireApp: true }),
   isMaintainerAuthorAssociation,
   isMaintainerAuthored,
-  isOlderThanDays,
   labelNames,
   normalizeLabelName,
   obsoleteFixPrAgeSkipReason,
@@ -660,7 +655,6 @@ const {
   isFresh,
   planCandidates,
   selectCandidates,
-  timestampMs,
 } = reviewPlanning;
 
 function fetchReviewStructuralRecord(options: {
@@ -918,7 +912,6 @@ const reportOrchestration = createReportOrchestration({
   isImplementationCloseReason: (...args) => isImplementationCloseReason(...args),
   isIssueAdvisoryLabel: (...args) => isIssueAdvisoryLabel(...args),
   isMaintainerAuthored,
-  isOlderThanDays,
   issueAdvisoryLabelStateFromReport: (...args) => issueAdvisoryLabelStateFromReport(...args),
   isVerifiedFixedCloseReason,
   itemSnapshotHash,
@@ -958,7 +951,6 @@ const reportOrchestration = createReportOrchestration({
   targetProfile,
   targetRepo,
   timeoutWithinRuntimeBudget: (...args) => timeoutWithinRuntimeBudget(...args),
-  timestampMs,
   validateCloseDecision: (...args) => validateCloseDecision(...args),
   workStatusForDecision: (...args) => workStatusForDecision(...args),
 });
@@ -1072,7 +1064,6 @@ const reviewCommentWorkflow = createReviewCommentWorkflow({
   ...reportParser,
   ensureDir,
   ...recordMetadata,
-  timestampMs,
   stringOrUndefined,
   sentence,
   ...reportOrchestration,
@@ -1297,7 +1288,6 @@ const { applyDecisionsCommandInner } = createApplyDecisionWorkflow({
   sha256,
   stringOrUndefined,
   targetRepo,
-  timestampMs,
   validateCloseDecision,
 });
 

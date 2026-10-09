@@ -44,6 +44,7 @@ import {
 } from "./review-history.js";
 import type { CreateReportRenderingDependencies } from "./clawsweeper-report-rendering-dependencies.js";
 import type { createReportContextRendering } from "./clawsweeper-report-context.js";
+import { parseIsoMs } from "./iso-time.js";
 
 export function createReportCommentHelpers(
   dependencies: CreateReportRenderingDependencies & ReturnType<typeof createReportContextRendering>,
@@ -89,7 +90,6 @@ export function createReportCommentHelpers(
     securityReviewLine,
     sentence,
     stripListMarker,
-    timestampMs,
     workCandidateReasonText,
   } = dependencies;
 
@@ -460,7 +460,7 @@ export function createReportCommentHelpers(
         !/^[1-9]\d*$/.test(number) ||
           !Number.isSafeInteger(Number(number)) ||
           !headSha ||
-          timestampMs(frontMatterValue(markdown, "reviewed_at")) === null ||
+          parseIsoMs(frontMatterValue(markdown, "reviewed_at")) === null ||
           !validReviewLeaseIdentity(
             frontMatterValue(markdown, "review_lease_owner"),
             frontMatterValue(markdown, "review_lease_comment_id"),

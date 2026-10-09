@@ -121,10 +121,6 @@ function sourceFreshness(options: {
   nonAutomationActivityAfterSnapshot?: boolean;
   timeline?: { event: string; actor: string; createdAt: string; label?: string }[];
 }) {
-  const timestampMs = (value: unknown) => {
-    const parsed = typeof value === "string" ? Date.parse(value) : Number.NaN;
-    return Number.isFinite(parsed) ? parsed : null;
-  };
   const record = (value: unknown) =>
     value && typeof value === "object" ? (value as Record<string, unknown>) : {};
   const context = { issue: {}, comments: [], timeline: [] } as Record<PropertyKey, unknown>;
@@ -152,7 +148,6 @@ function sourceFreshness(options: {
       recordedLabelSyncCoversUpdate: () => false,
       reviewStartLeaseOwner: () => null,
       stringOrUndefined: (value: unknown) => (typeof value === "string" ? value : undefined),
-      timestampMs,
     } as never,
     {
       action: "proposed_close",

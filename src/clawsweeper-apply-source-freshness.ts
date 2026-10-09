@@ -2,6 +2,7 @@ import type { CreateApplyDecisionWorkflowDependencies } from "./clawsweeper-appl
 import { completeActivityContextSymbol } from "./clawsweeper-types.js";
 import type { ApplyResult, Item, ItemContext } from "./clawsweeper-types.js";
 import { asRecord, login } from "./value-coerce.js";
+import { parseIsoMs } from "./iso-time.js";
 
 /**
  * A released review lease leaves no live timestamp. Its deletion must follow the review
@@ -23,7 +24,6 @@ type ApplySourceFreshnessDependencies = Pick<
   | "recordedLabelSyncCoversUpdate"
   | "reviewStartLeaseOwner"
   | "stringOrUndefined"
-  | "timestampMs"
 >;
 
 interface ApplySourceFreshnessOptions {
@@ -161,7 +161,6 @@ export function createApplySourceFreshness(
     recordedLabelSyncCoversUpdate,
     reviewStartLeaseOwner,
     stringOrUndefined,
-    timestampMs,
   } = dependencies;
   const {
     action,
@@ -191,13 +190,13 @@ export function createApplySourceFreshness(
     : [];
   const latestAutomationUpdatedAt = [existingReviewComment, ...reportOwnedLeaseComments]
     .map(commentUpdatedAt)
-    .filter((value): value is string => timestampMs(value) !== null)
-    .sort((left, right) => (timestampMs(left) ?? 0) - (timestampMs(right) ?? 0))
+    .filter((value): value is string => parseIsoMs(value) !== null)
+    .sort((left, right) => (parseIsoMs(left) ?? 0) - (parseIsoMs(right) ?? 0))
     .at(-1);
   const { markdown, storedUpdatedAt } = currentState();
   const updatedSinceReview = Boolean(storedUpdatedAt && item.updatedAt !== storedUpdatedAt);
   const reviewCommentOnlyUpdate = item.updatedAt === existingReviewCommentUpdatedAt;
-  const storedUpdatedAtMs = timestampMs(storedUpdatedAt);
+  const storedUpdatedAtMs = parseIsoMs(storedUpdatedAt);
   const recordedLabelSyncMatches =
     updatedSinceReview &&
     recordedLabelSyncCoversUpdate({
@@ -277,14 +276,14 @@ export function createApplySourceFreshness(
   // changing the reviewed source. A later apply of the same review, such as the deferred batch
   // publisher, accepts such an update only when a receipt ClawSweeper recorded for this item
   // accounts for the latest updated_at and the review's complete activity receipt still matches.
-  const itemUpdatedAtMs = timestampMs(item.updatedAt);
+  const itemUpdatedAtMs = parseIsoMs(item.updatedAt);
   const isClawSweeperLogin = (value: string | undefined): boolean =>
     CLAWSWEEPER_BOT_AUTHORS.has((value ?? "").trim().toLowerCase());
   const ownedItemMarker = new RegExp(
     `<!--\\s*clawsweeper-[\\w:-]+\\s[^>]*?\\bitem=${number}(?![0-9])`,
   );
   const ownedCommentWriteTimes = comments.flatMap((comment) => {
-    const at = timestampMs(commentUpdatedAt(comment));
+    const at = parseIsoMs(commentUpdatedAt(comment));
     return at !== null &&
       isClawSweeperLogin(login(asRecord(comment).user)) &&
       ownedItemMarker.test(commentBody(comment) ?? "")
@@ -295,7 +294,7 @@ export function createApplySourceFreshness(
   const ownedTimelineWriteTimes = (): number[] =>
     (currentItemContext()[completeActivityContextSymbol]?.timeline ?? []).flatMap((event) => {
       const record = asRecord(event);
-      const at = timestampMs(stringOrUndefined(record.createdAt));
+      const at = parseIsoMs(stringOrUndefined(record.createdAt));
       return at !== null && isClawSweeperLogin(stringOrUndefined(record.actor)) ? [at] : [];
     });
   const exactOwnedWriteAccountsForUpdate = (): boolean =>
@@ -310,7 +309,7 @@ export function createApplySourceFreshness(
       .match(/<!--\s+clawsweeper-review-version\b[^>]*-->/g)
       ?.at(-1);
     if (!marker) return false;
-    const reviewedAtMs = timestampMs(
+    const reviewedAtMs = parseIsoMs(
       frontMatterValue(markdownBeforeApplyDecisionMutations, "reviewed_at"),
     );
     const sourceRevision = frontMatterValue(
@@ -321,7 +320,7 @@ export function createApplySourceFreshness(
       Number(reviewVersionAttribute(marker, "item")) === number &&
       reviewVersionAttribute(marker, "v") === "1" &&
       reviewedAtMs !== null &&
-      timestampMs(reviewVersionAttribute(marker, "reviewed_at")) === reviewedAtMs &&
+      parseIsoMs(reviewVersionAttribute(marker, "reviewed_at")) === reviewedAtMs &&
       Boolean(sourceRevision) &&
       reviewVersionAttribute(marker, "source_revision") === sourceRevision &&
       reviewVersionAttribute(marker, "lease_owner") === reportReviewLeaseOwner &&
@@ -337,7 +336,7 @@ export function createApplySourceFreshness(
     }
     if (comments.some((comment) => commentId(comment) === reportReviewLeaseCommentId)) return false;
     if (!durableCommentRecordsReviewGeneration()) return false;
-    const syncedAtMs = timestampMs(existingReviewCommentUpdatedAt);
+    const syncedAtMs = parseIsoMs(existingReviewCommentUpdatedAt);
     if (syncedAtMs === null || syncedAtMs < storedUpdatedAtMs) return false;
     const latestOwnedWriteMs = Math.max(
       syncedAtMs,
@@ -393,7 +392,7 @@ export function createApplySourceFreshness(
       freshPullRequestReviewHead(markdown, currentItemContext());
     if (completeFreshHeadReview && reviewHasCompleteActivityIdentity) {
       if (!completeReviewActivityReceiptMatches(currentItemContext())) return false;
-      const reviewedAtMs = timestampMs(frontMatterValue(markdown, "reviewed_at"));
+      const reviewedAtMs = parseIsoMs(frontMatterValue(markdown, "reviewed_at"));
       if (reviewedAtMs === null) return false;
       // GitHub activity has second precision; that whole second is ambiguous.
       const reviewSecondStartMs = Math.floor(reviewedAtMs / 1000) * 1000;
@@ -403,14 +402,14 @@ export function createApplySourceFreshness(
     }
     if (!updatedSinceReview || automationOnlyUpdate) return true;
     if (!completeFreshHeadReview) {
-      const latestAutomationMs = timestampMs(latestAutomationUpdatedAt);
-      const itemUpdatedAtMs = timestampMs(item.updatedAt);
+      const latestAutomationMs = parseIsoMs(latestAutomationUpdatedAt);
+      const itemUpdatedAtMs = parseIsoMs(item.updatedAt);
       if (latestAutomationMs === null || itemUpdatedAtMs === null) return false;
       if (Math.abs(itemUpdatedAtMs - latestAutomationMs) > 5 * 60 * 1000) return false;
     }
-    const reviewedTimestampMs = timestampMs(storedUpdatedAt);
+    const reviewedTimestampMs = parseIsoMs(storedUpdatedAt);
     if (reviewedTimestampMs === null) return false;
-    const reviewedAtMs = timestampMs(frontMatterValue(markdown, "reviewed_at"));
+    const reviewedAtMs = parseIsoMs(frontMatterValue(markdown, "reviewed_at"));
     return !contextHasNonAutomationActivityAfter(currentItemContext(), reviewedTimestampMs, {
       useCompleteActivityContext: true,
       ...(reviewedAtMs === null ? {} : { ignoreTimelineCommentsThroughMs: reviewedAtMs }),

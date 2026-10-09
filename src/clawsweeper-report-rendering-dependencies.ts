@@ -205,7 +205,6 @@ export interface CreateReportRenderingDependencies {
   shouldRenderWorkPlanFromReport: (markdown: string) => boolean;
   stripListMarker: (text: string) => string;
   targetRepo: () => string;
-  timestampMs: (iso: string | undefined) => number | null;
   triagePriorityFromReport: (markdown: string) => TriagePriority;
   validateCloseDecision: (
     item: Pick<Item, "kind" | "labels"> & Partial<Pick<Item, "repo" | "authorAssociation">>,

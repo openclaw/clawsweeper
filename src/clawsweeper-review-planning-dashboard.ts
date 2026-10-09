@@ -8,6 +8,7 @@ import type {
 import type { ReviewPlanningDependencies } from "./clawsweeper-review-planning-dependencies.js";
 import type { createReviewPlanningInventory } from "./clawsweeper-review-planning-inventory.js";
 import type { createReviewPlanningHotIntake } from "./clawsweeper-review-planning-hot-intake.js";
+import { parseIsoMs } from "./iso-time.js";
 
 export function createReviewPlanningDashboard(
   dependencies: ReviewPlanningDependencies &
@@ -92,11 +93,6 @@ export function createReviewPlanningDashboard(
     const due = bucket.total - bucket.current;
     return `${bucket.current}/${bucket.total} current (${due} due, ${formatPercent(bucket.current, bucket.total)})`;
   }
-  function timestampMs(iso: string | undefined): number | null {
-    if (!iso) return null;
-    const parsed = Date.parse(iso);
-    return Number.isFinite(parsed) ? parsed : null;
-  }
   function isWithinWindow(timestamp: number | null, now: number, windowMs: number): boolean {
     return timestamp !== null && timestamp <= now && now - timestamp <= windowMs;
   }
@@ -104,9 +100,9 @@ export function createReviewPlanningDashboard(
     current: string | undefined,
     candidate: string | undefined,
   ): string | undefined {
-    const candidateMs = timestampMs(candidate);
+    const candidateMs = parseIsoMs(candidate);
     if (candidateMs === null) return current;
-    const currentMs = timestampMs(current);
+    const currentMs = parseIsoMs(current);
     return currentMs === null || candidateMs > currentMs ? candidate : current;
   }
   function recordDashboardActivity(
@@ -115,18 +111,18 @@ export function createReviewPlanningDashboard(
     now: number,
   ): void {
     const reviewedAt = frontMatterValue(markdown, "reviewed_at");
-    const reviewedAtMs = timestampMs(reviewedAt);
+    const reviewedAtMs = parseIsoMs(reviewedAt);
     const closedAt = dashboardClosedAt(markdown);
-    const closedAtMs = timestampMs(closedAt);
+    const closedAtMs = parseIsoMs(closedAt);
     const commentSyncedAt = frontMatterValue(markdown, "review_comment_synced_at");
-    const commentSyncedAtMs = timestampMs(commentSyncedAt);
+    const commentSyncedAtMs = parseIsoMs(commentSyncedAt);
     const applyCheckedAt = frontMatterValue(markdown, "apply_checked_at");
-    const applyCheckedAtMs = timestampMs(applyCheckedAt);
+    const applyCheckedAtMs = parseIsoMs(applyCheckedAt);
     const decision = frontMatterValue(markdown, "decision") ?? "unknown";
     const action = frontMatterValue(markdown, "action_taken") ?? "unknown";
     const failedReviewRetryStatus = frontMatterValue(markdown, "failed_review_retry_status");
     const failedReviewRetryLastAt = frontMatterValue(markdown, "failed_review_retry_last_at");
-    const failedReviewRetryLastAtMs = timestampMs(failedReviewRetryLastAt);
+    const failedReviewRetryLastAtMs = parseIsoMs(failedReviewRetryLastAt);
     const reviewStatus = effectiveReviewStatus(markdown);
 
     activity.latestReviewAt = latestTimestamp(activity.latestReviewAt, reviewedAt);
@@ -268,7 +264,6 @@ export function createReviewPlanningDashboard(
     capDashboardCadenceBucket,
     formatPercent,
     formatCadenceBucket,
-    timestampMs,
     isWithinWindow,
     latestTimestamp,
     recordDashboardActivity,

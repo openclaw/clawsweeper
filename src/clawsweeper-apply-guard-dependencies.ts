@@ -8,7 +8,6 @@ export interface ApplyGuardDependencies {
   ghPaged: <T>(path: string) => T[];
   isMaintainerAuthorAssociation: (value: unknown) => boolean;
   isMaintainerAuthored: (item: Pick<Item, "authorAssociation">) => boolean;
-  isOlderThanDays: (isoTimestamp: string, days: number, now?: number) => boolean;
   labelNames: (value: unknown) => string[];
   normalizeLabelName: (label: string) => string;
   obsoleteFixPrAgeSkipReason: (item: Pick<Item, "createdAt">, now?: number) => string | null;

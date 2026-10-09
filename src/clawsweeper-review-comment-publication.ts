@@ -13,6 +13,7 @@ import type { ReviewCommentWorkflowDependencies } from "./clawsweeper-review-com
 import type { createReviewCommentIdentity } from "./clawsweeper-review-comment-identity.js";
 import type { createReviewCommentState } from "./clawsweeper-review-comment-state.js";
 import { asRecord } from "./value-coerce.js";
+import { parseIsoMs } from "./iso-time.js";
 
 const DURABLE_REVIEW_COMMENT_MAX_BYTES = 60 * 1024;
 
@@ -43,7 +44,6 @@ export function createReviewCommentPublication(
     frontMatterValue,
     replaceFrontMatterValue,
     sectionValue,
-    timestampMs,
     sentence,
     normalizedLabelSet,
     sectionLineValue,
@@ -114,8 +114,8 @@ export function createReviewCommentPublication(
     recordedLabels: readonly string[];
     hasNonAutomationActivity: boolean;
   }): boolean {
-    const itemUpdatedAtMs = timestampMs(options.itemUpdatedAt);
-    const labelsSyncedAtMs = timestampMs(options.labelsSyncedAt);
+    const itemUpdatedAtMs = parseIsoMs(options.itemUpdatedAt);
+    const labelsSyncedAtMs = parseIsoMs(options.labelsSyncedAt);
     if (
       itemUpdatedAtMs === null ||
       labelsSyncedAtMs === null ||
@@ -178,14 +178,14 @@ export function createReviewCommentPublication(
   ): string {
     if (
       !identity ||
-      timestampMs(identity.reviewedAt) === null ||
+      parseIsoMs(identity.reviewedAt) === null ||
       (identity.headSha !== null && !/^[0-9a-f]{40}$/i.test(identity.headSha))
     ) {
       return "";
     }
     const attrs = [
       `item=${number}`,
-      `reviewed_at=${new Date(timestampMs(identity.reviewedAt)!).toISOString()}`,
+      `reviewed_at=${new Date(parseIsoMs(identity.reviewedAt)!).toISOString()}`,
       `sha=${identity.headSha?.toLowerCase() ?? "na"}`,
       ...(identity.sourceRevision &&
       /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i.test(identity.sourceRevision)

@@ -9,6 +9,7 @@ import type { CreateReportOrchestrationDependencies } from "./clawsweeper-report
 import type { createReportOrchestrationFoundation } from "./clawsweeper-orchestration-foundation.js";
 import type { createPullRequestPromotionFacts } from "./clawsweeper-promotion-facts.js";
 import type { createPullRequestCoverageProof } from "./clawsweeper-coverage-proof.js";
+import { isOlderThanDays } from "./iso-time.js";
 
 export function createPullRequestClosePromotion(
   dependencies: CreateReportOrchestrationDependencies &
@@ -21,7 +22,6 @@ export function createPullRequestClosePromotion(
     frontMatterValue,
     ghJson,
     ghPaged,
-    isOlderThanDays,
     linkedPullRequestSupersession,
     lowSignalUnmergeablePrAuthorActivityBlockReason,
     lowSignalUnmergeablePrConflictBlockReason,

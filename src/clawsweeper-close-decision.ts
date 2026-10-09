@@ -12,6 +12,7 @@ import {
 import { isAutoCloseAllowed, repositoryProfileFor } from "./repository-profiles.js";
 import type { ActionTaken, CloseReason, Decision, Item } from "./clawsweeper-types.js";
 import { NEEDS_SECURITY_REVIEW_LABEL } from "./repair/exact-review-guard-labels.js";
+import { isIsoTimestamp } from "./iso-time.js";
 
 interface CloseDecisionWorkflowDependencies {
   targetRepo: () => string;
@@ -48,11 +49,7 @@ export function createCloseDecisionWorkflow({
 
   function hasValidFixedAt(decision: Decision): boolean {
     const value = decision.fixedAt?.trim();
-    return Boolean(
-      value &&
-      /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/.test(value) &&
-      Number.isFinite(Date.parse(value)),
-    );
+    return Boolean(value && isIsoTimestamp(value, { allowOffset: true }));
   }
 
   function verifiedImplementationPullRequestBlockReason(

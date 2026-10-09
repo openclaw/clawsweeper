@@ -27,6 +27,7 @@ import type {
   SecurityReviewStatus,
 } from "./clawsweeper-types.js";
 import { asRecord } from "./value-coerce.js";
+import { parseIsoMs } from "./iso-time.js";
 
 interface LabelPolicyDependencies {
   frontMatterValue: (markdown: string, key: string) => string | undefined;
@@ -36,7 +37,6 @@ interface LabelPolicyDependencies {
   reportRealBehaviorProofPolicy: (markdown: string) => RealBehaviorProofPolicy;
   reportSecurityReview: (markdown: string) => SecurityReview;
   stringOrUndefined: (value: unknown) => string | undefined;
-  timestampMs: (iso: string | undefined) => number | null;
 }
 
 export function createLabelPolicy({
@@ -47,7 +47,6 @@ export function createLabelPolicy({
   reportRealBehaviorProofPolicy,
   reportSecurityReview,
   stringOrUndefined,
-  timestampMs,
 }: LabelPolicyDependencies) {
   function shouldApplyFeatureShowcaseLabel(options: {
     isPullRequest: boolean;
@@ -189,7 +188,7 @@ export function createLabelPolicy({
 
   function eventTimestampMs(value: unknown): number | null {
     const record = asRecord(value);
-    return timestampMs(stringOrUndefined(record.updatedAt) ?? stringOrUndefined(record.createdAt));
+    return parseIsoMs(stringOrUndefined(record.updatedAt) ?? stringOrUndefined(record.createdAt));
   }
 
   function isAfterReview(value: unknown, reviewedAtMs: number | null): boolean {
@@ -214,7 +213,7 @@ export function createLabelPolicy({
     context: Pick<ItemContext, "comments">,
     reviewedAt: string | undefined,
   ): boolean {
-    const reviewedAtMs = timestampMs(reviewedAt);
+    const reviewedAtMs = parseIsoMs(reviewedAt);
     return context.comments.some((comment) => {
       const record = asRecord(comment);
       if (isAutomationReportAuthor(stringOrUndefined(record.author))) return false;
@@ -230,7 +229,7 @@ export function createLabelPolicy({
       .trim()
       .toLowerCase();
     if (!author) return false;
-    const reviewedAtMs = timestampMs(options.reviewedAt);
+    const reviewedAtMs = parseIsoMs(options.reviewedAt);
     return (
       context.comments.some((comment) => {
         const record = asRecord(comment);

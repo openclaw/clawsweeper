@@ -118,7 +118,6 @@ export interface CreateReportOrchestrationDependencies {
   isImplementationCloseReason: (reason: CloseReason) => boolean;
   isIssueAdvisoryLabel: (label: string) => boolean;
   isMaintainerAuthored: (item: Pick<Item, "authorAssociation">) => boolean;
-  isOlderThanDays: (isoTimestamp: string, days: number, now?: number) => boolean;
   isReportNoneList: (value: string) => boolean;
   issueAdvisoryLabelStateFromReport: (
     markdown: string,
@@ -403,7 +402,6 @@ export interface CreateReportOrchestrationDependencies {
     requestedTimeoutMs: number,
     nowMs: number,
   ) => number | null;
-  timestampMs: (iso: string | undefined) => number | null;
   triagePriorityFromReport: (markdown: string) => TriagePriority;
   validateCloseDecision: (
     item: Pick<Item, "kind" | "labels"> & Partial<Pick<Item, "repo" | "authorAssociation">>,

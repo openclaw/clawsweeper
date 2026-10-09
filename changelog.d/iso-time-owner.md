@@ -1,0 +1,1 @@
+- Parse and age-check ISO timestamps through one `iso-time` module (`parseIsoMs`, `isIsoTimestamp`, `isOlderThanDays`) instead of three `timestampMs` copies, two `isOlderThanDays` copies and three timestamp regexes.

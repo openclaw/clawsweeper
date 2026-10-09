@@ -26,6 +26,7 @@ import type {
 } from "./clawsweeper-types.js";
 import { isRetryableCodexTransportError } from "./codex-transient.js";
 import { isAutoCloseAllowed, repositoryProfileFor } from "./repository-profiles.js";
+import { isOlderThanDays, parseIsoMs } from "./iso-time.js";
 import {
   REVIEW_STRUCTURAL_CACHE_VERSION,
   validReviewStructuralRecord,
@@ -38,8 +39,6 @@ interface RecordMetadataDependencies {
   reportFileName: (repo: string, number: number) => string;
   markdownRepository: (markdown: string, file?: string) => string;
   isVerifiedFixedCloseReason: (reason: unknown) => boolean;
-  isOlderThanDays: (timestamp: string, days: number, now?: number) => boolean;
-  timestampMs: (timestamp: string | undefined) => number | null;
   pullHeadShaFromReport: (markdown: string) => string | null;
   reviewLeaseRevisionFromReport: (markdown: string) => string | null;
   lockedConversationApplyReason: (item: Pick<Item, "activeLockReason" | "locked">) => string | null;
@@ -51,8 +50,6 @@ export function createRecordMetadata({
   reportFileName,
   markdownRepository,
   isVerifiedFixedCloseReason,
-  isOlderThanDays,
-  timestampMs,
   pullHeadShaFromReport,
   reviewLeaseRevisionFromReport,
   lockedConversationApplyReason,
@@ -535,7 +532,7 @@ export function createRecordMetadata({
   ): number | null {
     const storedRevision = storedFailedReviewRetryRevision(markdown);
     if (storedRevision && !sameFailedReviewRetryRevision(storedRevision, revision)) return null;
-    return timestampMs(frontMatterValue(markdown, "failed_review_retry_last_at"));
+    return parseIsoMs(frontMatterValue(markdown, "failed_review_retry_last_at"));
   }
 
   function isFailedReviewRetryAlreadyExhausted(

@@ -10,13 +10,13 @@ import {
   type ApplyGuardDependencies,
 } from "./clawsweeper-apply-guard-dependencies.js";
 import { asRecord, login } from "./value-coerce.js";
+import { isOlderThanDays } from "./iso-time.js";
 
 export function createApplyGuardActivity(dependencies: ApplyGuardDependencies) {
   const {
     ghJson,
     ghPaged,
     isMaintainerAuthorAssociation,
-    isOlderThanDays,
     normalizeLabelName,
     quoteGitHubSearchTerm,
     reportPrRating,

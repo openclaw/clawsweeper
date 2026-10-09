@@ -5,6 +5,7 @@ import { AUTOFIX_LABEL, AUTOMERGE_LABEL } from "./repair/exact-review-guard-labe
 import type { ReviewCommentWorkflowDependencies } from "./clawsweeper-review-comment-dependencies.js";
 import type { createReviewCommentIdentity } from "./clawsweeper-review-comment-identity.js";
 import type { PullRequestReviewReadiness } from "./clawsweeper-types.js";
+import { parseIsoMs } from "./iso-time.js";
 
 export function createReviewCommentAutomation(
   dependencies: ReviewCommentWorkflowDependencies & ReturnType<typeof createReviewCommentIdentity>,
@@ -20,11 +21,10 @@ export function createReviewCommentAutomation(
     pullRequestReviewReadinessFromReport,
     securitySensitiveRepairAllowed,
     markerAttributeValue,
-    timestampMs,
   } = dependencies;
 
   function canonicalReviewTimestamp(value: string | undefined): string | null {
-    const parsed = timestampMs(value);
+    const parsed = parseIsoMs(value);
     return parsed === null ? null : new Date(parsed).toISOString();
   }
 
