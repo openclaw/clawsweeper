@@ -3,7 +3,7 @@ import { escapeRegExp } from "../clawsweeper-markdown.js";
 import { reportAllowsAutomation } from "../manual-publication-policy.js";
 import { asJsonObject, type JsonValue, type LooseRecord } from "./json-types.js";
 import { sha256 } from "../content-hash.js";
-import { parseFrontMatterStringArray } from "../report-front-matter.js";
+import { parseFrontMatterStringArray, reportWithoutReviewRecord } from "../report-front-matter.js";
 import fs from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -1035,8 +1035,10 @@ ${context.decision.blockers.length ? context.decision.blockers.map((blocker: str
   fs.writeFileSync(context.auditPath, body, "utf8");
 }
 
+// The review_record line repeats the review. A backfill that adds it must not look
+// like a new review to implementation jobs.
 export function reportRevisionSha256(markdown: string) {
-  return sha256(markdown);
+  return sha256(reportWithoutReviewRecord(markdown));
 }
 
 function matchingIntakeAudit({

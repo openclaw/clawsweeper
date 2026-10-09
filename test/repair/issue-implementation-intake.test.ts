@@ -32,6 +32,7 @@ import {
   REVIEW_VIABLE_ISSUE_TRIGGER_SOURCE,
   REVIEW_VISION_FIT_TRIGGER_SOURCE,
 } from "../../dist/repair/comment-router/dispatch.js";
+import { withReviewRecord } from "../helpers.ts";
 
 function report(overrides = {}, securityStatus = "not_applicable") {
   const fields = {
@@ -1795,4 +1796,21 @@ test("issue build overrides on protected issues only prepare a handoff", () => {
   ]) {
     assert.equal(blockerClass(target), "hard", JSON.stringify(target));
   }
+});
+
+// The backfill adds a review_record line to stored reports. That line repeats the
+// review; it must not change the review revision that implementation jobs track.
+test("adding the review record does not change the implementation-intake revision", () => {
+  const legacy = report();
+  const backfilled = withReviewRecord(legacy);
+  assert.notEqual(backfilled, legacy);
+  assert.equal(reportRevisionSha256(backfilled), reportRevisionSha256(legacy));
+  const audit = parseReviewReport(
+    `---\nreport_revision_sha256: ${reportRevisionSha256(legacy)}\ndecision: queued_for_repair\nworker_dispatched: false\n---\n`,
+  );
+  assert.equal(issueImplementationJobNeedsRefresh(audit, backfilled), false);
+  assert.notEqual(
+    reportRevisionSha256(backfilled.replace(/^confidence: high$/m, "confidence: low")),
+    reportRevisionSha256(legacy),
+  );
 });

@@ -1,0 +1,1 @@
+- Issue-implementation intake hashes a report without its `review_record` line. The line repeats the review, so adding it (by a new review or by the backfill) no longer looks like a new review revision that refreshes implementation jobs or makes worker retries due.

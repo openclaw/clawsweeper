@@ -16,12 +16,13 @@ import {
   frontMatterField,
   frontMatterValue,
   replaceFrontMatterValue,
+  reportWithoutReviewRecord,
+  REVIEW_RECORD_KEY,
 } from "./report-front-matter.js";
 
 // The typed review record is one front-matter line in the report:
 //   review_record: {"version":1,"decision":{...}}
 // A record that the backfill made from an older report also has "origin":"backfill".
-const REVIEW_RECORD_KEY = "review_record";
 const REVIEW_RECORD_VERSION = 1;
 
 // Model text is made safe for the report when the review parses it. Stored text is
@@ -129,28 +130,18 @@ export function updateReviewRecordDecision(
   } catch (error) {
     if (!(error instanceof ReviewRecordFormatError)) throw error;
     console.error(`[review-record] record removed: ${error.message}`);
-    return withoutReviewRecord(markdown);
+    return reportWithoutReviewRecord(markdown);
   }
   if (!record) return markdown;
   const decision = { ...record.decision, ...update(record.decision) };
   if (!storableDecision(decision, reviewRecordSubject(markdown))) {
-    return withoutReviewRecord(markdown);
+    return reportWithoutReviewRecord(markdown);
   }
   return replaceFrontMatterValue(
     markdown,
     REVIEW_RECORD_KEY,
     reviewRecordValue({ ...record, decision }),
   );
-}
-
-function withoutReviewRecord(markdown: string): string {
-  const end = markdown.indexOf("\n---", 3);
-  if (!markdown.startsWith("---") || end === -1) return markdown;
-  const frontMatter = markdown
-    .slice(0, end)
-    .split("\n")
-    .filter((line) => !line.startsWith(`${REVIEW_RECORD_KEY}:`));
-  return `${frontMatter.join("\n")}${markdown.slice(end)}`;
 }
 
 function reviewRecordSubject(markdown: string): ReviewRecordSubject {

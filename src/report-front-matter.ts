@@ -136,6 +136,21 @@ export function frontMatterBoolean(markdown: string, key: string): boolean {
   return /^true$/i.test(frontMatterValue(markdown, key) ?? "");
 }
 
+/** The front-matter field that holds the typed review record (see review-record.ts). */
+export const REVIEW_RECORD_KEY = "review_record";
+
+// The review_record line repeats the review. Code that tracks review revisions, and
+// the record writer when it drops an invalid record, use the report without it.
+export function reportWithoutReviewRecord(markdown: string): string {
+  const end = markdown.indexOf("\n---", 3);
+  if (!markdown.startsWith("---") || end === -1) return markdown;
+  const frontMatter = markdown
+    .slice(0, end)
+    .split("\n")
+    .filter((line) => !line.startsWith(`${REVIEW_RECORD_KEY}:`));
+  return `${frontMatter.join("\n")}${markdown.slice(end)}`;
+}
+
 // `value` is record data, for example `JSON.stringify(item.labels)` with GitHub label
 // names. A replacement string would expand `$&`, `` $` `` and `$'` against the match, so
 // a replacement function inserts the text literally. A new key uses the line ending of
