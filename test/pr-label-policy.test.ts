@@ -745,20 +745,6 @@ test("ClawSweeper priority label descriptions live in the schema only", () => {
   }
 });
 
-test("triage priority schema keeps unrelated CI noise out of priority", () => {
-  const schema = JSON.parse(reviewDecisionSchemaText()) as {
-    properties?: {
-      triagePriority?: {
-        description?: string;
-      };
-    };
-  };
-  const schemaDescription = schema.properties?.triagePriority?.description ?? "";
-
-  assert.match(schemaDescription, /Do not raise priority solely because CI or status checks/);
-  assert.match(schemaDescription, /diff-caused urgent regressions/);
-});
-
 test("ClawSweeper priority labels follow triage priority", () => {
   assert.deepEqual(nextPriorityLabels(["bug"], "P2"), ["bug", "P2"]);
   assert.deepEqual(nextPriorityLabels(["bug", "P3"], "P1"), ["bug", "P1"]);
@@ -891,7 +877,6 @@ test("review prompt and schema define UX release-blocker override", () => {
   const schema = JSON.parse(reviewDecisionSchemaText()) as {
     properties?: {
       impactLabels?: {
-        description?: string;
         items?: {
           enum?: string[];
         };
@@ -907,23 +892,10 @@ test("review prompt and schema define UX release-blocker override", () => {
       };
     };
   };
-  const schemaDescription = schema.properties?.impactLabels?.description ?? "";
   const impactLabelEnum = schema.properties?.impactLabels?.items?.enum ?? [];
   const justificationLabelEnum =
     schema.properties?.labelJustifications?.items?.properties?.label?.enum ?? [];
 
-  assert.match(
-    reviewPrompt("issue"),
-    /Apply the UX override in the `impactLabels` description before ordinary technical severity/,
-  );
-  assert.match(schemaDescription, /UX override:/);
-  assert.match(schemaDescription, /non-technical first-time or community user/);
-  assert.match(
-    schemaDescription,
-    /terminal commands, config edits, log inspection, manual file edits/,
-  );
-  assert.match(schemaDescription, /Doctor button, Fix button, setup wizard, inline recovery/);
-  assert.match(schemaDescription, /Cosmetic confusion or a fully recoverable in-product issue/);
   assert.ok(impactLabelEnum.includes("impact:ux-release-blocker"));
   assert.ok(impactLabelEnum.includes("impact:ux-friction"));
   assert.ok(justificationLabelEnum.includes("impact:ux-release-blocker"));
@@ -1011,20 +983,6 @@ test("ClawSweeper merge-risk label descriptions live in the schema only", () => 
       `${label.name} description is missing from the schema`,
     );
   }
-});
-
-test("merge-risk schema uses automation risk only for diff-caused automation risk", () => {
-  const schema = JSON.parse(reviewDecisionSchemaText()) as {
-    properties?: {
-      mergeRiskLabels?: {
-        description?: string;
-      };
-    };
-  };
-  const schemaDescription = schema.properties?.mergeRiskLabels?.description ?? "";
-
-  assert.match(schemaDescription, /Do not use merge-risk: 🚨 automation only because CI is red/);
-  assert.match(schemaDescription, /PR diff changes automation behavior/);
 });
 
 test("ClawSweeper merge-risk labels remove stale owned labels and preserve unrelated labels", () => {

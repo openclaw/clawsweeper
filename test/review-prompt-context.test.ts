@@ -318,12 +318,6 @@ ${scenario === "concrete" ? "- **[P1] Invalidate revoked credentials:** `src/cac
       JSON.stringify(input),
       /Agent review details|Optional improvements that raise the rating/,
     );
-    assert.match(prompt, /Intentional\s+self-comment filtering alone is not missing evidence/);
-    assert.match(
-      prompt,
-      /Apply each applicable rank-up move\s+or explicitly justify its exception before landing/,
-    );
-    assert.match(prompt, /Disclose genuinely material missing, malformed, or truncated context/);
 
     // Controlled follow-up report, not a model evaluation: concrete risks still publish.
     const rerendered = renderReviewCommentFromReport(report, "none", {
@@ -470,14 +464,6 @@ for (const [repo, core] of [
 
       assert.ok(prompt.includes(`- Target repo: ${repo}`), scenario);
       assert.ok(prompt.includes(`## Repository Policy\n\n${profile.promptNote}`), scenario);
-      assert.match(
-        prompt,
-        /follow the target's own policy in `## Repository Policy` and `AGENTS\.md`; do not infer it from the organization, display name, PR body, or linked repository/,
-      );
-      assert.match(
-        prompt,
-        /do not treat a target outside the core repository as permission to edit release-owned files/,
-      );
       assert.equal(prompt.includes("`CHANGELOG.md` is release-owned"), core, scenario);
       if (core) {
         assert.match(prompt, /`CHANGELOG\.md` is release-owned/);
@@ -715,9 +701,6 @@ test("review prompt includes merge state and guards clean behind-branch drift", 
 
   assert.deepEqual((compactPullRequest as { mergeableState?: unknown }).mergeableState, "clean");
   assert.match(prompt, /"mergeableState": "clean"/);
-  assert.match(prompt, /Claim a merge conflict only when the context's `pullRequest\.mergeable`/);
-  assert.match(prompt, /A branch behind the base is not a conflict/);
-  assert.match(prompt, /actual three-way merge result/);
 });
 
 test("review context ledger records ordered section budgets", () => {

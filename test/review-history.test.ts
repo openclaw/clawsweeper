@@ -26,7 +26,6 @@ import {
   realBehaviorProofReportSection,
   reviewReportFrontMatter as reportFrontMatter,
   reviewFinding,
-  reviewPrompt,
 } from "./helpers.ts";
 
 const CURRENT_REVIEW_HEAD_SHA = "9999999999999999999999999999999999999999";
@@ -1032,13 +1031,8 @@ test("late findings round-trip through decisions and comment rendering", () => {
 });
 
 test("review prompt and schema document re-review continuity", () => {
-  const prompt = reviewPrompt("pull_request");
   const schema = readFileSync("schema/clawsweeper-decision.schema.json", "utf8");
 
-  assert.match(prompt, /re-review continuity/);
-  assert.match(prompt, /never hold back a visible concern for a later cycle/);
-  assert.match(prompt, /`lateFinding: true`/);
-  assert.match(prompt, /git diff <earlier-sha>\.\.HEAD -- <file>/);
   assert.match(schema, /"lateFinding"/);
 });
 

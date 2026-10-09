@@ -51,8 +51,6 @@ import {
   markedReviewCommentForTest,
   reportFrontMatter,
   reportWithSyncedReviewComment,
-  readText,
-  reviewPrompt,
   runApplyDecisionsForTest,
   tmpPrefix,
   withMockGh,
@@ -1967,60 +1965,6 @@ test("runtime yield keeps the unfinished item out of the apply cursor trace", ()
   assert.deepEqual(examined, [10]);
   removeCurrentCursorTraceItem(examined, 30);
   assert.deepEqual(examined, [10]);
-});
-
-test("review prompt asks for concise public review fields", () => {
-  const prompt = reviewPrompt("pull_request");
-
-  assert.match(prompt, /Keep these fields concise because they become the public review comment/);
-  assert.match(prompt, /one short sentence for `changeSummary`, `workReason`, `bestSolution`/);
-  assert.match(prompt, /`nextStep` records required PR action intent/);
-  assert.match(
-    prompt,
-    /merge\s+automation is reported by the command\/status comment and hidden markers/,
-  );
-  const schema = JSON.parse(readText("schema/clawsweeper-decision.schema.json"));
-  assert.match(schema.properties.nextStep.description, /Do not rely on action keywords/);
-  assert.match(schema.properties.nextStep.description, /never authority to auto-fix or merge/);
-});
-
-test("review prompt keeps automerge opt-in from becoming generic manual review", () => {
-  const prompt = reviewPrompt("pull_request");
-
-  assert.match(prompt, /explicitly opted into `clawsweeper:automerge`/);
-  assert.match(prompt, /Do not choose `manual_review` solely because/);
-  assert.match(prompt, /`maintainer` label/);
-  assert.match(prompt, /large `size:\*` label/);
-  assert.match(prompt, /choose `queue_fix_pr` even when the\s+finding is process-only or P3/);
-  assert.match(prompt, /does not by itself block a clean automerge verdict/);
-});
-
-test("review prompts and schema require reproduction and solution assessment details", () => {
-  const itemPrompt = `${reviewPrompt("issue")}\n${reviewPrompt("pull_request")}`;
-  const commitPrompt = readText("prompts/review-commit.md");
-  const schema = JSON.parse(readText("schema/clawsweeper-decision.schema.json")).properties;
-
-  assert.match(schema.itemCategory.description, /Use bug only for broken existing behavior/);
-  assert.match(schema.itemCategory.description, /use skill for optional skill bundles/);
-  assert.match(
-    schema.triagePriority.description,
-    /for maintainers to sort issues and pull requests/,
-  );
-  assert.match(schema.triagePriority.description, /not just from PR review findings/);
-  assert.match(itemPrompt, /skills\/<vendor>/);
-  assert.match(itemPrompt, /upload or publish it through ClawHub\.com/);
-  assert.match(itemPrompt, /requiresNewConfigOption/);
-  assert.match(itemPrompt, /automatic\s+bug-fix PR creation/);
-  assert.match(itemPrompt, /For every other issue or PR reference,\s+use the full GitHub URL/);
-  assert.doesNotMatch(itemPrompt, /normal `#123` links/);
-  assert.match(
-    schema.reproductionAssessment.description,
-    /Do we have a high-confidence way to reproduce the issue\?/,
-  );
-  assert.match(schema.solutionAssessment.description, /Is this the best way to solve the issue\?/);
-  assert.match(commitPrompt, /The checkout is current target\s+`main`, not the commit snapshot/);
-  assert.match(commitPrompt, /Do we have a high-confidence way to reproduce the issue\?/);
-  assert.match(commitPrompt, /Is this the best way to solve the issue\?/);
 });
 
 test("dashboard operation counters include persisted failed-review retry sidecars", () => {

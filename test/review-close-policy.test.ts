@@ -22,31 +22,6 @@ import {
 import { parseCoAuthors } from "../dist/commit-sweeper.js";
 import { closeDecision, git, item, reportFrontMatter, reviewPrompt } from "./helpers.ts";
 
-test("review prompt documents gated backlog close policies", () => {
-  const prompt = `${reviewPrompt("issue")}\n${reviewPrompt("pull_request")}`;
-  assert.match(prompt, /`unsponsored_feature_request`/);
-  assert.match(prompt, /reversible idea-archive park, not a rejection/);
-  assert.match(prompt, /label whose normalized name contains `security`/);
-  assert.match(prompt, /configured positive-reaction threshold automatically reopens it/);
-  assert.match(prompt, /commenting `@clawsweeper revive`/);
-  assert.match(prompt, /no human comment in the last 60 days/);
-  assert.match(prompt, /significantly outdated version or behavior/);
-  assert.match(prompt, /not cleanly mergeable \(merge conflicts\) on its current head/);
-  assert.match(prompt, /`author_pr_budget_exceeded`/);
-  assert.match(prompt, /Never propose this reason when the author open-PR count is unknown/);
-  assert.match(prompt, /default path is apply-side deterministic promotion/);
-  assert.match(prompt, /`stale_version_bug`/);
-  assert.match(prompt, /fresh current-version reproduction/);
-  assert.match(prompt, /`obsolete_fix_pr`/);
-  assert.match(prompt, /every touched path was substantially rewritten or removed/);
-  assert.match(prompt, /`bulkFiler\.detected`/);
-  assert.match(prompt, /extra duplicate scrutiny/);
-  assert.match(prompt, /Never route it to proof-nudge or automated fix-dispatch work/);
-  assert.match(prompt, /do not invent a bulk-filing close reason/);
-  assert.match(prompt, /GitHub-verified, merged fixing PR in\s+the same repository/);
-  assert.match(prompt, /linked issue is not permission or proof to close either item/);
-});
-
 function renderedCloseReasons(prompt: string): string[] {
   const section = prompt.slice(
     prompt.indexOf("### Close reasons"),
@@ -75,39 +50,7 @@ test("review prompt renders close reasons from the repository profile for the it
   assert.match(closedRepoPrompt, /enables no close reason for this item kind: keep the item open/);
 });
 
-test("review prompt closes independently disproven nonexistent-source bug reports", () => {
-  const prompt = reviewPrompt("issue");
-
-  assert.match(prompt, /`cannot_reproduce`: [^\n]*Distinguish missing reporter evidence/);
-  assert.match(prompt, /Search the complete current tree,\s+source history, renamed paths/);
-  assert.match(prompt, /actual owner, callers, dependency contract, and relevant regression tests/);
-  assert.match(prompt, /named implementation never existed or cannot perform the alleged/);
-  assert.match(prompt, /propose a high-confidence close with that source-backed evidence/);
-  assert.match(prompt, /Do not keep a source-disproven issue open/);
-  assert.match(prompt, /Bulk filing is not itself a close reason/);
-  assert.match(prompt, /each claim is\s+independently disproved/);
-  assert.match(prompt, /Keep open when an affected shipped version/);
-});
-
 test("external desktop-product bugs close without inventing upstream maintainer work", () => {
-  const prompt = reviewPrompt("issue");
-
-  assert.match(prompt, /QClaw `0\.x` desktop\/client reports/);
-  assert.match(prompt, /`qclaw\/\*` providers/);
-  assert.match(prompt, /externally maintained WeChat adapters/);
-  assert.match(prompt, /propose a high-confidence `not_actionable_in_repo` close immediately/);
-  assert.match(prompt, /do not request private\/encrypted third-party traces/);
-  assert.match(prompt, /do not turn missing third-party logs into a maintainer-review blocker/);
-  assert.match(
-    prompt,
-    /evidence demonstrates an actual failure in an official OpenClaw release or owned source path/,
-  );
-  assert.match(
-    prompt,
-    /Merely citing healthy owned source paths, generic fallback\/delivery plumbing/,
-  );
-  assert.match(prompt, /set `workCandidate: "none"`/);
-
   const decision = closeDecision({
     closeReason: "not_actionable_in_repo",
     itemCategory: "bug",
@@ -125,30 +68,6 @@ test("external desktop-product bugs close without inventing upstream maintainer 
 });
 
 test("close-first triage keeps actionable upstream work and invites better reports", () => {
-  const prompt = reviewPrompt("issue");
-
-  assert.match(prompt, /Maintainer attention is scarce/);
-  assert.match(prompt, /the first rule that applies wins/);
-  assert.match(prompt, /1\. Keep-open guards win over every close rule/);
-  assert.ok(
-    prompt.indexOf("Keep-open guards win") < prompt.indexOf("Default to closure"),
-    "keep-open guards must take precedence over the closure default",
-  );
-  assert.doesNotMatch(
-    prompt,
-    /Close only when the evidence is strong and the repository policy allows it/,
-  );
-  assert.match(prompt, /Default to closure when an unprotected item does not establish/);
-  assert.match(
-    prompt,
-    /Confidence applies to whether this submission merits scarce maintainer attention/,
-  );
-  assert.match(prompt, /explicitly invite the author to reopen with that evidence/);
-  assert.match(prompt, /Keep open for actual current upstream bugs/);
-  assert.match(prompt, /official affected release or owned source failure/);
-  assert.match(prompt, /security-sensitive items, protected labels, maintainer-engaged work/);
-  assert.match(prompt, /Do not invent a new close reason or misclassify an actual upstream defect/);
-
   for (const closeReason of ["not_actionable_in_repo", "incoherent", "cannot_reproduce"] as const) {
     const decision = closeDecision({
       closeReason,

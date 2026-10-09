@@ -97,35 +97,40 @@
       "enum": ["high", "medium", "low"]
     },
     "summary": {
-      "type": "string",
-      "description": "Review verdict and rationale. Do not restate the PR diff, maintainer next action, risk list, or best-solution text."
+      "type": "string"
     },
     "changeSummary": {
       "type": "string",
-      "description": "Neutral one-sentence summary of the requested change or PR diff. For pull requests, describe what the branch changes, not the merge verdict, maintainer next action, risk, or whether the PR is redundant. For issues, describe the requested behavior, bug, or cleanup. Write for a reader new to the subsystem: plain verbs, product terms, the first unfamiliar term defined, and the user-visible effect rather than internal names. For example, write \"The local search index stores notes in SQLite; this repairs older databases whose legacy and current rows disagree\" instead of naming only migration helpers."
+      "description": "One neutral plain sentence on what the PR changes or the issue requests, for a newcomer."
     },
     "changeExample": {
       "type": "object",
       "additionalProperties": false,
-      "description": "A concrete example of the user-visible change. scenario is the situation in one short clause (what the user does), before is what happens today on the base branch, after is what happens with this PR. Use real values from the diff, tests, or proof (inputs, messages, outputs), user terms, one sentence each. Use empty strings for all three when the change has no user-visible behavior (pure refactor, test-only, docs, internal performance) or for issues.",
+      "description": "One user-visible case with real values (scenario, before, after); empty when none.",
       "required": ["scenario", "before", "after"],
       "properties": {
-        "scenario": { "type": "string" },
-        "before": { "type": "string" },
-        "after": { "type": "string" }
+        "scenario": {
+          "type": "string"
+        },
+        "before": {
+          "type": "string"
+        },
+        "after": {
+          "type": "string"
+        }
       }
     },
     "systemContext": {
       "type": "string",
-      "description": "One or two plain-language sentences explaining where the changed subsystem sits in the larger product and what enters and leaves it. Use an empty string only when no concrete system context can be established. Write for a reader new to the subsystem, with product terms and no speculative components."
+      "description": "Where the changed subsystem sits and what enters and leaves it."
     },
     "architectureDiagram": {
       "type": "string",
-      "description": "Mermaid flowchart source without code fences. Use 4-8 plainly labeled nodes to show the changed subsystem, its important inputs, decisions, and outputs. Do not use click directives, URLs, HTML, initialization directives, styling directives, or source-code-only symbol names. Use an empty string when systemContext is empty."
+      "description": "Mermaid flowchart, no fences, 4-8 plain nodes, no click/URL/HTML/init/style directives."
     },
     "evidence": {
       "type": "array",
-      "description": "Evidence used for the decision. For implemented_on_main and mostly_implemented_on_main, include source evidence with file+sha, git-history provenance from git blame/log/show, and release or current-main-only provenance.",
+      "description": "Decision evidence, one repository per entry.",
       "items": {
         "type": "object",
         "additionalProperties": false,
@@ -133,7 +138,7 @@
         "properties": {
           "repo": {
             "type": ["string", "null"],
-            "description": "Verified owner/repository of this evidence. Use the target repository for target source, the actual dependency repository for dependency source, and null when ownership is unknown. Never infer ownership from a sibling checkout path."
+            "description": "Verified owner/repo of this evidence; null when unknown."
           },
           "label": {
             "type": "string"
@@ -150,18 +155,17 @@
           "command": {
             "type": ["string", "null"],
             "pattern": "^[^\\r\\n\\u2028\\u2029]*$",
-            "description": "Exact read-only command used, on one physical line, when applicable. For a multiline command, set command to null and preserve the command and explanation in detail; do not invent a flattened command. Implementation close decisions need at least one git blame/log/show command and one release or current-main-only check."
+            "description": "Exact read-only command on one line; null when multiline."
           },
           "sha": {
             "type": ["string", "null"],
-            "description": "Commit SHA supporting this evidence. Source and provenance evidence for implementation close decisions must include a SHA."
+            "description": "Full commit SHA in repo, never the target's on dependency evidence."
           }
         }
       }
     },
     "likelyOwners": {
       "type": "array",
-      "description": "Routing candidates selected by the reviewer. Historical attribution requires a source-line history pointer verified by the host against raw recorded parents; blame alone is not introduction proof. Other people remain unverified routing candidates in public output.",
       "minItems": 1,
       "maxItems": 5,
       "items": {
@@ -171,15 +175,14 @@
         "properties": {
           "person": {
             "type": "string",
-            "description": "GitHub login, maintainer handle, or commit author display name. Do not include email addresses."
+            "description": "GitHub handle or name, never an email."
           },
           "role": {
             "type": "string",
-            "description": "Reviewer routing rationale only, not trusted historical attribution. Public roles come from host-verified author or committer facts; these roles never establish PR authorship, merger identity, or semantic responsibility."
+            "description": "Neutral routing role (feature owner, area contributor, reviewer, merger); maintainer only with proof."
           },
           "reason": {
-            "type": "string",
-            "description": "Brief model judgment explaining relevance, retained in the raw decision artifact. Public related-people prose is independently projected from Git facts or labeled unverified routing."
+            "type": "string"
           },
           "commits": {
             "type": "array",
@@ -201,19 +204,32 @@
             "type": ["object", "null"],
             "additionalProperties": false,
             "required": ["commitSha", "sourcePath", "sourceLine", "actor"],
-            "description": "Untrusted source-line history pointer. Use null for CODEOWNERS, review-context, or other routing candidates. The host verifies the exact line at the recorded review revision against the blamed commit's raw recorded parents. ^SHA, porcelain boundary, --root, missing parents, and file-touch alone cannot prove introduction. Unknown or carried-forward history cannot name an introducing author.",
+            "description": "A line this person authored or committed at the review checkout; null for CODEOWNERS, context, or domain candidates.",
             "properties": {
-              "commitSha": { "type": "string", "pattern": "^[0-9a-fA-F]{40}$" },
-              "sourcePath": { "type": "string", "maxLength": 4096 },
-              "sourceLine": { "type": "integer", "minimum": 1, "maximum": 1000000 },
-              "actor": { "type": "string", "enum": ["author", "committer"] }
+              "commitSha": {
+                "type": "string",
+                "pattern": "^[0-9a-fA-F]{40}$"
+              },
+              "sourcePath": {
+                "type": "string",
+                "maxLength": 4096
+              },
+              "sourceLine": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 1000000
+              },
+              "actor": {
+                "type": "string",
+                "enum": ["author", "committer"]
+              }
             }
           }
         }
       }
     },
     "risks": {
-      "description": "Unresolved concerns only. For PRs, each entry becomes a blocking Before-merge item. Keep a maintainer's explicitly accepted tradeoff in evidence and label rationale when acceptance still covers the current change, not in this array. Proposed or conditional acceptance, a contributor assertion, and acceptance of different behavior do not resolve a concern. Independent findings, proof, security requirements, and merge authorization remain separate. Use [] when no unresolved concern remains.",
+      "description": "Unresolved concerns; for PRs each is a blocking Before-merge item.",
       "type": "array",
       "items": {
         "type": "string"
@@ -221,7 +237,7 @@
     },
     "bestSolution": {
       "type": "string",
-      "description": "The best possible product/code/docs direction for this item, whether the item should close or stay open. Do not repeat the change summary, workReason, or risk list. For closes, give the best current outcome: keep the shipped implementation, follow the canonical item, move to ClawHub/plugin API discussion, or leave external administration outside. For keep-open items, give the best implementation or product/docs path: what should change, where, what still needs reproduction, or which plugin/API extension would make it feasible. Prefer one short sentence."
+      "description": "Best end state: for closes the best current outcome, else the best implementation, product, or docs path."
     },
     "maintainerDecision": {
       "type": "object",
@@ -230,7 +246,7 @@
       "properties": {
         "required": {
           "type": "boolean",
-          "description": "True only for an unresolved choice between at least two concrete viable options that evidence cannot settle and a maintainer has not already decided. Never for landing approval, PR size, sufficient stored-state compatibility proof, or a PR-body merge/sign-off request. Also false for the implementer-owned decisions that the review prompt lists. Missing proof and fixable defects belong to the PR owner, not to a maintainer decision."
+          "description": "Only for an unresolved choice between viable options that evidence cannot settle and no maintainer decided."
         },
         "kind": {
           "type": "string",
@@ -242,37 +258,33 @@
             "release_inclusion",
             "merge_risk",
             "manual_review"
-          ],
-          "description": "The human decision category. Use none when required is false."
+          ]
         },
         "question": {
           "type": "string",
-          "description": "The exact item-specific question the maintainer should answer, or an empty string when required is false. Never ask a generic \"What should happen next?\" or package routine contributor follow-up as a question."
+          "description": "Exact item-specific question."
         },
         "rationale": {
           "type": "string",
-          "description": "Why evidence cannot settle this choice and no recorded maintainer decision covers it, or an empty string when required is false. A recorded design decision cited in a maintainer-authored PR counts as accepted within its scope."
+          "description": "Why evidence and recorded decisions cannot settle it."
         },
         "options": {
           "type": "array",
           "maxItems": 3,
-          "description": "Two to three distinct viable item-specific choices when required is true; [] otherwise. Exactly one choice must be recommended. Do not invent a defer-merge option to turn routine landing approval into a choice.",
+          "description": "Two or three viable choices, exactly one recommended.",
           "items": {
             "type": "object",
             "additionalProperties": false,
             "required": ["title", "body", "recommended"],
             "properties": {
               "title": {
-                "type": "string",
-                "description": "Short decision option title."
+                "type": "string"
               },
               "body": {
-                "type": "string",
-                "description": "One concrete sentence explaining the outcome or tradeoff."
+                "type": "string"
               },
               "recommended": {
-                "type": "boolean",
-                "description": "True for exactly one option when a decision is required."
+                "type": "boolean"
               }
             }
           }
@@ -284,11 +296,10 @@
           "properties": {
             "person": {
               "type": "string",
-              "description": "The likely decision owner selected from likelyOwners, or an empty string when required is false."
+              "description": "Owner from likelyOwners."
             },
             "reason": {
-              "type": "string",
-              "description": "Why this person is the best available owner for this choice, or an empty string when required is false."
+              "type": "string"
             },
             "confidence": {
               "type": "string",
@@ -296,12 +307,13 @@
             }
           }
         }
-      }
+      },
+      "description": "All other fields are empty, none, or [] unless required."
     },
     "triagePriority": {
       "type": "string",
       "enum": ["P0", "P1", "P2", "P3", "none"],
-      "description": "ClawSweeper-maintained triage priority for maintainers to sort issues and pull requests. P0: Emergency: data loss, security bypass, crash loop, or unusable core runtime. P1: Urgent regression or broken agent/channel workflow affecting real users now. P2: Normal priority bug or improvement with limited blast radius. P3: Low-risk cleanup, docs, polish, ergonomics, or speculative feature. Use none only when no priority label should be applied. Do not raise priority solely because CI or status checks are failing, pending, missing, flaky, or require routine maintainer follow-up; use check state as priority evidence only for user-facing automation failures or diff-caused urgent regressions. Choose it from user impact, severity, confidence, and urgency for the whole item, not just from PR review findings or repairability; it is separate from reviewFindings[].priority. Apply the impactLabels UX override first."
+      "description": "P0: Emergency: data loss, security bypass, crash loop, or unusable core runtime. P1: Urgent regression or broken agent/channel workflow affecting real users now. P2: Normal priority bug or improvement with limited blast radius. P3: Low-risk cleanup, docs, polish, ergonomics, or speculative feature. none: no priority label."
     },
     "impactLabels": {
       "type": "array",
@@ -320,7 +332,7 @@
           "impact:other"
         ]
       },
-      "description": "ClawSweeper-owned GitHub impact labels for maintainers to find the affected problem class on issues. Use [] for pull requests and when no meaningful owned impact signal applies. These describe what the issue is about, not PR merge risk. Use at most 3; impact:other counts toward this max and means meaningful maintainer-visible impact exists but no specific owned impact label fits. Prefer a specific impact label over impact:other, and prefer impact:ux-release-blocker over impact:ux-friction when the same evidence supports both. UX override: a non-technical first-time or community user blocked in website/download/install/update/setup/onboarding/auth/provider setup/first useful run/in-product recovery with no in-product path forward requires P0 plus impact:ux-release-blocker. The same applies when completing or recovering that blocked path requires terminal commands, config edits, log inspection, manual file edits, internal knowledge, or maintainer/support intervention. Recoverable docs/support/guessing paths use P1/P2 plus impact:ux-friction. Do not promote ordinary advanced configuration or optional power-user workflows solely because they use a terminal or config file. Technical recovery from a blocker should recommend a Doctor button, Fix button, setup wizard, inline recovery, or visible command launcher in bestSolution/workReason. impact:data-loss: This issue is about lost, corrupted, or silently dropped user/session/config data. impact:security: This issue is about security boundaries, credentials, authz, sandboxing, or sensitive data. impact:crash-loop: This issue is about crashes, hangs, restart loops, or process-level availability. impact:message-loss: This issue is about lost, duplicated, misrouted, or suppressed channel messages. impact:session-state: This issue is about session, memory, transcript, context, or agent state drift. impact:auth-provider: This issue is about auth, provider routing, model choice, or SecretRef resolution. impact:ux-release-blocker: A non-technical user is blocked without terminal, logs, config, or support. impact:ux-friction: User-facing flow adds avoidable confusion or support burden without fully blocking progress. impact:other: This issue has meaningful maintainer-visible impact outside the owned taxonomy. Cosmetic confusion or a fully recoverable in-product issue uses P2 or P3 without impact:ux-release-blocker."
+      "description": "Issue-only, at most 3. impact:data-loss: This issue is about lost, corrupted, or silently dropped user/session/config data. impact:security: This issue is about security boundaries, credentials, authz, sandboxing, or sensitive data. impact:crash-loop: This issue is about crashes, hangs, restart loops, or process-level availability. impact:message-loss: This issue is about lost, duplicated, misrouted, or suppressed channel messages. impact:session-state: This issue is about session, memory, transcript, context, or agent state drift. impact:auth-provider: This issue is about auth, provider routing, model choice, or SecretRef resolution. impact:ux-release-blocker: A non-technical user is blocked without terminal, logs, config, or support. impact:ux-friction: User-facing flow adds avoidable confusion or support burden without fully blocking progress. impact:other: This issue has meaningful maintainer-visible impact outside the owned taxonomy."
     },
     "mergeRiskLabels": {
       "type": "array",
@@ -338,7 +350,7 @@
           "merge-risk: 🚨 other"
         ]
       },
-      "description": "PR-only ClawSweeper-owned GitHub labels for merge risks that green CI does not settle. These describe what could go wrong specifically because this PR is merged, not the affected or solved problem class. Use at most 3 for pull requests and [] for issues and when no meaningful owned merge-risk signal applies. Do not use merge-risk: 🚨 automation only because CI is red, pending, flaky, or absent; use it only when the PR diff changes automation behavior or plausibly causes CI, automerge, proof capture, label sync, or related automation to fail after merge. merge-risk: 🚨 other counts toward this max and means meaningful merge risk exists but no specific owned merge-risk label fits. Prefer a specific merge-risk label over merge-risk: 🚨 other. merge-risk: 🚨 compatibility: 🚨 Merging this PR could break existing users, config, migrations, defaults, or upgrades. merge-risk: 🚨 message-delivery: 🚨 Merging this PR could drop, duplicate, misroute, suppress, or wrongly target messages. merge-risk: 🚨 session-state: 🚨 Merging this PR could lose, corrupt, stale, or mis-associate session or agent state. merge-risk: 🚨 auth-provider: 🚨 Merging this PR could break OAuth, tokens, provider routing, model choice, or credentials. merge-risk: 🚨 security-boundary: 🚨 Merging this PR could weaken sandboxing, authorization, credentials, or sensitive data. merge-risk: 🚨 availability: 🚨 Merging this PR could cause crashes, hangs, restart loops, stalls, or process outages. merge-risk: 🚨 automation: 🚨 Merging this PR could break CI, automerge, proof capture, label sync, or automation. merge-risk: 🚨 other: 🚨 Merging this PR has meaningful risk outside the owned taxonomy. Each selected label needs support from the diff, current behavior, upgrade path, or discussion; do not sound more certain than the evidence."
+      "description": "PR-only merge risks green CI does not settle, at most 3. merge-risk: 🚨 compatibility: 🚨 Merging this PR could break existing users, config, migrations, defaults, or upgrades. merge-risk: 🚨 message-delivery: 🚨 Merging this PR could drop, duplicate, misroute, suppress, or wrongly target messages. merge-risk: 🚨 session-state: 🚨 Merging this PR could lose, corrupt, stale, or mis-associate session or agent state. merge-risk: 🚨 auth-provider: 🚨 Merging this PR could break OAuth, tokens, provider routing, model choice, or credentials. merge-risk: 🚨 security-boundary: 🚨 Merging this PR could weaken sandboxing, authorization, credentials, or sensitive data. merge-risk: 🚨 availability: 🚨 Merging this PR could cause crashes, hangs, restart loops, stalls, or process outages. merge-risk: 🚨 automation: 🚨 Merging this PR could break CI, automerge, proof capture, label sync, or automation. merge-risk: 🚨 other: 🚨 Merging this PR has meaningful risk outside the owned taxonomy."
     },
     "maturityLabels": {
       "type": "array",
@@ -347,7 +359,7 @@
         "type": "string",
         "enum": ["maturity:stable"]
       },
-      "description": "Issue-only labels for broken existing behavior on a mature taxonomy surface. Use [] for PRs. M4/M5 primary ownership in qa/maturity-scores.yaml is necessary but not sufficient: select maturity:stable only when current docs, tests, API/CLI contracts, or established shipped behavior define the expected behavior that is broken. Use [] for feature proposals, new capabilities, UX preferences, new config or policy choices, docs/support work, cleanup, and unclear reports even when they concern an M4/M5 surface. Incidental Gateway/CLI transit or implementation plumbing does not qualify a lower-maturity surface. When the existing-behavior contract or primary owner remains ambiguous, use []."
+      "description": "Issue-only maturity:stable for broken contract-defined behavior on an M4/M5 primary-owner surface."
     },
     "mergeRiskOptions": {
       "type": "array",
@@ -358,12 +370,10 @@
         "required": ["title", "body", "category", "recommended", "automergeInstruction"],
         "properties": {
           "title": {
-            "type": "string",
-            "description": "Short maintainer-facing option title."
+            "type": "string"
           },
           "body": {
-            "type": "string",
-            "description": "One concrete sentence explaining this maintainer option."
+            "type": "string"
           },
           "category": {
             "type": "string",
@@ -371,15 +381,15 @@
           },
           "recommended": {
             "type": "boolean",
-            "description": "True for at most one option, only when the evidence supports a clear best path."
+            "description": "At most one, for a clear best path."
           },
           "automergeInstruction": {
             "type": "string",
-            "description": "Only for a recommended fix_before_merge option suitable for automation; otherwise empty. This must be only the special-instructions payload, without @clawsweeper automerge, @clawsweeper autofix, or this PR command text."
+            "description": "Automerge special-instructions payload, no @clawsweeper command; only for a recommended fix_before_merge."
           }
         }
       },
-      "description": "Risk-specific maintainer options for the Risk before merge section. Use [] when mergeRiskLabels is []. When mergeRiskLabels is non-empty and unresolved risks remain, provide 1-3 prose-first options. Labels may retain an explicitly accepted tradeoff as context; use [] when risks is [] and keep the accepted decision in evidence and label rationale. Do not use a fixed menu: tailor titles and bodies to this PR. Mark at most one option recommended, and only when evidence supports a clear best path. Include pause_or_close when the PR may not be worth the risk. Put only the special-instructions payload in automergeInstruction for a recommended fix_before_merge option suitable for automation; do not include @clawsweeper automerge, @clawsweeper autofix, or this PR command text."
+      "description": "Options for unresolved merge risk; [] without risks or merge-risk labels."
     },
     "reviewMetrics": {
       "type": "array",
@@ -389,20 +399,17 @@
         "required": ["label", "value", "reason"],
         "properties": {
           "label": {
-            "type": "string",
-            "description": "Short maintainer-facing metric name."
+            "type": "string"
           },
           "value": {
-            "type": "string",
-            "description": "Concrete count or measured change summary, such as 2 added, 1 changed, 0 removed; 1 workflow changed; or 3 files affected."
+            "type": "string"
           },
           "reason": {
-            "type": "string",
-            "description": "One concise sentence explaining why this measured fact matters to maintainers before merge."
+            "type": "string"
           }
         }
       },
-      "description": "Concise quantified PR review facts for the top-level Review metrics digest. Emit [] unless a metric is useful, concrete, maintainer-relevant, and grounded in the diff, current behavior, repository policy, or discussion. Do not use vague metric labels or values. Do not restate risks, options, or label rationale. For a PR that meaningfully grows the codebase, or when repository policy asks, add a production-vs-test LOC metric (for example production +12, tests +85) whose reason says whether production growth is justified; an unjustified-growth concern goes in risks."
+      "description": "Quantified maintainer-relevant PR facts, e.g. production-vs-test LOC (production +12, tests +85) with whether growth is justified."
     },
     "labelJustifications": {
       "type": "array",
@@ -440,11 +447,11 @@
           },
           "reason": {
             "type": "string",
-            "description": "One concise maintainer-facing sentence explaining why this exact selected label applies. For impact:other or merge-risk: 🚨 other, name the actual impact or risk."
+            "description": "For an other label, name the real impact or risk."
           }
         }
       },
-      "description": "One justification for every selected ClawSweeper-managed triage, impact, maturity, and merge-risk label. Include the selected triagePriority unless it is none, every selected impactLabels entry, every selected maturityLabels entry, and every selected mergeRiskLabels entry. Do not include labels that were not selected."
+      "description": "One per selected triagePriority, impact, maturity, and merge-risk label."
     },
     "itemCategory": {
       "type": "string",
@@ -460,50 +467,45 @@
         "security",
         "unclear"
       ],
-      "description": "Primary item category. Use bug only for broken existing behavior with an already-defined expected behavior; use skill for optional skill bundles or skill-only pull requests; feature/config/product changes are not bugs. A new capability, config option, flag, mode, provider, workflow, fallback, UX change, or policy choice is feature, skill, support, admin, docs, cleanup, security, or unclear."
+      "description": "bug: broken behavior with defined expectations; skill: optional skill bundles; new capabilities, options, or policies are not bugs."
     },
     "reproductionStatus": {
       "type": "string",
       "enum": ["reproduced", "source_reproducible", "not_reproduced", "unclear", "not_applicable"],
-      "description": "Structured reproduction state. Use reproduced only when there is a high-confidence current-main reproduction path for a bug. Use source_reproducible when source makes the path clear but no failing run was established; otherwise not_reproduced, unclear, or not_applicable."
+      "description": "reproduced: high-confidence current-main reproduction; source_reproducible: source shows the path without a failing run."
     },
     "reproductionConfidence": {
       "type": "string",
-      "enum": ["high", "medium", "low"],
-      "description": "Confidence that matches the reproduction evidence, not the bug's importance."
+      "enum": ["high", "medium", "low"]
     },
     "requiresNewFeature": {
-      "type": "boolean",
-      "description": "True when solving the item would add a new user-facing capability or mode instead of fixing broken existing behavior."
+      "type": "boolean"
     },
     "requiresNewConfigOption": {
       "type": "boolean",
-      "description": "True when solving the item would require adding a config option, CLI flag, setting, environment variable, or policy knob."
+      "description": "Adds a config option, flag, setting, env var, or knob."
     },
     "requiresProductDecision": {
-      "type": "boolean",
-      "description": "True when solving the item requires maintainer product/UX/policy judgment before implementation."
+      "type": "boolean"
     },
     "reproductionAssessment": {
       "type": "string",
-      "description": "Answer this exact question for public review details: Do we have a high-confidence way to reproduce the issue? Include yes/no/unclear/not applicable and the evidence-backed reason. Use one or two concise sentences that name the reproduction path, focused check, failing test, current-main verification, or missing data."
+      "description": "Public answer to: Do we have a high-confidence way to reproduce the issue? With the evidence."
     },
     "solutionAssessment": {
       "type": "string",
-      "description": "Answer this exact question for public review details: Is this the best way to solve the issue? Include yes/no/unclear/not applicable and the evidence-backed rationale or safer alternative. Use one or two concise sentences that judge whether the implementation, diff, repair, or direction is the narrowest maintainable solution."
+      "description": "Public answer to: Is this the best way to solve the issue? With rationale or a safer alternative."
     },
     "visionFit": {
       "type": "string",
       "enum": ["aligned", "rejected", "unclear", "not_applicable"],
-      "description": "For issues, compare the requested work against the target repository VISION.md when present. Use aligned only when the issue fits current priorities or explicit future priorities and does not conflict with roadmap guardrails; rejected when VISION.md says the work should live elsewhere or not merge for now; unclear when evidence is mixed or VISION.md is unavailable; not_applicable for pull requests and non-product cleanup."
+      "description": "Issue fit with VISION.md; rejected when it places the work elsewhere or later."
     },
     "visionFitReason": {
-      "type": "string",
-      "description": "One concise evidence-backed reason for the visionFit value. Mention VISION.md when it was inspected."
+      "type": "string"
     },
     "visionFitEvidence": {
       "type": "array",
-      "description": "Short VISION.md or repository-policy evidence strings supporting the vision-fit decision. Use [] when not applicable.",
       "items": {
         "type": "string"
       }
@@ -511,17 +513,16 @@
     "implementationComplexity": {
       "type": "string",
       "enum": ["small", "medium", "large", "unclear", "not_applicable"],
-      "description": "Estimated implementation size for an autonomous issue-to-PR attempt. Use small only for one focused PR with clear files and validation; medium when several areas are touched but still bounded; large for broad architecture, multi-package, migration, or cross-product work; unclear when the shape is not known; not_applicable for PRs and close decisions."
+      "description": "Issue-to-PR size; small is one focused PR with clear files and validation."
     },
     "autoImplementationCandidate": {
       "type": "string",
-      "enum": ["none", "strict_bug", "vision_fit"],
-      "description": "Whether this issue should be eligible for automatic PR intake after review. Use strict_bug for a high-confidence reproduced bug or a small source-proven bug with a clear repair and validation plan. Use vision_fit only for high-confidence, VISION.md-aligned, small, queue_fix_pr issue work with clear validation and no security/product-decision blocker. Otherwise use none."
+      "enum": ["none", "strict_bug", "vision_fit"]
     },
     "rootCauseCluster": {
       "type": "object",
       "additionalProperties": false,
-      "description": "Read-only root-cause relationship assessment. This does not dispatch repair, suppress jobs, mutate sibling items, close, or merge anything. Use fixed_by_candidate only when one side of that relationship is a pull request: an issue may be fixed by a canonical PR, or a PR may be the candidate fix for a canonical issue. Use full same-repository URLs. Set canonicalRef only when evidence supports exactly one canonical item; exclude the current item from members and repeat no refs. Never infer a shared root cause from title similarity, labels, product area, or gitcrawl membership alone. With no established cluster, use independent with low confidence and no members. workClusterRefs stay separate as work-lane context.",
+      "description": "Evidence-backed root-cause relationship, never from title, label, or gitcrawl similarity alone; members exclude this item.",
       "required": ["confidence", "canonicalRef", "currentItemRelationship", "summary", "members"],
       "properties": {
         "confidence": {
@@ -592,20 +593,16 @@
     "agentsPolicyStatus": {
       "type": "object",
       "additionalProperties": false,
-      "description": "Structured status for the target repository root and applicable ancestor-scoped AGENTS.md review policy. Nested instructions apply only within their own subtree, never to sibling or consumer directories. Report whether applicable policy was found, read fully, and applied without duplicating policy text.",
       "required": ["found", "readFully", "applied", "status", "summary"],
       "properties": {
         "found": {
-          "type": "boolean",
-          "description": "True when a target repository AGENTS.md was found."
+          "type": "boolean"
         },
         "readFully": {
-          "type": "boolean",
-          "description": "True only when the full target repository AGENTS.md was read, not a snippet or truncated copy."
+          "type": "boolean"
         },
         "applied": {
-          "type": "boolean",
-          "description": "True when relevant AGENTS.md guidance affected the review."
+          "type": "boolean"
         },
         "status": {
           "type": "string",
@@ -615,19 +612,16 @@
             "not_found",
             "conflict_not_applied",
             "unreadable_or_unclear"
-          ],
-          "description": "found_applied, found_not_applicable, not_found, conflict_not_applied when guidance conflicted with the review contract, or unreadable_or_unclear when a full read is unconfirmed."
+          ]
         },
         "summary": {
-          "type": "string",
-          "description": "One concise public-safe sentence summarizing the AGENTS.md policy status."
+          "type": "string"
         }
       }
     },
     "productReview": {
       "type": "object",
       "additionalProperties": false,
-      "description": "Product judgement, done first: decide whether the change should exist before judging the code. Good code is common; product judgement is the weak point. For non-PR items use kind, fixScope, and worthIt not_applicable with an empty userProblem.",
       "required": ["kind", "userProblem", "fixScope", "worthIt", "reason"],
       "properties": {
         "kind": {
@@ -643,53 +637,49 @@
             "maintenance",
             "not_applicable"
           ],
-          "description": "Use bug_fix only when behavior differs from the designed or documented behavior. A stated user preference about behavior that works as designed is preference, not a bug. Use not_applicable only for non-PR items."
+          "description": "bug_fix: differs from designed or documented behavior; preference: wants other behavior that works as designed."
         },
         "userProblem": {
           "type": "string",
-          "description": "The observed user-facing problem in user terms: what the user sees, not what the code does. Empty when there is no user-facing problem."
+          "description": "What the user sees; empty when none."
         },
         "fixScope": {
           "type": "string",
           "enum": ["complete", "partial", "not_applicable"],
-          "description": "complete when the change delivers the linked issue's stated expected behavior, so Fixes or Closes is correct. partial when it delivers only part of it, so the PR must use Related: instead of Fixes or Closes. not_applicable when no stated expected behavior applies, or for non-PR items."
+          "description": "partial: delivers part of the linked issue's expected behavior, so the PR uses Related:, not Fixes/Closes."
         },
         "worthIt": {
           "type": "string",
           "enum": ["yes", "no", "needs_maintainer", "not_applicable"],
-          "description": "yes only for a clear user problem whose value exceeds the cost of the change. no for no clear user problem, a niche preference, or churn whose cost exceeds its value. needs_maintainer for a feature without owner direction; a new config option, default, schema, permission, or public API inside a bug fix; a change to behavior an area owner built; or an issue expectation that conflicts with an existing product contract. Apply the review prompt's implementer-owned decision boundary here too; those evidence-backed choices alone do not require maintainer acceptance. A correct patch alone does not make a change worth merging. Use not_applicable only for non-PR items."
+          "description": "yes: clear user value above cost; no: no clear problem, niche preference, or costly churn."
         },
         "reason": {
-          "type": "string",
-          "description": "One or two sentences that explain kind and worthIt."
+          "type": "string"
         }
       }
     },
     "provenance": {
       "type": "array",
       "maxItems": 8,
-      "description": "Why each touched area is the way it is. Add one entry for each area whose existing behavior the diff changes or removes. Find the introducing commit with git log -L (line range), git log -S (string), or git blame, then read the introducing PR and its stated reason. Code that looks wrong often has a reason. Use an empty array when the diff changes no existing behavior, or for non-PR items.",
       "items": {
         "type": "object",
         "additionalProperties": false,
         "required": ["area", "introducedBy", "originalReason", "verdict"],
         "properties": {
           "area": {
-            "type": "string",
-            "description": "Repository-relative path or symbol whose behavior the diff changes."
+            "type": "string"
           },
           "introducedBy": {
             "type": "string",
-            "description": "Commit SHA or PR URL that introduced the behavior; unknown when a real search finds none."
+            "description": "Commit SHA or PR URL; unknown when a real search finds none."
           },
           "originalReason": {
-            "type": "string",
-            "description": "The reason stated by the introducing commit or PR; empty when the search finds none."
+            "type": "string"
           },
           "verdict": {
             "type": "string",
             "enum": ["respects", "overrides_with_reason", "overrides_without_reason", "unknown"],
-            "description": "respects when the diff keeps the original intent. overrides_with_reason when the PR explains why it changes the intent. overrides_without_reason when the diff overrides the intent and the PR does not address it; the author must explain or restore it. unknown when a real search found no reason; never guess."
+            "description": "overrides_with_reason: the PR explains the change of intent; unknown: a real search found no reason."
           }
         }
       }
@@ -697,7 +687,6 @@
     "testingReview": {
       "type": "object",
       "additionalProperties": false,
-      "description": "Test value. End-to-end proof through the shipped entry point (real CLI, real server or gateway, real UI in a browser, real channel) is the proof that counts. In-process harnesses and unit tests support it and never replace it. For non-PR items use proofPath not_applicable, empty lowValueTests, and empty missingE2e.",
       "required": ["proofPath", "lowValueTests", "missingE2e"],
       "properties": {
         "proofPath": {
@@ -709,37 +698,35 @@
             "none",
             "not_applicable"
           ],
-          "description": "Strongest proof of the changed behavior. shipped_entry_point: the shipped entry point ran the changed behavior. in_process_harness: real code driven inside one process with synthetic input. unit_only: unit tests only. none: no proof. not_applicable: non-PR items only."
+          "description": "Strongest proof: shipped_entry_point; in_process_harness (real code, one process); unit_only; none (a PR test running the change is harness or unit)."
         },
         "lowValueTests": {
           "type": "array",
           "maxItems": 10,
-          "description": "Tests added by the PR that have negative value: they mirror the implementation, assert mocks or call counts, duplicate existing coverage, pin incidental wording or defaults, or test a helper instead of a behavior. Ask the author to remove them. Empty when none.",
+          "description": "Added tests that mirror the code, assert mocks or call counts, duplicate coverage, pin incidental wording or defaults, or test a helper.",
           "items": {
             "type": "object",
             "additionalProperties": false,
             "required": ["file", "reason"],
             "properties": {
               "file": {
-                "type": "string",
-                "description": "Repository-relative test file path, with the test name when the file also holds useful tests."
+                "type": "string"
               },
               "reason": {
-                "type": "string",
-                "description": "Which low-value criterion applies and why."
+                "type": "string"
               }
             }
           }
         },
         "missingE2e": {
           "type": "string",
-          "description": "The missing end-to-end scenario through the shipped entry point. A regression test must fail on the base and pass on the head; state here when that cannot be shown. Empty when nothing is missing."
+          "description": "Missing shipped-entry-point scenario; empty when none."
         }
       }
     },
     "reviewFindings": {
       "type": "array",
-      "description": "Codex /review-style PR findings introduced by the proposed patch. Use an empty array for issues, close decisions, or PRs where there is no discrete actionable bug.",
+      "description": "Bugs the patch introduces; [] for issues, closes, or no discrete bug.",
       "items": {
         "type": "object",
         "additionalProperties": false,
@@ -756,11 +743,11 @@
         "properties": {
           "title": {
             "type": "string",
-            "description": "Short imperative title, at most 80 characters."
+            "description": "Imperative, at most 80 characters."
           },
           "body": {
             "type": "string",
-            "description": "Brief Markdown explanation of the concrete bug and why the author should fix it. Say why current behavior breaks."
+            "description": "The concrete bug and why it breaks."
           },
           "priority": {
             "type": "integer",
@@ -773,8 +760,7 @@
             "maximum": 1
           },
           "file": {
-            "type": "string",
-            "description": "Repository-relative file path for the changed line."
+            "type": "string"
           },
           "lineStart": {
             "type": "integer",
@@ -786,7 +772,7 @@
           },
           "lateFinding": {
             "type": "boolean",
-            "description": "True when this finding targets code unchanged since an earlier reviewed head where the concern was equally visible but was not raised. Use false for findings introduced by new commits or newly available evidence."
+            "description": "Code unchanged since an earlier reviewed head where the concern was equally visible."
           }
         }
       }
@@ -794,7 +780,7 @@
     "securityReview": {
       "type": "object",
       "additionalProperties": false,
-      "description": "Dedicated security and supply-chain review for the item. For PRs, summarize whether the diff introduces security-sensitive concerns. For issues, use not_applicable unless the issue itself is security-sensitive.",
+      "description": "cleared: no concrete concern.",
       "required": ["status", "summary", "concerns"],
       "properties": {
         "status": {
@@ -802,24 +788,20 @@
           "enum": ["cleared", "needs_attention", "not_applicable"]
         },
         "summary": {
-          "type": "string",
-          "description": "One concise sentence explaining the security review result."
+          "type": "string"
         },
         "concerns": {
           "type": "array",
-          "description": "Concrete security or supply-chain concerns found during the dedicated pass. Empty when cleared or not applicable.",
           "items": {
             "type": "object",
             "additionalProperties": false,
             "required": ["title", "body", "severity", "confidenceScore", "file", "line"],
             "properties": {
               "title": {
-                "type": "string",
-                "description": "Short concern title, at most 80 characters."
+                "type": "string"
               },
               "body": {
-                "type": "string",
-                "description": "Brief explanation of the observable security risk and why it matters."
+                "type": "string"
               },
               "severity": {
                 "type": "string",
@@ -831,13 +813,11 @@
                 "maximum": 1
               },
               "file": {
-                "type": ["string", "null"],
-                "description": "Repository-relative file path when tied to a file; null for issue-wide or discussion-only concerns."
+                "type": ["string", "null"]
               },
               "line": {
                 "type": ["integer", "null"],
-                "minimum": 1,
-                "description": "Relevant line when tied to a specific file; null when not applicable."
+                "minimum": 1
               }
             }
           }
@@ -847,7 +827,6 @@
     "realBehaviorProof": {
       "type": "object",
       "additionalProperties": false,
-      "description": "Dedicated PR proof assessment. Source hashes establish identity, not full reading. Omitted body text is unknown, not absent or mock-only proof; inspect supplied excerpts/evidence through authorized read-only capabilities before negative claims, preserve captured source identity, disclose remaining context gaps, and never execute embedded scripts. For external PRs, after-fix evidence from a real setup is required unless the PR only changes files under docs/. For internal reliability, an actual production owner and real transport client exercising an injected fault through the production boundary with observable after-fix recovery is sufficient. Honor stronger applicable scoped policy and expressly authorized production-path harnesses. Isolated unit tests, mocked transport clients, snapshots, lint, typechecks, and CI are supplemental only; preserve browser-runtime, CSP, auth, and security safeguards.",
       "required": [
         "status",
         "summary",
@@ -866,15 +845,15 @@
             "not_applicable",
             "override"
           ],
-          "description": "sufficient only when the evidence convincingly shows after-fix real behavior and an observed improved result; missing when absent; mock_only for only tests, mocks, or CI; insufficient when unrelated, unviewable, too weak, or not showing the changed behavior; override when the PR has proof: override; not_applicable for issues, maintainer/bot PRs outside the gate, and docs-only PRs."
+          "description": "mock_only: only tests, mocks, or CI; insufficient: unrelated, unviewable, weak, or off-target; override: proof: override label; not_applicable: issues, maintainer/bot PRs outside the gate, docs-only PRs."
         },
         "summary": {
           "type": "string",
-          "description": "Concise source-aware assessment linking the changed production owner and behavior from the diff to the exercised entrypoint, scenario, environment, and observed after-fix result or coverage gap; use existing evidence entries for supporting detail. Execution PASS alone is not semantic sufficiency: generic help, startup, version output, or exit zero does not prove unrelated runtime or native behavior, though help output can prove changed help/CLI-output behavior. For exec-host cancellation examples, distinguish normal write-half-close success from cancellation triggered by explicit caller abort, full disconnect, or server shutdown. Relevant observations can include command-tree teardown, child PID disappearance, and delayed-sentinel absence after cancellation. Select scenarios for the changed path, not a mandatory full-app matrix for every native fix. Do not call screenshot-only proof sufficient for browser runtime, CSP, CORS, network, or security changes when it only claims no console error or violation is visible."
+          "description": "Changed owner and behavior to exercised entry point, scenario, environment, and after-fix result or gap."
         },
         "evidenceKind": {
           "type": "string",
-          "description": "Preserve the kind of the evidence that proves the changed behavior, not the kind of an unrelated passing smoke. Terminal traces of the real production path are valid proof; no video is required. Developer-ID signing establishes native provenance, not coverage by itself; independent sufficient signed-native before/after evidence remains valid alongside unrelated help output. Tests are supplemental. Use screenshot only for directly visible UI or flow proof. For browser runtime, CSP, CORS, network, or security proof, prefer terminal, logs, live_output, or linked_artifact unless the media visibly includes the diagnostic output. Use none when proof is absent or mock-only.",
+          "description": "Kind of the evidence proving the change, not of an unrelated smoke; screenshot only for directly visible UI.",
           "enum": [
             "screenshot",
             "recording",
@@ -888,39 +867,38 @@
         },
         "needsContributorAction": {
           "type": "boolean",
-          "description": "True when the contributor must add or improve real behavior proof before merge. This must be false for sufficient, override, and not_applicable statuses."
+          "description": "False for sufficient, override, and not_applicable."
         },
         "dataModelCompatibility": {
           "type": "string",
           "enum": ["sufficient", "insufficient", "not_applicable"],
-          "description": "Independent assessment of existing-state migration or upgrade compatibility. Use sufficient only for verified compatible behavior (including a verified no-migration case), insufficient when required compatibility evidence is missing or unresolved, and not_applicable when no stored-data contract changes. Sufficient clears this gate without human acknowledgement; insufficient is a PR-owner proof/finding item, not itself a maintainer decision. General proof exemptions do not waive this assessment; explain it in the existing summary and evidence."
+          "description": "Existing-state upgrade compatibility; sufficient includes a verified no-migration case."
         }
       }
     },
     "prRating": {
       "type": "object",
       "additionalProperties": false,
-      "description": "Calibrated PR quality rating; your judgement, per the Review Rules rating rubric. Use boring internal tiers S/A/B/C/D/F/NA; public rendering maps them to funny crustacean labels. Rate the PR evidence, patch quality, and product value, not the contributor or workflow state. Most PRs are B or C. B means worth merging, correct, and proven end to end. A needs end-to-end proof through the shipped entry point, a change clearly worth merging, no open review finding, and no low-value tests. S is rare and exceptional. C is useful with limited confidence, D is thin signal, F is not quality-ready, and NA is only for non-PR items. Harness-only or unit-only proof, low-value tests, a change not worth merging, a pending owner decision, a partial fix, or an unexplained override of original intent all weigh the rating down. Real screenshots, recordings, or linked media that directly show the changed behavior are strong boosters, but screenshots alone are not enough for browser runtime, network, CSP, or security claims unless diagnostics are visible. Do not lower any tier solely because the PR is draft, has protected labels, is not automerge-eligible, or is waiting on a maintainer action.",
+      "description": "Tiers per the rating rubric; NA for non-PR items.",
       "required": ["proofTier", "patchTier", "overallTier", "summary", "nextSteps"],
       "properties": {
         "proofTier": {
           "type": "string",
           "enum": ["S", "A", "B", "C", "D", "F", "NA"],
-          "description": "Rating for real behavior proof quality only. End-to-end proof through the shipped entry point can earn A or S; harness-only or unit-only proof is weak proof."
+          "description": "Proof quality only."
         },
         "patchTier": {
           "type": "string",
           "enum": ["S", "A", "B", "C", "D", "F", "NA"],
-          "description": "Rating for implementation quality, review findings, security concerns, scope, and validation. Low-value tests weigh this tier down."
+          "description": "Correctness, findings, security, scope, validation."
         },
         "overallTier": {
           "type": "string",
           "enum": ["S", "A", "B", "C", "D", "F", "NA"],
-          "description": "Overall PR quality tier: the weaker of proofTier and patchTier, also carrying your product judgement. Missing, mock-only, or insufficient proof must cap or lower the overall rating because real behavior proof remains a merge gate. Draft, protected-label, automerge eligibility, and maintainer-waiting workflow states must not lower this tier by themselves."
+          "description": "Weaker of proofTier and patchTier, plus product judgement."
         },
         "summary": {
-          "type": "string",
-          "description": "One concise sentence explaining the calibrated overall rating without insulting the contributor."
+          "type": "string"
         },
         "nextSteps": {
           "type": "array",
@@ -928,14 +906,14 @@
           "items": {
             "type": "string"
           },
-          "description": "Zero to three concrete, merge-relevant rank-up moves. Use an empty array for S/A/NA and for B when there is no material risk reducer. Do not invent optional polish work."
+          "description": "Zero to three rank-up moves."
         }
       }
     },
     "telegramVisibleProof": {
       "type": "object",
       "additionalProperties": false,
-      "description": "For Telegram PRs, classify whether the change is user-visible and should be demonstrated with the repository telegram-e2e-userbot skill. Internal retry, ordering, or transport reliability without changed visible chat behavior is not_needed.",
+      "description": "Whether the PR changes Telegram-visible behavior to show with telegram-e2e-userbot.",
       "required": ["status", "summary"],
       "properties": {
         "status": {
@@ -943,15 +921,14 @@
           "enum": ["needed", "not_needed"]
         },
         "summary": {
-          "type": "string",
-          "description": "One concise sentence explaining why the PR should or should not receive the proof: telegram-e2e label."
+          "type": "string"
         }
       }
     },
     "featureShowcase": {
       "type": "object",
       "additionalProperties": false,
-      "description": "Positive-only maintainer spotlight for unusually compelling feature ideas in PRs. This is not a merge-readiness score, not a contributor ranking, and not a merge gate. Use showcase only when the PR is a feature or adds a new user-facing capability and the idea is exceptional enough that maintainers should notice it even if ordinary review work remains. Use none for normal useful features. Patches with serious correctness or security concerns use none.",
+      "description": "Positive-only spotlight, not a gate: showcase only an exceptional new user-facing feature idea without serious concerns.",
       "required": ["status", "reason"],
       "properties": {
         "status": {
@@ -960,14 +937,14 @@
         },
         "reason": {
           "type": "string",
-          "description": "One concise maintainer-facing sentence explaining the idea-level reason for the feature spotlight, or why no spotlight applies. Do not mention contributor worth."
+          "description": "Idea-level reason, never contributor worth."
         }
       }
     },
     "overallCorrectness": {
       "type": "string",
       "enum": ["patch is correct", "patch is incorrect", "not a patch"],
-      "description": "Codex /review-style overall patch verdict. Use not a patch for issues and non-PR items."
+      "description": "patch is incorrect only when a listed P0-P2 finding blocks merge."
     },
     "overallConfidenceScore": {
       "type": "number",
@@ -976,18 +953,18 @@
     },
     "fixedRelease": {
       "type": ["string", "null"],
-      "description": "Release tag/version where the issue was fixed, if known. Use null when not applicable or not known."
+      "description": "First release tag with the fix; null when main-only."
     },
     "fixedSha": {
       "type": ["string", "null"],
-      "description": "Specific commit SHA that fixed or proves the issue is implemented. Required for implemented_on_main and mostly_implemented_on_main; keep open if this cannot be identified."
+      "description": "Fixing commit; required for implemented_on_main and mostly_implemented_on_main."
     },
     "fixedAt": {
       "type": ["string", "null"],
-      "description": "ISO-8601 commit or merge timestamp for the fix/proof SHA when known. Required for implemented_on_main and mostly_implemented_on_main when fixedRelease is null so maintainers know when it became fixed on main."
+      "description": "ISO-8601 time of fixedSha; required for those when fixedRelease is null."
     },
     "regressionAssessment": {
-      "description": "A non-blaming preliminary regression assessment. Do not name a predecessor here; runtime verification may separately publish either verified canonical provenance or a cautiously labeled, non-causal rewrite-equivalent PR relationship.",
+      "description": "suspected: one directly observed evidence kind; probable: two. Timing, history, title similarity, and correlation are no evidence.",
       "type": ["object", "null"],
       "additionalProperties": false,
       "required": ["confidence", "supportingEvidence"],
@@ -1008,7 +985,7 @@
       }
     },
     "regressionProvenance": {
-      "description": "An untrusted candidate predecessor link. Use null unless one exact relevant source line and prior merged PR are known. Runtime verification requires the exact source-line patch against raw recorded parents, not blame or a root-style display alone. It may publish verified provenance when the blamed commit matches the canonical merge commit, or cautiously label a non-causal related PR after an exact location-and-context-preserving rewritten patch match; all other associations fail closed.",
+      "description": "Earlier merged PR that introduced the exact responsible source line at the review revision; null unless known.",
       "type": ["object", "null"],
       "additionalProperties": false,
       "required": [
@@ -1021,24 +998,21 @@
       ],
       "properties": {
         "repo": {
-          "type": "string",
-          "description": "Target owner/repository only."
+          "type": "string"
         },
         "pullRequestNumber": {
           "type": "integer",
           "minimum": 1
         },
         "pullRequestUrl": {
-          "type": "string",
-          "description": "Canonical https://github.com/<owner>/<repo>/pull/<number> URL."
+          "type": "string"
         },
         "mergeCommitSha": {
           "type": "string",
           "pattern": "^[0-9a-fA-F]{40}$"
         },
         "sourcePath": {
-          "type": "string",
-          "description": "One exact repository-relative tracked source path; no absolute or traversal path."
+          "type": "string"
         },
         "sourceLine": {
           "type": "integer",
@@ -1048,12 +1022,11 @@
     },
     "closeComment": {
       "type": "string",
-      "description": "Public close comment in readable Markdown when decision is close: a short opening sentence, a blank line, then concise evidence bullets. Explain the specific close reason, mention that this was a Codex review, credit useful prior discussion, and include concrete evidence such as file paths, release version, commit SHA, or fix timestamp. For under-evidenced work, invite reopening with the missing version, component, reproduction, focused patch, or other deciding evidence."
+      "description": "Close comment: opening sentence, blank line, evidence bullets (the reason, that this was a Codex review, credited discussion, paths, release, SHA, or fix time), and for thin evidence a reopen invitation naming what is missing."
     },
     "workCandidate": {
       "type": "string",
-      "enum": ["none", "manual_review", "queue_fix_pr"],
-      "description": "Whether this item should become a manually promoted ClawSweeper repair job. Use queue_fix_pr only for concrete actionable repairs; use manual_review or none for maintainer/product/security review or normal PR validation."
+      "enum": ["none", "manual_review", "queue_fix_pr"]
     },
     "workConfidence": {
       "type": "string",
@@ -1065,18 +1038,24 @@
     },
     "workReason": {
       "type": "string",
-      "description": "Short routing explanation for why this item is or is not a safe fix-PR candidate. For pull requests, keep required action intent in nextStep, not in this rationale. For issues, retain existing routing or next-action guidance here."
+      "description": "Routing reason; for issues also next-action guidance."
     },
     "nextStep": {
-      "description": "Producer-owned presentation intent for the PR Before merge next step only, never authority to auto-fix or merge. Issues use none and retain next-action guidance in workReason. None means no additional required action (including routine CI or ordinary maintainer look); required states the concrete action, including human-owned blockers even when workCandidate is none or the text contains no/not/but/unless/until. Independent findings, security, proof, risks, decisions, and low-quality remediation remain separate blockers. Final landing approval or a PR-body request for maintainer merge/sign-off is not a required step; when it is the only item left, report readiness with none. A genuine blocker stays required whatever its wording, for example \"No schema change is needed, but repair the retry guard before merge.\" Do not rely on action keywords to communicate intent; keep routing prose in workReason.",
+      "description": "PR next-step intent, never authority to fix or merge: required names the concrete action, human-owned blockers included, whatever its wording; none when nothing more is required.",
       "anyOf": [
         {
           "type": "object",
           "additionalProperties": false,
           "required": ["kind", "text"],
           "properties": {
-            "kind": { "type": "string", "enum": ["none"] },
-            "text": { "type": "string", "enum": [""] }
+            "kind": {
+              "type": "string",
+              "enum": ["none"]
+            },
+            "text": {
+              "type": "string",
+              "enum": [""]
+            }
           }
         },
         {
@@ -1084,15 +1063,20 @@
           "additionalProperties": false,
           "required": ["kind", "text"],
           "properties": {
-            "kind": { "type": "string", "enum": ["required"] },
-            "text": { "type": "string", "pattern": "^\\S(?:[\\s\\S]*\\S)?$" }
+            "kind": {
+              "type": "string",
+              "enum": ["required"]
+            },
+            "text": {
+              "type": "string",
+              "pattern": "^\\S(?:[\\s\\S]*\\S)?$"
+            }
           }
         }
       ]
     },
     "workPrompt": {
-      "type": "string",
-      "description": "Maintainer prompt to hand to the ClawSweeper repair lane if the item is promoted."
+      "type": "string"
     },
     "workClusterRefs": {
       "type": "array",
