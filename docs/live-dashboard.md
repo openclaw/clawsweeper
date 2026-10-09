@@ -740,6 +740,11 @@ available for descriptor registration. The existing
 object-side production, but neither scheduled nor manual ops invokes it.
 Cold hydration retains its existing record bound; a large repository without
 any snapshot still needs an initial snapshot before normal hydration can run.
+The runner's `snapshot-upload` producer can build that first snapshot directly
+from the paginated export, bounded by 250,000 journal identities and the existing
+1 GiB archive limit. Ordinary cold hydration still refuses above 2,000 records;
+only snapshot production uses the larger bound. Once a snapshot exists, both
+paths reuse the same snapshot-plus-delta materialization and first-page watermark.
 No bindings or Durable Object migrations change. The existing descriptor table
 gains a nullable `identity_digest` column; existing snapshots remain readable.
 OpenClaw Bay is unaffected because its public observer contract does not use

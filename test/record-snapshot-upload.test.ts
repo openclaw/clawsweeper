@@ -1,6 +1,23 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
+import fs, { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import test from "node:test";
+import {
+  RECORD_SNAPSHOT_UPLOAD_MAX_BYTES,
+  SNAPSHOT_MAX_IDENTITIES,
+} from "../src/record-snapshot-protocol.ts";
+import {
+  COLD_HYDRATION_MAX_RECORDS,
+  materializeWorkerRecords,
+  uploadWorkerRecordSnapshot,
+  WorkerRecordExportBoundError,
+  WorkerSnapshotUnavailableError,
+  type WorkerRecord,
+  type WorkerStoredSnapshot,
+} from "../scripts/worker-records.ts";
 import {
   MemoryDurableNamespace,
   MemoryDurableStorage,
@@ -147,6 +164,221 @@ function fixture(registrationStatus = 201) {
     counts: () => ({ writes, aborted, uploads: uploads.size }),
   };
 }
+
+test("runner bootstraps a cold repository beyond the reader bound and preserves concurrent deltas", async (t) => {
+  const root = mkdtempSync(path.join(tmpdir(), "snapshot-bootstrap-test-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const repoSlug = "fixture-repo";
+  const count = COLD_HYDRATION_MAX_RECORDS + 1;
+  let revision = count;
+  const journal = new Map<string, WorkerRecord>();
+  const put = (id: number, content: string | null, storeRevision = ++revision) => {
+    journal.set(String(id), {
+      section: "items",
+      id: String(id),
+      content,
+      digest: content === null ? null : digest(Buffer.from(content)),
+      revision: 1,
+      storeRevision,
+      deleted: content === null,
+    });
+  };
+  for (let id = 1; id <= count; id++) put(id, `# Record ${id}\r\nUnicode 🦞\n`, id);
+  const f = fixture();
+  let snapshot: WorkerStoredSnapshot | undefined;
+  let mutate = false;
+  const since: number[] = [];
+  const source: typeof fetch = async (input, init) => {
+    const endpoint = new URL(String(input)).pathname;
+    const body = JSON.parse(String(init?.body));
+    if (endpoint.endsWith("/latest"))
+      return snapshot
+        ? Response.json({ snapshotStoreAvailable: true, snapshot })
+        : Response.json({ error: "snapshot_not_found" }, { status: 404 });
+    if (endpoint.endsWith("/chunk")) {
+      const archive = f.objects.get(snapshot!.objectKey)!;
+      return new Response(archive.subarray(body.offset, body.offset + body.length), {
+        status: 206,
+        headers: {
+          "content-range": `bytes ${body.offset}-${body.offset + body.length - 1}/${archive.length}`,
+        },
+      });
+    }
+    if (endpoint.endsWith("/export")) {
+      since.push(body.sinceRevision);
+      const available = [...journal.values()]
+        .filter((r) => r.storeRevision > Math.max(body.cursor, body.sinceRevision))
+        .sort((a, b) => a.storeRevision - b.storeRevision);
+      const page = available.slice(0, body.limit);
+      const response = Response.json({
+        repoSlug,
+        revision,
+        records: page,
+        nextCursor: available.length > page.length ? page.at(-1)!.storeRevision : null,
+      });
+      if (mutate && body.cursor === 0) {
+        mutate = false;
+        put(1, "updated after first page\n");
+        put(2, null);
+        put(count + 1, "created after first page\n");
+      }
+      return response;
+    }
+    if (endpoint.endsWith("/list")) {
+      const ids = [...journal.values()]
+        .filter((r) => !r.deleted && Number(r.id) > body.cursor)
+        .map((r) => ({ id: Number(r.id) }))
+        .sort((a, b) => a.id - b.id);
+      const page = ids.slice(0, body.limit);
+      return Response.json({
+        repoSlug,
+        section: "items",
+        records: page,
+        nextCursor: ids.length > page.length ? page.at(-1)!.id : null,
+      });
+    }
+    return worker.fetch(new Request(String(input), init), f.env);
+  };
+  const options = {
+    baseUrl: "http://127.0.0.1:8787",
+    webhookSecret: secret,
+    repoSlug,
+    fetch: source,
+    log: () => {},
+  };
+  const destination = path.join(root, "reader");
+  fs.mkdirSync(path.join(destination, "records"), { recursive: true });
+  writeFileSync(path.join(destination, "records", "sentinel"), "preserved");
+  await assert.rejects(
+    materializeWorkerRecords({ ...options, repoSlugs: [repoSlug], worktreeRoot: destination }),
+    (error: unknown) =>
+      error instanceof WorkerSnapshotUnavailableError &&
+      error.detail.code === "cold_hydration_bound_exceeded",
+  );
+  assert.equal(readFileSync(path.join(destination, "records", "sentinel"), "utf8"), "preserved");
+  assert.equal(f.counts().uploads, 0);
+  mutate = true;
+  snapshot = {
+    ...(await uploadWorkerRecordSnapshot(options)),
+    access: { mode: "worker_range_proxy", maxChunkBytes: partBytes },
+  };
+  assert.equal(snapshot.revisionWatermark, count);
+  assert.equal(snapshot.fileCount, count);
+  assert.equal(f.counts().uploads, 1);
+  since.length = 0;
+  const hydrated = await materializeWorkerRecords({
+    ...options,
+    repoSlugs: [repoSlug],
+    worktreeRoot: destination,
+  });
+  assert.deepEqual(since, [count]);
+  assert.equal(hydrated.repositories[repoSlug].deltaRecords, 3);
+  for (const record of journal.values()) {
+    const filename = path.join(hydrated.recordsRoot, repoSlug, "items", `${record.id}.md`);
+    if (record.deleted) assert.equal(existsSync(filename), false);
+    else assert.deepEqual(readFileSync(filename), Buffer.from(record.content!));
+  }
+  // The next producer shares the warm snapshot/delta path; use a fresh upload
+  // store so an Actions operation id still denotes exactly one attempt.
+  const warm = fixture();
+  since.length = 0;
+  const refreshed = await uploadWorkerRecordSnapshot({
+    ...options,
+    fetch: (input, init) =>
+      new URL(String(input)).pathname.includes("/upload/")
+        ? worker.fetch(new Request(String(input), init), warm.env)
+        : source(input, init),
+  });
+  assert.deepEqual(since, [count]);
+  assert.equal(refreshed.revisionWatermark, revision);
+  assert.equal(refreshed.fileCount, count);
+});
+
+test("cold producer export failures and protocol caps never start an upload and clean staging", async (t) => {
+  const roots: string[] = [];
+  const original = fs.mkdtempSync;
+  t.mock.method(fs, "mkdtempSync", (prefix: string) => {
+    const root = original(prefix);
+    if (prefix.includes("clawsweeper-snapshot-upload-")) roots.push(root);
+    return root;
+  });
+  syncBuiltinESMExports();
+  t.after(() => {
+    t.mock.restoreAll();
+    syncBuiltinESMExports();
+  });
+  const originalStat = fs.statSync;
+  for (const failure of ["export", "cap", "archive"] as const) {
+    if (failure === "archive") {
+      // Exercise the archive-size admission boundary without a 1 GiB fixture.
+      t.mock.method(fs, "statSync", (filename, ...args) => {
+        const stat = originalStat(filename, ...args);
+        return String(filename).endsWith("snapshot.tar.gz")
+          ? { ...stat, size: RECORD_SNAPSHOT_UPLOAD_MAX_BYTES + 1 }
+          : stat;
+      });
+      syncBuiltinESMExports();
+    }
+    let uploadCalls = 0;
+    const promise = uploadWorkerRecordSnapshot({
+      baseUrl: "http://127.0.0.1:8787",
+      webhookSecret: secret,
+      repoSlug: "fixture-repo",
+      log: () => {},
+      fetch: async (input, init) => {
+        const endpoint = new URL(String(input)).pathname;
+        if (endpoint.includes("/upload/")) uploadCalls++;
+        if (endpoint.endsWith("/latest"))
+          return Response.json({ error: "snapshot_not_found" }, { status: 404 });
+        if (endpoint.endsWith("/list"))
+          return Response.json({
+            repoSlug: "fixture-repo",
+            section: "items",
+            records: [],
+            nextCursor: null,
+          });
+        assert.ok(endpoint.endsWith("/export"));
+        if (failure === "export")
+          return Response.json({ error: "fixture_export_refused" }, { status: 403 });
+        if (failure === "archive")
+          return Response.json({
+            repoSlug: "fixture-repo",
+            revision: 0,
+            records: [],
+            nextCursor: null,
+          });
+        const { cursor, limit } = JSON.parse(String(init?.body));
+        const end = Math.min(cursor + limit, SNAPSHOT_MAX_IDENTITIES + 1);
+        return Response.json({
+          repoSlug: "fixture-repo",
+          revision: SNAPSHOT_MAX_IDENTITIES + 1,
+          nextCursor: end === SNAPSHOT_MAX_IDENTITIES + 1 ? null : end,
+          records: Array.from({ length: end - cursor }, (_, offset) => ({
+            section: "items",
+            id: String(cursor + offset + 1),
+            content: "",
+            digest: digest(Buffer.alloc(0)),
+            revision: 1,
+            storeRevision: cursor + offset + 1,
+            deleted: false,
+          })),
+        });
+      },
+    });
+    await assert.rejects(promise, (error: unknown) =>
+      failure === "cap"
+        ? error instanceof WorkerRecordExportBoundError &&
+          error.maxRecords === SNAPSHOT_MAX_IDENTITIES
+        : error instanceof Error &&
+          error.message.includes(
+            failure === "archive" ? "1 GiB upload limit" : "fixture_export_refused",
+          ),
+    );
+    assert.equal(uploadCalls, 0);
+    assert.ok(roots.length > 0);
+    assert.ok(roots.every((root) => !existsSync(root)));
+  }
+});
 
 test("signed part bodies cannot be replayed as aborts", async () => {
   const f = fixture();

@@ -273,7 +273,7 @@ export async function exportWorkerRecords(options: {
   };
 }
 
-export async function materializeWorkerRecords(options: {
+type MaterializeWorkerRecordsOptions = {
   worktreeRoot: string;
   baseUrl: string;
   webhookSecret: string;
@@ -281,7 +281,20 @@ export async function materializeWorkerRecords(options: {
   cacheRoot?: string;
   fetch?: typeof globalThis.fetch;
   log?: (line: string) => void;
-}) {
+};
+
+export async function materializeWorkerRecords(options: MaterializeWorkerRecordsOptions) {
+  return materializeRecords(options, "hydration");
+}
+
+async function materializeRecords(
+  options: MaterializeWorkerRecordsOptions,
+  purpose: "hydration" | "snapshot",
+) {
+  // The snapshot producer must bootstrap repositories that readers refuse.
+  // Both paths retain the same staging, watermark and snapshot/delta lifecycle.
+  const coldRecordLimit =
+    purpose === "snapshot" ? SNAPSHOT_MAX_IDENTITIES : COLD_HYDRATION_MAX_RECORDS;
   const log = options.log ?? ((line: string) => console.error(line));
   mkdirSync(options.worktreeRoot, { recursive: true });
   const recordsRoot = path.join(options.worktreeRoot, "records");
@@ -349,12 +362,12 @@ export async function materializeWorkerRecords(options: {
           webhookSecret: options.webhookSecret,
           repoSlug,
           sinceRevision: storedSnapshot?.revisionWatermark ?? 0,
-          ...(storedSnapshot ? {} : { maxRecords: COLD_HYDRATION_MAX_RECORDS }),
+          ...(storedSnapshot ? {} : { maxRecords: coldRecordLimit }),
           fetch: options.fetch,
         }).catch((error: unknown) => {
           // Over the bound, the named refusal returns: the operator must run a
           // snapshot sweep for this slug before worker hydration accepts it.
-          if (error instanceof WorkerRecordExportBoundError) {
+          if (purpose === "hydration" && error instanceof WorkerRecordExportBoundError) {
             throw new WorkerSnapshotUnavailableError(
               "snapshot_not_found",
               {
@@ -388,7 +401,7 @@ export async function materializeWorkerRecords(options: {
         log(
           storedSnapshot
             ? `[worker-records] snapshot hydrated repo=${repoSlug} revision=${entry.revision} snapshotRevision=${entry.snapshotRevision} snapshotBytes=${entry.snapshotBytes} cache=${entry.snapshotCache} deltaRecords=${entry.deltaRecords} records=${entry.recordCount} coverageTrackedItems=${entry.coverageTrackedItemIds.length}`
-            : `[worker-records] COLD HYDRATION repo=${repoSlug}: no stored snapshot, replayed the full journal from revision 0 (revision=${entry.revision} journalRecords=${entry.deltaRecords} records=${entry.recordCount} coverageTrackedItems=${entry.coverageTrackedItemIds.length} bound=${COLD_HYDRATION_MAX_RECORDS}); trigger a snapshot sweep to make future hydrations incremental`,
+            : `[worker-records] ${purpose === "snapshot" ? "SNAPSHOT BOOTSTRAP" : "COLD HYDRATION"} repo=${repoSlug}: no stored snapshot, replayed the full journal from revision 0 (revision=${entry.revision} journalRecords=${entry.deltaRecords} records=${entry.recordCount} coverageTrackedItems=${entry.coverageTrackedItemIds.length} bound=${coldRecordLimit})${purpose === "hydration" ? "; trigger a snapshot sweep to make future hydrations incremental" : ""}`,
         );
       } catch (error) {
         // Re-wrap so the refusal that aborts a multi-slug hydration names the
@@ -1470,11 +1483,10 @@ export async function uploadWorkerRecordSnapshot(options: {
       body: { ...body, operation, issuedAt: new Date().toISOString() },
     });
   try {
-    const hydrated = await materializeWorkerRecords({
-      ...options,
-      worktreeRoot: root,
-      repoSlugs: [options.repoSlug],
-    });
+    const hydrated = await materializeRecords(
+      { ...options, worktreeRoot: root, repoSlugs: [options.repoSlug] },
+      "snapshot",
+    );
     const packed = await packWorkerRecordSnapshot({
       repoRoot: path.join(hydrated.recordsRoot, options.repoSlug),
       archivePath: path.join(root, "snapshot.tar.gz"),
