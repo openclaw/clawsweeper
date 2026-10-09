@@ -97,11 +97,6 @@ function leaseGuards(generation) {
     closeDelayMs: 0,
     currentReviewActivityBlock: () => null,
     dryRun: false,
-    frontMatterValue: (_markdown, key) => {
-      if (key === "review_lease_owner") return leaseOwner;
-      if (key === "review_lease_comment_id") return "700042";
-      return undefined;
-    },
     getActiveApplyMutationLease: () => active,
     ghJson: () => get("/pull"),
     GitHubRuntimeBudgetError: class extends Error {},
@@ -122,7 +117,7 @@ function leaseGuards(generation) {
     },
     liveIssueSourceRevision: () => "",
     liveReadGeneration: generation,
-    markdownBeforeApplyDecisionMutations: "proof",
+    markdownBeforeApplyDecisionMutations: `---\nreview_lease_owner: ${leaseOwner}\nreview_lease_comment_id: 700042\n---\nproof\n`,
     number: 42,
     PATCHABLE_REVIEW_COMMENT_AUTHORS: new Set(["clawsweeper[bot]"]),
     postReviewStartStatusComment: () => ({ status: "held" }),
