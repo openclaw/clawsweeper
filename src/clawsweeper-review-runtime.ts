@@ -859,7 +859,10 @@ ${extra}
   }
 
   // Builds the failed-review decision and log kind for one per-item review error.
-  function codexReviewFailure(error: unknown): { decision: Decision; logKind: CodexFailureLogKind } {
+  function codexReviewFailure(error: unknown): {
+    decision: Decision;
+    logKind: CodexFailureLogKind;
+  } {
     if (error instanceof CodexReviewError) {
       return codexFailure(error.status, error.message, error.stdout, error.stderr, {
         errorCode: error.errorCode,
