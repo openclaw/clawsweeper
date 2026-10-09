@@ -6903,9 +6903,11 @@ async function githubTargetDispatch(request: Request, env) {
 }
 
 async function hostedTargetQueueRequest(env, path: string, body: string) {
+  // The queue trims the repository. Trim it here too, so that a padded slug gets
+  // the same eligibility check before the header tells the queue it passed.
   const targetRepo = String(
     objectValue(objectValue(parseJsonObject(body)).decision).targetRepo || "",
-  );
+  ).trim();
   if (/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(targetRepo)) {
     const eligibility = await workerHostedTargetEligibility(env, targetRepo);
     if (eligibility.outcome === "terminal") {

@@ -17,11 +17,13 @@ const invalidDecisionErrors = {
 } as const;
 
 // Sends a signed intake request through the Worker to a real queue.
-async function signedIntake(route: string, decision: Record<string, unknown>) {
+// `hosted` is false when the hosted-target policy excludes every repository.
+async function signedIntake(route: string, decision: Record<string, unknown>, hosted = true) {
   const storage = new MemoryDurableStorage();
+  const policy = { hostedTargetPredicate: () => hosted };
   const queue = new ExactReviewQueue(
     { storage },
-    { hostedTargetPredicate: () => true, hostedPublicTargetProbe: async () => "public" },
+    { ...policy, hostedPublicTargetProbe: async () => "public" },
   );
   const body = JSON.stringify({
     delivery_id: `target-repo-header:${route}`,
@@ -46,7 +48,11 @@ async function signedIntake(route: string, decision: Record<string, unknown>) {
       },
       body,
     }),
-    { CLAWSWEEPER_WEBHOOK_SECRET: secret, EXACT_REVIEW_QUEUE: new MemoryDurableNamespace(queue) },
+    {
+      ...policy,
+      CLAWSWEEPER_WEBHOOK_SECRET: secret,
+      EXACT_REVIEW_QUEUE: new MemoryDurableNamespace(queue),
+    },
   );
   const stored = (await storage.get("exact-review-queue")) as
     | { items: Record<string, unknown> }
@@ -98,5 +104,19 @@ for (const [route, status, body] of [
   test(`signed ${route} intake still accepts a space-padded target repository`, async () => {
     const result = await signedIntake(route, { targetRepo: " openclaw/openclaw " });
     assert.deepEqual({ status: result.status, body: result.body }, { status, body });
+  });
+}
+
+// The header tells the queue that the Worker checked eligibility. A padded slug
+// must not get the header without that check.
+for (const route of Object.keys(invalidDecisionErrors)) {
+  test(`signed ${route} intake checks hosted-target eligibility for a space-padded repository`, async () => {
+    const unpadded = await signedIntake(route, { targetRepo: "openclaw/openclaw" }, false);
+    assert.equal(unpadded.status >= 400, true);
+    assert.deepEqual(unpadded.items, []);
+    assert.deepEqual(
+      await signedIntake(route, { targetRepo: " openclaw/openclaw " }, false),
+      unpadded,
+    );
   });
 }
