@@ -48,7 +48,7 @@ import type {
 import { isGitHubNotFoundError } from "./github-retry.js";
 import { type RepositoryProfile } from "./repository-profiles.js";
 import { compareCodeUnits, stableJson } from "./stable-json.js";
-import { asRecord, login } from "./value-coerce.js";
+import { asRecord, login, nonBlankStringOrUndefined } from "./value-coerce.js";
 
 const REVIEW_TREE_METADATA_JQ =
   '{truncated, tree: (.tree | if type == "array" then map(if type == "object" then {type, sha, size} else . end) else . end)}';
@@ -111,7 +111,6 @@ interface CreateContextHydrationDependencies {
       | "closeComment",
   ) => string;
   ROOT: string;
-  stringOrUndefined: (value: unknown) => string | undefined;
   targetRepo: () => string;
 }
 
@@ -144,7 +143,6 @@ export function createContextHydration(dependencies: CreateContextHydrationDepen
     reviewCommentBodyDigest,
     reviewSectionValue,
     ROOT,
-    stringOrUndefined,
     targetRepo,
   } = dependencies;
 
@@ -331,15 +329,17 @@ export function createContextHydration(dependencies: CreateContextHydrationDepen
         const label =
           typeof labelValue === "string"
             ? labelValue
-            : (stringOrUndefined(asRecord(labelValue).name) ?? "");
+            : (nonBlankStringOrUndefined(asRecord(labelValue).name) ?? "");
         const actorValue = event.actor;
         const actor = typeof actorValue === "string" ? actorValue : (login(actorValue) ?? "");
         return {
-          event: stringOrUndefined(event.event) ?? "",
+          event: nonBlankStringOrUndefined(event.event) ?? "",
           label: normalizeLabelName(label),
           actor: actor.toLowerCase(),
           createdAt:
-            stringOrUndefined(event.createdAt) ?? stringOrUndefined(event.created_at) ?? "",
+            nonBlankStringOrUndefined(event.createdAt) ??
+            nonBlankStringOrUndefined(event.created_at) ??
+            "",
           id: Number(event.id ?? 0),
         };
       })
@@ -898,9 +898,9 @@ export function createContextHydration(dependencies: CreateContextHydrationDepen
     const pull = asRecord(options.pullRequest);
     const base = asRecord(pull.base);
     const head = asRecord(pull.head);
-    const baseSha = stringOrUndefined(base.sha) ?? "";
-    const headSha = stringOrUndefined(head.sha) ?? "";
-    const baseRef = stringOrUndefined(base.ref) ?? "";
+    const baseSha = nonBlankStringOrUndefined(base.sha) ?? "";
+    const headSha = nonBlankStringOrUndefined(head.sha) ?? "";
+    const baseRef = nonBlankStringOrUndefined(base.ref) ?? "";
     try {
       if (
         ![baseSha, headSha].every((sha) => /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/.test(sha)) ||
@@ -929,7 +929,7 @@ export function createContextHydration(dependencies: CreateContextHydrationDepen
       }
       const testMergeSha =
         pull.merged === false && pull.state === "open"
-          ? stringOrUndefined(pull.merge_commit_sha)
+          ? nonBlankStringOrUndefined(pull.merge_commit_sha)
           : undefined;
       const mergeBaseSha = hydratePullRequestReviewHistory({
         targetDir: options.targetDir,

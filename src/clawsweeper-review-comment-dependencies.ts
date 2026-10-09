@@ -47,7 +47,6 @@ export interface ReviewCommentWorkflowDependencies {
   replaceFrontMatterValue: (markdown: string, key: string, value: string) => string;
   sectionValue: (markdown: string, heading: string) => string;
   frontMatterStringArray: (markdown: string, key: string) => string[];
-  stringOrUndefined: (value: unknown) => string | undefined;
   sentence: ReturnType<typeof createReviewPresentation>["sentence"];
   pullRequestReviewReadinessFromReport: (markdown: string) => PullRequestReviewReadiness;
   securitySensitiveRepairAllowed: (markdown: string) => boolean;

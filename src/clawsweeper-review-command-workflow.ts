@@ -78,7 +78,7 @@ import {
   writeReviewOutput,
   type ReviewOutputResult,
 } from "./review-output-policy.js";
-import { asRecord } from "./value-coerce.js";
+import { asRecord, nonBlankStringOrUndefined } from "./value-coerce.js";
 
 /** Bind verified evidence to its candidate before an ordinary full review. */
 export function reviewCommandProofBinding(sourceAction: unknown, additionalPrompt: string) {
@@ -231,7 +231,6 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
     selectCandidates,
     startReviewActionLedger,
     startReviewActionLedgerItem,
-    stringOrUndefined,
     updateBulkFilerDetectedFrontMatter,
     updateReviewStructuralFrontMatter,
   } = dependencies;
@@ -607,7 +606,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
           const admission = oversizedPullRequestAdmission(pullRequestPayload);
           if (!admission.admitted) {
             item.labels = labelNames(pullRequestPayload.labels);
-            item.updatedAt = stringOrUndefined(pullRequestPayload.updated_at) ?? item.updatedAt;
+            item.updatedAt = nonBlankStringOrUndefined(pullRequestPayload.updated_at) ?? item.updatedAt;
             const context = oversizedPullRequestContext(pullRequestPayload);
             const decision = oversizedPullRequestDecision(admission.decision, oversizedPrSourceSnapshot(pullRequestPayload, pullObservedAt));
             const runtime = { model: "none", reasoningEffort: "none", contextElapsedMs: 0, codexElapsedMs: 0 };
@@ -1093,7 +1092,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
         }
         if (!skipStartComment && !acquiredReviewLease && item.kind === "pull_request") {
           acquiredReviewLease = acquireReviewStartLease(
-            () => structuralRecord?.pullHeadSha ?? stringOrUndefined(asRecord(pullRequestPayload?.head).sha) ?? pullRequestHeadSha(item.number),
+            () => structuralRecord?.pullHeadSha ?? nonBlankStringOrUndefined(asRecord(pullRequestPayload?.head).sha) ?? pullRequestHeadSha(item.number),
           );
           if (!acquiredReviewLease) continue;
         }
@@ -1147,7 +1146,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
         }
         if (bulkFilerDetection.context) context.bulkFiler = bulkFilerDetection.context;
         const contextElapsedMs = Date.now() - contextStartedAt;
-        const contextItemUpdatedAt = stringOrUndefined(asRecord(context.issue).updatedAt);
+        const contextItemUpdatedAt = nonBlankStringOrUndefined(asRecord(context.issue).updatedAt);
         if (contextItemUpdatedAt) item.updatedAt = contextItemUpdatedAt;
         if (suppliedReviewLease) {
           const currentRevision =

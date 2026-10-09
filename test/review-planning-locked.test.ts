@@ -42,7 +42,6 @@ function planning(listings: string[][]) {
     buildExistingReviewIndex: () => new Map(),
     indexedExistingReview: () => null,
     effectiveReviewStatus: () => "complete",
-    stringOrUndefined: (value: unknown) => (typeof value === "string" ? value : undefined),
     pullHeadShaFromReport: () => null,
     failedReviewRetryStatePath: () => "",
     readFailedReviewRetryState: () => null,

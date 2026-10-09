@@ -8,7 +8,7 @@ import { reviewStructuralPullStateDigest } from "./review-structural-cache.js";
 import { HOT_INTAKE_FRESHNESS_MS, hasReviewPolicyMismatch } from "./scheduler-policy.js";
 import type { ReviewPlanningDependencies } from "./clawsweeper-review-planning-dependencies.js";
 import type { createReviewPlanningInventory } from "./clawsweeper-review-planning-inventory.js";
-import { asRecord } from "./value-coerce.js";
+import { asRecord, nonBlankStringOrUndefined } from "./value-coerce.js";
 
 export function createReviewPlanningHotIntake(
   dependencies: ReviewPlanningDependencies & ReturnType<typeof createReviewPlanningInventory>,
@@ -20,7 +20,6 @@ export function createReviewPlanningHotIntake(
     githubCount,
     itemSourceRevisionSha256,
     frontMatterValue,
-    stringOrUndefined,
     pullHeadShaFromReport,
   } = dependencies;
 
@@ -72,14 +71,14 @@ export function createReviewPlanningHotIntake(
       const comments = ghPaged<unknown>(`repos/${item.repo}/issues/${item.number}/comments`);
       const pull = ghJson<unknown>(["api", `repos/${item.repo}/pulls/${item.number}`]);
       const source = asRecord(pull);
-      const headSha = stringOrUndefined(asRecord(source.head).sha)?.trim().toLowerCase();
+      const headSha = nonBlankStringOrUndefined(asRecord(source.head).sha)?.trim().toLowerCase();
       if (!headSha) return null;
-      const itemUpdatedAt = stringOrUndefined(source.updated_at)?.trim();
+      const itemUpdatedAt = nonBlankStringOrUndefined(source.updated_at)?.trim();
       if (!itemUpdatedAt) return null;
-      const baseSha = stringOrUndefined(asRecord(source.base).sha)?.trim().toLowerCase();
+      const baseSha = nonBlankStringOrUndefined(asRecord(source.base).sha)?.trim().toLowerCase();
       const draft = source.draft;
       const mergeable = source.mergeable;
-      const mergeStateStatus = stringOrUndefined(source.mergeable_state);
+      const mergeStateStatus = nonBlankStringOrUndefined(source.mergeable_state);
       const additions = githubCount(source.additions);
       const deletions = githubCount(source.deletions);
       const changedFiles = githubCount(source.changed_files);

@@ -797,7 +797,6 @@ async function reviewIdentity(runtime, state) {
     normalizeLabelName,
     pullHeadShaFromContext: () => null,
     sha256,
-    stringOrUndefined: (value) => (typeof value === "string" ? value : undefined),
   });
   const issue = {
     title: state.title,

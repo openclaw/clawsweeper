@@ -521,7 +521,6 @@ export interface CreateApplyDecisionWorkflowDependencies {
     receiptIdentity: string,
     idempotencyIdentity: string,
   ) => ApplyMutationAttempt | null;
-  stringOrUndefined: (value: unknown) => string | undefined;
   syncBulkFilerLabel: (options: {
     number: number;
     labels: readonly string[];

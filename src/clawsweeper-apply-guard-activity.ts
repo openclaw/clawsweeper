@@ -9,7 +9,7 @@ import {
   STALLED_UNPROVEN_PROOF_STATUSES,
   type ApplyGuardDependencies,
 } from "./clawsweeper-apply-guard-dependencies.js";
-import { asRecord, login } from "./value-coerce.js";
+import { asRecord, login, nonBlankStringOrUndefined } from "./value-coerce.js";
 import { isOlderThanDays } from "./iso-time.js";
 
 export function createApplyGuardActivity(dependencies: ApplyGuardDependencies) {
@@ -21,7 +21,6 @@ export function createApplyGuardActivity(dependencies: ApplyGuardDependencies) {
     quoteGitHubSearchTerm,
     reportPrRating,
     reportRealBehaviorProof,
-    stringOrUndefined,
     targetRepo,
   } = dependencies;
 
@@ -33,8 +32,8 @@ export function createApplyGuardActivity(dependencies: ApplyGuardDependencies) {
   function lowSignalUnmergeablePrConflictBlockReason(pullValue: unknown): string | null {
     const pull = asRecord(pullValue);
     const mergeableState = (
-      stringOrUndefined(pull.mergeableState) ??
-      stringOrUndefined(pull.mergeable_state) ??
+      nonBlankStringOrUndefined(pull.mergeableState) ??
+      nonBlankStringOrUndefined(pull.mergeable_state) ??
       "unknown"
     ).toLowerCase();
     if (pull.mergeable === false && mergeableState === "dirty") return null;
@@ -58,9 +57,9 @@ export function createApplyGuardActivity(dependencies: ApplyGuardDependencies) {
   function githubActivityLogin(value: unknown): string {
     const record = asRecord(value);
     return (
-      stringOrUndefined(record.author) ??
+      nonBlankStringOrUndefined(record.author) ??
       login(record.user) ??
-      stringOrUndefined(record.actor) ??
+      nonBlankStringOrUndefined(record.actor) ??
       login(record.actor) ??
       ""
     )
@@ -90,8 +89,9 @@ export function createApplyGuardActivity(dependencies: ApplyGuardDependencies) {
     options.inlineComments?.forEach(observe);
     for (const event of options.timeline ?? []) {
       const record = asRecord(event);
-      const eventName = stringOrUndefined(record.event) ?? "";
-      const commitId = stringOrUndefined(record.commitId) ?? stringOrUndefined(record.commit_id);
+      const eventName = nonBlankStringOrUndefined(record.event) ?? "";
+      const commitId =
+        nonBlankStringOrUndefined(record.commitId) ?? nonBlankStringOrUndefined(record.commit_id);
       if (
         eventName === "commented" ||
         eventName === "committed" ||
@@ -272,9 +272,10 @@ export function createApplyGuardActivity(dependencies: ApplyGuardDependencies) {
       }
       for (const event of timeline) {
         const record = asRecord(event);
-        const commitId = stringOrUndefined(record.commitId) ?? stringOrUndefined(record.commit_id);
+        const commitId =
+          nonBlankStringOrUndefined(record.commitId) ?? nonBlankStringOrUndefined(record.commit_id);
         if (record.event === "head_ref_force_pushed" && commitId === headSha) {
-          observe(stringOrUndefined(record.createdAt) ?? record.created_at);
+          observe(nonBlankStringOrUndefined(record.createdAt) ?? record.created_at);
         }
       }
     }

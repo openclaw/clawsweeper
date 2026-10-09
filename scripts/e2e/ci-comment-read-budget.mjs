@@ -123,7 +123,6 @@ if (process.argv.includes("--server")) {
     ...sourceTools,
     ...github,
     sha256,
-    stringOrUndefined: (value) => (typeof value === "string" ? value : undefined),
     targetRepo: () => repo,
     ghJson: (args) => get(args[1]),
     ghPagedLinkHeaderContextWindow: () => empty,

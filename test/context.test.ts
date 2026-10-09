@@ -690,7 +690,6 @@ test("bounded PR context prepares source independently of cache digest and API f
     ...hydration,
     ...sourceTools,
     sha256,
-    stringOrUndefined: (value) => (typeof value === "string" ? value : undefined),
     targetRepo: () => target.repo,
     ghJson: <T>(args: string[]) =>
       (args[1]!.includes("/pulls/") ? pullRequest : { comments: 0 }) as T,

@@ -45,7 +45,6 @@ function createGuards({ ghJson = () => ({}), ghPaged = () => [] } = {}) {
     }),
     staleVersionBugAgeSkipReason: () => null,
     staleVersionBugCloseEnabled: () => true,
-    stringOrUndefined: (value) => (typeof value === "string" ? value : undefined),
     targetRepo: () => "openclaw/openclaw",
     unconfirmedProductDirectionAgeSkipReason: () => null,
     unconfirmedProductDirectionCloseEnabled: () => true,

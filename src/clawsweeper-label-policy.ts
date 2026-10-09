@@ -26,7 +26,7 @@ import type {
   SecurityReview,
   SecurityReviewStatus,
 } from "./clawsweeper-types.js";
-import { asRecord } from "./value-coerce.js";
+import { asRecord, nonBlankStringOrUndefined } from "./value-coerce.js";
 import { parseIsoMs } from "./iso-time.js";
 
 interface LabelPolicyDependencies {
@@ -36,7 +36,6 @@ interface LabelPolicyDependencies {
   pullRequestReviewReadinessFromReport: (markdown: string) => PullRequestReviewReadiness;
   reportRealBehaviorProofPolicy: (markdown: string) => RealBehaviorProofPolicy;
   reportSecurityReview: (markdown: string) => SecurityReview;
-  stringOrUndefined: (value: unknown) => string | undefined;
 }
 
 export function createLabelPolicy({
@@ -46,7 +45,6 @@ export function createLabelPolicy({
   pullRequestReviewReadinessFromReport,
   reportRealBehaviorProofPolicy,
   reportSecurityReview,
-  stringOrUndefined,
 }: LabelPolicyDependencies) {
   function shouldApplyFeatureShowcaseLabel(options: {
     isPullRequest: boolean;
@@ -188,7 +186,9 @@ export function createLabelPolicy({
 
   function eventTimestampMs(value: unknown): number | null {
     const record = asRecord(value);
-    return parseIsoMs(stringOrUndefined(record.updatedAt) ?? stringOrUndefined(record.createdAt));
+    return parseIsoMs(
+      nonBlankStringOrUndefined(record.updatedAt) ?? nonBlankStringOrUndefined(record.createdAt),
+    );
   }
 
   function isAfterReview(value: unknown, reviewedAtMs: number | null): boolean {
@@ -198,7 +198,7 @@ export function createLabelPolicy({
   }
 
   function isReReviewRequestText(text: unknown): boolean {
-    const body = stringOrUndefined(text)?.trim() ?? "";
+    const body = nonBlankStringOrUndefined(text)?.trim() ?? "";
     if (!body) return false;
     return (
       /^\s*\/review(?:\s|$)/im.test(body) ||
@@ -216,7 +216,7 @@ export function createLabelPolicy({
     const reviewedAtMs = parseIsoMs(reviewedAt);
     return context.comments.some((comment) => {
       const record = asRecord(comment);
-      if (isAutomationReportAuthor(stringOrUndefined(record.author))) return false;
+      if (isAutomationReportAuthor(nonBlankStringOrUndefined(record.author))) return false;
       return isAfterReview(comment, reviewedAtMs) && isReReviewRequestText(record.body);
     });
   }
@@ -235,14 +235,14 @@ export function createLabelPolicy({
         const record = asRecord(comment);
         return (
           isAfterReview(comment, reviewedAtMs) &&
-          stringOrUndefined(record.author)?.toLowerCase() === author
+          nonBlankStringOrUndefined(record.author)?.toLowerCase() === author
         );
       }) ||
       context.timeline.some((event) => {
         const record = asRecord(event);
         return (
           isAfterReview(event, reviewedAtMs) &&
-          stringOrUndefined(record.actor)?.toLowerCase() === author &&
+          nonBlankStringOrUndefined(record.actor)?.toLowerCase() === author &&
           typeof record.commitId === "string" &&
           record.commitId.length > 0
         );

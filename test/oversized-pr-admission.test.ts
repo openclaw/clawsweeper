@@ -180,7 +180,6 @@ for (const source of [
         frontMatterValue: () => undefined,
         bulkFilerPolicyInvalidatesCachedReview: () => false,
         localExactReviewHistoryPath: () => null,
-        stringOrUndefined: (value: unknown) => (typeof value === "string" ? value : undefined),
       };
       const dependencies = new Proxy(base, {
         get(target, property) {

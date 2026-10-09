@@ -632,7 +632,6 @@ function reviewRuntime(releaseTag?: string) {
     defaultRootCauseCluster: unavailable,
     parseDecision: unavailable,
     ensureDir: unavailable,
-    stringOrUndefined: unavailable,
   });
 }
 
@@ -880,7 +879,6 @@ test("optional pinned-base blobs cannot suppress unsettled acquisition", (t) => 
   const context = createContextHydration(
     new Proxy(
       {
-        stringOrUndefined: (value: unknown) => (typeof value === "string" ? value : undefined),
         isSafeGitBranchName: (branch: string) => branch === "main",
         targetRepo: () => "fixture/repository",
         ghJson: (args: string[]) => {
@@ -2434,7 +2432,6 @@ test("introduced blob hydration does not start metadata work after its deadline"
   const context = createContextHydration(
     new Proxy(
       {
-        stringOrUndefined: (value: unknown) => (typeof value === "string" ? value : undefined),
         isSafeGitBranchName: (branch: string) => branch === "main",
         targetRepo: () => "fixture/repository",
         ghJson: execution.ghJson,
@@ -2480,7 +2477,6 @@ test("source preparation reports unavailable historical blobs before restricted 
   const { hydratePullRequestReviewSource } = createContextHydration(
     new Proxy(
       {
-        stringOrUndefined: (value: unknown) => (typeof value === "string" ? value : undefined),
         isSafeGitBranchName: (branch: string) => branch === "main",
         targetRepo: () => "fixture/repository",
         ghJson: (args: string[]) => {

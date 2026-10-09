@@ -17,6 +17,15 @@ export function stringOrEmpty(value: unknown): string {
   return typeof value === "string" ? value : "";
 }
 
+export function stringOrUndefined(value: unknown): string | undefined {
+  return typeof value === "string" ? value : undefined;
+}
+
+/** Returns the string unchanged when it has text that is not whitespace. */
+export function nonBlankStringOrUndefined(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() ? value : undefined;
+}
+
 export function requireRecord(value: unknown, label: string): Record<string, unknown> {
   if (!isRecord(value)) throw new Error(`${label} must be an object`);
   return value;

@@ -83,7 +83,6 @@ try {
     const context = createContextHydration(
       new Proxy(
         {
-          stringOrUndefined: (value) => (typeof value === "string" ? value : undefined),
           isSafeGitBranchName: (branch) => branch === "main",
           targetRepo: () => "fixture/repository",
           ghJson: (args) => {

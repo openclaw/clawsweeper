@@ -7,7 +7,7 @@ import {
   reviewSourceRevisionLabels,
 } from "./repair/exact-review-guard-labels.js";
 import type { GitInfo, Item, ItemContext } from "./clawsweeper-types.js";
-import { asRecord, login } from "./value-coerce.js";
+import { asRecord, login, nonBlankStringOrUndefined } from "./value-coerce.js";
 
 interface SourceRevisionDependencies {
   clawsweeperBotAuthors: ReadonlySet<string>;
@@ -17,7 +17,6 @@ interface SourceRevisionDependencies {
   normalizeLabelName: (label: string) => string;
   pullHeadShaFromContext: (context: ItemContext) => string | null;
   sha256: (text: string) => string;
-  stringOrUndefined: (value: unknown) => string | undefined;
 }
 
 export function createSourceRevisionTools({
@@ -28,7 +27,6 @@ export function createSourceRevisionTools({
   normalizeLabelName,
   pullHeadShaFromContext,
   sha256,
-  stringOrUndefined,
 }: SourceRevisionDependencies) {
   function reviewCommentBodyDigest(body: string): string {
     return sha256(body.trim());
@@ -82,9 +80,9 @@ export function createSourceRevisionTools({
     const body = sourceRevisionScalar(source.body);
     const author = login(source.user);
     const authorAssociation = normalizeAuthorAssociation(
-      stringOrUndefined(source.author_association),
+      nonBlankStringOrUndefined(source.author_association),
     );
-    const state = stringOrUndefined(source.state);
+    const state = nonBlankStringOrUndefined(source.state);
     if (!author || !authorAssociation || !state || typeof source.locked !== "boolean") {
       return undefined;
     }
@@ -104,10 +102,10 @@ export function createSourceRevisionTools({
             updatedAt: sourceRevisionScalar(
               comment.updated_at ?? comment.updatedAt ?? comment.created_at,
             ),
-            author: login(comment.user) ?? stringOrUndefined(comment.author) ?? null,
+            author: login(comment.user) ?? nonBlankStringOrUndefined(comment.author) ?? null,
             authorAssociation:
               normalizeAuthorAssociation(
-                stringOrUndefined(comment.author_association ?? comment.authorAssociation),
+                nonBlankStringOrUndefined(comment.author_association ?? comment.authorAssociation),
               ) ?? null,
             bodyDigest: sha256(sourceRevisionScalar(comment.body)),
           })),
@@ -195,7 +193,9 @@ export function createSourceRevisionTools({
       const author =
         typeof commit.author === "string"
           ? commit.author
-          : login(commit.author) || stringOrUndefined(asRecord(commitInfo.author).name) || null;
+          : login(commit.author) ||
+            nonBlankStringOrUndefined(asRecord(commitInfo.author).name) ||
+            null;
       identities.push({ author, message });
     }
     return sha256(stableJson(identities));

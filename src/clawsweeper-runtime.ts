@@ -29,6 +29,7 @@ import {
   type ReviewStructuralRecord,
 } from "./review-structural-cache.js";
 import { stableJson } from "./stable-json.js";
+import { asRecord, nonBlankStringOrUndefined } from "./value-coerce.js";
 
 import { createActionCommands } from "./clawsweeper-action-commands.js";
 import { createApplyDecisionWorkflow } from "./clawsweeper-apply-decision-workflow.js";
@@ -121,7 +122,6 @@ import type {
   RootCauseNormalizationItem,
   SecurityConcern,
 } from "./clawsweeper-types.js";
-import { asRecord } from "./value-coerce.js";
 export {
   authorPrBudgetAgeSkipReason,
   closeReasonApplyAgeSkipReason,
@@ -384,7 +384,6 @@ const sourceRevisionTools = createSourceRevisionTools({
   normalizeLabelName,
   pullHeadShaFromContext: (context) => pullHeadShaFromContext(context),
   sha256,
-  stringOrUndefined,
 });
 export const {
   isExactEventSourceRevisionChange,
@@ -512,7 +511,6 @@ const labelPolicy = createLabelPolicy({
     pullRequestReviewReadinessFromReport(markdown),
   reportRealBehaviorProofPolicy,
   reportSecurityReview,
-  stringOrUndefined,
 });
 export const { featureShowcaseLabelsForTest, prStatusLabelsForTest, prStatusLabelSchemeForTest } =
   labelPolicy;
@@ -539,7 +537,6 @@ const applyGuards = createApplyGuards({
   reportRealBehaviorProof,
   staleVersionBugAgeSkipReason,
   staleVersionBugCloseEnabled,
-  stringOrUndefined,
   targetRepo,
   unconfirmedProductDirectionAgeSkipReason,
   unconfirmedProductDirectionCloseEnabled,
@@ -583,7 +580,6 @@ const contextHydration = createContextHydration({
   reportUrl,
   reviewCommentBodyDigest,
   ROOT,
-  stringOrUndefined,
   targetRepo,
 });
 export const {
@@ -633,7 +629,6 @@ const reviewPlanning = createReviewPlanning({
   normalizeAuthorAssociation,
   shouldPlanItem,
   ...recordMetadata,
-  stringOrUndefined,
   pullHeadShaFromReport: (markdown) => pullHeadShaFromReport(markdown),
   failedReviewRetryStatePath: (stateDir, number) => failedReviewRetryStatePath(stateDir, number),
   readFailedReviewRetryState: (statePath) => readFailedReviewRetryState(statePath),
@@ -686,13 +681,13 @@ function fetchReviewStructuralRecord(options: {
   let pullChecksDigest: string | null = null;
   if (options.item.kind === "pull_request") {
     const pull = asRecord(asRecord(asRecord(response).data).repository).pullRequest;
-    const headSha = stringOrUndefined(asRecord(pull).headRefOid)?.trim().toLowerCase();
+    const headSha = nonBlankStringOrUndefined(asRecord(pull).headRefOid)?.trim().toLowerCase();
     if (!headSha) return null;
     const pullChecks = pullChecksContext(options.item.number, headSha);
     if (!completePullChecksContext(pullChecks)) return null;
     pullChecksDigest = sha256(stableJson(reviewPullChecksDigestParts(pullChecks)));
     options.onPullIdentity?.({
-      baseSha: stringOrUndefined(asRecord(pull).baseRefOid)?.trim().toLowerCase() ?? "",
+      baseSha: nonBlankStringOrUndefined(asRecord(pull).baseRefOid)?.trim().toLowerCase() ?? "",
       headSha,
     });
   }
@@ -719,7 +714,6 @@ const { collectItemContext } = createItemContext({
   ghJson,
   ...sourceRevisionTools,
   sha256,
-  stringOrUndefined,
   targetRepo,
 });
 
@@ -735,7 +729,6 @@ const reviewRuntime = createReviewRuntime({
   defaultRootCauseCluster,
   parseDecision,
   ensureDir,
-  stringOrUndefined,
 });
 export const {
   codexFailureDecisionForTest,
@@ -792,7 +785,6 @@ const statusContext = createStatusContext({
   ghJson,
   GitHubRuntimeBudgetError,
   frontMatterValue,
-  stringOrUndefined,
   numberOrUndefined,
   recordOrUndefined,
 });
@@ -850,10 +842,6 @@ function verifyRegressionProvenance(
     ...decision,
     regressionProvenance,
   };
-}
-
-function stringOrUndefined(value: unknown): string | undefined {
-  return typeof value === "string" && value.trim() ? value : undefined;
 }
 
 function numberOrUndefined(value: unknown): number | undefined {
@@ -947,7 +935,6 @@ const reportOrchestration = createReportOrchestration({
   sectionLineValue: (...args) => sectionLineValue(...args),
   securityConcernLocation,
   sha256,
-  stringOrUndefined,
   targetProfile,
   targetRepo,
   timeoutWithinRuntimeBudget: (...args) => timeoutWithinRuntimeBudget(...args),
@@ -1064,7 +1051,6 @@ const reviewCommentWorkflow = createReviewCommentWorkflow({
   ...reportParser,
   ensureDir,
   ...recordMetadata,
-  stringOrUndefined,
   sentence,
   ...reportOrchestration,
   isIssueAdvisoryLabel,
@@ -1231,7 +1217,6 @@ const { reviewCommand } = createReviewCommandWorkflow({
   reviewLeaseStillMatchesContext,
   reviewPolicyHash,
   selectCandidates,
-  stringOrUndefined,
   suppliedReviewStartLeaseFromArgs,
   targetRepo,
 });
@@ -1286,7 +1271,6 @@ const { applyDecisionsCommandInner } = createApplyDecisionWorkflow({
   reportEntriesForDir,
   ROOT,
   sha256,
-  stringOrUndefined,
   targetRepo,
   validateCloseDecision,
 });

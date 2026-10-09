@@ -27,7 +27,6 @@ export interface ReviewPlanningDependencies {
     reviewIndex?: ExistingReviewIndex,
   ) => ExistingReview | null;
   effectiveReviewStatus: (markdown: string) => string;
-  stringOrUndefined: (value: unknown) => string | undefined;
   pullHeadShaFromReport: (markdown: string) => string | null;
   failedReviewRetryStatePath: (stateDir: string, number: number) => string;
   readFailedReviewRetryState: (statePath: string) => FailedReviewRetryState | null;

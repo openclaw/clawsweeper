@@ -30,7 +30,7 @@ import type { CreateReportOrchestrationDependencies } from "./clawsweeper-report
 import type { createReportOrchestrationFoundation } from "./clawsweeper-orchestration-foundation.js";
 import type { createPullRequestPromotionFacts } from "./clawsweeper-promotion-facts.js";
 import type { createReportRendering } from "./clawsweeper-report-rendering.js";
-import { asRecord } from "./value-coerce.js";
+import { asRecord, nonBlankStringOrUndefined } from "./value-coerce.js";
 
 export function createPullRequestCoverageProof(
   dependencies: CreateReportOrchestrationDependencies &
@@ -70,7 +70,6 @@ export function createPullRequestCoverageProof(
     sectionValue,
     sentence,
     sha256,
-    stringOrUndefined,
     targetRepo,
     timeoutWithinRuntimeBudget,
     unsafeCanonicalPullRequestReason,
@@ -95,11 +94,11 @@ export function createPullRequestCoverageProof(
         const pull = asRecord(ghJson<unknown>(["api", `repos/${targetRepo()}/pulls/${number}`]));
         const linkedPull: LinkedPullRequestSupersession = {
           number,
-          title: stringOrUndefined(pull.title) ?? `PR #${number}`,
-          url: stringOrUndefined(pull.html_url) ?? pullRequestUrlForNumber(number),
-          state: stringOrUndefined(pull.state)?.toLowerCase() ?? "",
-          mergedAt: stringOrUndefined(pull.merged_at) ?? null,
-          mergeableState: stringOrUndefined(pull.mergeable_state)?.toLowerCase() ?? null,
+          title: nonBlankStringOrUndefined(pull.title) ?? `PR #${number}`,
+          url: nonBlankStringOrUndefined(pull.html_url) ?? pullRequestUrlForNumber(number),
+          state: nonBlankStringOrUndefined(pull.state)?.toLowerCase() ?? "",
+          mergedAt: nonBlankStringOrUndefined(pull.merged_at) ?? null,
+          mergeableState: nonBlankStringOrUndefined(pull.mergeable_state)?.toLowerCase() ?? null,
           draft: pull.draft === true,
           labels: linkedPullRequestLabels(number, pull),
         };
@@ -132,8 +131,8 @@ export function createPullRequestCoverageProof(
     for (const number of possibleCanonicalPullRequestNumbersFromReport(markdown, item)) {
       try {
         const pull = asRecord(ghJson<unknown>(["api", `repos/${targetRepo()}/pulls/${number}`]));
-        const state = stringOrUndefined(pull.state)?.toLowerCase() ?? "";
-        const mergedAt = stringOrUndefined(pull.merged_at) ?? null;
+        const state = nonBlankStringOrUndefined(pull.state)?.toLowerCase() ?? "";
+        const mergedAt = nonBlankStringOrUndefined(pull.merged_at) ?? null;
         if (state === "closed" && !mergedAt) {
           return {
             kind: "closed_unmerged",
@@ -194,12 +193,15 @@ export function createPullRequestCoverageProof(
     const pull = asRecord(context.pullRequest);
     return {
       number: item.number,
-      title: stringOrUndefined(pull.title) ?? stringOrUndefined(issue.title) ?? item.title,
+      title:
+        nonBlankStringOrUndefined(pull.title) ??
+        nonBlankStringOrUndefined(issue.title) ??
+        item.title,
       url: item.url,
       state: "open",
       mergedAt: null,
       body: compactPrCloseCoverageProofText(
-        stringOrUndefined(pull.body) ?? stringOrUndefined(issue.body) ?? "",
+        nonBlankStringOrUndefined(pull.body) ?? nonBlankStringOrUndefined(issue.body) ?? "",
       ),
       updatedAt: item.updatedAt,
       headSha: pullHeadShaFromContext(context) ?? null,
@@ -222,18 +224,24 @@ export function createPullRequestCoverageProof(
     const filteredComments = filterReviewContextComments(commentsWindow.items, number);
     return {
       number,
-      title: stringOrUndefined(pull.title) ?? stringOrUndefined(issue.title) ?? `PR #${number}`,
+      title:
+        nonBlankStringOrUndefined(pull.title) ??
+        nonBlankStringOrUndefined(issue.title) ??
+        `PR #${number}`,
       url:
-        stringOrUndefined(pull.html_url) ??
-        stringOrUndefined(issue.html_url) ??
+        nonBlankStringOrUndefined(pull.html_url) ??
+        nonBlankStringOrUndefined(issue.html_url) ??
         pullRequestUrlForNumber(number),
-      state: stringOrUndefined(pull.state)?.toLowerCase() ?? "",
-      mergedAt: stringOrUndefined(pull.merged_at) ?? null,
+      state: nonBlankStringOrUndefined(pull.state)?.toLowerCase() ?? "",
+      mergedAt: nonBlankStringOrUndefined(pull.merged_at) ?? null,
       body: compactPrCloseCoverageProofText(
-        stringOrUndefined(pull.body) ?? stringOrUndefined(issue.body) ?? "",
+        nonBlankStringOrUndefined(pull.body) ?? nonBlankStringOrUndefined(issue.body) ?? "",
       ),
-      updatedAt: stringOrUndefined(pull.updated_at) ?? stringOrUndefined(issue.updated_at) ?? null,
-      headSha: stringOrUndefined(asRecord(pull.head).sha) ?? null,
+      updatedAt:
+        nonBlankStringOrUndefined(pull.updated_at) ??
+        nonBlankStringOrUndefined(issue.updated_at) ??
+        null,
+      headSha: nonBlankStringOrUndefined(asRecord(pull.head).sha) ?? null,
       comments: filteredComments.included.map(compactPrCloseCoverageProofComment),
       commentsTruncated: commentsWindow.truncated,
     };

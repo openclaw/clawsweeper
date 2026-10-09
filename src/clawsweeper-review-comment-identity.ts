@@ -8,13 +8,12 @@ import type { ItemContext, StalePullRequestReviewHead } from "./clawsweeper-type
 import { renderReviewHistorySection } from "./review-history.js";
 import type { ReviewStructuralPullState } from "./review-structural-cache.js";
 import type { ReviewCommentWorkflowDependencies } from "./clawsweeper-review-comment-dependencies.js";
-import { asRecord } from "./value-coerce.js";
+import { asRecord, nonBlankStringOrUndefined } from "./value-coerce.js";
 
 export function createReviewCommentIdentity(dependencies: ReviewCommentWorkflowDependencies) {
   const {
     githubCount,
     frontMatterValue,
-    stringOrUndefined,
     isIssueAdvisoryLabel,
     removeIssueLabel,
     isClawSweeperOwnedLabel,
@@ -42,9 +41,9 @@ export function createReviewCommentIdentity(dependencies: ReviewCommentWorkflowD
     const pull = asRecord(context.pullRequest);
     const head = asRecord(pull.head);
     const base = asRecord(pull.base);
-    const headSha = stringOrUndefined(head.sha);
-    const baseSha = stringOrUndefined(base.sha);
-    const mergeStateStatus = stringOrUndefined(pull.mergeableState);
+    const headSha = nonBlankStringOrUndefined(head.sha);
+    const baseSha = nonBlankStringOrUndefined(base.sha);
+    const mergeStateStatus = nonBlankStringOrUndefined(pull.mergeableState);
     const additions = githubCount(pull.additions);
     const deletions = githubCount(pull.deletions);
     const changedFiles = githubCount(pull.changedFiles);

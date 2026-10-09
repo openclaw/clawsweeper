@@ -8,7 +8,7 @@ import {
   normalizeAuthorAssociation,
   normalizeLabelName,
 } from "../dist/clawsweeper-item-policy.js";
-import { asRecord, login } from "../dist/value-coerce.js";
+import { asRecord, login, stringOrUndefined } from "../dist/value-coerce.js";
 import type { PrimaryBodyContext } from "../dist/clawsweeper-primary-body.js";
 import type { Item, ItemKind } from "../dist/clawsweeper-types.js";
 import { item } from "./helpers.ts";
@@ -62,7 +62,6 @@ export function sha256(text: string): string {
   return createHash("sha256").update(text).digest("hex");
 }
 
-const stringOrUndefined = (value: unknown) => (typeof value === "string" ? value : undefined);
 const githubCount = (value: unknown) => (typeof value === "number" ? value : null);
 const CLAWSWEEPER_BOT_AUTHORS = new Set(["clawsweeper[bot]"]);
 const isClawSweeperComment = (value: unknown) =>
@@ -77,7 +76,6 @@ export const sourceTools = createSourceRevisionTools({
   pullHeadShaFromContext: (context) =>
     stringOrUndefined(asRecord(asRecord(context.pullRequest).head).sha) ?? null,
   sha256,
-  stringOrUndefined,
 });
 
 function unavailable(): never {
@@ -92,7 +90,6 @@ export const hydration = createContextHydration(
       labelNames,
       normalizeAuthorAssociation,
       normalizeLabelName,
-      stringOrUndefined,
       githubCount,
       reviewCommentBodyDigest: sourceTools.reviewCommentBodyDigest,
     },
@@ -146,7 +143,6 @@ export function hydratePrimaryBody(
     ...hydration,
     ...sourceTools,
     sha256,
-    stringOrUndefined,
     targetRepo: () => target.repo,
     ghJson: <T>(args: string[]) => {
       if (args[1] === `repos/${target.repo}/issues/${target.number}`) return rawIssue as T;

@@ -176,7 +176,6 @@ function statusContextWithCalls(
       const value = markdown.match(new RegExp(`^${key}: (.*)$`, "m"))?.[1];
       return value?.startsWith('"') && value.endsWith('"') ? value.slice(1, -1) : value;
     },
-    stringOrUndefined: (value) => (typeof value === "string" ? value : undefined),
     numberOrUndefined: (value) => (typeof value === "number" ? value : undefined),
     recordOrUndefined: (value) =>
       value && typeof value === "object" && !Array.isArray(value)

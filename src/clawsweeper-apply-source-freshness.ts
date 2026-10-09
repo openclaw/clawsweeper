@@ -1,7 +1,7 @@
 import type { CreateApplyDecisionWorkflowDependencies } from "./clawsweeper-apply-dependencies.js";
 import { completeActivityContextSymbol } from "./clawsweeper-types.js";
 import type { ApplyResult, Item, ItemContext } from "./clawsweeper-types.js";
-import { asRecord, login } from "./value-coerce.js";
+import { asRecord, login, nonBlankStringOrUndefined } from "./value-coerce.js";
 import { parseIsoMs } from "./iso-time.js";
 
 /**
@@ -23,7 +23,6 @@ type ApplySourceFreshnessDependencies = Pick<
   | "itemSnapshotHash"
   | "recordedLabelSyncCoversUpdate"
   | "reviewStartLeaseOwner"
-  | "stringOrUndefined"
 >;
 
 interface ApplySourceFreshnessOptions {
@@ -160,7 +159,6 @@ export function createApplySourceFreshness(
     itemSnapshotHash,
     recordedLabelSyncCoversUpdate,
     reviewStartLeaseOwner,
-    stringOrUndefined,
   } = dependencies;
   const {
     action,
@@ -254,7 +252,7 @@ export function createApplySourceFreshness(
         CLAWSWEEPER_BOT_AUTHORS.has((login(asRecord(entry).user) ?? "").trim().toLowerCase()) &&
         (commentBody(entry) ?? "").includes("<!-- clawsweeper-command-status:"),
     );
-    const createdAt = comment ? stringOrUndefined(comment.created_at) : undefined;
+    const createdAt = comment ? nonBlankStringOrUndefined(comment.created_at) : undefined;
     return Boolean(
       createdAt &&
       (reviewHasCompleteActivityIdentity
@@ -294,8 +292,8 @@ export function createApplySourceFreshness(
   const ownedTimelineWriteTimes = (): number[] =>
     (currentItemContext()[completeActivityContextSymbol]?.timeline ?? []).flatMap((event) => {
       const record = asRecord(event);
-      const at = parseIsoMs(stringOrUndefined(record.createdAt));
-      return at !== null && isClawSweeperLogin(stringOrUndefined(record.actor)) ? [at] : [];
+      const at = parseIsoMs(nonBlankStringOrUndefined(record.createdAt));
+      return at !== null && isClawSweeperLogin(nonBlankStringOrUndefined(record.actor)) ? [at] : [];
     });
   const exactOwnedWriteAccountsForUpdate = (): boolean =>
     itemUpdatedAtMs !== null &&

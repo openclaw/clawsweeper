@@ -18,7 +18,7 @@ import {
 } from "./clawsweeper-regression-provenance.js";
 import { GitHubRateLimitError, isGitHubNotFoundError } from "./github-retry.js";
 import type { RepositoryProfile } from "./repository-profiles.js";
-import { asRecord } from "./value-coerce.js";
+import { asRecord, nonBlankStringOrUndefined } from "./value-coerce.js";
 
 export const MAX_IMPLEMENTATION_LINKED_ISSUE_REFERENCES = 5;
 
@@ -238,7 +238,6 @@ interface StatusContextDependencies {
   ghJson: <T>(args: string[]) => T;
   GitHubRuntimeBudgetError: new (reason: string) => Error & { readonly reason: string };
   frontMatterValue: (markdown: string, key: string) => string | undefined;
-  stringOrUndefined: (value: unknown) => string | undefined;
   numberOrUndefined: (value: unknown) => number | undefined;
   recordOrUndefined: (value: unknown) => Record<string, unknown> | undefined;
 }
@@ -257,7 +256,6 @@ export function createStatusContext({
   ghJson,
   GitHubRuntimeBudgetError,
   frontMatterValue,
-  stringOrUndefined,
   numberOrUndefined,
   recordOrUndefined,
 }: StatusContextDependencies) {
@@ -433,10 +431,11 @@ ${profileStatusEnd(profile)}`;
     try {
       const parsed = JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
       return {
-        updatedAt: stringOrUndefined(parsed.updated_at),
-        state: stringOrUndefined(parsed.state) ?? "Idle",
-        detail: stringOrUndefined(parsed.detail) ?? "No workflow status has been published yet.",
-        runUrl: stringOrUndefined(parsed.run_url),
+        updatedAt: nonBlankStringOrUndefined(parsed.updated_at),
+        state: nonBlankStringOrUndefined(parsed.state) ?? "Idle",
+        detail:
+          nonBlankStringOrUndefined(parsed.detail) ?? "No workflow status has been published yet.",
+        runUrl: nonBlankStringOrUndefined(parsed.run_url),
         applyHealth: recordOrUndefined(parsed.apply_health),
         lastCloseApplyHealth: recordOrUndefined(parsed.last_close_apply_health),
         plannedCount: numberOrUndefined(parsed.planned_count),
@@ -444,8 +443,8 @@ ${profileStatusEnd(profile)}`;
         plannedShards: numberOrUndefined(parsed.planned_shards),
         activeCodex: numberOrUndefined(parsed.active_codex),
         dueBacklog: numberOrUndefined(parsed.due_backlog),
-        oldestUnreviewedAt: stringOrUndefined(parsed.oldest_unreviewed_at),
-        capacityReason: stringOrUndefined(parsed.capacity_reason),
+        oldestUnreviewedAt: nonBlankStringOrUndefined(parsed.oldest_unreviewed_at),
+        capacityReason: nonBlankStringOrUndefined(parsed.capacity_reason),
         inheritedLabelCleanups: numberOrUndefined(parsed.inherited_label_cleanups),
         selfHealConflictRepairs: numberOrUndefined(parsed.self_heal_conflict_repairs),
         failedReviewRetries: numberOrUndefined(parsed.failed_review_retries),

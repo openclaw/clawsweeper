@@ -37,7 +37,7 @@ import {
 import type { CreateReportOrchestrationDependencies } from "./clawsweeper-report-orchestration-dependencies.js";
 import type { createReportOrchestrationFoundation } from "./clawsweeper-orchestration-foundation.js";
 import type { createReportRendering } from "./clawsweeper-report-rendering.js";
-import { asRecord } from "./value-coerce.js";
+import { asRecord, nonBlankStringOrUndefined } from "./value-coerce.js";
 import { parseIsoMs } from "./iso-time.js";
 
 export function createPullRequestPromotionFacts(
@@ -84,7 +84,6 @@ export function createPullRequestPromotionFacts(
     reportVisionFit,
     reviewMetricsFromReport,
     reviewSectionValue,
-    stringOrUndefined,
     targetRepo,
     triagePriorityFromReport,
   } = dependencies;
@@ -334,15 +333,15 @@ export function createPullRequestPromotionFacts(
       const record = asRecord(comment);
       return (
         isAfterReview(comment, reviewedAtMs) &&
-        !isAutomationReportAuthor(stringOrUndefined(record.author))
+        !isAutomationReportAuthor(nonBlankStringOrUndefined(record.author))
       );
     };
     const hasNonAutomationEvent = (event: unknown): boolean => {
       const record = asRecord(event);
-      const eventActor = (stringOrUndefined(record.actor) ?? "").trim().toLowerCase();
+      const eventActor = (nonBlankStringOrUndefined(record.actor) ?? "").trim().toLowerCase();
       const trustedTimelineComment = options.ignoreTrustedTimelineComment;
       if (
-        stringOrUndefined(record.event) === "commented" &&
+        nonBlankStringOrUndefined(record.event) === "commented" &&
         trustedTimelineComment &&
         eventTimestampMs(event) === parseIsoMs(trustedTimelineComment.createdAt) &&
         trustedTimelineComment.authors.has(eventActor)
@@ -353,7 +352,7 @@ export function createPullRequestPromotionFacts(
       // duplicates only through the completed review; later commands are fresh
       // activity and must keep stale labels from being restored.
       if (
-        stringOrUndefined(record.event) === "commented" &&
+        nonBlankStringOrUndefined(record.event) === "commented" &&
         options.ignoreTimelineCommentsThroughMs !== undefined
       ) {
         const eventMs = eventTimestampMs(event);
@@ -361,7 +360,7 @@ export function createPullRequestPromotionFacts(
       }
       return (
         isAfterReview(event, reviewedAtMs) &&
-        !isAutomationReportAuthor(stringOrUndefined(record.actor))
+        !isAutomationReportAuthor(nonBlankStringOrUndefined(record.actor))
       );
     };
     return (
@@ -452,15 +451,15 @@ export function createPullRequestPromotionFacts(
     for (const number of canonicalPullRequestNumbersFromReport(markdown, item.number)) {
       try {
         const pull = asRecord(ghJson<unknown>(["api", `repos/${targetRepo()}/pulls/${number}`]));
-        const state = stringOrUndefined(pull.state)?.toLowerCase() ?? "";
-        const mergedAt = stringOrUndefined(pull.merged_at) ?? null;
+        const state = nonBlankStringOrUndefined(pull.state)?.toLowerCase() ?? "";
+        const mergedAt = nonBlankStringOrUndefined(pull.merged_at) ?? null;
         const linkedPull: LinkedPullRequestSupersession = {
           number,
-          title: stringOrUndefined(pull.title) ?? `PR #${number}`,
-          url: stringOrUndefined(pull.html_url) ?? pullRequestUrlForNumber(number),
+          title: nonBlankStringOrUndefined(pull.title) ?? `PR #${number}`,
+          url: nonBlankStringOrUndefined(pull.html_url) ?? pullRequestUrlForNumber(number),
           state,
           mergedAt,
-          mergeableState: stringOrUndefined(pull.mergeable_state)?.toLowerCase() ?? null,
+          mergeableState: nonBlankStringOrUndefined(pull.mergeable_state)?.toLowerCase() ?? null,
           draft: pull.draft === true,
           labels: linkedPullRequestLabels(number, pull),
         };

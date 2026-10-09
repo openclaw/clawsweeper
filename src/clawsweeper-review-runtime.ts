@@ -70,7 +70,7 @@ import {
 import { repositoryProfileFor, type RepositoryProfile } from "./repository-profiles.js";
 import { reviewProofCapabilityFromEnv } from "./review-proof-client.js";
 import { readBoundedReviewResult } from "./review-output-policy.js";
-import { asRecord } from "./value-coerce.js";
+import { asRecord, nonBlankStringOrUndefined } from "./value-coerce.js";
 
 /** Prompt sources for an item review: the shared core, one template per item kind, and close reasons. */
 export type ReviewItemPrompts = Readonly<Record<"core" | Item["kind"] | "closeReasons", string>>;
@@ -94,7 +94,6 @@ interface ReviewRuntimeDependencies {
   defaultRootCauseCluster: () => RootCauseClusterAssessment;
   parseDecision: (value: unknown, item?: RootCauseNormalizationItem) => Decision;
   ensureDir: (path: string) => void;
-  stringOrUndefined: (value: unknown) => string | undefined;
 }
 
 export function createReviewRuntime({
@@ -109,7 +108,6 @@ export function createReviewRuntime({
   defaultRootCauseCluster,
   parseDecision,
   ensureDir,
-  stringOrUndefined,
 }: ReviewRuntimeDependencies) {
   let reviewPromptTemplatesCache: ReviewItemPrompts | undefined;
   let reviewDecisionSchemaCache: string | undefined;
@@ -204,7 +202,7 @@ export function createReviewRuntime({
   function localPullMetadata(itemNumber: number): LocalPullMetadata {
     try {
       const pull = asRecord(ghJson<unknown>(["api", `repos/${targetRepo()}/pulls/${itemNumber}`]));
-      const baseRef = stringOrUndefined(asRecord(pull.base).ref);
+      const baseRef = nonBlankStringOrUndefined(asRecord(pull.base).ref);
       if (!baseRef) throw new Error("pull request base ref was missing");
       return { baseRef: requireSafeGitBranchName(baseRef, "pull request base branch") };
     } catch (error) {
@@ -1111,8 +1109,8 @@ ${extra}
       options.item.kind === "pull_request"
         ? {
             kind: "committed",
-            baseSha: stringOrUndefined(asRecord(pull.base).sha) ?? "",
-            headSha: stringOrUndefined(asRecord(pull.head).sha) ?? "",
+            baseSha: nonBlankStringOrUndefined(asRecord(pull.base).sha) ?? "",
+            headSha: nonBlankStringOrUndefined(asRecord(pull.head).sha) ?? "",
           }
         : { kind: "prompt" };
     const checkoutInspection = runReviewCheckoutInspection({
@@ -1163,7 +1161,7 @@ ${extra}
       options.item.kind === "pull_request"
         ? reviewProofCapabilityFromEnv(
             options.item.repo,
-            stringOrUndefined(asRecord(pull.head).sha) ?? "",
+            nonBlankStringOrUndefined(asRecord(pull.head).sha) ?? "",
           )
         : undefined;
     const result = runAgentProcess({
@@ -1237,7 +1235,10 @@ ${extra}
         return {
           ...verifyLikelyOwnerHistory(decision, {
             checkoutDir: options.openclawDir,
-            reviewedCommitShas: [options.git.mainSha, stringOrUndefined(asRecord(pull.head).sha)],
+            reviewedCommitShas: [
+              options.git.mainSha,
+              nonBlankStringOrUndefined(asRecord(pull.head).sha),
+            ],
           }),
           localCheckoutAccess: "verified",
         };

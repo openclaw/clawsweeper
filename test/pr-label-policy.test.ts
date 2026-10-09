@@ -78,7 +78,6 @@ for (const proofStatus of ["missing", "not_applicable"] as const) {
         ],
       }),
       isAutomationReportAuthor: () => false,
-      stringOrUndefined: (value) => (typeof value === "string" ? value : undefined),
     });
     const oldStatuses = ["status: 🚀 automerge armed", "status: 👀 ready for maintainer look"];
     for (const [extraLabels, comment, incorrect, expected] of [
@@ -196,7 +195,6 @@ test("report-based status selection follows the model proof assessment for exter
     pullRequestReviewReadinessFromReport: () => readyReadiness,
     reportRealBehaviorProofPolicy,
     reportSecurityReview: () => ({ status: "cleared", summary: "", concerns: [] }),
-    stringOrUndefined: (value) => (typeof value === "string" ? value : undefined),
   });
   for (const path of ["README.md", "src/arbitrary.ts"]) {
     const report = reportFrontMatter({
@@ -404,7 +402,6 @@ test("historical receipt failures route to the proof owner without erasing indep
     pullRequestReviewReadinessFromReport: () => readyReadiness,
     reportRealBehaviorProofPolicy,
     reportSecurityReview: () => ({ status: "cleared", summary: "", concerns: [] }),
-    stringOrUndefined: (value) => (typeof value === "string" ? value : undefined),
   });
 
   for (reviewFailed of [false, true]) {

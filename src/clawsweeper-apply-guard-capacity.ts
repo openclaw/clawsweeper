@@ -9,7 +9,7 @@ import type { ApplyGuardDependencies } from "./clawsweeper-apply-guard-dependenc
 import type { createApplyGuardActivity } from "./clawsweeper-apply-guard-activity.js";
 import type { createApplyGuardPolicy } from "./clawsweeper-apply-guard-policy.js";
 import type { createApplyGuardProof } from "./clawsweeper-apply-guard-proof.js";
-import { asRecord } from "./value-coerce.js";
+import { asRecord, nonBlankStringOrUndefined } from "./value-coerce.js";
 
 export function createApplyGuardCapacity(
   dependencies: ApplyGuardDependencies &
@@ -27,7 +27,6 @@ export function createApplyGuardCapacity(
     obsoleteFixPrAgeSkipReason,
     obsoleteFixPrCloseEnabled,
     protectedLabels,
-    stringOrUndefined,
     targetRepo,
     pullRequestHumanEngagementBlockReason,
     pullRequestLiveActivity,
@@ -101,8 +100,8 @@ export function createApplyGuardCapacity(
       return "obsolete_fix_pr live changed-file list is incomplete";
     }
     const changedEntries = files.map((file) => ({
-      path: stringOrUndefined(asRecord(file).filename)?.trim() ?? "",
-      status: stringOrUndefined(asRecord(file).status)?.trim() ?? "",
+      path: nonBlankStringOrUndefined(asRecord(file).filename)?.trim() ?? "",
+      status: nonBlankStringOrUndefined(asRecord(file).status)?.trim() ?? "",
     }));
     const paths = changedEntries.map((entry) => entry.path);
     if (paths.some((path) => !path) || new Set(paths).size !== paths.length) {
@@ -129,7 +128,7 @@ export function createApplyGuardCapacity(
         return `touched path unchanged on main; fix may still be relevant: ${path}`;
       }
       const changedAt = asRecord(asRecord(commits[0]).commit).committer;
-      const changedDate = stringOrUndefined(asRecord(changedAt).date) ?? "";
+      const changedDate = nonBlankStringOrUndefined(asRecord(changedAt).date) ?? "";
       if (!Number.isFinite(Date.parse(changedDate)) || Date.parse(changedDate) <= committedAtMs) {
         return `post-PR main-side change date is unavailable for touched path: ${path}`;
       }

@@ -406,7 +406,6 @@ test("lazy fetch is disabled only behind the allowlisted proxy, and the prompt s
       defaultRootCauseCluster: unavailable,
       parseDecision: unavailable,
       ensureDir: unavailable,
-      stringOrUndefined: unavailable,
     });
     assert.deepEqual(
       runtime.reviewEnvironment(sandboxMode, true),

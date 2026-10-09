@@ -1,4 +1,4 @@
-import { asRecord } from "./value-coerce.js";
+import { asRecord, stringOrUndefined } from "./value-coerce.js";
 import { sha256 } from "./content-hash.js";
 import { escapeRegExp } from "./clawsweeper-text.js";
 import { parseIsoMs } from "./iso-time.js";
@@ -332,10 +332,6 @@ export function reviewStructuralQuery(kind: ReviewStructuralKind): string {
       }
     }
   `;
-}
-
-function stringOrUndefined(value: unknown): string | undefined {
-  return typeof value === "string" ? value : undefined;
 }
 
 function nonNegativeInteger(value: unknown): number | null {

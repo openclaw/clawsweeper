@@ -147,7 +147,6 @@ function sourceFreshness(options: {
       itemSnapshotHash: () => "snapshot",
       recordedLabelSyncCoversUpdate: () => false,
       reviewStartLeaseOwner: () => null,
-      stringOrUndefined: (value: unknown) => (typeof value === "string" ? value : undefined),
     } as never,
     {
       action: "proposed_close",

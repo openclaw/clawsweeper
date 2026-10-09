@@ -372,7 +372,6 @@ export interface CreateReviewCommandWorkflowDependencies {
     batchSize: number;
   }) => ReviewActionLedger;
   startReviewActionLedgerItem: (ledger: ReviewActionLedger, item: Item) => ActionEvent | null;
-  stringOrUndefined: (value: unknown) => string | undefined;
   suppliedReviewStartLeaseFromArgs: (
     args: Args,
   ) => Pick<AcquiredReviewStartLease, "owner" | "commentId"> | null;

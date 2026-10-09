@@ -586,8 +586,6 @@ else {
           const hydration = createContextHydration(
             new Proxy(
               {
-                stringOrUndefined: (value: unknown) =>
-                  typeof value === "string" ? value : undefined,
                 isSafeGitBranchName: (branch: string) => branch === "main",
                 targetRepo: () => REPO,
                 ghJson: () => {
@@ -695,7 +693,6 @@ else {
       isSuppliedReviewStartLease,
       reviewLeaseStillMatchesContext,
       liveClawSweeperReviewDigest: () => digest("previous"),
-      stringOrUndefined: (value: unknown) => (typeof value === "string" ? value : undefined),
       itemContentDigest: () => (changedPr ? digest("different-content") : digest("content")),
       extractLatestClawSweeperReview: () => context.previousClawSweeperReview,
       extractClawSweeperReviewCommentBody: (body: string) =>

@@ -392,7 +392,6 @@ export interface CreateReportOrchestrationDependencies {
     securityReview: Pick<SecurityReview, "status">;
     overallCorrectness: OverallCorrectness;
   }) => boolean;
-  stringOrUndefined: (value: unknown) => string | undefined;
   stripListMarker: (text: string) => string;
   targetProfile: () => RepositoryProfile;
   targetRepo: () => string;

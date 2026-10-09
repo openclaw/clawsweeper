@@ -18,7 +18,6 @@ export interface ApplyGuardDependencies {
   reportRealBehaviorProof: (markdown: string) => RealBehaviorProof;
   staleVersionBugAgeSkipReason: (item: Pick<Item, "createdAt">, now?: number) => string | null;
   staleVersionBugCloseEnabled: () => boolean;
-  stringOrUndefined: (value: unknown) => string | undefined;
   targetRepo: () => string;
   unconfirmedProductDirectionAgeSkipReason: (
     item: Pick<Item, "createdAt">,
