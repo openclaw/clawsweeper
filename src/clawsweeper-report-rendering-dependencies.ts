@@ -132,7 +132,6 @@ export interface CreateReportRenderingDependencies {
   renderReviewMetricsDigest: (metrics: readonly ReviewMetric[]) => string;
   repairLoopPassModeFromReport: (markdown: string) => "" | "autofix" | "automerge";
   repoRelativePath: (path: string) => string;
-  reportRealBehaviorProofPolicy: (markdown: string) => RealBehaviorProofPolicy;
   reportRiskEntries: (text: string) => string[];
   reviewAutomationMarkersFromReport: (
     markdown: string,

@@ -12,7 +12,6 @@ import {
   classifyGitHubDispatchResultForTest,
   codexReviewFailureRetryableForTest,
   heldReviewStartStatusCommentResultForTest,
-  isGitHubLabelAlreadyExistsErrorForTest,
   main,
   observedGitHubMutationAttemptsForTest,
   reviewCommentPublicationEventDisposition,
@@ -21,6 +20,7 @@ import {
   reviewRetryBusinessIdempotencyIdentityForTest,
   untrustedCodexEnvForTest,
 } from "../dist/clawsweeper.js";
+import { labelAlreadyExistsError } from "../dist/clawsweeper-label-mutations.js";
 import { actionIdempotencyKey } from "../dist/action-ledger.js";
 import { createApplyLeaseGuards } from "../dist/clawsweeper-apply-lease-guards.js";
 import { GitHubRateLimitError } from "../dist/github-retry.js";
@@ -639,12 +639,12 @@ test("apply receipts start per item and persist mutation observation before fina
 
 test("apply mutation receipts bind every GitHub request attempt and preserve no-op truth", () => {
   assert.equal(
-    isGitHubLabelAlreadyExistsErrorForTest(
-      'HTTP 422: Validation Failed (label "priority: high" already exists)',
+    labelAlreadyExistsError(
+      new Error('HTTP 422: Validation Failed (label "priority: high" already exists)'),
     ),
     true,
   );
-  assert.equal(isGitHubLabelAlreadyExistsErrorForTest("HTTP 500: unavailable"), false);
+  assert.equal(labelAlreadyExistsError(new Error("HTTP 500: unavailable")), false);
   const retriedMutation = observedGitHubMutationAttemptsForTest(["transient", "accepted"]);
   assert.deepEqual(retriedMutation, [
     {
@@ -694,7 +694,6 @@ test("apply mutation receipts bind every GitHub request attempt and preserve no-
     readText("src/clawsweeper-review-comment-leases.ts"),
   ].join("\n");
   const labelSource = [
-    readText("src/clawsweeper-label-sync.ts"),
     readText("src/clawsweeper-label-mutations.ts"),
     readText("src/clawsweeper-label-operations.ts"),
   ].join("\n");

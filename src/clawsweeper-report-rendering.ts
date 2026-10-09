@@ -27,7 +27,6 @@ export function createReportRendering(dependencies: CreateReportRenderingDepende
     markdownFor: tools.markdownFor,
     pullRequestFilePathsFromContextForTest: tools.pullRequestFilePathsFromContextForTest,
     pullRequestHeadSha: tools.pullRequestHeadSha,
-    pullRequestReviewReadinessFromReport: tools.pullRequestReviewReadinessFromReport,
     renderCloseCommentFromReport: tools.renderCloseCommentFromReport,
     renderPrRatingAssessmentReportSection: tools.renderPrRatingAssessmentReportSection,
     renderReviewCommentFromReport: tools.renderReviewCommentFromReport,
@@ -38,7 +37,6 @@ export function createReportRendering(dependencies: CreateReportRenderingDepende
     reviewActionForDecision: tools.reviewActionForDecision,
     reviewContextLedgerForTest: tools.reviewContextLedgerForTest,
     reviewHistoryForStaleComment: tools.reviewHistoryForStaleComment,
-    securitySensitiveRepairAllowed: tools.securitySensitiveRepairAllowed,
     syncWorkPlanFromReport: tools.syncWorkPlanFromReport,
     updateReviewStructuralFrontMatter: tools.updateReviewStructuralFrontMatter,
   };

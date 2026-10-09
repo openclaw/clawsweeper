@@ -52,7 +52,6 @@ import {
   closeReasonEnabled,
   closeReasonFilterText,
   closeReasonsArg,
-  isAutomationReportAuthor,
   isBulkFilerExemptAuthorAssociation,
   isBulkFilerExemptRepositoryPermission,
   isMaintainerAuthorAssociation,
@@ -69,7 +68,12 @@ import {
   unconfirmedProductDirectionAgeSkipReason,
   unsponsoredFeatureAgeSkipReason,
 } from "./clawsweeper-item-policy.js";
-import { createLabelPolicy } from "./clawsweeper-label-policy.js";
+import {
+  hasRepairLoopPauseLabel,
+  prStatusLabelKindFromReport,
+} from "./clawsweeper-label-policy.js";
+import { createLabelMutationOperations } from "./clawsweeper-label-mutations.js";
+import { createLabelSyncOperations } from "./clawsweeper-label-operations.js";
 import { createLiveProofCommands } from "./live-proof/commands.js";
 import { publishReviewLiveProofArtifacts } from "./live-proof/publication-artifacts.js";
 import { executeReviewLiveProofs, inspectReviewLiveProofs } from "./live-proof/review-artifacts.js";
@@ -85,20 +89,8 @@ import {
 } from "./clawsweeper-policy.js";
 import { createRegressionProvenanceVerifier } from "./clawsweeper-regression-provenance.js";
 import { createReportOrchestration } from "./clawsweeper-report-orchestration.js";
-import {
-  mergeRiskOptionsFromReport,
-  reportAttachedLiveVerification,
-  reportLiveProofPlan,
-  reportRealBehaviorProof,
-  reportReviewFindings,
-  reportSecurityReview,
-} from "./clawsweeper-report-parser.js";
-import {
-  existingReview,
-  isExternalPullRequestReport,
-  reviewSectionValue,
-} from "./clawsweeper-record-metadata.js";
-import { createRealBehaviorProofPolicy } from "./clawsweeper-proof-policy.js";
+import { reportLiveProofPlan, reportReviewFindings } from "./clawsweeper-report-parser.js";
+import { existingReview } from "./clawsweeper-record-metadata.js";
 import {
   createRepositoryPaths,
   markdownFiles,
@@ -323,7 +315,6 @@ const { GitHubRuntimeBudgetError, untrustedCodexEnv } = gitHubRuntime;
 const githubExecution = createGitHubExecution({
   ROOT,
   gitHubRuntime,
-  labelAlreadyExistsError: (error) => labelAlreadyExistsError(error),
 });
 export const { classifyGitHubDispatchResultForTest, observedGitHubMutationAttemptsForTest } =
   githubExecution;
@@ -423,25 +414,6 @@ const { defaultRootCauseCluster, parseGitHubItemRef } = reviewDecisionParser;
 export function parseDecision(value: unknown, item?: RootCauseNormalizationItem): Decision {
   return reviewDecisionParser.parseDecision(value, item);
 }
-
-const reportRealBehaviorProofPolicy = createRealBehaviorProofPolicy({
-  isExternalPullRequestReport,
-  reportAttachedLiveVerification,
-  reportRealBehaviorProof,
-  reviewSectionValue,
-});
-
-const labelPolicy = createLabelPolicy({
-  isAutomationReportAuthor,
-  mergeRiskOptionsFromReport,
-  pullRequestReviewReadinessFromReport: (markdown) =>
-    pullRequestReviewReadinessFromReport(markdown),
-  reportRealBehaviorProofPolicy,
-  reportSecurityReview,
-});
-export const { featureShowcaseLabelsForTest, prStatusLabelsForTest, prStatusLabelSchemeForTest } =
-  labelPolicy;
-const { hasRepairLoopPauseLabel, prStatusLabelKindFromReport } = labelPolicy;
 
 const applyGuards = createApplyGuards({
   authorPrBudget: () => authorPrBudget(),
@@ -785,13 +757,11 @@ const { sentence } = reviewPresentation;
 
 const reportOrchestration = createReportOrchestration({
   ...reviewPresentation,
-  reportRealBehaviorProofPolicy,
   collectItemContext,
   ...contextHydration,
   ...repositoryPaths,
   defaultRootCauseCluster,
   ensureDir,
-  ...labelPolicy,
   ...repositoryLinks,
   ...statusContext,
   ghJson,
@@ -799,32 +769,17 @@ const reportOrchestration = createReportOrchestration({
   ...githubContext,
   GitHubRuntimeBudgetError,
   hasUsableCloseComment: (...args) => hasUsableCloseComment(...args),
-  isBulkFilerExemptAuthorAssociation,
-  isBulkFilerExemptRepositoryPermission,
   isFresh,
   isImplementationCloseReason: (...args) => isImplementationCloseReason(...args),
-  isIssueAdvisoryLabel: (...args) => isIssueAdvisoryLabel(...args),
   isMaintainerAuthored,
-  issueAdvisoryLabelStateFromReport: (...args) => issueAdvisoryLabelStateFromReport(...args),
   isVerifiedFixedCloseReason,
   itemSnapshotHash,
   jsonFrontMatterValue: (...args) => jsonFrontMatterValue(...args),
   labelNames,
-  labelPolicy,
   ...applyGuards,
-  nextImpactLabels: (...args) => nextImpactLabels(...args),
-  nextIssueAdvisoryLabels: (...args) => nextIssueAdvisoryLabels(...args),
-  nextMaturityLabels: (...args) => nextMaturityLabels(...args),
-  nextMergeRiskLabels: (...args) => nextMergeRiskLabels(...args),
-  nextPriorityLabels: (...args) => nextPriorityLabels(...args),
-  nextRealBehaviorProofMediaLabels: (...args) => nextRealBehaviorProofMediaLabels(...args),
-  nextRealBehaviorProofSufficientLabels: (...args) =>
-    nextRealBehaviorProofSufficientLabels(...args),
-  nextTelegramVisibleProofLabels: (...args) => nextTelegramVisibleProofLabels(...args),
   normalizeLabelName,
   numberOrUndefined,
   parseGitHubItemRef,
-  protectedLabels,
   pullHeadShaFromContext: (...args) => pullHeadShaFromContext(...args),
   repairLoopPassModeFromReport: (...args) => repairLoopPassModeFromReport(...args),
   repoRelativePath,
@@ -843,53 +798,18 @@ const reportOrchestration = createReportOrchestration({
 });
 export const {
   contextHasNonAutomationActivityAfterForTest,
-  impactLabelSchemeForTest,
-  impactLabelsForTest,
-  isGitHubLabelAlreadyExistsErrorForTest,
-  isGitHubLabelCapacityErrorForTest,
-  isMissingGitHubLabelErrorForTest,
-  issueAdvisoryLabelsForTest,
   labelJustificationsMarkdownForTest,
-  maturityLabelSchemeForTest,
-  maturityLabelsForTest,
-  mergeRiskLabelSchemeForTest,
-  mergeRiskLabelsForTest,
-  prRatingLabelSchemeForTest,
-  prRatingLabelsForTest,
-  priorityLabelSchemeForTest,
-  priorityLabelsForTest,
   pullRequestFilePathsFromContextForTest,
-  realBehaviorProofMediaLabelsForTest,
-  realBehaviorProofSufficientLabelsForTest,
   renderReviewCommentFromReport,
   renderReviewContextBudgetForTest,
   renderWorkPlanFromReport,
   reviewActionForDecision,
   reviewContextLedgerForTest,
-  syncBulkFilerLabelForTest,
-  telegramVisibleProofLabelsForTest,
 } = reportOrchestration;
-const {
-  labelSynchronization,
-  pullRequestReviewReadinessFromReport,
-  syncWorkPlanFromReport,
-  workPlanPathForReport,
-} = reportOrchestration;
+const { syncWorkPlanFromReport, workPlanPathForReport } = reportOrchestration;
 
-const {
-  isIssueAdvisoryLabel,
-  issueAdvisoryLabelStateFromReport,
-  labelAlreadyExistsError,
-  nextImpactLabels,
-  nextIssueAdvisoryLabels,
-  nextMaturityLabels,
-  nextMergeRiskLabels,
-  nextPriorityLabels,
-  nextRealBehaviorProofMediaLabels,
-  nextRealBehaviorProofSufficientLabels,
-  nextTelegramVisibleProofLabels,
-  removeIssueLabel,
-} = labelSynchronization;
+const labelMutations = createLabelMutationOperations({ ghJson, ghObservedMutationCommand });
+const labelSyncOperations = createLabelSyncOperations(labelMutations);
 
 const closeDecisionWorkflow = createCloseDecisionWorkflow({
   targetRepo,
@@ -920,8 +840,7 @@ const reviewCommentWorkflow = createReviewCommentWorkflow({
   ensureDir,
   sentence,
   ...reportOrchestration,
-  isIssueAdvisoryLabel,
-  removeIssueLabel,
+  removeIssueLabel: labelMutations.removeIssueLabel,
   markdownLink,
 });
 export const {
@@ -1088,7 +1007,8 @@ const { applyDecisionsCommandInner } = createApplyDecisionWorkflow({
   set activeApplyMutationRunner(value: MutationRunner | null) {
     githubExecution.activeApplyMutationRunner = value;
   },
-  ...labelSynchronization,
+  ...labelMutations,
+  ...labelSyncOperations,
   ...reportOrchestration,
   applyBlockingProtectedLabels,
   applyKindArg,
@@ -1121,7 +1041,6 @@ const { applyDecisionsCommandInner } = createApplyDecisionWorkflow({
   normalizeLabelName,
   PR_CLOSE_COVERAGE_PROOF_SCHEMA_PATH,
   prCloseCoverageProofPromptTemplate,
-  prStatusLabelKindFromReport,
   repoFromArgs,
   reportEntriesForDir,
   ROOT,

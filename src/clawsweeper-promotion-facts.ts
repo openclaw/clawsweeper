@@ -68,6 +68,7 @@ import {
 import { isAutomationReportAuthor } from "./clawsweeper-item-policy.js";
 import { reportFileName } from "./clawsweeper-repository-paths.js";
 import { reviewSectionValue } from "./clawsweeper-record-metadata.js";
+import { eventTimestampMs, isAfterReview } from "./clawsweeper-label-policy.js";
 
 export function createPullRequestPromotionFacts(
   dependencies: CreateReportOrchestrationDependencies &
@@ -76,10 +77,8 @@ export function createPullRequestPromotionFacts(
 ) {
   const {
     defaultRootCauseCluster,
-    eventTimestampMs,
     fixedPullRequestFromReport,
     ghJson,
-    isAfterReview,
     itemSnapshotHash,
     labelNames,
     normalizeLabelName,

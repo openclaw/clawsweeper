@@ -101,6 +101,14 @@ export function normalizeLabelName(label: string): string {
   return label.trim().toLowerCase();
 }
 
+export function normalizedLabelSet(labels: readonly string[]): Set<string> {
+  return new Set(labels.map(normalizeLabelName));
+}
+
+export function hasNormalizedLabel(labels: readonly string[], label: string): boolean {
+  return normalizedLabelSet(labels).has(normalizeLabelName(label));
+}
+
 export function protectedLabels(labels: readonly string[]): string[] {
   return labels
     .map((label) => normalizeLabelName(label))

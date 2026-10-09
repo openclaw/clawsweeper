@@ -17,6 +17,7 @@ import { asRecord } from "./value-coerce.js";
 import { parseIsoMs } from "./iso-time.js";
 import { frontMatterValue, replaceFrontMatterValue, sectionValue } from "./report-front-matter.js";
 import { sectionLineValue } from "./clawsweeper-report-helpers.js";
+import { normalizedLabelSet } from "./clawsweeper-item-policy.js";
 
 const DURABLE_REVIEW_COMMENT_MAX_BYTES = 60 * 1024;
 
@@ -44,7 +45,6 @@ export function createReviewCommentPublication(
     reviewCommentBodyDigest,
     ensureDir,
     sentence,
-    normalizedLabelSet,
     markdownLink,
     closeAppliedCommentMarker,
     markedReviewCommentBody,

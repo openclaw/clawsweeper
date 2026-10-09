@@ -14,13 +14,9 @@ import test from "node:test";
 import { reviewNetworkCapability } from "../dist/agent-runner.js";
 
 import {
-  isGitHubLabelCapacityErrorForTest,
-  isMissingGitHubLabelErrorForTest,
   prepareMediaProofArtifactsForTest,
   proofMediaUrlsFromContextForTest,
   proofVideoUrlsFromContextForTest,
-  realBehaviorProofMediaLabelsForTest,
-  realBehaviorProofSufficientLabelsForTest,
   renderReviewCommentFromReport,
   reviewPromptForTest,
 } from "../dist/clawsweeper.js";
@@ -31,6 +27,11 @@ import {
   mediaProofCommandRunner,
 } from "../dist/clawsweeper-media-proof.js";
 import { LIVE_VERIFICATION_MARKER } from "../dist/clawsweeper-policy.js";
+import { labelCapacityError, missingLabelError } from "../dist/clawsweeper-label-mutations.js";
+import {
+  nextRealBehaviorProofMediaLabels,
+  nextRealBehaviorProofSufficientLabels,
+} from "../dist/clawsweeper-label-selection.js";
 import type { LiveProofPlan } from "../dist/clawsweeper-types.js";
 import {
   encodeLiveVerificationReportPayload,
@@ -1447,42 +1448,52 @@ Reason: Maintainers should review the proof before merge.
 });
 
 test("ClawSweeper proof judgement controls the sufficient proof label", () => {
-  assert.deepEqual(realBehaviorProofSufficientLabelsForTest(["bug"], "sufficient"), [
+  assert.deepEqual(nextRealBehaviorProofSufficientLabels(["bug"], { status: "sufficient" }), [
     "bug",
     "proof: sufficient",
   ]);
   assert.deepEqual(
-    realBehaviorProofSufficientLabelsForTest(["bug", "proof: sufficient"], "insufficient"),
+    nextRealBehaviorProofSufficientLabels(["bug", "proof: sufficient"], { status: "insufficient" }),
     ["bug"],
   );
-  assert.deepEqual(realBehaviorProofSufficientLabelsForTest(["proof: sufficient"], "missing"), []);
+  assert.deepEqual(
+    nextRealBehaviorProofSufficientLabels(["proof: sufficient"], { status: "missing" }),
+    [],
+  );
 });
 
 test("ClawSweeper proof evidence kind controls media proof labels", () => {
-  assert.deepEqual(realBehaviorProofMediaLabelsForTest(["bug"], "screenshot"), [
+  assert.deepEqual(nextRealBehaviorProofMediaLabels(["bug"], { evidenceKind: "screenshot" }), [
     "bug",
     "proof: 📸 screenshot",
   ]);
-  assert.deepEqual(realBehaviorProofMediaLabelsForTest(["proof: 📸 screenshot"], "recording"), [
-    "proof: 🎥 video",
-  ]);
   assert.deepEqual(
-    realBehaviorProofMediaLabelsForTest(["proof: 📸 screenshot", "proof: 🎥 video"], "terminal"),
+    nextRealBehaviorProofMediaLabels(["proof: 📸 screenshot"], { evidenceKind: "recording" }),
+    ["proof: 🎥 video"],
+  );
+  assert.deepEqual(
+    nextRealBehaviorProofMediaLabels(["proof: 📸 screenshot", "proof: 🎥 video"], {
+      evidenceKind: "terminal",
+    }),
     [],
   );
 });
 
 test("ClawSweeper proof label sync recognizes missing optional labels", () => {
   assert.equal(
-    isMissingGitHubLabelErrorForTest(
-      "failed to update https://github.com/openclaw/fs-safe/pull/18: 'proof: sufficient' not found",
+    missingLabelError(
+      new Error(
+        "failed to update https://github.com/openclaw/fs-safe/pull/18: 'proof: sufficient' not found",
+      ),
       "proof: sufficient",
     ),
     true,
   );
   assert.equal(
-    isMissingGitHubLabelErrorForTest(
-      "failed to update https://github.com/openclaw/fs-safe/pull/18: 'other label' not found",
+    missingLabelError(
+      new Error(
+        "failed to update https://github.com/openclaw/fs-safe/pull/18: 'other label' not found",
+      ),
       "proof: sufficient",
     ),
     false,
@@ -1491,13 +1502,15 @@ test("ClawSweeper proof label sync recognizes missing optional labels", () => {
 
 test("ClawSweeper optional label sync recognizes GitHub label capacity errors", () => {
   assert.equal(
-    isGitHubLabelCapacityErrorForTest(
-      "GraphQL: Validation failed: Labels can have a maximum of 100 labels (addLabelsToLabelable)",
+    labelCapacityError(
+      new Error(
+        "GraphQL: Validation failed: Labels can have a maximum of 100 labels (addLabelsToLabelable)",
+      ),
     ),
     true,
   );
   assert.equal(
-    isGitHubLabelCapacityErrorForTest("GraphQL: Resource not accessible by integration"),
+    labelCapacityError(new Error("GraphQL: Resource not accessible by integration")),
     false,
   );
 });

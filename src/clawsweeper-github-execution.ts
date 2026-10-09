@@ -19,15 +19,15 @@ import {
   GitHubOperationDeadlineError,
   type createGitHubRuntime,
 } from "./clawsweeper-github-runtime.js";
+import { labelAlreadyExistsError } from "./clawsweeper-label-mutations.js";
 
 interface CreateGitHubExecutionDependencies {
   ROOT: string;
   gitHubRuntime: ReturnType<typeof createGitHubRuntime>;
-  labelAlreadyExistsError: (error: unknown) => boolean;
 }
 
 export function createGitHubExecution(dependencies: CreateGitHubExecutionDependencies) {
-  const { ROOT, gitHubRuntime, labelAlreadyExistsError } = dependencies;
+  const { ROOT, gitHubRuntime } = dependencies;
   const {
     GitHubRuntimeBudgetError,
     claimPublicReadFallback,

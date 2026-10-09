@@ -20,6 +20,115 @@ import { isCommitSha, normalizeEvidence, splitFileAndLine } from "./clawsweeper-
 import { publicTableCell } from "./clawsweeper-report-helpers.js";
 import { reportEvidence } from "./clawsweeper-report-parser.js";
 
+export function sentence(value: string): string {
+  const trimmed = value.trim();
+  if (!trimmed) return "";
+  return /[.!?)]$/.test(trimmed) ? trimmed : `${trimmed}.`;
+}
+
+export function normalizePublicReviewText(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/https?:\/\/\S+/g, "")
+    .replace(/[`*_~#[\]()>.,:;!?'"-]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+export function publicReviewTextDiffers(left: string, right: string): boolean {
+  const normalizedLeft = normalizePublicReviewText(left);
+  const normalizedRight = normalizePublicReviewText(right);
+  if (!normalizedLeft || !normalizedRight) return normalizedLeft !== normalizedRight;
+  return (
+    normalizedLeft !== normalizedRight &&
+    !normalizedLeft.includes(normalizedRight) &&
+    !normalizedRight.includes(normalizedLeft)
+  );
+}
+
+export function isReportNoneList(value: string): boolean {
+  return !value.trim() || value.trim() === "- none";
+}
+
+export function priorityLabel(priority: ReviewFinding["priority"]): string {
+  return `P${priority}`;
+}
+
+export function stripListMarker(text: string): string {
+  return text
+    .trim()
+    .replace(/^[-*]\s+/, "")
+    .trim();
+}
+
+// The report stores each `risks` entry as one list item; a long entry can wrap
+// onto more lines. This returns one string for each entry.
+export function reportRiskEntries(text: string): string[] {
+  const entries: string[] = [];
+  let current: string[] = [];
+  const flush = () => {
+    const entry = current.join(" ").trim();
+    if (entry) entries.push(entry);
+    current = [];
+  };
+  for (const rawLine of text.split("\n")) {
+    const line = rawLine.trim();
+    if (!line) {
+      flush();
+      continue;
+    }
+    if (/^[-*]\s+/.test(line)) {
+      flush();
+      current.push(stripListMarker(line));
+      continue;
+    }
+    current.push(line);
+  }
+  flush();
+  return entries.filter((entry) => !isReportNoneList(entry) && !/^none[.!]?$/i.test(entry));
+}
+
+export function reviewFindingLocation(
+  finding: Pick<ReviewFinding, "file" | "lineStart" | "lineEnd">,
+): string {
+  const line =
+    finding.lineStart === finding.lineEnd
+      ? `${finding.lineStart}`
+      : `${finding.lineStart}-${finding.lineEnd}`;
+  return `${finding.file}:${line}`;
+}
+
+function realBehaviorProofReReviewGuidance(): string {
+  return "After adding proof, update the PR body; ClawSweeper should re-review automatically. If it does not, the PR author or someone with repository write access can comment `@clawsweeper re-review`.";
+}
+
+function realBehaviorProofBlockerSummary(summary: string, fallback: string): string {
+  const body = sentence(summary) || fallback;
+  if (/\b(?:@clawsweeper re-review|re-review automatically|update the PR body)\b/i.test(body)) {
+    return body;
+  }
+  return `${body} ${realBehaviorProofReReviewGuidance()}`;
+}
+
+export function publicHistoricalVerificationBlockerLine(): string {
+  return "A historical verification receipt failed or is malformed. A maintainer must resolve that verification blocker before merge; independently assessed contributor proof remains valid.";
+}
+
+// The Before merge item owns the proof ask. Other sections point to it.
+export function publicRealBehaviorProofLine(policy: RealBehaviorProofPolicy): string {
+  const proof = policy.assessment;
+  const summary = sentence(proof.summary);
+  if (proof.status === "not_applicable") {
+    return `Required by policy: the recorded not-applicable assessment does not satisfy the current PR proof policy. Put relevant after-change evidence in the main PR body, then request a fresh review with \`@clawsweeper re-review\`.${summary ? ` Recorded reviewer context: ${summary}` : ""}`;
+  }
+  return realBehaviorProofBlockerSummary(
+    summary,
+    proof.status === "mock_only"
+      ? "Tests, mocks, snapshots, lint, typechecks, and CI are supplemental only. Screenshots or videos are preferred when they can show the behavior; terminal screenshots, console output, copied live output, linked artifacts, and redacted logs count. Redact private information like IP addresses, API keys, phone numbers, non-public endpoints, and other private details before posting evidence."
+      : "The PR must include after-fix evidence from a real setup. Screenshots or videos are preferred when they can show the behavior; terminal screenshots, console output, copied live output, linked artifacts, and redacted logs count. Redact private information like IP addresses, API keys, phone numbers, non-public endpoints, and other private details before posting evidence.",
+  );
+}
+
 interface ReviewPresentationDependencies {
   docsPageUrl: (file: string, repo?: string) => string | null;
   fileUrl: (file: string, sha: string, line?: number, repo?: string) => string;
@@ -47,40 +156,10 @@ export function createReviewPresentation({
   securityConcernLocation,
   targetRepo,
 }: ReviewPresentationDependencies) {
-  function sentence(value: string): string {
-    const trimmed = value.trim();
-    if (!trimmed) return "";
-    return /[.!?)]$/.test(trimmed) ? trimmed : `${trimmed}.`;
-  }
-
-  function normalizePublicReviewText(value: string): string {
-    return value
-      .toLowerCase()
-      .replace(/https?:\/\/\S+/g, "")
-      .replace(/[`*_~#[\]()>.,:;!?'"-]+/g, " ")
-      .replace(/\s+/g, " ")
-      .trim();
-  }
-
-  function publicReviewTextDiffers(left: string, right: string): boolean {
-    const normalizedLeft = normalizePublicReviewText(left);
-    const normalizedRight = normalizePublicReviewText(right);
-    if (!normalizedLeft || !normalizedRight) return normalizedLeft !== normalizedRight;
-    return (
-      normalizedLeft !== normalizedRight &&
-      !normalizedLeft.includes(normalizedRight) &&
-      !normalizedRight.includes(normalizedLeft)
-    );
-  }
-
   function publicReviewTextIsSame(left: string, right: string): boolean {
     const normalizedLeft = normalizePublicReviewText(left);
     const normalizedRight = normalizePublicReviewText(right);
     return Boolean(normalizedLeft) && normalizedLeft === normalizedRight;
-  }
-
-  function isReportNoneList(value: string): boolean {
-    return !value.trim() || value.trim() === "- none";
   }
 
   function isLinkableSourceRef(file: string): boolean {
@@ -189,44 +268,6 @@ export function createReviewPresentation({
       });
   }
 
-  function priorityLabel(priority: ReviewFinding["priority"]): string {
-    return `P${priority}`;
-  }
-
-  function stripListMarker(text: string): string {
-    return text
-      .trim()
-      .replace(/^[-*]\s+/, "")
-      .trim();
-  }
-
-  // The report stores each `risks` entry as one list item; a long entry can wrap
-  // onto more lines. This returns one string for each entry.
-  function reportRiskEntries(text: string): string[] {
-    const entries: string[] = [];
-    let current: string[] = [];
-    const flush = () => {
-      const entry = current.join(" ").trim();
-      if (entry) entries.push(entry);
-      current = [];
-    };
-    for (const rawLine of text.split("\n")) {
-      const line = rawLine.trim();
-      if (!line) {
-        flush();
-        continue;
-      }
-      if (/^[-*]\s+/.test(line)) {
-        flush();
-        current.push(stripListMarker(line));
-        continue;
-      }
-      current.push(line);
-    }
-    flush();
-    return entries.filter((entry) => !isReportNoneList(entry) && !/^none[.!]?$/i.test(entry));
-  }
-
   function publicRiskBullets(text: string): string {
     return reportRiskEntries(text)
       .map((entry) => `- ${sentence(entry)}`)
@@ -235,16 +276,6 @@ export function createReviewPresentation({
 
   function confidenceText(score: number): string {
     return score.toFixed(2).replace(/0+$/, "").replace(/\.$/, "");
-  }
-
-  function reviewFindingLocation(
-    finding: Pick<ReviewFinding, "file" | "lineStart" | "lineEnd">,
-  ): string {
-    const line =
-      finding.lineStart === finding.lineEnd
-        ? `${finding.lineStart}`
-        : `${finding.lineStart}-${finding.lineEnd}`;
-    return `${finding.file}:${line}`;
   }
 
   function reviewFindingSummaryLine(finding: ReviewFinding): string {
@@ -297,37 +328,6 @@ export function createReviewPresentation({
           ? "Cleared"
           : "Not applicable";
     return `${prefix}: ${sentence(review.summary)}`;
-  }
-
-  function realBehaviorProofReReviewGuidance(): string {
-    return "After adding proof, update the PR body; ClawSweeper should re-review automatically. If it does not, the PR author or someone with repository write access can comment `@clawsweeper re-review`.";
-  }
-
-  function realBehaviorProofBlockerSummary(summary: string, fallback: string): string {
-    const body = sentence(summary) || fallback;
-    if (/\b(?:@clawsweeper re-review|re-review automatically|update the PR body)\b/i.test(body)) {
-      return body;
-    }
-    return `${body} ${realBehaviorProofReReviewGuidance()}`;
-  }
-
-  function publicHistoricalVerificationBlockerLine(): string {
-    return "A historical verification receipt failed or is malformed. A maintainer must resolve that verification blocker before merge; independently assessed contributor proof remains valid.";
-  }
-
-  // The Before merge item owns the proof ask. Other sections point to it.
-  function publicRealBehaviorProofLine(policy: RealBehaviorProofPolicy): string {
-    const proof = policy.assessment;
-    const summary = sentence(proof.summary);
-    if (proof.status === "not_applicable") {
-      return `Required by policy: the recorded not-applicable assessment does not satisfy the current PR proof policy. Put relevant after-change evidence in the main PR body, then request a fresh review with \`@clawsweeper re-review\`.${summary ? ` Recorded reviewer context: ${summary}` : ""}`;
-    }
-    return realBehaviorProofBlockerSummary(
-      summary,
-      proof.status === "mock_only"
-        ? "Tests, mocks, snapshots, lint, typechecks, and CI are supplemental only. Screenshots or videos are preferred when they can show the behavior; terminal screenshots, console output, copied live output, linked artifacts, and redacted logs count. Redact private information like IP addresses, API keys, phone numbers, non-public endpoints, and other private details before posting evidence."
-        : "The PR must include after-fix evidence from a real setup. Screenshots or videos are preferred when they can show the behavior; terminal screenshots, console output, copied live output, linked artifacts, and redacted logs count. Redact private information like IP addresses, API keys, phone numbers, non-public endpoints, and other private details before posting evidence.",
-    );
   }
 
   // The proof tier stays rated when the contributor proof gate does not apply,

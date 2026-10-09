@@ -3,7 +3,6 @@ import { spawnSync } from "node:child_process";
 import test from "node:test";
 
 import { createLabelMutationOperations } from "../dist/clawsweeper-label-mutations.js";
-import { normalizeLabelName } from "../dist/clawsweeper-item-policy.js";
 
 type ObservedMutation = {
   identity: string;
@@ -22,18 +21,13 @@ function createOperations(options?: {
       reads.push(args);
       return (options?.catalog ?? []) as T;
     },
-    ghObservedMutationCommand: (mutation: ObservedMutation): void => {
+    ghObservedMutationCommand: (mutation: ObservedMutation): string => {
       mutations.push(mutation);
       options?.mutate?.(mutation);
       mutation.onMutation?.();
+      return "";
     },
-    normalizeLabelName,
-    prStatusLabelForKind: () => ({
-      name: "status:ready",
-      color: "1F883D",
-      description: "Ready for maintainer review.",
-    }),
-  } as never);
+  });
   return { mutations, operations, reads };
 }
 

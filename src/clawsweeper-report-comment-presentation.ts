@@ -50,6 +50,8 @@ import {
   sanitizeArchitectureDiagram,
 } from "./clawsweeper-report-helpers.js";
 import { pullHeadShaFromReport, reviewSectionValue } from "./clawsweeper-record-metadata.js";
+import { reportRealBehaviorProofPolicy } from "./clawsweeper-proof-policy.js";
+import { pullRequestReviewReadinessFromReport } from "./clawsweeper-report-comment-helpers.js";
 
 const PRODUCT_KIND_TEXT: Record<ProductReviewKind, string> = {
   bug_fix: "Bug fix",
@@ -117,12 +119,10 @@ export function createReportCommentPresentation(
     publicRootCauseClusterBlock,
     publicSecurityReviewLine,
     publicSummaryBody,
-    pullRequestReviewReadinessFromReport,
     renderCloseCommentFromReport,
     renderOpenClawPrSurfaceFromReport,
     renderReviewMetricsDigest,
     repairLoopPassModeFromReport,
-    reportRealBehaviorProofPolicy,
     reportWorkCandidateReason,
     regressionAssessmentFromReport,
     regressionProvenanceFromReport,

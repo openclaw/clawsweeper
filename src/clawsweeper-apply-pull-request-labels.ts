@@ -14,10 +14,10 @@ import {
   reportSecurityReview,
   reportTelegramVisibleProof,
 } from "./clawsweeper-report-parser.js";
+import { prStatusLabelKindFromReport } from "./clawsweeper-label-policy.js";
 
 type ApplyPullRequestLabelDependencies = Pick<
   CreateApplyDecisionWorkflowDependencies,
-  | "prStatusLabelKindFromReport"
   | "syncFeatureShowcaseLabel"
   | "syncPrRatingLabel"
   | "syncPrStatusLabel"
@@ -48,7 +48,6 @@ export function syncApplyPullRequestLabels(
   markdown: string;
 } {
   const {
-    prStatusLabelKindFromReport,
     syncFeatureShowcaseLabel,
     syncPrRatingLabel,
     syncPrStatusLabel,

@@ -1,12 +1,8 @@
 import type { createDecisionParser } from "./clawsweeper-decision-parser.js";
 import type { createGitHubContext } from "./clawsweeper-github-context.js";
-import type { createLabelSynchronization } from "./clawsweeper-label-sync.js";
+import type { LabelMutations } from "./clawsweeper-label-mutations.js";
 import type { createReviewPresentation } from "./clawsweeper-review-presentation.js";
-import type {
-  Item,
-  PullRequestReviewReadiness,
-  ReviewStartStatusCommentResult,
-} from "./clawsweeper-types.js";
+import type { Item, ReviewStartStatusCommentResult } from "./clawsweeper-types.js";
 import { type ReviewHistoryLedger } from "./review-history.js";
 
 export interface ReviewCommentWorkflowDependencies {
@@ -34,12 +30,8 @@ export interface ReviewCommentWorkflowDependencies {
   parseGitHubItemRef: ReturnType<typeof createDecisionParser>["parseGitHubItemRef"];
   ensureDir: (path: string) => void;
   sentence: ReturnType<typeof createReviewPresentation>["sentence"];
-  pullRequestReviewReadinessFromReport: (markdown: string) => PullRequestReviewReadiness;
-  securitySensitiveRepairAllowed: (markdown: string) => boolean;
-  isIssueAdvisoryLabel: ReturnType<typeof createLabelSynchronization>["isIssueAdvisoryLabel"];
-  removeIssueLabel: ReturnType<typeof createLabelSynchronization>["removeIssueLabel"];
+  removeIssueLabel: LabelMutations["removeIssueLabel"];
   realBehaviorProofBlocksMerge: (markdown: string) => boolean;
-  normalizedLabelSet: (labels: readonly string[]) => Set<string>;
   isClawSweeperOwnedLabel: (label: string) => boolean;
   reviewHistoryForStaleComment: (body: string | undefined) => ReviewHistoryLedger;
   currentReviewRevision: (item: Item) => string;

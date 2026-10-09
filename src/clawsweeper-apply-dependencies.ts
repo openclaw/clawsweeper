@@ -201,7 +201,6 @@ export interface CreateApplyDecisionWorkflowDependencies {
     actionTaken: string,
     options: { emitEventApplyProof: boolean; liveGuardVerified: boolean },
   ) => { guardedOpenStateVerified?: true };
-  hasNormalizedLabel: (labels: readonly string[], label: string) => boolean;
   implementedOnMainPullRequestProvenanceApplyBlock: (
     markdown: string,
     item: Item,
@@ -210,16 +209,7 @@ export interface CreateApplyDecisionWorkflowDependencies {
   ) => string | null;
   isBulkFilerExemptAuthorAssociation: (value: unknown) => boolean;
   isExactEventSourceRevisionChange: (itemKind: Item["kind"], reason: string) => boolean;
-  isGoodFirstIssue: (state: IssueAdvisoryLabelState, currentLabels: readonly string[]) => boolean;
   isMaintainerAuthorAssociation: (value: unknown) => boolean;
-  issueAdvisoryLabelStateFromReport: (
-    markdown: string,
-    options?: {
-      goodFirstIssueOptedOut?: boolean;
-      hasOpenLinkedPullRequest?: boolean;
-      locked?: boolean;
-    },
-  ) => IssueAdvisoryLabelState;
   issueRecentHumanCommentBlockReasonSafe: (number: number, days: number) => string | null;
   issueRecentHumanCommentBlockReasonFromComments: (
     comments: readonly unknown[],
@@ -296,11 +286,6 @@ export interface CreateApplyDecisionWorkflowDependencies {
     runtimeBudget?: PrCloseCoverageRuntimeBudget;
   }) => PrCloseCoverageProofGateResult;
   prCloseCoverageProofPromptTemplate: () => string;
-  prStatusLabelKindFromReport: (
-    markdown: string,
-    context: ItemContext,
-    currentLabels: readonly string[],
-  ) => PrStatusLabelKind | null;
   pullHeadShaFromContext: (context: ItemContext) => string | null;
   pullRequestClosePromotion: (
     markdown: string,

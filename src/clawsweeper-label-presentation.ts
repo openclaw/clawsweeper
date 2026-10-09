@@ -38,32 +38,31 @@ import {
   reportTelegramVisibleProof,
   triagePriorityFromReport,
 } from "./clawsweeper-report-parser.js";
+import { reportRealBehaviorProofPolicy } from "./clawsweeper-proof-policy.js";
+import {
+  nextFeatureShowcaseLabels,
+  nextPrStatusLabels,
+  prStatusLabelForKind,
+  shouldApplyFeatureShowcaseLabel,
+} from "./clawsweeper-label-policy.js";
+import {
+  isIssueAdvisoryLabel,
+  issueAdvisoryLabelStateFromReport,
+  nextImpactLabels,
+  nextIssueAdvisoryLabels,
+  nextMaturityLabels,
+  nextMergeRiskLabels,
+  nextPriorityLabels,
+  nextRealBehaviorProofMediaLabels,
+  nextRealBehaviorProofSufficientLabels,
+  nextTelegramVisibleProofLabels,
+} from "./clawsweeper-label-selection.js";
 
 export function createReportLabelPresentation(
   dependencies: CreateReportOrchestrationDependencies &
     ReturnType<typeof createReportOrchestrationFoundation>,
 ) {
-  const {
-    defaultPlansDir,
-    isFresh,
-    isIssueAdvisoryLabel,
-    issueAdvisoryLabelStateFromReport,
-    nextFeatureShowcaseLabels,
-    nextImpactLabels,
-    nextIssueAdvisoryLabels,
-    nextMaturityLabels,
-    nextMergeRiskLabels,
-    nextPrStatusLabels,
-    nextPriorityLabels,
-    nextRealBehaviorProofMediaLabels,
-    nextRealBehaviorProofSufficientLabels,
-    nextTelegramVisibleProofLabels,
-    prStatusLabelForKind,
-    prStatusLabelKindFromReportLabels,
-    reportRealBehaviorProofPolicy,
-    sentence,
-    shouldApplyFeatureShowcaseLabel,
-  } = dependencies;
+  const { defaultPlansDir, isFresh, prStatusLabelKindFromReportLabels, sentence } = dependencies;
 
   function workPlanPathForReport(file: string, plansDir = defaultPlansDir()): string {
     return join(plansDir, basename(file));

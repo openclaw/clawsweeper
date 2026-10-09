@@ -1,10 +1,7 @@
 import {
   FEATURE_SHOWCASE_LABEL,
-  FEATURE_SHOWCASE_STATUSES,
-  OVERALL_CORRECTNESS_VALUES,
   PR_STATUS_LABEL_NAMES,
   PR_STATUS_LABELS,
-  SECURITY_REVIEW_STATUSES,
 } from "./clawsweeper-policy.js";
 import {
   AUTOMERGE_LABEL,
@@ -12,345 +9,215 @@ import {
   MANUAL_ONLY_LABEL,
   MERGE_READY_LABEL,
 } from "./repair/exact-review-guard-labels.js";
-import type { RealBehaviorProofPolicy } from "./clawsweeper-proof-policy.js";
+import {
+  reportRealBehaviorProofPolicy,
+  type RealBehaviorProofPolicy,
+} from "./clawsweeper-proof-policy.js";
+import { pullRequestReviewReadinessFromReport } from "./clawsweeper-report-comment-helpers.js";
+import { mergeRiskOptionsFromReport, reportSecurityReview } from "./clawsweeper-report-parser.js";
+import { isAutomationReportAuthor } from "./clawsweeper-item-policy.js";
 import type {
   FeatureShowcase,
-  FeatureShowcaseStatus,
   ItemContext,
   MergeRiskOption,
   MergeRiskOptionCategory,
   OverallCorrectness,
   PrStatusLabelKind,
   PublicBeforeMergeItem,
-  PullRequestReviewReadiness,
   SecurityReview,
-  SecurityReviewStatus,
 } from "./clawsweeper-types.js";
 import { asRecord, nonBlankStringOrUndefined } from "./value-coerce.js";
 import { parseIsoMs } from "./iso-time.js";
 import { frontMatterValue } from "./report-front-matter.js";
 
-interface LabelPolicyDependencies {
-  isAutomationReportAuthor: (author: string | undefined) => boolean;
-  mergeRiskOptionsFromReport: (markdown: string) => MergeRiskOption[];
-  pullRequestReviewReadinessFromReport: (markdown: string) => PullRequestReviewReadiness;
-  reportRealBehaviorProofPolicy: (markdown: string) => RealBehaviorProofPolicy;
-  reportSecurityReview: (markdown: string) => SecurityReview;
+export function shouldApplyFeatureShowcaseLabel(options: {
+  isPullRequest: boolean;
+  itemCategory: string | undefined;
+  requiresNewFeature: boolean;
+  showcase: FeatureShowcase;
+  securityReview: Pick<SecurityReview, "status">;
+  overallCorrectness: OverallCorrectness;
+}): boolean {
+  return (
+    options.isPullRequest &&
+    options.showcase.status === "showcase" &&
+    (options.itemCategory === "feature" || options.requiresNewFeature) &&
+    options.securityReview.status !== "needs_attention" &&
+    options.overallCorrectness !== "patch is incorrect"
+  );
 }
 
-export function createLabelPolicy({
-  isAutomationReportAuthor,
-  mergeRiskOptionsFromReport,
-  pullRequestReviewReadinessFromReport,
-  reportRealBehaviorProofPolicy,
-  reportSecurityReview,
-}: LabelPolicyDependencies) {
-  function shouldApplyFeatureShowcaseLabel(options: {
+export function nextFeatureShowcaseLabels(
+  labels: readonly string[],
+  options: {
     isPullRequest: boolean;
     itemCategory: string | undefined;
     requiresNewFeature: boolean;
     showcase: FeatureShowcase;
     securityReview: Pick<SecurityReview, "status">;
     overallCorrectness: OverallCorrectness;
-  }): boolean {
-    return (
-      options.isPullRequest &&
-      options.showcase.status === "showcase" &&
-      (options.itemCategory === "feature" || options.requiresNewFeature) &&
-      options.securityReview.status !== "needs_attention" &&
-      options.overallCorrectness !== "patch is incorrect"
-    );
-  }
+  },
+): string[] {
+  if (labels.includes(FEATURE_SHOWCASE_LABEL)) return [...labels];
+  return shouldApplyFeatureShowcaseLabel(options)
+    ? [...labels, FEATURE_SHOWCASE_LABEL]
+    : [...labels];
+}
 
-  function nextFeatureShowcaseLabels(
-    labels: readonly string[],
-    options: {
-      isPullRequest: boolean;
-      itemCategory: string | undefined;
-      requiresNewFeature: boolean;
-      showcase: FeatureShowcase;
-      securityReview: Pick<SecurityReview, "status">;
-      overallCorrectness: OverallCorrectness;
-    },
-  ): string[] {
-    if (labels.includes(FEATURE_SHOWCASE_LABEL)) return [...labels];
-    return shouldApplyFeatureShowcaseLabel(options)
-      ? [...labels, FEATURE_SHOWCASE_LABEL]
-      : [...labels];
-  }
+function recommendedMergeRiskOptionCategory(
+  options: readonly Pick<MergeRiskOption, "category" | "recommended">[],
+): MergeRiskOptionCategory | null {
+  return options.find((option) => option.recommended)?.category ?? null;
+}
 
-  function featureShowcaseLabelsForTest(
-    labels: readonly string[],
-    options: {
-      isPullRequest?: boolean;
-      itemCategory?: string;
-      requiresNewFeature?: boolean;
-      status?: string;
-      securityReviewStatus?: string;
-      overallCorrectness?: string;
-    },
-  ): string[] {
-    const status = FEATURE_SHOWCASE_STATUSES.has(options.status as FeatureShowcaseStatus)
-      ? (options.status as FeatureShowcaseStatus)
-      : "none";
-    const securityReviewStatus = SECURITY_REVIEW_STATUSES.has(
-      options.securityReviewStatus as SecurityReviewStatus,
+function securityReviewNeedsContributorWork(options: {
+  securityReview: Pick<SecurityReview, "status">;
+  mergeRiskOptions: readonly Pick<MergeRiskOption, "category" | "recommended">[];
+}): boolean {
+  if (options.securityReview.status !== "needs_attention") return false;
+  return recommendedMergeRiskOptionCategory(options.mergeRiskOptions) !== "accept_risk";
+}
+
+// The Before-merge items own merge readiness. The status label only routes them:
+// it is "ready" only when the published comment lists no Before-merge item.
+export function prStatusLabelKind(options: {
+  reviewFailed: boolean;
+  proofPolicy: Pick<RealBehaviorProofPolicy, "blocksMerge" | "needsContributorAction">;
+  beforeMergeItems: readonly Pick<PublicBeforeMergeItem, "state">[];
+  securityReview: Pick<SecurityReview, "status">;
+  mergeRiskOptions: readonly Pick<MergeRiskOption, "category" | "recommended">[];
+  hasAutomergeLabel: boolean;
+  hasRepairLoopPauseLabel: boolean;
+  hasRecentReReviewRequest: boolean;
+  hasRecentAuthorActivity: boolean;
+}): PrStatusLabelKind | null {
+  const unresolvedWork =
+    options.proofPolicy.needsContributorAction ||
+    options.beforeMergeItems.some((item) => item.state === "needs-changes") ||
+    securityReviewNeedsContributorWork(options);
+  if (options.hasRepairLoopPauseLabel) return null;
+  if (options.hasRecentReReviewRequest) return "re_review_loop";
+  if (options.hasRecentAuthorActivity && unresolvedWork) return "actively_grinding";
+  if (options.proofPolicy.needsContributorAction) return "needs_proof";
+  if (options.proofPolicy.blocksMerge) return "needs_maintainer_proof_decision";
+  if (options.reviewFailed) return null;
+  if (unresolvedWork) return "waiting_on_author";
+  if (options.hasAutomergeLabel) return "automerge_armed";
+  if (options.beforeMergeItems.length === 0) return "ready_for_maintainer_look";
+  return null;
+}
+
+export function prStatusLabelForKind(kind: PrStatusLabelKind): (typeof PR_STATUS_LABELS)[number] {
+  const label = PR_STATUS_LABELS.find((candidate) => candidate.kind === kind);
+  if (!label) throw new Error(`unknown PR status label kind: ${kind}`);
+  return label;
+}
+
+export function nextPrStatusLabels(
+  labels: readonly string[],
+  statusKind: PrStatusLabelKind | null,
+): string[] {
+  const nextLabels = labels.filter((label) => !PR_STATUS_LABEL_NAMES.has(label));
+  if (statusKind) nextLabels.push(prStatusLabelForKind(statusKind).name);
+  return nextLabels;
+}
+
+export function hasRepairLoopPauseLabel(labels: readonly string[]): boolean {
+  const normalized = new Set(labels.map((label) => label.toLowerCase()));
+  return (
+    normalized.has(HUMAN_REVIEW_LABEL) ||
+    normalized.has(MANUAL_ONLY_LABEL) ||
+    normalized.has(MERGE_READY_LABEL)
+  );
+}
+
+export function eventTimestampMs(value: unknown): number | null {
+  const record = asRecord(value);
+  return parseIsoMs(
+    nonBlankStringOrUndefined(record.updatedAt) ?? nonBlankStringOrUndefined(record.createdAt),
+  );
+}
+
+export function isAfterReview(value: unknown, reviewedAtMs: number | null): boolean {
+  if (reviewedAtMs === null) return false;
+  const eventMs = eventTimestampMs(value);
+  return eventMs !== null && eventMs > reviewedAtMs;
+}
+
+function isReReviewRequestText(text: unknown): boolean {
+  const body = nonBlankStringOrUndefined(text)?.trim() ?? "";
+  if (!body) return false;
+  return (
+    /^\s*\/review(?:\s|$)/im.test(body) ||
+    /^\s*\/clawsweeper\s+(?:re-?review|rerun|re-run|run\s+review|review)(?:\s|$)/im.test(body) ||
+    /(?:^|\s)@clawsweeper(?:\[bot\])?\s+(?:re-?review|rerun|re-run|run\s+review|review)(?:\s|$)/im.test(
+      body,
     )
-      ? (options.securityReviewStatus as SecurityReviewStatus)
-      : "not_applicable";
-    const overallCorrectness = OVERALL_CORRECTNESS_VALUES.has(
-      options.overallCorrectness as OverallCorrectness,
-    )
-      ? (options.overallCorrectness as OverallCorrectness)
-      : "not a patch";
-    return nextFeatureShowcaseLabels(labels, {
-      isPullRequest: options.isPullRequest ?? true,
-      itemCategory: options.itemCategory,
-      requiresNewFeature: options.requiresNewFeature ?? false,
-      showcase: {
-        status,
-        reason: status === "showcase" ? "This is a high-signal feature idea." : "",
-      },
-      securityReview: { status: securityReviewStatus },
-      overallCorrectness,
-    });
-  }
+  );
+}
 
-  function recommendedMergeRiskOptionCategory(
-    options: readonly Pick<MergeRiskOption, "category" | "recommended">[],
-  ): MergeRiskOptionCategory | null {
-    return options.find((option) => option.recommended)?.category ?? null;
-  }
+export function hasRecentReReviewRequest(
+  context: Pick<ItemContext, "comments">,
+  reviewedAt: string | undefined,
+): boolean {
+  const reviewedAtMs = parseIsoMs(reviewedAt);
+  return context.comments.some((comment) => {
+    const record = asRecord(comment);
+    if (isAutomationReportAuthor(nonBlankStringOrUndefined(record.author))) return false;
+    return isAfterReview(comment, reviewedAtMs) && isReReviewRequestText(record.body);
+  });
+}
 
-  function securityReviewNeedsContributorWork(options: {
-    securityReview: Pick<SecurityReview, "status">;
-    mergeRiskOptions: readonly Pick<MergeRiskOption, "category" | "recommended">[];
-  }): boolean {
-    if (options.securityReview.status !== "needs_attention") return false;
-    return recommendedMergeRiskOptionCategory(options.mergeRiskOptions) !== "accept_risk";
-  }
-
-  // The Before-merge items own merge readiness. The status label only routes them:
-  // it is "ready" only when the published comment lists no Before-merge item.
-  function prStatusLabelKind(options: {
-    reviewFailed: boolean;
-    proofPolicy: Pick<RealBehaviorProofPolicy, "blocksMerge" | "needsContributorAction">;
-    beforeMergeItems: readonly Pick<PublicBeforeMergeItem, "state">[];
-    securityReview: Pick<SecurityReview, "status">;
-    mergeRiskOptions: readonly Pick<MergeRiskOption, "category" | "recommended">[];
-    hasAutomergeLabel: boolean;
-    hasRepairLoopPauseLabel: boolean;
-    hasRecentReReviewRequest: boolean;
-    hasRecentAuthorActivity: boolean;
-  }): PrStatusLabelKind | null {
-    const unresolvedWork =
-      options.proofPolicy.needsContributorAction ||
-      options.beforeMergeItems.some((item) => item.state === "needs-changes") ||
-      securityReviewNeedsContributorWork(options);
-    if (options.hasRepairLoopPauseLabel) return null;
-    if (options.hasRecentReReviewRequest) return "re_review_loop";
-    if (options.hasRecentAuthorActivity && unresolvedWork) return "actively_grinding";
-    if (options.proofPolicy.needsContributorAction) return "needs_proof";
-    if (options.proofPolicy.blocksMerge) return "needs_maintainer_proof_decision";
-    if (options.reviewFailed) return null;
-    if (unresolvedWork) return "waiting_on_author";
-    if (options.hasAutomergeLabel) return "automerge_armed";
-    if (options.beforeMergeItems.length === 0) return "ready_for_maintainer_look";
-    return null;
-  }
-
-  function prStatusLabelForKind(kind: PrStatusLabelKind): (typeof PR_STATUS_LABELS)[number] {
-    const label = PR_STATUS_LABELS.find((candidate) => candidate.kind === kind);
-    if (!label) throw new Error(`unknown PR status label kind: ${kind}`);
-    return label;
-  }
-
-  function nextPrStatusLabels(
-    labels: readonly string[],
-    statusKind: PrStatusLabelKind | null,
-  ): string[] {
-    const nextLabels = labels.filter((label) => !PR_STATUS_LABEL_NAMES.has(label));
-    if (statusKind) nextLabels.push(prStatusLabelForKind(statusKind).name);
-    return nextLabels;
-  }
-
-  function hasRepairLoopPauseLabel(labels: readonly string[]): boolean {
-    const normalized = new Set(labels.map((label) => label.toLowerCase()));
-    return (
-      normalized.has(HUMAN_REVIEW_LABEL) ||
-      normalized.has(MANUAL_ONLY_LABEL) ||
-      normalized.has(MERGE_READY_LABEL)
-    );
-  }
-
-  function eventTimestampMs(value: unknown): number | null {
-    const record = asRecord(value);
-    return parseIsoMs(
-      nonBlankStringOrUndefined(record.updatedAt) ?? nonBlankStringOrUndefined(record.createdAt),
-    );
-  }
-
-  function isAfterReview(value: unknown, reviewedAtMs: number | null): boolean {
-    if (reviewedAtMs === null) return false;
-    const eventMs = eventTimestampMs(value);
-    return eventMs !== null && eventMs > reviewedAtMs;
-  }
-
-  function isReReviewRequestText(text: unknown): boolean {
-    const body = nonBlankStringOrUndefined(text)?.trim() ?? "";
-    if (!body) return false;
-    return (
-      /^\s*\/review(?:\s|$)/im.test(body) ||
-      /^\s*\/clawsweeper\s+(?:re-?review|rerun|re-run|run\s+review|review)(?:\s|$)/im.test(body) ||
-      /(?:^|\s)@clawsweeper(?:\[bot\])?\s+(?:re-?review|rerun|re-run|run\s+review|review)(?:\s|$)/im.test(
-        body,
-      )
-    );
-  }
-
-  function hasRecentReReviewRequest(
-    context: Pick<ItemContext, "comments">,
-    reviewedAt: string | undefined,
-  ): boolean {
-    const reviewedAtMs = parseIsoMs(reviewedAt);
-    return context.comments.some((comment) => {
+function hasRecentAuthorActivity(
+  context: Pick<ItemContext, "comments" | "timeline">,
+  options: { reviewedAt: string | undefined; author: string | undefined },
+): boolean {
+  const author = String(options.author ?? "")
+    .trim()
+    .toLowerCase();
+  if (!author) return false;
+  const reviewedAtMs = parseIsoMs(options.reviewedAt);
+  return (
+    context.comments.some((comment) => {
       const record = asRecord(comment);
-      if (isAutomationReportAuthor(nonBlankStringOrUndefined(record.author))) return false;
-      return isAfterReview(comment, reviewedAtMs) && isReReviewRequestText(record.body);
-    });
-  }
-
-  function hasRecentAuthorActivity(
-    context: Pick<ItemContext, "comments" | "timeline">,
-    options: { reviewedAt: string | undefined; author: string | undefined },
-  ): boolean {
-    const author = String(options.author ?? "")
-      .trim()
-      .toLowerCase();
-    if (!author) return false;
-    const reviewedAtMs = parseIsoMs(options.reviewedAt);
-    return (
-      context.comments.some((comment) => {
-        const record = asRecord(comment);
-        return (
-          isAfterReview(comment, reviewedAtMs) &&
-          nonBlankStringOrUndefined(record.author)?.toLowerCase() === author
-        );
-      }) ||
-      context.timeline.some((event) => {
-        const record = asRecord(event);
-        return (
-          isAfterReview(event, reviewedAtMs) &&
-          nonBlankStringOrUndefined(record.actor)?.toLowerCase() === author &&
-          typeof record.commitId === "string" &&
-          record.commitId.length > 0
-        );
-      })
-    );
-  }
-
-  function prStatusLabelKindFromReport(
-    markdown: string,
-    context: Pick<ItemContext, "comments" | "timeline">,
-    currentLabels: readonly string[],
-  ): PrStatusLabelKind | null {
-    if (frontMatterValue(markdown, "type") !== "pull_request") return null;
-    return prStatusLabelKind({
-      reviewFailed: frontMatterValue(markdown, "review_status") === "failed",
-      proofPolicy: reportRealBehaviorProofPolicy(markdown),
-      beforeMergeItems: pullRequestReviewReadinessFromReport(markdown).items,
-      securityReview: reportSecurityReview(markdown),
-      mergeRiskOptions: mergeRiskOptionsFromReport(markdown),
-      hasAutomergeLabel: currentLabels.includes(AUTOMERGE_LABEL),
-      hasRepairLoopPauseLabel: hasRepairLoopPauseLabel(currentLabels),
-      hasRecentReReviewRequest: hasRecentReReviewRequest(
-        context,
-        frontMatterValue(markdown, "reviewed_at"),
-      ),
-      hasRecentAuthorActivity: hasRecentAuthorActivity(context, {
-        reviewedAt: frontMatterValue(markdown, "reviewed_at"),
-        author: frontMatterValue(markdown, "author"),
-      }),
-    });
-  }
-
-  function prStatusLabelsForTest(
-    labels: readonly string[],
-    options: {
-      isPullRequest?: boolean;
-      proofStatus?: string;
-      needsContributorAction?: boolean;
-      beforeMergeItems?: readonly PublicBeforeMergeItem["state"][];
-      securityStatus?: string;
-      mergeRiskOptions?: readonly Pick<MergeRiskOption, "category" | "recommended">[];
-      hasAutomergeLabel?: boolean;
-      hasRecentReReviewRequest?: boolean;
-      hasRecentAuthorActivity?: boolean;
-      reviewedAt?: string;
-      comments?: readonly {
-        author?: string;
-        body?: string;
-        createdAt?: string;
-        updatedAt?: string;
-      }[];
-    },
-  ): string[] {
-    if (options.isPullRequest === false) return nextPrStatusLabels(labels, null);
-    const hasRecentReReviewRequestValue =
-      options.hasRecentReReviewRequest ??
-      hasRecentReReviewRequest(
-        { comments: [...(options.comments ?? [])] },
-        options.reviewedAt ?? "2026-01-01T00:00:00Z",
+      return (
+        isAfterReview(comment, reviewedAtMs) &&
+        nonBlankStringOrUndefined(record.author)?.toLowerCase() === author
       );
-    const unresolvedProof = ["missing", "mock_only", "insufficient"].includes(
-      options.proofStatus ?? "",
-    );
-    const statusKind = prStatusLabelKind({
-      reviewFailed: false,
-      proofPolicy: {
-        blocksMerge: unresolvedProof,
-        needsContributorAction: unresolvedProof && (options.needsContributorAction ?? true),
-      },
-      beforeMergeItems: (options.beforeMergeItems ?? []).map((state) => ({ state })),
-      securityReview: {
-        status: SECURITY_REVIEW_STATUSES.has(options.securityStatus as SecurityReviewStatus)
-          ? (options.securityStatus as SecurityReviewStatus)
-          : "cleared",
-      },
-      mergeRiskOptions: options.mergeRiskOptions ?? [],
-      hasAutomergeLabel: options.hasAutomergeLabel ?? labels.includes(AUTOMERGE_LABEL),
-      hasRepairLoopPauseLabel: hasRepairLoopPauseLabel(labels),
-      hasRecentReReviewRequest: hasRecentReReviewRequestValue,
-      hasRecentAuthorActivity: options.hasRecentAuthorActivity === true,
-    });
-    return nextPrStatusLabels(labels, statusKind);
-  }
+    }) ||
+    context.timeline.some((event) => {
+      const record = asRecord(event);
+      return (
+        isAfterReview(event, reviewedAtMs) &&
+        nonBlankStringOrUndefined(record.actor)?.toLowerCase() === author &&
+        typeof record.commitId === "string" &&
+        record.commitId.length > 0
+      );
+    })
+  );
+}
 
-  function prStatusLabelSchemeForTest(): {
-    kind: PrStatusLabelKind;
-    name: string;
-    color: string;
-    description: string;
-  }[] {
-    return PR_STATUS_LABELS.map(({ kind, name, color, description }) => ({
-      kind,
-      name,
-      color,
-      description,
-    }));
-  }
-
-  return {
-    eventTimestampMs,
-    featureShowcaseLabelsForTest,
-    hasRepairLoopPauseLabel,
-    isAfterReview,
-    nextFeatureShowcaseLabels,
-    nextPrStatusLabels,
-    prStatusLabelForKind,
-    prStatusLabelKindFromReport,
-    prStatusLabelsForTest,
-    prStatusLabelSchemeForTest,
-    shouldApplyFeatureShowcaseLabel,
-  };
+export function prStatusLabelKindFromReport(
+  markdown: string,
+  context: Pick<ItemContext, "comments" | "timeline">,
+  currentLabels: readonly string[],
+): PrStatusLabelKind | null {
+  if (frontMatterValue(markdown, "type") !== "pull_request") return null;
+  return prStatusLabelKind({
+    reviewFailed: frontMatterValue(markdown, "review_status") === "failed",
+    proofPolicy: reportRealBehaviorProofPolicy(markdown),
+    beforeMergeItems: pullRequestReviewReadinessFromReport(markdown).items,
+    securityReview: reportSecurityReview(markdown),
+    mergeRiskOptions: mergeRiskOptionsFromReport(markdown),
+    hasAutomergeLabel: currentLabels.includes(AUTOMERGE_LABEL),
+    hasRepairLoopPauseLabel: hasRepairLoopPauseLabel(currentLabels),
+    hasRecentReReviewRequest: hasRecentReReviewRequest(
+      context,
+      frontMatterValue(markdown, "reviewed_at"),
+    ),
+    hasRecentAuthorActivity: hasRecentAuthorActivity(context, {
+      reviewedAt: frontMatterValue(markdown, "reviewed_at"),
+      author: frontMatterValue(markdown, "author"),
+    }),
+  });
 }

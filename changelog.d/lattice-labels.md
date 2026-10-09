@@ -1,0 +1,1 @@
+- Make the label policy, label selection, proof policy and PR readiness plain module exports that callers import. Label writes keep one mutation instance over the gh shell, and the sync operations build on it. This removes `label-sync`, `label-dependencies`, 21 label `*ForTest` twins and their dependency-interface members.

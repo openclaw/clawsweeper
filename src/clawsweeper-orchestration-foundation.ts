@@ -1,4 +1,3 @@
-import { createLabelSynchronization } from "./clawsweeper-label-sync.js";
 import type {
   CloseReason,
   Evidence,
@@ -25,8 +24,7 @@ import {
 } from "./report-front-matter.js";
 import { markdownRepository } from "./clawsweeper-repository-paths.js";
 import { publicTableCell } from "./clawsweeper-report-helpers.js";
-import { reportSecurityReview } from "./clawsweeper-report-parser.js";
-import { reviewSectionValue } from "./clawsweeper-record-metadata.js";
+import { reportRealBehaviorProofPolicy } from "./clawsweeper-proof-policy.js";
 
 export function createReportOrchestrationFoundation(
   dependencies: CreateReportOrchestrationDependencies &
@@ -34,17 +32,9 @@ export function createReportOrchestrationFoundation(
 ) {
   const {
     collapsedDetailsBlock,
-    ghJson,
-    ghObservedMutationCommand,
-    isBulkFilerExemptAuthorAssociation,
-    isBulkFilerExemptRepositoryPermission,
-    labelPolicy,
     markdownLink,
-    normalizeLabelName,
-    protectedLabels,
     publicReviewTextDiffers,
     repoUrlFor,
-    reportRealBehaviorProofPolicy,
     sentence,
     targetProfile,
     targetRepo,
@@ -333,50 +323,8 @@ export function createReportOrchestrationFoundation(
     ].join("\n");
   }
 
-  const labelSynchronization = createLabelSynchronization({
-    ghJson,
-    ghObservedMutationCommand,
-    hasNormalizedLabel,
-    normalizeLabelName,
-    protectedLabels,
-    isBulkFilerExemptAuthorAssociation,
-    isBulkFilerExemptRepositoryPermission,
-    reportSecurityReview,
-    reviewSectionValue,
-    labelPolicy,
-  });
-
-  const {
-    impactLabelSchemeForTest,
-    impactLabelsForTest,
-    isGitHubLabelAlreadyExistsErrorForTest,
-    isGitHubLabelCapacityErrorForTest,
-    isMissingGitHubLabelErrorForTest,
-    issueAdvisoryLabelsForTest,
-    maturityLabelSchemeForTest,
-    maturityLabelsForTest,
-    mergeRiskLabelSchemeForTest,
-    mergeRiskLabelsForTest,
-    priorityLabelSchemeForTest,
-    priorityLabelsForTest,
-    prRatingLabelSchemeForTest,
-    prRatingLabelsForTest,
-    realBehaviorProofMediaLabelsForTest,
-    realBehaviorProofSufficientLabelsForTest,
-    syncBulkFilerLabelForTest,
-    telegramVisibleProofLabelsForTest,
-  } = labelSynchronization;
-
   function realBehaviorProofBlocksMerge(markdown: string): boolean {
     return reportRealBehaviorProofPolicy(markdown).blocksMerge;
-  }
-
-  function normalizedLabelSet(labels: readonly string[]): Set<string> {
-    return new Set(labels.map(normalizeLabelName));
-  }
-
-  function hasNormalizedLabel(labels: readonly string[], label: string): boolean {
-    return normalizedLabelSet(labels).has(normalizeLabelName(label));
   }
 
   function workCandidateReasonText(section: string): string {
@@ -422,28 +370,7 @@ export function createReportOrchestrationFoundation(
     renderOpenClawPrSurfaceFromReport,
     reviewMetricsFromReport,
     renderReviewMetricsDigest,
-    labelSynchronization,
-    impactLabelSchemeForTest,
-    impactLabelsForTest,
-    isGitHubLabelAlreadyExistsErrorForTest,
-    isGitHubLabelCapacityErrorForTest,
-    isMissingGitHubLabelErrorForTest,
-    issueAdvisoryLabelsForTest,
-    maturityLabelSchemeForTest,
-    maturityLabelsForTest,
-    mergeRiskLabelSchemeForTest,
-    mergeRiskLabelsForTest,
-    priorityLabelSchemeForTest,
-    priorityLabelsForTest,
-    prRatingLabelSchemeForTest,
-    prRatingLabelsForTest,
-    realBehaviorProofMediaLabelsForTest,
-    realBehaviorProofSufficientLabelsForTest,
-    syncBulkFilerLabelForTest,
-    telegramVisibleProofLabelsForTest,
     realBehaviorProofBlocksMerge,
-    normalizedLabelSet,
-    hasNormalizedLabel,
     workCandidateReasonText,
   };
 }

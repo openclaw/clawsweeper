@@ -11,15 +11,11 @@ import type { ReviewCommentWorkflowDependencies } from "./clawsweeper-review-com
 import { asRecord, nonBlankStringOrUndefined } from "./value-coerce.js";
 import { frontMatterValue } from "./report-front-matter.js";
 import { pullHeadShaFromReport } from "./clawsweeper-record-metadata.js";
+import { isIssueAdvisoryLabel } from "./clawsweeper-label-selection.js";
 
 export function createReviewCommentIdentity(dependencies: ReviewCommentWorkflowDependencies) {
-  const {
-    githubCount,
-    isIssueAdvisoryLabel,
-    removeIssueLabel,
-    isClawSweeperOwnedLabel,
-    reviewHistoryForStaleComment,
-  } = dependencies;
+  const { githubCount, removeIssueLabel, isClawSweeperOwnedLabel, reviewHistoryForStaleComment } =
+    dependencies;
 
   function reviewCommentMarker(number: number): string {
     return `${REVIEW_COMMENT_MARKER_PREFIX} item=${number} -->`;

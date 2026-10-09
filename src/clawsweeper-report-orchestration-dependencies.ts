@@ -1,36 +1,26 @@
 import type { RealBehaviorProofPolicy } from "./clawsweeper-proof-policy.js";
-import { PR_STATUS_LABELS, type MergeRiskLabelName } from "./clawsweeper-policy.js";
 import type {
   ActionTaken,
   CloseReason,
   ContextHydration,
   Decision,
   Evidence,
-  FeatureShowcase,
   FixedPullRequest,
   GithubPageWithHeaders,
-  ImpactLabelName,
-  IssueAdvisoryLabelState,
   Item,
   ItemContext,
   LikelyOwner,
-  MaturityLabelName,
-  MergeRiskOption,
-  OverallCorrectness,
   ParsedGitHubItemRef,
   PrRating,
   PrStatusLabelKind,
-  PublicBeforeMergeItem,
   PullRequestReviewState,
   RegressionAssessment,
   PullRequestLiveActivity,
-  RealBehaviorProof,
   PublicRegressionProvenance,
   ReviewFinding,
   RootCauseClusterAssessment,
   SecurityConcern,
   SecurityReview,
-  TelegramVisibleProof,
   TriagePriority,
 } from "./clawsweeper-types.js";
 import { type RepositoryProfile } from "./repository-profiles.js";
@@ -51,7 +41,6 @@ export interface CreateReportOrchestrationDependencies {
   defaultPlansDir: (profile?: RepositoryProfile) => string;
   defaultRootCauseCluster: () => RootCauseClusterAssessment;
   ensureDir: (path: string) => void;
-  eventTimestampMs: (value: unknown) => number | null;
   fileUrl: (file: string, sha: string, line?: number, repo?: string) => string;
   filterReviewContextComments: (
     comments: readonly unknown[],
@@ -93,100 +82,16 @@ export interface CreateReportOrchestrationDependencies {
   ) => ContextHydration<T>;
   GitHubRuntimeBudgetError: new (reason: string) => Error & { readonly reason: string };
   hasUsableCloseComment: (closeComment: string) => boolean;
-  isAfterReview: (value: unknown, reviewedAtMs: number | null) => boolean;
-  isBulkFilerExemptAuthorAssociation: (value: unknown) => boolean;
-  isBulkFilerExemptRepositoryPermission: (value: unknown) => boolean;
   isFresh: (
     review: { reviewedAt: string | undefined; reviewStatus: string | undefined } | null,
   ) => boolean;
   isImplementationCloseReason: (reason: CloseReason) => boolean;
-  isIssueAdvisoryLabel: (label: string) => boolean;
   isMaintainerAuthored: (item: Pick<Item, "authorAssociation">) => boolean;
   isReportNoneList: (value: string) => boolean;
-  issueAdvisoryLabelStateFromReport: (
-    markdown: string,
-    options?: {
-      goodFirstIssueOptedOut?: boolean;
-      hasOpenLinkedPullRequest?: boolean;
-      locked?: boolean;
-    },
-  ) => IssueAdvisoryLabelState;
   isVerifiedFixedCloseReason: (reason: unknown) => boolean;
   itemSnapshotHash: (item: Item, context: ItemContext) => string;
   jsonFrontMatterValue: (value: readonly unknown[]) => string;
   labelNames: (value: unknown) => string[];
-  labelPolicy: {
-    eventTimestampMs: (value: unknown) => number | null;
-    featureShowcaseLabelsForTest: (
-      labels: readonly string[],
-      options: {
-        isPullRequest?: boolean;
-        itemCategory?: string;
-        requiresNewFeature?: boolean;
-        status?: string;
-        securityReviewStatus?: string;
-        overallCorrectness?: string;
-      },
-    ) => string[];
-    hasRepairLoopPauseLabel: (labels: readonly string[]) => boolean;
-    isAfterReview: (value: unknown, reviewedAtMs: number | null) => boolean;
-    nextFeatureShowcaseLabels: (
-      labels: readonly string[],
-      options: {
-        isPullRequest: boolean;
-        itemCategory: string | undefined;
-        requiresNewFeature: boolean;
-        showcase: FeatureShowcase;
-        securityReview: Pick<SecurityReview, "status">;
-        overallCorrectness: OverallCorrectness;
-      },
-    ) => string[];
-    nextPrStatusLabels: (
-      labels: readonly string[],
-      statusKind: PrStatusLabelKind | null,
-    ) => string[];
-    prStatusLabelForKind: (kind: PrStatusLabelKind) => (typeof PR_STATUS_LABELS)[number];
-    prStatusLabelKindFromReport: (
-      markdown: string,
-      context: Pick<ItemContext, "comments" | "timeline">,
-      currentLabels: readonly string[],
-    ) => PrStatusLabelKind | null;
-    prStatusLabelsForTest: (
-      labels: readonly string[],
-      options: {
-        isPullRequest?: boolean;
-        proofStatus?: string;
-        needsContributorAction?: boolean;
-        beforeMergeItems?: readonly PublicBeforeMergeItem["state"][];
-        securityStatus?: string;
-        mergeRiskOptions?: readonly Pick<MergeRiskOption, "category" | "recommended">[];
-        hasAutomergeLabel?: boolean;
-        hasRecentReReviewRequest?: boolean;
-        hasRecentAuthorActivity?: boolean;
-        reviewedAt?: string;
-        comments?: readonly {
-          author?: string;
-          body?: string;
-          createdAt?: string;
-          updatedAt?: string;
-        }[];
-      },
-    ) => string[];
-    prStatusLabelSchemeForTest: () => {
-      kind: PrStatusLabelKind;
-      name: string;
-      color: string;
-      description: string;
-    }[];
-    shouldApplyFeatureShowcaseLabel: (options: {
-      isPullRequest: boolean;
-      itemCategory: string | undefined;
-      requiresNewFeature: boolean;
-      showcase: FeatureShowcase;
-      securityReview: Pick<SecurityReview, "status">;
-      overallCorrectness: OverallCorrectness;
-    }) => boolean;
-  };
   likelyOwnerLines: (owners: readonly LikelyOwner[]) => string[];
   linkedRelease: (tag: string) => string;
   linkedSha: (sha: string, repo?: string) => string;
@@ -204,51 +109,11 @@ export interface CreateReportOrchestrationDependencies {
   }) => string | null;
   lowSignalUnmergeablePrConflictBlockReason: (pullValue: unknown) => string | null;
   markdownLink: (label: string, url: string) => string;
-  nextFeatureShowcaseLabels: (
-    labels: readonly string[],
-    options: {
-      isPullRequest: boolean;
-      itemCategory: string | undefined;
-      requiresNewFeature: boolean;
-      showcase: FeatureShowcase;
-      securityReview: Pick<SecurityReview, "status">;
-      overallCorrectness: OverallCorrectness;
-    },
-  ) => string[];
-  nextImpactLabels: (
-    labels: readonly string[],
-    impactLabels: readonly ImpactLabelName[],
-  ) => string[];
-  nextIssueAdvisoryLabels: (labels: readonly string[], state: IssueAdvisoryLabelState) => string[];
-  nextMaturityLabels: (
-    labels: readonly string[],
-    maturityLabels: readonly MaturityLabelName[],
-  ) => string[];
-  nextMergeRiskLabels: (
-    labels: readonly string[],
-    mergeRiskLabels: readonly MergeRiskLabelName[],
-  ) => string[];
-  nextPriorityLabels: (labels: readonly string[], triagePriority: TriagePriority) => string[];
-  nextPrStatusLabels: (labels: readonly string[], statusKind: PrStatusLabelKind | null) => string[];
-  nextRealBehaviorProofMediaLabels: (
-    labels: readonly string[],
-    proof: Pick<RealBehaviorProof, "evidenceKind">,
-  ) => string[];
-  nextRealBehaviorProofSufficientLabels: (
-    labels: readonly string[],
-    proof: Pick<RealBehaviorProof, "status">,
-  ) => string[];
-  nextTelegramVisibleProofLabels: (
-    labels: readonly string[],
-    proof: Pick<TelegramVisibleProof, "status">,
-  ) => string[];
   normalizeLabelName: (label: string) => string;
   normalizePublicReviewText: (value: string) => string;
   numberOrUndefined: (value: unknown) => number | undefined;
   parseGitHubItemRef: (value: string, path: string) => ParsedGitHubItemRef;
   priorityLabel: (priority: ReviewFinding["priority"]) => string;
-  protectedLabels: (labels: readonly string[]) => string[];
-  prStatusLabelForKind: (kind: PrStatusLabelKind) => (typeof PR_STATUS_LABELS)[number];
   prStatusLabelKindFromReportLabels: (markdown: string) => PrStatusLabelKind | null;
   publicFailedReviewReadinessBlock: (markdown: string) => string;
   publicHistoricalVerificationBlockerLine: () => string;
@@ -283,7 +148,6 @@ export interface CreateReportOrchestrationDependencies {
   ) => Pick<PullRequestLiveActivity, "headSha" | "headActivityAtMs">;
   repairLoopPassModeFromReport: (markdown: string) => "" | "autofix" | "automerge";
   repoRelativePath: (path: string) => string;
-  reportRealBehaviorProofPolicy: (markdown: string) => RealBehaviorProofPolicy;
   reportRiskEntries: (text: string) => string[];
   repoUrlFor: (repo: string, path?: string) => string;
   reviewAutomationMarkersFromReport: (markdown: string) => string;
@@ -299,14 +163,6 @@ export interface CreateReportOrchestrationDependencies {
   securityConcernSummaryLine: (concern: SecurityConcern) => string;
   securityReviewLine: (review: SecurityReview) => string;
   sentence: (value: string) => string;
-  shouldApplyFeatureShowcaseLabel: (options: {
-    isPullRequest: boolean;
-    itemCategory: string | undefined;
-    requiresNewFeature: boolean;
-    showcase: FeatureShowcase;
-    securityReview: Pick<SecurityReview, "status">;
-    overallCorrectness: OverallCorrectness;
-  }) => boolean;
   stripListMarker: (text: string) => string;
   targetProfile: () => RepositoryProfile;
   targetRepo: () => string;

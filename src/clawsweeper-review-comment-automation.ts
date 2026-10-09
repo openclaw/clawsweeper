@@ -13,16 +13,15 @@ import {
   reportReviewFindings,
   reportSecurityReview,
 } from "./clawsweeper-report-parser.js";
+import {
+  pullRequestReviewReadinessFromReport,
+  securitySensitiveRepairAllowed,
+} from "./clawsweeper-report-comment-helpers.js";
 
 export function createReviewCommentAutomation(
   dependencies: ReviewCommentWorkflowDependencies & ReturnType<typeof createReviewCommentIdentity>,
 ) {
-  const {
-    realBehaviorProofBlocksMerge,
-    pullRequestReviewReadinessFromReport,
-    securitySensitiveRepairAllowed,
-    markerAttributeValue,
-  } = dependencies;
+  const { realBehaviorProofBlocksMerge, markerAttributeValue } = dependencies;
 
   function canonicalReviewTimestamp(value: string | undefined): string | null {
     const parsed = parseIsoMs(value);

@@ -24,6 +24,19 @@ import type {
 } from "./clawsweeper-types.js";
 import type { RealBehaviorProofPolicy } from "./clawsweeper-proof-policy.js";
 import { nextStepFromReport } from "./clawsweeper-next-step.js";
+import { reportRealBehaviorProofPolicy } from "./clawsweeper-proof-policy.js";
+import {
+  isReportNoneList,
+  normalizePublicReviewText,
+  priorityLabel,
+  publicHistoricalVerificationBlockerLine,
+  publicRealBehaviorProofLine,
+  publicReviewTextDiffers,
+  reportRiskEntries,
+  reviewFindingLocation,
+  sentence,
+  stripListMarker,
+} from "./clawsweeper-review-presentation.js";
 import { validReviewLeaseIdentity } from "./review-comment-markers.js";
 import { maintainerDecisionFromReport } from "./decision-packets.js";
 import {
@@ -61,6 +74,311 @@ import { agentsPolicyStatusLine } from "./clawsweeper-report-helpers.js";
 import { markdownRepository } from "./clawsweeper-repository-paths.js";
 import { pullHeadShaFromReport, reviewSectionValue } from "./clawsweeper-record-metadata.js";
 
+function publicBeforeMergeItems(options: {
+  reviewFailed: boolean;
+  proofPolicy: RealBehaviorProofPolicy;
+  findings: readonly ReviewFinding[];
+  securityReview: SecurityReview;
+  securityRepairAllowed: boolean;
+  risks: string;
+  nextStepAssessment: NextStepAssessment | undefined;
+  patchQualityBlocked: boolean;
+  requiredRatingSteps: readonly string[];
+}): PublicBeforeMergeItem[] {
+  const items: PublicBeforeMergeItem[] = [];
+  const seen = new Map<string, PublicBeforeMergeItem>();
+  const add = (
+    label: string,
+    detail: string,
+    identity?: { distinctKey: string },
+    state: PublicBeforeMergeItem["state"] = "needs-changes",
+  ) => {
+    const rawDetail = stripListMarker(detail);
+    const cleanDetail = sentence(rawDetail);
+    // Typed findings pass a distinct key (title and location) so independent
+    // findings that share remediation wording are all kept; free-form guidance
+    // still de-duplicates on the detail text across sections.
+    const key = normalizePublicReviewText(
+      identity ? `${identity.distinctKey} ${cleanDetail}` : cleanDetail,
+    );
+    if (!cleanDetail || /^none[.!]?$/i.test(rawDetail) || isReportNoneList(cleanDetail)) return;
+    const duplicate =
+      seen.get(key) ??
+      (!identity
+        ? items.find((item) => !publicReviewTextDiffers(item.detail, cleanDetail))
+        : undefined);
+    if (duplicate) {
+      if (state === "blocked") duplicate.state = "blocked";
+      return;
+    }
+    const item = { label, detail: cleanDetail, state };
+    seen.set(key, item);
+    items.push(item);
+  };
+
+  if (options.reviewFailed) {
+    add(
+      "Retry ClawSweeper review",
+      "ClawSweeper must complete a fresh review before readiness is known.",
+      undefined,
+      "blocked",
+    );
+  }
+  if (!options.reviewFailed && options.proofPolicy.proofBlocksMerge) {
+    add(
+      options.proofPolicy.needsContributorAction
+        ? "Add real behavior proof"
+        : "Resolve real behavior proof assessment",
+      publicRealBehaviorProofLine(options.proofPolicy),
+      undefined,
+      "blocked",
+    );
+  }
+  if (!options.reviewFailed && options.proofPolicy.verificationBlocksMerge) {
+    add(
+      "Resolve historical verification",
+      publicHistoricalVerificationBlockerLine(),
+      undefined,
+      "blocked",
+    );
+  }
+  for (const finding of options.findings) {
+    add(
+      `${finding.title.trim()} (${priorityLabel(finding.priority)})`,
+      typedBlockerDetail(finding.body, `Resolve ${finding.title.trim()} before merge.`),
+      {
+        distinctKey: `${finding.title} ${reviewFindingLocation(finding)}`,
+      },
+    );
+  }
+  for (const concern of options.securityReview.concerns) {
+    add(
+      `Resolve security concern: ${concern.title.trim()}`,
+      typedBlockerDetail(concern.body, `Resolve ${concern.title.trim()} before merge.`),
+      {
+        distinctKey: `security ${concern.title}`,
+      },
+      options.securityRepairAllowed ? "needs-changes" : "blocked",
+    );
+  }
+  if (
+    options.securityReview.status === "needs_attention" &&
+    options.securityReview.concerns.length === 0
+  ) {
+    add(
+      "Resolve security review attention item",
+      typedBlockerDetail(
+        options.securityReview.summary,
+        "Resolve the security review before merge.",
+      ),
+      undefined,
+      options.securityRepairAllowed ? "needs-changes" : "blocked",
+    );
+  }
+  // Each `risks` entry is unresolved merge work; the prompt keeps settled points out.
+  for (const risk of reportRiskEntries(options.risks)) {
+    add("Resolve merge risk", risk, undefined, "blocked");
+  }
+  // The model owns next-step intent. A report without a typed next step fails closed.
+  if (options.nextStepAssessment?.kind === "required") {
+    add(
+      "Complete next step",
+      typedBlockerDetail(
+        options.nextStepAssessment.text,
+        "Complete the required follow-up from this review before merge.",
+      ),
+    );
+  } else if (!options.reviewFailed && options.nextStepAssessment === undefined) {
+    add(
+      "Run a fresh ClawSweeper review",
+      "This review report has no valid next-step record. Run a fresh exact-head review before merge.",
+      undefined,
+      "blocked",
+    );
+  }
+  // A step that deduplicates against an existing item still counts as represented remediation.
+  let ratingRemediationRepresented = false;
+  for (const step of options.requiredRatingSteps) {
+    const cleanStep = sentence(stripListMarker(step));
+    if (!cleanStep || /^none[.!]?$/i.test(cleanStep) || isReportNoneList(cleanStep)) continue;
+    ratingRemediationRepresented = true;
+    add("Improve patch quality", step);
+  }
+  // A blocked patch rating must always leave a concrete follow-up, even when the
+  // rating supplied no usable next steps and no typed findings explain the block.
+  if (
+    options.patchQualityBlocked &&
+    !ratingRemediationRepresented &&
+    options.findings.length === 0 &&
+    options.securityReview.concerns.length === 0
+  ) {
+    add(
+      "Improve patch quality",
+      "Address the low patch-quality rating before merge; see the review scores for what is holding it back.",
+    );
+  }
+
+  return items;
+}
+
+function typedBlockerDetail(detail: string, fallback: string): string {
+  return detail.trim() &&
+    !isReportNoneList(detail) &&
+    !/^(?:none|n\/a|not applicable)[.!]?$/i.test(detail.trim())
+    ? detail
+    : fallback;
+}
+
+export function securitySensitiveRepairAllowed(markdown: string): boolean {
+  const labels = frontMatterStringArray(markdown, "labels");
+  return (
+    frontMatterValue(markdown, "decision") === "keep_open" &&
+    (labels.includes(AUTOFIX_LABEL) || labels.includes(AUTOMERGE_LABEL))
+  );
+}
+
+export function pullRequestReviewReadinessFromReport(markdown: string): PullRequestReviewReadiness {
+  let headSha: string | null = null;
+  try {
+    const candidate = pullHeadShaFromReport(markdown);
+    headSha = candidate && /^[0-9a-f]{40}$/i.test(candidate) ? candidate.toLowerCase() : null;
+    const reviewStatus = frontMatterValue(markdown, "review_status");
+    const decisionPending = Boolean(maintainerDecisionFromReport(markdown)?.required);
+    const rating = reportPrRating(markdown);
+    const patchQualityBlocked = rating.patchTier === "F" || rating.patchTier === "D";
+    const items = publicBeforeMergeItems({
+      reviewFailed: reviewStatus !== "complete",
+      proofPolicy: reportRealBehaviorProofPolicy(markdown),
+      findings: reportReviewFindings(markdown),
+      securityReview: reportSecurityReview(markdown),
+      securityRepairAllowed: securitySensitiveRepairAllowed(markdown),
+      risks: reviewSectionValue(markdown, "risks"),
+      nextStepAssessment: nextStepFromReport(markdown),
+      patchQualityBlocked,
+      requiredRatingSteps: patchQualityBlocked ? rating.nextSteps : [],
+    });
+    const block = (condition: boolean, label: string, detail: string) => {
+      if (condition) items.push({ state: "blocked", label, detail });
+    };
+    const number = frontMatterValue(markdown, "number") ?? "";
+    block(
+      !/^[1-9]\d*$/.test(number) ||
+        !Number.isSafeInteger(Number(number)) ||
+        !headSha ||
+        parseIsoMs(frontMatterValue(markdown, "reviewed_at")) === null ||
+        !validReviewLeaseIdentity(
+          frontMatterValue(markdown, "review_lease_owner"),
+          frontMatterValue(markdown, "review_lease_comment_id"),
+        ),
+      "Bind the durable review identity",
+      "Record the exact pull request, head, review time, and owned lease before publishing readiness.",
+    );
+    block(
+      frontMatterValue(markdown, "confidence") !== "high",
+      "Resolve review confidence",
+      "ClawSweeper must reach high confidence before merge readiness is known.",
+    );
+    block(
+      frontMatterValue(markdown, "decision") !== "keep_open",
+      "Resolve review disposition",
+      "Only a keep-open review can publish merge readiness.",
+    );
+    block(
+      decisionPending,
+      "Resolve maintainer decision",
+      "Resolve the maintainer decision shown above before merge.",
+    );
+    const product = reportProductReview(markdown);
+    block(
+      product.worthIt === "no",
+      "Product: not worth merging",
+      product.reason || "The review found no user problem that justifies this change.",
+    );
+    // A maintainer decision packet already asks the owner; one blocker is enough.
+    block(
+      product.worthIt === "needs_maintainer" && !decisionPending,
+      "Product call needed",
+      product.reason || "An owner must decide whether this change belongs in the product.",
+    );
+    // The model owns the stored-data judgement; the host only shows its verdict.
+    block(
+      reportRealBehaviorProofPolicy(markdown).assessment.dataModelCompatibility === "insufficient",
+      "Add data-model compatibility proof",
+      "The review found that existing stored data may not work after upgrade. Show that existing data still loads and works with this change.",
+    );
+    // The close path failed, not the patch. A maintainer decides between close and land.
+    block(
+      frontMatterValue(markdown, "action_taken") === "skipped_pr_close_coverage_proof",
+      "Maintainer: close or keep this PR",
+      "The review found that this PR may be superseded, but the close check did not confirm that the other PR covers all of its work. A maintainer must close this PR or confirm that it still has work to land.",
+    );
+    const correctness = reportOverallCorrectness(markdown);
+    if (
+      correctness === "patch is incorrect" &&
+      !items.some((item) => item.state === "needs-changes")
+    ) {
+      items.push({
+        state: "needs-changes",
+        label: "Correct the reviewed patch",
+        detail: typedBlockerDetail(
+          rating.summary,
+          "The review found the patch incorrect. See the merge readiness summary above for the reason.",
+        ),
+      });
+    } else {
+      block(
+        reviewStatus === "complete" &&
+          correctness !== "patch is correct" &&
+          correctness !== "patch is incorrect",
+        "Complete the correctness assessment",
+        "Record a definitive patch correctness assessment before merge.",
+      );
+    }
+    if (
+      frontMatterValue(markdown, "work_candidate") === "queue_fix_pr" &&
+      !items.some((item) => item.state === "needs-changes")
+    ) {
+      items.push({
+        state: "needs-changes",
+        label: "Complete the queued repair",
+        detail: "Apply the queued review repair and run a fresh exact-head review before merge.",
+      });
+    }
+    for (const entry of reportProvenance(markdown)) {
+      if (entry.verdict !== "overrides_without_reason") continue;
+      items.push({
+        state: "needs-changes",
+        label: `Explain or restore the original intent of ${entry.area}`,
+        detail: `${entry.introducedBy}: ${entry.originalReason || "reason not recorded"}`,
+      });
+    }
+    return {
+      headSha,
+      state: items.some((item) => item.state === "blocked")
+        ? "blocked"
+        : items.length
+          ? "needs-changes"
+          : "ready",
+      items,
+      normalizationFailed: false,
+    };
+  } catch {
+    return {
+      headSha,
+      state: "blocked",
+      normalizationFailed: true,
+      items: [
+        {
+          state: "blocked",
+          label: "Regenerate malformed review report",
+          detail:
+            "Regenerate the ClawSweeper report and run a fresh exact-head review before merge.",
+        },
+      ],
+    };
+  }
+}
+
 export function createReportCommentHelpers(
   dependencies: CreateReportRenderingDependencies & ReturnType<typeof createReportContextRendering>,
 ) {
@@ -75,22 +393,11 @@ export function createReportCommentHelpers(
     duplicateCanonicalPathLine,
     fixedPullRequestFromReport,
     formatReviewFreshnessTimestamp,
-    isReportNoneList,
     likelyOwnerLines,
     markdownLink,
-    normalizePublicReviewText,
-    priorityLabel,
-    publicHistoricalVerificationBlockerLine,
-    publicRealBehaviorProofLine,
-    publicReviewTextDiffers,
     publicReviewTextIsSame,
-    reportRiskEntries,
-    reportRealBehaviorProofPolicy,
-    reviewFindingLocation,
     securityConcernDetailedLine,
     securityReviewLine,
-    sentence,
-    stripListMarker,
     workCandidateReasonText,
   } = dependencies;
 
@@ -268,312 +575,6 @@ export function createReportCommentHelpers(
 
   function appendHeadingSection(lines: string[], heading: string, body: string): void {
     lines.push(`## ${heading}`, "", body, "");
-  }
-
-  function publicBeforeMergeItems(options: {
-    reviewFailed: boolean;
-    proofPolicy: RealBehaviorProofPolicy;
-    findings: readonly ReviewFinding[];
-    securityReview: SecurityReview;
-    securityRepairAllowed: boolean;
-    risks: string;
-    nextStepAssessment: NextStepAssessment | undefined;
-    patchQualityBlocked: boolean;
-    requiredRatingSteps: readonly string[];
-  }): PublicBeforeMergeItem[] {
-    const items: PublicBeforeMergeItem[] = [];
-    const seen = new Map<string, PublicBeforeMergeItem>();
-    const add = (
-      label: string,
-      detail: string,
-      identity?: { distinctKey: string },
-      state: PublicBeforeMergeItem["state"] = "needs-changes",
-    ) => {
-      const rawDetail = stripListMarker(detail);
-      const cleanDetail = sentence(rawDetail);
-      // Typed findings pass a distinct key (title and location) so independent
-      // findings that share remediation wording are all kept; free-form guidance
-      // still de-duplicates on the detail text across sections.
-      const key = normalizePublicReviewText(
-        identity ? `${identity.distinctKey} ${cleanDetail}` : cleanDetail,
-      );
-      if (!cleanDetail || /^none[.!]?$/i.test(rawDetail) || isReportNoneList(cleanDetail)) return;
-      const duplicate =
-        seen.get(key) ??
-        (!identity
-          ? items.find((item) => !publicReviewTextDiffers(item.detail, cleanDetail))
-          : undefined);
-      if (duplicate) {
-        if (state === "blocked") duplicate.state = "blocked";
-        return;
-      }
-      const item = { label, detail: cleanDetail, state };
-      seen.set(key, item);
-      items.push(item);
-    };
-
-    if (options.reviewFailed) {
-      add(
-        "Retry ClawSweeper review",
-        "ClawSweeper must complete a fresh review before readiness is known.",
-        undefined,
-        "blocked",
-      );
-    }
-    if (!options.reviewFailed && options.proofPolicy.proofBlocksMerge) {
-      add(
-        options.proofPolicy.needsContributorAction
-          ? "Add real behavior proof"
-          : "Resolve real behavior proof assessment",
-        publicRealBehaviorProofLine(options.proofPolicy),
-        undefined,
-        "blocked",
-      );
-    }
-    if (!options.reviewFailed && options.proofPolicy.verificationBlocksMerge) {
-      add(
-        "Resolve historical verification",
-        publicHistoricalVerificationBlockerLine(),
-        undefined,
-        "blocked",
-      );
-    }
-    for (const finding of options.findings) {
-      add(
-        `${finding.title.trim()} (${priorityLabel(finding.priority)})`,
-        typedBlockerDetail(finding.body, `Resolve ${finding.title.trim()} before merge.`),
-        {
-          distinctKey: `${finding.title} ${reviewFindingLocation(finding)}`,
-        },
-      );
-    }
-    for (const concern of options.securityReview.concerns) {
-      add(
-        `Resolve security concern: ${concern.title.trim()}`,
-        typedBlockerDetail(concern.body, `Resolve ${concern.title.trim()} before merge.`),
-        {
-          distinctKey: `security ${concern.title}`,
-        },
-        options.securityRepairAllowed ? "needs-changes" : "blocked",
-      );
-    }
-    if (
-      options.securityReview.status === "needs_attention" &&
-      options.securityReview.concerns.length === 0
-    ) {
-      add(
-        "Resolve security review attention item",
-        typedBlockerDetail(
-          options.securityReview.summary,
-          "Resolve the security review before merge.",
-        ),
-        undefined,
-        options.securityRepairAllowed ? "needs-changes" : "blocked",
-      );
-    }
-    // Each `risks` entry is unresolved merge work; the prompt keeps settled points out.
-    for (const risk of reportRiskEntries(options.risks)) {
-      add("Resolve merge risk", risk, undefined, "blocked");
-    }
-    // The model owns next-step intent. A report without a typed next step fails closed.
-    if (options.nextStepAssessment?.kind === "required") {
-      add(
-        "Complete next step",
-        typedBlockerDetail(
-          options.nextStepAssessment.text,
-          "Complete the required follow-up from this review before merge.",
-        ),
-      );
-    } else if (!options.reviewFailed && options.nextStepAssessment === undefined) {
-      add(
-        "Run a fresh ClawSweeper review",
-        "This review report has no valid next-step record. Run a fresh exact-head review before merge.",
-        undefined,
-        "blocked",
-      );
-    }
-    // A step that deduplicates against an existing item still counts as represented remediation.
-    let ratingRemediationRepresented = false;
-    for (const step of options.requiredRatingSteps) {
-      const cleanStep = sentence(stripListMarker(step));
-      if (!cleanStep || /^none[.!]?$/i.test(cleanStep) || isReportNoneList(cleanStep)) continue;
-      ratingRemediationRepresented = true;
-      add("Improve patch quality", step);
-    }
-    // A blocked patch rating must always leave a concrete follow-up, even when the
-    // rating supplied no usable next steps and no typed findings explain the block.
-    if (
-      options.patchQualityBlocked &&
-      !ratingRemediationRepresented &&
-      options.findings.length === 0 &&
-      options.securityReview.concerns.length === 0
-    ) {
-      add(
-        "Improve patch quality",
-        "Address the low patch-quality rating before merge; see the review scores for what is holding it back.",
-      );
-    }
-
-    return items;
-  }
-
-  function typedBlockerDetail(detail: string, fallback: string): string {
-    return detail.trim() &&
-      !isReportNoneList(detail) &&
-      !/^(?:none|n\/a|not applicable)[.!]?$/i.test(detail.trim())
-      ? detail
-      : fallback;
-  }
-
-  function securitySensitiveRepairAllowed(markdown: string): boolean {
-    const labels = frontMatterStringArray(markdown, "labels");
-    return (
-      frontMatterValue(markdown, "decision") === "keep_open" &&
-      (labels.includes(AUTOFIX_LABEL) || labels.includes(AUTOMERGE_LABEL))
-    );
-  }
-
-  function pullRequestReviewReadinessFromReport(markdown: string): PullRequestReviewReadiness {
-    let headSha: string | null = null;
-    try {
-      const candidate = pullHeadShaFromReport(markdown);
-      headSha = candidate && /^[0-9a-f]{40}$/i.test(candidate) ? candidate.toLowerCase() : null;
-      const reviewStatus = frontMatterValue(markdown, "review_status");
-      const decisionPending = Boolean(maintainerDecisionFromReport(markdown)?.required);
-      const rating = reportPrRating(markdown);
-      const patchQualityBlocked = rating.patchTier === "F" || rating.patchTier === "D";
-      const items = publicBeforeMergeItems({
-        reviewFailed: reviewStatus !== "complete",
-        proofPolicy: reportRealBehaviorProofPolicy(markdown),
-        findings: reportReviewFindings(markdown),
-        securityReview: reportSecurityReview(markdown),
-        securityRepairAllowed: securitySensitiveRepairAllowed(markdown),
-        risks: reviewSectionValue(markdown, "risks"),
-        nextStepAssessment: nextStepFromReport(markdown),
-        patchQualityBlocked,
-        requiredRatingSteps: patchQualityBlocked ? rating.nextSteps : [],
-      });
-      const block = (condition: boolean, label: string, detail: string) => {
-        if (condition) items.push({ state: "blocked", label, detail });
-      };
-      const number = frontMatterValue(markdown, "number") ?? "";
-      block(
-        !/^[1-9]\d*$/.test(number) ||
-          !Number.isSafeInteger(Number(number)) ||
-          !headSha ||
-          parseIsoMs(frontMatterValue(markdown, "reviewed_at")) === null ||
-          !validReviewLeaseIdentity(
-            frontMatterValue(markdown, "review_lease_owner"),
-            frontMatterValue(markdown, "review_lease_comment_id"),
-          ),
-        "Bind the durable review identity",
-        "Record the exact pull request, head, review time, and owned lease before publishing readiness.",
-      );
-      block(
-        frontMatterValue(markdown, "confidence") !== "high",
-        "Resolve review confidence",
-        "ClawSweeper must reach high confidence before merge readiness is known.",
-      );
-      block(
-        frontMatterValue(markdown, "decision") !== "keep_open",
-        "Resolve review disposition",
-        "Only a keep-open review can publish merge readiness.",
-      );
-      block(
-        decisionPending,
-        "Resolve maintainer decision",
-        "Resolve the maintainer decision shown above before merge.",
-      );
-      const product = reportProductReview(markdown);
-      block(
-        product.worthIt === "no",
-        "Product: not worth merging",
-        product.reason || "The review found no user problem that justifies this change.",
-      );
-      // A maintainer decision packet already asks the owner; one blocker is enough.
-      block(
-        product.worthIt === "needs_maintainer" && !decisionPending,
-        "Product call needed",
-        product.reason || "An owner must decide whether this change belongs in the product.",
-      );
-      // The model owns the stored-data judgement; the host only shows its verdict.
-      block(
-        reportRealBehaviorProofPolicy(markdown).assessment.dataModelCompatibility ===
-          "insufficient",
-        "Add data-model compatibility proof",
-        "The review found that existing stored data may not work after upgrade. Show that existing data still loads and works with this change.",
-      );
-      // The close path failed, not the patch. A maintainer decides between close and land.
-      block(
-        frontMatterValue(markdown, "action_taken") === "skipped_pr_close_coverage_proof",
-        "Maintainer: close or keep this PR",
-        "The review found that this PR may be superseded, but the close check did not confirm that the other PR covers all of its work. A maintainer must close this PR or confirm that it still has work to land.",
-      );
-      const correctness = reportOverallCorrectness(markdown);
-      if (
-        correctness === "patch is incorrect" &&
-        !items.some((item) => item.state === "needs-changes")
-      ) {
-        items.push({
-          state: "needs-changes",
-          label: "Correct the reviewed patch",
-          detail: typedBlockerDetail(
-            rating.summary,
-            "The review found the patch incorrect. See the merge readiness summary above for the reason.",
-          ),
-        });
-      } else {
-        block(
-          reviewStatus === "complete" &&
-            correctness !== "patch is correct" &&
-            correctness !== "patch is incorrect",
-          "Complete the correctness assessment",
-          "Record a definitive patch correctness assessment before merge.",
-        );
-      }
-      if (
-        frontMatterValue(markdown, "work_candidate") === "queue_fix_pr" &&
-        !items.some((item) => item.state === "needs-changes")
-      ) {
-        items.push({
-          state: "needs-changes",
-          label: "Complete the queued repair",
-          detail: "Apply the queued review repair and run a fresh exact-head review before merge.",
-        });
-      }
-      for (const entry of reportProvenance(markdown)) {
-        if (entry.verdict !== "overrides_without_reason") continue;
-        items.push({
-          state: "needs-changes",
-          label: `Explain or restore the original intent of ${entry.area}`,
-          detail: `${entry.introducedBy}: ${entry.originalReason || "reason not recorded"}`,
-        });
-      }
-      return {
-        headSha,
-        state: items.some((item) => item.state === "blocked")
-          ? "blocked"
-          : items.length
-            ? "needs-changes"
-            : "ready",
-        items,
-        normalizationFailed: false,
-      };
-    } catch {
-      return {
-        headSha,
-        state: "blocked",
-        normalizationFailed: true,
-        items: [
-          {
-            state: "blocked",
-            label: "Regenerate malformed review report",
-            detail:
-              "Regenerate the ClawSweeper report and run a fresh exact-head review before merge.",
-          },
-        ],
-      };
-    }
   }
 
   function publicChecklistText(value: string): string {
@@ -817,9 +818,6 @@ export function createReportCommentHelpers(
     collapsedDetailsBlock,
     appendPublicSection,
     appendHeadingSection,
-    publicBeforeMergeItems,
-    pullRequestReviewReadinessFromReport,
-    securitySensitiveRepairAllowed,
     publicChecklistText,
     publicChecklistLabel,
     publicBeforeMergeBlock,

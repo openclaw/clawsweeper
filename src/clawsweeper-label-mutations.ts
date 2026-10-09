@@ -31,19 +31,39 @@ import type {
   PrRatingTier,
   PrStatusLabelKind,
 } from "./clawsweeper-types.js";
-import type { LabelSynchronizationDependencies } from "./clawsweeper-label-dependencies.js";
-import type { createLabelSelectionPolicy } from "./clawsweeper-label-selection.js";
+import { normalizeLabelName } from "./clawsweeper-item-policy.js";
+import { prStatusLabelForKind } from "./clawsweeper-label-policy.js";
+import type { PriorityLabelSpec } from "./clawsweeper-label-selection.js";
 
-export function createLabelMutationOperations(
-  dependencies: LabelSynchronizationDependencies & ReturnType<typeof createLabelSelectionPolicy>,
-) {
-  const { ghJson, ghObservedMutationCommand, normalizeLabelName, prStatusLabelForKind } =
-    dependencies;
+export function labelAlreadyExistsError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /already exists/i.test(message);
+}
 
-  type PriorityLabelSpec = NonNullable<
-    ReturnType<ReturnType<typeof createLabelSelectionPolicy>["priorityLabelForTriage"]>
-  >;
+export function missingLabelError(error: unknown, label: string): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.includes(`'${label}' not found`) || message.includes(`"${label}" not found`);
+}
 
+export function labelCapacityError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /labels can have a maximum of 100 labels/i.test(message);
+}
+
+// The gh shell that label writes go through.
+export interface LabelGh {
+  ghJson: <T>(args: string[]) => T;
+  ghObservedMutationCommand: (options: {
+    identity: string;
+    args: string[];
+    attempts?: number | undefined;
+    onMutation?: (() => void) | undefined;
+    knownNoMutation?: ((error: unknown) => boolean) | undefined;
+  }) => string;
+}
+
+// One instance owns the pending label batch and the label catalog cache.
+export function createLabelMutationOperations({ ghJson, ghObservedMutationCommand }: LabelGh) {
   type LabelDefinition = {
     name: string;
     color: string;
@@ -401,13 +421,6 @@ export function createLabelMutationOperations(
       knownNoMutation: (error) => missingLabelError(error, label) || labelCapacityError(error),
     });
   }
-  function labelAlreadyExistsError(error: unknown): boolean {
-    const message = error instanceof Error ? error.message : String(error);
-    return /already exists/i.test(message);
-  }
-  function isGitHubLabelAlreadyExistsErrorForTest(message: string): boolean {
-    return labelAlreadyExistsError(new Error(message));
-  }
   function ensurePriorityLabel(label: PriorityLabelSpec, onMutation?: () => void): void {
     ensureLabelDefinition(label, onMutation);
   }
@@ -480,14 +493,6 @@ export function createLabelMutationOperations(
       onMutation,
     );
   }
-  function missingLabelError(error: unknown, label: string): boolean {
-    const message = error instanceof Error ? error.message : String(error);
-    return message.includes(`'${label}' not found`) || message.includes(`"${label}" not found`);
-  }
-  function labelCapacityError(error: unknown): boolean {
-    const message = error instanceof Error ? error.message : String(error);
-    return /labels can have a maximum of 100 labels/i.test(message);
-  }
   function tryAddOptionalLabel(options: {
     number: number;
     label: string;
@@ -517,12 +522,6 @@ export function createLabelMutationOperations(
       );
       return false;
     }
-  }
-  function isMissingGitHubLabelErrorForTest(message: string, label: string): boolean {
-    return missingLabelError(new Error(message), label);
-  }
-  function isGitHubLabelCapacityErrorForTest(message: string): boolean {
-    return labelCapacityError(new Error(message));
   }
   function ensureRealBehaviorProofSufficientLabel(onMutation?: () => void): boolean {
     try {
@@ -563,8 +562,6 @@ export function createLabelMutationOperations(
     flushIssueLabelMutationBatch,
     removeIssueLabel,
     addIssueLabel,
-    labelAlreadyExistsError,
-    isGitHubLabelAlreadyExistsErrorForTest,
     ensurePriorityLabel,
     ensureImpactLabel,
     ensureBulkFilerLabel,
@@ -576,12 +573,10 @@ export function createLabelMutationOperations(
     ensurePrStatusLabel,
     ensureTelegramVisibleProofLabel,
     ensureIdeaArchiveLabel,
-    missingLabelError,
-    labelCapacityError,
     tryAddOptionalLabel,
-    isMissingGitHubLabelErrorForTest,
-    isGitHubLabelCapacityErrorForTest,
     ensureRealBehaviorProofSufficientLabel,
     ensureRealBehaviorProofMediaLabel,
   };
 }
+
+export type LabelMutations = ReturnType<typeof createLabelMutationOperations>;

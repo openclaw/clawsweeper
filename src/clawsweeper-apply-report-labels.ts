@@ -16,15 +16,17 @@ import {
   mergeRiskLabelsFromReport,
   triagePriorityFromReport,
 } from "./clawsweeper-report-parser.js";
+import { hasNormalizedLabel } from "./clawsweeper-item-policy.js";
+import {
+  isGoodFirstIssue,
+  issueAdvisoryLabelStateFromReport,
+} from "./clawsweeper-label-selection.js";
 
 type ApplyReportLabelDependencies = Pick<
   CreateApplyDecisionWorkflowDependencies,
   | "bulkFilerRepositoryPermission"
   | "closingPullRequestsForIssue"
-  | "hasNormalizedLabel"
   | "isBulkFilerExemptAuthorAssociation"
-  | "isGoodFirstIssue"
-  | "issueAdvisoryLabelStateFromReport"
   | "openClosingPullRequestApplyReason"
   | "syncBulkFilerLabel"
   | "syncImpactLabels"
@@ -73,10 +75,7 @@ export function syncApplyReportLabels(
   const {
     bulkFilerRepositoryPermission,
     closingPullRequestsForIssue,
-    hasNormalizedLabel,
     isBulkFilerExemptAuthorAssociation,
-    isGoodFirstIssue,
-    issueAdvisoryLabelStateFromReport,
     openClosingPullRequestApplyReason,
     syncBulkFilerLabel,
     syncImpactLabels,

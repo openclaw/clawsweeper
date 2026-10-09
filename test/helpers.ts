@@ -379,6 +379,90 @@ ${values.nextSteps}
 `;
 }
 
+/** A pull request report with a recorded proof assessment. */
+export function pullRequestProofReport(options: {
+  author: string;
+  association: string;
+  status?: "missing" | "mock_only" | "insufficient" | "sufficient";
+  securityAttention?: boolean;
+  authorityChainProofRequired?: boolean;
+  labels?: string[];
+  frontMatter?: Record<string, unknown>;
+  sections?: string;
+}): string {
+  const status = options.status ?? "missing";
+  const sufficient = status === "sufficient";
+  const proofTier = sufficient ? "A" : status === "missing" ? "F" : "D";
+  return `${reviewReportFrontMatter({
+    type: "pull_request",
+    number: "119610",
+    decision: "keep_open",
+    close_reason: "none",
+    review_status: "complete",
+    confidence: "high",
+    author: options.author,
+    author_association: options.association,
+    labels: JSON.stringify(options.labels ?? ["clawsweeper:automerge"]),
+    work_candidate: "none",
+    pull_head_sha: "abc123def456abc123def456abc123def456abcd",
+    ...options.frontMatter,
+  })}
+
+## Summary
+
+Keep this focused pull request open for maintainer review.
+
+## What This Changes
+
+Keeps pull request evidence checks aligned with their actual scope.
+
+## Best Possible Solution
+
+Continue normal maintainer review.
+
+${realBehaviorProofReportSection({
+  status,
+  evidenceKind: sufficient ? "terminal" : "none",
+  needsContributorAction: !sufficient,
+  summary: options.authorityChainProofRequired
+    ? sufficient
+      ? "Authority-chain proof required: a terminal trace shows the nearest forbidden principal rejected before provider I/O."
+      : "Authority-chain proof required: the nearest forbidden principal was not exercised before provider I/O."
+    : sufficient
+      ? "The maintainer supplied terminal output from the changed production path."
+      : "The reviewer did not find contributor-supplied live proof.",
+})}
+
+${prRatingReportSection({
+  overallTier: proofTier,
+  proofTier,
+  patchTier: "A",
+  summary: "The model capped readiness based on its recorded proof assessment.",
+  nextSteps: sufficient ? "- none" : "- Add real behavior proof.",
+})}
+
+${
+  options.securityAttention
+    ? `## Security Review
+
+Status: needs_attention
+
+Summary: The changed authorization boundary requires maintainer review.
+
+`
+    : ""
+}${options.sections ?? ""}## Review Findings
+
+Overall correctness: patch is correct
+
+Overall confidence: 0.9
+
+Full review comments:
+
+- none
+`;
+}
+
 export function detailsBody(markdown, summary) {
   const marker = `<summary>${summary}</summary>`;
   let markerIndex = markdown.indexOf(marker);
