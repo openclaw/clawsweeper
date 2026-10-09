@@ -397,7 +397,10 @@ fs.writeFileSync(process.argv[process.argv.indexOf('--output-last-message') + 1]
 
   comments = [{ id: 7, body: posted.body, user: { login: "spoofer" } }];
   workflow.assistPublishCommand(args);
-  assert.equal(writes.at(-1)!.args[3], "POST");
+  assert.deepEqual(
+    writes.map((write) => write.args[3]),
+    ["POST", "POST"],
+  );
 
   comments = [
     { id: 8, body: `${posted.body}\nstale`, user: { login: "openclaw-clawsweeper[bot]" } },
