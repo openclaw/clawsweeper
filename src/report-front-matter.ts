@@ -86,16 +86,13 @@ export function readReportFrontMatterField(markdown: string, key: string): Front
 }
 
 // Decoded field: trimmed, with one pair of enclosing double quotes removed. An empty
-// value is ambiguous.
+// value, quoted or not, is ambiguous.
 export function frontMatterField(markdown: string, key: string): FrontMatterField {
   const field = readReportFrontMatterField(markdown, key);
   if (field.status !== "value") return field;
-  const value = field.value.trim();
-  if (!value) return { status: "ambiguous" };
-  return {
-    status: "value",
-    value: value.startsWith('"') && value.endsWith('"') ? value.slice(1, -1) : value,
-  };
+  const raw = field.value.trim();
+  const value = raw.length > 1 && raw.startsWith('"') && raw.endsWith('"') ? raw.slice(1, -1) : raw;
+  return value ? { status: "value", value } : { status: "ambiguous" };
 }
 
 export function frontMatterValue(markdown: string, key: string): string | undefined {
@@ -141,12 +138,13 @@ export function frontMatterBoolean(markdown: string, key: string): boolean {
 
 // `value` is record data, for example `JSON.stringify(item.labels)` with GitHub label
 // names. A replacement string would expand `$&`, `` $` `` and `$'` against the match, so
-// a replacement function inserts the text literally.
+// a replacement function inserts the text literally. A new key uses the line ending of
+// the opening delimiter.
 export function replaceFrontMatterValue(markdown: string, key: string, value: string): string {
   const line = `${key}: ${value}`;
   const pattern = new RegExp(`^${escapeRegExp(key)}:\\s*.*$`, "m");
   if (pattern.test(markdown)) return markdown.replace(pattern, () => line);
-  return markdown.replace(/^---\n/, () => `---\n${line}\n`);
+  return markdown.replace(/^---(\r?\n)/, (opening, ending: string) => `${opening}${line}${ending}`);
 }
 
 function sectionPattern(heading: string): RegExp {

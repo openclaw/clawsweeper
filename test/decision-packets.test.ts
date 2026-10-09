@@ -275,14 +275,15 @@ test("decision packet sync writes pointers and removes stale generated state", (
   }
 });
 
-test("decision packet sync writes a packet path with replacement patterns literally", () => {
+test("decision packet sync writes packet pointers literally and keeps CRLF headers", () => {
   const root = mkdtempSync(tmpPrefix);
   try {
     const packetsDir = join(root, "records", "a$&b$'c$`d", "decision-packets");
     const markdown = decisionReport({ maintainer_decision: JSON.stringify(productDecision) });
     for (const input of [
       markdown,
-      `${markdown.replace(/^---\n/, "---\ndecision_packet_path: old\n")}`,
+      markdown.replace(/^---\n/, "---\ndecision_packet_path: old\n"),
+      markdown.replaceAll("\n", "\r\n"),
     ]) {
       const result = syncDecisionPacketRecord({
         markdown: input,
@@ -290,11 +291,11 @@ test("decision packet sync writes a packet path with replacement patterns litera
         packetsDir,
         repoRoot: root,
       });
-      assert.ok(
-        result.markdown.includes(
-          "\ndecision_packet_path: records/a$&b$'c$`d/decision-packets/321.json\n",
-        ),
+      assert.match(
+        result.markdown,
+        /^decision_packet_path: records\/a\$&b\$'c\$`d\/decision-packets\/321\.json\r?$/m,
       );
+      assert.match(result.markdown, /^decision_packet_sha256: [a-f0-9]{64}\r?$/m);
     }
   } finally {
     rmSync(root, { recursive: true, force: true });

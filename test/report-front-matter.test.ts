@@ -275,13 +275,12 @@ test("missing body lookalikes remain ambiguous while genuinely absent fields per
 });
 
 test("raw empty fields never consume the next line and paired quotes retain their existing decoding", () => {
-  for (const value of ["", " ", "\t"]) {
+  for (const value of ["", " ", "\t", ' ""']) {
     const report = `---\ntitle:${value}\nrepository: openclaw/clawsweeper\n---\n`;
     assert.deepEqual(frontMatterField(report, "title"), { status: "ambiguous" });
     assert.equal(frontMatterValue(report, "repository"), "openclaw/clawsweeper");
   }
   for (const [raw, value] of [
-    ['""', ""],
     ['"a\\nb"', "a\\nb"],
     ['"unpaired', '"unpaired'],
     ["'single'", "'single'"],
