@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { sha256 } from "./content-hash.js";
 import { appendFileSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import {
@@ -627,5 +627,5 @@ function emptyRateLimitHeaders(): GitHubRateLimitHeadersV2 {
 }
 
 function digest(value: string, length: number): string {
-  return createHash("sha256").update(value).digest("hex").slice(0, length);
+  return sha256(value).slice(0, length);
 }

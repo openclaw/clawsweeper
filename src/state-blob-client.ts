@@ -1,4 +1,5 @@
-import { createHash, createHmac } from "node:crypto";
+import { createHmac } from "node:crypto";
+import { sha256 } from "./content-hash.js";
 
 const SINGLE_PUT_MAX_BYTES = 24 * 1024 * 1024;
 
@@ -11,7 +12,7 @@ type StateBlobClientOptions = {
 export async function publishStateBlob(
   options: StateBlobClientOptions & { path: string; content: Buffer },
 ): Promise<{ path: string; bytes: number; digest: string; unchanged: boolean }> {
-  const digest = createHash("sha256").update(options.content).digest("hex");
+  const digest = sha256(options.content);
   if (options.content.byteLength <= SINGLE_PUT_MAX_BYTES) {
     const result = await signedBlobPost<{ unchanged?: boolean }>(options, "put", {
       path: options.path,

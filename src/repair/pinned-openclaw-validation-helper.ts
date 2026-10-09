@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { sha256 } from "../content-hash.js";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -127,9 +127,7 @@ function pinnedOpenClawDlxCacheKey(
   // Native pnpm 12 excludes the builtin JSR route from its dlx key. A legacy
   // key misses the prepared graph and starts an unfrozen install while offline.
   if (!packageManager.startsWith("pnpm@12.")) registries.unshift(["@jsr", "https://npm.jsr.io/"]);
-  return createHash("sha256")
-    .update(JSON.stringify([resolvedPackages, registries]))
-    .digest("hex");
+  return sha256(JSON.stringify([resolvedPackages, registries]));
 }
 
 function seedOfflinePinnedOpenClawMetadata(

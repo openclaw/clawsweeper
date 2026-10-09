@@ -1,7 +1,8 @@
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 
+import { sha256 } from "../content-hash.js";
 import type { JsonValue, LooseRecord } from "./json-types.js";
 import { rollUpStatusChecks } from "./status-check-rollup.js";
 
@@ -59,10 +60,7 @@ export function dispatchReceiptKeyMaterial(entry: LooseRecord, claim: LooseRecor
 }
 
 export function routerDispatchReceiptKey(entry: LooseRecord, claim: LooseRecord | null) {
-  return `router-${createHash("sha256")
-    .update(dispatchReceiptKeyMaterial(entry, claim))
-    .digest("hex")
-    .slice(0, 16)}`;
+  return `router-${sha256(dispatchReceiptKeyMaterial(entry, claim)).slice(0, 16)}`;
 }
 
 function forcedReplayAttemptId(entry: LooseRecord): string | null {
@@ -159,9 +157,7 @@ export function shouldSuppressProcessedCommentVersion(entry: LooseRecord) {
 }
 
 export function commentBodySha256(body: JsonValue) {
-  return createHash("sha256")
-    .update(String(body ?? ""), "utf8")
-    .digest("hex");
+  return sha256(String(body ?? ""));
 }
 
 export function exactCommentVersionMatchesLive(command: LooseRecord, live: JsonValue) {

@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import crypto from "node:crypto";
+import { sha256 } from "../content-hash.js";
 import http from "node:http";
 
 import { CLAWSWEEPER_BOT_LOGINS } from "../clawsweeper-policy.js";
@@ -442,7 +443,7 @@ export function classifyItemWebhook({ event, payload }: { event: string; payload
 function itemContentRevision(item: LooseRecord) {
   const revisionMaterial = sourceRevisionMaterial(item);
   if (!revisionMaterial) return null;
-  return crypto.createHash("sha256").update(JSON.stringify(revisionMaterial)).digest("hex");
+  return sha256(JSON.stringify(revisionMaterial));
 }
 
 function sourceRevisionMaterial(source: LooseRecord) {

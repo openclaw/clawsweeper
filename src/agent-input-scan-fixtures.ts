@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { sha256 } from "./content-hash.js";
 import { basename } from "node:path";
 import { TRUFFLEHOG_VERSION } from "./review-tool-bootstrap.js";
 import { resolvePatchWitnesses } from "./agent-input-scan-patch.js";
@@ -585,7 +585,7 @@ export function omitReviewedFixtureReferences(text: string): string {
       end -= 1;
     }
     for (const candidate of [uri, uri.slice(0, end)]) {
-      const digest = createHash("sha256").update(candidate).digest("hex");
+      const digest = sha256(candidate);
       const fixture = REVIEWED_FIXTURES.find((entry) => entry.fixtureSha256 === digest);
       if (fixture) {
         return (
@@ -743,7 +743,7 @@ function materialDiagnostic(input: StagedScanInput): ScanMaterialDiagnostic {
           referenceCount: input.references.length,
           references: input.references.slice(0, 4).map(({ source, mode, revision, role }) => ({
             revision,
-            pathSha256: createHash("sha256").update(source).digest("hex"),
+            pathSha256: sha256(source),
             mode,
             role,
           })),
@@ -882,10 +882,8 @@ function classifyReviewedFindings(
     });
     const raw = typeof finding.Raw === "string" ? finding.Raw : undefined;
     const rawV2 = typeof finding.RawV2 === "string" ? finding.RawV2 : undefined;
-    const rawDigest =
-      raw === undefined ? undefined : createHash("sha256").update(raw).digest("hex");
-    const rawV2Digest =
-      rawV2 === undefined ? undefined : createHash("sha256").update(rawV2).digest("hex");
+    const rawDigest = raw === undefined ? undefined : sha256(raw);
+    const rawV2Digest = rawV2 === undefined ? undefined : sha256(rawV2);
     const exactCandidates =
       rawDigest === undefined || rawV2Digest === undefined
         ? []
@@ -1088,7 +1086,7 @@ function classifyReviewedFindings(
       if (typeof file !== "string" || scannerLine === null) return refuse("metadata_mismatch");
       if (staged?.kind !== "blob" || !staged.bytes) return refuse("material_not_reviewed");
       if (matchingMetadata.some((row) => row[8] !== undefined)) {
-        const sourceSha256 = createHash("sha256").update(staged.bytes).digest("hex");
+        const sourceSha256 = sha256(staged.bytes);
         matchingMetadata = matchingMetadata.filter(
           (row) => row[8] === undefined || row[8].includes(sourceSha256),
         );
@@ -1159,12 +1157,12 @@ function classifyReviewedFindings(
           let occurrence = line.indexOf(sourceLiteral);
           while (occurrence !== -1) {
             if (witnessDigests.length >= maxOccurrences) return refuse("literal_mismatch");
-            witnessDigests.push(createHash("sha256").update(line).digest("hex"));
+            witnessDigests.push(sha256(line));
             occurrence = line.indexOf(sourceLiteral, occurrence + sourceLiteral.length);
           }
           witnessLineNumber ??= lineNumber;
         } else if (sourceLiteral === undefined && lineNumber === scannerLine) {
-          witnessDigests.push(createHash("sha256").update(line).digest("hex"));
+          witnessDigests.push(sha256(line));
           witnessLineNumber = lineNumber;
         }
         if (newline === -1) break;
@@ -1240,7 +1238,7 @@ function classifyReviewedFindings(
     )
       return refuse("finding_not_reviewed");
     // URI Raw omits the path; bind both native outputs to the reviewed match.
-    const digest = createHash("sha256").update(finding.RawV2).digest("hex");
+    const digest = sha256(finding.RawV2);
     if (!fixture) return refuse("literal_not_reviewed");
     if (!(fixture.decoders ?? ["PLAIN", "HTML"]).some((decoder) => decoder === finding.DecoderName))
       return refuse("finding_not_reviewed");
@@ -1288,10 +1286,7 @@ function classifyReviewedFindings(
             literalOccurrences++;
             occurrence = line.indexOf(finding.RawV2, occurrence + finding.RawV2.length);
           }
-          if (
-            fixture.lineSha256s &&
-            !fixture.lineSha256s.includes(createHash("sha256").update(line).digest("hex"))
-          )
+          if (fixture.lineSha256s && !fixture.lineSha256s.includes(sha256(line)))
             return refuse("literal_mismatch");
           literalLine ??= lineNumber;
         }

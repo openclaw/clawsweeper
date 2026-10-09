@@ -2,7 +2,7 @@
 import { escapeRegExp } from "../clawsweeper-text.js";
 import { reportAllowsAutomation } from "../manual-publication-policy.js";
 import { asJsonObject, type JsonValue, type LooseRecord } from "./json-types.js";
-import crypto from "node:crypto";
+import { sha256 } from "../content-hash.js";
 import fs from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -939,7 +939,7 @@ ${context.decision.blockers.length ? context.decision.blockers.map((blocker: str
 }
 
 export function reportRevisionSha256(markdown: string) {
-  return crypto.createHash("sha256").update(markdown).digest("hex");
+  return sha256(markdown);
 }
 
 function matchingIntakeAudit({

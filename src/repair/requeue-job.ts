@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import type { JsonValue, LooseRecord } from "./json-types.js";
-import { createHash } from "node:crypto";
+import { sha256 } from "../content-hash.js";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -74,7 +74,7 @@ if (!resolved.source_job) {
 
 const job = parseJob(resolved.source_job);
 const sourceJobPath = normalizedRequeueSourceJobPath(args["source-job-path"], job.relativePath);
-const authorizationSha256 = createHash("sha256").update(job.raw).digest("hex");
+const authorizationSha256 = sha256(job.raw);
 const errors = validateJob(job);
 if (errors.length > 0) {
   console.error(`invalid job: ${job.relativePath}`);

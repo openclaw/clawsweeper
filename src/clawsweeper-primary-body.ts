@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { sha256 } from "./content-hash.js";
 
 interface BodyRange {
   start: number;
@@ -36,9 +36,7 @@ export function primaryBodySourceSha256(value: unknown): string | null {
       return null;
     return source.sourceBodySha256;
   }
-  return createHash("sha256")
-    .update(body.body ?? "")
-    .digest("hex");
+  return sha256(body.body ?? "");
 }
 
 const BODY_BUDGET = 12_000;
@@ -113,7 +111,7 @@ export function compactPrimaryBody(value: unknown): PrimaryBodyContext {
     if (excerpts.length === 3) break;
   }
   excerpts.sort((left, right) => left.start - right.start);
-  const sourceBodySha256 = createHash("sha256").update(source).digest("hex");
+  const sourceBodySha256 = sha256(source);
   const supplementalUnits = excerpts.reduce((total, range) => total + range.end - range.start, 0);
   const resultAt = (end: number): PrimaryBodyContext => ({
     body: source.slice(0, end),

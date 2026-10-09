@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { sha256 } from "../content-hash.js";
 
 import { actionLedgerJson, readActionEventShardAt, type ActionEvent } from "../action-ledger.js";
 import {
@@ -223,5 +223,5 @@ function assertCommandActionLedgerLane(lane: string): void {
 }
 
 function commandActionLedgerManifestSha256(identity: CommandActionLedgerManifestIdentity): string {
-  return createHash("sha256").update(actionLedgerJson(identity)).digest("hex");
+  return sha256(actionLedgerJson(identity));
 }

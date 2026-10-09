@@ -10,7 +10,7 @@ export {
   trustedRun,
   type ProofProducerIdentity,
 } from "../proof-artifact-contract.js";
-import { createHash } from "node:crypto";
+import { sha256 } from "../content-hash.js";
 import {
   COMMAND_PROOF_RECEIPT_MAX_BYTES,
   COMMAND_PROOF_SCENARIO,
@@ -28,8 +28,7 @@ import { verifyTelegramProofEvidence } from "./telegram-proof-evidence.js";
 import { verifyTelegramQaEvidence } from "./telegram-qa-evidence.js";
 import { commandProofBaseRefSha256 } from "../command-proof-assessment.js";
 
-export const proofDigest = (bytes: string | Buffer) =>
-  createHash("sha256").update(bytes).digest("hex");
+export const proofDigest = (bytes: string | Buffer) => sha256(bytes);
 export function proofEvidenceArtifactName(
   _id: string,
   runId: string,

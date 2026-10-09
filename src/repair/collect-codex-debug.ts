@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import crypto from "node:crypto";
+import { sha256 } from "../content-hash.js";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -78,7 +78,7 @@ export function collectCodexDebug(options: CollectOptions) {
         bytes: stat.size,
         redacted_bytes: Buffer.byteLength(redacted),
         modified_at: stat.mtime.toISOString(),
-        sha256: crypto.createHash("sha256").update(redacted).digest("hex"),
+        sha256: sha256(redacted),
       });
     }
   }

@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { sha256 } from "./content-hash.js";
 import { labelNames } from "./clawsweeper-item-policy.js";
 import { compareCodeUnits, stableJson } from "./stable-json.js";
 import { asRecord, stringOrEmpty } from "./value-coerce.js";
@@ -18,7 +18,7 @@ export interface OversizedPrActivityReceipt {
   ownedCommentFingerprint: string | null;
 }
 
-const hash = (value: unknown) => createHash("sha256").update(stableJson(value)).digest("hex");
+const hash = (value: unknown) => sha256(stableJson(value));
 const count = (value: unknown): value is number =>
   typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
 const timestamp = (value: unknown): value is string =>

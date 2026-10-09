@@ -1,4 +1,4 @@
-import crypto from "node:crypto";
+import { sha256 } from "../content-hash.js";
 
 import { CLAWSWEEPER_BOT_LOGINS } from "../clawsweeper-policy.js";
 import { asJsonObject, type JsonValue, type LooseRecord } from "./json-types.js";
@@ -33,7 +33,7 @@ export function issueSourceRevisionSha256(issue: LooseRecord, comments: JsonValu
         `${left.id}:${left.updated_at}`.localeCompare(`${right.id}:${right.updated_at}`),
       ),
   };
-  return crypto.createHash("sha256").update(JSON.stringify(snapshot)).digest("hex");
+  return sha256(JSON.stringify(snapshot));
 }
 
 function normalizedLabels(labels: JsonValue[]): string[] {

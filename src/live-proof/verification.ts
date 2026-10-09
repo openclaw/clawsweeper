@@ -4,7 +4,7 @@ import {
   requireString,
   requirePositiveInteger,
 } from "../value-coerce.js";
-import { createHash } from "node:crypto";
+import { sha256 } from "../content-hash.js";
 import type { LiveProofPlan, LiveProofStep } from "../clawsweeper-types.js";
 import { LIVE_VERIFICATION_MARKER } from "../clawsweeper-policy.js";
 import type { LiveProofDriveStatus } from "./manifest.js";
@@ -319,7 +319,7 @@ export function liveProofPlanSha256(plan: LiveProofPlan): string {
     entry: plan.entry,
     steps: plan.steps.map(canonicalLiveProofStep),
   };
-  return createHash("sha256").update(JSON.stringify(canonicalPlan)).digest("hex");
+  return sha256(JSON.stringify(canonicalPlan));
 }
 
 export function validateLiveVerificationReportPlan(

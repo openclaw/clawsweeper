@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { createHash } from "node:crypto";
+import { sha256 } from "../content-hash.js";
 import { spawnSync } from "node:child_process";
 import {
   appendFileSync,
@@ -724,17 +724,15 @@ function telemetrySubmissionId(
     process.env.GITHUB_RUN_ATTEMPT || "0",
     dirname(env("EXACT_REVIEW_BATCH_MANIFEST")),
   ].join(":");
-  return createHash("sha256")
-    .update(
-      JSON.stringify({
-        producer,
-        rateLimitStart: acknowledged.rateLimitBytes,
-        rateLimitEnd,
-        requestMetricStart: acknowledged.requestMetricBytes,
-        requestMetricEnd,
-      }),
-    )
-    .digest("hex");
+  return sha256(
+    JSON.stringify({
+      producer,
+      rateLimitStart: acknowledged.rateLimitBytes,
+      rateLimitEnd,
+      requestMetricStart: acknowledged.requestMetricBytes,
+      requestMetricEnd,
+    }),
+  );
 }
 
 function failureCompletion(

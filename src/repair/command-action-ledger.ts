@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { sha256 } from "../content-hash.js";
 
 import {
   ACTION_EVENT_REASON_CODES,
@@ -664,5 +664,5 @@ function positiveInteger(value: JsonValue): number | null {
 }
 
 function stableDigest(value: unknown): string {
-  return createHash("sha256").update(JSON.stringify(value)).digest("hex");
+  return sha256(JSON.stringify(value));
 }

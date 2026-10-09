@@ -1,4 +1,4 @@
-import crypto from "node:crypto";
+import { sha256 } from "../content-hash.js";
 import type { JsonValue, LooseRecord } from "./json-types.js";
 import { compactText } from "./text-utils.js";
 import { PUBLIC_CODEX_MODEL, redactInternalCodexModel } from "../codex-env.js";
@@ -93,10 +93,7 @@ export function spamAuditKey(comment: SpamScanComment) {
 }
 
 export function bodyHash(body: JsonValue) {
-  return crypto
-    .createHash("sha256")
-    .update(String(body ?? ""))
-    .digest("hex");
+  return sha256(String(body ?? ""));
 }
 
 export function isProtectedSpamAuthor(

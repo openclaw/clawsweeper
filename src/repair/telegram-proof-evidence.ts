@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { sha256 } from "../content-hash.ts";
 
 export const TELEGRAM_OBSERVATION_MAX_BYTES = 8 * 1024;
 const SCENARIO = "telegram-bot-e2e-proof";
@@ -31,7 +31,6 @@ const SHAPES = [
     fields: ["message_id", "in_reply_to", "text_sha256", "from_sut"],
   },
 ] as const;
-const hash = (value: string) => createHash("sha256").update(value).digest("hex");
 const hex = (value: unknown, length: number): value is string =>
   typeof value === "string" &&
   value.length === length &&
@@ -191,8 +190,8 @@ export function verifyTelegramProofEvidence(
     (reply.in_reply_to !== null && !decimal(reply.in_reply_to))
   )
     return invalid("invalid_telegram_observation_facts");
-  const expectedSend = hash("Mantis Telegram request " + String(send.nonce));
-  const expectedReply = hash("MANTIS_TELEGRAM_REPLY_" + provider.response_nonce);
+  const expectedSend = sha256("Mantis Telegram request " + String(send.nonce));
+  const expectedReply = sha256("MANTIS_TELEGRAM_REPLY_" + provider.response_nonce);
   if (
     send.text_sha256 !== expectedSend ||
     provider.input_nonce !== send.nonce ||

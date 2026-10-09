@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { sha256 } from "../content-hash.js";
 import type { InlineProofScenario } from "./direct-re-review-admission.js";
 
 export const PROOF_COMMAND_USAGE =
@@ -77,7 +77,7 @@ export function admitProofCommand(input: {
       "No authenticated, request-bound behavioral-proof producer is connected. Nothing was dispatched. Media, PASS text, and exit status cannot establish proof or readiness.",
     request: {
       ...identity,
-      requestId: createHash("sha256").update(JSON.stringify(identity)).digest("hex"),
+      requestId: sha256(JSON.stringify(identity)),
     },
   };
 }

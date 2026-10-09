@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { createHash } from "node:crypto";
+import { sha256 } from "../content-hash.js";
 import { requiredEnv as env } from "../required-env.js";
 import { readFileSync, statSync, writeFileSync } from "node:fs";
 import { parseArgs } from "node:util";
@@ -113,7 +113,7 @@ async function reconcile() {
       ...result,
       // Retain stable row correlation without logging target or producer identities.
       sample: result.sample.map((sample) => ({
-        identity_hash: createHash("sha256").update(sample.itemKey).digest("hex"),
+        identity_hash: sha256(sample.itemKey),
         queueRevision: sample.queueRevision,
         reason: sample.reason,
         publicationRevision: sample.publicationRevision,

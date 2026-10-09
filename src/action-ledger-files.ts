@@ -1,6 +1,7 @@
 import { constants as bufferConstants, isUtf8 } from "node:buffer";
 import { spawnSync } from "node:child_process";
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
+import { sha256 } from "./content-hash.js";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -340,7 +341,7 @@ export function processIncarnationIdentitySha256(
     processIdentityCache.delete(pid);
     return null;
   }
-  const identity = createHash("sha256").update(`${process.platform}\0${rawIdentity}`).digest("hex");
+  const identity = sha256(`${process.platform}\0${rawIdentity}`);
   processIdentityCache.set(pid, {
     expiresAt: pid === process.pid ? Number.POSITIVE_INFINITY : now + PROCESS_IDENTITY_CACHE_MS,
     identity,

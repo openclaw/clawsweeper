@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { sha256 } from "./content-hash.js";
 import { validReviewProofPlan, validFixedWebUiProofPlan } from "./review-proof-plan.js";
 import {
   REVIEW_PROOF_LIFETIME_MS,
@@ -203,7 +203,7 @@ export async function requestReviewProof(
   ) {
     return { status: "inconclusive", reason: "Invalid or oversized data-only proof plan." };
   }
-  const planSha256 = createHash("sha256").update(canonicalProofPlan(proofPlan)).digest("hex");
+  const planSha256 = sha256(canonicalProofPlan(proofPlan));
   const owner = canonicalProofPlan({ queueUrl: capability.queueUrl, lease: capability.lease });
   const previous = proofDeadlines.get(capability);
   let deadline =

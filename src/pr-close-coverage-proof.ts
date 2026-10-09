@@ -1,7 +1,7 @@
 import { requireRecord, requireString } from "./value-coerce.js";
 import { runAgentProcess } from "./agent-runner.js";
 import { codexLoginConfig } from "./codex-env.js";
-import { createHash } from "node:crypto";
+import { sha256 } from "./content-hash.js";
 import { existsSync, lstatSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { codexEnv } from "./codex-env.js";
@@ -227,7 +227,7 @@ export function buildPrCloseCoverageProofPrompt(options: {
 export function prCloseCoverageProofPromptSha256(
   options: Parameters<typeof buildPrCloseCoverageProofPrompt>[0],
 ): string {
-  return createHash("sha256").update(buildPrCloseCoverageProofPrompt(options)).digest("hex");
+  return sha256(buildPrCloseCoverageProofPrompt(options));
 }
 
 export function runPrCloseCoverageProofModel(options: {
@@ -333,7 +333,7 @@ export function prCloseCoverageProofEnvelopePath(
 export function prCloseCoverageProofSnapshotSha256(
   pullRequest: PrCloseCoverageProofPullRequestView,
 ): string {
-  return createHash("sha256").update(JSON.stringify(pullRequest)).digest("hex");
+  return sha256(JSON.stringify(pullRequest));
 }
 
 export function createPrCloseCoverageProofEnvelope(options: {

@@ -4,7 +4,7 @@ import {
   requireString as stringValue,
   rejectUnexpectedKeys,
 } from "./value-coerce.js";
-import { createHash } from "node:crypto";
+import { sha256 } from "./content-hash.js";
 import { existsSync, mkdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { basename, dirname, relative } from "node:path";
 import { parseReportFrontMatter } from "./report-front-matter.js";
@@ -338,7 +338,7 @@ export function syncDecisionPacketRecord(
   mkdirSync(dirname(packetPath), { recursive: true });
   const json = `${JSON.stringify(packet, null, 2)}\n`;
   writeFileSync(packetPath, json, "utf8");
-  const packetSha256 = createHash("sha256").update(json).digest("hex");
+  const packetSha256 = sha256(json);
   return {
     markdown: replacePacketFrontmatter(
       options.markdown,

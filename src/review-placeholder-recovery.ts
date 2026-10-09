@@ -1,5 +1,6 @@
 #!/usr/bin/env node
-import { createHash, createHmac } from "node:crypto";
+import { createHmac } from "node:crypto";
+import { sha256 } from "./content-hash.js";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { CLAWSWEEPER_BOT_LOGINS } from "./clawsweeper-policy.js";
@@ -67,10 +68,7 @@ export function reviewPlaceholderCursorMode(
   repository: string,
   state: ReviewPlaceholderState,
 ): ReviewPlaceholderCursorMode {
-  const repositoryKey = createHash("sha256")
-    .update(repository.toLowerCase())
-    .digest("hex")
-    .slice(0, 16);
+  const repositoryKey = sha256(repository.toLowerCase()).slice(0, 16);
   return `review-placeholder-${repositoryKey}-${state}`;
 }
 

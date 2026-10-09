@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { sha256 } from "../content-hash.js";
 import path from "node:path";
 
 export function deterministicRequeueDispatchKey({
@@ -16,19 +16,16 @@ export function deterministicRequeueDispatchKey({
   authorizationSha256: string;
   depth: number;
 }) {
-  const digest = createHash("sha256")
-    .update(
-      JSON.stringify({
-        repo,
-        workflow,
-        source_run_id: sourceRunId,
-        source_job_path: sourceJobPath,
-        authorization_sha256: authorizationSha256,
-        depth,
-      }),
-    )
-    .digest("hex")
-    .slice(0, 24);
+  const digest = sha256(
+    JSON.stringify({
+      repo,
+      workflow,
+      source_run_id: sourceRunId,
+      source_job_path: sourceJobPath,
+      authorization_sha256: authorizationSha256,
+      depth,
+    }),
+  ).slice(0, 24);
   return `requeue-${depth}-${digest}`;
 }
 

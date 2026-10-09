@@ -1,7 +1,6 @@
 #!/usr/bin/env node
 import { sha256 } from "../content-hash.js";
 import { requiredCliValue } from "../clawsweeper-args.js";
-import { createHash } from "node:crypto";
 import {
   appendFileSync,
   existsSync,
@@ -271,9 +270,7 @@ function planCanonicalRecordTuples(
           ...(content === null ? {} : { contentBase64: Buffer.from(content).toString("base64") }),
         };
       });
-      const contentHash = createHash("sha256")
-        .update(JSON.stringify({ key, operations }))
-        .digest("hex");
+      const contentHash = sha256(JSON.stringify({ key, operations }));
       const deliveryPrefix =
         env.CLAWSWEEPER_CANONICAL_PUBLICATION_KIND === "reconcile"
           ? `record-reconcile:${repository}:${number}`
@@ -373,9 +370,7 @@ async function postCanonicalRecordTupleWithRecovery(
         ...(content === null ? {} : { contentBase64: Buffer.from(content).toString("base64") }),
       };
     });
-    const contentHash = createHash("sha256")
-      .update(JSON.stringify({ key: options.mutation.key, operations }))
-      .digest("hex");
+    const contentHash = sha256(JSON.stringify({ key: options.mutation.key, operations }));
     const retryMutation: CanonicalRecordTupleMutation = {
       ...options.mutation,
       deliveryId: `record-reconcile:${repoSlug}:${itemNumber}:${contentHash}`,
@@ -503,9 +498,7 @@ async function recoverNonReconcilePublicationConflict(
       ...(content === null ? {} : { contentBase64: Buffer.from(content).toString("base64") }),
     };
   });
-  const contentHash = createHash("sha256")
-    .update(JSON.stringify({ key: options.mutation.key, operations }))
-    .digest("hex");
+  const contentHash = sha256(JSON.stringify({ key: options.mutation.key, operations }));
   const retryMutation: CanonicalRecordTupleMutation = {
     ...options.mutation,
     deliveryId: `record-tuple-rebase:${deliveryPart(options.env.GITHUB_RUN_ID, "local")}:${deliveryPart(options.env.GITHUB_RUN_ATTEMPT, "1")}:${contentHash}`,

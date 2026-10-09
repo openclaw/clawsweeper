@@ -1,6 +1,7 @@
 import { escapeRegExp as escapeRegex } from "../clawsweeper-text.js";
 import { isRecord } from "../value-coerce.js";
-import { createHash, createHmac, timingSafeEqual } from "node:crypto";
+import { createHmac, timingSafeEqual } from "node:crypto";
+import { sha256 } from "../content-hash.js";
 import { parseSimpleYaml, validateJob } from "./lib.js";
 
 export const CLUSTER_INTAKE_SCHEMA = "clawsweeper-cluster-intake-intent-v1";
@@ -273,7 +274,7 @@ export function clusterIntakeProposal(value: unknown): ClusterIntakeProposal {
       // workflow_dispatch inputs share a 65,535-character payload budget. Keep
       // the raw job below 32 KiB so its base64 form and the other inputs fit.
       Buffer.byteLength(content) > 32 * 1024 ||
-      createHash("sha256").update(content).digest("hex") !== digest ||
+      sha256(content) !== digest ||
       dispatchKey !== `cluster-intake:${repoSlug}:${clusterId}`
     ) {
       throw new Error(`invalid cluster intake job fence: ${path || clusterId}`);
@@ -352,25 +353,23 @@ export function acceptClusterIntakeIntent(value: unknown, secret: string): Clust
 }
 
 export function clusterAcceptedIntentDigest(fields: ClusterAcceptedIntentFields): string {
-  return createHash("sha256")
-    .update(
-      JSON.stringify({
-        target_repo: fields.target_repo,
-        store_sha256: fields.store_sha256,
-        store_exported_at: fields.store_exported_at,
-        manifest_path: fields.manifest_path,
-        run_url: fields.run_url,
-        accepted_at: fields.accepted_at,
-        runner: fields.runner,
-        execution_runner: fields.execution_runner,
-        model: fields.model,
-        cluster_id: fields.cluster_id,
-        path: fields.path,
-        digest: fields.digest,
-        dispatch_key: fields.dispatch_key,
-      }),
-    )
-    .digest("hex");
+  return sha256(
+    JSON.stringify({
+      target_repo: fields.target_repo,
+      store_sha256: fields.store_sha256,
+      store_exported_at: fields.store_exported_at,
+      manifest_path: fields.manifest_path,
+      run_url: fields.run_url,
+      accepted_at: fields.accepted_at,
+      runner: fields.runner,
+      execution_runner: fields.execution_runner,
+      model: fields.model,
+      cluster_id: fields.cluster_id,
+      path: fields.path,
+      digest: fields.digest,
+      dispatch_key: fields.dispatch_key,
+    }),
+  );
 }
 
 export function verifyClusterAcceptedIntentReceipt(
