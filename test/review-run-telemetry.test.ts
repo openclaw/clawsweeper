@@ -74,12 +74,11 @@ test("review observer attributes each review entry path without counting support
     },
   );
   assert.equal(
-    classifyReviewRun(run({ display_title: "Retry failed Codex reviews", event: "schedule" }))
-      ?.trigger_lane,
-    "recovery",
+    classifyReviewRun(run({ display_title: "Retry failed Codex reviews", event: "schedule" })),
+    null,
   );
   assert.equal(
-    classifyReviewRun(run({ display_title: "Retry failed Codex reviews", event: "workflow_call" }))
+    classifyReviewRun(run({ display_title: "Review ClawSweeper items", event: "workflow_call" }))
       ?.trigger_origin,
     "system",
   );

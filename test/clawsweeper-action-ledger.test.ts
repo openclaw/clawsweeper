@@ -1144,12 +1144,17 @@ function workflowStep(workflow: Workflow, name: string): WorkflowStep {
 }
 
 test("sweep finalizes open ledger attempts and publishes shards through the signed queue", () => {
-  const workflow: Workflow = parseYaml(readText(".github/workflows/sweep.yml"));
+  const sweep: Workflow = parseYaml(readText(".github/workflows/sweep.yml"));
+  const retry: Workflow = parseYaml(readText(".github/workflows/failed-review-retry.yml"));
   // A failed or cancelled producer must not leave open attempts in its shard.
-  for (const [name, reasons] of [
-    ["Finalize apply proof action ledger", ["cancelled", "workflow_failed"]],
-    ["Finalize apply action ledger", ["cancelled", "workflow_failed"]],
-    ["Finalize failed-review retry action ledger", ["cancelled", "timeout", "workflow_failed"]],
+  for (const [workflow, name, reasons] of [
+    [sweep, "Finalize apply proof action ledger", ["cancelled", "workflow_failed"]],
+    [sweep, "Finalize apply action ledger", ["cancelled", "workflow_failed"]],
+    [
+      retry,
+      "Finalize failed-review retry action ledger",
+      ["cancelled", "timeout", "workflow_failed"],
+    ],
   ] as const) {
     const finalizer = workflowStep(workflow, name);
     assert.match(finalizer.if ?? "", /always\(\)/, name);
@@ -1157,11 +1162,11 @@ test("sweep finalizes open ledger attempts and publishes shards through the sign
       assert.ok(finalizer.run?.includes(`--interrupt-open-attempts --reason ${reason}`), name);
     }
   }
-  for (const name of [
-    "Publish apply proof action events",
-    "Publish apply action events",
-    "Publish failed-review retry action ledger",
-  ]) {
+  for (const [workflow, name] of [
+    [sweep, "Publish apply proof action events"],
+    [sweep, "Publish apply action events"],
+    [retry, "Publish failed-review retry action ledger"],
+  ] as const) {
     const publisher = workflowStep(workflow, name);
     assert.ok(publisher.env?.QUEUE_URL && publisher.env.CLAWSWEEPER_WEBHOOK_SECRET, name);
     assert.doesNotMatch(publisher.run ?? "", /repair:publish-main/, name);

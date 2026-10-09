@@ -774,7 +774,6 @@ test("review and apply primary boundaries ignore ledger-only failures", () => {
   for (const jobName of [
     "event-review-apply",
     "event-review-publish",
-    "retry-failed-reviews",
     "apply-proof",
     "apply-existing",
   ]) {
@@ -5887,9 +5886,10 @@ for (const jobId of ["publish-review-action-ledger", "recover-review-failures"])
 }
 
 test("every action-ledger publication authenticates the expected producer job", () => {
-  const workflow = YAML.parse(readText(".github/workflows/sweep.yml")) as {
-    jobs: Record<string, { steps?: Array<{ run?: string }> }>;
-  };
+  type WorkflowJobs = { jobs: Record<string, { steps?: Array<{ run?: string }> }> };
+  const jobs = [".github/workflows/sweep.yml", ".github/workflows/failed-review-retry.yml"].flatMap(
+    (path) => Object.values((YAML.parse(readText(path)) as WorkflowJobs).jobs),
+  );
   const invocation = "publish-action-events";
   const commandStart = `pnpm run --silent ${invocation} -- \\`;
   const isCanonicalValue = (value: string): boolean => {
@@ -5979,7 +5979,7 @@ test("every action-ledger publication authenticates the expected producer job", 
     }
     return commands;
   };
-  const commands = Object.values(workflow.jobs).flatMap((job) =>
+  const commands = jobs.flatMap((job) =>
     (job.steps ?? []).flatMap((step) => commandsFromScript(step.run ?? "")),
   );
 

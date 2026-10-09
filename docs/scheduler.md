@@ -520,7 +520,9 @@ cleanup is idempotent and cannot duplicate accounting.
 
 Failed Codex review backstop:
 
-- failed-review retry: `13 * * * *`
+- failed-review retry: `13 * * * *`, in `.github/workflows/failed-review-retry.yml`
+- each retry sends one `clawsweeper_item` repository dispatch; `sweep.yml`
+  routes it to the exact-review queue
 - retries remain dry-run unless `CLAWSWEEPER_FAILED_REVIEW_RETRY_ENABLED=1`
 - each retry is exact-item, cooldown- and attempt-bounded, and complements the
   immediate one-shot failed-shard recovery in the originating workflow

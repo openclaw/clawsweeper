@@ -81,6 +81,7 @@ test("per-target state hydration is slug-scoped while fleet lanes retain discove
       .map(({ site }) => site),
     [
       ".github/workflows/exact-review-batch-publish.yml:publish",
+      ".github/workflows/failed-review-retry.yml:retry-failed-reviews",
       ".github/workflows/live-proof-maintenance.yml:retract",
       ".github/workflows/repair-cluster-intake.yml:intake",
       ".github/workflows/repair-cluster-worker.yml:cluster",
@@ -93,7 +94,6 @@ test("per-target state hydration is slug-scoped while fleet lanes retain discove
       ".github/workflows/sweep.yml:event-review-apply",
       ".github/workflows/sweep.yml:event-review-publish",
       ".github/workflows/sweep.yml:plan",
-      ".github/workflows/sweep.yml:retry-failed-reviews",
       ".github/workflows/sweep.yml:apply-proof",
       ".github/workflows/sweep.yml:apply-existing",
     ],
@@ -204,7 +204,11 @@ test("post-side-effect git bookkeeping is non-fatal while durability fences stay
       "Commit conflict self-heal ledger",
     ],
     [".github/workflows/repair-self-heal.yml", "self-heal", "Commit self-heal ledger"],
-    [".github/workflows/sweep.yml", "retry-failed-reviews", "Publish failed-review retry state"],
+    [
+      ".github/workflows/failed-review-retry.yml",
+      "retry-failed-reviews",
+      "Publish failed-review retry state",
+    ],
     [".github/workflows/sweep.yml", "apply-existing", "Retry final apply status publication"],
   ]) {
     assert.equal(step(file, job, name)["continue-on-error"], true, `${file}:${job}:${name}`);

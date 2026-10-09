@@ -256,15 +256,19 @@ test("automatic retry publication remains review-only", () => {
   }
 });
 
-// Failed-review retries plan only until an operator enables live dispatch.
+// Failed-review retries plan only until an operator enables live dispatch, and a ledger setup
+// failure never blocks the retry plan.
 test("failed-review retries default to dry-run", () => {
-  const retry = workflow("sweep.yml").jobs["retry-failed-reviews"]?.steps?.find(
-    (step) => step.env?.DRY_RUN !== undefined,
-  );
+  const steps = workflow("failed-review-retry.yml").jobs["retry-failed-reviews"]?.steps ?? [];
+  const retry = steps.find((step) => step.env?.DRY_RUN !== undefined);
   assert.equal(
     retry?.env?.DRY_RUN,
     "${{ vars.CLAWSWEEPER_FAILED_REVIEW_RETRY_ENABLED == '1' && 'false' || 'true' }}",
   );
+  const ledger = steps.find((step) => step.uses?.endsWith("/setup-action-ledger")) as
+    | (Step & { "continue-on-error"?: boolean })
+    | undefined;
+  assert.equal(ledger?.["continue-on-error"], true);
 });
 
 // Status publication names its target repository, so it never writes another repository.

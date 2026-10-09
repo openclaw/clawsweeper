@@ -1,0 +1,196 @@
+name: ClawSweeper failed-review retry
+
+run-name: Retry failed Codex reviews
+
+on:
+  schedule:
+    - cron: "13 * * * *"
+
+permissions: {}
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+  CLAWSWEEPER_AUTO_CLOSE_REASONS: ${{ vars.CLAWSWEEPER_AUTO_CLOSE_REASONS || 'all' }}
+  CLAWSWEEPER_UNCONFIRMED_PRODUCT_DIRECTION_CLOSE_ENABLED: ${{ vars.CLAWSWEEPER_UNCONFIRMED_PRODUCT_DIRECTION_CLOSE_ENABLED || 'false' }}
+  CLAWSWEEPER_OVERSIZED_PR_CLOSE_ENABLED: ${{ vars.CLAWSWEEPER_OVERSIZED_PR_CLOSE_ENABLED || 'true' }}
+  CLAWSWEEPER_MAX_PR_CHANGED_LINES: ${{ vars.CLAWSWEEPER_MAX_PR_CHANGED_LINES || '50000' }}
+  CLAWSWEEPER_UNSPONSORED_FEATURE_CLOSE_ENABLED: ${{ vars.CLAWSWEEPER_UNSPONSORED_FEATURE_CLOSE_ENABLED || 'false' }}
+  CLAWSWEEPER_STALE_VERSION_BUG_CLOSE_ENABLED: ${{ vars.CLAWSWEEPER_STALE_VERSION_BUG_CLOSE_ENABLED || 'false' }}
+  CLAWSWEEPER_OBSOLETE_FIX_PR_CLOSE_ENABLED: ${{ vars.CLAWSWEEPER_OBSOLETE_FIX_PR_CLOSE_ENABLED || 'false' }}
+  CLAWSWEEPER_AUTHOR_PR_BUDGET: ${{ vars.CLAWSWEEPER_AUTHOR_PR_BUDGET || '15' }}
+  CLAWSWEEPER_AUTHOR_PR_BUDGET_MAX_CLOSES_PER_RUN: ${{ vars.CLAWSWEEPER_AUTHOR_PR_BUDGET_MAX_CLOSES_PER_RUN || '5' }}
+  CLAWSWEEPER_IDEA_REVIVAL_REACTIONS: ${{ vars.CLAWSWEEPER_IDEA_REVIVAL_REACTIONS || '5' }}
+  CLAWSWEEPER_APP_CLIENT_ID: Iv23liOECG0slfuhz093
+  CLAWSWEEPER_MODEL: internal
+  CLAWSWEEPER_RUNNER: ${{ vars.CLAWSWEEPER_RUNNER || 'codex' }}
+  CLAWSWEEPER_OPENCLAW_MODEL: ${{ secrets.CLAWSWEEPER_OPENCLAW_MODEL }}
+  CLAWSWEEPER_OPENCLAW_PROVIDERS_JSON: ${{ secrets.CLAWSWEEPER_OPENCLAW_PROVIDERS_JSON }}
+  CLAWSWEEPER_OPENCLAW_OPENAI_KEY: ${{ vars.CLAWSWEEPER_RUNNER == 'openclaw' && secrets.OPENAI_API_KEY || '' }}
+  ANTHROPIC_API_KEY: ${{ vars.CLAWSWEEPER_RUNNER == 'openclaw' && secrets.ANTHROPIC_API_KEY || '' }}
+  GEMINI_API_KEY: ${{ vars.CLAWSWEEPER_RUNNER == 'openclaw' && secrets.GEMINI_API_KEY || '' }}
+  KIMI_API_KEY: ${{ vars.CLAWSWEEPER_RUNNER == 'openclaw' && secrets.KIMI_API_KEY || '' }}
+  OPENROUTER_API_KEY: ${{ vars.CLAWSWEEPER_RUNNER == 'openclaw' && secrets.OPENROUTER_API_KEY || '' }}
+
+concurrency:
+  group: clawsweeper-failed-review-retry-openclaw/openclaw
+  cancel-in-progress: false
+
+jobs:
+  hosted-target-admission:
+    uses: ./.github/workflows/hosted-target-admission.yml
+    with:
+      target_repo: openclaw/openclaw
+    secrets:
+      CLAWSWEEPER_APP_PRIVATE_KEY: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
+
+  retry-failed-reviews:
+    name: Retry failed Codex reviews
+    needs: hosted-target-admission
+    if: ${{ always() && needs.hosted-target-admission.outputs.outcome == 'public' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      actions: write
+      contents: write
+      issues: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          filter: blob:none
+          fetch-depth: 0
+
+      - uses: ./.github/actions/setup-action-ledger
+        continue-on-error: true
+
+      - name: Create state token
+        id: state-token
+        uses: ./.github/actions/create-state-token
+        with:
+          client-id: ${{ env.CLAWSWEEPER_APP_CLIENT_ID }}
+          private-key: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
+
+      - uses: ./.github/actions/setup-state
+        with:
+          coordinator-url: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
+          records-url: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
+          records-secret: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
+          records-repo-slugs: openclaw-openclaw
+          hydrate-state-blobs: "false"
+          token: ${{ steps.state-token.outputs.token }}
+
+      - uses: ./.github/actions/setup-pnpm
+        with:
+          build-script: build:all
+
+      - name: Plan or dispatch failed-review retries
+        id: retry-failed-reviews-run
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_REPO: openclaw/openclaw
+          DRY_RUN: ${{ vars.CLAWSWEEPER_FAILED_REVIEW_RETRY_ENABLED == '1' && 'false' || 'true' }}
+          RETRY_LIMIT: ${{ vars.CLAWSWEEPER_FAILED_REVIEW_RETRY_LIMIT || '3' }}
+          RETRY_MAX_ATTEMPTS: ${{ vars.CLAWSWEEPER_FAILED_REVIEW_RETRY_MAX_ATTEMPTS || '2' }}
+          RETRY_COOLDOWN_MINUTES: ${{ vars.CLAWSWEEPER_FAILED_REVIEW_RETRY_COOLDOWN_MINUTES || '45' }}
+          RETRY_MAX_RUNTIME_MS: ${{ vars.CLAWSWEEPER_FAILED_REVIEW_RETRY_MAX_RUNTIME_MS || '600000' }}
+          CODEX_TIMEOUT_MS: ${{ vars.CLAWSWEEPER_FAILED_REVIEW_RETRY_CODEX_TIMEOUT_MS || vars.CLAWSWEEPER_CODEX_TIMEOUT_MS || '1200000' }}
+        run: |
+          set -euo pipefail
+          git pull --rebase --autostash
+          dry_run_arg=()
+          if [ "$DRY_RUN" = "true" ]; then
+            dry_run_arg=(--dry-run)
+            echo "::notice::Failed-review retry is running in dry-run mode. Set CLAWSWEEPER_FAILED_REVIEW_RETRY_ENABLED=1 to dispatch exact-item retries."
+          fi
+          set +e
+          pnpm run retry-failed-reviews -- \
+            --target-repo "$TARGET_REPO" \
+            --limit "$RETRY_LIMIT" \
+            --max-attempts "$RETRY_MAX_ATTEMPTS" \
+            --cooldown-minutes "$RETRY_COOLDOWN_MINUTES" \
+            --max-runtime-ms "$RETRY_MAX_RUNTIME_MS" \
+            --codex-timeout-ms "$CODEX_TIMEOUT_MS" \
+            --workflow-repo "$GITHUB_REPOSITORY" \
+            --workflow-ref main \
+            --state-dir results/failed-review-retries/openclaw-openclaw \
+            --report-path artifacts/failed-review-retry-report.json \
+            "${dry_run_arg[@]}"
+          retry_exit_code=$?
+          set -e
+          echo "exit_code=$retry_exit_code" >> "$GITHUB_OUTPUT"
+          exit "$retry_exit_code"
+
+      - name: Finalize failed-review retry action ledger
+        if: ${{ always() }}
+        env:
+          RETRY_EXIT_CODE: ${{ steps.retry-failed-reviews-run.outputs.exit_code || '' }}
+          RETRY_OUTCOME: ${{ steps.retry-failed-reviews-run.outcome || 'not_started' }}
+        run: |
+          args=()
+          if [ "$RETRY_OUTCOME" = "cancelled" ] || [ "$RETRY_EXIT_CODE" = "130" ] || [ "$RETRY_EXIT_CODE" = "143" ]; then
+            args=(--interrupt-open-attempts --reason cancelled)
+          elif [ "$RETRY_EXIT_CODE" = "124" ] || [ "$RETRY_EXIT_CODE" = "137" ]; then
+            args=(--interrupt-open-attempts --reason timeout)
+          elif [ "$RETRY_OUTCOME" != "success" ]; then
+            args=(--interrupt-open-attempts --reason workflow_failed)
+          fi
+          pnpm run --silent finalize-action-events -- "${args[@]}"
+
+      - name: Publish failed-review retry state
+        if: ${{ always() && vars.CLAWSWEEPER_FAILED_REVIEW_RETRY_ENABLED == '1' && hashFiles('results/failed-review-retries/openclaw-openclaw/*.json') != '' }}
+        continue-on-error: true
+        env:
+          CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
+        run: |
+          pnpm run repair:publish-main -- \
+            --message "chore: update failed review retry state" \
+            --path results/failed-review-retries/openclaw-openclaw \
+            --rebase-strategy theirs
+
+      - name: Publish failed-review retry action ledger
+        if: ${{ always() }}
+        env:
+          CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
+          QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
+        run: |
+          set -euo pipefail
+          source_root="$CLAWSWEEPER_ACTION_LEDGER_OUTPUT_ROOT"
+          if [ ! -d "$source_root/ledger" ]; then
+            echo "No failed-review retry action event shards were finalized."
+            exit 0
+          fi
+          event_paths_file=".artifacts/failed-review-retry-action-ledger-paths.txt"
+          mkdir -p .artifacts
+          pnpm run --silent publish-action-events -- \
+            --source-root "$source_root" \
+            --state-root . \
+            --expected-producer-job "$GITHUB_JOB" |
+            jq -r '.paths[]?' |
+            sort -u > "$event_paths_file"
+          if [ ! -s "$event_paths_file" ]; then
+            echo "Failed-review retry action shards existed but no paths were imported." >&2
+            exit 1
+          fi
+          node dist/clawsweeper.js publish-action-event-paths \
+            --paths-file "$event_paths_file"
+
+      - uses: actions/upload-artifact@v7
+        if: ${{ always() }}
+        with:
+          name: failed-review-retry-report
+          path: artifacts/failed-review-retry-report.json
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Restore failed-review retry outcome
+        if: ${{ always() && steps.retry-failed-reviews-run.outcome != 'success' && steps.retry-failed-reviews-run.outcome != 'skipped' }}
+        env:
+          RETRY_EXIT_CODE: ${{ steps.retry-failed-reviews-run.outputs.exit_code || '1' }}
+        run: |
+          retry_exit_code="$RETRY_EXIT_CODE"
+          if ! [[ "$retry_exit_code" =~ ^[1-9][0-9]*$ ]] || [ "$retry_exit_code" -gt 255 ]; then
+            retry_exit_code=1
+          fi
+          echo "Restoring failed-review retry exit code $retry_exit_code after ledger cleanup."
+          exit "$retry_exit_code"

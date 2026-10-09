@@ -1,0 +1,1 @@
+- Move the hourly failed-review retry lane from `sweep.yml` to its own `failed-review-retry.yml` workflow with the same schedule, concurrency group, admission gate, permissions, environment and steps; the review-run observer no longer starts a runner for these support-only runs.
