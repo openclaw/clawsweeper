@@ -1,0 +1,1 @@
+- Replace the `test/sweep-workflow.test.ts` boundary tests that read raw workflow and source text: the queue claim, review-only publication, direct-publication lifecycle, state publishers and review target branch now run the real step or CLI, and the token-scope guards read parsed workflow steps.
