@@ -176,7 +176,7 @@ jobs:
 
       - uses: actions/download-artifact@v8
         with:
-          pattern: coverage-shard-*
+          pattern: coverage-shard-1
           path: ${{ runner.temp }}/coverage
 
       - name: Enforce coverage thresholds over every shard

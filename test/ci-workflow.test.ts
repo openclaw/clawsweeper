@@ -67,7 +67,7 @@ test("CI runs the fast gates once and the full suite as coverage shards", () => 
     step.uses?.startsWith("actions/download-artifact@"),
   );
   assert.deepEqual(download?.with, {
-    pattern: "coverage-shard-*",
+    pattern: "coverage-shard-1",
     path: "${{ runner.temp }}/coverage",
   });
   assert.ok(
