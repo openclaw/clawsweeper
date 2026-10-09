@@ -78,6 +78,7 @@ import {
   FRESH_DAYS,
   REVIEW_SECTIONS,
   REVIEW_POLICY_VERSION,
+  CLAWSWEEPER_BOT_LOGINS,
 } from "./clawsweeper-policy.js";
 import { createRecordMetadata } from "./clawsweeper-record-metadata.js";
 import { createRegressionProvenanceVerifier } from "./clawsweeper-regression-provenance.js";
@@ -351,12 +352,7 @@ const {
 } = githubExecution;
 
 const CLAWSWEEPER_BOT_AUTHORS = new Set(
-  [
-    "clawsweeper",
-    "clawsweeper[bot]",
-    "openclaw-clawsweeper[bot]",
-    process.env.CLAWSWEEPER_COMMENT_AUTHOR_LOGIN,
-  ]
+  [...CLAWSWEEPER_BOT_LOGINS, process.env.CLAWSWEEPER_COMMENT_AUTHOR_LOGIN]
     .filter((login): login is string => typeof login === "string" && login.length > 0)
     .map((login) => login.toLowerCase()),
 );

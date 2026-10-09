@@ -22,12 +22,12 @@ import {
   TELEGRAM_VISIBLE_PROOF_LABEL,
   TELEGRAM_VISIBLE_PROOF_LABEL_COLOR,
   TELEGRAM_VISIBLE_PROOF_LABEL_DESCRIPTION,
+  type MergeRiskLabelName,
 } from "./clawsweeper-policy.js";
 import { compareCodeUnits } from "./stable-json.js";
 import type {
   ImpactLabelName,
   MaturityLabelName,
-  MergeRiskLabelName,
   PrRatingTier,
   PrStatusLabelKind,
 } from "./clawsweeper-types.js";

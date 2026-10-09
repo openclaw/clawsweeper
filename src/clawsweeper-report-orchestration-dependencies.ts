@@ -1,5 +1,5 @@
 import type { RealBehaviorProofPolicy } from "./clawsweeper-proof-policy.js";
-import { PR_STATUS_LABELS } from "./clawsweeper-policy.js";
+import { PR_STATUS_LABELS, type MergeRiskLabelName } from "./clawsweeper-policy.js";
 import type {
   ActionTaken,
   AgentsPolicyStatus,
@@ -19,7 +19,6 @@ import type {
   LabelJustification,
   LikelyOwner,
   MaturityLabelName,
-  MergeRiskLabelName,
   MergeRiskOption,
   OverallCorrectness,
   ParsedGitHubItemRef,

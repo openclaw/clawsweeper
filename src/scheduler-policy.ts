@@ -1,3 +1,5 @@
+import { BULK_FILED_LABEL } from "./repair/exact-review-guard-labels.js";
+
 export type SchedulerItemKind = "issue" | "pull_request";
 
 export interface SchedulerItem {
@@ -55,7 +57,6 @@ const DAILY_REVIEW_DAYS = 1;
 const WEEKLY_REVIEW_DAYS = 7;
 export const WEEKLY_COVERAGE_REVIEW_DAYS = 6;
 const DAY_MS = 24 * 60 * 60 * 1000;
-const BULK_FILED_LABEL = "clawsweeper:bulk-filed";
 
 function isBulkFiled(item: SchedulerItem): boolean {
   return item.labels?.some((label) => label.toLowerCase() === BULK_FILED_LABEL) ?? false;

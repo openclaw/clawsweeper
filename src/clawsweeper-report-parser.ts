@@ -28,6 +28,7 @@ import {
   TESTING_PROOF_PATHS,
   TRIAGE_PRIORITIES,
   VISION_FIT_STATUSES,
+  type MergeRiskLabelName,
 } from "./clawsweeper-policy.js";
 import {
   parseAttachedLiveVerification,
@@ -50,7 +51,6 @@ import type {
   LabelJustification,
   LikelyOwner,
   MaturityLabelName,
-  MergeRiskLabelName,
   MergeRiskOption,
   OverallCorrectness,
   PrRating,

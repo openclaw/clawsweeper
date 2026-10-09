@@ -7,6 +7,7 @@ import {
   REVIEW_VIABLE_ISSUE_TRIGGER_SOURCE,
   REVIEW_VISION_FIT_TRIGGER_SOURCE,
 } from "./comment-router-core.js";
+import { HUMAN_REVIEW_LABEL, MANUAL_ONLY_LABEL } from "./exact-review-guard-labels.js";
 import { validateRepairContractShape } from "./repair-contract.js";
 import { slug } from "./text-utils.js";
 
@@ -17,8 +18,6 @@ const REPAIR_STRATEGIES = new Set([
   "replace_uneditable_branch",
   "new_fix_pr",
 ]);
-export const HUMAN_REVIEW_LABEL = "clawsweeper:human-review";
-export const MANUAL_ONLY_LABEL = "clawsweeper:manual-only";
 const REVIEWED_ISSUE_TRIGGER_SOURCES = new Set([
   REVIEW_REPRODUCIBLE_BUG_TRIGGER_SOURCE,
   REVIEW_VIABLE_ISSUE_TRIGGER_SOURCE,

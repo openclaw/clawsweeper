@@ -1,7 +1,9 @@
 import crypto from "node:crypto";
 
+import { CLAWSWEEPER_BOT_LOGINS } from "../clawsweeper-policy.js";
 import type { JsonValue, LooseRecord } from "./json-types.js";
 import {
+  BULK_FILED_LABEL,
   CLOSE_PROTECTED_LABEL_NAMES,
   HUMAN_REVIEW_LABEL,
   MANUAL_ONLY_LABEL,
@@ -11,12 +13,6 @@ const PROTECTED_LABELS = new Set<string>([
   ...CLOSE_PROTECTED_LABEL_NAMES,
   HUMAN_REVIEW_LABEL,
   MANUAL_ONLY_LABEL,
-]);
-const CLAWSWEEPER_BOTS = new Set([
-  "clawsweeper",
-  "clawsweeper[bot]",
-  "openclaw-clawsweeper",
-  "openclaw-clawsweeper[bot]",
 ]);
 
 export function issueSourceRevisionSha256(issue: LooseRecord, comments: JsonValue[] = []): string {
@@ -60,7 +56,7 @@ function isIgnorableAutomationLabel(label: string) {
     isClawSweeperAdvisoryLabel(label) ||
     (label.startsWith("clawsweeper:") &&
       !PROTECTED_LABELS.has(label) &&
-      label !== "clawsweeper:bulk-filed") ||
+      label !== BULK_FILED_LABEL) ||
     label === "no-stale" ||
     label === "stale"
   );
@@ -80,7 +76,7 @@ function isClawSweeperAdvisoryLabel(label: string): boolean {
 }
 
 function isClawSweeperComment(comment: LooseRecord): boolean {
-  return CLAWSWEEPER_BOTS.has(
+  return CLAWSWEEPER_BOT_LOGINS.has(
     String(comment.user?.login ?? "")
       .trim()
       .toLowerCase(),

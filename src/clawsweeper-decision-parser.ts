@@ -64,6 +64,7 @@ import {
   TRIAGE_PRIORITIES,
   VISION_FIT_STATUSES,
   WORK_CANDIDATES,
+  type MergeRiskLabelName,
 } from "./clawsweeper-policy.js";
 import type {
   AgentsPolicyStatus,
@@ -76,7 +77,6 @@ import type {
   LiveProofStep,
   LikelyOwner,
   MaturityLabelName,
-  MergeRiskLabelName,
   MergeRiskOption,
   ParsedGitHubItemRef,
   PrRating,

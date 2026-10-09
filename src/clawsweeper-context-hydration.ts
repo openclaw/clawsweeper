@@ -2,8 +2,8 @@ import { AgentInputScanError } from "./agent-input-scan.js";
 import { GitHubOperationDeadlineError } from "./clawsweeper-github-runtime.js";
 import { ReviewSourcePreparationError } from "./review-source-preparation.js";
 import { validationRecoveryRequired } from "./repair/validation-recovery.js";
+import { BULK_FILED_LABEL } from "./repair/exact-review-guard-labels.js";
 import {
-  BULK_FILED_LABEL,
   BULK_FILER_SEARCH_TIMEOUT_MS,
   DAY_MS,
   DEFAULT_AUTHOR_PR_BUDGET,

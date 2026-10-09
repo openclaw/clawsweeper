@@ -34,9 +34,12 @@ import {
 } from "./issue-worker-recovery.js";
 import { hasSecuritySignal } from "./security-signals.js";
 import {
+  BULK_FILED_LABEL,
   CLOSE_PROTECTED_LABEL_NAMES,
   HUMAN_REVIEW_LABEL,
   MANUAL_ONLY_LABEL,
+  NEEDS_MAINTAINER_REVIEW_LABEL,
+  NEEDS_PRODUCT_DECISION_LABEL,
 } from "./exact-review-guard-labels.js";
 
 type CandidateKind = "strict_bug" | "vision_fit" | "viable";
@@ -676,7 +679,7 @@ function eligibilityDecision({
   const reportLabels = frontMatterStringArray(fm.labels);
   if (
     fm.bulk_filer_detected === "true" ||
-    reportLabels.some((label) => label.trim().toLowerCase() === "clawsweeper:bulk-filed")
+    reportLabels.some((label) => label.trim().toLowerCase() === BULK_FILED_LABEL)
   ) {
     blockers.push("bulk-filed issues are not eligible for automatic implementation");
   }
@@ -700,7 +703,7 @@ function eligibilityDecision({
     if (issue.state !== "open") blockHard(`live issue state is ${issue.state || "unknown"}`);
     if (issue.locked === true) blockHard("live issue is locked");
     if (labels.some(isProtectedLabel)) blockHard("live issue has protected label");
-    if (labels.some((label: string) => label.trim().toLowerCase() === "clawsweeper:bulk-filed")) {
+    if (labels.some((label: string) => label.trim().toLowerCase() === BULK_FILED_LABEL)) {
       blockers.push("live issue is bulk-filed and is not eligible for automatic implementation");
     }
     const livePauseLabels = labels.filter(isAutomaticImplementationPauseLabel);
@@ -1434,8 +1437,8 @@ function isProtectedLabel(label: string): boolean {
 function isAutomaticImplementationPauseLabel(label: string): boolean {
   return [
     "clawsweeper:no-new-fix-pr",
-    "clawsweeper:needs-maintainer-review",
-    "clawsweeper:needs-product-decision",
+    NEEDS_MAINTAINER_REVIEW_LABEL,
+    NEEDS_PRODUCT_DECISION_LABEL,
   ].includes(label.trim().toLowerCase());
 }
 

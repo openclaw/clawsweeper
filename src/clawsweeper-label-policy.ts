@@ -1,7 +1,6 @@
 import {
   FEATURE_SHOWCASE_LABEL,
   FEATURE_SHOWCASE_STATUSES,
-  MERGE_READY_LABEL,
   OVERALL_CORRECTNESS_VALUES,
   PR_STATUS_LABEL_NAMES,
   PR_STATUS_LABELS,
@@ -11,6 +10,7 @@ import {
   AUTOMERGE_LABEL,
   HUMAN_REVIEW_LABEL,
   MANUAL_ONLY_LABEL,
+  MERGE_READY_LABEL,
 } from "./repair/exact-review-guard-labels.js";
 import type { RealBehaviorProofPolicy } from "./clawsweeper-proof-policy.js";
 import type {

@@ -17,6 +17,7 @@ import {
 import { publishMainCommit, publishRoot } from "./git-publish.js";
 import { ghJson, ghJsonWithRetry, ghPaged, ghText, githubCommandTimeoutMs } from "./github-cli.js";
 import { DEFAULT_TARGET_REPO, REPAIR_CLUSTER_WORKFLOW } from "./constants.js";
+import { CLAWSWEEPER_BOT_LOGINS } from "../clawsweeper-policy.js";
 import { writePayload } from "./comment-router-utils.js";
 import {
   DEFAULT_SELF_HEAL_HEAD_PREFIX,
@@ -591,12 +592,7 @@ function currentActionsRunUrl() {
 }
 
 function isTrustedStatusComment(comment: LooseRecord) {
-  const author = String(comment.user?.login ?? "").toLowerCase();
-  return (
-    author === "clawsweeper" ||
-    author === "clawsweeper[bot]" ||
-    author === "openclaw-clawsweeper[bot]"
-  );
+  return CLAWSWEEPER_BOT_LOGINS.has(String(comment.user?.login ?? "").toLowerCase());
 }
 
 function writeGithubOutput(values: Record<string, string>) {

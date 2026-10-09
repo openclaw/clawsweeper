@@ -1,4 +1,4 @@
-import { AUTOFIX_LABEL, AUTOMERGE_LABEL } from "./comment-router-core.js";
+import { AUTOFIX_LABEL, AUTOMERGE_LABEL } from "./exact-review-guard-labels.js";
 
 export const SECURITY_REPAIR_OPT_IN_LABELS = new Set([AUTOFIX_LABEL, AUTOMERGE_LABEL]);
 

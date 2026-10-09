@@ -1,4 +1,5 @@
 import { type Args } from "./clawsweeper-args.js";
+import type { MergeRiskLabelName } from "./clawsweeper-policy.js";
 import type {
   AcquiredReviewStartLease,
   ActionTaken,
@@ -22,7 +23,6 @@ import type {
   ItemContext,
   ItemKind,
   MaturityLabelName,
-  MergeRiskLabelName,
   MutationRunner,
   OverallCorrectness,
   PrCloseCoverageProofGateBlock,

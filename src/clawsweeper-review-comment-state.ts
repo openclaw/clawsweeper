@@ -3,6 +3,7 @@ import {
   LIVE_RECHECK_CLOSE_GUARD_ACTIONS,
 } from "./apply-close-actions.js";
 import {
+  CLAWSWEEPER_BOT_LOGINS,
   DEFAULT_REVIEW_CODEX_TIMEOUT_MS,
   PAIR_BLOCKED_CLOSE_ACTIONS,
   REVIEW_START_STATUS_MARKER_PREFIX,
@@ -862,12 +863,9 @@ export function createReviewCommentState(
   }
 
   const PATCHABLE_REVIEW_COMMENT_AUTHORS = new Set(
-    [
-      "clawsweeper",
-      "clawsweeper[bot]",
-      "openclaw-clawsweeper[bot]",
-      process.env.CLAWSWEEPER_COMMENT_AUTHOR_LOGIN,
-    ].filter((login): login is string => typeof login === "string" && login.length > 0),
+    [...CLAWSWEEPER_BOT_LOGINS, process.env.CLAWSWEEPER_COMMENT_AUTHOR_LOGIN].filter(
+      (login): login is string => typeof login === "string" && login.length > 0,
+    ),
   );
 
   function commentAuthorLogin(comment: Record<string, unknown> | undefined): string | undefined {

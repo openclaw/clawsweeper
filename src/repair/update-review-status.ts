@@ -7,7 +7,7 @@ import {
   type TerminalReviewFailureReason,
 } from "../exact-review-failure-reason.js";
 import { repoRoot } from "./paths.js";
-import { DEFAULT_TRUSTED_BOTS } from "./config.js";
+import { CLAWSWEEPER_BOT_LOGINS } from "../clawsweeper-policy.js";
 import {
   commaSet,
   isAllowedMutationActor,
@@ -238,7 +238,7 @@ export function parseOptions(argv: string[]): Options {
     trustedBots: commaSet(
       args["trusted-bots"] ??
         process.env.CLAWSWEEPER_TRUSTED_BOTS ??
-        [...DEFAULT_TRUSTED_BOTS, "clawsweeper"].join(","),
+        [...CLAWSWEEPER_BOT_LOGINS].join(","),
     ),
     state,
     failureReason,

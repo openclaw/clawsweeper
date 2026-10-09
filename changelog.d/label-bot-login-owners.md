@@ -1,0 +1,1 @@
+- Give each ClawSweeper automation label name and the ClawSweeper bot logins one defining site, derive `MergeRiskLabelName` from the policy label list, and delete the duplicate label and trusted-author constants in the repair lane.

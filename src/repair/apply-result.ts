@@ -2,6 +2,7 @@
 import { sha256 } from "../content-hash.js";
 import { normalizeAuthorAssociation } from "../clawsweeper-item-policy.js";
 import {
+  CLAWSWEEPER_BOT_LOGINS,
   PROOF_OVERRIDE_LABEL,
   PROOF_SUFFICIENT_LABEL,
   PR_RATING_LABELS,
@@ -88,12 +89,9 @@ const NEEDS_PROOF_LABELS = new Set([
 const F_RATING_LABEL = PR_RATING_LABELS.find((label) => label.tier === "F")!.name;
 const CLAWSWEEPER_COMMAND_ONLY_PATTERN = /^@clawsweeper\s+(?:re-review|re-run|review)\s*$/i;
 const CLAWSWEEPER_BOT_AUTHORS = new Set(
-  [
-    "clawsweeper",
-    "clawsweeper[bot]",
-    "openclaw-clawsweeper[bot]",
-    process.env.CLAWSWEEPER_COMMENT_AUTHOR_LOGIN,
-  ].filter((login): login is string => typeof login === "string" && login.length > 0),
+  [...CLAWSWEEPER_BOT_LOGINS, process.env.CLAWSWEEPER_COMMENT_AUTHOR_LOGIN].filter(
+    (login): login is string => typeof login === "string" && login.length > 0,
+  ),
 );
 
 type PrCloseCoverageProofValidation =

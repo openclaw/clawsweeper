@@ -1,6 +1,5 @@
 import { nextPrRatingLabels } from "./clawsweeper-rating.js";
 import {
-  BULK_FILED_LABEL,
   FEATURE_SHOWCASE_LABEL,
   GOOD_FIRST_ISSUE_LABEL,
   IMPACT_LABEL_NAMES,
@@ -16,13 +15,13 @@ import {
   PR_STATUS_LABEL_NAMES,
   STALE_LABEL,
   TELEGRAM_VISIBLE_PROOF_LABEL,
+  type MergeRiskLabelName,
 } from "./clawsweeper-policy.js";
 import type {
   FeatureShowcase,
   ImpactLabelName,
   IssueAdvisoryLabelState,
   MaturityLabelName,
-  MergeRiskLabelName,
   OverallCorrectness,
   PrRating,
   PrStatusLabelKind,
@@ -31,6 +30,7 @@ import type {
   TelegramVisibleProof,
   TriagePriority,
 } from "./clawsweeper-types.js";
+import { BULK_FILED_LABEL } from "./repair/exact-review-guard-labels.js";
 import type { LabelSynchronizationDependencies } from "./clawsweeper-label-dependencies.js";
 import type { createLabelSelectionPolicy } from "./clawsweeper-label-selection.js";
 import type { createLabelMutationOperations } from "./clawsweeper-label-mutations.js";

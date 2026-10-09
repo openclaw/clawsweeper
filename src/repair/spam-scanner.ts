@@ -9,6 +9,7 @@ import {
   ghStdoutFromError,
 } from "./github-cli.js";
 import { assertRepo, commaSet, positiveInteger } from "./comment-router-utils.js";
+import { DEFAULT_TRUSTED_BOTS } from "./config.js";
 import {
   buildSpamModelInput,
   commentVersionKey,
@@ -57,7 +58,7 @@ const reviewCommentIds = numberSet(
 const trustedBots = commaSet(
   args["trusted-bots"] ??
     process.env.CLAWSWEEPER_SPAM_TRUSTED_BOTS ??
-    "clawsweeper[bot],openclaw-clawsweeper[bot]",
+    DEFAULT_TRUSTED_BOTS.join(","),
 );
 
 assertRepo(targetRepo, "repo");

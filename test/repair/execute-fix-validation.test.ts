@@ -2,11 +2,13 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
-  HUMAN_REVIEW_LABEL,
-  MANUAL_ONLY_LABEL,
   repairPauseLabel,
   validateAutonomousFixScope,
 } from "../../dist/repair/execute-fix-validation.js";
+import {
+  HUMAN_REVIEW_LABEL,
+  MANUAL_ONLY_LABEL,
+} from "../../dist/repair/exact-review-guard-labels.js";
 
 function broadBranchRepairArtifact() {
   return {

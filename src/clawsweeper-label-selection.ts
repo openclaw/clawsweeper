@@ -1,6 +1,5 @@
 import { nextPrRatingLabels } from "./clawsweeper-rating.js";
 import {
-  BULK_FILED_LABEL,
   GOOD_FIRST_ISSUE_LABEL,
   IMPACT_LABELS,
   IMPACT_LABEL_NAMES,
@@ -26,12 +25,12 @@ import {
   TELEGRAM_VISIBLE_PROOF_LABEL,
   TELEGRAM_VISIBLE_PROOF_STATUSES,
   TRIAGE_PRIORITIES,
+  type MergeRiskLabelName,
 } from "./clawsweeper-policy.js";
 import type {
   ImpactLabelName,
   IssueAdvisoryLabelState,
   MaturityLabelName,
-  MergeRiskLabelName,
   PrRatingTier,
   RealBehaviorProof,
   RealBehaviorProofEvidenceKind,
@@ -40,6 +39,12 @@ import type {
   TelegramVisibleProofStatus,
   TriagePriority,
 } from "./clawsweeper-types.js";
+import {
+  BULK_FILED_LABEL,
+  NEEDS_MAINTAINER_REVIEW_LABEL,
+  NEEDS_PRODUCT_DECISION_LABEL,
+  NEEDS_SECURITY_REVIEW_LABEL,
+} from "./repair/exact-review-guard-labels.js";
 import type { LabelSynchronizationDependencies } from "./clawsweeper-label-dependencies.js";
 
 export function createLabelSelectionPolicy(dependencies: LabelSynchronizationDependencies) {
@@ -368,13 +373,13 @@ export function createLabelSelectionPolicy(dependencies: LabelSynchronizationDep
       labels.add("clawsweeper:fix-shape-clear");
     }
     if (state.workCandidate === "manual_review" || state.workStatus === "manual_review") {
-      labels.add("clawsweeper:needs-maintainer-review");
+      labels.add(NEEDS_MAINTAINER_REVIEW_LABEL);
     }
     if (state.requiresProductDecision) {
-      labels.add("clawsweeper:needs-product-decision");
+      labels.add(NEEDS_PRODUCT_DECISION_LABEL);
     }
     if (state.itemCategory === "security" || state.securityReviewStatus === "needs_attention") {
-      labels.add("clawsweeper:needs-security-review");
+      labels.add(NEEDS_SECURITY_REVIEW_LABEL);
     }
     if (
       state.hasOpenLinkedPullRequest ||

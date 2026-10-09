@@ -11,6 +11,7 @@ import {
 } from "./clawsweeper-policy.js";
 import { isAutoCloseAllowed, repositoryProfileFor } from "./repository-profiles.js";
 import type { ActionTaken, CloseReason, Decision, Item } from "./clawsweeper-types.js";
+import { NEEDS_SECURITY_REVIEW_LABEL } from "./repair/exact-review-guard-labels.js";
 
 interface CloseDecisionWorkflowDependencies {
   targetRepo: () => string;
@@ -149,9 +150,7 @@ export function createCloseDecisionWorkflow({
     }
     const securityLabel = item.labels
       .map(normalizeLabelName)
-      .find(
-        (label) => label === "impact:security" || label === "clawsweeper:needs-security-review",
-      );
+      .find((label) => label === "impact:security" || label === NEEDS_SECURITY_REVIEW_LABEL);
     if (securityLabel) {
       return `${securityLabel} blocks unsponsored feature auto-close`;
     }

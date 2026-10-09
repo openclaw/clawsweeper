@@ -11,6 +11,7 @@ import {
   type ActionEventStatus,
   type ActionEventSubject,
 } from "./action-ledger.js";
+import { CLAWSWEEPER_BOT_LOGINS } from "./clawsweeper-policy.js";
 import { createApplyActionLedger } from "./clawsweeper-apply-ledger.js";
 import { boolArg, numberArg, stringArg, type Args } from "./clawsweeper-args.js";
 import { createFailedReviewRetryWorkflow } from "./clawsweeper-failed-review-retry.js";
@@ -299,12 +300,7 @@ export function createCommandOperations(dependencies: CreateCommandOperationsDep
     const path = `repos/${targetRepo()}/issues/comments/${commentId}`;
     const comment = ghJson<{ body?: string; user?: { login?: string } }>(["api", path]);
     const body = comment.body ?? "";
-    if (
-      !["clawsweeper", "clawsweeper[bot]", "openclaw-clawsweeper[bot]"].includes(
-        comment.user?.login ?? "",
-      )
-    )
-      return;
+    if (!CLAWSWEEPER_BOT_LOGINS.has(comment.user?.login ?? "")) return;
     const expired = expireReviewStartStatusLease(body, new Date().toISOString(), itemNumber);
     if (expired !== body) {
       ghWithRetry(["api", path, "--method", "PATCH", "-f", `body=${expired}`]);

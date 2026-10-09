@@ -1,5 +1,6 @@
 import type { CreateApplyDecisionWorkflowDependencies } from "./clawsweeper-apply-dependencies.js";
-import { BULK_FILED_LABEL, GOOD_FIRST_ISSUE_LABEL } from "./clawsweeper-policy.js";
+import { GOOD_FIRST_ISSUE_LABEL } from "./clawsweeper-policy.js";
+import { BULK_FILED_LABEL } from "./repair/exact-review-guard-labels.js";
 import type {
   BulkFilerRepositoryPermissionCache,
   Item,

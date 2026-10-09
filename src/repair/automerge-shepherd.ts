@@ -1,13 +1,9 @@
 import type { JsonValue, LooseRecord } from "./json-types.js";
+import { CLAWSWEEPER_BOT_LOGINS } from "../clawsweeper-policy.js";
 import { isAutomergeMergeStateReady, latestTrustedExactHeadReview } from "./comment-router-core.js";
 
 const DEFAULT_WAIT_MS = 10 * 60 * 1000;
 const DEFAULT_POLL_MS = 15 * 1000;
-const TRUSTED_REVIEW_AUTHORS = new Set([
-  "clawsweeper",
-  "clawsweeper[bot]",
-  "openclaw-clawsweeper[bot]",
-]);
 
 export function automergeShepherdWaitConfig(env: LooseRecord = process.env) {
   const maxWaitMs = positiveInt(env.CLAWSWEEPER_AUTOMERGE_SHEPHERD_WAIT_MS, DEFAULT_WAIT_MS);
@@ -102,7 +98,7 @@ function trustedReviewDecisionForHead(comments: JsonValue[], headSha: string) {
   return latestTrustedExactHeadReview({
     comments,
     headSha,
-    trustedAuthors: TRUSTED_REVIEW_AUTHORS,
+    trustedAuthors: CLAWSWEEPER_BOT_LOGINS,
   });
 }
 

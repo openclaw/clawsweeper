@@ -2,6 +2,7 @@
 import { createHash, createHmac } from "node:crypto";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { CLAWSWEEPER_BOT_LOGINS } from "./clawsweeper-policy.js";
 import {
   fetchDurableCursor,
   putDurableCursor,
@@ -31,7 +32,6 @@ const SEARCH_PAGE_SIZE = 100;
 const SEARCH_RESULT_LIMIT = 1_000;
 const COMMENT_PAGE_SIZE = 100;
 const COMMENT_MAX_PAGES = 5;
-const CLAWSWEEPER_BOT_LOGINS = new Set(["clawsweeper[bot]", "openclaw-clawsweeper[bot]"]);
 
 export type ReviewPlaceholderComment = {
   body?: unknown;

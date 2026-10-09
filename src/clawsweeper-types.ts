@@ -1,3 +1,5 @@
+import type { MergeRiskLabelName } from "./clawsweeper-policy.js";
+import type { BULK_FILED_LABEL } from "./repair/exact-review-guard-labels.js";
 import type { MaintainerDecision } from "./decision-packets.js";
 import type { PrCloseCoverageProofModelResult } from "./pr-close-coverage-proof.js";
 import type { RepositoryProfile } from "./repository-profiles.js";
@@ -63,15 +65,6 @@ export type ImpactLabelName =
   | "impact:ux-release-blocker"
   | "impact:ux-friction"
   | "impact:other";
-export type MergeRiskLabelName =
-  | "merge-risk: 🚨 compatibility"
-  | "merge-risk: 🚨 message-delivery"
-  | "merge-risk: 🚨 session-state"
-  | "merge-risk: 🚨 auth-provider"
-  | "merge-risk: 🚨 security-boundary"
-  | "merge-risk: 🚨 availability"
-  | "merge-risk: 🚨 automation"
-  | "merge-risk: 🚨 other";
 export type MaturityLabelName = "maturity:stable";
 export type MergeRiskOptionCategory = "fix_before_merge" | "accept_risk" | "pause_or_close";
 export type ReviewLabelName =
@@ -275,7 +268,7 @@ export interface BulkFilerReviewContext {
   threshold: number;
   windowDays: number;
   windowStart: string;
-  label: "clawsweeper:bulk-filed";
+  label: typeof BULK_FILED_LABEL;
 }
 
 export interface BulkFilerDetectionResult {

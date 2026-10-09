@@ -1,8 +1,13 @@
 import { PUBLIC_CODEX_MODEL } from "./codex-env.js";
 import {
   ACCEPTED_LARGE_LABEL,
+  BULK_FILED_LABEL,
   CLOSE_PROTECTED_LABEL_NAMES,
+  NEEDS_MAINTAINER_REVIEW_LABEL,
+  NEEDS_PRODUCT_DECISION_LABEL,
+  NEEDS_SECURITY_REVIEW_LABEL,
   PR_AUTO_CLOSE_EXEMPT_LABEL_NAMES,
+  SECURITY_BOUNDARY_MERGE_RISK_LABEL,
   SECURITY_PROTECTED_LABEL_NAMES,
 } from "./repair/exact-review-guard-labels.js";
 import type {
@@ -22,7 +27,6 @@ import type {
   LiveProofSurface,
   LiveProofTerminalCompletion,
   MaturityLabelName,
-  MergeRiskLabelName,
   MergeRiskOptionCategory,
   OverallCorrectness,
   PrRatingTier,
@@ -70,7 +74,6 @@ export const DEFAULT_AUTHOR_PR_BUDGET_MAX_CLOSES_PER_RUN = 5;
 export const DEFAULT_BULK_FILER_THRESHOLD = 10;
 export const DEFAULT_BULK_FILER_WINDOW_DAYS = 7;
 export const BULK_FILER_SEARCH_TIMEOUT_MS = 15_000;
-export const BULK_FILED_LABEL = "clawsweeper:bulk-filed";
 export const BULK_FILED_LABEL_DEFINITION = {
   name: BULK_FILED_LABEL,
   color: "6E7781",
@@ -97,7 +100,13 @@ export const ACCEPTED_LARGE_LABEL_DEFINITION = {
   color: "5319E7",
   description: "Maintainer accepts this pull request exceeding the review size limit.",
 };
-export const MERGE_READY_LABEL = "clawsweeper:merge-ready";
+// GitHub logins that ClawSweeper writes as. GraphQL gives the App bot login
+// without the "[bot]" suffix, so "clawsweeper" is in this set too.
+export const CLAWSWEEPER_BOT_LOGINS: ReadonlySet<string> = new Set([
+  "clawsweeper",
+  "clawsweeper[bot]",
+  "openclaw-clawsweeper[bot]",
+]);
 export const PR_AUTO_CLOSE_EXEMPT_LABELS = new Set<string>(PR_AUTO_CLOSE_EXEMPT_LABEL_NAMES);
 export const WAITING_ON_AUTHOR_LABEL = "status: ⏳ waiting on author";
 export const PROOF_OVERRIDE_LABEL = "proof: override";
@@ -361,7 +370,7 @@ export const MERGE_RISK_LABELS = [
       "🚨 Merging this PR could break OAuth, tokens, provider routing, model choice, or credentials.",
   },
   {
-    name: "merge-risk: 🚨 security-boundary",
+    name: SECURITY_BOUNDARY_MERGE_RISK_LABEL,
     color: "B60205",
     description:
       "🚨 Merging this PR could weaken sandboxing, authorization, credentials, or sensitive data.",
@@ -384,10 +393,11 @@ export const MERGE_RISK_LABELS = [
     description: "🚨 Merging this PR has meaningful risk outside the owned taxonomy.",
   },
 ] as const satisfies readonly {
-  name: MergeRiskLabelName;
+  name: string;
   color: string;
   description: string;
 }[];
+export type MergeRiskLabelName = (typeof MERGE_RISK_LABELS)[number]["name"];
 export const MERGE_RISK_LABEL_NAMES: ReadonlySet<string> = new Set(
   MERGE_RISK_LABELS.map((label) => label.name),
 );
@@ -411,6 +421,7 @@ export const GOOD_FIRST_ISSUE_LABEL_DEFINITION = {
   color: "7057FF",
   description: "Good for newcomers",
 } as const;
+export const QUEUEABLE_FIX_LABEL = "clawsweeper:queueable-fix";
 export const ISSUE_ADVISORY_LABELS = [
   {
     name: "issue-rating: 🦀 challenger crab",
@@ -487,7 +498,7 @@ export const ISSUE_ADVISORY_LABELS = [
     description: "ClawSweeper does not recommend queueing a new automated fix PR for this issue.",
   },
   {
-    name: "clawsweeper:queueable-fix",
+    name: QUEUEABLE_FIX_LABEL,
     color: "0E8A16",
     description: "ClawSweeper marked this issue as an existing queue_fix_pr work candidate.",
   },
@@ -497,17 +508,17 @@ export const ISSUE_ADVISORY_LABELS = [
     description: "ClawSweeper found a clear likely implementation shape for this issue.",
   },
   {
-    name: "clawsweeper:needs-maintainer-review",
+    name: NEEDS_MAINTAINER_REVIEW_LABEL,
     color: "FBCA04",
     description: "ClawSweeper marked this issue as needing maintainer review before automation.",
   },
   {
-    name: "clawsweeper:needs-product-decision",
+    name: NEEDS_PRODUCT_DECISION_LABEL,
     color: "FBCA04",
     description: "ClawSweeper marked this issue as needing a product or behavior decision.",
   },
   {
-    name: "clawsweeper:needs-security-review",
+    name: NEEDS_SECURITY_REVIEW_LABEL,
     color: "B60205",
     description: "ClawSweeper marked this issue as needing security-sensitive review.",
   },
@@ -517,7 +528,6 @@ export const ISSUE_ADVISORY_LABEL_NAMES = new Set(
 );
 export const STALE_LABEL = "stale";
 export const NO_STALE_LABEL = "no-stale";
-export const QUEUEABLE_FIX_LABEL = "clawsweeper:queueable-fix";
 export const ISSUE_STALE_PROTECTION_LABEL = {
   name: NO_STALE_LABEL,
   color: "6E7781",
@@ -526,9 +536,9 @@ export const ISSUE_STALE_PROTECTION_LABEL = {
 export const PROTECTED_LABELS = new Set<string>(CLOSE_PROTECTED_LABEL_NAMES);
 export const APPLY_PROTECTED_LABELS = new Set<string>([
   ...CLOSE_PROTECTED_LABEL_NAMES,
-  "clawsweeper:needs-security-review",
-  "clawsweeper:needs-maintainer-review",
-  "clawsweeper:needs-product-decision",
+  NEEDS_SECURITY_REVIEW_LABEL,
+  NEEDS_MAINTAINER_REVIEW_LABEL,
+  NEEDS_PRODUCT_DECISION_LABEL,
 ]);
 export const SECURITY_PROTECTED_LABELS = new Set<string>(SECURITY_PROTECTED_LABEL_NAMES);
 // The runtime sets these sources only after GitHub confirms the merged fixing PR.

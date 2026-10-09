@@ -2,6 +2,7 @@
 import crypto from "node:crypto";
 import http from "node:http";
 
+import { CLAWSWEEPER_BOT_LOGINS } from "../clawsweeper-policy.js";
 import { repositoryProfileFor } from "../repository-profiles.js";
 import {
   hostedTargetRetryableAdmission,
@@ -492,9 +493,11 @@ function targetDefaultBranch(repo: LooseRecord) {
   return /^[A-Za-z0-9_./-]+$/.test(branch) ? branch : "main";
 }
 
+// REST gives the App login with the "[bot]" suffix. Do not match the plain
+// "clawsweeper" login here, because the caller deletes the comments it finds.
 function isClawsweeperWebhookSender(sender: LooseRecord) {
   const login = normalizedLogin(sender.login);
-  return login === "clawsweeper[bot]" || login === "openclaw-clawsweeper[bot]";
+  return login.endsWith("[bot]") && CLAWSWEEPER_BOT_LOGINS.has(login);
 }
 
 function isAuthorReadOnlyWebhookCommand({
