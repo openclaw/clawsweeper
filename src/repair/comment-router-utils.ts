@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 
 import { sha256 } from "../content-hash.js";
+import { normalizeGitHubActor } from "./comment-router/admission.js";
 import type { JsonValue, LooseRecord } from "./json-types.js";
 import { rollUpStatusChecks } from "./status-check-rollup.js";
 
@@ -429,39 +430,6 @@ export function supersededReReviewCommentVersions(commands: LooseRecord[]) {
   }
 
   return superseded;
-}
-
-export function isAllowedMutationActor(login: JsonValue, trustedBots: Iterable<string>) {
-  const actor = String(login ?? "")
-    .trim()
-    .toLowerCase();
-  if (!actor) return false;
-  for (const trustedBot of trustedBots) {
-    if (
-      String(trustedBot ?? "")
-        .trim()
-        .toLowerCase() === actor
-    )
-      return true;
-  }
-  return false;
-}
-
-export function normalizeGitHubActor(login: JsonValue) {
-  // Strip every trailing [bot] suffix: "evil[bot][bot]" must not normalize to
-  // "evil[bot]" and collide with a real bot's normalized identity (#574).
-  return String(login ?? "")
-    .trim()
-    .toLowerCase()
-    .replace(/(\[bot\])+$/i, "");
-}
-
-export function isGitHubAppIntegrationAuthError(message: JsonValue) {
-  const text = String(message ?? "").toLowerCase();
-  return (
-    text.includes("resource not accessible by integration") &&
-    (text.includes("http 403") || /"status"\s*:\s*"403"/.test(text) || text.includes("status: 403"))
-  );
 }
 
 function uniqueCommentsById(comments: LooseRecord[]) {

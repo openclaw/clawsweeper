@@ -13,9 +13,6 @@ import {
   exactCommentVersionFastPathDecision,
   exactCommentVersionMatchesLive,
   hasSuccessfulDispatchExecutionJob,
-  isGitHubAppIntegrationAuthError,
-  isAllowedMutationActor,
-  normalizeGitHubActor,
   routerDispatchReceiptKey,
   routedCommentSourceDeliveryId,
   selectCommentsForRouting,
@@ -24,6 +21,11 @@ import {
   supersededReReviewCommentVersions,
   summarizeChecks,
 } from "../../dist/repair/comment-router-utils.js";
+import {
+  isAllowedMutationActor,
+  isGitHubAppIntegrationAuthError,
+  normalizeGitHubActor,
+} from "../../dist/repair/comment-router/admission.js";
 import { appendLedger, readLedger, writeLedger } from "../../dist/repair/comment-router/ledger.js";
 import { forcedReplayCommandFields, readCommentRouterConfig } from "../../dist/repair/config.js";
 

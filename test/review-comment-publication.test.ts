@@ -16,7 +16,7 @@ import {
   createReviewCommentState,
   expireReviewStartStatusLease,
 } from "../dist/clawsweeper-review-comment-state.js";
-import { freshExactHeadReviewStartLease } from "../dist/repair/comment-router-core.js";
+import { freshExactHeadReviewStartLease } from "../dist/repair/comment-router/admission.js";
 
 import { manualPublicationOwnerFromEnv } from "../dist/manual-publication-authority.js";
 

@@ -15,8 +15,8 @@ import {
   isAssistPublicationCommentBody,
   isProofNudgeCommentBody,
   parseCommand,
-  staleClosedItemCommandReason,
-} from "./comment-router-core.js";
+} from "./comment-router/admission.js";
+import { staleClosedItemCommandReason } from "./comment-router-core.js";
 import { adaptiveReviewBudgetForPullRequest } from "./adaptive-review-budget.js";
 import {
   isExactReviewCloseGuardLabel,

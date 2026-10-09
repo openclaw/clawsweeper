@@ -58,9 +58,9 @@ import {
 } from "./automerge-outcome.js";
 import {
   isTrustedStatusCommentAuthor,
-  needsHumanHoldAllowsAutomergeOptIn,
   parseTrustedAutomation,
-} from "./comment-router-core.js";
+} from "./comment-router/admission.js";
+import { needsHumanHoldAllowsAutomergeOptIn } from "./comment-router-core.js";
 import { SELF_HEAL_STATUS_MARKER_INTENT } from "./conflict-self-heal-core.js";
 import {
   AUTOMERGE_STATUS_INTENTS,

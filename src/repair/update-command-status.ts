@@ -8,10 +8,10 @@ import type { JsonValue, LooseRecord } from "./json-types.js";
 import { repoRoot } from "./paths.js";
 import { terminalCommandStatusFence } from "./terminal-command-status-fence.js";
 import { DEFAULT_TRUSTED_BOTS } from "./config.js";
+import { isAllowedMutationActor } from "./comment-router/admission.js";
 import {
   commaSet,
   commentBodySha256,
-  isAllowedMutationActor,
   issueNumberFromUrl,
   writePayload,
 } from "./comment-router-utils.js";

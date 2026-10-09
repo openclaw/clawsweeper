@@ -9,7 +9,7 @@ import {
   proofSha,
   type CommandProofClaim,
 } from "../command-proof-contract.js";
-import { parseCommand } from "./comment-router-core.js";
+import { parseCommand } from "./comment-router/admission.js";
 import { commandStatusMarker } from "./markers.js";
 import { GitHubRateLimitError } from "../github-retry.js";
 import { admitProofCommand } from "./proof-command.js";

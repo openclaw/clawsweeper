@@ -6,7 +6,6 @@ import {
   AUTOCLOSE_INTENTS,
   MERGE_INTENTS,
   REPAIR_INTENTS,
-  autocloseReasonFromCommand,
   autoRepairBlockReason,
   autoRepairHeadKey,
   automergeChangelogBlockReason,
@@ -28,27 +27,17 @@ import {
   createCachedLabelNumberLookup,
   existingCommandStatusBlocksReplay,
   existingModeStatusBlocksReplay,
-  expiredReviewStartStatusLeases,
-  freshExactHeadReviewStartLease,
   hasCommandResponseMarker,
   issueImplementationClusterId,
   issueImplementationJobBranch,
   issueImplementationJobPath,
-  latestTrustedExactHeadReview,
   isReadyHumanReviewPause,
   pendingRepairLoopOptIns,
-  isTrustedStatusCommentAuthor,
   latestRepairLoopResumeTime,
-  isAuthorReadOnlyCommandAllowed,
-  isMaintainerCommandAllowed,
-  isIssueImplementationCommandAllowed,
   maintainerApprovalAppliesToExactHeadReview,
   maintainerAutomergeOptInApprovesNeedsHuman,
   maintainerModeCommandCanResumePausedMode,
-  parseCommand,
-  parseRoutedCommentCommand,
   pausedModeStatusBlocksReplay,
-  parseTrustedAutomation,
   repairableCheckBlockers,
   reviewOnlyRepairLoopCompletionLabels,
   reviewOnlyRepairLoopMergeStateBlockReason,
@@ -67,12 +56,24 @@ import {
   staleClosedItemCommandReason,
   syncAutomergeJobRepairMode,
   shouldClearMaintainerCommandReaction,
-  supersededReviewStartStatusLeases,
-  trustedAutomationPredatesReviewStartLease,
-  trustedExactHeadReviewCompletionSince,
   trustedCloseBlockReason,
   usesSharedAutomergeStatus,
 } from "../../dist/repair/comment-router-core.js";
+import {
+  autocloseReasonFromCommand,
+  expiredReviewStartStatusLeases,
+  freshExactHeadReviewStartLease,
+  isAuthorReadOnlyCommandAllowed,
+  isMaintainerCommandAllowed,
+  isTrustedStatusCommentAuthor,
+  latestTrustedExactHeadReview,
+  parseCommand,
+  parseRoutedCommentCommand,
+  parseTrustedAutomation,
+  supersededReviewStartStatusLeases,
+  trustedAutomationPredatesReviewStartLease,
+  trustedExactHeadReviewCompletionSince,
+} from "../../dist/repair/comment-router/admission.js";
 import { planCommandAckConvergence } from "../../dist/repair/command-ack-convergence.js";
 import {
   commandResponseMarker,
@@ -4693,7 +4694,7 @@ test("maintainer command authorization requires maintainer repository permission
 test("issue implementation requires current write permission", () => {
   const allowedAssociations = new Set(["OWNER", "MEMBER", "COLLABORATOR"]);
   assert.equal(
-    isIssueImplementationCommandAllowed({
+    isMaintainerCommandAllowed({
       authorAssociation: "MEMBER",
       repositoryPermission: "read",
       allowedAssociations,
@@ -4701,7 +4702,7 @@ test("issue implementation requires current write permission", () => {
     false,
   );
   assert.equal(
-    isIssueImplementationCommandAllowed({
+    isMaintainerCommandAllowed({
       authorAssociation: "MEMBER",
       repositoryPermission: "maintain",
       allowedAssociations,
@@ -4709,7 +4710,7 @@ test("issue implementation requires current write permission", () => {
     true,
   );
   assert.equal(
-    isIssueImplementationCommandAllowed({
+    isMaintainerCommandAllowed({
       authorAssociation: "MEMBER",
       repositoryPermission: null,
       allowedAssociations,
@@ -4717,7 +4718,7 @@ test("issue implementation requires current write permission", () => {
     false,
   );
   assert.equal(
-    isIssueImplementationCommandAllowed({
+    isMaintainerCommandAllowed({
       authorAssociation: "CONTRIBUTOR",
       repositoryPermission: "write",
       allowedAssociations,
@@ -4725,7 +4726,7 @@ test("issue implementation requires current write permission", () => {
     true,
   );
   assert.equal(
-    isIssueImplementationCommandAllowed({
+    isMaintainerCommandAllowed({
       authorAssociation: "OWNER",
       repositoryPermission: null,
       allowedAssociations,

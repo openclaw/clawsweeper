@@ -1,0 +1,1 @@
+- Move comment-router command parsing, trusted automation marker reading, maintainer command admission and GitHub actor checks into one `src/repair/comment-router/admission.ts` owner, and delete the `isIssueImplementationCommandAllowed` pass-through; routing and admission decisions are unchanged.

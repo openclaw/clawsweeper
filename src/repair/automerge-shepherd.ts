@@ -1,6 +1,7 @@
 import type { JsonValue, LooseRecord } from "./json-types.js";
 import { CLAWSWEEPER_BOT_LOGINS } from "../clawsweeper-policy.js";
-import { isAutomergeMergeStateReady, latestTrustedExactHeadReview } from "./comment-router-core.js";
+import { isAutomergeMergeStateReady } from "./comment-router-core.js";
+import { latestTrustedExactHeadReview } from "./comment-router/admission.js";
 
 const DEFAULT_WAIT_MS = 10 * 60 * 1000;
 const DEFAULT_POLL_MS = 15 * 1000;

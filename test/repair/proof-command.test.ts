@@ -11,8 +11,8 @@ import {
 import {
   isAuthorReadOnlyCommandAllowed,
   parseCommand,
-  renderResponse,
-} from "../../dist/repair/comment-router-core.js";
+} from "../../dist/repair/comment-router/admission.js";
+import { renderResponse } from "../../dist/repair/comment-router-core.js";
 
 test("compiled proof command preserves inconclusive status and replay protection", async () => {
   const { stdout } = await promisify(execFile)(

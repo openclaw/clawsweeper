@@ -8,12 +8,8 @@ import {
 } from "../exact-review-failure-reason.js";
 import { repoRoot } from "./paths.js";
 import { CLAWSWEEPER_BOT_LOGINS } from "../clawsweeper-policy.js";
-import {
-  commaSet,
-  isAllowedMutationActor,
-  issueNumberFromUrl,
-  writePayload,
-} from "./comment-router-utils.js";
+import { isAllowedMutationActor } from "./comment-router/admission.js";
+import { commaSet, issueNumberFromUrl, writePayload } from "./comment-router-utils.js";
 
 const REVIEW_PROGRESS_START = "<!-- clawsweeper-review-progress:start -->";
 const REVIEW_PROGRESS_END = "<!-- clawsweeper-review-progress:end -->";
