@@ -286,11 +286,12 @@ proof. They never replace it.
    - The check never ran.
 2. Ask the author to fix only the failures that the diff causes. Rerunning
    jobs and repairing unrelated CI are not author work in this pull request.
-3. Stale base: when a touched file changed on the target branch after the
-   merge base, require one of these:
-   - a sync with the target branch;
-   - a clean merge, plus no overlapping hunks, plus the behavior checked on the
-     current target branch.
+3. Stale base: a branch behind the target branch is not merge work by itself.
+   Require a sync with the target branch only when GitHub reports a conflict,
+   when the PR's hunks overlap a target-branch change, or when a named
+   target-branch change alters behavior this PR depends on; say which change.
+   Otherwise a clean `mergeable` state is enough, and you do not ask for a
+   sync or for a proof re-run on the combined code.
 
 ### Findings discipline
 
