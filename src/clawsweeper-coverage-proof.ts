@@ -1,3 +1,4 @@
+import { sha256 } from "./content-hash.js";
 import { PR_CLOSE_COVERAGE_PROOF_SECTION, REVIEW_SECTIONS } from "./clawsweeper-policy.js";
 import type {
   CanonicalPullRequestCommentSyncBlock,
@@ -71,7 +72,7 @@ export function createPullRequestCoverageProof(
     runtimeBudgetExceeded,
     sectionLineValue,
     sentence,
-    sha256,
+
     targetRepo,
     timeoutWithinRuntimeBudget,
     unsafeCanonicalPullRequestReason,

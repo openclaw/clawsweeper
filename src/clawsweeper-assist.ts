@@ -1,3 +1,4 @@
+import { sha256 } from "./content-hash.js";
 import {
   closeSync,
   existsSync,
@@ -43,7 +44,6 @@ interface AssistWorkflowDependencies {
   ghPaged: <T>(path: string) => T[];
   ghWithRetry: (args: string[]) => string;
   repoFromArgs: (args: Args) => RepositoryProfile;
-  sha256: (text: string) => string;
   targetRepo: () => string;
   untrustedCodexEnv: () => NodeJS.ProcessEnv;
   writeCommentPayload: (number: number, body: string) => string;
@@ -59,7 +59,6 @@ export function createAssistWorkflow({
   ghPaged,
   ghWithRetry,
   repoFromArgs,
-  sha256,
   targetRepo,
   untrustedCodexEnv,
   writeCommentPayload,

@@ -160,7 +160,6 @@ test("renderer-produced reports preserve nested statistics and authoritative met
     pullHeadShaFromContext: () => null,
     reviewStructuralPullStateFromContext: () => null,
     sentence: String,
-    sha256: () => "synthetic-digest",
   } as Parameters<typeof createReportDocumentRendering>[0]);
   const report = document.markdownFor({
     item: subject,
@@ -1872,7 +1871,6 @@ function renderedPullRequestReport(
         ? `${concern.file}${concern.line ? `:${concern.line}` : ""}`
         : "not tied to a single file",
     sentence: String,
-    sha256: () => "synthetic-digest",
   } as Parameters<typeof createReportDocumentRendering>[0]);
   return document.markdownFor({
     item: subject,

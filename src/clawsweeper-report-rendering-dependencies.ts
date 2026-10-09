@@ -198,7 +198,6 @@ export interface CreateReportRenderingDependencies {
   securityConcernSummaryLine: (concern: SecurityConcern) => string;
   securityReviewLine: (review: SecurityReview) => string;
   sentence: (value: string) => string;
-  sha256: (text: string) => string;
   shouldRenderWorkPlanFromReport: (markdown: string) => boolean;
   stripListMarker: (text: string) => string;
   targetRepo: () => string;

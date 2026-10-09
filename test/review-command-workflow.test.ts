@@ -537,7 +537,6 @@ else {
       root,
       targetRepo: () => REPO,
       repoRelativePath: () => `records/openclaw-openclaw/items/${ITEM_NUMBER}.md`,
-      sha256: digest,
       isRuntimeBudgetError: () => false,
     });
     const providerCalls = join(root, "provider-calls");

@@ -111,7 +111,6 @@ function evidenceReport(
     pullHeadShaFromContext: () => "c".repeat(40),
     reviewStructuralPullStateFromContext: () => null,
     sentence: String,
-    sha256: () => "synthetic-digest",
   } as Parameters<typeof createReportDocumentRendering>[0]);
   return document.markdownFor({
     item: item({ kind: "pull_request", url: "https://github.com/openclaw/openclaw/pull/123" }),

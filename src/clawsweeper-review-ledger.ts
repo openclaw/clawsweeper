@@ -1,4 +1,5 @@
 import { AgentInputScanError } from "./agent-input-scan.js";
+import { sha256 } from "./content-hash.js";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import {
@@ -24,7 +25,6 @@ interface ReviewActionLedgerDependencies {
   root: string;
   targetRepo: () => string;
   repoRelativePath: (filePath: string) => string;
-  sha256: (value: string) => string;
   isRuntimeBudgetError: (error: unknown) => boolean;
 }
 
@@ -32,7 +32,6 @@ export function createReviewActionLedger({
   root,
   targetRepo,
   repoRelativePath,
-  sha256,
   isRuntimeBudgetError,
 }: ReviewActionLedgerDependencies) {
   const ACTION_LEDGER_DROPPED_FIELDS = [

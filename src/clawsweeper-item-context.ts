@@ -1,3 +1,4 @@
+import { sha256 } from "./content-hash.js";
 import type {
   ContextHydration,
   GithubPageWithHeaders,
@@ -94,7 +95,7 @@ interface CreateItemContextDependencies {
     pullRequest: unknown;
     targetDir: string;
   }) => void;
-  sha256: (text: string) => string;
+
   targetRepo: () => string;
 }
 
@@ -126,7 +127,7 @@ export function createItemContext(dependencies: CreateItemContextDependencies) {
     reviewCommentContentRevision,
     reviewTimelineDigestParts,
     hydratePullRequestReviewSource,
-    sha256,
+
     targetRepo,
   } = dependencies;
 

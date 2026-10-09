@@ -1,0 +1,1 @@
+- Import `sha256` from `src/content-hash.ts` directly instead of threading it through ten review/apply dependency interfaces and eight runtime wiring sites.

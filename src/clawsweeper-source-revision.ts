@@ -1,3 +1,4 @@
+import { sha256 } from "./content-hash.js";
 import { stableJson } from "./stable-json.js";
 import { primaryBodySourceSha256 } from "./clawsweeper-primary-body.js";
 import { reviewPullChecksDigestParts } from "./review-checks-digest.js";
@@ -16,7 +17,6 @@ interface SourceRevisionDependencies {
   normalizeAuthorAssociation: (value: unknown) => string;
   normalizeLabelName: (label: string) => string;
   pullHeadShaFromContext: (context: ItemContext) => string | null;
-  sha256: (text: string) => string;
 }
 
 export function createSourceRevisionTools({
@@ -26,7 +26,6 @@ export function createSourceRevisionTools({
   normalizeAuthorAssociation,
   normalizeLabelName,
   pullHeadShaFromContext,
-  sha256,
 }: SourceRevisionDependencies) {
   function reviewCommentBodyDigest(body: string): string {
     return sha256(body.trim());

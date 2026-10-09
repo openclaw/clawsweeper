@@ -1,3 +1,4 @@
+import { sha256 } from "./content-hash.js";
 import {
   ACTION_EVENT_REASON_CODES,
   ACTION_EVENT_STATUSES,
@@ -29,7 +30,7 @@ interface ApplyActionLedgerDependencies {
   root: string;
   targetRepo: () => string;
   repoRelativePath: (filePath: string) => string;
-  sha256: (value: string) => string;
+
   reviewLeaseRevisionFromReport: (markdown: string) => string | null;
   reportItemKind: (markdown: string) => ItemKind | undefined;
   reviewLedger: ReturnType<typeof createReviewActionLedger>;
@@ -39,7 +40,7 @@ export function createApplyActionLedger({
   root,
   targetRepo,
   repoRelativePath,
-  sha256,
+
   reviewLeaseRevisionFromReport,
   reportItemKind,
   reviewLedger,

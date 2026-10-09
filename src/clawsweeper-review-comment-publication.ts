@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { sha256 } from "./content-hash.js";
 import { writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { closeReasonText } from "./clawsweeper-close-reasons.js";
@@ -38,7 +39,6 @@ export function createReviewCommentPublication(
     root: ROOT,
     targetRepo,
     ghObservedMutationCommand,
-    sha256,
     ghPaged,
     reviewCommentBodyDigest,
     ensureDir,

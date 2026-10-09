@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
+import { sha256 } from "../dist/content-hash.js";
 import { createContextHydration } from "../dist/clawsweeper-context-hydration.js";
 import { createItemContext } from "../dist/clawsweeper-item-context.js";
 import { createSourceRevisionTools } from "../dist/clawsweeper-source-revision.js";
@@ -58,10 +58,6 @@ export function longProofBody(): string {
   return body.padEnd(60641, ".");
 }
 
-export function sha256(text: string): string {
-  return createHash("sha256").update(text).digest("hex");
-}
-
 const githubCount = (value: unknown) => (typeof value === "number" ? value : null);
 const CLAWSWEEPER_BOT_AUTHORS = new Set(["clawsweeper[bot]"]);
 const isClawSweeperComment = (value: unknown) =>
@@ -75,7 +71,6 @@ export const sourceTools = createSourceRevisionTools({
   normalizeLabelName,
   pullHeadShaFromContext: (context) =>
     stringOrUndefined(asRecord(asRecord(context.pullRequest).head).sha) ?? null,
-  sha256,
 });
 
 function unavailable(): never {
@@ -142,7 +137,7 @@ export function hydratePrimaryBody(
   const { collectItemContext } = createItemContext({
     ...hydration,
     ...sourceTools,
-    sha256,
+
     targetRepo: () => target.repo,
     ghJson: <T>(args: string[]) => {
       if (args[1] === `repos/${target.repo}/issues/${target.number}`) return rawIssue as T;

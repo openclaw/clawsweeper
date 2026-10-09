@@ -440,7 +440,6 @@ export interface CreateApplyDecisionWorkflowDependencies {
       state: string;
     },
   ) => string | null;
-  sha256: (text: string) => string;
   shouldPreserveReviewStartLease: (options: {
     currentHeadSha: string;
     reportHeadSha: string | undefined;

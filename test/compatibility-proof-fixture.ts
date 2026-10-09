@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import { parseDecision } from "../dist/clawsweeper.js";
 import { createReportDocumentRendering } from "../dist/clawsweeper-report-document.js";
 import { createReportContextRendering } from "../dist/clawsweeper-report-context.js";
@@ -97,7 +96,6 @@ export function generatedCompatibilityReport(
     pullHeadShaFromContext: () => "a".repeat(40),
     reviewStructuralPullStateFromContext: () => null,
     sentence: String,
-    sha256: (value: string) => createHash("sha256").update(value).digest("hex"),
   } as Parameters<typeof createReportDocumentRendering>[0]);
   const decision = parseDecision(
     closeDecision({

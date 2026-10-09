@@ -383,7 +383,6 @@ const sourceRevisionTools = createSourceRevisionTools({
   normalizeAuthorAssociation,
   normalizeLabelName,
   pullHeadShaFromContext: (context) => pullHeadShaFromContext(context),
-  sha256,
 });
 export const {
   isExactEventSourceRevisionChange,
@@ -711,7 +710,7 @@ const { collectItemContext } = createItemContext({
   ...githubContext,
   ghJson,
   ...sourceRevisionTools,
-  sha256,
+
   targetRepo,
 });
 
@@ -757,7 +756,6 @@ const assistWorkflow = createAssistWorkflow({
   ghPaged,
   ghWithRetry,
   repoFromArgs,
-  sha256,
   targetRepo,
   untrustedCodexEnv,
   writeCommentPayload: (number, body) => writeCommentPayload(number, body),
@@ -930,7 +928,7 @@ const reportOrchestration = createReportOrchestration({
   sanitizeArchitectureDiagram: (...args) => sanitizeArchitectureDiagram(...args),
   sectionLineValue: (...args) => sectionLineValue(...args),
   securityConcernLocation,
-  sha256,
+
   targetProfile,
   targetRepo,
   timeoutWithinRuntimeBudget: (...args) => timeoutWithinRuntimeBudget(...args),
@@ -1039,7 +1037,6 @@ const reviewCommentWorkflow = createReviewCommentWorkflow({
   heldReviewStartStatusCommentResult,
   gitHubRuntimeBudgetError: GitHubRuntimeBudgetError,
   ghObservedMutationCommand,
-  sha256,
   githubCount,
   ghPaged,
   reviewCommentBodyDigest,
@@ -1116,7 +1113,6 @@ const reviewActionLedger = createReviewActionLedger({
   root: ROOT,
   targetRepo,
   repoRelativePath,
-  sha256,
   isRuntimeBudgetError: (error) => error instanceof GitHubRuntimeBudgetError,
 });
 export const { actionLedgerFailureDisposition } = reviewActionLedger;
@@ -1148,7 +1144,6 @@ const commandOperations = createCommandOperations({
   repoRelativePath,
   reviewActionLedger,
   ROOT,
-  sha256,
   targetRepo,
 });
 export const {
@@ -1266,7 +1261,7 @@ const { applyDecisionsCommandInner } = createApplyDecisionWorkflow({
   repoFromArgs,
   reportEntriesForDir,
   ROOT,
-  sha256,
+
   targetRepo,
   validateCloseDecision,
 });

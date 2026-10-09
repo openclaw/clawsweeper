@@ -1,6 +1,7 @@
 import { existsSync, readdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { recordWorkflowPhaseEvent } from "./action-ledger-runtime.js";
+import { sha256 } from "./content-hash.js";
 import {
   ACTION_EVENT_REASON_CODES,
   ACTION_EVENT_STATUSES,
@@ -211,7 +212,7 @@ interface CreateCommandOperationsDependencies {
     left: FailedReviewRetryRevision,
     right: FailedReviewRetryRevision,
   ) => boolean;
-  sha256: (text: string) => string;
+
   storedFailedReviewRetryRevision: (markdown: string) => FailedReviewRetryRevision | null;
   syncWorkPlanFromReport: (options: {
     markdown: string;
@@ -272,7 +273,7 @@ export function createCommandOperations(dependencies: CreateCommandOperationsDep
     reviewLeaseRevisionFromReport,
     ROOT,
     sameFailedReviewRetryRevision,
-    sha256,
+
     storedFailedReviewRetryRevision,
     syncWorkPlanFromReport,
     targetRepo,
@@ -521,7 +522,7 @@ export function createCommandOperations(dependencies: CreateCommandOperationsDep
     root: ROOT,
     targetRepo,
     repoRelativePath,
-    sha256,
+
     reviewLeaseRevisionFromReport,
     reportItemKind,
     reviewLedger: reviewActionLedger,

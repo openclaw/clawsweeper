@@ -1,3 +1,4 @@
+import { sha256 } from "./content-hash.js";
 import {
   createOversizedPrFreshnessGuard,
   parseOversizedPrSourceSnapshot,
@@ -2774,7 +2775,7 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
           const completedComment = upsertReviewComment(number, completedBody, liveComment, undefined, { suppressAutomationMarkers });
           markdown = updateReviewCommentMetadata(markdown, completedComment, completedBody);
           markdown = replaceSectionValue(markdown, REVIEW_SECTIONS.closeComment, completedBody);
-          markdown = replaceFrontMatterValue(markdown, "close_comment_sha256", dependencies.sha256(completedBody));
+          markdown = replaceFrontMatterValue(markdown, "close_comment_sha256", sha256(completedBody));
           writeReportMarkdown(join(closedDir, file), markdown);
           } catch (error) {
             // Closing already succeeded; a notice failure must not recreate an open record.

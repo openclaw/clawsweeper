@@ -132,7 +132,6 @@ test("closeout receipts ignore spoofed markers after posting the owned receipt",
       targetRepo: () => "openclaw/clawsweeper",
       ghPaged: () => comments,
       ensureDir: (directory: string) => mkdirSync(directory, { recursive: true }),
-      sha256: () => "body-digest",
       ghObservedMutationCommand: ({ args }) => {
         mutationCount += 1;
         const input = args[args.indexOf("--input") + 1];

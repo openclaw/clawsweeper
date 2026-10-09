@@ -87,7 +87,8 @@ if (process.argv.includes("--server")) {
   );
   const { LiveReadGeneration, generationReadKey } =
     await import("../../dist/live-read-generation.js");
-  const { hydration, sourceTools, sha256 } = await import("../../test/primary-body-fixture.ts");
+  const { hydration, sourceTools } = await import("../../test/primary-body-fixture.ts");
+  const { sha256 } = await import("../../dist/content-hash.js");
   const baseline = process.argv.includes("--baseline");
   const child = spawn(
     process.execPath,
@@ -122,6 +123,7 @@ if (process.argv.includes("--server")) {
     ...hydration,
     ...sourceTools,
     ...github,
+    // The --baseline item-context build predates direct content-hash imports.
     sha256,
     targetRepo: () => repo,
     ghJson: (args) => get(args[1]),

@@ -1,3 +1,4 @@
+import { sha256 } from "./content-hash.js";
 import {
   oversizedPullRequestLiveBlockReason,
   parseOversizedPullRequestEvidence,
@@ -64,7 +65,6 @@ type ApplyCloseExecutionDependencies = Pick<
   | "normalizeLabelName"
   | "removeCurrentCursorTraceItem"
   | "reportDecision"
-  | "sha256"
   | "sleepMs"
   | "stalledUnprovenPrApplyBlockReasonSafe"
   | "unsponsoredFeatureApplyBlockReasonSafe"
@@ -203,7 +203,6 @@ export function executeApplyClose(
     normalizeLabelName,
     removeCurrentCursorTraceItem,
     reportDecision,
-    sha256,
     sleepMs,
     validateCloseDecision,
   } = dependencies;

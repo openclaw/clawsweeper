@@ -376,7 +376,6 @@ export interface CreateReportOrchestrationDependencies {
   securityConcernSummaryLine: (concern: SecurityConcern) => string;
   securityReviewLine: (review: SecurityReview) => string;
   sentence: (value: string) => string;
-  sha256: (text: string) => string;
   shouldApplyFeatureShowcaseLabel: (options: {
     isPullRequest: boolean;
     itemCategory: string | undefined;

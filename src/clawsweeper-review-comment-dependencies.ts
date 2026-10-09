@@ -33,7 +33,6 @@ export interface ReviewCommentWorkflowDependencies {
     prepareRequest?: ((args: string[], attempt: number) => () => string) | undefined;
     sleepBeforeRetry?: ((waitMs: number) => void) | undefined;
   }) => string;
-  sha256: (value: string) => string;
   githubCount: ReturnType<typeof createGitHubContext>["githubCount"];
   ghPaged: ReturnType<typeof createGitHubContext>["ghPaged"];
   reviewCommentBodyDigest: (body: string) => string;

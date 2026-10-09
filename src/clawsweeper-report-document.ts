@@ -1,3 +1,4 @@
+import { sha256 } from "./content-hash.js";
 import { parseOversizedPullRequestEvidence } from "./clawsweeper-oversized-pr-policy.js";
 import { closeReasonText } from "./clawsweeper-close-reasons.js";
 import { REVIEW_SECTIONS } from "./clawsweeper-policy.js";
@@ -91,7 +92,6 @@ export function createReportDocumentRendering(
     runtimeReviewText,
     securityConcernLocation,
     sentence,
-    sha256,
     workStatusForDecision,
   } = dependencies;
 

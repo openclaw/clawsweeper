@@ -674,7 +674,7 @@ test("ghPagedLinkHeaderContextWindow falls back when link headers are unavailabl
 
 test("bounded PR context prepares source independently of cache digest and API file completeness", async () => {
   const { createItemContext } = await import("../dist/clawsweeper-item-context.js");
-  const { hydration, sourceTools, sha256 } = await import("./primary-body-fixture.ts");
+  const { hydration, sourceTools } = await import("./primary-body-fixture.ts");
   const { item } = await import("./helpers.ts");
   const target = item({ kind: "pull_request" });
   const pullRequest = {
@@ -689,7 +689,7 @@ test("bounded PR context prepares source independently of cache digest and API f
   const { collectItemContext } = createItemContext({
     ...hydration,
     ...sourceTools,
-    sha256,
+
     targetRepo: () => target.repo,
     ghJson: <T>(args: string[]) =>
       (args[1]!.includes("/pulls/") ? pullRequest : { comments: 0 }) as T,

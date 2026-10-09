@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -76,7 +75,6 @@ fs.writeFileSync(process.argv[process.argv.indexOf('--output-last-message') + 1]
       ghPaged: forbidden,
       ghWithRetry: forbidden,
       repoFromArgs: () => repositoryProfileFor("openclaw/openclaw"),
-      sha256: (text) => createHash("sha256").update(text).digest("hex"),
       targetRepo: () => "openclaw/openclaw",
       untrustedCodexEnv: () => ({ PATH: process.env.PATH, CODEX_BIN: binary }),
       writeCommentPayload: forbidden,

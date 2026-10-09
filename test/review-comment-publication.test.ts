@@ -140,7 +140,6 @@ function reviewCommentPublication(options: {
     root: options.root,
     targetRepo: () => "openclaw/openclaw",
     ghObservedMutationCommand: options.mutate,
-    sha256,
     ghPaged: options.comments,
     reviewCommentBodyDigest: sha256,
     ensureDir: (path: string) => mkdirSync(path, { recursive: true }),
@@ -324,7 +323,6 @@ test("oversized durable review publication replaces ready state with a verified 
           body: publishedBody,
         });
       },
-      sha256,
       ghPaged: () => [],
       reviewCommentBodyDigest: sha256,
       ensureDir: (path: string) => mkdirSync(path, { recursive: true }),
