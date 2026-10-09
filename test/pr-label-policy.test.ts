@@ -863,10 +863,21 @@ test("review prompt and schema define UX release-blocker override", () => {
           enum?: string[];
         };
       };
+      labelJustifications?: {
+        items?: {
+          properties?: {
+            label?: {
+              enum?: string[];
+            };
+          };
+        };
+      };
     };
   };
   const schemaDescription = schema.properties?.impactLabels?.description ?? "";
   const impactLabelEnum = schema.properties?.impactLabels?.items?.enum ?? [];
+  const justificationLabelEnum =
+    schema.properties?.labelJustifications?.items?.properties?.label?.enum ?? [];
 
   assert.match(
     reviewPrompt("issue"),
@@ -882,6 +893,8 @@ test("review prompt and schema define UX release-blocker override", () => {
   assert.match(schemaDescription, /Cosmetic confusion or a fully recoverable in-product issue/);
   assert.ok(impactLabelEnum.includes("impact:ux-release-blocker"));
   assert.ok(impactLabelEnum.includes("impact:ux-friction"));
+  assert.ok(justificationLabelEnum.includes("impact:ux-release-blocker"));
+  assert.ok(justificationLabelEnum.includes("impact:ux-friction"));
 });
 
 test("ClawSweeper merge-risk label scheme exposes PR-only merge warning labels", () => {

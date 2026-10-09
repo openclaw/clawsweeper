@@ -413,7 +413,30 @@
         "properties": {
           "label": {
             "type": "string",
-            "description": "One selected triagePriority, impactLabels, maturityLabels, or mergeRiskLabels value, copied exactly."
+            "enum": [
+              "P0",
+              "P1",
+              "P2",
+              "P3",
+              "impact:data-loss",
+              "impact:security",
+              "impact:crash-loop",
+              "impact:message-loss",
+              "impact:session-state",
+              "impact:auth-provider",
+              "impact:ux-release-blocker",
+              "impact:ux-friction",
+              "impact:other",
+              "maturity:stable",
+              "merge-risk: 🚨 compatibility",
+              "merge-risk: 🚨 message-delivery",
+              "merge-risk: 🚨 session-state",
+              "merge-risk: 🚨 auth-provider",
+              "merge-risk: 🚨 security-boundary",
+              "merge-risk: 🚨 availability",
+              "merge-risk: 🚨 automation",
+              "merge-risk: 🚨 other"
+            ]
           },
           "reason": {
             "type": "string",
@@ -928,7 +951,7 @@
     "featureShowcase": {
       "type": "object",
       "additionalProperties": false,
-      "description": "Positive-only maintainer spotlight for unusually compelling feature ideas in PRs. This is not a merge-readiness score, not a contributor ranking, and not a merge gate. Use showcase only when the PR is a feature or adds a new user-facing capability and the idea is exceptional enough that maintainers should notice it even if ordinary review work remains. Use none for normal useful features.",
+      "description": "Positive-only maintainer spotlight for unusually compelling feature ideas in PRs. This is not a merge-readiness score, not a contributor ranking, and not a merge gate. Use showcase only when the PR is a feature or adds a new user-facing capability and the idea is exceptional enough that maintainers should notice it even if ordinary review work remains. Use none for normal useful features. Patches with serious correctness or security concerns use none.",
       "required": ["status", "reason"],
       "properties": {
         "status": {
@@ -1025,7 +1048,7 @@
     },
     "closeComment": {
       "type": "string",
-      "description": "Public close comment in readable Markdown when decision is close: a short opening sentence, a blank line, then concise evidence bullets. Explain the specific close reason, mention that this was a Codex review, credit useful prior discussion, and include concrete evidence such as file paths, release version, commit SHA, or fix timestamp. For under-evidenced work, invite reopening with the missing version, component, reproduction, focused patch, or other deciding evidence. Use an empty string when decision is keep_open."
+      "description": "Public close comment in readable Markdown when decision is close: a short opening sentence, a blank line, then concise evidence bullets. Explain the specific close reason, mention that this was a Codex review, credit useful prior discussion, and include concrete evidence such as file paths, release version, commit SHA, or fix timestamp. For under-evidenced work, invite reopening with the missing version, component, reproduction, focused patch, or other deciding evidence."
     },
     "workCandidate": {
       "type": "string",
