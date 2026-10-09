@@ -1734,18 +1734,23 @@ jobs:
           test -n "$CLAWSWEEPER_WEBHOOK_SECRET"
           queue_url="${QUEUE_URL%/}"
           payload="$(node dist/repair/exact-review-queue-request.js enqueue publication)"
-          response="$(
-            control_plane_signed_post "$queue_url/internal/exact-review/enqueue" "$payload" \
-              --fail --silent --show-error --connect-timeout 5 --max-time 20 || true
-          )"
-          if jq -e '.superseded == true' <<< "$response" >/dev/null 2>&1; then
-            echo "::notice::Exact-review publication revision $(jq -r '.publication_revision // "unknown"' <<< "$response") was superseded by revision $(jq -r '.superseded_by_revision // "unknown"' <<< "$response"); the newer publisher owns final delivery."
+          response_file="$(mktemp)"
+          trap 'rm -f "$response_file"' EXIT
+          # Success needs a 2xx status and one parsed JSON body with the
+          # expected fields. jq -s reads an empty body as [], so an empty body
+          # fails in every jq version. jq 1.6 -e passes on empty input.
+          status="$(control_plane_signed_post "$queue_url/internal/exact-review/enqueue" "$payload" \
+            --silent --show-error --connect-timeout 5 --max-time 20 \
+            --output "$response_file" --write-out '%{http_code}')" || status=""
+          if [[ "$status" != 2[0-9][0-9] ]]; then
+            echo "Exact-review publication enqueue returned HTTP ${status:-000}: $(<"$response_file")" >&2
+            exit 1
+          fi
+          if jq -s -e 'length == 1 and .[0].superseded == true' "$response_file" >/dev/null 2>&1; then
+            echo "::notice::Exact-review publication revision $(jq -r '.publication_revision // "unknown"' "$response_file") was superseded by revision $(jq -r '.superseded_by_revision // "unknown"' "$response_file"); the newer publisher owns final delivery."
             exit 0
           fi
-          if jq -e '.ok == true and (.queued == true or .deduped == true)' <<< "$response" >/dev/null; then
-            exit 0
-          fi
-          exit 1
+          jq -s -e 'length == 1 and .[0].ok == true and (.[0].queued == true or .[0].deduped == true)' "$response_file" >/dev/null
 
       - name: Expire queued exact review lease
         if: ${{ always() && !cancelled() && steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.queue-exact-review-publication.outcome == 'success' && steps.direct-exact-review-publication.outputs.accepted != 'true' && steps.reserve-exact-review-lease.outputs.status == 'posted' && steps.reserve-exact-review-lease.outputs.queue_only != 'true' }}

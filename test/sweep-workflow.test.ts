@@ -1487,7 +1487,6 @@ test("exact event review publishes directly with a queue-bounded canonical fallb
     queuePublication.run ?? "",
     /payload="\$\(node dist\/repair\/exact-review-queue-request\.js enqueue publication\)"/,
   );
-  assert.match(queuePublication.run ?? "", /\.queued == true or \.deduped == true/);
   assert.equal(queuePublication.env?.CLAIM_DECISION, "${{ steps.live-item.outputs.decision }}");
   assert.equal(
     generationResult.env?.ADMISSION_RETRY,
@@ -6014,7 +6013,7 @@ test("every action-ledger publication authenticates the expected producer job", 
   assert.ok(commands.some((command) => command.get("--expected-producer-job") === "apply-proof"));
 });
 
-test("exact review publication enqueue accepts a superseded acknowledgement", () => {
+test("exact review publication enqueue passes only on a 2xx status with a queued, deduped or superseded body", () => {
   type WorkflowStep = { name?: string; id?: string; run?: string };
   type WorkflowJob = { steps: WorkflowStep[] };
   const workflow = YAML.parse(readText(".github/workflows/sweep.yml")) as {
@@ -6024,10 +6023,95 @@ test("exact review publication enqueue accepts a superseded acknowledgement", ()
     (candidate) => candidate.id === "queue-exact-review-publication",
   );
   assert.ok(publicationEnqueue, "missing queue-exact-review-publication step");
-  const run = publicationEnqueue.run ?? "";
-  assert.match(run, /\.ok == true and \(\.queued == true or \.deduped == true\)/);
-  assert.match(run, /jq -e '\.superseded == true'/);
-  assert.match(run, /the newer publisher owns final delivery/);
+  // The curl stub writes the status line, the body and --write-out like curl.
+  // With --fail and a status of 400 or more, it prints no body and exits 22.
+  // The jq shim gives the jq 1.6 result for empty input without --slurp: exit
+  // 0, even with -e. The runner jq exits 4 there, so without the shim this
+  // test could not see a step that trusts an empty body.
+  const fixture = [
+    "sleep() { :; }",
+    "curl() {",
+    '  local output="" headers="" write_out="" fail=false',
+    '  while [ "$#" -gt 0 ]; do',
+    '    case "$1" in',
+    '      --output) shift; output="$1" ;;',
+    '      --dump-header) shift; headers="$1" ;;',
+    '      --write-out) shift; write_out="$1" ;;',
+    "      --fail) fail=true ;;",
+    "    esac",
+    "    shift",
+    "  done",
+    '  if [ "$MOCK_STATUS" = "000" ]; then printf "%s" "${write_out:+000}"; return 7; fi',
+    '  printf "HTTP/1.1 %s\\r\\nretry-after: 0\\r\\n\\r\\n" "$MOCK_STATUS" > "$headers"',
+    '  if [ "$fail" = true ] && [ "$MOCK_STATUS" -ge 400 ]; then return 22; fi',
+    '  if [ -n "$output" ]; then printf "%s" "$MOCK_BODY" > "$output"; else printf "%s" "$MOCK_BODY"; fi',
+    '  if [ -n "$write_out" ]; then printf "%s" "$MOCK_STATUS"; fi',
+    "}",
+    "jq() {",
+    "  local input slurp=false argument",
+    '  for argument in "$@"; do',
+    '    case "$argument" in -s|--slurp) slurp=true ;; esac',
+    "  done",
+    '  if [ "$#" -gt 0 ] && [ -f "${!#}" ]; then input="$(<"${!#}")"; set -- "${@:1:$#-1}"; else input="$(cat)"; fi',
+    '  if [ "$slurp" = false ] && [ -z "${input//[[:space:]]/}" ]; then return 0; fi',
+    '  printf "%s" "$input" | command jq "$@"',
+    "}",
+  ].join("\n");
+  const superseded = {
+    ok: true,
+    deduped: true,
+    superseded: true,
+    publication_revision: 1,
+    superseded_by_revision: 5,
+  };
+  for (const [status, body, passes, name] of [
+    ["202", { ok: true, queued: true }, true, "queued"],
+    ["202", { ok: true, deduped: true }, true, "deduped"],
+    ["202", superseded, true, "superseded"],
+    ["202", "", false, "2xx without a body"],
+    ["200", "not json", false, "2xx with a body that is not JSON"],
+    ["202", { ok: false, queued: true }, false, "2xx that is not ok"],
+    ["202", { ok: true, shed: true }, false, "2xx shed"],
+    ["400", { error: "invalid_exact_review_item" }, false, "400"],
+    ["409", superseded, false, "409 with a superseded body"],
+    ["503", "", false, "503 after the retries"],
+    ["000", "", false, "no connection"],
+  ] as const) {
+    const result = spawnSync("bash", ["-c", `${fixture}\n${publicationEnqueue.run}`], {
+      encoding: "utf8",
+      timeout: 30_000,
+      env: {
+        PATH: process.env.PATH,
+        GITHUB_RUN_ID: "42",
+        GITHUB_RUN_ATTEMPT: "1",
+        GITHUB_SHA: "a".repeat(40),
+        ARTIFACT_NAME: "exact-review-42-1",
+        CLAIM_DECISION: JSON.stringify({ targetRepo: "openclaw/openclaw", itemNumber: 7 }),
+        CLAIM_GENERATION: "2",
+        ITEM_KEY: "openclaw/openclaw#7",
+        LEASE_REVISION: "3",
+        QUEUE_LEASE_REVISION: "3",
+        LIVE_GUARDED_OPEN: "false",
+        LIVE_PROCEEDED: "true",
+        LIVE_TERMINAL_MISSING: "false",
+        LIVE_TERMINAL_NOOP: "false",
+        PROTOCOL_VERSION: "2",
+        QUEUE_URL: "https://queue.invalid",
+        CLAWSWEEPER_WEBHOOK_SECRET: "fixture-secret",
+        MOCK_STATUS: status,
+        MOCK_BODY: typeof body === "string" ? body : JSON.stringify(body),
+      },
+    });
+    assert.equal(result.error, undefined, name);
+    assert.equal(result.status === 0, passes, `${name}: ${result.stderr}`);
+    assert.equal(
+      result.stdout.includes(
+        "::notice::Exact-review publication revision 1 was superseded by revision 5; the newer publisher owns final delivery.",
+      ),
+      name === "superseded",
+      name,
+    );
+  }
 });
 
 test("apply drift requeue selects source-drift skips before unverified-checkout keeps", () => {
