@@ -6,10 +6,10 @@ export type FrontMatterField =
   | { status: "value"; value: string };
 
 interface ReportFrontMatter {
-  fields: Map<string, string[]>;
-  bodyKeys: Set<string>;
-  competingKeys: Set<string>;
-  ambiguous: boolean;
+  readonly fields: ReadonlyMap<string, readonly string[]>;
+  readonly bodyKeys: ReadonlySet<string>;
+  readonly competingKeys: ReadonlySet<string>;
+  readonly ambiguous: boolean;
 }
 
 // Preserve literal keys and raw single-line values; decoding belongs to each reader.
@@ -20,7 +20,22 @@ function fieldEntry(line: string): [string, string] | null {
   return separator > 0 ? [line.slice(0, separator), line.slice(separator + 1)] : null;
 }
 
+// A reader asks for many fields of the same report, and a comparison reads two reports
+// in turn. Each field read would otherwise parse the whole report again. The result is
+// read-only, so callers can share it.
+const PARSE_CACHE_SIZE = 4;
+const parseCache = new Map<string, ReportFrontMatter | null>();
+
 export function parseReportFrontMatter(markdown: string): ReportFrontMatter | null {
+  const cached = parseCache.get(markdown);
+  if (cached !== undefined) return cached;
+  const parsed = parseUncached(markdown);
+  if (parseCache.size >= PARSE_CACHE_SIZE) parseCache.delete(parseCache.keys().next().value!);
+  parseCache.set(markdown, parsed);
+  return parsed;
+}
+
+function parseUncached(markdown: string): ReportFrontMatter | null {
   const header = markdown.match(/^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/);
   if (!header) return null;
   const fields = new Map<string, string[]>();
