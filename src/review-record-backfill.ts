@@ -9,7 +9,10 @@ import { nextStepFromReport } from "./clawsweeper-next-step.js";
 import { REVIEW_SECTIONS } from "./clawsweeper-policy.js";
 import { ambiguityGuardedMaintainerDecision } from "./clawsweeper-promotion-facts.js";
 import { reviewSectionValue } from "./clawsweeper-record-metadata.js";
+import { neutralizeOwnedSectionSpoofing } from "./clawsweeper-report-helpers.js";
+import { likelyOwnersMarkdown } from "./clawsweeper-report-document.js";
 import {
+  defaultAgentsPolicyStatus,
   impactLabelsFromReport,
   labelJustificationsFromReport,
   maturityLabelsFromReport,
@@ -25,7 +28,8 @@ import {
   reportPrRating,
   reportProductReview,
   reportProvenance,
-  reportRealBehaviorProof,
+  reportRecordedLikelyOwners,
+  reportRecordedRealBehaviorProof,
   reportReviewFindings,
   reportRootCauseCluster,
   reportSecurityReview,
@@ -73,15 +77,19 @@ type MarkdownFor = (options: {
   runtime: ReviewRuntime;
 }) => string;
 
+// "filled": the report has no value for the field (it predates the field), and the
+// record supplies the decision default. "rendered": the current renderer prints the
+// stored value differently, and the record keeps it. "changed": the record changes a
+// stored value.
 interface DecisionDifference {
   field: string;
   stored: string;
   rendered: string;
+  kind: "filled" | "rendered" | "changed";
 }
 
-// "filled": the report has no value for each differing field (it predates the field),
-// and the record supplies the decision default. "lossy": at least one stored value
-// differs from the value the record renders.
+// "lossless": every difference is rendered. "filled": no stored value changes, and
+// the record fills at least one field. "lossy": at least one stored value changes.
 export type ReviewRecordBackfill =
   | { status: "typed" }
   | { status: "invalid_record" | "unparseable"; reason: string }
@@ -91,7 +99,8 @@ export type ReviewRecordBackfill =
       markdown: string;
     };
 
-// The front-matter fields that markdownFor writes from the decision.
+// The front-matter fields that markdownFor writes from the decision. review_status is
+// host lifecycle state (stale_reopened, for example), not a decision field.
 const DECISION_FRONT_MATTER_KEYS = [
   "fixed_release",
   "fixed_sha",
@@ -120,7 +129,6 @@ const DECISION_FRONT_MATTER_KEYS = [
   "regression_provenance_related_pr_url",
   "regression_provenance_related_pr_number",
   "regression_provenance_related_repo",
-  "review_status",
   "review_terminal_failure",
   "review_checkout_inspection_failed",
   "local_checkout_access",
@@ -212,7 +220,8 @@ function textSection(markdown: string, name: keyof typeof REVIEW_SECTIONS): stri
 function listSection(markdown: string, name: keyof typeof REVIEW_SECTIONS): string[] {
   const value = reviewSectionValue(markdown, name);
   if (!value || value === "- none") return [];
-  return value.split("\n").map((line) => line.replace(/^- /, ""));
+  // A list item can be empty: the section then ends with a bare "-".
+  return value.split("\n").map((line) => line.replace(/^-(?: |$)/, ""));
 }
 
 // The Work Candidate section has "Reason: <text>" before the optional lists.
@@ -242,8 +251,8 @@ export function legacyReviewDecision(markdown: string): Decision {
     mergeRiskLabels: mergeRiskLabelsFromReport(markdown),
     maturityLabels: maturityLabelsFromReport(markdown),
   };
-  const agentsPolicyStatus = reportAgentsPolicyStatus(markdown);
-  if (!agentsPolicyStatus) throw new Error("report has no AGENTS.md policy status");
+  // Older reports predate the AGENTS.md policy status; the record fills the default.
+  const agentsPolicyStatus = reportAgentsPolicyStatus(markdown) ?? defaultAgentsPolicyStatus();
   const oversizedPullRequest = fm("oversized_pull_request");
   const oversizedPullRequestSource = fm("oversized_pr_source");
   // The writer records "unknown" as the source when the runner did not set the field.
@@ -294,7 +303,7 @@ export function legacyReviewDecision(markdown: string): Decision {
     testingReview: reportTestingReview(markdown),
     reviewFindings: reportReviewFindings(markdown),
     securityReview: reportSecurityReview(markdown),
-    realBehaviorProof: reportRealBehaviorProof(markdown),
+    realBehaviorProof: reportRecordedRealBehaviorProof(markdown),
     prRating: (({ nextSteps, ...rating }) => ({
       ...rating,
       nextSteps: withoutNoneEntry(nextSteps),
@@ -350,6 +359,123 @@ function decisionSection(markdown: string, heading: string): string {
   return heading === "Decision" ? value.replace(/\n\nAction taken: .*$/, "") : value;
 }
 
+// Sections that print only front-matter fields, which are compared on their own. A
+// section that differs while the report stores those fields is older text: a host
+// promotion, for example, rewrites decision and work_candidate but not the sections.
+const RESTATED_SECTIONS: Record<string, readonly string[]> = {
+  "## Decision": ["decision", "close_reason", "confidence"],
+  "## Work Candidate": [
+    "work_candidate",
+    "work_confidence",
+    "work_priority",
+    "work_status",
+    "work_reason_sha256",
+    "work_cluster_refs",
+    "work_likely_files",
+    "work_validation",
+  ],
+  "## Root-Cause Cluster": ["root_cause_cluster"],
+  "## Maintainer Decision": ["maintainer_decision"],
+  "## Label Justifications": ["label_justifications"],
+};
+
+const ENTRY_START = /\n(?=- \*\*)/;
+
+// Sections that the current renderer prints in another form. Each check is true only
+// when the stored section holds no data that the record lacks.
+const RENDERED_SECTIONS: Record<
+  string,
+  (stored: string, rendered: string, report: string) => boolean
+> = {
+  // Older evidence entries have no repo line. The reader takes the report repository,
+  // and the renderer prints it.
+  "## Evidence": (stored, rendered) => {
+    const storedEntries = stored.split(ENTRY_START);
+    const renderedEntries = rendered.split(ENTRY_START);
+    return (
+      storedEntries.length === renderedEntries.length &&
+      renderedEntries.every(
+        (entry, index) =>
+          (storedEntries[index]!.includes("\n  - repo: ")
+            ? entry
+            : entry.replace(/\n {2}- repo: [^\n]*/, "")) === storedEntries[index],
+      )
+    );
+  },
+  // The report shows each owner through publicLikelyOwner, as a fresh review stores
+  // them. The stored owners must read back whole before that policy.
+  "## Likely Related People": (stored, _rendered, report) =>
+    likelyOwnersMarkdown(reportRecordedLikelyOwners(report)) === stored,
+  // The testing review no longer has the added-test-files count of older reports.
+  "## Testing Review": (stored, rendered) =>
+    stored.replace(/\n\nAdded test files: \d+(?=\n\n)/, "") === rendered,
+};
+
+// A stored "Label:" line with no value, which the record fills with the default text.
+function filledLines(stored: string, rendered: string): boolean {
+  const storedLines = stored.split("\n");
+  const renderedLines = rendered.split("\n");
+  return (
+    storedLines.length === renderedLines.length &&
+    storedLines.every((line, index) => {
+      const label = line.trimEnd();
+      return (
+        line === renderedLines[index] ||
+        (/^[A-Z][A-Za-z -]*:$/.test(label) && renderedLines[index]!.startsWith(`${label} `))
+      );
+    })
+  );
+}
+
+// The review parser makes model text safe for the report, and a fresh review stores
+// that text. Older reports stored JSON text from before the parser did.
+function safeJsonText(value: unknown): unknown {
+  if (typeof value === "string") return neutralizeOwnedSectionSpoofing(value);
+  if (Array.isArray(value)) return value.map(safeJsonText);
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value).map(([key, entry]) => [key, safeJsonText(entry)]),
+    );
+  }
+  return value;
+}
+
+// A JSON front-matter value can list its keys or entries in another order, and the
+// record can add entries, such as the default justification of a selected label.
+function jsonDifferenceKind(stored: string, rendered: string): DecisionDifference["kind"] {
+  let storedValue: unknown;
+  let renderedValue: unknown;
+  try {
+    storedValue = safeJsonText(JSON.parse(stored));
+    renderedValue = JSON.parse(rendered);
+  } catch {
+    return "changed";
+  }
+  if (isDeepStrictEqual(storedValue, renderedValue)) return "rendered";
+  if (!Array.isArray(storedValue) || !Array.isArray(renderedValue)) return "changed";
+  const unmatched = [...renderedValue];
+  for (const entry of storedValue) {
+    const index = unmatched.findIndex((candidate) => isDeepStrictEqual(candidate, entry));
+    if (index === -1) return "changed";
+    unmatched.splice(index, 1);
+  }
+  return unmatched.length ? "filled" : "rendered";
+}
+
+function differenceKind(
+  report: string,
+  field: string,
+  stored: string,
+  rendered: string,
+): DecisionDifference["kind"] {
+  if (!stored) return "filled";
+  const restated = RESTATED_SECTIONS[field];
+  if (restated?.every((key) => frontMatterValue(report, key))) return "rendered";
+  if (RENDERED_SECTIONS[field]?.(stored, rendered, report)) return "rendered";
+  if (filledLines(stored, rendered)) return "filled";
+  return field.startsWith("## ") ? "changed" : jsonDifferenceKind(stored, rendered);
+}
+
 /** Compares the decision fields of the stored report and the report that the record renders. */
 function decisionDifferences(stored: string, rendered: string): DecisionDifference[] {
   const fields = [
@@ -364,9 +490,12 @@ function decisionDifferences(stored: string, rendered: string): DecisionDifferen
       rendered: decisionSection(rendered, heading),
     })),
   ];
-  return fields.filter(
-    (field) => field.stored !== field.rendered && !sameJson(field.stored, field.rendered),
-  );
+  return fields
+    .filter((field) => field.stored !== field.rendered && !sameJson(field.stored, field.rendered))
+    .map((field) => ({
+      ...field,
+      kind: differenceKind(stored, field.field, field.stored, field.rendered),
+    }));
 }
 
 // A JSON front-matter value can list its keys in another order.
@@ -413,12 +542,9 @@ export function createReviewRecordBackfill(dependencies: { markdownFor: Markdown
     const differences = decisionDifferences(markdown, rendered);
     const line = reviewRecordFrontMatterLine({ decision, origin: "backfill" }, item)!;
     const end = markdown.indexOf("\n---", 3);
+    const kinds = new Set(differences.map((difference) => difference.kind));
     return {
-      status: !differences.length
-        ? "lossless"
-        : differences.every((difference) => !difference.stored)
-          ? "filled"
-          : "lossy",
+      status: kinds.has("changed") ? "lossy" : kinds.has("filled") ? "filled" : "lossless",
       differences,
       markdown: `${markdown.slice(0, end)}\n${line}${markdown.slice(end)}`,
     };
@@ -443,10 +569,14 @@ export function createReviewRecordBackfill(dependencies: { markdownFor: Markdown
       lossy: 0,
     };
     const reasons: Record<string, number> = {};
-    // Per field: how many reports lack a stored value, and how many store a value
-    // that the record would change.
-    const filledFields: Record<string, number> = {};
-    const changedFields: Record<string, number> = {};
+    // Per field: how many reports lack a stored value, how many store a value that the
+    // current renderer prints in another form, and how many store a value that the
+    // record would change.
+    const fieldCounts: Record<DecisionDifference["kind"], Record<string, number>> = {
+      filled: {},
+      rendered: {},
+      changed: {},
+    };
     const differenceSamples: Array<DecisionDifference & { path: string }> = [];
     const examples: Record<string, string[]> = {};
     let total = 0;
@@ -467,11 +597,9 @@ export function createReviewRecordBackfill(dependencies: { markdownFor: Markdown
         if ("reason" in result) reasons[result.reason] = (reasons[result.reason] ?? 0) + 1;
         if ("differences" in result) {
           for (const difference of result.differences) {
-            if (!difference.stored) {
-              filledFields[difference.field] = (filledFields[difference.field] ?? 0) + 1;
-              continue;
-            }
-            changedFields[difference.field] = (changedFields[difference.field] ?? 0) + 1;
+            const fields = fieldCounts[difference.kind];
+            fields[difference.field] = (fields[difference.field] ?? 0) + 1;
+            if (difference.kind !== "changed") continue;
             // Five short samples for each changed field show what the parsers lose.
             // Each sample starts a little before the first character that differs.
             if (
@@ -485,6 +613,7 @@ export function createReviewRecordBackfill(dependencies: { markdownFor: Markdown
                 field: difference.field,
                 stored: difference.stored.slice(start, start + 300),
                 rendered: difference.rendered.slice(start, start + 300),
+                kind: difference.kind,
               });
             }
           }
@@ -497,8 +626,9 @@ export function createReviewRecordBackfill(dependencies: { markdownFor: Markdown
       recordsDir,
       total,
       counts,
-      changedFields: byCount(changedFields),
-      filledFields: byCount(filledFields),
+      changedFields: byCount(fieldCounts.changed),
+      renderedFields: byCount(fieldCounts.rendered),
+      filledFields: byCount(fieldCounts.filled),
       reasons: byCount(reasons),
       examples,
       differenceSamples,

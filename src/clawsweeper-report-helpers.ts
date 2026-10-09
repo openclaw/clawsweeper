@@ -105,12 +105,18 @@ export function parseSecurityConcernHeading(line: string): {
   const titleEnd = line.indexOf(":**", titleStart);
   if (titleEnd === -1) return null;
 
+  // The renderer writes `file:line`, or `file` alone for a concern without a line.
   const locationText = line.slice(titleEnd + 3).trim();
   const location = locationText ? parseBacktickLocation(locationText) : null;
+  const file =
+    location?.file ??
+    (locationText.length > 2 && locationText.startsWith("`") && locationText.endsWith("`")
+      ? locationText.slice(1, -1)
+      : null);
   return {
     severity: severity as SecurityConcernSeverity,
     title: line.slice(titleStart, titleEnd),
-    file: location?.file ?? null,
+    file,
     line: location?.lineStart ?? null,
   };
 }

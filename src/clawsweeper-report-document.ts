@@ -18,6 +18,7 @@ import type {
   GitInfo,
   Item,
   ItemContext,
+  LikelyOwner,
   PrRating,
   RealBehaviorProof,
   ReviewRuntime,
@@ -73,6 +74,22 @@ export function reviewStatusForDecision(
     !decision.summary.startsWith("Codex review failed")
     ? "complete"
     : "failed";
+}
+
+/** The Likely Related People section for owners as given; the report shows public owners. */
+export function likelyOwnersMarkdown(owners: readonly LikelyOwner[]): string {
+  if (!owners.length) return "- none";
+  return owners
+    .map((owner) => {
+      const bits = [`- **${owner.person}:** ${owner.role.trim()}`];
+      if (owner.attributionSource) bits.push(`  - attribution source: ${owner.attributionSource}`);
+      bits.push(`  - reason: ${owner.reason}`);
+      bits.push(`  - confidence: ${owner.confidence}`);
+      if (owner.commits.length) bits.push(`  - commits: ${owner.commits.join(", ")}`);
+      if (owner.files.length) bits.push(`  - files: ${owner.files.join(", ")}`);
+      return bits.join("\n");
+    })
+    .join("\n");
 }
 
 export function createReportDocumentRendering(
@@ -544,21 +561,7 @@ export function createReportDocumentRendering(
     const risks = options.decision.risks.length
       ? options.decision.risks.map((risk) => `- ${risk}`).join("\n")
       : "- none";
-    const likelyOwners = options.decision.likelyOwners.length
-      ? options.decision.likelyOwners
-          .map(publicLikelyOwner)
-          .map((owner) => {
-            const bits = [`- **${owner.person}:** ${owner.role.trim()}`];
-            if (owner.attributionSource)
-              bits.push(`  - attribution source: ${owner.attributionSource}`);
-            bits.push(`  - reason: ${owner.reason}`);
-            bits.push(`  - confidence: ${owner.confidence}`);
-            if (owner.commits.length) bits.push(`  - commits: ${owner.commits.join(", ")}`);
-            if (owner.files.length) bits.push(`  - files: ${owner.files.join(", ")}`);
-            return bits.join("\n");
-          })
-          .join("\n")
-      : "- none";
+    const likelyOwners = likelyOwnersMarkdown(options.decision.likelyOwners.map(publicLikelyOwner));
     const bestSolution = options.decision.bestSolution.trim() || "_Not provided._";
     const maintainerDecision = renderMaintainerDecisionReportSection(options.decision);
     const reproductionAssessment =

@@ -376,6 +376,11 @@ export function reportEvidence(markdown: string): Evidence[] {
 }
 
 export function reportLikelyOwners(markdown: string): LikelyOwner[] {
+  return reportRecordedLikelyOwners(markdown).map(publicLikelyOwner);
+}
+
+/** The related people as the report lists them, before the public attribution policy. */
+export function reportRecordedLikelyOwners(markdown: string): LikelyOwner[] {
   const section = reviewSectionValue(markdown, "likelyOwners");
   const owners: LikelyOwner[] = [];
   let current: LikelyOwner | null = null;
@@ -423,7 +428,7 @@ export function reportLikelyOwners(markdown: string): LikelyOwner[] {
     if (confidence?.[1]) current.confidence = confidence[1] as Confidence;
   }
   if (current) owners.push(current);
-  return owners.map(publicLikelyOwner);
+  return owners;
 }
 
 export function reportOverallCorrectness(markdown: string): OverallCorrectness {
@@ -610,19 +615,10 @@ export function reportSecurityReview(markdown: string): SecurityReview {
 }
 
 function defaultRealBehaviorProof(markdown: string): RealBehaviorProof {
-  const type = frontMatterValue(markdown, "type");
-  if (frontMatterStringArray(markdown, "labels").includes(PROOF_OVERRIDE_LABEL)) {
-    return {
-      status: "override",
-      summary: "A maintainer applied proof: override for this PR.",
-      evidenceKind: "not_applicable",
-      needsContributorAction: false,
-    };
-  }
   return {
     status: "not_applicable",
     summary:
-      type === "pull_request"
+      frontMatterValue(markdown, "type") === "pull_request"
         ? "No real behavior proof assessment was recorded in this older report."
         : "Real behavior proof is not required for non-PR issue triage.",
     evidenceKind: "not_applicable",
@@ -631,10 +627,25 @@ function defaultRealBehaviorProof(markdown: string): RealBehaviorProof {
 }
 
 export function reportRealBehaviorProof(markdown: string): RealBehaviorProof {
+  return realBehaviorProofFromReport(markdown, { readerPolicy: true });
+}
+
+/**
+ * The proof assessment that the review wrote, for the review record. Readers add the
+ * proof: override label and the maintainer exemption; the record does not hold them.
+ */
+export function reportRecordedRealBehaviorProof(markdown: string): RealBehaviorProof {
+  return realBehaviorProofFromReport(markdown, { readerPolicy: false });
+}
+
+function realBehaviorProofFromReport(
+  markdown: string,
+  options: { readerPolicy: boolean },
+): RealBehaviorProof {
   const compatibility = frontMatterField(markdown, "real_behavior_proof_data_model_compatibility");
   // Generic proof exemptions must neither grant nor discard this independent assessment.
   return {
-    ...reportGeneralBehaviorProof(markdown),
+    ...reportGeneralBehaviorProof(markdown, options),
     ...(compatibility.status === "value" &&
     DATA_MODEL_COMPATIBILITY_STATUSES.has(compatibility.value as DataModelCompatibility)
       ? { dataModelCompatibility: compatibility.value as DataModelCompatibility }
@@ -642,10 +653,20 @@ export function reportRealBehaviorProof(markdown: string): RealBehaviorProof {
   };
 }
 
-function reportGeneralBehaviorProof(markdown: string): RealBehaviorProof {
+function reportGeneralBehaviorProof(
+  markdown: string,
+  { readerPolicy }: { readerPolicy: boolean },
+): RealBehaviorProof {
   // Historical execution receipts do not assess relevance to the changed behavior.
+  if (readerPolicy && frontMatterStringArray(markdown, "labels").includes(PROOF_OVERRIDE_LABEL)) {
+    return {
+      status: "override",
+      summary: "A maintainer applied proof: override for this PR.",
+      evidenceKind: "not_applicable",
+      needsContributorAction: false,
+    };
+  }
   const defaultProof = defaultRealBehaviorProof(markdown);
-  if (defaultProof.status === "override") return defaultProof;
   const statusField = frontMatterField(markdown, "real_behavior_proof_status");
   const evidenceKindField = frontMatterField(markdown, "real_behavior_proof_evidence_kind");
   const needsContributorActionField = frontMatterField(
@@ -720,6 +741,7 @@ function reportGeneralBehaviorProof(markdown: string): RealBehaviorProof {
   };
   const authorityChainProofRequired = summary.startsWith(AUTHORITY_CHAIN_PROOF_MARKER);
   if (
+    !readerPolicy ||
     frontMatterValue(markdown, "type") !== "pull_request" ||
     isExternalPullRequestReport(markdown) ||
     authorityChainProofRequired ||

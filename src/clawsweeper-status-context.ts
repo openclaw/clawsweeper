@@ -14,7 +14,8 @@ import type {
 } from "./clawsweeper-types.js";
 import {
   isRegressionAssessment,
-  isPublicRegressionProvenance,
+  isSuspectedRegressionProvenance,
+  isVerifiedRegressionProvenance,
 } from "./clawsweeper-regression-provenance.js";
 import { GitHubRateLimitError, isGitHubNotFoundError } from "./github-retry.js";
 import type { RepositoryProfile } from "./repository-profiles.js";
@@ -323,39 +324,59 @@ export function fixedPullRequestFromReport(markdown: string): FixedPullRequest |
   };
 }
 
+// The runner writes a verified provenance (blame to a merge commit) or a suspected one
+// (a source line); each shape has only its own keys.
 export function regressionProvenanceFromReport(
   markdown: string,
 ): PublicRegressionProvenance | null {
-  const rawNumber = frontMatterValue(markdown, "regression_provenance_pr_number");
-  const sourceLine = frontMatterValue(markdown, "regression_provenance_source_line");
+  const rawSourceLine = frontMatterValue(markdown, "regression_provenance_source_line");
+  const sourceLine = rawSourceLine ? Number(rawSourceLine) : NaN;
   const sourceCommitSha = nonUnknownFrontMatter(
     markdown,
     "regression_provenance_source_commit_sha",
   );
   const rawSourceAuthor = frontMatterValue(markdown, "regression_provenance_source_author");
   const sourceAuthor = sourceCommitSha && rawSourceAuthor ? rawSourceAuthor : null;
-  const provenance = {
-    verificationSource: frontMatterValue(markdown, "regression_provenance_verification_source"),
-    repo: frontMatterValue(markdown, "regression_provenance_repo"),
-    pullRequestNumber: rawNumber ? Number(rawNumber) : NaN,
-    pullRequestUrl: frontMatterValue(markdown, "regression_provenance_pr_url"),
-    mergeCommitSha: frontMatterValue(markdown, "regression_provenance_merge_sha"),
-    sourcePath: frontMatterValue(markdown, "regression_provenance_source_path"),
-    sourceLine: sourceLine ? Number(sourceLine) : NaN,
-    evidenceType: frontMatterValue(markdown, "regression_provenance_evidence_type"),
-    mergedAt: frontMatterValue(markdown, "regression_provenance_merged_at"),
-    reviewedCommitSha: frontMatterValue(markdown, "regression_provenance_reviewed_sha"),
-    ...(sourceCommitSha ? { sourceCommitSha } : {}),
-    ...(sourceAuthor ? { sourceAuthor } : {}),
-    relatedPullRequestUrl:
-      nonUnknownFrontMatter(markdown, "regression_provenance_related_pr_url") ?? null,
-    relatedPullRequestNumber: (() => {
-      const raw = nonUnknownFrontMatter(markdown, "regression_provenance_related_pr_number");
-      return raw ? Number(raw) : null;
-    })(),
-    relatedRepo: nonUnknownFrontMatter(markdown, "regression_provenance_related_repo") ?? null,
+  const verificationSource = frontMatterValue(
+    markdown,
+    "regression_provenance_verification_source",
+  );
+  const evidenceType = frontMatterValue(markdown, "regression_provenance_evidence_type");
+  const sourcePath = frontMatterValue(markdown, "regression_provenance_source_path");
+  if (evidenceType === "blame_to_merge_commit") {
+    const rawNumber = frontMatterValue(markdown, "regression_provenance_pr_number");
+    const verified = {
+      repo: frontMatterValue(markdown, "regression_provenance_repo"),
+      pullRequestNumber: rawNumber ? Number(rawNumber) : NaN,
+      pullRequestUrl: frontMatterValue(markdown, "regression_provenance_pr_url"),
+      mergeCommitSha: frontMatterValue(markdown, "regression_provenance_merge_sha"),
+      sourcePath,
+      sourceLine,
+      verificationSource,
+      evidenceType,
+      mergedAt: frontMatterValue(markdown, "regression_provenance_merged_at"),
+      reviewedCommitSha: frontMatterValue(markdown, "regression_provenance_reviewed_sha"),
+      ...(sourceCommitSha ? { sourceCommitSha } : {}),
+      ...(sourceAuthor ? { sourceAuthor } : {}),
+    };
+    return isVerifiedRegressionProvenance(verified) ? verified : null;
+  }
+  const relatedPullRequestNumber = nonUnknownFrontMatter(
+    markdown,
+    "regression_provenance_related_pr_number",
+  );
+  const suspected = {
+    verificationSource,
+    evidenceType,
+    sourceCommitSha,
+    sourceAuthor,
+    sourcePath,
+    sourceLine,
+    relatedPullRequestNumber: relatedPullRequestNumber ? Number(relatedPullRequestNumber) : null,
+    relatedPullRequestUrl: nonUnknownFrontMatter(markdown, "regression_provenance_related_pr_url"),
+    relatedRepo: nonUnknownFrontMatter(markdown, "regression_provenance_related_repo"),
   };
-  return isPublicRegressionProvenance(provenance) ? provenance : null;
+  return isSuspectedRegressionProvenance(suspected) ? suspected : null;
 }
 
 export function regressionAssessmentFromReport(markdown: string): RegressionAssessment | null {
