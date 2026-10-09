@@ -208,6 +208,11 @@ function fetchReviewObjects({
   return false;
 }
 
+/** Env for local review Git reads: no optional lock writes and no lazy promisor fetch. */
+function localReviewGitEnv(extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
+  return { ...process.env, GIT_NO_LAZY_FETCH: "1", GIT_OPTIONAL_LOCKS: "0", ...extra };
+}
+
 function gitCommitExists(
   targetDir: string,
   sha: string,
@@ -221,12 +226,7 @@ function gitCommitExists(
       cwd: targetDir,
       // Some Git versions ignore GIT_NO_LAZY_FETCH. An empty protocol allowlist also
       // prevents its implicit promisor fetch from escaping the acquisition owner.
-      env: {
-        ...process.env,
-        GIT_NO_LAZY_FETCH: "1",
-        GIT_ALLOW_PROTOCOL: "",
-        GIT_OPTIONAL_LOCKS: "0",
-      },
+      env: localReviewGitEnv({ GIT_ALLOW_PROTOCOL: "" }),
       stdio: "ignore",
       timeout,
       killSignal: "SIGKILL",
@@ -409,7 +409,7 @@ function reviewTreeMatchesCommit({ targetDir, sha }: { targetDir: string; sha: s
   const head = spawnSync("git", ["rev-parse", "HEAD"], {
     cwd: targetDir,
     encoding: "utf8",
-    env: { ...process.env, GIT_NO_LAZY_FETCH: "1", GIT_OPTIONAL_LOCKS: "0" },
+    env: localReviewGitEnv(),
   });
   if (
     checkedReviewGit(head, "review_git_inspection_failed").trim().toLowerCase() !==
@@ -420,7 +420,7 @@ function reviewTreeMatchesCommit({ targetDir, sha }: { targetDir: string; sha: s
   const status = spawnSync("git", ["status", "--porcelain=v1", "--untracked-files=all"], {
     cwd: targetDir,
     encoding: "utf8",
-    env: { ...process.env, GIT_NO_LAZY_FETCH: "1", GIT_OPTIONAL_LOCKS: "0" },
+    env: localReviewGitEnv(),
   });
   return checkedReviewGit(status, "review_git_inspection_failed").trim() === "";
 }
@@ -465,7 +465,7 @@ function reviewTreeObjectStoreCapacity(targetDir: string, headSha: string): Revi
     ["rev-parse", "--path-format=absolute", "--git-path", "objects"],
     {
       cwd: targetDir,
-      env: { ...process.env, GIT_NO_LAZY_FETCH: "1", GIT_OPTIONAL_LOCKS: "0" },
+      env: localReviewGitEnv(),
       encoding: "utf8",
       maxBuffer: MAX_GIT_OUTPUT_BYTES,
     },
@@ -530,7 +530,7 @@ function reviewTreeMetadata(
   const deadlineAt = Date.now() + REVIEW_TREE_METADATA_DEADLINE_MS;
   const result = spawnSync("git", ["ls-tree", "-r", "-z", "--full-tree", headSha], {
     cwd: targetDir,
-    env: { ...process.env, GIT_NO_LAZY_FETCH: "1", GIT_OPTIONAL_LOCKS: "0" },
+    env: localReviewGitEnv(),
     encoding: "utf8",
     maxBuffer: MAX_REVIEW_TREE_LIST_BYTES,
   });
@@ -577,12 +577,7 @@ function reviewTreeMetadata(
     ["rev-list", "--objects", "--missing=print", `${headSha}^{tree}`],
     {
       cwd: targetDir,
-      env: {
-        ...process.env,
-        GIT_NO_LAZY_FETCH: "1",
-        GIT_OPTIONAL_LOCKS: "0",
-        GIT_NO_REPLACE_OBJECTS: "1",
-      },
+      env: localReviewGitEnv({ GIT_NO_REPLACE_OBJECTS: "1" }),
       encoding: "utf8",
       maxBuffer: MAX_REVIEW_TREE_LIST_BYTES,
     },
@@ -609,7 +604,7 @@ function reviewTreeMetadata(
       ["cat-file", "--batch-check=%(objectname) %(objecttype) %(objectsize)"],
       {
         cwd: targetDir,
-        env: { ...process.env, GIT_NO_LAZY_FETCH: "1", GIT_OPTIONAL_LOCKS: "0" },
+        env: localReviewGitEnv(),
         encoding: "utf8",
         input: `${localObjectIds.join("\n")}\n`,
         maxBuffer: MAX_REVIEW_TREE_LIST_BYTES,
@@ -732,12 +727,7 @@ function fetchMissingReviewTreeBlobs(
       const availability = checkedReviewGit(
         spawnSync("git", ["rev-list", "--objects", "--missing=print", `${headSha}^{tree}`], {
           cwd: targetDir,
-          env: {
-            ...process.env,
-            GIT_NO_LAZY_FETCH: "1",
-            GIT_OPTIONAL_LOCKS: "0",
-            GIT_NO_REPLACE_OBJECTS: "1",
-          },
+          env: localReviewGitEnv({ GIT_NO_REPLACE_OBJECTS: "1" }),
           encoding: "utf8",
           maxBuffer: MAX_REVIEW_TREE_LIST_BYTES,
           timeout: remainingMs(),
@@ -762,12 +752,7 @@ function fetchMissingReviewTreeBlobs(
         ["cat-file", "--batch-check=%(objectname) %(objecttype) %(objectsize)"],
         {
           cwd: targetDir,
-          env: {
-            ...process.env,
-            GIT_NO_LAZY_FETCH: "1",
-            GIT_OPTIONAL_LOCKS: "0",
-            GIT_NO_REPLACE_OBJECTS: "1",
-          },
+          env: localReviewGitEnv({ GIT_NO_REPLACE_OBJECTS: "1" }),
           encoding: "utf8",
           input: `${[...available].join("\n")}\n`,
           maxBuffer: MAX_REVIEW_TREE_LIST_BYTES,
@@ -875,12 +860,7 @@ function assertReviewTreeHasBoundedTransforms(
   const indexDir = mkdtempSync(join(reviewWorkspaceDir, ".clawsweeper-attributes-"));
   chmodSync(indexDir, 0o700);
   const indexPath = join(indexDir, "index");
-  const env = {
-    ...process.env,
-    GIT_INDEX_FILE: indexPath,
-    GIT_NO_LAZY_FETCH: "1",
-    GIT_OPTIONAL_LOCKS: "0",
-  };
+  const env = localReviewGitEnv({ GIT_INDEX_FILE: indexPath });
   try {
     checkedReviewGit(
       spawnSync(
@@ -1086,7 +1066,7 @@ function materializePullRequestReviewTreeWithBudget(
     ],
     {
       cwd: targetDir,
-      env: { ...process.env, GIT_NO_LAZY_FETCH: "1", GIT_OPTIONAL_LOCKS: "0" },
+      env: localReviewGitEnv(),
       encoding: "utf8",
       maxBuffer: MAX_GIT_OUTPUT_BYTES,
     },
@@ -1233,12 +1213,7 @@ export function hydratePullRequestReviewBlobs({
       {
         cwd: targetDir,
         encoding: "utf8",
-        env: {
-          ...process.env,
-          GIT_OPTIONAL_LOCKS: "0",
-          GIT_NO_LAZY_FETCH: "1",
-          GIT_NO_REPLACE_OBJECTS: "1",
-        },
+        env: localReviewGitEnv({ GIT_NO_REPLACE_OBJECTS: "1" }),
         maxBuffer: MAX_GIT_OUTPUT_BYTES,
         timeout: timeoutMs,
         killSignal: "SIGKILL",

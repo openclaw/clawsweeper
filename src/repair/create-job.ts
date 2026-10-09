@@ -4,6 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { parseArgs, parseJob, repoRoot, validateJob } from "./lib.js";
+import { runGitResult } from "./git.js";
 import { ghJsonBestEffort } from "./github-cli.js";
 import { renderJobIntentFrontmatter } from "./job-intent.js";
 import { frontMatterStringArray, frontMatterValue, sectionValue } from "../report-front-matter.js";
@@ -289,14 +290,9 @@ function findExistingWork({ repo, branch, clusterId }: LooseRecord) {
   );
   for (const pr of bodyPrs ?? []) existing.push({ type: "open_pr_body", ...pr });
 
-  const remoteBranch = spawnSync(
-    "git",
+  const remoteBranch = runGitResult(
     ["ls-remote", `https://github.com/${repo}.git`, `refs/heads/${branch}`],
-    {
-      cwd: repoRoot(),
-      encoding: "utf8",
-      stdio: "pipe",
-    },
+    { cwd: repoRoot() },
   );
   if (remoteBranch.status === 0 && remoteBranch.stdout.trim()) {
     existing.push({ type: "remote_branch", branch });
@@ -316,16 +312,8 @@ function uniqueExisting(existing: JsonValue) {
 }
 
 function assertDispatchable(relativePath: string) {
-  const tracked = spawnSync("git", ["ls-files", "--error-unmatch", relativePath], {
-    cwd: repoRoot(),
-    encoding: "utf8",
-    stdio: "pipe",
-  });
-  const clean = spawnSync("git", ["status", "--porcelain", "--", relativePath], {
-    cwd: repoRoot(),
-    encoding: "utf8",
-    stdio: "pipe",
-  });
+  const tracked = runGitResult(["ls-files", "--error-unmatch", relativePath], { cwd: repoRoot() });
+  const clean = runGitResult(["status", "--porcelain", "--", relativePath], { cwd: repoRoot() });
   if (tracked.status !== 0 || clean.stdout.trim()) {
     die(`refusing --dispatch because ${relativePath} is not committed and pushed yet`);
   }

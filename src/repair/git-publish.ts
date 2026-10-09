@@ -1,26 +1,17 @@
-import { spawnSync } from "node:child_process";
+import type { SpawnSyncReturns } from "node:child_process";
 import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, relative, resolve } from "node:path";
 
 import { mergeCommentRouterLedgers } from "./comment-router-ledger-merge.js";
+import { runGitResult } from "./git.js";
 import { clawsweeperGitUserEmail, clawsweeperGitUserName } from "./process-env.js";
 import { mergeSweepStatusJson } from "./sweep-status-merge.js";
 import { acquireStateWriterCoordinator } from "./state-writer-coordinator.js";
 
-type GitRunResult = {
-  status: number;
-  stdout: string;
-  stderr: string;
-  timedOut: boolean;
-};
-
-type GitRunOptions = {
+type StateGitOptions = {
   allowFailure?: boolean;
-  env?: NodeJS.ProcessEnv;
-  input?: string | Uint8Array;
-  maxBuffer?: number;
   quiet?: boolean;
-  timeout?: number;
+  timeoutMs?: number;
 };
 
 export type RebaseStrategy = "normal" | "theirs";
@@ -41,49 +32,25 @@ export type PublishResult = "committed" | "unchanged";
 const GIT_TIMEOUT_MS = 60_000;
 const GIT_PUSH_TIMEOUT_MS = 300_000;
 
-class GitCommandTimeoutError extends Error {
-  constructor(args: readonly string[], timeoutMs: number) {
-    super(`git ${safeAction(args[0])} timed out after ${timeoutMs}ms`);
-    this.name = "GitCommandTimeoutError";
-  }
-}
-
 function configureGitUser(): void {
-  runGit(["config", "user.name", clawsweeperGitUserName()]);
-  runGit(["config", "user.email", clawsweeperGitUserEmail()]);
+  stateGit(["config", "user.name", clawsweeperGitUserName()]);
+  stateGit(["config", "user.email", clawsweeperGitUserEmail()]);
 }
 
-export function runGit(args: readonly string[], options: GitRunOptions = {}): string {
-  const result = spawnGit(args, options);
-  if (result.timedOut) throw new GitCommandTimeoutError(args, options.timeout ?? GIT_TIMEOUT_MS);
-  if (result.status !== 0 && !options.allowFailure) {
+/** Run git in the publish root. Echo the output unless quiet; a failed exit throws unless allowed. */
+function stateGit(args: string[], options: StateGitOptions = {}): SpawnSyncReturns<string> {
+  const child = runGitResult(args, {
+    cwd: publishRoot() ?? process.cwd(),
+    timeoutMs: options.timeoutMs ?? GIT_TIMEOUT_MS,
+  });
+  if (!options.quiet && child.stdout) process.stdout.write(child.stdout);
+  if (!options.quiet && child.stderr) process.stderr.write(child.stderr);
+  if (child.status !== 0 && !options.allowFailure) {
     throw new Error(
-      result.stderr.trim() || `git ${safeAction(args[0])} failed with status ${result.status}`,
+      child.stderr.trim() || `git ${safeAction(args[0])} failed with status ${child.status}`,
     );
   }
-  return result.stdout;
-}
-
-function spawnGit(args: readonly string[], options: GitRunOptions = {}): GitRunResult {
-  const child = spawnSync("git", [...args], {
-    cwd: publishRoot() ?? process.cwd(),
-    encoding: "utf8",
-    env: options.env ?? process.env,
-    input: options.input,
-    maxBuffer: options.maxBuffer ?? 64 * 1024 * 1024,
-    timeout: options.timeout ?? GIT_TIMEOUT_MS,
-    windowsHide: true,
-  });
-  const stdout = child.stdout ?? "";
-  const stderr = redactGitOutput(child.stderr ?? "", args);
-  if (!options.quiet && stdout) process.stdout.write(stdout);
-  if (!options.quiet && stderr) process.stderr.write(stderr);
-  return {
-    status: child.status ?? 1,
-    stdout: child.status === 0 ? stdout : redactGitOutput(stdout, args),
-    stderr,
-    timedOut: (child.error as NodeJS.ErrnoException | undefined)?.code === "ETIMEDOUT",
-  };
+  return child;
 }
 
 export function publishMainCommit(options: GitPublishOptions): PublishResult {
@@ -93,8 +60,10 @@ export function publishMainCommit(options: GitPublishOptions): PublishResult {
   const coordinator = stateRoot ? acquireStateWriterCoordinator(branch) : null;
   try {
     if (stateRoot) {
-      runGit(["fetch", "--no-tags", "--depth=1", remote, branch], { timeout: GIT_PUSH_TIMEOUT_MS });
-      runGit(["checkout", "--detach", "FETCH_HEAD"]);
+      stateGit(["fetch", "--no-tags", "--depth=1", remote, branch], {
+        timeoutMs: GIT_PUSH_TIMEOUT_MS,
+      });
+      stateGit(["checkout", "--detach", "FETCH_HEAD"]);
       syncPublishPaths(options.paths);
     }
     configureGitUser();
@@ -104,18 +73,9 @@ export function publishMainCommit(options: GitPublishOptions): PublishResult {
       refreshSourceAfterStatePublish(options.paths);
       return "unchanged";
     }
-    runGit(["commit", "-m", options.message]);
+    stateGit(["commit", "-m", options.message]);
     coordinator?.assertActive();
-    const push = spawnGit(["push", remote, `HEAD:${branch}`], {
-      quiet: true,
-      timeout: GIT_PUSH_TIMEOUT_MS,
-    });
-    if (push.timedOut) {
-      throw new GitCommandTimeoutError(["push"], GIT_PUSH_TIMEOUT_MS);
-    }
-    if (push.status !== 0) {
-      throw new Error(push.stderr.trim() || `git push failed with status ${push.status}`);
-    }
+    stateGit(["push", remote, `HEAD:${branch}`], { quiet: true, timeoutMs: GIT_PUSH_TIMEOUT_MS });
     restoreWorktree(options.restorePaths ?? []);
     refreshSourceAfterStatePublish(options.paths);
     return "committed";
@@ -127,16 +87,18 @@ export function publishMainCommit(options: GitPublishOptions): PublishResult {
 function stagePaths(paths: readonly string[]): void {
   const unique = uniqueNonEmpty(paths).map(normalizedPath);
   if (!unique.length) throw new Error("No paths were provided for publishing");
-  runGit(["add", "-A", "--", ...unique]);
+  stateGit(["add", "-A", "--", ...unique]);
 }
 
 function restoreWorktree(paths: readonly string[]): void {
   const unique = uniqueNonEmpty(paths).map(normalizedPath);
-  if (unique.length) runGit(["restore", "--worktree", "--", ...unique], { allowFailure: true });
+  if (unique.length) stateGit(["restore", "--worktree", "--", ...unique], { allowFailure: true });
 }
 
 function hasStagedChanges(): boolean {
-  return spawnGit(["diff", "--cached", "--quiet"], { quiet: true }).status !== 0;
+  return (
+    stateGit(["diff", "--cached", "--quiet"], { allowFailure: true, quiet: true }).status !== 0
+  );
 }
 
 export function publishRoot(): string | undefined {
@@ -241,13 +203,4 @@ function isSweepStatus(path: string): boolean {
 
 function safeAction(value: string | undefined): string {
   return /^[a-z-]+$/.test(value ?? "") ? value! : "command";
-}
-
-function redactGitOutput(value: string, args: readonly string[]): string {
-  let redacted = value;
-  for (const argument of args) {
-    const match = /^https:\/\/x-access-token:([^@]+)@/.exec(argument);
-    if (match?.[1]) redacted = redacted.split(match[1]).join("<redacted>");
-  }
-  return redacted;
 }

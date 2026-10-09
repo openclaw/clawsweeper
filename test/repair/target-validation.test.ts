@@ -33,7 +33,7 @@ import {
 } from "../../dist/repair/target-validation.js";
 import { compactText } from "../../dist/repair/text-utils.js";
 import { validationRecoveryRequired } from "../../dist/repair/validation-recovery.js";
-import { gitChangedFiles } from "../../dist/repair/git-repo-utils.js";
+import { gitChangedFiles } from "../../dist/repair/git.js";
 import {
   __resetTargetRepoToolchainCache,
   resolveTargetRepoToolchain,

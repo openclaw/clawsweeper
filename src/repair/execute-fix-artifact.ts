@@ -44,8 +44,9 @@ import {
   ensureMergeBaseAvailable,
   isAncestor,
   type RebaseOntoBaseResult,
+  runGit,
   unmergedPaths,
-} from "./git-repo-utils.js";
+} from "./git.js";
 import {
   automergeShepherdReadiness,
   automergeShepherdWaitConfig,
@@ -1463,12 +1464,12 @@ function tryAutomergeFastRebaseRepair({
   if (!commit || commit === sourceHead) {
     return { status: "fallback", reason: "deterministic rebase produced no branch change" };
   }
-  if (run("git", ["status", "--porcelain"], { cwd: targetDir }).trim()) {
+  if (runGit(["status", "--porcelain"], { cwd: targetDir }).trim()) {
     return { status: "fallback", reason: "deterministic rebase left working tree changes" };
   }
 
   const targetBaseSha = pinRepairBase(() =>
-    run("git", ["rev-parse", `origin/${baseBranch}`], { cwd: targetDir }),
+    runGit(["rev-parse", `origin/${baseBranch}`], { cwd: targetDir }),
   ).sha;
   const validationOptions = {
     ...currentTargetValidationOptions(),
@@ -2197,7 +2198,7 @@ function editValidatePrepareMerge({
   }
   const repositoryContext = buildRepositoryContext({ fixArtifact, targetDir });
   const targetBaseSha = pinRepairBase(() =>
-    run("git", ["rev-parse", `origin/${baseBranch}`], { cwd: targetDir }),
+    runGit(["rev-parse", `origin/${baseBranch}`], { cwd: targetDir }),
   ).sha;
   const shouldRunCodexEdit = !producedChanges || reconcileWithBase;
   const repairDeltaBaseHead =
@@ -2323,7 +2324,7 @@ function editValidatePrepareMerge({
       });
 
       const hasWorkingTreeChanges = Boolean(
-        run("git", ["status", "--porcelain"], { cwd: targetDir }).trim(),
+        runGit(["status", "--porcelain"], { cwd: targetDir }).trim(),
       );
       const hasHeadChanges = currentHead(targetDir) !== headBeforeAttempt;
       producedChanges = producedChanges || hasWorkingTreeChanges || hasHeadChanges;
@@ -2387,8 +2388,7 @@ function editValidatePrepareMerge({
     },
   });
   let acceptedBaseSha = targetBaseSha;
-  const finalSyncRepairDeltaPaths = run(
-    "git",
+  const finalSyncRepairDeltaPaths = runGit(
     ["diff", "--name-only", `${repairDeltaBaseHead}..HEAD`],
     { cwd: targetDir },
   )
@@ -2595,7 +2595,7 @@ function reconcileLatestBaseBeforePush({
   );
   const baseRef = `origin/${baseBranch}`;
   const baseSha = pinRepairBase(() =>
-    run("git", ["rev-parse", "--verify", `${baseRef}^{commit}`], { cwd: targetDir }),
+    runGit(["rev-parse", "--verify", `${baseRef}^{commit}`], { cwd: targetDir }),
   ).sha;
   if (isAncestor({ targetDir, ancestor: baseSha, descendant: "HEAD" })) {
     return { status: "already-current", base_sha: baseSha };
@@ -3259,7 +3259,7 @@ function runCodexValidationFix({
   targetBaseSha,
 }: LooseRecord) {
   const validationError = compactText(String(error?.message ?? error), 8000);
-  const changedFiles = run("git", ["diff", "--name-only"], { cwd: targetDir })
+  const changedFiles = runGit(["diff", "--name-only"], { cwd: targetDir })
     .split("\n")
     .map((line) => line.trim())
     .filter(Boolean);
@@ -3394,7 +3394,7 @@ function ensureTargetCheckout(repo: string, targetDir: string) {
   if (!fs.existsSync(path.join(targetDir, ".git"))) {
     throw new Error(`target dir is not a git checkout: ${targetDir}`);
   }
-  const status = run("git", ["status", "--porcelain"], { cwd: targetDir }).trim();
+  const status = runGit(["status", "--porcelain"], { cwd: targetDir }).trim();
   if (status) throw new Error(`target checkout has uncommitted changes: ${targetDir}`);
 }
 
@@ -3407,7 +3407,7 @@ function cloneTargetCheckout(repo: string, targetDir: string) {
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
     fs.rmSync(targetDir, { recursive: true, force: true });
     try {
-      run("git", bloblessCloneArgs(repo, targetDir), {
+      runGit(bloblessCloneArgs(repo, targetDir), {
         cwd: repoRoot(),
         env: ghEnv(),
         timeoutMs,
@@ -3463,8 +3463,8 @@ function githubRepoCloneUrl(repo: string) {
 }
 
 function setupGitIdentity(cwd: JsonValue) {
-  run("git", ["config", "user.name", clawsweeperGitUserName()], { cwd });
-  run("git", ["config", "user.email", clawsweeperGitUserEmail()], { cwd });
+  runGit(["config", "user.name", clawsweeperGitUserName()], { cwd });
+  runGit(["config", "user.email", clawsweeperGitUserEmail()], { cwd });
 }
 
 function jobMaintainerAttribution() {
@@ -3508,7 +3508,7 @@ function checkoutRecoverableReplacementBranch({
       ],
       targetDir,
     );
-    const recoveredHeadSha = run("git", ["rev-parse", `origin/${branch}`], {
+    const recoveredHeadSha = runGit(["rev-parse", `origin/${branch}`], {
       cwd: targetDir,
     }).trim();
     if (recoveredHeadSha !== remoteLeaseSha) {
@@ -3529,7 +3529,7 @@ function checkoutRecoverableReplacementBranch({
     });
     if (sourcePr) {
       const sourceRef = fetchSourcePullRequestHead({ targetDir, sourcePr });
-      const sourceHeadSha = run("git", ["rev-parse", sourceRef], { cwd: targetDir }).trim();
+      const sourceHeadSha = runGit(["rev-parse", sourceRef], { cwd: targetDir }).trim();
       if (!isAncestor({ targetDir, ancestor: sourceHeadSha, descendant: "HEAD" })) {
         const pull = fetchPullRequest(result.repo, sourcePr.number);
         if (pull.state !== "open")
@@ -3571,7 +3571,7 @@ function checkoutRecoverableReplacementBranch({
     };
   }
   // Fetch can advance the base ref without moving the fresh clone's HEAD.
-  const fetchedBaseSha = run("git", ["rev-parse", `origin/${baseBranch}`], {
+  const fetchedBaseSha = runGit(["rev-parse", `origin/${baseBranch}`], {
     cwd: targetDir,
   }).trim();
   materializeFetchedReplacementCommit({
@@ -3637,7 +3637,7 @@ function commitCheckpointIfNeeded({ targetDir, message, trailers = [] }: LooseRe
 function enforceFinalRepairContract({ fixArtifact, targetDir, baseSha }: LooseRecord) {
   if (!repairContract(fixArtifact)) return;
   const changedFiles = changedFilesFromNameOnlyZ(
-    run("git", ["diff", "--name-only", "-z", `${baseSha}..HEAD`], { cwd: targetDir }),
+    runGit(["diff", "--name-only", "-z", `${baseSha}..HEAD`], { cwd: targetDir }),
   );
   enforceRepairContract({ fixArtifact, changedFiles });
 }
@@ -3733,7 +3733,7 @@ function fetchRemoteRecoverableBranch({ targetDir, branch, required = true }: Lo
       ],
       targetDir,
     );
-    const sha = run("git", ["rev-parse", "--verify", `refs/remotes/origin/${branch}`], {
+    const sha = runGit(["rev-parse", "--verify", `refs/remotes/origin/${branch}`], {
       cwd: targetDir,
     }).trim();
     if (!/^[0-9a-f]{40,64}$/.test(sha)) {

@@ -11,8 +11,8 @@ import { pathToFileURL } from "node:url";
 import {
   branchHasBaseDiff,
   ensureMergeBaseAvailable,
-  runGitCommand,
-} from "../../dist/repair/git-repo-utils.js";
+  runGitResult,
+} from "../../dist/repair/git.js";
 import { mockCommandBinEnv } from "../helpers.ts";
 
 test("git helper bounds execution and terminates the timed-out process", async (t) => {
@@ -21,8 +21,8 @@ test("git helper bounds execution and terminates the timed-out process", async (
   const controlMarker = path.join(fixture.root, "control-marker");
   const marker = path.join(fixture.root, "late-marker");
 
-  const control = runGitCommand(["stall", controlMarker], {
-    targetDir: fixture.root,
+  const control = runGitResult(["stall", controlMarker], {
+    cwd: fixture.root,
     env: fixture.env,
   });
   assert.equal(control.status, 0);
@@ -31,8 +31,8 @@ test("git helper bounds execution and terminates the timed-out process", async (
 
   assert.throws(
     () =>
-      runGitCommand(["stall", marker], {
-        targetDir: fixture.root,
+      runGitResult(["stall", marker], {
+        cwd: fixture.root,
         timeoutMs: 250,
         env: fixture.env,
       }),
@@ -57,15 +57,15 @@ test("git helper preserves stderr in timeout errors", (t) => {
   });
 
   assert.throws(
-    () => runGitCommand(["stall"], { targetDir: process.cwd(), timeoutMs: 250 }),
+    () => runGitResult(["stall"], { cwd: process.cwd(), timeoutMs: 250 }),
     /command timed out after 250ms: git stall\nwaiting for timeout/,
   );
 });
 
 test("git helper preserves ordinary nonzero status and stderr", () => {
   const fixture = fakeGitFixture();
-  const child = runGitCommand(["fail"], {
-    targetDir: fixture.root,
+  const child = runGitResult(["fail"], {
+    cwd: fixture.root,
     timeoutMs: 1_000,
     env: fixture.env,
   });
@@ -79,8 +79,8 @@ test("git helper reports spawn errors instead of returning an empty status", () 
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-git-spawn-"));
   assert.throws(
     () =>
-      runGitCommand(["status"], {
-        targetDir: root,
+      runGitResult(["status"], {
+        cwd: root,
         timeoutMs: 1_000,
         env: {
           ...process.env,
@@ -97,8 +97,8 @@ test(
   { skip: process.platform === "win32" },
   () => {
     const fixture = fakeGitFixture();
-    const child = runGitCommand(["signal"], {
-      targetDir: fixture.root,
+    const child = runGitResult(["signal"], {
+      cwd: fixture.root,
       timeoutMs: 1_000,
       env: fixture.env,
     });
@@ -186,10 +186,7 @@ test("ensureMergeBaseAvailable deepens shallow history without pruning the base 
   ]);
   run("git", ["config", "--local", "fetch.prune", "true"], { cwd: shallow });
   assert.equal(run("git", ["rev-parse", "--is-shallow-repository"], { cwd: shallow }), "true");
-  assert.equal(
-    runGitCommand(["merge-base", "origin/main", "HEAD"], { targetDir: shallow }).status,
-    1,
-  );
+  assert.equal(runGitResult(["merge-base", "origin/main", "HEAD"], { cwd: shallow }).status, 1);
 
   assert.equal(ensureMergeBaseAvailable({ targetDir: shallow, baseBranch: "main" }), baseSha);
   assert.equal(run("git", ["rev-parse", "--is-shallow-repository"], { cwd: shallow }), "false");

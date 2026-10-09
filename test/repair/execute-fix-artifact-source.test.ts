@@ -502,7 +502,7 @@ test("contributor repair review loop stays on one pinned target base", () => {
 
   assert.match(
     source,
-    /const targetBaseSha = pinRepairBase\(\(\) =>[\s\S]*?run\("git", \["rev-parse", `origin\/\$\{baseBranch\}`\]/,
+    /const targetBaseSha = pinRepairBase\(\(\) =>[\s\S]*?runGit\(\["rev-parse", `origin\/\$\{baseBranch\}`\]/,
   );
   assert.match(source, /validateAndReviewLoop\(\{[\s\S]*targetBaseSha/);
   assert.match(source, /pinnedBaseRef: targetBaseSha/);

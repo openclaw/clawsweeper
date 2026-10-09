@@ -42,7 +42,8 @@ import {
   gitStatusPaths,
   gitLsFiles,
   isAncestor,
-} from "./git-repo-utils.js";
+  runGit,
+} from "./git.js";
 import { parsePullRequestUrl, sameRepoSlug } from "./github-ref.js";
 import type { JsonValue, LooseRecord } from "./json-types.js";
 import {
@@ -197,7 +198,7 @@ export function classifyExternalBaseValidationFailure({
 }): ExternalBaseValidationBlocker | null {
   if (!repairBaseRef || !baseError) return null;
   const trackedAtBase = new Set(
-    splitGitLines(run("git", ["ls-tree", "-r", "--name-only", pinnedBaseRef], { cwd: targetDir })),
+    splitGitLines(runGit(["ls-tree", "-r", "--name-only", pinnedBaseRef], { cwd: targetDir })),
   );
   const referencedPaths = referencedTrackedPaths(String((error as Error)?.message ?? error), {
     targetDir,
@@ -222,15 +223,11 @@ export function classifyExternalBaseValidationFailure({
   }
 
   const changedFromBase = new Set(
-    splitGitLines(
-      run("git", ["diff", "--name-only", `${pinnedBaseRef}..HEAD`], { cwd: targetDir }),
-    ),
+    splitGitLines(runGit(["diff", "--name-only", `${pinnedBaseRef}..HEAD`], { cwd: targetDir })),
   );
   const repairDelta = new Set(
     repairDeltaPaths ??
-      splitGitLines(
-        run("git", ["diff", "--name-only", `${repairBaseRef}..HEAD`], { cwd: targetDir }),
-      ),
+      splitGitLines(runGit(["diff", "--name-only", `${repairBaseRef}..HEAD`], { cwd: targetDir })),
   );
   if (referencedPaths.some((file) => changedFromBase.has(file) || repairDelta.has(file))) {
     return null;
@@ -269,26 +266,22 @@ export function reproduceValidationFailureAtPinnedBase({
   const checkout = path.join(root, "target");
   try {
     try {
-      const pinnedBaseSha = run(
-        "git",
-        ["rev-parse", "--verify", `${options.pinnedBaseRef}^{commit}`],
-        {
-          cwd: targetDir,
-        },
-      ).trim();
+      const pinnedBaseSha = runGit(["rev-parse", "--verify", `${options.pinnedBaseRef}^{commit}`], {
+        cwd: targetDir,
+      }).trim();
       const sourceGitDir = path.resolve(
         targetDir,
-        run("git", ["rev-parse", "--git-common-dir"], { cwd: targetDir }).trim(),
+        runGit(["rev-parse", "--git-common-dir"], { cwd: targetDir }).trim(),
       );
       const sourceObjectDir = fs.realpathSync(path.join(sourceGitDir, "objects"));
       if (/[\r\n]/.test(sourceObjectDir)) return null;
-      const sourceObjectFormat = run("git", ["rev-parse", "--show-object-format"], {
+      const sourceObjectFormat = runGit(["rev-parse", "--show-object-format"], {
         cwd: targetDir,
       }).trim();
       if (sourceObjectFormat !== "sha1" && sourceObjectFormat !== "sha256") return null;
       let sourceBaseSha = pinnedBaseSha;
       try {
-        sourceBaseSha = run("git", ["rev-parse", "--verify", `refs/heads/${baseBranch}^{commit}`], {
+        sourceBaseSha = runGit(["rev-parse", "--verify", `refs/heads/${baseBranch}^{commit}`], {
           cwd: targetDir,
         }).trim();
       } catch {
@@ -298,7 +291,7 @@ export function reproduceValidationFailureAtPinnedBase({
       const remoteUrl =
         options.pinnedBaseRemoteUrl ?? `https://github.com/${options.targetRepo}.git`;
 
-      run("git", ["init", "--quiet", `--object-format=${sourceObjectFormat}`, checkout]);
+      runGit(["init", "--quiet", `--object-format=${sourceObjectFormat}`, checkout], { cwd: root });
       const checkoutGitDir = path.join(checkout, ".git");
       fs.mkdirSync(path.join(checkoutGitDir, "objects", "info"), { recursive: true });
       fs.writeFileSync(
@@ -309,17 +302,15 @@ export function reproduceValidationFailureAtPinnedBase({
       if (fs.existsSync(sourceShallowPath)) {
         fs.copyFileSync(sourceShallowPath, path.join(checkoutGitDir, "shallow"));
       }
-      run("git", ["remote", "add", "origin", remoteUrl], { cwd: checkout });
+      runGit(["remote", "add", "origin", remoteUrl], { cwd: checkout });
       let partialCloneFilter = "";
       try {
-        const promisor = run(
-          "git",
+        const promisor = runGit(
           ["config", "--local", "--no-includes", "--get", "remote.origin.promisor"],
           { cwd: targetDir },
         ).trim();
         if (/^(?:1|on|true|yes)$/i.test(promisor)) {
-          partialCloneFilter = run(
-            "git",
+          partialCloneFilter = runGit(
             ["config", "--local", "--no-includes", "--get", "remote.origin.partialclonefilter"],
             { cwd: targetDir },
           ).trim();
@@ -329,15 +320,15 @@ export function reproduceValidationFailureAtPinnedBase({
       }
       if (partialCloneFilter) {
         if (!/^[A-Za-z0-9][A-Za-z0-9%:+=._/@{}^~,-]*$/.test(partialCloneFilter)) return null;
-        run("git", ["config", "--local", "remote.origin.promisor", "true"], { cwd: checkout });
-        run("git", ["config", "--local", "remote.origin.partialclonefilter", partialCloneFilter], {
+        runGit(["config", "--local", "remote.origin.promisor", "true"], { cwd: checkout });
+        runGit(["config", "--local", "remote.origin.partialclonefilter", partialCloneFilter], {
           cwd: checkout,
         });
       }
-      run("git", ["update-ref", `refs/remotes/origin/${baseBranch}`, sourceBaseSha], {
+      runGit(["update-ref", `refs/remotes/origin/${baseBranch}`, sourceBaseSha], {
         cwd: checkout,
       });
-      run("git", ["checkout", "--quiet", "--detach", pinnedBaseSha], {
+      runGit(["checkout", "--quiet", "--detach", pinnedBaseSha], {
         cwd: checkout,
         timeoutMs: targetValidationTimeoutMs(
           "CLAWSWEEPER_TARGET_SETUP_TIMEOUT_MS",
@@ -640,7 +631,7 @@ function openClawValidationNeedsPinnedHelper(
     if (paths.length === 0) {
       if (flags.includes("--staged")) {
         paths.push(
-          ...run("git", ["diff", "--cached", "--name-only", "--diff-filter=ACMRD", "-z"], {
+          ...runGit(["diff", "--cached", "--name-only", "--diff-filter=ACMRD", "-z"], {
             cwd,
           })
             .split("\0")
@@ -649,7 +640,7 @@ function openClawValidationNeedsPinnedHelper(
       } else {
         paths.push(
           ...gitChangedFilesFromRef(cwd, refs["--base"]!, refs["--head"]!),
-          ...run("git", ["ls-files", "--others", "--exclude-standard", "-z"], { cwd })
+          ...runGit(["ls-files", "--others", "--exclude-standard", "-z"], { cwd })
             .split("\0")
             .filter(Boolean),
         );
@@ -4234,8 +4225,7 @@ function withIsolatedTargetGit<T>(
       deadlineAt,
       root: isolationRoot,
       run: (args, operation, options = {}) => {
-        const output = run(
-          "git",
+        const output = runGit(
           [
             "-c",
             `core.hooksPath=${hooksDir}`,
@@ -4369,8 +4359,7 @@ function runIdentityGit(
   env.GIT_NO_REPLACE_OBJECTS = "1";
   env.GIT_NO_LAZY_FETCH = "1";
   env.GIT_OPTIONAL_LOCKS = "0";
-  return run(
-    "git",
+  return runGit(
     ["-c", "protocol.allow=never", "-c", "core.fsmonitor=false", "-c", "diff.external=", ...args],
     {
       cwd,
@@ -5493,12 +5482,12 @@ function validationBaseRef(cwd: string, baseBranch: string, options: TargetValid
     ensureMergeBaseAvailable({ targetDir: cwd, baseBranch });
     return `origin/${baseBranch}`;
   }
-  run("git", ["merge-base", options.pinnedBaseRef, "HEAD"], { cwd });
+  runGit(["merge-base", options.pinnedBaseRef, "HEAD"], { cwd });
   return options.pinnedBaseRef;
 }
 
 function gitChangedFilesFromRef(cwd: string, baseRef: string, headRef = "HEAD") {
-  const committed = run("git", ["diff", "--name-only", "-z", `${baseRef}...${headRef}`], { cwd })
+  const committed = runGit(["diff", "--name-only", "-z", `${baseRef}...${headRef}`], { cwd })
     .split("\0")
     .filter(Boolean);
   return uniqueStrings([...committed, ...gitStatusPaths(cwd)]);
@@ -5573,7 +5562,7 @@ function isChangedGateCommand(parts: readonly string[], options: TargetValidatio
 }
 
 function changedFilesSinceRef(cwd: string, sourceRef: string) {
-  const committed = run("git", ["diff", "--name-only", `${sourceRef}..HEAD`], { cwd })
+  const committed = runGit(["diff", "--name-only", `${sourceRef}..HEAD`], { cwd })
     .split("\n")
     .map((line) => line.trim())
     .filter(Boolean);

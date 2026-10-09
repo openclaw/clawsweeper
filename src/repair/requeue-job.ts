@@ -32,7 +32,7 @@ import {
   normalizedRequeueSourceJobPath,
 } from "./requeue-job-key.js";
 import { findFilesByBasenameSync } from "./glob-files.js";
-import { currentMainHeadSha } from "./git-repo-utils.js";
+import { currentMainHeadSha } from "./git.js";
 
 const DEFAULT_REPO = currentProjectRepo();
 const DEFAULT_WORKFLOW = REPAIR_CLUSTER_WORKFLOW;

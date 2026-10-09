@@ -16,7 +16,7 @@ import {
 import { ghErrorText, ghJson, ghText, githubCommandTimeoutMs } from "./github-cli.js";
 import { sleepMs } from "./timing.js";
 import { REPAIR_CLUSTER_WORKFLOW } from "./constants.js";
-import { currentMainHeadSha } from "./git-repo-utils.js";
+import { currentMainHeadSha } from "./git.js";
 
 const DEFAULT_REPO = currentProjectRepo();
 const DEFAULT_WORKFLOW = REPAIR_CLUSTER_WORKFLOW;

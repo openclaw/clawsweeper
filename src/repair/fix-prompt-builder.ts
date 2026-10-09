@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 
-import { runCommand as run } from "./command-runner.js";
+import { runGit } from "./git.js";
 import type { JsonValue, LooseRecord } from "./json-types.js";
 import { compactText } from "./text-utils.js";
 
@@ -311,7 +311,7 @@ function renderRebaseResult(rebaseResult: LooseRecord) {
 }
 
 export function buildRepositoryContext({ fixArtifact, targetDir }: LooseRecord) {
-  const files = run("git", ["ls-files"], { cwd: targetDir })
+  const files = runGit(["ls-files"], { cwd: targetDir })
     .split("\n")
     .map((line) => line.trim())
     .filter(Boolean);

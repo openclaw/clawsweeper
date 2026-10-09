@@ -4,9 +4,9 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { currentMainHeadSha } from "../../dist/repair/git-repo-utils.js";
+import { currentMainHeadSha } from "../../dist/repair/git.js";
 
-test("repair main head reads origin/main and preserves native Git failures", () => {
+test("repair main head reads origin/main and throws Git failures", () => {
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "repair-main-head-"));
   const git = (args: string[]) =>
     execFileSync("git", args, {
@@ -36,30 +36,8 @@ test("repair main head reads origin/main and preserves native Git failures", () 
     assert.equal(currentMainHeadSha(cwd), main);
 
     git(["update-ref", "-d", "refs/remotes/origin/main"]);
-    for (const invalidCwd of [cwd, path.join(cwd, "absent")]) {
-      let expected: NodeJS.ErrnoException;
-      assert.throws(
-        () =>
-          execFileSync("git", ["rev-parse", "origin/main"], {
-            cwd: invalidCwd,
-            encoding: "utf8",
-            stdio: ["ignore", "pipe", "pipe"],
-          }),
-        (error: NodeJS.ErrnoException) => {
-          expected = error;
-          return true;
-        },
-      );
-      assert.throws(
-        () => currentMainHeadSha(invalidCwd),
-        (error: NodeJS.ErrnoException) => {
-          for (const key of ["message", "status", "stdout", "stderr", "code", "signal"]) {
-            assert.equal(Reflect.get(error, key), Reflect.get(expected, key));
-          }
-          return true;
-        },
-      );
-    }
+    assert.throws(() => currentMainHeadSha(cwd), /ambiguous argument 'origin\/main'/);
+    assert.throws(() => currentMainHeadSha(path.join(cwd, "absent")), /ENOENT/);
   } finally {
     fs.rmSync(cwd, { recursive: true, force: true });
   }
