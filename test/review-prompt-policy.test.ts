@@ -387,14 +387,27 @@ test("assembled review prompt keeps evidenced implementation choices with the PR
 test("decision schema preserves implementer ownership without waiving compatibility proof", () => {
   const schema = JSON.parse(readFileSync("schema/clawsweeper-decision.schema.json", "utf8"));
   const required = schema.properties.maintainerDecision.properties.required.description;
-  assert.match(required, /recorded in the PR body with review-verified evidence/);
-  assert.match(required, /individually source-verified tool-metadata oracle\/snapshot\/baseline/);
-  assert.match(required, /preserving exact user data without masking regressions/);
-  assert.match(required, /invalid\/unreachable-data-only Doctor\/recovery removal/);
-  assert.match(required, /verified prior backup, reported counts, and valid data untouched/);
-  assert.match(required, /within an authorized maintainer repair-and-land scope/);
-  assert.match(required, /Broad exceptions, defects, and missing data-model compatibility proof/);
-  assert.match(required, /Unresolved product\/public-contract choices still require a decision/);
+  // The review prompt owns the implementer-owned decision list; the schema points to it.
+  assert.match(required, /implementer-owned decisions that the review prompt lists/);
+  const prompt = reviewPrompt("pull_request");
+  const boundary = prompt.slice(
+    prompt.indexOf("Treat the following as implementer-owned decisions"),
+    prompt.indexOf("### Risks and merge-risk options"),
+  );
+  assert.match(boundary, /PR body records the choice and supporting evidence/);
+  assert.match(boundary, /individually source-verified test-oracle, snapshot, or baseline/);
+  assert.match(boundary, /user data stays exact and no real regression is masked/);
+  assert.match(boundary, /remove only invalid or unreachable persisted data/);
+  assert.match(
+    boundary,
+    /verified backup before removal, report counts, and leave valid data untouched/,
+  );
+  assert.match(boundary, /within an authorized maintainer repair-and-land request/);
+  assert.match(
+    boundary,
+    /Keep concrete defects, security concerns, and missing compatibility proof/,
+  );
+  assert.match(boundary, /Genuinely unresolved product or public-contract choices still require/);
   assert.match(
     schema.properties.productReview.properties.worthIt.description,
     /implementer-owned decision boundary here too/,
