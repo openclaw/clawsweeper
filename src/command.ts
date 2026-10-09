@@ -1,6 +1,7 @@
 import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { delimiter, dirname, isAbsolute, join, normalize, resolve } from "node:path";
+import type { Args } from "./clawsweeper-args.js";
 
 export const SWEEPER_COMMAND_MAX_BUFFER_BYTES = 128 * 1024 * 1024;
 
@@ -39,6 +40,17 @@ export class UserFacingCommandError extends Error {
 
 export function isUserFacingCommandError(error: unknown): error is UserFacingCommandError {
   return error instanceof UserFacingCommandError;
+}
+
+/**
+ * Stop a command that selects a fixed Codex profile when a caller still sends the retired flags.
+ * clawsweeper-args stays import-free because workflows run it as raw source.
+ */
+export function rejectRetiredCodexProfileArgs(args: Args, reason: string): void {
+  if (args.codex_reasoning_effort === undefined && args.codex_service_tier === undefined) return;
+  throw new UserFacingCommandError(
+    `--codex-reasoning-effort and --codex-service-tier are retired for ${reason}.`,
+  );
 }
 
 export function runText(

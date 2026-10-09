@@ -1,4 +1,5 @@
 import type { CreateApplyDecisionWorkflowDependencies } from "./clawsweeper-apply-dependencies.js";
+import { authorPrBudgetCloseEnabled } from "./policy-flags.js";
 import { reportAllowsAutomation } from "./manual-publication-policy.js";
 import type {
   AuthorPrBudgetApplyGate,
@@ -11,7 +12,6 @@ import type {
 type ApplyPullRequestPromotionDependencies = Pick<
   CreateApplyDecisionWorkflowDependencies,
   | "authorPrBudgetAgeSkipReason"
-  | "authorPrBudgetCloseEnabled"
   | "authorPrBudgetPromotion"
   | "authorPrBudgetSignalBlockReason"
   | "closeReasonEnabled"
@@ -48,7 +48,6 @@ export function promoteApplyPullRequest(
 ) {
   const {
     authorPrBudgetAgeSkipReason,
-    authorPrBudgetCloseEnabled,
     authorPrBudgetPromotion,
     authorPrBudgetSignalBlockReason,
     closeReasonEnabled,

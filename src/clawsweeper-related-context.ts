@@ -3,6 +3,7 @@ import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { escapeRegExp, truncateText } from "./clawsweeper-text.js";
 import { querySqliteRows, querySqliteScalar } from "./sqlite-readonly.js";
+import { envFlagDisabled, envFlagEnabled } from "./policy-flags.js";
 import type {
   GitcrawlClusterSource,
   GitHubJsonResult,
@@ -38,8 +39,6 @@ interface RelatedContextDependencies {
   login: (value: unknown) => string | undefined;
   compactIssue: (value: unknown) => unknown;
   compactPullRequest: (value: unknown) => unknown;
-  envFlagEnabled: (value: string | undefined) => boolean;
-  envFlagDisabled: (value: string | undefined) => boolean;
   frontMatterValue: (markdown: string, key: string) => string | undefined;
   reviewSectionValue: (markdown: string, section: "summary") => string;
   effectiveReviewStatus: (markdown: string) => string;
@@ -63,8 +62,6 @@ export function createRelatedContext({
   login,
   compactIssue,
   compactPullRequest,
-  envFlagEnabled,
-  envFlagDisabled,
   frontMatterValue,
   reviewSectionValue,
   effectiveReviewStatus,

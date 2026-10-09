@@ -15,6 +15,13 @@ import {
   repositoryProfileFor,
   type RepositoryProfile,
 } from "./repository-profiles.js";
+import {
+  authorPrBudgetCloseEnabled,
+  obsoleteFixPrCloseEnabled,
+  staleVersionBugCloseEnabled,
+  unconfirmedProductDirectionCloseEnabled,
+  unsponsoredFeatureCloseEnabled,
+} from "./policy-flags.js";
 import { reviewPullChecksDigestParts } from "./review-checks-digest.js";
 import {
   reviewStructuralQuery,
@@ -523,7 +530,7 @@ const applyGuards = createApplyGuards({
   asRecord,
   authorPrBudget: () => authorPrBudget(),
   authorPrBudgetAgeSkipReason,
-  authorPrBudgetCloseEnabled: () => authorPrBudgetCloseEnabled(),
+  authorPrBudgetCloseEnabled,
   ghJson: <T>(args: string[]): T =>
     ghJson<T>(
       exactPublicationPublicReadToken(args, targetRepo()) ? [...args, "--method", "GET"] : args,
@@ -536,19 +543,19 @@ const applyGuards = createApplyGuards({
   login,
   normalizeLabelName,
   obsoleteFixPrAgeSkipReason,
-  obsoleteFixPrCloseEnabled: () => obsoleteFixPrCloseEnabled(),
+  obsoleteFixPrCloseEnabled,
   protectedLabels,
   quoteGitHubSearchTerm: (term) => quoteGitHubSearchTerm(term),
   reportPrRating,
   reportRealBehaviorProof,
   staleVersionBugAgeSkipReason,
-  staleVersionBugCloseEnabled: () => staleVersionBugCloseEnabled(),
+  staleVersionBugCloseEnabled,
   stringOrUndefined,
   targetRepo,
   unconfirmedProductDirectionAgeSkipReason,
-  unconfirmedProductDirectionCloseEnabled: () => unconfirmedProductDirectionCloseEnabled(),
+  unconfirmedProductDirectionCloseEnabled,
   unsponsoredFeatureAgeSkipReason,
-  unsponsoredFeatureCloseEnabled: () => unsponsoredFeatureCloseEnabled(),
+  unsponsoredFeatureCloseEnabled,
 });
 const { resetGuardReadCache } = applyGuards;
 export const {
@@ -594,7 +601,6 @@ const contextHydration = createContextHydration({
 });
 export const {
   authorPrBudget,
-  authorPrBudgetCloseEnabled,
   authorPrBudgetMaxClosesPerRun,
   bulkFilerPolicyInvalidatesCachedReviewForTest,
   bulkFilerThreshold,
@@ -609,7 +615,6 @@ export const {
   extractLatestClawSweeperReviewFromHydrationForTest,
   filterReviewContextCommentsForTest,
   goodFirstIssueLabelOptedOutForTest,
-  obsoleteFixPrCloseEnabled,
   openClosingPullRequestApplyReason,
   previousClawSweeperReviewDigestFromReportForTest,
   referencingMergedPullRequestCandidatesForTest,
@@ -617,9 +622,6 @@ export const {
   relatedGitHubIssueSearchQueryForTest,
   relatedTitleSearchTerms,
   sameAuthorCounterpartApplyReason,
-  staleVersionBugCloseEnabled,
-  unconfirmedProductDirectionCloseEnabled,
-  unsponsoredFeatureCloseEnabled,
   updateBulkFilerDetectedFrontMatterForTest,
 } = contextHydration;
 const {

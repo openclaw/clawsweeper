@@ -29,6 +29,11 @@ import {
   type RepositoryCloseReason,
   type RepositoryItemKind,
 } from "../repository-profiles.js";
+import {
+  authorPrBudgetCloseEnabled,
+  unconfirmedProductDirectionCloseEnabled,
+  unsponsoredFeatureCloseEnabled,
+} from "../policy-flags.js";
 export const REPAIR_INTENTS = new Set([
   "fix_ci",
   "address_review",
@@ -1299,21 +1304,21 @@ export function trustedCloseBlockReason({
   if (
     closeKind === "pull_request" &&
     reason === "unconfirmed_product_direction" &&
-    !unconfirmedProductDirectionTrustedCloseEnabled()
+    !unconfirmedProductDirectionCloseEnabled()
   ) {
     return "unconfirmed product-direction apply policy is disabled";
   }
   if (
     closeKind === "issue" &&
     reason === "unsponsored_feature_request" &&
-    !unsponsoredFeatureTrustedCloseEnabled()
+    !unsponsoredFeatureCloseEnabled()
   ) {
     return "unsponsored feature-request apply policy is disabled";
   }
   if (
     closeKind === "pull_request" &&
     reason === "author_pr_budget_exceeded" &&
-    !authorPrBudgetTrustedCloseEnabled()
+    !authorPrBudgetCloseEnabled()
   ) {
     return "author PR-budget apply policy is disabled";
   }
@@ -1367,23 +1372,6 @@ export function trustedCloseBlockReason({
   if (activityBlock) return activityBlock;
 
   return null;
-}
-
-function envFlagEnabled(value: JsonValue): boolean {
-  if (typeof value !== "string") return false;
-  return ["1", "true", "yes", "on"].includes(value.trim().toLowerCase());
-}
-
-function unconfirmedProductDirectionTrustedCloseEnabled(env: LooseRecord = process.env): boolean {
-  return envFlagEnabled(env.CLAWSWEEPER_UNCONFIRMED_PRODUCT_DIRECTION_CLOSE_ENABLED);
-}
-
-function unsponsoredFeatureTrustedCloseEnabled(env: LooseRecord = process.env): boolean {
-  return envFlagEnabled(env.CLAWSWEEPER_UNSPONSORED_FEATURE_CLOSE_ENABLED);
-}
-
-function authorPrBudgetTrustedCloseEnabled(env: LooseRecord = process.env): boolean {
-  return envFlagEnabled(env.CLAWSWEEPER_AUTHOR_PR_BUDGET_CLOSE_ENABLED);
 }
 
 function trustedCloseReasonSpecificBlockReason({

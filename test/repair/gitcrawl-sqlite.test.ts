@@ -440,8 +440,6 @@ function relatedContextFor(root: string, dbPath: string) {
     login: () => undefined,
     compactIssue: (value: unknown) => value,
     compactPullRequest: (value: unknown) => value,
-    envFlagEnabled: () => false,
-    envFlagDisabled: () => false,
     frontMatterValue: () => undefined,
     reviewSectionValue: () => "",
     effectiveReviewStatus: () => "",

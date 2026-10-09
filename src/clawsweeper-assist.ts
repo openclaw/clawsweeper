@@ -20,6 +20,7 @@ import {
   type AssistRequestBinding,
 } from "./assist-artifact.js";
 import { numberArg, stringArg, type Args } from "./clawsweeper-args.js";
+import { rejectRetiredCodexProfileArgs } from "./command.js";
 import { safeOutputTail } from "./clawsweeper-text.js";
 import type {
   AssistSourceCommentSnapshot,
@@ -499,11 +500,10 @@ export function createAssistWorkflow({
     if (requestedLens !== "auto" && !VISUAL_LENSES.has(requestedLens)) {
       throw new Error("--lens is invalid for assist");
     }
-    if (args.codex_reasoning_effort !== undefined || args.codex_service_tier !== undefined) {
-      throw new Error(
-        "--codex-reasoning-effort and --codex-service-tier are retired for assist; assist uses the fixed medium reasoning, priority service profile.",
-      );
-    }
+    rejectRetiredCodexProfileArgs(
+      args,
+      "assist; assist uses the fixed medium reasoning, priority service profile",
+    );
     const request: AssistRequestBinding = {
       targetRepo: targetRepo(),
       itemNumber,

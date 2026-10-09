@@ -40,8 +40,6 @@ type ApplyCloseExecutionDependencies = Pick<
   | "resetGuardReadCache"
   | "withGuardReadOptions"
   | "unconfirmedProductDirectionApplyBlockReasonSafe"
-  | "unconfirmedProductDirectionCloseEnabled"
-  | "unsponsoredFeatureCloseEnabled"
   | "addIssueLabel"
   | "applyPrCloseCoverageProofReportSection"
   | "closeItem"

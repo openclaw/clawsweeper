@@ -6,7 +6,6 @@ import {
   abandonedPrAgeSkipReason,
   authorPrBudget,
   authorPrBudgetAgeSkipReason,
-  authorPrBudgetCloseEnabled,
   authorPrBudgetMaxClosesPerRun,
   closeReasonApplyAgeSkipReason,
   closeReasonsArg,
@@ -14,7 +13,6 @@ import {
   formatRecentClosedRows,
   issueRecentHumanCommentBlockReasonFromComments,
   obsoleteFixPrAgeSkipReason,
-  obsoleteFixPrCloseEnabled,
   openClosingPullRequestApplyReason,
   referencingMergedPullRequestCandidatesForTest,
   referencingMergedPullRequestsForIssueForTest,
@@ -23,15 +21,19 @@ import {
   stalledUnprovenPrAgeSkipReason,
   stalledUnprovenProofRequestBlockReason,
   staleVersionBugAgeSkipReason,
-  staleVersionBugCloseEnabled,
   staleVersionBugDecisionBlockReason,
   unconfirmedProductDirectionAgeSkipReason,
-  unconfirmedProductDirectionCloseEnabled,
   unsponsoredFeatureAgeSkipReason,
-  unsponsoredFeatureCloseEnabled,
   unsponsoredFeatureDecisionBlockReason,
   validateCloseDecision,
 } from "../dist/clawsweeper.js";
+import {
+  authorPrBudgetCloseEnabled,
+  obsoleteFixPrCloseEnabled,
+  staleVersionBugCloseEnabled,
+  unconfirmedProductDirectionCloseEnabled,
+  unsponsoredFeatureCloseEnabled,
+} from "../dist/policy-flags.js";
 import { closeDecision, git, item, tmpPrefix, withMockGh } from "./helpers.ts";
 
 test("invalid close semantics are rejected", () => {

@@ -85,7 +85,6 @@ export interface CreateApplyDecisionWorkflowDependencies {
     item: Pick<Item, "author" | "authorAssociation" | "createdAt" | "kind" | "labels">,
     markdown: string,
   ) => AuthorPrBudgetApplyGate;
-  authorPrBudgetCloseEnabled: (env?: Record<string, string | undefined>) => boolean;
   authorPrBudgetMaxClosesPerRun: (env?: Record<string, string | undefined>) => number;
   authorPrBudgetPromotion: (
     markdown: string,
@@ -644,12 +643,10 @@ export interface CreateApplyDecisionWorkflowDependencies {
     reviewedUpdatedAt: string | undefined,
     reviewedAt: string | undefined,
   ) => string | null;
-  unconfirmedProductDirectionCloseEnabled: (env?: Record<string, string | undefined>) => boolean;
   unsponsoredFeatureApplyBlockReasonSafe: (
     number: number,
     item: Pick<Item, "createdAt">,
   ) => string | null;
-  unsponsoredFeatureCloseEnabled: (env?: Record<string, string | undefined>) => boolean;
   updateReviewCommentMetadata: (
     markdown: string,
     comment: Record<string, unknown> | undefined,

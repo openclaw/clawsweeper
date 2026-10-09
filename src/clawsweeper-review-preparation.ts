@@ -4,7 +4,7 @@ import { dirname, join, resolve } from "node:path";
 import { boolArg, itemNumbersArg, numberArg, stringArg } from "./clawsweeper-args.js";
 import { DEFAULT_CODEX_MODEL, DEFAULT_REVIEW_CODEX_TIMEOUT_MS } from "./clawsweeper-policy.js";
 import type { GitInfo } from "./clawsweeper-types.js";
-import { UserFacingCommandError } from "./command.js";
+import { rejectRetiredCodexProfileArgs, UserFacingCommandError } from "./command.js";
 import {
   isolateGitHubConfigDir,
   localReviewAdditionalPrompt,
@@ -162,11 +162,10 @@ export function prepareReviewCommand(
     const batchSize = numberArg(args.batch_size, DEFAULT_PLAN_BATCH_SIZE);
     const maxPages = numberArg(args.max_pages, 250);
     const model = stringArg(args.codex_model, DEFAULT_CODEX_MODEL);
-    if (args.codex_reasoning_effort !== undefined || args.codex_service_tier !== undefined) {
-      throw new UserFacingCommandError(
-        "--codex-reasoning-effort and --codex-service-tier are retired for item reviews; author association selects the fixed profile.",
-      );
-    }
+    rejectRetiredCodexProfileArgs(
+      args,
+      "item reviews; author association selects the fixed profile",
+    );
     const sandboxMode = stringArg(args.codex_sandbox, "read-only");
     const timeoutMs = numberArg(args.codex_timeout_ms, DEFAULT_REVIEW_CODEX_TIMEOUT_MS);
     const expectedSourceRevision = stringArg(args.expected_source_revision, "").trim();

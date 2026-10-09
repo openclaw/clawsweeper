@@ -589,8 +589,6 @@ export function createContextHydration(dependencies: CreateContextHydrationDepen
     login,
     compactIssue,
     compactPullRequest,
-    envFlagEnabled,
-    envFlagDisabled,
     frontMatterValue,
     reviewSectionValue,
     effectiveReviewStatus,
@@ -615,46 +613,6 @@ export function createContextHydration(dependencies: CreateContextHydrationDepen
     relatedItemsContext,
     structuralExternalRelationSensitivity,
   } = relatedContext;
-
-  function envFlagEnabled(value: string | undefined): boolean {
-    if (!value) return false;
-    return ["1", "true", "yes", "on"].includes(value.trim().toLowerCase());
-  }
-
-  function envFlagDisabled(value: string | undefined): boolean {
-    if (!value) return false;
-    return ["0", "false", "no", "off", "disabled"].includes(value.trim().toLowerCase());
-  }
-
-  function unconfirmedProductDirectionCloseEnabled(
-    env: Record<string, string | undefined> = process.env,
-  ): boolean {
-    return envFlagEnabled(env.CLAWSWEEPER_UNCONFIRMED_PRODUCT_DIRECTION_CLOSE_ENABLED);
-  }
-
-  function unsponsoredFeatureCloseEnabled(
-    env: Record<string, string | undefined> = process.env,
-  ): boolean {
-    return envFlagEnabled(env.CLAWSWEEPER_UNSPONSORED_FEATURE_CLOSE_ENABLED);
-  }
-
-  function authorPrBudgetCloseEnabled(
-    env: Record<string, string | undefined> = process.env,
-  ): boolean {
-    return envFlagEnabled(env.CLAWSWEEPER_AUTHOR_PR_BUDGET_CLOSE_ENABLED);
-  }
-
-  function staleVersionBugCloseEnabled(
-    env: Record<string, string | undefined> = process.env,
-  ): boolean {
-    return envFlagEnabled(env.CLAWSWEEPER_STALE_VERSION_BUG_CLOSE_ENABLED);
-  }
-
-  function obsoleteFixPrCloseEnabled(
-    env: Record<string, string | undefined> = process.env,
-  ): boolean {
-    return envFlagEnabled(env.CLAWSWEEPER_OBSOLETE_FIX_PR_CLOSE_ENABLED);
-  }
 
   function positiveIntegerEnv(value: string | undefined, fallback: number): number {
     const parsed = Number(value);
@@ -1074,7 +1032,6 @@ export function createContextHydration(dependencies: CreateContextHydrationDepen
   return {
     authorIssueCountInBulkFilerWindow,
     authorPrBudget,
-    authorPrBudgetCloseEnabled,
     authorPrBudgetMaxClosesPerRun,
     bulkFilerPolicyInvalidatesCachedReview,
     bulkFilerPolicyInvalidatesCachedReviewForTest,
@@ -1109,7 +1066,6 @@ export function createContextHydration(dependencies: CreateContextHydrationDepen
     isClawSweeperComment,
     isDigitsOnly,
     liveClawSweeperReviewDigest,
-    obsoleteFixPrCloseEnabled,
     openClosingPullRequestApplyReason,
     pairCloseKey,
     previousClawSweeperReviewDigestFromReport,
@@ -1148,10 +1104,7 @@ export function createContextHydration(dependencies: CreateContextHydrationDepen
       });
     },
     removePullRequestReviewTree,
-    staleVersionBugCloseEnabled,
     structuralExternalRelationSensitivity,
-    unconfirmedProductDirectionCloseEnabled,
-    unsponsoredFeatureCloseEnabled,
     updateBulkFilerDetectedFrontMatter,
     updateBulkFilerDetectedFrontMatterForTest,
   };

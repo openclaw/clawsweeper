@@ -1,6 +1,7 @@
 import type { OversizedPrSourceSnapshot } from "./clawsweeper-oversized-pr-freshness.js";
 import { applyBlockingProtectedLabels, labelNames } from "./clawsweeper-item-policy.js";
 import { emptyMaintainerDecision } from "./decision-packets.js";
+import { envFlagEnabled } from "./policy-flags.js";
 import {
   ACCEPTED_LARGE_LABEL,
   PR_AUTO_CLOSE_EXEMPT_LABEL_NAMES,
@@ -25,7 +26,7 @@ export function maxPrChangedLines(env: NodeJS.ProcessEnv = process.env): number 
 }
 
 export function oversizedPrCloseEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
-  return /^(1|true|yes|on)$/i.test(env.CLAWSWEEPER_OVERSIZED_PR_CLOSE_ENABLED?.trim() ?? "");
+  return envFlagEnabled(env.CLAWSWEEPER_OVERSIZED_PR_CLOSE_ENABLED);
 }
 
 function count(value: unknown): value is number {
