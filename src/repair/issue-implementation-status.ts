@@ -6,7 +6,7 @@ import { pathToFileURL } from "node:url";
 import { escapeRegExp } from "../clawsweeper-markdown.js";
 import { DEFAULT_TRUSTED_BOTS } from "./config.js";
 import { isAllowedMutationActor } from "./comment-router/admission.js";
-import { repoSlug } from "./comment-router/dispatch.js";
+import { issueImplementationSource, repoSlug } from "./comment-router/dispatch.js";
 import { writePayload } from "./comment-router-utils.js";
 import { ghJsonWithRetry, ghPagedWithRetry, ghText } from "./github-cli.js";
 import type { JsonValue, LooseRecord } from "./json-types.js";
@@ -45,9 +45,10 @@ async function main() {
     return;
   }
 
-  const repo = stringArg(args.repo) || String(job?.frontmatter.source_issue_repo ?? "");
+  const jobSource = job ? issueImplementationSource(job.frontmatter) : null;
+  const repo = stringArg(args.repo) || jobSource?.repo || "";
   const itemNumber = positiveInteger(
-    stringArg(args["item-number"]) || String(job?.frontmatter.source_issue_number ?? ""),
+    stringArg(args["item-number"]) || String(jobSource?.number ?? ""),
   );
   const state = stringArg(args.state) || "Queued";
   const detail = stringArg(args.detail) || "ClawSweeper is preparing the implementation worker.";

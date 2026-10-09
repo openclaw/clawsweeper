@@ -47,6 +47,7 @@ import {
   isTrustedStatusCommentAuthor,
   parseTrustedAutomation,
 } from "./comment-router/admission.js";
+import { issueImplementationSource } from "./comment-router/dispatch.js";
 import { needsHumanHoldAllowsAutomergeOptIn } from "./comment-router-core.js";
 import { SELF_HEAL_STATUS_MARKER_INTENT } from "./conflict-self-heal-core.js";
 import {
@@ -2802,11 +2803,7 @@ function enforceFinalRepairContract({ fixArtifact, targetDir, baseSha }: LooseRe
 
 function assertIssueImplementationNotPaused() {
   if (job.frontmatter.source !== "issue_implementation") return;
-  const repo = String(job.frontmatter.source_issue_repo ?? job.frontmatter.repo ?? "").trim();
-  const number = Number(job.frontmatter.source_issue_number);
-  if (!repo || !Number.isInteger(number) || number <= 0) {
-    throw new Error("issue implementation job is missing a valid source issue");
-  }
+  const { repo, number } = issueImplementationSource(job.frontmatter);
   const response = run(
     "gh",
     ["api", `repos/${repo}/issues/${number}`, "--jq", "{state, labels: [.labels[].name]}"],

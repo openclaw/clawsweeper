@@ -474,6 +474,20 @@ ${artifactInstructions}
 `;
 }
 
+// renderIssueImplementationJob writes the source issue keys. Every reader of an
+// issue implementation job gets the source issue from this function.
+export function issueImplementationSource(frontmatter: LooseRecord): {
+  repo: string;
+  number: number;
+} {
+  const repo = String(frontmatter.source_issue_repo ?? "").trim();
+  const number = Number(frontmatter.source_issue_number);
+  if (!repo || !Number.isInteger(number) || number <= 0) {
+    throw new Error("issue implementation job must set source_issue_repo and source_issue_number");
+  }
+  return { repo, number };
+}
+
 export function repairableCheckBlockers(checks: LooseRecord = {}) {
   const externalBlockers = new Set(
     (checks.externalBlockers ?? checks.external_blockers ?? []).map((blocker: JsonValue) =>

@@ -95,7 +95,32 @@ function main() {
   if (command === "prepare") prepare();
   else if (command === "candidates") candidates();
   else if (command === "mark-dispatched") markDispatched();
+  else if (command === "restore-job") restoreJob();
   else die(`unknown command: ${command}`);
+}
+
+// A worker can start after its job file left the state checkout. Write the job
+// again with the same renderer as intake, so that the job keeps the source issue
+// keys. The review context is not available here, so the job has no trigger
+// source and no review prompt.
+function restoreJob() {
+  const targetRepo = stringArg("target-repo").trim();
+  const itemNumber = Number(stringArg("item-number"));
+  const jobPath = stringArg("job-path").trim();
+  if (!targetRepo || !Number.isInteger(itemNumber) || itemNumber <= 0) {
+    die("restore-job requires --target-repo and a positive --item-number");
+  }
+  if (path.normalize(jobPath) !== issueImplementationJobPath(targetRepo, itemNumber)) {
+    die(`restore-job path ${jobPath} is not the job path of ${targetRepo}#${itemNumber}`);
+  }
+  fs.mkdirSync(path.dirname(jobPath), { recursive: true });
+  fs.writeFileSync(
+    jobPath,
+    renderIssueImplementationJob({ repo: targetRepo, issueNumber: itemNumber }),
+    "utf8",
+  );
+  const errors = validateJob(parseJob(jobPath));
+  if (errors.length) die(errors.join("\n"));
 }
 
 function prepare() {

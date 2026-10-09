@@ -459,6 +459,19 @@ jobs:
               --summary "Planning completed; execution runner starting"
           fi
 
+      - name: Publish automatic implementation planning failure status
+        if: ${{ failure() && steps.check_job.outputs.job_exists == '1' && steps.repair_policy.outputs.allowed == '1' }}
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ steps.status_token.outputs.token }}
+          CLAWSWEEPER_STATUS_INGEST_TOKEN: ${{ secrets.CLAWSWEEPER_STATUS_INGEST_TOKEN }}
+        run: |
+          pnpm run repair:policy-run -- "$CLUSTER_JOB_PATH" -- pnpm run repair:issue-implementation-status -- \
+            --job "$CLUSTER_JOB_PATH" \
+            --state "Blocked" \
+            --detail "The worker failed while it planned the implementation. Open the workflow run for the exact blocker." \
+            --run-url "$CLUSTER_RUN_URL"
+
       - name: Record planning failure
         if: ${{ failure() && steps.crabfleet_session.outcome == 'success' }}
         continue-on-error: true
