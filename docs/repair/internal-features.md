@@ -176,7 +176,9 @@ stale-head worker without cancelling the active run's gate cleanup.
 
 ## Creating Implementation PRs
 
-Script: `src/repair/execute-fix-artifact.ts`
+Script: `src/repair/execute-fix-artifact.ts`. Its Git work (target checkout,
+remote branch reads, rebase completion, checkpoint commits, history compaction
+and branch pushes) is in `src/repair/execute-fix/git-ops.ts`.
 
 This is the PR creation and branch repair engine.
 

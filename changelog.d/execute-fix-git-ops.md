@@ -1,0 +1,1 @@
+- Move the fix executor's Git work (target checkout, remote branch lease reads, mechanical rebase completion, checkpoint commits, history compaction and recoverable branch pushes) from `src/repair/execute-fix-artifact.ts` into `src/repair/execute-fix/git-ops.ts`, built over one small run context; repair branches, pushes and reports are unchanged.

@@ -23,11 +23,12 @@ function checkoutFunction(text, materialize = materializeTargetCommitWithIsolati
   assert.ok(start >= 0 && end > start);
   const code = stripTypeScriptTypes(text.slice(start, end));
   // Execute the production control flow with real Git owners; only remote-PR discovery is absent.
-  // Older baselines call run("git", ...); current builds call runGit(...).
-  return new Function("run", "runGit", "materializeTargetCommitWithIsolation", "switchTargetBranchWithPlumbing", "shouldSeedReplacementBranchFromSource", "trustedRemoteBranchSha", "result", "targetValidationTimeoutMs", "runGitNetwork", `${code}; return checkoutRecoverableReplacementBranch;`)(
+  // Older baselines call run("git", ...) and read result.repo; current builds call runGit(...)
+  // and read targetRepo from the git-ops run context.
+  return new Function("run", "runGit", "materializeTargetCommitWithIsolation", "switchTargetBranchWithPlumbing", "shouldSeedReplacementBranchFromSource", "trustedRemoteBranchSha", "result", "targetRepo", "targetValidationTimeoutMs", "runGitNetwork", `${code}; return checkoutRecoverableReplacementBranch;`)(
     (command, args, options) => { assert.equal(command, "git"); return git(options.cwd, ...args); },
     (args, options) => git(options.cwd, ...args),
-    materialize, switchTargetBranchWithPlumbing, () => false, () => remoteLease, { repo: "openclaw/clawsweeper" }, 30000, network,
+    materialize, switchTargetBranchWithPlumbing, () => false, () => remoteLease, { repo: "openclaw/clawsweeper" }, "openclaw/clawsweeper", 30000, network,
   );
 }
 
@@ -66,7 +67,7 @@ function fixture(parent, name, filtered = false) {
 
 export function runReplacementBranchProof(base) {
   const scratch = mkdtempSync(join(tmpdir(), "replacement-branch-proof-"));
-  const candidate = readFileSync(join(root, "dist/repair/execute-fix-artifact.js"), "utf8");
+  const candidate = readFileSync(join(root, "dist/repair/execute-fix/git-ops.js"), "utf8");
   const branch = "clawsweeper/synthetic-replacement";
   const options = targetDir => ({ targetDir, branch, baseBranch: "main", fixArtifact: {} });
   const observations = {};
