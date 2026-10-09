@@ -8,11 +8,11 @@ import type { ItemContext, StalePullRequestReviewHead } from "./clawsweeper-type
 import { renderReviewHistorySection } from "./review-history.js";
 import type { ReviewStructuralPullState } from "./review-structural-cache.js";
 import type { ReviewCommentWorkflowDependencies } from "./clawsweeper-review-comment-dependencies.js";
+import { asRecord } from "./value-coerce.js";
 
 export function createReviewCommentIdentity(dependencies: ReviewCommentWorkflowDependencies) {
   const {
     githubCount,
-    asRecord,
     frontMatterValue,
     stringOrUndefined,
     isIssueAdvisoryLabel,

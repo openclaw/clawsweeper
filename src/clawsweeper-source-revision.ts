@@ -7,13 +7,12 @@ import {
   reviewSourceRevisionLabels,
 } from "./repair/exact-review-guard-labels.js";
 import type { GitInfo, Item, ItemContext } from "./clawsweeper-types.js";
+import { asRecord, login } from "./value-coerce.js";
 
 interface SourceRevisionDependencies {
-  asRecord: (value: unknown) => Record<string, unknown>;
   clawsweeperBotAuthors: ReadonlySet<string>;
   githubCount: (value: unknown) => number | null;
   isClawSweeperComment: (value: unknown) => boolean;
-  login: (value: unknown) => string | undefined;
   normalizeAuthorAssociation: (value: unknown) => string;
   normalizeLabelName: (label: string) => string;
   pullHeadShaFromContext: (context: ItemContext) => string | null;
@@ -22,11 +21,9 @@ interface SourceRevisionDependencies {
 }
 
 export function createSourceRevisionTools({
-  asRecord,
   clawsweeperBotAuthors,
   githubCount,
   isClawSweeperComment,
-  login,
   normalizeAuthorAssociation,
   normalizeLabelName,
   pullHeadShaFromContext,

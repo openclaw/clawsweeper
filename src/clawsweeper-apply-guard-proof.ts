@@ -13,6 +13,7 @@ import type { Item } from "./clawsweeper-types.js";
 import type { ApplyGuardDependencies } from "./clawsweeper-apply-guard-dependencies.js";
 import type { createApplyGuardActivity } from "./clawsweeper-apply-guard-activity.js";
 import type { createApplyGuardPolicy } from "./clawsweeper-apply-guard-policy.js";
+import { asRecord } from "./value-coerce.js";
 
 export function createApplyGuardProof(
   dependencies: ApplyGuardDependencies &
@@ -20,7 +21,6 @@ export function createApplyGuardProof(
     ReturnType<typeof createApplyGuardPolicy>,
 ) {
   const {
-    asRecord,
     ghPaged,
     isOlderThanDays,
     normalizeLabelName,

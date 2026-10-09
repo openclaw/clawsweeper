@@ -1,4 +1,4 @@
-import { recordOrEmpty as objectValue } from "../src/value-coerce.ts";
+import { asRecord as objectValue } from "../src/value-coerce.ts";
 
 export const EXACT_REVIEW_ARTIFACT_RECEIPT_TABLE = "exact_review_artifact_receipts";
 const EXACT_REVIEW_ARTIFACT_CACHE_META_TABLE = "exact_review_artifact_cache_meta";

@@ -3,7 +3,7 @@ import {
   githubEtagCacheKeyFromValue,
   type GithubEtagCacheKey,
 } from "../src/github-etag-cache-contract.ts";
-import { recordOrEmpty as objectValue } from "../src/value-coerce.ts";
+import { asRecord as objectValue } from "../src/value-coerce.ts";
 
 import {
   EXACT_REVIEW_QUEUE_TRACE_HEADER,

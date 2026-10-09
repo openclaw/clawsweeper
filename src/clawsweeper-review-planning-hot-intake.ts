@@ -8,6 +8,7 @@ import { reviewStructuralPullStateDigest } from "./review-structural-cache.js";
 import { HOT_INTAKE_FRESHNESS_MS, hasReviewPolicyMismatch } from "./scheduler-policy.js";
 import type { ReviewPlanningDependencies } from "./clawsweeper-review-planning-dependencies.js";
 import type { createReviewPlanningInventory } from "./clawsweeper-review-planning-inventory.js";
+import { asRecord } from "./value-coerce.js";
 
 export function createReviewPlanningHotIntake(
   dependencies: ReviewPlanningDependencies & ReturnType<typeof createReviewPlanningInventory>,
@@ -18,7 +19,6 @@ export function createReviewPlanningHotIntake(
     ghPaged,
     githubCount,
     itemSourceRevisionSha256,
-    asRecord,
     frontMatterValue,
     stringOrUndefined,
     pullHeadShaFromReport,

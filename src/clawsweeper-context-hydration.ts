@@ -48,6 +48,7 @@ import type {
 import { isGitHubNotFoundError } from "./github-retry.js";
 import { type RepositoryProfile } from "./repository-profiles.js";
 import { compareCodeUnits, stableJson } from "./stable-json.js";
+import { asRecord, login } from "./value-coerce.js";
 
 const REVIEW_TREE_METADATA_JQ =
   '{truncated, tree: (.tree | if type == "array" then map(if type == "object" then {type, sha, size} else . end) else . end)}';
@@ -57,7 +58,6 @@ export function reviewTreeMetadataArgs(path: string): string[] {
 }
 
 interface CreateContextHydrationDependencies {
-  asRecord: (value: unknown) => Record<string, unknown>;
   CLAWSWEEPER_BOT_AUTHORS: Set<string>;
   defaultClosedDir: (profile?: RepositoryProfile) => string;
   defaultItemsDir: (profile?: RepositoryProfile) => string;
@@ -75,7 +75,6 @@ interface CreateContextHydrationDependencies {
   isMarkdownForActiveRepo: (markdown: string, file?: string) => boolean;
   isSafeGitBranchName: (branch: string) => boolean;
   labelNames: (value: unknown) => string[];
-  login: (value: unknown) => string | undefined;
   markdownFiles: (dir: string) => string[];
   normalizeAuthorAssociation: (value: unknown) => string;
   normalizeLabelName: (label: string) => string;
@@ -118,7 +117,6 @@ interface CreateContextHydrationDependencies {
 
 export function createContextHydration(dependencies: CreateContextHydrationDependencies) {
   const {
-    asRecord,
     CLAWSWEEPER_BOT_AUTHORS,
     defaultClosedDir,
     defaultItemsDir,
@@ -136,7 +134,6 @@ export function createContextHydration(dependencies: CreateContextHydrationDepen
     isMarkdownForActiveRepo,
     isSafeGitBranchName,
     labelNames,
-    login,
     markdownFiles,
     normalizeAuthorAssociation,
     normalizeLabelName,
@@ -585,8 +582,6 @@ export function createContextHydration(dependencies: CreateContextHydrationDepen
     gitHubRuntimeBudgetError: GitHubRuntimeBudgetError,
     ghJsonOnce,
     ghJsonEach,
-    asRecord,
-    login,
     compactIssue,
     compactPullRequest,
     envFlagEnabled,

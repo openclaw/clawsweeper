@@ -78,6 +78,7 @@ import {
   writeReviewOutput,
   type ReviewOutputResult,
 } from "./review-output-policy.js";
+import { asRecord } from "./value-coerce.js";
 
 /** Bind verified evidence to its candidate before an ordinary full review. */
 export function reviewCommandProofBinding(sourceAction: unknown, additionalPrompt: string) {
@@ -168,7 +169,6 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
   const {
     actionLedgerFailureDisposition,
     actionLedgerItemKey,
-    asRecord,
     attachFixedPullRequest,
     verifyRegressionProvenance,
     authorIssueCountInBulkFilerWindow,

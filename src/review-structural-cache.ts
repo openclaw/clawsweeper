@@ -1,4 +1,4 @@
-import { recordOrEmpty as asRecord } from "./value-coerce.js";
+import { asRecord } from "./value-coerce.js";
 import { sha256 } from "./content-hash.js";
 import { escapeRegExp } from "./clawsweeper-text.js";
 

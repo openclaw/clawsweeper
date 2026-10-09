@@ -61,8 +61,6 @@ fs.writeFileSync(process.argv[process.argv.indexOf('--output-last-message') + 1]
     };
     const workflow = createAssistWorkflow({
       root,
-      asRecord: (value) =>
-        value && typeof value === "object" ? (value as Record<string, unknown>) : {},
       canPatchReviewComment: () => false,
       collectItemContext: () => ({
         issue: {},

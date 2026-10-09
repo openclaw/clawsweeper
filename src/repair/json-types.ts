@@ -1,3 +1,5 @@
+import { isRecord } from "../value-coerce.js";
+
 export type JsonPrimitive = string | number | boolean | null;
 export type StrictJsonObject = { [key: string]: StrictJsonValue | undefined };
 export type StrictJsonArray = StrictJsonValue[];
@@ -9,7 +11,7 @@ export type JsonArray = JsonValue[];
 export type LooseRecord = JsonValue;
 
 export function isJsonObject(value: unknown): value is JsonObject {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+  return isRecord(value);
 }
 
 export function asJsonObject(value: unknown): JsonObject {

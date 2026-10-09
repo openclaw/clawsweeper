@@ -35,7 +35,7 @@ import {
   ghRetryKind,
   type GitHubCredentialScope,
 } from "./github-retry.js";
-import { recordOrEmpty as objectValue } from "./value-coerce.js";
+import { asRecord as objectValue } from "./value-coerce.js";
 
 type GitHubCommandOptions = {
   cwd?: string;

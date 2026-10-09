@@ -1,8 +1,7 @@
 #!/usr/bin/env node
 import { escapeRegExp } from "../clawsweeper-text.js";
 import { reportAllowsAutomation } from "../manual-publication-policy.js";
-import type { JsonValue, LooseRecord } from "./json-types.js";
-import { asJsonObject as asRecord } from "./json-types.js";
+import { asJsonObject, type JsonValue, type LooseRecord } from "./json-types.js";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
@@ -698,7 +697,7 @@ function eligibilityDecision({
       blockers.push("missing validation commands");
   }
   if (live) {
-    const issue = asRecord(live.issue);
+    const issue = asJsonObject(live.issue);
     const labels = (issue.labels ?? []).map((label: JsonValue) => String(label?.name ?? label));
     if (issue.state !== "open") blockHard(`live issue state is ${issue.state || "unknown"}`);
     if (issue.locked === true) blockHard("live issue is locked");
@@ -743,7 +742,7 @@ function eligibilityDecision({
           ))) ||
       (Array.isArray(live.referencedPrs) &&
         live.referencedPrs.some(
-          (pullRequest: JsonValue) => asRecord(pullRequest).state !== "closed",
+          (pullRequest: JsonValue) => asJsonObject(pullRequest).state !== "closed",
         ))
     ) {
       blockHard("review report references an open or unverifiable pull request");
@@ -783,7 +782,7 @@ function eligibilityDecision({
 
 function writeJob(context: IntakeContext) {
   const fm = context.report.frontmatter;
-  const issue = asRecord(context.live.issue);
+  const issue = asJsonObject(context.live.issue);
   const candidateKind = context.candidateKind;
   const body = renderIssueImplementationJob({
     repo: context.targetRepo,
@@ -1249,7 +1248,7 @@ function verifiedClosedPullReference(
   value: JsonValue,
   reference: { owner: string; name: string; number: number },
 ): boolean {
-  const pullRequest = asRecord(value);
+  const pullRequest = asJsonObject(value);
   if (
     pullRequest.is_pull !== true ||
     pullRequest.state !== "closed" ||
@@ -1328,7 +1327,7 @@ function inspectReferencedPullRequests({
   return referencedPullRequestCoordinates({ targetRepo, itemNumber, references }).flatMap(
     ({ owner, name, number, knownPullRequest }) => {
       try {
-        const item = asRecord(
+        const item = asJsonObject(
           ghJsonWithRetry(
             [
               "api",

@@ -1,4 +1,4 @@
-import { recordOrEmpty as record } from "./value-coerce.js";
+import { asRecord as record } from "./value-coerce.js";
 import { createHash } from "node:crypto";
 
 import { compareCodeUnits, stableJsonCodeUnit } from "./stable-json.js";

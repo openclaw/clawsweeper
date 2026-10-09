@@ -34,11 +34,6 @@ function relatedContextWith(records: Record<string, unknown>) {
     ghJsonOnce: () => {
       throw new Error("unexpected GitHub request");
     },
-    asRecord: (value: unknown) =>
-      value && typeof value === "object" && !Array.isArray(value)
-        ? (value as Record<string, unknown>)
-        : {},
-    login: () => undefined,
     compactIssue: (value: unknown) => value,
     compactPullRequest: (value: unknown) => value,
     envFlagEnabled: () => false,

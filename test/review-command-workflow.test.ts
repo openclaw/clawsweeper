@@ -25,7 +25,6 @@ import { prepareOpenClawCodexSourceForReview } from "../dist/openclaw-codex-sour
 import { reviewStatusForDecision } from "../dist/clawsweeper-report-document.js";
 import { previousClawSweeperReviewFromComment } from "../dist/clawsweeper-review-comments.js";
 import { createContextHydration } from "../dist/clawsweeper-context-hydration.js";
-import { asRecord } from "../dist/clawsweeper-item-policy.js";
 import {
   materializePullRequestReviewTree,
   removePullRequestReviewTree,
@@ -570,7 +569,6 @@ else {
       CodexReviewError: class extends Error {},
       actionLedgerItemKey: (value: { repo: string; number: number }) =>
         `${value.repo}#${value.number}`,
-      asRecord,
       bulkFilerPolicyInvalidatesCachedReview: () => false,
       bulkFilerRepositoryPermission: () =>
         proofMaintainerChange ? "maintain" : writeAccessAuthor ? "write" : null,
@@ -588,7 +586,6 @@ else {
           const hydration = createContextHydration(
             new Proxy(
               {
-                asRecord,
                 stringOrUndefined: (value: unknown) =>
                   typeof value === "string" ? value : undefined,
                 isSafeGitBranchName: (branch: string) => branch === "main",

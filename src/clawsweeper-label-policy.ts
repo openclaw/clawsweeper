@@ -26,9 +26,9 @@ import type {
   SecurityReview,
   SecurityReviewStatus,
 } from "./clawsweeper-types.js";
+import { asRecord } from "./value-coerce.js";
 
 interface LabelPolicyDependencies {
-  asRecord: (value: unknown) => Record<string, unknown>;
   frontMatterValue: (markdown: string, key: string) => string | undefined;
   isAutomationReportAuthor: (author: string | undefined) => boolean;
   mergeRiskOptionsFromReport: (markdown: string) => MergeRiskOption[];
@@ -40,7 +40,6 @@ interface LabelPolicyDependencies {
 }
 
 export function createLabelPolicy({
-  asRecord,
   frontMatterValue,
   isAutomationReportAuthor,
   mergeRiskOptionsFromReport,

@@ -1,4 +1,4 @@
-import { recordOrEmpty, requireRecord as record } from "./value-coerce.js";
+import { asRecord, requireRecord as record } from "./value-coerce.js";
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -210,13 +210,13 @@ export function repositoryManagedPullRequestCloseReason(
     !["openclaw-mantis[bot]", "app/openclaw-mantis"].includes(item.author.toLowerCase())
   )
     return null;
-  const pull = recordOrEmpty(readPullRequest());
-  const head = recordOrEmpty(pull.head);
-  const base = recordOrEmpty(pull.base);
+  const pull = asRecord(readPullRequest());
+  const head = asRecord(pull.head);
+  const base = asRecord(pull.base);
   if (
-    recordOrEmpty(pull.user).login !== "openclaw-mantis[bot]" ||
-    recordOrEmpty(head.repo).full_name !== DEFAULT_TARGET_REPO ||
-    recordOrEmpty(base.repo).full_name !== DEFAULT_TARGET_REPO ||
+    asRecord(pull.user).login !== "openclaw-mantis[bot]" ||
+    asRecord(head.repo).full_name !== DEFAULT_TARGET_REPO ||
+    asRecord(base.repo).full_name !== DEFAULT_TARGET_REPO ||
     base.ref !== "main" ||
     typeof head.ref !== "string" ||
     !["automation/native-app-locale-refresh", "automation/control-ui-locale-refresh"].includes(

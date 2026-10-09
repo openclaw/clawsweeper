@@ -29,11 +29,11 @@ import {
   isLockedConversationCommentError,
 } from "./github-retry.js";
 import { stableJson } from "./stable-json.js";
+import { asRecord } from "./value-coerce.js";
 
 type ApplyCloseExecutionDependencies = Pick<
   CreateApplyDecisionWorkflowDependencies,
   | "CLAWSWEEPER_BOT_AUTHORS"
-  | "asRecord"
   | "abandonedPrApplyBlockReasonSafe"
   | "applyAuthorPrBudgetStateToReport"
   | "issueRecentHumanCommentBlockReasonFromComments"
@@ -185,7 +185,6 @@ export function executeApplyClose(
 ): ApplyCloseFlow {
   const {
     CLAWSWEEPER_BOT_AUTHORS,
-    asRecord,
     addIssueLabel,
     applyPrCloseCoverageProofReportSection,
     closeItem,

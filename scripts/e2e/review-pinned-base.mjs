@@ -83,7 +83,6 @@ try {
     const context = createContextHydration(
       new Proxy(
         {
-          asRecord: (value) => (value && typeof value === "object" ? value : {}),
           stringOrUndefined: (value) => (typeof value === "string" ? value : undefined),
           isSafeGitBranchName: (branch) => branch === "main",
           targetRepo: () => "fixture/repository",

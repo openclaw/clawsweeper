@@ -10,7 +10,6 @@ function asRecord(value) {
 
 function createGuards({ ghJson = () => ({}), ghPaged = () => [] } = {}) {
   return createApplyGuards({
-    asRecord,
     authorPrBudget: () => 10,
     authorPrBudgetAgeSkipReason: () => null,
     authorPrBudgetCloseEnabled: () => true,
@@ -27,10 +26,6 @@ function createGuards({ ghJson = () => ({}), ghPaged = () => [] } = {}) {
             return typeof name === "string" ? [name] : [];
           })
         : [],
-    login: (value) => {
-      const login = asRecord(value).login;
-      return typeof login === "string" ? login : undefined;
-    },
     normalizeLabelName: (label) => label.trim().toLowerCase(),
     obsoleteFixPrAgeSkipReason: () => null,
     obsoleteFixPrCloseEnabled: () => true,

@@ -9,7 +9,7 @@ import {
   probeHostedPublicTarget,
   type HostedTargetAdmission,
 } from "../hosted-target-admission.js";
-import type { JsonValue, LooseRecord } from "./json-types.js";
+import { asJsonObject, type JsonValue, type LooseRecord } from "./json-types.js";
 import {
   isAssistPublicationCommentBody,
   isProofNudgeCommentBody,
@@ -268,9 +268,9 @@ export function classifyIssueCommentWebhook({
   if (!["created", "edited"].includes(String(payload.action ?? ""))) {
     return { accepted: false, reason: "unsupported action" };
   }
-  const comment = asRecord(payload.comment);
-  const issue = asRecord(payload.issue);
-  const repo = asRecord(payload.repository);
+  const comment = asJsonObject(payload.comment);
+  const issue = asJsonObject(payload.issue);
+  const repo = asJsonObject(payload.repository);
   const association = String(comment.author_association ?? "").toUpperCase();
   if (isAssistPublicationCommentBody(String(comment.body ?? ""))) {
     return { accepted: false, reason: "assist publication comment" };
@@ -309,7 +309,7 @@ export function classifyIssueCommentWebhook({
   if (staleReason) return { accepted: false, reason: staleReason };
   const itemNumber = Number(issue.number);
   const commentId = Number(comment.id);
-  const installationId = Number(asRecord(payload.installation).id);
+  const installationId = Number(asJsonObject(payload.installation).id);
   if (!Number.isInteger(itemNumber) || itemNumber <= 0) {
     return { accepted: false, reason: "missing issue number" };
   }
@@ -332,7 +332,7 @@ export function classifyIssueCommentWebhook({
     installationId,
     sourceAction: String(payload.action ?? "created"),
     commentBody: String(comment.body ?? ""),
-    commentAuthor: String(asRecord(comment.user).login ?? ""),
+    commentAuthor: String(asJsonObject(comment.user).login ?? ""),
     commentUrl: String(comment.html_url ?? ""),
     maintainerAuthorized: ALLOWED_ASSOCIATIONS.has(association),
     ...(commentUpdatedAt
@@ -351,12 +351,12 @@ function exactWebhookTimestamp(value: JsonValue) {
 
 export function classifyItemWebhook({ event, payload }: { event: string; payload: LooseRecord }) {
   const action = String(payload.action ?? "");
-  const repo = asRecord(payload.repository);
+  const repo = asJsonObject(payload.repository);
   if (!isEligibleRepositoryPayload(repo))
     return { accepted: false, reason: "repository not eligible" };
   const targetRepo = String(repo.full_name ?? "");
   const targetBranch = targetDefaultBranch(repo);
-  const installationId = Number(asRecord(payload.installation).id);
+  const installationId = Number(asJsonObject(payload.installation).id);
   if (!Number.isInteger(installationId) || installationId <= 0) {
     return { accepted: false, reason: "missing installation id" };
   }
@@ -366,7 +366,7 @@ export function classifyItemWebhook({ event, payload }: { event: string; payload
     if (action === "unlabeled" && !isCloseGuardLabel(payload.label)) {
       return { accepted: false, reason: "unsupported action" };
     }
-    const issue = asRecord(payload.issue);
+    const issue = asJsonObject(payload.issue);
     const itemNumber = Number(issue.number);
     if (!Number.isInteger(itemNumber) || itemNumber <= 0) {
       return { accepted: false, reason: "missing issue number" };
@@ -394,15 +394,15 @@ export function classifyItemWebhook({ event, payload }: { event: string; payload
     if (action === "unlabeled" && !isCloseGuardLabel(payload.label)) {
       return { accepted: false, reason: "unsupported action" };
     }
-    const pull = asRecord(payload.pull_request);
+    const pull = asJsonObject(payload.pull_request);
     const itemNumber = Number(pull.number);
     if (!Number.isInteger(itemNumber) || itemNumber <= 0) {
       return { accepted: false, reason: "missing pull request number" };
     }
-    const sourceHeadSha = String(asRecord(pull.head).sha ?? "")
+    const sourceHeadSha = String(asJsonObject(pull.head).sha ?? "")
       .trim()
       .toLowerCase();
-    const sourceBaseSha = String(asRecord(pull.base).sha ?? "")
+    const sourceBaseSha = String(asJsonObject(pull.base).sha ?? "")
       .trim()
       .toLowerCase();
     const sourceContentRevision = itemContentRevision(pull);
@@ -465,7 +465,7 @@ function sourceRevisionMaterial(source: LooseRecord) {
 }
 
 function isCloseGuardLabel(value: JsonValue) {
-  const label = String(asRecord(value).name ?? "")
+  const label = String(asJsonObject(value).name ?? "")
     .trim()
     .toLowerCase();
   return isExactReviewCloseGuardLabel(label);
@@ -509,8 +509,8 @@ function isAuthorReadOnlyWebhookCommand({
 }) {
   const parsed = parseCommand(String(comment.body ?? ""));
   if (parsed?.intent !== "re_review") return false;
-  const commentAuthor = normalizedLogin(asRecord(comment.user).login);
-  const issueAuthor = normalizedLogin(asRecord(issue.user).login);
+  const commentAuthor = normalizedLogin(asJsonObject(comment.user).login);
+  const issueAuthor = normalizedLogin(asJsonObject(issue.user).login);
   return Boolean(commentAuthor && issueAuthor && commentAuthor === issueAuthor);
 }
 
@@ -794,10 +794,10 @@ async function listFastAckComments({
     });
     if (!Array.isArray(response)) return comments;
     for (const comment of response) {
-      const record = asRecord(comment);
+      const record = asJsonObject(comment);
       if (
         String(record.body ?? "").includes(marker) &&
-        isClawsweeperWebhookSender(asRecord(record.user))
+        isClawsweeperWebhookSender(asJsonObject(record.user))
       ) {
         comments.push(record);
       }
@@ -977,8 +977,4 @@ function base64Url(value: string | Buffer) {
 
 function repoName(targetRepo: string) {
   return targetRepo.split("/")[1] ?? "";
-}
-
-function asRecord(value: JsonValue): LooseRecord {
-  return value && typeof value === "object" && !Array.isArray(value) ? value : {};
 }

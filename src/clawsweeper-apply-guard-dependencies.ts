@@ -1,7 +1,6 @@
 import type { Item, PrRating, RealBehaviorProof } from "./clawsweeper-types.js";
 
 export interface ApplyGuardDependencies {
-  asRecord: (value: unknown) => Record<string, unknown>;
   authorPrBudget: () => number;
   authorPrBudgetAgeSkipReason: (item: Pick<Item, "createdAt">, now?: number) => string | null;
   authorPrBudgetCloseEnabled: () => boolean;
@@ -11,7 +10,6 @@ export interface ApplyGuardDependencies {
   isMaintainerAuthored: (item: Pick<Item, "authorAssociation">) => boolean;
   isOlderThanDays: (isoTimestamp: string, days: number, now?: number) => boolean;
   labelNames: (value: unknown) => string[];
-  login: (value: unknown) => string | undefined;
   normalizeLabelName: (label: string) => string;
   obsoleteFixPrAgeSkipReason: (item: Pick<Item, "createdAt">, now?: number) => string | null;
   obsoleteFixPrCloseEnabled: () => boolean;

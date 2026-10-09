@@ -4,12 +4,11 @@ import { createContextHydration } from "../dist/clawsweeper-context-hydration.js
 import { createItemContext } from "../dist/clawsweeper-item-context.js";
 import { createSourceRevisionTools } from "../dist/clawsweeper-source-revision.js";
 import {
-  asRecord,
   labelNames,
-  login,
   normalizeAuthorAssociation,
   normalizeLabelName,
 } from "../dist/clawsweeper-item-policy.js";
+import { asRecord, login } from "../dist/value-coerce.js";
 import type { PrimaryBodyContext } from "../dist/clawsweeper-primary-body.js";
 import type { Item, ItemKind } from "../dist/clawsweeper-types.js";
 import { item } from "./helpers.ts";
@@ -70,11 +69,9 @@ const isClawSweeperComment = (value: unknown) =>
   CLAWSWEEPER_BOT_AUTHORS.has((login(asRecord(value).user) ?? "").toLowerCase());
 
 export const sourceTools = createSourceRevisionTools({
-  asRecord,
   clawsweeperBotAuthors: CLAWSWEEPER_BOT_AUTHORS,
   githubCount,
   isClawSweeperComment,
-  login,
   normalizeAuthorAssociation,
   normalizeLabelName,
   pullHeadShaFromContext: (context) =>
@@ -91,10 +88,8 @@ function unavailable(): never {
 export const hydration = createContextHydration(
   new Proxy(
     {
-      asRecord,
       CLAWSWEEPER_BOT_AUTHORS,
       labelNames,
-      login,
       normalizeAuthorAssociation,
       normalizeLabelName,
       stringOrUndefined,
@@ -150,7 +145,6 @@ export function hydratePrimaryBody(
   const { collectItemContext } = createItemContext({
     ...hydration,
     ...sourceTools,
-    asRecord,
     sha256,
     stringOrUndefined,
     targetRepo: () => target.repo,

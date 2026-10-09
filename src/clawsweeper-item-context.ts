@@ -20,9 +20,9 @@ import {
   type LiveReadGeneration,
   type LiveReadOptions,
 } from "./live-read-generation.js";
+import { asRecord } from "./value-coerce.js";
 
 interface CreateItemContextDependencies {
-  asRecord: (value: unknown) => Record<string, unknown>;
   closingPullRequestsForIssue: (number: number) => unknown[];
   compactComment: (value: unknown) => unknown;
   compactIssue: (value: unknown) => unknown;
@@ -101,7 +101,6 @@ interface CreateItemContextDependencies {
 
 export function createItemContext(dependencies: CreateItemContextDependencies) {
   const {
-    asRecord,
     closingPullRequestsForIssue,
     compactComment,
     compactIssue,

@@ -18,6 +18,7 @@ import {
 } from "./clawsweeper-regression-provenance.js";
 import { GitHubRateLimitError, isGitHubNotFoundError } from "./github-retry.js";
 import type { RepositoryProfile } from "./repository-profiles.js";
+import { asRecord } from "./value-coerce.js";
 
 export const MAX_IMPLEMENTATION_LINKED_ISSUE_REFERENCES = 5;
 
@@ -236,7 +237,6 @@ interface StatusContextDependencies {
   markdownRepository: (markdown: string, file?: string) => string;
   ghJson: <T>(args: string[]) => T;
   GitHubRuntimeBudgetError: new (reason: string) => Error & { readonly reason: string };
-  asRecord: (value: unknown) => Record<string, unknown>;
   frontMatterValue: (markdown: string, key: string) => string | undefined;
   stringOrUndefined: (value: unknown) => string | undefined;
   numberOrUndefined: (value: unknown) => number | undefined;
@@ -256,7 +256,6 @@ export function createStatusContext({
   markdownRepository,
   ghJson,
   GitHubRuntimeBudgetError,
-  asRecord,
   frontMatterValue,
   stringOrUndefined,
   numberOrUndefined,

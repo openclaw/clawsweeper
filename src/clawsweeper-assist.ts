@@ -30,10 +30,10 @@ import type {
 import { codexLoginConfig, PUBLIC_CODEX_MODEL } from "./codex-env.js";
 import type { RepositoryProfile } from "./repository-profiles.js";
 import { stableJson } from "./stable-json.js";
+import { asRecord } from "./value-coerce.js";
 
 interface AssistWorkflowDependencies {
   root: string;
-  asRecord: (value: unknown) => Record<string, unknown>;
   canPatchReviewComment: (comment: Record<string, unknown> | undefined) => boolean;
   collectItemContext: (item: Item) => ItemContext;
   ensureDir: (path: string) => void;
@@ -50,7 +50,6 @@ interface AssistWorkflowDependencies {
 
 export function createAssistWorkflow({
   root,
-  asRecord,
   canPatchReviewComment,
   collectItemContext,
   ensureDir,

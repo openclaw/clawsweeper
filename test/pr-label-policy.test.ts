@@ -77,7 +77,6 @@ for (const proofStatus of ["missing", "not_applicable"] as const) {
             : []),
         ],
       }),
-      asRecord: (value) => value as Record<string, unknown>,
       isAutomationReportAuthor: () => false,
       stringOrUndefined: (value) => (typeof value === "string" ? value : undefined),
       timestampMs: (value) => (value ? Date.parse(value) : null),
@@ -193,7 +192,6 @@ test("report-based status selection follows the model proof assessment for exter
   });
   const policy = createLabelPolicy({
     ...metadata,
-    asRecord: (value) => value as Record<string, unknown>,
     isAutomationReportAuthor: () => false,
     mergeRiskOptionsFromReport: () => [],
     pullRequestReviewReadinessFromReport: () => readyReadiness,
@@ -395,7 +393,6 @@ test("historical receipt failures route to the proof owner without erasing indep
     }),
   });
   const policy = createLabelPolicy({
-    asRecord: (value) => value as Record<string, unknown>,
     frontMatterValue: (_markdown, key) =>
       key === "type"
         ? "pull_request"

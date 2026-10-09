@@ -35,7 +35,6 @@ import { writeExactReviewFailureDiagnostics } from "../dist/clawsweeper-review-f
 import { createContextHydration } from "../dist/clawsweeper-context-hydration.js";
 import { createGitHubRuntime } from "../dist/clawsweeper-github-runtime.js";
 import { createGitHubExecution } from "../dist/clawsweeper-github-execution.js";
-import { asRecord } from "../dist/clawsweeper-item-policy.js";
 import { createReviewRuntime } from "../dist/clawsweeper-review-runtime.js";
 import { main, reviewPolicyHashForTest } from "../dist/clawsweeper-runtime.js";
 import { runText } from "../dist/command.js";
@@ -630,7 +629,6 @@ function reviewRuntime(releaseTag?: string) {
     ghJson: <T>() => (releaseTag ? [{ tagName: releaseTag, isLatest: true }] : []) as T,
     evidenceEntry: unavailable,
     untrustedCodexEnv: unavailable,
-    asRecord: unavailable,
     defaultRootCauseCluster: unavailable,
     parseDecision: unavailable,
     ensureDir: unavailable,
@@ -882,7 +880,6 @@ test("optional pinned-base blobs cannot suppress unsettled acquisition", (t) => 
   const context = createContextHydration(
     new Proxy(
       {
-        asRecord,
         stringOrUndefined: (value: unknown) => (typeof value === "string" ? value : undefined),
         isSafeGitBranchName: (branch: string) => branch === "main",
         targetRepo: () => "fixture/repository",
@@ -2437,7 +2434,6 @@ test("introduced blob hydration does not start metadata work after its deadline"
   const context = createContextHydration(
     new Proxy(
       {
-        asRecord,
         stringOrUndefined: (value: unknown) => (typeof value === "string" ? value : undefined),
         isSafeGitBranchName: (branch: string) => branch === "main",
         targetRepo: () => "fixture/repository",
@@ -2484,7 +2480,6 @@ test("source preparation reports unavailable historical blobs before restricted 
   const { hydratePullRequestReviewSource } = createContextHydration(
     new Proxy(
       {
-        asRecord,
         stringOrUndefined: (value: unknown) => (typeof value === "string" ? value : undefined),
         isSafeGitBranchName: (branch: string) => branch === "main",
         targetRepo: () => "fixture/repository",
@@ -2676,7 +2671,6 @@ test("review checkout preserves large tree metadata within the GitHub CLI captur
   const context = createContextHydration(
     new Proxy(
       {
-        asRecord,
         targetRepo: () => "fixture/repository",
         ghJsonOnce: (args: string[], timeoutMs: number) => {
           const output = runtime.ghOnce(args, timeoutMs);

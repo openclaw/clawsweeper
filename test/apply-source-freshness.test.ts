@@ -136,7 +136,6 @@ function sourceFreshness(options: {
     };
   return createApplySourceFreshness(
     {
-      asRecord: record,
       CLAWSWEEPER_BOT_AUTHORS: new Set(["clawsweeper", "clawsweeper[bot]"]),
       commentBody: (comment: unknown) => record(comment).body as string | undefined,
       commentId: (comment: unknown) => record(comment).id as number | undefined,
@@ -150,7 +149,6 @@ function sourceFreshness(options: {
       frontMatterValue: (markdown: string, key: string) =>
         markdown.match(new RegExp(`^${key}: (.*)$`, "m"))?.[1],
       itemSnapshotHash: () => "snapshot",
-      login: (user: unknown) => record(user).login as string | undefined,
       recordedLabelSyncCoversUpdate: () => false,
       reviewStartLeaseOwner: () => null,
       stringOrUndefined: (value: unknown) => (typeof value === "string" ? value : undefined),

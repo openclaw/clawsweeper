@@ -8,12 +8,12 @@ import {
 import type { GitHubUser, Item } from "./clawsweeper-types.js";
 import type { ApplyGuardDependencies } from "./clawsweeper-apply-guard-dependencies.js";
 import type { createApplyGuardActivity } from "./clawsweeper-apply-guard-activity.js";
+import { asRecord } from "./value-coerce.js";
 
 export function createApplyGuardPolicy(
   dependencies: ApplyGuardDependencies & ReturnType<typeof createApplyGuardActivity>,
 ) {
   const {
-    asRecord,
     ghJson,
     ghPaged,
     labelNames,

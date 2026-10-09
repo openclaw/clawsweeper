@@ -2,6 +2,7 @@ import {
   isMaintainerAuthorAssociation,
   isWriteAccessRepositoryPermission,
 } from "./clawsweeper-item-policy.js";
+import { asRecord } from "./value-coerce.js";
 
 export interface CodexItemProfile {
   reasoningEffort: string;
@@ -58,10 +59,4 @@ function normalizeItemRef(value: string): string {
 
 function asList(value: unknown): unknown[] {
   return Array.isArray(value) ? value : [value];
-}
-
-function asRecord(value: unknown): Record<string, unknown> {
-  return value && typeof value === "object" && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : {};
 }

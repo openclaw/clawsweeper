@@ -23,6 +23,7 @@ import { normalizeRepo } from "./repository-profiles.js";
 import { trailingHtmlComments, validReviewLeaseIdentity } from "./review-comment-markers.js";
 import { neutralizeReviewControlMarkers } from "./review-history.js";
 import type { ReviewCommentWorkflowDependencies } from "./clawsweeper-review-comment-dependencies.js";
+import { asRecord } from "./value-coerce.js";
 
 export function normalizeNoopReviewMarkerMetadata(body: string): string {
   // A completed re-review must publish its freshness even when the verdict is unchanged.
@@ -66,7 +67,6 @@ export function createReviewCommentState(
     targetRepo,
     ghPaged,
     reviewCommentBodyDigest,
-    asRecord,
     parseGitHubItemRef,
     frontMatterValue,
     timestampMs,

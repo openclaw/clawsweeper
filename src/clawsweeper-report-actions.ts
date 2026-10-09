@@ -12,6 +12,7 @@ import type {
 import type { CreateReportRenderingDependencies } from "./clawsweeper-report-rendering-dependencies.js";
 import type { createReportContextRendering } from "./clawsweeper-report-context.js";
 import type { createReportCommentHelpers } from "./clawsweeper-report-comment-helpers.js";
+import { asRecord } from "./value-coerce.js";
 
 export function createReportActionRendering(
   dependencies: CreateReportRenderingDependencies &
@@ -20,7 +21,6 @@ export function createReportActionRendering(
 ) {
   const {
     ROOT,
-    asRecord,
     collectItemContext,
     ghJson,
     ghObservedMutationCommand,

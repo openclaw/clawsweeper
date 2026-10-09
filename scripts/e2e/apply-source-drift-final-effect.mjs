@@ -784,16 +784,15 @@ async function runScenario({
 async function reviewIdentity(runtime, state) {
   const load = (file) => import(pathToFileURL(path.join(runtime, "dist", file)).href);
   const { createSourceRevisionTools } = await load("clawsweeper-source-revision.js");
-  const { asRecord, login, normalizeLabelName } = await load("clawsweeper-item-policy.js");
+  const { normalizeLabelName } = await load("clawsweeper-item-policy.js");
+  const { asRecord, login } = await load("value-coerce.js");
   const { reviewedPrActivityCursorsV2FromGraphql } = await load("review-activity-cursor.js");
   const { stableJson } = await load("stable-json.js");
   const bots = new Set(["clawsweeper", "clawsweeper[bot]", "openclaw-clawsweeper[bot]"]);
   const tools = createSourceRevisionTools({
-    asRecord,
     clawsweeperBotAuthors: bots,
     githubCount: (value) => (Number.isSafeInteger(value) && value >= 0 ? value : null),
     isClawSweeperComment: (value) => bots.has((login(asRecord(value).user) ?? "").toLowerCase()),
-    login,
     normalizeAuthorAssociation: (value) => String(value ?? "").toUpperCase(),
     normalizeLabelName,
     pullHeadShaFromContext: () => null,

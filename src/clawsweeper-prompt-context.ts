@@ -1,4 +1,4 @@
-import { asRecord } from "./clawsweeper-item-policy.js";
+import { asRecord } from "./value-coerce.js";
 import { primaryBodySourceSha256 } from "./clawsweeper-primary-body.js";
 import type { ItemContext } from "./clawsweeper-types.js";
 

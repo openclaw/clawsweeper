@@ -27,8 +27,6 @@ const leaseComment = {
 
 function leaseGuards(calls: string[], activityBlock: string | null = null) {
   return createApplyLeaseGuards({
-    asRecord: (value: unknown) =>
-      value && typeof value === "object" && !Array.isArray(value) ? value : {},
     canonicalBoundStaleReviewReason: () => {
       calls.push("canonical");
       return null;

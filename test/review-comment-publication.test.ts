@@ -121,7 +121,6 @@ function reviewCommentState(comments: () => Record<string, unknown>[]) {
     targetRepo: () => "openclaw/openclaw",
     ghPaged: comments,
     reviewCommentBodyDigest: sha256,
-    asRecord: (value: unknown) => value as Record<string, unknown>,
     parseGitHubItemRef: () => ({ repo: "openclaw/openclaw", kind: "pull_request", number: 1 }),
     frontMatterValue: () => undefined,
     timestampMs: (value: string | undefined) => {
@@ -149,7 +148,6 @@ function reviewCommentPublication(options: {
     sha256,
     ghPaged: options.comments,
     reviewCommentBodyDigest: sha256,
-    asRecord: (value: unknown) => value as Record<string, unknown>,
     ensureDir: (path: string) => mkdirSync(path, { recursive: true }),
     frontMatterValue: () => undefined,
     replaceFrontMatterValue: (markdown: string) => markdown,
@@ -339,7 +337,6 @@ test("oversized durable review publication replaces ready state with a verified 
       sha256,
       ghPaged: () => [],
       reviewCommentBodyDigest: sha256,
-      asRecord: (value: unknown) => value as Record<string, unknown>,
       ensureDir: (path: string) => mkdirSync(path, { recursive: true }),
       frontMatterValue: () => undefined,
       replaceFrontMatterValue: (markdown: string) => markdown,
@@ -638,7 +635,6 @@ test("newest exact durable comment wins over older trusted duplicates", () => {
     targetRepo: () => "openclaw/openclaw",
     ghPaged: () => [],
     reviewCommentBodyDigest: sha256,
-    asRecord: (value: unknown) => value as Record<string, unknown>,
     parseGitHubItemRef: () => ({ repo: "openclaw/openclaw", kind: "pull_request", number: 1 }),
     frontMatterValue: () => undefined,
     timestampMs: (value: string | undefined) => {

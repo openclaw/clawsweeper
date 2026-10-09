@@ -2,8 +2,15 @@ export function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-export function recordOrEmpty(value: unknown): Record<string, unknown> {
+/** Return the value when it is a plain object (not an array), else an empty record. */
+export function asRecord(value: unknown): Record<string, unknown> {
   return isRecord(value) ? value : {};
+}
+
+/** Return the `login` string of a GitHub user object, if it has one. */
+export function login(value: unknown): string | undefined {
+  const name = asRecord(value).login;
+  return typeof name === "string" ? name : undefined;
 }
 
 export function stringOrEmpty(value: unknown): string {

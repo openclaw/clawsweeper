@@ -13,6 +13,7 @@ import {
   UNSPONSORED_FEATURE_MIN_AGE_DAYS,
 } from "./clawsweeper-policy.js";
 import type { ApplyKind, CloseReason, Item } from "./clawsweeper-types.js";
+import { asRecord } from "./value-coerce.js";
 
 const MAINTAINER_AUTHOR_ASSOCIATIONS = new Set(["OWNER", "MEMBER", "COLLABORATOR"]);
 
@@ -25,16 +26,6 @@ const BULK_FILER_EXEMPT_AUTHOR_ASSOCIATIONS = new Set(["OWNER", "MEMBER"]);
 const BULK_FILER_EXEMPT_REPOSITORY_PERMISSIONS = new Set(["admin", "maintain"]);
 
 const WRITE_ACCESS_REPOSITORY_PERMISSIONS = new Set(["admin", "maintain", "write"]);
-
-export function asRecord(value: unknown): Record<string, unknown> {
-  return value && typeof value === "object" ? (value as Record<string, unknown>) : {};
-}
-
-export function login(value: unknown): string | undefined {
-  const user = asRecord(value);
-  const name = user.login;
-  return typeof name === "string" ? name : undefined;
-}
 
 export function labelNames(value: unknown): string[] {
   if (!Array.isArray(value)) return [];

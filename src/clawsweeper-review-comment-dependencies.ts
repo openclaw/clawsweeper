@@ -37,7 +37,6 @@ export interface ReviewCommentWorkflowDependencies {
   githubCount: ReturnType<typeof createGitHubContext>["githubCount"];
   ghPaged: ReturnType<typeof createGitHubContext>["ghPaged"];
   reviewCommentBodyDigest: (body: string) => string;
-  asRecord: (value: unknown) => Record<string, unknown>;
   parseGitHubItemRef: ReturnType<typeof createDecisionParser>["parseGitHubItemRef"];
   reportSecurityReview: (markdown: string) => SecurityReview;
   reportReviewFindings: (markdown: string) => ReviewFinding[];

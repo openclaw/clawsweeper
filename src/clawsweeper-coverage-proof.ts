@@ -30,6 +30,7 @@ import type { CreateReportOrchestrationDependencies } from "./clawsweeper-report
 import type { createReportOrchestrationFoundation } from "./clawsweeper-orchestration-foundation.js";
 import type { createPullRequestPromotionFacts } from "./clawsweeper-promotion-facts.js";
 import type { createReportRendering } from "./clawsweeper-report-rendering.js";
+import { asRecord } from "./value-coerce.js";
 
 export function createPullRequestCoverageProof(
   dependencies: CreateReportOrchestrationDependencies &
@@ -42,7 +43,6 @@ export function createPullRequestCoverageProof(
 ) {
   const {
     GitHubRuntimeBudgetError,
-    asRecord,
     canonicalPullRequestNumbersFromReport,
     defaultRootCauseCluster,
     filterReviewContextComments,

@@ -17,13 +17,13 @@ import {
 import { normalizeRepo } from "./repository-profiles.js";
 import type { CreateReportOrchestrationDependencies } from "./clawsweeper-report-orchestration-dependencies.js";
 import type { createReportRendering } from "./clawsweeper-report-rendering.js";
+import { asRecord } from "./value-coerce.js";
 
 export function createReportOrchestrationFoundation(
   dependencies: CreateReportOrchestrationDependencies &
     Pick<ReturnType<typeof createReportRendering>, "collapsedDetailsBlock">,
 ) {
   const {
-    asRecord,
     collapsedDetailsBlock,
     frontMatterBoolean,
     frontMatterJsonArray,

@@ -86,7 +86,6 @@ for (const source of [
       const stop = new Error("CONTROL_REACHED_NORMAL_HYDRATION");
       const base = {
         activeReviewMutationRunner: null,
-        asRecord: (value: unknown) => (value && typeof value === "object" ? value : {}),
         repoFromArgs: () => repositoryProfileFor(candidate.repo),
         targetRepo: () => candidate.repo,
         localExactReviewItem: () => false,

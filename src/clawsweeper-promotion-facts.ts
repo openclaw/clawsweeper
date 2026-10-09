@@ -37,6 +37,7 @@ import {
 import type { CreateReportOrchestrationDependencies } from "./clawsweeper-report-orchestration-dependencies.js";
 import type { createReportOrchestrationFoundation } from "./clawsweeper-orchestration-foundation.js";
 import type { createReportRendering } from "./clawsweeper-report-rendering.js";
+import { asRecord } from "./value-coerce.js";
 
 export function createPullRequestPromotionFacts(
   dependencies: CreateReportOrchestrationDependencies &
@@ -44,7 +45,6 @@ export function createPullRequestPromotionFacts(
     Pick<ReturnType<typeof createReportRendering>, "renderCloseCommentFromReport">,
 ) {
   const {
-    asRecord,
     defaultAgentsPolicyStatus,
     defaultRootCauseCluster,
     eventTimestampMs,

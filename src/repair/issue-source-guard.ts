@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
 
 import { CLAWSWEEPER_BOT_LOGINS } from "../clawsweeper-policy.js";
-import type { JsonValue, LooseRecord } from "./json-types.js";
+import { asJsonObject, type JsonValue, type LooseRecord } from "./json-types.js";
 import {
   BULK_FILED_LABEL,
   CLOSE_PROTECTED_LABEL_NAMES,
@@ -21,7 +21,7 @@ export function issueSourceRevisionSha256(issue: LooseRecord, comments: JsonValu
     body: String(issue.body ?? ""),
     labels: revisionLabels(issue.labels ?? []),
     comments: comments
-      .map(asRecord)
+      .map(asJsonObject)
       .filter((comment) => !isClawSweeperComment(comment))
       .map((comment) => ({
         id: String(comment.id ?? ""),
@@ -81,8 +81,4 @@ function isClawSweeperComment(comment: LooseRecord): boolean {
       .trim()
       .toLowerCase(),
   );
-}
-
-function asRecord(value: JsonValue): LooseRecord {
-  return value && typeof value === "object" && !Array.isArray(value) ? value : {};
 }

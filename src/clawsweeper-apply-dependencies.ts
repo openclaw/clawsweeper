@@ -78,7 +78,6 @@ export interface CreateApplyDecisionWorkflowDependencies {
     applyKind: ApplyKind,
   ) => { priority: number; applyCheckedAt: number };
   applyRuntimeBudgetYieldResults: (number: number, reason: string) => ApplyResult[];
-  asRecord: (value: unknown) => Record<string, unknown>;
   authorPrBudgetAgeSkipReason: (item: Pick<Item, "createdAt">, now?: number) => string | null;
   authorPrBudgetApplyGateSafe: (
     number: number,
@@ -273,7 +272,6 @@ export interface CreateApplyDecisionWorkflowDependencies {
   ) => string;
   livePullRequestHasNoDiff: (context: ItemContext) => boolean;
   lockedConversationApplyReason: (item: Pick<Item, "activeLockReason" | "locked">) => string | null;
-  login: (value: unknown) => string | undefined;
   lowSignalUnmergeablePrApplyBlockReasonSafe: (
     number: number,
     staleMinAgeDays: number,

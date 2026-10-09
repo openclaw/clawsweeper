@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { labelNames } from "./clawsweeper-item-policy.js";
 import { compareCodeUnits, stableJson } from "./stable-json.js";
-import { recordOrEmpty, stringOrEmpty } from "./value-coerce.js";
+import { asRecord, stringOrEmpty } from "./value-coerce.js";
 
 export interface OversizedPrSourceSnapshot {
   fingerprint: string;
@@ -41,7 +41,7 @@ export function oversizedPrSourceSnapshot(
     return null;
   return {
     fingerprint: hash({
-      head: recordOrEmpty(pull.head).sha,
+      head: asRecord(pull.head).sha,
       additions: pull.additions,
       deletions: pull.deletions,
       changedFiles: pull.changed_files,
@@ -51,7 +51,7 @@ export function oversizedPrSourceSnapshot(
       body: pull.body ?? "",
       labels: labelNames(pull.labels).sort(),
       draft: pull.draft === true,
-      baseRef: stringOrEmpty(recordOrEmpty(pull.base).ref),
+      baseRef: stringOrEmpty(asRecord(pull.base).ref),
       assignees: pull.assignees ?? [],
       milestone: pull.milestone ?? null,
       requestedReviewers: pull.requested_reviewers ?? [],
@@ -72,7 +72,7 @@ function jsonRecord(value: unknown): Record<string, unknown> {
       return {};
     }
   }
-  return recordOrEmpty(value);
+  return asRecord(value);
 }
 
 export function parseOversizedPrSourceSnapshot(value: unknown): OversizedPrSourceSnapshot | null {
@@ -98,7 +98,7 @@ function commentIdentity(value: Record<string, unknown>): unknown {
     body: value.body ?? "",
     createdAt: value.created_at,
     updatedAt: value.updated_at,
-    author: recordOrEmpty(value.user).login,
+    author: asRecord(value.user).login,
     association: value.author_association ?? "",
   };
 }
@@ -109,9 +109,9 @@ function activityIdentity(entry: Record<string, unknown>, timeline: boolean): st
   if (typeof entry.sha === "string" || typeof entry.node_id === "string")
     return stableJson({ event: entry.event, sha: entry.sha ?? null, node: entry.node_id ?? null });
   if (entry.event !== "cross-referenced" || !timestamp(entry.created_at)) return null;
-  const source = recordOrEmpty(entry.source),
-    issue = recordOrEmpty(source.issue),
-    actor = recordOrEmpty(entry.actor);
+  const source = asRecord(entry.source),
+    issue = asRecord(source.issue),
+    actor = asRecord(entry.actor);
   const issueIdentity = count(issue.id)
     ? issue.id
     : typeof issue.node_id === "string"
@@ -151,7 +151,7 @@ export function createOversizedPrFreshnessGuard(options: {
       const batch = options.ghJson<unknown>(["api", `${endpoint}?per_page=100&page=${page}`]);
       if (!Array.isArray(batch)) throw new Error("activity response is incomplete or invalid");
       for (const entry of batch) {
-        const identity = activityIdentity(recordOrEmpty(entry), endpoint.endsWith("/timeline"));
+        const identity = activityIdentity(asRecord(entry), endpoint.endsWith("/timeline"));
         if (!identity) throw new Error("activity response is incomplete or invalid");
         if (identities.has(identity)) throw new Error("activity pagination repeated an identity");
         identities.add(identity);
@@ -164,7 +164,7 @@ export function createOversizedPrFreshnessGuard(options: {
   const capture = (): Capture => {
     const root = `repos/${options.repo}`;
     const pull = oversizedPrSourceSnapshot(
-      recordOrEmpty(options.ghJson(["api", `${root}/pulls/${options.number}`])),
+      asRecord(options.ghJson(["api", `${root}/pulls/${options.number}`])),
     );
     if (!pull) throw new Error("live PR metadata snapshot is incomplete");
     const comments = boundedList(`${root}/issues/${options.number}/comments`);
@@ -190,7 +190,7 @@ export function createOversizedPrFreshnessGuard(options: {
     if (comments.length !== pull.comments || inline.length !== pull.reviewComments)
       throw new Error("live PR activity counts changed during capture");
     const confirmed = oversizedPrSourceSnapshot(
-      recordOrEmpty(options.ghJson(["api", `${root}/pulls/${options.number}`])),
+      asRecord(options.ghJson(["api", `${root}/pulls/${options.number}`])),
     );
     if (!confirmed || stableJson(confirmed) !== stableJson(pull))
       throw new Error("PR metadata changed during activity capture");

@@ -17,7 +17,6 @@ export interface ReviewPlanningDependencies {
   ghPaged: <T>(path: string) => T[];
   githubCount: (value: unknown) => number | null;
   itemSourceRevisionSha256: (issue: unknown, comments?: unknown[]) => string;
-  asRecord: (value: unknown) => Record<string, unknown>;
   normalizeAuthorAssociation: (value: unknown) => string;
   shouldPlanItem: (item: Pick<Item, "authorAssociation" | "labels">) => boolean;
   frontMatterValue: (markdown: string, key: string) => string | undefined;

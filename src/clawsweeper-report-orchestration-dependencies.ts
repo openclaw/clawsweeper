@@ -43,7 +43,6 @@ import { type ReviewStructuralPullState } from "./review-structural-cache.js";
 
 export interface CreateReportOrchestrationDependencies {
   agentsPolicyStatusLine: (status: AgentsPolicyStatus | undefined) => string;
-  asRecord: (value: unknown) => Record<string, unknown>;
   closeEvidenceLine: (evidence: Evidence) => string;
   collectItemContext: (
     item: Item,

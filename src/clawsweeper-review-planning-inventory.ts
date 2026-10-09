@@ -32,7 +32,7 @@ import {
   githubReadModelRequestSync,
   usableGithubReadModelResponse,
 } from "./github-webhook-read-model-client.js";
-import { recordOrEmpty as jsonRecord } from "./value-coerce.js";
+import { asRecord as jsonRecord } from "./value-coerce.js";
 
 export {
   PR_ACTIVITY_REVISION_CONNECTION_LIMIT,

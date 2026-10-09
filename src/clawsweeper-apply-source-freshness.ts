@@ -1,6 +1,7 @@
 import type { CreateApplyDecisionWorkflowDependencies } from "./clawsweeper-apply-dependencies.js";
 import { completeActivityContextSymbol } from "./clawsweeper-types.js";
 import type { ApplyResult, Item, ItemContext } from "./clawsweeper-types.js";
+import { asRecord, login } from "./value-coerce.js";
 
 /**
  * A released review lease leaves no live timestamp. Its deletion must follow the review
@@ -10,7 +11,6 @@ export const OWNED_LEASE_RELEASE_RECEIPT_WINDOW_MS = 5 * 60 * 1000;
 
 type ApplySourceFreshnessDependencies = Pick<
   CreateApplyDecisionWorkflowDependencies,
-  | "asRecord"
   | "CLAWSWEEPER_BOT_AUTHORS"
   | "commentBody"
   | "commentId"
@@ -20,7 +20,6 @@ type ApplySourceFreshnessDependencies = Pick<
   | "freshPullRequestReviewHead"
   | "frontMatterValue"
   | "itemSnapshotHash"
-  | "login"
   | "recordedLabelSyncCoversUpdate"
   | "reviewStartLeaseOwner"
   | "stringOrUndefined"
@@ -150,7 +149,6 @@ export function createApplySourceFreshness(
   options: ApplySourceFreshnessOptions,
 ) {
   const {
-    asRecord,
     CLAWSWEEPER_BOT_AUTHORS,
     commentBody,
     commentId,
@@ -160,7 +158,6 @@ export function createApplySourceFreshness(
     freshPullRequestReviewHead,
     frontMatterValue,
     itemSnapshotHash,
-    login,
     recordedLabelSyncCoversUpdate,
     reviewStartLeaseOwner,
     stringOrUndefined,

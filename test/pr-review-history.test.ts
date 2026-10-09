@@ -403,7 +403,6 @@ test("lazy fetch is disabled only behind the allowlisted proxy, and the prompt s
       ghJson: unavailable,
       evidenceEntry: unavailable,
       untrustedCodexEnv: () => ({ PATH: "/bin", CLAWSWEEPER_RUNNER: runner }),
-      asRecord: unavailable,
       defaultRootCauseCluster: unavailable,
       parseDecision: unavailable,
       ensureDir: unavailable,

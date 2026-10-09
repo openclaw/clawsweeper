@@ -10,6 +10,7 @@ import type {
   ItemKind,
   LocalRelatedTitleEntry,
 } from "./clawsweeper-types.js";
+import { asRecord, login } from "./value-coerce.js";
 
 const CREDENTIAL_URI =
   /(https?:\/\/)[\w!#$%&()*+,\-./;<=>?@[\\\]^_{|}~]{0,50}:[\w!#$%&()*+,\-./:;<=>?[\\\]^_{|}~]{3,50}@([a-zA-Z0-9.-]+)/g;
@@ -34,8 +35,6 @@ interface RelatedContextDependencies {
   gitHubRuntimeBudgetError: new (reason: string) => Error;
   ghJsonEach: <T>(requests: readonly string[][]) => GitHubJsonResult<T>[];
   ghJsonOnce: <T>(args: string[], timeoutMs: number) => T;
-  asRecord: (value: unknown) => Record<string, unknown>;
-  login: (value: unknown) => string | undefined;
   compactIssue: (value: unknown) => unknown;
   compactPullRequest: (value: unknown) => unknown;
   envFlagEnabled: (value: string | undefined) => boolean;
@@ -59,8 +58,6 @@ export function createRelatedContext({
   gitHubRuntimeBudgetError: GitHubRuntimeBudgetError,
   ghJsonEach,
   ghJsonOnce,
-  asRecord,
-  login,
   compactIssue,
   compactPullRequest,
   envFlagEnabled,

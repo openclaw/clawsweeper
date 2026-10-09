@@ -723,7 +723,6 @@ test("GitHub throttles abort apply lease checks and preserve durable lease owner
   let requests = 0;
   const lease = { owner: "review-owner", commentId: 7, headSha: "abc123" };
   const guards = createApplyLeaseGuards({
-    asRecord: (value: unknown) => value,
     canonicalBoundStaleReviewReason: () => null,
     closeDelayMs: 0,
     currentReviewActivityBlock: () => null,

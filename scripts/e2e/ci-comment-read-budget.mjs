@@ -87,7 +87,6 @@ if (process.argv.includes("--server")) {
   );
   const { LiveReadGeneration, generationReadKey } =
     await import("../../dist/live-read-generation.js");
-  const { asRecord } = await import("../../dist/clawsweeper-item-policy.js");
   const { hydration, sourceTools, sha256 } = await import("../../test/primary-body-fixture.ts");
   const baseline = process.argv.includes("--baseline");
   const child = spawn(
@@ -123,7 +122,6 @@ if (process.argv.includes("--server")) {
     ...hydration,
     ...sourceTools,
     ...github,
-    asRecord,
     sha256,
     stringOrUndefined: (value) => (typeof value === "string" ? value : undefined),
     targetRepo: () => repo,

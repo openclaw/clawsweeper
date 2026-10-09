@@ -55,7 +55,6 @@ export function createReportOrchestration(dependencies: CreateReportOrchestratio
   });
   const {
     agentsPolicyStatusLine,
-    asRecord,
     closeEvidenceLine,
     collectItemContext,
     compactPullFilePaths,
@@ -211,7 +210,6 @@ export function createReportOrchestration(dependencies: CreateReportOrchestratio
 
   reportRendering = createReportRendering({
     agentsPolicyStatusLine,
-    asRecord,
     closeClawHubHandoffBlock,
     closeEvidenceLine,
     closeIntro,

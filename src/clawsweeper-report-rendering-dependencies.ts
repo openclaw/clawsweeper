@@ -32,7 +32,6 @@ import { type ReviewStructuralPullState } from "./review-structural-cache.js";
 
 export interface CreateReportRenderingDependencies {
   agentsPolicyStatusLine: (status: AgentsPolicyStatus | undefined) => string;
-  asRecord: (value: unknown) => Record<string, unknown>;
   closeClawHubHandoffBlock: (reason: CloseReason) => string;
   closeEvidenceLine: (evidence: Evidence) => string;
   closeIntro: (reason: CloseReason) => string;

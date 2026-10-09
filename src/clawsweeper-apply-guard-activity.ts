@@ -9,15 +9,14 @@ import {
   STALLED_UNPROVEN_PROOF_STATUSES,
   type ApplyGuardDependencies,
 } from "./clawsweeper-apply-guard-dependencies.js";
+import { asRecord, login } from "./value-coerce.js";
 
 export function createApplyGuardActivity(dependencies: ApplyGuardDependencies) {
   const {
-    asRecord,
     ghJson,
     ghPaged,
     isMaintainerAuthorAssociation,
     isOlderThanDays,
-    login,
     normalizeLabelName,
     quoteGitHubSearchTerm,
     reportPrRating,

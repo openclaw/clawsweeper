@@ -70,6 +70,7 @@ import {
 import { repositoryProfileFor, type RepositoryProfile } from "./repository-profiles.js";
 import { reviewProofCapabilityFromEnv } from "./review-proof-client.js";
 import { readBoundedReviewResult } from "./review-output-policy.js";
+import { asRecord } from "./value-coerce.js";
 
 /** Prompt sources for an item review: the shared core, one template per item kind, and close reasons. */
 export type ReviewItemPrompts = Readonly<Record<"core" | Item["kind"] | "closeReasons", string>>;
@@ -90,7 +91,6 @@ interface ReviewRuntimeDependencies {
     preserveCodexAuth?: boolean | undefined;
   }) => NodeJS.ProcessEnv;
   ghJson: <T>(args: string[]) => T;
-  asRecord: (value: unknown) => Record<string, unknown>;
   defaultRootCauseCluster: () => RootCauseClusterAssessment;
   parseDecision: (value: unknown, item?: RootCauseNormalizationItem) => Decision;
   ensureDir: (path: string) => void;
@@ -106,7 +106,6 @@ export function createReviewRuntime({
   run,
   untrustedCodexEnv,
   ghJson,
-  asRecord,
   defaultRootCauseCluster,
   parseDecision,
   ensureDir,

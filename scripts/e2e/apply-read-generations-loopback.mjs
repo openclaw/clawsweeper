@@ -92,7 +92,6 @@ function leaseGuards(generation) {
     lease: { owner: leaseOwner, commentId: 700042, headSha: reviewedHead },
   };
   return createApplyLeaseGuards({
-    asRecord: (value) => (value && typeof value === "object" && !Array.isArray(value) ? value : {}),
     canonicalBoundStaleReviewReason: (_markdown, comment) =>
       comment?.id === 800042 ? "new durable comment arrived between generations" : null,
     closeDelayMs: 0,

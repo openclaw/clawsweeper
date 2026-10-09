@@ -36,7 +36,6 @@ function planning(listings: string[][]) {
     ghPaged: () => [],
     githubCount: () => null,
     itemSourceRevisionSha256: () => "",
-    asRecord: (value: unknown) => (value ?? {}) as Record<string, unknown>,
     normalizeAuthorAssociation: (value: unknown) => String(value ?? "NONE"),
     shouldPlanItem: () => true,
     frontMatterValue: () => undefined,

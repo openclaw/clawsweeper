@@ -12,6 +12,7 @@ import {
 import type { ReviewCommentWorkflowDependencies } from "./clawsweeper-review-comment-dependencies.js";
 import type { createReviewCommentIdentity } from "./clawsweeper-review-comment-identity.js";
 import type { createReviewCommentState } from "./clawsweeper-review-comment-state.js";
+import { asRecord } from "./value-coerce.js";
 
 const DURABLE_REVIEW_COMMENT_MAX_BYTES = 60 * 1024;
 
@@ -38,7 +39,6 @@ export function createReviewCommentPublication(
     sha256,
     ghPaged,
     reviewCommentBodyDigest,
-    asRecord,
     ensureDir,
     frontMatterValue,
     replaceFrontMatterValue,

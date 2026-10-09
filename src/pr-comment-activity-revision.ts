@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { compareCodeUnits, stableJson } from "./stable-json.js";
-import { recordOrEmpty as jsonRecord } from "./value-coerce.js";
+import { asRecord as jsonRecord } from "./value-coerce.js";
 
 export const PR_ACTIVITY_REVISION_QUERY_PAGE_SIZE = 100;
 export const PR_ACTIVITY_REVISION_CONNECTION_LIMIT = 40;

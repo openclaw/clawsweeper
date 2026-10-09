@@ -94,6 +94,7 @@ import { isAutoCloseAllowed, repositoryProfileFor } from "./repository-profiles.
 import { stableJson } from "./stable-json.js";
 import { LiveReadGeneration, type GenerationBoundValue } from "./live-read-generation.js";
 import { parsePrHydrationSnapshot } from "./pr-hydration-snapshot.js";
+import { asRecord, login } from "./value-coerce.js";
 
 export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWorkflowDependencies) {
   const {
@@ -147,7 +148,6 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
     issueReviewComment,
     isVerifiedFixedCloseReason,
     liveIssueSourceRevision,
-    login,
     lockedConversationApplyReason,
     lowSignalUnmergeablePrApplyBlockReasonSafe,
     markedReviewCommentBody,
@@ -1078,7 +1078,7 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
       };
       const currentItemContext = (): ItemContext => {
         if (oversizedMetadataDecision) {
-          currentContext ??= liveReadGeneration.bind(oversizedPullRequestContext(dependencies.asRecord(ghJson(["api", `repos/${repo}/pulls/${number}`]))));
+          currentContext ??= liveReadGeneration.bind(oversizedPullRequestContext(asRecord(ghJson(["api", `repos/${repo}/pulls/${number}`]))));
           return liveReadGeneration.value(currentContext);
         }
         currentContext ??= liveReadGeneration.bind(
