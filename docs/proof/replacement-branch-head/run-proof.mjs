@@ -23,8 +23,10 @@ function checkoutFunction(text, materialize = materializeTargetCommitWithIsolati
   assert.ok(start >= 0 && end > start);
   const code = stripTypeScriptTypes(text.slice(start, end));
   // Execute the production control flow with real Git owners; only remote-PR discovery is absent.
-  return new Function("run", "materializeTargetCommitWithIsolation", "switchTargetBranchWithPlumbing", "shouldSeedReplacementBranchFromSource", "trustedRemoteBranchSha", "result", "targetValidationTimeoutMs", "runGitNetwork", `${code}; return checkoutRecoverableReplacementBranch;`)(
+  // Older baselines call run("git", ...); current builds call runGit(...).
+  return new Function("run", "runGit", "materializeTargetCommitWithIsolation", "switchTargetBranchWithPlumbing", "shouldSeedReplacementBranchFromSource", "trustedRemoteBranchSha", "result", "targetValidationTimeoutMs", "runGitNetwork", `${code}; return checkoutRecoverableReplacementBranch;`)(
     (command, args, options) => { assert.equal(command, "git"); return git(options.cwd, ...args); },
+    (args, options) => git(options.cwd, ...args),
     materialize, switchTargetBranchWithPlumbing, () => false, () => remoteLease, { repo: "openclaw/clawsweeper" }, 30000, network,
   );
 }
