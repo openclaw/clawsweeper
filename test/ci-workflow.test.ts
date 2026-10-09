@@ -83,3 +83,7 @@ test("CI runs the fast gates once and the full suite as coverage shards", () => 
   assert.equal(buildScript(shards), "build:all");
   assert.equal(buildScript(coverage), "build:all");
 });
+
+test("TEMPORARY: deliberately failing test to prove a shard failure fails pnpm check", () => {
+  assert.fail("temporary proof commit; revert before merge");
+});
