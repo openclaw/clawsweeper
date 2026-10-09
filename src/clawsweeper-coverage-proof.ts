@@ -31,6 +31,13 @@ import type { createReportOrchestrationFoundation } from "./clawsweeper-orchestr
 import type { createPullRequestPromotionFacts } from "./clawsweeper-promotion-facts.js";
 import type { createReportRendering } from "./clawsweeper-report-rendering.js";
 import { asRecord, nonBlankStringOrUndefined } from "./value-coerce.js";
+import {
+  frontMatterStringArray,
+  frontMatterValue,
+  replaceFrontMatterValue,
+  replaceSectionValue,
+  sectionValue,
+} from "./report-front-matter.js";
 
 export function createPullRequestCoverageProof(
   dependencies: CreateReportOrchestrationDependencies &
@@ -46,8 +53,6 @@ export function createPullRequestCoverageProof(
     canonicalPullRequestNumbersFromReport,
     defaultRootCauseCluster,
     filterReviewContextComments,
-    frontMatterStringArray,
-    frontMatterValue,
     ghJson,
     ghPagedContextWindow,
     ghPagedLinkHeaderContextWindow,
@@ -59,15 +64,12 @@ export function createPullRequestCoverageProof(
     pullRequestUrlForNumber,
     renderPrRatingAssessmentReportSection,
     renderRootCauseClusterAssessmentReportSection,
-    replaceFrontMatterValue,
-    replaceSectionValue,
     reportPrRating,
     reportRealBehaviorProof,
     reportRootCauseCluster,
     reviewSectionValue,
     runtimeBudgetExceeded,
     sectionLineValue,
-    sectionValue,
     sentence,
     sha256,
     targetRepo,

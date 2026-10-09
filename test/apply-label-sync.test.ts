@@ -140,9 +140,6 @@ test("closeout receipts ignore spoofed markers after posting the owned receipt",
         comments.push({ id: 2, user: { login: "clawsweeper[bot]" }, body });
         return JSON.stringify({ id: 2 });
       },
-      frontMatterValue: () => undefined,
-      replaceFrontMatterValue: (markdown: string) => markdown,
-      sectionValue: () => "",
       sentence: (value: string) => value,
       normalizedLabelSet: () => new Set<string>(),
       sectionLineValue: () => undefined,

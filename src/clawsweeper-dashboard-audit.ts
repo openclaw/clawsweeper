@@ -17,7 +17,7 @@ import {
   HOT_REVIEW_DAYS,
   RECENT_ISSUE_DAYS,
 } from "./clawsweeper-policy.js";
-import { escapeRegExp } from "./clawsweeper-text.js";
+import { escapeRegExp } from "./clawsweeper-markdown.js";
 import type {
   AuditRecord,
   AuditRecordLocation,
@@ -47,6 +47,11 @@ import {
 } from "./repository-profiles.js";
 import { WEEKLY_COVERAGE_REVIEW_DAYS } from "./scheduler-policy.js";
 import { parseIsoMs } from "./iso-time.js";
+import {
+  frontMatterStringArray,
+  frontMatterValue,
+  replaceFrontMatterValue,
+} from "./report-front-matter.js";
 
 interface CreateDashboardAuditDependencies {
   addDashboardCadenceBucket: (
@@ -87,8 +92,6 @@ interface CreateDashboardAuditDependencies {
   formatPercent: (numerator: number, denominator: number) => string;
   formatStatusNumber: (value: number | undefined) => string;
   formatTimestamp: (iso: string | undefined) => string;
-  frontMatterStringArray: (markdown: string, key: string) => string[];
-  frontMatterValue: (markdown: string, key: string) => string | undefined;
   ghJson: <T>(args: string[]) => T;
   isCurrentForCadence: (options: {
     reviewedAt: string | undefined;
@@ -118,7 +121,6 @@ interface CreateDashboardAuditDependencies {
     activity: DashboardActivityStats,
     now: number,
   ) => void;
-  replaceFrontMatterValue: (markdown: string, key: string, value: string) => string;
   repoFromArgs: (args: Args) => RepositoryProfile;
   repoRelativePath: (path: string) => string;
   reportEntriesForDir: (dir: string, itemNumbers?: ReadonlySet<number>) => ReportEntry[];
@@ -190,8 +192,6 @@ export function createDashboardAudit(dependencies: CreateDashboardAuditDependenc
     formatPercent,
     formatStatusNumber,
     formatTimestamp,
-    frontMatterStringArray,
-    frontMatterValue,
     ghJson,
     isCurrentForCadence,
     isFresh,
@@ -207,7 +207,6 @@ export function createDashboardAudit(dependencies: CreateDashboardAuditDependenc
     profileAuditEnd,
     profileAuditStart,
     recordDashboardActivity,
-    replaceFrontMatterValue,
     repoFromArgs,
     repoRelativePath,
     reportEntriesForDir,
@@ -861,7 +860,6 @@ export function createDashboardAudit(dependencies: CreateDashboardAuditDependenc
     formatPercent,
     formatStatusNumber,
     formatTimestamp,
-    frontMatterValue,
     itemUrlFor,
     latestTimestamp,
     markdownLink,

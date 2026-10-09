@@ -38,7 +38,6 @@ function planning(listings: string[][]) {
     itemSourceRevisionSha256: () => "",
     normalizeAuthorAssociation: (value: unknown) => String(value ?? "NONE"),
     shouldPlanItem: () => true,
-    frontMatterValue: () => undefined,
     buildExistingReviewIndex: () => new Map(),
     indexedExistingReview: () => null,
     effectiveReviewStatus: () => "complete",

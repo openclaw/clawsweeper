@@ -808,9 +808,7 @@ test("structural cache probes before hydration but acquires a lease before carry
   );
   const contentPreflight = reviewLoop.indexOf("cachePreflightPasses(", contentCache);
   const provenancePromotions = [
-    ...reviewLoop.matchAll(
-      /carried = withRunnerPreflightProvenance\(carried, replaceFrontMatterValue\)/g,
-    ),
+    ...reviewLoop.matchAll(/carried = withRunnerPreflightProvenance\(carried\)/g),
   ];
   const hydration = reviewLoop.indexOf("collectItemContext(item");
   const mediaPrep = reviewLoop.indexOf("prepareMediaProofArtifacts(", contentCache);

@@ -205,9 +205,6 @@ export interface CreateApplyDecisionWorkflowDependencies {
     skippedAdditions: string[];
   };
   freshPullRequestReviewHead: (markdown: string, context: ItemContext) => boolean;
-  frontMatterBoolean: (markdown: string, key: string) => boolean;
-  frontMatterStringArray: (markdown: string, key: string) => string[];
-  frontMatterValue: (markdown: string, key: string) => string | undefined;
   ghJson: <T>(args: string[]) => T;
   GitHubRuntimeBudgetError: new (reason: string) => Error & { readonly reason: string };
   guardedOpenApplyProofFields: (
@@ -374,8 +371,6 @@ export interface CreateApplyDecisionWorkflowDependencies {
     reason: CloseReason,
     options?: ReviewCommentRenderOptions,
   ) => string;
-  replaceFrontMatterValue: (markdown: string, key: string, value: string) => string;
-  replaceSectionValue: (markdown: string, heading: string, value: string) => string;
   repoFromArgs: (args: Args) => RepositoryProfile;
   reportCloseReason: (markdown: string) => CloseReason | undefined;
   reportDecision: (markdown: string, closeReason: CloseReason) => Decision;

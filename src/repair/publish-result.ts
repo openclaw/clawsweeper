@@ -4,7 +4,8 @@ import fs from "node:fs";
 import path from "node:path";
 import { githubActionsRunUrl, parseArgs, repoRoot } from "./lib.js";
 import { readJsonFile as readJson } from "./json-file.js";
-import { escapeRegExp, slug } from "./text-utils.js";
+import { slug } from "./text-utils.js";
+import { escapeRegExp } from "../clawsweeper-markdown.js";
 import { renderClusterReport, writeClosedRecord } from "./publish-cluster-report.js";
 import {
   findResultPaths,

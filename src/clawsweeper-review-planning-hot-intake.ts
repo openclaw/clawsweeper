@@ -9,6 +9,7 @@ import { HOT_INTAKE_FRESHNESS_MS, hasReviewPolicyMismatch } from "./scheduler-po
 import type { ReviewPlanningDependencies } from "./clawsweeper-review-planning-dependencies.js";
 import type { createReviewPlanningInventory } from "./clawsweeper-review-planning-inventory.js";
 import { asRecord, nonBlankStringOrUndefined } from "./value-coerce.js";
+import { frontMatterValue } from "./report-front-matter.js";
 
 export function createReviewPlanningHotIntake(
   dependencies: ReviewPlanningDependencies & ReturnType<typeof createReviewPlanningInventory>,
@@ -19,7 +20,6 @@ export function createReviewPlanningHotIntake(
     ghPaged,
     githubCount,
     itemSourceRevisionSha256,
-    frontMatterValue,
     pullHeadShaFromReport,
   } = dependencies;
 

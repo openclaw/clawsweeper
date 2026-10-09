@@ -9,11 +9,11 @@ import { renderReviewHistorySection } from "./review-history.js";
 import type { ReviewStructuralPullState } from "./review-structural-cache.js";
 import type { ReviewCommentWorkflowDependencies } from "./clawsweeper-review-comment-dependencies.js";
 import { asRecord, nonBlankStringOrUndefined } from "./value-coerce.js";
+import { frontMatterValue } from "./report-front-matter.js";
 
 export function createReviewCommentIdentity(dependencies: ReviewCommentWorkflowDependencies) {
   const {
     githubCount,
-    frontMatterValue,
     isIssueAdvisoryLabel,
     removeIssueLabel,
     isClawSweeperOwnedLabel,

@@ -1,8 +1,9 @@
 #!/usr/bin/env node
-import { escapeRegExp } from "../clawsweeper-text.js";
+import { escapeRegExp } from "../clawsweeper-markdown.js";
 import { reportAllowsAutomation } from "../manual-publication-policy.js";
 import { asJsonObject, type JsonValue, type LooseRecord } from "./json-types.js";
 import { sha256 } from "../content-hash.js";
+import { parseFrontMatterStringArray } from "../report-front-matter.js";
 import fs from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -139,7 +140,7 @@ function prepare() {
     ? liveIssueContext({
         repo: targetRepo,
         number: itemNumber,
-        references: frontMatterStringArray(report.frontmatter.work_cluster_refs),
+        references: parseFrontMatterStringArray(report.frontmatter.work_cluster_refs),
       })
     : {
         issue: null,
@@ -672,10 +673,10 @@ function eligibilityDecision({
       blockers.push(`implementation complexity is ${fm.implementation_complexity || "unknown"}`);
     if (!visionFitItemCategoryAllowed(fm.item_category))
       blockers.push(`item category is ${fm.item_category || "unknown"}`);
-    if (frontMatterStringArray(fm.vision_fit_evidence).length === 0)
+    if (parseFrontMatterStringArray(fm.vision_fit_evidence).length === 0)
       blockers.push("missing vision-fit evidence");
   }
-  const reportLabels = frontMatterStringArray(fm.labels);
+  const reportLabels = parseFrontMatterStringArray(fm.labels);
   if (
     fm.bulk_filer_detected === "true" ||
     reportLabels.some((label) => label.trim().toLowerCase() === BULK_FILED_LABEL)
@@ -693,7 +694,7 @@ function eligibilityDecision({
   }
   if (candidateKind !== "viable") {
     if (!section(report.body, "Repair Work Prompt").trim()) blockHard("missing repair work prompt");
-    if (frontMatterStringArray(fm.work_validation).length === 0)
+    if (parseFrontMatterStringArray(fm.work_validation).length === 0)
       blockers.push("missing validation commands");
   }
   if (live) {
@@ -729,7 +730,7 @@ function eligibilityDecision({
     const explicitPullReferences = referencedPullRequestCoordinates({
       targetRepo,
       itemNumber,
-      references: frontMatterStringArray(fm.work_cluster_refs),
+      references: parseFrontMatterStringArray(fm.work_cluster_refs),
     }).filter((reference) => reference.knownPullRequest);
     if (
       (explicitPullReferences.length > 0 &&
@@ -840,9 +841,9 @@ function viableImplementationPrompt(context: IntakeContext) {
 
 function reviewImplementationPrompt(context: IntakeContext) {
   const fm = context.report.frontmatter;
-  const validation = frontMatterStringArray(fm.work_validation);
-  const likelyFiles = frontMatterStringArray(fm.work_likely_files);
-  const visionEvidence = frontMatterStringArray(fm.vision_fit_evidence);
+  const validation = parseFrontMatterStringArray(fm.work_validation);
+  const likelyFiles = parseFrontMatterStringArray(fm.work_likely_files);
+  const visionEvidence = parseFrontMatterStringArray(fm.vision_fit_evidence);
   const visionFit = context.candidateKind === "vision_fit";
   const workPrompt = section(context.report.body, "Repair Work Prompt");
   return [
@@ -1391,21 +1392,6 @@ function section(markdown: string, heading: string) {
     new RegExp(`(?:^|\\n)## ${escapeRegExp(heading)}\\n\\n([\\s\\S]*?)(?=\\n## |\\n?$)`, "i"),
   );
   return match?.[1]?.trim() ?? "";
-}
-
-function frontMatterStringArray(value: string | undefined): string[] {
-  if (!value || value === "none") return [];
-  try {
-    const parsed = JSON.parse(value) as unknown;
-    if (Array.isArray(parsed))
-      return parsed.filter((entry): entry is string => typeof entry === "string");
-  } catch {
-    // Legacy comma-separated reports.
-  }
-  return value
-    .split(",")
-    .map((entry) => entry.trim())
-    .filter(Boolean);
 }
 
 function decision(status: string, shouldRepair: boolean, reason: string): IntakeDecision {

@@ -15,12 +15,12 @@ import type {
   SecurityReview,
   TriagePriority,
 } from "./clawsweeper-types.js";
+import { frontMatterStringArray } from "./report-front-matter.js";
 
 interface ReviewPresentationDependencies {
   docsPageUrl: (file: string, repo?: string) => string | null;
   fileUrl: (file: string, sha: string, line?: number, repo?: string) => string;
   normalizeEvidence: (entry: Evidence) => Evidence;
-  frontMatterStringArray: (markdown: string, key: string) => string[];
   hasRepairLoopPauseLabel: (labels: readonly string[]) => boolean;
   isCommitSha: (value: string) => boolean;
   latestFileUrl: (file: string, repo?: string) => string;
@@ -42,7 +42,6 @@ export function createReviewPresentation({
   docsPageUrl,
   fileUrl,
   normalizeEvidence,
-  frontMatterStringArray,
   hasRepairLoopPauseLabel,
   isCommitSha,
   latestFileUrl,

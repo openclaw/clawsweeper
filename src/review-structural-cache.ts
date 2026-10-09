@@ -1,6 +1,6 @@
 import { asRecord, stringOrUndefined } from "./value-coerce.js";
 import { sha256 } from "./content-hash.js";
-import { escapeRegExp } from "./clawsweeper-text.js";
+import { escapeRegExp } from "./clawsweeper-markdown.js";
 import { parseIsoMs } from "./iso-time.js";
 
 import { REVIEW_CACHE_MAX_AGE_DAYS } from "./scheduler-policy.js";

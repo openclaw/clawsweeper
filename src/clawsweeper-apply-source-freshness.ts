@@ -3,6 +3,7 @@ import { completeActivityContextSymbol } from "./clawsweeper-types.js";
 import type { ApplyResult, Item, ItemContext } from "./clawsweeper-types.js";
 import { asRecord, login, nonBlankStringOrUndefined } from "./value-coerce.js";
 import { parseIsoMs } from "./iso-time.js";
+import { frontMatterValue, replaceFrontMatterValue } from "./report-front-matter.js";
 
 /**
  * A released review lease leaves no live timestamp. Its deletion must follow the review
@@ -19,7 +20,6 @@ type ApplySourceFreshnessDependencies = Pick<
   | "contextHasNonAutomationActivityAfter"
   | "fetchIssueReviewComments"
   | "freshPullRequestReviewHead"
-  | "frontMatterValue"
   | "itemSnapshotHash"
   | "recordedLabelSyncCoversUpdate"
   | "reviewStartLeaseOwner"
@@ -64,12 +64,7 @@ interface ApplyChangedSinceReviewMarkerOptions {
   writeReportMarkdown: (path: string, markdown: string) => void;
 }
 
-export function createApplyChangedSinceReviewMarker(
-  {
-    replaceFrontMatterValue,
-  }: Pick<CreateApplyDecisionWorkflowDependencies, "replaceFrontMatterValue">,
-  options: ApplyChangedSinceReviewMarkerOptions,
-) {
+export function createApplyChangedSinceReviewMarker(options: ApplyChangedSinceReviewMarkerOptions) {
   return ({
     reason,
     currentUpdatedAt,
@@ -155,7 +150,6 @@ export function createApplySourceFreshness(
     contextHasNonAutomationActivityAfter,
     fetchIssueReviewComments,
     freshPullRequestReviewHead,
-    frontMatterValue,
     itemSnapshotHash,
     recordedLabelSyncCoversUpdate,
     reviewStartLeaseOwner,

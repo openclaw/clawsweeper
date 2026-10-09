@@ -1,6 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { CONFIDENCES, isGitHubVerifiedFixedPullRequestSource } from "./clawsweeper-policy.js";
-import { escapeRegExp } from "./clawsweeper-text.js";
+import { escapeRegExp } from "./clawsweeper-markdown.js";
 import type {
   Confidence,
   Decision,
@@ -19,6 +19,7 @@ import {
 import { GitHubRateLimitError, isGitHubNotFoundError } from "./github-retry.js";
 import type { RepositoryProfile } from "./repository-profiles.js";
 import { asRecord, nonBlankStringOrUndefined } from "./value-coerce.js";
+import { frontMatterValue } from "./report-front-matter.js";
 
 export const MAX_IMPLEMENTATION_LINKED_ISSUE_REFERENCES = 5;
 
@@ -237,7 +238,6 @@ interface StatusContextDependencies {
   markdownRepository: (markdown: string, file?: string) => string;
   ghJson: <T>(args: string[]) => T;
   GitHubRuntimeBudgetError: new (reason: string) => Error & { readonly reason: string };
-  frontMatterValue: (markdown: string, key: string) => string | undefined;
   numberOrUndefined: (value: unknown) => number | undefined;
   recordOrUndefined: (value: unknown) => Record<string, unknown> | undefined;
 }
@@ -255,7 +255,6 @@ export function createStatusContext({
   markdownRepository,
   ghJson,
   GitHubRuntimeBudgetError,
-  frontMatterValue,
   numberOrUndefined,
   recordOrUndefined,
 }: StatusContextDependencies) {

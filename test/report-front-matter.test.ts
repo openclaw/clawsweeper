@@ -1,18 +1,14 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { createRecordMetadata } from "../dist/clawsweeper-record-metadata.js";
-
-const metadata = createRecordMetadata({
-  reportFileName: () => "unused.md",
-  markdownRepository: () => "openclaw/clawsweeper",
-  isVerifiedFixedCloseReason: () => false,
-  pullHeadShaFromReport: () => null,
-  reviewLeaseRevisionFromReport: () => null,
-  lockedConversationApplyReason: () => null,
-  markdownFiles: () => [],
-  numberForMarkdownFile: () => 0,
-});
+import {
+  frontMatterField,
+  frontMatterStringArray,
+  frontMatterValue,
+  replaceFrontMatterValue,
+  replaceSectionValue,
+  sectionValue,
+} from "../dist/report-front-matter.js";
 
 test("front matter fields are ambiguous when the same key occurs after the leading block", () => {
   const report = `---
@@ -23,28 +19,28 @@ real_behavior_proof_status: missing
 ---
 `;
 
-  assert.deepEqual(metadata.frontMatterField(report, "real_behavior_proof_status"), {
+  assert.deepEqual(frontMatterField(report, "real_behavior_proof_status"), {
     status: "ambiguous",
   });
 });
 
 test("front matter fields preserve current-format, duplicate, and no-block behavior", () => {
   assert.deepEqual(
-    metadata.frontMatterField(
+    frontMatterField(
       "---\nreal_behavior_proof_status: missing\n---\n\n## Summary\n\nUnproven.\n",
       "real_behavior_proof_status",
     ),
     { status: "value", value: "missing" },
   );
   assert.deepEqual(
-    metadata.frontMatterField(
+    frontMatterField(
       "---\nreal_behavior_proof_status: sufficient\nreal_behavior_proof_status: missing\n---\n",
       "real_behavior_proof_status",
     ),
     { status: "ambiguous" },
   );
   assert.deepEqual(
-    metadata.frontMatterField(
+    frontMatterField(
       "real_behavior_proof_status: sufficient\n\n## Summary\n\nNo leading block.\n",
       "real_behavior_proof_status",
     ),
@@ -63,14 +59,14 @@ test("label names containing replacement patterns survive a front matter write",
 
   for (const labels of [["bug"], ["$&"], ["$`"], ["$'"], ["a$&b"], ["$$"], ["P$1"]]) {
     const written = JSON.stringify(labels);
-    const next = metadata.replaceFrontMatterValue(report, "labels", written);
+    const next = replaceFrontMatterValue(report, "labels", written);
     assert.equal(
-      metadata.frontMatterValue(next, "labels"),
+      frontMatterValue(next, "labels"),
       written,
       `labels ${written} must be stored verbatim`,
     );
     assert.deepEqual(
-      metadata.frontMatterStringArray(next, "labels"),
+      frontMatterStringArray(next, "labels"),
       labels,
       `labels ${written} must read back unchanged`,
     );
@@ -84,23 +80,19 @@ test("front matter keys are matched literally, not as regular expressions", () =
     const report = ["---", `${key}: original`, "---", "", "body", ""].join("\n");
 
     assert.deepEqual(
-      metadata.frontMatterField(report, key),
+      frontMatterField(report, key),
       { status: "value", value: "original" },
       `key ${key} must be readable`,
     );
 
-    const next = metadata.replaceFrontMatterValue(report, key, "updated");
-    assert.equal(
-      metadata.frontMatterValue(next, key),
-      "updated",
-      `key ${key} must be updated in place`,
-    );
+    const next = replaceFrontMatterValue(report, key, "updated");
+    assert.equal(frontMatterValue(next, key), "updated", `key ${key} must be updated in place`);
     assert.equal(next.includes(`${key}: original`), false, `key ${key} must not be duplicated`);
   }
 
   // A literal key must not match a different, regex-equivalent line.
   const decoy = ["---", "aXc: decoy", "---", "", "body", ""].join("\n");
-  assert.deepEqual(metadata.frontMatterField(decoy, "a.c"), { status: "absent" });
+  assert.deepEqual(frontMatterField(decoy, "a.c"), { status: "absent" });
 });
 
 test("report prose that quotes a front matter key does not mask the real value", () => {
@@ -125,17 +117,17 @@ test("report prose that quotes a front matter key does not mask the real value",
   for (const [name, body] of Object.entries(bodies)) {
     const report = `${frontMatter}\n\n${body}`;
     assert.deepEqual(
-      metadata.frontMatterField(report, "type"),
+      frontMatterField(report, "type"),
       { status: "value", value: "pull_request" },
       `${name} must not mask type`,
     );
     assert.deepEqual(
-      metadata.frontMatterField(report, "title"),
+      frontMatterField(report, "title"),
       { status: "value", value: "Fix the thing" },
       `${name} must not mask title`,
     );
     assert.deepEqual(
-      metadata.frontMatterField(report, "url"),
+      frontMatterField(report, "url"),
       { status: "value", value: "https://github.com/openclaw/openclaw/pull/42" },
       `${name} must not mask url`,
     );
@@ -146,23 +138,23 @@ test("a second front matter block still makes a field ambiguous", () => {
   // The competing-record guard is the point of the check and must survive, in both
   // the delimiter-first and bare-run shapes.
   const bare = ["---", "type: issue", "---", "type: pull_request", "---", ""].join("\n");
-  assert.deepEqual(metadata.frontMatterField(bare, "type"), { status: "ambiguous" });
+  assert.deepEqual(frontMatterField(bare, "type"), { status: "ambiguous" });
 
   const delimited = ["---", "type: issue", "---", "---", "type: pull_request", "---", ""].join(
     "\n",
   );
-  assert.deepEqual(metadata.frontMatterField(delimited, "type"), { status: "ambiguous" });
+  assert.deepEqual(frontMatterField(delimited, "type"), { status: "ambiguous" });
 
   // A competing block that does not mention the key leaves other keys readable.
   const other = ["---", "type: issue", "number: 7", "---", "number: 9", "---", ""].join("\n");
-  assert.deepEqual(metadata.frontMatterField(other, "type"), { status: "value", value: "issue" });
-  assert.deepEqual(metadata.frontMatterField(other, "number"), { status: "ambiguous" });
+  assert.deepEqual(frontMatterField(other, "type"), { status: "value", value: "issue" });
+  assert.deepEqual(frontMatterField(other, "number"), { status: "ambiguous" });
 });
 
 test("an unterminated key-shaped run in the body is prose, not a competing block", () => {
   // Without a closing `---` there is no second record, so the leading value stands.
   const report = ["---", "type: pull_request", "---", "type: not a record", ""].join("\n");
-  assert.deepEqual(metadata.frontMatterField(report, "type"), {
+  assert.deepEqual(frontMatterField(report, "type"), {
     status: "value",
     value: "pull_request",
   });
@@ -195,13 +187,13 @@ test("a complete competing block after review prose is still ambiguous", () => {
     ].join("\n");
 
     assert.deepEqual(
-      metadata.frontMatterField(report, "type"),
+      frontMatterField(report, "type"),
       { status: "ambiguous" },
       `${name}: a complete competing block must fail closed`,
     );
     // A key the competing block does not claim stays readable.
     assert.deepEqual(
-      metadata.frontMatterField(report, "number"),
+      frontMatterField(report, "number"),
       { status: "value", value: "42" },
       `${name}: an unclaimed key stays readable`,
     );
@@ -228,7 +220,7 @@ test("a fenced metadata sample is illustration, not a competing record", () => {
     "",
   ].join("\n");
 
-  assert.deepEqual(metadata.frontMatterField(report, "type"), {
+  assert.deepEqual(frontMatterField(report, "type"), {
     status: "value",
     value: "pull_request",
   });
@@ -236,7 +228,7 @@ test("a fenced metadata sample is illustration, not a competing record", () => {
   // The fence must be closed for that to hold: an unterminated fence leaves the
   // rest of the body quoted, so a later block is not reachable as a record either.
   const tildeFenced = report.replace(/```markdown/, "~~~markdown").replace(/```/, "~~~");
-  assert.deepEqual(metadata.frontMatterField(tildeFenced, "type"), {
+  assert.deepEqual(frontMatterField(tildeFenced, "type"), {
     status: "value",
     value: "pull_request",
   });
@@ -251,8 +243,8 @@ for (const body of [
 ]) {
   test(`header-owned metadata survives body quotes: ${JSON.stringify(body)}`, () => {
     const report = `---\ntitle: "Original"\nrepository: openclaw/clawsweeper\n---\n\n## Summary\n\n${body}`;
-    assert.equal(metadata.frontMatterValue(report, "title"), "Original");
-    assert.equal(metadata.frontMatterValue(report, "repository"), "openclaw/clawsweeper");
+    assert.equal(frontMatterValue(report, "title"), "Original");
+    assert.equal(frontMatterValue(report, "repository"), "openclaw/clawsweeper");
   });
 }
 
@@ -266,18 +258,18 @@ for (const prefix of [
 ]) {
   test(`unfenced competing records fail closed after ${JSON.stringify(prefix)}`, () => {
     const report = `---\ntitle: Original\ntype: pull_request\n---\n\n${prefix}---\ntitle: Competing\nrepository: other/record\nnumber: 999\n---\n`;
-    assert.deepEqual(metadata.frontMatterField(report, "title"), { status: "ambiguous" });
-    assert.equal(metadata.frontMatterValue(report, "type"), "pull_request");
+    assert.deepEqual(frontMatterField(report, "title"), { status: "ambiguous" });
+    assert.equal(frontMatterValue(report, "type"), "pull_request");
   });
 }
 
 test("missing body lookalikes remain ambiguous while genuinely absent fields permit legacy handling", () => {
   for (const body of ["title: Quoted", "```yaml\ntitle: Quoted\n```", "---\ntitle: Quoted\n---"]) {
-    assert.deepEqual(metadata.frontMatterField(`---\nnumber: 321\n---\n\n${body}\n`, "title"), {
+    assert.deepEqual(frontMatterField(`---\nnumber: 321\n---\n\n${body}\n`, "title"), {
       status: "ambiguous",
     });
   }
-  assert.deepEqual(metadata.frontMatterField("---\nnumber: 321\n---\n\nPlain body.\n", "title"), {
+  assert.deepEqual(frontMatterField("---\nnumber: 321\n---\n\nPlain body.\n", "title"), {
     status: "absent",
   });
 });
@@ -285,8 +277,8 @@ test("missing body lookalikes remain ambiguous while genuinely absent fields per
 test("raw empty fields never consume the next line and paired quotes retain their existing decoding", () => {
   for (const value of ["", " ", "\t"]) {
     const report = `---\ntitle:${value}\nrepository: openclaw/clawsweeper\n---\n`;
-    assert.deepEqual(metadata.frontMatterField(report, "title"), { status: "ambiguous" });
-    assert.equal(metadata.frontMatterValue(report, "repository"), "openclaw/clawsweeper");
+    assert.deepEqual(frontMatterField(report, "title"), { status: "ambiguous" });
+    assert.equal(frontMatterValue(report, "repository"), "openclaw/clawsweeper");
   }
   for (const [raw, value] of [
     ['""', ""],
@@ -294,7 +286,7 @@ test("raw empty fields never consume the next line and paired quotes retain thei
     ['"unpaired', '"unpaired'],
     ["'single'", "'single'"],
   ]) {
-    assert.deepEqual(metadata.frontMatterField(`---\ntitle: ${raw}\n---\n`, "title"), {
+    assert.deepEqual(frontMatterField(`---\ntitle: ${raw}\n---\n`, "title"), {
       status: "value",
       value,
     });
@@ -320,18 +312,18 @@ test("literal keys, CRLF, and nested multiline metadata retain top-level ownersh
     "a.c: Quoted",
     "title: Quoted",
   ].join("\r\n");
-  assert.equal(metadata.frontMatterValue(report, "title"), "Original");
-  assert.equal(metadata.frontMatterValue(report, "a.c"), "literal");
-  assert.deepEqual(metadata.frontMatterField(report, "repository"), { status: "absent" });
-  assert.deepEqual(metadata.frontMatterField(report, "aXc"), { status: "absent" });
+  assert.equal(frontMatterValue(report, "title"), "Original");
+  assert.equal(frontMatterValue(report, "a.c"), "literal");
+  assert.deepEqual(frontMatterField(report, "repository"), { status: "absent" });
+  assert.deepEqual(frontMatterField(report, "aXc"), { status: "absent" });
 });
 
 test("cache-control lookalikes cannot disable unique header fields or supply missing cache fields", () => {
   const report =
     "---\nreview_cache_hit: false\nreview_policy: current\n---\n\n## Summary\n\nreview_cache_hit: true\nreview_policy: quoted\nreview_structural_fingerprint: body-only\n";
-  assert.equal(metadata.frontMatterValue(report, "review_cache_hit"), "false");
-  assert.equal(metadata.frontMatterValue(report, "review_policy"), "current");
-  assert.deepEqual(metadata.frontMatterField(report, "review_structural_fingerprint"), {
+  assert.equal(frontMatterValue(report, "review_cache_hit"), "false");
+  assert.equal(frontMatterValue(report, "review_policy"), "current");
+  assert.deepEqual(frontMatterField(report, "review_structural_fingerprint"), {
     status: "ambiguous",
   });
 });
@@ -339,10 +331,10 @@ test("cache-control lookalikes cannot disable unique header fields or supply mis
 test("false fence closers cannot conceal a later unfenced competing record", () => {
   const quoted = "```yaml\n    ```\n~~~\n```not-a-close\n---\ntitle: Quoted\n---\n```\n";
   const header = "---\ntitle: Original\ntype: pull_request\n---\n\n";
-  assert.equal(metadata.frontMatterValue(header + quoted, "title"), "Original");
+  assert.equal(frontMatterValue(header + quoted, "title"), "Original");
   const competing = header + quoted + "\nProse.\n---\ntitle: Competing\n---\n";
-  assert.deepEqual(metadata.frontMatterField(competing, "title"), { status: "ambiguous" });
-  assert.equal(metadata.frontMatterValue(competing, "type"), "pull_request");
+  assert.deepEqual(frontMatterField(competing, "title"), { status: "ambiguous" });
+  assert.equal(frontMatterValue(competing, "type"), "pull_request");
 });
 
 test("metadata fragments cannot be hidden by pseudo-fences or metadata comments", () => {
@@ -351,8 +343,17 @@ test("metadata fragments cannot be hidden by pseudo-fences or metadata comments"
     "``yaml\ntitle: Competing\n---\n",
     "---\n# Record metadata\ntitle: Competing\n---\n",
   ]) {
-    assert.deepEqual(metadata.frontMatterField(`---\ntitle: Original\n---\n${fragment}`, "title"), {
+    assert.deepEqual(frontMatterField(`---\ntitle: Original\n---\n${fragment}`, "title"), {
       status: "ambiguous",
     });
+  }
+});
+
+test("section writes keep replacement patterns in model text literal", () => {
+  const report = "---\nnumber: 1\n---\n\n## Summary\n\nOld.\n\n## Evidence\n\nKept.\n";
+  for (const value of ["$1 and $& and $` and $'", "Run `echo $1`."]) {
+    const next = replaceSectionValue(report, "Summary", value);
+    assert.equal(sectionValue(next, "Summary"), value);
+    assert.equal(sectionValue(next, "Evidence"), "Kept.");
   }
 });

@@ -34,6 +34,7 @@ import {
   serializePrHydrationSnapshot,
 } from "./pr-hydration-snapshot.js";
 import { parseNextStep } from "./clawsweeper-next-step.js";
+import { replaceFrontMatterValue } from "./report-front-matter.js";
 
 export function localCheckoutAccessForDecision(
   decision: Pick<Decision, "localCheckoutAccess">,
@@ -84,7 +85,6 @@ export function createReportDocumentRendering(
     priorityLabel,
     pullHeadShaFromContext,
     renderReviewContextBudget,
-    replaceFrontMatterValue,
     reviewFindingLocation,
     reviewStructuralPullStateFromContext,
     reviewTelemetryNumber,

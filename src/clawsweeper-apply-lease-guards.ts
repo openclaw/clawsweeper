@@ -5,12 +5,12 @@ import { GitHubRateLimitError } from "./github-retry.js";
 import { freshExactHeadReviewStartLease } from "./repair/comment-router-core.js";
 import { generationReadKey, type LiveReadGeneration } from "./live-read-generation.js";
 import { asRecord } from "./value-coerce.js";
+import { frontMatterValue } from "./report-front-matter.js";
 
 type ActiveApplyMutationLease = { itemNumber: number; lease: AcquiredReviewStartLease } | null;
 
 type ApplyLeaseGuardDependencies = Pick<
   CreateApplyDecisionWorkflowDependencies,
-  | "frontMatterValue"
   | "ghJson"
   | "GitHubRuntimeBudgetError"
   | "issueReviewCommentState"
@@ -44,7 +44,6 @@ export function createApplyLeaseGuards({
   closeDelayMs,
   currentReviewActivityBlock,
   dryRun,
-  frontMatterValue,
   getActiveApplyMutationLease,
   ghJson,
   GitHubRuntimeBudgetError,

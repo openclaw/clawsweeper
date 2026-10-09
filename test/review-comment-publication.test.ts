@@ -122,7 +122,6 @@ function reviewCommentState(comments: () => Record<string, unknown>[]) {
     ghPaged: comments,
     reviewCommentBodyDigest: sha256,
     parseGitHubItemRef: () => ({ repo: "openclaw/openclaw", kind: "pull_request", number: 1 }),
-    frontMatterValue: () => undefined,
     reviewCommentMarker: () => reviewMarker,
     pullHeadShaFromContext: () => headSha,
     pullHeadShaFromReport: () => headSha,
@@ -145,9 +144,6 @@ function reviewCommentPublication(options: {
     ghPaged: options.comments,
     reviewCommentBodyDigest: sha256,
     ensureDir: (path: string) => mkdirSync(path, { recursive: true }),
-    frontMatterValue: () => undefined,
-    replaceFrontMatterValue: (markdown: string) => markdown,
-    sectionValue: () => "",
     sentence: (value: string) => value,
     normalizedLabelSet: () => new Set<string>(),
     sectionLineValue: () => undefined,
@@ -230,12 +226,18 @@ test("review version timestamps round-trip through the durable parser", () => {
     review_lease_owner: "fixture",
     review_lease_comment_id: "20",
   };
+  const report = [
+    "---",
+    ...Object.entries(fields).map(([key, value]) => `${key}: ${value}`),
+    "---",
+    "Review",
+    "",
+  ].join("\n");
   const automation = createReviewCommentAutomation({
-    frontMatterValue: (_markdown: string, key: string) => fields[key],
     pullHeadShaFromReport: () => headSha,
     markerAttributeValue: (value: string) => value.trim().replace(/[^\w./:@-]/g, "_") || "unknown",
   } as never);
-  const versionMarker = automation.reviewVersionMarkerFromReport("report");
+  const versionMarker = automation.reviewVersionMarkerFromReport(report);
   const comment = {
     id: 20,
     user: { login: "clawsweeper[bot]" },
@@ -247,7 +249,7 @@ test("review version timestamps round-trip through the durable parser", () => {
   assert.ok(parsed);
   assert.equal(parsed.reviewedAt, "2026-08-08T18:00:00.000Z");
   assert.equal(Date.parse(parsed.reviewedAt), Date.parse(fields.reviewed_at));
-  const restricted = "---\npublication_policy: record_comment_only\n---\nReview\n";
+  const restricted = report.replace("---\n", "---\npublication_policy: record_comment_only\n");
   assert.equal(automation.reviewAutomationMarkersFromReport(restricted), "");
   assert.equal(automation.reviewVersionMarkerFromReport(restricted), versionMarker);
 });
@@ -326,9 +328,6 @@ test("oversized durable review publication replaces ready state with a verified 
       ghPaged: () => [],
       reviewCommentBodyDigest: sha256,
       ensureDir: (path: string) => mkdirSync(path, { recursive: true }),
-      frontMatterValue: () => undefined,
-      replaceFrontMatterValue: (markdown: string) => markdown,
-      sectionValue: () => "",
       sentence: (value: string) => value,
       normalizedLabelSet: () => new Set<string>(),
       sectionLineValue: () => undefined,
@@ -620,7 +619,6 @@ test("newest exact durable comment wins over older trusted duplicates", () => {
     ghPaged: () => [],
     reviewCommentBodyDigest: sha256,
     parseGitHubItemRef: () => ({ repo: "openclaw/openclaw", kind: "pull_request", number: 1 }),
-    frontMatterValue: () => undefined,
     reviewCommentMarker: () => reviewMarker,
     pullHeadShaFromContext: () => headSha,
     pullHeadShaFromReport: () => headSha,

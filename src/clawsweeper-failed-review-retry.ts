@@ -29,6 +29,13 @@ import type {
 } from "./clawsweeper-types.js";
 import { UserFacingCommandError } from "./command.js";
 import type { RepositoryProfile } from "./repository-profiles.js";
+import {
+  appendSectionValue,
+  frontMatterValue,
+  replaceFrontMatterValue,
+  replaceSectionValue,
+  sectionValue,
+} from "./report-front-matter.js";
 
 type RetryRuntimeBudgetError = Error & { reason: string };
 type RetryDispatchError = Error & {
@@ -38,7 +45,6 @@ type RetryDispatchError = Error & {
 
 interface FailedReviewRetryDependencies {
   root: string;
-  appendSectionValue: (markdown: string, heading: string, value: string) => string;
   codexFailureReason: (detail: string) => string;
   defaultItemsDir: () => string;
   effectiveReviewStatus: (markdown: string) => string;
@@ -63,7 +69,6 @@ interface FailedReviewRetryDependencies {
   };
   failedReviewRetryRevisionForReport: (markdown: string) => FailedReviewRetryRevision | null;
   fetchItem: (number: number) => { item: Item; state: string };
-  frontMatterValue: (markdown: string, key: string) => string | undefined;
   ghRawOnceWithCheckpoint: (
     args: string[],
     onBeforeRun: () => void,
@@ -81,8 +86,6 @@ interface FailedReviewRetryDependencies {
   lockedConversationApplyReason: (item: Pick<Item, "activeLockReason" | "locked">) => string | null;
   markdownFiles: (directory: string) => string[];
   numberForMarkdownFile: (file: string) => number;
-  replaceFrontMatterValue: (markdown: string, key: string, value: string) => string;
-  replaceSectionValue: (markdown: string, heading: string, value: string) => string;
   repoFromArgs: (args: Args) => RepositoryProfile;
   repoRelativePath: (filePath: string) => string;
   reportItemKind: (markdown: string) => ItemKind | undefined;
@@ -92,7 +95,6 @@ interface FailedReviewRetryDependencies {
     left: FailedReviewRetryRevision,
     right: FailedReviewRetryRevision,
   ) => boolean;
-  sectionValue: (markdown: string, heading: string) => string;
   storedFailedReviewRetryRevision: (markdown: string) => FailedReviewRetryRevision | null;
   targetRepo: () => string;
   withGitHubRuntimeBudget: <T>(budget: GitHubRuntimeBudget, operation: () => T) => T;
@@ -100,7 +102,6 @@ interface FailedReviewRetryDependencies {
 
 export function createFailedReviewRetryWorkflow({
   root,
-  appendSectionValue,
   codexFailureReason,
   defaultItemsDir,
   effectiveReviewStatus,
@@ -111,7 +112,6 @@ export function createFailedReviewRetryWorkflow({
   failedReviewRetryResultRevision,
   failedReviewRetryRevisionForReport,
   fetchItem,
-  frontMatterValue,
   ghRawOnceWithCheckpoint,
   ghWithRetry,
   isDispatchError,
@@ -123,15 +123,12 @@ export function createFailedReviewRetryWorkflow({
   lockedConversationApplyReason,
   markdownFiles,
   numberForMarkdownFile,
-  replaceFrontMatterValue,
-  replaceSectionValue,
   repoFromArgs,
   repoRelativePath,
   reportItemKind,
   reviewLeaseRevisionFromReport,
   reviewLedger,
   sameFailedReviewRetryRevision,
-  sectionValue,
   storedFailedReviewRetryRevision,
   targetRepo,
   withGitHubRuntimeBudget,

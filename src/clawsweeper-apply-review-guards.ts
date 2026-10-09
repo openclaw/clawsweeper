@@ -7,13 +7,13 @@ import type {
   ItemContext,
   PrCloseCoverageProofGateBlock,
 } from "./clawsweeper-types.js";
+import { replaceFrontMatterValue } from "./report-front-matter.js";
 
 type ApplyReviewGuardDependencies = Pick<
   CreateApplyDecisionWorkflowDependencies,
   | "applyClosedUnmergedCanonicalBlockedReport"
   | "canonicalPullRequestCommentSyncBlock"
   | "isExactEventSourceRevisionChange"
-  | "replaceFrontMatterValue"
   | "reviewCommentHasCloseVerdictForCanonical"
   | "staleCanonicalPullRequestNumber"
   | "staleReviewCommentSyncReason"
@@ -60,7 +60,6 @@ export function createApplyReviewGuards(
     applyClosedUnmergedCanonicalBlockedReport,
     canonicalPullRequestCommentSyncBlock,
     isExactEventSourceRevisionChange,
-    replaceFrontMatterValue,
     reviewCommentHasCloseVerdictForCanonical,
     staleCanonicalPullRequestNumber,
     staleReviewCommentSyncReason,

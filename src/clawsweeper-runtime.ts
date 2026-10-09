@@ -122,6 +122,7 @@ import type {
   RootCauseNormalizationItem,
   SecurityConcern,
 } from "./clawsweeper-types.js";
+import { frontMatterValue } from "./report-front-matter.js";
 export {
   authorPrBudgetAgeSkipReason,
   closeReasonApplyAgeSkipReason,
@@ -276,7 +277,6 @@ const sweepStatus = createSweepStatus({
 });
 export const { sweepStatusApplyHealthForTest } = sweepStatus;
 const repositoryPaths = createRepositoryPaths({
-  frontMatterValue: (...args) => frontMatterValue(...args),
   RECORDS_ROOT,
   repoRelativePath,
   ROOT,
@@ -468,7 +468,6 @@ export const {
   reviewReportCanPromoteToCloseForTest,
   shouldSyncReviewComment,
 } = recordMetadata;
-const { frontMatterStringArray, frontMatterValue } = recordMetadata;
 
 const reportParser = createReportParser({
   agentsPolicyStatusLine: (...args) => agentsPolicyStatusLine(...args),
@@ -504,7 +503,6 @@ const reportRealBehaviorProofPolicy = createRealBehaviorProofPolicy({
 });
 
 const labelPolicy = createLabelPolicy({
-  frontMatterValue,
   isAutomationReportAuthor,
   mergeRiskOptionsFromReport,
   pullRequestReviewReadinessFromReport: (markdown) =>
@@ -784,7 +782,6 @@ const statusContext = createStatusContext({
   markdownRepository,
   ghJson,
   GitHubRuntimeBudgetError,
-  frontMatterValue,
   numberOrUndefined,
   recordOrUndefined,
 });
@@ -859,7 +856,6 @@ const reviewPresentation = createReviewPresentation({
   normalizeEvidence: repositoryLinks.normalizeEvidence,
   docsPageUrl,
   fileUrl,
-  frontMatterStringArray,
   hasRepairLoopPauseLabel,
   isCommitSha,
   latestFileUrl,
@@ -1405,9 +1401,6 @@ const {
 
 const liveProofAttachDependencies = {
   reportLiveProofPlan: reportParser.reportLiveProofPlan,
-  frontMatterValue: recordMetadata.frontMatterValue,
-  sectionValue: recordMetadata.sectionValue,
-  replaceSectionValue: recordMetadata.replaceSectionValue,
   reviewSections: REVIEW_SECTIONS,
   renderReviewCommentFromReport: reportOrchestration.renderReviewCommentFromReport,
   markedReviewCommentBody: reviewCommentWorkflow.markedReviewCommentBody,
@@ -1448,7 +1441,6 @@ function liveProofReviewCommand(args: Args): void {
     repo,
   };
   const dependencies = {
-    frontMatterValue: recordMetadata.frontMatterValue,
     materializePullRequestReviewTree: (
       options: Parameters<typeof contextHydration.materializePullRequestReviewTree>[0],
     ) =>

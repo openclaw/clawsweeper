@@ -5,9 +5,8 @@ import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { parseArgs, parseJob, repoRoot, validateJob } from "./lib.js";
 import { ghJsonBestEffort } from "./github-cli.js";
-import { escapeRegExp } from "./text-utils.js";
 import { renderJobIntentFrontmatter } from "./job-intent.js";
-import { readReportFrontMatterField } from "../report-front-matter.js";
+import { frontMatterStringArray, frontMatterValue, sectionValue } from "../report-front-matter.js";
 
 const args = parseArgs(process.argv.slice(2));
 const fromReport = args["from-report"] ?? args.from_report;
@@ -241,45 +240,17 @@ function sanitizeClusterId(value: JsonValue) {
 function parseClawSweeperReport(filePath: string) {
   const absolute = path.resolve(filePath);
   const markdown = fs.readFileSync(absolute, "utf8");
+  const prompt = sectionValue(markdown, "ClawSweeper Work Prompt");
   return {
     repo: frontMatterValue(markdown, "repository") || undefined,
     refs: [
       `#${frontMatterValue(markdown, "number")}`,
-      ...frontMatterArray(markdown, "work_cluster_refs"),
+      ...frontMatterStringArray(markdown, "work_cluster_refs"),
     ].filter((ref: JsonValue) => /^#?[0-9]+$/.test(ref)),
-    prompt: sectionValue(markdown, "ClawSweeper Work Prompt"),
-    validation: frontMatterArray(markdown, "work_validation"),
-    likelyFiles: frontMatterArray(markdown, "work_likely_files"),
+    prompt: prompt === "_No ClawSweeper prompt drafted._" ? "" : prompt,
+    validation: frontMatterStringArray(markdown, "work_validation"),
+    likelyFiles: frontMatterStringArray(markdown, "work_likely_files"),
   };
-}
-
-function frontMatterValue(markdown: string, key: string) {
-  const field = readReportFrontMatterField(markdown, key);
-  return field.status === "value" ? field.value.trim().replace(/^"|"$/g, "") : "";
-}
-
-function frontMatterArray(markdown: string, key: string) {
-  const value = frontMatterValue(markdown, key);
-  if (!value || value === "none") return [];
-  try {
-    const parsed = JSON.parse(value);
-    if (Array.isArray(parsed))
-      return parsed.filter((entry: JsonValue) => typeof entry === "string");
-  } catch {
-    return value
-      .split(",")
-      .map((entry: JsonValue) => entry.trim())
-      .filter(Boolean);
-  }
-  return [];
-}
-
-function sectionValue(markdown: string, heading: string) {
-  const match = markdown.match(
-    new RegExp(`(?:^|\\n)## ${escapeRegExp(heading)}\\n\\n([\\s\\S]*?)(?=\\n## |\\n?$)`),
-  );
-  const value = match?.[1]?.trim() ?? "";
-  return value === "_No ClawSweeper prompt drafted._" ? "" : value;
 }
 
 function findExistingWork({ repo, branch, clusterId }: LooseRecord) {

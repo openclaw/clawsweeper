@@ -1,7 +1,8 @@
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
-import { escapeRegExp, truncateText } from "./clawsweeper-text.js";
+import { truncateText } from "./clawsweeper-text.js";
+import { escapeRegExp } from "./clawsweeper-markdown.js";
 import { querySqliteRows, querySqliteScalar } from "./sqlite-readonly.js";
 import { envFlagDisabled, envFlagEnabled } from "./policy-flags.js";
 import type {
@@ -12,6 +13,7 @@ import type {
   LocalRelatedTitleEntry,
 } from "./clawsweeper-types.js";
 import { asRecord, login } from "./value-coerce.js";
+import { frontMatterValue } from "./report-front-matter.js";
 
 const CREDENTIAL_URI =
   /(https?:\/\/)[\w!#$%&()*+,\-./;<=>?@[\\\]^_{|}~]{0,50}:[\w!#$%&()*+,\-./:;<=>?[\\\]^_{|}~]{3,50}@([a-zA-Z0-9.-]+)/g;
@@ -38,7 +40,6 @@ interface RelatedContextDependencies {
   ghJsonOnce: <T>(args: string[], timeoutMs: number) => T;
   compactIssue: (value: unknown) => unknown;
   compactPullRequest: (value: unknown) => unknown;
-  frontMatterValue: (markdown: string, key: string) => string | undefined;
   reviewSectionValue: (markdown: string, section: "summary") => string;
   effectiveReviewStatus: (markdown: string) => string;
   displayTitle: (title: string) => string;
@@ -59,7 +60,6 @@ export function createRelatedContext({
   ghJsonOnce,
   compactIssue,
   compactPullRequest,
-  frontMatterValue,
   reviewSectionValue,
   effectiveReviewStatus,
   displayTitle,

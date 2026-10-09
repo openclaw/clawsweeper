@@ -73,10 +73,6 @@ export interface CreateReportOrchestrationDependencies {
   regressionProvenanceFromReport: (markdown: string) => PublicRegressionProvenance | null;
   formatReviewFreshnessTimestamp: (iso: string | undefined) => string;
   formatTimestamp: (iso: string | undefined) => string;
-  frontMatterBoolean: (markdown: string, key: string) => boolean;
-  frontMatterJsonArray: (markdown: string, key: string) => unknown[];
-  frontMatterStringArray: (markdown: string, key: string) => string[];
-  frontMatterValue: (markdown: string, key: string) => string | undefined;
   ghJson: <T>(args: string[]) => T;
   ghObservedMutationCommand: (options: {
     identity: string;
@@ -312,8 +308,6 @@ export interface CreateReportOrchestrationDependencies {
     timeline?: unknown[],
   ) => Pick<PullRequestLiveActivity, "headSha" | "headActivityAtMs">;
   repairLoopPassModeFromReport: (markdown: string) => "" | "autofix" | "automerge";
-  replaceFrontMatterValue: (markdown: string, key: string, value: string) => string;
-  replaceSectionValue: (markdown: string, heading: string, value: string) => string;
   repoRelativePath: (path: string) => string;
   reportAgentsPolicyStatus: (markdown: string) => AgentsPolicyStatus | undefined;
   reportEvidence: (markdown: string) => Evidence[];
@@ -377,7 +371,6 @@ export interface CreateReportOrchestrationDependencies {
   runtimeBudgetExceeded: (startedAtMs: number, maxRuntimeMs: number, nowMs: number) => boolean;
   sanitizeArchitectureDiagram: (value: string) => string;
   sectionLineValue: (section: string, label: string) => string | undefined;
-  sectionValue: (markdown: string, heading: string) => string;
   securityConcernDetailedLine: (concern: SecurityConcern) => string;
   securityConcernLocation: (concern: SecurityConcern) => string;
   securityConcernSummaryLine: (concern: SecurityConcern) => string;

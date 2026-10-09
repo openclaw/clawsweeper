@@ -11,13 +11,13 @@ import {
 import { repositoryManagedPullRequestCloseReason } from "./repository-profiles.js";
 import { STALE_INSUFFICIENT_INFO_MIN_INACTIVE_DAYS } from "./clawsweeper-policy.js";
 import type { ApplyKind, AuthorPrBudgetApplyGate, CloseReason, Item } from "./clawsweeper-types.js";
+import { frontMatterValue } from "./report-front-matter.js";
 
 type ApplyClosePolicyDependencies = Pick<
   CreateApplyDecisionWorkflowDependencies,
   | "abandonedPrApplyBlockReasonSafe"
   | "applyAuthorPrBudgetStateToReport"
   | "closeReasonEnabled"
-  | "frontMatterValue"
   | "ghJson"
   | "issueRecentHumanCommentBlockReasonFromComments"
   | "issueRecentHumanCommentBlockReasonSafe"
@@ -74,7 +74,7 @@ export function evaluateApplyCloseReasonPolicy(
         try {
           const reason = oversizedPullRequestLiveBlockReason(
             parseOversizedPullRequestEvidence(
-              dependencies.frontMatterValue(options.markdown, "oversized_pull_request"),
+              frontMatterValue(options.markdown, "oversized_pull_request"),
             ),
             dependencies.ghJson(["api", `repos/${options.item.repo}/pulls/${options.number}`]),
           );
@@ -135,7 +135,7 @@ export function evaluateApplyCloseReasonPolicy(
         options.number,
         options.item,
         options.storedUpdatedAt,
-        dependencies.frontMatterValue(options.markdown, "reviewed_at"),
+        frontMatterValue(options.markdown, "reviewed_at"),
       );
       return reason ? blocked(reason) : allowed();
     }

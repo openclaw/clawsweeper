@@ -49,6 +49,7 @@ import { isGitHubNotFoundError } from "./github-retry.js";
 import { type RepositoryProfile } from "./repository-profiles.js";
 import { compareCodeUnits, stableJson } from "./stable-json.js";
 import { asRecord, login, nonBlankStringOrUndefined } from "./value-coerce.js";
+import { frontMatterValue, replaceFrontMatterValue } from "./report-front-matter.js";
 
 const REVIEW_TREE_METADATA_JQ =
   '{truncated, tree: (.tree | if type == "array" then map(if type == "object" then {type, sha, size} else . end) else . end)}';
@@ -64,7 +65,6 @@ interface CreateContextHydrationDependencies {
   displayTitle: (title: string) => string;
   effectiveReviewStatus: (markdown: string) => string;
   fetchIssueReviewComments: (number: number) => Record<string, unknown>[];
-  frontMatterValue: (markdown: string, key: string) => string | undefined;
   ghJson: <T>(args: string[], options?: GitHubDeadlineOptions) => T;
   ghJsonOnce: <T>(args: string[], timeoutMs: number) => T;
   ghJsonEach: <T>(requests: readonly string[][]) => GitHubJsonResult<T>[];
@@ -79,7 +79,6 @@ interface CreateContextHydrationDependencies {
   normalizeAuthorAssociation: (value: unknown) => string;
   normalizeLabelName: (label: string) => string;
   numberForMarkdownFile: (file: string) => number;
-  replaceFrontMatterValue: (markdown: string, key: string, value: string) => string;
   repoRelativePath: (path: string) => string;
   reportUrl: (path?: string) => string;
   reviewCommentBodyDigest: (body: string) => string;
@@ -122,7 +121,6 @@ export function createContextHydration(dependencies: CreateContextHydrationDepen
     displayTitle,
     effectiveReviewStatus,
     fetchIssueReviewComments,
-    frontMatterValue,
     ghJson,
     ghJsonOnce,
     ghJsonEach,
@@ -137,7 +135,6 @@ export function createContextHydration(dependencies: CreateContextHydrationDepen
     normalizeAuthorAssociation,
     normalizeLabelName,
     numberForMarkdownFile,
-    replaceFrontMatterValue,
     repoRelativePath,
     reportUrl,
     reviewCommentBodyDigest,
@@ -584,7 +581,6 @@ export function createContextHydration(dependencies: CreateContextHydrationDepen
     ghJsonEach,
     compactIssue,
     compactPullRequest,
-    frontMatterValue,
     reviewSectionValue,
     effectiveReviewStatus,
     displayTitle: (title) => displayTitle(title),

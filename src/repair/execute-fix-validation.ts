@@ -10,6 +10,7 @@ import {
 import { HUMAN_REVIEW_LABEL, MANUAL_ONLY_LABEL } from "./exact-review-guard-labels.js";
 import { validateRepairContractShape } from "./repair-contract.js";
 import { slug } from "./text-utils.js";
+import { escapeRegExp } from "../clawsweeper-markdown.js";
 
 const GITHUB_PR_TITLE_MAX_LENGTH = 256;
 
@@ -211,9 +212,7 @@ function isTrustedPrRepairIntake(frontmatter: LooseRecord, fixArtifact: LooseRec
   if (!Array.isArray(fixArtifact.source_prs) || fixArtifact.source_prs.length !== 1) return false;
   const sourcePr = String(fixArtifact.source_prs[0] ?? "").toLowerCase();
   const sourceMatch = sourcePr.match(
-    new RegExp(
-      `^https://github\\.com/${repo.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}/pull/([1-9]\\d*)$`,
-    ),
+    new RegExp(`^https://github\\.com/${escapeRegExp(repo)}/pull/([1-9]\\d*)$`),
   );
   if (!sourceMatch) return false;
   const sourceRef = `#${sourceMatch[1]}`;

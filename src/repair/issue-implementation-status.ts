@@ -3,7 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 
-import { escapeRegExp as escapeRegex } from "../clawsweeper-text.js";
+import { escapeRegExp } from "../clawsweeper-markdown.js";
 import { DEFAULT_TRUSTED_BOTS } from "./config.js";
 import { repoSlug } from "./comment-router-core.js";
 import { isAllowedMutationActor, writePayload } from "./comment-router-utils.js";
@@ -278,7 +278,7 @@ function validateRepo(repo: string) {
 
 function validatePrUrl(prUrl: string, repo: string) {
   if (!prUrl) return;
-  if (!new RegExp(`^https://github\\.com/${escapeRegex(repo)}/pull/[1-9][0-9]*$`).test(prUrl)) {
+  if (!new RegExp(`^https://github\\.com/${escapeRegExp(repo)}/pull/[1-9][0-9]*$`).test(prUrl)) {
     throw new Error(`invalid pull request URL: ${prUrl}`);
   }
 }

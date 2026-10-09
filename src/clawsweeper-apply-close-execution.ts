@@ -30,6 +30,11 @@ import {
 } from "./github-retry.js";
 import { stableJson } from "./stable-json.js";
 import { asRecord } from "./value-coerce.js";
+import {
+  frontMatterValue,
+  replaceFrontMatterValue,
+  replaceSectionValue,
+} from "./report-front-matter.js";
 
 type ApplyCloseExecutionDependencies = Pick<
   CreateApplyDecisionWorkflowDependencies,
@@ -51,7 +56,6 @@ type ApplyCloseExecutionDependencies = Pick<
   | "ensureRuntimeDelayFits"
   | "fetchIssueReviewComments"
   | "fetchItem"
-  | "frontMatterValue"
   | "GitHubRuntimeBudgetError"
   | "ghJson"
   | "implementedOnMainPullRequestProvenanceApplyBlock"
@@ -59,8 +63,6 @@ type ApplyCloseExecutionDependencies = Pick<
   | "lowSignalUnmergeablePrApplyBlockReasonSafe"
   | "normalizeLabelName"
   | "removeCurrentCursorTraceItem"
-  | "replaceFrontMatterValue"
-  | "replaceSectionValue"
   | "reportDecision"
   | "sha256"
   | "sleepMs"
@@ -194,15 +196,12 @@ export function executeApplyClose(
     ensureRuntimeDelayFits,
     fetchIssueReviewComments,
     fetchItem,
-    frontMatterValue,
     GitHubRuntimeBudgetError,
     ghJson,
     implementedOnMainPullRequestProvenanceApplyBlock,
     lowSignalUnmergeablePrApplyBlockReasonSafe,
     normalizeLabelName,
     removeCurrentCursorTraceItem,
-    replaceFrontMatterValue,
-    replaceSectionValue,
     reportDecision,
     sha256,
     sleepMs,

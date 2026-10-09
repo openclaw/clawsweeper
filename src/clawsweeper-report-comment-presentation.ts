@@ -31,6 +31,7 @@ import { neutralizeReviewControlMarkers, renderReviewHistorySection } from "./re
 import type { CreateReportRenderingDependencies } from "./clawsweeper-report-rendering-dependencies.js";
 import type { createReportContextRendering } from "./clawsweeper-report-context.js";
 import type { createReportCommentHelpers } from "./clawsweeper-report-comment-helpers.js";
+import { frontMatterStringArray, frontMatterValue } from "./report-front-matter.js";
 
 const PRODUCT_KIND_TEXT: Record<ProductReviewKind, string> = {
   bug_fix: "Bug fix",
@@ -80,8 +81,6 @@ export function createReportCommentPresentation(
     closeReviewLineFromReport,
     collapsedDetailsBlock,
     confidenceText,
-    frontMatterStringArray,
-    frontMatterValue,
     isReportNoneList,
     labelJustificationsFromPublicReport,
     labelJustificationsMarkdown,

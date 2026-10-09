@@ -39,6 +39,12 @@ import type { createReportOrchestrationFoundation } from "./clawsweeper-orchestr
 import type { createReportRendering } from "./clawsweeper-report-rendering.js";
 import { asRecord, nonBlankStringOrUndefined } from "./value-coerce.js";
 import { parseIsoMs } from "./iso-time.js";
+import {
+  frontMatterStringArray,
+  frontMatterValue,
+  replaceFrontMatterValue,
+  replaceSectionValue,
+} from "./report-front-matter.js";
 
 export function createPullRequestPromotionFacts(
   dependencies: CreateReportOrchestrationDependencies &
@@ -50,8 +56,6 @@ export function createPullRequestPromotionFacts(
     defaultRootCauseCluster,
     eventTimestampMs,
     fixedPullRequestFromReport,
-    frontMatterStringArray,
-    frontMatterValue,
     ghJson,
     impactLabelsFromReport,
     isAfterReview,
@@ -65,8 +69,6 @@ export function createPullRequestPromotionFacts(
     normalizeLabelName,
     parseGitHubItemRef,
     renderCloseCommentFromReport,
-    replaceFrontMatterValue,
-    replaceSectionValue,
     repoUrlFor,
     reportAgentsPolicyStatus,
     reportEvidence,

@@ -19,7 +19,6 @@ export interface ReviewPlanningDependencies {
   itemSourceRevisionSha256: (issue: unknown, comments?: unknown[]) => string;
   normalizeAuthorAssociation: (value: unknown) => string;
   shouldPlanItem: (item: Pick<Item, "authorAssociation" | "labels">) => boolean;
-  frontMatterValue: (markdown: string, key: string) => string | undefined;
   buildExistingReviewIndex: (itemsDir: string) => ExistingReviewIndex;
   indexedExistingReview: (
     item: Pick<Item, "number" | "repo">,

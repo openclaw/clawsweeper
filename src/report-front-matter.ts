@@ -1,4 +1,4 @@
-import { markdownFenceStateAfterLine } from "./clawsweeper-markdown.ts";
+import { escapeRegExp, markdownFenceStateAfterLine } from "./clawsweeper-markdown.ts";
 
 export type FrontMatterField =
   | { status: "absent" }
@@ -83,4 +83,91 @@ export function readReportFrontMatterField(markdown: string, key: string): Front
     return { status: parsed.bodyKeys.has(key) ? "ambiguous" : "absent" };
   }
   return { status: "value", value: values[0]! };
+}
+
+// Decoded field: trimmed, with one pair of enclosing double quotes removed. An empty
+// value is ambiguous.
+export function frontMatterField(markdown: string, key: string): FrontMatterField {
+  const field = readReportFrontMatterField(markdown, key);
+  if (field.status !== "value") return field;
+  const value = field.value.trim();
+  if (!value) return { status: "ambiguous" };
+  return {
+    status: "value",
+    value: value.startsWith('"') && value.endsWith('"') ? value.slice(1, -1) : value,
+  };
+}
+
+export function frontMatterValue(markdown: string, key: string): string | undefined {
+  const field = frontMatterField(markdown, key);
+  return field.status === "value" ? field.value : undefined;
+}
+
+// A list value is a JSON array of strings. Older reports use a comma-separated list.
+export function parseFrontMatterStringArray(value: string | undefined): string[] {
+  if (!value || value === "none") return [];
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    if (Array.isArray(parsed)) {
+      return parsed.filter((entry): entry is string => typeof entry === "string");
+    }
+  } catch {
+    // Not JSON: read the comma-separated form.
+  }
+  return value
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+}
+
+export function frontMatterStringArray(markdown: string, key: string): string[] {
+  return parseFrontMatterStringArray(frontMatterValue(markdown, key));
+}
+
+export function frontMatterJsonArray(markdown: string, key: string): unknown[] {
+  const value = frontMatterValue(markdown, key);
+  if (!value || value === "none") return [];
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+export function frontMatterBoolean(markdown: string, key: string): boolean {
+  return /^true$/i.test(frontMatterValue(markdown, key) ?? "");
+}
+
+// `value` is record data, for example `JSON.stringify(item.labels)` with GitHub label
+// names. A replacement string would expand `$&`, `` $` `` and `$'` against the match, so
+// a replacement function inserts the text literally.
+export function replaceFrontMatterValue(markdown: string, key: string, value: string): string {
+  const line = `${key}: ${value}`;
+  const pattern = new RegExp(`^${escapeRegExp(key)}:\\s*.*$`, "m");
+  if (pattern.test(markdown)) return markdown.replace(pattern, () => line);
+  return markdown.replace(/^---\n/, () => `---\n${line}\n`);
+}
+
+function sectionPattern(heading: string): RegExp {
+  return new RegExp(`((?:^|\\n)## ${escapeRegExp(heading)}\\n\\n)([\\s\\S]*?)(?=\\n## |\\n?$)`);
+}
+
+export function sectionValue(markdown: string, heading: string): string {
+  return markdown.match(sectionPattern(heading))?.[2]?.trim() ?? "";
+}
+
+// `value` is often model text. A replacement function keeps `$1` and `$&` literal.
+export function replaceSectionValue(markdown: string, heading: string, value: string): string {
+  const pattern = sectionPattern(heading);
+  if (pattern.test(markdown)) {
+    return markdown.replace(pattern, (_match, prefix: string) => `${prefix}${value.trim()}\n`);
+  }
+  return `${markdown.trimEnd()}\n\n## ${heading}\n\n${value.trim()}\n`;
+}
+
+export function appendSectionValue(markdown: string, heading: string, value: string): string {
+  const existing = sectionValue(markdown, heading);
+  const nextValue = existing ? `${existing.trimEnd()}\n\n${value.trim()}` : value.trim();
+  return replaceSectionValue(markdown, heading, nextValue);
 }

@@ -8,6 +8,7 @@ import type {
   ReviewRuntime,
 } from "./clawsweeper-types.js";
 import type { CreateReportRenderingDependencies } from "./clawsweeper-report-rendering-dependencies.js";
+import { frontMatterStringArray, frontMatterValue } from "./report-front-matter.js";
 
 export function createReportContextRendering(dependencies: CreateReportRenderingDependencies) {
   const {
@@ -15,8 +16,6 @@ export function createReportContextRendering(dependencies: CreateReportRendering
     fixedInReportText,
     fixedInText,
     formattedMarkdownList,
-    frontMatterStringArray,
-    frontMatterValue,
     inlineCode,
     linkedSha,
     markdownLink,

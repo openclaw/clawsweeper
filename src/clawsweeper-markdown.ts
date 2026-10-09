@@ -1,5 +1,9 @@
 /** Fence-aware parsing for renderer-owned ClawSweeper review sections and markers. */
 
+export function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 function markdownFenceDelimiter(line: string): string | null {
   return line.trimStart().match(/^(?:`{3,}|~{3,})/)?.[0] ?? null;
 }
@@ -32,7 +36,7 @@ export function markdownTopLevelSection(body: string, heading: string): string {
 }
 
 function markdownSectionInternal(body: string, heading: string, topLevelOnly: boolean): string {
-  const escaped = heading.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const escaped = escapeRegExp(heading);
   const headingPattern = new RegExp(
     `^(?:\\*\\*${escaped}\\*\\*|#{1,6}[ \\t]+${escaped})[ \\t]*$`,
     "i",
@@ -221,7 +225,7 @@ export function sectionLabeledValue(body: string, heading: string, prefix: strin
     .find((line) => line.toLowerCase().startsWith(lowerPrefix));
   if (plain) return plain;
   const label = prefix.replace(/:$/, "");
-  const escaped = label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const escaped = escapeRegExp(label);
   const tableRow = section.match(
     new RegExp(`^\\|\\s*\\*\\*${escaped}\\*\\*\\s*\\|\\s*(.*?)\\s*\\|`, "im"),
   );

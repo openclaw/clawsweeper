@@ -1,5 +1,5 @@
 import type { PullRequestRef } from "./clawsweeper-types.js";
-import { escapeRegExp } from "./clawsweeper-text.js";
+import { escapeRegExp } from "./clawsweeper-markdown.js";
 
 export interface PullRequestReferenceParserDependencies {
   targetRepo: () => string;

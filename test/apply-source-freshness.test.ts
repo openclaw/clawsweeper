@@ -142,8 +142,6 @@ function sourceFreshness(options: {
         throw new Error("acknowledgement witness must reuse the apply comment read");
       },
       freshPullRequestReviewHead: () => true,
-      frontMatterValue: (markdown: string, key: string) =>
-        markdown.match(new RegExp(`^${key}: (.*)$`, "m"))?.[1],
       itemSnapshotHash: () => "snapshot",
       recordedLabelSyncCoversUpdate: () => false,
       reviewStartLeaseOwner: () => null,

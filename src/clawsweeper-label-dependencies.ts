@@ -15,8 +15,6 @@ export interface LabelSynchronizationDependencies {
   protectedLabels: (labels: readonly string[]) => string[];
   isBulkFilerExemptAuthorAssociation: (value: unknown) => boolean;
   isBulkFilerExemptRepositoryPermission: (value: unknown) => boolean;
-  frontMatterValue: (markdown: string, key: string) => string | undefined;
-  frontMatterStringArray: (markdown: string, key: string) => string[];
   reportSecurityReview: (markdown: string) => SecurityReview;
   reviewSectionValue: (markdown: string, section: "repairWorkPrompt") => string;
   labelPolicy: ReturnType<typeof createLabelPolicy>;

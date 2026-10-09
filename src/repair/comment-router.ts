@@ -53,7 +53,6 @@ import {
   existingCommandStatusBlocksReplay,
   existingModeStatusBlocksReplay,
   existingRepairLoopModeOutcome,
-  extractMarkdownSection,
   freshExactHeadReviewStartLease,
   isAuthorReadOnlyCommandAllowed,
   isMaintainerCommandAllowed,
@@ -155,7 +154,8 @@ import {
 import { GitHubRateLimitError, ghRetryKind, ghRetryWaitMs } from "../github-retry.js";
 import { issueSourceRevisionSha256 } from "./issue-source-guard.js";
 import { hasSecuritySignal } from "./security-signals.js";
-import { compactText, escapeRegExp } from "./text-utils.js";
+import { compactText } from "./text-utils.js";
+import { escapeRegExp, markdownTopLevelSection } from "../clawsweeper-markdown.js";
 import {
   flushCommandActionEvents,
   recordCommandClaimed,
@@ -480,29 +480,31 @@ async function measureAsync<T>(name: string, fn: () => Promise<T>): Promise<T> {
 }
 
 function reviewFollowupFromCommentBody(body: JsonValue): string | null {
-  const beforeMerge = extractMarkdownSection(body, "Before merge");
+  const text = String(body ?? "");
+  const beforeMerge = markdownTopLevelSection(text, "Before merge");
   if (beforeMerge) {
     // A present Before merge section is authoritative: "None." and fully checked
     // checklists mean no checklist follow-up, and legacy headings elsewhere in the
     // comment (possibly model-injected) must not be consulted. A decision-only
     // review still carries its maintainer question as the follow-up.
     if (/^none[.!]?$/i.test(beforeMerge.trim())) {
-      return extractMarkdownSection(body, "Decision needed");
+      return markdownTopLevelSection(text, "Decision needed") || null;
     }
     const lines = beforeMerge.split(/\r?\n/).map((line) => line.trim());
     const tasks = lines.filter((line) => /^- \[[ xX]\]/.test(line));
     if (tasks.length) {
       return (
         tasks.find((line) => line.startsWith("- [ ]")) ??
-        extractMarkdownSection(body, "Decision needed")
+        (markdownTopLevelSection(text, "Decision needed") || null)
       );
     }
     return beforeMerge;
   }
   return (
-    extractMarkdownSection(body, "Next step before merge") ??
-    extractMarkdownSection(body, "Automerge follow-up") ??
-    extractMarkdownSection(body, "Autofix follow-up")
+    markdownTopLevelSection(text, "Next step before merge") ||
+    markdownTopLevelSection(text, "Automerge follow-up") ||
+    markdownTopLevelSection(text, "Autofix follow-up") ||
+    null
   );
 }
 

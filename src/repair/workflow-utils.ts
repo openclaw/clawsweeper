@@ -1,12 +1,17 @@
 #!/usr/bin/env node
-import { escapeRegExp } from "../clawsweeper-text.js";
+import { escapeRegExp } from "../clawsweeper-markdown.js";
 import type { JsonValue, LooseRecord } from "./json-types.js";
 import fs from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { parseArgs } from "./lib.js";
 import { isJsonObject } from "./json-types.js";
-import { readReportFrontMatterField, type FrontMatterField } from "../report-front-matter.js";
+import {
+  frontMatterField,
+  frontMatterJsonArray,
+  frontMatterValue,
+  sectionValue,
+} from "../report-front-matter.js";
 import { AUTOMATION_LIMITS, WORKER_CONFIG, workerLimit, type WorkerLane } from "../limits.js";
 import {
   fetchExactReviewQueuePressure,
@@ -1409,12 +1414,12 @@ function selectedProposedItemCandidates(
           if (options.itemNumbers && !options.itemNumbers.has(number)) return [];
           const markdown = fs.readFileSync(path.join(itemsDir, name), "utf8");
           if (repoFor(markdown, name) !== options.targetRepo) return [];
-          const type = frontMatterValue(markdown, "type");
+          const type = frontMatterValue(markdown, "type") ?? "";
           if (options.applyKind !== "all" && type && type !== options.applyKind) return [];
           const decision = frontMatterValue(markdown, "decision");
-          const action = frontMatterValue(markdown, "action_taken");
+          const action = frontMatterValue(markdown, "action_taken") ?? "";
           const confidence = frontMatterValue(markdown, "confidence");
-          const reason = frontMatterValue(markdown, "close_reason");
+          const reason = frontMatterValue(markdown, "close_reason") ?? "";
           const selectableClose =
             decision === "close" &&
             confidence === "high" &&
@@ -1469,8 +1474,8 @@ function selectedProposedItemCandidates(
           return [
             {
               number,
-              applyCheckedAt: frontMatterValue(markdown, "apply_checked_at"),
-              reviewedAt: frontMatterValue(markdown, "reviewed_at"),
+              applyCheckedAt: frontMatterValue(markdown, "apply_checked_at") ?? "",
+              reviewedAt: frontMatterValue(markdown, "reviewed_at") ?? "",
               action,
               stage: selectablePromotion
                 ? ("promotion_probe" as const)
@@ -1593,11 +1598,11 @@ function inconsistentOrStaleProposedItemCount(
       if (options.itemNumbers && !options.itemNumbers.has(number)) return false;
       const markdown = fs.readFileSync(path.join(itemsDir, name), "utf8");
       if (repoFor(markdown, name) !== options.targetRepo) return false;
-      const type = frontMatterValue(markdown, "type");
+      const type = frontMatterValue(markdown, "type") ?? "";
       if (options.applyKind !== "all" && type && type !== options.applyKind) return false;
       const action = frontMatterValue(markdown, "action_taken");
       if (action !== "proposed_close" && action !== "retry_pr_close_coverage_proof") return false;
-      const reason = frontMatterValue(markdown, "close_reason");
+      const reason = frontMatterValue(markdown, "close_reason") ?? "";
       if (allowedCloseReasons && !allowedCloseReasons.has(reason)) return false;
       if (
         ALLOWED_CLOSE_REASONS.has(reason) &&
@@ -1810,7 +1815,7 @@ function pullRequestClosePromotionReasons(
 function hasCanonicalPullRequest(markdown: string, targetRepo: string): boolean {
   let cluster: unknown;
   try {
-    cluster = JSON.parse(frontMatterValue(markdown, "root_cause_cluster"));
+    cluster = JSON.parse(frontMatterValue(markdown, "root_cause_cluster") ?? "");
   } catch {
     return false;
   }
@@ -1823,7 +1828,7 @@ function hasCanonicalPullRequest(markdown: string, targetRepo: string): boolean 
 }
 
 function hasRecommendedPauseOrCloseOption(markdown: string): boolean {
-  return jsonArrayFrontMatter(markdown, "merge_risk_options").some((entry) => {
+  return frontMatterJsonArray(markdown, "merge_risk_options").some((entry) => {
     if (!isJsonObject(entry)) return false;
     return entry.category === "pause_or_close" && entry.recommended === true;
   });
@@ -2172,7 +2177,9 @@ function applyCheckedAtForItem(targetRepo: string, itemNumber: number): string {
       .readdirSync(dir)
       .find((entry) => /(?:^|[a-z0-9-]-)\d+\.md$/.test(entry) && numberFor(entry) === itemNumber);
     if (!name) continue;
-    return frontMatterValue(fs.readFileSync(path.join(dir, name), "utf8"), "apply_checked_at");
+    return (
+      frontMatterValue(fs.readFileSync(path.join(dir, name), "utf8"), "apply_checked_at") ?? ""
+    );
   }
   return "";
 }
@@ -2300,7 +2307,7 @@ function commentSyncCandidates(
         frontMatterValue(markdown, "decision") === "close" &&
         frontMatterValue(markdown, "close_reason") === "duplicate_or_superseded" &&
         hasStoredReviewComment;
-      const reviewCommentHash = frontMatterValue(markdown, "review_comment_sha256");
+      const reviewCommentHash = frontMatterValue(markdown, "review_comment_sha256") ?? "";
       const invalidReviewCommentHash = !/^[a-f\d]{64}$/i.test(reviewCommentHash);
       const requiresDurableCommentRepair =
         actionTaken === "retry_stale_canonical_comment_sync" ||
@@ -2552,36 +2559,6 @@ function checkpointNumber(name: string): number {
   return Number(name.match(/\d+/)?.[0] ?? 0);
 }
 
-function frontMatterField(markdown: string, key: string): FrontMatterField {
-  const field = readReportFrontMatterField(markdown, key);
-  if (field.status !== "value") return field;
-  const value = field.value.trim().replace(/^"|"$/g, "");
-  return value ? { status: "value", value } : { status: "ambiguous" };
-}
-
-function frontMatterValue(markdown: string, key: string): string {
-  const field = frontMatterField(markdown, key);
-  return field.status === "value" ? field.value : "";
-}
-
-function jsonArrayFrontMatter(markdown: string, key: string): JsonValue[] {
-  const raw = frontMatterValue(markdown, key);
-  if (!raw) return [];
-  try {
-    const parsed: unknown = JSON.parse(raw);
-    return Array.isArray(parsed) ? parsed : [];
-  } catch {
-    return [];
-  }
-}
-
-function sectionValue(markdown: string, heading: string): string {
-  const match = markdown.match(
-    new RegExp(`(?:^|\\n)## ${escapeRegExp(heading)}\\n\\n([\\s\\S]*?)(?=\\n## |\\n?$)`),
-  );
-  return match?.[1]?.trim() ?? "";
-}
-
 function sectionLineValue(markdown: string, key: string): string {
   const match = markdown.match(new RegExp(`^${escapeRegExp(key)}:\\s*(.+)$`, "m"));
   return match?.[1]?.trim() ?? "";
@@ -2619,9 +2596,9 @@ function allowedForTarget(
   return allowedReasons.has(reason);
 }
 
-function olderThan(iso: string, milliseconds: number): boolean {
+function olderThan(iso: string | undefined, milliseconds: number): boolean {
   if (milliseconds <= 0) return true;
-  const parsed = Date.parse(iso);
+  const parsed = Date.parse(iso ?? "");
   return Number.isFinite(parsed) && Date.now() - parsed > milliseconds;
 }
 

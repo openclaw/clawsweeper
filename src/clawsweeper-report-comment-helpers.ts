@@ -45,6 +45,7 @@ import {
 import type { CreateReportRenderingDependencies } from "./clawsweeper-report-rendering-dependencies.js";
 import type { createReportContextRendering } from "./clawsweeper-report-context.js";
 import { parseIsoMs } from "./iso-time.js";
+import { frontMatterStringArray, frontMatterValue } from "./report-front-matter.js";
 
 export function createReportCommentHelpers(
   dependencies: CreateReportRenderingDependencies & ReturnType<typeof createReportContextRendering>,
@@ -61,8 +62,6 @@ export function createReportCommentHelpers(
     duplicateCanonicalPathLine,
     fixedPullRequestFromReport,
     formatReviewFreshnessTimestamp,
-    frontMatterStringArray,
-    frontMatterValue,
     isReportNoneList,
     likelyOwnerLines,
     markdownLink,

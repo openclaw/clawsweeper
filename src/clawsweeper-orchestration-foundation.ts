@@ -18,6 +18,11 @@ import { normalizeRepo } from "./repository-profiles.js";
 import type { CreateReportOrchestrationDependencies } from "./clawsweeper-report-orchestration-dependencies.js";
 import type { createReportRendering } from "./clawsweeper-report-rendering.js";
 import { asRecord } from "./value-coerce.js";
+import {
+  frontMatterBoolean,
+  frontMatterJsonArray,
+  frontMatterValue,
+} from "./report-front-matter.js";
 
 export function createReportOrchestrationFoundation(
   dependencies: CreateReportOrchestrationDependencies &
@@ -25,10 +30,6 @@ export function createReportOrchestrationFoundation(
 ) {
   const {
     collapsedDetailsBlock,
-    frontMatterBoolean,
-    frontMatterJsonArray,
-    frontMatterStringArray,
-    frontMatterValue,
     ghJson,
     ghObservedMutationCommand,
     isBulkFilerExemptAuthorAssociation,
@@ -341,8 +342,6 @@ export function createReportOrchestrationFoundation(
     protectedLabels,
     isBulkFilerExemptAuthorAssociation,
     isBulkFilerExemptRepositoryPermission,
-    frontMatterValue,
-    frontMatterStringArray,
     reportSecurityReview,
     reviewSectionValue,
     labelPolicy,

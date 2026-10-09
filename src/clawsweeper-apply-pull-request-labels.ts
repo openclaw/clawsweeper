@@ -5,10 +5,10 @@ import type {
   PrStatusLabelKind,
   StalePullRequestReviewHead,
 } from "./clawsweeper-types.js";
+import { frontMatterValue, replaceFrontMatterValue } from "./report-front-matter.js";
 
 type ApplyPullRequestLabelDependencies = Pick<
   CreateApplyDecisionWorkflowDependencies,
-  | "frontMatterValue"
   | "prStatusLabelKindFromReport"
   | "reportFeatureShowcase"
   | "reportOverallCorrectness"
@@ -16,7 +16,6 @@ type ApplyPullRequestLabelDependencies = Pick<
   | "reportRealBehaviorProof"
   | "reportSecurityReview"
   | "reportTelegramVisibleProof"
-  | "replaceFrontMatterValue"
   | "syncFeatureShowcaseLabel"
   | "syncPrRatingLabel"
   | "syncPrStatusLabel"
@@ -47,7 +46,6 @@ export function syncApplyPullRequestLabels(
   markdown: string;
 } {
   const {
-    frontMatterValue,
     prStatusLabelKindFromReport,
     reportFeatureShowcase,
     reportOverallCorrectness,
@@ -55,7 +53,6 @@ export function syncApplyPullRequestLabels(
     reportRealBehaviorProof,
     reportSecurityReview,
     reportTelegramVisibleProof,
-    replaceFrontMatterValue,
     syncFeatureShowcaseLabel,
     syncPrRatingLabel,
     syncPrStatusLabel,

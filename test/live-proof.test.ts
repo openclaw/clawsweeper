@@ -43,6 +43,7 @@ import {
 } from "../dist/live-proof/environment.js";
 import { MediaProbeExecutionError, parseLiveProofManifest } from "../dist/live-proof/manifest.js";
 import { publishReviewLiveProofArtifacts } from "../dist/live-proof/publication-artifacts.js";
+import { sectionValue } from "../dist/report-front-matter.js";
 import {
   buildLiveVerificationResult,
   encodeLiveVerificationReportPayload,
@@ -5194,9 +5195,6 @@ function attachDependencies(options: {
     runner: options.runner,
     fetchPullRequest: options.fetchPullRequest,
     reportLiveProofPlan: reportLiveProofPlanForTest,
-    frontMatterValue,
-    sectionValue,
-    replaceSectionValue,
     reviewSections: REVIEW_SECTIONS,
     renderReviewCommentFromReport: (markdown: string) =>
       `Review comment\n\n### Live Verification\n\n${sectionValue(markdown, REVIEW_SECTIONS.liveProof)}`,
@@ -5205,23 +5203,4 @@ function attachDependencies(options: {
     upsertReviewComment: options.upsertReviewComment,
     log: (message: string) => options.logs.push(message),
   };
-}
-
-function frontMatterValue(markdown: string, key: string): string | undefined {
-  return new RegExp(`^${key}:\\s*(.*)$`, "m").exec(markdown)?.[1]?.trim();
-}
-
-function sectionValue(markdown: string, heading: string): string {
-  const escaped = heading.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  return (
-    new RegExp(`(?:^|\\n)## ${escaped}\\n\\n([\\s\\S]*?)(?=\\n## |\\n?$)`)
-      .exec(markdown)?.[1]
-      ?.trim() ?? ""
-  );
-}
-
-function replaceSectionValue(markdown: string, heading: string, value: string): string {
-  const escaped = heading.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const pattern = new RegExp(`((?:^|\\n)## ${escaped}\\n\\n)([\\s\\S]*?)(?=\\n## |\\n?$)`);
-  return markdown.replace(pattern, `$1${value.trim()}\n`);
 }

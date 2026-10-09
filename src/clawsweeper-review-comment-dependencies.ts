@@ -43,10 +43,6 @@ export interface ReviewCommentWorkflowDependencies {
   reportOverallCorrectness: (markdown: string) => OverallCorrectness;
   reportPrRating: (markdown: string) => PrRating;
   ensureDir: (path: string) => void;
-  frontMatterValue: (markdown: string, key: string) => string | undefined;
-  replaceFrontMatterValue: (markdown: string, key: string, value: string) => string;
-  sectionValue: (markdown: string, heading: string) => string;
-  frontMatterStringArray: (markdown: string, key: string) => string[];
   sentence: ReturnType<typeof createReviewPresentation>["sentence"];
   pullRequestReviewReadinessFromReport: (markdown: string) => PullRequestReviewReadiness;
   securitySensitiveRepairAllowed: (markdown: string) => boolean;

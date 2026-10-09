@@ -23,6 +23,7 @@ import {
   type HostedTargetPolicy,
 } from "../hosted-target-admission.js";
 import { fetchExactReviewQueuePressure } from "../queue-pressure.js";
+import { frontMatterValue } from "../report-front-matter.js";
 import { coverageTrackedCountsFromManifest } from "../review-coverage-manifest.js";
 import { githubCommandTimeoutMs } from "./github-cli.js";
 import { parseArgs, repoRoot } from "./lib.js";
@@ -1008,8 +1009,8 @@ export function summarizeFleetReviewCoverage(options: {
       for (const entry of readdirSync(itemsDir, { withFileTypes: true })) {
         if (!entry.isFile() || !entry.name.endsWith(".md")) continue;
         const markdown = readFileSync(join(itemsDir, entry.name), "utf8");
-        if (frontMatterField(markdown, "review_status") !== "complete") continue;
-        const reviewedAt = Date.parse(frontMatterField(markdown, "reviewed_at"));
+        if (frontMatterValue(markdown, "review_status") !== "complete") continue;
+        const reviewedAt = Date.parse(frontMatterValue(markdown, "reviewed_at") ?? "");
         if (Number.isFinite(reviewedAt) && reviewedAt >= cutoff && reviewedAt <= now) {
           freshRecords += 1;
         }
@@ -1118,11 +1119,6 @@ Generated ${coverage.generatedAt}. Canonical open-item records are compared with
 | Required items/hour with 30% headroom | ${coverage.requiredItemsPerHourWithHeadroom.toFixed(1)} |
 
 `;
-}
-
-function frontMatterField(markdown: string, key: string): string {
-  const match = markdown.match(new RegExp(`^${key}:\\s*(.+?)\\s*$`, "m"));
-  return match?.[1]?.trim().replace(/^['"]|['"]$/g, "") ?? "";
 }
 
 function nonNegativeNumber(value: unknown, label: string): number {

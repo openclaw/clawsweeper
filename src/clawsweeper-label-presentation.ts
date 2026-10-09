@@ -23,6 +23,7 @@ import type {
 } from "./clawsweeper-types.js";
 import type { CreateReportOrchestrationDependencies } from "./clawsweeper-report-orchestration-dependencies.js";
 import type { createReportOrchestrationFoundation } from "./clawsweeper-orchestration-foundation.js";
+import { frontMatterStringArray, frontMatterValue } from "./report-front-matter.js";
 
 export function createReportLabelPresentation(
   dependencies: CreateReportOrchestrationDependencies &
@@ -31,8 +32,6 @@ export function createReportLabelPresentation(
   const {
     defaultPlansDir,
     effectiveReviewStatus,
-    frontMatterStringArray,
-    frontMatterValue,
     impactLabelsFromReport,
     isFresh,
     isIssueAdvisoryLabel,

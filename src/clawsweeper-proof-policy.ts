@@ -1,6 +1,7 @@
 import { AUTHORITY_CHAIN_PROOF_MARKER, PROOF_OVERRIDE_LABEL } from "./clawsweeper-policy.js";
 import type { RealBehaviorProof } from "./clawsweeper-types.js";
 import type { AttachedLiveVerification } from "./live-proof/verification.js";
+import { frontMatterStringArray, frontMatterValue } from "./report-front-matter.js";
 
 export interface RealBehaviorProofPolicy {
   readonly assessment: RealBehaviorProof;
@@ -12,8 +13,6 @@ export interface RealBehaviorProofPolicy {
 }
 
 interface ProofPolicyDependencies {
-  frontMatterValue: (markdown: string, key: string) => string | undefined;
-  frontMatterStringArray: (markdown: string, key: string) => string[];
   isExternalPullRequestReport: (markdown: string) => boolean;
   reportAttachedLiveVerification: (markdown: string) => AttachedLiveVerification;
   reportRealBehaviorProof: (markdown: string) => RealBehaviorProof;
@@ -22,8 +21,6 @@ interface ProofPolicyDependencies {
 
 export function createRealBehaviorProofPolicy(dependencies: ProofPolicyDependencies) {
   const {
-    frontMatterValue,
-    frontMatterStringArray,
     isExternalPullRequestReport,
     reportAttachedLiveVerification,
     reportRealBehaviorProof,

@@ -16,6 +16,7 @@ import type {
   RepoDashboardSnapshot,
 } from "./clawsweeper-types.js";
 import { parseIsoMs } from "./iso-time.js";
+import { frontMatterValue } from "./report-front-matter.js";
 
 interface DashboardDependencies {
   closeReasonText: (reason: CloseReason) => string;
@@ -27,7 +28,6 @@ interface DashboardDependencies {
   formatPercent: (numerator: number, denominator: number) => string;
   formatStatusNumber: (value: number | undefined) => string;
   formatTimestamp: (iso: string | undefined) => string;
-  frontMatterValue: (markdown: string, key: string) => string | undefined;
   itemUrlFor: (repo: string, number: number, kind?: ItemKind) => string;
   latestTimestamp: (
     current: string | undefined,
@@ -57,7 +57,6 @@ export function createDashboardPresentation({
   formatPercent,
   formatStatusNumber,
   formatTimestamp,
-  frontMatterValue,
   itemUrlFor,
   latestTimestamp,
   markdownLink,

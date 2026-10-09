@@ -36,7 +36,6 @@ function relatedContextWith(records: Record<string, unknown>) {
     },
     compactIssue: (value: unknown) => value,
     compactPullRequest: (value: unknown) => value,
-    frontMatterValue: () => undefined,
     reviewSectionValue: () => "",
     effectiveReviewStatus: () => "",
     displayTitle: (value: string) => value,

@@ -28,7 +28,6 @@ import {
   createCachedLabelNumberLookup,
   existingCommandStatusBlocksReplay,
   existingModeStatusBlocksReplay,
-  extractMarkdownSection,
   expiredReviewStartStatusLeases,
   freshExactHeadReviewStartLease,
   hasCommandResponseMarker,
@@ -124,7 +123,7 @@ test("status comment authors preserve consumer allowlists and untrimmed case-ins
   assert.equal(isTrustedStatusCommentAuthor({ user: { login: " clawsweeper " } }, fixed), false);
 });
 
-test("review comment section extraction supports headings and stops at metadata", () => {
+test("review summaries use the shared section reader and stop at metadata", () => {
   const body = [
     "# ClawSweeper review",
     "",
@@ -147,18 +146,19 @@ test("review comment section extraction supports headings and stops at metadata"
   ].join("\n");
 
   assert.equal(
-    extractMarkdownSection(body, "What this changes"),
+    reviewSummaryFromCommentBody(body),
     "Adds a human-first review summary.\n\nA second paragraph stays with the summary.",
   );
   assert.equal(
-    extractMarkdownSection("**Summary**\n\nLegacy summary.\n\n**Next step**\n\nWait.", "Summary"),
+    reviewSummaryFromCommentBody("**Summary**\n\nLegacy summary.\n\n**Next step**\n\nWait."),
     "Legacy summary.",
   );
+  // The shared reader does not accept `Summary:` as a heading. No current comment uses it.
   assert.equal(
-    extractMarkdownSection("Summary:\n\nColon-style summary.\n\nNext step:\nWait.", "Summary"),
-    "Colon-style summary.",
+    reviewSummaryFromCommentBody("Summary:\n\nColon-style summary.\n\nNext step:\nWait."),
+    null,
   );
-  assert.equal(extractMarkdownSection(body, "Missing"), null);
+  assert.equal(reviewSummaryFromCommentBody(body.replace("What this changes", "Other")), null);
 });
 
 test("review summaries prefer the human-first change summary over legacy summary text", () => {

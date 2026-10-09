@@ -1,4 +1,4 @@
-import { escapeRegExp } from "../clawsweeper-text.js";
+import { escapeRegExp } from "../clawsweeper-markdown.js";
 import type { JsonValue, LooseRecord } from "./json-types.js";
 import { randomInt } from "node:crypto";
 import { repairCodexReasoningEffort } from "./process-env.js";

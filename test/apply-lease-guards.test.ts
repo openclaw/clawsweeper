@@ -37,7 +37,6 @@ function leaseGuards(calls: string[], activityBlock: string | null = null) {
       return activityBlock;
     },
     dryRun: false,
-    frontMatterValue: () => undefined,
     getActiveApplyMutationLease: () => ({ itemNumber: 42, lease }),
     ghJson: () => {
       calls.push("pull");

@@ -23,13 +23,13 @@ import type {
   ItemKind,
   ReportEntry,
 } from "./clawsweeper-types.js";
+import { frontMatterValue } from "./report-front-matter.js";
 
 interface ApplyActionLedgerDependencies {
   root: string;
   targetRepo: () => string;
   repoRelativePath: (filePath: string) => string;
   sha256: (value: string) => string;
-  frontMatterValue: (markdown: string, key: string) => string | undefined;
   reviewLeaseRevisionFromReport: (markdown: string) => string | null;
   reportItemKind: (markdown: string) => ItemKind | undefined;
   reviewLedger: ReturnType<typeof createReviewActionLedger>;
@@ -40,7 +40,6 @@ export function createApplyActionLedger({
   targetRepo,
   repoRelativePath,
   sha256,
-  frontMatterValue,
   reviewLeaseRevisionFromReport,
   reportItemKind,
   reviewLedger,

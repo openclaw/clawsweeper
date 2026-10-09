@@ -9,6 +9,7 @@ import type { ReviewPlanningDependencies } from "./clawsweeper-review-planning-d
 import type { createReviewPlanningInventory } from "./clawsweeper-review-planning-inventory.js";
 import type { createReviewPlanningHotIntake } from "./clawsweeper-review-planning-hot-intake.js";
 import { parseIsoMs } from "./iso-time.js";
+import { frontMatterValue } from "./report-front-matter.js";
 
 export function createReviewPlanningDashboard(
   dependencies: ReviewPlanningDependencies &
@@ -16,7 +17,6 @@ export function createReviewPlanningDashboard(
     ReturnType<typeof createReviewPlanningHotIntake>,
 ) {
   const {
-    frontMatterValue,
     effectiveReviewStatus,
     failedReviewRetryStatePath,
     readFailedReviewRetryState,

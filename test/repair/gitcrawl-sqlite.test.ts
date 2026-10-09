@@ -435,7 +435,6 @@ function relatedContextFor(root: string, dbPath: string) {
     },
     compactIssue: (value: unknown) => value,
     compactPullRequest: (value: unknown) => value,
-    frontMatterValue: () => undefined,
     reviewSectionValue: () => "",
     effectiveReviewStatus: () => "",
     displayTitle: (value: string) => value,

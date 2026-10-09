@@ -12,6 +12,7 @@ import type {
   ReportEntry,
 } from "./clawsweeper-types.js";
 import { maintainerDecisionBlocksClose, type MaintainerDecision } from "./decision-packets.js";
+import { frontMatterValue } from "./report-front-matter.js";
 
 export function markLockedConversationApplySkipped(
   reason: string | null,
@@ -48,7 +49,6 @@ export function requiresLockedReviewCommentMutation(
   {
     commentBody,
     commentBodyMatches,
-    frontMatterValue,
     markedReviewCommentBody,
     renderReviewCommentFromReport,
     shouldSyncReviewComment,
@@ -56,7 +56,6 @@ export function requiresLockedReviewCommentMutation(
     CreateApplyDecisionWorkflowDependencies,
     | "commentBody"
     | "commentBodyMatches"
-    | "frontMatterValue"
     | "markedReviewCommentBody"
     | "renderReviewCommentFromReport"
     | "shouldSyncReviewComment"
@@ -188,7 +187,6 @@ export function createApplyCloseGuards(
     commentUpdatedAt,
     duplicateCanonicalPullRequestBlockReason,
     fetchItem,
-    frontMatterValue,
     hasAutoCloseAllowedMetadata,
     hasVerifiedLocalCheckoutAccess,
     isApplyCloseCandidateReport,

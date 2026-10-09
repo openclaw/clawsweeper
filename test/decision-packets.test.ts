@@ -275,6 +275,32 @@ test("decision packet sync writes pointers and removes stale generated state", (
   }
 });
 
+test("decision packet sync writes a packet path with replacement patterns literally", () => {
+  const root = mkdtempSync(tmpPrefix);
+  try {
+    const packetsDir = join(root, "records", "a$&b$'c$`d", "decision-packets");
+    const markdown = decisionReport({ maintainer_decision: JSON.stringify(productDecision) });
+    for (const input of [
+      markdown,
+      `${markdown.replace(/^---\n/, "---\ndecision_packet_path: old\n")}`,
+    ]) {
+      const result = syncDecisionPacketRecord({
+        markdown: input,
+        reportPath: join(root, "records", "a$&b$'c$`d", "items", "321.md"),
+        packetsDir,
+        repoRoot: root,
+      });
+      assert.ok(
+        result.markdown.includes(
+          "\ndecision_packet_path: records/a$&b$'c$`d/decision-packets/321.json\n",
+        ),
+      );
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("packet sync removes invalid legacy sidecars without clearing the report hold", () => {
   const invalidDecisions = [
     { ...productDecision, options: productDecision.options.slice(0, 1) },

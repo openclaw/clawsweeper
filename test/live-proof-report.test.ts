@@ -99,8 +99,6 @@ function reviewFixture(t: test.TestContext) {
     materializePullRequestReviewTree: () => assert.fail("must not materialize a target checkout"),
     repositoryProfileFor,
     reportLiveProofPlan,
-    frontMatterValue: (markdown: string, key: string) =>
-      new RegExp(`^${key}:\\s*(.*)$`, "m").exec(markdown)?.[1]?.trim(),
   };
   assert.equal(repositoryProfileFor(options.repo).liveTest?.enabled, true);
   return {

@@ -7,9 +7,9 @@ import {
   repositoryProfileForSlug,
   type RepositoryProfile,
 } from "./repository-profiles.js";
+import { frontMatterValue } from "./report-front-matter.js";
 
 interface CreateRepositoryPathsDependencies {
-  frontMatterValue: (markdown: string, key: string) => string | undefined;
   RECORDS_ROOT: string;
   repoRelativePath: (path: string) => string;
   ROOT: string;
@@ -18,8 +18,7 @@ interface CreateRepositoryPathsDependencies {
 }
 
 export function createRepositoryPaths(dependencies: CreateRepositoryPathsDependencies) {
-  const { frontMatterValue, RECORDS_ROOT, repoRelativePath, ROOT, targetProfile, targetRepo } =
-    dependencies;
+  const { RECORDS_ROOT, repoRelativePath, ROOT, targetProfile, targetRepo } = dependencies;
 
   function repoRecordsDir(profile = targetProfile()): string {
     return join(RECORDS_ROOT, profile.slug);

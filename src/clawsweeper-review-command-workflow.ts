@@ -79,6 +79,7 @@ import {
   type ReviewOutputResult,
 } from "./review-output-policy.js";
 import { asRecord, nonBlankStringOrUndefined } from "./value-coerce.js";
+import { frontMatterValue, replaceFrontMatterValue } from "./report-front-matter.js";
 
 /** Bind verified evidence to its candidate before an ordinary full review. */
 export function reviewCommandProofBinding(sourceAction: unknown, additionalPrompt: string) {
@@ -116,10 +117,7 @@ export function localReviewOutputHasPayload(
   return status === "completed" || resultCount > 0;
 }
 
-export function withRunnerPreflightProvenance(
-  markdown: string,
-  replaceFrontMatterValue: (markdown: string, key: string, value: string) => string,
-): string {
+export function withRunnerPreflightProvenance(markdown: string): string {
   let promoted = replaceFrontMatterValue(markdown, "local_checkout_access", "verified");
   promoted = replaceFrontMatterValue(
     promoted,
@@ -132,7 +130,6 @@ export function withRunnerPreflightProvenance(
 export function localExactBootstrapReviewCommentBody(
   markdown: string,
   item: Pick<Item, "repo" | "number">,
-  frontMatterValue: (markdown: string, key: string) => string | undefined,
   renderReviewCommentFromReport: (markdown: string, reason: "none") => string,
 ): string {
   if (
@@ -198,7 +195,6 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
     finishReviewActionLedger,
     finishReviewActionLedgerItem,
     freshDedicatedReviewStartLeases,
-    frontMatterValue,
     isBulkFilerExemptAuthorAssociation,
     isBulkFilerExemptRepositoryPermission,
     issueReviewCommentState,
@@ -217,7 +213,6 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
     pullRequestHeadSha,
     recordReviewLogPublication,
     removePullRequestReviewTree,
-    replaceFrontMatterValue,
     renderReviewCommentFromReport,
     reportFileName,
     reportReviewFindings,
@@ -698,7 +693,6 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
           previousLocalReviewCommentBody = localExactBootstrapReviewCommentBody(
             bootstrapReport,
             item,
-            frontMatterValue,
             renderReviewCommentFromReport,
           );
         }
@@ -1043,7 +1037,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
                 carried = replaceFrontMatterValue(carried, "review_cache_hit", "true");
                 carried = updateBulkFilerDetectedFrontMatter(carried, bulkFilerDetection);
                 carried = updateReviewStructuralFrontMatter(carried, structuralRecord, true);
-                carried = withRunnerPreflightProvenance(carried, replaceFrontMatterValue);
+                carried = withRunnerPreflightProvenance(carried);
                 writeOutputReport(item, reportPath, hostReport(carried));
                 finishReviewActionLedgerItem({
                   ledger: reviewLedger,
@@ -1403,7 +1397,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
           carried = structuralRecord
             ? updateReviewStructuralFrontMatter(carried, structuralRecord, false)
             : replaceFrontMatterValue(carried, "review_structural_cache_hit", "false");
-          carried = withRunnerPreflightProvenance(carried, replaceFrontMatterValue);
+          carried = withRunnerPreflightProvenance(carried);
           writeOutputReport(item, reportPath, hostReport(carried));
           finishReviewActionLedgerItem({
             ledger: reviewLedger,

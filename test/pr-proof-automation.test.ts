@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { createRecordMetadata } from "../dist/clawsweeper-record-metadata.js";
+import { frontMatterJsonArray, frontMatterValue } from "../dist/report-front-matter.js";
 import { createReportHelpers } from "../dist/clawsweeper-report-helpers.js";
 import { createReportParser } from "../dist/clawsweeper-report-parser.js";
 import { createReportDocumentRendering } from "../dist/clawsweeper-report-document.js";
@@ -181,10 +182,9 @@ test("renderer-produced reports preserve nested statistics and authoritative met
     reviewPolicy: "synthetic-policy",
     runtime: { model: "Codex", reasoningEffort: "high" },
   } as Parameters<typeof document.markdownFor>[0]);
-  const metadata = createRecordMetadata({} as never);
-  assert.equal(metadata.frontMatterValue(report, "title"), "Original");
-  assert.equal(metadata.frontMatterValue(report, "repository"), "openclaw/clawsweeper");
-  assert.equal(metadata.frontMatterJsonArray(report, "pr_surface_files").length, 2);
+  assert.equal(frontMatterValue(report, "title"), "Original");
+  assert.equal(frontMatterValue(report, "repository"), "openclaw/clawsweeper");
+  assert.equal(frontMatterJsonArray(report, "pr_surface_files").length, 2);
   assert.equal(maintainerDecisionBlocksClose(report), false);
   assert.equal(buildDecisionPacketFromReport(report), null);
   const headerOnly = report.slice(0, report.indexOf("\n---\n") + 5);

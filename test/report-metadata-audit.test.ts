@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import { parse } from "yaml";
-import { createRecordMetadata } from "../dist/clawsweeper-record-metadata.js";
+import { frontMatterValue } from "../dist/report-front-matter.js";
 
 import {
   auditCanonicalItemRecords,
@@ -31,10 +31,7 @@ test("advisory audit still inventories body quotes that do not override runtime 
     matched_keys: ["real_behavior_proof_status"],
     first_match_line: 8,
   });
-  assert.equal(
-    createRecordMetadata({} as never).frontMatterValue(report, "real_behavior_proof_status"),
-    "missing",
-  );
+  assert.equal(frontMatterValue(report, "real_behavior_proof_status"), "missing");
 });
 
 test("metadata audit flags canonical promotion keys only after the leading block", () => {

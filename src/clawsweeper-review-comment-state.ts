@@ -34,6 +34,7 @@ export function normalizeNoopReviewMarkerMetadata(body: string): string {
 }
 import type { createReviewCommentIdentity } from "./clawsweeper-review-comment-identity.js";
 import { parseIsoMs } from "./iso-time.js";
+import { frontMatterValue } from "./report-front-matter.js";
 
 export function expireReviewStartStatusLease(
   body: string,
@@ -69,7 +70,6 @@ export function createReviewCommentState(
     ghPaged,
     reviewCommentBodyDigest,
     parseGitHubItemRef,
-    frontMatterValue,
     reviewCommentMarker,
     pullHeadShaFromContext,
     pullHeadShaFromReport,

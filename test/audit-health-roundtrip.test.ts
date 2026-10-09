@@ -55,7 +55,6 @@ test("extracted dashboard preserves flush Markdown headings, tables, and embedde
     formatPercent: () => "0%",
     formatStatusNumber: (value) => String(value ?? "unknown"),
     formatTimestamp: (value) => String(value ?? "never"),
-    frontMatterValue: () => undefined,
     itemUrlFor: (repo, number) => `https://github.com/${repo}/issues/${number}`,
     latestTimestamp: (current, candidate) => candidate ?? current,
     markdownLink: (label, url) => `[${label}](${url})`,

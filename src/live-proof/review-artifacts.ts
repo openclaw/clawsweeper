@@ -10,6 +10,7 @@ import {
 } from "../clawsweeper-review-blobs.js";
 import type { RepositoryProfile } from "../repository-profiles.js";
 import { sanitizedLiveProofEnvironment } from "./environment.js";
+import { frontMatterValue } from "../report-front-matter.js";
 
 const HEAD_SHA = /^[0-9a-f]{40}$/;
 const PUBLIC_BUNDLE_FILES = [
@@ -37,7 +38,6 @@ export interface ReviewLiveProofOptions {
 
 export interface ReviewLiveProofDependencies {
   env?: NodeJS.ProcessEnv;
-  frontMatterValue: (markdown: string, key: string) => string | undefined;
   log?: (message: string) => void;
   materializePullRequestReviewTree: (options: ReviewTreeMaterializationOptions) => boolean;
   reportLiveProofPlan: (markdown: string) => LiveProofPlan;
@@ -65,7 +65,7 @@ export function inspectReviewLiveProofs(
     const recordPath = join(resolve(options.recordsDir), `${item}.md`);
     if (!existsSync(recordPath)) continue;
     const markdown = readFileSync(recordPath, "utf8");
-    if (dependencies.frontMatterValue(markdown, "type") !== "pull_request") continue;
+    if (frontMatterValue(markdown, "type") !== "pull_request") continue;
     const plan = dependencies.reportLiveProofPlan(markdown);
     if (plan.invalid) {
       throw new Error(`live proof plan for ${item} is invalid: ${plan.reason}`);
@@ -99,7 +99,7 @@ function executeReviewLiveProof(
 ): void {
   const recordPath = join(resolve(options.recordsDir), `${item}.md`);
   const markdown = readFileSync(recordPath, "utf8");
-  const headSha = (dependencies.frontMatterValue(markdown, "pull_head_sha") ?? "").toLowerCase();
+  const headSha = (frontMatterValue(markdown, "pull_head_sha") ?? "").toLowerCase();
   if (!HEAD_SHA.test(headSha)) {
     throw new Error(`live proof review artifact ${item} is missing a full pull_head_sha`);
   }

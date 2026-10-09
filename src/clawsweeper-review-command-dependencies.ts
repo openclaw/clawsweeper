@@ -200,7 +200,6 @@ export interface CreateReviewCommandWorkflowDependencies {
     owner: string | null;
     commentId: number | null;
   }>;
-  frontMatterValue: (markdown: string, key: string) => string | undefined;
   gitInfo: (openclawDir: string, options?: ReviewGitInfoOptions) => GitInfo;
   isBulkFilerExemptAuthorAssociation: (value: unknown) => boolean;
   isBulkFilerExemptRepositoryPermission: (value: unknown) => boolean;
@@ -284,7 +283,6 @@ export interface CreateReviewCommandWorkflowDependencies {
     retryable?: boolean;
   }) => ActionEvent | null;
   removePullRequestReviewTree: (options: { targetDir: string; worktreeDir: string }) => boolean;
-  replaceFrontMatterValue: (markdown: string, key: string, value: string) => string;
   renderReviewCommentFromReport: (
     markdown: string,
     reason: "none",

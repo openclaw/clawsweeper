@@ -359,6 +359,38 @@ test("target fanout summarizes trailing weekly coverage from canonical open reco
   }
 });
 
+test("target fanout coverage ignores review metadata inside a fenced report sample", () => {
+  const root = mkdtempSync(join(tmpdir(), "clawsweeper-coverage-"));
+  try {
+    const items = join(root, "openclaw-a", "items");
+    mkdirSync(items, { recursive: true });
+    writeFileSync(
+      join(items, "1.md"),
+      [
+        "---",
+        "number: 1",
+        "---",
+        "",
+        "```yaml",
+        "review_status: complete",
+        "reviewed_at: 2026-07-28T12:00:00Z",
+        "```",
+        "",
+      ].join("\n"),
+    );
+    const coverage = summarizeFleetReviewCoverage({
+      repositories: [{ targetRepo: "openclaw/a", defaultBranch: "main", visibility: "PUBLIC" }],
+      openCounts: new Map([["openclaw/a", { issues: 1, pullRequests: 0 }]]),
+      windowDays: 7,
+      recordsRoot: root,
+      now: Date.parse("2026-07-29T12:00:00Z"),
+    });
+    assert.equal(coverage.scannedOpenRecords, 0);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("target fanout publishes signed live open counts for dashboard coverage", async () => {
   const now = Date.parse("2026-07-29T12:00:00Z");
   const repositories = [

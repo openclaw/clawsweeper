@@ -28,9 +28,9 @@ import type {
 } from "./clawsweeper-types.js";
 import { asRecord, nonBlankStringOrUndefined } from "./value-coerce.js";
 import { parseIsoMs } from "./iso-time.js";
+import { frontMatterValue } from "./report-front-matter.js";
 
 interface LabelPolicyDependencies {
-  frontMatterValue: (markdown: string, key: string) => string | undefined;
   isAutomationReportAuthor: (author: string | undefined) => boolean;
   mergeRiskOptionsFromReport: (markdown: string) => MergeRiskOption[];
   pullRequestReviewReadinessFromReport: (markdown: string) => PullRequestReviewReadiness;
@@ -39,7 +39,6 @@ interface LabelPolicyDependencies {
 }
 
 export function createLabelPolicy({
-  frontMatterValue,
   isAutomationReportAuthor,
   mergeRiskOptionsFromReport,
   pullRequestReviewReadinessFromReport,

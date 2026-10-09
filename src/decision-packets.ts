@@ -1,4 +1,3 @@
-import { escapeRegExp } from "./clawsweeper-text.js";
 import {
   requireRecord as objectValue,
   requireString as stringValue,
@@ -7,7 +6,7 @@ import {
 import { sha256 } from "./content-hash.js";
 import { existsSync, mkdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { basename, dirname, relative } from "node:path";
-import { parseReportFrontMatter } from "./report-front-matter.js";
+import { parseReportFrontMatter, replaceFrontMatterValue } from "./report-front-matter.js";
 
 export type MaintainerDecisionKind =
   | "none"
@@ -410,13 +409,6 @@ function replacePacketFrontmatter(markdown: string, path: string, sha256: string
     "decision_packet_sha256",
     sha256,
   );
-}
-
-function replaceFrontMatterValue(markdown: string, key: string, value: string): string {
-  const line = `${key}: ${value}`;
-  const pattern = new RegExp(`^${escapeRegExp(key)}:\\s*.*$`, "m");
-  if (pattern.test(markdown)) return markdown.replace(pattern, line);
-  return markdown.replace(/^---\r?\n/, `---\n${line}\n`);
 }
 
 function numberValue(value: string | undefined): number | null {

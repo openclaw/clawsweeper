@@ -44,8 +44,6 @@ function counterpartAdmission(
     let liveLocked = false;
     let liveState = changeAfterAdmission === "closed" ? "closed" : "open";
     let reviewStateReads = 0;
-    const frontMatterValue = (source: string, key: string) =>
-      new RegExp(`^${key}: (.*)$`, "m").exec(source)?.[1];
     const guards = createApplyCloseGuards(
       {
         resetGuardReadCache: () => {},
@@ -60,7 +58,6 @@ function counterpartAdmission(
         commentUpdatedAt: () => counterpartItem.updatedAt,
         duplicateCanonicalPullRequestBlockReason: () => null,
         fetchItem: () => ({ item: counterpartItem, state: liveState }),
-        frontMatterValue,
         hasAutoCloseAllowedMetadata: () => true,
         hasVerifiedLocalCheckoutAccess: () => true,
         isApplyCloseCandidateReport: () => true,

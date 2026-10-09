@@ -46,14 +46,13 @@ import {
   NEEDS_SECURITY_REVIEW_LABEL,
 } from "./repair/exact-review-guard-labels.js";
 import type { LabelSynchronizationDependencies } from "./clawsweeper-label-dependencies.js";
+import { frontMatterStringArray, frontMatterValue } from "./report-front-matter.js";
 
 export function createLabelSelectionPolicy(dependencies: LabelSynchronizationDependencies) {
   const {
     hasNormalizedLabel,
     normalizeLabelName,
     protectedLabels,
-    frontMatterValue,
-    frontMatterStringArray,
     reportSecurityReview,
     reviewSectionValue,
     labelPolicy,

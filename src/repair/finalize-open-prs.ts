@@ -17,7 +17,8 @@ import { ghJson, ghText } from "./github-cli.js";
 import { sleepMs } from "./timing.js";
 import { DEFAULT_TARGET_REPO, REPAIR_CLUSTER_WORKFLOW, REVIEW_BOTS } from "./constants.js";
 import { numberEnv } from "./env-utils.js";
-import { compactText, escapeRegExp } from "./text-utils.js";
+import { compactText } from "./text-utils.js";
+import { escapeRegExp } from "../clawsweeper-markdown.js";
 import { rollUpStatusChecks } from "./status-check-rollup.js";
 
 const DEFAULT_HEAD_PREFIX = "clawsweeper/";

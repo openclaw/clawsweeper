@@ -78,14 +78,6 @@ const safeFixtureQuote = fixtureQuote.replace(
   "[reviewed synthetic URI omitted; inspect test/action-ledger-runtime.test.ts]",
 );
 
-function replaceFrontMatterValue(markdown: string, key: string, value: string): string {
-  const line = `${key}: ${value}`;
-  const pattern = new RegExp(`^${key}:\\s*.*$`, "m");
-  return pattern.test(markdown)
-    ? markdown.replace(pattern, line)
-    : markdown.replace(/^---\n/, `---\n${line}\n`);
-}
-
 function structuralRecord(
   activityUpdatedAt: string,
   pull: ReviewStructuralSnapshot["pull"] = null,
@@ -176,8 +168,6 @@ test("exact local bootstrap rejects a same-number report from another repository
     "---",
     "Foreign report",
   ].join("\n");
-  const frontMatterValue = (markdown: string, key: string): string | undefined =>
-    markdown.match(new RegExp(`^${key}:\\s*(.+)$`, "m"))?.[1]?.trim();
   let renderCalls = 0;
   const render = () => {
     renderCalls += 1;
@@ -188,7 +178,6 @@ test("exact local bootstrap rejects a same-number report from another repository
     localExactBootstrapReviewCommentBody(
       report,
       { repo: "openclaw/clawsweeper", number: ITEM_NUMBER },
-      frontMatterValue,
       render,
     ),
     "rendered review history",
@@ -197,7 +186,6 @@ test("exact local bootstrap rejects a same-number report from another repository
     localExactBootstrapReviewCommentBody(
       report,
       { repo: "openclaw/openclaw", number: ITEM_NUMBER },
-      frontMatterValue,
       render,
     ),
     "",
@@ -206,7 +194,6 @@ test("exact local bootstrap rejects a same-number report from another repository
     localExactBootstrapReviewCommentBody(
       report,
       { repo: "openclaw/clawsweeper", number: ITEM_NUMBER + 1 },
-      frontMatterValue,
       render,
     ),
     "",
@@ -217,7 +204,7 @@ test("exact local bootstrap rejects a same-number report from another repository
 test("cache preflight promotes legacy carried reports to runner-owned provenance", () => {
   const legacy = "---\nreview_status: complete\nlocal_checkout_access: unverified\n---\nLegacy";
 
-  const promoted = withRunnerPreflightProvenance(legacy, replaceFrontMatterValue);
+  const promoted = withRunnerPreflightProvenance(legacy);
 
   assert.match(promoted, /^local_checkout_access: verified$/m);
   assert.match(promoted, /^local_checkout_access_source: runner_preflight_v1$/m);
@@ -496,7 +483,11 @@ else {
       created_at: RESERVED_AT,
       updated_at: RESERVED_AT,
     };
-    const priorMarkdown = `---\n${publicationCase?.cachedPolicy ?? ""}decision: keep_open\nreview_status: complete\n---\nCached review\n${oversized}`;
+    const activityCursor =
+      scenario === "changed-pr-proof-invalid-cursor"
+        ? "unusable-cursor"
+        : `v2:0:${digest("activity")}`;
+    const priorMarkdown = `---\n${publicationCase?.cachedPolicy ?? ""}decision: keep_open\nreview_status: complete\nreview_activity_cursor: ${activityCursor}\n---\nCached review\n${oversized}`;
     if (publicationCase) {
       mkdirSync(itemsDir);
       writeFileSync(join(itemsDir, `${ITEM_NUMBER}.md`), priorMarkdown);
@@ -667,14 +658,6 @@ else {
           },
         ];
       },
-      frontMatterValue: (_markdown: string, key: string) =>
-        outputCase?.surface === "history" && key === "review_status"
-          ? "complete"
-          : key === "review_activity_cursor"
-            ? scenario === "changed-pr-proof-invalid-cursor"
-              ? "unusable-cursor"
-              : `v2:0:${digest("activity")}`
-            : undefined,
       gitInfo: () => ({
         mainSha: "a".repeat(40),
         releaseStateComplete: true,
@@ -742,8 +725,10 @@ else {
         throw new Error("scheduled delivery must not post a second lease");
       },
       previousClawSweeperReviewDigestFromReport: () => digest("previous"),
-      replaceFrontMatterValue,
-      renderReviewCommentFromReport: () => "x".repeat(4 * 1024 * 1024 + 1),
+      renderReviewCommentFromReport: () =>
+        outputCase?.surface === "history"
+          ? "x".repeat(4 * 1024 * 1024 + 1)
+          : "rendered review history",
       repoFromArgs: () => ({ owner: "openclaw", repo: "openclaw" }),
       reportFileName: (_repo, number) => `${number}.md`,
       reportReviewFindings: () => [],

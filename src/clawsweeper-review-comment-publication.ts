@@ -14,6 +14,7 @@ import type { createReviewCommentIdentity } from "./clawsweeper-review-comment-i
 import type { createReviewCommentState } from "./clawsweeper-review-comment-state.js";
 import { asRecord } from "./value-coerce.js";
 import { parseIsoMs } from "./iso-time.js";
+import { frontMatterValue, replaceFrontMatterValue, sectionValue } from "./report-front-matter.js";
 
 const DURABLE_REVIEW_COMMENT_MAX_BYTES = 60 * 1024;
 
@@ -41,9 +42,6 @@ export function createReviewCommentPublication(
     ghPaged,
     reviewCommentBodyDigest,
     ensureDir,
-    frontMatterValue,
-    replaceFrontMatterValue,
-    sectionValue,
     sentence,
     normalizedLabelSet,
     sectionLineValue,

@@ -18,6 +18,7 @@ import {
 } from "./lib.js";
 import { ghJson, ghPaged, ghPagedLimit, ghText } from "./github-cli.js";
 import { hasSecurityRepairOptInLabel } from "./security-boundary.js";
+import { escapeRegExp } from "../clawsweeper-markdown.js";
 
 function readNonNegativeIntegerEnv(name: string, fallback: number): number {
   const raw = process.env[name];
@@ -691,7 +692,7 @@ function isReviewBotComment(comment: LooseRecord) {
 
 function refsFromText(defaultRepo: string, text: string) {
   const refs: LooseRecord[] = [];
-  const ownerRepo = defaultRepo.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const ownerRepo = escapeRegExp(defaultRepo);
   const urlPattern = new RegExp(
     `https://github\\.com/(${ownerRepo}|[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/(?:issues|pull)/(\\d+)`,
     "g",

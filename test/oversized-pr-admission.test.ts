@@ -177,7 +177,6 @@ for (const source of [
           if (total > 50000) throw new Error("oversized admission must precede cache lookup");
           return null;
         },
-        frontMatterValue: () => undefined,
         bulkFilerPolicyInvalidatesCachedReview: () => false,
         localExactReviewHistoryPath: () => null,
       };

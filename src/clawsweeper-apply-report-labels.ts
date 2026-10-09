@@ -9,12 +9,12 @@ import type {
 } from "./clawsweeper-types.js";
 import { isGitHubRequiresAuthenticationError } from "./github-retry.js";
 import { reportAllowsAutomation } from "./manual-publication-policy.js";
+import { frontMatterBoolean, replaceFrontMatterValue } from "./report-front-matter.js";
 
 type ApplyReportLabelDependencies = Pick<
   CreateApplyDecisionWorkflowDependencies,
   | "bulkFilerRepositoryPermission"
   | "closingPullRequestsForIssue"
-  | "frontMatterBoolean"
   | "hasNormalizedLabel"
   | "impactLabelsFromReport"
   | "isBulkFilerExemptAuthorAssociation"
@@ -23,7 +23,6 @@ type ApplyReportLabelDependencies = Pick<
   | "maturityLabelsFromReport"
   | "mergeRiskLabelsFromReport"
   | "openClosingPullRequestApplyReason"
-  | "replaceFrontMatterValue"
   | "syncBulkFilerLabel"
   | "syncImpactLabels"
   | "syncIssueAdvisoryLabels"
@@ -72,7 +71,6 @@ export function syncApplyReportLabels(
   const {
     bulkFilerRepositoryPermission,
     closingPullRequestsForIssue,
-    frontMatterBoolean,
     hasNormalizedLabel,
     impactLabelsFromReport,
     isBulkFilerExemptAuthorAssociation,
@@ -81,7 +79,6 @@ export function syncApplyReportLabels(
     maturityLabelsFromReport,
     mergeRiskLabelsFromReport,
     openClosingPullRequestApplyReason,
-    replaceFrontMatterValue,
     syncBulkFilerLabel,
     syncImpactLabels,
     syncIssueAdvisoryLabels,

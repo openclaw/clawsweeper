@@ -4,6 +4,7 @@ import test from "node:test";
 import { createLabelPolicy } from "../dist/clawsweeper-label-policy.js";
 import { createLabelSynchronization } from "../dist/clawsweeper-label-sync.js";
 import { createRecordMetadata } from "../dist/clawsweeper-record-metadata.js";
+import { frontMatterValue } from "../dist/report-front-matter.js";
 import { createReportParser } from "../dist/clawsweeper-report-parser.js";
 import { createReportHelpers } from "../dist/clawsweeper-report-helpers.js";
 import { createRealBehaviorProofPolicy } from "../dist/clawsweeper-proof-policy.js";
@@ -184,7 +185,7 @@ test("report-based status selection follows the model proof assessment for exter
   const reportRealBehaviorProofPolicy = createRealBehaviorProofPolicy({
     ...metadata,
     isExternalPullRequestReport: (markdown) =>
-      metadata.frontMatterValue(markdown, "author_association") === "CONTRIBUTOR",
+      frontMatterValue(markdown, "author_association") === "CONTRIBUTOR",
     reportAttachedLiveVerification: () => ({ status: "absent" }),
     reportRealBehaviorProof: () => assessment as never,
   });
@@ -375,9 +376,6 @@ test("historical receipt failures route to the proof owner without erasing indep
   let needsContributorAction = false;
   let reviewFailed = false;
   const reportRealBehaviorProofPolicy = createRealBehaviorProofPolicy({
-    frontMatterValue: (_markdown, key) =>
-      key === "review_status" && reviewFailed ? "failed" : undefined,
-    frontMatterStringArray: () => [],
     isExternalPullRequestReport: () => true,
     reviewSectionValue: () => "",
     reportAttachedLiveVerification: () => ({ status: receiptStatus }) as never,
@@ -389,14 +387,6 @@ test("historical receipt failures route to the proof owner without erasing indep
     }),
   });
   const policy = createLabelPolicy({
-    frontMatterValue: (_markdown, key) =>
-      key === "type"
-        ? "pull_request"
-        : key === "reviewed_at"
-          ? "2026-08-27T12:00:00.000Z"
-          : key === "review_status" && reviewFailed
-            ? "failed"
-            : undefined,
     isAutomationReportAuthor: () => false,
     mergeRiskOptionsFromReport: () => [],
     pullRequestReviewReadinessFromReport: () => readyReadiness,
@@ -408,9 +398,18 @@ test("historical receipt failures route to the proof owner without erasing indep
     for (receiptStatus of ["absent", "passed", "failed", "malformed"]) {
       for (needsContributorAction of [false, true]) {
         assert.equal(
-          policy.prStatusLabelKindFromReport("report", { comments: [], timeline: [] }, [
-            "clawsweeper:automerge",
-          ]),
+          policy.prStatusLabelKindFromReport(
+            [
+              "---",
+              "type: pull_request",
+              "reviewed_at: 2026-08-27T12:00:00.000Z",
+              ...(reviewFailed ? ["review_status: failed"] : []),
+              "---",
+              "",
+            ].join("\n"),
+            { comments: [], timeline: [] },
+            ["clawsweeper:automerge"],
+          ),
           needsContributorAction && !reviewFailed
             ? "needs_proof"
             : receiptStatus === "failed" || receiptStatus === "malformed"
@@ -624,8 +623,6 @@ test("ClawSweeper replaces the legacy Telegram proof label during synchronizatio
     protectedLabels: () => [],
     isBulkFilerExemptAuthorAssociation: () => false,
     isBulkFilerExemptRepositoryPermission: () => false,
-    frontMatterValue: () => undefined,
-    frontMatterStringArray: () => [],
     reportSecurityReview: () => ({ status: "not_applicable", evidence: [] }),
     reviewSectionValue: () => "",
     labelPolicy: {},
@@ -1056,8 +1053,6 @@ test("ClawSweeper updates each managed label category before applying it", () =>
       protectedLabels: () => [],
       isBulkFilerExemptAuthorAssociation: () => false,
       isBulkFilerExemptRepositoryPermission: () => false,
-      frontMatterValue: () => undefined,
-      frontMatterStringArray: () => [],
       reportSecurityReview: () => ({ status: "not_applicable", evidence: [] }),
       reviewSectionValue: () => "",
       labelPolicy: {},

@@ -44,6 +44,7 @@ import {
   type LiveReadGeneration,
   type LiveReadOptions,
 } from "./live-read-generation.js";
+import { frontMatterValue } from "./report-front-matter.js";
 
 interface CreateCommandOperationsDependencies {
   actionLedgerFailureDisposition: (error: unknown) => {
@@ -56,7 +57,6 @@ interface CreateCommandOperationsDependencies {
     redactionVersion: string;
     fieldsDropped: readonly ["body", "comments", "diff", "logs", "patch", "prompt"];
   };
-  appendSectionValue: (markdown: string, heading: string, value: string) => string;
   applyDecisionsCommandInner: (args: Args, runtimeBudget: GitHubRuntimeBudget) => void;
   artifactTargetIsOpen: (number: number, openNumbers: Set<number> | null) => boolean;
   codexFailureReason: (detail: string, errorCode?: string | null) => string;
@@ -89,7 +89,6 @@ interface CreateCommandOperationsDependencies {
   failedReviewRetryRevisionForReport: (markdown: string) => FailedReviewRetryRevision | null;
   fetchItem: (number: number) => { item: Item; state: string };
   fetchOpenItemNumbers: (maxPages: number) => { numbers: Set<number>; pagesScanned: number };
-  frontMatterValue: (markdown: string, key: string) => string | undefined;
   ghJson: <T>(args: string[]) => T;
   ghPaged: <T>(path: string) => T[];
   ghRawOnceWithCheckpoint: (
@@ -140,8 +139,6 @@ interface CreateCommandOperationsDependencies {
     fetchClosedAt?: boolean;
     preserveItemNumbers?: readonly number[];
   }) => ReconcileResult;
-  replaceFrontMatterValue: (markdown: string, key: string, value: string) => string;
-  replaceSectionValue: (markdown: string, heading: string, value: string) => string;
   repoFromArgs: (args: Args) => RepositoryProfile;
   repoRelativePath: (path: string) => string;
   reportFileName: (repo: string, number: number) => string;
@@ -214,7 +211,6 @@ interface CreateCommandOperationsDependencies {
     left: FailedReviewRetryRevision,
     right: FailedReviewRetryRevision,
   ) => boolean;
-  sectionValue: (markdown: string, heading: string) => string;
   sha256: (text: string) => string;
   storedFailedReviewRetryRevision: (markdown: string) => FailedReviewRetryRevision | null;
   syncWorkPlanFromReport: (options: {
@@ -233,7 +229,6 @@ export function createCommandOperations(dependencies: CreateCommandOperationsDep
   const {
     actionLedgerFailureDisposition,
     actionLedgerPrivacy,
-    appendSectionValue,
     applyDecisionsCommandInner,
     artifactTargetIsOpen,
     codexFailureReason,
@@ -252,7 +247,6 @@ export function createCommandOperations(dependencies: CreateCommandOperationsDep
     failedReviewRetryRevisionForReport,
     fetchItem,
     fetchOpenItemNumbers,
-    frontMatterValue,
     ghJson,
     ghPaged,
     ghRawOnceWithCheckpoint,
@@ -269,8 +263,6 @@ export function createCommandOperations(dependencies: CreateCommandOperationsDep
     parseReportFileName,
     postReviewStartStatusComment,
     reconcileFolders,
-    replaceFrontMatterValue,
-    replaceSectionValue,
     repoFromArgs,
     repoRelativePath,
     reportFileName,
@@ -280,7 +272,6 @@ export function createCommandOperations(dependencies: CreateCommandOperationsDep
     reviewLeaseRevisionFromReport,
     ROOT,
     sameFailedReviewRetryRevision,
-    sectionValue,
     sha256,
     storedFailedReviewRetryRevision,
     syncWorkPlanFromReport,
@@ -472,7 +463,6 @@ export function createCommandOperations(dependencies: CreateCommandOperationsDep
 
   const failedReviewRetryWorkflow = createFailedReviewRetryWorkflow({
     root: ROOT,
-    appendSectionValue,
     codexFailureReason,
     defaultItemsDir,
     effectiveReviewStatus,
@@ -483,7 +473,6 @@ export function createCommandOperations(dependencies: CreateCommandOperationsDep
     failedReviewRetryResultRevision,
     failedReviewRetryRevisionForReport,
     fetchItem,
-    frontMatterValue,
     ghRawOnceWithCheckpoint,
     ghWithRetry,
     isDispatchError: (
@@ -501,15 +490,12 @@ export function createCommandOperations(dependencies: CreateCommandOperationsDep
     lockedConversationApplyReason,
     markdownFiles,
     numberForMarkdownFile,
-    replaceFrontMatterValue,
-    replaceSectionValue,
     repoFromArgs,
     repoRelativePath,
     reportItemKind,
     reviewLeaseRevisionFromReport,
     reviewLedger: reviewActionLedger,
     sameFailedReviewRetryRevision,
-    sectionValue,
     storedFailedReviewRetryRevision,
     targetRepo,
     withGitHubRuntimeBudget,
@@ -536,7 +522,6 @@ export function createCommandOperations(dependencies: CreateCommandOperationsDep
     targetRepo,
     repoRelativePath,
     sha256,
-    frontMatterValue,
     reviewLeaseRevisionFromReport,
     reportItemKind,
     reviewLedger: reviewActionLedger,

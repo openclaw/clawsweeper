@@ -95,6 +95,12 @@ import { stableJson } from "./stable-json.js";
 import { LiveReadGeneration, type GenerationBoundValue } from "./live-read-generation.js";
 import { parsePrHydrationSnapshot } from "./pr-hydration-snapshot.js";
 import { asRecord, login } from "./value-coerce.js";
+import {
+  frontMatterStringArray,
+  frontMatterValue,
+  replaceFrontMatterValue,
+  replaceSectionValue,
+} from "./report-front-matter.js";
 
 export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWorkflowDependencies) {
   const {
@@ -132,8 +138,6 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
     finishApplyMutationAttempt,
     flushIssueLabelMutationBatch,
     freshPullRequestReviewHead,
-    frontMatterStringArray,
-    frontMatterValue,
     ghJson,
     GitHubRuntimeBudgetError,
     guardedOpenApplyProofFields,
@@ -169,7 +173,6 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
     removeCurrentCursorTraceItem,
     removeIssueLabel,
     renderReviewCommentFromReport,
-    replaceFrontMatterValue,
     repoFromArgs,
     reportDecision,
     reportEntriesForDir,
@@ -1670,7 +1673,7 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
         requiresApplyMutationLease,
         storedHash,
       });
-      const markChangedSinceReview = createApplyChangedSinceReviewMarker(dependencies, {
+      const markChangedSinceReview = createApplyChangedSinceReviewMarker({
         dryRun,
         emitEventApplyProof,
         getMarkdown: () => markdown,
@@ -2770,7 +2773,7 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
           const completedBody = markedReviewCommentForApply(renderReviewCommentFromReport(markdown, "oversized_pull_request", renderOptions));
           const completedComment = upsertReviewComment(number, completedBody, liveComment, undefined, { suppressAutomationMarkers });
           markdown = updateReviewCommentMetadata(markdown, completedComment, completedBody);
-          markdown = dependencies.replaceSectionValue(markdown, REVIEW_SECTIONS.closeComment, completedBody);
+          markdown = replaceSectionValue(markdown, REVIEW_SECTIONS.closeComment, completedBody);
           markdown = replaceFrontMatterValue(markdown, "close_comment_sha256", dependencies.sha256(completedBody));
           writeReportMarkdown(join(closedDir, file), markdown);
           } catch (error) {

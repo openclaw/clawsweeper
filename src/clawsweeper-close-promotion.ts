@@ -10,6 +10,7 @@ import type { createReportOrchestrationFoundation } from "./clawsweeper-orchestr
 import type { createPullRequestPromotionFacts } from "./clawsweeper-promotion-facts.js";
 import type { createPullRequestCoverageProof } from "./clawsweeper-coverage-proof.js";
 import { isOlderThanDays } from "./iso-time.js";
+import { frontMatterValue } from "./report-front-matter.js";
 
 export function createPullRequestClosePromotion(
   dependencies: CreateReportOrchestrationDependencies &
@@ -19,7 +20,6 @@ export function createPullRequestClosePromotion(
 ) {
   const {
     closePromotionHasNonAutomationActivityAfterReview,
-    frontMatterValue,
     ghJson,
     ghPaged,
     linkedPullRequestSupersession,

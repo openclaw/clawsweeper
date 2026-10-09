@@ -1,4 +1,4 @@
-import { escapeRegExp as escapeRegex } from "../clawsweeper-text.js";
+import { escapeRegExp } from "../clawsweeper-markdown.js";
 import { isRecord } from "../value-coerce.js";
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { sha256 } from "../content-hash.js";
@@ -262,7 +262,7 @@ export function clusterIntakeProposal(value: unknown): ClusterIntakeProposal {
       .toLowerCase();
     const dispatchKey = String(raw.dispatch_key || "").trim();
     const pathPattern = new RegExp(
-      `^jobs/${escapeRegex(targetRepo.split("/")[0]!)}/inbox/gitcrawl-${clusterId}-[^/]+\\.md$`,
+      `^jobs/${escapeRegExp(targetRepo.split("/")[0]!)}/inbox/gitcrawl-${clusterId}-[^/]+\\.md$`,
     );
     if (
       !Number.isSafeInteger(clusterId) ||
@@ -1327,7 +1327,7 @@ function strictJobPaths(value: unknown, targetRepo: string, label: string): stri
 
 function strictJobPath(value: unknown, targetRepo: string, label: string): string {
   const path = strictString(value, label);
-  const owner = escapeRegex(targetRepo.split("/")[0]!);
+  const owner = escapeRegExp(targetRepo.split("/")[0]!);
   if (!new RegExp(`^jobs/${owner}/inbox/gitcrawl-[1-9][0-9]*-[^/]+\\.md$`).test(path)) {
     throw new Error(`invalid ${label}`);
   }

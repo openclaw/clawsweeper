@@ -727,7 +727,6 @@ test("GitHub throttles abort apply lease checks and preserve durable lease owner
     closeDelayMs: 0,
     currentReviewActivityBlock: () => null,
     dryRun: false,
-    frontMatterValue: () => undefined,
     getActiveApplyMutationLease: () => ({ itemNumber: 42, lease }),
     ghJson: () => {
       requests += 1;

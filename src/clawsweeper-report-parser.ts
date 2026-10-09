@@ -80,16 +80,17 @@ import type {
   TriagePriority,
   VisionFitStatus,
 } from "./clawsweeper-types.js";
-import type { FrontMatterField } from "./report-front-matter.js";
+import {
+  frontMatterField,
+  frontMatterJsonArray,
+  frontMatterStringArray,
+  frontMatterValue,
+} from "./report-front-matter.js";
 
 interface ReportParsingDependencies {
   agentsPolicyStatusLine: (status: AgentsPolicyStatus | undefined) => string;
   defaultRootCauseCluster: () => RootCauseClusterAssessment;
   evidenceEntry: (options: Partial<Evidence> & Pick<Evidence, "label" | "detail">) => Evidence;
-  frontMatterJsonArray: (markdown: string, key: string) => unknown[];
-  frontMatterField: (markdown: string, key: string) => FrontMatterField;
-  frontMatterStringArray: (markdown: string, key: string) => string[];
-  frontMatterValue: (markdown: string, key: string) => string | undefined;
   isExternalPullRequestReport: (markdown: string) => boolean;
   markdownRepository: (markdown: string, file?: string) => string;
   parseBoldListHeading: (line: string) => { label: string; detail: string } | null;
@@ -344,10 +345,6 @@ export function createReportParser({
   agentsPolicyStatusLine,
   defaultRootCauseCluster,
   evidenceEntry,
-  frontMatterJsonArray,
-  frontMatterField,
-  frontMatterStringArray,
-  frontMatterValue,
   isExternalPullRequestReport,
   markdownRepository,
   parseBoldListHeading,

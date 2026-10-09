@@ -1,4 +1,4 @@
-import { escapeRegExp } from "../clawsweeper-text.js";
+import { escapeRegExp } from "../clawsweeper-markdown.js";
 import type { JsonValue, LooseRecord } from "./json-types.js";
 import { compactCommentText as compact } from "./text-utils.js";
 

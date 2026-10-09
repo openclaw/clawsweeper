@@ -72,8 +72,6 @@ export interface CreateReportRenderingDependencies {
     formatter: (value: string) => string,
   ) => string;
   formatTimestamp: (iso: string | undefined) => string;
-  frontMatterStringArray: (markdown: string, key: string) => string[];
-  frontMatterValue: (markdown: string, key: string) => string | undefined;
   ghJson: <T>(args: string[]) => T;
   ghObservedMutationCommand: (options: {
     identity: string;
@@ -143,7 +141,6 @@ export interface CreateReportRenderingDependencies {
   renderOpenClawPrSurfaceFromReport: (markdown: string) => string;
   renderReviewMetricsDigest: (metrics: readonly ReviewMetric[]) => string;
   repairLoopPassModeFromReport: (markdown: string) => "" | "autofix" | "automerge";
-  replaceFrontMatterValue: (markdown: string, key: string, value: string) => string;
   repoRelativePath: (path: string) => string;
   reportAgentsPolicyStatus: (markdown: string) => AgentsPolicyStatus | undefined;
   reportEvidence: (markdown: string) => Evidence[];
