@@ -23,13 +23,12 @@ function report(decision: Decision): string {
     }),
     ...createReportContextRendering({} as never),
     ...createDashboardPresentation({} as never),
-    prSurfaceFilesFromContext: () => [],
     compactPullFilePaths: () => [],
-    fixedInText: () => "unknown",
     formatTimestamp: String,
     labelJustificationsMarkdown: () => "- none",
     pullHeadShaFromContext: () => "c".repeat(40),
     reviewStructuralPullStateFromContext: () => null,
+    targetProfile: () => repositoryProfileFor("openclaw/openclaw"),
   } as Parameters<typeof createReportDocumentRendering>[0]);
   return document.markdownFor({
     item: pullRequest,
