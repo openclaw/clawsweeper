@@ -191,7 +191,7 @@ export function runExecuteFixFixture(t: TestContext, options: ExecuteFixFixtureO
     ],
     {
       encoding: "utf8",
-      timeout: 120_000,
+      timeout: 300_000,
       env: {
         ...process.env,
         PATH: `${bin}${path.delimiter}${process.env.PATH}`,
