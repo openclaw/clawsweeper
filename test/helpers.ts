@@ -1166,7 +1166,7 @@ export function withReviewRecord(report: string, decision: Record<string, unknow
     kind: frontMatterValue(report, "type"),
   };
   const line = reviewRecordFrontMatterLine(
-    parseDecision(closeDecision(decision), subject),
+    { decision: parseDecision(closeDecision(decision), subject) },
     subject,
   );
   assert.ok(line, "fixture decision must be a valid review record");

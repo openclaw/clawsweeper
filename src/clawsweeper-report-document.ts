@@ -595,7 +595,10 @@ export function createReportDocumentRendering(
     const pullFilesTruncated = Boolean(options.context.counts?.pullFilesTruncated);
     const prSurfaceFiles = prSurfaceFilesFromContext(options.context);
     const reviewedPullStateDigest = reviewStructuralPullStateFromContext(options.context);
-    const reviewRecordLine = reviewRecordFrontMatterLine(options.decision, options.item);
+    const reviewRecordLine = reviewRecordFrontMatterLine(
+      { decision: options.decision },
+      options.item,
+    );
     const markdown = `---
 number: ${options.item.number}
 repository: ${options.item.repo}

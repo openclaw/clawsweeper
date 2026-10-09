@@ -1,0 +1,56 @@
+name: Review record backfill dry run
+
+# Reports what the review_record backfill would do for every stored report.
+# It reads canonical records and writes nothing back.
+on:
+  workflow_dispatch:
+    inputs:
+      repo_slugs:
+        description: "Optional comma-separated canonical repository slugs (empty discovers all)"
+        required: false
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  dry-run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: main
+          filter: blob:none
+          fetch-depth: 1
+          persist-credentials: false
+
+      - uses: ./.github/actions/setup-pnpm
+        with:
+          build-script: build
+
+      - uses: ./.github/actions/setup-state
+        with:
+          hydrate-git-state: "false"
+          hydrate-state-blobs: "false"
+          records-url: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
+          records-secret: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
+          records-repo-slugs: ${{ inputs.repo_slugs || vars.CLAWSWEEPER_RECORDS_REPO_SLUGS || '' }}
+
+      - name: Classify stored reports
+        run: |
+          mkdir -p .artifacts/review-record-backfill
+          for dir in records/*/; do
+            slug="$(basename "$dir")"
+            node dist/clawsweeper.js backfill-review-records \
+              --records-dir "$dir" \
+              --output ".artifacts/review-record-backfill/$slug.json"
+          done
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: review-record-backfill
+          path: .artifacts/review-record-backfill
+          if-no-files-found: error
+          retention-days: 14

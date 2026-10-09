@@ -74,6 +74,7 @@ import {
 import { createRegressionProvenanceVerifier } from "./clawsweeper-regression-provenance.js";
 import { createReportOrchestration } from "./clawsweeper-report-orchestration.js";
 import { reportLiveProofPlan, reportReviewFindings } from "./clawsweeper-report-parser.js";
+import { createReviewRecordBackfill } from "./review-record-backfill.js";
 import { existingReview } from "./clawsweeper-record-metadata.js";
 import {
   createRepositoryPaths,
@@ -747,6 +748,7 @@ export const {
   reviewContextLedgerForTest,
 } = reportOrchestration;
 const { syncWorkPlanFromReport, workPlanPathForReport } = reportOrchestration;
+const { backfillReviewRecordsCommand } = createReviewRecordBackfill(reportOrchestration);
 
 const labelMutations = createLabelMutationOperations({ ghJson, ghObservedMutationCommand });
 const labelSyncOperations = createLabelSyncOperations(labelMutations);
@@ -1172,6 +1174,7 @@ const COMMAND_HANDLERS: Readonly<Record<string, CommandHandler<Args>>> = {
   "live-proof-comment": liveProofCommentCommand,
   "live-proof-publish-artifacts": liveProofPublishArtifactsCommand,
   "apply-decisions": applyDecisionsCommand,
+  "backfill-review-records": backfillReviewRecordsCommand,
   "publish-action-events": publishActionEventsCommand,
   "publish-action-event-paths": publishActionEventPathsCommand,
   audit: auditCommand,

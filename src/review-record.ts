@@ -59,29 +59,39 @@ function reviewRecordValue(record: ReviewRecord): string {
   );
 }
 
-// A stored record must read back unchanged. A decision that would not is not
-// stored: the report then has no record, as before review_record existed, and
-// the backfill makes one from the report.
-function storableDecision(decision: Decision, subject: ReviewRecordSubject): boolean {
-  try {
-    parseStoredDecision(JSON.parse(JSON.stringify(decision)), subject);
-    return true;
-  } catch (error) {
-    if (!(error instanceof ReviewRecordFormatError)) throw error;
-    console.error(
-      `[review-record] ${subject.repo}#${subject.number}: record not stored: ${error.message}`,
-    );
-    return false;
-  }
-}
-
-/** The front-matter line that stores the typed decision of a report, or null. */
-export function reviewRecordFrontMatterLine(
+/** Why a decision cannot be stored, or null. A stored record must read back unchanged. */
+export function reviewRecordProblem(
   decision: Decision,
   subject: ReviewRecordSubject,
 ): string | null {
-  return storableDecision(decision, subject)
-    ? `${REVIEW_RECORD_KEY}: ${reviewRecordValue({ decision })}`
+  try {
+    parseStoredDecision(JSON.parse(JSON.stringify(decision)), subject);
+    return null;
+  } catch (error) {
+    if (!(error instanceof ReviewRecordFormatError)) throw error;
+    return error.message;
+  }
+}
+
+// A decision that would not read back is not stored: the report then has no record,
+// as before review_record existed, and the backfill makes one from the report.
+function storableDecision(decision: Decision, subject: ReviewRecordSubject): boolean {
+  const problem = reviewRecordProblem(decision, subject);
+  if (problem) {
+    console.error(
+      `[review-record] ${subject.repo}#${subject.number}: record not stored: ${problem}`,
+    );
+  }
+  return problem === null;
+}
+
+/** The front-matter line that stores the typed record of a report, or null. */
+export function reviewRecordFrontMatterLine(
+  record: ReviewRecord,
+  subject: ReviewRecordSubject,
+): string | null {
+  return storableDecision(record.decision, subject)
+    ? `${REVIEW_RECORD_KEY}: ${reviewRecordValue(record)}`
     : null;
 }
 
