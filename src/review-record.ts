@@ -126,6 +126,19 @@ export function readReviewRecord(markdown: string): ReviewRecord | null {
 }
 
 /**
+ * Reads the typed record of a report. A report from before review_record existed
+ * gets its decision from `legacyDecision`, which reads the report text. Remove this
+ * fallback when the backfill shows that no stored report is without a record.
+ * A record that does not read throws ReviewRecordFormatError: it gets no fallback.
+ */
+export function readReviewRecordOrLegacy(
+  markdown: string,
+  legacyDecision: (markdown: string) => Decision,
+): ReviewRecord {
+  return readReviewRecord(markdown) ?? { decision: legacyDecision(markdown) };
+}
+
+/**
  * Changes decision fields in the typed record of a report. A report without a
  * record does not change: the backfill makes its record. A record that is not
  * valid before or after the change is removed, so a stored record always reads.

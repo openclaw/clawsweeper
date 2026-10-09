@@ -14,6 +14,7 @@ import { dirname, join, resolve } from "node:path";
 import { reportPublicationPolicy } from "./manual-publication-policy.js";
 import { assertManualPublicationAuthority } from "./manual-publication-authority.js";
 import { createApplyCandidateGuards } from "./clawsweeper-apply-candidate-guards.js";
+import { validateReportClose } from "./clawsweeper-apply-close-decision.js";
 import { executeApplyClose } from "./clawsweeper-apply-close-execution.js";
 import {
   createApplyCloseGuards,
@@ -181,7 +182,6 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
     removeIssueLabel,
     renderReviewCommentFromReport,
     repoFromArgs,
-    reportDecision,
     reportEntriesForDir,
     reviewCommentBodyDigest,
     reviewCommentHashMatches,
@@ -198,7 +198,6 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
     targetRepo,
     updateReviewCommentMetadata,
     upsertReviewComment,
-    validateCloseDecision,
     withGuardReadOptions,
   } = dependencies;
 
@@ -2090,14 +2089,16 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
         (applyKind === "all" || item.kind === applyKind) &&
         closeReasonEnabled(closeReason, applyCloseReasons)
       ) {
-        const preSyncReportValidation = validateCloseDecision(
+        const preSyncReportValidation = validateReportClose(
+          dependencies,
           {
             repo,
             kind: item.kind,
             labels: item.labels,
             authorAssociation: item.authorAssociation,
           },
-          reportDecision(markdown, closeReason),
+          markdown,
+          closeReason,
           { requireCloseComment: !isRetryableSkippedClose },
         );
         const preSyncValidationPassed =
@@ -2685,15 +2686,7 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
         pairedIssueDurableReviewCommentUpdatedAt: (pairedNumber) => {
           const pairedMarkdown = openReportEntry(pairedNumber)?.markdown;
           if (!pairedMarkdown) return null;
-          const pairedCloseReason = reportDecision(
-            pairedMarkdown,
-            "implemented_on_main",
-          ).closeReason;
-          return durableReviewCommentUpdatedAt(
-            pairedMarkdown,
-            pairedNumber,
-            pairedCloseReason,
-          );
+          return durableReviewCommentUpdatedAt(pairedMarkdown, pairedNumber, "implemented_on_main");
         },
         closeDelayMs,
         closeLimitReached: closedCount >= limit,

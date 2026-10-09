@@ -4,6 +4,7 @@ import {
   parseOversizedPullRequestEvidence,
 } from "./clawsweeper-oversized-pr-policy.js";
 import type { CreateApplyDecisionWorkflowDependencies } from "./clawsweeper-apply-dependencies.js";
+import { validateReportClose } from "./clawsweeper-apply-close-decision.js";
 import { liveApplyCloseReasonPolicyBlock } from "./clawsweeper-apply-close-policies.js";
 import { closeReasonText } from "./clawsweeper-close-reasons.js";
 import { linkedIssueNumbersForImplementationProvenance } from "./clawsweeper-status-context.js";
@@ -201,9 +202,7 @@ export function executeApplyClose(
     lowSignalUnmergeablePrApplyBlockReasonSafe,
     normalizeLabelName,
     removeCurrentCursorTraceItem,
-    reportDecision,
     sleepMs,
-    validateCloseDecision,
   } = dependencies;
   const {
     applyCloseReasons,
@@ -400,9 +399,11 @@ export function executeApplyClose(
     return skip("kept_open", currentImplementationProvenanceBlock);
   }
 
-  const currentReportValidation = validateCloseDecision(
+  const currentReportValidation = validateReportClose(
+    dependencies,
     { repo, kind: item.kind, labels: item.labels, authorAssociation: item.authorAssociation },
-    reportDecision(getMarkdown(), closeReason),
+    getMarkdown(),
+    closeReason,
     { requireCloseComment: !isRetryableSkippedClose },
   );
   if (!currentReportValidation.ok && currentReportValidation.actionTaken !== "kept_open") {
@@ -559,17 +560,16 @@ export function executeApplyClose(
         "implemented-on-main paired closeout requires the linked issue to remain unchanged since its independent review",
       );
     }
-    const issueValidation = validateCloseDecision(
+    const issueValidation = validateReportClose(
+      dependencies,
       {
         repo,
         kind: liveIssue.item.kind,
         labels: liveIssue.item.labels,
         authorAssociation: liveIssue.item.authorAssociation,
       },
-      {
-        ...reportDecision(pairedMarkdown, linkedIssueCloseReason),
-        closeReason: linkedIssueCloseReason,
-      },
+      pairedMarkdown,
+      linkedIssueCloseReason,
       { requireCloseComment: true },
     );
     if (!issueValidation.ok) return skip("kept_open", issueValidation.reason);
@@ -790,17 +790,16 @@ export function executeApplyClose(
       currentLinkedIssue.item.number,
       pairedReviewedAtMs,
     );
-    const postCommentIssueValidation = validateCloseDecision(
+    const postCommentIssueValidation = validateReportClose(
+      dependencies,
       {
         repo,
         kind: postCommentLinkedIssue.item.kind,
         labels: postCommentLinkedIssue.item.labels,
         authorAssociation: postCommentLinkedIssue.item.authorAssociation,
       },
-      {
-        ...reportDecision(pairedMarkdown, linkedIssueCloseReason),
-        closeReason: linkedIssueCloseReason,
-      },
+      pairedMarkdown,
+      linkedIssueCloseReason,
       { requireCloseComment: true },
     );
     if (

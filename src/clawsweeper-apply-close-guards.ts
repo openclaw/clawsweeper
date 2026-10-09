@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import type { CreateApplyDecisionWorkflowDependencies } from "./clawsweeper-apply-dependencies.js";
+import { validateReportClose } from "./clawsweeper-apply-close-decision.js";
 import { liveApplyCloseReasonPolicyBlock } from "./clawsweeper-apply-close-policies.js";
 import type {
   ActionTaken,
@@ -205,11 +206,9 @@ export function createApplyCloseGuards(
     normalizeAuthorAssociation,
     openClosingPullRequestApplyReason,
     renderReviewCommentFromReport,
-    reportDecision,
     reviewCommentBodyDigest,
     reviewCommentHashMatches,
     sameAuthorCounterpartApplyReason,
-    validateCloseDecision,
   } = dependencies;
 
   const currentCloseGatesPassed = (): boolean => {
@@ -223,17 +222,17 @@ export function createApplyCloseGuards(
     if (!closeReason || !closeReasonEnabled(closeReason, applyCloseReasons)) return false;
     if (needsReviewCommentSync) return false;
     if (
-      !validateCloseDecision(
+      !validateReportClose(
+        dependencies,
         {
           repo,
           kind: item.kind,
           labels: item.labels,
           authorAssociation: item.authorAssociation,
         },
-        reportDecision(markdown, closeReason),
-        {
-          requireCloseComment: !isRetryableSkippedClose,
-        },
+        markdown,
+        closeReason,
+        { requireCloseComment: !isRetryableSkippedClose },
       ).ok
     ) {
       return false;
@@ -428,14 +427,16 @@ export function createApplyCloseGuards(
             (!counterpartUpdatedSinceReview || counterpartReviewCommentOnlyUpdate) &&
             !counterpartSnapshotChanged &&
             !counterpartNeedsReviewCommentSync &&
-            validateCloseDecision(
+            validateReportClose(
+              dependencies,
               {
                 repo: counterpartRepo,
                 kind: counterpartItem.kind,
                 labels: counterpartItem.labels,
                 authorAssociation: counterpartItem.authorAssociation,
               },
-              reportDecision(counterpartMarkdown, counterpartReason),
+              counterpartMarkdown,
+              counterpartReason,
               { requireCloseComment: !isRetryableCloseSkipReport(counterpartMarkdown) },
             ).ok &&
             closeReasonApplyAgeSkipReason(counterpartItem, counterpartReason, {
