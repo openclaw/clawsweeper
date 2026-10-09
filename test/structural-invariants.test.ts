@@ -9,6 +9,7 @@ import { readText } from "./helpers.ts";
 type Step = {
   id?: string;
   name?: string;
+  uses?: string;
   if?: string;
   run?: string;
   env?: Record<string, string>;
@@ -27,6 +28,23 @@ function steps(document: Workflow): Step[] {
 }
 
 // test/repair source-text guards
+
+// Cluster intake makes state durable and recovers pending dispatches before it selects new work.
+test("cluster intake publishes jobs durably before dispatch", () => {
+  const intake = workflow("repair-cluster-intake.yml").jobs.intake?.steps ?? [];
+  const order = [
+    intake.findIndex((step) => step.uses === "./.github/actions/create-state-token"),
+    intake.findIndex((step) => step.uses === "./.github/actions/setup-state"),
+    intake.findIndex((step) => step.name === "Recover pending cluster dispatches"),
+    intake.findIndex((step) => step.name === "Prepare unprocessed cluster candidates"),
+    intake.findIndex((step) => step.name === "Durably accept cluster intake"),
+  ];
+  assert.ok(order[0]! >= 0, "missing state token step");
+  assert.deepEqual(
+    order,
+    [...order].sort((left, right) => left - right),
+  );
+});
 
 // Post-flight records closure authorization only. Guarded apply owns every close.
 test("post-flight never closes issues or pull requests", () => {
