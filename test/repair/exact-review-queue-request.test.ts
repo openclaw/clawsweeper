@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { copyFileSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 
 const lease = {
@@ -16,15 +19,15 @@ const lease = {
   REVISION: "4",
 };
 
-function run(argv: string[], env: Record<string, string>) {
-  const result = spawnSync(
-    process.execPath,
-    ["dist/repair/exact-review-queue-request.js", ...argv],
-    {
-      encoding: "utf8",
-      env: { PATH: process.env.PATH ?? "", ...lease, ...env },
-    },
-  );
+function run(
+  argv: string[],
+  env: Record<string, string>,
+  script = "dist/repair/exact-review-queue-request.js",
+) {
+  const result = spawnSync(process.execPath, [script, ...argv], {
+    encoding: "utf8",
+    env: { PATH: process.env.PATH ?? "", ...lease, ...env },
+  });
   return { status: result.status, body: result.stdout, error: result.stderr };
 }
 
@@ -171,6 +174,34 @@ test("lifecycle requests with an invalid target or record option print no body",
     assert.equal(result.status, 1, message);
     assert.equal(result.body, "", message);
     assert.equal(result.error, `exact-review-queue-request: ${message}\n`);
+  }
+});
+
+// Steps that run before checkout download only this source file and run it with
+// the runner Node, which strips the types. It must not need the build.
+test("the source file alone gives the same bodies and errors as the build", () => {
+  const dir = mkdtempSync(join(tmpdir(), "exact-review-queue-request-"));
+  try {
+    const copy = join(dir, "exact-review-queue-request.mts");
+    copyFileSync("src/repair/exact-review-queue-request.ts", copy);
+    for (const argv of [
+      [
+        "lifecycle",
+        "router-receipt",
+        "--outcome",
+        "durable",
+        "--receipt-id-prefix",
+        "router-direct-recovery",
+      ],
+      ["lifecycle", "terminal-disposition", "--kind", "requeue"],
+      ["lifecycle", "terminal-disposition", "--kind", "review_completed_routed"],
+      ["heartbeat", "--phase", "status"],
+    ]) {
+      const built = run(argv, {});
+      assert.deepEqual(run(argv, {}, copy), built, argv.join(" "));
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
   }
 });
 

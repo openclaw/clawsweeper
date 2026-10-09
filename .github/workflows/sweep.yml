@@ -2530,6 +2530,11 @@ jobs:
           test -s "$RUNNER_TEMP/control-plane-curl.sh"
           source "$RUNNER_TEMP/control-plane-curl.sh"
           declare -F control_plane_curl > /dev/null
+          # The direct lifecycle replay runs before checkout. It builds its queue
+          # request bodies with the typed command from the same pinned commit.
+          # The runner Node strips the TypeScript types.
+          curl -fsSL --retry 3 --retry-all-errors --retry-connrefused "https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${GITHUB_SHA}/src/repair/exact-review-queue-request.ts" -o "$RUNNER_TEMP/exact-review-queue-request.mts"
+          test -s "$RUNNER_TEMP/exact-review-queue-request.mts"
       - name: Claim durable exact review publication
         id: publication-context
         env:
@@ -2747,42 +2752,10 @@ jobs:
             accepted|deduped|superseded) ;;
             *) exit 1 ;;
           esac
-          post_router_receipt() {
-            local outcome="$1"
-            local deferred_coverage="$2"
-            lifecycle_payload="$(LIFECYCLE_ROUTER_OUTCOME="$outcome" LIFECYCLE_DEFERRED_COVERAGE="$deferred_coverage" node -e '
-              const revision = Number(process.env.REVISION);
-              if (!Number.isInteger(revision) || revision < 1 || !process.env.FENCE_KEY) process.exit(1);
-              const prefix = process.env.LIFECYCLE_DEFERRED_COVERAGE === "true"
-                ? "router-direct-recovery-proof"
-                : process.env.LIFECYCLE_ROUTER_OUTCOME === "not_required"
-                  ? "router-direct-recovery-not-required"
-                  : "router-direct-recovery";
-              process.stdout.write(JSON.stringify({
-                canonical_target_key: `${process.env.TARGET_REPO}#${process.env.ITEM_NUMBER}`,
-                fence_key: process.env.FENCE_KEY,
-                revision,
-                outcome: process.env.LIFECYCLE_ROUTER_OUTCOME,
-                receipt_id: `${prefix}:${process.env.GITHUB_RUN_ID}:${process.env.GITHUB_RUN_ATTEMPT}`,
-              }));
-            ')"
-            lifecycle_response="$(control_plane_signed_post "$queue_url/internal/exact-review/lifecycle/router-receipt" "$lifecycle_payload" \
-              --fail --silent --show-error --connect-timeout 5 --max-time 20)"
-            jq -e '.ok == true' <<<"$lifecycle_response" >/dev/null
-          }
-          post_terminal_disposition() {
-            local terminal_kind="$1"
-            lifecycle_payload="$(LIFECYCLE_TERMINAL="$terminal_kind" node -e '
-              const revision = Number(process.env.REVISION);
-              if (!Number.isInteger(revision) || revision < 1 || !process.env.FENCE_KEY || !process.env.LIFECYCLE_TERMINAL) process.exit(1);
-              process.stdout.write(JSON.stringify({
-                canonical_target_key: `${process.env.TARGET_REPO}#${process.env.ITEM_NUMBER}`,
-                fence_key: process.env.FENCE_KEY,
-                revision,
-                kind: process.env.LIFECYCLE_TERMINAL,
-              }));
-            ')"
-            lifecycle_response="$(control_plane_signed_post "$queue_url/internal/exact-review/lifecycle/terminal-disposition" "$lifecycle_payload" \
+          request="$RUNNER_TEMP/exact-review-queue-request.mts"
+          post_lifecycle() {
+            local record="$1" payload="$2"
+            lifecycle_response="$(control_plane_signed_post "$queue_url/internal/exact-review/lifecycle/$record" "$payload" \
               --fail --silent --show-error --connect-timeout 5 --max-time 20)"
             jq -e '.ok == true' <<<"$lifecycle_response" >/dev/null
           }
@@ -2798,6 +2771,10 @@ jobs:
           else
             case "$lifecycle_kind" in
               router)
+                # Build the body before the router dispatch. A body error then
+                # stops the step before any side effect.
+                lifecycle_payload="$(node "$request" lifecycle router-receipt \
+                  --outcome durable --receipt-id-prefix router-direct-recovery)"
                 gh workflow run repair-comment-router.yml \
                   --repo "$GITHUB_REPOSITORY" \
                   --ref main \
@@ -2807,16 +2784,21 @@ jobs:
                   -f item_numbers="$ITEM_NUMBER" \
                   -f lookback_minutes="$CLAWSWEEPER_COMMENT_LOOKBACK_MINUTES" \
                   -f max_comments="$CLAWSWEEPER_COMMENT_MAX_COMMENTS"
-                post_router_receipt durable false
+                post_lifecycle router-receipt "$lifecycle_payload"
                 ;;
               router_deferred_coverage)
-                post_router_receipt durable true
+                lifecycle_payload="$(node "$request" lifecycle router-receipt \
+                  --outcome durable --receipt-id-prefix router-direct-recovery-proof)"
+                post_lifecycle router-receipt "$lifecycle_payload"
                 ;;
               router_not_required)
-                post_router_receipt not_required false
+                lifecycle_payload="$(node "$request" lifecycle router-receipt \
+                  --outcome not_required --receipt-id-prefix router-direct-recovery-not-required)"
+                post_lifecycle router-receipt "$lifecycle_payload"
                 ;;
               requeue)
-                post_terminal_disposition requeue
+                lifecycle_payload="$(node "$request" lifecycle terminal-disposition --kind requeue)"
+                post_lifecycle terminal-disposition "$lifecycle_payload"
                 # The completion endpoint atomically changes this exact direct
                 # publication into a new fenced source-drift review revision.
                 # A separate enqueue here could be ignored while this lease is
@@ -2824,7 +2806,8 @@ jobs:
                 direct_requeue=true
                 ;;
               target_missing|target_closed|guarded_open|policy_noop)
-                post_terminal_disposition "$lifecycle_kind"
+                lifecycle_payload="$(node "$request" lifecycle terminal-disposition --kind "$lifecycle_kind")"
+                post_lifecycle terminal-disposition "$lifecycle_payload"
                 ;;
               *) exit 1 ;;
             esac

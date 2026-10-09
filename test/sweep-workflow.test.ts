@@ -1871,8 +1871,8 @@ test("exact event review publishes directly with a queue-bounded canonical fallb
   assert.match(replayDirect.run ?? "", /router_deferred_coverage/);
   assert.match(replayDirect.run ?? "", /router_not_required/);
   assert.match(replayDirect.run ?? "", /repair-comment-router\.yml/);
-  assert.match(replayDirect.run ?? "", /lifecycle\/router-receipt/);
-  assert.match(replayDirect.run ?? "", /lifecycle\/terminal-disposition/);
+  assert.match(replayDirect.run ?? "", /"\$request" lifecycle router-receipt/);
+  assert.match(replayDirect.run ?? "", /"\$request" lifecycle terminal-disposition/);
   assert.match(replayDirect.run ?? "", /direct_requeue=true/);
   assert.doesNotMatch(replayDirect.run ?? "", /internal\/exact-review\/enqueue/);
   assert.doesNotMatch(replayDirect.run ?? "", /repair:publish-event-result/);

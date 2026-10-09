@@ -1,0 +1,1 @@
+- Build the pre-checkout direct-lifecycle replay bodies in `event-review-publish` with `exact-review-queue-request.ts`, downloaded for the pinned workflow commit like the curl helper, instead of two inline Node builders in `sweep.yml`.

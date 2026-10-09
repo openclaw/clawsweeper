@@ -161,8 +161,16 @@ receipt steps in `event-review-publish` build their lifecycle bodies with
 `exact-review-queue-request.js lifecycle <router-receipt|canonical-receipt|terminal-disposition>`.
 The command reads `TARGET_REPO`, `ITEM_NUMBER`, `FENCE_KEY` and `REVISION`, and
 accepts only the outcomes and terminal kinds that the queue accepts. A receipt id
-is `--receipt-id-prefix` plus the run id and run attempt. The pre-checkout
-direct-lifecycle replay in `event-review-publish` still builds its bodies inline.
+is `--receipt-id-prefix` plus the run id and run attempt.
+
+The direct-lifecycle replay in `event-review-publish` runs before checkout. Its
+bootstrap step also downloads `src/repair/exact-review-queue-request.ts`, pinned
+to `GITHUB_SHA` like the curl helper, into
+`RUNNER_TEMP/exact-review-queue-request.mts`. The runner Node strips the types,
+so the source file runs without a build; it imports only Node built-ins. The
+replay builds each body before its side effect, so a body error stops the step
+before the router dispatch or any queue write. The other pre-checkout steps
+still build their bodies inline.
 
 After checkout, `event-review-terminal-finalization` builds its bodies with the
 same command. `terminal-finalization <attempt|skip>` reads the claimed lease tuple
