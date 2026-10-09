@@ -2,7 +2,6 @@
 import type { JsonValue, LooseRecord } from "./json-types.js";
 import fs from "node:fs";
 import path from "node:path";
-import { spawnSync } from "node:child_process";
 import { runCommandResult } from "./command-runner.js";
 import { parseArgs, parseJob, repoRoot, validateJob } from "./lib.js";
 import { runGitResult } from "./git.js";
