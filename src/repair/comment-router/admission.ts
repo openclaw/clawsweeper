@@ -1,5 +1,11 @@
 import { markdownTopLevelSection } from "../../clawsweeper-markdown.js";
 import {
+  githubReadModelCommentObject,
+  githubReadModelRequestSync,
+  usableGithubReadModelResponse,
+  type GithubReadModelResponse,
+} from "../../github-webhook-read-model-client.js";
+import {
   extractClawSweeperCommandLine,
   isClawSweeperReReviewCommandText,
   reviewPromptFromClawSweeperCommandText,
@@ -1000,4 +1006,37 @@ function markerReasonSuffix(attrs: LooseRecord) {
   if (attrs?.finding) parts.push(`finding=${attrs.finding}`);
   if (attrs?.sha) parts.push(`sha=${attrs.sha}`);
   return parts.length ? ` (${parts.join(" ")})` : "";
+}
+
+// Read the comments of one repair loop item. Use the read model snapshot when it is usable.
+// Otherwise read the live comments and give them back to the read model.
+export function readRepairLoopComments(options: {
+  repository: string;
+  number: number;
+  liveRead: () => LooseRecord[];
+  readModelRequest?: (
+    operation: "comments" | "repair",
+    payload: Record<string, unknown>,
+  ) => GithubReadModelResponse | null;
+}): LooseRecord[] {
+  const request = options.readModelRequest ?? githubReadModelRequestSync;
+  const snapshot = request("comments", {
+    repository: options.repository,
+    number: options.number,
+  });
+  if (usableGithubReadModelResponse(snapshot, "comment_router_repair_labels", "issue_comments")) {
+    return Array.isArray(snapshot.comments) ? (snapshot.comments as LooseRecord[]) : [];
+  }
+  const comments = options.liveRead();
+  const objects = comments.flatMap((comment) => {
+    const object = githubReadModelCommentObject(options.repository, options.number, comment);
+    return object ? [object] : [];
+  });
+  request("repair", {
+    repository: options.repository,
+    repair_kind: "comments",
+    complete_comment_items: [options.number],
+    objects,
+  });
+  return comments;
 }

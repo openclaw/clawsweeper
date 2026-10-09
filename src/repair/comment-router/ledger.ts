@@ -3,7 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 
 import { isRecord } from "../../value-coerce.js";
-import { dispatchClaimLookupKeys, forcedReplayIdentityFields } from "../comment-router-utils.js";
+import { dispatchClaimLookupKeys, forcedReplayIdentityFields } from "./dispatch.js";
 import type { JsonValue, LooseRecord } from "../json-types.js";
 
 type JsonRecord = Record<string, unknown>;

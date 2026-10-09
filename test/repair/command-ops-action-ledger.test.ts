@@ -6,7 +6,7 @@ import path from "node:path";
 import test from "node:test";
 import { parse as parseYaml } from "yaml";
 
-import { renderAutomergeJob } from "../../dist/repair/comment-router-core.js";
+import { renderAutomergeJob } from "../../dist/repair/comment-router/dispatch.js";
 import { readText } from "../helpers.ts";
 
 type WorkflowStep = { name?: string; id?: string; uses?: string; if?: string; run?: string };

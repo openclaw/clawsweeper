@@ -410,6 +410,9 @@ Scripts:
 
 - `src/repair/comment-router.ts`
 - `src/repair/comment-router-core.ts`
+- `src/repair/comment-router/admission.ts`
+- `src/repair/comment-router/dispatch.ts`
+- `src/repair/comment-router/ledger.ts`
 
 Comment routing scans recent target-repo issue/PR comments and accepts only
 maintainer-authored commands. Default allowed GitHub `author_association`
@@ -656,7 +659,7 @@ Important defaults:
   writes the same job schema.
 - Better CI self-repair: extend `finalize-open-prs` to collect failed check
   logs and classify rerun vs repair.
-- New maintainer command: extend `comment-router-core.ts` parsing and
+- New maintainer command: extend `comment-router/admission.ts` parsing and
   `comment-router.ts` execution.
 - New mutation type: add schema support, worker prompt policy, result review
   validation, and deterministic application in `apply-result`.

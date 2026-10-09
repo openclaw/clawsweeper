@@ -24,14 +24,14 @@ import {
   reportRevisionSha256,
   reportOnlyDecision,
 } from "../../dist/repair/issue-implementation-intake.js";
+import { issueImplementationOverrideBlockerClass } from "../../dist/repair/comment-router-core.js";
 import {
   issueImplementationJobPath,
-  issueImplementationOverrideBlockerClass,
   renderIssueImplementationJob,
   REVIEW_REPRODUCIBLE_BUG_TRIGGER_SOURCE,
   REVIEW_VIABLE_ISSUE_TRIGGER_SOURCE,
   REVIEW_VISION_FIT_TRIGGER_SOURCE,
-} from "../../dist/repair/comment-router-core.js";
+} from "../../dist/repair/comment-router/dispatch.js";
 
 function report(overrides = {}, securityStatus = "not_applicable") {
   const fields = {

@@ -2,13 +2,15 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
-  automergeMergeFailureRepairReason,
-  automergeRebaseRepairReason,
   existingRepairLoopModeOutcome,
   isAutomergeMergeStateReady,
   latestRepairLoopResumeTime,
   maintainerAutomergeOptInApprovesNeedsHuman,
 } from "./comment-router-core.js";
+import {
+  automergeMergeFailureRepairReason,
+  automergeRebaseRepairReason,
+} from "./comment-router/dispatch.js";
 
 test("automerge rebase repair reason detects dirty merge state", () => {
   assert.match(

@@ -449,6 +449,7 @@ Scripts:
 - `src/repair/comment-router-core.ts`
 - `src/repair/comment-router-utils.ts`
 - `src/repair/comment-router/admission.ts`
+- `src/repair/comment-router/dispatch.ts`
 - `src/repair/comment-router/ledger.ts`
 
 Durable state:

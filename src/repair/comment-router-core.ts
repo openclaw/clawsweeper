@@ -6,7 +6,6 @@ import {
   parseCommand,
   type TrustedExactHeadReview,
 } from "./comment-router/admission.js";
-import { renderJobIntentFrontmatter } from "./job-intent.js";
 import { compactText } from "./text-utils.js";
 import { markdownTopLevelSection } from "../clawsweeper-markdown.js";
 import { renderProofCommandAdmission } from "./proof-command.js";
@@ -58,11 +57,6 @@ const REPAIR_COMMAND_INTENTS = new Set([
   "automerge",
 ]);
 export const AUTOCLOSE_INTENTS = new Set(["autoclose"]);
-export const AUTOMERGE_JOB_SOURCE = "pr_automerge";
-export const ISSUE_IMPLEMENTATION_JOB_SOURCE = "issue_implementation";
-export const REVIEW_REPRODUCIBLE_BUG_TRIGGER_SOURCE = "review_reproducible_bug";
-export const REVIEW_VISION_FIT_TRIGGER_SOURCE = "review_vision_fit";
-export const REVIEW_VIABLE_ISSUE_TRIGGER_SOURCE = "review_viable_issue";
 
 export function repositoryRepairCommandBlockReason(repo: JsonValue, intent: JsonValue) {
   const profile = repositoryProfileFor(String(repo ?? ""));
@@ -71,9 +65,6 @@ export function repositoryRepairCommandBlockReason(repo: JsonValue, intent: Json
   return `${profile.targetRepo} is configured for review and read-only commands; repair commands are disabled`;
 }
 export const TERMINAL_COMMAND_REACTION_STATUSES = new Set(["executed", "skipped"]);
-export const DEFAULT_ASSIST_MODEL = "internal";
-export const DEFAULT_ASSIST_REASONING_EFFORT = "medium";
-export const DEFAULT_ASSIST_TIMEOUT_MS = "120000";
 const REPAIR_LOOP_PAUSE_LABELS = [HUMAN_REVIEW_LABEL, MANUAL_ONLY_LABEL, MERGE_READY_LABEL];
 const TRUSTED_CLOSE_PROTECTED_LABELS = new Set<string>([
   ...CLOSE_PROTECTED_LABEL_NAMES,
@@ -97,13 +88,6 @@ const CLAWSWEEPER_REPLY_BADGES = {
   sweep: "🦞🧹",
   done: "🦞✅",
 };
-const REPAIRABLE_CHECK_BLOCKER_CONCLUSIONS = new Set([
-  "ACTION_REQUIRED",
-  "ERROR",
-  "FAILURE",
-  "STARTUP_FAILURE",
-  "TIMED_OUT",
-]);
 
 function commandSource(command: LooseRecord): string {
   return String(command.trusted_bot_author ?? command.author ?? "trusted automation");
@@ -139,61 +123,10 @@ function commandReplyBadge(command: LooseRecord, dispatched: LooseRecord): strin
   return CLAWSWEEPER_REPLY_BADGES.default;
 }
 
-export function repoSlug(repo: string) {
-  return String(repo ?? "")
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9_.-]+/g, "-")
-    .replace(/^-+|-+$/g, "");
-}
-
 export function shouldClearMaintainerCommandReaction(command: LooseRecord) {
   if (command?.trusted_bot) return false;
   if (!command?.comment_id) return false;
   return TERMINAL_COMMAND_REACTION_STATUSES.has(String(command?.status ?? ""));
-}
-
-function yamlScalar(value: JsonValue): string {
-  return JSON.stringify(String(value ?? ""));
-}
-
-export function automergeClusterId(repo: string, issueNumber: JsonValue) {
-  return `automerge-${repoSlug(repo)}-${Number(issueNumber)}`;
-}
-
-export function automergeJobBranch(repo: string, issueNumber: JsonValue) {
-  return `clawsweeper/${automergeClusterId(repo, issueNumber)}`;
-}
-
-export function automergeJobPath(repo: string, issueNumber: JsonValue) {
-  const owner = String(repo ?? "").split("/")[0] || "openclaw";
-  return `jobs/${owner}/inbox/${automergeClusterId(repo, issueNumber)}.md`;
-}
-
-export function selectPullRepairJob({
-  sourceJobPath = null,
-  adoptedJobPath = null,
-  automergePath = null,
-}: LooseRecord) {
-  return {
-    jobPath: adoptedJobPath ?? sourceJobPath,
-    sourceJobPath,
-    automergeJobPath: adoptedJobPath ?? automergePath,
-    hasAutomergeJob: Boolean(adoptedJobPath),
-  };
-}
-
-export function issueImplementationClusterId(repo: string, issueNumber: JsonValue) {
-  return `issue-${repoSlug(repo)}-${Number(issueNumber)}`;
-}
-
-export function issueImplementationJobBranch(repo: string, issueNumber: JsonValue) {
-  return `clawsweeper/${issueImplementationClusterId(repo, issueNumber)}`;
-}
-
-export function issueImplementationJobPath(repo: string, issueNumber: JsonValue) {
-  const owner = String(repo ?? "").split("/")[0] || "openclaw";
-  return `jobs/${owner}/inbox/${issueImplementationClusterId(repo, issueNumber)}.md`;
 }
 
 export function createCachedLabelNumberLookup(fetchNumbers: (label: string) => JsonValue[]) {
@@ -316,407 +249,6 @@ function uniquePositiveIntegers(values: JsonValue): number[] {
   ];
 }
 
-export function renderAutomergeJob({
-  repo,
-  issueNumber,
-  title = null,
-  repairMode: rawRepairMode = "automerge",
-  author = null,
-  authorId = null,
-  commentUrl = null,
-  automergeInstructions = null,
-}: LooseRecord) {
-  const clusterId = automergeClusterId(repo, issueNumber);
-  const branch = automergeJobBranch(repo, issueNumber);
-  const ref = `#${Number(issueNumber)}`;
-  const prUrl = `https://github.com/${repo}/pull/${Number(issueNumber)}`;
-  const safeTitle = String(title ?? `PR ${ref}`).trim() || `PR ${ref}`;
-  const repairMode = String(rawRepairMode) === "autofix" ? "autofix" : "automerge";
-  const maintainerFrontmatter = [
-    author ? `requested_by: ${yamlScalar(author)}` : null,
-    authorId ? `requested_by_id: ${yamlScalar(authorId)}` : null,
-    commentUrl ? `request_comment_url: ${yamlScalar(commentUrl)}` : null,
-  ]
-    .filter(Boolean)
-    .join("\n");
-  const maintainerContext = [
-    author ? `Requested by: ${author}` : null,
-    commentUrl ? `Request comment: ${commentUrl}` : null,
-  ].filter(Boolean);
-  const extraInstructions = String(automergeInstructions ?? "").trim();
-  const finalMergeLine = automergeJobFinalMergeLine(repairMode);
-  return `---
-repo: ${repo}
-cluster_id: ${clusterId}
-mode: autonomous
-repair_mode: ${repairMode}
-${renderJobIntentFrontmatter("automerge_pr")}
-allowed_actions:
-  - comment
-  - label
-  - fix
-  - raise_pr
-blocked_actions:
-  - close
-  - merge
-require_human_for:
-  - close
-  - merge
-canonical:
-  - ${ref}
-candidates:
-  - ${ref}
-cluster_refs:
-  - ${ref}
-allow_instant_close: false
-allow_fix_pr: true
-allow_merge: false
-allow_unmerged_fix_close: false
-allow_post_merge_close: false
-require_fix_before_close: true
-security_policy: central_security_only
-security_sensitive: false
-target_branch: ${branch}
-source: ${AUTOMERGE_JOB_SOURCE}
-${maintainerFrontmatter ? `${maintainerFrontmatter}\n` : ""}---
-
-# ClawSweeper adopted PR repair candidate
-
-Maintainer opted ${ref} into ClawSweeper ${repairMode}.
-${maintainerContext.length > 0 ? `\n${maintainerContext.join("\n")}\n` : ""}
-
-Source PR: ${prUrl}
-Title: ${safeTitle}
-
-ClawSweeper should use this job only for the bounded ClawSweeper review/fix loop:
-
-- Emit a fix artifact with \`repair_strategy: "repair_contributor_branch"\` and \`source_prs: ["${prUrl}"]\` so the Codex edit pass can make this PR merge-ready.
-- The edit pass should rebase onto latest main, address PR comments and review findings, fix CI/check failures, preserve release-note context when required, run the relevant validation, and keep iterating until the branch is ready or an external blocker is proven.
-- If the PR branch cannot be safely updated, emit a narrow credited replacement only when the artifact can preserve the original contributor credit; otherwise return \`needs_human\`.
-- Never add forbidden changelog credit lines for \`@codex\`, \`@openclaw\`, or \`@steipete\`; preserve contributor credit through source links, PR body, and commit/PR history.
-- ${finalMergeLine}
-- Keep repair scope limited to actionable ClawSweeper findings, failing relevant checks, and required review feedback on this PR.
-${extraInstructions ? `\nMaintainer special instructions:\n\n${extraInstructions}\n` : ""}
-`;
-}
-
-function automergeJobFinalMergeLine(repairMode: "autofix" | "automerge"): string {
-  return repairMode === "autofix"
-    ? "Final merge is disabled for autofix. Keep the PR open after a passing ClawSweeper verdict unless a maintainer explicitly changes mode."
-    : "Do not merge, close, or bypass review gates from the worker. The comment router owns final merge only after a passing ClawSweeper verdict for the exact current head.";
-}
-
-// Choose the repair mode and the maintainer authorization for an automerge job write.
-// A trusted bot command keeps the mode of an existing job. Only a maintainer command records authorization.
-export function automergeJobRepairPlan(command: LooseRecord, existingRepairMode: JsonValue = null) {
-  const existing = String(existingRepairMode ?? "");
-  const repairMode =
-    command.trusted_bot === true && (existing === "autofix" || existing === "automerge")
-      ? existing
-      : command.intent === "autofix" || command.intent === "automerge"
-        ? String(command.intent)
-        : normalizedLabels(command.target?.labels).includes(AUTOFIX_LABEL)
-          ? "autofix"
-          : "automerge";
-  const maintainerRequest =
-    command.trusted_bot !== true &&
-    ["autofix", "automerge", "maintainer_approve_automerge"].includes(String(command.intent));
-  const authorization = maintainerRequest
-    ? {
-        author: command.author,
-        authorId: command.author_id,
-        commentUrl: command.comment_url,
-        automergeInstructions: command.automerge_instructions,
-      }
-    : undefined;
-  return { repairMode, authorization };
-}
-
-export function syncAutomergeJobRepairMode(
-  markdown: string,
-  repairMode: string,
-  authorization?: {
-    author?: string | null;
-    authorId?: string | number | null;
-    commentUrl?: string | null;
-    automergeInstructions?: string | null;
-  },
-): string {
-  if (repairMode !== "autofix" && repairMode !== "automerge") {
-    throw new Error(`Invalid repair mode: ${repairMode}`);
-  }
-  const frontmatterMatch = markdown.match(/^(---\r?\n)([\s\S]*?)(\r?\n---(?:\r?\n|$))/);
-  if (!frontmatterMatch) throw new Error("Automerge job must contain YAML frontmatter.");
-
-  const lineEnding = frontmatterMatch[1]!.endsWith("\r\n") ? "\r\n" : "\n";
-  const frontmatter = frontmatterMatch[2]!;
-  if ((frontmatter.match(/^repair_mode:[^\r\n]*$/gm) ?? []).length > 1) {
-    throw new Error("Automerge job contains duplicate repair_mode fields.");
-  }
-  const nextModeLine = `repair_mode: ${repairMode}`;
-  let nextFrontmatter = /^repair_mode:[^\r\n]*$/m.test(frontmatter)
-    ? frontmatter.replace(/^repair_mode:[^\r\n]*$/m, nextModeLine)
-    : /^mode:[^\r\n]*$/m.test(frontmatter)
-      ? frontmatter.replace(/^mode:[^\r\n]*$/m, (line) => `${line}${lineEnding}${nextModeLine}`)
-      : `${nextModeLine}${lineEnding}${frontmatter}`;
-  if (authorization) {
-    const values = {
-      requested_by: authorization.author,
-      requested_by_id: authorization.authorId,
-      request_comment_url: authorization.commentUrl,
-    };
-    for (const [key, rawValue] of Object.entries(values)) {
-      const value = String(rawValue ?? "").trim();
-      const pattern = new RegExp(`^${key}:[^\\r\\n]*(\\r?\\n|$)`, "m");
-      const line = value ? `${key}: ${yamlScalar(value)}` : "";
-      if (pattern.test(nextFrontmatter)) {
-        nextFrontmatter = nextFrontmatter.replace(pattern, (_match, ending: string) =>
-          line ? `${line}${ending}` : "",
-        );
-      } else if (line) {
-        nextFrontmatter = `${nextFrontmatter}${lineEnding}${line}`;
-      }
-    }
-  }
-
-  let nextMarkdown = `${frontmatterMatch[1]}${nextFrontmatter}${frontmatterMatch[3]}${markdown.slice(frontmatterMatch[0].length)}`;
-  nextMarkdown = nextMarkdown
-    .replace(
-      /(Maintainer opted #\d+ into ClawSweeper )(?:autofix|automerge)(\.)/,
-      `$1${repairMode}$2`,
-    )
-    .replace(
-      /^- (?:Final merge is disabled for autofix\.[^\r\n]*|Do not merge, close, or bypass review gates from the worker\.[^\r\n]*)$/m,
-      `- ${automergeJobFinalMergeLine(repairMode)}`,
-    );
-  if (!authorization) return nextMarkdown;
-
-  const author = String(authorization.author ?? "").trim();
-  const commentUrl = String(authorization.commentUrl ?? "").trim();
-  nextMarkdown = nextMarkdown
-    .replace(/^Requested by:[^\r\n]*(?:\r?\n)?/m, "")
-    .replace(/^Request comment:[^\r\n]*(?:\r?\n)?/m, "");
-  const maintainerContext = [
-    author ? `Requested by: ${author}` : null,
-    commentUrl ? `Request comment: ${commentUrl}` : null,
-  ]
-    .filter(Boolean)
-    .join(lineEnding);
-  nextMarkdown = nextMarkdown.replace(
-    /^(Maintainer opted #\d+ into ClawSweeper (?:autofix|automerge)\.)(?:\r?\n)*(?=Source PR:)/m,
-    (_match, heading: string) =>
-      `${heading}${maintainerContext ? `${lineEnding}${lineEnding}${maintainerContext}` : ""}${lineEnding}${lineEnding}${lineEnding}`,
-  );
-  const instructions = String(authorization.automergeInstructions ?? "")
-    .trim()
-    .replace(/\r?\n/g, lineEnding);
-  const instructionSection = /\r?\nMaintainer special instructions:\r?\n\r?\n[\s\S]*$/;
-  if (instructions) {
-    const replacement = `${lineEnding}Maintainer special instructions:${lineEnding}${lineEnding}${instructions}${lineEnding}${lineEnding}`;
-    nextMarkdown = instructionSection.test(nextMarkdown)
-      ? nextMarkdown.replace(instructionSection, () => replacement)
-      : `${nextMarkdown.trimEnd()}${lineEnding}${replacement}`;
-  } else {
-    nextMarkdown = nextMarkdown.replace(instructionSection, "");
-  }
-  return nextMarkdown;
-}
-
-export function renderIssueImplementationJob({
-  repo,
-  issueNumber,
-  title = null,
-  commentUrl = null,
-  author = null,
-  implementationPrompt = null,
-  triggerSource = null,
-  reviewReportUrl = null,
-  reviewReportPath = null,
-  strictBugOnly = false,
-  visionFit = false,
-  operatorOverride = false,
-  overrideRequestedBy = null,
-  overrideReason = null,
-  overrideBlockerClass = null,
-  overrideAction = null,
-  sourceIssueRevision = null,
-}: LooseRecord) {
-  const clusterId = issueImplementationClusterId(repo, issueNumber);
-  const branch = issueImplementationJobBranch(repo, issueNumber);
-  const ref = `#${Number(issueNumber)}`;
-  const issueUrl = `https://github.com/${repo}/issues/${Number(issueNumber)}`;
-  const safeTitle = String(title ?? `Issue ${ref}`).trim() || `Issue ${ref}`;
-  const extraPrompt = String(implementationPrompt ?? "").trim();
-  const trigger = String(triggerSource ?? "").trim();
-  const reportPath = String(reviewReportPath ?? "").trim();
-  const reportUrl = String(reviewReportUrl ?? "").trim();
-  const strictBug = Boolean(strictBugOnly);
-  const visionFitLane = Boolean(visionFit);
-  const override = Boolean(operatorOverride);
-  const overrideClass = String(overrideBlockerClass ?? "").trim();
-  const hardOverride = override && overrideClass === "hard";
-  const overrideActionText = String(overrideAction ?? "").trim();
-  const sourceRevision = String(sourceIssueRevision ?? "")
-    .trim()
-    .toLowerCase();
-  const overrideReasonText =
-    String(overrideReason ?? "").trim() || "maintainer requested /clawsweeper build override";
-  const maintainerContext = [
-    commentUrl ? `- Command comment: ${commentUrl}` : null,
-    author ? `- Requested by: ${author}` : null,
-    trigger ? `- Trigger source: ${trigger}` : null,
-    reportPath ? `- ClawSweeper review report: ${reportPath}` : null,
-    reportUrl ? `- Review report URL: ${reportUrl}` : null,
-    extraPrompt ? `- Maintainer instruction: ${extraPrompt}` : null,
-    override ? `- Operator override: ${overrideReasonText}` : null,
-    overrideClass ? `- Override blocker class: ${overrideClass}` : null,
-    overrideActionText ? `- Override action: ${overrideActionText}` : null,
-  ].filter(Boolean);
-  const triggerFrontmatter = [
-    trigger ? `trigger_source: ${trigger}` : null,
-    reportPath ? `clawsweeper_report_path: ${reportPath}` : null,
-    `source_issue_repo: ${yamlScalar(repo)}`,
-    `source_issue_number: ${Number(issueNumber)}`,
-    sourceRevision ? `source_issue_revision_sha256: ${yamlScalar(sourceRevision)}` : null,
-    override ? "operator_override: true" : null,
-    override && overrideRequestedBy ? `override_requested_by: ${overrideRequestedBy}` : null,
-    override ? `override_reason: ${JSON.stringify(overrideReasonText)}` : null,
-    overrideClass ? `override_blocker_class: ${overrideClass}` : null,
-    "required_pr_labels:",
-    `  - ${AUTOGENERATED_LABEL}`,
-    `  - ${AUTOFIX_LABEL}`,
-  ]
-    .filter(Boolean)
-    .join("\n");
-  const bugOnlyGuardrails = strictBug
-    ? `
-This job came from ClawSweeper's reproducible bug lane. Treat it as bug-only:
-
-- Fix only broken existing behavior that is already expected by current docs,
-  tests, CLI/API contracts, or clearly established behavior.
-- Stop without code changes if the issue requires a new feature, new config
-  option, new mode, new dependency, broad UX/product judgment, or a policy
-  decision.
-- Start by reproducing the bug or adding a failing regression test. If the bug
-  cannot be reproduced on latest main, report the blocker instead of opening a
-  PR.
-- The final PR must stay narrow and should carry the
-  \`${AUTOGENERATED_LABEL}\` and \`${AUTOFIX_LABEL}\` labels; the executor also
-  applies these labels after opening or updating the PR.
-`
-    : "";
-  const visionFitGuardrails = visionFitLane
-    ? `
-This job came from ClawSweeper's vision-fit issue lane:
-
-- Confirm the issue still fits the target repository VISION.md before editing.
-- Keep the implementation small and direct; stop if the work becomes medium or
-  large, crosses broad architecture, needs a new product decision, or conflicts
-  with VISION.md guardrails.
-- Prefer existing plugin, ClawHub, extension, config, and docs surfaces when
-  VISION.md says optional capability should live outside core.
-- The final PR must stay narrow and should carry the
-  \`${AUTOGENERATED_LABEL}\` and \`${AUTOFIX_LABEL}\` labels; the executor also
-  applies these labels after opening or updating the PR.
-`
-    : "";
-  const overrideGuardrails = override
-    ? overrideClass === "hard"
-      ? `
-This job has a maintainer operator override for a hard blocker. The override
-does not permit code generation for this blocker class. Produce the safest
-useful non-code artifact instead: a concrete plan, decomposition, or
-human-review handoff that explains the blocker, evidence, and what must change
-before a code PR is safe. Emit \`needs_human\` or another non-mutating result;
-do not emit a \`new_fix_pr\` artifact.
-`
-      : `
-This job has a maintainer operator override for a soft blocker. The maintainer
-accepted the stated blocker and asked ClawSweeper to attempt the narrowest
-useful reviewable PR. Keep the attempt bounded to one PR, prefer the smallest
-existing mechanism, and stop with a concrete blocker if the work expands beyond
-automation-safe scope.
-`
-    : "";
-  const artifactInstructions = hardOverride
-    ? `
-For this hard override, do not emit a fix artifact and do not prepare a code
-branch. Emit a non-mutating result with \`needs_human\` that contains the plan,
-decomposition, or handoff text and the exact hard-blocker evidence.
-`
-    : `
-When code changes are appropriate, emit a fix artifact with
-\`repair_strategy: "new_fix_pr"\`, \`source_prs: []\`, this issue in
-\`linked_refs\`, and validation commands for the touched surface. Keep working
-until the PR branch is locally validated and ready for clean required CI; if CI
-or type/test validation fails, fix and rerun until it passes or a concrete
-external blocker is proven.
-`;
-  return `---
-repo: ${repo}
-cluster_id: ${clusterId}
-mode: autonomous
-${renderJobIntentFrontmatter("implement_issue")}
-allowed_actions:
-  - comment
-  - label
-${hardOverride ? "" : "  - fix\n  - raise_pr\n"}blocked_actions:
-${hardOverride ? "  - fix\n  - raise_pr\n" : ""}  - close
-  - merge
-require_human_for:
-${hardOverride ? "  - fix\n  - raise_pr\n" : ""}  - close
-  - merge
-canonical:
-  - ${ref}
-candidates:
-  - ${ref}
-cluster_refs:
-  - ${ref}
-allow_instant_close: false
-allow_fix_pr: ${hardOverride ? "false" : "true"}
-allow_merge: false
-allow_unmerged_fix_close: false
-allow_post_merge_close: false
-require_fix_before_close: false
-security_policy: central_security_only
-security_sensitive: false
-target_branch: ${branch}
-source: ${ISSUE_IMPLEMENTATION_JOB_SOURCE}
-${triggerFrontmatter}
----
-
-# ClawSweeper issue implementation candidate
-
-ClawSweeper Repair should create or update one implementation PR from \`${branch}\`.
-
-Source issue: ${issueUrl}
-Title: ${safeTitle}
-${maintainerContext.length ? `\n## Maintainer Context\n\n${maintainerContext.join("\n")}\n` : ""}
-## Operator Prompt
-
-Use the source issue as the product request or bug report. Verify the request is
-still valid on latest \`${repo}@main\`, inspect nearby code, and make the
-narrowest implementation that directly satisfies the issue. If the issue is too
-broad, underspecified, security-sensitive, already fixed, or not safely
-implementable by automation, do not change code; report the exact blocker.
-${bugOnlyGuardrails}
-${visionFitGuardrails}
-${overrideGuardrails}
-${artifactInstructions}
-
-## Guardrails
-
-- Do not merge.
-- Do not close the issue from this lane.
-- Keep one PR for this issue; reuse \`${branch}\` if it already exists.
-- Keep the diff narrow and avoid unrelated refactors.
-- Preserve issue context and link ${issueUrl} in the PR body.
-- Use a closing reference for ${issueUrl} when the implementation satisfies the issue.
-- Preserve release-note context in the PR body or commit message when the
-  target repo expects it.
-`;
-}
-
 export function automergeChangelogBlockReason({ repo }: LooseRecord): string | null {
   if (String(repo ?? "").toLowerCase() !== "openclaw/openclaw") return null;
   return null;
@@ -741,87 +273,6 @@ function positiveInt(value: JsonValue, fallback: number) {
   const parsed = Number(value);
   if (!Number.isFinite(parsed) || parsed < 0) return fallback;
   return Math.floor(parsed);
-}
-
-export function repairableCheckBlockers(checks: LooseRecord = {}) {
-  const externalBlockers = new Set(
-    (checks.externalBlockers ?? checks.external_blockers ?? []).map((blocker: JsonValue) =>
-      String(blocker ?? ""),
-    ),
-  );
-  return (checks.blockers ?? []).filter((blocker: JsonValue) => {
-    if (externalBlockers.has(String(blocker ?? ""))) return false;
-    const conclusion = String(blocker ?? "")
-      .split(":")
-      .pop()
-      ?.trim()
-      .toUpperCase();
-    return conclusion ? REPAIRABLE_CHECK_BLOCKER_CONCLUSIONS.has(conclusion) : false;
-  });
-}
-
-export function automergeFailedChecksRepairReason(checks: LooseRecord = {}): string | null {
-  const failedCheckBlockers = repairableCheckBlockers(checks);
-  if (failedCheckBlockers.length === 0) return null;
-  return `current checks are failing: ${failedCheckBlockers.slice(0, 5).join(", ")}`;
-}
-
-export function automergeRebaseRepairReason(target: LooseRecord = {}): string | null {
-  const mergeStateStatus = String(target.merge_state_status ?? target.mergeStateStatus ?? "")
-    .trim()
-    .toUpperCase();
-  if (mergeStateStatus === "DIRTY")
-    return "PR has merge conflicts and needs a cloud rebase repair before automerge";
-
-  const mergeable = String(target.mergeable ?? "")
-    .trim()
-    .toUpperCase();
-  if (mergeable === "CONFLICTING")
-    return "PR has merge conflicts and needs a cloud rebase repair before automerge";
-
-  // BEHIND alone allows a three-way merge; the exact-head merge call enforces repo policy.
-  return null;
-}
-
-export function automergeMergeFailureRepairReason(reason: JsonValue): string | null {
-  const text = String(reason ?? "")
-    .trim()
-    .toLowerCase();
-  if (!text) return null;
-  // A BEHIND head is mergeable in repositories that allow GitHub to create a
-  // merge commit, but protected linear-history targets reject it at the final
-  // merge command. Hand that concrete policy failure to the existing rebase
-  // repair lane instead of leaving an armed PR permanently blocked.
-  if (text.includes("head branch is not up to date with the base branch")) {
-    return "PR head is behind base and needs a cloud rebase repair before automerge";
-  }
-  if (text.includes("mergepullrequest") && text.includes("merge conflict")) {
-    return "PR has merge conflicts and needs a cloud rebase repair before automerge";
-  }
-  if (text.includes("pull request has merge conflicts")) {
-    return "PR has merge conflicts and needs a cloud rebase repair before automerge";
-  }
-  if (text.includes("merge command failed") && text.includes("merge conflict")) {
-    return "PR has merge conflicts and needs a cloud rebase repair before automerge";
-  }
-  return null;
-}
-
-export function automergeReadinessRepairReason(reason: JsonValue): string | null {
-  const text = String(reason ?? "")
-    .trim()
-    .toLowerCase();
-  if (!text) return null;
-  if (text === "mergeable state is conflicting") {
-    return "PR has merge conflicts and needs a cloud rebase repair before automerge";
-  }
-  if (text === "merge state status is dirty") {
-    return "PR has merge conflicts and needs a cloud rebase repair before automerge";
-  }
-  if (text === "maintainer-approved pr head is behind base") {
-    return "PR head is behind base and needs a cloud rebase repair before automerge";
-  }
-  return null;
 }
 
 export function isAutomergeMergeStateReady(value: JsonValue): boolean {
@@ -1600,7 +1051,7 @@ function isTrustedCloseReviewCommentChurn({
   );
 }
 
-function normalizedLabels(labels: JsonValue): string[] {
+export function normalizedLabels(labels: JsonValue): string[] {
   if (!Array.isArray(labels)) return [];
   return labels
     .map((label) =>
@@ -2045,28 +1496,6 @@ function mergeResponseLines(repo: string, merge: LooseRecord) {
       ? "The automerge loop is complete."
       : "I left the PR open for the remaining gate instead of bypassing it.",
   ];
-}
-
-export function buildClawSweeperAssistDispatchPayload(command: LooseRecord) {
-  return {
-    event_type: "clawsweeper_assist",
-    client_payload: {
-      target_repo: command.repo,
-      item_number: String(command.issue_number),
-      item_kind: command.target?.kind ?? "",
-      comment_id: String(command.comment_id ?? ""),
-      comment_url: String(command.comment_url ?? ""),
-      author: String(command.author ?? ""),
-      question: String(command.freeform_prompt ?? command.command ?? "").slice(0, 3000),
-      assist: {
-        mode: command.intent === "visualize" ? "visual" : "assist",
-        lens: String(command.visual_lens ?? "auto"),
-        model: DEFAULT_ASSIST_MODEL,
-        reasoning_effort: DEFAULT_ASSIST_REASONING_EFFORT,
-        timeout_ms: DEFAULT_ASSIST_TIMEOUT_MS,
-      },
-    },
-  };
 }
 
 function markdownCommitLink(repo: JsonValue, sha: JsonValue): string {

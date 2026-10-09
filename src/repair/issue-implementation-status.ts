@@ -5,8 +5,8 @@ import { pathToFileURL } from "node:url";
 
 import { escapeRegExp } from "../clawsweeper-markdown.js";
 import { DEFAULT_TRUSTED_BOTS } from "./config.js";
-import { repoSlug } from "./comment-router-core.js";
 import { isAllowedMutationActor } from "./comment-router/admission.js";
+import { repoSlug } from "./comment-router/dispatch.js";
 import { writePayload } from "./comment-router-utils.js";
 import { ghJsonWithRetry, ghPagedWithRetry, ghText } from "./github-cli.js";
 import type { JsonValue, LooseRecord } from "./json-types.js";

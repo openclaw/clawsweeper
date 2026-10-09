@@ -6,7 +6,7 @@ import {
   REVIEW_REPRODUCIBLE_BUG_TRIGGER_SOURCE,
   REVIEW_VIABLE_ISSUE_TRIGGER_SOURCE,
   REVIEW_VISION_FIT_TRIGGER_SOURCE,
-} from "./comment-router-core.js";
+} from "./comment-router/dispatch.js";
 import { HUMAN_REVIEW_LABEL, MANUAL_ONLY_LABEL } from "./exact-review-guard-labels.js";
 import { validateRepairContractShape } from "./repair-contract.js";
 import { slug } from "./text-utils.js";

@@ -1,7 +1,7 @@
 import type { JsonValue, LooseRecord } from "./json-types.js";
 import { renderJobIntentFrontmatter } from "./job-intent.js";
 import { commandStatusMarker, commandStatusMarkerPrefix } from "./markers.js";
-import { repoSlug } from "./comment-router-core.js";
+import { repoSlug } from "./comment-router/dispatch.js";
 import { HUMAN_REVIEW_LABEL, MERGE_READY_LABEL } from "./exact-review-guard-labels.js";
 
 export const CLAWSWEEPER_SELF_REBASE_SOURCE = "clawsweeper_self_rebase";

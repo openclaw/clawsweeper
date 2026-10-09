@@ -9,7 +9,7 @@ import type { LooseRecord } from "./json-types.js";
 import {
   dispatchClaimDecision,
   hasSuccessfulDispatchExecutionJob,
-} from "./comment-router-utils.js";
+} from "./comment-router/dispatch.js";
 import { ghJson, githubCommandTimeoutMs } from "./github-cli.js";
 import { liveWorkerCapacity } from "./live-worker-capacity.js";
 import { workerLimit } from "../limits.js";

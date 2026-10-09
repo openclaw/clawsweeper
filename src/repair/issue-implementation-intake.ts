@@ -16,15 +16,15 @@ import {
   validateJob,
 } from "./lib.js";
 import { ghErrorText, ghJsonWithRetry } from "./github-cli.js";
+import { issueImplementationOverrideAction } from "./comment-router-core.js";
 import {
   issueImplementationJobBranch,
   issueImplementationJobPath,
-  issueImplementationOverrideAction,
   renderIssueImplementationJob,
   REVIEW_REPRODUCIBLE_BUG_TRIGGER_SOURCE,
   REVIEW_VIABLE_ISSUE_TRIGGER_SOURCE,
   REVIEW_VISION_FIT_TRIGGER_SOURCE,
-} from "./comment-router-core.js";
+} from "./comment-router/dispatch.js";
 import { issueSourceRevisionSha256 } from "./issue-source-guard.js";
 import {
   dispatchedIssueImplementationWorkerRetryDue,

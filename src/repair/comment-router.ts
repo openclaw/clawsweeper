@@ -4,7 +4,6 @@ import fs from "node:fs";
 import path from "node:path";
 import { errorMessage } from "../value-coerce.js";
 import { runCommandResult } from "./command-runner.js";
-import { readRepairLoopComments } from "./comment-router-read-model.js";
 import { adaptiveReviewBudgetForPullRequest } from "./adaptive-review-budget.js";
 import {
   AUTOFIX_LABEL,
@@ -28,18 +27,10 @@ import {
   REPAIR_INTENTS,
   autoRepairBlockReason,
   autoRepairHeadKey,
-  automergeFailedChecksRepairReason,
   automergeGateBlockReason,
-  automergeClusterId,
-  automergeJobPath,
-  automergeJobRepairPlan,
-  automergeMergeFailureRepairReason,
   automergeRequestedByFromBody,
   automergeReadinessBlockReason,
-  automergeReadinessRepairReason,
-  automergeRebaseRepairReason,
   automergeTransientWaitConfig,
-  buildClawSweeperAssistDispatchPayload,
   buildAutomergeMergeArgs,
   buildAutomergeSquashMessage,
   commandHasAction,
@@ -51,8 +42,6 @@ import {
   existingCommandStatusBlocksReplay,
   existingModeStatusBlocksReplay,
   existingRepairLoopModeOutcome,
-  issueImplementationClusterId,
-  issueImplementationJobPath,
   issueImplementationLinkedPrSignal,
   issueImplementationOverrideBlockerClass,
   pendingRepairLoopOptIns,
@@ -61,7 +50,6 @@ import {
   latestRepairLoopResumeTime,
   pausedModeStatusBlocksReplay,
   repositoryRepairCommandBlockReason,
-  repairableCheckBlockers,
   reviewOnlyRepairLoopCompletionLabels,
   reviewOnlyRepairLoopMergeStateBlockReason,
   reviewOnlyRepairLoopMissingChecks,
@@ -71,13 +59,9 @@ import {
   repairLoopStopPauseReason,
   reviewSummaryFromCommentBody,
   reviewedHeadShaBlockReason,
-  renderAutomergeJob,
-  renderIssueImplementationJob,
   renderResponse,
-  selectPullRepairJob,
   staleClosedItemCommandReason,
   shouldClearMaintainerCommandReaction,
-  syncAutomergeJobRepairMode,
   trustedCloseBlockReason,
   usesSharedAutomergeStatus,
 } from "./comment-router-core.js";
@@ -92,9 +76,31 @@ import {
   latestTrustedExactHeadReview,
   parseRoutedCommentCommand,
   parseTrustedAutomation,
+  readRepairLoopComments,
   trustedAutomationPredatesReviewStartLease,
   trustedExactHeadReviewCompletionSince,
 } from "./comment-router/admission.js";
+import {
+  automergeClusterId,
+  automergeFailedChecksRepairReason,
+  automergeJobPath,
+  automergeJobRepairPlan,
+  automergeMergeFailureRepairReason,
+  automergeReadinessRepairReason,
+  automergeRebaseRepairReason,
+  buildClawSweeperAssistDispatchPayload,
+  dispatchClaimDecision,
+  dispatchClaimLookupKeys,
+  hasSuccessfulDispatchExecutionJob,
+  issueImplementationClusterId,
+  issueImplementationJobPath,
+  repairableCheckBlockers,
+  renderAutomergeJob,
+  renderIssueImplementationJob,
+  routerDispatchReceiptKey,
+  selectPullRepairJob,
+  syncAutomergeJobRepairMode,
+} from "./comment-router/dispatch.js";
 import { planCommandAckConvergence } from "./command-ack-convergence.js";
 import {
   hasAutomergeCommandStatusMarker,
@@ -116,13 +122,9 @@ import {
 import {
   SUPERSEDED_RE_REVIEW_REASON,
   commentBodySha256,
-  dispatchClaimDecision,
-  dispatchClaimLookupKeys,
   exactCommentVersionFastPathDecision,
   exactCommentVersionMatchesLive,
-  hasSuccessfulDispatchExecutionJob,
   issueNumberFromUrl,
-  routerDispatchReceiptKey,
   routedCommentSourceDeliveryId,
   selectCommentsForRouting,
   shouldSuppressProcessedCommentVersion,

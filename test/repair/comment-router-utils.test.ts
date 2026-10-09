@@ -7,13 +7,8 @@ import test from "node:test";
 import {
   SUPERSEDED_RE_REVIEW_REASON,
   commentBodySha256,
-  dispatchClaimDecision,
-  dispatchClaimLookupKeys,
-  dispatchReceiptKeyMaterial,
   exactCommentVersionFastPathDecision,
   exactCommentVersionMatchesLive,
-  hasSuccessfulDispatchExecutionJob,
-  routerDispatchReceiptKey,
   routedCommentSourceDeliveryId,
   selectCommentsForRouting,
   shouldSuppressProcessedCommentVersion,
@@ -21,6 +16,13 @@ import {
   supersededReReviewCommentVersions,
   summarizeChecks,
 } from "../../dist/repair/comment-router-utils.js";
+import {
+  dispatchClaimDecision,
+  dispatchClaimLookupKeys,
+  dispatchReceiptKeyMaterial,
+  hasSuccessfulDispatchExecutionJob,
+  routerDispatchReceiptKey,
+} from "../../dist/repair/comment-router/dispatch.js";
 import {
   isAllowedMutationActor,
   isGitHubAppIntegrationAuthError,
