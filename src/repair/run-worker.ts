@@ -2,7 +2,8 @@
 import type { JsonValue, LooseRecord } from "./json-types.js";
 import fs from "node:fs";
 import path from "node:path";
-import { spawn, spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
+import { runCommandResult } from "./command-runner.js";
 import { runAgentProcess } from "../agent-runner.js";
 import { canonicalItemCodexProfile } from "../codex-item-profile.js";
 import { codexAppServerProcessOptionsFromEnv } from "../codex-process.js";
@@ -95,11 +96,7 @@ if (!dryRun) {
     "--run-dir",
     runDir,
   ];
-  const planner = spawnSync(process.execPath, plannerArgs, {
-    cwd: repoRoot(),
-    encoding: "utf8",
-    env: process.env,
-  });
+  const planner = runCommandResult(process.execPath, plannerArgs, { cwd: repoRoot() });
   if (planner.status !== 0) {
     console.error(planner.stderr || planner.stdout);
     process.exit(planner.status ?? 1);
@@ -125,11 +122,7 @@ if (!dryRun) {
     runDir,
     "--offline",
   ];
-  const planner = spawnSync(process.execPath, plannerArgs, {
-    cwd: repoRoot(),
-    encoding: "utf8",
-    env: process.env,
-  });
+  const planner = runCommandResult(process.execPath, plannerArgs, { cwd: repoRoot() });
   if (planner.status !== 0) {
     console.error(planner.stderr || planner.stdout);
     process.exit(planner.status ?? 1);
@@ -362,14 +355,10 @@ async function repairResultIfNeeded() {
 }
 
 function reviewResult() {
-  return spawnSync(
+  return runCommandResult(
     process.execPath,
     [path.join(repoRoot(), "dist/repair/review-results.js"), runDir],
-    {
-      cwd: repoRoot(),
-      encoding: "utf8",
-      env: process.env,
-    },
+    { cwd: repoRoot() },
   );
 }
 

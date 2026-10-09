@@ -2,7 +2,7 @@
 import type { JsonValue, LooseRecord } from "./json-types.js";
 import fs from "node:fs";
 import path from "node:path";
-import { spawnSync } from "node:child_process";
+import { runCommandResult } from "./command-runner.js";
 import {
   activeRepairWorkflowRunForJob,
   assertLiveWorkerCapacity,
@@ -115,7 +115,7 @@ while (!failed && index < jobs.length) {
 }
 
 function dispatchJob(relative: JsonValue, position: JsonValue, total: JsonValue) {
-  const result = spawnSync(
+  const result = runCommandResult(
     "gh",
     [
       "workflow",
@@ -137,9 +137,7 @@ function dispatchJob(relative: JsonValue, position: JsonValue, total: JsonValue)
     ],
     {
       cwd: repoRoot(),
-      encoding: "utf8",
-      stdio: "pipe",
-      timeout: githubCommandTimeoutMs(process.env),
+      timeoutMs: githubCommandTimeoutMs(process.env),
       killSignal: "SIGKILL",
     },
   );

@@ -21,6 +21,8 @@ export type CommandRunOptions = {
   cwd?: string;
   env?: NodeJS.ProcessEnv;
   input?: string;
+  /** Signal for a timed-out plain command. The default is SIGTERM. */
+  killSignal?: NodeJS.Signals;
   isolateNetwork?: boolean;
   maxBuffer?: number;
   timeoutMs?: number;
@@ -139,7 +141,7 @@ export function runGitAcquisitionResult(
 
 export function runCommand(
   command: string,
-  commandArgs: string[],
+  commandArgs: readonly string[],
   options: CommandRunOptions = {},
 ): string {
   const child = runCommandResult(command, commandArgs, options);
@@ -260,7 +262,7 @@ function serializedWorkerMaxBuffer(maxBuffer: number) {
 
 export function runCommandResult(
   command: string,
-  commandArgs: string[],
+  commandArgs: readonly string[],
   options: CommandRunOptions = {},
 ): SpawnSyncReturns<string> {
   const env = options.env ?? process.env;
@@ -275,6 +277,7 @@ export function runCommandResult(
     encoding: "utf8",
     maxBuffer: options.maxBuffer ?? DEFAULT_COMMAND_MAX_BUFFER,
     timeout: options.timeoutMs,
+    killSignal: options.killSignal,
     windowsHide: true,
     ...(invocation.windowsVerbatimArguments ? { windowsVerbatimArguments: true } : {}),
   });

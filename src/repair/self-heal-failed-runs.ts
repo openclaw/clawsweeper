@@ -2,7 +2,7 @@
 import type { JsonValue, LooseRecord } from "./json-types.js";
 import fs from "node:fs";
 import path from "node:path";
-import { spawnSync } from "node:child_process";
+import { runCommandResult } from "./command-runner.js";
 import {
   assertLiveWorkerCapacity,
   currentProjectRepo,
@@ -285,7 +285,7 @@ function sourceJobFromRunTitle(title: string) {
 }
 
 function dispatchCandidate(candidate: LooseRecord) {
-  const result = spawnSync(
+  const result = runCommandResult(
     "gh",
     [
       "workflow",
@@ -306,9 +306,7 @@ function dispatchCandidate(candidate: LooseRecord) {
     ],
     {
       cwd: repoRoot(),
-      encoding: "utf8",
-      stdio: "pipe",
-      timeout: githubCommandTimeoutMs(process.env),
+      timeoutMs: githubCommandTimeoutMs(process.env),
       killSignal: "SIGKILL",
     },
   );

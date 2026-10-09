@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { requireRecord as record, errorSummary as errorMessage } from "../value-coerce.js";
-import { execFileSync } from "node:child_process";
+import { runCommand } from "./command-runner.js";
 import { createHmac } from "node:crypto";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
@@ -8,7 +8,6 @@ import { pathToFileURL } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
 import { AUTOMATION_LIMITS } from "../limits.js";
 import { type AuditWaveState } from "../audit-wave-state.js";
-import { resolveCommand } from "../command.js";
 import {
   fetchDurableCursor,
   putDurableCursor,
@@ -885,13 +884,10 @@ export async function persistFanoutCursorFailOpen(
 
 function runGh(args: readonly string[], env: NodeJS.ProcessEnv, timeout?: number): string {
   const childEnv = { ...process.env, ...env, NO_COLOR: "1", CLICOLOR: "0" };
-  const command = resolveCommand("gh", args, childEnv);
-  return execFileSync(command.command, command.args, {
-    encoding: "utf8",
+  return runCommand("gh", args, {
     env: childEnv,
     maxBuffer: 32 * 1024 * 1024,
-    stdio: ["ignore", "pipe", "pipe"],
-    timeout: timeout ?? githubCommandTimeoutMs(childEnv),
+    timeoutMs: timeout ?? githubCommandTimeoutMs(childEnv),
   }).trimEnd();
 }
 

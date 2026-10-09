@@ -2,7 +2,8 @@
 import type { JsonValue, LooseRecord } from "./json-types.js";
 import fs from "node:fs";
 import path from "node:path";
-import { spawnSync } from "node:child_process";
+import { errorMessage } from "../value-coerce.js";
+import { runCommandResult } from "./command-runner.js";
 import { readRepairLoopComments } from "./comment-router-read-model.js";
 import { adaptiveReviewBudgetForPullRequest } from "./adaptive-review-budget.js";
 import {
@@ -2115,15 +2116,21 @@ function executeCommand(command: LooseRecord) {
           number: command.issue_number,
           commentId: command.comment_id,
         },
-        operation: () =>
-          spawnSync(
-            process.execPath,
-            [path.join(repoRoot(), "dist/repair/command-proof-cli.js"), "request", input],
-            { encoding: "utf8", timeout: 180000 },
-          ),
-        outcome: (result) => (result.status === 0 ? "accepted" : "unknown"),
+        operation: () => {
+          try {
+            return runCommandResult(
+              process.execPath,
+              [path.join(repoRoot(), "dist/repair/command-proof-cli.js"), "request", input],
+              { timeoutMs: 180000 },
+            );
+          } catch (error) {
+            console.error(`proof request transport failed: ${errorMessage(error)}`);
+            return null;
+          }
+        },
+        outcome: (result) => (result?.status === 0 ? "accepted" : "unknown"),
       });
-      if (result.status !== 0) {
+      if (result?.status !== 0) {
         command.status = "waiting";
         command.reason =
           "Proof request transport unavailable; durable ownership will be rechecked without blind redispatch.";

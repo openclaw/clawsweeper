@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 import { sha256 } from "../content-hash.js";
-import { spawnSync } from "node:child_process";
+import type { SpawnSyncReturns } from "node:child_process";
+import { errorMessage } from "../value-coerce.js";
+import { runCommandResult } from "./command-runner.js";
 import {
   appendFileSync,
   existsSync,
@@ -139,23 +141,23 @@ function recordRateLimit() {
     throw new Error("EXACT_REVIEW_GITHUB_RATE_LIMIT_TARGET_OWNER is invalid");
   }
   const now = Date.now();
-  const status = spawnSync(
-    "gh",
-    [
-      "api",
-      "rate_limit",
-      "--jq",
-      "{remaining:.resources.core.remaining,reset:.resources.core.reset}",
-    ],
-    {
-      encoding: "utf8",
-      env: process.env,
-      timeout: 20_000,
-      stdio: ["ignore", "pipe", "pipe"],
-    },
-  );
+  let status: SpawnSyncReturns<string> | null = null;
+  try {
+    status = runCommandResult(
+      "gh",
+      [
+        "api",
+        "rate_limit",
+        "--jq",
+        "{remaining:.resources.core.remaining,reset:.resources.core.reset}",
+      ],
+      { timeoutMs: 20_000 },
+    );
+  } catch (error) {
+    console.error(`gh rate_limit probe failed: ${errorMessage(error)}`);
+  }
   let resetAt = 0;
-  if (status.status === 0) {
+  if (status?.status === 0) {
     try {
       const parsed = JSON.parse(status.stdout || "null") as {
         remaining?: unknown;
@@ -186,7 +188,7 @@ function recordRateLimit() {
       scope,
       category: "rate_status",
       mode: "read",
-      outcome: status.status === 0 ? "success" : "error",
+      outcome: status?.status === 0 ? "success" : "error",
       repeat_revision: false,
       count: 1,
     })}\n`,

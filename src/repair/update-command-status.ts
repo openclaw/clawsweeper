@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { setTimeout as sleep } from "node:timers/promises";
-import { execFileSync } from "node:child_process";
+import { runCommand } from "./command-runner.js";
 import { appendFileSync } from "node:fs";
 import { ghJsonWithRetry, ghPagedWithRetry, ghText } from "./github-cli.js";
 import { isLockedConversationCommentError } from "../github-retry.js";
@@ -729,11 +729,7 @@ export function parseOptions(argv: string[]): Options {
 
 export async function exactReviewQueueAuthorityFence(
   env: NodeJS.ProcessEnv = process.env,
-  execute: (
-    file: string,
-    args: string[],
-    options: { encoding: "utf8"; maxBuffer: number },
-  ) => string = (file, args, options) => execFileSync(file, args, options),
+  execute: (file: string, args: string[], options: { maxBuffer: number }) => string = runCommand,
 ): Promise<boolean> {
   const origin = new URL(env.QUEUE_URL || "");
   if (
@@ -784,7 +780,7 @@ export async function exactReviewQueueAuthorityFence(
       payload,
       new URL("/internal/exact-review/heartbeat", origin).toString(),
     ],
-    { encoding: "utf8", maxBuffer: 1024 * 1024 },
+    { maxBuffer: 1024 * 1024 },
   );
   const separator = output.lastIndexOf("\n");
   const status = Number(output.slice(separator + 1).trim());

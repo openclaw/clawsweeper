@@ -3,6 +3,7 @@ import type { JsonValue, LooseRecord } from "./json-types.js";
 import fs from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
+import { runCommandResult } from "./command-runner.js";
 import { parseArgs, parseJob, repoRoot, validateJob } from "./lib.js";
 import { runGitResult } from "./git.js";
 import { ghJsonBestEffort } from "./github-cli.js";
@@ -118,11 +119,13 @@ console.log(
 
 if (dispatch) {
   assertDispatchable(relativeOutPath);
-  const result = spawnSync("npm", ["run", "dispatch", "--", relativeOutPath, "--mode", mode], {
-    cwd: repoRoot(),
-    encoding: "utf8",
-    stdio: "inherit",
-  });
+  const result = runCommandResult(
+    process.execPath,
+    [path.join(repoRoot(), "dist/repair/dispatch-jobs.js"), relativeOutPath, "--mode", mode],
+    { cwd: repoRoot() },
+  );
+  process.stdout.write(result.stdout);
+  process.stderr.write(result.stderr);
   process.exit(result.status ?? 1);
 }
 
