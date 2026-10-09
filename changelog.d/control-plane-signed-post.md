@@ -1,0 +1,1 @@
+- Sign control-plane requests from workflows in one place: `control_plane_signed_post` in `scripts/control-plane-curl.sh` replaces the 14 copied HMAC one-liners in `sweep.yml` and `exact-review-reconcile-run.yml`, with byte-identical signatures and bodies.

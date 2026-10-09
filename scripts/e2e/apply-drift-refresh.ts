@@ -79,7 +79,7 @@ if (tool === 'pnpm') {
 if (tool === 'curl') {
   assert.equal(args.at(-1), 'http://queue.invalid/internal/exact-review/enqueue');
   if (process.env.FAIL_INTAKE === 'true') { process.stderr.write('controlled queue HTTP 500\\n'); process.exit(22); }
-  const body = args[args.indexOf('--data')+1];
+  const body = args[args.indexOf('--data-binary')+1];
   assert.ok(args.includes('x-clawsweeper-exact-review-signature: sha256='+createHmac('sha256',process.env.CLAWSWEEPER_WEBHOOK_SECRET).update(body).digest('hex')));
   fs.appendFileSync(process.env.ENQUEUE, body+'\\n'); process.stdout.write('{"ok":true,"queued":true}'); process.exit(0);
 }

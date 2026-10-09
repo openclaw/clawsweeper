@@ -130,6 +130,13 @@ policy. Fence and reservation failures are attributed to the existing
 `queue_completion_failure` infrastructure category, including a review that
 never starts because its status fence is unavailable.
 
+Signed shell requests use `control_plane_signed_post <url> <body> [curl options...]`
+from the same helper. Shell steps compute the
+`x-clawsweeper-exact-review-signature` header only there: `sha256=` plus the hex
+HMAC-SHA256 of the exact body bytes, keyed by `CLAWSWEEPER_WEBHOOK_SECRET`. It
+sends the body with `--data-binary` and `content-type: application/json` through
+`control_plane_curl`, so signed calls get the same retries.
+
 Before a job's source checkout, the workflow downloads this single helper from
 `raw.githubusercontent.com`, pinned to `GITHUB_REPOSITORY` and `GITHUB_SHA`,
 with three curl retries into `RUNNER_TEMP`. The bootstrap fails if the download

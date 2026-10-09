@@ -1586,7 +1586,7 @@ test("exact event review publishes directly with a queue-bounded canonical fallb
     /direct-exact-review-publication\.outputs\.accepted != 'true' \|\| steps\.finalize-direct-exact-review-lifecycle\.outcome != 'success'/,
   );
   assert.equal(upload.with?.["retention-days"], 90);
-  assert.match(queuePublication.run ?? "", /control_plane_curl/);
+  assert.match(queuePublication.run ?? "", /control_plane_signed_post/);
   assert.match(queuePublication.run ?? "", /\.queued == true or \.deduped == true/);
   assert.equal(queuePublication.env?.CLAIM_DECISION, "${{ steps.live-item.outputs.decision }}");
   assert.equal(
@@ -2015,7 +2015,7 @@ test("exact event review publishes directly with a queue-bounded canonical fallb
   const drift = step(publisher, "Queue fresh review after source drift");
   assert.match(drift.if ?? "", /requeue_latest == 'true'/);
   assert.match(drift.if ?? "", /legacy-exact-artifact\.outputs\.legacy_tupleless == 'true'/);
-  assert.match(drift.run ?? "", /x-clawsweeper-exact-review-signature/);
+  assert.match(drift.run ?? "", /control_plane_signed_post /);
   assert.match(drift.run ?? "", /internal\/exact-review\/enqueue/);
   const driftPayloadBuilder = (drift.run ?? "").match(
     /node <<'NODE'\r?\n([\s\S]*?)\r?\n\s*NODE/,
@@ -2791,10 +2791,8 @@ test("terminal exact-review runs reconcile through a signed isolated backstop", 
   assert.match(eventJob, /run_attempt: runAttempt/);
   assert.match(eventJob, /include_all_claimed: true/);
   assert.match(eventJob, /CLAWSWEEPER_WEBHOOK_SECRET/);
-  assert.match(eventJob, /x-clawsweeper-exact-review-signature: \$signature/);
+  assert.match(eventJob, /control_plane_signed_post "\$queue_url\/internal\/exact-review\/reconcile" "\$payload"/);
   assert.match(eventJob, /--max-time 120/);
-  assert.match(eventJob, /--data-binary "\$payload"/);
-  assert.match(eventJob, /\/internal\/exact-review\/reconcile/);
   assert.match(eventJob, /actions\/checkout@v7/);
   assert.match(eventJob, /ref: \$\{\{ github\.event\.repository\.default_branch \}\}/);
   assert.match(eventJob, /persist-credentials: false/);

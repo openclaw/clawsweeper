@@ -454,13 +454,8 @@ jobs:
           );
           NODE
           )"
-          signature="$(PAYLOAD="$payload" node -e 'const crypto=require("node:crypto"); process.stdout.write(`sha256=${crypto.createHmac("sha256", process.env.CLAWSWEEPER_WEBHOOK_SECRET).update(process.env.PAYLOAD).digest("hex")}`)')"
-          control_plane_curl --fail --silent --show-error --connect-timeout 5 --max-time 20 \
-            --request POST \
-            --header "content-type: application/json" \
-            --header "x-clawsweeper-exact-review-signature: $signature" \
-            --data "$payload" \
-            "$queue_url$queue_path" >/dev/null
+          control_plane_signed_post "$queue_url$queue_path" "$payload" \
+            --fail --silent --show-error --connect-timeout 5 --max-time 20 >/dev/null
 
   event-review-apply:
     name: Review exact event item
@@ -1959,13 +1954,8 @@ jobs:
                 receipt_id: `${prefix}:${process.env.GITHUB_RUN_ID}:${process.env.GITHUB_RUN_ATTEMPT}`,
               }));
             ')"
-            lifecycle_signature="$(PAYLOAD="$lifecycle_payload" node -e 'const crypto=require("node:crypto"); process.stdout.write(`sha256=${crypto.createHmac("sha256", process.env.CLAWSWEEPER_WEBHOOK_SECRET).update(process.env.PAYLOAD).digest("hex")}`)')"
-            lifecycle_response="$(control_plane_curl --fail --silent --show-error --connect-timeout 5 --max-time 20 \
-              --request POST \
-              --header "content-type: application/json" \
-              --header "x-clawsweeper-exact-review-signature: $lifecycle_signature" \
-              --data "$lifecycle_payload" \
-              "$queue_url/internal/exact-review/lifecycle/router-receipt")"
+            lifecycle_response="$(control_plane_signed_post "$queue_url/internal/exact-review/lifecycle/router-receipt" "$lifecycle_payload" \
+              --fail --silent --show-error --connect-timeout 5 --max-time 20)"
             jq -e '.ok == true' <<<"$lifecycle_response" >/dev/null
           elif [ -n "$lifecycle_terminal" ]; then
             export LIFECYCLE_TERMINAL="$lifecycle_terminal"
@@ -1979,13 +1969,8 @@ jobs:
                 kind: process.env.LIFECYCLE_TERMINAL,
               }));
             ')"
-            lifecycle_signature="$(PAYLOAD="$lifecycle_payload" node -e 'const crypto=require("node:crypto"); process.stdout.write(`sha256=${crypto.createHmac("sha256", process.env.CLAWSWEEPER_WEBHOOK_SECRET).update(process.env.PAYLOAD).digest("hex")}`)')"
-            lifecycle_response="$(control_plane_curl --fail --silent --show-error --connect-timeout 5 --max-time 20 \
-              --request POST \
-              --header "content-type: application/json" \
-              --header "x-clawsweeper-exact-review-signature: $lifecycle_signature" \
-              --data "$lifecycle_payload" \
-              "$queue_url/internal/exact-review/lifecycle/terminal-disposition")"
+            lifecycle_response="$(control_plane_signed_post "$queue_url/internal/exact-review/lifecycle/terminal-disposition" "$lifecycle_payload" \
+              --fail --silent --show-error --connect-timeout 5 --max-time 20)"
             jq -e '.ok == true' <<<"$lifecycle_response" >/dev/null
           fi
           echo "direct_lifecycle_requeue=$direct_lifecycle_requeue" >> "$GITHUB_OUTPUT"
@@ -2079,14 +2064,9 @@ jobs:
           }));
           NODE
           )"
-          signature="$(PAYLOAD="$payload" node -e 'const crypto=require("node:crypto"); process.stdout.write(`sha256=${crypto.createHmac("sha256", process.env.CLAWSWEEPER_WEBHOOK_SECRET).update(process.env.PAYLOAD).digest("hex")}`)')"
           response="$(
-            control_plane_curl --fail --silent --show-error --connect-timeout 5 --max-time 20 \
-              --request POST \
-              --header "content-type: application/json" \
-              --header "x-clawsweeper-exact-review-signature: $signature" \
-              --data "$payload" \
-              "$queue_url/internal/exact-review/enqueue" || true
+            control_plane_signed_post "$queue_url/internal/exact-review/enqueue" "$payload" \
+              --fail --silent --show-error --connect-timeout 5 --max-time 20 || true
           )"
           if jq -e '.superseded == true' <<< "$response" >/dev/null 2>&1; then
             echo "::notice::Exact-review publication revision $(jq -r '.publication_revision // "unknown"' <<< "$response") was superseded by revision $(jq -r '.superseded_by_revision // "unknown"' <<< "$response"); the newer publisher owns final delivery."
@@ -2938,13 +2918,8 @@ jobs:
                 receipt_id: `${prefix}:${process.env.GITHUB_RUN_ID}:${process.env.GITHUB_RUN_ATTEMPT}`,
               }));
             ')"
-            lifecycle_signature="$(PAYLOAD="$lifecycle_payload" node -e 'const crypto=require("node:crypto"); process.stdout.write(`sha256=${crypto.createHmac("sha256", process.env.CLAWSWEEPER_WEBHOOK_SECRET).update(process.env.PAYLOAD).digest("hex")}`)')"
-            lifecycle_response="$(control_plane_curl --fail --silent --show-error --connect-timeout 5 --max-time 20 \
-              --request POST \
-              --header "content-type: application/json" \
-              --header "x-clawsweeper-exact-review-signature: $lifecycle_signature" \
-              --data "$lifecycle_payload" \
-              "$queue_url/internal/exact-review/lifecycle/router-receipt")"
+            lifecycle_response="$(control_plane_signed_post "$queue_url/internal/exact-review/lifecycle/router-receipt" "$lifecycle_payload" \
+              --fail --silent --show-error --connect-timeout 5 --max-time 20)"
             jq -e '.ok == true' <<<"$lifecycle_response" >/dev/null
           }
           post_terminal_disposition() {
@@ -2959,13 +2934,8 @@ jobs:
                 kind: process.env.LIFECYCLE_TERMINAL,
               }));
             ')"
-            lifecycle_signature="$(PAYLOAD="$lifecycle_payload" node -e 'const crypto=require("node:crypto"); process.stdout.write(`sha256=${crypto.createHmac("sha256", process.env.CLAWSWEEPER_WEBHOOK_SECRET).update(process.env.PAYLOAD).digest("hex")}`)')"
-            lifecycle_response="$(control_plane_curl --fail --silent --show-error --connect-timeout 5 --max-time 20 \
-              --request POST \
-              --header "content-type: application/json" \
-              --header "x-clawsweeper-exact-review-signature: $lifecycle_signature" \
-              --data "$lifecycle_payload" \
-              "$queue_url/internal/exact-review/lifecycle/terminal-disposition")"
+            lifecycle_response="$(control_plane_signed_post "$queue_url/internal/exact-review/lifecycle/terminal-disposition" "$lifecycle_payload" \
+              --fail --silent --show-error --connect-timeout 5 --max-time 20)"
             jq -e '.ok == true' <<<"$lifecycle_response" >/dev/null
           }
           completion_kind=published
@@ -3369,14 +3339,9 @@ jobs:
               receipt_id: `fallback:${process.env.GITHUB_RUN_ID}:${process.env.GITHUB_RUN_ATTEMPT}`,
             }));
           ')"
-          signature="$(PAYLOAD="$payload" node -e 'const crypto=require("node:crypto"); process.stdout.write(`sha256=${crypto.createHmac("sha256", process.env.CLAWSWEEPER_WEBHOOK_SECRET).update(process.env.PAYLOAD).digest("hex")}`)')"
           queue_url="${QUEUE_URL%/}"
-          control_plane_curl --fail --silent --show-error --connect-timeout 5 --max-time 20 \
-            --request POST \
-            --header "content-type: application/json" \
-            --header "x-clawsweeper-exact-review-signature: $signature" \
-            --data "$payload" \
-            "$queue_url/internal/exact-review/lifecycle/canonical-receipt" >/dev/null
+          control_plane_signed_post "$queue_url/internal/exact-review/lifecycle/canonical-receipt" "$payload" \
+            --fail --silent --show-error --connect-timeout 5 --max-time 20 >/dev/null
 
       - name: Queue deferred exact verdict router
         id: queue-deferred-verdict-router
@@ -3416,14 +3381,9 @@ jobs:
               receipt_id: `router:${process.env.GITHUB_RUN_ID}:${process.env.GITHUB_RUN_ATTEMPT}`,
             }));
           ')"
-          signature="$(PAYLOAD="$payload" node -e 'const crypto=require("node:crypto"); process.stdout.write(`sha256=${crypto.createHmac("sha256", process.env.CLAWSWEEPER_WEBHOOK_SECRET).update(process.env.PAYLOAD).digest("hex")}`)')"
           queue_url="${QUEUE_URL%/}"
-          control_plane_curl --fail --silent --show-error --connect-timeout 5 --max-time 20 \
-            --request POST \
-            --header "content-type: application/json" \
-            --header "x-clawsweeper-exact-review-signature: $signature" \
-            --data "$payload" \
-            "$queue_url/internal/exact-review/lifecycle/router-receipt" >/dev/null
+          control_plane_signed_post "$queue_url/internal/exact-review/lifecycle/router-receipt" "$payload" \
+            --fail --silent --show-error --connect-timeout 5 --max-time 20 >/dev/null
 
       - name: Record deferred close-proof exact review lifecycle receipt
         id: record-deferred-close-proof-lifecycle-receipt
@@ -3449,14 +3409,9 @@ jobs:
               receipt_id: "router-proof:" + process.env.GITHUB_RUN_ID + ":" + process.env.GITHUB_RUN_ATTEMPT,
             }));
           ')"
-          signature="$(PAYLOAD="$payload" node -e 'const crypto=require("node:crypto"); process.stdout.write("sha256="+crypto.createHmac("sha256", process.env.CLAWSWEEPER_WEBHOOK_SECRET).update(process.env.PAYLOAD).digest("hex"))')"
           queue_url="${QUEUE_URL%/}"
-          control_plane_curl --fail --silent --show-error --connect-timeout 5 --max-time 20 \
-            --request POST \
-            --header "content-type: application/json" \
-            --header "x-clawsweeper-exact-review-signature: $signature" \
-            --data "$payload" \
-            "$queue_url/internal/exact-review/lifecycle/router-receipt" >/dev/null
+          control_plane_signed_post "$queue_url/internal/exact-review/lifecycle/router-receipt" "$payload" \
+            --fail --silent --show-error --connect-timeout 5 --max-time 20 >/dev/null
 
       - name: Record no-router exact review lifecycle receipt
         id: record-no-router-lifecycle-receipt
@@ -3482,14 +3437,9 @@ jobs:
               receipt_id: `router-not-required:${process.env.GITHUB_RUN_ID}:${process.env.GITHUB_RUN_ATTEMPT}`,
             }));
           ')"
-          signature="$(PAYLOAD="$payload" node -e 'const crypto=require("node:crypto"); process.stdout.write(`sha256=${crypto.createHmac("sha256", process.env.CLAWSWEEPER_WEBHOOK_SECRET).update(process.env.PAYLOAD).digest("hex")}`)')"
           queue_url="${QUEUE_URL%/}"
-          control_plane_curl --fail --silent --show-error --connect-timeout 5 --max-time 20 \
-            --request POST \
-            --header "content-type: application/json" \
-            --header "x-clawsweeper-exact-review-signature: $signature" \
-            --data "$payload" \
-            "$queue_url/internal/exact-review/lifecycle/router-receipt" >/dev/null
+          control_plane_signed_post "$queue_url/internal/exact-review/lifecycle/router-receipt" "$payload" \
+            --fail --silent --show-error --connect-timeout 5 --max-time 20 >/dev/null
 
       - name: Dispatch deferred high-confidence bug implementation
         if: ${{ steps.publication-context.outputs.claimed == 'true' && steps.publication-context.outputs.direct_lifecycle_recovery != 'true' && steps.publish-event-result.outcome == 'success' && steps.publish-event-result.outputs.remote_tuple_verified == 'true' && steps.record-fallback-canonical-lifecycle-receipt.outcome == 'success' && vars.CLAWSWEEPER_AUTO_IMPLEMENT_ISSUES == '1' && fromJSON(steps.publication-context.outputs.decision).publicationPolicy != 'record_comment_only' && steps.publication-context.outputs.target_repo == 'openclaw/openclaw' && fromJSON(steps.publication-context.outputs.decision).itemKind == 'issue' && (((fromJSON(steps.publication-context.outputs.decision).sourceAction == 'failed_review_shard_recovery' || fromJSON(steps.publication-context.outputs.decision).publicationPolicy == 'record_comment_only') && steps.record-no-router-lifecycle-receipt.outcome == 'success') || ((fromJSON(steps.publication-context.outputs.decision).sourceAction != 'failed_review_shard_recovery' && fromJSON(steps.publication-context.outputs.decision).publicationPolicy != 'record_comment_only') && (steps.publish-event-result.outputs.routing_deferred != 'true' || steps.queue-deferred-verdict-router.outcome == 'success'))) }}
@@ -3534,13 +3484,8 @@ jobs:
           }));
           NODE
           )"
-          signature="$(PAYLOAD="$payload" node -e 'const crypto=require("node:crypto"); process.stdout.write(`sha256=${crypto.createHmac("sha256", process.env.CLAWSWEEPER_WEBHOOK_SECRET).update(process.env.PAYLOAD).digest("hex")}`)')"
-          response="$(control_plane_curl --fail --silent --show-error --connect-timeout 5 --max-time 20 \
-            --request POST \
-            --header "content-type: application/json" \
-            --header "x-clawsweeper-exact-review-signature: $signature" \
-            --data "$payload" \
-            "$queue_url/internal/exact-review/enqueue")"
+          response="$(control_plane_signed_post "$queue_url/internal/exact-review/enqueue" "$payload" \
+            --fail --silent --show-error --connect-timeout 5 --max-time 20)"
           jq -e '.ok == true and (.queued == true or .deduped == true or .shed == true)' <<< "$response" >/dev/null
           if jq -e '.shed == true' <<< "$response" >/dev/null; then
             echo "Source-drift recovery shed by exact-review queue backpressure."
@@ -4191,12 +4136,8 @@ jobs:
                   ...(process.env.STATUS_COMMENT_ID ? { status_comment_id: Number(process.env.STATUS_COMMENT_ID) } : {}),
                 }));
               ')"
-              signature="$(PAYLOAD="$failure_payload" node -e 'const crypto=require("node:crypto"); process.stdout.write(`sha256=${crypto.createHmac("sha256", process.env.CLAWSWEEPER_WEBHOOK_SECRET).update(process.env.PAYLOAD).digest("hex")}`)')"
-              control_plane_curl --fail --silent --show-error --connect-timeout 5 --max-time 20 \
-                --request POST --header "content-type: application/json" \
-                --header "x-clawsweeper-exact-review-signature: $signature" \
-                --data "$failure_payload" \
-                "${QUEUE_URL%/}/internal/exact-review/lifecycle/command-ack/failed" >/dev/null
+              control_plane_signed_post "${QUEUE_URL%/}/internal/exact-review/lifecycle/command-ack/failed" "$failure_payload" \
+                --fail --silent --show-error --connect-timeout 5 --max-time 20 >/dev/null
               exit "$update_status"
             }
 
@@ -4249,12 +4190,8 @@ jobs:
               observed_at: Date.now(),
             }));
           ')"
-          signature="$(PAYLOAD="$payload" node -e 'const crypto=require("node:crypto"); process.stdout.write(`sha256=${crypto.createHmac("sha256", process.env.CLAWSWEEPER_WEBHOOK_SECRET).update(process.env.PAYLOAD).digest("hex")}`)')"
-          response="$(control_plane_curl --fail --silent --show-error --connect-timeout 5 --max-time 20 \
-            --request POST --header "content-type: application/json" \
-            --header "x-clawsweeper-exact-review-signature: $signature" \
-            --data "$payload" \
-            "${QUEUE_URL%/}/internal/exact-review/lifecycle/command-ack/observed")"
+          response="$(control_plane_signed_post "${QUEUE_URL%/}/internal/exact-review/lifecycle/command-ack/observed" "$payload" \
+            --fail --silent --show-error --connect-timeout 5 --max-time 20)"
           jq -e '.ok == true and .accepted == true and .acknowledgement_state == "observed"' <<< "$response" >/dev/null
 
       - name: Complete locked terminal acknowledgement skip
