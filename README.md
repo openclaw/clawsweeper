@@ -1184,14 +1184,19 @@ pnpm run oxformat
 ```
 
 `oxformat` is an alias for `oxfmt`; there is no separate `oxformat` pnpm package.
-The `CI` GitHub Actions workflow uses the latest Node 24 release and runs
-`pnpm run check` on pushes, pull requests, and manual dispatches. The check gate
-includes the full test suite, a strict changed-surface coverage threshold, and a
-full compiled-repo coverage ratchet. It builds once, runs independent static and
-lint checks with bounded phase-level parallelism, and uses the full coverage run
-as the single source of complete test results. Standalone `test`, `test:repair`,
-and coverage commands still build their required outputs; their internal
-`*:no-build` variants are for the composed gate after `build:all`.
+The `CI` GitHub Actions workflow uses the latest Node 24 release. Locally,
+`pnpm run check` runs the whole gate: the full test suite, a strict
+changed-surface coverage threshold, and a full compiled-repo coverage ratchet.
+It builds once, runs `check:fast` (static checks, build, lint, and the
+changed-surface coverage), then the full coverage run. CI splits the same gate
+into parallel jobs on pushes, pull requests, and manual dispatches:
+`check fast gates` runs `check:fast`; `check tests (i/N)` jobs each run one
+round-robin shard of the suite and upload its raw V8 coverage profiles; and
+`check coverage` replays every shard's profiles through Node's own coverage
+report with the same thresholds. The single `pnpm check` job passes only when
+all of them pass. Standalone `test`, `test:repair`, and coverage commands still
+build their required outputs; their internal `*:no-build` variants are for the
+composed gate after `build:all`.
 
 Node test files are expanded by `scripts/run-node-tests.mjs` instead of the
 shell, so the same targets work on Linux, macOS, and Windows. The runner defaults
@@ -1199,7 +1204,10 @@ to the smaller of the machine's available parallelism and 16, prints the chosen
 value, and accepts an explicit `--test-concurrency` override for diagnostics.
 `CLAWSWEEPER_TEST_CONCURRENCY` sets the default for CLI runs when that flag is
 absent, allowing controlled concurrency experiments through package scripts.
-CI retains the adaptive default. Crabbox diagnostic bundles under `.crabbox/` are generated scratch
+CI retains the adaptive default. The runner owns each target's coverage
+thresholds (`--coverage`), and its `--shard`, `--coverage-out`, and
+`--coverage-from` options are the CI shard and merge steps; see
+`node scripts/run-node-tests.mjs --help`. Crabbox diagnostic bundles under `.crabbox/` are generated scratch
 and are ignored by Git.
 
 On Linux and macOS, the shared synthetic GitHub CLI fixtures clear
