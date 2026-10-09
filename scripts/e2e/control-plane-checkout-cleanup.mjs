@@ -10,6 +10,7 @@ import { parse } from "yaml";
 const execute = promisify(execFile);
 const workflow = parse(await readFile(".github/workflows/sweep.yml", "utf8"));
 const helper = await readFile("scripts/control-plane-curl.sh", "utf8");
+const requestCommand = await readFile("src/repair/exact-review-queue-request.ts", "utf8");
 const cases = [];
 for (const [jobName, stepName, endpoint] of [
   ["event-review-apply", "Complete exact-review queue lease", "/internal/exact-review/complete"],
@@ -46,12 +47,21 @@ for (const [jobName, stepName, endpoint] of [
         join(runnerTemp, "control-plane-curl.sh"),
         checkoutOutcome === "success" ? "exit 91\n" : helper,
       );
+      await writeFile(
+        join(runnerTemp, "exact-review-queue-request.mts"),
+        checkoutOutcome === "success" ? "process.exit(93);\n" : requestCommand,
+      );
       if (checkoutOutcome !== "skipped") {
         await mkdir(join(root, "scripts"));
+        await mkdir(join(root, "src/repair"), { recursive: true });
         // A failed checkout's partial tree must not override the validated bootstrap.
         await writeFile(
           join(root, "scripts/control-plane-curl.sh"),
           checkoutOutcome === "success" ? helper : "exit 92\n",
+        );
+        await writeFile(
+          join(root, "src/repair/exact-review-queue-request.ts"),
+          checkoutOutcome === "success" ? requestCommand : "process.exit(94);\n",
         );
       }
       await execute("bash", ["-c", step.run], {
@@ -65,6 +75,7 @@ for (const [jobName, stepName, endpoint] of [
           QUEUE_URL: `http://127.0.0.1:${server.address().port}`,
           GITHUB_OUTPUT: join(root, "output"),
           GITHUB_RUN_ID: "123",
+          GITHUB_RUN_ATTEMPT: "1",
           RUN_ATTEMPT: "1",
           QUEUE_LEASE_ID: "synthetic-lease",
           ITEM_KEY: "synthetic/repo#42",

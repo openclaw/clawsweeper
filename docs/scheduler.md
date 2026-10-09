@@ -177,7 +177,22 @@ the same command source. `enqueue route` prints the queue path for the
 the payload names no branch, `source-authority` for an edited pull request with
 its complete source tuple, and `enqueue` otherwise. `enqueue body` prints the
 request body. Both reject an invalid target repository or branch before any
-request. The other pre-checkout steps still build their bodies inline.
+request.
+
+`event-review-apply` claims and completes its lease with the same command.
+Its bootstrap step downloads the command source. `claim body` reads the
+dispatch tuple (`QUEUE_LEASE_ID`, `ITEM_KEY`, `QUEUE_LEASE_REVISION`); an older
+dispatch without a tuple claims by lease id only. `complete body` reads the claim
+outputs and the results of the review steps, and a protocol 1 claim completes by
+lease id only. On HTTP 409, `claim conflict` and `complete conflict` read the
+response in `RESPONSE`. They print the error, and the step stops without an
+error, only when another run or a newer revision owns the lease:
+`lease_not_active`, `lease_already_claimed`, `lease_decision_unavailable` or
+`stale_run_attempt` for the claim, and `lease_superseded` for the completion.
+Every other 409 fails the step. Like the curl helper, the completion runs
+`src/repair/exact-review-queue-request.ts` from the checkout only when the
+checkout succeeded, and the downloaded copy otherwise. The other pre-checkout
+steps still build their bodies inline.
 
 After checkout, `event-review-terminal-finalization` builds its bodies with the
 same command. `terminal-finalization <attempt|skip>` reads the claimed lease tuple

@@ -19,6 +19,21 @@ const lease = {
   REVISION: "4",
 };
 
+// The claim reads the dispatch tuple. The completion reads the claim outputs
+// and the results of the review steps.
+const completion = {
+  QUEUE_LEASE_ID: "lease-7",
+  ITEM_KEY: "openclaw/openclaw#7",
+  QUEUE_LEASE_REVISION: "3",
+  PROTOCOL_VERSION: "2",
+  CLAIM_GENERATION: "2",
+  PRIMARY_OUTCOME: "success",
+};
+
+function leaseStep(record: string, env: Record<string, string> = {}) {
+  return run(record.split(" "), { ...completion, ...env });
+}
+
 function run(
   argv: string[],
   env: Record<string, string>,
@@ -184,13 +199,16 @@ test("the source file alone gives the same bodies and errors as the build", () =
   try {
     const copy = join(dir, "exact-review-queue-request.mts");
     copyFileSync("src/repair/exact-review-queue-request.ts", copy);
-    // The legacy intake payload; the other records ignore it.
+    // The legacy intake payload, the claim and completion inputs and a 409
+    // response; each record reads only its own inputs.
     const env = {
       CLIENT_PAYLOAD: JSON.stringify({
         item_kind: "pull_request",
         item_number: 5,
         target_branch: "main",
       }),
+      ...completion,
+      RESPONSE: JSON.stringify({ error: "lease_superseded" }),
     };
     for (const argv of [
       [
@@ -206,6 +224,10 @@ test("the source file alone gives the same bodies and errors as the build", () =
       ["heartbeat", "--phase", "status"],
       ["enqueue", "route"],
       ["enqueue", "body"],
+      ["claim", "body"],
+      ["claim", "conflict"],
+      ["complete", "body"],
+      ["complete", "conflict"],
     ]) {
       const built = run(argv, env);
       assert.deepEqual(run(argv, env, copy), built, argv.join(" "));
@@ -573,5 +595,228 @@ test("legacy event requests with an invalid target print no route or body", () =
     assert.equal(result.status, 1, message);
     assert.equal(result.body, "", message);
     assert.equal(result.error, `exact-review-queue-request: ${message}\n`);
+  }
+});
+
+test("claim bodies carry the dispatch tuple, or only the lease id for an older dispatch", () => {
+  assert.equal(
+    leaseStep("claim body", { ITEM_KEY: " openclaw/openclaw#7 ", QUEUE_LEASE_REVISION: " 3 " })
+      .body,
+    JSON.stringify({
+      lease_id: "lease-7",
+      item_key: "openclaw/openclaw#7",
+      lease_revision: 3,
+      run_id: "10",
+      run_attempt: 1,
+    }),
+  );
+  assert.equal(
+    leaseStep("claim body", { ITEM_KEY: "", QUEUE_LEASE_REVISION: "" }).body,
+    JSON.stringify({ lease_id: "lease-7", run_id: "10", run_attempt: 1 }),
+  );
+});
+
+test("a lease step stops without an error only on the conflicts that another owner causes", () => {
+  for (const [step, safe] of [
+    [
+      "claim",
+      [
+        "lease_not_active",
+        "lease_already_claimed",
+        "lease_decision_unavailable",
+        "stale_run_attempt",
+      ],
+    ],
+    ["complete", ["lease_superseded"]],
+  ] as const) {
+    for (const error of [
+      "lease_not_active",
+      "lease_already_claimed",
+      "lease_decision_unavailable",
+      "stale_run_attempt",
+      "lease_superseded",
+      "lease_not_claimed",
+      "claim_protocol_mismatch",
+    ]) {
+      const result = leaseStep(`${step} conflict`, { RESPONSE: JSON.stringify({ error }) });
+      if ((safe as readonly string[]).includes(error)) {
+        assert.deepEqual(result, { status: 0, body: error, error: "" }, `${step}: ${error}`);
+      } else {
+        assert.deepEqual(
+          result,
+          {
+            status: 1,
+            body: "",
+            error: `exact-review-queue-request: unexpected ${step} conflict\n`,
+          },
+          `${step}: ${error}`,
+        );
+      }
+    }
+    for (const response of ["", "{}", "null", "not json", '{"error":["lease_superseded"]}']) {
+      const result = leaseStep(`${step} conflict`, { RESPONSE: response });
+      assert.equal(result.status, 1, `${step}: ${response}`);
+      assert.equal(result.body, "", `${step}: ${response}`);
+    }
+  }
+});
+
+test("completion bodies keep the claim tuple and each review result in the queue order", () => {
+  const body = (env: Record<string, string>) => JSON.parse(leaseStep("complete body", env).body);
+  const tuple = {
+    lease_id: "lease-7",
+    item_key: "openclaw/openclaw#7",
+    lease_revision: 3,
+    claim_generation: 2,
+    run_id: "10",
+    run_attempt: 1,
+  };
+  // A protocol 1 claim completes by lease id only.
+  assert.equal(
+    leaseStep("complete body", { PROTOCOL_VERSION: "1", ITEM_KEY: "", CLAIM_GENERATION: "" }).body,
+    JSON.stringify({ lease_id: "lease-7", run_id: "10", run_attempt: 1, outcome: "success" }),
+  );
+  // A skipped result step reports failure.
+  assert.deepEqual(body({ PRIMARY_OUTCOME: "" }), { ...tuple, outcome: "failure" });
+  assert.deepEqual(body({ PRIMARY_OUTCOME: "cancelled" }), { ...tuple, outcome: "cancelled" });
+  assert.equal(
+    leaseStep("complete body", {
+      REQUEUE_LATEST: "true",
+      SCHEDULED_SEMANTIC_NOOP: "true",
+      REVIEW_HOLD: "locked_conversation",
+    }).body,
+    JSON.stringify({ ...tuple, outcome: "success", requeue_latest: true }),
+  );
+  assert.equal(
+    leaseStep("complete body", {
+      SCHEDULED_SEMANTIC_NOOP: "true",
+      REVIEW_HOLD: " oversized_pull_request ",
+    }).body,
+    JSON.stringify({
+      ...tuple,
+      outcome: "success",
+      lifecycle_terminal_disposition: "policy_noop",
+      review_hold: "oversized_pull_request",
+    }),
+  );
+  // A command review is never held.
+  assert.deepEqual(body({ REVIEW_HOLD: "locked_conversation", HAS_COMMAND_CONTEXT: "true" }), {
+    ...tuple,
+    outcome: "success",
+  });
+  assert.equal(
+    leaseStep("complete body", {
+      DIRECT_PUBLICATION_ACCEPTED: "true",
+      DIRECT_LIFECYCLE_OUTCOME: "success",
+      DIRECT_PUBLICATION_SUPERSEDED: "true",
+      DIRECT_LIFECYCLE_REQUEUE: "true",
+      REVIEW_HOLD: "locked_conversation",
+    }).body,
+    JSON.stringify({
+      ...tuple,
+      outcome: "success",
+      completion_kind: "superseded",
+      reason_code: "remote_newer_tuple",
+      direct_lifecycle_requeue: true,
+    }),
+  );
+  // The lifecycle step must succeed before the direct publication counts.
+  assert.deepEqual(
+    body({
+      DIRECT_PUBLICATION_ACCEPTED: "true",
+      DIRECT_LIFECYCLE_OUTCOME: "failure",
+      DIRECT_LIFECYCLE_REQUEUE: "true",
+    }),
+    { ...tuple, outcome: "success" },
+  );
+  assert.equal(
+    leaseStep("complete body", {
+      PRIMARY_OUTCOME: "failure",
+      RETRY_KIND: " throttle ",
+      RETRY_AT: "2026-10-09T00:00:00Z",
+    }).body,
+    JSON.stringify({
+      ...tuple,
+      outcome: "failure",
+      retry_kind: "throttle",
+      retry_at: "2026-10-09T00:00:00Z",
+    }),
+  );
+  const failure = {
+    PRIMARY_OUTCOME: "failure",
+    REVIEW_FAILURE_REASON: "codex_failed",
+    REVIEW_FAILURE_STAGE: "codex",
+    REVIEW_FAILURE_REASON_CODE: "codex_exit",
+    REVIEW_FAILURE_RETRYABLE: "false",
+    REVIEW_ITEM_KIND: "pull_request",
+  };
+  const reviewFailure = { stage: "codex", reason_code: "codex_exit", retryable: false };
+  assert.equal(
+    leaseStep("complete body", {
+      ...failure,
+      REVIEW_STATUS_VERIFIED: "true",
+      REVIEW_STATUS_COMMENT_ID: "9001",
+      REVIEW_STATUS_COMPLETED_AT: " 2026-10-09T00:00:00Z ",
+    }).body,
+    JSON.stringify({
+      ...tuple,
+      outcome: "failure",
+      review_failure_reason: "codex_failed",
+      review_failure_status: {
+        outcome: "observed",
+        comment_id: 9001,
+        completed_at: "2026-10-09T00:00:00Z",
+      },
+      review_failure: reviewFailure,
+    }),
+  );
+  assert.deepEqual(body({ ...failure, REVIEW_ACKNOWLEDGEMENT_COMMENT_ID: "9002" }), {
+    ...tuple,
+    outcome: "failure",
+    review_failure_reason: "codex_failed",
+    review_failure_status: { outcome: "failed", comment_id: 9002 },
+    review_failure: reviewFailure,
+  });
+  assert.deepEqual(body(failure).review_failure_status, { outcome: "unavailable" });
+  // Only an automatic pull request review has a review status comment.
+  for (const env of [{ HAS_COMMAND_CONTEXT: "true" }, { REVIEW_ITEM_KIND: "issue" }]) {
+    assert.equal(Object.hasOwn(body({ ...failure, ...env }), "review_failure_status"), false);
+  }
+});
+
+test("completion requests with an invalid tuple or result print no body", () => {
+  for (const [env, message] of [
+    [{ QUEUE_LEASE_ID: "" }, "missing QUEUE_LEASE_ID"],
+    [{ PROTOCOL_VERSION: "3" }, "invalid PROTOCOL_VERSION"],
+    [{ ITEM_KEY: "" }, "missing ITEM_KEY"],
+    [{ CLAIM_GENERATION: "0" }, "invalid CLAIM_GENERATION"],
+    [{ GITHUB_RUN_ATTEMPT: "0" }, "invalid GITHUB_RUN_ATTEMPT"],
+    [
+      { PRIMARY_OUTCOME: "failure", RETRY_KIND: "later" },
+      "RETRY_KIND must be coordination, throttle",
+    ],
+    [{ PRIMARY_OUTCOME: "failure", RETRY_KIND: "throttle" }, "RETRY_KIND requires RETRY_AT"],
+    [
+      {
+        REQUEUE_LATEST: "true",
+        DIRECT_PUBLICATION_ACCEPTED: "true",
+        DIRECT_LIFECYCLE_OUTCOME: "success",
+        DIRECT_LIFECYCLE_REQUEUE: "true",
+      },
+      "REQUEUE_LATEST and DIRECT_LIFECYCLE_REQUEUE exclude each other",
+    ],
+    [{ REVIEW_FAILURE_STAGE: "codex" }, "incomplete review failure"],
+  ] as const) {
+    const result = leaseStep("complete body", env);
+    assert.equal(result.status, 1, message);
+    assert.equal(result.body, "", message);
+    assert.equal(result.error, `exact-review-queue-request: ${message}\n`);
+  }
+  for (const [env, message] of [
+    [{ ITEM_KEY: "openclaw/openclaw#7", QUEUE_LEASE_REVISION: "" }, "invalid QUEUE_LEASE_REVISION"],
+    [{ ITEM_KEY: "", QUEUE_LEASE_REVISION: "3" }, "missing ITEM_KEY"],
+    [{ GITHUB_RUN_ID: "run" }, "invalid GITHUB_RUN_ID"],
+  ] as const) {
+    assert.equal(leaseStep("claim body", env).error, `exact-review-queue-request: ${message}\n`);
   }
 });

@@ -3,6 +3,7 @@ import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
   chmodSync,
+  copyFileSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -79,7 +80,7 @@ test("review workflow emits terminal reasons for non-retryable scanner manifests
 test("queue completion tolerates only terminal-reason deploy skew", async (t) => {
   const workflow = YAML.parse(readText(".github/workflows/sweep.yml"));
   const producers = Object.values(workflow.jobs).flatMap((job: any) =>
-    (job.steps ?? []).filter((step: any) => /review_failure_reason:/.test(step.run ?? "")),
+    (job.steps ?? []).filter((step: any) => /complete body\)/.test(step.run ?? "")),
   );
   assert.equal(producers.length, 1, "audit every completion reason producer when lanes change");
   const detail = { stage: "agent_input_scan", reason_code: "deadline", retryable: false };
@@ -151,7 +152,7 @@ test("queue completion tolerates only terminal-reason deploy skew", async (t) =>
             CLAIM_GENERATION: "1",
             ITEM_KEY: "openclaw/clawsweeper#1",
             GITHUB_RUN_ID: "100",
-            RUN_ATTEMPT: "1",
+            GITHUB_RUN_ATTEMPT: "1",
             PRIMARY_OUTCOME: "failure",
             REQUEUE_LATEST: "false",
             RETRY_KIND: "",
@@ -1419,10 +1420,10 @@ test("exact event review publishes directly with a queue-bounded canonical fallb
       reviewer.steps.indexOf(releaseTerminalStatusFence),
   );
   assert.ok(reviewer.steps.indexOf(terminalReviewStatus) < reviewer.steps.indexOf(complete));
-  assert.match(complete.run ?? "", /review_failure_status/);
-  assert.match(complete.run ?? "", /outcome: "observed"/);
-  assert.match(complete.run ?? "", /outcome: "failed"/);
-  assert.match(complete.run ?? "", /outcome: "unavailable"/);
+  // The queue request command builds review_failure_status from these step results.
+  assert.match(complete.run ?? "", /payload="\$\(node "\$request" complete body\)"/);
+  assert.match(complete.env?.REVIEW_STATUS_VERIFIED ?? "", /terminal-review-status/);
+  assert.match(complete.env?.REVIEW_ACKNOWLEDGEMENT_COMMENT_ID ?? "", /automatic-review-status/);
   assert.ok(reviewer.steps.indexOf(failureDiagnostics) > reviewer.steps.indexOf(queuePublication));
   assert.ok(reviewer.steps.indexOf(failureDiagnostics) > reviewer.steps.indexOf(complete));
   assert.ok(reviewer.steps.indexOf(failureDiagnostics) < reviewer.steps.indexOf(failGeneration));
@@ -1630,13 +1631,9 @@ test("exact event review publishes directly with a queue-bounded canonical fallb
     complete.env?.DIRECT_LIFECYCLE_REQUEUE,
     "${{ steps.exact-review-generation-result.outputs.direct_lifecycle_requeue }}",
   );
-  assert.match(complete.run ?? "", /directPublicationCompleted/);
-  assert.match(complete.run ?? "", /directPublicationSuperseded/);
-  assert.match(complete.run ?? "", /directLifecycleRequeue/);
-  assert.match(complete.run ?? "", /direct_lifecycle_requeue: true/);
-  assert.match(complete.run ?? "", /requeueLatest && directLifecycleRequeue/);
-  assert.match(complete.run ?? "", /completion_kind: "published"/);
-  assert.match(complete.run ?? "", /completion_kind: "superseded"/);
+  // The completion and direct lifecycle bodies are behavior-tested in
+  // test/repair/exact-review-queue-request.test.ts.
+  assert.match(complete.run ?? "", /payload="\$\(node "\$request" complete body\)"/);
   assert.match(complete.env?.PRIMARY_OUTCOME ?? "", /exact-review-generation-result/);
   assert.match(complete.env?.REQUEUE_LATEST ?? "", /exact-review-generation-result/);
   assert.equal(
@@ -1663,10 +1660,6 @@ test("exact event review publishes directly with a queue-bounded canonical fallb
     complete.env?.REVIEW_FAILURE_RETRYABLE,
     "${{ steps.review-exact-event-item.outputs.failure_retryable || '' }}",
   );
-  assert.match(complete.run ?? "", /retry_kind: retryKind/);
-  assert.match(complete.run ?? "", /review_failure_reason: process\.env\.REVIEW_FAILURE_REASON/);
-  assert.match(complete.run ?? "", /review_failure:[\s\S]*stage: reviewFailureStage/);
-  assert.match(complete.run ?? "", /requeue_latest: true/);
   assert.match(deferHeldReview.if ?? "", /reserve-exact-review-lease\.outputs\.status == 'held'/);
   assert.match(deferHeldReview.run ?? "", /retry deferred/);
   assert.match(failGeneration.if ?? "", /reserve-exact-review-lease\.outputs\.status != 'held'/);
@@ -2408,6 +2401,11 @@ test("exact event claim accepts only the requested queue tuple", () => {
 }
 `,
     );
+    // The claim step runs the command copy that the bootstrap downloads.
+    copyFileSync(
+      "src/repair/exact-review-queue-request.ts",
+      join(root, "exact-review-queue-request.mts"),
+    );
     const decision = {
       targetRepo: "openclaw/openclaw",
       itemNumber: 7,
@@ -2426,7 +2424,7 @@ test("exact event claim accepts only the requested queue tuple", () => {
           RUNNER_TEMP: root,
           GITHUB_OUTPUT: output,
           GITHUB_RUN_ID: "10",
-          RUN_ATTEMPT: "1",
+          GITHUB_RUN_ATTEMPT: "1",
           QUEUE_URL: "https://queue.test",
           QUEUE_LEASE_ID: "lease-1",
           ITEM_KEY: "openclaw/openclaw#7",
@@ -2651,15 +2649,21 @@ test("exact-review lease competition skips only known conflicts and gates both o
     assert.match(claimRun, /printf 'claimed=false\\ndecision=\{\}\\n'/, jobName);
     assert.match(claimRun, /--write-out '%\{http_code\}'/, jobName);
     assert.match(claimRun, /if \[ "\$status" = "409" \]/, jobName);
-    for (const reason of [
-      "lease_not_active",
-      "lease_already_claimed",
-      "lease_decision_unavailable",
-      "stale_run_attempt",
-    ]) {
-      assert.match(claimRun, new RegExp(`"${reason}"`), `${jobName}: ${reason}`);
+    // The queue request command owns the apply claim conflicts; the publish
+    // claim still lists them inline.
+    if (jobName === "event-review-apply") {
+      assert.match(claimRun, /RESPONSE="\$response" node "\$request" claim conflict/);
+    } else {
+      for (const reason of [
+        "lease_not_active",
+        "lease_already_claimed",
+        "lease_decision_unavailable",
+        "stale_run_attempt",
+      ]) {
+        assert.match(claimRun, new RegExp(`"${reason}"`), `${jobName}: ${reason}`);
+      }
+      assert.match(claimRun, /if \(!safeConflicts\.has\(response\.error\)\) process\.exit\(1\)/);
     }
-    assert.match(claimRun, /if \(!safeConflicts\.has\(response\.error\)\) process\.exit\(1\)/);
     assert.match(claimRun, /if \[ "\$status" != "200" \]/, jobName);
     assert.match(claimRun, /if \[\[ "\$status" != 5\* \]\]/, jobName);
     assert.match(claimRun, /returned an invalid success payload/, jobName);

@@ -69,6 +69,19 @@ const STATUS_ADDRESS_OPTIONS = {
   "status-marker": { type: "string" },
   "status-comment-id": { type: "string" },
 } as const;
+// The 409 errors after which a lease step stops without an error, because
+// another run or a newer revision owns the lease. Every other 409 fails the step.
+const SAFE_CONFLICTS = {
+  claim: [
+    "lease_not_active",
+    "lease_already_claimed",
+    "lease_decision_unavailable",
+    "stale_run_attempt",
+  ],
+  complete: ["lease_superseded"],
+} as const;
+const PRIMARY_OUTCOMES = ["success", "cancelled", "failure"] as const;
+const RETRY_KINDS = ["coordination", "throttle"] as const;
 
 try {
   const result = exactReviewQueueRequest(process.argv.slice(2), process.env);
@@ -90,11 +103,165 @@ function exactReviewQueueRequest(argv: string[], env: NodeJS.ProcessEnv) {
       return exactReviewTerminalFinalizationBody(args, env);
     case "enqueue":
       return legacyEventEnqueue(args, env);
+    case "claim":
+    case "complete":
+      return exactReviewLeaseStep(command, args, env);
     default:
       throw new Error(
-        "usage: heartbeat --phase <review|status|finalizing> | lifecycle <router-receipt|canonical-receipt|terminal-disposition|command-ack-failed|command-ack-observed> | terminal-finalization <attempt|skip> | enqueue <route|body>",
+        "usage: heartbeat --phase <review|status|finalizing> | lifecycle <router-receipt|canonical-receipt|terminal-disposition|command-ack-failed|command-ack-observed> | terminal-finalization <attempt|skip> | enqueue <route|body> | claim <body|conflict> | complete <body|conflict>",
       );
   }
+}
+
+// `body` prints the claim or completion body. `conflict` reads the 409 response
+// in RESPONSE and prints its error when the step can stop without an error.
+function exactReviewLeaseStep(
+  command: "claim" | "complete",
+  args: string[],
+  env: NodeJS.ProcessEnv,
+) {
+  const [record, ...options] = args;
+  if (options.length > 0) throw new Error(`${command} takes no options`);
+  switch (record) {
+    case "body":
+      return command === "claim" ? exactReviewClaimBody(env) : exactReviewCompletionBody(env);
+    case "conflict": {
+      const response: unknown = JSON.parse(env.RESPONSE || "{}");
+      const error = (response as JsonObject | null)?.error;
+      const safe = SAFE_CONFLICTS[command].find((reason) => reason === error);
+      if (safe === undefined) throw new Error(`unexpected ${command} conflict`);
+      return safe;
+    }
+    default:
+      throw new Error(`${command} record must be body or conflict`);
+  }
+}
+
+// A dispatch names its lease tuple. An older dispatch names only the lease id.
+function exactReviewClaimBody(env: NodeJS.ProcessEnv) {
+  const leaseId = requiredText(env.QUEUE_LEASE_ID, "QUEUE_LEASE_ID");
+  const itemKey = (env.ITEM_KEY ?? "").trim();
+  const leaseRevision = (env.QUEUE_LEASE_REVISION ?? "").trim();
+  const { runId, runAttempt } = githubRun(env);
+  return {
+    lease_id: leaseId,
+    ...(itemKey || leaseRevision
+      ? {
+          item_key: requiredText(itemKey, "ITEM_KEY"),
+          lease_revision: positiveInteger(leaseRevision, "QUEUE_LEASE_REVISION"),
+        }
+      : {}),
+    run_id: runId,
+    run_attempt: runAttempt,
+  };
+}
+
+// Reads the claim outputs and the results of the review steps. A protocol 1
+// claim completes by lease id only.
+function exactReviewCompletionBody(env: NodeJS.ProcessEnv) {
+  const leaseId = requiredText(env.QUEUE_LEASE_ID, "QUEUE_LEASE_ID");
+  const protocolVersion = Number(env.PROTOCOL_VERSION);
+  if (protocolVersion !== 1 && protocolVersion !== 2) throw new Error("invalid PROTOCOL_VERSION");
+  const tuple =
+    protocolVersion === 2
+      ? {
+          item_key: requiredText(env.ITEM_KEY, "ITEM_KEY"),
+          lease_revision: positiveInteger(env.QUEUE_LEASE_REVISION, "QUEUE_LEASE_REVISION"),
+          claim_generation: positiveInteger(env.CLAIM_GENERATION, "CLAIM_GENERATION"),
+        }
+      : {};
+  const { runId, runAttempt } = githubRun(env);
+  // A skipped or failed result step reports failure.
+  const outcome = PRIMARY_OUTCOMES.find((value) => value === env.PRIMARY_OUTCOME) ?? "failure";
+  const requeueLatest = env.REQUEUE_LATEST === "true";
+  const retryKindText = (env.RETRY_KIND ?? "").trim();
+  const retryKind = retryKindText ? oneOf(retryKindText, RETRY_KINDS, "RETRY_KIND") : undefined;
+  const retryAt = (env.RETRY_AT ?? "").trim();
+  if (retryKind && !retryAt) throw new Error("RETRY_KIND requires RETRY_AT");
+  const directPublicationCompleted =
+    env.DIRECT_PUBLICATION_ACCEPTED === "true" && env.DIRECT_LIFECYCLE_OUTCOME === "success";
+  const directLifecycleRequeue =
+    directPublicationCompleted && env.DIRECT_LIFECYCLE_REQUEUE === "true";
+  if (requeueLatest && directLifecycleRequeue) {
+    throw new Error("REQUEUE_LATEST and DIRECT_LIFECYCLE_REQUEUE exclude each other");
+  }
+  const failureStage = (env.REVIEW_FAILURE_STAGE ?? "").trim();
+  const failureReasonCode = (env.REVIEW_FAILURE_REASON_CODE ?? "").trim();
+  const failureRetryable = (env.REVIEW_FAILURE_RETRYABLE ?? "").trim();
+  const hasReviewFailure = Boolean(failureStage || failureReasonCode || failureRetryable);
+  if (
+    hasReviewFailure &&
+    (!failureStage || !failureReasonCode || !["true", "false"].includes(failureRetryable))
+  ) {
+    throw new Error("incomplete review failure");
+  }
+  const hasCommandContext = env.HAS_COMMAND_CONTEXT === "true";
+  // The queue holds a deterministic no-op until the target changes.
+  const reviewHold =
+    outcome === "success" &&
+    !requeueLatest &&
+    !retryKind &&
+    !directPublicationCompleted &&
+    !hasCommandContext
+      ? (env.REVIEW_HOLD ?? "").trim()
+      : "";
+  return {
+    lease_id: leaseId,
+    ...tuple,
+    run_id: runId,
+    run_attempt: runAttempt,
+    outcome,
+    ...(requeueLatest ? { requeue_latest: true } : {}),
+    ...(env.SCHEDULED_SEMANTIC_NOOP === "true" &&
+    outcome === "success" &&
+    !requeueLatest &&
+    !retryKind
+      ? { lifecycle_terminal_disposition: "policy_noop" }
+      : {}),
+    ...(retryKind ? { retry_kind: retryKind } : {}),
+    ...(directPublicationCompleted
+      ? env.DIRECT_PUBLICATION_SUPERSEDED === "true"
+        ? { completion_kind: "superseded", reason_code: "remote_newer_tuple" }
+        : { completion_kind: "published", reason_code: "publication_applied" }
+      : {}),
+    ...(directLifecycleRequeue ? { direct_lifecycle_requeue: true } : {}),
+    ...(retryAt ? { retry_at: retryAt } : {}),
+    ...(reviewHold ? { review_hold: reviewHold } : {}),
+    ...(env.REVIEW_FAILURE_REASON
+      ? {
+          review_failure_reason: env.REVIEW_FAILURE_REASON,
+          // Only an automatic pull request review has a review status comment.
+          ...(hasCommandContext || env.REVIEW_ITEM_KIND !== "pull_request"
+            ? {}
+            : { review_failure_status: reviewFailureStatus(env) }),
+        }
+      : {}),
+    ...(hasReviewFailure
+      ? {
+          review_failure: {
+            stage: failureStage,
+            reason_code: failureReasonCode,
+            retryable: failureRetryable === "true",
+          },
+        }
+      : {}),
+  };
+}
+
+// The terminal review status write was seen, failed after the acknowledgement
+// comment, or had no comment to write.
+function reviewFailureStatus(env: NodeJS.ProcessEnv) {
+  if (env.REVIEW_STATUS_VERIFIED === "true") {
+    return {
+      outcome: "observed",
+      comment_id: Number(env.REVIEW_STATUS_COMMENT_ID),
+      completed_at: (env.REVIEW_STATUS_COMPLETED_AT ?? "").trim(),
+    };
+  }
+  const acknowledgementCommentId = Number(env.REVIEW_ACKNOWLEDGEMENT_COMMENT_ID);
+  return Number.isSafeInteger(acknowledgementCommentId) && acknowledgementCommentId > 0
+    ? { outcome: "failed", comment_id: acknowledgementCommentId }
+    : { outcome: "unavailable" };
 }
 
 // `enqueue route` prints the queue path for a legacy event, and `enqueue body`
