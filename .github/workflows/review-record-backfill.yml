@@ -30,13 +30,14 @@ jobs:
         with:
           build-script: build
 
-      - uses: ./.github/actions/setup-state
-        with:
-          hydrate-git-state: "false"
-          hydrate-state-blobs: "false"
-          records-url: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
-          records-secret: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
-          records-repo-slugs: ${{ inputs.repo_slugs || vars.CLAWSWEEPER_RECORDS_REPO_SLUGS || '' }}
+      # Read-only, like report-metadata-audit: setup-state also enables the state
+      # writer coordinator, which this job must not have. It hydrates records only.
+      - name: Hydrate canonical records
+        env:
+          CLAWSWEEPER_RECORDS_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
+          CLAWSWEEPER_RECORDS_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
+          CLAWSWEEPER_RECORDS_REPO_SLUGS: ${{ inputs.repo_slugs || vars.CLAWSWEEPER_RECORDS_REPO_SLUGS || '' }}
+        run: node scripts/hydrate-state.ts --skip-git-state --skip-state-blobs
 
       - name: Classify stored reports
         run: |
