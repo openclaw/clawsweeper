@@ -72,63 +72,23 @@ Before keeping an older item open only because a small part might remain, search
 
 ### Close comment
 
-If you choose `close`, set `confidence` to `high`, include at least one evidence entry, and write a friendly `closeComment` in readable Markdown: a short opening sentence, a blank line, then concise evidence bullets. Explain the specific reason, mention that this was a Codex review, credit useful prior discussion, and include concrete evidence such as file paths, release version, commit SHA, or fix timestamp. For under-evidenced work, invite reopening with the missing version, component, reproduction, focused patch, or other deciding evidence.
+If you choose `close`, set `confidence` to `high`, include at least one evidence entry, and write the `closeComment` that its schema description and the close reason describe.
 
 ## Field contracts
 
-### Summary and assessment fields
+The output schema describes each field. The rules below connect fields.
 
 Keep user-visible fields non-overlapping. `summary` is the verdict and rationale, `changeSummary` is only the requested change or PR diff, `changeExample` is one concrete before and after case of that change, `systemContext` and `architectureDiagram` place that change in the surrounding system, `workReason` is the routing reason (or issue next-action guidance), `nextStep` records required PR action intent, `bestSolution` is the desired end state, `reproductionAssessment` and `solutionAssessment` answer their questions, and `risks` are only unresolved uncertainty. Do not repeat a sentence across them. Keep these fields concise because they become the public review comment. Prefer one short sentence for `changeSummary`, `workReason`, `bestSolution`, and `securityReview.summary`; use bullets only inside list fields. Do not turn `changeSummary` or `workReason` into an automerge/autofix status update; merge automation is reported by the command/status comment and hidden markers.
 
-`changeSummary` is one neutral sentence: for PRs, what the branch changes, from the title, body, diff, and commits; for issues, the requested behavior, bug, or cleanup. Write `changeSummary`, `systemContext`, and `architectureDiagram` for a reader new to the subsystem: plain verbs, product terms, the first unfamiliar term defined, the user-visible effect rather than internal names, and no speculative components. For example, write "The local search index stores notes in SQLite; this repairs older databases whose legacy and current rows disagree" instead of naming only migration helpers.
-
-`changeExample` shows the change with one concrete case. Write `scenario` as one short clause that tells what the user does. Write `before` as what happens today on the base branch. Write `after` as what happens with this PR. Use real values from the diff, tests, or proof, such as inputs, messages, and outputs. Use user terms and one sentence for each field. Set all three fields to empty strings when the change has no user-visible behavior (pure refactor, test-only, docs, or internal performance) and for issues.
-
-Always fill `bestSolution`. For closes, give the best current outcome (keep the shipped implementation, follow the canonical item, move to ClawHub/plugin API discussion, or leave external administration outside). For keep-open items, give the best implementation or product/docs path: what should change, where, what still needs reproduction, or which plugin/API extension would make it feasible.
-
-Always fill `reproductionAssessment` and answer this exact question in one or two concise sentences: "Do we have a high-confidence way to reproduce the issue?" Say yes/no/unclear and name the reproduction path, focused check, failing test, current-main verification, or missing data; for requests where reproduction does not apply, say so.
-
-Always fill `solutionAssessment` and answer this exact question in one or two concise sentences: "Is this the best way to solve the issue?" Say yes/no/unclear/not applicable, judge whether the implementation, diff, repair, or direction is the narrowest maintainable solution, and name any safer alternative.
-
-Always fill `agentsPolicyStatus` from your `AGENTS.md` read: `found_applied`, `found_not_applicable`, `not_found`, `conflict_not_applied` when guidance conflicted with this contract, or `unreadable_or_unclear` when a full read is unconfirmed. Do not copy AGENTS.md policy text into the public comment.
-
-### maintainerDecision
-
-Put maintainer-intent reasoning in `maintainerDecision`. Set `required: true` only for an unresolved choice between at least two concrete, viable options that the evidence cannot settle and a maintainer has not already decided (product direction, an intentional public-contract break, or policy). Never require a decision merely to approve landing, or because a PR is large, touches persistent state with sufficient compatibility proof, or the PR body reserves final merge/sign-off for a maintainer, and do not invent a second option such as delaying a ready merge. Missing proof and fixable defects belong to the PR owner. When required, state the item-specific question, why evidence cannot settle it, two to three viable options with exactly one recommended, and the likely owner from `likelyOwners`. Never ask a generic "What should happen next?" or package routine contributor follow-up.
-
 ### Labels
 
-Always fill `triagePriority`, the maintainer-facing priority for issues and pull requests. ClawSweeper syncs it to a GitHub label so maintainers can find issues and pull requests by priority. Choose it from user impact, severity, confidence, and urgency for the whole item, not just from PR review findings or repairability; it is separate from `reviewFindings[].priority`. Rubric:
-`P0`: Emergency: data loss, security bypass, crash loop, or unusable core runtime.
-`P1`: Urgent regression or broken agent/channel workflow affecting real users now.
-`P2`: Normal priority bug or improvement with limited blast radius.
-`P3`: Low-risk cleanup, docs, polish, ergonomics, or speculative feature.
-Use `none` only to leave priority labels absent on purpose.
-
-Apply this UX override before falling back to ordinary technical severity:
-
-| User-experience evidence | Required classification |
-| --- | --- |
-| A non-technical first-time or community user is blocked in website, download, install, update, setup, onboarding, auth/provider setup, first useful run, or in-product recovery, with no in-product path forward. | Set `triagePriority: "P0"` and include `impact:ux-release-blocker`. |
-| Completing or recovering that blocked path requires terminal commands, config edits, log inspection, manual file edits, internal knowledge, or maintainer/support intervention. | Set `triagePriority: "P0"` and include `impact:ux-release-blocker`. |
-| The user can proceed only through docs, support, guessing, or fragile workarounds, without being fully blocked. | Use `P1` or `P2` and include `impact:ux-friction`. |
-| Cosmetic confusion or a fully recoverable in-product issue. | Use `P2` or `P3` without `impact:ux-release-blocker`. |
-
-Advanced configuration or power-user workflows do not qualify merely because they use a terminal or config file; the override requires a blocked user-facing path. When recovery needs a technical path, recommend a less-technical surface such as a Doctor button, Fix button, setup wizard, inline recovery, or visible command launcher in `bestSolution` or `workReason`.
-
-Do not raise `triagePriority` solely because CI or status checks are failing, pending, missing, flaky, or require routine maintainer follow-up. Treat check state as priority evidence only when the item reports a user-facing automation failure or the PR diff plausibly caused an urgent regression.
-
-Always fill `labelJustifications` with exactly one entry per selected label (`triagePriority` unless `none`, and every selected impact, maturity, and merge-risk label) and none for unselected labels.
+The output schema defines every label. Apply the UX override in the `impactLabels` description before ordinary technical severity, including its `triagePriority`, and give every selected label one `labelJustifications` entry.
 
 ### Classification and work lane
 
-Set `itemCategory: "bug"` only when the item reports broken existing behavior whose expected behavior current docs, tests, CLI/API contract, or established behavior already define. A new capability, config option, flag, mode, provider, workflow, fallback, UX change, or policy choice is `feature`, `skill`, `support`, `admin`, `docs`, `cleanup`, `security`, or `unclear`. Use `itemCategory: "skill"` for an optional skill bundle, skill docs, or skill-only PR that can live outside core. Set `requiresNewFeature`, `requiresNewConfigOption`, and `requiresProductDecision` independently; any true value removes strict bug-fix automation eligibility.
-
-`reproductionStatus` is `reproduced` only for a concrete, high-confidence current-main reproduction path; `source_reproducible` when source makes the path clear but you did not establish a failing run; otherwise `not_reproduced`, `unclear`, or `not_applicable`. `reproductionConfidence` matches the evidence, not the bug's importance.
+Set `requiresNewFeature`, `requiresNewConfigOption`, and `requiresProductDecision` independently; any true value removes strict bug-fix automation eligibility.
 
 Always fill the work-lane fields. For keep-open items, decide whether this is a safe repair candidate; it only marks a work lane for a maintainer and grants no permission to mutate GitHub. `queue_fix_pr` requires all of: a valid report not already fixed by a merged change; a fix narrow enough for one PR; clear area, likely files, and validation path; related reports covered by one canonical fix; and no security, release, product-strategy, vague, or broad architecture decision first. Use `manual_review` when the item matters but needs human priority or product judgment (blocker in `workReason`), and `none` for closes, stale or unclear reports, security-sensitive or protected items, broad feature programs, administration, or items already paired with an open fix PR, with low confidence/priority, an empty `workPrompt`, and empty arrays. A `queue_fix_pr` `workPrompt` states the observable bug, fix boundary, `workClusterRefs`, likely files, validation commands, changelog expectation, and what must not change, concrete enough for one autonomous PR; `workValidation` and `workLikelyFiles` list exact checks and paths.
-
-Always fill `rootCauseCluster` conservatively with full same-repository URLs. Set `canonicalRef` only when evidence supports exactly one canonical item; exclude the current item from `members`, repeat no refs, and never infer a shared root cause from title similarity, labels, product area, or gitcrawl membership alone. With no established cluster, use the independent default with low confidence and no members. Keep `workClusterRefs` separate as work-lane context.
 
 ## Output rules
 

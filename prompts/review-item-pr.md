@@ -20,7 +20,7 @@ Tie the assessment to the diff: map the changed production owner and behavior to
 
 For internal retry, ordering, delivery, or network-reliability changes, the actual production owner and real transport client exercising an injected fault through the production boundary, with a recorded request/response trace showing observed after-fix recovery, is real behavior proof. Use `status: "sufficient"` and `needsContributorAction: false`; do not require unrelated live-channel access or a full application. Honor stronger applicable scoped policy and expressly authorized production-path harnesses. Mocked transport clients and isolated unit tests remain `mock_only`; preserve existing browser-runtime, CSP, auth, and security safeguards.
 
-Status values: `sufficient` only when the evidence convincingly shows after-fix real behavior and an observed improved result; `missing` when absent; `mock_only` for only tests, mocks, or CI; `insufficient` when unrelated, unviewable, too weak, or not showing the changed behavior; `override` when the PR has `proof: override`; `not_applicable` for non-PR items, maintainer/bot PRs outside the gate, and docs-only PRs. Use `evidenceKind: "none"` when proof is absent or mock-only. `needsContributorAction` is false only for `sufficient`, `override`, or `not_applicable`. For missing, mock-only, or insufficient proof, set `needsContributorAction: true`, make the PR a human-only merge blocker, and do not request ClawSweeper repair markers: automation cannot prove the contributor's setup.
+For missing, mock-only, or insufficient proof, set `needsContributorAction: true`, make the PR a human-only merge blocker, and do not request ClawSweeper repair markers: automation cannot prove the contributor's setup.
 
 In `realBehaviorProof.summary`, name the missing scenario. Prefer asking for screenshots or videos when they can show the behavior, including terminal screenshots for console changes; logs and live output stay acceptable. Remind contributors to redact private information like IP addresses, API keys, phone numbers, and non-public endpoints. The comment adds the proof heading and the re-review steps, so do not write "needs real behavior proof before merge" or re-review steps in any field.
 
@@ -28,7 +28,7 @@ A reviewer-side limitation is not missing contributor proof. When a dependency c
 
 ## Findings and re-review continuity
 
-Always fill `reviewFindings`, `overallCorrectness`, and `overallConfidenceScore`. For PRs, emit Codex `/review`-style findings: review the diff as another engineer's patch and list every discrete, actionable bug the author would fix. Each finding is introduced by the PR, concrete enough to fix, and tied to the smallest useful changed line range, with repository-relative `file`, `lineStart`, and `lineEnd` that overlap the diff when possible. Prefer an empty list when nothing definite is wrong; do not pad with style, speculation, missing tests without a real bug, or praise. Priorities: `0=P0 critical`, `1=P1 high`, `2=P2 normal`, `3=P3 low`. Titles are imperative and at most 80 characters; bodies are brief and say why current behavior breaks. `overallCorrectness` is `patch is incorrect` only when a listed P0/P1/P2 finding says what is wrong and should block merge, and `patch is correct` for other PRs. `overallConfidenceScore` is your 0-1 confidence in the verdict.
+Always fill `reviewFindings`, `overallCorrectness`, and `overallConfidenceScore`. For PRs, emit Codex `/review`-style findings: review the diff as another engineer's patch and list every discrete, actionable bug the author would fix. Each finding is introduced by the PR, concrete enough to fix, and tied to the smallest useful changed line range, with repository-relative `file`, `lineStart`, and `lineEnd` that overlap the diff when possible. Prefer an empty list when nothing definite is wrong; do not pad with style, speculation, missing tests without a real bug, or praise. `overallCorrectness` is `patch is incorrect` only when a listed P0/P1/P2 finding says what is wrong and should block merge, and `patch is correct` for other PRs. `overallConfidenceScore` is your 0-1 confidence in the verdict.
 
 Every finding must identify an actual introduced trigger and its causal link to the failure. An untouched affected file is a valid finding location when another introduced hunk causes the regression; this is not a changed-file allowlist. Current main versus an older head cannot establish a revert or downgrade. For a claim about what merging would remove, verify the test merge has exactly the pinned main/base parent then the exact head parent, and compare against that parent; never substitute a final merge commit, stale test merge, or `mergeable` metadata. A clean merge does not rule out semantic regressions. Apply the same check to risks, labels, scores, compatibility warnings, and fixups. Before returning, remove claims whose trigger was disproved; unavailable evidence is neither a pass nor a contributor defect.
 
@@ -74,9 +74,7 @@ When the pass leaves a material, plausible authority violation unresolved, requi
 
 ## Pull request fields
 
-### nextStep and implementer-owned decisions
-
-Follow this next-step contract. Always fill `nextStep` with `{ "kind": "none", "text": "" }` when no additional required next step remains, including routine CI or ordinary maintainer look. Final landing approval or a PR-body request for maintainer merge/sign-off is not a required next step; when it is the only item left, report readiness with no Before-merge blocker and `nextStep` kind none. Otherwise use `{ "kind": "required", "text": "<nonempty trimmed action>" }` and keep routing prose in `workReason`. A genuine blocker stays required even if its prose includes no, not, but, unless, or until: for example, "No schema change is needed, but repair the retry guard before merge." Human-owned actions can be required even with `workCandidate: "none"`. Do not rely on action keywords to communicate intent. Independent findings, security concerns, risks, contributor proof, historical verification, decisions, failed reviews, and low-quality remediation remain blockers regardless of `nextStep`. This field is presentation intent for the Before merge checklist/count only, not authority to auto-fix or merge; the automation meaning of `workCandidate` is unchanged.
+### Implementer-owned decisions
 
 Treat the following as implementer-owned decisions when the PR body records the choice and supporting evidence, and review verifies that evidence:
 
@@ -96,30 +94,9 @@ Claim a merge conflict only when the context's `pullRequest.mergeable` is `false
 
 For unresolved merge risk, fill `mergeRiskOptions` with 1-3 options tailored to this PR, not a fixed menu. Use `fix_before_merge` for repair paths (several allowed), `accept_risk` when maintainers may own the risk, and `pause_or_close` when the PR may not be worth it. Set `automergeInstruction` only for a recommended `fix_before_merge` option that automerge can execute.
 
-### Merge-risk labels
-
-`mergeRiskLabels` are PR-only labels for what could break because this PR merges, concretely supported by the diff, current behavior, upgrade path, or discussion, with their scope explained in label rationale:
-`merge-risk: 🚨 compatibility`: 🚨 Merging this PR could break existing users, config, migrations, defaults, or upgrades.
-`merge-risk: 🚨 message-delivery`: 🚨 Merging this PR could drop, duplicate, misroute, suppress, or wrongly target messages.
-`merge-risk: 🚨 session-state`: 🚨 Merging this PR could lose, corrupt, stale, or mis-associate session or agent state.
-`merge-risk: 🚨 auth-provider`: 🚨 Merging this PR could break OAuth, tokens, provider routing, model choice, or credentials.
-`merge-risk: 🚨 security-boundary`: 🚨 Merging this PR could weaken sandboxing, authorization, credentials, or sensitive data.
-`merge-risk: 🚨 availability`: 🚨 Merging this PR could cause crashes, hangs, restart loops, stalls, or process outages.
-`merge-risk: 🚨 automation`: 🚨 Merging this PR could break CI, automerge, proof capture, label sync, or automation.
-`merge-risk: 🚨 other`: 🚨 Merging this PR has meaningful risk outside the owned taxonomy.
-Do not use `merge-risk: 🚨 automation` only because CI is red, pending, flaky, or absent. Use it only when the PR diff changes automation behavior or plausibly causes CI, automerge, proof capture, label sync, or related automation to fail after merge. Do not make ClawSweeper sound more certain than the evidence supports.
-
 ### Work lane
 
 For pull requests, `workCandidate` is also the automation contract. Use `queue_fix_pr` only for a concrete repair a worker can attempt on the PR branch or a narrow replacement branch, never merely because the PR needs review; use `manual_review` or `none` for maintainer judgment, protected-label handling, ownership/product/security review, or validation without a specific defect. If an open PR is explicitly opted into `clawsweeper:automerge`, prefer the automerge path once review findings are empty and checks can gate the exact head. Do not choose `manual_review` solely because the PR has the `maintainer` label, a large `size:*` label, broad surface area, or ordinary review expectations. For a narrow mechanical blocker (docs or diagnostic copy, a validation warning, focused tests, a failing check with a file-level repair), choose `queue_fix_pr` even when the finding is process-only or P3; after a `clawsweeper:automerge` or `clawsweeper:autofix` opt-in, this includes concrete security findings with a narrow code/test repair. Use `manual_review` for an automerge-opted PR only for release/beta approval, a draft/conflict/stale head, a required check without a narrow repair, human/product/ownership approval, a security/product decision rather than a code defect, or an explicit human-review/pause signal.
-
-### Metrics, showcase, and rating
-
-Always fill `reviewMetrics`. Use `[]` for ordinary PRs; add a metric only when it is useful, concrete, maintainer-relevant, and grounded in the diff, behavior, policy, or discussion, with a value such as `2 added, 1 changed, 0 removed` or `3 files affected`. Do not use vague labels or values, and do not restate risks, options, or label rationale. For PRs that meaningfully grow the codebase, or when target policy asks, add a production-vs-test LOC metric (for example `production +12, tests +85`) whose reason says whether production growth is justified; an unjustified-growth concern goes in `risks`.
-
-For PRs, `featureShowcase` is a positive-only maintainer spotlight for really compelling feature ideas. The bar is high: routine features, integrations, polish, and patches with serious correctness or security concerns use `none`, as do non-feature PRs. It is not a merge-readiness score, not a contributor ranking, and not a merge gate.
-
-Always fill `prRating`. Rate it with the `### Rating rubric` in `## Review Rules`, which also sets `prRating.nextSteps`. `### Authority chain` sets the authority rank-up moves.
 
 ## Review Rules
 

@@ -67,11 +67,16 @@ test("review prompt and generation schema deliver explicit next-step presentatio
       latestRelease: null,
     },
   );
-  assert.match(prompt, /Always fill `nextStep`/);
-  assert.match(prompt, /routine CI or ordinary maintainer look/);
-  assert.match(prompt, /no, not, but, unless, or until/);
-  assert.match(prompt, /Human-owned actions can be\s+required even with `workCandidate: "none"`/);
-  assert.match(prompt, /not authority to auto-fix or\s+merge/);
+  const description = schema.properties.nextStep.description;
+  assert.match(description, /routine CI or ordinary maintainer look/);
+  assert.match(description, /no\/not\/but\/unless\/until/);
+  assert.match(description, /human-owned blockers even when workCandidate is none/);
+  assert.match(description, /never authority to auto-fix or merge/);
+  assert.match(
+    description,
+    /Final landing approval or a PR-body request for maintainer merge\/sign-off/,
+  );
+  assert.match(description, /Do not rely on action keywords to communicate intent/);
   assert.match(prompt, /Do not request contributor changelog entries/);
   assert.match(reviewPrompt("issue"), /`nextStep` kind none with empty text/);
   assert.match(reviewPrompt("issue"), /keeping next-action guidance in `workReason`/);
@@ -203,13 +208,15 @@ test("issue reviews close fixed work and automatically route small source-proven
   assert.doesNotMatch(prompt, /strict_bug"` only for the existing reproduced/);
 });
 
-test("review prompt describes concrete review metrics without vague examples", () => {
+test("review metrics schema describes concrete metrics without vague examples", () => {
   const prompt = reviewPrompt("pull_request");
+  const reviewMetrics = JSON.parse(readFileSync("schema/clawsweeper-decision.schema.json", "utf8"))
+    .properties.reviewMetrics;
 
-  assert.match(prompt, /Always fill `reviewMetrics`/);
-  assert.match(prompt, /useful, concrete, maintainer-relevant/);
-  assert.match(prompt, /2 added, 1 changed, 0\s+removed/);
-  assert.match(prompt, /Do not use vague\s+labels or values/);
+  assert.match(reviewMetrics.description, /useful, concrete, maintainer-relevant/);
+  assert.match(reviewMetrics.items.properties.value.description, /2 added, 1 changed, 0 removed/);
+  assert.match(reviewMetrics.description, /Do not use vague metric labels or values/);
+  assert.match(reviewMetrics.description, /production-vs-test LOC metric/);
   assert.doesNotMatch(prompt, /Risky change/);
   assert.doesNotMatch(prompt, /Some changes/);
   assert.doesNotMatch(prompt, /This seems risky/);
@@ -320,11 +327,12 @@ test("review prompt treats duplicated behavior as a P1 PR finding", () => {
 test("review prompt and schema reserve maintainer decisions for unresolved choices", () => {
   const prompt = reviewPrompt("pull_request");
   const schema = JSON.parse(readFileSync("schema/clawsweeper-decision.schema.json", "utf8"));
-  assert.match(prompt, /at least two concrete, viable options/);
-  assert.match(prompt, /evidence cannot settle and a maintainer has not already decided/);
-  assert.match(prompt, /Never require a decision merely to approve landing/);
-  assert.match(prompt, /PR body reserves final merge\/sign-off/);
-  assert.match(prompt, /no Before-merge blocker/);
+  const required = schema.properties.maintainerDecision.properties.required.description;
+  assert.match(required, /at least two concrete viable options that evidence cannot settle/);
+  assert.match(required, /a maintainer has not already decided/);
+  assert.match(required, /Never for landing approval, PR size/);
+  assert.match(required, /PR-body merge\/sign-off request/);
+  assert.match(required, /Missing proof and fixable defects belong to the PR owner/);
   assert.match(prompt, /recorded maintainer design decision cited in a maintainer-authored PR/);
   assert.match(prompt, /does not revoke that decision/);
   assert.match(prompt, /including verified no-migration cases/);
@@ -1149,7 +1157,6 @@ test("review rules keep draft and protected workflow state out of PR rank", () =
     prompt,
     /A draft state, protected labels, automerge eligibility,\s+or a pending maintainer action is workflow state\. These never lower a\s+tier\./,
   );
-  assert.match(prompt, /Rate it with the `### Rating rubric` in `## Review Rules`/);
 });
 
 test("decision schema keeps draft and protected workflow state out of PR rank", () => {
@@ -1174,15 +1181,10 @@ test("review finding schema requires every structured-output property", () => {
   assert.deepEqual([...finding.required].sort(), Object.keys(finding.properties).sort());
 });
 
-test("review prompt and schema describe positive-only feature showcase labels", () => {
-  const prompt = reviewPrompt("pull_request");
+test("decision schema describes positive-only feature showcase labels", () => {
   const schema = JSON.parse(readFileSync("schema/clawsweeper-decision.schema.json", "utf8"));
   const featureShowcase = schema.properties.featureShowcase;
 
-  assert.match(prompt, /featureShowcase/);
-  assert.match(prompt, /positive-only maintainer spotlight/);
-  assert.match(prompt, /really compelling feature ideas/);
-  assert.match(prompt, /not a merge gate/);
   assert.match(featureShowcase.description, /Positive-only maintainer spotlight/);
   assert.match(featureShowcase.description, /not a merge gate/);
   assert.deepEqual(featureShowcase.properties.status.enum, ["showcase", "none"]);
@@ -1193,7 +1195,6 @@ test("review prompt requires source evidence for stable maturity", () => {
 
   assert.match(prompt, /Identify exactly one primary owner surface/);
   assert.match(prompt, /Shared\s+Gateway\/CLI transit/);
-  assert.match(prompt, /M4\/M5 ownership is necessary but is\s+not enough by itself/);
   assert.match(prompt, /current docs, tests, an API or\s+CLI contract/);
   assert.match(prompt, /feature proposal, new capability, UX preference/);
   assert.match(prompt, /requiresNewFeature: true/);
@@ -1216,23 +1217,25 @@ test("review prompt classifies Telegram visible proof candidates", () => {
   assert.match(prompt, /proof: telegram-e2e/);
 });
 
-test("review prompt states each always-fill field contract once", () => {
+test("review prompt leaves per-field contracts to the decision schema", () => {
   const prompt = reviewPrompt("pull_request");
-  for (const field of [
-    "telegramVisibleProof",
-    "triagePriority",
-    "securityReview",
-    "realBehaviorProof",
-    "reviewMetrics",
-    "prRating",
-  ]) {
+  for (const field of ["telegramVisibleProof", "securityReview", "realBehaviorProof"]) {
     assert.equal(prompt.split(`Always fill \`${field}\``).length - 1, 1, field);
   }
-  for (const [label, kind] of [
-    ["merge-risk: 🚨 compatibility", "pull_request"],
-    ["impact:data-loss", "issue"],
-  ] as const) {
-    assert.equal(reviewPrompt(kind).split(`\`${label}\`: `).length - 1, 1, label);
+  for (const text of [prompt, reviewPrompt("issue")]) {
+    for (const field of [
+      "triagePriority",
+      "reviewMetrics",
+      "prRating",
+      "labelJustifications",
+      "bestSolution",
+      "reproductionAssessment",
+      "solutionAssessment",
+      "agentsPolicyStatus",
+      "rootCauseCluster",
+    ]) {
+      assert.ok(!text.includes(`Always fill \`${field}\``), field);
+    }
   }
 });
 

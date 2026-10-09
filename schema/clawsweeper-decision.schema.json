@@ -102,7 +102,7 @@
     },
     "changeSummary": {
       "type": "string",
-      "description": "Neutral one-sentence summary of the requested change or PR diff. For pull requests, describe what the branch changes, not the merge verdict, maintainer next action, risk, or whether the PR is redundant."
+      "description": "Neutral one-sentence summary of the requested change or PR diff. For pull requests, describe what the branch changes, not the merge verdict, maintainer next action, risk, or whether the PR is redundant. For issues, describe the requested behavior, bug, or cleanup. Write for a reader new to the subsystem: plain verbs, product terms, the first unfamiliar term defined, and the user-visible effect rather than internal names. For example, write \"The local search index stores notes in SQLite; this repairs older databases whose legacy and current rows disagree\" instead of naming only migration helpers."
     },
     "changeExample": {
       "type": "object",
@@ -117,7 +117,7 @@
     },
     "systemContext": {
       "type": "string",
-      "description": "One or two plain-language sentences explaining where the changed subsystem sits in the larger product and what enters and leaves it. Use an empty string only when no concrete system context can be established."
+      "description": "One or two plain-language sentences explaining where the changed subsystem sits in the larger product and what enters and leaves it. Use an empty string only when no concrete system context can be established. Write for a reader new to the subsystem, with product terms and no speculative components."
     },
     "architectureDiagram": {
       "type": "string",
@@ -221,7 +221,7 @@
     },
     "bestSolution": {
       "type": "string",
-      "description": "The best possible product/code/docs direction for this item, whether the item should close or stay open. Do not repeat the change summary, workReason, or risk list."
+      "description": "The best possible product/code/docs direction for this item, whether the item should close or stay open. Do not repeat the change summary, workReason, or risk list. For closes, give the best current outcome: keep the shipped implementation, follow the canonical item, move to ClawHub/plugin API discussion, or leave external administration outside. For keep-open items, give the best implementation or product/docs path: what should change, where, what still needs reproduction, or which plugin/API extension would make it feasible. Prefer one short sentence."
     },
     "maintainerDecision": {
       "type": "object",
@@ -230,7 +230,7 @@
       "properties": {
         "required": {
           "type": "boolean",
-          "description": "True only for an unresolved choice between at least two concrete viable options that evidence cannot settle and a maintainer has not already decided. Never for landing approval, PR size, sufficient stored-state compatibility proof, or a PR-body merge/sign-off request. Also false for implementer-owned choices recorded in the PR body with review-verified evidence: narrow individually source-verified tool-metadata oracle/snapshot/baseline exceptions preserving exact user data without masking regressions; invalid/unreachable-data-only Doctor/recovery removal with a verified prior backup, reported counts, and valid data untouched; or ownership, ordering, and internal transaction/lifecycle mechanics within an authorized maintainer repair-and-land scope. Do not request design acceptance or a Resolve maintainer decision item for these choices. Broad exceptions, defects, and missing data-model compatibility proof remain PR-owner work. Unresolved product/public-contract choices still require a decision: new config options, breaking public API/SDK changes, new schemas/tables, changed retention of valid data, or paid services."
+          "description": "True only for an unresolved choice between at least two concrete viable options that evidence cannot settle and a maintainer has not already decided. Never for landing approval, PR size, sufficient stored-state compatibility proof, or a PR-body merge/sign-off request. Also false for implementer-owned choices recorded in the PR body with review-verified evidence: narrow individually source-verified tool-metadata oracle/snapshot/baseline exceptions preserving exact user data without masking regressions; invalid/unreachable-data-only Doctor/recovery removal with a verified prior backup, reported counts, and valid data untouched; or ownership, ordering, and internal transaction/lifecycle mechanics within an authorized maintainer repair-and-land scope. Do not request design acceptance or a Resolve maintainer decision item for these choices. Broad exceptions, defects, and missing data-model compatibility proof remain PR-owner work. Unresolved product/public-contract choices still require a decision: new config options, breaking public API/SDK changes, new schemas/tables, changed retention of valid data, or paid services. Missing proof and fixable defects belong to the PR owner, not to a maintainer decision."
         },
         "kind": {
           "type": "string",
@@ -247,7 +247,7 @@
         },
         "question": {
           "type": "string",
-          "description": "The exact item-specific question the maintainer should answer, or an empty string when required is false."
+          "description": "The exact item-specific question the maintainer should answer, or an empty string when required is false. Never ask a generic \"What should happen next?\" or package routine contributor follow-up as a question."
         },
         "rationale": {
           "type": "string",
@@ -301,7 +301,7 @@
     "triagePriority": {
       "type": "string",
       "enum": ["P0", "P1", "P2", "P3", "none"],
-      "description": "ClawSweeper-maintained triage priority for maintainers to sort issues and pull requests. P0: Emergency: data loss, security bypass, crash loop, or unusable core runtime. P1: Urgent regression or broken agent/channel workflow affecting real users now. P2: Normal priority bug or improvement with limited blast radius. P3: Low-risk cleanup, docs, polish, ergonomics, or speculative feature. Use none only when no priority label should be applied. Do not raise priority solely because CI or status checks are failing, pending, missing, flaky, or require routine maintainer follow-up; use check state as priority evidence only for user-facing automation failures or diff-caused urgent regressions."
+      "description": "ClawSweeper-maintained triage priority for maintainers to sort issues and pull requests. P0: Emergency: data loss, security bypass, crash loop, or unusable core runtime. P1: Urgent regression or broken agent/channel workflow affecting real users now. P2: Normal priority bug or improvement with limited blast radius. P3: Low-risk cleanup, docs, polish, ergonomics, or speculative feature. Use none only when no priority label should be applied. Do not raise priority solely because CI or status checks are failing, pending, missing, flaky, or require routine maintainer follow-up; use check state as priority evidence only for user-facing automation failures or diff-caused urgent regressions. Choose it from user impact, severity, confidence, and urgency for the whole item, not just from PR review findings or repairability; it is separate from reviewFindings[].priority. Apply the impactLabels UX override first."
     },
     "impactLabels": {
       "type": "array",
@@ -320,7 +320,7 @@
           "impact:other"
         ]
       },
-      "description": "ClawSweeper-owned GitHub impact labels for maintainers to find the affected problem class on issues. Use [] for pull requests and when no meaningful owned impact signal applies. These describe what the issue is about, not PR merge risk. Use at most 3; impact:other counts toward this max and means meaningful maintainer-visible impact exists but no specific owned impact label fits. Prefer a specific impact label over impact:other, and prefer impact:ux-release-blocker over impact:ux-friction when the same evidence supports both. UX override: a non-technical first-time or community user blocked in website/download/install/update/setup/onboarding/auth/provider setup/first useful run/in-product recovery with no in-product path forward requires P0 plus impact:ux-release-blocker. The same applies when completing or recovering that blocked path requires terminal commands, config edits, log inspection, manual file edits, internal knowledge, or maintainer/support intervention. Recoverable docs/support/guessing paths use P1/P2 plus impact:ux-friction. Do not promote ordinary advanced configuration or optional power-user workflows solely because they use a terminal or config file. Technical recovery from a blocker should recommend a Doctor button, Fix button, setup wizard, inline recovery, or visible command launcher in bestSolution/workReason. impact:data-loss: This issue is about lost, corrupted, or silently dropped user/session/config data. impact:security: This issue is about security boundaries, credentials, authz, sandboxing, or sensitive data. impact:crash-loop: This issue is about crashes, hangs, restart loops, or process-level availability. impact:message-loss: This issue is about lost, duplicated, misrouted, or suppressed channel messages. impact:session-state: This issue is about session, memory, transcript, context, or agent state drift. impact:auth-provider: This issue is about auth, provider routing, model choice, or SecretRef resolution. impact:ux-release-blocker: A non-technical user is blocked without terminal, logs, config, or support. impact:ux-friction: User-facing flow adds avoidable confusion or support burden without fully blocking progress. impact:other: This issue has meaningful maintainer-visible impact outside the owned taxonomy."
+      "description": "ClawSweeper-owned GitHub impact labels for maintainers to find the affected problem class on issues. Use [] for pull requests and when no meaningful owned impact signal applies. These describe what the issue is about, not PR merge risk. Use at most 3; impact:other counts toward this max and means meaningful maintainer-visible impact exists but no specific owned impact label fits. Prefer a specific impact label over impact:other, and prefer impact:ux-release-blocker over impact:ux-friction when the same evidence supports both. UX override: a non-technical first-time or community user blocked in website/download/install/update/setup/onboarding/auth/provider setup/first useful run/in-product recovery with no in-product path forward requires P0 plus impact:ux-release-blocker. The same applies when completing or recovering that blocked path requires terminal commands, config edits, log inspection, manual file edits, internal knowledge, or maintainer/support intervention. Recoverable docs/support/guessing paths use P1/P2 plus impact:ux-friction. Do not promote ordinary advanced configuration or optional power-user workflows solely because they use a terminal or config file. Technical recovery from a blocker should recommend a Doctor button, Fix button, setup wizard, inline recovery, or visible command launcher in bestSolution/workReason. impact:data-loss: This issue is about lost, corrupted, or silently dropped user/session/config data. impact:security: This issue is about security boundaries, credentials, authz, sandboxing, or sensitive data. impact:crash-loop: This issue is about crashes, hangs, restart loops, or process-level availability. impact:message-loss: This issue is about lost, duplicated, misrouted, or suppressed channel messages. impact:session-state: This issue is about session, memory, transcript, context, or agent state drift. impact:auth-provider: This issue is about auth, provider routing, model choice, or SecretRef resolution. impact:ux-release-blocker: A non-technical user is blocked without terminal, logs, config, or support. impact:ux-friction: User-facing flow adds avoidable confusion or support burden without fully blocking progress. impact:other: This issue has meaningful maintainer-visible impact outside the owned taxonomy. Cosmetic confusion or a fully recoverable in-product issue uses P2 or P3 without impact:ux-release-blocker."
     },
     "mergeRiskLabels": {
       "type": "array",
@@ -338,7 +338,7 @@
           "merge-risk: 🚨 other"
         ]
       },
-      "description": "PR-only ClawSweeper-owned GitHub labels for merge risks that green CI does not settle. These describe what could go wrong specifically because this PR is merged, not the affected or solved problem class. Use at most 3 for pull requests and [] for issues and when no meaningful owned merge-risk signal applies. Do not use merge-risk: 🚨 automation only because CI is red, pending, flaky, or absent; use it only when the PR diff changes automation behavior or plausibly causes CI, automerge, proof capture, label sync, or related automation to fail after merge. merge-risk: 🚨 other counts toward this max and means meaningful merge risk exists but no specific owned merge-risk label fits. Prefer a specific merge-risk label over merge-risk: 🚨 other. merge-risk: 🚨 compatibility: 🚨 Merging this PR could break existing users, config, migrations, defaults, or upgrades. merge-risk: 🚨 message-delivery: 🚨 Merging this PR could drop, duplicate, misroute, suppress, or wrongly target messages. merge-risk: 🚨 session-state: 🚨 Merging this PR could lose, corrupt, stale, or mis-associate session or agent state. merge-risk: 🚨 auth-provider: 🚨 Merging this PR could break OAuth, tokens, provider routing, model choice, or credentials. merge-risk: 🚨 security-boundary: 🚨 Merging this PR could weaken sandboxing, authorization, credentials, or sensitive data. merge-risk: 🚨 availability: 🚨 Merging this PR could cause crashes, hangs, restart loops, stalls, or process outages. merge-risk: 🚨 automation: 🚨 Merging this PR could break CI, automerge, proof capture, label sync, or automation. merge-risk: 🚨 other: 🚨 Merging this PR has meaningful risk outside the owned taxonomy."
+      "description": "PR-only ClawSweeper-owned GitHub labels for merge risks that green CI does not settle. These describe what could go wrong specifically because this PR is merged, not the affected or solved problem class. Use at most 3 for pull requests and [] for issues and when no meaningful owned merge-risk signal applies. Do not use merge-risk: 🚨 automation only because CI is red, pending, flaky, or absent; use it only when the PR diff changes automation behavior or plausibly causes CI, automerge, proof capture, label sync, or related automation to fail after merge. merge-risk: 🚨 other counts toward this max and means meaningful merge risk exists but no specific owned merge-risk label fits. Prefer a specific merge-risk label over merge-risk: 🚨 other. merge-risk: 🚨 compatibility: 🚨 Merging this PR could break existing users, config, migrations, defaults, or upgrades. merge-risk: 🚨 message-delivery: 🚨 Merging this PR could drop, duplicate, misroute, suppress, or wrongly target messages. merge-risk: 🚨 session-state: 🚨 Merging this PR could lose, corrupt, stale, or mis-associate session or agent state. merge-risk: 🚨 auth-provider: 🚨 Merging this PR could break OAuth, tokens, provider routing, model choice, or credentials. merge-risk: 🚨 security-boundary: 🚨 Merging this PR could weaken sandboxing, authorization, credentials, or sensitive data. merge-risk: 🚨 availability: 🚨 Merging this PR could cause crashes, hangs, restart loops, stalls, or process outages. merge-risk: 🚨 automation: 🚨 Merging this PR could break CI, automerge, proof capture, label sync, or automation. merge-risk: 🚨 other: 🚨 Merging this PR has meaningful risk outside the owned taxonomy. Each selected label needs support from the diff, current behavior, upgrade path, or discussion; do not sound more certain than the evidence."
     },
     "maturityLabels": {
       "type": "array",
@@ -402,7 +402,7 @@
           }
         }
       },
-      "description": "Concise quantified PR review facts for the top-level Review metrics digest. Emit [] unless a metric is useful, concrete, maintainer-relevant, and grounded in the diff, current behavior, repository policy, or discussion. Do not use vague metric labels or values."
+      "description": "Concise quantified PR review facts for the top-level Review metrics digest. Emit [] unless a metric is useful, concrete, maintainer-relevant, and grounded in the diff, current behavior, repository policy, or discussion. Do not use vague metric labels or values. Do not restate risks, options, or label rationale. For a PR that meaningfully grows the codebase, or when repository policy asks, add a production-vs-test LOC metric (for example production +12, tests +85) whose reason says whether production growth is justified; an unjustified-growth concern goes in risks."
     },
     "labelJustifications": {
       "type": "array",
@@ -413,34 +413,11 @@
         "properties": {
           "label": {
             "type": "string",
-            "enum": [
-              "P0",
-              "P1",
-              "P2",
-              "P3",
-              "impact:data-loss",
-              "impact:security",
-              "impact:crash-loop",
-              "impact:message-loss",
-              "impact:session-state",
-              "impact:auth-provider",
-              "impact:ux-release-blocker",
-              "impact:ux-friction",
-              "impact:other",
-              "maturity:stable",
-              "merge-risk: 🚨 compatibility",
-              "merge-risk: 🚨 message-delivery",
-              "merge-risk: 🚨 session-state",
-              "merge-risk: 🚨 auth-provider",
-              "merge-risk: 🚨 security-boundary",
-              "merge-risk: 🚨 availability",
-              "merge-risk: 🚨 automation",
-              "merge-risk: 🚨 other"
-            ]
+            "description": "One selected triagePriority, impactLabels, maturityLabels, or mergeRiskLabels value, copied exactly."
           },
           "reason": {
             "type": "string",
-            "description": "One concise maintainer-facing sentence explaining why this exact selected label applies."
+            "description": "One concise maintainer-facing sentence explaining why this exact selected label applies. For impact:other or merge-risk: 🚨 other, name the actual impact or risk."
           }
         }
       },
@@ -460,16 +437,17 @@
         "security",
         "unclear"
       ],
-      "description": "Primary item category. Use bug only for broken existing behavior with an already-defined expected behavior; use skill for optional skill bundles or skill-only pull requests; feature/config/product changes are not bugs."
+      "description": "Primary item category. Use bug only for broken existing behavior with an already-defined expected behavior; use skill for optional skill bundles or skill-only pull requests; feature/config/product changes are not bugs. A new capability, config option, flag, mode, provider, workflow, fallback, UX change, or policy choice is feature, skill, support, admin, docs, cleanup, security, or unclear."
     },
     "reproductionStatus": {
       "type": "string",
       "enum": ["reproduced", "source_reproducible", "not_reproduced", "unclear", "not_applicable"],
-      "description": "Structured reproduction state. Use reproduced only when there is a high-confidence current-main reproduction path for a bug."
+      "description": "Structured reproduction state. Use reproduced only when there is a high-confidence current-main reproduction path for a bug. Use source_reproducible when source makes the path clear but no failing run was established; otherwise not_reproduced, unclear, or not_applicable."
     },
     "reproductionConfidence": {
       "type": "string",
-      "enum": ["high", "medium", "low"]
+      "enum": ["high", "medium", "low"],
+      "description": "Confidence that matches the reproduction evidence, not the bug's importance."
     },
     "requiresNewFeature": {
       "type": "boolean",
@@ -485,11 +463,11 @@
     },
     "reproductionAssessment": {
       "type": "string",
-      "description": "Answer this exact question for public review details: Do we have a high-confidence way to reproduce the issue? Include yes/no/unclear/not applicable and the evidence-backed reason."
+      "description": "Answer this exact question for public review details: Do we have a high-confidence way to reproduce the issue? Include yes/no/unclear/not applicable and the evidence-backed reason. Use one or two concise sentences that name the reproduction path, focused check, failing test, current-main verification, or missing data."
     },
     "solutionAssessment": {
       "type": "string",
-      "description": "Answer this exact question for public review details: Is this the best way to solve the issue? Include yes/no/unclear/not applicable and the evidence-backed rationale or safer alternative."
+      "description": "Answer this exact question for public review details: Is this the best way to solve the issue? Include yes/no/unclear/not applicable and the evidence-backed rationale or safer alternative. Use one or two concise sentences that judge whether the implementation, diff, repair, or direction is the narrowest maintainable solution."
     },
     "visionFit": {
       "type": "string",
@@ -520,7 +498,7 @@
     "rootCauseCluster": {
       "type": "object",
       "additionalProperties": false,
-      "description": "Read-only root-cause relationship assessment. This does not dispatch repair, suppress jobs, mutate sibling items, close, or merge anything. Use fixed_by_candidate only when one side of that relationship is a pull request: an issue may be fixed by a canonical PR, or a PR may be the candidate fix for a canonical issue.",
+      "description": "Read-only root-cause relationship assessment. This does not dispatch repair, suppress jobs, mutate sibling items, close, or merge anything. Use fixed_by_candidate only when one side of that relationship is a pull request: an issue may be fixed by a canonical PR, or a PR may be the candidate fix for a canonical issue. Use full same-repository URLs. Set canonicalRef only when evidence supports exactly one canonical item; exclude the current item from members and repeat no refs. Never infer a shared root cause from title similarity, labels, product area, or gitcrawl membership alone. With no established cluster, use independent with low confidence and no members. workClusterRefs stay separate as work-lane context.",
       "required": ["confidence", "canonicalRef", "currentItemRelationship", "summary", "members"],
       "properties": {
         "confidence": {
@@ -614,7 +592,8 @@
             "not_found",
             "conflict_not_applied",
             "unreadable_or_unclear"
-          ]
+          ],
+          "description": "found_applied, found_not_applicable, not_found, conflict_not_applied when guidance conflicted with the review contract, or unreadable_or_unclear when a full read is unconfirmed."
         },
         "summary": {
           "type": "string",
@@ -758,7 +737,7 @@
           },
           "body": {
             "type": "string",
-            "description": "Brief Markdown explanation of the concrete bug and why the author should fix it."
+            "description": "Brief Markdown explanation of the concrete bug and why the author should fix it. Say why current behavior breaks."
           },
           "priority": {
             "type": "integer",
@@ -863,7 +842,8 @@
             "insufficient",
             "not_applicable",
             "override"
-          ]
+          ],
+          "description": "sufficient only when the evidence convincingly shows after-fix real behavior and an observed improved result; missing when absent; mock_only for only tests, mocks, or CI; insufficient when unrelated, unviewable, too weak, or not showing the changed behavior; override when the PR has proof: override; not_applicable for issues, maintainer/bot PRs outside the gate, and docs-only PRs."
         },
         "summary": {
           "type": "string",
@@ -871,7 +851,7 @@
         },
         "evidenceKind": {
           "type": "string",
-          "description": "Preserve the kind of the evidence that proves the changed behavior, not the kind of an unrelated passing smoke. Terminal traces of the real production path are valid proof; no video is required. Developer-ID signing establishes native provenance, not coverage by itself; independent sufficient signed-native before/after evidence remains valid alongside unrelated help output. Tests are supplemental. Use screenshot only for directly visible UI or flow proof. For browser runtime, CSP, CORS, network, or security proof, prefer terminal, logs, live_output, or linked_artifact unless the media visibly includes the diagnostic output.",
+          "description": "Preserve the kind of the evidence that proves the changed behavior, not the kind of an unrelated passing smoke. Terminal traces of the real production path are valid proof; no video is required. Developer-ID signing establishes native provenance, not coverage by itself; independent sufficient signed-native before/after evidence remains valid alongside unrelated help output. Tests are supplemental. Use screenshot only for directly visible UI or flow proof. For browser runtime, CSP, CORS, network, or security proof, prefer terminal, logs, live_output, or linked_artifact unless the media visibly includes the diagnostic output. Use none when proof is absent or mock-only.",
           "enum": [
             "screenshot",
             "recording",
@@ -1044,7 +1024,8 @@
       }
     },
     "closeComment": {
-      "type": "string"
+      "type": "string",
+      "description": "Public close comment in readable Markdown when decision is close: a short opening sentence, a blank line, then concise evidence bullets. Explain the specific close reason, mention that this was a Codex review, credit useful prior discussion, and include concrete evidence such as file paths, release version, commit SHA, or fix timestamp. For under-evidenced work, invite reopening with the missing version, component, reproduction, focused patch, or other deciding evidence. Use an empty string when decision is keep_open."
     },
     "workCandidate": {
       "type": "string",
@@ -1064,7 +1045,7 @@
       "description": "Short routing explanation for why this item is or is not a safe fix-PR candidate. For pull requests, keep required action intent in nextStep, not in this rationale. For issues, retain existing routing or next-action guidance here."
     },
     "nextStep": {
-      "description": "Producer-owned presentation intent for the PR Before merge next step only, never authority to auto-fix or merge. Issues use none and retain next-action guidance in workReason. None means no additional required action (including routine CI or ordinary maintainer look); required states the concrete action, including human-owned blockers even when workCandidate is none or the text contains no/not/but/unless/until. Independent findings, security, proof, risks, decisions, and low-quality remediation remain separate blockers.",
+      "description": "Producer-owned presentation intent for the PR Before merge next step only, never authority to auto-fix or merge. Issues use none and retain next-action guidance in workReason. None means no additional required action (including routine CI or ordinary maintainer look); required states the concrete action, including human-owned blockers even when workCandidate is none or the text contains no/not/but/unless/until. Independent findings, security, proof, risks, decisions, and low-quality remediation remain separate blockers. Final landing approval or a PR-body request for maintainer merge/sign-off is not a required step; when it is the only item left, report readiness with none. A genuine blocker stays required whatever its wording, for example \"No schema change is needed, but repair the retry guard before merge.\" Do not rely on action keywords to communicate intent; keep routing prose in workReason.",
       "anyOf": [
         {
           "type": "object",
