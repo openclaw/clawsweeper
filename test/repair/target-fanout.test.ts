@@ -1402,14 +1402,19 @@ test("audit fanout requires batch-aware storage before advancing the cursor", as
 test("scheduled inventory forwards default and configured GitHub CLI budgets", async (t) => {
   const original = process.env;
   const timeouts: unknown[] = [];
-  t.mock.method(childProcess, "execFileSync", (_file, _args, options) => {
+  t.mock.method(childProcess, "spawnSync", (_file, _args, options) => {
     timeouts.push(options.timeout);
-    return JSON.stringify({
-      full_name: "openclaw/clawhub",
-      has_issues: true,
-      visibility: "public",
-      default_branch: "main",
-    });
+    return {
+      status: 0,
+      signal: null,
+      stderr: "",
+      stdout: JSON.stringify({
+        full_name: "openclaw/clawhub",
+        has_issues: true,
+        visibility: "public",
+        default_branch: "main",
+      }),
+    };
   });
   syncBuiltinESMExports();
   t.after(() => {
