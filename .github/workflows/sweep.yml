@@ -3562,8 +3562,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          filter: blob:none
-          fetch-depth: 0
+          fetch-depth: 1
 
       - uses: ./.github/actions/setup-state
         if: ${{ github.event.schedule == '37 */6 * * *' }}
@@ -3695,8 +3694,7 @@ jobs:
       - uses: actions/checkout@v7
         with:
           path: clawsweeper
-          filter: blob:none
-          fetch-depth: 0
+          fetch-depth: 1
 
       - name: Resolve target repository
         id: target
@@ -4477,8 +4475,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          filter: blob:none
-          fetch-depth: 0
+          fetch-depth: 1
           persist-credentials: false
 
       - uses: ./.github/actions/setup-action-ledger

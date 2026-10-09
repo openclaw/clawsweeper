@@ -7,6 +7,7 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ## 0.3.1 - Unreleased
 
+- Check out only the current ClawSweeper commit in the scheduled review planner, target fanout, and apply-existing jobs. None of their steps reads ClawSweeper Git history. Audit and failed-review retry keep full history because they run `git pull --rebase`.
 - Give authors with live `write`, `maintain`, or `admin` repository permission the same priority (fast) Codex service as OWNER/MEMBER/COLLABORATOR authors in review and repair, even when GitHub redacts their association, and run maintainer-only assist answers on priority service.
 - Move every ClawSweeper Codex lane in the direct API auth modes to `gpt-6.1-sol` with medium reasoning (maintainer-authored items keep fast service; `clawrouter` mode keeps its private alias) and update the pinned Codex CLI to 0.159.3 with the Responses proxy at 0.159.2.
 - Let scheduled normal backfill use the review budget: charge new organic admissions and successors (including reconciled completions) against a 220/hour, 24-burst scheduled budget with bounded organic debt, cap hot intake at 30/hour, and offer `openclaw/openclaw` normal backfill every 20 minutes. Organic work remains unconditional; this is not a total-work cap.
