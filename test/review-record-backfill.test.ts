@@ -633,7 +633,7 @@ test("backfill-review-records --write needs a canonical baseline directory", () 
   }
 });
 
-test("the write job publishes only the written tuples, with the classified digest as its expectation", async () => {
+test("the write job publishes the written tuples with compare-and-swap and keeps a newer review", async () => {
   const workflow = parse(readFileSync(".github/workflows/review-record-backfill.yml", "utf8"));
   assert.equal(workflow.on.workflow_dispatch.inputs.mode.default, "dry-run");
   assert.equal(workflow.jobs["dry-run"].if, "${{ inputs.mode == 'dry-run' }}");
@@ -649,35 +649,66 @@ test("the write job publishes only the written tuples, with the classified diges
   );
 
   const root = mkdtempSync(tmpPrefix);
+  const recordsDir = join(root, "records", "openclaw-openclaw");
+  const reportFor = (number: number) => {
+    const subject = item({ kind: "pull_request", number });
+    return legacyReport(
+      parseDecision(closeDecision({ decision: "keep_open", closeReason: "none" }), subject),
+      subject,
+    );
+  };
+  const lossless = reportFor(11);
+  // A fresh review rewrites 12 after hydration, so the Worker rejects its tuple.
+  const reviewed = withReviewRecord(lowSignalCloseReport({ number: 12 }));
+  const lossy = reportFor(13).replace(
+    "\n  - repo: openclaw/openclaw\n",
+    "\n  - repo: openclaw/openclaw\n  - note: kept by an older writer\n",
+  );
   const requests: Array<Record<string, any>> = [];
   const server = createServer((request, response) => {
     let body = "";
     request.on("data", (chunk) => (body += chunk));
     request.on("end", () => {
-      requests.push({ url: request.url, ...JSON.parse(body) });
+      const mutation = JSON.parse(body);
+      requests.push({ url: request.url, ...mutation });
+      if (mutation.key === "openclaw-openclaw/12") {
+        response.writeHead(409, { "content-type": "application/json" });
+        response.end(
+          JSON.stringify({
+            ok: false,
+            error: "canonical_record_tuple_conflict",
+            current: {
+              key: mutation.key,
+              revision: 7,
+              deliveryId: null,
+              operations: mutation.operations.map((operation: { path: string }) =>
+                operation.path.endsWith("/items/12.md")
+                  ? {
+                      path: operation.path,
+                      expectedDigest: sha256(reviewed),
+                      contentBase64: Buffer.from(reviewed).toString("base64"),
+                    }
+                  : { path: operation.path, expectedDigest: null },
+              ),
+            },
+          }),
+        );
+        return;
+      }
       response.writeHead(200, { "content-type": "application/json" });
       response.end(JSON.stringify({ ok: true, revision: requests.length }));
     });
   });
   await new Promise<void>((done) => server.listen(0, "127.0.0.1", done));
   try {
-    const recordsDir = join(root, "records", "openclaw-openclaw");
     mkdirSync(join(recordsDir, "items"), { recursive: true });
-    const subject = item({ kind: "pull_request", number: 11 });
-    const lossless = legacyReport(
-      parseDecision(closeDecision({ decision: "keep_open", closeReason: "none" }), subject),
-      subject,
-    );
-    const lossy = lossless.replace(
-      "\n  - repo: openclaw/openclaw\n",
-      "\n  - repo: openclaw/openclaw\n  - note: kept by an older writer\n",
-    );
     writeFileSync(join(recordsDir, "items", "11.md"), lossless);
+    writeFileSync(join(recordsDir, "items", "12.md"), reportFor(12));
     writeFileSync(join(recordsDir, "items", "13.md"), lossy);
     symlinkSync(resolve("scripts"), join(root, "scripts"));
     const address = server.address();
     assert.ok(address && typeof address === "object");
-    await promisify(execFile)(
+    const { stdout } = await promisify(execFile)(
       "bash",
       [
         "-c",
@@ -705,11 +736,18 @@ test("the write job publishes only the written tuples, with the classified diges
 
     const written = readFileSync(join(recordsDir, "items", "11.md"), "utf8");
     assert.equal(readReviewRecord(written)?.origin, "backfill");
+    assert.equal(readFileSync(join(recordsDir, "items", "12.md"), "utf8"), reviewed);
     assert.equal(readFileSync(join(recordsDir, "items", "13.md"), "utf8"), lossy);
-    assert.equal(requests.length, 1);
+    assert.match(
+      stdout,
+      /^written=2 changedSinceClassification=0 skippedByCanonicalCompareAndSwap=1 /m,
+    );
+    assert.deepEqual(
+      requests.map((request) => request.key),
+      ["openclaw-openclaw/11", "openclaw-openclaw/12"],
+    );
     const [tuple] = requests;
     assert.equal(tuple!.url, "/internal/state/records/tuples");
-    assert.equal(tuple!.key, "openclaw-openclaw/11");
     assert.match(tuple!.deliveryId, /^record-reconcile:openclaw-openclaw:11:/);
     const operations = Object.fromEntries(
       tuple!.operations.map((operation: Record<string, string | null>) => [

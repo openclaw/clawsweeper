@@ -148,7 +148,14 @@ jobs:
             --write \
             "${limit_args[@]}"
           changed_records="$(jq -c '{changedRecordFiles}' "$output")"
-          publish_reconciled_records "chore: backfill review records" "$changed_records"
+          publish_log=".artifacts/review-record-backfill/$TARGET_SLUG-publish.log"
+          publish_reconciled_records "chore: backfill review records" "$changed_records" 2>&1 | tee "$publish_log"
+          # The Worker rejects a tuple whose report changed since hydration (a fresh
+          # review); the publisher keeps that report and logs "Skipped <tuple>: ...".
+          skipped_by_canonical="$(grep -c '^Skipped ' "$publish_log" || true)"
+          jq -r --argjson skipped "$skipped_by_canonical" \
+            '"written=\(.written) changedSinceClassification=\(.changedSinceClassification) skippedByCanonicalCompareAndSwap=\($skipped) counts=\(.counts | tojson)"' \
+            "$output" | tee -a "${GITHUB_STEP_SUMMARY:-/dev/null}"
 
       - uses: actions/upload-artifact@v7
         if: ${{ always() }}
