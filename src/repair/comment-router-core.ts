@@ -249,11 +249,6 @@ function uniquePositiveIntegers(values: JsonValue): number[] {
   ];
 }
 
-export function automergeChangelogBlockReason({ repo }: LooseRecord): string | null {
-  if (String(repo ?? "").toLowerCase() !== "openclaw/openclaw") return null;
-  return null;
-}
-
 export function automergeGateBlockReason(env: LooseRecord = process.env) {
   if (env.CLAWSWEEPER_ALLOW_MERGE !== "1") return "merge requires CLAWSWEEPER_ALLOW_MERGE=1";
   return "";

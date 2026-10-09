@@ -1,4 +1,3 @@
-import { automergeChangelogBlockReason } from "./comment-router-core.js";
 import type { JsonValue, LooseRecord } from "./json-types.js";
 import { resolveTargetRepoToolchain } from "./target-toolchain-config.js";
 import { sanitizeCheckLink, sanitizeEvidenceList } from "./url-safety.js";
@@ -19,12 +18,6 @@ export function deterministicAutomergeResult({
   if (canonical.state !== "open") return null;
 
   const files = changedFiles(canonical);
-  const changelogReason = automergeChangelogBlockReason({
-    repo,
-    title: canonical.title,
-    files,
-  });
-
   const number = Number(canonical.number);
   if (!Number.isInteger(number) || number <= 0) return null;
   const ref = `#${number}`;
@@ -35,7 +28,7 @@ export function deterministicAutomergeResult({
     `Make PR ${ref} merge-ready for ClawSweeper ${repairMode}.`,
     "Rebase onto latest main, address PR comments and review findings, fix CI/check failures, preserve release-note context, and validate before returning.",
   ].join(" ");
-  const likelyFiles = likelyRepairFiles(files, Boolean(changelogReason));
+  const likelyFiles = likelyRepairFiles(files);
   const failedChecks = failingCheckEvidence(canonical);
   const reviewFindings = reviewFindingEvidence(canonical);
   const evidence = sanitizeEvidenceList(
@@ -49,7 +42,6 @@ export function deterministicAutomergeResult({
       canonical.pull_request?.files_truncated > 0
         ? `Changed files truncated by ${canonical.pull_request.files_truncated}; Codex must inspect live diff before editing`
         : null,
-      changelogReason,
     ].filter(Boolean),
   );
   const reason =
@@ -140,9 +132,8 @@ function surfaceForFile(file: string): string {
   return root || "PR changed surface";
 }
 
-function likelyRepairFiles(files: string[], changelogRequired: boolean): string[] {
+function likelyRepairFiles(files: string[]): string[] {
   const likely = files.slice(0, 80);
-  if (changelogRequired && !likely.includes("CHANGELOG.md")) likely.push("CHANGELOG.md");
   if (likely.length === 0) likely.push("CHANGELOG.md");
   return uniqueStrings(likely);
 }

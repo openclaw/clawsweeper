@@ -10,7 +10,6 @@ import {
   REPAIR_INTENTS,
   autoRepairBlockReason,
   autoRepairHeadKey,
-  automergeChangelogBlockReason,
   automergeRequestedByFromComments,
   automergeRequestedByFromBody,
   automergeGateBlockReason,
@@ -1089,69 +1088,6 @@ test("renderIssueImplementationJob records maintainer build override metadata", 
   assert.match(job.body, /non-code artifact/);
   assert.match(job.body, /do not emit a `new_fix_pr` artifact/);
   assert.doesNotMatch(job.body, /repair_strategy: "new_fix_pr"/);
-});
-
-test("automerge changelog gate does not block user-facing OpenClaw changes", () => {
-  assert.equal(
-    automergeChangelogBlockReason({
-      repo: "openclaw/openclaw",
-      title: "fix(discord): cool down Cloudflare 429 responses",
-      files: [
-        { path: "extensions/discord/src/api.ts" },
-        { path: "extensions/discord/src/api.test.ts" },
-      ],
-    }),
-    null,
-  );
-
-  assert.equal(
-    automergeChangelogBlockReason({
-      repo: "openclaw/openclaw",
-      title: "fix(agents): normalize Copilot replay tool IDs",
-      files: [{ filename: "src/agents/openai-transport-stream.ts" }],
-    }),
-    null,
-  );
-
-  assert.equal(
-    automergeChangelogBlockReason({
-      repo: "openclaw/openclaw",
-      title: "Log Telegram outbound delivery success",
-      files: [
-        { path: "extensions/telegram/src/send.ts" },
-        { path: "extensions/telegram/src/send.test.ts" },
-      ],
-    }),
-    null,
-  );
-
-  assert.equal(
-    automergeChangelogBlockReason({
-      repo: "openclaw/openclaw",
-      title: "fix(discord): cool down Cloudflare 429 responses",
-      files: [{ path: "CHANGELOG.md" }, { path: "extensions/discord/src/api.ts" }],
-    }),
-    null,
-  );
-});
-
-test("automerge changelog gate ignores docs-only and tests-only changes", () => {
-  assert.equal(
-    automergeChangelogBlockReason({
-      repo: "openclaw/openclaw",
-      title: "docs(discord): clarify setup",
-      files: [{ path: "docs/channels/discord.md" }],
-    }),
-    null,
-  );
-  assert.equal(
-    automergeChangelogBlockReason({
-      repo: "openclaw/openclaw",
-      title: "fix(sdk): align test expectation",
-      files: [{ path: "packages/sdk/src/index.test.ts" }],
-    }),
-    null,
-  );
 });
 
 test("renderAutomergeJob documents autofix as repair-only", () => {

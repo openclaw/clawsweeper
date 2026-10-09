@@ -1,0 +1,1 @@
+- Delete the dead `automergeChangelogBlockReason` gate, which always returned null, with its call in the deterministic automerge result and the tests that only pinned it; automerge fix artifacts are unchanged.
