@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import http from "node:http";
+import os from "node:os";
+import path from "node:path";
 import test from "node:test";
+import { parse } from "yaml";
 
 import {
   ISSUE_STATUS_INGEST_TIMEOUT_MS,
@@ -71,14 +75,62 @@ test("issue implementation status collapses an opened PR to a concise terminal c
 });
 
 test("issue build workflow reports an opened PR without calling pending CI blocked", () => {
-  const workflow = fs.readFileSync(".github/workflows/repair-cluster-worker.yml", "utf8");
-
-  assert.match(workflow, /state="PR Opened"/);
-  assert.match(workflow, /The implementation PR is open\. Post-flight status:/);
-  assert.doesNotMatch(
-    workflow,
-    /detail="The automatic implementation worker stopped before all post-flight gates passed:/,
-  );
+  const workflow = parse(
+    fs.readFileSync(".github/workflows/repair-cluster-worker.yml", "utf8"),
+  ) as {
+    jobs: Record<string, { steps?: Array<{ name?: string; run?: string }> }>;
+  };
+  const run = Object.values(workflow.jobs)
+    .flatMap((job) => job.steps ?? [])
+    .find((step) => step.name === "Publish automatic implementation completion status")?.run;
+  assert.ok(run);
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "issue-status-step-"));
+  try {
+    const prUrl = "https://github.com/steipete/example/pull/43";
+    const runDir = path.join(root, ".clawsweeper-repair/runs/run-1");
+    fs.mkdirSync(runDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(runDir, "fix-execution-report.json"),
+      JSON.stringify({ actions: [{ action: "open_fix_pr", status: "opened", pr_url: prUrl }] }),
+    );
+    fs.writeFileSync(
+      path.join(runDir, "post-flight-report.json"),
+      JSON.stringify({
+        actions: [
+          {
+            action: "finalize_fix_pr",
+            source_action: "open_fix_pr",
+            status: "blocked",
+            target: prUrl,
+            reason: "checks are still running: build",
+          },
+        ],
+      }),
+    );
+    const argsPath = path.join(root, "args");
+    const result = spawnSync("bash", ["-c", `pnpm() { printf '%s\\0' "$@" > "$ARGS"; }\n${run}`], {
+      cwd: root,
+      encoding: "utf8",
+      env: {
+        PATH: process.env.PATH,
+        ARGS: argsPath,
+        EXECUTE_OUTCOME: "success",
+        POST_FLIGHT_OUTCOME: "success",
+        CLUSTER_JOB_PATH: "jobs/steipete/inbox/issue-42.md",
+        CLUSTER_RUN_URL: options.runUrl,
+      },
+    });
+    assert.equal(result.status, 0, result.stderr);
+    const args = fs.readFileSync(argsPath, "utf8").split("\0");
+    assert.equal(args[args.indexOf("--state") + 1], "PR Opened");
+    assert.equal(
+      args[args.indexOf("--detail") + 1],
+      "The implementation PR is open. Post-flight status: checks are still running: build",
+    );
+    assert.equal(args[args.indexOf("--pr-url") + 1], prUrl);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test("issue implementation status ingest skips when no token is configured", async () => {

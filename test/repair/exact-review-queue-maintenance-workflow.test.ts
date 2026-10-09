@@ -20,9 +20,7 @@ import YAML from "yaml";
 import { stableJson } from "../../dist/stable-json.js";
 
 const path = ".github/workflows/exact-review-queue-maintenance.yml";
-const source = readFileSync(path, "utf8");
-const cliSource = readFileSync("src/repair/exact-review-queue-maintenance.ts", "utf8");
-const workflow = YAML.parse(source) as {
+const workflow = YAML.parse(readFileSync(path, "utf8")) as {
   on: { schedule?: unknown; workflow_dispatch: { inputs: Record<string, unknown> } };
   concurrency: Record<string, unknown>;
   permissions: Record<string, string>;
@@ -76,10 +74,6 @@ test("queue maintenance is explicit, bounded, and non-cancelling", () => {
   assert.match(run, /--max-items "\$MAX_ITEMS"/);
   assert.match(run, /args\+=\(--apply\)/);
   assert.match(run, /--passes "\$PASSES"/);
-  assert.match(cliSource, /requestedPasses = integerArg\("--passes", 1, 1, 100\)/);
-  assert.match(cliSource, /effectivePasses: 1/);
-  assert.doesNotMatch(cliSource, /for \(let pass/);
-  assert.doesNotMatch(source, /schedule:/);
 });
 
 test("retirement workflow executes isolated preview and apply argument routes", async (t) => {

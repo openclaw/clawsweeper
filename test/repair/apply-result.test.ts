@@ -1220,17 +1220,60 @@ test("repair apply leaves current-main fixed closeout outside coverage proof", (
 });
 
 test("post-flight authorization promotes only candidate-bound closeouts into guarded apply", () => {
-  const source = fs.readFileSync("src/repair/apply-result.ts", "utf8");
+  for (const status of ["authorized", "blocked"]) {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-apply-result-"));
+    try {
+      const paths = writeApplyFixture(tmp, {
+        action: "close_fixed_by_candidate",
+        classification: "fixed_by_candidate",
+      });
+      const result = JSON.parse(fs.readFileSync(paths.resultPath, "utf8"));
+      // Neither target is a job candidate, so a promoted action stops at a guarded apply check.
+      result.actions = [
+        { ...result.actions[0], target: "#303", candidate_fix: "#202", status: "blocked" },
+        { ...result.actions[0], target: "#304", candidate_fix: "#305", status: "blocked" },
+      ];
+      fs.writeFileSync(paths.resultPath, JSON.stringify(result));
+      fs.writeFileSync(
+        path.join(path.dirname(paths.resultPath), "post-flight-report.json"),
+        JSON.stringify({
+          repo: result.repo,
+          cluster_id: result.cluster_id,
+          closure_authorization: {
+            version: 1,
+            status,
+            merged_fixes: [
+              { fix_ref: "#202", merge_commit_sha: "b".repeat(40) },
+              { fix_ref: "#305", merge_commit_sha: "" },
+            ],
+          },
+        }),
+      );
 
-  assert.match(source, /from "\.\/merge-readiness-github\.js"/);
-  assert.doesNotMatch(source, /function (?:fetchPullRequestView|validateResolvedReviewThreads)\(/);
-  assert.match(source, /closure_authorization\?\.status !== "authorized"/);
-  assert.match(source, /mergedFixes\.has\(candidateFix\)/);
-  assert.match(source, /normalizeIssueRef\(entry\.target, result\.repo\) === candidateFix/);
-  assert.doesNotMatch(
-    source,
-    /MERGE_ACTIONS\.has\(entry\.action\) && entry\.status === "executed"\s*\)/,
-  );
+      runApplyResult(paths, { proofDecision: "covered", failIfProofRuns: true });
+
+      const report = JSON.parse(fs.readFileSync(paths.reportPath, "utf8"));
+      const promoted = status === "authorized";
+      assert.deepEqual(
+        report.closure_promotions?.map((entry: { target: number }) => entry.target),
+        promoted ? [303] : undefined,
+      );
+      assert.deepEqual(
+        report.actions.map((action: { status: string; reason: string }) => [
+          action.status,
+          action.reason,
+        ]),
+        [
+          promoted
+            ? ["blocked", "target is not listed in job candidates"]
+            : ["skipped", "action status is blocked"],
+          ["skipped", "action status is blocked"],
+        ],
+      );
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  }
 });
 
 type ApplyFixturePaths = {

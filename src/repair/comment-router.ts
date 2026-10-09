@@ -10,7 +10,6 @@ import {
   AUTOFIX_LABEL,
   AUTOMERGE_BLOCKING_LABEL_NAMES,
   AUTOMERGE_LABEL,
-  CLOSE_PROTECTED_LABEL_NAMES,
   HUMAN_REVIEW_LABEL,
   MANUAL_ONLY_LABEL,
   MERGE_READY_LABEL,
@@ -60,6 +59,8 @@ import {
   isAutomergeMergeStateReady,
   issueImplementationClusterId,
   issueImplementationJobPath,
+  issueImplementationLinkedPrSignal,
+  issueImplementationOverrideBlockerClass,
   pendingRepairLoopOptIns,
   isTrustedStatusCommentAuthor,
   latestTrustedExactHeadReview,
@@ -153,7 +154,6 @@ import {
 } from "./github-cli.js";
 import { GitHubRateLimitError, ghRetryKind, ghRetryWaitMs } from "../github-retry.js";
 import { issueSourceRevisionSha256 } from "./issue-source-guard.js";
-import { hasSecuritySignal } from "./security-signals.js";
 import { compactText } from "./text-utils.js";
 import { escapeRegExp, markdownTopLevelSection } from "../clawsweeper-markdown.js";
 import {
@@ -3034,41 +3034,6 @@ function issueImplementationJobOptions(command: LooseRecord) {
       issueCommentsFor(command.issue_number),
     ),
   };
-}
-
-function issueImplementationOverrideBlockerClass(command: LooseRecord) {
-  if (command.operator_override !== true) return null;
-  const target = command.target ?? {};
-  if (target.kind === "issue" && target.job_path) return "hard";
-  if (target.kind === "issue" && issueImplementationLinkedPrSignal(target)) return "hard";
-  if (target.kind === "issue" && target.state && target.state !== "open") return "hard";
-  if (target.kind === "issue" && target.locked === true) return "hard";
-  const labels = (target.labels ?? []).map((label: JsonValue) => String(label));
-  if (labels.some(isIssueImplementationProtectedLabel)) return "hard";
-  // Only explicit security labels, ClawSweeper security markers and advisory IDs count here.
-  // The review model judges security risk; do not grep the issue prose for risk words.
-  if (hasSecuritySignal({ labels, text: [target.title, target.body] })) return "hard";
-  return "soft";
-}
-
-function issueImplementationLinkedPrSignal(target: LooseRecord) {
-  const candidates = [
-    target.linked_prs,
-    target.linkedPrs,
-    target.existing_prs,
-    target.existingPrs,
-    target.open_prs,
-    target.openPrs,
-    target.pull_request_urls,
-    target.pullRequestUrls,
-  ];
-  return candidates.some((value) => Array.isArray(value) && value.length > 0);
-}
-
-const ISSUE_IMPLEMENTATION_PROTECTED_LABELS = new Set<string>(CLOSE_PROTECTED_LABEL_NAMES);
-
-function isIssueImplementationProtectedLabel(label: string) {
-  return ISSUE_IMPLEMENTATION_PROTECTED_LABELS.has(label.trim().toLowerCase());
 }
 
 function repairJobModeForCommand(command: LooseRecord) {

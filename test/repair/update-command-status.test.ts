@@ -17,7 +17,6 @@ import {
   terminalLockedConversationSkip,
   verifiedTerminalStatusReceipt,
 } from "../../dist/repair/update-command-status.js";
-import { readText } from "../helpers.ts";
 
 function withEnv(values: Record<string, string | undefined>, run: () => void) {
   const previous = new Map<string, string | undefined>();
@@ -467,16 +466,33 @@ test("parseOptions enables the terminal locked-conversation skip only when reque
 });
 
 test("terminal locked-conversation skip covers status selection", () => {
-  const source = readText("src/repair/update-command-status.ts");
-  const selection = source.indexOf("comment = await findCommandStatusComment(options)");
-  const caught = source.indexOf(
-    "recordTerminalLockedConversationSkip(options, lifecycle, error)",
-    selection,
-  );
+  for (const skip of [true, false]) {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-update-command-status-"));
+    try {
+      const result = runUpdateCommandStatus(
+        tmp,
+        [
+          "--repo",
+          "openclaw/openclaw",
+          "--item-number",
+          "81564",
+          "--marker",
+          "<!-- clawsweeper-command-status:81564:automerge:320c867f -->",
+          "--state",
+          "Complete",
+          ...(skip ? ["--locked-conversation-terminal-skip"] : []),
+        ],
+        undefined,
+        [],
+        { GH_TEST_LIST_ERROR: "gh: Issue is locked. (HTTP 403)" },
+      );
 
-  assert.ok(selection >= 0);
-  assert.ok(caught > selection);
-  assert.match(source.slice(selection, caught), /catch \(error\)/);
+      assert.equal(result.status === 0, skip, result.stderr);
+      assert.equal(/^locked_conversation=true$/m.test(result.output), skip);
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  }
 });
 
 function runUpdateCommandStatus(
@@ -489,6 +505,7 @@ function runUpdateCommandStatus(
     user: { login: string };
     updated_at?: string;
   }> = [],
+  extraEnv: Record<string, string> = {},
 ) {
   const ghPath = path.join(tmp, "gh.js");
   const patchPath = path.join(tmp, "patched-comment.json");
@@ -509,6 +526,8 @@ function runUpdateCommandStatus(
       "  const exact = comments.find((candidate) => Number(candidate.id) === commentId);",
       "  if (!exact) { console.error('HTTP 404: Not Found'); process.exit(1); }",
       "  process.stdout.write(JSON.stringify({ ...exact, issue_url: process.env.GH_TEST_ISSUE_URL }));",
+      "} else if (process.env.GH_TEST_LIST_ERROR) {",
+      "  console.error(process.env.GH_TEST_LIST_ERROR); process.exit(1);",
       "} else {",
       "  process.stdout.write(JSON.stringify([comments]));",
       "}",
@@ -535,6 +554,7 @@ function runUpdateCommandStatus(
         GH_TEST_STATUS_PATCH_PATH: patchPath,
         GITHUB_OUTPUT: outputPath,
         CLAWSWEEPER_ACTION_LEDGER_DISABLED: "1",
+        ...extraEnv,
       },
       stdio: ["ignore", "pipe", "pipe"],
     });

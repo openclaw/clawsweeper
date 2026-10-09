@@ -241,7 +241,7 @@ export function fixtureGh() {
   if (args[0] === "run" && args[1] === "download") {
     const bundleDir = args[args.indexOf("--dir") + 1];
     const artifact = args[args.indexOf("--name") + 1];
-    log({ kind: "download", artifact });
+    log({ kind: "download", artifact, token: process.env.GH_TOKEN });
     if (config.mode === "mixed-circuit" && artifact === "exact-review-0") {
       waitFor(join(config.workspace, "second-download-started"));
       console.error("API rate limit exceeded");
@@ -432,6 +432,8 @@ export function runCopyProof({
         GITHUB_WORKSPACE: workspace,
         GITHUB_REPOSITORY: "openclaw/clawsweeper",
         REPO_TOKEN: "synthetic-fixture-token",
+        // Artifact downloads must replace the ambient target token with REPO_TOKEN.
+        GH_TOKEN: "ambient-target-token",
         EXACT_REVIEW_BATCH_MANIFEST: join(workspace, "manifest.json"),
         EXACT_REVIEW_BATCH_PREPARE_CONCURRENCY: String(concurrency),
         GITHUB_OUTPUT: join(root, "github-output"),
@@ -449,6 +451,12 @@ export function runCopyProof({
       .split("\n")
       .filter(Boolean)
       .map(JSON.parse);
+    assert.ok(
+      events
+        .filter((event) => event.kind === "download")
+        .every((event) => event.token === "synthetic-fixture-token"),
+      "artifact downloads must use the repository token",
+    );
     const memberOrder = new Map(items.map((item, index) => [item.itemKey, index]));
     const byMember = (left, right) =>
       memberOrder.get(left.itemKey) - memberOrder.get(right.itemKey);

@@ -40,6 +40,7 @@ import {
   unsponsoredFeatureCloseEnabled,
 } from "../policy-flags.js";
 import { isOlderThanDays } from "../iso-time.js";
+import { hasSecuritySignal } from "./security-signals.js";
 export const REPAIR_INTENTS = new Set([
   "fix_ci",
   "address_review",
@@ -2733,6 +2734,42 @@ export function issueImplementationOverrideAction(
     ? "produce a safe non-code plan, decomposition, or human-review handoff instead of a code PR"
     : "allow one bounded attempt to create or update a reviewable implementation PR";
 }
+
+// An override on an issue with an open PR, a closed or locked issue, a protected label or a
+// security signal can only prepare a handoff. Other overrides may try one PR.
+export function issueImplementationOverrideBlockerClass(
+  command: LooseRecord,
+): IssueImplementationBlockerClass | null {
+  if (command.operator_override !== true) return null;
+  const target = command.target ?? {};
+  if (target.kind === "issue" && target.job_path) return "hard";
+  if (target.kind === "issue" && issueImplementationLinkedPrSignal(target)) return "hard";
+  if (target.kind === "issue" && target.state && target.state !== "open") return "hard";
+  if (target.kind === "issue" && target.locked === true) return "hard";
+  const labels: string[] = (target.labels ?? []).map((label: JsonValue) => String(label));
+  if (labels.some((label) => ISSUE_IMPLEMENTATION_PROTECTED_LABELS.has(label.trim().toLowerCase())))
+    return "hard";
+  // Only explicit security labels, ClawSweeper security markers and advisory IDs count here.
+  // The review model judges security risk; do not grep the issue prose for risk words.
+  if (hasSecuritySignal({ labels, text: [target.title, target.body] })) return "hard";
+  return "soft";
+}
+
+export function issueImplementationLinkedPrSignal(target: LooseRecord) {
+  const candidates = [
+    target.linked_prs,
+    target.linkedPrs,
+    target.existing_prs,
+    target.existingPrs,
+    target.open_prs,
+    target.openPrs,
+    target.pull_request_urls,
+    target.pullRequestUrls,
+  ];
+  return candidates.some((value) => Array.isArray(value) && value.length > 0);
+}
+
+const ISSUE_IMPLEMENTATION_PROTECTED_LABELS = new Set<string>(CLOSE_PROTECTED_LABEL_NAMES);
 
 function renderIssueImplementationRefusal(reason: string, blockerClass: JsonValue) {
   if (blockerClass !== "hard" && blockerClass !== "soft") return `Reason: ${reason}.`;

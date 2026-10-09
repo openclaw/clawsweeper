@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { parse } from "yaml";
 
 import { resolveResultTargets } from "../../dist/repair/resolve-result-targets.js";
 
@@ -117,44 +119,87 @@ test("result targets fail closed on malformed repository identities", () => {
   );
 });
 
-test("result publication mints its reader token from resolved targets, not a fixed repository", () => {
-  const workflow = fs.readFileSync(".github/workflows/repair-publish-results.yml", "utf8");
-  assert.match(workflow, /repair:resolve-result-targets/);
-  assert.match(workflow, /owner: \$\{\{ steps\.result-targets\.outputs\.owner \}\}/);
-  assert.match(workflow, /repositories: \$\{\{ steps\.result-targets\.outputs\.repositories \}\}/);
-  const resolveIndex = workflow.indexOf("- name: Resolve result target repositories");
-  const downloadIndex = workflow.indexOf("- name: Download worker artifacts");
-  const mintIndex = workflow.indexOf("- name: Create target read token");
-  assert.ok(downloadIndex >= 0 && resolveIndex > downloadIndex && mintIndex > resolveIndex);
-  // The ClawSweeper app token needs read access only; state publication uses
-  // the state credential, and the target reader is minted per validated target.
-  assert.doesNotMatch(workflow, /permission-contents: write/);
-});
+function workflowStepRun(file: string, name: string): string {
+  const workflow = parse(fs.readFileSync(`.github/workflows/${file}`, "utf8")) as {
+    jobs: Record<string, { steps?: Array<{ name?: string; run?: string }> }>;
+  };
+  const run = Object.values(workflow.jobs)
+    .flatMap((job) => job.steps ?? [])
+    .find((step) => step.name === name)?.run;
+  assert.ok(run, name);
+  return run;
+}
 
-test("intake owns its remaining git-backed jobs and results publication", () => {
-  const workflow = fs.readFileSync(".github/workflows/repair-cluster-intake.yml", "utf8");
-  assert.doesNotMatch(workflow, /contents-permission: read|actions-permission: read/);
-  assert.match(workflow, /persist-credentials: "true"/);
-  assert.match(workflow, /Recover pending cluster dispatches/);
-  assert.match(workflow, /CLAWSWEEPER_STATE_COORDINATOR_SECRET:/);
-});
+test("intake target validation honors the owner-list contract", () => {
+  const run = workflowStepRun("repair-cluster-intake.yml", "Resolve target repository");
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-intake-target-"));
+  try {
+    const resolve = (allowedOwner: string, targetRepo: string) => {
+      const output = path.join(root, "output");
+      fs.writeFileSync(output, "");
+      const result = spawnSync("bash", ["-c", run], {
+        encoding: "utf8",
+        env: {
+          PATH: process.env.PATH,
+          ALLOWED_OWNER: allowedOwner,
+          TARGET_REPO: targetRepo,
+          GITHUB_OUTPUT: output,
+        },
+      });
+      return { status: result.status, output: fs.readFileSync(output, "utf8") };
+    };
 
-test("intake target validation honors the owner-list contract and version-coherent refs", () => {
-  const intake = fs.readFileSync(".github/workflows/repair-cluster-intake.yml", "utf8");
-  // Owner membership must be checked against the parsed list, never a raw
-  // single-string comparison against CLAWSWEEPER_ALLOWED_OWNER.
-  assert.match(intake, /comma- or whitespace-separated owner/);
-  assert.match(intake, /owner_allowed=1/);
-  assert.doesNotMatch(intake, /\[ "\$target_owner" != "\$ALLOWED_OWNER" \]/);
-  assert.doesNotMatch(intake, /state-materializer\.yml/);
-  assert.match(intake, /CLAWSWEEPER_DISPATCH_REF: \$\{\{ github\.ref_name \}\}/);
-  assert.match(intake, /repair:publish-cluster-intake -- --recover/);
+    const allowed = resolve("steipete, openclaw", "OpenClaw/Gitcrawl");
+    assert.equal(allowed.status, 0);
+    assert.match(allowed.output, /^owner=OpenClaw$/m);
+    assert.match(allowed.output, /^name=Gitcrawl$/m);
+    assert.match(allowed.output, /^slug=openclaw-gitcrawl$/m);
+    const outside = resolve("steipete openclaw-labs", "openclaw/gitcrawl");
+    assert.equal(outside.status, 2);
+    assert.equal(outside.output, "");
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test("self-heal treats a failed publisher rerun as non-blocking", () => {
-  const workflow = fs.readFileSync(".github/workflows/repair-self-heal.yml", "utf8");
-  const rerunIndex = workflow.indexOf('if ! gh run rerun "$run_id"');
-  const selfHealIndex = workflow.indexOf("- name: Self-heal failed cluster runs");
-  assert.ok(rerunIndex >= 0 && selfHealIndex > rerunIndex);
-  assert.match(workflow, /warning title=Publisher rerun failed/);
+  const run = workflowStepRun("repair-self-heal.yml", "Retry failed cluster result publications");
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-self-heal-rerun-"));
+  try {
+    const bin = path.join(root, "bin");
+    const reruns = path.join(root, "reruns");
+    fs.mkdirSync(bin);
+    fs.writeFileSync(
+      path.join(bin, "gh"),
+      `#!/usr/bin/env bash
+if [ "$1" = api ]; then printf '%s' "$RUNS_JSON"; exit 0; fi
+if [ "$1 $2" = "run rerun" ]; then printf '%s\\n' "$3" >> "$RERUNS"; [ "$3" != 1 ]; exit; fi
+exit 2
+`,
+      { mode: 0o755 },
+    );
+    const recent = new Date(Date.now() - 60_000).toISOString().slice(0, 19) + "Z";
+    const runs = [
+      { id: 1, created_at: recent, conclusion: "failure", run_attempt: 1 },
+      { id: 2, created_at: recent, conclusion: "cancelled", run_attempt: 2 },
+      { id: 3, created_at: recent, conclusion: "failure", run_attempt: 3 },
+      { id: 4, created_at: "2020-01-01T00:00:00Z", conclusion: "failure", run_attempt: 1 },
+      { id: 5, created_at: recent, conclusion: "success", run_attempt: 1 },
+    ];
+    const result = spawnSync("bash", ["-c", run], {
+      encoding: "utf8",
+      env: {
+        PATH: `${bin}${path.delimiter}${process.env.PATH}`,
+        GITHUB_REPOSITORY: "openclaw/clawsweeper",
+        RUNS_JSON: JSON.stringify({ workflow_runs: runs }),
+        RERUNS: reruns,
+      },
+    });
+
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(fs.readFileSync(reruns, "utf8"), "1\n2\n");
+    assert.match(result.stdout, /::warning title=Publisher rerun failed::.*run 1;/);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
 });

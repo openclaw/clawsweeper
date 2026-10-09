@@ -822,29 +822,43 @@ globalThis.fetch = async (input, init) => {
   );
 });
 
-test("target fanout uses explicit inventory and central metadata tokens in Actions", () => {
-  const source = readFileSync("src/repair/target-fanout.ts", "utf8");
-  const inventoryStart = source.indexOf("function inventoryAccess(");
-  const inventoryEnd = source.indexOf("function publicInventoryEnv(", inventoryStart);
-  const metadataStart = source.indexOf("function hostedTargetMetadataToken(");
-  const metadataEnd = source.indexOf("function dispatchEnv(", metadataStart);
-
-  assert.notEqual(inventoryStart, -1);
-  assert.notEqual(inventoryEnd, -1);
-  assert.notEqual(metadataStart, -1);
-  assert.notEqual(metadataEnd, -1);
-  const inventoryHelper = source.slice(inventoryStart, inventoryEnd);
-  assert.match(inventoryHelper, /CLAWSWEEPER_INVENTORY_TOKEN_/);
-  assert.match(inventoryHelper, /if \(process\.env\.GITHUB_ACTIONS === "true"\) return null;/);
-  assert.match(inventoryHelper, /kind: "installation"/);
-  assert.match(inventoryHelper, /kind: "public"/);
-  const metadataHelper = source.slice(metadataStart, metadataEnd);
-  assert.match(metadataHelper, /CLAWSWEEPER_HOSTED_TARGET_METADATA_TOKEN/);
-  assert.match(
-    metadataHelper,
-    /if \(explicit \|\| process\.env\.GITHUB_ACTIONS === "true"\) return explicit;/,
-  );
-  assert.doesNotMatch(source, /CLAWSWEEPER_TARGET_METADATA_TOKEN/);
+test("target fanout never probes with the dispatch token in Actions", async () => {
+  const names = [
+    "GITHUB_ACTIONS",
+    "CLAWSWEEPER_DISPATCH_TOKEN",
+    "CLAWSWEEPER_HOSTED_TARGET_METADATA_TOKEN",
+    "CLAWSWEEPER_PUBLIC_INVENTORY_TOKEN",
+    "CLAWSWEEPER_TARGET_METADATA_TOKEN",
+  ];
+  const previous = names.map((name) => process.env[name]);
+  // Only the explicit metadata token may probe; the retired variable name grants nothing.
+  const values = ["true", "dispatch-token", undefined, undefined, "retired-metadata"];
+  names.forEach((name, index) => {
+    if (values[index] === undefined) delete process.env[name];
+    else process.env[name] = values[index];
+  });
+  let probes = 0;
+  try {
+    await assert.rejects(
+      admitSelectedRepositories(
+        [{ targetRepo: "openclaw/clawhub", defaultBranch: "main", visibility: "PUBLIC" }],
+        {
+          policy: config.hostedTargetPolicy,
+          reader: async () => {
+            probes += 1;
+            return Response.json({ full_name: "openclaw/clawhub", visibility: "public" });
+          },
+        },
+      ),
+      /retryable for openclaw\/clawhub/,
+    );
+  } finally {
+    names.forEach((name, index) => {
+      if (previous[index] === undefined) delete process.env[name];
+      else process.env[name] = previous[index];
+    });
+  }
+  assert.equal(probes, 0);
 });
 
 test("target fanout selection advances cursor with wraparound", () => {

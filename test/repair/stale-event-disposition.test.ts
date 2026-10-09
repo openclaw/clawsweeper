@@ -42,22 +42,51 @@ test("stale event disposition output lines match the workflow contract", () => {
   assert.ok(closed.includes("requeue_latest=false"));
 });
 
-test("publish-event-result exits terminally on a stale preflight instead of throwing", () => {
-  // The workflow classifier treats an unset disposition as failure -> infinite
-  // requeue of the same stale artifact (2026-07-16 poison cohort). Guard the
-  // contract at the source level.
-  const source = readFileSync("src/repair/publish-event-result.ts", "utf8");
-  const preflightBlock = source.slice(
-    source.indexOf('preflightResult === "remote-closed"'),
-    source.indexOf("const actions = readApplyActions"),
-  );
-  assert.ok(preflightBlock.includes("writeStaleEventDispositionOutputs"));
-  assert.match(preflightBlock, /if \(options\.batchMutationOutput\)\s+writeBatchMutationResult/);
-  assert.doesNotMatch(
-    preflightBlock,
-    /options\.batchMutationOutput && preflightResult !== "missing"/,
-  );
-  assert.ok(!preflightBlock.includes("throw new Error"));
+test("publisher exits terminally when the stale preflight finds no record tuple", () => {
+  // An unset disposition makes the workflow requeue the same stale artifact forever.
+  const root = mkdtempSync(join(tmpdir(), "stale-preflight-"));
+  try {
+    const work = join(root, "work");
+    const code = join(root, "code");
+    mkdirSync(join(work, "artifacts/event"), { recursive: true });
+    mkdirSync(join(code, "dist"), { recursive: true });
+    writeFileSync(join(work, "artifacts/event/74.md"), "---\nnumber: 74\n---\nReport\n");
+    // apply-artifacts writes no record, so the preflight snapshot is missing.
+    writeFileSync(
+      join(code, "dist/clawsweeper.js"),
+      `if (process.argv[2] !== "apply-artifacts") {
+  console.error("apply-decisions reached");
+  process.exitCode = 23;
+}
+`,
+    );
+    const output = join(root, "output");
+    const mutation = join(work, ".artifacts/result.json");
+    const result = spawnSync(process.execPath, [resolve("dist/repair/publish-event-result.js")], {
+      env: {
+        PATH: process.env.PATH,
+        TARGET_REPO: "openclaw/openclaw",
+        ITEM_NUMBER: "74",
+        EXACT_REVIEW_WORK_ROOT: work,
+        CLAWSWEEPER_CODE_ROOT: code,
+        EXACT_REVIEW_BATCH_MUTATION_OUTPUT: ".artifacts/result.json",
+        GITHUB_OUTPUT: output,
+      },
+      encoding: "utf8",
+      timeout: 10_000,
+    });
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+    assert.doesNotMatch(result.stderr, /apply-decisions reached/);
+    const outputs = readFileSync(output, "utf8");
+    assert.match(outputs, /^terminal_missing=true$/m);
+    assert.match(outputs, /^requeue_latest=false$/m);
+    assert.deepEqual(JSON.parse(readFileSync(mutation, "utf8")), {
+      kind: "superseded",
+      disposition: { requeueLatestExpected: false },
+    });
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 for (const artifactDir of ["artifacts/event", ".artifacts/exact-review-bundle/review"]) {
