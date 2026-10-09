@@ -308,33 +308,50 @@ export function prefetchReviewHistory(options: {
     for (const entry of deletions === null ? [] : parseRawHistory(deletions))
       if (entry.oldOid)
         renameSources.set(entry.commit, [...(renameSources.get(entry.commit) ?? []), entry]);
+    const named = new Map(
+      creations.map((creation) => {
+        const sources = renameSources.get(creation.commit) ?? [];
+        const name = creation.path.slice(creation.path.lastIndexOf("/") + 1);
+        return [
+          creation,
+          sources.length <= MAX_RENAME_SOURCES
+            ? sources
+            : sources.filter(
+                (source) =>
+                  source.oldOid === creation.oid ||
+                  source.path.slice(source.path.lastIndexOf("/") + 1) === name,
+              ),
+        ];
+      }),
+    );
+    // One batched check without lazy fetch: installed candidates cost nothing.
+    const installed = localBlobs(git, [
+      ...new Set(
+        [...named.values()].flatMap((sources) =>
+          sources.map((source) => source.oldOid!).filter((oid) => !selected.has(oid)),
+        ),
+      ),
+    ]).sizes;
     const candidates = new Map<
       (typeof creations)[number],
       { sources: RawEntry[]; unchecked: boolean }
     >();
     for (const creation of creations) {
       const sources = renameSources.get(creation.commit) ?? [];
-      const name = creation.path.slice(creation.path.lastIndexOf("/") + 1);
-      const named =
-        sources.length <= MAX_RENAME_SOURCES
-          ? sources
-          : sources.filter(
-              (source) =>
-                source.oldOid === creation.oid ||
-                source.path.slice(source.path.lastIndexOf("/") + 1) === name,
-            );
       const kept: RawEntry[] = [];
-      for (const source of named) {
+      for (const source of named.get(creation)!) {
         if (selected.has(source.oldOid!)) {
           kept.push(source);
           continue;
         }
-        budgetExhausted ||=
-          queued >= MAX_OBJECTS || estimatedBytes + UNKNOWN_BLOB_BYTES > MAX_ESTIMATED_BYTES;
-        if (budgetExhausted) break;
+        if (!installed.has(source.oldOid!)) {
+          budgetExhausted ||=
+            queued >= MAX_OBJECTS || estimatedBytes + UNKNOWN_BLOB_BYTES > MAX_ESTIMATED_BYTES;
+          if (budgetExhausted) break;
+          queued += 1;
+          estimatedBytes += UNKNOWN_BLOB_BYTES;
+        }
         selected.add(source.oldOid!);
-        queued += 1;
-        estimatedBytes += UNKNOWN_BLOB_BYTES;
         kept.push(source);
       }
       // Unchecked candidates may hide the earlier name unless a kept one is it.

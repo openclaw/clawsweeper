@@ -283,6 +283,79 @@ for (const [deletions, parents] of [
   });
 }
 
+test("installed rename candidates do not spend the fetch budget", () => {
+  const zero = "0".repeat(40);
+  const date = "2026-03-04T00:00:00Z";
+  // 26 files, each created in its own commit that deleted 200 installed files:
+  // 5,200 local candidates, more than the 5,000-blob budget.
+  const files = Array.from({ length: 26 }, (_, index) => ({
+    path: `src/f${index}.ts`,
+    commit: oid("c", index),
+    created: oid("a", index),
+    deleted: Array.from({ length: 200 }, (_, n) => oid("b", index * 1000 + n)),
+  }));
+  // The last file was renamed from a predecessor that is not installed.
+  const renamed = { path: "src/z.ts", commit: oid("c", 99), created: oid("a", 99) };
+  const predecessor = oid("f", 1);
+  const present = new Set([
+    ...files.flatMap(({ created, deleted }) => [created, ...deleted]),
+    renamed.created,
+  ]);
+  const fetched: string[][] = [];
+  const header = (commit: string) => `\x01${commit} ${oid("d", 0)}\0${date}\0\n`;
+  const coverage = prefetchReviewHistory({
+    git: (args, input) => {
+      if (args[0] === "diff")
+        return [...files, renamed]
+          .map(({ path, created }) => `:000000 100644 ${zero} ${created} A\0${path}\0`)
+          .join("");
+      if (args.includes("--diff-filter=D"))
+        return [
+          ...files.map(
+            ({ commit, deleted }, index) =>
+              header(commit) +
+              deleted
+                .map((id, n) => `:100644 000000 ${id} ${zero} D\0old/${index}-${n}.ts\0`)
+                .join(""),
+          ),
+          `${header(renamed.commit)}:100644 000000 ${predecessor} ${zero} D\0src/zold.ts\0`,
+        ].join("");
+      if (args[1] === "log") {
+        if (args.includes("src/zold.ts")) return "";
+        return [...files, renamed]
+          .map(
+            ({ path, commit, created }) =>
+              `${header(commit)}:000000 100644 ${zero} ${created} A\0${path}\0`,
+          )
+          .join("");
+      }
+      if (args[1] === "diff-tree")
+        return args.includes(renamed.commit)
+          ? `:100644 100644 ${predecessor} ${renamed.created} R090\0src/zold.ts\0src/z.ts\0`
+          : "";
+      const ids = input!.trim().split("\n");
+      if (args[0] === "rev-list")
+        return ids.map((id) => (present.has(id) ? id : `?${id}`)).join("\n");
+      if (args[0] === "cat-file") return ids.map((id) => `${id} blob 100`).join("\n");
+      return null;
+    },
+    fetchBlobs: (ids) => {
+      fetched.push(ids);
+      for (const id of ids) present.add(id);
+    },
+    mergeBaseSha: oid("e", 0),
+    headSha: oid("e", 1),
+    tips: [],
+    deadlineAt: Date.now() + 60_000,
+  });
+  assert.deepEqual(fetched, [[predecessor]]);
+  assert.deepEqual(coverage.renames, [
+    { from: "src/zold.ts", to: "src/z.ts", commit: renamed.commit },
+  ]);
+  assert.deepEqual(coverage.truncated, []);
+  assert.equal(coverage.status, "complete", coverage.reason);
+});
+
 test("lazy fetch is disabled only behind the allowlisted proxy, and the prompt says so per runner", () => {
   const coverage: ReviewHistoryCoverage = {
     status: "complete",
