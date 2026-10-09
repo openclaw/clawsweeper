@@ -399,11 +399,18 @@ test("assist generation never holds a write token and the publisher never runs a
   }
 
   const publish = jobs.publish?.steps ?? [];
-  const index = (name: string) => publish.findIndex((step) => step.name === name);
-  const writeToken = index("Create narrow GitHub App write token");
-  assert.ok(index("Resolve validated target repository") < writeToken);
-  assert.ok(index("Validate untrusted assist artifact") < writeToken);
-  assert.ok(writeToken < index("Revalidate and publish assist comment"));
+  const order = [
+    "Resolve validated target repository",
+    "Validate untrusted assist artifact",
+    "Create narrow GitHub App write token",
+    "Revalidate and publish assist comment",
+  ].map((name) => publish.findIndex((step) => step.name === name));
+  assert.ok(order[0]! >= 0, order.join(","));
+  assert.deepEqual(
+    order,
+    [...order].sort((left, right) => left - right),
+  );
+  const writeToken = order[2]!;
   for (const [position, step] of publish.entries()) {
     assert.doesNotMatch(
       JSON.stringify(step),
