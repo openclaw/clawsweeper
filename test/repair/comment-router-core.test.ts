@@ -1332,16 +1332,16 @@ test("automerge job writes keep maintainer-chosen modes and record only maintain
       { repairMode, authorization },
     );
   }
-  // A trusted bot verdict keeps the existing mode and records no authorization.
-  for (const existing of ["autofix", "automerge"]) {
+  // A trusted bot command keeps the existing mode and records no authorization,
+  // even when its text asks for the other mode.
+  for (const [existing, intent] of [
+    ["autofix", "clawsweeper_auto_repair"],
+    ["autofix", "automerge"],
+    ["automerge", "autofix"],
+  ]) {
     assert.deepEqual(
       automergeJobRepairPlan(
-        {
-          ...maintainer,
-          trusted_bot: true,
-          intent: "clawsweeper_auto_repair",
-          target: { labels: [] },
-        },
+        { ...maintainer, trusted_bot: true, intent, target: { labels: [] } },
         existing,
       ),
       { repairMode: existing, authorization: undefined },
