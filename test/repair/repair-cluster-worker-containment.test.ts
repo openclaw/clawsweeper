@@ -4,49 +4,21 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { parse as parseYaml } from "yaml";
 
-const workflow = fs.readFileSync(".github/workflows/repair-cluster-worker.yml", "utf8");
-
-test("repair target containment preflight runs the enforced worker only for fix execution", () => {
-  const preflightIndex = workflow.indexOf("- name: Verify Linux validation containment");
-  const selfHealIndex = workflow.indexOf("- name: Verify self-heal head", preflightIndex - 1_000);
-  const publishStatusIndex = workflow.indexOf(
-    "- name: Publish automatic implementation build status",
-  );
-  const executeFixIndex = workflow.indexOf("- name: Execute credited fix artifact");
-
-  assert.ok(preflightIndex > selfHealIndex);
-  assert.ok(publishStatusIndex > preflightIndex);
-  assert.ok(executeFixIndex > publishStatusIndex);
-
-  const preflight = workflow.slice(preflightIndex, publishStatusIndex);
-  const executionCondition =
-    "steps.check_job.outputs.job_exists == '1' && steps.self_heal_head.outputs.matched != 'false' && env.CLAWSWEEPER_ALLOW_EXECUTE == '1' && env.CLAWSWEEPER_ALLOW_FIX_PR == '1'";
-  assert.match(preflight, new RegExp(escapeRegExp(`if: \${{ ${executionCondition} }}`)));
-  assert.match(preflight, /run: pnpm run repair:containment-smoke/);
-  assert.doesNotMatch(preflight, /node --input-type=module|spawnSync|CONTAINMENT_PROBE_ROOT/);
-  assert.doesNotMatch(preflight, /continue-on-error/);
-});
+// Parsed workflow YAML. A missing job or step fails the step lookup below.
+const workflow = parseYaml(
+  fs.readFileSync(".github/workflows/repair-cluster-worker.yml", "utf8"),
+) as {
+  env: Record<string, string>;
+  jobs: { cluster: { steps: Array<{ name?: string; run?: string }> } };
+};
 
 test("repair target containment worker loads from the isolated work directory", () => {
   const work = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-containment-entry-"));
-  const workerPath = path.resolve("dist/repair/contained-command-worker.js");
 
   try {
-    const worker = spawnSync(process.execPath, [workerPath], {
-      cwd: work,
-      env: { ...process.env, NODE_TEST_CONTEXT: "child-v8" },
-      input: JSON.stringify({
-        args: ["-e", 'process.stdout.write("loaded")'],
-        command: process.execPath,
-        cwd: work,
-        isolateNetwork: true,
-        maxBuffer: 1024,
-        writableRoots: [work],
-        windowsVerbatimArguments: false,
-      }),
-      encoding: "utf8",
-    });
+    const worker = runWorker(work, { ...process.env, NODE_TEST_CONTEXT: "child-v8" });
 
     assert.equal(worker.status, 0, worker.stderr);
     assert.deepEqual(JSON.parse(worker.stdout), {
@@ -61,116 +33,112 @@ test("repair target containment worker loads from the isolated work directory", 
   }
 });
 
-test("closure-only apply does not depend on target containment or target tool setup", () => {
-  const preflightIndex = workflow.indexOf("- name: Verify Linux validation containment");
-  const publishStatusIndex = workflow.indexOf(
-    "- name: Publish automatic implementation build status",
-  );
-  const applyIndex = workflow.indexOf("- name: Apply safe closure actions");
+test(
+  "validation worker refuses to run commands without Linux containment",
+  { skip: process.platform === "linux" },
+  () => {
+    const work = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-containment-platform-"));
+    const { NODE_TEST_CONTEXT: _testContext, ...env } = process.env;
 
-  const preflight = workflow.slice(preflightIndex, publishStatusIndex);
-  const apply = workflow.slice(applyIndex, workflow.indexOf("- name:", applyIndex + 1));
+    try {
+      const worker = runWorker(work, env);
 
-  assert.match(preflight, /CLAWSWEEPER_ALLOW_FIX_PR == '1'/);
-  assert.match(apply, /CLAWSWEEPER_ALLOW_EXECUTE == '1'/);
-  assert.doesNotMatch(apply, /CLAWSWEEPER_ALLOW_FIX_PR/);
+      assert.notEqual(worker.status, 0);
+      assert.match(worker.stderr, /validation process containment requires Linux/);
+      assert.doesNotMatch(worker.stdout, /loaded/);
+    } finally {
+      fs.rmSync(work, { recursive: true, force: true });
+    }
+  },
+);
+
+test("planning forwards the selected model and downgrades modes unless execution is allowed", () => {
+  assert.equal(workflow.env.CLUSTER_WORKER_MODEL, "${{ inputs.model }}");
+  for (const [mode, allowExecute, effectiveMode] of [
+    ["execute", "0", "plan"],
+    ["autonomous", "1", "autonomous"],
+  ]) {
+    const result = runClusterStep("Run worker", {
+      CLAWSWEEPER_ALLOW_EXECUTE: allowExecute,
+      CLUSTER_JOB_PATH: "jobs/openclaw/inbox/issue-openclaw-openclaw-1.md",
+      CLUSTER_WORKER_DRY_RUN: "false",
+      CLUSTER_WORKER_MODE: mode,
+      CLUSTER_WORKER_MODEL: "selected-model",
+    });
+
+    assert.equal(result.output, `effective_mode=${effectiveMode}\n`);
+    assert.deepEqual(result.pnpm, [
+      "run",
+      "repair:worker",
+      "--",
+      "jobs/openclaw/inbox/issue-openclaw-openclaw-1.md",
+      "--mode",
+      effectiveMode,
+      "--model",
+      "selected-model",
+    ]);
+  }
 });
 
-test("privileged execution requires the captured execution gate", () => {
-  const executeJobIndex = workflow.indexOf("\n  execute:");
-  const executeJob = workflow.slice(executeJobIndex);
+test("plan-only planning completes the session without starting execution", () => {
+  const complete = (effectiveMode: string) =>
+    runClusterStep("Record planning completion", {
+      CLUSTER_WORKER_DRY_RUN: "false",
+      EFFECTIVE_MODE: effectiveMode,
+    }).pnpm;
 
-  assert.ok(executeJobIndex >= 0);
-  assert.match(executeJob, /if:.*needs\.cluster\.outputs\.allow_execute == '1'/);
-  assert.match(
-    workflow,
-    /description: "Linux runner label for fix\/apply execution work with delegated namespaces, recursive mount hardening, and optional Landlock defense in depth"/,
-  );
+  assert.deepEqual(complete("plan").slice(0, 6), [
+    "run",
+    "repair:action-session",
+    "--",
+    "update",
+    "--state",
+    "completed",
+  ]);
+  assert.ok(complete("plan").includes("plan_complete"));
+  assert.deepEqual(complete("execute").slice(4, 6), ["--state", "running"]);
 });
 
-test("initial planning forwards the selected model like requeues", () => {
-  const runWorkerIndex = workflow.indexOf("- name: Run worker");
-  const reviewWorkerIndex = workflow.indexOf("- name: Review worker result", runWorkerIndex);
-  const runWorker = workflow.slice(runWorkerIndex, reviewWorkerIndex);
+function runWorker(work: string, env: NodeJS.ProcessEnv) {
+  return spawnSync(process.execPath, [path.resolve("dist/repair/contained-command-worker.js")], {
+    cwd: work,
+    env,
+    input: JSON.stringify({
+      args: ["-e", 'process.stdout.write("loaded")'],
+      command: process.execPath,
+      cwd: work,
+      isolateNetwork: true,
+      maxBuffer: 1024,
+      writableRoots: [work],
+      windowsVerbatimArguments: false,
+    }),
+    encoding: "utf8",
+  });
+}
 
-  assert.ok(runWorkerIndex >= 0);
-  assert.ok(reviewWorkerIndex > runWorkerIndex);
-  assert.match(workflow, /CLUSTER_WORKER_MODEL: \$\{\{ inputs\.model \}\}/);
-  assert.match(runWorker, /--model "\$CLUSTER_WORKER_MODEL"/);
-  assert.match(workflow.slice(reviewWorkerIndex), /--model "\$CLUSTER_WORKER_MODEL"/);
-});
-
-test("issue PR execution uses Sol with the ordinary item profile before author routing", () => {
-  const executeJobIndex = workflow.indexOf("\n  execute:");
-  const planningJob = workflow.slice(0, executeJobIndex);
-  const executeJob = workflow.slice(executeJobIndex);
-
-  assert.ok(executeJobIndex >= 0);
-  assert.match(
-    planningJob,
-    /CLAWSWEEPER_INTERNAL_MODEL: \$\{\{ vars\.CLAWSWEEPER_CODEX_AUTH_MODE != 'clawrouter' && secrets\.CLAWSWEEPER_MODEL \|\| '' \}\}/,
-  );
-  assert.doesNotMatch(executeJob, /CLAWSWEEPER_CODEX_REASONING_EFFORT/);
-  assert.match(
-    executeJob,
-    /CLAWSWEEPER_INTERNAL_MODEL: \$\{\{ vars\.CLAWSWEEPER_CODEX_AUTH_MODE != 'clawrouter' && \(contains\(inputs\.job, '\/inbox\/issue-'\) && \(vars\.CLAWSWEEPER_FIX_PR_MODEL \|\| 'gpt-6\.1-sol'\) \|\| secrets\.CLAWSWEEPER_MODEL\) \|\| '' \}\}/,
-  );
-  assert.match(
-    executeJob,
-    /CLAWSWEEPER_OPENCLAW_MODEL: \$\{\{ contains\(inputs\.job, '\/inbox\/issue-'\) && format\('openai\/\{0\}', vars\.CLAWSWEEPER_FIX_PR_MODEL \|\| 'gpt-6\.1-sol'\) \|\| secrets\.CLAWSWEEPER_OPENCLAW_MODEL \}\}/,
-  );
-  assert.match(
-    fs.readFileSync("src/repair/execute-fix-artifact.ts", "utf8"),
-    /canonicalItemCodexProfile\(job\.frontmatter, clusterPlan\)/,
-  );
-});
-
-test("issue and pull-request workers hydrate only their canonical item in both jobs", () => {
-  const focusedHydration = workflow.match(
-    /records-item-number: \$\{\{ steps\.target\.outputs\.records_item_number \|\| '' \}\}/g,
-  );
-  const targetSlugs = workflow.match(
-    /records-repo-slugs: \$\{\{ steps\.target\.outputs\.target_slug \|\| '' \}\}/g,
-  );
-
-  assert.equal(focusedHydration?.length, 2);
-  assert.equal(targetSlugs?.length, 2);
-  assert.equal((workflow.match(/bash scripts\/resolve-repair-job-target\.sh/g) || []).length, 2);
-
-  const resolver = fs.readFileSync("scripts/resolve-repair-job-target.sh", "utf8");
-  assert.match(resolver, /"issue-\$\{owner_slug\}-"\*\.md/);
-  assert.match(resolver, /"automerge-\$\{owner_slug\}-"\*\.md/);
-  assert.match(resolver, /echo "records_item_number=\$item_number"/);
-  assert.match(resolver, /echo "target_slug=\$\{owner_slug\}-\$\{repository\}"/);
-});
-
-test("execution-gate downgrades complete the planning session without starting execution", () => {
-  const runWorkerIndex = workflow.indexOf("- name: Run worker");
-  const completionIndex = workflow.indexOf("- name: Record planning completion", runWorkerIndex);
-  const executeIndex = workflow.indexOf("\n  execute:", completionIndex);
-
-  assert.ok(runWorkerIndex >= 0);
-  assert.ok(completionIndex > runWorkerIndex);
-  assert.ok(executeIndex > completionIndex);
-  assert.match(workflow.slice(runWorkerIndex, completionIndex), /effective_mode=\$worker_mode/);
-  assert.match(
-    workflow.slice(completionIndex, executeIndex),
-    /EFFECTIVE_MODE: \$\{\{ steps\.run_worker\.outputs\.effective_mode \}\}[\s\S]*?"\$EFFECTIVE_MODE" == "plan"/,
-  );
-  assert.match(
-    workflow.slice(executeIndex),
-    /needs\.cluster\.outputs\.effective_mode == 'execute'.*needs\.cluster\.outputs\.effective_mode == 'autonomous'/,
-  );
-});
-
-test("snapshot-less self-heal retries default to plan mode", () => {
-  const source = fs.readFileSync("src/repair/self-heal-failed-runs.ts", "utf8");
-
-  assert.match(source, /record\.effective_mode/);
-  assert.match(source, /: "plan"\),?\n\s*};/);
-  assert.doesNotMatch(source, /record\.mode \?\? job\.frontmatter\.mode/);
-});
-
-function escapeRegExp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+function runClusterStep(name: string, env: Record<string, string>) {
+  const step = workflow.jobs.cluster.steps.find((candidate) => candidate.name === name);
+  assert.ok(step?.run, name);
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-cluster-step-"));
+  const output = path.join(root, "github-output");
+  const pnpmArgs = path.join(root, "pnpm-args");
+  fs.writeFileSync(output, "");
+  fs.writeFileSync(pnpmArgs, "");
+  try {
+    const result = spawnSync(
+      "bash",
+      ["-eu", "-c", `pnpm() { printf '%s\\n' "$@" >> "$PNPM_ARGS"; }\n${step.run}`],
+      {
+        encoding: "utf8",
+        env: { ...process.env, ...env, GITHUB_OUTPUT: output, PNPM_ARGS: pnpmArgs },
+      },
+    );
+    assert.equal(result.status, 0, result.stderr);
+    return {
+      output: fs.readFileSync(output, "utf8"),
+      pnpm: fs.readFileSync(pnpmArgs, "utf8").trimEnd().split("\n"),
+    };
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
 }

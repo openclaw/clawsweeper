@@ -440,6 +440,10 @@ test("repair jobs hydrate exactly their issue or pull-request record", () => {
         hydrate?.with?.["records-item-number"],
         "${{ steps.target.outputs.records_item_number || '' }}",
       );
+      assert.equal(
+        hydrate?.with?.["records-repo-slugs"],
+        "${{ steps.target.outputs.target_slug || '' }}",
+      );
     }
 
     const issue = resolveTarget("jobs/openclaw/inbox/issue-openclaw-openclaw-98276.md");

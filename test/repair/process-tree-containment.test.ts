@@ -7,90 +7,106 @@ import test from "node:test";
 
 import { LINUX_SUBREAPER_SCRIPT } from "../../dist/repair/process-tree-containment.js";
 import { parseContainmentProtocol } from "../../dist/repair/contained-command-worker.js";
-import { readText } from "../helpers.ts";
 
-test("Linux validation containment uses an externally owned PID namespace and subreaper", () => {
-  const worker = readText(path.join(process.cwd(), "src/repair/contained-command-worker.ts"));
-  const sandbox = readText(path.join(process.cwd(), "src/repair/contained-command-sandbox.ts"));
-  const containment = readText(path.join(process.cwd(), "src/repair/process-tree-containment.ts"));
+const MS_RDONLY = 1;
+const MS_NOSUID = 2;
+const MS_NODEV = 4;
+const MS_NOEXEC = 8;
+const MS_REMOUNT = 32;
+const MS_BIND = 4096;
+const MS_REC = 16384;
+const MS_PRIVATE = 262144;
 
-  assert.match(containment, /PR_SET_CHILD_SUBREAPER/);
-  assert.match(containment, /os\.waitpid\(-1, os\.WNOHANG\)/);
-  assert.match(containment, /if pid != primary_pid:\s+background_pids\.add\(pid\)/);
-  assert.match(containment, /if pid != os\.getpid\(\)/);
-  assert.match(containment, /background_pids\.update\(pid for pid in remaining_pids/);
-  assert.match(containment, /reap_adopted_children\(child\.pid, background_pids, child\)/);
-  assert.match(containment, /return_code = child\.poll\(\)/);
-  assert.match(containment, /except ChildProcessError/);
-  assert.match(containment, /struct\.pack\("=Qi", allowed_access, path_fd\)/);
-  assert.match(containment, /struct\.pack\(\s+"=QQQQ"/);
-  assert.match(containment, /checked_mount\(\s+"tmpfs",\s+sandbox_root/);
-  assert.match(containment, /checked_mount\(\s+"tmpfs",\s+root_path\(sandbox_root, "\/run"\)/);
-  assert.match(containment, /set_mount_readonly\(sandbox_root, True\)/);
-  assert.match(containment, /set_mount_readonly\(target, False, recursive\)/);
-  assert.match(containment, /if error\.errno != errno\.ENOSYS:/);
-  assert.match(containment, /legacy_set_mount_readonly\(path, readonly, recursive\)/);
-  assert.match(
-    containment,
-    /MS_BIND \| MS_REMOUNT \| preserved_flags \| \(MS_RDONLY if readonly else 0\)/,
-  );
-  assert.match(containment, /\("nosuid", MS_NOSUID\)/);
-  assert.match(containment, /\("nodev", MS_NODEV\)/);
-  assert.match(containment, /\("noexec", MS_NOEXEC\)/);
-  assert.match(containment, /open\("\/proc\/self\/mountinfo"/);
-  assert.match(containment, /os\.chroot\(sandbox_root\)/);
-  assert.match(containment, /validation working directory is outside writable roots/);
-  assert.match(containment, /validation writable root is unsafe/);
-  assert.doesNotMatch(containment, /checked_mount\("\/", "\/", MS_BIND/);
-  assert.match(containment, /bring_up_loopback\(\)/);
-  assert.match(containment, /error\.errno not in \{errno\.ENOSYS, errno\.EOPNOTSUPP\}/);
-  assert.match(containment, /if abi is None:\s+return/);
-  assert.match(containment, /ruleset_fd = checked_syscall/);
-  assert.match(containment, /PR_CAPBSET_DROP/);
-  assert.match(containment, /PR_CAP_AMBIENT_CLEAR_ALL/);
-  assert.match(containment, /libc\.capset/);
-  assert.match(containment, /validation capabilities were not fully dropped/);
-  assert.match(containment, /empty_deadline = time\.monotonic\(\) \+ 0\.1/);
-  assert.match(containment, /if time\.monotonic\(\) >= empty_deadline/);
-  assert.doesNotMatch(containment, /_pack_|_layout_/);
-  assert.doesNotMatch(containment, /setInterval|Get-CimInstance|ProcessTreeTracker/);
-  assert.match(worker, /LINUX_SUBREAPER_SCRIPT/);
-  assert.match(worker, /command: "\/usr\/bin\/unshare"/);
-  assert.match(worker, /"--map-root-user"/);
-  assert.match(worker, /"--mount"/);
-  assert.match(worker, /input\.isolateNetwork \? \["--net"\] : \[\]/);
-  assert.match(worker, /"--pid"/);
-  assert.match(worker, /"--mount-proc"/);
-  assert.match(worker, /"--kill-child=SIGKILL"/);
-  assert.match(worker, /createTrustedSandboxRoot\(input\.writableRoots\)/);
-  assert.match(worker, /\.\/contained-command-sandbox\.js/);
-  assert.match(sandbox, /candidates = \["\/var\/tmp", "\/tmp", os\.tmpdir\(\)\]/);
-  assert.match(sandbox, /validation sandbox requires a trusted root outside writable roots/);
-  assert.match(worker, /sandboxRoot!/);
-  assert.match(worker, /fs\.rmSync\(sandboxRoot/);
-  assert.match(worker, /await reapProcessGroup\(child\.pid\)/);
-  assert.match(worker, /validation process containment requires Linux/);
-  assert.doesNotMatch(worker, /ProcessTreeTracker/);
+test("namespace init applies every fail-closed stage before it spawns the target", () => {
+  assert.deepEqual(runLandlockScenario("main_ok"), {
+    events: [
+      "subreaper",
+      "loopback",
+      "filesystem",
+      "landlock",
+      "capabilities",
+      ["spawn", ["/bin/echo", "ok"], true],
+      {
+        backgroundProcesses: 0,
+        capabilitySummary: { landlock: "abi-3", mount_readonly: "native" },
+        signal: null,
+        status: 0,
+      },
+    ],
+  });
+  assert.deepEqual(runLandlockScenario("main_landlock_fails"), {
+    events: [
+      "subreaper",
+      "loopback",
+      "filesystem",
+      "landlock",
+      { containmentError: { errno: 1, stage: "landlock", syscall: null } },
+      ["exit", 125],
+    ],
+  });
 });
 
-test("Linux validation containment applies every fail-closed stage before target spawn", () => {
-  const containment = readText(path.join(process.cwd(), "src/repair/process-tree-containment.ts"));
-  const main = containment.slice(containment.indexOf("def main():"));
+test("filesystem isolation exposes only writable roots and read-only runtime paths", () => {
+  const plan = runLandlockScenario("filesystem_plan").events as unknown[][];
+  const binds = plan.filter((event) => event[0] === "bind").map((event) => event[1]);
+  const readonly = plan.filter((event) => event[0] === "readonly");
+  const lastBind = plan.findLastIndex((event) => event[0] === "bind");
 
-  const loopback = main.indexOf('run_stage("namespace_setup", bring_up_loopback)');
-  const filesystem = main.indexOf("isolate_filesystem(");
-  const landlock = main.indexOf("restrict_filesystem_writes(canonical_roots)");
-  const capabilities = main.indexOf('run_stage("capability_drop", drop_capabilities)');
-  const spawn = main.indexOf("subprocess.Popen(command, close_fds=True)");
+  assert.deepEqual(plan[0], ["mount", null, "/", MS_REC | MS_PRIVATE, null]);
+  assert.deepEqual(
+    plan.filter((event) => event[4] === "tmpfs").map((event) => [event[2], event[3]]),
+    [
+      ["<sandbox>", MS_NOSUID | MS_NODEV],
+      ["<sandbox>/dev", MS_NOSUID],
+      ["<sandbox>/run", MS_NOSUID | MS_NODEV],
+    ],
+  );
+  assert.deepEqual(binds.slice(0, 3), ["<work>", "/usr", "/proc"]);
+  assert.ok(binds.slice(3).every((source) => String(source).startsWith("/dev/")));
+  assert.deepEqual(readonly.slice(0, 4), [
+    ["readonly", "<sandbox>", true],
+    ["readonly", "<sandbox><work>", false],
+    ["readonly", "<sandbox>/usr", true],
+    ["readonly", "<sandbox>/proc", true],
+  ]);
+  assert.ok(plan.indexOf(readonly[0]!) > lastBind);
+  assert.deepEqual(plan.slice(-2), [
+    ["chroot", "<sandbox>"],
+    ["chdir", "<work>"],
+  ]);
 
-  assert.ok(loopback >= 0);
-  assert.ok(filesystem > loopback);
-  assert.ok(landlock > filesystem);
-  assert.ok(capabilities > landlock);
-  assert.ok(spawn > capabilities);
-  assert.match(containment, /forbidden_exact_roots = \{/);
-  assert.match(containment, /"\/run",/);
-  assert.match(containment, /os\.symlink\("\/run", root_path\(sandbox_root, "\/var\/run"\)\)/);
+  assert.deepEqual(runLandlockScenario("filesystem_cwd_outside"), {
+    error: "validation working directory is outside writable roots",
+    events: [],
+  });
+  assert.deepEqual(runLandlockScenario("filesystem_host_root"), {
+    error: "validation writable root is unsafe: /",
+    events: [],
+  });
+  assert.deepEqual(runLandlockScenario("filesystem_root_contains_sandbox"), {
+    error: "validation writable root is unsafe: <base>",
+    events: [],
+  });
+});
+
+test("legacy read-only remounts keep the existing nosuid, nodev and noexec flags", () => {
+  assert.deepEqual(runLandlockScenario("legacy_flags"), {
+    mounts: [
+      ["/sandbox/work", MS_BIND | MS_REMOUNT | MS_NOEXEC | MS_RDONLY],
+      ["/sandbox", MS_BIND | MS_REMOUNT | MS_NOSUID | MS_NODEV | MS_RDONLY],
+    ],
+  });
+});
+
+test("capability drop clears every set and fails closed when one stays", () => {
+  assert.deepEqual(runLandlockScenario("capabilities_retained"), {
+    calls: [[24, 0, 0, 0, 0], [24, 1, 0, 0, 0], [47, 4, 0, 0, 0], ["capset"]],
+    error: "validation capabilities were not fully dropped",
+  });
+});
+
+test("namespace init counts every reaped child except the target as a background process", () => {
+  assert.deepEqual(runLandlockScenario("reap_exited"), { done: false, tracked: [25] });
 });
 
 test("embedded containment runtime imports without executing its production entrypoint", () => {
@@ -252,11 +268,11 @@ import ctypes
 import importlib.util
 import io
 import json
+import os
 import sys
 
 module_path, scenario = sys.argv[1:]
 if sys.platform != "linux":
-    import os
     errno.ENOSYS = 38
     if not hasattr(os, "O_PATH"):
         os.O_PATH = 0
@@ -277,6 +293,112 @@ module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
 if scenario == "import":
     print(json.dumps({"status": "imported"}, separators=(",", ":")))
+    raise SystemExit(0)
+
+if scenario.startswith("main_"):
+    work = os.path.realpath(os.path.dirname(module_path))
+    events = []
+    def failing_stage(name, result=None):
+        def run(*_arguments):
+            events.append(name)
+            if scenario == "main_" + name + "_fails":
+                raise module.ContainmentStageError(name, OSError(errno.EPERM, name))
+            return result
+        return run
+    class Child:
+        pid = 2
+        def poll(self):
+            return 0
+    def spawn(command, close_fds):
+        events.append(["spawn", command, close_fds])
+        return Child()
+    module.libc.prctl = lambda option, *_arguments: events.append(
+        "subreaper" if option == module.PR_SET_CHILD_SUBREAPER else "prctl"
+    ) or 0
+    module.signal.signal = lambda *_arguments: None
+    module.bring_up_loopback = failing_stage("loopback")
+    module.isolate_filesystem = failing_stage("filesystem", "native")
+    module.restrict_filesystem_writes = failing_stage("landlock", "abi-3")
+    module.drop_capabilities = failing_stage("capabilities")
+    module.subprocess.Popen = spawn
+    module.reap_adopted_children = lambda *_arguments: None
+    module.terminate_and_reap_descendants = lambda *_arguments: 0
+    module.write_protocol = events.append
+    module.sys.exit = lambda code: events.append(["exit", code])
+    module.sys.argv = ["init", json.dumps([work]), "true", work, "/bin/echo", "ok"]
+    os.chdir(work)
+    module.run_entrypoint()
+    print(json.dumps({"events": events}, separators=(",", ":")))
+    raise SystemExit(0)
+
+if scenario.startswith("filesystem_"):
+    base = os.path.realpath(os.path.dirname(module_path))
+    work = os.path.join(base, "work")
+    sandbox = os.path.join(base, "sandbox")
+    os.makedirs(work)
+    os.makedirs(sandbox)
+    events = []
+    def mount(source, target, flags, filesystem_type=None, _data=None):
+        events.append(["mount", source, target, flags, filesystem_type])
+    def bind(sandbox_root, source, target_path=None):
+        events.append(["bind", source])
+        return module.root_path(sandbox_root, source), True
+    def readonly(target, value, _recursive=True):
+        events.append(["readonly", target, value])
+        return "native"
+    module.checked_mount = mount
+    module.bind_mount = bind
+    module.set_mount_readonly = readonly
+    module.normalized_runtime_paths = lambda *_arguments: ["/usr"]
+    module.os.chroot = lambda path: events.append(["chroot", path])
+    module.os.chdir = lambda path: events.append(["chdir", path])
+    roots = {"filesystem_host_root": ["/"], "filesystem_root_contains_sandbox": [base]}
+    cwd = base if scenario == "filesystem_cwd_outside" else work
+    try:
+        module.isolate_filesystem(roots.get(scenario, [work]), sandbox, cwd, ["/bin/true"])
+        payload = {"events": events}
+    except RuntimeError as error:
+        payload = {"error": str(error), "events": events}
+    output = json.dumps(payload, separators=(",", ":"))
+    print(output.replace(sandbox, "<sandbox>").replace(work, "<work>").replace(base, "<base>"))
+    raise SystemExit(0)
+
+if scenario == "legacy_flags":
+    mounts = []
+    module.open = lambda *_arguments, **_options: io.StringIO(
+        "1 0 0:1 / /sandbox rw,nosuid,nodev - tmpfs tmpfs rw\n"
+        "2 1 0:2 / /sandbox/work rw,noexec - ext4 /dev/sda rw\n"
+        "3 0 0:3 / /other rw,nosuid - ext4 /dev/sdb rw\n"
+    )
+    module.checked_mount = lambda _source, target, flags: mounts.append([target, flags])
+    module.legacy_set_mount_readonly("/sandbox", True, True)
+    print(json.dumps({"mounts": mounts}, separators=(",", ":")))
+    raise SystemExit(0)
+
+if scenario == "capabilities_retained":
+    calls = []
+    status = "".join(
+        name + ":\t" + ("0000000000000400" if name == "CapEff" else "0" * 16) + "\n"
+        for name in ("CapInh", "CapPrm", "CapEff", "CapBnd", "CapAmb")
+    )
+    files = {"/proc/sys/kernel/cap_last_cap": "1\n", "/proc/self/status": status}
+    module.open = lambda path, *_arguments, **_options: io.StringIO(files[path])
+    module.libc.prctl = lambda *arguments: calls.append(list(arguments)) or 0
+    module.libc.capset = lambda *_arguments: calls.append(["capset"]) or 0
+    try:
+        module.drop_capabilities()
+        payload = {"calls": calls, "status": "ok"}
+    except RuntimeError as error:
+        payload = {"calls": calls, "error": str(error)}
+    print(json.dumps(payload, separators=(",", ":")))
+    raise SystemExit(0)
+
+if scenario == "reap_exited":
+    results = [(25, 0), (20, 0), (0, 0)]
+    module.os.waitpid = lambda *_arguments: results.pop(0)
+    tracked = set()
+    done = module.reap_exited_children(20, tracked)
+    print(json.dumps({"done": done, "tracked": sorted(tracked)}, separators=(",", ":")))
     raise SystemExit(0)
 
 if scenario in {"process_rows_esrch", "process_rows_eacces"}:

@@ -16,12 +16,21 @@ type Step = {
   run?: string;
   env?: Record<string, string>;
   with?: Record<string, string>;
+  "continue-on-error"?: unknown;
 };
 type Workflow = {
   env?: Record<string, string>;
   concurrency?: { group: string; "cancel-in-progress": boolean };
-  on: { workflow_dispatch?: { inputs: Record<string, { default?: string }> } };
-  jobs: Record<string, { if?: string; env?: Record<string, string>; steps?: Step[] }>;
+  on: {
+    workflow_dispatch?: { inputs: Record<string, { default?: string }> };
+    push?: { paths?: string[] } | null;
+    pull_request?: { paths?: string[] } | null;
+  };
+  permissions?: unknown;
+  jobs: Record<
+    string,
+    { if?: string; env?: Record<string, string>; "continue-on-error"?: unknown; steps?: Step[] }
+  >;
 };
 
 function workflow(name: string): Workflow {
@@ -289,4 +298,94 @@ test("production code launches Codex only through the agent runner", () => {
     return directLaunch.test(source) || (!runnerFile && /\brunCodexProcess\b/.test(source));
   });
   assert.deepEqual(offenders, []);
+});
+
+// test/repair containment and E2E workflow guards
+
+// Linux behavior tests skip on runners without delegated namespaces, so pin the namespace set.
+test("validation worker enters fresh user, mount, PID and network namespaces", () => {
+  const worker = readText("src/repair/contained-command-worker.ts");
+  for (const flag of [
+    "--user",
+    "--map-root-user",
+    "--mount",
+    "--pid",
+    "--fork",
+    "--mount-proc",
+    "--kill-child=SIGKILL",
+  ]) {
+    assert.ok(worker.includes(`"${flag}"`), flag);
+  }
+  assert.match(worker, /input\.isolateNetwork \? \["--net"\] : \[\]/);
+});
+
+// Fix execution runs target code, so the containment preflight must pass first under the same gate.
+test("containment preflight gates every fix execution", () => {
+  const steps = workflow("repair-cluster-worker.yml").jobs.execute!.steps ?? [];
+  const preflight = steps.findIndex((step) => step.run === "pnpm run repair:containment-smoke");
+  const execute = steps.findIndex((step) => step.name === "Execute credited fix artifact");
+  assert.ok(preflight >= 0 && preflight < execute);
+  assert.equal(steps[preflight]!.if, steps[execute]!.if);
+  assert.equal(steps[preflight]!["continue-on-error"], undefined);
+});
+
+// A plan-only or unauthorized planning run must never reach the execute job.
+test("execute job runs only after allowed execute or autonomous planning", () => {
+  const condition = workflow("repair-cluster-worker.yml").jobs.execute!.if ?? "";
+  assert.ok(condition.includes("needs.cluster.outputs.allow_execute == '1'"));
+  assert.ok(
+    condition.includes(
+      "(needs.cluster.outputs.effective_mode == 'execute' || needs.cluster.outputs.effective_mode == 'autonomous')",
+    ),
+  );
+});
+
+// The smoke is the only pre-merge run of real containment on a production-class runner.
+test("containment smoke runs the compiled preflight for every containment change", () => {
+  const document = workflow("repair-containment-smoke.yml");
+  const job = document.jobs["containment-smoke"]!;
+  const jobSteps = job.steps ?? [];
+  assert.deepEqual(
+    jobSteps.filter((step) => step.run).map((step) => step.run),
+    ["pnpm run repair:containment-smoke"],
+  );
+  assert.ok(jobSteps.every((step) => step["continue-on-error"] === undefined));
+  assert.equal(job["continue-on-error"], undefined);
+  for (const source of [
+    "src/repair/contained-command-sandbox.ts",
+    "src/repair/contained-command-worker.ts",
+    "src/repair/containment-preflight.ts",
+    "src/repair/process-tree-containment.ts",
+  ]) {
+    assert.ok(document.on.push?.paths?.includes(source), source);
+    assert.ok(document.on.pull_request?.paths?.includes(source), source);
+  }
+});
+
+// E2E workflows run repository code on shared runners and must never hold write tokens or secrets.
+test("E2E workflows are read-only and skip fork pull requests", () => {
+  for (const name of ["automerge-e2e.yml", "repair-containment-smoke.yml"]) {
+    const document = workflow(name);
+    assert.deepEqual(document.permissions, { contents: "read" }, name);
+    for (const job of Object.values(document.jobs)) {
+      assert.match(
+        job.if ?? "",
+        /github\.event\.pull_request\.head\.repo\.full_name == github\.repository/,
+      );
+      const checkout = job.steps?.find((step) => step.uses?.startsWith("actions/checkout@"));
+      assert.equal(checkout?.with?.["persist-credentials"], false, name);
+    }
+    assert.doesNotMatch(readText(`.github/workflows/${name}`), /secrets\.|GH_TOKEN|app-token/);
+  }
+});
+
+// The automerge E2E image must come from repository source, not from a registry or a stale cache.
+test("automerge E2E builds its base image from the repository Dockerfile", () => {
+  const job = workflow("automerge-e2e.yml").jobs["automerge-e2e"]!;
+  assert.doesNotMatch(job.env?.AUTOMERGE_E2E_BASE_IMAGE ?? "", /\//);
+  const cache = job.steps?.find((step) => step.uses?.startsWith("actions/cache@"));
+  assert.match(String(cache?.with?.key), /hashFiles\('test\/e2e\/automerge\/Dockerfile\.base'\)/);
+  const runs = (job.steps ?? []).map((step) => step.run ?? "").join("\n");
+  assert.match(runs, /docker build \\\n\s+--file test\/e2e\/automerge\/Dockerfile\.base/);
+  assert.doesNotMatch(runs, /docker pull/);
 });
