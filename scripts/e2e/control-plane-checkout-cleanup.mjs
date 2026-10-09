@@ -84,7 +84,6 @@ for (const [jobName, stepName, endpoint] of [
           LEASE_REVISION: "1",
           CLAIM_GENERATION: "1",
           PRIMARY_OUTCOME: "failure",
-          OUTCOME: "failure",
           COMPLETION_KIND: "retryable_failure",
           REASON_CODE: "unknown_failure",
           DIRECT_PUBLICATION_ACCEPTED: "false",
