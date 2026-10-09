@@ -2,13 +2,15 @@ import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
-
+import { frontMatterValue, sectionValue } from "../dist/report-front-matter.js";
+import { readReviewRecord } from "../dist/review-record.js";
 import {
   promotionGhMock,
   reportWithSyncedReviewComment,
   runApplyDecisionsForTest,
   tmpPrefix,
   withMockGh,
+  withReviewRecord,
   workPlanCandidateReport,
 } from "./helpers.ts";
 
@@ -101,7 +103,7 @@ function runBudgetApply(options: RunOptions = {}) {
     const reportPath = join(root, "apply-report.json");
     mkdirSync(itemsDir, { recursive: true });
     mkdirSync(plansDir, { recursive: true });
-    const source = budgetCandidateReport(options);
+    const source = withReviewRecord(budgetCandidateReport(options));
     const reason = options.proposed ? "author_pr_budget_exceeded" : "none";
     const synced = reportWithSyncedReviewComment(source, 321, reason);
     writeFileSync(join(itemsDir, "321.md"), synced.report, "utf8");
@@ -224,6 +226,15 @@ test("author PR-budget apply promotes and closes an over-budget idle D-rated PR"
   assert.match(
     result.markdown,
     /reopened once the author is under budget or when real proof is added/,
+  );
+  const record = readReviewRecord(result.markdown)?.decision;
+  assert.equal(record?.decision, "close");
+  assert.equal(record?.closeReason, frontMatterValue(result.markdown, "close_reason"));
+  assert.equal(record?.summary, sectionValue(result.markdown, "Summary"));
+  assert.equal(record?.bestSolution, sectionValue(result.markdown, "Best Possible Solution"));
+  assert.deepEqual(
+    record?.evidence.map((entry) => entry.label),
+    ["live author budget", "lowest-signal classification", "inactivity floor"],
   );
 });
 
