@@ -1,0 +1,1 @@
+- Update the pinned Codex CLI to 0.162.1 (the Responses proxy stays at 0.159.2). The `codex exec --json` events, `--output-schema` and `--output-last-message` behavior, the `clawsweeper-review` permission profile, and the `gpt-6.1-sol` catalog entry stay the same.
