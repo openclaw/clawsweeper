@@ -34,7 +34,10 @@ test("state hydration retains canonical defaults with an explicit operational-on
   assert.equal(setups.length, 20, "setup-state site count is an audited invariant");
   assert.deepEqual(
     setups.filter(({ step }) => step.with?.["hydrate-records"] === "false").map(({ site }) => site),
-    [".github/workflows/repair-publish-results.yml:publish"],
+    [
+      ".github/workflows/repair-publish-results.yml:publish",
+      ".github/workflows/repair-self-heal.yml:self-heal",
+    ],
   );
   for (const { site, step } of setups) {
     if (step.with?.["hydrate-records"] === "false") {

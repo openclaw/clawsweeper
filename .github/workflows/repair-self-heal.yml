@@ -72,11 +72,13 @@ jobs:
           client-id: ${{ env.CLAWSWEEPER_APP_CLIENT_ID }}
           private-key: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
 
+      # Self-heal reads repair jobs and run results from Git state and live
+      # Actions runs; it never reads canonical review records, so it opts out
+      # of the fleet-wide record export.
       - uses: ./.github/actions/setup-state
         with:
           coordinator-url: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
-          records-url: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
-          records-secret: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
+          hydrate-records: "false"
           hydrate-state-blobs: "false"
           token: ${{ steps.state-token.outputs.token }}
 
