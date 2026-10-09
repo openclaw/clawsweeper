@@ -15,8 +15,8 @@ interface ReviewedFixture {
 export type ScanSourceRole = "base" | "head" | "index" | "tree" | "worktree";
 
 export type ReviewedAttribution = readonly [
-  detectorType: 17 | 895 | 899 | 968,
-  detectorName: "URI" | "MongoDB" | "FTP" | "Postgres",
+  detectorType: 17 | 895 | 899 | 938 | 968,
+  detectorName: "URI" | "MongoDB" | "FTP" | "Privacy" | "Postgres",
   decoder: "PLAIN" | "HTML" | "ESCAPED_UNICODE" | "BASE64",
   rawSha256: string,
   rawV2Sha256: string,
@@ -279,6 +279,9 @@ const OCE_KUBERNETES_COMPUTE_SOURCE_SHA256S = [
 
 // oxfmt-ignore
 const REVIEWED_ATTRIBUTIONS: readonly ReviewedAttribution[] = [
+  // Ship #19: CLI-generated event_id; Privacy's keyword window crosses the reason field.
+  // Bind the reviewed occurrence and complete blob, never arbitrary event IDs.
+  [938, "Privacy", "PLAIN", "6e31751daf97832583d6877d6f79a17eb9b74188d3916d1668d136af36a9ea45", "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "ed7bda1f092e8919442f3acb5c403917f2f0decbf3e7b50d1b7ce3d67bc0ddc7", ".grilltrack/events.jsonl", "100644", ["e9b2c64042139b1ed6400eac42b95796d10ad9782120cb88227c6f0655835d1c"]],
   // Retain the removed OCE fixtures only in source blobs already held by open OCE PRs.
   [17, "URI", "PLAIN", "fde443718383531e2fc52a8324fc644f1c45c1c766afd11da028368831e0f457", "fde443718383531e2fc52a8324fc644f1c45c1c766afd11da028368831e0f457", "6c17481ec8ebdfc543923950c2959e58568b8ad6daddabf26ce870e7a5d69274", "tests/conformance/kubernetes-compute.test.mjs", "100644", OCE_KUBERNETES_COMPUTE_SOURCE_SHA256S],
   [17, "URI", "PLAIN", "18e186031a746783f43d3002e63b775b6e28acef5d60825a82c418ad3e603b5b", "18e186031a746783f43d3002e63b775b6e28acef5d60825a82c418ad3e603b5b", "fb50a8d4a7885dd59938f6421133018054740ef7a91dd01b62b9c109bb4c471c", "tests/conformance/kubernetes-compute.test.mjs", "100644", OCE_KUBERNETES_COMPUTE_SOURCE_SHA256S],
@@ -448,7 +451,13 @@ const REVIEWED_ATTRIBUTIONS: readonly ReviewedAttribution[] = [
 ];
 
 const sha256Pattern = /^[0-9a-f]{64}$/;
-const detectorNames = { 17: "URI", 895: "MongoDB", 899: "FTP", 968: "Postgres" } as const;
+const detectorNames = {
+  17: "URI",
+  895: "MongoDB",
+  899: "FTP",
+  938: "Privacy",
+  968: "Postgres",
+} as const;
 
 function validateReviewedAttributions(rows: readonly ReviewedAttribution[]): void {
   const seen = new Set<string>();
@@ -463,6 +472,15 @@ function validateReviewedAttributions(rows: readonly ReviewedAttribution[]): voi
       !lines.length ||
       ![raw, rawV2, ...lines].every((digest) => sha256Pattern.test(digest)) ||
       !(
+        (source === ".grilltrack/events.jsonl" &&
+          detectorType === 938 &&
+          detectorName === "Privacy" &&
+          decoder === "PLAIN" &&
+          rawV2 === sha256("") &&
+          lines.length === 1 &&
+          Array.isArray(sourceSha256s) &&
+          sourceSha256s.length > 0 &&
+          sourceSha256s.every((digest) => sha256Pattern.test(digest))) ||
         (source === "src/plugin-sdk/browser-subpaths.test.ts" &&
           detectorType === 17 &&
           detectorName === "URI" &&
@@ -482,6 +500,7 @@ function validateReviewedAttributions(rows: readonly ReviewedAttribution[]): voi
           (decoder === "PLAIN" || decoder === "HTML")) ||
         (source === "src/logging/redact.test.ts" &&
           detectorType !== 899 &&
+          detectorType !== 938 &&
           (decoder === "PLAIN" || decoder === "ESCAPED_UNICODE" || decoder === "HTML")) ||
         (source === "src/infra/git-source.test.ts" &&
           detectorType === 17 &&
@@ -978,18 +997,23 @@ function classifyReviewedFindings(
             source === "src/infra/git-source.test.ts" &&
             mode === "100644",
         );
+      const reviewedEventUuid =
+        finding.DetectorType === 938 &&
+        finding.DecoderName === "PLAIN" &&
+        exactCandidates.some(([type]) => type === 938);
+      const patchLiteral = reviewedEventUuid ? raw : rawV2;
       if (
-        finding.DetectorType !== 17 ||
-        !rawV2 ||
+        (finding.DetectorType !== 17 && !reviewedEventUuid) ||
+        !patchLiteral ||
         (finding.DecoderName !== "PLAIN" &&
           finding.DecoderName !== "HTML" &&
           (finding.DecoderName !== "ESCAPED_UNICODE" || !exactGitSourceEscapedAttribution))
       )
         return refuse("material_not_reviewed");
       // Decoder labels do not reconstruct source: this fixture still needs literal witnesses.
-      const witnessKey = `${file}:${rawV2Digest}`;
+      const witnessKey = `${file}:${reviewedEventUuid ? rawDigest : rawV2Digest}`;
       const witnesses =
-        patchWitnesses.get(witnessKey) ?? resolvePatchWitnesses(staged, rawV2, inputs);
+        patchWitnesses.get(witnessKey) ?? resolvePatchWitnesses(staged, patchLiteral, inputs);
       if (!witnesses) return refuse("material_not_reviewed");
       patchWitnesses.set(witnessKey, witnesses);
       if (witnesses.some((witness) => usesExactPolicy(inputs.get(witness.file)))) {
@@ -1070,8 +1094,10 @@ function classifyReviewedFindings(
       if (
         finding.SourceType !== 15 ||
         finding.Verified !== false ||
-        typeof finding.VerificationError !== "string" ||
-        !finding.VerificationError ||
+        !(
+          (finding.DetectorType === 938 && finding.VerificationError === undefined) ||
+          (typeof finding.VerificationError === "string" && !!finding.VerificationError)
+        ) ||
         finding.StructuredData !== null
       )
         return refuse("finding_not_reviewed");
@@ -1107,6 +1133,15 @@ function classifyReviewedFindings(
           parts.host !== uri.host ||
           parts.username !== uri.username ||
           parts.password !== uri.password
+        )
+          return refuse("metadata_mismatch");
+      } else if (detectorType === 938) {
+        if (
+          rawV2 !== "" ||
+          !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(raw) ||
+          !exactStringRecord(parts, ["key"]) ||
+          parts?.key !== raw ||
+          finding.ExtraData !== null
         )
           return refuse("metadata_mismatch");
       } else if (detectorType === 895 || detectorType === 899) {
@@ -1148,7 +1183,12 @@ function classifyReviewedFindings(
         typeof line === "string" ? [line] : line,
       );
       const maxOccurrences = Math.max(...expectedDigests.map((lines) => lines.length));
-      const sourceLiteral = detectorType === 17 ? rawV2 : detectorType === 899 ? raw : undefined;
+      const sourceLiteral =
+        detectorType === 17
+          ? rawV2
+          : detectorType === 899 || detectorType === 938
+            ? raw
+            : undefined;
       while (lineStart <= text.length) {
         const newline = text.indexOf("\n", lineStart);
         const lineEnd = newline === -1 ? text.length : newline;
@@ -1157,6 +1197,15 @@ function classifyReviewedFindings(
           let occurrence = line.indexOf(sourceLiteral);
           while (occurrence !== -1) {
             if (witnessDigests.length >= maxOccurrences) return refuse("literal_mismatch");
+            if (detectorType === 938) {
+              try {
+                const event = object(JSON.parse(line));
+                if (event?.event_id !== raw || event.action !== "decision_reopened")
+                  return refuse("literal_mismatch");
+              } catch {
+                return refuse("literal_mismatch");
+              }
+            }
             witnessDigests.push(sha256(line));
             occurrence = line.indexOf(sourceLiteral, occurrence + sourceLiteral.length);
           }
