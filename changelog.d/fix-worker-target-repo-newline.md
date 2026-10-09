@@ -1,0 +1,1 @@
+- Fix signed exact-review enqueue, branch-authority, and source-authority intake so a `decision.targetRepo` that is not an `owner/repo` slug gets a 400 `invalid_target_repo` response instead of an uncaught Worker 500 from an invalid header value.

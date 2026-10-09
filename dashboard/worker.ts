@@ -6906,7 +6906,12 @@ async function hostedTargetQueueRequest(env, path: string, body: string) {
   const targetRepo = String(
     objectValue(objectValue(parseJsonObject(body)).decision).targetRepo || "",
   );
-  if (/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(targetRepo)) {
+  if (targetRepo) {
+    // The value goes into a header below. A value that is not a repo slug can be an
+    // invalid header value, and then `Headers` throws.
+    if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(targetRepo)) {
+      return json({ error: "invalid_target_repo" }, 400);
+    }
     const eligibility = await workerHostedTargetEligibility(env, targetRepo);
     if (eligibility.outcome === "terminal") {
       return hostedTargetProbeResponse({ outcome: "terminal" });
