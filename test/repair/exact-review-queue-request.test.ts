@@ -230,7 +230,8 @@ test("the source file alone gives the same bodies and errors as the build", () =
       ["claim", "conflict"],
       ["complete", "body"],
       ["complete", "conflict"],
-      ["claim", "publication"],
+      ["claim", "body", "--require-tuple"],
+      ["terminal-finalization", "retry"],
       ["complete", "publication"],
     ]) {
       const built = run(argv, env);
@@ -427,9 +428,9 @@ test("command acknowledgement and terminal-finalization requests reject invalid 
       "--reason must be locked_conversation, missing_status_comment",
     ],
     [
-      ["terminal-finalization", "retry"],
+      ["terminal-finalization", "requeue"],
       {},
-      "terminal-finalization record must be attempt or skip",
+      "terminal-finalization record must be attempt, skip or retry",
     ],
   ] as const) {
     const result = run([...args], env);
@@ -825,9 +826,9 @@ test("completion requests with an invalid tuple or result print no body", () => 
   }
 });
 
-test("a publication claim always carries its tuple", () => {
+test("a claim with --require-tuple always carries its tuple", () => {
   assert.equal(
-    leaseStep("claim publication").body,
+    leaseStep("claim body --require-tuple").body,
     JSON.stringify({
       lease_id: "lease-7",
       item_key: "openclaw/openclaw#7",
@@ -842,7 +843,43 @@ test("a publication claim always carries its tuple", () => {
     [{ QUEUE_LEASE_ID: "" }, "missing QUEUE_LEASE_ID"],
   ] as const) {
     assert.deepEqual(
-      leaseStep("claim publication", env),
+      leaseStep("claim body --require-tuple", env),
+      { status: 1, body: "", error: `exact-review-queue-request: ${message}\n` },
+      message,
+    );
+  }
+  for (const [record, message] of [
+    ["claim publication", "claim record must be body or conflict"],
+    ["claim conflict --require-tuple", "claim conflict takes no options"],
+    ["complete body --require-tuple", "complete body takes no options"],
+  ] as const) {
+    assert.deepEqual(
+      leaseStep(record),
+      { status: 1, body: "", error: `exact-review-queue-request: ${message}\n` },
+      record,
+    );
+  }
+});
+
+test("the terminal-finalization retry carries only the claimed lease tuple", () => {
+  assert.equal(
+    run(["terminal-finalization", "retry"], {}).body,
+    JSON.stringify({
+      lease_id: "lease-1",
+      item_key: "openclaw/openclaw#1",
+      lease_revision: 3,
+      claim_generation: 2,
+      run_id: "10",
+      run_attempt: 1,
+    }),
+  );
+  for (const [args, env, message] of [
+    [[], { EXACT_REVIEW_CLAIM_GENERATION: "" }, "invalid EXACT_REVIEW_CLAIM_GENERATION"],
+    [[], { EXACT_REVIEW_ITEM_KEY: "" }, "missing exact-review lease tuple"],
+    [["--status-marker", "m"], {}, "terminal-finalization retry takes no options"],
+  ] as const) {
+    assert.deepEqual(
+      run(["terminal-finalization", "retry", ...args], env),
       { status: 1, body: "", error: `exact-review-queue-request: ${message}\n` },
       message,
     );

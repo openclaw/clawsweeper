@@ -139,30 +139,35 @@ function exactReviewQueueRequest(argv: string[], env: NodeJS.ProcessEnv) {
       return exactReviewLeaseStep(command, args, env);
     default:
       throw new Error(
-        "usage: heartbeat --phase <review|status|finalizing> | lifecycle <router-receipt|canonical-receipt|terminal-disposition|command-ack-failed|command-ack-observed> | terminal-finalization <attempt|skip> | enqueue <route|body> | claim <body|publication|conflict> | complete <body|publication|conflict>",
+        "usage: heartbeat --phase <review|status|finalizing> | lifecycle <router-receipt|canonical-receipt|terminal-disposition|command-ack-failed|command-ack-observed> | terminal-finalization <attempt|skip|retry> | enqueue <route|body> | claim <body [--require-tuple]|conflict> | complete <body|publication|conflict>",
       );
   }
 }
 
-// `body` prints the review claim or completion body, and `publication` prints
-// the publication claim or completion body. `conflict` reads the 409 response in
-// RESPONSE and prints its error when the step can stop without an error.
+// `claim body` prints the claim body. `complete body` prints the review
+// completion body, and `complete publication` the publication completion body.
+// `conflict` reads the 409 response in RESPONSE and prints its error when the
+// step can stop without an error.
 function exactReviewLeaseStep(
   command: "claim" | "complete",
   args: string[],
   env: NodeJS.ProcessEnv,
 ) {
   const [record, ...options] = args;
-  if (options.length > 0) throw new Error(`${command} takes no options`);
+  if (command === "claim" && record === "body") {
+    const { values } = parseArgs({
+      args: options,
+      options: { "require-tuple": { type: "boolean", default: false } },
+    });
+    return exactReviewClaimBody(env, values["require-tuple"]);
+  }
+  if (options.length > 0) throw new Error(`${command} ${record} takes no options`);
   switch (record) {
     case "body":
-      return command === "claim"
-        ? exactReviewClaimBody(env, false)
-        : exactReviewCompletionBody(env);
+      return exactReviewCompletionBody(env);
     case "publication":
-      return command === "claim"
-        ? exactReviewClaimBody(env, true)
-        : exactReviewPublicationCompletionBody(env);
+      if (command === "complete") return exactReviewPublicationCompletionBody(env);
+      break;
     case "conflict": {
       const response: unknown = JSON.parse(env.RESPONSE || "{}");
       const error = (response as JsonObject | null)?.error;
@@ -170,13 +175,17 @@ function exactReviewLeaseStep(
       if (safe === undefined) throw new Error(`unexpected ${command} conflict`);
       return safe;
     }
-    default:
-      throw new Error(`${command} record must be body, publication or conflict`);
   }
+  throw new Error(
+    command === "claim"
+      ? "claim record must be body or conflict"
+      : "complete record must be body, publication or conflict",
+  );
 }
 
 // A dispatch names its lease tuple. An older review dispatch names only the
-// lease id. A publication dispatch always names its tuple.
+// lease id. The publication and terminal-finalization dispatches always name
+// their tuple, so their claims use --require-tuple.
 function exactReviewClaimBody(env: NodeJS.ProcessEnv, tupleRequired: boolean) {
   const leaseId = requiredText(env.QUEUE_LEASE_ID, "QUEUE_LEASE_ID");
   const itemKey = (env.ITEM_KEY ?? "").trim();
@@ -702,11 +711,12 @@ function exactReviewLifecycleBody(args: string[], env: NodeJS.ProcessEnv) {
 }
 
 // Bodies for the claimed terminal-finalization lease. The lease fences the one
-// final command status write.
+// final command status write. `retry` hands the unobserved acknowledgement back
+// to the queue and carries only the lease tuple.
 function exactReviewTerminalFinalizationBody(args: string[], env: NodeJS.ProcessEnv) {
   const [record, ...options] = args;
-  if (record !== "attempt" && record !== "skip") {
-    throw new Error("terminal-finalization record must be attempt or skip");
+  if (record !== "attempt" && record !== "skip" && record !== "retry") {
+    throw new Error("terminal-finalization record must be attempt, skip or retry");
   }
   const { values } = parseArgs({
     args: options,
@@ -725,6 +735,10 @@ function exactReviewTerminalFinalizationBody(args: string[], env: NodeJS.Process
     run_id: lease.runId,
     run_attempt: lease.runAttempt,
   };
+  if (record === "retry") {
+    if (options.length > 0) throw new Error("terminal-finalization retry takes no options");
+    return tuple;
+  }
   if (record === "attempt") {
     if (values["attempt-id"] !== undefined || values.reason !== undefined) {
       throw new Error("--attempt-id and --reason apply only to skip");

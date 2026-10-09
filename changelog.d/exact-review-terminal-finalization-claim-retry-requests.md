@@ -1,0 +1,1 @@
+- Build the terminal-finalization claim and requeue bodies and classify the claim's safe 409 conflicts with `exact-review-queue-request.ts claim body --require-tuple`, `claim conflict` and `terminal-finalization retry`, downloaded for the pinned workflow commit, instead of three inline Node scripts in `sweep.yml`; the publication claim uses the same `--require-tuple` claim.

@@ -2313,8 +2313,11 @@ test("exact event publication derives lifecycle receipt and final command acknow
   assert.match(finalizationClaim.run ?? "", /lifecycle_revision/);
   assert.match(finalizationClaim.run ?? "", /response\.item_key !== process\.env\.ITEM_KEY/);
   assert.doesNotMatch(finalizationClaim.run ?? "", /expectedItemKey/);
-  assert.match(finalizationClaim.run ?? "", /lease_not_active/);
-  assert.match(finalizationClaim.run ?? "", /lease_already_claimed/);
+  // The queue request command owns the safe claim conflicts.
+  assert.match(
+    finalizationClaim.run ?? "",
+    /RESPONSE="\$response" node "\$request" claim conflict/,
+  );
   assert.match(
     finalizationClaim.run ?? "",
     /Skipping terminal finalization because lease claim lost safely/,

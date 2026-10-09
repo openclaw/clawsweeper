@@ -194,24 +194,29 @@ Every other 409 fails the step. Like the curl helper, the completion runs
 checkout succeeded, and the downloaded copy otherwise.
 
 `event-review-publish` claims and completes its publication lease with the same
-command. `claim publication` is `claim body` with a required tuple, because a
-publication dispatch always names it, and `claim conflict` classifies its 409.
-`complete publication` reads the publisher claim outputs and the publication
-result. It accepts only the completion kinds and reason codes that the queue
-accepts, and it adds the lifecycle disposition that the result implies. The
-publication completion has no safe 409, so every non-2xx response fails the step.
-The completion uses the same checkout-or-download rule. Its checkout is `main`,
-like the rest of the publisher. The other pre-checkout steps still build their
-bodies inline.
+command. `claim body --require-tuple` fails when the dispatch does not name its
+tuple, because a publication dispatch always names it, and `claim conflict`
+classifies its 409. `complete publication` reads the publisher claim outputs and
+the publication result. It accepts only the completion kinds and reason codes
+that the queue accepts, and it adds the lifecycle disposition that the result
+implies. The publication completion has no safe 409, so every non-2xx response
+fails the step. The completion uses the same checkout-or-download rule. Its
+checkout is `main`, like the rest of the publisher.
 
-After checkout, `event-review-terminal-finalization` builds its bodies with the
-same command. `terminal-finalization <attempt|skip>` reads the claimed lease tuple
-from the `EXACT_REVIEW_*` and `GITHUB_RUN_*` environment. `lifecycle
-command-ack-failed` and `lifecycle command-ack-observed` read the lifecycle target
-like the other lifecycle records. `--status-marker` and `--status-comment-id`
-address the command status comment; an empty value means no such address. The
-attempt, skip and observed bodies need at least one address. The claim and the
-retry steps can run before checkout, so they still build their bodies inline.
+`event-review-terminal-finalization` builds all its bodies with the same command.
+Its claim uses `claim body --require-tuple` and `claim conflict` before checkout.
+`terminal-finalization <attempt|skip|retry>` reads the claimed lease tuple from
+the `EXACT_REVIEW_*` and `GITHUB_RUN_*` environment. `retry` carries only the
+tuple. The requeue step that sends it uses the same checkout-or-download rule as
+the other completions. `lifecycle command-ack-failed` and `lifecycle
+command-ack-observed` read the lifecycle target like the other lifecycle records.
+`--status-marker` and `--status-comment-id` address the command status comment;
+an empty value means no such address. The attempt, skip and observed bodies need
+at least one address. Every step that runs before checkout now builds its queue
+request body with the command. Two enqueue steps that run after checkout still
+build their bodies inline: "Queue durable exact review publication" in
+`event-review-apply` and "Queue fresh review after source drift" in
+`event-review-publish`.
 
 The terminal-run observer (`scripts/review-run-observer.mjs`) uses plain Node
 after checkout and retries its telemetry POST up to three times. Each attempt
