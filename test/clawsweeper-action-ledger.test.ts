@@ -1,19 +1,33 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
+import {
+  cpSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
+import { dirname, join, relative, resolve } from "node:path";
+import test, { after, type TestContext } from "node:test";
+import { parse as parseYaml } from "yaml";
 
 import {
   actionEventPublishPathsForTest,
   actionLedgerFailureDisposition,
   applyActionEventDisposition,
-  applyItemBusinessIdempotencyIdentityForTest,
-  applyMutationBusinessIdempotencyIdentityForTest,
-  applyPhaseSequenceForTest,
   applyRuntimeBudgetYieldResultsForTest,
   classifyGitHubDispatchResultForTest,
   codexReviewFailureRetryableForTest,
   heldReviewStartStatusCommentResultForTest,
+  itemSourceRevisionSha256ForTest,
   main,
   observedGitHubMutationAttemptsForTest,
+  renderReviewStartStatusComment,
   reviewCommentPublicationEventDisposition,
   reviewRetryActionDisposition,
   reviewRetryBatchEventDisposition,
@@ -21,10 +35,28 @@ import {
   untrustedCodexEnvForTest,
 } from "../dist/clawsweeper.js";
 import { labelAlreadyExistsError } from "../dist/clawsweeper-label-mutations.js";
-import { actionIdempotencyKey } from "../dist/action-ledger.js";
+import {
+  ACTION_EVENT_TYPES,
+  actionIdempotencyKey,
+  readAllSpooledActionEvents,
+  type ActionEvent,
+} from "../dist/action-ledger.js";
+import { createApplyActionLedger } from "../dist/clawsweeper-apply-ledger.js";
 import { createApplyLeaseGuards } from "../dist/clawsweeper-apply-lease-guards.js";
+import { createReviewActionLedger } from "../dist/clawsweeper-review-ledger.js";
+import type { Item } from "../dist/clawsweeper-types.js";
 import { GitHubRateLimitError } from "../dist/github-retry.js";
-import { readText } from "./helpers.ts";
+import {
+  item,
+  mockGhBinEnv,
+  readText,
+  reportWithSyncedReviewComment,
+  runApplyDecisionsForTest,
+  tmpPrefix,
+  withApplyTestWorkspace,
+  withMockGh,
+  workPlanCandidateReport,
+} from "./helpers.ts";
 
 test("primary command success survives best-effort action ledger flush failure", async (t) => {
   const errors: string[] = [];
@@ -317,58 +349,7 @@ test("action event publication accepts only sorted canonical event and binding p
   );
 });
 
-test("apply and retry business idempotency ignore batch order but bind source revision", () => {
-  const applyIdentity = {
-    slot: "apply_item" as const,
-    repository: "openclaw/openclaw",
-    number: 512,
-    sourceRevision: "a".repeat(40),
-    reviewContentDigest: "b".repeat(64),
-    decisionPacketSha256: "c".repeat(64),
-  };
-  const applyKey = actionIdempotencyKey(applyItemBusinessIdempotencyIdentityForTest(applyIdentity));
-  assert.equal(
-    actionIdempotencyKey(
-      applyItemBusinessIdempotencyIdentityForTest({
-        ...applyIdentity,
-      }),
-    ),
-    applyKey,
-  );
-  assert.notEqual(
-    actionIdempotencyKey(
-      applyItemBusinessIdempotencyIdentityForTest({
-        ...applyIdentity,
-        sourceRevision: "d".repeat(40),
-      }),
-    ),
-    applyKey,
-  );
-  const mutationIdentity = {
-    repository: applyIdentity.repository,
-    number: applyIdentity.number,
-    sourceRevision: applyIdentity.sourceRevision,
-    reviewContentDigest: applyIdentity.reviewContentDigest,
-    decisionPacketSha256: applyIdentity.decisionPacketSha256,
-    mutationIdentity: "review_comment_post:512",
-  };
-  const mutationKey = actionIdempotencyKey(
-    applyMutationBusinessIdempotencyIdentityForTest(mutationIdentity),
-  );
-  assert.equal(
-    actionIdempotencyKey(applyMutationBusinessIdempotencyIdentityForTest(mutationIdentity)),
-    mutationKey,
-  );
-  assert.notEqual(
-    actionIdempotencyKey(
-      applyMutationBusinessIdempotencyIdentityForTest({
-        ...mutationIdentity,
-        mutationIdentity: "review_comment_delete:512",
-      }),
-    ),
-    mutationKey,
-  );
-
+test("retry business idempotency binds source revision and review content", () => {
   const retryIdentity = {
     repository: "openclaw/openclaw",
     number: 512,
@@ -418,223 +399,415 @@ test("apply and retry business idempotency ignore batch order but bind source re
   );
 });
 
-test("lane instrumentation uses stable slots with explicit parent and phase ordering", () => {
-  const source = [
-    readText("src/clawsweeper-runtime.ts"),
-    readText("src/clawsweeper-failed-review-retry.ts"),
-    readText("src/clawsweeper-review-ledger.ts"),
-    readText("src/clawsweeper-apply-ledger.ts"),
-  ].join("\n");
+const LEDGER_ENV = {
+  CLAWSWEEPER_ACTION_LEDGER_FORCE: "1",
+  CLAWSWEEPER_ACTION_LEDGER_DISABLED: "0",
+  CLAWSWEEPER_ACTION_LEDGER_PARTITION_DATE: "2026-07-12",
+  CLAWSWEEPER_CRABFLEET_AGENT_TOKEN: "",
+  GITHUB_REPOSITORY: "openclaw/clawsweeper",
+  GITHUB_RUN_ID: "100",
+  GITHUB_RUN_ATTEMPT: "1",
+  GITHUB_WORKFLOW: "fixture",
+  GITHUB_WORKFLOW_REF: "",
+  GITHUB_JOB: "apply",
+  GITHUB_SHA: "abc123",
+};
 
-  for (const phase of [
-    "reviewBatch",
-    "reviewItem",
-    "reviewRetry",
-    "reviewLogPublication",
-    "reviewCommentPublication",
-    "applyAction",
-    "applyBatch",
-    "applyPublish",
-  ]) {
-    assert.match(source, new RegExp(`ACTION_EVENT_TYPES\\.${phase}`));
+// Real review and apply ledgers that write events to a private spool root.
+function ledgerFixture(t: TestContext) {
+  const root = realpathSync(mkdtempSync(tmpPrefix));
+  const previousEnv = process.env;
+  process.env = { ...previousEnv, ...LEDGER_ENV };
+  t.after(() => {
+    process.env = previousEnv;
+    rmSync(root, { recursive: true, force: true });
+  });
+  const repoRelativePath = (filePath: string) => relative(root, filePath);
+  const reviewLedger = createReviewActionLedger({
+    root,
+    targetRepo: () => "openclaw/openclaw",
+    repoRelativePath,
+    isRuntimeBudgetError: () => false,
+  });
+  const applyLedger = createApplyActionLedger({
+    root,
+    targetRepo: () => "openclaw/openclaw",
+    repoRelativePath,
+    reviewLeaseRevisionFromReport: (markdown) =>
+      /^item_source_revision: (.+)$/m.exec(markdown)?.[1] ?? null,
+    reportItemKind: () => "issue",
+    reviewLedger,
+  });
+  const entry = (number: number) => {
+    const path = join(root, "records", `${number}.md`);
+    const markdown = `---\nitem_source_revision: revision-${number}\n---\n`;
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, markdown);
+    return { name: `${number}.md`, number, path, repo: "openclaw/openclaw", markdown };
+  };
+  const events = () => readAllSpooledActionEvents(root).sort((a, b) => a.phase_seq - b.phase_seq);
+  return { root, reviewLedger, applyLedger, entry, events };
+}
+
+function eventSummary(events: readonly ActionEvent[]) {
+  return events.map((event) => [
+    event.event_type,
+    event.action.status,
+    event.attributes?.completion_reason,
+  ]);
+}
+
+test("apply ledger starts items lazily and chains every receipt in phase order", (t) => {
+  const { root, applyLedger, entry, events } = ledgerFixture(t);
+  const first = entry(41);
+  const unprocessed = entry(42);
+  const reportPath = join(root, "apply-report.json");
+  const batch = {
+    applyKind: "all" as const,
+    closeReasons: null,
+    dryRun: false,
+    syncCommentsOnly: false,
+    requestedItemNumbers: [],
+    reportPath,
+  };
+  const ledger = applyLedger.startApplyActionLedger({
+    ...batch,
+    candidates: [first, unprocessed],
+  });
+  assert.deepEqual(eventSummary(events()), [[ACTION_EVENT_TYPES.applyBatch, "started", undefined]]);
+
+  for (const [attempt, outcome] of [
+    [1, "unknown"],
+    [2, "accepted"],
+  ] as const) {
+    const receipt = applyLedger.startApplyMutationAttempt(
+      ledger,
+      first,
+      `label_create:P1:request_attempt:${attempt}`,
+      "label_create:P1",
+    );
+    assert.ok(receipt);
+    applyLedger.finishApplyMutationAttempt({ ledger, entry: first, attempt: receipt, outcome });
   }
+  const results = [
+    {
+      number: 41,
+      action: "review_comment_synced" as const,
+      reason: "updated durable Codex review comment",
+      commentMutationOccurred: true,
+    },
+  ];
+  const state = ledger.items.get("openclaw/openclaw#41");
+  assert.ok(state);
+  applyLedger.recordApplyActionLedgerItemResults({
+    ledger,
+    state,
+    results,
+    entry: first,
+    mutationOccurred: true,
+    dryRun: false,
+  });
+  writeFileSync(reportPath, JSON.stringify(results));
+  applyLedger.recordApplyActionEvents({
+    ledger,
+    results,
+    entries: new Map(),
+    mutationByItem: new Map([["openclaw/openclaw#41", true]]),
+    dryRun: false,
+    reportPath,
+  });
 
-  assert.match(source, /parentEventId: ledger\.batchStartEventId/);
-  assert.match(source, /parentEventId: state\.lastEventId \?\? state\.startEventId/);
-  assert.match(
-    source,
-    /parentEventId: options\.state\.lastEventId \?\? options\.state\.startEventId/,
+  const recorded = events();
+  assert.deepEqual(eventSummary(recorded), [
+    [ACTION_EVENT_TYPES.applyBatch, "started", undefined],
+    [ACTION_EVENT_TYPES.applyAction, "started", "started"],
+    [ACTION_EVENT_TYPES.applyAction, "started", "mutation_attempted"],
+    [ACTION_EVENT_TYPES.applyAction, "failed", "mutation_outcome_unknown"],
+    [ACTION_EVENT_TYPES.applyAction, "started", "mutation_attempted"],
+    [ACTION_EVENT_TYPES.applyAction, "executed", "mutation_accepted"],
+    [ACTION_EVENT_TYPES.applyAction, "completed", "comment_published"],
+    [ACTION_EVENT_TYPES.reviewCommentPublication, "published", "comment_published"],
+    [ACTION_EVENT_TYPES.applyBatch, "completed", "completed"],
+    [ACTION_EVENT_TYPES.applyPublish, "completed", undefined],
+  ]);
+  assert.deepEqual(
+    recorded.map((event) => event.phase_seq),
+    recorded.map((_, index) => index + 1),
   );
-  assert.match(source, /function nextReviewPhaseSeq\(/);
-  assert.match(source, /phaseSeq: nextReviewPhaseSeq\(options\.ledger\)/);
-  assert.match(source, /phaseSeq: 1_000_000/);
-  assert.match(source, /if \(!state\.logPublication\) \{\s*recordReviewLogPublication\(/);
-
-  assert.match(
-    source,
-    /idempotencyIdentity: \{\s*operationIdentity: options\.ledger\.operationIdentity,\s*slot: "apply_batch_terminal"/,
-  );
-  assert.match(source, /candidateSnapshots: options\.candidates\.map/);
-  assert.match(source, /candidateRevisions: options\.candidates\.map/);
-  assert.match(source, /slot: "apply_item"/);
-  assert.match(source, /operation: "apply",\s*slot: options\.slot/);
-  assert.doesNotMatch(
-    source.slice(
-      source.indexOf("function applyItemIdempotencyIdentity("),
-      source.indexOf("function applyLedgerItemSubject("),
+  assert.deepEqual(
+    recorded.map((event) =>
+      recorded.findIndex(({ event_id }) => event_id === event.parent_event_id),
     ),
-    /operationIdentity|checkpoint|index/,
+    [-1, 0, 1, 2, 3, 4, 5, 6, 0, 8],
   );
-  assert.doesNotMatch(
-    source,
-    /idempotencyIdentity: \{[^}]{0,300}slot: "apply_(?:result|in_flight_failure)"/,
+  const [, itemStart, firstAttempt, , secondAttempt, accepted, result, comment, batchEnd] =
+    recorded;
+  // Each request attempt has its own receipt, but retries share one business identity.
+  assert.notEqual(firstAttempt?.event_id, secondAttempt?.event_id);
+  assert.equal(firstAttempt?.idempotency_key_sha256, secondAttempt?.idempotency_key_sha256);
+  assert.equal(accepted?.idempotency_key_sha256, secondAttempt?.idempotency_key_sha256);
+  // The item identity does not change with the item status.
+  assert.equal(result?.idempotency_key_sha256, itemStart?.idempotency_key_sha256);
+  assert.deepEqual(
+    [result, comment, batchEnd].map((event) => event?.action.mutation),
+    [true, true, true],
   );
-  assert.match(
-    source,
-    /idempotencyIdentity: \{\s*operationIdentity: options\.ledger\.operationIdentity,\s*slot: "batch_terminal"/,
-  );
-  assert.doesNotMatch(
-    source,
-    /idempotencyIdentity: \{[^}]{0,300}(?:status|reasonCode|completionReason)/,
-  );
-});
-
-test("review candidates start lazily and deferred items cannot remain active", () => {
-  const source = readText("src/clawsweeper-review-command-workflow.ts");
-  const ledgerSource = readText("src/clawsweeper-review-ledger.ts");
-  const ledgerStart = ledgerSource.slice(
-    ledgerSource.indexOf("function startReviewActionLedger(options:"),
-    ledgerSource.indexOf("function startReviewActionLedgerItem("),
-  );
-  const reviewLoop = source.slice(
-    source.indexOf("for (const item of candidates) {"),
-    source.indexOf("if (coordinationHeldRetryAt) {"),
-  );
-
-  assert.doesNotMatch(ledgerStart, /status: ACTION_EVENT_STATUSES\.started[\s\S]*reviewItem/);
-  assert.match(
-    reviewLoop,
-    /activeReviewItem = item;[\s\S]*startReviewActionLedgerItem\(reviewLedger, item\)/,
-  );
-  assert.match(
-    reviewLoop,
-    /activeReviewMutationRunner = reviewMutationRunner\(reviewLedger, item\)/,
-  );
-  assert.match(
-    reviewLoop,
-    /finally \{[\s\S]*!reviewItemFailed[\s\S]*finishReviewActionLedgerItem\(\{[\s\S]*completionReason: "coordination_deferred"[\s\S]*activeReviewItem = null;/,
-  );
-  const reviewMutationAttempt = ledgerSource.slice(
-    ledgerSource.indexOf("function startReviewMutationAttempt("),
-    ledgerSource.indexOf("function recordReviewLogPublication("),
-  );
-  assert.match(reviewMutationAttempt, /completion_reason: "mutation_attempted"/);
-  assert.match(reviewMutationAttempt, /"mutation_accepted"/);
-  assert.match(reviewMutationAttempt, /"mutation_rejected"/);
-  assert.match(reviewMutationAttempt, /"mutation_outcome_unknown"/);
-  assert.match(reviewMutationAttempt, /mutationIdentitySha256: sha256\(idempotencyIdentity\)/);
-  const reviewItemTerminal = ledgerSource.slice(
-    ledgerSource.indexOf("function finishReviewActionLedgerItem("),
-    ledgerSource.indexOf("function actionLedgerFailureDisposition("),
-  );
-  assert.match(reviewItemTerminal, /mutation: state\.mutationObserved/);
-  const reviewBatchTerminal = ledgerSource.slice(
-    ledgerSource.indexOf("function finishReviewActionLedger(options:"),
-  );
-  assert.match(reviewBatchTerminal, /mutation: options\.ledger\.mutationObserved/);
-
-  const reviewCommandStart = source.indexOf("function reviewCommand(args:");
-  const materializationHelper = source.indexOf(
-    "const preparePullRequestReviewTree =",
-    reviewCommandStart,
-  );
-  const exactHeadMaterialization = source.indexOf(
-    "materializePullRequestReviewTree({",
-    materializationHelper,
-  );
-  const contextCollection = source.indexOf("const context = localRangeData", reviewCommandStart);
-  const sourceAvailabilityGate = source.indexOf(
-    "preparePullRequestReviewTree(headSha)",
-    contextCollection,
-  );
-  const modelAdmission = source.indexOf("decision = produceReviewOutput(", sourceAvailabilityGate);
-  const modelReview = source.indexOf("runCodex({", modelAdmission);
-  assert.ok(materializationHelper >= 0);
-  assert.ok(exactHeadMaterialization > materializationHelper);
-  assert.ok(contextCollection >= 0);
-  assert.ok(sourceAvailabilityGate > contextCollection);
-  assert.ok(modelAdmission > sourceAvailabilityGate);
-  assert.ok(modelReview > modelAdmission);
-  const logPublication = source.indexOf("recordReviewLogPublication({", modelReview);
-  const itemCompletion = source.indexOf("finishReviewActionLedgerItem({", logPublication);
-  const liveOutputBudget = source.indexOf("assertCurrentOutputBudget()", itemCompletion);
-  const itemPruning = source.indexOf("pruneItemOutput(reportPath)", itemCompletion);
-  assert.ok(logPublication > modelReview);
-  assert.ok(itemCompletion > logPublication);
-  assert.ok(liveOutputBudget > itemCompletion);
-  assert.ok(itemPruning > liveOutputBudget);
-  const failureSummary = source.slice(
-    source.indexOf("if (codexFailures > 0) {", itemPruning),
-    source.indexOf("finishReviewActionLedger({", itemPruning),
-  );
-  assert.doesNotMatch(failureSummary, /readFileSync\(reportPath/);
-  const reviewCatchStart = source.indexOf(
-    "} catch (error) {\n      commandError = error;",
-    reviewCommandStart,
-  );
-  const reviewCatch = source.slice(
-    reviewCatchStart,
-    source.indexOf("restoreTreeModes(readonlyModeSnapshots)", reviewCatchStart),
-  );
-  const cleanup = reviewCatch.indexOf(
-    "releaseOwnedReviewLease(acquired.itemNumber, acquired.lease)",
-  );
-  const finalization = reviewCatch.indexOf("finishReviewActionLedger({");
-  assert.ok(cleanup >= 0);
-  assert.ok(finalization > cleanup);
-  assert.match(
-    source,
-    /const releaseOwnedReviewLease = \(\s*itemNumber: number,\s*lease: AcquiredReviewStartLease,?\s*\): boolean =>[\s\S]*isSuppliedReviewStartLease\(suppliedReviewLease, lease\)[\s\S]*deleteOwnedDedicatedReviewStartLease\(itemNumber, lease\)/,
+  // Batch position and checkpoint do not change the business identity of an item;
+  // a new source revision does.
+  process.env.CLAWSWEEPER_APPLY_CHECKPOINT = "7";
+  const revised = { ...first, markdown: first.markdown.replace("revision-41", "revision-41b") };
+  for (const candidates of [[unprocessed, first], [revised]]) {
+    const ledger = applyLedger.startApplyActionLedger({ ...batch, candidates });
+    applyLedger.startApplyActionLedgerItem(ledger, candidates.at(-1) ?? revised);
+  }
+  assert.deepEqual(
+    events()
+      .filter((event) => event.attributes?.completion_reason === "started")
+      .map((event) => [
+        event.subject.source_revision,
+        event.idempotency_key_sha256 === itemStart?.idempotency_key_sha256,
+      ])
+      .sort(),
+    [
+      ["revision-41", true],
+      ["revision-41", true],
+      ["revision-41b", false],
+    ],
   );
 });
 
-test("apply receipts start per item and persist mutation observation before finalization", () => {
-  const source = [
-    readText("src/clawsweeper-apply-decision-workflow.ts"),
-    readText("src/clawsweeper-runtime.ts"),
-    readText("src/clawsweeper-github-execution.ts"),
-    readText("src/clawsweeper-apply-ledger.ts"),
-  ].join("\n");
-  const applyLoop = source.slice(
-    source.indexOf("for (const entry of fileEntries) {"),
-    source.indexOf("if (runtimeBudget.yieldReason) {"),
-  );
+test("review ledger starts items lazily and closes every started item", (t) => {
+  const { reviewLedger, events } = ledgerFixture(t);
+  const active = item({ number: 51 }) as Item;
+  const deferred = item({ number: 52 }) as Item;
+  const ledger = reviewLedger.startReviewActionLedger({
+    candidates: [active, deferred],
+    reviewPolicy: "fixture",
+    shardIndex: 0,
+    shardCount: 1,
+    batchSize: 2,
+  });
+  assert.deepEqual(eventSummary(events()), [
+    [ACTION_EVENT_TYPES.reviewBatch, "started", undefined],
+  ]);
 
-  assert.match(applyLoop, /startApplyActionLedgerItem\(applyLedger, entry\)/);
-  assert.match(source, /completion_reason: "mutation_attempted"/);
-  assert.match(source, /parentEventId: state\.lastEventId \?\? state\.startEventId/);
-  assert.match(source, /const phaseSeq = nextApplyPhaseSeq\(ledger\)/);
-  assert.doesNotMatch(source, /11 \+ state\.index \* 20/);
-  assert.match(applyLoop, /syncedComment = upsertReviewComment\(/);
-  assert.match(applyLoop, /commentMutationOccurred: !dryRun && needsReviewCommentBodySync/);
-  assert.match(
-    source,
-    /const commentMutationOccurred = result\.commentMutationOccurred === true;[\s\S]*applyActionEventDisposition\([\s\S]*commentMutationOccurred,[\s\S]*reviewCommentPublicationEventDisposition\([\s\S]*commentMutationOccurred,/,
+  reviewLedger.startReviewActionLedgerItem(ledger, active);
+  const runMutation = reviewLedger.reviewMutationRunner(ledger, active);
+  const request = (attempt: number) => ({
+    identity: `review_lease_post:51:request_attempt:${attempt}`,
+    idempotencyIdentity: "review_lease_post:51",
+  });
+  runMutation({ ...request(1), operation: () => true });
+  runMutation({ ...request(2), operation: () => false, didMutate: (posted) => posted });
+  assert.throws(
+    () =>
+      runMutation({
+        ...request(3),
+        operation: () => {
+          throw new Error("socket closed");
+        },
+      }),
+    /socket closed/,
   );
-  assert.match(applyLoop, /executeApplyClose\(\s*\{/);
-  assert.match(
-    readText("src/clawsweeper-apply-close-execution.ts"),
-    /closeItem\(\{ number, kind: item\.kind/,
+  // The run ends while item 51 is still active; the ledger must not leave it open.
+  reviewLedger.finishReviewActionLedger({ ledger, completedCount: 0, cacheHits: 0 });
+
+  const recorded = events();
+  assert.deepEqual(eventSummary(recorded), [
+    [ACTION_EVENT_TYPES.reviewBatch, "started", undefined],
+    [ACTION_EVENT_TYPES.reviewItem, "started", undefined],
+    [ACTION_EVENT_TYPES.reviewItem, "started", "mutation_attempted"],
+    [ACTION_EVENT_TYPES.reviewItem, "executed", "mutation_accepted"],
+    [ACTION_EVENT_TYPES.reviewItem, "started", "mutation_attempted"],
+    [ACTION_EVENT_TYPES.reviewItem, "skipped", "mutation_rejected"],
+    [ACTION_EVENT_TYPES.reviewItem, "started", "mutation_attempted"],
+    [ACTION_EVENT_TYPES.reviewItem, "failed", "mutation_outcome_unknown"],
+    [ACTION_EVENT_TYPES.reviewLogPublication, "blocked", undefined],
+    [ACTION_EVENT_TYPES.reviewItem, "blocked", "coordination_blocked"],
+    [ACTION_EVENT_TYPES.reviewBatch, "yielded", "partial"],
+  ]);
+  assert.deepEqual(
+    recorded.map((event) =>
+      recorded.findIndex(({ event_id }) => event_id === event.parent_event_id),
+    ),
+    [-1, 0, 1, 2, 3, 4, 5, 6, 7, 8, 0],
   );
-  const mutationAttemptStart = source.indexOf("function startApplyMutationAttempt(");
-  const mutationIdentityStart = source.indexOf(
-    "const businessIdempotencyIdentity = applyMutationBusinessIdempotencyIdentityForTest({",
-    mutationAttemptStart,
+  const attempts = recorded.filter(
+    (event) => event.attributes?.completion_reason === "mutation_attempted",
   );
-  const mutationIdentity = source.slice(
-    mutationIdentityStart,
-    source.indexOf("const receiptIdentitySha256 =", mutationIdentityStart),
+  assert.equal(new Set(attempts.map((event) => event.event_id)).size, 3);
+  assert.equal(new Set(attempts.map((event) => event.idempotency_key_sha256)).size, 1);
+  const itemEnd = recorded.at(-2);
+  const batchEnd = recorded.at(-1);
+  // An unknown mutation outcome stays visible and blocks a blind retry.
+  assert.deepEqual(
+    [itemEnd, batchEnd].map((event) => [event?.action.mutation, event?.action.retryable]),
+    [
+      [true, false],
+      [true, false],
+    ],
   );
-  assert.match(mutationIdentity, /mutationIdentity: idempotencyIdentity/);
-  assert.doesNotMatch(mutationIdentity, /mutationIndex/);
-  assert.match(source, /identity: `\$\{options\.identity\}:request_attempt:\$\{attempt \+ 1\}`/);
-  assert.match(source, /idempotencyIdentity: options\.identity/);
-  assert.match(
-    applyLoop,
-    /finally \{[\s\S]*recordApplyActionLedgerItemResults\(\{[\s\S]*activeApplyItem = null;/,
+});
+
+const CLI_INPUTS = ["config", "dist", "node_modules", "package.json", "prompts"];
+let cliRoot: string | undefined;
+after(() => {
+  if (cliRoot) rmSync(cliRoot, { recursive: true, force: true });
+});
+
+// Run the built CLI from a private copy, so its ledger spool stays in the fixture root.
+// The CLI finds its root from its own path, so dist is a real copy. Each run clears
+// the data that the previous run left.
+function runCliWithLedger(ghMock: string, args: (root: string) => string[]) {
+  if (!cliRoot) {
+    cliRoot = realpathSync(mkdtempSync(tmpPrefix));
+    cpSync("dist", join(cliRoot, "dist"), { recursive: true });
+    for (const entry of CLI_INPUTS.filter((input) => input !== "dist")) {
+      symlinkSync(resolve(entry), join(cliRoot, entry));
+    }
+  }
+  const root = cliRoot;
+  for (const entry of readdirSync(root).filter((name) => !CLI_INPUTS.includes(name))) {
+    rmSync(join(root, entry), { recursive: true, force: true });
+  }
+  const outputRoot = join(root, "ledger-output");
+  mkdirSync(outputRoot);
+  const ghPath = join(root, "gh.cjs");
+  writeFileSync(ghPath, ghMock);
+  const result = spawnSync(
+    process.execPath,
+    [join(root, "dist", "clawsweeper.js"), ...args(root)],
+    {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        ...LEDGER_ENV,
+        ...mockGhBinEnv(ghPath),
+        CLAWSWEEPER_ACTION_LEDGER_OUTPUT_ROOT: outputRoot,
+      },
+    },
   );
-  const yieldStart = source.indexOf(
-    "runtimeBudget.onYield = (reason: string, resumeCurrent = true): void => {",
+  const events = readAllSpooledActionEvents(root).sort((a, b) => a.phase_seq - b.phase_seq);
+  return { root, result, events };
+}
+
+function syncedIssueReport(number: number, labels: string[]) {
+  return reportWithSyncedReviewComment(
+    workPlanCandidateReport({
+      number,
+      reviewed_at: "2026-05-01T00:00:00Z",
+      item_snapshot_hash: `reviewed-snapshot-${number}`,
+      item_updated_at: "2026-05-01T00:00:00Z",
+      labels: JSON.stringify(labels),
+    }),
+    number,
   );
-  const yieldHandler = source.slice(
-    yieldStart,
-    source.indexOf("if (fileEntries.length === 0", yieldStart),
+}
+
+test("apply-decisions records per-request receipts before it finalizes the item", () => {
+  const first = syncedIssueReport(321, ["stale"]);
+  const second = syncedIssueReport(322, []);
+  const ghMock = `
+const { readFileSync } = require("fs");
+const rawArgs = process.argv.slice(2);
+const args = rawArgs[0] === "--repo" ? rawArgs.slice(2) : rawArgs;
+const path = args[1] === "-i" ? args[2] || "" : args[1] || "";
+if (args[0] === "api" && /\\/issues\\/comments\\/9321$/.test(path)) {
+  const body = JSON.parse(readFileSync(args[args.indexOf("--input") + 1], "utf8")).body;
+  console.log(JSON.stringify({ id: 9321, html_url: "https://github.com/openclaw/clawsweeper/issues/321#issuecomment-9321", updated_at: "2026-05-01T01:02:00Z", user: { login: "clawsweeper[bot]" }, body }));
+} else if (args[0] === "api" && /\\/issues\\/321\\/timeline(?:\\?|$)/.test(path)) {
+  console.log("HTTP/2 200\\n\\n[]");
+} else if (args[0] === "api" && /\\/issues\\/321\\/comments(?:\\?|$)/.test(path)) {
+  console.log(JSON.stringify([[{ id: 9321, html_url: "https://github.com/openclaw/clawsweeper/issues/321#issuecomment-9321", created_at: "2026-05-01T01:00:00Z", updated_at: "2026-05-01T01:00:00Z", user: { login: "clawsweeper[bot]" }, body: ${JSON.stringify(first.comment)} }]]));
+} else if (args[0] === "api" && /\\/issues\\/321$/.test(path)) {
+  console.log(JSON.stringify({ number: 321, title: "Render work plans", html_url: "https://github.com/openclaw/clawsweeper/issues/321", created_at: "2026-05-01T00:00:00Z", updated_at: "2026-05-01T00:00:00Z", closed_at: null, state: "open", locked: false, active_lock_reason: null, author_association: "CONTRIBUTOR", user: { login: "reporter" }, labels: ["stale"], pull_request: null }));
+} else if (args[0] === "issue" && args[1] === "view") {
+  console.log(JSON.stringify({ closedByPullRequestsReferences: [] }));
+} else if (args[0] === "label" && args[1] === "create") {
+  console.error('HTTP 422: Validation Failed (label "' + args[2] + '" already exists)');
+  process.exit(1);
+} else if (args[0] === "issue" && args[1] === "edit") {
+  console.log("");
+} else {
+  console.error("unexpected gh args", JSON.stringify(args));
+  process.exit(1);
+}
+`;
+  const { root, result, events } = runCliWithLedger(ghMock, (root) => {
+    const itemsDir = join(root, "records", "openclaw-clawsweeper", "items");
+    mkdirSync(itemsDir, { recursive: true });
+    writeFileSync(join(itemsDir, "321.md"), first.report);
+    writeFileSync(join(itemsDir, "322.md"), second.report);
+    return [
+      "apply-decisions",
+      "--target-repo",
+      "openclaw/clawsweeper",
+      "--items-dir",
+      itemsDir,
+      "--closed-dir",
+      join(root, "records", "openclaw-clawsweeper", "closed"),
+      "--plans-dir",
+      join(root, "plans"),
+      "--report-path",
+      join(root, "apply-report.json"),
+      "--processed-limit",
+      "1",
+      "--close-delay-ms",
+      "0",
+    ];
+  });
+  assert.equal(result.status, 0, result.stderr);
+  // Item 322 was a candidate but the processed limit stopped the run first.
+  assert.deepEqual([...new Set(events.flatMap((event) => event.subject.number ?? []))], [321]);
+  // One chain: batch start, item 321 in phase order, batch end, report publication.
+  const last = events.length - 1;
+  assert.deepEqual(
+    events.map((event) => events.findIndex(({ event_id }) => event_id === event.parent_event_id)),
+    events.map((_, index) =>
+      index === 0 ? -1 : index === last - 1 ? 0 : index === last ? last - 1 : index - 1,
+    ),
   );
-  assert.match(yieldHandler, /const interruptedItem = resumeCurrent \? activeApplyItem : null/);
-  assert.match(yieldHandler, /applyRuntimeBudgetYieldResults\(interruptedItem\.number, reason\)/);
-  assert.match(yieldHandler, /budget stop, resume next cycle/);
-  assert.match(yieldHandler, /finishApply\(\);/);
-  assert.doesNotMatch(yieldHandler, /finishApply\(\s*true/);
+  // Each GitHub request gets its own receipt, closed by the next event in the chain.
+  // A label that already exists is a known no-op, not a mutation. Different requests
+  // have different business identities.
+  const receipts = events.flatMap((event, index) => {
+    if (event.attributes?.completion_reason !== "mutation_attempted") return [];
+    const outcome = events[index + 1];
+    assert.equal(outcome?.idempotency_key_sha256, event.idempotency_key_sha256);
+    return [
+      [
+        event.idempotency_key_sha256,
+        outcome?.attributes?.completion_reason,
+        outcome?.action.mutation,
+      ],
+    ];
+  });
+  assert.deepEqual(
+    [...new Set(receipts.map(([, reason, mutation]) => `${reason}:${mutation}`))].sort(),
+    ["mutation_accepted:true", "mutation_rejected:false"],
+  );
+  assert.ok(new Set(receipts.map(([key]) => key)).size > 1);
+  assert.deepEqual(eventSummary(events.slice(-3)), [
+    [ACTION_EVENT_TYPES.applyAction, "skipped", "kept_open"],
+    [ACTION_EVENT_TYPES.applyBatch, "completed", "completed"],
+    [ACTION_EVENT_TYPES.applyPublish, "completed", undefined],
+  ]);
+  // The item result and the batch keep the mutation that the receipts observed.
+  assert.deepEqual(
+    events.slice(-3).map((event) => event.action.mutation),
+    [true, true, false],
+  );
+  // The local apply report is digest evidence, not a durable record path.
+  assert.deepEqual(events.at(-1)?.subject, {
+    repository: "openclaw/clawsweeper",
+    kind: "publication",
+  });
+  assert.deepEqual(events.at(-1)?.evidence?.[0], {
+    kind: "apply_report",
+    sha256: createHash("sha256")
+      .update(readFileSync(join(root, "apply-report.json")))
+      .digest("hex"),
+  });
 });
 
 test("apply mutation receipts bind every GitHub request attempt and preserve no-op truth", () => {
@@ -687,34 +860,6 @@ test("apply mutation receipts bind every GitHub request attempt and preserve no-
     retryAt: "2026-07-12T12:00:00Z",
     didMutate: true,
   });
-
-  const source = [
-    readText("src/clawsweeper-runtime.ts"),
-    readText("src/clawsweeper-review-comments-workflow.ts"),
-    readText("src/clawsweeper-review-comment-leases.ts"),
-  ].join("\n");
-  const labelSource = [
-    readText("src/clawsweeper-label-mutations.ts"),
-    readText("src/clawsweeper-label-operations.ts"),
-  ].join("\n");
-  assert.match(
-    labelSource,
-    /identity: `\$\{force \? "label_upsert" : "label_create"\}:\$\{definition\.name\}`/,
-  );
-  assert.match(
-    labelSource,
-    /\.\.\.\(force \? \{\} : \{ knownNoMutation: labelAlreadyExistsError \}\)/,
-  );
-  assert.match(source, /identity: `review_lease_post:/);
-  assert.match(source, /identity: `review_lease_delete:/);
-  assert.doesNotMatch(source, /identity: `apply_lease_acquire:/);
-  // The posted result must carry the acquired lease (now enriched with the
-  // winning comment for bulk-filer transparency patches) and didMutate: true.
-  assert.match(
-    source,
-    /return \{\s*status: "posted",\s*lease: \{ \.\.\.acquired, comment: winner\.comment \},\s*didMutate: true,?\s*\}/,
-  );
-  assert.deepEqual(applyPhaseSequenceForTest(6), [2, 3, 4, 5, 6, 7]);
 });
 
 test("GitHub throttles abort apply lease checks and preserve durable lease ownership", () => {
@@ -757,17 +902,125 @@ test("GitHub throttles abort apply lease checks and preserve durable lease owner
   );
   assert.equal(requests, 2);
 
-  const applySource = readText("src/clawsweeper-apply-decision-workflow.ts");
-  const releaseStart = applySource.indexOf("const releaseActiveApplyMutationLease =");
-  const releaseEnd = applySource.indexOf("runtimeBudget.onFailure", releaseStart);
-  assert.match(
-    applySource.slice(releaseStart, releaseEnd),
-    /catch \(error\) \{\s*if \(error instanceof GitHubRateLimitError\) throw error;/,
-  );
-  assert.match(
-    applySource,
-    /if \(error instanceof GitHubRateLimitError\) \{[\s\S]*?activeApplyMutationLease = null;[\s\S]*?throw error;\s*\} finally \{\s*discardIssueLabelBatch\(\);\s*releaseActiveApplyMutationLease\(\);/,
-  );
+  // Through the CLI: a throttled mutation keeps the durable lease until it expires,
+  // and a throttled lease release is not hidden as a logged warning.
+  for (const throttled of ["issue edit", "lease delete"] as const) {
+    withApplyTestWorkspace(tmpPrefix, ({ root, itemsDir, closedDir, plansDir, reportPath }) => {
+      const callsPath = join(root, "gh-calls.jsonl");
+      const reviewedAt = new Date(Date.now() - 180_000).toISOString();
+      const startedAt = new Date(Date.now() - 120_000).toISOString();
+      const issue = {
+        number: 321,
+        title: "Keep the lease under GitHub throttling",
+        created_at: "2026-05-01T00:00:00Z",
+        updated_at: reviewedAt,
+        state: "open",
+        author_association: "CONTRIBUTOR",
+        user: { login: "reporter" },
+        labels: [],
+      };
+      const sourceRevision = itemSourceRevisionSha256ForTest(issue, []);
+      const synced = reportWithSyncedReviewComment(
+        workPlanCandidateReport({
+          number: 321,
+          repository: "openclaw/clawsweeper",
+          type: "issue",
+          title: issue.title,
+          reviewed_at: reviewedAt,
+          item_snapshot_hash: "reviewed-snapshot-321",
+          item_updated_at: reviewedAt,
+          item_source_revision: sourceRevision,
+          review_lease_owner: "report-owned-review",
+          review_lease_comment_id: "700321",
+          labels: JSON.stringify([]),
+          triage_priority: "P2",
+        }),
+        321,
+      );
+      writeFileSync(join(itemsDir, "321.md"), synced.report);
+      const comments = [
+        {
+          id: 9321,
+          html_url: "https://github.com/openclaw/clawsweeper/issues/321#issuecomment-9321",
+          created_at: reviewedAt,
+          updated_at: reviewedAt,
+          user: { login: "clawsweeper[bot]" },
+          body: synced.comment,
+        },
+        {
+          id: 700321,
+          html_url: "https://github.com/openclaw/clawsweeper/issues/321#issuecomment-700321",
+          created_at: startedAt,
+          updated_at: startedAt,
+          user: { login: "clawsweeper[bot]" },
+          body: renderReviewStartStatusComment({
+            number: 321,
+            kind: "issue",
+            title: issue.title,
+            headSha: sourceRevision,
+            startedAt,
+            leaseExpiresAt: new Date(Date.now() + 1_800_000).toISOString(),
+            leaseOwner: "report-owned-review",
+          }),
+        },
+      ];
+      const ghMock = `
+const { appendFileSync } = require("fs");
+const args = process.argv.slice(2);
+const actual = args[0] === "--repo" ? args.slice(2) : args;
+const path = actual.includes("-i") ? actual[actual.indexOf("-i") + 1] : actual[1] || "";
+const call = /\\/issues\\/comments\\/700321$/.test(path) && actual.includes("DELETE") ? "lease delete" : actual.slice(0, 2).join(" ");
+appendFileSync(${JSON.stringify(callsPath)}, JSON.stringify(call) + "\\n");
+if (call === ${JSON.stringify(throttled)}) {
+  console.error("gh: API rate limit exceeded for installation. (HTTP 403)");
+  process.exit(1);
+}
+if (actual[0] === "api" && /\\/issues\\/321\\/comments(?:\\?|$)/.test(path) && !actual.includes("--method")) {
+  const comments = ${JSON.stringify(comments)};
+  console.log(JSON.stringify(actual.includes("--slurp") ? [comments] : comments));
+} else if (actual[0] === "api" && /\\/issues\\/321\\/timeline(?:\\?|$)/.test(path)) {
+  console.log(JSON.stringify(actual.includes("--slurp") ? [[]] : []));
+} else if (actual[0] === "api" && /\\/issues\\/321$/.test(path)) {
+  console.log(JSON.stringify(${JSON.stringify(issue)}));
+} else if (actual[0] === "issue" && actual[1] === "view") {
+  console.log(JSON.stringify({ closedByPullRequestsReferences: [] }));
+} else if (path.startsWith("search/issues")) {
+  console.log(JSON.stringify({ items: [] }));
+} else {
+  console.log("");
+}`;
+      withMockGh(root, ghMock, () =>
+        runApplyDecisionsForTest({
+          itemsDir,
+          closedDir,
+          plansDir,
+          reportPath,
+          extraArgs: ["--skip-dashboard", "--item-number", "321"],
+        }),
+      );
+      const calls = readFileSync(callsPath, "utf8")
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line));
+      const actions = JSON.parse(readFileSync(reportPath, "utf8")).map(
+        (result: { number: number; action: string }) => [result.number, result.action],
+      );
+      if (throttled === "issue edit") {
+        assert.ok(calls.includes("issue edit"));
+        assert.equal(calls.includes("lease delete"), false);
+        assert.deepEqual(actions, [
+          [321, "skipped_runtime_budget"],
+          [0, "skipped_runtime_budget"],
+        ]);
+      } else {
+        assert.ok(calls.includes("lease delete"));
+        assert.deepEqual(actions.slice(-2), [
+          [321, "skipped_runtime_budget"],
+          [0, "skipped_runtime_budget"],
+        ]);
+      }
+    });
+  }
 });
 
 test("runtime yields bind the active item and terminal Codex failures preserve retryability", () => {
@@ -788,41 +1041,6 @@ test("runtime yields bind the active item and terminal Codex failures preserve r
   );
   assert.equal(codexReviewFailureRetryableForTest(false), false);
   assert.equal(codexReviewFailureRetryableForTest(true), true);
-});
-
-test("blocked exact close publication discards staged labels before writing the report", () => {
-  const source = readText("src/clawsweeper-apply-decision-workflow.ts");
-  const blockedCloseStart = source.indexOf("if (closeBlockedForCommentSync) {");
-  const blockedCloseEnd = source.indexOf("clawSweeperLabelsChanged &&", blockedCloseStart);
-  const blockedClose = source.slice(blockedCloseStart, blockedCloseEnd);
-  const labelMutationResultStart = source.indexOf("const rememberLabelMutationResult =");
-  const labelMutationResultEnd = source.indexOf(
-    "const flushIssueLabelBatch =",
-    labelMutationResultStart,
-  );
-  const labelMutationResult = source.slice(labelMutationResultStart, labelMutationResultEnd);
-  const stagedLabelReceiptStart = source.indexOf("const rememberLabelMutationUpdatedAt =");
-  const stagedLabelReceiptEnd = source.indexOf(
-    "const previousApplyMutationRunner =",
-    stagedLabelReceiptStart,
-  );
-  const stagedLabelReceipt = source.slice(stagedLabelReceiptStart, stagedLabelReceiptEnd);
-
-  assert.ok(blockedCloseStart >= 0);
-  assert.ok(blockedCloseEnd > blockedCloseStart);
-  assert.match(
-    blockedClose,
-    /if \(!needsReviewCommentSync\) \{\s*discardIssueLabelBatch\(\);[\s\S]*?writeReportMarkdown\(path, markdown\);/,
-  );
-  assert.ok(labelMutationResultStart >= 0);
-  assert.ok(labelMutationResultEnd > labelMutationResultStart);
-  assert.match(labelMutationResult, /if \(confirmed\) rememberPublishedLabelSync\(\);/);
-  assert.match(labelMutationResult, /rememberSelfMutationUpdatedAt\(\);/);
-  assert.match(
-    stagedLabelReceipt,
-    /if \(issueLabelBatchActive\) deferredSelfMutationReceipt = true;/,
-  );
-  assert.doesNotMatch(stagedLabelReceipt, /"labels_synced_at"/);
 });
 
 test("retry dispatch outcomes distinguish definite rejection, ambiguity, and acceptance", () => {
@@ -861,260 +1079,120 @@ test("untrusted Codex processes cannot inherit action-ledger producer authority"
 });
 
 test("apply failure finalization survives report publication errors", () => {
-  const source = readText("src/clawsweeper-apply-decision-workflow.ts");
-  const finishApplyStart = source.indexOf(
-    "const finishApply = (failed = false, failure?: unknown): void => {",
-  );
-  const onFailureStart = source.indexOf(
-    "runtimeBudget.onFailure = (error: unknown): void => {",
-    finishApplyStart,
-  );
-  const finishApply = source.slice(finishApplyStart, onFailureStart);
-
-  assert.ok(finishApplyStart >= 0);
-  assert.ok(onFailureStart > finishApplyStart);
-  assert.match(finishApply, /catch \(error\) \{\s*publicationError = error;\s*\}/);
-  assert.ok(
-    finishApply.indexOf("recordApplyActionEvents({") > finishApply.indexOf("catch (error)"),
-  );
-  assert.ok(finishApply.indexOf("if (publicationError) throw publicationError;") > 0);
-  assert.match(
-    source.slice(onFailureStart, source.indexOf("runtimeBudget.onYield", onFailureStart)),
-    /finishApply\(true, error\)/,
-  );
+  const ghMock = `console.error("gh: Validation Failed (HTTP 422)"); process.exit(1);\n`;
+  const { result, events } = runCliWithLedger(ghMock, (root) => {
+    const itemsDir = join(root, "records", "openclaw-clawsweeper", "items");
+    mkdirSync(itemsDir, { recursive: true });
+    writeFileSync(join(itemsDir, "321.md"), syncedIssueReport(321, []).report);
+    // A regular file where the report directory must be makes the report write fail.
+    writeFileSync(join(root, "blocked"), "");
+    return [
+      "apply-decisions",
+      "--target-repo",
+      "openclaw/clawsweeper",
+      "--items-dir",
+      itemsDir,
+      "--closed-dir",
+      join(root, "records", "openclaw-clawsweeper", "closed"),
+      "--plans-dir",
+      join(root, "plans"),
+      "--report-path",
+      join(root, "blocked", "apply-report.json"),
+    ];
+  });
+  assert.notEqual(result.status, 0);
+  assert.deepEqual(eventSummary(events), [
+    [ACTION_EVENT_TYPES.applyBatch, "started", undefined],
+    [ACTION_EVENT_TYPES.applyAction, "started", "started"],
+    [ACTION_EVENT_TYPES.applyAction, "failed", "failed"],
+    [ACTION_EVENT_TYPES.applyBatch, "failed", "failed"],
+    [ACTION_EVENT_TYPES.applyPublish, "skipped", undefined],
+  ]);
+  assert.equal(events.at(-1)?.action.reason_code, "not_found");
 });
 
-test("apply report publication uses digest evidence without a durable record path", () => {
-  const source = readText("src/clawsweeper-apply-ledger.ts");
-  const evidenceStart = source.indexOf(
-    'const reportEvidence = actionLedgerFileDigestEvidence("apply_report", options.reportPath)',
-  );
-  const publicationStart = source.indexOf('identity: { slot: "apply_report_publication" }');
-  const publicationEnd = source.indexOf("attributes:", publicationStart);
-  const evidence = source.slice(evidenceStart, publicationStart);
-  const publication = source.slice(publicationStart, publicationEnd);
-
-  assert.ok(evidenceStart >= 0);
-  assert.ok(publicationStart >= 0);
-  assert.ok(publicationEnd > publicationStart);
-  assert.doesNotMatch(evidence, /actionLedgerFileEvidence\("apply_report"/);
-  assert.match(publication, /kind: "publication"/);
-  assert.doesNotMatch(publication, /recordPath/);
-  assert.match(publication, /reportEvidence/);
+test("failed-review retry finalizes its ledger when the command fails", () => {
+  const { result, events } = runCliWithLedger(`console.log("main");\n`, (root) => {
+    mkdirSync(join(root, "records", "openclaw-openclaw", "items"), { recursive: true });
+    // A regular file where the report directory must be makes the report write fail.
+    writeFileSync(join(root, "blocked"), "");
+    return [
+      "retry-failed-reviews",
+      "--target-repo",
+      "openclaw/openclaw",
+      "--items-dir",
+      join(root, "records", "openclaw-openclaw", "items"),
+      "--workflow-ref",
+      "main",
+      "--report-path",
+      join(root, "blocked", "failed-review-retry-report.json"),
+    ];
+  });
+  assert.notEqual(result.status, 0);
+  assert.deepEqual(eventSummary(events), [
+    [ACTION_EVENT_TYPES.reviewRetry, "started", undefined],
+    [ACTION_EVENT_TYPES.reviewRetry, "failed", "failed"],
+  ]);
 });
 
-test("retry and review publication lanes finalize unexpected failures", () => {
-  const source = [
-    readText("src/clawsweeper-command-operations.ts"),
-    readText("src/clawsweeper-review-command-workflow.ts"),
-    readText("src/clawsweeper-apply-decision-workflow.ts"),
-  ].join("\n");
-  const retrySource = readText("src/clawsweeper-failed-review-retry.ts");
-  const retryStart = retrySource.indexOf("const retryLedger = startFailedReviewRetryLedger({");
-  const retryRecord = retrySource.indexOf("recordFailedReviewRetryEvents({", retryStart);
-  const retryThrow = retrySource.indexOf("if (commandError) throw commandError;", retryRecord);
-  assert.ok(retryStart >= 0);
-  assert.ok(retryRecord > retryStart);
-  assert.ok(retryThrow > retryRecord);
-  assert.match(
-    retrySource.slice(retryRecord, retryThrow),
-    /ledger: retryLedger[\s\S]*failure: commandError/,
-  );
+type WorkflowStep = { name?: string; if?: string; run?: string; env?: Record<string, string> };
+type Workflow = { jobs: Record<string, { steps?: WorkflowStep[] }> };
 
-  const publicationStart = source.indexOf("function applyArtifactsCommand(args: Args): void {");
-  const publicationCatch = source.indexOf("} catch (error) {", publicationStart);
-  const publicationFinish = source.indexOf(
-    "finishPublication(error, interruptedMutation);",
-    publicationCatch,
-  );
-  const publicationThrow = source.indexOf("throw error;", publicationFinish);
-  assert.ok(publicationCatch > publicationStart);
-  assert.ok(publicationFinish > publicationCatch);
-  assert.ok(publicationThrow > publicationFinish);
-  assert.match(
-    source.slice(publicationCatch, publicationFinish),
-    /recordPublication\(\{[\s\S]*status: actionLedgerFailureDisposition\(error\)\.status/,
-  );
-  assert.match(
-    source,
-    /syncApplyPullRequestLabels\(dependencies, \{[\s\S]{0,350}onMutation: recordMutation/,
-  );
-  assert.match(
-    source,
-    /syncApplyReportLabels\(dependencies, \{[\s\S]{0,550}onMutation: recordMutation/,
-  );
-  assert.match(
-    readText("src/clawsweeper-apply-pull-request-labels.ts"),
-    /syncStalePullRequestReviewLabels\(\{[\s\S]{0,180}onMutation/,
-  );
-  assert.match(
-    readText("src/clawsweeper-apply-report-labels.ts"),
-    /syncPriorityLabel\(\{[\s\S]{0,220}onMutation/,
-  );
-  assert.match(
-    readText("src/clawsweeper-label-operations.ts"),
-    /tryAddOptionalLabel\(\{[\s\S]{0,220}onMutation: options\.onMutation/,
-  );
-});
+function workflowStep(workflow: Workflow, name: string): WorkflowStep {
+  const step = Object.values(workflow.jobs)
+    .flatMap((job) => job.steps ?? [])
+    .find((candidate) => candidate.name === name);
+  assert.ok(step, `missing workflow step ${name}`);
+  return step;
+}
 
-test("sweep publishes complete immutable shards for every review and apply producer", () => {
-  const workflow = readText(".github/workflows/sweep.yml");
-  const applyProofStep = workflow.indexOf("- name: Generate bound close coverage proofs");
-  const applyProofFinalizer = workflow.indexOf("- name: Finalize apply proof action ledger");
-  const applyStep = workflow.indexOf("- name: Apply unchanged proposed decisions with checkpoints");
-  const applyFinalizer = workflow.indexOf("- name: Finalize apply action ledger");
-  const applyPublish = workflow.indexOf("- name: Publish apply action events");
-  const retryStep = workflow.indexOf("- name: Plan or dispatch failed-review retries");
-  const retryFinalizer = workflow.indexOf("- name: Finalize failed-review retry action ledger");
-  const retryPublish = workflow.indexOf("- name: Publish failed-review retry action ledger");
-
-  assert.ok(applyProofStep >= 0);
-  assert.ok(applyProofFinalizer > applyProofStep);
-  assert.match(
-    workflow.slice(applyProofStep, applyProofFinalizer),
-    /id: generate-apply-proofs[\s\S]*timeout-minutes: 50/,
-  );
-  assert.match(
-    workflow.slice(applyProofFinalizer, applyProofFinalizer + 700),
-    /APPLY_PROOF_OUTCOME:[\s\S]*--interrupt-open-attempts --reason cancelled[\s\S]*--interrupt-open-attempts --reason workflow_failed/,
-  );
-  assert.ok(applyStep >= 0);
-  assert.ok(applyFinalizer > applyStep);
-  assert.ok(applyPublish > applyFinalizer);
-  assert.match(
-    workflow.slice(applyStep, applyFinalizer),
-    /id: apply-existing-run[\s\S]*timeout-minutes: 70/,
-  );
-  assert.match(
-    workflow.slice(applyFinalizer, applyPublish),
-    /if: \$\{\{ always\(\) \}\}[\s\S]*APPLY_OUTCOME:[\s\S]*--interrupt-open-attempts --reason cancelled[\s\S]*--interrupt-open-attempts --reason workflow_failed/,
-  );
-  assert.ok(retryStep >= 0);
-  assert.ok(retryFinalizer > retryStep);
-  assert.ok(retryPublish > retryFinalizer);
-  assert.match(workflow.slice(retryStep, retryFinalizer), /id: retry-failed-reviews-run/);
-  assert.match(
-    workflow.slice(retryFinalizer, retryPublish),
-    /RETRY_EXIT_CODE:[\s\S]*--interrupt-open-attempts --reason cancelled[\s\S]*--interrupt-open-attempts --reason timeout[\s\S]*--interrupt-open-attempts --reason workflow_failed/,
-  );
-
+test("sweep finalizes open ledger attempts and publishes shards through the signed queue", () => {
+  const workflow: Workflow = parseYaml(readText(".github/workflows/sweep.yml"));
+  // A failed or cancelled producer must not leave open attempts in its shard.
+  for (const [name, reasons] of [
+    ["Finalize apply proof action ledger", ["cancelled", "workflow_failed"]],
+    ["Finalize apply action ledger", ["cancelled", "workflow_failed"]],
+    ["Finalize failed-review retry action ledger", ["cancelled", "timeout", "workflow_failed"]],
+  ] as const) {
+    const finalizer = workflowStep(workflow, name);
+    assert.match(finalizer.if ?? "", /always\(\)/, name);
+    for (const reason of reasons) {
+      assert.ok(finalizer.run?.includes(`--interrupt-open-attempts --reason ${reason}`), name);
+    }
+  }
   for (const name of [
-    "Publish failed-review retry action ledger",
-    "Finalize exact event action ledger",
-    "Finalize apply proof action ledger",
     "Publish apply proof action events",
     "Publish apply action events",
+    "Publish failed-review retry action ledger",
   ]) {
-    assert.match(workflow, new RegExp(`- name: ${name}`));
+    const publisher = workflowStep(workflow, name);
+    assert.ok(publisher.env?.QUEUE_URL && publisher.env.CLAWSWEEPER_WEBHOOK_SECRET, name);
+    assert.doesNotMatch(publisher.run ?? "", /repair:publish-main/, name);
   }
-
-  assert.match(
-    workflow,
-    /publish-apply-proof-action-ledger:\s*\n\s*name: Publish immutable apply proof action ledger/,
-  );
-  assert.match(workflow, /include-hidden-files: true/);
-  assert.match(workflow, /--state-root \./);
-  assert.doesNotMatch(workflow, /durable_event_path|CLAWSWEEPER_STATE_APPEND_ENABLED/);
-  assert.equal((workflow.match(/publish-action-event-paths/g) ?? []).length, 3);
-  for (const name of ["Publish failed-review retry action ledger"]) {
-    assertStateBlobPublisherWiring(namedWorkflowStep(workflow, name));
-  }
-  for (const name of ["Publish apply proof action events", "Publish apply action events"]) {
-    assertStateBlobPublisherWiring(namedWorkflowStep(workflow, name));
-  }
-  assert.doesNotMatch(
-    workflow,
-    /--message "chore: append (?:review|apply).*action ledger"[\s\S]{0,180}--path "ledger\/v1\/events"/,
-  );
 });
 
-test("comment router publishes immutable command receipts for initial and retry invocations", () => {
-  const setupAction = readText(".github/actions/setup-action-ledger/action.yml");
-  const workflow = readText(".github/workflows/repair-comment-router.yml");
-  const repairWorkerWorkflow = readText(".github/workflows/repair-cluster-worker.yml");
-  const finalizeStart = workflow.indexOf("- name: Finalize command action ledger");
-  const publishStart = workflow.indexOf("- name: Publish immutable command action ledger");
-  const finalizeStep = workflow.slice(finalizeStart, publishStart);
-  const publishStep = workflow.slice(publishStart);
-
-  assert.match(setupAction, /CLAWSWEEPER_ACTION_LEDGER_OUTPUT_ROOT=\$output_root/);
-  assert.match(workflow, /uses: \.\/\.github\/actions\/setup-action-ledger/);
-  assert.match(workflow, /CLAWSWEEPER_ACTION_LEDGER_INVOCATION: initial/);
-  assert.match(workflow, /CLAWSWEEPER_ACTION_LEDGER_INVOCATION: retry/);
-  assert.ok(finalizeStart >= 0);
-  assert.ok(publishStart > finalizeStart);
-  assertCommandFinalizerUsesCanonicalRoot(finalizeStep);
-  assertCommandPublisherUsesCanonicalRoot(publishStep);
-  assert.match(finalizeStep, /--lane comment-router/);
-  assert.match(finalizeStep, /steps\.route-comments\.outcome.*success/);
-  assert.match(finalizeStep, /\.commands_seen == 0/);
-  assert.match(finalizeStep, /allow_empty_args\+=\(--allow-empty\)/);
-  assert.match(finalizeStep, /echo "publish=false" >> "\$GITHUB_OUTPUT"/);
-  assert.match(publishStep, /steps\.finalize-command-action-ledger\.outputs\.publish == 'true'/);
-  assert.match(publishStep, /--lane comment-router/);
-  assert.match(publishStep, /repair:action-ledger -- publish/);
-  assert.match(publishStep, /publish-action-event-paths/);
-  assert.doesNotMatch(publishStep, /repair:publish-main|--message|action_ledger_args/);
-  for (const name of ["Commit comment router ledger", "Commit comment router retry ledger"]) {
-    const step = namedWorkflowStep(workflow, name);
-    assert.match(step, /repair:publish-main/);
-    assert.match(step, /CLAWSWEEPER_WEBHOOK_SECRET:/);
-  }
-  assertStateBlobPublisherWiring(
-    namedWorkflowStep(workflow, "Publish immutable command action ledger"),
+test("comment router publishes command receipts per invocation through the signed queue", () => {
+  const workflow: Workflow = parseYaml(readText(".github/workflows/repair-comment-router.yml"));
+  // Initial and retry runs write separate shards.
+  assert.deepEqual(
+    ["Route ClawSweeper comments", "Retry waiting repair dispatches"].map(
+      (name) => workflowStep(workflow, name).env?.CLAWSWEEPER_ACTION_LEDGER_INVOCATION,
+    ),
+    ["initial", "retry"],
   );
-  assertStateBlobPublisherWiring(
-    namedWorkflowStep(repairWorkerWorkflow, "Publish immutable repair requeue action ledger"),
+  // An empty manifest is valid only when the router saw no command.
+  assert.match(
+    workflowStep(workflow, "Finalize command action ledger").run ?? "",
+    /\.commands_seen == 0[\s\S]*--allow-empty/,
   );
-  assert.doesNotMatch(
-    publishStep,
-    /--message "chore: append command action ledger"[\s\S]{0,180}--path "ledger\/v1\/events"/,
+  const publisher = workflowStep(workflow, "Publish immutable command action ledger");
+  assert.match(
+    publisher.if ?? "",
+    /steps\.finalize-command-action-ledger\.outputs\.publish == 'true'/,
   );
+  assert.ok(publisher.env?.QUEUE_URL && publisher.env.CLAWSWEEPER_WEBHOOK_SECRET);
+  assert.doesNotMatch(publisher.run ?? "", /repair:publish-main/);
 });
-
-function assertCommandFinalizerUsesCanonicalRoot(step: string): void {
-  assert.match(
-    step,
-    /CLAWSWEEPER_ACTION_LEDGER_OUTPUT_ROOT:\?setup-action-ledger output root is required/,
-  );
-  assert.match(step, /repair:action-ledger -- finalize \\\n\s+--lane [a-z0-9-]+ \\\n/);
-  assert.match(step, /> "\$manifest_file"/);
-}
-
-function assertCommandPublisherUsesCanonicalRoot(step: string): void {
-  assert.match(
-    step,
-    /source_root="\$\{CLAWSWEEPER_ACTION_LEDGER_OUTPUT_ROOT:\?setup-action-ledger output root is required\}"/,
-  );
-  assert.match(step, /manifest_file="\.artifacts\/[a-z0-9-]+-action-ledger-manifest\.json"/);
-  assert.match(step, /test -s "\$manifest_file"/);
-  assert.match(step, /repair:action-ledger -- publish/);
-  assert.match(step, /--lane [a-z0-9-]+/);
-  assert.match(step, /--manifest "\$manifest_file"/);
-  assert.match(step, /--source-root "\$source_root"/);
-  assert.match(step, /--state-root \./);
-  assert.match(
-    step,
-    /jq -e --slurpfile manifest "\$manifest_file"[\s\S]*?'\.eventPaths == \$manifest\[0\]\.event_paths'/,
-  );
-  assert.match(step, /jq -r '\.paths\[\]\?' "\$import_result_file"/);
-  assert.match(step, /if \[ ! -s "\$event_paths_file" \]; then[\s\S]*?exit 1[\s\S]*?fi/);
-  assert.doesNotMatch(step, /command_shard_found/);
-  assert.doesNotMatch(step, /\.created > 0/);
-}
-
-function assertStateBlobPublisherWiring(step: string): void {
-  assert.match(step, /CLAWSWEEPER_WEBHOOK_SECRET:/);
-  assert.match(step, /QUEUE_URL:/);
-  assert.doesNotMatch(step, /CLAWSWEEPER_STATE_DIR|repair:publish-main|--message/);
-}
-
-function namedWorkflowStep(workflow: string, name: string): string {
-  const start = workflow.indexOf(`- name: ${name}`);
-  assert.ok(start >= 0, `missing workflow step ${name}`);
-  const end = workflow.indexOf("\n      - ", start + 1);
-  return workflow.slice(start, end < 0 ? workflow.length : end);
-}
 
 test("the ledger distinguishes a blocked fallback from ordinary kept-open comment work", () => {
   assert.deepEqual(reviewCommentPublicationEventDisposition("kept_open", true, false, true), {

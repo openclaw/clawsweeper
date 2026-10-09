@@ -464,9 +464,6 @@ export function createCommandOperations(dependencies: CreateCommandOperationsDep
 
   const {
     applyActionEventDisposition,
-    applyItemBusinessIdempotencyIdentityForTest,
-    applyMutationBusinessIdempotencyIdentityForTest,
-    applyPhaseSequenceForTest,
     applyRuntimeBudgetYieldResultsForTest,
     reviewCommentPublicationEventDisposition,
   } = applyActionLedger;
@@ -887,9 +884,6 @@ export function createCommandOperations(dependencies: CreateCommandOperationsDep
     applyActionEventDisposition,
     applyArtifactsCommand,
     applyDecisionsCommand,
-    applyItemBusinessIdempotencyIdentityForTest,
-    applyMutationBusinessIdempotencyIdentityForTest,
-    applyPhaseSequenceForTest,
     applyRuntimeBudgetForTest,
     applyRuntimeBudgetYieldResults,
     applyRuntimeBudgetYieldResultsForTest,

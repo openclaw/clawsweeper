@@ -1,0 +1,1 @@
+- Replace the action-ledger tests that read `src/**` text with behavior tests that drive the real review and apply ledgers and the built `apply-decisions` and `retry-failed-reviews` CLIs, and remove the `applyPhaseSequenceForTest` and apply business-identity `ForTest` exports.

@@ -53,11 +53,6 @@ export function createApplyActionLedger({
     return phaseSeq;
   }
 
-  function applyPhaseSequenceForTest(count: number): number[] {
-    const cursor: ApplyPhaseCursor = { nextPhaseSeq: 2 };
-    return Array.from({ length: Math.max(0, count) }, () => nextApplyPhaseSeq(cursor));
-  }
-
   function startApplyActionLedger(options: {
     applyKind: ApplyKind;
     closeReasons: ReadonlySet<CloseReason> | null;
@@ -145,7 +140,7 @@ export function createApplyActionLedger({
     };
   }
 
-  function applyItemBusinessIdempotencyIdentityForTest(options: {
+  function applyItemBusinessIdempotencyIdentity(options: {
     slot: "apply_item" | "apply_mutation" | "review_comment";
     repository: string;
     number: number;
@@ -168,13 +163,13 @@ export function createApplyActionLedger({
     state: ApplyLedgerItem,
     slot: "apply_item" | "apply_mutation" | "review_comment",
   ): ApplyItemBusinessIdempotencyIdentity {
-    return applyItemBusinessIdempotencyIdentityForTest({
+    return applyItemBusinessIdempotencyIdentity({
       ...state.businessIdentity,
       slot,
     });
   }
 
-  function applyMutationBusinessIdempotencyIdentityForTest(options: {
+  function applyMutationBusinessIdempotencyIdentity(options: {
     repository: string;
     number: number;
     sourceRevision: string;
@@ -183,7 +178,7 @@ export function createApplyActionLedger({
     mutationIdentity: string;
   }): ApplyMutationBusinessIdempotencyIdentity {
     return {
-      ...applyItemBusinessIdempotencyIdentityForTest({
+      ...applyItemBusinessIdempotencyIdentity({
         ...options,
         slot: "apply_mutation",
       }),
@@ -265,7 +260,7 @@ export function createApplyActionLedger({
     if (!state) return null;
     const mutationIndex = state.mutationAttemptCount;
     state.mutationAttemptCount += 1;
-    const businessIdempotencyIdentity = applyMutationBusinessIdempotencyIdentityForTest({
+    const businessIdempotencyIdentity = applyMutationBusinessIdempotencyIdentity({
       ...state.businessIdentity,
       mutationIdentity: idempotencyIdentity,
     });
@@ -984,9 +979,6 @@ export function createApplyActionLedger({
 
   return {
     applyActionEventDisposition,
-    applyItemBusinessIdempotencyIdentityForTest,
-    applyMutationBusinessIdempotencyIdentityForTest,
-    applyPhaseSequenceForTest,
     applyRuntimeBudgetYieldResults,
     applyRuntimeBudgetYieldResultsForTest,
     finishApplyMutationAttempt,

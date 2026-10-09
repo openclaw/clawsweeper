@@ -933,9 +933,6 @@ const commandOperations = createCommandOperations({
 });
 export const {
   applyActionEventDisposition,
-  applyItemBusinessIdempotencyIdentityForTest,
-  applyMutationBusinessIdempotencyIdentityForTest,
-  applyPhaseSequenceForTest,
   applyRuntimeBudgetForTest,
   applyRuntimeBudgetYieldResultsForTest,
   enforceExpectedIssueSourceRevisionForTest,
