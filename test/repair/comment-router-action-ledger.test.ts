@@ -128,3 +128,66 @@ test("comment router never falls back to a manual review workflow dispatch", () 
     /actions\/workflows\/[^\n]*\/dispatches/,
   );
 });
+
+// Router write-order guards (moved from comment-router-core.test.ts).
+// The router reads GitHub, decides and then writes. These guards keep each live re-check
+// ahead of its write. Remove a guard when a loopback behavior test covers the same order.
+const routerSource = readText("src/repair/comment-router.ts");
+
+// Return the text of one top-level router function.
+function routerFunction(name: string): string {
+  const start = routerSource.indexOf(`\nfunction ${name}(`);
+  assert.ok(start >= 0, `missing function ${name}`);
+  const end = routerSource.indexOf("\nfunction ", start + 1);
+  return routerSource.slice(start, end < 0 ? undefined : end);
+}
+
+function assertBefore(body: string, first: string, second: string) {
+  const firstIndex = body.indexOf(first);
+  assert.ok(firstIndex >= 0, `missing ${first}`);
+  assert.ok(firstIndex < body.indexOf(second), `${first} must come before ${second}`);
+}
+
+test("autofix and automerge commands coordinate the review before they write labels or jobs", () => {
+  // Without this re-check, a label sweep can start a second review on the same head.
+  assertBefore(
+    routerFunction("executeCommand"),
+    "repairLoopPreMutationReviewDispatchDecision(command)",
+    "ensureRepairLoopLabel(command, modeLabel)",
+  );
+});
+
+test("automerge re-reads the final PR snapshot before the merge write", () => {
+  // The merge must use live labels, head and review, not the classification snapshot.
+  assertBefore(
+    routerFunction("executeAutomerge"),
+    "finalAutomergeSnapshot(command)",
+    '"pull_request_merge"',
+  );
+});
+
+test("trusted autoclose runs the live close gate before each close write", () => {
+  // A trusted close marker can be stale; the live gate blocks a close after source drift.
+  assertBefore(
+    routerFunction("executeAutoclose"),
+    "liveTrustedCloseBlockReason(command, liveTarget)",
+    "closeIssueOrPullRequest(",
+  );
+  assert.match(routerFunction("classifyAutoclose"), /trustedCloseBlockReason\(\{/);
+});
+
+test("merge commands remove repair-loop labels only after a successful merge", () => {
+  // A failed merge must keep the pause and mode labels on the PR.
+  assert.doesNotMatch(routerFunction("executeAutomerge"), /applyRemoveLabelActions/);
+  const execute = routerFunction("executeCommand");
+  const mergeBlock = execute.slice(
+    execute.indexOf("const merge = executeAutomerge(command)"),
+    execute.indexOf('if (merge.status === "executed")'),
+  );
+  assert.ok(mergeBlock.length > 0);
+  assert.doesNotMatch(mergeBlock, /applyRemoveLabelActions/);
+  assert.match(
+    execute,
+    /if \(merge\.status === "executed"\) \{\s*applyRemoveLabelActions\(command\);\s*\}/,
+  );
+});
