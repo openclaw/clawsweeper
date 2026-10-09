@@ -140,12 +140,27 @@ function restoreJob() {
   console.log(JSON.stringify({ job_restore: restore, job_path: jobPath, reason }));
 }
 
-// Return the job as it was before the last state commit removed it. Return
-// null when any step fails or when the content is not the job of this issue.
+// Return the job as it was after the last state commit that changed it, or,
+// when that commit removed it, as it was before that commit. Return null when
+// any step fails or when the content is not the job of this issue.
 function jobFromStateHistory(jobPath: string, targetRepo: string, itemNumber: number) {
   const token = String(process.env.CLAWSWEEPER_STATE_REPO_TOKEN ?? "").trim();
   if (!token) return null;
   const options = { env: { GH_TOKEN: token }, attempts: 3 };
+  const [owner, name] = DEFAULT_STATE_REPOSITORY.split("/");
+  // GraphQL gives a null object, not an error, when the file is not in the commit.
+  const blob = (commit: string) =>
+    ghJsonWithRetry<LooseRecord>(
+      [
+        "api",
+        "graphql",
+        "-f",
+        `query=query($expression: String!) { repository(owner: "${owner}", name: "${name}") { object(expression: $expression) { ... on Blob { text } } } }`,
+        "-f",
+        `expression=${commit}:${jobPath}`,
+      ],
+      options,
+    ).data?.repository?.object ?? null;
   try {
     const [latest] = ghJsonWithRetry<LooseRecord[]>(
       [
@@ -155,19 +170,10 @@ function jobFromStateHistory(jobPath: string, targetRepo: string, itemNumber: nu
       options,
     );
     if (!latest?.sha) return null;
-    const commit = ghJsonWithRetry<LooseRecord>(
-      ["api", `repos/${DEFAULT_STATE_REPOSITORY}/commits/${latest.sha}`],
-      options,
-    );
-    const change = (commit.files ?? []).find((file: LooseRecord) => file.filename === jobPath);
-    if (!change) return null;
-    const ref = change.status === "removed" ? commit.parents?.[0]?.sha : commit.sha;
-    if (!ref) return null;
-    const file = ghJsonWithRetry<LooseRecord>(
-      ["api", `repos/${DEFAULT_STATE_REPOSITORY}/contents/${jobPath}?ref=${ref}`],
-      options,
-    );
-    const content = Buffer.from(String(file.content ?? ""), "base64").toString("utf8");
+    const parent = latest.parents?.[0]?.sha;
+    // When the latest commit removed the file, the job is the parent version.
+    const content = (blob(latest.sha) ?? (parent ? blob(parent) : null))?.text;
+    if (typeof content !== "string") return null;
     const match = content.match(/^---\n([\s\S]*?)\n---\n?/);
     if (!match) return null;
     const frontmatter = parseSimpleYaml(match[1] ?? "");

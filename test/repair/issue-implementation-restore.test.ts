@@ -42,7 +42,7 @@ function writeGhStub(root: string) {
       'const routes = JSON.parse(fs.readFileSync(process.env.GH_ROUTES, "utf8"));',
       "const patch = args.indexOf('PATCH');",
       "if (patch >= 0) { fs.appendFileSync(process.env.GH_BODIES, fs.readFileSync(args.at(-1), 'utf8')); console.log('{}'); process.exit(0); }",
-      "const key = args.includes('--paginate') ? 'paginate' : args.join(' ');",
+      "const key = args.includes('--paginate') ? 'paginate' : args[1] === 'graphql' ? 'graphql ' + args.at(-1) : args.join(' ');",
       "if (Object.hasOwn(routes, key)) { console.log(JSON.stringify(routes[key])); process.exit(0); }",
       "console.error('gh: Not Found (HTTP 404)');",
       "process.exit(1);",
@@ -53,19 +53,16 @@ function writeGhStub(root: string) {
   return bin;
 }
 
-function historyRoutes(jobPath: string, content: string, change: Record<string, string>): Routes {
+// The last state commit removed the job, so the job is the version in the
+// parent commit.
+function historyRoutes(jobPath: string, content: string, parentReadable = true): Routes {
+  const blob = (object: unknown) => ({ data: { repository: { object } } });
   return {
     [`api ${STATE}/commits?sha=state&path=${encodeURIComponent(jobPath)}&per_page=1`]: [
-      { sha: "c2" },
+      { sha: "c2", parents: [{ sha: "c1" }] },
     ],
-    [`api ${STATE}/commits/c2`]: {
-      sha: "c2",
-      parents: [{ sha: "c1" }],
-      files: [{ filename: jobPath, status: "removed", ...change }],
-    },
-    [`api ${STATE}/contents/${jobPath}?ref=c1`]: {
-      content: Buffer.from(content).toString("base64"),
-    },
+    [`graphql expression=c2:${jobPath}`]: blob(null),
+    ...(parentReadable ? { [`graphql expression=c1:${jobPath}`]: blob({ text: content }) } : {}),
   };
 }
 
@@ -140,7 +137,7 @@ test(
       triggerSource: REVIEW_REPRODUCIBLE_BUG_TRIGGER_SOURCE,
       strictBugOnly: true,
     });
-    const restored = restoreJob(t, FIXTURE_JOB, historyRoutes(FIXTURE_JOB, original, {}));
+    const restored = restoreJob(t, FIXTURE_JOB, historyRoutes(FIXTURE_JOB, original));
 
     assert.equal(restored.job, original);
     assert.equal(restored.outputs.job_restore, "history");
@@ -174,7 +171,7 @@ test(
       overrideBlockerClass: "hard",
       overrideAction: "Write a human handoff for the locked issue.",
     });
-    const restored = restoreJob(t, FIXTURE_JOB, historyRoutes(FIXTURE_JOB, original, {}));
+    const restored = restoreJob(t, FIXTURE_JOB, historyRoutes(FIXTURE_JOB, original));
 
     assert.equal(restored.job, original);
     assert.match(restored.job, /^allow_fix_pr: false$/m);
@@ -195,19 +192,12 @@ test(
     const allowed = renderIssueImplementationJob({ repo: "openclaw/fixture", issueNumber: 7 });
     const otherIssue = renderIssueImplementationJob({ repo: "openclaw/fixture", issueNumber: 8 });
     const cases: Array<[string, Routes, string | null]> = [
-      ["no state token", historyRoutes(FIXTURE_JOB, allowed, {}), null],
+      ["no state token", historyRoutes(FIXTURE_JOB, allowed), null],
       ["no state history", {}, STATE_TOKEN],
-      [
-        "the job moved to another path",
-        historyRoutes(FIXTURE_JOB, allowed, {
-          filename: "jobs/openclaw/outbox/issue-openclaw-fixture-7.md",
-          status: "renamed",
-        }),
-        STATE_TOKEN,
-      ],
+      ["the state API fails", historyRoutes(FIXTURE_JOB, allowed, false), STATE_TOKEN],
       [
         "the state version is for another issue",
-        historyRoutes(FIXTURE_JOB, otherIssue, {}),
+        historyRoutes(FIXTURE_JOB, otherIssue),
         STATE_TOKEN,
       ],
     ];
