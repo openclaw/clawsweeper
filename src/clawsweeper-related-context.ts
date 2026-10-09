@@ -46,6 +46,10 @@ interface RelatedContextDependencies {
   repoRelativePath: (filePath: string) => string;
 }
 
+export function quoteGitHubSearchTerm(term: string): string {
+  return /^[a-z0-9_]+$/i.test(term) ? term : `"${term.replaceAll('"', "")}"`;
+}
+
 export function createRelatedContext({
   root: ROOT,
   targetRepo,
@@ -403,10 +407,6 @@ export function createRelatedContext({
           reportUrl: reportUrl(`/blob/main/${entry.path}`),
         },
       }));
-  }
-
-  function quoteGitHubSearchTerm(term: string): string {
-    return /^[a-z0-9_]+$/i.test(term) ? term : `"${term.replaceAll('"', "")}"`;
   }
 
   function relatedGitHubIssueSearchQuery(repo: string, title: string): string | null {

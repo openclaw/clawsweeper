@@ -1,14 +1,13 @@
-import type { ApplyGuardDependencies } from "./clawsweeper-apply-guard-dependencies.js";
-import { createApplyGuardActivity } from "./clawsweeper-apply-guard-activity.js";
+import { createApplyGuardActivity, type GuardReads } from "./clawsweeper-apply-guard-activity.js";
 import { createApplyGuardPolicy } from "./clawsweeper-apply-guard-policy.js";
 import { createApplyGuardProof } from "./clawsweeper-apply-guard-proof.js";
 import { createApplyGuardCapacity } from "./clawsweeper-apply-guard-capacity.js";
 import { type LiveReadGeneration, type LiveReadOptions } from "./live-read-generation.js";
-export { STALLED_UNPROVEN_PROOF_STATUSES } from "./clawsweeper-apply-guard-dependencies.js";
 
 type GuardReadCacheEntry = { ok: true; value: unknown } | { ok: false; error: unknown };
 
-export function createApplyGuards(dependencies: ApplyGuardDependencies) {
+// All guards read GitHub through one memoized copy of the read context.
+export function createApplyGuards(gh: GuardReads) {
   const guardReadCache = new Map<string, GuardReadCacheEntry>();
   let liveReadGeneration: LiveReadGeneration | null = null;
   let liveReadOptions: LiveReadOptions = {};
@@ -31,22 +30,16 @@ export function createApplyGuards(dependencies: ApplyGuardDependencies) {
     }
   }
 
-  const guardDependencies: ApplyGuardDependencies = {
-    ...dependencies,
-    ghJson: <T>(args: string[]): T =>
-      memoizedGuardRead("json", args, () => dependencies.ghJson<T>(args)),
+  const reads: GuardReads = {
+    ghJson: <T>(args: string[]): T => memoizedGuardRead("json", args, () => gh.ghJson<T>(args)),
     ghPaged: <T>(path: string): T[] =>
-      memoizedGuardRead("paged", [path], () => dependencies.ghPaged<T>(path)),
+      memoizedGuardRead("paged", [path], () => gh.ghPaged<T>(path)),
+    targetRepo: gh.targetRepo,
   };
-  const activity = createApplyGuardActivity({ ...guardDependencies });
-  const policy = createApplyGuardPolicy({ ...guardDependencies, ...activity });
-  const proof = createApplyGuardProof({ ...guardDependencies, ...activity, ...policy });
-  const capacity = createApplyGuardCapacity({
-    ...guardDependencies,
-    ...activity,
-    ...policy,
-    ...proof,
-  });
+  const activity = createApplyGuardActivity(reads);
+  const policy = createApplyGuardPolicy(reads, activity);
+  const proof = createApplyGuardProof(reads, activity);
+  const capacity = createApplyGuardCapacity(reads, activity);
 
   function resetGuardReadCache(): void {
     guardReadCache.clear();
@@ -64,32 +57,21 @@ export function createApplyGuards(dependencies: ApplyGuardDependencies) {
       liveReadOptions = previous;
     }
   }
-  const tools = { ...activity, ...policy, ...proof, ...capacity };
   return {
-    abandonedPrAgeSkipReason: tools.abandonedPrAgeSkipReason,
-    abandonedPrApplyBlockReasonSafe: tools.abandonedPrApplyBlockReasonSafe,
-    authorPrBudgetApplyGateSafe: tools.authorPrBudgetApplyGateSafe,
-    authorPrBudgetSignalBlockReason: tools.authorPrBudgetSignalBlockReason,
-    issueRecentHumanCommentBlockReasonFromComments:
-      tools.issueRecentHumanCommentBlockReasonFromComments,
-    issueRecentHumanCommentBlockReasonSafe: tools.issueRecentHumanCommentBlockReasonSafe,
-    lowSignalUnmergeablePrApplyBlockReasonSafe: tools.lowSignalUnmergeablePrApplyBlockReasonSafe,
-    lowSignalUnmergeablePrAuthorActivityBlockReason:
-      tools.lowSignalUnmergeablePrAuthorActivityBlockReason,
-    lowSignalUnmergeablePrConflictBlockReason: tools.lowSignalUnmergeablePrConflictBlockReason,
-    obsoleteFixPrApplyBlockReasonSafe: tools.obsoleteFixPrApplyBlockReasonSafe,
-    prAutoCloseExemptDecisionReason: tools.prAutoCloseExemptDecisionReason,
-    prAutoCloseExemptLabel: tools.prAutoCloseExemptLabel,
-    pullRequestHeadActivity: tools.pullRequestHeadActivity,
+    abandonedPrApplyBlockReasonSafe: proof.abandonedPrApplyBlockReasonSafe,
+    authorPrBudgetApplyGateSafe: capacity.authorPrBudgetApplyGateSafe,
+    issueRecentHumanCommentBlockReasonSafe: activity.issueRecentHumanCommentBlockReasonSafe,
+    lowSignalUnmergeablePrApplyBlockReasonSafe: policy.lowSignalUnmergeablePrApplyBlockReasonSafe,
+    obsoleteFixPrApplyBlockReasonSafe: capacity.obsoleteFixPrApplyBlockReasonSafe,
+    pullRequestHeadActivity: activity.pullRequestHeadActivity,
     resetGuardReadCache,
     setGuardReadGeneration,
-    staleVersionBugApplyBlockReasonSafe: tools.staleVersionBugApplyBlockReasonSafe,
-    stalledUnprovenPrAgeSkipReason: tools.stalledUnprovenPrAgeSkipReason,
-    stalledUnprovenPrApplyBlockReasonSafe: tools.stalledUnprovenPrApplyBlockReasonSafe,
-    stalledUnprovenProofRequestBlockReason: tools.stalledUnprovenProofRequestBlockReason,
+    staleVersionBugApplyBlockReasonSafe: policy.staleVersionBugApplyBlockReasonSafe,
+    stalledUnprovenPrApplyBlockReasonSafe: proof.stalledUnprovenPrApplyBlockReasonSafe,
+    stalledUnprovenProofRequestBlockReason: proof.stalledUnprovenProofRequestBlockReason,
     unconfirmedProductDirectionApplyBlockReasonSafe:
-      tools.unconfirmedProductDirectionApplyBlockReasonSafe,
-    unsponsoredFeatureApplyBlockReasonSafe: tools.unsponsoredFeatureApplyBlockReasonSafe,
+      policy.unconfirmedProductDirectionApplyBlockReasonSafe,
+    unsponsoredFeatureApplyBlockReasonSafe: policy.unsponsoredFeatureApplyBlockReasonSafe,
     withGuardReadOptions,
   };
 }

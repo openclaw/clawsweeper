@@ -42,7 +42,6 @@ type ApplyCloseExecutionDependencies = Pick<
   | "CLAWSWEEPER_BOT_AUTHORS"
   | "abandonedPrApplyBlockReasonSafe"
   | "applyAuthorPrBudgetStateToReport"
-  | "issueRecentHumanCommentBlockReasonFromComments"
   | "resetGuardReadCache"
   | "withGuardReadOptions"
   | "unconfirmedProductDirectionApplyBlockReasonSafe"

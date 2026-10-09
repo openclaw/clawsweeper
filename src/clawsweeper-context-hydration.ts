@@ -6,7 +6,6 @@ import { BULK_FILED_LABEL } from "./repair/exact-review-guard-labels.js";
 import {
   BULK_FILER_SEARCH_TIMEOUT_MS,
   DAY_MS,
-  DEFAULT_AUTHOR_PR_BUDGET,
   DEFAULT_AUTHOR_PR_BUDGET_MAX_CLOSES_PER_RUN,
   DEFAULT_BULK_FILER_THRESHOLD,
   DEFAULT_BULK_FILER_WINDOW_DAYS,
@@ -51,6 +50,7 @@ import { compareCodeUnits, stableJson } from "./stable-json.js";
 import { asRecord, login, nonBlankStringOrUndefined } from "./value-coerce.js";
 import { frontMatterValue, replaceFrontMatterValue } from "./report-front-matter.js";
 import { isAutomationReportAuthor } from "./clawsweeper-item-policy.js";
+import { authorPrBudget, positiveIntegerEnv } from "./policy-flags.js";
 
 const REVIEW_TREE_METADATA_JQ =
   '{truncated, tree: (.tree | if type == "array" then map(if type == "object" then {type, sha, size} else . end) else . end)}';
@@ -564,15 +564,6 @@ export function createContextHydration(dependencies: CreateContextHydrationDepen
     relatedItemsContext,
     structuralExternalRelationSensitivity,
   } = relatedContext;
-
-  function positiveIntegerEnv(value: string | undefined, fallback: number): number {
-    const parsed = Number(value);
-    return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
-  }
-
-  function authorPrBudget(env: Record<string, string | undefined> = process.env): number {
-    return positiveIntegerEnv(env.CLAWSWEEPER_AUTHOR_PR_BUDGET, DEFAULT_AUTHOR_PR_BUDGET);
-  }
 
   function authorPrBudgetMaxClosesPerRun(
     env: Record<string, string | undefined> = process.env,

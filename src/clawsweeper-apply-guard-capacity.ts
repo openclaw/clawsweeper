@@ -5,38 +5,36 @@ import {
   OBSOLETE_FIX_PR_MIN_INACTIVE_DAYS,
 } from "./clawsweeper-policy.js";
 import type { AuthorPrBudgetApplyGate, Item } from "./clawsweeper-types.js";
-import type { ApplyGuardDependencies } from "./clawsweeper-apply-guard-dependencies.js";
-import type { createApplyGuardActivity } from "./clawsweeper-apply-guard-activity.js";
-import type { createApplyGuardPolicy } from "./clawsweeper-apply-guard-policy.js";
-import type { createApplyGuardProof } from "./clawsweeper-apply-guard-proof.js";
+import {
+  authorPrBudgetSignalBlockReason,
+  isWorkflowOrCiPath,
+  prAutoCloseExemptLabel,
+  type ApplyGuardActivity,
+  type GuardReads,
+} from "./clawsweeper-apply-guard-activity.js";
+import {
+  authorPrBudgetAgeSkipReason,
+  isMaintainerAuthored,
+  labelNames,
+  obsoleteFixPrAgeSkipReason,
+  protectedLabels,
+} from "./clawsweeper-item-policy.js";
+import {
+  authorPrBudget,
+  authorPrBudgetCloseEnabled,
+  obsoleteFixPrCloseEnabled,
+} from "./policy-flags.js";
 import { asRecord, nonBlankStringOrUndefined } from "./value-coerce.js";
 
 export function createApplyGuardCapacity(
-  dependencies: ApplyGuardDependencies &
-    ReturnType<typeof createApplyGuardActivity> &
-    ReturnType<typeof createApplyGuardPolicy> &
-    ReturnType<typeof createApplyGuardProof>,
-) {
-  const {
-    authorPrBudget,
-    authorPrBudgetAgeSkipReason,
-    authorPrBudgetCloseEnabled,
-    ghJson,
-    isMaintainerAuthored,
-    labelNames,
-    obsoleteFixPrAgeSkipReason,
-    obsoleteFixPrCloseEnabled,
-    protectedLabels,
-    targetRepo,
+  { ghJson, targetRepo }: GuardReads,
+  {
+    authorOpenPullRequestCount,
+    defaultBranchPathMissing,
     pullRequestHumanEngagementBlockReason,
     pullRequestLiveActivity,
-    prAutoCloseExemptLabel,
-    isWorkflowOrCiPath,
-    defaultBranchPathMissing,
-    authorPrBudgetSignalBlockReason,
-    authorOpenPullRequestCount,
-  } = dependencies;
-
+  }: ApplyGuardActivity,
+) {
   function obsoleteFixPrApplyBlockReason(
     number: number,
     item: Pick<Item, "createdAt">,

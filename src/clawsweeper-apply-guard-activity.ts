@@ -3,159 +3,233 @@ import {
   DAY_MS,
   LOW_SIGNAL_UNMERGEABLE_PR_MIN_INACTIVE_DAYS,
   PR_AUTO_CLOSE_EXEMPT_LABELS,
+  STALLED_UNPROVEN_PROOF_STATUSES,
 } from "./clawsweeper-policy.js";
 import type { CloseReason, Item, PullRequestLiveActivity } from "./clawsweeper-types.js";
-import {
-  STALLED_UNPROVEN_PROOF_STATUSES,
-  type ApplyGuardDependencies,
-} from "./clawsweeper-apply-guard-dependencies.js";
+import { isMaintainerAuthorAssociation, normalizeLabelName } from "./clawsweeper-item-policy.js";
+import { quoteGitHubSearchTerm } from "./clawsweeper-related-context.js";
 import { asRecord, login, nonBlankStringOrUndefined } from "./value-coerce.js";
 import { isOlderThanDays } from "./iso-time.js";
 import { reportPrRating, reportRealBehaviorProof } from "./clawsweeper-report-parser.js";
 
-export function createApplyGuardActivity(dependencies: ApplyGuardDependencies) {
-  const {
-    ghJson,
-    ghPaged,
-    isMaintainerAuthorAssociation,
-    normalizeLabelName,
-    quoteGitHubSearchTerm,
-    targetRepo,
-  } = dependencies;
+export function maintainerAssociatedEntries(entries: readonly unknown[]): unknown[] {
+  return entries.filter((entry) =>
+    isMaintainerAuthorAssociation(asRecord(entry).author_association),
+  );
+}
 
-  function maintainerAssociatedEntries(entries: readonly unknown[]): unknown[] {
-    return entries.filter((entry) =>
-      isMaintainerAuthorAssociation(asRecord(entry).author_association),
-    );
+export function lowSignalUnmergeablePrConflictBlockReason(pullValue: unknown): string | null {
+  const pull = asRecord(pullValue);
+  const mergeableState = (
+    nonBlankStringOrUndefined(pull.mergeableState) ??
+    nonBlankStringOrUndefined(pull.mergeable_state) ??
+    "unknown"
+  ).toLowerCase();
+  if (pull.mergeable === false && mergeableState === "dirty") return null;
+  const mergeable = typeof pull.mergeable === "boolean" ? String(pull.mergeable) : "unknown";
+  return `low_signal_unmergeable_pr requires a live merge conflict; GitHub reports mergeable=${mergeable}, mergeable_state=${mergeableState}`;
+}
+
+function githubActivityTimestampMs(value: unknown): number | null {
+  const record = asRecord(value);
+  for (const candidate of [
+    record.updatedAt,
+    record.updated_at,
+    record.submitted_at,
+    record.createdAt,
+    record.created_at,
+  ]) {
+    const timestamp = Date.parse(typeof candidate === "string" ? candidate : "");
+    if (Number.isFinite(timestamp)) return timestamp;
   }
-  function lowSignalUnmergeablePrConflictBlockReason(pullValue: unknown): string | null {
-    const pull = asRecord(pullValue);
-    const mergeableState = (
-      nonBlankStringOrUndefined(pull.mergeableState) ??
-      nonBlankStringOrUndefined(pull.mergeable_state) ??
-      "unknown"
-    ).toLowerCase();
-    if (pull.mergeable === false && mergeableState === "dirty") return null;
-    const mergeable = typeof pull.mergeable === "boolean" ? String(pull.mergeable) : "unknown";
-    return `low_signal_unmergeable_pr requires a live merge conflict; GitHub reports mergeable=${mergeable}, mergeable_state=${mergeableState}`;
-  }
-  function githubActivityTimestampMs(value: unknown): number | null {
-    const record = asRecord(value);
-    for (const candidate of [
-      record.updatedAt,
-      record.updated_at,
-      record.submitted_at,
-      record.createdAt,
-      record.created_at,
-    ]) {
-      const timestamp = Date.parse(typeof candidate === "string" ? candidate : "");
-      if (Number.isFinite(timestamp)) return timestamp;
-    }
-    return null;
-  }
-  function githubActivityLogin(value: unknown): string {
-    const record = asRecord(value);
-    return (
-      nonBlankStringOrUndefined(record.author) ??
-      login(record.user) ??
-      nonBlankStringOrUndefined(record.actor) ??
-      login(record.actor) ??
-      ""
-    )
-      .trim()
-      .toLowerCase();
-  }
-  function latestPullRequestAuthorActivityAtMs(options: {
-    author: string;
-    createdAt: string;
-    comments?: readonly unknown[];
-    reviews?: readonly unknown[];
-    inlineComments?: readonly unknown[];
-    timeline?: readonly unknown[];
-    headActivityAtMs?: number | null;
-  }): number | null {
-    const author = options.author.trim().toLowerCase();
-    if (!author) return null;
-    let latest = Date.parse(options.createdAt);
-    if (!Number.isFinite(latest)) latest = Number.NEGATIVE_INFINITY;
-    const observe = (value: unknown): void => {
-      if (githubActivityLogin(value) !== author) return;
-      const timestamp = githubActivityTimestampMs(value);
-      if (timestamp !== null && timestamp > latest) latest = timestamp;
-    };
-    options.comments?.forEach(observe);
-    options.reviews?.forEach(observe);
-    options.inlineComments?.forEach(observe);
-    for (const event of options.timeline ?? []) {
-      const record = asRecord(event);
-      const eventName = nonBlankStringOrUndefined(record.event) ?? "";
-      const commitId =
-        nonBlankStringOrUndefined(record.commitId) ?? nonBlankStringOrUndefined(record.commit_id);
-      if (
-        eventName === "commented" ||
-        eventName === "committed" ||
-        eventName === "head_ref_force_pushed" ||
-        eventName === "head_ref_restored" ||
-        Boolean(commitId)
-      ) {
-        observe(event);
-      }
-    }
-    if (options.headActivityAtMs !== null && options.headActivityAtMs !== undefined) {
-      latest = Math.max(latest, options.headActivityAtMs);
-    }
-    return Number.isFinite(latest) ? latest : null;
-  }
-  function lowSignalUnmergeablePrAuthorActivityBlockReason(options: {
-    author: string;
-    createdAt: string;
-    comments?: readonly unknown[];
-    reviews?: readonly unknown[];
-    inlineComments?: readonly unknown[];
-    timeline?: readonly unknown[];
-    headActivityAtMs?: number | null;
-    staleMinAgeDays: number;
-    requireHeadActivityEvidence?: boolean;
-    now?: number;
-  }): string | null {
+  return null;
+}
+
+function githubActivityLogin(value: unknown): string {
+  const record = asRecord(value);
+  return (
+    nonBlankStringOrUndefined(record.author) ??
+    login(record.user) ??
+    nonBlankStringOrUndefined(record.actor) ??
+    login(record.actor) ??
+    ""
+  )
+    .trim()
+    .toLowerCase();
+}
+
+function latestPullRequestAuthorActivityAtMs(options: {
+  author: string;
+  createdAt: string;
+  comments?: readonly unknown[];
+  reviews?: readonly unknown[];
+  inlineComments?: readonly unknown[];
+  timeline?: readonly unknown[];
+  headActivityAtMs?: number | null;
+}): number | null {
+  const author = options.author.trim().toLowerCase();
+  if (!author) return null;
+  let latest = Date.parse(options.createdAt);
+  if (!Number.isFinite(latest)) latest = Number.NEGATIVE_INFINITY;
+  const observe = (value: unknown): void => {
+    if (githubActivityLogin(value) !== author) return;
+    const timestamp = githubActivityTimestampMs(value);
+    if (timestamp !== null && timestamp > latest) latest = timestamp;
+  };
+  options.comments?.forEach(observe);
+  options.reviews?.forEach(observe);
+  options.inlineComments?.forEach(observe);
+  for (const event of options.timeline ?? []) {
+    const record = asRecord(event);
+    const eventName = nonBlankStringOrUndefined(record.event) ?? "";
+    const commitId =
+      nonBlankStringOrUndefined(record.commitId) ?? nonBlankStringOrUndefined(record.commit_id);
     if (
-      options.requireHeadActivityEvidence &&
-      (options.headActivityAtMs === null || options.headActivityAtMs === undefined)
+      eventName === "commented" ||
+      eventName === "committed" ||
+      eventName === "head_ref_force_pushed" ||
+      eventName === "head_ref_restored" ||
+      Boolean(commitId)
     ) {
-      return "low_signal_unmergeable_pr requires dated activity evidence for the current head";
+      observe(event);
     }
-    const latestActivityAtMs = latestPullRequestAuthorActivityAtMs(options);
-    if (latestActivityAtMs === null) {
-      return "low_signal_unmergeable_pr requires dated author and current-head activity evidence";
-    }
-    const now = options.now ?? Date.now();
-    const configuredInactiveDays = Number.isFinite(options.staleMinAgeDays)
-      ? Math.max(0, options.staleMinAgeDays)
-      : LOW_SIGNAL_UNMERGEABLE_PR_MIN_INACTIVE_DAYS;
-    const minimumInactiveDays = Math.max(
-      LOW_SIGNAL_UNMERGEABLE_PR_MIN_INACTIVE_DAYS,
-      configuredInactiveDays,
-    );
-    if (now - latestActivityAtMs <= minimumInactiveDays * DAY_MS) {
-      return `low_signal_unmergeable_pr requires ${minimumInactiveDays} days without author comments or head activity`;
-    }
-    return null;
   }
-  function issueRecentHumanCommentBlockReasonFromComments(
-    comments: readonly unknown[],
-    days: number,
-    now = Date.now(),
-  ): string | null {
-    for (const comment of comments) {
-      const record = asRecord(comment);
-      if (asRecord(record.user).type === "Bot") continue;
-      const createdAt = typeof record.created_at === "string" ? record.created_at : "";
-      if (!isOlderThanDays(createdAt, days, now)) {
-        return `issue has a non-bot comment within the last ${days} days`;
-      }
-    }
-    return null;
+  if (options.headActivityAtMs !== null && options.headActivityAtMs !== undefined) {
+    latest = Math.max(latest, options.headActivityAtMs);
   }
+  return Number.isFinite(latest) ? latest : null;
+}
+
+export function lowSignalUnmergeablePrAuthorActivityBlockReason(options: {
+  author: string;
+  createdAt: string;
+  comments?: readonly unknown[];
+  reviews?: readonly unknown[];
+  inlineComments?: readonly unknown[];
+  timeline?: readonly unknown[];
+  headActivityAtMs?: number | null;
+  staleMinAgeDays: number;
+  requireHeadActivityEvidence?: boolean;
+  now?: number;
+}): string | null {
+  if (
+    options.requireHeadActivityEvidence &&
+    (options.headActivityAtMs === null || options.headActivityAtMs === undefined)
+  ) {
+    return "low_signal_unmergeable_pr requires dated activity evidence for the current head";
+  }
+  const latestActivityAtMs = latestPullRequestAuthorActivityAtMs(options);
+  if (latestActivityAtMs === null) {
+    return "low_signal_unmergeable_pr requires dated author and current-head activity evidence";
+  }
+  const now = options.now ?? Date.now();
+  const configuredInactiveDays = Number.isFinite(options.staleMinAgeDays)
+    ? Math.max(0, options.staleMinAgeDays)
+    : LOW_SIGNAL_UNMERGEABLE_PR_MIN_INACTIVE_DAYS;
+  const minimumInactiveDays = Math.max(
+    LOW_SIGNAL_UNMERGEABLE_PR_MIN_INACTIVE_DAYS,
+    configuredInactiveDays,
+  );
+  if (now - latestActivityAtMs <= minimumInactiveDays * DAY_MS) {
+    return `low_signal_unmergeable_pr requires ${minimumInactiveDays} days without author comments or head activity`;
+  }
+  return null;
+}
+
+export function issueRecentHumanCommentBlockReasonFromComments(
+  comments: readonly unknown[],
+  days: number,
+  now = Date.now(),
+): string | null {
+  for (const comment of comments) {
+    const record = asRecord(comment);
+    if (asRecord(record.user).type === "Bot") continue;
+    const createdAt = typeof record.created_at === "string" ? record.created_at : "";
+    if (!isOlderThanDays(createdAt, days, now)) {
+      return `issue has a non-bot comment within the last ${days} days`;
+    }
+  }
+  return null;
+}
+
+export function prAutoCloseExemptLabel(labels: readonly string[]): string | undefined {
+  return labels.map(normalizeLabelName).find((label) => PR_AUTO_CLOSE_EXEMPT_LABELS.has(label));
+}
+
+export function prAutoCloseExemptDecisionReason(
+  item: Pick<Item, "kind" | "labels">,
+  closeReason: CloseReason | undefined,
+): string | null {
+  if (item.kind !== "pull_request") return null;
+  const exemptLabel = prAutoCloseExemptLabel(item.labels);
+  if (!exemptLabel) return null;
+  if (closeReason === "unconfirmed_product_direction") {
+    return `${exemptLabel} exempts this PR from product-direction auto-close`;
+  }
+  if (closeReason === "stalled_unproven_pr") {
+    return `${exemptLabel} exempts this PR from stalled-unproven auto-close`;
+  }
+  if (closeReason === "abandoned_pr") {
+    return `${exemptLabel} exempts this PR from abandoned-PR auto-close`;
+  }
+  if (closeReason === "author_pr_budget_exceeded") {
+    return `${exemptLabel} exempts this PR from author-budget auto-close`;
+  }
+  if (closeReason === "obsolete_fix_pr") {
+    return `${exemptLabel} exempts this PR from obsolete-fix auto-close`;
+  }
+  return null;
+}
+
+export function isWorkflowOrCiPath(path: string): boolean {
+  const normalized = path.toLowerCase();
+  return (
+    normalized.startsWith(".github/workflows/") ||
+    normalized.startsWith(".github/actions/") ||
+    normalized.startsWith(".circleci/") ||
+    normalized.startsWith(".buildkite/") ||
+    normalized.startsWith("ci/") ||
+    normalized === ".gitlab-ci.yml" ||
+    normalized === "azure-pipelines.yml" ||
+    normalized === "jenkinsfile"
+  );
+}
+
+function githubContentsPath(path: string): string {
+  return path
+    .split("/")
+    .map((part) => encodeURIComponent(part))
+    .join("/");
+}
+
+export function authorPrBudgetSignalBlockReason(markdown: string): string | null {
+  const proof = reportRealBehaviorProof(markdown);
+  const rating = reportPrRating(markdown);
+  if (
+    ["S", "A", "B"].includes(rating.overallTier) &&
+    ["sufficient", "override"].includes(proof.status)
+  ) {
+    return "author_pr_budget_exceeded cannot close a high-quality proven pull request";
+  }
+  if (
+    !["D", "F"].includes(rating.overallTier) &&
+    !STALLED_UNPROVEN_PROOF_STATUSES.has(proof.status)
+  ) {
+    return "author_pr_budget_exceeded requires a D/F rating or missing, mock-only, or insufficient real behavior proof";
+  }
+  return null;
+}
+
+const FAILING_CHECK_RUN_CONCLUSIONS = new Set(["failure", "timed_out"]);
+
+// Guard reads go through this context. The apply guards give it a memo cache.
+export interface GuardReads {
+  ghJson: <T>(args: string[]) => T;
+  ghPaged: <T>(path: string) => T[];
+  targetRepo: () => string;
+}
+
+export function createApplyGuardActivity({ ghJson, ghPaged, targetRepo }: GuardReads) {
   function issueRecentHumanCommentBlockReason(number: number, days: number): string | null {
     return issueRecentHumanCommentBlockReasonFromComments(
       ghPaged<unknown>(`repos/${targetRepo()}/issues/${number}/comments`),
@@ -223,7 +297,6 @@ export function createApplyGuardActivity(dependencies: ApplyGuardDependencies) {
     }
     return null;
   }
-  const FAILING_CHECK_RUN_CONCLUSIONS = new Set(["failure", "timed_out"]);
   function pullRequestHeadActivity(
     number: number,
     pull: {
@@ -349,52 +422,6 @@ export function createApplyGuardActivity(dependencies: ApplyGuardDependencies) {
       headConflicted,
     };
   }
-  function prAutoCloseExemptLabel(labels: readonly string[]): string | undefined {
-    return labels.map(normalizeLabelName).find((label) => PR_AUTO_CLOSE_EXEMPT_LABELS.has(label));
-  }
-  function prAutoCloseExemptDecisionReason(
-    item: Pick<Item, "kind" | "labels">,
-    closeReason: CloseReason | undefined,
-  ): string | null {
-    if (item.kind !== "pull_request") return null;
-    const exemptLabel = prAutoCloseExemptLabel(item.labels);
-    if (!exemptLabel) return null;
-    if (closeReason === "unconfirmed_product_direction") {
-      return `${exemptLabel} exempts this PR from product-direction auto-close`;
-    }
-    if (closeReason === "stalled_unproven_pr") {
-      return `${exemptLabel} exempts this PR from stalled-unproven auto-close`;
-    }
-    if (closeReason === "abandoned_pr") {
-      return `${exemptLabel} exempts this PR from abandoned-PR auto-close`;
-    }
-    if (closeReason === "author_pr_budget_exceeded") {
-      return `${exemptLabel} exempts this PR from author-budget auto-close`;
-    }
-    if (closeReason === "obsolete_fix_pr") {
-      return `${exemptLabel} exempts this PR from obsolete-fix auto-close`;
-    }
-    return null;
-  }
-  function isWorkflowOrCiPath(path: string): boolean {
-    const normalized = path.toLowerCase();
-    return (
-      normalized.startsWith(".github/workflows/") ||
-      normalized.startsWith(".github/actions/") ||
-      normalized.startsWith(".circleci/") ||
-      normalized.startsWith(".buildkite/") ||
-      normalized.startsWith("ci/") ||
-      normalized === ".gitlab-ci.yml" ||
-      normalized === "azure-pipelines.yml" ||
-      normalized === "jenkinsfile"
-    );
-  }
-  function githubContentsPath(path: string): string {
-    return path
-      .split("/")
-      .map((part) => encodeURIComponent(part))
-      .join("/");
-  }
   function defaultBranchPathMissing(path: string, defaultBranch: string): boolean {
     try {
       ghJson<unknown>([
@@ -406,23 +433,6 @@ export function createApplyGuardActivity(dependencies: ApplyGuardDependencies) {
       if (isGitHubNotFoundError(error)) return true;
       throw error;
     }
-  }
-  function authorPrBudgetSignalBlockReason(markdown: string): string | null {
-    const proof = reportRealBehaviorProof(markdown);
-    const rating = reportPrRating(markdown);
-    if (
-      ["S", "A", "B"].includes(rating.overallTier) &&
-      ["sufficient", "override"].includes(proof.status)
-    ) {
-      return "author_pr_budget_exceeded cannot close a high-quality proven pull request";
-    }
-    if (
-      !["D", "F"].includes(rating.overallTier) &&
-      !STALLED_UNPROVEN_PROOF_STATUSES.has(proof.status)
-    ) {
-      return "author_pr_budget_exceeded requires a D/F rating or missing, mock-only, or insufficient real behavior proof";
-    }
-    return null;
   }
   function authorOpenPullRequestCount(author: string): number {
     const query = [
@@ -451,25 +461,14 @@ export function createApplyGuardActivity(dependencies: ApplyGuardDependencies) {
   }
 
   return {
-    maintainerAssociatedEntries,
-    lowSignalUnmergeablePrConflictBlockReason,
-    githubActivityTimestampMs,
-    githubActivityLogin,
-    latestPullRequestAuthorActivityAtMs,
-    lowSignalUnmergeablePrAuthorActivityBlockReason,
-    issueRecentHumanCommentBlockReasonFromComments,
     issueRecentHumanCommentBlockReason,
     issueRecentHumanCommentBlockReasonSafe,
     pullRequestHumanEngagementBlockReason,
-    FAILING_CHECK_RUN_CONCLUSIONS,
     pullRequestHeadActivity,
     pullRequestLiveActivity,
-    prAutoCloseExemptLabel,
-    prAutoCloseExemptDecisionReason,
-    isWorkflowOrCiPath,
-    githubContentsPath,
     defaultBranchPathMissing,
-    authorPrBudgetSignalBlockReason,
     authorOpenPullRequestCount,
   };
 }
+
+export type ApplyGuardActivity = ReturnType<typeof createApplyGuardActivity>;

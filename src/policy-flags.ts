@@ -1,3 +1,5 @@
+import { DEFAULT_AUTHOR_PR_BUDGET } from "./clawsweeper-policy.js";
+
 type PolicyEnv = Readonly<Record<string, unknown>>;
 
 /** Return true only when the flag is set to an "on" word. */
@@ -30,4 +32,13 @@ export function staleVersionBugCloseEnabled(env: PolicyEnv = process.env): boole
 
 export function obsoleteFixPrCloseEnabled(env: PolicyEnv = process.env): boolean {
   return envFlagEnabled(env.CLAWSWEEPER_OBSOLETE_FIX_PR_CLOSE_ENABLED);
+}
+
+export function positiveIntegerEnv(value: string | undefined, fallback: number): number {
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+export function authorPrBudget(env: Record<string, string | undefined> = process.env): number {
+  return positiveIntegerEnv(env.CLAWSWEEPER_AUTHOR_PR_BUDGET, DEFAULT_AUTHOR_PR_BUDGET);
 }

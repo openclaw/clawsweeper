@@ -9,12 +9,12 @@ import type {
   PullRequestClosePromotion,
 } from "./clawsweeper-types.js";
 import { reviewReportCanPromoteToClose } from "./clawsweeper-record-metadata.js";
+import { authorPrBudgetSignalBlockReason } from "./clawsweeper-apply-guard-activity.js";
 
 type ApplyPullRequestPromotionDependencies = Pick<
   CreateApplyDecisionWorkflowDependencies,
   | "authorPrBudgetAgeSkipReason"
   | "authorPrBudgetPromotion"
-  | "authorPrBudgetSignalBlockReason"
   | "closeReasonEnabled"
   | "itemSnapshotHash"
   | "livePullRequestHasNoDiff"
@@ -49,7 +49,6 @@ export function promoteApplyPullRequest(
   const {
     authorPrBudgetAgeSkipReason,
     authorPrBudgetPromotion,
-    authorPrBudgetSignalBlockReason,
     closeReasonEnabled,
     itemSnapshotHash,
     livePullRequestHasNoDiff,

@@ -13,13 +13,6 @@ import {
   repositoryProfileFor,
   type RepositoryProfile,
 } from "./repository-profiles.js";
-import {
-  authorPrBudgetCloseEnabled,
-  obsoleteFixPrCloseEnabled,
-  staleVersionBugCloseEnabled,
-  unconfirmedProductDirectionCloseEnabled,
-  unsponsoredFeatureCloseEnabled,
-} from "./policy-flags.js";
 import { reviewPullChecksDigestParts } from "./review-checks-digest.js";
 import {
   reviewStructuralQuery,
@@ -61,12 +54,7 @@ import {
   labelNames,
   normalizeAuthorAssociation,
   normalizeLabelName,
-  obsoleteFixPrAgeSkipReason,
-  protectedLabels,
   shouldPlanItem,
-  staleVersionBugAgeSkipReason,
-  unconfirmedProductDirectionAgeSkipReason,
-  unsponsoredFeatureAgeSkipReason,
 } from "./clawsweeper-item-policy.js";
 import {
   hasRepairLoopPauseLabel,
@@ -415,43 +403,20 @@ export function parseDecision(value: unknown, item?: RootCauseNormalizationItem)
 }
 
 const applyGuards = createApplyGuards({
-  authorPrBudget: () => authorPrBudget(),
-  authorPrBudgetAgeSkipReason,
-  authorPrBudgetCloseEnabled,
   ghJson: <T>(args: string[]): T =>
     ghJson<T>(
       exactPublicationPublicReadToken(args, targetRepo()) ? [...args, "--method", "GET"] : args,
     ),
   ghPaged: <T>(path: string): T[] => ghPaged<T>(path, { requireApp: true }),
-  isMaintainerAuthorAssociation,
-  isMaintainerAuthored,
-  labelNames,
-  normalizeLabelName,
-  obsoleteFixPrAgeSkipReason,
-  obsoleteFixPrCloseEnabled,
-  protectedLabels,
-  quoteGitHubSearchTerm: (term) => quoteGitHubSearchTerm(term),
-  staleVersionBugAgeSkipReason,
-  staleVersionBugCloseEnabled,
   targetRepo,
-  unconfirmedProductDirectionAgeSkipReason,
-  unconfirmedProductDirectionCloseEnabled,
-  unsponsoredFeatureAgeSkipReason,
-  unsponsoredFeatureCloseEnabled,
 });
 const { resetGuardReadCache } = applyGuards;
-export const {
-  abandonedPrAgeSkipReason,
-  issueRecentHumanCommentBlockReasonFromComments,
-  stalledUnprovenPrAgeSkipReason,
-} = applyGuards;
 export function stalledUnprovenProofRequestBlockReason(
   ...args: Parameters<typeof applyGuards.stalledUnprovenProofRequestBlockReason>
 ): ReturnType<typeof applyGuards.stalledUnprovenProofRequestBlockReason> {
   resetGuardReadCache();
   return applyGuards.stalledUnprovenProofRequestBlockReason(...args);
 }
-const { prAutoCloseExemptDecisionReason, prAutoCloseExemptLabel } = applyGuards;
 
 const contextHydration = createContextHydration({
   CLAWSWEEPER_BOT_AUTHORS,
@@ -503,7 +468,6 @@ const {
   completePullChecksContext,
   isClawSweeperComment,
   pullChecksContext,
-  quoteGitHubSearchTerm,
   structuralExternalRelationSensitivity,
 } = contextHydration;
 
@@ -775,8 +739,8 @@ const reportOrchestration = createReportOrchestration({
   itemSnapshotHash,
   jsonFrontMatterValue: (...args) => jsonFrontMatterValue(...args),
   labelNames,
-  ...applyGuards,
   normalizeLabelName,
+  pullRequestHeadActivity: applyGuards.pullRequestHeadActivity,
   numberOrUndefined,
   parseGitHubItemRef,
   pullHeadShaFromContext: (...args) => pullHeadShaFromContext(...args),
@@ -816,8 +780,6 @@ const closeDecisionWorkflow = createCloseDecisionWorkflow({
   normalizeLabelName,
   applyBlockingProtectedLabels,
   applyProtectedLabelReason,
-  prAutoCloseExemptLabel,
-  prAutoCloseExemptDecisionReason,
 });
 export const {
   staleVersionBugDecisionBlockReason,

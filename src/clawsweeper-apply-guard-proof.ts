@@ -10,39 +10,44 @@ import {
   WAITING_ON_AUTHOR_LABEL,
 } from "./clawsweeper-policy.js";
 import type { Item } from "./clawsweeper-types.js";
-import type { ApplyGuardDependencies } from "./clawsweeper-apply-guard-dependencies.js";
-import type { createApplyGuardActivity } from "./clawsweeper-apply-guard-activity.js";
-import type { createApplyGuardPolicy } from "./clawsweeper-apply-guard-policy.js";
+import {
+  prAutoCloseExemptLabel,
+  type ApplyGuardActivity,
+  type GuardReads,
+} from "./clawsweeper-apply-guard-activity.js";
+import { normalizeLabelName } from "./clawsweeper-item-policy.js";
 import { asRecord } from "./value-coerce.js";
 import { isOlderThanDays } from "./iso-time.js";
 
-export function createApplyGuardProof(
-  dependencies: ApplyGuardDependencies &
-    ReturnType<typeof createApplyGuardActivity> &
-    ReturnType<typeof createApplyGuardPolicy>,
-) {
-  const {
-    ghPaged,
-    normalizeLabelName,
-    targetRepo,
-    pullRequestHumanEngagementBlockReason,
-    pullRequestLiveActivity,
-    prAutoCloseExemptLabel,
-  } = dependencies;
-
-  function stalledUnprovenPrAgeSkipReason(
-    item: Pick<Item, "createdAt">,
-    now = Date.now(),
-  ): string | null {
-    if (!isOlderThanDays(item.createdAt, STALLED_UNPROVEN_PR_MIN_AGE_DAYS, now)) {
-      return `stalled_unproven_pr requires PR older than ${STALLED_UNPROVEN_PR_MIN_AGE_DAYS} days`;
-    }
-    return null;
+export function stalledUnprovenPrAgeSkipReason(
+  item: Pick<Item, "createdAt">,
+  now = Date.now(),
+): string | null {
+  if (!isOlderThanDays(item.createdAt, STALLED_UNPROVEN_PR_MIN_AGE_DAYS, now)) {
+    return `stalled_unproven_pr requires PR older than ${STALLED_UNPROVEN_PR_MIN_AGE_DAYS} days`;
   }
-  const STALLED_PROOF_REQUEST_LABELS = new Set([
-    "triage: needs-real-behavior-proof",
-    "status: 📣 needs proof",
-  ]);
+  return null;
+}
+
+export function abandonedPrAgeSkipReason(
+  item: Pick<Item, "createdAt">,
+  now = Date.now(),
+): string | null {
+  if (!isOlderThanDays(item.createdAt, ABANDONED_PR_MIN_AGE_DAYS, now)) {
+    return `abandoned_pr requires PR older than ${ABANDONED_PR_MIN_AGE_DAYS} days`;
+  }
+  return null;
+}
+
+const STALLED_PROOF_REQUEST_LABELS = new Set([
+  "triage: needs-real-behavior-proof",
+  "status: 📣 needs proof",
+]);
+
+export function createApplyGuardProof(
+  { ghPaged, targetRepo }: GuardReads,
+  { pullRequestHumanEngagementBlockReason, pullRequestLiveActivity }: ApplyGuardActivity,
+) {
   function stalledUnprovenProofRequestBlockReason(number: number, now = Date.now()): string | null {
     let earliestRequestAtMs: number | null = null;
     const observe = (value: unknown): void => {
@@ -70,15 +75,6 @@ export function createApplyGuardProof(
     }
     if (now - earliestRequestAtMs <= STALLED_UNPROVEN_PR_MIN_INACTIVE_DAYS * DAY_MS) {
       return `stalled_unproven_pr requires the proof request to be visible for ${STALLED_UNPROVEN_PR_MIN_INACTIVE_DAYS} days`;
-    }
-    return null;
-  }
-  function abandonedPrAgeSkipReason(
-    item: Pick<Item, "createdAt">,
-    now = Date.now(),
-  ): string | null {
-    if (!isOlderThanDays(item.createdAt, ABANDONED_PR_MIN_AGE_DAYS, now)) {
-      return `abandoned_pr requires PR older than ${ABANDONED_PR_MIN_AGE_DAYS} days`;
     }
     return null;
   }
@@ -162,10 +158,7 @@ export function createApplyGuardProof(
   }
 
   return {
-    stalledUnprovenPrAgeSkipReason,
-    STALLED_PROOF_REQUEST_LABELS,
     stalledUnprovenProofRequestBlockReason,
-    abandonedPrAgeSkipReason,
     stalledUnprovenPrApplyBlockReason,
     stalledUnprovenPrApplyBlockReasonSafe,
     abandonedPrApplyBlockReason,

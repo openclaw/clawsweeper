@@ -6,34 +6,34 @@ import {
   UNSPONSORED_FEATURE_MIN_INACTIVE_DAYS,
 } from "./clawsweeper-policy.js";
 import type { GitHubUser, Item } from "./clawsweeper-types.js";
-import type { ApplyGuardDependencies } from "./clawsweeper-apply-guard-dependencies.js";
-import type { createApplyGuardActivity } from "./clawsweeper-apply-guard-activity.js";
+import {
+  issueRecentHumanCommentBlockReasonFromComments,
+  lowSignalUnmergeablePrAuthorActivityBlockReason,
+  lowSignalUnmergeablePrConflictBlockReason,
+  maintainerAssociatedEntries,
+  prAutoCloseExemptLabel,
+  type ApplyGuardActivity,
+  type GuardReads,
+} from "./clawsweeper-apply-guard-activity.js";
+import {
+  labelNames,
+  normalizeLabelName,
+  protectedLabels,
+  staleVersionBugAgeSkipReason,
+  unconfirmedProductDirectionAgeSkipReason,
+  unsponsoredFeatureAgeSkipReason,
+} from "./clawsweeper-item-policy.js";
+import {
+  staleVersionBugCloseEnabled,
+  unconfirmedProductDirectionCloseEnabled,
+  unsponsoredFeatureCloseEnabled,
+} from "./policy-flags.js";
 import { asRecord } from "./value-coerce.js";
 
 export function createApplyGuardPolicy(
-  dependencies: ApplyGuardDependencies & ReturnType<typeof createApplyGuardActivity>,
+  { ghJson, ghPaged, targetRepo }: GuardReads,
+  { pullRequestHeadActivity }: ApplyGuardActivity,
 ) {
-  const {
-    ghJson,
-    ghPaged,
-    labelNames,
-    normalizeLabelName,
-    protectedLabels,
-    staleVersionBugAgeSkipReason,
-    staleVersionBugCloseEnabled,
-    targetRepo,
-    unconfirmedProductDirectionAgeSkipReason,
-    unconfirmedProductDirectionCloseEnabled,
-    unsponsoredFeatureAgeSkipReason,
-    unsponsoredFeatureCloseEnabled,
-    maintainerAssociatedEntries,
-    lowSignalUnmergeablePrConflictBlockReason,
-    lowSignalUnmergeablePrAuthorActivityBlockReason,
-    issueRecentHumanCommentBlockReasonFromComments,
-    pullRequestHeadActivity,
-    prAutoCloseExemptLabel,
-  } = dependencies;
-
   function lowSignalUnmergeablePrApplyBlockReason(
     number: number,
     staleMinAgeDays: number,

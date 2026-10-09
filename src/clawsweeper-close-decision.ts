@@ -2,17 +2,21 @@ import {
   parseOversizedPullRequestEvidence,
   ACCEPTED_LARGE_LABEL,
 } from "./clawsweeper-oversized-pr-policy.js";
-import { STALLED_UNPROVEN_PROOF_STATUSES } from "./clawsweeper-apply-guards.js";
 import {
   ALLOWED_REASONS,
   PR_AUTO_CLOSE_EXEMPT_LABELS,
   SECURITY_PROTECTED_LABELS,
+  STALLED_UNPROVEN_PROOF_STATUSES,
   isGitHubVerifiedFixedPullRequestSource,
 } from "./clawsweeper-policy.js";
 import { isAutoCloseAllowed, repositoryProfileFor } from "./repository-profiles.js";
 import type { ActionTaken, CloseReason, Decision, Item } from "./clawsweeper-types.js";
 import { NEEDS_SECURITY_REVIEW_LABEL } from "./repair/exact-review-guard-labels.js";
 import { isIsoTimestamp } from "./iso-time.js";
+import {
+  prAutoCloseExemptDecisionReason,
+  prAutoCloseExemptLabel,
+} from "./clawsweeper-apply-guard-activity.js";
 
 interface CloseDecisionWorkflowDependencies {
   targetRepo: () => string;
@@ -20,11 +24,6 @@ interface CloseDecisionWorkflowDependencies {
   normalizeLabelName: (label: string) => string;
   applyBlockingProtectedLabels: (labels: readonly string[], closeReason: unknown) => string[];
   applyProtectedLabelReason: (labels: readonly string[], closeReason: unknown) => string;
-  prAutoCloseExemptLabel: (labels: readonly string[]) => string | undefined;
-  prAutoCloseExemptDecisionReason: (
-    item: Pick<Item, "kind" | "labels">,
-    closeReason: CloseReason | undefined,
-  ) => string | null;
 }
 
 export function createCloseDecisionWorkflow({
@@ -33,8 +32,6 @@ export function createCloseDecisionWorkflow({
   normalizeLabelName,
   applyBlockingProtectedLabels,
   applyProtectedLabelReason,
-  prAutoCloseExemptLabel,
-  prAutoCloseExemptDecisionReason,
 }: CloseDecisionWorkflowDependencies) {
   function hasUsableCloseComment(closeComment: string): boolean {
     const trimmed = closeComment.trim();

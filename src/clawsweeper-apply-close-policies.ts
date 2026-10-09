@@ -12,6 +12,7 @@ import { repositoryManagedPullRequestCloseReason } from "./repository-profiles.j
 import { STALE_INSUFFICIENT_INFO_MIN_INACTIVE_DAYS } from "./clawsweeper-policy.js";
 import type { ApplyKind, AuthorPrBudgetApplyGate, CloseReason, Item } from "./clawsweeper-types.js";
 import { frontMatterValue } from "./report-front-matter.js";
+import { issueRecentHumanCommentBlockReasonFromComments } from "./clawsweeper-apply-guard-activity.js";
 
 type ApplyClosePolicyDependencies = Pick<
   CreateApplyDecisionWorkflowDependencies,
@@ -19,7 +20,6 @@ type ApplyClosePolicyDependencies = Pick<
   | "applyAuthorPrBudgetStateToReport"
   | "closeReasonEnabled"
   | "ghJson"
-  | "issueRecentHumanCommentBlockReasonFromComments"
   | "issueRecentHumanCommentBlockReasonSafe"
   | "stalledUnprovenPrApplyBlockReasonSafe"
   | "unconfirmedProductDirectionApplyBlockReasonSafe"
@@ -115,7 +115,7 @@ export function evaluateApplyCloseReasonPolicy(
                 options.number,
                 STALE_INSUFFICIENT_INFO_MIN_INACTIVE_DAYS,
               )
-            : dependencies.issueRecentHumanCommentBlockReasonFromComments(
+            : issueRecentHumanCommentBlockReasonFromComments(
                 options.comments,
                 STALE_INSUFFICIENT_INFO_MIN_INACTIVE_DAYS,
               );

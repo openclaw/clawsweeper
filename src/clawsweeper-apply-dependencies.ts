@@ -83,7 +83,6 @@ export interface CreateApplyDecisionWorkflowDependencies {
     markdown: string,
     state: AuthorPrBudgetApplyState,
   ) => PullRequestClosePromotion;
-  authorPrBudgetSignalBlockReason: (markdown: string) => string | null;
   bulkFilerRepositoryPermission: (
     author: string,
     cache: BulkFilerRepositoryPermissionCache,
@@ -211,10 +210,6 @@ export interface CreateApplyDecisionWorkflowDependencies {
   isExactEventSourceRevisionChange: (itemKind: Item["kind"], reason: string) => boolean;
   isMaintainerAuthorAssociation: (value: unknown) => boolean;
   issueRecentHumanCommentBlockReasonSafe: (number: number, days: number) => string | null;
-  issueRecentHumanCommentBlockReasonFromComments: (
-    comments: readonly unknown[],
-    days: number,
-  ) => string | null;
   issueReviewComment: (
     number: number,
     fallbackBodies?: readonly string[],
@@ -273,10 +268,6 @@ export interface CreateApplyDecisionWorkflowDependencies {
     allowSupersededLeaseCleanup?: boolean;
   }) => ReviewStartStatusCommentResult;
   PR_CLOSE_COVERAGE_PROOF_SCHEMA_PATH: string;
-  prAutoCloseExemptDecisionReason: (
-    item: Pick<Item, "kind" | "labels">,
-    closeReason: CloseReason | undefined,
-  ) => string | null;
   prCloseCoverageProofGateResult: (options: {
     markdown: string;
     item: Item;

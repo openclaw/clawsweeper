@@ -4,53 +4,27 @@ import test from "node:test";
 import { createApplyGuards } from "../dist/clawsweeper-apply-guards.js";
 import { LiveReadGeneration } from "../dist/live-read-generation.js";
 
-function asRecord(value) {
-  return value && typeof value === "object" && !Array.isArray(value) ? value : {};
+function createGuards({ ghJson = () => ({}), ghPaged = () => [] } = {}) {
+  return createApplyGuards({ ghJson, ghPaged, targetRepo: () => "openclaw/openclaw" });
 }
 
-function createGuards({ ghJson = () => ({}), ghPaged = () => [] } = {}) {
-  return createApplyGuards({
-    authorPrBudget: () => 10,
-    authorPrBudgetAgeSkipReason: () => null,
-    authorPrBudgetCloseEnabled: () => true,
-    ghJson,
-    ghPaged,
-    isMaintainerAuthorAssociation: (value) => ["MEMBER", "OWNER", "COLLABORATOR"].includes(value),
-    isMaintainerAuthored: () => false,
-    labelNames: (value) =>
-      Array.isArray(value)
-        ? value.flatMap((label) => {
-            if (typeof label === "string") return [label];
-            const name = asRecord(label).name;
-            return typeof name === "string" ? [name] : [];
-          })
-        : [],
-    normalizeLabelName: (label) => label.trim().toLowerCase(),
-    obsoleteFixPrAgeSkipReason: () => null,
-    obsoleteFixPrCloseEnabled: () => true,
-    protectedLabels: () => [],
-    quoteGitHubSearchTerm: (term) => term,
-    reportPrRating: () => ({
-      proofTier: "F",
-      patchTier: "F",
-      overallTier: "F",
-      summary: "",
-      nextSteps: [],
-    }),
-    reportRealBehaviorProof: () => ({
-      status: "missing",
-      summary: "",
-      evidenceKind: "not_applicable",
-      needsContributorAction: true,
-    }),
-    staleVersionBugAgeSkipReason: () => null,
-    staleVersionBugCloseEnabled: () => true,
-    targetRepo: () => "openclaw/openclaw",
-    unconfirmedProductDirectionAgeSkipReason: () => null,
-    unconfirmedProductDirectionCloseEnabled: () => true,
-    unsponsoredFeatureAgeSkipReason: () => null,
-    unsponsoredFeatureCloseEnabled: () => true,
-  });
+// The policy guards read GitHub only when their close policy is on.
+function withClosePoliciesEnabled(run: () => void): void {
+  const flags = [
+    "CLAWSWEEPER_STALE_VERSION_BUG_CLOSE_ENABLED",
+    "CLAWSWEEPER_UNCONFIRMED_PRODUCT_DIRECTION_CLOSE_ENABLED",
+    "CLAWSWEEPER_UNSPONSORED_FEATURE_CLOSE_ENABLED",
+  ];
+  const previous = flags.map((flag) => process.env[flag]);
+  for (const flag of flags) process.env[flag] = "1";
+  try {
+    run();
+  } finally {
+    flags.forEach((flag, index) => {
+      if (previous[index] === undefined) delete process.env[flag];
+      else process.env[flag] = previous[index];
+    });
+  }
 }
 
 test("apply guard reads share a paged endpoint across guard functions", () => {
@@ -92,8 +66,10 @@ test("apply guard reads share a JSON endpoint across guard functions", () => {
   });
   const item = { createdAt: "2025-01-01T00:00:00Z" };
 
-  guards.unsponsoredFeatureApplyBlockReasonSafe(42, item);
-  guards.staleVersionBugApplyBlockReasonSafe(42, item);
+  withClosePoliciesEnabled(() => {
+    guards.unsponsoredFeatureApplyBlockReasonSafe(42, item);
+    guards.staleVersionBugApplyBlockReasonSafe(42, item);
+  });
 
   assert.equal(
     calls.filter(
@@ -150,8 +126,15 @@ test("apply policy guards share canonical full-object reads", () => {
   });
   const item = { createdAt: "2025-01-01T00:00:00Z", labels: [] };
 
-  guards.unconfirmedProductDirectionApplyBlockReasonSafe(42, item, undefined, undefined);
-  guards.lowSignalUnmergeablePrApplyBlockReasonSafe(42, 30);
+  withClosePoliciesEnabled(() => {
+    guards.unconfirmedProductDirectionApplyBlockReasonSafe(
+      42,
+      item,
+      "2025-01-01T00:00:00Z",
+      "2026-01-01T00:00:00Z",
+    );
+    guards.lowSignalUnmergeablePrApplyBlockReasonSafe(42, 30);
+  });
 
   const pullCalls = calls.filter((args) => args[1] === "repos/openclaw/openclaw/pulls/42");
   assert.equal(pullCalls.length, 1);

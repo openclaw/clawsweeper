@@ -696,6 +696,8 @@ export const REAL_BEHAVIOR_PROOF_EVIDENCE_KINDS = new Set<RealBehaviorProofEvide
   "none",
   "not_applicable",
 ]);
+// Proof statuses that leave a stalled pull request unproven.
+export const STALLED_UNPROVEN_PROOF_STATUSES = new Set(["missing", "mock_only", "insufficient"]);
 export const TELEGRAM_VISIBLE_PROOF_STATUSES = new Set<TelegramVisibleProofStatus>([
   "needed",
   "not_needed",

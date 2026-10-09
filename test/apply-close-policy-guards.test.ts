@@ -61,16 +61,15 @@ function counterpartAdmission(
         duplicateCanonicalPullRequestBlockReason: () => null,
         fetchItem: () => ({ item: { ...counterpartItem, locked: liveLocked }, state: liveState }),
         isMaintainerAuthorAssociation: () => false,
-        issueRecentHumanCommentBlockReasonFromComments: () =>
-          closeReason === "stale_insufficient_info"
-            ? "issue has a non-bot comment within the last 60 days"
-            : null,
         issueRecentHumanCommentBlockReasonSafe: () => {
           throw new Error("counterpart policy must reuse the complete comment read");
         },
         issueReviewCommentState: () => {
           reviewStateReads += 1;
-          return { comments: [{}], reviewComment: { updated_at: counterpartItem.updatedAt } };
+          return {
+            comments: [{ user: { type: "User" }, created_at: new Date().toISOString() }],
+            reviewComment: { updated_at: counterpartItem.updatedAt },
+          };
         },
         isVerifiedFixedCloseReason: () => false,
         itemSnapshotHash: () => "reviewed-snapshot",

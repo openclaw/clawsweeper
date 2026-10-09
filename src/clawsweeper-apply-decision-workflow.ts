@@ -117,6 +117,7 @@ import {
   shouldSyncReviewComment,
 } from "./clawsweeper-record-metadata.js";
 import { lockedConversationApplyReason } from "./clawsweeper-item-policy.js";
+import { prAutoCloseExemptDecisionReason } from "./clawsweeper-apply-guard-activity.js";
 
 export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWorkflowDependencies) {
   const {
@@ -169,7 +170,6 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
     orderedApplyItemNumbers,
     pairCloseKey,
     PR_CLOSE_COVERAGE_PROOF_SCHEMA_PATH,
-    prAutoCloseExemptDecisionReason,
     prCloseCoverageProofPromptTemplate,
     pullHeadShaFromContext,
     recordApplyActionEvents,

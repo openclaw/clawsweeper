@@ -17,6 +17,10 @@ import {
   reportRealBehaviorProof,
 } from "./clawsweeper-report-parser.js";
 import { reviewReportCanPromoteToClose } from "./clawsweeper-record-metadata.js";
+import {
+  lowSignalUnmergeablePrAuthorActivityBlockReason,
+  lowSignalUnmergeablePrConflictBlockReason,
+} from "./clawsweeper-apply-guard-activity.js";
 
 export function createPullRequestClosePromotion(
   dependencies: CreateReportOrchestrationDependencies &
@@ -29,8 +33,6 @@ export function createPullRequestClosePromotion(
     ghJson,
     ghPaged,
     linkedPullRequestSupersession,
-    lowSignalUnmergeablePrAuthorActivityBlockReason,
-    lowSignalUnmergeablePrConflictBlockReason,
     pullRequestHeadActivity,
     targetRepo,
   } = dependencies;

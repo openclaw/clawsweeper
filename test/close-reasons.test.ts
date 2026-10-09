@@ -3,7 +3,6 @@ import { mkdtempSync, rmSync } from "node:fs";
 import test from "node:test";
 
 import {
-  abandonedPrAgeSkipReason,
   authorPrBudget,
   authorPrBudgetAgeSkipReason,
   authorPrBudgetMaxClosesPerRun,
@@ -11,14 +10,12 @@ import {
   closeReasonsArg,
   compactReferencingMergedPullRequestForTest,
   formatRecentClosedRows,
-  issueRecentHumanCommentBlockReasonFromComments,
   obsoleteFixPrAgeSkipReason,
   openClosingPullRequestApplyReason,
   referencingMergedPullRequestCandidatesForTest,
   referencingMergedPullRequestsForIssueForTest,
   reviewActionForDecision,
   sameAuthorCounterpartApplyReason,
-  stalledUnprovenPrAgeSkipReason,
   stalledUnprovenProofRequestBlockReason,
   staleVersionBugAgeSkipReason,
   staleVersionBugDecisionBlockReason,
@@ -34,6 +31,11 @@ import {
   unconfirmedProductDirectionCloseEnabled,
   unsponsoredFeatureCloseEnabled,
 } from "../dist/policy-flags.js";
+import { issueRecentHumanCommentBlockReasonFromComments } from "../dist/clawsweeper-apply-guard-activity.js";
+import {
+  abandonedPrAgeSkipReason,
+  stalledUnprovenPrAgeSkipReason,
+} from "../dist/clawsweeper-apply-guard-proof.js";
 import { closeDecision, git, item, tmpPrefix, withMockGh } from "./helpers.ts";
 
 test("invalid close semantics are rejected", () => {

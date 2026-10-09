@@ -95,19 +95,6 @@ export interface CreateReportOrchestrationDependencies {
   likelyOwnerLines: (owners: readonly LikelyOwner[]) => string[];
   linkedRelease: (tag: string) => string;
   linkedSha: (sha: string, repo?: string) => string;
-  lowSignalUnmergeablePrAuthorActivityBlockReason: (options: {
-    author: string;
-    createdAt: string;
-    comments?: readonly unknown[];
-    reviews?: readonly unknown[];
-    inlineComments?: readonly unknown[];
-    timeline?: readonly unknown[];
-    headActivityAtMs?: number | null;
-    staleMinAgeDays: number;
-    requireHeadActivityEvidence?: boolean;
-    now?: number;
-  }) => string | null;
-  lowSignalUnmergeablePrConflictBlockReason: (pullValue: unknown) => string | null;
   markdownLink: (label: string, url: string) => string;
   normalizeLabelName: (label: string) => string;
   normalizePublicReviewText: (value: string) => string;
