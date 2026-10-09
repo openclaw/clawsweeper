@@ -178,7 +178,9 @@ stale-head worker without cancelling the active run's gate cleanup.
 
 Script: `src/repair/execute-fix-artifact.ts`. Its Git work (target checkout,
 remote branch reads, rebase completion, checkpoint commits, history compaction
-and branch pushes) is in `src/repair/execute-fix/git-ops.ts`.
+and branch pushes) is in `src/repair/execute-fix/git-ops.ts`. Its Codex handoff
+(the worker process, `/review`, and the review-fix and validation-fix workers)
+and the fix execution report are in `src/repair/execute-fix/run-and-report.ts`.
 
 This is the PR creation and branch repair engine.
 
