@@ -24,13 +24,20 @@ import {
 } from "./command-action-ledger.js";
 import {
   COMMAND_PROGRESS_START as PROGRESS_START,
-  commandAckMarkerFromBody,
-  commandStatusMarkerFromBody,
   compareCommentsByCreatedAt,
   legacyCommandCommentId,
   selectCommandAckKeeper,
   statusMarkerDiffersFromRequested,
 } from "./command-ack-convergence.js";
+import {
+  commandAckCommentIds,
+  commandAckMarkerFromBody,
+  commandResponseMarkersInBody,
+  commandStatusMarkerFromBody,
+  commandStatusMarkersInBody,
+  hasCommandAckMarker,
+  parseCommandStatusMarker,
+} from "./markers.js";
 
 const PROGRESS_END = "<!-- clawsweeper-command-progress:end -->";
 // The 120-minute job reserves at most 56 minutes for review work. The remaining
@@ -504,15 +511,18 @@ export function commandReviewLeaseHeadSha(input: {
     String(value ?? "")
       .trim()
       .toLowerCase();
+  const markerStatus = parseCommandStatusMarker(String(input.marker ?? "").trim(), {
+    ignoreCase: true,
+  });
   const markerHead =
-    /^<!--\s*clawsweeper-command-status:(\d+):[^:\s>]+:([0-9a-f]{40})\s*-->$/i.exec(
-      String(input.marker ?? "").trim(),
-    );
+    markerStatus && /^[0-9a-f]{40}$/i.test(markerStatus.revision) ? markerStatus : null;
   const headSha =
     normalize(input.sourceHeadSha) ||
     normalize(input.sourceRevision) ||
     normalize(input.liveHeadSha) ||
-    (markerHead && Number(markerHead[1]) === input.itemNumber ? normalize(markerHead[2]) : "");
+    (markerHead && Number(markerHead.issueNumber) === input.itemNumber
+      ? normalize(markerHead.revision)
+      : "");
   if (!/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(headSha)) {
     throw new Error(
       `queue-owned command review lease for ${input.repo}#${input.itemNumber} has no valid head SHA ` +
@@ -573,8 +583,8 @@ export function verifiedTerminalStatusReceipt(
   if (!options.verifyTerminalStatusReceipt || (!options.marker && !options.statusCommentId))
     return null;
   const completionCommentId = Number(comment.id);
-  const commandCommentIds = commandAckCommentIdsFromBody(comment.body);
-  const statusMarkers = commandStatusMarkersFromBody(comment.body);
+  const commandCommentIds = commandAckCommentIds(comment.body);
+  const statusMarkers = commandStatusMarkersInBody(comment.body);
   if (
     !Number.isSafeInteger(completionCommentId) ||
     !terminalProgressMatches(comment.body, options)
@@ -628,30 +638,14 @@ function terminalProgressMatches(body: JsonValue, options: Pick<Options, "state"
   );
 }
 
-function commandAckCommentIdsFromBody(body: JsonValue) {
-  return Array.from(
-    String(body ?? "").matchAll(/<!--\s*clawsweeper-command-ack:(\d+)\s*-->/g),
-    (match) => Number(match[1]),
-  ).filter((id) => Number.isSafeInteger(id) && id > 0);
-}
-
-function hasCommandAckMarker(body: JsonValue) {
-  return /<!--\s*clawsweeper-command-ack:[^>]*-->/.test(String(body ?? ""));
-}
-
 function syntheticLegacyCommandCommentId(
   body: JsonValue,
   statusMarker: string,
   completionCommentId: number,
 ) {
-  const status = /^<!--\s*clawsweeper-command-status:(\d+):([^:\s>]+):([^:\s>]+)\s*-->$/.exec(
-    statusMarker,
-  );
+  const status = parseCommandStatusMarker(statusMarker);
   if (!status) return null;
-  const commandMarkers = Array.from(
-    String(body ?? "").matchAll(/<!--\s*clawsweeper-command:[^>]+-->/g),
-  );
-  if (commandMarkers.length !== 1) return null;
+  if (commandResponseMarkersInBody(body).length !== 1) return null;
   const syntheticCommands = Array.from(
     String(body ?? "").matchAll(
       /<!--\s*clawsweeper-command:repair-loop-label-sweep:(autofix|automerge):(\d+):(autofix|automerge):([^:\s>]+)\s*-->/g,
@@ -659,21 +653,14 @@ function syntheticLegacyCommandCommentId(
   );
   if (
     syntheticCommands.length !== 1 ||
-    syntheticCommands[0]![1] !== status[2] ||
-    syntheticCommands[0]![2] !== status[1] ||
-    syntheticCommands[0]![3] !== status[2] ||
-    syntheticCommands[0]![4] !== status[3]
+    syntheticCommands[0]![1] !== status.intent ||
+    syntheticCommands[0]![2] !== status.issueNumber ||
+    syntheticCommands[0]![3] !== status.intent ||
+    syntheticCommands[0]![4] !== status.revision
   ) {
     return null;
   }
   return completionCommentId;
-}
-
-function commandStatusMarkersFromBody(body: JsonValue) {
-  return Array.from(
-    String(body ?? "").matchAll(/<!--\s*clawsweeper-command-status:[^>]+-->/g),
-    (match) => match[0],
-  );
 }
 
 function renderCommandProgressSection(options: Pick<Options, "state" | "detail" | "runUrl">) {

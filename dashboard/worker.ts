@@ -27,6 +27,7 @@ import {
   targetDispatchQueueIntake,
 } from "./target-dispatch-ingress.ts";
 import { legacyCommandCommentId } from "../src/repair/command-ack-convergence.ts";
+import { commandAckMarker } from "../src/repair/markers.ts";
 import { directReReviewIntake } from "../src/repair/direct-re-review-admission.ts";
 import { isExactReviewCloseGuardLabel } from "../src/repair/exact-review-guard-labels.ts";
 import { sha256Hex } from "./exact-review-direct-publication.ts";
@@ -7452,7 +7453,7 @@ async function createFastAckComment({
   repo,
   itemNumber,
   sourceCommentId = undefined,
-  ackMarker = fastAckMarker(sourceCommentId),
+  ackMarker = commandAckMarker(sourceCommentId),
   ackMatch = undefined,
   ackBody = renderFastAckComment(sourceCommentId),
   sinceMs = 24 * 60 * 60 * 1000,
@@ -7488,7 +7489,7 @@ function settleFastAckComments({
   repo,
   itemNumber,
   sourceCommentId = undefined,
-  ackMarker = fastAckMarker(sourceCommentId),
+  ackMarker = commandAckMarker(sourceCommentId),
   ackMatch = undefined,
   sinceMs = 24 * 60 * 60 * 1000,
   delaysMs = DEFAULT_FAST_ACK_SETTLE_DELAYS_MS,
@@ -7528,7 +7529,7 @@ async function createFastAckCommentOnce({
   repo,
   itemNumber,
   sourceCommentId = undefined,
-  ackMarker = fastAckMarker(sourceCommentId),
+  ackMarker = commandAckMarker(sourceCommentId),
   ackMatch = undefined,
   ackDedupeKey = ackMarker,
   ackBody = renderFastAckComment(sourceCommentId),
@@ -7570,7 +7571,7 @@ async function pruneFastAckComments({
   repo,
   itemNumber,
   sourceCommentId = undefined,
-  ackMarker = fastAckMarker(sourceCommentId),
+  ackMarker = commandAckMarker(sourceCommentId),
   ackMatch = undefined,
   sinceMs = 24 * 60 * 60 * 1000,
 }) {
@@ -7681,16 +7682,12 @@ async function listFastAckComments({
 
 function renderFastAckComment(sourceCommentId) {
   return [
-    fastAckMarker(sourceCommentId),
+    commandAckMarker(sourceCommentId),
     "🦞👀",
     "ClawSweeper picked this up.",
     "",
     "Command router queued. I will update this comment with the next step.",
   ].join("\n");
-}
-
-function fastAckMarker(sourceCommentId) {
-  return `<!-- clawsweeper-command-ack:${sourceCommentId} -->`;
 }
 
 async function addIssueCommentReaction({ env, token, repo, commentId, content }) {

@@ -32,6 +32,7 @@ import {
   compareCommandAckKeepPriority,
   isCommandAckStatusComment,
 } from "./command-ack-convergence.js";
+import { commandAckMarker } from "./markers.js";
 
 const DEFAULT_PORT = 8787;
 export const WEBHOOK_MAX_BODY_BYTES = 2 * 1024 * 1024;
@@ -522,16 +523,12 @@ function normalizedLogin(value: JsonValue) {
 
 export function renderFastAckComment(sourceCommentId: number) {
   return [
-    fastAckMarker(sourceCommentId),
+    commandAckMarker(sourceCommentId),
     "🦞👀",
     "ClawSweeper picked this up.",
     "",
     "Command router queued. I will update this comment with the next step.",
   ].join("\n");
-}
-
-function fastAckMarker(sourceCommentId: number) {
-  return `<!-- clawsweeper-command-ack:${sourceCommentId} -->`;
 }
 
 export function verifyGitHubSignature({
@@ -784,7 +781,7 @@ async function listFastAckComments({
   sourceCommentId: number;
 }) {
   const comments: LooseRecord[] = [];
-  const marker = fastAckMarker(sourceCommentId);
+  const marker = commandAckMarker(sourceCommentId);
   const since = encodeURIComponent(new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString());
   for (let page = 1; page <= 5; page += 1) {
     const response = await githubFetch({

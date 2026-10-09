@@ -19,10 +19,14 @@ import {
   NEEDS_SECURITY_REVIEW_LABEL,
   SECURITY_PROTECTED_LABEL_NAMES,
 } from "./exact-review-guard-labels.js";
-export {
-  commandStatusMarkerFromBody,
-  planCommandAckConvergence,
-} from "./command-ack-convergence.js";
+import {
+  AUTOMERGE_STATUS_INTENTS,
+  automergeRequestedByAttributes,
+  commandResponseMarker,
+  commandResponseMarkerPrefix,
+  commandStatusMarker,
+  markerAttributes,
+} from "./markers.js";
 import {
   isAutoCloseAllowed,
   repositoryProfileFor,
@@ -84,12 +88,6 @@ const CLAWSWEEPER_REPLY_BADGES = {
   sweep: "🦞🧹",
   done: "🦞✅",
 };
-const AUTOMERGE_STATUS_INTENTS = new Set([
-  "automerge",
-  "clawsweeper_auto_repair",
-  "clawsweeper_auto_merge",
-  "maintainer_approve_automerge",
-]);
 const REPAIRABLE_CHECK_BLOCKER_CONCLUSIONS = new Set([
   "ACTION_REQUIRED",
   "ERROR",
@@ -1191,11 +1189,8 @@ function maintainerCredit(value: LooseRecord): LooseRecord | null {
 }
 
 export function automergeRequestedByFromBody(body: JsonValue): LooseRecord | null {
-  const marker = String(body ?? "").match(
-    /<!--\s*clawsweeper-automerge-requested-by\s+([^>]*)-->/i,
-  );
-  if (!marker) return null;
-  const attrs = markerAttributes(marker[1] ?? "");
+  const attrs = automergeRequestedByAttributes(body);
+  if (!attrs) return null;
   const author = attrs.login ?? attrs.author ?? attrs.requested_by;
   if (!author) return null;
   return {
@@ -2411,12 +2406,8 @@ function compactReason(value: JsonValue, max = 300) {
 export function renderResponse(command: LooseRecord, dispatched: LooseRecord) {
   const markerId = command.comment_version_key ?? command.comment_id;
   const marker = [
-    commandStatusMarker(command),
-    commandResponseMarker({
-      commentId: markerId,
-      intent: command.intent,
-      headSha: command.target?.head_sha ?? "na",
-    }),
+    commandStatusMarkerForCommand(command),
+    commandResponseMarker(markerId, command.intent, command.target?.head_sha ?? "na"),
     commandReplyBadge(command, dispatched),
   ].join("\n");
   if (command.intent === "request_proof" && command.proof_admission) {
@@ -2762,10 +2753,6 @@ export function usesSharedAutomergeStatus(command: LooseRecord) {
   return AUTOMERGE_STATUS_INTENTS.has(String(command.intent ?? ""));
 }
 
-export function sharedAutomergeStatusMarkerPrefix(command: LooseRecord) {
-  return `<!-- clawsweeper-command-status:${command.issue_number ?? "unknown"}:`;
-}
-
 function commandFromText(trigger: JsonValue, value: JsonValue) {
   const rawText = String(value ?? "status").trim();
   const rawCommand = rawText.replace(/\s+/g, " ");
@@ -2942,26 +2929,22 @@ function normalizeIntent(command: LooseRecord) {
   return "help";
 }
 
-export function commandStatusMarker(command: LooseRecord) {
-  return `<!-- clawsweeper-command-status:${command.issue_number ?? "unknown"}:${command.intent}:${command.command_status_revision ?? command.target?.head_sha ?? "na"} -->`;
-}
-
-export function commandStatusMarkerPrefix(command: LooseRecord) {
-  return `<!-- clawsweeper-command-status:${command.issue_number ?? "unknown"}:${command.intent}:`;
-}
-
-export function commandResponseMarker({ commentId, intent, headSha = "na" }: LooseRecord): string {
-  return `<!-- clawsweeper-command:${commentId}:${intent}:${headSha ?? "na"} -->`;
-}
-
-export function commandResponseMarkerPrefix({ commentId, intent }: LooseRecord): string {
-  return `<!-- clawsweeper-command:${commentId}:${intent}:`;
+export function commandStatusMarkerForCommand(command: LooseRecord) {
+  return commandStatusMarker(
+    command.issue_number ?? "unknown",
+    command.intent,
+    command.command_status_revision ?? command.target?.head_sha ?? "na",
+  );
 }
 
 export function hasCommandResponseMarker(body: JsonValue, command: LooseRecord): boolean {
   const text = String(body ?? "");
-  if (command.matchAnyHead) return text.includes(commandResponseMarkerPrefix(command));
-  return text.includes(commandResponseMarker(command));
+  if (command.matchAnyHead) {
+    return text.includes(commandResponseMarkerPrefix(command.commentId, command.intent));
+  }
+  return text.includes(
+    commandResponseMarker(command.commentId, command.intent, command.headSha ?? "na"),
+  );
 }
 
 export function staleClosedItemCommandReason({
@@ -3290,15 +3273,6 @@ function clawsweeperMarker(body: string, kind: string) {
     action: (marker[1] ?? "").toLowerCase(),
     attrs: markerAttributes(marker[2] ?? ""),
   };
-}
-
-function markerAttributes(input: JsonValue) {
-  const attrs: Record<string, string> = {};
-  for (const match of String(input ?? "").matchAll(/([a-z0-9_-]+)=("[^"]*"|'[^']*'|[^\s>]+)/gi)) {
-    const raw = match[2] ?? "";
-    attrs[(match[1] ?? "").toLowerCase()] = raw.replace(/^["']|["']$/g, "");
-  }
-  return attrs;
 }
 
 function markerReasonSuffix(attrs: LooseRecord) {

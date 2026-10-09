@@ -44,10 +44,8 @@ import {
   type HostedTargetEligibility,
   type HostedTargetAdmission,
 } from "../src/hosted-target-admission.ts";
-import {
-  clawSweeperCommandAckMarker,
-  renderClawSweeperQueuedAcknowledgement,
-} from "../src/repair/comment-command-text.ts";
+import { renderClawSweeperQueuedAcknowledgement } from "../src/repair/comment-command-text.ts";
+import { commandAckMarker } from "../src/repair/markers.ts";
 import { planCommandAckConvergence } from "../src/repair/command-ack-convergence.ts";
 import type { DirectReReviewDecision } from "../src/repair/direct-re-review-admission.ts";
 import {
@@ -17931,7 +17929,7 @@ export async function convergeCommandAcknowledgement(options: {
   sourceCommentId: number;
 }) {
   const token = await options.token;
-  const ackMarker = clawSweeperCommandAckMarker(options.sourceCommentId);
+  const ackMarker = commandAckMarker(options.sourceCommentId);
   const statusMarker = options.decision.commandStatusMarker;
   const trustedBotLogins = exactReviewCommandBotLogins(options.env);
   const trustedAcknowledgement = (comment: Record<string, unknown>) =>

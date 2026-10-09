@@ -9,6 +9,7 @@ import { repoSlug } from "./comment-router-core.js";
 import { isAllowedMutationActor, writePayload } from "./comment-router-utils.js";
 import { ghJsonWithRetry, ghPagedWithRetry, ghText } from "./github-cli.js";
 import type { JsonValue, LooseRecord } from "./json-types.js";
+import { commandStatusMarker } from "./markers.js";
 import { parseArgs, parseJob, repoRoot } from "./lib.js";
 
 const PROGRESS_START = "<!-- clawsweeper-issue-implementation-progress:start -->";
@@ -128,7 +129,7 @@ async function main() {
 }
 
 export function issueImplementationStatusMarker(itemNumber: number) {
-  return `<!-- clawsweeper-command-status:${itemNumber}:implement_issue:auto -->`;
+  return commandStatusMarker(itemNumber, "implement_issue", "auto");
 }
 
 export function renderIssueImplementationStatusComment(

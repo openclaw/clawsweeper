@@ -45,13 +45,11 @@ import {
   buildAutomergeMergeArgs,
   buildAutomergeSquashMessage,
   commandHasAction,
-  commandResponseMarker,
   createCachedIssueCommentsLookup,
   createCachedIssueCommentsLookupAsync,
   createCachedLabelNumberLookup,
   hasCommandResponseMarker,
-  commandStatusMarker,
-  commandStatusMarkerPrefix,
+  commandStatusMarkerForCommand,
   existingCommandStatusBlocksReplay,
   existingModeStatusBlocksReplay,
   existingRepairLoopModeOutcome,
@@ -88,7 +86,6 @@ import {
   renderIssueImplementationJob,
   renderResponse,
   selectPullRepairJob,
-  sharedAutomergeStatusMarkerPrefix,
   staleClosedItemCommandReason,
   shouldClearMaintainerCommandReaction,
   syncAutomergeJobRepairMode,
@@ -97,11 +94,16 @@ import {
   trustedCloseBlockReason,
   usesSharedAutomergeStatus,
 } from "./comment-router-core.js";
+import { planCommandAckConvergence } from "./command-ack-convergence.js";
 import {
+  hasAutomergeCommandStatusMarker,
+  commandAckMarker,
   commandAckMarkerFromBody,
+  commandResponseMarker,
   commandStatusMarkerFromBody,
-  planCommandAckConvergence,
-} from "./command-ack-convergence.js";
+  commandStatusMarkerPrefix,
+  itemCommandStatusMarkerPrefix,
+} from "./markers.js";
 import { mergeAutomergeTimelineSection } from "./automerge-status-timeline.js";
 import {
   automergeSessionId,
@@ -3386,7 +3388,7 @@ function dispatchClawSweeperReview(command: LooseRecord): LooseRecord {
       : null;
   const commandStatus = requiresCommandStatus
     ? {
-        command_status_marker: commandStatusMarker(command),
+        command_status_marker: commandStatusMarkerForCommand(command),
         ...(command.status_comment_id
           ? { status_comment_id: String(command.status_comment_id) }
           : {}),
@@ -4989,7 +4991,7 @@ function hasExistingResponse(
 }
 
 function hasExistingModeStatusResponse(number: JsonValue, intent: JsonValue) {
-  const markerPrefix = commandStatusMarkerPrefix({ issue_number: number, intent });
+  const markerPrefix = commandStatusMarkerPrefix(number ?? "unknown", intent);
   const comments = cachedIssueComments(number);
   return comments.some((comment: JsonValue) => {
     if (!isTrustedStatusComment(comment)) return false;
@@ -5082,10 +5084,9 @@ function findPrecreatedCommandStatusComment(command: LooseRecord) {
   const comment = fetchIssueComment(statusCommentId);
   if (!comment || !isTrustedStatusComment(comment)) return null;
   if (issueNumberFromUrl(comment.issue_url) !== Number(command.issue_number)) return null;
-  if (commandAckMarkerFromBody(comment.body) !== commandAckMarkerForCommentId(command.comment_id))
-    return null;
+  if (commandAckMarkerFromBody(comment.body) !== commandAckMarker(command.comment_id)) return null;
   const statusMarker = commandStatusMarkerFromBody(comment.body);
-  if (statusMarker && statusMarker !== commandStatusMarker(command)) return null;
+  if (statusMarker && statusMarker !== commandStatusMarkerForCommand(command)) return null;
   return comment;
 }
 
@@ -5123,7 +5124,7 @@ function convergeExactCommentVersionFastPathAck(command: LooseRecord, commentId:
     if (!isTrustedStatusComment(comment)) return "skipped_untrusted";
     if (issueNumberFromUrl(comment.issue_url) !== Number(command.issue_number))
       return "skipped_item_mismatch";
-    const ackMarker = commandAckMarkerForCommentId(command.comment_id);
+    const ackMarker = commandAckMarker(command.comment_id);
     if (commandAckMarkerFromBody(comment.body) !== ackMarker) return "skipped_marker_mismatch";
     if (commandStatusMarkerFromBody(comment.body)) return "already_terminal";
     const terminal = exactCommentVersionTerminalResponse(command, id);
@@ -5175,12 +5176,12 @@ function exactCommentVersionTerminalResponse(command: LooseRecord, excludeId: nu
 
 function exactCommentVersionMissingTerminalBody(command: LooseRecord) {
   return [
-    commandStatusMarker(command),
-    commandResponseMarker({
-      commentId: command.comment_version_key ?? command.comment_id,
-      intent: command.intent,
-      headSha: command.target?.head_sha ?? "na",
-    }),
+    commandStatusMarkerForCommand(command),
+    commandResponseMarker(
+      command.comment_version_key ?? command.comment_id,
+      command.intent,
+      command.target?.head_sha ?? "na",
+    ),
     "ClawSweeper already handled this exact command version.",
     "",
     "The original detailed response is no longer available. Run the command again for a fresh result.",
@@ -5192,7 +5193,7 @@ function exactCommentVersionAckFailed(result: string) {
 }
 
 function convergePrecreatedCommandAckCommentsInner(command: LooseRecord) {
-  const marker = commandAckMarkerForCommentId(command.comment_id);
+  const marker = commandAckMarker(command.comment_id);
   const comments = cachedIssueComments(command.issue_number).filter(
     (comment: JsonValue) =>
       isTrustedStatusComment(comment) && commandAckMarkerFromBody(comment.body) === marker,
@@ -5200,7 +5201,7 @@ function convergePrecreatedCommandAckCommentsInner(command: LooseRecord) {
   if (comments.length === 0) return null;
   const { keep, prunable } = planCommandAckConvergence(
     comments as LooseRecord[],
-    commandStatusMarker(command),
+    commandStatusMarkerForCommand(command),
   );
   if (!keep) return null;
   let deleted = false;
@@ -5218,10 +5219,6 @@ function convergePrecreatedCommandAckCommentsInner(command: LooseRecord) {
   }
   if (deleted) issueCommentsCache.delete(Number(command.issue_number));
   return keep;
-}
-
-function commandAckMarkerForCommentId(commentId: JsonValue) {
-  return `<!-- clawsweeper-command-ack:${commentId} -->`;
 }
 
 function automergeTimelineEvents(command: LooseRecord, body: string) {
@@ -5321,11 +5318,11 @@ function compactTimelineStatus(value: JsonValue) {
 }
 
 function findExistingCommandStatusComment(command: LooseRecord) {
-  const marker = commandStatusMarker(command);
+  const marker = commandStatusMarkerForCommand(command);
   const markerPrefix = usesSharedAutomergeStatus(command)
-    ? sharedAutomergeStatusMarkerPrefix(command)
+    ? itemCommandStatusMarkerPrefix(command.issue_number ?? "unknown")
     : ["autofix"].includes(String(command.intent ?? ""))
-      ? commandStatusMarkerPrefix(command)
+      ? commandStatusMarkerPrefix(command.issue_number ?? "unknown", command.intent)
       : null;
   return cachedIssueComments(command.issue_number)
     .slice()
@@ -5336,9 +5333,7 @@ function findExistingCommandStatusComment(command: LooseRecord) {
       if (body.includes(marker)) return true;
       if (!markerPrefix || !body.includes(markerPrefix)) return false;
       if (!usesSharedAutomergeStatus(command)) return true;
-      return /clawsweeper-command-status:\d+:(?:automerge|clawsweeper_auto_repair|clawsweeper_auto_merge|maintainer_approve_automerge):/i.test(
-        body,
-      );
+      return hasAutomergeCommandStatusMarker(body);
     });
 }
 

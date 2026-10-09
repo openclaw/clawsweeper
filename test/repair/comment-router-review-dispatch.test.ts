@@ -20,7 +20,7 @@ function reviewDispatch(status: number) {
       codexTimeoutMs: 600_000,
       mediaProofTimeoutMs: 30_000,
     }),
-    commandStatusMarker: () => "fixture-marker",
+    commandStatusMarkerForCommand: () => "fixture-marker",
     freeformReviewPrompt: () => "Preserve the requested scope",
     dispatchTokenEnv: () => ({}),
     runGitHubSpawnMutation: (...args: unknown[]) => {

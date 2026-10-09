@@ -1,0 +1,1 @@
+- Give the ClawSweeper command-ack, command-status, command response and automerge-requested-by markers one owner (`src/repair/markers.ts`) that builds and parses them, and delete the duplicate builders and regexes in the router, executor, webhook and dashboard Worker.

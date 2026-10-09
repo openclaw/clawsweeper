@@ -3,6 +3,7 @@ import type { JsonValue, LooseRecord } from "./json-types.js";
 import { randomInt } from "node:crypto";
 import { repairCodexReasoningEffort } from "./process-env.js";
 import { compactCommentText as compactForComment } from "./text-utils.js";
+import { automergeRequestedByMarker } from "./markers.js";
 
 const SIGNATURE = "ClawSweeper 🐠";
 const EVIDENCE_LIMIT = 5;
@@ -423,11 +424,7 @@ export function replacementPrBody({
   }
   const maintainer = automergeMaintainerAttribution(maintainerAttribution);
   if (maintainer) {
-    lines.push(
-      `<!-- clawsweeper-automerge-requested-by login="${escapeHtmlAttribute(
-        maintainer.login,
-      )}" id="${escapeHtmlAttribute(maintainer.id)}" -->`,
-    );
+    lines.push(automergeRequestedByMarker(maintainer.login, maintainer.id));
   }
   const closingReferences = uniqueLines(sourceClosingReferences);
   if (closingReferences.length > 0) {
@@ -479,14 +476,6 @@ function automergeMaintainerAttribution(value: LooseRecord): LooseRecord | null 
     login,
     id: String(value?.author_id ?? value?.id ?? value?.requested_by_id ?? "").trim(),
   };
-}
-
-function escapeHtmlAttribute(value: JsonValue) {
-  return String(value ?? "")
-    .replace(/&/g, "&amp;")
-    .replace(/"/g, "&quot;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;");
 }
 
 export function defaultCloseComment({

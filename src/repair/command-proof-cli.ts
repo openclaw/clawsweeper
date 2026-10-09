@@ -4,6 +4,7 @@ import { CommandProofConsumer } from "./command-proof-consumer.js";
 import { CommandProofHttpTransport } from "./command-proof-http.js";
 import { proofRecord, commandProofProducersFromEnv } from "../command-proof-contract.js";
 import { parseOptions, runCommandStatusUpdate } from "./update-command-status.js";
+import { commandStatusMarker } from "./markers.js";
 import { planCommandProof } from "./command-proof-planner.js";
 
 try {
@@ -19,11 +20,7 @@ try {
           "--item-number",
           String(claim.pullRequest),
           "--marker",
-          "<!-- clawsweeper-command-status:" +
-            claim.pullRequest +
-            ":request_proof:" +
-            claim.requestId +
-            " -->",
+          commandStatusMarker(claim.pullRequest, "request_proof", claim.requestId),
           "--state",
           state,
           "--detail",

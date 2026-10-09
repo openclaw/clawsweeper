@@ -1,3 +1,5 @@
+import { commandAckMarker } from "./markers.ts";
+
 export type ClawSweeperCommandTrigger = "slash" | "mention";
 
 export type ClawSweeperCommandLine = {
@@ -112,9 +114,6 @@ export function directReReviewAdditionalPrompt(options: {
   ].join("\n");
 }
 
-export const clawSweeperCommandAckMarker = (sourceCommentId: number) =>
-  `<!-- clawsweeper-command-ack:${sourceCommentId} -->`;
-
 export function renderClawSweeperQueuedAcknowledgement(
   sourceCommentId: number,
   statusMarker?: string,
@@ -127,7 +126,7 @@ export function renderClawSweeperQueuedAcknowledgement(
         "",
         "Command router queued. I will update this comment with the next step.",
       ];
-  return [clawSweeperCommandAckMarker(sourceCommentId), ...detail].join("\n");
+  return [commandAckMarker(sourceCommentId), ...detail].join("\n");
 }
 
 function commandLine(

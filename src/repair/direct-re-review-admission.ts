@@ -1,3 +1,5 @@
+import { commandStatusMarker } from "./markers.ts";
+
 export type DirectReReviewOrigin = "hosted_webhook" | "comment_router";
 export type InlineProofScenario = "web-ui-chat-proof" | "telegram-bot-e2e-proof";
 
@@ -221,5 +223,5 @@ function directReReviewStatusMarker(itemNumber: number, commandVersionId: string
   ) {
     throw new Error("exact re-review command status marker is invalid");
   }
-  return `<!-- clawsweeper-command-status:${itemNumber}:re_review:${commandVersionId} -->`;
+  return commandStatusMarker(itemNumber, "re_review", commandVersionId);
 }

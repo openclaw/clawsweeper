@@ -1,28 +1,21 @@
 import type { JsonValue, LooseRecord } from "./json-types.js";
+import {
+  commandResponseMarkersInBody,
+  commandStatusMarkerFromBody,
+  commandStatusMarkersInBody,
+  hasCommandAckMarker,
+  hasCommandStatusMarker,
+  parseCommandResponseMarker,
+  parseCommandStatusMarker,
+} from "./markers.ts";
 
 export const COMMAND_PROGRESS_START = "<!-- clawsweeper-command-progress:start -->";
 
-export function commandAckMarkerFromBody(body: JsonValue): string | null {
-  return String(body ?? "").match(/<!--\s*clawsweeper-command-ack:\d+\s*-->/)?.[0] ?? null;
-}
-
-export function commandStatusMarkerFromBody(body: JsonValue): string | null {
-  return (
-    String(body ?? "").match(new RegExp("<!--\\s*clawsweeper-command-status:[^>]+-->"))?.[0] ?? null
-  );
-}
-
 export function legacyCommandCommentId(body: JsonValue, statusMarker: string): number | null {
-  const text = String(body ?? "");
-  if (/<!--\s*clawsweeper-command-ack:[^>]*-->/i.test(text)) return null;
-  const statusMarkers = Array.from(
-    text.matchAll(/<!--\s*clawsweeper-command-status:[^>]+-->/gi),
-    (match) => match[0],
-  );
-  const commandMarkers = Array.from(
-    text.matchAll(/<!--\s*clawsweeper-command:[^>]+-->/gi),
-    (match) => match[0],
-  );
+  // The legacy grammar matches markers case-insensitively.
+  if (hasCommandAckMarker(body, { ignoreCase: true })) return null;
+  const statusMarkers = commandStatusMarkersInBody(body, { ignoreCase: true });
+  const commandMarkers = commandResponseMarkersInBody(body, { ignoreCase: true });
   if (
     statusMarkers.length !== 1 ||
     statusMarkers[0] !== statusMarker ||
@@ -30,23 +23,19 @@ export function legacyCommandCommentId(body: JsonValue, statusMarker: string): n
   ) {
     return null;
   }
-  const status = /^<!--\s*clawsweeper-command-status:(\d+):([^:\s>]+):([^:\s>]+)\s*-->$/i.exec(
-    statusMarker,
-  );
-  const command = /^<!--\s*clawsweeper-command:(\d+):(?:(.+):)?([^:\s>]+):([^:\s>]+)\s*-->$/i.exec(
-    commandMarkers[0]!,
-  );
-  if (!status || !command || command[3] !== status[2]) return null;
-  const commandCommentId = Number(command[1]);
+  const status = parseCommandStatusMarker(statusMarker, { ignoreCase: true });
+  const command = parseCommandResponseMarker(commandMarkers[0]);
+  if (!status || !command || command.intent !== status.intent) return null;
+  const commandCommentId = Number(command.commentId);
   if (!Number.isSafeInteger(commandCommentId) || commandCommentId < 1) return null;
 
-  const commandRevision = /^command-(\d+)-([0-9a-z]+)-[0-9a-f]{64}$/.exec(status[3]!);
-  if (!commandRevision) return command[4] === status[3] ? commandCommentId : null;
+  const commandRevision = /^command-(\d+)-([0-9a-z]+)-[0-9a-f]{64}$/.exec(status.revision);
+  if (!commandRevision) return command.revision === status.revision ? commandCommentId : null;
 
   // Current direct re-review status revisions encode the legacy command's
   // comment id and timestamp; its trailing digest intentionally differs.
-  const commandTimestamp = Date.parse(command[2] ?? "");
-  return commandRevision[1] === command[1] &&
+  const commandTimestamp = Date.parse(command.createdAt ?? "");
+  return commandRevision[1] === command.commentId &&
     Number.isSafeInteger(commandTimestamp) &&
     commandTimestamp.toString(36) === commandRevision[2]
     ? commandCommentId
@@ -110,7 +99,7 @@ export function compareCommandAckKeepPriority(left: LooseRecord, right: LooseRec
 
 export function isCommandAckStatusComment(comment: LooseRecord): boolean {
   const body = String(comment.body ?? "");
-  return body.includes("clawsweeper-command-status:") || body.includes(COMMAND_PROGRESS_START);
+  return hasCommandStatusMarker(body) || body.includes(COMMAND_PROGRESS_START);
 }
 
 function compareCommentsByUpdatedAtDesc(left: LooseRecord, right: LooseRecord): number {

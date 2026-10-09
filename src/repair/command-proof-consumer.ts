@@ -10,6 +10,7 @@ import {
   type CommandProofClaim,
 } from "../command-proof-contract.js";
 import { parseCommand } from "./comment-router-core.js";
+import { commandStatusMarker } from "./markers.js";
 import { GitHubRateLimitError } from "../github-retry.js";
 import { admitProofCommand } from "./proof-command.js";
 import {
@@ -517,12 +518,11 @@ export class CommandProofConsumer {
           sourceCommentVerified: true,
           sourceDeliveryId: deliveryId,
           additionalPrompt: context,
-          commandStatusMarker:
-            "<!-- clawsweeper-command-status:" +
-            claim.pullRequest +
-            ":request_proof:" +
-            claim.requestId +
-            " -->",
+          commandStatusMarker: commandStatusMarker(
+            claim.pullRequest,
+            "request_proof",
+            claim.requestId,
+          ),
         },
       }),
     );

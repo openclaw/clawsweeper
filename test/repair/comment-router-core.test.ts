@@ -25,10 +25,6 @@ import {
   commandHasAction,
   createCachedIssueCommentsLookup,
   createCachedIssueCommentsLookupAsync,
-  commandResponseMarker,
-  commandResponseMarkerPrefix,
-  commandStatusMarkerFromBody,
-  commandStatusMarkerPrefix,
   createCachedLabelNumberLookup,
   existingCommandStatusBlocksReplay,
   existingModeStatusBlocksReplay,
@@ -52,7 +48,6 @@ import {
   maintainerModeCommandCanResumePausedMode,
   parseCommand,
   parseRoutedCommentCommand,
-  planCommandAckConvergence,
   pausedModeStatusBlocksReplay,
   parseTrustedAutomation,
   repairableCheckBlockers,
@@ -70,7 +65,6 @@ import {
   renderIssueImplementationJob,
   renderResponse,
   selectPullRepairJob,
-  sharedAutomergeStatusMarkerPrefix,
   staleClosedItemCommandReason,
   syncAutomergeJobRepairMode,
   shouldClearMaintainerCommandReaction,
@@ -80,6 +74,14 @@ import {
   trustedCloseBlockReason,
   usesSharedAutomergeStatus,
 } from "../../dist/repair/comment-router-core.js";
+import { planCommandAckConvergence } from "../../dist/repair/command-ack-convergence.js";
+import {
+  commandResponseMarker,
+  commandResponseMarkerPrefix,
+  commandStatusMarkerFromBody,
+  commandStatusMarkerPrefix,
+  itemCommandStatusMarkerPrefix,
+} from "../../dist/repair/markers.js";
 import { CLAWSWEEPER_CO_AUTHOR_TRAILER } from "../../dist/repair/co-author-credit.js";
 import { issueSourceRevisionSha256 } from "../../dist/repair/issue-source-guard.js";
 import { parseSimpleYaml, validateJob } from "../../dist/repair/lib.js";
@@ -643,11 +645,7 @@ test("force reprocess bypasses existing command status guards", () => {
 
 test("automerge status marker prefix is stable across head changes", () => {
   assert.equal(
-    commandStatusMarkerPrefix({
-      issue_number: 75338,
-      intent: "automerge",
-      target: { head_sha: "old" },
-    }),
+    commandStatusMarkerPrefix(75338, "automerge"),
     "<!-- clawsweeper-command-status:75338:automerge:",
   );
 });
@@ -672,15 +670,11 @@ test("command response markers can match across head changes", () => {
 
   assert.match(body, /clawsweeper-command:4358615144:fix_ci:dc3e9a97a2c655/);
   assert.equal(
-    commandResponseMarker({
-      commentId: "4358615144",
-      intent: "fix_ci",
-      headSha: "dc3e9a97a2c655c0c054cddb5a64e7b6fc51dd10",
-    }),
+    commandResponseMarker("4358615144", "fix_ci", "dc3e9a97a2c655c0c054cddb5a64e7b6fc51dd10"),
     "<!-- clawsweeper-command:4358615144:fix_ci:dc3e9a97a2c655c0c054cddb5a64e7b6fc51dd10 -->",
   );
   assert.equal(
-    commandResponseMarkerPrefix({ commentId: "4358615144", intent: "fix_ci" }),
+    commandResponseMarkerPrefix("4358615144", "fix_ci"),
     "<!-- clawsweeper-command:4358615144:fix_ci:",
   );
   assert.equal(
@@ -2645,7 +2639,7 @@ test("exact comment fast path converges terminal acknowledgement before own reac
   assert.match(ackConvergence, /exactCommentVersionTerminalResponse\(command, id\)/);
   assert.match(ackConvergence, /hasCommandResponseMarker\(comment\.body/);
   assert.match(ackConvergence, /exactCommentVersionMissingTerminalBody\(command\)/);
-  assert.match(ackConvergence, /commandResponseMarker\(\{/);
+  assert.match(ackConvergence, /commandResponseMarker\(/);
   assert.match(ackConvergence, /"--method",\s*"PATCH"/);
   assert.match(ackConvergence, /githubNotFoundNoMutation/);
   assert.doesNotMatch(ackConvergence, /renderResponse\(/);
@@ -4155,10 +4149,7 @@ test("automerge loop intents share one status comment thread", () => {
   assert.equal(usesSharedAutomergeStatus({ intent: "clawsweeper_auto_repair" }), true);
   assert.equal(usesSharedAutomergeStatus({ intent: "clawsweeper_auto_merge" }), true);
   assert.equal(usesSharedAutomergeStatus({ intent: "status" }), false);
-  assert.equal(
-    sharedAutomergeStatusMarkerPrefix({ issue_number: 75183 }),
-    "<!-- clawsweeper-command-status:75183:",
-  );
+  assert.equal(itemCommandStatusMarkerPrefix(75183), "<!-- clawsweeper-command-status:75183:");
 });
 
 test("renderResponse picks human-review guidance from the typed hold", () => {

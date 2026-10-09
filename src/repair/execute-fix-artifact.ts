@@ -60,6 +60,12 @@ import {
   needsHumanHoldAllowsAutomergeOptIn,
   parseTrustedAutomation,
 } from "./comment-router-core.js";
+import { SELF_HEAL_STATUS_MARKER_INTENT } from "./conflict-self-heal-core.js";
+import {
+  AUTOMERGE_STATUS_INTENTS,
+  automergeStatusMarkerFromBody,
+  commandStatusMarkerPrefix,
+} from "./markers.js";
 import { parsePullRequestUrl, pullRequestNumberFromUrl, sameRepoSlug } from "./github-ref.js";
 import {
   clawsweeperGitUserEmail,
@@ -90,6 +96,8 @@ import { CLAWSWEEPER_BOT_LOGINS } from "../clawsweeper-policy.js";
 const AUTOFIX_LABEL_COLOR = "0A3069";
 const AUTOFIX_LABEL_DESCRIPTION =
   "Maintainer opted this PR into bounded ClawSweeper-reviewed autofix without merge";
+// The automerge executor also owns the self-heal status marker.
+const EXECUTOR_STATUS_INTENTS = [...AUTOMERGE_STATUS_INTENTS, SELF_HEAL_STATUS_MARKER_INTENT];
 import {
   buildFixPrompt,
   buildRepositoryContext,
@@ -3923,7 +3931,10 @@ function issueImplementationTargetIssueNumber() {
 
 function findIssueImplementationStatusComment(number: JsonValue) {
   const issueNumber = Number(number);
-  const marker = `<!-- clawsweeper-command-status:${Number.isFinite(issueNumber) ? issueNumber : "unknown"}:implement_issue:`;
+  const marker = commandStatusMarkerPrefix(
+    Number.isFinite(issueNumber) ? issueNumber : "unknown",
+    "implement_issue",
+  );
   return issueCommentsFor(number)
     .reverse()
     .find((comment: LooseRecord) => {
@@ -4314,7 +4325,11 @@ function dispatchAutomergeCommentRouter({
 function dispatchAutomergeReviewAfterBranchRepair({ target, commit, statusComment }: LooseRecord) {
   const reviewRepo = String(process.env.CLAWSWEEPER_REVIEW_REPO ?? "openclaw/clawsweeper").trim();
   const dispatchedAt = new Date().toISOString();
-  const commandStatusMarker = automergeStatusMarkerFromBody(statusComment?.body, target);
+  const commandStatusMarker = automergeStatusMarkerFromBody(
+    statusComment?.body,
+    target,
+    EXECUTOR_STATUS_INTENTS,
+  );
   const statusCommentId = Number(statusComment?.id ?? 0);
   const commandContext =
     commandStatusMarker && Number.isSafeInteger(statusCommentId) && statusCommentId > 0
@@ -4450,7 +4465,7 @@ function issueHasCommentMarker(number: JsonValue, marker: LooseRecord) {
 function findAutomergeStatusComment(number: JsonValue, comments = issueCommentsFor(number)) {
   return [...comments].reverse().find((comment: LooseRecord) => {
     if (!isTrustedStatusComment(comment)) return false;
-    return Boolean(automergeStatusMarkerFromBody(comment.body, number));
+    return Boolean(automergeStatusMarkerFromBody(comment.body, number, EXECUTOR_STATUS_INTENTS));
   });
 }
 
@@ -4501,19 +4516,6 @@ function fetchPullRequestViewForRepo({ repo, number }: LooseRecord) {
 
 function isTrustedStatusComment(comment: LooseRecord) {
   return isTrustedStatusCommentAuthor(comment, CLAWSWEEPER_BOT_LOGINS);
-}
-
-function automergeStatusMarkerFromBody(body: JsonValue, number: JsonValue) {
-  const issueNumber = Number(number);
-  if (!Number.isSafeInteger(issueNumber) || issueNumber < 1) return null;
-  return (
-    String(body ?? "").match(
-      new RegExp(
-        `<!-- clawsweeper-command-status:${issueNumber}:(?:automerge|clawsweeper_auto_repair|clawsweeper_auto_merge|maintainer_approve_automerge|clawsweeper_self_rebase):[^<>\\r\\n]{1,120} -->`,
-        "i",
-      ),
-    )?.[0] ?? null
-  );
 }
 
 function preserveStatusMarkers(existingBody: JsonValue, nextBody: string) {

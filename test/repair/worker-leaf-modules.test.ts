@@ -4,7 +4,7 @@ import test from "node:test";
 
 // The dashboard Worker imports these modules directly and has no Node APIs.
 // They must not load Node code at runtime.
-const WORKER_LEAF_MODULES = ["src/repair/exact-review-guard-labels.ts"];
+const WORKER_LEAF_MODULES = ["src/repair/exact-review-guard-labels.ts", "src/repair/markers.ts"];
 
 for (const file of WORKER_LEAF_MODULES) {
   test(`${file} has no runtime imports`, () => {
