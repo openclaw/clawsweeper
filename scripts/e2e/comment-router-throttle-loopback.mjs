@@ -81,14 +81,27 @@ const args = process.argv.slice(2);
 const valued = new Set(["--method", "-X", "--input", "--jq", "-H", "--header", "-f", "-F"]);
 let endpoint = "";
 let method = "GET";
+let input = null;
 for (let index = 1; args[0] === "api" && index < args.length; index += 1) {
   if (args[index] === "--method" || args[index] === "-X") method = args[index + 1];
+  if (args[index] === "--input") input = args[index + 1];
   if (valued.has(args[index])) index += 1;
   else if (!endpoint && !args[index].startsWith("-")) endpoint = args[index];
 }
-if (args.includes("-")) for await (const _chunk of process.stdin);
+// "gh pr view N --repo R" reads one pull request fixture.
+if (args[0] === "pr" && args[1] === "view") {
+  endpoint = "repos/" + args[args.indexOf("--repo") + 1] + "/__pr/" + args[2];
+}
+let payload;
+if (input === "-") {
+  payload = "";
+  for await (const chunk of process.stdin) payload += chunk;
+} else if (input) {
+  payload = (await import("node:fs")).readFileSync(input, "utf8");
+}
 const response = await fetch(new URL(endpoint, process.env.GITHUB_API_URL + "/"), {
   method,
+  body: payload,
   headers: { authorization: "Bearer loopback-proof-token" },
 });
 const body = await response.json();
@@ -104,7 +117,8 @@ process.stdout.write(JSON.stringify(args.includes("--slurp") ? [body] : body));
 
 let mode = "throttle";
 const requests = [];
-// Executed commands: status replies on issues 3 and 5 and an assist dispatch on issue 4.
+// Executed commands: status replies on issues 3 and 5, an assist dispatch on issue 4,
+// and an autofix review dispatch on pull request 6.
 const executionCommands = {
   3: commandComment({ id: 300, issueNumber: 3 }),
   4: commandComment({
@@ -113,7 +127,18 @@ const executionCommands = {
     body: "/clawsweeper ask is this blocked on flaky CI?",
   }),
   5: commandComment({ id: 500, issueNumber: 5 }),
+  6: commandComment({ id: 600, issueNumber: 6, body: "/clawsweeper autofix" }),
 };
+// The status comment that an earlier autofix command on pull request 6 left behind.
+const retainedStatus = {
+  id: 650,
+  body: "<!-- clawsweeper-command-status:6:autofix:0000000 -->\nAutofix is active.",
+  issue_url: `https://api.github.com/repos/${targetRepo}/issues/6`,
+  user: { login: "openclaw-clawsweeper[bot]" },
+  created_at: "2026-08-13T11:00:00.000Z",
+  updated_at: "2026-08-13T11:00:00.000Z",
+};
+const dispatchBodies = [];
 // The webhook acknowledgement for comment 500. It is deleted before the router updates it.
 const deletedAck = {
   id: 501,
@@ -121,7 +146,7 @@ const deletedAck = {
   issue_url: `https://api.github.com/repos/${targetRepo}/issues/5`,
   user: { login: "openclaw-clawsweeper[bot]" },
 };
-const server = http.createServer((request, response) => {
+const server = http.createServer(async (request, response) => {
   const url = new URL(request.url || "/", "http://loopback.invalid");
   requests.push(`${request.method} ${url.pathname}${url.search}`);
   if (mode === "before-discovery") {
@@ -137,7 +162,41 @@ const server = http.createServer((request, response) => {
     if (url.pathname.endsWith(`/issues/comments/${deletedAck.id}`)) {
       return json(response, 404, { message: "Not Found" });
     }
+    if (url.pathname.endsWith("/dispatches")) {
+      let body = "";
+      for await (const chunk of request) body += chunk;
+      dispatchBodies.push(JSON.parse(body));
+    }
     return json(response, 201, { id: 1 });
+  }
+  if (url.pathname === `/repos/${targetRepo}/__pr/6`) {
+    return json(response, 200, {
+      additions: 10,
+      deletions: 2,
+      changedFiles: 1,
+      files: [{ path: "src/a.ts", additions: 10, deletions: 2 }],
+      headRefName: "fix",
+      headRefOid: "1".repeat(40),
+      baseRefName: "main",
+      author: { login: "contributor" },
+      body: "Fix a bug",
+      title: "Fix a bug",
+      closingIssuesReferences: [],
+      commits: [],
+      isDraft: false,
+      labels: [],
+      mergeable: "MERGEABLE",
+      mergeCommit: null,
+      mergeStateStatus: "CLEAN",
+      mergedAt: null,
+      reviewDecision: "",
+      state: "OPEN",
+      statusCheckRollup: [],
+      url: `https://github.com/${targetRepo}/pull/6`,
+    });
+  }
+  if (url.pathname === `/repos/${targetRepo}/issues/6/comments`) {
+    return json(response, 200, [retainedStatus, executionCommands[6]]);
   }
   if (url.pathname === "/user") return json(response, 200, { login: "openclaw-clawsweeper[bot]" });
   if (url.pathname === `/repos/${targetRepo}/issues/comments/${deletedAck.id}`) {
@@ -157,6 +216,7 @@ const server = http.createServer((request, response) => {
         body: "Router mutation throttle fixture",
         user: { login: "reporter" },
         labels: [],
+        ...(issueNumber === "6" ? { pull_request: { url: `${issuePath}/pull` } } : {}),
       });
     }
     if (url.pathname === `${issuePath}/comments`) return json(response, 200, [comment]);
@@ -388,6 +448,26 @@ try {
   assert.equal(forcedCommand.forced_replay, true);
   assert.equal(forcedCommand.attempt_id, "forced-replay-42");
 
+  // An autofix review follow-up keeps the existing status comment in its dispatch.
+  const autofix = await runExecutedCommand(apiUrl, 6);
+  assert.equal(autofix.status, 0, autofix.stderr || autofix.stdout);
+  const reviewDispatch = dispatchBodies.find((body) => body.event_type === "clawsweeper_item");
+  assert.ok(reviewDispatch, JSON.stringify(autofix.report));
+  assert.equal(reviewDispatch.client_payload.target_repo, targetRepo);
+  assert.equal(reviewDispatch.client_payload.item_number, "6");
+  assert.equal(reviewDispatch.client_payload.item_kind, "pull_request");
+  assert.equal(reviewDispatch.client_payload.status_comment_id, String(retainedStatus.id));
+  assert.match(
+    reviewDispatch.client_payload.command_status_marker,
+    /^<!-- clawsweeper-command-status:6:autofix:/,
+  );
+  assert.ok(reviewDispatch.client_payload.review_options);
+  assert.equal(
+    reviewDispatch.client_payload.dispatch_key,
+    autofix.command?.actions.find((action) => action.action === "dispatch_clawsweeper")
+      ?.dispatch_key,
+  );
+
   process.stdout.write(
     `${JSON.stringify(
       {
@@ -421,6 +501,7 @@ try {
           throttled_dispatch_defers_command: true,
           deleted_ack_converges_without_write: true,
           forced_replay_attempt_routed: true,
+          review_dispatch_keeps_status_comment: true,
         },
         requests,
       },
