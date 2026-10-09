@@ -1454,7 +1454,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
               reviewOutputMediaLimits(outputBudget, proofScratchDir),
               writeOutputMetadata,
             );
-        const reviewEnv = reviewEnvironment(localOnly);
+        const reviewEnv = reviewEnvironment(sandboxMode, localOnly);
         // The review sandbox cannot fetch old blobs: make the changed files'
         // history local first, so host blame and the reviewer both read it.
         const historyCoverage =

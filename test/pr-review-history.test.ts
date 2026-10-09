@@ -149,7 +149,10 @@ test("history prefetch reports an unusable checkout instead of throwing", () => 
       mainSha: f.base,
     });
     assert.equal(missingHead.status, "unavailable");
-    assert.match(reviewHistoryCapability(missingHead), /^Old file contents are not local: /);
+    assert.match(
+      reviewHistoryCapability(missingHead, "allowlisted-proxy"),
+      /^Old file contents were not prefetched: /,
+    );
     git(f.clone, "remote", "set-url", "origin", `file://${join(f.root, "gone")}`);
     const failedFetch = pullRequestHistoryCoverage({
       targetDir: f.clone,
@@ -159,7 +162,7 @@ test("history prefetch reports an unusable checkout instead of throwing", () => 
     assert.equal(failedFetch.status, "unavailable");
     assert.match(failedFetch.reason!, /^History prefetch failed: /);
     assert.match(
-      reviewHistoryCapability(failedFetch),
+      reviewHistoryCapability(failedFetch, "allowlisted-proxy"),
       /report such a gap once as a local limit\.$/,
     );
   } finally {
@@ -226,8 +229,8 @@ for (const allLocal of [false, true]) {
       ["pnpm-lock.yaml"],
     );
     assert.match(
-      reviewHistoryCapability(coverage),
-      /Not local: `pnpm-lock\.yaml` from 2026-01-01 back\./,
+      reviewHistoryCapability(coverage, "allowlisted-proxy"),
+      /Not prefetched: `pnpm-lock\.yaml` from 2026-01-01 back\./,
     );
   });
 }
@@ -280,7 +283,7 @@ for (const [deletions, parents] of [
   });
 }
 
-test("pull request prompts state local history; the reviewer cannot lazily fetch", () => {
+test("lazy fetch is disabled only behind the allowlisted proxy, and the prompt says so per runner", () => {
   const coverage: ReviewHistoryCoverage = {
     status: "complete",
     changedPaths: 3,
@@ -290,14 +293,21 @@ test("pull request prompts state local history; the reviewer cannot lazily fetch
     truncated: [],
     elapsedMs: 1,
   };
-  const prompt = reviewPromptForTest(item({ kind: "pull_request" }), {}, reviewGit, "", {
-    historyCoverage: coverage,
-  });
-  const capabilities = prompt.slice(prompt.indexOf("## Runtime Capabilities"));
-  assert.match(
-    capabilities,
-    /- Git history of the 3 changed files and their earlier names is local on main and the PR; scope `git log -S\/-G` to those paths\. .*`src\/old\.ts` became `src\/new\.ts` in ffffffffff\..*lazy fetching disabled/,
-  );
+  const capabilities = (networkCapability: "allowlisted-proxy" | "unrestricted" | "none") => {
+    const prompt = reviewPromptForTest(item({ kind: "pull_request" }), {}, reviewGit, "", {
+      historyCoverage: coverage,
+      networkCapability,
+    });
+    return prompt.slice(prompt.indexOf("## Runtime Capabilities"));
+  };
+  const local =
+    /- Git history of the 3 changed files and their earlier names is local on main and the PR; scope `git log -S\/-G` to those paths\. .*`src\/old\.ts` became `src\/new\.ts` in ffffffffff\./;
+  assert.match(capabilities("allowlisted-proxy"), local);
+  assert.match(capabilities("allowlisted-proxy"), /lazy fetching disabled/);
+  assert.match(capabilities("unrestricted"), local);
+  assert.match(capabilities("unrestricted"), /Git downloads any other old blob on demand/);
+  assert.doesNotMatch(capabilities("unrestricted"), /lazy fetching disabled|--follow` ends/);
+  assert.match(capabilities("none"), /without network access/);
   const issue = reviewPromptForTest(item({ kind: "issue" }), {}, reviewGit, "", {
     historyCoverage: coverage,
   });
@@ -306,21 +316,33 @@ test("pull request prompts state local history; the reviewer cannot lazily fetch
   const unavailable = (): never => {
     throw new Error("unexpected dependency");
   };
-  const runtime = createReviewRuntime({
-    reviewItemPromptPath: "",
-    reviewRulesPath: "",
-    decisionSchemaPath: "",
-    prCloseCoverageProofPromptPath: "",
-    targetRepo: () => "fixture/repository",
-    run: unavailable,
-    ghJson: unavailable,
-    evidenceEntry: unavailable,
-    untrustedCodexEnv: () => ({ PATH: "/bin", GIT_NO_LAZY_FETCH: "0" }),
-    asRecord: unavailable,
-    defaultRootCauseCluster: unavailable,
-    parseDecision: unavailable,
-    ensureDir: unavailable,
-    stringOrUndefined: unavailable,
-  });
-  assert.deepEqual(runtime.reviewEnvironment(true), { PATH: "/bin", GIT_NO_LAZY_FETCH: "1" });
+  for (const [runner, sandboxMode, disabled] of [
+    ["codex", "clawsweeper-review", true],
+    ["codex", "read-only", false],
+    ["openclaw", "clawsweeper-review", false],
+  ] as const) {
+    const runtime = createReviewRuntime({
+      reviewItemPromptPath: "",
+      reviewRulesPath: "",
+      decisionSchemaPath: "",
+      prCloseCoverageProofPromptPath: "",
+      targetRepo: () => "fixture/repository",
+      run: unavailable,
+      ghJson: unavailable,
+      evidenceEntry: unavailable,
+      untrustedCodexEnv: () => ({ PATH: "/bin", CLAWSWEEPER_RUNNER: runner }),
+      asRecord: unavailable,
+      defaultRootCauseCluster: unavailable,
+      parseDecision: unavailable,
+      ensureDir: unavailable,
+      stringOrUndefined: unavailable,
+    });
+    assert.deepEqual(
+      runtime.reviewEnvironment(sandboxMode, true),
+      disabled
+        ? { PATH: "/bin", CLAWSWEEPER_RUNNER: runner, GIT_NO_LAZY_FETCH: "1" }
+        : { PATH: "/bin", CLAWSWEEPER_RUNNER: runner },
+      `${runner}/${sandboxMode}`,
+    );
+  }
 });

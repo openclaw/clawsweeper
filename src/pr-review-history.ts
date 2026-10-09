@@ -460,21 +460,35 @@ export function pullRequestHistoryCoverage(options: {
 }
 
 /** One Runtime Capabilities line, in plain words, so the model reports a gap once. */
-export function reviewHistoryCapability(coverage: ReviewHistoryCoverage): string {
-  const failFast =
-    "Git reports any other old blob as missing (`lazy fetching disabled`, `could not fetch`, `bad object`, `unable to read`) instead of downloading it; report such a gap once as a local limit.";
+export function reviewHistoryCapability(
+  coverage: ReviewHistoryCoverage,
+  networkCapability: "allowlisted-proxy" | "unrestricted" | "none" | undefined,
+): string {
+  // Only an unrestricted runner can lazily download what the host did not fetch.
+  const downloads = networkCapability === "unrestricted";
+  const miss = downloads
+    ? "Git downloads any other old blob on demand, more slowly."
+    : networkCapability === "allowlisted-proxy"
+      ? "Git reports any other old blob as missing (`lazy fetching disabled`, `could not fetch`, `bad object`, `unable to read`) instead of downloading it; report such a gap once as a local limit."
+      : "Git cannot download any other old blob without network access; report such a gap once as a local limit.";
   if (coverage.status === "unavailable")
-    return `Old file contents are not local: ${coverage.reason ?? "the host could not prepare file history."} ${failFast}`;
+    return `Old file contents were not prefetched: ${coverage.reason ?? "the host could not prepare file history."} ${miss}`;
   const listed = <T>(items: readonly T[], format: (item: T) => string) =>
     `${items.slice(0, MAX_LISTED).map(format).join(", ")}${items.length > MAX_LISTED ? `, and ${items.length - MAX_LISTED} more` : ""}`;
+  const renames =
+    coverage.renames.length > 0
+      ? ` Continue across renames with \`git log -- <earlier name>\`: ${listed(coverage.renames, ({ from, to, commit }) => `\`${from}\` became \`${to}\` in ${commit.slice(0, 10)}`)}.`
+      : "";
   return [
     `Git history of the ${coverage.changedPaths} changed files and their earlier names is local on main and the PR; scope \`git log -S/-G\` to those paths.`,
-    `\`git log --follow\` ends with a missing-object error at each file's creation commit; that is not missing history.${coverage.renames.length > 0 ? ` Continue across renames with \`git log -- <earlier name>\`: ${listed(coverage.renames, ({ from, to, commit }) => `\`${from}\` became \`${to}\` in ${commit.slice(0, 10)}`)}.` : ""}`,
+    downloads
+      ? renames.trim()
+      : `\`git log --follow\` ends with a missing-object error at each file's creation commit; that is not missing history.${renames}`,
     coverage.truncated.length > 0
-      ? `Not local: ${listed(coverage.truncated, ({ path, before }) => `\`${path}\` from ${before.slice(0, 10)} back`)}.`
+      ? `Not prefetched: ${listed(coverage.truncated, ({ path, before }) => `\`${path}\` from ${before.slice(0, 10)} back`)}.`
       : "",
     coverage.reason ?? "",
-    failFast,
+    miss,
   ]
     .filter(Boolean)
     .join(" ");

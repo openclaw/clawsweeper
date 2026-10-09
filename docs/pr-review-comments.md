@@ -248,10 +248,12 @@ bound keeps its newest versions, and an earlier name that could not be checked
 counts as a cut. On openclaw/openclaw the full history of 2 to 20 changed files
 and their earlier names is 160 to 1,058 blobs, 0.3 to 6.6 MiB, in 2.5 to 12 seconds.
 The prompt's Runtime Capabilities line names the earlier file names and any
-history that is not local. The reviewer runs with `GIT_NO_LAZY_FETCH=1`, so any
-other missing blob fails at once with `lazy fetching disabled` instead of a 403.
-`git log --follow` still ends with that error at a file's creation commit: its
-copy detection reads the whole parent tree.
+history that was not prefetched. Behind the allowlisted proxy (codex runner,
+`clawsweeper-review` sandbox) the reviewer runs with `GIT_NO_LAZY_FETCH=1`, so any
+other missing blob fails at once with `lazy fetching disabled` instead of a 403;
+`git log --follow` still ends with that error at a file's creation commit, because
+its copy detection reads the whole parent tree. The unrestricted OpenClaw runner
+keeps lazy fetch, so reads beyond the prefetch still download on demand.
 
 The host also computes the PR prompt's `## Provenance Evidence`: from the merge-base to head diff it
 takes up to 12 files that existed on the merge base (most modified or deleted

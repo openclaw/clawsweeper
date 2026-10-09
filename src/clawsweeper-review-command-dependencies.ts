@@ -36,7 +36,7 @@ import type { ReviewStructuralRecord } from "./review-structural-cache.js";
 import type { PrHydrationSnapshot } from "./pr-hydration-snapshot.js";
 
 export interface CreateReviewCommandWorkflowDependencies {
-  reviewEnvironment: (preserveCodexAuth?: boolean) => NodeJS.ProcessEnv;
+  reviewEnvironment: (sandboxMode: string, preserveCodexAuth?: boolean) => NodeJS.ProcessEnv;
   actionLedgerFailureDisposition: (error: unknown) => {
     status: ActionEventStatus;
     reasonCode: ActionEventReasonCode;

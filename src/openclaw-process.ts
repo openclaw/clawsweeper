@@ -396,8 +396,6 @@ const OPENCLAW_CHILD_ENV_ALLOWLIST = [
   "http_proxy",
   "https_proxy",
   "no_proxy",
-  // Reviews read only host-prefetched Git history; a missing blob fails at once.
-  "GIT_NO_LAZY_FETCH",
   // Provider API keys the embedded agent needs for direct inference. These
   // are the credentials this lane intentionally trades for provider choice;
   // everything else in the step environment stays out.

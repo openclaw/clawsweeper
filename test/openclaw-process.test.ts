@@ -48,7 +48,6 @@ const record = {
     CLAWSWEEPER_APP_PRIVATE_KEY: process.env.CLAWSWEEPER_APP_PRIVATE_KEY ?? null,
     KIMI_API_KEY: process.env.KIMI_API_KEY ?? null,
     OPENAI_API_KEY: process.env.OPENAI_API_KEY ?? null,
-    GIT_NO_LAZY_FETCH: process.env.GIT_NO_LAZY_FETCH ?? null,
   },
 };
 fs.writeFileSync(process.env.OPENCLAW_TEST_RECORD, JSON.stringify(record));
@@ -598,7 +597,6 @@ test("OpenClaw subprocess env strips workflow credentials and keeps provider key
       CLAWSWEEPER_WEBHOOK_SECRET: "workflow-webhook",
       CLAWSWEEPER_APP_PRIVATE_KEY: "workflow-app",
       KIMI_API_KEY: "provider-kimi",
-      GIT_NO_LAZY_FETCH: "1",
     };
     const capability = reviewNetworkCapability("clawsweeper-review", {
       ...env,
@@ -621,7 +619,6 @@ test("OpenClaw subprocess env strips workflow credentials and keeps provider key
     assert.equal(record.env.CLAWSWEEPER_WEBHOOK_SECRET, null);
     assert.equal(record.env.CLAWSWEEPER_APP_PRIVATE_KEY, null);
     assert.equal(record.env.KIMI_API_KEY, "provider-kimi");
-    assert.equal(record.env.GIT_NO_LAZY_FETCH, "1");
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
