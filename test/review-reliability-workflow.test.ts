@@ -119,6 +119,6 @@ test("exact review generation enters finalization before state hydration", () =>
 
   assert.ok(review);
   assert.ok(reviewIndex >= 0 && reviewIndex < setupStateIndex);
-  assert.match(String(review.run), /phase: "finalizing"/);
+  assert.match(String(review.run), /exact-review-queue-request\.js heartbeat --phase finalizing\)/);
   assert.match(String(review.run), /mark_finalizing \|\| review_exit_code=1/);
 });
