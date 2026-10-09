@@ -289,6 +289,44 @@ process.stdout.write(${JSON.stringify(`${payload}\n`)});
   assert.equal(readFileSync(outputPath, "utf8"), payload);
 });
 
+test("OpenClaw review input carries the same output schema file that Codex receives", (t) => {
+  const root = mkdtempSync(join(tmpdir(), "clawsweeper-openclaw-schema-test-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  useFakeScanner(t);
+  const binary = join(root, "fake-openclaw");
+  const receivedPath = join(root, "received.md");
+  writeFileSync(
+    binary,
+    `#!/usr/bin/env node
+const fs = require("node:fs");
+fs.copyFileSync(process.argv[process.argv.indexOf("--message-file") + 1], ${JSON.stringify(receivedPath)});
+process.stdout.write(JSON.stringify({ payloads: [{ text: "{}" }], meta: { stopReason: "stop" } }));
+`,
+    { mode: 0o755 },
+  );
+  const schemaPath = join(process.cwd(), "schema", "clawsweeper-decision.schema.json");
+  const result = runAgentProcess({
+    label: "openclaw-schema",
+    scanSource: { kind: "prompt" },
+    prompt: "review prompt\n",
+    model: "unused",
+    cwd: root,
+    env: {
+      ...process.env,
+      CLAWSWEEPER_RUNNER: "openclaw",
+      CLAWSWEEPER_OPENCLAW_MODEL: "openai/test",
+      CLAWSWEEPER_OPENCLAW_BIN: binary,
+    },
+    timeoutMs: 10_000,
+    codexExtraArgs: ["--output-schema", schemaPath, "-"],
+  });
+  assert.equal(result.status, 0, result.error?.message);
+  const received = readFileSync(receivedPath, "utf8");
+  assert.ok(received.startsWith("review prompt\n\n## Output schema\n"));
+  assert.ok(received.includes(readFileSync(schemaPath, "utf8").trim()));
+  assert.match(received, /Cosmetic confusion or a fully recoverable in-product issue/);
+});
+
 test("OpenClaw checkout inspection attests the exact tracked path without checkout writes", (t) => {
   useFakeScanner(t);
   const root = mkdtempSync(join(tmpdir(), "clawsweeper-agent-runner-test-"));
