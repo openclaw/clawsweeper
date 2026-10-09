@@ -120,7 +120,9 @@ test(
           `import { createTransientReviewOutput } from ${JSON.stringify(new URL("../dist/review-output-policy.js", import.meta.url).href)};`,
           `const output = createTransientReviewOutput("clawsweeper-signal-test-");`,
           `console.log(output.path);`,
-          `spawnSync(process.execPath, ["-e", "setTimeout(() => {}, 1000)"]);`,
+          // The blocker outlives the SIGTERMed child, so its late coverage write could
+          // land while the runner reads profiles; it carries none.
+          `spawnSync(process.execPath, ["-e", "setTimeout(() => {}, 1000)"], { env: { ...process.env, NODE_V8_COVERAGE: undefined } });`,
           `console.log("unexpected completion");`,
         ].join("\n"),
       ],
