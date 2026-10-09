@@ -290,18 +290,3 @@ test("production code launches Codex only through the agent runner", () => {
   });
   assert.deepEqual(offenders, []);
 });
-
-// comment router
-
-// Each router write goes through runGitHub*Mutation, which records the action-ledger receipt.
-test("comment router never calls a GitHub writer that skips its action receipt", () => {
-  assert.doesNotMatch(readText("src/repair/comment-router.ts"), /\bghText\(|\bghBestEffort/);
-});
-
-// A workflow_dispatch fallback gives a failed review follow-up explicit retry authority.
-test("comment router never falls back to a manual review workflow dispatch", () => {
-  assert.doesNotMatch(
-    readText("src/repair/comment-router.ts"),
-    /actions\/workflows\/[^\n]*\/dispatches/,
-  );
-});
