@@ -697,7 +697,7 @@ export class GithubWebhookReadModelStore {
         ? {
             delivery_id: String(row.delivery_id),
             object_watermark: Number(row.watermark),
-            item: parseJsonRecord(String(row.snapshot_json)),
+            item: itemSnapshotWithKind(parseJsonRecord(String(row.snapshot_json)), row.item_kind),
           }
         : {}),
     };
@@ -950,7 +950,7 @@ export class GithubWebhookReadModelStore {
     );
     const comments = Array.from(
       this.storage.sql.exec(
-        `SELECT c.number, c.snapshot_json, c.source_updated_at, i.snapshot_json AS item_json
+        `SELECT c.number, c.snapshot_json, c.source_updated_at, i.item_kind, i.snapshot_json AS item_json
            FROM github_webhook_read_model_comments_v1 c
            JOIN github_webhook_read_model_items_v1 i
              ON i.repository = c.repository AND i.number = c.number
@@ -963,7 +963,7 @@ export class GithubWebhookReadModelStore {
     for (const row of comments) {
       const comment = parseJsonRecord(String(row.snapshot_json));
       if (!String(comment.body || "").includes("ClawSweeper status: review started.")) continue;
-      const item = parseJsonRecord(String(row.item_json));
+      const item = itemSnapshotWithKind(parseJsonRecord(String(row.item_json)), row.item_kind);
       if (state !== "all" && String(item.state || "").toLowerCase() !== state) continue;
       const number = Number(row.number);
       const entry = byNumber.get(number) ?? { item, comments: [] };
@@ -1051,7 +1051,7 @@ export class GithubWebhookReadModelStore {
         object.number,
         object.itemKind,
         sourceUpdatedAt,
-        JSON.stringify(mergedSnapshot),
+        JSON.stringify(itemSnapshotWithKind(mergedSnapshot, object.itemKind)),
         deliveryId,
         watermark,
         receivedAt,
@@ -1352,6 +1352,14 @@ function boundedSnapshot(value: unknown): JsonRecord | null {
     }
   }
   return JSON.stringify(copy).length <= 256 * 1_024 ? copy : null;
+}
+
+function itemSnapshotWithKind(snapshot: JsonRecord, itemKind: unknown): JsonRecord {
+  // Raw PR webhooks lack the Issues API marker. Preserve the recorded kind for
+  // every consumer, including rows stored before normalization added the marker.
+  return itemKind === "pull_request"
+    ? { ...snapshot, pull_request: record(snapshot.pull_request) }
+    : snapshot;
 }
 
 function normalizedItemSnapshot(

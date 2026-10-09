@@ -60,6 +60,12 @@ initialization cost and adds storage and receipt-write work.
 
 Item snapshots are stale after 15 minutes, comment and review collections after 30 minutes, and workflow state after 5 minutes. Placeholder discovery additionally requires a successful repair census within 6 hours. Missing, stale, incomplete, unsubscribed, or gap-detected snapshots fall back to GitHub and repair the Durable Object before later reads reuse it.
 
+Item and placeholder projections preserve the stored issue/PR kind using the
+Issues API's `pull_request` marker, including older rows whose JSON lacks that
+marker. Raw PR webhook objects do not contain a nested marker. Planning therefore
+keeps PR lease revisions tied to the live PR head, while issues retain their
+source digest; the live head-drift and mutation guards are unchanged.
+
 ## Read and repair endpoints
 
 Publisher-authenticated POST routes live below `/internal/state/github-read-model/`: `item`, `comments`, `activity`, `workflows`, `placeholders`, and `repair`. Authentication uses the same body HMAC as the other automated queue data-plane routes. Responses carry `watermark`, per-class subscription state, `freshness`, and `usable`; callers must not infer freshness from a successful HTTP response alone.

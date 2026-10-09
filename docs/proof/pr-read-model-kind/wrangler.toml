@@ -1,0 +1,11 @@
+name = "pr-read-model-kind-proof"
+main = "worker.ts"
+compatibility_date = "2026-05-11"
+
+[[durable_objects.bindings]]
+name = "READ_MODEL"
+class_name = "ReadModelProof"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["ReadModelProof"]

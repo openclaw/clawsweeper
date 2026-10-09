@@ -1,0 +1,1 @@
+- Preserve pull request identity in webhook item and placeholder snapshots so review leases use the PR head and reject head drift instead of reserving an issue digest.
