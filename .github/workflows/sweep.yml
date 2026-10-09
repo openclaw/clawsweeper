@@ -818,27 +818,7 @@ jobs:
           source scripts/control-plane-curl.sh
           echo "authorized=false" >> "$GITHUB_OUTPUT"
           echo "superseded=false" >> "$GITHUB_OUTPUT"
-          payload="$(node -e '
-            const leaseRevision = Number(process.env.EXACT_REVIEW_LEASE_REVISION);
-            const claimGeneration = Number(process.env.EXACT_REVIEW_CLAIM_GENERATION);
-            const runAttempt = Number(process.env.GITHUB_RUN_ATTEMPT);
-            const sourceHeadSha = String(process.env.EXACT_REVIEW_SOURCE_HEAD_SHA || "").trim().toLowerCase();
-            if (!process.env.EXACT_REVIEW_ITEM_KEY || !process.env.EXACT_REVIEW_LEASE_ID) process.exit(1);
-            if (!Number.isInteger(leaseRevision) || leaseRevision < 1) process.exit(1);
-            if (!Number.isInteger(claimGeneration) || claimGeneration < 1) process.exit(1);
-            if (!Number.isInteger(runAttempt) || runAttempt < 1) process.exit(1);
-            if (sourceHeadSha && !/^[0-9a-f]{40}$/.test(sourceHeadSha)) process.exit(1);
-            process.stdout.write(JSON.stringify({
-              item_key: process.env.EXACT_REVIEW_ITEM_KEY,
-              lease_id: process.env.EXACT_REVIEW_LEASE_ID,
-              lease_revision: leaseRevision,
-              claim_generation: claimGeneration,
-              run_id: process.env.GITHUB_RUN_ID,
-              run_attempt: runAttempt,
-              ...(sourceHeadSha ? { source_head_sha: sourceHeadSha } : {}),
-              phase: "status",
-            }));
-          ')"
+          payload="$(node dist/repair/exact-review-queue-request.js heartbeat --phase status)"
           response="$(mktemp)"
           trap 'rm -f "$response"' EXIT
           status="$(control_plane_curl --silent --show-error --connect-timeout 5 --max-time 20 \
@@ -1231,20 +1211,8 @@ jobs:
           set -euo pipefail
           source scripts/control-plane-curl.sh
           echo "authorized=false" >> "$GITHUB_OUTPUT"
-          payload="$(node -e '
-            const sourceHeadSha = String(process.env.EXACT_REVIEW_SOURCE_HEAD_SHA || "").trim().toLowerCase();
-            process.stdout.write(JSON.stringify({
-              item_key: process.env.EXACT_REVIEW_ITEM_KEY,
-              lease_id: process.env.EXACT_REVIEW_LEASE_ID,
-              lease_revision: Number(process.env.EXACT_REVIEW_LEASE_REVISION),
-              claim_generation: Number(process.env.EXACT_REVIEW_CLAIM_GENERATION),
-              run_id: process.env.GITHUB_RUN_ID,
-              run_attempt: Number(process.env.GITHUB_RUN_ATTEMPT),
-              ...(sourceHeadSha ? { source_head_sha: sourceHeadSha } : {}),
-              review_acknowledgement_comment_id: Number(process.env.REVIEW_ACKNOWLEDGEMENT_COMMENT_ID),
-              phase: "status",
-            }));
-          ')"
+          payload="$(node dist/repair/exact-review-queue-request.js heartbeat --phase status \
+            --review-acknowledgement-comment-id "$REVIEW_ACKNOWLEDGEMENT_COMMENT_ID")"
           response="$(mktemp)"
           trap 'rm -f "$response"' EXIT
           status="$(control_plane_curl --silent --show-error --connect-timeout 5 --max-time 20 \
@@ -1290,19 +1258,7 @@ jobs:
           set -euo pipefail
           source scripts/control-plane-curl.sh
           echo "authorized=false" >> "$GITHUB_OUTPUT"
-          payload="$(node -e '
-            const sourceHeadSha = String(process.env.EXACT_REVIEW_SOURCE_HEAD_SHA || "").trim().toLowerCase();
-            process.stdout.write(JSON.stringify({
-              item_key: process.env.EXACT_REVIEW_ITEM_KEY,
-              lease_id: process.env.EXACT_REVIEW_LEASE_ID,
-              lease_revision: Number(process.env.EXACT_REVIEW_LEASE_REVISION),
-              claim_generation: Number(process.env.EXACT_REVIEW_CLAIM_GENERATION),
-              run_id: process.env.GITHUB_RUN_ID,
-              run_attempt: Number(process.env.GITHUB_RUN_ATTEMPT),
-              ...(sourceHeadSha ? { source_head_sha: sourceHeadSha } : {}),
-              phase: "review",
-            }));
-          ')"
+          payload="$(node dist/repair/exact-review-queue-request.js heartbeat --phase review)"
           response="$(mktemp)"
           trap 'rm -f "$response"' EXIT
           status="$(control_plane_curl --silent --show-error --connect-timeout 5 --max-time 20 \
@@ -1396,26 +1352,10 @@ jobs:
           prepare_heartbeat() {
             # Heartbeat authenticates by the full lease tuple (same capability model as
             # claim/complete), so this Codex-adjacent step never sees the webhook secret.
-            heartbeat_payload="$(node -e '
-              const leaseRevision = Number(process.env.EXACT_REVIEW_LEASE_REVISION);
-              const claimGeneration = Number(process.env.EXACT_REVIEW_CLAIM_GENERATION);
-              const runAttempt = Number(process.env.GITHUB_RUN_ATTEMPT);
-              const sourceHeadSha = String(process.env.EXACT_REVIEW_SOURCE_HEAD_SHA || "").trim().toLowerCase();
-              if (!process.env.EXACT_REVIEW_ITEM_KEY || !process.env.EXACT_REVIEW_LEASE_ID) process.exit(1);
-              if (!Number.isInteger(leaseRevision) || leaseRevision < 1) process.exit(1);
-              if (!Number.isInteger(claimGeneration) || claimGeneration < 1) process.exit(1);
-              if (!Number.isInteger(runAttempt) || runAttempt < 1) process.exit(1);
-              if (sourceHeadSha && !/^[0-9a-f]{40}$/.test(sourceHeadSha)) process.exit(1);
-              process.stdout.write(JSON.stringify({
-                item_key: process.env.EXACT_REVIEW_ITEM_KEY,
-                lease_id: process.env.EXACT_REVIEW_LEASE_ID,
-                lease_revision: leaseRevision,
-                claim_generation: claimGeneration,
-                run_id: process.env.GITHUB_RUN_ID,
-                run_attempt: runAttempt,
-                ...(sourceHeadSha ? { source_head_sha: sourceHeadSha } : {}),
-              }));
-            ')" || return 1
+            # Build every lease body before generation, so an invalid tuple stops the step early.
+            heartbeat_payload="$(node dist/repair/exact-review-queue-request.js heartbeat --phase review)" || return 1
+            startup_payload="$(node dist/repair/exact-review-queue-request.js heartbeat --phase review --generation-start)" || return 1
+            finalizing_payload="$(node dist/repair/exact-review-queue-request.js heartbeat --phase finalizing)" || return 1
           }
           start_heartbeat() {
             heartbeat_loop &
@@ -1427,10 +1367,6 @@ jobs:
             wait "$heartbeat_pid" 2>/dev/null || true
           }
           mark_finalizing() {
-            finalizing_payload="$(HEARTBEAT_PAYLOAD="$heartbeat_payload" node -e '
-              const payload = JSON.parse(process.env.HEARTBEAT_PAYLOAD || "{}");
-              process.stdout.write(JSON.stringify({ ...payload, phase: "finalizing" }));
-            ')" || return 1
             finalizing_status="$(control_plane_curl --silent --connect-timeout 5 --max-time 20 \
               --output /dev/null \
               --write-out '%{http_code}' \
@@ -1456,7 +1392,6 @@ jobs:
             # Run after branch-specific setup, immediately before generation.
             # generation_start charges the review budget once for this claim
             # generation; claims that never reach generation are not charged.
-            startup_payload="$(jq -c '. + {generation_start: true}' <<<"$heartbeat_payload")"
             startup_response="$(mktemp)"
             startup_status="$(control_plane_curl --silent --connect-timeout 5 --max-time 20 \
               --output "$startup_response" \
@@ -1688,20 +1623,8 @@ jobs:
           set -euo pipefail
           source scripts/control-plane-curl.sh
           echo "authorized=false" >> "$GITHUB_OUTPUT"
-          payload="$(node -e '
-            const sourceHeadSha = String(process.env.EXACT_REVIEW_SOURCE_HEAD_SHA || "").trim().toLowerCase();
-            process.stdout.write(JSON.stringify({
-              item_key: process.env.EXACT_REVIEW_ITEM_KEY,
-              lease_id: process.env.EXACT_REVIEW_LEASE_ID,
-              lease_revision: Number(process.env.EXACT_REVIEW_LEASE_REVISION),
-              claim_generation: Number(process.env.EXACT_REVIEW_CLAIM_GENERATION),
-              run_id: process.env.GITHUB_RUN_ID,
-              run_attempt: Number(process.env.GITHUB_RUN_ATTEMPT),
-              ...(sourceHeadSha ? { source_head_sha: sourceHeadSha } : {}),
-              review_acknowledgement_comment_id: Number(process.env.REVIEW_ACKNOWLEDGEMENT_COMMENT_ID),
-              phase: "status",
-            }));
-          ')"
+          payload="$(node dist/repair/exact-review-queue-request.js heartbeat --phase status \
+            --review-acknowledgement-comment-id "$REVIEW_ACKNOWLEDGEMENT_COMMENT_ID")"
           response="$(mktemp)"
           trap 'rm -f "$response"' EXIT
           status="$(control_plane_curl --silent --show-error --connect-timeout 5 --max-time 20 \
@@ -1744,19 +1667,7 @@ jobs:
           set -euo pipefail
           source scripts/control-plane-curl.sh
           echo "authorized=false" >> "$GITHUB_OUTPUT"
-          payload="$(node -e '
-            const sourceHeadSha = String(process.env.EXACT_REVIEW_SOURCE_HEAD_SHA || "").trim().toLowerCase();
-            process.stdout.write(JSON.stringify({
-              item_key: process.env.EXACT_REVIEW_ITEM_KEY,
-              lease_id: process.env.EXACT_REVIEW_LEASE_ID,
-              lease_revision: Number(process.env.EXACT_REVIEW_LEASE_REVISION),
-              claim_generation: Number(process.env.EXACT_REVIEW_CLAIM_GENERATION),
-              run_id: process.env.GITHUB_RUN_ID,
-              run_attempt: Number(process.env.GITHUB_RUN_ATTEMPT),
-              ...(sourceHeadSha ? { source_head_sha: sourceHeadSha } : {}),
-              phase: "finalizing",
-            }));
-          ')"
+          payload="$(node dist/repair/exact-review-queue-request.js heartbeat --phase finalizing)"
           response="$(mktemp)"
           trap 'rm -f "$response"' EXIT
           status="$(control_plane_curl --silent --show-error --connect-timeout 5 --max-time 20 \
@@ -2168,19 +2079,7 @@ jobs:
         run: |
           set -euo pipefail
           source scripts/control-plane-curl.sh
-          payload="$(node -e '
-            const sourceHeadSha = String(process.env.EXACT_REVIEW_SOURCE_HEAD_SHA || "").trim().toLowerCase();
-            process.stdout.write(JSON.stringify({
-              item_key: process.env.EXACT_REVIEW_ITEM_KEY,
-              lease_id: process.env.EXACT_REVIEW_LEASE_ID,
-              lease_revision: Number(process.env.EXACT_REVIEW_LEASE_REVISION),
-              claim_generation: Number(process.env.EXACT_REVIEW_CLAIM_GENERATION),
-              run_id: process.env.GITHUB_RUN_ID,
-              run_attempt: Number(process.env.GITHUB_RUN_ATTEMPT),
-              ...(sourceHeadSha ? { source_head_sha: sourceHeadSha } : {}),
-              phase: "status",
-            }));
-          ')"
+          payload="$(node dist/repair/exact-review-queue-request.js heartbeat --phase status)"
           response="$(mktemp)"
           trap 'rm -f "$response"' EXIT
           status="$(control_plane_curl --silent --show-error --connect-timeout 5 --max-time 20 \
@@ -2242,28 +2141,8 @@ jobs:
           set -euo pipefail
           source scripts/control-plane-curl.sh
           echo "authorized=false" >> "$GITHUB_OUTPUT"
-          payload="$(node -e '
-            const leaseRevision = Number(process.env.EXACT_REVIEW_LEASE_REVISION);
-            const claimGeneration = Number(process.env.EXACT_REVIEW_CLAIM_GENERATION);
-            const runAttempt = Number(process.env.GITHUB_RUN_ATTEMPT);
-            const sourceHeadSha = String(process.env.EXACT_REVIEW_SOURCE_HEAD_SHA || "").trim().toLowerCase();
-            if (!process.env.EXACT_REVIEW_ITEM_KEY || !process.env.EXACT_REVIEW_LEASE_ID) process.exit(1);
-            if (!Number.isInteger(leaseRevision) || leaseRevision < 1) process.exit(1);
-            if (!Number.isInteger(claimGeneration) || claimGeneration < 1) process.exit(1);
-            if (!Number.isInteger(runAttempt) || runAttempt < 1) process.exit(1);
-            if (sourceHeadSha && !/^[0-9a-f]{40}$/.test(sourceHeadSha)) process.exit(1);
-            process.stdout.write(JSON.stringify({
-              item_key: process.env.EXACT_REVIEW_ITEM_KEY,
-              lease_id: process.env.EXACT_REVIEW_LEASE_ID,
-              lease_revision: leaseRevision,
-              claim_generation: claimGeneration,
-              run_id: process.env.GITHUB_RUN_ID,
-              run_attempt: runAttempt,
-              ...(sourceHeadSha ? { source_head_sha: sourceHeadSha } : {}),
-              review_acknowledgement_comment_id: Number(process.env.REVIEW_ACKNOWLEDGEMENT_COMMENT_ID),
-              phase: "status",
-            }));
-          ')"
+          payload="$(node dist/repair/exact-review-queue-request.js heartbeat --phase status \
+            --review-acknowledgement-comment-id "$REVIEW_ACKNOWLEDGEMENT_COMMENT_ID")"
           status="$(control_plane_curl --silent --show-error --connect-timeout 5 --max-time 20 \
             --output /dev/null \
             --write-out '%{http_code}' \
@@ -2314,19 +2193,7 @@ jobs:
           EXACT_REVIEW_SOURCE_HEAD_SHA: ${{ fromJSON(steps.claim-exact-review-queue.outputs.decision).sourceHeadSha || '' }}
         run: |
           source scripts/control-plane-curl.sh
-          payload="$(node -e '
-            const sourceHeadSha = String(process.env.EXACT_REVIEW_SOURCE_HEAD_SHA || "").trim().toLowerCase();
-            process.stdout.write(JSON.stringify({
-              item_key: process.env.EXACT_REVIEW_ITEM_KEY,
-              lease_id: process.env.EXACT_REVIEW_LEASE_ID,
-              lease_revision: Number(process.env.EXACT_REVIEW_LEASE_REVISION),
-              claim_generation: Number(process.env.EXACT_REVIEW_CLAIM_GENERATION),
-              run_id: process.env.GITHUB_RUN_ID,
-              run_attempt: Number(process.env.GITHUB_RUN_ATTEMPT),
-              ...(sourceHeadSha ? { source_head_sha: sourceHeadSha } : {}),
-              phase: "finalizing",
-            }));
-          ')"
+          payload="$(node dist/repair/exact-review-queue-request.js heartbeat --phase finalizing)"
           control_plane_curl --fail --silent --show-error --connect-timeout 5 --max-time 20 \
             --request POST --header "content-type: application/json" --data-binary "$payload" \
             "${QUEUE_URL%/}/internal/exact-review/heartbeat" >/dev/null

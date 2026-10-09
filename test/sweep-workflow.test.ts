@@ -1369,9 +1369,10 @@ test("exact event review publishes directly with a queue-bounded canonical fallb
   );
   assert.match(step(reviewer, "Review exact event item").run ?? "", /--review-lease-owner/);
   assert.match(step(reviewer, "Review exact event item").run ?? "", /--review-lease-comment-id/);
-  assert.match(step(reviewer, "Review exact event item").run ?? "", /claim_generation/);
-  assert.match(step(reviewer, "Review exact event item").run ?? "", /run_attempt/);
-  assert.match(step(reviewer, "Review exact event item").run ?? "", /source_head_sha/);
+  assert.match(
+    step(reviewer, "Review exact event item").run ?? "",
+    /exact-review-queue-request\.js heartbeat --phase review\)/,
+  );
   assert.equal(
     step(reviewer, "Review exact event item").env?.EXACT_REVIEW_ITEM_KIND,
     "${{ fromJSON(steps.claim-exact-review-queue.outputs.decision).itemKind }}",
@@ -1472,17 +1473,18 @@ test("exact event review publishes directly with a queue-bounded canonical fallb
   assert.match(resolveAutomaticStatus.run ?? "", /clawsweeper-pr-ack:/);
   assert.match(resolveAutomaticStatus.run ?? "", /clawsweeper-review-progress:start/);
   assert.match(reviewStatusFence.if ?? "", /automatic-review-status\.outputs\.status_comment_id/);
-  assert.match(reviewStatusFence.run ?? "", /review_acknowledgement_comment_id/);
+  const acknowledgedStatusHeartbeat =
+    /exact-review-queue-request\.js heartbeat --phase status \\\n\s*--review-acknowledgement-comment-id "\$REVIEW_ACKNOWLEDGEMENT_COMMENT_ID"/;
+  assert.match(reviewStatusFence.run ?? "", acknowledgedStatusHeartbeat);
   assert.match(reviewStatusFence.if ?? "", /has_command_context != 'true'/);
   assert.match(
     reviewStatusFence.if ?? "",
     /reserve-exact-review-lease\.outputs\.status == 'posted'/,
   );
-  assert.match(reviewStatusFence.run ?? "", /phase: "status"/);
   assert.match(markAutomatic.if ?? "", /review-status-fence\.outputs\.authorized/);
   assert.match(markAutomatic.run ?? "", /repair:update-review-status/);
   assert.match(markAutomatic.run ?? "", /--state reviewing/);
-  assert.match(releaseReviewStatusFence.run ?? "", /phase: "review"/);
+  assert.match(releaseReviewStatusFence.run ?? "", /heartbeat --phase review\)/);
   assert.match(releaseReviewStatusFence.run ?? "", /authorized=false/);
   assert.match(releaseReviewStatusFence.run ?? "", /authorized=true/);
   assert.match(releaseReviewStatusFence.run ?? "", /status.*409/);
@@ -1499,26 +1501,24 @@ test("exact event review publishes directly with a queue-bounded canonical fallb
   );
   assert.doesNotMatch(completeStatusFence.if ?? "", /terminal_during_review != 'true'/);
   assert.match(completeStatusFence.if ?? "", /review-exact-event-item\.outputs\.retry_at == ''/);
-  assert.match(completeStatusFence.run ?? "", /phase: "status"/);
-  assert.match(completeStatusFence.run ?? "", /review_acknowledgement_comment_id/);
+  assert.match(completeStatusFence.run ?? "", acknowledgedStatusHeartbeat);
   assert.match(completeStatusFence.run ?? "", /internal\/exact-review\/heartbeat/);
   assert.match(markComplete.if ?? "", /review-complete-status-fence\.outputs\.authorized/);
   assert.match(markComplete.env?.REVIEW_STATUS_STATE ?? "", /terminal_during_review/);
   assert.match(markComplete.run ?? "", /--state "\$REVIEW_STATUS_STATE"/);
   assert.notEqual(markComplete["continue-on-error"], true);
-  assert.match(releaseCompleteStatusFence.run ?? "", /phase: "finalizing"/);
+  assert.match(releaseCompleteStatusFence.run ?? "", /heartbeat --phase finalizing\)/);
   assert.ok(
     reviewer.steps.indexOf(markComplete) < reviewer.steps.indexOf(releaseCompleteStatusFence),
   );
   assert.match(fenceAutomatic.if ?? "", /failure_reason != ''/);
   assert.equal(fenceAutomatic["continue-on-error"], true);
-  assert.match(fenceAutomatic.run ?? "", /phase: "status"/);
-  assert.match(fenceAutomatic.run ?? "", /review_acknowledgement_comment_id/);
+  assert.match(fenceAutomatic.run ?? "", acknowledgedStatusHeartbeat);
   assert.match(fenceAutomatic.run ?? "", /internal\/exact-review\/heartbeat/);
   assert.match(terminalReviewStatus.if ?? "", /terminal-review-status-fence\.outputs\.authorized/);
   assert.match(terminalReviewStatus.run ?? "", /--state blocked/);
   assert.match(terminalReviewStatus.run ?? "", /--failure-reason/);
-  assert.match(releaseTerminalStatusFence.run ?? "", /phase: "finalizing"/);
+  assert.match(releaseTerminalStatusFence.run ?? "", /heartbeat --phase finalizing\)/);
   assert.ok(
     reviewer.steps.indexOf(terminalReviewStatus) <
       reviewer.steps.indexOf(releaseTerminalStatusFence),
@@ -2551,10 +2551,18 @@ test("exact event review heartbeats its queue lease while Codex runs", () => {
   // The Codex-adjacent review step must never receive the shared webhook secret;
   // the heartbeat authenticates by lease tuple like /claim and /complete.
   assert.equal(review.env?.CLAWSWEEPER_WEBHOOK_SECRET, undefined);
-  assert.match(review.run ?? "", /item_key: process\.env\.EXACT_REVIEW_ITEM_KEY/);
-  assert.match(review.run ?? "", /lease_id: process\.env\.EXACT_REVIEW_LEASE_ID/);
-  assert.match(review.run ?? "", /lease_revision: leaseRevision/);
-  assert.match(review.run ?? "", /run_id: process\.env\.GITHUB_RUN_ID/);
+  assert.match(
+    review.run ?? "",
+    /heartbeat_payload="\$\(node dist\/repair\/exact-review-queue-request\.js heartbeat --phase review\)"/,
+  );
+  assert.match(
+    review.run ?? "",
+    /startup_payload="\$\(node dist\/repair\/exact-review-queue-request\.js heartbeat --phase review --generation-start\)"/,
+  );
+  assert.match(
+    review.run ?? "",
+    /finalizing_payload="\$\(node dist\/repair\/exact-review-queue-request\.js heartbeat --phase finalizing\)"/,
+  );
   assert.doesNotMatch(review.run ?? "", /x-clawsweeper-exact-review-signature/);
   assert.doesNotMatch(review.run ?? "", /CLAWSWEEPER_WEBHOOK_SECRET/);
   assert.match(review.run ?? "", /internal\/exact-review\/heartbeat/);
@@ -2585,15 +2593,20 @@ test("exact-review startup ownership check charges generation start on the lease
     workflow.jobs["event-review-apply"]!.steps.find(
       (candidate) => candidate.name === "Review exact event item",
     )?.run ?? "";
+  const prepare = run.slice(
+    run.indexOf("prepare_heartbeat() {"),
+    run.indexOf("\nstart_heartbeat() {"),
+  );
   const start = run.indexOf("verify_startup_authority() {");
   const verify = run.slice(start, run.indexOf("\nadmission_args=()", start));
-  assert.ok(start >= 0 && verify.endsWith("}"));
+  assert.ok(prepare.endsWith("}") && start >= 0 && verify.endsWith("}"));
   // Both generation paths verify ownership immediately before Codex starts.
   assert.equal(run.split(/^\s*verify_startup_authority\s*$/m).length - 1, 2);
 
   for (const scenario of ["owned", "superseded"] as const) {
     const root = mkdtempSync(tmpPrefix);
     try {
+      symlinkSync(join(process.cwd(), "dist"), join(root, "dist"), "dir");
       const output = join(root, "output");
       const sent = join(root, "sent.json");
       execFileSync(
@@ -2616,7 +2629,8 @@ test("exact-review startup ownership check charges generation start on the lease
           printf '%s' "$MOCK_BODY" > "$out"
           printf '%s' "$MOCK_HTTP_STATUS"
         }
-        heartbeat_payload='{"item_key":"openclaw/openclaw#1","lease_id":"lease-1","lease_revision":1,"claim_generation":1,"run_id":"10","run_attempt":1}'
+        ${prepare}
+        prepare_heartbeat
         ${verify}
         verify_startup_authority
         echo verified >> "$GITHUB_OUTPUT"
@@ -2631,6 +2645,13 @@ test("exact-review startup ownership check charges generation start on the lease
             MOCK_HTTP_STATUS: scenario === "owned" ? "200" : "409",
             MOCK_BODY: scenario === "owned" ? '{"ok":true}' : '{"error":"lease_superseded"}',
             QUEUE_URL: "http://127.0.0.1",
+            EXACT_REVIEW_ITEM_KEY: "openclaw/openclaw#1",
+            EXACT_REVIEW_LEASE_ID: "lease-1",
+            EXACT_REVIEW_LEASE_REVISION: "1",
+            EXACT_REVIEW_CLAIM_GENERATION: "1",
+            EXACT_REVIEW_SOURCE_HEAD_SHA: "",
+            GITHUB_RUN_ID: "10",
+            GITHUB_RUN_ATTEMPT: "1",
           },
         },
       );
@@ -2641,6 +2662,7 @@ test("exact-review startup ownership check charges generation start on the lease
         claim_generation: 1,
         run_id: "10",
         run_attempt: 1,
+        phase: "review",
         generation_start: true,
       });
       if (scenario === "owned") assert.equal(readText(output), "verified\n");
@@ -7580,7 +7602,7 @@ for (const scenario of [
         verify_startup_authority() { return 0; }
         cleanup_heartbeat() { return 0; }
         control_plane_curl() { printf '%s' "$MOCK_HTTP_STATUS"; }
-        heartbeat_payload='{}'
+        finalizing_payload='{}'
         superseded_marker="$TEST_ROOT/superseded"
         admission_args=(--pr-admission-file "$PR_ADMISSION_FILE")
         review_lease_args=(--review-lease-owner "$REVIEW_LEASE_OWNER" --review-lease-comment-id "$REVIEW_LEASE_COMMENT_ID")

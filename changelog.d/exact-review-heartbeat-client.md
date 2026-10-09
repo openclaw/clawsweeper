@@ -1,0 +1,1 @@
+- Build every exact-review lease heartbeat body in `event-review-apply` with one typed command, `dist/repair/exact-review-queue-request.js heartbeat`, which validates the lease tuple and phase options; this replaces nine copied inline Node builders and two shell derivations.

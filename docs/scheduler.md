@@ -141,6 +141,14 @@ when checkout failed or was skipped, including direct-lifecycle recovery.
 The bootstrap never changes workspace Git configuration: an early sparse
 checkout can otherwise leave later checkouts sparse and omit local actions.
 
+After setup, `event-review-apply` builds every lease heartbeat body with
+`node dist/repair/exact-review-queue-request.js heartbeat --phase <review|status|finalizing>`.
+The command reads the lease tuple from the `EXACT_REVIEW_*` and `GITHUB_RUN_*`
+environment, validates it, and prints the JSON body for `control_plane_curl`.
+`--review-acknowledgement-comment-id` is accepted only with `--phase status`, and
+`--generation-start` only with `--phase review`, as the queue requires. An
+invalid tuple stops the step before any request.
+
 The terminal-run observer (`scripts/review-run-observer.mjs`) uses plain Node
 after checkout and retries its telemetry POST up to three times. Each attempt
 retains the 20-second deadline. Connection resets and other recognized transient
