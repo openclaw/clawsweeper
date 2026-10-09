@@ -557,7 +557,6 @@ else {
         activeReviewMutationRunner = value;
       },
       ...ledgerOwner,
-      CodexReviewError: class extends Error {},
       actionLedgerItemKey: (value: { repo: string; number: number }) =>
         `${value.repo}#${value.number}`,
       bulkFilerPolicyInvalidatesCachedReview: () => false,
@@ -761,17 +760,19 @@ else {
         return { text: "Review the current item." };
       },
       itemSnapshotHash: () => digest("snapshot"),
-      codexFailureLogKind: () => "codex_execution",
       codexReviewFailureRetryable: (error: unknown) =>
         !(error instanceof AgentInputScanError) && !sourceIncompatible,
-      codexFailureDecision: () => {
+      codexReviewFailure: () => {
         if (codexFailure || preparationFailure || checkoutUnavailable)
-          return closeDecision({
-            decision: "keep_open",
-            closeReason: null,
-            summary: "Codex review failed: source preparation.",
-            localCheckoutAccess: "unverified",
-          });
+          return {
+            decision: closeDecision({
+              decision: "keep_open",
+              closeReason: null,
+              summary: "Codex review failed: source preparation.",
+              localCheckoutAccess: "unverified",
+            }),
+            logKind: "codex_execution",
+          };
         throw new Error("scan refusal must not become a decision");
       },
       runCodex: ({

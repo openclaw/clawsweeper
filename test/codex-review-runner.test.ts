@@ -176,17 +176,21 @@ test("Codex decision schema avoids unsupported strict-output keywords recursivel
 
 test("Codex failure logs distinguish provider throttling from content output failures", () => {
   assert.equal(
-    codexFailureLogKindForTest(
-      "Codex review failed: retryable codex transport failure (capacity).",
-    ),
+    codexFailureLogKindForTest(1, "Codex failed", "", "", {
+      diagnostic: "Rate limit reached for model-test on tokens per min (TPM).",
+    }),
     "provider_throttle",
   );
+  assert.equal(codexFailureLogKindForTest(1, "Codex wrote invalid JSON"), "content_or_output");
+  assert.equal(codexFailureLogKindForTest(null, "Codex review timed out."), "timeout");
+  // Captured model output is evidence only. It does not change the log kind.
   assert.equal(
-    codexFailureLogKindForTest("Codex review failed: invalid structured output."),
-    "content_or_output",
-  );
-  assert.equal(
-    codexFailureLogKindForTest("Codex review failed: codex execution failed."),
+    codexFailureLogKindForTest(
+      1,
+      "Codex failed",
+      "Codex review failed: invalid structured output.",
+      "retryable codex transport failure (capacity)",
+    ),
     "codex_execution",
   );
 });

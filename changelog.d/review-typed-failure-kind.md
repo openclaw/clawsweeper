@@ -1,0 +1,1 @@
+- The review command now takes the Codex failure log kind and the local-history `review_status` from the typed failure and decision it already holds, instead of regex-reading its own rendered report. Model output that quotes host failure wording no longer changes the `codex-failure classification=` log line.

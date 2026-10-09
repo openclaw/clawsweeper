@@ -30,6 +30,7 @@ import type {
 } from "./clawsweeper-types.js";
 import type { UserFacingCommandError } from "./command.js";
 import type { CodexProcessResult } from "./codex-process.js";
+import type { CodexFailureLogKind } from "./clawsweeper-review-runtime.js";
 import type { RepositoryProfile } from "./repository-profiles.js";
 import type { ReviewStructuralPullState } from "./review-structural-cache.js";
 import type { ReviewStructuralRecord } from "./review-structural-cache.js";
@@ -78,39 +79,7 @@ export interface CreateReviewCommandWorkflowDependencies {
     author: string,
     cache: BulkFilerRepositoryPermissionCache,
   ) => string | null;
-  codexFailureDecision: (
-    status: number | null,
-    detail: string,
-    stdout?: string,
-    stderr?: string,
-    processResult?: {
-      errorCode?: string | null;
-      signal?: NodeJS.Signals | null;
-      diagnostic?: string;
-      retryHint?: string;
-    },
-  ) => Decision;
-  codexFailureLogKind: (markdown: string) => string;
-  CodexReviewError: new (options: {
-    message: string;
-    status: number | null;
-    stdout?: string;
-    stderr?: string;
-    errorCode?: string | null;
-    signal?: NodeJS.Signals | null;
-    retryable?: boolean;
-    diagnostic?: string;
-    retryHint?: string;
-  }) => Error & {
-    readonly status: number | null;
-    readonly stdout: string;
-    readonly stderr: string;
-    readonly errorCode: string | null;
-    readonly signal: NodeJS.Signals | null;
-    readonly retryable: boolean;
-    readonly diagnostic: string;
-    readonly retryHint?: string;
-  };
+  codexReviewFailure: (error: unknown) => { decision: Decision; logKind: CodexFailureLogKind };
   codexReviewFailureRetryable: (error: unknown) => boolean;
   ghJson: <T>(args: string[], options?: GitHubDeadlineOptions) => T;
   collectItemContext: (

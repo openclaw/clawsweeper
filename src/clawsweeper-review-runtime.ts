@@ -75,6 +75,27 @@ import { asRecord, nonBlankStringOrUndefined } from "./value-coerce.js";
 /** Prompt sources for an item review: the shared core, one template per item kind, and close reasons. */
 export type ReviewItemPrompts = Readonly<Record<"core" | Item["kind"] | "closeReasons", string>>;
 
+// Each Codex failure reason has one log kind. The review run logs this kind.
+const CODEX_FAILURE_LOG_KINDS = {
+  "dirty checkout": "codex_execution",
+  "missing structured output": "content_or_output",
+  "invalid structured output": "content_or_output",
+  "output buffer overflow": "content_or_output",
+  "model unavailable or access denied": "model_access",
+  timeout: "timeout",
+  "retryable codex transport failure (capacity)": "provider_throttle",
+  "retryable codex transport failure (network)": "transport_network",
+  "codex execution failed": "codex_execution",
+} as const;
+type CodexFailureReason = keyof typeof CODEX_FAILURE_LOG_KINDS;
+export type CodexFailureLogKind = (typeof CODEX_FAILURE_LOG_KINDS)[CodexFailureReason];
+type CodexProcessFailure = {
+  errorCode?: string | null;
+  signal?: NodeJS.Signals | null;
+  diagnostic?: string;
+  retryHint?: string;
+};
+
 interface ReviewRuntimeDependencies {
   reviewItemPromptPaths: ReviewItemPrompts;
   decisionSchemaPath: string;
@@ -641,7 +662,11 @@ ${extra}
     return buildReviewPrompt(item, context, git, additionalPrompt, runtimeHints).text;
   }
 
-  function codexFailureReason(detail: string, errorCode?: string | null, retryHint = ""): string {
+  function codexFailureReason(
+    detail: string,
+    errorCode?: string | null,
+    retryHint = "",
+  ): CodexFailureReason {
     if (detail.includes("Codex dirtied the OpenClaw checkout")) return "dirty checkout";
     if (detail.includes("did not produce output")) return "missing structured output";
     if (detail.includes("invalid JSON")) return "invalid structured output";
@@ -670,39 +695,13 @@ ${extra}
     return "codex execution failed";
   }
 
-  function codexFailureLogKind(markdown: string): string {
-    if (/retryable codex transport failure \(capacity\)/i.test(markdown)) {
-      return "provider_throttle";
-    }
-    if (/retryable codex transport failure \(network\)/i.test(markdown)) {
-      return "transport_network";
-    }
-    if (
-      /missing structured output|invalid structured output|output buffer overflow/i.test(markdown)
-    ) {
-      return "content_or_output";
-    }
-    if (/model unavailable or access denied/i.test(markdown)) return "model_access";
-    if (/Codex review failed: timeout/i.test(markdown)) return "timeout";
-    return "codex_execution";
-  }
-
-  function codexFailureLogKindForTest(markdown: string): string {
-    return codexFailureLogKind(markdown);
-  }
-
-  function codexFailureDecision(
+  function codexFailure(
     status: number | null,
     detail: string,
     stdout = "",
     stderr = "",
-    processResult: {
-      errorCode?: string | null;
-      signal?: NodeJS.Signals | null;
-      diagnostic?: string;
-      retryHint?: string;
-    } = {},
-  ): Decision {
+    processResult: CodexProcessFailure = {},
+  ): { decision: Decision; logKind: CodexFailureLogKind } {
     const failureDetail = redactInternalCodexModel(detail || "No failure detail.");
     const safeStdout = redactedOutputTail(stdout || "No stdout captured.");
     const safeStderr = redactedOutputTail(stderr || "No stderr captured.");
@@ -713,7 +712,7 @@ ${extra}
     const terminalError = codexTerminalErrorDetail(diagnostic);
     const processFailureDetail = [failureDetail, diagnostic].filter(Boolean).join("\n");
     const reason = codexFailureReason(processFailureDetail, processResult.errorCode, retryHint);
-    return {
+    const decision: Decision = {
       decision: "keep_open",
       closeReason: "none",
       confidence: "low",
@@ -856,6 +855,24 @@ ${extra}
       workValidation: [],
       workLikelyFiles: [],
     };
+    return { decision, logKind: CODEX_FAILURE_LOG_KINDS[reason] };
+  }
+
+  // Builds the failed-review decision and log kind for one per-item review error.
+  function codexReviewFailure(error: unknown): { decision: Decision; logKind: CodexFailureLogKind } {
+    if (error instanceof CodexReviewError) {
+      return codexFailure(error.status, error.message, error.stdout, error.stderr, {
+        errorCode: error.errorCode,
+        signal: error.signal,
+        diagnostic: error.diagnostic,
+        ...(error.retryHint ? { retryHint: error.retryHint } : {}),
+      });
+    }
+    return codexFailure(
+      null,
+      error instanceof Error ? error.message : String(error),
+      "Per-item Codex failure; continuing with the rest of the shard.",
+    );
   }
 
   function codexFailureDecisionForTest(
@@ -863,14 +880,19 @@ ${extra}
     detail: string,
     stdout = "",
     stderr = "",
-    processResult: {
-      errorCode?: string | null;
-      signal?: NodeJS.Signals | null;
-      diagnostic?: string;
-      retryHint?: string;
-    } = {},
+    processResult: CodexProcessFailure = {},
   ): Decision {
-    return codexFailureDecision(status, detail, stdout, stderr, processResult);
+    return codexFailure(status, detail, stdout, stderr, processResult).decision;
+  }
+
+  function codexFailureLogKindForTest(
+    status: number | null,
+    detail: string,
+    stdout = "",
+    stderr = "",
+    processResult: CodexProcessFailure = {},
+  ): CodexFailureLogKind {
+    return codexFailure(status, detail, stdout, stderr, processResult).logKind;
   }
 
   function redactedOutputTail(value: string | Buffer | null | undefined, maxLength = 6000): string {
@@ -1316,11 +1338,9 @@ ${extra}
     reviewPromptTelemetryForTest,
     reviewPromptTemplates,
     runCodexForTest,
-    CodexReviewError,
     buildReviewPrompt,
     reviewEnvironment,
-    codexFailureDecision,
-    codexFailureLogKind,
+    codexReviewFailure,
     codexFailureReason,
     codexReviewFailureRetryable,
     defaultLocalRangeArtifactDir,

@@ -80,6 +80,8 @@ import {
 } from "./review-output-policy.js";
 import { asRecord, nonBlankStringOrUndefined } from "./value-coerce.js";
 import { frontMatterValue, replaceFrontMatterValue } from "./report-front-matter.js";
+import { reviewStatusForDecision } from "./clawsweeper-report-document.js";
+import type { CodexFailureLogKind } from "./clawsweeper-review-runtime.js";
 
 /** Bind verified evidence to its candidate before an ordinary full review. */
 export function reviewCommandProofBinding(sourceAction: unknown, additionalPrompt: string) {
@@ -173,9 +175,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
     reviewEnvironment,
     bulkFilerPolicyInvalidatesCachedReview,
     bulkFilerRepositoryPermission,
-    codexFailureDecision,
-    codexFailureLogKind,
-    CodexReviewError,
+    codexReviewFailure,
     codexReviewFailureRetryable,
     collectItemContext,
     commentId,
@@ -460,7 +460,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
       const bulkFilerWindowNow = Date.now();
       const structuralCacheReasons = new Map<string, number>();
       const structuralCacheRevalidationReasons = new Map<string, number>();
-      const codexFailureReports: Array<{ path: string | null; kind: string }> = [];
+      const codexFailureReports: Array<{ path: string | null; kind: CodexFailureLogKind }> = [];
       const leaseAcquisitionFailureDetails: string[] = [];
       const reviewTreeCleanupFailures: string[] = [];
       // oxfmt-ignore
@@ -1486,8 +1486,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
         const snapshotHash = itemSnapshotHash(item, context);
         let decision: Decision;
         let codexElapsedMs = 0;
-        let codexFailed = false;
-        let codexFailureError: unknown = null;
+        let codexFailure: { error: unknown; logKind: CodexFailureLogKind } | null = null;
         let codexFailureRetryable = false;
         let codexFailureDisposition: ReturnType<typeof actionLedgerFailureDisposition> | null =
           null;
@@ -1542,30 +1541,11 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
         } catch (error) {
           if (error instanceof AgentInputScanError) throw error;
           codexFailures += 1;
-          codexFailed = true;
-          codexFailureError = error;
           codexFailureRetryable = codexReviewFailureRetryable(error);
           codexFailureDisposition = actionLedgerFailureDisposition(error);
-          if (error instanceof CodexReviewError) {
-            decision = codexFailureDecision(
-              error.status,
-              error.message,
-              error.stdout,
-              error.stderr,
-              {
-                errorCode: error.errorCode,
-                signal: error.signal,
-                diagnostic: error.diagnostic,
-                ...(error.retryHint ? { retryHint: error.retryHint } : {}),
-              },
-            );
-          } else {
-            decision = codexFailureDecision(
-              null,
-              error instanceof Error ? error.message : String(error),
-              "Per-item Codex failure; continuing with the rest of the shard.",
-            );
-          }
+          const failure = codexReviewFailure(error);
+          decision = failure.decision;
+          codexFailure = { error, logKind: failure.logKind };
         } finally {
           codexElapsedMs = Date.now() - codexStartedAt;
         }
@@ -1608,12 +1588,12 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
               : {}),
         }));
         writeOutputReport(item, reportPath, reportMarkdown);
-        if (codexFailureError) {
-          recordFailureDiagnostics(codexFailureError, codexFailureLogKind(reportMarkdown));
+        if (codexFailure) {
+          recordFailureDiagnostics(codexFailure.error, codexFailure.logKind);
         }
         if (itemLocalReviewHistoryPath) {
           const nextLocalReviewCommentBody =
-            frontMatterValue(reportMarkdown, "review_status") === "complete"
+            reviewStatusForDecision(decision) === "complete"
               ? renderReviewCommentFromReport(
                   reportMarkdown,
                   "none",
@@ -1646,7 +1626,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
           item,
           status: codexFailureDisposition?.status ?? ACTION_EVENT_STATUSES.completed,
           reasonCode: codexFailureDisposition?.reasonCode ?? ACTION_EVENT_REASON_CODES.completed,
-          retryable: codexFailed && codexFailureRetryable,
+          retryable: codexFailureRetryable,
           cached: false,
           startedAtMs: contextStartedAt,
           ...(context.sourceRevision ? { sourceRevision: context.sourceRevision } : {}),
@@ -1656,15 +1636,15 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
         });
         activeReviewItem = null;
         completed += 1;
-        if (codexFailed) {
+        if (codexFailure) {
           codexFailureReports.push({
             path: outputSelection.retention === "none" ? null : reportPath,
-            kind: codexFailureLogKind(reportMarkdown),
+            kind: codexFailure.logKind,
           });
         }
         if (humanLocalReview) {
           console.error("");
-          console.error(codexFailed ? "Codex review failed" : "Review complete");
+          console.error(codexFailure ? "Codex review failed" : "Review complete");
           console.error(`  elapsed: ${displayDurationMs(codexElapsedMs)}`);
           console.error(`  decision: ${decision.decision}`);
           console.error(`  confidence: ${decision.confidence}`);
