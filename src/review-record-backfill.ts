@@ -79,10 +79,17 @@ interface DecisionDifference {
   rendered: string;
 }
 
+// "filled": the report has no value for each differing field (it predates the field),
+// and the record supplies the decision default. "lossy": at least one stored value
+// differs from the value the record renders.
 export type ReviewRecordBackfill =
   | { status: "typed" }
   | { status: "invalid_record" | "unparseable"; reason: string }
-  | { status: "lossless" | "lossy"; differences: DecisionDifference[]; markdown: string };
+  | {
+      status: "lossless" | "filled" | "lossy";
+      differences: DecisionDifference[];
+      markdown: string;
+    };
 
 // The front-matter fields that markdownFor writes from the decision.
 const DECISION_FRONT_MATTER_KEYS = [
@@ -407,7 +414,11 @@ export function createReviewRecordBackfill(dependencies: { markdownFor: Markdown
     const line = reviewRecordFrontMatterLine({ decision, origin: "backfill" }, item)!;
     const end = markdown.indexOf("\n---", 3);
     return {
-      status: differences.length ? "lossy" : "lossless",
+      status: !differences.length
+        ? "lossless"
+        : differences.every((difference) => !difference.stored)
+          ? "filled"
+          : "lossy",
       differences,
       markdown: `${markdown.slice(0, end)}\n${line}${markdown.slice(end)}`,
     };
@@ -428,10 +439,14 @@ export function createReviewRecordBackfill(dependencies: { markdownFor: Markdown
       invalid_record: 0,
       unparseable: 0,
       lossless: 0,
+      filled: 0,
       lossy: 0,
     };
     const reasons: Record<string, number> = {};
-    const differences: Record<string, number> = {};
+    // Per field: how many reports lack a stored value, and how many store a value
+    // that the record would change.
+    const filledFields: Record<string, number> = {};
+    const changedFields: Record<string, number> = {};
     const differenceSamples: Array<DecisionDifference & { path: string }> = [];
     const examples: Record<string, string[]> = {};
     let total = 0;
@@ -452,11 +467,15 @@ export function createReviewRecordBackfill(dependencies: { markdownFor: Markdown
         if ("reason" in result) reasons[result.reason] = (reasons[result.reason] ?? 0) + 1;
         if ("differences" in result) {
           for (const difference of result.differences) {
-            differences[difference.field] = (differences[difference.field] ?? 0) + 1;
-            // Three short samples for each field show what the parsers lose. Each
-            // sample starts a little before the first character that differs.
+            if (!difference.stored) {
+              filledFields[difference.field] = (filledFields[difference.field] ?? 0) + 1;
+              continue;
+            }
+            changedFields[difference.field] = (changedFields[difference.field] ?? 0) + 1;
+            // Five short samples for each changed field show what the parsers lose.
+            // Each sample starts a little before the first character that differs.
             if (
-              differenceSamples.filter((sample) => sample.field === difference.field).length < 3
+              differenceSamples.filter((sample) => sample.field === difference.field).length < 5
             ) {
               let first = 0;
               while (difference.stored[first] === difference.rendered[first]) first += 1;
@@ -478,7 +497,8 @@ export function createReviewRecordBackfill(dependencies: { markdownFor: Markdown
       recordsDir,
       total,
       counts,
-      differences: byCount(differences),
+      changedFields: byCount(changedFields),
+      filledFields: byCount(filledFields),
       reasons: byCount(reasons),
       examples,
       differenceSamples,

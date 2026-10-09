@@ -127,6 +127,21 @@ test("the backfill names the decision fields that the report lost", () => {
   );
 });
 
+test("a report that predates a decision field is filled, not lossy", () => {
+  const legacy = legacyReport(
+    parseDecision(closeDecision({ decision: "keep_open", closeReason: "none" }), pullRequest),
+  );
+  const report = legacy.replace(/^product_kind: .*\n/m, "");
+  assert.notEqual(report, legacy);
+  const result = backfillReviewRecord(report);
+  assert.equal(result.status, "filled", JSON.stringify(result));
+  assert.ok("differences" in result);
+  assert.deepEqual(
+    result.differences.map((difference) => difference.field),
+    ["product_kind"],
+  );
+});
+
 test("the backfill leaves typed reports and reports it cannot read", () => {
   const typed = withReviewRecord(lowSignalCloseReport({ number: 7 }));
   assert.deepEqual(backfillReviewRecord(typed), { status: "typed" });
@@ -164,6 +179,7 @@ test("backfill-review-records reports counts for a records directory and writes 
       invalid_record: 0,
       unparseable: 1,
       lossless: 0,
+      filled: 0,
       lossy: 0,
     });
     assert.deepEqual(summary.reasons, { "front matter has no decision": 1 });
