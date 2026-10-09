@@ -1,0 +1,1 @@
+- Ask the target `pnpm` for its own `dlx` cache key during OpenClaw setup and link the pinned Knip helper there, so the offline `check:changed` dead-export scan reuses the reviewed helper instead of failing with `ERR_PNPM_NO_OFFLINE_TARBALL` when a pnpm release changes its key inputs.

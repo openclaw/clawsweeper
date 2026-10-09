@@ -1,11 +1,10 @@
-import { sha256 } from "../content-hash.js";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { isDeepStrictEqual } from "node:util";
 import { parse as parseYaml } from "yaml";
 
-import { runContainedCommand } from "./command-runner.js";
+import { runContainedCommand, runContainedCommandResult } from "./command-runner.js";
 import { PNPM_CONTAINED_PRIVATE_DIRECTORIES } from "./target-toolchain-config.js";
 
 const PINNED_OPENCLAW_KNIP_RELEASES: Record<string, string> = {
@@ -13,6 +12,9 @@ const PINNED_OPENCLAW_KNIP_RELEASES: Record<string, string> = {
   "6.32.2": "2026-08-11T20:34:19.949Z",
 };
 const PREPARED_PNPM_HELPER_CACHE = ".__clawsweeper_pnpm_helper_cache__";
+// The pinned helper lives under this name in pnpm's dlx cache. The key that
+// pnpm reports for the changed gate request is a symlink to it.
+const PINNED_HELPER_DIRECTORY = "clawsweeper-pinned-knip";
 const MINIMUM_OPENCLAW_RELEASE_AGE_MINUTES = 48 * 60;
 
 type PinnedKnip = { version: string; publishedAt: string; lockPath: string };
@@ -20,14 +22,12 @@ type PinnedKnip = { version: string; publishedAt: string; lockPath: string };
 export function preparePinnedOpenClawValidationHelper({
   cwd,
   targetRepo,
-  packageManager,
   validationEnv,
   installRegistry,
   remainingTimeoutMs,
 }: {
   cwd: string;
   targetRepo: string;
-  packageManager: string;
   validationEnv: NodeJS.ProcessEnv;
   installRegistry: string;
   remainingTimeoutMs: () => number;
@@ -62,8 +62,7 @@ export function preparePinnedOpenClawValidationHelper({
   const helperCache = path.join(String(validationEnv.COREPACK_HOME), PREPARED_PNPM_HELPER_CACHE);
   const minimumReleaseAge = openClawMinimumReleaseAge(cwd);
   const dlxRoot = path.join(helperCache, "pnpm", "dlx");
-  const fullCacheKey = pinnedOpenClawDlxCacheKey(pin.version, packageManager, installRegistry);
-  const cacheRoot = path.join(dlxRoot, fullCacheKey);
+  const cacheRoot = path.join(dlxRoot, PINNED_HELPER_DIRECTORY);
   const helperProject = path.join(cacheRoot, "pinned");
   fs.mkdirSync(helperProject, { recursive: true, mode: 0o700 });
   fs.copyFileSync(pin.lockPath, path.join(helperProject, "pnpm-lock.yaml"));
@@ -102,9 +101,96 @@ export function preparePinnedOpenClawValidationHelper({
   );
   scopePinnedOpenClawJitiCache(helperProject);
   fs.symlinkSync("pinned", path.join(cacheRoot, "pkg"));
-  fs.symlinkSync(fullCacheKey, path.join(dlxRoot, fullCacheKey.slice(0, 32)));
   assertPinnedOpenClawValidationHelperLock(helperCache, pin.lockPath);
   seedOfflinePinnedOpenClawMetadata(helperCache, helperProject, installRegistry, pin);
+  linkPinnedOpenClawDlxCacheKey({
+    cwd,
+    helperCache,
+    installRegistry,
+    profileRoot,
+    remainingTimeoutMs,
+    validationEnv,
+    version: pin.version,
+  });
+}
+
+/** The pnpm settings that the OpenClaw changed gate uses for `pnpm dlx`. */
+export function pinnedOpenClawDlxEnvironment(registry: string): NodeJS.ProcessEnv {
+  // pnpm 11 and later ignore legacy npm_config_* environment settings, and
+  // pnpm 10 ignores PNPM_CONFIG_OFFLINE. Set both forms of offline mode.
+  return {
+    PNPM_CONFIG_REGISTRY: registry,
+    PNPM_CONFIG_OFFLINE: "true",
+    npm_config_offline: "true",
+  };
+}
+
+// pnpm owns the dlx cache key, and its inputs change between pnpm releases
+// (registry routes, platform, Node.js major). Thus ask the target pnpm for the
+// key. Send the same dlx request that the changed gate sends, from the same
+// checkout, offline, with no network and an empty store. pnpm makes the cache
+// directory for its key and then stops, because it cannot get the package.
+// The command name does not exist, so no package code can run.
+function linkPinnedOpenClawDlxCacheKey({
+  cwd,
+  helperCache,
+  installRegistry,
+  profileRoot,
+  remainingTimeoutMs,
+  validationEnv,
+  version,
+}: {
+  cwd: string;
+  helperCache: string;
+  installRegistry: string;
+  profileRoot: string;
+  remainingTimeoutMs: () => number;
+  validationEnv: NodeJS.ProcessEnv;
+  version: string;
+}): void {
+  const dlxRoot = path.join(helperCache, "pnpm", "dlx");
+  const probeRoot = fs.mkdtempSync(path.join(profileRoot, "dlx-key-probe-"));
+  try {
+    const probeCache = path.join(probeRoot, "cache");
+    const probeStore = path.join(probeRoot, "store");
+    // pnpm 10 and 11 resolve the package before they make the key directory,
+    // so give the probe the seeded offline metadata but not the helper.
+    fs.cpSync(path.join(helperCache, "pnpm"), path.join(probeCache, "pnpm"), {
+      recursive: true,
+      filter: (source) => source !== dlxRoot,
+    });
+    const probe = runContainedCommandResult(
+      "pnpm",
+      ["dlx", "--package", `knip@${version}`, "clawsweeper-dlx-cache-key-probe"],
+      {
+        cwd,
+        env: {
+          ...validationEnv,
+          ...pinnedOpenClawDlxEnvironment(installRegistry),
+          PNPM_CONFIG_STORE_DIR: probeStore,
+          XDG_CACHE_HOME: probeCache,
+          npm_config_store_dir: probeStore,
+        },
+        isolateNetwork: true,
+        privateDirectories: PNPM_CONTAINED_PRIVATE_DIRECTORIES,
+        timeoutMs: remainingTimeoutMs(),
+        writableRoots: [cwd, profileRoot],
+      },
+    );
+    const probeDlxRoot = path.join(probeCache, "pnpm", "dlx");
+    const keys = fs.existsSync(probeDlxRoot) ? fs.readdirSync(probeDlxRoot) : [];
+    if (
+      probe.error !== undefined ||
+      probe.status === 0 ||
+      probe.backgroundProcesses !== 0 ||
+      keys.length !== 1
+    ) {
+      throw new Error("pnpm did not report one dlx cache key for the pinned OpenClaw Knip helper");
+    }
+    fs.symlinkSync(PINNED_HELPER_DIRECTORY, path.join(dlxRoot, keys[0]!));
+  } finally {
+    fs.rmSync(probeRoot, { recursive: true, force: true });
+  }
 }
 
 function scopePinnedOpenClawJitiCache(helperProject: string): void {
@@ -117,19 +203,6 @@ function scopePinnedOpenClawJitiCache(helperProject: string): void {
     '#!/bin/sh\nJITI_FS_CACHE=0\nexport JITI_FS_CACHE\nexec "${0%/*}/knip-real" "$@"\n',
     { mode },
   );
-}
-
-function pinnedOpenClawDlxCacheKey(
-  version: string,
-  packageManager: string,
-  installRegistry: string,
-): string {
-  const resolvedPackages = [`knip@${version}`];
-  const registries = [["default", installRegistry]];
-  // Native pnpm 12 excludes the builtin JSR route from its dlx key. A legacy
-  // key misses the prepared graph and starts an unfrozen install while offline.
-  if (!packageManager.startsWith("pnpm@12.")) registries.unshift(["@jsr", "https://npm.jsr.io/"]);
-  return sha256(JSON.stringify([resolvedPackages, registries]));
 }
 
 function seedOfflinePinnedOpenClawMetadata(

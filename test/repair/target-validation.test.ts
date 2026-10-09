@@ -4024,7 +4024,20 @@ for (const [extension, knipVersion, pnpmVersion] of [
 const fs = require("node:fs");
 const path = require("node:path");
 const args = process.argv.slice(2);
-fs.appendFileSync(${JSON.stringify(logPath)}, JSON.stringify({ args, cwd: process.cwd(), cache: process.env.XDG_CACHE_HOME, jitiFsCache: process.env.JITI_FS_CACHE, offline: process.env.PNPM_CONFIG_OFFLINE, legacyOffline: process.env.npm_config_offline, registry: process.env.PNPM_CONFIG_REGISTRY }) + "\\n");
+fs.appendFileSync(${JSON.stringify(logPath)}, JSON.stringify({ args, cwd: process.cwd(), cache: process.env.XDG_CACHE_HOME, jitiFsCache: process.env.JITI_FS_CACHE, offline: process.env.PNPM_CONFIG_OFFLINE, legacyOffline: process.env.npm_config_offline, registry: process.env.PNPM_CONFIG_REGISTRY, store: process.env.PNPM_CONFIG_STORE_DIR }) + "\\n");
+// Only this fake pnpm knows its dlx key. ClawSweeper must ask for it.
+const dlxKey = require("node:crypto")
+  .createHash("sha256")
+  .update(JSON.stringify(["${pnpmVersion}", "knip@${knipVersion}", process.env.PNPM_CONFIG_REGISTRY, process.platform, process.arch]))
+  .digest("hex")
+  .slice(0, 32);
+if (args[0] === "dlx") {
+  if (args.join(" ") !== "dlx --package knip@${knipVersion} clawsweeper-dlx-cache-key-probe") process.exit(50);
+  if (fs.existsSync(${JSON.stringify(path.join(hostBin, "probe-no-key"))})) process.exit(1);
+  fs.mkdirSync(path.join(process.env.XDG_CACHE_HOME, "pnpm", "dlx", dlxKey, "probe-prepare"), { recursive: true });
+  process.stderr.write("ERR_PNPM_NO_OFFLINE_TARBALL\\n");
+  process.exit(1);
+}
 if (args[0] === "install") {
   fs.mkdirSync("node_modules", { recursive: true });
   if (process.cwd().includes(".__clawsweeper_pnpm_helper_cache__")) {
@@ -4050,15 +4063,11 @@ if (args[0] === "install") {
 }
 if (args.at(-1) === "first" || args.at(-1) === "second") {
   const registry = process.env.PNPM_CONFIG_REGISTRY;
-  const registries = ${pnpmVersion === "12.3.4" ? '[["default", registry]]' : '[["@jsr", "https://npm.jsr.io/"], ["default", registry]]'};
-  const fullCacheKey = require("node:crypto")
-    .createHash("sha256")
-    .update(JSON.stringify([["knip@${knipVersion}"], registries]))
-    .digest("hex");
-  const cacheKey = fullCacheKey.slice(0, 32);
-  const marker = path.join(process.env.XDG_CACHE_HOME, "pnpm", "dlx", cacheKey, "marker");
+  const cacheRoot = path.join(process.env.XDG_CACHE_HOME, "pnpm", "dlx", dlxKey);
+  const marker = path.join(cacheRoot, "marker");
   if (fs.readFileSync(marker, "utf8") !== "frozen helper") process.exit(42);
-  if (fs.readFileSync(path.join(process.env.XDG_CACHE_HOME, "pnpm", "dlx", fullCacheKey, "marker"), "utf8") !== "frozen helper") process.exit(44);
+  if (!fs.existsSync(path.join(cacheRoot, "pkg", "pnpm-lock.yaml"))) process.exit(44);
+  if (fs.existsSync(path.join(cacheRoot, "probe-prepare"))) process.exit(47);
   const host = new URL(registry).host.replace(":", "+");
   for (const metadataPath of [
     path.join(process.env.XDG_CACHE_HOME, "pnpm", "v11", "metadata-full-filtered", host, "knip.jsonl"),
@@ -4068,7 +4077,7 @@ if (args.at(-1) === "first" || args.at(-1) === "second") {
     if (Object.keys(metadata.versions).join(",") !== "${knipVersion}") process.exit(45);
     if (!metadata.versions["${knipVersion}"].dist.integrity.startsWith("sha512-")) process.exit(46);
   }
-  const knip = path.join(path.dirname(marker), "pinned", "node_modules", ".bin", "knip");
+  const knip = path.join(cacheRoot, "pinned", "node_modules", ".bin", "knip");
   if (!fs.readFileSync(knip, "utf8").includes("JITI_FS_CACHE=0")) process.exit(43);
   if (args.at(-1) === "first") fs.writeFileSync(marker, "validation mutated its own cache");
 }
@@ -4148,6 +4157,14 @@ if (args[0] === "enable") {
       assert.ok(validations.every(({ offline }) => offline === "true"));
       assert.ok(validations.every(({ legacyOffline }) => legacyOffline === "true"));
       assert.ok(validations.every(({ registry }) => registry === "https://registry.npmjs.org/"));
+      const probes = invocations.filter(({ args }) => args[0] === "dlx");
+      assert.equal(probes.length, 1, "setup asks pnpm for the dlx key once");
+      assert.equal(probes[0].cwd, fs.realpathSync(cwd), "probe uses the target checkout config");
+      assert.equal(probes[0].offline, "true");
+      assert.equal(probes[0].legacyOffline, "true");
+      assert.equal(probes[0].registry, "https://registry.npmjs.org/");
+      assert.ok(!probes[0].cache.includes(".__clawsweeper_pnpm_helper_cache__"));
+      assert.ok(!probes[0].store.startsWith(fs.realpathSync(cwd)));
 
       withCommandOverridesUnset(["corepack", "pnpm"], () =>
         withPathOnlyPrefix(hostBin, () => {
@@ -4157,6 +4174,13 @@ if (args[0] === "enable") {
             /dependency lockfile does not match the trusted graph/,
           );
           fs.rmSync(path.join(hostBin, "tamper-lock"));
+
+          fs.writeFileSync(path.join(hostBin, "probe-no-key"), "1");
+          assert.throws(
+            () => prepareTargetToolchain(cwd, options, ["pnpm check:changed"]),
+            /pnpm did not report one dlx cache key for the pinned OpenClaw Knip helper/,
+          );
+          fs.rmSync(path.join(hostBin, "probe-no-key"));
 
           const previousRegistry = process.env.npm_config_registry;
           process.env.npm_config_registry = "https://registry.example.invalid:8443/";

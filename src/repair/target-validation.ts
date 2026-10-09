@@ -47,6 +47,7 @@ import {
 import { parsePullRequestUrl, sameRepoSlug } from "./github-ref.js";
 import type { JsonValue, LooseRecord } from "./json-types.js";
 import {
+  pinnedOpenClawDlxEnvironment,
   preparePinnedOpenClawValidationHelper,
   restorePinnedOpenClawValidationHelperCache,
 } from "./pinned-openclaw-validation-helper.js";
@@ -569,7 +570,6 @@ function preparePnpmToolchain({
     preparePinnedOpenClawValidationHelper({
       cwd,
       targetRepo,
-      packageManager,
       validationEnv,
       installRegistry,
       remainingTimeoutMs: () =>
@@ -1388,11 +1388,10 @@ export function runAllowedValidationCommandsWithBinding(
       validationEnv.OPENCLAW_TEST_PROJECTS_TIMINGS = "0";
       // The changed gate invokes `pnpm dlx`; require its resolver to use the
       // frozen helper metadata and the same approved registry used for setup.
-      // pnpm 11 ignores legacy npm_config_* environment configuration, while
-      // pnpm 10 ignores the newer PNPM_CONFIG_OFFLINE environment variable.
-      validationEnv.PNPM_CONFIG_REGISTRY = approvedTargetInstallRegistry(validationEnv);
-      validationEnv.PNPM_CONFIG_OFFLINE = "true";
-      validationEnv.npm_config_offline = "true";
+      Object.assign(
+        validationEnv,
+        pinnedOpenClawDlxEnvironment(approvedTargetInstallRegistry(validationEnv)),
+      );
     }
     const validationTimeoutMs = targetValidationTimeoutMs(
       "CLAWSWEEPER_TARGET_VALIDATION_TIMEOUT_MS",
