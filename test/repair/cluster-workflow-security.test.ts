@@ -11,12 +11,16 @@ type Workflow = {
     string,
     {
       env?: Record<string, string>;
+      "timeout-minutes"?: number;
       steps?: Array<{
+        id?: string;
+        if?: string;
         name?: string;
         run?: string;
         env?: Record<string, string>;
         uses?: string;
         with?: Record<string, string>;
+        "timeout-minutes"?: string;
       }>;
     }
   >;
@@ -561,4 +565,99 @@ test("cluster intake validates one safe repository token before exporting output
   assert.match(resolveStep.run, /\^\[A-Za-z0-9_\.-\]\+\/\[A-Za-z0-9_\.-\]\+\$/);
   assert.match(resolveStep.run, /printf 'name=%s\\n'/);
   assert.doesNotMatch(resolveStep.run, /echo "name=\$target_name"/);
+});
+
+function repairWorkerJob(job: "cluster" | "execute") {
+  const workflow = parse(
+    fs.readFileSync(".github/workflows/repair-cluster-worker.yml", "utf8"),
+  ) as Workflow;
+  return workflow.jobs?.[job];
+}
+
+test("repair policy gates every planning and execution effect", () => {
+  for (const [job, effects] of [
+    [
+      "cluster",
+      [
+        "Register steerable Action session",
+        "Publish automatic implementation planning status",
+        "Run worker",
+      ],
+    ],
+    [
+      "execute",
+      [
+        "Resume steerable Action session",
+        "Publish automatic implementation build status",
+        "Execute credited fix artifact",
+        "Publish automatic implementation completion status",
+      ],
+    ],
+  ] as const) {
+    const steps = repairWorkerJob(job)?.steps ?? [];
+    const gate = steps.findIndex((step) => step.id === "repair_policy");
+    assert.ok(gate >= 0, job);
+    for (const name of effects) {
+      const index = steps.findIndex((step) => step.name === name);
+      const step = steps[index];
+      assert.ok(index > gate, `${job}: ${name}`);
+      assert.ok(
+        step?.if?.includes("steps.repair_policy.outputs.allowed == '1'") ||
+          step?.run?.includes("pnpm run repair:policy-run --"),
+        `${job}: ${name}`,
+      );
+    }
+  }
+});
+
+test("deferred repair outcome publishes with a token renewed after execution", () => {
+  const steps = repairWorkerJob("execute")?.steps ?? [];
+  const index = (name: string) => steps.findIndex((step) => step.name === name);
+  const execute = steps[index("Execute credited fix artifact")];
+  const publish = steps[index("Publish deferred fix outcome")];
+  assert.ok(
+    index("Execute credited fix artifact") < index("Renew target write token for post-flight") &&
+      index("Renew target write token for post-flight") < index("Publish deferred fix outcome") &&
+      index("Publish deferred fix outcome") < index("Post-flight finalize fix PRs"),
+  );
+  assert.match(execute?.run ?? "", /--latest --defer-publication$/);
+  assert.match(publish?.run ?? "", /--latest --publish-report-only$/);
+  assert.equal(publish?.env?.GH_TOKEN, "${{ steps.target_post_flight_token.outputs.token }}");
+});
+
+test("repair execution step timeout comes from the resolved budget and fits the job", () => {
+  const job = repairWorkerJob("execute");
+  const steps = job?.steps ?? [];
+  const budget = steps.findIndex((step) => step.id === "repair_budget");
+  const execute = steps.findIndex((step) => step.id === "execute_fix");
+  assert.ok(budget >= 0 && budget < execute);
+  assert.equal(
+    steps[execute]?.["timeout-minutes"],
+    "${{ fromJSON(steps.repair_budget.outputs.timeout_minutes) }}",
+  );
+
+  // Resolve the budget with the workflow defaults that apply when no repository variable is set.
+  const root = fs.mkdtempSync(path.join(tmpdir(), "clawsweeper-repair-budget-"));
+  try {
+    const jobPath = path.join(root, "job.md");
+    const output = path.join(root, "github-output");
+    fs.writeFileSync(jobPath, "---\nrepo: openclaw/fixture\n---\nFixture\n");
+    fs.writeFileSync(output, "");
+    const defaults = Object.fromEntries(
+      Object.entries(job?.env ?? {}).map(([name, value]) => [
+        name,
+        /'([^']*)' \}\}$/.exec(value)?.[1] ?? "",
+      ]),
+    );
+    const command = steps[budget]?.run?.replace('"$CLUSTER_JOB_PATH"', jobPath) ?? "";
+    const child = spawnSync("sh", ["-c", command], {
+      encoding: "utf8",
+      env: { PATH: process.env.PATH, ...defaults, GITHUB_OUTPUT: output },
+    });
+    assert.equal(child.status, 0, child.stderr);
+    const minutes = Number(/^timeout_minutes=(\d+)$/m.exec(fs.readFileSync(output, "utf8"))?.[1]);
+    assert.ok(minutes > 0 && minutes < Number(job?.["timeout-minutes"]), String(minutes));
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
 });

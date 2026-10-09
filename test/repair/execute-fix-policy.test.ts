@@ -3,6 +3,8 @@ import test from "node:test";
 
 import { parseBooleanEnv } from "../../dist/repair/env-utils.js";
 import {
+  isBlockedFixError,
+  isRetryableCodexFailure,
   repositoryRepairExecutionBlockReason,
   shouldCloseSupersededSourcePrs,
   shouldSeedReplacementBranchFromSource,
@@ -108,4 +110,26 @@ test("sourceBranchWriteBlockReason blocks missing head details", () => {
     }),
     "source PR is missing head repo/ref",
   );
+});
+
+for (const phase of ["fix worker", "review-fix worker", "validation-fix worker", "/review"]) {
+  for (const failure of ["timed out after 1800000ms", "failed"]) {
+    test(`${phase} ${failure} retains the blocked recovery outcome`, () => {
+      const message = `Codex ${phase} ${failure}`;
+      assert.equal(isBlockedFixError(new Error(message)), true);
+      assert.equal(isRetryableCodexFailure(message), true);
+    });
+  }
+}
+
+test("terminal Codex and persistent setup failures do not request repair requeue", () => {
+  const terminal = "The model fixture-model does not exist or you do not have access to it.";
+  assert.equal(isRetryableCodexFailure(`Codex fix worker failed: ${terminal}`, terminal), false);
+  assert.equal(
+    isRetryableCodexFailure("Codex validation-fix worker failed: login required"),
+    false,
+  );
+  assert.equal(isRetryableCodexFailure("Codex validation-fix worker failed: bwrap setup"), false);
+  assert.equal(isRetryableCodexFailure("Codex fix worker failed: sandbox startup"), false);
+  assert.equal(isBlockedFixError(new Error("unexpected executor invariant failure")), false);
 });

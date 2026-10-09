@@ -2,8 +2,9 @@
 
 Status: active validation recipe. Owner: repair execution. Source:
 `src/repair/execute-fix-artifact.ts`, especially `runCodexValidationFix` and the
-outer blocked-outcome handler. Update this proof when worker errors, validation,
-or terminal reporting change.
+outer blocked-outcome handler, with the failure classifiers in
+`src/repair/execute-fix-policy.ts`. Update this proof when worker errors,
+validation, or terminal reporting change.
 
 The executor previously omitted the validation-fix phase from its recognized
 worker timeout/failure errors. A timeout or silent nonzero worker exit therefore
@@ -11,7 +12,7 @@ escaped before the blocked report and recovery request were written.
 
 ```sh
 pnpm run build:node
-node --test test/repair/execute-fix-worker-errors.test.ts
+node --test test/repair/execute-fix-policy.test.ts
 node docs/proof/validation-fix-outcome/run-proof.mjs
 node docs/proof/validation-fix-outcome/run-proof.mjs --timeout
 ```

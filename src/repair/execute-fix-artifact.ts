@@ -29,10 +29,7 @@ import { resolveTargetRepoToolchain } from "./target-toolchain-config.js";
 import {
   codexJsonlFailureDetail,
   codexRetryDelayMs,
-  isCodexContextLimitError,
   isRetryableCodexErrorMessage,
-  isRetryableCodexTransportError,
-  isTerminalCodexErrorMessage,
 } from "../codex-transient.js";
 import { runAgentProcess } from "../agent-runner.js";
 import { AgentInputScanError, type AgentScanSource } from "../agent-input-scan.js";
@@ -114,6 +111,8 @@ import {
 import { tryResolveMechanicalRebaseConflicts } from "./mechanical-rebase-conflicts.js";
 import { compactText } from "./text-utils.js";
 import {
+  isBlockedFixError,
+  isRetryableCodexFailure,
   shouldCloseSupersededSourcePrs,
   shouldSeedReplacementBranchFromSource,
   sourceBranchWriteBlockReason,
@@ -765,33 +764,6 @@ updateAutomergeProgressStatus({
   details: compactText(String(outcome.reason ?? outcome.action ?? "done"), 240),
   headSha: outcome.commit ?? null,
 });
-
-function isRetryableCodexFailure(...values: JsonValue[]) {
-  const messages = values.flat().map(String);
-  const message = messages.join("\n");
-  if (messages.some((value) => isTerminalCodexErrorMessage(value))) return false;
-  if (isPersistentCodexSetupFailure(message)) return false;
-  return (
-    isRetryableCodexTransportError(message) ||
-    /Codex .*(?:timed out|failed|exited)|Codex produced no structured result/i.test(message)
-  );
-}
-
-function isPersistentCodexSetupFailure(message: string) {
-  return /can(?:not|'t|’t)\s+create\s+files?\s+in\s+this\s+mode|switch\s+to\s+execution\s+mode|bwrap|loopback|uid map|sandbox (?:wrapper|startup)|operation not permitted|auth(?:entication)? unavailable|login required|api key|401|403|unauthorized|forbidden/i.test(
-    message,
-  );
-}
-
-function isBlockedFixError(error: JsonValue) {
-  if (isRepairBranchPushRace(error)) return true;
-  if (isRepairBranchPushBlocked(error)) return true;
-  if (isRetryableCodexErrorMessage(String(error?.message ?? error))) return true;
-  if (isCodexContextLimitError(String(error?.message ?? error))) return true;
-  return /external base blocker|Codex produced no target repo changes|Codex \/review did not pass|Codex (?:fix worker|review-fix worker|validation-fix worker|\/review) timed out|Codex (?:fix worker|review-fix worker|validation-fix worker|\/review) failed|validation command failed|command timed out after \d+ms: git (?:fetch|push)|rebase (?:conflicts remain unresolved|produced additional conflicts)/i.test(
-    String(error?.message ?? error),
-  );
-}
 
 function shouldFallbackToReplacementAfterRepairError(error: JsonValue) {
   if (isRepairBranchPushRace(error)) return false;
