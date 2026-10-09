@@ -2,6 +2,7 @@
 // reach (workflow YAML or a forbidden raw API). Keep each guard small and give its reason.
 import assert from "node:assert/strict";
 import { globSync, readdirSync } from "node:fs";
+import { join } from "node:path";
 import test from "node:test";
 import { parse as parseYaml } from "yaml";
 
@@ -283,7 +284,8 @@ test("production code launches Codex only through the agent runner", () => {
   const directLaunch = /\b(?:spawn|spawnSync|execFile|execFileSync)\(\s*["'`]codex["'`]/;
   const offenders = globSync("src/**/*.ts").filter((file) => {
     const source = readText(file);
-    const runnerFile = file === "src/agent-runner.ts" || file === "src/codex-process.ts";
+    const runnerFile =
+      file === join("src", "agent-runner.ts") || file === join("src", "codex-process.ts");
     return directLaunch.test(source) || (!runnerFile && /\brunCodexProcess\b/.test(source));
   });
   assert.deepEqual(offenders, []);
