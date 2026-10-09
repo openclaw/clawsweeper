@@ -19,10 +19,10 @@ import {
   validateCloseDecision,
 } from "../dist/clawsweeper.js";
 import { parseCoAuthors } from "../dist/commit-sweeper.js";
-import { closeDecision, git, item, reportFrontMatter } from "./helpers.ts";
+import { closeDecision, git, item, reportFrontMatter, reviewPrompt } from "./helpers.ts";
 
 test("review prompt documents gated backlog close policies", () => {
-  const prompt = readFileSync(new URL("../prompts/review-item.md", import.meta.url), "utf8");
+  const prompt = `${reviewPrompt("issue")}\n${reviewPrompt("pull_request")}`;
   const sweepWorkflow = readFileSync(
     new URL("../.github/workflows/sweep.yml", import.meta.url),
     "utf8",
@@ -53,8 +53,36 @@ test("review prompt documents gated backlog close policies", () => {
   );
 });
 
+function renderedCloseReasons(prompt: string): string[] {
+  const section = prompt.slice(
+    prompt.indexOf("### Close reasons"),
+    prompt.indexOf("### Canonical search and partial work"),
+  );
+  return [...section.matchAll(/^- `([a-z_]+)`: /gm)].map((match) => match[1]!);
+}
+
+test("review prompt renders close reasons from the repository profile for the item kind", () => {
+  const schema = JSON.parse(readFileSync("schema/clawsweeper-decision.schema.json", "utf8"));
+  const issueReasons = renderedCloseReasons(reviewPrompt("issue"));
+  const pullRequestReasons = renderedCloseReasons(reviewPrompt("pull_request"));
+  assert.deepEqual(
+    [...new Set([...issueReasons, ...pullRequestReasons, "none"])].sort(),
+    [...schema.properties.closeReason.enum].sort(),
+  );
+  assert.ok(issueReasons.includes("stale_insufficient_info"));
+  assert.ok(!issueReasons.includes("obsolete_fix_pr"));
+  assert.ok(pullRequestReasons.includes("obsolete_fix_pr"));
+  assert.ok(!pullRequestReasons.includes("stale_insufficient_info"));
+  assert.deepEqual(renderedCloseReasons(reviewPrompt("issue", "openclaw/clawhub")), [
+    "implemented_on_main",
+  ]);
+  const closedRepoPrompt = reviewPrompt("pull_request", "steipete/camsnap");
+  assert.deepEqual(renderedCloseReasons(closedRepoPrompt), []);
+  assert.match(closedRepoPrompt, /enables no close reason for this item kind: keep the item open/);
+});
+
 test("review prompt closes independently disproven nonexistent-source bug reports", () => {
-  const prompt = readFileSync(new URL("../prompts/review-item.md", import.meta.url), "utf8");
+  const prompt = reviewPrompt("issue");
 
   assert.match(prompt, /`cannot_reproduce`: [^\n]*Distinguish missing reporter evidence/);
   assert.match(prompt, /Search the complete current tree,\s+source history, renamed paths/);
@@ -68,7 +96,7 @@ test("review prompt closes independently disproven nonexistent-source bug report
 });
 
 test("external desktop-product bugs close without inventing upstream maintainer work", () => {
-  const prompt = readFileSync(new URL("../prompts/review-item.md", import.meta.url), "utf8");
+  const prompt = reviewPrompt("issue");
 
   assert.match(prompt, /QClaw `0\.x` desktop\/client reports/);
   assert.match(prompt, /`qclaw\/\*` providers/);
@@ -103,7 +131,7 @@ test("external desktop-product bugs close without inventing upstream maintainer 
 });
 
 test("close-first triage keeps actionable upstream work and invites better reports", () => {
-  const prompt = readFileSync(new URL("../prompts/review-item.md", import.meta.url), "utf8");
+  const prompt = reviewPrompt("issue");
 
   assert.match(prompt, /Maintainer attention is scarce/);
   assert.match(prompt, /the first rule that applies wins/);

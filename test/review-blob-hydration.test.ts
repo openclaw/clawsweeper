@@ -622,8 +622,7 @@ function reviewRuntime(releaseTag?: string) {
     throw new Error("Unexpected dependency in native Git preparation fixture");
   };
   return createReviewRuntime({
-    reviewItemPromptPath: "",
-    reviewRulesPath: "",
+    reviewItemPromptPaths: { core: "", issue: "", pull_request: "", closeReasons: "" },
     decisionSchemaPath: "",
     prCloseCoverageProofPromptPath: "",
     targetRepo: () => "fixture/repository",

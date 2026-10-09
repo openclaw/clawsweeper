@@ -26,11 +26,17 @@ configured profiles allow `implemented_on_main` for issues and PRs, and some
 profiles additionally allow age-gated `mostly_implemented_on_main` for PRs.
 
 Review guidance belongs to the selected profile's `promptNote` in
-`src/repository-profiles.ts` or `config/target-repositories.json`. The production
-prompt assembler selects it with `repositoryProfileFor(item.repo)`, using the
+`src/repository-profiles.ts` or `config/target-repositories.json`; a built-in
+profile can add `kindPromptNotes` for guidance that applies only to issues or
+only to PRs. The production prompt assembler selects them with
+`repositoryProfileFor(item.repo)`, using the
 normalized exact owner/repository, not the organization, display name, PR body,
-linked repository, or author association. The built-in `openclaw/openclaw`
-profile alone supplies its release-owned `CHANGELOG.md` review restriction.
+linked repository, or author association, and renders them as the prompt's
+`Repository Policy` section. The same profile's `apply_close_rules` for the item
+kind select which entries of `prompts/review-close-reasons.md` the prompt shows.
+The built-in `openclaw/openclaw` profile alone supplies its release-owned
+`CHANGELOG.md` review restriction, Telegram proof routing, and maturity-label
+guidance.
 `openclaw/clawsweeper`, ClawHub, and generic targets follow their own release-note
 policies; being a non-core target does not grant contributors or workers
 permission to edit release-owned files.

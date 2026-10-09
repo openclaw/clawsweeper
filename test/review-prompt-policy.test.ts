@@ -36,7 +36,7 @@ import {
   encodeLiveVerificationReportPayload,
   liveProofPlanSha256,
 } from "../dist/live-proof/verification.js";
-import { item, reportFrontMatter } from "./helpers.ts";
+import { item, reportFrontMatter, reviewPrompt } from "./helpers.ts";
 import {
   hydratePrimaryBody,
   inertTrace,
@@ -72,9 +72,9 @@ test("review prompt and generation schema deliver explicit next-step presentatio
   assert.match(prompt, /no, not, but, unless, or until/);
   assert.match(prompt, /Human-owned actions can be\s+required even with `workCandidate: "none"`/);
   assert.match(prompt, /not authority to auto-fix or\s+merge/);
-  assert.match(prompt, /do not request contributor changelog entries for OpenClaw/);
-  assert.match(prompt, /For issues, use `nextStep` kind none with empty text/);
-  assert.match(prompt, /existing next-action\s+guidance in `workReason`/);
+  assert.match(prompt, /Do not request contributor changelog entries/);
+  assert.match(reviewPrompt("issue"), /`nextStep` kind none with empty text/);
+  assert.match(reviewPrompt("issue"), /keeping next-action guidance in `workReason`/);
 });
 
 for (const [kind, name, lateUrl] of (["issue", "pull_request"] as const).flatMap((kind) =>
@@ -179,7 +179,7 @@ for (const [name, url] of Object.entries(mediaFixtureUrls)) {
 }
 
 test("review prompt routes PR likely owners through feature history", () => {
-  const prompt = readFileSync("prompts/review-item.md", "utf8");
+  const prompt = reviewPrompt("pull_request");
 
   assert.match(prompt, /feature-history hunt/);
   assert.match(prompt, /who introduced the feature/);
@@ -193,7 +193,7 @@ test("review prompt routes PR likely owners through feature history", () => {
 });
 
 test("issue reviews close fixed work and automatically route small source-proven bugs", () => {
-  const prompt = readFileSync("prompts/review-item.md", "utf8");
+  const prompt = reviewPrompt("issue");
 
   assert.match(prompt, /close it when current `main` or an\s+already-merged PR/);
   assert.match(prompt, /automatically route\s+a bounded, high-confidence existing-behavior bug/);
@@ -204,7 +204,7 @@ test("issue reviews close fixed work and automatically route small source-proven
 });
 
 test("review prompt describes concrete review metrics without vague examples", () => {
-  const prompt = readFileSync("prompts/review-item.md", "utf8");
+  const prompt = reviewPrompt("pull_request");
 
   assert.match(prompt, /Always fill `reviewMetrics`/);
   assert.match(prompt, /useful, concrete, maintainer-relevant/);
@@ -216,7 +216,7 @@ test("review prompt describes concrete review metrics without vague examples", (
 });
 
 test("review prompt reads maintainer notes before PR diffs", () => {
-  const prompt = readFileSync("prompts/review-item.md", "utf8");
+  const prompt = reviewPrompt("pull_request");
 
   assert.match(prompt, /\.agents\/maintainer-notes\//);
   assert.match(prompt, /before reviewing the diff/);
@@ -225,7 +225,7 @@ test("review prompt reads maintainer notes before PR diffs", () => {
 });
 
 test("review prompts treat target AGENTS as optional review policy", () => {
-  const itemPrompt = readFileSync("prompts/review-item.md", "utf8");
+  const itemPrompt = reviewPrompt("pull_request");
   const commitPrompt = readFileSync("prompts/review-commit.md", "utf8");
 
   for (const prompt of [itemPrompt, commitPrompt]) {
@@ -255,10 +255,7 @@ test("review prompts treat target AGENTS as optional review policy", () => {
     itemPrompt,
     /route the\s+concern through the existing `risks`, `bestSolution`, `solutionAssessment`, or\s+`workReason` fields/,
   );
-  assert.match(
-    readFileSync("instructions/pr-review-rules.md", "utf8"),
-    /PR-body paperwork is a\s+process concern/,
-  );
+  assert.match(itemPrompt, /PR-body paperwork is a\s+process concern/);
   assert.match(
     commitPrompt,
     /Report an AGENTS-policy conflict only when the commit creates a\s+concrete bug/,
@@ -267,7 +264,7 @@ test("review prompts treat target AGENTS as optional review policy", () => {
 });
 
 test("review prompt requires a dedicated securityReview section", () => {
-  const prompt = readFileSync("prompts/review-item.md", "utf8");
+  const prompt = reviewPrompt("pull_request");
 
   assert.match(prompt, /Always summarize this pass in `securityReview`/);
   assert.match(prompt, /Always fill `securityReview`/);
@@ -275,7 +272,7 @@ test("review prompt requires a dedicated securityReview section", () => {
 });
 
 test("review prompt inverts authority-sensitive success claims", () => {
-  const prompt = readFileSync("prompts/review-item.md", "utf8");
+  const prompt = reviewPrompt("pull_request");
 
   assert.match(prompt, /authority-chain and invariant-inversion pass/);
   assert.match(prompt, /only when the diff materially changes\s+authority/);
@@ -310,7 +307,7 @@ test("review prompt inverts authority-sensitive success claims", () => {
 });
 
 test("review prompt treats duplicated behavior as a P1 PR finding", () => {
-  const prompt = readFileSync("prompts/review-item.md", "utf8");
+  const prompt = reviewPrompt("pull_request");
 
   assert.match(prompt, /dedicated solution-fit and upgrade-safety pass/);
   assert.match(prompt, /current code, documented configuration, CLI flags, env vars/);
@@ -321,7 +318,7 @@ test("review prompt treats duplicated behavior as a P1 PR finding", () => {
 });
 
 test("review prompt and schema reserve maintainer decisions for unresolved choices", () => {
-  const prompt = readFileSync("prompts/review-item.md", "utf8");
+  const prompt = reviewPrompt("pull_request");
   const schema = JSON.parse(readFileSync("schema/clawsweeper-decision.schema.json", "utf8"));
   assert.match(prompt, /at least two concrete, viable options/);
   assert.match(prompt, /evidence cannot settle and a maintainer has not already decided/);
@@ -401,7 +398,7 @@ test("decision schema preserves implementer ownership without waiving compatibil
 });
 
 test("review prompt treats plugin API changes as compatibility-sensitive P1 repair work", () => {
-  const prompt = readFileSync("prompts/review-item.md", "utf8");
+  const prompt = reviewPrompt("pull_request");
 
   assert.match(prompt, /Treat plugin API surface changes as compatibility-sensitive/);
   assert.match(prompt, /adds,\s+removes, renames, deprecates, changes behavior for/);
@@ -427,7 +424,7 @@ test("review prompt treats plugin API changes as compatibility-sensitive P1 repa
 });
 
 test("review prompt makes ClawHub closes a self-serve handoff", () => {
-  const prompt = readFileSync("prompts/review-item.md", "utf8");
+  const prompt = reviewPrompt("pull_request");
 
   assert.match(prompt, /For `clawhub` closes/);
   assert.match(prompt, /self-serve handoff/);
@@ -439,7 +436,7 @@ test("review prompt makes ClawHub closes a self-serve handoff", () => {
 });
 
 test("review prompt requires upgrade and preference overwrite checks", () => {
-  const prompt = readFileSync("prompts/review-item.md", "utf8");
+  const prompt = reviewPrompt("pull_request");
 
   assert.match(prompt, /Treat compatibility and user settings as merge-critical/);
   assert.match(prompt, /override existing preferences, persisted config, provider choices/);
@@ -456,7 +453,7 @@ test("review prompt requires upgrade and preference overwrite checks", () => {
 });
 
 test("review prompt treats stored data-model changes as compatibility-sensitive", () => {
-  const prompt = readFileSync("prompts/review-item.md", "utf8");
+  const prompt = reviewPrompt("pull_request");
 
   assert.match(prompt, /Treat stored data-model changes as compatibility-sensitive/);
   assert.match(prompt, /SQL\s+DDL or migrations/);
@@ -470,7 +467,7 @@ test("review prompt treats stored data-model changes as compatibility-sensitive"
 });
 
 test("review prompt requires real behavior proof for PR reviews", () => {
-  const prompt = readFileSync("prompts/review-item.md", "utf8");
+  const prompt = reviewPrompt("pull_request");
 
   assert.match(prompt, /realBehaviorProof/);
   assert.match(prompt, /Terminal screenshots|terminal screenshots/);
@@ -491,7 +488,7 @@ test("review prompt requires real behavior proof for PR reviews", () => {
 });
 
 test("review prompt accepts real production transport-boundary proof for reliability fixes", () => {
-  const prompt = readFileSync("prompts/review-item.md", "utf8");
+  const prompt = reviewPrompt("pull_request");
   const schema = JSON.parse(readFileSync("schema/clawsweeper-decision.schema.json", "utf8"));
 
   assert.match(prompt, /actual production owner and real transport client/);
@@ -1144,18 +1141,15 @@ test("media proof URL discovery excludes persistence-only hydration snapshots", 
 });
 
 test("review rules keep draft and protected workflow state out of PR rank", () => {
-  const rules = readFileSync("instructions/pr-review-rules.md", "utf8");
+  const prompt = reviewPrompt("pull_request");
 
-  assert.match(rules, /Rate the\s+evidence and the patch, not the contributor/);
-  assert.match(rules, /`overallTier` is the weaker of `proofTier` and `patchTier`/);
+  assert.match(prompt, /Rate the\s+evidence and the patch, not the contributor/);
+  assert.match(prompt, /`overallTier` is the weaker of `proofTier` and `patchTier`/);
   assert.match(
-    rules,
+    prompt,
     /A draft state, protected labels, automerge eligibility,\s+or a pending maintainer action is workflow state\. These never lower a\s+tier\./,
   );
-  assert.match(
-    readFileSync("prompts/review-item.md", "utf8"),
-    /rate it with the `### Rating rubric` in `## Review Rules`/,
-  );
+  assert.match(prompt, /Rate it with the `### Rating rubric` in `## Review Rules`/);
 });
 
 test("decision schema keeps draft and protected workflow state out of PR rank", () => {
@@ -1181,7 +1175,7 @@ test("review finding schema requires every structured-output property", () => {
 });
 
 test("review prompt and schema describe positive-only feature showcase labels", () => {
-  const prompt = readFileSync("prompts/review-item.md", "utf8");
+  const prompt = reviewPrompt("pull_request");
   const schema = JSON.parse(readFileSync("schema/clawsweeper-decision.schema.json", "utf8"));
   const featureShowcase = schema.properties.featureShowcase;
 
@@ -1195,7 +1189,7 @@ test("review prompt and schema describe positive-only feature showcase labels", 
 });
 
 test("review prompt requires source evidence for stable maturity", () => {
-  const prompt = readFileSync("prompts/review-item.md", "utf8");
+  const prompt = reviewPrompt("issue");
 
   assert.match(prompt, /Identify exactly one primary owner surface/);
   assert.match(prompt, /Shared\s+Gateway\/CLI transit/);
@@ -1207,7 +1201,7 @@ test("review prompt requires source evidence for stable maturity", () => {
 });
 
 test("review prompt classifies Telegram visible proof candidates", () => {
-  const prompt = readFileSync("prompts/review-item.md", "utf8");
+  const prompt = reviewPrompt("pull_request");
 
   assert.match(prompt, /telegramVisibleProof/);
   assert.match(prompt, /telegram-e2e-userbot/);
@@ -1223,7 +1217,7 @@ test("review prompt classifies Telegram visible proof candidates", () => {
 });
 
 test("review prompt states each always-fill field contract once", () => {
-  const prompt = readFileSync("prompts/review-item.md", "utf8");
+  const prompt = reviewPrompt("pull_request");
   for (const field of [
     "telegramVisibleProof",
     "triagePriority",
@@ -1234,8 +1228,11 @@ test("review prompt states each always-fill field contract once", () => {
   ]) {
     assert.equal(prompt.split(`Always fill \`${field}\``).length - 1, 1, field);
   }
-  for (const label of ["merge-risk: 🚨 compatibility", "impact:data-loss"]) {
-    assert.equal(prompt.split(`\`${label}\`: `).length - 1, 1, label);
+  for (const [label, kind] of [
+    ["merge-risk: 🚨 compatibility", "pull_request"],
+    ["impact:data-loss", "issue"],
+  ] as const) {
+    assert.equal(reviewPrompt(kind).split(`\`${label}\`: `).length - 1, 1, label);
   }
 });
 

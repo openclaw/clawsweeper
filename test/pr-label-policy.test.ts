@@ -28,7 +28,6 @@ import {
   priorityLabelsForTest,
   priorityLabelSchemeForTest,
   reviewDecisionSchemaText,
-  reviewPromptTemplate,
   telegramVisibleProofLabelsForTest,
 } from "../dist/clawsweeper.js";
 import {
@@ -36,6 +35,7 @@ import {
   item,
   realBehaviorProofReportSection,
   reportFrontMatter,
+  reviewPrompt,
 } from "./helpers.ts";
 
 const readyReadiness = {
@@ -705,7 +705,7 @@ test("ClawSweeper priority label descriptions stay aligned with prompt and schem
     };
   };
   const schemaDescription = schema.properties?.triagePriority?.description ?? "";
-  const prompt = reviewPromptTemplate();
+  const prompt = reviewPrompt("issue");
   for (const label of priorityLabelSchemeForTest()) {
     assert.ok(
       prompt.includes(`\`${label.name}\`: ${label.description}`),
@@ -727,7 +727,7 @@ test("review prompt keeps unrelated CI noise out of triage priority", () => {
     };
   };
   const schemaDescription = schema.properties?.triagePriority?.description ?? "";
-  const prompt = reviewPromptTemplate();
+  const prompt = reviewPrompt("issue");
 
   assert.match(prompt, /Do not raise `triagePriority` solely because CI or status checks/);
   assert.match(
@@ -845,7 +845,7 @@ test("ClawSweeper impact label descriptions stay aligned with prompt and schema"
     };
   };
   const schemaDescription = schema.properties?.impactLabels?.description ?? "";
-  const prompt = reviewPromptTemplate();
+  const prompt = reviewPrompt("issue");
   for (const label of impactLabelSchemeForTest()) {
     assert.ok(
       prompt.includes(`\`${label.name}\`: ${label.description}`),
@@ -891,7 +891,7 @@ test("review prompt and schema define UX release-blocker override", () => {
   const impactLabelEnum = schema.properties?.impactLabels?.items?.enum ?? [];
   const justificationLabelEnum =
     schema.properties?.labelJustifications?.items?.properties?.label?.enum ?? [];
-  const prompt = reviewPromptTemplate();
+  const prompt = reviewPrompt("issue");
 
   assert.match(prompt, /Apply this UX override before falling back to ordinary technical severity/);
   assert.match(prompt, /non-technical first-time or community user/);
@@ -978,7 +978,7 @@ test("ClawSweeper merge-risk label descriptions stay aligned with prompt and sch
     };
   };
   const schemaDescription = schema.properties?.mergeRiskLabels?.description ?? "";
-  const prompt = reviewPromptTemplate();
+  const prompt = reviewPrompt("pull_request");
   for (const label of mergeRiskLabelSchemeForTest()) {
     assert.ok(
       prompt.includes(`\`${label.name}\`: ${label.description}`),
@@ -1000,7 +1000,7 @@ test("review prompt uses automation merge risk only for diff-caused automation r
     };
   };
   const schemaDescription = schema.properties?.mergeRiskLabels?.description ?? "";
-  const prompt = reviewPromptTemplate();
+  const prompt = reviewPrompt("pull_request");
 
   assert.match(prompt, /Do not use `merge-risk: 🚨 automation` only because CI is red/);
   assert.match(prompt, /pending,\s+flaky,\s+or absent/);

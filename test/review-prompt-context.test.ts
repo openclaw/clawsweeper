@@ -12,7 +12,7 @@ import {
   reviewPromptForTest,
   reviewPromptTelemetryForTest,
   reviewPolicyHashForTest,
-  reviewPromptTemplate,
+  reviewPromptTemplates,
   extractLatestClawSweeperReviewForTest,
   filterReviewContextCommentsForTest,
   renderReviewCommentFromReport,
@@ -361,7 +361,12 @@ ${scenario === "concrete" ? "- **[P1] Invalidate revoked credentials:** `src/cac
 }
 
 test("review prompt assets match tracked files", () => {
-  assert.equal(reviewPromptTemplate(), readFileSync("prompts/review-item.md", "utf8"));
+  assert.deepEqual(reviewPromptTemplates(), {
+    core: readFileSync("prompts/review-item.md", "utf8"),
+    issue: readFileSync("prompts/review-item-issue.md", "utf8"),
+    pull_request: readFileSync("prompts/review-item-pr.md", "utf8"),
+    closeReasons: readFileSync("prompts/review-close-reasons.md", "utf8"),
+  });
   assert.deepEqual(
     JSON.parse(reviewDecisionSchemaText()),
     JSON.parse(readFileSync("schema/clawsweeper-decision.schema.json", "utf8")),
@@ -392,7 +397,7 @@ test("review preparation uses an explicitly configured external-owner profile", 
       git,
     );
     assert.match(prompt, /- Target repo: partner\/configured-repo/);
-    assert.match(prompt, /- Repository policy: Use the configured partner repository policy\./);
+    assert.match(prompt, /## Repository Policy\n\nUse the configured partner repository policy\./);
   } finally {
     REPOSITORY_PROFILES.splice(REPOSITORY_PROFILES.indexOf(profile), 1);
   }
@@ -464,21 +469,16 @@ for (const [repo, core] of [
       const scenario = `${repo}: ${variant}, ${authorAssociation}`;
 
       assert.ok(prompt.includes(`- Target repo: ${repo}`), scenario);
-      assert.ok(prompt.includes(`- Repository policy: ${profile.promptNote}`), scenario);
-      assert.match(prompt, /policy of the authoritative Target repo in\s+Repository State/);
+      assert.ok(prompt.includes(`## Repository Policy\n\n${profile.promptNote}`), scenario);
       assert.match(
         prompt,
-        /Do not infer that policy from the organization, display name,\s+PR body, or linked repository/,
+        /follow the target's own policy in `## Repository Policy` and `AGENTS\.md`; do not infer it from the organization, display name, PR body, or linked repository/,
       );
       assert.match(
         prompt,
-        /Being outside `openclaw\/openclaw` does not itself\s+permit contributors or workers to edit release-owned files; the target's own\s+policy governs/,
+        /do not treat a target outside the core repository as permission to edit release-owned files/,
       );
-      assert.equal(
-        prompt.includes("For `openclaw/openclaw` PR release-note review"),
-        core,
-        scenario,
-      );
+      assert.equal(prompt.includes("`CHANGELOG.md` is release-owned"), core, scenario);
       if (core) {
         assert.match(prompt, /`CHANGELOG\.md` is release-owned/);
         assert.match(
@@ -487,7 +487,7 @@ for (const [repo, core] of [
         );
         assert.match(
           prompt,
-          /Do not make missing `CHANGELOG\.md` a review finding, merge blocker, work item, or next-step blocker/,
+          /do not make missing `CHANGELOG\.md` a review finding, merge blocker, work item, or next-step blocker/,
         );
         assert.match(prompt, /ask for PR-body or commit message context/);
         assert.match(prompt, /user-visible behavior, affected surface, issue\/PR refs/);
@@ -842,8 +842,8 @@ test("PR prompt omits only source patch fields without mutating policy evidence"
   assert.ok(issuePrompt.includes("SOURCE_PATCH_SENTINEL"));
 });
 
-test("PR prompts carry the review rules after the static template; issue prompts do not", () => {
-  const rules = readFileSync("instructions/pr-review-rules.md", "utf8").trim();
+test("item prompts carry only the review template for their kind", () => {
+  const templates = reviewPromptTemplates();
   const context = {
     issue: { number: 123, title: "Sample item" },
     comments: [],
@@ -851,24 +851,22 @@ test("PR prompts carry the review rules after the static template; issue prompts
     counts: { comments: 0, timeline: 0 },
   };
   const prompt = reviewPromptForTest(item({ kind: "pull_request" }), context, git);
-  const rulesSection = `\n\n## Review Rules\n\n${rules}\n\n## Repository State\n`;
-  assert.ok(prompt.startsWith(reviewPromptTemplate()));
-  assert.ok(prompt.includes(rulesSection));
-  assert.equal(
-    prompt.indexOf(rulesSection),
-    reviewPromptTemplate().length,
-    "rules follow the static template",
-  );
   const issuePrompt = reviewPromptForTest(item({ kind: "issue" }), context, git);
-  assert.ok(!issuePrompt.includes(rules));
-  assert.ok(!issuePrompt.includes("\n\n## Review Rules\n\n"));
+  assert.ok(prompt.includes(templates.pull_request.trim()));
+  assert.ok(!prompt.includes(templates.issue.trim()));
+  assert.ok(issuePrompt.includes(templates.issue.trim()));
+  assert.ok(!issuePrompt.includes("\n## Review Rules\n"));
+  for (const text of [prompt, issuePrompt]) assert.doesNotMatch(text, /\{\{\w+\}\}/);
 });
 
-test("review policy hash changes when the review rules change", () => {
-  const rules = readFileSync("instructions/pr-review-rules.md", "utf8");
-  assert.equal(reviewPolicyHashForTest({}, rules), reviewPolicyHashForTest());
+test("review policy hash changes when a review prompt template changes", () => {
+  const templates = reviewPromptTemplates();
+  assert.equal(reviewPolicyHashForTest({}, templates), reviewPolicyHashForTest());
   assert.notEqual(
-    reviewPolicyHashForTest({}, `${rules}\nOne more rule.\n`),
+    reviewPolicyHashForTest(
+      {},
+      { ...templates, pull_request: `${templates.pull_request}\nOne more rule.\n` },
+    ),
     reviewPolicyHashForTest(),
   );
 });

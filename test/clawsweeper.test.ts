@@ -51,6 +51,7 @@ import {
   reportFrontMatter,
   reportWithSyncedReviewComment,
   readText,
+  reviewPrompt,
   runApplyDecisionsForTest,
   tmpPrefix,
   withMockGh,
@@ -2485,7 +2486,7 @@ test("conflict self-heal publishes exact-head jobs before worker dispatch", () =
 });
 
 test("review prompt asks for concise public review fields", () => {
-  const prompt = readText("prompts/review-item.md");
+  const prompt = reviewPrompt("pull_request");
 
   assert.match(prompt, /Keep these fields concise because they become the public review comment/);
   assert.match(prompt, /one short sentence for `changeSummary`, `workReason`, `bestSolution`/);
@@ -2499,7 +2500,7 @@ test("review prompt asks for concise public review fields", () => {
 });
 
 test("review prompt keeps automerge opt-in from becoming generic manual review", () => {
-  const prompt = readText("prompts/review-item.md");
+  const prompt = reviewPrompt("pull_request");
 
   assert.match(prompt, /explicitly opted into `clawsweeper:automerge`/);
   assert.match(prompt, /Do not choose `manual_review` solely because/);
@@ -2510,7 +2511,7 @@ test("review prompt keeps automerge opt-in from becoming generic manual review",
 });
 
 test("review prompts require reproduction and solution assessment details", () => {
-  const itemPrompt = readText("prompts/review-item.md");
+  const itemPrompt = `${reviewPrompt("issue")}\n${reviewPrompt("pull_request")}`;
   const commitPrompt = readText("prompts/review-commit.md");
 
   assert.match(itemPrompt, /Always fill `reproductionAssessment`/);

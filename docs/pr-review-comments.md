@@ -234,8 +234,8 @@ new schemas/tables, changed retention of valid data, and paid services retain
 the maintainer-decision requirement. This changes reviewer guidance only;
 OpenClaw Bay's observer fields, routes, and controls are unchanged.
 
-PR reviews load `instructions/pr-review-rules.md` as the prompt's
-`Review Rules` section and record three typed assessments: `productReview`
+PR reviews use `prompts/review-item-pr.md`, whose `Review Rules` section
+guides three typed assessments: `productReview`
 (kind, user problem, fix scope, `worthIt`), `provenance` (the introducing commit
 or PR and stated reason for each changed behavior), and `testingReview` (proof
 path, low-value tests, missing end-to-end scenario). `worthIt: no` and

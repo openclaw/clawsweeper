@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { writeFakeScanner } from "./agent-input-scan-helpers.ts";
 
-import { renderReviewCommentFromReport } from "../dist/clawsweeper.js";
+import { renderReviewCommentFromReport, reviewPromptForTest } from "../dist/clawsweeper.js";
 import { createReviewedPrActivityCursor } from "../dist/review-activity-cursor.js";
 import { createDecisionParser } from "../dist/clawsweeper-decision-parser.js";
 import type { LiveProofPlan } from "../dist/clawsweeper-types.js";
@@ -36,6 +36,11 @@ export function item(overrides = {}) {
     labels: [],
     ...overrides,
   };
+}
+
+/** Assembled static review prompt for one item kind and target repository. */
+export function reviewPrompt(kind: "issue" | "pull_request", repo = "openclaw/openclaw"): string {
+  return reviewPromptForTest(item({ kind, repo }), { issue: {}, comments: [], timeline: [] }, git);
 }
 
 export function closeDecision(overrides = {}) {

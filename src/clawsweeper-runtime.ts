@@ -96,7 +96,7 @@ import {
 import { createReviewActionLedger } from "./clawsweeper-review-ledger.js";
 import { createReviewPlanning } from "./clawsweeper-review-planning.js";
 import { createReviewPresentation } from "./clawsweeper-review-presentation.js";
-import { createReviewRuntime } from "./clawsweeper-review-runtime.js";
+import { createReviewRuntime, type ReviewItemPrompts } from "./clawsweeper-review-runtime.js";
 import { createSourceRevisionTools } from "./clawsweeper-source-revision.js";
 import {
   currentClosingPullRequestReferenceFromIssueTimeline,
@@ -186,8 +186,12 @@ const RECORDS_ROOT = join(ROOT, "records");
 let activeRepositoryProfile = repositoryProfileFor(
   process.env.CLAWSWEEPER_TARGET_REPO ?? DEFAULT_TARGET_REPO,
 );
-const REVIEW_ITEM_PROMPT_PATH = join(ROOT, "prompts", "review-item.md");
-const REVIEW_RULES_PATH = join(ROOT, "instructions", "pr-review-rules.md");
+const REVIEW_ITEM_PROMPT_PATHS = {
+  core: join(ROOT, "prompts", "review-item.md"),
+  issue: join(ROOT, "prompts", "review-item-issue.md"),
+  pull_request: join(ROOT, "prompts", "review-item-pr.md"),
+  closeReasons: join(ROOT, "prompts", "review-close-reasons.md"),
+};
 const CLAWSWEEPER_DECISION_SCHEMA_PATH = join(ROOT, "schema", "clawsweeper-decision.schema.json");
 const PR_CLOSE_COVERAGE_PROOF_PROMPT_PATH = join(ROOT, "prompts", "pr-close-coverage-proof.md");
 const PR_CLOSE_COVERAGE_PROOF_SCHEMA_PATH = join(
@@ -401,7 +405,7 @@ const {
 
 function reviewPolicyHash(
   options: { model?: string; sandboxMode?: string },
-  reviewRules = reviewRulesText(),
+  prompts: ReviewItemPrompts = reviewPromptTemplates(),
 ): string {
   const policyTargetRepo = targetRepo();
   return sha256(
@@ -421,8 +425,7 @@ function reviewPolicyHash(
         ? { openclawCodexSourceProvisioning: "v1" }
         : {}),
       repositoryProfile: targetProfile(),
-      prompt: reviewPromptTemplate(),
-      reviewRules,
+      prompts,
       schema: reviewDecisionSchemaText(),
     }),
   ).slice(0, 16);
@@ -433,9 +436,9 @@ export function reviewPolicyHashForTest(
     model?: string;
     sandboxMode?: string;
   } = {},
-  reviewRules?: string,
+  prompts?: ReviewItemPrompts,
 ): string {
-  return reviewPolicyHash(options, reviewRules);
+  return reviewPolicyHash(options, prompts);
 }
 
 const decisionParser = createDecisionParser({
@@ -739,8 +742,7 @@ const { collectItemContext } = createItemContext({
 });
 
 const reviewRuntime = createReviewRuntime({
-  reviewItemPromptPath: REVIEW_ITEM_PROMPT_PATH,
-  reviewRulesPath: REVIEW_RULES_PATH,
+  reviewItemPromptPaths: REVIEW_ITEM_PROMPT_PATHS,
   decisionSchemaPath: CLAWSWEEPER_DECISION_SCHEMA_PATH,
   prCloseCoverageProofPromptPath: PR_CLOSE_COVERAGE_PROOF_PROMPT_PATH,
   targetRepo,
@@ -767,8 +769,7 @@ export const {
   reviewDecisionSchemaText,
   reviewPromptForTest,
   reviewPromptTelemetryForTest,
-  reviewPromptTemplate,
-  reviewRulesText,
+  reviewPromptTemplates,
   runCodexForTest,
 } = reviewRuntime;
 const { codexFailureReason, isSafeGitBranchName, prCloseCoverageProofPromptTemplate } =

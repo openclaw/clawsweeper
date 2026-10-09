@@ -395,8 +395,7 @@ test("lazy fetch is disabled only behind the allowlisted proxy, and the prompt s
     ["openclaw", "clawsweeper-review", false],
   ] as const) {
     const runtime = createReviewRuntime({
-      reviewItemPromptPath: "",
-      reviewRulesPath: "",
+      reviewItemPromptPaths: { core: "", issue: "", pull_request: "", closeReasons: "" },
       decisionSchemaPath: "",
       prCloseCoverageProofPromptPath: "",
       targetRepo: () => "fixture/repository",

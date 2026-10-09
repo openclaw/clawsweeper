@@ -71,9 +71,11 @@ import { repositoryProfileFor, type RepositoryProfile } from "./repository-profi
 import { reviewProofCapabilityFromEnv } from "./review-proof-client.js";
 import { readBoundedReviewResult } from "./review-output-policy.js";
 
+/** Prompt sources for an item review: the shared core, one template per item kind, and close reasons. */
+export type ReviewItemPrompts = Readonly<Record<"core" | Item["kind"] | "closeReasons", string>>;
+
 interface ReviewRuntimeDependencies {
-  reviewItemPromptPath: string;
-  reviewRulesPath: string;
+  reviewItemPromptPaths: ReviewItemPrompts;
   decisionSchemaPath: string;
   prCloseCoverageProofPromptPath: string;
   targetRepo: () => string;
@@ -96,8 +98,7 @@ interface ReviewRuntimeDependencies {
 }
 
 export function createReviewRuntime({
-  reviewItemPromptPath: REVIEW_ITEM_PROMPT_PATH,
-  reviewRulesPath: REVIEW_RULES_PATH,
+  reviewItemPromptPaths: REVIEW_ITEM_PROMPT_PATHS,
   decisionSchemaPath: CLAWSWEEPER_DECISION_SCHEMA_PATH,
   prCloseCoverageProofPromptPath: PR_CLOSE_COVERAGE_PROOF_PROMPT_PATH,
   targetRepo,
@@ -111,8 +112,7 @@ export function createReviewRuntime({
   ensureDir,
   stringOrUndefined,
 }: ReviewRuntimeDependencies) {
-  let reviewPromptTemplateCache: string | undefined;
-  let reviewRulesCache: string | undefined;
+  let reviewPromptTemplatesCache: ReviewItemPrompts | undefined;
   let reviewDecisionSchemaCache: string | undefined;
   let prCloseCoverageProofPromptTemplateCache: string | undefined;
 
@@ -457,14 +457,35 @@ export function createReviewRuntime({
     prepareManagedLocalReviewCheckout(options);
   }
 
-  function reviewPromptTemplate(): string {
-    reviewPromptTemplateCache ??= readFileSync(REVIEW_ITEM_PROMPT_PATH, "utf8");
-    return reviewPromptTemplateCache;
+  function reviewPromptTemplates(): ReviewItemPrompts {
+    reviewPromptTemplatesCache ??= {
+      core: readFileSync(REVIEW_ITEM_PROMPT_PATHS.core, "utf8"),
+      issue: readFileSync(REVIEW_ITEM_PROMPT_PATHS.issue, "utf8"),
+      pull_request: readFileSync(REVIEW_ITEM_PROMPT_PATHS.pull_request, "utf8"),
+      closeReasons: readFileSync(REVIEW_ITEM_PROMPT_PATHS.closeReasons, "utf8"),
+    };
+    return reviewPromptTemplatesCache;
   }
 
-  function reviewRulesText(): string {
-    reviewRulesCache ??= readFileSync(REVIEW_RULES_PATH, "utf8");
-    return reviewRulesCache;
+  // Keep only the close reasons that the repository profile enables for this item kind.
+  function closeReasonsPrompt(guidance: string, reasons: readonly string[]): string {
+    const lines = guidance.trim().split("\n");
+    const enabled = lines.filter((line) =>
+      reasons.some((reason) => line.startsWith(`- \`${reason}\`: `)),
+    );
+    if (enabled.length === 0) {
+      return "This repository enables no close reason for this item kind: keep the item open.";
+    }
+    const preamble = lines
+      .filter((line) => !line.startsWith("- "))
+      .join("\n")
+      .trim();
+    return `${preamble}\n\n${enabled.join("\n")}`;
+  }
+
+  function fillPromptSlot(template: string, slot: string, value: string): string {
+    if (!template.includes(slot)) throw new Error(`Review prompt template has no ${slot} slot`);
+    return template.replace(slot, () => value);
   }
 
   function prCloseCoverageProofPromptTemplate(): string {
@@ -498,10 +519,15 @@ export function createReviewRuntime({
     additionalPrompt = "",
     runtimeHints: ReviewPromptRuntimeHints = {},
   ): ReviewPromptBuild {
-    const prompt = reviewPromptTemplate();
-    // Review rules judge pull requests only; issue triage keeps the static template.
-    const rules =
-      item.kind === "pull_request" ? `\n\n## Review Rules\n\n${reviewRulesText().trim()}` : "";
+    const templates = reviewPromptTemplates();
+    const profile = repositoryProfileFor(item.repo);
+    const prompt = fillPromptSlot(
+      fillPromptSlot(templates.core, "{{item_kind_review}}", templates[item.kind].trim()),
+      "{{close_reasons}}",
+      closeReasonsPrompt(templates.closeReasons, profile.applyCloseRules[item.kind] ?? []),
+    );
+    const kindPolicy = profile.kindPromptNotes?.[item.kind];
+    const repositoryPolicy = `\n## Repository Policy\n\n${profile.promptNote}${kindPolicy ? `\n\n${kindPolicy}` : ""}\n`;
     const contextJson = contextJsonForPrompt(context, item.kind, runtimeHints.networkCapability);
     const prEvidence =
       item.kind === "pull_request"
@@ -522,7 +548,6 @@ export function createReviewRuntime({
         )}\n\`\`\`\n`
       : "";
     const schema = reviewDecisionSchemaText();
-    const profile = repositoryProfileFor(item.repo);
     const proofScratchDir = runtimeHints.proofScratchDir?.trim();
     const mediaProofPrompt = mediaProofRuntimePrompt(
       runtimeHints.mediaProofSummary,
@@ -546,12 +571,10 @@ ${additionalPrompt.trim()}
     const tokenDescription = runtimeHints.hasGitHubToken
       ? "A read-only GitHub App token for the target repository is available as `GH_TOKEN` (contents, issues, and pull requests read; expires within the hour); use it for `gh api`/authenticated GitHub reads so public rate limits do not apply; it cannot write. Never place it in a URL, log it, or send it to any non-GitHub host."
       : "No GitHub token is supplied to the review process; use public endpoints or pre-fetched context.";
-    const text = `${prompt}${rules}
-
+    const text = `${prompt}${repositoryPolicy}
 ## Repository State
 
 - Target repo: ${item.repo}
-- Repository policy: ${profile.promptNote}
 - Item: #${item.number}
 - Type: ${item.kind}
 - Title: ${omitReviewedFixtureReferences(item.title)}
@@ -585,7 +608,7 @@ ${extra}
       text,
       telemetry: {
         promptChars: text.length,
-        staticPromptChars: prompt.length + rules.length,
+        staticPromptChars: prompt.length + repositoryPolicy.length,
         contextChars: contextJson.length + introductionEvidence.length + provenanceEvidence.length,
         schemaChars: schema.length,
         additionalPromptChars: additionalPrompt.trim().length,
@@ -1291,8 +1314,7 @@ ${extra}
     reviewDecisionSchemaText,
     reviewPromptForTest,
     reviewPromptTelemetryForTest,
-    reviewPromptTemplate,
-    reviewRulesText,
+    reviewPromptTemplates,
     runCodexForTest,
     CodexReviewError,
     buildReviewPrompt,
