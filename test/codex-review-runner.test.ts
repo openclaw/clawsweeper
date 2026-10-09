@@ -1028,7 +1028,12 @@ ${fakeManagedDecision}
   }
 });
 
-for (const scenario of ["repaired", "invalid-twice", "valid-first"] as const) {
+for (const scenario of [
+  "repaired",
+  "invalid-twice",
+  "repair-rate-limited",
+  "valid-first",
+] as const) {
   test(`runCodex decision repair turn: ${scenario}`, () => {
     const root = mkdtempSync(tmpPrefix);
     const openclawDir = join(root, "openclaw");
@@ -1065,6 +1070,10 @@ fs.appendFileSync(${JSON.stringify(callsPath)}, JSON.stringify({ args, stdin }) 
 process.stderr.write("OpenAI Codex v0.0.0\\n--------\\nsandbox: read-only\\nsession id: ${sessionId}\\n--------\\nuser\\n" + stdin + "\\n");
 const resumed = args.includes("resume");
 const scenario = ${JSON.stringify(scenario)};
+if (resumed && scenario === "repair-rate-limited") {
+  process.stderr.write("ERROR: stream disconnected: Rate limit reached for model-test on tokens per min (TPM). Please try again in 1ms.\\n");
+  process.exit(1);
+}
 const output = resumed
   ? scenario === "invalid-twice" ? "not json" : ${JSON.stringify(validDecision)}
   : scenario === "valid-first" ? ${JSON.stringify(validDecision)} : '{"decision":"keep_open"}';
@@ -1094,7 +1103,18 @@ process.stdout.write(output + "\\n");
         .split("\n")
         .map((line) => JSON.parse(line) as { args: string[]; stdin: string });
     try {
-      if (scenario === "invalid-twice") {
+      if (scenario === "repair-rate-limited") {
+        // The repair turn's own failure, not the first turn's output, classifies the retry.
+        assert.throws(review, (error: Error & { retryable?: boolean }) => {
+          assert.equal(error.retryable, true);
+          assert.match(error.message, /Rate limit reached/);
+          assert.match(
+            error.message,
+            /first final message failed validation: decision\.evidence must be an array/,
+          );
+          return true;
+        });
+      } else if (scenario === "invalid-twice") {
         assert.throws(review, (error: Error) => {
           assert.equal(error.name, "CodexReviewError");
           assert.match(error.message, /schema-invalid output to .*: Unexpected token/);

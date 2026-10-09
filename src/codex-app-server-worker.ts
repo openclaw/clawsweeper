@@ -430,6 +430,9 @@ async function handleRpcMessage(message: RpcMessage): Promise<void> {
     // One repair turn on the same thread, with the same sandbox, schema, and timeout budget.
     decisionRepairError = repairError;
     appendCodexOutputCapture(stderr, Buffer.from("[clawsweeper] decision repair turn\n"));
+    // The log files keep both turns; the returned tails classify only the repair turn's outcome.
+    stdout.tail = Buffer.alloc(0);
+    stderr.tail = Buffer.alloc(0);
     finalMessage = "";
     turnId = "";
     turnStatus = "";

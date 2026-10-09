@@ -60,7 +60,7 @@ const stderr = openCodexOutputCapture(options.stderrPath, {
 process.env.CODEX_BIN = options.command;
 let child: ChildProcessWithoutNullStreams | undefined;
 let input: Readable = process.stdin;
-let sessionHeader: Buffer | undefined = Buffer.alloc(0);
+let sessionHeader = options.decisionRepair ? Buffer.alloc(0) : undefined;
 let timeoutError: Error | undefined;
 let terminating = false;
 let forceKillTimer: NodeJS.Timeout | undefined;
@@ -96,6 +96,9 @@ if (repairError && repairThreadId && options.args.at(-1) === "-" && !terminating
   // One repair turn on the same thread, with the same sandbox, schema, and timeout budget.
   decisionRepairError = repairError;
   appendCodexOutputCapture(stderr, Buffer.from("\n[clawsweeper] decision repair turn\n"));
+  // The log files keep both turns; the returned tails classify only the repair turn's outcome.
+  stdout.tail = Buffer.alloc(0);
+  stderr.tail = Buffer.alloc(0);
   input = Readable.from([decisionRepairPrompt(repairError)]);
   turn = await runTurn([...options.args.slice(0, -1), "resume", repairThreadId, "-"]);
 }
