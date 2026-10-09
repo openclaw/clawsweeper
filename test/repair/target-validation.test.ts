@@ -4035,6 +4035,10 @@ if (args[0] === "dlx") {
   if (args.join(" ") !== "dlx --package knip@${knipVersion} clawsweeper-dlx-cache-key-probe") process.exit(50);
   if (fs.existsSync(${JSON.stringify(path.join(hostBin, "probe-no-key"))})) process.exit(1);
   fs.mkdirSync(path.join(process.env.XDG_CACHE_HOME, "pnpm", "dlx", dlxKey, "probe-prepare"), { recursive: true });
+  if (fs.existsSync(${JSON.stringify(path.join(hostBin, "probe-kill-supervisor"))})) {
+    process.kill(process.ppid, "SIGKILL");
+    process.exit(1);
+  }
   process.stderr.write("ERR_PNPM_NO_OFFLINE_TARBALL\\n");
   process.exit(1);
 }
@@ -4341,6 +4345,29 @@ if (args[0] === "enable") {
           );
           assert.equal(prefetchCount(), beforeUnsupportedPin, "unsupported pins never install");
           fs.writeFileSync(runnerPath, `const KNIP_VERSION = "${knipVersion}";\n`);
+
+          // Runs last: a recovery error blocks this checkout for the rest of the process.
+          fs.writeFileSync(path.join(hostBin, "probe-kill-supervisor"), "1");
+          let recoveryMessage = "";
+          assert.throws(
+            () => prepareTargetToolchain(cwd, options, ["pnpm check:changed -- src/unchanged.ts"]),
+            (error: Error) => {
+              recoveryMessage = error.message;
+              return /Validation recovery required/.test(error.message);
+            },
+          );
+          const retainedPaths = recoveryMessage.split("Retained paths: ")[1]?.split(", ") ?? [];
+          const retainedProbe = retainedPaths.find((retained) =>
+            path.basename(retained).startsWith("dlx-key-probe-"),
+          );
+          assert.ok(retainedProbe, "the recovery error names the probe state");
+          assert.equal(
+            fs.existsSync(path.join(retainedProbe, "cache")),
+            true,
+            "probe state is kept",
+          );
+          for (const retained of retainedPaths)
+            fs.rmSync(retained, { recursive: true, force: true });
         }),
       );
     },

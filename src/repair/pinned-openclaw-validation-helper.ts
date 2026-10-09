@@ -6,6 +6,7 @@ import { parse as parseYaml } from "yaml";
 
 import { runContainedCommand, runContainedCommandResult } from "./command-runner.js";
 import { PNPM_CONTAINED_PRIVATE_DIRECTORIES } from "./target-toolchain-config.js";
+import { validationRecoveryRequired } from "./validation-recovery.js";
 
 const PINNED_OPENCLAW_KNIP_RELEASES: Record<string, string> = {
   "6.8.0": "2026-04-29T06:27:29.928Z",
@@ -150,6 +151,7 @@ function linkPinnedOpenClawDlxCacheKey({
 }): void {
   const dlxRoot = path.join(helperCache, "pnpm", "dlx");
   const probeRoot = fs.mkdtempSync(path.join(profileRoot, "dlx-key-probe-"));
+  let retainProbe = false;
   try {
     const probeCache = path.join(probeRoot, "cache");
     const probeStore = path.join(probeRoot, "store");
@@ -188,8 +190,17 @@ function linkPinnedOpenClawDlxCacheKey({
       throw new Error("pnpm did not report one dlx cache key for the pinned OpenClaw Knip helper");
     }
     fs.symlinkSync(PINNED_HELPER_DIRECTORY, path.join(dlxRoot, keys[0]!));
+  } catch (error) {
+    // When the supervisor cannot prove that the probe stopped, a probe process
+    // can still use these files. Keep them for recovery.
+    const recovery = validationRecoveryRequired(error);
+    if (recovery) {
+      recovery.retain([probeRoot]);
+      retainProbe = true;
+    }
+    throw error;
   } finally {
-    fs.rmSync(probeRoot, { recursive: true, force: true });
+    if (!retainProbe) fs.rmSync(probeRoot, { recursive: true, force: true });
   }
 }
 
