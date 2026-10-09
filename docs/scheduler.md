@@ -191,8 +191,18 @@ error, only when another run or a newer revision owns the lease:
 `stale_run_attempt` for the claim, and `lease_superseded` for the completion.
 Every other 409 fails the step. Like the curl helper, the completion runs
 `src/repair/exact-review-queue-request.ts` from the checkout only when the
-checkout succeeded, and the downloaded copy otherwise. The other pre-checkout
-steps still build their bodies inline.
+checkout succeeded, and the downloaded copy otherwise.
+
+`event-review-publish` claims and completes its publication lease with the same
+command. `claim publication` is `claim body` with a required tuple, because a
+publication dispatch always names it, and `claim conflict` classifies its 409.
+`complete publication` reads the publisher claim outputs and the publication
+result. It accepts only the completion kinds and reason codes that the queue
+accepts, and it adds the lifecycle disposition that the result implies. The
+publication completion has no safe 409, so every non-2xx response fails the step.
+The completion uses the same checkout-or-download rule. Its checkout is `main`,
+like the rest of the publisher. The other pre-checkout steps still build their
+bodies inline.
 
 After checkout, `event-review-terminal-finalization` builds its bodies with the
 same command. `terminal-finalization <attempt|skip>` reads the claimed lease tuple

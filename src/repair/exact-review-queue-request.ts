@@ -82,6 +82,37 @@ const SAFE_CONFLICTS = {
 } as const;
 const PRIMARY_OUTCOMES = ["success", "cancelled", "failure"] as const;
 const RETRY_KINDS = ["coordination", "throttle"] as const;
+// The publication completion values that the queue accepts.
+const PUBLICATION_COMPLETION_KINDS = [
+  "published",
+  "superseded",
+  "deferred",
+  "retryable_failure",
+  "refresh_required",
+  "permanent_failure",
+] as const;
+const PUBLICATION_REASON_CODES = [
+  "publication_applied",
+  "remote_newer_tuple",
+  "remote_closed",
+  "live_terminal",
+  "github_rate_limit",
+  "github_transient",
+  "state_contention",
+  "review_lease_active",
+  "workflow_cancelled",
+  "artifact_unavailable",
+  "artifact_expired",
+  "close_coverage_retry",
+  "close_coverage_deferred",
+  "invalid_artifact",
+  "missing_record_tuple",
+  "tuple_protocol_invalid",
+  "policy_invariant",
+  "unknown_failure",
+  "retry_exhausted",
+] as const;
+const PUBLICATION_FAILURE_KINDS = ["github_rate_limit", "github_transient"] as const;
 
 try {
   const result = exactReviewQueueRequest(process.argv.slice(2), process.env);
@@ -108,13 +139,14 @@ function exactReviewQueueRequest(argv: string[], env: NodeJS.ProcessEnv) {
       return exactReviewLeaseStep(command, args, env);
     default:
       throw new Error(
-        "usage: heartbeat --phase <review|status|finalizing> | lifecycle <router-receipt|canonical-receipt|terminal-disposition|command-ack-failed|command-ack-observed> | terminal-finalization <attempt|skip> | enqueue <route|body> | claim <body|conflict> | complete <body|conflict>",
+        "usage: heartbeat --phase <review|status|finalizing> | lifecycle <router-receipt|canonical-receipt|terminal-disposition|command-ack-failed|command-ack-observed> | terminal-finalization <attempt|skip> | enqueue <route|body> | claim <body|publication|conflict> | complete <body|publication|conflict>",
       );
   }
 }
 
-// `body` prints the claim or completion body. `conflict` reads the 409 response
-// in RESPONSE and prints its error when the step can stop without an error.
+// `body` prints the review claim or completion body, and `publication` prints
+// the publication claim or completion body. `conflict` reads the 409 response in
+// RESPONSE and prints its error when the step can stop without an error.
 function exactReviewLeaseStep(
   command: "claim" | "complete",
   args: string[],
@@ -124,7 +156,13 @@ function exactReviewLeaseStep(
   if (options.length > 0) throw new Error(`${command} takes no options`);
   switch (record) {
     case "body":
-      return command === "claim" ? exactReviewClaimBody(env) : exactReviewCompletionBody(env);
+      return command === "claim"
+        ? exactReviewClaimBody(env, false)
+        : exactReviewCompletionBody(env);
+    case "publication":
+      return command === "claim"
+        ? exactReviewClaimBody(env, true)
+        : exactReviewPublicationCompletionBody(env);
     case "conflict": {
       const response: unknown = JSON.parse(env.RESPONSE || "{}");
       const error = (response as JsonObject | null)?.error;
@@ -133,19 +171,20 @@ function exactReviewLeaseStep(
       return safe;
     }
     default:
-      throw new Error(`${command} record must be body or conflict`);
+      throw new Error(`${command} record must be body, publication or conflict`);
   }
 }
 
-// A dispatch names its lease tuple. An older dispatch names only the lease id.
-function exactReviewClaimBody(env: NodeJS.ProcessEnv) {
+// A dispatch names its lease tuple. An older review dispatch names only the
+// lease id. A publication dispatch always names its tuple.
+function exactReviewClaimBody(env: NodeJS.ProcessEnv, tupleRequired: boolean) {
   const leaseId = requiredText(env.QUEUE_LEASE_ID, "QUEUE_LEASE_ID");
   const itemKey = (env.ITEM_KEY ?? "").trim();
   const leaseRevision = (env.QUEUE_LEASE_REVISION ?? "").trim();
   const { runId, runAttempt } = githubRun(env);
   return {
     lease_id: leaseId,
-    ...(itemKey || leaseRevision
+    ...(tupleRequired || itemKey || leaseRevision
       ? {
           item_key: requiredText(itemKey, "ITEM_KEY"),
           lease_revision: positiveInteger(leaseRevision, "QUEUE_LEASE_REVISION"),
@@ -156,20 +195,22 @@ function exactReviewClaimBody(env: NodeJS.ProcessEnv) {
   };
 }
 
+// The lease tuple that a protocol 2 claim returned.
+function claimedLeaseTuple(env: NodeJS.ProcessEnv) {
+  return {
+    item_key: requiredText(env.ITEM_KEY, "ITEM_KEY"),
+    lease_revision: positiveInteger(env.QUEUE_LEASE_REVISION, "QUEUE_LEASE_REVISION"),
+    claim_generation: positiveInteger(env.CLAIM_GENERATION, "CLAIM_GENERATION"),
+  };
+}
+
 // Reads the claim outputs and the results of the review steps. A protocol 1
 // claim completes by lease id only.
 function exactReviewCompletionBody(env: NodeJS.ProcessEnv) {
   const leaseId = requiredText(env.QUEUE_LEASE_ID, "QUEUE_LEASE_ID");
   const protocolVersion = Number(env.PROTOCOL_VERSION);
   if (protocolVersion !== 1 && protocolVersion !== 2) throw new Error("invalid PROTOCOL_VERSION");
-  const tuple =
-    protocolVersion === 2
-      ? {
-          item_key: requiredText(env.ITEM_KEY, "ITEM_KEY"),
-          lease_revision: positiveInteger(env.QUEUE_LEASE_REVISION, "QUEUE_LEASE_REVISION"),
-          claim_generation: positiveInteger(env.CLAIM_GENERATION, "CLAIM_GENERATION"),
-        }
-      : {};
+  const tuple = protocolVersion === 2 ? claimedLeaseTuple(env) : {};
   const { runId, runAttempt } = githubRun(env);
   // A skipped or failed result step reports failure.
   const outcome = PRIMARY_OUTCOMES.find((value) => value === env.PRIMARY_OUTCOME) ?? "failure";
@@ -246,6 +287,80 @@ function exactReviewCompletionBody(env: NodeJS.ProcessEnv) {
         }
       : {}),
   };
+}
+
+// Reads the publisher claim outputs and the publication result. The queue
+// records the lifecycle disposition that the publication result implies.
+function exactReviewPublicationCompletionBody(env: NodeJS.ProcessEnv) {
+  const leaseId = requiredText(env.QUEUE_LEASE_ID, "QUEUE_LEASE_ID");
+  const tuple = claimedLeaseTuple(env);
+  const { runId, runAttempt } = githubRun(env);
+  // A skipped or failed result step reports failure.
+  const outcome = PRIMARY_OUTCOMES.find((value) => value === env.PRIMARY_OUTCOME) ?? "failure";
+  const failureKind = PUBLICATION_FAILURE_KINDS.find((value) => value === env.FAILURE_KIND);
+  const retryAt = (env.RETRY_AT ?? "").trim();
+  if (retryAt && !Number.isFinite(Date.parse(retryAt))) throw new Error("invalid RETRY_AT");
+  const completionKind = oneOf(
+    env.COMPLETION_KIND,
+    PUBLICATION_COMPLETION_KINDS,
+    "COMPLETION_KIND",
+  );
+  const reasonCode = oneOf(env.REASON_CODE, PUBLICATION_REASON_CODES, "REASON_CODE");
+  // An invalid fingerprint is diagnostic only, so the body leaves it out.
+  const errorFingerprint = /^[A-Za-z0-9:._-]{1,200}$/.test(env.ERROR_FINGERPRINT ?? "")
+    ? env.ERROR_FINGERPRINT
+    : undefined;
+  const directLifecycleRequeue = env.DIRECT_LIFECYCLE_REQUEUE === "true";
+  const lifecycleTerminal = publicationLifecycleTerminal(
+    env,
+    completionKind,
+    reasonCode,
+    directLifecycleRequeue,
+  );
+  let stateWriter: unknown;
+  try {
+    const parsed: unknown = JSON.parse(env.STATE_WRITER_JSON || "");
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) stateWriter = parsed;
+  } catch {
+    // State writer telemetry is optional.
+  }
+  return {
+    lease_id: leaseId,
+    ...tuple,
+    run_id: runId,
+    run_attempt: runAttempt,
+    outcome,
+    completion_kind: completionKind,
+    reason_code: reasonCode,
+    ...(errorFingerprint ? { error_fingerprint: errorFingerprint } : {}),
+    ...(retryAt ? { retry_at: retryAt } : {}),
+    ...(outcome === "failure" && failureKind ? { failure_kind: failureKind } : {}),
+    ...(directLifecycleRequeue ? { direct_lifecycle_requeue: true } : {}),
+    ...(lifecycleTerminal ? { lifecycle_terminal_disposition: lifecycleTerminal } : {}),
+    ...(stateWriter ? { state_writer: stateWriter } : {}),
+  };
+}
+
+// The first rule that matches gives the disposition. A published result has none.
+function publicationLifecycleTerminal(
+  env: NodeJS.ProcessEnv,
+  completionKind: (typeof PUBLICATION_COMPLETION_KINDS)[number],
+  reasonCode: (typeof PUBLICATION_REASON_CODES)[number],
+  directLifecycleRequeue: boolean,
+) {
+  if (directLifecycleRequeue || env.REQUEUE_LATEST === "true") return "requeue";
+  if (env.LEGACY_TUPLELESS === "true") return "requeue";
+  if (completionKind === "retryable_failure" || completionKind === "refresh_required") {
+    return "requeue";
+  }
+  if (env.TERMINAL_MISSING === "true") return "target_missing";
+  if (env.TERMINAL_CLOSED === "true" || env.TERMINAL_NOOP === "true") return "target_closed";
+  if (env.POLICY_NOOP === "true") return "policy_noop";
+  if (env.GUARDED_OPEN === "true") return "guarded_open";
+  if (completionKind === "superseded") {
+    return reasonCode === "remote_closed" ? "target_closed" : "superseded";
+  }
+  return completionKind === "permanent_failure" ? "failure" : undefined;
 }
 
 // The terminal review status write was seen, failed after the acknowledgement

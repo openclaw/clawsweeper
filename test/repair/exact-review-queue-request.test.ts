@@ -209,6 +209,8 @@ test("the source file alone gives the same bodies and errors as the build", () =
       }),
       ...completion,
       RESPONSE: JSON.stringify({ error: "lease_superseded" }),
+      COMPLETION_KIND: "superseded",
+      REASON_CODE: "remote_closed",
     };
     for (const argv of [
       [
@@ -228,6 +230,8 @@ test("the source file alone gives the same bodies and errors as the build", () =
       ["claim", "conflict"],
       ["complete", "body"],
       ["complete", "conflict"],
+      ["claim", "publication"],
+      ["complete", "publication"],
     ]) {
       const built = run(argv, env);
       assert.deepEqual(run(argv, env, copy), built, argv.join(" "));
@@ -818,5 +822,152 @@ test("completion requests with an invalid tuple or result print no body", () => 
     [{ GITHUB_RUN_ID: "run" }, "invalid GITHUB_RUN_ID"],
   ] as const) {
     assert.equal(leaseStep("claim body", env).error, `exact-review-queue-request: ${message}\n`);
+  }
+});
+
+test("a publication claim always carries its tuple", () => {
+  assert.equal(
+    leaseStep("claim publication").body,
+    JSON.stringify({
+      lease_id: "lease-7",
+      item_key: "openclaw/openclaw#7",
+      lease_revision: 3,
+      run_id: "10",
+      run_attempt: 1,
+    }),
+  );
+  for (const [env, message] of [
+    [{ ITEM_KEY: "", QUEUE_LEASE_REVISION: "" }, "missing ITEM_KEY"],
+    [{ QUEUE_LEASE_REVISION: "" }, "invalid QUEUE_LEASE_REVISION"],
+    [{ QUEUE_LEASE_ID: "" }, "missing QUEUE_LEASE_ID"],
+  ] as const) {
+    assert.deepEqual(
+      leaseStep("claim publication", env),
+      { status: 1, body: "", error: `exact-review-queue-request: ${message}\n` },
+      message,
+    );
+  }
+});
+
+test("publication completion bodies carry the result and the lifecycle disposition it implies", () => {
+  const publication = (env: Record<string, string>) =>
+    leaseStep("complete publication", {
+      COMPLETION_KIND: "published",
+      REASON_CODE: "publication_applied",
+      ...env,
+    });
+  const body = (env: Record<string, string>) => JSON.parse(publication(env).body);
+  const tuple = {
+    lease_id: "lease-7",
+    item_key: "openclaw/openclaw#7",
+    lease_revision: 3,
+    claim_generation: 2,
+    run_id: "10",
+    run_attempt: 1,
+  };
+  // A published result has no lifecycle disposition.
+  assert.equal(
+    publication({}).body,
+    JSON.stringify({
+      ...tuple,
+      outcome: "success",
+      completion_kind: "published",
+      reason_code: "publication_applied",
+    }),
+  );
+  assert.equal(
+    publication({
+      PRIMARY_OUTCOME: "failure",
+      COMPLETION_KIND: "retryable_failure",
+      REASON_CODE: "github_rate_limit",
+      FAILURE_KIND: "github_rate_limit",
+      ERROR_FINGERPRINT: "gh:429",
+      RETRY_AT: " 2026-10-09T00:00:00Z ",
+      STATE_WRITER_JSON: '{"attempts":2}',
+    }).body,
+    JSON.stringify({
+      ...tuple,
+      outcome: "failure",
+      completion_kind: "retryable_failure",
+      reason_code: "github_rate_limit",
+      error_fingerprint: "gh:429",
+      retry_at: "2026-10-09T00:00:00Z",
+      failure_kind: "github_rate_limit",
+      lifecycle_terminal_disposition: "requeue",
+      state_writer: { attempts: 2 },
+    }),
+  );
+  // Optional diagnostics that fail their check stay out of the body.
+  assert.deepEqual(
+    body({
+      PRIMARY_OUTCOME: "",
+      FAILURE_KIND: "github_rate_limit",
+      ERROR_FINGERPRINT: "bad fingerprint",
+      STATE_WRITER_JSON: "[1]",
+    }),
+    {
+      ...tuple,
+      outcome: "failure",
+      completion_kind: "published",
+      reason_code: "publication_applied",
+      failure_kind: "github_rate_limit",
+    },
+  );
+  assert.equal(Object.hasOwn(body({ FAILURE_KIND: "github_rate_limit" }), "failure_kind"), false);
+  assert.equal(Object.hasOwn(body({ STATE_WRITER_JSON: "not json" }), "state_writer"), false);
+  assert.equal(
+    Object.hasOwn(body({ FAILURE_KIND: "timeout", PRIMARY_OUTCOME: "failure" }), "failure_kind"),
+    false,
+  );
+  assert.deepEqual(body({ DIRECT_LIFECYCLE_REQUEUE: "true" }), {
+    ...tuple,
+    outcome: "success",
+    completion_kind: "published",
+    reason_code: "publication_applied",
+    direct_lifecycle_requeue: true,
+    lifecycle_terminal_disposition: "requeue",
+  });
+  // The first rule that matches gives the disposition.
+  for (const [env, expected] of [
+    [{ REQUEUE_LATEST: "true", TERMINAL_MISSING: "true" }, "requeue"],
+    [{ LEGACY_TUPLELESS: "true", TERMINAL_MISSING: "true" }, "requeue"],
+    [{ COMPLETION_KIND: "refresh_required", REASON_CODE: "invalid_artifact" }, "requeue"],
+    [{ TERMINAL_MISSING: "true", TERMINAL_CLOSED: "true" }, "target_missing"],
+    [{ TERMINAL_CLOSED: "true", POLICY_NOOP: "true" }, "target_closed"],
+    [{ TERMINAL_NOOP: "true" }, "target_closed"],
+    [{ POLICY_NOOP: "true", GUARDED_OPEN: "true" }, "policy_noop"],
+    [{ GUARDED_OPEN: "true" }, "guarded_open"],
+    [{ COMPLETION_KIND: "superseded", REASON_CODE: "remote_closed" }, "target_closed"],
+    [{ COMPLETION_KIND: "superseded", REASON_CODE: "remote_newer_tuple" }, "superseded"],
+    [{ COMPLETION_KIND: "permanent_failure", REASON_CODE: "invalid_artifact" }, "failure"],
+    [{ COMPLETION_KIND: "deferred", REASON_CODE: "close_coverage_deferred" }, undefined],
+  ] as const) {
+    assert.equal(body(env).lifecycle_terminal_disposition, expected, JSON.stringify(env));
+  }
+});
+
+test("publication completion requests with an invalid tuple or result print no body", () => {
+  for (const [env, message] of [
+    [{ CLAIM_GENERATION: "" }, "invalid CLAIM_GENERATION"],
+    [{ ITEM_KEY: "" }, "missing ITEM_KEY"],
+    [
+      { COMPLETION_KIND: "" },
+      "COMPLETION_KIND must be published, superseded, deferred, retryable_failure, refresh_required, permanent_failure",
+    ],
+    [
+      { REASON_CODE: "ok" },
+      "REASON_CODE must be publication_applied, remote_newer_tuple, remote_closed, live_terminal, github_rate_limit, github_transient, state_contention, review_lease_active, workflow_cancelled, artifact_unavailable, artifact_expired, close_coverage_retry, close_coverage_deferred, invalid_artifact, missing_record_tuple, tuple_protocol_invalid, policy_invariant, unknown_failure, retry_exhausted",
+    ],
+    [{ RETRY_AT: "later" }, "invalid RETRY_AT"],
+  ] as const) {
+    assert.deepEqual(
+      leaseStep("complete publication", {
+        COMPLETION_KIND: "published",
+        REASON_CODE: "publication_applied",
+        ...env,
+      }),
+      { status: 1, body: "", error: `exact-review-queue-request: ${message}\n` },
+      message,
+    );
   }
 });

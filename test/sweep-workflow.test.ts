@@ -2079,15 +2079,10 @@ test("exact event review publishes directly with a queue-bounded canonical fallb
   assert.match(publishComplete.run ?? "", /internal\/exact-review\/complete/);
   assert.match(publishComplete.env?.FAILURE_KIND ?? "", /exact-review-publication-result/);
   assert.match(publishComplete.env?.RETRY_AT ?? "", /exact-review-publication-result/);
-  assert.match(publishComplete.run ?? "", /failure_kind: failureKind/);
-  assert.match(publishComplete.run ?? "", /completion_kind: completionKind/);
-  assert.match(publishComplete.run ?? "", /reason_code: reasonCode/);
-  assert.match(publishComplete.run ?? "", /retry_at: retryAt/);
   assert.match(
     publishComplete.env?.DIRECT_LIFECYCLE_REQUEUE ?? "",
     /exact-review-publication-result/,
   );
-  assert.match(publishComplete.run ?? "", /direct_lifecycle_requeue/);
   assert.ok(publisher.steps.indexOf(publishResult) < publisher.steps.indexOf(publishComplete));
   assert.ok(publisher.steps.indexOf(publishComplete) < publisher.steps.indexOf(activeLeaseWaiting));
   assert.match(activeLeaseWaiting.if ?? "", /reason_code == 'review_lease_active'/);
@@ -2096,8 +2091,6 @@ test("exact event review publishes directly with a queue-bounded canonical fallb
     /complete-exact-review-publication\.outcome == 'success'/,
   );
   assert.match(activeLeaseWaiting.run ?? "", /--state "Waiting"/);
-
-  assert.match(publishComplete.run ?? "", /"state_contention"/);
 });
 
 // Recovery reviews do not need the command router. Other sources keep their router lifecycle.
@@ -2245,13 +2238,10 @@ test("exact event publication derives lifecycle receipt and final command acknow
   assert.ok(steps.indexOf(router) < steps.indexOf(deferredDispatch));
   assert.ok(steps.indexOf(noRouter) < steps.indexOf(deferredDispatch));
 
+  // The publication completion body is behavior-tested in
+  // test/repair/exact-review-queue-request.test.ts.
   const complete = step("Complete durable exact review publication");
-  assert.match(
-    complete.run ?? "",
-    /\["retryable_failure", "refresh_required"\]\.includes\(completionKind\)/,
-  );
-  assert.doesNotMatch(complete.run ?? "", /outcome !== "success"\s*\?\s*"failure"/);
-  assert.match(complete.run ?? "", /completionKind === "permanent_failure"\s*\? "failure"/);
+  assert.match(complete.run ?? "", /payload="\$\(node "\$request" complete publication\)"/);
   const finalizer = workflow.jobs["event-review-terminal-finalization"]!;
   const finalizationCheckout = finalizer.steps.find(
     (candidate) => candidate.uses?.startsWith("actions/checkout@") && candidate.if,
@@ -2649,21 +2639,8 @@ test("exact-review lease competition skips only known conflicts and gates both o
     assert.match(claimRun, /printf 'claimed=false\\ndecision=\{\}\\n'/, jobName);
     assert.match(claimRun, /--write-out '%\{http_code\}'/, jobName);
     assert.match(claimRun, /if \[ "\$status" = "409" \]/, jobName);
-    // The queue request command owns the apply claim conflicts; the publish
-    // claim still lists them inline.
-    if (jobName === "event-review-apply") {
-      assert.match(claimRun, /RESPONSE="\$response" node "\$request" claim conflict/);
-    } else {
-      for (const reason of [
-        "lease_not_active",
-        "lease_already_claimed",
-        "lease_decision_unavailable",
-        "stale_run_attempt",
-      ]) {
-        assert.match(claimRun, new RegExp(`"${reason}"`), `${jobName}: ${reason}`);
-      }
-      assert.match(claimRun, /if \(!safeConflicts\.has\(response\.error\)\) process\.exit\(1\)/);
-    }
+    // The queue request command owns the safe claim conflicts of both jobs.
+    assert.match(claimRun, /RESPONSE="\$response" node "\$request" claim conflict/, jobName);
     assert.match(claimRun, /if \[ "\$status" != "200" \]/, jobName);
     assert.match(claimRun, /if \[\[ "\$status" != 5\* \]\]/, jobName);
     assert.match(claimRun, /returned an invalid success payload/, jobName);
