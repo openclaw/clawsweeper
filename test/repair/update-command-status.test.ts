@@ -808,6 +808,91 @@ test("missing status comment still fails non-terminal required mutations", () =>
   }
 });
 
+test("command status updates record the write attempt and its outcome", () => {
+  const tmp = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-status-ledger-")));
+  const marker = "<!-- clawsweeper-command-status:113663:automerge:320c867f -->";
+  const receipts = (
+    invocation: string,
+    comment?: { id: number; body: string; user: { login: string } },
+  ) => {
+    const root = path.join(tmp, invocation);
+    const outputRoot = path.join(root, "output");
+    fs.mkdirSync(outputRoot, { recursive: true });
+    const result = runUpdateCommandStatus(
+      root,
+      [
+        "--repo",
+        "openclaw/openclaw",
+        "--item-number",
+        "113663",
+        "--marker",
+        marker,
+        "--state",
+        "Complete",
+        "--detail",
+        "Durable review routing completed.",
+      ],
+      comment,
+      [],
+      {
+        CLAWSWEEPER_ACTION_LEDGER_FORCE: "1",
+        CLAWSWEEPER_ACTION_LEDGER_DISABLED: "0",
+        CLAWSWEEPER_ACTION_LEDGER_ROOT: root,
+        CLAWSWEEPER_ACTION_LEDGER_OUTPUT_ROOT: outputRoot,
+        CLAWSWEEPER_ACTION_LEDGER_INVOCATION: invocation,
+        GITHUB_REPOSITORY: "openclaw/clawsweeper",
+        GITHUB_SHA: "a".repeat(40),
+        GITHUB_WORKFLOW: "repair comment router",
+        GITHUB_WORKFLOW_REF: "",
+        GITHUB_JOB: "route-comments",
+        GITHUB_RUN_ID: "42",
+        GITHUB_RUN_ATTEMPT: "1",
+        GITHUB_ACTION: "status",
+        GITHUB_RUN_STARTED_AT: "2026-09-05T00:00:00Z",
+        CLAWSWEEPER_CRABFLEET_AGENT_TOKEN: "",
+        CLAWSWEEPER_CRABFLEET_SESSION_ID: "",
+      },
+    );
+    assert.equal(result.status, 0, result.stderr);
+    return readLedgerEvents(outputRoot).map((event) => [
+      event.event_type,
+      event.action.status,
+      event.action.mutation,
+    ]);
+  };
+  try {
+    assert.deepEqual(
+      receipts("update", {
+        id: 7001,
+        body: `${marker}\nQueued.`,
+        user: { login: "clawsweeper[bot]" },
+      }),
+      [
+        ["command.mutation", "started", false],
+        ["command.mutation", "executed", true],
+        ["command.progress", "completed", true],
+      ],
+    );
+    assert.deepEqual(receipts("missing"), [["command.progress", "skipped", false]]);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+function readLedgerEvents(root: string): Record<string, any>[] {
+  return fs
+    .readdirSync(root, { recursive: true, withFileTypes: true })
+    .filter((entry) => entry.isFile() && entry.name.endsWith(".jsonl"))
+    .flatMap((entry) =>
+      fs
+        .readFileSync(path.join(entry.parentPath, entry.name), "utf8")
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line)),
+    )
+    .sort((left, right) => left.phase_seq - right.phase_seq);
+}
+
 test("parseOptions reads STATUS_COMMENT_ID env fallback", () => {
   withEnv({ STATUS_COMMENT_ID: "4466202000" }, () => {
     const options = parseOptions(["--repo", "openclaw/openclaw", "--item-number", "81564"]);

@@ -1,0 +1,1 @@
+- Comment router, command status and repair requeue tests now drive the real CLIs and workflow steps instead of reading their source text; `buildClawSweeperReviewDispatchPayload` in `comment-router-core.ts` owns the review follow-up dispatch payload, and the two remaining source guards live in `test/structural-invariants.test.ts`.
