@@ -2791,7 +2791,10 @@ test("terminal exact-review runs reconcile through a signed isolated backstop", 
   assert.match(eventJob, /run_attempt: runAttempt/);
   assert.match(eventJob, /include_all_claimed: true/);
   assert.match(eventJob, /CLAWSWEEPER_WEBHOOK_SECRET/);
-  assert.match(eventJob, /control_plane_signed_post "\$queue_url\/internal\/exact-review\/reconcile" "\$payload"/);
+  assert.match(
+    eventJob,
+    /control_plane_signed_post "\$queue_url\/internal\/exact-review\/reconcile" "\$payload"/,
+  );
   assert.match(eventJob, /--max-time 120/);
   assert.match(eventJob, /actions\/checkout@v7/);
   assert.match(eventJob, /ref: \$\{\{ github\.event\.repository\.default_branch \}\}/);
