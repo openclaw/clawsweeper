@@ -1969,7 +1969,6 @@ test("runtime yield keeps the unfinished item out of the apply cursor trace", ()
   assert.deepEqual(examined, [10]);
 });
 
-
 test("review prompt asks for concise public review fields", () => {
   const prompt = reviewPrompt("pull_request");
 
