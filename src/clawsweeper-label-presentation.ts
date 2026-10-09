@@ -57,12 +57,13 @@ import {
   nextRealBehaviorProofSufficientLabels,
   nextTelegramVisibleProofLabels,
 } from "./clawsweeper-label-selection.js";
+import { prStatusLabelKindFromReportLabels, sentence } from "./clawsweeper-review-presentation.js";
 
 export function createReportLabelPresentation(
   dependencies: CreateReportOrchestrationDependencies &
     ReturnType<typeof createReportOrchestrationFoundation>,
 ) {
-  const { defaultPlansDir, isFresh, prStatusLabelKindFromReportLabels, sentence } = dependencies;
+  const { defaultPlansDir, isFresh } = dependencies;
 
   function workPlanPathForReport(file: string, plansDir = defaultPlansDir()): string {
     return join(plansDir, basename(file));

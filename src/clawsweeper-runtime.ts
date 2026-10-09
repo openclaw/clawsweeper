@@ -68,10 +68,6 @@ import {
   unconfirmedProductDirectionAgeSkipReason,
   unsponsoredFeatureAgeSkipReason,
 } from "./clawsweeper-item-policy.js";
-import {
-  hasRepairLoopPauseLabel,
-  prStatusLabelKindFromReport,
-} from "./clawsweeper-label-policy.js";
 import { createLabelMutationOperations } from "./clawsweeper-label-mutations.js";
 import { createLabelSyncOperations } from "./clawsweeper-label-operations.js";
 import { createLiveProofCommands } from "./live-proof/commands.js";
@@ -110,7 +106,6 @@ import {
 } from "./clawsweeper-review-lease.js";
 import { createReviewActionLedger } from "./clawsweeper-review-ledger.js";
 import { createReviewPlanning } from "./clawsweeper-review-planning.js";
-import { createReviewPresentation } from "./clawsweeper-review-presentation.js";
 import { createReviewRuntime, type ReviewItemPrompts } from "./clawsweeper-review-runtime.js";
 import { createSourceRevisionTools } from "./clawsweeper-source-revision.js";
 import {
@@ -128,7 +123,6 @@ import type {
   MutationRunner,
   ReportEntry,
   RootCauseNormalizationItem,
-  SecurityConcern,
 } from "./clawsweeper-types.js";
 import { frontMatterValue } from "./report-front-matter.js";
 export {
@@ -237,7 +231,7 @@ const repositoryLinks = createRepositoryLinks({
   targetProfile,
   targetRepo,
 });
-const { docsPageUrl, fileUrl, latestFileUrl, linkedSha, markdownLink, reportUrl } = repositoryLinks;
+const { markdownLink, reportUrl } = repositoryLinks;
 
 function setTargetRepo(targetRepoName: string): RepositoryProfile {
   activeRepositoryProfile = repositoryProfileFor(targetRepoName);
@@ -741,21 +735,7 @@ function recordOrUndefined(value: unknown): Record<string, unknown> | undefined 
     : undefined;
 }
 
-const reviewPresentation = createReviewPresentation({
-  docsPageUrl,
-  fileUrl,
-  hasRepairLoopPauseLabel,
-  latestFileUrl,
-  linkedSha,
-  markdownLink,
-  prStatusLabelKindFromReport,
-  securityConcernLocation,
-  targetRepo,
-});
-const { sentence } = reviewPresentation;
-
 const reportOrchestration = createReportOrchestration({
-  ...reviewPresentation,
   collectItemContext,
   ...contextHydration,
   ...repositoryPaths,
@@ -787,8 +767,6 @@ const reportOrchestration = createReportOrchestration({
   reviewVersionMarkerFromReport: (...args) => reviewVersionMarkerFromReport(...args),
   ROOT,
   runtimeBudgetExceeded: (...args) => runtimeBudgetExceeded(...args),
-  securityConcernLocation,
-
   targetProfile,
   targetRepo,
   timeoutWithinRuntimeBudget: (...args) => timeoutWithinRuntimeBudget(...args),
@@ -837,7 +815,6 @@ const reviewCommentWorkflow = createReviewCommentWorkflow({
   reviewCommentBodyDigest,
   parseGitHubItemRef,
   ensureDir,
-  sentence,
   ...reportOrchestration,
   removeIssueLabel: labelMutations.removeIssueLabel,
   markdownLink,
@@ -866,11 +843,6 @@ const {
   reviewVersionMarkerFromReport,
   reviewStructuralPullStateFromContext,
 } = reviewCommentWorkflow;
-
-function securityConcernLocation(concern: SecurityConcern): string {
-  if (!concern.file) return "not tied to a single file";
-  return `${concern.file}${concern.line ? `:${concern.line}` : ""}`;
-}
 
 const planCommand = createPlanCommand({
   defaultBatchSize: DEFAULT_PLAN_BATCH_SIZE,

@@ -87,9 +87,9 @@ test("valid recorded N/A proof fields and summary survive decision parsing", () 
     item({ kind: "pull_request", authorAssociation: "CONTRIBUTOR" }),
   );
   assert.deepEqual(decision.realBehaviorProof, recordedNotApplicableProof);
-  const document = createReportDocumentRendering({
-    sentence: (value: string) => value,
-  } as Parameters<typeof createReportDocumentRendering>[0]);
+  const document = createReportDocumentRendering(
+    {} as Parameters<typeof createReportDocumentRendering>[0],
+  );
   const serialized = document.renderRealBehaviorProofReportSection(decision);
   assert.match(serialized, /^Status: not_applicable$/m);
   assert.match(serialized, /^Evidence kind: not_applicable$/m);
@@ -135,7 +135,6 @@ test("renderer-produced reports preserve nested statistics and authoritative met
       { path: "src/b.ts", additions: 2, deletions: 1 },
     ],
     compactPullFilePaths: (file) => [file.filename],
-    confidenceText: String,
     fixedInText: () => "unknown",
     formatTimestamp: String,
     labelJustificationsMarkdown: () => "- none",
@@ -143,7 +142,6 @@ test("renderer-produced reports preserve nested statistics and authoritative met
     markdownLink: (label, url) => `[${label}](${url})`,
     pullHeadShaFromContext: () => null,
     reviewStructuralPullStateFromContext: () => null,
-    sentence: String,
   } as Parameters<typeof createReportDocumentRendering>[0]);
   const report = document.markdownFor({
     item: subject,
@@ -1762,26 +1760,13 @@ function renderedPullRequestReport(
     ...createDashboardPresentation({} as never),
     prSurfaceFilesFromContext: () => [{ path: "src/runtime.ts", additions: 1, deletions: 0 }],
     compactPullFilePaths: (file) => [file.filename],
-    confidenceText: (score: number) => score.toFixed(2).replace(/0+$/, "").replace(/\.$/, ""),
     fixedInText: () => "unknown",
     formatTimestamp: String,
     labelJustificationsMarkdown: () => "- none",
     linkedSha: String,
     markdownLink: (label, url) => `[${label}](${url})`,
-    priorityLabel: (priority: number) => `P${priority}`,
     pullHeadShaFromContext: () => null,
-    reviewFindingLocation: (finding: { file: string; lineStart: number; lineEnd: number }) =>
-      `${finding.file}:${
-        finding.lineStart === finding.lineEnd
-          ? finding.lineStart
-          : `${finding.lineStart}-${finding.lineEnd}`
-      }`,
     reviewStructuralPullStateFromContext: () => null,
-    securityConcernLocation: (concern: { file: string | null; line: number | null }) =>
-      concern.file
-        ? `${concern.file}${concern.line ? `:${concern.line}` : ""}`
-        : "not tied to a single file",
-    sentence: String,
   } as Parameters<typeof createReportDocumentRendering>[0]);
   return document.markdownFor({
     item: subject,

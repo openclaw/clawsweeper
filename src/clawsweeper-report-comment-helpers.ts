@@ -26,14 +26,19 @@ import type { RealBehaviorProofPolicy } from "./clawsweeper-proof-policy.js";
 import { nextStepFromReport } from "./clawsweeper-next-step.js";
 import { reportRealBehaviorProofPolicy } from "./clawsweeper-proof-policy.js";
 import {
+  closeEvidenceLine,
   isReportNoneList,
+  likelyOwnerLines,
   normalizePublicReviewText,
   priorityLabel,
   publicHistoricalVerificationBlockerLine,
   publicRealBehaviorProofLine,
   publicReviewTextDiffers,
+  publicReviewTextIsSame,
   reportRiskEntries,
   reviewFindingLocation,
+  securityConcernDetailedLine,
+  securityReviewLine,
   sentence,
   stripListMarker,
 } from "./clawsweeper-review-presentation.js";
@@ -384,7 +389,6 @@ export function createReportCommentHelpers(
 ) {
   const {
     closeClawHubHandoffBlock,
-    closeEvidenceLine,
     closeIntro,
     closeOutro,
     closeReviewLineFromDecision,
@@ -393,11 +397,8 @@ export function createReportCommentHelpers(
     duplicateCanonicalPathLine,
     fixedPullRequestFromReport,
     formatReviewFreshnessTimestamp,
-    likelyOwnerLines,
     markdownLink,
-    publicReviewTextIsSame,
-    securityConcernDetailedLine,
-    securityReviewLine,
+    targetProfile,
     workCandidateReasonText,
   } = dependencies;
 
@@ -418,8 +419,9 @@ export function createReportCommentHelpers(
     reviewLine: string;
     currentItem?: { repo?: string; kind?: ItemKind; number?: number } | undefined;
   }): string {
-    const evidence = options.evidence.slice(0, 6).map(closeEvidenceLine);
-    const likelyOwners = likelyOwnerLines(options.likelyOwners ?? []);
+    const profile = targetProfile();
+    const evidence = options.evidence.slice(0, 6).map((entry) => closeEvidenceLine(entry, profile));
+    const likelyOwners = likelyOwnerLines(options.likelyOwners ?? [], profile);
     const summaryLine = sentence(options.summary);
     const lines = [closeIntro(options.reason), "", summaryLine];
     if (options.fixedPullRequest?.confidence === "high") {

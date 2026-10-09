@@ -87,43 +87,79 @@ export function normalizeEvidence(entry: Evidence, legacyReportRepo?: string): E
   return { ...entry, repo: conflict ? null : repo, file, line, sha };
 }
 
+export function repoUrlFor(repo: string, path = ""): string {
+  return `https://github.com/${normalizeRepo(repo)}${path}`;
+}
+
+export function commitUrl(sha: string, repo: string): string {
+  return repoUrlFor(repo, `/commit/${sha}`);
+}
+
+export function shortSha(sha: string): string {
+  return sha.slice(0, 12);
+}
+
+export function releaseUrl(tag: string, repo: string): string {
+  return repoUrlFor(repo, `/releases/tag/${encodeURIComponent(tag)}`);
+}
+
+export function itemUrlFor(repo: string, number: number, kind: ItemKind = "issue"): string {
+  return repoUrlFor(repo, `/${kind === "pull_request" ? "pull" : "issues"}/${number}`);
+}
+
+export function githubPath(path: string): string {
+  return path
+    .split("/")
+    .map((segment) => encodeURIComponent(segment))
+    .join("/");
+}
+
+export function fileUrl(file: string, sha: string, line: number | undefined, repo: string): string {
+  return repoUrlFor(repo, `/blob/${sha}/${githubPath(file)}${line ? `#L${line}` : ""}`);
+}
+
+export function latestFileUrl(file: string, repo: string): string {
+  return fileUrl(file, "main", undefined, repo);
+}
+
+// Only files in the target repository have public docs pages.
+export function docsPageUrl(file: string, repo: string, profile: RepositoryProfile): string | null {
+  if (normalizeRepo(repo) !== normalizeRepo(profile.targetRepo)) return null;
+  const docsUrl = profile.docsUrl;
+  if (!docsUrl || !file.startsWith("docs/")) return null;
+  const page = file
+    .replace(/^docs\//, "")
+    .replace(/\/index\.mdx?$/, "")
+    .replace(/\.mdx?$/, "");
+  return `${docsUrl}/${page}`;
+}
+
+export function markdownLink(label: string, url: string): string {
+  return `[${label.replaceAll("|", "\\|")}](${url})`;
+}
+
+export function linkedSha(sha: string, repo: string): string {
+  return markdownLink(shortSha(sha), commitUrl(sha, repo));
+}
+
+export function linkedRelease(tag: string, repo: string): string {
+  return markdownLink(tag, releaseUrl(tag, repo));
+}
+
 interface RepositoryLinkDependencies {
   reportRepo: string;
   targetProfile: () => RepositoryProfile;
   targetRepo: () => string;
 }
 
+// Binds the link builders to the active target repository.
 export function createRepositoryLinks({
   reportRepo,
   targetProfile,
   targetRepo,
 }: RepositoryLinkDependencies) {
-  function repoUrlFor(repo: string, path = ""): string {
-    return `https://github.com/${normalizeRepo(repo)}${path}`;
-  }
-
-  function repoUrl(path = ""): string {
-    return repoUrlFor(targetRepo(), path);
-  }
-
   function reportUrl(path = ""): string {
     return `https://github.com/${reportRepo}${path}`;
-  }
-
-  function commitUrl(sha: string, repo = targetRepo()): string {
-    return repoUrlFor(repo, `/commit/${sha}`);
-  }
-
-  function shortSha(sha: string): string {
-    return sha.slice(0, 12);
-  }
-
-  function releaseUrl(tag: string): string {
-    return repoUrl(`/releases/tag/${encodeURIComponent(tag)}`);
-  }
-
-  function itemUrlFor(repo: string, number: number, kind: ItemKind = "issue"): string {
-    return repoUrlFor(repo, `/${kind === "pull_request" ? "pull" : "issues"}/${number}`);
   }
 
   function reportFileUrl(
@@ -133,56 +169,19 @@ export function createRepositoryLinks({
     return reportUrl(`/blob/main/${githubPath(path)}`);
   }
 
-  function githubPath(path: string): string {
-    return path
-      .split("/")
-      .map((segment) => encodeURIComponent(segment))
-      .join("/");
-  }
-
-  function fileUrl(file: string, sha: string, line?: number, repo = targetRepo()): string {
-    return repoUrlFor(repo, `/blob/${sha}/${githubPath(file)}${line ? `#L${line}` : ""}`);
-  }
-
-  function latestFileUrl(file: string, repo = targetRepo()): string {
-    return fileUrl(file, "main", undefined, repo);
-  }
-
-  function docsPageUrl(file: string, repo = targetRepo()): string | null {
-    if (normalizeRepo(repo) !== normalizeRepo(targetRepo())) return null;
-    const docsUrl = targetProfile().docsUrl;
-    if (!docsUrl || !file.startsWith("docs/")) return null;
-    const page = file
-      .replace(/^docs\//, "")
-      .replace(/\/index\.mdx?$/, "")
-      .replace(/\.mdx?$/, "");
-    return `${docsUrl}/${page}`;
-  }
-
-  function markdownLink(label: string, url: string): string {
-    return `[${label.replaceAll("|", "\\|")}](${url})`;
-  }
-
-  function linkedSha(sha: string, repo = targetRepo()): string {
-    return markdownLink(shortSha(sha), commitUrl(sha, repo));
-  }
-
-  function linkedRelease(tag: string): string {
-    return markdownLink(tag, releaseUrl(tag));
-  }
-
   return {
-    commitUrl,
-    docsPageUrl,
-    fileUrl,
+    commitUrl: (sha: string, repo = targetRepo()) => commitUrl(sha, repo),
+    docsPageUrl: (file: string, repo = targetRepo()) => docsPageUrl(file, repo, targetProfile()),
+    fileUrl: (file: string, sha: string, line?: number, repo = targetRepo()) =>
+      fileUrl(file, sha, line, repo),
     githubPath,
     itemUrlFor,
-    latestFileUrl,
-    linkedRelease,
-    linkedSha,
+    latestFileUrl: (file: string, repo = targetRepo()) => latestFileUrl(file, repo),
+    linkedRelease: (tag: string) => linkedRelease(tag, targetRepo()),
+    linkedSha: (sha: string, repo = targetRepo()) => linkedSha(sha, repo),
     markdownLink,
-    releaseUrl,
-    repoUrl,
+    releaseUrl: (tag: string) => releaseUrl(tag, targetRepo()),
+    repoUrl: (path = "") => repoUrlFor(targetRepo(), path),
     repoUrlFor,
     reportFileUrl,
     reportUrl,

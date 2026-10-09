@@ -393,13 +393,11 @@ test("the review report persists the cursor that apply revalidates", () => {
     ...createDashboardPresentation({} as never),
     prSurfaceFilesFromContext: () => [],
     compactPullFilePaths: () => [],
-    confidenceText: String,
     fixedInText: () => "unknown",
     formatTimestamp: String,
     labelJustificationsMarkdown: () => "- none",
     pullHeadShaFromContext: () => "c".repeat(40),
     reviewStructuralPullStateFromContext: () => null,
-    sentence: String,
   } as Parameters<typeof createReportDocumentRendering>[0]);
   const report = document.markdownFor({
     item: item({ kind: "pull_request", number: 42 }),

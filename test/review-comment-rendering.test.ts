@@ -83,13 +83,11 @@ function evidenceReport(
     ...createDashboardPresentation({} as never),
     prSurfaceFilesFromContext: () => [],
     compactPullFilePaths: () => [],
-    confidenceText: String,
     fixedInText: () => "unknown",
     formatTimestamp: String,
     labelJustificationsMarkdown: () => "- none",
     pullHeadShaFromContext: () => "c".repeat(40),
     reviewStructuralPullStateFromContext: () => null,
-    sentence: String,
   } as Parameters<typeof createReportDocumentRendering>[0]);
   return document.markdownFor({
     item: item({ kind: "pull_request", url: "https://github.com/openclaw/openclaw/pull/123" }),

@@ -1,7 +1,6 @@
 import type { createDecisionParser } from "./clawsweeper-decision-parser.js";
 import type { createGitHubContext } from "./clawsweeper-github-context.js";
 import type { LabelMutations } from "./clawsweeper-label-mutations.js";
-import type { createReviewPresentation } from "./clawsweeper-review-presentation.js";
 import type { Item, ReviewStartStatusCommentResult } from "./clawsweeper-types.js";
 import { type ReviewHistoryLedger } from "./review-history.js";
 
@@ -29,7 +28,6 @@ export interface ReviewCommentWorkflowDependencies {
   reviewCommentBodyDigest: (body: string) => string;
   parseGitHubItemRef: ReturnType<typeof createDecisionParser>["parseGitHubItemRef"];
   ensureDir: (path: string) => void;
-  sentence: ReturnType<typeof createReviewPresentation>["sentence"];
   removeIssueLabel: LabelMutations["removeIssueLabel"];
   realBehaviorProofBlocksMerge: (markdown: string) => boolean;
   isClawSweeperOwnedLabel: (label: string) => boolean;

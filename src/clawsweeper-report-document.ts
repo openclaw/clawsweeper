@@ -37,6 +37,13 @@ import {
 import { parseNextStep } from "./clawsweeper-next-step.js";
 import { replaceFrontMatterValue } from "./report-front-matter.js";
 import { normalizeEvidence } from "./clawsweeper-links.js";
+import {
+  confidenceText,
+  priorityLabel,
+  reviewFindingLocation,
+  securityConcernLocation,
+  sentence,
+} from "./clawsweeper-review-presentation.js";
 
 export function localCheckoutAccessForDecision(
   decision: Pick<Decision, "localCheckoutAccess">,
@@ -72,7 +79,6 @@ export function createReportDocumentRendering(
 ) {
   const {
     compactPullFilePaths,
-    confidenceText,
     contextCountText,
     fileUrl,
     fixedInText,
@@ -83,15 +89,11 @@ export function createReportDocumentRendering(
     linkedSha,
     markdownLink,
     prSurfaceFilesFromContext,
-    priorityLabel,
     pullHeadShaFromContext,
     renderReviewContextBudget,
-    reviewFindingLocation,
     reviewStructuralPullStateFromContext,
     reviewTelemetryNumber,
     runtimeReviewText,
-    securityConcernLocation,
-    sentence,
     workStatusForDecision,
   } = dependencies;
 

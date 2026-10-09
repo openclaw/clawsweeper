@@ -52,6 +52,26 @@ import {
 import { pullHeadShaFromReport, reviewSectionValue } from "./clawsweeper-record-metadata.js";
 import { reportRealBehaviorProofPolicy } from "./clawsweeper-proof-policy.js";
 import { pullRequestReviewReadinessFromReport } from "./clawsweeper-report-comment-helpers.js";
+import {
+  closeEvidenceLine,
+  confidenceText,
+  isReportNoneList,
+  likelyOwnerLines,
+  publicFailedReviewReadinessBlock,
+  publicMergeReadinessBlock,
+  publicRankScaleLine,
+  publicReviewScoresBlock,
+  publicReviewTextDiffers,
+  publicReviewTextIsSame,
+  publicRiskBullets,
+  publicSecurityReviewLine,
+  reviewFindingDetailedLine,
+  reviewFindingSummaryLine,
+  securityConcernDetailedLine,
+  securityConcernSummaryLine,
+  sentence,
+  stripListMarker,
+} from "./clawsweeper-review-presentation.js";
 
 const PRODUCT_KIND_TEXT: Record<ProductReviewKind, string> = {
   bug_fix: "Bug fix",
@@ -96,28 +116,16 @@ export function createReportCommentPresentation(
     appendHeadingSection,
     appendPublicSection,
     appendReviewQuestionDetails,
-    closeEvidenceLine,
     closeReviewLineFromReport,
     collapsedDetailsBlock,
-    confidenceText,
-    isReportNoneList,
     labelJustificationsFromPublicReport,
     labelJustificationsMarkdown,
     labelTransitionJustificationsFromPublicReport,
     labelTransitionJustificationsMarkdown,
-    likelyOwnerLines,
     publicBeforeMergeBlock,
     publicChecklistText,
-    publicFailedReviewReadinessBlock,
-    publicMergeReadinessBlock,
     publicMergeRiskLine,
-    publicRankScaleLine,
-    publicReviewScoresBlock,
-    publicReviewTextDiffers,
-    publicReviewTextIsSame,
-    publicRiskBullets,
     publicRootCauseClusterBlock,
-    publicSecurityReviewLine,
     publicSummaryBody,
     renderCloseCommentFromReport,
     renderOpenClawPrSurfaceFromReport,
@@ -127,18 +135,13 @@ export function createReportCommentPresentation(
     regressionAssessmentFromReport,
     regressionProvenanceFromReport,
     reviewAutomationMarkersFromReport,
-    reviewFindingDetailedLine,
-    reviewFindingSummaryLine,
     reviewFreshnessText,
     reviewHistoryForRender,
     reviewMetricsFromReport,
     reviewVersionMarkerFromReport,
     reviewWorkflowCallout,
     reviewWorkflowSummaryLine,
-    securityConcernDetailedLine,
-    securityConcernSummaryLine,
-    sentence,
-    stripListMarker,
+    targetProfile,
   } = dependencies;
 
   function publicInlineText(value: string): string {
@@ -233,6 +236,7 @@ export function createReportCommentPresentation(
     options: ReviewCommentRenderOptions = {},
     precomputedReadiness?: PullRequestReviewReadiness,
   ): string {
+    const profile = targetProfile();
     const isPullRequest = frontMatterValue(markdown, "type") === "pull_request";
     const proofPolicy = reportRealBehaviorProofPolicy(markdown);
     // PR comments state the proof sentence once: in Review scores, or in Before merge
@@ -249,8 +253,8 @@ export function createReportCommentPresentation(
           !publicReviewTextIsSame(entry.detail, proofSummary),
       )
       .slice(0, 6)
-      .map(closeEvidenceLine);
-    const likelyOwners = likelyOwnerLines(reportLikelyOwners(markdown));
+      .map((entry) => closeEvidenceLine(entry, profile));
+    const likelyOwners = likelyOwnerLines(reportLikelyOwners(markdown), profile);
     const reviewFindings = reportReviewFindings(markdown);
     const securityReview = reportSecurityReview(markdown);
     const prRating = reportPrRating(markdown);

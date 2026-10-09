@@ -88,13 +88,11 @@ export function generatedCompatibilityReport(
     ...createDashboardPresentation({} as never),
     prSurfaceFilesFromContext: () => [{ path: "src/db/schema.sql", additions: 1, deletions: 0 }],
     compactPullFilePaths: (file) => [file.filename],
-    confidenceText: String,
     fixedInText: () => "unknown",
     formatTimestamp: String,
     labelJustificationsMarkdown: () => "- none",
     pullHeadShaFromContext: () => "a".repeat(40),
     reviewStructuralPullStateFromContext: () => null,
-    sentence: String,
   } as Parameters<typeof createReportDocumentRendering>[0]);
   const decision = parseDecision(
     closeDecision({

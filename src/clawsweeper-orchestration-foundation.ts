@@ -25,20 +25,14 @@ import {
 import { markdownRepository } from "./clawsweeper-repository-paths.js";
 import { publicTableCell } from "./clawsweeper-report-helpers.js";
 import { reportRealBehaviorProofPolicy } from "./clawsweeper-proof-policy.js";
+import { publicReviewTextDiffers, sentence } from "./clawsweeper-review-presentation.js";
 
 export function createReportOrchestrationFoundation(
   dependencies: CreateReportOrchestrationDependencies &
     Pick<ReturnType<typeof createReportRendering>, "collapsedDetailsBlock">,
 ) {
-  const {
-    collapsedDetailsBlock,
-    markdownLink,
-    publicReviewTextDiffers,
-    repoUrlFor,
-    sentence,
-    targetProfile,
-    targetRepo,
-  } = dependencies;
+  const { collapsedDetailsBlock, markdownLink, repoUrlFor, targetProfile, targetRepo } =
+    dependencies;
 
   function closeIntro(reason: CloseReason): string {
     switch (reason) {

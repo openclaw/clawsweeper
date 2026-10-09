@@ -47,6 +47,7 @@ import {
 } from "./clawsweeper-report-parser.js";
 import { reviewSectionValue } from "./clawsweeper-record-metadata.js";
 import { sectionLineValue } from "./clawsweeper-report-helpers.js";
+import { sentence } from "./clawsweeper-review-presentation.js";
 
 export function createPullRequestCoverageProof(
   dependencies: CreateReportOrchestrationDependencies &
@@ -73,7 +74,6 @@ export function createPullRequestCoverageProof(
     renderPrRatingAssessmentReportSection,
     renderRootCauseClusterAssessmentReportSection,
     runtimeBudgetExceeded,
-    sentence,
     targetRepo,
     timeoutWithinRuntimeBudget,
     unsafeCanonicalPullRequestReason,
