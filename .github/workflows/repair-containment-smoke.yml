@@ -21,6 +21,7 @@ on:
       - "test/repair/containment-preflight.test.ts"
       - "test/repair/process-tree-containment.test.ts"
       - "test/repair/repair-cluster-worker-containment.test.ts"
+      - "test/repair/repair-containment-smoke-workflow.test.ts"
       - "test/repair/target-validation.test.ts"
       - "tsconfig.repair.json"
   pull_request:
@@ -41,6 +42,7 @@ on:
       - "test/repair/containment-preflight.test.ts"
       - "test/repair/process-tree-containment.test.ts"
       - "test/repair/repair-cluster-worker-containment.test.ts"
+      - "test/repair/repair-containment-smoke-workflow.test.ts"
       - "test/repair/target-validation.test.ts"
       - "tsconfig.repair.json"
   workflow_dispatch:
