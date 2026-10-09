@@ -115,7 +115,8 @@ EOF
 
 restore_issue_implementation_job() {
   parse_repair_job_path issue || return 1
-  # The intake renderer owns the issue job format, with the source issue keys.
+  # The intake owns the issue job format. It never gives a restored job more
+  # permissions than the original job.
   node "$(dirname "${BASH_SOURCE[0]}")/../dist/repair/issue-implementation-intake.js" restore-job \
     --target-repo "$PARSED_JOB_REPO" \
     --item-number "$PARSED_JOB_NUMBER" \
@@ -189,7 +190,7 @@ elif [[ "$JOB_PATH" == jobs/*/inbox/issue-*.md ]]; then
     exit 1
   fi
   write_output job_exists 1
-  echo "::notice title=Restored issue implementation job::Job file '$JOB_PATH' was missing from the state checkout; reconstructed it from the job path without the review context."
+  echo "::notice title=Restored issue implementation job::Job file '$JOB_PATH' was missing from the state checkout; restored the last state version, or a job that cannot change code when that version is not available."
 elif restore_self_heal_job; then
   write_output job_exists 1
   echo "::notice title=Restored self-heal repair job::Job file '$JOB_PATH' was missing from the state checkout; reconstructed a non-mutating placeholder from the workflow input."

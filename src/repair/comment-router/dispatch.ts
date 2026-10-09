@@ -297,6 +297,7 @@ export function renderIssueImplementationJob({
   overrideBlockerClass = null,
   overrideAction = null,
   sourceIssueRevision = null,
+  handoffReason = null,
 }: LooseRecord) {
   const clusterId = issueImplementationClusterId(repo, issueNumber);
   const branch = issueImplementationJobBranch(repo, issueNumber);
@@ -313,6 +314,7 @@ export function renderIssueImplementationJob({
   const overrideClass = String(overrideBlockerClass ?? "").trim();
   const hardOverride = override && overrideClass === "hard";
   const overrideActionText = String(overrideAction ?? "").trim();
+  const handoffText = String(handoffReason ?? "").trim();
   const sourceRevision = String(sourceIssueRevision ?? "")
     .trim()
     .toLowerCase();
@@ -395,13 +397,20 @@ existing mechanism, and stop with a concrete blocker if the work expands beyond
 automation-safe scope.
 `
     : "";
+  const handoffOnly = hardOverride || Boolean(handoffText);
   const artifactInstructions = hardOverride
     ? `
 For this hard override, do not emit a fix artifact and do not prepare a code
 branch. Emit a non-mutating result with \`needs_human\` that contains the plan,
 decomposition, or handoff text and the exact hard-blocker evidence.
 `
-    : `
+    : handoffText
+      ? `
+This job cannot change code. ${handoffText} Do not emit a fix artifact and do
+not prepare a code branch. Emit a non-mutating result with \`needs_human\` that
+contains the plan or handoff text.
+`
+      : `
 When code changes are appropriate, emit a fix artifact with
 \`repair_strategy: "new_fix_pr"\`, \`source_prs: []\`, this issue in
 \`linked_refs\`, and validation commands for the touched surface. Keep working
@@ -417,11 +426,11 @@ ${renderJobIntentFrontmatter("implement_issue")}
 allowed_actions:
   - comment
   - label
-${hardOverride ? "" : "  - fix\n  - raise_pr\n"}blocked_actions:
-${hardOverride ? "  - fix\n  - raise_pr\n" : ""}  - close
+${handoffOnly ? "" : "  - fix\n  - raise_pr\n"}blocked_actions:
+${handoffOnly ? "  - fix\n  - raise_pr\n" : ""}  - close
   - merge
 require_human_for:
-${hardOverride ? "  - fix\n  - raise_pr\n" : ""}  - close
+${handoffOnly ? "  - fix\n  - raise_pr\n" : ""}  - close
   - merge
 canonical:
   - ${ref}
@@ -430,7 +439,7 @@ candidates:
 cluster_refs:
   - ${ref}
 allow_instant_close: false
-allow_fix_pr: ${hardOverride ? "false" : "true"}
+allow_fix_pr: ${handoffOnly ? "false" : "true"}
 allow_merge: false
 allow_unmerged_fix_close: false
 allow_post_merge_close: false

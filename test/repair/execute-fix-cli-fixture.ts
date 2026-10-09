@@ -24,6 +24,8 @@ export type ExecuteFixFixtureOptions = {
   clusterId?: string;
   source?: string;
   jobFields?: string[];
+  // Complete job markdown. It replaces the job that the fixture writes.
+  job?: string;
   fixArtifact?: Json;
   // Files in the base commit next to README.md.
   baseFiles?: Record<string, string>;
@@ -137,21 +139,22 @@ export function runExecuteFixFixture(t: TestContext, options: ExecuteFixFixtureO
   const result = path.join(root, "result.json");
   fs.writeFileSync(
     job,
-    [
-      "---",
-      `repo: ${targetRepo}`,
-      `cluster_id: ${clusterId}`,
-      "mode: autonomous",
-      `source: ${options.source ?? "pr_automerge"}`,
-      "allowed_actions: [fix, raise_pr]",
-      "allow_fix_pr: true",
-      "candidates: ['#1']",
-      "canonical: ['#1']",
-      ...(options.jobFields ?? []),
-      "---",
-      "Fixture",
-      "",
-    ].join("\n"),
+    options.job ??
+      [
+        "---",
+        `repo: ${targetRepo}`,
+        `cluster_id: ${clusterId}`,
+        "mode: autonomous",
+        `source: ${options.source ?? "pr_automerge"}`,
+        "allowed_actions: [fix, raise_pr]",
+        "allow_fix_pr: true",
+        "candidates: ['#1']",
+        "canonical: ['#1']",
+        ...(options.jobFields ?? []),
+        "---",
+        "Fixture",
+        "",
+      ].join("\n"),
   );
   fs.writeFileSync(
     result,

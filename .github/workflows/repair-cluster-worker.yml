@@ -268,6 +268,7 @@ jobs:
         env:
           JOB_PATH: ${{ inputs.job }}
           GH_TOKEN: ${{ steps.app_token.outputs.token }}
+          CLAWSWEEPER_STATE_REPO_TOKEN: ${{ steps.state-token.outputs.token }}
         run: scripts/restore-repair-job.sh "$JOB_PATH" "this worker"
 
       - name: Capture execution gates
@@ -359,11 +360,18 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.status_token.outputs.token }}
           CLAWSWEEPER_STATUS_INGEST_TOKEN: ${{ secrets.CLAWSWEEPER_STATUS_INGEST_TOKEN }}
+          JOB_RESTORE_REASON: ${{ steps.check_job.outputs.job_restore_reason }}
         run: |
+          state="Planning"
+          detail="Codex is reading the issue and repository, choosing an implementation, and planning validation."
+          if [ -n "$JOB_RESTORE_REASON" ]; then
+            state="Blocked"
+            detail="$JOB_RESTORE_REASON"
+          fi
           pnpm run repair:policy-run -- "$CLUSTER_JOB_PATH" -- pnpm run repair:issue-implementation-status -- \
             --job "$CLUSTER_JOB_PATH" \
-            --state "Planning" \
-            --detail "Codex is reading the issue and repository, choosing an implementation, and planning validation." \
+            --state "$state" \
+            --detail "$detail" \
             --run-url "$CLUSTER_RUN_URL"
 
       - name: Run worker
@@ -583,6 +591,7 @@ jobs:
         env:
           JOB_PATH: ${{ inputs.job }}
           GH_TOKEN: ${{ steps.target_write_token.outputs.token }}
+          CLAWSWEEPER_STATE_REPO_TOKEN: ${{ steps.state-token.outputs.token }}
         run: scripts/restore-repair-job.sh "$JOB_PATH" "execute"
 
       - name: Recheck execution merge authorization
@@ -681,11 +690,18 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.target_write_token.outputs.token }}
           CLAWSWEEPER_STATUS_INGEST_TOKEN: ${{ secrets.CLAWSWEEPER_STATUS_INGEST_TOKEN }}
+          JOB_RESTORE_REASON: ${{ steps.check_job.outputs.job_restore_reason }}
         run: |
+          state="Building"
+          detail="Codex is editing, validating, and reviewing the implementation before a branch or pull request is published."
+          if [ -n "$JOB_RESTORE_REASON" ]; then
+            state="Blocked"
+            detail="$JOB_RESTORE_REASON"
+          fi
           pnpm run repair:policy-run -- "$CLUSTER_JOB_PATH" -- pnpm run repair:issue-implementation-status -- \
             --job "$CLUSTER_JOB_PATH" \
-            --state "Building" \
-            --detail "Codex is editing, validating, and reviewing the implementation before a branch or pull request is published." \
+            --state "$state" \
+            --detail "$detail" \
             --run-url "$CLUSTER_RUN_URL"
 
       - name: Resolve repair timeout budget
@@ -771,10 +787,11 @@ jobs:
           CLAWSWEEPER_STATUS_INGEST_TOKEN: ${{ secrets.CLAWSWEEPER_STATUS_INGEST_TOKEN }}
           EXECUTE_OUTCOME: ${{ steps.execute_fix.outcome }}
           POST_FLIGHT_OUTCOME: ${{ steps.post_flight.outcome }}
+          JOB_RESTORE_REASON: ${{ steps.check_job.outputs.job_restore_reason }}
         run: |
           set -euo pipefail
           state="Blocked"
-          detail="The automatic implementation worker stopped before all deterministic gates completed. Open the workflow run for the exact blocker."
+          detail="${JOB_RESTORE_REASON:-The automatic implementation worker stopped before all deterministic gates completed. Open the workflow run for the exact blocker.}"
           pr_url=""
           report=""
           post_flight_report=""
