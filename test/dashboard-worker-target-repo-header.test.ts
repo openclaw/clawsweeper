@@ -9,42 +9,94 @@ import {
 } from "./dashboard-worker-harness.ts";
 
 const secret = "test-clawsweeper-webhook-secret";
+// The error that each queue route returns for a decision that it cannot read.
+const invalidDecisionErrors = {
+  enqueue: "invalid_exact_review_item",
+  "branch-authority": "invalid_branch_authority_reservation",
+  "source-authority": "invalid_source_authority_reservation",
+} as const;
 
-for (const route of ["enqueue", "branch-authority", "source-authority"]) {
-  test(`signed ${route} intake rejects a target repository that is not a slug`, async () => {
-    const storage = new MemoryDurableStorage();
-    const queue = new ExactReviewQueue({ storage }, {});
-    // A newline is not a valid header value, so the Worker must stop before it builds headers.
-    const body = JSON.stringify({
-      delivery_id: `invalid-target-repo:${route}`,
-      installation_id: 123,
-      decision: {
-        targetRepo: "openclaw/openclaw\nother/repo",
-        targetBranch: "main",
-        itemNumber: 597,
-        itemKind: "issue",
-        sourceEvent: "issues",
-        sourceAction: "legacy_dispatch",
-        supersedesInProgress: false,
+// Sends a signed intake request through the Worker to a real queue.
+async function signedIntake(route: string, decision: Record<string, unknown>) {
+  const storage = new MemoryDurableStorage();
+  const queue = new ExactReviewQueue(
+    { storage },
+    { hostedTargetPredicate: () => true, hostedPublicTargetProbe: async () => "public" },
+  );
+  const body = JSON.stringify({
+    delivery_id: `target-repo-header:${route}`,
+    installation_id: 123,
+    decision: {
+      // Branch authority resolves the branch, so its decision names none.
+      ...(route === "branch-authority" ? {} : { targetBranch: "main" }),
+      itemNumber: 597,
+      itemKind: "pull_request",
+      sourceEvent: "pull_request",
+      sourceAction: "legacy_dispatch",
+      supersedesInProgress: false,
+      ...decision,
+    },
+  });
+  const response = await worker.fetch(
+    new Request(`https://clawsweeper.openclaw.ai/internal/exact-review/${route}`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-clawsweeper-exact-review-signature": `sha256=${createHmac("sha256", secret).update(body).digest("hex")}`,
       },
+      body,
+    }),
+    { CLAWSWEEPER_WEBHOOK_SECRET: secret, EXACT_REVIEW_QUEUE: new MemoryDurableNamespace(queue) },
+  );
+  const stored = (await storage.get("exact-review-queue")) as
+    | { items: Record<string, unknown> }
+    | undefined;
+  return {
+    status: response.status,
+    body: await response.json(),
+    items: Object.keys(stored?.items ?? {}),
+  };
+}
+
+for (const [route, error] of Object.entries(invalidDecisionErrors)) {
+  // Before the fix, Headers threw on these values and the Worker failed with 500.
+  for (const targetRepo of [
+    "openclaw/openclaw\nother/repo",
+    "openclaw/openclaw\u0000",
+    "openclaw/日本",
+  ]) {
+    test(`signed ${route} intake rejects ${JSON.stringify(targetRepo)} with the queue error`, async () => {
+      assert.deepEqual(await signedIntake(route, { targetRepo }), {
+        status: 400,
+        body: { error },
+        items: [],
+      });
     });
-    const response = await worker.fetch(
-      new Request(`https://clawsweeper.openclaw.ai/internal/exact-review/${route}`, {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-          "x-clawsweeper-exact-review-signature": `sha256=${createHmac("sha256", secret).update(body).digest("hex")}`,
-        },
-        body,
-      }),
-      {
-        CLAWSWEEPER_WEBHOOK_SECRET: secret,
-        EXACT_REVIEW_QUEUE: new MemoryDurableNamespace(queue),
-      },
-    );
-    assert.equal(response.status, 400);
-    assert.deepEqual(await response.json(), { error: "invalid_target_repo" });
-    const stored = (await storage.get("exact-review-queue")) as { items: Record<string, unknown> };
-    assert.deepEqual(stored.items, {});
+  }
+
+  test(`signed ${route} intake keeps the queue error for an empty or missing target repository`, async () => {
+    for (const decision of [{ targetRepo: "" }, { targetRepo: undefined }]) {
+      assert.deepEqual(await signedIntake(route, decision), {
+        status: 400,
+        body: { error },
+        items: [],
+      });
+    }
+  });
+}
+
+// The queue trims the target repository, so a padded slug is accepted as before.
+for (const [route, status, body] of [
+  [
+    "enqueue",
+    202,
+    { ok: true, queued: true, item_key: "openclaw/openclaw#597", superseded_publications: 0 },
+  ],
+  ["branch-authority", 202, { ok: true, branch_authority_pending: true }],
+  ["source-authority", 200, { ok: true, source_authority_seq: 1 }],
+] as const) {
+  test(`signed ${route} intake still accepts a space-padded target repository`, async () => {
+    const result = await signedIntake(route, { targetRepo: " openclaw/openclaw " });
+    assert.deepEqual({ status: result.status, body: result.body }, { status, body });
   });
 }
