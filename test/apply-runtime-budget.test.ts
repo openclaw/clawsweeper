@@ -9,7 +9,7 @@ import {
   symlinkSync,
   writeFileSync,
 } from "node:fs";
-import { dirname, join } from "node:path";
+import { delimiter, dirname, join } from "node:path";
 import test from "node:test";
 
 import { createGitHubRuntime } from "../dist/clawsweeper-github-runtime.js";
@@ -18,6 +18,7 @@ import {
   main,
   referencingMergedPullRequestsForIssueForTest,
 } from "../dist/clawsweeper.js";
+import { writeFakeScanner } from "./agent-input-scan-helpers.ts";
 import {
   canonicalPullRequestClusterForTest,
   implementedCloseReport,
@@ -69,8 +70,9 @@ const { join, resolve } = require("node:path");
 const state = JSON.parse(readFileSync(join(__dirname, "runtime-clock.json"), "utf8"));
 if (process.argv[2] === "apply-decisions" &&
     resolve(process.argv[1] || "") === state.entrypoint) {
-  Date.now = () => state.afterCloseMs !== undefined && existsSync(state.closeCommandLogPath)
-    ? state.afterCloseMs
+  // The apply clock jumps to laterMs once the laterAfterPath marker exists.
+  Date.now = () => state.laterMs !== undefined && existsSync(state.laterAfterPath)
+    ? state.laterMs
     : state.startedAtMs;
   Atomics.wait = (_array, _index, _value, milliseconds) => {
     appendFileSync(state.sleepTracePath, JSON.stringify({ event: "wait", milliseconds }) + "\\n");
@@ -591,6 +593,105 @@ test("apply-decisions yields before closing when its post-close delay cannot fit
   }
 });
 
+test("coverage proof timeout uses the runtime left after linked PR hydration", () => {
+  const fixture = runtimeBudgetFixture(729);
+  const maxRuntimeMs = 600_000;
+  const hydratedPath = join(fixture.root, "linked-pull-hydrated");
+  const clockHookPath = join(fixture.root, "runtime-clock.cjs");
+  const binDir = join(fixture.root, "bin");
+  const startedAtMs = Date.now();
+  const original = {
+    NODE_OPTIONS: process.env.NODE_OPTIONS,
+    CODEX_BIN: process.env.CODEX_BIN,
+    PATH: process.env.PATH,
+  };
+  const synced = reportWithSyncedReviewComment(
+    lowSignalCloseReport({
+      number: 729,
+      title: "Provider route fallback",
+      close_reason: "duplicate_or_superseded",
+      root_cause_cluster: canonicalPullRequestClusterForTest(
+        "https://github.com/openclaw/openclaw/pull/400",
+      ),
+    }).replace(
+      "Closing this PR because the branch is not a useful landing base.",
+      "Closing this PR as superseded by https://github.com/openclaw/openclaw/pull/400.",
+    ),
+    729,
+    "duplicate_or_superseded",
+  );
+  writeFileSync(join(fixture.itemsDir, "729.md"), synced.report, "utf8");
+  // The covering PR issue read in proof hydration uses all runtime except the last 4 seconds.
+  writeApplyRuntimeClock(clockHookPath, {
+    startedAtMs,
+    laterMs: startedAtMs + maxRuntimeMs - 4_000,
+    laterAfterPath: hydratedPath,
+    sleepTracePath: join(fixture.root, "sleep-trace.jsonl"),
+  });
+  process.env.NODE_OPTIONS = [original.NODE_OPTIONS, `--require=${JSON.stringify(clockHookPath)}`]
+    .filter(Boolean)
+    .join(" ");
+  // The proof model hangs, so only its timeout can end it.
+  writeFakeScanner(binDir);
+  writeFileSync(
+    join(binDir, "codex"),
+    "#!/usr/bin/env node\nprocess.stdin.resume();\nsetTimeout(() => process.exit(1), 20_000);\n",
+    { mode: 0o755 },
+  );
+  process.env.CODEX_BIN = join(binDir, "codex");
+  process.env.PATH = `${binDir}${delimiter}${original.PATH ?? ""}`;
+  try {
+    withMockGh(
+      fixture.root,
+      `if (process.argv.slice(2).join(" ") === "api repos/openclaw/openclaw/issues/400") require("node:fs").writeFileSync(${JSON.stringify(hydratedPath)}, "");\n${promotionGhMock(
+        {
+          number: 729,
+          title: "Provider route fallback",
+          comment: synced.comment,
+          linkedPulls: {
+            400: {
+              number: 400,
+              title: "Provider cleanup",
+              html_url: "https://github.com/openclaw/openclaw/pull/400",
+              state: "closed",
+              merged_at: "2026-05-02T00:00:00Z",
+              updated_at: "2026-05-01T00:00:00Z",
+              body: "Includes the fallback route behavior from PR 729.",
+              comments: [],
+              labels: [],
+            },
+          },
+        },
+      )}`,
+      () => {
+        runApplyDecisionsForTest({
+          ...fixture,
+          targetRepo: "openclaw/openclaw",
+          extraArgs: [
+            "--apply-kind",
+            "all",
+            "--max-runtime-ms",
+            String(maxRuntimeMs),
+            "--cursor-trace",
+            fixture.cursorTracePath,
+          ],
+        });
+      },
+    );
+
+    const report = JSON.parse(readFileSync(fixture.reportPath, "utf8"));
+    assert.equal(report[0]?.number, 729);
+    assert.equal(report[0]?.action, "retry_pr_close_coverage_proof");
+    assert.match(report[0]?.reason ?? "", /Codex process timed out after 4000ms/);
+  } finally {
+    for (const [key, value] of Object.entries(original)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+    rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
+
 test("apply-decisions records a successful close before yielding after it", () => {
   const fixture = runtimeBudgetFixture(727);
   const maxRuntimeMs = 25_000;
@@ -620,8 +721,8 @@ test("apply-decisions records a successful close before yielding after it", () =
   writeFileSync(join(fixture.itemsDir, "727.md"), synced.report, "utf8");
   writeApplyRuntimeClock(clockHookPath, {
     startedAtMs,
-    afterCloseMs: startedAtMs + maxRuntimeMs - closeDelayMs,
-    closeCommandLogPath,
+    laterMs: startedAtMs + maxRuntimeMs - closeDelayMs,
+    laterAfterPath: closeCommandLogPath,
     sleepTracePath,
   });
   process.env.NODE_OPTIONS = [originalNodeOptions, `--require=${JSON.stringify(clockHookPath)}`]

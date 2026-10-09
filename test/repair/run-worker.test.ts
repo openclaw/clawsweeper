@@ -33,7 +33,7 @@ test("repair output schema keeps every strict object property required", () => {
   visit(schema, "schema");
 });
 
-for (const admission of ["clean", "invalid-output", "dry-run"])
+for (const admission of ["clean", "invalid-output", "dry-run", "no-result", "timeout"])
   test(`run-worker ${admission} preserves the target and prompt artifact contract`, () => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-run-worker-"));
     const fakeBin = path.join(tmp, "bin");
@@ -85,6 +85,8 @@ ${admission === "invalid-output" ? "process.exit(183);" : admission === "dry-run
         "fs.writeFileSync(process.env.FAKE_CODEX_CWD_FILE, process.cwd());",
         "fs.writeFileSync(process.env.FAKE_CODEX_ARGS_FILE, JSON.stringify(process.argv.slice(2)));",
         "if (process.env.CLAWSWEEPER_INTERNAL_MODEL) process.exit(9);",
+        "if (process.env.FAKE_CODEX_MODE === 'no-result') return;",
+        "if (process.env.FAKE_CODEX_MODE === 'timeout') return setInterval(() => {}, 1000);",
         "const outputIndex = process.argv.indexOf('--output-last-message');",
         "const outputPath = process.argv[outputIndex + 1];",
         "const result = {",
@@ -148,9 +150,15 @@ ${admission === "invalid-output" ? "process.exit(183);" : admission === "dry-run
               CLAWSWEEPER_TARGET_CHECKOUT: targetCheckout,
               FAKE_CODEX_CWD_FILE: cwdFile,
               FAKE_CODEX_ARGS_FILE: argsFile,
+              FAKE_CODEX_MODE: admission,
               CLAWSWEEPER_INTERNAL_MODEL: "secret-model-for-test",
               CLAWSWEEPER_CODEX_STDIO_MAX_BUFFER_MB: "1",
-              CLAWSWEEPER_CODEX_PLANNER_SANDBOX: "danger-full-access",
+              // The no-result run keeps the default planner sandbox.
+              ...(admission === "no-result"
+                ? {}
+                : { CLAWSWEEPER_CODEX_PLANNER_SANDBOX: "danger-full-access" }),
+              // The worker must kill a real hung child process, so this case needs real time.
+              ...(admission === "timeout" ? { CLAWSWEEPER_CODEX_TIMEOUT_MS: "3000" } : {}),
               CLAWSWEEPER_STEERABLE_CODEX: "0",
               CODEX_BIN: path.join(fakeBin, "codex"),
               GH_BIN: process.execPath,
@@ -161,6 +169,7 @@ ${admission === "invalid-output" ? "process.exit(183);" : admission === "dry-run
         );
       if (admission === "invalid-output")
         assert.throws(run, /Agent input scan refused: scanner_failed/);
+      else if (admission === "no-result" || admission === "timeout") assert.throws(run);
       else run();
       assert.equal(fs.readFileSync(jobPath, "utf8"), originalJob);
       const runDirs = fs.globSync(
@@ -187,6 +196,21 @@ ${admission === "invalid-output" ? "process.exit(183);" : admission === "dry-run
       assert.equal(diagnosticPrompt, fs.readFileSync(inputFile, "utf8"));
       assert.equal(fs.readFileSync(cwdFile, "utf8"), fs.realpathSync(targetCheckout));
       const args = JSON.parse(fs.readFileSync(argsFile, "utf8"));
+      if (admission === "no-result" || admission === "timeout") {
+        const blocked = JSON.parse(fs.readFileSync(path.join(runDir, "result.json"), "utf8"));
+        assert.equal(blocked.status, "blocked");
+        assert.equal(
+          blocked.summary,
+          admission === "timeout"
+            ? "Codex worker timed out after 3000ms"
+            : "Codex worker completed without a structured result.json artifact.",
+        );
+        assert.equal(
+          args[args.indexOf("--sandbox") + 1],
+          admission === "no-result" ? "read-only" : "danger-full-access",
+        );
+        return;
+      }
       assert.deepEqual(args, [
         "exec",
         "--cd",

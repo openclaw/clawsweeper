@@ -1,6 +1,7 @@
 // Deliberate structural guards. Each guard keeps a safety boundary that a behavior test cannot
 // reach (workflow YAML or a forbidden raw API). Keep each guard small and give its reason.
 import assert from "node:assert/strict";
+import { globSync, readdirSync } from "node:fs";
 import test from "node:test";
 import { parse as parseYaml } from "yaml";
 
@@ -16,7 +17,10 @@ type Step = {
   with?: Record<string, string>;
 };
 type Workflow = {
-  jobs: Record<string, { steps?: Step[] }>;
+  env?: Record<string, string>;
+  concurrency?: { group: string; "cancel-in-progress": boolean };
+  on: { workflow_dispatch?: { inputs: Record<string, { default?: string }> } };
+  jobs: Record<string, { if?: string; env?: Record<string, string>; steps?: Step[] }>;
 };
 
 function workflow(name: string): Workflow {
@@ -116,4 +120,171 @@ test("sweep workflow keeps the product-direction close gate off by default", () 
       "${{ vars.CLAWSWEEPER_UNCONFIRMED_PRODUCT_DIRECTION_CLOSE_ENABLED || 'false' }}",
     );
   }
+});
+
+// clawsweeper.test.ts workflow and source guards
+
+// Duplicate deliveries of one comment cancel each other; other comments never do.
+test("spam comment intake cancels only duplicate deliveries of the same comment", () => {
+  const concurrency = workflow("spam-comment-intake.yml").concurrency;
+  assert.equal(concurrency?.["cancel-in-progress"], true);
+  for (const key of ["comment_id", "review_comment_id", "activity.comment.id"]) {
+    assert.ok(concurrency?.group.includes(`client_payload.${key}`), key);
+  }
+});
+
+// Exact spam scans run per comment and never cancel one another.
+test("spam scanner exact dispatches never cancel other scans", () => {
+  const concurrency = workflow("spam-scanner.yml").concurrency;
+  assert.equal(concurrency?.["cancel-in-progress"], false);
+  assert.ok(concurrency?.group.includes("spam-scanner-{0}-issue-comment-{1}"));
+  assert.ok(concurrency?.group.includes("spam-scanner-{0}-review-comment-{1}"));
+});
+
+// A requeue dispatch needs a durable ledger, and session reports follow the dispatch outcome.
+test("repair worker requeue dispatch waits for its durable ledger", () => {
+  const all = steps(workflow("repair-cluster-worker.yml"));
+  const dispatch = all.find((step) => step.id === "requeue_dispatch");
+  assert.match(dispatch?.if ?? "", /steps\.repair-requeue-ledger\.outcome == 'success'/);
+  const failure = all.find((step) => step.name === "Record work failure");
+  assert.match(failure?.if ?? "", /steps\.requeue_dispatch\.outcome != 'success'/);
+});
+
+// Agent CLIs install exact releases, never a moving tag; OpenClaw source builds stay opt-in.
+test("agent CLI setup actions install exact pinned releases", () => {
+  const exact = /^\d+\.\d+\.\d+$/;
+  for (const [action, inputs] of [
+    ["setup-codex", ["codex-version", "proxy-version"]],
+    ["setup-openclaw", ["openclaw-version"]],
+  ] as const) {
+    const document = parseYaml(readText(`.github/actions/${action}/action.yml`)) as {
+      inputs: Record<string, { default?: string }>;
+      runs: { steps: Step[] };
+    };
+    for (const input of inputs) assert.match(document.inputs[input]?.default ?? "", exact, input);
+    for (const step of document.runs.steps) assert.doesNotMatch(step.run ?? "", /@latest/);
+    if (action === "setup-openclaw") {
+      assert.equal(document.inputs["openclaw-source-ref"]?.default, "");
+      for (const step of document.runs.steps) {
+        assert.match(step.if ?? "", /env\.CLAWSWEEPER_RUNNER == 'openclaw'/);
+      }
+    }
+  }
+});
+
+// Model credentials stay in step env, so setup steps and other steps never inherit them.
+test("workflows never expose model credentials at workflow or job scope", () => {
+  for (const name of readdirSync(".github/workflows").filter((file) => file.endsWith(".yml"))) {
+    const document = workflow(name);
+    for (const env of [document.env, ...Object.values(document.jobs).map((job) => job.env)]) {
+      for (const secret of ["OPENAI_API_KEY", "CLAWSWEEPER_INTERNAL_MODEL"]) {
+        assert.equal(Object.hasOwn(env ?? {}, secret), false, `${name}: ${secret}`);
+      }
+    }
+  }
+});
+
+// Repair planning stays read-only unless an operator picks the trusted-runner fallback.
+test("repair worker planner sandbox defaults to read-only", () => {
+  const input = workflow("repair-cluster-worker.yml").on.workflow_dispatch?.inputs.planner_sandbox;
+  assert.equal(input?.default, "read-only");
+});
+
+// Scheduled cluster intake is gated at job level, before any credential is created.
+test("scheduled cluster intake is gated before it creates credentials", () => {
+  const intake = workflow("repair-cluster-intake.yml").jobs.intake;
+  assert.equal(
+    intake?.if,
+    "${{ github.event_name != 'schedule' || vars.CLAWSWEEPER_FEATURE_CLUSTER_REPAIR_ENABLED == '1' }}",
+  );
+});
+
+// Cluster intake dispatches workers only through the durable intake publisher.
+test("cluster intake never dispatches workers before durable acceptance", () => {
+  for (const step of steps(workflow("repair-cluster-intake.yml"))) {
+    assert.doesNotMatch(step.run ?? "", /repair:dispatch\b|state-materializer\.yml/, step.name);
+  }
+});
+
+// A self-heal worker can hydrate its exact-head job only after the job is published.
+test("conflict self-heal publishes jobs before it dispatches workers", () => {
+  const source = readText("src/repair/conflict-self-heal.ts");
+  const publish = source.indexOf("publishSelfHealJobs();");
+  assert.ok(publish >= 0);
+  assert.ok(source.indexOf("dispatchRepair(candidate);") > publish);
+});
+
+// Terminal acknowledgements write comments and labels only, never repository content.
+test("terminal finalization target token cannot write repository content", () => {
+  const tokens = workflow("sweep.yml").jobs["event-review-terminal-finalization"]?.steps?.filter(
+    (step) => step.id === "target-write-token",
+  );
+  assert.equal(tokens?.length, 1);
+  assert.notEqual(tokens?.[0]?.with?.["permission-contents"], "write");
+});
+
+// Automatic failed-review recovery and record-only manual reviews publish review comments only.
+test("automatic retry publication remains review-only", () => {
+  const reviewOnly = steps(workflow("sweep.yml")).find(
+    (step) => step.id === "prepare-direct-exact-review-publication",
+  )?.env?.REVIEW_ONLY;
+  assert.equal(typeof reviewOnly, "string");
+  for (const [sourceAction, publicationPolicy, expected] of [
+    ["failed_review_shard_recovery", "", "true"],
+    ["manual_explicit_review", "record_comment_only", "true"],
+    ["command_proof_result", "", "false"],
+    ["opened", "", "false"],
+    ["source_drift_requeue", "", "false"],
+  ]) {
+    const expression = reviewOnly!
+      .replace(/^\$\{\{\s*|\s*\}\}$/g, "")
+      .replace(
+        "fromJSON(steps.claim-exact-review-queue.outputs.decision).sourceAction",
+        JSON.stringify(sourceAction),
+      )
+      .replace(
+        "fromJSON(steps.claim-exact-review-queue.outputs.decision).publicationPolicy",
+        JSON.stringify(publicationPolicy),
+      );
+    const contains = (values: string[], value: string) => values.includes(value);
+    assert.equal(
+      Function("contains", "fromJSON", `return (${expression});`)(contains, JSON.parse),
+      expected,
+      sourceAction,
+    );
+  }
+});
+
+// Failed-review retries plan only until an operator enables live dispatch.
+test("failed-review retries default to dry-run", () => {
+  const retry = workflow("sweep.yml").jobs["retry-failed-reviews"]?.steps?.find(
+    (step) => step.env?.DRY_RUN !== undefined,
+  );
+  assert.equal(
+    retry?.env?.DRY_RUN,
+    "${{ vars.CLAWSWEEPER_FAILED_REVIEW_RETRY_ENABLED == '1' && 'false' || 'true' }}",
+  );
+});
+
+// Status publication names its target repository, so it never writes another repository.
+test("sweep status writes are scoped to the target repository", () => {
+  const statusSteps = steps(workflow("sweep.yml")).filter((step) =>
+    step.run?.includes("pnpm run status --"),
+  );
+  assert.ok(statusSteps.length > 0);
+  for (const step of statusSteps) assert.match(step.run ?? "", /--target-repo /, step.name);
+});
+
+// execute-fix-artifact-source.test.ts guards
+
+// A direct Codex launch skips the agent runner sandbox, input scan, timeout and file capture.
+// This guard also replaces the clawsweeper.test.ts review-surface check.
+test("production code launches Codex only through the agent runner", () => {
+  const directLaunch = /\b(?:spawn|spawnSync|execFile|execFileSync)\(\s*["'`]codex["'`]/;
+  const offenders = globSync("src/**/*.ts").filter((file) => {
+    const source = readText(file);
+    const runnerFile = file === "src/agent-runner.ts" || file === "src/codex-process.ts";
+    return directLaunch.test(source) || (!runnerFile && /\brunCodexProcess\b/.test(source));
+  });
+  assert.deepEqual(offenders, []);
 });

@@ -119,6 +119,9 @@ function sourceFreshness(options: {
   existingReviewComment?: Comment;
   // Non-automation comment, review comment, or timeline event after the review snapshot.
   nonAutomationActivityAfterSnapshot?: boolean;
+  // The activity read is truncated and has no complete hydration.
+  truncatedActivity?: boolean;
+  labelSyncRecorded?: boolean;
   timeline?: { event: string; actor: string; createdAt: string; label?: string }[];
 }) {
   const record = (value: unknown) =>
@@ -136,14 +139,20 @@ function sourceFreshness(options: {
       commentBody: (comment: unknown) => record(comment).body as string | undefined,
       commentId: (comment: unknown) => record(comment).id as number | undefined,
       commentUpdatedAt: (comment: unknown) => record(comment).updated_at as string | undefined,
-      contextHasNonAutomationActivityAfter: () =>
-        options.nonAutomationActivityAfterSnapshot ?? false,
+      // Like the real dependency, truncation counts as activity unless the caller opts out.
+      contextHasNonAutomationActivityAfter: (
+        _context: unknown,
+        _afterMs: number,
+        activity?: { truncationCountsAsActivity?: boolean },
+      ) =>
+        options.nonAutomationActivityAfterSnapshot ??
+        (options.truncatedActivity === true && (activity?.truncationCountsAsActivity ?? true)),
       fetchIssueReviewComments: () => {
         throw new Error("acknowledgement witness must reuse the apply comment read");
       },
       freshPullRequestReviewHead: () => true,
       itemSnapshotHash: () => "snapshot",
-      recordedLabelSyncCoversUpdate: () => false,
+      recordedLabelSyncCoversUpdate: () => options.labelSyncRecorded ?? false,
       reviewStartLeaseOwner: () => null,
     } as never,
     {
@@ -239,6 +248,14 @@ test("acknowledgement edit cannot mask other activity after the review snapshot"
     assert.equal(freshness.automationOnlyUpdate, false, name);
     assert.equal(freshness.reviewedSourceFresh(), false, name);
   }
+});
+
+test("recorded label sync cannot hide activity behind truncated hydration", () => {
+  const labelSync = { comments: [], completeIdentity: false, labelSyncRecorded: true };
+  assert.equal(sourceFreshness(labelSync).automationOnlyUpdate, true);
+  const truncated = sourceFreshness({ ...labelSync, truncatedActivity: true });
+  assert.equal(truncated.automationOnlyUpdate, false);
+  assert.equal(truncated.reviewedSourceFresh(), false);
 });
 
 test("released review lease after the generation's durable sync is not source drift", () => {
