@@ -138,14 +138,18 @@ test("metadata audit enforces its global record bound", async () => {
 });
 
 test("report metadata audit workflow is dispatch-only and read-only", () => {
-  const source = readFileSync(".github/workflows/report-metadata-audit.yml", "utf8");
-  const workflow = parse(source);
+  const workflow = parse(readFileSync(".github/workflows/report-metadata-audit.yml", "utf8"));
   assert.deepEqual(Object.keys(workflow.on), ["workflow_dispatch"]);
   assert.deepEqual(workflow.permissions, { contents: "read" });
-  assert.match(source, /actions\/checkout@v7/);
-  assert.match(source, /\.\/\.github\/actions\/setup-pnpm/);
-  assert.match(source, /CLAWSWEEPER_WEBHOOK_SECRET/);
-  assert.match(source, /CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL/);
-  assert.match(source, /actions\/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a/);
-  assert.doesNotMatch(source, /(?:permissions:[\s\S]*?)(?:write|id-token)/);
+  for (const job of Object.values(workflow.jobs) as Array<{
+    permissions?: unknown;
+    steps: Array<{ uses?: string }>;
+  }>) {
+    assert.equal(job.permissions, undefined);
+    assert.ok(
+      job.steps.some(
+        (step) => step.uses === "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
+      ),
+    );
+  }
 });

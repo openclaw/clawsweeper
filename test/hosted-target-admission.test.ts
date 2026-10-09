@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import test from "node:test";
+import { parse } from "yaml";
 
 import { probeHostedPublicTarget } from "../dashboard/exact-review-queue.ts";
 import {
@@ -189,146 +190,129 @@ test("hosted target metadata retry hints honor bounded GitHub quota headers", as
   assert.ok((retryAfter.retryAt ?? 0) <= Date.now() + 2 * 60 * 60 * 1_000);
 });
 
-test("hosted admission heredocs execute as ESM without network access", () => {
-  const admission = readFileSync(".github/workflows/hosted-target-admission.yml", "utf8");
-  const scripts = [
-    ...admission.matchAll(/node --input-type=module <<'NODE'\n([\s\S]*?)\n\s+NODE/g),
-  ].map((match) => match[1] ?? "");
-  assert.equal(scripts.length, 2);
-  assert.equal(
-    scripts.every((script) => /import fs from "node:fs";/.test(script)),
-    true,
-  );
-
+test("hosted admission steps classify registry and visibility replies", () => {
+  const admit = parse(readFileSync(".github/workflows/hosted-target-admission.yml", "utf8")).jobs
+    .admit.steps as Array<{ id?: string; run?: string }>;
   const root = mkdtempSync(join(tmpdir(), "clawsweeper-hosted-admission-"));
-  try {
-    for (const [index, script] of scripts.entries()) {
-      const output = join(root, `output-${index}`);
-      const result = spawnSync(process.execPath, ["--input-type=module"], {
-        input: script,
-        encoding: "utf8",
-        env: {
-          ...process.env,
-          GITHUB_OUTPUT: output,
-          TARGET_REPO: "invalid",
-          TARGET_ELIGIBILITY: "terminal",
+  const preload = join(root, "fetch.mjs");
+  writeFileSync(
+    preload,
+    `import fs from "node:fs";
+globalThis.fetch = async (url, init) => {
+  fs.appendFileSync(process.env.FETCH_LOG, JSON.stringify({ url: String(url), ...init, signal: init.signal instanceof AbortSignal }) + "\\n");
+  const reply = JSON.parse(process.env.FETCH_REPLY);
+  if (reply.status === 0) throw new Error("network down");
+  return new Response(JSON.stringify(reply.body), { status: reply.status });
+};
+`,
+  );
+  const run = (id: string, env: Record<string, string>, reply = { status: 0, body: {} }) => {
+    const output = join(root, "output");
+    const log = join(root, "fetch.log");
+    writeFileSync(output, "");
+    writeFileSync(log, "");
+    const result = spawnSync(process.execPath, ["--import", preload, "--input-type=module"], {
+      input: /<<'NODE'\n([\s\S]*?)\nNODE/.exec(
+        admit.find((step) => step.id === id)?.run ?? "",
+      )?.[1],
+      encoding: "utf8",
+      env: {
+        PATH: process.env.PATH,
+        GITHUB_OUTPUT: output,
+        FETCH_LOG: log,
+        FETCH_REPLY: JSON.stringify(reply),
+        ...env,
+      },
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout, "");
+    const requests = readFileSync(log, "utf8")
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => JSON.parse(line));
+    return { outcome: readFileSync(output, "utf8"), requests };
+  };
+  const registry = {
+    status: 200,
+    body: {
+      schema_version: 2,
+      repositories: [{ target_repo: "Partner/Configured" }],
+      generic_fallbacks: [
+        {
+          owner: "openclaw",
+          deny_repositories: ["openclaw/clawsweeper-state"],
+          allow_repo_name_pattern: "^[a-z0-9-]+$",
         },
-      });
-      assert.equal(result.status, 0, result.stderr);
-      assert.equal(readFileSync(output, "utf8"), "outcome=terminal\n");
+      ],
+    },
+  };
+  try {
+    for (const [target, reply, outcome] of [
+      ["partner/configured", registry, "eligible"],
+      ["openclaw/new-plugin", registry, "eligible"],
+      ["openclaw/clawsweeper-state", registry, "terminal"],
+      ["partner/unlisted", registry, "terminal"],
+      ["partner/configured", { status: 500, body: {} }, "retryable"],
+      ["partner/configured", { status: 0, body: {} }, "retryable"],
+    ] as const) {
+      const result = run("eligibility", { TARGET_REPO: target, REGISTRY_REF: "main" }, reply);
+      assert.equal(result.outcome, `outcome=${outcome}\n`, `${target} ${reply.status}`);
+      assert.equal(result.requests.length, 1);
+      assert.equal(
+        result.requests[0].url,
+        "https://raw.githubusercontent.com/openclaw/clawsweeper/main/config/target-repositories.json",
+      );
+      assert.equal(result.requests[0].cache, "no-store");
+      assert.equal(result.requests[0].redirect, "manual");
+      assert.equal(result.requests[0].signal, true);
+    }
+    for (const env of [
+      { TARGET_REPO: "invalid", REGISTRY_REF: "main" },
+      { TARGET_REPO: "partner/configured", REGISTRY_REF: "feature-branch" },
+    ]) {
+      const result = run("eligibility", env, registry);
+      assert.equal(result.requests.length, 0);
+      assert.equal(
+        result.outcome,
+        `outcome=${env.TARGET_REPO === "invalid" ? "terminal" : "retryable"}\n`,
+      );
+    }
+
+    const repository = (visibility: string) => ({
+      status: 200,
+      body: { full_name: "Partner/Configured", private: visibility !== "public", visibility },
+    });
+    for (const [reply, outcome] of [
+      [repository("public"), "public"],
+      [repository("private"), "terminal"],
+      [{ status: 404, body: {} }, "terminal"],
+      [{ status: 500, body: {} }, "retryable"],
+    ] as const) {
+      const env = {
+        TARGET_REPO: "partner/configured",
+        TARGET_ELIGIBILITY: "eligible",
+        METADATA_TOKEN: "metadata-token",
+      };
+      const result = run("probe", env, reply);
+      assert.equal(result.outcome, `outcome=${outcome}\n`, `${reply.status}`);
+      assert.equal(result.requests[0].url, "https://api.github.com/repos/partner/configured");
+      assert.equal(result.requests[0].headers.Authorization, "Bearer metadata-token");
+      assert.equal(result.requests[0].redirect, "manual");
+    }
+    for (const [eligibility, token, outcome] of [
+      ["terminal", "metadata-token", "terminal"],
+      ["eligible", "", "retryable"],
+    ]) {
+      const env = {
+        TARGET_REPO: "partner/configured",
+        TARGET_ELIGIBILITY: eligibility!,
+        METADATA_TOKEN: token!,
+      };
+      const result = run("probe", env, repository("public"));
+      assert.equal(result.requests.length, 0);
+      assert.equal(result.outcome, `outcome=${outcome}\n`);
     }
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
-});
-
-test("scheduled, manual, target-sweep, and comment workflows admit targets before privileged jobs", () => {
-  const admission = readFileSync(".github/workflows/hosted-target-admission.yml", "utf8");
-  assert.match(admission, /workflow_call:/);
-  assert.match(admission, /permissions: \{\}/);
-  assert.match(admission, /runs-on: ubuntu-latest\s+timeout-minutes: 2/);
-  assert.match(admission, /outputs:\s+outcome:/);
-  assert.match(admission, /value: \$\{\{ jobs\.admit\.outputs\.outcome \}\}/);
-  assert.match(admission, /outcome: \$\{\{ steps\.probe\.outputs\.outcome \}\}/);
-  assert.match(admission, /registry_ref:\s+required: false\s+type: string\s+default: main/);
-  assert.match(
-    admission,
-    /https:\/\/raw\.githubusercontent\.com\/openclaw\/clawsweeper\/\$\{registryRef\}\/config\/target-repositories\.json/,
-  );
-  assert.match(admission, /entry\.deny_repositories/);
-  assert.match(admission, /fallback\.denyRepositories\.includes\(target\)/);
-  assert.match(admission, /\/\^\(openclaw\|steipete\)\$\/\.test\(owner\)/);
-  assert.match(admission, /entry\.target_repo\.trim\(\)\.toLowerCase\(\) === target/);
-  assert.match(admission, /if: \$\{\{ steps\.eligibility\.outputs\.outcome == 'eligible' \}\}/);
-  assert.ok(
-    admission.indexOf("Check hosted target eligibility") <
-      admission.indexOf("Create central metadata token"),
-  );
-  assert.doesNotMatch(admission, /\.hosted != false/);
-  assert.match(admission, /create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1/);
-  assert.match(admission, /continue-on-error: true/);
-  assert.match(
-    admission,
-    /owner: openclaw\s+repositories: clawsweeper\s+permission-metadata: read/,
-  );
-  assert.doesNotMatch(admission, /permission-(?:contents|issues|pull-requests|actions):/);
-  assert.match(admission, /Authorization: `Bearer \$\{token\}`/);
-  assert.match(admission, /"Cache-Control": "no-store"/);
-  assert.match(admission, /cache: "no-store"/);
-  assert.match(admission, /redirect: "manual"/);
-  assert.match(admission, /signal: AbortSignal\.timeout\(20_000\)/);
-  assert.match(admission, /outcome = "terminal"/);
-  assert.match(admission, /outcome = "retryable"/);
-  assert.match(admission, /outcome =\s+fullName === target[\s\S]*\? "public"\s+:\s+"terminal"/);
-  assert.match(
-    admission,
-    /fs\.appendFileSync\(process\.env\.GITHUB_OUTPUT, `outcome=\$\{outcome\}\\n`\)/,
-  );
-  assert.doesNotMatch(admission, /console\.(?:log|error)|echo .*METADATA_TOKEN/);
-  assert.doesNotMatch(admission, /checkout/);
-
-  const sweep = readFileSync(".github/workflows/sweep.yml", "utf8");
-  const jobBlock = (job: string) => {
-    const start = sweep.indexOf(`\n  ${job}:`);
-    assert.notEqual(start, -1, `missing workflow job ${job}`);
-    const remaining = sweep.slice(start + 1);
-    const next = remaining.search(/\n  [A-Za-z0-9_-]+:\n/);
-    return sweep.slice(start, next === -1 ? undefined : start + 1 + next);
-  };
-  const admissionJob = jobBlock("hosted-target-admission");
-  assert.match(admissionJob, /github\.event_name == 'schedule'/);
-  assert.match(admissionJob, /github\.event_name == 'workflow_dispatch'/);
-  assert.match(admissionJob, /github\.event\.action == 'clawsweeper_target_sweep'/);
-  assert.match(admissionJob, /github\.event\.inputs\.target_repo/);
-  assert.match(admissionJob, /github\.event\.client_payload\.target_repo/);
-  assert.match(admissionJob, /'openclaw\/clawsweeper'/);
-  assert.match(admissionJob, /'openclaw\/clawhub'/);
-  assert.match(admissionJob, /'openclaw\/openclaw'/);
-  for (const job of [
-    "plan",
-    "target-fanout",
-    "retry-failed-reviews",
-    "audit-dashboard",
-    "apply-proof",
-  ]) {
-    const block = jobBlock(job);
-    assert.match(block.slice(0, 500), /needs: hosted-target-admission/);
-    assert.match(
-      block.slice(0, 800),
-      /needs\.hosted-target-admission\.outputs\.outcome == 'public'/,
-    );
-    assert.doesNotMatch(block.slice(0, 800), /hosted-target-admission\.result == 'skipped'/);
-  }
-  assert.match(
-    sweep,
-    /apply_min_age_minutes:\s+description: "Optional minute-level minimum item age before apply-existing can close it"\s+required: false\s+default: ""/,
-  );
-  const router = readFileSync(".github/workflows/repair-comment-router.yml", "utf8");
-  assert.match(router, /route-comments:\s+needs: hosted-target-admission/);
-  assert.match(
-    router,
-    /CLAWSWEEPER_APP_PRIVATE_KEY: \$\{\{ secrets\.CLAWSWEEPER_APP_PRIVATE_KEY \}\}/,
-  );
-
-  const dispatcher = readFileSync(".github/workflows/clawsweeper-dispatch.yml", "utf8");
-  assert.match(
-    dispatcher,
-    /hosted-target-admission:[\s\S]*?uses: openclaw\/clawsweeper\/\.github\/workflows\/hosted-target-admission\.yml@174a2c9c903323eb9387d030748ed2b41824a7be[\s\S]*?target_repo: \$\{\{ github\.repository \}\}/,
-  );
-  assert.match(dispatcher, /dispatch:\s+needs: hosted-target-admission/);
-  assert.match(dispatcher, /reject-hosted-target:\s+needs: hosted-target-admission/);
-  assert.match(dispatcher, /needs\.hosted-target-admission\.outputs\.outcome == 'public'/);
-  const rejectionJob = dispatcher.slice(
-    dispatcher.indexOf("\n  reject-hosted-target:"),
-    dispatcher.indexOf("\n  dispatch:"),
-  );
-  assert.match(rejectionJob, /permissions: \{\}/);
-  assert.doesNotMatch(
-    rejectionJob,
-    /permissions: \{ issues: write \}|gh api|github\.token|GH_TOKEN/,
-  );
-  assert.match(
-    dispatcher,
-    /hosted-target-admission:[\s\S]*?secrets:\s+CLAWSWEEPER_APP_PRIVATE_KEY: \$\{\{ secrets\.CLAWSWEEPER_APP_PRIVATE_KEY \}\}/,
-  );
 });

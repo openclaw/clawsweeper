@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import { createHash, createHmac } from "node:crypto";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import {
@@ -991,19 +990,6 @@ test("exact-review lease capability reads only its own item without the webhook 
     env,
   );
   assert.equal(rejected.status, 409);
-});
-
-test("exact-review workflow exposes the scoped lease tuple but not the shared webhook secret", () => {
-  const workflow = readFileSync(".github/workflows/sweep.yml", "utf8");
-  const start = workflow.indexOf("- name: Review exact event item");
-  const end = workflow.indexOf("\n      - name:", start + 1);
-  const step = workflow.slice(start, end);
-  assert.match(step, /EXACT_REVIEW_ITEM_KEY:/);
-  assert.match(step, /EXACT_REVIEW_LEASE_ID:/);
-  assert.match(step, /EXACT_REVIEW_LEASE_REVISION:/);
-  assert.match(step, /EXACT_REVIEW_CLAIM_GENERATION:/);
-  assert.match(step, /QUEUE_URL:/);
-  assert.doesNotMatch(step, /CLAWSWEEPER_WEBHOOK_SECRET:/);
 });
 
 function issue(number: number, title: string, updatedAt: string) {

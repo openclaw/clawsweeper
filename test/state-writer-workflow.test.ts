@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readdirSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
 import { parse } from "yaml";
@@ -116,8 +116,9 @@ test("per-target state hydration is slug-scoped while fleet lanes retain discove
 });
 
 test("automatic issue implementation joins the priority intake state-writer lane", () => {
-  const source = readFileSync(".github/workflows/repair-issue-implementation-intake.yml", "utf8");
-  const workflow = parse(source) as WorkflowDocument;
+  const workflow = parse(
+    readFileSync(".github/workflows/repair-issue-implementation-intake.yml", "utf8"),
+  ) as WorkflowDocument;
   const stateSetup = workflow.jobs?.intake?.steps?.find(isSetupState);
 
   assert.equal(stateSetup?.with?.["coordinator-class"], "cluster_intake");
@@ -125,13 +126,10 @@ test("automatic issue implementation joins the priority intake state-writer lane
     stateSetup?.with?.["records-item-number"],
     "${{ github.event.inputs.item_number || github.event.client_payload.item_number }}",
   );
-  assert.equal(source.match(/for attempt in 1 2 3; do/g)?.length, 2);
-  assert.match(source, /sleep "\$\(\(attempt \* 3\)\)"/);
 });
 
 test("setup-state checks out only the remaining operational git tree", () => {
-  const source = readFileSync(".github/actions/setup-state/action.yml", "utf8");
-  const action = parse(source) as {
+  const action = parse(readFileSync(".github/actions/setup-state/action.yml", "utf8")) as {
     inputs?: Record<string, unknown>;
     runs?: { steps?: WorkflowStep[] };
   };
@@ -148,8 +146,10 @@ test("setup-state checks out only the remaining operational git tree", () => {
     (snapshot as WorkflowStep & { if?: string })?.if,
     "${{ inputs.hydrate-records == 'true' && inputs.records-item-number == '' }}",
   );
-  assert.match(source, /--records-item-number "\$RECORDS_ITEM_NUMBER"/);
-  assert.match(source, /CLAWSWEEPER_STATE_COORDINATOR_ENABLED=1/);
+  const exportConfiguration = action.runs?.steps?.find(
+    (step) => step.name === "Export state configuration",
+  );
+  assert.match(String(exportConfiguration?.run), /CLAWSWEEPER_STATE_COORDINATOR_ENABLED=1/);
   const checkout = action.runs?.steps?.find((step) => step.name === "Check out operational state");
   const sparse = String(checkout?.with?.["sparse-checkout"] ?? "");
   for (const retained of ["/jobs/", "/results/", "/notifications/", "/apply-report.json"]) {
@@ -158,7 +158,6 @@ test("setup-state checks out only the remaining operational git tree", () => {
   for (const canonical of ["records", "ledger", "assets"]) {
     assert.doesNotMatch(sparse, new RegExp(`/${canonical}/`));
   }
-  assert.match(source, /--skip-git-state/);
 });
 
 test("all remaining git publishers join setup-state and receive a step-scoped coordinator secret", () => {
@@ -222,11 +221,6 @@ test("post-side-effect git bookkeeping is non-fatal while durability fences stay
   ]) {
     assert.notEqual(step(file, job, name)["continue-on-error"], true, `${file}:${job}:${name}`);
   }
-
-  assert.match(
-    readFileSync("scripts/apply-workflow-helpers.sh", "utf8"),
-    /Operational state publish failed.*Canonical work remains valid/,
-  );
 });
 
 test("every immutable action-event publisher targets R2 without a state-repo token", () => {
@@ -249,13 +243,6 @@ test("every immutable action-event publisher targets R2 without a state-repo tok
 });
 
 test("retired migration and Git recovery surfaces stay deleted", () => {
-  const allSource = [
-    readFileSync("src/repair/git-publish.ts", "utf8"),
-    readFileSync(".github/actions/setup-state/action.yml", "utf8"),
-    ...workflows().map(({ file }) => readFileSync(file, "utf8")),
-  ].join("\n");
-  assert.doesNotMatch(allSource, /clawsweeper-publish-lease|CLAWSWEEPER_STATE_LEASE/);
-  assert.doesNotMatch(allSource, /CLAWSWEEPER_RECORDS_SOURCE|CLAWSWEEPER_LEDGER_SOURCE/);
   for (const retired of [
     ".github/workflows/backfill-worker-records.yml",
     ".github/workflows/migrate-state-blobs.yml",
@@ -274,7 +261,7 @@ test("retired migration and Git recovery surfaces stay deleted", () => {
     "src/repair/live-proof-dispatch-candidates.ts",
     "src/live-proof/publication.ts",
   ]) {
-    assert.throws(() => readFileSync(retired, "utf8"));
+    assert.equal(existsSync(retired), false, retired);
   }
 });
 

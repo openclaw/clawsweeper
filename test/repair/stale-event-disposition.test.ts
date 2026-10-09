@@ -165,7 +165,7 @@ if (command === "apply-artifacts") {
   fs.mkdirSync(value("--items-dir"), { recursive: true });
   fs.copyFileSync(path.join(value("--artifact-dir"), "74.md"), path.join(value("--items-dir"), "74.md"));
 } else {
-  console.error("scoped apply reached");
+  console.error(["scoped apply reached:", command, ...args].join(" "));
   process.exitCode = 23;
 }
 `,
@@ -180,12 +180,16 @@ if (command === "apply-artifacts") {
         CLAWSWEEPER_CODE_ROOT: code,
         EXACT_REVIEW_PUBLICATION_ARTIFACT_DIR: ".artifacts/exact-review-bundle/review",
         EXACT_REVIEW_BATCH_MUTATION_OUTPUT: ".artifacts/result.json",
+        CLAWSWEEPER_AUTO_CLOSE_REASONS: "duplicate_or_superseded",
       },
       encoding: "utf8",
       timeout: 10_000,
     });
     assert.equal(result.status, 1, result.stdout + result.stderr);
-    assert.match(result.stderr, /scoped apply reached/);
+    assert.match(
+      result.stderr,
+      /scoped apply reached: apply-decisions .*--apply-close-reasons duplicate_or_superseded .*--stale-min-age-days 60 /,
+    );
     assert.doesNotMatch(result.stdout, /event produced no record tuple/);
     assert.equal(
       readFileSync(join(work, ".artifacts/event-record-snapshot/candidate/items/74.md"), "utf8"),

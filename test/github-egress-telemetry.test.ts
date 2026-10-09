@@ -366,12 +366,12 @@ test("runtime attribution follows the selected credential instead of throttle te
 });
 
 test("publication workflows retain v1 metrics while wiring bounded v2 observation and upload", () => {
-  const batchSource = readFileSync(".github/workflows/exact-review-batch-publish.yml", "utf8");
-  const sweepSource = readFileSync(".github/workflows/sweep.yml", "utf8");
-  const batch = YAML.parse(batchSource) as {
+  const batch = YAML.parse(
+    readFileSync(".github/workflows/exact-review-batch-publish.yml", "utf8"),
+  ) as {
     jobs: { publish: { env: Record<string, string>; steps: Array<Record<string, unknown>> } };
   };
-  const sweep = YAML.parse(sweepSource) as {
+  const sweep = YAML.parse(readFileSync(".github/workflows/sweep.yml", "utf8")) as {
     jobs: Record<string, { steps: Array<Record<string, unknown>> }>;
   };
   assert.ok(batch.jobs.publish.env.CLAWSWEEPER_GITHUB_REQUEST_METRICS_PATH);
@@ -384,8 +384,11 @@ test("publication workflows retain v1 metrics while wiring bounded v2 observatio
     "Submit batch GitHub egress telemetry",
     "Release unfinished batch members",
   ]);
-  assert.match(batchSource, /CLAWSWEEPER_GITHUB_POOL_CLASS=repository_actions/);
-  assert.match(batchSource, /CLAWSWEEPER_GITHUB_STAGE=publication_router/);
+  const finalize = batchSteps.find(
+    (step) => step.name === "Finalize healthy members under a fenced heartbeat",
+  );
+  assert.match(String(finalize?.run), /export CLAWSWEEPER_GITHUB_POOL_CLASS=repository_actions/);
+  assert.match(String(finalize?.run), /export CLAWSWEEPER_GITHUB_STAGE=publication_router/);
   assert.equal(
     batchSteps.find((step) => step.id === "github-egress-observer")?.["continue-on-error"],
     true,
@@ -431,11 +434,18 @@ test("publication workflows retain v1 metrics while wiring bounded v2 observatio
     artifact.find((step) => step.name === "Record artifact-publication member")?.env?.TARGET_REPO,
     "${{ steps.publication-context.outputs.target_repo }}",
   );
-  assert.match(sweepSource, /CLAWSWEEPER_GITHUB_POOL_CLASS: repository_actions/);
-  assert.match(sweepSource, /CLAWSWEEPER_GITHUB_STAGE: publication_router/);
-  assert.match(
-    sweepSource,
-    /repeat_revision=\$\{responseProtocol === 2 \? repeatRevision : false\}/,
+  for (const step of [
+    direct.find((candidate) => candidate.id === "finalize-direct-exact-review-lifecycle"),
+    artifact.find((candidate) => candidate.id === "queue-deferred-verdict-router"),
+  ] as Array<{ env?: Record<string, string> } | undefined>) {
+    assert.equal(step?.env?.CLAWSWEEPER_GITHUB_POOL_CLASS, "repository_actions");
+    assert.equal(step?.env?.CLAWSWEEPER_GITHUB_STAGE, "publication_router");
+  }
+  const claim = direct.find((step) => step.id === "claim-exact-review-queue");
+  assert.ok(
+    String(claim?.run).includes(
+      "repeat_revision=${responseProtocol === 2 ? repeatRevision : false}",
+    ),
   );
 });
 

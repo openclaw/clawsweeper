@@ -14,6 +14,7 @@ import {
 import { syncBuiltinESMExports } from "node:module";
 import { join, resolve } from "node:path";
 import test, { type TestContext } from "node:test";
+import { parse } from "yaml";
 
 import {
   enforceExpectedIssueSourceRevisionForTest,
@@ -1065,13 +1066,24 @@ test("expected issue source revision aborts drift and writes a requeue marker", 
 });
 
 test("automatic retries retain their issue pin in exact queue execution", () => {
-  const workflow = readFileSync(".github/workflows/sweep.yml", "utf8");
-  assert.match(workflow, /expectedSourceRevision: payload.expected_source_revision/);
-  assert.match(workflow, /EXPECTED_SOURCE_REVISION:.*expectedSourceRevision/);
-  assert.match(workflow, /--expected-source-revision "\$EXPECTED_SOURCE_REVISION"/);
-  assert.match(workflow, /artifacts\/event\/source-revision-mismatch.json/);
-  assert.match(workflow, /source_revision_changed=true/);
-  assert.doesNotMatch(workflow, /requeue-source-revision-drift:/);
+  const jobs = parse(readFileSync(".github/workflows/sweep.yml", "utf8")).jobs as Record<
+    string,
+    { steps?: Array<{ id?: string; run?: string; env?: Record<string, string> }> }
+  >;
+  const steps = Object.values(jobs).flatMap((job) => job.steps ?? []);
+  const review = steps.find((step) => step.id === "review-exact-event-item");
+  assert.equal(
+    review?.env?.EXPECTED_SOURCE_REVISION,
+    "${{ fromJSON(steps.claim-exact-review-queue.outputs.decision).expectedSourceRevision || '' }}",
+  );
+  assert.ok(review?.run?.includes('--expected-source-revision "$EXPECTED_SOURCE_REVISION"'));
+  assert.ok(review?.run?.includes('echo "source_revision_changed=true" >> "$GITHUB_OUTPUT"'));
+  const noop = steps.filter((step) =>
+    step.env?.SCHEDULED_SEMANTIC_NOOP?.includes(
+      "steps.review-exact-event-item.outputs.source_revision_changed == 'true'",
+    ),
+  );
+  assert.ok(noop.length > 0);
 });
 
 test("failed retry metadata survives a repeated failure at the same revision", () => {

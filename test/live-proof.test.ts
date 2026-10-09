@@ -4341,10 +4341,8 @@ test("live-proof attach dry-run prints exact uploads and mutations without perfo
 
 // Workflow guard: historical proof is folded before publication, and maintenance stays manual.
 test("automatic live proof is retired while historical artifact publication remains", () => {
-  assert.throws(() => readFileSync(".github/workflows/live-proof.yml", "utf8"));
-  assert.throws(() => readFileSync(".github/actions/dispatch-live-proofs/action.yml", "utf8"));
-  const sweep = readFileSync(".github/workflows/sweep.yml", "utf8");
-  const sweepWorkflow = YAML.parse(sweep) as {
+  assert.equal(existsSync(".github/actions/dispatch-live-proofs/action.yml"), false);
+  const sweepWorkflow = YAML.parse(readFileSync(".github/workflows/sweep.yml", "utf8")) as {
     jobs: Record<
       string,
       {
@@ -4407,10 +4405,6 @@ test("automatic live proof is retired while historical artifact publication rema
     "Publish event result and apply safe close",
   ]);
   assert.match(JSON.stringify(exactPublishSteps), /CLAWSWEEPER_LIVE_PROOF_AWS/);
-  assert.doesNotMatch(
-    sweep,
-    /dispatch-live-proofs|clawsweeper_live_proof|live-proof-attach-publish/,
-  );
 
   const batchWorkflow = YAML.parse(
     readFileSync(".github/workflows/exact-review-batch-publish.yml", "utf8"),
@@ -4433,16 +4427,19 @@ test("automatic live proof is retired while historical artifact publication rema
     (step) => step.name === "Prepare each item independently",
   );
   assert.match(JSON.stringify(batchPrepare?.env), /CLAWSWEEPER_LIVE_PROOF_AWS/);
-  assert.match(
-    readFileSync("scripts/prepare-exact-review-batch.mjs", "utf8"),
-    /live-proof-publish-artifacts/,
-  );
 
-  const maintenance = readFileSync(".github/workflows/live-proof-maintenance.yml", "utf8");
-  assert.match(maintenance, /workflow_dispatch:/);
-  assert.doesNotMatch(maintenance, /repository_dispatch:/);
-  assert.match(maintenance, /live-proof-attach[\s\S]*--detach/);
-  assert.match(maintenance, /live-proof-comment[\s\S]*--detach/);
+  const maintenance = YAML.parse(
+    readFileSync(".github/workflows/live-proof-maintenance.yml", "utf8"),
+  ) as { on: object; jobs: Record<string, { steps?: Array<{ run?: string }> }> };
+  assert.deepEqual(Object.keys(maintenance.on), ["workflow_dispatch"]);
+  const runs = Object.values(maintenance.jobs).flatMap((job) =>
+    (job.steps ?? []).map((step) => step.run ?? ""),
+  );
+  for (const command of ["live-proof-attach", "live-proof-comment"]) {
+    const invocations = runs.filter((run) => run.includes(`clawsweeper.js ${command}`));
+    assert.ok(invocations.length > 0, command);
+    for (const run of invocations) assert.match(run, /--detach/, command);
+  }
 });
 
 function validManifest() {

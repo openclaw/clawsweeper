@@ -11,6 +11,7 @@ interface CheckoutStep {
 
 interface WorkflowDocument {
   jobs?: Record<string, { steps?: CheckoutStep[] }>;
+  runs?: { steps?: CheckoutStep[] };
 }
 
 function yamlFiles(directory: string): string[] {
@@ -21,32 +22,26 @@ function yamlFiles(directory: string): string[] {
   });
 }
 
-const actionFiles = yamlFiles(".github");
-const checkoutReferences = actionFiles.flatMap((path) =>
-  readFileSync(path, "utf8")
-    .split("\n")
-    .filter((line) => line.includes("actions/checkout@"))
-    .map((line) => ({
-      path,
-      reference: line
-        .trim()
-        .replace(/^-?\s*uses:\s*/, "")
-        .replace(/\s+#.*$/, ""),
-    })),
-);
 const checkoutV7Commit = "3d3c42e5aac5ba805825da76410c181273ba90b1";
 
 test("every checkout uses v7 without disabling its fork-PR guard", () => {
-  assert.ok(checkoutReferences.length > 0, "expected checkout action references");
-  for (const { path, reference } of checkoutReferences) {
+  const checkouts = yamlFiles(".github").flatMap((path) => {
+    const document = parse(readFileSync(path, "utf8")) as WorkflowDocument;
+    return [
+      ...Object.values(document.jobs ?? {}).flatMap((job) => job.steps ?? []),
+      ...(document.runs?.steps ?? []),
+    ]
+      .filter((step) => step.uses?.startsWith("actions/checkout@"))
+      .map((step) => ({ path, step }));
+  });
+  assert.ok(checkouts.length > 0, "expected checkout action references");
+  for (const { path, step } of checkouts) {
     assert.ok(
-      reference === "actions/checkout@v7" || reference === `actions/checkout@${checkoutV7Commit}`,
-      `${path}: ${reference}`,
+      step.uses === "actions/checkout@v7" || step.uses === `actions/checkout@${checkoutV7Commit}`,
+      `${path}: ${step.uses}`,
     );
+    assert.notEqual(String(step.with?.["allow-unsafe-pr-checkout"]), "true", path);
   }
-
-  const sources = actionFiles.map((path) => readFileSync(path, "utf8")).join("\n");
-  assert.doesNotMatch(sources, /allow-unsafe-pr-checkout:\s*true/);
 });
 
 test("trusted-event workflows explicitly checkout the default branch", () => {

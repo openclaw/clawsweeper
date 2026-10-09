@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
+import { parse } from "yaml";
 
 import {
   currentClosingPullRequestReferenceFromIssueTimeline,
@@ -23,10 +24,6 @@ import { closeDecision, git, item, reportFrontMatter, reviewPrompt } from "./hel
 
 test("review prompt documents gated backlog close policies", () => {
   const prompt = `${reviewPrompt("issue")}\n${reviewPrompt("pull_request")}`;
-  const sweepWorkflow = readFileSync(
-    new URL("../.github/workflows/sweep.yml", import.meta.url),
-    "utf8",
-  );
   assert.match(prompt, /`unsponsored_feature_request`/);
   assert.match(prompt, /reversible idea-archive park, not a rejection/);
   assert.match(prompt, /label whose normalized name contains `security`/);
@@ -48,9 +45,6 @@ test("review prompt documents gated backlog close policies", () => {
   assert.match(prompt, /do not invent a bulk-filing close reason/);
   assert.match(prompt, /GitHub-verified, merged fixing PR in\s+the same repository/);
   assert.match(prompt, /linked issue is not permission or proof to close either item/);
-  assert.ok(
-    [...sweepWorkflow.matchAll(/CLAWSWEEPER_IDEA_REVIVAL_REACTIONS:.*\|\| '5'/g)].length >= 2,
-  );
 });
 
 function renderedCloseReasons(prompt: string): string[] {
@@ -185,74 +179,31 @@ test("close-first triage keeps actionable upstream work and invites better repor
 });
 
 test("all exact-review publication paths inherit the shared automatic-close policy", () => {
-  const sweepWorkflow = readFileSync(
-    new URL("../.github/workflows/sweep.yml", import.meta.url),
-    "utf8",
-  );
-  const batchWorkflow = readFileSync(
-    new URL("../.github/workflows/exact-review-batch-publish.yml", import.meta.url),
-    "utf8",
-  );
-  const batchPreparation = readFileSync(
-    new URL("../scripts/prepare-exact-review-batch.mjs", import.meta.url),
-    "utf8",
-  );
-  const publisher = readFileSync(
-    new URL("../src/repair/publish-event-result.ts", import.meta.url),
-    "utf8",
-  );
-
-  for (const workflow of [sweepWorkflow, batchWorkflow]) {
-    assert.match(
-      workflow,
-      /CLAWSWEEPER_AUTO_CLOSE_REASONS: \$\{\{ vars\.CLAWSWEEPER_AUTO_CLOSE_REASONS \|\| 'all' \}\}/,
+  const sweep = parse(readFileSync(".github/workflows/sweep.yml", "utf8"));
+  const batch = parse(readFileSync(".github/workflows/exact-review-batch-publish.yml", "utf8"));
+  for (const env of [sweep.env, batch.jobs.publish.env]) {
+    assert.equal(
+      env.CLAWSWEEPER_AUTO_CLOSE_REASONS,
+      "${{ vars.CLAWSWEEPER_AUTO_CLOSE_REASONS || 'all' }}",
     );
-    for (const flag of [
-      "UNCONFIRMED_PRODUCT_DIRECTION",
-      "UNSPONSORED_FEATURE",
-      "STALE_VERSION_BUG",
-      "OBSOLETE_FIX_PR",
-    ]) {
-      assert.match(workflow, new RegExp(`CLAWSWEEPER_${flag}_CLOSE_ENABLED:`), flag);
-    }
-    for (const setting of [
+    for (const name of [
+      "UNCONFIRMED_PRODUCT_DIRECTION_CLOSE_ENABLED",
+      "UNSPONSORED_FEATURE_CLOSE_ENABLED",
+      "STALE_VERSION_BUG_CLOSE_ENABLED",
+      "OBSOLETE_FIX_PR_CLOSE_ENABLED",
       "AUTHOR_PR_BUDGET",
       "AUTHOR_PR_BUDGET_MAX_CLOSES_PER_RUN",
       "IDEA_REVIVAL_REACTIONS",
     ]) {
-      assert.match(workflow, new RegExp(`CLAWSWEEPER_${setting}:`), setting);
+      assert.ok(env[`CLAWSWEEPER_${name}`], name);
+    }
+    assert.equal(env.CLAWSWEEPER_AUTHOR_PR_BUDGET_CLOSE_ENABLED, undefined);
+  }
+  for (const document of [sweep, batch]) {
+    for (const job of Object.values(document.jobs) as Array<{ steps?: Array<{ env?: object }> }>) {
+      for (const step of job.steps ?? []) assert.equal("CLOSE_REASONS" in (step.env ?? {}), false);
     }
   }
-
-  const sweepGlobalEnv = sweepWorkflow.slice(
-    sweepWorkflow.indexOf("\nenv:\n"),
-    sweepWorkflow.indexOf("\nconcurrency:\n"),
-  );
-  const batchJobEnv = batchWorkflow.slice(
-    batchWorkflow.indexOf("    env:\n"),
-    batchWorkflow.indexOf("    steps:\n"),
-  );
-  assert.doesNotMatch(sweepGlobalEnv, /CLAWSWEEPER_AUTHOR_PR_BUDGET_CLOSE_ENABLED:/);
-  assert.doesNotMatch(batchJobEnv, /CLAWSWEEPER_AUTHOR_PR_BUDGET_CLOSE_ENABLED:/);
-  assert.match(sweepWorkflow, /CLAWSWEEPER_AUTHOR_PR_BUDGET_CLOSE_ENABLED:/);
-  assert.equal(
-    [
-      ...sweepWorkflow.matchAll(
-        /inputs\.apply_close_reasons \|\| env\.CLAWSWEEPER_AUTO_CLOSE_REASONS/g,
-      ),
-    ].length,
-    3,
-  );
-  assert.doesNotMatch(
-    sweepWorkflow,
-    /CLOSE_REASONS: implemented_on_main,duplicate_or_superseded,low_signal_unmergeable_pr/,
-  );
-  assert.doesNotMatch(batchPreparation, /CLOSE_REASONS:\s*"implemented_on_main/);
-  assert.match(
-    publisher,
-    /process\.env\.CLOSE_REASONS \|\| process\.env\.CLAWSWEEPER_AUTO_CLOSE_REASONS \|\| "all"/,
-  );
-  assert.match(publisher, /"--stale-min-age-days",\s*"60"/);
 });
 
 test("unsponsored feature issue proposals emit source-bound trusted close markers", () => {

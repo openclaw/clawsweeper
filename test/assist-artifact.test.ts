@@ -9,6 +9,7 @@ import { item } from "./helpers.ts";
 import { useFakeScanner } from "./agent-input-scan-helpers.ts";
 import {
   ASSIST_ANSWER_MAX_BYTES,
+  ASSIST_ARTIFACT_MAX_BYTES,
   assertAssistArtifactLiveRevision,
   assistSourceCommentSha256,
   createAssistArtifact,
@@ -318,77 +319,97 @@ test("assist artifact validation rejects hostile shape, markers, and oversized o
   );
 });
 
-test("assist workflow isolates Codex generation from the fresh write-token publisher", () => {
-  const workflow = readFileSync(".github/workflows/assist.yml", "utf8");
-  const source = readFileSync("src/clawsweeper-assist.ts", "utf8");
-  const assistStart = workflow.indexOf("\n  assist:");
-  const publishStart = workflow.indexOf("\n  publish:", assistStart);
-  assert.ok(assistStart > 0 && publishStart > assistStart);
-  const generation = workflow.slice(assistStart, publishStart);
-  const publish = workflow.slice(publishStart);
+test("assist publication bounds the artifact and patches only an owned marker comment", (t) => {
+  const root = mkdtempSync(join(tmpdir(), "clawsweeper-assist-publish-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  useFakeScanner(t, "");
+  const binary = join(root, "codex");
+  writeFileSync(
+    binary,
+    `#!${process.execPath}
+const fs = require('node:fs');
+fs.readFileSync(0);
+fs.writeFileSync(process.argv[process.argv.indexOf('--output-last-message') + 1], 'Useful assist answer.');
+`,
+    { mode: 0o755 },
+  );
+  const liveUrl = "https://github.com/openclaw/openclaw/issues/42#issuecomment-123456";
+  let comments: Array<Record<string, unknown>> = [];
+  const writes: Array<{ args: string[]; body: string }> = [];
+  const workflow = createAssistWorkflow({
+    root,
+    canPatchReviewComment: (comment) =>
+      (comment?.user as { login?: string } | undefined)?.login === "openclaw-clawsweeper[bot]",
+    collectItemContext: () => ({
+      issue: {},
+      comments: [],
+      timeline: [],
+      sourceRevision: "a".repeat(64),
+    }),
+    ensureDir: (dir) => {
+      mkdirSync(dir, { recursive: true });
+    },
+    fetchItem: () => ({ item: item({ number: 42 }), state: "open" }),
+    ghJson: <T>() =>
+      ({
+        id: 123456,
+        issue_url: "https://api.github.com/repos/openclaw/openclaw/issues/42",
+        html_url: liveUrl,
+        user: { login: "maintainer" },
+        body: "@clawsweeper explain this change",
+        updated_at: "2026-07-10T01:00:00Z",
+      }) as T,
+    ghPaged: <T>() => comments as T[],
+    ghWithRetry: (args) => {
+      writes.push({ args, body: readFileSync(args.at(-1)!, "utf8") });
+      return "";
+    },
+    repoFromArgs: () => repositoryProfileFor("openclaw/openclaw"),
+    targetRepo: () => "openclaw/openclaw",
+    untrustedCodexEnv: () => ({ PATH: process.env.PATH, CODEX_BIN: binary }),
+    writeCommentPayload: (_number, body) => {
+      const path = join(root, "payload.json");
+      writeFileSync(path, body);
+      return path;
+    },
+  });
+  const artifactPath = join(root, "assist-result.json");
+  const args = {
+    item_number: "42",
+    question: "Explain this change.",
+    comment_id: "123456",
+    author: "maintainer",
+    run_id: "123",
+    run_attempt: "1",
+    artifact: artifactPath,
+    work_dir: root,
+  };
+  workflow.assistGenerateCommand(args);
 
-  assert.match(
-    workflow,
-    /permissions:\n  actions: read\n  contents: read\n  issues: read\n  pull-requests: read/,
-  );
-  assert.equal(workflow.match(/uses: actions\/checkout@v7/g)?.length, 4);
-  assert.equal(workflow.match(/persist-credentials: false/g)?.length, 4);
-  assert.doesNotMatch(workflow, /REASONING_EFFORT|--codex-reasoning-effort/);
-  assert.doesNotMatch(workflow, /inputs\.reasoning_effort|client_payload\.reasoning_effort/);
+  workflow.assistPublishCommand(args);
+  const posted = writes.at(-1)!;
+  assert.deepEqual(posted.args.slice(1, 4), [
+    "repos/openclaw/openclaw/issues/42/comments",
+    "--method",
+    "POST",
+  ]);
+  assert.ok(posted.body.includes(`Source: ${liveUrl}`), posted.body);
 
-  assert.match(generation, /Create read-only GitHub App token/);
-  assert.ok(
-    generation.indexOf("Resolve validated target repository") <
-      generation.indexOf("Create read-only GitHub App token"),
-  );
-  assert.match(generation, /repositories: \$\{\{ steps\.target\.outputs\.target_repo_name \}\}/);
-  assert.match(generation, /permission-issues: read/);
-  assert.match(generation, /permission-pull-requests: read/);
-  assert.match(generation, /GH_TOKEN: \$\{\{ steps\.read_token\.outputs\.token \}\}/);
-  assert.match(generation, /setup-codex/);
-  assert.match(generation, /assist-generate/);
-  assert.match(
-    generation,
-    /generation_attempt: \$\{\{ steps\.generate\.outputs\.generation_attempt \}\}/,
-  );
-  assert.match(generation, /generation_attempt=\$GITHUB_RUN_ATTEMPT/);
-  assert.match(generation, /actions\/upload-artifact@v7/);
-  assert.match(generation, /include-hidden-files: true/);
-  assert.doesNotMatch(generation, /permission-issues: write/);
-  assert.doesNotMatch(generation, /write_token|Create narrow GitHub App write token/);
+  comments = [{ id: 7, body: posted.body, user: { login: "spoofer" } }];
+  workflow.assistPublishCommand(args);
+  assert.equal(writes.at(-1)!.args[3], "POST");
 
-  const validateIndex = publish.indexOf("Validate untrusted assist artifact");
-  const tokenIndex = publish.indexOf("Create narrow GitHub App write token");
-  const mutateIndex = publish.indexOf("Revalidate and publish assist comment");
-  assert.ok(validateIndex >= 0 && validateIndex < tokenIndex && tokenIndex < mutateIndex);
-  assert.match(publish, /runs-on: ubuntu-latest/);
-  assert.match(publish, /ref: \$\{\{ github\.sha \}\}/);
-  assert.match(publish, /Verify exact workflow source/);
-  assert.ok(
-    publish.indexOf("Resolve validated target repository") <
-      publish.indexOf("Create narrow GitHub App write token"),
-  );
-  assert.match(publish, /actions\/download-artifact@v8/);
-  assert.match(
-    publish,
-    /clawsweeper-assist-\$\{\{ github\.run_id \}\}-\$\{\{ needs\.assist\.outputs\.generation_attempt \}\}/,
-  );
-  assert.equal(publish.match(/--run-attempt "\$GENERATION_ATTEMPT"/g)?.length, 2);
-  assert.match(publish, /permission-issues: write/);
-  assert.match(publish, /permission-pull-requests: write/);
-  assert.match(publish, /repositories: \$\{\{ steps\.target\.outputs\.target_repo_name \}\}/);
-  assert.match(publish, /GH_TOKEN: \$\{\{ steps\.write_token\.outputs\.token \}\}/);
-  assert.match(publish, /assist-validate/);
-  assert.match(publish, /assist-publish/);
-  assert.doesNotMatch(publish, /setup-codex|OPENAI_API_KEY|CLAWSWEEPER_INTERNAL_MODEL/);
-  assert.ok(publish.indexOf("GH_TOKEN:") > tokenIndex);
-  assert.match(
-    workflow,
-    /github\.event\.client_payload\.comment_id \|\| inputs\.comment_id \|\| 'manual'/,
-  );
-  assert.doesNotMatch(workflow.match(/group: .*\n/)?.[0] ?? "", /github\.run_id/);
-  assert.match(source, /readBoundedUtf8File\([\s\S]*ASSIST_ARTIFACT_MAX_BYTES/);
-  assert.match(source, /findOwnedCommentByMarker[\s\S]*canPatchReviewComment/);
-  assert.match(source, /live\.sourceComment\?\.htmlUrl \?\? request\.sourceCommentUrl/);
-  assert.doesNotMatch(source, /idempotency marker is owned by a non-ClawSweeper comment/);
+  comments = [
+    { id: 8, body: `${posted.body}\nstale`, user: { login: "openclaw-clawsweeper[bot]" } },
+  ];
+  workflow.assistPublishCommand(args);
+  assert.deepEqual(writes.at(-1)!.args.slice(1, 4), [
+    "repos/openclaw/openclaw/issues/comments/8",
+    "--method",
+    "PATCH",
+  ]);
+
+  writeFileSync(artifactPath, " ".repeat(ASSIST_ARTIFACT_MAX_BYTES + 1));
+  assert.throws(() => workflow.assistValidateArtifactCommand(args), /assist artifact exceeds/);
+  assert.throws(() => workflow.assistPublishCommand(args), /assist artifact exceeds/);
 });
