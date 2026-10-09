@@ -231,7 +231,7 @@
       "properties": {
         "required": {
           "type": "boolean",
-          "description": "True only for an unresolved choice between at least two concrete viable options that evidence cannot settle and a maintainer has not already decided. Never for landing approval, PR size, sufficient stored-state compatibility proof, or a PR-body merge/sign-off request. Missing proof and fixable defects remain PR-owner work."
+          "description": "True only for an unresolved choice between at least two concrete viable options that evidence cannot settle and a maintainer has not already decided. Never for landing approval, PR size, sufficient stored-state compatibility proof, or a PR-body merge/sign-off request. Also false for implementer-owned choices recorded in the PR body with review-verified evidence: narrow individually source-verified tool-metadata oracle/snapshot/baseline exceptions preserving exact user data without masking regressions; invalid/unreachable-data-only Doctor/recovery removal with a verified prior backup, reported counts, and valid data untouched; or ownership, ordering, and internal transaction/lifecycle mechanics within an authorized maintainer repair-and-land scope. Do not request design acceptance or a Resolve maintainer decision item for these choices. Broad exceptions, defects, and missing data-model compatibility proof remain PR-owner work. Unresolved product/public-contract choices still require a decision: new config options, breaking public API/SDK changes, new schemas/tables, changed retention of valid data, or paid services."
         },
         "kind": {
           "type": "string",
@@ -656,7 +656,7 @@
         "worthIt": {
           "type": "string",
           "enum": ["yes", "no", "needs_maintainer", "not_applicable"],
-          "description": "yes only for a clear user problem whose value exceeds the cost of the change. no for no clear user problem, a niche preference, or churn whose cost exceeds its value. needs_maintainer for a feature without owner direction; a new config option, default, schema, permission, or public API inside a bug fix; a change to behavior an area owner built; or an issue expectation that conflicts with an existing product contract. A correct patch alone does not make a change worth merging. Use not_applicable only for non-PR items."
+          "description": "yes only for a clear user problem whose value exceeds the cost of the change. no for no clear user problem, a niche preference, or churn whose cost exceeds its value. needs_maintainer for a feature without owner direction; a new config option, default, schema, permission, or public API inside a bug fix; a change to behavior an area owner built; or an issue expectation that conflicts with an existing product contract. Apply the review prompt's implementer-owned decision boundary here too; those evidence-backed choices alone do not require maintainer acceptance. A correct patch alone does not make a change worth merging. Use not_applicable only for non-PR items."
         },
         "reason": {
           "type": "string",

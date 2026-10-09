@@ -342,6 +342,64 @@ test("review prompt and schema reserve maintainer decisions for unresolved choic
   );
 });
 
+test("assembled review prompt keeps evidenced implementation choices with the PR owner", () => {
+  const prompt = reviewPromptForTest(
+    item({ kind: "pull_request" }),
+    { issue: {}, comments: [], timeline: [] },
+    { mainSha: "a".repeat(40), latestRelease: null },
+  );
+  const boundary = prompt.slice(
+    prompt.indexOf("Treat the following as implementer-owned decisions"),
+    prompt.indexOf("### Risks and merge-risk options"),
+  );
+  assert.match(boundary, /PR body records the choice and supporting evidence/);
+  assert.match(boundary, /review verifies that evidence/);
+  assert.match(boundary, /individually source-verified test-oracle, snapshot, or baseline/);
+  assert.match(boundary, /tool-owned metadata/);
+  assert.match(boundary, /user data stays exact and no real regression is masked/);
+  assert.match(boundary, /Blanket or broad exceptions still warrant a finding/);
+  assert.match(boundary, /remove only invalid or unreachable persisted data/);
+  assert.match(boundary, /verified backup before removal, report counts/);
+  assert.match(boundary, /leave valid data untouched/);
+  assert.match(boundary, /`realBehaviorProof.dataModelCompatibility` requirement still applies/);
+  assert.match(boundary, /Ownership placement, ordering, and internal transaction or lifecycle/);
+  assert.match(boundary, /within an authorized maintainer repair-and-land request/);
+  assert.match(boundary, /`maintainerDecision.required: false`/);
+  assert.match(boundary, /do not emit a "Resolve maintainer decision" Before-merge item/);
+  assert.match(boundary, /`productReview.worthIt`, `nextStep`, `risks`, and `mergeRiskOptions`/);
+  assert.match(
+    boundary,
+    /Keep concrete defects, security concerns, and missing compatibility proof/,
+  );
+  assert.match(
+    boundary,
+    /new config options, breaking public API\/SDK changes, new schemas or tables/,
+  );
+  assert.match(boundary, /changed retention of valid data, and paid services/);
+  assert.match(boundary, /does not authorize scope expansion/);
+});
+
+test("decision schema preserves implementer ownership without waiving compatibility proof", () => {
+  const schema = JSON.parse(readFileSync("schema/clawsweeper-decision.schema.json", "utf8"));
+  const required = schema.properties.maintainerDecision.properties.required.description;
+  assert.match(required, /recorded in the PR body with review-verified evidence/);
+  assert.match(required, /individually source-verified tool-metadata oracle\/snapshot\/baseline/);
+  assert.match(required, /preserving exact user data without masking regressions/);
+  assert.match(required, /invalid\/unreachable-data-only Doctor\/recovery removal/);
+  assert.match(required, /verified prior backup, reported counts, and valid data untouched/);
+  assert.match(required, /within an authorized maintainer repair-and-land scope/);
+  assert.match(required, /Broad exceptions, defects, and missing data-model compatibility proof/);
+  assert.match(required, /Unresolved product\/public-contract choices still require a decision/);
+  assert.match(
+    schema.properties.productReview.properties.worthIt.description,
+    /implementer-owned decision boundary here too/,
+  );
+  assert.match(
+    schema.properties.realBehaviorProof.properties.dataModelCompatibility.description,
+    /General proof exemptions do not waive this assessment/,
+  );
+});
+
 test("review prompt treats plugin API changes as compatibility-sensitive P1 repair work", () => {
   const prompt = readFileSync("prompts/review-item.md", "utf8");
 
