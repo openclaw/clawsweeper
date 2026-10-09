@@ -53,6 +53,33 @@ const outDir = resolve(repoRoot, option("--out", ".artifacts/forged-evidence-fie
 const providedBaselineDist = option("--baseline-dist", "");
 mkdirSync(outDir, { recursive: true });
 
+// Base commits before the report helpers became module exports built them in a
+// factory. Keep that base code, and expose it through the current module exports.
+function baselineHelpersModule(baselineSource) {
+  if (!baselineSource.includes("export function createReportHelpers(")) return null;
+  return [
+    'import { createReportHelpers } from "./clawsweeper-report-helpers-base.js";',
+    "import {",
+    "  OWNED_REVIEW_SECTION_HEADINGS,",
+    "  parseBacktickLocation,",
+    '} from "./clawsweeper-report-helpers-current.js";',
+    "",
+    "export { OWNED_REVIEW_SECTION_HEADINGS, parseBacktickLocation };",
+    "export const {",
+    "  agentsPolicyStatusLine,",
+    "  neutralizeOwnedSectionSpoofing,",
+    "  parseBoldListHeading,",
+    "  parseReviewFindingHeading,",
+    "  parseSecurityConcernHeading,",
+    "  publicTableCell,",
+    "  sanitizeArchitectureDiagram,",
+    "  sectionLineValue,",
+    "  sectionList,",
+    "} = createReportHelpers({ OWNED_REVIEW_SECTION_HEADINGS, parseBacktickLocation });",
+    "",
+  ].join("\n");
+}
+
 function compileBaselineDist() {
   const baseSha = git("rev-parse", baseRev);
   const baselineSource = git("show", `${baseSha}:${HELPERS}`);
@@ -65,7 +92,15 @@ function compileBaselineDist() {
   const baselineSrc = join(baselineRoot, "src");
   rmSync(baselineRoot, { recursive: true, force: true });
   cpSync(join(repoRoot, "src"), baselineSrc, { recursive: true });
-  writeFileSync(join(baselineRoot, HELPERS), baselineSource);
+  const adapter = baselineHelpersModule(baselineSource);
+  if (adapter) {
+    const helpersDir = dirname(join(baselineRoot, HELPERS));
+    cpSync(join(repoRoot, HELPERS), join(helpersDir, "clawsweeper-report-helpers-current.ts"));
+    writeFileSync(join(helpersDir, "clawsweeper-report-helpers-base.ts"), baselineSource);
+    writeFileSync(join(baselineRoot, HELPERS), adapter);
+  } else {
+    writeFileSync(join(baselineRoot, HELPERS), baselineSource);
+  }
   writeFileSync(join(baselineRoot, "package.json"), `${JSON.stringify({ type: "module" })}\n`);
   symlinkSync(join(repoRoot, "node_modules"), join(baselineRoot, "node_modules"), "junction");
   const baselineDist = join(baselineRoot, "dist");
@@ -118,16 +153,13 @@ async function runArm(arm) {
   const { createReportDocumentRendering } = await load("clawsweeper-report-document.js");
   const { createReportContextRendering } = await load("clawsweeper-report-context.js");
   const { createDashboardPresentation } = await load("clawsweeper-dashboard.js");
-  const { createReportParser } = await load("clawsweeper-report-parser.js");
-  const { createRecordMetadata } = await load("clawsweeper-record-metadata.js");
-  const { createReportHelpers } = await load("clawsweeper-report-helpers.js");
+  const parser = await load("clawsweeper-report-parser.js");
   const { createRepositoryLinks } = await load("clawsweeper-links.js");
-  const { normalizeRepo, repositoryProfileFor } = await load("repository-profiles.js");
+  const { repositoryProfileFor } = await load("repository-profiles.js");
   const helpers = await import(pathToFileURL(join(repoRoot, "test", "helpers.ts")).href);
 
   const links = createRepositoryLinks({
     reportRepo: "openclaw/clawsweeper-state",
-    normalizeRepo,
     targetRepo: () => "openclaw/openclaw",
     targetProfile: () => repositoryProfileFor("openclaw/openclaw"),
   });
@@ -175,23 +207,6 @@ async function runArm(arm) {
     contentDigest: "synthetic-content",
     reviewPolicy: "synthetic-policy",
     runtime: { model: "Codex", reasoningEffort: "high" },
-  });
-  const parser = createReportParser({
-    ...links,
-    ...createRecordMetadata({}),
-    ...createReportHelpers({
-      OWNED_REVIEW_SECTION_HEADINGS: new Set(),
-      parseBacktickLocation: () => null,
-    }),
-    markdownRepository: () => "openclaw/openclaw",
-    evidenceEntry: (value) => ({
-      repo: null,
-      file: null,
-      line: null,
-      command: null,
-      sha: null,
-      ...value,
-    }),
   });
   const parsed = parser.reportEvidence(report);
   const comment = clawsweeper.renderReviewCommentFromReport(report, "none");

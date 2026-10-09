@@ -52,6 +52,9 @@ async function record(modulePath, root) {
   const recorder = createApplyActionLedger({
     ...dependencies,
     reviewLedger: createReviewActionLedger(dependencies),
+    // Builds before the report readers became module exports read these callbacks.
+    reviewLeaseRevisionFromReport: () => "a".repeat(40),
+    reportItemKind: () => "issue",
   });
   const entry = {
     repo: "example/fixture",
