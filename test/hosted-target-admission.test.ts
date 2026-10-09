@@ -323,3 +323,62 @@ globalThis.fetch = async (url, init) => {
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+type GuardJob = {
+  needs?: string | string[];
+  if?: string;
+  permissions?: Record<string, string>;
+  secrets?: Record<string, string>;
+  steps?: Array<{ id?: string; uses?: string; if?: string; with?: Record<string, string> }>;
+};
+
+function guardJobs(name: string): Record<string, GuardJob> {
+  return parse(readFileSync(`.github/workflows/${name}`, "utf8")).jobs as Record<string, GuardJob>;
+}
+
+// Admission decides visibility before any other job can mint a credential.
+test("hosted admission has no permissions and mints only a metadata-read token after eligibility", () => {
+  const document = parse(readFileSync(".github/workflows/hosted-target-admission.yml", "utf8")) as {
+    permissions: Record<string, string>;
+  };
+  assert.deepEqual(document.permissions, {});
+  const admit = guardJobs("hosted-target-admission.yml").admit?.steps ?? [];
+  assert.equal(
+    admit.some((step) => step.uses?.startsWith("actions/checkout")),
+    false,
+  );
+  const eligibility = admit.findIndex((step) => step.id === "eligibility");
+  const token = admit.findIndex((step) => step.id === "metadata_token");
+  assert.ok(eligibility >= 0 && eligibility < token);
+  assert.equal(admit[token]?.if, "${{ steps.eligibility.outputs.outcome == 'eligible' }}");
+  assert.deepEqual(
+    Object.entries(admit[token]?.with ?? {}).filter(([key]) => key.startsWith("permission-")),
+    [["permission-metadata", "read"]],
+  );
+  assert.equal(admit[token]?.with?.repositories, "clawsweeper");
+});
+
+// Privileged jobs run only after admission reports a public target.
+test("privileged sweep and router jobs need a public hosted admission", () => {
+  for (const [file, names] of [
+    [
+      "sweep.yml",
+      ["plan", "target-fanout", "retry-failed-reviews", "audit-dashboard", "apply-proof"],
+    ],
+    ["repair-comment-router.yml", ["route-comments"]],
+  ] as const) {
+    const jobs = guardJobs(file);
+    for (const name of names) {
+      assert.equal(jobs[name]?.needs, "hosted-target-admission", `${file}:${name}`);
+      assert.match(
+        jobs[name]?.if ?? "",
+        /needs\.hosted-target-admission\.outputs\.outcome == 'public'/,
+        `${file}:${name}`,
+      );
+      assert.doesNotMatch(jobs[name]?.if ?? "", /hosted-target-admission\.result == 'skipped'/);
+    }
+  }
+  assert.deepEqual(guardJobs("repair-comment-router.yml")["hosted-target-admission"]?.secrets, {
+    CLAWSWEEPER_APP_PRIVATE_KEY: "${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}",
+  });
+});

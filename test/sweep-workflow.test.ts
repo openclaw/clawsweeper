@@ -6499,3 +6499,21 @@ test("claimed-lease cleanup survives skipped and failed checkouts and uses sourc
   assert.equal(proof.ok, true);
   assert.equal(proof.cases.length, 9);
 });
+
+// The model-running review step gets only its scoped lease, never the shared webhook secret.
+test("exact review step carries the scoped lease tuple but not the shared webhook secret", () => {
+  const workflow = YAML.parse(readText(".github/workflows/sweep.yml"));
+  const review = Object.values(workflow.jobs)
+    .flatMap((job: any) => job.steps ?? [])
+    .find((step: any) => step.id === "review-exact-event-item");
+  for (const name of [
+    "EXACT_REVIEW_ITEM_KEY",
+    "EXACT_REVIEW_LEASE_ID",
+    "EXACT_REVIEW_LEASE_REVISION",
+    "EXACT_REVIEW_CLAIM_GENERATION",
+    "QUEUE_URL",
+  ]) {
+    assert.ok(review?.env?.[name], name);
+  }
+  assert.equal(review?.env?.CLAWSWEEPER_WEBHOOK_SECRET, undefined);
+});

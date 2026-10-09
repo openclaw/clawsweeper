@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { parse as parseYaml } from "yaml";
 import { createAssistWorkflow } from "../dist/clawsweeper-assist.js";
 import { repositoryProfileFor } from "../dist/repository-profiles.js";
 import { item } from "./helpers.ts";
@@ -415,4 +416,66 @@ fs.writeFileSync(process.argv[process.argv.indexOf('--output-last-message') + 1]
   writeFileSync(artifactPath, " ".repeat(ASSIST_ARTIFACT_MAX_BYTES + 1));
   assert.throws(() => workflow.assistValidateArtifactCommand(args), /assist artifact exceeds/);
   assert.throws(() => workflow.assistPublishCommand(args), /assist artifact exceeds/);
+});
+
+// Codex generation runs with read-only credentials; only the model-free publisher gets write.
+test("assist generation never holds a write token and the publisher never runs a model", () => {
+  type Step = {
+    id?: string;
+    name?: string;
+    uses?: string;
+    env?: Record<string, string>;
+    with?: Record<string, string>;
+  };
+  const document = parseYaml(readFileSync(".github/workflows/assist.yml", "utf8")) as {
+    permissions: Record<string, string>;
+    jobs: Record<string, { steps?: Step[] }>;
+  };
+  assert.deepEqual(document.permissions, {
+    actions: "read",
+    contents: "read",
+    issues: "read",
+    "pull-requests": "read",
+  });
+  const jobs = document.jobs;
+  for (const step of Object.values(jobs).flatMap((job) => job.steps ?? [])) {
+    if (step.uses?.startsWith("actions/checkout")) {
+      assert.equal(String(step.with?.["persist-credentials"]), "false");
+    }
+  }
+
+  const generation = jobs.assist?.steps ?? [];
+  const target = generation.findIndex((step) => step.id === "target");
+  const readToken = generation.findIndex((step) => step.id === "read_token");
+  assert.ok(target >= 0 && target < readToken);
+  for (const step of generation) {
+    for (const [key, value] of Object.entries(step.with ?? {})) {
+      if (key.startsWith("permission-")) assert.equal(value, "read", `${step.name}:${key}`);
+    }
+    if (step.env?.GH_TOKEN) {
+      assert.equal(step.env.GH_TOKEN, "${{ steps.read_token.outputs.token }}", step.name);
+    }
+  }
+
+  const publish = jobs.publish?.steps ?? [];
+  const order = [
+    "Resolve validated target repository",
+    "Validate untrusted assist artifact",
+    "Create narrow GitHub App write token",
+    "Revalidate and publish assist comment",
+  ].map((name) => publish.findIndex((step) => step.name === name));
+  assert.ok(order[0]! >= 0, order.join(","));
+  assert.deepEqual(
+    order,
+    [...order].sort((left, right) => left - right),
+  );
+  const writeToken = order[2]!;
+  for (const [position, step] of publish.entries()) {
+    assert.doesNotMatch(
+      JSON.stringify(step),
+      /setup-codex|OPENAI_API_KEY|CLAWSWEEPER_INTERNAL_MODEL/,
+      step.name,
+    );
+    if (step.env?.GH_TOKEN) assert.ok(position > writeToken, step.name);
+  }
 });
