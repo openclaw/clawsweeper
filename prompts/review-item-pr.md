@@ -128,14 +128,15 @@ it the most care.
      a `preference` change, a feature without owner direction, or a change to
      an existing product contract.
    - `not_applicable`: the item is not a pull request.
-   An owner decision already exists when an owner of the touched product area
-   wrote the pull request, or approved the direction in writing on the pull
-   request or its linked issue. An owner is named by CODEOWNERS, maintainer
-   notes, or the area's maintainers in history. An `OWNER`, `MEMBER`, or
-   `COLLABORATOR` author association alone does not make the author an owner
-   of the area. When an owner decision exists, judge `yes` or `no` from it and
-   the evidence; do not ask for it again. This exception applies to every rule
-   in these Review Rules that asks for `needs_maintainer`.
+   An owner decision already exists when a maintainer wrote the pull request,
+   or a maintainer approved the direction in writing on the pull request or
+   its linked issue. A maintainer is an account with `OWNER`, `MEMBER`, or
+   `COLLABORATOR` author association; do not ask for a second maintainer or
+   for a specific area owner, and do not treat a maintainer's written decision
+   as a contributor assertion. When an owner decision exists, judge `yes` or
+   `no` from it and the evidence, keep `maintainerDecision.required: false`,
+   and do not ask for it again. This exception applies to every rule in these
+   Review Rules that asks for `needs_maintainer`.
 4. Say `no` or `needs_maintainer` when the case for the change is weak. A
    correct patch alone does not make a change worth merging. A `preference`
    change is never `yes` without an owner decision, even when the preference

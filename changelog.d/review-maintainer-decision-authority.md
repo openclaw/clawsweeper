@@ -1,0 +1,1 @@
+- A written decision by a maintainer (OWNER, MEMBER, or COLLABORATOR) on a pull request or its linked issue now resolves an owner call; reviews no longer ask for a second maintainer or a specific area owner.
