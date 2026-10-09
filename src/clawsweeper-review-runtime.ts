@@ -1217,6 +1217,9 @@ ${extra}
         : { outputFileBytes: options.streamFileBytes }),
       outputLastMessageBytes: options.resultFileBytes,
       timeoutMs: remainingMs,
+      decisionRepair: {
+        item: { repo: options.item.repo, number: options.item.number, kind: options.item.kind },
+      },
       ...(reviewProof
         ? {
             appServer: {
@@ -1255,6 +1258,11 @@ ${extra}
             );
           }
         }
+        if (result.decisionRepairError) {
+          console.error(
+            `[review] ${new Date().toISOString()} decision-repair-turn #${options.item.number} ok`,
+          );
+        }
         return {
           ...verifyLikelyOwnerHistory(decision, {
             checkoutDir: options.openclawDir,
@@ -1277,6 +1285,12 @@ ${extra}
         result.status === 0
           ? `Codex review did not produce output for #${options.item.number}: Codex exited successfully but did not write ${outputPath}.\n${stdout || "No stdout."}`
           : `Codex review failed for #${options.item.number} with exit ${result.status ?? "unknown"}.`;
+    }
+    if (result.decisionRepairError) {
+      console.error(
+        `[review] ${new Date().toISOString()} decision-repair-turn #${options.item.number} failed`,
+      );
+      failureDetail = `${failureDetail}\nThe decision repair turn ran after the first final message failed validation: ${result.decisionRepairError}`;
     }
     const plainNative = agentRunner(codexEnv) === "codex" && !reviewProof;
     const nativeFailureEligible =

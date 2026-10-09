@@ -1,0 +1,1 @@
+- Give a Codex review one repair turn on the same thread when its final decision fails validation, so a fixable cross-field error no longer fails the whole review.

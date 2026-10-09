@@ -10,6 +10,7 @@ import {
 } from "./codex-process.js";
 import { runOpenclawProcess } from "./openclaw-process.js";
 import { AgentInputScanError, scanAgentInput, type AgentScanSource } from "./agent-input-scan.js";
+import type { DecisionRepairOptions } from "./review-decision-repair.js";
 
 export type AgentRunner = "codex" | "openclaw";
 
@@ -31,6 +32,8 @@ export interface RunAgentProcessOptions {
   stderrPath?: string;
   appServer?: CodexAppServerProcessOptions;
   codexExtraArgs?: readonly string[];
+  // Codex only: one repair turn on the same thread when the final decision fails validation.
+  decisionRepair?: DecisionRepairOptions;
 }
 
 export function agentRunner(env: NodeJS.ProcessEnv = process.env): AgentRunner {
@@ -120,6 +123,7 @@ export function runAgentProcess(options: RunAgentProcessOptions): CodexProcessRe
       ...(options.stdoutPath ? { stdoutPath: options.stdoutPath } : {}),
       ...(options.stderrPath ? { stderrPath: options.stderrPath } : {}),
       ...(options.appServer ? { appServer: options.appServer } : {}),
+      ...(options.decisionRepair ? { decisionRepair: options.decisionRepair } : {}),
     });
   }
 
