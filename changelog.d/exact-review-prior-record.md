@@ -1,0 +1,1 @@
+- Reuse unchanged scheduled review verdicts again by giving each hosted exact review its prior canonical record, so unchanged items are no longer re-reviewed and re-rated every pass.

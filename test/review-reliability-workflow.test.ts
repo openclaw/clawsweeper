@@ -114,11 +114,47 @@ test("exact review generation enters finalization before state hydration", () =>
   >;
   const steps = workflow.jobs["event-review-apply"].steps as Array<Record<string, unknown>>;
   const review = steps.find((step) => step.name === "Review exact event item");
-  const setupStateIndex = steps.findIndex((step) => step.uses === "./.github/actions/setup-state");
+  const setupStateIndex = steps.findIndex((step) => step.id === "direct-setup-state");
   const reviewIndex = steps.indexOf(review!);
 
   assert.ok(review);
+  assert.equal(steps[setupStateIndex]?.uses, "./.github/actions/setup-state");
   assert.ok(reviewIndex >= 0 && reviewIndex < setupStateIndex);
   assert.match(String(review.run), /exact-review-queue-request\.js heartbeat --phase finalizing\)/);
   assert.match(String(review.run), /mark_finalizing \|\| review_exit_code=1/);
+});
+
+test("exact review generation reads the item's prior canonical record", () => {
+  const workflow = parse(readFileSync(".github/workflows/sweep.yml", "utf8")) as Record<
+    string,
+    any
+  >;
+  const steps = workflow.jobs["event-review-apply"].steps as Array<Record<string, any>>;
+  const review = steps.find((step) => step.name === "Review exact event item");
+  const reviewIndex = steps.indexOf(review!);
+  // The review command reads records/<slug>/items/<number>.md; without that
+  // prior record every scheduled pass misses both review caches.
+  const priorRecordIndex = steps.findIndex(
+    (step, index) =>
+      index < reviewIndex &&
+      step.uses === "./.github/actions/setup-state" &&
+      step.with?.["records-item-number"] === "${{ steps.target.outputs.item_number }}",
+  );
+  const priorRecord = steps[priorRecordIndex];
+
+  assert.ok(review);
+  assert.ok(priorRecord, "the exact review must hydrate its prior record before generation");
+  assert.equal(priorRecord.with["records-repo-slugs"], "${{ steps.target.outputs.target_slug }}");
+  assert.equal(priorRecord.with["hydrate-records"] ?? "true", "true");
+  assert.equal(priorRecord.with["hydrate-git-state"], "false");
+  assert.equal(priorRecord.with["hydrate-state-blobs"], "false");
+  // A missing record only costs the cache; it must not block the review.
+  assert.equal(priorRecord["continue-on-error"], true);
+  // A stalled Worker must not hold the review lease before generation starts.
+  assert.ok(
+    Number(priorRecord["timeout-minutes"]) > 0 && Number(priorRecord["timeout-minutes"]) <= 5,
+  );
+  assert.equal(priorRecord.if, review.if);
+  // The Worker secret stays scoped to the hydration step.
+  assert.doesNotMatch(JSON.stringify(review.env), /CLAWSWEEPER_WEBHOOK_SECRET/);
 });

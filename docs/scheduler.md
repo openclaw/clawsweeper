@@ -926,12 +926,14 @@ Review cadence:
 - older inactive issues: weekly
 - review policy hash changes: due immediately
 
-The activity check ignores ClawSweeper-owned GitHub mutations that are already
-recorded in durable report frontmatter. `review_comment_synced_at` covers public
-review comment writes, and `labels_synced_at` covers ClawSweeper label-only
-writes such as priority or advisory issue-label syncs. If GitHub `updated_at` is
-at or before either marker, the planner does not treat it as fresh reporter or
-maintainer activity.
+The activity check does not attribute later item updates to ClawSweeper. GitHub
+`updated_at` has one-second precision, so `review_comment_synced_at` and
+`labels_synced_at` cannot prove that a later update was ClawSweeper's own. An
+item updated at or after its last review stays in the hourly activity bucket,
+including after ClawSweeper's own comment, label, and review-lease writes. The
+exact review then checks the [structural review cache](review-cache.md) against
+the item's prior canonical record, so an unchanged item reuses its verdict
+instead of running the model again.
 
 Selection uses weighted buckets so hot issues cannot starve pull requests and
 older issue backlog forever. The normal scheduler cycles through:

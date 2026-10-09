@@ -3,6 +3,16 @@
 Scheduled keep-open reviews use two exact-input cache stages. Codex judges
 changed content; ClawSweeper does not infer source equivalence.
 
+## Prior Record
+
+Both stages compare against the item's prior canonical record. Hosted exact
+reviews hydrate only that item's record from the Worker immediately before
+generation, and the review reads it from `records/<slug>/items/<number>.md`.
+Without the record, the structural stage reports `missing_review`, the content
+stage has no verdict to reuse, and the item is reviewed again in full; a failed
+hydration keeps that fallback. The hydration step is bounded to five minutes so
+a stalled Worker cannot hold the review lease before generation starts.
+
 ## Structural Stage
 
 Before ClawSweeper hydrates full GitHub context, it loads bounded metadata for

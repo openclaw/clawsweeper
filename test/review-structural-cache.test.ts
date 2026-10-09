@@ -668,6 +668,73 @@ test("a validated reservation covers its own activity but nothing after it", () 
   );
 });
 
+test("an unchanged scheduled pass reuses its verdict once the prior record is present", () => {
+  // Timestamps from two consecutive scheduled passes on one unchanged issue
+  // (2026-10-07, UTC). Pass 1 reserved at 08:43:57, synced labels at 08:46:32
+  // and its durable comment at 08:46:43, then released the reservation, which
+  // moved item activity to 08:46:46. Pass 2 reserved at 09:50:52.
+  const now = Date.parse("2026-10-07T09:50:58Z");
+  const priorReview = review({
+    lastFullReviewAt: "2026-10-07T08:46:03Z",
+    labelsSyncedAt: "2026-10-07T08:46:32Z",
+    reviewCommentSyncedAt: "2026-10-07T08:46:43Z",
+  });
+  const priorRecord = record(issueSnapshot({ activityUpdatedAt: "2026-10-07T08:43:57Z" }));
+  const base = {
+    review: priorReview,
+    priorRecord,
+    currentRecord: record(issueSnapshot({ activityUpdatedAt: "2026-10-07T09:50:52Z" })),
+    reviewPolicy: "policy-1",
+    reviewModel: "gpt-5.6",
+    explicitDispatch: false,
+    maintainerRequest: false,
+    coordinationEnabled: true,
+    now,
+  };
+
+  // Without the hydrated prior record the pass can only hydrate and rerun the model.
+  assert.equal(
+    reviewStructuralCacheProbeDecision({ ...base, review: null }).reason,
+    "missing_review",
+  );
+  // The release is newer than both recorded syncs, so it alone is not covered.
+  assert.equal(
+    reviewStructuralCacheDecision({
+      ...base,
+      currentRecord: record(issueSnapshot({ activityUpdatedAt: "2026-10-07T08:46:46Z" })),
+    }).reason,
+    "activity_changed",
+  );
+  // The next pass's own reservation covers the release and its own comment.
+  assert.deepEqual(
+    reviewStructuralCacheDecision({ ...base, ownedReservationUpdatedAt: "2026-10-07T09:50:52Z" }),
+    { hit: true, reason: "hit" },
+  );
+  // A human comment after pass 1 still forces a fresh review.
+  const humanComment = {
+    id: "IC_human_after_review",
+    updatedAt: "2026-10-07T09:00:00Z",
+    author: "reporter",
+    authorAssociation: "NONE",
+    state: null,
+    commitSha: null,
+    bodyDigest: digest("still broken"),
+  };
+  assert.equal(
+    reviewStructuralCacheDecision({
+      ...base,
+      currentRecord: record(
+        issueSnapshot({
+          activityUpdatedAt: "2026-10-07T09:50:52Z",
+          comments: [...issueSnapshot().comments, humanComment],
+        }),
+      ),
+      ownedReservationUpdatedAt: "2026-10-07T09:50:52Z",
+    }).reason,
+    "source_changed",
+  );
+});
+
 test("disabled coordination and missing lease revisions force hydration", () => {
   assert.equal(decision({ coordinationEnabled: false }).reason, "coordination_disabled");
   assert.equal(

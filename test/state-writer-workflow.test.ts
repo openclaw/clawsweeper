@@ -31,7 +31,7 @@ test("state hydration retains canonical defaults with an explicit operational-on
     }
   }
 
-  assert.equal(setups.length, 20, "setup-state site count is an audited invariant");
+  assert.equal(setups.length, 21, "setup-state site count is an audited invariant");
   assert.deepEqual(
     setups.filter(({ step }) => step.with?.["hydrate-records"] === "false").map(({ site }) => site),
     [".github/workflows/repair-publish-results.yml:publish"],
@@ -58,6 +58,7 @@ test("state hydration retains canonical defaults with an explicit operational-on
     [
       ".github/workflows/exact-review-batch-publish.yml:publish",
       ".github/workflows/live-proof-maintenance.yml:retract",
+      ".github/workflows/sweep.yml:event-review-apply",
       ".github/workflows/sweep.yml:event-review-apply",
       ".github/workflows/sweep.yml:event-review-publish",
       ".github/workflows/sweep.yml:target-fanout",
@@ -91,6 +92,7 @@ test("per-target state hydration is slug-scoped while fleet lanes retain discove
       ".github/workflows/repair-issue-implementation-backfill.yml:backfill",
       ".github/workflows/repair-issue-implementation-intake.yml:intake",
       ".github/workflows/spam-scanner.yml:scan",
+      ".github/workflows/sweep.yml:event-review-apply",
       ".github/workflows/sweep.yml:event-review-apply",
       ".github/workflows/sweep.yml:event-review-publish",
       ".github/workflows/sweep.yml:plan",

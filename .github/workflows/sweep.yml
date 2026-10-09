@@ -1080,6 +1080,23 @@ jobs:
           fi
           exit 1
 
+      # The review reads its prior canonical record from records/<slug>/items.
+      # Without it, the structural and content review caches can never reuse an
+      # unchanged verdict. Hydration failure keeps the full-review fallback.
+      - uses: ./.github/actions/setup-state
+        if: ${{ steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.live-item.outputs.proceed == 'true' && steps.reserve-exact-review-lease.outputs.status == 'posted' && (steps.review-status-fence.outcome == 'skipped' || (steps.review-status-fence.outputs.authorized == 'true' && steps.release-review-status-fence.outputs.authorized == 'true')) }}
+        id: prior-record-setup-state
+        continue-on-error: true
+        timeout-minutes: 5
+        with:
+          coordinator-url: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
+          records-url: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
+          records-secret: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
+          records-repo-slugs: ${{ steps.target.outputs.target_slug }}
+          records-item-number: ${{ steps.target.outputs.item_number }}
+          hydrate-git-state: "false"
+          hydrate-state-blobs: "false"
+
       - name: Review exact event item
         id: review-exact-event-item
         if: ${{ steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.live-item.outputs.proceed == 'true' && steps.reserve-exact-review-lease.outputs.status == 'posted' && (steps.review-status-fence.outcome == 'skipped' || (steps.review-status-fence.outputs.authorized == 'true' && steps.release-review-status-fence.outputs.authorized == 'true')) }}
