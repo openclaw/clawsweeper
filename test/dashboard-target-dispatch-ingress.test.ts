@@ -1,7 +1,5 @@
 import { execFileSync } from "node:child_process";
 import { generateKeyPairSync, sign } from "node:crypto";
-import { readFileSync } from "node:fs";
-import { parse } from "yaml";
 import {
   assert,
   test,
@@ -156,15 +154,6 @@ test("target dispatch OIDC binds repository, event, branch, workflow, and run", 
 });
 
 test("target dispatch intake matches the legacy relay decision for dispatcher payloads", () => {
-  const workflow = parse(readFileSync(".github/workflows/sweep.yml", "utf8"));
-  const intake = workflow.jobs["legacy-event-queue-intake"].steps.find(
-    (step: { name?: string }) =>
-      step.name === "Enqueue legacy event through the durable control plane",
-  ).run as string;
-  const relayScript = [...intake.matchAll(/node <<'NODE'\n([\s\S]*?)\nNODE\n/g)].map(
-    (match) => match[1],
-  )[1];
-  assert.ok(relayScript);
   const legacyOpenclawPayload = {
     target_repo: "openclaw/openclaw",
     target_branch: "main",
@@ -182,19 +171,19 @@ test("target dispatch intake matches the legacy relay decision for dispatcher pa
     [issuePayload, { ...pullIdentity, eventName: "issues" as const }],
   ] as const) {
     const relay = JSON.parse(
-      execFileSync(process.execPath, ["-"], {
-        input: relayScript,
-        encoding: "utf8",
-        env: {
-          ...process.env,
-          CLIENT_PAYLOAD: JSON.stringify(payload),
-          TARGET_REPO: payload.target_repo,
-          TARGET_BRANCH: payload.target_branch,
-          USE_SOURCE_AUTHORITY: "0",
-          GITHUB_RUN_ID: "36809311832",
-          GITHUB_RUN_ATTEMPT: "1",
+      execFileSync(
+        process.execPath,
+        ["dist/repair/exact-review-queue-request.js", "enqueue", "body"],
+        {
+          encoding: "utf8",
+          env: {
+            ...process.env,
+            CLIENT_PAYLOAD: JSON.stringify(payload),
+            GITHUB_RUN_ID: "36809311832",
+            GITHUB_RUN_ATTEMPT: "1",
+          },
         },
-      }),
+      ),
     );
     const direct = targetDispatchQueueIntake(payload, identity);
     assert.ok(direct.ok);

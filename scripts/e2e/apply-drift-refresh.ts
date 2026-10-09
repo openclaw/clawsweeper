@@ -29,6 +29,10 @@ export async function proveApplyDriftRefresh() {
     path.join(sourceRoot, "scripts/control-plane-curl.sh"),
     path.join(artifacts, "control-plane-curl.sh"),
   );
+  fs.copyFileSync(
+    path.join(sourceRoot, "src/repair/exact-review-queue-request.ts"),
+    path.join(artifacts, "exact-review-queue-request.mts"),
+  );
   const workflow = YAML.parse(
     fs.readFileSync(path.join(sourceRoot, ".github/workflows/sweep.yml"), "utf8"),
   );
@@ -116,7 +120,8 @@ process.stdout.write(args.includes('--jq') ? (pr ? 'pull_request' : 'issue') : J
     APPLY_TARGET_REPO: "openclaw/openclaw",
     APPLY_AUTO_SELECTED_BATCH: "true",
     DISPATCH_REPOSITORY: "openclaw/clawsweeper",
-    GITHUB_RUN_ID: "fixture",
+    // Actions run ids are numeric; the intake command checks this.
+    GITHUB_RUN_ID: "424242",
     GITHUB_RUN_ATTEMPT: "1",
     GITHUB_OUTPUT: path.join(artifacts, "live-output.txt"),
     QUEUE_URL: "http://queue.invalid",

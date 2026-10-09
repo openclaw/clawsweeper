@@ -184,6 +184,14 @@ test("the source file alone gives the same bodies and errors as the build", () =
   try {
     const copy = join(dir, "exact-review-queue-request.mts");
     copyFileSync("src/repair/exact-review-queue-request.ts", copy);
+    // The legacy intake payload; the other records ignore it.
+    const env = {
+      CLIENT_PAYLOAD: JSON.stringify({
+        item_kind: "pull_request",
+        item_number: 5,
+        target_branch: "main",
+      }),
+    };
     for (const argv of [
       [
         "lifecycle",
@@ -196,9 +204,11 @@ test("the source file alone gives the same bodies and errors as the build", () =
       ["lifecycle", "terminal-disposition", "--kind", "requeue"],
       ["lifecycle", "terminal-disposition", "--kind", "review_completed_routed"],
       ["heartbeat", "--phase", "status"],
+      ["enqueue", "route"],
+      ["enqueue", "body"],
     ]) {
-      const built = run(argv, {});
-      assert.deepEqual(run(argv, {}, copy), built, argv.join(" "));
+      const built = run(argv, env);
+      assert.deepEqual(run(argv, env, copy), built, argv.join(" "));
     }
   } finally {
     rmSync(dir, { recursive: true, force: true });
@@ -397,6 +407,169 @@ test("command acknowledgement and terminal-finalization requests reject invalid 
     ],
   ] as const) {
     const result = run([...args], env);
+    assert.equal(result.status, 1, message);
+    assert.equal(result.body, "", message);
+    assert.equal(result.error, `exact-review-queue-request: ${message}\n`);
+  }
+});
+
+function enqueue(record: string, payload: unknown, env: Record<string, string> = {}) {
+  return run(["enqueue", record], { CLIENT_PAYLOAD: JSON.stringify(payload), ...env });
+}
+
+const sourceTuple = {
+  installation_id: 1,
+  source_head_sha: "a".repeat(40),
+  source_base_sha: "b".repeat(40),
+  source_is_draft: false,
+  source_content_revision: "c".repeat(64),
+};
+
+test("legacy events go to branch authority, source authority or plain enqueue", () => {
+  const editedPull = {
+    item_kind: "pull_request",
+    target_repo: "openclaw/clawhub",
+    source_event: "pull_request",
+    source_action: "edited",
+    queue_claim: sourceTuple,
+  };
+  for (const [payload, route] of [
+    [{ item_kind: "issue", source_event: "issues", source_action: "opened" }, "branch-authority"],
+    [{ item_kind: "pull_request", source_event: "pull_request_target" }, "branch-authority"],
+    [editedPull, "branch-authority"],
+    [{ ...editedPull, target_branch: "main" }, "source-authority"],
+    // The flat payload fields are the older form of the queue claim.
+    [
+      { ...editedPull, ...sourceTuple, queue_claim: undefined, target_branch: "main" },
+      "source-authority",
+    ],
+    [{ ...editedPull, source_action: "synchronize", target_branch: "main" }, "enqueue"],
+    [{ ...editedPull, source_event: "pull_request_target", target_branch: "main" }, "enqueue"],
+    [
+      {
+        ...editedPull,
+        target_branch: "main",
+        ingress_route: "target_dispatcher",
+        ingress_fingerprint: "d".repeat(64),
+      },
+      "enqueue",
+    ],
+    [{ target_branch: "release/v1", source_event: "issue_comment" }, "enqueue"],
+  ] as const) {
+    const result = enqueue("route", payload);
+    assert.equal(result.status, 0, result.error);
+    assert.equal(result.body, `/internal/exact-review/${route}`, JSON.stringify(payload));
+  }
+  // Only a branchless event asks the queue for source authority in its body.
+  assert.equal(JSON.parse(enqueue("body", editedPull).body).source_authority_required, true);
+  assert.equal(
+    Object.hasOwn(
+      JSON.parse(enqueue("body", { ...editedPull, target_branch: "main" }).body),
+      "source_authority_required",
+    ),
+    false,
+  );
+});
+
+test("legacy event bodies keep the queue claim, review options and flat fields in that order", () => {
+  assert.equal(
+    enqueue("body", {
+      target_repo: " openclaw/openclaw ",
+      target_branch: "main",
+      item_number: 117838,
+      item_kind: "pull_request",
+      source_event: "pull_request",
+      source_action: "edited",
+      supersedes_in_progress: true,
+      source_delivery_id: "original-review-delivery",
+      ...sourceTuple,
+      queue_claim: {
+        source_head_sha: "E".repeat(40),
+        source_updated_at: "2026-10-09T00:00:00Z",
+        codex_timeout_ms: 1_200_000,
+      },
+      review_options: { codex_timeout_ms: 1, media_proof_timeout_ms: 480_000 },
+      review_acknowledgement_comment_id: 7001,
+      command_status_marker: "<!-- marker -->",
+      status_comment_id: 7002,
+      additional_prompt: "Retry context",
+      ingress_route: "target_dispatcher",
+      ingress_fingerprint: "D".repeat(64),
+    }).body,
+    JSON.stringify({
+      delivery_id: "legacy:10:1",
+      installation_id: 1,
+      decision: {
+        targetRepo: "openclaw/openclaw",
+        targetBranch: "main",
+        itemNumber: 117838,
+        itemKind: "pull_request",
+        sourceEvent: "pull_request",
+        sourceAction: "edited",
+        supersedesInProgress: true,
+        sourceDeliveryId: "original-review-delivery",
+        sourceHeadSha: "e".repeat(40),
+        sourceBaseSha: "b".repeat(40),
+        sourceIsDraft: false,
+        sourceContentRevision: "c".repeat(64),
+        sourceUpdatedAt: "2026-10-09T00:00:00Z",
+        codexTimeoutMs: 1_200_000,
+        mediaProofTimeoutMs: 480_000,
+        commandStatusMarker: "<!-- marker -->",
+        statusCommentId: 7002,
+        reviewAcknowledgementCommentId: 7001,
+        additionalPrompt: "Retry context",
+      },
+      ingress: { route: "target_dispatcher", fingerprint: "d".repeat(64) },
+    }),
+  );
+  // A router dispatch key names the delivery, so the run is not read.
+  assert.equal(
+    enqueue(
+      "body",
+      {
+        dispatch_key: " key-1 ",
+        item_number: 1455,
+        source_action: "failed_review_shard_recovery",
+        expected_source_revision: "a".repeat(64),
+      },
+      { GITHUB_RUN_ID: "" },
+    ).body,
+    JSON.stringify({
+      delivery_id: "router:key-1",
+      decision: {
+        targetRepo: "openclaw/openclaw",
+        itemNumber: 1455,
+        itemKind: "issue",
+        sourceEvent: "issues",
+        sourceAction: "failed_review_shard_recovery",
+        expectedSourceRevision: "a".repeat(64),
+        supersedesInProgress: false,
+      },
+    }),
+  );
+});
+
+test("legacy event requests with an invalid target print no route or body", () => {
+  for (const [record, payload, env, message] of [
+    ["route", { target_repo: "openclaw" }, {}, "invalid legacy target repository: openclaw"],
+    [
+      "body",
+      { target_repo: "openclaw/openclaw\nother/repo" },
+      {},
+      "invalid legacy target repository: openclaw/openclaw\nother/repo",
+    ],
+    [
+      "route",
+      { target_branch: "main; rm" },
+      {},
+      "invalid legacy target branch for openclaw/openclaw: main; rm",
+    ],
+    ["body", null, {}, "invalid CLIENT_PAYLOAD"],
+    ["body", {}, { GITHUB_RUN_ID: "" }, "invalid GITHUB_RUN_ID"],
+    ["claim", {}, {}, "enqueue record must be route or body"],
+  ] as const) {
+    const result = enqueue(record, payload, env);
     assert.equal(result.status, 1, message);
     assert.equal(result.body, "", message);
     assert.equal(result.error, `exact-review-queue-request: ${message}\n`);

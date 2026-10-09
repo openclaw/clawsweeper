@@ -515,6 +515,11 @@ try {
       path.join(dir, "scripts/control-plane-curl.sh"),
       path.join(runnerTemp, "control-plane-curl.sh"),
     );
+    // Newer relay steps also run the queue request command that the job downloads.
+    const requestCommand = path.join(dir, "src/repair/exact-review-queue-request.ts");
+    if (existsSync(requestCommand)) {
+      copyFileSync(requestCommand, path.join(runnerTemp, "exact-review-queue-request.mts"));
+    }
 
     const entry = path.join(scratch, `${variant}-entry.ts`);
     writeFileSync(

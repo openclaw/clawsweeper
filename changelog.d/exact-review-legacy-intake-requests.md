@@ -1,0 +1,1 @@
+- Build the legacy `repository_dispatch` intake route and body in `sweep.yml` with `exact-review-queue-request.ts enqueue`, downloaded for the pinned workflow commit, instead of two inline Node scripts.

@@ -273,6 +273,11 @@ jobs:
           test -s "$RUNNER_TEMP/control-plane-curl.sh"
           source "$RUNNER_TEMP/control-plane-curl.sh"
           declare -F control_plane_curl > /dev/null
+          # The legacy intake runs without checkout. It builds its queue route
+          # and body with the typed command from the same pinned commit.
+          # The runner Node strips the TypeScript types.
+          curl -fsSL --retry 3 --retry-all-errors --retry-connrefused "https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${GITHUB_SHA}/src/repair/exact-review-queue-request.ts" -o "$RUNNER_TEMP/exact-review-queue-request.mts"
+          test -s "$RUNNER_TEMP/exact-review-queue-request.mts"
       - name: Enqueue legacy event through the durable control plane
         env:
           CLIENT_PAYLOAD: ${{ toJson(github.event.client_payload) }}
@@ -283,177 +288,9 @@ jobs:
           source "$RUNNER_TEMP/control-plane-curl.sh"
           test -n "$CLAWSWEEPER_WEBHOOK_SECRET"
           queue_url="${QUEUE_URL%/}"
-          mapfile -d '' -t legacy_intake_fields < <(node <<'NODE'
-          const payload = JSON.parse(process.env.CLIENT_PAYLOAD || "{}");
-          const itemKind = payload.item_kind === "pull_request" ? "pull_request" : "issue";
-          const queueClaim = payload.queue_claim && typeof payload.queue_claim === "object"
-            ? payload.queue_claim
-            : {};
-          const installationId = Number(queueClaim.installation_id ?? payload.installation_id);
-          const sourceHeadSha = String(
-            queueClaim.source_head_sha ?? payload.source_head_sha ?? "",
-          )
-            .trim()
-            .toLowerCase();
-          const sourceBaseSha = String(
-            queueClaim.source_base_sha ?? payload.source_base_sha ?? "",
-          )
-            .trim()
-            .toLowerCase();
-          const sourceIsDraft = queueClaim.source_is_draft ?? payload.source_is_draft;
-          const sourceContentRevision = String(
-            queueClaim.source_content_revision ?? payload.source_content_revision ?? "",
-          )
-            .trim()
-            .toLowerCase();
-          const ingressFingerprint = String(payload.ingress_fingerprint || "").trim().toLowerCase();
-          const targetDispatcherIngress =
-            payload.ingress_route === "target_dispatcher" &&
-            itemKind === "pull_request" &&
-            (payload.source_event === "pull_request" || payload.source_event === "pull_request_target") &&
-            /^[0-9a-f]{64}$/.test(ingressFingerprint);
-          process.stdout.write(
-            `${String(payload.target_repo || "openclaw/openclaw").trim()}\0${String(payload.target_branch || "").trim()}\0${itemKind === "pull_request" && payload.source_event === "pull_request" && payload.source_action === "edited" && Number.isInteger(installationId) && installationId > 0 && /^[0-9a-f]{40}$/.test(sourceHeadSha) && /^[0-9a-f]{40}$/.test(sourceBaseSha) && typeof sourceIsDraft === "boolean" && /^[0-9a-f]{64}$/.test(sourceContentRevision) && !targetDispatcherIngress ? "1" : "0"}\0`,
-          );
-          NODE
-          )
-          if [ "${#legacy_intake_fields[@]}" -ne 3 ]; then
-            echo "Invalid legacy intake field count." >&2
-            exit 1
-          fi
-          target_repo="${legacy_intake_fields[0]}"
-          target_branch="${legacy_intake_fields[1]}"
-          use_source_authority="${legacy_intake_fields[2]}"
-          if ! printf '%s' "$target_repo" | grep -Eq '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$'; then
-            echo "Invalid legacy target repository: $target_repo" >&2
-            exit 1
-          fi
-          if [ -n "$target_branch" ] && ! printf '%s' "$target_branch" | grep -Eq '^[A-Za-z0-9_.\/-]+$'; then
-            echo "Invalid legacy target branch for $target_repo: $target_branch" >&2
-            exit 1
-          fi
-          queue_path="/internal/exact-review/enqueue"
-          if [ -z "$target_branch" ]; then
-            queue_path="/internal/exact-review/branch-authority"
-          elif [ "$use_source_authority" = "1" ]; then
-            queue_path="/internal/exact-review/source-authority"
-          fi
-          payload="$(TARGET_REPO="$target_repo" TARGET_BRANCH="$target_branch" USE_SOURCE_AUTHORITY="$use_source_authority" node <<'NODE'
-          const payload = JSON.parse(process.env.CLIENT_PAYLOAD || "{}");
-          const itemKind = payload.item_kind === "pull_request" ? "pull_request" : "issue";
-          const sourceEvent =
-            payload.source_event === "pull_request" || payload.source_event === "pull_request_target"
-              ? "pull_request"
-              : "issues";
-          const queueClaim = payload.queue_claim && typeof payload.queue_claim === "object"
-            ? payload.queue_claim
-            : {};
-          const reviewOptions = payload.review_options && typeof payload.review_options === "object"
-            ? payload.review_options
-            : {};
-          const dispatchKey = String(payload.dispatch_key || "").trim();
-          const ingressFingerprint = String(payload.ingress_fingerprint || "").trim().toLowerCase();
-          const ingress =
-            payload.ingress_route === "target_dispatcher" &&
-            itemKind === "pull_request" &&
-            sourceEvent === "pull_request" &&
-            /^[0-9a-f]{64}$/.test(ingressFingerprint)
-              ? { route: "target_dispatcher", fingerprint: ingressFingerprint }
-              : undefined;
-          const sourceHeadSha = String(queueClaim.source_head_sha ?? payload.source_head_sha ?? "").trim().toLowerCase();
-          const sourceBaseSha = String(queueClaim.source_base_sha ?? payload.source_base_sha ?? "").trim().toLowerCase();
-          const sourceIsDraft = queueClaim.source_is_draft ?? payload.source_is_draft;
-          const sourceContentRevision = String(queueClaim.source_content_revision ?? payload.source_content_revision ?? "").trim().toLowerCase();
-          const sourceUpdatedAt = String(queueClaim.source_updated_at ?? payload.source_updated_at ?? "").trim();
-          const reviewAcknowledgementCommentId = Number(
-            queueClaim.review_acknowledgement_comment_id ??
-              reviewOptions.review_acknowledgement_comment_id ??
-              payload.review_acknowledgement_comment_id,
-          );
-          const installationId = Number(queueClaim.installation_id ?? payload.installation_id);
-          const targetBranch = String(process.env.TARGET_BRANCH || "").trim();
-          const sourceAuthorityRequired = process.env.USE_SOURCE_AUTHORITY === "1";
-          process.stdout.write(
-            JSON.stringify({
-              delivery_id: dispatchKey
-                ? `router:${dispatchKey}`
-                : `legacy:${process.env.GITHUB_RUN_ID}:${process.env.GITHUB_RUN_ATTEMPT}`,
-              ...(Number.isInteger(installationId) && installationId > 0
-                ? { installation_id: installationId }
-                : {}),
-              ...(!targetBranch && sourceAuthorityRequired
-                ? { source_authority_required: true }
-                : {}),
-              decision: {
-                targetRepo: process.env.TARGET_REPO,
-                ...(targetBranch ? { targetBranch } : {}),
-                itemNumber: Number(payload.item_number),
-                itemKind,
-                sourceEvent,
-                sourceAction: payload.source_action || "legacy_dispatch",
-                ...(Object.hasOwn(payload, "expected_source_revision")
-                  ? { expectedSourceRevision: payload.expected_source_revision }
-                  : {}),
-                supersedesInProgress: payload.supersedes_in_progress === true,
-                ...(typeof payload.source_delivery_id === "string" && payload.source_delivery_id
-                  ? { sourceDeliveryId: payload.source_delivery_id }
-                  : {}),
-                ...(/^[0-9a-f]{40}$/.test(sourceHeadSha)
-                  ? { sourceHeadSha }
-                  : {}),
-                ...(/^[0-9a-f]{40}$/.test(sourceBaseSha)
-                  ? { sourceBaseSha }
-                  : {}),
-                ...(typeof sourceIsDraft === "boolean" ? { sourceIsDraft } : {}),
-                ...(/^[0-9a-f]{64}$/.test(sourceContentRevision)
-                  ? { sourceContentRevision }
-                  : {}),
-                ...(sourceUpdatedAt && Number.isFinite(Date.parse(sourceUpdatedAt))
-                  ? { sourceUpdatedAt }
-                  : {}),
-                ...(Number.isFinite(
-                  Number(queueClaim.codex_timeout_ms ?? reviewOptions.codex_timeout_ms ?? payload.codex_timeout_ms),
-                )
-                  ? {
-                      codexTimeoutMs: Number(
-                        queueClaim.codex_timeout_ms ?? reviewOptions.codex_timeout_ms ?? payload.codex_timeout_ms,
-                      ),
-                    }
-                  : {}),
-                ...(Number.isFinite(
-                  Number(
-                    queueClaim.media_proof_timeout_ms ??
-                      reviewOptions.media_proof_timeout_ms ??
-                      payload.media_proof_timeout_ms,
-                  ),
-                )
-                  ? {
-                      mediaProofTimeoutMs: Number(
-                        queueClaim.media_proof_timeout_ms ??
-                          reviewOptions.media_proof_timeout_ms ??
-                          payload.media_proof_timeout_ms,
-                      ),
-                    }
-                  : {}),
-                ...(Object.hasOwn(payload, "command_status_marker")
-                  ? { commandStatusMarker: payload.command_status_marker }
-                  : {}),
-                ...(Object.hasOwn(payload, "status_comment_id")
-                  ? { statusCommentId: payload.status_comment_id }
-                  : {}),
-                ...(Number.isSafeInteger(reviewAcknowledgementCommentId) &&
-                reviewAcknowledgementCommentId > 0
-                  ? { reviewAcknowledgementCommentId }
-                  : {}),
-                ...(Object.hasOwn(payload, "additional_prompt")
-                  ? { additionalPrompt: payload.additional_prompt }
-                  : {}),
-              },
-              ...(ingress ? { ingress } : {}),
-            }),
-          );
-          NODE
-          )"
+          request="$RUNNER_TEMP/exact-review-queue-request.mts"
+          queue_path="$(node "$request" enqueue route)"
+          payload="$(node "$request" enqueue body)"
           control_plane_signed_post "$queue_url$queue_path" "$payload" \
             --fail --silent --show-error --connect-timeout 5 --max-time 20 >/dev/null
 

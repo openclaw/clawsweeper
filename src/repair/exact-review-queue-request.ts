@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 // Builds exact-review queue request bodies for workflow steps.
 // Workflow steps send the body with control_plane_curl.
+// Steps that run before checkout run this source file directly, so it imports
+// only Node built-ins.
 import { parseArgs } from "node:util";
 
 type ExactReviewLease = {
@@ -27,6 +29,27 @@ type ExactReviewLifecycleTarget = {
   revision: number;
 };
 
+type JsonObject = Record<string, unknown>;
+
+// A legacy repository_dispatch event, read from the client payload that the
+// legacy intake step receives in CLIENT_PAYLOAD.
+type LegacyEvent = {
+  payload: JsonObject;
+  queueClaim: JsonObject;
+  reviewOptions: JsonObject;
+  targetRepo: string;
+  // Empty when the event does not name a branch. The queue then resolves it.
+  targetBranch: string;
+  itemKind: "issue" | "pull_request";
+  sourceEvent: "issues" | "pull_request";
+  ingress: { route: "target_dispatcher"; fingerprint: string } | undefined;
+  sourceHeadSha: string;
+  sourceBaseSha: string;
+  sourceIsDraft: unknown;
+  sourceContentRevision: string;
+  installationId: number;
+};
+
 // The values that the queue accepts for each lifecycle record.
 const ROUTER_OUTCOMES = ["durable", "not_required"] as const;
 const CANONICAL_OUTCOMES = ["accepted", "deduped", "superseded"] as const;
@@ -48,7 +71,9 @@ const STATUS_ADDRESS_OPTIONS = {
 } as const;
 
 try {
-  process.stdout.write(JSON.stringify(exactReviewQueueRequest(process.argv.slice(2), process.env)));
+  const result = exactReviewQueueRequest(process.argv.slice(2), process.env);
+  // A route is plain text. A body is JSON.
+  process.stdout.write(typeof result === "string" ? result : JSON.stringify(result));
 } catch (error) {
   process.stderr.write(`exact-review-queue-request: ${(error as Error).message}\n`);
   process.exitCode = 1;
@@ -63,11 +88,169 @@ function exactReviewQueueRequest(argv: string[], env: NodeJS.ProcessEnv) {
       return exactReviewLifecycleBody(args, env);
     case "terminal-finalization":
       return exactReviewTerminalFinalizationBody(args, env);
+    case "enqueue":
+      return legacyEventEnqueue(args, env);
     default:
       throw new Error(
-        "usage: heartbeat --phase <review|status|finalizing> | lifecycle <router-receipt|canonical-receipt|terminal-disposition|command-ack-failed|command-ack-observed> | terminal-finalization <attempt|skip>",
+        "usage: heartbeat --phase <review|status|finalizing> | lifecycle <router-receipt|canonical-receipt|terminal-disposition|command-ack-failed|command-ack-observed> | terminal-finalization <attempt|skip> | enqueue <route|body>",
       );
   }
+}
+
+// `enqueue route` prints the queue path for a legacy event, and `enqueue body`
+// prints its request body. Both fail on an invalid target before any request.
+function legacyEventEnqueue(args: string[], env: NodeJS.ProcessEnv) {
+  const [record, ...options] = args;
+  if (options.length > 0) throw new Error("enqueue takes no options");
+  const event = legacyEventFromEnv(env);
+  switch (record) {
+    case "route":
+      if (!event.targetBranch) return "/internal/exact-review/branch-authority";
+      return legacyEventNeedsSourceAuthority(event)
+        ? "/internal/exact-review/source-authority"
+        : "/internal/exact-review/enqueue";
+    case "body":
+      return legacyEventBody(event, env);
+    default:
+      throw new Error("enqueue record must be route or body");
+  }
+}
+
+function legacyEventFromEnv(env: NodeJS.ProcessEnv): LegacyEvent {
+  const payload: unknown = JSON.parse(env.CLIENT_PAYLOAD || "{}");
+  if (!payload || typeof payload !== "object") throw new Error("invalid CLIENT_PAYLOAD");
+  const fields = payload as JsonObject;
+  const queueClaim = (
+    fields.queue_claim && typeof fields.queue_claim === "object" ? fields.queue_claim : {}
+  ) as JsonObject;
+  const targetRepo = String(fields.target_repo || "openclaw/openclaw").trim();
+  const targetBranch = String(fields.target_branch || "").trim();
+  if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(targetRepo)) {
+    throw new Error(`invalid legacy target repository: ${targetRepo}`);
+  }
+  if (targetBranch && !/^[A-Za-z0-9_./-]+$/.test(targetBranch)) {
+    throw new Error(`invalid legacy target branch for ${targetRepo}: ${targetBranch}`);
+  }
+  const itemKind = fields.item_kind === "pull_request" ? "pull_request" : "issue";
+  const sourceEvent =
+    fields.source_event === "pull_request" || fields.source_event === "pull_request_target"
+      ? "pull_request"
+      : "issues";
+  const fingerprint = String(fields.ingress_fingerprint || "")
+    .trim()
+    .toLowerCase();
+  // The target dispatcher sends pull request events with a payload fingerprint.
+  const ingress =
+    fields.ingress_route === "target_dispatcher" &&
+    itemKind === "pull_request" &&
+    sourceEvent === "pull_request" &&
+    /^[0-9a-f]{64}$/.test(fingerprint)
+      ? { route: "target_dispatcher" as const, fingerprint }
+      : undefined;
+  // The queue claim fields come first. The flat payload fields are the older form.
+  const claimText = (name: string) =>
+    String(queueClaim[name] ?? fields[name] ?? "")
+      .trim()
+      .toLowerCase();
+  return {
+    payload: fields,
+    queueClaim,
+    reviewOptions: (fields.review_options && typeof fields.review_options === "object"
+      ? fields.review_options
+      : {}) as JsonObject,
+    targetRepo,
+    targetBranch,
+    itemKind,
+    sourceEvent,
+    ingress,
+    sourceHeadSha: claimText("source_head_sha"),
+    sourceBaseSha: claimText("source_base_sha"),
+    sourceIsDraft: queueClaim.source_is_draft ?? fields.source_is_draft,
+    sourceContentRevision: claimText("source_content_revision"),
+    installationId: Number(queueClaim.installation_id ?? fields.installation_id),
+  };
+}
+
+// An edited pull request with its complete source tuple goes through source
+// authority. A target dispatcher event does not.
+function legacyEventNeedsSourceAuthority(event: LegacyEvent) {
+  return (
+    event.itemKind === "pull_request" &&
+    event.payload.source_event === "pull_request" &&
+    event.payload.source_action === "edited" &&
+    Number.isInteger(event.installationId) &&
+    event.installationId > 0 &&
+    /^[0-9a-f]{40}$/.test(event.sourceHeadSha) &&
+    /^[0-9a-f]{40}$/.test(event.sourceBaseSha) &&
+    typeof event.sourceIsDraft === "boolean" &&
+    /^[0-9a-f]{64}$/.test(event.sourceContentRevision) &&
+    !event.ingress
+  );
+}
+
+function legacyEventBody(event: LegacyEvent, env: NodeJS.ProcessEnv) {
+  const { payload, queueClaim, reviewOptions, targetBranch } = event;
+  const dispatchKey = String(payload.dispatch_key || "").trim();
+  const legacyRun = dispatchKey ? undefined : githubRun(env);
+  const sourceUpdatedAt = String(
+    queueClaim.source_updated_at ?? payload.source_updated_at ?? "",
+  ).trim();
+  // A review option can come from the queue claim, the review options, or the flat payload.
+  const reviewOption = (name: string) =>
+    Number(queueClaim[name] ?? reviewOptions[name] ?? payload[name]);
+  const codexTimeoutMs = reviewOption("codex_timeout_ms");
+  const mediaProofTimeoutMs = reviewOption("media_proof_timeout_ms");
+  const reviewAcknowledgementCommentId = reviewOption("review_acknowledgement_comment_id");
+  return {
+    delivery_id: legacyRun
+      ? `legacy:${legacyRun.runId}:${legacyRun.runAttempt}`
+      : `router:${dispatchKey}`,
+    ...(Number.isInteger(event.installationId) && event.installationId > 0
+      ? { installation_id: event.installationId }
+      : {}),
+    ...(!targetBranch && legacyEventNeedsSourceAuthority(event)
+      ? { source_authority_required: true }
+      : {}),
+    decision: {
+      targetRepo: event.targetRepo,
+      ...(targetBranch ? { targetBranch } : {}),
+      itemNumber: Number(payload.item_number),
+      itemKind: event.itemKind,
+      sourceEvent: event.sourceEvent,
+      sourceAction: payload.source_action || "legacy_dispatch",
+      ...(Object.hasOwn(payload, "expected_source_revision")
+        ? { expectedSourceRevision: payload.expected_source_revision }
+        : {}),
+      supersedesInProgress: payload.supersedes_in_progress === true,
+      ...(typeof payload.source_delivery_id === "string" && payload.source_delivery_id
+        ? { sourceDeliveryId: payload.source_delivery_id }
+        : {}),
+      ...(/^[0-9a-f]{40}$/.test(event.sourceHeadSha) ? { sourceHeadSha: event.sourceHeadSha } : {}),
+      ...(/^[0-9a-f]{40}$/.test(event.sourceBaseSha) ? { sourceBaseSha: event.sourceBaseSha } : {}),
+      ...(typeof event.sourceIsDraft === "boolean" ? { sourceIsDraft: event.sourceIsDraft } : {}),
+      ...(/^[0-9a-f]{64}$/.test(event.sourceContentRevision)
+        ? { sourceContentRevision: event.sourceContentRevision }
+        : {}),
+      ...(sourceUpdatedAt && Number.isFinite(Date.parse(sourceUpdatedAt))
+        ? { sourceUpdatedAt }
+        : {}),
+      ...(Number.isFinite(codexTimeoutMs) ? { codexTimeoutMs } : {}),
+      ...(Number.isFinite(mediaProofTimeoutMs) ? { mediaProofTimeoutMs } : {}),
+      ...(Object.hasOwn(payload, "command_status_marker")
+        ? { commandStatusMarker: payload.command_status_marker }
+        : {}),
+      ...(Object.hasOwn(payload, "status_comment_id")
+        ? { statusCommentId: payload.status_comment_id }
+        : {}),
+      ...(Number.isSafeInteger(reviewAcknowledgementCommentId) && reviewAcknowledgementCommentId > 0
+        ? { reviewAcknowledgementCommentId }
+        : {}),
+      ...(Object.hasOwn(payload, "additional_prompt")
+        ? { additionalPrompt: payload.additional_prompt }
+        : {}),
+    },
+    ...(event.ingress ? { ingress: event.ingress } : {}),
+  };
 }
 
 // Reads the lease tuple that the claim step exports to each lease-holding step.

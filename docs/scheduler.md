@@ -169,8 +169,15 @@ to `GITHUB_SHA` like the curl helper, into
 `RUNNER_TEMP/exact-review-queue-request.mts`. The runner Node strips the types,
 so the source file runs without a build; it imports only Node built-ins. The
 replay builds each body before its side effect, so a body error stops the step
-before the router dispatch or any queue write. The other pre-checkout steps
-still build their bodies inline.
+before the router dispatch or any queue write.
+
+The `legacy-event-queue-intake` job has no checkout. Its bootstrap step downloads
+the same command source. `enqueue route` prints the queue path for the
+`repository_dispatch` client payload in `CLIENT_PAYLOAD`: `branch-authority` when
+the payload names no branch, `source-authority` for an edited pull request with
+its complete source tuple, and `enqueue` otherwise. `enqueue body` prints the
+request body. Both reject an invalid target repository or branch before any
+request. The other pre-checkout steps still build their bodies inline.
 
 After checkout, `event-review-terminal-finalization` builds its bodies with the
 same command. `terminal-finalization <attempt|skip>` reads the claimed lease tuple
