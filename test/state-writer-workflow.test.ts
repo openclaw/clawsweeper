@@ -101,6 +101,7 @@ test("per-target state hydration is slug-scoped while fleet lanes retain discove
       ".github/workflows/sweep.yml:event-review-apply",
       ".github/workflows/sweep.yml:event-review-publish",
       ".github/workflows/sweep.yml:plan",
+      ".github/workflows/sweep.yml:audit-dashboard",
       ".github/workflows/sweep.yml:apply-proof",
       ".github/workflows/sweep.yml:apply-existing",
     ],
@@ -113,7 +114,6 @@ test("per-target state hydration is slug-scoped while fleet lanes retain discove
       ".github/workflows/repair-publish-results.yml:publish",
       ".github/workflows/repair-self-heal.yml:self-heal",
       ".github/workflows/sweep.yml:target-fanout",
-      ".github/workflows/sweep.yml:audit-dashboard",
     ],
   );
 

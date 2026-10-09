@@ -42,3 +42,25 @@ test("scheduled and manual canonical snapshots run the runner upload command", (
   assert.doesNotMatch(trigger.run, /snapshots\/trigger/);
   assert.doesNotMatch(trigger.run, /dry.run|inputs\./i);
 });
+
+test("scheduled snapshots also bootstrap every repository without a snapshot", () => {
+  const workflow = parse(readFileSync(".github/workflows/worker-records-ops.yml", "utf8"));
+  const steps = workflow.jobs.snapshot.steps as Array<{
+    name?: string;
+    if?: string;
+    env?: Record<string, string>;
+    run?: string;
+  }>;
+  const upload = steps.findIndex(
+    (step) => step.name === "Build and upload canonical records snapshot",
+  );
+  const bootstrap = steps.findIndex(
+    (step) => step.name === "Bootstrap snapshots for repositories without one",
+  );
+  assert.ok(bootstrap > upload, "cold bootstrap runs after the openclaw/openclaw snapshot");
+  const step = steps[bootstrap]!;
+  assert.equal(step.if, "${{ !cancelled() && github.event_name == 'schedule' }}");
+  assert.equal(step.env?.CLAWSWEEPER_WEBHOOK_SECRET, "${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}");
+  assert.match(step.run ?? "", /node scripts\/worker-records\.ts snapshot-bootstrap-cold /);
+  assert.match(step.run ?? "", /exit "\$status"/);
+});

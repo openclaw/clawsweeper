@@ -60,3 +60,23 @@ jobs:
             cat snapshot-result.json
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+
+      # Every fleet-wide hydration reads every slug, and cold hydration refuses a
+      # snapshot-less slug past 2,000 records, so each scheduled run also gives
+      # every repository without a snapshot its first one.
+      - name: Bootstrap snapshots for repositories without one
+        if: ${{ !cancelled() && github.event_name == 'schedule' }}
+        env:
+          CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
+        run: |
+          status=0
+          node scripts/worker-records.ts snapshot-bootstrap-cold > bootstrap-result.json || status=$?
+          cat bootstrap-result.json
+          {
+            echo '### Cold repository snapshot bootstrap'
+            echo
+            echo '```json'
+            cat bootstrap-result.json
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit "$status"

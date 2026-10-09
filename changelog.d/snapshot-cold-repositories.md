@@ -1,0 +1,1 @@
+- Give every repository without a canonical record snapshot its first one on the six-hourly snapshot schedule, so a growing unsnapshotted repository no longer fails every fleet-wide hydration past the 2,000-record cold limit, and scope Audit state hydration to its target repository.

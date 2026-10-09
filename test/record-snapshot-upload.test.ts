@@ -10,6 +10,7 @@ import {
   SNAPSHOT_MAX_IDENTITIES,
 } from "../src/record-snapshot-protocol.ts";
 import {
+  bootstrapColdWorkerRecordSnapshots,
   COLD_HYDRATION_MAX_RECORDS,
   materializeWorkerRecords,
   uploadWorkerRecordSnapshot,
@@ -292,6 +293,110 @@ test("runner bootstraps a cold repository beyond the reader bound and preserves 
   assert.deepEqual(since, [count]);
   assert.equal(refreshed.revisionWatermark, revision);
   assert.equal(refreshed.fileCount, count);
+});
+
+test("cold bootstrap snapshots every snapshot-less repository and survives per-repository failures", async () => {
+  const count = COLD_HYDRATION_MAX_RECORDS + 1;
+  const records: WorkerRecord[] = Array.from({ length: count }, (_, index) => {
+    const content = `# Record ${index + 1}\n`;
+    return {
+      section: "items",
+      id: String(index + 1),
+      content,
+      digest: digest(Buffer.from(content)),
+      revision: 1,
+      storeRevision: index + 1,
+      deleted: false,
+    };
+  });
+  const f = fixture();
+  const stored = new Map<string, WorkerStoredSnapshot>();
+  const exported: string[] = [];
+  const source: typeof fetch = async (input, init) => {
+    const endpoint = new URL(String(input)).pathname;
+    const body = JSON.parse(String(init?.body ?? "{}"));
+    if (endpoint.endsWith("/records/slugs"))
+      return Response.json({
+        repositories: [
+          { repoSlug: "cold-b-large", revision: count },
+          { repoSlug: "a-lookup-broken", revision: 1 },
+          { repoSlug: "cold-a-refused", revision: 1 },
+        ],
+      });
+    if (endpoint.endsWith("/latest")) {
+      if (body.repoSlug === "a-lookup-broken")
+        return Response.json({ error: "fixture_lookup_refused" }, { status: 404 });
+      const snapshot = stored.get(body.repoSlug);
+      return snapshot
+        ? Response.json({ snapshotStoreAvailable: true, snapshot })
+        : Response.json({ error: "snapshot_not_found" }, { status: 404 });
+    }
+    if (endpoint.endsWith("/export")) {
+      exported.push(body.repoSlug);
+      if (body.repoSlug === "cold-a-refused")
+        return Response.json({ error: "fixture_export_refused" }, { status: 403 });
+      const available = records.filter(
+        (record) => record.storeRevision > Math.max(body.cursor, body.sinceRevision),
+      );
+      const page = available.slice(0, body.limit);
+      return Response.json({
+        repoSlug: body.repoSlug,
+        revision: count,
+        records: page,
+        nextCursor: available.length > page.length ? page.at(-1)!.storeRevision : null,
+      });
+    }
+    if (endpoint.endsWith("/list"))
+      return Response.json({
+        repoSlug: body.repoSlug,
+        section: "items",
+        records: [],
+        nextCursor: null,
+      });
+    return worker.fetch(new Request(String(input), init), f.env);
+  };
+  const options = {
+    baseUrl: "http://127.0.0.1:8787",
+    webhookSecret: secret,
+    fetch: source,
+    log: () => {},
+  };
+
+  // Both broken slugs sort first: neither a lookup nor an upload failure may
+  // strand the large cold repository.
+  const first = await bootstrapColdWorkerRecordSnapshots(options);
+  assert.deepEqual(first.coldSlugs, ["cold-a-refused", "cold-b-large"]);
+  assert.deepEqual(
+    first.snapshots.map(({ repoSlug, fileCount, revisionWatermark }) => ({
+      repoSlug,
+      fileCount,
+      revisionWatermark,
+    })),
+    [{ repoSlug: "cold-b-large", fileCount: count, revisionWatermark: count }],
+  );
+  assert.deepEqual(
+    first.failures.map(({ repoSlug }) => repoSlug),
+    ["a-lookup-broken", "cold-a-refused"],
+  );
+  assert.match(first.failures[0]!.error, /fixture_lookup_refused/);
+  assert.match(first.failures[1]!.error, /fixture_export_refused/);
+  assert.equal(f.counts().uploads, 1);
+
+  for (const snapshot of first.snapshots)
+    stored.set(snapshot.repoSlug, {
+      ...snapshot,
+      access: { mode: "worker_range_proxy", maxChunkBytes: partBytes },
+    });
+  exported.length = 0;
+  const second = await bootstrapColdWorkerRecordSnapshots(options);
+  assert.deepEqual(second.coldSlugs, ["cold-a-refused"]);
+  assert.deepEqual(second.snapshots, []);
+  assert.deepEqual(
+    second.failures.map(({ repoSlug }) => repoSlug),
+    ["a-lookup-broken", "cold-a-refused"],
+  );
+  assert.deepEqual(exported, ["cold-a-refused"]);
+  assert.equal(f.counts().uploads, 1);
 });
 
 test("cold producer export failures and protocol caps never start an upload and clean staging", async (t) => {

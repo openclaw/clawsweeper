@@ -660,7 +660,11 @@ production values from `dashboard/wrangler.toml`, not only fallback constants
 in `dashboard/exact-review-queue.ts`.
 
 Canonical record snapshots for `openclaw/openclaw` are produced every six hours
-by `worker-records-ops.yml`, at minute 9 UTC. Manual dispatch remains available
+by `worker-records-ops.yml`, at minute 9 UTC. The same scheduled run then runs
+`node scripts/worker-records.ts snapshot-bootstrap-cold`, which lists every
+canonical repository slug and uploads a first snapshot for each one that has
+none; one slug's failure is reported without stopping the rest, and the step
+fails if any slug failed. Manual dispatch remains available
 for a selected repository; scheduled and manual snapshots share a concurrency
 group so snapshot runs do not overlap. Full record hydration replays changes
 since the latest snapshot.
@@ -739,7 +743,8 @@ available for descriptor registration. The existing
 `/internal/state/records/snapshots/trigger` endpoint remains for explicit
 object-side production, but neither scheduled nor manual ops invokes it.
 Cold hydration retains its existing record bound; a large repository without
-any snapshot still needs an initial snapshot before normal hydration can run.
+any snapshot still needs an initial snapshot before normal hydration can run,
+and the scheduled cold bootstrap above provides it.
 The runner's `snapshot-upload` producer can build that first snapshot directly
 from the paginated export, bounded by 250,000 journal identities and the existing
 1 GiB archive limit. Ordinary cold hydration still refuses above 2,000 records;

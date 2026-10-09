@@ -160,8 +160,8 @@ type SignedPostOptions = Omit<SignedRequestOptions, "method"> & {
 // revision 0, so it must stay a small-repo affordance: a slug whose record set
 // outgrows this bound has earned a real snapshot and still refuses cutover.
 // 2000 small records is ~10 export pages and covers hundreds of reviewed items,
-// giving a newly onboarded repository long runway before the first manual
-// snapshot sweep is required.
+// giving a newly onboarded repository long runway before the scheduled
+// snapshot-bootstrap-cold sweep (worker-records-ops.yml) gives it a snapshot.
 export const COLD_HYDRATION_MAX_RECORDS = 2000;
 
 export class WorkerRecordExportBoundError extends Error {
@@ -1601,24 +1601,79 @@ export async function uploadWorkerRecordSnapshot(options: {
   }
 }
 
+// Uploads a first snapshot for every repository the canonical store lists
+// without one. Cold hydration refuses a snapshot-less slug past
+// COLD_HYDRATION_MAX_RECORDS, and every fleet-wide reader hydrates every slug,
+// so one unsnapshotted growing repository fails all of them. One slug's lookup
+// or upload failure must not strand the rest; failures are reported after the
+// sweep.
+export async function bootstrapColdWorkerRecordSnapshots(options: {
+  baseUrl: string;
+  webhookSecret: string;
+  fetch?: typeof globalThis.fetch;
+  log?: (line: string) => void;
+}) {
+  const log = options.log ?? ((line: string) => console.error(line));
+  const repositories = await discoverWorkerRecordRepoSlugs(options);
+  const coldSlugs: string[] = [];
+  const snapshots: WorkerStoredSnapshot[] = [];
+  const failures: Array<{ repoSlug: string; error: string }> = [];
+  for (const { repoSlug } of repositories) {
+    try {
+      const cold = await fetchWorkerStoredSnapshot({ ...options, repoSlug }).then(
+        () => false,
+        (error: unknown) => {
+          if (
+            error instanceof WorkerSnapshotUnavailableError &&
+            error.reason === "snapshot_not_found"
+          )
+            return true;
+          throw error;
+        },
+      );
+      if (!cold) continue;
+      coldSlugs.push(repoSlug);
+      snapshots.push(await uploadWorkerRecordSnapshot({ ...options, repoSlug }));
+      log(`[worker-records] SNAPSHOT BOOTSTRAP repo=${repoSlug}: uploaded the first snapshot`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      failures.push({ repoSlug, error: message });
+      log(`[worker-records] SNAPSHOT BOOTSTRAP repo=${repoSlug}: failed: ${message}`);
+    }
+  }
+  return { coldSlugs, snapshots, failures };
+}
+
 export async function workerRecordsMain(argv: string[], env: NodeJS.ProcessEnv = process.env) {
   const [command, ...args] = argv;
-  if (command !== "snapshot-upload")
+  if (command !== "snapshot-upload" && command !== "snapshot-bootstrap-cold")
     throw new Error(
-      "Usage: worker-records.ts snapshot-upload --repo-slug <slug> [--records-url <url>]",
+      "Usage: worker-records.ts snapshot-upload --repo-slug <slug> [--records-url <url>]\n" +
+        "       worker-records.ts snapshot-bootstrap-cold [--records-url <url>]",
     );
   const { values } = parseArgs({
     args,
     options: { "repo-slug": { type: "string" }, "records-url": { type: "string" } },
     strict: true,
   });
-  if (!values["repo-slug"]) throw new Error("--repo-slug is required");
   const webhookSecret = env.CLAWSWEEPER_RECORDS_SECRET ?? env.CLAWSWEEPER_WEBHOOK_SECRET ?? "";
   if (!webhookSecret) throw new Error("CLAWSWEEPER_WEBHOOK_SECRET is required");
+  const baseUrl =
+    values["records-url"] ?? env.CLAWSWEEPER_RECORDS_URL ?? "https://clawsweeper.openclaw.ai";
+  if (command === "snapshot-bootstrap-cold") {
+    if (values["repo-slug"]) throw new Error("snapshot-bootstrap-cold takes no --repo-slug");
+    const result = await bootstrapColdWorkerRecordSnapshots({ baseUrl, webhookSecret });
+    console.log(JSON.stringify(result));
+    if (result.failures.length > 0)
+      throw new Error(
+        `Snapshot bootstrap failed for ${result.failures.map(({ repoSlug }) => repoSlug).join(", ")}`,
+      );
+    return result;
+  }
+  if (!values["repo-slug"]) throw new Error("--repo-slug is required");
   const snapshot = await uploadWorkerRecordSnapshot({
     repoSlug: values["repo-slug"],
-    baseUrl:
-      values["records-url"] ?? env.CLAWSWEEPER_RECORDS_URL ?? "https://clawsweeper.openclaw.ai",
+    baseUrl,
     webhookSecret,
   });
   console.log(JSON.stringify(snapshot));
