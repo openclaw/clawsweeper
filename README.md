@@ -1199,7 +1199,8 @@ to the smaller of the machine's available parallelism and 16, prints the chosen
 value, and accepts an explicit `--test-concurrency` override for diagnostics.
 `CLAWSWEEPER_TEST_CONCURRENCY` sets the default for CLI runs when that flag is
 absent, allowing controlled concurrency experiments through package scripts.
-CI retains the adaptive default. Crabbox diagnostic bundles under `.crabbox/` are generated scratch
+The `pnpm check` CI job sets it to 8 on the 4-vCPU hosted runner, because many
+suite tests wait on Git and Node child processes rather than the CPU. Crabbox diagnostic bundles under `.crabbox/` are generated scratch
 and are ignored by Git.
 
 On Linux and macOS, the shared synthetic GitHub CLI fixtures clear

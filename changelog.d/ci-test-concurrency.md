@@ -1,0 +1,1 @@
+- Run the CI `pnpm check` suite with test concurrency 8 on the 4-vCPU runner, since many tests wait on child processes, cutting the gate's wall time with unchanged coverage thresholds.

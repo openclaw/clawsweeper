@@ -128,6 +128,10 @@ jobs:
       - uses: ./.github/actions/setup-pnpm
 
       - name: Run check
+        env:
+          # Many suite tests wait on Git and Node child processes, so 2x the
+          # 4-vCPU runner keeps more of them in flight without changing thresholds.
+          CLAWSWEEPER_TEST_CONCURRENCY: "8"
         run: pnpm run check
 
   sparse-repair-builds:
