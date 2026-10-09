@@ -433,14 +433,11 @@ function ledgerFixture(t: TestContext) {
     root,
     targetRepo: () => "openclaw/openclaw",
     repoRelativePath,
-    reviewLeaseRevisionFromReport: (markdown) =>
-      /^item_source_revision: (.+)$/m.exec(markdown)?.[1] ?? null,
-    reportItemKind: () => "issue",
     reviewLedger,
   });
   const entry = (number: number) => {
     const path = join(root, "records", `${number}.md`);
-    const markdown = `---\nitem_source_revision: revision-${number}\n---\n`;
+    const markdown = `---\ntype: issue\nitem_source_revision: revision-${number}\n---\n`;
     mkdirSync(dirname(path), { recursive: true });
     writeFileSync(path, markdown);
     return { name: `${number}.md`, number, path, repo: "openclaw/openclaw", markdown };
