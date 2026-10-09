@@ -213,10 +213,18 @@ command-ack-observed` read the lifecycle target like the other lifecycle records
 `--status-marker` and `--status-comment-id` address the command status comment;
 an empty value means no such address. The attempt, skip and observed bodies need
 at least one address. Every step that runs before checkout now builds its queue
-request body with the command. Two enqueue steps that run after checkout still
-build their bodies inline: "Queue durable exact review publication" in
-`event-review-apply` and "Queue fresh review after source drift" in
-`event-review-publish`.
+request body with the command.
+
+The two enqueue steps that run after checkout use the built command.
+`enqueue publication` ("Queue durable exact review publication" in
+`event-review-apply`) reads the claim outputs, `ARTIFACT_NAME`, `GITHUB_SHA` and
+the `LIVE_*` result flags. A protocol 1 claim sends a null lease revision and
+claim generation. `enqueue source-drift` ("Queue fresh review after source
+drift" in `event-review-publish`) reads the claimed decision and the producer
+run in `PRODUCER_RUN_ID` and `PRODUCER_RUN_ATTEMPT`. It keeps the
+`failed_review_shard_recovery` and `command_proof_result` source actions and
+sends every other action as `source_drift_requeue`. No step in `sweep.yml`
+builds a queue request body inline now.
 
 The terminal-run observer (`scripts/review-run-observer.mjs`) uses plain Node
 after checkout and retries its telemetry POST up to three times. Each attempt

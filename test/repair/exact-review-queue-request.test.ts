@@ -199,8 +199,9 @@ test("the source file alone gives the same bodies and errors as the build", () =
   try {
     const copy = join(dir, "exact-review-queue-request.mts");
     copyFileSync("src/repair/exact-review-queue-request.ts", copy);
-    // The legacy intake payload, the claim and completion inputs and a 409
-    // response; each record reads only its own inputs.
+    // The legacy intake payload, the claim and completion inputs, a 409
+    // response and the publisher enqueue inputs; each record reads only its
+    // own inputs.
     const env = {
       CLIENT_PAYLOAD: JSON.stringify({
         item_kind: "pull_request",
@@ -211,6 +212,15 @@ test("the source file alone gives the same bodies and errors as the build", () =
       RESPONSE: JSON.stringify({ error: "lease_superseded" }),
       COMPLETION_KIND: "superseded",
       REASON_CODE: "remote_closed",
+      ARTIFACT_NAME: "exact-review-10-1",
+      CLAIM_DECISION: JSON.stringify({ itemNumber: 7, sourceAction: "opened" }),
+      GITHUB_SHA: "d".repeat(40),
+      LIVE_GUARDED_OPEN: "false",
+      LIVE_PROCEEDED: "true",
+      LIVE_TERMINAL_MISSING: "false",
+      LIVE_TERMINAL_NOOP: "false",
+      PRODUCER_RUN_ID: "900",
+      PRODUCER_RUN_ATTEMPT: "1",
     };
     for (const argv of [
       [
@@ -233,6 +243,8 @@ test("the source file alone gives the same bodies and errors as the build", () =
       ["claim", "body", "--require-tuple"],
       ["terminal-finalization", "retry"],
       ["complete", "publication"],
+      ["enqueue", "publication"],
+      ["enqueue", "source-drift"],
     ]) {
       const built = run(argv, env);
       assert.deepEqual(run(argv, env, copy), built, argv.join(" "));
@@ -594,12 +606,136 @@ test("legacy event requests with an invalid target print no route or body", () =
     ],
     ["body", null, {}, "invalid CLIENT_PAYLOAD"],
     ["body", {}, { GITHUB_RUN_ID: "" }, "invalid GITHUB_RUN_ID"],
-    ["claim", {}, {}, "enqueue record must be route or body"],
+    ["claim", {}, {}, "enqueue record must be route, body, publication or source-drift"],
   ] as const) {
     const result = enqueue(record, payload, env);
     assert.equal(result.status, 1, message);
     assert.equal(result.body, "", message);
     assert.equal(result.error, `exact-review-queue-request: ${message}\n`);
+  }
+});
+
+// The review run's claim outputs and live item result. The claimed decision
+// already has a source action, so the body must keep its key position.
+const claimedDecision = {
+  targetRepo: "openclaw/openclaw",
+  itemNumber: 7,
+  sourceAction: "opened",
+  additionalPrompt: "keep context",
+};
+const publication = {
+  ARTIFACT_NAME: "exact-review-10-1",
+  CLAIM_DECISION: JSON.stringify(claimedDecision),
+  CLAIM_GENERATION: "2",
+  GITHUB_SHA: "d".repeat(40),
+  ITEM_KEY: "openclaw/openclaw#7",
+  LIVE_GUARDED_OPEN: "false",
+  LIVE_PROCEEDED: "true",
+  LIVE_TERMINAL_MISSING: "false",
+  LIVE_TERMINAL_NOOP: "false",
+  PROTOCOL_VERSION: "2",
+  QUEUE_LEASE_REVISION: "3",
+};
+
+test("the publication enqueue hands the artifact and the live result to the publisher", () => {
+  const publicationFields = {
+    artifactName: "exact-review-10-1",
+    producerRunId: "10",
+    producerRunAttempt: 1,
+    sourceSha: "d".repeat(40),
+    itemKey: "openclaw/openclaw#7",
+    protocolVersion: 2,
+    leaseRevision: 3,
+    claimGeneration: 2,
+    liveProceeded: true,
+    liveTerminalNoop: false,
+    liveTerminalMissing: false,
+    liveGuardedOpen: false,
+    producerDecision: claimedDecision,
+  };
+  const body = (fields: object) =>
+    JSON.stringify({
+      delivery_id: "publisher:10:1",
+      decision: {
+        ...claimedDecision,
+        sourceAction: "exact_review_artifact_publish",
+        supersedesInProgress: false,
+        publication: { ...publicationFields, ...fields },
+      },
+    });
+  assert.deepEqual(run(["enqueue", "publication"], publication), {
+    status: 0,
+    body: body({}),
+    error: "",
+  });
+  // A protocol 1 claim has no claim generation and can have no lease revision.
+  assert.equal(
+    run(["enqueue", "publication"], {
+      ...publication,
+      PROTOCOL_VERSION: "1",
+      QUEUE_LEASE_REVISION: "",
+      CLAIM_GENERATION: "",
+      LIVE_PROCEEDED: "false",
+      LIVE_TERMINAL_NOOP: "true",
+    }).body,
+    body({
+      protocolVersion: 1,
+      leaseRevision: null,
+      claimGeneration: null,
+      liveProceeded: false,
+      liveTerminalNoop: true,
+    }),
+  );
+});
+
+test("the source-drift enqueue asks for a fresh review and keeps recovery and proof actions", () => {
+  for (const [sourceAction, expectedAction] of [
+    ["failed_review_shard_recovery", "failed_review_shard_recovery"],
+    ["command_proof_result", "command_proof_result"],
+    ["opened", "source_drift_requeue"],
+    ["synchronize", "source_drift_requeue"],
+  ]) {
+    const decision = { ...claimedDecision, sourceAction };
+    assert.deepEqual(
+      run(["enqueue", "source-drift"], {
+        CLAIM_DECISION: JSON.stringify(decision),
+        PRODUCER_RUN_ID: "900",
+        PRODUCER_RUN_ATTEMPT: "2",
+      }),
+      {
+        status: 0,
+        body: JSON.stringify({
+          delivery_id: "publisher-source-drift:900:2",
+          decision: { ...decision, sourceAction: expectedAction, supersedesInProgress: true },
+        }),
+        error: "",
+      },
+      sourceAction,
+    );
+  }
+});
+
+test("publisher enqueue requests with an invalid claim or live result print no body", () => {
+  const drift = { CLAIM_DECISION: "{}", PRODUCER_RUN_ID: "900", PRODUCER_RUN_ATTEMPT: "1" };
+  for (const [argv, env, message] of [
+    [["publication"], { LIVE_GUARDED_OPEN: "" }, "invalid LIVE_GUARDED_OPEN"],
+    [["publication"], { PROTOCOL_VERSION: "3" }, "invalid PROTOCOL_VERSION"],
+    [["publication"], { QUEUE_LEASE_REVISION: "0" }, "invalid QUEUE_LEASE_REVISION"],
+    [["publication"], { CLAIM_GENERATION: "x" }, "invalid CLAIM_GENERATION"],
+    [["publication"], { ARTIFACT_NAME: "" }, "missing ARTIFACT_NAME"],
+    [["publication"], { ITEM_KEY: "" }, "missing ITEM_KEY"],
+    [["publication"], { GITHUB_RUN_ATTEMPT: "0" }, "invalid GITHUB_RUN_ATTEMPT"],
+    [["publication"], { CLAIM_DECISION: "[]" }, "invalid CLAIM_DECISION"],
+    [["publication", "--now"], {}, "enqueue takes no options"],
+    [["source-drift"], { ...drift, PRODUCER_RUN_ID: "" }, "invalid PRODUCER_RUN_ID"],
+    [["source-drift"], { ...drift, PRODUCER_RUN_ATTEMPT: "" }, "invalid PRODUCER_RUN_ATTEMPT"],
+    [["source-drift"], { ...drift, CLAIM_DECISION: "null" }, "invalid CLAIM_DECISION"],
+  ] as const) {
+    assert.deepEqual(
+      run(["enqueue", ...argv], { ...publication, ...env }),
+      { status: 1, body: "", error: `exact-review-queue-request: ${message}\n` },
+      message,
+    );
   }
 });
 

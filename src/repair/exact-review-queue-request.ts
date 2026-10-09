@@ -113,6 +113,9 @@ const PUBLICATION_REASON_CODES = [
   "retry_exhausted",
 ] as const;
 const PUBLICATION_FAILURE_KINDS = ["github_rate_limit", "github_transient"] as const;
+// A source-drift requeue keeps these source actions, so the queue still sees a
+// recovery or a command proof. Every other action becomes source_drift_requeue.
+const SOURCE_DRIFT_KEPT_ACTIONS = ["failed_review_shard_recovery", "command_proof_result"];
 
 try {
   const result = exactReviewQueueRequest(process.argv.slice(2), process.env);
@@ -133,13 +136,13 @@ function exactReviewQueueRequest(argv: string[], env: NodeJS.ProcessEnv) {
     case "terminal-finalization":
       return exactReviewTerminalFinalizationBody(args, env);
     case "enqueue":
-      return legacyEventEnqueue(args, env);
+      return exactReviewEnqueue(args, env);
     case "claim":
     case "complete":
       return exactReviewLeaseStep(command, args, env);
     default:
       throw new Error(
-        "usage: heartbeat --phase <review|status|finalizing> | lifecycle <router-receipt|canonical-receipt|terminal-disposition|command-ack-failed|command-ack-observed> | terminal-finalization <attempt|skip|retry> | enqueue <route|body> | claim <body [--require-tuple]|conflict> | complete <body|publication|conflict>",
+        "usage: heartbeat --phase <review|status|finalizing> | lifecycle <router-receipt|canonical-receipt|terminal-disposition|command-ack-failed|command-ack-observed> | terminal-finalization <attempt|skip|retry> | enqueue <route|body|publication|source-drift> | claim <body [--require-tuple]|conflict> | complete <body|publication|conflict>",
       );
   }
 }
@@ -390,21 +393,96 @@ function reviewFailureStatus(env: NodeJS.ProcessEnv) {
 
 // `enqueue route` prints the queue path for a legacy event, and `enqueue body`
 // prints its request body. Both fail on an invalid target before any request.
-function legacyEventEnqueue(args: string[], env: NodeJS.ProcessEnv) {
+// `enqueue publication` and `enqueue source-drift` print the publisher enqueue
+// bodies.
+function exactReviewEnqueue(args: string[], env: NodeJS.ProcessEnv) {
   const [record, ...options] = args;
   if (options.length > 0) throw new Error("enqueue takes no options");
-  const event = legacyEventFromEnv(env);
   switch (record) {
-    case "route":
+    case "route": {
+      const event = legacyEventFromEnv(env);
       if (!event.targetBranch) return "/internal/exact-review/branch-authority";
       return legacyEventNeedsSourceAuthority(event)
         ? "/internal/exact-review/source-authority"
         : "/internal/exact-review/enqueue";
+    }
     case "body":
-      return legacyEventBody(event, env);
+      return legacyEventBody(legacyEventFromEnv(env), env);
+    case "publication":
+      return publicationEnqueueBody(env);
+    case "source-drift":
+      return sourceDriftEnqueueBody(env);
     default:
-      throw new Error("enqueue record must be route or body");
+      throw new Error("enqueue record must be route, body, publication or source-drift");
   }
+}
+
+// The review run hands its artifact to the publisher. The body reads the claim
+// outputs and the live item result. A protocol 1 claim can have no lease
+// revision and has no claim generation; the body then sends null.
+function publicationEnqueueBody(env: NodeJS.ProcessEnv) {
+  const producerDecision = decisionFromEnv(env);
+  const { runId, runAttempt } = githubRun(env);
+  const protocolVersion = Number(env.PROTOCOL_VERSION);
+  if (protocolVersion !== 1 && protocolVersion !== 2) throw new Error("invalid PROTOCOL_VERSION");
+  const flag = (name: string) => {
+    if (env[name] === "true") return true;
+    if (env[name] === "false") return false;
+    throw new Error(`invalid ${name}`);
+  };
+  return {
+    delivery_id: `publisher:${runId}:${runAttempt}`,
+    decision: {
+      ...producerDecision,
+      sourceAction: "exact_review_artifact_publish",
+      supersedesInProgress: false,
+      publication: {
+        artifactName: requiredText(env.ARTIFACT_NAME, "ARTIFACT_NAME"),
+        producerRunId: runId,
+        producerRunAttempt: runAttempt,
+        sourceSha: requiredText(env.GITHUB_SHA, "GITHUB_SHA"),
+        itemKey: requiredText(env.ITEM_KEY, "ITEM_KEY"),
+        protocolVersion,
+        leaseRevision: env.QUEUE_LEASE_REVISION
+          ? positiveInteger(env.QUEUE_LEASE_REVISION, "QUEUE_LEASE_REVISION")
+          : null,
+        claimGeneration: env.CLAIM_GENERATION
+          ? positiveInteger(env.CLAIM_GENERATION, "CLAIM_GENERATION")
+          : null,
+        liveProceeded: flag("LIVE_PROCEEDED"),
+        liveTerminalNoop: flag("LIVE_TERMINAL_NOOP"),
+        liveTerminalMissing: flag("LIVE_TERMINAL_MISSING"),
+        liveGuardedOpen: flag("LIVE_GUARDED_OPEN"),
+        producerDecision,
+      },
+    },
+  };
+}
+
+// The publisher asks for a fresh review of the claimed decision after the
+// source changed. The delivery id names the run that produced the artifact.
+function sourceDriftEnqueueBody(env: NodeJS.ProcessEnv) {
+  const decision = decisionFromEnv(env);
+  const { runId, runAttempt } = githubRun(env, "PRODUCER_RUN_ID", "PRODUCER_RUN_ATTEMPT");
+  return {
+    delivery_id: `publisher-source-drift:${runId}:${runAttempt}`,
+    decision: {
+      ...decision,
+      sourceAction: SOURCE_DRIFT_KEPT_ACTIONS.includes(decision.sourceAction as string)
+        ? decision.sourceAction
+        : "source_drift_requeue",
+      supersedesInProgress: true,
+    },
+  };
+}
+
+// The claimed decision in CLAIM_DECISION. An empty value is an empty decision.
+function decisionFromEnv(env: NodeJS.ProcessEnv): JsonObject {
+  const decision: unknown = JSON.parse(env.CLAIM_DECISION || "{}");
+  if (!decision || typeof decision !== "object" || Array.isArray(decision)) {
+    throw new Error("invalid CLAIM_DECISION");
+  }
+  return decision as JsonObject;
 }
 
 function legacyEventFromEnv(env: NodeJS.ProcessEnv): LegacyEvent {
@@ -796,10 +874,14 @@ function receiptId(prefix: string | undefined, env: NodeJS.ProcessEnv) {
   return `${prefix}:${runId}:${runAttempt}`;
 }
 
-function githubRun(env: NodeJS.ProcessEnv) {
-  const runId = env.GITHUB_RUN_ID ?? "";
-  if (!/^\d+$/.test(runId)) throw new Error("invalid GITHUB_RUN_ID");
-  return { runId, runAttempt: positiveInteger(env.GITHUB_RUN_ATTEMPT, "GITHUB_RUN_ATTEMPT") };
+function githubRun(
+  env: NodeJS.ProcessEnv,
+  idName = "GITHUB_RUN_ID",
+  attemptName = "GITHUB_RUN_ATTEMPT",
+) {
+  const runId = env[idName] ?? "";
+  if (!/^\d+$/.test(runId)) throw new Error(`invalid ${idName}`);
+  return { runId, runAttempt: positiveInteger(env[attemptName], attemptName) };
 }
 
 function oneOf<T extends string>(

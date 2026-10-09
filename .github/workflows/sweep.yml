@@ -1720,12 +1720,12 @@ jobs:
           CLAIM_DECISION: ${{ steps.live-item.outputs.decision }}
           CLAIM_GENERATION: ${{ steps.claim-exact-review-queue.outputs.claim_generation }}
           ITEM_KEY: ${{ steps.claim-exact-review-queue.outputs.item_key }}
-          LEASE_REVISION: ${{ steps.claim-exact-review-queue.outputs.lease_revision }}
           LIVE_GUARDED_OPEN: ${{ steps.live-item.outputs.guarded_open }}
           LIVE_PROCEEDED: ${{ steps.review-exact-event-item.outputs.terminal_during_review == 'true' && 'false' || steps.live-item.outputs.proceed }}
           LIVE_TERMINAL_MISSING: ${{ steps.live-item.outputs.terminal_missing }}
           LIVE_TERMINAL_NOOP: ${{ steps.review-exact-event-item.outputs.terminal_during_review == 'true' && 'true' || steps.live-item.outputs.terminal_noop }}
           PROTOCOL_VERSION: ${{ steps.claim-exact-review-queue.outputs.protocol_version }}
+          QUEUE_LEASE_REVISION: ${{ steps.claim-exact-review-queue.outputs.lease_revision }}
           QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
           CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
         run: |
@@ -1733,44 +1733,7 @@ jobs:
           source scripts/control-plane-curl.sh
           test -n "$CLAWSWEEPER_WEBHOOK_SECRET"
           queue_url="${QUEUE_URL%/}"
-          payload="$(node <<'NODE'
-          const producerDecision = JSON.parse(process.env.CLAIM_DECISION || "{}");
-          const producerRunAttempt = Number(process.env.GITHUB_RUN_ATTEMPT);
-          const protocolVersion = Number(process.env.PROTOCOL_VERSION);
-          const leaseRevision = process.env.LEASE_REVISION ? Number(process.env.LEASE_REVISION) : null;
-          const claimGeneration = process.env.CLAIM_GENERATION ? Number(process.env.CLAIM_GENERATION) : null;
-          const flag = (name) => {
-            const value = process.env[name];
-            if (value === "true") return true;
-            if (value === "false") return false;
-            process.exit(1);
-          };
-          if (!Number.isInteger(producerRunAttempt) || producerRunAttempt < 1) process.exit(1);
-          process.stdout.write(JSON.stringify({
-            delivery_id: `publisher:${process.env.GITHUB_RUN_ID}:${producerRunAttempt}`,
-            decision: {
-              ...producerDecision,
-              sourceAction: "exact_review_artifact_publish",
-              supersedesInProgress: false,
-              publication: {
-                artifactName: process.env.ARTIFACT_NAME,
-                producerRunId: process.env.GITHUB_RUN_ID,
-                producerRunAttempt,
-                sourceSha: process.env.GITHUB_SHA,
-                itemKey: process.env.ITEM_KEY,
-                protocolVersion,
-                leaseRevision,
-                claimGeneration,
-                liveProceeded: flag("LIVE_PROCEEDED"),
-                liveTerminalNoop: flag("LIVE_TERMINAL_NOOP"),
-                liveTerminalMissing: flag("LIVE_TERMINAL_MISSING"),
-                liveGuardedOpen: flag("LIVE_GUARDED_OPEN"),
-                producerDecision,
-              },
-            },
-          }));
-          NODE
-          )"
+          payload="$(node dist/repair/exact-review-queue-request.js enqueue publication)"
           response="$(
             control_plane_signed_post "$queue_url/internal/exact-review/enqueue" "$payload" \
               --fail --silent --show-error --connect-timeout 5 --max-time 20 || true
@@ -2930,21 +2893,7 @@ jobs:
           source scripts/control-plane-curl.sh
           test -n "$CLAWSWEEPER_WEBHOOK_SECRET"
           queue_url="${QUEUE_URL%/}"
-          payload="$(node <<'NODE'
-          const decision = JSON.parse(process.env.CLAIM_DECISION || "{}");
-          process.stdout.write(JSON.stringify({
-            delivery_id: `publisher-source-drift:${process.env.PRODUCER_RUN_ID}:${process.env.PRODUCER_RUN_ATTEMPT}`,
-            decision: {
-              ...decision,
-              sourceAction:
-                ["failed_review_shard_recovery", "command_proof_result"].includes(decision.sourceAction)
-                  ? decision.sourceAction
-                  : "source_drift_requeue",
-              supersedesInProgress: true,
-            },
-          }));
-          NODE
-          )"
+          payload="$(node dist/repair/exact-review-queue-request.js enqueue source-drift)"
           response="$(control_plane_signed_post "$queue_url/internal/exact-review/enqueue" "$payload" \
             --fail --silent --show-error --connect-timeout 5 --max-time 20)"
           jq -e '.ok == true and (.queued == true or .deduped == true or .shed == true)' <<< "$response" >/dev/null

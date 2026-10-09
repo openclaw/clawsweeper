@@ -1483,6 +1483,10 @@ test("exact event review publishes directly with a queue-bounded canonical fallb
   );
   assert.equal(upload.with?.["retention-days"], 90);
   assert.match(queuePublication.run ?? "", /control_plane_signed_post/);
+  assert.match(
+    queuePublication.run ?? "",
+    /payload="\$\(node dist\/repair\/exact-review-queue-request\.js enqueue publication\)"/,
+  );
   assert.match(queuePublication.run ?? "", /\.queued == true or \.deduped == true/);
   assert.equal(queuePublication.env?.CLAIM_DECISION, "${{ steps.live-item.outputs.decision }}");
   assert.equal(
@@ -1905,37 +1909,10 @@ test("exact event review publishes directly with a queue-bounded canonical fallb
   assert.match(drift.if ?? "", /legacy-exact-artifact\.outputs\.legacy_tupleless == 'true'/);
   assert.match(drift.run ?? "", /control_plane_signed_post /);
   assert.match(drift.run ?? "", /internal\/exact-review\/enqueue/);
-  const driftPayloadBuilder = (drift.run ?? "").match(
-    /node <<'NODE'\r?\n([\s\S]*?)\r?\n\s*NODE/,
-  )?.[1];
-  assert.ok(driftPayloadBuilder, "missing owning source-drift payload builder");
-  for (const [sourceAction, expectedAction] of [
-    ["failed_review_shard_recovery", "failed_review_shard_recovery"],
-    ["command_proof_result", "command_proof_result"],
-    ["opened", "source_drift_requeue"],
-    ["synchronize", "source_drift_requeue"],
-  ]) {
-    const decision = {
-      sourceAction,
-      targetRepo: "openclaw/openclaw",
-      itemNumber: 42,
-      additionalPrompt: "preserve context",
-    };
-    const payload = JSON.parse(
-      execFileSync(process.execPath, ["-e", driftPayloadBuilder], {
-        encoding: "utf8",
-        env: {
-          CLAIM_DECISION: JSON.stringify(decision),
-          PRODUCER_RUN_ID: "900",
-          PRODUCER_RUN_ATTEMPT: "1",
-        },
-      }),
-    );
-    assert.deepEqual(payload, {
-      delivery_id: "publisher-source-drift:900:1",
-      decision: { ...decision, sourceAction: expectedAction, supersedesInProgress: true },
-    });
-  }
+  assert.match(
+    drift.run ?? "",
+    /payload="\$\(node dist\/repair\/exact-review-queue-request\.js enqueue source-drift\)"/,
+  );
   assert.match(drift.run ?? "", /\.queued == true or \.deduped == true or \.shed == true/);
   assert.match(drift.run ?? "", /Source-drift recovery shed by exact-review queue backpressure/);
   const reaction = step(publisher, "React to target item completion");
