@@ -126,7 +126,17 @@ test("review reports store the typed decision and read it back unchanged", () =>
   };
   for (const [name, decision] of [
     ["model review", modelDecision()],
-    ["model review with runner fields", { ...modelDecision(), ...runnerFields } as Decision],
+    [
+      "model review with runner fields",
+      {
+        ...modelDecision(),
+        ...runnerFields,
+        likelyOwners: modelDecision().likelyOwners.map((owner) => ({
+          ...owner,
+          attributionSource: "raw_parent_line_v1",
+        })),
+      } as Decision,
+    ],
     ["failed review", codexFailureDecisionForTest(1, "Codex failed", "out", "err")],
     ["oversized pull request", oversizedPullRequestDecision(size, source)],
     [

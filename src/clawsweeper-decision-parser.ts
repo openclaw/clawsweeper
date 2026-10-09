@@ -416,9 +416,16 @@ export function createDecisionParser({
     };
   }
 
-  function parseLikelyOwner(value: unknown, path: string): LikelyOwner {
+  // The runner verifies owners and marks them with attributionSource. Only a stored
+  // decision can have it; model output cannot.
+  function parseLikelyOwner(value: unknown, path: string, source: "model" | "stored"): LikelyOwner {
     const record = requireRecord(value, path);
-    rejectUnexpectedKeys(record, LIKELY_OWNER_SCHEMA_KEYS, path);
+    const { attributionSource, ...modelFields } = record;
+    rejectUnexpectedKeys(
+      source === "stored" ? modelFields : record,
+      LIKELY_OWNER_SCHEMA_KEYS,
+      path,
+    );
     let history: LikelyOwner["history"];
     if (record.history !== undefined && record.history !== null) {
       const source = requireRecord(record.history, `${path}.history`);
@@ -446,6 +453,15 @@ export function createDecisionParser({
       commits: requireSingleLineStringArray(record.commits, `${path}.commits`),
       files: requireSingleLineStringArray(record.files, `${path}.files`),
       confidence: requireEnum(record.confidence, CONFIDENCES, `${path}.confidence`),
+      ...(attributionSource === undefined
+        ? {}
+        : {
+            attributionSource: requireEnum(
+              attributionSource,
+              new Set(["raw_parent_line_v1"] as const),
+              `${path}.attributionSource`,
+            ),
+          }),
     };
   }
 
@@ -1008,7 +1024,7 @@ export function createDecisionParser({
         })();
     const likelyOwners = Array.isArray(record.likelyOwners)
       ? record.likelyOwners.map((entry, index) =>
-          parseLikelyOwner(entry, `decision.likelyOwners[${index}]`),
+          parseLikelyOwner(entry, `decision.likelyOwners[${index}]`, source),
         )
       : (() => {
           throw new Error("decision.likelyOwners must be an array");

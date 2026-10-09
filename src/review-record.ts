@@ -157,7 +157,8 @@ function reviewRecordSubject(markdown: string): ReviewRecordSubject {
   const repo = frontMatterValue(markdown, "repository");
   const number = Number(frontMatterValue(markdown, "number"));
   const kind = frontMatterValue(markdown, "type");
-  if (!repo || !Number.isSafeInteger(number) || number <= 0) {
+  // A local-range review has item number 0.
+  if (!repo || !Number.isSafeInteger(number) || number < 0) {
     throw new ReviewRecordFormatError("the report has no repository and number");
   }
   if (kind !== "issue" && kind !== "pull_request") {
