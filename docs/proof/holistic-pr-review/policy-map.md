@@ -45,13 +45,14 @@ schema-delivery tests exercise capture, admission, quotas, and consumer bytes.
 
 ## Evidence boundary
 
-The checked-in JSON receipts describe pre-rebase runs and retain their original
-identities and metrics. They do not prove this integration. `run-proof.mjs`
+The original JSON receipts describe pre-rebase runs and retain their original
+identities and metrics. They do not prove this integration. The separate
+[October 9 proof](rebase.md) and rebase receipt record the executed current inputs. `run-proof.mjs`
 builds selected main from its real source and builds the current candidate,
 compares assembled issue instructions, and records new measurements when the
 owner executes it. `schema-delivery.mjs` exercises the real delivery path through
-a controlled consumer, not model quality. Neither harness runs as part of this
-conflict-resolution pass.
+a controlled consumer, not model quality. The dedicated resolver did not execute either harness; the owner subsequently
+ran both and recorded the source-qualified results separately.
 
 No schema/publication contract, model/provider configuration, permissions, queue,
 apply behavior, or Bay surface is changed.

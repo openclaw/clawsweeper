@@ -1,9 +1,9 @@
 # Engineering-review integration proof
 
-- Status: current opt-in harness; checked-in receipts are historical
+- Status: current opt-in harness with source-qualified historical and rebase receipts
 - Owner: ClawSweeper review maintainers
 - Selected main: fe750d1779208b067c1f694dba70f494cb29c401
-- Current execution: not performed by this conflict-resolution pass
+- Current execution: [October 9 rebased-source proof and limits](rebase.md)
 
 ## Current source contract
 
@@ -97,6 +97,7 @@ count, source identities, outcomes, and development attempts.
 controlled delivery experiment. Neither receipt is relabeled or used as proof
 of current main's templates, schema, instruction sizes, or this resolution.
 
+The [October 9 proof](rebase.md) records current-base measurements and execution.
 Historical test totals, native reviews, and instruction-size reductions do not
 establish current results. Run focused prompt/context/policy/provenance and
 agent/schema-delivery coverage, then `pnpm run check`, current controlled proof,
