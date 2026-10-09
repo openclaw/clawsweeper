@@ -2406,25 +2406,12 @@ test("exact event publication derives lifecycle receipt and final command acknow
   assert.match(observedReceipt.run ?? "", /lifecycle\/command-ack\/observed/);
   assert.match(
     observedReceipt.run ?? "",
-    /const statusMarker = process\.env\.STATUS_MARKER \|\| null/,
+    /exact-review-queue-request\.js lifecycle command-ack-observed \\\n\s*--status-marker "\$STATUS_MARKER" --status-comment-id "\$STATUS_COMMENT_ID" \\\n\s*--command-comment-id "\$COMMAND_COMMENT_ID" --completion-comment-id "\$COMPLETION_COMMENT_ID" \\\n\s*--completed-at "\$COMPLETION_COMPLETED_AT" --completion-outcome "\$completion_outcome"\)/,
   );
   assert.match(
     observedReceipt.run ?? "",
-    /const statusCommentId = process\.env\.STATUS_COMMENT_ID/,
+    /if \[ "\$STATUS_STATE" = "Failed" \]; then\s+completion_outcome="failure"/,
   );
-  assert.match(observedReceipt.run ?? "", /fence_key: fenceKey/);
-  assert.match(observedReceipt.run ?? "", /revision,/);
-  assert.match(
-    observedReceipt.run ?? "",
-    /\.\.\.\(statusMarker \? \{ status_marker: statusMarker \} : \{\}\)/,
-  );
-  assert.match(observedReceipt.run ?? "", /command_comment_id: commandCommentId/);
-  assert.match(
-    observedReceipt.run ?? "",
-    /\.\.\.\(statusCommentId === null \? \{\} : \{ status_comment_id: statusCommentId \}\)/,
-  );
-  assert.match(observedReceipt.run ?? "", /completion_comment_id: completionCommentId/);
-  assert.match(observedReceipt.run ?? "", /completed_at: completedAt/);
   assert.equal(
     observedReceipt.env?.COMPLETION_COMPLETED_AT,
     "${{ steps.update-final-command-status.outputs.completion_completed_at }}",
@@ -2433,7 +2420,10 @@ test("exact event publication derives lifecycle receipt and final command acknow
   assert.match(lockedSkip.if ?? "", /locked_conversation == 'true'/);
   assert.match(lockedSkip.if ?? "", /missing_status_comment == 'true'/);
   assert.match(lockedSkip.run ?? "", /terminal-finalization\/skip/);
-  assert.match(lockedSkip.run ?? "", /locked_conversation/);
+  assert.match(
+    lockedSkip.run ?? "",
+    /terminal-finalization skip \\\n\s*--attempt-id "\$ATTEMPT_ID" --reason "\$skip_reason"/,
+  );
   assert.match(lockedSkip.run ?? "", /skip_reason="missing_status_comment"/);
   assert.match(lockedSkip.run ?? "", /expected_state="skipped_missing_comment"/);
   assert.match(lockedSkip.run ?? "", /acknowledgement_state == \$state/);

@@ -3833,34 +3833,18 @@ jobs:
         id: terminal-acknowledgement
         if: ${{ steps.finalization-context.outputs.claimed == 'true' }}
         env:
-          ITEM_KEY: ${{ steps.finalization-context.outputs.item_key }}
-          QUEUE_LEASE_ID: ${{ github.event.client_payload.queue_lease_id }}
-          LEASE_REVISION: ${{ steps.finalization-context.outputs.lease_revision }}
-          CLAIM_GENERATION: ${{ steps.finalization-context.outputs.claim_generation }}
+          EXACT_REVIEW_ITEM_KEY: ${{ steps.finalization-context.outputs.item_key }}
+          EXACT_REVIEW_LEASE_ID: ${{ github.event.client_payload.queue_lease_id }}
+          EXACT_REVIEW_LEASE_REVISION: ${{ steps.finalization-context.outputs.lease_revision }}
+          EXACT_REVIEW_CLAIM_GENERATION: ${{ steps.finalization-context.outputs.claim_generation }}
           STATUS_MARKER: ${{ steps.finalization-context.outputs.status_marker }}
           STATUS_COMMENT_ID: ${{ steps.finalization-context.outputs.status_comment_id }}
           QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
-          RUN_ATTEMPT: ${{ github.run_attempt }}
         run: |
           set -euo pipefail
           source scripts/control-plane-curl.sh
-          payload="$(node -e '
-            const leaseRevision = Number(process.env.LEASE_REVISION);
-            const claimGeneration = Number(process.env.CLAIM_GENERATION);
-            const runAttempt = Number(process.env.RUN_ATTEMPT);
-            const statusMarker = process.env.STATUS_MARKER || null;
-            const statusCommentId = process.env.STATUS_COMMENT_ID === "" ? null : Number(process.env.STATUS_COMMENT_ID);
-            if (!process.env.QUEUE_LEASE_ID || !process.env.ITEM_KEY) process.exit(1);
-            if (!Number.isInteger(leaseRevision) || leaseRevision < 1 || !Number.isInteger(claimGeneration) || claimGeneration < 1 || !Number.isInteger(runAttempt) || runAttempt < 1) process.exit(1);
-            if (!statusMarker && statusCommentId === null) process.exit(1);
-            process.stdout.write(JSON.stringify({
-              lease_id: process.env.QUEUE_LEASE_ID, item_key: process.env.ITEM_KEY,
-              lease_revision: leaseRevision, claim_generation: claimGeneration,
-              run_id: process.env.GITHUB_RUN_ID, run_attempt: runAttempt,
-              ...(statusMarker ? { status_marker: statusMarker } : {}),
-              ...(statusCommentId === null ? {} : { status_comment_id: statusCommentId }),
-            }));
-          ')"
+          payload="$(node dist/repair/exact-review-queue-request.js terminal-finalization attempt \
+            --status-marker "$STATUS_MARKER" --status-comment-id "$STATUS_COMMENT_ID")"
           response_file="$(mktemp)"
           trap 'rm -f "$response_file"' EXIT
           response_status="$(control_plane_curl --silent --show-error --connect-timeout 5 --max-time 20 \
@@ -3939,16 +3923,9 @@ jobs:
                 echo "throttled=true" >> "$GITHUB_OUTPUT"
                 echo "::notice::GitHub throttled the terminal status update; the requeue step retries after the rate window."
               fi
-              failure_payload="$(node -e '
-                const revision = Number(process.env.REVISION);
-                if (!process.env.FENCE_KEY || !process.env.ATTEMPT_ID || !Number.isInteger(revision) || revision < 1) process.exit(1);
-                process.stdout.write(JSON.stringify({
-                  canonical_target_key: `${process.env.TARGET_REPO}#${process.env.ITEM_NUMBER}`,
-                  fence_key: process.env.FENCE_KEY, revision, attempt_id: process.env.ATTEMPT_ID,
-                  ...(process.env.COMMAND_STATUS_MARKER ? { status_marker: process.env.COMMAND_STATUS_MARKER } : {}),
-                  ...(process.env.STATUS_COMMENT_ID ? { status_comment_id: Number(process.env.STATUS_COMMENT_ID) } : {}),
-                }));
-              ')"
+              failure_payload="$(node dist/repair/exact-review-queue-request.js lifecycle command-ack-failed \
+                --attempt-id "$ATTEMPT_ID" \
+                --status-marker "$COMMAND_STATUS_MARKER" --status-comment-id "$STATUS_COMMENT_ID")"
               control_plane_signed_post "${QUEUE_URL%/}/internal/exact-review/lifecycle/command-ack/failed" "$failure_payload" \
                 --fail --silent --show-error --connect-timeout 5 --max-time 20 >/dev/null
               exit "$update_status"
@@ -3973,36 +3950,14 @@ jobs:
         run: |
           set -euo pipefail
           source scripts/control-plane-curl.sh
-          payload="$(node -e '
-            const fenceKey = process.env.FENCE_KEY || "";
-            const revision = Number(process.env.REVISION);
-            const statusMarker = process.env.STATUS_MARKER || null;
-            const statusCommentId = process.env.STATUS_COMMENT_ID === "" ? null : Number(process.env.STATUS_COMMENT_ID);
-            const commandCommentId = Number(process.env.COMMAND_COMMENT_ID);
-            const completionCommentId = Number(process.env.COMPLETION_COMMENT_ID);
-            const completedAt = process.env.COMPLETION_COMPLETED_AT || "";
-            const completionOutcome = process.env.STATUS_STATE === "Failed" ? "failure" : "success";
-            if (
-              !fenceKey || !Number.isSafeInteger(revision) || revision < 1 ||
-              (!statusMarker && statusCommentId === null) ||
-              (statusCommentId !== null && (!Number.isInteger(statusCommentId) || statusCommentId < 1)) ||
-              !Number.isInteger(commandCommentId) || commandCommentId < 1 ||
-              !Number.isInteger(completionCommentId) || completionCommentId < 1 ||
-              !completedAt || !Number.isFinite(Date.parse(completedAt))
-            ) process.exit(1);
-            process.stdout.write(JSON.stringify({
-              canonical_target_key: `${process.env.TARGET_REPO}#${process.env.ITEM_NUMBER}`,
-              fence_key: fenceKey,
-              revision,
-              ...(statusMarker ? { status_marker: statusMarker } : {}),
-              ...(statusCommentId === null ? {} : { status_comment_id: statusCommentId }),
-              command_comment_id: commandCommentId,
-              completion_comment_id: completionCommentId,
-              completed_at: completedAt,
-              completion_outcome: completionOutcome,
-              observed_at: Date.now(),
-            }));
-          ')"
+          completion_outcome="success"
+          if [ "$STATUS_STATE" = "Failed" ]; then
+            completion_outcome="failure"
+          fi
+          payload="$(node dist/repair/exact-review-queue-request.js lifecycle command-ack-observed \
+            --status-marker "$STATUS_MARKER" --status-comment-id "$STATUS_COMMENT_ID" \
+            --command-comment-id "$COMMAND_COMMENT_ID" --completion-comment-id "$COMPLETION_COMMENT_ID" \
+            --completed-at "$COMPLETION_COMPLETED_AT" --completion-outcome "$completion_outcome")"
           response="$(control_plane_signed_post "${QUEUE_URL%/}/internal/exact-review/lifecycle/command-ack/observed" "$payload" \
             --fail --silent --show-error --connect-timeout 5 --max-time 20)"
           jq -e '.ok == true and .accepted == true and .acknowledgement_state == "observed"' <<< "$response" >/dev/null
@@ -4011,16 +3966,15 @@ jobs:
         id: complete-locked-terminal-acknowledgement
         if: ${{ always() && steps.finalization-context.outputs.claimed == 'true' && (steps.update-final-command-status.outputs.locked_conversation == 'true' || steps.update-final-command-status.outputs.missing_status_comment == 'true') }}
         env:
-          ITEM_KEY: ${{ steps.finalization-context.outputs.item_key }}
-          QUEUE_LEASE_ID: ${{ github.event.client_payload.queue_lease_id }}
-          LEASE_REVISION: ${{ steps.finalization-context.outputs.lease_revision }}
-          CLAIM_GENERATION: ${{ steps.finalization-context.outputs.claim_generation }}
+          EXACT_REVIEW_ITEM_KEY: ${{ steps.finalization-context.outputs.item_key }}
+          EXACT_REVIEW_LEASE_ID: ${{ github.event.client_payload.queue_lease_id }}
+          EXACT_REVIEW_LEASE_REVISION: ${{ steps.finalization-context.outputs.lease_revision }}
+          EXACT_REVIEW_CLAIM_GENERATION: ${{ steps.finalization-context.outputs.claim_generation }}
           STATUS_MARKER: ${{ steps.finalization-context.outputs.status_marker }}
           STATUS_COMMENT_ID: ${{ steps.finalization-context.outputs.status_comment_id }}
           ATTEMPT_ID: ${{ steps.terminal-acknowledgement.outputs.attempt_id }}
           MISSING_STATUS_COMMENT: ${{ steps.update-final-command-status.outputs.missing_status_comment }}
           QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
-          RUN_ATTEMPT: ${{ github.run_attempt }}
         run: |
           set -euo pipefail
           source scripts/control-plane-curl.sh
@@ -4030,25 +3984,9 @@ jobs:
             skip_reason="missing_status_comment"
             expected_state="skipped_missing_comment"
           fi
-          payload="$(SKIP_REASON="$skip_reason" node -e '
-            const leaseRevision = Number(process.env.LEASE_REVISION);
-            const claimGeneration = Number(process.env.CLAIM_GENERATION);
-            const runAttempt = Number(process.env.RUN_ATTEMPT);
-            const statusMarker = process.env.STATUS_MARKER || null;
-            const statusCommentId = process.env.STATUS_COMMENT_ID === "" ? null : Number(process.env.STATUS_COMMENT_ID);
-            if (!process.env.QUEUE_LEASE_ID || !process.env.ITEM_KEY || !process.env.ATTEMPT_ID) process.exit(1);
-            if (!["locked_conversation", "missing_status_comment"].includes(process.env.SKIP_REASON)) process.exit(1);
-            if (!Number.isInteger(leaseRevision) || leaseRevision < 1 || !Number.isInteger(claimGeneration) || claimGeneration < 1 || !Number.isInteger(runAttempt) || runAttempt < 1) process.exit(1);
-            if (!statusMarker && statusCommentId === null) process.exit(1);
-            process.stdout.write(JSON.stringify({
-              lease_id: process.env.QUEUE_LEASE_ID, item_key: process.env.ITEM_KEY,
-              lease_revision: leaseRevision, claim_generation: claimGeneration,
-              run_id: process.env.GITHUB_RUN_ID, run_attempt: runAttempt,
-              attempt_id: process.env.ATTEMPT_ID, reason: process.env.SKIP_REASON,
-              ...(statusMarker ? { status_marker: statusMarker } : {}),
-              ...(statusCommentId === null ? {} : { status_comment_id: statusCommentId }),
-            }));
-          ')"
+          payload="$(node dist/repair/exact-review-queue-request.js terminal-finalization skip \
+            --attempt-id "$ATTEMPT_ID" --reason "$skip_reason" \
+            --status-marker "$STATUS_MARKER" --status-comment-id "$STATUS_COMMENT_ID")"
           response="$(control_plane_curl --fail --silent --show-error --connect-timeout 5 --max-time 20 \
             --request POST --header "content-type: application/json" --data "$payload" \
             "${QUEUE_URL%/}/internal/exact-review/terminal-finalization/skip")"

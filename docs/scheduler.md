@@ -164,6 +164,15 @@ accepts only the outcomes and terminal kinds that the queue accepts. A receipt i
 is `--receipt-id-prefix` plus the run id and run attempt. The pre-checkout
 direct-lifecycle replay in `event-review-publish` still builds its bodies inline.
 
+After checkout, `event-review-terminal-finalization` builds its bodies with the
+same command. `terminal-finalization <attempt|skip>` reads the claimed lease tuple
+from the `EXACT_REVIEW_*` and `GITHUB_RUN_*` environment. `lifecycle
+command-ack-failed` and `lifecycle command-ack-observed` read the lifecycle target
+like the other lifecycle records. `--status-marker` and `--status-comment-id`
+address the command status comment; an empty value means no such address. The
+attempt, skip and observed bodies need at least one address. The claim and the
+retry steps can run before checkout, so they still build their bodies inline.
+
 The terminal-run observer (`scripts/review-run-observer.mjs`) uses plain Node
 after checkout and retries its telemetry POST up to three times. Each attempt
 retains the 20-second deadline. Connection resets and other recognized transient

@@ -164,10 +164,208 @@ test("lifecycle requests with an invalid target or record option print no body",
     [
       ["claim-receipt"],
       {},
-      "lifecycle record must be router-receipt, canonical-receipt or terminal-disposition",
+      "lifecycle record must be router-receipt, canonical-receipt, terminal-disposition, command-ack-failed or command-ack-observed",
     ],
   ] as const) {
     const result = lifecycle([...args], env);
+    assert.equal(result.status, 1, message);
+    assert.equal(result.body, "", message);
+    assert.equal(result.error, `exact-review-queue-request: ${message}\n`);
+  }
+});
+
+test("command acknowledgement bodies carry the status address and the verified completion", () => {
+  const target = {
+    canonical_target_key: "openclaw/openclaw#1",
+    fence_key: "openclaw/openclaw#1",
+    revision: 4,
+  };
+  // A failed status write may carry no address; the attempt id fences it.
+  assert.equal(
+    lifecycle([
+      "command-ack-failed",
+      "--attempt-id",
+      "ack:1",
+      "--status-marker",
+      "",
+      "--status-comment-id",
+      "",
+    ]).body,
+    JSON.stringify({ ...target, attempt_id: "ack:1" }),
+  );
+  const before = Date.now();
+  const observed = JSON.parse(
+    lifecycle([
+      "command-ack-observed",
+      "--status-marker",
+      "marker",
+      "--status-comment-id",
+      "7",
+      "--command-comment-id",
+      "8",
+      "--completion-comment-id",
+      "9",
+      "--completed-at",
+      "2026-10-09T00:00:00Z",
+      "--completion-outcome",
+      "failure",
+    ]).body,
+  );
+  assert.ok(observed.observed_at >= before && observed.observed_at <= Date.now());
+  assert.equal(
+    JSON.stringify(observed),
+    JSON.stringify({
+      ...target,
+      status_marker: "marker",
+      status_comment_id: 7,
+      command_comment_id: 8,
+      completion_comment_id: 9,
+      completed_at: "2026-10-09T00:00:00Z",
+      completion_outcome: "failure",
+      observed_at: observed.observed_at,
+    }),
+  );
+});
+
+test("terminal-finalization bodies carry the claimed lease tuple before the status address", () => {
+  const tuple = {
+    lease_id: "lease-1",
+    item_key: "openclaw/openclaw#1",
+    lease_revision: 3,
+    claim_generation: 2,
+    run_id: "10",
+    run_attempt: 1,
+  };
+  assert.equal(
+    run(
+      ["terminal-finalization", "attempt", "--status-marker", "marker", "--status-comment-id", ""],
+      {},
+    ).body,
+    JSON.stringify({ ...tuple, status_marker: "marker" }),
+  );
+  assert.equal(
+    run(
+      [
+        "terminal-finalization",
+        "skip",
+        "--attempt-id",
+        "ack:1",
+        "--reason",
+        "missing_status_comment",
+        "--status-marker",
+        "",
+        "--status-comment-id",
+        "7",
+      ],
+      {},
+    ).body,
+    JSON.stringify({
+      ...tuple,
+      attempt_id: "ack:1",
+      reason: "missing_status_comment",
+      status_comment_id: 7,
+    }),
+  );
+});
+
+test("command acknowledgement and terminal-finalization requests reject invalid input", () => {
+  const noAddress = ["--status-marker", "", "--status-comment-id", ""];
+  for (const [args, env, message] of [
+    [["lifecycle", "command-ack-failed"], {}, "missing --attempt-id"],
+    [
+      ["lifecycle", "command-ack-failed", "--attempt-id", "a", "--status-comment-id", "x"],
+      {},
+      "invalid --status-comment-id",
+    ],
+    [
+      ["lifecycle", "command-ack-observed", ...noAddress],
+      {},
+      "--status-marker or --status-comment-id is required",
+    ],
+    [
+      [
+        "lifecycle",
+        "command-ack-observed",
+        "--status-marker",
+        "m",
+        "--command-comment-id",
+        "8",
+        "--completion-comment-id",
+        "9",
+        "--completed-at",
+        "later",
+        "--completion-outcome",
+        "success",
+      ],
+      {},
+      "invalid --completed-at",
+    ],
+    [
+      [
+        "lifecycle",
+        "command-ack-observed",
+        "--status-marker",
+        "m",
+        "--command-comment-id",
+        "8",
+        "--completion-comment-id",
+        "9",
+        "--completed-at",
+        "2026-10-09T00:00:00Z",
+        "--completion-outcome",
+        "done",
+      ],
+      {},
+      "--completion-outcome must be success, failure",
+    ],
+    [
+      ["terminal-finalization", "attempt", ...noAddress],
+      {},
+      "--status-marker or --status-comment-id is required",
+    ],
+    [
+      ["terminal-finalization", "attempt", "--status-marker", "m"],
+      { EXACT_REVIEW_LEASE_ID: "" },
+      "missing exact-review lease tuple",
+    ],
+    [
+      [
+        "terminal-finalization",
+        "attempt",
+        "--status-marker",
+        "m",
+        "--reason",
+        "locked_conversation",
+      ],
+      {},
+      "--attempt-id and --reason apply only to skip",
+    ],
+    [
+      ["terminal-finalization", "skip", "--status-marker", "m", "--reason", "locked_conversation"],
+      {},
+      "missing --attempt-id",
+    ],
+    [
+      [
+        "terminal-finalization",
+        "skip",
+        "--status-marker",
+        "m",
+        "--attempt-id",
+        "a",
+        "--reason",
+        "closed",
+      ],
+      {},
+      "--reason must be locked_conversation, missing_status_comment",
+    ],
+    [
+      ["terminal-finalization", "retry"],
+      {},
+      "terminal-finalization record must be attempt or skip",
+    ],
+  ] as const) {
+    const result = run([...args], env);
     assert.equal(result.status, 1, message);
     assert.equal(result.body, "", message);
     assert.equal(result.error, `exact-review-queue-request: ${message}\n`);

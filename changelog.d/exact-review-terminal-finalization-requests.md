@@ -1,0 +1,1 @@
+- Build the terminal-finalization attempt and skip bodies and the command-acknowledgement failed and observed receipts with `exact-review-queue-request.js`, which validates the lease tuple, status address, skip reason and completion; this replaces four copied inline Node builders in `sweep.yml`.

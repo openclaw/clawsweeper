@@ -38,6 +38,14 @@ const TERMINAL_DISPOSITIONS = [
   "guarded_open",
   "policy_noop",
 ] as const;
+// The reasons for which a terminal acknowledgement completes without a status write.
+const SKIP_REASONS = ["locked_conversation", "missing_status_comment"] as const;
+const COMPLETION_OUTCOMES = ["success", "failure"] as const;
+// A command status comment is found by its marker, its comment id, or both.
+const STATUS_ADDRESS_OPTIONS = {
+  "status-marker": { type: "string" },
+  "status-comment-id": { type: "string" },
+} as const;
 
 try {
   process.stdout.write(JSON.stringify(exactReviewQueueRequest(process.argv.slice(2), process.env)));
@@ -53,9 +61,11 @@ function exactReviewQueueRequest(argv: string[], env: NodeJS.ProcessEnv) {
       return exactReviewHeartbeatBody(exactReviewLeaseFromEnv(env), heartbeatFromArgs(args));
     case "lifecycle":
       return exactReviewLifecycleBody(args, env);
+    case "terminal-finalization":
+      return exactReviewTerminalFinalizationBody(args, env);
     default:
       throw new Error(
-        "usage: heartbeat --phase <review|status|finalizing> | lifecycle <router-receipt|canonical-receipt|terminal-disposition>",
+        "usage: heartbeat --phase <review|status|finalizing> | lifecycle <router-receipt|canonical-receipt|terminal-disposition|command-ack-failed|command-ack-observed> | terminal-finalization <attempt|skip>",
       );
   }
 }
@@ -176,11 +186,113 @@ function exactReviewLifecycleBody(args: string[], env: NodeJS.ProcessEnv) {
         kind: oneOf(values.kind, TERMINAL_DISPOSITIONS, "--kind"),
       };
     }
+    case "command-ack-failed": {
+      const { values } = parseArgs({
+        args: options,
+        options: { ...STATUS_ADDRESS_OPTIONS, "attempt-id": { type: "string" } },
+      });
+      return {
+        ...exactReviewLifecycleTarget(env),
+        attempt_id: requiredText(values["attempt-id"], "--attempt-id"),
+        ...statusAddress(values, false),
+      };
+    }
+    case "command-ack-observed": {
+      const { values } = parseArgs({
+        args: options,
+        options: {
+          ...STATUS_ADDRESS_OPTIONS,
+          "command-comment-id": { type: "string" },
+          "completion-comment-id": { type: "string" },
+          "completed-at": { type: "string" },
+          "completion-outcome": { type: "string" },
+        },
+      });
+      const target = exactReviewLifecycleTarget(env);
+      const address = statusAddress(values, true);
+      const completedAt = values["completed-at"] ?? "";
+      if (!Number.isFinite(Date.parse(completedAt))) throw new Error("invalid --completed-at");
+      return {
+        ...target,
+        ...address,
+        command_comment_id: positiveInteger(values["command-comment-id"], "--command-comment-id"),
+        completion_comment_id: positiveInteger(
+          values["completion-comment-id"],
+          "--completion-comment-id",
+        ),
+        completed_at: completedAt,
+        completion_outcome: oneOf(
+          values["completion-outcome"],
+          COMPLETION_OUTCOMES,
+          "--completion-outcome",
+        ),
+        observed_at: Date.now(),
+      };
+    }
     default:
       throw new Error(
-        "lifecycle record must be router-receipt, canonical-receipt or terminal-disposition",
+        "lifecycle record must be router-receipt, canonical-receipt, terminal-disposition, command-ack-failed or command-ack-observed",
       );
   }
+}
+
+// Bodies for the claimed terminal-finalization lease. The lease fences the one
+// final command status write.
+function exactReviewTerminalFinalizationBody(args: string[], env: NodeJS.ProcessEnv) {
+  const [record, ...options] = args;
+  if (record !== "attempt" && record !== "skip") {
+    throw new Error("terminal-finalization record must be attempt or skip");
+  }
+  const { values } = parseArgs({
+    args: options,
+    options: {
+      ...STATUS_ADDRESS_OPTIONS,
+      "attempt-id": { type: "string" },
+      reason: { type: "string" },
+    },
+  });
+  const lease = exactReviewLeaseFromEnv(env);
+  const tuple = {
+    lease_id: lease.leaseId,
+    item_key: lease.itemKey,
+    lease_revision: lease.leaseRevision,
+    claim_generation: lease.claimGeneration,
+    run_id: lease.runId,
+    run_attempt: lease.runAttempt,
+  };
+  if (record === "attempt") {
+    if (values["attempt-id"] !== undefined || values.reason !== undefined) {
+      throw new Error("--attempt-id and --reason apply only to skip");
+    }
+    return { ...tuple, ...statusAddress(values, true) };
+  }
+  return {
+    ...tuple,
+    attempt_id: requiredText(values["attempt-id"], "--attempt-id"),
+    reason: oneOf(values.reason, SKIP_REASONS, "--reason"),
+    ...statusAddress(values, true),
+  };
+}
+
+// An empty value means the step has no such address.
+function statusAddress(
+  values: { "status-marker"?: string | undefined; "status-comment-id"?: string | undefined },
+  required: boolean,
+) {
+  const marker = values["status-marker"] ?? "";
+  const commentId = values["status-comment-id"] ?? "";
+  if (required && !marker && !commentId) {
+    throw new Error("--status-marker or --status-comment-id is required");
+  }
+  return {
+    ...(marker ? { status_marker: marker } : {}),
+    ...(commentId ? { status_comment_id: positiveInteger(commentId, "--status-comment-id") } : {}),
+  };
+}
+
+function requiredText(value: string | undefined, name: string) {
+  if (!value) throw new Error(`missing ${name}`);
+  return value;
 }
 
 // Reads the target item and the publisher fence that each lifecycle step receives.
