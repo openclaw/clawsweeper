@@ -1,8 +1,15 @@
 import assert from "node:assert/strict";
-import fs from "node:fs";
 import test from "node:test";
 
 import { createApplyReviewActivityGuard } from "../dist/clawsweeper-apply-review-activity.js";
+import { createDashboardPresentation } from "../dist/clawsweeper-dashboard.js";
+import { createRepositoryLinks } from "../dist/clawsweeper-links.js";
+import { createReportContextRendering } from "../dist/clawsweeper-report-context.js";
+import { createReportDocumentRendering } from "../dist/clawsweeper-report-document.js";
+import { parseDecision } from "../dist/clawsweeper.js";
+import { frontMatterValue } from "../dist/report-front-matter.js";
+import { normalizeRepo, repositoryProfileFor } from "../dist/repository-profiles.js";
+import { closeDecision, item } from "./helpers.ts";
 import {
   MAX_REVIEWED_PR_ACTIVITY,
   ReviewedPrActivityChangedDuringReadError,
@@ -372,16 +379,58 @@ test("review thread pages parse fail-closed", () => {
   );
 });
 
-test("review and apply paths persist and revalidate the cursor", () => {
-  const source = [
-    fs.readFileSync("src/clawsweeper-report-orchestration.ts", "utf8"),
-    fs.readFileSync("src/clawsweeper-report-rendering.ts", "utf8"),
-    fs.readFileSync("src/clawsweeper-report-document.ts", "utf8"),
-    fs.readFileSync("src/clawsweeper-apply-decision-workflow.ts", "utf8"),
-    fs.readFileSync("src/clawsweeper-apply-review-activity.ts", "utf8"),
-  ].join("\n");
+test("the review report persists the cursor that apply revalidates", () => {
+  const reviewedCursor = v2Cursor();
+  assert.ok(reviewedCursor);
+  const document = createReportDocumentRendering({
+    ...createRepositoryLinks({
+      reportRepo: "openclaw/clawsweeper-state",
+      normalizeRepo,
+      targetRepo: () => "openclaw/openclaw",
+      targetProfile: () => repositoryProfileFor("openclaw/openclaw"),
+    }),
+    ...createReportContextRendering({} as never),
+    ...createDashboardPresentation({} as never),
+    prSurfaceFilesFromContext: () => [],
+    compactPullFilePaths: () => [],
+    confidenceText: String,
+    fixedInText: () => "unknown",
+    formatTimestamp: String,
+    labelJustificationsMarkdown: () => "- none",
+    pullHeadShaFromContext: () => "c".repeat(40),
+    reviewStructuralPullStateFromContext: () => null,
+    sentence: String,
+  } as Parameters<typeof createReportDocumentRendering>[0]);
+  const report = document.markdownFor({
+    item: item({ kind: "pull_request", number: 42 }),
+    decision: parseDecision(closeDecision({ decision: "keep_open", closeReason: "none" })),
+    context: { issue: {}, comments: [], timeline: [], pullReviewActivityCursor: reviewedCursor },
+    git: { mainSha: "a".repeat(40), latestRelease: null, releaseStateComplete: true },
+    action: { actionTaken: "kept_open" },
+    reviewMode: "propose",
+    snapshotHash: "synthetic-snapshot",
+    contentDigest: "synthetic-content",
+    reviewPolicy: "synthetic-policy",
+    runtime: { model: "Codex", reasoningEffort: "high" },
+  } as Parameters<typeof document.markdownFor>[0]);
 
-  assert.match(source, /review_activity_cursor: \$\{options\.context\.pullReviewActivityCursor/);
-  assert.match(source, /pull request review activity changed since review/);
-  assert.match(source, /currentReviewActivityBlock\(\)/);
+  for (const [liveCursor, reason] of [
+    [reviewedCursor, null],
+    [v2Cursor({ reviewState: "DISMISSED" }), "pull request review activity changed since review"],
+  ] as const) {
+    const guard = createApplyReviewActivityGuard(
+      {
+        fetchReviewedPrActivityCursor: () => liveCursor,
+        GitHubRuntimeBudgetError: class extends Error {
+          readonly reason = "test";
+        },
+      },
+      {
+        expectedCursor: frontMatterValue(report, "review_activity_cursor"),
+        itemKind: "pull_request",
+        number: 42,
+      },
+    );
+    assert.equal(guard(), reason);
+  }
 });

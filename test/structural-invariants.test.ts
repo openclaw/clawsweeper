@@ -91,3 +91,29 @@ test("repair target read tokens are scoped to the resolved target", () => {
   // Result publication writes state with the state credential, never with an app token.
   for (const step of publish) assert.notEqual(step.with?.["permission-contents"], "write");
 });
+
+// review-prompt-context.test.ts guards
+
+// Product-direction closes act on contributor items. The workflow must keep them off unless a
+// maintainer sets the repository variable.
+test("sweep workflow keeps the product-direction close gate off by default", () => {
+  type Env = Record<string, string> | undefined;
+  const workflow = parseYaml(readText(".github/workflows/sweep.yml")) as {
+    env?: Env;
+    jobs: Record<string, { env?: Env; steps?: Array<{ env?: Env }> }>;
+  };
+  const values = [
+    workflow.env,
+    ...Object.values(workflow.jobs).flatMap((job) => [
+      job.env,
+      ...(job.steps ?? []).map((step) => step.env),
+    ]),
+  ].flatMap((env) => env?.CLAWSWEEPER_UNCONFIRMED_PRODUCT_DIRECTION_CLOSE_ENABLED ?? []);
+  assert.ok(values.length > 0);
+  for (const value of values) {
+    assert.equal(
+      value,
+      "${{ vars.CLAWSWEEPER_UNCONFIRMED_PRODUCT_DIRECTION_CLOSE_ENABLED || 'false' }}",
+    );
+  }
+});

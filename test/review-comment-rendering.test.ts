@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 import MarkdownIt from "markdown-it";
 
@@ -752,117 +751,6 @@ test("comment matcher recognizes old and new Codex review comments", () => {
   assert.equal(isCodexReviewCommentBody("Thanks for the report, I can reproduce this."), false);
 });
 
-test("structural cache probes before hydration but acquires a lease before carrying a hit", () => {
-  const source = [
-    readFileSync("src/clawsweeper-review-command-workflow.ts", "utf8"),
-    readFileSync("src/clawsweeper-review-preparation.ts", "utf8"),
-    readFileSync("src/clawsweeper-runtime.ts", "utf8"),
-    readFileSync("src/clawsweeper-item-context.ts", "utf8"),
-  ].join("\n");
-  const reviewLoop = source.slice(
-    source.indexOf("for (const item of candidates)"),
-    source.indexOf("let decision: Decision", source.indexOf("for (const item of candidates)")),
-  );
-  const structuralEligibility = reviewLoop.indexOf("reviewStructuralCacheProbeDecision({");
-  const structuralProbe = reviewLoop.indexOf(
-    "structuralRecord = fetchReviewStructuralRecord({",
-    structuralEligibility,
-  );
-  const structuralCache = reviewLoop.indexOf("reviewStructuralCacheDecision({", structuralProbe);
-  const structuralHit = reviewLoop.indexOf("if (structuralDecision.hit)");
-  const structuralLease = reviewLoop.indexOf("postReviewStartStatusComment({", structuralHit);
-  const structuralRevalidation = reviewLoop.indexOf(
-    "structuralCacheRevalidations += 1",
-    structuralLease,
-  );
-  const structuralWrite = reviewLoop.indexOf(
-    "writeOutputReport(item, reportPath, hostReport(carried)",
-    structuralLease,
-  );
-  const contentCache = reviewLoop.indexOf("reviewContentCacheHit({");
-  const structuralPreflight = reviewLoop.indexOf("cachePreflightPasses(", structuralRevalidation);
-  const contentWrite = reviewLoop.indexOf(
-    "writeOutputReport(item, reportPath, hostReport(carried)",
-    contentCache,
-  );
-  const contentPreflight = reviewLoop.indexOf("cachePreflightPasses(", contentCache);
-  const provenancePromotions = [
-    ...reviewLoop.matchAll(/carried = withRunnerPreflightProvenance\(carried\)/g),
-  ];
-  const hydration = reviewLoop.indexOf("collectItemContext(item");
-  const mediaPrep = reviewLoop.indexOf("prepareMediaProofArtifacts(", contentCache);
-
-  assert.ok(structuralEligibility >= 0);
-  assert.ok(structuralProbe > structuralEligibility);
-  assert.ok(structuralCache >= 0);
-  assert.ok(structuralCache < hydration);
-  assert.ok(structuralHit > structuralCache);
-  assert.ok(structuralLease > structuralHit);
-  assert.ok(structuralRevalidation > structuralLease);
-  assert.ok(structuralWrite > structuralRevalidation);
-  assert.ok(structuralPreflight > structuralRevalidation);
-  assert.ok(structuralPreflight < structuralWrite);
-  assert.ok(structuralWrite < hydration);
-  assert.ok(contentCache > structuralLease);
-  assert.ok(contentPreflight > contentCache);
-  assert.ok(contentPreflight < contentWrite);
-  assert.equal(provenancePromotions.length, 2);
-  assert.ok(provenancePromotions[0]!.index > structuralPreflight);
-  assert.ok(provenancePromotions[0]!.index < structuralWrite);
-  assert.ok(provenancePromotions[1]!.index > contentPreflight);
-  assert.ok(provenancePromotions[1]!.index < contentWrite);
-  assert.ok(mediaPrep > contentCache);
-  assert.match(
-    reviewLoop.slice(structuralHit, structuralWrite),
-    /review_lease_owner[\s\S]*acquiredReviewLease\.owner/,
-  );
-  assert.match(
-    reviewLoop.slice(structuralHit, structuralWrite),
-    /review_lease_comment_id[\s\S]*acquiredReviewLease\.commentId/,
-  );
-  const hydratedAnchor = reviewLoop.indexOf(
-    "reviewStructuralRecordsDescribeSameVerdictInput(",
-    hydration,
-  );
-  assert.ok(hydratedAnchor > hydration);
-  assert.match(reviewLoop.slice(hydration, hydratedAnchor + 160), /preHydrationStructuralRecord/);
-  assert.match(
-    reviewLoop.slice(structuralRevalidation, structuralWrite),
-    /git = loadReviewGitInfo\(\)[\s\S]*fetchReviewStructuralRecord\(\{/,
-  );
-  assert.match(
-    reviewLoop.slice(structuralRevalidation, structuralWrite),
-    /liveClawSweeperReviewDigest\(item\.number\)[\s\S]*previousReviewIdentityMatches/,
-  );
-  const structuralProbeSource = source.slice(
-    source.indexOf("function fetchReviewStructuralRecord"),
-    source.indexOf("function collectItemContext"),
-  );
-  assert.match(structuralProbeSource, /pullChecksContext\(options\.item\.number, headSha\)/);
-  assert.match(
-    structuralProbeSource,
-    /pullChecksDigest = sha256\(stableJson\(reviewPullChecksDigestParts\(pullChecks\)\)\)/,
-  );
-  assert.match(structuralProbeSource, /if \(!options\.git\.releaseStateComplete\) return null/);
-  const reviewRuntime = readFileSync("src/clawsweeper-review-runtime.ts", "utf8");
-  const gitInfoBlock = reviewRuntime.slice(
-    reviewRuntime.indexOf("function gitInfo("),
-    reviewRuntime.indexOf("function reviewTargetBranch"),
-  );
-  assert.match(gitInfoBlock, /releaseStateComplete = false/);
-  assert.match(gitInfoBlock, /"release",\s+"list"/);
-  assert.match(gitInfoBlock, /"tagName,name,publishedAt,isLatest"/);
-  assert.match(gitInfoBlock, /release\.isLatest === true/);
-  assert.doesNotMatch(gitInfoBlock, /releases\[0\]/);
-  assert.match(
-    gitInfoBlock,
-    /return \{ mainSha, targetBranch, releaseStateComplete, latestRelease \}/,
-  );
-  assert.match(source, /coordination-held\.json/);
-  assert.match(source, /coordinationHeldRetryAt = startComment\.retryAt/);
-  assert.match(source, /review-cache-metrics\.json/);
-});
-
 test("review comment patching only targets ClawSweeper-owned comments", () => {
   assert.equal(canPatchReviewComment({ user: { login: "clawsweeper" } }), true);
   assert.equal(canPatchReviewComment({ user: { login: "clawsweeper[bot]" } }), true);
@@ -878,22 +766,31 @@ test("spoofed durable markers cannot suppress a bot-owned start lease", () => {
   };
   assert.equal(canPatchReviewComment(spoofedComment), false);
 
-  const source = [
-    readFileSync("src/clawsweeper-review-comments-workflow.ts", "utf8"),
-    readFileSync("src/clawsweeper-review-comment-leases.ts", "utf8"),
-    readFileSync("src/clawsweeper-runtime.ts", "utf8"),
+  // A contributor can copy a fresh lease marker. Only a bot-authored lease can win the
+  // election, so a copied marker with an older comment id cannot hold a bot-owned lease.
+  const itemNumber = 74453;
+  const headSha = "0123456789abcdef0123456789abcdef01234567";
+  const body = [
+    `<!-- clawsweeper-review-status:started item=${itemNumber} sha=${headSha} started_at=2026-07-09T21:00:00.000Z lease_expires_at=2026-07-09T22:31:47.000Z owner=spoof v=1 -->`,
+    "",
+    `<!-- clawsweeper-review-lease item=${itemNumber} -->`,
   ].join("\n");
-  const functionStart = source.indexOf("function postReviewStartStatusComment");
-  const postStart = source.slice(
-    functionStart,
-    source.indexOf("function closeItem", functionStart),
+  assert.equal(
+    reviewStartLeaseWinnerCommentIdForTest({
+      comments: [
+        { id: 100, user: { login: "contributor" }, body },
+        {
+          id: 200,
+          user: { login: "clawsweeper[bot]" },
+          body: body.replace("owner=spoof", "owner=bot"),
+        },
+      ],
+      itemNumber,
+      headSha,
+      nowMs: Date.parse("2026-07-09T21:02:00.000Z"),
+    }),
+    200,
   );
-  assert.match(postStart, /issueReviewCommentState\(options\.item\.number\)/);
-  assert.match(postStart, /freshDedicatedReviewStartLeases\(\{/);
-  assert.match(postStart, /reapSupersededDedicatedReviewStartLeases\(/);
-  assert.match(postStart, /heldReviewStartStatusCommentResult\(initialLease\.expiresAt, false\)/);
-  assert.match(postStart, /heldReviewStartStatusCommentResult\(winner\.expiresAt, true\)/);
-  assert.match(postStart, /issues\/\$\{options\.item\.number\}\/comments/);
 });
 
 test("review start status comment is marker-backed and crustacean-friendly", () => {
@@ -1048,23 +945,6 @@ test("concurrent review lease election uses server comment order, not client tim
     }),
     100,
   );
-});
-
-test("apply retains its mutation lease until the item action is complete", () => {
-  const source = readFileSync("src/clawsweeper-apply-decision-workflow.ts", "utf8");
-  const acquire = source.indexOf("const mutationLeaseBlockReason = acquireApplyMutationLease");
-  const commentSync = source.indexOf("syncedComment = upsertReviewComment(", acquire);
-  const close = source.indexOf("const closeFlow = executeApplyClose(", commentSync);
-  const release = source.indexOf("releaseActiveApplyMutationLease();", close);
-  assert.ok(acquire >= 0);
-  assert.ok(commentSync > acquire);
-  assert.ok(close > commentSync);
-  assert.ok(release > close);
-  assert.match(
-    readFileSync("src/clawsweeper-apply-close-execution.ts", "utf8"),
-    /currentApplyMutationLeaseBlockReason\(\)[\s\S]*closeItem\(\{ number, kind: item\.kind/,
-  );
-  assert.doesNotMatch(source, /deleteSupersededDedicatedReviewStartLeases/);
 });
 
 test("review item source revision ignores advisory labels but tracks protected labels", () => {
@@ -2459,30 +2339,6 @@ Full review comments:
   assert.doesNotMatch(markers, /clawsweeper-verdict:pass/);
 });
 
-test("recovery cleanup preserves durable-review ordering and exact publication batching", () => {
-  const source = readFileSync("src/clawsweeper-apply-decision-workflow.ts", "utf8");
-  const delayedBatch = source.indexOf("const delayIssueLabelBatchForRecoveryCleanup =");
-  const publication = source.indexOf("syncedComment = upsertReviewComment(");
-  const recoveryCleanup = source.indexOf("clearResolvedReviewRecoveryLabel({", publication);
-  const delayedFlush = source.indexOf(
-    "if (delayIssueLabelBatchForRecoveryCleanup)",
-    recoveryCleanup,
-  );
-  const nextCatch = source.indexOf("} catch (error)", delayedFlush);
-
-  assert.ok(delayedBatch >= 0);
-  assert.ok(delayedBatch < publication);
-  assert.ok(publication >= 0);
-  assert.ok(recoveryCleanup > publication);
-  assert.ok(delayedFlush > recoveryCleanup);
-  assert.match(
-    source.slice(delayedBatch, publication),
-    /if \(!delayIssueLabelBatchForRecoveryCleanup\)/,
-  );
-  assert.match(source.slice(recoveryCleanup, delayedFlush), /if \(issueLabelBatchActive\)/);
-  assert.match(source.slice(delayedFlush, nextCatch), /flushIssueLabelBatchForDurableComment\(\);/);
-  assert.match(source.slice(recoveryCleanup, nextCatch), /removeLabel:\s*removeIssueLabel/);
-});
 test("forged evidence continuation lines in evidence prose cannot replace the entry's repository, file, commit, or command through the durable report", () => {
   const forgedSha = "e".repeat(40);
   const entry = {

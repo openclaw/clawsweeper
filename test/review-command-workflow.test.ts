@@ -61,6 +61,7 @@ const LEASE_OWNER = "github-run-123-1";
 const LEASE_COMMENT_ID = 456;
 const PRIOR_ACTIVITY_AT = "2026-08-07T10:00:00Z";
 const RESERVED_AT = "2026-08-07T10:05:00Z";
+const HELD_LEASE_EXPIRES_AT = "2026-08-07T11:00:00Z";
 
 function digest(value: string): string {
   return createHash("sha256").update(value).digest("hex");
@@ -246,6 +247,7 @@ const scheduledScenarios = [
   "changed-pr-partial-json-incomplete-source",
   "changed-pr-partial-json-generic",
   "content-clean",
+  "content-held",
   "fresh-refusal",
 ];
 
@@ -293,6 +295,7 @@ function testScheduledCacheScenario(
     const publicationCacheMiss = publicationCase?.compatible === false;
     const contentPath = scenario.startsWith("content-");
     const hydrated = fresh || contentPath || cacheRecovery || publicationCacheMiss;
+    const heldElsewhere = scenario === "content-held";
     if (refuseScan && !earlyScanRefusal) useFakeScanner(t, "process.exit(183);");
     const root = realpathSync(mkdtempSync(join(tmpdir(), "clawsweeper-scheduled-cache-")));
     const artifactDir = join(root, "artifacts");
@@ -646,14 +649,25 @@ else {
       },
       freshDedicatedReviewStartLeases: (options: { headSha: string }) => {
         assert.equal(options.headSha, isPullRequest ? headSha : priorRecord.sourceRevision);
+        const supplied = {
+          comment: leaseComment,
+          startedAt: RESERVED_AT,
+          expiresAt: "2026-08-07T11:05:00Z",
+          owner: LEASE_OWNER,
+          commentId: LEASE_COMMENT_ID,
+        };
+        if (!heldElsewhere) return [supplied];
+        // A lower server comment id wins the election over the supplied lease.
+        const winnerId = LEASE_COMMENT_ID - 1;
         return [
           {
-            comment: leaseComment,
+            comment: { ...leaseComment, id: winnerId },
             startedAt: RESERVED_AT,
-            expiresAt: "2026-08-07T11:05:00Z",
-            owner: LEASE_OWNER,
-            commentId: LEASE_COMMENT_ID,
+            expiresAt: HELD_LEASE_EXPIRES_AT,
+            owner: "github-run-122-1",
+            commentId: winnerId,
           },
+          supplied,
         ];
       },
       gitInfo: () => ({
@@ -1227,6 +1241,18 @@ else {
         }
         return;
       }
+      if (heldElsewhere) {
+        execute();
+        // Another worker holds the elected lease. The workflow retries when that lease expires.
+        assert.deepEqual(
+          JSON.parse(readFileSync(join(artifactDir, "coordination-held.json"), "utf8")),
+          { retry_at: HELD_LEASE_EXPIRES_AT },
+        );
+        assert.equal(generationCalls, 0);
+        assert.equal(cachedCompletions, 0);
+        assert.equal(existsSync(join(artifactDir, `${ITEM_NUMBER}.md`)), false);
+        return;
+      }
       execute();
 
       if (publicationCase) {
@@ -1315,6 +1341,11 @@ else {
       const carriedReport = readFileSync(carriedReportPath, "utf8");
       assert.match(carriedReport, /^local_checkout_access: verified$/m);
       assert.match(carriedReport, /^local_checkout_access_source: runner_preflight_v1$/m);
+      assert.match(carriedReport, new RegExp(`^review_lease_owner: ${LEASE_OWNER}$`, "m"));
+      assert.match(
+        carriedReport,
+        new RegExp(`^review_lease_comment_id: ${LEASE_COMMENT_ID}$`, "m"),
+      );
       const metrics = JSON.parse(
         readFileSync(join(artifactDir, "review-cache-metrics.json"), "utf8"),
       );

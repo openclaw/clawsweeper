@@ -55,14 +55,6 @@ export function createSweepStatus(dependencies: CreateSweepStatusDependencies) {
       : applyHealth;
   }
 
-  function sweepStatusApplyHealthForTest(options: {
-    previousApplyHealth?: Record<string, unknown> | undefined;
-    requestedApplyHealth?: Record<string, unknown> | null | undefined;
-    runUrl?: string | undefined;
-  }): Record<string, unknown> | null | undefined {
-    return sweepStatusApplyHealth(options);
-  }
-
   function writeSweepStatus(options: {
     state: string;
     detail: string;
@@ -132,7 +124,6 @@ export function createSweepStatus(dependencies: CreateSweepStatusDependencies) {
     profileAuditStart,
     profileStatusEnd,
     profileStatusStart,
-    sweepStatusApplyHealthForTest,
     sweepStatusPath,
     sweepStatusRelativePath,
     writeSweepStatus,

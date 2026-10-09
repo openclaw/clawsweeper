@@ -523,17 +523,6 @@ test("review prompt omits retired automatic live-proof execution context", () =>
   assert.match(prompt, /## GitHub Context/);
 });
 
-test("sweep apply jobs wire the default-off product direction policy gate", () => {
-  const workflow = readFileSync(".github/workflows/sweep.yml", "utf8");
-  assert.ok(
-    (workflow.match(/CLAWSWEEPER_UNCONFIRMED_PRODUCT_DIRECTION_CLOSE_ENABLED:/g)?.length ?? 0) >= 2,
-  );
-  assert.match(
-    workflow,
-    /vars\.CLAWSWEEPER_UNCONFIRMED_PRODUCT_DIRECTION_CLOSE_ENABLED \|\| 'false'/,
-  );
-});
-
 test("main CLI args ignore package-manager double dash separators", () => {
   assert.deepEqual(parseClawsweeperArgs(["apply-decisions", "--", "--dry-run"]), {
     _: ["apply-decisions"],
