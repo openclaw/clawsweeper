@@ -9,7 +9,7 @@ import { REVIEW_SECTIONS } from "./clawsweeper-policy.js";
 import { ambiguityGuardedMaintainerDecision } from "./clawsweeper-promotion-facts.js";
 import { reviewSectionValue } from "./clawsweeper-record-metadata.js";
 import { neutralizeOwnedSectionSpoofing } from "./clawsweeper-report-helpers.js";
-import { likelyOwnersMarkdown } from "./clawsweeper-report-document.js";
+import { likelyOwnersMarkdown, markdownFor } from "./clawsweeper-report-document.js";
 import {
   defaultAgentsPolicyStatus,
   impactLabelsFromReport,
@@ -43,14 +43,7 @@ import {
   regressionAssessmentFromReport,
   regressionProvenanceFromReport,
 } from "./clawsweeper-status-context.js";
-import type {
-  Action,
-  Decision,
-  GitInfo,
-  Item,
-  ItemContext,
-  ReviewRuntime,
-} from "./clawsweeper-types.js";
+import type { Action, Decision, Item } from "./clawsweeper-types.js";
 import { numberForMarkdownFile } from "./clawsweeper-repository-paths.js";
 import { UserFacingCommandError } from "./command.js";
 import { sha256 } from "./content-hash.js";
@@ -66,19 +59,6 @@ import {
 // typed decision from the report, renders that decision again, and compares every
 // decision field of the report. Delete this module with the report parsers when every
 // stored report has a record.
-
-type MarkdownFor = (options: {
-  item: Item;
-  context: ItemContext;
-  decision: Decision;
-  git: GitInfo;
-  action: Action;
-  reviewMode: "propose" | "apply";
-  snapshotHash: string;
-  contentDigest: string;
-  reviewPolicy: string;
-  runtime: ReviewRuntime;
-}) => string;
 
 // "filled": the report has no value for the field (it predates the field), and the
 // record supplies the decision default. "rendered": the current renderer prints the
@@ -571,185 +551,179 @@ export function writeReviewRecordBackfills(options: {
 // way leaves whole batches written. Publication batches tuples on its own.
 const WRITE_BATCH_SIZE = 50;
 
-export function createReviewRecordBackfill(dependencies: { markdownFor: MarkdownFor }) {
-  function backfillReviewRecord(markdown: string): ReviewRecordBackfill {
-    try {
-      if (readReviewRecord(markdown)) return { status: "typed" };
-    } catch (error) {
-      return { status: "invalid_record", reason: String((error as Error).message) };
-    }
-    const item = reportSubject(markdown);
-    let decision: Decision;
-    try {
-      decision = legacyReviewDecision(markdown);
-    } catch (error) {
-      return { status: "unparseable", reason: String((error as Error).message) };
-    }
-    const problem = reviewRecordProblem(decision, item);
-    if (problem) return { status: "unparseable", reason: problem };
-    const rendered = dependencies.markdownFor({
-      item,
-      decision,
-      context: { issue: {}, comments: [], timeline: [] },
-      git: {
-        mainSha: frontMatterValue(markdown, "main_sha") ?? "",
-        latestRelease: null,
-        releaseStateComplete: true,
-      },
-      action: { actionTaken: frontMatterValue(markdown, "action_taken") ?? "" } as Action,
-      reviewMode: "propose",
-      snapshotHash: "",
-      contentDigest: "",
-      reviewPolicy: "",
-      runtime: { model: "", reasoningEffort: "" },
-    });
-    const differences = decisionDifferences(markdown, rendered);
-    const line = reviewRecordFrontMatterLine({ decision, origin: "backfill" }, item)!;
-    const end = markdown.indexOf("\n---", 3);
-    const kinds = new Set(differences.map((difference) => difference.kind));
-    return {
-      status: kinds.has("changed") ? "lossy" : kinds.has("filled") ? "filled" : "lossless",
-      differences,
-      markdown: `${markdown.slice(0, end)}\n${line}${markdown.slice(end)}`,
-    };
+export function backfillReviewRecord(markdown: string): ReviewRecordBackfill {
+  try {
+    if (readReviewRecord(markdown)) return { status: "typed" };
+  } catch (error) {
+    return { status: "invalid_record", reason: String((error as Error).message) };
   }
+  const item = reportSubject(markdown);
+  let decision: Decision;
+  try {
+    decision = legacyReviewDecision(markdown);
+  } catch (error) {
+    return { status: "unparseable", reason: String((error as Error).message) };
+  }
+  const problem = reviewRecordProblem(decision, item);
+  if (problem) return { status: "unparseable", reason: problem };
+  const rendered = markdownFor({
+    item,
+    decision,
+    context: { issue: {}, comments: [], timeline: [] },
+    git: {
+      mainSha: frontMatterValue(markdown, "main_sha") ?? "",
+      latestRelease: null,
+      releaseStateComplete: true,
+    },
+    action: { actionTaken: frontMatterValue(markdown, "action_taken") ?? "" } as Action,
+    reviewMode: "propose",
+    snapshotHash: "",
+    contentDigest: "",
+    reviewPolicy: "",
+    runtime: { model: "", reasoningEffort: "" },
+  });
+  const differences = decisionDifferences(markdown, rendered);
+  const line = reviewRecordFrontMatterLine({ decision, origin: "backfill" }, item)!;
+  const end = markdown.indexOf("\n---", 3);
+  const kinds = new Set(differences.map((difference) => difference.kind));
+  return {
+    status: kinds.has("changed") ? "lossy" : kinds.has("filled") ? "filled" : "lossless",
+    differences,
+    markdown: `${markdown.slice(0, end)}\n${line}${markdown.slice(end)}`,
+  };
+}
 
-  /**
-   * `backfill-review-records --records-dir <records/<slug>> --output <json>`: reports
-   * what the backfill would do for every items and closed report. It writes nothing.
-   *
-   * With `--write [--limit <n>]` it also adds the record line to lossless and filled
-   * reports (at most n), captures each tuple in the canonical baseline directory
-   * (`--canonical-record-baseline-dir` or CLAWSWEEPER_CANONICAL_RECORD_BASELINE_DIR),
-   * and lists the written reports in `changedRecordFiles` for the reconcile
-   * publication. Lossy, unparseable, invalid_record and typed reports stay as they
-   * are. A written report is typed, so a second run writes nothing more.
-   */
-  function backfillReviewRecordsCommand(args: Args): void {
-    const recordsDir = stringArg(args.records_dir, "");
-    const output = stringArg(args.output, "");
-    if (!recordsDir || !output) {
-      throw new UserFacingCommandError("backfill-review-records needs --records-dir and --output");
+/**
+ * `backfill-review-records --records-dir <records/<slug>> --output <json>`: reports
+ * what the backfill would do for every items and closed report. It writes nothing.
+ *
+ * With `--write [--limit <n>]` it also adds the record line to lossless and filled
+ * reports (at most n), captures each tuple in the canonical baseline directory
+ * (`--canonical-record-baseline-dir` or CLAWSWEEPER_CANONICAL_RECORD_BASELINE_DIR),
+ * and lists the written reports in `changedRecordFiles` for the reconcile
+ * publication. Lossy, unparseable, invalid_record and typed reports stay as they
+ * are. A written report is typed, so a second run writes nothing more.
+ */
+export function backfillReviewRecordsCommand(args: Args): void {
+  const recordsDir = stringArg(args.records_dir, "");
+  const output = stringArg(args.output, "");
+  if (!recordsDir || !output) {
+    throw new UserFacingCommandError("backfill-review-records needs --records-dir and --output");
+  }
+  const write = boolArg(args.write);
+  const limit = argNumber(args, "limit", 0);
+  const baselineDir = stringArg(
+    args.canonical_record_baseline_dir,
+    process.env.CLAWSWEEPER_CANONICAL_RECORD_BASELINE_DIR ?? "",
+  ).trim();
+  if (write && !baselineDir) {
+    throw new UserFacingCommandError(
+      "backfill-review-records --write needs a canonical record baseline directory",
+    );
+  }
+  const changedRecordFiles: string[] = [];
+  const changedSinceClassification: string[] = [];
+  let pending: ReviewRecordBackfillWrite[] = [];
+  const flush = () => {
+    const written = writeReviewRecordBackfills({ recordsDir, baselineDir, writes: pending });
+    changedRecordFiles.push(...written.changedRecordFiles);
+    changedSinceClassification.push(...written.changedSinceClassification);
+    pending = [];
+  };
+  const counts: Record<ReviewRecordBackfill["status"], number> = {
+    typed: 0,
+    invalid_record: 0,
+    unparseable: 0,
+    lossless: 0,
+    filled: 0,
+    lossy: 0,
+  };
+  const reasons: Record<string, number> = {};
+  // Per field: how many reports lack a stored value, how many store a value that the
+  // current renderer prints in another form, and how many store a value that the
+  // record would change.
+  const fieldCounts: Record<DecisionDifference["kind"], Record<string, number>> = {
+    filled: {},
+    rendered: {},
+    changed: {},
+  };
+  const differenceSamples: Array<DecisionDifference & { path: string }> = [];
+  const examples: Record<string, string[]> = {};
+  let total = 0;
+  for (const section of ["items", "closed"]) {
+    let names: string[];
+    try {
+      names = readdirSync(join(recordsDir, section)).filter((name) => name.endsWith(".md"));
+    } catch {
+      continue;
     }
-    const write = boolArg(args.write);
-    const limit = argNumber(args, "limit", 0);
-    const baselineDir = stringArg(
-      args.canonical_record_baseline_dir,
-      process.env.CLAWSWEEPER_CANONICAL_RECORD_BASELINE_DIR ?? "",
-    ).trim();
-    if (write && !baselineDir) {
-      throw new UserFacingCommandError(
-        "backfill-review-records --write needs a canonical record baseline directory",
-      );
-    }
-    const changedRecordFiles: string[] = [];
-    const changedSinceClassification: string[] = [];
-    let pending: ReviewRecordBackfillWrite[] = [];
-    const flush = () => {
-      const written = writeReviewRecordBackfills({ recordsDir, baselineDir, writes: pending });
-      changedRecordFiles.push(...written.changedRecordFiles);
-      changedSinceClassification.push(...written.changedSinceClassification);
-      pending = [];
-    };
-    const counts: Record<ReviewRecordBackfill["status"], number> = {
-      typed: 0,
-      invalid_record: 0,
-      unparseable: 0,
-      lossless: 0,
-      filled: 0,
-      lossy: 0,
-    };
-    const reasons: Record<string, number> = {};
-    // Per field: how many reports lack a stored value, how many store a value that the
-    // current renderer prints in another form, and how many store a value that the
-    // record would change.
-    const fieldCounts: Record<DecisionDifference["kind"], Record<string, number>> = {
-      filled: {},
-      rendered: {},
-      changed: {},
-    };
-    const differenceSamples: Array<DecisionDifference & { path: string }> = [];
-    const examples: Record<string, string[]> = {};
-    let total = 0;
-    for (const section of ["items", "closed"]) {
-      let names: string[];
-      try {
-        names = readdirSync(join(recordsDir, section)).filter((name) => name.endsWith(".md"));
-      } catch {
-        continue;
+    for (const name of names.sort()) {
+      const path = `${section}/${name}`;
+      const markdown = readFileSync(join(recordsDir, path), "utf8");
+      const result = backfillReviewRecord(markdown);
+      total += 1;
+      counts[result.status] += 1;
+      const sample = (examples[result.status] ??= []);
+      if (sample.length < 20) sample.push(path);
+      if ("reason" in result) reasons[result.reason] = (reasons[result.reason] ?? 0) + 1;
+      if (
+        write &&
+        (result.status === "lossless" || result.status === "filled") &&
+        (!limit || changedRecordFiles.length + pending.length < limit)
+      ) {
+        pending.push({ path, classifiedSha256: sha256(markdown), markdown: result.markdown });
+        if (pending.length >= WRITE_BATCH_SIZE) flush();
       }
-      for (const name of names.sort()) {
-        const path = `${section}/${name}`;
-        const markdown = readFileSync(join(recordsDir, path), "utf8");
-        const result = backfillReviewRecord(markdown);
-        total += 1;
-        counts[result.status] += 1;
-        const sample = (examples[result.status] ??= []);
-        if (sample.length < 20) sample.push(path);
-        if ("reason" in result) reasons[result.reason] = (reasons[result.reason] ?? 0) + 1;
-        if (
-          write &&
-          (result.status === "lossless" || result.status === "filled") &&
-          (!limit || changedRecordFiles.length + pending.length < limit)
-        ) {
-          pending.push({ path, classifiedSha256: sha256(markdown), markdown: result.markdown });
-          if (pending.length >= WRITE_BATCH_SIZE) flush();
-        }
-        if ("differences" in result) {
-          for (const difference of result.differences) {
-            const fields = fieldCounts[difference.kind];
-            fields[difference.field] = (fields[difference.field] ?? 0) + 1;
-            if (difference.kind !== "changed") continue;
-            // Five short samples for each changed field show what the parsers lose.
-            // Each sample starts a little before the first character that differs.
-            if (
-              differenceSamples.filter((sample) => sample.field === difference.field).length < 5
-            ) {
-              let first = 0;
-              while (difference.stored[first] === difference.rendered[first]) first += 1;
-              const start = Math.max(0, first - 80);
-              differenceSamples.push({
-                path,
-                field: difference.field,
-                stored: difference.stored.slice(start, start + 300),
-                rendered: difference.rendered.slice(start, start + 300),
-                kind: difference.kind,
-              });
-            }
+      if ("differences" in result) {
+        for (const difference of result.differences) {
+          const fields = fieldCounts[difference.kind];
+          fields[difference.field] = (fields[difference.field] ?? 0) + 1;
+          if (difference.kind !== "changed") continue;
+          // Five short samples for each changed field show what the parsers lose.
+          // Each sample starts a little before the first character that differs.
+          if (differenceSamples.filter((sample) => sample.field === difference.field).length < 5) {
+            let first = 0;
+            while (difference.stored[first] === difference.rendered[first]) first += 1;
+            const start = Math.max(0, first - 80);
+            differenceSamples.push({
+              path,
+              field: difference.field,
+              stored: difference.stored.slice(start, start + 300),
+              rendered: difference.rendered.slice(start, start + 300),
+              kind: difference.kind,
+            });
           }
         }
       }
     }
-    if (pending.length > 0) flush();
-    const byCount = (record: Record<string, number>) =>
-      Object.fromEntries(Object.entries(record).sort(([, left], [, right]) => right - left));
-    const writeSummary = write
+  }
+  if (pending.length > 0) flush();
+  const byCount = (record: Record<string, number>) =>
+    Object.fromEntries(Object.entries(record).sort(([, left], [, right]) => right - left));
+  const writeSummary = write
+    ? {
+        written: changedRecordFiles.length,
+        changedSinceClassification: changedSinceClassification.length,
+      }
+    : {};
+  const summary = {
+    recordsDir,
+    total,
+    counts,
+    ...writeSummary,
+    changedFields: byCount(fieldCounts.changed),
+    renderedFields: byCount(fieldCounts.rendered),
+    filledFields: byCount(fieldCounts.filled),
+    reasons: byCount(reasons),
+    examples,
+    differenceSamples,
+    ...(write
       ? {
-          written: changedRecordFiles.length,
-          changedSinceClassification: changedSinceClassification.length,
+          changedSinceClassificationExamples: changedSinceClassification.slice(0, 20),
+          changedRecordFiles,
         }
-      : {};
-    const summary = {
-      recordsDir,
-      total,
-      counts,
-      ...writeSummary,
-      changedFields: byCount(fieldCounts.changed),
-      renderedFields: byCount(fieldCounts.rendered),
-      filledFields: byCount(fieldCounts.filled),
-      reasons: byCount(reasons),
-      examples,
-      differenceSamples,
-      ...(write
-        ? {
-            changedSinceClassificationExamples: changedSinceClassification.slice(0, 20),
-            changedRecordFiles,
-          }
-        : {}),
-    };
-    writeFileSync(output, `${JSON.stringify(summary, null, 2)}\n`);
-    console.log(JSON.stringify({ recordsDir, total, counts, ...writeSummary }));
-  }
-
-  return { backfillReviewRecord, backfillReviewRecordsCommand };
+      : {}),
+  };
+  writeFileSync(output, `${JSON.stringify(summary, null, 2)}\n`);
+  console.log(JSON.stringify({ recordsDir, total, counts, ...writeSummary }));
 }

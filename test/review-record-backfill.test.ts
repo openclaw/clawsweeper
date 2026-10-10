@@ -19,7 +19,7 @@ import * as document from "../dist/clawsweeper-report-document.js";
 import { oversizedPullRequestDecision } from "../dist/clawsweeper-oversized-pr-policy.js";
 import { readReviewRecord } from "../dist/review-record.js";
 import {
-  createReviewRecordBackfill,
+  backfillReviewRecord,
   writeReviewRecordBackfills,
 } from "../dist/review-record-backfill.js";
 import { sha256 } from "../dist/content-hash.js";
@@ -34,7 +34,6 @@ import {
 } from "./helpers.ts";
 
 const pullRequest = item({ kind: "pull_request", number: 42 });
-const { backfillReviewRecord } = createReviewRecordBackfill(document);
 
 // A report from before review_record existed: the current writer without the record line.
 function legacyReport(decision: Decision, subject = pullRequest): string {
