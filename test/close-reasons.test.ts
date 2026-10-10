@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
-import test from "node:test";
+import { githubTest as test } from "./github-runtime-fixture.ts";
 
 import {
   authorPrBudget,
