@@ -11,8 +11,8 @@ try {
   const job = path.join(dir, "job.md");
   fs.writeFileSync(job, "---\nrepo: openclaw/openclaw\n---\nSynthetic budget fixture.\n");
   for (const [validation, step, expected] of [
-    ["", "", 102], ["1200000", "", 92], ["9007199254740991", "", 112],
-    ["", "4200000", 72], ["invalid", "invalid", 102],
+    ["", "", 112], ["1200000", "", 92], ["9007199254740991", "", 112],
+    ["", "4200000", 72], ["invalid", "invalid", 112],
   ]) {
     const output = path.join(dir, `output-${trace.scenarios.length}`);
     const stdout = execFileSync(process.execPath, ["scripts/resolve-repair-timeout-budget.mjs", job], {

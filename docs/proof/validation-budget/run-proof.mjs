@@ -18,7 +18,7 @@ const trace = { head: execFileSync("git", ["rev-parse", "HEAD"], { encoding: "ut
 let retainCheckout = false;
 let recovery;
 try {
-  for (const [repo, expected] of [["openclaw/openclaw", 1_500_000], ["openclaw/clawsweeper", 480_000], ["openclaw/clawhub", 480_000]]) {
+  for (const [repo, expected] of [["openclaw/openclaw", 3_000_000], ["openclaw/clawsweeper", 480_000], ["openclaw/clawhub", 480_000]]) {
     const actual = repairTargetValidationTimeoutMs({}, resolveTargetRepoToolchain(repo).validationTimeoutMs);
     assert.equal(actual, expected);
     trace.scenarios.push({ repo, budgetMs: actual });
