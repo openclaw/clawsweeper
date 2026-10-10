@@ -93,6 +93,8 @@ test("packet readers use the typed decision instead of stale report metadata", (
     }),
     subject,
   );
+  // The review host projects the selected owner's Git facts before storing the decision.
+  decision.maintainerDecision.likelyOwner = { ...productDecision.likelyOwner };
   const line = reviewRecordFrontMatterLine(
     { decision },
     { repo: "openclaw/clawsweeper", number: 321, kind: "pull_request" },
