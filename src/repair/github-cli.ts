@@ -1,7 +1,7 @@
 import type { JsonValue } from "./json-types.js";
 import { execFile, execFileSync, spawnSync } from "node:child_process";
 import { promisify } from "node:util";
-import { stripAnsi } from "./comment-router-utils.js";
+import { stripAnsi } from "./text-utils.js";
 import { ghCliEnv as ghEnv } from "./process-env.js";
 import { repoRoot } from "./paths.js";
 import {

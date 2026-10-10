@@ -10,7 +10,6 @@ import {
   repoRoot,
   validateJob,
 } from "./lib.js";
-import { stripAnsi } from "./comment-router-utils.js";
 import {
   ghBestEffortWithRetry as ghBestEffort,
   ghErrorText,
@@ -31,7 +30,7 @@ import {
   writeRepairSquashMergeBody,
 } from "./repair-merge-message.js";
 import { fetchPullRequestView, validateResolvedReviewThreads } from "./merge-readiness-github.js";
-import { compactText as compactPlainText } from "./text-utils.js";
+import { compactText as compactPlainText, stripAnsi } from "./text-utils.js";
 import { isPendingStatusCheck, rollUpStatusChecks } from "./status-check-rollup.js";
 import { readJsonFileIfExists } from "./json-file.js";
 

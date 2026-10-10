@@ -36,3 +36,10 @@ export function slug(value: unknown, fallback = "unknown", maxLength = 120) {
       .replace(/-+$/g, "") || fallback
   );
 }
+
+export function stripAnsi(text: string) {
+  return String(text ?? "").replace(
+    new RegExp(`${String.fromCharCode(27)}\\[[0-?]*[ -/]*[@-~]`, "g"),
+    "",
+  );
+}

@@ -132,7 +132,6 @@ import {
   routedCommentSourceDeliveryId,
   selectCommentsForRouting,
   shouldSuppressProcessedCommentVersion,
-  stripAnsi,
   supersededReReviewCommentVersions,
   summarizeChecks,
   writePayload,
@@ -157,7 +156,7 @@ import {
 } from "./github-cli.js";
 import { GitHubRateLimitError, ghRetryKind, ghRetryWaitMs } from "../github-retry.js";
 import { issueSourceRevisionSha256 } from "./issue-source-guard.js";
-import { compactText } from "./text-utils.js";
+import { compactText, stripAnsi } from "./text-utils.js";
 import { escapeRegExp, markdownTopLevelSection } from "../clawsweeper-markdown.js";
 import {
   flushCommandActionEvents,

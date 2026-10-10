@@ -370,13 +370,6 @@ export function commaSet(value: JsonValue) {
   );
 }
 
-export function stripAnsi(text: string) {
-  return String(text ?? "").replace(
-    new RegExp(`${String.fromCharCode(27)}\\[[0-?]*[ -/]*[@-~]`, "g"),
-    "",
-  );
-}
-
 export function assertRepo(value: JsonValue, name: string) {
   if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(value))
     throw new Error(`${name} must be owner/repo`);

@@ -27,7 +27,7 @@ import {
   repairCodexConfigArgs,
 } from "../process-env.js";
 import { withTargetReviewSnapshot } from "../target-validation.js";
-import { compactText } from "../text-utils.js";
+import { compactText, stripAnsi } from "../text-utils.js";
 
 const codexHeartbeatMs = Math.max(
   10_000,
@@ -530,24 +530,6 @@ export function buildMergePreflight({ fixArtifact, codexReview }: LooseRecord) {
     validation_commands: validationCommands,
     final_base_sync: codexReview.final_base_sync ?? null,
   };
-}
-
-function stripAnsi(text: string) {
-  let out = "";
-  for (let index = 0; index < text.length; index += 1) {
-    if (text.charCodeAt(index) !== 27) {
-      out += text[index];
-      continue;
-    }
-    if (text[index + 1] !== "[") continue;
-    index += 2;
-    while (index < text.length) {
-      const code = text.charCodeAt(index);
-      if (code >= 0x40 && code <= 0x7e) break;
-      index += 1;
-    }
-  }
-  return out;
 }
 
 function codexWorkspaceSandboxConfigArgs(sandbox: string, networkAccess: boolean) {

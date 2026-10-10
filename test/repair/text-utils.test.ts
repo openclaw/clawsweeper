@@ -1,8 +1,20 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { compactCommentText, compactText, slug } from "../../dist/repair/text-utils.js";
+import { compactCommentText, compactText, slug, stripAnsi } from "../../dist/repair/text-utils.js";
 import { mergeAutomergeTimelineSection } from "../../dist/repair/automerge-status-timeline.js";
+import { ghErrorText } from "../../dist/repair/github-cli.js";
+import { codexFailureMessage } from "../../dist/repair/execute-fix/run-and-report.js";
+
+test("repair diagnostics remove ANSI control sequences without losing message text", () => {
+  const colored = "\u001b[31mfailed\u001b[0m: \u001b[1;4mretained details\u001b[0m";
+  const plain = "failed: retained details";
+  assert.equal(stripAnsi(colored), plain);
+  assert.equal(stripAnsi("plain [31m text\n"), "plain [31m text\n");
+  assert.equal(stripAnsi(""), "");
+  assert.equal(ghErrorText(new Error(colored)), plain);
+  assert.equal(codexFailureMessage("Codex", colored), `Codex: ${plain}`);
+});
 
 test("comment previews count the ellipsis inside every character cap", () => {
   for (let cap = 0; cap <= 200; cap++) {
