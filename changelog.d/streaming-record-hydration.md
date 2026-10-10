@@ -1,0 +1,1 @@
+- Stream canonical record journal pages into the hydration staging tree instead of retaining every report in memory, preserving snapshot validation, latest-revision selection, cold-hydration limits, and fail-closed publication for large repositories.

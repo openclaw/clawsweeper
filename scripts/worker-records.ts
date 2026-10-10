@@ -180,7 +180,7 @@ export class WorkerRecordExportBoundError extends Error {
   }
 }
 
-export async function exportWorkerRecords(options: {
+type ExportWorkerRecordsOptions = {
   baseUrl: string;
   webhookSecret: string;
   repoSlug: string;
@@ -189,10 +189,36 @@ export async function exportWorkerRecords(options: {
   limit?: number;
   maxRecords?: number;
   fetch?: typeof globalThis.fetch;
-}): Promise<WorkerRecordSnapshot> {
+};
+
+export async function exportWorkerRecords(
+  options: ExportWorkerRecordsOptions,
+): Promise<WorkerRecordSnapshot> {
+  const records = new Map<string, WorkerRecord>();
+  const result = await visitWorkerRecords(options, (record) => {
+    records.set(`${record.section}/${record.id}`, record);
+  });
+  return {
+    repoSlug: result.repoSlug,
+    revision: result.revision,
+    exportStartRevision: result.exportStartRevision,
+    records: [...records.values()].sort((left, right) =>
+      recordRelativePath(left).localeCompare(recordRelativePath(right)),
+    ),
+  };
+}
+
+// Only the current response page owns content. Hydration writes accepted rows
+// into its private staging tree before fetching the next page; the index keeps
+// revision ordering and the cold-repository identity bound without retaining
+// reports that have already been written.
+async function visitWorkerRecords(
+  options: ExportWorkerRecordsOptions,
+  visit: (record: WorkerRecord) => void,
+) {
   const sections = options.sections ?? RECORD_SECTIONS;
   const sinceRevision = options.sinceRevision ?? 0;
-  const records = new Map<string, WorkerRecord>();
+  const revisions = new Map<string, number>();
   let cursor: number | null = 0;
   let revision = sinceRevision;
   let exportStartRevision: number | undefined;
@@ -244,13 +270,18 @@ export async function exportWorkerRecords(options: {
     for (const record of page.records) {
       validateWorkerRecord(record);
       const key = `${record.section}/${record.id}`;
-      const prior = records.get(key);
-      if (!prior || prior.storeRevision < record.storeRevision) records.set(key, record);
-    }
-    // Abort mid-pagination: the bound exists so an unsnapshotted large repo
-    // never triggers an unbounded full-journal download.
-    if (options.maxRecords !== undefined && records.size > options.maxRecords) {
-      throw new WorkerRecordExportBoundError(options.repoSlug, records.size, options.maxRecords);
+      const prior = revisions.get(key);
+      if (prior !== undefined && prior >= record.storeRevision) continue;
+      revisions.set(key, record.storeRevision);
+      // Count identities, including tombstones, not writes or journal pages.
+      if (options.maxRecords !== undefined && revisions.size > options.maxRecords) {
+        throw new WorkerRecordExportBoundError(
+          options.repoSlug,
+          revisions.size,
+          options.maxRecords,
+        );
+      }
+      visit(record);
     }
     if (
       page.nextCursor !== null &&
@@ -267,9 +298,7 @@ export async function exportWorkerRecords(options: {
     repoSlug: options.repoSlug,
     revision,
     exportStartRevision: exportStartRevision!,
-    records: [...records.values()].sort((left, right) =>
-      recordRelativePath(left).localeCompare(recordRelativePath(right)),
-    ),
+    recordCount: revisions.size,
   };
 }
 
@@ -357,14 +386,17 @@ async function materializeRecords(
         } else {
           mkdirSync(stagedRepoRoot, { recursive: true });
         }
-        const journal = await exportWorkerRecords({
-          baseUrl: options.baseUrl,
-          webhookSecret: options.webhookSecret,
-          repoSlug,
-          sinceRevision: storedSnapshot?.revisionWatermark ?? 0,
-          ...(storedSnapshot ? {} : { maxRecords: coldRecordLimit }),
-          fetch: options.fetch,
-        }).catch((error: unknown) => {
+        const journal = await visitWorkerRecords(
+          {
+            baseUrl: options.baseUrl,
+            webhookSecret: options.webhookSecret,
+            repoSlug,
+            sinceRevision: storedSnapshot?.revisionWatermark ?? 0,
+            ...(storedSnapshot ? {} : { maxRecords: coldRecordLimit }),
+            fetch: options.fetch,
+          },
+          (record) => applyWorkerRecord(stagedRepoRoot, record),
+        ).catch((error: unknown) => {
           // Over the bound, the named refusal returns: the operator must run a
           // snapshot sweep for this slug before worker hydration accepts it.
           if (purpose === "hydration" && error instanceof WorkerRecordExportBoundError) {
@@ -380,7 +412,6 @@ async function materializeRecords(
           }
           throw error;
         });
-        applyWorkerRecords(stagedRepoRoot, journal.records);
         const coverageTrackedItemIds = await fetchWorkerCanonicalItemIds({
           baseUrl: options.baseUrl,
           webhookSecret: options.webhookSecret,
@@ -393,7 +424,7 @@ async function materializeRecords(
           snapshotRevision: storedSnapshot?.revisionWatermark ?? 0,
           snapshotBytes,
           snapshotCache,
-          deltaRecords: journal.records.length,
+          deltaRecords: journal.recordCount,
           recordCount: countMaterializedRecords(stagingRoot, repoSlug),
           coverageTrackedItemIds,
         };
@@ -1090,18 +1121,15 @@ function validateSnapshotTree(treeRoot: string) {
   return fileCount;
 }
 
-function applyWorkerRecords(repoRoot: string, records: readonly WorkerRecord[]) {
-  for (const record of records) {
-    const destination = path.join(repoRoot, recordRelativePath(record));
-    if (record.deleted) {
-      rmSync(destination, { force: true });
-      continue;
-    }
-    if (record.content === null)
-      throw new Error(`Worker record is missing content: ${destination}`);
-    mkdirSync(path.dirname(destination), { recursive: true });
-    writeFileSync(destination, record.content, "utf8");
+function applyWorkerRecord(repoRoot: string, record: WorkerRecord) {
+  const destination = path.join(repoRoot, recordRelativePath(record));
+  if (record.deleted) {
+    rmSync(destination, { force: true });
+    return;
   }
+  if (record.content === null) throw new Error(`Worker record is missing content: ${destination}`);
+  mkdirSync(path.dirname(destination), { recursive: true });
+  writeFileSync(destination, record.content, "utf8");
 }
 
 function signedWorkerRecordReadPost<T>(options: SignedPostOptions): Promise<T> {
