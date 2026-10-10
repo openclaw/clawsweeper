@@ -171,7 +171,7 @@
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["person", "role", "reason", "commits", "files", "confidence", "history"],
+        "required": ["person", "role", "commits", "files", "confidence", "history"],
         "properties": {
           "person": {
             "type": "string",
@@ -180,9 +180,6 @@
           "role": {
             "type": "string",
             "description": "Neutral routing role (feature owner, area contributor, reviewer, merger); maintainer only with proof."
-          },
-          "reason": {
-            "type": "string"
           },
           "commits": {
             "type": "array",
@@ -292,18 +289,11 @@
         "likelyOwner": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["person", "reason", "confidence"],
+          "required": ["person"],
           "properties": {
             "person": {
               "type": "string",
               "description": "Owner from likelyOwners."
-            },
-            "reason": {
-              "type": "string"
-            },
-            "confidence": {
-              "type": "string",
-              "enum": ["high", "medium", "low"]
             }
           }
         }
@@ -593,17 +583,8 @@
     "agentsPolicyStatus": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["found", "readFully", "applied", "status", "summary"],
+      "required": ["status"],
       "properties": {
-        "found": {
-          "type": "boolean"
-        },
-        "readFully": {
-          "type": "boolean"
-        },
-        "applied": {
-          "type": "boolean"
-        },
         "status": {
           "type": "string",
           "enum": [
@@ -613,9 +594,6 @@
             "conflict_not_applied",
             "unreadable_or_unclear"
           ]
-        },
-        "summary": {
-          "type": "string"
         }
       }
     },
