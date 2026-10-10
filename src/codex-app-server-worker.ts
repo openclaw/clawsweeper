@@ -26,6 +26,11 @@ import {
   webUiReviewProofTool,
   type ReviewProofCapability,
 } from "./review-proof-client.js";
+import {
+  decisionOutputError,
+  decisionRepairPrompt,
+  type DecisionRepairOptions,
+} from "./review-decision-repair.js";
 
 interface AppServerOptions {
   statePath: string;
@@ -47,6 +52,7 @@ interface WorkerOptions {
   maxOutputFileBytes: number;
   outputLastMessageBytes?: number;
   appServer: AppServerOptions;
+  decisionRepair?: DecisionRepairOptions;
 }
 
 interface ExecOptions {
@@ -135,6 +141,7 @@ let turnStarted: Promise<Record<string, unknown>> | undefined;
 let turnActivation: Promise<void> | undefined;
 let turnCompleted = false;
 let settled = false;
+let decisionRepairError = "";
 let terminating = false;
 let forceKillTimer: NodeJS.Timeout | undefined;
 let terminal: WebSocket | null = null;
@@ -227,9 +234,22 @@ try {
   connectTerminal();
   startHeartbeat();
   await updateWorkState("running", "codex", "Codex turn starting");
-  turnStarted = request("turn/start", {
+  turnStarted = startTurn(prompt);
+  await turnStarted;
+  await turnActivation;
+  if (!turnCompleted)
+    terminalWrite(
+      `\r\n[ClawSweeper] ${options.appServer.label ?? "Codex"} active` +
+        `${turnId ? ` (${turnId})` : ""}. Type a message and press Enter to steer.\r\n\r\n`,
+    );
+} catch (error) {
+  await finish(1, null, error instanceof Error ? error : new Error(String(error)));
+}
+
+function startTurn(text: string): Promise<Record<string, unknown>> {
+  return request("turn/start", {
     threadId,
-    input: [{ type: "text", text: prompt }],
+    input: [{ type: "text", text }],
     cwd: execOptions.cwd,
     approvalPolicy: "never",
     ...(execOptions.permissionsProfile
@@ -249,15 +269,6 @@ try {
       ? { outputSchema: JSON.parse(readFileSync(execOptions.outputSchemaPath, "utf8")) }
       : {}),
   });
-  await turnStarted;
-  await turnActivation;
-  if (!turnCompleted)
-    terminalWrite(
-      `\r\n[ClawSweeper] ${options.appServer.label ?? "Codex"} active` +
-        `${turnId ? ` (${turnId})` : ""}. Type a message and press Enter to steer.\r\n\r\n`,
-    );
-} catch (error) {
-  await finish(1, null, error instanceof Error ? error : new Error(String(error)));
 }
 
 async function startThread(): Promise<Record<string, unknown>> {
@@ -411,6 +422,26 @@ async function handleRpcMessage(message: RpcMessage): Promise<void> {
   // Codex clears partial messages on failed/interrupted turns. Only confirmed
   // completion can publish a result, even if an earlier item looked complete.
   if (failed) finalMessage = "";
+  const repairError =
+    finalMessage && options.decisionRepair && !decisionRepairError
+      ? decisionOutputError(finalMessage, options.decisionRepair.item)
+      : undefined;
+  if (repairError) {
+    // One repair turn on the same thread, with the same sandbox, schema, and timeout budget.
+    decisionRepairError = repairError;
+    appendCodexOutputCapture(stderr, Buffer.from("[clawsweeper] decision repair turn\n"));
+    // The log files keep both turns; the returned tails classify only the repair turn's outcome.
+    stdout.tail = Buffer.alloc(0);
+    stderr.tail = Buffer.alloc(0);
+    finalMessage = "";
+    turnId = "";
+    turnStatus = "";
+    turnCompleted = false;
+    startHeartbeat();
+    turnStarted = startTurn(decisionRepairPrompt(repairError));
+    await turnStarted;
+    return;
+  }
   if (execOptions.outputLastMessagePath && finalMessage) {
     if (
       options.outputLastMessageBytes !== undefined &&
@@ -579,6 +610,7 @@ async function finish(status: number, signal: NodeJS.Signals | null, error?: Err
       status,
       signal,
       ...(error ? { error: serializedError(error) } : {}),
+      ...(decisionRepairError ? { decisionRepairError } : {}),
       stdout: codexOutputTail(stdout),
       stderr: codexOutputTail(stderr),
     }),

@@ -417,6 +417,7 @@ export interface CreateApplyDecisionWorkflowDependencies {
     number: number;
     labels: readonly string[];
     bulkFilerDetected: boolean;
+    bulkFilerBelowThreshold?: boolean;
     authorAssociation: string;
     repositoryPermission?: string | null;
     dryRun: boolean;

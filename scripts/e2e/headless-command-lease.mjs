@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
+import { MAX_MEDIA_PROOF_TIMEOUT_MS } from "../../src/media-proof-budget.ts";
 
 // Reuse the publication harness's real Worker and stock gh transports.
 export async function proveHeadlessCommandLease({
@@ -92,6 +93,7 @@ export async function proveHeadlessCommandLease({
     RUN_URL: `https://github.com/${producerRepo}/actions/runs/${tuple.run_id}`,
     CODEX_TIMEOUT_MS: "60000",
     MEDIA_PROOF_TIMEOUT_MS: "0",
+    MEDIA_PREPROCESSING_RESERVE_SECONDS: String(MAX_MEDIA_PROOF_TIMEOUT_MS / 1000),
   };
   await command("bash", ["-eu", "-c", step("live-item").run], {
     ...env,

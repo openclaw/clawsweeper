@@ -58,7 +58,11 @@ export interface CreateReviewCommandWorkflowDependencies {
     checkoutDir: string,
     git: GitInfo,
   ) => Decision;
-  authorIssueCountInBulkFilerWindow: (author: string, windowStart: string) => number;
+  authorIssueCountInBulkFilerWindow: (
+    author: string,
+    windowStart: string,
+    windowEnd: string,
+  ) => number;
   buildLocalRangeReview: (
     targetDir: string,
     repo: string,
@@ -74,6 +78,7 @@ export interface CreateReviewCommandWorkflowDependencies {
   bulkFilerPolicyInvalidatesCachedReview: (
     markdown: string | null,
     exemptionApplied: boolean,
+    belowThreshold?: boolean,
   ) => boolean;
   bulkFilerRepositoryPermission: (
     author: string,

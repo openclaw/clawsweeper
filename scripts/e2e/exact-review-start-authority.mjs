@@ -14,6 +14,7 @@ import {
 import { createServer } from "node:http";
 import { join, resolve } from "node:path";
 import { parse } from "yaml";
+import { MAX_MEDIA_PROOF_TIMEOUT_MS } from "../../src/media-proof-budget.ts";
 
 // Run the actual workflow shell and curl helper against an isolated HTTP peer.
 // Only expensive review/GitHub commands are replaced by harmless process fixtures.
@@ -146,6 +147,7 @@ cat "$PROOF_ROOT/pull.json"
     target_checkout_dir: "target",
     codex_timeout_ms: "10000",
     media_proof_timeout_ms: "0",
+    media_preprocessing_reserve_seconds: String(MAX_MEDIA_PROOF_TIMEOUT_MS / 1000),
   };
   const shell = step.run.replace(/\$\{\{ steps.target.outputs.(\w+) \}\}/g, (_, key) => {
     assert.ok(Object.hasOwn(replacements, key), key);

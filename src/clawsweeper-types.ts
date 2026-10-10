@@ -275,6 +275,8 @@ export interface BulkFilerDetectionResult {
   context: BulkFilerReviewContext | null;
   labelPending: boolean;
   labelApplied: boolean;
+  /** Set only when the count search succeeded and stayed below the threshold. */
+  belowThreshold?: true;
 }
 
 export type BulkFilerCountCache = Map<string, number | null>;
@@ -285,7 +287,7 @@ export interface BulkFilerDetectionOptions {
   cache: BulkFilerCountCache;
   now: number;
   env?: Record<string, string | undefined>;
-  searchCount: (options: { author: string; windowStart: string }) => number;
+  searchCount: (options: { author: string; windowStart: string; windowEnd: string }) => number;
   onSearchError?: (error: unknown) => void;
 }
 

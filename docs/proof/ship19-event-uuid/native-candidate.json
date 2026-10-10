@@ -1,0 +1,57 @@
+{
+  "targetHead": "77d22efdc90594981ef9b5e71983c9abadb8df0c",
+  "base": "9be08279694a7cdba55bd35b813641eae75aca3f",
+  "source": "complete committed range, canonical pinned native scanner",
+  "prompt": {
+    "kind": "controlled",
+    "bytes": 71,
+    "sha256": "ec04b7c204ee8e5aafb5fc4f81351c69e8fa7375aba79b95e50ecc86c127f66f"
+  },
+  "schema": null,
+  "limits": "No model execution; hosted review must rescan its own prompt, schema, and source inputs.",
+  "verification": "canonical enabled",
+  "result": "admitted",
+  "elapsedMs": 7486,
+  "notices": [
+    {
+      "event": "agent_input_scan_classified",
+      "notice": "Reviewed synthetic fixture findings classified as non-sensitive.",
+      "fixtureSha256": "6e31751daf97832583d6877d6f79a17eb9b74188d3916d1668d136af36a9ea45",
+      "source": ".grilltrack/events.jsonl",
+      "detector": "Privacy",
+      "findings": [
+        {
+          "blob": "8ca02e876ba753647b437ff3501beaf67e0c0386",
+          "scannerLine": 96,
+          "literalLine": 96,
+          "decoder": "PLAIN",
+          "role": "head",
+          "occurrences": 1
+        }
+      ]
+    },
+    {
+      "event": "agent_input_scan_classified",
+      "notice": "Reviewed synthetic fixture findings classified as non-sensitive.",
+      "fixtureSha256": "6e31751daf97832583d6877d6f79a17eb9b74188d3916d1668d136af36a9ea45",
+      "source": ".grilltrack/events.jsonl",
+      "detector": "Privacy",
+      "findings": [
+        {
+          "blob": "1",
+          "scannerLine": 9,
+          "literalLine": 9,
+          "decoder": "PLAIN",
+          "role": "head",
+          "occurrences": 1,
+          "patch": {
+            "from": "9be08279694a7cdba55bd35b813641eae75aca3f",
+            "to": "77d22efdc90594981ef9b5e71983c9abadb8df0c",
+            "sourceBlob": "8ca02e876ba753647b437ff3501beaf67e0c0386",
+            "sourceLine": 96
+          }
+        }
+      ]
+    }
+  ]
+}

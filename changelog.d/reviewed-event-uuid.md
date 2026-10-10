@@ -1,0 +1,1 @@
+- Classify one reviewed generated event UUID through exact source and patch witnesses without relaxing secret detection for other UUIDs or event files.

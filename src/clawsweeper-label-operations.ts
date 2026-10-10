@@ -74,6 +74,7 @@ export function createLabelSyncOperations(mutations: LabelMutations) {
     number: number;
     labels: readonly string[];
     bulkFilerDetected: boolean;
+    bulkFilerBelowThreshold?: boolean;
     authorAssociation: string;
     repositoryPermission?: string | null;
     dryRun: boolean;
@@ -87,6 +88,16 @@ export function createLabelSyncOperations(mutations: LabelMutations) {
       if (!hasBulkFilerLabel) return { labels: [...options.labels], changed: false };
       // This is ClawSweeper policy state, not a human triage label. Remove a
       // pre-exemption value so owners and members are not still deprioritized.
+      const nextLabels = options.labels.filter(
+        (label) => normalizeLabelName(label) !== normalizeLabelName(BULK_FILED_LABEL),
+      );
+      if (options.dryRun) return { labels: nextLabels, changed: true };
+      removeIssueLabel(options.number, BULK_FILED_LABEL, options.onMutation);
+      return { labels: nextLabels, changed: true };
+    }
+    if (!options.bulkFilerDetected && hasBulkFilerLabel && options.bulkFilerBelowThreshold) {
+      // A confirmed below-threshold count means an earlier review-time count labeled
+      // this issue; a failed search never sets the flag and keeps the label.
       const nextLabels = options.labels.filter(
         (label) => normalizeLabelName(label) !== normalizeLabelName(BULK_FILED_LABEL),
       );

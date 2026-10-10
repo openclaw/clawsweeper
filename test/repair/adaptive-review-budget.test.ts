@@ -1,11 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import {
-  MAX_MEDIA_PROOF_URLS,
-  MEDIA_PROOF_TIMEOUT_MS,
-  VIDEO_PROOF_EXTENSIONS,
-} from "../../dist/clawsweeper-media-proof.js";
+import { VIDEO_PROOF_EXTENSIONS } from "../../dist/clawsweeper-media-proof.js";
+import { MAX_MEDIA_PROOF_URLS, MEDIA_PROOF_TIMEOUT_MS } from "../../dist/media-proof-budget.js";
 import { adaptiveReviewBudgetForPullRequest } from "../../dist/repair/adaptive-review-budget.js";
 import { mediaFixtureUrls } from "../primary-body-fixture.ts";
 

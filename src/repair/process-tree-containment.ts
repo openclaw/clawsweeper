@@ -304,6 +304,11 @@ def selected_runtime_paths(command):
             continue
         path_entries.append(normalized)
     selected.extend(path_entries)
+    # The validator pins GOROOT for Go targets; the tree holds the compiler,
+    # tools and standard library that the go binary on PATH needs.
+    goroot = os.environ.get("GOROOT", "")
+    if goroot and os.path.isabs(goroot) and os.path.isdir(goroot):
+        selected.append(os.path.abspath(goroot))
     executable = command[0]
     resolved_executable = (
         executable

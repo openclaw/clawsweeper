@@ -650,8 +650,8 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
                 item,
                 cache: bulkFilerCountCache,
                 now: bulkFilerWindowNow,
-                searchCount: ({ author, windowStart }) =>
-                  authorIssueCountInBulkFilerWindow(author, windowStart),
+                searchCount: ({ author, windowStart, windowEnd }) =>
+                  authorIssueCountInBulkFilerWindow(author, windowStart, windowEnd),
                 onSearchError: (error) => {
                   console.error(
                     `[review] ${new Date().toISOString()} shard=${shardIndex}/${shardCount} bulk-filer-search=failed #${item.number}: ${
@@ -734,7 +734,11 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
             !isMaintainerAuthorAssociation(
               frontMatterValue(priorReview.markdown, "author_association"),
             )) ||
-          bulkFilerPolicyInvalidatesCachedReview(priorReview?.markdown ?? null, bulkFilerExemptionApplied)
+          bulkFilerPolicyInvalidatesCachedReview(
+            priorReview?.markdown ?? null,
+            bulkFilerExemptionApplied,
+            bulkFilerDetection.belowThreshold === true,
+          )
         ) {
           // Ownership and bulk-filer policy changes require a fresh decision;
           // carrying stale front matter would preserve the wrong safeguards.
@@ -1568,7 +1572,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
         const action = reviewActionForDecision({ item, decision, git, runtime });
         structuralRecord = refreshStructuralRecordForVerdict();
         const reportPath = join(artifactDir, reportFileName(item.repo, item.number));
-        const reportMarkdown = hostReport(markdownFor({
+        const reportMarkdown = hostReport(updateBulkFilerDetectedFrontMatter(markdownFor({
             item,
             context,
             decision,
@@ -1586,7 +1590,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
                   reviewLeaseCommentId: acquiredReviewLease.commentId,
                 }
               : {}),
-        }));
+        }), bulkFilerDetection));
         writeOutputReport(item, reportPath, reportMarkdown);
         if (codexFailure) {
           recordFailureDiagnostics(codexFailure.error, codexFailure.logKind);

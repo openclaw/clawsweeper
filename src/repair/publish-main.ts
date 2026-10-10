@@ -48,6 +48,8 @@ type PublishMainRuntime = {
   env?: NodeJS.ProcessEnv;
   fetchImpl?: typeof fetch;
   now?: () => Date;
+  sleep?: (milliseconds: number) => Promise<void>;
+  random?: () => number;
   publishGit?: (options: GitPublishOptions) => PublishResult;
   root?: string;
 };
@@ -92,6 +94,9 @@ export async function publishMainWithStateAppend(
           stateRoot: canonicalBaselineRoot!,
           env,
           ...(runtime.fetchImpl ? { fetchImpl: runtime.fetchImpl } : {}),
+          ...(runtime.now ? { now: runtime.now } : {}),
+          ...(runtime.sleep ? { sleep: runtime.sleep } : {}),
+          ...(runtime.random ? { random: runtime.random } : {}),
         });
         if (outcome === "skipped") canonicalSkippedCount += 1;
         else canonicalResolvedCount += 1;
@@ -319,13 +324,58 @@ type CanonicalPublicationOptions = {
   stateRoot: string;
   env: NodeJS.ProcessEnv;
   fetchImpl?: typeof fetch;
+  now?: () => Date;
+  sleep?: (milliseconds: number) => Promise<void>;
+  random?: () => number;
 };
+
+// Each unchanged mutation gets at most five POSTs and 120 seconds of backoff.
+// Keep the payload (especially deliveryId) intact: the Worker checks its durable
+// receipt before CAS, so even a lost response after a commit is safe to retry.
+async function postCanonicalRecordTupleWithTransientRetries(
+  options: CanonicalPublicationOptions,
+): Promise<void> {
+  const sleep =
+    options.sleep ??
+    ((milliseconds) => new Promise<void>((resolve) => setTimeout(resolve, milliseconds)));
+  let waited = 0;
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      await postCanonicalRecordTuple(options);
+      return;
+    } catch (error) {
+      const transient =
+        error instanceof CanonicalRecordTupleRequestError
+          ? error.status === 429 || (error.status >= 500 && error.status <= 599)
+          : error instanceof Error &&
+            /(?:\bECONNRESET\b|\bETIMEDOUT\b|fetch failed)/i.test(error.message);
+      if (!transient || attempt === 4) throw error;
+      const backoff =
+        Math.min(10_000 * 2 ** attempt, 50_000) * (0.8 + 0.2 * (options.random ?? Math.random)());
+      const retryAfter =
+        error instanceof CanonicalRecordTupleRequestError ? error.retryAfter : null;
+      let retryAfterMs = 0;
+      if (retryAfter !== null) {
+        const seconds = Number(retryAfter);
+        retryAfterMs = Number.isFinite(seconds)
+          ? Math.max(0, seconds * 1_000)
+          : Math.max(0, Date.parse(retryAfter) - (options.now?.() ?? new Date()).getTime());
+        if (!Number.isFinite(retryAfterMs)) retryAfterMs = 0;
+      }
+      const delay = Math.max(backoff, retryAfterMs);
+      // Never retry earlier than Retry-After, or exceed the bounded wait budget.
+      if (waited + delay > 120_000) throw error;
+      await sleep(delay);
+      waited += delay;
+    }
+  }
+}
 
 async function postCanonicalRecordTupleWithRecovery(
   options: CanonicalPublicationOptions,
 ): Promise<CanonicalPublicationOutcome> {
   try {
-    await postCanonicalRecordTuple(options);
+    await postCanonicalRecordTupleWithTransientRetries(options);
     return "published";
   } catch (error) {
     if (!(error instanceof CanonicalRecordTupleConflictError)) throw error;
@@ -377,11 +427,9 @@ async function postCanonicalRecordTupleWithRecovery(
       operations,
     };
     try {
-      await postCanonicalRecordTuple({
-        queueUrl: options.queueUrl,
-        webhookSecret: options.webhookSecret,
+      await postCanonicalRecordTupleWithTransientRetries({
+        ...options,
         mutation: retryMutation,
-        ...(options.fetchImpl ? { fetchImpl: options.fetchImpl } : {}),
       });
     } catch (retryError) {
       if (!(retryError instanceof CanonicalRecordTupleConflictError)) throw retryError;
@@ -505,11 +553,9 @@ async function recoverNonReconcilePublicationConflict(
     operations,
   };
   try {
-    await postCanonicalRecordTuple({
-      queueUrl: options.queueUrl,
-      webhookSecret: options.webhookSecret,
+    await postCanonicalRecordTupleWithTransientRetries({
+      ...options,
       mutation: retryMutation,
-      ...(options.fetchImpl ? { fetchImpl: options.fetchImpl } : {}),
     });
   } catch (retryError) {
     if (!(retryError instanceof CanonicalRecordTupleConflictError)) throw retryError;

@@ -40,7 +40,11 @@ export class CanonicalRecordTupleRequestError extends Error {
   readonly status: number;
   readonly code: string;
 
-  constructor(status: number, code: string) {
+  constructor(
+    status: number,
+    code: string,
+    readonly retryAfter: string | null = null,
+  ) {
     super(`POST /internal/state/records/tuples returned ${status}: ${code}`);
     this.name = "CanonicalRecordTupleRequestError";
     this.status = status;
@@ -83,7 +87,11 @@ export async function postCanonicalRecordTuple(options: {
       if (response.status === 409 && code === "canonical_record_tuple_conflict") {
         throw new CanonicalRecordTupleConflictError(parseConflictState(responseRecord?.current));
       }
-      throw new CanonicalRecordTupleRequestError(response.status, code);
+      throw new CanonicalRecordTupleRequestError(
+        response.status,
+        code,
+        response.headers.get("retry-after"),
+      );
     }
     const revision = Number(responseRecord.revision);
     if (!Number.isSafeInteger(revision) || revision < 1) {
@@ -97,8 +105,13 @@ export async function postCanonicalRecordTuple(options: {
     ) {
       throw error;
     }
+    const cause = isRecord(error) && isRecord(error.cause) ? error.cause : error;
+    const networkCode =
+      isRecord(cause) && /^(?:ECONNRESET|ETIMEDOUT)$/.test(String(cause.code))
+        ? ` (${String(cause.code)})`
+        : "";
     // oxlint-disable-next-line preserve-caught-error -- A cause would retain credentials after sanitization.
-    throw new Error(redactStateAppendSecrets(errorMessage(error)));
+    throw new Error(redactStateAppendSecrets(`${errorMessage(error)}${networkCode}`));
   }
 }
 

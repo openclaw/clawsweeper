@@ -1,0 +1,1 @@
+- Keep the media proof URL cap and per-URL deadline in one dependency-free module; media proof preparation, the adaptive review budget and the exact-review workflow (its media allowance cap and its media preprocessing reserve) now read them from there instead of repeating 4, 120 seconds and 480 seconds.

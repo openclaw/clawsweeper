@@ -58,6 +58,185 @@ test("publish-main appends changed record tuples canonically and never invokes g
   ]);
 });
 
+test("publish-main retries transient tuple failures with the same delivery and bounded backoff", async (t) => {
+  for (const failure of [
+    () => Response.json({ error: "exact_review_queue_unavailable" }, { status: 500 }),
+    () => Response.json({ error: "unavailable" }, { status: 503 }),
+    () => {
+      throw new TypeError("fetch failed");
+    },
+    () => {
+      throw Object.assign(new Error("socket closed"), { code: "ECONNRESET" });
+    },
+    () => {
+      throw new TypeError("request failed", { cause: { code: "ETIMEDOUT" } });
+    },
+  ]) {
+    const fixture = retryPublicationFixture(t);
+    const bodies: string[] = [];
+    const result = await publishMainWithStateAppend(fixture.options, {
+      ...fixture.runtime,
+      fetchImpl: (async (_input, init) => {
+        bodies.push(String(init?.body));
+        return bodies.length <= 2
+          ? failure()
+          : Response.json({ ok: true, revision: 1, deduped: true });
+      }) as typeof fetch,
+    });
+    assert.equal(result, "appended");
+    assert.equal(bodies.length, 3);
+    assert.equal(new Set(bodies).size, 1);
+    assert.deepEqual(fixture.waits, [10_000, 20_000]);
+  }
+});
+
+test("publish-main isolates exhausted transient failures and still aborts an all-failed batch", async (t) => {
+  for (const sibling of [false, true]) {
+    const fixture = retryPublicationFixture(t);
+    if (sibling) {
+      writeText(
+        fixture.runtime.root,
+        `${tupleRoot}/items/43.md`,
+        recordMarkdown("2026-07-26T02:00:00.000Z", "after").replace("number: 42", "number: 43"),
+      );
+    }
+    const keys: string[] = [];
+    const errors: string[] = [];
+    const errorMock = t.mock.method(console, "error", (message: string) => errors.push(message));
+    const publication = publishMainWithStateAppend(fixture.options, {
+      ...fixture.runtime,
+      fetchImpl: (async (_input, init) => {
+        const { key } = JSON.parse(String(init?.body)) as { key: string };
+        keys.push(key);
+        return key.endsWith("/42")
+          ? Response.json({ error: "exact_review_queue_unavailable" }, { status: 500 })
+          : Response.json({ ok: true, revision: 1 });
+      }) as typeof fetch,
+    });
+    if (sibling) assert.equal(await publication, "appended");
+    else await assert.rejects(publication, /Canonical reconciliation failed for all 1 item/);
+    assert.equal(keys.filter((key) => key.endsWith("/42")).length, 5);
+    assert.equal(keys.filter((key) => key.endsWith("/43")).length, sibling ? 1 : 0);
+    assert.deepEqual(fixture.waits, [10_000, 20_000, 40_000, 50_000]);
+    assert.equal(errors.length, 1);
+    errorMock.mock.restore();
+  }
+});
+
+test("publish-main never retries permanent HTTP failures and aborts authentication immediately", async (t) => {
+  for (const status of [400, 401, 403, 404, 422]) {
+    const fixture = retryPublicationFixture(t);
+    let calls = 0;
+    await assert.rejects(
+      publishMainWithStateAppend(fixture.options, {
+        ...fixture.runtime,
+        fetchImpl: (async () => {
+          calls += 1;
+          return Response.json({ error: "denied" }, { status });
+        }) as typeof fetch,
+      }),
+      status === 401 || status === 403
+        ? new RegExp(`returned ${status}: denied`)
+        : /failed for all/,
+    );
+    assert.equal(calls, 1);
+    assert.deepEqual(fixture.waits, []);
+  }
+});
+
+test("publish-main keeps persistent infrastructure failures fatal after bounded retries", async (t) => {
+  for (const [status, code] of [
+    [503, "unavailable"],
+    [500, "snapshot_unavailable"],
+    [500, "state_unavailable"],
+    [500, "storage_unavailable"],
+    [500, "store_unavailable"],
+  ] as const) {
+    const fixture = retryPublicationFixture(t);
+    writeText(
+      fixture.runtime.root,
+      `${tupleRoot}/items/43.md`,
+      recordMarkdown("2026-07-26T02:00:00.000Z", "after").replace("number: 42", "number: 43"),
+    );
+    const keys: string[] = [];
+    await assert.rejects(
+      publishMainWithStateAppend(fixture.options, {
+        ...fixture.runtime,
+        fetchImpl: (async (_input, init) => {
+          const { key } = JSON.parse(String(init?.body));
+          assert.equal(typeof key, "string");
+          keys.push(key);
+          return Response.json({ error: code }, { status });
+        }) as typeof fetch,
+      }),
+      new RegExp(`returned ${status}: ${code}`),
+    );
+    assert.deepEqual(keys, Array(5).fill("openclaw-openclaw/42"));
+    assert.deepEqual(fixture.waits, [10_000, 20_000, 40_000, 50_000]);
+  }
+});
+
+test("publish-main honors Retry-After without exceeding the retry wait budget", async (t) => {
+  for (const retryAfter of ["65", "Sat, 10 Oct 2026 00:01:05 GMT", "121"]) {
+    const fixture = retryPublicationFixture(t);
+    let calls = 0;
+    const publication = publishMainWithStateAppend(fixture.options, {
+      ...fixture.runtime,
+      fetchImpl: (async () => {
+        calls += 1;
+        return calls === 1
+          ? Response.json(
+              { error: "rate_limited" },
+              { status: 429, headers: { "Retry-After": retryAfter } },
+            )
+          : Response.json({ ok: true, revision: 1 });
+      }) as typeof fetch,
+    });
+    if (retryAfter === "121") {
+      await assert.rejects(publication, /failed for all/);
+      assert.equal(calls, 1);
+      assert.deepEqual(fixture.waits, []);
+    } else {
+      assert.equal(await publication, "appended");
+      assert.equal(calls, 2);
+      assert.deepEqual(fixture.waits, [65_000]);
+    }
+  }
+});
+
+function retryPublicationFixture(t: { after: (cleanup: () => void) => void }) {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-retry-source-"));
+  const stateRoot = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-retry-state-"));
+  t.after(() => {
+    fs.rmSync(root, { recursive: true, force: true });
+    fs.rmSync(stateRoot, { recursive: true, force: true });
+  });
+  writeText(stateRoot, tupleItemPath, recordMarkdown("2026-07-26T01:00:00.000Z", "before"));
+  writeText(root, tupleItemPath, recordMarkdown("2026-07-26T02:00:00.000Z", "after"));
+  const waits: number[] = [];
+  let clock = Date.parse("2026-10-10T00:00:00Z");
+  return {
+    options: { message: "test canonical retries", paths: [tupleRoot] },
+    waits,
+    runtime: {
+      root,
+      env: appendEnv({
+        CLAWSWEEPER_STATE_DIR: stateRoot,
+        CLAWSWEEPER_CANONICAL_PUBLICATION_KIND: "reconcile",
+      }),
+      now: () => new Date(clock),
+      random: () => 1,
+      sleep: async (milliseconds: number) => {
+        waits.push(milliseconds);
+        clock += milliseconds;
+      },
+      publishGit: (): PublishResult => {
+        throw new Error("git publication must not run");
+      },
+    },
+  };
+}
+
 test("publish-main canonically moves reconciled records from items to closed", async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-canonical-record-source-"));
   const stateRoot = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-canonical-record-state-"));

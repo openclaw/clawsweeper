@@ -1,0 +1,7 @@
+{
+  "base": "9be08279694a7cdba55bd35b813641eae75aca3f",
+  "targetHead": "77d22efdc90594981ef9b5e71983c9abadb8df0c",
+  "result": "refused_unknown_candidate",
+  "reason": "findings",
+  "notices": []
+}

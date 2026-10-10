@@ -5,6 +5,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { runCodexProcess } from "../dist/codex-process.js";
 import { CODEX_THREAD_STATE_MAX_BYTES } from "../dist/codex-output-capture.js";
+import { closeDecision } from "./helpers.ts";
 
 const uuid = "019f0560-0000-7000-8000-000000000001";
 const turnFailure = "Rate limit reached for tokens per min (TPM). Please try again in 20s.";
@@ -141,4 +142,107 @@ rl.on("line", (line) => {
       rmSync(root, { recursive: true, force: true });
     }
   });
+}
+
+for (const scenario of ["repaired", "invalid-twice"] as const) {
+  test(
+    `app-server decision repair turn: ${scenario}`,
+    { skip: process.platform === "win32" },
+    () => {
+      const root = mkdtempSync(join(tmpdir(), "clawsweeper-app-server-repair-"));
+      const outputPath = join(root, "result.json");
+      const schemaPath = join(root, "schema.json");
+      const requestsPath = join(root, "requests.jsonl");
+      const binary = join(root, "codex");
+      const fixture = join(root, "codex-fixture.cjs");
+      const validDecision = JSON.stringify(
+        closeDecision({
+          decision: "keep_open",
+          closeReason: "none",
+          confidence: "medium",
+          summary: "Repaired decision.",
+          bestSolution: "Keep the validator.",
+          closeComment: "",
+          workReason: "Maintainer review is required.",
+        }),
+      );
+      const messages = [
+        '{"decision":"keep_open"}',
+        scenario === "repaired" ? validDecision : "not json",
+      ];
+      try {
+        writeFileSync(schemaPath, '{"type":"object"}');
+        writeFileSync(
+          fixture,
+          `const fs = require("node:fs");
+const rl = require("node:readline").createInterface({ input: process.stdin });
+const messages = ${JSON.stringify(messages)};
+let turns = 0;
+const send = (value) => process.stdout.write(JSON.stringify(value) + "\\n");
+rl.on("line", (line) => {
+  const message = JSON.parse(line);
+  fs.appendFileSync(${JSON.stringify(requestsPath)}, line + "\\n");
+  if (message.method === "initialize") send({ id: message.id, result: {} });
+  if (message.method === "thread/start") {
+    send({ id: message.id, result: { thread: { id: ${JSON.stringify(uuid)} } } });
+  }
+  if (message.method === "turn/start") {
+    const turnId = "turn-" + turns;
+    const text = messages[turns++];
+    send({ id: message.id, result: { turn: { id: turnId, status: "inProgress" } } });
+    send({ method: "item/completed", params: { threadId: ${JSON.stringify(uuid)}, turnId, item: { type: "agentMessage", id: "m", text } } });
+    send({ method: "turn/completed", params: { threadId: ${JSON.stringify(uuid)}, turn: { id: turnId, status: "completed", error: null } } });
+  }
+});
+`,
+        );
+        writeFileSync(
+          binary,
+          `#!/bin/sh\nexec /usr/bin/env -u NODE_V8_COVERAGE ${JSON.stringify(process.execPath)} ${JSON.stringify(fixture)} "$@"\n`,
+          { mode: 0o700 },
+        );
+        const result = runCodexProcess({
+          args: [
+            "exec",
+            "--cd",
+            root,
+            "--sandbox",
+            "read-only",
+            "--output-schema",
+            schemaPath,
+            "--output-last-message",
+            outputPath,
+            "--json",
+            "-",
+          ],
+          cwd: root,
+          env: { ...process.env, CODEX_BIN: binary },
+          input: "Review the fixture.",
+          timeoutMs: 10_000,
+          outputLastMessagePath: outputPath,
+          outputLastMessageBytes: 64 * 1024,
+          appServer: { statePath: join(root, "thread.json") },
+          decisionRepair: { item: { repo: "openclaw/openclaw", number: 123, kind: "issue" } },
+        });
+        assert.equal(result.error, undefined);
+        assert.equal(result.decisionRepairError, "decision.evidence must be an array");
+        assert.equal(readFileSync(outputPath, "utf8"), messages[1]);
+        const turnStarts = readFileSync(requestsPath, "utf8")
+          .trim()
+          .split("\n")
+          .map((line) => JSON.parse(line))
+          .filter((message) => message.method === "turn/start")
+          .map((message) => message.params);
+        assert.equal(turnStarts.length, 2);
+        const [first, repair] = turnStarts;
+        assert.deepEqual(first.input, [{ type: "text", text: "Review the fixture." }]);
+        assert.match(repair.input[0].text, /decision\.evidence must be an array/);
+        // Same thread, sandbox, cwd, and output schema; only the input changes.
+        assert.deepEqual({ ...repair, input: first.input }, first);
+        assert.deepEqual(first.outputSchema, { type: "object" });
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+  );
 }

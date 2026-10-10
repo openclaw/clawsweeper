@@ -7,6 +7,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { parse } from "yaml";
+import { MAX_MEDIA_PROOF_TIMEOUT_MS } from "../../src/media-proof-budget.ts";
 
 const output = resolve(process.argv[2] || ".artifacts/review-reservation");
 mkdirSync(output, { recursive: true });
@@ -171,6 +172,7 @@ try {
           ITEM_NUMBER: String(number),
           CODEX_TIMEOUT_MS: "1000",
           MEDIA_PROOF_TIMEOUT_MS: "0",
+          MEDIA_PREPROCESSING_RESERVE_SECONDS: String(MAX_MEDIA_PROOF_TIMEOUT_MS / 1000),
           GITHUB_OUTPUT: githubOutput,
           GITHUB_RUN_ID: "999",
           GITHUB_RUN_ATTEMPT: "1",

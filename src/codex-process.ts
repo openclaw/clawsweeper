@@ -13,6 +13,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { normalizedOutputFileBytes, normalizedTailBytes } from "./codex-output-capture.js";
 import { codexProcessCommand } from "./codex-spawn.js";
+import type { DecisionRepairOptions } from "./review-decision-repair.js";
 import type { ReviewProofCapability } from "./review-proof-client.js";
 
 export { codexProcessCommand, codexSpawnInvocation } from "./codex-spawn.js";
@@ -22,6 +23,8 @@ export interface CodexProcessResult {
   signal: NodeJS.Signals | null;
   error?: Error;
   processError?: boolean;
+  // Validator error of the first final message when the worker ran one decision repair turn.
+  decisionRepairError?: string;
   stdout: string;
   stderr: string;
 }
@@ -34,6 +37,7 @@ interface SerializedCodexProcessResult {
     code?: string;
   };
   processError?: boolean;
+  decisionRepairError?: string;
   stdout: string;
   stderr: string;
 }
@@ -90,6 +94,7 @@ export function runCodexProcess(options: {
   stdoutPath?: string;
   stderrPath?: string;
   appServer?: CodexAppServerProcessOptions;
+  decisionRepair?: DecisionRepairOptions;
 }): CodexProcessResult {
   const workDir = mkdtempSync(join(tmpdir(), "clawsweeper-codex-process-"));
   const optionsPath = join(workDir, "options.json");
@@ -119,6 +124,7 @@ export function runCodexProcess(options: {
               outputLastMessagePath: options.outputLastMessagePath,
             }),
         ...(options.appServer ? { appServer: options.appServer } : {}),
+        ...(options.decisionRepair ? { decisionRepair: options.decisionRepair } : {}),
       }),
       { encoding: "utf8", mode: 0o600 },
     );
@@ -220,6 +226,9 @@ function deserializeProcessResult(value: SerializedCodexProcessResult): CodexPro
     signal: value.signal,
     ...(value.error ? { error: deserializeError(value.error) } : {}),
     ...(value.processError === undefined ? {} : { processError: value.processError }),
+    ...(value.decisionRepairError === undefined
+      ? {}
+      : { decisionRepairError: value.decisionRepairError }),
     stdout: value.stdout,
     stderr: value.stderr,
   };
