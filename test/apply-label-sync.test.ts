@@ -3770,15 +3770,13 @@ if (args[0] === "api" && args[1] === "-i" && /\\/issues\\/321\\/timeline(?:\\?|$
       calls.some((args) => args[0] === "label" && args[1] === "create"),
       false,
     );
-    assert.equal(
-      calls.some(
-        (args) =>
-          args[0] === "api" &&
-          (args[1] ?? "").endsWith("/issues/321/timeline?per_page=100") &&
-          args.includes("--paginate"),
-      ),
-      true,
+    const timelineCalls = calls.filter(
+      (args) => args[0] === "api" && args.some((arg) => arg.includes("/issues/321/timeline?")),
     );
+    assert.deepEqual(timelineCalls, [
+      ["api", "-i", "repos/openclaw/clawsweeper/issues/321/timeline?per_page=100&page=1"],
+      ["api", "-i", "repos/openclaw/clawsweeper/issues/321/timeline?per_page=100&page=2"],
+    ]);
     assert.deepEqual(JSON.parse(readFileSync(reportPath, "utf8")), [
       {
         number: 321,
