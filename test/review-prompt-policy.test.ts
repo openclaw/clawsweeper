@@ -206,7 +206,7 @@ test("runtime prompt renders only the applicable PR review instructions", () => 
   assert.match(firstReview, /For this external PR, real-behavior proof gates merge/);
   assert.doesNotMatch(firstReview, /This PR is maintainer-authored|Re-review: when the context/);
   assert.match(firstReview, /Authority chain, inside the existing outputs/);
-  assert.doesNotMatch(firstReview, /Keep repository-managed locale PRs open/);
+  assert.match(firstReview, /Keep repository-managed locale PRs open/);
   assert.doesNotMatch(firstReview, /<!-- \/?review-section/);
   assert.match(firstReview, /Claim malicious intent only on concrete evidence/);
 
@@ -226,6 +226,13 @@ test("runtime prompt renders only the applicable PR review instructions", () => 
     git,
   );
   assert.match(codeReview, /Authority chain, inside the existing outputs/);
+  const botReview = reviewPromptForTest(
+    item({ kind: "pull_request", author: "dependabot[bot]" }),
+    context,
+    git,
+  );
+  assert.doesNotMatch(botReview, /For this external PR, real-behavior proof gates merge/);
+  assert.match(botReview, /Authority chain, inside the existing outputs/);
 });
 
 test("media proof discovers both GitHub attachment shapes only on the approved host and paths", () => {

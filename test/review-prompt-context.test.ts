@@ -20,12 +20,7 @@ import {
 } from "../dist/clawsweeper.js";
 import { parseArgs as parseClawsweeperArgs } from "../dist/clawsweeper-args.js";
 import { REPOSITORY_PROFILES, repositoryProfileFor } from "../dist/repository-profiles.js";
-import {
-  applicableCloseReasons,
-  renderReviewSections,
-  reviewPromptSections,
-} from "../dist/review-prompt-sections.js";
-import { repositoryManagedPullRequestSymbol } from "../dist/clawsweeper-types.js";
+import { renderReviewSections, reviewPromptSections } from "../dist/review-prompt-sections.js";
 import {
   git,
   item,
@@ -840,70 +835,6 @@ test("item prompts carry only the review template for their kind", () => {
   assert.ok(issuePrompt.includes(templates.issue.trim()));
   assert.ok(!issuePrompt.includes("\n## Review Rules\n"));
   for (const text of [prompt, issuePrompt]) assert.doesNotMatch(text, /\{\{\w+\}\}/);
-});
-
-test("hydration preserves managed locale identity before compaction without serializing it", () => {
-  for (const scenario of [
-    {
-      author: "openclaw-mantis[bot]",
-      ref: "automation/native-app-locale-refresh",
-      headRepo: "openclaw/openclaw",
-      baseRepo: "openclaw/openclaw",
-      expected: true,
-    },
-    {
-      author: "app/openclaw-mantis",
-      ref: "automation/control-ui-locale-refresh",
-      headRepo: "openclaw/openclaw",
-      baseRepo: "openclaw/openclaw",
-      expected: true,
-    },
-    {
-      author: "contributor",
-      ref: "automation/native-app-locale-refresh",
-      headRepo: "openclaw/openclaw",
-      baseRepo: "openclaw/openclaw",
-      expected: false,
-    },
-    {
-      author: "openclaw-mantis[bot]",
-      ref: "contributor/locales",
-      headRepo: "openclaw/openclaw",
-      baseRepo: "openclaw/openclaw",
-      expected: false,
-    },
-    {
-      author: "openclaw-mantis[bot]",
-      ref: "automation/native-app-locale-refresh",
-      headRepo: "fork/openclaw",
-      baseRepo: "openclaw/openclaw",
-      expected: false,
-    },
-    {
-      author: "openclaw-mantis[bot]",
-      ref: "automation/native-app-locale-refresh",
-      headRepo: "openclaw/openclaw",
-      baseRepo: "fork/openclaw",
-      expected: false,
-    },
-  ]) {
-    const { target, context } = hydratePrimaryBody("", "pull_request", {
-      target: { author: scenario.author },
-      pullRequest: {
-        user: { login: "openclaw-mantis[bot]" },
-        head: { ref: scenario.ref, sha: "b".repeat(40), repo: { full_name: scenario.headRepo } },
-        base: { ref: "main", sha: "c".repeat(40), repo: { full_name: scenario.baseRepo } },
-      },
-    });
-    assert.equal(context[repositoryManagedPullRequestSymbol], scenario.expected ? true : undefined);
-    const prompt = reviewPromptForTest(target, context, git);
-    assert.equal(prompt.includes("Keep repository-managed locale PRs open"), scenario.expected);
-    assert.deepEqual(
-      applicableCloseReasons(target, context, ["implemented_on_main"]),
-      scenario.expected ? [] : ["implemented_on_main"],
-    );
-    assert.equal(JSON.stringify(context).includes("repositoryManagedPullRequest"), false);
-  }
 });
 
 test("review policy hash changes when a review prompt template changes", () => {

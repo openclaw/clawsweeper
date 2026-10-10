@@ -1,5 +1,6 @@
 import {
   applyBlockingProtectedLabels,
+  isAutomationReportAuthor,
   isMaintainerAuthorAssociation,
   isProtectedItem,
 } from "./clawsweeper-item-policy.js";
@@ -18,7 +19,6 @@ import {
   UNSPONSORED_FEATURE_MIN_AGE_DAYS,
 } from "./clawsweeper-policy.js";
 import type { Item, ItemContext, ReviewPromptRuntimeHints } from "./clawsweeper-types.js";
-import { repositoryManagedPullRequestSymbol } from "./clawsweeper-types.js";
 import type { RepositoryCloseReason } from "./repository-profiles.js";
 import { asRecord } from "./value-coerce.js";
 
@@ -27,8 +27,7 @@ export type ReviewPromptSection =
   | "media"
   | "maintainer_author"
   | "external_author"
-  | "authority_chain"
-  | "managed_locale";
+  | "authority_chain";
 
 /** Semantic authority changes stay model-assessed: even Markdown can be a runtime template. */
 export function reviewPromptSections(
@@ -41,9 +40,8 @@ export function reviewPromptSections(
     follow_up: item.kind === "pull_request" && context.previousClawSweeperReview != null,
     media: Boolean(hints.mediaProofSummary?.trim() && hints.mediaProofManifestPath?.trim()),
     maintainer_author: maintainer,
-    external_author: !maintainer,
+    external_author: !maintainer && !isAutomationReportAuthor(item.author),
     authority_chain: item.kind === "pull_request",
-    managed_locale: context[repositoryManagedPullRequestSymbol] === true,
   };
 }
 
@@ -108,11 +106,10 @@ export function applicableCloseReasons(
   now = Date.now(),
 ): RepositoryCloseReason[] {
   const guarded = isMaintainerAuthorAssociation(item.authorAssociation) || isProtectedItem(item);
-  const managed = context[repositoryManagedPullRequestSymbol] === true;
   const pull = asRecord(context.pullRequest);
   const age = (now - Date.parse(item.createdAt)) / DAY_MS;
   return reasons.filter((reason) => {
-    if (managed || reason === "none" || reason === "author_pr_budget_exceeded") return false;
+    if (reason === "none" || reason === "author_pr_budget_exceeded") return false;
     if (item.kind === "issue" ? pullRequestReasons[reason] : issueReasons[reason]) return false;
     if (reason === "oversized_pull_request") {
       if (applyBlockingProtectedLabels(item.labels, reason).length > 0) return false;

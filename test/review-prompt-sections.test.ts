@@ -25,7 +25,6 @@ import {
   maxPrChangedLines,
 } from "../dist/clawsweeper-oversized-pr-policy.js";
 import type { Item, ItemContext, ReviewPromptRuntimeHints } from "../dist/clawsweeper-types.js";
-import { repositoryManagedPullRequestSymbol } from "../dist/clawsweeper-types.js";
 import type { RepositoryCloseReason } from "../dist/repository-profiles.js";
 import { applyBlockingProtectedLabels } from "../dist/clawsweeper-item-policy.js";
 
@@ -139,17 +138,13 @@ test("authority review stays available for every PR, including runtime-consumed 
   }
 });
 
-test("managed locale instructions consume the host identity fact and suppress all close reasons", () => {
-  const managed = context({
-    [repositoryManagedPullRequestSymbol]: true,
-    pullRequest: oversizedPull(),
-  });
-  assertSection("managed_locale", true, target(), managed);
-  assert.deepEqual(applicableCloseReasons(target(), managed, reasons, now), []);
-  assertSection("managed_locale", false);
-  assert.ok(
-    applicableCloseReasons(target(), context(), reasons, now).includes("implemented_on_main"),
-  );
+test("automation authors retain security review without external-human proof gating", () => {
+  for (const author of ["dependabot[bot]", "app/clawsweeper"]) {
+    const item = target({ author });
+    assertSection("external_author", false, item);
+    assertSection("maintainer_author", false, item);
+    assertSection("authority_chain", true, item);
+  }
 });
 
 test("renderer composes adjacent sections without exposing markers or changing literal content", () => {

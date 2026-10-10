@@ -7,10 +7,7 @@ import type {
   ItemContext,
   PreviousClawSweeperReview,
 } from "./clawsweeper-types.js";
-import {
-  completeActivityContextSymbol,
-  repositoryManagedPullRequestSymbol,
-} from "./clawsweeper-types.js";
+import { completeActivityContextSymbol } from "./clawsweeper-types.js";
 import { stableJson } from "./stable-json.js";
 import { compactPrimaryBody } from "./clawsweeper-primary-body.js";
 import { fetchPrCommentActivityRevision } from "./pr-comment-activity-revision.js";
@@ -25,7 +22,6 @@ import {
   type LiveReadOptions,
 } from "./live-read-generation.js";
 import { asRecord, nonBlankStringOrUndefined } from "./value-coerce.js";
-import { repositoryManagedPullRequestCloseReason } from "./repository-profiles.js";
 
 interface CreateItemContextDependencies {
   closingPullRequestsForIssue: (number: number) => unknown[];
@@ -357,9 +353,6 @@ export function createItemContext(dependencies: CreateItemContextDependencies) {
               ghPaged: readPaged,
               ghPagedContextWindow: readContextWindow,
             });
-      if (repositoryManagedPullRequestCloseReason(item, () => pullRequest)) {
-        context[repositoryManagedPullRequestSymbol] = true;
-      }
       const pullFilesWindow = hydration.files;
       const pullFiles = pullFilesWindow.items;
       const pullCommitsWindow = hydration.commits;

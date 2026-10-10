@@ -101,11 +101,9 @@ export function hydratePrimaryBody(
     comments?: unknown[];
     pullReviewComments?: unknown[];
     pullFiles?: unknown[];
-    target?: Partial<Item>;
-    pullRequest?: Record<string, unknown>;
   } = {},
 ) {
-  const target = item({ kind, ...options.target }) as Item;
+  const target = item({ kind }) as Item;
   const rawIssue = {
     number: target.number,
     title: target.title,
@@ -129,7 +127,6 @@ export function hydratePrimaryBody(
     changed_files: options.pullFiles?.length ?? 0,
     commits: 0,
     review_comments: options.pullReviewComments?.length ?? 0,
-    ...options.pullRequest,
   };
   const window = (items: unknown[]) => ({
     items,
