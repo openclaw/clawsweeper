@@ -157,7 +157,8 @@ function fence(args) {
 async function child(codeRoot, stepsPath, resultPath) {
   const dist = (name) => pathToFileURL(join(codeRoot, "dist", name)).href;
   const runtimeModule = await import(dist("clawsweeper-github-runtime.js"));
-  const { createGitHubExecution } = await import(dist("clawsweeper-github-execution.js"));
+  const executionModule = await import(dist("clawsweeper-github-execution.js"));
+  let execution = executionModule;
   let gitHubRuntime = runtimeModule;
   if (runtimeModule.createGitHubRuntime && process.env.DP_PHASE.startsWith("before-")) {
     // Only historical baseline checkouts retain the runtime factory contract.
@@ -179,11 +180,9 @@ async function child(codeRoot, stepsPath, resultPath) {
     const { setTargetRepo } = await import(dist("repository-profiles.js"));
     setTargetRepo(REPO);
   }
-  const execution = createGitHubExecution({
-    ROOT: codeRoot,
-    gitHubRuntime,
-    labelAlreadyExistsError: () => false,
-  });
+  if (executionModule.createGitHubExecution && process.env.DP_PHASE.startsWith("before-")) {
+    execution = executionModule.createGitHubExecution({ ROOT: codeRoot, gitHubRuntime });
+  }
   const steps = JSON.parse(readFileSync(stepsPath, "utf8"));
   const startedAt = Date.now();
   const results = [];
@@ -207,8 +206,8 @@ async function child(codeRoot, stepsPath, resultPath) {
       });
     }
   };
-  if (gitHubRuntime === runtimeModule) runtimeModule.withGitHubRun(replay);
-  else replay();
+  if (runtimeModule.createGitHubRuntime && process.env.DP_PHASE.startsWith("before-")) replay();
+  else runtimeModule.withGitHubRun(replay);
   writeFileSync(resultPath, JSON.stringify({ startedAt, finishedAt: Date.now(), results }));
 }
 

@@ -1,23 +1,41 @@
 #!/usr/bin/env node
 import assert from "node:assert/strict";
-import { fork, spawnSync } from "node:child_process";
-import { mkdirSync, writeFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { execFileSync, fork } from "node:child_process";
+import {
+  appendFileSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 
-import { createGitHubContext } from "../../dist/clawsweeper-github-context.js";
+import * as github from "../../dist/clawsweeper-github-context.js";
+import { withGitHubRun } from "../../dist/clawsweeper-github-runtime.js";
+import { setTargetRepo } from "../../dist/repository-profiles.js";
 import {
   ReviewedPrActivityChangedDuringReadError,
   readStableReviewedPrActivityCursor,
   readStableReviewedPrActivityCursors,
 } from "../../dist/review-activity-cursor.js";
 
+if (process.argv[2] === "--gh") {
+  process.stdout.write(gh(process.argv.slice(3), process.env));
+  process.exit(0);
+}
+
 const { values } = parseArgs({
   options: { "output-dir": { type: "string" } },
   strict: true,
 });
 
-const requests = [];
+const fixture = mkdtempSync(join(tmpdir(), "activity-cursor-gh-"));
+const requestLog = join(fixture, "requests.jsonl");
+writeFileSync(requestLog, "");
 const server = fork(
   new URL("graphql-activity-cursor-v2-loopback-server.mjs", import.meta.url),
   [],
@@ -34,75 +52,72 @@ const port = await new Promise((resolveReady, reject) => {
 
 try {
   const apiUrl = `http://127.0.0.1:${port}`;
-  const githubEnv = {
-    ...process.env,
+  Object.assign(process.env, {
+    GH_BIN: process.execPath,
+    GH_BIN_ARGS: JSON.stringify([fileURLToPath(import.meta.url), "--gh"]),
+    CURSOR_PROOF_REQUEST_LOG: requestLog,
     GITHUB_API_URL: apiUrl,
     GITHUB_GRAPHQL_URL: `${apiUrl}/graphql`,
     GH_TOKEN: "loopback-proof-token",
-  };
-  const context = () =>
-    createGitHubContext({
-      targetRepo: () => "openclaw/clawsweeper",
-      ghJson: (args) => ghJson(args, githubEnv),
-      ghWithRetry: (args) => gh(args, githubEnv),
-    });
+    EXACT_EVENT_PUBLICATION: "false",
+  });
+  setTargetRepo("openclaw/clawsweeper");
   const numbers = Array.from({ length: 8 }, (_, index) => index + 1);
 
   resetRequests();
-  const v1 = context();
-  const v1SingleCursor = readStableReviewedPrActivityCursor(() =>
-    v1.fetchReviewedPrActivityCursorV1(1),
+  const v1SingleCursor = withGitHubRun(() =>
+    readStableReviewedPrActivityCursor(() => github.fetchReviewedPrActivityCursorV1(1)),
   );
-  const v1SingleRequests = requests.length;
+  const v1SingleRequests = requestCount();
 
   resetRequests();
-  const v2 = context();
-  const v2SingleCursor = readStableReviewedPrActivityCursor(() =>
-    v2.fetchReviewedPrActivityCursor(1),
+  const v2SingleCursor = withGitHubRun(() =>
+    readStableReviewedPrActivityCursor(() => github.fetchReviewedPrActivityCursor(1)),
   );
-  const v2SingleRequests = requests.length;
+  const v2SingleRequests = requestCount();
 
   resetRequests();
-  const v1Batch = context();
-  const v1BatchCursors = readStableReviewedPrActivityCursors(() =>
-    Object.fromEntries(
-      numbers.map((number) => [String(number), v1Batch.fetchReviewedPrActivityCursorV1(number)]),
+  const v1BatchCursors = withGitHubRun(() =>
+    readStableReviewedPrActivityCursors(() =>
+      Object.fromEntries(
+        numbers.map((number) => [String(number), github.fetchReviewedPrActivityCursorV1(number)]),
+      ),
     ),
   );
-  const v1BatchRequests = requests.length;
+  const v1BatchRequests = requestCount();
 
   resetRequests();
-  const v2Batch = context();
-  const v2BatchCursors = readStableReviewedPrActivityCursors(() =>
-    v2Batch.fetchReviewedPrActivityCursors(numbers),
+  const v2BatchCursors = withGitHubRun(() =>
+    readStableReviewedPrActivityCursors(() => github.fetchReviewedPrActivityCursors(numbers)),
   );
-  const v2BatchRequests = requests.length;
+  const v2BatchRequests = requestCount();
 
   resetRequests();
   await setServerMode("partial");
-  const fallback = context();
   const telemetry = [];
   const originalError = console.error;
   let fallbackCursor;
   try {
     console.error = (line) => telemetry.push(String(line));
-    fallbackCursor = readStableReviewedPrActivityCursor(() =>
-      fallback.fetchReviewedPrActivityCursor(1),
+    fallbackCursor = withGitHubRun(() =>
+      readStableReviewedPrActivityCursor(() => github.fetchReviewedPrActivityCursor(1)),
     );
   } finally {
     console.error = originalError;
   }
-  const fallbackRequests = requests.length;
+  const fallbackRequests = requestCount();
   await setServerMode("complete");
 
   resetRequests();
   await setServerMode("concurrent");
-  const concurrent = context();
   assert.throws(
-    () => readStableReviewedPrActivityCursor(() => concurrent.fetchReviewedPrActivityCursor(1)),
+    () =>
+      withGitHubRun(() =>
+        readStableReviewedPrActivityCursor(() => github.fetchReviewedPrActivityCursor(1)),
+      ),
     ReviewedPrActivityChangedDuringReadError,
   );
-  const concurrentRequests = requests.length;
+  const concurrentRequests = requestCount();
   await setServerMode("complete");
 
   assert.equal(v1SingleRequests, 6);
@@ -170,10 +185,15 @@ try {
 } finally {
   server.send({ kind: "close" });
   await new Promise((resolveClose) => server.once("exit", resolveClose));
+  rmSync(fixture, { recursive: true, force: true });
 }
 
 function resetRequests() {
-  requests.length = 0;
+  writeFileSync(requestLog, "");
+}
+
+function requestCount() {
+  return readFileSync(requestLog, "utf8").split("\n").filter(Boolean).length;
 }
 
 function setServerMode(mode) {
@@ -187,10 +207,6 @@ function setServerMode(mode) {
     server.on("message", listener);
     server.send({ kind: "mode", mode, id });
   });
-}
-
-function ghJson(args, env) {
-  return JSON.parse(gh(args, env));
 }
 
 function gh(args, env) {
@@ -216,8 +232,11 @@ function gh(args, env) {
   } else {
     url = new URL(String(args[1]), `${env.GITHUB_API_URL}/`).toString();
   }
-  requests.push({ method: graphql ? "POST" : "GET", url });
-  const child = spawnSync(
+  appendFileSync(
+    env.CURSOR_PROOF_REQUEST_LOG,
+    `${JSON.stringify({ method: graphql ? "POST" : "GET", url })}\n`,
+  );
+  return execFileSync(
     "curl",
     [
       "--fail",
@@ -234,9 +253,4 @@ function gh(args, env) {
       maxBuffer: 8 * 1024 * 1024,
     },
   );
-  if (child.error) throw child.error;
-  if (child.status !== 0) {
-    throw new Error(`loopback request failed: ${String(child.stderr).trim()}`);
-  }
-  return child.stdout;
 }

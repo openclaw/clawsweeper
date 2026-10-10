@@ -1,6 +1,9 @@
 import { parseGhJson } from "./github-json.js";
 import { exactPublicationPublicReadToken } from "./github-public-read.js";
 import { ghRetryKind } from "./github-retry.js";
+import { targetRepo } from "./repository-profiles.js";
+import { ghJson, ghJsonEach, ghWithRetry } from "./clawsweeper-github-execution.js";
+import { reviewedPrActivityFallbacks } from "./clawsweeper-github-runtime.js";
 import {
   MAX_REVIEWED_PR_ACTIVITY,
   REVIEWED_PR_ACTIVITY_THREADS_QUERY,
@@ -13,7 +16,6 @@ import type {
   ContextHydration,
   GithubContextWindowPlan,
   GithubPageWithHeaders,
-  GitHubJsonResult,
 } from "./clawsweeper-types.js";
 
 export function githubCount(value: unknown): number | null {
@@ -22,423 +24,397 @@ export function githubCount(value: unknown): number | null {
   if (!Number.isFinite(count) || count < 0) return null;
   return Math.floor(count);
 }
-interface GitHubContextDependencies {
-  ghJson: <T>(args: string[]) => T;
-  ghJsonEach: <T>(requests: readonly string[][]) => GitHubJsonResult<T>[];
-  ghWithRetry: (args: string[]) => string;
-  targetRepo: () => string;
+
+export function githubPaginatedPath(path: string): string {
+  const [basePart, query = ""] = path.split("?", 2);
+  const base = basePart ?? path;
+  const params = new URLSearchParams(query);
+  if (!params.has("per_page")) params.set("per_page", "100");
+  const serialized = params.toString();
+  return serialized ? `${base}?${serialized}` : base;
 }
 
-export function createGitHubContext({
-  ghJson,
-  ghJsonEach,
-  ghWithRetry,
-  targetRepo,
-}: GitHubContextDependencies) {
-  const reviewedPrActivityV2Fallbacks = new Map<number, string>();
+function githubPagePath(path: string, page: number, perPage = 100): string {
+  const [basePart, query = ""] = path.split("?", 2);
+  const base = basePart ?? path;
+  const params = new URLSearchParams(query);
+  params.set("per_page", String(Math.max(1, Math.floor(perPage))));
+  params.set("page", String(Math.max(1, Math.floor(page))));
+  const serialized = params.toString();
+  return serialized ? `${base}?${serialized}` : base;
+}
 
-  function githubPaginatedPath(path: string): string {
-    const [basePart, query = ""] = path.split("?", 2);
-    const base = basePart ?? path;
-    const params = new URLSearchParams(query);
-    if (!params.has("per_page")) params.set("per_page", "100");
-    const serialized = params.toString();
-    return serialized ? `${base}?${serialized}` : base;
-  }
-
-  function githubPagePath(path: string, page: number, perPage = 100): string {
-    const [basePart, query = ""] = path.split("?", 2);
-    const base = basePart ?? path;
-    const params = new URLSearchParams(query);
-    params.set("per_page", String(Math.max(1, Math.floor(perPage))));
-    params.set("page", String(Math.max(1, Math.floor(page))));
-    const serialized = params.toString();
-    return serialized ? `${base}?${serialized}` : base;
-  }
-
-  function ghPaged<T>(path: string, options: { requireApp?: boolean } = {}): T[] {
-    if (
-      process.env.EXACT_EVENT_PUBLICATION !== "true" ||
-      !process.env.EXACT_REVIEW_QUEUE_URL?.trim() ||
-      !process.env.CLAWSWEEPER_WEBHOOK_SECRET?.trim()
-    ) {
-      const args = ["api", githubPaginatedPath(path), "--paginate", "--slurp"];
-      if (options.requireApp && exactPublicationPublicReadToken(args, targetRepo())) {
-        args.push("--method", "GET");
-      }
-      const pages = ghJson<unknown[]>(args);
-      if (!Array.isArray(pages)) return [];
-      return pages.flatMap((page) => (Array.isArray(page) ? (page as T[]) : []));
+export function ghPaged<T>(path: string, options: { requireApp?: boolean } = {}): T[] {
+  if (
+    process.env.EXACT_EVENT_PUBLICATION !== "true" ||
+    !process.env.EXACT_REVIEW_QUEUE_URL?.trim() ||
+    !process.env.CLAWSWEEPER_WEBHOOK_SECRET?.trim()
+  ) {
+    const args = ["api", githubPaginatedPath(path), "--paginate", "--slurp"];
+    if (options.requireApp && exactPublicationPublicReadToken(args, targetRepo())) {
+      args.push("--method", "GET");
     }
-    const entries: T[] = [];
-    for (let page = 1; ; page += 1) {
-      const args = ["api", githubPagePath(path, page)];
-      if (options.requireApp && exactPublicationPublicReadToken(args, targetRepo())) {
-        args.push("--method", "GET");
-      }
-      const current = ghJson<unknown[]>(args);
-      if (!Array.isArray(current)) return entries;
-      entries.push(...(current as T[]));
-      if (current.length < 100) return entries;
+    const pages = ghJson<unknown[]>(args);
+    if (!Array.isArray(pages)) return [];
+    return pages.flatMap((page) => (Array.isArray(page) ? (page as T[]) : []));
+  }
+  const entries: T[] = [];
+  for (let page = 1; ; page += 1) {
+    const args = ["api", githubPagePath(path, page)];
+    if (options.requireApp && exactPublicationPublicReadToken(args, targetRepo())) {
+      args.push("--method", "GET");
     }
+    const current = ghJson<unknown[]>(args);
+    if (!Array.isArray(current)) return entries;
+    entries.push(...(current as T[]));
+    if (current.length < 100) return entries;
   }
+}
 
-  function ghPagedLimit<T>(path: string, limit: number): T[] {
-    const max = Number.isFinite(limit) ? Math.max(0, Math.floor(limit)) : 0;
-    if (max === 0) return [];
-    const entries: T[] = [];
-    for (let page = 1; entries.length < max; page += 1) {
-      const current = normalizeLimitedPage(ghPage<T>(path, page));
-      entries.push(...current);
-      if (current.length < 100) break;
+export function ghPagedLimit<T>(path: string, limit: number): T[] {
+  const max = Number.isFinite(limit) ? Math.max(0, Math.floor(limit)) : 0;
+  if (max === 0) return [];
+  const entries: T[] = [];
+  for (let page = 1; entries.length < max; page += 1) {
+    const current = normalizeLimitedPage(ghPage<T>(path, page));
+    entries.push(...current);
+    if (current.length < 100) break;
+  }
+  return entries.slice(0, max);
+}
+
+function normalizeLimitedPage<T>(entries: T[]): T[] {
+  return entries.length === 1 && Array.isArray(entries[0]) ? (entries[0] as T[]) : entries;
+}
+
+function reviewedPrActivityThreads(number: number, limit: number): unknown[] {
+  const max = Number.isFinite(limit) ? Math.max(0, Math.floor(limit)) : 0;
+  if (max === 0) return [];
+  const [owner, name] = targetRepo().split("/");
+  if (!owner || !name) throw new Error(`invalid target repository: ${targetRepo()}`);
+  const threads: unknown[] = [];
+  const seenCursors = new Set<string>();
+  let after: string | null = null;
+  while (threads.length < max) {
+    const args = [
+      "api",
+      "graphql",
+      "-f",
+      `owner=${owner}`,
+      "-f",
+      `name=${name}`,
+      "-F",
+      `number=${number}`,
+      "-f",
+      `query=${REVIEWED_PR_ACTIVITY_THREADS_QUERY}`,
+    ];
+    if (after) args.push("-f", `after=${after}`);
+    const page = reviewedPrActivityThreadsPageFromGraphql(ghJson<unknown>(args));
+    if (!page) throw new Error(`malformed review thread response for PR #${number}`);
+    threads.push(...page.threads);
+    if (!page.hasNextPage) break;
+    if (!page.endCursor || seenCursors.has(page.endCursor) || page.threads.length === 0) {
+      throw new Error(`review thread pagination did not advance for PR #${number}`);
     }
-    return entries.slice(0, max);
+    seenCursors.add(page.endCursor);
+    after = page.endCursor;
   }
+  return threads.slice(0, max);
+}
 
-  function normalizeLimitedPage<T>(entries: T[]): T[] {
-    return entries.length === 1 && Array.isArray(entries[0]) ? (entries[0] as T[]) : entries;
-  }
+export function fetchReviewedPrActivityCursorV1(
+  number: number,
+  prefetchedInlineComments?: unknown[],
+): string | null {
+  let remaining = MAX_REVIEWED_PR_ACTIVITY;
+  const reviews = ghPagedLimit<unknown>(
+    `repos/${targetRepo()}/pulls/${number}/reviews`,
+    remaining + 1,
+  );
+  if (reviews.length > remaining) return null;
+  remaining -= reviews.length;
+  const inlineComments =
+    prefetchedInlineComments ??
+    ghPagedLimit<unknown>(`repos/${targetRepo()}/pulls/${number}/comments`, remaining + 1);
+  if (inlineComments.length > remaining) return null;
+  remaining -= inlineComments.length;
+  const reviewThreads =
+    inlineComments.length === 0 ? [] : reviewedPrActivityThreads(number, remaining + 1);
+  if (reviewThreads.length > remaining) return null;
+  return createReviewedPrActivityCursor({ reviews, inlineComments, reviewThreads });
+}
 
-  function reviewedPrActivityThreads(number: number, limit: number): unknown[] {
-    const max = Number.isFinite(limit) ? Math.max(0, Math.floor(limit)) : 0;
-    if (max === 0) return [];
+export function fetchReviewedPrActivityCursors(
+  numbers: readonly number[],
+  prefetchedInlineComments: ReadonlyMap<number, readonly unknown[]> = new Map(),
+): Record<string, string | null> {
+  const reviewedPrActivityV2Fallbacks = reviewedPrActivityFallbacks();
+  const repo = targetRepo();
+  const uniqueNumbers = [...new Set(numbers)].sort((left, right) => left - right);
+  const cursors: Record<string, string | null> = {};
+  const v2Numbers = uniqueNumbers.filter(
+    (number) => !reviewedPrActivityV2Fallbacks.has(`${repo}#${number}`),
+  );
+  if (v2Numbers.length > 0) {
     const [owner, name] = targetRepo().split("/");
     if (!owner || !name) throw new Error(`invalid target repository: ${targetRepo()}`);
-    const threads: unknown[] = [];
-    const seenCursors = new Set<string>();
-    let after: string | null = null;
-    while (threads.length < max) {
-      const args = [
-        "api",
-        "graphql",
-        "-f",
-        `owner=${owner}`,
-        "-f",
-        `name=${name}`,
-        "-F",
-        `number=${number}`,
-        "-f",
-        `query=${REVIEWED_PR_ACTIVITY_THREADS_QUERY}`,
-      ];
-      if (after) args.push("-f", `after=${after}`);
-      const page = reviewedPrActivityThreadsPageFromGraphql(ghJson<unknown>(args));
-      if (!page) throw new Error(`malformed review thread response for PR #${number}`);
-      threads.push(...page.threads);
-      if (!page.hasNextPage) break;
-      if (!page.endCursor || seenCursors.has(page.endCursor) || page.threads.length === 0) {
-        throw new Error(`review thread pagination did not advance for PR #${number}`);
-      }
-      seenCursors.add(page.endCursor);
-      after = page.endCursor;
-    }
-    return threads.slice(0, max);
-  }
-
-  function fetchReviewedPrActivityCursorV1(
-    number: number,
-    prefetchedInlineComments?: unknown[],
-  ): string | null {
-    let remaining = MAX_REVIEWED_PR_ACTIVITY;
-    const reviews = ghPagedLimit<unknown>(
-      `repos/${targetRepo()}/pulls/${number}/reviews`,
-      remaining + 1,
-    );
-    if (reviews.length > remaining) return null;
-    remaining -= reviews.length;
-    const inlineComments =
-      prefetchedInlineComments ??
-      ghPagedLimit<unknown>(`repos/${targetRepo()}/pulls/${number}/comments`, remaining + 1);
-    if (inlineComments.length > remaining) return null;
-    remaining -= inlineComments.length;
-    const reviewThreads =
-      inlineComments.length === 0 ? [] : reviewedPrActivityThreads(number, remaining + 1);
-    if (reviewThreads.length > remaining) return null;
-    return createReviewedPrActivityCursor({ reviews, inlineComments, reviewThreads });
-  }
-
-  function fetchReviewedPrActivityCursors(
-    numbers: readonly number[],
-    prefetchedInlineComments: ReadonlyMap<number, readonly unknown[]> = new Map(),
-  ): Record<string, string | null> {
-    const uniqueNumbers = [...new Set(numbers)].sort((left, right) => left - right);
-    const cursors: Record<string, string | null> = {};
-    const v2Numbers = uniqueNumbers.filter((number) => !reviewedPrActivityV2Fallbacks.has(number));
-    if (v2Numbers.length > 0) {
-      const [owner, name] = targetRepo().split("/");
-      if (!owner || !name) throw new Error(`invalid target repository: ${targetRepo()}`);
-      const query = reviewedPrActivityCursorV2Query(owner, name, v2Numbers);
-      try {
-        const batch = reviewedPrActivityCursorsV2FromGraphql(
-          ghJson<unknown>(["api", "graphql", "-f", `query=${query}`]),
-          v2Numbers,
-        );
-        for (const number of v2Numbers) {
-          const key = String(number);
-          const failure = batch.failures[key];
-          if (failure) {
-            activateReviewedPrActivityV1Fallback(number, failure);
-            continue;
-          }
-          cursors[key] = batch.cursors[key] ?? null;
-        }
-      } catch (error) {
-        if (ghRetryKind(error) !== "none") throw error;
-        for (const number of v2Numbers) {
-          activateReviewedPrActivityV1Fallback(number, "graphql_request_failed");
-        }
-      }
-    }
-    for (const number of uniqueNumbers) {
-      const key = String(number);
-      if (!reviewedPrActivityV2Fallbacks.has(number)) continue;
-      const prefetched = prefetchedInlineComments.get(number);
-      cursors[key] = fetchReviewedPrActivityCursorV1(
-        number,
-        prefetched ? [...prefetched] : undefined,
+    const query = reviewedPrActivityCursorV2Query(owner, name, v2Numbers);
+    try {
+      const batch = reviewedPrActivityCursorsV2FromGraphql(
+        ghJson<unknown>(["api", "graphql", "-f", `query=${query}`]),
+        v2Numbers,
       );
+      for (const number of v2Numbers) {
+        const key = String(number);
+        const failure = batch.failures[key];
+        if (failure) {
+          activateReviewedPrActivityV1Fallback(number, failure);
+          continue;
+        }
+        cursors[key] = batch.cursors[key] ?? null;
+      }
+    } catch (error) {
+      if (ghRetryKind(error) !== "none") throw error;
+      for (const number of v2Numbers) {
+        activateReviewedPrActivityV1Fallback(number, "graphql_request_failed");
+      }
     }
-    return cursors;
   }
-
-  function activateReviewedPrActivityV1Fallback(number: number, reason: string): void {
-    if (reviewedPrActivityV2Fallbacks.has(number)) return;
-    reviewedPrActivityV2Fallbacks.set(number, reason);
-    console.error(
-      JSON.stringify({
-        event: "reviewed_pr_activity_cursor_v2_fallback",
-        repo: targetRepo(),
-        number,
-        from_version: 2,
-        to_version: 1,
-        reason,
-      }),
+  for (const number of uniqueNumbers) {
+    const key = String(number);
+    if (!reviewedPrActivityV2Fallbacks.has(`${repo}#${number}`)) continue;
+    const prefetched = prefetchedInlineComments.get(number);
+    cursors[key] = fetchReviewedPrActivityCursorV1(
+      number,
+      prefetched ? [...prefetched] : undefined,
     );
   }
+  return cursors;
+}
 
-  function fetchReviewedPrActivityCursor(
-    number: number,
-    prefetchedInlineComments?: unknown[],
-  ): string | null {
-    const prefetched = prefetchedInlineComments
-      ? new Map<number, readonly unknown[]>([[number, prefetchedInlineComments]])
-      : undefined;
-    return fetchReviewedPrActivityCursors([number], prefetched)[String(number)] ?? null;
+function activateReviewedPrActivityV1Fallback(number: number, reason: string): void {
+  const fallbacks = reviewedPrActivityFallbacks();
+  const key = `${targetRepo()}#${number}`;
+  if (fallbacks.has(key)) return;
+  fallbacks.set(key, reason);
+  console.error(
+    JSON.stringify({
+      event: "reviewed_pr_activity_cursor_v2_fallback",
+      repo: targetRepo(),
+      number,
+      from_version: 2,
+      to_version: 1,
+      reason,
+    }),
+  );
+}
+
+export function fetchReviewedPrActivityCursor(
+  number: number,
+  prefetchedInlineComments?: unknown[],
+): string | null {
+  const prefetched = prefetchedInlineComments
+    ? new Map<number, readonly unknown[]>([[number, prefetchedInlineComments]])
+    : undefined;
+  return fetchReviewedPrActivityCursors([number], prefetched)[String(number)] ?? null;
+}
+
+function ghPage<T>(path: string, page: number): T[] {
+  const items = ghJson<unknown[]>(["api", githubPagePath(path, page)]);
+  return Array.isArray(items) ? (items as T[]) : [];
+}
+
+export function githubLinkLastPageNumber(header: string | undefined): number | null {
+  if (!header) return null;
+  for (const part of header.split(",")) {
+    if (!part.includes('rel="last"')) continue;
+    const page = part.match(/[?&]page=(\d+)/)?.[1];
+    if (!page) continue;
+    const value = Number(page);
+    if (Number.isSafeInteger(value) && value > 0) return value;
   }
+  return null;
+}
 
-  function ghPage<T>(path: string, page: number): T[] {
-    const items = ghJson<unknown[]>(["api", githubPagePath(path, page)]);
-    return Array.isArray(items) ? (items as T[]) : [];
+function ghPageWithHeaders<T>(path: string, page: number, perPage = 100): GithubPageWithHeaders<T> {
+  const apiPath = githubPagePath(path, page, perPage);
+  const output = ghWithRetry(["api", "-i", apiPath]);
+  const normalized = output.replace(/\r\n/g, "\n");
+  const separator = normalized.lastIndexOf("\n\n");
+  const headerText = separator >= 0 ? normalized.slice(0, separator) : "";
+  const bodyText = separator >= 0 ? normalized.slice(separator + 2) : normalized;
+  let linkHeader: string | undefined;
+  for (const line of headerText.split("\n")) {
+    const delimiter = line.indexOf(":");
+    if (delimiter <= 0) continue;
+    if (line.slice(0, delimiter).trim().toLowerCase() === "link") {
+      linkHeader = line.slice(delimiter + 1).trim();
+    }
   }
+  const parsed = parseGhJson<unknown>(bodyText, ["api", "-i", apiPath]);
+  return {
+    items: Array.isArray(parsed) ? (parsed as T[]) : [],
+    lastPageNumber: githubLinkLastPageNumber(linkHeader),
+  };
+}
 
-  function githubLinkLastPageNumber(header: string | undefined): number | null {
-    if (!header) return null;
-    for (const part of header.split(",")) {
-      if (!part.includes('rel="last"')) continue;
-      const page = part.match(/[?&]page=(\d+)/)?.[1];
-      if (!page) continue;
-      const value = Number(page);
-      if (Number.isSafeInteger(value) && value > 0) return value;
-    }
-    return null;
+export function githubContextWindowPlan(
+  total: number,
+  promptLimit: number,
+  perPage = 100,
+): GithubContextWindowPlan {
+  const boundedTotal = Math.max(0, Math.floor(total));
+  const boundedLimit = Math.max(0, Math.floor(promptLimit));
+  const boundedPerPage = Math.max(1, Math.floor(perPage));
+  const keepStart = Math.floor(boundedLimit / 2);
+  const keepEnd = Math.max(0, boundedLimit - keepStart);
+  const tailStartIndex = Math.max(0, boundedTotal - keepEnd);
+  const tailFirstPageNumber = Math.floor(tailStartIndex / boundedPerPage) + 1;
+  return {
+    keepStart,
+    keepEnd,
+    tailFirstPageNumber,
+    lastPageNumber: Math.max(1, Math.ceil(boundedTotal / boundedPerPage)),
+    tailOffset: tailStartIndex - (tailFirstPageNumber - 1) * boundedPerPage,
+  };
+}
+
+export function ghPagedContextWindow<T>(
+  path: string,
+  totalCount: unknown,
+  promptLimit: number,
+  fetchers: {
+    page?: (path: string, page: number) => T[];
+    paged?: (path: string) => T[];
+  } = {},
+): ContextHydration<T> {
+  const fetchPage = fetchers.page ?? ghPage<T>;
+  const fetchPaged = fetchers.paged ?? ghPaged<T>;
+  const total = githubCount(totalCount);
+  const boundedLimit = Math.max(0, Math.floor(promptLimit));
+  if (total === null) {
+    const items = fetchPaged(path);
+    return { items, total: items.length, hydrated: items.length, truncated: false };
   }
-
-  function ghPageWithHeaders<T>(
-    path: string,
-    page: number,
-    perPage = 100,
-  ): GithubPageWithHeaders<T> {
-    const apiPath = githubPagePath(path, page, perPage);
-    const output = ghWithRetry(["api", "-i", apiPath]);
-    const normalized = output.replace(/\r\n/g, "\n");
-    const separator = normalized.lastIndexOf("\n\n");
-    const headerText = separator >= 0 ? normalized.slice(0, separator) : "";
-    const bodyText = separator >= 0 ? normalized.slice(separator + 2) : normalized;
-    let linkHeader: string | undefined;
-    for (const line of headerText.split("\n")) {
-      const delimiter = line.indexOf(":");
-      if (delimiter <= 0) continue;
-      if (line.slice(0, delimiter).trim().toLowerCase() === "link") {
-        linkHeader = line.slice(delimiter + 1).trim();
-      }
-    }
-    const parsed = parseGhJson<unknown>(bodyText, ["api", "-i", apiPath]);
-    return {
-      items: Array.isArray(parsed) ? (parsed as T[]) : [],
-      lastPageNumber: githubLinkLastPageNumber(linkHeader),
-    };
+  if (total === 0 || boundedLimit === 0) {
+    return { items: [], total, hydrated: 0, truncated: total > 0 };
   }
-
-  function githubContextWindowPlan(
-    total: number,
-    promptLimit: number,
-    perPage = 100,
-  ): GithubContextWindowPlan {
-    const boundedTotal = Math.max(0, Math.floor(total));
-    const boundedLimit = Math.max(0, Math.floor(promptLimit));
-    const boundedPerPage = Math.max(1, Math.floor(perPage));
-    const keepStart = Math.floor(boundedLimit / 2);
-    const keepEnd = Math.max(0, boundedLimit - keepStart);
-    const tailStartIndex = Math.max(0, boundedTotal - keepEnd);
-    const tailFirstPageNumber = Math.floor(tailStartIndex / boundedPerPage) + 1;
-    return {
-      keepStart,
-      keepEnd,
-      tailFirstPageNumber,
-      lastPageNumber: Math.max(1, Math.ceil(boundedTotal / boundedPerPage)),
-      tailOffset: tailStartIndex - (tailFirstPageNumber - 1) * boundedPerPage,
-    };
-  }
-
-  function ghPagedContextWindow<T>(
-    path: string,
-    totalCount: unknown,
-    promptLimit: number,
-    fetchers: {
-      page?: (path: string, page: number) => T[];
-      paged?: (path: string) => T[];
-    } = {},
-  ): ContextHydration<T> {
-    const fetchPage = fetchers.page ?? ghPage<T>;
-    const fetchPaged = fetchers.paged ?? ghPaged<T>;
-    const total = githubCount(totalCount);
-    const boundedLimit = Math.max(0, Math.floor(promptLimit));
-    if (total === null) {
-      const items = fetchPaged(path);
-      return { items, total: items.length, hydrated: items.length, truncated: false };
-    }
-    if (total === 0 || boundedLimit === 0) {
-      return { items: [], total, hydrated: 0, truncated: total > 0 };
-    }
-    if (total <= boundedLimit) {
-      const items = total <= 100 ? fetchPage(path, 1) : fetchPaged(path);
-      return {
-        items,
-        total: Math.max(total, items.length),
-        hydrated: items.length,
-        truncated: false,
-      };
-    }
-
-    const plan = githubContextWindowPlan(total, boundedLimit);
-    const tailPageNumbers: number[] = [];
-    if (plan.keepEnd > 0) {
-      for (let page = plan.tailFirstPageNumber; page <= plan.lastPageNumber; page += 1) {
-        tailPageNumbers.push(page);
-      }
-    }
-    const pageNumbers = [...new Set([...(plan.keepStart > 0 ? [1] : []), ...tailPageNumbers])];
-    // Head and tail pages are independent reads; the first failure in page order is thrown.
-    const pages = fetchers.page
-      ? new Map(pageNumbers.map((page) => [page, fetchPage(path, page)] as const))
-      : new Map(
-          ghJsonEach<unknown>(pageNumbers.map((page) => ["api", githubPagePath(path, page)])).map(
-            (read, index) => {
-              if (!read.ok) throw read.error;
-              return [pageNumbers[index]!, Array.isArray(read.value) ? (read.value as T[]) : []];
-            },
-          ),
-        );
-    const headItems = (pages.get(1) ?? []).slice(0, plan.keepStart);
-    const tailPages = tailPageNumbers.flatMap((page) => pages.get(page) ?? []);
-    const tailItems = tailPages.slice(plan.tailOffset, plan.tailOffset + plan.keepEnd);
-    const items = [...headItems, ...tailItems];
+  if (total <= boundedLimit) {
+    const items = total <= 100 ? fetchPage(path, 1) : fetchPaged(path);
     return {
       items,
-      total,
+      total: Math.max(total, items.length),
       hydrated: items.length,
-      truncated: total > items.length,
+      truncated: false,
     };
   }
 
-  function ghPagedLinkHeaderContextWindow<T>(
-    path: string,
-    promptLimit: number,
-    fetchers: {
-      pageWithHeaders?: (path: string, page: number, perPage: number) => GithubPageWithHeaders<T>;
-      paged?: (path: string) => T[];
-      complete?: (items: T[]) => void;
-    } = {},
-  ): ContextHydration<T> {
-    const fetchPage = fetchers.pageWithHeaders ?? ghPageWithHeaders<T>;
-    const fetchPaged = fetchers.paged ?? ghPaged<T>;
-    const boundedLimit = Math.max(0, Math.floor(promptLimit));
-    const perPage = 100;
-    const pages = new Map<number, T[]>();
-    const readPage = (page: number): GithubPageWithHeaders<T> => {
-      const cached = pages.get(page);
-      if (cached) return { items: cached, lastPageNumber: null };
-      const result = fetchPage(path, page, perPage);
-      pages.set(page, result.items);
-      return result;
-    };
-
-    const first = readPage(1);
-    const lastPageNumber = first.lastPageNumber ?? (first.items.length < perPage ? 1 : null);
-    if (lastPageNumber === null) {
-      const items = fetchPaged(path);
-      return { items, total: items.length, hydrated: items.length, truncated: false };
+  const plan = githubContextWindowPlan(total, boundedLimit);
+  const tailPageNumbers: number[] = [];
+  if (plan.keepEnd > 0) {
+    for (let page = plan.tailFirstPageNumber; page <= plan.lastPageNumber; page += 1) {
+      tailPageNumbers.push(page);
     }
+  }
+  const pageNumbers = [...new Set([...(plan.keepStart > 0 ? [1] : []), ...tailPageNumbers])];
+  // Head and tail pages are independent reads; the first failure in page order is thrown.
+  const pages = fetchers.page
+    ? new Map(pageNumbers.map((page) => [page, fetchPage(path, page)] as const))
+    : new Map(
+        ghJsonEach<unknown>(pageNumbers.map((page) => ["api", githubPagePath(path, page)])).map(
+          (read, index) => {
+            if (!read.ok) throw read.error;
+            return [pageNumbers[index]!, Array.isArray(read.value) ? (read.value as T[]) : []];
+          },
+        ),
+      );
+  const headItems = (pages.get(1) ?? []).slice(0, plan.keepStart);
+  const tailPages = tailPageNumbers.flatMap((page) => pages.get(page) ?? []);
+  const tailItems = tailPages.slice(plan.tailOffset, plan.tailOffset + plan.keepEnd);
+  const items = [...headItems, ...tailItems];
+  return {
+    items,
+    total,
+    hydrated: items.length,
+    truncated: total > items.length,
+  };
+}
 
-    const lastPage = Math.max(1, lastPageNumber);
-    const lastItems = lastPage === 1 ? first.items : readPage(lastPage).items;
-    const total = Math.max(0, (lastPage - 1) * perPage + lastItems.length);
-    const finish = (window: ContextHydration<T>): ContextHydration<T> => {
-      if (fetchers.complete && window.truncated) {
-        const complete = lastPage === 1 ? first.items : [];
-        if (lastPage > 1) {
-          for (let page = 1; page <= lastPage; page += 1) {
-            complete.push(...readPage(page).items);
-          }
+export function ghPagedLinkHeaderContextWindow<T>(
+  path: string,
+  promptLimit: number,
+  fetchers: {
+    pageWithHeaders?: (path: string, page: number, perPage: number) => GithubPageWithHeaders<T>;
+    paged?: (path: string) => T[];
+    complete?: (items: T[]) => void;
+  } = {},
+): ContextHydration<T> {
+  const fetchPage = fetchers.pageWithHeaders ?? ghPageWithHeaders<T>;
+  const fetchPaged = fetchers.paged ?? ghPaged<T>;
+  const boundedLimit = Math.max(0, Math.floor(promptLimit));
+  const perPage = 100;
+  const pages = new Map<number, T[]>();
+  const readPage = (page: number): GithubPageWithHeaders<T> => {
+    const cached = pages.get(page);
+    if (cached) return { items: cached, lastPageNumber: null };
+    const result = fetchPage(path, page, perPage);
+    pages.set(page, result.items);
+    return result;
+  };
+
+  const first = readPage(1);
+  const lastPageNumber = first.lastPageNumber ?? (first.items.length < perPage ? 1 : null);
+  if (lastPageNumber === null) {
+    const items = fetchPaged(path);
+    return { items, total: items.length, hydrated: items.length, truncated: false };
+  }
+
+  const lastPage = Math.max(1, lastPageNumber);
+  const lastItems = lastPage === 1 ? first.items : readPage(lastPage).items;
+  const total = Math.max(0, (lastPage - 1) * perPage + lastItems.length);
+  const finish = (window: ContextHydration<T>): ContextHydration<T> => {
+    if (fetchers.complete && window.truncated) {
+      const complete = lastPage === 1 ? first.items : [];
+      if (lastPage > 1) {
+        for (let page = 1; page <= lastPage; page += 1) {
+          complete.push(...readPage(page).items);
         }
-        fetchers.complete(complete);
       }
-      return window;
-    };
-    if (total === 0 || boundedLimit === 0) {
-      return finish({ items: [], total, hydrated: 0, truncated: total > 0 });
+      fetchers.complete(complete);
     }
+    return window;
+  };
+  if (total === 0 || boundedLimit === 0) {
+    return finish({ items: [], total, hydrated: 0, truncated: total > 0 });
+  }
 
-    if (total <= boundedLimit) {
-      const items: T[] = [];
-      for (let page = 1; page <= lastPage; page += 1) {
-        items.push(...(page === 1 ? first.items : readPage(page).items));
-      }
-      return finish({
-        items,
-        total: Math.max(total, items.length),
-        hydrated: items.length,
-        truncated: false,
-      });
+  if (total <= boundedLimit) {
+    const items: T[] = [];
+    for (let page = 1; page <= lastPage; page += 1) {
+      items.push(...(page === 1 ? first.items : readPage(page).items));
     }
-
-    const plan = githubContextWindowPlan(total, boundedLimit, perPage);
-    const headItems = first.items.slice(0, plan.keepStart);
-    const tailPages: T[] = [];
-    if (plan.keepEnd > 0) {
-      for (let page = plan.tailFirstPageNumber; page <= plan.lastPageNumber; page += 1) {
-        tailPages.push(...(page === 1 ? first.items : readPage(page).items));
-      }
-    }
-    const tailItems = tailPages.slice(plan.tailOffset, plan.tailOffset + plan.keepEnd);
-    const items = [...headItems, ...tailItems];
     return finish({
       items,
-      total,
+      total: Math.max(total, items.length),
       hydrated: items.length,
-      truncated: total > items.length,
+      truncated: false,
     });
   }
 
-  return {
-    fetchReviewedPrActivityCursor,
-    fetchReviewedPrActivityCursorV1,
-    fetchReviewedPrActivityCursors,
-    ghPaged,
-    ghPagedContextWindow,
-    ghPagedLimit,
-    ghPagedLinkHeaderContextWindow,
-    githubContextWindowPlan,
-    githubLinkLastPageNumber,
-    githubPaginatedPath,
-  };
+  const plan = githubContextWindowPlan(total, boundedLimit, perPage);
+  const headItems = first.items.slice(0, plan.keepStart);
+  const tailPages: T[] = [];
+  if (plan.keepEnd > 0) {
+    for (let page = plan.tailFirstPageNumber; page <= plan.lastPageNumber; page += 1) {
+      tailPages.push(...(page === 1 ? first.items : readPage(page).items));
+    }
+  }
+  const tailItems = tailPages.slice(plan.tailOffset, plan.tailOffset + plan.keepEnd);
+  const items = [...headItems, ...tailItems];
+  return finish({
+    items,
+    total,
+    hydrated: items.length,
+    truncated: total > items.length,
+  });
 }

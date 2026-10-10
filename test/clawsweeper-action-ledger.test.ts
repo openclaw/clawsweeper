@@ -22,18 +22,27 @@ import {
   actionLedgerFailureDisposition,
   applyActionEventDisposition,
   applyRuntimeBudgetYieldResultsForTest,
-  classifyGitHubDispatchResultForTest,
   codexReviewFailureRetryableForTest,
   heldReviewStartStatusCommentResultForTest,
   main,
-  observedGitHubMutationAttemptsForTest,
   renderReviewStartStatusComment,
   reviewCommentPublicationEventDisposition,
   reviewRetryActionDisposition,
   reviewRetryBatchEventDisposition,
   reviewRetryBusinessIdempotencyIdentityForTest,
 } from "../dist/clawsweeper.js";
-import { untrustedCodexEnv, withGitHubRun } from "../dist/clawsweeper-github-runtime.js";
+import {
+  ghObservedMutationCommand,
+  ghRawOnceWithCheckpoint,
+  GitHubDispatchError,
+  withMutationReceiptRunner,
+} from "../dist/clawsweeper-github-execution.js";
+import {
+  untrustedCodexEnv,
+  withGitHubRun,
+  withGitHubRuntimeBudget,
+} from "../dist/clawsweeper-github-runtime.js";
+import { githubTest, installGhFixture } from "./github-runtime-fixture.ts";
 import { itemSourceRevisionSha256 } from "../dist/clawsweeper-source-revision.js";
 import { labelAlreadyExistsError } from "../dist/clawsweeper-label-mutations.js";
 import {
@@ -867,58 +876,104 @@ if (args[0] === "api" && /\\/issues\\/comments\\/9321$/.test(path)) {
   });
 });
 
-test("apply mutation receipts bind every GitHub request attempt and preserve no-op truth", () =>
-  withGitHubRun(() => {
-    assert.equal(
-      labelAlreadyExistsError(
-        new Error('HTTP 422: Validation Failed (label "priority: high" already exists)'),
+githubTest("apply mutation receipts bind retry, rejection and admission outcomes", (t) => {
+  const fixture = installGhFixture(
+    t,
+    `
+state.calls = (state.calls || 0) + 1;
+switch (state.calls) {
+  case 1: throw new Error("HTTP 502: transient upstream failure");
+  case 3: throw new Error('HTTP 422: Validation Failed (label "priority: high" already exists)');
+  case 4: throw new Error("HTTP 429: Too Many Requests");
+}
+process.stdout.write("ok");
+`,
+  );
+  const receipts: string[] = [];
+  const run = () =>
+    ghObservedMutationCommand({
+      args: ["api", "repos/test/item", "--method", "PATCH"],
+      identity: "test_mutation",
+      attempts: 2,
+      knownNoMutation: labelAlreadyExistsError,
+    });
+  withMutationReceiptRunner(
+    (options) => {
+      assert.equal(options.idempotencyIdentity, "test_mutation");
+      let outcome = "unknown";
+      try {
+        const result = options.operation();
+        outcome = "accepted";
+        return result;
+      } catch (error) {
+        if (options.knownNoMutation?.(error)) outcome = "rejected";
+        throw error;
+      } finally {
+        receipts.push(`${options.identity}:${outcome}`);
+      }
+    },
+    () => {
+      assert.equal(run(), "ok");
+      assert.throws(run, /already exists/);
+      assert.throws(run, /HTTP 429/);
+      assert.throws(
+        () =>
+          withGitHubRuntimeBudget({ startedAtMs: Date.now() - 2_000, maxRuntimeMs: 1_000 }, run),
+        { name: "GitHubRuntimeBudgetError" },
+      );
+    },
+  );
+  assert.deepEqual(receipts, [
+    "test_mutation:request_attempt:1:unknown",
+    "test_mutation:request_attempt:2:accepted",
+    "test_mutation:request_attempt:1:rejected",
+    "test_mutation:request_attempt:1:unknown",
+  ]);
+  assert.equal(fixture.requests().filter(({ args }) => args[1] !== "rate_limit").length, 4);
+  for (const didMutate of [false, true]) {
+    assert.deepEqual(heldReviewStartStatusCommentResultForTest("2026-07-12T12:00:00Z", didMutate), {
+      status: "held",
+      lease: null,
+      retryAt: "2026-07-12T12:00:00Z",
+      didMutate,
+    });
+  }
+});
+
+githubTest(
+  "overlapping async commands keep executable GitHub writes in their own receipt scopes",
+  async (t) => {
+    const fixture = installGhFixture(t, "process.stdout.write(args[1]);");
+    const receipts: string[][] = [[], []];
+    await Promise.all(
+      receipts.map((recorded, index) =>
+        withGitHubRun(() =>
+          withMutationReceiptRunner(
+            (options) => {
+              recorded.push(options.identity);
+              return options.operation();
+            },
+            async () => {
+              await Promise.resolve();
+              assert.equal(
+                ghObservedMutationCommand({
+                  args: ["api", `repos/test/issues/${index + 1}`, "--method", "PATCH"],
+                  identity: `command_${index + 1}`,
+                }),
+                `repos/test/issues/${index + 1}`,
+              );
+            },
+          ),
+        ),
       ),
-      true,
     );
-    assert.equal(labelAlreadyExistsError(new Error("HTTP 500: unavailable")), false);
-    const retriedMutation = observedGitHubMutationAttemptsForTest(["transient", "accepted"]);
-    assert.deepEqual(retriedMutation, [
-      {
-        identity: "test_mutation:request_attempt:1",
-        idempotencyIdentity: "test_mutation",
-        outcome: "unknown",
-      },
-      {
-        identity: "test_mutation:request_attempt:2",
-        idempotencyIdentity: "test_mutation",
-        outcome: "accepted",
-      },
-    ]);
-    assert.notEqual(retriedMutation[0]?.identity, retriedMutation[1]?.identity);
-    assert.equal(retriedMutation[0]?.idempotencyIdentity, retriedMutation[1]?.idempotencyIdentity);
-    assert.deepEqual(observedGitHubMutationAttemptsForTest(["already_exists"]), [
-      {
-        identity: "test_mutation:request_attempt:1",
-        idempotencyIdentity: "test_mutation",
-        outcome: "rejected",
-      },
-    ]);
-    assert.deepEqual(observedGitHubMutationAttemptsForTest(["throttle", "accepted"]), [
-      {
-        identity: "test_mutation:request_attempt:1",
-        idempotencyIdentity: "test_mutation",
-        outcome: "unknown",
-      },
-    ]);
-    assert.deepEqual(observedGitHubMutationAttemptsForTest(["not_started"]), []);
-    assert.deepEqual(heldReviewStartStatusCommentResultForTest("2026-07-12T12:00:00Z", false), {
-      status: "held",
-      lease: null,
-      retryAt: "2026-07-12T12:00:00Z",
-      didMutate: false,
-    });
-    assert.deepEqual(heldReviewStartStatusCommentResultForTest("2026-07-12T12:00:00Z", true), {
-      status: "held",
-      lease: null,
-      retryAt: "2026-07-12T12:00:00Z",
-      didMutate: true,
-    });
-  }));
+    assert.deepEqual(receipts, [["command_1:request_attempt:1"], ["command_2:request_attempt:1"]]);
+    assert.deepEqual(
+      fixture.requests().map(({ args }) => args),
+      [1, 2].map((number) => ["api", `repos/test/issues/${number}`, "--method", "PATCH"]),
+    );
+  },
+);
 
 test("GitHub throttles abort apply lease checks and preserve durable lease ownership", () => {
   const rateLimit = new GitHubRateLimitError(new Error("HTTP 403: API rate limit exceeded"));
@@ -1101,21 +1156,49 @@ test("runtime yields bind the active item and terminal Codex failures preserve r
   assert.equal(codexReviewFailureRetryableForTest(true), true);
 });
 
-test("retry dispatch outcomes distinguish definite rejection, ambiguity, and acceptance", () => {
-  assert.equal(
-    classifyGitHubDispatchResultForTest({ status: 1, stderr: "HTTP 422: validation failed" }),
-    "definitely_not_dispatched",
-  );
-  assert.equal(
-    classifyGitHubDispatchResultForTest({ status: 1, stderr: "HTTP 502: bad gateway" }),
-    "ambiguous_transport",
-  );
-  assert.equal(
-    classifyGitHubDispatchResultForTest({ status: null, errorCode: "ETIMEDOUT" }),
-    "ambiguous_transport",
-  );
-  assert.equal(classifyGitHubDispatchResultForTest({ status: 0 }), "accepted");
-});
+githubTest(
+  "retry dispatch outcomes distinguish definite rejection, ambiguity, and acceptance",
+  (t) => {
+    const fixture = installGhFixture(
+      t,
+      `
+if (args[1] === "rejected") throw new Error("HTTP 422: validation failed");
+else if (args[1] === "upstream") throw new Error("HTTP 502: bad gateway");
+else if (args[1] === "signal") process.kill(process.pid, "SIGTERM");
+else if (args[1] === "timeout") Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0);
+else process.stdout.write("ok");
+`,
+    );
+    let checkpoints = 0;
+    for (const [scenario, outcome] of [
+      ["rejected", "definitely_not_dispatched"],
+      ["upstream", "ambiguous_transport"],
+      ["signal", "ambiguous_transport"],
+      ["timeout", "ambiguous_transport"],
+    ]) {
+      const run = () =>
+        ghRawOnceWithCheckpoint(["api", scenario!], () => {
+          checkpoints += 1;
+        });
+      assert.throws(
+        () =>
+          scenario === "timeout"
+            ? withGitHubRuntimeBudget({ startedAtMs: Date.now(), maxRuntimeMs: 1_500 }, run)
+            : run(),
+        (error: unknown) => error instanceof GitHubDispatchError && error.outcome === outcome,
+      );
+    }
+    assert.deepEqual(
+      ghRawOnceWithCheckpoint(["api", "accepted"], () => {}),
+      {
+        outcome: "accepted",
+        output: "ok",
+      },
+    );
+    assert.equal(checkpoints, 4);
+    assert.equal(fixture.requests().filter(({ args }) => args[1] !== "timeout").length, 4);
+  },
+);
 
 test("untrusted Codex processes cannot inherit action-ledger producer authority", (t) => {
   const previousEnv = process.env;

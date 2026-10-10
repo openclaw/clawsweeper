@@ -296,7 +296,7 @@ async function main() {
     const [
       { createContextHydration },
       runtimeModule,
-      { createGitHubExecution },
+      executionModule,
       { resolveCommand, runText, runTextConcurrently, SWEEPER_COMMAND_MAX_BUFFER_BYTES },
     ] = await Promise.all([
       load("clawsweeper-context-hydration"),
@@ -323,10 +323,9 @@ async function main() {
       withGitHubRun = (operation) => operation();
     }
     const { GitHubRuntimeBudgetError, githubCommandTimeoutMs } = gitHubRuntime;
-    const { ghJson, ghJsonOnce } = createGitHubExecution({
-      ROOT: target,
-      gitHubRuntime,
-    });
+    const { ghJson, ghJsonOnce } = typeof executionModule.createGitHubExecution === "function"
+      ? executionModule.createGitHubExecution({ ROOT: target, gitHubRuntime })
+      : executionModule;
     const resolvedGh = resolveCommand("gh", ["api"], process.env);
     assert.equal(resolvedGh.command, process.execPath);
     assert.deepEqual(resolvedGh.args.slice(0, 3), [self, "--fake-gh", payloadPath]);

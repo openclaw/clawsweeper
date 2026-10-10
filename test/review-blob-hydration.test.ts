@@ -34,7 +34,7 @@ import { agentInputScanFailureExitCode, MAX_SCAN_BYTES } from "../dist/agent-inp
 import { writeExactReviewFailureDiagnostics } from "../dist/clawsweeper-review-failure-diagnostics.js";
 import { createContextHydration } from "../dist/clawsweeper-context-hydration.js";
 import * as gitHubRuntime from "../dist/clawsweeper-github-runtime.js";
-import { createGitHubExecution } from "../dist/clawsweeper-github-execution.js";
+import { ghJson, ghJsonOnce } from "../dist/clawsweeper-github-execution.js";
 import { createReviewRuntime } from "../dist/clawsweeper-review-runtime.js";
 import { main, reviewPolicyHashForTest } from "../dist/clawsweeper-runtime.js";
 import { runText } from "../dist/command.js";
@@ -44,10 +44,6 @@ import { validationRecoveryRequired } from "../dist/repair/validation-recovery.j
 import { withMockGh } from "./helpers.ts";
 
 const { ghOnce, withGitHubRun } = gitHubRuntime;
-const { ghJson, ghJsonOnce } = createGitHubExecution({
-  ROOT: process.cwd(),
-  gitHubRuntime,
-});
 
 function git(cwd: string, ...args: string[]): string {
   return execFileSync("git", args, { cwd, encoding: "utf8" }).trim();

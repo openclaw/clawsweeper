@@ -16,7 +16,7 @@ import { join } from "node:path";
 import test from "node:test";
 import YAML from "yaml";
 
-import { createGitHubExecution } from "../../dist/clawsweeper-github-execution.js";
+import { ghObservedMutationCommand, ghWithRetry } from "../../dist/clawsweeper-github-execution.js";
 import * as gitHubRuntime from "../../dist/clawsweeper-github-runtime.js";
 import { repositoryProfileFor, withTargetProfile } from "../../dist/repository-profiles.js";
 import { githubTest, installGhFixture } from "../github-runtime-fixture.ts";
@@ -24,10 +24,6 @@ import { runCopyProof } from "../../scripts/e2e/exact-review-selected-tuple-copy
 import { MAX_MEDIA_PROOF_TIMEOUT_MS } from "../../dist/media-proof-budget.js";
 
 const { gh, ghOnce, ghWithPreparedTimeout, withGitHubRun } = gitHubRuntime;
-const { ghObservedMutationCommand, ghWithRetry } = createGitHubExecution({
-  ROOT: process.cwd(),
-  gitHubRuntime,
-});
 
 const path = ".github/workflows/exact-review-batch-publish.yml";
 const source = readFileSync(path, "utf8");
@@ -344,7 +340,6 @@ if (state.calls <= ${failures}) {
               ghObservedMutationCommand({
                 args: ["api", "repos/test/item"],
                 identity: "batch-publication",
-                sleepBeforeRetry: (ms) => waits.push(ms),
               }),
             /API rate limit exceeded|HTTP 429/,
           );

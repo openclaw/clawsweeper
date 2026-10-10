@@ -3,7 +3,7 @@ import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { performance } from "node:perf_hooks";
 import { type TestContext } from "node:test";
-import { createGitHubExecution } from "../dist/clawsweeper-github-execution.js";
+import * as execution from "../dist/clawsweeper-github-execution.js";
 import * as runtime from "../dist/clawsweeper-github-runtime.js";
 import type { GitHubRuntimeBudget } from "../src/clawsweeper-types.js";
 import {
@@ -12,7 +12,6 @@ import {
   installGhFixture,
 } from "./github-runtime-fixture.ts";
 
-const execution = createGitHubExecution({ ROOT: process.cwd(), gitHubRuntime: runtime });
 const args = ["api", "repos/openclaw/openclaw/issues/123", "--jq", "."];
 const systemNow = Date.now;
 

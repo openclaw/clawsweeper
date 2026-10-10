@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import test from "node:test";
-import { createGitHubContext } from "../dist/clawsweeper-github-context.js";
+import * as github from "../dist/clawsweeper-github-context.js";
+import { ghJson } from "../dist/clawsweeper-github-execution.js";
 import { createItemContext } from "../dist/clawsweeper-item-context.js";
 import { item } from "./helpers.ts";
 import { hydration, sourceTools } from "./primary-body-fixture.ts";
+import { githubTest, installGhFixture } from "./github-runtime-fixture.ts";
 
 test("inline review comments share full pagination and retain fresh revision checks", () => {
   const result = JSON.parse(
@@ -746,63 +748,68 @@ test("complete timeline hydration propagates remaining-page errors", () => {
   );
 });
 
-test("legacy PR metadata derives inline windows and complete activity from one paged read", () => {
-  const target = item({ kind: "pull_request" });
-  for (const count of [0, 10, 40, 81, 250]) {
-    const comments = Array.from({ length: count }, (_, index) => ({
-      id: index + 1,
-      body: `Inline comment ${index + 1}`,
-      user: { login: "contributor" },
-    }));
-    let completeReads = 0;
-    const ghJson = <T>(args: string[]): T => {
-      const path = args[1]!;
-      if (path.includes("/pulls/") && path.includes("/comments")) {
-        assert.ok(args.includes("--paginate"));
-        completeReads += 1;
-        return Array.from({ length: Math.ceil(count / 100) }, (_, index) =>
-          comments.slice(index * 100, (index + 1) * 100),
-        ) as T;
-      }
-      if (path.includes("/pulls/")) {
-        return { changed_files: 0, commits: 0, review_comments: count } as T;
-      }
-      return { comments: 0 } as T;
-    };
-    const github = createGitHubContext({
-      ghJson,
-      ghJsonEach: () => {
-        throw new Error("legacy inline hydration must not fetch a separate window");
-      },
-      ghWithRetry: () => "HTTP/2 200 OK\n\n[]",
-      targetRepo: () => target.repo,
-    });
-    const { collectItemContext } = createItemContext({
-      ...hydration,
-      ...sourceTools,
-      ...github,
-      ghJson,
-      targetRepo: () => target.repo,
-      closingPullRequestsForIssue: () => [],
-      referencingMergedPullRequestsForIssue: () => [],
-      relatedItemsContext: () => [],
-      fetchReviewedPrActivityCursor: () => null,
-      pullChecksContext: () => ({ complete: true, checkRuns: [], statuses: [] }),
-    });
-    const context = collectItemContext(target, {
-      reviewCacheDigest: true,
-      fullTimelineForRelations: true,
-    });
-    assert.equal(completeReads, count > 0 ? 1 : 0);
-    assert.equal(context.counts?.pullReviewComments, count);
-    assert.equal(context.counts?.pullReviewCommentsHydrated, Math.min(count, 40));
-    assert.equal(context.counts?.pullReviewCommentsTruncated, count > 40);
-    assert.equal(
-      context.pullReviewCommentsRevision,
-      sourceTools.reviewCommentContentRevision(comments.map(hydration.compactComment)),
-    );
-  }
-});
+githubTest(
+  "legacy PR metadata derives inline windows and complete activity from one paged read",
+  async (t) => {
+    const target = item({ kind: "pull_request" });
+    for (const count of [0, 10, 40, 81, 250]) {
+      await t.test(`${count} inline comments`, (t) => {
+        const comments = Array.from({ length: count }, (_, index) => ({
+          id: index + 1,
+          body: `Inline comment ${index + 1}`,
+          user: { login: "contributor" },
+        }));
+        const fixture = installGhFixture(
+          t,
+          `
+const comments = ${JSON.stringify(comments)};
+const path = args[1];
+if (path.includes("/pulls/") && path.includes("/comments")) {
+  if (!args.includes("--paginate")) throw new Error("inline comments must use full pagination");
+  console.log(JSON.stringify(Array.from(
+    { length: Math.ceil(comments.length / 100) },
+    (_, index) => comments.slice(index * 100, (index + 1) * 100),
+  )));
+} else if (path.includes("/pulls/")) {
+  console.log(JSON.stringify({ changed_files: 0, commits: 0, review_comments: comments.length }));
+} else if (args.includes("-i")) {
+  console.log("HTTP/2 200 OK\\n\\n[]");
+} else {
+  console.log(JSON.stringify({ comments: 0 }));
+}
+`,
+        );
+        const { collectItemContext } = createItemContext({
+          ...hydration,
+          ...sourceTools,
+          ...github,
+          ghJson,
+          targetRepo: () => target.repo,
+          closingPullRequestsForIssue: () => [],
+          referencingMergedPullRequestsForIssue: () => [],
+          relatedItemsContext: () => [],
+          fetchReviewedPrActivityCursor: () => null,
+          pullChecksContext: () => ({ complete: true, checkRuns: [], statuses: [] }),
+        });
+        const context = collectItemContext(target, {
+          reviewCacheDigest: true,
+          fullTimelineForRelations: true,
+        });
+        assert.equal(
+          fixture.requests().filter(({ args }) => args.includes("--paginate")).length,
+          count > 0 ? 1 : 0,
+        );
+        assert.equal(context.counts?.pullReviewComments, count);
+        assert.equal(context.counts?.pullReviewCommentsHydrated, Math.min(count, 40));
+        assert.equal(context.counts?.pullReviewCommentsTruncated, count > 40);
+        assert.equal(
+          context.pullReviewCommentsRevision,
+          sourceTools.reviewCommentContentRevision(comments.map(hydration.compactComment)),
+        );
+      });
+    }
+  },
+);
 
 test("bounded PR context prepares source independently of cache digest and API file completeness", async () => {
   const { createItemContext } = await import("../dist/clawsweeper-item-context.js");

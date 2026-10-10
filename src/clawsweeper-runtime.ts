@@ -38,9 +38,44 @@ import {
 import { createCommandOperations } from "./clawsweeper-command-operations.js";
 import { createContextHydration } from "./clawsweeper-context-hydration.js";
 import { createDashboardAudit } from "./clawsweeper-dashboard-audit.js";
-import { createGitHubContext, githubCount } from "./clawsweeper-github-context.js";
-import { createGitHubExecution } from "./clawsweeper-github-execution.js";
-import * as gitHubRuntime from "./clawsweeper-github-runtime.js";
+import {
+  fetchReviewedPrActivityCursor,
+  ghPaged,
+  ghPagedContextWindow,
+  ghPagedLinkHeaderContextWindow,
+  githubCount,
+} from "./clawsweeper-github-context.js";
+export {
+  ghPagedContextWindow,
+  ghPagedLinkHeaderContextWindow,
+  githubContextWindowPlan,
+  githubLinkLastPageNumber,
+  githubPaginatedPath,
+} from "./clawsweeper-github-context.js";
+import {
+  ApplyMutationReviewGuardError,
+  GitHubDispatchError,
+  ghJson,
+  ghJsonEach,
+  ghJsonLines,
+  ghJsonOnce,
+  ghObservedMutationCommand,
+  ghRawOnceWithCheckpoint,
+  ghWithRetry,
+  mutationErrorMessage,
+  getMutationReceiptRunner,
+  setMutationReceiptRunner,
+  withMutationReceiptRunner,
+} from "./clawsweeper-github-execution.js";
+import {
+  GitHubRuntimeBudgetError,
+  ensureGitHubRuntimeAvailable,
+  ensureRuntimeDelayFits,
+  sleepMs,
+  untrustedCodexEnv,
+  withGitHubRun,
+  withGitHubRuntimeBudget,
+} from "./clawsweeper-github-runtime.js";
 import { exactPublicationPublicReadToken } from "./github-public-read.js";
 import { createItemContext } from "./clawsweeper-item-context.js";
 import {
@@ -148,6 +183,7 @@ import type {
   Item,
   ItemContext,
   MutationRunner,
+  GitHubRuntimeBudget,
   ReportEntry,
   RootCauseNormalizationItem,
 } from "./clawsweeper-types.js";
@@ -271,36 +307,6 @@ function run(
   return runText(command, args, { ...runTextOptions(options), timeoutMs: options.timeoutMs });
 }
 
-const { GitHubRuntimeBudgetError, untrustedCodexEnv } = gitHubRuntime;
-
-const githubExecution = createGitHubExecution({
-  ROOT,
-  gitHubRuntime,
-});
-export const { classifyGitHubDispatchResultForTest, observedGitHubMutationAttemptsForTest } =
-  githubExecution;
-const {
-  ApplyMutationReviewGuardError,
-  GitHubDispatchError,
-  ghJson,
-  ghJsonEach,
-  ghJsonLines,
-  ghJsonOnce,
-  ghObservedMutationCommand,
-  ghRawOnceWithCheckpoint,
-  ghWithRetry,
-  mutationErrorMessage,
-} = githubExecution;
-
-const githubContext = createGitHubContext({ ghJson, ghJsonEach, ghWithRetry, targetRepo });
-export const {
-  ghPagedContextWindow,
-  ghPagedLinkHeaderContextWindow,
-  githubContextWindowPlan,
-  githubLinkLastPageNumber,
-  githubPaginatedPath,
-} = githubContext;
-const { fetchReviewedPrActivityCursor, ghPaged } = githubContext;
 export { isExactEventSourceRevisionChange };
 
 function reviewPolicyHash(
@@ -421,7 +427,8 @@ const reviewPlanning = createReviewPlanning({
   targetRepo,
   ghJson,
   ghJsonLines,
-  ...githubContext,
+  fetchReviewedPrActivityCursor,
+  ghPaged,
   githubCount,
   itemSourceRevisionSha256,
   normalizeAuthorAssociation,
@@ -506,7 +513,10 @@ function fetchReviewStructuralRecord(options: {
 
 const { collectItemContext } = createItemContext({
   ...contextHydration,
-  ...githubContext,
+  fetchReviewedPrActivityCursor,
+  ghPaged,
+  ghPagedContextWindow,
+  ghPagedLinkHeaderContextWindow,
   ghJson,
   hydratedReviewStructuralItemStateDigest,
   itemSourceRevisionSha256,
@@ -661,7 +671,9 @@ const reportOrchestration = createReportOrchestration({
   ...statusContext,
   ghJson,
   ghObservedMutationCommand,
-  ...githubContext,
+  ghPaged,
+  ghPagedContextWindow,
+  ghPagedLinkHeaderContextWindow,
   GitHubRuntimeBudgetError,
   hasUsableCloseComment: (...args) => hasUsableCloseComment(...args),
   isFresh,
@@ -783,7 +795,9 @@ const commandOperations = createCommandOperations({
   ...reportOrchestration,
   ...repositoryPaths,
   ensureDir,
-  ...gitHubRuntime,
+  ensureGitHubRuntimeAvailable,
+  GitHubRuntimeBudgetError,
+  withGitHubRuntimeBudget,
   ...reviewCommentWorkflow,
   fetchItem,
   fetchOpenItemNumbers,
@@ -824,16 +838,16 @@ const {
   retryFailedReviewsCommand,
 } = commandOperations;
 
-const { reviewCommand } = createReviewCommandWorkflow({
+const { reviewCommand: reviewCommandWithoutReceipts } = createReviewCommandWorkflow({
   ghJson,
   existingReview,
   reportFileName,
   ...reviewActionLedger,
   get activeReviewMutationRunner() {
-    return githubExecution.activeReviewMutationRunner;
+    return getMutationReceiptRunner();
   },
   set activeReviewMutationRunner(value: MutationRunner | null) {
-    githubExecution.activeReviewMutationRunner = value;
+    setMutationReceiptRunner(value);
   },
   attachFixedPullRequest,
   verifyRegressionProvenance,
@@ -864,14 +878,18 @@ const { reviewCommand } = createReviewCommandWorkflow({
   targetRepo,
 });
 
-const { applyDecisionsCommandInner } = createApplyDecisionWorkflow({
+function reviewCommand(args: Args): void {
+  withMutationReceiptRunner(null, () => reviewCommandWithoutReceipts(args));
+}
+
+const { applyDecisionsCommandInner: applyDecisionsWithoutReceipts } = createApplyDecisionWorkflow({
   ...applyGuards,
   actionLedgerItemKey,
   get activeApplyMutationRunner() {
-    return githubExecution.activeApplyMutationRunner;
+    return getMutationReceiptRunner();
   },
   set activeApplyMutationRunner(value: MutationRunner | null) {
-    githubExecution.activeApplyMutationRunner = value;
+    setMutationReceiptRunner(value);
   },
   ...labelMutations,
   ...labelSyncOperations,
@@ -896,7 +914,9 @@ const { applyDecisionsCommandInner } = createApplyDecisionWorkflow({
   collectItemContext,
   ...repositoryPaths,
   ensureDir,
-  ...gitHubRuntime,
+  ensureRuntimeDelayFits,
+  GitHubRuntimeBudgetError,
+  sleepMs,
   fetchItem,
   fetchReviewedPrActivityCursor,
   ghJson,
@@ -920,6 +940,10 @@ const { applyDecisionsCommandInner } = createApplyDecisionWorkflow({
   targetRepo,
   validateCloseDecision,
 });
+
+function applyDecisionsCommandInner(args: Args, budget: GitHubRuntimeBudget): void {
+  withMutationReceiptRunner(null, () => applyDecisionsWithoutReceipts(args, budget));
+}
 
 function artifactTargetIsOpen(number: number, openNumbers: Set<number> | null): boolean {
   if (openNumbers) return openNumbers.has(number);
@@ -1129,7 +1153,7 @@ export async function main(
     flushWorkflowActionEvents?: typeof flushWorkflowActionEvents;
   } = {},
 ): Promise<void> {
-  return gitHubRuntime.withGitHubRun(async () => {
+  return withGitHubRun(async () => {
     const args = parseArgs(argv);
     const command = args._[0] ?? "review";
     const flushActionEvents = dependencies.flushWorkflowActionEvents ?? flushWorkflowActionEvents;

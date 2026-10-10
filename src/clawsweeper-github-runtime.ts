@@ -50,6 +50,7 @@ type GitHubRunState = {
   inspectedRateLimitScopes: Set<GitHubCredentialScope>;
   retainedEtagResponses: GithubEtagRetainedResponses;
   claimedPublicReadFallbackTokens: Set<string>;
+  reviewedPrActivityV2Fallbacks: Map<string, string>;
   budget: GitHubRuntimeBudget | null;
 };
 
@@ -68,10 +69,16 @@ export function withGitHubRun<T>(operation: () => T): T {
       inspectedRateLimitScopes: new Set(),
       retainedEtagResponses: createRetainedGithubEtagResponses(),
       claimedPublicReadFallbackTokens: new Set(),
+      reviewedPrActivityV2Fallbacks: new Map(),
       budget: null,
     },
     operation,
   );
+}
+
+/** Repository-qualified activity fallbacks retained for this command only. */
+export function reviewedPrActivityFallbacks(): Map<string, string> {
+  return gitHubRunState().reviewedPrActivityV2Fallbacks;
 }
 
 /** Independent GitHub reads in flight together. */

@@ -3,6 +3,10 @@ import { execFileSync, spawn } from "node:child_process";
 import { once } from "node:events";
 import { createServer } from "node:http";
 import { fileURLToPath } from "node:url";
+import * as github from "../../dist/clawsweeper-github-context.js";
+import * as execution from "../../dist/clawsweeper-github-execution.js";
+import { withGitHubRun } from "../../dist/clawsweeper-github-runtime.js";
+import { repositoryProfileFor, withTargetProfile } from "../../dist/repository-profiles.js";
 
 const repo = "fixture/repository";
 const issuePath = `repos/${repo}/issues/123`;
@@ -10,7 +14,25 @@ const inline = process.argv.includes("--inline");
 const pullPath = `repos/${repo}/pulls/123`;
 const commentsPath = inline ? `${pullPath}/comments` : `${issuePath}/comments`;
 
-if (process.argv.includes("--server")) {
+if (process.argv[2] === "--gh") {
+  const args = process.argv.slice(3);
+  assert.equal(args[0], "api");
+  const path = args.slice(1).find((arg) => !arg.startsWith("-"));
+  assert.ok(path);
+  process.stdout.write(
+    execFileSync(
+      "curl",
+      [
+        "-fsS",
+        "--max-time",
+        "10",
+        ...(args.includes("--include") || args.includes("-i") ? ["--include"] : []),
+        `${process.env.COMMENT_BUDGET_API_URL}/${path}`,
+      ],
+      { encoding: "utf8" },
+    ),
+  );
+} else if (process.argv.includes("--server")) {
   let comments = [];
   let declaredCount;
   let requests = [];
@@ -35,6 +57,10 @@ if (process.argv.includes("--server")) {
       return send({ ok: true });
     }
     if (url.pathname === "/counts") return send(requests);
+    if (url.pathname === "/internal/exact-review/github-etag-cache/lookup") {
+      request.resume();
+      return send({ hit: false });
+    }
     if (url.pathname === "/edit") {
       comments[Math.floor(comments.length / 2)].body = "Changed middle comment";
       return send({ ok: true });
@@ -79,7 +105,6 @@ if (process.argv.includes("--server")) {
   });
   server.listen(0, "127.0.0.1", () => console.log(server.address().port));
 } else {
-  const { createGitHubContext } = await import("../../dist/clawsweeper-github-context.js");
   const { createItemContext } = await import(
     inline && process.argv.includes("--baseline")
       ? "../../dist/clawsweeper-item-context-baseline.js"
@@ -110,13 +135,11 @@ if (process.argv.includes("--server")) {
   process.env.EXACT_EVENT_PUBLICATION = "true";
   process.env.EXACT_REVIEW_QUEUE_URL = base;
   process.env.CLAWSWEEPER_WEBHOOK_SECRET = "synthetic-loopback-only";
-  const github = createGitHubContext({
-    ghJson: (args) => get(args[1]),
-    ghJsonEach: (requests) => requests.map((args) => ({ ok: true, value: get(args[1]) })),
-    ghWithRetry: () => {
-      throw new Error("unexpected transport");
-    },
-    targetRepo: () => repo,
+  Object.assign(process.env, {
+    GH_BIN: process.execPath,
+    GH_BIN_ARGS: JSON.stringify([fileURLToPath(import.meta.url), "--gh"]),
+    COMMENT_BUDGET_API_URL: base,
+    GH_TOKEN: "synthetic-loopback-only",
   });
   const empty = { items: [], total: 0, hydrated: 0, truncated: false };
   const { collectItemContext } = createItemContext({
@@ -126,7 +149,7 @@ if (process.argv.includes("--server")) {
     // The --baseline item-context build predates direct content-hash imports.
     sha256,
     targetRepo: () => repo,
-    ghJson: (args) => get(args[1]),
+    ghJson: execution.ghJson,
     ghPagedLinkHeaderContextWindow: () => empty,
     closingPullRequestsForIssue: () => [],
     referencingMergedPullRequestsForIssue: () => [],
@@ -148,80 +171,89 @@ if (process.argv.includes("--server")) {
   };
   const output = { mode: baseline ? "baseline" : "candidate", scenarios: [] };
   try {
-    for (const [count, unknown] of [
-      [0, false],
-      [10, false],
-      [40, false],
-      [250, false],
-      ...(!inline ? [[40, true]] : []),
-    ]) {
-      get(`reset?count=${count}${unknown ? "&unknown=1" : ""}`);
-      const generation = new LiveReadGeneration();
-      const options = {
-        liveReadGeneration: generation,
-        ...(inline ? { reviewCacheDigest: true } : {}),
-      };
-      const revision = (value) =>
-        inline ? value.pullReviewCommentsRevision : value.sourceRevision;
-      const window = (value) => (inline ? value.pullReviewComments : value.comments);
-      const windowLimit = inline ? 40 : 24;
-      const context = collectItemContext(target, options);
-      const readComments = () =>
-        generation.read(generationReadKey("paged", [commentsPath]), () =>
-          github.ghPaged(commentsPath),
-        );
-      const complete = readComments();
-      assert.equal(complete.length, count);
-      assert.equal(
-        revision(context),
-        inline
-          ? sourceTools.reviewCommentContentRevision(complete.map(hydration.compactComment))
-          : sourceTools.itemSourceRevisionSha256(get(issuePath), complete),
-      );
-      const retained = window(context).filter((comment) => typeof comment.id === "number");
-      const expected =
-        !unknown && count > windowLimit
-          ? [...complete.slice(0, windowLimit / 2), ...complete.slice(-windowLimit / 2)]
-          : complete;
-      // Unknown counts retain all comments before the existing prompt compactor.
-      const compacted = hydration.compactMappedWindow(
-        expected,
-        expected.length,
-        windowLimit,
-        hydration.compactComment,
-      );
-      assert.deepEqual(window(context), compacted);
-      assert.ok(retained.length <= windowLimit);
-      const requests = get("counts");
-      const commentReads = requests.filter((path) => path.startsWith(`/${commentsPath}?`)).length;
-      const expectedReads =
-        count === 0
-          ? 1
-          : baseline && !unknown
-            ? count > 100
-              ? 5
-              : 2
-            : Math.floor(count / 100) + 1;
-      assert.equal(commentReads, expectedReads, JSON.stringify({ count, requests }));
-      const row = {
-        count,
-        unknown,
-        comment_reads: commentReads,
-        source_revision: revision(context),
-      };
-      if (count > windowLimit) {
-        get("edit");
-        assert.equal(revision(collectItemContext(target, options)), revision(context));
-        const fresh = collectItemContext(target, { ...options, bypassGenerationCache: true });
-        assert.notEqual(revision(fresh), revision(context));
-        assert.equal(revision(collectItemContext(target, options)), revision(context));
-        generation.invalidate();
-        assert.equal(revision(collectItemContext(target, options)), revision(fresh));
-        row.middle_edit_detected_after_bypass_and_invalidation = true;
-      }
-      output.scenarios.push(row);
-    }
-    console.log(JSON.stringify(output, null, 2));
+    withGitHubRun(() =>
+      withTargetProfile(
+        { ...repositoryProfileFor("openclaw/clawsweeper"), targetRepo: repo },
+        () => {
+          for (const [count, unknown] of [
+            [0, false],
+            [10, false],
+            [40, false],
+            [250, false],
+            ...(!inline ? [[40, true]] : []),
+          ]) {
+            get(`reset?count=${count}${unknown ? "&unknown=1" : ""}`);
+            const generation = new LiveReadGeneration();
+            const options = {
+              liveReadGeneration: generation,
+              ...(inline ? { reviewCacheDigest: true } : {}),
+            };
+            const revision = (value) =>
+              inline ? value.pullReviewCommentsRevision : value.sourceRevision;
+            const window = (value) => (inline ? value.pullReviewComments : value.comments);
+            const windowLimit = inline ? 40 : 24;
+            const context = collectItemContext(target, options);
+            const readComments = () =>
+              generation.read(generationReadKey("paged", [commentsPath]), () =>
+                github.ghPaged(commentsPath),
+              );
+            const complete = readComments();
+            assert.equal(complete.length, count);
+            assert.equal(
+              revision(context),
+              inline
+                ? sourceTools.reviewCommentContentRevision(complete.map(hydration.compactComment))
+                : sourceTools.itemSourceRevisionSha256(get(issuePath), complete),
+            );
+            const retained = window(context).filter((comment) => typeof comment.id === "number");
+            const expected =
+              !unknown && count > windowLimit
+                ? [...complete.slice(0, windowLimit / 2), ...complete.slice(-windowLimit / 2)]
+                : complete;
+            // Unknown counts retain all comments before the existing prompt compactor.
+            const compacted = hydration.compactMappedWindow(
+              expected,
+              expected.length,
+              windowLimit,
+              hydration.compactComment,
+            );
+            assert.deepEqual(window(context), compacted);
+            assert.ok(retained.length <= windowLimit);
+            const requests = get("counts");
+            const commentReads = requests.filter((path) =>
+              path.startsWith(`/${commentsPath}?`),
+            ).length;
+            const expectedReads =
+              count === 0
+                ? 1
+                : baseline && !unknown
+                  ? count > 100
+                    ? 5
+                    : 2
+                  : Math.floor(count / 100) + 1;
+            assert.equal(commentReads, expectedReads, JSON.stringify({ count, requests }));
+            const row = {
+              count,
+              unknown,
+              comment_reads: commentReads,
+              source_revision: revision(context),
+            };
+            if (count > windowLimit) {
+              get("edit");
+              assert.equal(revision(collectItemContext(target, options)), revision(context));
+              const fresh = collectItemContext(target, { ...options, bypassGenerationCache: true });
+              assert.notEqual(revision(fresh), revision(context));
+              assert.equal(revision(collectItemContext(target, options)), revision(context));
+              generation.invalidate();
+              assert.equal(revision(collectItemContext(target, options)), revision(fresh));
+              row.middle_edit_detected_after_bypass_and_invalidation = true;
+            }
+            output.scenarios.push(row);
+          }
+          console.log(JSON.stringify(output, null, 2));
+        },
+      ),
+    );
   } finally {
     child.kill();
     await once(child, "exit");

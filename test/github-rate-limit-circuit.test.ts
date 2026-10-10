@@ -5,10 +5,8 @@ import { join } from "node:path";
 import { type TestContext } from "node:test";
 import { githubTest as test, installGhFixture } from "./github-runtime-fixture.ts";
 import * as runtime from "../dist/clawsweeper-github-runtime.js";
-import { createGitHubExecution } from "../dist/clawsweeper-github-execution.js";
+import * as execution from "../dist/clawsweeper-github-execution.js";
 import { activeGitHubRateLimitCircuit } from "../dist/github-rate-limit-circuit.js";
-
-const execution = createGitHubExecution({ ROOT: process.cwd(), gitHubRuntime: runtime });
 
 function fixture(t: TestContext) {
   const root = mkdtempSync(join(tmpdir(), "publication-quota-"));

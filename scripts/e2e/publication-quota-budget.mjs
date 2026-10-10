@@ -24,26 +24,26 @@ if (process.argv[2] === "transport") {
   }
 } else if (process.argv[2] === "member") {
   const runtimeModule = await import(pathToFileURL(process.argv[3]));
-  const { createGitHubExecution } = await import(pathToFileURL(process.argv[4]));
+  const executionModule = await import(pathToFileURL(process.argv[4]));
   const historical = process.argv[5] === "--baseline";
-  let runtime = runtimeModule;
+  let execution = executionModule;
   if (historical) {
     // Only the archived baseline uses the historical runtime factory contract.
     const { runText } = await import(new URL("./command.js", pathToFileURL(process.argv[3])));
-    runtime = runtimeModule.createGitHubRuntime({
+    const runtime = runtimeModule.createGitHubRuntime({
       ROOT: process.cwd(),
       targetRepo: () => "openclaw/openclaw",
       run: runText,
+    });
+    execution = executionModule.createGitHubExecution({
+      ROOT: process.cwd(),
+      gitHubRuntime: runtime,
+      labelAlreadyExistsError: () => false,
     });
   } else {
     const { setTargetRepo } = await import("../../dist/repository-profiles.js");
     setTargetRepo("openclaw/openclaw");
   }
-  const execution = createGitHubExecution({
-    ROOT: process.cwd(),
-    gitHubRuntime: runtime,
-    labelAlreadyExistsError: () => false,
-  });
   const publish = () => {
     try {
       const item = execution.ghJson(["api", "repos/openclaw/openclaw/issues/123"]);
