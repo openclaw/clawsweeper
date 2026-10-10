@@ -2,9 +2,24 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  AUTOMERGE_BLOCKING_LABEL_NAMES,
+  AUTOMERGE_LABEL,
+} from "../../dist/repair/exact-review-guard-labels.js";
+import {
+  jobSourceLabelChanges,
   replacementLabelsToCopy,
   replacementSourceLabelCopyable,
 } from "../../dist/repair/replacement-labels.js";
+
+test("generated issue implementation PRs carry a merge-blocking label and lose automerge", () => {
+  const blocking: readonly string[] = AUTOMERGE_BLOCKING_LABEL_NAMES;
+  const generated = jobSourceLabelChanges({ source: "issue_implementation" });
+  assert.ok(generated.add.some((label) => blocking.includes(label)));
+  assert.ok(generated.remove.includes(AUTOMERGE_LABEL));
+  // A maintainer-opted automerge job keeps its opt-in and gets no merge-blocking label.
+  const automerge = jobSourceLabelChanges({ source: "pr_automerge" });
+  assert.deepEqual(automerge, { add: [], remove: [] });
+});
 
 test("replacement PRs preserve durable source labels and required labels without duplicates", () => {
   assert.deepEqual(
