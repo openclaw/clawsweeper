@@ -145,7 +145,7 @@ export function applyHostProofRules(markdown: string, proof: RealBehaviorProof):
   if (
     frontMatterValue(markdown, "type") !== "pull_request" ||
     external ||
-    proof.summary.startsWith(AUTHORITY_CHAIN_PROOF_MARKER) ||
+    proof.summary.trim().startsWith(AUTHORITY_CHAIN_PROOF_MARKER) ||
     (!proof.needsContributorAction &&
       proof.status !== "missing" &&
       proof.status !== "mock_only" &&
@@ -186,9 +186,9 @@ export function reportReviewDecision(markdown: string): ReportReviewDecision {
     ...decision,
     labelJustifications: selectedLabelJustifications(decision.labelJustifications, decision),
     realBehaviorProof: applyHostProofRules(markdown, decision.realBehaviorProof),
-    authorityChainProofRequired: decision.realBehaviorProof.summary.startsWith(
-      AUTHORITY_CHAIN_PROOF_MARKER,
-    ),
+    authorityChainProofRequired: decision.realBehaviorProof.summary
+      .trim()
+      .startsWith(AUTHORITY_CHAIN_PROOF_MARKER),
     risks: decision.risks.length ? decision.risks.map((risk) => `- ${risk}`).join("\n") : "- none",
     agentsPolicyStatus: decision.agentsPolicyStatus,
     maintainerDecisionInvalid: false,

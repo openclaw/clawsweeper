@@ -287,7 +287,7 @@ test("host proof rules retain overrides, author exemptions, empty summaries and 
       ...missing,
       status: "not_applicable",
       needsContributorAction: false,
-      summary: `${AUTHORITY_CHAIN_PROOF_MARKER} verify the changed authority.`,
+      summary: `  ${AUTHORITY_CHAIN_PROOF_MARKER} verify the changed authority.`,
     }),
   );
   assert.equal(authority.required, true);
