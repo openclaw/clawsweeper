@@ -116,8 +116,10 @@ test("result publisher opts out of unused canonical record and blob hydration", 
         ...env,
       },
     });
+    // Node runtime flags (heap size) come before the script; the test checks the
+    // hydration arguments.
     assert.equal(
-      result.stdout,
+      result.stdout.replace(/^(?:--\S+ )+/, ""),
       `code/scripts/hydrate-state.ts --state-dir state --worktree code ${args}\n`,
     );
   }

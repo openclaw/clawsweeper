@@ -183,4 +183,8 @@ runs:
         if [ -n "$RECORDS_ITEM_NUMBER" ]; then
           hydrate_args+=(--records-item-number "$RECORDS_ITEM_NUMBER")
         fi
-        node "${{ inputs.worktree-path }}/scripts/hydrate-state.ts" "${hydrate_args[@]}"
+        # Hydration keeps the target's whole record corpus in memory. With the
+        # review_record line on every report, openclaw-openclaw passes Node's
+        # default ~4 GB heap (#1874). Runners have 16 GB; streaming the export
+        # to disk is the follow-up that removes this limit.
+        node --max-old-space-size=12288 "${{ inputs.worktree-path }}/scripts/hydrate-state.ts" "${hydrate_args[@]}"
