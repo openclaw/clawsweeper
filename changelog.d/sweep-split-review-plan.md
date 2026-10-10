@@ -1,0 +1,1 @@
+- Move normal and hot review planning to `review-plan.yml` (`ClawSweeper Review Plan`), preserving schedules, admission, and planner inputs. Route manual reviews and target fanout there; keep exact-event review and manual/scheduled apply in `sweep.yml`.

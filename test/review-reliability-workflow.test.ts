@@ -16,7 +16,7 @@ test("review reliability telemetry shares the terminal reconciler workflow", () 
   const source = readFileSync(".github/workflows/exact-review-reconcile.yml", "utf8");
   const workflow = parse(source) as Record<string, any>;
   assert.deepEqual(workflow.on.workflow_run, {
-    workflows: ["ClawSweeper"],
+    workflows: ["ClawSweeper", "ClawSweeper Review Plan"],
     types: ["completed"],
   });
   assert.deepEqual(workflow.permissions, {});

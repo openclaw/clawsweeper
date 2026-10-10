@@ -433,11 +433,12 @@ scheduling, capacity, and monitoring behavior is documented in
 
 Review is proposal-only. It never closes items.
 
-- A planner selects due items and offers them to the shared exact-review queue.
-- Manual review runs in `sweep.yml` can select `item_number` or comma-separated
+- The `ClawSweeper Review Plan` workflow (`review-plan.yml`) selects due items
+  and offers them to the shared exact-review queue.
+- Manual review runs in `review-plan.yml` can select `item_number` or comma-separated
   `item_numbers`, target branch, prompt, timeout, and hot-intake mode. Broad runs
   use the same queue capacity and pacing as scheduled feeds; per-run `batch_size`, `shard_count`,
-  and `apply_after_review` inputs are retired. Use the separate `apply_existing`
+  and `apply_after_review` inputs are retired. Use the separate `sweep.yml` `apply_existing`
   lane to apply eligible proposals.
 - Each admitted item gets its own review workflow for the selected target.
 - Codex reviews use `gpt-6.1-sol` with medium reasoning in the direct API auth
@@ -966,8 +967,9 @@ audit; it accepts only `target_repo`, with no `audit_dashboard` input:
 gh workflow run audit.yml -f target_repo=openclaw/openclaw
 ```
 
-Review dispatch remains in `sweep.yml`; target fanout dispatches reviews there
-and audits to `audit.yml`. The read-only audit lane covers `openclaw/openclaw`,
+Review planning dispatch uses `review-plan.yml`; target fanout dispatches review
+plans there and audits to `audit.yml`. Exact event review and apply remain in
+`sweep.yml`. The read-only audit lane covers `openclaw/openclaw`,
 `openclaw/clawhub`, and `openclaw/clawsweeper`; it falls back to public
 workflow-token reads when the ClawSweeper App token is not available for a target.
 
@@ -1128,13 +1130,14 @@ corepack enable
 pnpm run apply-decisions -- --target-repo openclaw/openclaw --sync-comments-only --comment-sync-min-age-days 7 --processed-limit 1000 --limit 0 --skip-dashboard
 ```
 
-Manual review runs are proposal-only. Use `apply_existing=true` to apply unchanged
-proposals later. Scheduled apply runs process both issues and pull requests by
+Manual review runs in `review-plan.yml` are proposal-only. Dispatch `sweep.yml`
+with `apply_existing=true` to apply unchanged proposals later. Scheduled apply runs process both issues and pull requests by
 default, subject to the selected repository profile; pass `target_repo`,
 `apply_kind=issue`, or `apply_kind=pull_request` to narrow a manual run.
 
 Scheduled runs cover the configured product profiles. `openclaw/openclaw` runs
-normal backfill every 20 minutes; scheduled hot intake and normal backfill share a
+normal backfill every 20 minutes in `review-plan.yml`, alongside hot-intake schedules;
+scheduled hot intake and normal backfill share a
 32-worker cap in the durable review queue. `openclaw/clawhub` runs on offset review/apply/audit crons so its reports
 live under `records/openclaw-clawhub/` without colliding with default repo
 records. `openclaw/clawsweeper` has a scheduled read-only audit row and is

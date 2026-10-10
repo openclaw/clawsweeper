@@ -630,5 +630,5 @@ These limits are owned by `dashboard/exact-review-queue.ts`, implemented in
   finished issue implementation worker runs below the floor, automatic dispatch
   pauses and the dispatcher's run summary shows the rate; `0` overrides the
   pause. See [Automatic issue PRs](repair/automatic-issue-prs.md).
-- Broad `sweep.yml` dispatches use queue-advertised candidate capacity, bounded
+- Broad `review-plan.yml` dispatches use queue-advertised candidate capacity, bounded
   by `review_shards.hard_cap`; there is no per-run shard override.

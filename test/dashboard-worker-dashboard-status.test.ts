@@ -1836,6 +1836,27 @@ test("dashboard hero treats apply and exact-review handoff health as attention",
   });
   new Script(script).runInContext(context);
   await new Promise((resolve) => setTimeout(resolve, 0));
+  const refreshReview = context.applyHealthRecommendedAction(
+    { target_repo: "openclaw/clawhub", mode: "close" },
+    "skipped_changed_since_review",
+  );
+  assert.equal(
+    refreshReview.command,
+    "gh workflow run review-plan.yml --repo openclaw/clawsweeper -f target_repo=openclaw/clawhub",
+  );
+  assert.equal(
+    refreshReview.url,
+    "https://github.com/openclaw/clawsweeper/actions/workflows/review-plan.yml",
+  );
+  for (const mode of ["close", "comment_sync"]) {
+    const apply = context.applyHealthRecommendedAction(
+      { target_repo: "openclaw/clawhub", mode },
+      "skipped_runtime_budget",
+    );
+    assert.match(apply.command, /^gh workflow run sweep\.yml /);
+    assert.match(apply.command, /-f apply_existing=true/);
+    assert.equal(apply.url, "https://github.com/openclaw/clawsweeper/actions/workflows/sweep.yml");
+  }
 
   const freshnessTimestamp = new Date(Date.now() - 1_000).toISOString();
   for (const state of ["fresh", "stale"]) {
@@ -3184,6 +3205,7 @@ test("dashboard keeps control-plane workflow fallbacks out of Codex capacity", a
     [5, "repair comment router", "clawsweeper_comment", "queued"],
     [6, "Reconcile exact-review leases", "Reconcile exact-review leases", "in_progress"],
     [7, "ClawSweeper", "Sync Codex review comments for openclaw/openclaw", "queued"],
+    [8, "ClawSweeper Review Plan", "Review ClawSweeper items", "in_progress"],
   ].map(([id, name, displayTitle, status]) => ({
     id,
     name,
@@ -3233,9 +3255,9 @@ test("dashboard keeps control-plane workflow fallbacks out of Codex capacity", a
       { waitUntil: () => undefined },
     );
     const status = await response.json();
-    assert.equal(status.fleet.active_codex_jobs, 3);
-    assert.equal(status.fleet.worker_detail_fallbacks, 3);
-    assert.equal(status.workers.length, 3);
+    assert.equal(status.fleet.active_codex_jobs, 4);
+    assert.equal(status.fleet.worker_detail_fallbacks, 4);
+    assert.equal(status.workers.length, 4);
     assert.equal(
       status.workers.every((entry: Record<string, unknown>) => !("id" in entry)),
       true,

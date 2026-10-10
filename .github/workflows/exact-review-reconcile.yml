@@ -2,7 +2,7 @@ name: Reconcile exact-review leases
 
 on:
   workflow_run:
-    workflows: [ClawSweeper]
+    workflows: [ClawSweeper, ClawSweeper Review Plan]
     types: [completed]
   schedule:
     - cron: "*/15 * * * *"

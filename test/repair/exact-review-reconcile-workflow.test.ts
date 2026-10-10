@@ -28,12 +28,18 @@ const job = {
 test("event reconciliation coalesces the complete reusable job while preserving observations", () => {
   const workflow = parse(readFileSync(".github/workflows/exact-review-reconcile.yml", "utf8"));
   const child = parse(readFileSync(".github/workflows/exact-review-reconcile-run.yml", "utf8"));
+  assert.deepEqual(workflow.on.workflow_run, {
+    workflows: ["ClawSweeper", "ClawSweeper Review Plan"],
+    types: ["completed"],
+  });
   assert.deepEqual(workflow.jobs.reconcile.concurrency, {
     group: "exact-review-reconcile-workflow-run",
     "cancel-in-progress": false,
   });
   assert.equal(workflow.jobs.reconcile.uses, "./.github/workflows/exact-review-reconcile-run.yml");
   assert.match(workflow.jobs.reconcile.if, /github.event_name == 'workflow_run'/);
+  assert.match(workflow.jobs.reconcile.if, /workflow_run.event == 'repository_dispatch'/);
+  assert.match(workflow.jobs.reconcile.if, /'Review event item '/);
   assert.equal(child.jobs.reconcile.needs, "cooldown");
   assert.equal(child.jobs.reconcile.if, "${{ needs.cooldown.outputs.reconcile == 'true' }}");
   assert.equal(child.jobs.cooldown.outputs.reconcile, "${{ steps.history.outputs.reconcile }}");

@@ -687,14 +687,16 @@ test("automatic OpenClaw bug dispatch uses one gate across direct and deferred p
 });
 
 test("issue implementation dispatches omit the deleted model input", () => {
-  const workflow = YAML.parse(readText(".github/workflows/sweep.yml")) as {
-    jobs: Record<string, { steps?: Array<{ name?: string; run?: string }> }>;
-  };
-  const dispatches = Object.entries(workflow.jobs).flatMap(([jobName, job]) =>
-    (job.steps ?? [])
-      .filter((step) => step.run?.includes("dispatch-issue-implementation-candidates.mjs"))
-      .map((step) => ({ jobName, step })),
-  );
+  const dispatches = ["sweep.yml", "review-plan.yml"].flatMap((file) => {
+    const workflow = YAML.parse(readText(`.github/workflows/${file}`)) as {
+      jobs: Record<string, { steps?: Array<{ name?: string; run?: string }> }>;
+    };
+    return Object.entries(workflow.jobs).flatMap(([jobName, job]) =>
+      (job.steps ?? [])
+        .filter((step) => step.run?.includes("dispatch-issue-implementation-candidates.mjs"))
+        .map((step) => ({ jobName: `${file}:${jobName}`, step })),
+    );
+  });
 
   assert.ok(dispatches.length > 0);
   for (const { jobName, step } of dispatches) {
@@ -705,6 +707,7 @@ test("issue implementation dispatches omit the deleted model input", () => {
 test("every automatic issue dispatcher receives the lane health floor override", () => {
   const dispatches = [
     ".github/workflows/sweep.yml",
+    ".github/workflows/review-plan.yml",
     ".github/workflows/exact-review-batch-publish.yml",
     ".github/workflows/repair-issue-implementation-backfill.yml",
   ].flatMap((file) => {
@@ -2865,6 +2868,7 @@ test("audit publication keeps record tuples apart from status files", () => {
 test("audit cron and manual dispatches route exclusively through the standalone audit workflow", () => {
   const audit = YAML.parse(readText(".github/workflows/audit.yml"));
   const sweep = YAML.parse(readText(".github/workflows/sweep.yml"));
+  const planner = YAML.parse(readText(".github/workflows/review-plan.yml"));
   const crons = ["7 */6 * * *", "12 */6 * * *", "17 */6 * * *"];
   assert.deepEqual(
     audit.on.schedule.map(({ cron }: { cron: string }) => cron),
@@ -2879,7 +2883,8 @@ test("audit cron and manual dispatches route exclusively through the standalone 
   assert.deepEqual(Object.keys(audit.jobs).sort(), ["audit-dashboard", "hosted-target-admission"]);
   assert.equal(sweep.jobs["audit-dashboard"], undefined);
   assert.equal(sweep.on.workflow_dispatch.inputs.audit_dashboard, undefined);
-  for (const { cron } of sweep.on.schedule) assert.ok(!crons.includes(cron), cron);
+  for (const workflow of [sweep, planner])
+    for (const { cron } of workflow.on.schedule) assert.ok(!crons.includes(cron), cron);
   assert.equal(audit.concurrency["cancel-in-progress"], false);
 
   const format = (template: string, ...values: unknown[]) =>
@@ -5531,7 +5536,13 @@ function cronFiringMinutesOfDay(cron: string): number[] {
 }
 
 test("workflow schedules are distinct, every compared schedule fires, and fanout stays contained", () => {
-  const paths = ["sweep.yml", "target-fanout.yml", "failed-review-retry.yml", "audit.yml"];
+  const paths = [
+    "sweep.yml",
+    "target-fanout.yml",
+    "failed-review-retry.yml",
+    "audit.yml",
+    "review-plan.yml",
+  ];
   const workflows = paths.map((path) => {
     const source = readText(`.github/workflows/${path}`);
     const workflow = YAML.parse(source) as {
@@ -5546,8 +5557,17 @@ test("workflow schedules are distinct, every compared schedule fires, and fanout
 
   assert.equal(new Set(schedules).size, schedules.length);
   // A branch on a schedule that is not registered never runs.
-  for (const { source, schedules } of workflows) {
-    for (const cron of new Set(compared(source))) assert.ok(schedules.includes(cron), cron);
+  for (const { source, workflow, schedules } of workflows) {
+    // The planner retains original step bytes, including unreachable apply clauses.
+    const routing = workflow.jobs.plan
+      ? JSON.stringify({
+          ...workflow,
+          jobs: Object.fromEntries(
+            Object.entries(workflow.jobs).map(([name, job]) => [name, { if: job.if }]),
+          ),
+        })
+      : source;
+    for (const cron of new Set(compared(routing))) assert.ok(schedules.includes(cron), cron);
   }
   // Containment: each fleet fanout schedule fires at most once every twenty minutes.
   const fanout = compared(workflows[1]!.workflow.jobs["target-fanout"]?.if ?? "");
@@ -5602,15 +5622,17 @@ test("review git info follows the checked-out target branch", () => {
 });
 
 // GitHub accepts at most 25 workflow_dispatch inputs.
-test("sweep workflow_dispatch input count stays under GitHub limit", () => {
-  const workflow = YAML.parse(readText(".github/workflows/sweep.yml")) as {
-    on: { workflow_dispatch: { inputs: Record<string, unknown> } };
-  };
-  const count = Object.keys(workflow.on.workflow_dispatch.inputs).length;
-  assert.ok(count <= 25, `workflow_dispatch has ${count} inputs`);
+test("sweep and review planner workflow_dispatch input counts stay under GitHub limit", () => {
+  for (const file of ["sweep.yml", "review-plan.yml"]) {
+    const workflow = YAML.parse(readText(`.github/workflows/${file}`)) as {
+      on: { workflow_dispatch: { inputs: Record<string, unknown> } };
+    };
+    const count = Object.keys(workflow.on.workflow_dispatch.inputs).length;
+    assert.ok(count <= 25, `${file} workflow_dispatch has ${count} inputs`);
+  }
 });
 
-test("manual review docs name only declared sweep inputs", () => {
+test("manual review docs name only declared planner inputs", () => {
   const readme = readText("README.md");
   const scheduler = readText("docs/scheduler.md");
   const guidanceSections = [
@@ -5625,7 +5647,7 @@ test("manual review docs name only declared sweep inputs", () => {
   ];
   const requiredInputs = ["item_number", "item_numbers"];
   const schedulerInputs = ["target_repo", "hot_intake"];
-  const workflow = YAML.parse(readText(".github/workflows/sweep.yml")) as {
+  const workflow = YAML.parse(readText(".github/workflows/review-plan.yml")) as {
     on: { workflow_dispatch: { inputs: Record<string, unknown> } };
   };
   const declaredInputs = new Set(Object.keys(workflow.on.workflow_dispatch.inputs));
@@ -5716,7 +5738,7 @@ if (command === "apply-artifacts") {
 
 // A disabled ClawHub target must not start a target sweep.
 test("target sweep dispatches preserve disabled ClawHub guard", () => {
-  const workflow = YAML.parse(readText(".github/workflows/sweep.yml")) as {
+  const workflow = YAML.parse(readText(".github/workflows/review-plan.yml")) as {
     jobs: Record<string, { if?: string }>;
   };
   assert.match(
@@ -5747,7 +5769,7 @@ test("review backstops preserve resolved apply scope and recent lane activity", 
   const calls = join(root, "calls");
   const recent = (displayTitle: string, databaseId: number) => ({
     databaseId,
-    workflowPath: ".github/workflows/sweep.yml",
+    workflowPath: ".github/workflows/review-plan.yml",
     displayTitle,
     status: "completed",
     createdAt: new Date().toISOString(),
@@ -5809,7 +5831,7 @@ gh() {
   printf 'gh %s\\n' "$*" >> "$BACKSTOP_CALLS"
   case "$1" in
     api) printf '%s' "$BACKSTOP_RECENT_RUNS" ;;
-    workflow) [ "$2" = run ] && [ "$3" = sweep.yml ] ;;
+    workflow) [ "$2" = run ] && [ "$3" = review-plan.yml ] ;;
     *) return 98 ;;
   esac
 }
@@ -5875,7 +5897,8 @@ ${run}`,
         scenario.name,
       );
       for (const dispatch of dispatches) {
-        assert.match(dispatch, /-f apply_existing=false -f hot_intake=/);
+        assert.match(dispatch, /gh workflow run review-plan\.yml/);
+        assert.doesNotMatch(dispatch, /-f apply_existing=/);
         assert.match(dispatch, /-f target_repo=openclaw\/openclaw/);
       }
     }
@@ -6044,7 +6067,7 @@ test("durable cursor sync coalesces safely without discarding targeted batches",
 });
 
 test("explicit-item planning hydrates exactly the items selected for review", () => {
-  const workflow = YAML.parse(readText(".github/workflows/sweep.yml"));
+  const workflow = YAML.parse(readText(".github/workflows/review-plan.yml"));
   const steps = workflow.jobs.plan.steps;
   const setup = steps.findIndex((step: { uses?: string }) => step.uses?.endsWith("/setup-pnpm"));
   const parser = steps.findIndex((step: { id?: string }) => step.id === "requested-items");
@@ -6618,6 +6641,7 @@ for (const scenario of [
 test("all workflow control-plane curls use the shared helper after download or full checkout", () => {
   for (const file of [
     "sweep.yml",
+    "review-plan.yml",
     "exact-review-reconcile-run.yml",
     "exact-review-dead-letter-reconcile.yml",
   ]) {

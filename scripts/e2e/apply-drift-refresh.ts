@@ -36,6 +36,9 @@ export async function proveApplyDriftRefresh() {
   const workflow = YAML.parse(
     fs.readFileSync(path.join(sourceRoot, ".github/workflows/sweep.yml"), "utf8"),
   );
+  const planner = YAML.parse(
+    fs.readFileSync(path.join(sourceRoot, ".github/workflows/review-plan.yml"), "utf8"),
+  );
   const step = (job: string, name: string): Step => {
     const found = workflow.jobs[job].steps.find((entry: Step) => entry.name === name);
     assert.ok(found?.run, `${job}: ${name}`);
@@ -186,7 +189,7 @@ process.stdout.write(args.includes('--jq') ? (pr ? 'pull_request' : 'issue') : J
   }
   for (const event of events) {
     assert.equal(event.event_type, "clawsweeper_item");
-    assert.equal(route(workflow.jobs.plan.if, event.event_type), false);
+    assert.equal(route(planner.jobs.plan.if, event.event_type), false);
     assert.equal(route(workflow.jobs["legacy-event-queue-intake"].if, event.event_type), true);
     assert.equal(route(workflow.jobs["event-review-apply"].if, event.event_type), false);
     success(intake.run!, {
@@ -194,9 +197,9 @@ process.stdout.write(args.includes('--jq') ? (pr ? 'pull_request' : 'issue') : J
       GITHUB_RUN_ID: String(event.client_payload.item_number),
     });
   }
-  assert.equal(route(workflow.jobs.plan.if, "clawsweeper_target_sweep"), true);
+  assert.equal(route(planner.jobs.plan.if, "clawsweeper_target_sweep"), true);
   assert.ok(
-    workflow.jobs.plan.steps.some((entry: Step) =>
+    planner.jobs.plan.steps.some((entry: Step) =>
       entry.uses?.endsWith("/.github/actions/setup-state"),
     ),
   );
@@ -380,6 +383,9 @@ process.stdout.write(args.includes('--jq') ? (pr ? 'pull_request' : 'issue') : J
     head: execFileSync("git", ["rev-parse", "HEAD"], { cwd: sourceRoot, encoding: "utf8" }).trim(),
     workflowSha256: createHash("sha256")
       .update(fs.readFileSync(path.join(sourceRoot, ".github/workflows/sweep.yml")))
+      .digest("hex"),
+    plannerWorkflowSha256: createHash("sha256")
+      .update(fs.readFileSync(path.join(sourceRoot, ".github/workflows/review-plan.yml")))
       .digest("hex"),
     reportSha256: createHash("sha256").update(report).digest("hex"),
     recordedRows: 27,

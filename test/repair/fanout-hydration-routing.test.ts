@@ -45,7 +45,7 @@ test("only normal-review fanout uses identities; hot intake skips preflight and 
   assert.match(dispatch.run, /--coverage-tracked-items-manifest "\$COVERAGE_MANIFEST"/);
   assert.match(dispatch.run, /--workflow audit\.yml(?:\s|$)/);
   assert.doesNotMatch(dispatch.run, /audit_dashboard/);
-  const jobs = ["sweep.yml", "audit.yml"].flatMap((file) =>
+  const jobs = ["sweep.yml", "review-plan.yml", "audit.yml"].flatMap((file) =>
     Object.values<{ steps?: Array<{ uses?: string; name?: string }> }>(
       parse(readFileSync(`.github/workflows/${file}`, "utf8")).jobs,
     ),

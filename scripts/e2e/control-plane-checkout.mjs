@@ -41,7 +41,7 @@ try {
     `OLD: sparse-checkout set --no-cone scripts/control-plane-curl.sh; checkout; clean/reset/fetch/checkout => core.sparseCheckout=true; ${action}=MISSING`,
   );
 
-  for (const file of ["sweep.yml", "exact-review-reconcile-run.yml"]) {
+  for (const file of ["sweep.yml", "review-plan.yml", "exact-review-reconcile-run.yml"]) {
     const workflow = parse(readFileSync(join(root, ".github/workflows", file), "utf8"));
     for (const [jobName, job] of Object.entries(workflow.jobs)) {
       const bootstrap = job.steps?.find((step) => step.name === "Fetch control-plane retry helper");

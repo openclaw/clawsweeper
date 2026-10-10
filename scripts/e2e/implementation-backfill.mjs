@@ -15,7 +15,7 @@ fs.copyFileSync(
   "scripts/dispatch-issue-implementation-candidates.mjs",
   path.join(root, "scripts/dispatch-issue-implementation-candidates.mjs"),
 );
-const workflow = YAML.parse(fs.readFileSync(".github/workflows/sweep.yml", "utf8"));
+const workflow = YAML.parse(fs.readFileSync(".github/workflows/review-plan.yml", "utf8"));
 const step = workflow.jobs.plan.steps.find(
   (candidate) => candidate.name === "Backfill existing implementation candidates",
 );
@@ -112,9 +112,10 @@ const receipt = {
   surface:
     "Actual workflow Bash, shared dispatcher and compiled canonical-report discovery; GitHub writes captured locally",
   source_sha256: Object.fromEntries(
-    [".github/workflows/sweep.yml", "scripts/dispatch-issue-implementation-candidates.mjs"].map(
-      (file) => [file, createHash("sha256").update(fs.readFileSync(file)).digest("hex")],
-    ),
+    [
+      ".github/workflows/review-plan.yml",
+      "scripts/dispatch-issue-implementation-candidates.mjs",
+    ].map((file) => [file, createHash("sha256").update(fs.readFileSync(file)).digest("hex")]),
   ),
   artifact: root,
 };

@@ -6,7 +6,7 @@ import { join } from "node:path";
 import test from "node:test";
 import YAML from "yaml";
 
-const workflow = YAML.parse(readFileSync(".github/workflows/sweep.yml", "utf8"));
+const workflow = YAML.parse(readFileSync(".github/workflows/review-plan.yml", "utf8"));
 const mode = workflow.jobs.plan.steps.find((step) => step.id === "mode").run;
 for (const scenario of [
   { name: "broad manual", capacity: "7", share: "", expected: "7" },
@@ -60,7 +60,7 @@ for (const scenario of [
   });
 }
 
-test("hosted sweep graph has no direct matrix bypass or retired manual control", () => {
+test("hosted review planner has no direct matrix bypass or retired manual control", () => {
   for (const id of [
     "review",
     "publish",
@@ -77,20 +77,52 @@ test("hosted sweep graph has no direct matrix bypass or retired manual control",
     "apply_after_review_min_age_minutes",
   ])
     assert.equal(Object.hasOwn(workflow.on.workflow_dispatch.inputs, name), false, name);
+  assert.deepEqual(Object.keys(workflow.on.workflow_dispatch.inputs), [
+    "target_repo",
+    "target_branch",
+    "codex_timeout_ms",
+    "item_number",
+    "item_numbers",
+    "additional_prompt",
+    "hot_intake",
+  ]);
+  assert.equal(workflow.name, "ClawSweeper Review Plan");
+  assert.deepEqual(workflow.on.repository_dispatch.types, ["clawsweeper_target_sweep"]);
+  assert.deepEqual(workflow.on.schedule, [
+    { cron: "*/5 * * * *" },
+    { cron: "2/5 * * * *" },
+    { cron: "9/20 * * * *" },
+    { cron: "22 * * * *" },
+  ]);
   for (const name of [
+    "target_repo",
     "target_branch",
     "codex_timeout_ms",
     "additional_prompt",
     "item_number",
     "item_numbers",
-    "apply_existing",
+    "hot_intake",
   ])
     assert.ok(Object.hasOwn(workflow.on.workflow_dispatch.inputs, name), name);
   for (const job of Object.values(workflow.jobs) as Array<{ needs?: string | string[] }>)
     for (const dependency of [job.needs ?? []].flat())
       assert.ok(Object.hasOwn(workflow.jobs, dependency), dependency);
-  assert.ok(workflow.jobs["apply-existing"]);
-  assert.ok(workflow.jobs["event-review-publish"]);
+  assert.equal(workflow.jobs["apply-existing"], undefined);
+  assert.equal(workflow.jobs["event-review-publish"], undefined);
+  const sweep = YAML.parse(readFileSync(".github/workflows/sweep.yml", "utf8"));
+  assert.equal(sweep.jobs.plan, undefined);
+  assert.equal(sweep.on.repository_dispatch.types.includes("clawsweeper_target_sweep"), false);
+  for (const name of [
+    "target_branch",
+    "codex_timeout_ms",
+    "item_number",
+    "item_numbers",
+    "additional_prompt",
+    "hot_intake",
+  ])
+    assert.equal(Object.hasOwn(sweep.on.workflow_dispatch.inputs, name), false, name);
+  assert.ok(sweep.jobs["apply-existing"]);
+  assert.ok(sweep.jobs["event-review-publish"]);
 });
 
 test("automatic retry dispatch is serialized as automatic queue work with its source pin", () => {

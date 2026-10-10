@@ -684,7 +684,10 @@ exec '${process.execPath}' '${transport}' curl "\${args[@]}"
   assert.ok(ready, redact(workerLog));
   const { default: YAML } = await import("yaml");
   const sweep = YAML.parse(readFileSync(join(source, ".github/workflows/sweep.yml"), "utf8"));
-  const admissionStep = sweep.jobs.plan.steps.find(
+  const planner = YAML.parse(
+    readFileSync(join(source, ".github/workflows/review-plan.yml"), "utf8"),
+  );
+  const admissionStep = planner.jobs.plan.steps.find(
     (step) => step.name === "Admit explicit manual reviews",
   );
   const directStep = Object.values(sweep.jobs)

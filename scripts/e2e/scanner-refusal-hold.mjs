@@ -639,7 +639,7 @@ try {
     results.push("intentional epoch change allows a fresh automatic admission");
     // Execute the owning workflow gate and production scheduled-enqueue CLI.
     const workflow = YAML.parse(
-      fs.readFileSync(path.join(root, ".github/workflows/sweep.yml"), "utf8"),
+      fs.readFileSync(path.join(root, ".github/workflows/review-plan.yml"), "utf8"),
     );
     const modeStep = workflow.jobs.plan.steps.find((s) => s.id === "mode");
     const enqueueStep = workflow.jobs.plan.steps.find((s) => s.id === "enqueue-scheduled");
@@ -765,6 +765,7 @@ try {
     source_sha256: Object.fromEntries(
       [
         ".github/workflows/sweep.yml",
+        ".github/workflows/review-plan.yml",
         "dashboard/exact-review-decision.ts",
         "src/repair/exact-review-admission.ts",
         "src/clawsweeper-failed-review-retry.ts",

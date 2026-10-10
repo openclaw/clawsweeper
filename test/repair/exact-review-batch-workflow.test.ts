@@ -28,6 +28,7 @@ const { gh, ghOnce, ghWithPreparedTimeout, withGitHubRun } = gitHubRuntime;
 const path = ".github/workflows/exact-review-batch-publish.yml";
 const source = readFileSync(path, "utf8");
 const sweep = YAML.parse(readFileSync(".github/workflows/sweep.yml", "utf8"));
+const planner = YAML.parse(readFileSync(".github/workflows/review-plan.yml", "utf8"));
 const workflow = YAML.parse(source) as {
   on: {
     schedule?: unknown;
@@ -185,7 +186,7 @@ test("manual publication proof preserves isolated toolchain settings without inh
 });
 
 test("manual publication stays queue-owned and excludes router and implementation hooks", () => {
-  const admission = sweep.jobs.plan.steps.find(
+  const admission = planner.jobs.plan.steps.find(
     (step: { name?: string }) => step.name === "Admit explicit manual reviews",
   );
   assert.equal(admission.if, "${{ steps.mode.outputs.manual_explicit == 'true' }}");
@@ -199,7 +200,7 @@ for (const targetBranch of ["release/proof", ""]) {
     `manual admission preserves branch selection ${targetBranch || "(default lookup)"}`,
     { skip: process.platform === "win32" },
     () => {
-      const admission = sweep.jobs.plan.steps.find(
+      const admission = planner.jobs.plan.steps.find(
         (step: { name?: string }) => step.name === "Admit explicit manual reviews",
       );
       const root = mkdtempSync(join(tmpdir(), "manual-admission-branch-"));

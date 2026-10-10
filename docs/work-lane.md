@@ -159,9 +159,8 @@ When enabled, strict-bug and vision-fit sweeps also scan durable open reports,
 so their existing eligible issue backlog enters the same bounded intake.
 
 After an exact OpenClaw issue review is accepted, `sweep.yml` immediately
-checks that review and dispatches its high-confidence bug fix. Scheduled
-review publish also scans the just-produced artifacts and durable open issue
-records, then dispatches
+checks that review and dispatches its high-confidence bug fix. The
+`review-plan.yml` planner also scans durable open issue records, then dispatches
 `repair-issue-implementation-intake.yml` for a bounded set of eligible reports.
 The intake workflow re-fetches the live issue, rejects protected, security, or
 locked items, skips issues that already have an open PR reference, durable

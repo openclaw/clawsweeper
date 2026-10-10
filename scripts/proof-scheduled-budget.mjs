@@ -114,6 +114,7 @@ const FILES = [
   "dashboard/exact-review-queue.ts",
   "dashboard/wrangler.toml",
   ".github/workflows/sweep.yml",
+  ".github/workflows/review-plan.yml",
   ".github/workflows/target-fanout.yml",
   ".github/workflows/audit.yml",
 ];
@@ -358,8 +359,9 @@ try {
     }
     const read = (file) => readFileSync(path.join(dir, file), "utf8");
     const vars = wranglerVars(read("dashboard/wrangler.toml"));
-    // Historical baselines predate the fanout and audit workflow splits.
+    // Historical baselines predate the planner, fanout and audit workflow splits.
     const optionalWorkflowPaths = [
+      ".github/workflows/review-plan.yml",
       ".github/workflows/target-fanout.yml",
       ".github/workflows/audit.yml",
     ];

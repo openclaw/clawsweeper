@@ -4391,8 +4391,8 @@ function applyHealthRecommendedAction(item, reason) {
   if (reason === "skipped_changed_since_review") {
     return {
       title: "Maintainer action: " + (nextAction?.next_step || "refresh review records before trying to close changed items."),
-      command: "gh workflow run sweep.yml --repo openclaw/clawsweeper -f target_repo=" + targetRepo + " -f apply_existing=false",
-      url: workflowUrl,
+      command: "gh workflow run review-plan.yml --repo openclaw/clawsweeper -f target_repo=" + targetRepo,
+      url: "https://github.com/openclaw/clawsweeper/actions/workflows/review-plan.yml",
       linkLabel: "open workflow",
     };
   }

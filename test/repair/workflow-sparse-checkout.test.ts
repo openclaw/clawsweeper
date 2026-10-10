@@ -72,12 +72,15 @@ test("checkout audit rejects the early helper sparse checkout from the reverted 
   );
 });
 
-test("every sweep setup-pnpm step follows a full checkout at its action path", () => {
-  const workflow = parse(readText(".github/workflows/sweep.yml")) as {
-    jobs: Record<string, { steps?: CheckoutAuditStep[] }>;
-  };
+test("every review and apply setup-pnpm step follows a full checkout at its action path", () => {
+  const workflows = ["sweep.yml", "review-plan.yml"].map(
+    (file) =>
+      parse(readText(`.github/workflows/${file}`)) as {
+        jobs: Record<string, { steps?: CheckoutAuditStep[] }>;
+      },
+  );
   let audited = 0;
-  for (const [jobName, job] of Object.entries(workflow.jobs)) {
+  for (const [jobName, job] of workflows.flatMap((workflow) => Object.entries(workflow.jobs))) {
     const steps = job.steps ?? [];
     for (const [index, step] of steps.entries()) {
       const actionPath = step.uses?.match(/^\.\/(.*)\.github\/actions\/setup-pnpm$/)?.[1];
@@ -98,7 +101,7 @@ test("every sweep setup-pnpm step follows a full checkout at its action path", (
       );
     }
   }
-  assert.ok(audited > 0, "must audit sweep setup-pnpm consumers");
+  assert.ok(audited > 0, "must audit review and apply setup-pnpm consumers");
 });
 
 test("repair planning and execution use a Node runtime accepted by current OpenClaw", () => {
@@ -346,11 +349,12 @@ test("repair comment router sparse checkout includes action ledger runtime", () 
 
 test("sweep workflow preserves one claimed target branch through exact review", () => {
   const workflow = readText(".github/workflows/sweep.yml");
+  const planner = readText(".github/workflows/review-plan.yml");
   const dispatchTargetBranchResolver =
     /target_branch="\$\{\{ github\.event_name == 'workflow_dispatch' && github\.event\.inputs\.target_branch \|\| github\.event\.client_payload\.target_branch \|\| 'main' \}\}"/g;
 
-  assert.match(workflow, /target_branch:\n\s+description: "Target repository branch to review"/);
-  assert.equal([...workflow.matchAll(dispatchTargetBranchResolver)].length, 1);
+  assert.match(planner, /target_branch:\n\s+description: "Target repository branch to review"/);
+  assert.equal([...planner.matchAll(dispatchTargetBranchResolver)].length, 1);
   assert.match(
     workflow,
     /CLAIM_TARGET_BRANCH: \$\{\{ fromJSON\(steps\.claim-exact-review-queue\.outputs\.decision\)\.targetBranch \}\}/,
