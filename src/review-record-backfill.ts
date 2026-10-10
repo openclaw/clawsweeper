@@ -597,12 +597,13 @@ export function backfillReviewRecord(markdown: string): ReviewRecordBackfill {
  * `backfill-review-records --records-dir <records/<slug>> --output <json>`: reports
  * what the backfill would do for every items and closed report. It writes nothing.
  *
- * With `--write [--limit <n>]` it also adds the record line to lossless and filled
- * reports (at most n), captures each tuple in the canonical baseline directory
+ * With `--write [--include-lossy] [--limit <n>]` it also adds the record line to
+ * lossless and filled reports (at most n), plus lossy reports when opted in.
+ * It captures each tuple in the canonical baseline directory
  * (`--canonical-record-baseline-dir` or CLAWSWEEPER_CANONICAL_RECORD_BASELINE_DIR),
- * and lists the written reports in `changedRecordFiles` for the reconcile
- * publication. Lossy, unparseable, invalid_record and typed reports stay as they
- * are. A written report is typed, so a second run writes nothing more.
+ * and lists the written reports in `changedRecordFiles` for reconcile publication.
+ * Unparseable, invalid_record and typed reports stay as they are. Report text is
+ * preserved; a written report is typed, so a second run writes nothing more.
  */
 export function backfillReviewRecordsCommand(args: Args): void {
   const recordsDir = stringArg(args.records_dir, "");
@@ -611,6 +612,7 @@ export function backfillReviewRecordsCommand(args: Args): void {
     throw new UserFacingCommandError("backfill-review-records needs --records-dir and --output");
   }
   const write = boolArg(args.write);
+  const includeLossy = boolArg(args.include_lossy);
   const limit = argNumber(args, "limit", 0);
   const baselineDir = stringArg(
     args.canonical_record_baseline_dir,
@@ -668,7 +670,9 @@ export function backfillReviewRecordsCommand(args: Args): void {
       if ("reason" in result) reasons[result.reason] = (reasons[result.reason] ?? 0) + 1;
       if (
         write &&
-        (result.status === "lossless" || result.status === "filled") &&
+        (result.status === "lossless" ||
+          result.status === "filled" ||
+          (includeLossy && result.status === "lossy")) &&
         (!limit || changedRecordFiles.length + pending.length < limit)
       ) {
         pending.push({ path, classifiedSha256: sha256(markdown), markdown: result.markdown });

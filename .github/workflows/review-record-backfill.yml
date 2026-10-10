@@ -1,8 +1,8 @@
 name: Review record backfill
 
 # dry-run reports what the review_record backfill would do for every stored report and
-# writes nothing back. write adds the review_record line to the lossless and filled
-# reports of one repository and publishes them through the reconcile path.
+# writes nothing back. write adds the review_record line to lossless and filled
+# reports (also lossy reports when opted in) and publishes through the reconcile path.
 on:
   workflow_dispatch:
     inputs:
@@ -14,6 +14,11 @@ on:
           - dry-run
           - write
         default: dry-run
+      include_lossy:
+        description: "write: also record parsed decisions from lossy reports, preserving report text"
+        required: false
+        type: boolean
+        default: false
       repo_slugs:
         description: "dry-run: optional comma-separated canonical repository slugs (empty discovers all)"
         required: false
@@ -132,22 +137,26 @@ jobs:
           TARGET_REPO: ${{ inputs.target_repo }}
           TARGET_SLUG: ${{ steps.target.outputs.target_slug }}
           WRITE_LIMIT: ${{ inputs.limit }}
+          INCLUDE_LOSSY: ${{ inputs.include_lossy }}
           CLAWSWEEPER_REVIEW_RECORD_BACKFILL: "true"
         run: |
           set -euo pipefail
           source scripts/apply-workflow-helpers.sh
           mkdir -p .artifacts/review-record-backfill
           output=".artifacts/review-record-backfill/$TARGET_SLUG.json"
-          limit_args=()
+          write_args=()
           if [ -n "$WRITE_LIMIT" ]; then
-            limit_args=(--limit "$WRITE_LIMIT")
+            write_args+=(--limit "$WRITE_LIMIT")
+          fi
+          if [ "$INCLUDE_LOSSY" = "true" ]; then
+            write_args+=(--include-lossy)
           fi
           begin_canonical_record_mutation
           node dist/clawsweeper.js backfill-review-records \
             --records-dir "records/$TARGET_SLUG" \
             --output "$output" \
             --write \
-            "${limit_args[@]}"
+            "${write_args[@]}"
           changed_records="$(jq -c '{changedRecordFiles}' "$output")"
           publish_log=".artifacts/review-record-backfill/$TARGET_SLUG-publish.log"
           publish_reconciled_records "chore: backfill review records" "$changed_records" 2>&1 | tee "$publish_log"

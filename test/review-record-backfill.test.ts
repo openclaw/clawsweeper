@@ -439,6 +439,127 @@ function runBackfill(recordsDir: string, output: string, extra: string[]) {
   return JSON.parse(readFileSync(output, "utf8"));
 }
 
+test("lossy dry-runs report per-field counts and at most five samples without writing", () => {
+  const root = mkdtempSync(tmpPrefix);
+  try {
+    const recordsDir = join(root, "records", "openclaw-openclaw");
+    mkdirSync(join(recordsDir, "items"), { recursive: true });
+    const report = legacyReport(
+      parseDecision(closeDecision({ decision: "keep_open", closeReason: "none" }), pullRequest),
+    )
+      .replace(
+        "\n  - repo: openclaw/openclaw\n",
+        "\n  - repo: openclaw/openclaw\n  - note: old evidence detail\n",
+      )
+      .replace(
+        /\n## Likely Related People\n\n[\s\S]*?\n\n(?=## )/,
+        [
+          "\n## Likely Related People\n",
+          "- **alice:** introduced behavior",
+          "  - reason: git blame points the relevant implementation line at abcdef1234567890.",
+          "  - confidence: high",
+          "  - commits: abcdef1234567890",
+          "  - files: src/example.ts",
+          "  - note: old owner detail\n\n",
+        ].join("\n"),
+      );
+    assert.equal(backfillReviewRecord(report).status, "lossy");
+    for (let number = 1; number <= 6; number++) {
+      writeFileSync(join(recordsDir, "items", `${number}.md`), report);
+    }
+    const summary = runBackfill(recordsDir, join(root, "dry-run.json"), ["--include-lossy"]);
+    assert.equal(summary.counts.lossy, 6);
+    assert.deepEqual(summary.changedFields, { "## Evidence": 6, "## Likely Related People": 6 });
+    for (const field of Object.keys(summary.changedFields)) {
+      const samples = summary.differenceSamples.filter(
+        (sample: { field: string }) => sample.field === field,
+      );
+      assert.equal(samples.length, 5, field);
+      for (const sample of samples) {
+        assert.match(sample.stored, /old (evidence|owner) detail/);
+        assert.doesNotMatch(sample.rendered, /old (evidence|owner) detail/);
+      }
+    }
+    for (let number = 1; number <= 6; number++) {
+      assert.equal(readFileSync(join(recordsDir, "items", `${number}.md`), "utf8"), report);
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("--write --include-lossy preserves text, records the parsed decision and is retryable", () => {
+  const root = mkdtempSync(tmpPrefix);
+  try {
+    const recordsDir = join(root, "records", "openclaw-openclaw");
+    mkdirSync(join(recordsDir, "items"), { recursive: true });
+    const report = legacyReport(
+      parseDecision(closeDecision({ decision: "keep_open", closeReason: "none" }), pullRequest),
+    ).replace(
+      "\n  - repo: openclaw/openclaw\n",
+      "\n  - repo: openclaw/openclaw\n  - note: old evidence detail\n",
+    );
+    const invalid = withReviewRecord(lowSignalCloseReport({ number: 9 })).replace(
+      /^review_record: \{/m,
+      "review_record: [",
+    );
+    const unparseable = lowSignalCloseReport({ number: 8 }).replace(/^decision: .*\n/m, "");
+    for (const [number, markdown] of [
+      [42, report],
+      [43, report],
+      [9, invalid],
+      [8, unparseable],
+    ] as const) {
+      writeFileSync(join(recordsDir, "items", `${number}.md`), markdown);
+    }
+    const args = ["--write", "--include-lossy", "--canonical-record-baseline-dir"];
+    const first = runBackfill(recordsDir, join(root, "first.json"), [
+      ...args,
+      join(root, "baseline-1"),
+      "--limit",
+      "1",
+    ]);
+    assert.equal(first.written, 1);
+    assert.deepEqual(first.changedRecordFiles, ["42.md"]);
+    const second = runBackfill(recordsDir, join(root, "second.json"), [
+      ...args,
+      join(root, "baseline-2"),
+    ]);
+    assert.equal(second.written, 1);
+    assert.deepEqual(second.changedRecordFiles, ["43.md"]);
+    for (const [number, baseline] of [
+      [42, "baseline-1"],
+      [43, "baseline-2"],
+    ] as const) {
+      const stored = readFileSync(join(recordsDir, "items", `${number}.md`), "utf8");
+      assert.equal(stored.replace(/^review_record: .*\n/m, ""), report);
+      const record = readReviewRecord(stored)!;
+      assert.doesNotMatch(legacyReport(record.decision), /old evidence detail/);
+      assert.equal(record.origin, "backfill");
+      assert.deepEqual(record.decision, recordDecision(report));
+      assert.doesNotMatch(JSON.stringify(record), /old evidence detail/);
+      assert.equal(
+        readFileSync(
+          join(root, baseline, "records", "openclaw-openclaw", "items", `${number}.md`),
+          "utf8",
+        ),
+        report,
+      );
+    }
+    assert.equal(readFileSync(join(recordsDir, "items", "9.md"), "utf8"), invalid);
+    assert.equal(readFileSync(join(recordsDir, "items", "8.md"), "utf8"), unparseable);
+    const third = runBackfill(recordsDir, join(root, "third.json"), [
+      ...args,
+      join(root, "baseline-3"),
+    ]);
+    assert.equal(third.written, 0);
+    assert.equal(third.counts.typed, 2);
+    assert.equal(existsSync(join(root, "baseline-3")), false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("backfill-review-records --write adds the record to lossless and filled reports only, once", () => {
   const root = mkdtempSync(tmpPrefix);
   try {
@@ -564,7 +685,11 @@ test("the backfill does not write a report that changed after classification", (
     mkdirSync(join(recordsDir, "items"), { recursive: true });
     const classified = legacyReport(
       parseDecision(closeDecision({ decision: "keep_open", closeReason: "none" }), pullRequest),
+    ).replace(
+      "\n  - repo: openclaw/openclaw\n",
+      "\n  - repo: openclaw/openclaw\n  - note: old evidence detail\n",
     );
+    assert.equal(backfillReviewRecord(classified).status, "lossy");
     writeFileSync(join(recordsDir, "items", "42.md"), classified);
     const result = backfillReviewRecord(classified);
     assert.ok("markdown" in result);
@@ -614,140 +739,159 @@ test("backfill-review-records --write needs a canonical baseline directory", () 
   }
 });
 
-test("the write job publishes the written tuples with compare-and-swap and keeps a newer review", async () => {
-  const workflow = parse(readFileSync(".github/workflows/review-record-backfill.yml", "utf8"));
-  assert.equal(workflow.on.workflow_dispatch.inputs.mode.default, "dry-run");
-  assert.equal(workflow.jobs["dry-run"].if, "${{ inputs.mode == 'dry-run' }}");
-  assert.equal(workflow.jobs.write.if, "${{ inputs.mode == 'write' }}");
-  type Step = { uses?: string; name?: string; run?: string };
-  const steps: Step[] = workflow.jobs.write.steps;
-  const setupState = steps.findIndex((step) => step.uses === "./.github/actions/setup-state");
-  const writeStep = steps.findIndex((step) => step.name === "Write and publish review records");
-  assert.ok(setupState >= 0 && setupState < writeStep);
-  assert.equal(
-    (workflow.jobs["dry-run"].steps as Step[]).some((step) => step.uses?.includes("setup-state")),
-    false,
-  );
-
-  const root = mkdtempSync(tmpPrefix);
-  const recordsDir = join(root, "records", "openclaw-openclaw");
-  const reportFor = (number: number) => {
-    const subject = item({ kind: "pull_request", number });
-    return legacyReport(
-      parseDecision(closeDecision({ decision: "keep_open", closeReason: "none" }), subject),
-      subject,
+for (const includeLossy of [false, true]) {
+  test(`the write job publishes with include_lossy=${includeLossy} and keeps a newer review`, async () => {
+    const workflow = parse(readFileSync(".github/workflows/review-record-backfill.yml", "utf8"));
+    assert.equal(workflow.on.workflow_dispatch.inputs.mode.default, "dry-run");
+    assert.equal(workflow.on.workflow_dispatch.inputs.include_lossy.type, "boolean");
+    assert.equal(workflow.on.workflow_dispatch.inputs.include_lossy.default, false);
+    assert.equal(workflow.jobs["dry-run"].if, "${{ inputs.mode == 'dry-run' }}");
+    assert.equal(workflow.jobs.write.if, "${{ inputs.mode == 'write' }}");
+    type Step = { uses?: string; name?: string; run?: string; env?: Record<string, string> };
+    const steps: Step[] = workflow.jobs.write.steps;
+    const setupState = steps.findIndex((step) => step.uses === "./.github/actions/setup-state");
+    const writeStep = steps.findIndex((step) => step.name === "Write and publish review records");
+    assert.equal(steps[writeStep]!.env?.INCLUDE_LOSSY, "${{ inputs.include_lossy }}");
+    assert.equal(
+      (workflow.jobs["dry-run"].steps as Step[]).some((step) =>
+        step.run?.includes("--include-lossy"),
+      ),
+      false,
     );
-  };
-  const lossless = reportFor(11);
-  // A fresh review rewrites 12 after hydration, so the Worker rejects its tuple.
-  const reviewed = withReviewRecord(lowSignalCloseReport({ number: 12 }));
-  const lossy = reportFor(13).replace(
-    "\n  - repo: openclaw/openclaw\n",
-    "\n  - repo: openclaw/openclaw\n  - note: kept by an older writer\n",
-  );
-  const requests: Array<Record<string, any>> = [];
-  const server = createServer((request, response) => {
-    let body = "";
-    request.on("data", (chunk) => (body += chunk));
-    request.on("end", () => {
-      const mutation = JSON.parse(body);
-      requests.push({ url: request.url, ...mutation });
-      if (mutation.key === "openclaw-openclaw/12") {
-        response.writeHead(409, { "content-type": "application/json" });
-        response.end(
-          JSON.stringify({
-            ok: false,
-            error: "canonical_record_tuple_conflict",
-            current: {
-              key: mutation.key,
-              revision: 7,
-              deliveryId: null,
-              operations: mutation.operations.map((operation: { path: string }) =>
-                operation.path.endsWith("/items/12.md")
-                  ? {
-                      path: operation.path,
-                      expectedDigest: sha256(reviewed),
-                      contentBase64: Buffer.from(reviewed).toString("base64"),
-                    }
-                  : { path: operation.path, expectedDigest: null },
-              ),
-            },
-          }),
-        );
-        return;
-      }
-      response.writeHead(200, { "content-type": "application/json" });
-      response.end(JSON.stringify({ ok: true, revision: requests.length }));
+    assert.ok(setupState >= 0 && setupState < writeStep);
+    assert.equal(
+      (workflow.jobs["dry-run"].steps as Step[]).some((step) => step.uses?.includes("setup-state")),
+      false,
+    );
+
+    const root = mkdtempSync(tmpPrefix);
+    const recordsDir = join(root, "records", "openclaw-openclaw");
+    const reportFor = (number: number) => {
+      const subject = item({ kind: "pull_request", number });
+      return legacyReport(
+        parseDecision(closeDecision({ decision: "keep_open", closeReason: "none" }), subject),
+        subject,
+      );
+    };
+    const lossless = reportFor(11);
+    // A fresh review rewrites 12 after hydration, so the Worker rejects its tuple.
+    const reviewed = withReviewRecord(lowSignalCloseReport({ number: 12 }));
+    const lossy = reportFor(13).replace(
+      "\n  - repo: openclaw/openclaw\n",
+      "\n  - repo: openclaw/openclaw\n  - note: kept by an older writer\n",
+    );
+    const requests: Array<Record<string, any>> = [];
+    const server = createServer((request, response) => {
+      let body = "";
+      request.on("data", (chunk) => (body += chunk));
+      request.on("end", () => {
+        const mutation = JSON.parse(body);
+        requests.push({ url: request.url, ...mutation });
+        if (mutation.key === "openclaw-openclaw/12") {
+          response.writeHead(409, { "content-type": "application/json" });
+          response.end(
+            JSON.stringify({
+              ok: false,
+              error: "canonical_record_tuple_conflict",
+              current: {
+                key: mutation.key,
+                revision: 7,
+                deliveryId: null,
+                operations: mutation.operations.map((operation: { path: string }) =>
+                  operation.path.endsWith("/items/12.md")
+                    ? {
+                        path: operation.path,
+                        expectedDigest: sha256(reviewed),
+                        contentBase64: Buffer.from(reviewed).toString("base64"),
+                      }
+                    : { path: operation.path, expectedDigest: null },
+                ),
+              },
+            }),
+          );
+          return;
+        }
+        response.writeHead(200, { "content-type": "application/json" });
+        response.end(JSON.stringify({ ok: true, revision: requests.length }));
+      });
     });
-  });
-  await new Promise<void>((done) => server.listen(0, "127.0.0.1", done));
-  try {
-    mkdirSync(join(recordsDir, "items"), { recursive: true });
-    writeFileSync(join(recordsDir, "items", "11.md"), lossless);
-    writeFileSync(join(recordsDir, "items", "12.md"), reportFor(12));
-    writeFileSync(join(recordsDir, "items", "13.md"), lossy);
-    symlinkSync(resolve("scripts"), join(root, "scripts"));
-    const address = server.address();
-    assert.ok(address && typeof address === "object");
-    const { stdout } = await promisify(execFile)(
-      "bash",
-      [
-        "-c",
+    await new Promise<void>((done) => server.listen(0, "127.0.0.1", done));
+    try {
+      mkdirSync(join(recordsDir, "items"), { recursive: true });
+      writeFileSync(join(recordsDir, "items", "11.md"), lossless);
+      writeFileSync(join(recordsDir, "items", "12.md"), reportFor(12));
+      writeFileSync(join(recordsDir, "items", "13.md"), lossy);
+      symlinkSync(resolve("scripts"), join(root, "scripts"));
+      const address = server.address();
+      assert.ok(address && typeof address === "object");
+      const { stdout } = await promisify(execFile)(
+        "bash",
         [
-          // The job runs from the checkout; here the records are in a temporary
-          // directory, so node runs the built entry points of this checkout.
-          'node() { local script="$1"; shift; command node "$CHECKOUT/$script" "$@"; }',
-          'pnpm() { shift 3; node dist/repair/publish-main.js "$@"; }',
-          steps[writeStep]!.run!,
-        ].join("\n"),
-      ],
-      {
-        cwd: root,
-        env: {
-          ...process.env,
-          CLAWSWEEPER_WEBHOOK_SECRET: "secret",
-          QUEUE_URL: `http://127.0.0.1:${address.port}`,
-          TARGET_REPO: "openclaw/openclaw",
-          TARGET_SLUG: "openclaw-openclaw",
-          WRITE_LIMIT: "",
-          CHECKOUT: process.cwd(),
+          "-c",
+          [
+            // The job runs from the checkout; here the records are in a temporary
+            // directory, so node runs the built entry points of this checkout.
+            'node() { local script="$1"; shift; command node "$CHECKOUT/$script" "$@"; }',
+            'pnpm() { shift 3; node dist/repair/publish-main.js "$@"; }',
+            steps[writeStep]!.run!,
+          ].join("\n"),
+        ],
+        {
+          cwd: root,
+          env: {
+            ...process.env,
+            CLAWSWEEPER_WEBHOOK_SECRET: "secret",
+            QUEUE_URL: `http://127.0.0.1:${address.port}`,
+            TARGET_REPO: "openclaw/openclaw",
+            TARGET_SLUG: "openclaw-openclaw",
+            WRITE_LIMIT: "",
+            INCLUDE_LOSSY: String(includeLossy),
+            CHECKOUT: process.cwd(),
+          },
         },
-      },
-    );
+      );
 
-    const written = readFileSync(join(recordsDir, "items", "11.md"), "utf8");
-    assert.equal(readReviewRecord(written)?.origin, "backfill");
-    assert.equal(readFileSync(join(recordsDir, "items", "12.md"), "utf8"), reviewed);
-    assert.equal(readFileSync(join(recordsDir, "items", "13.md"), "utf8"), lossy);
-    assert.match(
-      stdout,
-      /^written=2 changedSinceClassification=0 skippedByCanonicalCompareAndSwap=1 /m,
-    );
-    assert.deepEqual(
-      requests.map((request) => request.key),
-      ["openclaw-openclaw/11", "openclaw-openclaw/12"],
-    );
-    const [tuple] = requests;
-    assert.equal(tuple!.url, "/internal/state/records/tuples");
-    assert.match(tuple!.deliveryId, /^record-reconcile:openclaw-openclaw:11:/);
-    const operations = Object.fromEntries(
-      tuple!.operations.map((operation: Record<string, string | null>) => [
-        operation.path,
-        operation,
-      ]),
-    );
-    const item11 = operations["records/openclaw-openclaw/items/11.md"];
-    assert.equal(item11.expectedDigest, sha256(lossless));
-    assert.equal(Buffer.from(item11.contentBase64, "base64").toString("utf8"), written);
-    for (const path of [
-      "records/openclaw-openclaw/closed/11.md",
-      "records/openclaw-openclaw/plans/11.md",
-      "records/openclaw-openclaw/decision-packets/11.json",
-    ]) {
-      assert.deepEqual(operations[path], { path, expectedDigest: null });
+      const written = readFileSync(join(recordsDir, "items", "11.md"), "utf8");
+      assert.equal(readReviewRecord(written)?.origin, "backfill");
+      assert.equal(readFileSync(join(recordsDir, "items", "12.md"), "utf8"), reviewed);
+      const storedLossy = readFileSync(join(recordsDir, "items", "13.md"), "utf8");
+      assert.equal(storedLossy.replace(/^review_record: .*\n/m, ""), lossy);
+      assert.equal(readReviewRecord(storedLossy)?.origin, includeLossy ? "backfill" : undefined);
+      assert.match(
+        stdout,
+        new RegExp(
+          `^written=${includeLossy ? 3 : 2} changedSinceClassification=0 skippedByCanonicalCompareAndSwap=1 `,
+          "m",
+        ),
+      );
+      assert.deepEqual(
+        requests.map((request) => request.key).sort(),
+        includeLossy
+          ? ["openclaw-openclaw/11", "openclaw-openclaw/12", "openclaw-openclaw/13"]
+          : ["openclaw-openclaw/11", "openclaw-openclaw/12"],
+      );
+      const [tuple] = requests;
+      assert.equal(tuple!.url, "/internal/state/records/tuples");
+      assert.match(tuple!.deliveryId, /^record-reconcile:openclaw-openclaw:11:/);
+      const operations = Object.fromEntries(
+        tuple!.operations.map((operation: Record<string, string | null>) => [
+          operation.path,
+          operation,
+        ]),
+      );
+      const item11 = operations["records/openclaw-openclaw/items/11.md"];
+      assert.equal(item11.expectedDigest, sha256(lossless));
+      assert.equal(Buffer.from(item11.contentBase64, "base64").toString("utf8"), written);
+      for (const path of [
+        "records/openclaw-openclaw/closed/11.md",
+        "records/openclaw-openclaw/plans/11.md",
+        "records/openclaw-openclaw/decision-packets/11.json",
+      ]) {
+        assert.deepEqual(operations[path], { path, expectedDigest: null });
+      }
+    } finally {
+      server.close();
+      rmSync(root, { recursive: true, force: true });
     }
-  } finally {
-    server.close();
-    rmSync(root, { recursive: true, force: true });
-  }
-});
+  });
+}
