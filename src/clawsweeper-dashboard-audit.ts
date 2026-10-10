@@ -232,7 +232,10 @@ export function createDashboardAudit(dependencies: CreateDashboardAuditDependenc
     const markdown = readFileSync(path, "utf8");
     const repo = markdownRepository(markdown, file);
     const review = reportReviewDecision(markdown);
-    return {
+    // Metadata readers return V8 string slices. Detach the small audit projection
+    // before retaining it, or each title/timestamp pins the entire report (including
+    // its typed review_record and evidence) for the lifetime of the corpus scan.
+    return structuredClone({
       repo,
       number: numberForMarkdownFile(file),
       location,
@@ -247,7 +250,7 @@ export function createDashboardAudit(dependencies: CreateDashboardAuditDependenc
       action: frontMatterValue(markdown, "action_taken"),
       reviewStatus: effectiveReviewStatus(markdown),
       currentState: frontMatterValue(markdown, "current_state"),
-    };
+    });
   }
 
   function auditRecords(location: AuditRecordLocation, dir: string): AuditRecord[] {

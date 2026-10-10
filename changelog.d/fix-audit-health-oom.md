@@ -1,0 +1,1 @@
+- Keep audit health scans from retaining full report bodies through metadata string slices, avoiding heap exhaustion on large report corpora.

@@ -141,6 +141,82 @@ test("audit records prefer typed decision, confidence and close reason without r
   }
 });
 
+test("audit projection preserves metadata and output while filtering other repositories", (t) => {
+  const f = fixture(t);
+  const reviewedAt = "2026-08-01T12:00:00.000Z";
+  const typed = withReviewRecord(
+    report(42, {
+      title: "Unicode audit title: café 漢字",
+      labels: '["audit-label-long-enough-to-slice","bug"]',
+      reviewed_at: reviewedAt,
+      decision: "keep_open",
+      confidence: "low",
+      close_reason: "legacy_reason",
+      action_taken: "proposed_close",
+      current_state: "open",
+    }),
+    { decision: "close", confidence: "medium", closeReason: "implemented_on_main" },
+  );
+  const legacy = report(43, {
+    reviewed_at: reviewedAt,
+    decision: "keep_open",
+    confidence: "high",
+    close_reason: "none",
+    current_state: "open",
+  });
+  f.put(42, typed);
+  f.put(43, legacy);
+  f.put(42, typed, true);
+  f.put(90, report(90, { repository: "openclaw/clawsweeper" }));
+  f.put(91, report(91, { repository: "openclaw/clawsweeper" }), true);
+
+  const before = f.auditResult();
+  assert.equal(before.counts.itemRecords, 2);
+  assert.equal(before.counts.closedRecords, 1);
+  const typedFinding = {
+    number: 42,
+    kind: "issue",
+    title: "Unicode audit title: café 漢字",
+    labels: ["audit-label-long-enough-to-slice", "bug"],
+    action: "proposed_close",
+    decision: "close",
+    closeReason: "implemented_on_main",
+    confidence: "medium",
+    reviewedAt,
+    reviewStatus: "complete",
+    currentState: "open",
+    itemPath: join("items", "42.md"),
+  };
+  assert.deepEqual(before.findings.staleItemRecords, [
+    typedFinding,
+    {
+      number: 43,
+      kind: "issue",
+      title: "Item 43",
+      labels: [],
+      action: "kept_open",
+      decision: "keep_open",
+      closeReason: "none",
+      confidence: "high",
+      reviewedAt,
+      reviewStatus: "complete",
+      currentState: "open",
+      itemPath: join("items", "43.md"),
+    },
+  ]);
+  assert.deepEqual(before.findings.duplicateRecords, [
+    { ...typedFinding, closedPath: join("closed", "42.md") },
+  ]);
+
+  const body = `\n## Evidence\n\n${"Unrelated report evidence. ".repeat(4096)}`;
+  f.put(42, typed + body);
+  f.put(43, legacy + body);
+  f.put(42, typed + body, true);
+  const after = f.auditResult();
+  // The timestamp is the only output field that depends on when audit runs.
+  assert.deepEqual({ ...after, generatedAt: null }, { ...before, generatedAt: null });
+});
+
 test("dashboard outcomes, work queue priority and recent closes prefer the review record", (t) => {
   const f = fixture(t);
   f.put(42, withReviewRecord(report(42, { action_taken: "proposed_close" })));
