@@ -56,9 +56,11 @@ type RunOptions = {
   maintainerComment?: boolean;
   recentHumanComment?: boolean;
   report?: (report: string) => string;
+  storedReport?: (report: string) => string;
+  dryRun?: boolean;
 };
 
-function staleVersionGhMock(reviewComment: string, options: RunOptions) {
+function staleVersionGhMock(reviewComment: string, options: RunOptions, callLogPath: string) {
   const comments: unknown[] = [
     {
       id: 9321,
@@ -91,6 +93,7 @@ function staleVersionGhMock(reviewComment: string, options: RunOptions) {
   }
   return `
 const rawArgs = process.argv.slice(2);
+require("node:fs").appendFileSync(${JSON.stringify(callLogPath)}, JSON.stringify(rawArgs) + "\\n");
 const args = rawArgs[0] === "--repo" ? rawArgs.slice(2) : rawArgs;
 const path = args[1] || "";
 const comments = ${JSON.stringify(comments)};
@@ -142,17 +145,19 @@ function runStaleVersionApply(options: RunOptions = {}) {
     const plansDir = join(root, "plans");
     const reportPath = join(root, "apply-report.json");
     mkdirSync(itemsDir, { recursive: true });
+    const callLogPath = join(root, "gh-calls.jsonl");
     mkdirSync(plansDir, { recursive: true });
     const synced = reportWithSyncedReviewComment(
       (options.report ?? ((report) => report))(staleVersionReport()),
       321,
       "stale_version_bug",
     );
-    writeFileSync(join(itemsDir, "321.md"), synced.report, "utf8");
+    const storedReport = options.storedReport?.(synced.report) ?? synced.report;
+    writeFileSync(join(itemsDir, "321.md"), storedReport, "utf8");
     if (options.enabled === false) delete process.env.CLAWSWEEPER_STALE_VERSION_BUG_CLOSE_ENABLED;
     else process.env.CLAWSWEEPER_STALE_VERSION_BUG_CLOSE_ENABLED = "true";
 
-    withMockGh(root, staleVersionGhMock(synced.comment, options), () => {
+    withMockGh(root, staleVersionGhMock(synced.comment, options, callLogPath), () => {
       runApplyDecisionsForTest({
         targetRepo: "openclaw/openclaw",
         itemsDir,
@@ -160,7 +165,7 @@ function runStaleVersionApply(options: RunOptions = {}) {
         plansDir,
         reportPath,
         extraArgs: [
-          "--dry-run",
+          ...(options.dryRun === false ? [] : ["--dry-run"]),
           "--apply-kind",
           "issue",
           "--apply-close-reasons",
@@ -177,6 +182,13 @@ function runStaleVersionApply(options: RunOptions = {}) {
       }>,
       comment: synced.comment,
       closed: existsSync(join(closedDir, "321.md")),
+      report: readFileSync(join(itemsDir, "321.md"), "utf8"),
+      ghCalls: existsSync(callLogPath)
+        ? readFileSync(callLogPath, "utf8")
+            .trim()
+            .split("\n")
+            .map((line) => JSON.parse(line))
+        : [],
     };
   } finally {
     if (previous === undefined) delete process.env.CLAWSWEEPER_STALE_VERSION_BUG_CLOSE_ENABLED;
@@ -213,11 +225,10 @@ test("stale-version bug apply reads the item category from the review record", (
 
 test("a review record that does not read keeps the item open for a fresh review", () => {
   const result = runStaleVersionApply({
+    dryRun: false,
     report: (report) =>
-      withReviewRecord(report, { closeReason: "stale_version_bug", itemCategory: "bug" }).replace(
-        /^review_record: \{/m,
-        "review_record: {broken",
-      ),
+      withReviewRecord(report, { closeReason: "stale_version_bug", itemCategory: "bug" }),
+    storedReport: (report) => report.replace(/^review_record: \{/m, "review_record: {broken"),
   });
   assert.deepEqual(
     result.entries.map((entry) => [entry.action, entry.reason]),
@@ -229,6 +240,8 @@ test("a review record that does not read keeps the item open for a fresh review"
     ],
   );
   assert.equal(result.closed, false);
+  assert.match(result.report, /^action_taken: skipped_changed_since_review$/m);
+  assert.deepEqual(result.ghCalls, []);
 });
 
 for (const [name, options, message] of [
