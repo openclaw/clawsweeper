@@ -1,0 +1,46 @@
+{
+  "claim": "materializeWorkerRecords hydrates a journal delta larger than the heap by writing each export page to disk",
+  "surface": "real scripts/worker-records.ts materializeWorkerRecords (stored snapshot download, journal export, staging, manifest) with a fixture Worker fetch",
+  "scenario": {
+    "heapCapMiB": 384,
+    "deltaRecords": 2400,
+    "recordKiB": 512,
+    "recordsPerPage": 4,
+    "journalMiB": 1200
+  },
+  "node": "v24.21.0",
+  "runs": [
+    {
+      "label": "base",
+      "commit": "acf20cfb6129d683aa2c1a6c8bd36a4b3dcef2c9",
+      "exitCode": null,
+      "signal": "SIGABRT",
+      "heapOutOfMemory": true,
+      "summary": null,
+      "stderrTail": [
+        "48: 0x1093be0dc node::NodeMainInstance::Run() [/opt/homebrew/Cellar/node@24/24.21.0_2/lib/libnode.137.dylib]",
+        "49: 0x10935892c node::Start(int, char**) [/opt/homebrew/Cellar/node@24/24.21.0_2/lib/libnode.137.dylib]",
+        "50: 0x1843f7e80 start [/usr/lib/dyld]"
+      ]
+    },
+    {
+      "label": "candidate",
+      "commit": "ba584b66c05295d4f6d25eb192c1971b7a6e7759",
+      "exitCode": 0,
+      "signal": null,
+      "heapOutOfMemory": false,
+      "summary": {
+        "outcome": "hydrated",
+        "materializedFiles": 2401,
+        "deltaRecords": 2400,
+        "sampledExactContents": "3/3",
+        "exportRequests": 600,
+        "journalBytes": 1258291200,
+        "peakHeapMiB": 53,
+        "elapsedMs": 8356
+      },
+      "stderrTail": []
+    }
+  ],
+  "limits": "synthetic records and fixture Worker responses; production pages are byte-bounded (~2 MiB) by the export route, approximated here by 4 x 512 KiB records per page"
+}
