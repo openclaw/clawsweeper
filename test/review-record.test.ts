@@ -104,6 +104,23 @@ const runnerFields = {
   },
 } as const;
 
+test("version-1 records retain host-owned owner and policy fields", () => {
+  const decision = modelDecision();
+  decision.likelyOwners[0]!.reason =
+    "Raw commit abc adds src/runtime.ts:42 relative to its recorded parents.";
+  decision.maintainerDecision.likelyOwner.confidence = "high";
+  decision.agentsPolicyStatus = {
+    status: "found_applied",
+    found: true,
+    readFully: true,
+    applied: true,
+    summary: "The complete repository policy was applied.",
+  };
+  const markdown = report(decision);
+  assert.equal(storedRecord(markdown).version, 1);
+  assert.deepEqual(readReviewRecord(markdown)?.decision, decision);
+});
+
 test("review reports store the typed decision and read it back unchanged", () => {
   const size = {
     threshold: 5000,

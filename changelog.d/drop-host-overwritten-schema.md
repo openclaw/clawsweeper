@@ -1,0 +1,1 @@
+- Stop asking the review model for host-owned owner explanations and redundant AGENTS.md policy fields; preserve host-projected attribution, legacy reports, and version-1 review records, and invalidate cached reviews for the slimmer schema.

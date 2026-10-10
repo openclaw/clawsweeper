@@ -103,6 +103,7 @@ import { parseNextStep } from "./clawsweeper-next-step.js";
 import { parseMaintainerDecision } from "./decision-packets.js";
 import { normalizeRepo } from "./repository-profiles.js";
 import {
+  agentsPolicyStatusLine,
   neutralizeOwnedSectionSpoofing,
   sanitizeArchitectureDiagram,
 } from "./clawsweeper-report-helpers.js";
@@ -449,7 +450,7 @@ export function createDecisionParser({
       ...(record.history === undefined ? {} : { history: history ?? null }),
       person: requireReportText(record.person, `${path}.person`),
       role: requireReportText(record.role, `${path}.role`),
-      reason: requireReportText(record.reason, `${path}.reason`),
+      reason: source === "model" ? "" : requireReportText(record.reason, `${path}.reason`),
       commits: requireSingleLineStringArray(record.commits, `${path}.commits`),
       files: requireSingleLineStringArray(record.files, `${path}.files`),
       confidence: requireEnum(record.confidence, CONFIDENCES, `${path}.confidence`),
@@ -916,9 +917,25 @@ export function createDecisionParser({
     }
   }
 
-  function parseAgentsPolicyStatus(value: unknown, path: string): AgentsPolicyStatus {
+  function parseAgentsPolicyStatus(
+    value: unknown,
+    path: string,
+    source: "model" | "stored",
+  ): AgentsPolicyStatus {
     const record = requireRecord(value, path);
     rejectUnexpectedKeys(record, AGENTS_POLICY_STATUS_SCHEMA_KEYS, path);
+    if (source === "model") {
+      const status = requireEnum(record.status, AGENTS_POLICY_STATUSES, `${path}.status`);
+      const policy = {
+        status,
+        found: status !== "not_found",
+        readFully: status !== "not_found" && status !== "unreadable_or_unclear",
+        applied: status === "found_applied",
+        summary: "",
+      };
+      policy.summary = agentsPolicyStatusLine(policy);
+      return policy;
+    }
     return {
       found: requireBoolean(record.found, `${path}.found`),
       readFully: requireBoolean(record.readFully, `${path}.readFully`),
@@ -1026,6 +1043,7 @@ export function createDecisionParser({
     const maintainerDecision = parseMaintainerDecision(
       record.maintainerDecision,
       "decision.maintainerDecision",
+      source,
     );
     const productReview = parseProductReview(record.productReview, "decision.productReview");
     const provenance = parseProvenance(record.provenance, "decision.provenance");
@@ -1130,6 +1148,7 @@ export function createDecisionParser({
       agentsPolicyStatus: parseAgentsPolicyStatus(
         record.agentsPolicyStatus,
         "decision.agentsPolicyStatus",
+        source,
       ),
       productReview,
       provenance,
