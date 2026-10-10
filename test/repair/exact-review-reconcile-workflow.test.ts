@@ -305,7 +305,7 @@ test("guard main fails open on the aggregate deadline and both API error paths",
 });
 
 test("audit coverage refreshes inventory tokens after dispatching the waves", () => {
-  const workflow = parse(readFileSync(".github/workflows/sweep.yml", "utf8"));
+  const workflow = parse(readFileSync(".github/workflows/target-fanout.yml", "utf8"));
   const steps = workflow.jobs["target-fanout"].steps;
   const dispatch = steps.findIndex((step: any) => step.name === "Dispatch selected targets");
   const coverage = steps.findIndex(

@@ -4,7 +4,7 @@ import test from "node:test";
 import { parse } from "yaml";
 
 test("only normal-review fanout uses identities; hot intake skips preflight and audit retains hydration", () => {
-  const workflow = parse(readFileSync(".github/workflows/sweep.yml", "utf8"));
+  const workflow = parse(readFileSync(".github/workflows/target-fanout.yml", "utf8"));
   const fanout = workflow.jobs["target-fanout"];
   const full = fanout.steps.find(
     (step: { uses?: string }) => step.uses === "./.github/actions/setup-state",
@@ -43,12 +43,10 @@ test("only normal-review fanout uses identities; hot intake skips preflight and 
     "${{ github.event.schedule == '37 */6 * * *' && '.artifacts/worker-records-manifest.json' || '.artifacts/worker-coverage-manifest.json' }}",
   );
   assert.match(dispatch.run, /--coverage-tracked-items-manifest "\$COVERAGE_MANIFEST"/);
-  const otherHydrations = Object.entries(workflow.jobs).flatMap(([name, job]) =>
-    name === "target-fanout"
-      ? []
-      : ((job as { steps?: Array<{ uses?: string; name?: string }> }).steps ?? []).filter((step) =>
-          step.uses?.endsWith("/.github/actions/setup-state"),
-        ),
+  const sweep = parse(readFileSync(".github/workflows/sweep.yml", "utf8"));
+  const jobs = Object.values<{ steps?: Array<{ uses?: string; name?: string }> }>(sweep.jobs);
+  const otherHydrations = jobs.flatMap((job) =>
+    (job.steps ?? []).filter((step) => step.uses?.endsWith("/.github/actions/setup-state")),
   );
   assert.ok(otherHydrations.length >= 5);
   assert.ok(otherHydrations.every((step) => step.name !== "Prepare canonical coverage identities"));

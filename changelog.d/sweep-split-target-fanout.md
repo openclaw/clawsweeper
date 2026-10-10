@@ -1,0 +1,1 @@
+- Move scheduled target fanout from `sweep.yml` to `target-fanout.yml`, preserving its schedules, concurrency, admission gate, permissions, environment and steps. Review planning, audit dispatch destinations and apply lanes stay in `sweep.yml`.

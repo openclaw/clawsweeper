@@ -44,7 +44,7 @@ test("state hydration retains canonical defaults with an explicit operational-on
 test("per-target state hydration is slug-scoped while fleet lanes retain discovery", () => {
   // Hydrating records without a slug pulls every target's records; only the fleet fan-out
   // needs that, so a new record-hydrating lane must scope itself to its target.
-  const fleetRecordLane = ".github/workflows/sweep.yml:target-fanout";
+  const fleetRecordLane = ".github/workflows/target-fanout.yml:target-fanout";
   const setups = setupStateSites();
   assert.ok(setups.length > 0, "no setup-state sites found");
 

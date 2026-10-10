@@ -556,7 +556,8 @@ through the separate `apply_existing` lane and its existing apply controls.
 
 Target fanout dispatches review batches through `repository_dispatch` so each
 selected repository can carry its inventory default branch without consuming
-manual workflow inputs. Scheduled fanout uses:
+manual workflow inputs. Scheduled fanout runs in `.github/workflows/target-fanout.yml`
+and continues dispatching review and audit work to `sweep.yml`. Its schedules are:
 
 - hot intake: `4/20 * * * *`, 20 target repositories per cursor step. This
   20-minute cadence is temporary containment for scheduled self-feedback;

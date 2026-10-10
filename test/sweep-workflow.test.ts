@@ -4991,7 +4991,7 @@ test("apply workflow drops a coverage-proof tail only after exact trace examinat
 // Fanout inventory tokens can read repository metadata only.
 test("target fanout inventory tokens read only repository metadata", () => {
   type Step = { name?: string; uses?: string; with?: Record<string, string> };
-  const workflow = YAML.parse(readText(".github/workflows/sweep.yml")) as {
+  const workflow = YAML.parse(readText(".github/workflows/target-fanout.yml")) as {
     jobs: Record<string, { steps: Step[] }>;
   };
   const tokens = workflow.jobs["target-fanout"]!.steps.filter((step) =>
@@ -5420,7 +5420,10 @@ if (args[0] === "api" && /\\/issues\\/${number}$/.test(path)) {
 });
 
 test("audit target fanout waits in bounded waves without changing cadence or selection", () => {
-  const workflow = YAML.parse(readText(".github/workflows/sweep.yml")) as Record<string, any>;
+  const workflow = YAML.parse(readText(".github/workflows/target-fanout.yml")) as Record<
+    string,
+    any
+  >;
   const fanout = workflow.jobs["target-fanout"];
   const dispatch = fanout.steps.find((step: any) => step.name === "Dispatch selected targets");
   assert.match(dispatch.env.FANOUT_MODE, /'37 \*\/6 \* \* \*' && 'audit'/);
@@ -5448,20 +5451,26 @@ function cronFiringMinutesOfDay(cron: string): number[] {
 }
 
 test("workflow schedules are distinct, every compared schedule fires, and fanout stays contained", () => {
-  const source = readText(".github/workflows/sweep.yml");
-  const workflow = YAML.parse(source) as {
-    on: { schedule: Array<{ cron: string }> };
-    jobs: Record<string, { if?: string }>;
-  };
-  const schedules = workflow.on.schedule.map(({ cron }) => cron);
+  const paths = ["sweep.yml", "target-fanout.yml", "failed-review-retry.yml"];
+  const workflows = paths.map((path) => {
+    const source = readText(`.github/workflows/${path}`);
+    const workflow = YAML.parse(source) as {
+      on: { schedule: Array<{ cron: string }> };
+      jobs: Record<string, { if?: string }>;
+    };
+    return { source, workflow, schedules: workflow.on.schedule.map(({ cron }) => cron) };
+  });
+  const schedules = workflows.flatMap(({ schedules }) => schedules);
   const compared = (text: string) =>
     [...text.matchAll(/github\.event\.schedule == '([^']+)'/g)].map((match) => match[1]!);
 
   assert.equal(new Set(schedules).size, schedules.length);
   // A branch on a schedule that is not registered never runs.
-  for (const cron of new Set(compared(source))) assert.ok(schedules.includes(cron), cron);
+  for (const { source, schedules } of workflows) {
+    for (const cron of new Set(compared(source))) assert.ok(schedules.includes(cron), cron);
+  }
   // Containment: each fleet fanout schedule fires at most once every twenty minutes.
-  const fanout = compared(workflow.jobs["target-fanout"]?.if ?? "");
+  const fanout = compared(workflows[1]!.workflow.jobs["target-fanout"]?.if ?? "");
   assert.ok(fanout.length > 0);
   for (const cron of fanout) {
     const minutes = cronFiringMinutesOfDay(cron).sort((left, right) => left - right);
@@ -6048,9 +6057,11 @@ for (const jobId of ["publish-review-action-ledger", "recover-review-failures"])
 
 test("every action-ledger publication authenticates the expected producer job", () => {
   type WorkflowJobs = { jobs: Record<string, { steps?: Array<{ run?: string }> }> };
-  const jobs = [".github/workflows/sweep.yml", ".github/workflows/failed-review-retry.yml"].flatMap(
-    (path) => Object.values((YAML.parse(readText(path)) as WorkflowJobs).jobs),
-  );
+  const jobs = [
+    ".github/workflows/sweep.yml",
+    ".github/workflows/failed-review-retry.yml",
+    ".github/workflows/target-fanout.yml",
+  ].flatMap((path) => Object.values((YAML.parse(readText(path)) as WorkflowJobs).jobs));
   const invocation = "publish-action-events";
   const commandStart = `pnpm run --silent ${invocation} -- \\`;
   const isCanonicalValue = (value: string): boolean => {

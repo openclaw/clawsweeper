@@ -12,7 +12,7 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createHash, generateKeyPairSync } from "node:crypto";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import http from "node:http";
 import { createRequire } from "node:module";
 import path from "node:path";
@@ -114,6 +114,7 @@ const FILES = [
   "dashboard/exact-review-queue.ts",
   "dashboard/wrangler.toml",
   ".github/workflows/sweep.yml",
+  ".github/workflows/target-fanout.yml",
 ];
 
 function mulberry32(seed) {
@@ -356,7 +357,12 @@ try {
     }
     const read = (file) => readFileSync(path.join(dir, file), "utf8");
     const vars = wranglerVars(read("dashboard/wrangler.toml"));
-    const cadence = sweepCadence(read(".github/workflows/sweep.yml"));
+    // Historical baselines predate the fanout workflow split.
+    const fanoutPath = ".github/workflows/target-fanout.yml";
+    const cadence = sweepCadence(
+      read(".github/workflows/sweep.yml") +
+        (existsSync(path.join(dir, fanoutPath)) ? read(fanoutPath) : ""),
+    );
     const entry = path.join(out, `${variant}-proof-worker.ts`);
     writeFileSync(
       entry,
@@ -423,7 +429,10 @@ export default { fetch(request, env) { return env.QUEUE.get(env.QUEUE.idFromName
     runtimeFactories[variant] = startMiniflare;
     const result = {
       source_sha256: Object.fromEntries(
-        FILES.map((file) => [file, createHash("sha256").update(read(file)).digest("hex")]),
+        FILES.filter((file) => existsSync(path.join(dir, file))).map((file) => [
+          file,
+          createHash("sha256").update(read(file)).digest("hex"),
+        ]),
       ),
       config: Object.fromEntries(
         [
