@@ -18,7 +18,7 @@ import { codexFailureDecisionForTest, parseDecision } from "../dist/clawsweeper.
 import { createReportDocumentRendering } from "../dist/clawsweeper-report-document.js";
 import { createReportContextRendering } from "../dist/clawsweeper-report-context.js";
 import { createDashboardPresentation } from "../dist/clawsweeper-dashboard.js";
-import { createRepositoryLinks } from "../dist/clawsweeper-links.js";
+import * as repositoryLinks from "../dist/clawsweeper-links.js";
 import { oversizedPullRequestDecision } from "../dist/clawsweeper-oversized-pr-policy.js";
 import { repositoryProfileFor } from "../dist/repository-profiles.js";
 import { readReviewRecord } from "../dist/review-record.js";
@@ -39,11 +39,7 @@ import {
 
 const pullRequest = item({ kind: "pull_request", number: 42 });
 const document = createReportDocumentRendering({
-  ...createRepositoryLinks({
-    reportRepo: "openclaw/clawsweeper-state",
-    targetRepo: () => "openclaw/openclaw",
-    targetProfile: () => repositoryProfileFor("openclaw/openclaw"),
-  }),
+  ...repositoryLinks,
   ...createReportContextRendering({} as never),
   ...createDashboardPresentation({} as never),
   compactPullFilePaths: () => [],

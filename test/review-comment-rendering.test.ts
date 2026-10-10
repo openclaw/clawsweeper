@@ -25,7 +25,7 @@ import {
   reviewReportFrontMatter as reportFrontMatter,
 } from "./helpers.ts";
 import { nextStepFromReport } from "../dist/clawsweeper-next-step.js";
-import { createRepositoryLinks } from "../dist/clawsweeper-links.js";
+import * as repositoryLinks from "../dist/clawsweeper-links.js";
 import { createReportDocumentRendering } from "../dist/clawsweeper-report-document.js";
 import { createReportContextRendering } from "../dist/clawsweeper-report-context.js";
 import { createDashboardPresentation } from "../dist/clawsweeper-dashboard.js";
@@ -65,11 +65,7 @@ test("Markdown destination assertions reject prose and lookalike links inside de
   );
 });
 
-const evidenceLinks = createRepositoryLinks({
-  reportRepo: "openclaw/clawsweeper-state",
-  targetRepo: () => "openclaw/openclaw",
-  targetProfile: () => repositoryProfileFor("openclaw/openclaw"),
-});
+const evidenceLinks = repositoryLinks;
 
 function evidenceReport(
   evidence: Evidence[],

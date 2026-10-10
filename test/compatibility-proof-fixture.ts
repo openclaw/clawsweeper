@@ -2,7 +2,7 @@ import { parseDecision } from "../dist/clawsweeper.js";
 import { createReportDocumentRendering } from "../dist/clawsweeper-report-document.js";
 import { createReportContextRendering } from "../dist/clawsweeper-report-context.js";
 import { createDashboardPresentation } from "../dist/clawsweeper-dashboard.js";
-import { createRepositoryLinks } from "../dist/clawsweeper-links.js";
+import * as repositoryLinks from "../dist/clawsweeper-links.js";
 import { repositoryProfileFor } from "../dist/repository-profiles.js";
 import type { DataModelCompatibility } from "../src/clawsweeper-types.ts";
 import { closeDecision, item, reviewReportFrontMatter } from "./helpers.ts";
@@ -79,11 +79,7 @@ export function generatedCompatibilityReport(
   decisionOverrides: Record<string, unknown> = {},
 ): string {
   const document = createReportDocumentRendering({
-    ...createRepositoryLinks({
-      reportRepo: "openclaw/clawsweeper-state",
-      targetRepo: () => "openclaw/openclaw",
-      targetProfile: () => repositoryProfileFor("openclaw/openclaw"),
-    }),
+    ...repositoryLinks,
     ...createReportContextRendering({} as never),
     ...createDashboardPresentation({} as never),
     compactPullFilePaths: (file) => [file.filename],

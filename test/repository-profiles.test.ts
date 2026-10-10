@@ -1,13 +1,69 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 
 import {
   REPOSITORY_PROFILES,
   repositoryProfileFor,
+  repoFromArgs,
+  setTargetRepo,
+  targetProfile,
+  targetRepo,
+  withTargetProfile,
   validateTargetRepositoryConfigForTest,
 } from "../dist/repository-profiles.js";
 import { resolveTargetRepoToolchain } from "../dist/repair/target-toolchain-config.js";
+import {
+  defaultItemsDir,
+  isMarkdownForActiveRepo,
+  markdownFiles,
+} from "../dist/clawsweeper-repository-paths.js";
+import { reportFileUrl, repoUrl } from "../dist/clawsweeper-links.js";
+
+test("command profiles select real record trees and restore nested repository links", () => {
+  const root = mkdtempSync(join(tmpdir(), "clawsweeper-profile-"));
+  const original = targetProfile();
+  try {
+    for (const repo of ["openclaw/openclaw", "openclaw/clawhub"]) {
+      const profile = repositoryProfileFor(repo);
+      const dir = join(root, profile.slug, "items");
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, "42.md"), `---\nrepository: ${repo}\n---\n# Review\n`);
+    }
+    for (const repo of ["openclaw/clawhub", "openclaw/openclaw", "openclaw/clawhub"]) {
+      const profile = repoFromArgs({ target_repo: repo });
+      const dir = join(root, profile.slug, "items");
+      const [file] = markdownFiles(dir);
+      assert.ok(file);
+      assert.equal(isMarkdownForActiveRepo(readFileSync(join(dir, file), "utf8"), file), true);
+      const otherRepo = repo === "openclaw/clawhub" ? "openclaw/openclaw" : "openclaw/clawhub";
+      const otherFile = join(root, repositoryProfileFor(otherRepo).slug, "items", "42.md");
+      assert.equal(isMarkdownForActiveRepo(readFileSync(otherFile, "utf8"), otherFile), false);
+      assert.equal(defaultItemsDir().endsWith(join("records", profile.slug, "items")), true);
+      assert.equal(new URL(repoUrl()).pathname, `/${repo}`);
+      assert.equal(
+        new URL(reportFileUrl(42)).pathname,
+        `/openclaw/clawsweeper/blob/main/records/${profile.slug}/items/42.md`,
+      );
+      assert.throws(
+        () =>
+          withTargetProfile(repositoryProfileFor(otherRepo), () => {
+            assert.equal(targetRepo(), otherRepo);
+            assert.equal(new URL(repoUrl()).pathname, `/${otherRepo}`);
+            throw new Error("restore profile");
+          }),
+        /restore profile/,
+      );
+      assert.equal(targetRepo(), repo);
+      assert.equal(new URL(repoUrl()).pathname, `/${repo}`);
+    }
+  } finally {
+    setTargetRepo(original.targetRepo);
+    rmSync(root, { recursive: true, force: true });
+  }
+});
 
 function targetRepositoryConfig(liveTest: Record<string, unknown>, schemaVersion = 2) {
   return {

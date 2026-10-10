@@ -1,5 +1,6 @@
 import type { Evidence, ItemKind } from "./clawsweeper-types.js";
 import { normalizeRepo, type RepositoryProfile } from "./repository-profiles.js";
+import { targetProfile, targetRepo } from "./repository-profiles.js";
 
 export function isCommitSha(value: string): boolean {
   return /^[0-9a-f]{7,40}$/i.test(value.trim());
@@ -91,7 +92,7 @@ export function repoUrlFor(repo: string, path = ""): string {
   return `https://github.com/${normalizeRepo(repo)}${path}`;
 }
 
-export function commitUrl(sha: string, repo: string): string {
+export function commitUrl(sha: string, repo = targetRepo()): string {
   return repoUrlFor(repo, `/commit/${sha}`);
 }
 
@@ -99,7 +100,7 @@ export function shortSha(sha: string): string {
   return sha.slice(0, 12);
 }
 
-export function releaseUrl(tag: string, repo: string): string {
+export function releaseUrl(tag: string, repo = targetRepo()): string {
   return repoUrlFor(repo, `/releases/tag/${encodeURIComponent(tag)}`);
 }
 
@@ -114,16 +115,20 @@ export function githubPath(path: string): string {
     .join("/");
 }
 
-export function fileUrl(file: string, sha: string, line: number | undefined, repo: string): string {
+export function fileUrl(file: string, sha: string, line?: number, repo = targetRepo()): string {
   return repoUrlFor(repo, `/blob/${sha}/${githubPath(file)}${line ? `#L${line}` : ""}`);
 }
 
-export function latestFileUrl(file: string, repo: string): string {
+export function latestFileUrl(file: string, repo = targetRepo()): string {
   return fileUrl(file, "main", undefined, repo);
 }
 
 // Only files in the target repository have public docs pages.
-export function docsPageUrl(file: string, repo: string, profile: RepositoryProfile): string | null {
+export function docsPageUrl(
+  file: string,
+  repo = targetRepo(),
+  profile: RepositoryProfile = targetProfile(),
+): string | null {
   if (normalizeRepo(repo) !== normalizeRepo(profile.targetRepo)) return null;
   const docsUrl = profile.docsUrl;
   if (!docsUrl || !file.startsWith("docs/")) return null;
@@ -138,53 +143,25 @@ export function markdownLink(label: string, url: string): string {
   return `[${label.replaceAll("|", "\\|")}](${url})`;
 }
 
-export function linkedSha(sha: string, repo: string): string {
+export function linkedSha(sha: string, repo = targetRepo()): string {
   return markdownLink(shortSha(sha), commitUrl(sha, repo));
 }
 
-export function linkedRelease(tag: string, repo: string): string {
+export function linkedRelease(tag: string, repo = targetRepo()): string {
   return markdownLink(tag, releaseUrl(tag, repo));
 }
 
-interface RepositoryLinkDependencies {
-  reportRepo: string;
-  targetProfile: () => RepositoryProfile;
-  targetRepo: () => string;
+export function repoUrl(path = ""): string {
+  return repoUrlFor(targetRepo(), path);
 }
 
-// Binds the link builders to the active target repository.
-export function createRepositoryLinks({
-  reportRepo,
-  targetProfile,
-  targetRepo,
-}: RepositoryLinkDependencies) {
-  function reportUrl(path = ""): string {
-    return `https://github.com/${reportRepo}${path}`;
-  }
+export function reportUrl(path = ""): string {
+  return `https://github.com/openclaw/clawsweeper${path}`;
+}
 
-  function reportFileUrl(
-    number: number,
-    path = `records/${targetProfile().slug}/items/${number}.md`,
-  ): string {
-    return reportUrl(`/blob/main/${githubPath(path)}`);
-  }
-
-  return {
-    commitUrl: (sha: string, repo = targetRepo()) => commitUrl(sha, repo),
-    docsPageUrl: (file: string, repo = targetRepo()) => docsPageUrl(file, repo, targetProfile()),
-    fileUrl: (file: string, sha: string, line?: number, repo = targetRepo()) =>
-      fileUrl(file, sha, line, repo),
-    githubPath,
-    itemUrlFor,
-    latestFileUrl: (file: string, repo = targetRepo()) => latestFileUrl(file, repo),
-    linkedRelease: (tag: string) => linkedRelease(tag, targetRepo()),
-    linkedSha: (sha: string, repo = targetRepo()) => linkedSha(sha, repo),
-    markdownLink,
-    releaseUrl: (tag: string) => releaseUrl(tag, targetRepo()),
-    repoUrl: (path = "") => repoUrlFor(targetRepo(), path),
-    repoUrlFor,
-    reportFileUrl,
-    reportUrl,
-    shortSha,
-  };
+export function reportFileUrl(
+  number: number,
+  path = `records/${targetProfile().slug}/items/${number}.md`,
+): string {
+  return reportUrl(`/blob/main/${githubPath(path)}`);
 }

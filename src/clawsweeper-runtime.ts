@@ -8,11 +8,7 @@ import { dispatchCommand, type CommandHandler } from "./clawsweeper-command-disp
 import { reviewDecisionParser } from "./clawsweeper-decision-parser.js";
 import { runText, runTextConcurrently, SWEEPER_COMMAND_MAX_BUFFER_BYTES } from "./command.js";
 import { AUTOMATION_LIMITS } from "./limits.js";
-import {
-  DEFAULT_TARGET_REPO,
-  repositoryProfileFor,
-  type RepositoryProfile,
-} from "./repository-profiles.js";
+import { repositoryProfileFor } from "./repository-profiles.js";
 import { reviewPullChecksDigestParts } from "./review-checks-digest.js";
 import {
   reviewStructuralQuery,
@@ -66,7 +62,15 @@ import { createLabelSyncOperations } from "./clawsweeper-label-operations.js";
 import { createLiveProofCommands } from "./live-proof/commands.js";
 import { publishReviewLiveProofArtifacts } from "./live-proof/publication-artifacts.js";
 import { executeReviewLiveProofs, inspectReviewLiveProofs } from "./live-proof/review-artifacts.js";
-import { createRepositoryLinks } from "./clawsweeper-links.js";
+import * as repositoryLinks from "./clawsweeper-links.js";
+import {
+  repoFromArgs,
+  setTargetRepo,
+  targetProfile,
+  targetRepo,
+  withTargetProfile,
+} from "./repository-profiles.js";
+import * as repositoryPaths from "./clawsweeper-repository-paths.js";
 import { createLocalRangeReviewer } from "./clawsweeper-local-review.js";
 import { createPlanCommand } from "./clawsweeper-plan-command.js";
 import { CLAWSWEEPER_BOT_LOGINS } from "./clawsweeper-bot-identity.js";
@@ -82,7 +86,6 @@ import { reportLiveProofPlan, reportReviewFindings } from "./clawsweeper-report-
 import { createReviewRecordBackfill } from "./review-record-backfill.js";
 import { existingReview } from "./clawsweeper-record-metadata.js";
 import {
-  createRepositoryPaths,
   markdownFiles,
   markdownRepository,
   numberForMarkdownFile,
@@ -183,10 +186,6 @@ const DEFAULT_PLAN_BATCH_SIZE = 3;
 const DEFAULT_PLAN_SHARD_COUNT = AUTOMATION_LIMITS.review_shards.normal_default;
 const MAX_PLAN_SHARD_COUNT = AUTOMATION_LIMITS.review_shards.hard_cap;
 
-const REPORT_REPO = "openclaw/clawsweeper";
-let activeRepositoryProfile = repositoryProfileFor(
-  process.env.CLAWSWEEPER_TARGET_REPO ?? DEFAULT_TARGET_REPO,
-);
 const REVIEW_ITEM_PROMPT_PATHS = {
   core: join(ROOT, "prompts", "review-item.md"),
   issue: join(ROOT, "prompts", "review-item-issue.md"),
@@ -212,46 +211,7 @@ export function guardedOpenApplyProofFields(
     : {};
 }
 
-function targetProfile(): RepositoryProfile {
-  return activeRepositoryProfile;
-}
-
-function targetRepo(): string {
-  return activeRepositoryProfile.targetRepo;
-}
-
-const repositoryLinks = createRepositoryLinks({
-  reportRepo: REPORT_REPO,
-  targetProfile,
-  targetRepo,
-});
 const { markdownLink, reportUrl } = repositoryLinks;
-
-function setTargetRepo(targetRepoName: string): RepositoryProfile {
-  activeRepositoryProfile = repositoryProfileFor(targetRepoName);
-  return activeRepositoryProfile;
-}
-
-function targetRepoInput(args: Args): string {
-  return stringArg(
-    args.target_repo,
-    process.env.CLAWSWEEPER_TARGET_REPO ?? process.env.TARGET_REPO ?? DEFAULT_TARGET_REPO,
-  );
-}
-
-function repoFromArgs(args: Args): RepositoryProfile {
-  return setTargetRepo(targetRepoInput(args));
-}
-
-function withTargetProfile<T>(profile: RepositoryProfile, fn: () => T): T {
-  const previousProfile = activeRepositoryProfile;
-  activeRepositoryProfile = profile;
-  try {
-    return fn();
-  } finally {
-    activeRepositoryProfile = previousProfile;
-  }
-}
 
 const sweepStatus = createSweepStatus({
   ensureDir,
@@ -259,7 +219,6 @@ const sweepStatus = createSweepStatus({
   ROOT,
   targetProfile,
 });
-const repositoryPaths = createRepositoryPaths({ targetProfile, targetRepo });
 const { defaultClosedDir, defaultItemsDir } = repositoryPaths;
 
 type RunOptions = { cwd?: string; env?: NodeJS.ProcessEnv };

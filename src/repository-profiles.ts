@@ -3,6 +3,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { stringArg, type Args } from "./clawsweeper-args.js";
 export type RepositoryItemKind = "issue" | "pull_request";
 export type RepositoryLiveTestSurface = "browser" | "terminal";
 export type RepositoryPackageManager = "bun" | "pnpm" | "npm";
@@ -565,4 +566,39 @@ function arrayValue(value: unknown, label: string): unknown[] {
 
 function repoRoot(): string {
   return dirname(dirname(fileURLToPath(import.meta.url)));
+}
+let activeRepositoryProfile = repositoryProfileFor(
+  process.env.CLAWSWEEPER_TARGET_REPO ?? DEFAULT_TARGET_REPO,
+);
+
+export function targetProfile(): RepositoryProfile {
+  return activeRepositoryProfile;
+}
+
+export function targetRepo(): string {
+  return activeRepositoryProfile.targetRepo;
+}
+
+export function setTargetRepo(repo: string): RepositoryProfile {
+  activeRepositoryProfile = repositoryProfileFor(repo);
+  return activeRepositoryProfile;
+}
+
+export function repoFromArgs(args: Args): RepositoryProfile {
+  return setTargetRepo(
+    stringArg(
+      args.target_repo,
+      process.env.CLAWSWEEPER_TARGET_REPO ?? process.env.TARGET_REPO ?? DEFAULT_TARGET_REPO,
+    ),
+  );
+}
+
+export function withTargetProfile<T>(profile: RepositoryProfile, fn: () => T): T {
+  const previousProfile = activeRepositoryProfile;
+  activeRepositoryProfile = profile;
+  try {
+    return fn();
+  } finally {
+    activeRepositoryProfile = previousProfile;
+  }
 }

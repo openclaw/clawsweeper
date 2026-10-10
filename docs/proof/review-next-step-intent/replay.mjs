@@ -200,17 +200,11 @@ const { createReportContextRendering } = await from(
   join(candidateDist, "clawsweeper-report-context.js"),
 );
 const { createDashboardPresentation } = await from(join(candidateDist, "clawsweeper-dashboard.js"));
-const { createRepositoryLinks } = await from(join(candidateDist, "clawsweeper-links.js"));
-const { normalizeRepo, repositoryProfileFor } = await from(
-  join(candidateDist, "repository-profiles.js"),
-);
+const repositoryLinks = await from(join(candidateDist, "clawsweeper-links.js"));
+const { repositoryProfileFor } = await from(join(candidateDist, "repository-profiles.js"));
 const document = createReportDocumentRendering({
-  ...createRepositoryLinks({
-    reportRepo: "openclaw/clawsweeper-state",
-    normalizeRepo,
-    targetRepo: () => "openclaw/openclaw",
-    targetProfile: () => repositoryProfileFor("openclaw/openclaw"),
-  }),
+  ...repositoryLinks,
+  targetProfile: () => repositoryProfileFor("openclaw/openclaw"),
   ...createReportContextRendering({}),
   ...createDashboardPresentation({}),
   prSurfaceFilesFromContext: () => [],

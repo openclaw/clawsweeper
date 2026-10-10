@@ -154,15 +154,18 @@ async function runArm(arm) {
   const { createReportContextRendering } = await load("clawsweeper-report-context.js");
   const { createDashboardPresentation } = await load("clawsweeper-dashboard.js");
   const parser = await load("clawsweeper-report-parser.js");
-  const { createRepositoryLinks } = await load("clawsweeper-links.js");
+  const linkModule = await load("clawsweeper-links.js");
   const { repositoryProfileFor } = await load("repository-profiles.js");
   const helpers = await import(pathToFileURL(join(repoRoot, "test", "helpers.ts")).href);
 
-  const links = createRepositoryLinks({
-    reportRepo: "openclaw/clawsweeper-state",
-    targetRepo: () => "openclaw/openclaw",
-    targetProfile: () => repositoryProfileFor("openclaw/openclaw"),
-  });
+  const links =
+    arm.slug === "baseline" && typeof linkModule.createRepositoryLinks === "function"
+      ? linkModule.createRepositoryLinks({
+          reportRepo: "openclaw/clawsweeper-state",
+          targetRepo: () => "openclaw/openclaw",
+          targetProfile: () => repositoryProfileFor("openclaw/openclaw"),
+        })
+      : linkModule;
   const entry = {
     repo: "openclaw/openclaw",
     label: "Real evidence",
@@ -174,6 +177,7 @@ async function runArm(arm) {
   };
   const document = createReportDocumentRendering({
     ...links,
+    targetProfile: () => repositoryProfileFor("openclaw/openclaw"),
     ...createReportContextRendering({}),
     ...createDashboardPresentation({}),
     prSurfaceFilesFromContext: () => [],

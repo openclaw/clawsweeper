@@ -3,12 +3,12 @@ import test from "node:test";
 
 import { createApplyReviewActivityGuard } from "../dist/clawsweeper-apply-review-activity.js";
 import { createDashboardPresentation } from "../dist/clawsweeper-dashboard.js";
-import { createRepositoryLinks } from "../dist/clawsweeper-links.js";
+import * as repositoryLinks from "../dist/clawsweeper-links.js";
 import { createReportContextRendering } from "../dist/clawsweeper-report-context.js";
 import { createReportDocumentRendering } from "../dist/clawsweeper-report-document.js";
 import { parseDecision } from "../dist/clawsweeper.js";
 import { frontMatterValue } from "../dist/report-front-matter.js";
-import { normalizeRepo, repositoryProfileFor } from "../dist/repository-profiles.js";
+import { repositoryProfileFor } from "../dist/repository-profiles.js";
 import { closeDecision, item } from "./helpers.ts";
 import {
   MAX_REVIEWED_PR_ACTIVITY,
@@ -383,12 +383,7 @@ test("the review report persists the cursor that apply revalidates", () => {
   const reviewedCursor = v2Cursor();
   assert.ok(reviewedCursor);
   const document = createReportDocumentRendering({
-    ...createRepositoryLinks({
-      reportRepo: "openclaw/clawsweeper-state",
-      normalizeRepo,
-      targetRepo: () => "openclaw/openclaw",
-      targetProfile: () => repositoryProfileFor("openclaw/openclaw"),
-    }),
+    ...repositoryLinks,
     ...createReportContextRendering({} as never),
     ...createDashboardPresentation({} as never),
     compactPullFilePaths: () => [],

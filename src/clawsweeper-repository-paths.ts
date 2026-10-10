@@ -7,9 +7,9 @@ import {
   normalizeRepo,
   repositoryProfileFor,
   repositoryProfileForSlug,
-  type RepositoryProfile,
 } from "./repository-profiles.js";
 import { frontMatterValue } from "./report-front-matter.js";
+import { targetProfile, targetRepo } from "./repository-profiles.js";
 
 export const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const RECORDS_ROOT = join(ROOT, "records");
@@ -71,85 +71,71 @@ export function numberForMarkdownFile(file: string): number {
   return parsed.number;
 }
 
-interface CreateRepositoryPathsDependencies {
-  targetProfile: () => RepositoryProfile;
-  targetRepo: () => string;
+function repoRecordsDir(profile = targetProfile()): string {
+  return join(RECORDS_ROOT, profile.slug);
 }
 
-export function createRepositoryPaths(dependencies: CreateRepositoryPathsDependencies) {
-  const { targetProfile, targetRepo } = dependencies;
+export function defaultItemsDir(profile = targetProfile()): string {
+  return join(repoRecordsDir(profile), "items");
+}
 
-  function repoRecordsDir(profile = targetProfile()): string {
-    return join(RECORDS_ROOT, profile.slug);
+export function defaultClosedDir(profile = targetProfile()): string {
+  return join(repoRecordsDir(profile), "closed");
+}
+
+export function defaultPlansDir(profile = targetProfile()): string {
+  return join(repoRecordsDir(profile), "plans");
+}
+
+export function defaultFailedReviewRetryStateDir(profile = targetProfile()): string {
+  return join(ROOT, "results", "failed-review-retries", profile.slug);
+}
+
+function defaultDecisionPacketsDir(profile = targetProfile()): string {
+  return join(repoRecordsDir(profile), "decision-packets");
+}
+
+function siblingDecisionPacketsDir(
+  recordDir: string,
+  recordDirName: "items" | "closed",
+): string | undefined {
+  return basename(recordDir) === recordDirName
+    ? join(dirname(recordDir), "decision-packets")
+    : undefined;
+}
+
+function defaultDecisionPacketsDirForRecordDirs(
+  itemsDir: string,
+  closedDir: string,
+  profile = targetProfile(),
+): string {
+  const itemsPacketsDir = siblingDecisionPacketsDir(itemsDir, "items");
+  const closedPacketsDir = siblingDecisionPacketsDir(closedDir, "closed");
+  if (itemsPacketsDir && (!closedPacketsDir || itemsPacketsDir === closedPacketsDir)) {
+    return itemsPacketsDir;
   }
+  if (closedPacketsDir && !itemsPacketsDir) return closedPacketsDir;
+  return defaultDecisionPacketsDir(profile);
+}
 
-  function defaultItemsDir(profile = targetProfile()): string {
-    return join(repoRecordsDir(profile), "items");
-  }
-
-  function defaultClosedDir(profile = targetProfile()): string {
-    return join(repoRecordsDir(profile), "closed");
-  }
-
-  function defaultPlansDir(profile = targetProfile()): string {
-    return join(repoRecordsDir(profile), "plans");
-  }
-
-  function defaultFailedReviewRetryStateDir(profile = targetProfile()): string {
-    return join(ROOT, "results", "failed-review-retries", profile.slug);
-  }
-
-  function defaultDecisionPacketsDir(profile = targetProfile()): string {
-    return join(repoRecordsDir(profile), "decision-packets");
-  }
-
-  function siblingDecisionPacketsDir(
-    recordDir: string,
-    recordDirName: "items" | "closed",
-  ): string | undefined {
-    return basename(recordDir) === recordDirName
-      ? join(dirname(recordDir), "decision-packets")
-      : undefined;
-  }
-
-  function defaultDecisionPacketsDirForRecordDirs(
-    itemsDir: string,
-    closedDir: string,
-    profile = targetProfile(),
-  ): string {
+export function decisionPacketsDirFromArgs(
+  args: Args,
+  itemsDir: string,
+  closedDir: string,
+): string {
+  const explicitDecisionPacketsDir = stringArg(args.decision_packets_dir, "");
+  if (explicitDecisionPacketsDir) return resolve(explicitDecisionPacketsDir);
+  if (typeof args.items_dir === "string") {
     const itemsPacketsDir = siblingDecisionPacketsDir(itemsDir, "items");
+    if (itemsPacketsDir) return resolve(itemsPacketsDir);
+  }
+  if (typeof args.closed_dir === "string") {
     const closedPacketsDir = siblingDecisionPacketsDir(closedDir, "closed");
-    if (itemsPacketsDir && (!closedPacketsDir || itemsPacketsDir === closedPacketsDir)) {
-      return itemsPacketsDir;
-    }
-    if (closedPacketsDir && !itemsPacketsDir) return closedPacketsDir;
-    return defaultDecisionPacketsDir(profile);
+    if (closedPacketsDir) return resolve(closedPacketsDir);
   }
+  return resolve(defaultDecisionPacketsDirForRecordDirs(itemsDir, closedDir));
+}
 
-  function decisionPacketsDirFromArgs(args: Args, itemsDir: string, closedDir: string): string {
-    const explicitDecisionPacketsDir = stringArg(args.decision_packets_dir, "");
-    if (explicitDecisionPacketsDir) return resolve(explicitDecisionPacketsDir);
-    if (typeof args.items_dir === "string") {
-      const itemsPacketsDir = siblingDecisionPacketsDir(itemsDir, "items");
-      if (itemsPacketsDir) return resolve(itemsPacketsDir);
-    }
-    if (typeof args.closed_dir === "string") {
-      const closedPacketsDir = siblingDecisionPacketsDir(closedDir, "closed");
-      if (closedPacketsDir) return resolve(closedPacketsDir);
-    }
-    return resolve(defaultDecisionPacketsDirForRecordDirs(itemsDir, closedDir));
-  }
-
-  function isMarkdownForActiveRepo(markdown: string, file?: string): boolean {
-    return markdownRepository(markdown, file) === targetRepo();
-  }
-
-  return {
-    decisionPacketsDirFromArgs,
-    defaultClosedDir,
-    defaultFailedReviewRetryStateDir,
-    defaultItemsDir,
-    defaultPlansDir,
-    isMarkdownForActiveRepo,
-  };
+export function isMarkdownForActiveRepo(markdown: string, file?: string): boolean {
+  return markdownRepository(markdown, file) === targetRepo();
 }
