@@ -30,6 +30,7 @@ import { legacyCommandCommentId } from "../src/repair/command-ack-convergence.ts
 import { commandAckMarker } from "../src/repair/markers.ts";
 import { directReReviewIntake } from "../src/repair/direct-re-review-admission.ts";
 import { isExactReviewCloseGuardLabel } from "../src/repair/exact-review-guard-labels.ts";
+import { EXACT_REVIEW_LIFECYCLE_BAY_TIDE_THRESHOLD } from "./exact-review-lifecycle-telemetry.ts";
 import { sha256Hex } from "./exact-review-direct-publication.ts";
 import { exactReviewSourceRevisionMaterial } from "./exact-review-source-revision.ts";
 import {
@@ -6667,7 +6668,10 @@ async function exactReviewBayLifecycleMetricsSnapshot(env) {
       ? allAverage !== null || allMedian !== null
       : allAverage === null || allMedian === null) ||
     (samples !== null && allSamples < samples);
-  const terminalCount = publicQueueCount(terminal.terminal_count, 20);
+  const terminalCount = publicQueueCount(
+    terminal.terminal_count,
+    EXACT_REVIEW_LIFECYCLE_BAY_TIDE_THRESHOLD,
+  );
   const tideThreshold = publicQueueCount(terminal.tide_threshold, 100);
   const tideGeneration = publicQueueCount(terminal.tide_generation, 1_000_000);
   const lastTideAt =
@@ -6685,7 +6689,7 @@ async function exactReviewBayLifecycleMetricsSnapshot(env) {
     !history ||
     !includingLegacyBatchHistory ||
     terminalCount === null ||
-    tideThreshold !== 20 ||
+    tideThreshold !== EXACT_REVIEW_LIFECYCLE_BAY_TIDE_THRESHOLD ||
     tideGeneration === null ||
     (terminal.last_tide_at !== null && !lastTideAt) ||
     !terminalBuffer ||
@@ -6726,7 +6730,8 @@ async function exactReviewBayLifecycleMetricsSnapshot(env) {
 }
 
 function bayLifecycleTerminalRows(value) {
-  if (!Array.isArray(value) || value.length > 20) return null;
+  if (!Array.isArray(value) || value.length > EXACT_REVIEW_LIFECYCLE_BAY_TIDE_THRESHOLD)
+    return null;
   const rows = [];
   for (const entry of value) {
     const row = objectValue(entry);

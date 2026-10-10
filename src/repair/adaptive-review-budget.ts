@@ -1,4 +1,9 @@
-import { isGitHubMediaAttachmentUrl } from "../clawsweeper-media-proof.js";
+import {
+  isGitHubMediaAttachmentUrl,
+  MAX_MEDIA_PROOF_URLS,
+  MEDIA_PROOF_TIMEOUT_MS,
+  VIDEO_PROOF_EXTENSIONS,
+} from "../clawsweeper-media-proof.js";
 import { trimTrailingUrlPunctuation } from "../clawsweeper-text.js";
 import type { JsonValue, LooseRecord } from "./json-types.js";
 
@@ -10,9 +15,6 @@ const PR_SIZE_BASELINE_LINES = 1_000;
 const PR_SIZE_LINE_STEP_MS = 50;
 const MAX_PR_FILE_TIMEOUT_BONUS_MS = 600_000;
 const MAX_PR_LINE_TIMEOUT_BONUS_MS = 300_000;
-const MEDIA_PROOF_TIMEOUT_BONUS_MS = 120_000;
-const MAX_MEDIA_PROOF_URLS = 4;
-const VIDEO_PROOF_EXTENSIONS = new Set([".mov", ".mp4", ".m4v", ".webm", ".avi", ".mkv"]);
 
 export type AdaptiveReviewBudget = {
   codexTimeoutMs: number;
@@ -46,7 +48,8 @@ export function adaptiveReviewBudgetForPullRequest(pull: LooseRecord): AdaptiveR
     0,
     MAX_PR_LINE_TIMEOUT_BONUS_MS,
   );
-  const mediaProofTimeoutMs = mediaProofCount * MEDIA_PROOF_TIMEOUT_BONUS_MS;
+  // Each selected video gets the full per-URL deadline media proof preparation runs under.
+  const mediaProofTimeoutMs = mediaProofCount * MEDIA_PROOF_TIMEOUT_MS;
   return {
     codexTimeoutMs: clamp(
       DEFAULT_ADAPTIVE_CODEX_TIMEOUT_MS + fileBonusMs + lineBonusMs,

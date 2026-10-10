@@ -21,9 +21,11 @@ import {
   reviewPromptForTest,
 } from "../dist/clawsweeper.js";
 import {
+  MAX_MEDIA_PROOF_URLS,
   MEDIA_PROOF_MAX_DERIVED_BYTES,
   MEDIA_PROOF_MAX_DOWNLOAD_BYTES,
   MEDIA_PROOF_MAX_TOTAL_DOWNLOAD_BYTES,
+  MEDIA_PROOF_TIMEOUT_MS,
   mediaProofCommandRunner,
 } from "../dist/clawsweeper-media-proof.js";
 import { LIVE_VERIFICATION_MARKER } from "../dist/clawsweeper-policy.js";
@@ -521,19 +523,21 @@ for (const source of ["extension", "attachment"] as const) {
     t.after(() => rmSync(dir, { recursive: true, force: true }));
     let now = 0;
     t.mock.method(performance, "now", () => now);
+    // Each item's three commands together use exactly its whole deadline.
+    const curlMs = Math.floor((MEDIA_PROOF_TIMEOUT_MS * 2) / 3);
+    const ffprobeMs = Math.floor(MEDIA_PROOF_TIMEOUT_MS / 4);
+    const ffmpegMs = MEDIA_PROOF_TIMEOUT_MS - curlMs - ffprobeMs;
     const timeouts: number[] = [];
     const prepared = prepareMediaProofArtifactsForTest(
       {
         issue: {},
         comments: [
           {
-            body: [1, 2, 3, 4, 5]
-              .map((n) =>
-                source === "attachment"
-                  ? mediaFixtureUrls.attachment.replace(/.$/, String(n))
-                  : `https://example.com/${n}.mov`,
-              )
-              .join("\n"),
+            body: Array.from({ length: MAX_MEDIA_PROOF_URLS + 1 }, (_, n) =>
+              source === "attachment"
+                ? mediaFixtureUrls.attachment.replace(/.$/, String(n))
+                : `https://example.com/${n}.mov`,
+            ).join("\n"),
           },
         ],
         timeline: [],
@@ -541,7 +545,7 @@ for (const source of ["extension", "attachment"] as const) {
       dir,
       (command, args, options) => {
         timeouts.push(options?.timeoutMs ?? 0);
-        now += command === "curl" ? 80_000 : command === "ffprobe" ? 30_000 : 10_000;
+        now += command === "curl" ? curlMs : command === "ffprobe" ? ffprobeMs : ffmpegMs;
         if (command === "curl") {
           writeFileSync(String(args[args.indexOf("--output") + 1]), "fake video");
           return { status: 0, stdout: source === "attachment" ? "video/mp4\n" : "" };
@@ -552,10 +556,14 @@ for (const source of ["extension", "attachment"] as const) {
     );
     assert.deepEqual(
       timeouts,
-      [1, 2, 3, 4].flatMap(() => [120_000, 40_000, 10_000]),
+      Array.from({ length: MAX_MEDIA_PROOF_URLS }).flatMap(() => [
+        MEDIA_PROOF_TIMEOUT_MS,
+        MEDIA_PROOF_TIMEOUT_MS - curlMs,
+        ffmpegMs,
+      ]),
     );
-    assert.equal(now, 480_000);
-    assert.equal(prepared.artifacts.length, 4);
+    assert.equal(now, MAX_MEDIA_PROOF_URLS * MEDIA_PROOF_TIMEOUT_MS);
+    assert.equal(prepared.artifacts.length, MAX_MEDIA_PROOF_URLS);
     assert.ok(prepared.artifacts.every((artifact) => artifact.status === "prepared"));
   });
 }
@@ -582,7 +590,7 @@ for (const exhaustedAfter of ["curl", "ffprobe"]) {
           writeFileSync(String(args[args.indexOf("--output") + 1]), "fake video");
         }
         if (command === "ffmpeg") writeFileSync(String(args.at(-1)), "fake contact sheet");
-        if (item === 1 && command === exhaustedAfter) now += 120_000;
+        if (item === 1 && command === exhaustedAfter) now += MEDIA_PROOF_TIMEOUT_MS;
         return { status: 0, stdout: "{}" };
       },
     );
@@ -621,7 +629,7 @@ test("media preparation kills a timed-out probe even when it ignores SIGTERM", (
     (command, args, options) => {
       if (command === "curl") {
         writeFileSync(String(args[args.indexOf("--output") + 1]), "fake video");
-        now = 119_750;
+        now = MEDIA_PROOF_TIMEOUT_MS - 250;
         return { status: 0 };
       }
       assert.equal(command, "ffprobe");

@@ -1,0 +1,1 @@
+- Read the media proof URL cap and per-URL deadline from the media proof module in the adaptive review budget, and the Bay tide size from the lifecycle telemetry module in the dashboard Worker, instead of keeping second copies; tests now read label, tide, and media budget values from their owners instead of pinning literals and workflow site counts.
