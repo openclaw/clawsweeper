@@ -1,0 +1,1 @@
+- The state publisher's push rules are now tested against real git remotes: a stale publisher never overwrites a concurrent commit or leaves side refs, and an enabled coordinator gates publication before any push, instead of grepping the source for forbidden strings.
