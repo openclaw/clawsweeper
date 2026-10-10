@@ -1,0 +1,1 @@
+- Give `openclaw/openclaw` repair validation 50 minutes per command instead of 25. Its cold `pnpm check:changed` typechecks all 27 core test graphs one at a time for changes in shared core code and now also runs the Knip dead-export scans; from 2026-10-03 to 10-09, 44 issue-fix runs timed out at 25 minutes on that gate.

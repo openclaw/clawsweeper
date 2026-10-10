@@ -74,7 +74,12 @@ before the policy changed and a replayed execute job cannot mutate the target.
 
 Repair validation defaults to 480,000 ms per command. Set `validation_timeout_ms`
 in an exact repository entry (or `core_target_overrides`) to override it:
-`openclaw/openclaw` uses 1,500,000 ms (25 minutes) for its cold changed gate.
+`openclaw/openclaw` uses 3,000,000 ms (50 minutes) for its cold changed gate.
+When a change selects every core test graph, that gate typechecks 27 graphs one
+at a time from a cold cache and then runs three Knip dead-export scans. On the
+16-vCPU execution runner (2026-10-03 to 10-09), finished runs took 19 to 24
+minutes before the Knip scans, and slower runners were on pace for up to 36
+minutes. The Knip scans add about 7 to 8 minutes.
 Other repositories retain eight minutes. The repair workflow's optional
 `target_validation_timeout_ms` input takes precedence over the ClawSweeper
 repository variable `CLAWSWEEPER_FIX_TARGET_VALIDATION_TIMEOUT_MS`, then this
@@ -85,7 +90,7 @@ Each top-level validation command receives a fresh budget. OpenClaw's
 stages share that budget. The overall executor budget is the larger of 70 minutes
 and 10 minutes of setup + the configured edit-worker budget + twice the validation
 budget + 10 minutes for review/reporting, capped at 110 minutes. With the default
-30-minute worker budget, OpenClaw receives 100 minutes. An explicit
+30-minute worker budget, OpenClaw receives the 110-minute ceiling. An explicit
 `CLAWSWEEPER_FIX_STEP_TIMEOUT_MS` overrides that derivation within the existing
 15-minute floor and new 110-minute ceiling. Actions resolves the same budget and
 adds two minutes for executor shutdown; the job retains its 120-minute ceiling.

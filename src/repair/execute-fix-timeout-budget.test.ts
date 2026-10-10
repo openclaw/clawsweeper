@@ -21,8 +21,8 @@ test("repair validation budget defaults to eight minutes with an OpenClaw-only p
     );
   }
   const configured = resolveTargetRepoToolchain("openclaw/openclaw").validationTimeoutMs;
-  assert.equal(configured, 1_500_000);
-  assert.equal(repairTargetValidationTimeoutMs({}, configured), 1_500_000);
+  assert.equal(configured, 3_000_000);
+  assert.equal(repairTargetValidationTimeoutMs({}, configured), 3_000_000);
   assert.equal(
     repairTargetValidationTimeoutMs(
       { CLAWSWEEPER_FIX_TARGET_VALIDATION_TIMEOUT_MS: "900000" },
@@ -36,7 +36,7 @@ test("repair validation budget defaults to eight minutes with an OpenClaw-only p
         { CLAWSWEEPER_FIX_TARGET_VALIDATION_TIMEOUT_MS: value },
         configured,
       ),
-      1_500_000,
+      3_000_000,
     );
     assert.equal(
       repairTargetValidationTimeoutMs({ CLAWSWEEPER_FIX_TARGET_VALIDATION_TIMEOUT_MS: value }),
@@ -97,12 +97,12 @@ test("repair timeout budget falls back or clamps unsafe repository variables", (
 test("overall repair and Actions budgets follow validation configuration with a hard ceiling", () => {
   const configured = resolveTargetRepoToolchain("openclaw/openclaw").validationTimeoutMs;
   for (const [environment, expectedMinutes] of [
-    [{}, 100],
+    [{}, 110],
     [{ CLAWSWEEPER_FIX_TARGET_VALIDATION_TIMEOUT_MS: "1200000" }, 90],
     [{ CLAWSWEEPER_FIX_TARGET_VALIDATION_TIMEOUT_MS: "9007199254740991" }, 110],
-    [{ CLAWSWEEPER_FIX_TARGET_VALIDATION_TIMEOUT_MS: "invalid" }, 100],
+    [{ CLAWSWEEPER_FIX_TARGET_VALIDATION_TIMEOUT_MS: "invalid" }, 110],
     [{ CLAWSWEEPER_FIX_STEP_TIMEOUT_MS: "4200000" }, 70],
-    [{ CLAWSWEEPER_FIX_STEP_TIMEOUT_MS: "invalid" }, 100],
+    [{ CLAWSWEEPER_FIX_STEP_TIMEOUT_MS: "invalid" }, 110],
   ] as const) {
     const budget = repairTimeoutBudgetFromEnv(environment, configured);
     assert.equal(budget.fixStepTimeoutMs, expectedMinutes * 60_000);

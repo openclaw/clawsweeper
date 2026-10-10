@@ -195,7 +195,7 @@
   "core_target_overrides": {
     "openclaw/openclaw": {
       "package_manager": "pnpm",
-      "validation_timeout_ms": 1500000,
+      "validation_timeout_ms": 3000000,
       "validation_commands": [],
       "changed_gate": {
         "command": "pnpm check:changed",
