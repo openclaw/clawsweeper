@@ -30,11 +30,17 @@ import {
   REVIEW_TREE_MAX_BYTES,
   ReviewGitError,
 } from "../dist/clawsweeper-review-blobs.js";
-import { agentInputScanFailureExitCode, MAX_SCAN_BYTES } from "../dist/agent-input-scan.js";
+import {
+  AgentInputScanError,
+  agentInputScanFailureExitCode,
+  MAX_SCAN_BYTES,
+} from "../dist/agent-input-scan.js";
 import { writeExactReviewFailureDiagnostics } from "../dist/clawsweeper-review-failure-diagnostics.js";
-import { createContextHydration } from "../dist/clawsweeper-context-hydration.js";
+import {
+  hydratePullRequestReviewSource,
+  materializePullRequestReviewTree as materializeContextReviewTree,
+} from "../dist/clawsweeper-context-hydration.js";
 import * as gitHubRuntime from "../dist/clawsweeper-github-runtime.js";
-import { ghJson, ghJsonOnce } from "../dist/clawsweeper-github-execution.js";
 import { createReviewRuntime } from "../dist/clawsweeper-review-runtime.js";
 import { main, reviewPolicyHashForTest } from "../dist/clawsweeper-runtime.js";
 import { runText } from "../dist/command.js";
@@ -43,10 +49,34 @@ import { ReviewSourcePreparationError } from "../dist/review-source-preparation.
 import { validationRecoveryRequired } from "../dist/repair/validation-recovery.js";
 import { withMockGh } from "./helpers.ts";
 
-const { ghOnce, withGitHubRun } = gitHubRuntime;
+const { withGitHubRun } = gitHubRuntime;
 
 function git(cwd: string, ...args: string[]): string {
   return execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
+}
+
+function reviewTreeGhScript(source: string): string {
+  return `const assert = require("node:assert/strict");
+const { execFileSync } = require("node:child_process");
+const args = process.argv.slice(2);
+assert.equal(args[0], "api");
+assert.deepEqual(args.slice(2), [
+  "--jq",
+  '{truncated, tree: (.tree | if type == "array" then map(if type == "object" then {type, sha, size} else . end) else . end)}',
+]);
+const revision = args[1]?.match(/\\/git\\/trees\\/([0-9a-f]+)\\?recursive=1$/)?.[1];
+assert.ok(revision);
+const tree = execFileSync("git", ["ls-tree", "-r", "-l", revision], {
+  cwd: ${JSON.stringify(source)}, encoding: "utf8",
+}).trim().split("\\n").filter(Boolean).map((line) => {
+  const match = line.match(/^\\d+ (\\w+) ([0-9a-f]+)\\s+(-|\\d+)\\t/);
+  assert.ok(match);
+  return match[1] === "blob"
+    ? { type: "blob", sha: match[2], size: Number(match[3]) }
+    : { type: match[1], sha: match[2] };
+});
+process.stdout.write(JSON.stringify({ truncated: false, tree }));
+`;
 }
 
 function ensureShallowPullRequestReviewHead(targetDir: string, headSha: string): boolean {
@@ -924,53 +954,26 @@ test("optional pinned-base blobs cannot suppress unsettled acquisition", (t) => 
     t.mock.restoreAll();
     syncBuiltinESMExports();
   });
-  const context = createContextHydration(
-    new Proxy(
-      {
-        isSafeGitBranchName: (branch: string) => branch === "main",
-        targetRepo: () => "fixture/repository",
-        ghJson: (args: string[]) => {
-          const revision = args[1]!.match(/\/git\/trees\/([0-9a-f]+)\?recursive=1$/)![1]!;
-          return {
-            truncated: false,
-            tree: git(fixture.source, "ls-tree", "-r", "-l", revision)
-              .split("\n")
-              .map((line) => {
-                const match = line.match(/^\d+ (\w+) ([0-9a-f]+)\s+(-|\d+)\t/)!;
-                return {
-                  type: match[1],
-                  sha: match[2],
-                  ...(match[1] === "blob" ? { size: Number(match[3]) } : {}),
-                };
-              }),
-          };
-        },
-      },
-      {
-        get: (target, key) =>
-          Reflect.get(target, key) ??
-          (() => {
-            throw new Error("unexpected dependency");
+  withMockGh(fixture.root, reviewTreeGhScript(fixture.source), () =>
+    withGitHubRun(() => {
+      assert.throws(
+        () =>
+          hydratePullRequestReviewSource({
+            itemNumber: 982,
+            targetDir: fixture.target,
+            pullRequest: { base: { ref: "main", sha: baseSha }, head: { sha: fixture.headSha } },
           }),
-      },
-    ) as Parameters<typeof createContextHydration>[0],
+        (error: unknown) => {
+          assert.ok(error instanceof ReviewGitError);
+          assert.equal(error.errorCode, "EPROCESSSETTLEMENT");
+          assert.equal(error.reviewedHeadSha, fixture.headSha);
+          assert.ok(validationRecoveryRequired(error));
+          return true;
+        },
+      );
+      assert.equal(interrupted, 1);
+    }),
   );
-  assert.throws(
-    () =>
-      context.hydratePullRequestReviewSource({
-        itemNumber: 982,
-        targetDir: fixture.target,
-        pullRequest: { base: { ref: "main", sha: baseSha }, head: { sha: fixture.headSha } },
-      }),
-    (error: unknown) => {
-      assert.ok(error instanceof ReviewGitError);
-      assert.equal(error.errorCode, "EPROCESSSETTLEMENT");
-      assert.equal(error.reviewedHeadSha, fixture.headSha);
-      assert.ok(validationRecoveryRequired(error));
-      return true;
-    },
-  );
-  assert.equal(interrupted, 1);
 });
 
 test("review acquisition preserves a pinned base after main advances", () => {
@@ -2445,9 +2448,6 @@ test("introduced blob hydration does not start metadata work after its deadline"
   const fixture = partialCloneFixture();
   const startedAt = Date.now();
   const requestsPath = join(fixture.root, "requests.json");
-  const unavailable = () => {
-    throw new Error("Unexpected dependency in hydration deadline fixture");
-  };
   const ghScript = `const assert = require("node:assert/strict");
 const { execFileSync } = require("node:child_process");
 const { appendFileSync } = require("node:fs");
@@ -2467,24 +2467,13 @@ const tree = execFileSync("git", ["ls-tree", "-r", "-l", revision], {
 appendFileSync(${JSON.stringify(requestsPath)}, JSON.stringify({ revision, elapsedMs: 0 }) + "\\n");
 process.stdout.write(JSON.stringify({ truncated: false, tree }));
 `;
-  const context = createContextHydration(
-    new Proxy(
-      {
-        isSafeGitBranchName: (branch: string) => branch === "main",
-        targetRepo: () => "fixture/repository",
-        ghJson,
-        ghJsonOnce,
-      },
-      { get: (target, key) => Reflect.get(target, key) ?? unavailable },
-    ) as Parameters<typeof createContextHydration>[0],
-  );
   try {
     t.mock.method(Date, "now", () => (existsSync(requestsPath) ? startedAt + 30_001 : startedAt));
     withMockGh(fixture.root, ghScript, () =>
       withGitHubRun(() => {
         assert.throws(
           () =>
-            context.hydratePullRequestReviewSource({
+            hydratePullRequestReviewSource({
               itemNumber: 982,
               targetDir: fixture.target,
               pullRequest: {
@@ -2517,129 +2506,207 @@ process.stdout.write(JSON.stringify({ truncated: false, tree }));
   }
 });
 
+// docs/proof/hydration-deadline/run-proof.mjs is a historical baseline driver.
+// Its injected ghJson trace exposed metadata_admission.deadlineAt,
+// request_start.timeoutMs, and the inner GitHubOperationDeadlineError.
+// Current-head coverage observes the actual child lifetime and every executable
+// request instead; no production collaborator or clock is replaced.
+// This integration test deliberately uses the platform clock: fake timers cannot
+// prove that the native synchronous command timeout signals and reaps a child.
+test(
+  "source hydration deadline terminates gh and admits no later metadata request",
+  {
+    skip: process.platform === "win32" && "requires POSIX child signal delivery",
+    timeout: 60_000,
+  },
+  (t) => {
+    const fixture = partialCloneFixture();
+    t.after(() => rmSync(fixture.root, { recursive: true, force: true }));
+    const eventsPath = join(fixture.root, "deadline-child-events.jsonl");
+    const ghScript = `const { appendFileSync, readFileSync } = require("node:fs");
+const eventsPath = ${JSON.stringify(eventsPath)};
+const previous = (() => {
+  try { return readFileSync(eventsPath, "utf8").trim().split("\\n").filter(Boolean).map(JSON.parse); }
+  catch (error) { if (error.code === "ENOENT") return []; throw error; }
+})();
+const ordinal = previous.filter((event) => event.event === "start").length + 1;
+const record = (event, data = {}) => appendFileSync(eventsPath,
+  JSON.stringify({ event, ordinal, pid: process.pid, atMs: Date.now(), ...data }) + "\\n");
+record("start", { args: process.argv.slice(2) });
+process.on("exit", (code) => record("exit", { code }));
+process.once("SIGTERM", () => {
+  record("signal", { signal: "SIGTERM" });
+  process.exit(143);
+});
+const respond = () => {
+  record("response");
+  ${reviewTreeGhScript(fixture.source)}
+};
+if (ordinal === 1) setTimeout(respond, 31_000);
+else respond();
+`;
+    assert.equal(objectExistsOffline(fixture.target, fixture.addedBlobSha), false);
+    assert.equal(objectExistsOffline(fixture.target, fixture.changedBlobSha), false);
+    const startedAt = Date.now();
+    withMockGh(fixture.root, ghScript, () =>
+      withGitHubRun(() => {
+        assert.throws(
+          () =>
+            hydratePullRequestReviewSource({
+              itemNumber: 982,
+              targetDir: fixture.target,
+              pullRequest: {
+                base: { ref: "main", sha: fixture.baseSha },
+                head: { sha: fixture.headSha },
+              },
+            }),
+          (error: unknown) => {
+            assert.ok(error instanceof AgentInputScanError);
+            assert.equal(error.name, "AgentInputScanError");
+            assert.equal(error.reason, "deadline");
+            assert.equal(error.retryable, false);
+            assert.equal(error.reviewedHeadSha, fixture.headSha);
+            assert.match(error.message, /^Agent input scan refused: deadline\./);
+            return true;
+          },
+        );
+      }),
+    );
+    const events: Array<{
+      event: string;
+      ordinal: number;
+      pid: number;
+      atMs: number;
+      args?: string[];
+      signal?: string;
+      code?: number;
+    }> = readFileSync(eventsPath, "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+    const starts = events.filter((event) => event.event === "start");
+    assert.equal(starts.length, 1, "no second metadata request may start after expiry");
+    assert.equal(starts[0]!.args?.[0], "api");
+    assert.ok(starts[0]!.args?.[1]?.endsWith(`/git/trees/${fixture.baseSha}?recursive=1`));
+    assert.deepEqual(
+      events.map((event) => event.event),
+      ["start", "signal", "exit"],
+    );
+    assert.equal(events[1]!.signal, "SIGTERM");
+    assert.equal(events[2]!.code, 143);
+    assert.equal(
+      events.every((event) => event.pid === starts[0]!.pid),
+      true,
+    );
+    assert.throws(
+      () => process.kill(starts[0]!.pid, 0),
+      { code: "ESRCH" },
+      "the exact gh child must be reaped before hydration returns",
+    );
+    assert.equal(objectExistsOffline(fixture.target, fixture.addedBlobSha), false);
+    assert.equal(objectExistsOffline(fixture.target, fixture.changedBlobSha), false);
+    t.diagnostic(JSON.stringify({ elapsedMs: Date.now() - startedAt, events }));
+  },
+);
+
 test("source preparation reports unavailable historical blobs before restricted inspection", () => {
   const fixture = partialCloneFixture({ historicalBase: true, prefetchHead: false });
   const reviewTree = join(fixture.root, "review-tree");
-  const unavailable = () => {
-    throw new Error("Unexpected external dependency in local source-preparation fixture");
-  };
-  const { hydratePullRequestReviewSource } = createContextHydration(
-    new Proxy(
-      {
-        isSafeGitBranchName: (branch: string) => branch === "main",
-        targetRepo: () => "fixture/repository",
-        ghJson: (args: string[]) => {
-          assert.equal(args[0], "api");
-          assert.deepEqual(args.slice(2), [
-            "--jq",
-            '{truncated, tree: (.tree | if type == "array" then map(if type == "object" then {type, sha, size} else . end) else . end)}',
-          ]);
-          const revision = args[1]?.match(/\/git\/trees\/([0-9a-f]+)\?recursive=1$/)?.[1];
-          assert.ok(revision);
-          const tree = git(fixture.source, "ls-tree", "-r", "-l", revision)
-            .split("\n")
-            .filter(Boolean)
-            .map((line) => {
-              const match = line.match(/^\d+ (\w+) ([0-9a-f]+)\s+(-|\d+)\t/);
-              assert.ok(match);
-              return match[1] === "blob"
-                ? { type: "blob", sha: match[2], size: Number(match[3]) }
-                : { type: match[1], sha: match[2] };
-            });
-          return { truncated: false, tree };
-        },
-      },
-      { get: (target, key) => Reflect.get(target, key) ?? unavailable },
-    ) as Parameters<typeof createContextHydration>[0],
-  );
-  try {
-    // Construct a main-only unsafe path in Git without relying on host filesystem
-    // filename support. Its optional endpoint delta must not block the PR delta.
-    const previousBase = git(fixture.source, "rev-parse", "HEAD");
-    const mainBlob = git(fixture.source, "rev-parse", "HEAD:changed.txt");
-    const baseTree = execFileSync("git", ["ls-tree", "-z", "HEAD"], { cwd: fixture.source });
-    const treeSha = execFileSync("git", ["mktree", "-z"], {
-      cwd: fixture.source,
-      encoding: "utf8",
-      input: Buffer.concat([
-        baseTree,
-        Buffer.from("100644 blob " + mainBlob + "\tbase-only\npath\0"),
-      ]),
-    }).trim();
-    const baseSha = git(
-      fixture.source,
-      "commit-tree",
-      treeSha,
-      "-p",
-      previousBase,
-      "-m",
-      "main-only path",
-    );
-    git(fixture.source, "update-ref", "refs/heads/main", baseSha);
-    git(fixture.source, "push", "-q", "origin", "main");
-    git(fixture.target, "fetch", "-q", "--filter=blob:none", "origin", "main");
-    const removedOid = git(fixture.source, "rev-parse", fixture.baseSha + ":removed.txt");
-    assert.ok(
-      ensurePullRequestReviewHead({
-        targetDir: fixture.target,
-        itemNumber: 982,
-        headSha: fixture.headSha,
-      }),
-    );
-    assert.equal(reviewMergeBase(fixture.target, baseSha, fixture.headSha).sha, fixture.baseSha);
-    assert.equal(objectExistsOffline(fixture.target, removedOid), false);
-    const prepare = () =>
-      hydratePullRequestReviewSource({
-        itemNumber: 982,
-        targetDir: fixture.target,
-        pullRequest: {
-          base: { ref: "main", sha: baseSha },
-          head: { sha: fixture.headSha },
-        },
-      });
-    const origin = git(fixture.target, "remote", "get-url", "origin");
-    git(fixture.target, "remote", "set-url", "origin", join(fixture.root, "unavailable.git"));
-    assert.throws(prepare, {
-      diagnosticStage: "source_preparation",
-      diagnosticReason: "review_blobs_unavailable",
-      reviewedHeadSha: fixture.headSha,
-    });
-    assert.equal(objectExistsOffline(fixture.target, removedOid), false);
+  withMockGh(fixture.root, reviewTreeGhScript(fixture.source), () =>
+    withGitHubRun(() => {
+      try {
+        // Construct a main-only unsafe path in Git without relying on host filesystem
+        // filename support. Its optional endpoint delta must not block the PR delta.
+        const previousBase = git(fixture.source, "rev-parse", "HEAD");
+        const mainBlob = git(fixture.source, "rev-parse", "HEAD:changed.txt");
+        const baseTree = execFileSync("git", ["ls-tree", "-z", "HEAD"], { cwd: fixture.source });
+        const treeSha = execFileSync("git", ["mktree", "-z"], {
+          cwd: fixture.source,
+          encoding: "utf8",
+          input: Buffer.concat([
+            baseTree,
+            Buffer.from("100644 blob " + mainBlob + "\tbase-only\npath\0"),
+          ]),
+        }).trim();
+        const baseSha = git(
+          fixture.source,
+          "commit-tree",
+          treeSha,
+          "-p",
+          previousBase,
+          "-m",
+          "main-only path",
+        );
+        git(fixture.source, "update-ref", "refs/heads/main", baseSha);
+        git(fixture.source, "push", "-q", "origin", "main");
+        git(fixture.target, "fetch", "-q", "--filter=blob:none", "origin", "main");
+        const removedOid = git(fixture.source, "rev-parse", fixture.baseSha + ":removed.txt");
+        assert.ok(
+          ensurePullRequestReviewHead({
+            targetDir: fixture.target,
+            itemNumber: 982,
+            headSha: fixture.headSha,
+          }),
+        );
+        assert.equal(
+          reviewMergeBase(fixture.target, baseSha, fixture.headSha).sha,
+          fixture.baseSha,
+        );
+        assert.equal(objectExistsOffline(fixture.target, removedOid), false);
+        const prepare = () =>
+          hydratePullRequestReviewSource({
+            itemNumber: 982,
+            targetDir: fixture.target,
+            pullRequest: {
+              base: { ref: "main", sha: baseSha },
+              head: { sha: fixture.headSha },
+            },
+          });
+        const origin = git(fixture.target, "remote", "get-url", "origin");
+        git(fixture.target, "remote", "set-url", "origin", join(fixture.root, "unavailable.git"));
+        assert.throws(prepare, {
+          diagnosticStage: "source_preparation",
+          diagnosticReason: "review_blobs_unavailable",
+          reviewedHeadSha: fixture.headSha,
+        });
+        assert.equal(objectExistsOffline(fixture.target, removedOid), false);
 
-    git(fixture.target, "remote", "set-url", "origin", origin);
-    prepare();
-    assert.ok(
-      materializePullRequestReviewTree({
-        targetDir: fixture.target,
-        worktreeDir: reviewTree,
-        itemNumber: 982,
-        headSha: fixture.headSha,
-      }),
-    );
-    assert.equal(git(reviewTree, "rev-parse", "HEAD"), fixture.headSha);
-    assert.equal(reviewMergeBase(reviewTree, baseSha, fixture.headSha).sha, fixture.baseSha);
-    git(fixture.target, "remote", "set-url", "origin", join(fixture.root, "offline.git"));
-    const args = [
-      "diff",
-      "--no-ext-diff",
-      "--no-textconv",
-      "--no-renames",
-      "--ignore-submodules=none",
-      fixture.baseSha,
-      fixture.headSha,
-      "--patch",
-      "--binary",
-      "--full-index",
-      "--",
-    ];
-    const patch = readReviewGit(reviewTree, args);
-    assert.ok(patch);
-    assert.deepEqual(patch, readReviewGit(fixture.source, args));
-    assert.equal(git(reviewTree, "status", "--porcelain"), "");
-  } finally {
-    removePullRequestReviewTree({ targetDir: fixture.target, worktreeDir: reviewTree });
-    rmSync(fixture.root, { recursive: true, force: true });
-  }
+        git(fixture.target, "remote", "set-url", "origin", origin);
+        prepare();
+        assert.ok(
+          materializePullRequestReviewTree({
+            targetDir: fixture.target,
+            worktreeDir: reviewTree,
+            itemNumber: 982,
+            headSha: fixture.headSha,
+          }),
+        );
+        assert.equal(git(reviewTree, "rev-parse", "HEAD"), fixture.headSha);
+        assert.equal(reviewMergeBase(reviewTree, baseSha, fixture.headSha).sha, fixture.baseSha);
+        git(fixture.target, "remote", "set-url", "origin", join(fixture.root, "offline.git"));
+        const args = [
+          "diff",
+          "--no-ext-diff",
+          "--no-textconv",
+          "--no-renames",
+          "--ignore-submodules=none",
+          fixture.baseSha,
+          fixture.headSha,
+          "--patch",
+          "--binary",
+          "--full-index",
+          "--",
+        ];
+        const patch = readReviewGit(reviewTree, args);
+        assert.ok(patch);
+        assert.deepEqual(patch, readReviewGit(fixture.source, args));
+        assert.equal(git(reviewTree, "status", "--porcelain"), "");
+      } finally {
+        removePullRequestReviewTree({ targetDir: fixture.target, worktreeDir: reviewTree });
+        rmSync(fixture.root, { recursive: true, force: true });
+      }
+    }),
+  );
 });
 
 test("review blob sizes use one bounded GraphQL metadata request", () => {
@@ -2704,27 +2771,10 @@ test("review checkout preserves large tree metadata within the GitHub CLI captur
   const raw = JSON.stringify(metadata);
   assert.ok(Buffer.byteLength(raw) > 8 * 1024 * 1024);
   writeFileSync(metadataPath, raw);
-  const unavailable = () => {
-    throw new Error("Unexpected dependency in tree metadata fixture");
-  };
-  let captured: typeof metadata | undefined;
-  const context = createContextHydration(
-    new Proxy(
-      {
-        targetRepo: () => "fixture/repository",
-        ghJsonOnce: (args: string[], timeoutMs: number) => {
-          const output = ghOnce(args, timeoutMs);
-          assert.ok(Buffer.byteLength(output) < 8 * 1024 * 1024);
-          captured = JSON.parse(output);
-          return captured;
-        },
-      },
-      { get: (target, key) => Reflect.get(target, key) ?? unavailable },
-    ) as Parameters<typeof createContextHydration>[0],
-  );
+  const capturedPath = join(fixture.root, "captured-tree.json");
   const materialize = () =>
     withGitHubRun(() =>
-      context.materializePullRequestReviewTree({
+      materializeContextReviewTree({
         targetDir: fixture.target,
         worktreeDir: reviewTree,
         itemNumber: 982,
@@ -2735,13 +2785,20 @@ test("review checkout preserves large tree metadata within the GitHub CLI captur
     withMockGh(
       fixture.root,
       `const { spawnSync } = require("node:child_process");
+const { readFileSync, writeFileSync } = require("node:fs");
 const args = process.argv.slice(2);
 const filter = args.indexOf("--jq");
 if (filter < 0) {
-  process.stdout.write(require("node:fs").readFileSync(${JSON.stringify(metadataPath)}));
+  process.stdout.write(readFileSync(${JSON.stringify(metadataPath)}));
 } else {
-  const result = spawnSync("jq", ["-c", args[filter + 1], ${JSON.stringify(metadataPath)}], { stdio: "inherit" });
-  process.exitCode = result.status ?? 1;
+  const result = spawnSync("jq", ["-c", args[filter + 1], ${JSON.stringify(metadataPath)}], { encoding: "utf8", maxBuffer: 8 * 1024 * 1024 });
+  if (result.status === 0) {
+    writeFileSync(${JSON.stringify(capturedPath)}, result.stdout);
+    process.stdout.write(result.stdout);
+  } else {
+    process.stderr.write(result.stderr);
+    process.exitCode = result.status ?? 1;
+  }
 }
 `,
       () => {
@@ -2758,6 +2815,9 @@ if (filter < 0) {
         assert.equal(materialize(), true);
       },
     );
+    const capturedOutput = readFileSync(capturedPath, "utf8");
+    assert.ok(Buffer.byteLength(capturedOutput) < 8 * 1024 * 1024);
+    const captured = JSON.parse(capturedOutput);
     assert.deepEqual(captured, {
       truncated: false,
       tree: tree.map(({ type, sha, size }) => ({ type, sha, size })),

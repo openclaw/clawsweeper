@@ -1,5 +1,9 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { setTargetRepo } from "../../../dist/repository-profiles.js";
 
 import { createStatusContext } from "../../../dist/clawsweeper-status-context.js";
 
@@ -37,8 +41,28 @@ const recentPulls = runGh([
 assert.ok(recentPulls.some((pull) => pull.number === pullNumber));
 
 const resolverCalls = [];
-const ghJson = (args) => {
-  const path = args[1] ?? "";
+const root = mkdtempSync(join(tmpdir(), "fixedsha-live-transport-"));
+const tracePath = join(root, "requests.jsonl");
+const executable = join(root, "gh.cjs");
+writeFileSync(tracePath, "");
+writeFileSync(executable, `
+const { appendFileSync } = require("node:fs");
+const { spawnSync } = require("node:child_process");
+const args = process.argv.slice(2);
+appendFileSync(${JSON.stringify(tracePath)}, JSON.stringify(args) + "\\n");
+const result = spawnSync("gh", args, { stdio: "inherit" });
+process.exit(result.status ?? 1);
+`);
+process.env.GH_BIN = process.execPath;
+process.env.GH_BIN_ARGS = JSON.stringify([executable]);
+setTargetRepo(repo);
+const context = createStatusContext();
+const resolveFixed = (...options) => {
+  const result = context.attachFixedPullRequest(...options);
+  resolverCalls.length = 0;
+  for (const line of readFileSync(tracePath, "utf8").split("\n").filter(Boolean)) {
+    const args = JSON.parse(line);
+    const path = args[1] ?? "";
   resolverCalls.push({
     route:
       path === `repos/${repo}`
@@ -51,32 +75,12 @@ const ghJson = (args) => {
               ? "commit"
               : "other",
     path,
-  });
-  return runGh(args);
+    });
+  }
+  return result;
 };
 
-const context = createStatusContext({
-  targetProfile: () => ({}),
-  targetRepo: () => repo,
-  markdownLink: (label) => label,
-  repoUrlFor: () => "",
-  linkedRelease: (tag) => tag,
-  linkedSha: (sha) => sha,
-  profileStatusStart: () => "",
-  profileStatusEnd: () => "",
-  sweepStatusPath: () => "",
-  markdownRepository: () => repo,
-  ghJson,
-  asRecord: (value) => (value && typeof value === "object" && !Array.isArray(value) ? value : {}),
-  frontMatterValue: (markdown, key) => {
-    const value = markdown.match(new RegExp(`^${key}: (.*)$`, "m"))?.[1];
-    return value?.startsWith('"') && value.endsWith('"') ? value.slice(1, -1) : value;
-  },
-  stringOrUndefined: (value) => (typeof value === "string" ? value : undefined),
-  numberOrUndefined: (value) => (typeof value === "number" ? value : undefined),
-  recordOrUndefined: (value) =>
-    value && typeof value === "object" && !Array.isArray(value) ? value : undefined,
-});
+process.on("exit", () => rmSync(root, { recursive: true, force: true }));
 
 function decision(fixedSha) {
   return {
@@ -106,7 +110,7 @@ fixed_pr_source: "GitHub commit PR lookup"
 `;
 
 for (let repeat = 0; repeat < 4; repeat += 1) {
-  const resolved = context.attachFixedPullRequest(
+  const resolved = resolveFixed(
     decision(candidate.merge_commit_sha),
     issue,
     {},
@@ -116,7 +120,7 @@ for (let repeat = 0; repeat < 4; repeat += 1) {
 }
 assert.equal(resolverCalls.length, 0, "persisted repeats must not invoke gh");
 
-const mergeResolved = context.attachFixedPullRequest(
+const mergeResolved = resolveFixed(
   decision(candidate.merge_commit_sha),
   issue,
   {},
@@ -127,12 +131,12 @@ assert.deepEqual(
   ["repository", "pulls_list"],
 );
 
-const headResolved = context.attachFixedPullRequest(decision(candidate.head.sha), issue, {});
+const headResolved = resolveFixed(decision(candidate.head.sha), issue, {});
 assert.equal(headResolved.fixedPullRequest?.number, pullNumber);
 assert.equal(resolverCalls.filter((call) => call.route === "pulls_list").length, 1);
 assert.equal(resolverCalls.filter((call) => call.route === "commit_pulls").length, 1);
 
-const interiorResolved = context.attachFixedPullRequest(decision(interiorSha), issue, {});
+const interiorResolved = resolveFixed(decision(interiorSha), issue, {});
 assert.equal(interiorResolved.fixedPullRequest?.number, pullNumber);
 assert.equal(resolverCalls.filter((call) => call.route === "pulls_list").length, 1);
 assert.equal(resolverCalls.filter((call) => call.route === "commit_pulls").length, 2);

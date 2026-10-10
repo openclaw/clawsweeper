@@ -70,3 +70,8 @@ export function errorSummary(error: unknown): string {
     .replace(/[\r\n]+/g, " ")
     .slice(0, 300);
 }
+
+export function numberOrUndefined(value: unknown): number | undefined {
+  const number = typeof value === "number" ? value : Number(value);
+  return Number.isFinite(number) ? number : undefined;
+}

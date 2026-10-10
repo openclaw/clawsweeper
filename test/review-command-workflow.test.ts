@@ -19,12 +19,13 @@ import { useFakeScanner } from "./agent-input-scan-helpers.ts";
 import { runAgentCheckoutInspection, runAgentProcess } from "../dist/agent-runner.js";
 import { createReviewActionLedger } from "../dist/clawsweeper-review-ledger.js";
 import { readAllSpooledActionEvents } from "../dist/action-ledger.js";
-import { closeDecision, reviewFinding } from "./helpers.ts";
+import { closeDecision, reviewFinding, withMockGh } from "./helpers.ts";
 import { AgentInputScanError, agentInputScanFailureExitCode } from "../dist/agent-input-scan.js";
 import { prepareOpenClawCodexSourceForReview } from "../dist/openclaw-codex-source.js";
 import { reviewStatusForDecision } from "../dist/clawsweeper-report-document.js";
 import { previousClawSweeperReviewFromComment } from "../dist/clawsweeper-review-comments.js";
-import { createContextHydration } from "../dist/clawsweeper-context-hydration.js";
+import { hydratePullRequestReviewSource } from "../dist/clawsweeper-context-hydration.js";
+import { withGitHubRun } from "../dist/clawsweeper-github-runtime.js";
 import {
   materializePullRequestReviewTree,
   removePullRequestReviewTree,
@@ -505,7 +506,7 @@ else {
     let reviewTreeAttempts = 0;
     let reviewTreeCleanupCalls = 0;
     const privateReviewRoots = new Set<string>();
-    let blobMetadataCalls = 0;
+    const blobMetadataRequests = join(root, "blob-metadata-requests.jsonl");
     let earlyHydrationError: unknown;
     let activeReviewMutationRunner = null;
 
@@ -572,34 +573,27 @@ else {
         if (!hydrated) throw new Error("scheduled structural cache hit must not hydrate");
         if (cacheRecovery) assert.equal(reviewTreeAttempts, 1);
         if (fetchFailure || blobMetadataFailure || earlyScanRefusal || cacheRecovery) {
-          const unavailable = () => {
-            throw new Error("unexpected fixture dependency");
-          };
-          const hydration = createContextHydration(
-            new Proxy(
-              {
-                isSafeGitBranchName: (branch: string) => branch === "main",
-                targetRepo: () => REPO,
-                ghJson: () => {
-                  blobMetadataCalls += 1;
-                  throw new Error("fixture blob metadata is unavailable");
-                },
-              },
-              { get: (target, key) => Reflect.get(target, key) ?? unavailable },
-            ) as Parameters<typeof createContextHydration>[0],
-          );
+          const ghScript = `const { appendFileSync } = require("node:fs");
+appendFileSync(${JSON.stringify(blobMetadataRequests)}, JSON.stringify(process.argv.slice(2)) + "\\n");
+process.stderr.write("fixture blob metadata is unavailable\\n");
+process.exitCode = 1;
+`;
           try {
-            hydration.hydratePullRequestReviewSource({
-              itemNumber: ITEM_NUMBER,
-              targetDir: target,
-              pullRequest: {
-                base: {
-                  ref: "main",
-                  sha: invalidBase ? "invalid" : fetchFailure ? "e".repeat(40) : baseSha,
-                },
-                head: missingHead ? {} : { sha: headSha },
-              },
-            });
+            withMockGh(root, ghScript, () =>
+              withGitHubRun(() =>
+                hydratePullRequestReviewSource({
+                  itemNumber: ITEM_NUMBER,
+                  targetDir: target,
+                  pullRequest: {
+                    base: {
+                      ref: "main",
+                      sha: invalidBase ? "invalid" : fetchFailure ? "e".repeat(40) : baseSha,
+                    },
+                    head: missingHead ? {} : { sha: headSha },
+                  },
+                }),
+              ),
+            );
           } catch (error) {
             earlyHydrationError = error;
             throw error;
@@ -1166,6 +1160,9 @@ else {
         assert.equal(generationCalls, 0);
         assert.equal(checkoutInspectionCalls, 0);
         assert.equal(hydrationCalls, 1);
+        const blobMetadataCalls = existsSync(blobMetadataRequests)
+          ? readFileSync(blobMetadataRequests, "utf8").trim().split("\n").length
+          : 0;
         assert.equal(blobMetadataCalls, blobMetadataFailure ? 1 : 0);
         assert.equal(cachedCompletions, 0);
         assert.equal(existsSync(providerCalls), false);

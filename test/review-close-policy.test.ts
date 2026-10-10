@@ -5,7 +5,6 @@ import { parse } from "yaml";
 
 import {
   currentClosingPullRequestReferenceFromIssueTimeline,
-  fixedPullRequestFromCommitPullsForTest,
   isProtectedItem,
   linkedIssueNumbersForPullRequestBody,
   linkedIssueNumbersForImplementationProvenance,
@@ -19,9 +18,12 @@ import {
   shouldPlanItem,
   validateCloseDecision,
 } from "../dist/clawsweeper.js";
+import { createStatusContext } from "../dist/clawsweeper-status-context.js";
 import { parseCoAuthors } from "../dist/commit-sweeper.js";
 import { repositoryProfileFor } from "../dist/repository-profiles.js";
 import { closeDecision, git, item, reportFrontMatter, reviewPrompt } from "./helpers.ts";
+
+const { fixedPullRequestFromCommitPulls } = createStatusContext();
 
 function renderedCloseReasons(prompt: string): string[] {
   const section = prompt.slice(
@@ -573,7 +575,7 @@ test("PR implementation provenance accepts only the current GitHub issue-closing
 });
 
 test("commit PR lookup selects the newest merged pull request", () => {
-  const fixedPullRequest = fixedPullRequestFromCommitPullsForTest(
+  const fixedPullRequest = fixedPullRequestFromCommitPulls(
     [
       {
         number: 455,
@@ -603,6 +605,7 @@ test("commit PR lookup selects the newest merged pull request", () => {
         base: { ref: "main" },
       },
     ],
+    "GitHub commit PR lookup",
     123,
   );
 
@@ -619,7 +622,7 @@ test("commit PR lookup selects the newest merged pull request", () => {
 });
 
 test("commit PR lookup rejects unrelated closing references at the claimed fixed SHA", () => {
-  const fixedPullRequest = fixedPullRequestFromCommitPullsForTest(
+  const fixedPullRequest = fixedPullRequestFromCommitPulls(
     [
       {
         number: 456,
@@ -646,6 +649,7 @@ test("commit PR lookup rejects unrelated closing references at the claimed fixed
         body: "Fixes other/repository#123",
       },
     ],
+    "GitHub commit PR lookup",
     123,
   );
 
@@ -664,12 +668,25 @@ test("commit PR lookup accepts an exact closing reference in the fixed commit me
   };
 
   assert.equal(
-    fixedPullRequestFromCommitPullsForTest([pull], 123, "Fixes other/repository#123"),
+    fixedPullRequestFromCommitPulls(
+      [pull],
+      "GitHub commit PR lookup",
+      123,
+      "Fixes other/repository#123",
+    ),
     null,
   );
-  assert.equal(fixedPullRequestFromCommitPullsForTest([pull], 123, "Fixes #999; see #123"), null);
   assert.equal(
-    fixedPullRequestFromCommitPullsForTest([pull], 123, "Fixes openclaw/openclaw#123")?.number,
+    fixedPullRequestFromCommitPulls([pull], "GitHub commit PR lookup", 123, "Fixes #999; see #123"),
+    null,
+  );
+  assert.equal(
+    fixedPullRequestFromCommitPulls(
+      [pull],
+      "GitHub commit PR lookup",
+      123,
+      "Fixes openclaw/openclaw#123",
+    )?.number,
     456,
   );
 });
@@ -685,8 +702,11 @@ test("commit PR lookup rejects closing references on a non-default branch", () =
     base: { ref: "release" },
   };
 
-  assert.equal(fixedPullRequestFromCommitPullsForTest([pull], 123), null);
-  assert.equal(fixedPullRequestFromCommitPullsForTest([pull], 123, "Fixes #123"), null);
+  assert.equal(fixedPullRequestFromCommitPulls([pull], "GitHub commit PR lookup", 123), null);
+  assert.equal(
+    fixedPullRequestFromCommitPulls([pull], "GitHub commit PR lookup", 123, "Fixes #123"),
+    null,
+  );
 });
 
 test("report-rendered close comments keep merged fixing PR provenance", () => {

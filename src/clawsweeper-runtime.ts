@@ -16,7 +16,7 @@ import {
   type ReviewStructuralRecord,
 } from "./review-structural-cache.js";
 import { stableJson } from "./stable-json.js";
-import { asRecord, nonBlankStringOrUndefined } from "./value-coerce.js";
+import { asRecord, nonBlankStringOrUndefined, numberOrUndefined } from "./value-coerce.js";
 
 import {
   finalizeActionEventsCommand,
@@ -36,7 +36,9 @@ import {
   validateCloseDecision,
 } from "./clawsweeper-close-decision.js";
 import { createCommandOperations } from "./clawsweeper-command-operations.js";
-import { createContextHydration } from "./clawsweeper-context-hydration.js";
+import * as contextHydration from "./clawsweeper-context-hydration.js";
+import { completePullChecksContext, pullChecksContext } from "./clawsweeper-context-hydration.js";
+import { createRelatedContext } from "./clawsweeper-related-context.js";
 import { createDashboardAudit } from "./clawsweeper-dashboard-audit.js";
 import {
   fetchReviewedPrActivityCursor,
@@ -145,7 +147,6 @@ import { createReviewActionLedger } from "./clawsweeper-review-ledger.js";
 import { createReviewPlanning } from "./clawsweeper-review-planning.js";
 import { createReviewRuntime, type ReviewItemPrompts } from "./clawsweeper-review-runtime.js";
 import {
-  hydratedReviewStructuralItemStateDigest,
   isExactEventSourceRevisionChange,
   isIgnorableSourceRevisionLabel,
   itemContentDigest,
@@ -154,7 +155,6 @@ import {
   pullCommitContentRevision,
   reviewCommentBodyDigest,
   reviewCommentContentRevision,
-  reviewTimelineDigestParts,
 } from "./clawsweeper-source-revision.js";
 import {
   freshPullRequestReviewHead,
@@ -173,6 +173,8 @@ export { reviewAutomationMarkersFromReport };
 import {
   currentClosingPullRequestReferenceFromIssueTimeline,
   createStatusContext,
+  displayTitle,
+  formatTimestamp,
   linkedIssueNumbersForImplementationProvenance,
   linkedIssueNumbersForPullRequestBody,
 } from "./clawsweeper-status-context.js";
@@ -369,54 +371,40 @@ export function stalledUnprovenProofRequestBlockReason(
   return applyGuards.stalledUnprovenProofRequestBlockReason(...args);
 }
 
-const contextHydration = createContextHydration({
-  CLAWSWEEPER_BOT_AUTHORS,
-  ...repositoryPaths,
-  displayTitle: (title) => displayTitle(title),
-  fetchIssueReviewComments: (number) => fetchIssueReviewComments(number),
-  ghJson,
-  ghJsonOnce,
-  ghJsonEach,
-  githubCount,
-  GitHubRuntimeBudgetError,
-  isBulkFilerExemptAuthorAssociation,
-  isSafeGitBranchName: (branch) => isSafeGitBranchName(branch),
-  labelNames,
-  normalizeAuthorAssociation,
-  normalizeLabelName,
-  repoRelativePath,
-  reportUrl,
-  reviewCommentBodyDigest,
-  ROOT,
+const relatedContext = createRelatedContext({
+  root: ROOT,
   targetRepo,
+  reportUrl,
+  defaultItemsDir: repositoryPaths.defaultItemsDir,
+  defaultClosedDir: repositoryPaths.defaultClosedDir,
+  isMarkdownForActiveRepo: repositoryPaths.isMarkdownForActiveRepo,
+  gitHubRuntimeBudgetError: GitHubRuntimeBudgetError,
+  ghJsonEach,
+  ghJsonOnce,
+  compactIssue: contextHydration.compactIssue,
+  compactPullRequest: contextHydration.compactPullRequest,
+  displayTitle,
+  repoRelativePath,
 });
 export const {
+  compactReferencingMergedPullRequestForTest,
+  referencingMergedPullRequestCandidatesForTest,
+  referencingMergedPullRequestsForIssueForTest,
+  relatedGitHubIssueSearchQueryForTest,
+  relatedTitleSearchTerms,
+} = relatedContext;
+const { structuralExternalRelationSensitivity } = relatedContext;
+export {
   authorPrBudget,
   authorPrBudgetMaxClosesPerRun,
-  bulkFilerPolicyInvalidatesCachedReviewForTest,
   bulkFilerThreshold,
   bulkFilerWindowDays,
   closingPullRequestReferenceTarget,
   compactMappedSlice,
   compactMappedWindow,
-  compactPullRequestForTest,
-  compactReferencingMergedPullRequestForTest,
-  detectBulkFilerForTest,
-  extractLatestClawSweeperReviewForTest,
-  extractLatestClawSweeperReviewFromHydrationForTest,
-  filterReviewContextCommentsForTest,
-  goodFirstIssueLabelOptedOutForTest,
   openClosingPullRequestApplyReason,
-  previousClawSweeperReviewDigestFromReportForTest,
-  referencingMergedPullRequestCandidatesForTest,
-  referencingMergedPullRequestsForIssueForTest,
-  relatedGitHubIssueSearchQueryForTest,
-  relatedTitleSearchTerms,
   sameAuthorCounterpartApplyReason,
-  updateBulkFilerDetectedFrontMatterForTest,
-} = contextHydration;
-const { completePullChecksContext, pullChecksContext, structuralExternalRelationSensitivity } =
-  contextHydration;
+} from "./clawsweeper-context-hydration.js";
 
 function ensureDir(path: string): void {
   mkdirSync(path, { recursive: true });
@@ -510,21 +498,7 @@ function fetchReviewStructuralRecord(options: {
   });
 }
 
-const { collectItemContext } = createItemContext({
-  ...contextHydration,
-  fetchReviewedPrActivityCursor,
-  ghPaged,
-  ghPagedContextWindow,
-  ghPagedLinkHeaderContextWindow,
-  ghJson,
-  hydratedReviewStructuralItemStateDigest,
-  itemSourceRevisionSha256,
-  pullCommitContentRevision,
-  reviewCommentContentRevision,
-  reviewTimelineDigestParts,
-
-  targetRepo,
-});
+const { collectItemContext } = createItemContext(relatedContext);
 
 const reviewRuntime = createReviewRuntime({
   reviewItemPromptPaths: REVIEW_ITEM_PROMPT_PATHS,
@@ -554,8 +528,7 @@ export const {
   reviewPromptTemplates,
   runCodexForTest,
 } = reviewRuntime;
-const { codexFailureReason, isSafeGitBranchName, prCloseCoverageProofPromptTemplate } =
-  reviewRuntime;
+const { codexFailureReason, prCloseCoverageProofPromptTemplate } = reviewRuntime;
 
 const assistWorkflow = createAssistWorkflow({
   root: ROOT,
@@ -583,17 +556,7 @@ const {
   assistValidateArtifactCommand,
 } = assistWorkflow;
 
-const statusContext = createStatusContext({
-  targetProfile,
-  targetRepo,
-  ...repositoryLinks,
-  ...sweepStatus,
-  ghJson,
-  GitHubRuntimeBudgetError,
-  numberOrUndefined,
-  recordOrUndefined,
-});
-export const { fixedPullRequestFromCommitPullsForTest } = statusContext;
+const statusContext = createStatusContext();
 export {
   currentClosingPullRequestReferenceFromIssueTimeline,
   implementedOnMainCloseProvenanceBlock,
@@ -602,7 +565,6 @@ export {
 };
 const {
   attachFixedPullRequest,
-  displayTitle,
   implementedOnMainPullRequestProvenanceApplyBlock,
   readSweepStatusSummary,
 } = statusContext;
@@ -649,17 +611,6 @@ function verifyRegressionProvenance(
   };
 }
 
-function numberOrUndefined(value: unknown): number | undefined {
-  const number = typeof value === "number" ? value : Number(value);
-  return Number.isFinite(number) ? number : undefined;
-}
-
-function recordOrUndefined(value: unknown): Record<string, unknown> | undefined {
-  return value && typeof value === "object" && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : undefined;
-}
-
 const reportOrchestration = createReportOrchestration({
   collectItemContext,
   ...contextHydration,
@@ -668,6 +619,7 @@ const reportOrchestration = createReportOrchestration({
   ensureDir,
   ...repositoryLinks,
   ...statusContext,
+  formatTimestamp,
   ghJson,
   ghObservedMutationCommand,
   ghPaged,
@@ -737,7 +689,7 @@ export const {
   timeoutWithinRuntimeBudget,
   withReviewStartStatusLease,
 } = reviewCommentWorkflow;
-const { fetchIssueReviewComments, writeCommentPayload } = reviewCommentWorkflow;
+const { writeCommentPayload } = reviewCommentWorkflow;
 
 const planCommand = createPlanCommand({
   defaultBatchSize: DEFAULT_PLAN_BATCH_SIZE,

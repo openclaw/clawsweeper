@@ -1,9 +1,17 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import test from "node:test";
-import * as github from "../dist/clawsweeper-github-context.js";
-import { ghJson } from "../dist/clawsweeper-github-execution.js";
-import { createItemContext } from "../dist/clawsweeper-item-context.js";
+import { createContextState } from "./context-state-fixture.ts";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import {
+  compactMappedSlice,
+  compactMappedWindow,
+  extractLatestClawSweeperReview,
+  extractLatestClawSweeperReviewFromHydration,
+  filterReviewContextComments,
+} from "../dist/clawsweeper-context-hydration.js";
 import { item } from "./helpers.ts";
 import { hydration, sourceTools } from "./primary-body-fixture.ts";
 import { githubTest, installGhFixture } from "./github-runtime-fixture.ts";
@@ -39,11 +47,6 @@ test("comment hydration shares complete REST pagination without weakening fresh 
 import {
   assistIssueUrlMatchesForTest,
   assistPromptContextForTest,
-  compactMappedSlice,
-  compactMappedWindow,
-  extractLatestClawSweeperReviewForTest,
-  extractLatestClawSweeperReviewFromHydrationForTest,
-  filterReviewContextCommentsForTest,
   ghPagedContextWindow,
   ghPagedLinkHeaderContextWindow,
   githubContextWindowPlan,
@@ -193,7 +196,7 @@ test("review context comment filter removes ClawSweeper self-noise and command-o
     issueComment(6, "Actionable file/line review feedback.", "chatgpt-codex-connector[bot]"),
   ];
 
-  const result = filterReviewContextCommentsForTest(comments, 123);
+  const result = filterReviewContextComments(comments, 123);
 
   assert.equal(result.filtered, 6);
   assert.deepEqual(
@@ -310,11 +313,11 @@ test("review context comment filter keeps contributor text that only quotes mark
     ),
   ];
 
-  const result = filterReviewContextCommentsForTest(comments, 123);
+  const result = filterReviewContextComments(comments, 123);
 
   assert.equal(result.filtered, 0);
   assert.equal(result.included.length, 1);
-  assert.equal(extractLatestClawSweeperReviewForTest(comments, 123), null);
+  assert.equal(extractLatestClawSweeperReview(comments, 123), null);
 });
 
 test("latest ClawSweeper durable review is extracted as compact previous review state", () => {
@@ -359,7 +362,7 @@ Needs real behavior proof before merge.
     "2026-05-24T02:00:00Z",
   );
 
-  const review = extractLatestClawSweeperReviewForTest([older, latest], 123);
+  const review = extractLatestClawSweeperReview([older, latest], 123);
 
   assert.ok(review);
   assert.equal(review.status, "found issues before merge.");
@@ -400,8 +403,8 @@ The review in the middle of an active discussion remains authoritative.
     },
   );
 
-  assert.equal(extractLatestClawSweeperReviewForTest(commentsWindow.items, 123), null);
-  const review = extractLatestClawSweeperReviewFromHydrationForTest(commentsWindow, comments, 123);
+  assert.equal(extractLatestClawSweeperReview(commentsWindow.items, 123), null);
+  const review = extractLatestClawSweeperReviewFromHydration(commentsWindow, comments, 123);
 
   assert.ok(review);
   assert.equal(review.reviewedSha, "abc");
@@ -449,8 +452,8 @@ RAW_SELF_COMMENT_SENTINEL
   );
   const forged = issueComment(43, body.replace("current", "forged"));
   const comments = [trusted, disposition, forged];
-  const filtered = filterReviewContextCommentsForTest(comments, 123);
-  const review = extractLatestClawSweeperReviewForTest(comments, 123)!;
+  const filtered = filterReviewContextComments(comments, 123);
+  const review = extractLatestClawSweeperReview(comments, 123)!;
 
   assert.deepEqual(filtered.included, [disposition, forged]);
   assert.equal(filtered.filtered, 1);
@@ -507,7 +510,7 @@ Add real behavior proof.
     "2026-05-24T02:00:00Z",
   );
 
-  const review = extractLatestClawSweeperReviewForTest([latest], 123);
+  const review = extractLatestClawSweeperReview([latest], 123);
 
   assert.ok(review);
   assert.equal(review.status, "needs real behavior proof before merge.");
@@ -752,6 +755,7 @@ githubTest(
   "legacy PR metadata derives inline windows and complete activity from one paged read",
   async (t) => {
     const target = item({ kind: "pull_request" });
+    const { collectItemContext } = createContextState();
     for (const count of [0, 10, 40, 81, 250]) {
       await t.test(`${count} inline comments`, (t) => {
         const comments = Array.from({ length: count }, (_, index) => ({
@@ -763,40 +767,37 @@ githubTest(
           t,
           `
 const comments = ${JSON.stringify(comments)};
-const path = args[1];
-if (path.includes("/pulls/") && path.includes("/comments")) {
+const path = (args.find(arg => /^(repos\\/|search\\/|graphql$)/.test(arg)) || "").split("?")[0];
+let value;
+if (path.includes("/pulls/") && path.endsWith("/comments")) {
   if (!args.includes("--paginate")) throw new Error("inline comments must use full pagination");
-  console.log(JSON.stringify(Array.from(
-    { length: Math.ceil(comments.length / 100) },
-    (_, index) => comments.slice(index * 100, (index + 1) * 100),
-  )));
+  value = comments;
+} else if (path.endsWith("/files") || path.endsWith("/commits") || path.endsWith("/reviews") || path.endsWith("/timeline")) {
+  value = [];
+} else if (path === "graphql") {
+  value = { data: { repository: { pullRequest: { reviewThreads: { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } } } } } };
 } else if (path.includes("/pulls/")) {
-  console.log(JSON.stringify({ changed_files: 0, commits: 0, review_comments: comments.length }));
-} else if (args.includes("-i")) {
-  console.log("HTTP/2 200 OK\\n\\n[]");
+  value = { changed_files: 0, commits: 0, review_comments: comments.length };
 } else {
-  console.log(JSON.stringify({ comments: 0 }));
+  value = { comments: 0 };
 }
+if (args.includes("-i") || args.includes("--include")) process.stdout.write("HTTP/2 200 OK\\n\\n");
+console.log(JSON.stringify(args.includes("--slurp") ? [value] : value));
 `,
         );
-        const { collectItemContext } = createItemContext({
-          ...hydration,
-          ...sourceTools,
-          ...github,
-          ghJson,
-          targetRepo: () => target.repo,
-          closingPullRequestsForIssue: () => [],
-          referencingMergedPullRequestsForIssue: () => [],
-          relatedItemsContext: () => [],
-          fetchReviewedPrActivityCursor: () => null,
-          pullChecksContext: () => ({ complete: true, checkRuns: [], statuses: [] }),
-        });
         const context = collectItemContext(target, {
           reviewCacheDigest: true,
           fullTimelineForRelations: true,
         });
         assert.equal(
-          fixture.requests().filter(({ args }) => args.includes("--paginate")).length,
+          fixture
+            .requests()
+            .filter(
+              ({ args }) =>
+                args.includes("--paginate") &&
+                args[1]?.includes("/pulls/") &&
+                args[1]?.includes("/comments"),
+            ).length,
           count > 0 ? 1 : 0,
         );
         assert.equal(context.counts?.pullReviewComments, count);
@@ -811,63 +812,83 @@ if (path.includes("/pulls/") && path.includes("/comments")) {
   },
 );
 
-test("bounded PR context prepares source independently of cache digest and API file completeness", async () => {
-  const { createItemContext } = await import("../dist/clawsweeper-item-context.js");
-  const { hydration, sourceTools } = await import("./primary-body-fixture.ts");
-  const { item } = await import("./helpers.ts");
-  const target = item({ kind: "pull_request" });
-  const pullRequest = {
-    head: { sha: "b".repeat(40) },
-    base: { sha: "a".repeat(40), ref: "main" },
-    changed_files: 341,
-    commits: 113,
-    review_comments: 0,
-  };
-  const empty = { items: [], total: 0, hydrated: 0, truncated: false };
-  const prepared: unknown[] = [];
-  const { collectItemContext } = createItemContext({
-    ...hydration,
-    ...sourceTools,
-
-    targetRepo: () => target.repo,
-    ghJson: <T>(args: string[]) =>
-      (args[1]!.includes("/pulls/") ? pullRequest : { comments: 0 }) as T,
-    ghPaged: () => [],
-    ghPagedContextWindow: <T>(path: string) =>
-      path.endsWith("/files")
-        ? {
-            items: Array.from({ length: 80 }, (_, index) => ({
-              filename: `file-${index}.txt`,
-            })) as T[],
-            total: 341,
-            hydrated: 80,
-            truncated: true,
-          }
-        : empty,
-    ghPagedLinkHeaderContextWindow: () => empty,
-    closingPullRequestsForIssue: () => [],
-    referencingMergedPullRequestsForIssue: () => [],
-    relatedItemsContext: () => [],
-    fetchReviewedPrActivityCursor: () => null,
-    pullChecksContext: () => ({ complete: true, checkRuns: [], statuses: [] }),
-    hydratePullRequestReviewSource: (options) => prepared.push(options),
-  });
-  for (const reviewCacheDigest of [false, true]) {
-    const context = collectItemContext(target, {
-      reviewCacheDigest,
-      reviewCacheGitDir: "/synthetic/source",
+githubTest(
+  "bounded PR context prepares source independently of cache digest and API file completeness",
+  async (t) => {
+    const root = mkdtempSync(join(tmpdir(), "bounded-pr-context-"));
+    t.after(() => rmSync(root, { recursive: true, force: true }));
+    const git = (...args: string[]) =>
+      execFileSync("git", ["-C", root, ...args], { encoding: "utf8" }).trim();
+    git("init", "-b", "main");
+    git("config", "user.name", "Fixture");
+    git("config", "user.email", "fixture@example.invalid");
+    writeFileSync(join(root, "source.txt"), "base\n");
+    git("add", ".");
+    git("commit", "-m", "base");
+    const baseSha = git("rev-parse", "HEAD");
+    writeFileSync(join(root, "source.txt"), "head\n");
+    git("commit", "-am", "head");
+    const headSha = git("rev-parse", "HEAD");
+    const target = item({ kind: "pull_request" });
+    const pullRequest = {
+      head: { sha: headSha },
+      base: { sha: baseSha, ref: "main" },
+      changed_files: 341,
+      commits: 113,
+      review_comments: 0,
+    };
+    const { collectItemContext } = createContextState();
+    installGhFixture(
+      t,
+      `
+const route = args.find(arg => /^(repos\\/|search\\/|graphql$)/.test(arg)) || "";
+const path = route.split("?")[0];
+const url = new URL("https://fixture.invalid/" + route);
+const page = Number(url.searchParams.get("page") || 1);
+let value;
+if (path.endsWith("/files")) {
+  const files = Array.from({ length: 341 }, (_, index) => ({ filename: "file-" + index + ".txt" }));
+  value = files.slice((page - 1) * 100, page * 100);
+} else if (path.endsWith("/pulls/${target.number}")) value = ${JSON.stringify(pullRequest)};
+else if (path.endsWith("/issues/${target.number}")) value = { comments: 0 };
+else if (path.endsWith("/check-runs")) value = { total_count: 0, check_runs: [] };
+else if (path.endsWith("/status")) value = { total_count: 0, statuses: [] };
+else if (path === "graphql") value = { data: { repository: { pullRequest: { reviewThreads: { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } } } } } };
+else value = [];
+if (args.includes("-i") || args.includes("--include")) process.stdout.write("HTTP/2 200 OK\\n\\n");
+console.log(JSON.stringify(args.includes("--slurp") ? [value] : value));
+`,
+    );
+    const trace = join(root, "git-trace");
+    const previousTrace = process.env.GIT_TRACE;
+    process.env.GIT_TRACE = trace;
+    t.after(() => {
+      if (previousTrace === undefined) delete process.env.GIT_TRACE;
+      else process.env.GIT_TRACE = previousTrace;
     });
-    assert.equal(context.counts?.pullFiles, 341);
-    assert.equal(context.counts?.pullFilesHydrated, 80);
-    assert.equal(context.counts?.pullFilesTruncated, true);
-    assert.equal(context.pullFiles?.length, 81, "80 files plus the explicit omission marker");
-    assert.deepEqual(prepared.at(-1), {
-      itemNumber: target.number,
-      pullRequest,
-      targetDir: "/synthetic/source",
-    });
-  }
-  assert.equal(prepared.length, 2);
-  collectItemContext(target);
-  assert.equal(prepared.length, 2, "context-only callers do not request a Git checkout");
-});
+    let priorTraceLength = 0;
+    for (const reviewCacheDigest of [false, true]) {
+      const context = collectItemContext(target, { reviewCacheDigest, reviewCacheGitDir: root });
+      assert.equal(context.counts?.pullFiles, 341);
+      assert.equal(context.counts?.pullFilesHydrated, 80);
+      assert.equal(context.counts?.pullFilesTruncated, true);
+      assert.equal(context.pullFiles?.length, 81, "80 files plus the explicit omission marker");
+      const sourceTrace = readFileSync(trace, "utf8");
+      assert.ok(
+        sourceTrace.length > priorTraceLength,
+        "each requested source preparation executes Git",
+      );
+      const preparationTrace = sourceTrace.slice(priorTraceLength);
+      for (const sha of [baseSha, headSha]) {
+        assert.match(preparationTrace, new RegExp(`cat-file -e ['"]?${sha}\\^\\{commit\\}`));
+      }
+      priorTraceLength = sourceTrace.length;
+    }
+    collectItemContext(target);
+    assert.equal(
+      readFileSync(trace, "utf8").length,
+      priorTraceLength,
+      "context-only callers do not request a Git checkout",
+    );
+  },
+);

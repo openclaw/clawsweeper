@@ -4,11 +4,13 @@ import test from "node:test";
 import {
   bulkFilerThreshold,
   bulkFilerWindowDays,
-  detectBulkFilerForTest,
-  bulkFilerPolicyInvalidatesCachedReviewForTest,
   renderReviewStartStatusComment,
-  updateBulkFilerDetectedFrontMatterForTest,
 } from "../dist/clawsweeper.js";
+import {
+  detectBulkFiler,
+  bulkFilerPolicyInvalidatesCachedReview,
+  updateBulkFilerDetectedFrontMatter,
+} from "../dist/clawsweeper-context-hydration.js";
 import { createLabelMutationOperations } from "../dist/clawsweeper-label-mutations.js";
 import { createLabelSyncOperations } from "../dist/clawsweeper-label-operations.js";
 import { item } from "./helpers.ts";
@@ -25,7 +27,7 @@ test("bulk-filer defaults and positive env overrides are bounded", () => {
 test("bulk-filer detection includes the threshold boundary and leaves labeling to publication", () => {
   const now = Date.parse("2026-07-16T12:00:00.000Z");
   let searches = 0;
-  const cutoffResult = detectBulkFilerForTest({
+  const cutoffResult = detectBulkFiler({
     item: item({ number: 43, createdAt: "2026-07-09T12:00:00.000Z" }),
     cache: new Map(),
     now,
@@ -44,7 +46,7 @@ test("bulk-filer detection includes the threshold boundary and leaves labeling t
   const candidate = item({ number: 44, createdAt: "2026-07-09T12:00:00.001Z" });
   let observedWindowStart = "";
   let observedWindowEnd = "";
-  const result = detectBulkFilerForTest({
+  const result = detectBulkFiler({
     item: candidate,
     cache: new Map(),
     now,
@@ -93,7 +95,7 @@ test("bulk-filer count ends at the issue's creation, not at review time", () => 
   const cache = new Map();
   const reReviewNow = Date.parse("2026-10-08T12:00:00.000Z");
 
-  const earlier = detectBulkFilerForTest({
+  const earlier = detectBulkFiler({
     item: item({ author: "reporter", number: 164972, createdAt: "2026-10-04T15:07:54Z" }),
     cache,
     now: reReviewNow,
@@ -106,7 +108,7 @@ test("bulk-filer count ends at the issue's creation, not at review time", () => 
     belowThreshold: true,
   });
 
-  const tenth = detectBulkFilerForTest({
+  const tenth = detectBulkFiler({
     item: item({ author: "reporter", number: 165709, createdAt: "2026-10-05T17:59:00Z" }),
     cache,
     now: reReviewNow,
@@ -121,7 +123,7 @@ test("bulk-filer policy exempts only owners and members", () => {
   const now = Date.parse("2026-07-16T12:00:00.000Z");
   for (const authorAssociation of ["OWNER", "MEMBER"]) {
     let searches = 0;
-    const result = detectBulkFilerForTest({
+    const result = detectBulkFiler({
       item: item({ authorAssociation, createdAt: "2026-07-16T11:59:59.999Z" }),
       cache: new Map(),
       now,
@@ -135,7 +137,7 @@ test("bulk-filer policy exempts only owners and members", () => {
   }
 
   let collaboratorSearches = 0;
-  const collaborator = detectBulkFilerForTest({
+  const collaborator = detectBulkFiler({
     item: item({ authorAssociation: "COLLABORATOR", createdAt: "2026-07-16T11:59:59.999Z" }),
     cache: new Map(),
     now,
@@ -155,13 +157,13 @@ test("bulk-filer detection caches counts, fails open, and respects an existing l
     searches += 1;
     throw new Error("search unavailable");
   };
-  const first = detectBulkFilerForTest({
+  const first = detectBulkFiler({
     item: item({ author: "Reporter", number: 1 }),
     cache,
     now: 0,
     searchCount,
   });
-  const second = detectBulkFilerForTest({
+  const second = detectBulkFiler({
     item: item({ author: "reporter", number: 2 }),
     cache,
     now: 0,
@@ -171,7 +173,7 @@ test("bulk-filer detection caches counts, fails open, and respects an existing l
   assert.deepEqual(second, { context: null, labelPending: false, labelApplied: false });
   assert.equal(searches, 1);
 
-  const existing = detectBulkFilerForTest({
+  const existing = detectBulkFiler({
     item: item({ labels: ["ClawSweeper:Bulk-Filed"] }),
     cache: new Map(),
     now: 0,
@@ -297,17 +299,17 @@ test("a confirmed below-threshold count removes a retroactive label, a failed se
     { labels: ["clawsweeper:bulk-filed", "P2"], changed: false },
   );
 
-  const below = detectBulkFilerForTest({
+  const below = detectBulkFiler({
     item: item({ createdAt: "2026-07-16T11:59:59.999Z" }),
     cache: new Map(),
     now: Date.parse("2026-07-16T12:00:00.000Z"),
     searchCount: () => 9,
   });
   assert.match(
-    updateBulkFilerDetectedFrontMatterForTest("---\nreview_cache_hit: true\n---\n", below),
+    updateBulkFilerDetectedFrontMatter("---\nreview_cache_hit: true\n---\n", below),
     /^bulk_filer_below_threshold: true$/m,
   );
-  const failed = detectBulkFilerForTest({
+  const failed = detectBulkFiler({
     item: item({ createdAt: "2026-07-16T11:59:59.999Z" }),
     cache: new Map(),
     now: Date.parse("2026-07-16T12:00:00.000Z"),
@@ -316,7 +318,7 @@ test("a confirmed below-threshold count removes a retroactive label, a failed se
     },
   });
   assert.match(
-    updateBulkFilerDetectedFrontMatterForTest("---\nreview_cache_hit: true\n---\n", failed),
+    updateBulkFilerDetectedFrontMatter("---\nreview_cache_hit: true\n---\n", failed),
     /^bulk_filer_below_threshold: false$/m,
   );
 });
@@ -324,10 +326,10 @@ test("a confirmed below-threshold count removes a retroactive label, a failed se
 test("a confirmed below-threshold count bypasses a cached bulk-suppressed review", () => {
   const suppressed =
     "---\nbulk_filer_detected: true\nlast_full_review_bulk_filer_detected: true\nreview_cache_hit: false\n---\n";
-  assert.equal(bulkFilerPolicyInvalidatesCachedReviewForTest(suppressed, false, true), true);
-  assert.equal(bulkFilerPolicyInvalidatesCachedReviewForTest(suppressed, false, false), false);
+  assert.equal(bulkFilerPolicyInvalidatesCachedReview(suppressed, false, true), true);
+  assert.equal(bulkFilerPolicyInvalidatesCachedReview(suppressed, false, false), false);
   assert.equal(
-    bulkFilerPolicyInvalidatesCachedReviewForTest(
+    bulkFilerPolicyInvalidatesCachedReview(
       "---\nlast_full_review_bulk_filer_detected: false\nreview_cache_hit: false\n---\n",
       false,
       true,
@@ -336,49 +338,45 @@ test("a confirmed below-threshold count bypasses a cached bulk-suppressed review
   );
   // Legacy reports without the field are not re-reviewed just because the count is low.
   assert.equal(
-    bulkFilerPolicyInvalidatesCachedReviewForTest(
-      "---\nreview_cache_hit: false\n---\n",
-      false,
-      true,
-    ),
+    bulkFilerPolicyInvalidatesCachedReview("---\nreview_cache_hit: false\n---\n", false, true),
     false,
   );
 });
 
 test("cached reports refresh the bulk-filer handoff, including legacy reports", () => {
-  const detected = detectBulkFilerForTest({
+  const detected = detectBulkFiler({
     item: item({ createdAt: "2026-07-16T11:59:59.999Z" }),
     cache: new Map(),
     now: Date.parse("2026-07-16T12:00:00.000Z"),
     searchCount: () => 16,
   });
   assert.match(
-    updateBulkFilerDetectedFrontMatterForTest("---\nreview_cache_hit: true\n---\n", detected),
+    updateBulkFilerDetectedFrontMatter("---\nreview_cache_hit: true\n---\n", detected),
     /^bulk_filer_detected: true$/m,
   );
 });
 
 test("a newly exempt maintainer bypasses a cached bulk-filer review", () => {
   assert.equal(
-    bulkFilerPolicyInvalidatesCachedReviewForTest(
+    bulkFilerPolicyInvalidatesCachedReview(
       "---\nbulk_filer_detected: false\nlast_full_review_bulk_filer_detected: true\nreview_cache_hit: false\n---\n",
       true,
     ),
     true,
   );
   assert.equal(
-    bulkFilerPolicyInvalidatesCachedReviewForTest(
+    bulkFilerPolicyInvalidatesCachedReview(
       "---\nbulk_filer_detected: true\nlast_full_review_bulk_filer_detected: false\nreview_cache_hit: false\n---\n",
       true,
     ),
     false,
   );
   assert.equal(
-    bulkFilerPolicyInvalidatesCachedReviewForTest("---\nreview_cache_hit: false\n---\n", true),
+    bulkFilerPolicyInvalidatesCachedReview("---\nreview_cache_hit: false\n---\n", true),
     true,
   );
   assert.equal(
-    bulkFilerPolicyInvalidatesCachedReviewForTest(
+    bulkFilerPolicyInvalidatesCachedReview(
       "---\nlast_full_review_bulk_filer_detected: true\nreview_cache_hit: false\n---\n",
       false,
     ),

@@ -214,10 +214,6 @@ export function createReviewRuntime({
     return "main";
   }
 
-  function isSafeGitBranchName(branch: string): boolean {
-    return /^[A-Za-z0-9_./-]+$/.test(branch) && !branch.startsWith("-");
-  }
-
   function requireSafeGitBranchName(branch: string, label: string): string {
     if (isSafeGitBranchName(branch) && branch !== "HEAD") return branch;
     throw new UserFacingCommandError(`Invalid ${label}: ${branch}`);
@@ -1388,3 +1384,8 @@ ${extra}
     runCodex,
   };
 }
+function isSafeGitBranchName(branch: string): boolean {
+  return /^[A-Za-z0-9_./-]+$/.test(branch) && !branch.startsWith("-");
+}
+
+export { isSafeGitBranchName };

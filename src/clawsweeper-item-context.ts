@@ -1,12 +1,5 @@
 import { sha256 } from "./content-hash.js";
-import type {
-  ContextHydration,
-  GithubPageWithHeaders,
-  GoodFirstIssueHumanLabelState,
-  Item,
-  ItemContext,
-  PreviousClawSweeperReview,
-} from "./clawsweeper-types.js";
+import type { ContextHydration, Item, ItemContext } from "./clawsweeper-types.js";
 import { completeActivityContextSymbol } from "./clawsweeper-types.js";
 import { stableJson } from "./stable-json.js";
 import { compactPrimaryBody } from "./clawsweeper-primary-body.js";
@@ -22,65 +15,39 @@ import {
   type LiveReadOptions,
 } from "./live-read-generation.js";
 import { asRecord, nonBlankStringOrUndefined } from "./value-coerce.js";
+import {
+  closingPullRequestsForIssue,
+  compactComment,
+  compactIssue,
+  compactMappedSlice,
+  compactMappedWindow,
+  compactPullCommit,
+  compactPullFile,
+  compactPullRequest,
+  compactTimelineEvent,
+  extractLatestClawSweeperReviewFromHydration,
+  filterReviewContextComments,
+  goodFirstIssueHumanLabelState,
+  pullChecksContext,
+  hydratePullRequestReviewSource,
+} from "./clawsweeper-context-hydration.js";
+import {
+  fetchReviewedPrActivityCursor,
+  ghPaged,
+  ghPagedContextWindow,
+  ghPagedLinkHeaderContextWindow,
+} from "./clawsweeper-github-context.js";
+import { ghJson } from "./clawsweeper-github-execution.js";
+import {
+  hydratedReviewStructuralItemStateDigest,
+  itemSourceRevisionSha256,
+  pullCommitContentRevision,
+  reviewCommentContentRevision,
+  reviewTimelineDigestParts,
+} from "./clawsweeper-source-revision.js";
+import { targetRepo } from "./repository-profiles.js";
 
-interface CreateItemContextDependencies {
-  closingPullRequestsForIssue: (number: number) => unknown[];
-  compactComment: (value: unknown) => unknown;
-  compactIssue: (value: unknown) => unknown;
-  compactMappedSlice: <T>(
-    items: readonly T[],
-    limit: number,
-    mapper: (item: T) => unknown,
-  ) => unknown[];
-  compactMappedWindow: <T>(
-    items: readonly T[],
-    total: number,
-    limit: number,
-    mapper: (item: T) => unknown,
-  ) => unknown[];
-  compactPullCommit: (value: unknown) => unknown;
-  compactPullFile: (value: unknown) => unknown;
-  compactPullRequest: (value: unknown) => unknown;
-  compactTimelineEvent: (value: unknown) => unknown;
-  extractLatestClawSweeperReviewFromHydration: (
-    commentsWindow: ContextHydration<unknown>,
-    completeComments: readonly unknown[],
-    number: number,
-  ) => PreviousClawSweeperReview | null;
-  fetchReviewedPrActivityCursor: (
-    number: number,
-    prefetchedInlineComments?: unknown[],
-  ) => string | null;
-  filterReviewContextComments: (
-    comments: readonly unknown[],
-    number: number,
-  ) => { included: unknown[]; filtered: number };
-  ghJson: <T>(args: string[]) => T;
-  ghPaged: <T>(path: string) => T[];
-  ghPagedContextWindow: <T>(
-    path: string,
-    totalCount: unknown,
-    promptLimit: number,
-    fetchers?: { page?: (path: string, page: number) => T[]; paged?: (path: string) => T[] },
-  ) => ContextHydration<T>;
-  ghPagedLinkHeaderContextWindow: <T>(
-    path: string,
-    promptLimit: number,
-    fetchers?: {
-      pageWithHeaders?: (path: string, page: number, perPage: number) => GithubPageWithHeaders<T>;
-      paged?: (path: string) => T[];
-      complete?: (items: T[]) => void;
-    },
-  ) => ContextHydration<T>;
-  goodFirstIssueHumanLabelState: (timeline: readonly unknown[]) => GoodFirstIssueHumanLabelState;
-  hydratedReviewStructuralItemStateDigest: (
-    issue: unknown,
-    comments: readonly unknown[],
-  ) => string | undefined;
-  itemSourceRevisionSha256: (issue: unknown, comments?: unknown[]) => string;
-  pullChecksContext: (number: number, headSha: string) => unknown;
-  pullCommitContentRevision: (entries: readonly unknown[]) => string | null;
-  referencingMergedPullRequestsForIssue: (number: number) => unknown[];
+export interface ItemContextRelations {
   relatedItemsContext: (options: {
     item: Item;
     issue: unknown;
@@ -89,48 +56,11 @@ interface CreateItemContextDependencies {
     pullRequest?: unknown;
     pullReviewComments?: unknown[];
   }) => unknown[];
-  reviewCommentContentRevision: (entries: readonly unknown[]) => string;
-  reviewTimelineDigestParts: (entries: unknown) => unknown;
-  hydratePullRequestReviewSource: (options: {
-    itemNumber: number;
-    pullRequest: unknown;
-    targetDir: string;
-  }) => void;
-
-  targetRepo: () => string;
+  referencingMergedPullRequestsForIssue: (number: number) => unknown[];
 }
 
-export function createItemContext(dependencies: CreateItemContextDependencies) {
-  const {
-    closingPullRequestsForIssue,
-    compactComment,
-    compactIssue,
-    compactMappedSlice,
-    compactMappedWindow,
-    compactPullCommit,
-    compactPullFile,
-    compactPullRequest,
-    compactTimelineEvent,
-    extractLatestClawSweeperReviewFromHydration,
-    fetchReviewedPrActivityCursor,
-    filterReviewContextComments,
-    ghJson,
-    ghPaged,
-    ghPagedContextWindow,
-    ghPagedLinkHeaderContextWindow,
-    goodFirstIssueHumanLabelState,
-    hydratedReviewStructuralItemStateDigest,
-    itemSourceRevisionSha256,
-    pullChecksContext,
-    pullCommitContentRevision,
-    referencingMergedPullRequestsForIssue,
-    relatedItemsContext,
-    reviewCommentContentRevision,
-    reviewTimelineDigestParts,
-    hydratePullRequestReviewSource,
-
-    targetRepo,
-  } = dependencies;
+export function createItemContext(relatedContext: ItemContextRelations) {
+  const { relatedItemsContext, referencingMergedPullRequestsForIssue } = relatedContext;
 
   function collectItemContext(
     item: Item,

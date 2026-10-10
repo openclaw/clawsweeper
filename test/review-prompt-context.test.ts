@@ -4,7 +4,6 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import {
-  compactPullRequestForTest,
   assistPromptContextForTest,
   renderReviewContextBudgetForTest,
   reviewContextLedgerForTest,
@@ -13,11 +12,14 @@ import {
   reviewPromptTelemetryForTest,
   reviewPolicyHashForTest,
   reviewPromptTemplates,
-  extractLatestClawSweeperReviewForTest,
-  filterReviewContextCommentsForTest,
   renderReviewCommentFromReport,
   reviewAutomationMarkersFromReport,
 } from "../dist/clawsweeper.js";
+import {
+  compactPullRequest,
+  extractLatestClawSweeperReview,
+  filterReviewContextComments,
+} from "../dist/clawsweeper-context-hydration.js";
 import { parseArgs as parseClawsweeperArgs } from "../dist/clawsweeper-args.js";
 import { REPOSITORY_PROFILES, repositoryProfileFor } from "../dist/repository-profiles.js";
 import { renderReviewSections, reviewPromptSections } from "../dist/review-prompt-sections.js";
@@ -287,8 +289,8 @@ ${scenario === "concrete" ? "- **[P1] Invalidate revoked credentials:** `src/cac
       body: "Rank-up disposition: the cache boundary is documented. Unspecified recursive advice is skipped; no code finding is waived.",
     };
     const comments = [previousComment, disposition];
-    const filtered = filterReviewContextCommentsForTest(comments, 101);
-    const previous = extractLatestClawSweeperReviewForTest(comments, 101)!;
+    const filtered = filterReviewContextComments(comments, 101);
+    const previous = extractLatestClawSweeperReview(comments, 101)!;
     const prompt = reviewPromptForTest(
       item({ kind: "pull_request", number: 101 }),
       {
@@ -327,7 +329,7 @@ ${scenario === "concrete" ? "- **[P1] Invalidate revoked credentials:** `src/cac
     const rerenderedBody = markedReviewCommentForTest(101, rerendered);
     assert.equal(rerenderedBody, body);
     assert.doesNotMatch(rerenderedBody, /<!-- clawsweeper-review-history\b/);
-    const again = extractLatestClawSweeperReviewForTest(
+    const again = extractLatestClawSweeperReview(
       [{ ...previousComment, body: rerenderedBody }],
       101,
     )!;
@@ -674,7 +676,7 @@ test("review prompt counts passing checks and lists only the ones that did not p
 });
 
 test("review prompt includes merge state and guards clean behind-branch drift", () => {
-  const compactPullRequest = compactPullRequestForTest({
+  const pullRequest = compactPullRequest({
     number: 123,
     title: "Sample PR",
     html_url: "https://github.com/openclaw/openclaw/pull/123",
@@ -694,13 +696,14 @@ test("review prompt includes merge state and guards clean behind-branch drift", 
     issue: { number: 123, title: "Sample PR" },
     comments: [],
     timeline: [],
-    pullRequest: compactPullRequest,
+    pullRequest,
     counts: { comments: 0, timeline: 0 },
   };
 
   const prompt = reviewPromptForTest(item({ kind: "pull_request", number: 123 }), context, git);
 
-  assert.deepEqual((compactPullRequest as { mergeableState?: unknown }).mergeableState, "clean");
+  assert.ok(pullRequest && typeof pullRequest === "object" && "mergeableState" in pullRequest);
+  assert.equal(pullRequest.mergeableState, "clean");
   assert.match(prompt, /"mergeableState": "clean"/);
 });
 

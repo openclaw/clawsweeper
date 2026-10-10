@@ -7,6 +7,7 @@ import * as github from "../../dist/clawsweeper-github-context.js";
 import * as execution from "../../dist/clawsweeper-github-execution.js";
 import { withGitHubRun } from "../../dist/clawsweeper-github-runtime.js";
 import { repositoryProfileFor, withTargetProfile } from "../../dist/repository-profiles.js";
+import { createContextState } from "../../test/context-state-fixture.ts";
 
 const repo = "fixture/repository";
 const issuePath = `repos/${repo}/issues/123`;
@@ -16,6 +17,11 @@ const commentsPath = inline ? `${pullPath}/comments` : `${issuePath}/comments`;
 
 if (process.argv[2] === "--gh") {
   const args = process.argv.slice(3);
+  if (args[0] === "--repo") args.splice(0, 2);
+  if (args[0] === "issue") {
+    process.stdout.write(JSON.stringify({ closedByPullRequestsReferences: [] }));
+    process.exit(0);
+  }
   assert.equal(args[0], "api");
   const path = args.slice(1).find((arg) => !arg.startsWith("-"));
   assert.ok(path);
@@ -100,19 +106,35 @@ if (process.argv[2] === "--gh") {
       )
     )
       return send([]);
+    if (url.pathname.endsWith("/timeline") || url.pathname.endsWith("/reviews")) return send([]);
+    if (url.pathname.endsWith("/check-runs")) return send({ total_count: 0, check_runs: [] });
+    if (url.pathname.endsWith("/status")) return send({ total_count: 0, statuses: [] });
+    if (url.pathname === "/search/issues") return send({ total_count: 0, items: [] });
+    if (url.pathname === "/graphql") {
+      return send({
+        data: {
+          repository: {
+            pullRequest: {
+              reviewThreads: { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } },
+            },
+          },
+        },
+      });
+    }
     response.statusCode = 404;
     send({ error: "unexpected proof route" });
   });
   server.listen(0, "127.0.0.1", () => console.log(server.address().port));
 } else {
-  const { createItemContext } = await import(
+  const itemContextModule = await import(
     inline && process.argv.includes("--baseline")
       ? "../../dist/clawsweeper-item-context-baseline.js"
       : "../../dist/clawsweeper-item-context.js"
   );
   const { LiveReadGeneration, generationReadKey } =
     await import("../../dist/live-read-generation.js");
-  const { hydration, sourceTools } = await import("../../test/primary-body-fixture.ts");
+  const hydration = await import("../../dist/clawsweeper-context-hydration.js");
+  const sourceTools = await import("../../dist/clawsweeper-source-revision.js");
   const { sha256 } = await import("../../dist/content-hash.js");
   const baseline = process.argv.includes("--baseline");
   const child = spawn(
@@ -142,21 +164,24 @@ if (process.argv[2] === "--gh") {
     GH_TOKEN: "synthetic-loopback-only",
   });
   const empty = { items: [], total: 0, hydrated: 0, truncated: false };
-  const { collectItemContext } = createItemContext({
-    ...hydration,
-    ...sourceTools,
-    ...github,
-    // The --baseline item-context build predates direct content-hash imports.
-    sha256,
-    targetRepo: () => repo,
-    ghJson: execution.ghJson,
-    ghPagedLinkHeaderContextWindow: () => empty,
-    closingPullRequestsForIssue: () => [],
-    referencingMergedPullRequestsForIssue: () => [],
-    relatedItemsContext: () => [],
-    fetchReviewedPrActivityCursor: () => null,
-    pullChecksContext: () => ({ complete: true, checkRuns: [], statuses: [] }),
-  });
+  const collectItemContext =
+    inline && process.argv.includes("--baseline")
+      ? itemContextModule.createItemContext({
+          ...hydration,
+          ...sourceTools,
+          ...github,
+          // The --baseline item-context build predates direct content-hash imports.
+          sha256,
+          targetRepo: () => repo,
+          ghJson: execution.ghJson,
+          ghPagedLinkHeaderContextWindow: () => empty,
+          closingPullRequestsForIssue: () => [],
+          referencingMergedPullRequestsForIssue: () => [],
+          relatedItemsContext: () => [],
+          fetchReviewedPrActivityCursor: () => null,
+          pullChecksContext: () => ({ complete: true, checkRuns: [], statuses: [] }),
+        }).collectItemContext
+      : createContextState().collectItemContext;
   const target = {
     repo,
     number: 123,

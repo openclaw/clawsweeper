@@ -3,7 +3,9 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createContextHydration } from "../../dist/clawsweeper-context-hydration.js";
+import { hydratePullRequestReviewSource } from "../../dist/clawsweeper-context-hydration.js";
+import { withGitHubRun } from "../../dist/clawsweeper-github-runtime.js";
+import { repositoryProfileFor, withTargetProfile } from "../../dist/repository-profiles.js";
 import { writeExactReviewFailureDiagnostics } from "../../dist/clawsweeper-review-failure-diagnostics.js";
 
 // Run after pnpm build. Real Git repositories exercise source preparation only;
@@ -80,41 +82,41 @@ try {
     );
     assert.equal(deleted ? before.status !== 0 : before.status === 0, true);
     assert.equal(present(target, base), false, "branch-only acquisition cannot supply the pin");
-    const context = createContextHydration(
-      new Proxy(
-        {
-          isSafeGitBranchName: (branch) => branch === "main",
-          targetRepo: () => "fixture/repository",
-          ghJson: (args) => {
-            const revision = args[1].match(/\/git\/trees\/([0-9a-f]+)\?recursive=1$/)?.[1];
-            assert.ok(revision);
-            return {
-              truncated: false,
-              tree: git(source, "ls-tree", "-r", "-l", revision)
-                .split("\n")
-                .map((line) => {
-                  const match = line.match(/^\d+ (\w+) ([0-9a-f]+)\s+(\d+)\t/);
-                  assert.ok(match);
-                  return { type: match[1], sha: match[2], size: Number(match[3]) };
-                }),
-            };
-          },
-        },
-        {
-          get: (object, key) =>
-            Reflect.get(object, key) ??
-            (() => {
-              throw new Error("Unexpected external dependency");
-            }),
-        },
-      ),
+    const ghFixture = join(dir, "gh.cjs");
+    writeFileSync(
+      ghFixture,
+      `
+const { execFileSync } = require("node:child_process");
+const args = process.argv.slice(2);
+const revision = args[1].match(/\\/git\\/trees\\/([0-9a-f]+)\\?recursive=1$/)?.[1];
+if (!revision) throw new Error("Unexpected GitHub request: " + args.join(" "));
+const tree = execFileSync("git", ["ls-tree", "-r", "-l", revision], {
+  cwd: ${JSON.stringify(source)}, encoding: "utf8",
+}).trim().split("\\n").map(line => {
+  const match = line.match(/^\\d+ (\\w+) ([0-9a-f]+)\\s+(\\d+)\\t/);
+  if (!match) throw new Error("Invalid tree line");
+  return { type: match[1], sha: match[2], size: Number(match[3]) };
+});
+console.log(JSON.stringify({ truncated: false, tree }));
+`,
     );
+    const profile = {
+      ...repositoryProfileFor("openclaw/clawsweeper"),
+      targetRepo: "fixture/repository",
+    };
+    process.env.GH_BIN = process.execPath;
+    process.env.GH_BIN_ARGS = JSON.stringify([ghFixture]);
+    process.env.GH_TOKEN = "synthetic-pinned-base-proof";
     const prepare = (pin = base) =>
-      context.hydratePullRequestReviewSource({
-        itemNumber: 1,
-        targetDir: target,
-        pullRequest: { base: { ref: "main", sha: pin }, head: { sha: head } },
-      });
+      withTargetProfile(profile, () =>
+        withGitHubRun(() =>
+          hydratePullRequestReviewSource({
+            itemNumber: 1,
+            targetDir: target,
+            pullRequest: { base: { ref: "main", sha: pin }, head: { sha: head } },
+          }),
+        ),
+      );
     prepare();
     assert.equal(present(target, base), true);
     assert.equal(present(target, head), true);

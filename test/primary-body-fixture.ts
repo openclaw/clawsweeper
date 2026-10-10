@@ -1,19 +1,16 @@
 import assert from "node:assert/strict";
 import { sha256 } from "../dist/content-hash.js";
-import { createContextHydration } from "../dist/clawsweeper-context-hydration.js";
-import { createItemContext } from "../dist/clawsweeper-item-context.js";
+import * as hydration from "../dist/clawsweeper-context-hydration.js";
+import { createContextState } from "./context-state-fixture.ts";
 import * as sourceTools from "../dist/clawsweeper-source-revision.js";
-import { githubCount } from "../dist/clawsweeper-github-context.js";
-import { CLAWSWEEPER_BOT_AUTHORS } from "../dist/clawsweeper-review-comments.js";
-export { sourceTools };
-import {
-  labelNames,
-  normalizeAuthorAssociation,
-  normalizeLabelName,
-} from "../dist/clawsweeper-item-policy.js";
+import { withGitHubRun } from "../dist/clawsweeper-github-runtime.js";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+export { hydration, sourceTools };
 import type { PrimaryBodyContext } from "../dist/clawsweeper-primary-body.js";
-import type { Item, ItemKind } from "../dist/clawsweeper-types.js";
-import { item } from "./helpers.ts";
+import type { Item, ItemContext, ItemKind } from "../dist/clawsweeper-types.js";
+import { item, withMockGh } from "./helpers.ts";
 
 export const inertTrace =
   'HTTP/1.1 202 Accepted\n{"queued":true,"nativeSql":{"rows":5,"persisted":true}}';
@@ -60,25 +57,6 @@ export function longProofBody(): string {
   return body.padEnd(60641, ".");
 }
 
-function unavailable(): never {
-  throw new Error("Unexpected dependency: this fixture must not use external capabilities");
-}
-
-// Unused dependencies fail closed instead of invoking GitHub or local archives.
-export const hydration = createContextHydration(
-  new Proxy(
-    {
-      CLAWSWEEPER_BOT_AUTHORS,
-      labelNames,
-      normalizeAuthorAssociation,
-      normalizeLabelName,
-      githubCount,
-      reviewCommentBodyDigest: sourceTools.reviewCommentBodyDigest,
-    },
-    { get: (target, key) => Reflect.get(target, key) ?? unavailable },
-  ) as Parameters<typeof createContextHydration>[0],
-);
-
 export function hydratePrimaryBody(
   body: unknown,
   kind: ItemKind,
@@ -91,6 +69,7 @@ export function hydratePrimaryBody(
   } = {},
 ) {
   const target = item({ kind }) as Item;
+  const { collectItemContext } = createContextState();
   const rawIssue = {
     number: target.number,
     title: target.title,
@@ -115,56 +94,49 @@ export function hydratePrimaryBody(
     commits: 0,
     review_comments: options.pullReviewComments?.length ?? 0,
   };
-  const window = (items: unknown[]) => ({
-    items,
-    total: items.length,
-    hydrated: items.length,
-    truncated: false,
-  });
-  const { collectItemContext } = createItemContext({
-    ...hydration,
-    ...sourceTools,
-
-    targetRepo: () => target.repo,
-    ghJson: <T>(args: string[]) => {
-      if (args[1] === `repos/${target.repo}/issues/${target.number}`) return rawIssue as T;
-      if (args[1] === `repos/${target.repo}/pulls/${target.number}`) return rawPull as T;
-      return unavailable();
-    },
-    ghPaged: <T>(path: string): T[] => {
-      if (path.endsWith(`/issues/${target.number}/comments`))
-        return (options.comments ?? []) as T[];
-      return unavailable();
-    },
-    ghPagedContextWindow: <T>(path: string) => {
-      const items = path.endsWith(`/issues/${target.number}/comments`)
-        ? (options.comments ?? [])
-        : path.endsWith(`/pulls/${target.number}/files`)
-          ? (options.pullFiles ?? [])
-          : path.endsWith(`/pulls/${target.number}/comments`)
-            ? (options.pullReviewComments ?? [])
-            : [];
-      return window(items) as {
-        items: T[];
-        total: number;
-        hydrated: number;
-        truncated: boolean;
-      };
-    },
-    ghPagedLinkHeaderContextWindow: () => window([]),
-    closingPullRequestsForIssue: () =>
-      (options.closingBodies ?? []).map((closingBody, index) => ({
-        ...rawPull,
-        number: target.number + index + 1,
-        body: closingBody,
-      })),
-    referencingMergedPullRequestsForIssue: () => [],
-    relatedItemsContext: () => [],
-    fetchReviewedPrActivityCursor: () => null,
-    pullChecksContext: () => ({ complete: true, checkRuns: [], statuses: [] }),
-  });
-  const context = collectItemContext(target, { reviewCacheDigest: true });
-  return { target, rawIssue, rawPull, context };
+  const root = mkdtempSync(join(tmpdir(), "primary-body-"));
+  let context!: ItemContext;
+  try {
+    withMockGh(
+      root,
+      `
+const args = process.argv.slice(2);
+const path = (args.find(arg => /^(repos\\/|search\\/|graphql$)/.test(arg)) || "").split("?")[0];
+const issue = ${JSON.stringify(rawIssue)};
+const pull = ${JSON.stringify(rawPull)};
+const closing = ${JSON.stringify(
+        (options.closingBodies ?? []).map((closingBody, index) => ({
+          ...rawPull,
+          number: target.number + index + 1,
+          body: closingBody,
+        })),
+      )};
+let value;
+if (args.some((arg, index) => arg === "issue" && args[index + 1] === "view")) value = { closedByPullRequestsReferences: closing.map(p => ({ number: p.number })) };
+else if (path === "repos/${target.repo}/issues/${target.number}") value = issue;
+else if (path === "repos/${target.repo}/pulls/${target.number}") value = pull;
+else if (closing.some(p => path === "repos/${target.repo}/pulls/" + p.number)) value = closing.find(p => path.endsWith("/" + p.number));
+else if (path.endsWith("/issues/${target.number}/comments")) value = ${JSON.stringify(options.comments ?? [])};
+else if (path.endsWith("/pulls/${target.number}/comments")) value = ${JSON.stringify(options.pullReviewComments ?? [])};
+else if (path.endsWith("/pulls/${target.number}/files")) value = ${JSON.stringify(options.pullFiles ?? [])};
+else if (path.endsWith("/check-runs")) value = { total_count: 0, check_runs: [] };
+else if (path.endsWith("/status")) value = { total_count: 0, statuses: [] };
+else if (path === "search/issues") value = { total_count: 0, items: [] };
+else if (path === "graphql") value = { data: { repository: { pullRequest: { reviewThreads: { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } } } } } };
+else if (/\\/(timeline|commits|reviews)$/.test(path)) value = [];
+else throw new Error("Unexpected GitHub request: " + args.join(" "));
+if (args.includes("--include")) process.stdout.write("HTTP/2.0 200 OK\\r\\n\\r\\n");
+if (args.includes("--slurp")) value = [value];
+process.stdout.write(JSON.stringify(value));
+`,
+      () => {
+        context = withGitHubRun(() => collectItemContext(target, { reviewCacheDigest: true }));
+      },
+    );
+    return { target, rawIssue, rawPull, context };
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 }
 
 export function assertBodyCoverage(source: string, compact: PrimaryBodyContext) {

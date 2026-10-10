@@ -18,11 +18,18 @@ import {
   isVerifiedRegressionProvenance,
 } from "./clawsweeper-regression-provenance.js";
 import { GitHubRateLimitError, isGitHubNotFoundError } from "./github-retry.js";
-import type { RepositoryProfile } from "./repository-profiles.js";
-import { asRecord, nonBlankStringOrUndefined } from "./value-coerce.js";
+import { targetProfile, targetRepo, type RepositoryProfile } from "./repository-profiles.js";
+import { asRecord, nonBlankStringOrUndefined, numberOrUndefined } from "./value-coerce.js";
 import { frontMatterValue } from "./report-front-matter.js";
 import { markdownRepository } from "./clawsweeper-repository-paths.js";
-import { linkedRelease, linkedSha, markdownLink } from "./clawsweeper-links.js";
+import { linkedRelease, linkedSha, markdownLink, repoUrlFor } from "./clawsweeper-links.js";
+import { ghJson } from "./clawsweeper-github-execution.js";
+import { GitHubRuntimeBudgetError } from "./clawsweeper-github-runtime.js";
+import {
+  profileStatusStart,
+  profileStatusEnd,
+  sweepStatusPath,
+} from "./clawsweeper-sweep-status.js";
 import { reportReviewDecision } from "./report-review-decision.js";
 
 export const MAX_IMPLEMENTATION_LINKED_ISSUE_REFERENCES = 5;
@@ -391,18 +398,10 @@ function nonUnknownFrontMatter(markdown: string, key: string): string | null {
   return value && value !== "unknown" ? value : null;
 }
 
-interface StatusContextDependencies {
-  targetProfile: () => RepositoryProfile;
-  targetRepo: () => string;
-  markdownLink: (label: string, url: string) => string;
-  repoUrlFor: (repo: string, relativePath?: string) => string;
-  profileStatusStart: (profile?: RepositoryProfile) => string;
-  profileStatusEnd: (profile?: RepositoryProfile) => string;
-  sweepStatusPath: (profile?: RepositoryProfile) => string;
-  ghJson: <T>(args: string[]) => T;
-  GitHubRuntimeBudgetError: new (reason: string) => Error & { readonly reason: string };
-  numberOrUndefined: (value: unknown) => number | undefined;
-  recordOrUndefined: (value: unknown) => Record<string, unknown> | undefined;
+function recordOrUndefined(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined;
 }
 
 export function formatTimestamp(iso: string | undefined): string {
@@ -423,19 +422,7 @@ export function formatTimestamp(iso: string | undefined): string {
 export function formatStatusNumber(value: number | undefined): string {
   return value === undefined || !Number.isFinite(value) ? "unknown" : String(value);
 }
-export function createStatusContext({
-  targetProfile,
-  targetRepo,
-  markdownLink,
-  repoUrlFor,
-  profileStatusStart,
-  profileStatusEnd,
-  sweepStatusPath,
-  ghJson,
-  GitHubRuntimeBudgetError,
-  numberOrUndefined,
-  recordOrUndefined,
-}: StatusContextDependencies) {
+export function createStatusContext() {
   const recentPullsByRepo = new Map<string, readonly unknown[]>();
   const defaultBranchByRepo = new Map<string, string | null>();
   const commitMessageByRepoSha = new Map<string, string>();
@@ -995,21 +982,6 @@ ${profileStatusEnd(profile)}`;
     return candidates[0] ?? null;
   }
 
-  function fixedPullRequestFromCommitPullsForTest(
-    pulls: readonly unknown[],
-    issueNumber: number,
-    commitMessage = "",
-    defaultBranch = "main",
-  ): FixedPullRequest | null {
-    return fixedPullRequestFromCommitPulls(
-      pulls,
-      "GitHub commit PR lookup",
-      issueNumber,
-      commitMessage,
-      defaultBranch,
-    );
-  }
-
   function recentPullsForFixedSha(): readonly unknown[] {
     const repo = targetRepo();
     const cached = recentPullsByRepo.get(repo);
@@ -1197,8 +1169,7 @@ ${profileStatusEnd(profile)}`;
   }
 
   return {
-    fixedPullRequestFromCommitPullsForTest,
-    linkedIssueNumbersForPullRequestBodyForTest: linkedIssueNumbersForPullRequestBody,
+    fixedPullRequestFromCommitPulls,
     attachFixedPullRequest,
     implementedOnMainPullRequestProvenanceApplyBlock,
     currentWorkflowStatusBlock,

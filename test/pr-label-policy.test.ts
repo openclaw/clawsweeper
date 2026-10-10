@@ -42,11 +42,11 @@ import {
   encodeLiveVerificationReportPayload,
 } from "../dist/live-proof/verification.js";
 import {
-  goodFirstIssueLabelOptedOutForTest,
   labelJustificationsMarkdownForTest,
   parseDecision,
   reviewDecisionSchemaText,
 } from "../dist/clawsweeper.js";
+import { goodFirstIssueHumanLabelState } from "../dist/clawsweeper-context-hydration.js";
 import {
   closeDecision,
   item,
@@ -1324,7 +1324,7 @@ test("ClawSweeper labels only small verified strict bugs as good first issues", 
 
 test("ClawSweeper respects human good first issue removal", () => {
   assert.equal(
-    goodFirstIssueLabelOptedOutForTest([
+    goodFirstIssueHumanLabelState([
       {
         id: 1,
         event: "labeled",
@@ -1346,11 +1346,11 @@ test("ClawSweeper respects human good first issue removal", () => {
         actor: { login: "openclaw-clawsweeper[bot]" },
         created_at: "2026-07-03T00:00:00Z",
       },
-    ]),
+    ]) === "removed",
     true,
   );
   assert.equal(
-    goodFirstIssueLabelOptedOutForTest([
+    goodFirstIssueHumanLabelState([
       {
         id: 2,
         event: "unlabeled",
@@ -1372,11 +1372,11 @@ test("ClawSweeper respects human good first issue removal", () => {
         actor: "github-actions[bot]",
         createdAt: "2026-07-04T00:00:00Z",
       },
-    ]),
+    ]) === "removed",
     false,
   );
   assert.equal(
-    goodFirstIssueLabelOptedOutForTest([
+    goodFirstIssueHumanLabelState([
       {
         id: 1,
         event: "unlabeled",
@@ -1384,7 +1384,7 @@ test("ClawSweeper respects human good first issue removal", () => {
         actor: "openclaw-clawsweeper[bot]",
         createdAt: "2026-07-02T00:00:00Z",
       },
-    ]),
+    ]) === "removed",
     false,
   );
 });

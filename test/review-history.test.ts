@@ -13,12 +13,11 @@ import {
   reviewHistoryCycleFromCommentBody,
   reviewHistoryForReviewer,
 } from "../dist/review-history.js";
+import { parseDecision, renderReviewCommentFromReport } from "../dist/clawsweeper.js";
 import {
-  extractLatestClawSweeperReviewForTest,
-  parseDecision,
-  previousClawSweeperReviewDigestFromReportForTest,
-  renderReviewCommentFromReport,
-} from "../dist/clawsweeper.js";
+  extractLatestClawSweeperReview,
+  previousClawSweeperReviewDigestFromReport,
+} from "../dist/clawsweeper-context-hydration.js";
 import { previousClawSweeperReviewDigest } from "../dist/clawsweeper-review-comments.js";
 import {
   changelogReviewDecision,
@@ -275,7 +274,7 @@ test("state report prior-review identity matches the marked durable comment", ()
   const persistedBody = `\n${body}\n\n`;
   const digest = createHash("sha256").update(body.trim()).digest("hex");
   const report = unsyncedReport.replace(/^---\n/, `---\nreview_comment_sha256: ${digest}\n`);
-  const liveReview = extractLatestClawSweeperReviewForTest(
+  const liveReview = extractLatestClawSweeperReview(
     [
       {
         id: 101,
@@ -289,7 +288,7 @@ test("state report prior-review identity matches the marked durable comment", ()
 
   assert.ok(liveReview);
   assert.equal(
-    previousClawSweeperReviewDigestFromReportForTest(report, 101),
+    previousClawSweeperReviewDigestFromReport(report),
     previousClawSweeperReviewDigest(liveReview),
   );
 });
@@ -324,7 +323,7 @@ test("latest review extraction reads the first action from the before-merge tabl
     "<!-- clawsweeper-verdict:needs-changes item=101 sha=abc123 confidence=high reviewed_at=2026-07-21T20:00:00.000Z -->",
     "<!-- clawsweeper-review item=101 -->",
   ].join("\n");
-  const review = extractLatestClawSweeperReviewForTest(
+  const review = extractLatestClawSweeperReview(
     [
       {
         id: 101,
@@ -366,7 +365,7 @@ test("latest review extraction reads the first action from the before-merge chec
     "<!-- clawsweeper-verdict:needs-changes item=101 sha=abc123 confidence=high reviewed_at=2026-07-21T20:00:00.000Z -->",
     "<!-- clawsweeper-review item=101 -->",
   ].join("\n");
-  const review = extractLatestClawSweeperReviewForTest(
+  const review = extractLatestClawSweeperReview(
     [
       {
         id: 101,
@@ -398,12 +397,11 @@ test("state report prior-review identity preserves the original render context",
   );
 
   assert.notEqual(createHash("sha256").update(reconstructed).digest("hex"), digest);
-  assert.equal(previousClawSweeperReviewDigestFromReportForTest(report, 101), digest);
-  assert.equal(previousClawSweeperReviewDigestFromReportForTest(unsyncedReport, 101), null);
+  assert.equal(previousClawSweeperReviewDigestFromReport(report), digest);
+  assert.equal(previousClawSweeperReviewDigestFromReport(unsyncedReport), null);
   assert.equal(
-    previousClawSweeperReviewDigestFromReportForTest(
+    previousClawSweeperReviewDigestFromReport(
       unsyncedReport.replace(/^---\n/, "---\nreview_comment_sha256: stale\n"),
-      101,
     ),
     null,
   );
@@ -482,9 +480,8 @@ test("durable review identity changes with every verdict-bearing section", () =>
   const syncedDigest = (report: string): string | null => {
     const body = markedReviewCommentForTest(101, renderReviewCommentFromReport(report, "none"));
     const digest = createHash("sha256").update(body).digest("hex");
-    return previousClawSweeperReviewDigestFromReportForTest(
+    return previousClawSweeperReviewDigestFromReport(
       report.replace(/^---\n/, `---\nreview_comment_sha256: ${digest}\n`),
-      101,
     );
   };
   const baseDigest = syncedDigest(base);
@@ -752,7 +749,7 @@ Keep this issue open.
 });
 
 function projectReview(body: string) {
-  return extractLatestClawSweeperReviewForTest(
+  return extractLatestClawSweeperReview(
     [
       {
         id: 1,
@@ -930,7 +927,7 @@ test("latest review extraction exposes earlier cycles and a cycle count", () => 
     ].join("\n"),
   );
   const body = `${currentComment}\n\n${ledger}`;
-  const review = extractLatestClawSweeperReviewForTest(
+  const review = extractLatestClawSweeperReview(
     [
       {
         id: 9,
@@ -972,7 +969,7 @@ test("stale durable comments expose the latest completed cycle from preserved hi
     totalCompletedCycles: 10,
   });
   const body = `${staleDurableComment()}\n\n${ledger}\n\n<!-- clawsweeper-review item=101 -->`;
-  const review = extractLatestClawSweeperReviewForTest(
+  const review = extractLatestClawSweeperReview(
     [
       {
         id: 10,
