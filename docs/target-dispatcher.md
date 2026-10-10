@@ -405,17 +405,26 @@ jobs:
             oidc_token="$(curl --fail --silent --show-error --connect-timeout 5 --max-time 15 \
               --header "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
               --get --data-urlencode "audience=$TARGET_DISPATCH_URL" \
-              "$ACTIONS_ID_TOKEN_REQUEST_URL" | jq -er '.value | strings | select(length > 0)')"; then
+              "$ACTIONS_ID_TOKEN_REQUEST_URL" | jq -er '.value | strings | select(length > 0)')" &&
+            # jq 1.6 exits 0 on empty input, and the step runs without pipefail.
+            [ -n "$oidc_token" ]; then
             echo "::add-mask::$oidc_token"
-            if direct_response="$(curl --fail --silent --show-error --connect-timeout 5 --max-time 20 \
+            direct_body="$RUNNER_TEMP/clawsweeper-direct-intake.json"
+            # Only a 2xx answer means the queue took the item; --fail would also
+            # accept a 3xx and drop the event without reaching the relay.
+            if direct_status="$(curl --silent --show-error --connect-timeout 5 --max-time 20 \
               --request POST \
               --header "authorization: Bearer $oidc_token" \
               --header "content-type: application/json" \
               --data "$client_payload" \
-              "$TARGET_DISPATCH_URL")"; then
-              echo "Queued exact ClawSweeper review directly: $(jq -c . <<< "$direct_response" 2>/dev/null || echo '{}')"
+              --output "$direct_body" \
+              --write-out '%{http_code}' \
+              "$TARGET_DISPATCH_URL")" &&
+              [[ "$direct_status" == 2[0-9][0-9] ]]; then
+              echo "Queued exact ClawSweeper review directly: $(jq -c . "$direct_body" 2>/dev/null || echo '{}')"
               exit 0
             fi
+            echo "Direct ClawSweeper queue intake answered HTTP ${direct_status:-none}."
           fi
           echo "::notice::Direct ClawSweeper queue intake was unavailable; dispatching through repository_dispatch."
           payload="$(jq -nc --argjson client_payload "$client_payload" '{event_type:"clawsweeper_item",client_payload:$client_payload}')"
