@@ -1379,6 +1379,7 @@ export function runAllowedValidationCommandsWithBinding(
   const baseRef = validationBaseRef(cwd, baseBranch, options);
   const requiredCommands = requiredValidationCommands(commands, cwd, options);
   const needsRustToolchain = targetValidationNeedsRustToolchain(cwd, requiredCommands);
+  const needsGoToolchain = targetValidationNeedsGoToolchain(cwd, requiredCommands);
   const preparedPnpmRuntime = preparedPnpmRuntimeForValidation(cwd, options);
   const validationContext = { cwd, preparedPnpmRuntime };
   return withTargetValidationEnvironment((validationEnv, resetValidationEnvironment) => {
@@ -1484,6 +1485,7 @@ export function runAllowedValidationCommandsWithBinding(
             const rustupToolchainBin = verifiedRustupToolchainBin(deadlineAt, identityReserveMs);
             if (rustupToolchainBin) prependValidationPath(validationEnv, rustupToolchainBin);
           }
+          if (needsGoToolchain) prepareGoValidationToolchain(cwd, validationEnv);
           const executionParts = validationCommandWithDisposableArchive(
             validationCommandForExecution(parts),
             validationEnv,
@@ -5162,6 +5164,205 @@ function registerPreparedTargetPnpmRuntimeCleanup() {
 function prependValidationPath(env: NodeJS.ProcessEnv, directory: string) {
   const pathKey = Object.keys(env).find((key) => key.toUpperCase() === "PATH") ?? "PATH";
   env[pathKey] = [directory, env[pathKey]].filter(Boolean).join(path.delimiter);
+}
+
+// Runs before every validation attempt: the disposable profile is recreated
+// between attempts, so the telemetry opt-out must be written again, while the
+// selected toolchain stays pinned once chosen.
+function prepareGoValidationToolchain(cwd: string, env: NodeJS.ProcessEnv) {
+  if (!env.GOROOT) {
+    const selected = selectGoToolchainRoot(cwd, env);
+    if (selected) {
+      env.GOROOT = selected.root;
+      if (!selected.onPath) prependValidationPath(env, path.join(selected.root, "bin"));
+    }
+  }
+  // The validation network is isolated, so an automatic toolchain download
+  // can never succeed; report a go.mod version mismatch as the clear local
+  // error instead of a stalled fetch.
+  env.GOTOOLCHAIN = "local";
+  disableGoTelemetry(env);
+}
+
+// A fresh Go config directory makes the go command start its telemetry
+// sidecar ("go ** telemetry **") on first use, which outlives the command and
+// trips the background-process gate. Only the mode file in the Go config
+// directory turns that off; GOTELEMETRY and GOTELEMETRYDIR do not.
+function disableGoTelemetry(env: NodeJS.ProcessEnv) {
+  const config = env.XDG_CONFIG_HOME;
+  if (!config) return;
+  const telemetryDir = path.join(config, "go", "telemetry");
+  fs.mkdirSync(telemetryDir, { recursive: true, mode: 0o700 });
+  fs.writeFileSync(path.join(telemetryDir, "mode"), "off\n", { mode: 0o600 });
+}
+
+function targetValidationNeedsGoToolchain(cwd: string, commands: readonly string[]) {
+  if (fs.existsSync(path.join(cwd, "go.mod"))) return true;
+  return commands.some((command) => {
+    try {
+      return stripEnvPrefix(parseAllowedValidationCommand(command))[0] === "go";
+    } catch {
+      return false;
+    }
+  });
+}
+
+type GoToolchainRoot = {
+  root: string;
+  version: number[] | null;
+  onPath: boolean;
+};
+
+// Go finds its root from the executable's own location unless the binary was
+// built with -trimpath, which runner images and distribution packages often
+// ship; those binaries need GOROOT and otherwise fail every command with
+// "cannot find GOROOT directory". The runner's GOROOT is stripped with the
+// other toolchain-steering names, so derive the root from the `go` the
+// validation PATH resolves to, or from the runner's published tool-cache roots
+// (GOROOT_<major>_<minor>_<arch>, which survive the filter because only the
+// bare GOROOT steers the toolchain). The sandbox cannot steer this: PATH and
+// the tool-cache names are inherited, never command-supplied. When the target's
+// go.mod asks for a newer Go than the one on PATH and the tool cache has it,
+// that root wins, because the isolated validation network cannot download one.
+function selectGoToolchainRoot(cwd: string, env: NodeJS.ProcessEnv): GoToolchainRoot | null {
+  const required = goModRequiredVersion(cwd);
+  const goBinary = resolveValidationGoBinary(env);
+  const pathRoot = goBinary ? goTreeForBinary(goBinary) : null;
+  const onPath: GoToolchainRoot | null = pathRoot
+    ? { root: pathRoot, version: goTreeVersion(pathRoot), onPath: true }
+    : null;
+  if (
+    onPath &&
+    (!required || (onPath.version && compareGoVersions(onPath.version, required) >= 0))
+  ) {
+    return onPath;
+  }
+  const cached = toolCacheGoRoots(env, goBinary);
+  const satisfying = required
+    ? cached.filter((entry) => entry.version && compareGoVersions(entry.version, required) >= 0)
+    : cached;
+  const chosen = satisfying[0] ?? onPath ?? cached[0] ?? null;
+  if (!chosen) return null;
+  return chosen.onPath ? chosen : { ...chosen, onPath: pathRoot === chosen.root };
+}
+
+function resolveValidationGoBinary(env: NodeJS.ProcessEnv): string | null {
+  const pathKey = Object.keys(env).find((key) => key.toUpperCase() === "PATH") ?? "PATH";
+  const names = process.platform === "win32" ? ["go.exe", "go"] : ["go"];
+  for (const directory of String(env[pathKey] ?? "").split(path.delimiter)) {
+    if (!directory) continue;
+    for (const name of names) {
+      try {
+        const candidate = path.join(directory, name);
+        fs.accessSync(candidate, fs.constants.X_OK);
+        if (!fs.statSync(candidate).isFile()) continue;
+        // The first `go` on PATH decides, exactly as the validation command's
+        // shell lookup would.
+        return fs.realpathSync(candidate);
+      } catch {
+        continue;
+      }
+    }
+  }
+  return null;
+}
+
+function goTreeForBinary(goBinary: string): string | null {
+  const binDir = path.dirname(goBinary);
+  const root = path.dirname(binDir);
+  if (
+    path.basename(binDir) === "bin" &&
+    fs.existsSync(path.join(root, "src", "runtime")) &&
+    fs.existsSync(path.join(root, "pkg"))
+  ) {
+    return root;
+  }
+  return null;
+}
+
+// Hosted runner images publish each installed Go as GOROOT_<major>_<minor>_<arch>
+// (for example GOROOT_1_24_X64=/opt/hostedtoolcache/go/1.24.12/x64). Accept
+// only verified Go trees; prefer the root whose bin/go is the resolved binary,
+// then the newest version.
+function toolCacheGoRoots(env: NodeJS.ProcessEnv, goBinary: string | null): GoToolchainRoot[] {
+  const candidates: (GoToolchainRoot & { sameBinary: boolean; major: number; minor: number })[] =
+    [];
+  for (const [key, value] of Object.entries(env)) {
+    const match = /^GOROOT_(\d+)_(\d+)_(?:X64|X86|ARM64|ARM)$/i.exec(key);
+    if (!match || !value) continue;
+    const major = Number(match[1]);
+    const minor = Number(match[2]);
+    let root: string;
+    try {
+      root = fs.realpathSync(value);
+    } catch {
+      continue;
+    }
+    if (goTreeForBinary(path.join(root, "bin", "go")) !== root) continue;
+    let sameBinary = false;
+    for (const name of process.platform === "win32" ? ["go.exe", "go"] : ["go"]) {
+      try {
+        if (fs.realpathSync(path.join(root, "bin", name)) === goBinary) sameBinary = true;
+      } catch {}
+    }
+    const version = goTreeVersion(root) ?? [major, minor];
+    candidates.push({ root, version, onPath: sameBinary, sameBinary, major, minor });
+  }
+  candidates.sort((left, right) => {
+    if (left.sameBinary !== right.sameBinary) return left.sameBinary ? -1 : 1;
+    return compareGoVersions(
+      right.version ?? [right.major, right.minor],
+      left.version ?? [left.major, left.minor],
+    );
+  });
+  return candidates.map(({ root, version, onPath }) => ({ root, version, onPath }));
+}
+
+// A Go tree records its exact release in VERSION ("go1.26.5", followed by
+// build metadata lines).
+function goTreeVersion(root: string): number[] | null {
+  try {
+    const firstLine = fs.readFileSync(path.join(root, "VERSION"), "utf8").split(/\r?\n/)[0] ?? "";
+    return parseGoVersion(firstLine);
+  } catch {
+    return null;
+  }
+}
+
+// The toolchain line names the exact minimum; the go line is the floor when
+// no toolchain line exists.
+function goModRequiredVersion(cwd: string): number[] | null {
+  let text: string;
+  try {
+    text = fs.readFileSync(path.join(cwd, "go.mod"), "utf8");
+  } catch {
+    return null;
+  }
+  let goLine: number[] | null = null;
+  for (const line of text.split(/\r?\n/)) {
+    const toolchain = /^\s*toolchain\s+(go\S+)/.exec(line);
+    if (toolchain) {
+      const parsed = parseGoVersion(toolchain[1] ?? "");
+      if (parsed) return parsed;
+    }
+    const go = /^\s*go\s+(\S+)/.exec(line);
+    if (go && !goLine) goLine = parseGoVersion(`go${go[1] ?? ""}`);
+  }
+  return goLine;
+}
+
+function parseGoVersion(value: string): number[] | null {
+  const match = /^go(\d+)\.(\d+)(?:\.(\d+))?/.exec(value.trim());
+  if (!match) return null;
+  return [Number(match[1]), Number(match[2]), Number(match[3] ?? 0)];
+}
+
+function compareGoVersions(left: readonly number[], right: readonly number[]): number {
+  for (let index = 0; index < Math.max(left.length, right.length); index += 1) {
+    const difference = (left[index] ?? 0) - (right[index] ?? 0);
+    if (difference !== 0) return difference;
+  }
+  return 0;
 }
 
 function targetValidationNeedsRustToolchain(cwd: string, commands: readonly string[]) {

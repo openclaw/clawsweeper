@@ -132,6 +132,7 @@ export function syncApplyReportLabels(
         number,
         labels: item.labels,
         bulkFilerDetected,
+        bulkFilerBelowThreshold: frontMatterBoolean(markdown, "bulk_filer_below_threshold"),
         authorAssociation: item.authorAssociation,
         repositoryPermission: needsPermission
           ? bulkFilerRepositoryPermission(item.author, bulkFilerRepositoryPermissionCache)

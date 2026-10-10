@@ -599,14 +599,18 @@ export function createContextHydration(dependencies: CreateContextHydrationDepen
       return { context: null, labelPending: false, labelApplied: false };
     }
     const threshold = bulkFilerThreshold(options.env);
-    const windowStart = new Date(windowStartMs).toISOString();
-    const cacheKey = options.item.author.trim().toLowerCase();
+    // Count the window that ends when this issue was filed, so a later burst cannot
+    // retroactively label an issue that was filed below the threshold.
+    const windowStart = new Date(itemCreatedAtMs - windowDays * DAY_MS).toISOString();
+    const windowEnd = new Date(itemCreatedAtMs).toISOString();
+    const cacheKey = `${options.item.author.trim().toLowerCase()}\n${windowEnd}`;
     let issueCount = options.cache.get(cacheKey);
     if (!options.cache.has(cacheKey)) {
       try {
         const searchedCount = options.searchCount({
           author: options.item.author,
           windowStart,
+          windowEnd,
         });
         if (!Number.isInteger(searchedCount) || searchedCount < 0) {
           throw new Error("GitHub bulk-filer search omitted a valid total_count");
@@ -618,8 +622,11 @@ export function createContextHydration(dependencies: CreateContextHydrationDepen
       }
       options.cache.set(cacheKey, issueCount ?? null);
     }
-    if (issueCount === undefined || issueCount === null || issueCount < threshold) {
+    if (issueCount === undefined || issueCount === null) {
       return { context: null, labelPending: false, labelApplied: false };
+    }
+    if (issueCount < threshold) {
+      return { context: null, labelPending: false, labelApplied: false, belowThreshold: true };
     }
     const alreadyLabeled = options.item.labels.some(
       (label) => label.toLowerCase() === BULK_FILED_LABEL,
@@ -647,9 +654,13 @@ export function createContextHydration(dependencies: CreateContextHydrationDepen
     detection: BulkFilerDetectionResult,
   ): string {
     return replaceFrontMatterValue(
-      markdown,
-      "bulk_filer_detected",
-      String(detection.context?.detected === true),
+      replaceFrontMatterValue(
+        markdown,
+        "bulk_filer_detected",
+        String(detection.context?.detected === true),
+      ),
+      "bulk_filer_below_threshold",
+      String(detection.belowThreshold === true),
     );
   }
 
@@ -663,8 +674,17 @@ export function createContextHydration(dependencies: CreateContextHydrationDepen
   function bulkFilerPolicyInvalidatesCachedReview(
     markdown: string | null,
     exemptionApplied: boolean,
+    belowThreshold = false,
   ): boolean {
-    if (!exemptionApplied || markdown === null) return false;
+    if (markdown === null) return false;
+    if (!exemptionApplied) {
+      // A report decided under bulk suppression is stale once the issue's own
+      // filing window is confirmed below the threshold.
+      return (
+        belowThreshold &&
+        /^true$/i.test(frontMatterValue(markdown, "last_full_review_bulk_filer_detected") ?? "")
+      );
+    }
     // Legacy reports predate this field. Refresh them once rather than preserving
     // a possibly bulk-filer-suppressed cached verdict under the new exemption.
     return !/^false$/i.test(
@@ -675,16 +695,23 @@ export function createContextHydration(dependencies: CreateContextHydrationDepen
   function bulkFilerPolicyInvalidatesCachedReviewForTest(
     markdown: string | null,
     exemptionApplied: boolean,
+    belowThreshold = false,
   ): boolean {
-    return bulkFilerPolicyInvalidatesCachedReview(markdown, exemptionApplied);
+    return bulkFilerPolicyInvalidatesCachedReview(markdown, exemptionApplied, belowThreshold);
   }
 
-  function authorIssueCountInBulkFilerWindow(author: string, windowStart: string): number {
+  function authorIssueCountInBulkFilerWindow(
+    author: string,
+    windowStart: string,
+    windowEnd: string,
+  ): number {
+    // GitHub search ranges include both ends; start 1 ms later to keep the window start exclusive.
+    const rangeStart = new Date(Date.parse(windowStart) + 1).toISOString();
     const query = [
       `repo:${targetRepo()}`,
       "type:issue",
       `author:${quoteGitHubSearchTerm(author)}`,
-      `created:>${windowStart}`,
+      `created:${rangeStart}..${windowEnd}`,
     ].join(" ");
     const result = ghJsonOnce<{ total_count?: number; incomplete_results?: boolean }>(
       ["api", "search/issues", "--method", "GET", "-f", `q=${query}`, "-f", "per_page=1"],
