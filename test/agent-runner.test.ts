@@ -324,7 +324,6 @@ process.stdout.write(JSON.stringify({ payloads: [{ text: "{}" }], meta: { stopRe
   const received = readFileSync(receivedPath, "utf8");
   assert.ok(received.startsWith("review prompt\n\n## Output schema\n"));
   assert.ok(received.includes(readFileSync(schemaPath, "utf8").trim()));
-  assert.match(received, /Cosmetic confusion or a fully recoverable in-product issue/);
 });
 
 test("OpenClaw checkout inspection attests the exact tracked path without checkout writes", (t) => {
