@@ -1244,8 +1244,7 @@ test("exact event review publishes directly with a queue-bounded canonical fallb
     reserveLease.run ?? "",
     /\\"status\\":\\"held\\",\\"retryAt\\":\\"\$retry_at\\",\\"retryKind\\":\\"throttle\\"/,
   );
-  assert.match(reserveLease.run ?? "", /reservation\.retryKind === "throttle"/);
-  assert.match(reserveLease.run ?? "", /append\("retry_kind", retryKind\)/);
+  assert.match(reserveLease.run ?? "", /exact-review-queue-response\.ts reservation/);
   assert.equal(
     reserveLease.env?.EXACT_REVIEW_ITEM_KEY,
     "${{ steps.claim-exact-review-queue.outputs.item_key }}",
@@ -1260,15 +1259,7 @@ test("exact event review publishes directly with a queue-bounded canonical fallb
   );
   const resolvePayload = step(reviewer, "Resolve event payload");
   const liveItem = step(reviewer, "Check live target item state");
-  assert.match(resolvePayload.run ?? "", /maxExactReviewCodexTimeoutMs = 2_700_000/);
-  assert.match(
-    resolvePayload.run ?? "",
-    /Math\.min\(maxExactReviewCodexTimeoutMs, configuredValue\)/,
-  );
-  assert.match(
-    resolvePayload.run ?? "",
-    /codex_timeout_ms: Math\.min\(\s*maxExactReviewCodexTimeoutMs/,
-  );
+  assert.match(resolvePayload.run ?? "", /node src\/repair\/exact-review-queue-context\.ts/);
   assert.equal(
     liveItem.env?.CLAIM_DECISION,
     "${{ steps.claim-exact-review-queue.outputs.decision }}",
@@ -1750,21 +1741,7 @@ test("exact event review publishes directly with a queue-bounded canonical fallb
   const publicationContext = step(publisher, "Claim durable exact review publication");
   assert.match(
     publicationContext.run ?? "",
-    /producerDecision\.commandStatusMarker \|\| producerDecision\.statusCommentId/,
-  );
-  assert.match(publicationContext.run ?? "", /directLifecycleRecovery/);
-  assert.match(publicationContext.run ?? "", /directLifecycleRecoveryReady/);
-  assert.match(
-    publicationContext.run ?? "",
-    /const publicationLeaseRevision = Number\(publication\?\.leaseRevision\);/,
-  );
-  assert.match(publicationContext.run ?? "", /publicationLeaseRevision === leaseRevision/);
-  assert.match(publicationContext.run ?? "", /direct_lifecycle_plan/);
-  assert.match(publicationContext.run ?? "", /direct_lifecycle_receipt_outcome/);
-  assert.match(publicationContext.run ?? "", /deferredPublication/);
-  assert.match(
-    publicationContext.run ?? "",
-    /response\.item_key === directItemKey\s*&&\s*publication\?\.itemKey === directItemKey/,
+    /node "\$RUNNER_TEMP\/exact-review-queue-response\.mts" publication/,
   );
 
   const download = step(publisher, "Download exact review artifact bundle");
@@ -1866,8 +1843,7 @@ test("exact event review publishes directly with a queue-bounded canonical fallb
   } finally {
     rmSync(foldFixtureRoot, { recursive: true, force: true });
   }
-  assert.match(legacyArtifact.run ?? "", /review_lease_owner/);
-  assert.match(legacyArtifact.run ?? "", /review_lease_comment_id/);
+  assert.match(legacyArtifact.run ?? "", /exact-review-queue-response\.ts legacyArtifact/);
   assert.doesNotMatch(create.run ?? "", /repair:exact-review-bundle -- create/);
   assert.doesNotMatch(validate.run ?? "", /repair:exact-review-bundle -- validate/);
   assert.ok(publisher.steps.indexOf(validate) < publisher.steps.indexOf(targetWriteStep));
@@ -2312,12 +2288,7 @@ test("exact event publication derives lifecycle receipt and final command acknow
     finalizationClaim && acknowledgement && statusEdit && observedReceipt && lockedSkip && retry,
   );
   assert.match(finalizer.if ?? "", /exact_review_command_acknowledgement/);
-  assert.match(finalizationClaim.run ?? "", /terminal_finalization/);
-  assert.match(finalizationClaim.run ?? "", /lifecycle_projection/);
-  assert.match(finalizationClaim.run ?? "", /lifecycle_fence_key/);
-  assert.match(finalizationClaim.run ?? "", /lifecycle_revision/);
-  assert.match(finalizationClaim.run ?? "", /response\.item_key !== process\.env\.ITEM_KEY/);
-  assert.doesNotMatch(finalizationClaim.run ?? "", /expectedItemKey/);
+  assert.match(finalizationClaim.run ?? "", /exact-review-queue-response\.mts" finalization/);
   // The queue request command owns the safe claim conflicts.
   assert.match(
     finalizationClaim.run ?? "",
@@ -2440,6 +2411,10 @@ test("exact event claim accepts only the requested queue tuple", () => {
     copyFileSync(
       "src/repair/exact-review-queue-request.ts",
       join(root, "exact-review-queue-request.mts"),
+    );
+    copyFileSync(
+      "src/repair/exact-review-queue-response.ts",
+      join(root, "exact-review-queue-response.mts"),
     );
     const decision = {
       targetRepo: "openclaw/openclaw",

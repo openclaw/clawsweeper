@@ -289,6 +289,8 @@ jobs:
           # The runner Node strips the TypeScript types.
           curl -fsSL --retry 3 --retry-all-errors --retry-connrefused "https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${GITHUB_SHA}/src/repair/exact-review-queue-request.ts" -o "$RUNNER_TEMP/exact-review-queue-request.mts"
           test -s "$RUNNER_TEMP/exact-review-queue-request.mts"
+          curl -fsSL --retry 3 --retry-all-errors --retry-connrefused "https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${GITHUB_SHA}/src/repair/exact-review-queue-response.ts" -o "$RUNNER_TEMP/exact-review-queue-response.mts"
+          test -s "$RUNNER_TEMP/exact-review-queue-response.mts"
       - name: Claim exact-review queue lease
         id: claim-exact-review-queue
         env:
@@ -328,110 +330,7 @@ jobs:
                 echo "Exact-review lease claim returned HTTP $status: $response" >&2
                 exit 1
               fi
-            elif RESPONSE="$response" node <<'NODE'
-              const fs = require("node:fs");
-              const response = JSON.parse(process.env.RESPONSE || "{}");
-              const dispatch = JSON.parse(process.env.DISPATCH_PAYLOAD || "{}");
-              const requestedItemKey = String(process.env.ITEM_KEY || "").trim();
-              const requestedLeaseRevision = Number(process.env.QUEUE_LEASE_REVISION);
-              const responseProtocol = Number(response.protocol_version || 1);
-              if (responseProtocol !== 1 && responseProtocol !== 2) process.exit(1);
-              if (response.claimed !== true) process.exit(1);
-
-              const reviewOptions =
-                dispatch.review_options && typeof dispatch.review_options === "object"
-                  ? dispatch.review_options
-                  : {};
-              const legacyDecision = {
-                targetRepo: String(dispatch.target_repo || ""),
-                targetBranch: String(dispatch.target_branch || "main"),
-                itemNumber: Number(dispatch.item_number),
-                itemKind: String(dispatch.item_kind || ""),
-                sourceEvent: String(dispatch.source_event || ""),
-                sourceAction: String(dispatch.source_action || "legacy_dispatch"),
-                supersedesInProgress: dispatch.supersedes_in_progress === true,
-                ...(/^[0-9a-f]{40}$/.test(String(dispatch.queue_claim?.source_head_sha || dispatch.source_head_sha || "").trim().toLowerCase())
-                  ? { sourceHeadSha: String(dispatch.queue_claim?.source_head_sha || dispatch.source_head_sha).trim().toLowerCase() }
-                  : {}),
-                ...(Number.isFinite(Number(reviewOptions.codex_timeout_ms))
-                  ? { codexTimeoutMs: Number(reviewOptions.codex_timeout_ms) }
-                  : {}),
-                ...(Number.isFinite(Number(reviewOptions.media_proof_timeout_ms))
-                  ? { mediaProofTimeoutMs: Number(reviewOptions.media_proof_timeout_ms) }
-                  : {}),
-                ...(Object.hasOwn(reviewOptions, "command_status_marker")
-                  ? { commandStatusMarker: reviewOptions.command_status_marker }
-                  : {}),
-                ...(Object.hasOwn(reviewOptions, "status_comment_id")
-                  ? { statusCommentId: reviewOptions.status_comment_id }
-                  : {}),
-                ...(Number.isSafeInteger(
-                  Number(reviewOptions.review_acknowledgement_comment_id),
-                ) && Number(reviewOptions.review_acknowledgement_comment_id) > 0
-                  ? {
-                      reviewAcknowledgementCommentId: Number(
-                        reviewOptions.review_acknowledgement_comment_id,
-                      ),
-                    }
-                  : {}),
-                ...(Object.hasOwn(reviewOptions, "additional_prompt")
-                  ? { additionalPrompt: reviewOptions.additional_prompt }
-                  : {}),
-              };
-              const decision =
-                response.decision && typeof response.decision === "object"
-                  ? response.decision
-                  : legacyDecision;
-              const targetRepo = String(decision?.targetRepo || "");
-              const itemNumber = Number(decision?.itemNumber);
-              const itemKey = `${targetRepo}#${itemNumber}`;
-              const leaseRevision =
-                responseProtocol === 2
-                  ? Number(response.lease_revision)
-                  : Number(
-                      response.revision ||
-                        response.lease_revision ||
-                        process.env.QUEUE_LEASE_REVISION,
-                    );
-              const claimGeneration = Number(response.claim_generation);
-              const repeatRevision = response.repeat_revision;
-              if (
-                !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(targetRepo) ||
-                !Number.isInteger(itemNumber) ||
-                itemNumber < 1 ||
-                (decision.itemKind !== "issue" && decision.itemKind !== "pull_request") ||
-                (decision.sourceEvent !== "issues" && decision.sourceEvent !== "pull_request") ||
-                typeof decision.sourceAction !== "string" ||
-                !decision.sourceAction
-              ) {
-                process.exit(1);
-              }
-              if (response.item_key && response.item_key !== itemKey) process.exit(1);
-              if (requestedItemKey && requestedItemKey !== itemKey) process.exit(1);
-              if (
-                responseProtocol === 2 &&
-                (!response.decision ||
-                  typeof response.decision !== "object" ||
-                  response.item_key !== requestedItemKey ||
-                  response.lease_revision !== requestedLeaseRevision ||
-                  !Number.isInteger(claimGeneration) ||
-                  claimGeneration < 1 ||
-                  typeof repeatRevision !== "boolean")
-              ) {
-                process.exit(1);
-              }
-              const output = [
-                "claimed=true",
-                `lease_id=${process.env.QUEUE_LEASE_ID}`,
-                `item_key=${itemKey}`,
-                `lease_revision=${Number.isInteger(leaseRevision) ? leaseRevision : ""}`,
-                `claim_generation=${responseProtocol === 2 ? claimGeneration : ""}`,
-                `repeat_revision=${responseProtocol === 2 ? repeatRevision : false}`,
-                `protocol_version=${responseProtocol}`,
-                `decision=${JSON.stringify(decision)}`,
-              ];
-              fs.appendFileSync(process.env.GITHUB_OUTPUT, `${output.join("\n")}\n`);
-          NODE
+            elif RESPONSE="$response" node "$RUNNER_TEMP/exact-review-queue-response.mts" review
             then
               exit 0
             else
@@ -462,72 +361,7 @@ jobs:
           CONFIGURED_CODEX_TIMEOUT_MS: ${{ vars.CLAWSWEEPER_CODEX_TIMEOUT_MS || '1200000' }}
         run: |
           set -euo pipefail
-          # The runner Node strips the TypeScript types of the imported owner.
-          node --input-type=module <<'NODE'
-          import fs from "node:fs";
-          import { MAX_MEDIA_PROOF_TIMEOUT_MS } from "./src/media-proof-budget.ts";
-          const decision = JSON.parse(process.env.CLAIM_DECISION || "{}");
-          const targetRepo = String(decision.targetRepo || "");
-          const itemNumber = Number(decision.itemNumber);
-          if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(targetRepo)) process.exit(1);
-          if (!Number.isInteger(itemNumber) || itemNumber < 1) process.exit(1);
-
-          // The review-start lease permits at most two hours, including its ten-minute
-          // cushion. The job keeps the rest of its timeout for target checkout/setup and
-          // artifact/publication finalizers after this cap and the review reserve: the
-          // largest media proof allowance plus three minutes.
-          const maxExactReviewCodexTimeoutMs = 2_700_000;
-          const configuredValue = Number(process.env.CONFIGURED_CODEX_TIMEOUT_MS);
-          const configuredTimeout =
-            Number.isInteger(configuredValue) && configuredValue > 0
-              ? Math.min(maxExactReviewCodexTimeoutMs, configuredValue)
-              : 1_200_000;
-          const adaptiveValue = Number(decision.codexTimeoutMs);
-          const adaptiveTimeout =
-            Number.isInteger(adaptiveValue) && adaptiveValue > 0
-              ? Math.min(1_800_000, Math.max(600_000, adaptiveValue))
-              : 0;
-          const requestedTimeout =
-            decision.sourceAction === "manual_explicit_review" &&
-            decision.publicationPolicy === "record_comment_only" &&
-            Number.isInteger(adaptiveValue) && adaptiveValue > 0
-              ? adaptiveValue
-              : Math.max(configuredTimeout, adaptiveTimeout);
-          // Manual review options can carry any media allowance; preparation never needs more.
-          const mediaValue = Number(decision.mediaProofTimeoutMs);
-          const mediaTimeout =
-            Number.isInteger(mediaValue) && mediaValue > 0
-              ? Math.min(MAX_MEDIA_PROOF_TIMEOUT_MS, mediaValue)
-              : 0;
-          const [owner, name] = targetRepo.split("/");
-          const targetSlug = targetRepo.trim().toLowerCase().replace(/[^a-z0-9_.-]+/g, "-");
-          const checkoutDir = targetRepo === process.env.GITHUB_REPOSITORY ? `${name}-target` : name;
-          const hasCommandContext = Boolean(decision.commandStatusMarker || decision.statusCommentId);
-          const targetEnabled =
-            targetRepo !== "openclaw/clawhub" || process.env.CLAWHUB_ENABLED === "1";
-          const output = {
-            target_repo: targetRepo,
-            target_repo_owner: owner,
-            target_repo_name: name,
-            target_slug: targetSlug,
-            target_checkout_dir: checkoutDir,
-            item_number: itemNumber,
-            codex_timeout_ms: Math.min(
-              maxExactReviewCodexTimeoutMs,
-              requestedTimeout,
-            ),
-            media_proof_timeout_ms: mediaTimeout,
-            media_preprocessing_reserve_seconds: Math.ceil(MAX_MEDIA_PROOF_TIMEOUT_MS / 1000),
-            has_command_context: hasCommandContext,
-            target_enabled: targetEnabled,
-          };
-          fs.appendFileSync(
-            process.env.GITHUB_OUTPUT,
-            `${Object.entries(output)
-              .map(([key, value]) => `${key}=${value}`)
-              .join("\n")}\n`,
-          );
-          NODE
+          node src/repair/exact-review-queue-context.ts
 
       - name: Skip disabled claimed target
         if: ${{ steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.target.outputs.target_enabled == 'false' }}
@@ -936,38 +770,7 @@ jobs:
             sleep "$delay_seconds"
           done
           echo "$reservation"
-          RESERVATION="$reservation" node <<'NODE'
-          const fs = require("node:fs");
-          const reservation = JSON.parse(process.env.RESERVATION || "{}");
-          const append = (key, value) => fs.appendFileSync(process.env.GITHUB_OUTPUT, `${key}=${value}\n`);
-          if (reservation.status === "posted") {
-            const owner = String(reservation.owner || "");
-            const commentId = Number(reservation.commentId);
-            if (!/^[a-zA-Z0-9._-]{1,200}$/.test(owner) || !Number.isInteger(commentId) || commentId <= 0) {
-              process.exit(1);
-            }
-            append("status", "posted");
-            append("owner", owner);
-            append("comment_id", String(commentId));
-            append("queue_only", "false");
-            process.exit(0);
-          }
-          if (reservation.status === "held") {
-            const retryAt = String(reservation.retryAt || "");
-            if (!Number.isFinite(Date.parse(retryAt))) process.exit(1);
-            const retryKind =
-              reservation.retryKind === "throttle" ? "throttle" : "coordination";
-            append("status", "held");
-            append("retry_kind", retryKind);
-            append("retry_at", new Date(retryAt).toISOString());
-            process.exit(0);
-          }
-          if (reservation.status === "superseded") {
-            append("status", "superseded");
-            process.exit(0);
-          }
-          process.exit(1);
-          NODE
+          RESERVATION="$reservation" node src/repair/exact-review-queue-response.ts reservation
 
       # At-least-once queue delivery can overlap an exact-head review that is already
       # running. The durable queue owns retry, so lease contention is deferred work.
@@ -1358,13 +1161,7 @@ jobs:
 
           coordination_held_path="artifacts/event/coordination-held.json"
           if [ -f "$coordination_held_path" ]; then
-            retry_at="$(node -e '
-              const data = JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8"));
-              const value = String(data.retry_at || "").trim();
-              const timestamp = Date.parse(value);
-              if (!value || !Number.isFinite(timestamp)) process.exit(1);
-              process.stdout.write(new Date(timestamp).toISOString());
-            ' "$coordination_held_path")"
+            retry_at="$(node src/repair/exact-review-queue-response.ts retryAt "$coordination_held_path")"
             echo "retry_kind=coordination" >> "$GITHUB_OUTPUT"
             echo "retry_at=$retry_at" >> "$GITHUB_OUTPUT"
             echo "::notice::Review coordination is held until $retry_at."
@@ -1601,7 +1398,7 @@ jobs:
           test -s "$DIRECT_OUTCOME"
           jq -e '.kind == "eligible" and .disposition != null' "$DIRECT_OUTCOME" >/dev/null
           test -n "$CLAWSWEEPER_WEBHOOK_SECRET"
-          source_action="$(node -e 'const decision=JSON.parse(process.env.CLAIM_DECISION || "{}"); process.stdout.write(decision.sourceAction || "")')"
+          source_action="$(node src/repair/exact-review-queue-response.ts sourceAction)"
           lifecycle_terminal=""
           lifecycle_router_outcome=""
           lifecycle_deferred_coverage="false"
@@ -2178,6 +1975,8 @@ jobs:
           # The runner Node strips the TypeScript types.
           curl -fsSL --retry 3 --retry-all-errors --retry-connrefused "https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${GITHUB_SHA}/src/repair/exact-review-queue-request.ts" -o "$RUNNER_TEMP/exact-review-queue-request.mts"
           test -s "$RUNNER_TEMP/exact-review-queue-request.mts"
+          curl -fsSL --retry 3 --retry-all-errors --retry-connrefused "https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${GITHUB_SHA}/src/repair/exact-review-queue-response.ts" -o "$RUNNER_TEMP/exact-review-queue-response.mts"
+          test -s "$RUNNER_TEMP/exact-review-queue-response.mts"
       - name: Claim durable exact review publication
         id: publication-context
         env:
@@ -2216,113 +2015,7 @@ jobs:
                 echo "Exact-review publication claim returned HTTP $status: $response" >&2
                 exit 1
               fi
-            elif RESPONSE="$response" node <<'NODE'
-              const fs = require("node:fs");
-              const response = JSON.parse(process.env.RESPONSE || "{}");
-              const decision = response.decision;
-              const publication = decision?.publication;
-              const producerDecision = publication?.producerDecision;
-              const leaseRevision = Number(response.lease_revision);
-              const claimGeneration = Number(response.claim_generation);
-              const repeatRevision = response.repeat_revision;
-              const publicationLeaseRevision = Number(publication?.leaseRevision);
-              const directItemKey = `${decision?.targetRepo}#${decision?.itemNumber}`;
-              const expectedDeferredItemKey = `${directItemKey}@publish:${publication?.producerRunId}:${publication?.producerRunAttempt}`;
-              // Direct publication converts its already-leased base item into a
-              // recoverable publication. Its saved revision must still match
-              // this publisher lease before any external router handoff;
-              // deferred publication has its own key.
-              const directLifecycleRecovery =
-                response.item_key === directItemKey &&
-                publication?.itemKey === directItemKey &&
-                Number.isInteger(publicationLeaseRevision) &&
-                publicationLeaseRevision === leaseRevision;
-              const directLifecycle = directLifecycleRecovery ? publication?.directLifecycle : null;
-              const directLifecyclePlan = directLifecycle?.plan;
-              const directLifecycleReceiptOutcome = directLifecycle?.receiptOutcome;
-              const directLifecycleKinds = new Set([
-                "router",
-                "router_deferred_coverage",
-                "router_not_required",
-                "requeue",
-                "target_missing",
-                "target_closed",
-                "guarded_open",
-                "policy_noop",
-              ]);
-              // Pre-projection rows have no saved post-effect intent. They
-              // deliberately retain artifact recovery rather than inferring a
-              // router or terminal result from a newer publisher run.
-              const directLifecycleRecoveryReady =
-                directLifecycleRecovery &&
-                directLifecyclePlan &&
-                typeof directLifecyclePlan === "object" &&
-                !Array.isArray(directLifecyclePlan) &&
-                Object.keys(directLifecyclePlan).length === 1 &&
-                directLifecycleKinds.has(directLifecyclePlan.kind) &&
-                ["accepted", "deduped", "superseded"].includes(directLifecycleReceiptOutcome);
-              const deferredPublication = response.item_key === expectedDeferredItemKey;
-              if (
-                response.claimed !== true ||
-                response.protocol_version !== 2 ||
-                typeof repeatRevision !== "boolean" ||
-                response.item_key !== process.env.ITEM_KEY ||
-                (!deferredPublication && !directLifecycleRecovery) ||
-                decision?.sourceAction !== "exact_review_artifact_publish" ||
-                !publication ||
-                !producerDecision ||
-                producerDecision.targetRepo !== decision.targetRepo ||
-                producerDecision.targetBranch !== decision.targetBranch ||
-                producerDecision.itemNumber !== decision.itemNumber ||
-                producerDecision.itemKind !== decision.itemKind
-              ) process.exit(1);
-              if (!Number.isInteger(leaseRevision) || leaseRevision < 1) process.exit(1);
-              if (!Number.isInteger(claimGeneration) || claimGeneration < 1) process.exit(1);
-              const targetRepo = String(decision.targetRepo);
-              const [targetRepoOwner, targetRepoName] = targetRepo.split("/");
-              const targetSlug = targetRepo.trim().toLowerCase().replace(/[^a-z0-9_.-]+/g, "-");
-              const values = {
-                artifact_name: publication.artifactName,
-                generation_attempt: publication.producerRunAttempt,
-                producer_run_id: publication.producerRunId,
-                source_sha: publication.sourceSha,
-                decision: JSON.stringify(producerDecision),
-                item_key: publication.itemKey,
-                protocol_version: publication.protocolVersion,
-                lease_revision: publication.leaseRevision ?? "",
-                claim_generation: publication.claimGeneration ?? "",
-                target_repo: targetRepo,
-                target_repo_owner: targetRepoOwner,
-                target_repo_name: targetRepoName,
-                target_slug: targetSlug,
-                target_branch: decision.targetBranch,
-                item_number: decision.itemNumber,
-                item_kind: decision.itemKind,
-                has_command_context: Boolean(
-                  producerDecision.commandStatusMarker || producerDecision.statusCommentId,
-                ),
-                live_proceeded: publication.liveProceeded,
-                live_terminal_noop: publication.liveTerminalNoop,
-                live_terminal_missing: publication.liveTerminalMissing,
-                live_guarded_open: publication.liveGuardedOpen,
-                publisher_lease_id: process.env.QUEUE_LEASE_ID,
-                publisher_item_key: response.item_key,
-                publisher_lease_revision: leaseRevision,
-                publisher_claim_generation: claimGeneration,
-                repeat_revision: repeatRevision,
-                direct_lifecycle_recovery: directLifecycleRecoveryReady,
-                direct_lifecycle_plan: directLifecycleRecoveryReady
-                  ? JSON.stringify(directLifecyclePlan)
-                  : "",
-                direct_lifecycle_receipt_outcome: directLifecycleRecoveryReady
-                  ? directLifecycleReceiptOutcome
-                  : "",
-              };
-              fs.appendFileSync(process.env.GITHUB_OUTPUT, "claimed=true\n");
-              for (const [key, value] of Object.entries(values)) {
-                fs.appendFileSync(process.env.GITHUB_OUTPUT, `${key}=${value}\n`);
-              }
-          NODE
+            elif RESPONSE="$response" node "$RUNNER_TEMP/exact-review-queue-response.mts" publication
             then
               exit 0
             else
@@ -2357,15 +2050,7 @@ jobs:
           source "$RUNNER_TEMP/control-plane-curl.sh"
           test -n "$CLAWSWEEPER_WEBHOOK_SECRET"
           queue_url="${QUEUE_URL%/}"
-          lifecycle_kind="$(DIRECT_LIFECYCLE_PLAN="$DIRECT_LIFECYCLE_PLAN" node -e '
-            const plan = JSON.parse(process.env.DIRECT_LIFECYCLE_PLAN || "");
-            const kinds = new Set([
-              "router", "router_deferred_coverage", "router_not_required", "requeue",
-              "target_missing", "target_closed", "guarded_open", "policy_noop",
-            ]);
-            if (!plan || typeof plan !== "object" || Array.isArray(plan) || Object.keys(plan).length !== 1 || !kinds.has(plan.kind)) process.exit(1);
-            process.stdout.write(plan.kind);
-          ')"
+          lifecycle_kind="$(node "$RUNNER_TEMP/exact-review-queue-response.mts" lifecycleKind)"
           receipt_outcome="$DIRECT_LIFECYCLE_RECEIPT_OUTCOME"
           case "$receipt_outcome" in
             accepted|deduped|superseded) ;;
@@ -2561,25 +2246,7 @@ jobs:
           REPORT_PATH: .artifacts/exact-review-bundle/review/${{ steps.publication-context.outputs.item_number }}.md
         run: |
           set -euo pipefail
-          REPORT_PATH="$REPORT_PATH" node <<'NODE'
-          const fs = require("node:fs");
-          const reportPath = process.env.REPORT_PATH;
-          let legacyTupleless = false;
-          if (fs.existsSync(reportPath)) {
-            const markdown = fs.readFileSync(reportPath, "utf8");
-            const owner = /^review_lease_owner:\s*(.+)\s*$/m.exec(markdown)?.[1]?.trim() || "";
-            const commentId = Number(
-              /^review_lease_comment_id:\s*(\d+)\s*$/m.exec(markdown)?.[1] || "0",
-            );
-            legacyTupleless =
-              (!owner || owner === "unknown") &&
-              (!Number.isInteger(commentId) || commentId <= 0);
-          }
-          fs.appendFileSync(
-            process.env.GITHUB_OUTPUT,
-            `legacy_tupleless=${legacyTupleless ? "true" : "false"}\n`,
-          );
-          NODE
+          node src/repair/exact-review-queue-response.ts legacyArtifact
 
       - name: Stage validated exact review artifact
         if: ${{ steps.publication-context.outputs.claimed == 'true' && steps.publication-context.outputs.direct_lifecycle_recovery != 'true' && steps.fold-exact-live-proof.outcome == 'success' }}
@@ -3250,6 +2917,8 @@ jobs:
           # The runner Node strips the TypeScript types.
           curl -fsSL --retry 3 --retry-all-errors --retry-connrefused "https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${GITHUB_SHA}/src/repair/exact-review-queue-request.ts" -o "$RUNNER_TEMP/exact-review-queue-request.mts"
           test -s "$RUNNER_TEMP/exact-review-queue-request.mts"
+          curl -fsSL --retry 3 --retry-all-errors --retry-connrefused "https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${GITHUB_SHA}/src/repair/exact-review-queue-response.ts" -o "$RUNNER_TEMP/exact-review-queue-response.mts"
+          test -s "$RUNNER_TEMP/exact-review-queue-response.mts"
       - name: Claim committed terminal finalization
         id: finalization-context
         env:
@@ -3288,49 +2957,7 @@ jobs:
             echo "Terminal-finalization claim failed after retries" >&2
             exit 1
           fi
-          RESPONSE="$response" node <<'NODE'
-          const fs = require("node:fs");
-          const response = JSON.parse(process.env.RESPONSE || "{}");
-          const decision = response.decision;
-          const finalization = response.terminal_finalization;
-          const lifecycleProjection = response.lifecycle_projection;
-          const leaseRevision = Number(response.lease_revision);
-          const claimGeneration = Number(response.claim_generation);
-          if (
-            response.claimed !== true || response.protocol_version !== 2 ||
-            response.item_key !== process.env.ITEM_KEY ||
-            decision?.sourceAction !== "exact_review_artifact_publish" ||
-            !finalization || !["Complete", "Failed"].includes(finalization.statusState) ||
-            typeof finalization.statusDetail !== "string" ||
-            !lifecycleProjection ||
-            lifecycleProjection.canonicalTargetKey !== `${decision.targetRepo}#${decision.itemNumber}` ||
-            typeof lifecycleProjection.fenceKey !== "string" || !lifecycleProjection.fenceKey ||
-            !Number.isInteger(lifecycleProjection.revision) || lifecycleProjection.revision < 1 ||
-            !Number.isInteger(leaseRevision) || leaseRevision < 1 ||
-            !Number.isInteger(claimGeneration) || claimGeneration < 1
-          ) process.exit(1);
-          const [targetRepoOwner, targetRepoName] = String(decision.targetRepo).split("/");
-          const values = {
-            target_repo: decision.targetRepo,
-            target_repo_owner: targetRepoOwner,
-            target_repo_name: targetRepoName,
-            item_number: decision.itemNumber,
-            status_marker: decision.commandStatusMarker || "",
-            status_comment_id: decision.statusCommentId || "",
-            item_key: response.item_key,
-            lease_revision: leaseRevision,
-            lifecycle_fence_key: lifecycleProjection.fenceKey,
-            lifecycle_revision: lifecycleProjection.revision,
-            claim_generation: claimGeneration,
-            status_state: finalization.statusState,
-            status_detail: finalization.statusDetail,
-            parked_command_finalization: Boolean(finalization.parkedCommand),
-          };
-          fs.appendFileSync(process.env.GITHUB_OUTPUT, "claimed=true\n");
-          for (const [key, value] of Object.entries(values)) {
-            fs.appendFileSync(process.env.GITHUB_OUTPUT, `${key}=${value}\n`);
-          }
-          NODE
+          RESPONSE="$response" node "$RUNNER_TEMP/exact-review-queue-response.mts" finalization
 
       - uses: actions/checkout@v7
         id: source-checkout

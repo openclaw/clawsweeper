@@ -1,0 +1,1 @@
+- Move exact-review claim, reservation and lifecycle response parsing from inline workflow scripts into typed queue CLI owners while preserving lease outcomes and pre-checkout recovery.
