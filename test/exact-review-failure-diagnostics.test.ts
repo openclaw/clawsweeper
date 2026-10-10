@@ -138,6 +138,32 @@ test("exact-review diagnostics retain distinct safe causes within the aggregate 
   }
 });
 
+test("overlapping environment values redact private paths without losing the safe cause", () => {
+  const root = mkdtempSync(join(tmpdir(), "clawsweeper-diagnostics-"));
+  const privatePath = "/home/runner/work/private/.git/worktrees/review";
+  try {
+    for (const [index, env] of [
+      {},
+      { USER: "runner" },
+      { CODEX_HOME: "/home/runner" },
+      { CODEX_HOME: privatePath },
+    ].entries()) {
+      const output = write(
+        join(root, String(index)),
+        failure("checkout failed", `fatal: '${privatePath}': Not a directory`),
+        env,
+      );
+      const detail = readFileSync(join(output, "stderr.tail.txt"), "utf8");
+      assert.match(detail, /REDACTED/);
+      assert.match(detail, /Not a directory/);
+      assert.equal(detail.includes(privatePath), false);
+      assert.equal(detail.includes("/home/runner"), false);
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("source-preparation diagnostics survive unsafe raw detail", () => {
   const root = mkdtempSync(join(tmpdir(), "clawsweeper-diagnostics-"));
   try {

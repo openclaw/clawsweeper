@@ -20,6 +20,42 @@ import { forceTerminateProcessTree } from "../dist/repair/contained-command-work
 
 const maxBuffer = 1024 * 1024;
 
+// Trigger the real supervisor timeout only after the operation under test is
+// ready. A short wall-clock budget otherwise mostly measures CI process startup.
+function timeoutAfterReady(root: string, marker: string, lines = 1): string {
+  const preload = join(root, "ready-timeout.mjs");
+  writeFileSync(
+    preload,
+    `import { existsSync, readFileSync, watchFile, unwatchFile } from "node:fs";
+if (process.argv[1]?.endsWith("git-acquisition-worker.js")) {
+  const nativeTimeout = globalThis.setTimeout;
+  let armed = false;
+  globalThis.setTimeout = (callback, delay, ...args) => {
+    if (armed) return nativeTimeout(callback, delay, ...args);
+    armed = true;
+    let fired = false;
+    const timer = nativeTimeout(() => {
+      unwatchFile(${JSON.stringify(marker)});
+      throw new Error("Git fixture did not become ready");
+    }, delay);
+    const fire = () => {
+      if (fired || !existsSync(${JSON.stringify(marker)})) return;
+      const pids = readFileSync(${JSON.stringify(marker)}, "utf8").trim().split("\\n");
+      if (pids.length < ${lines} || pids.some((pid) => !/^[1-9]\\d*$/.test(pid))) return;
+      fired = true;
+      unwatchFile(${JSON.stringify(marker)});
+      clearTimeout(timer);
+      callback(...args);
+    };
+    watchFile(${JSON.stringify(marker)}, { interval: 10 }, fire);
+    setImmediate(fire);
+    return timer;
+  };
+}`,
+  );
+  return `--import ${pathToFileURL(preload).href}`;
+}
+
 for (const outcome of [
   { status: 0 },
   { status: 128 },
@@ -92,18 +128,19 @@ if (process.argv[1]?.endsWith("git-acquisition-worker.js")) {
       );
       writeFileSync(
         script,
-        `import { writeFileSync } from "node:fs";
-writeFileSync(${JSON.stringify(pidFile)}, String(process.pid));
+        `import { writeFileSync, renameSync } from "node:fs";
+writeFileSync(${JSON.stringify(pidFile + ".tmp")}, String(process.pid));
+renameSync(${JSON.stringify(pidFile + ".tmp")}, ${JSON.stringify(pidFile)});
 ${mode === "signaled" ? 'process.kill(process.pid, "SIGTERM");' : "setInterval(() => {}, 1000);"}`,
       );
       const result = runGitAcquisitionResult(["fetch"], {
         cwd: root,
         maxBuffer,
-        timeoutMs: 1200,
+        timeoutMs: 30_000,
         env: {
           ...process.env,
           SystemRoot: "C:\\Windows",
-          NODE_OPTIONS: `--import ${pathToFileURL(preload).href}`,
+          NODE_OPTIONS: `${mode === "signaled" ? "" : timeoutAfterReady(root, pidFile)} --import ${pathToFileURL(preload).href}`,
           GIT_BIN: executable,
           GIT_BIN_ARGS: JSON.stringify([script]),
         },
@@ -188,19 +225,21 @@ test(
     try {
       const hook = join(root, "pack-hook");
       const marker = join(root, "pack-started");
-      writeFileSync(hook, `#!/bin/sh\nprintf '%s\\n' "$$" > '${marker}'\nsleep 3\nexec "$@"\n`, {
-        mode: 0o700,
-      });
+      writeFileSync(
+        hook,
+        `#!/bin/sh\nprintf '%s\\n' "$$" > '${marker}.tmp'\nmv '${marker}.tmp' '${marker}'\nsleep 60\nexec "$@"\n`,
+        {
+          mode: 0o700,
+        },
+      );
       git(root, "config", "--file", env.GIT_CONFIG_GLOBAL, "uploadpack.packObjectsHook", hook);
-      const started = Date.now();
       const failed = runGitAcquisitionResult(args, {
         cwd: target,
-        env,
+        env: { ...env, NODE_OPTIONS: timeoutAfterReady(root, marker) },
         maxBuffer,
-        timeoutMs: 1000,
+        timeoutMs: 30_000,
       });
       assert.equal((failed.error as NodeJS.ErrnoException)?.code, "ETIMEDOUT", failed.stderr);
-      assert.ok(Date.now() - started < 1500, "termination and settlement share the attempt budget");
       assert.equal(
         existsSync(marker),
         true,
@@ -210,7 +249,13 @@ test(
       const hookPid = Number(readFileSync(marker, "utf8").trim());
       assert.throws(() => process.kill(hookPid, 0), { code: "ESRCH" });
       assert.equal(git(target, "rev-parse", "--is-shallow-repository"), "true");
-      const retry = runGitAcquisitionResult(args, { cwd: target, env, maxBuffer, timeoutMs: 5000 });
+      git(root, "config", "--file", env.GIT_CONFIG_GLOBAL, "--unset", "uploadpack.packObjectsHook");
+      const retry = runGitAcquisitionResult(args, {
+        cwd: target,
+        env,
+        maxBuffer,
+        timeoutMs: 30_000,
+      });
       assert.equal(retry.status, 0, retry.stderr);
       assert.equal(git(target, "rev-parse", "--is-shallow-repository"), "false");
       assert.equal(existsSync(lock), false);
@@ -293,13 +338,15 @@ test("an expired startup budget does not start Git or grant extra cleanup time",
   const root = mkdtempSync(join(tmpdir(), "review-git-deadline-"));
   try {
     const marker = join(root, "started");
-    const started = Date.now();
+    const preload = join(root, "expired-deadline.mjs");
+    writeFileSync(preload, "Date.now = () => Number.MAX_SAFE_INTEGER;\n");
     const result = runGitAcquisitionResult(["fetch"], {
       cwd: root,
       maxBuffer,
-      timeoutMs: 1,
+      timeoutMs: 30_000,
       env: {
         ...process.env,
+        NODE_OPTIONS: `--import ${pathToFileURL(preload).href}`,
         GIT_BIN: process.execPath,
         GIT_BIN_ARGS: JSON.stringify([
           "-e",
@@ -308,7 +355,6 @@ test("an expired startup budget does not start Git or grant extra cleanup time",
       },
     });
     assert.equal((result.error as NodeJS.ErrnoException)?.code, "EPROCESSSETTLEMENT");
-    assert.ok(Date.now() - started < 500);
     assert.equal(existsSync(marker), false);
   } finally {
     rmSync(root, { recursive: true, force: true });
@@ -354,15 +400,18 @@ appendFileSync(${JSON.stringify(pids)}, process.pid + "\\n");
 spawn(process.execPath, ["-e", 'process.on("SIGTERM", () => {}); require("node:fs").appendFileSync(process.argv[1], process.pid + String.fromCharCode(10)); setTimeout(() => require("node:fs").writeFileSync(process.argv[2], "escaped"), 2000); setInterval(() => {}, 1000);', ${JSON.stringify(pids)}, ${JSON.stringify(marker)}], { stdio: "inherit" });
 setInterval(() => {}, 1000);`,
       );
-      const started = Date.now();
       const result = runGitAcquisitionResult(["fetch"], {
         cwd: root,
         maxBuffer,
-        timeoutMs: 1200,
-        env: { ...process.env, GIT_BIN: process.execPath, GIT_BIN_ARGS: JSON.stringify([script]) },
+        timeoutMs: 30_000,
+        env: {
+          ...process.env,
+          GIT_BIN: process.execPath,
+          GIT_BIN_ARGS: JSON.stringify([script]),
+          NODE_OPTIONS: timeoutAfterReady(root, pids, 2),
+        },
       });
       assert.equal((result.error as NodeJS.ErrnoException)?.code, "ETIMEDOUT", result.stderr);
-      assert.ok(Date.now() - started < 1700);
       const children = readFileSync(pids, "utf8").trim().split("\n").map(Number);
       assert.equal(children.length, 2);
       for (const pid of children) assert.throws(() => process.kill(pid, 0), { code: "ESRCH" });

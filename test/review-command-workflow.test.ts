@@ -1196,8 +1196,10 @@ else {
         if (nativeFailure) {
           assert.ok(Number.isInteger(manifest.process.status) && manifest.process.status > 0);
           const detail = readFileSync(join(output, "stderr.tail.txt"), "utf8");
-          if (fetchFailure) assert.match(detail, /REDACTED_PATH/);
-          else assert.match(detail, /\.git\/worktrees\/[^\r\n]+Not a directory/);
+          if (fetchFailure) assert.match(detail, /REDACTED/);
+          // Git versions report either a relative or an absolute worktree path.
+          // Exact environment-value redaction can also replace its prefix.
+          if (nativeCheckoutFailure) assert.match(detail, /Not a directory/);
           assert.equal(detail.includes(root), false);
         } else {
           assert.equal(manifest.process.status, null);

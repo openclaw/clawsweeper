@@ -233,6 +233,7 @@ test("compiled consumer CLI reopens SQL claims and completes only verified indep
   );
   const receipt = JSON.parse(stdout);
   assert.equal(receipt.ok, true);
+  assert.equal(receipt.reusedConnections, 0, "fixture requests never reuse a retired socket");
   assert.equal(receipt.observations.length, 15);
   assert.deepEqual(receipt.exceptionResponseSafety, {
     status: 500,

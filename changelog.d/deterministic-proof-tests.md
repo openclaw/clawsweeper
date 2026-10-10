@@ -1,0 +1,1 @@
+- Make command-proof loopback requests independent of pooled-socket retirement, synchronize Git acquisition timeout fixtures with child readiness, and assert diagnostic privacy without depending on host-specific redaction boundaries.

@@ -77,8 +77,15 @@ const enqueueRejections = {
 };
 const observations = [];
 const opened = [];
+const connections = new WeakSet();
+let reusedConnections = 0;
 const server = http.createServer(async (req, res) => {
+  // Every fixture request is independent. Child CLI phases must not race an
+  // idle socket's retirement or carry a pooled connection into the next case.
+  res.setHeader("connection", "close");
   try {
+    if (connections.has(req.socket)) reusedConnections++;
+    connections.add(req.socket);
     const url = new URL(req.url, "http://127.0.0.1");
     let raw = "";
     for await (const chunk of req) {
@@ -524,6 +531,7 @@ try {
     JSON.stringify(
       {
         ok: true,
+        reusedConnections,
         runtime: "compiled CLI + real Worker HTTP routing + file-backed SQLite ExactReviewQueue",
         scenarioProfile: proofProfile.scenario,
         producerContractExercised: Boolean(producer),
