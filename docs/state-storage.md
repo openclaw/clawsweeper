@@ -75,6 +75,14 @@ Jobs that need operational Git state receive a sparse checkout containing only
 the retained paths above. Canonical-only lanes set `hydrate-git-state: "false"`
 and never mint or use a state-repository token.
 
+Apply checkpoints use `CLAWSWEEPER_CANONICAL_RECORD_BASELINE_DIR` as both the
+before-mutation tuple store and the candidate manifest. Even when publishing
+`records/<repo-slug>`, the publisher opens only captured tuples, compares their
+four projection paths against that baseline, and retains the existing
+compare-and-swap and reconciliation/deferral protocol. Uncaptured hydrated
+reports are not publication candidates. Callers without an explicit captured
+baseline retain the full-tree comparison against `CLAWSWEEPER_STATE_DIR`.
+
 Repair-result publication consumes the Git-backed operational paths and sets
 `hydrate-records: "false"` with `hydrate-state-blobs: "false"`. This avoids
 unused canonical-record discovery, snapshot caches, and R2 hydration while

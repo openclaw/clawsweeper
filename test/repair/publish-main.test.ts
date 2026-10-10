@@ -364,6 +364,183 @@ test("publish-main fails closed when canonical tuple publication is rejected", a
   assert.equal(gitPublishes.length, 0);
 });
 
+test("publish-main ignores uncaptured invalid reports and symlinks with a captured baseline", async (t) => {
+  for (const unrelated of ["invalid-report", "symlink"] as const) {
+    const fixture = capturedPublicationFixture(t);
+    const before = recordMarkdown("2026-07-26T01:00:00.000Z", "before");
+    const after = recordMarkdown("2026-07-26T02:00:00.000Z", "after");
+    writeText(fixture.stateRoot, tupleItemPath, before);
+    fixture.capture(42);
+    writeText(fixture.root, tupleItemPath, after);
+    for (const directory of [fixture.root, fixture.baselineRoot]) {
+      if (unrelated === "invalid-report") {
+        writeText(directory, `${tupleRoot}/items/not-an-item.md`, "invalid report\n");
+      } else {
+        fs.symlinkSync("42.md", path.join(directory, `${tupleRoot}/items/99.md`));
+      }
+    }
+
+    assert.equal(await fixture.publish(["records"]), "appended");
+    assert.deepEqual(fixture.posted, [
+      {
+        deliveryId: fixture.posted[0]?.deliveryId,
+        key: "openclaw-openclaw/42",
+        operations: [
+          {
+            path: tupleItemPath,
+            expectedDigest: createHash("sha256").update(before).digest("hex"),
+            contentBase64: Buffer.from(after).toString("base64"),
+          },
+          { path: `${tupleRoot}/closed/42.md`, expectedDigest: null },
+          { path: `${tupleRoot}/plans/42.md`, expectedDigest: null },
+          { path: `${tupleRoot}/decision-packets/42.json`, expectedDigest: null },
+        ],
+      },
+    ]);
+    assert.match(String(fixture.posted[0]?.deliveryId), /^record-tuple:1234:2:[a-f0-9]{64}$/);
+  }
+});
+
+test("publish-main skips unchanged captured tuples without discovering uncaptured changes", async (t) => {
+  const fixture = capturedPublicationFixture(t);
+  const unchanged = recordMarkdown("2026-07-26T01:00:00.000Z", "unchanged");
+  writeText(fixture.stateRoot, tupleItemPath, unchanged);
+  fixture.capture(42);
+  writeText(fixture.root, tupleItemPath, unchanged);
+  writeText(
+    fixture.root,
+    `${tupleRoot}/items/43.md`,
+    recordMarkdown("2026-07-26T02:00:00.000Z", "uncaptured").replace("number: 42", "number: 43"),
+  );
+
+  assert.equal(await fixture.publish([tupleRoot]), "appended");
+  assert.deepEqual(fixture.posted, []);
+});
+
+test("publish-main publishes captured moves and deletions from the baseline manifest", async (t) => {
+  for (const change of ["move", "delete"] as const) {
+    const fixture = capturedPublicationFixture(t);
+    const before = recordMarkdown("2026-07-26T01:00:00.000Z", "before");
+    const plan = "captured plan\n";
+    writeText(fixture.stateRoot, tupleItemPath, before);
+    writeText(fixture.stateRoot, `${tupleRoot}/plans/42.md`, plan);
+    fixture.capture(42);
+    if (change === "move") writeText(fixture.root, `${tupleRoot}/closed/42.md`, before);
+
+    assert.equal(await fixture.publish([tupleRoot]), "appended");
+    assert.equal(fixture.posted.length, 1);
+    assert.equal(fixture.posted[0]?.key, "openclaw-openclaw/42");
+    assert.deepEqual(fixture.posted[0]?.operations, [
+      {
+        path: tupleItemPath,
+        expectedDigest: createHash("sha256").update(before).digest("hex"),
+      },
+      {
+        path: `${tupleRoot}/closed/42.md`,
+        expectedDigest: null,
+        ...(change === "move" ? { contentBase64: Buffer.from(before).toString("base64") } : {}),
+      },
+      {
+        path: `${tupleRoot}/plans/42.md`,
+        expectedDigest: createHash("sha256").update(plan).digest("hex"),
+      },
+      { path: `${tupleRoot}/decision-packets/42.json`, expectedDigest: null },
+    ]);
+  }
+});
+
+test("publish-main filters captured discovery by file, section, and repository requests", async (t) => {
+  for (const scope of ["file", "section", "repository"] as const) {
+    const fixture = capturedPublicationFixture(t);
+    const before = recordMarkdown("2026-07-26T01:00:00.000Z", "before");
+    const after = recordMarkdown("2026-07-26T02:00:00.000Z", "after");
+    writeText(fixture.stateRoot, tupleItemPath, before);
+    writeText(fixture.stateRoot, `${tupleRoot}/plans/42.md`, "before plan\n");
+    fixture.capture(42);
+    writeText(fixture.root, tupleItemPath, after);
+    writeText(fixture.root, `${tupleRoot}/plans/42.md`, "after plan\n");
+
+    const excludedSlug = scope === "repository" ? "other-repository" : "openclaw-openclaw";
+    const excludedSection = scope === "section" ? "closed" : "items";
+    const excludedPath = `records/${excludedSlug}/${excludedSection}/43.md`;
+    writeText(fixture.stateRoot, excludedPath, "uncaptured by the requested path\n");
+    fixture.capture(43, excludedSlug);
+    fs.mkdirSync(path.dirname(path.join(fixture.root, excludedPath)), { recursive: true });
+    fs.symlinkSync(path.join(fixture.root, tupleItemPath), path.join(fixture.root, excludedPath));
+    const request =
+      scope === "file" ? tupleItemPath : scope === "section" ? `${tupleRoot}/items` : tupleRoot;
+
+    assert.equal(await fixture.publish([request]), "appended");
+    assert.equal(fixture.posted.length, 1);
+    assert.equal(fixture.posted[0]?.key, "openclaw-openclaw/42");
+    assert.deepEqual(fixture.posted[0]?.operations, [
+      {
+        path: tupleItemPath,
+        expectedDigest: createHash("sha256").update(before).digest("hex"),
+        contentBase64: Buffer.from(after).toString("base64"),
+      },
+      { path: `${tupleRoot}/closed/42.md`, expectedDigest: null },
+      {
+        path: `${tupleRoot}/plans/42.md`,
+        expectedDigest: createHash("sha256").update("before plan\n").digest("hex"),
+        contentBase64: Buffer.from("after plan\n").toString("base64"),
+      },
+      { path: `${tupleRoot}/decision-packets/42.json`, expectedDigest: null },
+    ]);
+  }
+});
+
+test("publish-main rejects an explicitly requested uncaptured tuple with a captured baseline", async (t) => {
+  const fixture = capturedPublicationFixture(t);
+  fixture.capture(42);
+  const uncapturedPath = `${tupleRoot}/items/43.md`;
+  writeText(
+    fixture.root,
+    uncapturedPath,
+    recordMarkdown("2026-07-26T02:00:00.000Z", "uncaptured").replace("number: 42", "number: 43"),
+  );
+
+  await assert.rejects(
+    fixture.publish([uncapturedPath]),
+    /canonical tuple openclaw-openclaw\/43 was not captured before mutation/,
+  );
+  assert.deepEqual(fixture.posted, []);
+});
+
+test("publish-main rejects captured symbolic-link files in the working tree and baseline", async (t) => {
+  for (const location of ["working-tree", "baseline"] as const) {
+    const fixture = capturedPublicationFixture(t);
+    const before = recordMarkdown("2026-07-26T01:00:00.000Z", "before");
+    writeText(fixture.stateRoot, tupleItemPath, before);
+    fixture.capture(42);
+    writeText(fixture.root, tupleItemPath, before);
+    const directory = location === "working-tree" ? fixture.root : fixture.baselineRoot;
+    fs.unlinkSync(path.join(directory, tupleItemPath));
+    fs.symlinkSync(
+      path.join(fixture.stateRoot, tupleItemPath),
+      path.join(directory, tupleItemPath),
+    );
+
+    await assert.rejects(fixture.publish([tupleRoot]), /must not be a symbolic link/);
+    assert.deepEqual(fixture.posted, []);
+  }
+});
+
+test("publish-main rejects captured files beneath a symbolic-link directory escaping the workspace", async (t) => {
+  const fixture = capturedPublicationFixture(t);
+  writeText(fixture.stateRoot, tupleItemPath, recordMarkdown("2026-07-26T01:00:00.000Z", "before"));
+  fixture.capture(42);
+  fs.mkdirSync(path.join(fixture.root, tupleRoot), { recursive: true });
+  fs.symlinkSync(
+    path.join(fixture.stateRoot, tupleRoot, "items"),
+    path.join(fixture.root, tupleRoot, "items"),
+    "dir",
+  );
+
+  await assert.rejects(fixture.publish([tupleRoot]), /resolves outside the workspace/);
+  assert.deepEqual(fixture.posted, []);
+});
+
 test("publish-main refetches CURRENT and retries a conflicted reconciliation move once", async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-canonical-current-source-"));
   const stateRoot = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-canonical-current-state-"));
@@ -825,6 +1002,58 @@ test("publish-main refuses retired ledger and asset git paths", async () => {
   }
   assert.equal(gitPublishes.length, 0);
 });
+
+function capturedPublicationFixture(t: { after: (cleanup: () => void) => void }) {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-captured-source-"));
+  const stateRoot = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-captured-state-"));
+  const baselineRoot = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-captured-baseline-"));
+  t.after(() => {
+    for (const directory of [root, stateRoot, baselineRoot]) {
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
+  });
+  const posted: Array<Record<string, unknown>> = [];
+  return {
+    root,
+    stateRoot,
+    baselineRoot,
+    posted,
+    capture(itemNumber: number, repositorySlug = "openclaw-openclaw") {
+      captureCanonicalRecordBaseline({
+        baselineRoot,
+        repositorySlug,
+        itemNumber,
+        sources: (["items", "closed", "plans", "decision-packets"] as const).map((section) => {
+          const name = `${itemNumber}.${section === "decision-packets" ? "json" : "md"}`;
+          return {
+            section,
+            name,
+            path: path.join(stateRoot, "records", repositorySlug, section, name),
+          };
+        }),
+      });
+    },
+    publish(paths: string[]) {
+      return publishMainWithStateAppend(
+        { message: "test captured tuple publication", paths },
+        {
+          root,
+          env: appendEnv({
+            CLAWSWEEPER_STATE_DIR: stateRoot,
+            CLAWSWEEPER_CANONICAL_RECORD_BASELINE_DIR: baselineRoot,
+          }),
+          fetchImpl: (async (_input, init) => {
+            posted.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+            return Response.json({ ok: true, revision: 1 });
+          }) as typeof fetch,
+          publishGit: () => {
+            throw new Error("git publication must not run");
+          },
+        },
+      );
+    },
+  };
+}
 
 function statusFixture(): string {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-publish-main-"));

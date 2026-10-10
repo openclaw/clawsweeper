@@ -221,19 +221,33 @@ function planCanonicalRecordTuples(
       }
     }
   }
-  const includeFile = (path: string): boolean => {
-    if (!capturedKeys) return true;
-    const match = RECORD_TUPLE_PATH.exec(path);
-    return Boolean(match?.[1] && match[3] && capturedKeys.has(`${match[1]}/${match[3]}`));
+  // A captured baseline is also the mutation manifest. Select paths before
+  // opening files: the hydrated working tree can contain tens of thousands of
+  // unrelated reports, while only these tuples were eligible for mutation.
+  const candidatePaths = capturedKeys
+    ? [...capturedKeys].flatMap((key) => {
+        const [repository, number] = key.split("/");
+        const paths = recordTuplePaths({ repository: repository!, number: number! });
+        return RECORD_TUPLE_SECTIONS.map((section) => tuplePathForSection(paths, section)).filter(
+          (path) =>
+            recordRequests.some((request) => {
+              const normalized = normalizedPath(request);
+              return path === normalized || path.startsWith(`${normalized}/`);
+            }),
+        );
+      })
+    : null;
+  const collectFiles = (directory: string) => {
+    if (!candidatePaths) return collectRequestedRecordFiles(directory, recordRequests);
+    const files = new Map<string, string>();
+    for (const path of candidatePaths) {
+      const content = readOptionalRecordFile(directory, path);
+      if (content !== null) files.set(path, content);
+    }
+    return files;
   };
-  const localFiles = new Map(
-    [...collectRequestedRecordFiles(root, recordRequests)].filter(([path]) => includeFile(path)),
-  );
-  const stateFiles = new Map(
-    [...collectRequestedRecordFiles(stateRoot, recordRequests)].filter(([path]) =>
-      includeFile(path),
-    ),
-  );
+  const localFiles = collectFiles(root);
+  const stateFiles = collectFiles(stateRoot);
   const changedPaths = new Set(
     [...new Set([...localFiles.keys(), ...stateFiles.keys()])].filter(
       (path) => localFiles.get(path) !== stateFiles.get(path),

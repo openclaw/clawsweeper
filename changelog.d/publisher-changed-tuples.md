@@ -1,0 +1,1 @@
+- Bound apply checkpoint canonical-record planning to the captured tuple baseline instead of loading every hydrated report, preserving tuple compare-and-swap and reconciliation behavior while avoiding corpus-sized publisher memory use.
