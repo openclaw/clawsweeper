@@ -83,28 +83,46 @@ export async function publishMainWithStateAppend(
       throw new Error("canonical record publication is required for record tuple changes");
     }
     const isolateFailures = env.CLAWSWEEPER_CANONICAL_PUBLICATION_KIND === "reconcile";
-    for (const item of canonicalPlan.items) {
-      try {
-        if ("error" in item) throw item.error;
-        const outcome = await postCanonicalRecordTupleWithRecovery({
-          queueUrl,
-          webhookSecret,
-          mutation: item.mutation,
-          root,
-          stateRoot: canonicalBaselineRoot!,
-          env,
-          ...(runtime.fetchImpl ? { fetchImpl: runtime.fetchImpl } : {}),
-          ...(runtime.now ? { now: runtime.now } : {}),
-          ...(runtime.sleep ? { sleep: runtime.sleep } : {}),
-          ...(runtime.random ? { random: runtime.random } : {}),
-        });
-        if (outcome === "skipped") canonicalSkippedCount += 1;
-        else canonicalResolvedCount += 1;
-      } catch (error) {
-        if (!isolateFailures || isCanonicalInfrastructureError(error)) throw error;
-        canonicalFailedCount += 1;
-        console.error(`[canonical reconcile] ${item.key} failed: ${publishErrorMessage(error)}`);
+    const concurrency =
+      isolateFailures && env.CLAWSWEEPER_REVIEW_RECORD_BACKFILL === "true" ? 8 : 1;
+    let nextItem = 0;
+    let stopped = false;
+    const publishNext = async () => {
+      while (!stopped && nextItem < canonicalItemCount) {
+        const item = canonicalPlan.items[nextItem++]!;
+        try {
+          if ("error" in item) throw item.error;
+          const outcome = await postCanonicalRecordTupleWithRecovery({
+            queueUrl,
+            webhookSecret,
+            mutation: item.mutation,
+            root,
+            stateRoot: canonicalBaselineRoot!,
+            env,
+            ...(runtime.fetchImpl ? { fetchImpl: runtime.fetchImpl } : {}),
+            ...(runtime.now ? { now: runtime.now } : {}),
+            ...(runtime.sleep ? { sleep: runtime.sleep } : {}),
+            ...(runtime.random ? { random: runtime.random } : {}),
+          });
+          if (outcome === "skipped") canonicalSkippedCount += 1;
+          else canonicalResolvedCount += 1;
+        } catch (error) {
+          if (!isolateFailures || isCanonicalInfrastructureError(error)) {
+            stopped = true;
+            throw error;
+          }
+          canonicalFailedCount += 1;
+          console.error(`[canonical reconcile] ${item.key} failed: ${publishErrorMessage(error)}`);
+        }
       }
+    };
+    // Drain started requests before reporting a fatal error; no more tuples are
+    // scheduled after it, and no writes continue after this call has rejected.
+    const publishers = await Promise.allSettled(
+      Array.from({ length: Math.min(concurrency, canonicalItemCount) }, publishNext),
+    );
+    for (const publisher of publishers) {
+      if (publisher.status === "rejected") throw publisher.reason;
     }
     if (canonicalFailedCount === canonicalItemCount) {
       throw new Error(

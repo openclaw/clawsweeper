@@ -1,0 +1,1 @@
+- Publish ReviewRecord backfills with at most eight canonical tuple requests in flight, preserving per-tuple compare-and-swap and transient retries; ordinary reconciliation and publication remain serial.

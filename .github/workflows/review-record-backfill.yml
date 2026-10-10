@@ -78,9 +78,9 @@ jobs:
 
   # Writes like apply: setup-state hydrates the target's records and enables the state
   # writer coordinator, the command captures each tuple baseline before it writes, and
-  # publish_reconciled_records sends the tuples in batches of 50 with compare-and-swap
-  # on the baseline digest. A run that stops part way can run again: written reports
-  # are typed and the classification skips them.
+  # publish_reconciled_records sends batches of 50 with up to eight tuples in
+  # flight and compare-and-swap on each baseline digest. A run that stops part way
+  # can run again: written reports are typed and the classification skips them.
   write:
     if: ${{ inputs.mode == 'write' }}
     runs-on: ubuntu-latest
@@ -132,6 +132,7 @@ jobs:
           TARGET_REPO: ${{ inputs.target_repo }}
           TARGET_SLUG: ${{ steps.target.outputs.target_slug }}
           WRITE_LIMIT: ${{ inputs.limit }}
+          CLAWSWEEPER_REVIEW_RECORD_BACKFILL: "true"
         run: |
           set -euo pipefail
           source scripts/apply-workflow-helpers.sh

@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import fs from "node:fs";
+import { createServer } from "node:http";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { setTimeout as delay } from "node:timers/promises";
 
 import { captureCanonicalRecordBaseline } from "../../dist/repair/canonical-record-baseline.js";
 import { publishMainWithStateAppend } from "../../dist/repair/publish-main.js";
@@ -97,6 +99,148 @@ test("publish-main posts only the tuples whose files differ across a whole-repos
     "openclaw-openclaw/32",
     "openclaw-openclaw/33",
   ]);
+});
+
+test("backfill publishes the same CAS requests through a bounded, faster Worker connection pool", async (t) => {
+  const fixture = retryPublicationFixture(t);
+  for (let number = 43; number < 66; number += 1) {
+    for (const [root, body] of [
+      [fixture.runtime.root, "after"],
+      [fixture.runtime.env.CLAWSWEEPER_STATE_DIR!, "before"],
+    ] as const) {
+      writeText(
+        root,
+        `${tupleRoot}/items/${number}.md`,
+        recordMarkdown("2026-07-26T02:00:00.000Z", body).replace("number: 42", `number: ${number}`),
+      );
+    }
+  }
+  const concurrent = recordMarkdown("2026-07-26T03:00:00.000Z", "fresh review");
+  let active = 0;
+  let peak = 0;
+  let requests: string[] = [];
+  let failures = false;
+  const server = createServer(async (request, response) => {
+    active += 1;
+    peak = Math.max(peak, active);
+    try {
+      assert.equal(request.method, "POST");
+      assert.equal(request.url, "/internal/state/records/tuples");
+      const chunks: Buffer[] = [];
+      for await (const chunk of request) chunks.push(Buffer.from(chunk));
+      const body = Buffer.concat(chunks).toString();
+      const mutation = JSON.parse(body);
+      requests.push(body);
+      const number = Number(mutation.key.split("/")[1]);
+      const before = fs.readFileSync(
+        path.join(fixture.runtime.env.CLAWSWEEPER_STATE_DIR!, `${tupleRoot}/items/${number}.md`),
+        "utf8",
+      );
+      assert.equal(
+        mutation.operations[0].expectedDigest,
+        createHash("sha256").update(before).digest("hex"),
+      );
+      await delay(30);
+      if (failures) {
+        response.writeHead(400).end(JSON.stringify({ error: "invalid_tuple" }));
+      } else if (number === 42) {
+        response
+          .writeHead(409)
+          .end(await conflictResponse(concurrent, "record-tuple:fresh-review").text());
+      } else if (number === 43 && requests.filter((value) => value === body).length === 1) {
+        response.writeHead(500).end(JSON.stringify({ error: "exact_review_queue_unavailable" }));
+      } else {
+        response.writeHead(202).end(JSON.stringify({ ok: true, revision: 1 }));
+      }
+    } catch (error) {
+      response.writeHead(500).end(String(error));
+    } finally {
+      active -= 1;
+    }
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise<void>((resolve) => server.close(() => resolve())));
+  const address = server.address();
+  assert.ok(address && typeof address !== "string");
+  const run = async (backfill: boolean, kind = "reconcile") => {
+    // A previous conflict restored CURRENT locally; each run starts from the same change.
+    writeText(
+      fixture.runtime.root,
+      tupleItemPath,
+      recordMarkdown("2026-07-26T02:00:00.000Z", "after"),
+    );
+    requests = [];
+    peak = 0;
+    const start = performance.now();
+    const publication = publishMainWithStateAppend(fixture.options, {
+      ...fixture.runtime,
+      env: {
+        ...fixture.runtime.env,
+        QUEUE_URL: `http://127.0.0.1:${address.port}`,
+        CLAWSWEEPER_REVIEW_RECORD_BACKFILL: String(backfill),
+        CLAWSWEEPER_CANONICAL_PUBLICATION_KIND: kind,
+      },
+    });
+    if (failures) await assert.rejects(publication, /failed for all 24 item/);
+    else assert.equal(await publication, "appended");
+    return { requests: [...requests].sort(), peak, elapsedMs: performance.now() - start };
+  };
+  const serial = await run(false);
+  const parallel = await run(true);
+  assert.deepEqual(parallel.requests, serial.requests);
+  assert.equal(serial.requests.length, 25); // 24 tuples plus the unchanged transient retry.
+  assert.equal(serial.peak, 1);
+  assert.equal(parallel.peak, 8);
+  assert.ok(parallel.elapsedMs < serial.elapsedMs * 0.6, JSON.stringify({ serial, parallel }));
+  assert.equal(fs.readFileSync(path.join(fixture.runtime.root, tupleItemPath), "utf8"), concurrent);
+  const ordinary = await run(true, "review");
+  assert.equal(ordinary.peak, 1, "the backfill flag cannot parallelize ordinary publication");
+  failures = true;
+  await run(true);
+  assert.equal(requests.length, 24, "an all-failed concurrent batch still aborts");
+  t.diagnostic(
+    JSON.stringify({
+      serialMs: serial.elapsedMs,
+      parallelMs: parallel.elapsedMs,
+      serialPeak: serial.peak,
+      parallelPeak: parallel.peak,
+      identicalPosts: serial.requests.length,
+    }),
+  );
+});
+
+test("backfill stops scheduling on fatal errors and drains started requests before rejecting", async (t) => {
+  const fixture = retryPublicationFixture(t);
+  for (let number = 43; number < 66; number += 1) {
+    writeText(
+      fixture.runtime.root,
+      `${tupleRoot}/items/${number}.md`,
+      recordMarkdown("2026-07-26T02:00:00.000Z", "after").replace(
+        "number: 42",
+        `number: ${number}`,
+      ),
+    );
+  }
+  let calls = 0;
+  let active = 0;
+  await assert.rejects(
+    publishMainWithStateAppend(fixture.options, {
+      ...fixture.runtime,
+      env: { ...fixture.runtime.env, CLAWSWEEPER_REVIEW_RECORD_BACKFILL: "true" },
+      fetchImpl: (async () => {
+        const call = ++calls;
+        active += 1;
+        await delay(call === 1 ? 10 : 30);
+        active -= 1;
+        return call === 1
+          ? Response.json({ error: "denied" }, { status: 401 })
+          : Response.json({ ok: true, revision: 1 });
+      }) as typeof fetch,
+    }),
+    /returned 401: denied/,
+  );
+  assert.equal(calls, 8);
+  assert.equal(active, 0);
 });
 
 test("publish-main retries transient tuple failures with the same delivery and bounded backoff", async (t) => {
