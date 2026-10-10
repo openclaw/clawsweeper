@@ -16,7 +16,7 @@ import { createReviewCommandWorkflow } from "../dist/clawsweeper-review-command-
 import { suppliedReviewStartLeaseFromArgs } from "../dist/clawsweeper-review-lease.js";
 import { parseArgs } from "../dist/clawsweeper-args.js";
 import { repositoryProfileFor } from "../dist/repository-profiles.js";
-import { reviewActionForDecision } from "../dist/clawsweeper.js";
+import { reviewActionForDecision } from "../dist/clawsweeper-report-actions.js";
 import { item } from "./helpers.ts";
 
 for (const source of [

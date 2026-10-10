@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { prSurfaceFilesFromContext } from "../dist/clawsweeper-orchestration-foundation.js";
-import { pullRequestFilePathsFromContextForTest } from "../dist/clawsweeper.js";
+import { markdownFor } from "../dist/clawsweeper-report-document.js";
+import { parseDecision } from "../dist/clawsweeper.js";
+import { frontMatterJsonArray } from "../dist/report-front-matter.js";
+import { closeDecision, git, item } from "./helpers.ts";
 
 import {
   buildOpenClawPrSurfaceStats,
@@ -36,8 +39,20 @@ test("surface counts use only the current rename path while proof retains both s
     const populated = stats.filter((row) => row.files > 0);
     assert.equal(populated.length, 1);
     assert.equal(populated[0]?.bucket, bucket);
+    const report = markdownFor({
+      item: item({ kind: "pull_request" }),
+      decision: parseDecision(closeDecision({ decision: "keep_open", closeReason: "none" })),
+      context,
+      git,
+      action: { actionTaken: "kept_open" },
+      reviewMode: "propose",
+      snapshotHash: "synthetic-snapshot",
+      contentDigest: "synthetic-content",
+      reviewPolicy: "synthetic-policy",
+      runtime: { model: "Codex", reasoningEffort: "high" },
+    } as Parameters<typeof markdownFor>[0]);
     assert.deepEqual(
-      new Set(pullRequestFilePathsFromContextForTest(context)),
+      new Set(frontMatterJsonArray(report, "pull_files")),
       new Set([filename, previous_filename]),
     );
     assert.deepEqual(

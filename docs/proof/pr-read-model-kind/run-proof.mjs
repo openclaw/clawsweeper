@@ -2,12 +2,14 @@ import assert from "node:assert/strict";
 import { createHash, createHmac, randomUUID } from "node:crypto";
 import { execFileSync, spawn } from "node:child_process";
 import { once } from "node:events";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { createReviewPlanningInventory } from "../../../dist/clawsweeper-review-planning-inventory.js";
-import { createReportActionRendering } from "../../../dist/clawsweeper-report-actions.js";
+import { currentReviewRevision as liveReviewRevision } from "../../../dist/clawsweeper-report-actions.js";
+import { setTargetRepo } from "../../../dist/repository-profiles.js";
+import { withGitHubRun } from "../../../dist/clawsweeper-github-runtime.js";
 import { createCommandOperations } from "../../../dist/clawsweeper-command-operations.js";
 import { githubReadModelRequestSync } from "../../../dist/github-webhook-read-model-client.js";
 
@@ -94,16 +96,33 @@ try {
       QUEUE_URL: baseUrl, CLAWSWEEPER_WEBHOOK_SECRET: secret,
     }),
   });
+  const trace = path.join(root, "gh-requests.jsonl");
+  const gh = path.join(root, "gh.cjs");
+  writeFileSync(trace, "");
+  writeFileSync(gh, `
+const assert = require("node:assert/strict");
+const { createHmac } = require("node:crypto");
+const { execFileSync } = require("node:child_process");
+const { appendFileSync } = require("node:fs");
+const args = process.argv.slice(2);
+appendFileSync(${JSON.stringify(trace)}, JSON.stringify(args) + "\\n");
+assert.deepEqual(args, ["api", "repos/${repository}/pulls/77"]);
+const body = "{}";
+const signature = createHmac("sha256", ${JSON.stringify(secret)}).update(body).digest("hex");
+const value = JSON.parse(execFileSync("curl", ["--fail", "--silent", "--show-error", "--max-time", "10",
+  "--request", "POST", "--header", "content-type: application/json", "--header",
+  "x-clawsweeper-exact-review-signature: sha256=" + signature, "--data-binary", "@-", ${JSON.stringify(baseUrl + "/__proof/head")}],
+  { input: body, encoding: "utf8" }));
+console.log(JSON.stringify(value));
+`);
+  process.env.GH_BIN = process.execPath;
+  process.env.GH_BIN_ARGS = JSON.stringify([gh]);
+  process.env.GH_TOKEN = "synthetic-read-model-proof";
+  setTargetRepo(repository);
   let issueReads = 0;
   const issueRevision = "d".repeat(64);
-  const { currentReviewRevision } = createReportActionRendering({
-    targetRepo: () => repository, asRecord: (value) => value,
-    ghJson: (args) => {
-      assert.deepEqual(args, ["api", `repos/${repository}/pulls/77`]);
-      return send("/__proof/head", {});
-    },
-    collectItemContext: () => { issueReads++; return { sourceRevision: issueRevision }; },
-  });
+  const collectItemContext = () => { issueReads++; return { sourceRevision: issueRevision }; };
+  const currentReviewRevision = (item) => withGitHubRun(() => liveReviewRevision(item, collectItemContext));
   const { reserveReviewLeaseCommand } = createCommandOperations({
     targetRepo: () => repository, repoFromArgs: () => {}, fetchItem: inventory.fetchItem,
     currentReviewRevision, reviewActionLedger: {},

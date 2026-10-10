@@ -6,7 +6,6 @@ import { join, resolve } from "node:path";
 import test from "node:test";
 
 import {
-  contextHasNonAutomationActivityAfterForTest,
   implementedOnMainCloseProvenanceBlock,
   isExactEventSourceRevisionChange,
   renderReviewStartStatusComment,
@@ -18,6 +17,8 @@ import {
 } from "../dist/clawsweeper-review-comment-publication.js";
 import { repositoryProfileFor, withTargetProfile } from "../dist/repository-profiles.js";
 import { withGitHubRun } from "../dist/clawsweeper-github-runtime.js";
+import { contextHasNonAutomationActivityAfter } from "../dist/clawsweeper-promotion-facts.js";
+import { completeActivityContextSymbol, type ItemContext } from "../dist/clawsweeper-types.js";
 
 import {
   implementedCloseReport,
@@ -375,28 +376,22 @@ if (actual[0] === "api" && /\\/issues\\/321\\/comments(?:\\?|$)/.test(path) && !
 test("command-only timeline activity is ignored only through the completed review", () => {
   const storedAtMs = Date.parse("2026-07-03T21:42:48Z");
   const reviewedAtMs = Date.parse("2026-07-03T21:44:48Z");
-  const timelineEvent = (createdAt: string) => ({
-    event: "commented",
-    actor: "contributor",
-    createdAt,
-  });
-
-  assert.equal(
-    contextHasNonAutomationActivityAfterForTest({
-      timeline: [timelineEvent("2026-07-03T21:43:00Z")],
-      activityAfterMs: storedAtMs,
-      ignoreTimelineCommentsThroughMs: reviewedAtMs,
-    }),
-    false,
-  );
-  assert.equal(
-    contextHasNonAutomationActivityAfterForTest({
-      timeline: [timelineEvent("2026-07-03T21:45:00Z")],
-      activityAfterMs: storedAtMs,
-      ignoreTimelineCommentsThroughMs: reviewedAtMs,
-    }),
-    true,
-  );
+  for (const [createdAt, expected] of [
+    ["2026-07-03T21:43:00Z", false],
+    ["2026-07-03T21:45:00Z", true],
+  ] as const) {
+    const context = {
+      issue: {},
+      comments: [],
+      timeline: [{ event: "commented", actor: "contributor", createdAt }],
+    };
+    assert.equal(
+      contextHasNonAutomationActivityAfter(context, storedAtMs, {
+        ignoreTimelineCommentsThroughMs: reviewedAtMs,
+      }),
+      expected,
+    );
+  }
 });
 
 test("complete activity hydration distinguishes truncation from hidden human activity", () => {
@@ -409,16 +404,8 @@ test("complete activity hydration distinguishes truncation from hidden human act
     },
     {
       name: "timeline",
-      automation: {
-        event: "labeled",
-        actor: "fixture[bot]",
-        createdAt: "2026-07-03T21:45:00Z",
-      },
-      human: {
-        event: "labeled",
-        actor: "maintainer",
-        createdAt: "2026-07-03T21:46:00Z",
-      },
+      automation: { event: "labeled", actor: "fixture[bot]", createdAt: "2026-07-03T21:45:00Z" },
+      human: { event: "labeled", actor: "maintainer", createdAt: "2026-07-03T21:46:00Z" },
     },
     {
       name: "pullReviewComments",
@@ -426,33 +413,41 @@ test("complete activity hydration distinguishes truncation from hidden human act
       human: { author: "maintainer", createdAt: "2026-07-03T21:46:00Z" },
     },
   ] as const;
-
   for (const surface of surfaces) {
-    assert.equal(
-      contextHasNonAutomationActivityAfterForTest({
-        truncated: { [surface.name]: true },
-        completeActivityContext: { [surface.name]: [surface.automation] },
-        activityAfterMs,
-      }),
-      false,
-      `${surface.name} automation-only hydration should permit reconciliation`,
-    );
-    assert.equal(
-      contextHasNonAutomationActivityAfterForTest({
-        truncated: { [surface.name]: true },
-        completeActivityContext: { [surface.name]: [surface.automation, surface.human] },
-        activityAfterMs,
-      }),
-      true,
-      `${surface.name} hydration must preserve hidden human activity`,
-    );
+    for (const hasHuman of [false, true]) {
+      const context: ItemContext = {
+        issue: {},
+        comments: [],
+        timeline: [],
+        pullReviewComments: [],
+        counts: { comments: 0, timeline: 0, [`${surface.name}Truncated`]: true },
+        [completeActivityContextSymbol]: {
+          comments: [],
+          timeline: [],
+          pullReviewComments: [],
+          [surface.name]: hasHuman ? [surface.automation, surface.human] : [surface.automation],
+        },
+      };
+      assert.equal(
+        contextHasNonAutomationActivityAfter(context, activityAfterMs, {
+          useCompleteActivityContext: true,
+        }),
+        hasHuman,
+        `${surface.name} hydration must distinguish automation from hidden human activity`,
+      );
+    }
   }
-
   assert.equal(
-    contextHasNonAutomationActivityAfterForTest({
-      truncated: { comments: true },
+    contextHasNonAutomationActivityAfter(
+      {
+        issue: {},
+        comments: [],
+        timeline: [],
+        counts: { comments: 0, timeline: 0, commentsTruncated: true },
+      },
       activityAfterMs,
-    }),
+      { useCompleteActivityContext: true },
+    ),
     true,
     "truncation without complete hydration must remain fail closed",
   );

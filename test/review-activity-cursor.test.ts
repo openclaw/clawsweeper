@@ -2,13 +2,9 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { createApplyReviewActivityGuard } from "../dist/clawsweeper-apply-review-activity.js";
-import * as dashboardPresentation from "../dist/clawsweeper-dashboard.js";
-import * as repositoryLinks from "../dist/clawsweeper-links.js";
-import { createReportContextRendering } from "../dist/clawsweeper-report-context.js";
-import { createReportDocumentRendering } from "../dist/clawsweeper-report-document.js";
+import * as document from "../dist/clawsweeper-report-document.js";
 import { parseDecision } from "../dist/clawsweeper.js";
 import { frontMatterValue } from "../dist/report-front-matter.js";
-import { repositoryProfileFor } from "../dist/repository-profiles.js";
 import { closeDecision, item } from "./helpers.ts";
 import {
   MAX_REVIEWED_PR_ACTIVITY,
@@ -382,17 +378,6 @@ test("review thread pages parse fail-closed", () => {
 test("the review report persists the cursor that apply revalidates", () => {
   const reviewedCursor = v2Cursor();
   assert.ok(reviewedCursor);
-  const document = createReportDocumentRendering({
-    ...repositoryLinks,
-    ...createReportContextRendering({} as never),
-    ...dashboardPresentation,
-    compactPullFilePaths: () => [],
-    formatTimestamp: String,
-    labelJustificationsMarkdown: () => "- none",
-    pullHeadShaFromContext: () => "c".repeat(40),
-    reviewStructuralPullStateFromContext: () => null,
-    targetProfile: () => repositoryProfileFor("openclaw/openclaw"),
-  } as Parameters<typeof createReportDocumentRendering>[0]);
   const report = document.markdownFor({
     item: item({ kind: "pull_request", number: 42 }),
     decision: parseDecision(closeDecision({ decision: "keep_open", closeReason: "none" })),

@@ -17,7 +17,9 @@ import {
 } from "./dashboard-worker-harness.ts";
 import { githubReadModelLeaseItemRequest } from "../dist/github-webhook-read-model-client.js";
 import { createReviewPlanningInventory } from "../dist/clawsweeper-review-planning-inventory.js";
-import { createReportActionRendering } from "../dist/clawsweeper-report-actions.js";
+import { currentReviewRevision } from "../dist/clawsweeper-report-actions.js";
+import { githubTest, installGhFixture } from "./github-runtime-fixture.ts";
+import { readFileSync, writeFileSync } from "node:fs";
 import { createCommandOperations } from "../dist/clawsweeper-command-operations.js";
 
 const secret = "github-read-model-test-secret";
@@ -97,115 +99,131 @@ test("raw PR webhooks preserve the Issues API discriminator and earlier marker m
 });
 
 for (const kind of ["pull_request", "stored_pull_request", "issue"] as const) {
-  test(`read-model ${kind} preserves revision identity through lease reservation`, async (t) => {
-    const now = "2026-08-14T10:06:00.000Z";
-    const nowMs = Date.parse(now);
-    const isPull = kind !== "issue";
-    const storage = new MemoryDurableStorage();
-    const store = new GithubWebhookReadModelStore(storage);
-    store.ensureSchemaSync();
-    store.ingest(
-      requiredDelivery(isPull ? "pull_request" : "issues", kind, now, {
-        action: "opened",
-        repository,
-        ...(isPull ? { pull_request: pull(77, now) } : { issue: issue(77, "issue", now) }),
-      }),
-      nowMs,
-    );
-    if (kind === "stored_pull_request") {
-      // Existing rows have the authoritative kind but lack the JSON marker.
-      storage.sql.exec(
-        `UPDATE github_webhook_read_model_items_v1
-            SET snapshot_json = json_remove(snapshot_json, '$.pull_request')`,
+  githubTest(
+    `read-model ${kind} preserves revision identity through lease reservation`,
+    async (t) => {
+      const now = "2026-08-14T10:06:00.000Z";
+      const nowMs = Date.parse(now);
+      const isPull = kind !== "issue";
+      const storage = new MemoryDurableStorage();
+      const store = new GithubWebhookReadModelStore(storage);
+      store.ensureSchemaSync();
+      store.ingest(
+        requiredDelivery(isPull ? "pull_request" : "issues", kind, now, {
+          action: "opened",
+          repository,
+          ...(isPull ? { pull_request: pull(77, now) } : { issue: issue(77, "issue", now) }),
+        }),
+        nowMs,
       );
-    }
-    const before = [...storage.sql.exec(`SELECT * FROM github_webhook_read_model_items_v1`)];
-    const snapshot = await store.readItem({ repository: repository.full_name, number: 77 }, nowMs);
-    assert.equal(snapshot.usable, true);
-    assert.deepEqual(
-      [...storage.sql.exec(`SELECT * FROM github_webhook_read_model_items_v1`)],
-      before,
-    );
-    const inventory = createReviewPlanningInventory({
-      targetRepo: () => repository.full_name,
-      ghJson: () => assert.fail("fresh item projection must not poll GitHub"),
-      normalizeAuthorAssociation: () => "CONTRIBUTOR",
-      githubReadModelRequestSync: () => snapshot,
-    } as Parameters<typeof createReviewPlanningInventory>[0]);
-    const item = inventory.fetchItem(77).item;
-    assert.equal(item.kind, isPull ? "pull_request" : "issue");
-    let headSha = "a".repeat(40);
-    const issueRevision = "b".repeat(64);
-    const revisionReads: string[] = [];
-    const { currentReviewRevision } = createReportActionRendering({
-      targetRepo: () => repository.full_name,
-      asRecord: (value) => value,
-      ghJson: (args) => {
-        assert.deepEqual(args, ["api", "repos/openclaw/openclaw/pulls/77"]);
-        revisionReads.push("pull");
-        return { head: { sha: headSha } };
-      },
-      collectItemContext: () => {
-        revisionReads.push("issue");
-        return { sourceRevision: issueRevision };
-      },
-    } as Parameters<typeof createReportActionRendering>[0]);
-    const output: string[] = [];
-    t.mock.method(console, "log", (value: string) => output.push(value));
-    t.mock.method(console, "error", () => {});
-    const posted: { headSha?: string }[] = [];
-    const { reserveReviewLeaseCommand } = createCommandOperations({
-      targetRepo: () => repository.full_name,
-      repoFromArgs: () => {},
-      fetchItem: inventory.fetchItem,
-      currentReviewRevision,
-      exactReviewQueueAuthorityFromEnv: () => ({
-        itemKey: "openclaw/openclaw#77",
-        ...(isPull ? { sourceHeadSha: "a".repeat(40) } : {}),
-      }),
-      postReviewStartStatusComment: (options) => {
-        posted.push(options);
-        return {
-          status: "posted",
-          lease: { owner: "fixture", commentId: 123, headSha: options.headSha },
-        };
-      },
-      reviewActionLedger: {},
-    } as Parameters<typeof createCommandOperations>[0]);
-    reserveReviewLeaseCommand({ item_number: "77", review_timeout_ms: "600000" });
-    assert.equal(posted.length, 1);
-    assert.equal(posted[0].headSha, isPull ? headSha : issueRevision);
-    assert.equal(JSON.parse(output[0]).headSha, posted[0].headSha);
-    assert.deepEqual(revisionReads, [isPull ? "pull" : "issue"]);
-    if (isPull) {
-      headSha = "c".repeat(40);
+      if (kind === "stored_pull_request") {
+        // Existing rows have the authoritative kind but lack the JSON marker.
+        storage.sql.exec(
+          `UPDATE github_webhook_read_model_items_v1
+            SET snapshot_json = json_remove(snapshot_json, '$.pull_request')`,
+        );
+      }
+      const before = [...storage.sql.exec(`SELECT * FROM github_webhook_read_model_items_v1`)];
+      const snapshot = await store.readItem(
+        { repository: repository.full_name, number: 77 },
+        nowMs,
+      );
+      assert.equal(snapshot.usable, true);
+      assert.deepEqual(
+        [...storage.sql.exec(`SELECT * FROM github_webhook_read_model_items_v1`)],
+        before,
+      );
+      const inventory = createReviewPlanningInventory({
+        targetRepo: () => repository.full_name,
+        ghJson: () => assert.fail("fresh item projection must not poll GitHub"),
+        normalizeAuthorAssociation: () => "CONTRIBUTOR",
+        githubReadModelRequestSync: () => snapshot,
+      } as Parameters<typeof createReviewPlanningInventory>[0]);
+      const item = inventory.fetchItem(77).item;
+      assert.equal(item.kind, isPull ? "pull_request" : "issue");
+      let headSha = "a".repeat(40);
+      const issueRevision = "b".repeat(64);
+      const revisionReads: string[] = [];
+      const fixture = installGhFixture(
+        t,
+        `
+const path = args[1];
+if (path === "repos/openclaw/openclaw/pulls/77") {
+  console.log(JSON.stringify({ head: { sha: state.headSha || ${JSON.stringify(headSha)} } }));
+} else throw new Error("unexpected read " + args.join(" "));
+`,
+      );
+      const output: string[] = [];
+      t.mock.method(console, "log", (value: string) => output.push(value));
+      t.mock.method(console, "error", () => {});
+      const posted: { headSha?: string }[] = [];
+      const { reserveReviewLeaseCommand } = createCommandOperations({
+        targetRepo: () => repository.full_name,
+        repoFromArgs: () => {},
+        fetchItem: inventory.fetchItem,
+        currentReviewRevision: (candidate) =>
+          currentReviewRevision(candidate, (collectedItem, options) => {
+            assert.equal(collectedItem.number, 77);
+            assert.deepEqual(options, { fullTimelineForRelations: true });
+            revisionReads.push("issue");
+            return { sourceRevision: issueRevision };
+          }),
+        exactReviewQueueAuthorityFromEnv: () => ({
+          itemKey: "openclaw/openclaw#77",
+          ...(isPull ? { sourceHeadSha: "a".repeat(40) } : {}),
+        }),
+        postReviewStartStatusComment: (options) => {
+          posted.push(options);
+          return {
+            status: "posted",
+            lease: { owner: "fixture", commentId: 123, headSha: options.headSha },
+          };
+        },
+        reviewActionLedger: {},
+      } as Parameters<typeof createCommandOperations>[0]);
       reserveReviewLeaseCommand({ item_number: "77", review_timeout_ms: "600000" });
-      assert.equal(posted.length, 1, "head drift cannot publish a lease");
-      assert.equal(JSON.parse(output[1]).reason, "source_head_drift");
-    }
+      assert.equal(posted.length, 1);
+      assert.equal(posted[0].headSha, isPull ? headSha : issueRevision);
+      assert.equal(JSON.parse(output[0]).headSha, posted[0].headSha);
+      assert.deepEqual(revisionReads, isPull ? [] : ["issue"]);
+      assert.deepEqual(
+        fixture.requests().map(({ args }) => args),
+        isPull ? [["api", "repos/openclaw/openclaw/pulls/77"]] : [],
+      );
+      if (isPull) {
+        headSha = "c".repeat(40);
+        writeFileSync(
+          fixture.statePath,
+          JSON.stringify({ ...JSON.parse(readFileSync(fixture.statePath, "utf8")), headSha }),
+        );
+        reserveReviewLeaseCommand({ item_number: "77", review_timeout_ms: "600000" });
+        assert.equal(posted.length, 1, "head drift cannot publish a lease");
+        assert.equal(JSON.parse(output[1]).reason, "source_head_drift");
+      }
 
-    store.ingest(
-      requiredDelivery("issue_comment", `${kind}-comment`, now, {
-        action: "created",
-        repository,
-        issue: { ...issue(77, "comment", now), ...(isPull ? { pull_request: {} } : {}) },
-        comment: { id: 123, body: "ClawSweeper status: review started.", updated_at: now },
-      }),
-      nowMs,
-    );
-    store.repair(
-      { repository: repository.full_name, repair_kind: "placeholders", objects: [] },
-      nowMs,
-    );
-    const placeholders = await store.readPlaceholders(
-      { repository: repository.full_name, state: "open" },
-      nowMs,
-    );
-    assert.equal(placeholders.usable, true);
-    const candidates = placeholders.candidates as { item: Record<string, unknown> }[];
-    assert.equal(candidates.length, 1);
-    assert.equal(Boolean(candidates[0].item.pull_request), isPull);
-  });
+      store.ingest(
+        requiredDelivery("issue_comment", `${kind}-comment`, now, {
+          action: "created",
+          repository,
+          issue: { ...issue(77, "comment", now), ...(isPull ? { pull_request: {} } : {}) },
+          comment: { id: 123, body: "ClawSweeper status: review started.", updated_at: now },
+        }),
+        nowMs,
+      );
+      store.repair(
+        { repository: repository.full_name, repair_kind: "placeholders", objects: [] },
+        nowMs,
+      );
+      const placeholders = await store.readPlaceholders(
+        { repository: repository.full_name, state: "open" },
+        nowMs,
+      );
+      assert.equal(placeholders.usable, true);
+      const candidates = placeholders.candidates as { item: Record<string, unknown> }[];
+      assert.equal(candidates.length, 1);
+      assert.equal(Boolean(candidates[0].item.pull_request), isPull);
+    },
+  );
 }
 
 test("read model dedupes GUIDs, keeps object watermarks monotonic, tombstones, and TTL", async () => {

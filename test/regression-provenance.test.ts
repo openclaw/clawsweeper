@@ -7,7 +7,8 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 import * as provenance from "../dist/clawsweeper-regression-provenance.js";
-import { parseDecision, renderReviewCommentFromReport } from "../dist/clawsweeper.js";
+import { parseDecision } from "../dist/clawsweeper.js";
+import { renderReviewCommentFromReport } from "../dist/clawsweeper-report-comment-presentation.js";
 import { closeDecision, reportFrontMatter } from "./helpers.ts";
 import { maintainerDecisionFromReport } from "../dist/decision-packets.js";
 import { useFakeScanner } from "./agent-input-scan-helpers.ts";

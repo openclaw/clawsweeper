@@ -13,7 +13,8 @@ import {
   reviewHistoryCycleFromCommentBody,
   reviewHistoryForReviewer,
 } from "../dist/review-history.js";
-import { parseDecision, renderReviewCommentFromReport } from "../dist/clawsweeper.js";
+import { parseDecision } from "../dist/clawsweeper.js";
+import { renderReviewCommentFromReport } from "../dist/clawsweeper-report-comment-presentation.js";
 import {
   extractLatestClawSweeperReview,
   previousClawSweeperReviewDigestFromReport,

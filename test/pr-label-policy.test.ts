@@ -1,3 +1,4 @@
+import { labelJustificationsMarkdown } from "../dist/clawsweeper-label-presentation.js";
 import assert from "node:assert/strict";
 import test from "node:test";
 
@@ -41,11 +42,7 @@ import {
   buildLiveVerificationResult,
   encodeLiveVerificationReportPayload,
 } from "../dist/live-proof/verification.js";
-import {
-  labelJustificationsMarkdownForTest,
-  parseDecision,
-  reviewDecisionSchemaText,
-} from "../dist/clawsweeper.js";
+import { parseDecision, reviewDecisionSchemaText } from "../dist/clawsweeper.js";
 import { goodFirstIssueHumanLabelState } from "../dist/clawsweeper-context-hydration.js";
 import {
   closeDecision,
@@ -753,7 +750,7 @@ test("ClawSweeper priority labels follow triage priority", () => {
 
 test("ClawSweeper label justifications render selected label reasons", () => {
   assert.equal(
-    labelJustificationsMarkdownForTest([
+    labelJustificationsMarkdown([
       {
         label: "P1",
         reason: "The PR changes an active channel workflow affecting real users.",

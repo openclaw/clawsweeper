@@ -6,7 +6,7 @@ import { pathToFileURL } from "node:url";
 import { createServer } from "node:http";
 import { stripTypeScriptTypes } from "node:module";
 import MarkdownIt from "markdown-it";
-import { renderReviewCommentFromReport as render } from "../../../dist/clawsweeper.js";
+import { renderReviewCommentFromReport as render } from "../../../dist/clawsweeper-report-comment-presentation.js";
 import { parseReviewHistory, renderReviewHistorySection } from "../../../dist/review-history.js";
 import { reviewReportFrontMatter, realBehaviorProofReportSection } from "../../../test/helpers.ts";
 
@@ -64,9 +64,17 @@ try {
     fs.writeFileSync(path.join(baseline, "dist", name + ".js"), stripTypeScriptTypes(source));
   }
   const baselineModule = await import(
-    pathToFileURL(path.join(baseline, "dist/clawsweeper.js")).href
+    pathToFileURL(path.join(baseline, "dist/clawsweeper-report-comment-presentation.js")).href
   );
-  before = baselineModule.renderReviewCommentFromReport(report(), "none", options);
+  const load = (name) => import(pathToFileURL(path.join(baseline, "dist", name)).href);
+  const presentation = typeof baselineModule.createReportCommentPresentation === "function"
+    ? baselineModule.createReportCommentPresentation({
+        ...await load("clawsweeper-label-presentation.js"),
+        ...await load("clawsweeper-review-comment-automation.js"),
+        ...await load("repository-profiles.js"),
+      })
+    : baselineModule;
+  before = presentation.renderReviewCommentFromReport(report(), "none", options);
 } finally {
   fs.rmSync(baseline, { recursive: true, force: true });
 }

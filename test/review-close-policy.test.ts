@@ -1,3 +1,5 @@
+import { renderReviewCommentFromReport } from "../dist/clawsweeper-report-comment-presentation.js";
+import { reviewActionForDecision } from "../dist/clawsweeper-report-actions.js";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
@@ -13,8 +15,6 @@ import {
   parseGhJsonWithRetry,
   protectedLabels,
   reviewAutomationMarkersFromReport,
-  renderReviewCommentFromReport,
-  reviewActionForDecision,
   shouldPlanItem,
   validateCloseDecision,
 } from "../dist/clawsweeper.js";

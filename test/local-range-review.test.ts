@@ -1,3 +1,4 @@
+import { renderReviewCommentFromReport } from "../dist/clawsweeper-report-comment-presentation.js";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { useFakeScanner } from "./agent-input-scan-helpers.ts";
@@ -19,10 +20,7 @@ import { tmpdir } from "node:os";
 import { basename, delimiter, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import {
-  buildLocalRangeReviewForTest,
-  renderReviewCommentFromReport,
-} from "../dist/clawsweeper.js";
+import { buildLocalRangeReviewForTest } from "../dist/clawsweeper.js";
 import { buildPullRequestReviewEvidence, readReviewGit } from "../dist/pr-review-evidence.js";
 import { createLocalRangeReviewer } from "../dist/clawsweeper-local-review.js";
 import { runText, SWEEPER_COMMAND_MAX_BUFFER_BYTES } from "../dist/command.js";

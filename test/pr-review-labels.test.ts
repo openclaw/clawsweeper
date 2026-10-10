@@ -1,10 +1,8 @@
+import { renderReviewCommentFromReport } from "../dist/clawsweeper-report-comment-presentation.js";
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import {
-  renderReviewCommentFromReport,
-  reviewAutomationMarkersFromReport,
-} from "../dist/clawsweeper.js";
+import { reviewAutomationMarkersFromReport } from "../dist/clawsweeper.js";
 import { LIVE_VERIFICATION_MARKER } from "../dist/clawsweeper-policy.js";
 import type { LiveProofPlan } from "../dist/clawsweeper-types.js";
 import {

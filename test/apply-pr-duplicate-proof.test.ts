@@ -1,12 +1,10 @@
+import { renderReviewCommentFromReport } from "../dist/clawsweeper-report-comment-presentation.js";
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
 
-import {
-  renderReviewCommentFromReport,
-  renderReviewStartStatusComment,
-} from "../dist/clawsweeper.js";
+import { renderReviewStartStatusComment } from "../dist/clawsweeper.js";
 import { frontMatterValue, sectionValue } from "../dist/report-front-matter.js";
 import { readReviewRecord } from "../dist/review-record.js";
 import {

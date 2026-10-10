@@ -1,3 +1,4 @@
+import { reviewActionForDecision } from "../dist/clawsweeper-report-actions.js";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { githubTest as test } from "./github-runtime-fixture.ts";
@@ -14,7 +15,6 @@ import {
   openClosingPullRequestApplyReason,
   referencingMergedPullRequestCandidatesForTest,
   referencingMergedPullRequestsForIssueForTest,
-  reviewActionForDecision,
   sameAuthorCounterpartApplyReason,
   stalledUnprovenProofRequestBlockReason,
   staleVersionBugAgeSkipReason,

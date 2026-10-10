@@ -1,14 +1,16 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { basename, join } from "node:path";
+import { join } from "node:path";
 import test from "node:test";
 
-import { renderWorkPlanFromReport } from "../dist/clawsweeper.js";
+import {
+  renderWorkPlanFromReport,
+  syncWorkPlanFromReport,
+} from "../dist/clawsweeper-report-context.js";
 import { capturedCanonicalRecordBaselineKeys } from "../dist/repair/canonical-record-baseline.js";
 import { readText, tmpPrefix, withReviewRecord, workPlanCandidateReport } from "./helpers.ts";
 import { ReviewRecordFormatError } from "../dist/review-record.js";
-import { createReportContextRendering } from "../dist/clawsweeper-report-context.js";
 
 test("renderWorkPlanFromReport renders dashboard plan artifacts for fresh queue_fix_pr candidates", () => {
   const plan = renderWorkPlanFromReport(workPlanCandidateReport(), {
@@ -96,14 +98,6 @@ test("work plan sync removes a corrupt record's stale plan and continues with va
     writeFileSync(reportPath, markdown);
     const planPath = join(plansDir, "321.md");
     writeFileSync(planPath, "Stale runnable plan");
-    const { syncWorkPlanFromReport } = createReportContextRendering({
-      ensureDir: (path: string) => mkdirSync(path, { recursive: true }),
-      formattedMarkdownList: (values: readonly string[], formatter: (value: string) => string) =>
-        values.map((value) => `- ${formatter(value)}`).join("\n"),
-      inlineCode: (value: string) => `\`${value}\``,
-      shouldRenderWorkPlanFromReport: (value: string) => renderWorkPlanFromReport(value) !== null,
-      workPlanPathForReport: (path: string, directory: string) => join(directory, basename(path)),
-    } as never);
     assert.equal(syncWorkPlanFromReport({ markdown, reportPath, plansDir, dryRun: true }), false);
     assert.equal(readFileSync(planPath, "utf8"), "Stale runnable plan");
     assert.equal(syncWorkPlanFromReport({ markdown, reportPath, plansDir }), false);

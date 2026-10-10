@@ -2,8 +2,11 @@ import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
-import { createPullRequestPromotionFacts } from "../dist/clawsweeper-promotion-facts.js";
-import { createPullRequestClosePromotion } from "../dist/clawsweeper-close-promotion.js";
+import { linkedPullRequestSupersession } from "../dist/clawsweeper-promotion-facts.js";
+import { pullRequestClosePromotion } from "../dist/clawsweeper-close-promotion.js";
+import { pullRequestHeadActivity } from "../dist/clawsweeper-apply-guard-activity.js";
+import { repositoryProfileFor, withTargetProfile } from "../dist/repository-profiles.js";
+import { githubTest, installGhFixture } from "./github-runtime-fixture.ts";
 import { reportFileName } from "../dist/clawsweeper-repository-paths.js";
 
 import {
@@ -21,81 +24,127 @@ import {
   withMockGh,
   withReviewRecord,
 } from "./helpers.ts";
+for (const repo of ["openclaw/openclaw", "openclaw/clawhub"]) {
+  githubTest(
+    `head activity reads preserve source matching and timeline ownership for ${repo}`,
+    (t) => {
+      const fixture = installGhFixture(
+        t,
+        `
+const path = args[1];
+if (path.split("?")[0].endsWith("/issues/333/timeline")) {
+  const events = [
+    { event: "head_ref_force_pushed", commit_id: "head333", created_at: "2026-02-03T00:00:00Z" },
+    { event: "head_ref_force_pushed", commit_id: "other", created_at: "2026-03-01T00:00:00Z" }
+  ];
+  console.log(JSON.stringify(args.includes("--slurp") ? [events] : events));
+} else if (path.includes("/actions/runs?head_sha=head333&event=pull_request&per_page=100")) {
+  console.log(JSON.stringify({ workflow_runs: [
+    { event: "pull_request", pull_requests: [{ number: 333 }], created_at: "2026-02-01T00:00:00Z" },
+    { event: "pull_request", head_branch: "feature", head_repository: { id: 500 }, created_at: "2026-02-02T00:00:00Z" },
+    { event: "pull_request", head_branch: "feature", head_repository: { id: 501 }, created_at: "2026-02-10T00:00:00Z" },
+    { event: "pull_request", head_branch: "feature", head_repository: { id: 500 }, created_at: "2025-12-31T00:00:00Z" },
+    { event: "push", pull_requests: [{ number: 333 }], created_at: "2026-03-05T00:00:00Z" }
+  ] }));
+} else throw new Error("unexpected read " + args.join(" "));
+`,
+      );
+      withTargetProfile(repositoryProfileFor(repo), () => {
+        const pull = {
+          created_at: "2026-01-01T00:00:00Z",
+          head: { sha: "head333", ref: "feature", repo: { id: 500 } },
+        };
+        assert.deepEqual(pullRequestHeadActivity(333, pull), {
+          headSha: "head333",
+          headActivityAtMs: Date.parse("2026-02-03T00:00:00Z"),
+        });
+        assert.deepEqual(pullRequestHeadActivity(333, pull, []), {
+          headSha: "head333",
+          headActivityAtMs: Date.parse("2026-02-02T00:00:00Z"),
+        });
+        const count = fixture.requests().length;
+        assert.deepEqual(pullRequestHeadActivity(333, {}, []), {
+          headSha: "",
+          headActivityAtMs: null,
+        });
+        assert.equal(fixture.requests().length, count, "empty heads make no workflow read");
+        const paths = fixture.requests().map(({ args }) => args[1]);
+        assert.ok(paths.includes(`repos/${repo}/issues/333/timeline?per_page=100`));
+        assert.ok(
+          paths.includes(
+            `repos/${repo}/actions/runs?head_sha=head333&event=pull_request&per_page=100`,
+          ),
+        );
+        assert.ok(paths.every((path) => path.startsWith(`repos/${repo}/`)));
+      });
+    },
+  );
+}
 
-test("an unreadable canonical review blocks the stale low-signal promotion alternative", () => {
-  withApplyTestWorkspace(tmpPrefix, ({ itemsDir }) => {
-    const source = stalePullRequestReport({
-      number: 333,
-      root_cause_cluster: canonicalPullRequestClusterForTest(
-        "https://github.com/openclaw/openclaw/pull/400",
-      ),
+githubTest(
+  "an unreadable canonical review blocks the stale low-signal promotion alternative",
+  (t) => {
+    installGhFixture(
+      t,
+      `
+const path = args[1];
+if (path.endsWith("/pulls/333")) {
+  console.log(JSON.stringify({ created_at: "2026-01-01T00:00:00Z", mergeable: false, mergeable_state: "dirty", user: { login: "reporter" }, head: { sha: "head333" } }));
+} else if (path.endsWith("/pulls/400")) {
+  console.log(JSON.stringify({ number: 400, state: "open", mergeable_state: "clean", labels: ["proof: sufficient"] }));
+} else if (path.includes("/actions/runs?")) {
+  console.log(JSON.stringify({ workflow_runs: [{ event: "pull_request", pull_requests: [{number:333}], created_at:"2026-01-01T00:00:00Z" }] }));
+} else if (path.split("?")[0].endsWith("/reviews")) {
+  console.log(JSON.stringify(args.includes("--slurp") ? [[]] : []));
+} else {
+  throw new Error("unexpected read " + args.join(" "));
+}
+`,
+    );
+    withApplyTestWorkspace(tmpPrefix, ({ itemsDir }) => {
+      const source = stalePullRequestReport({
+        number: 333,
+        root_cause_cluster: canonicalPullRequestClusterForTest(
+          "https://github.com/openclaw/openclaw/pull/400",
+        ),
+      });
+      writeFileSync(
+        join(itemsDir, reportFileName("openclaw/openclaw", 400)),
+        withReviewRecord(stalePullRequestReport({ number: 400 })).replace(
+          /^review_record: \{/m,
+          "review_record: {broken",
+        ),
+        "utf8",
+      );
+      const sourceItem = item({
+        kind: "pull_request",
+        number: 333,
+        author: "reporter",
+        createdAt: "2026-01-01T00:00:00Z",
+      });
+      const context = { issue: {}, comments: [], timeline: [], pullReviewComments: [] };
+      assert.equal(
+        pullRequestClosePromotion(stalePullRequestReport({ number: 333 }), sourceItem, context, 30)
+          ?.closeReason,
+        "low_signal_unmergeable_pr",
+      );
+      assert.deepEqual(
+        linkedPullRequestSupersession(source, sourceItem, { reportDirs: [itemsDir] }),
+        {
+          candidate: null,
+          unsafeReason:
+            "linked canonical PR #400 has an unreadable review record; fresh review required",
+        },
+      );
+      assert.equal(
+        pullRequestClosePromotion(source, sourceItem, context, 30, {
+          reportDirs: [itemsDir],
+        }),
+        null,
+      );
     });
-    writeFileSync(
-      join(itemsDir, reportFileName("openclaw/openclaw", 400)),
-      withReviewRecord(stalePullRequestReport({ number: 400 })).replace(
-        /^review_record: \{/m,
-        "review_record: {broken",
-      ),
-      "utf8",
-    );
-    const dependencies = {
-      targetRepo: () => "openclaw/openclaw",
-      parseGitHubItemRef: () => ({ kind: "pull_request", number: 400 }),
-      labelNames: (labels: string[]) => labels,
-      normalizeLabelName: (label: string) => label,
-      ghJson: (args: string[]) =>
-        args.some((arg) => arg.endsWith("/333"))
-          ? {
-              created_at: "2026-01-01T00:00:00Z",
-              mergeable: false,
-              mergeable_state: "dirty",
-              user: { login: "reporter" },
-            }
-          : {
-              number: 400,
-              state: "open",
-              mergeable_state: "clean",
-              labels: ["proof: sufficient"],
-            },
-      ghPaged: () => [],
-      pullRequestHeadActivity: () => ({
-        headActivityAtMs: Date.parse("2026-01-01T00:00:00Z"),
-      }),
-    };
-    const facts = createPullRequestPromotionFacts(
-      dependencies as unknown as Parameters<typeof createPullRequestPromotionFacts>[0],
-    );
-    const promotions = createPullRequestClosePromotion({
-      ...dependencies,
-      ...facts,
-    } as unknown as Parameters<typeof createPullRequestClosePromotion>[0]);
-    const sourceItem = item({
-      kind: "pull_request",
-      number: 333,
-      author: "reporter",
-      createdAt: "2026-01-01T00:00:00Z",
-    });
-    const context = { issue: {}, comments: [], timeline: [], pullReviewComments: [] };
-    assert.equal(
-      promotions.staleFRatedPullRequestPromotion(source, sourceItem, context, 30)?.closeReason,
-      "low_signal_unmergeable_pr",
-    );
-    assert.deepEqual(
-      facts.linkedPullRequestSupersession(source, sourceItem, { reportDirs: [itemsDir] }),
-      {
-        candidate: null,
-        unsafeReason:
-          "linked canonical PR #400 has an unreadable review record; fresh review required",
-      },
-    );
-    assert.equal(
-      promotions.pullRequestClosePromotion(source, sourceItem, context, 30, {
-        reportDirs: [itemsDir],
-      }),
-      null,
-    );
-  });
-});
+  },
+);
 
 for (const syncCommentsOnly of [false, true]) {
   for (const [name, mergedAt, reference, mergeableState] of [

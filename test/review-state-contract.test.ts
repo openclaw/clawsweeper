@@ -1,11 +1,9 @@
+import { renderReviewCommentFromReport } from "../dist/clawsweeper-report-comment-presentation.js";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 
-import {
-  renderReviewCommentFromReport,
-  reviewAutomationMarkersFromReport,
-} from "../dist/clawsweeper.js";
+import { reviewAutomationMarkersFromReport } from "../dist/clawsweeper.js";
 import {
   prRatingReportSection,
   realBehaviorProofReportSection,

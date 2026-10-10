@@ -21,8 +21,8 @@ const home = join(out, "home");
 mkdirSync(home);
 const env = { PATH: process.env.PATH, HOME: home, LANG: "C" };
 const load = (name) => import(pathToFileURL(join(root, "dist", name)).href);
-const { renderReviewCommentFromReport, reviewAutomationMarkersFromReport } =
-  await load("clawsweeper.js");
+const { renderReviewCommentFromReport } = await load("clawsweeper-report-comment-presentation.js");
+const { reviewAutomationMarkersFromReport } = await load("clawsweeper-review-comment-automation.js");
 const { reportLiveProofPlan } = await load("live-proof/report.js");
 const { liveProofPlanSha256 } = await load("live-proof/verification.js");
 const base = readFileSync(join(recipe, "help-only-report.md"), "utf8");

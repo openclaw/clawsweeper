@@ -8,7 +8,7 @@ import test from "node:test";
 import { shouldSyncReviewComment } from "../dist/clawsweeper-record-metadata.js";
 import * as publication from "../dist/clawsweeper-review-comment-publication.js";
 import * as state from "../dist/clawsweeper-review-comment-state.js";
-import { createReviewCommentWorkflow } from "../dist/clawsweeper-review-comments-workflow.js";
+import { postReviewStartStatusComment } from "../dist/clawsweeper-review-comment-leases.js";
 import {
   reviewAutomationMarkersFromReport,
   reviewVersionMarkerFromReport,
@@ -503,7 +503,7 @@ test("active legacy leases on non-canonical duplicates block workflow acquisitio
         snapshot.leaseComments.map((comment) => comment.id),
         [10],
       );
-      const result = createReviewCommentWorkflow(() => headSha).postReviewStartStatusComment({
+      const result = postReviewStartStatusComment({
         item: { ...item({ number: itemNumber }), kind: "pull_request" },
         headSha,
         reviewTimeoutMs: 60_000,

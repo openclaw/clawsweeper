@@ -1,9 +1,5 @@
 import { parseDecision } from "../dist/clawsweeper.js";
-import { createReportDocumentRendering } from "../dist/clawsweeper-report-document.js";
-import { createReportContextRendering } from "../dist/clawsweeper-report-context.js";
-import * as dashboardPresentation from "../dist/clawsweeper-dashboard.js";
-import * as repositoryLinks from "../dist/clawsweeper-links.js";
-import { repositoryProfileFor } from "../dist/repository-profiles.js";
+import * as document from "../dist/clawsweeper-report-document.js";
 import type { DataModelCompatibility } from "../src/clawsweeper-types.ts";
 import { closeDecision, item, reviewReportFrontMatter } from "./helpers.ts";
 
@@ -73,22 +69,11 @@ Full review comments:
 `;
 }
 
-// Use the real decision parser and report writer; only surrounding context/formatting is synthetic.
+// Use the real decision parser and report writer with synthetic item context.
 export function generatedCompatibilityReport(
   compatibility: DataModelCompatibility,
   decisionOverrides: Record<string, unknown> = {},
 ): string {
-  const document = createReportDocumentRendering({
-    ...repositoryLinks,
-    ...createReportContextRendering({} as never),
-    ...dashboardPresentation,
-    compactPullFilePaths: (file) => [file.filename],
-    formatTimestamp: String,
-    labelJustificationsMarkdown: () => "- none",
-    pullHeadShaFromContext: () => "a".repeat(40),
-    reviewStructuralPullStateFromContext: () => null,
-    targetProfile: () => repositoryProfileFor("openclaw/openclaw"),
-  } as Parameters<typeof createReportDocumentRendering>[0]);
   const decision = parseDecision(
     closeDecision({
       decision: "keep_open",
@@ -139,6 +124,7 @@ export function generatedCompatibilityReport(
       issue: {},
       comments: [],
       timeline: [],
+      pullRequest: { head: { sha: "a".repeat(40) } },
       sourceRevision: "b".repeat(64),
       pullFiles: [
         {

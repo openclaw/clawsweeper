@@ -27,9 +27,31 @@ import {
   type PrCloseCoverageProofPullRequestView,
   type PrCloseCoverageProofRuntime,
 } from "./pr-close-coverage-proof.js";
-import type { CreateReportOrchestrationDependencies } from "./clawsweeper-report-orchestration-dependencies.js";
-import type { createPullRequestPromotionFacts } from "./clawsweeper-promotion-facts.js";
-import type { createReportRendering } from "./clawsweeper-report-rendering.js";
+import { GitHubRuntimeBudgetError } from "./clawsweeper-github-runtime.js";
+import { ghJson } from "./clawsweeper-github-execution.js";
+import {
+  ghPagedContextWindow,
+  ghPagedLinkHeaderContextWindow,
+} from "./clawsweeper-github-context.js";
+import {
+  canonicalPullRequestNumbersFromReport,
+  linkedPullRequestLabels,
+  unsafeCanonicalPullRequestReason,
+} from "./clawsweeper-promotion-facts.js";
+import { reviewDecisionParser } from "./clawsweeper-decision-parser.js";
+import { filterReviewContextComments } from "./clawsweeper-context-hydration.js";
+import { pullHeadShaFromContext } from "./clawsweeper-review-comment-identity.js";
+import {
+  renderPrRatingAssessmentReportSection,
+  renderRootCauseClusterAssessmentReportSection,
+} from "./clawsweeper-report-document.js";
+import {
+  runtimeBudgetExceeded,
+  timeoutWithinRuntimeBudget,
+} from "./clawsweeper-review-comment-publication.js";
+import { targetRepo } from "./repository-profiles.js";
+import { numberOrUndefined } from "./value-coerce.js";
+const { defaultRootCauseCluster } = reviewDecisionParser;
 import { asRecord, nonBlankStringOrUndefined } from "./value-coerce.js";
 import {
   frontMatterValue,
@@ -51,647 +73,589 @@ import {
   pullRequestUrlForNumber,
 } from "./clawsweeper-pr-references.js";
 
-export function createPullRequestCoverageProof(
-  dependencies: CreateReportOrchestrationDependencies &
-    ReturnType<typeof createPullRequestPromotionFacts> &
-    Pick<
-      ReturnType<typeof createReportRendering>,
-      "renderPrRatingAssessmentReportSection" | "renderRootCauseClusterAssessmentReportSection"
-    >,
-) {
-  const {
-    GitHubRuntimeBudgetError,
-    canonicalPullRequestNumbersFromReport,
-    defaultRootCauseCluster,
-    filterReviewContextComments,
-    ghJson,
-    ghPagedContextWindow,
-    ghPagedLinkHeaderContextWindow,
-    linkedPullRequestLabels,
-    numberOrUndefined,
-    pullHeadShaFromContext,
-    renderPrRatingAssessmentReportSection,
-    renderRootCauseClusterAssessmentReportSection,
-    runtimeBudgetExceeded,
-    targetRepo,
-    timeoutWithinRuntimeBudget,
-    unsafeCanonicalPullRequestReason,
-  } = dependencies;
+export function duplicateCanonicalPullRequestBlockReason(
+  markdown: string,
+  item: Item,
+  options: { reportDirs?: readonly string[] } = {},
+): string | null {
+  if (item.kind !== "pull_request") return null;
+  const candidateNumbers = prCloseCoverageProofCandidateNumbers(markdown, item);
+  if (
+    candidateNumbers.length === 0 &&
+    frontMatterValue(markdown, "pr_close_requires_canonical_pr") !== "false" &&
+    !reportReviewDecision(markdown).rootCauseCluster.canonicalRef
+  ) {
+    return "duplicate/superseded PR close has no rootCauseCluster.canonicalRef; refusing duplicate/superseded auto-close";
+  }
+  for (const number of candidateNumbers) {
+    try {
+      const pull = asRecord(ghJson<unknown>(["api", `repos/${targetRepo()}/pulls/${number}`]));
+      const linkedPull: LinkedPullRequestSupersession = {
+        number,
+        title: nonBlankStringOrUndefined(pull.title) ?? `PR #${number}`,
+        url:
+          nonBlankStringOrUndefined(pull.html_url) ?? pullRequestUrlForNumber(targetRepo(), number),
+        state: nonBlankStringOrUndefined(pull.state)?.toLowerCase() ?? "",
+        mergedAt: nonBlankStringOrUndefined(pull.merged_at) ?? null,
+        mergeableState: nonBlankStringOrUndefined(pull.mergeable_state)?.toLowerCase() ?? null,
+        draft: pull.draft === true,
+        labels: linkedPullRequestLabels(number, pull),
+      };
+      const reason = unsafeCanonicalPullRequestReason(linkedPull, options);
+      if (reason) return `${reason}; refusing duplicate/superseded auto-close`;
+    } catch (error) {
+      if (error instanceof GitHubRuntimeBudgetError) throw error;
+      return `linked canonical PR #${number} could not be read; refusing duplicate/superseded auto-close`;
+    }
+  }
+  return null;
+}
 
-  function duplicateCanonicalPullRequestBlockReason(
-    markdown: string,
-    item: Item,
-    options: { reportDirs?: readonly string[] } = {},
-  ): string | null {
-    if (item.kind !== "pull_request") return null;
-    const candidateNumbers = prCloseCoverageProofCandidateNumbers(markdown, item);
-    if (
-      candidateNumbers.length === 0 &&
-      frontMatterValue(markdown, "pr_close_requires_canonical_pr") !== "false" &&
-      !reportReviewDecision(markdown).rootCauseCluster.canonicalRef
-    ) {
-      return "duplicate/superseded PR close has no rootCauseCluster.canonicalRef; refusing duplicate/superseded auto-close";
-    }
-    for (const number of candidateNumbers) {
-      try {
-        const pull = asRecord(ghJson<unknown>(["api", `repos/${targetRepo()}/pulls/${number}`]));
-        const linkedPull: LinkedPullRequestSupersession = {
+function prCloseCoverageProofCandidateNumbers(markdown: string, item: Item): number[] {
+  if (item.kind !== "pull_request") return [];
+  return canonicalPullRequestNumbersFromReport(markdown, item.number);
+}
+
+function possibleCanonicalPullRequestNumbersFromReport(markdown: string, item: Item): number[] {
+  if (item.kind !== "pull_request") return [];
+  const pendingCanonicalNumber = staleCanonicalPullRequestNumber(markdown);
+  if (pendingCanonicalNumber) return [pendingCanonicalNumber];
+  return canonicalPullRequestNumbersFromReport(markdown, item.number);
+}
+
+export function canonicalPullRequestCommentSyncBlock(
+  markdown: string,
+  item: Item,
+): CanonicalPullRequestCommentSyncBlock | null {
+  for (const number of possibleCanonicalPullRequestNumbersFromReport(markdown, item)) {
+    try {
+      const pull = asRecord(ghJson<unknown>(["api", `repos/${targetRepo()}/pulls/${number}`]));
+      const state = nonBlankStringOrUndefined(pull.state)?.toLowerCase() ?? "";
+      const mergedAt = nonBlankStringOrUndefined(pull.merged_at) ?? null;
+      if (state === "closed" && !mergedAt) {
+        return {
+          kind: "closed_unmerged",
           number,
-          title: nonBlankStringOrUndefined(pull.title) ?? `PR #${number}`,
-          url:
-            nonBlankStringOrUndefined(pull.html_url) ??
-            pullRequestUrlForNumber(targetRepo(), number),
-          state: nonBlankStringOrUndefined(pull.state)?.toLowerCase() ?? "",
-          mergedAt: nonBlankStringOrUndefined(pull.merged_at) ?? null,
-          mergeableState: nonBlankStringOrUndefined(pull.mergeable_state)?.toLowerCase() ?? null,
-          draft: pull.draft === true,
-          labels: linkedPullRequestLabels(number, pull),
+          reason: `linked canonical PR #${number} is closed and unmerged; refusing duplicate/superseded auto-close`,
         };
-        const reason = unsafeCanonicalPullRequestReason(linkedPull, options);
-        if (reason) return `${reason}; refusing duplicate/superseded auto-close`;
-      } catch (error) {
-        if (error instanceof GitHubRuntimeBudgetError) throw error;
-        return `linked canonical PR #${number} could not be read; refusing duplicate/superseded auto-close`;
       }
+    } catch (error) {
+      if (error instanceof GitHubRuntimeBudgetError) throw error;
+      return {
+        kind: "unreadable",
+        number,
+        reason: `linked canonical PR #${number} could not be read; refusing duplicate/superseded comment sync`,
+      };
     }
+  }
+  return null;
+}
+
+function prCloseCoverageRuntimeBudgetBlock(
+  runtimeBudget: PrCloseCoverageRuntimeBudget | undefined,
+  phase: string,
+): PrCloseCoverageProofGateResult {
+  if (
+    !runtimeBudget ||
+    !runtimeBudgetExceeded(runtimeBudget.startedAtMs, runtimeBudget.maxRuntimeMs, Date.now())
+  ) {
     return null;
   }
+  return {
+    status: "blocked",
+    block: {
+      actionTaken: "skipped_runtime_budget",
+      reason: `max runtime ${runtimeBudget.maxRuntimeMs}ms reached ${phase} PR close coverage proof`,
+    },
+  };
+}
 
-  function prCloseCoverageProofCandidateNumbers(markdown: string, item: Item): number[] {
-    if (item.kind !== "pull_request") return [];
-    return canonicalPullRequestNumbersFromReport(markdown, item.number);
-  }
+function prCloseCoverageRuntime(
+  runtime: PrCloseCoverageProofRuntime,
+  runtimeBudget: PrCloseCoverageRuntimeBudget | undefined,
+): PrCloseCoverageProofRuntime | null {
+  if (!runtimeBudget) return runtime;
+  const timeoutMs = timeoutWithinRuntimeBudget(
+    runtimeBudget.startedAtMs,
+    runtimeBudget.maxRuntimeMs,
+    runtime.timeoutMs,
+    Date.now(),
+  );
+  return timeoutMs === null ? null : { ...runtime, timeoutMs };
+}
 
-  function possibleCanonicalPullRequestNumbersFromReport(markdown: string, item: Item): number[] {
-    if (item.kind !== "pull_request") return [];
-    const pendingCanonicalNumber = staleCanonicalPullRequestNumber(markdown);
-    if (pendingCanonicalNumber) return [pendingCanonicalNumber];
-    return canonicalPullRequestNumbersFromReport(markdown, item.number);
-  }
+function sourcePrCloseCoveragePullRequestView(
+  item: Item,
+  context: ItemContext,
+): PrCloseCoverageProofPullRequestView {
+  const issue = asRecord(context.issue);
+  const pull = asRecord(context.pullRequest);
+  return {
+    number: item.number,
+    title:
+      nonBlankStringOrUndefined(pull.title) ?? nonBlankStringOrUndefined(issue.title) ?? item.title,
+    url: item.url,
+    state: "open",
+    mergedAt: null,
+    body: compactPrCloseCoverageProofText(
+      nonBlankStringOrUndefined(pull.body) ?? nonBlankStringOrUndefined(issue.body) ?? "",
+    ),
+    updatedAt: item.updatedAt,
+    headSha: pullHeadShaFromContext(context) ?? null,
+    comments: (context.comments ?? []).map(compactPrCloseCoverageProofComment),
+    commentsTruncated: Boolean(context.counts?.commentsTruncated),
+  };
+}
 
-  function canonicalPullRequestCommentSyncBlock(
-    markdown: string,
-    item: Item,
-  ): CanonicalPullRequestCommentSyncBlock | null {
-    for (const number of possibleCanonicalPullRequestNumbersFromReport(markdown, item)) {
-      try {
-        const pull = asRecord(ghJson<unknown>(["api", `repos/${targetRepo()}/pulls/${number}`]));
-        const state = nonBlankStringOrUndefined(pull.state)?.toLowerCase() ?? "";
-        const mergedAt = nonBlankStringOrUndefined(pull.merged_at) ?? null;
-        if (state === "closed" && !mergedAt) {
-          return {
-            kind: "closed_unmerged",
-            number,
-            reason: `linked canonical PR #${number} is closed and unmerged; refusing duplicate/superseded auto-close`,
-          };
-        }
-      } catch (error) {
-        if (error instanceof GitHubRuntimeBudgetError) throw error;
-        return {
-          kind: "unreadable",
-          number,
-          reason: `linked canonical PR #${number} could not be read; refusing duplicate/superseded comment sync`,
-        };
-      }
-    }
-    return null;
-  }
+function coveringPrCloseCoveragePullRequestView(
+  number: number,
+): PrCloseCoverageProofPullRequestView {
+  const pull = asRecord(ghJson<unknown>(["api", `repos/${targetRepo()}/pulls/${number}`]));
+  const issue = asRecord(ghJson<unknown>(["api", `repos/${targetRepo()}/issues/${number}`]));
+  const commentsPath = `repos/${targetRepo()}/issues/${number}/comments`;
+  const commentsCount = numberOrUndefined(issue.comments);
+  const commentsWindow =
+    commentsCount === undefined
+      ? ghPagedLinkHeaderContextWindow<unknown>(commentsPath, 40)
+      : ghPagedContextWindow<unknown>(commentsPath, commentsCount, 40);
+  const filteredComments = filterReviewContextComments(commentsWindow.items, number);
+  return {
+    number,
+    title:
+      nonBlankStringOrUndefined(pull.title) ??
+      nonBlankStringOrUndefined(issue.title) ??
+      `PR #${number}`,
+    url:
+      nonBlankStringOrUndefined(pull.html_url) ??
+      nonBlankStringOrUndefined(issue.html_url) ??
+      pullRequestUrlForNumber(targetRepo(), number),
+    state: nonBlankStringOrUndefined(pull.state)?.toLowerCase() ?? "",
+    mergedAt: nonBlankStringOrUndefined(pull.merged_at) ?? null,
+    body: compactPrCloseCoverageProofText(
+      nonBlankStringOrUndefined(pull.body) ?? nonBlankStringOrUndefined(issue.body) ?? "",
+    ),
+    updatedAt:
+      nonBlankStringOrUndefined(pull.updated_at) ??
+      nonBlankStringOrUndefined(issue.updated_at) ??
+      null,
+    headSha: nonBlankStringOrUndefined(asRecord(pull.head).sha) ?? null,
+    comments: filteredComments.included.map(compactPrCloseCoverageProofComment),
+    commentsTruncated: commentsWindow.truncated,
+  };
+}
 
-  function prCloseCoverageRuntimeBudgetBlock(
-    runtimeBudget: PrCloseCoverageRuntimeBudget | undefined,
-    phase: string,
-  ): PrCloseCoverageProofGateResult {
-    if (
-      !runtimeBudget ||
-      !runtimeBudgetExceeded(runtimeBudget.startedAtMs, runtimeBudget.maxRuntimeMs, Date.now())
-    ) {
-      return null;
-    }
-    return {
-      status: "blocked",
-      block: {
-        actionTaken: "skipped_runtime_budget",
-        reason: `max runtime ${runtimeBudget.maxRuntimeMs}ms reached ${phase} PR close coverage proof`,
-      },
-    };
-  }
+export function coveringPrCloseCoveragePullRequestSnapshotSha256(number: number): string {
+  return prCloseCoverageProofSnapshotSha256(coveringPrCloseCoveragePullRequestView(number));
+}
 
-  function prCloseCoverageRuntime(
-    runtime: PrCloseCoverageProofRuntime,
-    runtimeBudget: PrCloseCoverageRuntimeBudget | undefined,
-  ): PrCloseCoverageProofRuntime | null {
-    if (!runtimeBudget) return runtime;
-    const timeoutMs = timeoutWithinRuntimeBudget(
-      runtimeBudget.startedAtMs,
-      runtimeBudget.maxRuntimeMs,
-      runtime.timeoutMs,
-      Date.now(),
-    );
-    return timeoutMs === null ? null : { ...runtime, timeoutMs };
-  }
+function prCloseCoverageProofSignalSnippets(
+  markdown: string,
+  currentNumber: number,
+  linkedNumber: number,
+): string[] {
+  const review = reportReviewDecision(markdown);
+  const texts = [
+    ...review.workClusterRefs,
+    ...review.mergeRiskOptions.flatMap((option) => [option.title, option.body]),
+    review.bestSolution,
+    review.evidenceMarkdown,
+    review.publishedCloseComment,
+  ];
+  return texts
+    .flatMap((text) =>
+      linkedPullRequestSignalContextsFromText(targetRepo(), text, currentNumber, linkedNumber),
+    )
+    .map((text) => compactPrCloseCoverageProofText(text, 500))
+    .filter(Boolean)
+    .slice(0, 4);
+}
 
-  function sourcePrCloseCoveragePullRequestView(
-    item: Item,
-    context: ItemContext,
-  ): PrCloseCoverageProofPullRequestView {
-    const issue = asRecord(context.issue);
-    const pull = asRecord(context.pullRequest);
-    return {
-      number: item.number,
-      title:
-        nonBlankStringOrUndefined(pull.title) ??
-        nonBlankStringOrUndefined(issue.title) ??
-        item.title,
-      url: item.url,
-      state: "open",
-      mergedAt: null,
-      body: compactPrCloseCoverageProofText(
-        nonBlankStringOrUndefined(pull.body) ?? nonBlankStringOrUndefined(issue.body) ?? "",
-      ),
-      updatedAt: item.updatedAt,
-      headSha: pullHeadShaFromContext(context) ?? null,
-      comments: (context.comments ?? []).map(compactPrCloseCoverageProofComment),
-      commentsTruncated: Boolean(context.counts?.commentsTruncated),
-    };
-  }
+export function prCloseCoverageProofGateResult(options: {
+  markdown: string;
+  item: Item;
+  context: ItemContext;
+  runtime: PrCloseCoverageProofRuntime;
+  requirePrecomputedProof?: boolean;
+  runtimeBudget?: PrCloseCoverageRuntimeBudget;
+}): PrCloseCoverageProofGateResult {
+  // This trusted timestamp precedes mutation-side hydration and validation. The
+  // proof artifact's own timestamp is audit metadata, not a freshness authority.
+  const proofBindingStartedAtMs = Date.now();
+  const beforeCandidateResolution = prCloseCoverageRuntimeBudgetBlock(
+    options.runtimeBudget,
+    "before resolving",
+  );
+  if (beforeCandidateResolution) return beforeCandidateResolution;
+  const candidateNumbers = prCloseCoverageProofCandidateNumbers(options.markdown, options.item);
+  const afterCandidateResolution = prCloseCoverageRuntimeBudgetBlock(
+    options.runtimeBudget,
+    "while resolving",
+  );
+  if (afterCandidateResolution) return afterCandidateResolution;
+  if (candidateNumbers.length === 0) return null;
 
-  function coveringPrCloseCoveragePullRequestView(
-    number: number,
-  ): PrCloseCoverageProofPullRequestView {
-    const pull = asRecord(ghJson<unknown>(["api", `repos/${targetRepo()}/pulls/${number}`]));
-    const issue = asRecord(ghJson<unknown>(["api", `repos/${targetRepo()}/issues/${number}`]));
-    const commentsPath = `repos/${targetRepo()}/issues/${number}/comments`;
-    const commentsCount = numberOrUndefined(issue.comments);
-    const commentsWindow =
-      commentsCount === undefined
-        ? ghPagedLinkHeaderContextWindow<unknown>(commentsPath, 40)
-        : ghPagedContextWindow<unknown>(commentsPath, commentsCount, 40);
-    const filteredComments = filterReviewContextComments(commentsWindow.items, number);
-    return {
-      number,
-      title:
-        nonBlankStringOrUndefined(pull.title) ??
-        nonBlankStringOrUndefined(issue.title) ??
-        `PR #${number}`,
-      url:
-        nonBlankStringOrUndefined(pull.html_url) ??
-        nonBlankStringOrUndefined(issue.html_url) ??
-        pullRequestUrlForNumber(targetRepo(), number),
-      state: nonBlankStringOrUndefined(pull.state)?.toLowerCase() ?? "",
-      mergedAt: nonBlankStringOrUndefined(pull.merged_at) ?? null,
-      body: compactPrCloseCoverageProofText(
-        nonBlankStringOrUndefined(pull.body) ?? nonBlankStringOrUndefined(issue.body) ?? "",
-      ),
-      updatedAt:
-        nonBlankStringOrUndefined(pull.updated_at) ??
-        nonBlankStringOrUndefined(issue.updated_at) ??
-        null,
-      headSha: nonBlankStringOrUndefined(asRecord(pull.head).sha) ?? null,
-      comments: filteredComments.included.map(compactPrCloseCoverageProofComment),
-      commentsTruncated: commentsWindow.truncated,
-    };
-  }
-
-  function coveringPrCloseCoveragePullRequestSnapshotSha256(number: number): string {
-    return prCloseCoverageProofSnapshotSha256(coveringPrCloseCoveragePullRequestView(number));
-  }
-
-  function prCloseCoverageProofSignalSnippets(
-    markdown: string,
-    currentNumber: number,
-    linkedNumber: number,
-  ): string[] {
-    const review = reportReviewDecision(markdown);
-    const texts = [
-      ...review.workClusterRefs,
-      ...review.mergeRiskOptions.flatMap((option) => [option.title, option.body]),
-      review.bestSolution,
-      review.evidenceMarkdown,
-      review.publishedCloseComment,
-    ];
-    return texts
-      .flatMap((text) =>
-        linkedPullRequestSignalContextsFromText(targetRepo(), text, currentNumber, linkedNumber),
-      )
-      .map((text) => compactPrCloseCoverageProofText(text, 500))
-      .filter(Boolean)
-      .slice(0, 4);
-  }
-
-  function prCloseCoverageProofGateResult(options: {
-    markdown: string;
-    item: Item;
-    context: ItemContext;
-    runtime: PrCloseCoverageProofRuntime;
-    requirePrecomputedProof?: boolean;
-    runtimeBudget?: PrCloseCoverageRuntimeBudget;
-  }): PrCloseCoverageProofGateResult {
-    // This trusted timestamp precedes mutation-side hydration and validation. The
-    // proof artifact's own timestamp is audit metadata, not a freshness authority.
-    const proofBindingStartedAtMs = Date.now();
-    const beforeCandidateResolution = prCloseCoverageRuntimeBudgetBlock(
+  const source = sourcePrCloseCoveragePullRequestView(options.item, options.context);
+  const coveringViews = new Map<number, PrCloseCoverageProofPullRequestView>();
+  const coveringView = (number: number): PrCloseCoverageProofPullRequestView => {
+    const cached = coveringViews.get(number);
+    if (cached) return cached;
+    const view = coveringPrCloseCoveragePullRequestView(number);
+    coveringViews.set(number, view);
+    return view;
+  };
+  let firstKeepOpenBlock: PrCloseCoverageProofGateBlock | null = null;
+  let checkedPullRequestCandidate = false;
+  for (const linkedNumber of candidateNumbers) {
+    const beforeHydration = prCloseCoverageRuntimeBudgetBlock(
       options.runtimeBudget,
-      "before resolving",
+      "before hydrating",
     );
-    if (beforeCandidateResolution) return beforeCandidateResolution;
-    const candidateNumbers = prCloseCoverageProofCandidateNumbers(options.markdown, options.item);
-    const afterCandidateResolution = prCloseCoverageRuntimeBudgetBlock(
-      options.runtimeBudget,
-      "while resolving",
-    );
-    if (afterCandidateResolution) return afterCandidateResolution;
-    if (candidateNumbers.length === 0) return null;
-
-    const source = sourcePrCloseCoveragePullRequestView(options.item, options.context);
-    const coveringViews = new Map<number, PrCloseCoverageProofPullRequestView>();
-    const coveringView = (number: number): PrCloseCoverageProofPullRequestView => {
-      const cached = coveringViews.get(number);
-      if (cached) return cached;
-      const view = coveringPrCloseCoveragePullRequestView(number);
-      coveringViews.set(number, view);
-      return view;
-    };
-    let firstKeepOpenBlock: PrCloseCoverageProofGateBlock | null = null;
-    let checkedPullRequestCandidate = false;
-    for (const linkedNumber of candidateNumbers) {
-      const beforeHydration = prCloseCoverageRuntimeBudgetBlock(
-        options.runtimeBudget,
-        "before hydrating",
-      );
-      if (beforeHydration) return beforeHydration;
-      let covering: PrCloseCoverageProofPullRequestView;
-      try {
-        covering = coveringView(linkedNumber);
-      } catch (error) {
-        if (error instanceof GitHubRuntimeBudgetError) throw error;
-        const hydrationBudgetBlock = prCloseCoverageRuntimeBudgetBlock(
-          options.runtimeBudget,
-          "while hydrating",
-        );
-        if (hydrationBudgetBlock) return hydrationBudgetBlock;
-        return {
-          status: "blocked",
-          block: {
-            actionTaken: "retry_pr_close_coverage_proof",
-            reason: `PR close coverage proof could not hydrate linked canonical PR #${linkedNumber}: ${
-              error instanceof Error ? error.message : String(error)
-            }`,
-          },
-        };
-      }
-      const afterHydration = prCloseCoverageRuntimeBudgetBlock(
+    if (beforeHydration) return beforeHydration;
+    let covering: PrCloseCoverageProofPullRequestView;
+    try {
+      covering = coveringView(linkedNumber);
+    } catch (error) {
+      if (error instanceof GitHubRuntimeBudgetError) throw error;
+      const hydrationBudgetBlock = prCloseCoverageRuntimeBudgetBlock(
         options.runtimeBudget,
         "while hydrating",
       );
-      if (afterHydration) return afterHydration;
-      checkedPullRequestCandidate = true;
-      if (!prCloseCoverageProofCandidateCanClose(covering)) {
-        return {
-          status: "blocked",
-          block: {
-            actionTaken: "kept_open",
-            reason: `linked canonical PR #${linkedNumber} is ${covering.state || "not open"} and unmerged; refusing duplicate/superseded auto-close`,
-          },
-        };
-      }
-      try {
-        const relationshipSignalSnippets = prCloseCoverageProofSignalSnippets(
-          options.markdown,
-          options.item.number,
-          linkedNumber,
-        );
-        const promptSha256 = prCloseCoverageProofPromptSha256({
-          source,
-          covering,
-          reportMarkdown: options.markdown,
-          relationshipSignalSnippets,
-          promptTemplate: options.runtime.promptTemplate,
-        });
-        let proofStartedAtMs = proofBindingStartedAtMs;
-        const envelope = options.requirePrecomputedProof
-          ? readPrCloseCoverageProofEnvelope(
-              prCloseCoverageProofEnvelopePath(
-                options.runtime.workDir,
-                source.number,
-                covering.number,
-              ),
-            )
-          : (() => {
-              const proofRuntime = prCloseCoverageRuntime(options.runtime, options.runtimeBudget);
-              if (!proofRuntime) {
-                throw new Error("runtime budget reached before running PR close coverage proof");
-              }
-              proofStartedAtMs = Date.now();
-              const proof = runPrCloseCoverageProofModel({
-                source,
-                covering,
-                markdown: options.markdown,
-                relationshipSignalSnippets,
-                runtime: proofRuntime,
-              });
-              return writePrCloseCoverageProofEnvelope({
-                workDir: options.runtime.workDir,
-                targetRepo: targetRepo(),
-                promptSha256,
-                source,
-                covering,
-                proof,
-              });
-            })();
-        validatePrCloseCoverageProofEnvelopeBinding(envelope, {
-          targetRepo: targetRepo(),
-          promptSha256,
-          source,
-          covering,
-        });
-        const proof = envelope.proof;
-        const closeDecision = prCloseCoverageProofCloseDecision(proof);
-        if (closeDecision.close) {
-          return {
-            status: "allowed",
-            covering: {
-              number: covering.number,
-              provedAtMs: proofStartedAtMs,
-              snapshotSha256: prCloseCoverageProofSnapshotSha256(covering),
-              updatedAt: covering.updatedAt,
-              url: covering.url,
-              proof: closeDecision.proof,
-            },
-          };
-        }
-        firstKeepOpenBlock ??= {
-          actionTaken: "skipped_pr_close_coverage_proof",
-          reason: `PR close coverage proof kept this PR open against ${covering.url}: ${closeDecision.reason}`,
-        };
-      } catch (error) {
-        if (error instanceof GitHubRuntimeBudgetError) throw error;
-        const proofBudgetBlock = prCloseCoverageRuntimeBudgetBlock(
-          options.runtimeBudget,
-          "while running",
-        );
-        if (proofBudgetBlock) return proofBudgetBlock;
-        return {
-          status: "blocked",
-          block: {
-            actionTaken: "retry_pr_close_coverage_proof",
-            reason: `PR close coverage proof ${
-              options.requirePrecomputedProof ? "artifact validation" : "generation"
-            } failed for linked canonical PR #${linkedNumber}: ${
-              error instanceof Error ? error.message : String(error)
-            }`,
-          },
-        };
-      }
+      if (hydrationBudgetBlock) return hydrationBudgetBlock;
+      return {
+        status: "blocked",
+        block: {
+          actionTaken: "retry_pr_close_coverage_proof",
+          reason: `PR close coverage proof could not hydrate linked canonical PR #${linkedNumber}: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        },
+      };
     }
-    if (!checkedPullRequestCandidate) return null;
-    return {
-      status: "blocked",
-      block: firstKeepOpenBlock ?? {
+    const afterHydration = prCloseCoverageRuntimeBudgetBlock(
+      options.runtimeBudget,
+      "while hydrating",
+    );
+    if (afterHydration) return afterHydration;
+    checkedPullRequestCandidate = true;
+    if (!prCloseCoverageProofCandidateCanClose(covering)) {
+      return {
+        status: "blocked",
+        block: {
+          actionTaken: "kept_open",
+          reason: `linked canonical PR #${linkedNumber} is ${covering.state || "not open"} and unmerged; refusing duplicate/superseded auto-close`,
+        },
+      };
+    }
+    try {
+      const relationshipSignalSnippets = prCloseCoverageProofSignalSnippets(
+        options.markdown,
+        options.item.number,
+        linkedNumber,
+      );
+      const promptSha256 = prCloseCoverageProofPromptSha256({
+        source,
+        covering,
+        reportMarkdown: options.markdown,
+        relationshipSignalSnippets,
+        promptTemplate: options.runtime.promptTemplate,
+      });
+      let proofStartedAtMs = proofBindingStartedAtMs;
+      const envelope = options.requirePrecomputedProof
+        ? readPrCloseCoverageProofEnvelope(
+            prCloseCoverageProofEnvelopePath(
+              options.runtime.workDir,
+              source.number,
+              covering.number,
+            ),
+          )
+        : (() => {
+            const proofRuntime = prCloseCoverageRuntime(options.runtime, options.runtimeBudget);
+            if (!proofRuntime) {
+              throw new Error("runtime budget reached before running PR close coverage proof");
+            }
+            proofStartedAtMs = Date.now();
+            const proof = runPrCloseCoverageProofModel({
+              source,
+              covering,
+              markdown: options.markdown,
+              relationshipSignalSnippets,
+              runtime: proofRuntime,
+            });
+            return writePrCloseCoverageProofEnvelope({
+              workDir: options.runtime.workDir,
+              targetRepo: targetRepo(),
+              promptSha256,
+              source,
+              covering,
+              proof,
+            });
+          })();
+      validatePrCloseCoverageProofEnvelopeBinding(envelope, {
+        targetRepo: targetRepo(),
+        promptSha256,
+        source,
+        covering,
+      });
+      const proof = envelope.proof;
+      const closeDecision = prCloseCoverageProofCloseDecision(proof);
+      if (closeDecision.close) {
+        return {
+          status: "allowed",
+          covering: {
+            number: covering.number,
+            provedAtMs: proofStartedAtMs,
+            snapshotSha256: prCloseCoverageProofSnapshotSha256(covering),
+            updatedAt: covering.updatedAt,
+            url: covering.url,
+            proof: closeDecision.proof,
+          },
+        };
+      }
+      firstKeepOpenBlock ??= {
         actionTaken: "skipped_pr_close_coverage_proof",
-        reason: "PR close coverage proof did not allow close",
-      },
-    };
-  }
-
-  function renderPrCloseCoverageProofReportSection(
-    covering: PrCloseCoverageProofCoveringWitness,
-  ): string {
-    return [
-      "Decision: covered",
-      `Covering PR: ${covering.url}`,
-      `Reason: ${covering.proof.reason}`,
-      "",
-      "Covered work:",
-      formatPrCloseCoverageProofDetailList(covering.proof.coveredWork),
-      "",
-      "Unique source work:",
-      formatPrCloseCoverageProofDetailList(covering.proof.uniqueSourceWork),
-    ].join("\n");
-  }
-
-  function applyPrCloseCoverageProofReportSection(
-    markdown: string,
-    gateResult: PrCloseCoverageProofGateResult | undefined,
-  ): string {
-    if (gateResult?.status !== "allowed") return markdown;
-    return replaceSectionValue(
-      markdown,
-      PR_CLOSE_COVERAGE_PROOF_SECTION,
-      renderPrCloseCoverageProofReportSection(gateResult.covering),
-    );
-  }
-
-  function applyPrCloseCoverageProofBlockedReport(
-    markdown: string,
-    block: PrCloseCoverageProofGateBlock,
-  ): string {
-    const previousEvidence = reportReviewDecision(markdown).evidenceMarkdown;
-    const coverageEvidence = evidenceEntry({
-      label: "PR close coverage proof",
-      detail: block.reason,
-    });
-    const summary = `Keep this PR open. ${sentence(block.reason)}`;
-    const bestSolution =
-      "Keep this PR open until a linked canonical PR proves it covers this PR's unique work, or a maintainer confirms closure.";
-    let next = replaceFrontMatterValue(markdown, "decision", "keep_open");
-    next = replaceFrontMatterValue(next, "close_reason", "none");
-    next = replaceSectionValue(next, REVIEW_SECTIONS.summary, summary);
-    next = replaceSectionValue(next, REVIEW_SECTIONS.bestSolution, bestSolution);
-    next = replaceSectionValue(
-      next,
-      REVIEW_SECTIONS.evidence,
-      [hostEvidenceMarkdown([coverageEvidence]), previousEvidence.trim()]
-        .filter(Boolean)
-        .join("\n"),
-    );
-    next = replaceSectionValue(next, REVIEW_SECTIONS.closeComment, "_No close comment posted._");
-    next = replaceSectionValue(
-      next,
-      PR_CLOSE_COVERAGE_PROOF_SECTION,
-      ["Decision: keep_open", `Reason: ${block.reason}`].join("\n"),
-    );
-    return updateReviewRecordDecision(next, (decision) => ({
-      decision: "keep_open",
-      closeReason: "none",
-      summary,
-      bestSolution,
-      evidence: [coverageEvidence, ...decision.evidence],
-      closeComment: "",
-    }));
-  }
-
-  function applyClosedUnmergedCanonicalBlockedReport(
-    markdown: string,
-    block: PrCloseCoverageProofGateBlock,
-    canonicalNumber: number,
-  ): string {
-    const rootCauseCluster = defaultRootCauseCluster();
-    const nextStep =
-      "Run a fresh review against current main and the current related PR state before choosing a landing or close path.";
-    const summary = `Keep this PR open. ${sentence(block.reason)}`;
-    const solutionAssessment =
-      "Needs a fresh assessment because the prior canonical PR is closed without merge.";
-    const canonicalEvidence = evidenceEntry({
-      label: "live canonical state",
-      detail: block.reason,
-    });
-    const risk = "The current branch and related work need a fresh review before merge or closure.";
-    const ratingUpdate = {
-      summary:
-        "The prior duplicate or superseded close path is no longer valid; retain the existing readiness tiers until a fresh review.",
-      nextSteps: [nextStep],
-    };
-    const review = reportReviewDecision(markdown);
-    const rating: PrRating = { ...review.prRating, ...ratingUpdate };
-    let next = replaceFrontMatterValue(markdown, "decision", "keep_open");
-    next = replaceFrontMatterValue(next, "close_reason", "none");
-    next = replaceFrontMatterValue(next, "confidence", "low");
-    next = replaceFrontMatterValue(next, "action_taken", "retry_stale_canonical_comment_sync");
-    next = replaceFrontMatterValue(
-      next,
-      "stale_canonical_pull_request_number",
-      String(canonicalNumber),
-    );
-    next = replaceFrontMatterValue(next, "close_comment_sha256", "none");
-    next = replaceFrontMatterValue(next, "work_candidate", "none");
-    next = replaceFrontMatterValue(next, "work_confidence", "low");
-    next = replaceFrontMatterValue(next, "work_priority", "low");
-    next = replaceFrontMatterValue(next, "work_status", "none");
-    next = replaceFrontMatterValue(next, "work_reason_sha256", sha256(nextStep));
-    next = replaceFrontMatterValue(next, "work_cluster_refs", "[]");
-    next = replaceFrontMatterValue(next, "work_validation", "[]");
-    next = replaceFrontMatterValue(next, "work_likely_files", "[]");
-    next = replaceFrontMatterValue(next, "merge_risk_options", "[]");
-    next = replaceFrontMatterValue(next, "label_justifications", "[]");
-    next = replaceFrontMatterValue(next, "review_metrics", "[]");
-    next = replaceFrontMatterValue(next, "root_cause_cluster", JSON.stringify(rootCauseCluster));
-    next = replaceSectionValue(
-      next,
-      "Decision",
-      [
-        "Keep open: none",
-        "",
-        "Confidence: low",
-        "",
-        "Action taken: retry_stale_canonical_comment_sync",
-      ].join("\n"),
-    );
-    next = replaceSectionValue(next, REVIEW_SECTIONS.summary, summary);
-    next = replaceSectionValue(next, REVIEW_SECTIONS.bestSolution, nextStep);
-    next = replaceSectionValue(next, REVIEW_SECTIONS.solutionAssessment, solutionAssessment);
-    next = replaceSectionValue(
-      next,
-      REVIEW_SECTIONS.rootCauseCluster,
-      renderRootCauseClusterAssessmentReportSection(rootCauseCluster),
-    );
-    next = replaceSectionValue(
-      next,
-      REVIEW_SECTIONS.prRating,
-      renderPrRatingAssessmentReportSection(rating, review.realBehaviorProof),
-    );
-    next = replaceSectionValue(
-      next,
-      REVIEW_SECTIONS.workCandidate,
-      [
-        "Candidate: none",
-        "",
-        "Confidence: low",
-        "",
-        "Priority: low",
-        "",
-        "Status: none",
-        "",
-        `Reason: ${nextStep}`,
-      ].join("\n"),
-    );
-    next = replaceSectionValue(
-      next,
-      REVIEW_SECTIONS.evidence,
-      hostEvidenceMarkdown([canonicalEvidence]),
-    );
-    next = replaceSectionValue(next, REVIEW_SECTIONS.likelyOwners, "- none");
-    next = replaceSectionValue(next, REVIEW_SECTIONS.risks, `- ${risk}`);
-    next = replaceSectionValue(next, REVIEW_SECTIONS.closeComment, "_No close comment posted._");
-    next = replaceSectionValue(
-      next,
-      PR_CLOSE_COVERAGE_PROOF_SECTION,
-      ["Decision: keep_open", `Reason: ${block.reason}`].join("\n"),
-    );
-    return updateReviewRecordDecision(next, (decision) => ({
-      decision: "keep_open",
-      closeReason: "none",
-      confidence: "low",
-      workCandidate: "none",
-      workConfidence: "low",
-      workPriority: "low",
-      workReason: nextStep,
-      workClusterRefs: [],
-      workValidation: [],
-      workLikelyFiles: [],
-      mergeRiskOptions: [],
-      labelJustifications: [],
-      reviewMetrics: [],
-      rootCauseCluster,
-      summary,
-      bestSolution: nextStep,
-      solutionAssessment,
-      prRating: normalizePrRating({ ...decision.prRating, ...ratingUpdate }),
-      evidence: [canonicalEvidence],
-      likelyOwners: [],
-      risks: [risk],
-      closeComment: "",
-    }));
-  }
-
-  function staleCanonicalCommentSyncPendingReason(markdown: string): string | null {
-    if (frontMatterValue(markdown, "action_taken") !== "retry_stale_canonical_comment_sync") {
-      return null;
+        reason: `PR close coverage proof kept this PR open against ${covering.url}: ${closeDecision.reason}`,
+      };
+    } catch (error) {
+      if (error instanceof GitHubRuntimeBudgetError) throw error;
+      const proofBudgetBlock = prCloseCoverageRuntimeBudgetBlock(
+        options.runtimeBudget,
+        "while running",
+      );
+      if (proofBudgetBlock) return proofBudgetBlock;
+      return {
+        status: "blocked",
+        block: {
+          actionTaken: "retry_pr_close_coverage_proof",
+          reason: `PR close coverage proof ${
+            options.requirePrecomputedProof ? "artifact validation" : "generation"
+          } failed for linked canonical PR #${linkedNumber}: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        },
+      };
     }
-    return (
-      sectionLineValue(sectionValue(markdown, PR_CLOSE_COVERAGE_PROOF_SECTION), "Reason") ??
-      "stale canonical close comment correction remains pending"
-    );
   }
-
-  function staleCanonicalPullRequestNumber(markdown: string): number | null {
-    const number = Number(frontMatterValue(markdown, "stale_canonical_pull_request_number"));
-    return Number.isInteger(number) && number > 0 ? number : null;
-  }
-
-  function completeStaleCanonicalCommentSyncReport(markdown: string): string {
-    let next = replaceFrontMatterValue(
-      markdown,
-      "action_taken",
-      "corrected_stale_canonical_comment",
-    );
-    next = replaceFrontMatterValue(next, "stale_canonical_pull_request_number", "none");
-    const decision = sectionValue(next, "Decision");
-    if (!decision) return next;
-    return replaceSectionValue(
-      next,
-      "Decision",
-      decision.replace(/^Action taken: .*$/m, "Action taken: corrected_stale_canonical_comment"),
-    );
-  }
-
+  if (!checkedPullRequestCandidate) return null;
   return {
-    duplicateCanonicalPullRequestBlockReason,
-    prCloseCoverageProofCandidateNumbers,
-    possibleCanonicalPullRequestNumbersFromReport,
-    canonicalPullRequestCommentSyncBlock,
-    prCloseCoverageRuntimeBudgetBlock,
-    prCloseCoverageRuntime,
-    sourcePrCloseCoveragePullRequestView,
-    coveringPrCloseCoveragePullRequestView,
-    coveringPrCloseCoveragePullRequestSnapshotSha256,
-    prCloseCoverageProofSignalSnippets,
-    prCloseCoverageProofGateResult,
-    renderPrCloseCoverageProofReportSection,
-    applyPrCloseCoverageProofReportSection,
-    applyPrCloseCoverageProofBlockedReport,
-    applyClosedUnmergedCanonicalBlockedReport,
-    staleCanonicalCommentSyncPendingReason,
-    staleCanonicalPullRequestNumber,
-    completeStaleCanonicalCommentSyncReport,
+    status: "blocked",
+    block: firstKeepOpenBlock ?? {
+      actionTaken: "skipped_pr_close_coverage_proof",
+      reason: "PR close coverage proof did not allow close",
+    },
   };
+}
+
+function renderPrCloseCoverageProofReportSection(
+  covering: PrCloseCoverageProofCoveringWitness,
+): string {
+  return [
+    "Decision: covered",
+    `Covering PR: ${covering.url}`,
+    `Reason: ${covering.proof.reason}`,
+    "",
+    "Covered work:",
+    formatPrCloseCoverageProofDetailList(covering.proof.coveredWork),
+    "",
+    "Unique source work:",
+    formatPrCloseCoverageProofDetailList(covering.proof.uniqueSourceWork),
+  ].join("\n");
+}
+
+export function applyPrCloseCoverageProofReportSection(
+  markdown: string,
+  gateResult: PrCloseCoverageProofGateResult | undefined,
+): string {
+  if (gateResult?.status !== "allowed") return markdown;
+  return replaceSectionValue(
+    markdown,
+    PR_CLOSE_COVERAGE_PROOF_SECTION,
+    renderPrCloseCoverageProofReportSection(gateResult.covering),
+  );
+}
+
+export function applyPrCloseCoverageProofBlockedReport(
+  markdown: string,
+  block: PrCloseCoverageProofGateBlock,
+): string {
+  const previousEvidence = reportReviewDecision(markdown).evidenceMarkdown;
+  const coverageEvidence = evidenceEntry({
+    label: "PR close coverage proof",
+    detail: block.reason,
+  });
+  const summary = `Keep this PR open. ${sentence(block.reason)}`;
+  const bestSolution =
+    "Keep this PR open until a linked canonical PR proves it covers this PR's unique work, or a maintainer confirms closure.";
+  let next = replaceFrontMatterValue(markdown, "decision", "keep_open");
+  next = replaceFrontMatterValue(next, "close_reason", "none");
+  next = replaceSectionValue(next, REVIEW_SECTIONS.summary, summary);
+  next = replaceSectionValue(next, REVIEW_SECTIONS.bestSolution, bestSolution);
+  next = replaceSectionValue(
+    next,
+    REVIEW_SECTIONS.evidence,
+    [hostEvidenceMarkdown([coverageEvidence]), previousEvidence.trim()].filter(Boolean).join("\n"),
+  );
+  next = replaceSectionValue(next, REVIEW_SECTIONS.closeComment, "_No close comment posted._");
+  next = replaceSectionValue(
+    next,
+    PR_CLOSE_COVERAGE_PROOF_SECTION,
+    ["Decision: keep_open", `Reason: ${block.reason}`].join("\n"),
+  );
+  return updateReviewRecordDecision(next, (decision) => ({
+    decision: "keep_open",
+    closeReason: "none",
+    summary,
+    bestSolution,
+    evidence: [coverageEvidence, ...decision.evidence],
+    closeComment: "",
+  }));
+}
+
+export function applyClosedUnmergedCanonicalBlockedReport(
+  markdown: string,
+  block: PrCloseCoverageProofGateBlock,
+  canonicalNumber: number,
+): string {
+  const rootCauseCluster = defaultRootCauseCluster();
+  const nextStep =
+    "Run a fresh review against current main and the current related PR state before choosing a landing or close path.";
+  const summary = `Keep this PR open. ${sentence(block.reason)}`;
+  const solutionAssessment =
+    "Needs a fresh assessment because the prior canonical PR is closed without merge.";
+  const canonicalEvidence = evidenceEntry({
+    label: "live canonical state",
+    detail: block.reason,
+  });
+  const risk = "The current branch and related work need a fresh review before merge or closure.";
+  const ratingUpdate = {
+    summary:
+      "The prior duplicate or superseded close path is no longer valid; retain the existing readiness tiers until a fresh review.",
+    nextSteps: [nextStep],
+  };
+  const review = reportReviewDecision(markdown);
+  const rating: PrRating = { ...review.prRating, ...ratingUpdate };
+  let next = replaceFrontMatterValue(markdown, "decision", "keep_open");
+  next = replaceFrontMatterValue(next, "close_reason", "none");
+  next = replaceFrontMatterValue(next, "confidence", "low");
+  next = replaceFrontMatterValue(next, "action_taken", "retry_stale_canonical_comment_sync");
+  next = replaceFrontMatterValue(
+    next,
+    "stale_canonical_pull_request_number",
+    String(canonicalNumber),
+  );
+  next = replaceFrontMatterValue(next, "close_comment_sha256", "none");
+  next = replaceFrontMatterValue(next, "work_candidate", "none");
+  next = replaceFrontMatterValue(next, "work_confidence", "low");
+  next = replaceFrontMatterValue(next, "work_priority", "low");
+  next = replaceFrontMatterValue(next, "work_status", "none");
+  next = replaceFrontMatterValue(next, "work_reason_sha256", sha256(nextStep));
+  next = replaceFrontMatterValue(next, "work_cluster_refs", "[]");
+  next = replaceFrontMatterValue(next, "work_validation", "[]");
+  next = replaceFrontMatterValue(next, "work_likely_files", "[]");
+  next = replaceFrontMatterValue(next, "merge_risk_options", "[]");
+  next = replaceFrontMatterValue(next, "label_justifications", "[]");
+  next = replaceFrontMatterValue(next, "review_metrics", "[]");
+  next = replaceFrontMatterValue(next, "root_cause_cluster", JSON.stringify(rootCauseCluster));
+  next = replaceSectionValue(
+    next,
+    "Decision",
+    [
+      "Keep open: none",
+      "",
+      "Confidence: low",
+      "",
+      "Action taken: retry_stale_canonical_comment_sync",
+    ].join("\n"),
+  );
+  next = replaceSectionValue(next, REVIEW_SECTIONS.summary, summary);
+  next = replaceSectionValue(next, REVIEW_SECTIONS.bestSolution, nextStep);
+  next = replaceSectionValue(next, REVIEW_SECTIONS.solutionAssessment, solutionAssessment);
+  next = replaceSectionValue(
+    next,
+    REVIEW_SECTIONS.rootCauseCluster,
+    renderRootCauseClusterAssessmentReportSection(rootCauseCluster),
+  );
+  next = replaceSectionValue(
+    next,
+    REVIEW_SECTIONS.prRating,
+    renderPrRatingAssessmentReportSection(rating, review.realBehaviorProof),
+  );
+  next = replaceSectionValue(
+    next,
+    REVIEW_SECTIONS.workCandidate,
+    [
+      "Candidate: none",
+      "",
+      "Confidence: low",
+      "",
+      "Priority: low",
+      "",
+      "Status: none",
+      "",
+      `Reason: ${nextStep}`,
+    ].join("\n"),
+  );
+  next = replaceSectionValue(
+    next,
+    REVIEW_SECTIONS.evidence,
+    hostEvidenceMarkdown([canonicalEvidence]),
+  );
+  next = replaceSectionValue(next, REVIEW_SECTIONS.likelyOwners, "- none");
+  next = replaceSectionValue(next, REVIEW_SECTIONS.risks, `- ${risk}`);
+  next = replaceSectionValue(next, REVIEW_SECTIONS.closeComment, "_No close comment posted._");
+  next = replaceSectionValue(
+    next,
+    PR_CLOSE_COVERAGE_PROOF_SECTION,
+    ["Decision: keep_open", `Reason: ${block.reason}`].join("\n"),
+  );
+  return updateReviewRecordDecision(next, (decision) => ({
+    decision: "keep_open",
+    closeReason: "none",
+    confidence: "low",
+    workCandidate: "none",
+    workConfidence: "low",
+    workPriority: "low",
+    workReason: nextStep,
+    workClusterRefs: [],
+    workValidation: [],
+    workLikelyFiles: [],
+    mergeRiskOptions: [],
+    labelJustifications: [],
+    reviewMetrics: [],
+    rootCauseCluster,
+    summary,
+    bestSolution: nextStep,
+    solutionAssessment,
+    prRating: normalizePrRating({ ...decision.prRating, ...ratingUpdate }),
+    evidence: [canonicalEvidence],
+    likelyOwners: [],
+    risks: [risk],
+    closeComment: "",
+  }));
+}
+
+export function staleCanonicalCommentSyncPendingReason(markdown: string): string | null {
+  if (frontMatterValue(markdown, "action_taken") !== "retry_stale_canonical_comment_sync") {
+    return null;
+  }
+  return (
+    sectionLineValue(sectionValue(markdown, PR_CLOSE_COVERAGE_PROOF_SECTION), "Reason") ??
+    "stale canonical close comment correction remains pending"
+  );
+}
+
+export function staleCanonicalPullRequestNumber(markdown: string): number | null {
+  const number = Number(frontMatterValue(markdown, "stale_canonical_pull_request_number"));
+  return Number.isInteger(number) && number > 0 ? number : null;
+}
+
+export function completeStaleCanonicalCommentSyncReport(markdown: string): string {
+  let next = replaceFrontMatterValue(markdown, "action_taken", "corrected_stale_canonical_comment");
+  next = replaceFrontMatterValue(next, "stale_canonical_pull_request_number", "none");
+  const decision = sectionValue(next, "Decision");
+  if (!decision) return next;
+  return replaceSectionValue(
+    next,
+    "Decision",
+    decision.replace(/^Action taken: .*$/m, "Action taken: corrected_stale_canonical_comment"),
+  );
 }

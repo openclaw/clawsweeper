@@ -1,3 +1,4 @@
+import { renderReviewCommentFromReport } from "../dist/clawsweeper-report-comment-presentation.js";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -6,7 +7,6 @@ import test from "node:test";
 
 import {
   guardedOpenApplyProofFields,
-  renderReviewCommentFromReport,
   renderReviewStartStatusComment,
 } from "../dist/clawsweeper.js";
 import { itemSourceRevisionSha256 } from "../dist/clawsweeper-source-revision.js";

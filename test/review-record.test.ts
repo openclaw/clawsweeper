@@ -1,12 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { codexFailureDecisionForTest, parseDecision } from "../dist/clawsweeper.js";
-import { createReportDocumentRendering } from "../dist/clawsweeper-report-document.js";
-import { createReportContextRendering } from "../dist/clawsweeper-report-context.js";
-import * as dashboardPresentation from "../dist/clawsweeper-dashboard.js";
-import * as repositoryLinks from "../dist/clawsweeper-links.js";
+import * as document from "../dist/clawsweeper-report-document.js";
 import { oversizedPullRequestDecision } from "../dist/clawsweeper-oversized-pr-policy.js";
-import { repositoryProfileFor } from "../dist/repository-profiles.js";
 import { replaceFrontMatterValue } from "../dist/report-front-matter.js";
 import { readReviewRecord, updateReviewRecordDecision } from "../dist/review-record.js";
 import type { Decision } from "../src/clawsweeper-types.ts";
@@ -15,17 +11,6 @@ import { closeDecision, item } from "./helpers.ts";
 const pullRequest = item({ kind: "pull_request", number: 42 });
 
 function report(decision: Decision): string {
-  const document = createReportDocumentRendering({
-    ...repositoryLinks,
-    ...createReportContextRendering({} as never),
-    ...dashboardPresentation,
-    compactPullFilePaths: () => [],
-    formatTimestamp: String,
-    labelJustificationsMarkdown: () => "- none",
-    pullHeadShaFromContext: () => "c".repeat(40),
-    reviewStructuralPullStateFromContext: () => null,
-    targetProfile: () => repositoryProfileFor("openclaw/openclaw"),
-  } as Parameters<typeof createReportDocumentRendering>[0]);
   return document.markdownFor({
     item: pullRequest,
     decision,

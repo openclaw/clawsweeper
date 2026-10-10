@@ -1,3 +1,4 @@
+import { renderReviewCommentFromReport } from "../dist/clawsweeper-report-comment-presentation.js";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -6,11 +7,7 @@ import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { writeFakeScanner } from "./agent-input-scan-helpers.ts";
 
-import {
-  parseDecision,
-  renderReviewCommentFromReport,
-  reviewPromptForTest,
-} from "../dist/clawsweeper.js";
+import { parseDecision, reviewPromptForTest } from "../dist/clawsweeper.js";
 import { frontMatterValue } from "../dist/report-front-matter.js";
 import { reviewRecordFrontMatterLine } from "../dist/review-record.js";
 import { createReviewedPrActivityCursor } from "../dist/review-activity-cursor.js";

@@ -47,19 +47,19 @@ export interface PlannedPrActivityRevisions {
   connectionLimit: number;
 }
 
+export function isFresh(
+  review: { reviewedAt: string | undefined; reviewStatus: string | undefined } | null,
+): boolean {
+  if (review?.reviewStatus !== "complete") return false;
+  if (!review?.reviewedAt) return false;
+  const reviewedAt = Date.parse(review.reviewedAt);
+  if (!Number.isFinite(reviewedAt)) return false;
+  return Date.now() - reviewedAt < FRESH_DAYS * DAY_MS;
+}
 export function createReviewPlanningInventory(dependencies: ReviewPlanningDependencies) {
   const { targetRepo, ghJson, ghJsonLines, normalizeAuthorAssociation } = dependencies;
   const readModelRequest = dependencies.githubReadModelRequestSync ?? githubReadModelRequestSync;
 
-  function isFresh(
-    review: { reviewedAt: string | undefined; reviewStatus: string | undefined } | null,
-  ): boolean {
-    if (review?.reviewStatus !== "complete") return false;
-    if (!review?.reviewedAt) return false;
-    const reviewedAt = Date.parse(review.reviewedAt);
-    if (!Number.isFinite(reviewedAt)) return false;
-    return Date.now() - reviewedAt < FRESH_DAYS * DAY_MS;
-  }
   function isCurrentForCadence(options: {
     reviewedAt: string | undefined;
     reviewStatus: string | undefined;

@@ -1,10 +1,8 @@
+import { renderReviewCommentFromReport } from "../dist/clawsweeper-report-comment-presentation.js";
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import {
-  renderReviewCommentFromReport,
-  reviewAutomationMarkersFromReport,
-} from "../dist/clawsweeper.js";
+import { reviewAutomationMarkersFromReport } from "../dist/clawsweeper.js";
 import { detailsBody, reviewReportFrontMatter as reportFrontMatter } from "./helpers.ts";
 import {
   prSurfaceFilesFromContext,

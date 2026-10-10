@@ -1,3 +1,4 @@
+import { renderReviewCommentFromReport } from "../dist/clawsweeper-report-comment-presentation.js";
 import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -9,14 +10,13 @@ import {
   canPatchReviewComment,
   isCodexReviewCommentBody,
   parseDecision,
-  renderReviewCommentFromReport,
   renderReviewStartStatusComment,
   reviewAutomationMarkersFromReport,
   shouldPreserveReviewStartLease,
   withReviewStartStatusLease,
 } from "../dist/clawsweeper.js";
 import { itemSourceRevisionSha256 } from "../dist/clawsweeper-source-revision.js";
-import { createReviewCommentWorkflow } from "../dist/clawsweeper-review-comments-workflow.js";
+import { postReviewStartStatusComment } from "../dist/clawsweeper-review-comment-leases.js";
 import { issueSourceRevisionSha256 } from "../dist/repair/issue-source-guard.js";
 import {
   closeDecision,
@@ -28,11 +28,7 @@ import {
   withMockGh,
 } from "./helpers.ts";
 import { nextStepFromReport } from "../dist/clawsweeper-next-step.js";
-import * as repositoryLinks from "../dist/clawsweeper-links.js";
-import { createReportDocumentRendering } from "../dist/clawsweeper-report-document.js";
-import { createReportContextRendering } from "../dist/clawsweeper-report-context.js";
-import * as dashboardPresentation from "../dist/clawsweeper-dashboard.js";
-import { repositoryProfileFor } from "../dist/repository-profiles.js";
+import * as document from "../dist/clawsweeper-report-document.js";
 import { withGitHubRun } from "../dist/clawsweeper-github-runtime.js";
 import type {
   Decision,
@@ -70,25 +66,12 @@ test("Markdown destination assertions reject prose and lookalike links inside de
   );
 });
 
-const evidenceLinks = repositoryLinks;
-
 function evidenceReport(
   evidence: Evidence[],
   decisionKind: DecisionKind = "close",
   nextStep?: NextStepAssessment,
   overrides: Partial<Decision> = {},
 ) {
-  const document = createReportDocumentRendering({
-    ...evidenceLinks,
-    ...createReportContextRendering({} as never),
-    ...dashboardPresentation,
-    compactPullFilePaths: () => [],
-    formatTimestamp: String,
-    labelJustificationsMarkdown: () => "- none",
-    pullHeadShaFromContext: () => "c".repeat(40),
-    reviewStructuralPullStateFromContext: () => null,
-    targetProfile: () => repositoryProfileFor("openclaw/openclaw"),
-  } as Parameters<typeof createReportDocumentRendering>[0]);
   return document.markdownFor({
     item: item({ kind: "pull_request", url: "https://github.com/openclaw/openclaw/pull/123" }),
     decision: {
@@ -104,7 +87,12 @@ function evidenceReport(
       // The host stamps checkout access after parsing model output.
       localCheckoutAccess: "verified",
     },
-    context: { issue: {}, comments: [], timeline: [] },
+    context: {
+      issue: {},
+      comments: [],
+      timeline: [],
+      pullRequest: { head: { sha: "c".repeat(40) } },
+    },
     git: { mainSha: "a".repeat(40), latestRelease: null, releaseStateComplete: true },
     action: { actionTaken: decisionKind === "close" ? "proposed_close" : "kept_open" },
     reviewMode: "propose",
@@ -781,7 +769,7 @@ writeFileSync(file, JSON.stringify(state));
     let result: ReviewStartStatusCommentResult | undefined;
     withGitHubRun(() =>
       withMockGh(root, script, () => {
-        result = createReviewCommentWorkflow(() => headSha).postReviewStartStatusComment({
+        result = postReviewStartStatusComment({
           item: { ...item({ number }), kind: "pull_request" },
           headSha,
           reviewTimeoutMs: 60_000,

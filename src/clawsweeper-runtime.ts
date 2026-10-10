@@ -16,7 +16,7 @@ import {
   type ReviewStructuralRecord,
 } from "./review-structural-cache.js";
 import { stableJson } from "./stable-json.js";
-import { asRecord, nonBlankStringOrUndefined, numberOrUndefined } from "./value-coerce.js";
+import { asRecord, nonBlankStringOrUndefined } from "./value-coerce.js";
 
 import {
   finalizeActionEventsCommand,
@@ -29,8 +29,6 @@ import { implementedOnMainCloseProvenanceBlock } from "./clawsweeper-apply-close
 import { createApplyGuards } from "./clawsweeper-apply-guards.js";
 import { createAssistWorkflow } from "./clawsweeper-assist.js";
 import {
-  hasUsableCloseComment,
-  isImplementationCloseReason,
   staleVersionBugDecisionBlockReason,
   unsponsoredFeatureDecisionBlockReason,
   validateCloseDecision,
@@ -43,8 +41,6 @@ import { createDashboardAudit } from "./clawsweeper-dashboard-audit.js";
 import {
   fetchReviewedPrActivityCursor,
   ghPaged,
-  ghPagedContextWindow,
-  ghPagedLinkHeaderContextWindow,
   githubCount,
 } from "./clawsweeper-github-context.js";
 export {
@@ -95,7 +91,6 @@ import {
   isMaintainerAuthored,
   isProtectedItem,
   isVerifiedFixedCloseReason,
-  labelNames,
   normalizeAuthorAssociation,
   normalizeLabelName,
   shouldPlanItem,
@@ -124,7 +119,38 @@ import {
   REVIEW_POLICY_VERSION,
 } from "./clawsweeper-policy.js";
 import { createRegressionProvenanceVerifier } from "./clawsweeper-regression-provenance.js";
-import { createReportOrchestration } from "./clawsweeper-report-orchestration.js";
+import {
+  applyAuthorPrBudgetStateToReport,
+  authorPrBudgetPromotion,
+  contextHasNonAutomationActivityAfter,
+  livePullRequestHasNoDiff,
+  reportDecision,
+  upgradeNoDiffPullRequestReport,
+  upgradePullRequestClosePromotionReport,
+} from "./clawsweeper-promotion-facts.js";
+import {
+  applyClosedUnmergedCanonicalBlockedReport,
+  applyPrCloseCoverageProofBlockedReport,
+  applyPrCloseCoverageProofReportSection,
+  canonicalPullRequestCommentSyncBlock,
+  completeStaleCanonicalCommentSyncReport,
+  coveringPrCloseCoveragePullRequestSnapshotSha256,
+  duplicateCanonicalPullRequestBlockReason,
+  prCloseCoverageProofGateResult,
+  staleCanonicalCommentSyncPendingReason,
+  staleCanonicalPullRequestNumber,
+} from "./clawsweeper-coverage-proof.js";
+import { pullRequestClosePromotion } from "./clawsweeper-close-promotion.js";
+import {
+  closeItem,
+  currentReviewRevision as readCurrentReviewRevision,
+  pullRequestHeadSha,
+  reviewActionForDecision,
+} from "./clawsweeper-report-actions.js";
+import { markdownFor, updateReviewStructuralFrontMatter } from "./clawsweeper-report-document.js";
+import { renderReviewCommentFromReport } from "./clawsweeper-report-comment-presentation.js";
+import { syncWorkPlanFromReport } from "./clawsweeper-report-context.js";
+import { workPlanPathForReport } from "./clawsweeper-label-presentation.js";
 import { reportLiveProofPlan } from "./live-proof/report.js";
 import { createReviewRecordBackfill } from "./review-record-backfill.js";
 import { existingReview } from "./clawsweeper-record-metadata.js";
@@ -164,17 +190,12 @@ import {
   stalePullRequestReviewHead,
   syncStalePullRequestReviewLabels,
 } from "./clawsweeper-review-comment-identity.js";
-import {
-  repairLoopPassModeFromReport,
-  reviewAutomationMarkersFromReport,
-  reviewVersionMarkerFromReport,
-} from "./clawsweeper-review-comment-automation.js";
+import { reviewAutomationMarkersFromReport } from "./clawsweeper-review-comment-automation.js";
 export { reviewAutomationMarkersFromReport };
 import {
   currentClosingPullRequestReferenceFromIssueTimeline,
   createStatusContext,
   displayTitle,
-  formatTimestamp,
   linkedIssueNumbersForImplementationProvenance,
   linkedIssueNumbersForPullRequestBody,
 } from "./clawsweeper-status-context.js";
@@ -349,7 +370,7 @@ export function reviewPolicyHashForTest(
   return reviewPolicyHash(options, prompts);
 }
 
-const { defaultRootCauseCluster, parseGitHubItemRef } = reviewDecisionParser;
+const { defaultRootCauseCluster } = reviewDecisionParser;
 
 export function parseDecision(value: unknown, item?: RootCauseNormalizationItem): Decision {
   return reviewDecisionParser.parseDecision(value, item);
@@ -437,7 +458,6 @@ const {
   fetchItem,
   fetchOpenItemNumbers,
   fetchPlannedPrActivityRevisions,
-  isFresh,
   planCandidates,
   selectCandidates,
 } = reviewPlanning;
@@ -611,58 +631,7 @@ function verifyRegressionProvenance(
   };
 }
 
-const reportOrchestration = createReportOrchestration({
-  collectItemContext,
-  ...contextHydration,
-  ...repositoryPaths,
-  defaultRootCauseCluster,
-  ensureDir,
-  ...repositoryLinks,
-  ...statusContext,
-  formatTimestamp,
-  ghJson,
-  ghObservedMutationCommand,
-  ghPaged,
-  ghPagedContextWindow,
-  ghPagedLinkHeaderContextWindow,
-  GitHubRuntimeBudgetError,
-  hasUsableCloseComment: (...args) => hasUsableCloseComment(...args),
-  isFresh,
-  isImplementationCloseReason: (...args) => isImplementationCloseReason(...args),
-  isMaintainerAuthored,
-  isVerifiedFixedCloseReason,
-  itemSnapshotHash,
-  jsonFrontMatterValue: (...args) => jsonFrontMatterValue(...args),
-  labelNames,
-  normalizeLabelName,
-  pullRequestHeadActivity: applyGuards.pullRequestHeadActivity,
-  numberOrUndefined,
-  parseGitHubItemRef,
-  pullHeadShaFromContext: (...args) => pullHeadShaFromContext(...args),
-  repairLoopPassModeFromReport: (...args) => repairLoopPassModeFromReport(...args),
-  reviewAutomationMarkersFromReport: (...args) => reviewAutomationMarkersFromReport(...args),
-  reviewStructuralPullStateFromContext: (...args) => reviewStructuralPullStateFromContext(...args),
-  reviewVersionMarkerFromReport: (...args) => reviewVersionMarkerFromReport(...args),
-  ROOT,
-  runtimeBudgetExceeded: (...args) => runtimeBudgetExceeded(...args),
-  targetProfile,
-  targetRepo,
-  timeoutWithinRuntimeBudget: (...args) => timeoutWithinRuntimeBudget(...args),
-  validateCloseDecision: (...args) => validateCloseDecision(...args),
-  workStatusForDecision: (...args) => workStatusForDecision(...args),
-});
-export const {
-  contextHasNonAutomationActivityAfterForTest,
-  labelJustificationsMarkdownForTest,
-  pullRequestFilePathsFromContextForTest,
-  renderReviewCommentFromReport,
-  renderReviewContextBudgetForTest,
-  renderWorkPlanFromReport,
-  reviewActionForDecision,
-  reviewContextLedgerForTest,
-} = reportOrchestration;
-const { syncWorkPlanFromReport, workPlanPathForReport } = reportOrchestration;
-const { backfillReviewRecordsCommand } = createReviewRecordBackfill(reportOrchestration);
+const { backfillReviewRecordsCommand } = createReviewRecordBackfill({ markdownFor });
 
 const labelMutations = createLabelMutationOperations({ ghJson, ghObservedMutationCommand });
 const labelSyncOperations = createLabelSyncOperations(labelMutations);
@@ -673,9 +642,9 @@ export {
   validateCloseDecision,
 };
 
-const reviewCommentWorkflow = createReviewCommentWorkflow(
-  reportOrchestration.currentReviewRevision,
-);
+const currentReviewRevision = (item: Item): string =>
+  readCurrentReviewRevision(item, collectItemContext);
+const reviewCommentWorkflow = createReviewCommentWorkflow(currentReviewRevision);
 export const {
   canPatchReviewComment,
   coverageProofRetryExhaustedRuntimeBudget,
@@ -730,7 +699,9 @@ const commandOperations = createCommandOperations({
   applyDecisionsCommandInner: (...args) => applyDecisionsCommandInner(...args),
   artifactTargetIsOpen,
   codexFailureReason,
-  ...reportOrchestration,
+  currentReviewRevision,
+  syncWorkPlanFromReport,
+  workPlanPathForReport,
   ...repositoryPaths,
   ensureDir,
   ensureGitHubRuntimeAvailable,
@@ -807,7 +778,11 @@ const { reviewCommand: reviewCommandWithoutReceipts } = createReviewCommandWorkf
   isSuppliedReviewStartLease,
   itemContentDigest,
   itemSnapshotHash,
-  ...reportOrchestration,
+  markdownFor,
+  pullRequestHeadSha,
+  renderReviewCommentFromReport,
+  reviewActionForDecision,
+  updateReviewStructuralFrontMatter,
   repoFromArgs,
   reviewLeaseStillMatchesContext,
   reviewPolicyHash,
@@ -831,7 +806,27 @@ const { applyDecisionsCommandInner: applyDecisionsWithoutReceipts } = createAppl
   },
   ...labelMutations,
   ...labelSyncOperations,
-  ...reportOrchestration,
+  applyAuthorPrBudgetStateToReport,
+  applyClosedUnmergedCanonicalBlockedReport,
+  applyPrCloseCoverageProofBlockedReport,
+  applyPrCloseCoverageProofReportSection,
+  authorPrBudgetPromotion,
+  canonicalPullRequestCommentSyncBlock,
+  closeItem,
+  completeStaleCanonicalCommentSyncReport,
+  contextHasNonAutomationActivityAfter,
+  coveringPrCloseCoveragePullRequestSnapshotSha256,
+  duplicateCanonicalPullRequestBlockReason,
+  livePullRequestHasNoDiff,
+  prCloseCoverageProofGateResult,
+  pullRequestClosePromotion,
+  renderReviewCommentFromReport,
+  reportDecision,
+  staleCanonicalCommentSyncPendingReason,
+  staleCanonicalPullRequestNumber,
+  syncWorkPlanFromReport,
+  upgradeNoDiffPullRequestReport,
+  upgradePullRequestClosePromotionReport,
   applyBlockingProtectedLabels,
   applyKindArg,
   ApplyMutationReviewGuardError,
@@ -936,15 +931,8 @@ export const {
   dashboardClosedAt,
   formatRecentClosedRows,
 } = dashboardAudit;
-const {
-  auditCommand,
-  jsonFrontMatterValue,
-  reconcileCommand,
-  reconcileFolders,
-  statusCommand,
-  updateDashboard,
-  workStatusForDecision,
-} = dashboardAudit;
+const { auditCommand, reconcileCommand, reconcileFolders, statusCommand, updateDashboard } =
+  dashboardAudit;
 
 function applyHealthStatusArg(args: Args): Record<string, unknown> | undefined {
   const filePath = stringArg(args.apply_health_file, "");
@@ -979,7 +967,7 @@ function dashboardCommand(args: Args): void {
 const liveProofAttachDependencies = {
   reportLiveProofPlan,
   reviewSections: REVIEW_SECTIONS,
-  renderReviewCommentFromReport: reportOrchestration.renderReviewCommentFromReport,
+  renderReviewCommentFromReport,
   markedReviewCommentBody: reviewCommentWorkflow.markedReviewCommentBody,
   upsertReviewComment: reviewCommentWorkflow.upsertReviewComment,
   selectTarget: (repo: string) => setTargetRepo(repo),

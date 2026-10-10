@@ -15,12 +15,8 @@ import test from "node:test";
 import { promisify } from "node:util";
 import { parse } from "yaml";
 import { codexFailureDecisionForTest, parseDecision } from "../dist/clawsweeper.js";
-import { createReportDocumentRendering } from "../dist/clawsweeper-report-document.js";
-import { createReportContextRendering } from "../dist/clawsweeper-report-context.js";
-import * as dashboardPresentation from "../dist/clawsweeper-dashboard.js";
-import * as repositoryLinks from "../dist/clawsweeper-links.js";
+import * as document from "../dist/clawsweeper-report-document.js";
 import { oversizedPullRequestDecision } from "../dist/clawsweeper-oversized-pr-policy.js";
-import { repositoryProfileFor } from "../dist/repository-profiles.js";
 import { readReviewRecord } from "../dist/review-record.js";
 import {
   createReviewRecordBackfill,
@@ -38,17 +34,6 @@ import {
 } from "./helpers.ts";
 
 const pullRequest = item({ kind: "pull_request", number: 42 });
-const document = createReportDocumentRendering({
-  ...repositoryLinks,
-  ...createReportContextRendering({} as never),
-  ...dashboardPresentation,
-  compactPullFilePaths: () => [],
-  formatTimestamp: String,
-  labelJustificationsMarkdown: () => "- none",
-  pullHeadShaFromContext: () => "c".repeat(40),
-  reviewStructuralPullStateFromContext: () => null,
-  targetProfile: () => repositoryProfileFor("openclaw/openclaw"),
-} as Parameters<typeof createReportDocumentRendering>[0]);
 const { backfillReviewRecord } = createReviewRecordBackfill(document);
 
 // A report from before review_record existed: the current writer without the record line.
@@ -265,6 +250,7 @@ test("stored JSON text keeps the report lossless once the review parser makes it
   // A selected label without a stored justification gets the default reason.
   assert.deepEqual(differenceKinds(legacy.replace(line, older([p2]))), [
     ["label_justifications", "filled"],
+    ["## Label Justifications", "rendered"],
   ]);
 });
 

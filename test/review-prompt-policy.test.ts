@@ -1,3 +1,4 @@
+import { renderReviewCommentFromReport } from "../dist/clawsweeper-report-comment-presentation.js";
 import assert from "node:assert/strict";
 import {
   existsSync,
@@ -17,7 +18,6 @@ import {
   prepareMediaProofArtifactsForTest,
   proofMediaUrlsFromContextForTest,
   proofVideoUrlsFromContextForTest,
-  renderReviewCommentFromReport,
   reviewPromptForTest,
 } from "../dist/clawsweeper.js";
 import {

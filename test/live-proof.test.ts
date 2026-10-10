@@ -15,7 +15,7 @@ import { spawnSync } from "node:child_process";
 import test from "node:test";
 import YAML from "yaml";
 
-import { renderReviewCommentFromReport } from "../dist/clawsweeper.js";
+import { renderReviewCommentFromReport } from "../dist/clawsweeper-report-comment-presentation.js";
 import { reportLiveProofPlan } from "../dist/live-proof/report.js";
 import { createDecisionParser } from "../dist/clawsweeper-decision-parser.js";
 import { mediaProofSpawnDetail } from "../dist/clawsweeper-media-proof.js";

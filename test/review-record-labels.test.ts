@@ -1,21 +1,19 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { renderReviewCommentFromReport } from "../dist/clawsweeper.js";
+import { renderReviewCommentFromReport } from "../dist/clawsweeper-report-comment-presentation.js";
 import { syncApplyPullRequestLabels } from "../dist/clawsweeper-apply-pull-request-labels.js";
 import { createLabelMutationOperations } from "../dist/clawsweeper-label-mutations.js";
 import { createLabelSyncOperations } from "../dist/clawsweeper-label-operations.js";
 import { readReviewRecord, ReviewRecordFormatError } from "../dist/review-record.js";
-import { createPullRequestPromotionFacts } from "../dist/clawsweeper-promotion-facts.js";
-import { reviewDecisionParser } from "../dist/clawsweeper-decision-parser.js";
-import { repositoryProfileFor } from "../dist/repository-profiles.js";
+import * as facts from "../dist/clawsweeper-promotion-facts.js";
 import { reviewSectionValue } from "../dist/clawsweeper-record-metadata.js";
 import { reportRealBehaviorProofPolicy } from "../dist/clawsweeper-proof-policy.js";
 import { pullRequestReviewReadinessFromReport } from "../dist/clawsweeper-report-comment-helpers.js";
 import { ratingLabelForTier } from "../dist/clawsweeper-rating.js";
 import { authorPrBudgetSignalBlockReason } from "../dist/clawsweeper-apply-guard-activity.js";
-import { createPullRequestClosePromotion } from "../dist/clawsweeper-close-promotion.js";
-import { createPullRequestCoverageProof } from "../dist/clawsweeper-coverage-proof.js";
+import { pullRequestClosePromotion } from "../dist/clawsweeper-close-promotion.js";
+import * as coverage from "../dist/clawsweeper-coverage-proof.js";
 import { createApplyCandidateGuards } from "../dist/clawsweeper-apply-candidate-guards.js";
 import { replaceFrontMatterValue } from "../dist/report-front-matter.js";
 import {
@@ -385,17 +383,13 @@ test("typed findings drive the repair marker with the same readiness as the comm
 });
 
 test("no-diff promotion renders and stores the promoted typed decision", () => {
-  const { upgradeNoDiffPullRequestReport } = createPullRequestPromotionFacts({
-    defaultRootCauseCluster: reviewDecisionParser.defaultRootCauseCluster,
-    targetProfile: () => repositoryProfileFor("openclaw/openclaw"),
-  } as Parameters<typeof createPullRequestPromotionFacts>[0]);
   const source = withReviewRecord(pullRequestReport(), {
     ...readyDecision,
     summary: "Keep this PR open.",
     bestSolution: "Continue the old review.",
     evidence: [],
   });
-  const promoted = upgradeNoDiffPullRequestReport(
+  const promoted = facts.upgradeNoDiffPullRequestReport(
     source,
     item({ kind: "pull_request", number: 74461 }),
   );
@@ -426,9 +420,6 @@ test("author budget guards and promotion facts prefer recorded proof and rating"
   });
   assert.notEqual(authorPrBudgetSignalBlockReason(legacy), null);
   assert.equal(authorPrBudgetSignalBlockReason(typed), null);
-  const facts = createPullRequestPromotionFacts(
-    {} as Parameters<typeof createPullRequestPromotionFacts>[0],
-  );
   const promotion = facts.authorPrBudgetPromotion(typed, {
     author: "contributor",
     openPrCount: 12,
@@ -437,13 +428,18 @@ test("author budget guards and promotion facts prefer recorded proof and rating"
   assert.match(promotion.summary, /overall rating is D.*proof is missing/);
   const corrupt = typed.replace(/^review_record: \{/m, "review_record: {broken");
   assert.throws(() => authorPrBudgetSignalBlockReason(corrupt), ReviewRecordFormatError);
-  assert.throws(() => facts.proofPassedInReport(corrupt), ReviewRecordFormatError);
+  assert.throws(
+    () =>
+      facts.authorPrBudgetPromotion(corrupt, {
+        author: "contributor",
+        openPrCount: 12,
+        budget: 10,
+      }),
+    ReviewRecordFormatError,
+  );
 });
 
 test("pause or close recommendations come only from the recorded review when present", () => {
-  const promotions = createPullRequestClosePromotion(
-    {} as Parameters<typeof createPullRequestClosePromotion>[0],
-  );
   const legacy = pullRequestReport();
   const option = {
     category: "pause_or_close",
@@ -462,21 +458,26 @@ test("pause or close recommendations come only from the recorded review when pre
     ],
     mergeRiskOptions: [option],
   });
-  assert.equal(promotions.recommendedPauseOrCloseOption(legacy), null);
-  assert.deepEqual(promotions.recommendedPauseOrCloseOption(typed), option);
+  const sourceItem = item({ kind: "pull_request" });
+  const context = { issue: {}, comments: [], timeline: [] };
+  assert.equal(pullRequestClosePromotion(legacy, sourceItem, context, 0), null);
+  assert.equal(
+    pullRequestClosePromotion(typed, sourceItem, context, 0)?.closeReason,
+    "duplicate_or_superseded",
+  );
   assert.throws(
     () =>
-      promotions.recommendedPauseOrCloseOption(
+      pullRequestClosePromotion(
         typed.replace(/^review_record: \{/m, "review_record: {broken"),
+        sourceItem,
+        context,
+        0,
       ),
     ReviewRecordFormatError,
   );
 });
 
 test("coverage proof demotion preserves recorded evidence rather than stale report prose", () => {
-  const coverage = createPullRequestCoverageProof(
-    {} as Parameters<typeof createPullRequestCoverageProof>[0],
-  );
   const legacy = `${pullRequestReport()}\n## Evidence\n\n- stale report evidence\n`;
   const typed = withReviewRecord(legacy, {
     ...readyDecision,
@@ -533,9 +534,6 @@ test("candidate proof gates read the recorded close decision and reject unreadab
 });
 
 test("canonical PR selection uses the recorded cluster rather than report metadata", () => {
-  const facts = createPullRequestPromotionFacts({
-    parseGitHubItemRef: () => ({ kind: "pull_request", number: 123 }),
-  } as unknown as Parameters<typeof createPullRequestPromotionFacts>[0]);
   const legacy = pullRequestReport();
   const typed = withReviewRecord(legacy, {
     ...readyDecision,

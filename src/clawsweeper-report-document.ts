@@ -28,8 +28,6 @@ import {
   reviewStructuralPullStateDigest,
   type ReviewStructuralRecord,
 } from "./review-structural-cache.js";
-import type { CreateReportRenderingDependencies } from "./clawsweeper-report-rendering-dependencies.js";
-import type { createReportContextRendering } from "./clawsweeper-report-context.js";
 import {
   fitPrHydrationSnapshotToPublicationLimit,
   serializePrHydrationSnapshot,
@@ -37,7 +35,21 @@ import {
 import { parseNextStep } from "./clawsweeper-next-step.js";
 import { replaceFrontMatterValue } from "./report-front-matter.js";
 import { reviewRecordFrontMatterLine } from "./review-record.js";
-import { normalizeEvidence } from "./clawsweeper-links.js";
+import {
+  fileUrl,
+  linkedRelease,
+  linkedSha,
+  markdownLink,
+  normalizeEvidence,
+} from "./clawsweeper-links.js";
+import { compactPullFilePaths } from "./clawsweeper-context-hydration.js";
+import { jsonFrontMatterValue, workStatusForDecision } from "./clawsweeper-dashboard.js";
+import { labelJustificationsMarkdown } from "./clawsweeper-label-presentation.js";
+import {
+  pullHeadShaFromContext,
+  reviewStructuralPullStateFromContext,
+} from "./clawsweeper-review-comment-identity.js";
+import { targetProfile } from "./repository-profiles.js";
 import {
   confidenceText,
   priorityLabel,
@@ -45,9 +57,14 @@ import {
   securityConcernLocation,
   sentence,
 } from "./clawsweeper-review-presentation.js";
-import { runtimeReviewText } from "./clawsweeper-report-context.js";
+import {
+  contextCountText,
+  renderReviewContextBudget,
+  reviewTelemetryNumber,
+  runtimeReviewText,
+} from "./clawsweeper-report-context.js";
 import { prSurfaceFilesFromContext } from "./clawsweeper-orchestration-foundation.js";
-import { fixedInText } from "./clawsweeper-status-context.js";
+import { fixedInText, formatTimestamp } from "./clawsweeper-status-context.js";
 
 export function localCheckoutAccessForDecision(
   decision: Pick<Decision, "localCheckoutAccess">,
@@ -92,514 +109,485 @@ export function likelyOwnersMarkdown(owners: readonly LikelyOwner[]): string {
     .join("\n");
 }
 
-export function createReportDocumentRendering(
-  dependencies: CreateReportRenderingDependencies & ReturnType<typeof createReportContextRendering>,
-) {
-  const {
-    compactPullFilePaths,
-    contextCountText,
-    fileUrl,
-    formatTimestamp,
-    jsonFrontMatterValue,
-    labelJustificationsMarkdown,
-    linkedRelease,
-    linkedSha,
-    markdownLink,
-    pullHeadShaFromContext,
-    renderReviewContextBudget,
-    reviewStructuralPullStateFromContext,
-    reviewTelemetryNumber,
-    targetProfile,
-    workStatusForDecision,
-  } = dependencies;
+function markdownList(values: string[]): string {
+  return values.length ? values.map((value) => `- ${value}`).join("\n") : "- none";
+}
 
-  function markdownList(values: string[]): string {
-    return values.length ? values.map((value) => `- ${value}`).join("\n") : "- none";
+function renderWorkCandidateReportSection(decision: Decision): string {
+  const lines = [
+    `Candidate: ${decision.workCandidate}`,
+    "",
+    `Confidence: ${decision.workConfidence}`,
+    "",
+    `Priority: ${decision.workPriority}`,
+    "",
+    `Status: ${workStatusForDecision(decision)}`,
+  ];
+  const workReason = decision.workReason.trim();
+  if (workReason) lines.push("", `Reason: ${workReason}`);
+
+  const includeDetails =
+    decision.workCandidate !== "none" ||
+    decision.workClusterRefs.length > 0 ||
+    decision.workLikelyFiles.length > 0 ||
+    decision.workValidation.length > 0;
+  if (includeDetails) {
+    lines.push("", "Cluster refs:", "", markdownList(decision.workClusterRefs));
+    lines.push("", "Likely files:", "", markdownList(decision.workLikelyFiles));
+    lines.push("", "Validation:", "", markdownList(decision.workValidation));
   }
+  return lines.join("\n");
+}
 
-  function renderWorkCandidateReportSection(decision: Decision): string {
-    const lines = [
-      `Candidate: ${decision.workCandidate}`,
-      "",
-      `Confidence: ${decision.workConfidence}`,
-      "",
-      `Priority: ${decision.workPriority}`,
-      "",
-      `Status: ${workStatusForDecision(decision)}`,
-    ];
-    const workReason = decision.workReason.trim();
-    if (workReason) lines.push("", `Reason: ${workReason}`);
+function renderRepairWorkPromptReportSection(decision: Decision): string {
+  const workPrompt = decision.workPrompt.trim();
+  return workPrompt ? `\n\n## ${REVIEW_SECTIONS.repairWorkPrompt}\n\n${workPrompt}` : "";
+}
 
-    const includeDetails =
-      decision.workCandidate !== "none" ||
-      decision.workClusterRefs.length > 0 ||
-      decision.workLikelyFiles.length > 0 ||
-      decision.workValidation.length > 0;
-    if (includeDetails) {
-      lines.push("", "Cluster refs:", "", markdownList(decision.workClusterRefs));
-      lines.push("", "Likely files:", "", markdownList(decision.workLikelyFiles));
-      lines.push("", "Validation:", "", markdownList(decision.workValidation));
-    }
+function renderMaintainerDecisionReportSection(decision: Decision): string {
+  const maintainerDecision = decision.maintainerDecision;
+  if (!maintainerDecision.required) return "Required: false";
+  const options = maintainerDecision.options
+    .map(
+      (option) =>
+        `- **${option.title}${option.recommended ? " (recommended)" : ""}:** ${option.body}`,
+    )
+    .join("\n");
+  return [
+    "Required: true",
+    "",
+    `Kind: ${maintainerDecision.kind}`,
+    "",
+    `Question: ${maintainerDecision.question}`,
+    "",
+    `Rationale: ${maintainerDecision.rationale}`,
+    "",
+    `Likely owner: ${maintainerDecision.likelyOwner.person}`,
+    "",
+    `Owner reason: ${maintainerDecision.likelyOwner.reason}`,
+    "",
+    `Owner confidence: ${maintainerDecision.likelyOwner.confidence}`,
+    "",
+    "Options:",
+    "",
+    options,
+  ].join("\n");
+}
+
+function renderVisionFitReportSection(decision: Decision): string {
+  return [
+    `Status: ${decision.visionFit}`,
+    "",
+    `Implementation complexity: ${decision.implementationComplexity}`,
+    "",
+    `Auto implementation candidate: ${decision.autoImplementationCandidate}`,
+    "",
+    `Reason: ${sentence(decision.visionFitReason)}`,
+    "",
+    "Vision evidence:",
+    "",
+    markdownList(decision.visionFitEvidence),
+  ].join("\n");
+}
+
+function renderReviewFindingsReportSection(decision: Decision): string {
+  const lines = [
+    `Overall correctness: ${decision.overallCorrectness}`,
+    "",
+    `Overall confidence: ${confidenceText(decision.overallConfidenceScore)}`,
+    "",
+    "Full review comments:",
+    "",
+  ];
+  if (!decision.reviewFindings.length) {
+    lines.push("- none");
     return lines.join("\n");
   }
-
-  function renderRepairWorkPromptReportSection(decision: Decision): string {
-    const workPrompt = decision.workPrompt.trim();
-    return workPrompt ? `\n\n## ${REVIEW_SECTIONS.repairWorkPrompt}\n\n${workPrompt}` : "";
-  }
-
-  function renderMaintainerDecisionReportSection(decision: Decision): string {
-    const maintainerDecision = decision.maintainerDecision;
-    if (!maintainerDecision.required) return "Required: false";
-    const options = maintainerDecision.options
-      .map(
-        (option) =>
-          `- **${option.title}${option.recommended ? " (recommended)" : ""}:** ${option.body}`,
-      )
-      .join("\n");
-    return [
-      "Required: true",
-      "",
-      `Kind: ${maintainerDecision.kind}`,
-      "",
-      `Question: ${maintainerDecision.question}`,
-      "",
-      `Rationale: ${maintainerDecision.rationale}`,
-      "",
-      `Likely owner: ${maintainerDecision.likelyOwner.person}`,
-      "",
-      `Owner reason: ${maintainerDecision.likelyOwner.reason}`,
-      "",
-      `Owner confidence: ${maintainerDecision.likelyOwner.confidence}`,
-      "",
-      "Options:",
-      "",
-      options,
-    ].join("\n");
-  }
-
-  function renderVisionFitReportSection(decision: Decision): string {
-    return [
-      `Status: ${decision.visionFit}`,
-      "",
-      `Implementation complexity: ${decision.implementationComplexity}`,
-      "",
-      `Auto implementation candidate: ${decision.autoImplementationCandidate}`,
-      "",
-      `Reason: ${sentence(decision.visionFitReason)}`,
-      "",
-      "Vision evidence:",
-      "",
-      markdownList(decision.visionFitEvidence),
-    ].join("\n");
-  }
-
-  function renderReviewFindingsReportSection(decision: Decision): string {
-    const lines = [
-      `Overall correctness: ${decision.overallCorrectness}`,
-      "",
-      `Overall confidence: ${confidenceText(decision.overallConfidenceScore)}`,
-      "",
-      "Full review comments:",
-      "",
-    ];
-    if (!decision.reviewFindings.length) {
-      lines.push("- none");
-      return lines.join("\n");
-    }
-    lines.push(
-      decision.reviewFindings
-        .map((finding) =>
-          [
-            `- **[${priorityLabel(finding.priority)}] ${finding.title}:** \`${reviewFindingLocation(
-              finding,
-            )}\``,
-            `  - body: ${sentence(finding.body)}`,
-            ...(finding.lateFinding ? ["  - late: true"] : []),
-            `  - confidence: ${confidenceText(finding.confidenceScore)}`,
-          ].join("\n"),
-        )
-        .join("\n"),
-    );
-    return lines.join("\n");
-  }
-
-  function renderChangeExampleReportSection(decision: Decision): string {
-    const example = decision.changeExample;
-    return [
-      `Scenario: ${example.scenario}`.trimEnd(),
-      "",
-      `Before: ${example.before}`.trimEnd(),
-      "",
-      `After: ${example.after}`.trimEnd(),
-    ].join("\n");
-  }
-
-  function renderProductReviewReportSection(decision: Decision): string {
-    const product = decision.productReview;
-    return [
-      `Kind: ${product.kind}`,
-      "",
-      `Worth it: ${product.worthIt}`,
-      "",
-      `Fix scope: ${product.fixScope}`,
-      "",
-      `User problem: ${product.userProblem}`.trimEnd(),
-      "",
-      `Reason: ${product.reason}`.trimEnd(),
-    ].join("\n");
-  }
-
-  function renderProvenanceReportSection(decision: Decision): string {
-    if (!decision.provenance.length) return "- none";
-    return decision.provenance
-      .map((entry) =>
+  lines.push(
+    decision.reviewFindings
+      .map((finding) =>
         [
-          `- Area: ${entry.area}`.trimEnd(),
-          `  - Introduced by: ${entry.introducedBy}`.trimEnd(),
-          `  - Original reason: ${entry.originalReason}`.trimEnd(),
-          `  - Verdict: ${entry.verdict}`,
+          `- **[${priorityLabel(finding.priority)}] ${finding.title}:** \`${reviewFindingLocation(
+            finding,
+          )}\``,
+          `  - body: ${sentence(finding.body)}`,
+          ...(finding.lateFinding ? ["  - late: true"] : []),
+          `  - confidence: ${confidenceText(finding.confidenceScore)}`,
         ].join("\n"),
       )
-      .join("\n");
-  }
+      .join("\n"),
+  );
+  return lines.join("\n");
+}
 
-  function renderTestingReviewReportSection(decision: Decision): string {
-    const testing = decision.testingReview;
-    return [
-      `Proof path: ${testing.proofPath}`,
-      "",
-      `Missing E2E: ${testing.missingE2e}`.trimEnd(),
-      "",
-      "Low-value tests:",
-      "",
-      testing.lowValueTests.length
-        ? testing.lowValueTests
-            .map((test) =>
-              [`- File: ${test.file}`.trimEnd(), `  - Reason: ${test.reason}`.trimEnd()].join("\n"),
-            )
-            .join("\n")
-        : "- none",
-    ].join("\n");
-  }
+function renderChangeExampleReportSection(decision: Decision): string {
+  const example = decision.changeExample;
+  return [
+    `Scenario: ${example.scenario}`.trimEnd(),
+    "",
+    `Before: ${example.before}`.trimEnd(),
+    "",
+    `After: ${example.after}`.trimEnd(),
+  ].join("\n");
+}
 
-  function renderSecurityReviewReportSection(decision: Decision): string {
-    const lines = [
-      `Status: ${decision.securityReview.status}`,
-      "",
-      `Summary: ${sentence(decision.securityReview.summary)}`,
-      "",
-      "Concerns:",
-      "",
-    ];
-    if (!decision.securityReview.concerns.length) {
-      lines.push("- none");
-      return lines.join("\n");
-    }
-    lines.push(
-      decision.securityReview.concerns
-        .map((concern) => {
-          const location = securityConcernLocation(concern);
-          const heading =
-            location === "not tied to a single file"
-              ? `- **[${concern.severity}] ${concern.title}:**`
-              : `- **[${concern.severity}] ${concern.title}:** \`${location}\``;
-          return [
-            heading,
-            `  - body: ${sentence(concern.body)}`,
-            `  - confidence: ${confidenceText(concern.confidenceScore)}`,
-          ].join("\n");
-        })
-        .join("\n"),
-    );
-    return lines.join("\n");
-  }
+function renderProductReviewReportSection(decision: Decision): string {
+  const product = decision.productReview;
+  return [
+    `Kind: ${product.kind}`,
+    "",
+    `Worth it: ${product.worthIt}`,
+    "",
+    `Fix scope: ${product.fixScope}`,
+    "",
+    `User problem: ${product.userProblem}`.trimEnd(),
+    "",
+    `Reason: ${product.reason}`.trimEnd(),
+  ].join("\n");
+}
 
-  function renderRealBehaviorProofReportSection(decision: Decision): string {
-    return [
-      `Status: ${decision.realBehaviorProof.status}`,
-      "",
-      `Evidence kind: ${decision.realBehaviorProof.evidenceKind}`,
-      "",
-      `Needs contributor action: ${decision.realBehaviorProof.needsContributorAction}`,
-      "",
-      `Summary: ${sentence(decision.realBehaviorProof.summary)}`,
-    ].join("\n");
-  }
+function renderProvenanceReportSection(decision: Decision): string {
+  if (!decision.provenance.length) return "- none";
+  return decision.provenance
+    .map((entry) =>
+      [
+        `- Area: ${entry.area}`.trimEnd(),
+        `  - Introduced by: ${entry.introducedBy}`.trimEnd(),
+        `  - Original reason: ${entry.originalReason}`.trimEnd(),
+        `  - Verdict: ${entry.verdict}`,
+      ].join("\n"),
+    )
+    .join("\n");
+}
 
-  function renderPrRatingAssessmentReportSection(
-    rating: PrRating,
-    realBehaviorProof: RealBehaviorProof,
-  ): string {
-    const nextSteps = rating.nextSteps.length
-      ? rating.nextSteps.map((step) => `- ${step}`).join("\n")
-      : "- none";
-    const shiny = hasShinyProof(realBehaviorProof) ? " ✨" : "";
-    return [
-      `Overall tier: ${rating.overallTier}`,
-      "",
-      `Proof tier: ${rating.proofTier}`,
-      "",
-      `Patch tier: ${rating.patchTier}`,
-      "",
-      `Overall label: ${themedRatingName(rating.overallTier)}`,
-      "",
-      `Proof label: ${themedRatingName(rating.proofTier)}${shiny}`,
-      "",
-      `Patch label: ${themedRatingName(rating.patchTier)}`,
-      "",
-      `Summary: ${sentence(rating.summary)}`,
-      "",
-      "Next rank-up steps:",
-      "",
-      nextSteps,
-    ].join("\n");
-  }
-
-  function renderPrRatingReportSection(decision: Decision): string {
-    return renderPrRatingAssessmentReportSection(decision.prRating, decision.realBehaviorProof);
-  }
-
-  function renderTelegramVisibleProofReportSection(decision: Decision): string {
-    return [
-      `Status: ${decision.telegramVisibleProof.status}`,
-      "",
-      `Summary: ${sentence(decision.telegramVisibleProof.summary)}`,
-    ].join("\n");
-  }
-
-  function renderFeatureShowcaseReportSection(decision: Decision): string {
-    return [
-      `Status: ${decision.featureShowcase.status}`,
-      "",
-      `Reason: ${sentence(decision.featureShowcase.reason)}`,
-    ].join("\n");
-  }
-
-  function renderRootCauseClusterAssessmentReportSection(
-    rootCauseCluster: RootCauseClusterAssessment,
-  ): string {
-    const members = rootCauseCluster.members.length
-      ? rootCauseCluster.members
-          .map(
-            (member) => `- **${member.relationship}:** ${member.ref}\n  - reason: ${member.reason}`,
+function renderTestingReviewReportSection(decision: Decision): string {
+  const testing = decision.testingReview;
+  return [
+    `Proof path: ${testing.proofPath}`,
+    "",
+    `Missing E2E: ${testing.missingE2e}`.trimEnd(),
+    "",
+    "Low-value tests:",
+    "",
+    testing.lowValueTests.length
+      ? testing.lowValueTests
+          .map((test) =>
+            [`- File: ${test.file}`.trimEnd(), `  - Reason: ${test.reason}`.trimEnd()].join("\n"),
           )
           .join("\n")
-      : "- none";
-    return [
-      `Current item relationship: ${rootCauseCluster.currentItemRelationship}`,
-      "",
-      `Confidence: ${rootCauseCluster.confidence}`,
-      "",
-      `Canonical ref: ${rootCauseCluster.canonicalRef ?? "none"}`,
-      "",
-      `Summary: ${sentence(rootCauseCluster.summary)}`,
-      "",
-      "Members:",
-      members,
-    ].join("\n");
-  }
+      : "- none",
+  ].join("\n");
+}
 
-  function renderRootCauseClusterReportSection(decision: Decision): string {
-    return renderRootCauseClusterAssessmentReportSection(decision.rootCauseCluster);
+function renderSecurityReviewReportSection(decision: Decision): string {
+  const lines = [
+    `Status: ${decision.securityReview.status}`,
+    "",
+    `Summary: ${sentence(decision.securityReview.summary)}`,
+    "",
+    "Concerns:",
+    "",
+  ];
+  if (!decision.securityReview.concerns.length) {
+    lines.push("- none");
+    return lines.join("\n");
   }
+  lines.push(
+    decision.securityReview.concerns
+      .map((concern) => {
+        const location = securityConcernLocation(concern);
+        const heading =
+          location === "not tied to a single file"
+            ? `- **[${concern.severity}] ${concern.title}:**`
+            : `- **[${concern.severity}] ${concern.title}:** \`${location}\``;
+        return [
+          heading,
+          `  - body: ${sentence(concern.body)}`,
+          `  - confidence: ${confidenceText(concern.confidenceScore)}`,
+        ].join("\n");
+      })
+      .join("\n"),
+  );
+  return lines.join("\n");
+}
 
-  function renderAgentsPolicyStatusReportSection(decision: Decision): string {
-    return [
-      `Status: ${decision.agentsPolicyStatus.status}`,
-      "",
-      `Found: ${decision.agentsPolicyStatus.found}`,
-      "",
-      `Read fully: ${decision.agentsPolicyStatus.readFully}`,
-      "",
-      `Applied: ${decision.agentsPolicyStatus.applied}`,
-      "",
-      `Summary: ${sentence(decision.agentsPolicyStatus.summary)}`,
-    ].join("\n");
-  }
+function renderRealBehaviorProofReportSection(decision: Decision): string {
+  return [
+    `Status: ${decision.realBehaviorProof.status}`,
+    "",
+    `Evidence kind: ${decision.realBehaviorProof.evidenceKind}`,
+    "",
+    `Needs contributor action: ${decision.realBehaviorProof.needsContributorAction}`,
+    "",
+    `Summary: ${sentence(decision.realBehaviorProof.summary)}`,
+  ].join("\n");
+}
 
-  function pullRequestFilePathsFromContextForTest(context: { pullFiles?: unknown[] }): string[] {
-    return (context.pullFiles ?? []).flatMap(compactPullFilePaths);
-  }
+export function renderPrRatingAssessmentReportSection(
+  rating: PrRating,
+  realBehaviorProof: RealBehaviorProof,
+): string {
+  const nextSteps = rating.nextSteps.length
+    ? rating.nextSteps.map((step) => `- ${step}`).join("\n")
+    : "- none";
+  const shiny = hasShinyProof(realBehaviorProof) ? " ✨" : "";
+  return [
+    `Overall tier: ${rating.overallTier}`,
+    "",
+    `Proof tier: ${rating.proofTier}`,
+    "",
+    `Patch tier: ${rating.patchTier}`,
+    "",
+    `Overall label: ${themedRatingName(rating.overallTier)}`,
+    "",
+    `Proof label: ${themedRatingName(rating.proofTier)}${shiny}`,
+    "",
+    `Patch label: ${themedRatingName(rating.patchTier)}`,
+    "",
+    `Summary: ${sentence(rating.summary)}`,
+    "",
+    "Next rank-up steps:",
+    "",
+    nextSteps,
+  ].join("\n");
+}
 
-  function pullRequestFilePathsFromContext(context: ItemContext): string[] {
-    return pullRequestFilePathsFromContextForTest(context);
-  }
+function renderPrRatingReportSection(decision: Decision): string {
+  return renderPrRatingAssessmentReportSection(decision.prRating, decision.realBehaviorProof);
+}
 
-  function updateReviewStructuralFrontMatter(
-    markdown: string,
-    record: ReviewStructuralRecord | null,
-    cacheHit: boolean,
-  ): string {
-    let next = replaceFrontMatterValue(
-      markdown,
-      "review_structural_cache_version",
-      record ? String(record.version) : "unknown",
-    );
-    next = replaceFrontMatterValue(
-      next,
-      "review_structural_fingerprint",
-      record?.fingerprint ?? "unknown",
-    );
-    next = replaceFrontMatterValue(
-      next,
-      "review_structural_source_revision",
-      record?.sourceRevision ?? "unknown",
-    );
-    next = replaceFrontMatterValue(
-      next,
-      "review_structural_item_state_digest",
-      record?.itemStateDigest ?? "unknown",
-    );
-    next = replaceFrontMatterValue(
-      next,
-      "review_structural_context_revision",
-      record?.contextRevision ?? "unknown",
-    );
-    next = replaceFrontMatterValue(
-      next,
-      "review_structural_activity_updated_at",
-      record?.activityUpdatedAt ?? "unknown",
-    );
-    next = replaceFrontMatterValue(
-      next,
-      "review_structural_relation_sensitive",
-      record ? String(record.relationSensitive) : "unknown",
-    );
-    next = replaceFrontMatterValue(
-      next,
-      "review_structural_target_head_sha",
-      record?.targetHeadSha ?? "unknown",
-    );
-    next = replaceFrontMatterValue(
-      next,
-      "review_structural_pull_head_sha",
-      record ? (record.pullHeadSha ?? "none") : "unknown",
-    );
-    next = replaceFrontMatterValue(
-      next,
-      "review_structural_pull_state_digest",
-      record ? (record.pullStateDigest ?? "none") : "unknown",
-    );
-    return replaceFrontMatterValue(
-      next,
-      "review_structural_cache_hit",
-      cacheHit ? "true" : "false",
-    );
-  }
+function renderTelegramVisibleProofReportSection(decision: Decision): string {
+  return [
+    `Status: ${decision.telegramVisibleProof.status}`,
+    "",
+    `Summary: ${sentence(decision.telegramVisibleProof.summary)}`,
+  ].join("\n");
+}
 
-  function markdownFor(options: {
-    item: Item;
-    context: ItemContext;
-    decision: Decision;
-    git: GitInfo;
-    action: Action;
-    reviewMode: "propose" | "apply";
-    snapshotHash: string;
-    contentDigest: string;
-    reviewPolicy: string;
-    runtime: ReviewRuntime;
-    structuralRecord?: ReviewStructuralRecord | null;
-    reviewLeaseOwner?: string;
-    reviewLeaseCommentId?: number;
-  }): string {
-    const labels = options.item.labels.length ? options.item.labels.join(", ") : "none";
-    const reviewedAt = new Date().toISOString();
-    const fixedPullRequest = options.decision.fixedPullRequest;
-    const regressionProvenance = isPublicRegressionProvenance(options.decision.regressionProvenance)
-      ? options.decision.regressionProvenance
-      : null;
-    const regressionAssessment = isRegressionAssessment(options.decision.regressionAssessment)
-      ? options.decision.regressionAssessment
-      : null;
-    const regressionProvenanceLine = regressionProvenancePublicLine(
-      regressionProvenance,
-      regressionAssessment,
-    );
-    const regressionAssessmentLine = regressionAssessmentPublicLine(regressionAssessment, {
-      predecessorAttributed: regressionProvenance?.evidenceType === "rewrite_equivalent",
-    });
-    const verifiedRegressionProvenance = isVerifiedRegressionProvenance(regressionProvenance)
-      ? regressionProvenance
-      : null;
-    const suspectedRegressionProvenance = isSuspectedRegressionProvenance(regressionProvenance)
-      ? regressionProvenance
-      : null;
-    const regressionPublicLines = [
-      regressionProvenanceLine,
-      !verifiedRegressionProvenance ? regressionAssessmentLine : null,
-    ]
-      .filter((line): line is string => Boolean(line))
-      .join("\n\n");
-    const evidence = options.decision.evidence.length
-      ? options.decision.evidence
-          .map((rawEntry) => {
-            const entry = normalizeEvidence(rawEntry);
-            const bits = [
-              `- **${entry.label}:** ${entry.detail}`,
-              `  - repo: ${entry.repo ?? "null"}`,
-            ];
-            if (entry.file) {
-              const label = `${entry.file}${entry.line ? `:${entry.line}` : ""}`;
-              const sha =
-                entry.sha ?? (entry.repo === options.item.repo ? options.git.mainSha : null);
-              const url =
-                entry.repo && sha
-                  ? fileUrl(entry.file, sha, entry.line ?? undefined, entry.repo)
-                  : null;
-              bits.push(`  - file: ${url ? markdownLink(label, url) : `\`${label}\``}`);
-            }
-            if (entry.command) bits.push(`  - command: \`${entry.command}\``);
-            if (entry.sha)
-              bits.push(
-                `  - sha: ${entry.repo ? linkedSha(entry.sha, entry.repo) : `\`${entry.sha}\``}`,
-              );
-            return bits.join("\n");
-          })
-          .join("\n")
-      : "- none";
-    const risks = options.decision.risks.length
-      ? options.decision.risks.map((risk) => `- ${risk}`).join("\n")
-      : "- none";
-    const likelyOwners = likelyOwnersMarkdown(options.decision.likelyOwners.map(publicLikelyOwner));
-    const bestSolution = options.decision.bestSolution.trim() || "_Not provided._";
-    const maintainerDecision = renderMaintainerDecisionReportSection(options.decision);
-    const reproductionAssessment =
-      options.decision.reproductionAssessment.trim() || "_Not provided._";
-    const solutionAssessment = options.decision.solutionAssessment.trim() || "_Not provided._";
-    const visionFit = renderVisionFitReportSection(options.decision);
-    const rootCauseCluster = renderRootCauseClusterReportSection(options.decision);
-    // Product, provenance, and testing reviews judge pull requests only.
-    const pullRequestReviewSections =
-      options.item.kind === "pull_request"
-        ? [
-            `## ${REVIEW_SECTIONS.productReview}`,
-            renderProductReviewReportSection(options.decision),
-            `## ${REVIEW_SECTIONS.provenance}`,
-            renderProvenanceReportSection(options.decision),
-            `## ${REVIEW_SECTIONS.testingReview}`,
-            renderTestingReviewReportSection(options.decision),
-            "",
-          ].join("\n\n")
-        : "";
-    const reviewFindings = renderReviewFindingsReportSection(options.decision);
-    const securityReview = renderSecurityReviewReportSection(options.decision);
-    const realBehaviorProof = renderRealBehaviorProofReportSection(options.decision);
-    const prRating = renderPrRatingReportSection(options.decision);
-    const telegramVisibleProof = renderTelegramVisibleProofReportSection(options.decision);
-    const featureShowcase = renderFeatureShowcaseReportSection(options.decision);
-    const agentsPolicyStatus = renderAgentsPolicyStatusReportSection(options.decision);
-    const workCandidateSection = renderWorkCandidateReportSection(options.decision);
-    const repairWorkPromptSection = renderRepairWorkPromptReportSection(options.decision);
-    const pullFiles = pullRequestFilePathsFromContext(options.context);
-    const pullFilesTruncated = Boolean(options.context.counts?.pullFilesTruncated);
-    const prSurfaceFiles = prSurfaceFilesFromContext(options.context);
-    const reviewedPullStateDigest = reviewStructuralPullStateFromContext(options.context);
-    const reviewRecordLine = reviewRecordFrontMatterLine(
-      { decision: options.decision },
-      options.item,
-    );
-    const markdown = `---
+function renderFeatureShowcaseReportSection(decision: Decision): string {
+  return [
+    `Status: ${decision.featureShowcase.status}`,
+    "",
+    `Reason: ${sentence(decision.featureShowcase.reason)}`,
+  ].join("\n");
+}
+
+export function renderRootCauseClusterAssessmentReportSection(
+  rootCauseCluster: RootCauseClusterAssessment,
+): string {
+  const members = rootCauseCluster.members.length
+    ? rootCauseCluster.members
+        .map(
+          (member) => `- **${member.relationship}:** ${member.ref}\n  - reason: ${member.reason}`,
+        )
+        .join("\n")
+    : "- none";
+  return [
+    `Current item relationship: ${rootCauseCluster.currentItemRelationship}`,
+    "",
+    `Confidence: ${rootCauseCluster.confidence}`,
+    "",
+    `Canonical ref: ${rootCauseCluster.canonicalRef ?? "none"}`,
+    "",
+    `Summary: ${sentence(rootCauseCluster.summary)}`,
+    "",
+    "Members:",
+    members,
+  ].join("\n");
+}
+
+function renderRootCauseClusterReportSection(decision: Decision): string {
+  return renderRootCauseClusterAssessmentReportSection(decision.rootCauseCluster);
+}
+
+function renderAgentsPolicyStatusReportSection(decision: Decision): string {
+  return [
+    `Status: ${decision.agentsPolicyStatus.status}`,
+    "",
+    `Found: ${decision.agentsPolicyStatus.found}`,
+    "",
+    `Read fully: ${decision.agentsPolicyStatus.readFully}`,
+    "",
+    `Applied: ${decision.agentsPolicyStatus.applied}`,
+    "",
+    `Summary: ${sentence(decision.agentsPolicyStatus.summary)}`,
+  ].join("\n");
+}
+
+function pullRequestFilePathsFromContext(context: { pullFiles?: unknown[] }): string[] {
+  return (context.pullFiles ?? []).flatMap(compactPullFilePaths);
+}
+
+export function updateReviewStructuralFrontMatter(
+  markdown: string,
+  record: ReviewStructuralRecord | null,
+  cacheHit: boolean,
+): string {
+  let next = replaceFrontMatterValue(
+    markdown,
+    "review_structural_cache_version",
+    record ? String(record.version) : "unknown",
+  );
+  next = replaceFrontMatterValue(
+    next,
+    "review_structural_fingerprint",
+    record?.fingerprint ?? "unknown",
+  );
+  next = replaceFrontMatterValue(
+    next,
+    "review_structural_source_revision",
+    record?.sourceRevision ?? "unknown",
+  );
+  next = replaceFrontMatterValue(
+    next,
+    "review_structural_item_state_digest",
+    record?.itemStateDigest ?? "unknown",
+  );
+  next = replaceFrontMatterValue(
+    next,
+    "review_structural_context_revision",
+    record?.contextRevision ?? "unknown",
+  );
+  next = replaceFrontMatterValue(
+    next,
+    "review_structural_activity_updated_at",
+    record?.activityUpdatedAt ?? "unknown",
+  );
+  next = replaceFrontMatterValue(
+    next,
+    "review_structural_relation_sensitive",
+    record ? String(record.relationSensitive) : "unknown",
+  );
+  next = replaceFrontMatterValue(
+    next,
+    "review_structural_target_head_sha",
+    record?.targetHeadSha ?? "unknown",
+  );
+  next = replaceFrontMatterValue(
+    next,
+    "review_structural_pull_head_sha",
+    record ? (record.pullHeadSha ?? "none") : "unknown",
+  );
+  next = replaceFrontMatterValue(
+    next,
+    "review_structural_pull_state_digest",
+    record ? (record.pullStateDigest ?? "none") : "unknown",
+  );
+  return replaceFrontMatterValue(next, "review_structural_cache_hit", cacheHit ? "true" : "false");
+}
+
+export function markdownFor(options: {
+  item: Item;
+  context: ItemContext;
+  decision: Decision;
+  git: GitInfo;
+  action: Action;
+  reviewMode: "propose" | "apply";
+  snapshotHash: string;
+  contentDigest: string;
+  reviewPolicy: string;
+  runtime: ReviewRuntime;
+  structuralRecord?: ReviewStructuralRecord | null;
+  reviewLeaseOwner?: string;
+  reviewLeaseCommentId?: number;
+}): string {
+  const labels = options.item.labels.length ? options.item.labels.join(", ") : "none";
+  const reviewedAt = new Date().toISOString();
+  const fixedPullRequest = options.decision.fixedPullRequest;
+  const regressionProvenance = isPublicRegressionProvenance(options.decision.regressionProvenance)
+    ? options.decision.regressionProvenance
+    : null;
+  const regressionAssessment = isRegressionAssessment(options.decision.regressionAssessment)
+    ? options.decision.regressionAssessment
+    : null;
+  const regressionProvenanceLine = regressionProvenancePublicLine(
+    regressionProvenance,
+    regressionAssessment,
+  );
+  const regressionAssessmentLine = regressionAssessmentPublicLine(regressionAssessment, {
+    predecessorAttributed: regressionProvenance?.evidenceType === "rewrite_equivalent",
+  });
+  const verifiedRegressionProvenance = isVerifiedRegressionProvenance(regressionProvenance)
+    ? regressionProvenance
+    : null;
+  const suspectedRegressionProvenance = isSuspectedRegressionProvenance(regressionProvenance)
+    ? regressionProvenance
+    : null;
+  const regressionPublicLines = [
+    regressionProvenanceLine,
+    !verifiedRegressionProvenance ? regressionAssessmentLine : null,
+  ]
+    .filter((line): line is string => Boolean(line))
+    .join("\n\n");
+  const evidence = options.decision.evidence.length
+    ? options.decision.evidence
+        .map((rawEntry) => {
+          const entry = normalizeEvidence(rawEntry);
+          const bits = [
+            `- **${entry.label}:** ${entry.detail}`,
+            `  - repo: ${entry.repo ?? "null"}`,
+          ];
+          if (entry.file) {
+            const label = `${entry.file}${entry.line ? `:${entry.line}` : ""}`;
+            const sha =
+              entry.sha ?? (entry.repo === options.item.repo ? options.git.mainSha : null);
+            const url =
+              entry.repo && sha
+                ? fileUrl(entry.file, sha, entry.line ?? undefined, entry.repo)
+                : null;
+            bits.push(`  - file: ${url ? markdownLink(label, url) : `\`${label}\``}`);
+          }
+          if (entry.command) bits.push(`  - command: \`${entry.command}\``);
+          if (entry.sha)
+            bits.push(
+              `  - sha: ${entry.repo ? linkedSha(entry.sha, entry.repo) : `\`${entry.sha}\``}`,
+            );
+          return bits.join("\n");
+        })
+        .join("\n")
+    : "- none";
+  const risks = options.decision.risks.length
+    ? options.decision.risks.map((risk) => `- ${risk}`).join("\n")
+    : "- none";
+  const likelyOwners = likelyOwnersMarkdown(options.decision.likelyOwners.map(publicLikelyOwner));
+  const bestSolution = options.decision.bestSolution.trim() || "_Not provided._";
+  const maintainerDecision = renderMaintainerDecisionReportSection(options.decision);
+  const reproductionAssessment =
+    options.decision.reproductionAssessment.trim() || "_Not provided._";
+  const solutionAssessment = options.decision.solutionAssessment.trim() || "_Not provided._";
+  const visionFit = renderVisionFitReportSection(options.decision);
+  const rootCauseCluster = renderRootCauseClusterReportSection(options.decision);
+  // Product, provenance, and testing reviews judge pull requests only.
+  const pullRequestReviewSections =
+    options.item.kind === "pull_request"
+      ? [
+          `## ${REVIEW_SECTIONS.productReview}`,
+          renderProductReviewReportSection(options.decision),
+          `## ${REVIEW_SECTIONS.provenance}`,
+          renderProvenanceReportSection(options.decision),
+          `## ${REVIEW_SECTIONS.testingReview}`,
+          renderTestingReviewReportSection(options.decision),
+          "",
+        ].join("\n\n")
+      : "";
+  const reviewFindings = renderReviewFindingsReportSection(options.decision);
+  const securityReview = renderSecurityReviewReportSection(options.decision);
+  const realBehaviorProof = renderRealBehaviorProofReportSection(options.decision);
+  const prRating = renderPrRatingReportSection(options.decision);
+  const telegramVisibleProof = renderTelegramVisibleProofReportSection(options.decision);
+  const featureShowcase = renderFeatureShowcaseReportSection(options.decision);
+  const agentsPolicyStatus = renderAgentsPolicyStatusReportSection(options.decision);
+  const workCandidateSection = renderWorkCandidateReportSection(options.decision);
+  const repairWorkPromptSection = renderRepairWorkPromptReportSection(options.decision);
+  const pullFiles = pullRequestFilePathsFromContext(options.context);
+  const pullFilesTruncated = Boolean(options.context.counts?.pullFilesTruncated);
+  const prSurfaceFiles = prSurfaceFilesFromContext(options.context);
+  const reviewedPullStateDigest = reviewStructuralPullStateFromContext(options.context);
+  const reviewRecordLine = reviewRecordFrontMatterLine(
+    { decision: options.decision },
+    options.item,
+  );
+  const markdown = `---
 number: ${options.item.number}
 repository: ${options.item.repo}
 type: ${options.item.kind}
@@ -619,10 +607,10 @@ main_sha: ${options.git.mainSha}
 pull_head_sha: ${pullHeadShaFromContext(options.context) ?? "unknown"}
 pr_hydration_snapshot: ${serializePrHydrationSnapshot(options.context.prHydrationSnapshot)}
 reviewed_pull_state_digest: ${
-      reviewedPullStateDigest
-        ? (reviewStructuralPullStateDigest(reviewedPullStateDigest) ?? "unknown")
-        : "unknown"
-    }
+    reviewedPullStateDigest
+      ? (reviewStructuralPullStateDigest(reviewedPullStateDigest) ?? "unknown")
+      : "unknown"
+  }
 latest_release: ${options.git.latestRelease?.tagName ?? "unknown"}
 latest_release_sha: ${options.git.latestRelease?.sha ?? "unknown"}
 fixed_release: ${options.decision.fixedRelease ?? "unknown"}
@@ -683,15 +671,15 @@ review_structural_item_state_digest: ${options.structuralRecord?.itemStateDigest
 review_structural_context_revision: ${options.structuralRecord?.contextRevision ?? "unknown"}
 review_structural_activity_updated_at: ${options.structuralRecord?.activityUpdatedAt ?? "unknown"}
 review_structural_relation_sensitive: ${
-      options.structuralRecord ? options.structuralRecord.relationSensitive : "unknown"
-    }
+    options.structuralRecord ? options.structuralRecord.relationSensitive : "unknown"
+  }
 review_structural_target_head_sha: ${options.structuralRecord?.targetHeadSha ?? "unknown"}
 review_structural_pull_head_sha: ${
-      options.structuralRecord ? (options.structuralRecord.pullHeadSha ?? "none") : "unknown"
-    }
+    options.structuralRecord ? (options.structuralRecord.pullHeadSha ?? "none") : "unknown"
+  }
 review_structural_pull_state_digest: ${
-      options.structuralRecord ? (options.structuralRecord.pullStateDigest ?? "none") : "unknown"
-    }
+    options.structuralRecord ? (options.structuralRecord.pullStateDigest ?? "none") : "unknown"
+  }
 review_structural_cache_hit: false
 item_source_revision: ${options.context.sourceRevision ?? "unknown"}
 review_timeline_revision: ${options.context.timelineRevision ?? "unknown"}
@@ -753,9 +741,9 @@ product_fix_scope: ${options.decision.productReview.fixScope}
 testing_proof_path: ${options.decision.testingReview.proofPath}
 low_value_tests: ${options.decision.testingReview.lowValueTests.length}
 provenance_overrides_without_reason: ${
-      options.decision.provenance.filter((entry) => entry.verdict === "overrides_without_reason")
-        .length
-    }
+    options.decision.provenance.filter((entry) => entry.verdict === "overrides_without_reason")
+      .length
+  }
 ${reviewRecordLine === null ? "" : `${reviewRecordLine}\n`}---
 
 # ${markdownLink(`#${options.item.number}: ${options.item.title}`, options.item.url)}
@@ -779,10 +767,10 @@ Reviewed against: ${linkedSha(options.git.mainSha)}
 Codex review: ${runtimeReviewText(options.runtime)}
 
 Latest release at review time: ${
-      options.git.latestRelease?.tagName
-        ? linkedRelease(options.git.latestRelease.tagName)
-        : "unknown"
-    }${options.git.latestRelease?.sha ? ` (${linkedSha(options.git.latestRelease.sha)})` : ""}
+    options.git.latestRelease?.tagName
+      ? linkedRelease(options.git.latestRelease.tagName)
+      : "unknown"
+  }${options.git.latestRelease?.sha ? ` (${linkedSha(options.git.latestRelease.sha)})` : ""}
 
 Fixed in: ${fixedInText(options.decision, targetProfile())}
 
@@ -895,36 +883,36 @@ ${options.action.closeComment ? options.action.closeComment : "_No close comment
 ## GitHub Snapshot
 
 - comments: ${contextCountText(
-      options.context.counts?.comments,
-      options.context.comments.length,
-      options.context.counts?.commentsHydrated,
-      options.context.counts?.commentsTruncated,
-    )}
+    options.context.counts?.comments,
+    options.context.comments.length,
+    options.context.counts?.commentsHydrated,
+    options.context.counts?.commentsTruncated,
+  )}
 - timeline events: ${contextCountText(
-      options.context.counts?.timeline,
-      options.context.timeline.length,
-      options.context.counts?.timelineHydrated,
-      options.context.counts?.timelineTruncated,
-    )}
+    options.context.counts?.timeline,
+    options.context.timeline.length,
+    options.context.counts?.timelineHydrated,
+    options.context.counts?.timelineTruncated,
+  )}
 - related items: ${options.context.counts?.relatedItems ?? options.context.relatedItems?.length ?? 0}
 - PR files: ${contextCountText(
-      options.context.counts?.pullFiles,
-      options.context.pullFiles?.length ?? 0,
-      options.context.counts?.pullFilesHydrated,
-      options.context.counts?.pullFilesTruncated,
-    )}
+    options.context.counts?.pullFiles,
+    options.context.pullFiles?.length ?? 0,
+    options.context.counts?.pullFilesHydrated,
+    options.context.counts?.pullFilesTruncated,
+  )}
 - PR commits: ${contextCountText(
-      options.context.counts?.pullCommits,
-      options.context.pullCommits?.length ?? 0,
-      options.context.counts?.pullCommitsHydrated,
-      options.context.counts?.pullCommitsTruncated,
-    )}
+    options.context.counts?.pullCommits,
+    options.context.pullCommits?.length ?? 0,
+    options.context.counts?.pullCommitsHydrated,
+    options.context.counts?.pullCommitsTruncated,
+  )}
 - PR review comments: ${contextCountText(
-      options.context.counts?.pullReviewComments,
-      options.context.pullReviewComments?.length ?? 0,
-      options.context.counts?.pullReviewCommentsHydrated,
-      options.context.counts?.pullReviewCommentsTruncated,
-    )}
+    options.context.counts?.pullReviewComments,
+    options.context.pullReviewComments?.length ?? 0,
+    options.context.counts?.pullReviewCommentsHydrated,
+    options.context.counts?.pullReviewCommentsTruncated,
+  )}
 
 ## Review Context Budget
 
@@ -940,28 +928,5 @@ ${renderReviewContextBudget(options.context)}
 - context collection ms: ${reviewTelemetryNumber(options.runtime.contextElapsedMs)}
 - Codex review ms: ${reviewTelemetryNumber(options.runtime.codexElapsedMs)}
   `;
-    return fitPrHydrationSnapshotToPublicationLimit(markdown);
-  }
-
-  return {
-    markdownList,
-    renderWorkCandidateReportSection,
-    renderRepairWorkPromptReportSection,
-    renderMaintainerDecisionReportSection,
-    renderVisionFitReportSection,
-    renderReviewFindingsReportSection,
-    renderSecurityReviewReportSection,
-    renderRealBehaviorProofReportSection,
-    renderPrRatingAssessmentReportSection,
-    renderPrRatingReportSection,
-    renderTelegramVisibleProofReportSection,
-    renderFeatureShowcaseReportSection,
-    renderRootCauseClusterAssessmentReportSection,
-    renderRootCauseClusterReportSection,
-    renderAgentsPolicyStatusReportSection,
-    pullRequestFilePathsFromContextForTest,
-    pullRequestFilePathsFromContext,
-    updateReviewStructuralFrontMatter,
-    markdownFor,
-  };
+  return fitPrHydrationSnapshotToPublicationLimit(markdown);
 }

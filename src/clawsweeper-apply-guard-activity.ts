@@ -11,6 +11,9 @@ import { quoteGitHubSearchTerm } from "./clawsweeper-related-context.js";
 import { asRecord, login, nonBlankStringOrUndefined } from "./value-coerce.js";
 import { isOlderThanDays } from "./iso-time.js";
 import { reportReviewDecision } from "./report-review-decision.js";
+import { ghJson } from "./clawsweeper-github-execution.js";
+import { ghPaged } from "./clawsweeper-github-context.js";
+import { targetRepo } from "./repository-profiles.js";
 
 export function maintainerAssociatedEntries(entries: readonly unknown[]): unknown[] {
   return entries.filter((entry) =>
@@ -228,7 +231,82 @@ export interface GuardReads {
   targetRepo: () => string;
 }
 
+function readPullRequestHeadActivity(
+  number: number,
+  pull: {
+    created_at?: string;
+    head?: { ref?: string; repo?: { full_name?: string; id?: unknown }; sha?: string };
+  },
+  timeline: unknown[],
+  readJson: GuardReads["ghJson"],
+  repo: string,
+): Pick<PullRequestLiveActivity, "headSha" | "headActivityAtMs"> {
+  const headSha = typeof pull.head?.sha === "string" ? pull.head.sha : "";
+  let headActivityAtMs: number | null = null;
+  const observe = (value: unknown): void => {
+    const ms = Date.parse(typeof value === "string" ? value : "");
+    if (Number.isFinite(ms) && (headActivityAtMs === null || ms > headActivityAtMs)) {
+      headActivityAtMs = ms;
+    }
+  };
+  if (headSha) {
+    const sourceRuns = readJson<{ workflow_runs?: unknown[] }>([
+      "api",
+      `repos/${repo}/actions/runs?head_sha=${encodeURIComponent(headSha)}&event=pull_request&per_page=100`,
+    ]);
+    for (const run of sourceRuns.workflow_runs ?? []) {
+      const record = asRecord(run);
+      const directlyAssociated = Array.isArray(record.pull_requests)
+        ? record.pull_requests.some((pull) => Number(asRecord(pull).number) === number)
+        : false;
+      const runRepo = asRecord(record.head_repository);
+      const pullCreatedAtMs = Date.parse(pull.created_at ?? "");
+      const runCreatedAtMs = Date.parse(
+        typeof record.created_at === "string" ? record.created_at : "",
+      );
+      const sameSourceBranch =
+        typeof pull.head?.ref === "string" &&
+        record.head_branch === pull.head.ref &&
+        ((Number.isFinite(Number(pull.head.repo?.id)) &&
+          Number(pull.head.repo?.id) === Number(runRepo.id)) ||
+          (typeof pull.head.repo?.full_name === "string" &&
+            runRepo.full_name === pull.head.repo.full_name)) &&
+        Number.isFinite(pullCreatedAtMs) &&
+        Number.isFinite(runCreatedAtMs) &&
+        runCreatedAtMs >= pullCreatedAtMs;
+      if (record.event === "pull_request" && (directlyAssociated || sameSourceBranch)) {
+        observe(record.created_at);
+      }
+    }
+    for (const event of timeline) {
+      const record = asRecord(event);
+      const commitId =
+        nonBlankStringOrUndefined(record.commitId) ?? nonBlankStringOrUndefined(record.commit_id);
+      if (record.event === "head_ref_force_pushed" && commitId === headSha) {
+        observe(nonBlankStringOrUndefined(record.createdAt) ?? record.created_at);
+      }
+    }
+  }
+  return { headSha, headActivityAtMs };
+}
+export function pullRequestHeadActivity(
+  number: number,
+  pull: {
+    created_at?: string;
+    head?: { ref?: string; repo?: { full_name?: string; id?: unknown }; sha?: string };
+  },
+  timeline = ghPaged<unknown>(`repos/${targetRepo()}/issues/${number}/timeline`),
+): Pick<PullRequestLiveActivity, "headSha" | "headActivityAtMs"> {
+  return readPullRequestHeadActivity(number, pull, timeline, ghJson, targetRepo());
+}
 export function createApplyGuardActivity({ ghJson, ghPaged, targetRepo }: GuardReads) {
+  function pullRequestHeadActivity(
+    number: number,
+    pull: Parameters<typeof readPullRequestHeadActivity>[1],
+    timeline = ghPaged<unknown>(`repos/${targetRepo()}/issues/${number}/timeline`),
+  ): Pick<PullRequestLiveActivity, "headSha" | "headActivityAtMs"> {
+    return readPullRequestHeadActivity(number, pull, timeline, ghJson, targetRepo());
+  }
   function issueRecentHumanCommentBlockReason(number: number, days: number): string | null {
     return issueRecentHumanCommentBlockReasonFromComments(
       ghPaged<unknown>(`repos/${targetRepo()}/issues/${number}/comments`),
@@ -295,62 +373,6 @@ export function createApplyGuardActivity({ ghJson, ghPaged, targetRepo }: GuardR
       return "maintainer inline review comment blocks inactivity auto-close";
     }
     return null;
-  }
-  function pullRequestHeadActivity(
-    number: number,
-    pull: {
-      created_at?: string;
-      head?: { ref?: string; repo?: { full_name?: string; id?: unknown }; sha?: string };
-    },
-    timeline = ghPaged<unknown>(`repos/${targetRepo()}/issues/${number}/timeline`),
-  ): Pick<PullRequestLiveActivity, "headSha" | "headActivityAtMs"> {
-    const headSha = typeof pull.head?.sha === "string" ? pull.head.sha : "";
-    let headActivityAtMs: number | null = null;
-    const observe = (value: unknown): void => {
-      const ms = Date.parse(typeof value === "string" ? value : "");
-      if (Number.isFinite(ms) && (headActivityAtMs === null || ms > headActivityAtMs)) {
-        headActivityAtMs = ms;
-      }
-    };
-    if (headSha) {
-      const sourceRuns = ghJson<{ workflow_runs?: unknown[] }>([
-        "api",
-        `repos/${targetRepo()}/actions/runs?head_sha=${encodeURIComponent(headSha)}&event=pull_request&per_page=100`,
-      ]);
-      for (const run of sourceRuns.workflow_runs ?? []) {
-        const record = asRecord(run);
-        const directlyAssociated = Array.isArray(record.pull_requests)
-          ? record.pull_requests.some((pull) => Number(asRecord(pull).number) === number)
-          : false;
-        const runRepo = asRecord(record.head_repository);
-        const pullCreatedAtMs = Date.parse(pull.created_at ?? "");
-        const runCreatedAtMs = Date.parse(
-          typeof record.created_at === "string" ? record.created_at : "",
-        );
-        const sameSourceBranch =
-          typeof pull.head?.ref === "string" &&
-          record.head_branch === pull.head.ref &&
-          ((Number.isFinite(Number(pull.head.repo?.id)) &&
-            Number(pull.head.repo?.id) === Number(runRepo.id)) ||
-            (typeof pull.head.repo?.full_name === "string" &&
-              runRepo.full_name === pull.head.repo.full_name)) &&
-          Number.isFinite(pullCreatedAtMs) &&
-          Number.isFinite(runCreatedAtMs) &&
-          runCreatedAtMs >= pullCreatedAtMs;
-        if (record.event === "pull_request" && (directlyAssociated || sameSourceBranch)) {
-          observe(record.created_at);
-        }
-      }
-      for (const event of timeline) {
-        const record = asRecord(event);
-        const commitId =
-          nonBlankStringOrUndefined(record.commitId) ?? nonBlankStringOrUndefined(record.commit_id);
-        if (record.event === "head_ref_force_pushed" && commitId === headSha) {
-          observe(nonBlankStringOrUndefined(record.createdAt) ?? record.created_at);
-        }
-      }
-    }
-    return { headSha, headActivityAtMs };
   }
   function pullRequestLiveActivity(number: number): PullRequestLiveActivity {
     const pull = ghJson<{

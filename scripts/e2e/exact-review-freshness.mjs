@@ -18,10 +18,8 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { stripTypeScriptTypes } from "node:module";
 import { parseArgs } from "node:util";
-import {
-  renderReviewCommentFromReport,
-  renderReviewStartStatusComment,
-} from "../../dist/clawsweeper.js";
+import { renderReviewCommentFromReport } from "../../dist/clawsweeper-report-comment-presentation.js";
+import { renderReviewStartStatusComment } from "../../dist/clawsweeper.js";
 import { itemSourceRevisionSha256 } from "../../dist/clawsweeper-source-revision.js";
 import { createReviewedPrActivityCursorV2 } from "../../dist/review-activity-cursor.js";
 

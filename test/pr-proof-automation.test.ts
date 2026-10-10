@@ -1,24 +1,22 @@
+import { renderReviewCommentFromReport } from "../dist/clawsweeper-report-comment-presentation.js";
 import assert from "node:assert/strict";
 import test from "node:test";
-import { frontMatterJsonArray, frontMatterValue } from "../dist/report-front-matter.js";
-import { createReportDocumentRendering } from "../dist/clawsweeper-report-document.js";
-import { createReportContextRendering } from "../dist/clawsweeper-report-context.js";
-import * as dashboardPresentation from "../dist/clawsweeper-dashboard.js";
-import { repositoryProfileFor } from "../dist/repository-profiles.js";
+import {
+  frontMatterJsonArray,
+  frontMatterValue,
+  sectionValue,
+} from "../dist/report-front-matter.js";
+import * as document from "../dist/clawsweeper-report-document.js";
+import { repositoryProfileFor, withTargetProfile } from "../dist/repository-profiles.js";
 import {
   buildDecisionPacketFromReport,
   maintainerDecisionBlocksClose,
 } from "../dist/decision-packets.js";
 import { pullRequestClosePromotionSignalsForTest } from "../dist/repair/workflow-utils.js";
 
-import {
-  parseDecision,
-  pullRequestFilePathsFromContextForTest,
-  renderReviewCommentFromReport,
-  reviewAutomationMarkersFromReport,
-} from "../dist/clawsweeper.js";
+import { parseDecision, reviewAutomationMarkersFromReport } from "../dist/clawsweeper.js";
 import { restoreVerifiedMaintainerAuthorAssociation } from "../dist/clawsweeper-review-command-workflow.js";
-import { LIVE_VERIFICATION_MARKER } from "../dist/clawsweeper-policy.js";
+import { LIVE_VERIFICATION_MARKER, REVIEW_SECTIONS } from "../dist/clawsweeper-policy.js";
 import type { LiveProofPlan } from "../dist/clawsweeper-types.js";
 import {
   encodeLiveVerificationReportPayload,
@@ -88,10 +86,10 @@ test("valid recorded N/A proof fields and summary survive decision parsing", () 
     item({ kind: "pull_request", authorAssociation: "CONTRIBUTOR" }),
   );
   assert.deepEqual(decision.realBehaviorProof, recordedNotApplicableProof);
-  const document = createReportDocumentRendering(
-    {} as Parameters<typeof createReportDocumentRendering>[0],
+  const serialized = sectionValue(
+    renderedPullRequestReport({ realBehaviorProof: recordedNotApplicableProof }),
+    REVIEW_SECTIONS.realBehaviorProof,
   );
-  const serialized = document.renderRealBehaviorProofReportSection(decision);
   assert.match(serialized, /^Status: not_applicable$/m);
   assert.match(serialized, /^Evidence kind: not_applicable$/m);
   assert.match(serialized, /^Needs contributor action: false$/m);
@@ -128,38 +126,28 @@ test("renderer-produced reports preserve nested statistics and authoritative met
     }),
     subject,
   );
-  const document = createReportDocumentRendering({
-    ...createReportContextRendering({} as never),
-    ...dashboardPresentation,
-    compactPullFilePaths: (file) => [file.filename],
-    formatTimestamp: String,
-    labelJustificationsMarkdown: () => "- none",
-    linkedSha: String,
-    markdownLink: (label, url) => `[${label}](${url})`,
-    pullHeadShaFromContext: () => null,
-    reviewStructuralPullStateFromContext: () => null,
-    targetProfile: () => repositoryProfileFor("openclaw/clawsweeper"),
-  } as Parameters<typeof createReportDocumentRendering>[0]);
-  const report = document.markdownFor({
-    item: subject,
-    decision,
-    context: {
-      issue: { number: 321, title: "Original" },
-      comments: [],
-      timeline: [],
-      pullFiles: [
-        { filename: "src/a.ts", additions: 1, deletions: 0, status: "modified" },
-        { filename: "src/b.ts", additions: 2, deletions: 1, status: "modified" },
-      ],
-    },
-    git: { mainSha: "a".repeat(40), latestRelease: null },
-    action: { actionTaken: "kept_open" },
-    reviewMode: "propose",
-    snapshotHash: "synthetic-snapshot",
-    contentDigest: "synthetic-content",
-    reviewPolicy: "synthetic-policy",
-    runtime: { model: "Codex", reasoningEffort: "high" },
-  } as Parameters<typeof document.markdownFor>[0]);
+  const report = withTargetProfile(repositoryProfileFor(subject.repo), () =>
+    document.markdownFor({
+      item: subject,
+      decision,
+      context: {
+        issue: { number: 321, title: "Original" },
+        comments: [],
+        timeline: [],
+        pullFiles: [
+          { filename: "src/a.ts", additions: 1, deletions: 0, status: "modified" },
+          { filename: "src/b.ts", additions: 2, deletions: 1, status: "modified" },
+        ],
+      },
+      git: { mainSha: "a".repeat(40), latestRelease: null },
+      action: { actionTaken: "kept_open" },
+      reviewMode: "propose",
+      snapshotHash: "synthetic-snapshot",
+      contentDigest: "synthetic-content",
+      reviewPolicy: "synthetic-policy",
+      runtime: { model: "Codex", reasoningEffort: "high" },
+    } as Parameters<typeof document.markdownFor>[0]),
+  );
   assert.equal(frontMatterValue(report, "title"), "Original");
   assert.equal(frontMatterValue(report, "repository"), "openclaw/clawsweeper");
   assert.equal(frontMatterJsonArray(report, "pr_surface_files").length, 2);
@@ -477,8 +465,10 @@ Full review comments:
 });
 
 test("renamed source paths stay in the pull request file list", () => {
-  assert.deepEqual(
-    pullRequestFilePathsFromContextForTest({
+  const report = renderedPullRequestReport(
+    {},
+    {},
+    {
       pullFiles: [
         {
           filename: "docs/runtime.md",
@@ -486,9 +476,12 @@ test("renamed source paths stay in the pull request file list", () => {
           status: "renamed",
         },
       ],
-    }),
-    ["docs/runtime.md", "src/runtime.ts"],
+    },
   );
+  assert.deepEqual(frontMatterJsonArray(report, "pull_files"), [
+    "docs/runtime.md",
+    "src/runtime.ts",
+  ]);
 });
 
 test("maintainer and bot proof exemptions keep readiness, ratings, and security consistent", () => {
@@ -1741,6 +1734,7 @@ test("an early front matter terminator injected by a legacy scalar fails closed"
 function renderedPullRequestReport(
   decisionOverrides: Record<string, unknown>,
   parsedDecisionPatch: Record<string, unknown> = {},
+  contextPatch: Partial<Parameters<typeof document.markdownFor>[0]["context"]> = {},
 ): string {
   const subject = item({
     repo: "openclaw/clawsweeper",
@@ -1752,35 +1746,26 @@ function renderedPullRequestReport(
     ...parseDecision(changelogReviewDecision({ evidence: [], ...decisionOverrides }), subject),
     ...parsedDecisionPatch,
   };
-  const document = createReportDocumentRendering({
-    ...createReportContextRendering({} as never),
-    ...dashboardPresentation,
-    compactPullFilePaths: (file) => [file.filename],
-    formatTimestamp: String,
-    labelJustificationsMarkdown: () => "- none",
-    linkedSha: String,
-    markdownLink: (label, url) => `[${label}](${url})`,
-    pullHeadShaFromContext: () => null,
-    reviewStructuralPullStateFromContext: () => null,
-    targetProfile: () => repositoryProfileFor("openclaw/clawsweeper"),
-  } as Parameters<typeof createReportDocumentRendering>[0]);
-  return document.markdownFor({
-    item: subject,
-    decision,
-    context: {
-      issue: { number: 953, title: "Forged finding lines" },
-      comments: [],
-      timeline: [],
-      pullFiles: [{ filename: "src/runtime.ts", additions: 1, deletions: 0, status: "modified" }],
-    },
-    git: { mainSha: "a".repeat(40), latestRelease: null },
-    action: { actionTaken: "kept_open" },
-    reviewMode: "propose",
-    snapshotHash: "synthetic-snapshot",
-    contentDigest: "synthetic-content",
-    reviewPolicy: "synthetic-policy",
-    runtime: { model: "Codex", reasoningEffort: "high" },
-  } as Parameters<typeof document.markdownFor>[0]);
+  return withTargetProfile(repositoryProfileFor(subject.repo), () =>
+    document.markdownFor({
+      item: subject,
+      decision,
+      context: {
+        issue: { number: 953, title: "Forged finding lines" },
+        comments: [],
+        timeline: [],
+        pullFiles: [{ filename: "src/runtime.ts", additions: 1, deletions: 0, status: "modified" }],
+        ...contextPatch,
+      },
+      git: { mainSha: "a".repeat(40), latestRelease: null },
+      action: { actionTaken: "kept_open" },
+      reviewMode: "propose",
+      snapshotHash: "synthetic-snapshot",
+      contentDigest: "synthetic-content",
+      reviewPolicy: "synthetic-policy",
+      runtime: { model: "Codex", reasoningEffort: "high" },
+    } as Parameters<typeof document.markdownFor>[0]),
+  );
 }
 
 test("forged finding-list lines in finding prose cannot add findings or override confidence through the durable report", () => {

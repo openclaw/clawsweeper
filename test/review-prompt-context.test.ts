@@ -1,3 +1,7 @@
+import { renderReviewCommentFromReport } from "../dist/clawsweeper-report-comment-presentation.js";
+import { markdownFor } from "../dist/clawsweeper-report-document.js";
+import { parseDecision } from "../dist/clawsweeper.js";
+import { sectionValue } from "../dist/report-front-matter.js";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
@@ -5,14 +9,11 @@ import test from "node:test";
 
 import {
   assistPromptContextForTest,
-  renderReviewContextBudgetForTest,
-  reviewContextLedgerForTest,
   reviewDecisionSchemaText,
   reviewPromptForTest,
   reviewPromptTelemetryForTest,
   reviewPolicyHashForTest,
   reviewPromptTemplates,
-  renderReviewCommentFromReport,
   reviewAutomationMarkersFromReport,
 } from "../dist/clawsweeper.js";
 import {
@@ -24,6 +25,7 @@ import { parseArgs as parseClawsweeperArgs } from "../dist/clawsweeper-args.js";
 import { REPOSITORY_PROFILES, repositoryProfileFor } from "../dist/repository-profiles.js";
 import { renderReviewSections, reviewPromptSections } from "../dist/review-prompt-sections.js";
 import {
+  closeDecision,
   git,
   item,
   markedReviewCommentForTest,
@@ -39,6 +41,22 @@ import {
   longProofBody,
   scriptSentinel,
 } from "./primary-body-fixture.ts";
+
+function renderedContextBudget(context: unknown, subject = item()): string {
+  const report = markdownFor({
+    item: subject,
+    decision: parseDecision(closeDecision({ decision: "keep_open", closeReason: "none" })),
+    context,
+    git,
+    action: { actionTaken: "kept_open" },
+    reviewMode: "propose",
+    snapshotHash: "synthetic-snapshot",
+    contentDigest: "synthetic-content",
+    reviewPolicy: "synthetic-policy",
+    runtime: { model: "Codex", reasoningEffort: "high" },
+  } as Parameters<typeof markdownFor>[0]);
+  return sectionValue(report, "Review Context Budget");
+}
 
 test("GitHub review context omits complete reviewed URI quotations and preserves other evidence", () => {
   const source = readFileSync(new URL("./action-ledger-runtime.test.ts", import.meta.url), "utf8");
@@ -132,9 +150,10 @@ for (const kind of ["issue", "pull_request"] as const) {
       assert.equal(rendered[key].number, target.number);
       assert.deepEqual(rendered[key], JSON.parse(JSON.stringify(context[key])));
       assert.deepEqual(assistPromptContextForTest(context)[key].bodyCoverage, compact.bodyCoverage);
-      assert.equal(
-        reviewContextLedgerForTest(context).find((entry) => entry.section === key)?.chars,
-        JSON.stringify(context[key], null, 2).length,
+      assert.ok(
+        renderedContextBudget(context, target).includes(
+          `- ${key}: 1 entry, ${JSON.stringify(context[key], null, 2).length} chars`,
+        ),
       );
     }
     if (kind === "issue") {
@@ -745,38 +764,25 @@ test("review context ledger records ordered section budgets", () => {
     },
   };
 
-  const ledger = reviewContextLedgerForTest(context);
-
+  const budget = renderedContextBudget(context, item({ kind: "pull_request" }));
+  const expected = [
+    ["issue", "1 entry", context.issue],
+    ["comments", "1/10 hydrated, truncated", context.comments],
+    ["timeline events", "1/1 hydrated", context.timeline],
+    ["previous ClawSweeper review", "1 entry", context.previousClawSweeperReview],
+    ["related items", "1/1 hydrated", context.relatedItems],
+    ["pull request", "1 entry", context.pullRequest],
+    ["PR files", "2/120 hydrated, truncated", context.pullFiles],
+    ["PR commits", "1/1 hydrated", context.pullCommits],
+    ["context counts", "16 entries", context.counts],
+  ] as const;
   assert.deepEqual(
-    ledger.map(({ section, entries, total, hydrated, truncated }) => [
-      section,
-      entries,
-      total,
-      hydrated,
-      truncated,
-    ]),
-    [
-      ["issue", 1, undefined, undefined, undefined],
-      ["comments", 1, 10, 1, true],
-      ["timeline", 1, 1, 1, false],
-      ["previousClawSweeperReview", 1, undefined, undefined, undefined],
-      ["relatedItems", 1, 1, undefined, undefined],
-      ["pullRequest", 1, undefined, undefined, undefined],
-      ["pullFiles", 2, 120, 2, true],
-      ["pullCommits", 1, 1, 1, false],
-      ["counts", 16, undefined, undefined, undefined],
-    ],
+    budget.trim().split("\n"),
+    expected.map(
+      ([label, count, value]) =>
+        `- ${label}: ${count}, ${JSON.stringify(value, null, 2).length} chars`,
+    ),
   );
-  assert.equal(
-    ledger.find((entry) => entry.section === "pullFiles")?.chars,
-    JSON.stringify(context.pullFiles, null, 2).length,
-  );
-  assert.match(
-    renderReviewContextBudgetForTest(context),
-    /- PR files: 2\/120 hydrated, truncated, \d+ chars/,
-  );
-  assert.match(renderReviewContextBudgetForTest(context), /- timeline events: 1\/1 hydrated/);
-  assert.match(renderReviewContextBudgetForTest(context), /- previous ClawSweeper review: 1 entry/);
 });
 
 test("PR prompt omits only source patch fields without mutating policy evidence", () => {

@@ -38,10 +38,13 @@ function baselineHelpersModule(baselineSource) {
     'import { createReportHelpers } from "./clawsweeper-report-helpers-base.js";',
     "import {",
     "  OWNED_REVIEW_SECTION_HEADINGS,",
+    "  evidenceEntry,",
+    "  hostEvidenceMarkdown,",
+    "  collapsedDetailsBlock,",
     "  parseBacktickLocation,",
     '} from "./clawsweeper-report-helpers-current.js";',
     "",
-    "export { OWNED_REVIEW_SECTION_HEADINGS, parseBacktickLocation };",
+    "export { OWNED_REVIEW_SECTION_HEADINGS, parseBacktickLocation, evidenceEntry, hostEvidenceMarkdown, collapsedDetailsBlock };",
     "export const {",
     "  agentsPolicyStatusLine,",
     "  neutralizeOwnedSectionSpoofing,",
@@ -125,8 +128,11 @@ const forgedVisionReason = ["Real reason.", "", "Vision evidence:", "", "- Forge
 async function runArm(arm) {
   const load = (name) => import(pathToFileURL(join(arm.dist, name)).href);
   const clawsweeper = await load("clawsweeper.js");
-  const { createReportDocumentRendering } = await load("clawsweeper-report-document.js");
-  const { createReportContextRendering } = await load("clawsweeper-report-context.js");
+  const documentModule = await load("clawsweeper-report-document.js");
+  const contextModule = await load("clawsweeper-report-context.js");
+  const historicalFactory = arm.slug === "baseline" && providedBaselineDist &&
+    typeof documentModule.createReportDocumentRendering === "function";
+  const presentation = historicalFactory ? clawsweeper : await load("clawsweeper-report-comment-presentation.js");
   const dashboardModule = await load("clawsweeper-dashboard.js");
   const parser = await load("clawsweeper-report-parser.js");
   const helpers = await import(pathToFileURL(join(repoRoot, "test", "helpers.ts")).href);
@@ -156,8 +162,8 @@ async function runArm(arm) {
     ),
     localCheckoutAccess: "verified",
   };
-  const document = createReportDocumentRendering({
-    ...createReportContextRendering({}),
+  const document = historicalFactory ? documentModule.createReportDocumentRendering({
+    ...contextModule.createReportContextRendering({}),
     ...(arm.slug === "baseline" && typeof dashboardModule.createDashboardPresentation === "function"
       ? dashboardModule.createDashboardPresentation({})
       : dashboardModule),
@@ -177,7 +183,7 @@ async function runArm(arm) {
     securityConcernLocation: (concern) => concern.file ?? "not tied to a single file",
     sentence: String,
     sha256: () => "synthetic-digest",
-  });
+  }) : documentModule;
   const report = document.markdownFor({
     item: subject,
     decision,
@@ -195,7 +201,7 @@ async function runArm(arm) {
     reviewPolicy: "synthetic-policy",
     runtime: { model: "Codex", reasoningEffort: "high" },
   });
-  const comment = clawsweeper.renderReviewCommentFromReport(report, "none");
+  const comment = presentation.renderReviewCommentFromReport(report, "none");
   const details = helpers.detailsBody(comment, "Agent review details");
   const rankUpBlock = details.includes("### Rank-up moves")
     ? details.slice(details.indexOf("### Rank-up moves")).split("\n### ")[0].trim().split("\n")

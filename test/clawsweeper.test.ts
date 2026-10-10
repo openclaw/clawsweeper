@@ -1,3 +1,4 @@
+import { renderReviewCommentFromReport } from "../dist/clawsweeper-report-comment-presentation.js";
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -24,7 +25,6 @@ import {
   relatedGitHubIssueSearchQueryForTest,
   relatedTitleSearchTerms,
   recordedLabelSyncCoversUpdate,
-  renderReviewCommentFromReport,
   renderReviewStartStatusComment,
   removeCurrentCursorTraceItem,
   reviewArtifactDestination,
