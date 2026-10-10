@@ -4,16 +4,9 @@ import { CLAWSWEEPER_BOT_LOGINS } from "../clawsweeper-policy.js";
 import { asJsonObject, type JsonValue, type LooseRecord } from "./json-types.js";
 import {
   BULK_FILED_LABEL,
-  CLOSE_PROTECTED_LABEL_NAMES,
   HUMAN_REVIEW_LABEL,
   MANUAL_ONLY_LABEL,
 } from "./exact-review-guard-labels.js";
-
-const PROTECTED_LABELS = new Set<string>([
-  ...CLOSE_PROTECTED_LABEL_NAMES,
-  HUMAN_REVIEW_LABEL,
-  MANUAL_ONLY_LABEL,
-]);
 
 export function issueSourceRevisionSha256(issue: LooseRecord, comments: JsonValue[] = []): string {
   const snapshot = {
@@ -55,7 +48,8 @@ function isIgnorableAutomationLabel(label: string) {
   return (
     isClawSweeperAdvisoryLabel(label) ||
     (label.startsWith("clawsweeper:") &&
-      !PROTECTED_LABELS.has(label) &&
+      label !== HUMAN_REVIEW_LABEL &&
+      label !== MANUAL_ONLY_LABEL &&
       label !== BULK_FILED_LABEL) ||
     label === "no-stale" ||
     label === "stale"
