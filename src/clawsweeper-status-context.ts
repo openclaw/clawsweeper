@@ -1,27 +1,16 @@
 import { existsSync, readFileSync } from "node:fs";
-import { CONFIDENCES, isGitHubVerifiedFixedPullRequestSource } from "./clawsweeper-policy.js";
 import { escapeRegExp } from "./clawsweeper-markdown.js";
 import type {
-  Confidence,
   Decision,
   FixedPullRequest,
   FixedPullRequestSource,
   Item,
   ItemContext,
-  RegressionAssessment,
-  PublicRegressionProvenance,
   WorkflowStatusSummary,
 } from "./clawsweeper-types.js";
-import {
-  isRegressionAssessment,
-  isSuspectedRegressionProvenance,
-  isVerifiedRegressionProvenance,
-} from "./clawsweeper-regression-provenance.js";
 import { GitHubRateLimitError, isGitHubNotFoundError } from "./github-retry.js";
 import { targetProfile, targetRepo, type RepositoryProfile } from "./repository-profiles.js";
 import { asRecord, nonBlankStringOrUndefined, numberOrUndefined } from "./value-coerce.js";
-import { frontMatterValue } from "./report-front-matter.js";
-import { markdownRepository } from "./clawsweeper-repository-paths.js";
 import { linkedRelease, linkedSha, markdownLink, repoUrlFor } from "./clawsweeper-links.js";
 import { ghJson } from "./clawsweeper-github-execution.js";
 import { GitHubRuntimeBudgetError } from "./clawsweeper-github-runtime.js";
@@ -314,96 +303,6 @@ export function fixedInReportText(markdown: string, profile: RepositoryProfile):
   if ((!fixedRelease || fixedRelease === "unknown") && fixedAt && fixedAt !== "unknown")
     parts.push(`main fix timestamp ${fixedAt}`);
   return parts.length ? parts.join(", ") : "not determined";
-}
-
-export function fixedPullRequestFromReport(markdown: string): FixedPullRequest | null {
-  const url = frontMatterValue(markdown, "fixed_pr_url");
-  const rawNumber = frontMatterValue(markdown, "fixed_pr_number");
-  const number = rawNumber ? Number(rawNumber) : NaN;
-  if (!url || url === "unknown" || !Number.isInteger(number) || number <= 0) return null;
-  const confidence = frontMatterValue(markdown, "fixed_pr_confidence") as Confidence | undefined;
-  const fixedPullRequestSource = frontMatterValue(markdown, "fixed_pr_source");
-  return {
-    repo: markdownRepository(markdown),
-    number,
-    url,
-    title: displayTitle(frontMatterValue(markdown, "fixed_pr_title") ?? `#${number}`),
-    mergedAt: nonUnknownFrontMatter(markdown, "fixed_pr_merged_at"),
-    sha: nonUnknownFrontMatter(markdown, "fixed_pr_sha"),
-    confidence: confidence && CONFIDENCES.has(confidence) ? confidence : "low",
-    source: isGitHubVerifiedFixedPullRequestSource(fixedPullRequestSource)
-      ? fixedPullRequestSource
-      : "report metadata",
-  };
-}
-
-// The runner writes a verified provenance (blame to a merge commit) or a suspected one
-// (a source line); each shape has only its own keys.
-export function regressionProvenanceFromReport(
-  markdown: string,
-): PublicRegressionProvenance | null {
-  const rawSourceLine = frontMatterValue(markdown, "regression_provenance_source_line");
-  const sourceLine = rawSourceLine ? Number(rawSourceLine) : NaN;
-  const sourceCommitSha = nonUnknownFrontMatter(
-    markdown,
-    "regression_provenance_source_commit_sha",
-  );
-  const rawSourceAuthor = frontMatterValue(markdown, "regression_provenance_source_author");
-  const sourceAuthor = sourceCommitSha && rawSourceAuthor ? rawSourceAuthor : null;
-  const verificationSource = frontMatterValue(
-    markdown,
-    "regression_provenance_verification_source",
-  );
-  const evidenceType = frontMatterValue(markdown, "regression_provenance_evidence_type");
-  const sourcePath = frontMatterValue(markdown, "regression_provenance_source_path");
-  if (evidenceType === "blame_to_merge_commit") {
-    const rawNumber = frontMatterValue(markdown, "regression_provenance_pr_number");
-    const verified = {
-      repo: frontMatterValue(markdown, "regression_provenance_repo"),
-      pullRequestNumber: rawNumber ? Number(rawNumber) : NaN,
-      pullRequestUrl: frontMatterValue(markdown, "regression_provenance_pr_url"),
-      mergeCommitSha: frontMatterValue(markdown, "regression_provenance_merge_sha"),
-      sourcePath,
-      sourceLine,
-      verificationSource,
-      evidenceType,
-      mergedAt: frontMatterValue(markdown, "regression_provenance_merged_at"),
-      reviewedCommitSha: frontMatterValue(markdown, "regression_provenance_reviewed_sha"),
-      ...(sourceCommitSha ? { sourceCommitSha } : {}),
-      ...(sourceAuthor ? { sourceAuthor } : {}),
-    };
-    return isVerifiedRegressionProvenance(verified) ? verified : null;
-  }
-  const relatedPullRequestNumber = nonUnknownFrontMatter(
-    markdown,
-    "regression_provenance_related_pr_number",
-  );
-  const suspected = {
-    verificationSource,
-    evidenceType,
-    sourceCommitSha,
-    sourceAuthor,
-    sourcePath,
-    sourceLine,
-    relatedPullRequestNumber: relatedPullRequestNumber ? Number(relatedPullRequestNumber) : null,
-    relatedPullRequestUrl: nonUnknownFrontMatter(markdown, "regression_provenance_related_pr_url"),
-    relatedRepo: nonUnknownFrontMatter(markdown, "regression_provenance_related_repo"),
-  };
-  return isSuspectedRegressionProvenance(suspected) ? suspected : null;
-}
-
-export function regressionAssessmentFromReport(markdown: string): RegressionAssessment | null {
-  const rawEvidence = frontMatterValue(markdown, "regression_assessment_evidence");
-  const assessment = {
-    confidence: frontMatterValue(markdown, "regression_assessment_confidence"),
-    supportingEvidence: rawEvidence ? rawEvidence.split(",") : [],
-  };
-  return isRegressionAssessment(assessment) ? assessment : null;
-}
-
-function nonUnknownFrontMatter(markdown: string, key: string): string | null {
-  const value = frontMatterValue(markdown, key);
-  return value && value !== "unknown" ? value : null;
 }
 
 function recordOrUndefined(value: unknown): Record<string, unknown> | undefined {

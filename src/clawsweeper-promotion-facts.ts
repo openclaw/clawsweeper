@@ -1,4 +1,3 @@
-import { parseOversizedPullRequestEvidence } from "./clawsweeper-oversized-pr-policy.js";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
@@ -7,49 +6,15 @@ import {
   isGitHubVerifiedFixedPullRequestSource,
 } from "./clawsweeper-policy.js";
 import { pullRequestUrlForNumber } from "./clawsweeper-pr-references.js";
-import {
-  defaultAgentsPolicyStatus,
-  impactLabelsFromReport,
-  labelJustificationsFromReport,
-  maturityLabelsFromReport,
-  mergeRiskLabelsFromReport,
-  mergeRiskOptionsFromReport,
-  reportAgentsPolicyStatus,
-  reportChangeExample,
-  reportEvidence,
-  reportFeatureShowcase,
-  reportLikelyOwners,
-  reportOverallConfidenceScore,
-  reportOverallCorrectness,
-  reportProductReview,
-  reportProvenance,
-  reportPrRating,
-  reportRealBehaviorProof,
-  reportReviewFindings,
-  reportRootCauseCluster,
-  reportSecurityReview,
-  reportTelegramVisibleProof,
-  reportTestingReview,
-  reportVisionFit,
-  reviewMetricsFromReport,
-  triagePriorityFromReport,
-} from "./clawsweeper-report-parser.js";
 import type {
   AuthorPrBudgetApplyState,
-  CloseReason,
-  Confidence,
-  Decision,
   Item,
-  ItemCategory,
   ItemContext,
   LinkedPullRequestSupersession,
   LinkedPullRequestSupersessionResolution,
   PullRequestClosePromotion,
-  ReproductionStatus,
-  WorkCandidateKind,
 } from "./clawsweeper-types.js";
 import { completeActivityContextSymbol } from "./clawsweeper-types.js";
-import { emptyMaintainerDecision, type MaintainerDecision } from "./decision-packets.js";
 import { ghJson } from "./clawsweeper-github-execution.js";
 import { itemSnapshotHash } from "./clawsweeper-source-revision.js";
 import { labelNames, normalizeLabelName } from "./clawsweeper-item-policy.js";
@@ -57,108 +22,19 @@ import { parseGitHubItemRef, reviewDecisionParser } from "./clawsweeper-decision
 import { targetProfile, targetRepo } from "./repository-profiles.js";
 const { defaultRootCauseCluster } = reviewDecisionParser;
 import { renderCloseCommentFromReport } from "./clawsweeper-report-comment-helpers.js";
-import { fixedPullRequestFromReport } from "./clawsweeper-status-context.js";
 import { asRecord, nonBlankStringOrUndefined } from "./value-coerce.js";
 import { parseIsoMs } from "./iso-time.js";
 import { evidenceEntry, hostEvidenceMarkdown } from "./clawsweeper-report-helpers.js";
 import { ReviewRecordFormatError, updateReviewRecordDecision } from "./review-record.js";
 import {
-  frontMatterStringArray,
   frontMatterValue,
   replaceFrontMatterValue,
   replaceSectionValue,
 } from "./report-front-matter.js";
 import { isAutomationReportAuthor } from "./clawsweeper-item-policy.js";
 import { reportFileName } from "./clawsweeper-repository-paths.js";
-import { reviewSectionValue } from "./clawsweeper-record-metadata.js";
 import { eventTimestampMs, isAfterReview } from "./clawsweeper-label-policy.js";
 import { reportReviewDecision } from "./report-review-decision.js";
-
-export function reportDecision(markdown: string, closeReason: CloseReason): Decision {
-  const fixedRelease = frontMatterValue(markdown, "fixed_release");
-  const fixedSha = frontMatterValue(markdown, "fixed_sha");
-  const fixedAt = frontMatterValue(markdown, "fixed_at");
-  const kind = frontMatterValue(markdown, "type");
-  const triagePriority = triagePriorityFromReport(markdown);
-  const impactLabels = kind === "pull_request" ? [] : impactLabelsFromReport(markdown);
-  const mergeRiskLabels = mergeRiskLabelsFromReport(markdown);
-  const maturityLabels = kind === "pull_request" ? [] : maturityLabelsFromReport(markdown);
-  const visionFit = reportVisionFit(markdown);
-  const oversized = parseOversizedPullRequestEvidence(
-    frontMatterValue(markdown, "oversized_pull_request"),
-  );
-  return {
-    ...(closeReason === "oversized_pull_request" && oversized
-      ? { oversizedPullRequest: oversized }
-      : {}),
-    decision: "close",
-    closeReason,
-    confidence: "high",
-    summary: reviewSectionValue(markdown, "summary"),
-    changeSummary: reviewSectionValue(markdown, "changeSummary"),
-    changeExample: reportChangeExample(markdown),
-    systemContext: reviewSectionValue(markdown, "systemContext"),
-    architectureDiagram: reviewSectionValue(markdown, "architectureDiagram"),
-    evidence: reportEvidence(markdown),
-    likelyOwners: reportLikelyOwners(markdown),
-    risks: [],
-    bestSolution: reviewSectionValue(markdown, "bestSolution"),
-    maintainerDecision: ambiguityGuardedMaintainerDecision(markdown),
-    triagePriority,
-    impactLabels,
-    mergeRiskLabels,
-    maturityLabels,
-    mergeRiskOptions: mergeRiskOptionsFromReport(markdown),
-    reviewMetrics: reviewMetricsFromReport(markdown),
-    labelJustifications: labelJustificationsFromReport(markdown, {
-      triagePriority,
-      impactLabels,
-      mergeRiskLabels,
-      maturityLabels,
-    }),
-    itemCategory:
-      (frontMatterValue(markdown, "item_category") as ItemCategory | undefined) ?? "unclear",
-    reproductionStatus:
-      (frontMatterValue(markdown, "reproduction_status") as ReproductionStatus | undefined) ??
-      "unclear",
-    reproductionConfidence:
-      (frontMatterValue(markdown, "reproduction_confidence") as Confidence | undefined) ?? "low",
-    requiresNewFeature: frontMatterValue(markdown, "requires_new_feature") === "true",
-    requiresNewConfigOption: frontMatterValue(markdown, "requires_new_config_option") === "true",
-    requiresProductDecision: frontMatterValue(markdown, "requires_product_decision") === "true",
-    reproductionAssessment: reviewSectionValue(markdown, "reproductionAssessment"),
-    solutionAssessment: reviewSectionValue(markdown, "solutionAssessment"),
-    ...visionFit,
-    rootCauseCluster: reportRootCauseCluster(markdown),
-    agentsPolicyStatus: reportAgentsPolicyStatus(markdown) ?? defaultAgentsPolicyStatus(),
-    productReview: reportProductReview(markdown),
-    provenance: reportProvenance(markdown),
-    testingReview: reportTestingReview(markdown),
-    reviewFindings: reportReviewFindings(markdown),
-    securityReview: reportSecurityReview(markdown),
-    realBehaviorProof: reportRealBehaviorProof(markdown),
-    prRating: reportPrRating(markdown),
-    telegramVisibleProof: reportTelegramVisibleProof(markdown),
-    featureShowcase: reportFeatureShowcase(markdown),
-    overallCorrectness: reportOverallCorrectness(markdown),
-    overallConfidenceScore: reportOverallConfidenceScore(markdown),
-    fixedRelease: fixedRelease && fixedRelease !== "unknown" ? fixedRelease : null,
-    fixedSha: fixedSha && fixedSha !== "unknown" ? fixedSha : null,
-    fixedAt: fixedAt && fixedAt !== "unknown" ? fixedAt : null,
-    fixedPullRequest: fixedPullRequestFromReport(markdown),
-    closeComment: reviewSectionValue(markdown, "closeComment"),
-    workCandidate:
-      (frontMatterValue(markdown, "work_candidate") as WorkCandidateKind | undefined) ?? "none",
-    workConfidence:
-      (frontMatterValue(markdown, "work_confidence") as Confidence | undefined) ?? "low",
-    workPriority: (frontMatterValue(markdown, "work_priority") as Confidence | undefined) ?? "low",
-    workReason: reviewSectionValue(markdown, "workCandidate"),
-    workPrompt: reviewSectionValue(markdown, "repairWorkPrompt"),
-    workClusterRefs: frontMatterStringArray(markdown, "work_cluster_refs"),
-    workValidation: frontMatterStringArray(markdown, "work_validation"),
-    workLikelyFiles: frontMatterStringArray(markdown, "work_likely_files"),
-  };
-}
 
 export function livePullRequestHasNoDiff(context: ItemContext): boolean {
   const pull = asRecord(context.pullRequest);
@@ -574,22 +450,4 @@ export function unsafeCanonicalPullRequestReason(
   }
 
   return null;
-}
-
-// Ambiguous (possibly spoofed) front matter must demote the item to human
-// review, not crash the promotion batch: close-decision gating blocks any
-// close while maintainerDecision.required is true.
-export function ambiguityGuardedMaintainerDecision(markdown: string): MaintainerDecision {
-  const review = reportReviewDecision(markdown);
-  if (!review.maintainerDecisionInvalid) {
-    return review.maintainerDecision ?? emptyMaintainerDecision();
-  }
-  return {
-    required: true,
-    kind: "manual_review",
-    question: "Report front matter is ambiguous or possibly spoofed; review manually.",
-    rationale: "Duplicate front-matter metadata detected outside the leading block.",
-    options: [],
-    likelyOwner: { person: "", reason: "", confidence: "low" },
-  };
 }

@@ -78,8 +78,6 @@ export type ReportReviewDecision = Pick<
   workReason: string;
   agentsPolicyStatus: Decision["agentsPolicyStatus"] | undefined;
   maintainerDecision: Decision["maintainerDecision"] | null;
-  maintainerDecisionInvalid: boolean;
-  maintainerDecisionError?: string;
   evidenceMarkdown: string;
   /** Host-rendered or already published comment, distinct from the model draft. */
   publishedCloseComment: string;
@@ -184,7 +182,6 @@ export function reportReviewDecision(markdown: string): ReportReviewDecision {
       .startsWith(AUTHORITY_CHAIN_PROOF_MARKER),
     risks: decision.risks.length ? decision.risks.map((risk) => `- ${risk}`).join("\n") : "- none",
     agentsPolicyStatus: decision.agentsPolicyStatus,
-    maintainerDecisionInvalid: false,
     bestSolution: decision.bestSolution.trim() || "_Not provided._",
     reproductionAssessment: decision.reproductionAssessment.trim() || "_Not provided._",
     solutionAssessment: decision.solutionAssessment.trim() || "_Not provided._",
