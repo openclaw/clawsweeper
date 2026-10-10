@@ -226,13 +226,7 @@ export function createPullRequestPromotionFacts(
       REVIEW_SECTIONS.evidence,
       hostEvidenceMarkdown(evidence),
     );
-    const closeComment = renderCloseCommentFromReport(
-      upgraded,
-      "duplicate_or_superseded",
-      targetProfile(),
-    );
-    upgraded = replaceSectionValue(upgraded, REVIEW_SECTIONS.closeComment, closeComment);
-    return updateReviewRecordDecision(upgraded, () => ({
+    upgraded = updateReviewRecordDecision(upgraded, () => ({
       decision: "close",
       closeReason: "duplicate_or_superseded",
       confidence: "high",
@@ -244,8 +238,14 @@ export function createPullRequestPromotionFacts(
       summary,
       bestSolution,
       evidence,
-      closeComment,
     }));
+    const closeComment = renderCloseCommentFromReport(
+      upgraded,
+      "duplicate_or_superseded",
+      targetProfile(),
+    );
+    upgraded = replaceSectionValue(upgraded, REVIEW_SECTIONS.closeComment, closeComment);
+    return updateReviewRecordDecision(upgraded, () => ({ closeComment }));
   }
 
   function upgradePullRequestClosePromotionReport(

@@ -5,7 +5,11 @@ import { renderReviewCommentFromReport } from "../dist/clawsweeper.js";
 import { syncApplyPullRequestLabels } from "../dist/clawsweeper-apply-pull-request-labels.js";
 import { createLabelMutationOperations } from "../dist/clawsweeper-label-mutations.js";
 import { createLabelSyncOperations } from "../dist/clawsweeper-label-operations.js";
-import { ReviewRecordFormatError } from "../dist/review-record.js";
+import { readReviewRecord, ReviewRecordFormatError } from "../dist/review-record.js";
+import { createPullRequestPromotionFacts } from "../dist/clawsweeper-promotion-facts.js";
+import { reviewDecisionParser } from "../dist/clawsweeper-decision-parser.js";
+import { repositoryProfileFor } from "../dist/repository-profiles.js";
+import { reviewSectionValue } from "../dist/clawsweeper-record-metadata.js";
 import { reportRealBehaviorProofPolicy } from "../dist/clawsweeper-proof-policy.js";
 import { pullRequestReviewReadinessFromReport } from "../dist/clawsweeper-report-comment-helpers.js";
 import { ratingLabelForTier } from "../dist/clawsweeper-rating.js";
@@ -371,4 +375,26 @@ test("typed findings drive the repair marker with the same readiness as the comm
   const comment = renderReviewCommentFromReport(typed, "none");
   assert.match(comment, /clawsweeper-action:fix-required/);
   assert.doesNotMatch(comment, /hold=blocked findings=0/);
+});
+
+test("no-diff promotion renders and stores the promoted typed decision", () => {
+  const { upgradeNoDiffPullRequestReport } = createPullRequestPromotionFacts({
+    defaultRootCauseCluster: reviewDecisionParser.defaultRootCauseCluster,
+    targetProfile: () => repositoryProfileFor("openclaw/openclaw"),
+  } as Parameters<typeof createPullRequestPromotionFacts>[0]);
+  const source = withReviewRecord(pullRequestReport(), {
+    ...readyDecision,
+    summary: "Keep this PR open.",
+    bestSolution: "Continue the old review.",
+    evidence: [],
+  });
+  const promoted = upgradeNoDiffPullRequestReport(
+    source,
+    item({ kind: "pull_request", number: 74461 }),
+  );
+  const comment = reviewSectionValue(promoted, "closeComment");
+  assert.match(comment, /GitHub reports no changed files/);
+  assert.match(comment, /changed_files: 0/);
+  assert.doesNotMatch(comment, /Keep this PR open|Continue the old review/);
+  assert.equal(readReviewRecord(promoted)?.decision.closeComment, comment);
 });
