@@ -3,9 +3,16 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { join } from "node:path";
 import test from "node:test";
 import { linkedPullRequestSupersession } from "../dist/clawsweeper-promotion-facts.js";
-import { pullRequestClosePromotion } from "../dist/clawsweeper-close-promotion.js";
-import { pullRequestHeadActivity } from "../dist/clawsweeper-apply-guard-activity.js";
-import { repositoryProfileFor, withTargetProfile } from "../dist/repository-profiles.js";
+import { createPullRequestClosePromotion } from "../dist/clawsweeper-close-promotion.js";
+import { createApplyGuards } from "../dist/clawsweeper-apply-guards.js";
+import { LiveReadGeneration } from "../dist/live-read-generation.js";
+import { ghJson } from "../dist/clawsweeper-github-execution.js";
+import { ghPaged } from "../dist/clawsweeper-github-context.js";
+import {
+  repositoryProfileFor,
+  targetRepo,
+  withTargetProfile,
+} from "../dist/repository-profiles.js";
 import { githubTest, installGhFixture } from "./github-runtime-fixture.ts";
 import { reportFileName } from "../dist/clawsweeper-repository-paths.js";
 
@@ -46,10 +53,24 @@ if (path.split("?")[0].endsWith("/issues/333/timeline")) {
     { event: "pull_request", head_branch: "feature", head_repository: { id: 500 }, created_at: "2025-12-31T00:00:00Z" },
     { event: "push", pull_requests: [{ number: 333 }], created_at: "2026-03-05T00:00:00Z" }
   ] }));
+} else if (path.endsWith("/pulls/333")) {
+  console.log(JSON.stringify({
+    created_at: "2026-01-01T00:00:00Z",
+    mergeable: false,
+    mergeable_state: "dirty",
+    user: { login: "reporter" },
+    head: { sha: "head333", ref: "feature", repo: { id: 500 } }
+  }));
+} else if (path.endsWith("/issues/333")) {
+  console.log(JSON.stringify({ assignees: [] }));
+} else if (path.split("?")[0].endsWith("/comments") || path.split("?")[0].endsWith("/reviews")) {
+  console.log(JSON.stringify(args.includes("--slurp") ? [[]] : []));
 } else throw new Error("unexpected read " + args.join(" "));
 `,
       );
       withTargetProfile(repositoryProfileFor(repo), () => {
+        const guards = createApplyGuards({ ghJson, ghPaged, targetRepo });
+        const { pullRequestHeadActivity } = guards;
         const pull = {
           created_at: "2026-01-01T00:00:00Z",
           head: { sha: "head333", ref: "feature", repo: { id: 500 } },
@@ -76,6 +97,39 @@ if (path.split("?")[0].endsWith("/issues/333/timeline")) {
           ),
         );
         assert.ok(paths.every((path) => path.startsWith(`repos/${repo}/`)));
+        const { pullRequestClosePromotion } = createPullRequestClosePromotion(
+          guards.pullRequestHeadActivity,
+        );
+        const sourceItem = item({
+          repo,
+          kind: "pull_request",
+          number: 333,
+          author: "reporter",
+          createdAt: "2026-01-01T00:00:00Z",
+        });
+        const report = stalePullRequestReport({ repository: repo, number: 333 });
+        const context = { issue: {}, comments: [], timeline: [], pullReviewComments: [] };
+        const workflowReadCount = () =>
+          fixture.requests().filter(({ args }) => args[1]?.includes("/actions/runs?")).length;
+        for (const generation of [new LiveReadGeneration(), new LiveReadGeneration()]) {
+          guards.setGuardReadGeneration(generation);
+          const beforePromotion = workflowReadCount();
+          assert.equal(
+            pullRequestClosePromotion(report, sourceItem, context, 30)?.closeReason,
+            "low_signal_unmergeable_pr",
+          );
+          assert.equal(
+            workflowReadCount(),
+            beforePromotion + 1,
+            "a new generation reads head activity",
+          );
+          assert.equal(guards.lowSignalUnmergeablePrApplyBlockReasonSafe(333, 30), null);
+          assert.equal(
+            workflowReadCount(),
+            beforePromotion + 1,
+            "promotion and the final low-signal guard share the generation's head activity read",
+          );
+        }
       });
     },
   );
@@ -100,6 +154,10 @@ if (path.endsWith("/pulls/333")) {
   throw new Error("unexpected read " + args.join(" "));
 }
 `,
+    );
+    const guards = createApplyGuards({ ghJson, ghPaged, targetRepo });
+    const { pullRequestClosePromotion } = createPullRequestClosePromotion(
+      guards.pullRequestHeadActivity,
     );
     withApplyTestWorkspace(tmpPrefix, ({ itemsDir }) => {
       const source = stalePullRequestReport({

@@ -12,7 +12,11 @@ import { reportRealBehaviorProofPolicy } from "../dist/clawsweeper-proof-policy.
 import { pullRequestReviewReadinessFromReport } from "../dist/clawsweeper-report-comment-helpers.js";
 import { ratingLabelForTier } from "../dist/clawsweeper-rating.js";
 import { authorPrBudgetSignalBlockReason } from "../dist/clawsweeper-apply-guard-activity.js";
-import { pullRequestClosePromotion } from "../dist/clawsweeper-close-promotion.js";
+import { createPullRequestClosePromotion } from "../dist/clawsweeper-close-promotion.js";
+import { createApplyGuards } from "../dist/clawsweeper-apply-guards.js";
+import { ghJson } from "../dist/clawsweeper-github-execution.js";
+import { ghPaged } from "../dist/clawsweeper-github-context.js";
+import { targetRepo } from "../dist/repository-profiles.js";
 import * as coverage from "../dist/clawsweeper-coverage-proof.js";
 import { createApplyCandidateGuards } from "../dist/clawsweeper-apply-candidate-guards.js";
 import { replaceFrontMatterValue } from "../dist/report-front-matter.js";
@@ -440,6 +444,10 @@ test("author budget guards and promotion facts prefer recorded proof and rating"
 });
 
 test("pause or close recommendations come only from the recorded review when present", () => {
+  const guards = createApplyGuards({ ghJson, ghPaged, targetRepo });
+  const { pullRequestClosePromotion } = createPullRequestClosePromotion(
+    guards.pullRequestHeadActivity,
+  );
   const legacy = pullRequestReport();
   const option = {
     category: "pause_or_close",

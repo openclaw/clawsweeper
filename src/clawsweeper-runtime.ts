@@ -140,7 +140,7 @@ import {
   staleCanonicalCommentSyncPendingReason,
   staleCanonicalPullRequestNumber,
 } from "./clawsweeper-coverage-proof.js";
-import { pullRequestClosePromotion } from "./clawsweeper-close-promotion.js";
+import { createPullRequestClosePromotion } from "./clawsweeper-close-promotion.js";
 import {
   closeItem,
   currentReviewRevision as readCurrentReviewRevision,
@@ -385,6 +385,9 @@ const applyGuards = createApplyGuards({
   targetRepo,
 });
 const { resetGuardReadCache } = applyGuards;
+const { pullRequestClosePromotion } = createPullRequestClosePromotion(
+  applyGuards.pullRequestHeadActivity,
+);
 export function stalledUnprovenProofRequestBlockReason(
   ...args: Parameters<typeof applyGuards.stalledUnprovenProofRequestBlockReason>
 ): ReturnType<typeof applyGuards.stalledUnprovenProofRequestBlockReason> {

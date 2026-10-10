@@ -12,7 +12,7 @@ import {
 import { ghJson } from "./clawsweeper-github-execution.js";
 import { ghPaged } from "./clawsweeper-github-context.js";
 import { targetRepo } from "./repository-profiles.js";
-import { pullRequestHeadActivity } from "./clawsweeper-apply-guard-activity.js";
+import type { PullRequestHeadActivityReader } from "./clawsweeper-apply-guard-activity.js";
 import { isOlderThanDays } from "./iso-time.js";
 import { frontMatterValue } from "./report-front-matter.js";
 import { evidenceEntry } from "./clawsweeper-report-helpers.js";
@@ -42,6 +42,7 @@ function staleFRatedPullRequestPromotion(
   item: Item,
   context: ItemContext,
   staleMinAgeDays: number,
+  readHeadActivity: PullRequestHeadActivityReader,
 ): PullRequestClosePromotion | null {
   const { realBehaviorProof: proof, prRating: rating } = reportReviewDecision(markdown);
   if (rating.overallTier !== "F") return null;
@@ -74,11 +75,7 @@ function staleFRatedPullRequestPromotion(
     livePull = ghJson(["api", `repos/${targetRepo()}/pulls/${item.number}`]);
     if (lowSignalUnmergeablePrConflictBlockReason(livePull)) return null;
     reviews = ghPaged<unknown>(`repos/${targetRepo()}/pulls/${item.number}/reviews`);
-    headActivityAtMs = pullRequestHeadActivity(
-      item.number,
-      livePull,
-      context.timeline,
-    ).headActivityAtMs;
+    headActivityAtMs = readHeadActivity(item.number, livePull, context.timeline).headActivityAtMs;
   } catch {
     return null;
   }
@@ -145,24 +142,33 @@ function pauseOrClosePromotion(
   };
 }
 
-export function pullRequestClosePromotion(
-  markdown: string,
-  item: Item,
-  context: ItemContext,
-  staleMinAgeDays: number,
-  options: { reportDirs?: readonly string[] } = {},
-): PullRequestClosePromotion | null {
-  if (item.kind !== "pull_request") return null;
-  if (!reviewReportCanPromoteToClose(markdown)) return null;
-  if (reportReviewDecision(markdown).decision !== "keep_open") return null;
-  if (frontMatterValue(markdown, "action_taken") !== "kept_open") return null;
-  if (frontMatterValue(markdown, "review_status") !== "complete") return null;
-  if (closePromotionHasNonAutomationActivityAfterReview(markdown, context)) return null;
-  const linkedSupersession = linkedPullRequestSupersession(markdown, item, options);
-  const pauseOrClose = pauseOrClosePromotion(markdown, item, staleMinAgeDays);
-  if (pauseOrClose) return pauseOrClose;
-  // A PR whose review names a canonical PR is a supersession candidate. Do not
-  // close it as a generic low-signal PR. Unreadable canonical PRs still qualify.
-  if (linkedSupersession.candidate || linkedSupersession.unsafeReason) return null;
-  return staleFRatedPullRequestPromotion(markdown, item, context, staleMinAgeDays);
+export function createPullRequestClosePromotion(readHeadActivity: PullRequestHeadActivityReader) {
+  function pullRequestClosePromotion(
+    markdown: string,
+    item: Item,
+    context: ItemContext,
+    staleMinAgeDays: number,
+    options: { reportDirs?: readonly string[] } = {},
+  ): PullRequestClosePromotion | null {
+    if (item.kind !== "pull_request") return null;
+    if (!reviewReportCanPromoteToClose(markdown)) return null;
+    if (reportReviewDecision(markdown).decision !== "keep_open") return null;
+    if (frontMatterValue(markdown, "action_taken") !== "kept_open") return null;
+    if (frontMatterValue(markdown, "review_status") !== "complete") return null;
+    if (closePromotionHasNonAutomationActivityAfterReview(markdown, context)) return null;
+    const linkedSupersession = linkedPullRequestSupersession(markdown, item, options);
+    const pauseOrClose = pauseOrClosePromotion(markdown, item, staleMinAgeDays);
+    if (pauseOrClose) return pauseOrClose;
+    // A PR whose review names a canonical PR is a supersession candidate. Do not
+    // close it as a generic low-signal PR. Unreadable canonical PRs still qualify.
+    if (linkedSupersession.candidate || linkedSupersession.unsafeReason) return null;
+    return staleFRatedPullRequestPromotion(
+      markdown,
+      item,
+      context,
+      staleMinAgeDays,
+      readHeadActivity,
+    );
+  }
+  return { pullRequestClosePromotion };
 }
