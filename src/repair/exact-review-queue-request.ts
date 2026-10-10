@@ -3,6 +3,7 @@
 // Workflow steps send the body with control_plane_curl.
 // Steps that run before checkout run this source file directly, so it imports
 // only Node built-ins.
+import { createHash } from "node:crypto";
 import { parseArgs } from "node:util";
 
 type ExactReviewLease = {
@@ -129,6 +130,8 @@ try {
 function exactReviewQueueRequest(argv: string[], env: NodeJS.ProcessEnv) {
   const [command, ...args] = argv;
   switch (command) {
+    case "batch-lifecycle":
+      return batchLifecycleBody(args[0], env);
     case "heartbeat":
       return exactReviewHeartbeatBody(exactReviewLeaseFromEnv(env), heartbeatFromArgs(args));
     case "lifecycle":
@@ -898,4 +901,35 @@ function positiveInteger(value: string | undefined, name: string) {
   const number = Number(value);
   if (!value || !Number.isSafeInteger(number) || number < 1) throw new Error(`invalid ${name}`);
   return number;
+}
+
+// Batch receipt IDs include the hashed fence so sibling items in a run do not collide.
+function batchLifecycleBody(record: string | undefined, env: NodeJS.ProcessEnv) {
+  const revision = Number(env.REVISION);
+  if (!Number.isInteger(revision) || revision < 1 || !env.FENCE_KEY) process.exit(1);
+  const fence = createHash("sha256").update(env.FENCE_KEY).digest("hex").slice(0, 24);
+  const target = {
+    canonical_target_key: `${env.TARGET_REPO}#${env.ITEM_NUMBER}`,
+    fence_key: env.FENCE_KEY,
+    revision,
+  };
+  if (record === "router") {
+    const prefix =
+      env.LIFECYCLE_DEFERRED_COVERAGE === "true"
+        ? "router-batch-proof"
+        : env.LIFECYCLE_ROUTER_OUTCOME === "not_required"
+          ? "router-batch-not-required"
+          : "router-batch";
+    return {
+      ...target,
+      outcome: env.LIFECYCLE_ROUTER_OUTCOME,
+      receipt_id: `${prefix}:${env.GITHUB_RUN_ID}:${env.GITHUB_RUN_ATTEMPT}:${fence}`,
+    };
+  }
+  if (record !== "terminal" || !env.LIFECYCLE_TERMINAL) process.exit(1);
+  return {
+    ...target,
+    kind: env.LIFECYCLE_TERMINAL,
+    operation_id: `terminal-batch:${env.GITHUB_RUN_ID}:${env.GITHUB_RUN_ATTEMPT}:${fence}`,
+  };
 }

@@ -256,7 +256,7 @@ ${admission.run}`,
 
 test("terminal batch lifecycle payload carries a stable run-attempt-fence operation id", () => {
   const builder = source.match(
-    /export LIFECYCLE_TERMINAL="\$lifecycle_terminal"\s+lifecycle_payload="\$\(node -e '([\s\S]*?)'\)"/,
+    /export LIFECYCLE_TERMINAL="\$lifecycle_terminal"\s+lifecycle_payload="\$\(node ([^)]*)\)"/,
   )?.[1];
   assert.ok(builder);
   const env = {
@@ -269,7 +269,7 @@ test("terminal batch lifecycle payload carries a stable run-attempt-fence operat
     GITHUB_RUN_ATTEMPT: "2",
   };
   const run = (overrides = {}) => {
-    const result = spawnSync(process.execPath, ["-e", builder], {
+    const result = spawnSync(process.execPath, builder.split(" "), {
       env: { ...env, ...overrides },
       encoding: "utf8",
     });
@@ -695,9 +695,7 @@ test("batch workflow signs queue ownership, isolates item failures, and commits 
     source,
     /curl --fail|lifecycle_signature|x-clawsweeper-exact-review-signature/,
   );
-  assert.match(source, /router-batch-not-required/);
-  assert.match(source, /router-batch/);
-  assert.match(source, /router-batch-proof/);
+  assert.match(source, /exact-review-queue-request\.ts batch-lifecycle router/);
   assert.match(source, /lifecycle_terminal="requeue"/);
   assert.match(source, /lifecycle_terminal="target_closed"/);
   assert.match(source, /lifecycle_terminal="target_missing"/);

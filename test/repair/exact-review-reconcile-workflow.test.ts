@@ -159,6 +159,10 @@ test("guard CLI and workflow clients preserve cooldown and the scheduled termina
       join(root, "control-plane-curl.sh"),
       readFileSync("scripts/control-plane-curl.sh"),
     );
+    writeFileSync(
+      join(root, "exact-review-queue-reconcile.mts"),
+      readFileSync("src/repair/exact-review-queue-reconcile.ts"),
+    );
     const fixture = join(root, "history.json");
     writeFileSync(
       join(bin, "gh"),
@@ -236,7 +240,11 @@ else process.exit(2);
       assert.equal(requests.length - before, admitted ? 1 : 0);
       results.push({ scenario, admitted, queueWrites: requests.length - before });
     }
-    await run("bash", ["-e", "-c", scheduledWorkflow.jobs.sweep.steps[0].run], { env });
+    assert.match(
+      scheduledWorkflow.jobs.sweep.steps[0].run,
+      /exact-review-queue-reconcile\.mts" sweep/,
+    );
+    await run(process.execPath, ["src/repair/exact-review-queue-reconcile.ts", "sweep"], { env });
     assert.deepEqual(requests.at(-1)!.body.terminal_runs, [
       {
         run_id: "123",
