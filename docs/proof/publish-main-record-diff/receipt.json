@@ -1,0 +1,41 @@
+{
+  "claim": "publish-main finds changed record tuples in a whole records/<repo> request without holding both trees in memory",
+  "surface": "real dist/repair/publish-main.js publishMainWithStateAppend (canonical tuple planning and posting) with a fixture queue fetch",
+  "scenario": {
+    "heapCapMiB": 384,
+    "itemsPerTree": 1600,
+    "itemKiB": 512,
+    "treeMiB": 800,
+    "changedTuples": "items 1 and 2 updated, item 3 moved to closed/"
+  },
+  "node": "v24.21.0",
+  "runs": [
+    {
+      "label": "base",
+      "commit": "a6d99849915f0e9af5add7b41d8234af2c734059",
+      "exitCode": null,
+      "signal": "SIGABRT",
+      "heapOutOfMemory": true,
+      "summary": null
+    },
+    {
+      "label": "candidate",
+      "commit": "0cb88366bbeeaff850b02380e565c6d9eda65be1",
+      "exitCode": 0,
+      "signal": null,
+      "heapOutOfMemory": false,
+      "summary": {
+        "outcome": "appended",
+        "postedTuples": [
+          "openclaw-openclaw/1",
+          "openclaw-openclaw/2",
+          "openclaw-openclaw/3"
+        ],
+        "treeMiB": 800,
+        "peakHeapMiB": 29,
+        "elapsedMs": 709
+      }
+    }
+  ],
+  "limits": "synthetic records and fixture queue responses; no production records, secrets or GitHub writes"
+}
