@@ -356,6 +356,7 @@ export function createGitHubContext({
     fetchers: {
       pageWithHeaders?: (path: string, page: number, perPage: number) => GithubPageWithHeaders<T>;
       paged?: (path: string) => T[];
+      complete?: (items: T[]) => void;
     } = {},
   ): ContextHydration<T> {
     const fetchPage = fetchers.pageWithHeaders ?? ghPageWithHeaders<T>;
@@ -381,8 +382,20 @@ export function createGitHubContext({
     const lastPage = Math.max(1, lastPageNumber);
     const lastItems = lastPage === 1 ? first.items : readPage(lastPage).items;
     const total = Math.max(0, (lastPage - 1) * perPage + lastItems.length);
+    const finish = (window: ContextHydration<T>): ContextHydration<T> => {
+      if (fetchers.complete && window.truncated) {
+        const complete = lastPage === 1 ? first.items : [];
+        if (lastPage > 1) {
+          for (let page = 1; page <= lastPage; page += 1) {
+            complete.push(...readPage(page).items);
+          }
+        }
+        fetchers.complete(complete);
+      }
+      return window;
+    };
     if (total === 0 || boundedLimit === 0) {
-      return { items: [], total, hydrated: 0, truncated: total > 0 };
+      return finish({ items: [], total, hydrated: 0, truncated: total > 0 });
     }
 
     if (total <= boundedLimit) {
@@ -390,12 +403,12 @@ export function createGitHubContext({
       for (let page = 1; page <= lastPage; page += 1) {
         items.push(...(page === 1 ? first.items : readPage(page).items));
       }
-      return {
+      return finish({
         items,
         total: Math.max(total, items.length),
         hydrated: items.length,
         truncated: false,
-      };
+      });
     }
 
     const plan = githubContextWindowPlan(total, boundedLimit, perPage);
@@ -408,12 +421,12 @@ export function createGitHubContext({
     }
     const tailItems = tailPages.slice(plan.tailOffset, plan.tailOffset + plan.keepEnd);
     const items = [...headItems, ...tailItems];
-    return {
+    return finish({
       items,
       total,
       hydrated: items.length,
       truncated: total > items.length,
-    };
+    });
   }
 
   return {

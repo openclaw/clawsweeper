@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import test from "node:test";
+import { createGitHubContext } from "../dist/clawsweeper-github-context.js";
+import { createItemContext } from "../dist/clawsweeper-item-context.js";
+import { item } from "./helpers.ts";
+import { hydration, sourceTools } from "./primary-body-fixture.ts";
 
 test("inline review comments share full pagination and retain fresh revision checks", () => {
   const result = JSON.parse(
@@ -670,6 +674,134 @@ test("ghPagedLinkHeaderContextWindow falls back when link headers are unavailabl
     hydrated: 3,
     truncated: false,
   });
+});
+
+test("complete timeline hydration reuses window pages without changing its metadata", () => {
+  for (const count of [0, 9, 80, 81, 101, 250, 3000]) {
+    const events = Array.from({ length: count }, (_, index) => index + 1);
+    const fetchedPages: number[] = [];
+    let complete: number[] | undefined;
+    const window = ghPagedLinkHeaderContextWindow<number>("timeline", 80, {
+      pageWithHeaders: (_path, page) => {
+        fetchedPages.push(page);
+        return {
+          items: events.slice((page - 1) * 100, page * 100),
+          lastPageNumber: Math.max(1, Math.ceil(count / 100)),
+        };
+      },
+      paged: () => {
+        throw new Error("header-backed timeline must not restart full pagination");
+      },
+      complete: (items) => {
+        complete = items;
+      },
+    });
+    assert.equal(fetchedPages.length, Math.max(1, Math.ceil(count / 100)));
+    assert.equal(new Set(fetchedPages).size, fetchedPages.length);
+    assert.deepEqual(complete ?? window.items, events);
+    assert.equal(window.total, count);
+    assert.equal(window.hydrated, Math.min(count, 80));
+    assert.equal(window.truncated, count > 80);
+    assert.deepEqual(
+      window.items,
+      count > 80 ? [...events.slice(0, 40), ...events.slice(-40)] : events,
+    );
+    assert.equal(complete !== undefined, count > 80);
+  }
+});
+
+test("complete timeline requests retain the missing-Link fallback unchanged", () => {
+  const events = Array.from({ length: 250 }, (_, index) => index + 1);
+  let completeCalled = false;
+  let pagedReads = 0;
+  const window = ghPagedLinkHeaderContextWindow<number>("timeline", 80, {
+    pageWithHeaders: () => ({ items: events.slice(0, 100), lastPageNumber: null }),
+    paged: () => {
+      pagedReads += 1;
+      return events;
+    },
+    complete: () => {
+      completeCalled = true;
+    },
+  });
+  assert.deepEqual(window, { items: events, total: 250, hydrated: 250, truncated: false });
+  assert.equal(pagedReads, 1);
+  assert.equal(completeCalled, false);
+});
+
+test("complete timeline hydration propagates remaining-page errors", () => {
+  const failure = new Error("page unavailable");
+  assert.throws(
+    () =>
+      ghPagedLinkHeaderContextWindow<number>("timeline", 80, {
+        pageWithHeaders: (_path, page) => {
+          if (page === 2) throw failure;
+          return { items: Array.from({ length: 100 }, (_, index) => index), lastPageNumber: 3 };
+        },
+        complete: () => {
+          assert.fail("incomplete hydration must not be published");
+        },
+      }),
+    (error) => error === failure,
+  );
+});
+
+test("legacy PR metadata derives inline windows and complete activity from one paged read", () => {
+  const target = item({ kind: "pull_request" });
+  for (const count of [0, 10, 40, 81, 250]) {
+    const comments = Array.from({ length: count }, (_, index) => ({
+      id: index + 1,
+      body: `Inline comment ${index + 1}`,
+      user: { login: "contributor" },
+    }));
+    let completeReads = 0;
+    const ghJson = <T>(args: string[]): T => {
+      const path = args[1]!;
+      if (path.includes("/pulls/") && path.includes("/comments")) {
+        assert.ok(args.includes("--paginate"));
+        completeReads += 1;
+        return Array.from({ length: Math.ceil(count / 100) }, (_, index) =>
+          comments.slice(index * 100, (index + 1) * 100),
+        ) as T;
+      }
+      if (path.includes("/pulls/")) {
+        return { changed_files: 0, commits: 0, review_comments: count } as T;
+      }
+      return { comments: 0 } as T;
+    };
+    const github = createGitHubContext({
+      ghJson,
+      ghJsonEach: () => {
+        throw new Error("legacy inline hydration must not fetch a separate window");
+      },
+      ghWithRetry: () => "HTTP/2 200 OK\n\n[]",
+      targetRepo: () => target.repo,
+    });
+    const { collectItemContext } = createItemContext({
+      ...hydration,
+      ...sourceTools,
+      ...github,
+      ghJson,
+      targetRepo: () => target.repo,
+      closingPullRequestsForIssue: () => [],
+      referencingMergedPullRequestsForIssue: () => [],
+      relatedItemsContext: () => [],
+      fetchReviewedPrActivityCursor: () => null,
+      pullChecksContext: () => ({ complete: true, checkRuns: [], statuses: [] }),
+    });
+    const context = collectItemContext(target, {
+      reviewCacheDigest: true,
+      fullTimelineForRelations: true,
+    });
+    assert.equal(completeReads, count > 0 ? 1 : 0);
+    assert.equal(context.counts?.pullReviewComments, count);
+    assert.equal(context.counts?.pullReviewCommentsHydrated, Math.min(count, 40));
+    assert.equal(context.counts?.pullReviewCommentsTruncated, count > 40);
+    assert.equal(
+      context.pullReviewCommentsRevision,
+      sourceTools.reviewCommentContentRevision(comments.map(hydration.compactComment)),
+    );
+  }
 });
 
 test("bounded PR context prepares source independently of cache digest and API file completeness", async () => {

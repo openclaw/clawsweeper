@@ -57,6 +57,7 @@ export interface CreateReportOrchestrationDependencies {
     fetchers?: {
       pageWithHeaders?: (path: string, page: number, perPage: number) => GithubPageWithHeaders<T>;
       paged?: (path: string) => T[];
+      complete?: (items: T[]) => void;
     },
   ) => ContextHydration<T>;
   GitHubRuntimeBudgetError: new (reason: string) => Error & { readonly reason: string };
