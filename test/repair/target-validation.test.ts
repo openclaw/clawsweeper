@@ -2670,16 +2670,18 @@ test("Go targets get GOROOT derived from the validation PATH so trimmed go binar
   const previousGoRoot = process.env.GOROOT;
   process.env.GOROOT = path.join(goRoot, "runner-provided-root");
   try {
-    withPathOnlyPrefix(path.join(goRoot, "bin"), () => {
-      assert.deepEqual(
-        runAllowedValidationCommands(
+    withRunnerGoRoots({}, () =>
+      withPathOnlyPrefix(path.join(goRoot, "bin"), () => {
+        assert.deepEqual(
+          runAllowedValidationCommands(
+            ["go version"],
+            cwd,
+            validationOptions("openclaw/crabbox", goToolchain()),
+          ),
           ["go version"],
-          cwd,
-          validationOptions("openclaw/crabbox", goToolchain()),
-        ),
-        ["go version"],
-      );
-    });
+        );
+      }),
+    );
   } finally {
     restoreEnv("GOROOT", previousGoRoot);
   }
@@ -2715,27 +2717,23 @@ test("Go targets fall back to the runner tool-cache GOROOT_<version>_<arch> root
     fs.chmodSync(path.join(binDir, name), 0o755);
   }
   const { goRoot: olderRoot } = fakeGoToolchainFixture({ version: "go1.22.9" });
-  const previous = {
-    GOROOT: process.env.GOROOT,
-    GOROOT_1_26_X64: process.env.GOROOT_1_26_X64,
-    GOROOT_1_22_X64: process.env.GOROOT_1_22_X64,
-  };
+  const previousGoRoot = process.env.GOROOT;
   process.env.GOROOT = path.join(goRoot, "runner-provided-root");
-  process.env.GOROOT_1_26_X64 = goRoot;
-  process.env.GOROOT_1_22_X64 = olderRoot;
   try {
-    withPathOnlyPrefix(binDir, () => {
-      assert.deepEqual(
-        runAllowedValidationCommands(
+    withRunnerGoRoots({ GOROOT_1_26_X64: goRoot, GOROOT_1_22_X64: olderRoot }, () =>
+      withPathOnlyPrefix(binDir, () => {
+        assert.deepEqual(
+          runAllowedValidationCommands(
+            ["go version"],
+            cwd,
+            validationOptions("openclaw/crabbox", goToolchain()),
+          ),
           ["go version"],
-          cwd,
-          validationOptions("openclaw/crabbox", goToolchain()),
-        ),
-        ["go version"],
-      );
-    });
+        );
+      }),
+    );
   } finally {
-    for (const [key, value] of Object.entries(previous)) restoreEnv(key, value);
+    restoreEnv("GOROOT", previousGoRoot);
   }
 
   const invocations = fs
@@ -2763,9 +2761,7 @@ test("Go targets switch to a tool-cache Go that satisfies go.mod when the go on 
   // sandbox has no network for an automatic download.
   const older = fakeGoToolchainFixture({ version: "go1.24.12" });
   const newer = fakeGoToolchainFixture({ version: "go1.26.5" });
-  const previous = { GOROOT_1_26_X64: process.env.GOROOT_1_26_X64 };
-  process.env.GOROOT_1_26_X64 = newer.goRoot;
-  try {
+  withRunnerGoRoots({ GOROOT_1_26_X64: newer.goRoot }, () =>
     withPathOnlyPrefix(path.join(older.goRoot, "bin"), () => {
       assert.deepEqual(
         runAllowedValidationCommands(
@@ -2775,10 +2771,8 @@ test("Go targets switch to a tool-cache Go that satisfies go.mod when the go on 
         ),
         ["go version"],
       );
-    });
-  } finally {
-    for (const [key, value] of Object.entries(previous)) restoreEnv(key, value);
-  }
+    }),
+  );
 
   assert.equal(fs.existsSync(older.envLogPath), false, "the 1.24 tree on PATH must not run");
   const invocations = fs
@@ -2804,16 +2798,19 @@ test("Go toolchain preparation leaves GOROOT unset when the go on PATH is not in
 
   const { goRoot, envLogPath } = fakeGoToolchainFixture({ trimmed: false });
   fs.rmSync(path.join(goRoot, "src"), { recursive: true, force: true });
-  withPathOnlyPrefix(path.join(goRoot, "bin"), () => {
-    assert.deepEqual(
-      runAllowedValidationCommands(
+  // With no tool-cache root either, nothing can supply GOROOT.
+  withRunnerGoRoots({}, () =>
+    withPathOnlyPrefix(path.join(goRoot, "bin"), () => {
+      assert.deepEqual(
+        runAllowedValidationCommands(
+          ["go version"],
+          cwd,
+          validationOptions("openclaw/crabbox", goToolchain()),
+        ),
         ["go version"],
-        cwd,
-        validationOptions("openclaw/crabbox", goToolchain()),
-      ),
-      ["go version"],
-    );
-  });
+      );
+    }),
+  );
 
   const invocations = fs
     .readFileSync(envLogPath, "utf8")
@@ -10764,6 +10761,25 @@ function withPathPrefix(binDir, callback) {
       if (previousUpperPath === undefined) delete process.env.PATH;
       else process.env.PATH = previousUpperPath;
     }
+  }
+}
+
+// Hosted runners publish their Go installs as GOROOT_<major>_<minor>_<arch>, and
+// validation falls back to those roots. Hide the inherited ones so Go tests see
+// only the tool-cache roots they set.
+function withRunnerGoRoots(roots: Record<string, string>, callback: () => void) {
+  const inherited = Object.keys(process.env).filter((key) =>
+    /^GOROOT_\d+_\d+_(?:X64|X86|ARM64|ARM)$/i.test(key),
+  );
+  const previous = Object.fromEntries(
+    [...new Set([...inherited, ...Object.keys(roots)])].map((key) => [key, process.env[key]]),
+  );
+  for (const key of inherited) delete process.env[key];
+  Object.assign(process.env, roots);
+  try {
+    return callback();
+  } finally {
+    for (const [key, value] of Object.entries(previous)) restoreEnv(key, value);
   }
 }
 
