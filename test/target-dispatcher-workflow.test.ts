@@ -367,6 +367,7 @@ test("dispatcher queues directly with its OIDC identity and falls back to reposi
           GH_STUB_LOG: log,
           GH_TOKEN: "app-installation-token",
           GITHUB_EVENT_PATH: eventPath,
+          RUNNER_TEMP: root,
           TARGET_REPO: "openclaw/example",
           TARGET_BRANCH: "main",
           ITEM_NUMBER: "42",
@@ -444,6 +445,8 @@ test("dispatcher queues directly with its OIDC identity and falls back to reposi
     const fallbacks = [
       { name: "worker rejection", oidc: true, token: 200, direct: 401, posts: 2 },
       { name: "worker outage", oidc: true, token: 200, direct: 503, posts: 2 },
+      // curl --fail treats a 3xx as success; only a 2xx may skip the relay.
+      { name: "worker redirect", oidc: true, token: 200, direct: 307, posts: 2 },
       { name: "token endpoint failure", oidc: true, token: 500, direct: 202, posts: 1 },
       { name: "no id-token permission", oidc: false, token: 200, direct: 202, posts: 0 },
       {
