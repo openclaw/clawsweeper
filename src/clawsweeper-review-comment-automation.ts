@@ -1,4 +1,4 @@
-import { maintainerDecisionFromReport } from "./decision-packets.js";
+import { reportReviewDecision } from "./report-review-decision.js";
 import { reportAllowsAutomation } from "./manual-publication-policy.js";
 import { validReviewLeaseIdentity, type NeedsHumanHold } from "./review-comment-markers.js";
 import { AUTOFIX_LABEL, AUTOMERGE_LABEL } from "./repair/exact-review-guard-labels.js";
@@ -8,11 +8,7 @@ import type { PullRequestReviewReadiness } from "./clawsweeper-types.js";
 import { parseIsoMs } from "./iso-time.js";
 import { frontMatterStringArray, frontMatterValue } from "./report-front-matter.js";
 import { pullHeadShaFromReport } from "./clawsweeper-record-metadata.js";
-import {
-  reportAttachedLiveVerification,
-  reportReviewFindings,
-  reportSecurityReview,
-} from "./clawsweeper-report-parser.js";
+import { reportAttachedLiveVerification } from "./clawsweeper-report-parser.js";
 import {
   pullRequestReviewReadinessFromReport,
   securitySensitiveRepairAllowed,
@@ -63,8 +59,9 @@ export function createReviewCommentAutomation(
   ): string {
     if (!reportAllowsAutomation(markdown)) return "";
     const itemKind = frontMatterValue(markdown, "type");
+    const reviewed = reportReviewDecision(markdown);
     if (itemKind === "issue") {
-      const decision = frontMatterValue(markdown, "decision");
+      const decision = reviewed.decision;
       const closeReason = frontMatterValue(markdown, "close_reason");
       if (decision !== "close" || closeReason !== "unsponsored_feature_request") return "";
       const reportReviewedAt = frontMatterValue(markdown, "reviewed_at");
@@ -72,7 +69,7 @@ export function createReviewCommentAutomation(
         canonicalReviewTimestamp(reportReviewedAt) ?? reportReviewedAt ?? "unknown";
       const attrs = [
         `item=${markerAttributeValue(frontMatterValue(markdown, "number") ?? "unknown")}`,
-        `confidence=${markerAttributeValue(frontMatterValue(markdown, "confidence") ?? "unknown")}`,
+        `confidence=${markerAttributeValue(reviewed.confidence ?? "unknown")}`,
         `updated_at=${markerAttributeValue(frontMatterValue(markdown, "item_updated_at") ?? "unknown")}`,
         `reviewed_at=${markerAttributeValue(reviewedAt)}`,
         `source_revision=${markerAttributeValue(frontMatterValue(markdown, "item_source_revision") ?? "unknown")}`,
@@ -89,8 +86,8 @@ export function createReviewCommentAutomation(
     const itemNumber = Number(number);
     const hasExactItemNumber =
       /^[1-9]\d*$/.test(number) && Number.isSafeInteger(itemNumber) && itemNumber > 0;
-    const decision = frontMatterValue(markdown, "decision");
-    const confidence = frontMatterValue(markdown, "confidence") ?? "unknown";
+    const decision = reviewed.decision;
+    const confidence = reviewed.confidence ?? "unknown";
     const headSha = pullHeadShaFromReport(markdown) ?? "unknown";
     const itemUpdatedAt = frontMatterValue(markdown, "item_updated_at") ?? "unknown";
     const reportReviewedAt = frontMatterValue(markdown, "reviewed_at");
@@ -131,13 +128,13 @@ export function createReviewCommentAutomation(
       reviewReadiness.normalizationFailed ||
       frontMatterValue(markdown, "review_status") === "failed"
         ? 0
-        : reportReviewFindings(markdown).length;
+        : reviewed.reviewFindings.length;
     const needsHumanVerdict = (hold: NeedsHumanHold): string =>
       `<!-- clawsweeper-verdict:needs-human ${baseAttrs} hold=${hold} findings=${findingCount} -->`;
     if (reviewReadiness.normalizationFailed) {
       return withReviewState(needsHumanVerdict("normalization_failed"));
     }
-    const securityNeedsAttention = reportSecurityReview(markdown).status === "needs_attention";
+    const securityNeedsAttention = reviewed.securityReview.status === "needs_attention";
     const humanReviewMarkers = (hold: NeedsHumanHold): string => {
       const markers = [];
       if (securityNeedsAttention) {
@@ -151,14 +148,11 @@ export function createReviewCommentAutomation(
     // A maintainer opt-in can waive a hold only when that hold is the one Before-merge item.
     // Security attention is never waivable.
     const onlyBlocker = reviewReadiness.items.length === 1;
-    try {
-      if (maintainerDecisionFromReport(markdown)?.required) {
-        return humanReviewMarkers(
-          securityNeedsAttention ? "security" : onlyBlocker ? "maintainer_decision" : "blocked",
-        );
-      }
-    } catch {
-      return humanReviewMarkers("normalization_failed");
+    if (reviewed.maintainerDecisionInvalid) return humanReviewMarkers("normalization_failed");
+    if (reviewed.maintainerDecision?.required) {
+      return humanReviewMarkers(
+        securityNeedsAttention ? "security" : onlyBlocker ? "maintainer_decision" : "blocked",
+      );
     }
     if (frontMatterValue(markdown, "review_status") === "failed") {
       return humanReviewMarkers("review_failed");
@@ -195,10 +189,7 @@ export function createReviewCommentAutomation(
       if (reviewReadiness.state === "ready") {
         return withReviewState(needsHumanVerdict("not_opted_in"));
       }
-      if (
-        reviewReadiness.state !== "needs-changes" ||
-        frontMatterValue(markdown, "work_candidate") !== "queue_fix_pr"
-      ) {
+      if (reviewReadiness.state !== "needs-changes" || reviewed.workCandidate !== "queue_fix_pr") {
         return withReviewState(needsHumanVerdict("blocked"));
       }
       return withReviewState(
@@ -230,7 +221,7 @@ export function createReviewCommentAutomation(
     return (
       (labels.includes(AUTOMERGE_LABEL) || labels.includes(AUTOFIX_LABEL)) &&
       !realBehaviorProofBlocksMerge(markdown) &&
-      reportReviewFindings(markdown).length > 0
+      reportReviewDecision(markdown).reviewFindings.length > 0
     );
   }
 

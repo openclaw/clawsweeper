@@ -8,11 +8,7 @@ import {
 } from "./pr-surface-stats.js";
 import { normalizeRepo } from "./repository-profiles.js";
 import { asRecord } from "./value-coerce.js";
-import {
-  frontMatterBoolean,
-  frontMatterJsonArray,
-  frontMatterValue,
-} from "./report-front-matter.js";
+import { frontMatterBoolean, frontMatterValue } from "./report-front-matter.js";
 import { markdownRepository } from "./clawsweeper-repository-paths.js";
 import { collapsedDetailsBlock, publicTableCell } from "./clawsweeper-report-helpers.js";
 import { reportRealBehaviorProofPolicy } from "./clawsweeper-proof-policy.js";
@@ -91,19 +87,6 @@ export function renderOpenClawPrSurfaceFromReport(markdown: string): string {
     renderOpenClawPrSurfaceTable(stats),
   ]);
   return details ? `${summaryLine}\n\n${details}` : summaryLine;
-}
-
-export function reviewMetricsFromReport(markdown: string): ReviewMetric[] {
-  return frontMatterJsonArray(markdown, "review_metrics")
-    .map((entry) => {
-      const metric = asRecord(entry);
-      const label = typeof metric.label === "string" ? metric.label.trim() : "";
-      const value = typeof metric.value === "string" ? metric.value.trim() : "";
-      const reason = typeof metric.reason === "string" ? metric.reason.trim() : "";
-      if (!label || !value || !reason) return null;
-      return { label, value, reason };
-    })
-    .filter((entry): entry is ReviewMetric => Boolean(entry));
 }
 
 export function renderReviewMetricsDigest(metrics: readonly ReviewMetric[]): string {

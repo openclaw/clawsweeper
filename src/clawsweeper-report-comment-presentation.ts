@@ -17,27 +17,8 @@ import {
   regressionAssessmentPublicLine,
   regressionProvenancePublicLine,
 } from "./clawsweeper-regression-provenance.js";
-import {
-  maintainerDecisionFromReport,
-  renderDecisionPacketPublicBlock,
-} from "./decision-packets.js";
-import {
-  mergeRiskOptionsFromReport,
-  reportAgentsPolicyStatus,
-  reportChangeExample,
-  reportEvidence,
-  reportLikelyOwners,
-  reportLiveProofRecordingBlock,
-  reportOverallConfidenceScore,
-  reportOverallCorrectness,
-  reportProductReview,
-  reportProvenance,
-  reportPrRating,
-  reportReviewFindings,
-  reportRootCauseCluster,
-  reportSecurityReview,
-  reportTestingReview,
-} from "./clawsweeper-report-parser.js";
+import { renderDecisionPacketPublicBlock } from "./decision-packets.js";
+import { reportLiveProofRecordingBlock } from "./clawsweeper-report-parser.js";
 import { reportReviewDecision } from "./report-review-decision.js";
 import { neutralizeReviewControlMarkers, renderReviewHistorySection } from "./review-history.js";
 import type { CreateReportRenderingDependencies } from "./clawsweeper-report-rendering-dependencies.js";
@@ -52,21 +33,20 @@ import {
   publicSummaryBody,
   pullRequestReviewReadinessFromReport,
   renderCloseCommentFromReport,
-  reportWorkCandidateReason,
   REVIEW_HISTORY_RENDER_SLOT,
   reviewFreshnessText,
   reviewHistoryForRender,
   reviewWorkflowCallout,
   reviewWorkflowSummaryLine,
 } from "./clawsweeper-report-comment-helpers.js";
-import { frontMatterStringArray, frontMatterValue } from "./report-front-matter.js";
+import { frontMatterValue } from "./report-front-matter.js";
 import {
   agentsPolicyStatusLine,
   collapsedDetailsBlock,
   neutralizeOwnedSectionSpoofing,
   sanitizeArchitectureDiagram,
 } from "./clawsweeper-report-helpers.js";
-import { pullHeadShaFromReport, reviewSectionValue } from "./clawsweeper-record-metadata.js";
+import { pullHeadShaFromReport } from "./clawsweeper-record-metadata.js";
 import { reportRealBehaviorProofPolicy } from "./clawsweeper-proof-policy.js";
 import {
   closeEvidenceLine,
@@ -92,12 +72,7 @@ import { closeReviewLineFromReport } from "./clawsweeper-report-context.js";
 import {
   renderOpenClawPrSurfaceFromReport,
   renderReviewMetricsDigest,
-  reviewMetricsFromReport,
 } from "./clawsweeper-orchestration-foundation.js";
-import {
-  regressionAssessmentFromReport,
-  regressionProvenanceFromReport,
-} from "./clawsweeper-status-context.js";
 
 const PRODUCT_KIND_TEXT: Record<ProductReviewKind, string> = {
   bug_fix: "Bug fix",
@@ -245,7 +220,7 @@ export function createReportCommentPresentation(dependencies: CreateReportRender
     // Entries that carry a location, commit, command, or link stay, because that is
     // the support for the proof.
     const proofSummary = isPullRequest ? proofPolicy.assessment.summary : "";
-    const evidence = reportEvidence(markdown)
+    const evidence = reviewDecision.evidence
       .filter(
         (entry) =>
           !proofSummary ||
@@ -255,15 +230,15 @@ export function createReportCommentPresentation(dependencies: CreateReportRender
       )
       .slice(0, 6)
       .map((entry) => closeEvidenceLine(entry, profile));
-    const likelyOwners = likelyOwnerLines(reportLikelyOwners(markdown), profile);
-    const reviewFindings = reportReviewFindings(markdown);
-    const securityReview = reportSecurityReview(markdown);
-    const prRating = reportPrRating(markdown);
+    const likelyOwners = likelyOwnerLines(reviewDecision.likelyOwners, profile);
+    const reviewFindings = reviewDecision.reviewFindings;
+    const securityReview = reviewDecision.securityReview;
+    const prRating = reviewDecision.prRating;
     const liveProofRecordingBlock = reportLiveProofRecordingBlock(markdown);
-    const agentsPolicyStatus = reportAgentsPolicyStatus(markdown);
-    const rootCauseCluster = reportRootCauseCluster(markdown);
-    const regressionProvenance = regressionProvenanceFromReport(markdown);
-    const regressionAssessment = regressionAssessmentFromReport(markdown);
+    const agentsPolicyStatus = reviewDecision.agentsPolicyStatus;
+    const rootCauseCluster = reviewDecision.rootCauseCluster;
+    const regressionProvenance = reviewDecision.regressionProvenance;
+    const regressionAssessment = reviewDecision.regressionAssessment;
     const regressionProvenanceLine = regressionProvenancePublicLine(
       regressionProvenance,
       regressionAssessment,
@@ -277,26 +252,22 @@ export function createReportCommentPresentation(dependencies: CreateReportRender
     ]
       .filter((line): line is string => Boolean(line))
       .join("\n\n");
-    const summary = reviewSectionValue(markdown, "summary");
-    const changeSummary = reviewSectionValue(markdown, "changeSummary");
-    const systemContext = neutralizeOwnedSectionSpoofing(
-      reviewSectionValue(markdown, "systemContext"),
-    );
-    const architectureDiagram = sanitizeArchitectureDiagram(
-      reviewSectionValue(markdown, "architectureDiagram"),
-    );
-    const bestSolution = reviewSectionValue(markdown, "bestSolution");
-    const reproductionAssessment = reviewSectionValue(markdown, "reproductionAssessment");
-    const solutionAssessment = reviewSectionValue(markdown, "solutionAssessment");
-    const risks = reviewSectionValue(markdown, "risks");
-    const mergeRiskOptions = mergeRiskOptionsFromReport(markdown);
-    const reviewMetrics = reviewMetricsFromReport(markdown);
-    const workReason = reportWorkCandidateReason(markdown);
+    const summary = reviewDecision.summary;
+    const changeSummary = reviewDecision.changeSummary;
+    const systemContext = neutralizeOwnedSectionSpoofing(reviewDecision.systemContext);
+    const architectureDiagram = sanitizeArchitectureDiagram(reviewDecision.architectureDiagram);
+    const bestSolution = reviewDecision.bestSolution;
+    const reproductionAssessment = reviewDecision.reproductionAssessment;
+    const solutionAssessment = reviewDecision.solutionAssessment;
+    const risks = reviewDecision.risks;
+    const mergeRiskOptions = reviewDecision.mergeRiskOptions;
+    const reviewMetrics = reviewDecision.reviewMetrics;
+    const workReason = reviewDecision.workReason;
     const reviewReadiness = isPullRequest
       ? (precomputedReadiness ?? pullRequestReviewReadinessFromReport(markdown))
       : undefined;
     const reviewFailed = frontMatterValue(markdown, "review_status") === "failed";
-    const validation = frontMatterStringArray(markdown, "work_validation")
+    const validation = reviewDecision.workValidation
       .slice(0, 5)
       .map((step) => `- ${stripListMarker(step)}`);
     const isRepairLoopPass = isPullRequest && Boolean(repairLoopPassModeFromReport(markdown));
@@ -307,7 +278,7 @@ export function createReportCommentPresentation(dependencies: CreateReportRender
     const changeSummarySentence =
       neutralizeOwnedSectionSpoofing(sentence(changeSummary || summary)) ||
       "_No change summary provided._";
-    const changeExample = reportChangeExample(markdown);
+    const changeExample = reviewDecision.changeExample;
     const changeSummaryLine =
       changeExample.scenario && changeExample.before && changeExample.after
         ? [
@@ -400,8 +371,8 @@ export function createReportCommentPresentation(dependencies: CreateReportRender
         "",
         ...reviewFindings.map(reviewFindingDetailedLine),
         "",
-        `Overall correctness: ${reportOverallCorrectness(markdown)}`,
-        `Overall confidence: ${confidenceText(reportOverallConfidenceScore(markdown))}`,
+        `Overall correctness: ${reviewDecision.overallCorrectness}`,
+        `Overall confidence: ${confidenceText(reviewDecision.overallConfidenceScore)}`,
       );
     }
     if (securityReview.concerns.length) {
@@ -475,7 +446,7 @@ export function createReportCommentPresentation(dependencies: CreateReportRender
           publicReviewScoresBlock(prRating, proofPolicy, reviewFindings, securityReview),
         );
       }
-      const productBlock = publicProductBlock(reportProductReview(markdown));
+      const productBlock = publicProductBlock(reviewDecision.productReview);
       if (productBlock) appendHeadingSection(lines, "Product", productBlock);
       if (regressionPublicLine) {
         appendHeadingSection(lines, "Regression provenance", regressionPublicLine);
@@ -498,8 +469,8 @@ export function createReportCommentPresentation(dependencies: CreateReportRender
         appendHeadingSection(lines, "Decision needed", decisionPacketBlock);
       }
       appendHeadingSection(lines, "Before merge", publicBeforeMergeBlock(beforeMergeItems));
-      const provenance = reportProvenance(markdown);
-      const testingReview = reportTestingReview(markdown);
+      const provenance = reviewDecision.provenance;
+      const testingReview = reviewDecision.testingReview;
       if (!reviewFailed) {
         appendHeadingSection(
           lines,
@@ -602,6 +573,7 @@ export function createReportCommentPresentation(dependencies: CreateReportRender
     reason: CloseReason,
     options: ReviewCommentRenderOptions = {},
   ): string {
+    const reviewDecision = reportReviewDecision(markdown);
     if (reason === "oversized_pull_request") {
       return [
         renderCloseCommentFromReport(markdown, reason, targetProfile()),
@@ -610,7 +582,7 @@ export function createReportCommentPresentation(dependencies: CreateReportRender
         .filter(Boolean)
         .join("\n\n");
     }
-    const decision = frontMatterValue(markdown, "decision");
+    const decision = reviewDecision.decision;
     const reviewReadiness =
       frontMatterValue(markdown, "type") === "pull_request"
         ? pullRequestReviewReadinessFromReport(markdown)
@@ -641,12 +613,9 @@ export function createReportCommentPresentation(dependencies: CreateReportRender
         : reviewAutomationMarkersFromReport(markdown, reviewReadiness);
       return [body, markers, reviewVersionMarkerFromReport(markdown)].filter(Boolean).join("\n\n");
     }
-    let requiresMaintainerDecision = true;
-    try {
-      requiresMaintainerDecision = maintainerDecisionFromReport(markdown)?.required === true;
-    } catch {
-      // Malformed or ambiguous decision metadata must keep the report on the human-review path.
-    }
+    const requiresMaintainerDecision =
+      reviewDecision.maintainerDecisionInvalid ||
+      reviewDecision.maintainerDecision?.required === true;
     const body =
       decision === "close" &&
       reason !== "none" &&

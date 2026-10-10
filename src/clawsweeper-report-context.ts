@@ -14,6 +14,7 @@ import { reviewSectionValue } from "./clawsweeper-record-metadata.js";
 import { linkedSha, markdownLink } from "./clawsweeper-links.js";
 import { fixedInReportText, fixedInText } from "./clawsweeper-status-context.js";
 import type { RepositoryProfile } from "./repository-profiles.js";
+import { readReviewRecord } from "./review-record.js";
 
 export function runtimeReviewText(runtime?: {
   model?: string | undefined;
@@ -51,7 +52,10 @@ export function closeReviewLineFromDecision(
 
 export function closeReviewLineFromReport(markdown: string, profile: RepositoryProfile): string {
   const mainSha = frontMatterValue(markdown, "main_sha");
-  const fixed = fixedInReportText(markdown, profile);
+  const record = readReviewRecord(markdown);
+  const fixed = record
+    ? fixedInText(record.decision, profile)
+    : fixedInReportText(markdown, profile);
   const parts: string[] = [runtimeReviewTextFromReport(markdown)].filter(Boolean);
   if (mainSha && mainSha !== "unknown")
     parts.push(`reviewed against ${linkedSha(mainSha, profile.targetRepo)}`);

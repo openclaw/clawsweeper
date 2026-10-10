@@ -77,6 +77,7 @@ import type {
   RealBehaviorProofEvidenceKind,
   RealBehaviorProofStatus,
   ReviewFinding,
+  ReviewMetric,
   RootCauseClusterAssessment,
   SecurityConcern,
   SecurityReview,
@@ -95,6 +96,7 @@ import {
   frontMatterStringArray,
   frontMatterValue,
 } from "./report-front-matter.js";
+import { asRecord } from "./value-coerce.js";
 
 const {
   defaultRootCauseCluster,
@@ -985,4 +987,44 @@ export function reportVisionFit(markdown: string): {
     implementationComplexity,
     autoImplementationCandidate,
   };
+}
+export function reviewMetricsFromReport(markdown: string): ReviewMetric[] {
+  return frontMatterJsonArray(markdown, "review_metrics")
+    .map((entry) => {
+      const metric = asRecord(entry);
+      const label = typeof metric.label === "string" ? metric.label.trim() : "";
+      const value = typeof metric.value === "string" ? metric.value.trim() : "";
+      const reason = typeof metric.reason === "string" ? metric.reason.trim() : "";
+      if (!label || !value || !reason) return null;
+      return { label, value, reason };
+    })
+    .filter((entry): entry is ReviewMetric => Boolean(entry));
+}
+function workCandidateReasonText(section: string): string {
+  const lines = section.split("\n");
+  const reasonStart = lines.findIndex((line) => line.startsWith("Reason:"));
+  if (reasonStart === -1) return "";
+
+  const reasonLines = [lines[reasonStart]!.slice("Reason:".length).trimStart()];
+  for (let index = reasonStart + 1; index < lines.length; index += 1) {
+    const line = lines[index]!;
+    const nextLine = lines[index + 1] ?? "";
+    if (
+      line.trim() === "" &&
+      (nextLine.startsWith("Cluster refs:") ||
+        nextLine.startsWith("Likely files:") ||
+        nextLine.startsWith("Validation:"))
+    ) {
+      break;
+    }
+    reasonLines.push(line);
+  }
+
+  return reasonLines.join("\n").trim();
+}
+export function reportWorkCandidateReason(markdown: string): string {
+  const workCandidate = reviewSectionValue(markdown, "workCandidate");
+  const reason = workCandidateReasonText(workCandidate);
+  if (!reason || reason.startsWith("_No work-lane recommendation")) return "";
+  return reason;
 }

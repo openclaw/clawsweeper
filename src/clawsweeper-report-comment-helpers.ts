@@ -23,8 +23,8 @@ import type {
   SecurityReview,
 } from "./clawsweeper-types.js";
 import type { RealBehaviorProofPolicy } from "./clawsweeper-proof-policy.js";
-import { nextStepFromReport } from "./clawsweeper-next-step.js";
 import { reportRealBehaviorProofPolicy } from "./clawsweeper-proof-policy.js";
+import { reportReviewDecision } from "./report-review-decision.js";
 import {
   closeEvidenceLine,
   isReportNoneList,
@@ -43,19 +43,6 @@ import {
   stripListMarker,
 } from "./clawsweeper-review-presentation.js";
 import { validReviewLeaseIdentity } from "./review-comment-markers.js";
-import { maintainerDecisionFromReport } from "./decision-packets.js";
-import {
-  reportAgentsPolicyStatus,
-  reportEvidence,
-  reportLikelyOwners,
-  reportOverallCorrectness,
-  reportProductReview,
-  reportProvenance,
-  reportPrRating,
-  reportReviewFindings,
-  reportRootCauseCluster,
-  reportSecurityReview,
-} from "./clawsweeper-report-parser.js";
 import { AUTOFIX_LABEL, AUTOMERGE_LABEL } from "./repair/exact-review-guard-labels.js";
 import {
   isRegressionAssessment,
@@ -81,14 +68,9 @@ import { agentsPolicyStatusLine, collapsedDetailsBlock } from "./clawsweeper-rep
 import { markdownLink, repoUrlFor } from "./clawsweeper-links.js";
 import { ideaRevivalReactionThreshold } from "./idea-archive-revival.js";
 import type { RepositoryProfile } from "./repository-profiles.js";
-import {
-  fixedPullRequestFromReport,
-  formatReviewFreshnessTimestamp,
-  regressionAssessmentFromReport,
-  regressionProvenanceFromReport,
-} from "./clawsweeper-status-context.js";
+import { formatReviewFreshnessTimestamp } from "./clawsweeper-status-context.js";
 import { markdownRepository } from "./clawsweeper-repository-paths.js";
-import { pullHeadShaFromReport, reviewSectionValue } from "./clawsweeper-record-metadata.js";
+import { pullHeadShaFromReport } from "./clawsweeper-record-metadata.js";
 
 function publicBeforeMergeItems(options: {
   reviewFailed: boolean;
@@ -248,7 +230,7 @@ function typedBlockerDetail(detail: string, fallback: string): string {
 export function securitySensitiveRepairAllowed(markdown: string): boolean {
   const labels = frontMatterStringArray(markdown, "labels");
   return (
-    frontMatterValue(markdown, "decision") === "keep_open" &&
+    reportReviewDecision(markdown).decision === "keep_open" &&
     (labels.includes(AUTOFIX_LABEL) || labels.includes(AUTOMERGE_LABEL))
   );
 }
@@ -258,18 +240,20 @@ export function pullRequestReviewReadinessFromReport(markdown: string): PullRequ
   try {
     const candidate = pullHeadShaFromReport(markdown);
     headSha = candidate && /^[0-9a-f]{40}$/i.test(candidate) ? candidate.toLowerCase() : null;
+    const decision = reportReviewDecision(markdown);
+    if (decision.maintainerDecisionInvalid) throw new Error("Invalid maintainer decision");
     const reviewStatus = frontMatterValue(markdown, "review_status");
-    const decisionPending = Boolean(maintainerDecisionFromReport(markdown)?.required);
-    const rating = reportPrRating(markdown);
+    const decisionPending = Boolean(decision.maintainerDecision?.required);
+    const rating = decision.prRating;
     const patchQualityBlocked = rating.patchTier === "F" || rating.patchTier === "D";
     const items = publicBeforeMergeItems({
       reviewFailed: reviewStatus !== "complete",
       proofPolicy: reportRealBehaviorProofPolicy(markdown),
-      findings: reportReviewFindings(markdown),
-      securityReview: reportSecurityReview(markdown),
+      findings: decision.reviewFindings,
+      securityReview: decision.securityReview,
       securityRepairAllowed: securitySensitiveRepairAllowed(markdown),
-      risks: reviewSectionValue(markdown, "risks"),
-      nextStepAssessment: nextStepFromReport(markdown),
+      risks: decision.risks,
+      nextStepAssessment: decision.nextStep,
       patchQualityBlocked,
       requiredRatingSteps: patchQualityBlocked ? rating.nextSteps : [],
     });
@@ -290,12 +274,12 @@ export function pullRequestReviewReadinessFromReport(markdown: string): PullRequ
       "Record the exact pull request, head, review time, and owned lease before publishing readiness.",
     );
     block(
-      frontMatterValue(markdown, "confidence") !== "high",
+      decision.confidence !== "high",
       "Resolve review confidence",
       "ClawSweeper must reach high confidence before merge readiness is known.",
     );
     block(
-      frontMatterValue(markdown, "decision") !== "keep_open",
+      decision.decision !== "keep_open",
       "Resolve review disposition",
       "Only a keep-open review can publish merge readiness.",
     );
@@ -304,7 +288,7 @@ export function pullRequestReviewReadinessFromReport(markdown: string): PullRequ
       "Resolve maintainer decision",
       "Resolve the maintainer decision shown above before merge.",
     );
-    const product = reportProductReview(markdown);
+    const product = decision.productReview;
     block(
       product.worthIt === "no",
       "Product: not worth merging",
@@ -328,7 +312,7 @@ export function pullRequestReviewReadinessFromReport(markdown: string): PullRequ
       "Maintainer: close or keep this PR",
       "The review found that this PR may be superseded, but the close check did not confirm that the other PR covers all of its work. A maintainer must close this PR or confirm that it still has work to land.",
     );
-    const correctness = reportOverallCorrectness(markdown);
+    const correctness = decision.overallCorrectness;
     if (
       correctness === "patch is incorrect" &&
       !items.some((item) => item.state === "needs-changes")
@@ -351,7 +335,7 @@ export function pullRequestReviewReadinessFromReport(markdown: string): PullRequ
       );
     }
     if (
-      frontMatterValue(markdown, "work_candidate") === "queue_fix_pr" &&
+      decision.workCandidate === "queue_fix_pr" &&
       !items.some((item) => item.state === "needs-changes")
     ) {
       items.push({
@@ -360,7 +344,7 @@ export function pullRequestReviewReadinessFromReport(markdown: string): PullRequ
         detail: "Apply the queued review repair and run a fresh exact-head review before merge.",
       });
     }
-    for (const entry of reportProvenance(markdown)) {
+    for (const entry of decision.provenance) {
       if (entry.verdict !== "overrides_without_reason") continue;
       items.push({
         state: "needs-changes",
@@ -578,29 +562,6 @@ function formatCanonicalLinks(links: readonly string[]): string {
   return `${links.slice(0, -1).join(", ")}, and ${links[links.length - 1]}`;
 }
 
-function workCandidateReasonText(section: string): string {
-  const lines = section.split("\n");
-  const reasonStart = lines.findIndex((line) => line.startsWith("Reason:"));
-  if (reasonStart === -1) return "";
-
-  const reasonLines = [lines[reasonStart]!.slice("Reason:".length).trimStart()];
-  for (let index = reasonStart + 1; index < lines.length; index += 1) {
-    const line = lines[index]!;
-    const nextLine = lines[index + 1] ?? "";
-    if (
-      line.trim() === "" &&
-      (nextLine.startsWith("Cluster refs:") ||
-        nextLine.startsWith("Likely files:") ||
-        nextLine.startsWith("Validation:"))
-    ) {
-      break;
-    }
-    reasonLines.push(line);
-  }
-
-  return reasonLines.join("\n").trim();
-}
-
 function renderCloseComment(
   options: {
     reason: CloseReason;
@@ -704,22 +665,23 @@ export function renderCloseCommentFromReport(
       ? oversizedPullRequestComment(size, frontMatterValue(markdown, "action_taken") === "closed")
       : "";
   }
+  const decision = reportReviewDecision(markdown);
   return neutralizeReviewControlMarkers(
     renderCloseComment(
       {
         reason,
-        summary: reviewSectionValue(markdown, "summary"),
-        bestSolution: reviewSectionValue(markdown, "bestSolution"),
-        reproductionAssessment: reviewSectionValue(markdown, "reproductionAssessment"),
-        solutionAssessment: reviewSectionValue(markdown, "solutionAssessment"),
-        agentsPolicyStatus: reportAgentsPolicyStatus(markdown),
-        evidence: reportEvidence(markdown),
-        likelyOwners: reportLikelyOwners(markdown),
-        fixedPullRequest: fixedPullRequestFromReport(markdown),
-        regressionAssessment: regressionAssessmentFromReport(markdown),
-        regressionProvenance: regressionProvenanceFromReport(markdown),
-        securityReview: reportSecurityReview(markdown),
-        rootCauseCluster: reportRootCauseCluster(markdown),
+        summary: decision.summary,
+        bestSolution: decision.bestSolution,
+        reproductionAssessment: decision.reproductionAssessment,
+        solutionAssessment: decision.solutionAssessment,
+        agentsPolicyStatus: decision.agentsPolicyStatus,
+        evidence: decision.evidence,
+        likelyOwners: decision.likelyOwners,
+        fixedPullRequest: decision.fixedPullRequest ?? null,
+        regressionAssessment: decision.regressionAssessment,
+        regressionProvenance: decision.regressionProvenance,
+        securityReview: decision.securityReview,
+        rootCauseCluster: decision.rootCauseCluster,
         reviewLine: closeReviewLineFromReport(markdown, profile),
         currentItem: {
           repo: markdownRepository(markdown),
@@ -767,13 +729,6 @@ export function normalizeComment(
     },
     profile,
   );
-}
-
-export function reportWorkCandidateReason(markdown: string): string {
-  const workCandidate = reviewSectionValue(markdown, "workCandidate");
-  const reason = workCandidateReasonText(workCandidate);
-  if (!reason || reason.startsWith("_No work-lane recommendation")) return "";
-  return reason;
 }
 
 export function appendPublicSection(lines: string[], heading: string, body: string): void {

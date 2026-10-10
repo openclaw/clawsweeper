@@ -7,6 +7,7 @@ import { sha256 } from "./content-hash.js";
 import { existsSync, mkdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { basename, dirname, relative } from "node:path";
 import { parseReportFrontMatter, replaceFrontMatterValue } from "./report-front-matter.js";
+import { readReviewRecord } from "./review-record.js";
 
 export type MaintainerDecisionKind =
   | "none"
@@ -269,9 +270,15 @@ export function buildDecisionPacketFromReport(
 }
 
 export function renderDecisionPacketPublicBlock(markdown: string): string {
-  let packet: DecisionPacket | null;
+  const record = readReviewRecord(markdown);
+  let packet: Pick<MaintainerDecision, "question" | "rationale" | "options"> | null;
   try {
-    packet = buildDecisionPacketFromReport(markdown);
+    const decision = record?.decision.maintainerDecision;
+    packet = decision
+      ? decision.required && decision.kind !== "none"
+        ? decision
+        : null
+      : buildDecisionPacketFromReport(markdown);
   } catch {
     return "The stored maintainer decision is invalid. Run a fresh review before resolving it.";
   }

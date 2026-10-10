@@ -32,6 +32,7 @@ import {
   reportTelegramVisibleProof,
   reportTestingReview,
   reportVisionFit,
+  reviewMetricsFromReport,
   triagePriorityFromReport,
 } from "./clawsweeper-report-parser.js";
 import type {
@@ -57,7 +58,6 @@ import {
 } from "./decision-packets.js";
 import type { CreateReportOrchestrationDependencies } from "./clawsweeper-report-orchestration-dependencies.js";
 import { renderCloseCommentFromReport } from "./clawsweeper-report-comment-helpers.js";
-import { reviewMetricsFromReport } from "./clawsweeper-orchestration-foundation.js";
 import { fixedPullRequestFromReport } from "./clawsweeper-status-context.js";
 import { asRecord, nonBlankStringOrUndefined } from "./value-coerce.js";
 import { parseIsoMs } from "./iso-time.js";

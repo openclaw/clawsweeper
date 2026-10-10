@@ -25,13 +25,6 @@ import type { CreateReportOrchestrationDependencies } from "./clawsweeper-report
 import { frontMatterStringArray, frontMatterValue } from "./report-front-matter.js";
 import { effectiveReviewStatus } from "./clawsweeper-record-metadata.js";
 import { reportRealBehaviorProofPolicy } from "./clawsweeper-proof-policy.js";
-import {
-  reportFeatureShowcase,
-  reportOverallCorrectness,
-  reportPrRating,
-  reportRealBehaviorProof,
-  reportSecurityReview,
-} from "./clawsweeper-report-parser.js";
 import type { ReportReviewDecision } from "./report-review-decision.js";
 import {
   nextFeatureShowcaseLabels,
@@ -130,20 +123,18 @@ export function createReportLabelPresentation(dependencies: CreateReportOrchestr
     labels = nextImpactLabels(labels, isPullRequest ? [] : decision.impactLabels);
     labels = nextMaturityLabels(labels, isPullRequest ? [] : decision.maturityLabels);
     if (isPullRequest) {
-      // Proof, rating, feature showcase, and status labels read the report text with PR
-      // merge readiness, which reads the same fields.
-      const realBehaviorProof = reportRealBehaviorProof(markdown);
+      const realBehaviorProof = decision.realBehaviorProof;
       labels = nextMergeRiskLabels(labels, decision.mergeRiskLabels);
       labels = nextRealBehaviorProofSufficientLabels(labels, realBehaviorProof);
       labels = nextRealBehaviorProofMediaLabels(labels, realBehaviorProof);
-      labels = nextPrRatingLabels(labels, reportPrRating(markdown), reviewFailed);
+      labels = nextPrRatingLabels(labels, decision.prRating, reviewFailed);
       labels = nextFeatureShowcaseLabels(labels, {
         isPullRequest,
-        itemCategory: frontMatterValue(markdown, "item_category"),
-        requiresNewFeature: frontMatterValue(markdown, "requires_new_feature") === "true",
-        showcase: reportFeatureShowcase(markdown),
-        securityReview: reportSecurityReview(markdown),
-        overallCorrectness: reportOverallCorrectness(markdown),
+        itemCategory: decision.itemCategory,
+        requiresNewFeature: decision.requiresNewFeature,
+        showcase: decision.featureShowcase,
+        securityReview: decision.securityReview,
+        overallCorrectness: decision.overallCorrectness,
       });
       labels = nextPrStatusLabels(
         labels,
@@ -172,7 +163,7 @@ export function createReportLabelPresentation(dependencies: CreateReportOrchestr
     options: ReviewCommentRenderOptions = {},
   ): string {
     const isPullRequest = frontMatterValue(markdown, "type") === "pull_request";
-    const realBehaviorProof = reportRealBehaviorProof(markdown);
+    const realBehaviorProof = decision.realBehaviorProof;
     if (action === "add") {
       const finalReason = finalJustifications.get(label);
       if (finalReason) return finalReason;
@@ -215,7 +206,7 @@ export function createReportLabelPresentation(dependencies: CreateReportOrchestr
           ? "Failed reviews do not select PR readiness rating labels."
           : "Current review failed before PR readiness was assessed, so no rating label should remain.";
       }
-      const rating = reportPrRating(markdown);
+      const rating = decision.prRating;
       const current = ratingLabelForTier(rating.overallTier).name;
       return action === "add"
         ? `Overall readiness is ${themedRatingName(rating.overallTier)}.`
@@ -230,7 +221,7 @@ export function createReportLabelPresentation(dependencies: CreateReportOrchestr
           : "Current PR status no longer selects a status label.";
     }
     if (label === FEATURE_SHOWCASE_LABEL) {
-      const showcase = reportFeatureShowcase(markdown);
+      const showcase = decision.featureShowcase;
       return action === "add"
         ? `${FEATURE_SHOWCASE_LABEL_DESCRIPTION} ${sentence(showcase.reason)}`
         : "Feature showcase labels are add-only; this label is no longer selected by the current review.";
@@ -310,10 +301,10 @@ export function createReportLabelPresentation(dependencies: CreateReportOrchestr
       byLabel.set(label, { label, reason });
     };
     const isPullRequest = frontMatterValue(markdown, "type") === "pull_request";
-    const realBehaviorProof = reportRealBehaviorProof(markdown);
+    const realBehaviorProof = decision.realBehaviorProof;
     if (isPullRequest && frontMatterValue(markdown, "review_status") !== "failed") {
       const proofPolicy = reportRealBehaviorProofPolicy(markdown);
-      const rating = reportPrRating(markdown);
+      const rating = decision.prRating;
       const ratingLabel = ratingLabelForTier(rating.overallTier).name;
       const previousRatingLabel = frontMatterStringArray(markdown, "labels").find(
         (label) => PR_RATING_LABEL_NAMES.has(label) && label !== ratingLabel,
@@ -331,15 +322,15 @@ export function createReportLabelPresentation(dependencies: CreateReportOrchestr
           rating.proofTier,
         )} and patch quality is ${themedRatingName(rating.patchTier)}.${changed}${requiredProofContext}`,
       );
-      const featureShowcase = reportFeatureShowcase(markdown);
+      const featureShowcase = decision.featureShowcase;
       if (
         shouldApplyFeatureShowcaseLabel({
           isPullRequest,
-          itemCategory: frontMatterValue(markdown, "item_category"),
-          requiresNewFeature: frontMatterValue(markdown, "requires_new_feature") === "true",
+          itemCategory: decision.itemCategory,
+          requiresNewFeature: decision.requiresNewFeature,
           showcase: featureShowcase,
-          securityReview: reportSecurityReview(markdown),
-          overallCorrectness: reportOverallCorrectness(markdown),
+          securityReview: decision.securityReview,
+          overallCorrectness: decision.overallCorrectness,
         })
       ) {
         add(

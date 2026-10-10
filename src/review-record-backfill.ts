@@ -2,7 +2,6 @@ import { readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { argNumber, boolArg, stringArg, type Args } from "./clawsweeper-args.js";
-import { reviewMetricsFromReport } from "./clawsweeper-orchestration-foundation.js";
 import { parseOversizedPrSourceSnapshot } from "./clawsweeper-oversized-pr-freshness.js";
 import { parseOversizedPullRequestEvidence } from "./clawsweeper-oversized-pr-policy.js";
 import { nextStepFromReport } from "./clawsweeper-next-step.js";
@@ -36,6 +35,7 @@ import {
   reportTelegramVisibleProof,
   reportTestingReview,
   reportVisionFit,
+  reviewMetricsFromReport,
   triagePriorityFromReport,
 } from "./clawsweeper-report-parser.js";
 import {

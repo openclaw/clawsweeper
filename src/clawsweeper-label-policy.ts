@@ -14,7 +14,7 @@ import {
   type RealBehaviorProofPolicy,
 } from "./clawsweeper-proof-policy.js";
 import { pullRequestReviewReadinessFromReport } from "./clawsweeper-report-comment-helpers.js";
-import { mergeRiskOptionsFromReport, reportSecurityReview } from "./clawsweeper-report-parser.js";
+import { reportReviewDecision } from "./report-review-decision.js";
 import { isAutomationReportAuthor } from "./clawsweeper-item-policy.js";
 import type {
   FeatureShowcase,
@@ -203,12 +203,13 @@ export function prStatusLabelKindFromReport(
   currentLabels: readonly string[],
 ): PrStatusLabelKind | null {
   if (frontMatterValue(markdown, "type") !== "pull_request") return null;
+  const decision = reportReviewDecision(markdown);
   return prStatusLabelKind({
     reviewFailed: frontMatterValue(markdown, "review_status") === "failed",
     proofPolicy: reportRealBehaviorProofPolicy(markdown),
     beforeMergeItems: pullRequestReviewReadinessFromReport(markdown).items,
-    securityReview: reportSecurityReview(markdown),
-    mergeRiskOptions: mergeRiskOptionsFromReport(markdown),
+    securityReview: decision.securityReview,
+    mergeRiskOptions: decision.mergeRiskOptions,
     hasAutomergeLabel: currentLabels.includes(AUTOMERGE_LABEL),
     hasRepairLoopPauseLabel: hasRepairLoopPauseLabel(currentLabels),
     hasRecentReReviewRequest: hasRecentReReviewRequest(
