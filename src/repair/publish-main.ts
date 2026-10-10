@@ -791,7 +791,10 @@ function recordReconciliationDeferralIfConfigured(
 function isCanonicalInfrastructureError(error: unknown): boolean {
   return (
     error instanceof CanonicalRecordTupleRequestError &&
-    (error.status === 401 || error.status === 403)
+    (error.status === 401 ||
+      error.status === 403 ||
+      error.status === 503 ||
+      /(?:snapshot_|state_|storage_|store_)unavailable/.test(error.code))
   );
 }
 

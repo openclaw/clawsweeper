@@ -144,6 +144,38 @@ test("publish-main never retries permanent HTTP failures and aborts authenticati
   }
 });
 
+test("publish-main keeps persistent infrastructure failures fatal after bounded retries", async (t) => {
+  for (const [status, code] of [
+    [503, "unavailable"],
+    [500, "snapshot_unavailable"],
+    [500, "state_unavailable"],
+    [500, "storage_unavailable"],
+    [500, "store_unavailable"],
+  ] as const) {
+    const fixture = retryPublicationFixture(t);
+    writeText(
+      fixture.runtime.root,
+      `${tupleRoot}/items/43.md`,
+      recordMarkdown("2026-07-26T02:00:00.000Z", "after").replace("number: 42", "number: 43"),
+    );
+    const keys: string[] = [];
+    await assert.rejects(
+      publishMainWithStateAppend(fixture.options, {
+        ...fixture.runtime,
+        fetchImpl: (async (_input, init) => {
+          const { key } = JSON.parse(String(init?.body));
+          assert.equal(typeof key, "string");
+          keys.push(key);
+          return Response.json({ error: code }, { status });
+        }) as typeof fetch,
+      }),
+      new RegExp(`returned ${status}: ${code}`),
+    );
+    assert.deepEqual(keys, Array(5).fill("openclaw-openclaw/42"));
+    assert.deepEqual(fixture.waits, [10_000, 20_000, 40_000, 50_000]);
+  }
+});
+
 test("publish-main honors Retry-After without exceeding the retry wait budget", async (t) => {
   for (const retryAfter of ["65", "Sat, 10 Oct 2026 00:01:05 GMT", "121"]) {
     const fixture = retryPublicationFixture(t);
