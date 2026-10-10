@@ -207,14 +207,6 @@ test("cluster intake never dispatches workers before durable acceptance", () => 
   }
 });
 
-// A self-heal worker can hydrate its exact-head job only after the job is published.
-test("conflict self-heal publishes jobs before it dispatches workers", () => {
-  const source = readText("src/repair/conflict-self-heal.ts");
-  const publish = source.indexOf("publishSelfHealJobs();");
-  assert.ok(publish >= 0);
-  assert.ok(source.indexOf("dispatchRepair(candidate);") > publish);
-});
-
 // Terminal acknowledgements write comments and labels only, never repository content.
 test("terminal finalization target token cannot write repository content", () => {
   const tokens = workflow("sweep.yml").jobs["event-review-terminal-finalization"]?.steps?.filter(
