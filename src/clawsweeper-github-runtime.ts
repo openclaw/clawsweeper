@@ -625,8 +625,20 @@ function githubEtagKeyForArgs(
   for (let index = 1; index < args.length; index += 1) {
     if (args[index] !== "-H" && args[index] !== "--header") continue;
     const header = String(args[index + 1] || "");
-    const match = /^accept:\s*(.+)$/i.exec(header);
-    if (match) mediaType = match[1];
+    if (header.slice(0, 7).toLowerCase() === "accept:") {
+      const value = header.slice(7);
+      // Preserve whitespace-only matches without backtracking over the header value.
+      const candidate = value.trimStart() || value.slice(-1);
+      if (
+        candidate &&
+        !candidate.includes("\r") &&
+        !candidate.includes("\n") &&
+        !candidate.includes("\u2028") &&
+        !candidate.includes("\u2029")
+      ) {
+        mediaType = candidate;
+      }
+    }
     index += 1;
   }
   const configuredPool = String(preparedEnv?.CLAWSWEEPER_GITHUB_POOL_CLASS || "");

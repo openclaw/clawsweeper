@@ -103,6 +103,57 @@ test("projected GitHub reads bypass the durable ETag broker", (t) => {
   }
 });
 
+test("runtime ETag Accept parsing preserves header semantics for long and malformed values", async (t) => {
+  process.env.EXACT_EVENT_PUBLICATION = "true";
+  const gh = installGhFixture(
+    t,
+    `
+    if (args.includes("-i") || args.includes("--include")) {
+      process.stdout.write('HTTP/2 200 OK\\nEtag: "accept-test"\\n\\n');
+    }
+    process.stdout.write(JSON.stringify({ ok: true }));
+  `,
+  );
+  const brokerRequests = await installEtagBroker(t, gh.root);
+  const raw = "application/vnd.github.raw+json";
+  const html = "application/vnd.github.html+json";
+  const padding = " ".repeat(16_384);
+  const cases: Array<{ headers: string[]; mediaType: string | null }> = [
+    { headers: [], mediaType: "application/vnd.github+json" },
+    { headers: ["-H", `aCcEpT:\t ${raw.toUpperCase()} \t`], mediaType: raw },
+    { headers: ["-H", `Accept:${raw}`, "--header", `Accept:${html}`], mediaType: html },
+    { headers: ["-H", `Accept:${raw}`, "--header", "Accept:"], mediaType: raw },
+    { headers: ["-H", `Accept:${raw}`, "--header", "Accept: \t "], mediaType: null },
+    { headers: ["-H", `Accept:${raw}`, "--header", "Accept:\n"], mediaType: raw },
+    { headers: ["-H", `Accept:${raw}`, "--header", "X-Accept:ignored"], mediaType: raw },
+    { headers: ["--header", `Accept:${padding}${raw}`], mediaType: raw },
+    { headers: ["--header", `Accept:\r\n\t${html}`], mediaType: html },
+    ...["\r", "\n", "\u2028", "\u2029"].map((terminator) => ({
+      headers: ["-H", `Accept:${raw}`, "--header", `Accept:${padding}${html}${terminator}`],
+      mediaType: raw,
+    })),
+    {
+      headers: ["-H", `Accept:${raw}`, "--header", `Accept:${padding}${html}\ninvalid`],
+      mediaType: raw,
+    },
+  ];
+
+  for (const [index, { headers, mediaType }] of cases.entries()) {
+    const lookupsBefore = brokerRequests().filter(({ operation }) => operation === "lookup").length;
+    assert.deepEqual(
+      runtime.withGitHubRun(() =>
+        JSON.parse(runtime.gh(["api", "repos/openclaw/openclaw/pulls/42", ...headers])),
+      ),
+      { ok: true },
+    );
+    const lookups = brokerRequests().filter(({ operation }) => operation === "lookup");
+    assert.equal(lookups.length, lookupsBefore + (mediaType === null ? 0 : 1), `case ${index}`);
+    if (mediaType !== null) {
+      assert.equal(lookups.at(-1)?.value.media_type, mediaType, `case ${index}`);
+    }
+  }
+});
+
 test("runtime ETags revalidate through gh and keep retained bodies scoped to one run", async (t) => {
   const previous = {
     GH_TOKEN: process.env.GH_TOKEN,

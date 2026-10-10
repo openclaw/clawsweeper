@@ -1,1 +1,1 @@
-- Remove GitHub execution and context factories and their test-only exports; isolate mutation receipt runners at review/apply command boundaries and retain repository-qualified activity fallbacks only for the current run.
+- Remove GitHub execution and context factories and their test-only exports; isolate mutation receipt runners at review/apply command boundaries, retain repository-qualified activity fallbacks only for the current run, and parse ETag Accept headers without backtracking.
