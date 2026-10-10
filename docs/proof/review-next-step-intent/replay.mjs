@@ -6,6 +6,10 @@ import { join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
 
+throw new Error(
+  "Historical-only proof: these no-record and malformed-intent fixtures require the retired report parser. Use the original driver and README from pinned pre-cutover commit dbb40525904c2176d192ef6e92c588853e676207 (historical baseline 39592f04448bdc34d37b9e7f8d5c5d7c828b73f2), not the current runtime.",
+);
+
 const root = fileURLToPath(new URL("../../../", import.meta.url));
 const { values } = parseArgs({
   options: {

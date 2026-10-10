@@ -1,15 +1,11 @@
 import type { CreateApplyDecisionWorkflowDependencies } from "./clawsweeper-apply-dependencies.js";
 import type { ActionTaken, CloseReason, Decision, Item } from "./clawsweeper-types.js";
 import { reportReviewDecision } from "./report-review-decision.js";
-import {
-  readReviewRecord,
-  readReviewRecordOrLegacy,
-  ReviewRecordFormatError,
-} from "./review-record.js";
+import { requireReviewRecord, ReviewRecordFormatError } from "./review-record.js";
 
 type ApplyCloseDecisionDependencies = Pick<
   CreateApplyDecisionWorkflowDependencies,
-  "reportDecision" | "validateCloseDecision"
+  "validateCloseDecision"
 >;
 type CloseDecisionValidation =
   | { ok: true }
@@ -26,7 +22,7 @@ function freshReviewReason(error: unknown): string {
  */
 export function unreadableReviewRecordReason(markdown: string): string | null {
   try {
-    readReviewRecord(markdown);
+    requireReviewRecord(markdown);
     return null;
   } catch (error) {
     return freshReviewReason(error);
@@ -35,14 +31,8 @@ export function unreadableReviewRecordReason(markdown: string): string | null {
 
 // The apply checks the close that it will do. The review record gives the reviewed
 // fields; the apply supplies the current close reason and host proof policy.
-function applyCloseDecision(
-  markdown: string,
-  closeReason: CloseReason,
-  reportDecision: ApplyCloseDecisionDependencies["reportDecision"],
-): Decision {
-  const { decision } = readReviewRecordOrLegacy(markdown, (report) =>
-    reportDecision(report, closeReason),
-  );
+function applyCloseDecision(markdown: string, closeReason: CloseReason): Decision {
+  const { decision } = requireReviewRecord(markdown);
   const review = reportReviewDecision(markdown);
   return {
     ...decision,
@@ -67,7 +57,7 @@ export function validateReportClose(
 ): CloseDecisionValidation {
   let decision: Decision;
   try {
-    decision = applyCloseDecision(markdown, closeReason, dependencies.reportDecision);
+    decision = applyCloseDecision(markdown, closeReason);
   } catch (error) {
     return {
       ok: false,

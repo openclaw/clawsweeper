@@ -2,13 +2,7 @@ import { renderReviewCommentFromReport } from "../dist/clawsweeper-report-commen
 import assert from "node:assert/strict";
 import test from "node:test";
 import { parseDecision, reviewAutomationMarkersFromReport } from "../dist/clawsweeper.js";
-import {
-  reportChangeExample,
-  reportPrRating,
-  reportProductReview,
-  reportProvenance,
-  reportTestingReview,
-} from "../dist/clawsweeper-report-parser.js";
+import { reportReviewDecision } from "../dist/report-review-decision.js";
 import type {
   PrRating,
   ProductReview,
@@ -16,11 +10,8 @@ import type {
   RealBehaviorProof,
   TestingReview,
 } from "../src/clawsweeper-types.ts";
-import {
-  compatibilityReport,
-  generatedCompatibilityReport,
-} from "./compatibility-proof-fixture.ts";
-import { closeDecision, item, prRatingReportSection } from "./helpers.ts";
+import { generatedCompatibilityReport } from "./compatibility-proof-fixture.ts";
+import { closeDecision, item } from "./helpers.ts";
 
 const worthyProduct: ProductReview = {
   kind: "bug_fix",
@@ -39,21 +30,6 @@ const sufficientProof: RealBehaviorProof = {
   summary: "A terminal transcript from the real CLI shows the fixed behavior.",
   evidenceKind: "terminal",
   needsContributorAction: false,
-};
-const notApplicableReview = {
-  productReview: {
-    kind: "not_applicable",
-    userProblem: "",
-    fixScope: "not_applicable",
-    worthIt: "not_applicable",
-    reason: "",
-  } satisfies ProductReview,
-  provenance: [] as ProvenanceEntry[],
-  testingReview: {
-    proofPath: "not_applicable",
-    lowValueTests: [],
-    missingE2e: "",
-  } satisfies TestingReview,
 };
 const topRating: PrRating = {
   proofTier: "S",
@@ -143,13 +119,14 @@ test("report round trip preserves product, provenance, and testing reviews", () 
     provenance,
     testingReview,
   });
-  assert.deepEqual(reportChangeExample(report), changeExample);
-  assert.deepEqual(reportProductReview(report), {
+  const decision = reportReviewDecision(report);
+  assert.deepEqual(decision.changeExample, changeExample);
+  assert.deepEqual(decision.productReview, {
     ...productReview,
     reason: "Works as designed; the user prefers a change.",
   });
-  assert.deepEqual(reportProvenance(report), provenance);
-  assert.deepEqual(reportTestingReview(report), testingReview);
+  assert.deepEqual(decision.provenance, provenance);
+  assert.deepEqual(decision.testingReview, testingReview);
   for (const line of [
     "product_kind: preference",
     "product_worth: no",
@@ -160,17 +137,6 @@ test("report round trip preserves product, provenance, and testing reviews", () 
   ]) {
     assert.ok(report.includes(`\n${line}\n`), line);
   }
-});
-
-test("old reports read as not applicable and keep their stored rating", () => {
-  const old = `${compatibilityReport({
-    metadata: { pr_rating_overall: "A", pr_rating_proof: "A", pr_rating_patch: "A" },
-  })}\n${prRatingReportSection({ overallTier: "A", proofTier: "A", patchTier: "A" })}`;
-  assert.deepEqual(reportChangeExample(old), { scenario: "", before: "", after: "" });
-  assert.deepEqual(reportProductReview(old), notApplicableReview.productReview);
-  assert.deepEqual(reportProvenance(old), []);
-  assert.deepEqual(reportTestingReview(old), notApplicableReview.testingReview);
-  assert.equal(tiers(reportPrRating(old)), "A/A/A");
 });
 
 function readiness(overrides: Record<string, unknown>) {

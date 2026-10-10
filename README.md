@@ -470,6 +470,12 @@ Review is proposal-only. It never closes items.
 Apply reads existing reports and mutates GitHub only when the stored review is
 still valid.
 
+Reviewer decisions come only from the typed `review_record` stored in each report.
+A missing or unreadable record requires a fresh review: apply records
+`skipped_changed_since_review` without calling GitHub, and decision packets and
+public decision renderers do not infer decisions from report prose. The completed
+backfill command and workflow have been retired.
+
 - Updates the single marker-backed Codex automated review comment in place.
 - Closes only unchanged high-confidence proposals.
 - Keeps the durable review comment. Applied PR closes also post one idempotent,

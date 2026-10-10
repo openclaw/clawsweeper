@@ -606,9 +606,7 @@ export function renderReviewCommentFromReport(
       : reviewAutomationMarkersFromReport(markdown, reviewReadiness);
     return [body, markers, reviewVersionMarkerFromReport(markdown)].filter(Boolean).join("\n\n");
   }
-  const requiresMaintainerDecision =
-    reviewDecision.maintainerDecisionInvalid ||
-    reviewDecision.maintainerDecision?.required === true;
+  const requiresMaintainerDecision = reviewDecision.maintainerDecision?.required === true;
   const body =
     decision === "close" &&
     reason !== "none" &&

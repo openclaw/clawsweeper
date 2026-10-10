@@ -6,6 +6,10 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
+throw new Error(
+  "Historical-only proof: these no-record fixtures require the retired report parser. Use the original driver and README from pinned pre-cutover commit dbb40525904c2176d192ef6e92c588853e676207 (historical baseline f72ea010c1d7fd134b1bd0826b3a707778c312bc), not the current runtime.",
+);
+
 const recipe = dirname(fileURLToPath(import.meta.url));
 const root = resolve(recipe, "../../..");
 const output = process.argv[2];

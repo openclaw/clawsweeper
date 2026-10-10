@@ -1,0 +1,1 @@
+- Require a readable typed review record before applying or publishing reviewer decisions, retire the completed backfill command, and bind intake revisions directly to typed job inputs. Reports without a record now require a fresh review without GitHub mutations.

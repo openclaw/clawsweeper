@@ -1,5 +1,19 @@
 # PR next-step intent renderer proof
 
+> **Historical-only after S7b.** `replay.mjs` intentionally throws before
+> execution. Its frozen paired inputs include absent records and malformed
+> intent whose prose fallback has been retired. Recover the original driver and
+> README from pinned pre-cutover commit
+> `dbb40525904c2176d192ef6e92c588853e676207`, using that runtime and the historical
+> baseline below. Do not change these old expectations to accept current results.
+>
+> Current typed decision authority and projections are covered in
+> `test/review-record.test.ts`, `test/review-comment-rendering.test.ts`, and
+> `test/pr-review-quality.test.ts`.
+> Saved S6b `proof.ts`/`readers.mjs` handoff drivers establish saved-corpus
+> render/apply/packet parity, not every synthetic legacy intent case below.
+> Missing records now require a fresh review; saved evidence remains unchanged.
+
 - Status: historical proof recipe, not an operator runbook
 - Owner: ClawSweeper review maintainers
 - Source: [replay](replay.mjs), [report producer](../../../src/clawsweeper-report-document.ts),

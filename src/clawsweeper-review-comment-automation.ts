@@ -140,7 +140,6 @@ export function reviewAutomationMarkersFromReport(
   // A maintainer opt-in can waive a hold only when that hold is the one Before-merge item.
   // Security attention is never waivable.
   const onlyBlocker = reviewReadiness.items.length === 1;
-  if (reviewed.maintainerDecisionInvalid) return humanReviewMarkers("normalization_failed");
   if (reviewed.maintainerDecision?.required) {
     return humanReviewMarkers(
       securityNeedsAttention ? "security" : onlyBlocker ? "maintainer_decision" : "blocked",

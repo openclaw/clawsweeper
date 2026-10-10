@@ -1,5 +1,19 @@
 # Report front-matter repro
 
+> **Historical-only after S7b.** Both `run-proof.mjs` and `runtime-proof.mjs`
+> intentionally throw before execution. Their frozen no-record fixtures assume
+> prose can supply reviewed decisions. Recover the original drivers and README
+> from pinned pre-cutover commit `dbb40525904c2176d192ef6e92c588853e676207`, using
+> its runtime and the historical baseline below. Do not build current source for
+> these old expectations. Saved evidence is unchanged.
+>
+> Current typed-fixture ambiguity/injected-field coverage lives in
+> `test/decision-packets.test.ts`; record authority and missing-record rejection
+> live in `test/review-record.test.ts`, `test/review-comment-rendering.test.ts`,
+> and the apply-close-decision tests. Saved S6b `proof.ts`/`readers.mjs` handoff
+> drivers establish saved-corpus render/apply/packet parity, not a replay of every
+> synthetic legacy case below.
+
 - Status: proposed proof methodology; no execution receipt for the integrated PR
 - Owner: ClawSweeper report and repair maintainers
 - Source of truth: [shared structure reader](../../../src/report-front-matter.ts),

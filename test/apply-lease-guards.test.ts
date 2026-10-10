@@ -127,7 +127,6 @@ test("apply does not close an item after it loses its mutation lease during clos
         closeReasonEnabled: () => true,
         implementedOnMainPullRequestProvenanceApplyBlock: () => null,
         validateCloseDecision: () => ({ ok: true }),
-        reportDecision: () => ({}),
         closeReasonApplyAgeSkipReason: () => null,
         normalizeLabelName: (label: string) => label,
         resetGuardReadCache: () => undefined,

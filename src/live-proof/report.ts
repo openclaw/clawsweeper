@@ -7,7 +7,7 @@ import {
 } from "../clawsweeper-policy.js";
 import type { LiveProofPlan } from "../clawsweeper-types.js";
 import { frontMatterValue } from "../report-front-matter.js";
-import { readReviewRecord } from "../review-record.js";
+import { requireReviewRecord } from "../review-record.js";
 import {
   parseAttachedLiveVerification,
   renderLiveVerificationCommentBlock,
@@ -24,8 +24,8 @@ const parseRecordedLiveProofPlan = createDecisionParser({
 }).parseLiveProofPlan;
 
 export function reportLiveProofPlan(markdown: string): LiveProofPlan {
-  // The plan is host-authored, but a corrupt review record must never authorize execution.
-  readReviewRecord(markdown);
+  // Host-authored plans cannot authorize execution without a readable review record.
+  requireReviewRecord(markdown);
   const section = reportSectionValue(markdown, LIVE_PROOF_SECTION_HEADING);
   const status = reportSectionLineValue(section, "Status");
   const surface = reportSectionLineValue(section, "Surface");

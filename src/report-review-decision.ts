@@ -1,41 +1,8 @@
 import { isExternalPullRequestReport, reviewSectionValue } from "./clawsweeper-record-metadata.js";
 import { AUTHORITY_CHAIN_PROOF_MARKER, PROOF_OVERRIDE_LABEL } from "./clawsweeper-policy.js";
-import {
-  impactLabelsFromReport,
-  labelJustificationsFromReport,
-  maturityLabelsFromReport,
-  mergeRiskLabelsFromReport,
-  mergeRiskOptionsFromReport,
-  reportAgentsPolicyStatus,
-  reportChangeExample,
-  reportEvidence,
-  reportFeatureShowcase,
-  reportLikelyOwners,
-  reportOverallConfidenceScore,
-  reportOverallCorrectness,
-  reportProductReview,
-  reportProvenance,
-  reportPrRating,
-  reportRealBehaviorProof,
-  reportReviewFindings,
-  reportRootCauseCluster,
-  reportTestingReview,
-  reportSecurityReview,
-  reportTelegramVisibleProof,
-  reportWorkCandidateReason,
-  reviewMetricsFromReport,
-  triagePriorityFromReport,
-} from "./clawsweeper-report-parser.js";
 import type { Decision, RealBehaviorProof } from "./clawsweeper-types.js";
 import { frontMatterStringArray, frontMatterValue } from "./report-front-matter.js";
-import { readReviewRecord } from "./review-record.js";
-import { maintainerDecisionFromReport } from "./decision-packets.js";
-import { nextStepFromReport } from "./clawsweeper-next-step.js";
-import {
-  fixedPullRequestFromReport,
-  regressionAssessmentFromReport,
-  regressionProvenanceFromReport,
-} from "./clawsweeper-status-context.js";
+import { requireReviewRecord } from "./review-record.js";
 import {
   isPublicRegressionProvenance,
   isRegressionAssessment,
@@ -192,14 +159,9 @@ function reportLineText(value: string): string {
   return newline < 0 ? value : value.slice(0, newline);
 }
 
-/**
- * Reads the reviewed decision of a report from its typed review_record. A report from
- * before review_record existed gets the decision from its text. A record that does not
- * read throws ReviewRecordFormatError: it gets no fallback.
- */
+/** Reads the typed decision; missing or corrupt records require a fresh review. */
 export function reportReviewDecision(markdown: string): ReportReviewDecision {
-  const record = readReviewRecord(markdown);
-  if (!record) return legacyReportReviewDecision(markdown);
+  const record = requireReviewRecord(markdown);
   const reviewedMain = frontMatterValue(markdown, "main_sha") ?? "";
   const repo = frontMatterValue(markdown, "repository");
   const { decision } = record;
@@ -255,103 +217,5 @@ export function reportReviewDecision(markdown: string): ReportReviewDecision {
     regressionProvenance: isPublicRegressionProvenance(decision.regressionProvenance)
       ? decision.regressionProvenance
       : null,
-  };
-}
-
-// The report readers that labels used before review_record existed. Remove this
-// fallback when the backfill shows that no stored report is without a record.
-function legacyReportReviewDecision(markdown: string): ReportReviewDecision {
-  const labels = {
-    triagePriority: triagePriorityFromReport(markdown),
-    impactLabels: impactLabelsFromReport(markdown),
-    mergeRiskLabels: mergeRiskLabelsFromReport(markdown),
-    maturityLabels: maturityLabelsFromReport(markdown),
-  };
-  // An older report can have no value, or a value that is not in the type. The labels
-  // compare these values to known values, as they did before review_record existed.
-  const stored = <T extends string>(key: string) => frontMatterValue(markdown, key) as T;
-  const nextStep = nextStepFromReport(markdown);
-  let maintainerDecision = null;
-  let maintainerDecisionError: string | undefined;
-  let maintainerDecisionInvalid = false;
-  try {
-    maintainerDecision = maintainerDecisionFromReport(markdown);
-  } catch (error) {
-    maintainerDecisionError = error instanceof Error ? error.message : String(error);
-    maintainerDecisionInvalid = true;
-  }
-  return {
-    ...labels,
-    labelJustifications: labelJustificationsFromReport(markdown, labels),
-    telegramVisibleProof: reportTelegramVisibleProof(markdown),
-    securityReview: reportSecurityReview(markdown),
-    itemCategory: stored("item_category"),
-    reproductionStatus: stored("reproduction_status"),
-    reproductionConfidence: stored("reproduction_confidence"),
-    requiresNewFeature: frontMatterValue(markdown, "requires_new_feature") === "true",
-    requiresNewConfigOption: frontMatterValue(markdown, "requires_new_config_option") === "true",
-    requiresProductDecision: frontMatterValue(markdown, "requires_product_decision") === "true",
-    implementationComplexity: stored("implementation_complexity"),
-    autoImplementationCandidate: stored("auto_implementation_candidate"),
-    workCandidate: stored("work_candidate"),
-    workConfidence: stored("work_confidence"),
-    workPrompt: reviewSectionValue(markdown, "repairWorkPrompt"),
-    workValidation: frontMatterStringArray(markdown, "work_validation"),
-    workLikelyFiles: frontMatterStringArray(markdown, "work_likely_files"),
-    decision: stored("decision"),
-    closeReason: stored("close_reason"),
-    visionFit: stored("vision_fit"),
-    publishedCloseComment: reviewSectionValue(markdown, "closeComment"),
-    visionFitEvidence: frontMatterStringArray(markdown, "vision_fit_evidence"),
-    workPriority: stored("work_priority"),
-    workClusterRefs: frontMatterStringArray(markdown, "work_cluster_refs"),
-    confidence: stored("confidence"),
-    summary: reviewSectionValue(markdown, "summary"),
-    changeSummary: reviewSectionValue(markdown, "changeSummary"),
-    changeExample: reportChangeExample(markdown),
-    systemContext: reviewSectionValue(markdown, "systemContext"),
-    architectureDiagram: reviewSectionValue(markdown, "architectureDiagram"),
-    evidence: reportEvidence(markdown),
-    likelyOwners: reportLikelyOwners(markdown),
-    risks: reviewSectionValue(markdown, "risks"),
-    bestSolution: reviewSectionValue(markdown, "bestSolution"),
-    reproductionAssessment: reviewSectionValue(markdown, "reproductionAssessment"),
-    solutionAssessment: reviewSectionValue(markdown, "solutionAssessment"),
-    mergeRiskOptions: mergeRiskOptionsFromReport(markdown),
-    reviewMetrics: reviewMetricsFromReport(markdown),
-    rootCauseCluster: reportRootCauseCluster(markdown),
-    agentsPolicyStatus: reportAgentsPolicyStatus(markdown),
-    productReview: reportProductReview(markdown),
-    provenance: reportProvenance(markdown),
-    testingReview: reportTestingReview(markdown),
-    reviewFindings: reportReviewFindings(markdown),
-    realBehaviorProof: reportRealBehaviorProof(markdown),
-    authorityChainProofRequired: reviewSectionValue(markdown, "realBehaviorProof")
-      .split("\n")
-      .some((line) => line.trimStart().startsWith(`Summary: ${AUTHORITY_CHAIN_PROOF_MARKER}`)),
-    prRating: reportPrRating(markdown),
-    featureShowcase: reportFeatureShowcase(markdown),
-    overallCorrectness: reportOverallCorrectness(markdown),
-    overallConfidenceScore: reportOverallConfidenceScore(markdown),
-    ...(nextStep ? { nextStep } : {}),
-    workReason: reportWorkCandidateReason(markdown),
-    maintainerDecision,
-    maintainerDecisionInvalid,
-    fixedRelease: frontMatterValue(markdown, "fixed_release") ?? null,
-    fixedSha: frontMatterValue(markdown, "fixed_sha") ?? null,
-    fixedAt: frontMatterValue(markdown, "fixed_at") ?? null,
-    evidenceMarkdown: reviewSectionValue(markdown, "evidence"),
-    ...(maintainerDecisionError ? { maintainerDecisionError } : {}),
-    fixedPullRequestNumber: Number(frontMatterValue(markdown, "fixed_pr_number")),
-    fixedPullRequestFields: {
-      number: frontMatterValue(markdown, "fixed_pr_number"),
-      url: frontMatterValue(markdown, "fixed_pr_url"),
-      confidence: frontMatterValue(markdown, "fixed_pr_confidence"),
-      source: frontMatterValue(markdown, "fixed_pr_source"),
-      mergedAt: frontMatterValue(markdown, "fixed_pr_merged_at"),
-    },
-    fixedPullRequest: fixedPullRequestFromReport(markdown),
-    regressionAssessment: regressionAssessmentFromReport(markdown),
-    regressionProvenance: regressionProvenanceFromReport(markdown),
   };
 }

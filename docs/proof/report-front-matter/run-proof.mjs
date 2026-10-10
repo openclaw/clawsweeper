@@ -19,6 +19,10 @@ import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 
+throw new Error(
+  "Historical-only proof: do not build current archives for the retired no-record fixture contract. Use the original driver and README from pinned pre-cutover commit dbb40525904c2176d192ef6e92c588853e676207 (historical baseline aba9826ab8c010a8f5a2b4411484dc4cb7e94f51).",
+);
+
 const { values } = parseArgs({
   options: Object.fromEntries(
     [

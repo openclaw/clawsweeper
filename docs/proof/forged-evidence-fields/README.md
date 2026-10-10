@@ -1,5 +1,20 @@
 # Forged evidence continuation fields proof
 
+> **Historical-only after S7b.** The driver intentionally throws before execution.
+> Its frozen assertions exercise the retired Markdown parser, not today's typed
+> record authority. Recover the original driver and this README from pinned
+> pre-cutover commit `dbb40525904c2176d192ef6e92c588853e676207` and use that
+> checkout's runtime and historical baseline recipe below. Do not run these
+> commands against current source or change the frozen expectations to make them pass.
+>
+> Current replacement coverage is the record-authority and projection coverage in
+> `test/review-record.test.ts`, `test/review-comment-rendering.test.ts`, and
+> `test/pr-review-quality.test.ts`, together
+> with the saved S6b render/apply/decision-packet parity drivers (`s6b/proof.ts` and
+> `s6b/readers.mjs` in the review-record handoff). That parity compares the saved
+> corpus at the pinned pre-cutover head; it does not re-exercise this historical
+> synthetic parser exploit. Saved evidence and transcripts are unchanged.
+
 Evidence entries are stored in the durable report as a bold list heading
 followed by `- repo:`, `- file:`, `- sha:`, and `- command:` continuation
 items, and related people as a heading followed by `- reason:`, `- commits:`,

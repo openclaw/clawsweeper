@@ -37,6 +37,7 @@ import {
 } from "../../dist/limits.js";
 
 import { withReviewRecord } from "../helpers.ts";
+import { ReviewRecordFormatError } from "../../dist/review-record.js";
 const APPLY_RUN_PATH = ".github/workflows/sweep.yml";
 const DEFAULT_APPLY_TITLE = "Apply default ClawSweeper closures for openclaw/openclaw";
 
@@ -65,10 +66,10 @@ real_behavior_proof_status: missing
       needsContributorAction: false,
     },
   });
-  assert.deepEqual(pullRequestClosePromotionSignalsForTest(legacy), {
-    authorBudget: true,
-    lowSignal: true,
-  });
+  assert.throws(
+    () => pullRequestClosePromotionSignalsForTest(legacy),
+    /review_record: missing record/,
+  );
   assert.deepEqual(pullRequestClosePromotionSignalsForTest(recorded), {
     authorBudget: false,
     lowSignal: false,
@@ -106,7 +107,19 @@ item_created_at: 2024-01-01T00:00:00Z
     minAgeMinutes: null,
   };
   try {
-    write(item, legacy);
+    write(item, legacy, false);
+    assert.throws(
+      () => withCwd(root, () => proposedItemNumbers(options)),
+      /review_record: missing record/,
+    );
+    write(
+      item,
+      withReviewRecord(legacy, {
+        decision: "close",
+        confidence: "high",
+        closeReason: "implemented_on_main",
+      }),
+    );
     assert.deepEqual(
       withCwd(root, () => proposedItemNumbers(options)),
       [123],
@@ -144,195 +157,26 @@ const CANONICAL_PULL_REQUEST_CLUSTER = `root_cause_cluster: ${JSON.stringify({
   ],
 })}`;
 
-test("repair close-promotion readers prefer durable proof and rating front matter", () => {
-  const report = `---
-pr_rating_overall: F
-pr_rating_proof: F
-real_behavior_proof_status: missing
----
-
-## Summary
-
-## PR Rating
-
-Overall tier: A
-
-Proof tier: A
-
-## Real Behavior Proof
-
-Status: sufficient
-
-## PR Rating
-
-Overall tier: F
-
-Proof tier: F
-
-## Real Behavior Proof
-
-Status: missing
-`;
-
-  assert.deepEqual(pullRequestClosePromotionSignalsForTest(report), {
-    authorBudget: true,
-    lowSignal: true,
-  });
-});
-
-test("repair close-promotion readers fail closed on body metadata after the leading block", () => {
-  const report = `---
-type: pull_request
----
-
-## Summary
-
-pr_rating_overall: A
-pr_rating_proof: A
-real_behavior_proof_status: sufficient
-
-## PR Rating
-
-Overall tier: F
-
-Proof tier: F
-
-## Real Behavior Proof
-
-Status: missing
-`;
-
-  assert.deepEqual(pullRequestClosePromotionSignalsForTest(report), {
-    authorBudget: false,
-    lowSignal: false,
-  });
-});
-
-test("repair close-promotion readers fail closed on duplicate front matter keys", () => {
-  const report = `---
-fixed_release: v1
-pr_rating_overall: A
-pr_rating_proof: A
-real_behavior_proof_status: sufficient
-pr_rating_overall: F
-pr_rating_proof: F
-real_behavior_proof_status: missing
----
-
-## Summary
-
-## PR Rating
-
-Overall tier: F
-
-Proof tier: F
-
-## Real Behavior Proof
-
-Status: missing
-
-## PR Rating
-
-Overall tier: A
-
-Proof tier: A
-
-## Real Behavior Proof
-
-Status: sufficient
-`;
-
-  assert.deepEqual(pullRequestClosePromotionSignalsForTest(report), {
-    authorBudget: false,
-    lowSignal: false,
-  });
-});
-
-test("repair close-promotion readers fail closed after an injected front matter terminator", () => {
-  const report = `---
-fixed_release: v1
-pr_rating_overall: F
-pr_rating_proof: F
-real_behavior_proof_status: missing
----
-pr_rating_overall: A
-pr_rating_proof: A
-real_behavior_proof_status: sufficient
----
-
-## PR Rating
-
-Overall tier: A
-
-Proof tier: A
-
-## Real Behavior Proof
-
-Status: sufficient
-`;
-
-  assert.deepEqual(pullRequestClosePromotionSignalsForTest(report), {
-    authorBudget: false,
-    lowSignal: false,
-  });
-});
-
-test("repair close-promotion readers preserve section fallback without front matter", () => {
-  const report = `## PR Rating
-
-Overall tier: F
-
-Proof tier: F
-
-## Real Behavior Proof
-
-Status: missing
-`;
-
-  assert.deepEqual(pullRequestClosePromotionSignalsForTest(report), {
-    authorBudget: true,
-    lowSignal: true,
-  });
-});
-
-for (const body of [
-  "pr_rating_overall: A\npr_rating_proof: A\nreal_behavior_proof_status: sufficient\n",
-  "```yaml\n---\npr_rating_overall: A\npr_rating_proof: A\nreal_behavior_proof_status: sufficient\n---\n```\n",
+for (const markdown of [
+  "## PR Rating\n\nOverall tier: F\n\nProof tier: F\n\n## Real Behavior Proof\n\nStatus: missing\n",
+  "---\npr_rating_overall: F\npr_rating_proof: F\nreal_behavior_proof_status: missing\n---\n",
+  "---\npr_rating_overall: A\npr_rating_overall: F\n---\n",
+  "---\npr_rating_overall: F\n---\npr_rating_overall: A\n---\n",
+  '---\npr_rating_overall: ""\npr_rating_proof: F\n---\n',
 ]) {
-  test(`workflow promotion uses owned ratings through body quotes: ${JSON.stringify(body)}`, () => {
-    const report = `---\npr_rating_overall: F\npr_rating_proof: F\nreal_behavior_proof_status: missing\n---\n\n## Summary\n\n${body}`;
-    assert.deepEqual(pullRequestClosePromotionSignalsForTest(report), {
-      authorBudget: true,
-      lowSignal: true,
-    });
-    const missing = `---\ntype: pull_request\n---\n\n## Summary\n\n${body}\n## PR Rating\n\nOverall tier: F\n\nProof tier: F\n\n## Real Behavior Proof\n\nStatus: missing\n`;
-    assert.deepEqual(pullRequestClosePromotionSignalsForTest(missing), {
-      authorBudget: false,
-      lowSignal: false,
-    });
+  test(`repair promotion requires a typed record: ${JSON.stringify(markdown)}`, () => {
+    assert.throws(
+      () => pullRequestClosePromotionSignalsForTest(markdown),
+      /review_record: missing record/,
+    );
   });
 }
 
-test("workflow empty and quoted-empty ratings remain ambiguous and later records cannot promote", () => {
-  const legacy =
-    "\n## PR Rating\n\nOverall tier: F\n\nProof tier: F\n\n## Real Behavior Proof\n\nStatus: missing\n";
-  for (const raw of ["", '""', "\t"]) {
-    assert.deepEqual(
-      pullRequestClosePromotionSignalsForTest(
-        `---\npr_rating_overall: ${raw}\npr_rating_proof: F\n---\n${legacy}`,
-      ),
-      { authorBudget: false, lowSignal: false },
-    );
-  }
-  assert.deepEqual(
-    pullRequestClosePromotionSignalsForTest(`---\ntype: pull_request\n---\n${legacy}`),
-    { authorBudget: true, lowSignal: true },
-  );
-  assert.deepEqual(
-    pullRequestClosePromotionSignalsForTest(
-      `---\npr_rating_overall: F\npr_rating_proof: F\nreal_behavior_proof_status: missing\n---\n${legacy}\n---\npr_rating_overall: A\nreal_behavior_proof_status: sufficient\n---\n`,
-    ),
-    { authorBudget: false, lowSignal: false },
+test("repair promotion rejects an ambiguous fenced review record", () => {
+  const markdown = "---\ntype: pull_request\n---\n\n```yaml\nreview_record: {}\n```\n";
+  assert.throws(
+    () => pullRequestClosePromotionSignalsForTest(markdown),
+    new ReviewRecordFormatError("the field is ambiguous"),
   );
 });
 
@@ -1737,6 +1581,7 @@ test("workflow utilities select proposed PR closes that can need coverage proof"
           recommended: true,
           title: "Pause or close",
           body: "No replacement PR is identified.",
+          automergeInstruction: "",
         },
       ])}`,
       "---",
@@ -3478,8 +3323,51 @@ function withCwd(cwd, callback) {
   }
 }
 
-function write(file, content) {
+function write(file, content, typedRecord = true) {
   fs.mkdirSync(path.dirname(file), { recursive: true });
+  // Encode the decision supplied by these fixture fields as a current report.
+  // Non-report artifacts and explicitly missing/corrupt record cases stay byte-for-byte.
+  if (typedRecord && /\/records\/.*\/items\//.test(file) && !/^review_record:/m.test(content)) {
+    const number = Number(path.basename(file).match(/(\d+)\.md$/)?.[1]);
+    const header = content.match(/^---\n([\s\S]*?)\n---\n?/)?.[1] ?? "";
+    const fields = Object.fromEntries(
+      header.split("\n").flatMap((line) => {
+        const match = line.match(/^([a-z_]+):\s*(.*)$/);
+        return match ? [[match[1], match[2]]] : [];
+      }),
+    );
+    const markdown = Object.hasOwn(fields, "number")
+      ? content
+      : content.replace(/^---\n/, `---\nnumber: ${number}\n`);
+    content = withReviewRecord(markdown, {
+      decision: fields.decision ?? "keep_open",
+      confidence: fields.confidence ?? "high",
+      closeReason: fields.close_reason ?? "none",
+      rootCauseCluster: fields.root_cause_cluster
+        ? JSON.parse(fields.root_cause_cluster)
+        : {
+            confidence: "low",
+            canonicalRef: null,
+            currentItemRelationship: "independent",
+            summary: "No cluster.",
+            members: [],
+          },
+      mergeRiskOptions: JSON.parse(fields.merge_risk_options ?? "[]"),
+      prRating: {
+        overallTier: fields.pr_rating_overall ?? "NA",
+        proofTier: fields.pr_rating_proof ?? "NA",
+        patchTier: "NA",
+        summary: "Fixture rating.",
+        nextSteps: [],
+      },
+      realBehaviorProof: {
+        status: fields.real_behavior_proof_status ?? "not_applicable",
+        summary: "Fixture proof.",
+        evidenceKind: "not_applicable",
+        needsContributorAction: false,
+      },
+    });
+  }
   fs.writeFileSync(file, content);
 }
 

@@ -295,7 +295,6 @@ export function createApplyCloseGuards(
         if (unreadableReviewRecordReason(counterpartMarkdown)) return false;
         const counterpartReview = reportReviewDecision(counterpartMarkdown);
         const counterpartMaintainerDecisionBlocked =
-          counterpartReview.maintainerDecisionInvalid ||
           counterpartReview.maintainerDecision?.required === true;
         const counterpartRepo = markdownRepository(counterpartMarkdown, counterpartEntry.path);
         const counterpartReason = reportCloseReason(counterpartMarkdown);

@@ -124,7 +124,6 @@ import {
   authorPrBudgetPromotion,
   contextHasNonAutomationActivityAfter,
   livePullRequestHasNoDiff,
-  reportDecision,
   upgradeNoDiffPullRequestReport,
   upgradePullRequestClosePromotionReport,
 } from "./clawsweeper-promotion-facts.js";
@@ -152,7 +151,6 @@ import { renderReviewCommentFromReport } from "./clawsweeper-report-comment-pres
 import { syncWorkPlanFromReport } from "./clawsweeper-report-context.js";
 import { workPlanPathForReport } from "./clawsweeper-label-presentation.js";
 import { reportLiveProofPlan } from "./live-proof/report.js";
-import { backfillReviewRecordsCommand } from "./review-record-backfill.js";
 import { existingReview } from "./clawsweeper-record-metadata.js";
 import {
   markdownFiles,
@@ -822,7 +820,6 @@ const { applyDecisionsCommandInner: applyDecisionsWithoutReceipts } = createAppl
   prCloseCoverageProofGateResult,
   pullRequestClosePromotion,
   renderReviewCommentFromReport,
-  reportDecision,
   staleCanonicalCommentSyncPendingReason,
   staleCanonicalPullRequestNumber,
   syncWorkPlanFromReport,
@@ -1060,7 +1057,6 @@ const COMMAND_HANDLERS: Readonly<Record<string, CommandHandler<Args>>> = {
   "live-proof-comment": liveProofCommentCommand,
   "live-proof-publish-artifacts": liveProofPublishArtifactsCommand,
   "apply-decisions": applyDecisionsCommand,
-  "backfill-review-records": backfillReviewRecordsCommand,
   "publish-action-events": publishActionEventsCommand,
   "publish-action-event-paths": publishActionEventPathsCommand,
   audit: auditCommand,

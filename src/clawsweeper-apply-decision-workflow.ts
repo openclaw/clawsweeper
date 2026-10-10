@@ -942,23 +942,8 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
             )
           : markApplySkipped("kept_open", reason);
       };
-      const { maintainerDecision, maintainerDecisionInvalid, maintainerDecisionError } =
-        reportReviewDecision(markdown);
+      const { maintainerDecision } = reportReviewDecision(markdown);
       requiredMaintainerDecision = maintainerDecision;
-      if (maintainerDecisionInvalid) {
-        const detail = maintainerDecisionError;
-        const reason = `invalid maintainer_decision: ${detail}`;
-        markdown = replaceFrontMatterValue(markdown, "apply_checked_at", new Date().toISOString());
-        if (!dryRun) {
-          captureApplyCanonicalBaseline(path);
-          writeFileSync(path, markdown, "utf8");
-        }
-        results.push({ number, action: "kept_open", reason });
-        processedCount += 1;
-        maybeLogProgress(`skipped #${number}: ${reason}`);
-        if (processedCount >= processedLimit) break;
-        continue;
-      }
       if (closeReason === "oversized_pull_request" &&
           (dryRun || syncCommentsOnly || !oversizedPrCloseEnabled() || !closeReasonEnabled(closeReason, applyCloseReasons))) {
         const policyReason = syncCommentsOnly

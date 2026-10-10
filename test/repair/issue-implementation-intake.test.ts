@@ -33,12 +33,33 @@ import {
   REVIEW_VIABLE_ISSUE_TRIGGER_SOURCE,
   REVIEW_VISION_FIT_TRIGGER_SOURCE,
 } from "../../dist/repair/comment-router/dispatch.js";
-import { withReviewRecord } from "../helpers.ts";
-import { legacyReviewDecision } from "../../dist/review-record-backfill.js";
-import { reviewRecordFrontMatterLine } from "../../dist/review-record.js";
+import { withReviewRecord as addReviewRecord } from "../helpers.ts";
+import { readReviewRecord, reviewRecordFrontMatterLine } from "../../dist/review-record.js";
+import { reportWithoutReviewRecord } from "../../dist/report-front-matter.js";
+import { parseSimpleYaml } from "../../dist/repair/lib.js";
+
+function withReviewRecord(markdown: string, decision: Record<string, unknown> = {}) {
+  return addReviewRecord(reportWithoutReviewRecord(markdown), {
+    ...readReviewRecord(markdown)?.decision,
+    ...decision,
+  });
+}
+
+function parseAudit(markdown: string) {
+  const match = markdown.match(/^---\n([\s\S]*?)\n---\n?/);
+  return {
+    frontmatter: Object.fromEntries(
+      Object.entries(parseSimpleYaml(match?.[1] ?? "")).map(([key, value]) => [key, String(value)]),
+    ),
+    body: match ? markdown.slice(match[0].length) : markdown,
+    workPrompt: "",
+    workReason: "",
+    securityStatus: "",
+  };
+}
 
 function report(overrides = {}, securityStatus = "not_applicable") {
-  const fields = {
+  const fields: Record<string, string> = {
     number: "123",
     repository: "openclaw/openclaw",
     type: "issue",
@@ -64,12 +85,37 @@ function report(overrides = {}, securityStatus = "not_applicable") {
   const frontmatter = Object.entries(fields)
     .map(([key, value]) => `${key}: ${value}`)
     .join("\n");
-  return `---\n${frontmatter}\n---\n\n## Security Review\n\nStatus: ${securityStatus}\n\nSummary: No patch security review is needed for this issue.\n\n## Repair Work Prompt\n\nFix the reproduced existing-behavior bug and add a regression test.\n`;
+  const markdown = `---\n${frontmatter}\n---\n\n## Security Review\n\nStatus: ${securityStatus}\n\nSummary: No patch security review is needed for this issue.\n\n## Repair Work Prompt\n\nFix the reproduced existing-behavior bug and add a regression test.\n`;
+  return withReviewRecord(markdown, {
+    decision: fields.decision,
+    closeReason: fields.close_reason,
+    confidence: fields.confidence,
+    workCandidate: fields.work_candidate,
+    workConfidence: fields.work_confidence,
+    workValidation: JSON.parse(fields.work_validation),
+    workLikelyFiles: JSON.parse(fields.work_likely_files),
+    workClusterRefs: JSON.parse(fields.work_cluster_refs),
+    itemCategory: fields.item_category,
+    reproductionStatus: fields.reproduction_status,
+    reproductionConfidence: fields.reproduction_confidence,
+    requiresNewFeature: fields.requires_new_feature === "true",
+    requiresNewConfigOption: fields.requires_new_config_option === "true",
+    requiresProductDecision: fields.requires_product_decision === "true",
+    autoImplementationCandidate: fields.auto_implementation_candidate ?? "strict_bug",
+    implementationComplexity: fields.implementation_complexity ?? "not_applicable",
+    visionFit: fields.vision_fit ?? "not_applicable",
+    visionFitEvidence: JSON.parse(fields.vision_fit_evidence ?? "[]"),
+    workPrompt: "Fix the reproduced existing-behavior bug and add a regression test.",
+    securityReview: { status: securityStatus, summary: "Security assessment.", concerns: [] },
+  });
 }
 
 test("implementation intake uses recorded eligibility and work fields instead of repeated text", () => {
   const markdown = withReviewRecord(
-    report({ decision: "close", confidence: "low", close_reason: "off_topic" }, "needs_attention"),
+    report(
+      { decision: "close", confidence: "low", close_reason: "not_actionable_in_repo" },
+      "needs_attention",
+    ),
     {
       decision: "keep_open",
       confidence: "high",
@@ -119,6 +165,12 @@ test("implementation intake uses recorded eligibility and work fields instead of
 test("implementation intake rejects unreadable records rather than using eligible legacy text", () => {
   const markdown = report().replace("\n---\n", "\nreview_record: {broken\n---\n");
   assert.throws(() => parseReviewReport(markdown), /review_record/);
+});
+
+test("implementation intake and revision identity reject reports without a typed record", () => {
+  const markdown = reportWithoutReviewRecord(report());
+  assert.throws(() => parseReviewReport(markdown), /review_record: missing record/);
+  assert.throws(() => reportRevisionSha256(markdown), /review_record: missing record/);
 });
 
 test("implementation discovery refuses persisted manual and ambiguous policies with automation enabled", () => {
@@ -190,7 +242,7 @@ test("small source-proven bug reports are eligible for implementation intake", (
   assert.equal(decision.status, "queued_for_repair");
 });
 
-test("legacy source-proven reviews remain eligible without an implementation marker", () => {
+test("typed source-proven reviews remain eligible without an implementation marker", () => {
   const markdown = report({
     reproduction_status: "source_reproducible",
     implementation_complexity: "small",
@@ -206,7 +258,7 @@ test("legacy source-proven reviews remain eligible without an implementation mar
   assert.equal(decision.status, "queued_for_repair");
 });
 
-test("legacy implementation-marker compatibility is limited to source-proven bugs", () => {
+test("typed implementation-marker compatibility is limited to source-proven bugs", () => {
   for (const overrides of [
     { reproduction_status: "reproduced", auto_implementation_candidate: "none" },
     {
@@ -229,7 +281,7 @@ test("legacy implementation-marker compatibility is limited to source-proven bug
 
 test("source-proven bugs need high confidence and a small repair", () => {
   for (const overrides of [
-    { implementation_complexity: "" },
+    { implementation_complexity: "not_applicable" },
     { implementation_complexity: "medium" },
     { implementation_complexity: "large" },
     { implementation_complexity: "unclear" },
@@ -880,9 +932,7 @@ test("issue intake reads the review security status and explicit security signal
   assert.equal(needsAttention.shouldRepair, false);
   assert.equal(needsAttention.blockerClass, "hard");
   assert.match(needsAttention.reason, /security-sensitive signal present/);
-  assert.equal(missingStatus.shouldRepair, false);
-  assert.equal(missingStatus.blockerClass, "hard");
-  assert.match(missingStatus.reason, /security review status is missing/);
+  assert.equal(missingStatus.shouldRepair, true);
 });
 
 test("viable review routing excludes protected repositories and invalid review identity", () => {
@@ -914,7 +964,7 @@ test("viable review routing excludes protected repositories and invalid review i
   }
 });
 
-test("bug candidate discovery includes legacy small source-proven OpenClaw reviews", () => {
+test("bug candidate discovery includes typed small source-proven OpenClaw reviews", () => {
   const root = mkdtempSync(path.join(os.tmpdir(), "clawsweeper-source-proven-bug-"));
   try {
     const reportDir = path.join(root, "records", "openclaw-openclaw", "items");
@@ -1081,36 +1131,36 @@ test("accepted newer review artifacts supersede stale hydrated canonical snapsho
 
 test("undispatched issue jobs are regenerated when their authoritative review changes", () => {
   const current = report({ implementation_complexity: "small" });
-  const legacy = parseReviewReport(`---
+  const legacy = parseAudit(`---
 decision: queued_for_repair
 report_revision_sha256: old-review-revision
 ---
 `);
-  const alreadyDispatched = parseReviewReport(`---
+  const alreadyDispatched = parseAudit(`---
 decision: queued_for_repair
 report_revision_sha256: old-review-revision
 worker_dispatched: true
 ---
 `);
-  const temporarilyIneligible = parseReviewReport(`---
+  const temporarilyIneligible = parseAudit(`---
 decision: not_eligible
 report_revision_sha256: temporarily-ineligible-review
 worker_dispatched: false
 ---
 `);
-  const temporarilyIneligibleAfterChangedReview = parseReviewReport(`---
+  const temporarilyIneligibleAfterChangedReview = parseAudit(`---
 decision: not_eligible
 report_revision_sha256: ${reportRevisionSha256(current)}
 job_report_revision_sha256: original-job-review
 worker_dispatched: false
 ---
 `);
-  const legacyTemporarilyIneligible = parseReviewReport(`---
+  const legacyTemporarilyIneligible = parseAudit(`---
 decision: not_eligible
 report_revision_sha256: ${reportRevisionSha256(current)}
 ---
 `);
-  const unchanged = parseReviewReport(`---
+  const unchanged = parseAudit(`---
 decision: queued_for_repair
 report_revision_sha256: ${reportRevisionSha256(current)}
 worker_dispatched: false
@@ -1663,7 +1713,7 @@ esac
       assert.match(stalePreparation.stderr, /older than the authoritative intake/);
     }
     assert.equal(
-      parseReviewReport(readFileSync(auditPath, "utf8")).frontmatter.report_revision_sha256,
+      parseAudit(readFileSync(auditPath, "utf8")).frontmatter.report_revision_sha256,
       reportRevisionSha256(oldReport),
     );
     assert.equal(readFileSync(jobPath, "utf8"), "old queued issue implementation job\n");
@@ -1672,7 +1722,7 @@ esac
     const blockedPreparation = spawnSync(process.execPath, intakeArgs, processOptions);
     assert.equal(blockedPreparation.status, 0, blockedPreparation.stderr);
     assert.equal(JSON.parse(blockedPreparation.stdout).status, "not_eligible");
-    const blockedAudit = parseReviewReport(readFileSync(auditPath, "utf8"));
+    const blockedAudit = parseAudit(readFileSync(auditPath, "utf8"));
     assert.match(
       blockedAudit.body,
       /review report references an open or unverifiable pull request/,
@@ -1714,7 +1764,7 @@ esac
     assert.equal(prepared.status, 0, prepared.stderr);
     assert.ok(prepared.stdout, prepared.stderr);
     assert.equal(JSON.parse(prepared.stdout).status, "queued_for_repair");
-    const refreshedAudit = parseReviewReport(readFileSync(auditPath, "utf8"));
+    const refreshedAudit = parseAudit(readFileSync(auditPath, "utf8"));
     assert.equal(
       refreshedAudit.frontmatter.report_revision_sha256,
       reportRevisionSha256(currentReport),
@@ -1861,9 +1911,7 @@ test("issue build overrides on protected issues only prepare a handoff", () => {
   }
 });
 
-// A backfill may add richer decision metadata, but identical effective job inputs
-// must retain the revision already recorded by prepared implementation jobs.
-test("equivalent backfills retain revisions while recorded job changes require regeneration", () => {
+test("typed revisions track effective job inputs and ignore unused work reasons", () => {
   const legacy = report({
     implementation_complexity: "small",
     vision_fit: "not_applicable",
@@ -1894,9 +1942,9 @@ test("equivalent backfills retain revisions while recorded job changes require r
   };
   const backfilled = withReviewRecord(legacy, jobInputs);
   assert.notEqual(backfilled, legacy);
-  assert.equal(reportRevisionSha256(backfilled), reportRevisionSha256(legacy));
-  const audit = parseReviewReport(
-    `---\nreport_revision_sha256: ${reportRevisionSha256(legacy)}\ndecision: queued_for_repair\nworker_dispatched: false\n---\n`,
+  assert.notEqual(reportRevisionSha256(backfilled), reportRevisionSha256(legacy));
+  const audit = parseAudit(
+    `---\nreport_revision_sha256: ${reportRevisionSha256(backfilled)}\ndecision: queued_for_repair\nworker_dispatched: false\n---\n`,
   );
   assert.equal(issueImplementationJobNeedsRefresh(audit, backfilled), false);
   for (const changedInputs of [
@@ -1952,25 +2000,21 @@ test("equivalent backfills retain revisions while recorded job changes require r
   );
 });
 
-test("revision equivalence uses canonical backfill defaults and fails closed on conversion errors", () => {
-  const legacy = report({ work_priority: "high" });
-  const decision = legacyReviewDecision(legacy);
+test("typed revision identity includes host metadata and requires a readable record", () => {
+  const markdown = report({ work_priority: "high" });
+  const decision = readReviewRecord(markdown)!.decision;
   const subject = { repo: "openclaw/openclaw", number: 123, kind: "issue" as const };
   const line = reviewRecordFrontMatterLine({ decision, origin: "backfill" }, subject);
   assert.ok(line);
-  const backfilled = legacy.replace("\n---\n", `\n${line}\n---\n`);
-  assert.equal(reportRevisionSha256(backfilled), reportRevisionSha256(legacy));
-  const changedLine = reviewRecordFrontMatterLine(
-    { decision: { ...decision, workValidation: ["pnpm test a-new-command"] }, origin: "backfill" },
-    subject,
-  );
-  assert.ok(changedLine);
-  const changed = legacy.replace("\n---\n", `\n${changedLine}\n---\n`);
-  assert.notEqual(reportRevisionSha256(changed), reportRevisionSha256(legacy));
-  const unconvertible = legacy.replace(/^work_priority: high\n/m, "");
+  const backfilled = reportWithoutReviewRecord(markdown).replace("\n---\n", `\n${line}\n---\n`);
+  assert.equal(reportRevisionSha256(backfilled), reportRevisionSha256(markdown));
   assert.notEqual(
-    reportRevisionSha256(unconvertible.replace("\n---\n", `\n${line}\n---\n`)),
-    reportRevisionSha256(unconvertible),
+    reportRevisionSha256(markdown.replace(/^work_priority: high$/m, "work_priority: low")),
+    reportRevisionSha256(markdown),
+  );
+  assert.throws(
+    () => reportRevisionSha256(reportWithoutReviewRecord(markdown)),
+    /review_record: missing record/,
   );
 });
 
@@ -1990,7 +2034,7 @@ test("record-only eligibility changes rediscover issues blocked by an earlier in
         },
         blocker === "security" ? "needs_attention" : "not_applicable",
       );
-      const original = legacyReviewDecision(legacy);
+      const original = readReviewRecord(legacy)!.decision;
       writeFileSync(path.join(reports, "123.md"), legacy);
       writeFileSync(
         path.join(auditDir, "123.md"),
@@ -2020,7 +2064,7 @@ test("record-only eligibility changes rediscover issues blocked by an earlier in
         { repo: "openclaw/openclaw", number: 123, kind: "issue" },
       );
       assert.ok(line);
-      const updated = legacy.replace("\n---\n", `\n${line}\n---\n`);
+      const updated = reportWithoutReviewRecord(legacy).replace("\n---\n", `\n${line}\n---\n`);
       assert.notEqual(reportRevisionSha256(updated), reportRevisionSha256(legacy));
       writeFileSync(path.join(reports, "123.md"), updated);
       assert.equal(discoverImplementationCandidates(options).length, 1, blocker);

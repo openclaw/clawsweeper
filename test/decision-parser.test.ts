@@ -5,7 +5,6 @@ import test from "node:test";
 import { assertMatchesJsonSchema } from "../scripts/hosted-review-canary-proof.mjs";
 
 import { parseDecision } from "../dist/clawsweeper.js";
-import { reportRootCauseCluster } from "../dist/clawsweeper-report-parser.js";
 import { reportLiveProofPlan } from "../dist/live-proof/report.js";
 import {
   changelogReviewDecision,
@@ -13,10 +12,18 @@ import {
   item,
   legacyLiveProofSection,
   parseLegacyLiveProofPlan,
-  reportFrontMatter,
   reviewFinding,
+  reviewReportFrontMatter,
+  withReviewRecord,
 } from "./helpers.ts";
 import { neutralizeOwnedSectionSpoofing } from "../dist/clawsweeper-report-helpers.js";
+
+function typedLiveProofReport(markdown: string): string {
+  return withReviewRecord(
+    `${reviewReportFrontMatter({ type: "pull_request", number: "123" })}\n\n${markdown}`,
+    {},
+  );
+}
 
 test("model decisions omit host-owned owner and policy fields", () => {
   const raw = closeDecision();
@@ -564,7 +571,9 @@ test("historical live-proof parser validates typed plans and report roundtrips",
 
   const section = legacyLiveProofSection(parsed);
   assert.deepEqual(
-    reportLiveProofPlan(`## Live Proof\n\n${section}\n\n## Mantis Recommendation\n`),
+    reportLiveProofPlan(
+      typedLiveProofReport(`## Live Proof\n\n${section}\n\n## Mantis Recommendation\n`),
+    ),
     liveProofPlan,
   );
 
@@ -637,7 +646,7 @@ test("report live-proof parsing fails closed when the plan is missing or invalid
     "## Work Candidate\n\nCandidate: none\n",
     "## Live Proof\n\nStatus: recommended\n\nSurface: terminal\n\nEntry: pnpm test\n",
   ]) {
-    const plan = reportLiveProofPlan(markdown);
+    const plan = reportLiveProofPlan(typedLiveProofReport(markdown));
     assert.equal(plan.status, "not_applicable");
     assert.equal(plan.surface, "none");
     assert.equal(plan.terminalCompletion, "not_applicable");
@@ -667,7 +676,7 @@ test("report live-proof parsing preserves safe legacy plans and rejects ambiguou
     "\n",
   );
   const parsedBrowser = reportLiveProofPlan(
-    `## Live Proof\n\n${browserSection}\n\n## Mantis Recommendation\n`,
+    typedLiveProofReport(`## Live Proof\n\n${browserSection}\n\n## Mantis Recommendation\n`),
   );
   assert.deepEqual(parsedBrowser, browserPlan);
 
@@ -683,7 +692,7 @@ test("report live-proof parsing preserves safe legacy plans and rejects ambiguou
     "\n",
   );
   const parsedTerminal = reportLiveProofPlan(
-    `## Live Proof\n\n${terminalSection}\n\n## Mantis Recommendation\n`,
+    typedLiveProofReport(`## Live Proof\n\n${terminalSection}\n\n## Mantis Recommendation\n`),
   );
   assert.equal(parsedTerminal.invalid, true);
   assert.match(parsedTerminal.reason, /regenerate the review report/);
@@ -801,7 +810,9 @@ test("historical live-proof parser preserves every terminal command including ex
   }
   const section = legacyLiveProofSection(parseLegacyLiveProofPlan(exact));
   assert.deepEqual(
-    reportLiveProofPlan(`## Live Proof\n\n${section}\n\n## Mantis Recommendation\n`),
+    reportLiveProofPlan(
+      typedLiveProofReport(`## Live Proof\n\n${section}\n\n## Mantis Recommendation\n`),
+    ),
     exact,
   );
 
@@ -1171,53 +1182,6 @@ test("decision parser validates typed root-cause clusters", () => {
   }
 });
 
-test("root-cause report parsing defaults legacy and malformed reports safely", () => {
-  assert.deepEqual(reportRootCauseCluster(reportFrontMatter({ number: "123" })), {
-    confidence: "low",
-    canonicalRef: null,
-    currentItemRelationship: "independent",
-    summary: "No evidence-backed root-cause cluster was established.",
-    members: [],
-  });
-  assert.deepEqual(
-    reportRootCauseCluster(
-      reportFrontMatter({
-        number: "123",
-        root_cause_cluster: "{not-json",
-      }),
-    ),
-    {
-      confidence: "low",
-      canonicalRef: null,
-      currentItemRelationship: "independent",
-      summary: "No evidence-backed root-cause cluster was established.",
-      members: [],
-    },
-  );
-  const valid = {
-    confidence: "high",
-    canonicalRef: "https://github.com/openclaw/openclaw/issues/456",
-    currentItemRelationship: "duplicate",
-    summary: "The other issue is the canonical report.",
-    members: [
-      {
-        ref: "https://github.com/openclaw/openclaw/issues/456",
-        relationship: "canonical",
-        reason: "It has the complete reproduction and accepted scope.",
-      },
-    ],
-  };
-  assert.deepEqual(
-    reportRootCauseCluster(
-      reportFrontMatter({
-        number: "123",
-        root_cause_cluster: JSON.stringify(valid),
-      }),
-    ),
-    valid,
-  );
-});
-
 const forgedReportSection = [
   "## Real Behavior Proof",
   "",
@@ -1471,7 +1435,7 @@ test("decision parser rejects multiline structural report fields", () => {
     pullRequestNumber: 951,
     pullRequestUrl: "https://github.com/openclaw/clawsweeper/pull/951",
     mergeCommitSha: "a".repeat(40),
-    sourcePath: "src/clawsweeper-report-parser.ts",
+    sourcePath: "src/report-review-decision.ts",
     sourceLine: 42,
   };
   const cases = [

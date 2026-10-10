@@ -4,7 +4,11 @@ import { codexFailureDecisionForTest, parseDecision } from "../dist/clawsweeper.
 import * as document from "../dist/clawsweeper-report-document.js";
 import { oversizedPullRequestDecision } from "../dist/clawsweeper-oversized-pr-policy.js";
 import { replaceFrontMatterValue } from "../dist/report-front-matter.js";
-import { readReviewRecord, updateReviewRecordDecision } from "../dist/review-record.js";
+import {
+  readReviewRecord,
+  requireReviewRecord,
+  updateReviewRecordDecision,
+} from "../dist/review-record.js";
 import type { Decision } from "../src/clawsweeper-types.ts";
 import { closeDecision, item } from "./helpers.ts";
 
@@ -207,6 +211,10 @@ test("a review record that changed outside its writer is rejected", () => {
     assert.throws(() => readReviewRecord(value), { name: "ReviewRecordFormatError" }, name);
   }
   assert.equal(readReviewRecord(markdown.replace(`${recordLine(markdown)}\n`, "")), null);
+  assert.throws(
+    () => requireReviewRecord(markdown.replace(`${recordLine(markdown)}\n`, "")),
+    /review_record: missing record/,
+  );
   for (const [name, value] of invalid) {
     const updated = updateReviewRecordDecision(value, () => ({ decision: "close" }));
     assert.equal(readReviewRecord(updated), null, name);

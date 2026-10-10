@@ -196,6 +196,7 @@ test("retired migration and Git recovery surfaces stay deleted", () => {
   for (const retired of [
     ".github/workflows/backfill-worker-records.yml",
     ".github/workflows/migrate-state-blobs.yml",
+    ".github/workflows/review-record-backfill.yml",
     ".github/workflows/commit-review.yml",
     ".github/workflows/live-proof.yml",
     ".github/workflows/deploy-crawl-remote.yml",

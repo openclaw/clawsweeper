@@ -7,7 +7,7 @@ import { sha256 } from "./content-hash.js";
 import { existsSync, mkdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { basename, dirname, relative } from "node:path";
 import { parseReportFrontMatter, replaceFrontMatterValue } from "./report-front-matter.js";
-import { readReviewRecord } from "./review-record.js";
+import { readReviewRecord, requireReviewRecord } from "./review-record.js";
 
 export type MaintainerDecisionKind =
   | "none"
@@ -179,24 +179,7 @@ export function emptyMaintainerDecision(): MaintainerDecision {
 }
 
 export function maintainerDecisionFromReport(markdown: string): MaintainerDecision | null {
-  const record = readReviewRecord(markdown);
-  return record
-    ? record.decision.maintainerDecision
-    : maintainerDecisionFromFrontMatter(frontMatter(markdown));
-}
-
-function maintainerDecisionFromFrontMatter(
-  frontmatter: Record<string, string>,
-): MaintainerDecision | null {
-  const raw = frontmatter.maintainer_decision;
-  if (!raw || raw === "none" || raw === "unknown") return null;
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch {
-    throw new Error("maintainer_decision must contain valid JSON");
-  }
-  return parseMaintainerDecision(parsed, "maintainer_decision");
+  return requireReviewRecord(markdown).decision.maintainerDecision;
 }
 
 export function maintainerDecisionBlocksClose(markdown: string): boolean {
@@ -212,12 +195,11 @@ export function buildDecisionPacketFromReport(
   options: DecisionPacketBuildOptions = {},
 ): DecisionPacket | null {
   const record = readReviewRecord(markdown);
+  if (!record) return null;
   const parsedFrontmatter = readFrontMatter(markdown);
   if (parsedFrontmatter.ambiguous) return null;
   const frontmatter = parsedFrontmatter.values;
-  const decision = record
-    ? record.decision.maintainerDecision
-    : maintainerDecisionFromFrontMatter(frontmatter);
+  const decision = record.decision.maintainerDecision;
   const repo = frontmatter.repository;
   const kind = frontmatter.type;
   const number = numberValue(frontmatter.number);
@@ -265,7 +247,7 @@ export function buildDecisionPacketFromReport(
       ...(headSha ? { headSha } : {}),
     },
     lane: decision.kind,
-    priority: priorityValue(record ? record.decision.triagePriority : frontmatter.triage_priority),
+    priority: priorityValue(record.decision.triagePriority),
     question: decision.question,
     rationale: decision.rationale,
     options: decision.options,
@@ -402,12 +384,6 @@ function booleanValue(value: unknown, path: string): boolean {
 function enumValue<T extends string>(value: unknown, values: ReadonlySet<T>, path: string): T {
   if (typeof value === "string" && values.has(value as T)) return value as T;
   throw new Error(`${path} has invalid value`);
-}
-
-function frontMatter(markdown: string): Record<string, string> {
-  const parsed = readFrontMatter(markdown);
-  if (parsed.ambiguous) throw new Error("report front matter is ambiguous");
-  return parsed.values;
 }
 
 function readFrontMatter(markdown: string): {

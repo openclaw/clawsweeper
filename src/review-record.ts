@@ -74,8 +74,8 @@ export function reviewRecordProblem(
   }
 }
 
-// A decision that would not read back is not stored: the report then has no record,
-// as before review_record existed, and the backfill makes one from the report.
+// A decision that would not read back is not stored. The report remains ineligible
+// for apply until a fresh review writes a valid record.
 function storableDecision(decision: Decision, subject: ReviewRecordSubject): boolean {
   const problem = reviewRecordProblem(decision, subject);
   if (problem) {
@@ -96,10 +96,7 @@ export function reviewRecordFrontMatterLine(
     : null;
 }
 
-/**
- * Reads the typed record of a report. Returns null for a report from before
- * review_record existed. Throws ReviewRecordFormatError for any other problem.
- */
+/** Reads the typed record, returning null only when its line is absent. */
 export function readReviewRecord(markdown: string): ReviewRecord | null {
   const field = frontMatterField(markdown, REVIEW_RECORD_KEY);
   if (field.status === "absent") return null;
@@ -125,23 +122,17 @@ export function readReviewRecord(markdown: string): ReviewRecord | null {
   };
 }
 
-/**
- * Reads the typed record of a report. A report from before review_record existed
- * gets its decision from `legacyDecision`, which reads the report text. Remove this
- * fallback when the backfill shows that no stored report is without a record.
- * A record that does not read throws ReviewRecordFormatError: it gets no fallback.
- */
-export function readReviewRecordOrLegacy<T>(
-  markdown: string,
-  legacyDecision: (markdown: string) => T,
-): ReviewRecord | { decision: T } {
-  return readReviewRecord(markdown) ?? { decision: legacyDecision(markdown) };
+/** Requires a readable decision; missing and corrupt records both need a fresh review. */
+export function requireReviewRecord(markdown: string): ReviewRecord {
+  const record = readReviewRecord(markdown);
+  if (!record) throw new ReviewRecordFormatError("missing record");
+  return record;
 }
 
 /**
  * Changes decision fields in the typed record of a report. A report without a
- * record does not change: the backfill makes its record. A record that is not
- * valid before or after the change is removed, so a stored record always reads.
+ * record does not change: a fresh review must write its record. A record that is
+ * not valid before or after the change is removed, so a stored record always reads.
  */
 export function updateReviewRecordDecision(
   markdown: string,

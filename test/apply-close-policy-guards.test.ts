@@ -77,7 +77,6 @@ function counterpartAdmission(
         normalizeAuthorAssociation: (value: unknown) => (typeof value === "string" ? value : ""),
         openClosingPullRequestApplyReason: () => null,
         renderReviewCommentFromReport: () => "review",
-        reportDecision: () => ({}),
         reviewCommentBodyDigest: () => "digest",
         reviewCommentHashMatches: () => true,
         sameAuthorCounterpartApplyReason: () => null,

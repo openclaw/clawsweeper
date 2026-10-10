@@ -4,21 +4,15 @@ import test from "node:test";
 import { validateCloseDecision } from "../dist/clawsweeper.js";
 import { validateReportClose } from "../dist/clawsweeper-apply-close-decision.js";
 import { replaceFrontMatterValue } from "../dist/report-front-matter.js";
-import type { CloseReason, Decision } from "../src/clawsweeper-types.ts";
-import { closeDecision, implementedCloseReport, withReviewRecord } from "./helpers.ts";
+import type { Decision } from "../src/clawsweeper-types.ts";
+import { implementedCloseReport, withReviewRecord } from "./helpers.ts";
 
 const issue = { repo: "openclaw/clawsweeper", kind: "issue" as const, labels: [] };
 
-function validate(markdown: string, legacy?: Decision) {
-  const legacyCalls: CloseReason[] = [];
+function validate(markdown: string) {
   const validated: Decision[] = [];
   const result = validateReportClose(
     {
-      reportDecision: (_markdown: string, closeReason: CloseReason) => {
-        legacyCalls.push(closeReason);
-        assert.ok(legacy, "a report with a review record must not read the report text");
-        return legacy;
-      },
       validateCloseDecision: (item, decision, options) => {
         validated.push(decision);
         return validateCloseDecision(item, decision, options);
@@ -29,7 +23,7 @@ function validate(markdown: string, legacy?: Decision) {
     "implemented_on_main",
     { requireCloseComment: true },
   );
-  return { result, legacyCalls, decision: validated[0] };
+  return { result, decision: validated[0] };
 }
 
 test("the apply validates the close from the review record", () => {
@@ -37,9 +31,8 @@ test("the apply validates the close from the review record", () => {
     summary: "The record summary.",
     closeComment: "",
   });
-  const { result, legacyCalls, decision } = validate(report);
+  const { result, decision } = validate(report);
   assert.deepEqual(result, { ok: true });
-  assert.deepEqual(legacyCalls, []);
   assert.equal(decision?.summary, "The record summary.");
   assert.deepEqual(
     decision?.evidence.map((entry) => entry.label),
@@ -61,12 +54,14 @@ test("the record decides the close when the report text disagrees", () => {
   });
 });
 
-test("a report without a review record reads its decision from the report text", () => {
-  const legacy = closeDecision({ summary: "From the report text." }) as Decision;
-  const { result, legacyCalls, decision } = validate(implementedCloseReport(), legacy);
-  assert.deepEqual(result, { ok: true });
-  assert.deepEqual(legacyCalls, ["implemented_on_main"]);
-  assert.equal(decision?.summary, "From the report text.");
+test("a report without a review record blocks the close and asks for a fresh review", () => {
+  const { result, decision } = validate(implementedCloseReport());
+  assert.deepEqual(result, {
+    ok: false,
+    actionTaken: "skipped_changed_since_review",
+    reason: "review_record: missing record; fresh review required",
+  });
+  assert.equal(decision, undefined);
 });
 
 test("a review record that does not read blocks the close and asks for a fresh review", () => {
@@ -74,13 +69,12 @@ test("a review record that does not read blocks the close and asks for a fresh r
     /^review_record: \{/m,
     "review_record: {broken",
   );
-  const { result, legacyCalls, decision } = validate(report, closeDecision() as Decision);
+  const { result, decision } = validate(report);
   assert.deepEqual(result, {
     ok: false,
     actionTaken: "skipped_changed_since_review",
     reason: "review_record: the value is not JSON; fresh review required",
   });
-  assert.deepEqual(legacyCalls, []);
   assert.equal(decision, undefined);
 });
 

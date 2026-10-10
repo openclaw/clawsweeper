@@ -15,6 +15,10 @@ import { cpSync, existsSync, mkdirSync, rmSync, symlinkSync, writeFileSync } fro
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
+throw new Error(
+  "Historical-only proof: this driver requires the retired report parser. Use the original driver and README from pinned pre-cutover commit dbb40525904c2176d192ef6e92c588853e676207, not the current runtime.",
+);
+
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(here, "..", "..", "..");
 const HELPERS = "src/clawsweeper-report-helpers.ts";

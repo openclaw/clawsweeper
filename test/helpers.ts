@@ -392,11 +392,12 @@ export function pullRequestProofReport(options: {
   labels?: string[];
   frontMatter?: Record<string, unknown>;
   sections?: string;
+  decision?: Record<string, unknown>;
 }): string {
   const status = options.status ?? "missing";
   const sufficient = status === "sufficient";
   const proofTier = sufficient ? "A" : status === "missing" ? "F" : "D";
-  return `${reviewReportFrontMatter({
+  const report = `${reviewReportFrontMatter({
     type: "pull_request",
     number: "119610",
     decision: "keep_open",
@@ -464,6 +465,42 @@ Full review comments:
 
 - none
 `;
+  return withReviewRecord(report, {
+    decision: "keep_open",
+    closeReason: "none",
+    summary: "Keep this focused pull request open for maintainer review.",
+    changeSummary: "Keeps pull request evidence checks aligned with their actual scope.",
+    bestSolution: "Continue normal maintainer review.",
+    realBehaviorProof: {
+      status,
+      evidenceKind: sufficient ? "terminal" : "none",
+      needsContributorAction: !sufficient,
+      summary: options.authorityChainProofRequired
+        ? sufficient
+          ? "Authority-chain proof required: a terminal trace shows the nearest forbidden principal rejected before provider I/O."
+          : "Authority-chain proof required: the nearest forbidden principal was not exercised before provider I/O."
+        : sufficient
+          ? "The maintainer supplied terminal output from the changed production path."
+          : "The reviewer did not find contributor-supplied live proof.",
+    },
+    prRating: {
+      overallTier: proofTier,
+      proofTier,
+      patchTier: "A",
+      summary: "The model capped readiness based on its recorded proof assessment.",
+      nextSteps: sufficient ? [] : ["Add real behavior proof."],
+    },
+    securityReview: {
+      status: options.securityAttention ? "needs_attention" : "not_applicable",
+      summary: options.securityAttention
+        ? "The changed authorization boundary requires maintainer review."
+        : "",
+      concerns: [],
+    },
+    overallCorrectness: "patch is correct",
+    overallConfidenceScore: 0.9,
+    ...options.decision,
+  });
 }
 
 export function detailsBody(markdown, summary) {

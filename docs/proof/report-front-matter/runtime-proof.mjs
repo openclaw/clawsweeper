@@ -16,6 +16,10 @@ import {
 } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 
+throw new Error(
+  "Historical-only proof: these no-record fixtures require the retired report parser. Use the original driver and README from pinned pre-cutover commit dbb40525904c2176d192ef6e92c588853e676207 (historical baseline aba9826ab8c010a8f5a2b4411484dc4cb7e94f51), not the current runtime.",
+);
+
 const args = Object.fromEntries(
   Array.from({ length: (process.argv.length - 2) / 2 }, (_, index) => [
     process.argv[2 + index * 2],

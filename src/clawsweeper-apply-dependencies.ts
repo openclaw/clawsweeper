@@ -324,7 +324,6 @@ export interface CreateApplyDecisionWorkflowDependencies {
     options?: ReviewCommentRenderOptions,
   ) => string;
   repoFromArgs: (args: Args) => RepositoryProfile;
-  reportDecision: (markdown: string, closeReason: CloseReason) => Decision;
   reportEntriesForDir: (dir: string, itemNumbers?: ReadonlySet<number>) => ReportEntry[];
   resetGuardReadCache: () => void;
   setGuardReadGeneration: (generation: LiveReadGeneration | null) => void;

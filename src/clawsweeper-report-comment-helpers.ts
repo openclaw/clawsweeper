@@ -241,7 +241,6 @@ export function pullRequestReviewReadinessFromReport(markdown: string): PullRequ
     const candidate = pullHeadShaFromReport(markdown);
     headSha = candidate && /^[0-9a-f]{40}$/i.test(candidate) ? candidate.toLowerCase() : null;
     const decision = reportReviewDecision(markdown);
-    if (decision.maintainerDecisionInvalid) throw new Error("Invalid maintainer decision");
     const reviewStatus = frontMatterValue(markdown, "review_status");
     const decisionPending = Boolean(decision.maintainerDecision?.required);
     const rating = decision.prRating;

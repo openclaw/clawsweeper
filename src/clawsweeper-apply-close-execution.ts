@@ -65,7 +65,6 @@ type ApplyCloseExecutionDependencies = Pick<
   | "lowSignalUnmergeablePrApplyBlockReasonSafe"
   | "normalizeLabelName"
   | "removeCurrentCursorTraceItem"
-  | "reportDecision"
   | "sleepMs"
   | "stalledUnprovenPrApplyBlockReasonSafe"
   | "unsponsoredFeatureApplyBlockReasonSafe"

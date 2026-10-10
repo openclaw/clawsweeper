@@ -1,5 +1,19 @@
 # Historical proof classification
 
+> **Historical-only after S7b.** `run-proof.mjs` intentionally throws before
+> execution: its no-record fixtures and body edits assume the retired Markdown
+> parser is authoritative. Recover the original driver and README from pinned
+> pre-cutover commit `dbb40525904c2176d192ef6e92c588853e676207`; use that runtime
+> and the historical baseline below. Frozen expectations and saved evidence are
+> unchanged. The production-path description below describes that historical code.
+>
+> Current record authority and proof projections are covered by
+> `test/review-record.test.ts`, `test/review-comment-rendering.test.ts`, and
+> `test/pr-review-quality.test.ts`.
+> The saved S6b `proof.ts` and `readers.mjs` handoff drivers cover saved-corpus
+> render/apply/packet parity, not every synthetic legacy receipt case in this
+> recipe. Missing records now require fresh review rather than prose recovery.
+
 - Status: historical repair proof recipe; not an execution runbook
 - Owner: ClawSweeper review and publication maintainers
 - Baseline: `f72ea010c1d7fd134b1bd0826b3a707778c312bc`

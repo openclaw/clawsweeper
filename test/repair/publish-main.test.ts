@@ -101,7 +101,7 @@ test("publish-main posts only the tuples whose files differ across a whole-repos
   ]);
 });
 
-test("backfill publishes the same CAS requests through a bounded, faster Worker connection pool", async (t) => {
+test("reconciliation serially publishes CAS requests and preserves retry and conflict recovery", async (t) => {
   const fixture = retryPublicationFixture(t);
   for (let number = 43; number < 66; number += 1) {
     for (const [root, body] of [
@@ -162,7 +162,7 @@ test("backfill publishes the same CAS requests through a bounded, faster Worker 
   t.after(() => new Promise<void>((resolve) => server.close(() => resolve())));
   const address = server.address();
   assert.ok(address && typeof address !== "string");
-  const run = async (backfill: boolean, kind = "reconcile") => {
+  const run = async (kind = "reconcile") => {
     // A previous conflict restored CURRENT locally; each run starts from the same change.
     writeText(
       fixture.runtime.root,
@@ -171,45 +171,33 @@ test("backfill publishes the same CAS requests through a bounded, faster Worker 
     );
     requests = [];
     peak = 0;
-    const start = performance.now();
     const publication = publishMainWithStateAppend(fixture.options, {
       ...fixture.runtime,
       env: {
         ...fixture.runtime.env,
         QUEUE_URL: `http://127.0.0.1:${address.port}`,
-        CLAWSWEEPER_REVIEW_RECORD_BACKFILL: String(backfill),
         CLAWSWEEPER_CANONICAL_PUBLICATION_KIND: kind,
       },
     });
     if (failures) await assert.rejects(publication, /failed for all 24 item/);
     else assert.equal(await publication, "appended");
-    return { requests: [...requests].sort(), peak, elapsedMs: performance.now() - start };
+    return { requests: [...requests].sort(), peak };
   };
-  const serial = await run(false);
-  const parallel = await run(true);
-  assert.deepEqual(parallel.requests, serial.requests);
+  const serial = await run();
   assert.equal(serial.requests.length, 25); // 24 tuples plus the unchanged transient retry.
   assert.equal(serial.peak, 1);
-  assert.equal(parallel.peak, 8);
-  assert.ok(parallel.elapsedMs < serial.elapsedMs * 0.6, JSON.stringify({ serial, parallel }));
+  const repeated = await run();
+  assert.deepEqual(repeated.requests, serial.requests);
   assert.equal(fs.readFileSync(path.join(fixture.runtime.root, tupleItemPath), "utf8"), concurrent);
-  const ordinary = await run(true, "review");
-  assert.equal(ordinary.peak, 1, "the backfill flag cannot parallelize ordinary publication");
+  const ordinary = await run("review");
+  assert.equal(ordinary.requests.length, serial.requests.length);
+  assert.equal(ordinary.peak, 1);
   failures = true;
-  await run(true);
-  assert.equal(requests.length, 24, "an all-failed concurrent batch still aborts");
-  t.diagnostic(
-    JSON.stringify({
-      serialMs: serial.elapsedMs,
-      parallelMs: parallel.elapsedMs,
-      serialPeak: serial.peak,
-      parallelPeak: parallel.peak,
-      identicalPosts: serial.requests.length,
-    }),
-  );
+  await run();
+  assert.equal(requests.length, 24, "an all-failed reconciliation batch still aborts");
 });
 
-test("backfill stops scheduling on fatal errors and drains started requests before rejecting", async (t) => {
+test("publication stops scheduling after a fatal error without outstanding requests", async (t) => {
   const fixture = retryPublicationFixture(t);
   for (let number = 43; number < 66; number += 1) {
     writeText(
@@ -226,7 +214,6 @@ test("backfill stops scheduling on fatal errors and drains started requests befo
   await assert.rejects(
     publishMainWithStateAppend(fixture.options, {
       ...fixture.runtime,
-      env: { ...fixture.runtime.env, CLAWSWEEPER_REVIEW_RECORD_BACKFILL: "true" },
       fetchImpl: (async () => {
         const call = ++calls;
         active += 1;
@@ -239,7 +226,7 @@ test("backfill stops scheduling on fatal errors and drains started requests befo
     }),
     /returned 401: denied/,
   );
-  assert.equal(calls, 8);
+  assert.equal(calls, 1);
   assert.equal(active, 0);
 });
 
