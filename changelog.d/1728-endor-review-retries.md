@@ -1,0 +1,1 @@
+- Preserve Endor review ownership and retry state across repeated sweeps, keep newer pull request input, and check live holds before automated Endor work continues; legacy Endor rows get one fresh review on their first continuation after deployment. Thanks @jesse-merhi.
