@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { setTargetRepo } from "../../../dist/repository-profiles.js";
 
 import { createStatusContext } from "../../../dist/clawsweeper-status-context.js";
+import { withGitHubRun } from "../../../dist/clawsweeper-github-runtime.js";
 
 const repo = "openclaw/clawsweeper";
 const issueNumber = 1135;
@@ -109,6 +110,7 @@ fixed_pr_source: "GitHub commit PR lookup"
 ---
 `;
 
+withGitHubRun(() => {
 for (let repeat = 0; repeat < 4; repeat += 1) {
   const resolved = resolveFixed(
     decision(candidate.merge_commit_sha),
@@ -169,3 +171,4 @@ console.log(
     2,
   ),
 );
+});
