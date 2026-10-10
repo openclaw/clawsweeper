@@ -4493,6 +4493,10 @@ jobs:
       CLAWSWEEPER_AUTHOR_PR_BUDGET_CLOSE_ENABLED: ${{ vars.CLAWSWEEPER_AUTHOR_PR_BUDGET_CLOSE_ENABLED || 'false' }}
       CLAWSWEEPER_AUTHOR_PR_BUDGET: ${{ vars.CLAWSWEEPER_AUTHOR_PR_BUDGET || '15' }}
       CLAWSWEEPER_AUTHOR_PR_BUDGET_MAX_CLOSES_PER_RUN: ${{ vars.CLAWSWEEPER_AUTHOR_PR_BUDGET_MAX_CLOSES_PER_RUN || '5' }}
+      # The checkpoint publisher scans records/<slug>; openclaw-openclaw no longer
+      # fits Node's default heap after the review_record backfill (#1874). Runners
+      # have 16 GB. Remove once the publisher reads only changed tuples.
+      NODE_OPTIONS: --max-old-space-size=12288
     steps:
       - uses: actions/checkout@v7
         with:

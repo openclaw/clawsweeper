@@ -1,0 +1,1 @@
+- Give every Node process in the apply-existing job a 12 GB heap, so the checkpoint publisher fits after the review_record backfill (#1874).
