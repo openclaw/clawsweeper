@@ -1,0 +1,1 @@
+- Keep issue next steps focused on the concrete repair, missing evidence, or maintainer decision instead of internal worker queue instructions.
