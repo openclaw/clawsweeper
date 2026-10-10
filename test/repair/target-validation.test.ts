@@ -151,6 +151,143 @@ test("formatter-hint filtering does not hide shell injection or write flags", ()
   }
 });
 
+test("gate-covered well-formed disallowed hints are logged and never executed", () => {
+  const cwd = gitPackageFixture({ "check:changed": "node check.js" });
+  git(cwd, "add", ".");
+  git(cwd, "commit", "-m", "initial");
+  attachOrigin(cwd);
+  const options = validationOptions("openclaw/openclaw");
+  const commands = [
+    "actionlint .github/workflows/auto-response.yml",
+    "pnpm --dir ui test src/pages/chat/chat-history.run-ownership.test.ts src/pages/chat/run-lifecycle.test.ts --maxWorkers=1",
+    "node --import tsx scripts/check.ts",
+    'actionlint "workflow with spaces.yml"',
+    "pnpm audit",
+  ];
+  const preflight = preflightTargetValidationPlan(
+    { fixArtifact: { validation_commands: commands }, targetDir: cwd },
+    options,
+  );
+  assert.equal(preflight.status, "passed");
+  assert.deepEqual(preflight.resolved_commands, ["pnpm check:changed"]);
+  assert.deepEqual(preflight.dropped_validation_hints, [
+    { command: "actionlint", reason: "unsupported validation command" },
+    { command: "pnpm", reason: "unsafe validation command" },
+    { command: "node", reason: "unsafe validation command" },
+    { command: "actionlint", reason: "unsupported validation command" },
+    { command: "pnpm", reason: "unsafe validation command" },
+  ]);
+  assert.deepEqual(
+    preflightTargetValidationPlan(
+      { fixArtifact: { validation_commands: commands }, targetDir: cwd },
+      { ...options, skipOpenClawChangedGate: true },
+    ),
+    preflight,
+  );
+  const binDir = makeFixtureDir("clawsweeper-rejected-hints-");
+  const gate = path.join(binDir, "gate.cjs");
+  const rejected = path.join(binDir, "rejected.cjs");
+  fs.writeFileSync(
+    gate,
+    'if (process.argv.slice(2).filter(arg => !arg.startsWith("--config.")).join(" ") !== "check:changed") throw new Error("rejected hint executed");\n',
+  );
+  fs.writeFileSync(rejected, 'throw new Error("rejected hint executed");\n');
+  withMockCommand("actionlint", rejected, () =>
+    withMockCommand("node", rejected, () =>
+      withMockCommand("pnpm", gate, () => {
+        assert.deepEqual(runAllowedValidationCommands(commands, cwd, options), [
+          "pnpm check:changed",
+        ]);
+        const plans = JSON.parse(
+          fs.readFileSync(
+            new URL("../fixtures/gate-covered-validation-plans.json", import.meta.url),
+            "utf8",
+          ),
+        );
+        for (const plan of plans) {
+          const replay = preflightTargetValidationPlan(
+            { fixArtifact: plan, targetDir: cwd },
+            options,
+          );
+          assert.equal(replay.status, "passed", plan.run);
+          assert.deepEqual(
+            replay.dropped_validation_hints,
+            plan.dropped_validation_hints,
+            plan.run,
+          );
+          assert.deepEqual(
+            runAllowedValidationCommands(plan.validation_commands, cwd, options),
+            ["pnpm check:changed", "git diff --check"],
+            plan.run,
+          );
+        }
+      }),
+    ),
+  );
+  for (const command of commands) {
+    for (const uncovered of [
+      { ...options, strictTargetValidation: true },
+      validationOptions("steipete/example", {
+        toolchain: { packageManager: "pnpm", baseValidationCommands: [], changedGate: null },
+      }),
+    ]) {
+      assert.throws(
+        () =>
+          preflightTargetValidationPlan(
+            { fixArtifact: { validation_commands: [command] }, targetDir: cwd },
+            uncovered,
+          ),
+        /(?:unsupported|unsafe) validation command/,
+      );
+    }
+  }
+});
+
+test("disallowed hints with shell syntax still abort before the replacement gate", () => {
+  const cwd = packageFixture({ "check:changed": "node check.js" });
+  for (const command of [
+    "actionlint workflow.yml; touch escaped",
+    "actionlint workflow.yml | cat",
+    "actionlint workflow.yml && true",
+    "actionlint workflow.yml || true",
+    "actionlint $(touch escaped)",
+    "actionlint `touch escaped`",
+    "actionlint workflow.yml > escaped",
+    "actionlint workflow.yml < input",
+    "actionlint workflow.yml\ntouch escaped",
+    "actionlint workflow.yml\r\ntouch escaped",
+    "actionlint 'workflow.yml; touch escaped'",
+    'actionlint "unterminated',
+    "pnpm i",
+    "npm run install",
+    "pnpm run postinstall",
+    "pnpm uninstall lodash",
+    "pnpm add lodash",
+    "pnpm update",
+    "npm ci",
+    "pnpm up",
+    "npm install-clean",
+    "pnpm audit fix",
+    "pnpm --global add lodash",
+    "npm --global install lodash",
+    "bun --global add lodash",
+  ]) {
+    for (const options of [
+      validationOptions("openclaw/openclaw"),
+      validationOptions("openclaw/openclaw", { strictTargetValidation: true }),
+    ]) {
+      assert.throws(
+        () =>
+          preflightTargetValidationPlan(
+            { fixArtifact: { validation_commands: [command] }, targetDir: cwd },
+            options,
+          ),
+        /(?:unsupported|unsafe) validation command/,
+      );
+    }
+  }
+});
+
 test("non-OpenClaw repairs do not get OpenClaw changed gate injection", () => {
   // The target repo's checkout happens to expose a `check:changed` script,
   // but the per-repo toolchain (resolved from config/target-repositories.json)

@@ -1679,11 +1679,27 @@ export function runAllowedValidationCommandsWithBinding(
 export function preflightTargetValidationPlan(
   { fixArtifact, targetDir, baseBranch = DEFAULT_BASE_BRANCH }: LooseRecord,
   options: TargetValidationOptions,
-) {
+): {
+  status: "passed" | "blocked";
+  resolved_commands: string[];
+  available_scripts: string[];
+  dropped_validation_hints?: { command: string; reason: string }[];
+  code?: string;
+  reason?: string;
+  required?: string;
+  unsafe_hook?: string;
+  missing_script?: string;
+  target_branch?: JsonValue;
+  source_pr?: JsonValue;
+} {
   const scripts = readPackageScriptSet(targetDir);
   const availableScripts = [...scripts].sort();
   const resolved: string[] = [];
   const requiredScripts: PackageScriptRequirement[] = [];
+  const droppedHints: { command: string; reason: string }[] = [];
+  const onRejectedHint = (command: string, reason: string) => {
+    droppedHints.push({ command, reason });
+  };
   for (const command of requiredValidationCommands(
     fixArtifact.validation_commands ?? [],
     targetDir,
@@ -1694,6 +1710,7 @@ export function preflightTargetValidationPlan(
       targetDir,
       baseBranch,
       options,
+      onRejectedHint,
     );
     for (const parts of resolvedCommands) {
       const rendered = parts.join(" ");
@@ -1702,10 +1719,13 @@ export function preflightTargetValidationPlan(
       if (script) requiredScripts.push(script);
     }
   }
+  const dropped: { dropped_validation_hints?: typeof droppedHints } =
+    droppedHints.length > 0 ? { dropped_validation_hints: droppedHints } : {};
 
   if (resolved.length === 0) {
     return {
       status: "blocked",
+      ...dropped,
       code: "validation_command_missing",
       available_scripts: availableScripts,
       resolved_commands: [],
@@ -1723,6 +1743,7 @@ export function preflightTargetValidationPlan(
   if (bunInspection?.status === "unsafe") {
     return {
       status: "blocked",
+      ...dropped,
       code: "validation_script_unsafe",
       required: bunInspection.command,
       unsafe_hook: bunInspection.hook,
@@ -1734,6 +1755,7 @@ export function preflightTargetValidationPlan(
   if (bunInspection?.status === "inconclusive") {
     return {
       status: "blocked",
+      ...dropped,
       code: "validation_script_unsafe",
       required: bunInspection.command,
       available_scripts: availableScripts,
@@ -1743,6 +1765,7 @@ export function preflightTargetValidationPlan(
   }
   if (!missing) {
     return {
+      ...dropped,
       status: "passed",
       resolved_commands: resolved,
       available_scripts: availableScripts,
@@ -1755,6 +1778,7 @@ export function preflightTargetValidationPlan(
     ) ?? null;
   return {
     status: "blocked",
+    ...dropped,
     code: "validation_script_missing",
     required: missing.command,
     missing_script: missing.name,
@@ -5524,12 +5548,14 @@ function resolveAllowedValidationCommands(
   cwd: string,
   baseBranch: string = DEFAULT_BASE_BRANCH,
   options: TargetValidationOptions,
+  onRejectedHint?: (command: string, reason: string) => void,
 ) {
   return resolveAllowedValidationCommandsWithoutWorkspaceBinding(
     command,
     cwd,
     baseBranch,
     options,
+    onRejectedHint,
   ).map(requireWorkspaceMatchFailure);
 }
 
@@ -5538,19 +5564,20 @@ function resolveAllowedValidationCommandsWithoutWorkspaceBinding(
   cwd: string,
   baseBranch: string,
   options: TargetValidationOptions,
+  onRejectedHint?: (command: string, reason: string) => void,
 ) {
-  const parts = parseAllowedValidationCommand(command);
-  const commandParts = stripEnvPrefix(parts);
-  const envPrefix = parts[0] === "env" ? parts.slice(0, parts.length - commandParts.length) : [];
   const scripts = readPackageScriptSet(cwd);
   const toolchain = getToolchain(options);
   const gate = toolchain.changedGate;
-  if (
-    !options.strictTargetValidation &&
-    gate &&
-    scripts.has(gate.requiredScript) &&
-    commandParts[0] !== "git"
-  ) {
+  const gateCoversHints =
+    !options.strictTargetValidation && gate && scripts.has(gate.requiredScript);
+  const parts = parseAllowedValidationCommand(
+    command,
+    gateCoversHints ? (onRejectedHint ?? (() => {})) : undefined,
+  );
+  const commandParts = stripEnvPrefix(parts);
+  const envPrefix = parts[0] === "env" ? parts.slice(0, parts.length - commandParts.length) : [];
+  if (gateCoversHints && commandParts[0] !== "git") {
     return [gate.command.split(" ")];
   }
   if (commandParts[0] === "npm" && commandParts[1] === "run" && commandParts[2] === "validate") {

@@ -359,6 +359,42 @@ const PACKAGE_MANAGER_COMMAND_CLASSIFICATION: Record<
   },
 };
 
+// Administrative package-manager commands stay fatal unless they are known
+// read-only queries. They must not be mistaken for unsupported test hints.
+const READ_ONLY_PACKAGE_MANAGER_COMMANDS: Readonly<Record<string, true>> = {
+  audit: true,
+  bin: true,
+  bugs: true,
+  "cat-file": true,
+  "cat-index": true,
+  completion: true,
+  "completion-server": true,
+  docs: true,
+  doctor: true,
+  exec: true,
+  "find-dupes": true,
+  "find-hash": true,
+  fund: true,
+  help: true,
+  "ignored-builds": true,
+  licenses: true,
+  list: true,
+  ls: true,
+  outdated: true,
+  ping: true,
+  prefix: true,
+  query: true,
+  repo: true,
+  root: true,
+  sbom: true,
+  search: true,
+  stars: true,
+  view: true,
+  whoami: true,
+  why: true,
+  xmas: true,
+};
+
 const MUTATING_PACKAGE_LIFECYCLE_SCRIPTS = new Set([
   "dependencies",
   "install",
@@ -662,10 +698,30 @@ export function uniqueStrings(values: Iterable<unknown>): string[] {
   return [...new Set([...values].filter(Boolean).map(String))];
 }
 
-export function parseAllowedValidationCommand(command: unknown): string[] {
+export function parseAllowedValidationCommand(
+  command: unknown,
+  onRejectedHint?: (command: string, reason: string) => void,
+): string[] {
   const text = String(command ?? "").trim();
   if (!text) throw new Error("empty validation command");
-  return validateAllowedValidationCommandParts(splitValidationCommand(text), text);
+  const parts = splitValidationCommand(text);
+  try {
+    return validateAllowedValidationCommandParts(parts, text);
+  } catch (error) {
+    // Only a trusted replacement gate may ignore a well-formed disallowed hint.
+    // Mutation and environment tripwires remain fatal, even when nothing runs.
+    if (
+      !onRejectedHint ||
+      hasUnsafeValidationEnvironment(parts) ||
+      hasMutatingValidationFlag(parts) ||
+      hasMutatingValidationCommand(parts)
+    ) {
+      throw error;
+    }
+    splitValidationCommand(String(command ?? ""), true);
+    onRejectedHint(parts[0] ?? "", String((error as Error).message).split(":")[0]!);
+    return [];
+  }
 }
 
 export function validateAllowedValidationCommandParts(
@@ -1196,11 +1252,27 @@ function hasMutatingValidationCommand(parts: readonly string[]): boolean {
   const commandParts = stripEnvPrefix(parts);
   const executable = commandParts[0] ?? "";
   const invocation = packageManagerInvocation(commandParts);
+  if (!invocation && (executable === "pnpm" || executable === "npm" || executable === "bun")) {
+    // Unknown package-manager options must not hide a mutating operation.
+    return true;
+  }
   const subcommand = invocation ? normalizedPackageCommand(invocation) : (commandParts[1] ?? "");
   const packageScript = packageScriptRequirement(commandParts)?.name ?? "";
   const wrappedCommandStart = wrappedValidationCommandStart(commandParts, invocation);
   if (wrappedCommandStart >= 0) {
     return hasMutatingValidationCommand(commandParts.slice(wrappedCommandStart));
+  }
+  if (
+    invocation &&
+    (MUTATING_PACKAGE_LIFECYCLE_SCRIPTS.has(subcommand) ||
+      MUTATING_PACKAGE_LIFECYCLE_SCRIPTS.has(packageScript) ||
+      (PACKAGE_MANAGER_COMMAND_CLASSIFICATION[invocation.executable].nonScriptCommands.has(
+        subcommand,
+      ) &&
+        READ_ONLY_PACKAGE_MANAGER_COMMANDS[subcommand] !== true) ||
+      (subcommand === "audit" && invocation.args.includes("fix")))
+  ) {
+    return true;
   }
 
   if (
@@ -1382,13 +1454,19 @@ const SAFE_WRAPPED_VALIDATION_EXECUTABLES = new Set([
   "vitest",
 ]);
 
-function splitValidationCommand(text: string): string[] {
+function splitValidationCommand(text: string, rejectShellSyntax = false): string[] {
   const parts: string[] = [];
   let current = "";
   let quote: "'" | '"' | null = null;
   let escaping = false;
   for (let index = 0; index < text.length; index += 1) {
     const character = text[index]!;
+    if (
+      rejectShellSyntax &&
+      ("\n\r;|&<>`".includes(character) || (character === "$" && text[index + 1] === "("))
+    ) {
+      throw new Error(`unsafe validation command: ${text}`);
+    }
     if (escaping) {
       current += character;
       escaping = false;

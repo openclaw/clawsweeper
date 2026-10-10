@@ -119,6 +119,16 @@ expand or block a narrow repair. The executor re-runs the normalized gate before
 push; if it fails, it feeds the full failure back into a dedicated validation-fix
 pass before spending the next review attempt.
 
+For non-strict issue-fixer validation, when the configured changed gate is
+available and replaces planner hints, well-formed commands rejected by the
+allowlist are dropped rather than blocking the run before Codex. The run's
+`validation_preflight.dropped_validation_hints` records only each command's
+first token and rejection reason; the rejected commands never execute.
+Parse failures still abort, as do rejected hints containing shell-control
+syntax, recognized mutation commands, or write flags. Accepted hints keep
+their existing parsing behavior. Strict validation and targets without a
+covering gate retain their existing fail-closed behavior.
+
 ## Exact-Head Rule
 
 Every automerge decision is bound to a concrete PR head SHA.

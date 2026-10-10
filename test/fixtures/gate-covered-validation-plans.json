@@ -1,0 +1,31 @@
+[
+  {
+    "run": "https://github.com/openclaw/clawsweeper/actions/runs/37999909071",
+    "validation_commands": [
+      "pnpm test test/scripts/barnacle-auto-response.test.ts --maxWorkers=1",
+      "node --check scripts/github/barnacle-auto-response.mjs",
+      "actionlint .github/workflows/auto-response.yml",
+      "pnpm check:changed",
+      "git diff --check"
+    ],
+    "dropped_validation_hints": [
+      { "command": "actionlint", "reason": "unsupported validation command" }
+    ]
+  },
+  {
+    "run": "https://github.com/openclaw/clawsweeper/actions/runs/37228471223",
+    "validation_commands": [
+      "pnpm --dir ui test src/pages/chat/chat-history.run-ownership.test.ts src/pages/chat/run-lifecycle.test.ts --maxWorkers=1",
+      "pnpm --dir ui test src/pages/chat/chat-history-cursor.test.ts src/pages/chat/chat-history.inflight.test.ts --maxWorkers=1",
+      "pnpm --dir ui test src/pages/chat/chat-state.test.ts --maxWorkers=1",
+      "pnpm exec node scripts/run-vitest.mjs run --config test/vitest/vitest.ui-e2e.config.ts --configLoader runner ui/src/e2e/chat-startup-progress.e2e.test.ts",
+      "pnpm check:changed",
+      "git diff --check"
+    ],
+    "dropped_validation_hints": [
+      { "command": "pnpm", "reason": "unsafe validation command" },
+      { "command": "pnpm", "reason": "unsafe validation command" },
+      { "command": "pnpm", "reason": "unsafe validation command" }
+    ]
+  }
+]
