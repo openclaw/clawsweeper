@@ -17,7 +17,7 @@ import { parse } from "yaml";
 import { codexFailureDecisionForTest, parseDecision } from "../dist/clawsweeper.js";
 import { createReportDocumentRendering } from "../dist/clawsweeper-report-document.js";
 import { createReportContextRendering } from "../dist/clawsweeper-report-context.js";
-import { createDashboardPresentation } from "../dist/clawsweeper-dashboard.js";
+import * as dashboardPresentation from "../dist/clawsweeper-dashboard.js";
 import * as repositoryLinks from "../dist/clawsweeper-links.js";
 import { oversizedPullRequestDecision } from "../dist/clawsweeper-oversized-pr-policy.js";
 import { repositoryProfileFor } from "../dist/repository-profiles.js";
@@ -41,7 +41,7 @@ const pullRequest = item({ kind: "pull_request", number: 42 });
 const document = createReportDocumentRendering({
   ...repositoryLinks,
   ...createReportContextRendering({} as never),
-  ...createDashboardPresentation({} as never),
+  ...dashboardPresentation,
   compactPullFilePaths: () => [],
   formatTimestamp: String,
   labelJustificationsMarkdown: () => "- none",

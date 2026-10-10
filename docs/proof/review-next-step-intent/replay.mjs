@@ -199,14 +199,14 @@ const { createReportDocumentRendering } = await from(
 const { createReportContextRendering } = await from(
   join(candidateDist, "clawsweeper-report-context.js"),
 );
-const { createDashboardPresentation } = await from(join(candidateDist, "clawsweeper-dashboard.js"));
+const dashboardPresentation = await from(join(candidateDist, "clawsweeper-dashboard.js"));
 const repositoryLinks = await from(join(candidateDist, "clawsweeper-links.js"));
 const { repositoryProfileFor } = await from(join(candidateDist, "repository-profiles.js"));
 const document = createReportDocumentRendering({
   ...repositoryLinks,
   targetProfile: () => repositoryProfileFor("openclaw/openclaw"),
   ...createReportContextRendering({}),
-  ...createDashboardPresentation({}),
+  ...dashboardPresentation,
   prSurfaceFilesFromContext: () => [],
   compactPullFilePaths: () => [],
   confidenceText: String,

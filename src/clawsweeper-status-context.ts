@@ -405,6 +405,24 @@ interface StatusContextDependencies {
   recordOrUndefined: (value: unknown) => Record<string, unknown> | undefined;
 }
 
+export function formatTimestamp(iso: string | undefined): string {
+  if (!iso) return "unknown";
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return iso;
+  return new Intl.DateTimeFormat("en-US", {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+    timeZone: "UTC",
+    timeZoneName: "short",
+  }).format(date);
+}
+export function formatStatusNumber(value: number | undefined): string {
+  return value === undefined || !Number.isFinite(value) ? "unknown" : String(value);
+}
 export function createStatusContext({
   targetProfile,
   targetRepo,
@@ -421,22 +439,6 @@ export function createStatusContext({
   const recentPullsByRepo = new Map<string, readonly unknown[]>();
   const defaultBranchByRepo = new Map<string, string | null>();
   const commitMessageByRepoSha = new Map<string, string>();
-
-  function formatTimestamp(iso: string | undefined): string {
-    if (!iso) return "unknown";
-    const date = new Date(iso);
-    if (Number.isNaN(date.getTime())) return iso;
-    return new Intl.DateTimeFormat("en-US", {
-      month: "short",
-      day: "numeric",
-      year: "numeric",
-      hour: "2-digit",
-      minute: "2-digit",
-      hour12: false,
-      timeZone: "UTC",
-      timeZoneName: "short",
-    }).format(date);
-  }
 
   function workflowStatusBlock(options?: {
     state?: string | undefined;
@@ -546,10 +548,6 @@ ${profileStatusEnd(profile)}`;
       );
     }
     return lines;
-  }
-
-  function formatStatusNumber(value: number | undefined): string {
-    return value === undefined || !Number.isFinite(value) ? "unknown" : String(value);
   }
 
   function readSweepStatusSummary(profile = targetProfile()): WorkflowStatusSummary | null {

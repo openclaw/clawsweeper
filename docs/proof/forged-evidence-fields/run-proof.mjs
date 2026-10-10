@@ -152,7 +152,7 @@ async function runArm(arm) {
   const clawsweeper = await load("clawsweeper.js");
   const { createReportDocumentRendering } = await load("clawsweeper-report-document.js");
   const { createReportContextRendering } = await load("clawsweeper-report-context.js");
-  const { createDashboardPresentation } = await load("clawsweeper-dashboard.js");
+  const dashboardModule = await load("clawsweeper-dashboard.js");
   const parser = await load("clawsweeper-report-parser.js");
   const linkModule = await load("clawsweeper-links.js");
   const { repositoryProfileFor } = await load("repository-profiles.js");
@@ -179,7 +179,9 @@ async function runArm(arm) {
     ...links,
     targetProfile: () => repositoryProfileFor("openclaw/openclaw"),
     ...createReportContextRendering({}),
-    ...createDashboardPresentation({}),
+    ...(arm.slug === "baseline" && typeof dashboardModule.createDashboardPresentation === "function"
+      ? dashboardModule.createDashboardPresentation({})
+      : dashboardModule),
     prSurfaceFilesFromContext: () => [],
     compactPullFilePaths: () => [],
     confidenceText: String,

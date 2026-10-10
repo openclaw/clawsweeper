@@ -1,7 +1,7 @@
 import { parseDecision } from "../dist/clawsweeper.js";
 import { createReportDocumentRendering } from "../dist/clawsweeper-report-document.js";
 import { createReportContextRendering } from "../dist/clawsweeper-report-context.js";
-import { createDashboardPresentation } from "../dist/clawsweeper-dashboard.js";
+import * as dashboardPresentation from "../dist/clawsweeper-dashboard.js";
 import * as repositoryLinks from "../dist/clawsweeper-links.js";
 import { repositoryProfileFor } from "../dist/repository-profiles.js";
 import type { DataModelCompatibility } from "../src/clawsweeper-types.ts";
@@ -81,7 +81,7 @@ export function generatedCompatibilityReport(
   const document = createReportDocumentRendering({
     ...repositoryLinks,
     ...createReportContextRendering({} as never),
-    ...createDashboardPresentation({} as never),
+    ...dashboardPresentation,
     compactPullFilePaths: (file) => [file.filename],
     formatTimestamp: String,
     labelJustificationsMarkdown: () => "- none",

@@ -8,37 +8,27 @@ import type {
   CloseReason,
   DashboardActivityBucket,
   DashboardActivityStats,
-  DashboardCadenceBucket,
   DashboardClosedItem,
   DashboardItem,
   Decision,
-  ItemKind,
   RepoDashboardSnapshot,
 } from "./clawsweeper-types.js";
 import { parseIsoMs } from "./iso-time.js";
 import { frontMatterValue } from "./report-front-matter.js";
 import { reportReviewDecision } from "./report-review-decision.js";
 
-interface DashboardDependencies {
-  closeReasonText: (reason: CloseReason) => string;
-  displayTitle: (title: string) => string;
-  emptyDashboardActivityStats: () => DashboardActivityStats;
-  formatActivityRow: (label: string, bucket: DashboardActivityBucket) => string;
-  formatCadenceBucket: (bucket: DashboardCadenceBucket) => string;
-  formatOperationActivityRow: (label: string, bucket: DashboardActivityBucket) => string;
-  formatPercent: (numerator: number, denominator: number) => string;
-  formatStatusNumber: (value: number | undefined) => string;
-  formatTimestamp: (iso: string | undefined) => string;
-  itemUrlFor: (repo: string, number: number, kind?: ItemKind) => string;
-  latestTimestamp: (
-    current: string | undefined,
-    candidate: string | undefined,
-  ) => string | undefined;
-  markdownLink: (label: string, url: string) => string;
-  repoUrlFor: (repo: string) => string;
-  reportFileUrl: (number: number, path?: string) => string;
-  targetRepo: () => string;
-}
+import { closeReasonText } from "./clawsweeper-close-reasons.js";
+import { displayTitle, formatStatusNumber, formatTimestamp } from "./clawsweeper-status-context.js";
+import { itemUrlFor, markdownLink, repoUrlFor, reportFileUrl } from "./clawsweeper-links.js";
+import { targetRepo } from "./repository-profiles.js";
+import {
+  emptyDashboardActivityStats,
+  formatActivityRow,
+  formatCadenceBucket,
+  formatOperationActivityRow,
+  formatPercent,
+  latestTimestamp,
+} from "./clawsweeper-review-planning-dashboard.js";
 
 function flushDashboardMarkdown(strings: TemplateStringsArray, ...values: unknown[]): string {
   return strings.reduce(
@@ -48,235 +38,215 @@ function flushDashboardMarkdown(strings: TemplateStringsArray, ...values: unknow
   );
 }
 
-export function createDashboardPresentation({
-  closeReasonText,
-  displayTitle,
-  emptyDashboardActivityStats,
-  formatActivityRow,
-  formatCadenceBucket,
-  formatOperationActivityRow,
-  formatPercent,
-  formatStatusNumber,
-  formatTimestamp,
-  itemUrlFor,
-  latestTimestamp,
-  markdownLink,
-  repoUrlFor,
-  reportFileUrl,
-  targetRepo,
-}: DashboardDependencies) {
-  function workPriorityScore(priority: string): number {
-    if (priority === "high") return 3;
-    if (priority === "medium") return 2;
-    if (priority === "low") return 1;
-    return 0;
-  }
+export function workPriorityScore(priority: string): number {
+  if (priority === "high") return 3;
+  if (priority === "medium") return 2;
+  if (priority === "low") return 1;
+  return 0;
+}
 
-  function markdownTableCell(value: string): string {
-    return value.replaceAll("|", "\\|");
-  }
+function markdownTableCell(value: string): string {
+  return value.replaceAll("|", "\\|");
+}
 
-  function jsonFrontMatterValue(value: readonly unknown[]): string {
-    return JSON.stringify(value);
-  }
+export function jsonFrontMatterValue(value: readonly unknown[]): string {
+  return JSON.stringify(value);
+}
 
-  function workStatusForDecision(decision: Decision): string {
-    if (decision.workCandidate === "queue_fix_pr") return "candidate";
-    if (decision.workCandidate === "manual_review") return "manual_review";
-    return "none";
-  }
+export function workStatusForDecision(decision: Decision): string {
+  if (decision.workCandidate === "queue_fix_pr") return "candidate";
+  if (decision.workCandidate === "manual_review") return "manual_review";
+  return "none";
+}
 
-  function displayCloseReason(reason: string | undefined): string {
-    if (reason && ALL_REASONS.has(reason as CloseReason))
-      return closeReasonText(reason as CloseReason);
-    return reason || "unknown";
-  }
+function displayCloseReason(reason: string | undefined): string {
+  if (reason && ALL_REASONS.has(reason as CloseReason))
+    return closeReasonText(reason as CloseReason);
+  return reason || "unknown";
+}
 
-  function dashboardClosedAt(markdown: string): string | undefined {
-    const appliedAt = frontMatterValue(markdown, "applied_at");
-    if (appliedAt) return appliedAt;
-    const currentItemClosedAt = frontMatterValue(markdown, "current_item_closed_at");
-    if (currentItemClosedAt) return currentItemClosedAt;
-    const currentState = frontMatterValue(markdown, "current_state");
-    const action = frontMatterValue(markdown, "action_taken");
-    if (currentState === "closed") return frontMatterValue(markdown, "reconciled_at");
-    if (action === "skipped_already_closed") return frontMatterValue(markdown, "apply_checked_at");
-    return undefined;
-  }
+export function dashboardClosedAt(markdown: string): string | undefined {
+  const appliedAt = frontMatterValue(markdown, "applied_at");
+  if (appliedAt) return appliedAt;
+  const currentItemClosedAt = frontMatterValue(markdown, "current_item_closed_at");
+  if (currentItemClosedAt) return currentItemClosedAt;
+  const currentState = frontMatterValue(markdown, "current_state");
+  const action = frontMatterValue(markdown, "action_taken");
+  if (currentState === "closed") return frontMatterValue(markdown, "reconciled_at");
+  if (action === "skipped_already_closed") return frontMatterValue(markdown, "apply_checked_at");
+  return undefined;
+}
 
-  function dashboardCloseReason(markdown: string): string | undefined {
-    const closeReason = reportReviewDecision(markdown).closeReason;
-    const action = frontMatterValue(markdown, "action_taken");
-    if (action === "closed") return closeReason;
-    if (action === "skipped_already_closed") return "already closed before apply";
-    if (frontMatterValue(markdown, "current_state") === "closed") {
-      if (action === "kept_open") return "closed externally after review";
-      if (action === "skipped_changed_since_review") return "closed externally after item changed";
-      return action ? `closed externally after ${action}` : "closed externally";
-    }
-    return closeReason;
+export function dashboardCloseReason(markdown: string): string | undefined {
+  const closeReason = reportReviewDecision(markdown).closeReason;
+  const action = frontMatterValue(markdown, "action_taken");
+  if (action === "closed") return closeReason;
+  if (action === "skipped_already_closed") return "already closed before apply";
+  if (frontMatterValue(markdown, "current_state") === "closed") {
+    if (action === "kept_open") return "closed externally after review";
+    if (action === "skipped_changed_since_review") return "closed externally after item changed";
+    return action ? `closed externally after ${action}` : "closed externally";
   }
+  return closeReason;
+}
 
-  function formatRecentClosedRows(items: readonly DashboardClosedItem[], limit = 10): string {
-    return (
-      items
-        .slice(0, limit)
-        .map((item) => {
-          const repo = item.repo ?? targetRepo();
-          const title = markdownTableCell(displayTitle(item.title));
-          const reason = markdownTableCell(displayCloseReason(item.closeReason));
-          return `| ${markdownLink(`#${item.number}`, itemUrlFor(repo, item.number, item.kind))} | ${title} | ${reason} | ${formatTimestamp(item.closedAt ?? item.appliedAt)} | ${markdownLink(item.reportPath, reportFileUrl(item.number, item.reportPath))} |`;
-        })
-        .join("\n") || "| _None_ |  |  |  |  |"
+export function formatRecentClosedRows(items: readonly DashboardClosedItem[], limit = 10): string {
+  return (
+    items
+      .slice(0, limit)
+      .map((item) => {
+        const repo = item.repo ?? targetRepo();
+        const title = markdownTableCell(displayTitle(item.title));
+        const reason = markdownTableCell(displayCloseReason(item.closeReason));
+        return `| ${markdownLink(`#${item.number}`, itemUrlFor(repo, item.number, item.kind))} | ${title} | ${reason} | ${formatTimestamp(item.closedAt ?? item.appliedAt)} | ${markdownLink(item.reportPath, reportFileUrl(item.number, item.reportPath))} |`;
+      })
+      .join("\n") || "| _None_ |  |  |  |  |"
+  );
+}
+
+function formatRecentReviewedRows(items: readonly DashboardItem[], limit = 10): string {
+  return (
+    items
+      .slice(0, limit)
+      .map((item) => {
+        const repo = item.repo ?? targetRepo();
+        const title = markdownTableCell(displayTitle(item.title));
+        const outcome = markdownLink(
+          `${item.decision} / ${item.action}`,
+          reportFileUrl(item.number, item.reportPath),
+        );
+        return `| ${markdownLink(`#${item.number}`, itemUrlFor(repo, item.number, item.kind))} | ${title} | ${outcome} | ${item.reviewStatus} | ${formatTimestamp(item.reviewedAt)} |`;
+      })
+      .join("\n") || "| _None_ |  |  |  |  |"
+  );
+}
+
+function formatWorkQueueRows(items: readonly DashboardItem[], limit = 10): string {
+  return (
+    items
+      .slice(0, limit)
+      .map((item) => {
+        const repo = item.repo ?? targetRepo();
+        const title = markdownTableCell(displayTitle(item.title));
+        const report = markdownLink(item.reportPath, reportFileUrl(item.number, item.reportPath));
+        const plan = item.planPath
+          ? markdownLink(item.planPath, reportFileUrl(item.number, item.planPath))
+          : "_pending_";
+        return `| ${markdownLink(`#${item.number}`, itemUrlFor(repo, item.number, item.kind))} | ${title} | ${item.workPriority} | ${item.workStatus} | ${formatTimestamp(item.reviewedAt)} | ${plan} | ${report} |`;
+      })
+      .join("\n") || "| _None_ |  |  |  |  |  |  |"
+  );
+}
+
+function formatFleetRecentClosedRows(items: readonly DashboardClosedItem[], limit = 10): string {
+  return (
+    items
+      .slice(0, limit)
+      .map((item) => {
+        const repo = item.repo ?? targetRepo();
+        const title = markdownTableCell(displayTitle(item.title));
+        const reason = markdownTableCell(displayCloseReason(item.closeReason));
+        return `| ${markdownLink(repo, repoUrlFor(repo))} | ${markdownLink(`#${item.number}`, itemUrlFor(repo, item.number, item.kind))} | ${title} | ${reason} | ${formatTimestamp(item.closedAt ?? item.appliedAt)} | ${markdownLink(item.reportPath, reportFileUrl(item.number, item.reportPath))} |`;
+      })
+      .join("\n") || "| _None_ |  |  |  |  |  |"
+  );
+}
+
+function formatFleetRecentReviewedRows(items: readonly DashboardItem[], limit = 10): string {
+  return (
+    items
+      .slice(0, limit)
+      .map((item) => {
+        const repo = item.repo ?? targetRepo();
+        const title = markdownTableCell(displayTitle(item.title));
+        const outcome = markdownLink(
+          `${item.decision} / ${item.action}`,
+          reportFileUrl(item.number, item.reportPath),
+        );
+        return `| ${markdownLink(repo, repoUrlFor(repo))} | ${markdownLink(`#${item.number}`, itemUrlFor(repo, item.number, item.kind))} | ${title} | ${outcome} | ${item.reviewStatus} | ${formatTimestamp(item.reviewedAt)} |`;
+      })
+      .join("\n") || "| _None_ |  |  |  |  |  |"
+  );
+}
+
+function formatFleetWorkQueueRows(items: readonly DashboardItem[], limit = 15): string {
+  return (
+    items
+      .slice(0, limit)
+      .map((item) => {
+        const repo = item.repo ?? targetRepo();
+        const title = markdownTableCell(displayTitle(item.title));
+        const report = markdownLink(item.reportPath, reportFileUrl(item.number, item.reportPath));
+        const plan = item.planPath
+          ? markdownLink(item.planPath, reportFileUrl(item.number, item.planPath))
+          : "_pending_";
+        return `| ${markdownLink(repo, repoUrlFor(repo))} | ${markdownLink(`#${item.number}`, itemUrlFor(repo, item.number, item.kind))} | ${title} | ${item.workPriority} | ${item.workStatus} | ${formatTimestamp(item.reviewedAt)} | ${plan} | ${report} |`;
+      })
+      .join("\n") || "| _None_ |  |  |  |  |  |  |  |"
+  );
+}
+
+function addActivityBucket(target: DashboardActivityBucket, source: DashboardActivityBucket): void {
+  target.reviews += source.reviews;
+  target.closeDecisions += source.closeDecisions;
+  target.keepOpenDecisions += source.keepOpenDecisions;
+  target.failedOrStaleReviews += source.failedOrStaleReviews;
+  target.closes += source.closes;
+  target.commentSyncs += source.commentSyncs;
+  target.applySkips += source.applySkips;
+  target.inheritedLabelCleanups += source.inheritedLabelCleanups;
+  target.selfHealConflictRepairs += source.selfHealConflictRepairs;
+  target.failedReviewRetries += source.failedReviewRetries;
+  target.failedReviewRetryExhaustions += source.failedReviewRetryExhaustions;
+  target.botOwnedProofDecisionsRequested += source.botOwnedProofDecisionsRequested;
+  target.botOwnedProofDispatches += source.botOwnedProofDispatches;
+}
+
+function aggregateActivity(snapshots: readonly RepoDashboardSnapshot[]): DashboardActivityStats {
+  const activity = emptyDashboardActivityStats();
+  for (const snapshot of snapshots) {
+    addActivityBucket(activity.last15Minutes, snapshot.stats.activity.last15Minutes);
+    addActivityBucket(activity.lastHour, snapshot.stats.activity.lastHour);
+    addActivityBucket(activity.last24Hours, snapshot.stats.activity.last24Hours);
+    activity.latestReviewAt = latestTimestamp(
+      activity.latestReviewAt,
+      snapshot.stats.activity.latestReviewAt,
+    );
+    activity.latestCloseAt = latestTimestamp(
+      activity.latestCloseAt,
+      snapshot.stats.activity.latestCloseAt,
+    );
+    activity.latestCommentSyncAt = latestTimestamp(
+      activity.latestCommentSyncAt,
+      snapshot.stats.activity.latestCommentSyncAt,
     );
   }
+  return activity;
+}
 
-  function formatRecentReviewedRows(items: readonly DashboardItem[], limit = 10): string {
-    return (
-      items
-        .slice(0, limit)
-        .map((item) => {
-          const repo = item.repo ?? targetRepo();
-          const title = markdownTableCell(displayTitle(item.title));
-          const outcome = markdownLink(
-            `${item.decision} / ${item.action}`,
-            reportFileUrl(item.number, item.reportPath),
-          );
-          return `| ${markdownLink(`#${item.number}`, itemUrlFor(repo, item.number, item.kind))} | ${title} | ${outcome} | ${item.reviewStatus} | ${formatTimestamp(item.reviewedAt)} |`;
-        })
-        .join("\n") || "| _None_ |  |  |  |  |"
-    );
-  }
+function formatRepositoryOverviewRow(snapshot: RepoDashboardSnapshot): string {
+  const stats = snapshot.stats;
+  return `| ${markdownLink(snapshot.profile.displayName, repoUrlFor(snapshot.profile.targetRepo))} | ${stats.open.total} | ${stats.files} | ${stats.cadence.unreviewedOpen} | ${stats.cadence.due} | ${stats.proposedClose} | ${stats.workCandidates} | ${stats.closed} | ${formatTimestamp(stats.activity.latestReviewAt)} | ${formatTimestamp(stats.activity.latestCloseAt)} | ${stats.activity.lastHour.commentSyncs} |`;
+}
 
-  function formatWorkQueueRows(items: readonly DashboardItem[], limit = 10): string {
-    return (
-      items
-        .slice(0, limit)
-        .map((item) => {
-          const repo = item.repo ?? targetRepo();
-          const title = markdownTableCell(displayTitle(item.title));
-          const report = markdownLink(item.reportPath, reportFileUrl(item.number, item.reportPath));
-          const plan = item.planPath
-            ? markdownLink(item.planPath, reportFileUrl(item.number, item.planPath))
-            : "_pending_";
-          return `| ${markdownLink(`#${item.number}`, itemUrlFor(repo, item.number, item.kind))} | ${title} | ${item.workPriority} | ${item.workStatus} | ${formatTimestamp(item.reviewedAt)} | ${plan} | ${report} |`;
-        })
-        .join("\n") || "| _None_ |  |  |  |  |  |  |"
-    );
-  }
+function formatWorkflowStatusRow(snapshot: RepoDashboardSnapshot): string {
+  const run = snapshot.statusSummary.runUrl
+    ? markdownLink("run", snapshot.statusSummary.runUrl)
+    : "_none_";
+  const plan =
+    snapshot.statusSummary.plannedCount === undefined &&
+    snapshot.statusSummary.plannedCapacity === undefined &&
+    snapshot.statusSummary.plannedShards === undefined
+      ? "unknown"
+      : `${formatStatusNumber(snapshot.statusSummary.plannedCount)}/${formatStatusNumber(
+          snapshot.statusSummary.plannedCapacity,
+        )} items, ${formatStatusNumber(snapshot.statusSummary.plannedShards)} shards`;
+  return `| ${markdownLink(snapshot.profile.displayName, repoUrlFor(snapshot.profile.targetRepo))} | ${markdownTableCell(snapshot.statusSummary.state)} | ${formatStatusNumber(snapshot.statusSummary.activeCodex)} | ${plan} | ${formatStatusNumber(snapshot.statusSummary.dueBacklog)} | ${formatTimestamp(snapshot.statusSummary.oldestUnreviewedAt)} | ${markdownTableCell(snapshot.statusSummary.capacityReason ?? "unknown")} | ${formatTimestamp(snapshot.statusSummary.updatedAt)} | ${run} |`;
+}
 
-  function formatFleetRecentClosedRows(items: readonly DashboardClosedItem[], limit = 10): string {
-    return (
-      items
-        .slice(0, limit)
-        .map((item) => {
-          const repo = item.repo ?? targetRepo();
-          const title = markdownTableCell(displayTitle(item.title));
-          const reason = markdownTableCell(displayCloseReason(item.closeReason));
-          return `| ${markdownLink(repo, repoUrlFor(repo))} | ${markdownLink(`#${item.number}`, itemUrlFor(repo, item.number, item.kind))} | ${title} | ${reason} | ${formatTimestamp(item.closedAt ?? item.appliedAt)} | ${markdownLink(item.reportPath, reportFileUrl(item.number, item.reportPath))} |`;
-        })
-        .join("\n") || "| _None_ |  |  |  |  |  |"
-    );
-  }
-
-  function formatFleetRecentReviewedRows(items: readonly DashboardItem[], limit = 10): string {
-    return (
-      items
-        .slice(0, limit)
-        .map((item) => {
-          const repo = item.repo ?? targetRepo();
-          const title = markdownTableCell(displayTitle(item.title));
-          const outcome = markdownLink(
-            `${item.decision} / ${item.action}`,
-            reportFileUrl(item.number, item.reportPath),
-          );
-          return `| ${markdownLink(repo, repoUrlFor(repo))} | ${markdownLink(`#${item.number}`, itemUrlFor(repo, item.number, item.kind))} | ${title} | ${outcome} | ${item.reviewStatus} | ${formatTimestamp(item.reviewedAt)} |`;
-        })
-        .join("\n") || "| _None_ |  |  |  |  |  |"
-    );
-  }
-
-  function formatFleetWorkQueueRows(items: readonly DashboardItem[], limit = 15): string {
-    return (
-      items
-        .slice(0, limit)
-        .map((item) => {
-          const repo = item.repo ?? targetRepo();
-          const title = markdownTableCell(displayTitle(item.title));
-          const report = markdownLink(item.reportPath, reportFileUrl(item.number, item.reportPath));
-          const plan = item.planPath
-            ? markdownLink(item.planPath, reportFileUrl(item.number, item.planPath))
-            : "_pending_";
-          return `| ${markdownLink(repo, repoUrlFor(repo))} | ${markdownLink(`#${item.number}`, itemUrlFor(repo, item.number, item.kind))} | ${title} | ${item.workPriority} | ${item.workStatus} | ${formatTimestamp(item.reviewedAt)} | ${plan} | ${report} |`;
-        })
-        .join("\n") || "| _None_ |  |  |  |  |  |  |  |"
-    );
-  }
-
-  function addActivityBucket(
-    target: DashboardActivityBucket,
-    source: DashboardActivityBucket,
-  ): void {
-    target.reviews += source.reviews;
-    target.closeDecisions += source.closeDecisions;
-    target.keepOpenDecisions += source.keepOpenDecisions;
-    target.failedOrStaleReviews += source.failedOrStaleReviews;
-    target.closes += source.closes;
-    target.commentSyncs += source.commentSyncs;
-    target.applySkips += source.applySkips;
-    target.inheritedLabelCleanups += source.inheritedLabelCleanups;
-    target.selfHealConflictRepairs += source.selfHealConflictRepairs;
-    target.failedReviewRetries += source.failedReviewRetries;
-    target.failedReviewRetryExhaustions += source.failedReviewRetryExhaustions;
-    target.botOwnedProofDecisionsRequested += source.botOwnedProofDecisionsRequested;
-    target.botOwnedProofDispatches += source.botOwnedProofDispatches;
-  }
-
-  function aggregateActivity(snapshots: readonly RepoDashboardSnapshot[]): DashboardActivityStats {
-    const activity = emptyDashboardActivityStats();
-    for (const snapshot of snapshots) {
-      addActivityBucket(activity.last15Minutes, snapshot.stats.activity.last15Minutes);
-      addActivityBucket(activity.lastHour, snapshot.stats.activity.lastHour);
-      addActivityBucket(activity.last24Hours, snapshot.stats.activity.last24Hours);
-      activity.latestReviewAt = latestTimestamp(
-        activity.latestReviewAt,
-        snapshot.stats.activity.latestReviewAt,
-      );
-      activity.latestCloseAt = latestTimestamp(
-        activity.latestCloseAt,
-        snapshot.stats.activity.latestCloseAt,
-      );
-      activity.latestCommentSyncAt = latestTimestamp(
-        activity.latestCommentSyncAt,
-        snapshot.stats.activity.latestCommentSyncAt,
-      );
-    }
-    return activity;
-  }
-
-  function formatRepositoryOverviewRow(snapshot: RepoDashboardSnapshot): string {
-    const stats = snapshot.stats;
-    return `| ${markdownLink(snapshot.profile.displayName, repoUrlFor(snapshot.profile.targetRepo))} | ${stats.open.total} | ${stats.files} | ${stats.cadence.unreviewedOpen} | ${stats.cadence.due} | ${stats.proposedClose} | ${stats.workCandidates} | ${stats.closed} | ${formatTimestamp(stats.activity.latestReviewAt)} | ${formatTimestamp(stats.activity.latestCloseAt)} | ${stats.activity.lastHour.commentSyncs} |`;
-  }
-
-  function formatWorkflowStatusRow(snapshot: RepoDashboardSnapshot): string {
-    const run = snapshot.statusSummary.runUrl
-      ? markdownLink("run", snapshot.statusSummary.runUrl)
-      : "_none_";
-    const plan =
-      snapshot.statusSummary.plannedCount === undefined &&
-      snapshot.statusSummary.plannedCapacity === undefined &&
-      snapshot.statusSummary.plannedShards === undefined
-        ? "unknown"
-        : `${formatStatusNumber(snapshot.statusSummary.plannedCount)}/${formatStatusNumber(
-            snapshot.statusSummary.plannedCapacity,
-          )} items, ${formatStatusNumber(snapshot.statusSummary.plannedShards)} shards`;
-    return `| ${markdownLink(snapshot.profile.displayName, repoUrlFor(snapshot.profile.targetRepo))} | ${markdownTableCell(snapshot.statusSummary.state)} | ${formatStatusNumber(snapshot.statusSummary.activeCodex)} | ${plan} | ${formatStatusNumber(snapshot.statusSummary.dueBacklog)} | ${formatTimestamp(snapshot.statusSummary.oldestUnreviewedAt)} | ${markdownTableCell(snapshot.statusSummary.capacityReason ?? "unknown")} | ${formatTimestamp(snapshot.statusSummary.updatedAt)} | ${run} |`;
-  }
-
-  function renderRepoDashboardDetails(snapshot: RepoDashboardSnapshot): string {
-    const stats = snapshot.stats;
-    return flushDashboardMarkdown`<details>
+function renderRepoDashboardDetails(snapshot: RepoDashboardSnapshot): string {
+  const stats = snapshot.stats;
+  return flushDashboardMarkdown`<details>
   <summary>${snapshot.profile.displayName} (${snapshot.profile.targetRepo})</summary>
 
   <br>
@@ -368,65 +338,65 @@ export function createDashboardPresentation({
   ${formatRecentReviewedRows(stats.recent)}
 
   </details>`;
-  }
+}
 
-  function renderDashboard(snapshots: readonly RepoDashboardSnapshot[]): string {
-    const activity = aggregateActivity(snapshots);
-    const recent = snapshots
-      .flatMap((snapshot) => snapshot.stats.recent)
-      .sort((a, b) => Date.parse(b.reviewedAt ?? "") - Date.parse(a.reviewedAt ?? ""));
-    const workQueue = snapshots
-      .flatMap((snapshot) => snapshot.stats.workQueue)
-      .sort(
-        (a, b) =>
-          workPriorityScore(b.workPriority) - workPriorityScore(a.workPriority) ||
-          Date.parse(b.reviewedAt ?? "") - Date.parse(a.reviewedAt ?? ""),
-      );
-    const recentClosed = snapshots
-      .flatMap((snapshot) => snapshot.stats.recentClosed)
-      .sort(
-        (a, b) =>
-          (parseIsoMs(b.closedAt ?? b.appliedAt) ?? Number.NEGATIVE_INFINITY) -
-            (parseIsoMs(a.closedAt ?? a.appliedAt) ?? Number.NEGATIVE_INFINITY) ||
-          b.number - a.number,
-      );
-    const totals = snapshots.reduce(
-      (accumulator, snapshot) => {
-        const stats = snapshot.stats;
-        accumulator.openIssues += stats.open.issues;
-        accumulator.openPullRequests += stats.open.pullRequests;
-        accumulator.reviewedFiles += stats.files;
-        accumulator.unreviewedOpen += stats.cadence.unreviewedOpen;
-        accumulator.due += stats.cadence.due;
-        accumulator.activeCodex += snapshot.statusSummary.activeCodex ?? 0;
-        accumulator.plannedShards += snapshot.statusSummary.plannedShards ?? 0;
-        accumulator.plannedCapacity += snapshot.statusSummary.plannedCapacity ?? 0;
-        accumulator.dueBacklog += snapshot.statusSummary.dueBacklog ?? 0;
-        accumulator.proposedClose += stats.proposedClose;
-        accumulator.workCandidates += stats.workCandidates;
-        accumulator.closed += stats.closed;
-        accumulator.failedOrStale += stats.failed + stats.stale;
-        accumulator.archivedFiles += stats.archivedFiles;
-        return accumulator;
-      },
-      {
-        openIssues: 0,
-        openPullRequests: 0,
-        reviewedFiles: 0,
-        unreviewedOpen: 0,
-        due: 0,
-        activeCodex: 0,
-        plannedShards: 0,
-        plannedCapacity: 0,
-        dueBacklog: 0,
-        proposedClose: 0,
-        workCandidates: 0,
-        closed: 0,
-        failedOrStale: 0,
-        archivedFiles: 0,
-      },
+export function renderDashboard(snapshots: readonly RepoDashboardSnapshot[]): string {
+  const activity = aggregateActivity(snapshots);
+  const recent = snapshots
+    .flatMap((snapshot) => snapshot.stats.recent)
+    .sort((a, b) => Date.parse(b.reviewedAt ?? "") - Date.parse(a.reviewedAt ?? ""));
+  const workQueue = snapshots
+    .flatMap((snapshot) => snapshot.stats.workQueue)
+    .sort(
+      (a, b) =>
+        workPriorityScore(b.workPriority) - workPriorityScore(a.workPriority) ||
+        Date.parse(b.reviewedAt ?? "") - Date.parse(a.reviewedAt ?? ""),
     );
-    const dashboard = flushDashboardMarkdown`## Dashboard
+  const recentClosed = snapshots
+    .flatMap((snapshot) => snapshot.stats.recentClosed)
+    .sort(
+      (a, b) =>
+        (parseIsoMs(b.closedAt ?? b.appliedAt) ?? Number.NEGATIVE_INFINITY) -
+          (parseIsoMs(a.closedAt ?? a.appliedAt) ?? Number.NEGATIVE_INFINITY) ||
+        b.number - a.number,
+    );
+  const totals = snapshots.reduce(
+    (accumulator, snapshot) => {
+      const stats = snapshot.stats;
+      accumulator.openIssues += stats.open.issues;
+      accumulator.openPullRequests += stats.open.pullRequests;
+      accumulator.reviewedFiles += stats.files;
+      accumulator.unreviewedOpen += stats.cadence.unreviewedOpen;
+      accumulator.due += stats.cadence.due;
+      accumulator.activeCodex += snapshot.statusSummary.activeCodex ?? 0;
+      accumulator.plannedShards += snapshot.statusSummary.plannedShards ?? 0;
+      accumulator.plannedCapacity += snapshot.statusSummary.plannedCapacity ?? 0;
+      accumulator.dueBacklog += snapshot.statusSummary.dueBacklog ?? 0;
+      accumulator.proposedClose += stats.proposedClose;
+      accumulator.workCandidates += stats.workCandidates;
+      accumulator.closed += stats.closed;
+      accumulator.failedOrStale += stats.failed + stats.stale;
+      accumulator.archivedFiles += stats.archivedFiles;
+      return accumulator;
+    },
+    {
+      openIssues: 0,
+      openPullRequests: 0,
+      reviewedFiles: 0,
+      unreviewedOpen: 0,
+      due: 0,
+      activeCodex: 0,
+      plannedShards: 0,
+      plannedCapacity: 0,
+      dueBacklog: 0,
+      proposedClose: 0,
+      workCandidates: 0,
+      closed: 0,
+      failedOrStale: 0,
+      archivedFiles: 0,
+    },
+  );
+  const dashboard = flushDashboardMarkdown`## Dashboard
 
   Last dashboard update: ${formatTimestamp(new Date().toISOString())}
 
@@ -507,16 +477,5 @@ export function createDashboardPresentation({
   ### Repository Details
 
   ${snapshots.map(renderRepoDashboardDetails).join("\n\n")}`;
-    return dashboard;
-  }
-
-  return {
-    dashboardClosedAt,
-    dashboardCloseReason,
-    formatRecentClosedRows,
-    jsonFrontMatterValue,
-    renderDashboard,
-    workPriorityScore,
-    workStatusForDecision,
-  };
+  return dashboard;
 }

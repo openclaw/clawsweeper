@@ -4,18 +4,15 @@ import { join, relative } from "node:path";
 import test, { type TestContext } from "node:test";
 
 import { createDashboardAudit } from "../dist/clawsweeper-dashboard-audit.js";
-import { createDashboardPresentation } from "../dist/clawsweeper-dashboard.js";
+import * as presentation from "../dist/clawsweeper-dashboard.js";
 import { createReviewPlanningDashboard } from "../dist/clawsweeper-review-planning-dashboard.js";
+import * as planning from "../dist/clawsweeper-review-planning-dashboard.js";
 import { markdownFiles, markdownRepository } from "../dist/clawsweeper-repository-paths.js";
 import { repositoryProfileFor } from "../dist/repository-profiles.js";
 import { ReviewRecordFormatError } from "../dist/review-record.js";
 import { reportFrontMatter, tmpPrefix, withReviewRecord } from "./helpers.ts";
 
-const presentation = createDashboardPresentation(
-  {} as Parameters<typeof createDashboardPresentation>[0],
-);
-const planning = createReviewPlanningDashboard({
-  dashboardClosedAt: presentation.dashboardClosedAt,
+const overlay = createReviewPlanningDashboard({
   failedReviewRetryStatePath: (dir, number) => join(dir, `${number}.json`),
   readFailedReviewRetryState: () => null,
   failedReviewRetryMarkdownWithState: (markdown) => markdown,
@@ -47,7 +44,7 @@ function fixture(t: TestContext) {
   writeFileSync(readmePath, "## Dashboard\n\n## How It Works\n");
   const profile = repositoryProfileFor("openclaw/openclaw");
   const audit = createDashboardAudit({
-    ...planning,
+    ...overlay,
     ROOT: root,
     targetRepo: () => profile.targetRepo,
     targetProfile: () => profile,
@@ -75,9 +72,7 @@ function fixture(t: TestContext) {
     markdownLink: (label, url) => `[${label}](${url})`,
     repoUrlFor: (repo) => `https://github.com/${repo}`,
     itemUrlFor: (repo, number) => `https://github.com/${repo}/issues/${number}`,
-    reportFileUrl: (_number, path) => path ?? "report",
     formatTimestamp: (value) => value ?? "never",
-    formatStatusNumber: (value) => String(value ?? "unknown"),
     reportEntriesForDir: (dir) =>
       markdownFiles(dir).map((name) => {
         const path = join(dir, name);
@@ -244,7 +239,10 @@ test("dashboard outcomes, work queue priority and recent closes prefer the revie
   const dashboard = f.dashboard();
   assert.match(dashboard, /\| Proposed closes awaiting apply \| 1 /);
   assert.match(dashboard, /\| Work candidates awaiting promotion \| 2 \|/);
-  assert.match(dashboard, /\[close \/ proposed_close\]\(items\/42\.md\)/);
+  assert.match(
+    dashboard,
+    /\[close \/ proposed_close\]\(https:\/\/github\.com\/openclaw\/clawsweeper\/blob\/main\/items\/42\.md\)/,
+  );
   assert.match(dashboard, /Item 43 \| high \| candidate \|/);
   assert.match(dashboard, /Item 44 \| medium \| candidate \|/);
   assert.ok(dashboard.indexOf("Item 43 | high") < dashboard.indexOf("Item 44 | medium"));
@@ -271,7 +269,10 @@ test("legacy dashboard outcomes preserve defaults and work queue fields", (t) =>
   assert.match(dashboard, /\| Proposed closes awaiting apply \| 1 /);
   assert.match(dashboard, /\| Work candidates awaiting promotion \| 1 \|/);
   assert.match(dashboard, /Item 42 \| high \| candidate \|/);
-  assert.match(dashboard, /\[unknown \/ kept_open\]\(items\/43\.md\)/);
+  assert.match(
+    dashboard,
+    /\[unknown \/ kept_open\]\(https:\/\/github\.com\/openclaw\/clawsweeper\/blob\/main\/items\/43\.md\)/,
+  );
 });
 
 test("typed keep-open and no-work decisions suppress stale legacy proposals", (t) => {
@@ -291,7 +292,10 @@ test("typed keep-open and no-work decisions suppress stale legacy proposals", (t
   const dashboard = f.dashboard();
   assert.match(dashboard, /\| Proposed closes awaiting apply \| 0 /);
   assert.match(dashboard, /\| Work candidates awaiting promotion \| 0 \|/);
-  assert.match(dashboard, /\[keep_open \/ proposed_close\]\(items\/42\.md\)/);
+  assert.match(
+    dashboard,
+    /\[keep_open \/ proposed_close\]\(https:\/\/github\.com\/openclaw\/clawsweeper\/blob\/main\/items\/42\.md\)/,
+  );
   assert.doesNotMatch(dashboard, /Item 42 \| high \| candidate/);
 });
 

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { createApplyReviewActivityGuard } from "../dist/clawsweeper-apply-review-activity.js";
-import { createDashboardPresentation } from "../dist/clawsweeper-dashboard.js";
+import * as dashboardPresentation from "../dist/clawsweeper-dashboard.js";
 import * as repositoryLinks from "../dist/clawsweeper-links.js";
 import { createReportContextRendering } from "../dist/clawsweeper-report-context.js";
 import { createReportDocumentRendering } from "../dist/clawsweeper-report-document.js";
@@ -385,7 +385,7 @@ test("the review report persists the cursor that apply revalidates", () => {
   const document = createReportDocumentRendering({
     ...repositoryLinks,
     ...createReportContextRendering({} as never),
-    ...createDashboardPresentation({} as never),
+    ...dashboardPresentation,
     compactPullFilePaths: () => [],
     formatTimestamp: String,
     labelJustificationsMarkdown: () => "- none",

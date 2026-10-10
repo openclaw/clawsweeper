@@ -2,7 +2,13 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { auditFromSnapshot, auditHealthSection } from "../dist/clawsweeper.js";
-import { createDashboardPresentation } from "../dist/clawsweeper-dashboard.js";
+import { renderDashboard } from "../dist/clawsweeper-dashboard.js";
+import {
+  emptyDashboardActivityStats,
+  emptyDashboardCadenceBucket,
+  emptyDashboardKindStats,
+} from "../dist/clawsweeper-review-planning-dashboard.js";
+import { repositoryProfileFor } from "../dist/repository-profiles.js";
 
 test("audit dashboard markers remain flush and recoverable after modularization", () => {
   const snapshot = auditFromSnapshot({
@@ -25,52 +31,25 @@ test("audit dashboard markers remain flush and recoverable after modularization"
 });
 
 test("extracted dashboard preserves flush Markdown headings, tables, and embedded audit state", () => {
-  const activityBucket = () => ({
-    reviews: 0,
-    closeDecisions: 0,
-    keepOpenDecisions: 0,
-    failedOrStaleReviews: 0,
-    closes: 0,
-    commentSyncs: 0,
-    applySkips: 0,
-    inheritedLabelCleanups: 0,
-    selfHealConflictRepairs: 0,
-    failedReviewRetries: 0,
-    failedReviewRetryExhaustions: 0,
-    botOwnedProofDecisionsRequested: 0,
-    botOwnedProofDispatches: 0,
-  });
-  const activity = () => ({
-    last15Minutes: activityBucket(),
-    lastHour: activityBucket(),
-    last24Hours: activityBucket(),
-  });
-  const dashboard = createDashboardPresentation({
-    closeReasonText: String,
-    displayTitle: String,
-    emptyDashboardActivityStats: activity,
-    formatActivityRow: (label) => `| ${label} |`,
-    formatCadenceBucket: () => "0/0",
-    formatOperationActivityRow: (label) => `| ${label} |`,
-    formatPercent: () => "0%",
-    formatStatusNumber: (value) => String(value ?? "unknown"),
-    formatTimestamp: (value) => String(value ?? "never"),
-    itemUrlFor: (repo, number) => `https://github.com/${repo}/issues/${number}`,
-    latestTimestamp: (current, candidate) => candidate ?? current,
-    markdownLink: (label, url) => `[${label}](${url})`,
-    repoUrlFor: (repo) => `https://github.com/${repo}`,
-    reportFileUrl: (_, reportPath) => reportPath ?? "report",
-    targetRepo: () => "openclaw/openclaw",
-  });
   const snapshot = {
-    profile: { displayName: "OpenClaw", targetRepo: "openclaw/openclaw" },
+    profile: repositoryProfileFor("openclaw/openclaw"),
     status: "<!-- status -->",
     statusSummary: { state: "idle" },
     auditHealth: auditHealthSection(null),
     stats: {
       open: { issues: 0, pullRequests: 0, total: 0 },
       files: 0,
-      cadence: { unreviewedOpen: 0, due: 0 },
+      cadence: {
+        hourlyHotItems: emptyDashboardCadenceBucket(),
+        dailyPullRequests: emptyDashboardCadenceBucket(),
+        dailyNewIssues: emptyDashboardCadenceBucket(),
+        weeklyOlderIssues: emptyDashboardCadenceBucket(),
+        hourly: emptyDashboardCadenceBucket(),
+        daily: emptyDashboardCadenceBucket(),
+        weekly: emptyDashboardCadenceBucket(),
+        unreviewedOpen: 0,
+        due: 0,
+      },
       proposedClose: 0,
       workCandidates: 0,
       closed: 0,
@@ -78,18 +57,19 @@ test("extracted dashboard preserves flush Markdown headings, tables, and embedde
       stale: 0,
       archivedFiles: 0,
       byKind: {
-        issue: { fresh: 0, proposedClose: 0 },
-        pull_request: { fresh: 0, proposedClose: 0 },
+        issue: emptyDashboardKindStats(),
+        pull_request: emptyDashboardKindStats(),
       },
       fresh: 0,
-      activity: activity(),
+      todo: 0,
+      activity: emptyDashboardActivityStats(),
       recent: [],
       recentClosed: [],
       workQueue: [],
     },
   };
 
-  const rendered = dashboard.renderDashboard([snapshot]);
+  const rendered = renderDashboard([snapshot]);
   for (const heading of ["Fleet", "Repositories", "Current Runs", "Repository Details"]) {
     assert.match(rendered, new RegExp(`^### ${heading}$`, "m"));
   }

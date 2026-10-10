@@ -3,7 +3,7 @@ import test from "node:test";
 import { frontMatterJsonArray, frontMatterValue } from "../dist/report-front-matter.js";
 import { createReportDocumentRendering } from "../dist/clawsweeper-report-document.js";
 import { createReportContextRendering } from "../dist/clawsweeper-report-context.js";
-import { createDashboardPresentation } from "../dist/clawsweeper-dashboard.js";
+import * as dashboardPresentation from "../dist/clawsweeper-dashboard.js";
 import { repositoryProfileFor } from "../dist/repository-profiles.js";
 import {
   buildDecisionPacketFromReport,
@@ -130,7 +130,7 @@ test("renderer-produced reports preserve nested statistics and authoritative met
   );
   const document = createReportDocumentRendering({
     ...createReportContextRendering({} as never),
-    ...createDashboardPresentation({} as never),
+    ...dashboardPresentation,
     compactPullFilePaths: (file) => [file.filename],
     formatTimestamp: String,
     labelJustificationsMarkdown: () => "- none",
@@ -1754,7 +1754,7 @@ function renderedPullRequestReport(
   };
   const document = createReportDocumentRendering({
     ...createReportContextRendering({} as never),
-    ...createDashboardPresentation({} as never),
+    ...dashboardPresentation,
     compactPullFilePaths: (file) => [file.filename],
     formatTimestamp: String,
     labelJustificationsMarkdown: () => "- none",

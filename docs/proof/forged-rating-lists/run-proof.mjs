@@ -127,7 +127,7 @@ async function runArm(arm) {
   const clawsweeper = await load("clawsweeper.js");
   const { createReportDocumentRendering } = await load("clawsweeper-report-document.js");
   const { createReportContextRendering } = await load("clawsweeper-report-context.js");
-  const { createDashboardPresentation } = await load("clawsweeper-dashboard.js");
+  const dashboardModule = await load("clawsweeper-dashboard.js");
   const parser = await load("clawsweeper-report-parser.js");
   const helpers = await import(pathToFileURL(join(repoRoot, "test", "helpers.ts")).href);
 
@@ -158,7 +158,9 @@ async function runArm(arm) {
   };
   const document = createReportDocumentRendering({
     ...createReportContextRendering({}),
-    ...createDashboardPresentation({}),
+    ...(arm.slug === "baseline" && typeof dashboardModule.createDashboardPresentation === "function"
+      ? dashboardModule.createDashboardPresentation({})
+      : dashboardModule),
     prSurfaceFilesFromContext: () => [{ path: "src/runtime.ts", additions: 1, deletions: 0 }],
     compactPullFilePaths: (file) => [file.filename],
     confidenceText: (score) => score.toFixed(2).replace(/0+$/, "").replace(/\.$/, ""),

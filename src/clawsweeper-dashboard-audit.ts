@@ -9,8 +9,15 @@ import {
   type Args,
 } from "./clawsweeper-args.js";
 import { createAuditEngine } from "./clawsweeper-audit.js";
-import { closeReasonText } from "./clawsweeper-close-reasons.js";
-import { createDashboardPresentation } from "./clawsweeper-dashboard.js";
+import {
+  dashboardClosedAt,
+  dashboardCloseReason,
+  formatRecentClosedRows,
+  jsonFrontMatterValue,
+  renderDashboard,
+  workPriorityScore,
+  workStatusForDecision,
+} from "./clawsweeper-dashboard.js";
 import {
   DAILY_REVIEW_DAYS,
   DAY_MS,
@@ -22,9 +29,6 @@ import type {
   AuditRecord,
   AuditRecordLocation,
   AuditResult,
-  DashboardActivityBucket,
-  DashboardActivityStats,
-  DashboardCadenceBucket,
   DashboardClosedItem,
   DashboardItem,
   DashboardKindStats,
@@ -59,19 +63,19 @@ import {
   numberForMarkdownFile,
 } from "./clawsweeper-repository-paths.js";
 import { reportReviewDecision } from "./report-review-decision.js";
+import {
+  addDashboardCadenceBucket,
+  capDashboardCadenceBucket,
+  emptyDashboardActivityStats,
+  emptyDashboardCadenceBucket,
+  emptyDashboardKindStats,
+  recordDashboardActivity,
+} from "./clawsweeper-review-planning-dashboard.js";
 
 interface CreateDashboardAuditDependencies {
-  addDashboardCadenceBucket: (
-    target: DashboardCadenceBucket,
-    source: DashboardCadenceBucket,
-  ) => void;
   applyBlockingProtectedLabels: (labels: readonly string[], closeReason: unknown) => string[];
   applyHealthStatusArg: (args: Args) => Record<string, unknown> | undefined;
   auditStatePath: (profile?: RepositoryProfile) => string;
-  capDashboardCadenceBucket: (
-    bucket: DashboardCadenceBucket,
-    totalLimit: number,
-  ) => DashboardCadenceBucket;
   currentWorkflowStatusBlock: (readme: string, profile?: RepositoryProfile) => string;
   dashboardMarkdownWithFailedReviewRetryState: (
     markdown: string,
@@ -84,19 +88,11 @@ interface CreateDashboardAuditDependencies {
   defaultItemsDir: (profile?: RepositoryProfile) => string;
   defaultPlansDir: (profile?: RepositoryProfile) => string;
   displayTitle: (title: string) => string;
-  emptyDashboardActivityStats: () => DashboardActivityStats;
-  emptyDashboardCadenceBucket: () => DashboardCadenceBucket;
-  emptyDashboardKindStats: () => DashboardKindStats;
   ensureDir: (path: string) => void;
   fetchItem: (number: number) => { item: Item; state: string };
   fetchOpenItemCounts: () => OpenItemCounts;
   fetchOpenItemNumbers: (maxPages: number) => { numbers: Set<number>; pagesScanned: number };
   fetchOpenItems: (maxPages: number) => { items: Item[]; pagesScanned: number; complete: boolean };
-  formatActivityRow: (label: string, bucket: DashboardActivityBucket) => string;
-  formatCadenceBucket: (bucket: DashboardCadenceBucket) => string;
-  formatOperationActivityRow: (label: string, bucket: DashboardActivityBucket) => string;
-  formatPercent: (numerator: number, denominator: number) => string;
-  formatStatusNumber: (value: number | undefined) => string;
   formatTimestamp: (iso: string | undefined) => string;
   ghJson: <T>(args: string[]) => T;
   isCurrentForCadence: (options: {
@@ -112,22 +108,12 @@ interface CreateDashboardAuditDependencies {
   isMarkdownForActiveRepo: (markdown: string, file?: string) => boolean;
   isProtectedItem: (item: Pick<Item, "labels">) => boolean;
   itemUrlFor: (repo: string, number: number, kind?: ItemKind) => string;
-  latestTimestamp: (
-    current: string | undefined,
-    candidate: string | undefined,
-  ) => string | undefined;
   markdownLink: (label: string, url: string) => string;
   profileAuditEnd: (profile?: RepositoryProfile) => string;
   profileAuditStart: (profile?: RepositoryProfile) => string;
-  recordDashboardActivity: (
-    markdown: string,
-    activity: DashboardActivityStats,
-    now: number,
-  ) => void;
   repoFromArgs: (args: Args) => RepositoryProfile;
   repoRelativePath: (path: string) => string;
   reportEntriesForDir: (dir: string, itemNumbers?: ReadonlySet<number>) => ReportEntry[];
-  reportFileUrl: (number: number, path?: string) => string;
   repoUrlFor: (repo: string, path?: string) => string;
   ROOT: string;
   shouldPlanItem: (item: Pick<Item, "authorAssociation" | "labels">) => boolean;
@@ -167,11 +153,9 @@ interface CreateDashboardAuditDependencies {
 
 export function createDashboardAudit(dependencies: CreateDashboardAuditDependencies) {
   const {
-    addDashboardCadenceBucket,
     applyBlockingProtectedLabels,
     applyHealthStatusArg,
     auditStatePath,
-    capDashboardCadenceBucket,
     currentWorkflowStatusBlock,
     dashboardMarkdownWithFailedReviewRetryState,
     decisionPacketsDirFromArgs,
@@ -180,19 +164,11 @@ export function createDashboardAudit(dependencies: CreateDashboardAuditDependenc
     defaultItemsDir,
     defaultPlansDir,
     displayTitle,
-    emptyDashboardActivityStats,
-    emptyDashboardCadenceBucket,
-    emptyDashboardKindStats,
     ensureDir,
     fetchItem,
     fetchOpenItemCounts,
     fetchOpenItemNumbers,
     fetchOpenItems,
-    formatActivityRow,
-    formatCadenceBucket,
-    formatOperationActivityRow,
-    formatPercent,
-    formatStatusNumber,
     formatTimestamp,
     ghJson,
     isCurrentForCadence,
@@ -201,15 +177,12 @@ export function createDashboardAudit(dependencies: CreateDashboardAuditDependenc
     isMarkdownForActiveRepo,
     isProtectedItem,
     itemUrlFor,
-    latestTimestamp,
     markdownLink,
     profileAuditEnd,
     profileAuditStart,
-    recordDashboardActivity,
     repoFromArgs,
     repoRelativePath,
     reportEntriesForDir,
-    reportFileUrl,
     repoUrlFor,
     ROOT,
     shouldPlanItem,
@@ -853,34 +826,6 @@ export function createDashboardAudit(dependencies: CreateDashboardAuditDependenc
       recentClosed,
     };
   }
-
-  const dashboardPresentation = createDashboardPresentation({
-    closeReasonText,
-    displayTitle,
-    emptyDashboardActivityStats,
-    formatActivityRow,
-    formatCadenceBucket,
-    formatOperationActivityRow,
-    formatPercent,
-    formatStatusNumber,
-    formatTimestamp,
-    itemUrlFor,
-    latestTimestamp,
-    markdownLink,
-    repoUrlFor,
-    reportFileUrl,
-    targetRepo,
-  });
-
-  const { dashboardClosedAt, formatRecentClosedRows } = dashboardPresentation;
-
-  const {
-    dashboardCloseReason,
-    jsonFrontMatterValue,
-    renderDashboard,
-    workPriorityScore,
-    workStatusForDecision,
-  } = dashboardPresentation;
 
   function fetchDashboardOpenItemCounts(
     profile: RepositoryProfile,

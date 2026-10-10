@@ -438,7 +438,6 @@ const reviewPlanning = createReviewPlanning({
   failedReviewRetryMarkdownWithState: (markdown, state) =>
     failedReviewRetryMarkdownWithState(markdown, state),
   repoRelativePath,
-  dashboardClosedAt: (markdown) => dashboardClosedAt(markdown),
 });
 export const {
   dashboardFailedReviewRetryActivityForTest,

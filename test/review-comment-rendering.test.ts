@@ -28,7 +28,7 @@ import { nextStepFromReport } from "../dist/clawsweeper-next-step.js";
 import * as repositoryLinks from "../dist/clawsweeper-links.js";
 import { createReportDocumentRendering } from "../dist/clawsweeper-report-document.js";
 import { createReportContextRendering } from "../dist/clawsweeper-report-context.js";
-import { createDashboardPresentation } from "../dist/clawsweeper-dashboard.js";
+import * as dashboardPresentation from "../dist/clawsweeper-dashboard.js";
 import { repositoryProfileFor } from "../dist/repository-profiles.js";
 import type {
   Decision,
@@ -76,7 +76,7 @@ function evidenceReport(
   const document = createReportDocumentRendering({
     ...evidenceLinks,
     ...createReportContextRendering({} as never),
-    ...createDashboardPresentation({} as never),
+    ...dashboardPresentation,
     compactPullFilePaths: () => [],
     formatTimestamp: String,
     labelJustificationsMarkdown: () => "- none",
