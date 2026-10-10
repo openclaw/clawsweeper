@@ -64,12 +64,12 @@ import { executeReviewLiveProofs, inspectReviewLiveProofs } from "./live-proof/r
 import { createRepositoryLinks } from "./clawsweeper-links.js";
 import { createLocalRangeReviewer } from "./clawsweeper-local-review.js";
 import { createPlanCommand } from "./clawsweeper-plan-command.js";
+import { CLAWSWEEPER_BOT_LOGINS } from "./clawsweeper-bot-identity.js";
 import {
   EVENT_GUARDED_OPEN_ACTIONS,
   FRESH_DAYS,
   REVIEW_SECTIONS,
   REVIEW_POLICY_VERSION,
-  CLAWSWEEPER_BOT_LOGINS,
 } from "./clawsweeper-policy.js";
 import { createRegressionProvenanceVerifier } from "./clawsweeper-regression-provenance.js";
 import { createReportOrchestration } from "./clawsweeper-report-orchestration.js";

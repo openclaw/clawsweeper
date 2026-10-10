@@ -1,3 +1,5 @@
+import { CLAWSWEEPER_BOT_LOGINS } from "../src/clawsweeper-bot-identity.ts";
+
 type GitHubJsonRequest = (options: {
   path: string;
   method?: string;
@@ -13,11 +15,6 @@ type PullRequestAcknowledgementOptions = {
 };
 
 const MAX_PULL_REQUEST_ACKNOWLEDGEMENT_PAGES = 10;
-const TRUSTED_PULL_REQUEST_ACKNOWLEDGEMENT_LOGINS = new Set([
-  "clawsweeper",
-  "clawsweeper[bot]",
-  "openclaw-clawsweeper[bot]",
-]);
 const inFlightPullRequestAcknowledgements = new Map<string, Promise<number | null>>();
 
 export type PullRequestAcknowledgementResolution =
@@ -134,7 +131,7 @@ async function listPullRequestAcknowledgements(
         return (
           body.includes("clawsweeper-pr-ack:") &&
           body.includes(suffix) &&
-          TRUSTED_PULL_REQUEST_ACKNOWLEDGEMENT_LOGINS.has(login)
+          CLAWSWEEPER_BOT_LOGINS.has(login)
         );
       }),
     );

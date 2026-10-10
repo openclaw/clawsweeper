@@ -32,6 +32,7 @@ import {
 } from "./github-retry.js";
 import { stableJson } from "./stable-json.js";
 import { asRecord } from "./value-coerce.js";
+import { reviewStartLeaseCommentMarker } from "./review-comment-markers.js";
 import {
   frontMatterValue,
   replaceFrontMatterValue,
@@ -314,7 +315,7 @@ export function executeApplyClose(
           CLAWSWEEPER_BOT_AUTHORS.has(login) &&
           (body.includes(closeAppliedMarker) ||
             body.includes(`<!-- clawsweeper-review item=${issueNumber}`) ||
-            body.includes(`<!-- clawsweeper-review-lease item=${issueNumber}`))
+            body.includes(reviewStartLeaseCommentMarker(issueNumber)))
         ) {
           continue;
         }

@@ -3,7 +3,7 @@ import { DEFAULT_ALLOWED_REPOSITORY_PERMISSIONS } from "./comment-router/admissi
 import { currentProjectRepo, readMaxLiveWorkers } from "./lib.js";
 import { assertRepo, commaSet, positiveInteger } from "./comment-router-utils.js";
 import { AUTOMATION_LIMITS } from "../limits.js";
-import { CLAWSWEEPER_BOT_LOGINS } from "../clawsweeper-policy.js";
+import { CLAWSWEEPER_APP_BOT_LOGINS } from "../clawsweeper-bot-identity.js";
 import {
   DEFAULT_HEAD_PREFIX,
   DEFAULT_TARGET_REPO,
@@ -14,9 +14,7 @@ export { DEFAULT_HEAD_PREFIX, DEFAULT_TARGET_REPO } from "./constants.js";
 
 const DEFAULT_ALLOWED_ASSOCIATIONS = ["OWNER", "MEMBER", "COLLABORATOR"];
 // Command trust admits only the GitHub App bot logins, not the plain "clawsweeper" login.
-export const DEFAULT_TRUSTED_BOTS = [...CLAWSWEEPER_BOT_LOGINS].filter((login) =>
-  login.endsWith("[bot]"),
-);
+export const DEFAULT_TRUSTED_BOTS = [...CLAWSWEEPER_APP_BOT_LOGINS];
 
 export type CommentRouterConfig = {
   targetRepo: string;

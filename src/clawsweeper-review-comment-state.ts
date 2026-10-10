@@ -2,8 +2,8 @@ import {
   LEGACY_FIXED_CLOSE_SKIP_ACTIONS,
   LIVE_RECHECK_CLOSE_GUARD_ACTIONS,
 } from "./apply-close-actions.js";
+import { CLAWSWEEPER_BOT_LOGINS } from "./clawsweeper-bot-identity.js";
 import {
-  CLAWSWEEPER_BOT_LOGINS,
   DEFAULT_REVIEW_CODEX_TIMEOUT_MS,
   PAIR_BLOCKED_CLOSE_ACTIONS,
   REVIEW_START_STATUS_MARKER_PREFIX,
@@ -19,7 +19,12 @@ import {
   type LiveReadOptions,
 } from "./live-read-generation.js";
 import { normalizeRepo } from "./repository-profiles.js";
-import { trailingHtmlComments, validReviewLeaseIdentity } from "./review-comment-markers.js";
+import {
+  hasReviewStartLeaseCommentMarker,
+  reviewStartLeaseCommentMarker,
+  trailingHtmlComments,
+  validReviewLeaseIdentity,
+} from "./review-comment-markers.js";
 import { neutralizeReviewControlMarkers } from "./review-history.js";
 import type { ReviewCommentWorkflowDependencies } from "./clawsweeper-review-comment-dependencies.js";
 import { asRecord } from "./value-coerce.js";
@@ -82,14 +87,6 @@ export function createReviewCommentState(
     return body.includes(reviewCommentMarker(number))
       ? body
       : `${body.trimEnd()}\n\n${reviewCommentMarker(number)}`;
-  }
-
-  function reviewStartLeaseCommentMarker(number: number): string {
-    return `<!-- clawsweeper-review-lease item=${number} -->`;
-  }
-
-  function commandReviewStartLeaseCommentMarker(number: number): string {
-    return `<!-- clawsweeper-command-review-lease item=${number} -->`;
   }
 
   function markedReviewStartLeaseCommentBody(number: number, body: string): string {
@@ -338,14 +335,10 @@ export function createReviewCommentState(
     number: number,
     comments: Record<string, unknown>[],
   ): Record<string, unknown>[] {
-    const markers = [
-      reviewStartLeaseCommentMarker(number),
-      commandReviewStartLeaseCommentMarker(number),
-    ];
     return comments.filter(
       (candidate) =>
         canPatchReviewComment(candidate) &&
-        markers.some((marker) => commentBody(candidate)?.includes(marker)),
+        hasReviewStartLeaseCommentMarker(commentBody(candidate) ?? "", number),
     );
   }
 
@@ -883,8 +876,6 @@ export function createReviewCommentState(
 
   return {
     markedReviewCommentBody,
-    reviewStartLeaseCommentMarker,
-    commandReviewStartLeaseCommentMarker,
     markedReviewStartLeaseCommentBody,
     reviewStartStatusCommentMarker,
     withReviewStartStatusLease,

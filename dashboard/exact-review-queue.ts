@@ -1,4 +1,5 @@
 import { stableJson } from "../src/stable-json.ts";
+import { CLAWSWEEPER_APP_BOT_LOGINS } from "../src/clawsweeper-bot-identity.ts";
 import { exactReviewSourceRevisionMaterial } from "./exact-review-source-revision.ts";
 import {
   normalizePublicReviewFailure,
@@ -18038,9 +18039,7 @@ function exactReviewCommandBotLogins(env: Record<string, unknown>) {
     .split(",")
     .map((login) => login.trim().toLowerCase())
     .filter(Boolean);
-  return new Set(
-    configured.length ? configured : ["clawsweeper[bot]", "openclaw-clawsweeper[bot]"],
-  );
+  return new Set(configured.length ? configured : CLAWSWEEPER_APP_BOT_LOGINS);
 }
 
 async function addCommandReaction(options: {

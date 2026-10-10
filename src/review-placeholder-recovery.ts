@@ -3,7 +3,7 @@ import { createHmac } from "node:crypto";
 import { sha256 } from "./content-hash.js";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { CLAWSWEEPER_BOT_LOGINS } from "./clawsweeper-policy.js";
+import { CLAWSWEEPER_BOT_LOGINS } from "./clawsweeper-bot-identity.js";
 import {
   fetchDurableCursor,
   putDurableCursor,

@@ -100,13 +100,6 @@ export const ACCEPTED_LARGE_LABEL_DEFINITION = {
   color: "5319E7",
   description: "Maintainer accepts this pull request exceeding the review size limit.",
 };
-// GitHub logins that ClawSweeper writes as. GraphQL gives the App bot login
-// without the "[bot]" suffix, so "clawsweeper" is in this set too.
-export const CLAWSWEEPER_BOT_LOGINS: ReadonlySet<string> = new Set([
-  "clawsweeper",
-  "clawsweeper[bot]",
-  "openclaw-clawsweeper[bot]",
-]);
 export const PR_AUTO_CLOSE_EXEMPT_LABELS = new Set<string>(PR_AUTO_CLOSE_EXEMPT_LABEL_NAMES);
 export const WAITING_ON_AUTHOR_LABEL = "status: ⏳ waiting on author";
 export const PROOF_OVERRIDE_LABEL = "proof: override";

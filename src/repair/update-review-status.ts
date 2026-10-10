@@ -7,7 +7,7 @@ import {
   type TerminalReviewFailureReason,
 } from "../exact-review-failure-reason.js";
 import { repoRoot } from "./paths.js";
-import { CLAWSWEEPER_BOT_LOGINS } from "../clawsweeper-policy.js";
+import { CLAWSWEEPER_BOT_LOGINS } from "../clawsweeper-bot-identity.js";
 import { isAllowedMutationActor } from "./comment-router/admission.js";
 import { commaSet, issueNumberFromUrl, writePayload } from "./comment-router-utils.js";
 

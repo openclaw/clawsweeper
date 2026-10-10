@@ -1,3 +1,6 @@
+// Workflow steps run src/workflow-bot-comments.ts from source, and it imports
+// this module, so this module has no imports.
+
 // Why a review comment carries a needs-human verdict (`hold=` marker attribute).
 // The repair router routes on this value. It must not read review prose for this decision.
 export type NeedsHumanHold =
@@ -20,6 +23,23 @@ export function validReviewLeaseIdentity(
     owner?.trim() !== "unknown" &&
     /^[1-9]\d*$/.test(commentId ?? "") &&
     Number.isSafeInteger(Number(commentId))
+  );
+}
+
+// The trailing marker of the comment that holds an item's review-start lease.
+export function reviewStartLeaseCommentMarker(itemNumber: number): string {
+  return `<!-- clawsweeper-review-lease item=${itemNumber} -->`;
+}
+
+// The trailing marker of a command status comment that holds the lease.
+export function commandReviewStartLeaseCommentMarker(itemNumber: number): string {
+  return `<!-- clawsweeper-command-review-lease item=${itemNumber} -->`;
+}
+
+export function hasReviewStartLeaseCommentMarker(body: string, itemNumber: number): boolean {
+  return (
+    body.includes(reviewStartLeaseCommentMarker(itemNumber)) ||
+    body.includes(commandReviewStartLeaseCommentMarker(itemNumber))
   );
 }
 

@@ -88,6 +88,7 @@ function snapshot(ref, capsule, runtimes) {
         "src/repair/workflow-utils.ts",
         "src/repair/github-cli.ts",
         "src/repair/process-env.ts",
+        "src/clawsweeper-bot-identity.ts",
         "src/github-public-read.ts",
         "src/github-retry.ts",
         "src/clawsweeper-oversized-pr-policy.ts",

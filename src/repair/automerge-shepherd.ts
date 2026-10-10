@@ -1,5 +1,5 @@
 import type { JsonValue, LooseRecord } from "./json-types.js";
-import { CLAWSWEEPER_BOT_LOGINS } from "../clawsweeper-policy.js";
+import { CLAWSWEEPER_BOT_LOGINS } from "../clawsweeper-bot-identity.js";
 import { isAutomergeMergeStateReady } from "./comment-router-core.js";
 import { latestTrustedExactHeadReview } from "./comment-router/admission.js";
 

@@ -1,6 +1,6 @@
 import { sha256 } from "../content-hash.js";
 
-import { CLAWSWEEPER_BOT_LOGINS } from "../clawsweeper-policy.js";
+import { CLAWSWEEPER_BOT_LOGINS } from "../clawsweeper-bot-identity.js";
 import { asJsonObject, type JsonValue, type LooseRecord } from "./json-types.js";
 import {
   BULK_FILED_LABEL,

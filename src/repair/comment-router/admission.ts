@@ -1,4 +1,5 @@
 import { markdownTopLevelSection } from "../../clawsweeper-markdown.js";
+import { hasReviewStartLeaseCommentMarker } from "../../review-comment-markers.js";
 import {
   githubReadModelCommentObject,
   githubReadModelRequestSync,
@@ -244,13 +245,6 @@ function canonicalReviewStartStatusMarker(body: string) {
   return { itemNumber, marker };
 }
 
-function hasDedicatedReviewStartLeaseMarker(body: string, itemNumber: number): boolean {
-  return [
-    `<!-- clawsweeper-review-lease item=${itemNumber} -->`,
-    `<!-- clawsweeper-command-review-lease item=${itemNumber} -->`,
-  ].some((marker) => body.includes(marker));
-}
-
 export function isTrustedReviewStartStatusComment({
   comment,
   trustedAuthors = new Set<string>(),
@@ -373,7 +367,7 @@ export function expiredReviewStartStatusLeases({
     // Only dedicated lease comments are reapable. The durable review comment can
     // carry the same started marker via the legacy combined-lease path, and it
     // must never be deleted here.
-    if (!hasDedicatedReviewStartLeaseMarker(body, itemNumber)) continue;
+    if (!hasReviewStartLeaseCommentMarker(body, itemNumber)) continue;
     const canonical = canonicalReviewStartStatusMarker(body);
     if (!canonical || canonical.itemNumber !== itemNumber) continue;
     if (String(canonical.marker.attrs.v ?? "") !== "1") continue;
@@ -423,7 +417,7 @@ export function supersededReviewStartStatusLeases({
       .toLowerCase();
     if (!author || !trustedAuthors.has(author)) continue;
     const body = String(comment?.body ?? "");
-    if (!hasDedicatedReviewStartLeaseMarker(body, itemNumber)) continue;
+    if (!hasReviewStartLeaseCommentMarker(body, itemNumber)) continue;
     const canonical = canonicalReviewStartStatusMarker(body);
     if (!canonical || canonical.itemNumber !== itemNumber) continue;
     if (String(canonical.marker.attrs.v ?? "") !== "1") continue;

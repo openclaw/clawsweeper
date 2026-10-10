@@ -12,7 +12,7 @@ import {
   type ActionEventStatus,
   type ActionEventSubject,
 } from "./action-ledger.js";
-import { CLAWSWEEPER_BOT_LOGINS } from "./clawsweeper-policy.js";
+import { CLAWSWEEPER_BOT_LOGINS } from "./clawsweeper-bot-identity.js";
 import { createApplyActionLedger } from "./clawsweeper-apply-ledger.js";
 import { boolArg, numberArg, stringArg, type Args } from "./clawsweeper-args.js";
 import { createFailedReviewRetryWorkflow } from "./clawsweeper-failed-review-retry.js";

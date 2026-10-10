@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 import { sha256 } from "../content-hash.js";
 import { normalizeAuthorAssociation } from "../clawsweeper-item-policy.js";
+import { CLAWSWEEPER_BOT_LOGINS } from "../clawsweeper-bot-identity.js";
 import {
-  CLAWSWEEPER_BOT_LOGINS,
   PROOF_OVERRIDE_LABEL,
   PROOF_SUFFICIENT_LABEL,
   PR_RATING_LABELS,

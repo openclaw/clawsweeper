@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import type { JsonValue, LooseRecord } from "./json-types.js";
+import { CLAWSWEEPER_APP_LOGIN } from "../clawsweeper-bot-identity.js";
 import fs from "node:fs";
 import path from "node:path";
 import { errorMessage } from "../value-coerce.js";
@@ -4578,7 +4579,7 @@ function listRepairLoopSweepCommands(existingCommands: LooseRecord[]) {
       comment_url: `https://github.com/${targetRepo}/pull/${number}`,
       repo: targetRepo,
       issue_number: number,
-      author: "clawsweeper[bot]",
+      author: CLAWSWEEPER_APP_LOGIN,
       author_association: "NONE",
       comment_created_at: new Date(startedAtMs).toISOString(),
       comment_updated_at: new Date(startedAtMs).toISOString(),
@@ -4586,7 +4587,7 @@ function listRepairLoopSweepCommands(existingCommands: LooseRecord[]) {
       command: intent,
       intent,
       trusted_bot: true,
-      trusted_bot_author: "clawsweeper[bot]",
+      trusted_bot_author: CLAWSWEEPER_APP_LOGIN,
       automation_source: "repair_loop_label_sweep",
       repair_reason: "scheduled ClawSweeper repair-loop label sweep",
       ...forcedReplayCommandFields({ forceReprocess, attemptId }),

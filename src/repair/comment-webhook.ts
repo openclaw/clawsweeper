@@ -3,7 +3,7 @@ import crypto from "node:crypto";
 import { sha256 } from "../content-hash.js";
 import http from "node:http";
 
-import { CLAWSWEEPER_BOT_LOGINS } from "../clawsweeper-policy.js";
+import { CLAWSWEEPER_BOT_LOGINS } from "../clawsweeper-bot-identity.js";
 import { repositoryProfileFor } from "../repository-profiles.js";
 import {
   hostedTargetRetryableAdmission,

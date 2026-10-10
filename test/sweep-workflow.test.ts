@@ -1959,9 +1959,15 @@ test("exact event review publishes directly with a queue-bounded canonical fallb
   );
   assert.doesNotMatch(releaseTerminal.if ?? "", /publication-context.*live_terminal_noop/);
   assert.match(releaseTerminal.if ?? "", /publish-event-result.*terminal_noop/);
-  assert.match(releaseUnsuccessful.run ?? "", /\.user\.login == \\"clawsweeper\[bot\]\\"/);
-  assert.match(releaseTerminal.run ?? "", /clawsweeper-command-review-lease/);
-  assert.match(releaseUnsuccessful.run ?? "", /clawsweeper-command-review-lease/);
+  // Lease comments are selected by the owner of the App logins and lease markers.
+  assert.match(
+    releaseTerminal.run ?? "",
+    /workflow-bot-comments\.ts review-lease-comment-ids --item-number "\$ITEM_NUMBER"\)/,
+  );
+  assert.match(
+    releaseUnsuccessful.run ?? "",
+    /workflow-bot-comments\.ts review-lease-comment-ids\s+\\\s+--item-number "\$ITEM_NUMBER" --owner "\$LEASE_OWNER"/,
+  );
   assert.match(releaseUnsuccessful.run ?? "", /clawsweeper-command-/);
   assert.match(releaseUnsuccessful.run ?? "", /continue/);
   assert.match(releaseUnsuccessful.run ?? "", /content == "eyes"/);

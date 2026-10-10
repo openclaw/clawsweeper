@@ -38,6 +38,7 @@ import {
   hasCommandAckMarker,
   parseCommandStatusMarker,
 } from "./markers.js";
+import { commandReviewStartLeaseCommentMarker } from "../review-comment-markers.js";
 
 const PROGRESS_END = "<!-- clawsweeper-command-progress:end -->";
 // The 120-minute job reserves at most 56 minutes for review work. The remaining
@@ -570,7 +571,7 @@ export function mergeCommandProgressSection(
   ) {
     throw new Error("invalid queue-owned command review lease");
   }
-  return `${merged.trimEnd()}\n\n<!-- clawsweeper-review-status:started item=${lease.itemNumber} sha=${lease.headSha} started_at=${lease.startedAt} lease_expires_at=${lease.expiresAt} owner=${lease.owner} v=1 -->\n<!-- clawsweeper-command-review-lease item=${lease.itemNumber} -->`;
+  return `${merged.trimEnd()}\n\n<!-- clawsweeper-review-status:started item=${lease.itemNumber} sha=${lease.headSha} started_at=${lease.startedAt} lease_expires_at=${lease.expiresAt} owner=${lease.owner} v=1 -->\n${commandReviewStartLeaseCommentMarker(lease.itemNumber)}`;
 }
 
 export function verifiedTerminalStatusReceipt(

@@ -10,6 +10,10 @@ import {
 } from "../src/review-failure-explanation.ts";
 import { MAX_TRIAGE_ITEMS_PER_VIEW, publicTriageProjection } from "./public-triage.ts";
 import { githubEtagCacheShard } from "./github-etag-cache.ts";
+import {
+  CLAWSWEEPER_APP_BOT_LOGINS,
+  CLAWSWEEPER_BOT_LOGINS,
+} from "../src/clawsweeper-bot-identity.ts";
 export { GithubEtagCache } from "./github-etag-cache.ts";
 import {
   commandTextForClawSweeperFastAck,
@@ -397,7 +401,6 @@ const AVERAGE_LIMIT = 4;
 const RECENT_CLOSED_LIMIT = 8;
 const CLOSED_STATS_HOURS = 24;
 const CLOSED_STATS_PAGE_LIMIT = 10;
-const DEFAULT_CLAWSWEEPER_BOT_LOGINS = ["clawsweeper[bot]", "openclaw-clawsweeper[bot]"];
 const GITHUB_TIMEOUT_MS = 4500;
 const DEFAULT_STALE_QUEUED_WORKFLOW_MS = 6 * 60 * 60 * 1000;
 const HEALTH_HISTORY_TTL_SECONDS = (HEALTH_HISTORY_RETENTION_DAYS + 1) * 24 * 60 * 60;
@@ -5076,9 +5079,7 @@ function targetDefaultBranch(repo) {
 
 function isClawsweeperGithubWebhookSender(sender) {
   const login = normalizedLogin(sender.login);
-  return (
-    login === "clawsweeper" || login === "clawsweeper[bot]" || login === "openclaw-clawsweeper[bot]"
-  );
+  return CLAWSWEEPER_BOT_LOGINS.has(login);
 }
 
 function isAuthorReadOnlyGithubWebhookCommand({ comment, issue, commandText }) {
@@ -11969,7 +11970,7 @@ function clawsweeperBotLogins(env) {
     .split(",")
     .map((login) => login.trim())
     .filter(Boolean);
-  return new Set(configured.length ? configured : DEFAULT_CLAWSWEEPER_BOT_LOGINS);
+  return new Set(configured.length ? configured : CLAWSWEEPER_APP_BOT_LOGINS);
 }
 
 function closedStats(items, since) {

@@ -1,0 +1,1 @@
+- Keep ClawSweeper's bot logins and review-lease comment markers in one place each; the dashboard Worker, repair code and the exact-review workflow's lease and reaction cleanup now read them from there instead of keeping their own copies.

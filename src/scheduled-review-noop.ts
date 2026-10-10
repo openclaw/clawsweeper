@@ -1,12 +1,10 @@
 import { createHash } from "node:crypto";
+import { CLAWSWEEPER_BOT_LOGINS } from "./clawsweeper-bot-identity.ts";
 
 const TRUSTED_AUTHORS = new Set(
-  [
-    "clawsweeper",
-    "clawsweeper[bot]",
-    "openclaw-clawsweeper[bot]",
-    process.env.CLAWSWEEPER_COMMENT_AUTHOR_LOGIN?.toLowerCase(),
-  ].filter((value): value is string => Boolean(value)),
+  [...CLAWSWEEPER_BOT_LOGINS, process.env.CLAWSWEEPER_COMMENT_AUTHOR_LOGIN?.toLowerCase()].filter(
+    (value): value is string => Boolean(value),
+  ),
 );
 const SOURCE_REVISION_PATTERN =
   /<!--\s+clawsweeper-review-version\b[^>]*\bsource_revision=([0-9a-f]{64})\b[^>]*-->/g;
