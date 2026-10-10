@@ -1,20 +1,22 @@
 import assert from "node:assert/strict";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 import MarkdownIt from "markdown-it";
 
 import {
   canPatchReviewComment,
   isCodexReviewCommentBody,
-  newReviewStartLeaseOwnerForTest,
   parseDecision,
   renderReviewCommentFromReport,
   renderReviewStartStatusComment,
   reviewAutomationMarkersFromReport,
-  reviewStartLeaseWinnerCommentIdForTest,
   shouldPreserveReviewStartLease,
   withReviewStartStatusLease,
 } from "../dist/clawsweeper.js";
 import { itemSourceRevisionSha256 } from "../dist/clawsweeper-source-revision.js";
+import { createReviewCommentWorkflow } from "../dist/clawsweeper-review-comments-workflow.js";
 import { issueSourceRevisionSha256 } from "../dist/repair/issue-source-guard.js";
 import {
   closeDecision,
@@ -23,6 +25,7 @@ import {
   prRatingReportSection,
   realBehaviorProofReportSection,
   reviewReportFrontMatter as reportFrontMatter,
+  withMockGh,
 } from "./helpers.ts";
 import { nextStepFromReport } from "../dist/clawsweeper-next-step.js";
 import * as repositoryLinks from "../dist/clawsweeper-links.js";
@@ -30,11 +33,13 @@ import { createReportDocumentRendering } from "../dist/clawsweeper-report-docume
 import { createReportContextRendering } from "../dist/clawsweeper-report-context.js";
 import { createDashboardPresentation } from "../dist/clawsweeper-dashboard.js";
 import { repositoryProfileFor } from "../dist/repository-profiles.js";
+import { withGitHubRun } from "../dist/clawsweeper-github-runtime.js";
 import type {
   Decision,
   DecisionKind,
   Evidence,
   NextStepAssessment,
+  ReviewStartStatusCommentResult,
 } from "../dist/clawsweeper-types.js";
 import { reportEvidence } from "../dist/clawsweeper-report-parser.js";
 
@@ -699,22 +704,110 @@ function implementedCloseReport(overrides = {}) {
   ].join("\n");
 }
 
-test("GitHub workflow review leases use a recoverable run identity", () => {
-  assert.equal(
-    newReviewStartLeaseOwnerForTest(
-      { GITHUB_RUN_ID: "29083888985", GITHUB_RUN_ATTEMPT: "2" },
-      () => "random-owner",
-    ),
-    "github-run-29083888985-2",
-  );
-  assert.equal(
-    newReviewStartLeaseOwnerForTest(
-      { GITHUB_RUN_ID: "29083888985", GITHUB_RUN_ATTEMPT: "invalid" },
-      () => "random-owner",
-    ),
-    "random-owner",
-  );
+test("lease acquisition ignores spoofed contenders and records a recoverable run identity", () => {
+  const root = mkdtempSync(join(tmpdir(), "clawsweeper-lease-owner-"));
+  const previousRunId = process.env.GITHUB_RUN_ID;
+  const previousRunAttempt = process.env.GITHUB_RUN_ATTEMPT;
+  try {
+    process.env.GITHUB_RUN_ID = "29083888985";
+    for (const attempt of ["2", "invalid"]) {
+      process.env.GITHUB_RUN_ATTEMPT = attempt;
+      const result = acquireFixtureLease(root, false);
+      assert.equal(result.status, "posted");
+      assert.ok(result.lease);
+      if (attempt === "2") assert.equal(result.lease.owner, "github-run-29083888985-2");
+      else assert.match(result.lease.owner, /^[0-9a-f-]{36}$/);
+      assert.equal(result.lease.commentId, 200);
+      assert.match(
+        String(result.lease.comment?.body),
+        new RegExp(`owner=${result.lease.owner}\\b`),
+      );
+    }
+  } finally {
+    if (previousRunId === undefined) delete process.env.GITHUB_RUN_ID;
+    else process.env.GITHUB_RUN_ID = previousRunId;
+    if (previousRunAttempt === undefined) delete process.env.GITHUB_RUN_ATTEMPT;
+    else process.env.GITHUB_RUN_ATTEMPT = previousRunAttempt;
+    rmSync(root, { recursive: true, force: true });
+  }
 });
+
+function acquireFixtureLease(root: string, racing: boolean) {
+  const number = 74453;
+  const headSha = "0123456789abcdef0123456789abcdef01234567";
+  const statePath = join(root, "lease-state.json");
+  const now = Date.now();
+  const leaseBody = (owner: string, startedAt: number) =>
+    `<!-- clawsweeper-review-status:started item=${number} sha=${headSha} started_at=${new Date(startedAt).toISOString()} lease_expires_at=${new Date(now + 3_600_000).toISOString()} owner=${owner} v=1 -->\n\n<!-- clawsweeper-review-lease item=${number} -->`;
+  writeFileSync(
+    statePath,
+    JSON.stringify({
+      comments: [
+        { id: 10, user: { login: "contributor" }, body: leaseBody("spoof", now - 120_000) },
+      ],
+      contender: racing
+        ? {
+            id: 100,
+            user: { login: "clawsweeper[bot]" },
+            body: leaseBody("confirmed-worker", now - 60_000),
+          }
+        : null,
+      payloads: [],
+    }),
+  );
+  const script = `
+const { readFileSync, writeFileSync } = require("node:fs");
+const file = ${JSON.stringify(statePath)};
+const state = JSON.parse(readFileSync(file, "utf8"));
+const args = process.argv.slice(2);
+const method = args[args.indexOf("--method") + 1];
+if (args.includes("--input")) {
+  const payload = args[args.indexOf("--input") + 1];
+  state.payloads.push(payload);
+  const comment = { id: 200, user: { login: "clawsweeper[bot]" }, body: JSON.parse(readFileSync(payload, "utf8")).body };
+  if (state.contender) comment.body = comment.body.replace(/started_at=[^ ]+/, ${JSON.stringify(`started_at=${new Date(now - 120_000).toISOString()}`)});
+  state.comments.push(comment);
+  if (state.contender) state.comments.push(state.contender);
+  console.log(JSON.stringify(comment));
+} else if (method === "DELETE") {
+  state.comments = state.comments.filter(comment => comment.id !== 200);
+  console.log("");
+} else {
+  console.log(JSON.stringify([state.comments]));
+}
+writeFileSync(file, JSON.stringify(state));
+`;
+  try {
+    let result: ReviewStartStatusCommentResult | undefined;
+    withGitHubRun(() =>
+      withMockGh(root, script, () => {
+        result = createReviewCommentWorkflow(() => headSha).postReviewStartStatusComment({
+          item: { ...item({ number }), kind: "pull_request" },
+          headSha,
+          reviewTimeoutMs: 60_000,
+          position: 1,
+          total: 1,
+          shardIndex: 0,
+          shardCount: 1,
+        });
+      }),
+    );
+    assert.ok(result);
+    const state = JSON.parse(readFileSync(statePath, "utf8"));
+    if (racing)
+      assert.deepEqual(
+        state.comments.map((comment: { id: number }) => comment.id),
+        [10, 100],
+      );
+    return result;
+  } finally {
+    const state = JSON.parse(readFileSync(statePath, "utf8"));
+    for (const payload of state.payloads) {
+      rmSync(payload, { force: true });
+      rmSync(payload.replace(/\.json$/, ".md"), { force: true });
+    }
+  }
+}
 
 test("comment matcher recognizes old and new Codex review comments", () => {
   assert.equal(
@@ -750,40 +843,6 @@ test("review comment patching only targets ClawSweeper-owned comments", () => {
   assert.equal(canPatchReviewComment({ user: { login: "openclaw-clawsweeper[bot]" } }), true);
   assert.equal(canPatchReviewComment({ user: { login: "steipete" } }), false);
   assert.equal(canPatchReviewComment(undefined), false);
-});
-
-test("spoofed durable markers cannot suppress a bot-owned start lease", () => {
-  const spoofedComment = {
-    user: { login: "contributor" },
-    body: "<!-- clawsweeper-review item=74453 -->",
-  };
-  assert.equal(canPatchReviewComment(spoofedComment), false);
-
-  // A contributor can copy a fresh lease marker. Only a bot-authored lease can win the
-  // election, so a copied marker with an older comment id cannot hold a bot-owned lease.
-  const itemNumber = 74453;
-  const headSha = "0123456789abcdef0123456789abcdef01234567";
-  const body = [
-    `<!-- clawsweeper-review-status:started item=${itemNumber} sha=${headSha} started_at=2026-07-09T21:00:00.000Z lease_expires_at=2026-07-09T22:31:47.000Z owner=spoof v=1 -->`,
-    "",
-    `<!-- clawsweeper-review-lease item=${itemNumber} -->`,
-  ].join("\n");
-  assert.equal(
-    reviewStartLeaseWinnerCommentIdForTest({
-      comments: [
-        { id: 100, user: { login: "contributor" }, body },
-        {
-          id: 200,
-          user: { login: "clawsweeper[bot]" },
-          body: body.replace("owner=spoof", "owner=bot"),
-        },
-      ],
-      itemNumber,
-      headSha,
-      nowMs: Date.parse("2026-07-09T21:02:00.000Z"),
-    }),
-    200,
-  );
 });
 
 test("review start status comment is marker-backed and crustacean-friendly", () => {
@@ -913,31 +972,16 @@ test("only the exact lease owner and comment can clear an active lease", () => {
   assert.equal(shouldPreserveReviewStartLease({ ...base, leaseOwner: null }), true);
 });
 
-test("concurrent review lease election uses server comment order, not client timestamps", () => {
-  const itemNumber = 74453;
-  const headSha = "0123456789abcdef0123456789abcdef01234567";
-  const leaseComment = (id: number, owner: string, startedAt: string) => ({
-    id,
-    user: { login: "clawsweeper[bot]" },
-    body: [
-      `<!-- clawsweeper-review-status:started item=${itemNumber} sha=${headSha} started_at=${startedAt} lease_expires_at=2026-07-09T22:31:47.000Z owner=${owner} v=1 -->`,
-      "",
-      `<!-- clawsweeper-review-lease item=${itemNumber} -->`,
-    ].join("\n"),
-  });
-
-  assert.equal(
-    reviewStartLeaseWinnerCommentIdForTest({
-      comments: [
-        leaseComment(200, "delayed-worker", "2026-07-09T21:00:00.000Z"),
-        leaseComment(100, "confirmed-worker", "2026-07-09T21:01:00.000Z"),
-      ],
-      itemNumber,
-      headSha,
-      nowMs: Date.parse("2026-07-09T21:02:00.000Z"),
-    }),
-    100,
-  );
+test("concurrent lease acquisition preserves the lowest server id despite client timestamps", () => {
+  const root = mkdtempSync(join(tmpdir(), "clawsweeper-lease-race-"));
+  try {
+    const result = acquireFixtureLease(root, true);
+    assert.equal(result.status, "held");
+    assert.equal(result.didMutate, true);
+    assert.equal(result.lease, null);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test("review item source revision ignores advisory labels but tracks protected labels", () => {

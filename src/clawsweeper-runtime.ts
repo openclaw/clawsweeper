@@ -137,7 +137,6 @@ import {
 import { createReviewCommandWorkflow } from "./clawsweeper-review-command-workflow.js";
 import { createReviewCommentWorkflow } from "./clawsweeper-review-comments-workflow.js";
 import {
-  heldReviewStartStatusCommentResult,
   isSuppliedReviewStartLease,
   reviewLeaseStillMatchesContext,
   suppliedReviewStartLeaseFromArgs,
@@ -163,6 +162,7 @@ import {
   reviewStructuralPullStateFromContext,
   stalePullRequestReviewComment,
   stalePullRequestReviewHead,
+  syncStalePullRequestReviewLabels,
 } from "./clawsweeper-review-comment-identity.js";
 import {
   repairLoopPassModeFromReport,
@@ -277,7 +277,7 @@ export function guardedOpenApplyProofFields(
     : {};
 }
 
-const { markdownLink, reportUrl } = repositoryLinks;
+const { reportUrl } = repositoryLinks;
 
 const sweepStatus = createSweepStatus({
   ensureDir,
@@ -722,30 +722,17 @@ export {
   validateCloseDecision,
 };
 
-const reviewCommentWorkflow = createReviewCommentWorkflow({
-  root: ROOT,
-  targetRepo,
-  heldReviewStartStatusCommentResult,
-  gitHubRuntimeBudgetError: GitHubRuntimeBudgetError,
-  ghObservedMutationCommand,
-  ghPaged,
-  reviewCommentBodyDigest,
-  parseGitHubItemRef,
-  ensureDir,
-  ...reportOrchestration,
-  removeIssueLabel: labelMutations.removeIssueLabel,
-  markdownLink,
-});
+const reviewCommentWorkflow = createReviewCommentWorkflow(
+  reportOrchestration.currentReviewRevision,
+);
 export const {
   canPatchReviewComment,
   coverageProofRetryExhaustedRuntimeBudget,
   isCodexReviewCommentBody,
-  newReviewStartLeaseOwnerForTest,
   recordedLabelSyncCoversUpdate,
   removeCurrentCursorTraceItem,
   renderReviewStartStatusComment,
   reviewArtifactDestination,
-  reviewStartLeaseWinnerCommentIdForTest,
   runtimeBudgetExceeded,
   shouldPreserveReviewStartLease,
   timeoutWithinRuntimeBudget,
@@ -903,6 +890,8 @@ const { applyDecisionsCommandInner: applyDecisionsWithoutReceipts } = createAppl
   ...contextHydration,
   CLAWSWEEPER_BOT_AUTHORS,
   ...reviewCommentWorkflow,
+  syncStalePullRequestReviewLabels: (options) =>
+    syncStalePullRequestReviewLabels(options, labelMutations.removeIssueLabel),
   freshPullRequestReviewHead,
   pullHeadShaFromContext,
   stalePullRequestReviewComment,

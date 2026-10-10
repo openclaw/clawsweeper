@@ -1,0 +1,1 @@
+- Simplify review-comment ownership by importing state, publication, policy, and formatting operations directly while retaining fresh live-revision checks during lease confirmation; CLI behavior and stored report formats are unchanged.

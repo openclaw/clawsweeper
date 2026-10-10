@@ -156,14 +156,10 @@ export async function proveHeadlessCommandLease({
     (await command("gh", ["api", `repos/${repo}/issues/${number}/comments`])).stdout,
   );
   assert.equal(readback.length, 1, "both steps must rewrite the same acknowledgement");
-  const { createReviewCommentLeases } = await import(
+  const { freshDedicatedReviewStartLeases } = await import(
     pathToFileURL(join(source, "dist/clawsweeper-review-comment-leases.js"))
   );
-  const leases = createReviewCommentLeases({
-    PATCHABLE_REVIEW_COMMENT_AUTHORS: new Set(["clawsweeper[bot]"]),
-    commentId: (comment) => comment?.id ?? null,
-  });
-  const candidates = leases.freshDedicatedReviewStartLeases({
+  const candidates = freshDedicatedReviewStartLeases({
     comments: readback,
     itemNumber: number,
     headSha: liveHead,
@@ -173,7 +169,7 @@ export async function proveHeadlessCommandLease({
   assert.equal(candidates[0].commentId, acknowledgement.id);
   assert.equal(candidates[0].owner, `github-run-${tuple.run_id}-1`);
   assert.equal(
-    leases.freshDedicatedReviewStartLeases({
+    freshDedicatedReviewStartLeases({
       comments: readback,
       itemNumber: number,
       headSha: staleHead,

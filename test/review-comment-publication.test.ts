@@ -1,29 +1,119 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
 import { shouldSyncReviewComment } from "../dist/clawsweeper-record-metadata.js";
-import { createReviewCommentLeases } from "../dist/clawsweeper-review-comment-leases.js";
-import {
-  createReviewCommentPublication,
-  DurableReviewPublicationBlockedError,
-} from "../dist/clawsweeper-review-comment-publication.js";
+import * as publication from "../dist/clawsweeper-review-comment-publication.js";
+import * as state from "../dist/clawsweeper-review-comment-state.js";
+import { createReviewCommentWorkflow } from "../dist/clawsweeper-review-comments-workflow.js";
 import {
   reviewAutomationMarkersFromReport,
   reviewVersionMarkerFromReport,
 } from "../dist/clawsweeper-review-comment-automation.js";
-import {
-  createReviewCommentState,
-  expireReviewStartStatusLease,
-} from "../dist/clawsweeper-review-comment-state.js";
 import { freshExactHeadReviewStartLease } from "../dist/repair/comment-router/admission.js";
-
 import { manualPublicationOwnerFromEnv } from "../dist/manual-publication-authority.js";
-import { reviewReportFrontMatter, withReviewRecord } from "./helpers.ts";
+import { reviewReportFrontMatter, withMockGh, withReviewRecord, item } from "./helpers.ts";
 import { ReviewRecordFormatError } from "../dist/review-record.js";
+import { repositoryProfileFor, withTargetProfile } from "../dist/repository-profiles.js";
+import { withGitHubRun } from "../dist/clawsweeper-github-runtime.js";
+
+const itemNumber = 120232;
+const headSha = "522ac4a03828a827c5c266194459d995b9982ff9";
+const reviewMarker = `<!-- clawsweeper-review item=${itemNumber} -->`;
+const sha256 = (value: string) => createHash("sha256").update(value).digest("hex");
+const markedReviewBody = (body: string) => `${body.trimEnd()}\n\n${reviewMarker}`;
+
+function durableReviewComment(options: {
+  id: number;
+  reviewedAt: string;
+  updatedAt: string;
+  leaseCommentId?: number;
+  state?: "ready" | "blocked" | "needs-changes";
+  author?: string;
+}): Record<string, unknown> {
+  return {
+    id: options.id,
+    created_at: options.updatedAt,
+    updated_at: options.updatedAt,
+    user: { login: options.author ?? "clawsweeper[bot]" },
+    body: [
+      "Codex review: durable state fixture.",
+      `<!-- clawsweeper-verdict:needs-human item=${itemNumber} sha=${headSha} confidence=high updated_at=${options.updatedAt} reviewed_at=${options.reviewedAt} -->`,
+      `<!-- clawsweeper-review-state:${options.state ?? "ready"} item=${itemNumber} sha=${headSha} v=1 -->`,
+      `<!-- clawsweeper-review-version item=${itemNumber} reviewed_at=${options.reviewedAt} sha=${headSha} source_revision=${"a".repeat(64)} lease_owner=fixture lease_comment_id=${options.leaseCommentId ?? options.id} v=1 -->`,
+      reviewMarker,
+    ].join("\n\n"),
+  };
+}
+
+interface GitHubFixtureState {
+  comments: Record<string, unknown>[];
+  calls: string[][];
+  reads: number;
+  payloads: string[];
+  response?: Record<string, unknown> | "empty";
+  preserveComments?: boolean;
+  updatedAt?: string;
+  nextId?: number;
+}
+
+function withPublicationFixture(
+  comments: Record<string, unknown>[],
+  run: (fixture: {
+    read: () => GitHubFixtureState;
+    update: (changes: Partial<GitHubFixtureState>) => void;
+  }) => void,
+) {
+  const root = mkdtempSync(join(tmpdir(), "clawsweeper-publication-"));
+  const path = join(root, "github.json");
+  writeFileSync(path, JSON.stringify({ comments, calls: [], reads: 0, payloads: [] }));
+  const read = (): GitHubFixtureState => JSON.parse(readFileSync(path, "utf8"));
+  const update = (changes: Partial<GitHubFixtureState>) =>
+    writeFileSync(path, JSON.stringify({ ...read(), ...changes }));
+  const script = `
+const { readFileSync, writeFileSync } = require("node:fs");
+const file = ${JSON.stringify(path)};
+const state = JSON.parse(readFileSync(file, "utf8"));
+const args = process.argv.slice(2);
+if (args.includes("--input")) {
+  state.calls.push(args);
+  state.payloads.push(args[args.indexOf("--input") + 1]);
+  const body = JSON.parse(readFileSync(args[args.indexOf("--input") + 1], "utf8")).body;
+  const patch = args[args.indexOf("--method") + 1] === "PATCH";
+  const id = patch ? Number(args[1].split("/").at(-1)) : (state.nextId ?? 100);
+  const previous = state.comments.find(comment => comment.id === id);
+  const comment = { ...previous, id, user: { login: "clawsweeper[bot]" }, body, updated_at: state.updatedAt ?? "2026-08-08T00:01:00Z" };
+  if (!state.preserveComments) state.comments = [...state.comments.filter(entry => entry.id !== id), comment];
+  if (state.response !== "empty") console.log(JSON.stringify(state.response ?? comment));
+} else {
+  if (args[0] !== "api" || !args[1].includes("/comments")) throw new Error("unexpected gh args: " + JSON.stringify(args));
+  state.reads++;
+  console.log(JSON.stringify([state.comments]));
+}
+writeFileSync(file, JSON.stringify(state));
+`;
+  try {
+    withTargetProfile(repositoryProfileFor("openclaw/openclaw"), () =>
+      withGitHubRun(() => withMockGh(root, script, () => run({ read, update }))),
+    );
+  } finally {
+    for (const payload of read().payloads) {
+      rmSync(payload, { force: true });
+      rmSync(payload.replace(/\.json$/, ".md"), { force: true });
+    }
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+
+const previousReview = () =>
+  durableReviewComment({
+    id: 20,
+    reviewedAt: "2026-08-07T16:00:00Z",
+    updatedAt: "2026-08-07T16:01:00Z",
+  });
 
 test("manual publication owner metadata requires actual producer or batch claim identifiers", () => {
   const run = { GITHUB_RUN_ID: "1074", GITHUB_RUN_ATTEMPT: "2" };
@@ -53,17 +143,11 @@ test("manual publication owner metadata requires actual producer or batch claim 
     assert.throws(() => manualPublicationOwnerFromEnv(invalid), /manual publication requires/);
 });
 
-const itemNumber = 120232;
-const headSha = "522ac4a03828a827c5c266194459d995b9982ff9";
-const reviewMarker = `<!-- clawsweeper-review item=${itemNumber} -->`;
-
-test("expireReviewStartStatusLease changes only the canonical expiry and releases the exact-head lease", () => {
-  const startedAt = "2026-09-02T21:00:00.000Z";
+test("canonical lease expiry releases admission without rewriting surrounding bytes", () => {
   const expiresAt = "2026-09-02T21:41:00.000Z";
   const queuedAt = "2026-09-02T21:23:00.000Z";
-  const marker = `<!-- clawsweeper-review-status:started item=${itemNumber} sha=${headSha} started_at=${startedAt} lease_expires_at=${expiresAt} owner=worker-1 v=1 -->`;
-  const body = `Review started.  \r\n\r\n${marker}\r\n<!-- clawsweeper-review-lease item=${itemNumber} -->\r\n`;
-  const rewritten = expireReviewStartStatusLease(body, queuedAt);
+  const body = `Review started.  \r\n\r\n<!-- clawsweeper-review-status:started item=${itemNumber} sha=${headSha} started_at=2026-09-02T21:00:00.000Z lease_expires_at=${expiresAt} owner=worker-1 v=1 -->\r\n<!-- clawsweeper-review-lease item=${itemNumber} -->\r\n`;
+  const rewritten = state.expireReviewStartStatusLease(body, queuedAt);
   assert.equal(rewritten, body.replace(expiresAt, queuedAt));
   const options = {
     itemNumber,
@@ -73,98 +157,40 @@ test("expireReviewStartStatusLease changes only the canonical expiry and release
     comments: [{ body, user: { login: "clawsweeper[bot]" } }],
   };
   assert.ok(freshExactHeadReviewStartLease(options));
-  options.comments[0].body = rewritten;
+  options.comments[0]!.body = rewritten;
   assert.equal(freshExactHeadReviewStartLease(options), null);
-});
-
-test("expireReviewStartStatusLease leaves noncanonical markers and unrelated text byte-identical", () => {
-  for (const body of [
+  for (const noncanonical of [
     "No marker.  \r\n",
     "<!-- clawsweeper-review-status:started item=1 lease_expires_at=later -->\nVisible text",
     "```\n<!-- clawsweeper-review-status:started item=1 lease_expires_at=later -->\n```",
     "<!-- clawsweeper-review-status:started item=1 lease_expires_at=later -->\n<!-- clawsweeper-review-lease item=2 -->",
-  ]) {
-    assert.equal(expireReviewStartStatusLease(body, "2026-09-02T21:23:00.000Z"), body);
-  }
+  ])
+    assert.equal(state.expireReviewStartStatusLease(noncanonical, queuedAt), noncanonical);
 });
 
-function sha256(value: string): string {
-  return createHash("sha256").update(value).digest("hex");
-}
-
-function markedReviewBody(body: string): string {
-  return body.includes(reviewMarker) ? body : `${body.trimEnd()}\n\n${reviewMarker}`;
-}
-
-function durableReviewComment(options: {
-  id: number;
-  reviewedAt: string;
-  updatedAt: string;
-  leaseCommentId?: number;
-  state?: "ready" | "blocked" | "needs-changes";
-  author?: string;
-}): Record<string, unknown> {
-  const state = options.state ?? "ready";
-  return {
-    id: options.id,
-    created_at: options.updatedAt,
-    updated_at: options.updatedAt,
-    user: { login: options.author ?? "clawsweeper[bot]" },
-    body: [
-      "Codex review: durable state fixture.",
-      "",
-      `<!-- clawsweeper-verdict:needs-human item=${itemNumber} sha=${headSha} confidence=high updated_at=${options.updatedAt} reviewed_at=${options.reviewedAt} -->`,
-      `<!-- clawsweeper-review-state:${state} item=${itemNumber} sha=${headSha} v=1 -->`,
-      `<!-- clawsweeper-review-version item=${itemNumber} reviewed_at=${options.reviewedAt} sha=${headSha} source_revision=${"a".repeat(64)} lease_owner=fixture lease_comment_id=${options.leaseCommentId ?? options.id} v=1 -->`,
-      reviewMarker,
-    ].join("\n\n"),
-  };
-}
-
-function reviewCommentState(comments: () => Record<string, unknown>[]) {
-  return createReviewCommentState({
-    targetRepo: () => "openclaw/openclaw",
-    ghPaged: comments,
-    reviewCommentBodyDigest: sha256,
-    parseGitHubItemRef: () => ({ repo: "openclaw/openclaw", kind: "pull_request", number: 1 }),
-  } as never);
-}
-
-function reviewCommentPublication(options: {
-  root: string;
-  comments: () => Record<string, unknown>[];
-  state: ReturnType<typeof reviewCommentState>;
-  mutate: (options: { args: string[] }) => string;
-}) {
-  return createReviewCommentPublication({
-    root: options.root,
-    targetRepo: () => "openclaw/openclaw",
-    ghObservedMutationCommand: options.mutate,
-    ghPaged: options.comments,
-    reviewCommentBodyDigest: sha256,
-    ensureDir: (path: string) => mkdirSync(path, { recursive: true }),
-    sentence: (value: string) => value,
-    normalizedLabelSet: () => new Set<string>(),
-    markdownLink: (label: string) => label,
-    ...options.state,
-  } as never);
-}
-
-test("close-applied evidence uses the typed fixing PR while preserving legacy links", () => {
-  const comments = () => [];
-  const publication = reviewCommentPublication({
-    root: ".",
-    comments,
-    state: reviewCommentState(comments),
-    mutate: () => assert.fail("link rendering must not mutate GitHub"),
-  });
+test("close-applied evidence uses typed fixing PR metadata and preserves legacy links", () => {
   const legacy = reviewReportFrontMatter({
     type: "pull_request",
     number: String(itemNumber),
     fixed_pr_url: "https://github.com/openclaw/openclaw/pull/11",
     fixed_pr_number: "11",
   });
-  assert.equal(publication.closeAppliedEvidenceLink(legacy, "item"), "fix PR #11");
+  const options = {
+    number: itemNumber,
+    closeReason: "implemented_on_main" as const,
+    itemUrl: "https://github.com/openclaw/openclaw/pull/120232",
+  };
+  const publishedBody = (markdown: string): string => {
+    let body = "";
+    withPublicationFixture([], (fixture) => {
+      publication.ensureCloseAppliedComment({ ...options, markdown, dryRun: false });
+      body = String(fixture.read().comments[0]!.body);
+    });
+    return body;
+  };
+  assert.ok(
+    publishedBody(legacy).includes("[fix PR #11](https://github.com/openclaw/openclaw/pull/11)"),
+  );
   const typed = withReviewRecord(legacy).replace(/^review_record: (.+)$/m, (_line, value) => {
     const record = JSON.parse(value);
     record.decision.fixedPullRequest = {
@@ -179,138 +205,106 @@ test("close-applied evidence uses the typed fixing PR while preserving legacy li
     };
     return `review_record: ${JSON.stringify(record)}`;
   });
-  assert.equal(publication.closeAppliedEvidenceLink(typed, "item"), "fix PR #22");
+  assert.ok(
+    publishedBody(typed).includes("[fix PR #22](https://github.com/openclaw/openclaw/pull/22)"),
+  );
   assert.throws(
-    () =>
-      publication.closeAppliedEvidenceLink(
-        typed.replace(/^review_record: \{/m, "review_record: {broken"),
-        "item",
-      ),
+    () => publishedBody(typed.replace(/^review_record: \{/m, "review_record: {broken")),
     ReviewRecordFormatError,
   );
 });
 
 test("an unchanged exact-head re-review refreshes its durable comment once", () => {
-  const root = mkdtempSync(join(tmpdir(), "clawsweeper-review-refresh-"));
-  try {
-    const reviewedAt = "2026-09-09T20:00:00Z";
-    let existing = durableReviewComment({
-      id: 20,
-      reviewedAt: "2026-09-08T17:51:38Z",
-      updatedAt: "2026-09-08T17:52:00Z",
-    });
-    const refreshed = durableReviewComment({
+  const existing = durableReviewComment({
+    id: 20,
+    reviewedAt: "2026-09-08T17:51:38Z",
+    updatedAt: "2026-09-08T17:52:00Z",
+  });
+  const reviewedAt = "2026-09-09T20:00:00Z";
+  const body = String(
+    durableReviewComment({
       id: 20,
       reviewedAt,
       updatedAt: "2026-09-08T17:52:00Z",
       leaseCommentId: 21,
-    });
-    const comments = () => [existing];
-    const state = reviewCommentState(comments);
-    const writes: string[][] = [];
-    const publication = reviewCommentPublication({
-      root,
-      comments,
-      state,
-      mutate: ({ args }) => {
-        writes.push(args);
-        const body = JSON.parse(readFileSync(args[args.indexOf("--input") + 1]!, "utf8")).body;
-        existing = { ...existing, body, updated_at: "2026-09-09T20:01:00Z" };
-        return JSON.stringify(existing);
-      },
-    });
-    const shouldSync = (body: string) =>
-      shouldSyncReviewComment({
+    }).body,
+  );
+  withPublicationFixture([existing], (fixture) => {
+    const shouldSync = (candidate: string) => {
+      const current = fixture.read().comments[0]!;
+      return shouldSyncReviewComment({
         syncCommentsOnly: false,
         isCloseProposal: false,
         commentSyncMinAgeDays: 7,
-        reviewCommentSyncedAt: String(existing.updated_at),
+        reviewCommentSyncedAt: String(current.updated_at),
         reviewedAt,
         hasExistingReviewComment: true,
-        needsReviewCommentBodySync: !state.commentBodyMatches(existing, body),
+        needsReviewCommentBodySync: !state.commentBodyMatches(current, candidate),
         needsReviewCommentHashSync: !state.reviewCommentHashMatches(
-          existing,
-          body,
-          sha256(String(existing.body)),
-          sha256(body),
+          current,
+          candidate,
+          sha256(String(current.body)),
+          sha256(candidate),
         ),
         needsReviewCommentReferenceSync: false,
       });
-
-    assert.equal(shouldSync(String(refreshed.body)), true);
-    const published = publication.upsertReviewComment(itemNumber, String(refreshed.body));
-    assert.equal(writes.length, 1);
-    assert.equal(writes[0]![1], "repos/openclaw/openclaw/issues/comments/20");
-    assert.equal(writes[0]![writes[0]!.indexOf("--method") + 1], "PATCH");
-    assert.equal(state.durableReviewVersion(published, itemNumber)?.reviewedAt, reviewedAt);
-    assert.equal(state.durableReviewVersion(published, itemNumber)?.headSha, headSha);
-    assert.equal(shouldSync(String(refreshed.body)), false);
-    assert.equal(
-      shouldSync(String(refreshed.body).replace("lease_comment_id=21", "lease_comment_id=22")),
-      false,
-    );
-  } finally {
-    rmSync(root, { recursive: true, force: true });
-  }
+    };
+    assert.equal(shouldSync(body), true);
+    fixture.update({ updatedAt: "2026-09-09T20:01:00Z" });
+    const published = publication.upsertReviewComment(itemNumber, body);
+    const calls = fixture.read().calls;
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0]![1], "repos/openclaw/openclaw/issues/comments/20");
+    assert.equal(calls[0]![calls[0]!.indexOf("--method") + 1], "PATCH");
+    const identity = state.durableReviewCausalIdentityFromBody(String(published.body), itemNumber);
+    assert.equal(identity?.reviewedAt, reviewedAt);
+    assert.equal(identity?.headSha, headSha);
+    assert.equal(shouldSync(body), false);
+    assert.equal(shouldSync(body.replace("lease_comment_id=21", "lease_comment_id=22")), false);
+  });
 });
 
 test("review version timestamps round-trip through the durable parser", () => {
-  const fields: Record<string, string> = {
-    type: "pull_request",
-    number: String(itemNumber),
-    pull_head_sha: headSha,
-    reviewed_at: "2026-08-08T20:00:00+02:00",
-    item_source_revision: "a".repeat(64),
-    review_lease_owner: "fixture",
-    review_lease_comment_id: "20",
-  };
   const report = [
     "---",
-    ...Object.entries(fields).map(([key, value]) => `${key}: ${value}`),
+    "type: pull_request",
+    `number: ${itemNumber}`,
+    `pull_head_sha: ${headSha}`,
+    "reviewed_at: 2026-08-08T20:00:00+02:00",
+    `item_source_revision: ${"a".repeat(64)}`,
+    "review_lease_owner: fixture",
+    "review_lease_comment_id: 20",
     "---",
     "Review",
     "",
   ].join("\n");
   const versionMarker = reviewVersionMarkerFromReport(report);
-  const comment = {
-    id: 20,
-    user: { login: "clawsweeper[bot]" },
-    body: [versionMarker, reviewMarker].join("\n\n"),
-  };
-  const parsed = reviewCommentState(() => []).durableReviewVersion(comment, itemNumber);
-
+  const parsed = state.durableReviewCausalIdentityFromBody(
+    [
+      versionMarker,
+      `<!-- clawsweeper-review-state:ready item=${itemNumber} sha=${headSha} v=1 -->`,
+      reviewMarker,
+    ].join("\n\n"),
+    itemNumber,
+  );
   assert.match(versionMarker, /\breviewed_at=2026-08-08T18:00:00\.000Z\b/);
-  assert.ok(parsed);
-  assert.equal(parsed.reviewedAt, "2026-08-08T18:00:00.000Z");
-  assert.equal(Date.parse(parsed.reviewedAt), Date.parse(fields.reviewed_at));
+  assert.equal(parsed?.reviewedAt, "2026-08-08T18:00:00.000Z");
   const restricted = report.replace("---\n", "---\npublication_policy: record_comment_only\n");
   assert.equal(reviewAutomationMarkersFromReport(restricted), "");
   assert.equal(reviewVersionMarkerFromReport(restricted), versionMarker);
 });
 
-test("marker-suppressed oversized publication refuses before writing a fallback", () => {
-  const root = mkdtempSync(join(tmpdir(), "clawsweeper-restricted-oversize-"));
-  try {
-    const existing = durableReviewComment({
-      id: 20,
-      reviewedAt: "2026-08-07T16:00:00Z",
-      updatedAt: "2026-08-07T16:01:00Z",
-    });
-    const comments = () => [existing];
-    let writes = 0;
-    let publishedBody = "";
-    const publication = reviewCommentPublication({
-      root,
-      comments,
-      state: reviewCommentState(comments),
-      mutate: ({ args }) => {
-        writes += 1;
-        publishedBody = JSON.parse(readFileSync(args[args.indexOf("--input") + 1]!, "utf8")).body;
-        return JSON.stringify({ ...existing, body: publishedBody });
-      },
-    });
-    const oversized = `${"x".repeat(70_000)}\n${existing.body}`;
-    const original = JSON.stringify(existing);
+test("oversized publication refuses suppressed markers and otherwise verifies a bounded blocked receipt", () => {
+  const existing = previousReview();
+  const oversized = [
+    "Codex review: ready for maintainer look.",
+    "x".repeat(70_000),
+    `<!-- clawsweeper-verdict:needs-human item=${itemNumber} sha=${headSha} confidence=high updated_at=2026-08-07T16:01:00Z reviewed_at=2026-08-07T18:00:00+02:00 diagnostic=${"y".repeat(70_000)} -->`,
+    `<!-- clawsweeper-review-state:ready item=${itemNumber} sha=${headSha} v=1 -->`,
+    `<!-- clawsweeper-review-version item=${itemNumber} reviewed_at=2026-08-07T18:00:00+02:00 sha=${headSha} source_revision=${"a".repeat(64)} lease_owner=fixture lease_comment_id=20 v=1 -->`,
+    reviewMarker,
+  ].join("\n\n");
+  withPublicationFixture([existing], (fixture) => {
     assert.throws(
       () =>
         publication.upsertReviewComment(itemNumber, oversized, existing, undefined, {
@@ -318,315 +312,155 @@ test("marker-suppressed oversized publication refuses before writing a fallback"
         }),
       /marker-suppressed publication cannot emit a fallback/,
     );
-    assert.equal(writes, 0);
-    assert.equal(publishedBody, "");
-    assert.equal(JSON.stringify(existing), original);
-
-    // Ordinary publication retains its established bounded-notice behavior.
+    assert.equal(fixture.read().calls.length, 0);
+    assert.deepEqual(fixture.read().comments, [existing]);
     assert.throws(
       () => publication.upsertReviewComment(itemNumber, oversized, existing),
-      DurableReviewPublicationBlockedError,
-    );
-    assert.equal(writes, 1);
-    assert.match(publishedBody, /clawsweeper-verdict:needs-human/);
-    assert.match(publishedBody, /clawsweeper-review-state:blocked/);
-  } finally {
-    rmSync(root, { recursive: true, force: true });
-  }
-});
-
-test("oversized durable review publication replaces ready state with a verified blocked receipt", () => {
-  const root = mkdtempSync(join(tmpdir(), "clawsweeper-publication-"));
-  try {
-    const existing = durableReviewComment({
-      id: 20,
-      reviewedAt: "2026-08-07T16:00:00Z",
-      updatedAt: "2026-08-07T16:01:00Z",
-    });
-    const state = reviewCommentState(() => []);
-    let publishedBody = "";
-    const publication = createReviewCommentPublication({
-      root,
-      targetRepo: () => "openclaw/openclaw",
-      ghObservedMutationCommand: ({ args }: { args: string[] }) => {
-        const input = args[args.indexOf("--input") + 1];
-        assert.ok(input);
-        publishedBody = JSON.parse(readFileSync(input, "utf8")).body;
-        return JSON.stringify({
-          ...existing,
-          updated_at: "2026-08-07T16:02:00Z",
-          body: publishedBody,
-        });
+      (error) => {
+        assert.ok(error instanceof publication.DurableReviewPublicationBlockedError);
+        assert.match(error.message, /published a blocked fallback and kept the item open/);
+        assert.equal(error.syncedComment.id, 20);
+        const body = String(fixture.read().comments[0]!.body);
+        assert.equal(error.publishedBody, body);
+        assert.ok(Buffer.byteLength(body, "utf8") <= 60 * 1024);
+        assert.match(body, /Codex review: publication failed closed\./);
+        assert.match(body, /## Before merge[\s\S]*- \[ \]/);
+        assert.match(body, /clawsweeper-verdict:needs-human/);
+        assert.match(body, /clawsweeper-review-state:blocked/);
+        assert.doesNotMatch(body, /clawsweeper-review-state:ready|y{100}|z{100}/);
+        assert.match(body, /\breviewed_at=2026-08-07T16:00:00\.000Z\b/);
+        assert.doesNotMatch(body, /reviewed_at=2026-08-07T18:00:00[+_]02:00/);
+        assert.equal((body.match(/<!-- clawsweeper-review-state:/g) ?? []).length, 1);
+        assert.equal((body.match(/<!-- clawsweeper-review-version\b/g) ?? []).length, 1);
+        assert.ok(body.trimEnd().endsWith(reviewMarker));
+        return true;
       },
-      ghPaged: () => [],
-      reviewCommentBodyDigest: sha256,
-      ensureDir: (path: string) => mkdirSync(path, { recursive: true }),
-      sentence: (value: string) => value,
-      normalizedLabelSet: () => new Set<string>(),
-      markdownLink: (label: string) => label,
-      ...state,
-      markedReviewCommentBody: (_number: number, body: string) => markedReviewBody(body),
-      issueReviewComment: () => existing,
-      issueReviewCommentWithBody: () => undefined,
-      commentUpdatedAt: () => "2026-08-07T16:02:00Z",
-      commentId: (comment: Record<string, unknown> | undefined) =>
-        typeof comment?.id === "number" ? comment.id : null,
-      commentUrl: () => `https://github.com/openclaw/openclaw/pull/${itemNumber}#issuecomment-20`,
-      commentBodyMatches: (comment: Record<string, unknown> | undefined, body: string) =>
-        comment?.body === body,
-      canPatchReviewComment: () => true,
-    } as never);
-
-    const oversized = [
-      "Codex review: ready for maintainer look.",
-      "",
-      "x".repeat(70_000),
-      "",
-      `<!-- clawsweeper-verdict:needs-human item=${itemNumber} sha=${headSha} confidence=high updated_at=2026-08-07T16:01:00Z reviewed_at=2026-08-07T18:00:00+02:00 diagnostic=${"y".repeat(70_000)} -->`,
-      `<!-- clawsweeper-review-state:ready item=${itemNumber} sha=${headSha} v=1 -->`,
-      `<!-- clawsweeper-review-version item=${itemNumber} reviewed_at=2026-08-07T18:00:00+02:00 sha=${headSha} source_revision=${"a".repeat(64)} lease_owner=fixture lease_comment_id=20 v=1 -->`,
-      reviewMarker,
-    ].join("\n\n");
-
-    let publicationError: unknown;
-    try {
-      publication.upsertReviewComment(itemNumber, oversized, existing);
-    } catch (error) {
-      publicationError = error;
-    }
-    assert.ok(publicationError instanceof DurableReviewPublicationBlockedError);
-    assert.match(publicationError.message, /published a blocked fallback and kept the item open/);
-    assert.equal(publicationError.syncedComment.id, 20);
-    assert.equal(publicationError.publishedBody, publishedBody);
-    assert.ok(Buffer.byteLength(publishedBody, "utf8") <= 60 * 1024);
-    assert.match(publishedBody, /Codex review: publication failed closed\./);
-    assert.match(publishedBody, /## Before merge[\s\S]*- \[ \]/);
-    assert.match(
-      publishedBody,
-      new RegExp(`<!-- clawsweeper-review-state:blocked item=${itemNumber} sha=${headSha} v=1 -->`),
     );
-    assert.doesNotMatch(publishedBody, /clawsweeper-review-state:ready/);
-    assert.doesNotMatch(publishedBody, /y{100}|z{100}/);
-    assert.match(publishedBody, /\breviewed_at=2026-08-07T16:00:00\.000Z\b/);
-    assert.doesNotMatch(publishedBody, /reviewed_at=2026-08-07T18:00:00[+_]02:00/);
-    assert.equal((publishedBody.match(/<!-- clawsweeper-review-state:/g) ?? []).length, 1);
-    assert.equal((publishedBody.match(/<!-- clawsweeper-review-version\b/g) ?? []).length, 1);
-    assert.ok(publishedBody.trimEnd().endsWith(reviewMarker));
-  } finally {
-    rmSync(root, { recursive: true, force: true });
-  }
+    assert.equal(fixture.read().calls.length, 1);
+  });
 });
 
-test("malformed oversized fallback gets a new comment without borrowing an older identity", () => {
-  const invalidVersionMarkers = [
+test("malformed oversized fallback creates a new comment without borrowing an older identity", () => {
+  for (const version of [
     "",
     `<!-- clawsweeper-review-version item=${itemNumber} reviewed_at=2026-08-07T14:00:00Z sha=${"b".repeat(40)} v=1 -->`,
-  ];
-  for (const invalidVersionMarker of invalidVersionMarkers) {
-    const root = mkdtempSync(join(tmpdir(), "clawsweeper-publication-ordering-"));
-    try {
-      const older = durableReviewComment({
-        id: 10,
-        reviewedAt: "2026-08-07T15:00:00Z",
-        updatedAt: "2026-08-07T15:01:00Z",
-      });
-      const current = durableReviewComment({
-        id: 20,
-        reviewedAt: "2026-08-07T18:00:00+02:00",
-        updatedAt: "2026-08-07T16:01:00Z",
-      });
-      let published = current;
-      let comments = [older, current];
-      const state = reviewCommentState(() => comments);
-      const publication = reviewCommentPublication({
-        root,
-        comments: () => comments,
-        state,
-        mutate: ({ args }) => {
-          assert.ok(args.includes("POST"));
-          const input = args[args.indexOf("--input") + 1];
-          assert.ok(input);
-          const body = JSON.parse(readFileSync(input, "utf8")).body;
-          published = {
-            ...current,
-            id: 100,
-            updated_at: "2026-08-08T00:01:00Z",
-            body,
-          };
-          comments = [older, current, published];
-          return JSON.stringify(published);
-        },
-      });
+  ]) {
+    const older = durableReviewComment({
+      id: 10,
+      reviewedAt: "2026-08-07T15:00:00Z",
+      updatedAt: "2026-08-07T15:01:00Z",
+    });
+    const current = previousReview();
+    withPublicationFixture([older, current], (fixture) => {
       const oversized = [
         "Codex review: ready for maintainer look.",
-        "",
         "x".repeat(70_000),
-        "",
         `<!-- clawsweeper-verdict:needs-human item=${itemNumber} sha=${headSha} confidence=high reviewed_at=unknown -->`,
-        invalidVersionMarker,
+        version,
         reviewMarker,
       ]
         .filter(Boolean)
         .join("\n\n");
-
       assert.throws(
         () => publication.upsertReviewComment(itemNumber, oversized, current),
-        DurableReviewPublicationBlockedError,
+        publication.DurableReviewPublicationBlockedError,
       );
-      const version = state.durableReviewVersion(published, itemNumber);
-      assert.equal(version, null);
+      const published = fixture.read().comments.find((comment) => comment.id === 100)!;
+      assert.ok(fixture.read().calls[0]!.includes("POST"));
+      assert.equal(
+        state.durableReviewCausalIdentityFromBody(String(published.body), itemNumber),
+        null,
+      );
       assert.match(String(published.body), /Codex review: publication failed closed\./);
       assert.doesNotMatch(
         String(published.body),
         /clawsweeper-review-state:|clawsweeper-review-version/,
       );
-      assert.equal(state.selectIssueReviewComment(itemNumber, comments)?.id, 100);
-    } finally {
-      rmSync(root, { recursive: true, force: true });
-    }
+      assert.equal(state.issueReviewComment(itemNumber)?.id, 100);
+    });
   }
 });
 
-test("identity-less blocked fallback requires a complete causally newer review", () => {
-  const root = mkdtempSync(join(tmpdir(), "clawsweeper-publication-veto-"));
-  try {
-    const selected = {
-      id: 20,
-      created_at: "2026-08-07T16:00:00Z",
-      updated_at: "2026-08-07T16:00:00Z",
-      user: { login: "clawsweeper[bot]" },
-      body: ["Codex review: incomplete durable state.", reviewMarker].join("\n\n"),
-    };
-    const olderReady = durableReviewComment({
-      id: 10,
-      reviewedAt: "2026-08-07T15:00:00Z",
-      updatedAt: "2026-08-07T15:01:00Z",
-    });
-    let published = selected;
-    let comments = [olderReady, selected];
-    const mutationArgs: string[][] = [];
-    const state = reviewCommentState(() => comments);
-    const publication = reviewCommentPublication({
-      root,
-      comments: () => comments,
-      state,
-      mutate: ({ args }) => {
-        mutationArgs.push(args);
-        const input = args[args.indexOf("--input") + 1];
-        assert.ok(input);
-        const replacedIds = new Set([Number(selected.id), Number(published.id), 100]);
-        published = {
-          ...published,
-          id: 100,
-          updated_at: mutationArgs.length === 1 ? "2026-08-07T16:02:00Z" : "2026-08-07T16:06:00Z",
-          body: JSON.parse(readFileSync(input, "utf8")).body,
-        };
-        comments = [
-          ...comments.filter((comment) => !replacedIds.has(Number(comment.id))),
-          published,
-        ];
-        return JSON.stringify(published);
-      },
-    });
-    const oversized = [
-      "Codex review: ready for maintainer look.",
-      "",
-      "x".repeat(70_000),
-      "",
-      `<!-- clawsweeper-verdict:needs-human item=${itemNumber} sha=${headSha} reviewed_at=unknown -->`,
-      reviewMarker,
-    ].join("\n\n");
-
+test("identity-less fallback requires a complete causally newer review", () => {
+  const selected = {
+    id: 20,
+    created_at: "2026-08-07T16:00:00Z",
+    updated_at: "2026-08-07T16:00:00Z",
+    user: { login: "clawsweeper[bot]" },
+    body: markedReviewBody("Codex review: incomplete durable state."),
+  };
+  const older = durableReviewComment({
+    id: 10,
+    reviewedAt: "2026-08-07T15:00:00Z",
+    updatedAt: "2026-08-07T15:01:00Z",
+  });
+  withPublicationFixture([older, selected], (fixture) => {
     assert.throws(
-      () => publication.upsertReviewComment(itemNumber, oversized, selected),
-      DurableReviewPublicationBlockedError,
+      () =>
+        publication.upsertReviewComment(
+          itemNumber,
+          markedReviewBody(
+            `${"x".repeat(70_000)}\n<!-- clawsweeper-verdict:needs-human item=${itemNumber} sha=${headSha} reviewed_at=unknown -->`,
+          ),
+          selected,
+        ),
+      publication.DurableReviewPublicationBlockedError,
     );
-    assert.equal(state.durableReviewVersion(published, itemNumber), null);
-    assert.doesNotMatch(String(published.body), /clawsweeper-review-state:/);
-    assert.match(String(published.body), /Codex review: publication failed closed\./);
-    assert.match(mutationArgs[0]?.[1] ?? "", /issues\/120232\/comments$/);
-    assert.equal(state.selectIssueReviewComment(itemNumber, comments)?.id, 100);
-
-    const freshReady = durableReviewComment({
+    const blocked = fixture.read().comments.find((comment) => comment.id === 100)!;
+    assert.equal(state.durableReviewCausalIdentityFromBody(String(blocked.body), itemNumber), null);
+    assert.doesNotMatch(String(blocked.body), /clawsweeper-review-state:/);
+    assert.match(fixture.read().calls[0]![1]!, /issues\/120232\/comments$/);
+    const fresh = durableReviewComment({
       id: 120,
       reviewedAt: "2026-08-07T16:04:00Z",
       updatedAt: "2026-08-07T16:05:00Z",
       leaseCommentId: 120,
     });
-    const malformedSuccessors = [
-      {
-        name: "missing state",
-        body: String(freshReady.body).replace(/<!-- clawsweeper-review-state:[^>]+-->\n\n/, ""),
-      },
-      {
-        name: "mismatched head",
-        body: String(freshReady.body).replace(
-          `sha=${headSha} v=1 -->`,
-          `sha=${"b".repeat(40)} v=1 -->`,
-        ),
-      },
-      {
-        name: "malformed version head",
-        body: String(freshReady.body).replace(
-          `reviewed_at=2026-08-07T16:04:00Z sha=${headSha}`,
-          "reviewed_at=2026-08-07T16:04:00Z sha=na",
-        ),
-      },
-      {
-        name: "unsupported state",
-        body: String(freshReady.body).replace(
-          "clawsweeper-review-state:ready",
-          "clawsweeper-review-state:unknown",
-        ),
-      },
-      {
-        name: "unknown lease owner",
-        body: String(freshReady.body).replace("lease_owner=fixture", "lease_owner=unknown"),
-      },
-    ];
-    for (const [index, malformed] of malformedSuccessors.entries()) {
-      const successor = {
-        ...freshReady,
-        id: 121 + index,
-        body: malformed.body,
-      };
-      comments = [olderReady, published, successor];
-      assert.equal(
-        state.durableReviewCausalIdentityFromBody(malformed.body, itemNumber),
-        null,
-        malformed.name,
-      );
-      assert.equal(state.selectIssueReviewComment(itemNumber, comments)?.id, 100, malformed.name);
+    const body = String(fresh.body);
+    for (const malformed of [
+      body.replace(/<!-- clawsweeper-review-state:[^>]+-->\n\n/, ""),
+      body.replace(`sha=${headSha} v=1 -->`, `sha=${"b".repeat(40)} v=1 -->`),
+      body.replace(
+        `reviewed_at=2026-08-07T16:04:00Z sha=${headSha}`,
+        "reviewed_at=2026-08-07T16:04:00Z sha=na",
+      ),
+      body.replace("clawsweeper-review-state:ready", "clawsweeper-review-state:unknown"),
+      body.replace("lease_owner=fixture", "lease_owner=unknown"),
+    ]) {
+      fixture.update({ comments: [older, blocked, { ...fresh, body: malformed }] });
+      assert.equal(state.durableReviewCausalIdentityFromBody(malformed, itemNumber), null);
+      assert.equal(state.issueReviewComment(itemNumber)?.id, 100);
       assert.throws(
-        () => publication.upsertReviewComment(itemNumber, malformed.body, published),
+        () => publication.upsertReviewComment(itemNumber, malformed, blocked),
         /fresh review lease is required/,
-        malformed.name,
       );
-      assert.equal(mutationArgs.length, 1, malformed.name);
+      assert.equal(fixture.read().calls.length, 1);
     }
-
-    const laterTimestampOlderLease = durableReviewComment({
-      id: 110,
-      reviewedAt: "2026-08-08T23:00:00Z",
-      updatedAt: "2026-08-08T23:01:00Z",
-      leaseCommentId: 90,
+    fixture.update({
+      comments: [
+        older,
+        blocked,
+        durableReviewComment({
+          id: 110,
+          reviewedAt: "2026-08-08T23:00:00Z",
+          updatedAt: "2026-08-08T23:01:00Z",
+          leaseCommentId: 90,
+        }),
+      ],
     });
-    comments = [olderReady, published, laterTimestampOlderLease];
-    assert.equal(state.selectIssueReviewComment(itemNumber, comments)?.id, 100);
-    const synced = publication.upsertReviewComment(itemNumber, String(freshReady.body), published);
+    assert.equal(state.issueReviewComment(itemNumber)?.id, 100);
+    const synced = publication.upsertReviewComment(itemNumber, body, blocked);
     assert.equal(synced.id, 100);
-    assert.match(mutationArgs[1]?.[1] ?? "", /issues\/comments\/100$/);
+    assert.match(fixture.read().calls[1]![1]!, /issues\/comments\/100$/);
     assert.equal(
-      state.durableReviewCausalIdentityFromBody(String(published.body), itemNumber)?.leaseCommentId,
+      state.durableReviewCausalIdentityFromBody(String(synced.body), itemNumber)?.leaseCommentId,
       120,
     );
-    assert.equal(state.selectIssueReviewComment(itemNumber, comments)?.id, 100);
-  } finally {
-    rmSync(root, { recursive: true, force: true });
-  }
+    assert.equal(state.issueReviewComment(itemNumber)?.id, 100);
+  });
 });
 
-test("newest exact durable comment wins over older trusted duplicates", () => {
+test("newest durable comment wins over older trusted duplicates and spoofed newer comments", () => {
   const older = durableReviewComment({
     id: 10,
     reviewedAt: "2026-08-07T15:00:00Z",
@@ -638,211 +472,136 @@ test("newest exact durable comment wins over older trusted duplicates", () => {
     updatedAt: "2026-08-07T16:05:00Z",
     state: "blocked",
   });
-  const untrusted = durableReviewComment({
+  const spoof = durableReviewComment({
     id: 30,
     reviewedAt: "2026-08-07T17:00:00Z",
     updatedAt: "2026-08-07T17:00:00Z",
     author: "reviewer",
   });
-  const comments = [older, untrusted, newer];
-  const state = createReviewCommentState({
-    targetRepo: () => "openclaw/openclaw",
-    ghPaged: () => [],
-    reviewCommentBodyDigest: sha256,
-    parseGitHubItemRef: () => ({ repo: "openclaw/openclaw", kind: "pull_request", number: 1 }),
-  } as never);
-
-  assert.equal(state.selectIssueReviewComment(itemNumber, comments)?.id, 20);
+  withPublicationFixture([older, spoof, newer], () =>
+    assert.equal(state.issueReviewComment(itemNumber)?.id, 20),
+  );
 });
 
-test("lease election includes active legacy leases on non-canonical durable duplicates", () => {
-  const nowMs = Date.parse("2026-08-08T00:05:00Z");
-  const canonical = durableReviewComment({
-    id: 20,
-    reviewedAt: "2026-08-08T00:02:00Z",
-    updatedAt: "2026-08-08T00:02:00Z",
-  });
-  const activeLegacy = durableReviewComment({
+test("active legacy leases on non-canonical duplicates block workflow acquisition", () => {
+  const canonical = previousReview();
+  const legacy = durableReviewComment({
     id: 10,
-    reviewedAt: "2026-08-08T00:01:00Z",
-    updatedAt: "2026-08-08T00:01:00Z",
+    reviewedAt: "2026-08-07T15:00:00Z",
+    updatedAt: "2026-08-07T15:01:00Z",
   });
-  activeLegacy.body = String(activeLegacy.body).replace(
+  legacy.body = String(legacy.body).replace(
     reviewMarker,
-    [
-      `<!-- clawsweeper-review-status:started item=${itemNumber} sha=${headSha} started_at=2026-08-08T00:00:00Z lease_expires_at=2026-08-08T00:10:00Z owner=legacy-worker v=1 -->`,
-      reviewMarker,
-    ].join("\n\n"),
+    `<!-- clawsweeper-review-status:started item=${itemNumber} sha=${headSha} started_at=${new Date(Date.now() - 60_000).toISOString()} lease_expires_at=${new Date(Date.now() + 600_000).toISOString()} owner=legacy-worker v=1 -->\n\n${reviewMarker}`,
   );
-  const untrustedLegacy = {
-    ...activeLegacy,
-    id: 5,
-    user: { login: "reviewer" },
-  };
-  const state = reviewCommentState(() => [untrustedLegacy, activeLegacy, canonical]);
-  const snapshot = state.issueReviewCommentState(itemNumber);
-
-  assert.equal(snapshot.reviewComment?.id, 20);
-  assert.deepEqual(
-    snapshot.leaseComments.map((comment) => comment.id),
-    [10],
-  );
-
-  const leases = createReviewCommentLeases({
-    ...state,
-    targetRepo: () => "openclaw/openclaw",
-    gitHubRuntimeBudgetError: class extends Error {},
-  } as never);
-  assert.equal(
-    leases.reviewStartLeaseWinnerCommentIdForTest({
-      comments: snapshot.leaseComments,
-      itemNumber,
-      headSha,
-      nowMs,
-    }),
-    10,
+  withPublicationFixture(
+    [{ ...legacy, id: 5, user: { login: "reviewer" } }, legacy, canonical],
+    (fixture) => {
+      const snapshot = state.issueReviewCommentState(itemNumber);
+      assert.equal(snapshot.reviewComment?.id, 20);
+      assert.deepEqual(
+        snapshot.leaseComments.map((comment) => comment.id),
+        [10],
+      );
+      const result = createReviewCommentWorkflow(() => headSha).postReviewStartStatusComment({
+        item: { ...item({ number: itemNumber }), kind: "pull_request" },
+        headSha,
+        reviewTimeoutMs: 60_000,
+        position: 1,
+        total: 1,
+        shardIndex: 0,
+        shardCount: 1,
+      });
+      assert.equal(result.status, "held");
+      assert.equal(result.didMutate, false);
+      assert.equal(fixture.read().calls.length, 0);
+    },
   );
 });
 
-test("mutation fallback verifies trusted comment identity", () => {
-  const root = mkdtempSync(join(tmpdir(), "clawsweeper-publication-recovery-"));
-  try {
-    const publishedBody = String(
-      durableReviewComment({
-        id: 99,
-        reviewedAt: "2026-08-07T17:00:00Z",
-        updatedAt: "2026-08-07T17:01:00Z",
-        state: "needs-changes",
-      }).body,
-    );
-    const older = durableReviewComment({
-      id: 10,
-      reviewedAt: "2026-08-07T15:00:00Z",
-      updatedAt: "2026-08-07T16:10:00Z",
-    });
-    const selected = durableReviewComment({
-      id: 20,
-      reviewedAt: "2026-08-07T16:00:00Z",
-      updatedAt: "2026-08-07T16:20:00Z",
-      state: "blocked",
-    });
-    const contributor = durableReviewComment({
-      id: 30,
+test("mutation fallback verifies the exact trusted comment identity", () => {
+  const older = durableReviewComment({
+    id: 10,
+    reviewedAt: "2026-08-07T15:00:00Z",
+    updatedAt: "2026-08-07T16:10:00Z",
+  });
+  const selected = durableReviewComment({
+    id: 20,
+    reviewedAt: "2026-08-07T16:00:00Z",
+    updatedAt: "2026-08-07T16:20:00Z",
+    state: "blocked",
+  });
+  const contributor = durableReviewComment({
+    id: 30,
+    reviewedAt: "2026-08-07T17:00:00Z",
+    updatedAt: "2026-08-07T16:30:00Z",
+    author: "reviewer",
+  });
+  const body = String(
+    durableReviewComment({
+      id: 99,
       reviewedAt: "2026-08-07T17:00:00Z",
-      updatedAt: "2026-08-07T16:30:00Z",
-      author: "reviewer",
-    });
-    const initialComments = [older, contributor, selected];
-
-    const patchFallbackComments = [
-      { ...older, body: publishedBody },
-      selected,
-      { ...contributor, body: publishedBody },
-    ];
-    const patchState = reviewCommentState(() => patchFallbackComments);
-    const selectedComment = patchState.selectIssueReviewComment(itemNumber, initialComments);
-    assert.equal(selectedComment?.id, 20);
-    const patchCalls: string[][] = [];
-    const patchPublication = reviewCommentPublication({
-      root,
-      comments: () => patchFallbackComments,
-      state: patchState,
-      mutate: ({ args }) => {
-        patchCalls.push(args);
-        return "";
-      },
+      updatedAt: "2026-08-07T17:01:00Z",
+      state: "needs-changes",
+    }).body,
+  );
+  withPublicationFixture([older, contributor, selected], (fixture) => {
+    assert.equal(state.issueReviewComment(itemNumber)?.id, 20);
+    fixture.update({
+      comments: [{ ...older, body }, selected, { ...contributor, body }],
+      response: "empty",
+      preserveComments: true,
     });
     assert.throws(
-      () => patchPublication.upsertReviewComment(itemNumber, publishedBody, selectedComment),
+      () => publication.upsertReviewComment(itemNumber, body, selected),
       /did not verify target comment 20/,
     );
-    assert.match(patchCalls[0]?.[1] ?? "", /issues\/comments\/20$/);
-
-    const staleResponseCalls: string[][] = [];
-    const staleResponsePublication = reviewCommentPublication({
-      root,
-      comments: () => initialComments,
-      state: patchState,
-      mutate: ({ args }) => {
-        staleResponseCalls.push(args);
-        return JSON.stringify(selected);
-      },
-    });
+    assert.match(fixture.read().calls[0]![1]!, /issues\/comments\/20$/);
+    fixture.update({ comments: [older, selected, contributor], response: selected });
     assert.throws(
-      () =>
-        staleResponsePublication.upsertReviewComment(itemNumber, publishedBody, selectedComment),
+      () => publication.upsertReviewComment(itemNumber, body, selected),
       /did not verify target comment 20/,
     );
-    assert.match(staleResponseCalls[0]?.[1] ?? "", /issues\/comments\/20$/);
-
-    const postRecoveryComments = [
-      { ...older, body: publishedBody },
-      { ...selected, body: publishedBody },
-      { ...contributor, body: publishedBody },
-    ];
-    const postState = reviewCommentState(() => postRecoveryComments);
-    const postCalls: string[][] = [];
-    const postPublication = reviewCommentPublication({
-      root,
-      comments: () => postRecoveryComments,
-      state: postState,
-      mutate: ({ args }) => {
-        postCalls.push(args);
-        return "";
-      },
+    assert.match(fixture.read().calls[1]![1]!, /issues\/comments\/20$/);
+    fixture.update({
+      comments: [
+        { ...older, body },
+        { ...selected, body },
+        { ...contributor, body },
+      ],
+      response: "empty",
     });
-    const recovered = postPublication.upsertReviewComment(itemNumber, publishedBody, contributor);
-    assert.equal(recovered.id, 20);
-    assert.match(postCalls[0]?.[1] ?? "", /issues\/120232\/comments$/);
-  } finally {
-    rmSync(root, { recursive: true, force: true });
-  }
+    assert.equal(publication.upsertReviewComment(itemNumber, body, contributor).id, 20);
+    assert.match(fixture.read().calls[2]![1]!, /issues\/120232\/comments$/);
+  });
 });
 
 test("an issue review with a newer owned lease clears an identity-less fallback", () => {
-  const root = mkdtempSync(join(tmpdir(), "clawsweeper-issue-publication-"));
-  try {
-    const blocked = {
-      id: 100,
-      user: { login: "clawsweeper[bot]" },
-      body: markedReviewBody("Codex review: publication failed closed."),
-    };
-    const issueReview = (leaseCommentId: number, reviewedAt: string) => {
-      const review = durableReviewComment({
-        id: 120,
-        leaseCommentId,
-        reviewedAt,
-        updatedAt: reviewedAt,
-      });
-      return {
-        ...review,
-        body: String(review.body)
-          .replace(/<!-- clawsweeper-review-state:[^>]+-->\n\n/, "")
-          .replaceAll(`sha=${headSha}`, "sha=na"),
-      };
-    };
-    const fresh = issueReview(120, "2026-08-08T12:00:00Z");
-    const oldLease = issueReview(90, "2026-08-09T12:00:00Z");
-    let comments: Record<string, unknown>[] = [blocked, oldLease];
-    const state = reviewCommentState(() => comments);
-    let mutations = 0;
-    const publication = reviewCommentPublication({
-      root,
-      state,
-      comments: () => comments,
-      mutate: ({ args }) => {
-        mutations += 1;
-        assert.ok(args.includes("PATCH"));
-        assert.match(args[1]!, /issues\/comments\/100$/);
-        const body = JSON.parse(readFileSync(args[args.indexOf("--input") + 1]!, "utf8")).body;
-        const published = { ...blocked, body };
-        comments = [published, oldLease];
-        return JSON.stringify(published);
-      },
+  const blocked = {
+    id: 100,
+    user: { login: "clawsweeper[bot]" },
+    body: markedReviewBody("Codex review: publication failed closed."),
+  };
+  const issueReview = (leaseCommentId: number, reviewedAt: string) => {
+    const review = durableReviewComment({
+      id: 120,
+      leaseCommentId,
+      reviewedAt,
+      updatedAt: reviewedAt,
     });
-    assert.equal(state.selectIssueReviewComment(itemNumber, comments)?.id, 100);
+    return {
+      ...review,
+      body: String(review.body)
+        .replace(/<!-- clawsweeper-review-state:[^>]+-->\n\n/, "")
+        .replaceAll(`sha=${headSha}`, "sha=na"),
+    };
+  };
+  const fresh = issueReview(120, "2026-08-08T12:00:00Z");
+  const old = issueReview(90, "2026-08-09T12:00:00Z");
+  withPublicationFixture([blocked, old], (fixture) => {
+    assert.equal(state.issueReviewComment(itemNumber)?.id, 100);
     for (const invalid of [
-      oldLease.body,
+      old.body,
       fresh.body.replace("lease_owner=fixture", "lease_owner=unknown"),
       fresh.body.replace(`source_revision=${"a".repeat(64)}`, "source_revision=unknown"),
       fresh.body.replaceAll("sha=na", "sha=unknown"),
@@ -850,44 +609,36 @@ test("an issue review with a newer owned lease clears an identity-less fallback"
         reviewMarker,
         `<!-- clawsweeper-review-state:ready item=${itemNumber} sha=${headSha} v=1 -->\n\n${reviewMarker}`,
       ),
-    ]) {
+    ])
       assert.throws(
         () => publication.upsertReviewComment(itemNumber, invalid, blocked),
         /fresh review lease is required/,
       );
-    }
-    assert.equal(mutations, 0);
-    assert.equal(publication.upsertReviewComment(itemNumber, fresh.body, blocked).id, 100);
-    assert.equal(mutations, 1);
-    const identity = state.durableReviewCausalIdentityFromBody(
-      String(comments[0]!.body),
-      itemNumber,
-    );
+    assert.equal(fixture.read().calls.length, 0);
+    const published = publication.upsertReviewComment(itemNumber, fresh.body, blocked);
+    assert.equal(published.id, 100);
+    assert.equal(fixture.read().calls.length, 1);
+    assert.ok(fixture.read().calls[0]!.includes("PATCH"));
+    assert.match(fixture.read().calls[0]![1]!, /issues\/comments\/100$/);
+    const identity = state.durableReviewCausalIdentityFromBody(String(published.body), itemNumber);
     assert.equal(identity?.headSha, null);
     assert.equal(identity?.state, null);
     assert.equal(identity?.leaseCommentId, 120);
-    assert.equal(state.selectIssueReviewComment(itemNumber, comments)?.id, 100);
-  } finally {
-    rmSync(root, { recursive: true, force: true });
-  }
+    assert.equal(state.issueReviewComment(itemNumber)?.id, 100);
+  });
 });
 
-test("publication requires exact trusted receipts, with one scoped readback recovery", () => {
-  const root = mkdtempSync(join(tmpdir(), "clawsweeper-exact-receipt-"));
-  try {
-    const selected = durableReviewComment({
-      id: 20,
-      reviewedAt: "2026-08-07T12:00:00Z",
-      updatedAt: "2026-08-07T12:01:00Z",
-    });
-    const body = String(
-      durableReviewComment({
-        id: 120,
-        reviewedAt: "2026-08-08T12:00:00Z",
-        updatedAt: "2026-08-08T12:01:00Z",
-      }).body,
-    );
-    const receipt = { ...selected, body };
+test("publication requires exact trusted receipts with one scoped readback recovery", () => {
+  const selected = previousReview();
+  const body = String(
+    durableReviewComment({
+      id: 120,
+      reviewedAt: "2026-08-08T12:00:00Z",
+      updatedAt: "2026-08-08T12:01:00Z",
+    }).body,
+  );
+  const receipt = { ...selected, body };
+  withPublicationFixture([], (fixture) => {
     for (const response of [
       { ...receipt, id: -1 },
       { ...receipt, id: 0 },
@@ -900,37 +651,15 @@ test("publication requires exact trusted receipts, with one scoped readback reco
         body: body.replace("reviewed_at=2026-08-08T12:00:00Z", "reviewed_at=2026-08-08T13:00:00Z"),
       },
     ]) {
-      const state = reviewCommentState(() => []);
-      const publication = reviewCommentPublication({
-        root,
-        state,
-        comments: () => [],
-        mutate: () => JSON.stringify(response),
-      });
+      fixture.update({ comments: [], preserveComments: true, response });
       assert.throws(
         () => publication.upsertReviewComment(itemNumber, body, selected),
         /did not verify target comment 20/,
       );
     }
-    let reads = 0;
-    let writes = 0;
-    const comments = () => {
-      reads += 1;
-      return [receipt];
-    };
-    const recovered = reviewCommentPublication({
-      root,
-      state: reviewCommentState(comments),
-      comments,
-      mutate: () => {
-        writes += 1;
-        return "";
-      },
-    });
-    assert.equal(recovered.upsertReviewComment(itemNumber, body, selected).id, 20);
-    assert.equal(writes, 1);
-    assert.equal(reads, 1);
-  } finally {
-    rmSync(root, { recursive: true, force: true });
-  }
+    fixture.update({ comments: [receipt], calls: [], reads: 0, response: "empty" });
+    assert.equal(publication.upsertReviewComment(itemNumber, body, selected).id, 20);
+    assert.equal(fixture.read().calls.length, 1);
+    assert.equal(fixture.read().reads, 1);
+  });
 });

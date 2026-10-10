@@ -763,22 +763,6 @@ export function createDecisionParser({
     };
   }
 
-  function parseGitHubItemRef(value: string, path: string): ParsedGitHubItemRef {
-    const match = value.match(
-      /^https:\/\/github\.com\/([^/\s]+)\/([^/\s]+)\/(issues|pull)\/([1-9][0-9]*)$/,
-    );
-    if (!match) throw new Error(`${path} must be a full GitHub issue or pull request URL`);
-    const repo = normalizeRepo(`${match[1]}/${match[2]}`);
-    const kind = match[3] === "pull" ? "pull_request" : "issue";
-    const number = Number(match[4]);
-    return {
-      repo,
-      kind,
-      number,
-      url: `https://github.com/${repo}/${kind === "pull_request" ? "pull" : "issues"}/${number}`,
-    };
-  }
-
   function decisionItemUrl(item: RootCauseNormalizationItem): string {
     const segment = item.kind === "pull_request" ? "pull" : "issues";
     return `https://github.com/${normalizeRepo(item.repo)}/${segment}/${item.number}`;
@@ -1238,3 +1222,18 @@ export const reviewDecisionParser = createDecisionParser({
   neutralizeOwnedSectionSpoofing,
   sanitizeArchitectureDiagram,
 });
+export function parseGitHubItemRef(value: string, path: string): ParsedGitHubItemRef {
+  const match = value.match(
+    /^https:\/\/github\.com\/([^/\s]+)\/([^/\s]+)\/(issues|pull)\/([1-9][0-9]*)$/,
+  );
+  if (!match) throw new Error(`${path} must be a full GitHub issue or pull request URL`);
+  const repo = normalizeRepo(`${match[1]}/${match[2]}`);
+  const kind = match[3] === "pull" ? "pull_request" : "issue";
+  const number = Number(match[4]);
+  return {
+    repo,
+    kind,
+    number,
+    url: `https://github.com/${repo}/${kind === "pull_request" ? "pull" : "issues"}/${number}`,
+  };
+}

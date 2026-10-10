@@ -12,7 +12,12 @@ import {
   renderReviewStartStatusComment,
 } from "../dist/clawsweeper.js";
 import { itemSourceRevisionSha256 } from "../dist/clawsweeper-source-revision.js";
-import { createReviewCommentPublication } from "../dist/clawsweeper-review-comment-publication.js";
+import {
+  ensureCloseAppliedComment,
+  writeCommentPayload,
+} from "../dist/clawsweeper-review-comment-publication.js";
+import { repositoryProfileFor, withTargetProfile } from "../dist/repository-profiles.js";
+import { withGitHubRun } from "../dist/clawsweeper-github-runtime.js";
 
 import {
   implementedCloseReport,
@@ -95,17 +100,14 @@ fixed_pr_merged_at: 2026-08-18T12:00:00Z`;
 });
 
 test("same-item comment payloads never overwrite an earlier pending mutation", () => {
-  const root = mkdtempSync(tmpPrefix);
+  const payloads: string[] = [];
   try {
-    const publication = createReviewCommentPublication({
-      root,
-      ensureDir: (directory: string) => mkdirSync(directory, { recursive: true }),
-    } as Parameters<typeof createReviewCommentPublication>[0]);
-
     const firstBody = "ClawSweeper applied the proposed close for this PR.";
     const secondBody = "A concurrent worker published a different durable review.";
-    const firstPayload = publication.writeCommentPayload(321, firstBody);
-    const secondPayload = publication.writeCommentPayload(321, secondBody);
+    const firstPayload = writeCommentPayload(321, firstBody);
+    payloads.push(firstPayload);
+    const secondPayload = writeCommentPayload(321, secondBody);
+    payloads.push(secondPayload);
 
     assert.notEqual(firstPayload, secondPayload);
     assert.deepEqual(JSON.parse(readFileSync(firstPayload, "utf8")), { body: firstBody });
@@ -113,41 +115,38 @@ test("same-item comment payloads never overwrite an earlier pending mutation", (
     assert.equal(readFileSync(firstPayload.replace(/\.json$/, ".md"), "utf8"), firstBody);
     assert.equal(readFileSync(secondPayload.replace(/\.json$/, ".md"), "utf8"), secondBody);
   } finally {
-    rmSync(root, { recursive: true, force: true });
+    for (const payload of payloads) {
+      rmSync(payload, { force: true });
+      rmSync(payload.replace(/\.json$/, ".md"), { force: true });
+    }
   }
 });
 
 test("closeout receipts ignore spoofed markers after posting the owned receipt", () => {
   const root = mkdtempSync(tmpPrefix);
   try {
-    const comments: Record<string, unknown>[] = [
-      {
-        id: 1,
-        user: { login: "contributor" },
-        body: "<!-- clawsweeper-close-applied item=321 -->",
-      },
-    ];
-    let mutationCount = 0;
-    const publication = createReviewCommentPublication({
-      root,
-      targetRepo: () => "openclaw/clawsweeper",
-      ghPaged: () => comments,
-      ensureDir: (directory: string) => mkdirSync(directory, { recursive: true }),
-      ghObservedMutationCommand: ({ args }) => {
-        mutationCount += 1;
-        const input = args[args.indexOf("--input") + 1];
-        const body = JSON.parse(readFileSync(input!, "utf8")).body as string;
-        comments.push({ id: 2, user: { login: "clawsweeper[bot]" }, body });
-        return JSON.stringify({ id: 2 });
-      },
-      sentence: (value: string) => value,
-      normalizedLabelSet: () => new Set<string>(),
-      markdownLink: (label: string, url: string) => `[${label}](${url})`,
-      commentId: (comment: Record<string, unknown> | undefined) =>
-        typeof comment?.id === "number" ? comment.id : null,
-      canPatchReviewComment: (comment: Record<string, unknown> | undefined) =>
-        (comment?.user as { login?: unknown } | undefined)?.login === "clawsweeper[bot]",
-    } as Parameters<typeof createReviewCommentPublication>[0]);
+    const statePath = join(root, "comments.json");
+    const callsPath = join(root, "calls.json");
+    writeFileSync(callsPath, "[]");
+    const script = `
+const { readFileSync, writeFileSync } = require("node:fs");
+const args = process.argv.slice(2);
+const statePath = ${JSON.stringify(statePath)};
+const callsPath = ${JSON.stringify(callsPath)};
+const comments = JSON.parse(readFileSync(statePath, "utf8"));
+if (args.includes("--input")) {
+  const payload = args[args.indexOf("--input") + 1];
+  const calls = JSON.parse(readFileSync(callsPath, "utf8"));
+  calls.push(payload);
+  writeFileSync(callsPath, JSON.stringify(calls));
+  const { body } = JSON.parse(readFileSync(payload, "utf8"));
+  const comment = { id: 2, user: { login: "clawsweeper[bot]" }, body };
+  comments.push(comment);
+  writeFileSync(statePath, JSON.stringify(comments));
+  console.log(JSON.stringify(comment));
+} else {
+  console.log(JSON.stringify([comments]));
+}`;
     const options = {
       number: 321,
       closeReason: "implemented_on_main" as const,
@@ -155,15 +154,33 @@ test("closeout receipts ignore spoofed markers after posting the owned receipt",
       itemUrl: "https://github.com/openclaw/clawsweeper/pull/321",
       dryRun: false,
     };
-    comments[0]!.body = publication.renderCloseAppliedComment(options);
-
-    assert.equal(publication.ensureCloseAppliedComment(options), "posted close-applied comment");
-    assert.equal(
-      publication.ensureCloseAppliedComment(options),
-      "matching ClawSweeper close-applied comment already exists",
+    writeFileSync(statePath, "[]");
+    withTargetProfile(repositoryProfileFor("openclaw/clawsweeper"), () =>
+      withGitHubRun(() =>
+        withMockGh(root, script, () => {
+          assert.equal(ensureCloseAppliedComment(options), "posted close-applied comment");
+          const [seed] = JSON.parse(readFileSync(statePath, "utf8"));
+          writeFileSync(
+            statePath,
+            JSON.stringify([{ ...seed, id: 1, user: { login: "contributor" } }]),
+          );
+          assert.equal(ensureCloseAppliedComment(options), "posted close-applied comment");
+          assert.equal(
+            ensureCloseAppliedComment(options),
+            "matching ClawSweeper close-applied comment already exists",
+          );
+        }),
+      ),
     );
-    assert.equal(mutationCount, 1);
+    assert.equal(JSON.parse(readFileSync(callsPath, "utf8")).length, 2);
   } finally {
+    const callsPath = join(root, "calls.json");
+    if (existsSync(callsPath)) {
+      for (const payload of JSON.parse(readFileSync(callsPath, "utf8"))) {
+        rmSync(payload, { force: true });
+        rmSync(payload.replace(/\.json$/, ".md"), { force: true });
+      }
+    }
     rmSync(root, { recursive: true, force: true });
   }
 });
