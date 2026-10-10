@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -149,6 +149,91 @@ test("runner packs hydrated records and the existing snapshot restore reads exac
       Buffer.from(record.content),
     );
   }
+});
+
+test("hydration streams journal pages: the newest revision wins across pages and later deletes remove files", async (t) => {
+  const root = mkdtempSync(path.join(tmpdir(), "record-snapshot-stream-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const record = (id: string, content: string, storeRevision: number, deleted = false) => ({
+    section: "items",
+    id,
+    content: deleted ? null : content,
+    digest: deleted ? null : createHash("sha256").update(content).digest("hex"),
+    revision: storeRevision,
+    storeRevision,
+    deleted,
+  });
+  const pages = [
+    [record("1", "one v3\n", 3), record("2", "two v4\n", 4), record("3", "three v5\n", 5)],
+    // An older revision of #1 after its newer one must not overwrite it.
+    [record("1", "one v2 stale\n", 2), record("2", "", 6, true)],
+    [record("4", "four v7\n", 7)],
+  ];
+  const seenPages: number[] = [];
+  const hydrated = await records.materializeWorkerRecords({
+    worktreeRoot: root,
+    baseUrl,
+    webhookSecret: secret,
+    repoSlugs: [repoSlug],
+    log: () => {},
+    fetch: async (input, init) => {
+      const endpoint = new URL(String(input)).pathname;
+      if (endpoint.endsWith("/latest"))
+        return Response.json({ error: "snapshot_not_found" }, { status: 404 });
+      if (endpoint.endsWith("/list"))
+        return Response.json({ repoSlug, section: "items", records: [], nextCursor: null });
+      const cursor = Number(JSON.parse(String(init?.body)).cursor);
+      seenPages.push(cursor);
+      return Response.json({
+        repoSlug,
+        revision: 7,
+        records: pages[cursor],
+        nextCursor: cursor + 1 < pages.length ? cursor + 1 : null,
+      });
+    },
+  });
+  assert.deepEqual(seenPages, [0, 1, 2]);
+  const items = path.join(hydrated.recordsRoot, repoSlug, "items");
+  assert.equal(readFileSync(path.join(items, "1.md"), "utf8"), "one v3\n");
+  assert.equal(existsSync(path.join(items, "2.md")), false, "the later delete removes #2");
+  assert.equal(readFileSync(path.join(items, "3.md"), "utf8"), "three v5\n");
+  assert.equal(readFileSync(path.join(items, "4.md"), "utf8"), "four v7\n");
+  assert.equal(hydrated.repositories[repoSlug].deltaRecords, 4);
+});
+
+test("streamed export still aborts mid-pagination at the cold record bound", async () => {
+  let pages = 0;
+  const content = "x\n";
+  await assert.rejects(
+    records.streamWorkerRecordExport(
+      {
+        baseUrl,
+        webhookSecret: secret,
+        repoSlug,
+        maxRecords: 3,
+        fetch: async () => {
+          const start = pages++ * 2;
+          return Response.json({
+            repoSlug,
+            revision: 9,
+            records: [0, 1].map((offset) => ({
+              section: "items",
+              id: String(start + offset + 1),
+              content,
+              digest: createHash("sha256").update(content).digest("hex"),
+              revision: 1,
+              storeRevision: start + offset + 1,
+              deleted: false,
+            })),
+            nextCursor: pages < 10 ? pages : null,
+          });
+        },
+      },
+      () => {},
+    ),
+    records.WorkerRecordExportBoundError,
+  );
+  assert.equal(pages, 2, "the second page crosses the bound and aborts the export");
 });
 
 test("signed registration validates descriptor, verifies R2, inserts and prunes", async () => {

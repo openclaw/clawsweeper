@@ -180,7 +180,7 @@ export class WorkerRecordExportBoundError extends Error {
   }
 }
 
-export async function exportWorkerRecords(options: {
+type WorkerRecordExportOptions = {
   baseUrl: string;
   webhookSecret: string;
   repoSlug: string;
@@ -189,10 +189,19 @@ export async function exportWorkerRecords(options: {
   limit?: number;
   maxRecords?: number;
   fetch?: typeof globalThis.fetch;
-}): Promise<WorkerRecordSnapshot> {
+};
+
+// Pages through the record journal and hands each page's winning records (the
+// highest storeRevision seen so far for their identity) to `onRecords`. Only
+// identity -> storeRevision is retained across pages, so memory stays bounded
+// by one page however large the delta since the last snapshot grows.
+export async function streamWorkerRecordExport(
+  options: WorkerRecordExportOptions,
+  onRecords: (records: WorkerRecord[]) => void,
+): Promise<{ revision: number; exportStartRevision: number; recordCount: number }> {
   const sections = options.sections ?? RECORD_SECTIONS;
   const sinceRevision = options.sinceRevision ?? 0;
-  const records = new Map<string, WorkerRecord>();
+  const storeRevisions = new Map<string, number>();
   let cursor: number | null = 0;
   let revision = sinceRevision;
   let exportStartRevision: number | undefined;
@@ -241,16 +250,23 @@ export async function exportWorkerRecords(options: {
     // may observe writes to records whose earlier revisions were already read.
     exportStartRevision ??= page.revision;
     revision = Math.max(revision, page.revision);
+    const winners: WorkerRecord[] = [];
     for (const record of page.records) {
       validateWorkerRecord(record);
       const key = `${record.section}/${record.id}`;
-      const prior = records.get(key);
-      if (!prior || prior.storeRevision < record.storeRevision) records.set(key, record);
+      const prior = storeRevisions.get(key);
+      if (prior !== undefined && prior >= record.storeRevision) continue;
+      storeRevisions.set(key, record.storeRevision);
+      winners.push(record);
     }
     // Abort mid-pagination: the bound exists so an unsnapshotted large repo
     // never triggers an unbounded full-journal download.
-    if (options.maxRecords !== undefined && records.size > options.maxRecords) {
-      throw new WorkerRecordExportBoundError(options.repoSlug, records.size, options.maxRecords);
+    if (options.maxRecords !== undefined && storeRevisions.size > options.maxRecords) {
+      throw new WorkerRecordExportBoundError(
+        options.repoSlug,
+        storeRevisions.size,
+        options.maxRecords,
+      );
     }
     if (
       page.nextCursor !== null &&
@@ -261,12 +277,25 @@ export async function exportWorkerRecords(options: {
     if (page.nextCursor !== null && page.nextCursor === cursor) {
       throw new Error("Worker record export cursor did not advance");
     }
+    onRecords(winners);
     cursor = page.nextCursor;
   } while (cursor !== null);
+  return { revision, exportStartRevision: exportStartRevision!, recordCount: storeRevisions.size };
+}
+
+// Collects the whole export in memory. Materialization streams instead; this
+// keeps the export contract inspectable for small exports.
+export async function exportWorkerRecords(
+  options: WorkerRecordExportOptions,
+): Promise<WorkerRecordSnapshot> {
+  const records = new Map<string, WorkerRecord>();
+  const { revision, exportStartRevision } = await streamWorkerRecordExport(options, (page) => {
+    for (const record of page) records.set(`${record.section}/${record.id}`, record);
+  });
   return {
     repoSlug: options.repoSlug,
     revision,
-    exportStartRevision: exportStartRevision!,
+    exportStartRevision,
     records: [...records.values()].sort((left, right) =>
       recordRelativePath(left).localeCompare(recordRelativePath(right)),
     ),
@@ -357,14 +386,19 @@ async function materializeRecords(
         } else {
           mkdirSync(stagedRepoRoot, { recursive: true });
         }
-        const journal = await exportWorkerRecords({
-          baseUrl: options.baseUrl,
-          webhookSecret: options.webhookSecret,
-          repoSlug,
-          sinceRevision: storedSnapshot?.revisionWatermark ?? 0,
-          ...(storedSnapshot ? {} : { maxRecords: coldRecordLimit }),
-          fetch: options.fetch,
-        }).catch((error: unknown) => {
+        // Each page lands in the staged tree as it arrives: a journal delta can
+        // span the whole repository after a backfill, too large to hold at once.
+        const journal = await streamWorkerRecordExport(
+          {
+            baseUrl: options.baseUrl,
+            webhookSecret: options.webhookSecret,
+            repoSlug,
+            sinceRevision: storedSnapshot?.revisionWatermark ?? 0,
+            ...(storedSnapshot ? {} : { maxRecords: coldRecordLimit }),
+            fetch: options.fetch,
+          },
+          (records) => applyWorkerRecords(stagedRepoRoot, records),
+        ).catch((error: unknown) => {
           // Over the bound, the named refusal returns: the operator must run a
           // snapshot sweep for this slug before worker hydration accepts it.
           if (purpose === "hydration" && error instanceof WorkerRecordExportBoundError) {
@@ -380,7 +414,6 @@ async function materializeRecords(
           }
           throw error;
         });
-        applyWorkerRecords(stagedRepoRoot, journal.records);
         const coverageTrackedItemIds = await fetchWorkerCanonicalItemIds({
           baseUrl: options.baseUrl,
           webhookSecret: options.webhookSecret,
@@ -393,7 +426,7 @@ async function materializeRecords(
           snapshotRevision: storedSnapshot?.revisionWatermark ?? 0,
           snapshotBytes,
           snapshotCache,
-          deltaRecords: journal.records.length,
+          deltaRecords: journal.recordCount,
           recordCount: countMaterializedRecords(stagingRoot, repoSlug),
           coverageTrackedItemIds,
         };

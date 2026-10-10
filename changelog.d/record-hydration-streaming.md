@@ -1,0 +1,1 @@
+- Stream canonical record hydration and snapshot builds page by page instead of holding the whole journal delta in memory, so a repository-wide record backfill no longer OOMs the apply lane, its coverage proofs, or the scheduled snapshot job.
