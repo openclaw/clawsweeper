@@ -54,7 +54,7 @@ on:
         default: blacksmith-16vcpu-ubuntu-2404
         type: string
       target_validation_timeout_ms:
-        description: "Per-command validation budget in ms; blank uses repository config, then 480000"
+        description: "Per-command validation budget in ms; blank uses the repository's configured budget, then the repair default"
         required: false
         default: ""
         type: string

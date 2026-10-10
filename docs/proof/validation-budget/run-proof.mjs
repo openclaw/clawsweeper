@@ -5,12 +5,24 @@ import os from "node:os";
 import path from "node:path";
 import { prepareTargetToolchain, runAllowedValidationCommands } from "../../../dist/repair/target-validation.js";
 import { validationRecoveryRequired } from "../../../dist/repair/validation-recovery.js";
-import { repairTargetValidationTimeoutMs } from "../../../dist/repair/execute-fix-timeout-budget.js";
+import { DEFAULT_FIX_TARGET_VALIDATION_TIMEOUT_MS, repairTargetValidationTimeoutMs } from "../../../dist/repair/execute-fix-timeout-budget.js";
 import { resolveTargetRepoToolchain } from "../../../dist/repair/target-toolchain-config.js";
 
 assert.equal(process.platform, "linux", "proof requires the production Linux containment path");
 assert.equal(process.env.NODE_TEST_CONTEXT, undefined, "proof must use real containment");
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), "validation-budget-proof-"));
+// The expected budgets come from the repository config, read the way the toolchain resolver
+// layers it: a core override replaces the repository entry, then the owner fallback applies.
+const config = JSON.parse(fs.readFileSync(new URL("../../../config/target-repositories.json", import.meta.url), "utf8"));
+const configuredValidationMs = (repo) => {
+  const entry = Object.hasOwn(config.core_target_overrides ?? {}, repo)
+    ? config.core_target_overrides[repo]
+    : (config.repositories ?? []).find((candidate) => candidate.target_repo === repo)
+      ?? (config.generic_fallbacks ?? []).find((candidate) => candidate.owner === repo.split("/")[0]);
+  return entry?.validation_timeout_ms ?? DEFAULT_FIX_TARGET_VALIDATION_TIMEOUT_MS;
+};
+// Shared by the fixture's summary and the expected relay; the unrelated rows must be dropped.
+const coreTimingRows = ["1.25s ok typecheck core", "40ms ok typecheck core tests", "2.50s ok lint core changed files", "3ms ok lint core changed file", "4.75s ok lint core"];
 const inconclusiveIdentity = process.argv.includes("--inconclusive-identity");
 const timingSummary = process.argv.includes("--timing-summary");
 const git = (...args) => execFileSync("git", args, { cwd: dir, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
@@ -18,9 +30,11 @@ const trace = { head: execFileSync("git", ["rev-parse", "HEAD"], { encoding: "ut
 let retainCheckout = false;
 let recovery;
 try {
-  for (const [repo, expected] of [["openclaw/openclaw", 3_000_000], ["openclaw/clawsweeper", 480_000], ["openclaw/clawhub", 480_000]]) {
-    const actual = repairTargetValidationTimeoutMs({}, resolveTargetRepoToolchain(repo).validationTimeoutMs);
-    assert.equal(actual, expected);
+  for (const repo of ["openclaw/openclaw", "openclaw/clawsweeper", "openclaw/clawhub"]) {
+    const configured = resolveTargetRepoToolchain(repo).validationTimeoutMs;
+    const actual = repairTargetValidationTimeoutMs({}, configured);
+    assert.equal(actual, configuredValidationMs(repo));
+    assert.equal(repairTargetValidationTimeoutMs({ CLAWSWEEPER_FIX_TARGET_VALIDATION_TIMEOUT_MS: "900000" }, configured), 900_000);
     trace.scenarios.push({ repo, budgetMs: actual });
   }
   git("init", "-b", "main");
@@ -35,7 +49,7 @@ const { spawn } = require("node:child_process");
 if (${timingSummary}) {
   if (!process.argv.includes("--timed")) process.exit(2);
   console.log("  99s ok typecheck core");
-  console.error("[check:changed] summary\\n  1.25s ok typecheck core\\n  40ms ok typecheck core tests\\n  2.50s ok lint core changed files\\n  3ms ok lint core changed file\\n  4.75s ok lint core\\n  99s ok unrelated output");
+  console.error(${JSON.stringify(["[check:changed] summary", ...coreTimingRows.map((row) => `  ${row}`), "  99s ok unrelated output"].join("\n"))});
   process.exit(0);
 }
 fs.mkdirSync(".artifacts/dist-artifacts.lock", { recursive: true });
@@ -70,13 +84,9 @@ setInterval(() => {}, 1000);
     } finally {
       console.log = originalLog;
     }
-    assert.deepEqual(messages, [
-      "[target-validation] 1.25s ok typecheck core",
-      "[target-validation] 40ms ok typecheck core tests",
-      "[target-validation] 2.50s ok lint core changed files",
-      "[target-validation] 3ms ok lint core changed file",
-      "[target-validation] 4.75s ok lint core",
-    ]);
+    // Exactly the core summary rows are relayed, in order; stdout and unrelated rows are not.
+    assert.equal(messages.length, coreTimingRows.length);
+    messages.forEach((message, index) => assert.ok(message.endsWith(` ${coreTimingRows[index]}`), message));
     assert.equal(git("status", "--porcelain"), before);
     trace.scenarios.push({ command: "pnpm check:changed --timed", result: "passed", timingRows: messages, identityUnchanged: true });
   } else {
