@@ -9,9 +9,9 @@ import {
   contextHasNonAutomationActivityAfterForTest,
   implementedOnMainCloseProvenanceBlock,
   isExactEventSourceRevisionChange,
-  itemSourceRevisionSha256ForTest,
   renderReviewStartStatusComment,
 } from "../dist/clawsweeper.js";
+import { itemSourceRevisionSha256 } from "../dist/clawsweeper-source-revision.js";
 import { createReviewCommentPublication } from "../dist/clawsweeper-review-comment-publication.js";
 
 import {
@@ -263,7 +263,7 @@ test("a lost mutation lease preserves labels already applied", () => {
       comments: 2,
       pull_request: null,
     };
-    const sourceRevision = itemSourceRevisionSha256ForTest(issue, []);
+    const sourceRevision = itemSourceRevisionSha256(issue, []);
     const synced = reportWithSyncedReviewComment(
       workPlanCandidateReport({
         number,
@@ -731,7 +731,7 @@ function assertCompletedIssueLeaseAccepted(extraArgs: string[]): void {
       comments: 2,
       pull_request: null,
     };
-    const sourceRevision = itemSourceRevisionSha256ForTest(issue, []);
+    const sourceRevision = itemSourceRevisionSha256(issue, []);
     const closeReport = implementedCloseReport({
       repository: "openclaw/clawsweeper",
       number,
@@ -871,7 +871,7 @@ test("exact publication rechecks after batched labels and again before close", (
       comments: 3,
       pull_request: null,
     };
-    const sourceRevision = itemSourceRevisionSha256ForTest(issue, []);
+    const sourceRevision = itemSourceRevisionSha256(issue, []);
     const closeReport = implementedCloseReport({
       repository: "openclaw/openclaw",
       number,
@@ -1135,7 +1135,7 @@ test("exact metadata-only publication flushes recoverable labels and drops faile
       comments: 2,
       pull_request: null,
     };
-    const sourceRevision = itemSourceRevisionSha256ForTest(issue, []);
+    const sourceRevision = itemSourceRevisionSha256(issue, []);
     const sourceReport = workPlanCandidateReport({
       repository: "openclaw/openclaw",
       number,
@@ -1371,7 +1371,7 @@ for (const scenario of [
         comments: 1,
         pull_request: null,
       };
-      const sourceRevision = itemSourceRevisionSha256ForTest(issue, []);
+      const sourceRevision = itemSourceRevisionSha256(issue, []);
 
       const oldReport = workPlanCandidateReport({
         number,
@@ -1553,8 +1553,8 @@ test("issue apply rejects a stable live source revision that differs from the re
       pull_request: null,
     };
     const reviewedIssue = { ...liveIssue, body: "Body at review time.", updated_at: reviewedAt };
-    const reviewedRevision = itemSourceRevisionSha256ForTest(reviewedIssue, []);
-    const liveRevision = itemSourceRevisionSha256ForTest(liveIssue, []);
+    const reviewedRevision = itemSourceRevisionSha256(reviewedIssue, []);
+    const liveRevision = itemSourceRevisionSha256(liveIssue, []);
     writeFileSync(
       join(itemsDir, `${number}.md`),
       workPlanCandidateReport({
@@ -1650,7 +1650,7 @@ test("issue apply preserves an owned active review lease for the live source rev
       comments: 2,
       pull_request: null,
     };
-    const sourceRevision = itemSourceRevisionSha256ForTest(issue, []);
+    const sourceRevision = itemSourceRevisionSha256(issue, []);
     const report = workPlanCandidateReport({
       number,
       title: issue.title,
@@ -2421,7 +2421,7 @@ for (const scenario of [
           ? "I relabeled this myself; keep my labels."
           : "@clawsweeper re-review";
       const emptyActivityDigest = createHash("sha256").update("[]").digest("hex");
-      const sourceRevision = itemSourceRevisionSha256ForTest(
+      const sourceRevision = itemSourceRevisionSha256(
         {
           title: "Fresh head label restore after re-review",
           labels: ["status: 📣 needs proof", "rating: 🦪 silver shellfish"],
@@ -3850,7 +3850,7 @@ for (const scenario of [
       const postedBodiesPath = join(root, "posted-bodies.jsonl");
       const prCommentPath = join(root, "pr-review-comment");
       const linkedIssueCommentPath = join(root, "linked-issue-review-comment");
-      const reviewedSourceRevision = itemSourceRevisionSha256ForTest(
+      const reviewedSourceRevision = itemSourceRevisionSha256(
         {
           title: "Render work plans",
           labels: ["maintainer"],

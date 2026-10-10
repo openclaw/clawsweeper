@@ -804,8 +804,8 @@ exec '${process.execPath}' '${transport}' curl "\${args[@]}"
     );
     return matching.at(-1);
   }
-  const { itemSourceRevisionSha256ForTest } = await import(
-    pathToFileURL(join(source, "dist/clawsweeper.js"))
+  const { itemSourceRevisionSha256 } = await import(
+    pathToFileURL(join(source, "dist/clawsweeper-source-revision.js"))
   );
   async function reviewedRecord(number, repeatRunId) {
     const dispatch = dispatches.findLast((d) => d.item_number === number);
@@ -897,7 +897,7 @@ exec '${process.execPath}' '${transport}' curl "\${args[@]}"
     const lease = JSON.parse(reserved.stdout.trim());
     assert.equal(lease.status, "posted");
     const reviewedAt = new Date().toISOString();
-    const sourceRevision = itemSourceRevisionSha256ForTest(items.get(number), comments.get(number));
+    const sourceRevision = itemSourceRevisionSha256(items.get(number), comments.get(number));
     let reviewActivityCursor;
     if (number === 76) {
       const { reviewedPrActivityCursorV2Query, reviewedPrActivityCursorsV2FromGraphql } =

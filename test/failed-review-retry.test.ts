@@ -18,11 +18,11 @@ import { parse } from "yaml";
 
 import {
   enforceExpectedIssueSourceRevisionForTest,
-  itemSourceRevisionSha256ForTest,
   main,
   preserveFailedReviewRetryMetadataForTest,
   reviewRetryActionNeedsItemEventForTest,
 } from "../dist/clawsweeper.js";
+import { itemSourceRevisionSha256 } from "../dist/clawsweeper-source-revision.js";
 import {
   failedReviewRetryEligibility,
   isInfrastructureFailedReview,
@@ -78,7 +78,7 @@ function failedIssueRetryFixture(root: string, number: number) {
     comments: 0,
     pull_request: null,
   };
-  const sourceRevision = itemSourceRevisionSha256ForTest(issue, []);
+  const sourceRevision = itemSourceRevisionSha256(issue, []);
   mkdirSync(itemsDir, { recursive: true });
   writeFileSync(
     itemPath,
@@ -678,7 +678,7 @@ test("failed issue retry dispatch binds the expected source revision", () => {
       comments: 0,
       pull_request: null,
     };
-    const sourceRevision = itemSourceRevisionSha256ForTest(issue, []);
+    const sourceRevision = itemSourceRevisionSha256(issue, []);
     mkdirSync(itemsDir, { recursive: true });
     writeFileSync(
       join(itemsDir, "4343.md"),

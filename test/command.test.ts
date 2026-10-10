@@ -16,13 +16,13 @@ import { fileURLToPath } from "node:url";
 
 import {
   defaultReviewArtifactDirForTest,
-  itemSourceRevisionSha256ForTest,
   isSuppliedReviewStartLeaseForTest,
   localExactReviewHistoryPathForTest,
   prepareManagedLocalReviewCheckoutForTest,
   reviewPolicyHashForTest,
   reviewLeaseStillMatchesContextForTest,
 } from "../dist/clawsweeper.js";
+import { itemSourceRevisionSha256 } from "../dist/clawsweeper-source-revision.js";
 import { exactEventReviewLeaseDisposition } from "../dist/clawsweeper-record-metadata.js";
 import { runText, runTextConcurrently, UserFacingCommandError } from "../dist/command.js";
 import { reviewMergeBase } from "../dist/pr-review-evidence.js";
@@ -343,7 +343,7 @@ test("CSW-088 scheduled hot planning suppresses #117063, observes an in-flight u
     labels: issue.labels,
     pull_request: {},
   };
-  const sourceRevision = itemSourceRevisionSha256ForTest(pull, []);
+  const sourceRevision = itemSourceRevisionSha256(pull, []);
   const pullStateDigest = reviewStructuralPullStateDigest({
     headSha,
     baseSha: pull.base.sha,

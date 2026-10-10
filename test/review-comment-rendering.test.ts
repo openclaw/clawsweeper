@@ -4,7 +4,6 @@ import MarkdownIt from "markdown-it";
 
 import {
   canPatchReviewComment,
-  itemSourceRevisionSha256ForTest,
   isCodexReviewCommentBody,
   newReviewStartLeaseOwnerForTest,
   parseDecision,
@@ -15,6 +14,7 @@ import {
   shouldPreserveReviewStartLease,
   withReviewStartStatusLease,
 } from "../dist/clawsweeper.js";
+import { itemSourceRevisionSha256 } from "../dist/clawsweeper-source-revision.js";
 import { issueSourceRevisionSha256 } from "../dist/repair/issue-source-guard.js";
 import {
   closeDecision,
@@ -950,10 +950,10 @@ test("review item source revision ignores advisory labels but tracks protected l
     body: "This was superseded by the canonical fix.",
     labels: [{ name: "bug" }],
   };
-  const revision = itemSourceRevisionSha256ForTest(item, []);
+  const revision = itemSourceRevisionSha256(item, []);
 
   assert.equal(
-    itemSourceRevisionSha256ForTest(
+    itemSourceRevisionSha256(
       {
         ...item,
         labels: [
@@ -984,27 +984,21 @@ test("review item source revision ignores advisory labels but tracks protected l
     revision,
   );
   assert.notEqual(
-    itemSourceRevisionSha256ForTest(
-      { ...item, labels: [...item.labels, { name: "needs-design" }] },
-      [],
-    ),
+    itemSourceRevisionSha256({ ...item, labels: [...item.labels, { name: "needs-design" }] }, []),
     revision,
   );
   assert.notEqual(
-    itemSourceRevisionSha256ForTest(
+    itemSourceRevisionSha256(
       { ...item, labels: [...item.labels, { name: "release-blocker" }] },
       [],
     ),
     revision,
   );
   const bulkFiled = { ...item, labels: [...item.labels, { name: "clawsweeper:bulk-filed" }] };
-  assert.notEqual(itemSourceRevisionSha256ForTest(bulkFiled, []), revision);
-  assert.equal(
-    itemSourceRevisionSha256ForTest(bulkFiled, []),
-    issueSourceRevisionSha256(bulkFiled, []),
-  );
+  assert.notEqual(itemSourceRevisionSha256(bulkFiled, []), revision);
+  assert.equal(itemSourceRevisionSha256(bulkFiled, []), issueSourceRevisionSha256(bulkFiled, []));
   assert.notEqual(
-    itemSourceRevisionSha256ForTest(
+    itemSourceRevisionSha256(
       { ...item, labels: [...item.labels, { name: "proof: override" }] },
       [],
     ),

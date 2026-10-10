@@ -1,10 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { filterReviewComments } from "../dist/clawsweeper-review-comments.js";
-import {
-  itemSourceRevisionSha256ForTest,
-  renderReviewStartStatusComment,
-} from "../dist/clawsweeper.js";
+import { renderReviewStartStatusComment } from "../dist/clawsweeper.js";
+import { itemSourceRevisionSha256 } from "../dist/clawsweeper-source-revision.js";
 
 const context = {
   isClawSweeperComment(value: unknown): boolean {
@@ -18,7 +16,7 @@ const context = {
 
 test("automatic receipt and review-progress comments do not enter review context", () => {
   const issue = { title: "Review publication", body: "Same source", labels: [] };
-  const sourceRevision = itemSourceRevisionSha256ForTest(issue, []);
+  const sourceRevision = itemSourceRevisionSha256(issue, []);
   for (const login of ["clawsweeper", "clawsweeper[bot]", "openclaw-clawsweeper[bot]"]) {
     for (const body of [
       "<!-- clawsweeper-pr-ack:opened item=42 -->\nClawSweeper picked this up.",
@@ -41,9 +39,9 @@ test("automatic receipt and review-progress comments do not enter review context
         included: [],
         filtered: 1,
       });
-      assert.equal(itemSourceRevisionSha256ForTest(issue, [comment]), sourceRevision);
+      assert.equal(itemSourceRevisionSha256(issue, [comment]), sourceRevision);
       assert.equal(
-        itemSourceRevisionSha256ForTest(issue, [
+        itemSourceRevisionSha256(issue, [
           {
             ...comment,
             body: `${body}\nUpdated status.`,
@@ -67,10 +65,7 @@ test("human discussion quoting automatic status markers remains in review contex
     included: [human],
     filtered: 0,
   });
-  assert.notEqual(
-    itemSourceRevisionSha256ForTest({}, [human]),
-    itemSourceRevisionSha256ForTest({}, []),
-  );
+  assert.notEqual(itemSourceRevisionSha256({}, [human]), itemSourceRevisionSha256({}, []));
 });
 
 test("substantive unmarked bot discussion is not removed with automatic status noise", () => {

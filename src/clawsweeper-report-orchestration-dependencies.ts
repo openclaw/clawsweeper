@@ -101,7 +101,7 @@ export interface CreateReportOrchestrationDependencies {
     nowMs: number,
   ) => number | null;
   validateCloseDecision: (
-    item: Pick<Item, "kind" | "labels"> & Partial<Pick<Item, "repo" | "authorAssociation">>,
+    item: Pick<Item, "kind" | "labels" | "repo"> & Partial<Pick<Item, "authorAssociation">>,
     decision: Decision,
     options?: { requireCloseComment?: boolean },
   ) => { ok: true } | { ok: false; actionTaken: ActionTaken; reason: string };

@@ -16,6 +16,12 @@ import type {
   GitHubJsonResult,
 } from "./clawsweeper-types.js";
 
+export function githubCount(value: unknown): number | null {
+  const count =
+    typeof value === "number" ? value : typeof value === "string" ? Number(value) : Number.NaN;
+  if (!Number.isFinite(count) || count < 0) return null;
+  return Math.floor(count);
+}
 interface GitHubContextDependencies {
   ghJson: <T>(args: string[]) => T;
   ghJsonEach: <T>(requests: readonly string[][]) => GitHubJsonResult<T>[];
@@ -262,13 +268,6 @@ export function createGitHubContext({
     };
   }
 
-  function githubCount(value: unknown): number | null {
-    const count =
-      typeof value === "number" ? value : typeof value === "string" ? Number(value) : Number.NaN;
-    if (!Number.isFinite(count) || count < 0) return null;
-    return Math.floor(count);
-  }
-
   function githubContextWindowPlan(
     total: number,
     promptLimit: number,
@@ -426,7 +425,6 @@ export function createGitHubContext({
     ghPagedLimit,
     ghPagedLinkHeaderContextWindow,
     githubContextWindowPlan,
-    githubCount,
     githubLinkLastPageNumber,
     githubPaginatedPath,
   };

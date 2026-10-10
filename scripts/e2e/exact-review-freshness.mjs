@@ -19,10 +19,10 @@ import { dirname, join, resolve } from "node:path";
 import { stripTypeScriptTypes } from "node:module";
 import { parseArgs } from "node:util";
 import {
-  itemSourceRevisionSha256ForTest,
   renderReviewCommentFromReport,
   renderReviewStartStatusComment,
 } from "../../dist/clawsweeper.js";
+import { itemSourceRevisionSha256 } from "../../dist/clawsweeper-source-revision.js";
 import { createReviewedPrActivityCursorV2 } from "../../dist/review-activity-cursor.js";
 
 const source = resolve(import.meta.dirname, "../..");
@@ -94,7 +94,7 @@ const issue = {
   labels: ["rating: 🧂 unranked krab", "status: 📣 needs proof"],
   pull_request: { url: `https://api.github.com/repos/${repo}/pulls/${number}` },
 };
-const revision = itemSourceRevisionSha256ForTest(issue, []);
+const revision = itemSourceRevisionSha256(issue, []);
 let kind = "pull_request";
 const baseReport = (time, lease) => `---
 repository: ${repo}
@@ -424,7 +424,7 @@ try {
       [],
       "same completed report remains outside the publication queue",
     );
-    assert.equal(itemSourceRevisionSha256ForTest(issue, comments), revision);
+    assert.equal(itemSourceRevisionSha256(issue, comments), revision);
     results.push({
       name,
       kind,

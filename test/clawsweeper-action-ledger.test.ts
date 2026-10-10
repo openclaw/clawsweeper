@@ -25,7 +25,6 @@ import {
   classifyGitHubDispatchResultForTest,
   codexReviewFailureRetryableForTest,
   heldReviewStartStatusCommentResultForTest,
-  itemSourceRevisionSha256ForTest,
   main,
   observedGitHubMutationAttemptsForTest,
   renderReviewStartStatusComment,
@@ -35,6 +34,7 @@ import {
   reviewRetryBusinessIdempotencyIdentityForTest,
   untrustedCodexEnvForTest,
 } from "../dist/clawsweeper.js";
+import { itemSourceRevisionSha256 } from "../dist/clawsweeper-source-revision.js";
 import { labelAlreadyExistsError } from "../dist/clawsweeper-label-mutations.js";
 import {
   ACTION_EVENT_TYPES,
@@ -976,7 +976,7 @@ test("GitHub throttles abort apply lease checks and preserve durable lease owner
         user: { login: "reporter" },
         labels: [],
       };
-      const sourceRevision = itemSourceRevisionSha256ForTest(issue, []);
+      const sourceRevision = itemSourceRevisionSha256(issue, []);
       const synced = reportWithSyncedReviewComment(
         workPlanCandidateReport({
           number: 321,

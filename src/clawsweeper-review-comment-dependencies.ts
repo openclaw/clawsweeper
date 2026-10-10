@@ -1,5 +1,5 @@
 import type { createDecisionParser } from "./clawsweeper-decision-parser.js";
-import type { createGitHubContext } from "./clawsweeper-github-context.js";
+import type { createGitHubContext, githubCount } from "./clawsweeper-github-context.js";
 import type { LabelMutations } from "./clawsweeper-label-mutations.js";
 import type { Item, ReviewStartStatusCommentResult } from "./clawsweeper-types.js";
 
@@ -22,7 +22,7 @@ export interface ReviewCommentWorkflowDependencies {
     prepareRequest?: ((args: string[], attempt: number) => () => string) | undefined;
     sleepBeforeRetry?: ((waitMs: number) => void) | undefined;
   }) => string;
-  githubCount: ReturnType<typeof createGitHubContext>["githubCount"];
+  githubCount: typeof githubCount;
   ghPaged: ReturnType<typeof createGitHubContext>["ghPaged"];
   reviewCommentBodyDigest: (body: string) => string;
   parseGitHubItemRef: ReturnType<typeof createDecisionParser>["parseGitHubItemRef"];

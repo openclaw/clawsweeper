@@ -21,7 +21,18 @@ import {
   reviewRankUpMovesForReviewer,
   type ReviewHistoryCycle,
 } from "./review-history.js";
-import { asRecord } from "./value-coerce.js";
+import { asRecord, login } from "./value-coerce.js";
+import { CLAWSWEEPER_BOT_LOGINS } from "./clawsweeper-bot-identity.js";
+
+export const CLAWSWEEPER_BOT_AUTHORS: ReadonlySet<string> = new Set(
+  [...CLAWSWEEPER_BOT_LOGINS, process.env.CLAWSWEEPER_COMMENT_AUTHOR_LOGIN]
+    .filter((login): login is string => typeof login === "string" && login.length > 0)
+    .map((login) => login.toLowerCase()),
+);
+
+export function isClawSweeperComment(value: unknown): boolean {
+  return CLAWSWEEPER_BOT_AUTHORS.has((login(asRecord(value).user) ?? "").toLowerCase());
+}
 
 export interface ReviewCommentContext {
   isClawSweeperComment: (value: unknown) => boolean;

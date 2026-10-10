@@ -32,11 +32,17 @@ import { createApplyDecisionWorkflow } from "./clawsweeper-apply-decision-workfl
 import { implementedOnMainCloseProvenanceBlock } from "./clawsweeper-apply-close-execution.js";
 import { createApplyGuards } from "./clawsweeper-apply-guards.js";
 import { createAssistWorkflow } from "./clawsweeper-assist.js";
-import { createCloseDecisionWorkflow } from "./clawsweeper-close-decision.js";
+import {
+  hasUsableCloseComment,
+  isImplementationCloseReason,
+  staleVersionBugDecisionBlockReason,
+  unsponsoredFeatureDecisionBlockReason,
+  validateCloseDecision,
+} from "./clawsweeper-close-decision.js";
 import { createCommandOperations } from "./clawsweeper-command-operations.js";
 import { createContextHydration } from "./clawsweeper-context-hydration.js";
 import { createDashboardAudit } from "./clawsweeper-dashboard-audit.js";
-import { createGitHubContext } from "./clawsweeper-github-context.js";
+import { createGitHubContext, githubCount } from "./clawsweeper-github-context.js";
 import { createGitHubExecution } from "./clawsweeper-github-execution.js";
 import { createGitHubRuntime } from "./clawsweeper-github-runtime.js";
 import { exactPublicationPublicReadToken } from "./github-public-read.js";
@@ -69,7 +75,7 @@ import { executeReviewLiveProofs, inspectReviewLiveProofs } from "./live-proof/r
 import { createRepositoryLinks } from "./clawsweeper-links.js";
 import { createLocalRangeReviewer } from "./clawsweeper-local-review.js";
 import { createPlanCommand } from "./clawsweeper-plan-command.js";
-import { CLAWSWEEPER_BOT_LOGINS } from "./clawsweeper-bot-identity.js";
+import { CLAWSWEEPER_BOT_AUTHORS } from "./clawsweeper-review-comments.js";
 import {
   EVENT_GUARDED_OPEN_ACTIONS,
   FRESH_DAYS,
@@ -101,7 +107,18 @@ import {
 import { createReviewActionLedger } from "./clawsweeper-review-ledger.js";
 import { createReviewPlanning } from "./clawsweeper-review-planning.js";
 import { createReviewRuntime, type ReviewItemPrompts } from "./clawsweeper-review-runtime.js";
-import { createSourceRevisionTools } from "./clawsweeper-source-revision.js";
+import {
+  hydratedReviewStructuralItemStateDigest,
+  isExactEventSourceRevisionChange,
+  isIgnorableSourceRevisionLabel,
+  itemContentDigest,
+  itemSnapshotHash,
+  itemSourceRevisionSha256,
+  pullCommitContentRevision,
+  reviewCommentBodyDigest,
+  reviewCommentContentRevision,
+  reviewTimelineDigestParts,
+} from "./clawsweeper-source-revision.js";
 import {
   currentClosingPullRequestReferenceFromIssueTimeline,
   createStatusContext,
@@ -318,12 +335,6 @@ const {
   mutationErrorMessage,
 } = githubExecution;
 
-const CLAWSWEEPER_BOT_AUTHORS = new Set(
-  [...CLAWSWEEPER_BOT_LOGINS, process.env.CLAWSWEEPER_COMMENT_AUTHOR_LOGIN]
-    .filter((login): login is string => typeof login === "string" && login.length > 0)
-    .map((login) => login.toLowerCase()),
-);
-
 const githubContext = createGitHubContext({ ghJson, ghJsonEach, ghWithRetry, targetRepo });
 export const {
   ghPagedContextWindow,
@@ -332,31 +343,8 @@ export const {
   githubLinkLastPageNumber,
   githubPaginatedPath,
 } = githubContext;
-const { fetchReviewedPrActivityCursor, ghPaged, githubCount } = githubContext;
-
-const sourceRevisionTools = createSourceRevisionTools({
-  clawsweeperBotAuthors: CLAWSWEEPER_BOT_AUTHORS,
-  githubCount,
-  isClawSweeperComment: (value) => isClawSweeperComment(value),
-  normalizeAuthorAssociation,
-  normalizeLabelName,
-  pullHeadShaFromContext: (context) => pullHeadShaFromContext(context),
-});
-export const {
-  isExactEventSourceRevisionChange,
-  itemContentDigestForTest,
-  itemSourceRevisionSha256ForTest,
-  reviewCommentContentRevisionForTest,
-} = sourceRevisionTools;
-const {
-  isIgnorableSourceRevisionLabel,
-  itemContentDigest,
-  itemSnapshotHash,
-  itemSourceRevisionSha256,
-  pullCommitContentRevision,
-  reviewCommentBodyDigest,
-  reviewCommentContentRevision,
-} = sourceRevisionTools;
+const { fetchReviewedPrActivityCursor, ghPaged } = githubContext;
+export { isExactEventSourceRevisionChange };
 
 function reviewPolicyHash(
   options: { model?: string; sandboxMode?: string },
@@ -464,12 +452,8 @@ export const {
   sameAuthorCounterpartApplyReason,
   updateBulkFilerDetectedFrontMatterForTest,
 } = contextHydration;
-const {
-  completePullChecksContext,
-  isClawSweeperComment,
-  pullChecksContext,
-  structuralExternalRelationSensitivity,
-} = contextHydration;
+const { completePullChecksContext, pullChecksContext, structuralExternalRelationSensitivity } =
+  contextHydration;
 
 function ensureDir(path: string): void {
   mkdirSync(path, { recursive: true });
@@ -481,6 +465,7 @@ const reviewPlanning = createReviewPlanning({
   ghJson,
   ghJsonLines,
   ...githubContext,
+  githubCount,
   itemSourceRevisionSha256,
   normalizeAuthorAssociation,
   shouldPlanItem,
@@ -566,7 +551,11 @@ const { collectItemContext } = createItemContext({
   ...contextHydration,
   ...githubContext,
   ghJson,
-  ...sourceRevisionTools,
+  hydratedReviewStructuralItemStateDigest,
+  itemSourceRevisionSha256,
+  pullCommitContentRevision,
+  reviewCommentContentRevision,
+  reviewTimelineDigestParts,
 
   targetRepo,
 });
@@ -758,19 +747,11 @@ const { backfillReviewRecordsCommand } = createReviewRecordBackfill(reportOrches
 const labelMutations = createLabelMutationOperations({ ghJson, ghObservedMutationCommand });
 const labelSyncOperations = createLabelSyncOperations(labelMutations);
 
-const closeDecisionWorkflow = createCloseDecisionWorkflow({
-  targetRepo,
-  isMaintainerAuthorAssociation,
-  normalizeLabelName,
-  applyBlockingProtectedLabels,
-  applyProtectedLabelReason,
-});
-export const {
+export {
   staleVersionBugDecisionBlockReason,
   unsponsoredFeatureDecisionBlockReason,
   validateCloseDecision,
-} = closeDecisionWorkflow;
-const { hasUsableCloseComment, isImplementationCloseReason } = closeDecisionWorkflow;
+};
 
 const reviewCommentWorkflow = createReviewCommentWorkflow({
   root: ROOT,
@@ -968,7 +949,9 @@ const { applyDecisionsCommandInner } = createApplyDecisionWorkflow({
   ghJson,
   guardedOpenApplyProofFields,
   isBulkFilerExemptAuthorAssociation,
-  ...sourceRevisionTools,
+  isExactEventSourceRevisionChange,
+  itemSnapshotHash,
+  reviewCommentBodyDigest,
   isMaintainerAuthorAssociation,
   implementedOnMainPullRequestProvenanceApplyBlock,
   isVerifiedFixedCloseReason,

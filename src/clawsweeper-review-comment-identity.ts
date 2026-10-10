@@ -14,6 +14,12 @@ import { pullHeadShaFromReport } from "./clawsweeper-record-metadata.js";
 import { isIssueAdvisoryLabel } from "./clawsweeper-label-selection.js";
 import { reviewHistoryForStaleComment } from "./clawsweeper-report-comment-helpers.js";
 
+export function pullHeadShaFromContext(context: ItemContext): string | null {
+  const pull = asRecord(context.pullRequest);
+  const head = asRecord(pull.head);
+  const sha = head.sha;
+  return typeof sha === "string" && sha.trim() ? sha.trim() : null;
+}
 export function createReviewCommentIdentity(dependencies: ReviewCommentWorkflowDependencies) {
   const { githubCount, removeIssueLabel, isClawSweeperOwnedLabel } = dependencies;
 
@@ -23,13 +29,6 @@ export function createReviewCommentIdentity(dependencies: ReviewCommentWorkflowD
 
   function closeAppliedCommentMarker(number: number): string {
     return `<!-- clawsweeper-close-applied item=${number} -->`;
-  }
-
-  function pullHeadShaFromContext(context: ItemContext): string | null {
-    const pull = asRecord(context.pullRequest);
-    const head = asRecord(pull.head);
-    const sha = head.sha;
-    return typeof sha === "string" && sha.trim() ? sha.trim() : null;
   }
 
   function reviewStructuralPullStateFromContext(

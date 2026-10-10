@@ -3,9 +3,9 @@ import test from "node:test";
 
 import { reviewContentCacheHit } from "../dist/scheduler-policy.js";
 import {
-  itemContentDigestForTest,
-  reviewCommentContentRevisionForTest,
-} from "../dist/clawsweeper.js";
+  itemContentDigest,
+  reviewCommentContentRevision,
+} from "../dist/clawsweeper-source-revision.js";
 import { reviewReportCanPromoteToClose } from "../dist/clawsweeper-record-metadata.js";
 import { item } from "./helpers.ts";
 import { hydratePrimaryBody, longProofBody, sourceTools } from "./primary-body-fixture.ts";
@@ -39,8 +39,8 @@ for (const kind of ["issue", "pull_request"] as const) {
       sourceTools.itemSnapshotHash(after.target, after.context),
     );
     assert.notEqual(
-      itemContentDigestForTest(before.target, before.context),
-      itemContentDigestForTest(after.target, after.context),
+      itemContentDigest(before.target, before.context),
+      itemContentDigest(after.target, after.context),
     );
   });
 }
@@ -69,14 +69,14 @@ function issueContext(overrides = {}) {
 
 test("content digest is stable across bot-only context churn", () => {
   const pull = item({ kind: "pull_request", number: 200 });
-  const a = itemContentDigestForTest(
+  const a = itemContentDigest(
     pull,
     pullContext({
       timeline: [{ id: 1, event: "labeled", actor: "ClawSweeper[bot]" }],
       counts: { comments: 3, timeline: 1 },
     }),
   );
-  const b = itemContentDigestForTest(
+  const b = itemContentDigest(
     pull,
     pullContext({
       timeline: [
@@ -91,8 +91,8 @@ test("content digest is stable across bot-only context churn", () => {
 
 test("content digest busts when a human timeline event appears", () => {
   const pull = item({ kind: "pull_request", number: 200 });
-  const a = itemContentDigestForTest(pull, pullContext({ timeline: [] }));
-  const b = itemContentDigestForTest(
+  const a = itemContentDigest(pull, pullContext({ timeline: [] }));
+  const b = itemContentDigest(
     pull,
     pullContext({
       timeline: [{ id: 9, event: "reviewed", actor: "maintainer" }],
@@ -103,8 +103,8 @@ test("content digest busts when a human timeline event appears", () => {
 
 test("content digest ignores advisory-label timeline churn", () => {
   const issue = item({ kind: "issue", number: 300 });
-  const a = itemContentDigestForTest(issue, issueContext({ timeline: [] }));
-  const b = itemContentDigestForTest(
+  const a = itemContentDigest(issue, issueContext({ timeline: [] }));
+  const b = itemContentDigest(
     issue,
     issueContext({
       timeline: [{ id: 10, event: "labeled", actor: "github-actions[bot]", label: "P2" }],
@@ -115,15 +115,15 @@ test("content digest ignores advisory-label timeline churn", () => {
 
 test("content digest busts when the source revision changes", () => {
   const pull = item({ kind: "pull_request", number: 200 });
-  const a = itemContentDigestForTest(pull, pullContext());
-  const b = itemContentDigestForTest(pull, pullContext({ sourceRevision: "source-rev-2" }));
+  const a = itemContentDigest(pull, pullContext());
+  const b = itemContentDigest(pull, pullContext({ sourceRevision: "source-rev-2" }));
   assert.notEqual(a, b);
 });
 
 test("content digest busts when a diff patch byte changes", () => {
   const pull = item({ kind: "pull_request", number: 200 });
-  const a = itemContentDigestForTest(pull, pullContext());
-  const b = itemContentDigestForTest(
+  const a = itemContentDigest(pull, pullContext());
+  const b = itemContentDigest(
     pull,
     pullContext({
       pullFiles: [{ filename: "src/a.ts", status: "modified", patch: "@@ -1 +1 @@\n-old\n+newer" }],
@@ -135,11 +135,11 @@ test("content digest busts when a diff patch byte changes", () => {
 test("content digest uses the full commit-message revision", () => {
   const pull = item({ kind: "pull_request", number: 200 });
   const compactCommits = [{ author: "contributor", message: "x".repeat(1000) }];
-  const a = itemContentDigestForTest(
+  const a = itemContentDigest(
     pull,
     pullContext({ pullCommits: compactCommits, pullCommitsRevision: "a".repeat(64) }),
   );
-  const b = itemContentDigestForTest(
+  const b = itemContentDigest(
     pull,
     pullContext({ pullCommits: compactCommits, pullCommitsRevision: "b".repeat(64) }),
   );
@@ -149,8 +149,8 @@ test("content digest uses the full commit-message revision", () => {
 
 test("content digest busts when the PR head sha changes", () => {
   const pull = item({ kind: "pull_request", number: 200 });
-  const a = itemContentDigestForTest(pull, pullContext());
-  const b = itemContentDigestForTest(
+  const a = itemContentDigest(pull, pullContext());
+  const b = itemContentDigest(
     pull,
     pullContext({ pullRequest: { head: { sha: "head-sha-2" }, base: { sha: "base-sha-1" } } }),
   );
@@ -159,8 +159,8 @@ test("content digest busts when the PR head sha changes", () => {
 
 test("content digest busts when the PR base sha changes", () => {
   const pull = item({ kind: "pull_request", number: 200 });
-  const a = itemContentDigestForTest(pull, pullContext());
-  const b = itemContentDigestForTest(
+  const a = itemContentDigest(pull, pullContext());
+  const b = itemContentDigest(
     pull,
     pullContext({ pullRequest: { head: { sha: "head-sha-1" }, base: { sha: "base-sha-2" } } }),
   );
@@ -169,14 +169,14 @@ test("content digest busts when the PR base sha changes", () => {
 
 test("issue digest ignores pull-request-only fields", () => {
   const issue = item({ kind: "issue", number: 300 });
-  const a = itemContentDigestForTest(
+  const a = itemContentDigest(
     issue,
     issueContext({
       pullFiles: [{ filename: "x", patch: "one" }],
       pullRequest: { head: { sha: "h1" } },
     }),
   );
-  const b = itemContentDigestForTest(
+  const b = itemContentDigest(
     issue,
     issueContext({
       pullFiles: [{ filename: "y", patch: "two" }],
@@ -188,8 +188,8 @@ test("issue digest ignores pull-request-only fields", () => {
 
 test("issue digest busts when closing pull request context changes", () => {
   const issue = item({ kind: "issue", number: 300 });
-  const a = itemContentDigestForTest(issue, issueContext({ closingPullRequests: [] }));
-  const b = itemContentDigestForTest(
+  const a = itemContentDigest(issue, issueContext({ closingPullRequests: [] }));
+  const b = itemContentDigest(
     issue,
     issueContext({
       closingPullRequests: [{ number: 301, state: "open", head: { sha: "head-1" } }],
@@ -200,8 +200,8 @@ test("issue digest busts when closing pull request context changes", () => {
 
 test("content digest busts when related item context changes", () => {
   const pull = item({ kind: "pull_request", number: 200 });
-  const a = itemContentDigestForTest(pull, pullContext({ relatedItems: [] }));
-  const b = itemContentDigestForTest(
+  const a = itemContentDigest(pull, pullContext({ relatedItems: [] }));
+  const b = itemContentDigest(
     pull,
     pullContext({ relatedItems: [{ issue: { number: 199, state: "closed" } }] }),
   );
@@ -211,11 +211,11 @@ test("content digest busts when related item context changes", () => {
 test("content digest busts when the latest release changes", () => {
   const issue = item({ kind: "issue", number: 300 });
   const context = issueContext();
-  const a = itemContentDigestForTest(issue, context, {
+  const a = itemContentDigest(issue, context, {
     mainSha: "main-1",
     latestRelease: { tagName: "v1.0.0", sha: "release-1" },
   });
-  const b = itemContentDigestForTest(issue, context, {
+  const b = itemContentDigest(issue, context, {
     mainSha: "main-2",
     latestRelease: { tagName: "v1.1.0", sha: "release-2" },
   });
@@ -224,12 +224,12 @@ test("content digest busts when the latest release changes", () => {
 
 test("content digest distinguishes complete and unknown release state", () => {
   const issue = item({ kind: "issue", number: 300 });
-  const known = itemContentDigestForTest(issue, issueContext(), {
+  const known = itemContentDigest(issue, issueContext(), {
     mainSha: "main-sha",
     releaseStateComplete: true,
     latestRelease: null,
   });
-  const unknown = itemContentDigestForTest(issue, issueContext(), {
+  const unknown = itemContentDigest(issue, issueContext(), {
     mainSha: "main-sha",
     releaseStateComplete: false,
     latestRelease: null,
@@ -241,15 +241,15 @@ test("content digest distinguishes complete and unknown release state", () => {
 test("issue digest busts when target main changes", () => {
   const issue = item({ kind: "issue", number: 300 });
   const context = issueContext();
-  const a = itemContentDigestForTest(issue, context, { mainSha: "main-1" });
-  const b = itemContentDigestForTest(issue, context, { mainSha: "main-2" });
+  const a = itemContentDigest(issue, context, { mainSha: "main-1" });
+  const b = itemContentDigest(issue, context, { mainSha: "main-2" });
   assert.notEqual(a, b);
 });
 
 test("content digest busts when a human adds a PR review comment", () => {
   const pull = item({ kind: "pull_request", number: 200 });
-  const a = itemContentDigestForTest(pull, pullContext({ pullReviewComments: [] }));
-  const b = itemContentDigestForTest(
+  const a = itemContentDigest(pull, pullContext({ pullReviewComments: [] }));
+  const b = itemContentDigest(
     pull,
     pullContext({
       pullReviewComments: [
@@ -266,8 +266,8 @@ test("content digest busts when a human adds a PR review comment", () => {
 
 test("content digest ignores ClawSweeper's own PR review comments", () => {
   const pull = item({ kind: "pull_request", number: 200 });
-  const a = itemContentDigestForTest(pull, pullContext({ pullReviewComments: [] }));
-  const b = itemContentDigestForTest(
+  const a = itemContentDigest(pull, pullContext({ pullReviewComments: [] }));
+  const b = itemContentDigest(
     pull,
     pullContext({
       pullReviewComments: [
@@ -281,7 +281,7 @@ test("content digest ignores ClawSweeper's own PR review comments", () => {
 test("content digest ignores PR review comment timestamp churn", () => {
   const pull = item({ kind: "pull_request", number: 200 });
   const comment = { author: "maintainer", authorAssociation: "MEMBER", body: "Looks good to me." };
-  const a = itemContentDigestForTest(
+  const a = itemContentDigest(
     pull,
     pullContext({
       pullReviewComments: [
@@ -289,7 +289,7 @@ test("content digest ignores PR review comment timestamp churn", () => {
       ],
     }),
   );
-  const b = itemContentDigestForTest(
+  const b = itemContentDigest(
     pull,
     pullContext({
       pullReviewComments: [
@@ -302,7 +302,7 @@ test("content digest ignores PR review comment timestamp churn", () => {
 
 test("content digest busts when bounded PR check state changes", () => {
   const pull = item({ kind: "pull_request", number: 200 });
-  const passing = itemContentDigestForTest(
+  const passing = itemContentDigest(
     pull,
     pullContext({
       pullChecks: {
@@ -314,7 +314,7 @@ test("content digest busts when bounded PR check state changes", () => {
       },
     }),
   );
-  const failing = itemContentDigestForTest(
+  const failing = itemContentDigest(
     pull,
     pullContext({
       pullChecks: {
@@ -338,7 +338,7 @@ test("content digest ignores duplicate compacted PR check runs", () => {
     conclusion: "success",
     app: "github-actions",
   };
-  const once = itemContentDigestForTest(
+  const once = itemContentDigest(
     pull,
     pullContext({
       pullChecks: {
@@ -350,7 +350,7 @@ test("content digest ignores duplicate compacted PR check runs", () => {
       },
     }),
   );
-  const repeated = itemContentDigestForTest(
+  const repeated = itemContentDigest(
     pull,
     pullContext({
       pullChecks: {
@@ -375,7 +375,7 @@ test("content digest keeps check runs that differ only in name or app", () => {
     app: "github-actions",
   };
   const digest = (checkRuns) =>
-    itemContentDigestForTest(
+    itemContentDigest(
       pull,
       pullContext({
         pullChecks: {
@@ -406,7 +406,7 @@ test("content digest busts when one of several repeated check runs newly fails",
     app: "github-actions",
   };
   const digest = (checkRuns) =>
-    itemContentDigestForTest(
+    itemContentDigest(
       pull,
       pullContext({
         pullChecks: {
@@ -435,19 +435,16 @@ test("review comment revision covers comments outside the bounded prompt window"
   const changed = comments.map((comment, index) =>
     index === 40 ? { ...comment, body: "middle comment edited" } : comment,
   );
-  assert.notEqual(
-    reviewCommentContentRevisionForTest(comments),
-    reviewCommentContentRevisionForTest(changed),
-  );
+  assert.notEqual(reviewCommentContentRevision(comments), reviewCommentContentRevision(changed));
 });
 
 test("content digest uses the full review-comment revision", () => {
   const pull = item({ kind: "pull_request", number: 200 });
-  const a = itemContentDigestForTest(
+  const a = itemContentDigest(
     pull,
     pullContext({ pullReviewCommentsRevision: "review-comments-1" }),
   );
-  const b = itemContentDigestForTest(
+  const b = itemContentDigest(
     pull,
     pullContext({ pullReviewCommentsRevision: "review-comments-2" }),
   );
@@ -492,7 +489,7 @@ test("cache hits after an equivalent check run is repeated on an unchanged head"
     conclusion: "success",
     app: "github-actions",
   };
-  const priorDigest = itemContentDigestForTest(
+  const priorDigest = itemContentDigest(
     pull,
     pullContext({
       pullChecks: {
@@ -504,7 +501,7 @@ test("cache hits after an equivalent check run is repeated on an unchanged head"
       },
     }),
   );
-  const currentDigest = itemContentDigestForTest(
+  const currentDigest = itemContentDigest(
     pull,
     pullContext({
       pullChecks: {

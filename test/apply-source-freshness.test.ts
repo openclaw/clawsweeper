@@ -4,10 +4,8 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
 
-import {
-  itemSourceRevisionSha256ForTest,
-  renderReviewStartStatusComment,
-} from "../dist/clawsweeper.js";
+import { renderReviewStartStatusComment } from "../dist/clawsweeper.js";
+import { itemSourceRevisionSha256 } from "../dist/clawsweeper-source-revision.js";
 import {
   createApplySourceFreshness,
   OWNED_LEASE_RELEASE_RECEIPT_WINDOW_MS,
@@ -415,7 +413,7 @@ for (const scenario of [
           labels: "[]",
           pull_head_sha: head,
           item_updated_at: reviewSnapshotAt,
-          item_source_revision: itemSourceRevisionSha256ForTest(
+          item_source_revision: itemSourceRevisionSha256(
             { title, body: "Stale PR body.", labels: [] },
             [],
           ),

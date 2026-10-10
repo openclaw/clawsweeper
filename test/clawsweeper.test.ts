@@ -20,7 +20,6 @@ import {
   isGitHubNotFoundError,
   isGitHubRequiresAuthenticationError,
   isLockedConversationCommentError,
-  itemSourceRevisionSha256ForTest,
   itemNumbersArg,
   relatedGitHubIssueSearchQueryForTest,
   relatedTitleSearchTerms,
@@ -36,6 +35,7 @@ import {
   shouldRetryGh,
   timeoutWithinRuntimeBudget,
 } from "../dist/clawsweeper.js";
+import { itemSourceRevisionSha256 } from "../dist/clawsweeper-source-revision.js";
 import {
   applyDecisionPriority,
   shouldSyncReviewComment,
@@ -862,7 +862,7 @@ test("apply-decisions syncs labels when first review placeholder advanced issue 
       comments: 1,
       pull_request: null,
     };
-    const sourceRevision = itemSourceRevisionSha256ForTest(issue, []);
+    const sourceRevision = itemSourceRevisionSha256(issue, []);
     const report = workPlanCandidateReport({
       number: 321,
       reviewed_at: "2026-05-01T00:05:00Z",

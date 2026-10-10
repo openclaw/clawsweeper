@@ -65,7 +65,7 @@ function applyCloseDecision(
  */
 export function validateReportClose(
   dependencies: ApplyCloseDecisionDependencies,
-  item: Pick<Item, "kind" | "labels"> & Partial<Pick<Item, "repo" | "authorAssociation">>,
+  item: Pick<Item, "kind" | "labels" | "repo"> & Partial<Pick<Item, "authorAssociation">>,
   markdown: string,
   closeReason: CloseReason,
   options: { requireCloseComment: boolean },

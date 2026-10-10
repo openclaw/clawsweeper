@@ -2,13 +2,15 @@ import assert from "node:assert/strict";
 import { sha256 } from "../dist/content-hash.js";
 import { createContextHydration } from "../dist/clawsweeper-context-hydration.js";
 import { createItemContext } from "../dist/clawsweeper-item-context.js";
-import { createSourceRevisionTools } from "../dist/clawsweeper-source-revision.js";
+import * as sourceTools from "../dist/clawsweeper-source-revision.js";
+import { githubCount } from "../dist/clawsweeper-github-context.js";
+import { CLAWSWEEPER_BOT_AUTHORS } from "../dist/clawsweeper-review-comments.js";
+export { sourceTools };
 import {
   labelNames,
   normalizeAuthorAssociation,
   normalizeLabelName,
 } from "../dist/clawsweeper-item-policy.js";
-import { asRecord, login, stringOrUndefined } from "../dist/value-coerce.js";
 import type { PrimaryBodyContext } from "../dist/clawsweeper-primary-body.js";
 import type { Item, ItemKind } from "../dist/clawsweeper-types.js";
 import { item } from "./helpers.ts";
@@ -57,21 +59,6 @@ export function longProofBody(): string {
   appendAt(32000, `\`\`\`sh\n${scriptSentinel}\n`);
   return body.padEnd(60641, ".");
 }
-
-const githubCount = (value: unknown) => (typeof value === "number" ? value : null);
-const CLAWSWEEPER_BOT_AUTHORS = new Set(["clawsweeper[bot]"]);
-const isClawSweeperComment = (value: unknown) =>
-  CLAWSWEEPER_BOT_AUTHORS.has((login(asRecord(value).user) ?? "").toLowerCase());
-
-export const sourceTools = createSourceRevisionTools({
-  clawsweeperBotAuthors: CLAWSWEEPER_BOT_AUTHORS,
-  githubCount,
-  isClawSweeperComment,
-  normalizeAuthorAssociation,
-  normalizeLabelName,
-  pullHeadShaFromContext: (context) =>
-    stringOrUndefined(asRecord(asRecord(context.pullRequest).head).sha) ?? null,
-});
 
 function unavailable(): never {
   throw new Error("Unexpected dependency: this fixture must not use external capabilities");

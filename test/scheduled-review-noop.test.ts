@@ -4,7 +4,7 @@ import {
   classifyScheduledReviewNoop,
   scheduledReviewSemanticSourceRevision,
 } from "../dist/scheduled-review-noop.js";
-import { itemSourceRevisionSha256ForTest } from "../dist/clawsweeper.js";
+import { itemSourceRevisionSha256 } from "../dist/clawsweeper-source-revision.js";
 
 const issue = {
   number: 41,
@@ -66,7 +66,7 @@ test("claim-time semantic identity matches the review runtime", () => {
   const current = fixture();
   assert.equal(
     scheduledReviewSemanticSourceRevision(current.issue, current.comments),
-    itemSourceRevisionSha256ForTest(current.issue, current.comments),
+    itemSourceRevisionSha256(current.issue, current.comments),
   );
 });
 test("claim-time classifier preserves human and mixed source changes", () => {

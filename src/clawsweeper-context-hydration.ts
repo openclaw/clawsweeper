@@ -60,7 +60,7 @@ export function reviewTreeMetadataArgs(path: string): string[] {
 }
 
 interface CreateContextHydrationDependencies {
-  CLAWSWEEPER_BOT_AUTHORS: Set<string>;
+  CLAWSWEEPER_BOT_AUTHORS: ReadonlySet<string>;
   defaultClosedDir: (profile?: RepositoryProfile) => string;
   defaultItemsDir: (profile?: RepositoryProfile) => string;
   displayTitle: (title: string) => string;
