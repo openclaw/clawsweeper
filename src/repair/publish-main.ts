@@ -226,19 +226,21 @@ function planCanonicalRecordTuples(
     const match = RECORD_TUPLE_PATH.exec(path);
     return Boolean(match?.[1] && match[3] && capturedKeys.has(`${match[1]}/${match[3]}`));
   };
-  const localFiles = new Map(
-    [...collectRequestedRecordFiles(root, recordRequests)].filter(([path]) => includeFile(path)),
-  );
-  const stateFiles = new Map(
-    [...collectRequestedRecordFiles(stateRoot, recordRequests)].filter(([path]) =>
-      includeFile(path),
-    ),
-  );
-  const changedPaths = new Set(
-    [...new Set([...localFiles.keys(), ...stateFiles.keys()])].filter(
-      (path) => localFiles.get(path) !== stateFiles.get(path),
-    ),
-  );
+  // Compare one file pair at a time and keep only changed paths: a whole
+  // records/<repo> request spans the repository, too large to hold twice.
+  const localPaths = collectRequestedRecordPaths(root, recordRequests);
+  const statePaths = collectRequestedRecordPaths(stateRoot, recordRequests);
+  const changedPaths = new Set<string>();
+  for (const path of new Set([...localPaths, ...statePaths])) {
+    if (!includeFile(path)) continue;
+    if (
+      !localPaths.has(path) ||
+      !statePaths.has(path) ||
+      readContainedRegularFile(root, path) !== readContainedRegularFile(stateRoot, path)
+    ) {
+      changedPaths.add(path);
+    }
+  }
   const changedTupleKeys = new Set<string>();
   for (const path of changedPaths) {
     const match = RECORD_TUPLE_PATH.exec(path);
@@ -253,10 +255,8 @@ function planCanonicalRecordTuples(
       const [repository, number] = key.split("/");
       if (!repository || !number) throw new Error(`invalid canonical tuple key: ${key}`);
       const paths = recordTuplePaths({ repository, number });
-      const localContent = (path: string) =>
-        localFiles.has(path) ? localFiles.get(path)! : readOptionalRecordFile(root, path);
-      const stateContent = (path: string) =>
-        stateFiles.has(path) ? stateFiles.get(path)! : readOptionalRecordFile(stateRoot, path);
+      const localContent = (path: string) => readOptionalRecordFile(root, path);
+      const stateContent = (path: string) => readOptionalRecordFile(stateRoot, path);
       const tuple: RecordTupleContents = {
         paths,
         item: localContent(paths.item),
@@ -812,6 +812,14 @@ function readOptionalRecordFile(root: string, path: string): string | null {
   return readContainedRegularFile(root, path);
 }
 
+function collectRequestedRecordPaths(root: string, requestedPaths: readonly string[]) {
+  const paths = new Set<string>();
+  for (const requestedPath of requestedPaths) {
+    visitRecordFiles(root, normalizedPath(requestedPath), (path) => paths.add(path));
+  }
+  return paths;
+}
+
 function collectRequestedRecordFiles(root: string, requestedPaths: readonly string[]) {
   const files = new Map<string, string>();
   for (const requestedPath of requestedPaths) {
@@ -821,19 +829,25 @@ function collectRequestedRecordFiles(root: string, requestedPaths: readonly stri
 }
 
 function collectRecordFiles(root: string, relativePath: string, files: Map<string, string>): void {
+  visitRecordFiles(root, relativePath, (path) =>
+    files.set(path, readContainedRegularFile(root, path)),
+  );
+}
+
+function visitRecordFiles(root: string, relativePath: string, visit: (path: string) => void) {
   const absolute = resolve(root, relativePath);
   if (!existsSync(absolute)) return;
   const stat = lstatSync(absolute);
   if (stat.isSymbolicLink())
     throw new Error(`record publication path is symbolic: ${relativePath}`);
   if (stat.isFile()) {
-    files.set(relativePath, readContainedRegularFile(root, relativePath));
+    visit(relativePath);
     return;
   }
   if (!stat.isDirectory())
     throw new Error(`record publication path is not regular: ${relativePath}`);
   for (const entry of readdirSync(absolute, { withFileTypes: true })) {
-    collectRecordFiles(root, `${relativePath}/${entry.name}`, files);
+    visitRecordFiles(root, `${relativePath}/${entry.name}`, visit);
   }
 }
 

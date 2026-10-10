@@ -58,6 +58,47 @@ test("publish-main appends changed record tuples canonically and never invokes g
   ]);
 });
 
+test("publish-main posts only the tuples whose files differ across a whole-repository request", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-canonical-record-source-"));
+  const stateRoot = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-canonical-record-state-"));
+  const item = (number: number, body: string) =>
+    `---\nrepo: openclaw/openclaw\nnumber: ${number}\nreviewed_at: 2026-07-26T01:00:00.000Z\n---\n\n${body}\n`;
+  for (let number = 1; number <= 30; number += 1) {
+    writeText(stateRoot, `${tupleRoot}/items/${number}.md`, item(number, "unchanged"));
+    writeText(root, `${tupleRoot}/items/${number}.md`, item(number, "unchanged"));
+  }
+  writeText(stateRoot, `${tupleRoot}/items/31.md`, item(31, "before"));
+  writeText(root, `${tupleRoot}/items/31.md`, item(31, "after"));
+  // An apply checkpoint moves a closed item from items/ to closed/.
+  writeText(stateRoot, `${tupleRoot}/items/32.md`, item(32, "open"));
+  writeText(root, `${tupleRoot}/closed/32.md`, item(32, "closed"));
+  writeText(root, `${tupleRoot}/items/33.md`, item(33, "new"));
+  const posted: string[] = [];
+
+  const result = await publishMainWithStateAppend(
+    { message: "chore: apply sweep decisions checkpoint 1", paths: [tupleRoot] },
+    {
+      root,
+      env: appendEnv({ CLAWSWEEPER_STATE_DIR: stateRoot }),
+      fetchImpl: (async (_input: string | URL | Request, init?: RequestInit) => {
+        posted.push(String(JSON.parse(String(init?.body ?? "")).key));
+        return Response.json(
+          { ok: true, accepted: true, deduped: false, revision: 7, sequence: 11 },
+          { status: 202 },
+        );
+      }) as typeof fetch,
+      publishGit: capturePublishes([]),
+    },
+  );
+
+  assert.equal(result, "appended");
+  assert.deepEqual(posted.sort(), [
+    "openclaw-openclaw/31",
+    "openclaw-openclaw/32",
+    "openclaw-openclaw/33",
+  ]);
+});
+
 test("publish-main retries transient tuple failures with the same delivery and bounded backoff", async (t) => {
   for (const failure of [
     () => Response.json({ error: "exact_review_queue_unavailable" }, { status: 500 }),

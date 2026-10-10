@@ -1,0 +1,1 @@
+- Compare record trees one file pair at a time when publishing a whole repository's records, so apply checkpoints no longer exhaust the heap by holding the working tree and the hydrated state tree in memory at once.
