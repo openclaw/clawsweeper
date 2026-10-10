@@ -15,15 +15,13 @@ import type {
   GitHubRetryOptions,
   MutationRunner,
 } from "./clawsweeper-types.js";
-import {
-  GitHubOperationDeadlineError,
-  type createGitHubRuntime,
-} from "./clawsweeper-github-runtime.js";
+import { GitHubOperationDeadlineError } from "./clawsweeper-github-runtime.js";
+import type * as GitHubRuntime from "./clawsweeper-github-runtime.js";
 import { labelAlreadyExistsError } from "./clawsweeper-label-mutations.js";
 
 interface CreateGitHubExecutionDependencies {
   ROOT: string;
-  gitHubRuntime: ReturnType<typeof createGitHubRuntime>;
+  gitHubRuntime: typeof GitHubRuntime;
 }
 
 export function createGitHubExecution(dependencies: CreateGitHubExecutionDependencies) {

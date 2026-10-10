@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 import { createHash, createHmac } from "node:crypto";
-import test from "node:test";
+import { writeFileSync } from "node:fs";
+import {
+  githubTest as test,
+  installEtagBroker,
+  installGhFixture,
+} from "./github-runtime-fixture.ts";
 
 import {
   GITHUB_ETAG_CACHE_MAX_BODY_BYTES,
@@ -10,7 +15,7 @@ import {
   GithubEtagResponseStore,
 } from "../dashboard/github-etag-cache.ts";
 import worker, { GithubEtagCache, githubJsonForTest } from "../dashboard/worker.ts";
-import { createGitHubRuntime } from "../dist/clawsweeper-github-runtime.js";
+import * as runtime from "../dist/clawsweeper-github-runtime.js";
 import {
   githubEtagCacheKey,
   githubEtagCacheRequestBody,
@@ -54,7 +59,7 @@ test("ETag keys fence credential pool, media type, query, and page", () => {
   assert.equal(page2.route, "/repos/openclaw/openclaw/issues/42/comments?page=2&per_page=100");
 });
 
-test("projected GitHub reads bypass the durable ETag broker", () => {
+test("projected GitHub reads bypass the durable ETag broker", (t) => {
   const keys = ["EXACT_EVENT_PUBLICATION", "EXACT_REVIEW_QUEUE_URL", "CLAWSWEEPER_WEBHOOK_SECRET"];
   const previous = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
   Object.assign(process.env, {
@@ -62,15 +67,7 @@ test("projected GitHub reads bypass the durable ETag broker", () => {
     EXACT_REVIEW_QUEUE_URL: "http://127.0.0.1:9",
     CLAWSWEEPER_WEBHOOK_SECRET: "etag-broker-secret-placeholder",
   });
-  const invocations: string[][] = [];
-  const runtime = createGitHubRuntime({
-    ROOT: process.cwd(),
-    targetRepo: () => "openclaw/openclaw",
-    run: (_command, args) => {
-      invocations.push(args);
-      return JSON.stringify({ projected: true });
-    },
-  });
+  const fixture = installGhFixture(t, "process.stdout.write(JSON.stringify({ projected: true }));");
   const route = "/repos/openclaw/openclaw/pulls/1234";
   const projections = [
     ["--jq", "{body}"],
@@ -95,7 +92,7 @@ test("projected GitHub reads bypass the durable ETag broker", () => {
       );
     }
     assert.deepEqual(
-      invocations,
+      fixture.requests().map(({ args }) => args),
       projections.map((projection) => ["api", route, ...projection]),
     );
   } finally {
@@ -104,6 +101,59 @@ test("projected GitHub reads bypass the durable ETag broker", () => {
       else process.env[key] = value;
     }
   }
+});
+
+test("runtime ETags revalidate through gh and keep retained bodies scoped to one run", async (t) => {
+  const previous = {
+    GH_TOKEN: process.env.GH_TOKEN,
+    GITHUB_TOKEN: process.env.GITHUB_TOKEN,
+    CLAWSWEEPER_PUBLIC_GH_TOKEN: process.env.CLAWSWEEPER_PUBLIC_GH_TOKEN,
+    EXACT_EVENT_PUBLICATION: process.env.EXACT_EVENT_PUBLICATION,
+  };
+  process.env.GH_TOKEN = "synthetic-app";
+  delete process.env.GITHUB_TOKEN;
+  delete process.env.CLAWSWEEPER_PUBLIC_GH_TOKEN;
+  process.env.EXACT_EVENT_PUBLICATION = "true";
+  t.after(() => {
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  });
+  const gh = installGhFixture(
+    t,
+    `
+    const version = state.version || 1;
+    const etag = '"resource-v' + version + '"';
+    const conditional = args.includes("If-None-Match: " + etag);
+    process.stdout.write(conditional
+      ? "HTTP/2 304 Not Modified\\nEtag: " + etag + "\\n\\n"
+      : "HTTP/2 200 OK\\nEtag: " + etag + "\\n\\n" + JSON.stringify({ version }));
+  `,
+  );
+  const brokerRequests = await installEtagBroker(t, gh.root);
+  const args = ["api", "repos/openclaw/openclaw/pulls/42"];
+  assert.deepEqual(JSON.parse(runtime.gh(args)), { version: 1 });
+  assert.deepEqual(JSON.parse(runtime.gh(args)), { version: 1 });
+  assert.deepEqual(
+    brokerRequests().map(({ operation }) => operation),
+    ["lookup", "store"],
+  );
+  assert.ok(gh.requests()[1]?.args.includes('If-None-Match: "resource-v1"'));
+  writeFileSync(gh.statePath, JSON.stringify({ version: 2 }));
+  assert.deepEqual(JSON.parse(runtime.gh(args)), { version: 2 });
+  assert.deepEqual(
+    brokerRequests().map(({ operation }) => operation),
+    ["lookup", "store", "store"],
+  );
+  runtime.withGitHubRun(() => {
+    assert.deepEqual(JSON.parse(runtime.gh(args)), { version: 2 });
+  });
+  assert.deepEqual(
+    brokerRequests().map(({ operation }) => operation),
+    ["lookup", "store", "store", "lookup", "confirm"],
+  );
+  assert.equal(gh.requests().length, 4, "every read makes a live conditional request");
 });
 
 test("durable broker revalidates every read and keeps wire calls while avoiding quota charges", () => {

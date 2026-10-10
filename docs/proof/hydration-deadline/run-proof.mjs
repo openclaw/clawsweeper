@@ -295,15 +295,20 @@ async function main() {
     const load = (name) => import(pathToFileURL(join(root, "dist", `${name}.js`)).href);
     const [
       { createContextHydration },
-      { createGitHubRuntime },
+      gitHubRuntime,
       { createGitHubExecution },
-      { runText, SWEEPER_COMMAND_MAX_BUFFER_BYTES, resolveCommand },
+      { resolveCommand },
     ] = await Promise.all([
       load("clawsweeper-context-hydration"),
       load("clawsweeper-github-runtime"),
       load("clawsweeper-github-execution"),
       load("command"),
     ]);
+    const { GitHubRuntimeBudgetError, githubCommandTimeoutMs, withGitHubRun } = gitHubRuntime;
+    const { ghJson, ghJsonOnce } = createGitHubExecution({
+      ROOT: target,
+      gitHubRuntime,
+    });
     const resolvedGh = resolveCommand("gh", ["api"], process.env);
     assert.equal(resolvedGh.command, process.execPath);
     assert.deepEqual(resolvedGh.args.slice(0, 3), [self, "--fake-gh", payloadPath]);
@@ -314,40 +319,6 @@ async function main() {
         requestEvents,
         `${JSON.stringify({ event, atMs: Date.now(), elapsedMs: Date.now() - startedAtMs, ...data })}\n`,
       );
-    const runtime = createGitHubRuntime({
-      ROOT: target,
-      targetRepo: () => "fixture/repository",
-      run(command, args, options = {}) {
-        assert.equal(command, "gh");
-        record("request_start", { args, timeoutMs: options.timeoutMs ?? null });
-        try {
-          const value = runText(command, args, {
-            cwd: options.cwd ?? target,
-            env: options.env,
-            maxBuffer: SWEEPER_COMMAND_MAX_BUFFER_BYTES,
-            stdio: ["ignore", "pipe", "pipe"],
-            timeoutMs: options.timeoutMs,
-            trim: "both",
-          });
-          record("request_complete");
-          return value;
-        } catch (error) {
-          record("request_error", {
-            name: error.name,
-            code: error.code ?? null,
-            pid: error.pid ?? null,
-            status: error.status ?? null,
-            signal: error.signal ?? null,
-          });
-          throw error;
-        }
-      },
-    });
-    const execution = createGitHubExecution({
-      ROOT: target,
-      gitHubRuntime: runtime,
-      labelAlreadyExistsError: () => false,
-    });
     const context = createContextHydration(
       new Proxy(
         {
@@ -359,10 +330,27 @@ async function main() {
           targetRepo: () => "fixture/repository",
           ghJson: (args, options) => {
             record("metadata_admission", { args, deadlineAt: options?.deadlineAt ?? null });
-            return execution.ghJson(args, options);
+            record("request_start", {
+              args,
+              timeoutMs: githubCommandTimeoutMs(undefined, options?.deadlineAt),
+            });
+            try {
+              const value = ghJson(args, options);
+              record("request_complete");
+              return value;
+            } catch (error) {
+              record("request_error", {
+                name: error.name,
+                code: error.code ?? null,
+                pid: error.pid ?? null,
+                status: error.status ?? null,
+                signal: error.signal ?? null,
+              });
+              throw error;
+            }
           },
-          ghJsonOnce: execution.ghJsonOnce,
-          GitHubRuntimeBudgetError: runtime.GitHubRuntimeBudgetError,
+          ghJsonOnce,
+          GitHubRuntimeBudgetError,
         },
         {
           get: (object, key) =>
@@ -375,11 +363,11 @@ async function main() {
     );
     const traceOffset = lines(gitTrace).length;
     try {
-      context.hydratePullRequestReviewSource({
+      withGitHubRun(() => context.hydratePullRequestReviewSource({
         itemNumber: 982,
         targetDir: target,
         pullRequest: { base: { ref: "main", sha: baseSha }, head: { sha: headSha } },
-      });
+      }));
       report.refusal = null;
     } catch (error) {
       report.refusal = {

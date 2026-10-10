@@ -1,0 +1,1 @@
+- Remove the CLI's GitHub runtime factory and isolate GitHub retry budgets, credential reservations and retained ETag responses to each command invocation, including asynchronous continuations.

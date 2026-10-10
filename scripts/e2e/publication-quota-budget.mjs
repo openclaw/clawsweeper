@@ -3,10 +3,10 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { execFileSync, spawn } from "node:child_process";
 import { createServer } from "node:http";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { stripTypeScriptTypes } from "node:module";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { delimiter, dirname, join, posix, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 const script = fileURLToPath(import.meta.url);
@@ -23,55 +23,51 @@ if (process.argv[2] === "transport") {
     process.exitCode = 1;
   }
 } else if (process.argv[2] === "member") {
-  const { createGitHubRuntime } = await import(pathToFileURL(process.argv[3]));
-  const { createGitHubExecution } = await import("../../dist/clawsweeper-github-execution.js");
-  const runtime = createGitHubRuntime({
-    ROOT: process.cwd(),
-    targetRepo: () => "openclaw/openclaw",
-    run: (_command, args, options) => {
-      try {
-        return execFileSync(
-          process.execPath,
-          [script, "transport", process.env.PROOF_URL, ...args],
-          {
-            env: { ...process.env, ...options?.env },
-            encoding: "utf8",
-            timeout: 10_000,
-            stdio: ["ignore", "pipe", "pipe"],
-          },
-        );
-      } catch (error) {
-        throw new Error(String(error.stderr || error.message), { cause: error });
-      }
-    },
-  });
+  const runtimeModule = await import(pathToFileURL(process.argv[3]));
+  const { createGitHubExecution } = await import(pathToFileURL(process.argv[4]));
+  const historical = process.argv[5] === "--baseline";
+  let runtime = runtimeModule;
+  if (historical) {
+    // Only the archived baseline uses the historical runtime factory contract.
+    const { runText } = await import(new URL("./command.js", pathToFileURL(process.argv[3])));
+    runtime = runtimeModule.createGitHubRuntime({
+      ROOT: process.cwd(),
+      targetRepo: () => "openclaw/openclaw",
+      run: runText,
+    });
+  } else {
+    const { setTargetRepo } = await import("../../dist/repository-profiles.js");
+    setTargetRepo("openclaw/openclaw");
+  }
   const execution = createGitHubExecution({
     ROOT: process.cwd(),
     gitHubRuntime: runtime,
     labelAlreadyExistsError: () => false,
   });
-  try {
-    const item = execution.ghJson(["api", "repos/openclaw/openclaw/issues/123"]);
-    const comments = execution.ghJson(["api", "repos/openclaw/openclaw/issues/123/comments"]);
-    process.stdout.write(JSON.stringify({ kind: "fresh", item, comments }));
-  } catch (error) {
-    if (error.name !== "GitHubRateLimitError") throw error;
-    process.stdout.write(
-      JSON.stringify({ kind: "deferred", scope: error.scope, retryAt: error.retryAt }),
-    );
-  }
+  const publish = () => {
+    try {
+      const item = execution.ghJson(["api", "repos/openclaw/openclaw/issues/123"]);
+      const comments = execution.ghJson(["api", "repos/openclaw/openclaw/issues/123/comments"]);
+      process.stdout.write(JSON.stringify({ kind: "fresh", item, comments }));
+    } catch (error) {
+      if (error.name !== "GitHubRateLimitError") throw error;
+      process.stdout.write(
+        JSON.stringify({ kind: "deferred", scope: error.scope, retryAt: error.retryAt }),
+      );
+    }
+  };
+  if (historical) publish();
+  else runtimeModule.withGitHubRun(publish);
 } else {
   const requestedBase =
     process.argv[2] === "--base" ? process.argv[3] : "74df933aeed3f01eddcf027150f1484fdcb57904";
   const base = execFileSync("git", ["rev-parse", requestedBase], { encoding: "utf8" }).trim();
-  const baselinePath = resolve("dist/clawsweeper-github-runtime-budget-baseline.js");
-  const source = execFileSync("git", ["show", `${base}:src/clawsweeper-github-runtime.ts`], {
-    encoding: "utf8",
-  });
-  writeFileSync(baselinePath, stripTypeScriptTypes(source, { mode: "transform" }));
+  const baselineRoot = mkdtempSync(resolve("dist/.publication-quota-baseline-"));
   try {
-    const baseline = await scenario(baselinePath);
-    const fixed = await scenario(resolve("dist/clawsweeper-github-runtime.js"));
+    // Preserve the historical dependency contracts as well as its runtime.
+    archiveBaseline(base, baselineRoot);
+    const baseline = await scenario(baselineRoot, true);
+    const fixed = await scenario(resolve("dist"));
     assert.deepEqual(fixed.outcomes, baseline.outcomes);
     assert.equal(baseline.beforeReset.total, 11);
     assert.equal(fixed.beforeReset.total, 3);
@@ -106,13 +102,19 @@ if (process.argv[2] === "transport") {
       ),
     );
   } finally {
-    rmSync(baselinePath, { force: true });
+    rmSync(baselineRoot, { recursive: true, force: true });
   }
 }
 
-async function scenario(runtimePath) {
+async function scenario(moduleRoot, historical = false) {
   const root = mkdtempSync(join(tmpdir(), "publication-quota-proof-"));
   const observations = join(root, "observations.jsonl");
+  const ghPath = join(root, "gh");
+  writeFileSync(
+    ghPath,
+    `#!${process.execPath}\nprocess.argv.splice(1, 1, ${JSON.stringify(script)}, "transport", process.env.PROOF_URL);\nimport(${JSON.stringify(pathToFileURL(script).href)});\n`,
+    { mode: 0o755 },
+  );
   let exhausted = true;
   const reset = Math.floor(Date.now() / 1000) + 600;
   const requests = [];
@@ -137,7 +139,8 @@ async function scenario(runtimePath) {
   });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   const env = {
-    PATH: process.env.PATH,
+    PATH: `${root}${delimiter}${process.env.PATH ?? ""}`,
+    GH_BIN: ghPath,
     PROOF_URL: `http://127.0.0.1:${server.address().port}`,
     EXACT_EVENT_PUBLICATION: "true",
     GH_TOKEN: "synthetic-app",
@@ -147,7 +150,7 @@ async function scenario(runtimePath) {
   };
   try {
     const members = [];
-    for (let index = 0; index < 8; index++) members.push(await member(runtimePath, env));
+    for (let index = 0; index < 8; index++) members.push(await member(moduleRoot, env, historical));
     const beforeReset = {
       total: requests.length,
       publicReads: requests.filter(
@@ -169,7 +172,7 @@ async function scenario(runtimePath) {
         .join("\n") + "\n",
     );
     exhausted = false;
-    const afterReset = await member(runtimePath, env);
+    const afterReset = await member(moduleRoot, env, historical);
     return {
       outcomes: members.map(({ kind, scope }) => ({ kind, scope })),
       beforeReset,
@@ -185,12 +188,19 @@ async function scenario(runtimePath) {
   }
 }
 
-function member(runtimePath, env) {
+function member(moduleRoot, env, historical) {
   return new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, [script, "member", runtimePath], {
-      env,
-      stdio: ["ignore", "pipe", "pipe"],
-    });
+    const child = spawn(
+      process.execPath,
+      [
+        script,
+        "member",
+        join(moduleRoot, "clawsweeper-github-runtime.js"),
+        join(moduleRoot, "clawsweeper-github-execution.js"),
+        ...(historical ? ["--baseline"] : []),
+      ],
+      { env, stdio: ["ignore", "pipe", "pipe"] },
+    );
     let stdout = "";
     let stderr = "";
     const timeout = setTimeout(() => child.kill("SIGKILL"), 30_000);
@@ -211,4 +221,28 @@ function member(runtimePath, env) {
       }
     });
   });
+}
+
+function archiveBaseline(base, outputRoot) {
+  const archived = new Set();
+  const archive = (modulePath) => {
+    if (archived.has(modulePath)) return;
+    archived.add(modulePath);
+    const sourcePath = modulePath.endsWith(".js") ? modulePath.replace(/\.js$/, ".ts") : modulePath;
+    const source = execFileSync("git", ["show", `${base}:src/${sourcePath}`], {
+      encoding: "utf8",
+    });
+    const compiled = sourcePath.endsWith(".ts")
+      ? stripTypeScriptTypes(source, { mode: "transform" })
+      : source;
+    const destination = join(outputRoot, modulePath);
+    mkdirSync(dirname(destination), { recursive: true });
+    writeFileSync(destination, compiled);
+    // Follow runtime imports after type erasure without rewriting baseline code.
+    for (const match of compiled.matchAll(/\b(?:from\s*|import\s*)["'](\.[^"']+)["']/g)) {
+      archive(posix.normalize(posix.join(posix.dirname(modulePath), match[1])));
+    }
+  };
+  archive("clawsweeper-github-runtime.js");
+  archive("clawsweeper-github-execution.js");
 }

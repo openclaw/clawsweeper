@@ -33,7 +33,7 @@ import {
 import { agentInputScanFailureExitCode, MAX_SCAN_BYTES } from "../dist/agent-input-scan.js";
 import { writeExactReviewFailureDiagnostics } from "../dist/clawsweeper-review-failure-diagnostics.js";
 import { createContextHydration } from "../dist/clawsweeper-context-hydration.js";
-import { createGitHubRuntime } from "../dist/clawsweeper-github-runtime.js";
+import * as gitHubRuntime from "../dist/clawsweeper-github-runtime.js";
 import { createGitHubExecution } from "../dist/clawsweeper-github-execution.js";
 import { createReviewRuntime } from "../dist/clawsweeper-review-runtime.js";
 import { main, reviewPolicyHashForTest } from "../dist/clawsweeper-runtime.js";
@@ -42,6 +42,12 @@ import { readReviewGit, reviewMergeBase } from "../dist/pr-review-evidence.js";
 import { ReviewSourcePreparationError } from "../dist/review-source-preparation.js";
 import { validationRecoveryRequired } from "../dist/repair/validation-recovery.js";
 import { withMockGh } from "./helpers.ts";
+
+const { ghOnce, withGitHubRun } = gitHubRuntime;
+const { ghJson, ghJsonOnce } = createGitHubExecution({
+  ROOT: process.cwd(),
+  gitHubRuntime,
+});
 
 function git(cwd: string, ...args: string[]): string {
   return execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
@@ -2442,64 +2448,65 @@ test("blob retry reuses installed objects after a transient partial fetch", (t) 
 test("introduced blob hydration does not start metadata work after its deadline", (t) => {
   const fixture = partialCloneFixture();
   const startedAt = Date.now();
-  let now = startedAt;
-  const requests: Array<{ revision: string; elapsedMs: number }> = [];
+  const requestsPath = join(fixture.root, "requests.json");
   const unavailable = () => {
     throw new Error("Unexpected dependency in hydration deadline fixture");
   };
-  const runtime = createGitHubRuntime({
-    ROOT: fixture.root,
-    targetRepo: () => "fixture/repository",
-    run: (command, args) => {
-      assert.equal(command, "gh");
-      assert.equal(args[0], "api");
-      const revision = args[1]?.match(/\/git\/trees\/([0-9a-f]+)\?recursive=1$/)?.[1];
-      assert.ok(revision);
-      requests.push({ revision, elapsedMs: now - startedAt });
-      const tree = git(fixture.source, "ls-tree", "-r", "-l", revision)
-        .split("\n")
-        .filter(Boolean)
-        .map((line) => {
-          const match = line.match(/^\d+ (\w+) ([0-9a-f]+)\s+(-|\d+)\t/);
-          assert.ok(match);
-          return match[1] === "blob"
-            ? { type: "blob", sha: match[2], size: Number(match[3]) }
-            : { type: match[1], sha: match[2] };
-        });
-      now = startedAt + 30_001;
-      return JSON.stringify({ truncated: false, tree });
-    },
-  });
-  const execution = createGitHubExecution({
-    ROOT: fixture.root,
-    gitHubRuntime: runtime,
-    labelAlreadyExistsError: () => false,
-  });
+  const ghScript = `const assert = require("node:assert/strict");
+const { execFileSync } = require("node:child_process");
+const { appendFileSync } = require("node:fs");
+const args = process.argv.slice(2);
+assert.equal(args[0], "api");
+const revision = args[1]?.match(/\\/git\\/trees\\/([0-9a-f]+)\\?recursive=1$/)?.[1];
+assert.ok(revision);
+const tree = execFileSync("git", ["ls-tree", "-r", "-l", revision], {
+  cwd: ${JSON.stringify(fixture.source)}, encoding: "utf8",
+}).trim().split("\\n").filter(Boolean).map((line) => {
+  const match = line.match(/^\\d+ (\\w+) ([0-9a-f]+)\\s+(-|\\d+)\\t/);
+  assert.ok(match);
+  return match[1] === "blob"
+    ? { type: "blob", sha: match[2], size: Number(match[3]) }
+    : { type: match[1], sha: match[2] };
+});
+appendFileSync(${JSON.stringify(requestsPath)}, JSON.stringify({ revision, elapsedMs: 0 }) + "\\n");
+process.stdout.write(JSON.stringify({ truncated: false, tree }));
+`;
   const context = createContextHydration(
     new Proxy(
       {
         isSafeGitBranchName: (branch: string) => branch === "main",
         targetRepo: () => "fixture/repository",
-        ghJson: execution.ghJson,
-        ghJsonOnce: execution.ghJsonOnce,
+        ghJson,
+        ghJsonOnce,
       },
       { get: (target, key) => Reflect.get(target, key) ?? unavailable },
     ) as Parameters<typeof createContextHydration>[0],
   );
   try {
-    t.mock.method(Date, "now", () => now);
-    assert.throws(
-      () =>
-        context.hydratePullRequestReviewSource({
-          itemNumber: 982,
-          targetDir: fixture.target,
-          pullRequest: {
-            base: { ref: "main", sha: fixture.baseSha },
-            head: { sha: fixture.headSha },
-          },
-        }),
-      { name: "AgentInputScanError", reason: "deadline", retryable: false },
+    t.mock.method(Date, "now", () => (existsSync(requestsPath) ? startedAt + 30_001 : startedAt));
+    withMockGh(fixture.root, ghScript, () =>
+      withGitHubRun(() => {
+        assert.throws(
+          () =>
+            context.hydratePullRequestReviewSource({
+              itemNumber: 982,
+              targetDir: fixture.target,
+              pullRequest: {
+                base: { ref: "main", sha: fixture.baseSha },
+                head: { sha: fixture.headSha },
+              },
+            }),
+          { name: "AgentInputScanError", reason: "deadline", retryable: false },
+        );
+      }),
     );
+    const requests: Array<{ revision: string; elapsedMs: number }> = readFileSync(
+      requestsPath,
+      "utf8",
+    )
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
     const addedBlobStillMissing = !objectExistsOffline(fixture.target, fixture.addedBlobSha);
     t.diagnostic(JSON.stringify({ requests, addedBlobStillMissing }));
     assert.deepEqual(
@@ -2705,17 +2712,12 @@ test("review checkout preserves large tree metadata within the GitHub CLI captur
     throw new Error("Unexpected dependency in tree metadata fixture");
   };
   let captured: typeof metadata | undefined;
-  const runtime = createGitHubRuntime({
-    ROOT: fixture.root,
-    run: unavailable,
-    targetRepo: () => "fixture/repository",
-  });
   const context = createContextHydration(
     new Proxy(
       {
         targetRepo: () => "fixture/repository",
         ghJsonOnce: (args: string[], timeoutMs: number) => {
-          const output = runtime.ghOnce(args, timeoutMs);
+          const output = ghOnce(args, timeoutMs);
           assert.ok(Buffer.byteLength(output) < 8 * 1024 * 1024);
           captured = JSON.parse(output);
           return captured;
@@ -2725,12 +2727,14 @@ test("review checkout preserves large tree metadata within the GitHub CLI captur
     ) as Parameters<typeof createContextHydration>[0],
   );
   const materialize = () =>
-    context.materializePullRequestReviewTree({
-      targetDir: fixture.target,
-      worktreeDir: reviewTree,
-      itemNumber: 982,
-      headSha: fixture.headSha,
-    });
+    withGitHubRun(() =>
+      context.materializePullRequestReviewTree({
+        targetDir: fixture.target,
+        worktreeDir: reviewTree,
+        itemNumber: 982,
+        headSha: fixture.headSha,
+      }),
+    );
   try {
     withMockGh(
       fixture.root,

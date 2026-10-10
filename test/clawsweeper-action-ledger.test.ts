@@ -32,8 +32,8 @@ import {
   reviewRetryActionDisposition,
   reviewRetryBatchEventDisposition,
   reviewRetryBusinessIdempotencyIdentityForTest,
-  untrustedCodexEnvForTest,
 } from "../dist/clawsweeper.js";
+import { untrustedCodexEnv, withGitHubRun } from "../dist/clawsweeper-github-runtime.js";
 import { itemSourceRevisionSha256 } from "../dist/clawsweeper-source-revision.js";
 import { labelAlreadyExistsError } from "../dist/clawsweeper-label-mutations.js";
 import {
@@ -867,57 +867,58 @@ if (args[0] === "api" && /\\/issues\\/comments\\/9321$/.test(path)) {
   });
 });
 
-test("apply mutation receipts bind every GitHub request attempt and preserve no-op truth", () => {
-  assert.equal(
-    labelAlreadyExistsError(
-      new Error('HTTP 422: Validation Failed (label "priority: high" already exists)'),
-    ),
-    true,
-  );
-  assert.equal(labelAlreadyExistsError(new Error("HTTP 500: unavailable")), false);
-  const retriedMutation = observedGitHubMutationAttemptsForTest(["transient", "accepted"]);
-  assert.deepEqual(retriedMutation, [
-    {
-      identity: "test_mutation:request_attempt:1",
-      idempotencyIdentity: "test_mutation",
-      outcome: "unknown",
-    },
-    {
-      identity: "test_mutation:request_attempt:2",
-      idempotencyIdentity: "test_mutation",
-      outcome: "accepted",
-    },
-  ]);
-  assert.notEqual(retriedMutation[0]?.identity, retriedMutation[1]?.identity);
-  assert.equal(retriedMutation[0]?.idempotencyIdentity, retriedMutation[1]?.idempotencyIdentity);
-  assert.deepEqual(observedGitHubMutationAttemptsForTest(["already_exists"]), [
-    {
-      identity: "test_mutation:request_attempt:1",
-      idempotencyIdentity: "test_mutation",
-      outcome: "rejected",
-    },
-  ]);
-  assert.deepEqual(observedGitHubMutationAttemptsForTest(["throttle", "accepted"]), [
-    {
-      identity: "test_mutation:request_attempt:1",
-      idempotencyIdentity: "test_mutation",
-      outcome: "unknown",
-    },
-  ]);
-  assert.deepEqual(observedGitHubMutationAttemptsForTest(["not_started"]), []);
-  assert.deepEqual(heldReviewStartStatusCommentResultForTest("2026-07-12T12:00:00Z", false), {
-    status: "held",
-    lease: null,
-    retryAt: "2026-07-12T12:00:00Z",
-    didMutate: false,
-  });
-  assert.deepEqual(heldReviewStartStatusCommentResultForTest("2026-07-12T12:00:00Z", true), {
-    status: "held",
-    lease: null,
-    retryAt: "2026-07-12T12:00:00Z",
-    didMutate: true,
-  });
-});
+test("apply mutation receipts bind every GitHub request attempt and preserve no-op truth", () =>
+  withGitHubRun(() => {
+    assert.equal(
+      labelAlreadyExistsError(
+        new Error('HTTP 422: Validation Failed (label "priority: high" already exists)'),
+      ),
+      true,
+    );
+    assert.equal(labelAlreadyExistsError(new Error("HTTP 500: unavailable")), false);
+    const retriedMutation = observedGitHubMutationAttemptsForTest(["transient", "accepted"]);
+    assert.deepEqual(retriedMutation, [
+      {
+        identity: "test_mutation:request_attempt:1",
+        idempotencyIdentity: "test_mutation",
+        outcome: "unknown",
+      },
+      {
+        identity: "test_mutation:request_attempt:2",
+        idempotencyIdentity: "test_mutation",
+        outcome: "accepted",
+      },
+    ]);
+    assert.notEqual(retriedMutation[0]?.identity, retriedMutation[1]?.identity);
+    assert.equal(retriedMutation[0]?.idempotencyIdentity, retriedMutation[1]?.idempotencyIdentity);
+    assert.deepEqual(observedGitHubMutationAttemptsForTest(["already_exists"]), [
+      {
+        identity: "test_mutation:request_attempt:1",
+        idempotencyIdentity: "test_mutation",
+        outcome: "rejected",
+      },
+    ]);
+    assert.deepEqual(observedGitHubMutationAttemptsForTest(["throttle", "accepted"]), [
+      {
+        identity: "test_mutation:request_attempt:1",
+        idempotencyIdentity: "test_mutation",
+        outcome: "unknown",
+      },
+    ]);
+    assert.deepEqual(observedGitHubMutationAttemptsForTest(["not_started"]), []);
+    assert.deepEqual(heldReviewStartStatusCommentResultForTest("2026-07-12T12:00:00Z", false), {
+      status: "held",
+      lease: null,
+      retryAt: "2026-07-12T12:00:00Z",
+      didMutate: false,
+    });
+    assert.deepEqual(heldReviewStartStatusCommentResultForTest("2026-07-12T12:00:00Z", true), {
+      status: "held",
+      lease: null,
+      retryAt: "2026-07-12T12:00:00Z",
+      didMutate: true,
+    });
+  }));
 
 test("GitHub throttles abort apply lease checks and preserve durable lease ownership", () => {
   const rateLimit = new GitHubRateLimitError(new Error("HTTP 403: API rate limit exceeded"));
@@ -1116,8 +1117,12 @@ test("retry dispatch outcomes distinguish definite rejection, ambiguity, and acc
   assert.equal(classifyGitHubDispatchResultForTest({ status: 0 }), "accepted");
 });
 
-test("untrusted Codex processes cannot inherit action-ledger producer authority", () => {
-  const env = untrustedCodexEnvForTest({
+test("untrusted Codex processes cannot inherit action-ledger producer authority", (t) => {
+  const previousEnv = process.env;
+  t.after(() => {
+    process.env = previousEnv;
+  });
+  process.env = {
     CLAWSWEEPER_ACTION_LEDGER_FORCE: "1",
     CLAWSWEEPER_ACTION_LEDGER_OUTPUT_ROOT: "/tmp/privileged-ledger",
     CLAWSWEEPER_ACTION_LEDGER_INVOCATION: "review-0",
@@ -1125,7 +1130,8 @@ test("untrusted Codex processes cannot inherit action-ledger producer authority"
     EXACT_REVIEW_LEASE_ID: "private-review-capability",
     EXACT_REVIEW_CLAIM_GENERATION: "2",
     EXACT_REVIEW_SOURCE_HEAD_SHA: "a".repeat(40),
-  });
+  };
+  const env = untrustedCodexEnv();
   assert.equal(env.CLAWSWEEPER_ACTION_LEDGER_FORCE, undefined);
   assert.equal(env.CLAWSWEEPER_ACTION_LEDGER_OUTPUT_ROOT, undefined);
   assert.equal(env.CLAWSWEEPER_ACTION_LEDGER_INVOCATION, undefined);

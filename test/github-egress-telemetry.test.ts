@@ -2,12 +2,12 @@ import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import test from "node:test";
+import { githubTest as test, installGhFixture } from "./github-runtime-fixture.ts";
 import YAML from "yaml";
 
 import { ExactReviewQueue } from "../dashboard/exact-review-queue.ts";
 import { GithubEgressTelemetryStore } from "../dashboard/github-egress-telemetry.ts";
-import { createGitHubRuntime } from "../dist/clawsweeper-github-runtime.js";
+import * as runtime from "../dist/clawsweeper-github-runtime.js";
 import {
   githubEgressCommandDescriptor,
   githubEgressRouteTemplate,
@@ -307,7 +307,8 @@ test("wire evidence completes high-level gh invocations without leaking their ar
   }
 });
 
-test("runtime attribution follows the selected credential instead of throttle text", () => {
+test("runtime attribution follows the selected credential instead of throttle text", (t) => {
+  const fixture = installGhFixture(t, 'process.stdout.write("{}");');
   const keys = [
     "CLAWSWEEPER_GITHUB_EGRESS_METRICS_PATH",
     "CLAWSWEEPER_GITHUB_STAGE",
@@ -321,7 +322,7 @@ test("runtime attribution follows the selected credential instead of throttle te
   ];
   const previous = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
   Object.assign(process.env, {
-    CLAWSWEEPER_GITHUB_EGRESS_METRICS_PATH: "metrics.jsonl",
+    CLAWSWEEPER_GITHUB_EGRESS_METRICS_PATH: join(fixture.root, "metrics.jsonl"),
     CLAWSWEEPER_GITHUB_STAGE: "publication_apply",
     CLAWSWEEPER_GITHUB_SOURCE_ACTION: "scheduled_hot_intake",
     CLAWSWEEPER_GITHUB_CLAIM_GENERATION: "2",
@@ -330,18 +331,6 @@ test("runtime attribution follows the selected credential instead of throttle te
     GH_TOKEN: "target-app-token",
     REPO_TOKEN: "repository-actions-token",
     GITHUB_REPOSITORY: "openclaw/clawsweeper",
-  });
-  const requests: Array<{ token: string; pool: string }> = [];
-  const runtime = createGitHubRuntime({
-    ROOT: process.cwd(),
-    targetRepo: () => "openclaw/openclaw",
-    run: (_command, _args, options) => {
-      requests.push({
-        token: String(options?.env?.GH_TOKEN || process.env.GH_TOKEN || ""),
-        pool: String(options?.env?.CLAWSWEEPER_GITHUB_POOL_CLASS || ""),
-      });
-      return "{}";
-    },
   });
   try {
     runtime.ghWithPreparedTimeout(["api", "repos/openclaw/openclaw/issues/1"], 1_000);
@@ -352,11 +341,14 @@ test("runtime attribution follows the selected credential instead of throttle te
     runtime.ghWithPreparedTimeout(["api", "repos/openclaw/openclaw/issues/1"], 1_000, {
       GH_TOKEN: "repository-actions-token",
     });
-    assert.deepEqual(requests, [
-      { token: "public-actions-token", pool: "public_read_fallback" },
-      { token: "target-app-token", pool: "target_app" },
-      { token: "repository-actions-token", pool: "repository_actions" },
-    ]);
+    assert.deepEqual(
+      fixture.requests().map(({ token, pool }) => ({ token, pool })),
+      [
+        { token: "public-actions-token", pool: "public_read_fallback" },
+        { token: "target-app-token", pool: "target_app" },
+        { token: "repository-actions-token", pool: "repository_actions" },
+      ],
+    );
   } finally {
     for (const [key, value] of Object.entries(previous)) {
       if (value === undefined) delete process.env[key];

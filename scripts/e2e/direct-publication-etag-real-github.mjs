@@ -23,7 +23,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 //
 // BEFORE_ROOT and AFTER_ROOT are built checkouts (dist/). Each run replays the
 // GET sequence that one exact-event PR publication's apply-decisions issues,
-// through the real createGitHubRuntime/createGitHubExecution modules, against
+// through the production GitHub runtime and execution modules, against
 // public openclaw/openclaw with the local gh login. A fence in front of gh
 // refuses every request except GETs of that item's issue/pull/commit routes.
 // The durable ETag broker is a loopback stub: the production Worker needs the
@@ -156,20 +156,29 @@ function fence(args) {
 
 async function child(codeRoot, stepsPath, resultPath) {
   const dist = (name) => pathToFileURL(join(codeRoot, "dist", name)).href;
-  const { createGitHubRuntime } = await import(dist("clawsweeper-github-runtime.js"));
+  const runtimeModule = await import(dist("clawsweeper-github-runtime.js"));
   const { createGitHubExecution } = await import(dist("clawsweeper-github-execution.js"));
-  const { runText, SWEEPER_COMMAND_MAX_BUFFER_BYTES } = await import(dist("command.js"));
-  // Same wiring as src/clawsweeper-runtime.ts.
-  const run = (command, args, options = {}) =>
-    runText(command, args, {
-      cwd: options.cwd ?? codeRoot,
-      env: options.env,
-      maxBuffer: SWEEPER_COMMAND_MAX_BUFFER_BYTES,
-      stdio: ["ignore", "pipe", "pipe"],
-      timeoutMs: options.timeoutMs,
-      trim: "both",
+  let gitHubRuntime = runtimeModule;
+  if (runtimeModule.createGitHubRuntime && process.env.DP_PHASE.startsWith("before-")) {
+    // Only historical baseline checkouts retain the runtime factory contract.
+    const { runText, SWEEPER_COMMAND_MAX_BUFFER_BYTES } = await import(dist("command.js"));
+    gitHubRuntime = runtimeModule.createGitHubRuntime({
+      ROOT: codeRoot,
+      targetRepo: () => REPO,
+      run: (command, args, options = {}) =>
+        runText(command, args, {
+          cwd: options.cwd ?? codeRoot,
+          env: options.env,
+          maxBuffer: SWEEPER_COMMAND_MAX_BUFFER_BYTES,
+          stdio: ["ignore", "pipe", "pipe"],
+          timeoutMs: options.timeoutMs,
+          trim: "both",
+        }),
     });
-  const gitHubRuntime = createGitHubRuntime({ ROOT: codeRoot, run, targetRepo: () => REPO });
+  } else {
+    const { setTargetRepo } = await import(dist("repository-profiles.js"));
+    setTargetRepo(REPO);
+  }
   const execution = createGitHubExecution({
     ROOT: codeRoot,
     gitHubRuntime,
@@ -178,24 +187,28 @@ async function child(codeRoot, stepsPath, resultPath) {
   const steps = JSON.parse(readFileSync(stepsPath, "utf8"));
   const startedAt = Date.now();
   const results = [];
-  for (const step of steps) {
-    const stepStartedAt = Date.now();
-    let value;
-    if (step.args.includes("-i")) {
-      // Mirrors ghPageWithHeaders: an included page read, never brokered.
-      const output = execution.ghWithRetry(step.args).replace(/\r\n/g, "\n");
-      value = JSON.parse(output.slice(output.lastIndexOf("\n\n") + 2));
-    } else {
-      value = execution.ghJson(step.args);
+  const replay = () => {
+    for (const step of steps) {
+      const stepStartedAt = Date.now();
+      let value;
+      if (step.args.includes("-i")) {
+        // Mirrors ghPageWithHeaders: an included page read, never brokered.
+        const output = execution.ghWithRetry(step.args).replace(/\r\n/g, "\n");
+        value = JSON.parse(output.slice(output.lastIndexOf("\n\n") + 2));
+      } else {
+        value = execution.ghJson(step.args);
+      }
+      results.push({
+        route: step.route,
+        endpoint: step.args.at(-1).replace(/\?.*/, ""),
+        digest: sha256(JSON.stringify(value)),
+        startedAt: stepStartedAt,
+        finishedAt: Date.now(),
+      });
     }
-    results.push({
-      route: step.route,
-      endpoint: step.args.at(-1).replace(/\?.*/, ""),
-      digest: sha256(JSON.stringify(value)),
-      startedAt: stepStartedAt,
-      finishedAt: Date.now(),
-    });
-  }
+  };
+  if (gitHubRuntime === runtimeModule) runtimeModule.withGitHubRun(replay);
+  else replay();
   writeFileSync(resultPath, JSON.stringify({ startedAt, finishedAt: Date.now(), results }));
 }
 

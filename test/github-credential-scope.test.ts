@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import { githubTest as test, installGhFixture } from "./github-runtime-fixture.ts";
 import { githubCredentialScopeForToken } from "../dist/github-retry.js";
-import { createGitHubRuntime } from "../dist/clawsweeper-github-runtime.js";
+import * as runtime from "../dist/clawsweeper-github-runtime.js";
 
 test("credential identity classification is explicit and excludes absent repository tokens", () => {
   const identities = Object.freeze({
@@ -42,11 +42,7 @@ test("runtime extraction preserves its existing selected-token precedence", (t) 
       else process.env[key] = value;
     }
   });
-  const runtime = createGitHubRuntime({
-    ROOT: process.cwd(),
-    targetRepo: () => "openclaw/openclaw",
-    run: () => assert.fail("scope classification must not dispatch"),
-  });
+  const fixture = installGhFixture(t, 'throw new Error("scope classification must not dispatch");');
   const args = ["api", "repos/openclaw/openclaw/issues/123"];
   const cause = new Error("gh: rate limit exceeded (HTTP 429)");
   const cases: Array<{ args: string[]; overrides: NodeJS.ProcessEnv; scope: string }> = [
@@ -68,4 +64,5 @@ test("runtime extraction preserves its existing selected-token precedence", (t) 
   for (const item of cases) {
     assert.equal(runtime.githubRateLimitError(cause, item.args, item.overrides).scope, item.scope);
   }
+  assert.equal(fixture.requests().length, 0);
 });

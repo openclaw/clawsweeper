@@ -17,9 +17,17 @@ import test from "node:test";
 import YAML from "yaml";
 
 import { createGitHubExecution } from "../../dist/clawsweeper-github-execution.js";
-import { createGitHubRuntime } from "../../dist/clawsweeper-github-runtime.js";
+import * as gitHubRuntime from "../../dist/clawsweeper-github-runtime.js";
+import { repositoryProfileFor, withTargetProfile } from "../../dist/repository-profiles.js";
+import { githubTest, installGhFixture } from "../github-runtime-fixture.ts";
 import { runCopyProof } from "../../scripts/e2e/exact-review-selected-tuple-copy.mjs";
 import { MAX_MEDIA_PROOF_TIMEOUT_MS } from "../../dist/media-proof-budget.js";
+
+const { gh, ghOnce, ghWithPreparedTimeout, withGitHubRun } = gitHubRuntime;
+const { ghObservedMutationCommand, ghWithRetry } = createGitHubExecution({
+  ROOT: process.cwd(),
+  gitHubRuntime,
+});
 
 const path = ".github/workflows/exact-review-batch-publish.yml";
 const source = readFileSync(path, "utf8");
@@ -294,66 +302,74 @@ test("batch publisher is event-driven and queue-bounded instead of workflow-seri
   assert.deepEqual(workflow.permissions, { actions: "write", contents: "read" });
 });
 
-test("transient retries stay bounded while GitHub throttles defer immediately", () => {
+githubTest("transient retries stay bounded while GitHub throttles defer immediately", async (t) => {
   const previous = process.env.CLAWSWEEPER_GH_RETRY_ATTEMPTS;
-  try {
-    delete process.env.CLAWSWEEPER_GH_RETRY_ATTEMPTS;
-    const defaultExecution = githubRetryExecution(2);
-    assert.equal(defaultExecution.execution.ghWithRetry(["api", "repos/test/item"]), "ok");
-    assert.equal(defaultExecution.calls(), 3);
-
-    process.env.CLAWSWEEPER_GH_RETRY_ATTEMPTS = "2";
-    const boundedExecution = githubRetryExecution(3);
-    assert.throws(
-      () => boundedExecution.execution.ghWithRetry(["api", "repos/test/item"]),
-      /HTTP 502/,
-    );
-    assert.equal(boundedExecution.calls(), 2);
-    assert.deepEqual(boundedExecution.waits, [2_000]);
-
-    for (const kind of ["throttle-403", "throttle-429"] as const) {
-      const throttledExecution = githubRetryExecution(3, kind);
-      assert.throws(
-        () => throttledExecution.execution.ghWithRetry(["api", "repos/test/item"]),
-        /API rate limit exceeded|HTTP 429/,
-      );
-      assert.equal(throttledExecution.calls(), 1);
-      assert.deepEqual(throttledExecution.waits, []);
-
-      const mutationExecution = githubRetryExecution(3, kind);
-      assert.throws(
-        () =>
-          mutationExecution.execution.ghObservedMutationCommand({
-            args: ["api", "repos/test/item"],
-            identity: "batch-publication",
-          }),
-        /API rate limit exceeded|HTTP 429/,
-      );
-      assert.equal(mutationExecution.calls(), 1);
-      assert.deepEqual(mutationExecution.waits, []);
-    }
-
-    const explicitExecution = githubRetryExecution(2);
-    assert.equal(explicitExecution.execution.ghWithRetry(["api", "repos/test/item"], 3), "ok");
-    assert.equal(explicitExecution.calls(), 3);
-  } finally {
+  t.after(() => {
     if (previous === undefined) delete process.env.CLAWSWEEPER_GH_RETRY_ATTEMPTS;
     else process.env.CLAWSWEEPER_GH_RETRY_ATTEMPTS = previous;
+  });
+  for (const scenario of ["default", "bounded", "throttle-403", "throttle-429", "explicit"]) {
+    await t.test(scenario, (t) =>
+      withGitHubRun(() => {
+        if (scenario === "default") delete process.env.CLAWSWEEPER_GH_RETRY_ATTEMPTS;
+        else process.env.CLAWSWEEPER_GH_RETRY_ATTEMPTS = "2";
+        const failures = scenario === "bounded" ? 3 : 2;
+        const fixture = installGhFixture(
+          t,
+          `
+state.calls = (state.calls || 0) + 1;
+if (state.calls <= ${failures}) {
+  console.error(${JSON.stringify(
+    scenario === "throttle-403"
+      ? "API rate limit exceeded for installation ID 122230863 (HTTP 403)"
+      : scenario === "throttle-429"
+        ? "HTTP 429: Too Many Requests"
+        : "HTTP 502: transient upstream failure",
+  )});
+  process.exitCode = 1;
+} else process.stdout.write("ok");
+`,
+        );
+        const waits: number[] = [];
+        const run = () =>
+          ghWithRetry(["api", "repos/test/item"], scenario === "explicit" ? 3 : undefined, {
+            sleepBeforeRetry: (ms) => waits.push(ms),
+          });
+        if (scenario.startsWith("throttle")) {
+          assert.throws(run, /API rate limit exceeded|HTTP 429/);
+          assert.equal(fixture.requests().length, 1);
+          assert.deepEqual(waits, []);
+          assert.throws(
+            () =>
+              ghObservedMutationCommand({
+                args: ["api", "repos/test/item"],
+                identity: "batch-publication",
+                sleepBeforeRetry: (ms) => waits.push(ms),
+              }),
+            /API rate limit exceeded|HTTP 429/,
+          );
+          assert.equal(fixture.requests().length, 2);
+          assert.deepEqual(waits, []);
+        } else if (scenario === "bounded") {
+          assert.throws(run, /HTTP 502/);
+          assert.equal(fixture.requests().length, 2);
+          assert.deepEqual(waits, [2_000]);
+        } else {
+          assert.equal(run(), "ok");
+          assert.equal(fixture.requests().length, 3);
+          assert.deepEqual(waits, [2_000, 4_000]);
+        }
+      }),
+    );
   }
 });
 
-test("sweep runtime routes only public target REST reads onto the public token", () => {
+githubTest("sweep runtime routes only public target REST reads onto the public token", (t) => {
   const fixtureEnv = {
     EXACT_EVENT_PUBLICATION: "true",
     GH_TOKEN: "target-app-token",
     REPO_TOKEN: "workflow-repository-token",
     CLAWSWEEPER_PUBLIC_GH_TOKEN: "public-read-token",
-    GH_BIN: process.execPath,
-    GH_BIN_ARGS: JSON.stringify([
-      "--eval",
-      "process.stdout.write(JSON.stringify({ token: process.env.GH_TOKEN, args: process.argv.slice(1) }))",
-      "--",
-    ]),
   };
   const previous = Object.fromEntries(
     [...Object.keys(fixtureEnv), "GH_HOST"].map((key) => [key, process.env[key]]),
@@ -361,35 +377,15 @@ test("sweep runtime routes only public target REST reads onto the public token",
   Object.assign(process.env, fixtureEnv);
   delete process.env.GH_HOST;
 
-  let currentTarget = "openclaw/openclaw";
-  const requests: Array<{ args: string[]; token: string | undefined; timeoutMs?: number }> = [];
-  const run = (
-    _command: string,
-    args: string[],
-    options?: { cwd?: string; env?: NodeJS.ProcessEnv; timeoutMs?: number },
-  ) => {
-    const request = {
-      args,
-      token: options?.env?.GH_TOKEN ?? process.env.GH_TOKEN,
-      ...(options?.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
-    };
-    requests.push(request);
-    return JSON.stringify(request);
-  };
-  const runtime = createGitHubRuntime({
-    ROOT: process.cwd(),
-    run,
-    targetRepo: () => currentTarget,
-  });
+  const fixture = installGhFixture(t, `process.stdout.write(JSON.stringify({ token, args }));`);
   const observed = (
     args: string[],
     timeoutMs: number | undefined = 5_000,
     env: NodeJS.ProcessEnv = {},
   ) =>
-    JSON.parse(runtime.ghWithPreparedTimeout(args, timeoutMs, env)) as {
+    JSON.parse(ghWithPreparedTimeout(args, timeoutMs, env)) as {
       token: string;
       args: string[];
-      timeoutMs?: number;
     };
 
   try {
@@ -404,9 +400,9 @@ test("sweep runtime routes only public target REST reads onto the public token",
     }
 
     const publicArgs = ["api", "repos/openclaw/openclaw/issues/comments/123"];
-    assert.equal(observed(publicArgs, 1234).timeoutMs, 1234);
-    assert.equal(JSON.parse(runtime.gh(publicArgs)).token, "public-read-token");
-    assert.equal(JSON.parse(runtime.ghOnce(publicArgs, 10_000)).token, "public-read-token");
+    assert.deepEqual(observed(publicArgs, 1234).args, publicArgs);
+    assert.equal(JSON.parse(gh(publicArgs)).token, "public-read-token");
+    assert.equal(JSON.parse(ghOnce(publicArgs, 10_000)).token, "public-read-token");
 
     const privateRequests = [
       ["api", "user"],
@@ -426,7 +422,7 @@ test("sweep runtime routes only public target REST reads onto the public token",
     for (const args of privateRequests) {
       assert.equal(observed(args).token, "target-app-token", args.join(" "));
     }
-    assert.equal(JSON.parse(runtime.ghOnce(privateRequests[6]!, 10_000)).token, "target-app-token");
+    assert.equal(JSON.parse(ghOnce(privateRequests[6]!, 10_000)).token, "target-app-token");
     assert.equal(
       observed(publicArgs, 5_000, { GH_TOKEN: "explicit-token" }).token,
       "explicit-token",
@@ -436,19 +432,9 @@ test("sweep runtime routes only public target REST reads onto the public token",
       "target-app-token",
     );
 
-    const execution = createGitHubExecution({
-      ROOT: process.cwd(),
-      run,
-      gitHubRuntime: runtime,
-      sweepStatus: {
-        sweepStatusRelativePath: () => "status.json",
-        writeSweepStatus: () => undefined,
-      },
-      labelAlreadyExistsError: () => false,
-    } as unknown as Parameters<typeof createGitHubExecution>[0]);
     assert.equal(
       JSON.parse(
-        execution.ghObservedMutationCommand({
+        ghObservedMutationCommand({
           args: ["api", "repos/openclaw/openclaw/issues/123", "--method", "PATCH"],
           identity: "exact-publication-target-mutation",
         }),
@@ -467,9 +453,9 @@ test("sweep runtime routes only public target REST reads onto the public token",
 
     process.env.CLAWSWEEPER_PUBLIC_GH_TOKEN = "public-read-token";
 
-    currentTarget = "openclaw/private";
-    assert.equal(observed(publicArgs).token, "public-read-token");
-    currentTarget = "openclaw/openclaw";
+    withTargetProfile(repositoryProfileFor("openclaw/private"), () => {
+      assert.equal(observed(publicArgs).token, "public-read-token");
+    });
 
     process.env.GH_HOST = "enterprise.example.invalid";
     assert.equal(observed(publicArgs).token, "target-app-token");
@@ -478,7 +464,7 @@ test("sweep runtime routes only public target REST reads onto the public token",
     delete process.env.CLAWSWEEPER_PUBLIC_GH_TOKEN;
     delete process.env.REPO_TOKEN;
     assert.equal(observed(publicArgs).token, "target-app-token");
-    assert.ok(requests.length > privateRequests.length);
+    assert.ok(fixture.requests().length > privateRequests.length);
   } finally {
     for (const [key, value] of Object.entries(previous)) {
       if (value === undefined) delete process.env[key];
@@ -487,7 +473,7 @@ test("sweep runtime routes only public target REST reads onto the public token",
   }
 });
 
-test("sweep public read throttles fall back once to the ambient App token", () => {
+githubTest("sweep public read throttles fall back once to the ambient App token", (t) => {
   const fixtureEnv = {
     GH_TOKEN: "sweep-fallback-app-token",
     CLAWSWEEPER_PUBLIC_GH_TOKEN: "sweep-fallback-public-token",
@@ -497,41 +483,32 @@ test("sweep public read throttles fall back once to the ambient App token", () =
   );
   Object.assign(process.env, fixtureEnv);
 
-  const observedTokens: string[] = [];
-  const run = (
-    _command: string,
-    _args: string[],
-    options?: { cwd?: string; env?: NodeJS.ProcessEnv; timeoutMs?: number },
-  ) => {
-    const token = options?.env?.GH_TOKEN ?? process.env.GH_TOKEN ?? "";
-    observedTokens.push(token);
-    if (token === fixtureEnv.CLAWSWEEPER_PUBLIC_GH_TOKEN) {
-      throw new Error("gh: API rate limit exceeded for installation (HTTP 403)");
-    }
-    return JSON.stringify({ token });
-  };
-  const runtime = createGitHubRuntime({
-    ROOT: process.cwd(),
-    run,
-    targetRepo: () => "openclaw/openclaw",
-  });
-  const execution = createGitHubExecution({
-    ROOT: process.cwd(),
-    gitHubRuntime: runtime,
-    labelAlreadyExistsError: () => false,
-  });
-
+  const fixture = installGhFixture(
+    t,
+    `
+if (token === ${JSON.stringify(fixtureEnv.CLAWSWEEPER_PUBLIC_GH_TOKEN)}) {
+  console.error("gh: API rate limit exceeded for installation (HTTP 403)");
+  process.exitCode = 1;
+} else process.stdout.write(JSON.stringify({ token }));
+`,
+  );
   try {
     const args = ["api", "repos/openclaw/openclaw/issues/123"];
-    assert.equal(JSON.parse(execution.ghWithRetry(args)).token, fixtureEnv.GH_TOKEN);
-    assert.deepEqual(observedTokens, [fixtureEnv.CLAWSWEEPER_PUBLIC_GH_TOKEN, fixtureEnv.GH_TOKEN]);
+    assert.equal(JSON.parse(ghWithRetry(args)).token, fixtureEnv.GH_TOKEN);
+    assert.deepEqual(
+      fixture.requests().map(({ token }) => token),
+      [fixtureEnv.CLAWSWEEPER_PUBLIC_GH_TOKEN, fixtureEnv.GH_TOKEN],
+    );
 
-    assert.throws(() => execution.ghWithRetry(args), { name: "GitHubRateLimitError" });
-    assert.deepEqual(observedTokens, [
-      fixtureEnv.CLAWSWEEPER_PUBLIC_GH_TOKEN,
-      fixtureEnv.GH_TOKEN,
-      fixtureEnv.CLAWSWEEPER_PUBLIC_GH_TOKEN,
-    ]);
+    assert.throws(() => ghWithRetry(args), { name: "GitHubRateLimitError" });
+    assert.deepEqual(
+      fixture.requests().map(({ token }) => token),
+      [
+        fixtureEnv.CLAWSWEEPER_PUBLIC_GH_TOKEN,
+        fixtureEnv.GH_TOKEN,
+        fixtureEnv.CLAWSWEEPER_PUBLIC_GH_TOKEN,
+      ],
+    );
   } finally {
     for (const [key, value] of Object.entries(previous)) {
       if (value === undefined) delete process.env[key];
@@ -540,7 +517,7 @@ test("sweep public read throttles fall back once to the ambient App token", () =
   }
 });
 
-test("exact publication records the Actions reset before one bounded App fallback", () => {
+githubTest("exact publication records the Actions reset before one bounded App fallback", (t) => {
   const observationPath = join(
     tmpdir(),
     `clawsweeper-rate-limit-${process.pid}-${Date.now()}.jsonl`,
@@ -555,34 +532,23 @@ test("exact publication records the Actions reset before one bounded App fallbac
     Object.keys(fixtureEnv).map((key) => [key, process.env[key]]),
   );
   Object.assign(process.env, fixtureEnv);
-  const observed: Array<{ token: string; args: string[] }> = [];
   const reset = Math.floor(Date.now() / 1_000) + 600;
-  const run = (_command: string, args: string[], options?: { env?: NodeJS.ProcessEnv }) => {
-    const token = options?.env?.GH_TOKEN ?? process.env.GH_TOKEN ?? "";
-    observed.push({ token, args });
-    if (args[0] === "api" && args[1] === "rate_limit") {
-      return JSON.stringify({ remaining: 0, reset });
-    }
-    if (token === fixtureEnv.REPO_TOKEN) {
-      throw new Error("gh: API rate limit exceeded for repository token (HTTP 403)");
-    }
-    return JSON.stringify({ token });
-  };
-  const runtime = createGitHubRuntime({
-    ROOT: process.cwd(),
-    run,
-    targetRepo: () => "openclaw/openclaw",
-  });
-  const execution = createGitHubExecution({
-    ROOT: process.cwd(),
-    gitHubRuntime: runtime,
-    labelAlreadyExistsError: () => false,
-  });
+  const fixture = installGhFixture(
+    t,
+    `
+if (args[0] === "api" && args[1] === "rate_limit") {
+  process.stdout.write(JSON.stringify({ remaining: 0, reset: ${reset} }));
+} else if (token === ${JSON.stringify(fixtureEnv.REPO_TOKEN)}) {
+  console.error("gh: API rate limit exceeded for repository token (HTTP 403)");
+  process.exitCode = 1;
+} else process.stdout.write(JSON.stringify({ token }));
+`,
+  );
   try {
-    const result = JSON.parse(execution.ghWithRetry(["api", "repos/openclaw/openclaw/issues/123"]));
+    const result = JSON.parse(ghWithRetry(["api", "repos/openclaw/openclaw/issues/123"]));
     assert.equal(result.token, fixtureEnv.GH_TOKEN);
     assert.deepEqual(
-      observed.map(({ token }) => token),
+      fixture.requests().map(({ token }) => token),
       [fixtureEnv.REPO_TOKEN, fixtureEnv.REPO_TOKEN, fixtureEnv.GH_TOKEN],
     );
     const observations = readFileSync(observationPath, "utf8")
@@ -611,7 +577,7 @@ test("exact publication records the Actions reset before one bounded App fallbac
   }
 });
 
-test("inherited GitHub Actions credentials open the repository quota circuit", () => {
+githubTest("inherited GitHub Actions credentials open the repository quota circuit", (t) => {
   const observationPath = join(
     tmpdir(),
     `clawsweeper-inherited-actions-rate-limit-${process.pid}-${Date.now()}.jsonl`,
@@ -626,37 +592,26 @@ test("inherited GitHub Actions credentials open the repository quota circuit", (
   );
   Object.assign(process.env, fixtureEnv);
   for (const key of clearedKeys) delete process.env[key];
-  const observedTokens: string[] = [];
   const reset = Math.floor(Date.now() / 1_000) + 300;
-  const run = (_command: string, args: string[], options?: { env?: NodeJS.ProcessEnv }) => {
-    const token =
-      options?.env?.GH_TOKEN ??
-      options?.env?.GITHUB_TOKEN ??
-      process.env.GH_TOKEN ??
-      process.env.GITHUB_TOKEN ??
-      "";
-    observedTokens.push(token);
-    if (args[0] === "api" && args[1] === "rate_limit") {
-      return JSON.stringify({ remaining: 0, reset });
-    }
-    throw new Error("gh: API rate limit exceeded for GITHUB_TOKEN (HTTP 403)");
-  };
-  const runtime = createGitHubRuntime({
-    ROOT: process.cwd(),
-    run,
-    targetRepo: () => "openclaw/openclaw",
-  });
-  const execution = createGitHubExecution({
-    ROOT: process.cwd(),
-    gitHubRuntime: runtime,
-    labelAlreadyExistsError: () => false,
-  });
+  const fixture = installGhFixture(
+    t,
+    `
+if (args[0] === "api" && args[1] === "rate_limit") {
+  process.stdout.write(JSON.stringify({ remaining: 0, reset: ${reset} }));
+} else {
+  console.error("gh: API rate limit exceeded for GITHUB_TOKEN (HTTP 403)");
+  process.exitCode = 1;
+}
+`,
+  );
   try {
-    assert.throws(
-      () => execution.ghWithRetry(["api", "repos/openclaw/openclaw/issues/123/comments"]),
-      { name: "GitHubRateLimitError" },
+    assert.throws(() => ghWithRetry(["api", "repos/openclaw/openclaw/issues/123/comments"]), {
+      name: "GitHubRateLimitError",
+    });
+    assert.deepEqual(
+      fixture.requests().map(({ token }) => token),
+      [fixtureEnv.GITHUB_TOKEN, fixtureEnv.GITHUB_TOKEN],
     );
-    assert.deepEqual(observedTokens, [fixtureEnv.GITHUB_TOKEN, fixtureEnv.GITHUB_TOKEN]);
     const observations = readFileSync(observationPath, "utf8")
       .trim()
       .split(/\r?\n/)
@@ -982,48 +937,3 @@ test("batch workflow shell steps are valid Bash", () => {
     assert.equal(syntax.status, 0, `${step.name ?? "unnamed step"}: ${syntax.stderr}`);
   }
 });
-
-function githubRetryExecution(
-  failures: number,
-  kind: "transient" | "throttle-403" | "throttle-429" = "transient",
-) {
-  let calls = 0;
-  const waits: number[] = [];
-  class TestGitHubRuntimeBudgetError extends Error {}
-  const request = () => {
-    calls += 1;
-    if (calls <= failures) {
-      throw new Error(
-        kind === "throttle-403"
-          ? "API rate limit exceeded for installation ID 122230863 (HTTP 403)"
-          : kind === "throttle-429"
-            ? "HTTP 429: Too Many Requests"
-            : "HTTP 502: transient upstream failure",
-      );
-    }
-    return "ok";
-  };
-  const execution = createGitHubExecution({
-    ROOT: process.cwd(),
-    run: request,
-    gitHubRuntime: {
-      GitHubRuntimeBudgetError: TestGitHubRuntimeBudgetError,
-      claimPublicReadFallback: () => null,
-      ensureGitHubRetryFits: () => undefined,
-      ensureGitHubRuntimeAvailable: () => undefined,
-      gh: request,
-      ghOnce: request,
-      ghWithPreparedTimeout: request,
-      githubCommandTimeoutMs: () => undefined,
-      githubRuntimeBudgetError: () => new TestGitHubRuntimeBudgetError(),
-      sleepBeforeGitHubRetry: (waitMs: number) => waits.push(waitMs),
-    },
-    sweepStatus: {
-      sweepStatusRelativePath: () => "status.json",
-      writeSweepStatus: () => undefined,
-    },
-    labelAlreadyExistsError: () => false,
-  } as unknown as Parameters<typeof createGitHubExecution>[0]);
-
-  return { execution, calls: () => calls, waits };
-}

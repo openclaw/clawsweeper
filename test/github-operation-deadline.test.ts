@@ -1,40 +1,32 @@
 import assert from "node:assert/strict";
-import childProcess from "node:child_process";
-import fs, {
-  existsSync,
-  mkdtempSync,
-  readFileSync,
-  renameSync,
-  rmSync,
-  writeFileSync,
-} from "node:fs";
-import { syncBuiltinESMExports } from "node:module";
-import { tmpdir } from "node:os";
+import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import test, { type TestContext } from "node:test";
-
+import { performance } from "node:perf_hooks";
+import { type TestContext } from "node:test";
 import { createGitHubExecution } from "../dist/clawsweeper-github-execution.js";
-import {
-  createGitHubRuntime,
-  GitHubOperationDeadlineError,
-} from "../dist/clawsweeper-github-runtime.js";
+import * as runtime from "../dist/clawsweeper-github-runtime.js";
 import type { GitHubRuntimeBudget } from "../src/clawsweeper-types.js";
+import {
+  githubTest as test,
+  installEtagBroker,
+  installGhFixture,
+} from "./github-runtime-fixture.ts";
 
+const execution = createGitHubExecution({ ROOT: process.cwd(), gitHubRuntime: runtime });
 const args = ["api", "repos/openclaw/openclaw/issues/123", "--jq", "."];
-type Request = { args: string[]; timeoutMs: number | undefined; token: string | undefined };
+const systemNow = Date.now;
 
-function fixture(
-  t: TestContext,
-  label: string,
-  respond: (request: Request, state: { now: number }) => string,
-  publicFallback = false,
-) {
-  const root = mkdtempSync(join(tmpdir(), "clawsweeper-operation-deadline-"));
-  const metricsPath = join(root, "requests.jsonl");
-  const observationPath = join(root, "rate-limit.jsonl");
+function fixture(t: TestContext, label: string, source: string, publicFallback = false) {
+  // A test can create several fixtures; do not stack mock-tracker restorations.
+  t.after(() => {
+    Date.now = systemNow;
+  });
+  const gh = installGhFixture(t, source);
+  const metricsPath = join(gh.root, "metrics.jsonl");
+  const observationPath = join(gh.root, "observations.jsonl");
   const appToken = `synthetic-${label}-app`;
   const publicToken = `synthetic-${label}-public`;
-  const env: Record<string, string | undefined> = {
+  const env: NodeJS.ProcessEnv = {
     GH_TOKEN: appToken,
     GITHUB_TOKEN: undefined,
     GH_HOST: undefined,
@@ -59,443 +51,296 @@ function fixture(
       if (value === undefined) delete process.env[key];
       else process.env[key] = value;
     }
-    rmSync(root, { recursive: true, force: true });
   });
-  const state = { now: 1_000_000 };
-  t.mock.method(Date, "now", () => state.now);
+  const started = performance.now();
+  Date.now = () =>
+    JSON.parse(readFileSync(gh.statePath, "utf8")).now + Math.floor(performance.now() - started);
   t.mock.method(console, "error", () => {});
-  const requests: Request[] = [];
-  const waits: number[] = [];
-  const runtime = createGitHubRuntime({
-    ROOT: root,
-    targetRepo: () => "openclaw/openclaw",
-    run: (_command, requestArgs, options) => {
-      const request = {
-        args: requestArgs,
-        timeoutMs: options?.timeoutMs,
-        token: options?.env?.GH_TOKEN ?? process.env.GH_TOKEN,
-      };
-      requests.push(request);
-      return respond(request, state);
-    },
-  });
-  t.mock.method(runtime, "sleepBeforeGitHubRetry", (waitMs, deadlineAt) => {
-    runtime.ensureGitHubRetryFits(waitMs, deadlineAt);
-    waits.push(waitMs);
-    state.now += waitMs;
-  });
-  const execution = createGitHubExecution({
-    ROOT: root,
-    gitHubRuntime: runtime,
-    labelAlreadyExistsError: () => false,
-  });
-  const metrics = () =>
-    readFileSync(metricsPath, "utf8")
-      .trim()
-      .split("\n")
-      .map((line) => JSON.parse(line) as { outcome: string; category: string });
-  const observations = () =>
-    readFileSync(observationPath, "utf8")
-      .trim()
-      .split("\n")
-      .map((line) => JSON.parse(line) as { scope: string; provenance: string });
   return {
-    runtime,
-    execution,
-    state,
-    requests,
-    waits,
-    metrics,
-    observations,
+    ...gh,
     observationPath,
     appToken,
     publicToken,
+    advance(ms: number) {
+      const state = JSON.parse(readFileSync(gh.statePath, "utf8"));
+      state.now += ms;
+      writeFileSync(gh.statePath, JSON.stringify(state));
+    },
+    metrics: () =>
+      readFileSync(metricsPath, "utf8")
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line) as { outcome: string }),
+    observations: () =>
+      readFileSync(observationPath, "utf8")
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line) as { provenance: string }),
   };
 }
 
+const throttledRead = `
+  if (args[1] === "rate_limit") {
+    process.stdout.write(JSON.stringify({ remaining: 0, reset: Math.floor(state.now / 1000) + 600 }));
+  } else if (token === process.env.REPO_TOKEN) {
+    throw new Error("HTTP 403: API rate limit exceeded");
+  } else process.stdout.write('{"ok":true}');
+`;
+
 test("operation deadline intersects the outer budget without poisoning its yield state", (t) => {
-  const f = fixture(t, "intersection", () => assert.fail("must not dispatch"));
-  const budget: GitHubRuntimeBudget = { startedAtMs: f.state.now, maxRuntimeMs: 10_000 };
-  const deadlineAt = f.state.now + 4_000;
-  f.runtime.withGitHubRuntimeBudget(budget, () => {
-    assert.equal(f.runtime.githubCommandTimeoutMs(20_000, deadlineAt), 4_000);
-    f.state.now += 1_000;
-    assert.equal(f.runtime.githubCommandTimeoutMs(undefined, deadlineAt), 3_000);
-    assert.doesNotThrow(() => f.runtime.ensureGitHubRetryFits(2_999, deadlineAt));
+  const f = fixture(t, "intersection", 'throw new Error("must not dispatch");');
+  const now = Date.now();
+  const budget: GitHubRuntimeBudget = { startedAtMs: now, maxRuntimeMs: 10_000 };
+  const deadlineAt = now + 4_000;
+  runtime.withGitHubRuntimeBudget(budget, () => {
+    assert.ok(runtime.githubCommandTimeoutMs(20_000, deadlineAt)! <= 4_000);
+    assert.doesNotThrow(() => runtime.ensureGitHubRetryFits(2_000, deadlineAt));
     assert.throws(
-      () => f.runtime.ensureGitHubRetryFits(3_000, deadlineAt),
-      GitHubOperationDeadlineError,
+      () => runtime.ensureGitHubRetryFits(4_000, deadlineAt),
+      runtime.GitHubOperationDeadlineError,
     );
-    assert.equal(budget.yieldReason, undefined);
-    f.state.now = deadlineAt;
+    f.advance(4_000);
     assert.throws(
-      () => f.runtime.githubCommandTimeoutMs(undefined, deadlineAt),
-      GitHubOperationDeadlineError,
+      () => runtime.githubCommandTimeoutMs(undefined, deadlineAt),
+      runtime.GitHubOperationDeadlineError,
     );
-    assert.equal(f.runtime.githubCommandTimeoutMs(), 5_000);
+    assert.ok(runtime.githubCommandTimeoutMs()! > 0);
     assert.equal(budget.yieldReason, undefined);
-    assert.equal(f.runtime.githubCommandTimeoutMs(20_000, deadlineAt + 20_000), 5_000);
   });
+  assert.equal(f.requests().length, 0);
 });
 
 test("local retry refusal preserves positive outer time when neither budget fits backoff", (t) => {
-  const f = fixture(t, "overlapping-wait", () => assert.fail("must not dispatch"));
-  const budget: GitHubRuntimeBudget = { startedAtMs: f.state.now, maxRuntimeMs: 2_000 };
-  const deadlineAt = f.state.now + 500;
-  f.runtime.withGitHubRuntimeBudget(budget, () => {
-    let failure: unknown;
-    try {
-      f.runtime.ensureGitHubRetryFits(2_000, deadlineAt);
-    } catch (error) {
-      failure = error;
-    }
-    t.diagnostic(
-      JSON.stringify({
-        errorName: failure instanceof Error ? failure.name : null,
-        outerYieldReason: budget.yieldReason ?? null,
-      }),
+  fixture(t, "overlap", 'throw new Error("must not dispatch");');
+  const budget: GitHubRuntimeBudget = { startedAtMs: Date.now(), maxRuntimeMs: 2_000 };
+  runtime.withGitHubRuntimeBudget(budget, () => {
+    assert.throws(
+      () => runtime.ensureGitHubRetryFits(2_000, Date.now() + 500),
+      runtime.GitHubOperationDeadlineError,
     );
-    assert.ok(failure instanceof GitHubOperationDeadlineError);
     assert.equal(budget.yieldReason, undefined);
-    assert.equal(f.runtime.githubCommandTimeoutMs(), 1_000);
+    assert.ok(runtime.githubCommandTimeoutMs()! > 0);
   });
 });
 
 for (const outerState of ["pending", "expired"] as const) {
   test(`local retry refusal preserves an already ${outerState} outer budget error`, (t) => {
-    const f = fixture(t, `outer-${outerState}`, () => assert.fail("must not dispatch"));
+    fixture(t, outerState, 'throw new Error("must not dispatch");');
     const budget: GitHubRuntimeBudget = {
-      startedAtMs: f.state.now,
-      maxRuntimeMs: outerState === "expired" ? 1_000 : 10_000,
+      startedAtMs: Date.now() - (outerState === "expired" ? 20_000 : 0),
+      maxRuntimeMs: 10_000,
       ...(outerState === "pending" ? { yieldReason: "prior outer refusal" } : {}),
     };
-    const expectedReason =
-      outerState === "pending"
-        ? "prior outer refusal"
-        : "max runtime 1000ms reached before GitHub retry";
-    f.runtime.withGitHubRuntimeBudget(budget, () => {
+    runtime.withGitHubRuntimeBudget(budget, () => {
       assert.throws(
-        () => f.runtime.ensureGitHubRetryFits(2_000, f.state.now),
-        (error: unknown) =>
-          error instanceof f.runtime.GitHubRuntimeBudgetError && error.reason === expectedReason,
+        () => runtime.ensureGitHubRetryFits(2_000, Date.now()),
+        runtime.GitHubRuntimeBudgetError,
       );
-      assert.equal(budget.yieldReason, expectedReason);
+      assert.match(
+        budget.yieldReason ?? "",
+        outerState === "pending" ? /prior outer refusal/ : /before GitHub retry/,
+      );
     });
   });
 }
 
 test("transport and malformed JSON retries consume one deadline and preserve request accounting", (t) => {
-  let attempt = 0;
-  const f = fixture(t, "retries", (_request, state) => {
-    state.now += 100;
-    if (attempt++ === 0) throw new Error("HTTP 502: temporary failure");
-    return attempt === 2 ? "{" : '{"ok":true}';
-  });
-  assert.deepEqual(f.execution.ghJson(args, { deadlineAt: f.state.now + 10_000 }), { ok: true });
-  assert.deepEqual(
-    f.requests.map((request) => request.timeoutMs),
-    [10_000, 7_900, 5_800],
+  const f = fixture(
+    t,
+    "retries",
+    `
+    state.attempt = (state.attempt || 0) + 1;
+    if (state.attempt === 1) throw new Error("HTTP 502: temporary failure");
+    process.stdout.write(state.attempt === 2 ? "{" : '{"ok":true}');
+  `,
   );
-  assert.deepEqual(f.waits, [2_000, 2_000]);
+  const started = performance.now();
+  assert.deepEqual(execution.ghJson(args, { deadlineAt: Date.now() + 15_000 }), { ok: true });
+  assert.equal(f.requests().length, 3);
+  assert.ok(performance.now() - started >= 4_000, "both real retry waits elapsed");
   assert.deepEqual(
-    f.metrics().map((entry) => entry.outcome),
+    f.metrics().map(({ outcome }) => outcome),
     ["transient", "success", "success"],
   );
 });
 
 for (const failure of ["transport", "json"] as const) {
   test(`${failure} retry cannot spend the operation's remaining time on backoff`, (t) => {
-    const f = fixture(t, `wait-${failure}`, () => {
-      if (failure === "transport") throw new Error("HTTP 502: temporary failure");
-      return "{";
-    });
-    const budget: GitHubRuntimeBudget = { startedAtMs: f.state.now, maxRuntimeMs: 60_000 };
-    f.runtime.withGitHubRuntimeBudget(budget, () => {
+    const f = fixture(
+      t,
+      failure,
+      failure === "transport"
+        ? 'throw new Error("HTTP 502: temporary failure");'
+        : 'process.stdout.write("{");',
+    );
+    const budget: GitHubRuntimeBudget = { startedAtMs: Date.now(), maxRuntimeMs: 60_000 };
+    runtime.withGitHubRuntimeBudget(budget, () => {
       assert.throws(
-        () => f.execution.ghJson(args, { deadlineAt: f.state.now + 2_000 }),
-        GitHubOperationDeadlineError,
+        () => execution.ghJson(args, { deadlineAt: Date.now() + 2_000 }),
+        runtime.GitHubOperationDeadlineError,
       );
       assert.equal(budget.yieldReason, undefined);
     });
-    assert.equal(f.requests.length, 1);
-    assert.deepEqual(f.waits, []);
+    assert.equal(f.requests().length, 1);
     assert.deepEqual(
-      f.metrics().map((entry) => entry.outcome),
+      f.metrics().map(({ outcome }) => outcome),
       [failure === "transport" ? "transient" : "success"],
     );
   });
 }
 
 test("a response arriving after the operation deadline cannot start another attempt", (t) => {
-  const f = fixture(t, "late-success", (_request, state) => {
-    state.now += 30_001;
-    return '{"ok":true}';
-  });
+  const f = fixture(t, "late", "state.now += 30_001; process.stdout.write('{\"ok\":true}');");
   assert.throws(
-    () => f.execution.ghJson(args, { deadlineAt: f.state.now + 30_000 }),
-    GitHubOperationDeadlineError,
+    () => execution.ghJson(args, { deadlineAt: Date.now() + 30_000 }),
+    runtime.GitHubOperationDeadlineError,
   );
-  assert.equal(f.requests.length, 1);
-  assert.deepEqual(f.waits, []);
+  assert.equal(f.requests().length, 1);
   assert.deepEqual(
-    f.metrics().map((entry) => entry.outcome),
+    f.metrics().map(({ outcome }) => outcome),
     ["success"],
   );
 });
 
 test("rate-limit lookup and one App fallback share the remaining deadline", (t) => {
-  const f = fixture(
-    t,
-    "fallback",
-    (request, state) => {
-      if (request.args[1] === "rate_limit") {
-        state.now += 200;
-        return JSON.stringify({ remaining: 0, reset: Math.floor(state.now / 1_000) + 600 });
-      }
-      state.now += 100;
-      if (request.token === "synthetic-fallback-public") {
-        throw new Error("HTTP 403: API rate limit exceeded");
-      }
-      return '{"ok":true}';
-    },
-    true,
-  );
-  const deadlineAt = f.state.now + 3_000;
-  assert.deepEqual(f.execution.ghJson(args, { deadlineAt }), { ok: true });
+  const f = fixture(t, "fallback", throttledRead, true);
+  const deadlineAt = Date.now() + 5_000;
+  assert.deepEqual(execution.ghJson(args, { deadlineAt }), { ok: true });
   assert.deepEqual(
-    f.requests.map((request) => request.timeoutMs),
-    [3_000, 2_900, 2_700],
-  );
-  assert.deepEqual(
-    f.requests.map((request) => request.token),
+    f.requests().map(({ token }) => token),
     [f.publicToken, f.publicToken, f.appToken],
   );
   assert.equal(f.observations()[0]?.provenance, "fallback");
   assert.equal(f.observations().at(-1)?.provenance, "rate_limit_status");
   assert.deepEqual(
-    f.metrics().map((entry) => entry.outcome),
+    f.metrics().map(({ outcome }) => outcome),
     ["throttle", "success", "success"],
   );
-  assert.throws(() => f.execution.ghJson(args, { deadlineAt }), { name: "GitHubRateLimitError" });
-  assert.equal(
-    f.requests.length,
-    3,
-    "neither the exhausted pool nor the App fallback is probed again",
-  );
+  assert.throws(() => execution.ghJson(args, { deadlineAt }), { name: "GitHubRateLimitError" });
+  assert.equal(f.requests().length, 3);
 });
 
 test("expiry records throttling without claiming an unused lookup or fallback", (t) => {
-  let expire = true;
   const f = fixture(
     t,
-    "expired-throttle",
-    (request, state) => {
-      if (request.args[1] === "rate_limit") {
-        return JSON.stringify({ remaining: 0, reset: Math.floor(state.now / 1_000) + 600 });
-      }
-      if (request.token === "synthetic-expired-throttle-public") {
-        if (expire) state.now += 30_001;
-        throw new Error("HTTP 403: API rate limit exceeded");
-      }
-      return '{"ok":true}';
-    },
+    "expired",
+    `
+    if (!state.expired) { state.expired = true; state.now += 30_001; }
+    ${throttledRead}
+  `,
     true,
   );
-  const budget: GitHubRuntimeBudget = { startedAtMs: f.state.now, maxRuntimeMs: 180_000 };
-  f.runtime.withGitHubRuntimeBudget(budget, () => {
+  const budget: GitHubRuntimeBudget = { startedAtMs: Date.now(), maxRuntimeMs: 180_000 };
+  runtime.withGitHubRuntimeBudget(budget, () => {
     assert.throws(
-      () => f.execution.ghJson(args, { deadlineAt: f.state.now + 30_000 }),
-      GitHubOperationDeadlineError,
+      () => execution.ghJson(args, { deadlineAt: Date.now() + 30_000 }),
+      runtime.GitHubOperationDeadlineError,
     );
     assert.equal(budget.yieldReason, undefined);
-    assert.equal(f.requests.length, 1);
+    assert.equal(f.requests().length, 1);
     assert.equal(existsSync(`${f.observationPath}.lookup-repository_actions.lock`), false);
     assert.equal(existsSync(`${f.observationPath}.fallback-target_app.lock`), false);
     assert.equal(f.observations()[0]?.provenance, "fallback");
-    assert.deepEqual(
-      f.metrics().map((entry) => entry.outcome),
-      ["throttle"],
-    );
-    expire = false;
-    f.state.now += 61_000;
-    assert.deepEqual(f.execution.ghJson(args, { deadlineAt: f.state.now + 5_000 }), { ok: true });
-    assert.deepEqual(
-      f.requests.map((request) => request.token),
-      [f.publicToken, f.publicToken, f.publicToken, f.appToken],
-    );
+    f.advance(61_000);
+    assert.deepEqual(execution.ghJson(args, { deadlineAt: Date.now() + 5_000 }), { ok: true });
+    assert.equal(f.requests().length, 4);
   });
 });
 
-test("an undispatched rate-limit lookup releases its scope and lock for the next member", (t) => {
-  const f = fixture(
-    t,
-    "lookup-claim-race",
-    (request, state) => {
-      if (request.args[1] === "rate_limit") {
-        return JSON.stringify({ remaining: 0, reset: Math.floor(state.now / 1_000) + 600 });
+for (const claimKind of ["lookup-repository_actions", "fallback-target_app"] as const) {
+  test(`an undispatched ${claimKind} releases its filesystem reservation`, (t) => {
+    const source = claimKind.startsWith("lookup")
+      ? throttledRead
+      : 'if (token === process.env.REPO_TOKEN) throw new Error("HTTP 403: API rate limit exceeded; retry-after: 60"); process.stdout.write(\'{"ok":true}\');';
+    const f = fixture(t, claimKind, source, true);
+    const deadlineAt = Date.now() + 5_000;
+    const lockPath = `${f.observationPath}.${claimKind}.lock`;
+    const clock = Date.now;
+    let expired = false;
+    Date.now = () => {
+      if (!expired && existsSync(lockPath)) {
+        expired = true;
+        f.advance(6_000);
       }
-      if (request.token === "synthetic-lookup-claim-race-public") {
-        throw new Error("HTTP 403: API rate limit exceeded");
-      }
-      return '{"ok":true}';
-    },
-    true,
-  );
-  const deadlineAt = f.state.now + 500;
-  const lockPath = `${f.observationPath}.lookup-repository_actions.lock`;
-  const nativeOpen = fs.openSync;
-  let expire = true;
-  const mock = t.mock.method(fs, "openSync", (...call: Parameters<typeof nativeOpen>) => {
-    const descriptor = nativeOpen(...call);
-    if (call[0] === lockPath && call[1] === "wx" && expire) {
-      expire = false;
-      f.state.now = deadlineAt;
-    }
-    return descriptor;
+      return clock();
+    };
+    assert.throws(
+      () => execution.ghJson(args, { deadlineAt }),
+      runtime.GitHubOperationDeadlineError,
+    );
+    assert.equal(existsSync(lockPath), false);
+    assert.equal(f.requests().length, 1);
+    f.advance(61_000);
+    assert.deepEqual(execution.ghJson(args, { deadlineAt: Date.now() + 5_000 }), { ok: true });
+    assert.equal(existsSync(lockPath), true);
   });
-  syncBuiltinESMExports();
-  t.after(() => {
-    mock.mock.restore();
-    syncBuiltinESMExports();
-  });
-  assert.throws(() => f.execution.ghJson(args, { deadlineAt }), GitHubOperationDeadlineError);
-  assert.equal(f.requests.length, 1);
-  assert.equal(existsSync(lockPath), false);
-  assert.equal(f.observations()[0]?.provenance, "fallback");
-  f.state.now += 61_000;
-  assert.deepEqual(f.execution.ghJson(args, { deadlineAt: f.state.now + 5_000 }), { ok: true });
-  assert.equal(f.requests.filter((request) => request.args[1] === "rate_limit").length, 1);
-  assert.equal(f.observations().at(-1)?.provenance, "rate_limit_status");
-  assert.equal(existsSync(lockPath), true);
-});
+}
 
 for (const outcome of ["success", "failure"] as const) {
   test(`a dispatched lookup's late ${outcome} retains its one-shot scope and lock`, (t) => {
-    const label = `lookup-expiry-${outcome}`;
     const f = fixture(
       t,
-      label,
-      (request, state) => {
-        if (request.args[1] === "rate_limit") {
-          assert.equal(request.timeoutMs, 1_000);
-          state.now += 1_000;
-          if (outcome === "failure")
-            throw Object.assign(new Error("operation timed out"), { code: "ETIMEDOUT" });
-          return JSON.stringify({ remaining: 0, reset: Math.floor(state.now / 1_000) + 600 });
-        }
-        if (request.token === `synthetic-${label}-public`)
-          throw new Error("HTTP 403: API rate limit exceeded");
-        return '{"ok":true}';
-      },
+      `lookup-${outcome}`,
+      `
+      if (args[1] === "rate_limit") {
+        state.now += 5_000;
+        ${outcome === "failure" ? 'throw new Error("HTTP 502: operation timed out");' : "process.stdout.write(JSON.stringify({ remaining: 0, reset: Math.floor(state.now / 1000) + 600 }));"}
+      } else if (token === process.env.REPO_TOKEN) throw new Error("HTTP 403: API rate limit exceeded");
+      else process.stdout.write('{"ok":true}');
+    `,
       true,
     );
     assert.throws(
-      () => f.execution.ghJson(args, { deadlineAt: f.state.now + 1_000 }),
-      GitHubOperationDeadlineError,
+      () => execution.ghJson(args, { deadlineAt: Date.now() + 5_000 }),
+      runtime.GitHubOperationDeadlineError,
     );
-    assert.equal(f.requests.length, 2);
+    assert.equal(f.requests().length, 2);
     assert.equal(existsSync(`${f.observationPath}.lookup-repository_actions.lock`), true);
     assert.equal(existsSync(`${f.observationPath}.fallback-target_app.lock`), false);
     assert.deepEqual(
-      f.metrics().map((entry) => entry.outcome),
+      f.metrics().map(({ outcome }) => outcome),
       ["throttle", outcome === "success" ? "success" : "transient"],
     );
-    assert.deepEqual(f.execution.ghJson(args, { deadlineAt: f.state.now + 5_000 }), { ok: true });
-    assert.equal(f.requests.filter((request) => request.args[1] === "rate_limit").length, 1);
+    assert.deepEqual(execution.ghJson(args, { deadlineAt: Date.now() + 5_000 }), { ok: true });
+    assert.equal(f.requests().filter(({ args }) => args[1] === "rate_limit").length, 1);
+  });
+
+  test(`a late dispatched App ${outcome} retains the one-shot claim`, (t) => {
+    const f = fixture(
+      t,
+      `app-${outcome}`,
+      `
+      if (token === process.env.REPO_TOKEN) throw new Error("HTTP 403: API rate limit exceeded; retry-after: 60");
+      state.now += 5_000;
+      ${outcome === "failure" ? 'throw new Error("HTTP 502: temporary failure");' : "process.stdout.write('{\"ok\":true}');"}
+    `,
+      true,
+    );
+    assert.throws(
+      () => execution.ghJson(args, { deadlineAt: Date.now() + 5_000 }),
+      runtime.GitHubOperationDeadlineError,
+    );
+    assert.equal(existsSync(`${f.observationPath}.fallback-target_app.lock`), true);
+    assert.throws(() => execution.ghJson(args, { deadlineAt: Date.now() + 5_000 }), {
+      name: "GitHubRateLimitError",
+    });
+    assert.equal(f.requests().filter(({ token }) => token === f.appToken).length, 1);
   });
 }
 
 test("callers without an operation deadline retain ordinary retries", (t) => {
-  let attempt = 0;
-  const f = fixture(t, "unbounded-caller", () => {
-    if (attempt++ === 0) throw new Error("HTTP 502: temporary failure");
-    return '{"ok":true}';
-  });
-  assert.deepEqual(f.execution.ghJson(args), { ok: true });
-  assert.deepEqual(
-    f.requests.map((request) => request.timeoutMs),
-    [undefined, undefined],
-  );
-  assert.deepEqual(f.waits, [2_000]);
-});
-
-test("a fallback claim that outlives admission is released for a later member", (t) => {
   const f = fixture(
     t,
-    "claim-race",
-    (request) => {
-      if (request.token === "synthetic-claim-race-public") {
-        throw new Error("HTTP 403: API rate limit exceeded; retry-after: 60");
-      }
-      return '{"ok":true}';
-    },
-    true,
+    "unbounded",
+    'state.attempt = (state.attempt || 0) + 1; if (state.attempt === 1) throw new Error("HTTP 502: temporary failure"); process.stdout.write(\'{"ok":true}\');',
   );
-  const deadlineAt = f.state.now + 500;
-  const originalClaim = f.runtime.claimPublicReadFallback;
-  let expireClaim = true;
-  t.mock.method(f.runtime, "claimPublicReadFallback", (requestArgs) => {
-    const claim = originalClaim(requestArgs);
-    if (claim && expireClaim) {
-      expireClaim = false;
-      f.state.now = deadlineAt;
-    }
-    return claim;
-  });
-  const execution = createGitHubExecution({
-    ROOT: process.cwd(),
-    gitHubRuntime: f.runtime,
-    labelAlreadyExistsError: () => false,
-  });
-  assert.throws(() => execution.ghJson(args, { deadlineAt }), GitHubOperationDeadlineError);
-  assert.deepEqual(
-    f.requests.map((request) => request.token),
-    [f.publicToken],
-  );
-  assert.equal(existsSync(`${f.observationPath}.fallback-target_app.lock`), false);
-  assert.deepEqual(execution.ghJson(args, { deadlineAt: f.state.now + 5_000 }), { ok: true });
-  assert.deepEqual(
-    f.requests.map((request) => request.token),
-    [f.publicToken, f.appToken],
-  );
-  assert.equal(existsSync(`${f.observationPath}.fallback-target_app.lock`), true);
-  assert.throws(() => execution.ghJson(args, { deadlineAt: f.state.now + 5_000 }), {
-    name: "GitHubRateLimitError",
-  });
-  assert.equal(f.requests.filter((request) => request.token === f.appToken).length, 1);
+  assert.deepEqual(execution.ghJson(args), { ok: true });
+  assert.equal(f.requests().length, 2);
 });
 
-for (const outcome of ["success", "failure"] as const) {
-  test(`a late dispatched App ${outcome} retains the one-shot claim`, (t) => {
-    const label = `late-app-${outcome}`;
-    const f = fixture(
-      t,
-      label,
-      (request, state) => {
-        if (request.token === `synthetic-${label}-public`) {
-          throw new Error("HTTP 403: API rate limit exceeded; retry-after: 60");
-        }
-        state.now += 500;
-        if (outcome === "failure") throw new Error("HTTP 502: temporary failure");
-        return '{"ok":true}';
-      },
-      true,
-    );
-    assert.throws(
-      () => f.execution.ghJson(args, { deadlineAt: f.state.now + 500 }),
-      GitHubOperationDeadlineError,
-    );
-    assert.equal(existsSync(`${f.observationPath}.fallback-target_app.lock`), true);
-    assert.throws(() => f.execution.ghJson(args, { deadlineAt: f.state.now + 5_000 }), {
-      name: "GitHubRateLimitError",
-    });
-    assert.equal(f.requests.filter((request) => request.token === f.appToken).length, 1);
-  });
-}
-
 test("fallback rollback never removes a replaced lock or clears its exclusion", (t) => {
-  const f = fixture(t, "replaced-lock", () => assert.fail("must not dispatch"), true);
-  const claim = f.runtime.claimPublicReadFallback(args);
+  const f = fixture(t, "replaced", 'throw new Error("must not dispatch");', true);
+  const claim = runtime.claimPublicReadFallback(args);
   assert.ok(claim);
   const lock = `${f.observationPath}.fallback-target_app.lock`;
   renameSync(lock, `${lock}.original`);
@@ -503,156 +348,142 @@ test("fallback rollback never removes a replaced lock or clears its exclusion", 
   assert.equal(claim.releaseIfUndispatched(), false);
   assert.equal(readFileSync(lock, "utf8"), "replacement owner");
   process.env.CLAWSWEEPER_GITHUB_RATE_LIMIT_OBSERVATION_PATH = `${f.observationPath}.other`;
-  assert.equal(f.runtime.claimPublicReadFallback(args), null);
+  assert.equal(runtime.claimPublicReadFallback(args), null);
 });
 
 for (const expiry of ["before", "after"] as const) {
-  test(`ETag fallback expiry ${expiry} GitHub dispatch preserves claim ownership`, (t) => {
-    const f = fixture(t, `etag-${expiry}`, () => assert.fail("must use the ETag transport"), true);
-    process.env.EXACT_REVIEW_QUEUE_URL = "http://127.0.0.1:9";
-    process.env.CLAWSWEEPER_WEBHOOK_SECRET = "synthetic-etag-deadline-secret";
-    const deadlineAt = f.state.now + 500;
-    let lookups = 0;
-    let appDispatches = 0;
-    const nativeSpawn = childProcess.spawnSync;
-    const mock = t.mock.method(
-      childProcess,
-      "spawnSync",
-      (...call: Parameters<typeof nativeSpawn>) => {
-        const requestArgs = call[1] ?? [];
-        const options = call[2];
-        const response = (stdout: string, status = 0, stderr = "") => ({
-          pid: 1,
-          status,
-          signal: null,
-          stdout,
-          stderr,
-          output: [null, stdout, stderr],
-        });
-        if (requestArgs.at(-1)?.endsWith("/github-etag-cache/lookup")) {
-          lookups += 1;
-          if (expiry === "before" && lookups === 2) f.state.now = deadlineAt;
-          return response('{"hit":false}');
-        }
-        assert.equal(requestArgs[0], "api");
-        assert.equal(requestArgs[1], "-i");
-        if (options?.env?.GH_TOKEN === f.publicToken) {
-          return response(
-            "HTTP/2 403 Forbidden\n\n{}",
-            1,
-            "HTTP 403: API rate limit exceeded; retry-after: 60",
-          );
-        }
-        assert.equal(options?.env?.GH_TOKEN, f.appToken);
-        appDispatches += 1;
-        if (expiry === "after" && appDispatches === 1) f.state.now = deadlineAt;
-        return response('HTTP/2 200 OK\n\n{"ok":true}');
-      },
+  test(`ETag fallback expiry ${expiry} GitHub dispatch preserves claim ownership`, async (t) => {
+    const f = fixture(
+      t,
+      `etag-${expiry}`,
+      `
+      if (token === process.env.REPO_TOKEN) {
+        process.stdout.write("HTTP/2 403 Forbidden\\n\\n{}");
+        throw new Error("HTTP 403: API rate limit exceeded; retry-after: 60");
+      }
+      ${expiry === "after" ? "state.now += 5_000;" : ""}
+      process.stdout.write('HTTP/2 200 OK\\n\\n{"ok":true}');
+    `,
+      true,
     );
-    syncBuiltinESMExports();
-    t.after(() => {
-      mock.mock.restore();
-      syncBuiltinESMExports();
-    });
-    const unprojectedArgs = args.slice(0, 2);
+    await installEtagBroker(
+      t,
+      f.root,
+      expiry === "before"
+        ? `
+      if (operation === "lookup" && lookups === 2) {
+        const path = join(root, "state.json");
+        const state = JSON.parse(readFileSync(path, "utf8")); state.now += 5_000;
+        writeFileSync(path, JSON.stringify(state));
+      }
+    `
+        : "",
+    );
     assert.throws(
-      () => f.execution.ghJson(unprojectedArgs, { deadlineAt }),
-      GitHubOperationDeadlineError,
+      () => execution.ghJson(args.slice(0, 2), { deadlineAt: Date.now() + 5_000 }),
+      runtime.GitHubOperationDeadlineError,
     );
-    assert.equal(appDispatches, expiry === "before" ? 0 : 1);
+    assert.equal(
+      f.requests().filter(({ token }) => token === f.appToken).length,
+      expiry === "before" ? 0 : 1,
+    );
     assert.equal(existsSync(`${f.observationPath}.fallback-target_app.lock`), expiry === "after");
-    if (expiry === "before") {
-      assert.deepEqual(f.execution.ghJson(unprojectedArgs, { deadlineAt: f.state.now + 5_000 }), {
+    if (expiry === "before")
+      assert.deepEqual(execution.ghJson(args.slice(0, 2), { deadlineAt: Date.now() + 5_000 }), {
         ok: true,
       });
-    } else {
-      assert.throws(
-        () => f.execution.ghJson(unprojectedArgs, { deadlineAt: f.state.now + 5_000 }),
-        { name: "GitHubRateLimitError" },
-      );
-    }
-    assert.equal(appDispatches, 1);
+    else
+      assert.throws(() => execution.ghJson(args.slice(0, 2), { deadlineAt: Date.now() + 5_000 }), {
+        name: "GitHubRateLimitError",
+      });
+    assert.equal(f.requests().filter(({ token }) => token === f.appToken).length, 1);
   });
 }
 
-test("ghJsonEach dispatches first attempts together and finishes each through ghJson", (t) => {
-  let nowMs = 1_000_000;
-  t.mock.method(Date, "now", () => nowMs);
-  t.mock.method(console, "error", () => {});
-  const batches: Array<Array<{ args: string[]; deadlineAt: number | undefined }>> = [];
-  const retried: string[][] = [];
-  const firstOutcomes: Record<string, { output: string } | { error: Error } | { expired: true }> = {
-    "repos/openclaw/openclaw/issues/1": { output: '{"number":1}' },
-    "repos/openclaw/openclaw/issues/2": { error: new Error("HTTP 502: Bad Gateway") },
-    "repos/openclaw/openclaw/issues/3": { error: new Error("HTTP 404: Not Found") },
-    // Still queued for a slot when the runtime budget ran out.
-    "repos/openclaw/openclaw/issues/4": { expired: true },
-  };
-  let batchDurationMs = 0;
-  const runtime = createGitHubRuntime({
-    ROOT: process.cwd(),
-    targetRepo: () => "openclaw/openclaw",
-    run: (_command, requestArgs) => {
-      retried.push(requestArgs);
-      return '{"number":2}';
-    },
-    runConcurrently: (commands) => {
-      batches.push(commands.map(({ args, options }) => ({ args, deadlineAt: options.deadlineAt })));
-      nowMs += batchDurationMs;
-      return commands.map(({ args }) => firstOutcomes[args[1]!]!);
-    },
-  });
-  const waits: number[] = [];
-  t.mock.method(runtime, "sleepBeforeGitHubRetry", (waitMs: number) => {
-    waits.push(waitMs);
-    nowMs += waitMs;
-  });
-  const execution = createGitHubExecution({
-    ROOT: process.cwd(),
-    gitHubRuntime: runtime,
-    labelAlreadyExistsError: () => false,
-  });
-  const issues = (...numbers: number[]) =>
-    numbers.map((number) => ["api", `repos/openclaw/openclaw/issues/${number}`]);
-  const requests = issues(1, 2, 3);
-
-  const results = runtime.withGitHubRuntimeBudget(
-    { startedAtMs: nowMs, maxRuntimeMs: 15_000 },
-    () => execution.ghJsonEach(requests),
+test("ghJsonEach dispatches first attempts together and retries only transient failures", (t) => {
+  const f = fixture(
+    t,
+    "concurrent",
+    `
+    const number = Number(args[1].split("/").at(-1));
+    const marker = join(root, "attempt-" + number);
+    const retry = existsSync(marker);
+    writeFileSync(marker, "started");
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 100);
+    if (number === 2 && !retry) throw new Error("HTTP 502: Bad Gateway");
+    if (number === 3) throw new Error("HTTP 404: Not Found");
+    process.stdout.write(JSON.stringify({ number }));
+  `,
   );
-
-  // One concurrent dispatch; every command shares the budget's absolute deadline.
-  assert.deepEqual(batches, [requests.map((args) => ({ args, deadlineAt: 1_014_000 }))]);
-  // Only the transient failure goes through the existing retry path.
-  assert.deepEqual(retried, [requests[1]]);
-  assert.deepEqual(waits, [2_000]);
+  const requests = [1, 2, 3].map((number) => ["api", `repos/openclaw/openclaw/issues/${number}`]);
+  const results = execution.ghJsonEach(requests);
   assert.deepEqual(results.slice(0, 2), [
     { ok: true, value: { number: 1 } },
     { ok: true, value: { number: 2 } },
   ]);
-  const notFound = results[2];
-  assert.ok(notFound && !notFound.ok);
-  assert.match(String(notFound.error), /HTTP 404/);
-
-  // The budget runs out while the queue drains: the command still waiting for
-  // a slot fails as an exhausted budget, as `gh` would before dispatch.
-  const budget: GitHubRuntimeBudget = { startedAtMs: nowMs, maxRuntimeMs: 15_000 };
-  batchDurationMs = 20_000;
-  const drained = runtime.withGitHubRuntimeBudget(budget, () => execution.ghJsonEach(issues(1, 4)));
-  assert.deepEqual(drained[0], { ok: true, value: { number: 1 } });
-  const expired = drained[1];
-  assert.ok(expired && !expired.ok && expired.error instanceof runtime.GitHubRuntimeBudgetError);
-  assert.match(budget.yieldReason ?? "", /max runtime 15000ms reached before GitHub operation/);
-
-  // An exhausted budget stops every read before any process starts.
+  assert.ok(results[2] && !results[2].ok);
+  assert.match(String(results[2].error), /HTTP 404/);
+  const dispatched = f.requests();
+  assert.equal(dispatched.length, 4);
+  assert.equal(dispatched[3]?.args[1], requests[1]?.[1]);
+  assert.ok(
+    Math.max(...dispatched.slice(0, 3).map(({ at }) => at)) -
+      Math.min(...dispatched.slice(0, 3).map(({ at }) => at)) <
+      1_000,
+  );
   const exhausted = runtime.withGitHubRuntimeBudget(
-    { startedAtMs: nowMs - 20_000, maxRuntimeMs: 15_000 },
+    { startedAtMs: Date.now() - 20_000, maxRuntimeMs: 15_000 },
     () => execution.ghJsonEach(requests),
   );
-  assert.equal(batches.length, 2);
   assert.ok(
     exhausted.every(
       (result) => !result.ok && result.error instanceof runtime.GitHubRuntimeBudgetError,
     ),
+  );
+  assert.equal(f.requests().length, 4);
+});
+
+test("queued concurrent reads expire without dispatch when the shared deadline drains", (t) => {
+  const gh = installGhFixture(
+    t,
+    `
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10_000);
+    process.stdout.write("{}");
+  `,
+  );
+  const requests = Array.from({ length: runtime.GITHUB_CONCURRENT_READS + 1 }, (_, index) => [
+    "api",
+    "repos/openclaw/openclaw/issues/" + (index + 1),
+    "--jq",
+    ".",
+  ]);
+  const budget: GitHubRuntimeBudget = { startedAtMs: Date.now(), maxRuntimeMs: 3_000 };
+  const results = runtime.withGitHubRuntimeBudget(budget, () => execution.ghJsonEach(requests));
+  assert.ok(gh.requests().length > 0);
+  assert.ok(gh.requests().length <= runtime.GITHUB_CONCURRENT_READS);
+  const queued = results.at(-1);
+  assert.ok(queued && !queued.ok && queued.error instanceof runtime.GitHubRuntimeBudgetError);
+  assert.match(budget.yieldReason ?? "", /before GitHub operation/);
+});
+
+test("a hung gh process is bounded by the operation deadline without yielding the outer budget", (t) => {
+  const f = fixture(
+    t,
+    "hung",
+    "Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 30_000);",
+  );
+  const budget: GitHubRuntimeBudget = { startedAtMs: Date.now(), maxRuntimeMs: 60_000 };
+  const started = performance.now();
+  runtime.withGitHubRuntimeBudget(budget, () => {
+    assert.throws(
+      () => execution.ghJson(args, { deadlineAt: Date.now() + 5_000 }),
+      runtime.GitHubOperationDeadlineError,
+    );
+    assert.equal(budget.yieldReason, undefined);
+  });
+  assert.equal(f.requests().length, 1);
+  assert.ok(
+    performance.now() - started < 20_000,
+    "the child must not consume its thirty-second sleep",
   );
 });

@@ -11,7 +11,7 @@ import {
   githubEtagCacheRequestBody,
 } from "../../../dist/github-etag-cache-contract.js";
 import { durableGithubEtagReadSync } from "../../../dist/github-etag-read-broker.js";
-import { createGitHubRuntime } from "../../../dist/clawsweeper-github-runtime.js";
+import { ghWithPreparedTimeout, withGitHubRun } from "../../../dist/clawsweeper-github-runtime.js";
 
 const secret = "etag-proof-publisher-placeholder";
 const operatorSecret = "etag-proof-operator-placeholder";
@@ -309,16 +309,9 @@ function runnerRead(baseUrl, route) {
   const previous = Object.fromEntries(Object.keys(overrides).map((key) => [key, process.env[key]]));
   Object.assign(process.env, overrides);
   try {
-    const runtime = createGitHubRuntime({
-      ROOT: process.cwd(),
-      targetRepo: () => "openclaw/openclaw",
-      run: () => {
-        throw new Error("unexpected unbrokered read");
-      },
-    });
-    return runtime.ghWithPreparedTimeout(["api", route], 5_000, {
+    return withGitHubRun(() => ghWithPreparedTimeout(["api", route], 5_000, {
       GH_TOKEN: "etag-proof-github-placeholder",
-    });
+    }));
   } finally {
     for (const [key, value] of Object.entries(previous)) {
       if (value === undefined) delete process.env[key];

@@ -6,7 +6,7 @@ import { flushWorkflowActionEvents } from "./action-ledger-runtime.js";
 import { boolArg, itemNumbersArg, parseArgs, stringArg, type Args } from "./clawsweeper-args.js";
 import { dispatchCommand, type CommandHandler } from "./clawsweeper-command-dispatch.js";
 import { reviewDecisionParser } from "./clawsweeper-decision-parser.js";
-import { runText, runTextConcurrently, SWEEPER_COMMAND_MAX_BUFFER_BYTES } from "./command.js";
+import { runText, SWEEPER_COMMAND_MAX_BUFFER_BYTES } from "./command.js";
 import { AUTOMATION_LIMITS } from "./limits.js";
 import { repositoryProfileFor } from "./repository-profiles.js";
 import { reviewPullChecksDigestParts } from "./review-checks-digest.js";
@@ -40,7 +40,7 @@ import { createContextHydration } from "./clawsweeper-context-hydration.js";
 import { createDashboardAudit } from "./clawsweeper-dashboard-audit.js";
 import { createGitHubContext, githubCount } from "./clawsweeper-github-context.js";
 import { createGitHubExecution } from "./clawsweeper-github-execution.js";
-import { createGitHubRuntime } from "./clawsweeper-github-runtime.js";
+import * as gitHubRuntime from "./clawsweeper-github-runtime.js";
 import { exactPublicationPublicReadToken } from "./github-public-read.js";
 import { createItemContext } from "./clawsweeper-item-context.js";
 import {
@@ -271,21 +271,6 @@ function run(
   return runText(command, args, { ...runTextOptions(options), timeoutMs: options.timeoutMs });
 }
 
-const gitHubRuntime = createGitHubRuntime({
-  ROOT,
-  run,
-  runConcurrently: (commands, concurrency) =>
-    runTextConcurrently(
-      commands.map(({ command, args, options }) => ({
-        command,
-        args,
-        options: { ...runTextOptions(options), deadlineAt: options.deadlineAt },
-      })),
-      concurrency,
-    ),
-  targetRepo,
-});
-export const { untrustedCodexEnvForTest } = gitHubRuntime;
 const { GitHubRuntimeBudgetError, untrustedCodexEnv } = gitHubRuntime;
 
 const githubExecution = createGitHubExecution({
@@ -1144,49 +1129,50 @@ export async function main(
     flushWorkflowActionEvents?: typeof flushWorkflowActionEvents;
   } = {},
 ): Promise<void> {
-  const args = parseArgs(argv);
-  const command = args._[0] ?? "review";
-  const flushActionEvents = dependencies.flushWorkflowActionEvents ?? flushWorkflowActionEvents;
-  if (!process.env.CLAWSWEEPER_ACTION_LEDGER_INVOCATION) {
-    process.env.CLAWSWEEPER_ACTION_LEDGER_INVOCATION = sha256(stableJson({ command, args })).slice(
-      0,
-      16,
-    );
-  }
-  let commandFailed = false;
-  let commandError: unknown;
-  try {
-    await dispatchCommand(command, args, COMMAND_HANDLERS);
-  } catch (error) {
-    commandFailed = true;
-    commandError = error;
-  }
-  try {
-    const shardPaths = await flushActionEvents(ROOT);
-    if (shardPaths.length > 0) {
-      console.error(
-        `[action-ledger] finalized ${shardPaths.length} immutable workflow shard${
-          shardPaths.length === 1 ? "" : "s"
-        }`,
-      );
+  return gitHubRuntime.withGitHubRun(async () => {
+    const args = parseArgs(argv);
+    const command = args._[0] ?? "review";
+    const flushActionEvents = dependencies.flushWorkflowActionEvents ?? flushWorkflowActionEvents;
+    if (!process.env.CLAWSWEEPER_ACTION_LEDGER_INVOCATION) {
+      process.env.CLAWSWEEPER_ACTION_LEDGER_INVOCATION = sha256(
+        stableJson({ command, args }),
+      ).slice(0, 16);
     }
-  } catch (error) {
-    if (commandFailed) {
-      console.error(
-        `[action-ledger] best-effort finalization failed after command failure: ${
-          error instanceof Error ? error.message : String(error)
-        }`,
-      );
-    } else if (isExplicitActionLedgerCommand(command)) {
+    let commandFailed = false;
+    let commandError: unknown;
+    try {
+      await dispatchCommand(command, args, COMMAND_HANDLERS);
+    } catch (error) {
       commandFailed = true;
       commandError = error;
-    } else {
-      console.error(
-        `[action-ledger] best-effort finalization failed after successful ${command}: ${
-          error instanceof Error ? error.message : String(error)
-        }`,
-      );
     }
-  }
-  if (commandFailed) throw commandError;
+    try {
+      const shardPaths = await flushActionEvents(ROOT);
+      if (shardPaths.length > 0) {
+        console.error(
+          `[action-ledger] finalized ${shardPaths.length} immutable workflow shard${
+            shardPaths.length === 1 ? "" : "s"
+          }`,
+        );
+      }
+    } catch (error) {
+      if (commandFailed) {
+        console.error(
+          `[action-ledger] best-effort finalization failed after command failure: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      } else if (isExplicitActionLedgerCommand(command)) {
+        commandFailed = true;
+        commandError = error;
+      } else {
+        console.error(
+          `[action-ledger] best-effort finalization failed after successful ${command}: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      }
+    }
+    if (commandFailed) throw commandError;
+  });
 }

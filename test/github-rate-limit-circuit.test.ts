@@ -2,10 +2,13 @@ import assert from "node:assert/strict";
 import { appendFileSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import test, { type TestContext } from "node:test";
-import { createGitHubRuntime } from "../dist/clawsweeper-github-runtime.js";
+import { type TestContext } from "node:test";
+import { githubTest as test, installGhFixture } from "./github-runtime-fixture.ts";
+import * as runtime from "../dist/clawsweeper-github-runtime.js";
 import { createGitHubExecution } from "../dist/clawsweeper-github-execution.js";
 import { activeGitHubRateLimitCircuit } from "../dist/github-rate-limit-circuit.js";
+
+const execution = createGitHubExecution({ ROOT: process.cwd(), gitHubRuntime: runtime });
 
 function fixture(t: TestContext) {
   const root = mkdtempSync(join(tmpdir(), "publication-quota-"));
@@ -95,53 +98,42 @@ test("shared circuits respect scope, owner, expiry and partial observations", (t
 
 test("publication siblings stop probing exhausted quota and resume fresh reads after reset", (t) => {
   const f = fixture(t);
-  const requests: Array<{ token: string | undefined; args: string[] }> = [];
   const reset = Math.floor(f.now / 1000) + 600;
-  let exhausted = true;
-  const runtime = () =>
-    createGitHubRuntime({
-      ROOT: f.root,
-      targetRepo: () => "openclaw/openclaw",
-      run: (_command, args, options) => {
-        const token = options?.env?.GH_TOKEN ?? process.env.GH_TOKEN;
-        requests.push({ token, args });
-        if (args[1] === "rate_limit") {
-          // The circuit must already be visible while this lookup is running.
-          assert.ok(
-            activeGitHubRateLimitCircuit(f.observationPath, "repository_actions", "openclaw"),
-          );
-          return JSON.stringify({ remaining: 0, reset });
-        }
-        if (token === f.env.REPO_TOKEN && exhausted)
-          throw new Error("HTTP 403: API rate limit exceeded");
-        return JSON.stringify({ version: exhausted ? 1 : 2 });
-      },
-    });
-  const execution = () =>
-    createGitHubExecution({
-      ROOT: f.root,
-      gitHubRuntime: runtime(),
-      labelAlreadyExistsError: () => false,
-    });
+  const gh = installGhFixture(
+    t,
+    `
+    if (args[1] === "rate_limit") {
+      const rows = readFileSync(process.env.CLAWSWEEPER_GITHUB_RATE_LIMIT_OBSERVATION_PATH, "utf8");
+      if (!rows.includes('"scope":"repository_actions"')) throw new Error("circuit missing before lookup");
+      process.stdout.write(JSON.stringify({ remaining: 0, reset: ${reset} }));
+    } else if (token === process.env.REPO_TOKEN && !state.recovered) {
+      throw new Error("HTTP 403: API rate limit exceeded");
+    } else {
+      process.stdout.write(JSON.stringify({ version: state.recovered ? 2 : 1 }));
+    }
+  `,
+  );
   const metadata = ["api", "repos/openclaw/openclaw/issues/123"];
-  assert.equal(JSON.parse(execution().ghWithRetry(metadata)).version, 1);
+  assert.equal(JSON.parse(runtime.withGitHubRun(() => execution.ghWithRetry(metadata))).version, 1);
   const observed = readFileSync(f.observationPath, "utf8");
-  const firstCount = requests.length;
+  const firstCount = gh.requests().length;
   assert.equal(firstCount, 3); // Initial read, one reset lookup, one App fallback.
   for (let sibling = 0; sibling < 8; sibling++) {
     assert.throws(
       () =>
-        execution().ghWithRetry([
-          "api",
-          `repos/openclaw/openclaw/issues/${sibling + 124}/comments`,
-        ]),
+        runtime.withGitHubRun(() =>
+          execution.ghWithRetry([
+            "api",
+            `repos/openclaw/openclaw/issues/${sibling + 124}/comments`,
+          ]),
+        ),
       (error: unknown) => {
         assert.equal((error as { retryAt: string }).retryAt, new Date(reset * 1000).toISOString());
         return true;
       },
     );
   }
-  assert.equal(requests.length, firstCount);
+  assert.equal(gh.requests().length, firstCount);
   assert.equal(readFileSync(f.observationPath, "utf8"), observed);
   const metrics = readFileSync(f.metricsPath, "utf8")
     .trim()
@@ -150,51 +142,36 @@ test("publication siblings stop probing exhausted quota and resume fresh reads a
   assert.equal(metrics.filter((row) => row.outcome === "throttle").length, 1);
   assert.equal(metrics.filter((row) => row.outcome === "skipped_by_circuit").length, 8);
   f.write(f.observation({ retry_at: new Date(f.now - 1).toISOString() }));
-  exhausted = false;
-  assert.equal(JSON.parse(execution().ghWithRetry(metadata)).version, 2);
-  assert.equal(requests.length, firstCount + 1);
+  writeFileSync(gh.statePath, JSON.stringify({ recovered: true }));
+  assert.equal(JSON.parse(runtime.withGitHubRun(() => execution.ghWithRetry(metadata))).version, 2);
+  assert.equal(gh.requests().length, firstCount + 1);
 });
 
 test("publication circuit preserves App fallback and leaves mutation routing unchanged", (t) => {
   const f = fixture(t);
   f.write(f.observation());
-  const tokens: Array<string | undefined> = [];
-  const runtime = createGitHubRuntime({
-    ROOT: f.root,
-    targetRepo: () => "openclaw/openclaw",
-    run: (_command, _args, options) => {
-      tokens.push(options?.env?.GH_TOKEN ?? process.env.GH_TOKEN);
-      return "{}";
-    },
-  });
-  const execution = createGitHubExecution({
-    ROOT: f.root,
-    gitHubRuntime: runtime,
-    labelAlreadyExistsError: () => false,
-  });
+  const gh = installGhFixture(t, 'process.stdout.write("{}");');
   execution.ghWithRetry(["api", "repos/openclaw/openclaw/issues/123"]);
-  assert.deepEqual(tokens, [f.env.GH_TOKEN]);
+  assert.deepEqual(
+    gh.requests().map(({ token }) => token),
+    [f.env.GH_TOKEN],
+  );
   runtime.ghWithPreparedTimeout(
     ["api", "repos/openclaw/openclaw/issues/123", "--method", "PATCH"],
     1000,
   );
-  assert.deepEqual(tokens, [f.env.GH_TOKEN, f.env.GH_TOKEN]);
+  assert.deepEqual(
+    gh.requests().map(({ token }) => token),
+    [f.env.GH_TOKEN, f.env.GH_TOKEN],
+  );
 });
 
 test("an exhausted matching App circuit cannot spend the fallback credential", (t) => {
   const f = fixture(t);
   f.write(f.observation(), f.observation({ scope: "target_app", target_owner: "openclaw" }));
-  const runtime = createGitHubRuntime({
-    ROOT: f.root,
-    targetRepo: () => "openclaw/openclaw",
-    run: () => assert.fail("exhausted credentials must not dispatch"),
-  });
-  const execution = createGitHubExecution({
-    ROOT: f.root,
-    gitHubRuntime: runtime,
-    labelAlreadyExistsError: () => false,
-  });
+  const gh = installGhFixture(t, 'throw new Error("exhausted credentials must not dispatch");');
   assert.throws(() => execution.ghWithRetry(["api", "repos/openclaw/openclaw/issues/123"]), {
     name: "GitHubRateLimitError",
   });
+  assert.equal(gh.requests().length, 0);
 });

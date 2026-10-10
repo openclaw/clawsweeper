@@ -10,9 +10,9 @@ import {
   writeFileSync,
 } from "node:fs";
 import { delimiter, dirname, join } from "node:path";
-import test from "node:test";
+import { githubTest as test } from "./github-runtime-fixture.ts";
 
-import { createGitHubRuntime } from "../dist/clawsweeper-github-runtime.js";
+import * as runtime from "../dist/clawsweeper-github-runtime.js";
 import {
   applyRuntimeBudgetForTest,
   main,
@@ -127,11 +127,6 @@ test("apply runtime budget uses the token deadline as an absolute wall clock", (
 test("GitHub command timeouts and close delays share the elapsed runtime and flush reserve", (t) => {
   let nowMs = 1_000_000;
   t.mock.method(Date, "now", () => nowMs);
-  const runtime = createGitHubRuntime({
-    ROOT: process.cwd(),
-    targetRepo: () => "openclaw/clawsweeper",
-    run: () => assert.fail("budget checks must not run commands"),
-  });
   const isExpectedYield = (error: unknown): boolean =>
     error instanceof runtime.GitHubRuntimeBudgetError &&
     error.reason === "max runtime 15000ms reached before close";
@@ -146,6 +141,25 @@ test("GitHub command timeouts and close delays share the elapsed runtime and flu
   });
   assert.equal(runtime.githubCommandTimeoutMs(), undefined);
   assert.doesNotThrow(() => runtime.ensureRuntimeDelayFits(30_000, "before close"));
+});
+
+test("run state and runtime budgets stay isolated across asynchronous commands", async () => {
+  const { promise, resolve } = Promise.withResolvers<void>();
+  const now = Date.now();
+  const limited = runtime.withGitHubRun(() =>
+    runtime.withGitHubRuntimeBudget({ startedAtMs: now, maxRuntimeMs: 20_000 }, async () => {
+      await promise;
+      assert.ok(runtime.githubCommandTimeoutMs()! > 0);
+      assert.ok(runtime.githubCommandTimeoutMs()! <= 19_000);
+    }),
+  );
+  const unlimited = runtime.withGitHubRun(async () => {
+    assert.equal(runtime.githubCommandTimeoutMs(), undefined);
+    resolve();
+    await limited;
+    assert.equal(runtime.githubCommandTimeoutMs(), undefined);
+  });
+  await Promise.all([limited, unlimited]);
 });
 
 test("apply-decisions exits cleanly at an expired token deadline and retries the same item", () => {
