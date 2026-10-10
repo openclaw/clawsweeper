@@ -503,7 +503,26 @@ test("apply-decisions promotes old F-rated stale PRs with low-signal close seman
       "## Summary\n\nKeep open: this branch needs contributor follow-up before any close decision.",
     );
     const synced = reportWithSyncedReviewComment(
-      withReviewRecord(staleReport, { decision: "keep_open", closeReason: "none" }),
+      withReviewRecord(staleReport, {
+        decision: "keep_open",
+        closeReason: "none",
+        summary: "Keep open: this branch needs contributor follow-up before any close decision.",
+        workCandidate: "manual_review",
+        workClusterRefs: ["Related discussion in #400"],
+        realBehaviorProof: {
+          status: "missing",
+          evidenceKind: "none",
+          needsContributorAction: true,
+          summary: "No live proof was supplied.",
+        },
+        prRating: {
+          overallTier: "F",
+          proofTier: "F",
+          patchTier: "F",
+          summary: "The PR is not merge-ready.",
+          nextSteps: ["Rebase and provide proof."],
+        },
+      }),
       330,
       "none",
     );
@@ -595,7 +614,7 @@ test("apply-decisions promotes old F-rated stale PRs with low-signal close seman
   });
 });
 
-test("apply-decisions does not promote a report whose review record does not read", () => {
+test("apply-decisions skips an unreadable record and continues with other queued reports", () => {
   withApplyTestWorkspace(tmpPrefix, ({ root, itemsDir, closedDir, plansDir, reportPath }) => {
     // The comment renderer stops on a record that does not read, so break the record after sync.
     const synced = reportWithSyncedReviewComment(
@@ -609,6 +628,18 @@ test("apply-decisions does not promote a report whose review record does not rea
     writeFileSync(
       join(itemsDir, "330.md"),
       synced.report.replace(/^review_record: \{/m, "review_record: {broken"),
+      "utf8",
+    );
+    writeFileSync(
+      join(itemsDir, "331.md"),
+      withReviewRecord(
+        stalePullRequestReport({
+          number: 331,
+          local_checkout_access: "unavailable",
+          local_checkout_access_source: "unavailable",
+        }),
+        { decision: "keep_open", closeReason: "none" },
+      ),
       "utf8",
     );
 
@@ -627,6 +658,11 @@ test("apply-decisions does not promote a report whose review record does not rea
         number: 330,
         action: "skipped_changed_since_review",
         reason: "review_record: the value is not JSON; fresh review required",
+      },
+      {
+        number: 331,
+        action: "kept_open",
+        reason: "review lacks verified local checkout access",
       },
     ]);
     assert.equal(existsSync(join(closedDir, "330.md")), false);

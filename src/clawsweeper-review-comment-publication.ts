@@ -19,6 +19,7 @@ import { frontMatterValue, replaceFrontMatterValue, sectionValue } from "./repor
 import { sectionLineValue } from "./clawsweeper-report-helpers.js";
 import { normalizedLabelSet } from "./clawsweeper-item-policy.js";
 import { sentence } from "./clawsweeper-review-presentation.js";
+import { reportReviewDecision } from "./report-review-decision.js";
 
 const DURABLE_REVIEW_COMMENT_MAX_BYTES = 60 * 1024;
 
@@ -372,8 +373,8 @@ export function createReviewCommentPublication(
   }
 
   function closeAppliedEvidenceLink(markdown: string, itemUrl: string): string {
-    const fixedPrUrl = frontMatterValue(markdown, "fixed_pr_url");
-    const fixedPrNumber = frontMatterValue(markdown, "fixed_pr_number");
+    const { url: fixedPrUrl, number: fixedPrNumber } =
+      reportReviewDecision(markdown).fixedPullRequestFields;
     if (fixedPrUrl && fixedPrUrl !== "unknown") {
       const label =
         fixedPrNumber && fixedPrNumber !== "unknown" ? `fix PR #${fixedPrNumber}` : "fix PR";

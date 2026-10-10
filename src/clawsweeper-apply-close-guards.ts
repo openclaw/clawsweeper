@@ -15,7 +15,7 @@ import type {
   PrCloseCoverageProofGateBlock,
   ReportEntry,
 } from "./clawsweeper-types.js";
-import { maintainerDecisionBlocksClose, type MaintainerDecision } from "./decision-packets.js";
+import type { MaintainerDecision } from "./decision-packets.js";
 import { frontMatterValue } from "./report-front-matter.js";
 import {
   hasAutoCloseAllowedMetadata,
@@ -24,11 +24,11 @@ import {
   isRetryableCloseSkipReport,
   reportCloseReason,
   reportItemKind,
-  reviewSectionValue,
   shouldSyncReviewComment,
 } from "./clawsweeper-record-metadata.js";
 import { lockedConversationApplyReason } from "./clawsweeper-item-policy.js";
 import { markdownRepository } from "./clawsweeper-repository-paths.js";
+import { reportReviewDecision } from "./report-review-decision.js";
 
 export function markLockedConversationApplySkipped(
   reason: string | null,
@@ -292,8 +292,11 @@ export function createApplyCloseGuards(
       const counterpartEntry = openReportEntry(counterpartNumber);
       if (counterpartEntry) {
         const counterpartMarkdown = readFileSync(counterpartEntry.path, "utf8");
+        if (unreadableReviewRecordReason(counterpartMarkdown)) return false;
+        const counterpartReview = reportReviewDecision(counterpartMarkdown);
         const counterpartMaintainerDecisionBlocked =
-          maintainerDecisionBlocksClose(counterpartMarkdown);
+          counterpartReview.maintainerDecisionInvalid ||
+          counterpartReview.maintainerDecision?.required === true;
         const counterpartRepo = markdownRepository(counterpartMarkdown, counterpartEntry.path);
         const counterpartReason = reportCloseReason(counterpartMarkdown);
         if (
@@ -314,9 +317,6 @@ export function createApplyCloseGuards(
               fileEntries.push(counterpartEntry);
             return true;
           }
-          // The comment render stops on a record that does not read. Such a counterpart
-          // does not close, because its close check fails on the same record.
-          if (unreadableReviewRecordReason(counterpartMarkdown)) return false;
           const counterpartReviewedAuthorAssociation = normalizeAuthorAssociation(
             frontMatterValue(counterpartMarkdown, "author_association"),
           );
@@ -331,7 +331,7 @@ export function createApplyCloseGuards(
           );
           const counterpartReviewState = issueReviewCommentState(
             counterpartNumber,
-            [counterpartReviewCommentBody, reviewSectionValue(counterpartMarkdown, "closeComment")],
+            [counterpartReviewCommentBody, counterpartReview.publishedCloseComment],
             { bypassGenerationCache: true },
           );
           const counterpartReviewComment = counterpartReviewState.reviewComment;

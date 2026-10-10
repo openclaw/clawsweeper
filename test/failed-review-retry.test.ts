@@ -27,7 +27,7 @@ import {
   failedReviewRetryEligibility,
   isInfrastructureFailedReview,
 } from "../dist/clawsweeper-record-metadata.js";
-import { tmpPrefix, withMockGh, workPlanCandidateReport } from "./helpers.ts";
+import { tmpPrefix, withMockGh, withReviewRecord, workPlanCandidateReport } from "./helpers.ts";
 import { readAllSpooledActionEvents } from "../dist/action-ledger.js";
 
 function failedReviewReport(overrides = {}) {
@@ -55,6 +55,30 @@ Codex review failed: timeout.
 - **codex failure detail:** Codex worker timed out after 600000ms with ETIMEDOUT.
 `;
 }
+
+test("corrupt failed review records are skipped without blocking later eligible retries", () => {
+  const valid = withReviewRecord(failedReviewReport(), {
+    decision: "keep_open",
+    closeReason: "none",
+    summary: "Codex review failed: timeout.",
+  });
+  const corrupt = valid.replace(/^review_record: \{/m, "review_record: {broken");
+  assert.equal(isInfrastructureFailedReview(corrupt), false);
+  const results = [corrupt, valid].map((markdown) =>
+    failedReviewRetryEligibility({
+      markdown,
+      liveState: "open",
+      liveHeadSha: "abc123def456",
+      now: Date.parse("2026-07-10T16:00:00Z"),
+      maxAttempts: 3,
+      cooldownMs: 0,
+    }),
+  );
+  assert.deepEqual(
+    results.map((result) => result.action),
+    ["skipped_non_infrastructure_failure", "planned_failed_review_retry"],
+  );
+});
 
 function failedIssueRetryFixture(root: string, number: number) {
   const itemsDir = join(root, "items");

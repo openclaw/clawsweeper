@@ -3813,6 +3813,7 @@ for (const scenario of [
   "paired_locked_closeout_cleanup",
   "paired_provenance_revoked_before_close",
   "paired_provenance_retargeted_before_close",
+  "paired_corrupt_review_record",
   "paired_human_activity_during_lease",
 ] as const) {
   test(`apply-decisions verifies provenance after a closeout note and before closing PR proposals (${scenario})`, () => {
@@ -3835,6 +3836,7 @@ for (const scenario of [
       scenario === "paired_provenance_revoked_before_close";
     const pairedProvenanceRetargetedBeforeClose =
       scenario === "paired_provenance_retargeted_before_close";
+    const pairedCorruptReviewRecord = scenario === "paired_corrupt_review_record";
     const pairedHumanActivityDuringLease = scenario === "paired_human_activity_during_lease";
     const lockedCloseoutComment = scenario === "locked_closeout_comment";
     const betweenFreshnessAndCloseoutHumanActivity =
@@ -3898,7 +3900,13 @@ for (const scenario of [
       );
       writeFileSync(join(itemsDir, "321.md"), synced.report, "utf8");
       if (!multipleLinkedIssues) {
-        writeFileSync(join(itemsDir, "456.md"), linkedIssueSynced.report, "utf8");
+        writeFileSync(
+          join(itemsDir, "456.md"),
+          pairedCorruptReviewRecord
+            ? linkedIssueSynced.report.replace(/^---\n/, "---\nreview_record: {broken\n")
+            : linkedIssueSynced.report,
+          "utf8",
+        );
         writeFileSync(
           linkedIssueCommentPath,
           pairedDurableReviewMismatch
@@ -4329,6 +4337,34 @@ if (args[0] === "api" && args[1] === "-i" && /\\/issues\\/321\\/timeline(?:\\?|$
       const graphqlIndices = calls
         .map((args, index) => (args[0] === "api" && args[1] === "graphql" ? index : -1))
         .filter((index) => index >= 0);
+      if (pairedCorruptReviewRecord) {
+        const report = JSON.parse(readFileSync(reportPath, "utf8")) as Array<{
+          number: number;
+          action: string;
+          reason: string;
+        }>;
+        assert.equal(pairedIssueCloseIndex, -1, JSON.stringify(report));
+        assert.equal(closeIndex, -1);
+        assert.equal(existsSync(join(closedDir, "456.md")), false);
+        assert.equal(existsSync(join(closedDir, "321.md")), false);
+        assert.equal(
+          report.some(
+            (entry) =>
+              entry.number === 321 &&
+              entry.action === "kept_open" &&
+              entry.reason ===
+                "implemented-on-main paired closeout requires an exact current durable review comment for the linked issue report",
+          ),
+          true,
+          JSON.stringify(report),
+        );
+        assert.equal(
+          report.some((entry) => entry.number === 456),
+          false,
+          JSON.stringify(report),
+        );
+        return;
+      }
       if (lockedCloseoutComment) {
         assert.equal(closeIndex, -1);
         assert.equal(existsSync(join(closedDir, "321.md")), false);

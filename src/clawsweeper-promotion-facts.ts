@@ -16,7 +16,6 @@ import {
   mergeRiskOptionsFromReport,
   reportAgentsPolicyStatus,
   reportChangeExample,
-  evidenceEntry,
   reportEvidence,
   reportFeatureShowcase,
   reportLikelyOwners,
@@ -51,18 +50,14 @@ import type {
   WorkCandidateKind,
 } from "./clawsweeper-types.js";
 import { completeActivityContextSymbol } from "./clawsweeper-types.js";
-import {
-  emptyMaintainerDecision,
-  maintainerDecisionFromReport,
-  type MaintainerDecision,
-} from "./decision-packets.js";
+import { emptyMaintainerDecision, type MaintainerDecision } from "./decision-packets.js";
 import type { CreateReportOrchestrationDependencies } from "./clawsweeper-report-orchestration-dependencies.js";
 import { renderCloseCommentFromReport } from "./clawsweeper-report-comment-helpers.js";
 import { fixedPullRequestFromReport } from "./clawsweeper-status-context.js";
 import { asRecord, nonBlankStringOrUndefined } from "./value-coerce.js";
 import { parseIsoMs } from "./iso-time.js";
-import { hostEvidenceMarkdown } from "./clawsweeper-report-helpers.js";
-import { updateReviewRecordDecision } from "./review-record.js";
+import { evidenceEntry, hostEvidenceMarkdown } from "./clawsweeper-report-helpers.js";
+import { ReviewRecordFormatError, updateReviewRecordDecision } from "./review-record.js";
 import {
   frontMatterStringArray,
   frontMatterValue,
@@ -73,6 +68,7 @@ import { isAutomationReportAuthor } from "./clawsweeper-item-policy.js";
 import { reportFileName } from "./clawsweeper-repository-paths.js";
 import { reviewSectionValue } from "./clawsweeper-record-metadata.js";
 import { eventTimestampMs, isAfterReview } from "./clawsweeper-label-policy.js";
+import { reportReviewDecision } from "./report-review-decision.js";
 
 export function createPullRequestPromotionFacts(
   dependencies: CreateReportOrchestrationDependencies,
@@ -298,8 +294,7 @@ export function createPullRequestPromotionFacts(
     markdown: string,
     state: AuthorPrBudgetApplyState,
   ): PullRequestClosePromotion {
-    const proof = reportRealBehaviorProof(markdown);
-    const rating = reportPrRating(markdown);
+    const { realBehaviorProof: proof, prRating: rating } = reportReviewDecision(markdown);
     const author = `@${state.author.replace(/^@/, "")}`;
     const summary = `${author} currently has ${state.openPrCount} open PRs in this repository, above the budget of ${state.budget}. ClawSweeper is closing this PR as one of the author's lowest-signal submissions under that budget: its overall rating is ${rating.overallTier} and its real behavior proof is ${proof.status}. Closing or finishing other PRs frees review budget, and this PR can be reopened once the author is under budget or when real proof is added.`;
     return {
@@ -472,12 +467,13 @@ export function createPullRequestPromotionFacts(
     currentNumber: number,
   ): number[] {
     const numbers = new Set<number>();
-    const canonicalRef = reportRootCauseCluster(markdown).canonicalRef;
+    const review = reportReviewDecision(markdown);
+    const canonicalRef = review.rootCauseCluster.canonicalRef;
     if (canonicalRef) {
       const parsed = parseGitHubItemRef(canonicalRef, "root_cause_cluster.canonicalRef");
       if (parsed.kind === "pull_request") numbers.add(parsed.number);
     }
-    const fixedPullRequest = fixedPullRequestFromReport(markdown);
+    const fixedPullRequest = review.fixedPullRequest;
     if (
       fixedPullRequest?.confidence === "high" &&
       isGitHubVerifiedFixedPullRequestSource(fixedPullRequest.source)
@@ -517,7 +513,13 @@ export function createPullRequestPromotionFacts(
           continue;
         }
         return { candidate: linkedPull, unsafeReason: null };
-      } catch {
+      } catch (error) {
+        if (error instanceof ReviewRecordFormatError) {
+          return {
+            candidate: null,
+            unsafeReason: `linked canonical PR #${number} has an unreadable review record; fresh review required`,
+          };
+        }
         // Missing or cross-repo stale references are not close evidence.
       }
     }
@@ -554,7 +556,7 @@ export function createPullRequestPromotionFacts(
 
   function proofPassedInReport(markdown: string | null): boolean {
     if (!markdown) return false;
-    const proof = reportRealBehaviorProof(markdown);
+    const proof = reportReviewDecision(markdown).realBehaviorProof;
     return proof.status === "sufficient" || proof.status === "override";
   }
 
@@ -603,13 +605,11 @@ export function createPullRequestPromotionFacts(
     }
 
     if (report) {
-      if (
-        frontMatterValue(report, "decision") === "close" &&
-        frontMatterValue(report, "confidence") === "high"
-      ) {
+      const review = reportReviewDecision(report);
+      if (review.decision === "close" && review.confidence === "high") {
         return `linked canonical PR #${linkedPull.number} is itself proposed for close`;
       }
-      const proof = reportRealBehaviorProof(report);
+      const proof = review.realBehaviorProof;
       if (
         !proofPassed &&
         (proof.status === "missing" ||
@@ -618,7 +618,7 @@ export function createPullRequestPromotionFacts(
       ) {
         return `linked canonical PR #${linkedPull.number} is still waiting for real behavior proof`;
       }
-      const rating = reportPrRating(report);
+      const rating = review.prRating;
       if (rating.overallTier === "F" || rating.proofTier === "F" || rating.patchTier === "F") {
         return `linked canonical PR #${linkedPull.number} is F-rated`;
       }
@@ -654,16 +654,16 @@ export function createPullRequestPromotionFacts(
 // review, not crash the promotion batch: close-decision gating blocks any
 // close while maintainerDecision.required is true.
 export function ambiguityGuardedMaintainerDecision(markdown: string): MaintainerDecision {
-  try {
-    return maintainerDecisionFromReport(markdown) ?? emptyMaintainerDecision();
-  } catch {
-    return {
-      required: true,
-      kind: "manual_review",
-      question: "Report front matter is ambiguous or possibly spoofed; review manually.",
-      rationale: "Duplicate front-matter metadata detected outside the leading block.",
-      options: [],
-      likelyOwner: { person: "", reason: "", confidence: "low" },
-    };
+  const review = reportReviewDecision(markdown);
+  if (!review.maintainerDecisionInvalid) {
+    return review.maintainerDecision ?? emptyMaintainerDecision();
   }
+  return {
+    required: true,
+    kind: "manual_review",
+    question: "Report front matter is ambiguous or possibly spoofed; review manually.",
+    rationale: "Duplicate front-matter metadata detected outside the leading block.",
+    options: [],
+    likelyOwner: { person: "", reason: "", confidence: "low" },
+  };
 }

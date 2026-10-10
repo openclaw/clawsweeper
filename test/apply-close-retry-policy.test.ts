@@ -9,7 +9,67 @@ import {
   tmpPrefix,
   verifiedImplementationPullRequestReport,
   withMockGh,
+  withReviewRecord,
 } from "./helpers.ts";
+import {
+  buildExistingReviewIndex,
+  existingReview,
+  hasAutoCloseAllowedMetadata,
+  isApplyCloseCandidateReport,
+  reportCloseReason,
+} from "../dist/clawsweeper-record-metadata.js";
+import { ReviewRecordFormatError } from "../dist/review-record.js";
+
+test("close metadata and existing review indexes use recorded decisions with host apply actions", () => {
+  const legacy = verifiedImplementationPullRequestReport({ action_taken: "proposed_close" });
+  assert.equal(isApplyCloseCandidateReport(legacy), true);
+  const typed = withReviewRecord(legacy, {
+    decision: "keep_open",
+    closeReason: "none",
+    confidence: "high",
+  });
+  assert.equal(reportCloseReason(typed), undefined);
+  assert.equal(isApplyCloseCandidateReport(typed), false);
+  assert.equal(hasAutoCloseAllowedMetadata(typed), false);
+  const promoted = withReviewRecord(legacy.replace("decision: close", "decision: keep_open"), {
+    decision: "close",
+    closeReason: "implemented_on_main",
+    confidence: "high",
+  });
+  assert.equal(isApplyCloseCandidateReport(promoted), true);
+  assert.equal(
+    isApplyCloseCandidateReport(
+      promoted.replace("action_taken: proposed_close", "action_taken: closed"),
+    ),
+    false,
+  );
+  const corrupt = typed.replace(/^review_record: \{/m, "review_record: {broken");
+  assert.throws(() => isApplyCloseCandidateReport(corrupt), ReviewRecordFormatError);
+  const root = mkdtempSync(tmpPrefix);
+  try {
+    writeFileSync(join(root, "321.md"), typed);
+    const subject = { repo: "openclaw/clawsweeper", number: 321 };
+    assert.equal(existingReview(subject, root)?.decision, "keep_open");
+    assert.equal(
+      buildExistingReviewIndex(root).byKey.get("openclaw/clawsweeper#321")?.decision,
+      "keep_open",
+    );
+    writeFileSync(join(root, "321.md"), corrupt);
+    writeFileSync(
+      join(root, "322.md"),
+      withReviewRecord(legacy.replace("number: 321", "number: 322"), {
+        decision: "keep_open",
+        closeReason: "none",
+      }),
+    );
+    assert.equal(existingReview(subject, root), null);
+    const index = buildExistingReviewIndex(root);
+    assert.equal(index.byKey.has("openclaw/clawsweeper#321"), false);
+    assert.equal(index.byKey.get("openclaw/clawsweeper#322")?.decision, "keep_open");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
 
 test("apply-decisions retries legacy fixed close skips", () => {
   for (const actionTaken of ["skipped_maintainer_authored", "skipped_invalid_decision"]) {

@@ -1,5 +1,6 @@
 import { existsSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { oversizedPrSourceSnapshot } from "./clawsweeper-oversized-pr-freshness.js";
+import { reportReviewDecision } from "./report-review-decision.js";
 import {
   oversizedPullRequestAdmission,
   oversizedPullRequestContext,
@@ -215,7 +216,6 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
     removePullRequestReviewTree,
     renderReviewCommentFromReport,
     reportFileName,
-    reportReviewFindings,
     restoreTreeModes,
     reviewActionForDecision,
     reviewLeaseStillMatchesContext,
@@ -1063,7 +1063,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
                       }
                     : {}),
                   reportPath,
-                  findingCount: reportReviewFindings(carried).length,
+                  findingCount: reportReviewDecision(carried).reviewFindings.length,
                   completionReason: "structural_cache",
                 });
                 completed += 1;
@@ -1413,7 +1413,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
             startedAtMs: contextStartedAt,
             ...(context.sourceRevision ? { sourceRevision: context.sourceRevision } : {}),
             reportPath,
-            findingCount: reportReviewFindings(carried).length,
+            findingCount: reportReviewDecision(carried).reviewFindings.length,
             completionReason: "content_cache",
           });
           activeReviewItem = null;

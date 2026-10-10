@@ -38,6 +38,21 @@ import { hasNormalizedLabel, protectedLabels } from "./clawsweeper-item-policy.j
 import { frontMatterValue } from "./report-front-matter.js";
 import { isSecurityLabel } from "./repair/security-signals.js";
 import type { ReportReviewDecision } from "./report-review-decision.js";
+import { reviewDecisionParser } from "./clawsweeper-decision-parser.js";
+import type { Decision, LabelJustification } from "./clawsweeper-types.js";
+
+/** One justification for each label that the review selected, in the order of the labels. */
+export function selectedLabelJustifications(
+  justifications: readonly LabelJustification[],
+  labels: Pick<Decision, "triagePriority" | "impactLabels" | "mergeRiskLabels" | "maturityLabels">,
+): LabelJustification[] {
+  const reasons = new Map(justifications.map((entry) => [entry.label, entry.reason]));
+  return reviewDecisionParser.selectedReviewLabels(labels).map((label) => ({
+    label,
+    reason:
+      reasons.get(label) ?? "Older review report did not store a label-specific justification.",
+  }));
+}
 
 export function nextRealBehaviorProofSufficientLabels(
   labels: readonly string[],

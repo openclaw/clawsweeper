@@ -23,7 +23,7 @@ const env = { PATH: process.env.PATH, HOME: home, LANG: "C" };
 const load = (name) => import(pathToFileURL(join(root, "dist", name)).href);
 const { renderReviewCommentFromReport, reviewAutomationMarkersFromReport } =
   await load("clawsweeper.js");
-const { reportLiveProofPlan } = await load("clawsweeper-report-parser.js");
+const { reportLiveProofPlan } = await load("live-proof/report.js");
 const { liveProofPlanSha256 } = await load("live-proof/verification.js");
 const base = readFileSync(join(recipe, "help-only-report.md"), "utf8");
 const receiptBytes = readFileSync(join(recipe, "help-only-receipt.json"));

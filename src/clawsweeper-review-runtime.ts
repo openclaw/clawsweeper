@@ -70,7 +70,7 @@ import { repositoryProfileFor, type RepositoryProfile } from "./repository-profi
 import { reviewProofCapabilityFromEnv } from "./review-proof-client.js";
 import { readBoundedReviewResult } from "./review-output-policy.js";
 import { asRecord, nonBlankStringOrUndefined } from "./value-coerce.js";
-import { evidenceEntry } from "./clawsweeper-report-parser.js";
+import { evidenceEntry } from "./clawsweeper-report-helpers.js";
 import {
   applicableCloseReasons,
   renderReviewSections,

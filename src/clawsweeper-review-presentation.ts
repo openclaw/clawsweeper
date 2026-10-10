@@ -31,7 +31,7 @@ import {
 } from "./clawsweeper-label-policy.js";
 import type { RepositoryProfile } from "./repository-profiles.js";
 import { publicTableCell } from "./clawsweeper-report-helpers.js";
-import { reportEvidence } from "./clawsweeper-report-parser.js";
+import { reportReviewDecision } from "./report-review-decision.js";
 
 export function sentence(value: string): string {
   const trimmed = value.trim();
@@ -453,8 +453,8 @@ export function publicMergeReadinessBlock(
 
 export function publicFailedReviewReadinessBlock(markdown: string): string {
   const reason =
-    reportEvidence(markdown)
-      .find((entry) => entry.label === "failure reason")
+    reportReviewDecision(markdown)
+      .evidence.find((entry) => entry.label === "failure reason")
       ?.detail.trim() || "Codex review failed before completion.";
   return [
     "Not assessed.",

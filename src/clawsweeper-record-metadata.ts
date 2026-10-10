@@ -43,6 +43,8 @@ import {
 } from "./clawsweeper-repository-paths.js";
 import { isAutoCloseAllowed, repositoryProfileFor } from "./repository-profiles.js";
 import { isOlderThanDays, parseIsoMs } from "./iso-time.js";
+import { reportReviewDecision } from "./report-review-decision.js";
+import { ReviewRecordFormatError } from "./review-record.js";
 import {
   REVIEW_STRUCTURAL_CACHE_VERSION,
   validReviewStructuralRecord,
@@ -73,7 +75,7 @@ export function isExternalPullRequestReport(markdown: string): boolean {
 }
 
 export function reportCloseReason(markdown: string): CloseReason | undefined {
-  const closeReason = frontMatterValue(markdown, "close_reason");
+  const closeReason = reportReviewDecision(markdown).closeReason;
   return closeReason && ALLOWED_REASONS.has(closeReason as CloseReason)
     ? (closeReason as CloseReason)
     : undefined;
@@ -85,12 +87,13 @@ export function reportItemKind(markdown: string): ItemKind | undefined {
 }
 
 function hasHighConfidenceAllowedCloseMetadata(markdown: string): boolean {
-  const closeReason = reportCloseReason(markdown);
+  const decision = reportReviewDecision(markdown);
+  const closeReason = decision.closeReason;
   const itemKind = reportItemKind(markdown);
   return !(
-    frontMatterValue(markdown, "decision") !== "close" ||
-    frontMatterValue(markdown, "confidence") !== "high" ||
-    !closeReason ||
+    decision.decision !== "close" ||
+    decision.confidence !== "high" ||
+    !ALLOWED_REASONS.has(closeReason) ||
     !itemKind
   );
 }
@@ -318,6 +321,14 @@ export function existingReview(
   });
   if (!path) return null;
   const markdown = readFileSync(path, "utf8");
+  let decision: string | undefined;
+  try {
+    decision = reportReviewDecision(markdown).decision;
+  } catch (error) {
+    // An unreadable prior review cannot be reused, but must not block a fresh review.
+    if (error instanceof ReviewRecordFormatError) return null;
+    throw error;
+  }
   return {
     path,
     markdown,
@@ -326,7 +337,7 @@ export function existingReview(
     automationItemUpdatedAt: frontMatterValue(markdown, "automation_item_updated_at"),
     reviewCommentSyncedAt: frontMatterValue(markdown, "review_comment_synced_at"),
     labelsSyncedAt: frontMatterValue(markdown, "labels_synced_at"),
-    decision: frontMatterValue(markdown, "decision"),
+    decision,
     reviewStatus: effectiveReviewStatus(markdown),
     reviewPolicy: frontMatterValue(markdown, "review_policy"),
     reviewModel: frontMatterValue(markdown, "review_model"),
@@ -349,6 +360,13 @@ export function buildExistingReviewIndex(itemsDir: string): ExistingReviewIndex 
     const markdown = readFileSync(path, "utf8");
     const repo = markdownRepository(markdown, path);
     const number = numberForMarkdownFile(file);
+    let decision: string | undefined;
+    try {
+      decision = reportReviewDecision(markdown).decision;
+    } catch (error) {
+      if (error instanceof ReviewRecordFormatError) continue;
+      throw error;
+    }
     byKey.set(existingReviewKey(repo, number), {
       path,
       markdown,
@@ -357,7 +375,7 @@ export function buildExistingReviewIndex(itemsDir: string): ExistingReviewIndex 
       automationItemUpdatedAt: frontMatterValue(markdown, "automation_item_updated_at"),
       reviewCommentSyncedAt: frontMatterValue(markdown, "review_comment_synced_at"),
       labelsSyncedAt: frontMatterValue(markdown, "labels_synced_at"),
-      decision: frontMatterValue(markdown, "decision"),
+      decision,
       reviewStatus: effectiveReviewStatus(markdown),
       reviewPolicy: frontMatterValue(markdown, "review_policy"),
       reviewModel: frontMatterValue(markdown, "review_model"),
@@ -478,11 +496,12 @@ export function isFailedReviewRetryAlreadyExhausted(
 }
 
 export function failedReviewFailureDetail(markdown: string): string {
+  const decision = reportReviewDecision(markdown);
   return [
     frontMatterValue(markdown, "review_status") ?? "",
-    frontMatterValue(markdown, "decision") ?? "",
-    reviewSectionValue(markdown, "summary"),
-    reviewSectionValue(markdown, "evidence"),
+    decision.decision ?? "",
+    decision.summary,
+    decision.evidenceMarkdown,
     sectionValue(markdown, "Summary"),
     sectionValue(markdown, "Evidence"),
     markdown.slice(0, 8000),
@@ -490,7 +509,14 @@ export function failedReviewFailureDetail(markdown: string): string {
 }
 
 export function isInfrastructureFailedReview(markdown: string): boolean {
-  const detail = failedReviewFailureDetail(markdown);
+  let detail: string;
+  try {
+    detail = failedReviewFailureDetail(markdown);
+  } catch (error) {
+    // Corrupt reviewed evidence is not authority to schedule an infrastructure retry.
+    if (error instanceof ReviewRecordFormatError) return false;
+    throw error;
+  }
   const terminalFailure = frontMatterField(markdown, "review_terminal_failure");
   const checkoutInspectionFailure = frontMatterField(markdown, "review_checkout_inspection_failed");
   if (terminalFailure.status === "ambiguous") return false;

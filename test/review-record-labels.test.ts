@@ -13,13 +13,20 @@ import { reviewSectionValue } from "../dist/clawsweeper-record-metadata.js";
 import { reportRealBehaviorProofPolicy } from "../dist/clawsweeper-proof-policy.js";
 import { pullRequestReviewReadinessFromReport } from "../dist/clawsweeper-report-comment-helpers.js";
 import { ratingLabelForTier } from "../dist/clawsweeper-rating.js";
+import { authorPrBudgetSignalBlockReason } from "../dist/clawsweeper-apply-guard-activity.js";
+import { createPullRequestClosePromotion } from "../dist/clawsweeper-close-promotion.js";
+import { createPullRequestCoverageProof } from "../dist/clawsweeper-coverage-proof.js";
+import { createApplyCandidateGuards } from "../dist/clawsweeper-apply-candidate-guards.js";
+import { replaceFrontMatterValue } from "../dist/report-front-matter.js";
 import {
   AUTHORITY_CHAIN_PROOF_MARKER,
   FEATURE_SHOWCASE_LABEL,
+  MERGE_RISK_LABELS,
   PROOF_OVERRIDE_LABEL,
   PROOF_SUFFICIENT_LABEL,
 } from "../dist/clawsweeper-policy.js";
 import {
+  canonicalPullRequestClusterForTest,
   detailsBody,
   item,
   realBehaviorProofReportSection,
@@ -397,4 +404,154 @@ test("no-diff promotion renders and stores the promoted typed decision", () => {
   assert.match(comment, /changed_files: 0/);
   assert.doesNotMatch(comment, /Keep this PR open|Continue the old review/);
   assert.equal(readReviewRecord(promoted)?.decision.closeComment, comment);
+});
+
+test("author budget guards and promotion facts prefer recorded proof and rating", () => {
+  const legacy = pullRequestReport();
+  const typed = withReviewRecord(legacy, {
+    ...readyDecision,
+    realBehaviorProof: {
+      status: "missing",
+      evidenceKind: "none",
+      summary: "The recorded review needs real proof.",
+      needsContributorAction: true,
+    },
+    prRating: {
+      overallTier: "D",
+      proofTier: "F",
+      patchTier: "D",
+      summary: "Recorded low-signal rating.",
+      nextSteps: [],
+    },
+  });
+  assert.notEqual(authorPrBudgetSignalBlockReason(legacy), null);
+  assert.equal(authorPrBudgetSignalBlockReason(typed), null);
+  const facts = createPullRequestPromotionFacts(
+    {} as Parameters<typeof createPullRequestPromotionFacts>[0],
+  );
+  const promotion = facts.authorPrBudgetPromotion(typed, {
+    author: "contributor",
+    openPrCount: 12,
+    budget: 10,
+  });
+  assert.match(promotion.summary, /overall rating is D.*proof is missing/);
+  const corrupt = typed.replace(/^review_record: \{/m, "review_record: {broken");
+  assert.throws(() => authorPrBudgetSignalBlockReason(corrupt), ReviewRecordFormatError);
+  assert.throws(() => facts.proofPassedInReport(corrupt), ReviewRecordFormatError);
+});
+
+test("pause or close recommendations come only from the recorded review when present", () => {
+  const promotions = createPullRequestClosePromotion(
+    {} as Parameters<typeof createPullRequestClosePromotion>[0],
+  );
+  const legacy = pullRequestReport();
+  const option = {
+    category: "pause_or_close",
+    title: "Use the canonical PR",
+    body: "Close this superseded branch.",
+    recommended: true,
+    automergeInstruction: "",
+  };
+  const riskLabel = MERGE_RISK_LABELS[0].name;
+  const typed = withReviewRecord(legacy, {
+    ...readyDecision,
+    mergeRiskLabels: [riskLabel],
+    labelJustifications: [
+      ...readyDecision.labelJustifications,
+      { label: riskLabel, reason: "The canonical PR is the safer landing path." },
+    ],
+    mergeRiskOptions: [option],
+  });
+  assert.equal(promotions.recommendedPauseOrCloseOption(legacy), null);
+  assert.deepEqual(promotions.recommendedPauseOrCloseOption(typed), option);
+  assert.throws(
+    () =>
+      promotions.recommendedPauseOrCloseOption(
+        typed.replace(/^review_record: \{/m, "review_record: {broken"),
+      ),
+    ReviewRecordFormatError,
+  );
+});
+
+test("coverage proof demotion preserves recorded evidence rather than stale report prose", () => {
+  const coverage = createPullRequestCoverageProof(
+    {} as Parameters<typeof createPullRequestCoverageProof>[0],
+  );
+  const legacy = `${pullRequestReport()}\n## Evidence\n\n- stale report evidence\n`;
+  const typed = withReviewRecord(legacy, {
+    ...readyDecision,
+    evidence: [
+      {
+        label: "recorded evidence",
+        detail: "The recorded evidence must survive demotion.",
+        repo: null,
+        file: null,
+        sha: null,
+        line: null,
+        command: null,
+      },
+    ],
+  });
+  const block = {
+    actionTaken: "skipped_pr_close_coverage_proof" as const,
+    reason: "Coverage is absent.",
+  };
+  const demoted = coverage.applyPrCloseCoverageProofBlockedReport(typed, block);
+  assert.match(reviewSectionValue(demoted, "evidence"), /recorded evidence/);
+  assert.doesNotMatch(reviewSectionValue(demoted, "evidence"), /stale report evidence/);
+  assert.equal(readReviewRecord(demoted)?.decision.evidence.length, 2);
+  const legacyDemoted = coverage.applyPrCloseCoverageProofBlockedReport(legacy, block);
+  assert.match(reviewSectionValue(legacyDemoted, "evidence"), /stale report evidence/);
+  assert.throws(
+    () =>
+      coverage.applyPrCloseCoverageProofBlockedReport(
+        typed.replace(/^review_record: \{/m, "review_record: {broken"),
+        block,
+      ),
+    ReviewRecordFormatError,
+  );
+});
+
+test("candidate proof gates read the recorded close decision and reject unreadable records", () => {
+  const legacy = replaceFrontMatterValue(pullRequestReport(), "decision", "close");
+  const typed = withReviewRecord(legacy, { ...readyDecision, decision: "keep_open" });
+  const guards = (markdown: string) =>
+    createApplyCandidateGuards(
+      {} as Parameters<typeof createApplyCandidateGuards>[0],
+      {
+        currentDecisionState: () => ({ markdown, closeReason: "duplicate_or_superseded" }),
+      } as Parameters<typeof createApplyCandidateGuards>[1],
+    );
+  assert.equal(guards(typed).currentPrCloseCoverageProofGateBlock(), null);
+  assert.throws(
+    () =>
+      guards(
+        typed.replace(/^review_record: \{/m, "review_record: {broken"),
+      ).currentPrCloseCoverageProofGateBlock(),
+    ReviewRecordFormatError,
+  );
+});
+
+test("canonical PR selection uses the recorded cluster rather than report metadata", () => {
+  const facts = createPullRequestPromotionFacts({
+    parseGitHubItemRef: () => ({ kind: "pull_request", number: 123 }),
+  } as unknown as Parameters<typeof createPullRequestPromotionFacts>[0]);
+  const legacy = pullRequestReport();
+  const typed = withReviewRecord(legacy, {
+    ...readyDecision,
+    rootCauseCluster: JSON.parse(
+      canonicalPullRequestClusterForTest("https://github.com/openclaw/openclaw/pull/123"),
+    ),
+  });
+  assert.deepEqual(facts.canonicalPullRequestNumbersFromReport(legacy, 74461), []);
+  assert.deepEqual(facts.canonicalPullRequestNumbersFromReport(typed, 74461), [123]);
+  assert.deepEqual(facts.canonicalPullRequestNumbersFromReport(typed, 123), []);
+  assert.throws(
+    () =>
+      facts.canonicalPullRequestNumbersFromReport(
+        typed.replace(/^review_record: \{/m, "review_record: {broken"),
+        74461,
+      ),
+    ReviewRecordFormatError,
+  );
 });

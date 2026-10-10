@@ -23,6 +23,7 @@ import { asRecord, nonBlankStringOrUndefined } from "./value-coerce.js";
 import { frontMatterValue } from "./report-front-matter.js";
 import { markdownRepository } from "./clawsweeper-repository-paths.js";
 import { linkedRelease, linkedSha, markdownLink } from "./clawsweeper-links.js";
+import { reportReviewDecision } from "./report-review-decision.js";
 
 export const MAX_IMPLEMENTATION_LINKED_ISSUE_REFERENCES = 5;
 
@@ -288,10 +289,7 @@ function linkedPullRequest(pull: FixedPullRequest): string {
 
 export function fixedInReportText(markdown: string, profile: RepositoryProfile): string {
   const parts: string[] = [];
-  const fixedPullRequest = fixedPullRequestFromReport(markdown);
-  const fixedRelease = frontMatterValue(markdown, "fixed_release");
-  const fixedSha = frontMatterValue(markdown, "fixed_sha");
-  const fixedAt = frontMatterValue(markdown, "fixed_at");
+  const { fixedPullRequest, fixedRelease, fixedSha, fixedAt } = reportReviewDecision(markdown);
   if (fixedPullRequest?.confidence === "high")
     parts.push(`merged PR ${linkedPullRequest(fixedPullRequest)}`);
   if (fixedRelease && fixedRelease !== "unknown")
@@ -935,7 +933,7 @@ ${profileStatusEnd(profile)}`;
     ) {
       return null;
     }
-    const expectedNumber = Number(frontMatterValue(markdown, "fixed_pr_number"));
+    const expectedNumber = reportReviewDecision(markdown).fixedPullRequestNumber;
     if (!Number.isInteger(expectedNumber) || expectedNumber <= 0) {
       return "implemented-on-main close requires current GitHub-verified fixing pull request provenance";
     }
@@ -1071,9 +1069,10 @@ ${profileStatusEnd(profile)}`;
   ): FixedPullRequest | null {
     if (!priorReviewMarkdown) return null;
     const fixedSha = decision.fixedSha?.trim();
-    const priorFixedSha = frontMatterValue(priorReviewMarkdown, "fixed_sha")?.trim();
+    const priorDecision = reportReviewDecision(priorReviewMarkdown);
+    const priorFixedSha = priorDecision.fixedSha?.trim();
     if (!fixedSha || fixedSha === "unknown" || fixedSha !== priorFixedSha) return null;
-    const pullRequest = fixedPullRequestFromReport(priorReviewMarkdown);
+    const pullRequest = priorDecision.fixedPullRequest;
     return pullRequest?.confidence === "high" ? pullRequest : null;
   }
 

@@ -147,6 +147,19 @@ export function sectionList(section: string, label: string): string[] {
   }
   return values;
 }
+export function evidenceEntry(
+  options: Partial<Evidence> & Pick<Evidence, "label" | "detail">,
+): Evidence {
+  return {
+    label: options.label,
+    repo: options.repo ?? null,
+    detail: options.detail,
+    file: options.file ?? null,
+    line: options.line ?? null,
+    command: options.command ?? null,
+    sha: options.sha ?? null,
+  };
+}
 
 /** Renders evidence that apply adds to a report: label, detail and an optional command. */
 export function hostEvidenceMarkdown(entries: readonly Evidence[]): string {

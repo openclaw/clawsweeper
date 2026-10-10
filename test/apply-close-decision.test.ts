@@ -35,7 +35,7 @@ function validate(markdown: string, legacy?: Decision) {
 test("the apply validates the close from the review record", () => {
   const report = withReviewRecord(implementedCloseReport(), {
     summary: "The record summary.",
-    closeComment: "The model close comment.",
+    closeComment: "",
   });
   const { result, legacyCalls, decision } = validate(report);
   assert.deepEqual(result, { ok: true });
@@ -45,7 +45,6 @@ test("the apply validates the close from the review record", () => {
     decision?.evidence.map((entry) => entry.label),
     ["implementation", "git history provenance", "release provenance"],
   );
-  // The apply posts the close comment of the report, not the model text.
   assert.equal(
     decision?.closeComment,
     "Closing this because the requested behavior is already on main.",

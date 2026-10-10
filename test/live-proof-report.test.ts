@@ -4,7 +4,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-import { reportLiveProofPlan } from "../dist/clawsweeper-report-parser.js";
+import {
+  reportAttachedLiveVerification,
+  reportLiveProofPlan,
+  reportLiveProofRecordingBlock,
+} from "../dist/live-proof/report.js";
 import {
   LIVE_PROOF_RECORDING_MARKER,
   LIVE_VERIFICATION_MARKER,
@@ -20,7 +24,13 @@ import {
   parseAttachedLiveVerification,
 } from "../dist/live-proof/verification.js";
 import { repositoryProfileFor } from "../dist/repository-profiles.js";
-import { legacyLiveProofSection, parseLegacyLiveProofPlan, reportFrontMatter } from "./helpers.ts";
+import { ReviewRecordFormatError } from "../dist/review-record.js";
+import {
+  legacyLiveProofSection,
+  parseLegacyLiveProofPlan,
+  reportFrontMatter,
+  withReviewRecord,
+} from "./helpers.ts";
 
 const HEAD = "a".repeat(40);
 const EMPTY_INSPECTION = {
@@ -108,6 +118,47 @@ function reviewFixture(t: test.TestContext) {
     assertRecordsOnly: () => assert.deepEqual(readdirSync(root), ["42.md"]),
   };
 }
+
+test("host live proof plans remain independent of the typed reviewer decision", () => {
+  const plan: LiveProofPlan = {
+    ...noExecutionPlan("not_applicable"),
+    status: "recommended",
+    surface: "terminal",
+    terminalCompletion: "exit_zero",
+    entry: "printf synthetic",
+    steps: [{ action: "expect_output", text: "synthetic" }],
+  };
+  const report = renderedReport(plan);
+  const typed = withReviewRecord(report, {
+    decision: "keep_open",
+    closeReason: "none",
+    summary: "The typed reviewer does not own the host execution plan.",
+  });
+  assert.deepEqual(reportLiveProofPlan(report), plan);
+  assert.deepEqual(reportLiveProofPlan(typed), plan);
+  assert.equal(reportAttachedLiveVerification(typed).status, "absent");
+  assert.equal(reportLiveProofRecordingBlock(typed), "");
+});
+
+test("unreadable review records stop host proof readers before legacy plan fallback", (t) => {
+  const fixture = reviewFixture(t);
+  const typed = withReviewRecord(renderedReport(noExecutionPlan("not_applicable")), {
+    decision: "keep_open",
+    closeReason: "none",
+  });
+  const corrupt = typed.replace(/^review_record: \{/m, "review_record: {broken");
+  for (const reader of [
+    reportLiveProofPlan,
+    reportAttachedLiveVerification,
+    reportLiveProofRecordingBlock,
+  ]) {
+    assert.throws(() => reader(corrupt), ReviewRecordFormatError);
+  }
+  fixture.write(corrupt);
+  assert.throws(fixture.inspect, ReviewRecordFormatError);
+  assert.throws(fixture.execute, ReviewRecordFormatError);
+  fixture.assertRecordsOnly();
+});
 
 test("review inspection reports executable plans without materializing a checkout", (t) => {
   const fixture = reviewFixture(t);

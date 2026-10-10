@@ -8,6 +8,7 @@ import {
   createRelatedContext,
   redactCredentialUriUserinfo,
 } from "../dist/clawsweeper-related-context.js";
+import { withReviewRecord } from "./helpers.ts";
 
 const TARGET_REPO = "openclaw/openclaw";
 const SECRET_URI = ["https://alice", "secret@example.com/chrome"].join(":");
@@ -195,7 +196,7 @@ test("related items read every issue in one batch, then their pull requests, fai
   ]);
 });
 
-test("local title matches are unchanged by typed record lines", () => {
+test("local title matches read recorded summaries and decisions", () => {
   const root = mkdtempSync(join(tmpdir(), "clawsweeper-related-record-"));
   try {
     mkdirSync(join(root, "items"));
@@ -218,7 +219,7 @@ Keep browser credentials out of model input.
 
 ## Evidence
 
-review_record: this body line is not metadata
+The body is unrelated to the review record.
 `;
     const paths = [join(root, "items", "1.md"), join(root, "closed", "2.md")];
     paths.forEach((path, index) => writeFileSync(path, report(index + 1)));
@@ -231,14 +232,37 @@ review_record: this body line is not metadata
     const before = relatedContextWith({}, root).context.relatedItemsContext(options);
     assert.equal(before.length, 2);
     paths.forEach((path, index) => {
-      const record = `review_record: ${JSON.stringify({
-        version: 1,
-        origin: "backfill",
-        decision: { summary: "unrelated typed summary".repeat(1000) },
-      })}\n`;
-      writeFileSync(path, report(index + 1).replace("\n---\n", `\n${record}---\n`));
+      writeFileSync(
+        path,
+        withReviewRecord(report(index + 1), {
+          decision: "close",
+          closeReason: "cannot_reproduce",
+          summary: "Recorded browser repair summary.",
+        }),
+      );
     });
-    assert.deepEqual(relatedContextWith({}, root).context.relatedItemsContext(options), before);
+    const after = relatedContextWith({}, root).context.relatedItemsContext(options);
+    assert.equal(after.length, 2);
+    assert.match(JSON.stringify(after), /Recorded browser repair summary/);
+    assert.match(JSON.stringify(after), /cannot_reproduce/);
+    assert.doesNotMatch(JSON.stringify(after), /Keep browser credentials/);
+    writeFileSync(
+      paths[0]!,
+      withReviewRecord(report(1)).replace(/^review_record: \{/m, "review_record: {broken"),
+    );
+    const surviving = relatedContextWith({}, root).context.relatedItemsContext(options);
+    assert.equal(surviving.length, 1);
+    assert.match(JSON.stringify(surviving), /Recorded browser repair summary/);
+    assert.doesNotMatch(JSON.stringify(surviving), /Keep browser credentials/);
+    // The current item is excluded from results, but still visited while indexing.
+    writeFileSync(
+      join(root, "items", `${item.number}.md`),
+      withReviewRecord(report(item.number)).replace(
+        /^review_record: \{/m,
+        "review_record: {broken",
+      ),
+    );
+    assert.deepEqual(relatedContextWith({}, root).context.relatedItemsContext(options), surviving);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -254,8 +278,10 @@ test("local title index does not retain the reports backing its metadata", () =>
     // Hardlinks keep the fixture small on disk while every read gets its own string.
     writeFileSync(
       source,
-      `---
+      withReviewRecord(
+        `---
 repository: ${TARGET_REPO}
+number: 1
 type: pull_request
 title: Browser credential transmission repair
 url: https://github.com/${TARGET_REPO}/pull/1
@@ -263,7 +289,6 @@ author: contributor-example
 decision: keep_open
 close_reason: none
 action_taken: kept_open
-review_record: {"version":1,"origin":"backfill","decision":{"summary":"${"r".repeat(512 * 1024)}"}}
 ---
 
 ## Summary
@@ -274,6 +299,13 @@ Keep browser credentials out of model input.
 
 ${"e".repeat(512 * 1024)}
 `,
+        {
+          decision: "keep_open",
+          closeReason: "none",
+          summary: "Keep browser credentials out of model input.",
+          architectureDiagram: "r".repeat(512 * 1024),
+        },
+      ),
     );
     for (let number = 1; number <= 100; number += 1) {
       linkSync(source, join(itemsDir, `${number}.md`));

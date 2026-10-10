@@ -16,7 +16,7 @@ import test from "node:test";
 import YAML from "yaml";
 
 import { renderReviewCommentFromReport } from "../dist/clawsweeper.js";
-import { reportLiveProofPlan } from "../dist/clawsweeper-report-parser.js";
+import { reportLiveProofPlan } from "../dist/live-proof/report.js";
 import { createDecisionParser } from "../dist/clawsweeper-decision-parser.js";
 import { mediaProofSpawnDetail } from "../dist/clawsweeper-media-proof.js";
 import { LIVE_VERIFICATION_MARKER, REVIEW_SECTIONS } from "../dist/clawsweeper-policy.js";
@@ -54,6 +54,8 @@ import {
   renderLiveVerificationCommentBlock,
   sanitizeUntrustedOutput,
 } from "../dist/live-proof/verification.js";
+import { withReviewRecord } from "./helpers.ts";
+import { ReviewRecordFormatError } from "../dist/review-record.js";
 
 const HEAD = "0123456789abcdef0123456789abcdef01234567";
 const liveProofPlanParser = createDecisionParser({
@@ -4139,6 +4141,38 @@ test("live-proof maintenance syncs a comment without the detached recording", ()
   assert.equal(result, "detached");
   assert.match(publishedBody, /<!-- clawsweeper-review item=42 -->/);
   assert.doesNotMatch(publishedBody, /clawsweeper-live-proof-recording|Live proof recording/);
+});
+
+test("detached comment sync reads the typed close reason and fails closed on corrupt records", () => {
+  const fixture = attachmentFixture();
+  const legacy = readFileSync(fixture.recordPath, "utf8");
+  const typed = withReviewRecord(legacy, {
+    decision: "close",
+    closeReason: "implemented_on_main",
+  });
+  const reasons: string[] = [];
+  const dependencies = {
+    ...attachDependencies({
+      runner: mediaRunner([]),
+      fetchPullRequest: async () => {
+        throw new Error("comment sync must not fetch the pull request");
+      },
+      upsertReviewComment: () => ({}),
+      logs: fixture.logs,
+    }),
+    renderReviewCommentFromReport: (_markdown: string, closeReason: string) => {
+      reasons.push(closeReason);
+      return "Review comment";
+    },
+  };
+  const options = { recordPath: fixture.recordPath, repositorySlug: "example-repo", item: 42 };
+  syncDetachedLiveProofComment(options, dependencies);
+  writeFileSync(fixture.recordPath, typed);
+  syncDetachedLiveProofComment(options, dependencies);
+  assert.deepEqual(reasons, ["none", "implemented_on_main"]);
+  writeFileSync(fixture.recordPath, typed.replace(/^review_record: \{/m, "review_record: {broken"));
+  assert.throws(() => syncDetachedLiveProofComment(options, dependencies), ReviewRecordFormatError);
+  assert.deepEqual(reasons, ["none", "implemented_on_main"]);
 });
 
 test("live-proof comment sync requires the exact published bundle result", () => {

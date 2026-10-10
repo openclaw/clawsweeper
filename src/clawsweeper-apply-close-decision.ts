@@ -1,9 +1,6 @@
 import type { CreateApplyDecisionWorkflowDependencies } from "./clawsweeper-apply-dependencies.js";
-import { PROOF_OVERRIDE_LABEL } from "./clawsweeper-policy.js";
-import { reviewSectionValue } from "./clawsweeper-record-metadata.js";
-import { reportRealBehaviorProof } from "./clawsweeper-report-parser.js";
 import type { ActionTaken, CloseReason, Decision, Item } from "./clawsweeper-types.js";
-import { frontMatterStringArray } from "./report-front-matter.js";
+import { reportReviewDecision } from "./report-review-decision.js";
 import {
   readReviewRecord,
   readReviewRecordOrLegacy,
@@ -37,8 +34,7 @@ export function unreadableReviewRecordReason(markdown: string): string | null {
 }
 
 // The apply checks the close that it will do. The review record gives the reviewed
-// fields. The apply gives the close reason. The report gives the close comment that the
-// apply posts, and its current labels can hold a maintainer proof override.
+// fields; the apply supplies the current close reason and host proof policy.
 function applyCloseDecision(
   markdown: string,
   closeReason: CloseReason,
@@ -47,15 +43,14 @@ function applyCloseDecision(
   const { decision } = readReviewRecordOrLegacy(markdown, (report) =>
     reportDecision(report, closeReason),
   );
+  const review = reportReviewDecision(markdown);
   return {
     ...decision,
     decision: "close",
     closeReason,
     confidence: "high",
-    closeComment: reviewSectionValue(markdown, "closeComment"),
-    realBehaviorProof: frontMatterStringArray(markdown, "labels").includes(PROOF_OVERRIDE_LABEL)
-      ? reportRealBehaviorProof(markdown)
-      : decision.realBehaviorProof,
+    closeComment: review.publishedCloseComment,
+    realBehaviorProof: review.realBehaviorProof,
   };
 }
 

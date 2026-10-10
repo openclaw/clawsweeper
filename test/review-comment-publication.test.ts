@@ -22,6 +22,8 @@ import {
 import { freshExactHeadReviewStartLease } from "../dist/repair/comment-router/admission.js";
 
 import { manualPublicationOwnerFromEnv } from "../dist/manual-publication-authority.js";
+import { reviewReportFrontMatter, withReviewRecord } from "./helpers.ts";
+import { ReviewRecordFormatError } from "../dist/review-record.js";
 
 test("manual publication owner metadata requires actual producer or batch claim identifiers", () => {
   const run = { GITHUB_RUN_ID: "1074", GITHUB_RUN_ATTEMPT: "2" };
@@ -147,6 +149,46 @@ function reviewCommentPublication(options: {
     ...options.state,
   } as never);
 }
+
+test("close-applied evidence uses the typed fixing PR while preserving legacy links", () => {
+  const comments = () => [];
+  const publication = reviewCommentPublication({
+    root: ".",
+    comments,
+    state: reviewCommentState(comments),
+    mutate: () => assert.fail("link rendering must not mutate GitHub"),
+  });
+  const legacy = reviewReportFrontMatter({
+    type: "pull_request",
+    number: String(itemNumber),
+    fixed_pr_url: "https://github.com/openclaw/openclaw/pull/11",
+    fixed_pr_number: "11",
+  });
+  assert.equal(publication.closeAppliedEvidenceLink(legacy, "item"), "fix PR #11");
+  const typed = withReviewRecord(legacy).replace(/^review_record: (.+)$/m, (_line, value) => {
+    const record = JSON.parse(value);
+    record.decision.fixedPullRequest = {
+      repo: "openclaw/openclaw",
+      number: 22,
+      url: "https://github.com/openclaw/openclaw/pull/22",
+      title: "Fix the reported behavior",
+      sha: null,
+      confidence: "high",
+      source: "GitHub closing PR reference",
+      mergedAt: "2026-09-01T00:00:00Z",
+    };
+    return `review_record: ${JSON.stringify(record)}`;
+  });
+  assert.equal(publication.closeAppliedEvidenceLink(typed, "item"), "fix PR #22");
+  assert.throws(
+    () =>
+      publication.closeAppliedEvidenceLink(
+        typed.replace(/^review_record: \{/m, "review_record: {broken"),
+        "item",
+      ),
+    ReviewRecordFormatError,
+  );
+});
 
 test("an unchanged exact-head re-review refreshes its durable comment once", () => {
   const root = mkdtempSync(join(tmpdir(), "clawsweeper-review-refresh-"));

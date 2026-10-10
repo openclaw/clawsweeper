@@ -22,7 +22,6 @@ import {
   reportTestingReview,
   reportSecurityReview,
   reportTelegramVisibleProof,
-  selectedLabelJustifications,
   reportWorkCandidateReason,
   reviewMetricsFromReport,
   triagePriorityFromReport,
@@ -44,6 +43,8 @@ import {
 } from "./clawsweeper-regression-provenance.js";
 import type { PublicRegressionProvenance, RegressionAssessment } from "./clawsweeper-types.js";
 import { isCommitSha, normalizeEvidence } from "./clawsweeper-links.js";
+import { hostEvidenceMarkdown } from "./clawsweeper-report-helpers.js";
+import { selectedLabelJustifications } from "./clawsweeper-label-selection.js";
 
 /**
  * Reviewed fields used by labels, readiness and public comments.
@@ -101,6 +102,9 @@ export type ReportReviewDecision = Pick<
   | "overallCorrectness"
   | "overallConfidenceScore"
   | "nextStep"
+  | "fixedRelease"
+  | "fixedSha"
+  | "fixedAt"
   | "fixedPullRequest"
 > & {
   risks: string;
@@ -108,6 +112,18 @@ export type ReportReviewDecision = Pick<
   agentsPolicyStatus: Decision["agentsPolicyStatus"] | undefined;
   maintainerDecision: Decision["maintainerDecision"] | null;
   maintainerDecisionInvalid: boolean;
+  maintainerDecisionError?: string;
+  evidenceMarkdown: string;
+  /** Host-rendered or already published comment, distinct from the model draft. */
+  publishedCloseComment: string;
+  fixedPullRequestNumber: number;
+  fixedPullRequestFields: {
+    number: string | undefined;
+    url: string | undefined;
+    confidence: string | undefined;
+    source: string | undefined;
+    mergedAt: string | undefined;
+  };
   regressionAssessment: RegressionAssessment | null;
   regressionProvenance: PublicRegressionProvenance | null;
   authorityChainProofRequired: boolean;
@@ -189,6 +205,16 @@ export function reportReviewDecision(markdown: string): ReportReviewDecision {
   const { decision } = record;
   return {
     ...decision,
+    evidenceMarkdown: hostEvidenceMarkdown(decision.evidence),
+    publishedCloseComment: reviewSectionValue(markdown, "closeComment"),
+    fixedPullRequestNumber: decision.fixedPullRequest?.number ?? NaN,
+    fixedPullRequestFields: {
+      number: decision.fixedPullRequest ? String(decision.fixedPullRequest.number) : undefined,
+      url: decision.fixedPullRequest?.url,
+      confidence: decision.fixedPullRequest?.confidence,
+      source: decision.fixedPullRequest?.source,
+      mergedAt: decision.fixedPullRequest?.mergedAt ?? undefined,
+    },
     labelJustifications: selectedLabelJustifications(decision.labelJustifications, decision),
     realBehaviorProof: applyHostProofRules(markdown, decision.realBehaviorProof),
     authorityChainProofRequired: decision.realBehaviorProof.summary
@@ -246,10 +272,12 @@ function legacyReportReviewDecision(markdown: string): ReportReviewDecision {
   const stored = <T extends string>(key: string) => frontMatterValue(markdown, key) as T;
   const nextStep = nextStepFromReport(markdown);
   let maintainerDecision = null;
+  let maintainerDecisionError: string | undefined;
   let maintainerDecisionInvalid = false;
   try {
     maintainerDecision = maintainerDecisionFromReport(markdown);
-  } catch {
+  } catch (error) {
+    maintainerDecisionError = error instanceof Error ? error.message : String(error);
     maintainerDecisionInvalid = true;
   }
   return {
@@ -273,6 +301,7 @@ function legacyReportReviewDecision(markdown: string): ReportReviewDecision {
     decision: stored("decision"),
     closeReason: stored("close_reason"),
     visionFit: stored("vision_fit"),
+    publishedCloseComment: reviewSectionValue(markdown, "closeComment"),
     visionFitEvidence: frontMatterStringArray(markdown, "vision_fit_evidence"),
     workPriority: stored("work_priority"),
     workClusterRefs: frontMatterStringArray(markdown, "work_cluster_refs"),
@@ -308,6 +337,19 @@ function legacyReportReviewDecision(markdown: string): ReportReviewDecision {
     workReason: reportWorkCandidateReason(markdown),
     maintainerDecision,
     maintainerDecisionInvalid,
+    fixedRelease: frontMatterValue(markdown, "fixed_release") ?? null,
+    fixedSha: frontMatterValue(markdown, "fixed_sha") ?? null,
+    fixedAt: frontMatterValue(markdown, "fixed_at") ?? null,
+    evidenceMarkdown: reviewSectionValue(markdown, "evidence"),
+    ...(maintainerDecisionError ? { maintainerDecisionError } : {}),
+    fixedPullRequestNumber: Number(frontMatterValue(markdown, "fixed_pr_number")),
+    fixedPullRequestFields: {
+      number: frontMatterValue(markdown, "fixed_pr_number"),
+      url: frontMatterValue(markdown, "fixed_pr_url"),
+      confidence: frontMatterValue(markdown, "fixed_pr_confidence"),
+      source: frontMatterValue(markdown, "fixed_pr_source"),
+      mergedAt: frontMatterValue(markdown, "fixed_pr_merged_at"),
+    },
     fixedPullRequest: fixedPullRequestFromReport(markdown),
     regressionAssessment: regressionAssessmentFromReport(markdown),
     regressionProvenance: regressionProvenanceFromReport(markdown),

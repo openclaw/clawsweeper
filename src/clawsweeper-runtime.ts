@@ -88,7 +88,7 @@ import {
 } from "./clawsweeper-policy.js";
 import { createRegressionProvenanceVerifier } from "./clawsweeper-regression-provenance.js";
 import { createReportOrchestration } from "./clawsweeper-report-orchestration.js";
-import { reportLiveProofPlan, reportReviewFindings } from "./clawsweeper-report-parser.js";
+import { reportLiveProofPlan } from "./live-proof/report.js";
 import { createReviewRecordBackfill } from "./review-record-backfill.js";
 import { existingReview } from "./clawsweeper-record-metadata.js";
 import {
@@ -843,7 +843,6 @@ const { reviewCommand } = createReviewCommandWorkflow({
   ghJson,
   existingReview,
   reportFileName,
-  reportReviewFindings,
   ...reviewActionLedger,
   get activeReviewMutationRunner() {
     return githubExecution.activeReviewMutationRunner;

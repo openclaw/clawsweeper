@@ -23,6 +23,7 @@ import {
   type LiveVerificationResult,
 } from "./verification.js";
 import { frontMatterValue, replaceSectionValue, sectionValue } from "../report-front-matter.js";
+import { reportReviewDecision } from "../report-review-decision.js";
 
 export interface LiveProofAttachOptions {
   bundleDir: string;
@@ -154,7 +155,7 @@ async function attachLiveProofInternal(
     dependencies.reviewSections.liveProof,
     liveProofSection,
   );
-  const closeReason = (frontMatterValue(updatedReport, "close_reason") ?? "none") as CloseReason;
+  const closeReason = reportReviewDecision(updatedReport).closeReason ?? "none";
   const comment = dependencies.renderReviewCommentFromReport(updatedReport, closeReason);
   const markedComment = dependencies.markedReviewCommentBody(verification.item, comment);
 
@@ -241,7 +242,7 @@ export function detachLiveProof(
     dependencies.reviewSections.liveProof,
     liveProofSection,
   );
-  const closeReason = (frontMatterValue(updatedReport, "close_reason") ?? "none") as CloseReason;
+  const closeReason = reportReviewDecision(updatedReport).closeReason ?? "none";
   const comment = dependencies.renderReviewCommentFromReport(updatedReport, closeReason);
   const markedComment = dependencies.markedReviewCommentBody(options.item, comment);
 
@@ -287,7 +288,7 @@ export function syncLiveProofComment(
   ) {
     throw new Error("record Live Verification result does not match the proof bundle");
   }
-  const closeReason = (frontMatterValue(report, "close_reason") ?? "none") as CloseReason;
+  const closeReason = reportReviewDecision(report).closeReason ?? "none";
   const comment = dependencies.renderReviewCommentFromReport(report, closeReason);
   const markedComment = dependencies.markedReviewCommentBody(verification.item, comment);
   dependencies.upsertReviewComment(verification.item, markedComment);
@@ -310,7 +311,7 @@ export function syncDetachedLiveProofComment(
   ) {
     throw new Error("record still contains the Live Proof recording");
   }
-  const closeReason = (frontMatterValue(report, "close_reason") ?? "none") as CloseReason;
+  const closeReason = reportReviewDecision(report).closeReason ?? "none";
   const comment = dependencies.renderReviewCommentFromReport(report, closeReason);
   const markedComment = dependencies.markedReviewCommentBody(options.item, comment);
   dependencies.upsertReviewComment(options.item, markedComment);

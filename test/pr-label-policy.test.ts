@@ -30,7 +30,7 @@ import {
 } from "../dist/clawsweeper-policy.js";
 import { reportRealBehaviorProofPolicy } from "../dist/clawsweeper-proof-policy.js";
 import { nextPrRatingLabels } from "../dist/clawsweeper-rating.js";
-import { reportAttachedLiveVerification } from "../dist/clawsweeper-report-parser.js";
+import { reportAttachedLiveVerification } from "../dist/live-proof/report.js";
 import { syncApplyPullRequestLabels } from "../dist/clawsweeper-apply-pull-request-labels.js";
 import type {
   LiveProofPlan,

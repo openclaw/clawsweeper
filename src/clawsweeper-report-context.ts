@@ -8,13 +8,13 @@ import type {
   ReviewRuntime,
 } from "./clawsweeper-types.js";
 import type { CreateReportRenderingDependencies } from "./clawsweeper-report-rendering-dependencies.js";
-import { frontMatterStringArray, frontMatterValue } from "./report-front-matter.js";
+import { frontMatterValue } from "./report-front-matter.js";
 import { markdownRepository, repoRelativePath } from "./clawsweeper-repository-paths.js";
-import { reviewSectionValue } from "./clawsweeper-record-metadata.js";
 import { linkedSha, markdownLink } from "./clawsweeper-links.js";
 import { fixedInReportText, fixedInText } from "./clawsweeper-status-context.js";
 import type { RepositoryProfile } from "./repository-profiles.js";
-import { readReviewRecord } from "./review-record.js";
+import { reportReviewDecision } from "./report-review-decision.js";
+import { ReviewRecordFormatError } from "./review-record.js";
 
 export function runtimeReviewText(runtime?: {
   model?: string | undefined;
@@ -52,10 +52,7 @@ export function closeReviewLineFromDecision(
 
 export function closeReviewLineFromReport(markdown: string, profile: RepositoryProfile): string {
   const mainSha = frontMatterValue(markdown, "main_sha");
-  const record = readReviewRecord(markdown);
-  const fixed = record
-    ? fixedInText(record.decision, profile)
-    : fixedInReportText(markdown, profile);
+  const fixed = fixedInReportText(markdown, profile);
   const parts: string[] = [runtimeReviewTextFromReport(markdown)].filter(Boolean);
   if (mainSha && mainSha !== "unknown")
     parts.push(`reviewed against ${linkedSha(mainSha, profile.targetRepo)}`);
@@ -77,14 +74,15 @@ export function createReportContextRendering(dependencies: CreateReportRendering
     options: { reportPath?: string } = {},
   ): string | null {
     if (!shouldRenderWorkPlanFromReport(markdown)) return null;
+    const decision = reportReviewDecision(markdown);
     const repo = markdownRepository(markdown);
     const number = frontMatterValue(markdown, "number") ?? "unknown";
     const title = frontMatterValue(markdown, "title") ?? "Untitled";
     const reviewedAt = frontMatterValue(markdown, "reviewed_at") ?? "unknown";
-    const workPrompt = reviewSectionValue(markdown, "repairWorkPrompt").trim();
-    const likelyFiles = frontMatterStringArray(markdown, "work_likely_files");
-    const validation = frontMatterStringArray(markdown, "work_validation");
-    const clusterRefs = frontMatterStringArray(markdown, "work_cluster_refs");
+    const workPrompt = decision.workPrompt.trim();
+    const likelyFiles = decision.workLikelyFiles;
+    const validation = decision.workValidation;
+    const clusterRefs = decision.workClusterRefs;
     const reportPath = options.reportPath ?? "unknown";
     return `---
 number: ${number}
@@ -92,9 +90,9 @@ repository: ${repo}
 title: ${JSON.stringify(title)}
 source_report: ${reportPath}
 reviewed_at: ${reviewedAt}
-work_candidate: ${frontMatterValue(markdown, "work_candidate") ?? "none"}
-work_priority: ${frontMatterValue(markdown, "work_priority") ?? "low"}
-work_confidence: ${frontMatterValue(markdown, "work_confidence") ?? "low"}
+work_candidate: ${decision.workCandidate ?? "none"}
+work_priority: ${decision.workPriority ?? "low"}
+work_confidence: ${decision.workConfidence ?? "low"}
 ---
 
 # Coding Plan for ${repo}#${number}: ${title}
@@ -103,7 +101,7 @@ Source report: ${reportPath === "unknown" ? "unknown" : markdownLink(reportPath,
 
 ## Summary
 
-${reviewSectionValue(markdown, "summary") || "No summary provided."}
+${decision.summary || "No summary provided."}
 
 ## Plan
 
@@ -135,9 +133,16 @@ ${formattedMarkdownList(clusterRefs, (value) => value)}
     dryRun?: boolean;
   }): boolean {
     const planPath = workPlanPathForReport(options.reportPath, options.plansDir);
-    const plan = renderWorkPlanFromReport(options.markdown, {
-      reportPath: repoRelativePath(options.reportPath),
-    });
+    let plan: string | null;
+    try {
+      plan = renderWorkPlanFromReport(options.markdown, {
+        reportPath: repoRelativePath(options.reportPath),
+      });
+    } catch (error) {
+      if (!(error instanceof ReviewRecordFormatError)) throw error;
+      // Preserve the report for fresh review, but never leave its old plan runnable.
+      plan = null;
+    }
     if (!plan) {
       if (!options.dryRun && existsSync(planPath)) unlinkSync(planPath);
       return false;

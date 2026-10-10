@@ -10,12 +10,8 @@ import type { createPullRequestPromotionFacts } from "./clawsweeper-promotion-fa
 import type { createPullRequestCoverageProof } from "./clawsweeper-coverage-proof.js";
 import { isOlderThanDays } from "./iso-time.js";
 import { frontMatterValue } from "./report-front-matter.js";
-import {
-  evidenceEntry,
-  mergeRiskOptionsFromReport,
-  reportPrRating,
-  reportRealBehaviorProof,
-} from "./clawsweeper-report-parser.js";
+import { evidenceEntry } from "./clawsweeper-report-helpers.js";
+import { reportReviewDecision } from "./report-review-decision.js";
 import { reviewReportCanPromoteToClose } from "./clawsweeper-record-metadata.js";
 import {
   lowSignalUnmergeablePrAuthorActivityBlockReason,
@@ -44,7 +40,7 @@ export function createPullRequestClosePromotion(
 
   function recommendedPauseOrCloseOption(markdown: string): MergeRiskOption | null {
     return (
-      mergeRiskOptionsFromReport(markdown).find(
+      reportReviewDecision(markdown).mergeRiskOptions.find(
         (option) => option.category === "pause_or_close" && option.recommended,
       ) ?? null
     );
@@ -56,8 +52,7 @@ export function createPullRequestClosePromotion(
     context: ItemContext,
     staleMinAgeDays: number,
   ): PullRequestClosePromotion | null {
-    const proof = reportRealBehaviorProof(markdown);
-    const rating = reportPrRating(markdown);
+    const { realBehaviorProof: proof, prRating: rating } = reportReviewDecision(markdown);
     if (rating.overallTier !== "F") return null;
     if (!isOlderThanDays(item.createdAt, staleMinAgeDays)) return null;
     if (
@@ -168,7 +163,7 @@ export function createPullRequestClosePromotion(
   ): PullRequestClosePromotion | null {
     if (item.kind !== "pull_request") return null;
     if (!reviewReportCanPromoteToClose(markdown)) return null;
-    if (frontMatterValue(markdown, "decision") !== "keep_open") return null;
+    if (reportReviewDecision(markdown).decision !== "keep_open") return null;
     if (frontMatterValue(markdown, "action_taken") !== "kept_open") return null;
     if (frontMatterValue(markdown, "review_status") !== "complete") return null;
     if (closePromotionHasNonAutomationActivityAfterReview(markdown, context)) return null;

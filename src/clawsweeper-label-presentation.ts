@@ -25,7 +25,7 @@ import type { CreateReportOrchestrationDependencies } from "./clawsweeper-report
 import { frontMatterStringArray, frontMatterValue } from "./report-front-matter.js";
 import { effectiveReviewStatus } from "./clawsweeper-record-metadata.js";
 import { reportRealBehaviorProofPolicy } from "./clawsweeper-proof-policy.js";
-import type { ReportReviewDecision } from "./report-review-decision.js";
+import { reportReviewDecision, type ReportReviewDecision } from "./report-review-decision.js";
 import {
   nextFeatureShowcaseLabels,
   nextPrStatusLabels,
@@ -69,10 +69,11 @@ export function createReportLabelPresentation(dependencies: CreateReportOrchestr
   }
 
   function shouldRenderWorkPlanFromReport(markdown: string): boolean {
+    const decision = reportReviewDecision(markdown);
     return (
-      frontMatterValue(markdown, "decision") === "keep_open" &&
+      decision.decision === "keep_open" &&
       frontMatterValue(markdown, "action_taken") === "kept_open" &&
-      frontMatterValue(markdown, "work_candidate") === "queue_fix_pr" &&
+      decision.workCandidate === "queue_fix_pr" &&
       frontMatterValue(markdown, "work_status") === "candidate" &&
       isFresh({
         reviewedAt: frontMatterValue(markdown, "reviewed_at"),

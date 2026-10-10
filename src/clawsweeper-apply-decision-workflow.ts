@@ -75,11 +75,7 @@ import type {
   ReportEntry,
   ReviewCommentRenderOptions,
 } from "./clawsweeper-types.js";
-import {
-  maintainerDecisionFromReport,
-  type DecisionPacketSubjectState,
-  type MaintainerDecision,
-} from "./decision-packets.js";
+import { type DecisionPacketSubjectState, type MaintainerDecision } from "./decision-packets.js";
 import {
   GitHubRateLimitError,
   isGitHubNotFoundError,
@@ -116,12 +112,12 @@ import {
   isRetryableKeptOpenCloseReport,
   isRetryablePrCloseCoverageProofReport,
   reviewLeaseRevisionFromReport,
-  reviewSectionValue,
   shouldProbeClosedStateReport,
   shouldSyncReviewComment,
 } from "./clawsweeper-record-metadata.js";
 import { lockedConversationApplyReason } from "./clawsweeper-item-policy.js";
 import { prAutoCloseExemptDecisionReason } from "./clawsweeper-apply-guard-activity.js";
+import { reportReviewDecision } from "./report-review-decision.js";
 
 export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWorkflowDependencies) {
   const {
@@ -741,8 +737,11 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
         }
       };
       examinedItemNumbers.push(number);
-      const decision = frontMatterValue(markdown, "decision");
-      let closeReason = frontMatterValue(markdown, "close_reason") as CloseReason | undefined;
+      const unreadableRecordReason = unreadableReviewRecordReason(markdown);
+      const { decision, closeReason: reviewedCloseReason } = unreadableRecordReason
+        ? {}
+        : reportReviewDecision(markdown);
+      let closeReason = reviewedCloseReason;
       const action = frontMatterValue(markdown, "action_taken");
       const changedSinceReviewDuplicateCommentRepair =
         action === "skipped_changed_since_review" &&
@@ -753,15 +752,6 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
       let storedUpdatedAt = frontMatterValue(markdown, "item_updated_at");
       const storedAuthorAssociation = frontMatterValue(markdown, "author_association");
       let requiredMaintainerDecision: MaintainerDecision | null;
-      const shouldProbeClosedState = shouldProbeClosedStateReport(markdown);
-      const isRetryableSkippedClose = isRetryableCloseSkipReport(markdown);
-      const isLiveRecheckGuardClose = isLiveRecheckCloseGuardReport(markdown);
-      const isUpgradedCloseCandidate =
-        isRetryableSkippedClose ||
-        isLiveRecheckGuardClose ||
-        isRetryablePrCloseCoverageProofReport(markdown) ||
-        isRetryableKeptOpenCloseReport(markdown) ||
-        isPairBlockedCloseReport(markdown);
       const oversizedMetadataDecision = closeReason === "oversized_pull_request" &&
         parseOversizedPullRequestEvidence(frontMatterValue(markdown, "oversized_pull_request")) !== null;
       let oversizedActivityGuard: ReturnType<typeof createOversizedPrFreshnessGuard> | undefined;
@@ -829,22 +819,21 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
         const pairedEntry = openReportEntry(issueNumber);
         if (!pairedEntry) return "implemented-on-main paired closeout requires an independently reviewed linked issue report";
         if (reportPublicationPolicy(pairedEntry.markdown)) return "linked issue publication policy forbids paired closeout";
-        const parentFixedPrNumber = frontMatterValue(markdown, "fixed_pr_number");
-        const parentFixedPrUrl = frontMatterValue(markdown, "fixed_pr_url");
-        const pairedFixedPrNumber = frontMatterValue(pairedEntry.markdown, "fixed_pr_number");
-        const pairedFixedPrUrl = frontMatterValue(pairedEntry.markdown, "fixed_pr_url");
-        const pairedFixedPrConfidence = frontMatterValue(pairedEntry.markdown, "fixed_pr_confidence");
-        const pairedFixedPrSource = frontMatterValue(pairedEntry.markdown, "fixed_pr_source");
-        const pairedFixedPrMergedAt = frontMatterValue(pairedEntry.markdown, "fixed_pr_merged_at");
+        const unreadablePairedRecordReason = unreadableReviewRecordReason(pairedEntry.markdown);
+        if (unreadablePairedRecordReason) {
+          return `linked issue #${issueNumber}: ${unreadablePairedRecordReason}`;
+        }
+        const parentFixedPr = reportReviewDecision(markdown).fixedPullRequestFields;
+        const pairedFixedPr = reportReviewDecision(pairedEntry.markdown).fixedPullRequestFields;
         if (
-          !parentFixedPrNumber ||
-          parentFixedPrNumber !== pairedFixedPrNumber ||
-          !parentFixedPrUrl ||
-          parentFixedPrUrl !== pairedFixedPrUrl ||
-          pairedFixedPrConfidence !== "high" ||
-          !isGitHubVerifiedFixedPullRequestSource(pairedFixedPrSource) ||
-          !pairedFixedPrMergedAt ||
-          pairedFixedPrMergedAt === "unknown"
+          !parentFixedPr.number ||
+          parentFixedPr.number !== pairedFixedPr.number ||
+          !parentFixedPr.url ||
+          parentFixedPr.url !== pairedFixedPr.url ||
+          pairedFixedPr.confidence !== "high" ||
+          !isGitHubVerifiedFixedPullRequestSource(pairedFixedPr.source) ||
+          !pairedFixedPr.mergedAt ||
+          pairedFixedPr.mergedAt === "unknown"
         ) {
           return "implemented-on-main paired closeout requires the linked issue's independent review to cite the same GitHub-verified fixing pull request";
         }
@@ -931,11 +920,19 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
         continue;
       }
       // A promotion removes a record that does not read, so do this check before a promotion.
-      const unreadableRecordReason = unreadableReviewRecordReason(markdown);
       if (unreadableRecordReason) {
         if (markApplySkipped("skipped_changed_since_review", unreadableRecordReason)) break;
         continue;
       }
+      const shouldProbeClosedState = shouldProbeClosedStateReport(markdown);
+      const isRetryableSkippedClose = isRetryableCloseSkipReport(markdown);
+      const isLiveRecheckGuardClose = isLiveRecheckCloseGuardReport(markdown);
+      const isUpgradedCloseCandidate =
+        isRetryableSkippedClose ||
+        isLiveRecheckGuardClose ||
+        isRetryablePrCloseCoverageProofReport(markdown) ||
+        isRetryableKeptOpenCloseReport(markdown) ||
+        isPairBlockedCloseReport(markdown);
       const markLabelSyncAuthSkipped = (labelKind: string): boolean => {
         const reason = `GitHub rejected ${labelKind} label sync with Requires authentication`;
         return staleCanonicalCommentSyncPending
@@ -945,10 +942,11 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
             )
           : markApplySkipped("kept_open", reason);
       };
-      try {
-        requiredMaintainerDecision = maintainerDecisionFromReport(markdown);
-      } catch (error) {
-        const detail = error instanceof Error ? error.message : String(error);
+      const { maintainerDecision, maintainerDecisionInvalid, maintainerDecisionError } =
+        reportReviewDecision(markdown);
+      requiredMaintainerDecision = maintainerDecision;
+      if (maintainerDecisionInvalid) {
+        const detail = maintainerDecisionError;
         const reason = `invalid maintainer_decision: ${detail}`;
         markdown = replaceFrontMatterValue(markdown, "apply_checked_at", new Date().toISOString());
         if (!dryRun) {
@@ -1625,7 +1623,7 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
           previousLabels,
           suppressAutomationMarkers,
         }),
-        reviewSectionValue(markdown, "closeComment"),
+        reportReviewDecision(markdown).publishedCloseComment,
       ]);
       const markedReviewCommentForApply = (body: string): string =>
         markedReviewCommentBody(number, body);
@@ -2660,7 +2658,7 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
         }
         const reviewComment = issueReviewComment(reviewNumber, [
           renderReviewCommentFromReport(reviewMarkdown, reviewCloseReason),
-          reviewSectionValue(reviewMarkdown, "closeComment"),
+          reportReviewDecision(reviewMarkdown).publishedCloseComment,
         ]);
         if (
           commentId(reviewComment) !== storedId ||

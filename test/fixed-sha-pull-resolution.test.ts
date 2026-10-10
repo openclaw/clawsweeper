@@ -4,10 +4,78 @@ import test from "node:test";
 import {
   createStatusContext,
   linkedIssueNumbersForPullRequestBody,
+  fixedInReportText,
 } from "../dist/clawsweeper-status-context.js";
 import { GitHubRateLimitError } from "../dist/github-retry.js";
-import { closeDecision, item, reportFrontMatter } from "./helpers.ts";
+import { closeDecision, item, reportFrontMatter, withReviewRecord } from "./helpers.ts";
+import { repositoryProfileFor } from "../dist/repository-profiles.js";
+import { ReviewRecordFormatError, updateReviewRecordDecision } from "../dist/review-record.js";
 
+test("fixed report text uses recorded evidence without overriding host repository metadata", () => {
+  const legacy = reportFrontMatter({
+    repository: "openclaw/openclaw",
+    number: 123,
+    type: "issue",
+    fixed_release: "v-legacy",
+    fixed_sha: "legacy-sha",
+    fixed_at: "legacy-time",
+  });
+  const profile = repositoryProfileFor("openclaw/openclaw");
+  assert.match(fixedInReportText(legacy, profile), /v-legacy/);
+  const typed = withReviewRecord(legacy, {
+    fixedRelease: "v2026.10.1",
+    fixedSha: "a".repeat(40),
+    fixedAt: "2026-10-01T00:00:00Z",
+  });
+  const rendered = fixedInReportText(typed, profile);
+  assert.match(rendered, /v2026\.10\.1/);
+  assert.match(rendered, /openclaw\/openclaw/);
+  assert.doesNotMatch(rendered, /legacy/);
+  assert.throws(
+    () =>
+      fixedInReportText(typed.replace(/^review_record: \{/m, "review_record: {broken"), profile),
+    ReviewRecordFormatError,
+  );
+});
+
+test("apply-time fixing PR provenance uses the recorded PR number", () => {
+  const { context } = statusContextWithCalls("main", { freshApplyBody: true });
+  const legacy = reportFrontMatter({
+    repository: "openclaw/openclaw",
+    number: 123,
+    type: "pull_request",
+    fixed_pr_number: "999",
+  });
+  const typed = updateReviewRecordDecision(withReviewRecord(legacy), () => ({
+    fixedPullRequest: {
+      repo: "openclaw/openclaw",
+      number: 900,
+      url: "https://github.com/openclaw/openclaw/pull/900",
+      title: "Recorded fix",
+      mergedAt: "2026-10-01T00:00:00Z",
+      sha: "a".repeat(40),
+      confidence: "high",
+      source: "GitHub linked-issue current closing PR",
+    },
+  }));
+  assert.equal(
+    context.implementedOnMainPullRequestProvenanceApplyBlock(
+      typed,
+      item({ number: 123, kind: "pull_request" }),
+      "implemented_on_main",
+    ),
+    null,
+  );
+  assert.throws(
+    () =>
+      context.implementedOnMainPullRequestProvenanceApplyBlock(
+        typed.replace(/^review_record: \{/m, "review_record: {broken"),
+        item({ number: 123, kind: "pull_request" }),
+        "implemented_on_main",
+      ),
+    ReviewRecordFormatError,
+  );
+});
 class TestGitHubRuntimeBudgetError extends Error {
   readonly reason: string;
 

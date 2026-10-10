@@ -18,7 +18,7 @@ import {
   regressionProvenancePublicLine,
 } from "./clawsweeper-regression-provenance.js";
 import { renderDecisionPacketPublicBlock } from "./decision-packets.js";
-import { reportLiveProofRecordingBlock } from "./clawsweeper-report-parser.js";
+import { reportLiveProofRecordingBlock } from "./live-proof/report.js";
 import { reportReviewDecision } from "./report-review-decision.js";
 import { neutralizeReviewControlMarkers, renderReviewHistorySection } from "./review-history.js";
 import type { CreateReportRenderingDependencies } from "./clawsweeper-report-rendering-dependencies.js";

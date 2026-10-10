@@ -10,7 +10,7 @@ import { isMaintainerAuthorAssociation, normalizeLabelName } from "./clawsweeper
 import { quoteGitHubSearchTerm } from "./clawsweeper-related-context.js";
 import { asRecord, login, nonBlankStringOrUndefined } from "./value-coerce.js";
 import { isOlderThanDays } from "./iso-time.js";
-import { reportPrRating, reportRealBehaviorProof } from "./clawsweeper-report-parser.js";
+import { reportReviewDecision } from "./report-review-decision.js";
 
 export function maintainerAssociatedEntries(entries: readonly unknown[]): unknown[] {
   return entries.filter((entry) =>
@@ -203,8 +203,7 @@ function githubContentsPath(path: string): string {
 }
 
 export function authorPrBudgetSignalBlockReason(markdown: string): string | null {
-  const proof = reportRealBehaviorProof(markdown);
-  const rating = reportPrRating(markdown);
+  const { realBehaviorProof: proof, prRating: rating } = reportReviewDecision(markdown);
   if (
     ["S", "A", "B"].includes(rating.overallTier) &&
     ["sufficient", "override"].includes(proof.status)

@@ -7,7 +7,7 @@ import type { PullRequestReviewReadiness } from "./clawsweeper-types.js";
 import { parseIsoMs } from "./iso-time.js";
 import { frontMatterStringArray, frontMatterValue } from "./report-front-matter.js";
 import { pullHeadShaFromReport } from "./clawsweeper-record-metadata.js";
-import { reportAttachedLiveVerification } from "./clawsweeper-report-parser.js";
+import { reportAttachedLiveVerification } from "./live-proof/report.js";
 import {
   pullRequestReviewReadinessFromReport,
   securitySensitiveRepairAllowed,
@@ -56,7 +56,7 @@ export function reviewAutomationMarkersFromReport(
   const reviewed = reportReviewDecision(markdown);
   if (itemKind === "issue") {
     const decision = reviewed.decision;
-    const closeReason = frontMatterValue(markdown, "close_reason");
+    const closeReason = reviewed.closeReason;
     if (decision !== "close" || closeReason !== "unsponsored_feature_request") return "";
     const reportReviewedAt = frontMatterValue(markdown, "reviewed_at");
     const reviewedAt = canonicalReviewTimestamp(reportReviewedAt) ?? reportReviewedAt ?? "unknown";
@@ -190,7 +190,7 @@ export function reviewAutomationMarkersFromReport(
     );
   }
   if (decision === "close") {
-    const closeReason = frontMatterValue(markdown, "close_reason") ?? "unknown";
+    const closeReason = reviewed.closeReason ?? "unknown";
     const actionTaken = frontMatterValue(markdown, "action_taken") ?? "unknown";
     const closeAttrs = `${baseAttrs} action_taken=${markerAttributeValue(actionTaken)} reason=${markerAttributeValue(closeReason)}`;
     return withReviewState(

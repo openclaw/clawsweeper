@@ -32,21 +32,17 @@ import type { createPullRequestPromotionFacts } from "./clawsweeper-promotion-fa
 import type { createReportRendering } from "./clawsweeper-report-rendering.js";
 import { asRecord, nonBlankStringOrUndefined } from "./value-coerce.js";
 import {
-  frontMatterStringArray,
   frontMatterValue,
   replaceFrontMatterValue,
   replaceSectionValue,
   sectionValue,
 } from "./report-front-matter.js";
+import { reportReviewDecision } from "./report-review-decision.js";
 import {
   evidenceEntry,
-  mergeRiskOptionsFromReport,
-  reportPrRating,
-  reportRealBehaviorProof,
-  reportRootCauseCluster,
-} from "./clawsweeper-report-parser.js";
-import { reviewSectionValue } from "./clawsweeper-record-metadata.js";
-import { hostEvidenceMarkdown, sectionLineValue } from "./clawsweeper-report-helpers.js";
+  hostEvidenceMarkdown,
+  sectionLineValue,
+} from "./clawsweeper-report-helpers.js";
 import { sentence } from "./clawsweeper-review-presentation.js";
 import { normalizePrRating } from "./clawsweeper-rating.js";
 import { updateReviewRecordDecision } from "./review-record.js";
@@ -92,7 +88,7 @@ export function createPullRequestCoverageProof(
     if (
       candidateNumbers.length === 0 &&
       frontMatterValue(markdown, "pr_close_requires_canonical_pr") !== "false" &&
-      !reportRootCauseCluster(markdown).canonicalRef
+      !reportReviewDecision(markdown).rootCauseCluster.canonicalRef
     ) {
       return "duplicate/superseded PR close has no rootCauseCluster.canonicalRef; refusing duplicate/superseded auto-close";
     }
@@ -265,12 +261,13 @@ export function createPullRequestCoverageProof(
     currentNumber: number,
     linkedNumber: number,
   ): string[] {
+    const review = reportReviewDecision(markdown);
     const texts = [
-      ...frontMatterStringArray(markdown, "work_cluster_refs"),
-      ...mergeRiskOptionsFromReport(markdown).flatMap((option) => [option.title, option.body]),
-      reviewSectionValue(markdown, "bestSolution"),
-      reviewSectionValue(markdown, "evidence"),
-      reviewSectionValue(markdown, "closeComment"),
+      ...review.workClusterRefs,
+      ...review.mergeRiskOptions.flatMap((option) => [option.title, option.body]),
+      review.bestSolution,
+      review.evidenceMarkdown,
+      review.publishedCloseComment,
     ];
     return texts
       .flatMap((text) =>
@@ -488,7 +485,7 @@ export function createPullRequestCoverageProof(
     markdown: string,
     block: PrCloseCoverageProofGateBlock,
   ): string {
-    const previousEvidence = reviewSectionValue(markdown, "evidence");
+    const previousEvidence = reportReviewDecision(markdown).evidenceMarkdown;
     const coverageEvidence = evidenceEntry({
       label: "PR close coverage proof",
       detail: block.reason,
@@ -544,7 +541,8 @@ export function createPullRequestCoverageProof(
         "The prior duplicate or superseded close path is no longer valid; retain the existing readiness tiers until a fresh review.",
       nextSteps: [nextStep],
     };
-    const rating: PrRating = { ...reportPrRating(markdown), ...ratingUpdate };
+    const review = reportReviewDecision(markdown);
+    const rating: PrRating = { ...review.prRating, ...ratingUpdate };
     let next = replaceFrontMatterValue(markdown, "decision", "keep_open");
     next = replaceFrontMatterValue(next, "close_reason", "none");
     next = replaceFrontMatterValue(next, "confidence", "low");
@@ -589,7 +587,7 @@ export function createPullRequestCoverageProof(
     next = replaceSectionValue(
       next,
       REVIEW_SECTIONS.prRating,
-      renderPrRatingAssessmentReportSection(rating, reportRealBehaviorProof(markdown)),
+      renderPrRatingAssessmentReportSection(rating, review.realBehaviorProof),
     );
     next = replaceSectionValue(
       next,

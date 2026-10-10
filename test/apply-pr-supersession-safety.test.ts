@@ -2,8 +2,13 @@ import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
+import { createPullRequestPromotionFacts } from "../dist/clawsweeper-promotion-facts.js";
+import { createPullRequestClosePromotion } from "../dist/clawsweeper-close-promotion.js";
+import { reportFileName } from "../dist/clawsweeper-repository-paths.js";
 
 import {
+  canonicalPullRequestClusterForTest,
+  item,
   promotionGhMock,
   reportWithSyncedReviewComment,
   runApplyDecisionsForTest,
@@ -14,7 +19,83 @@ import {
   withApplyTestWorkspace,
   withMockCodexProof,
   withMockGh,
+  withReviewRecord,
 } from "./helpers.ts";
+
+test("an unreadable canonical review blocks the stale low-signal promotion alternative", () => {
+  withApplyTestWorkspace(tmpPrefix, ({ itemsDir }) => {
+    const source = stalePullRequestReport({
+      number: 333,
+      root_cause_cluster: canonicalPullRequestClusterForTest(
+        "https://github.com/openclaw/openclaw/pull/400",
+      ),
+    });
+    writeFileSync(
+      join(itemsDir, reportFileName("openclaw/openclaw", 400)),
+      withReviewRecord(stalePullRequestReport({ number: 400 })).replace(
+        /^review_record: \{/m,
+        "review_record: {broken",
+      ),
+      "utf8",
+    );
+    const dependencies = {
+      targetRepo: () => "openclaw/openclaw",
+      parseGitHubItemRef: () => ({ kind: "pull_request", number: 400 }),
+      labelNames: (labels: string[]) => labels,
+      normalizeLabelName: (label: string) => label,
+      ghJson: (args: string[]) =>
+        args.some((arg) => arg.endsWith("/333"))
+          ? {
+              created_at: "2026-01-01T00:00:00Z",
+              mergeable: false,
+              mergeable_state: "dirty",
+              user: { login: "reporter" },
+            }
+          : {
+              number: 400,
+              state: "open",
+              mergeable_state: "clean",
+              labels: ["proof: sufficient"],
+            },
+      ghPaged: () => [],
+      pullRequestHeadActivity: () => ({
+        headActivityAtMs: Date.parse("2026-01-01T00:00:00Z"),
+      }),
+    };
+    const facts = createPullRequestPromotionFacts(
+      dependencies as unknown as Parameters<typeof createPullRequestPromotionFacts>[0],
+    );
+    const promotions = createPullRequestClosePromotion({
+      ...dependencies,
+      ...facts,
+    } as unknown as Parameters<typeof createPullRequestClosePromotion>[0]);
+    const sourceItem = item({
+      kind: "pull_request",
+      number: 333,
+      author: "reporter",
+      createdAt: "2026-01-01T00:00:00Z",
+    });
+    const context = { issue: {}, comments: [], timeline: [], pullReviewComments: [] };
+    assert.equal(
+      promotions.staleFRatedPullRequestPromotion(source, sourceItem, context, 30)?.closeReason,
+      "low_signal_unmergeable_pr",
+    );
+    assert.deepEqual(
+      facts.linkedPullRequestSupersession(source, sourceItem, { reportDirs: [itemsDir] }),
+      {
+        candidate: null,
+        unsafeReason:
+          "linked canonical PR #400 has an unreadable review record; fresh review required",
+      },
+    );
+    assert.equal(
+      promotions.pullRequestClosePromotion(source, sourceItem, context, 30, {
+        reportDirs: [itemsDir],
+      }),
+      null,
+    );
+  });
+});
 
 for (const syncCommentsOnly of [false, true]) {
   for (const [name, mergedAt, reference, mergeableState] of [

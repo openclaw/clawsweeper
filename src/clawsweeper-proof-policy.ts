@@ -2,7 +2,7 @@ import { PROOF_OVERRIDE_LABEL } from "./clawsweeper-policy.js";
 import type { RealBehaviorProof } from "./clawsweeper-types.js";
 import { frontMatterStringArray, frontMatterValue } from "./report-front-matter.js";
 import { isExternalPullRequestReport } from "./clawsweeper-record-metadata.js";
-import { reportAttachedLiveVerification } from "./clawsweeper-report-parser.js";
+import { reportAttachedLiveVerification } from "./live-proof/report.js";
 import { reportReviewDecision } from "./report-review-decision.js";
 
 export interface RealBehaviorProofPolicy {

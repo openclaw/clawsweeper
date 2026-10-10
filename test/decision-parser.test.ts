@@ -5,7 +5,8 @@ import test from "node:test";
 import { assertMatchesJsonSchema } from "../scripts/hosted-review-canary-proof.mjs";
 
 import { parseDecision } from "../dist/clawsweeper.js";
-import { reportLiveProofPlan, reportRootCauseCluster } from "../dist/clawsweeper-report-parser.js";
+import { reportRootCauseCluster } from "../dist/clawsweeper-report-parser.js";
+import { reportLiveProofPlan } from "../dist/live-proof/report.js";
 import {
   changelogReviewDecision,
   closeDecision,

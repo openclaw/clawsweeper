@@ -21,7 +21,6 @@ import type {
   PreviousClawSweeperReview,
   ReviewActionLedger,
   ReviewCheckout,
-  ReviewFinding,
   ReviewGitInfoOptions,
   ReviewPromptBuild,
   ReviewPromptRuntimeHints,
@@ -264,7 +263,6 @@ export interface CreateReviewCommandWorkflowDependencies {
   ) => string;
   repoFromArgs: (args: Args) => RepositoryProfile;
   reportFileName: (repo: string, number: number) => string;
-  reportReviewFindings: (markdown: string) => ReviewFinding[];
   resolveReviewCheckout: (options: {
     args: Args;
     artifactDir: string;
