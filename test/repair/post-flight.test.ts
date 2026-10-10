@@ -365,6 +365,7 @@ test("post-flight rechecks repair mode and live authorization immediately before
   const pullCountPath = path.join(temporary, "pull-count");
   const sourceCountPath = path.join(temporary, "source-pull-count");
   const mergedPath = path.join(temporary, "merged");
+  const callsPath = path.join(temporary, "gh-calls");
   fs.mkdirSync(fakeBin, { recursive: true });
   fs.mkdirSync(runDir, { recursive: true });
   fs.writeFileSync(
@@ -373,6 +374,9 @@ test("post-flight rechecks repair mode and live authorization immediately before
       "#!/usr/bin/env node",
       "const fs = require('node:fs');",
       "const args = process.argv.slice(2);",
+      "const inputPath = args[args.indexOf('--input') + 1];",
+      "const input = args.includes('--input') && inputPath !== '-' ? fs.readFileSync(inputPath, 'utf8') : '';",
+      "fs.appendFileSync(process.env.FAKE_GH_CALLS, `${JSON.stringify({ args, input })}\\n`);",
       "if (args[0] === 'api' && /^repos\\/openclaw\\/openclaw\\/pulls\\/(123|456)$/.test(args[1])) {",
       "  const number = Number(args[1].split('/').at(-1));",
       "  const source = process.env.FAKE_GH_REPLACEMENT === '1' && number === 123;",
@@ -462,6 +466,7 @@ test("post-flight rechecks repair mode and live authorization immediately before
         FAKE_GH_PULL_COUNT: pullCountPath,
         FAKE_GH_SOURCE_COUNT: sourceCountPath,
         FAKE_GH_MERGED_FILE: mergedPath,
+        FAKE_GH_CALLS: callsPath,
         FAKE_GH_LABEL_SEQUENCES: JSON.stringify(sequences),
         FAKE_GH_SOURCE_LABEL_SEQUENCES: JSON.stringify(sourceSequences ?? []),
         FAKE_GH_REPLACEMENT: sourceSequences ? "1" : "0",
@@ -573,6 +578,20 @@ test("post-flight rechecks repair mode and live authorization immediately before
     const authorized = execute({ mode: "automerge", sequences: [["clawsweeper:automerge"]] });
     assert.equal(authorized.actions[0]?.status, "executed");
     assert.equal(fs.existsSync(mergedPath), true);
+
+    // Post-flight records closure authorization for a merged fix; guarded apply owns the close.
+    assert.equal(authorized.closure_authorization.status, "authorized");
+    const closes = fs
+      .readFileSync(callsPath, "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as { args: string[]; input: string })
+      .filter(
+        ({ args, input }) =>
+          (["issue", "pr"].includes(args[0]!) && args[1] === "close") ||
+          [...args, input].some((value) => /state["=:\s]+closed/i.test(value)),
+      );
+    assert.deepEqual(closes, []);
   } finally {
     fs.rmSync(temporary, { recursive: true, force: true });
   }

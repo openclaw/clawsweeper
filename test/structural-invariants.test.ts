@@ -51,11 +51,6 @@ test("cluster intake publishes jobs durably before dispatch", () => {
   );
 });
 
-// Post-flight records closure authorization only. Guarded apply owns every close.
-test("post-flight never closes issues or pull requests", () => {
-  assert.doesNotMatch(readText("src/repair/post-flight.ts"), /"close"|state: "closed"/);
-});
-
 // The selector model judges cluster quality. Code never ranks clusters with word lists or scores.
 test("cluster selection has no semantic word lists, thresholds, or scores", () => {
   const sources = [
