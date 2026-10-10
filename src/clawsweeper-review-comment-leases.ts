@@ -14,7 +14,6 @@ import {
   supersededReviewStartStatusLeases,
 } from "./repair/comment-router/admission.js";
 import type { ReviewCommentWorkflowDependencies } from "./clawsweeper-review-comment-dependencies.js";
-import type { createReviewCommentIdentity } from "./clawsweeper-review-comment-identity.js";
 import type { createReviewCommentState } from "./clawsweeper-review-comment-state.js";
 import type { createReviewCommentPublication } from "./clawsweeper-review-comment-publication.js";
 
@@ -27,7 +26,6 @@ export class ReviewLeaseSupersededError extends Error {
 
 export function createReviewCommentLeases(
   dependencies: ReviewCommentWorkflowDependencies &
-    ReturnType<typeof createReviewCommentIdentity> &
     ReturnType<typeof createReviewCommentState> &
     ReturnType<typeof createReviewCommentPublication>,
 ) {

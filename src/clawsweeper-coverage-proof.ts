@@ -50,6 +50,10 @@ import { hostEvidenceMarkdown, sectionLineValue } from "./clawsweeper-report-hel
 import { sentence } from "./clawsweeper-review-presentation.js";
 import { normalizePrRating } from "./clawsweeper-rating.js";
 import { updateReviewRecordDecision } from "./review-record.js";
+import {
+  linkedPullRequestSignalContextsFromText,
+  pullRequestUrlForNumber,
+} from "./clawsweeper-pr-references.js";
 
 export function createPullRequestCoverageProof(
   dependencies: CreateReportOrchestrationDependencies &
@@ -68,10 +72,8 @@ export function createPullRequestCoverageProof(
     ghPagedContextWindow,
     ghPagedLinkHeaderContextWindow,
     linkedPullRequestLabels,
-    linkedPullRequestSignalContextsFromText,
     numberOrUndefined,
     pullHeadShaFromContext,
-    pullRequestUrlForNumber,
     renderPrRatingAssessmentReportSection,
     renderRootCauseClusterAssessmentReportSection,
     runtimeBudgetExceeded,
@@ -100,7 +102,9 @@ export function createPullRequestCoverageProof(
         const linkedPull: LinkedPullRequestSupersession = {
           number,
           title: nonBlankStringOrUndefined(pull.title) ?? `PR #${number}`,
-          url: nonBlankStringOrUndefined(pull.html_url) ?? pullRequestUrlForNumber(number),
+          url:
+            nonBlankStringOrUndefined(pull.html_url) ??
+            pullRequestUrlForNumber(targetRepo(), number),
           state: nonBlankStringOrUndefined(pull.state)?.toLowerCase() ?? "",
           mergedAt: nonBlankStringOrUndefined(pull.merged_at) ?? null,
           mergeableState: nonBlankStringOrUndefined(pull.mergeable_state)?.toLowerCase() ?? null,
@@ -236,7 +240,7 @@ export function createPullRequestCoverageProof(
       url:
         nonBlankStringOrUndefined(pull.html_url) ??
         nonBlankStringOrUndefined(issue.html_url) ??
-        pullRequestUrlForNumber(number),
+        pullRequestUrlForNumber(targetRepo(), number),
       state: nonBlankStringOrUndefined(pull.state)?.toLowerCase() ?? "",
       mergedAt: nonBlankStringOrUndefined(pull.merged_at) ?? null,
       body: compactPrCloseCoverageProofText(
@@ -269,7 +273,9 @@ export function createPullRequestCoverageProof(
       reviewSectionValue(markdown, "closeComment"),
     ];
     return texts
-      .flatMap((text) => linkedPullRequestSignalContextsFromText(text, currentNumber, linkedNumber))
+      .flatMap((text) =>
+        linkedPullRequestSignalContextsFromText(targetRepo(), text, currentNumber, linkedNumber),
+      )
       .map((text) => compactPrCloseCoverageProofText(text, 500))
       .filter(Boolean)
       .slice(0, 4);

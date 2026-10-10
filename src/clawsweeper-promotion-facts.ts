@@ -6,7 +6,7 @@ import {
   REVIEW_SECTIONS,
   isGitHubVerifiedFixedPullRequestSource,
 } from "./clawsweeper-policy.js";
-import { createPullRequestReferenceParser } from "./clawsweeper-pr-references.js";
+import { pullRequestUrlForNumber } from "./clawsweeper-pr-references.js";
 import {
   defaultAgentsPolicyStatus,
   impactLabelsFromReport,
@@ -84,7 +84,6 @@ export function createPullRequestPromotionFacts(
     labelNames,
     normalizeLabelName,
     parseGitHubItemRef,
-    repoUrlFor,
     targetProfile,
     targetRepo,
   } = dependencies;
@@ -465,11 +464,6 @@ export function createPullRequestPromotionFacts(
     });
   }
 
-  const pullRequestReferenceParser = createPullRequestReferenceParser({ targetRepo, repoUrlFor });
-
-  const { linkedPullRequestSignalContextsFromText, pullRequestUrlForNumber } =
-    pullRequestReferenceParser;
-
   // The review model names the canonical item in `rootCauseCluster.canonicalRef`,
   // and the runtime records a GitHub-verified merged fixing PR in `fixed_pr_*`.
   // Only these typed facts name a PR that can cover this one; report prose never does.
@@ -508,7 +502,9 @@ export function createPullRequestPromotionFacts(
         const linkedPull: LinkedPullRequestSupersession = {
           number,
           title: nonBlankStringOrUndefined(pull.title) ?? `PR #${number}`,
-          url: nonBlankStringOrUndefined(pull.html_url) ?? pullRequestUrlForNumber(number),
+          url:
+            nonBlankStringOrUndefined(pull.html_url) ??
+            pullRequestUrlForNumber(targetRepo(), number),
           state,
           mergedAt,
           mergeableState: nonBlankStringOrUndefined(pull.mergeable_state)?.toLowerCase() ?? null,
@@ -644,9 +640,6 @@ export function createPullRequestPromotionFacts(
     closePromotionHasNonAutomationActivityAfterReview,
     contextHasNonAutomationActivityAfter,
     contextHasNonAutomationActivityAfterForTest,
-    pullRequestReferenceParser,
-    linkedPullRequestSignalContextsFromText,
-    pullRequestUrlForNumber,
     canonicalPullRequestNumbersFromReport,
     linkedPullRequestSupersession,
     linkedPullRequestLabels,

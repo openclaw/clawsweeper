@@ -11,7 +11,10 @@ import {
   createReviewCommentPublication,
   DurableReviewPublicationBlockedError,
 } from "../dist/clawsweeper-review-comment-publication.js";
-import { createReviewCommentAutomation } from "../dist/clawsweeper-review-comment-automation.js";
+import {
+  reviewAutomationMarkersFromReport,
+  reviewVersionMarkerFromReport,
+} from "../dist/clawsweeper-review-comment-automation.js";
 import {
   createReviewCommentState,
   expireReviewStartStatusLease,
@@ -122,9 +125,6 @@ function reviewCommentState(comments: () => Record<string, unknown>[]) {
     ghPaged: comments,
     reviewCommentBodyDigest: sha256,
     parseGitHubItemRef: () => ({ repo: "openclaw/openclaw", kind: "pull_request", number: 1 }),
-    reviewCommentMarker: () => reviewMarker,
-    pullHeadShaFromContext: () => headSha,
-    markerAttributeValue: (value: string) => value,
   } as never);
 }
 
@@ -144,7 +144,6 @@ function reviewCommentPublication(options: {
     sentence: (value: string) => value,
     normalizedLabelSet: () => new Set<string>(),
     markdownLink: (label: string) => label,
-    closeAppliedCommentMarker: () => "",
     ...options.state,
   } as never);
 }
@@ -230,10 +229,7 @@ test("review version timestamps round-trip through the durable parser", () => {
     "Review",
     "",
   ].join("\n");
-  const automation = createReviewCommentAutomation({
-    markerAttributeValue: (value: string) => value.trim().replace(/[^\w./:@-]/g, "_") || "unknown",
-  } as never);
-  const versionMarker = automation.reviewVersionMarkerFromReport(report);
+  const versionMarker = reviewVersionMarkerFromReport(report);
   const comment = {
     id: 20,
     user: { login: "clawsweeper[bot]" },
@@ -246,8 +242,8 @@ test("review version timestamps round-trip through the durable parser", () => {
   assert.equal(parsed.reviewedAt, "2026-08-08T18:00:00.000Z");
   assert.equal(Date.parse(parsed.reviewedAt), Date.parse(fields.reviewed_at));
   const restricted = report.replace("---\n", "---\npublication_policy: record_comment_only\n");
-  assert.equal(automation.reviewAutomationMarkersFromReport(restricted), "");
-  assert.equal(automation.reviewVersionMarkerFromReport(restricted), versionMarker);
+  assert.equal(reviewAutomationMarkersFromReport(restricted), "");
+  assert.equal(reviewVersionMarkerFromReport(restricted), versionMarker);
 });
 
 test("marker-suppressed oversized publication refuses before writing a fallback", () => {
@@ -326,7 +322,6 @@ test("oversized durable review publication replaces ready state with a verified 
       sentence: (value: string) => value,
       normalizedLabelSet: () => new Set<string>(),
       markdownLink: (label: string) => label,
-      closeAppliedCommentMarker: () => "",
       ...state,
       markedReviewCommentBody: (_number: number, body: string) => markedReviewBody(body),
       issueReviewComment: () => existing,
@@ -613,9 +608,6 @@ test("newest exact durable comment wins over older trusted duplicates", () => {
     ghPaged: () => [],
     reviewCommentBodyDigest: sha256,
     parseGitHubItemRef: () => ({ repo: "openclaw/openclaw", kind: "pull_request", number: 1 }),
-    reviewCommentMarker: () => reviewMarker,
-    pullHeadShaFromContext: () => headSha,
-    markerAttributeValue: (value: string) => value,
   } as never);
 
   assert.equal(state.selectIssueReviewComment(itemNumber, comments)?.id, 20);

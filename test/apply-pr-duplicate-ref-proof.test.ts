@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
+import { linkedPullRequestSignalContextsFromText } from "../dist/clawsweeper-pr-references.js";
 
 import {
   lowSignalCloseReport,
@@ -13,6 +14,16 @@ import {
   withMockCodexProof,
   withMockGh,
 } from "./helpers.ts";
+
+test("PR reference parsing follows the explicit repository without retaining prior selection", () => {
+  const text = "Superseded by openclaw/clawhub#400";
+  for (const repo of ["openclaw/openclaw", "openclaw/clawhub", "openclaw/openclaw"]) {
+    assert.deepEqual(
+      linkedPullRequestSignalContextsFromText(repo, text, 357, 400),
+      repo === "openclaw/clawhub" ? [text] : [],
+    );
+  }
+});
 
 test("apply-decisions ignores bare refs inside cross-repo markdown link labels for duplicate proof", () => {
   withApplyTestWorkspace(tmpPrefix, ({ root, itemsDir, closedDir, plansDir, reportPath }) => {

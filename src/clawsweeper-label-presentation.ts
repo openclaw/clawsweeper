@@ -46,6 +46,21 @@ import {
 } from "./clawsweeper-label-selection.js";
 import { prStatusLabelKindFromReportLabels, sentence } from "./clawsweeper-review-presentation.js";
 
+export function isClawSweeperOwnedLabel(label: string): boolean {
+  return (
+    PRIORITY_LABEL_NAMES.has(label) ||
+    IMPACT_LABEL_NAMES.has(label) ||
+    MERGE_RISK_LABEL_NAMES.has(label) ||
+    MATURITY_LABEL_NAMES.has(label) ||
+    PR_RATING_LABEL_NAMES.has(label) ||
+    PR_STATUS_LABEL_NAMES.has(label) ||
+    label === FEATURE_SHOWCASE_LABEL ||
+    label === PROOF_SUFFICIENT_LABEL ||
+    PROOF_MEDIA_LABEL_NAMES.has(label) ||
+    label === TELEGRAM_VISIBLE_PROOF_LABEL ||
+    isIssueAdvisoryLabel(label)
+  );
+}
 export function createReportLabelPresentation(dependencies: CreateReportOrchestrationDependencies) {
   const { defaultPlansDir, isFresh } = dependencies;
 
@@ -93,22 +108,6 @@ export function createReportLabelPresentation(dependencies: CreateReportOrchestr
     justifications: readonly LabelJustification[],
   ): string {
     return labelJustificationsMarkdown(justifications);
-  }
-
-  function isClawSweeperOwnedLabel(label: string): boolean {
-    return (
-      PRIORITY_LABEL_NAMES.has(label) ||
-      IMPACT_LABEL_NAMES.has(label) ||
-      MERGE_RISK_LABEL_NAMES.has(label) ||
-      MATURITY_LABEL_NAMES.has(label) ||
-      PR_RATING_LABEL_NAMES.has(label) ||
-      PR_STATUS_LABEL_NAMES.has(label) ||
-      label === FEATURE_SHOWCASE_LABEL ||
-      label === PROOF_SUFFICIENT_LABEL ||
-      PROOF_MEDIA_LABEL_NAMES.has(label) ||
-      label === TELEGRAM_VISIBLE_PROOF_LABEL ||
-      isIssueAdvisoryLabel(label)
-    );
   }
 
   function desiredClawSweeperLabelsFromPublicReport(
@@ -372,7 +371,6 @@ export function createReportLabelPresentation(dependencies: CreateReportOrchestr
     labelJustificationsMarkdown,
     labelTransitionJustificationsMarkdown,
     labelJustificationsMarkdownForTest,
-    isClawSweeperOwnedLabel,
     desiredClawSweeperLabelsFromPublicReport,
     labelTransitionReason,
     labelTransitionJustificationsFromPublicReport,

@@ -11,7 +11,7 @@ import {
   isLockedConversationCommentError,
 } from "./github-retry.js";
 import type { ReviewCommentWorkflowDependencies } from "./clawsweeper-review-comment-dependencies.js";
-import type { createReviewCommentIdentity } from "./clawsweeper-review-comment-identity.js";
+import { closeAppliedCommentMarker } from "./clawsweeper-review-comment-identity.js";
 import type { createReviewCommentState } from "./clawsweeper-review-comment-state.js";
 import { asRecord } from "./value-coerce.js";
 import { parseIsoMs } from "./iso-time.js";
@@ -34,9 +34,7 @@ export class DurableReviewPublicationBlockedError extends Error {
 }
 
 export function createReviewCommentPublication(
-  dependencies: ReviewCommentWorkflowDependencies &
-    ReturnType<typeof createReviewCommentIdentity> &
-    ReturnType<typeof createReviewCommentState>,
+  dependencies: ReviewCommentWorkflowDependencies & ReturnType<typeof createReviewCommentState>,
 ) {
   const {
     root: ROOT,
@@ -46,7 +44,6 @@ export function createReviewCommentPublication(
     reviewCommentBodyDigest,
     ensureDir,
     markdownLink,
-    closeAppliedCommentMarker,
     markedReviewCommentBody,
     issueReviewComment,
     issueReviewCommentWithBody,

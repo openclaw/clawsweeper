@@ -123,6 +123,19 @@ import {
   reviewTimelineDigestParts,
 } from "./clawsweeper-source-revision.js";
 import {
+  freshPullRequestReviewHead,
+  pullHeadShaFromContext,
+  reviewStructuralPullStateFromContext,
+  stalePullRequestReviewComment,
+  stalePullRequestReviewHead,
+} from "./clawsweeper-review-comment-identity.js";
+import {
+  repairLoopPassModeFromReport,
+  reviewAutomationMarkersFromReport,
+  reviewVersionMarkerFromReport,
+} from "./clawsweeper-review-comment-automation.js";
+export { reviewAutomationMarkersFromReport };
+import {
   currentClosingPullRequestReferenceFromIssueTimeline,
   createStatusContext,
   linkedIssueNumbersForImplementationProvenance,
@@ -718,7 +731,6 @@ const reviewCommentWorkflow = createReviewCommentWorkflow({
   heldReviewStartStatusCommentResult,
   gitHubRuntimeBudgetError: GitHubRuntimeBudgetError,
   ghObservedMutationCommand,
-  githubCount,
   ghPaged,
   reviewCommentBodyDigest,
   parseGitHubItemRef,
@@ -736,21 +748,13 @@ export const {
   removeCurrentCursorTraceItem,
   renderReviewStartStatusComment,
   reviewArtifactDestination,
-  reviewAutomationMarkersFromReport,
   reviewStartLeaseWinnerCommentIdForTest,
   runtimeBudgetExceeded,
   shouldPreserveReviewStartLease,
   timeoutWithinRuntimeBudget,
   withReviewStartStatusLease,
 } = reviewCommentWorkflow;
-const {
-  pullHeadShaFromContext,
-  fetchIssueReviewComments,
-  writeCommentPayload,
-  repairLoopPassModeFromReport,
-  reviewVersionMarkerFromReport,
-  reviewStructuralPullStateFromContext,
-} = reviewCommentWorkflow;
+const { fetchIssueReviewComments, writeCommentPayload } = reviewCommentWorkflow;
 
 const planCommand = createPlanCommand({
   defaultBatchSize: DEFAULT_PLAN_BATCH_SIZE,
@@ -854,6 +858,8 @@ const { reviewCommand } = createReviewCommandWorkflow({
   ...reviewRuntime,
   collectItemContext,
   ...reviewCommentWorkflow,
+  pullHeadShaFromContext,
+  reviewStructuralPullStateFromContext,
   DEFAULT_PLAN_BATCH_SIZE,
   defaultItemsDir,
   enforceExpectedIssueSourceRevision,
@@ -895,6 +901,10 @@ const { applyDecisionsCommandInner } = createApplyDecisionWorkflow({
   ...contextHydration,
   CLAWSWEEPER_BOT_AUTHORS,
   ...reviewCommentWorkflow,
+  freshPullRequestReviewHead,
+  pullHeadShaFromContext,
+  stalePullRequestReviewComment,
+  stalePullRequestReviewHead,
   closeReasonApplyAgeSkipReason,
   closeReasonEnabled,
   closeReasonFilterText,

@@ -36,7 +36,11 @@ export function normalizeNoopReviewMarkerMetadata(body: string): string {
     (marker) => marker.replace(/\s(?:updated_at|lease_owner|lease_comment_id)=[^\s>]+/g, ""),
   );
 }
-import type { createReviewCommentIdentity } from "./clawsweeper-review-comment-identity.js";
+import {
+  markerAttributeValue,
+  pullHeadShaFromContext,
+  reviewCommentMarker,
+} from "./clawsweeper-review-comment-identity.js";
 import { parseIsoMs } from "./iso-time.js";
 import { frontMatterValue } from "./report-front-matter.js";
 import {
@@ -70,18 +74,8 @@ export function expireReviewStartStatusLease(
   return body.slice(0, offset) + rewritten + body.slice(offset + marker.length);
 }
 
-export function createReviewCommentState(
-  dependencies: ReviewCommentWorkflowDependencies & ReturnType<typeof createReviewCommentIdentity>,
-) {
-  const {
-    targetRepo,
-    ghPaged,
-    reviewCommentBodyDigest,
-    parseGitHubItemRef,
-    reviewCommentMarker,
-    pullHeadShaFromContext,
-    markerAttributeValue,
-  } = dependencies;
+export function createReviewCommentState(dependencies: ReviewCommentWorkflowDependencies) {
+  const { targetRepo, ghPaged, reviewCommentBodyDigest, parseGitHubItemRef } = dependencies;
 
   function markedReviewCommentBody(number: number, body: string): string {
     return body.includes(reviewCommentMarker(number))
