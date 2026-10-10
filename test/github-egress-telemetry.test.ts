@@ -441,12 +441,6 @@ test("publication workflows retain v1 metrics while wiring bounded v2 observatio
     assert.equal(step?.env?.CLAWSWEEPER_GITHUB_POOL_CLASS, "repository_actions");
     assert.equal(step?.env?.CLAWSWEEPER_GITHUB_STAGE, "publication_router");
   }
-  const claim = direct.find((step) => step.id === "claim-exact-review-queue");
-  assert.ok(
-    String(claim?.run).includes(
-      "repeat_revision=${responseProtocol === 2 ? repeatRevision : false}",
-    ),
-  );
 });
 
 test("signed upload, SQLite restart, retention, cardinality, and public privacy are bounded", async () => {

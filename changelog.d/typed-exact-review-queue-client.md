@@ -1,1 +1,1 @@
-- Move exact-review claim, reservation and lifecycle response parsing from inline workflow scripts into typed queue CLI owners while preserving lease outcomes and pre-checkout recovery.
+- Move exact-review claim, reservation and lifecycle response parsing from inline workflow scripts into typed queue CLI owners while preserving lease outcomes and pre-checkout recovery; verify repeat-revision telemetry through executable claim steps for both protocol versions.

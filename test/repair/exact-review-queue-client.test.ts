@@ -160,6 +160,53 @@ for (const [name, valid, key] of [
   }
 }
 
+for (const protocolVersion of [1, 2]) {
+  for (const repeatRevision of [false, true]) {
+    test(`review claim v${protocolVersion} exposes repeat_revision=${repeatRevision} for telemetry`, () => {
+      const results = versions.map((source) =>
+        runStep(
+          source,
+          "Claim exact-review queue lease",
+          { ...lease, protocol_version: protocolVersion, repeat_revision: repeatRevision },
+          "200",
+          itemKey,
+        ),
+      );
+      for (const result of results) {
+        assert.equal(result.status, 0);
+        const outputs = Object.fromEntries(
+          result.output
+            .trim()
+            .split("\n")
+            .map((line) => {
+              const separator = line.indexOf("=");
+              return [line.slice(0, separator), line.slice(separator + 1)];
+            }),
+        );
+        assert.equal(outputs.protocol_version, String(protocolVersion));
+        assert.equal(outputs.repeat_revision, String(protocolVersion === 2 && repeatRevision));
+      }
+      if (results.length === 2) assert.deepEqual(results[1], results[0]);
+    });
+  }
+}
+
+test("review claim v2 rejects a non-boolean repeat revision before exposing telemetry outputs", () => {
+  for (const repeatRevision of [undefined, "true"]) {
+    for (const source of versions) {
+      const result = runStep(
+        source,
+        "Claim exact-review queue lease",
+        { ...lease, repeat_revision: repeatRevision },
+        "200",
+        itemKey,
+      );
+      assert.equal(result.status, 1);
+      assert.equal(result.output, "claimed=false\ndecision={}\n");
+    }
+  }
+});
+
 for (const [command, variable, valid, invalid] of [
   [
     "reservation",
