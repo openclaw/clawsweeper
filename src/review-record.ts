@@ -131,10 +131,10 @@ export function readReviewRecord(markdown: string): ReviewRecord | null {
  * fallback when the backfill shows that no stored report is without a record.
  * A record that does not read throws ReviewRecordFormatError: it gets no fallback.
  */
-export function readReviewRecordOrLegacy(
+export function readReviewRecordOrLegacy<T>(
   markdown: string,
-  legacyDecision: (markdown: string) => Decision,
-): ReviewRecord {
+  legacyDecision: (markdown: string) => T,
+): ReviewRecord | { decision: T } {
   return readReviewRecord(markdown) ?? { decision: legacyDecision(markdown) };
 }
 

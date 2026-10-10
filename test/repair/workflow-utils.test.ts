@@ -36,8 +36,98 @@ import {
   workerLimit,
 } from "../../dist/limits.js";
 
+import { withReviewRecord } from "../helpers.ts";
 const APPLY_RUN_PATH = ".github/workflows/sweep.yml";
 const DEFAULT_APPLY_TITLE = "Apply default ClawSweeper closures for openclaw/openclaw";
+
+test("repair promotion signals use recorded ratings and reject unreadable records", () => {
+  const legacy = `---
+repository: openclaw/openclaw
+number: 123
+type: pull_request
+pr_rating_overall: F
+pr_rating_proof: F
+real_behavior_proof_status: missing
+---
+`;
+  const recorded = withReviewRecord(legacy, {
+    prRating: {
+      overallTier: "A",
+      patchTier: "A",
+      proofTier: "A",
+      summary: "Ready.",
+      nextSteps: [],
+    },
+    realBehaviorProof: {
+      status: "sufficient",
+      summary: "Real behavior verified.",
+      evidenceKind: "terminal",
+      needsContributorAction: false,
+    },
+  });
+  assert.deepEqual(pullRequestClosePromotionSignalsForTest(legacy), {
+    authorBudget: true,
+    lowSignal: true,
+  });
+  assert.deepEqual(pullRequestClosePromotionSignalsForTest(recorded), {
+    authorBudget: false,
+    lowSignal: false,
+  });
+  assert.throws(
+    () =>
+      pullRequestClosePromotionSignalsForTest(
+        recorded.replace(/^review_record: \{/m, "review_record: {broken"),
+      ),
+    /review_record/,
+  );
+});
+
+test("repair close selection follows recorded decisions, confidence and close reason", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-workflow-record-"));
+  const item = path.join(root, "records/openclaw-openclaw/items/123.md");
+  const legacy = `---
+repository: openclaw/openclaw
+number: 123
+type: issue
+review_status: complete
+decision: close
+confidence: high
+close_reason: implemented_on_main
+action_taken: proposed_close
+item_created_at: 2024-01-01T00:00:00Z
+---
+`;
+  const options = {
+    targetRepo: "openclaw/openclaw",
+    applyKind: "all",
+    applyCloseReasons: "implemented_on_main",
+    staleMinAgeDays: 60,
+    minAgeDays: 0,
+    minAgeMinutes: null,
+  };
+  try {
+    write(item, legacy);
+    assert.deepEqual(
+      withCwd(root, () => proposedItemNumbers(options)),
+      [123],
+    );
+    for (const decision of [
+      { decision: "keep_open", confidence: "high", closeReason: "none" },
+      { decision: "close", confidence: "low", closeReason: "implemented_on_main" },
+      { decision: "close", confidence: "high", closeReason: "not_actionable_in_repo" },
+    ]) {
+      write(item, withReviewRecord(legacy, decision));
+      assert.deepEqual(
+        withCwd(root, () => proposedItemNumbers(options)),
+        [],
+      );
+    }
+    write(item, legacy.replace("\n---\n", "\nreview_record: {broken\n---\n"));
+    assert.throws(() => withCwd(root, () => proposedItemNumbers(options)), /review_record/);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
 
 // Typed root-cause cluster front matter that names PR #400 as the canonical PR.
 const CANONICAL_PULL_REQUEST_CLUSTER = `root_cause_cluster: ${JSON.stringify({

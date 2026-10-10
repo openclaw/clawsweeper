@@ -72,6 +72,11 @@ export type ReportReviewDecision = Pick<
   | "workValidation"
   | "workLikelyFiles"
   | "decision"
+  | "closeReason"
+  | "visionFit"
+  | "visionFitEvidence"
+  | "workPriority"
+  | "workClusterRefs"
   | "confidence"
   | "summary"
   | "changeSummary"
@@ -266,6 +271,11 @@ function legacyReportReviewDecision(markdown: string): ReportReviewDecision {
     workValidation: frontMatterStringArray(markdown, "work_validation"),
     workLikelyFiles: frontMatterStringArray(markdown, "work_likely_files"),
     decision: stored("decision"),
+    closeReason: stored("close_reason"),
+    visionFit: stored("vision_fit"),
+    visionFitEvidence: frontMatterStringArray(markdown, "vision_fit_evidence"),
+    workPriority: stored("work_priority"),
+    workClusterRefs: frontMatterStringArray(markdown, "work_cluster_refs"),
     confidence: stored("confidence"),
     summary: reviewSectionValue(markdown, "summary"),
     changeSummary: reviewSectionValue(markdown, "changeSummary"),

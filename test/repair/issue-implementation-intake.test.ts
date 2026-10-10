@@ -8,6 +8,7 @@ import {
   readFileSync,
   realpathSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import os from "node:os";
@@ -63,6 +64,60 @@ function report(overrides = {}, securityStatus = "not_applicable") {
     .join("\n");
   return `---\n${frontmatter}\n---\n\n## Security Review\n\nStatus: ${securityStatus}\n\nSummary: No patch security review is needed for this issue.\n\n## Repair Work Prompt\n\nFix the reproduced existing-behavior bug and add a regression test.\n`;
 }
+
+test("implementation intake uses recorded eligibility and work fields instead of repeated text", () => {
+  const markdown = withReviewRecord(
+    report({ decision: "close", confidence: "low", close_reason: "off_topic" }, "needs_attention"),
+    {
+      decision: "keep_open",
+      confidence: "high",
+      closeReason: "none",
+      itemCategory: "bug",
+      reproductionStatus: "reproduced",
+      reproductionConfidence: "high",
+      requiresNewFeature: false,
+      requiresNewConfigOption: false,
+      requiresProductDecision: false,
+      autoImplementationCandidate: "strict_bug",
+      workCandidate: "queue_fix_pr",
+      workConfidence: "high",
+      workPrompt: "Use the recorded repair prompt.",
+      workValidation: ["check recorded"],
+      workLikelyFiles: ["src/recorded.ts"],
+      workClusterRefs: ["#123"],
+      securityReview: { status: "not_applicable", summary: "No security boundary.", concerns: [] },
+    },
+  );
+  const parsed = parseReviewReport(markdown);
+  assert.equal(parsed.workPrompt, "Use the recorded repair prompt.");
+  assert.equal(parsed.frontmatter.work_validation, '["check recorded"]');
+  assert.equal(parsed.frontmatter.work_likely_files, '["src/recorded.ts"]');
+  assert.equal(
+    reportOnlyDecision({
+      targetRepo: "openclaw/openclaw",
+      report: parsed,
+      reportMarkdown: markdown,
+    }).shouldRepair,
+    true,
+  );
+  const blocked = withReviewRecord(report(), {
+    decision: "close",
+    closeReason: "not_actionable_in_repo",
+  });
+  assert.equal(
+    reportOnlyDecision({
+      targetRepo: "openclaw/openclaw",
+      report: parseReviewReport(blocked),
+      reportMarkdown: blocked,
+    }).shouldRepair,
+    false,
+  );
+});
+
+test("implementation intake rejects unreadable records rather than using eligible legacy text", () => {
+  const markdown = report().replace("\n---\n", "\nreview_record: {broken\n---\n");
+  assert.throws(() => parseReviewReport(markdown), /review_record/);
+});
 
 test("implementation discovery refuses persisted manual and ambiguous policies with automation enabled", () => {
   const root = mkdtempSync(path.join(os.tmpdir(), "manual-discovery-"));
@@ -1455,6 +1510,7 @@ test("newer reviews immediately regenerate completed jobs ahead of fresh issue w
     for (const entry of ["dist", "config", "package.json"]) {
       cpSync(entry, path.join(root, entry), { recursive: true });
     }
+    symlinkSync(path.resolve("node_modules"), path.join(root, "node_modules"), "dir");
     const oldReport = report({ reviewed_at: "2026-07-31T10:00:00.000Z" });
     const currentReport = report({
       reviewed_at: "2026-07-31T10:05:00.000Z",

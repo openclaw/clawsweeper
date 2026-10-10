@@ -11,6 +11,7 @@ import type { createReviewPlanningHotIntake } from "./clawsweeper-review-plannin
 import { parseIsoMs } from "./iso-time.js";
 import { frontMatterValue } from "./report-front-matter.js";
 import { effectiveReviewStatus } from "./clawsweeper-record-metadata.js";
+import { reportReviewDecision } from "./report-review-decision.js";
 
 export function createReviewPlanningDashboard(
   dependencies: ReviewPlanningDependencies &
@@ -118,7 +119,7 @@ export function createReviewPlanningDashboard(
     const commentSyncedAtMs = parseIsoMs(commentSyncedAt);
     const applyCheckedAt = frontMatterValue(markdown, "apply_checked_at");
     const applyCheckedAtMs = parseIsoMs(applyCheckedAt);
-    const decision = frontMatterValue(markdown, "decision") ?? "unknown";
+    const decision = reportReviewDecision(markdown).decision ?? "unknown";
     const action = frontMatterValue(markdown, "action_taken") ?? "unknown";
     const failedReviewRetryStatus = frontMatterValue(markdown, "failed_review_retry_status");
     const failedReviewRetryLastAt = frontMatterValue(markdown, "failed_review_retry_last_at");

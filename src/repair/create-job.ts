@@ -8,6 +8,7 @@ import { runGitResult } from "./git.js";
 import { ghJsonBestEffort } from "./github-cli.js";
 import { renderJobIntentFrontmatter } from "./job-intent.js";
 import { frontMatterStringArray, frontMatterValue, sectionValue } from "../report-front-matter.js";
+import { readReviewRecordOrLegacy } from "../review-record.js";
 
 const args = parseArgs(process.argv.slice(2));
 const fromReport = args["from-report"] ?? args.from_report;
@@ -243,16 +244,21 @@ function sanitizeClusterId(value: JsonValue) {
 function parseClawSweeperReport(filePath: string) {
   const absolute = path.resolve(filePath);
   const markdown = fs.readFileSync(absolute, "utf8");
-  const prompt = sectionValue(markdown, "ClawSweeper Work Prompt");
+  const { decision } = readReviewRecordOrLegacy(markdown, (legacy) => ({
+    workPrompt: sectionValue(legacy, "ClawSweeper Work Prompt"),
+    workClusterRefs: frontMatterStringArray(legacy, "work_cluster_refs"),
+    workValidation: frontMatterStringArray(legacy, "work_validation"),
+    workLikelyFiles: frontMatterStringArray(legacy, "work_likely_files"),
+  }));
+  const prompt = decision.workPrompt;
   return {
     repo: frontMatterValue(markdown, "repository") || undefined,
-    refs: [
-      `#${frontMatterValue(markdown, "number")}`,
-      ...frontMatterStringArray(markdown, "work_cluster_refs"),
-    ].filter((ref: JsonValue) => /^#?[0-9]+$/.test(ref)),
+    refs: [`#${frontMatterValue(markdown, "number")}`, ...decision.workClusterRefs].filter(
+      (ref: JsonValue) => /^#?[0-9]+$/.test(ref),
+    ),
     prompt: prompt === "_No ClawSweeper prompt drafted._" ? "" : prompt,
-    validation: frontMatterStringArray(markdown, "work_validation"),
-    likelyFiles: frontMatterStringArray(markdown, "work_likely_files"),
+    validation: decision.workValidation,
+    likelyFiles: decision.workLikelyFiles,
   };
 }
 

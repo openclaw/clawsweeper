@@ -13,9 +13,10 @@ import {
   renderDecisionPacketPublicBlock,
   syncDecisionPacketRecord,
 } from "../dist/decision-packets.js";
-import { renderReviewCommentFromReport } from "../dist/clawsweeper.js";
+import { parseDecision, renderReviewCommentFromReport } from "../dist/clawsweeper.js";
 import { ambiguityGuardedMaintainerDecision } from "../dist/clawsweeper-promotion-facts.js";
-import { tmpPrefix } from "./helpers.ts";
+import { reviewRecordFrontMatterLine } from "../dist/review-record.js";
+import { closeDecision, item, tmpPrefix } from "./helpers.ts";
 
 const productDecision = {
   required: true,
@@ -75,6 +76,41 @@ test("decision packets preserve the exact Codex-authored maintainer decision", (
   assert.equal(packet.subject.headSha, "abc123");
   assert.equal(packet.subject.updatedAt, "2026-06-23T01:00:00Z");
   assert.equal(packet.updatedAt, "2026-06-23T01:00:00Z");
+});
+
+test("packet readers use the typed decision instead of stale report metadata", () => {
+  const subject = item({ number: 321, kind: "pull_request" });
+  const decision = parseDecision(
+    closeDecision({
+      decision: "keep_open",
+      closeReason: "none",
+      triagePriority: "P2",
+      maintainerDecision: productDecision,
+      likelyOwners: closeDecision().likelyOwners.map((owner) => ({
+        ...owner,
+        person: owner.person === "@alice" ? productDecision.likelyOwner.person : owner.person,
+      })),
+    }),
+    subject,
+  );
+  const line = reviewRecordFrontMatterLine(
+    { decision },
+    { repo: "openclaw/clawsweeper", number: 321, kind: "pull_request" },
+  );
+  assert.ok(line);
+  const report = decisionReport({ triage_priority: "P3", maintainer_decision: "none" }).replace(
+    "---\n",
+    `---\n${line}\n`,
+  );
+  const packet = buildDecisionPacketFromReport(report);
+  assert.equal(packet?.priority, "P2");
+  assert.deepEqual(packet?.options, productDecision.options);
+  assert.deepEqual(maintainerDecisionFromReport(report), productDecision);
+  assert.equal(maintainerDecisionBlocksClose(report), true);
+  const corrupt = report.replace(line, "review_record: {broken");
+  assert.throws(() => buildDecisionPacketFromReport(corrupt), /review_record/);
+  assert.throws(() => maintainerDecisionFromReport(corrupt), /review_record/);
+  assert.equal(maintainerDecisionBlocksClose(corrupt), true);
 });
 
 test("labels and report prose cannot invent a maintainer decision", () => {

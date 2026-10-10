@@ -173,7 +173,10 @@ export function emptyMaintainerDecision(): MaintainerDecision {
 }
 
 export function maintainerDecisionFromReport(markdown: string): MaintainerDecision | null {
-  return maintainerDecisionFromFrontMatter(frontMatter(markdown));
+  const record = readReviewRecord(markdown);
+  return record
+    ? record.decision.maintainerDecision
+    : maintainerDecisionFromFrontMatter(frontMatter(markdown));
 }
 
 function maintainerDecisionFromFrontMatter(
@@ -202,10 +205,13 @@ export function buildDecisionPacketFromReport(
   markdown: string,
   options: DecisionPacketBuildOptions = {},
 ): DecisionPacket | null {
+  const record = readReviewRecord(markdown);
   const parsedFrontmatter = readFrontMatter(markdown);
   if (parsedFrontmatter.ambiguous) return null;
   const frontmatter = parsedFrontmatter.values;
-  const decision = maintainerDecisionFromFrontMatter(frontmatter);
+  const decision = record
+    ? record.decision.maintainerDecision
+    : maintainerDecisionFromFrontMatter(frontmatter);
   const repo = frontmatter.repository;
   const kind = frontmatter.type;
   const number = numberValue(frontmatter.number);
@@ -253,7 +259,7 @@ export function buildDecisionPacketFromReport(
       ...(headSha ? { headSha } : {}),
     },
     lane: decision.kind,
-    priority: priorityValue(frontmatter.triage_priority),
+    priority: priorityValue(record ? record.decision.triagePriority : frontmatter.triage_priority),
     question: decision.question,
     rationale: decision.rationale,
     options: decision.options,

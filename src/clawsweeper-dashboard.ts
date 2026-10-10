@@ -17,6 +17,7 @@ import type {
 } from "./clawsweeper-types.js";
 import { parseIsoMs } from "./iso-time.js";
 import { frontMatterValue } from "./report-front-matter.js";
+import { reportReviewDecision } from "./report-review-decision.js";
 
 interface DashboardDependencies {
   closeReasonText: (reason: CloseReason) => string;
@@ -104,7 +105,7 @@ export function createDashboardPresentation({
   }
 
   function dashboardCloseReason(markdown: string): string | undefined {
-    const closeReason = frontMatterValue(markdown, "close_reason");
+    const closeReason = reportReviewDecision(markdown).closeReason;
     const action = frontMatterValue(markdown, "action_taken");
     if (action === "closed") return closeReason;
     if (action === "skipped_already_closed") return "already closed before apply";

@@ -58,6 +58,7 @@ import {
   markdownRepository,
   numberForMarkdownFile,
 } from "./clawsweeper-repository-paths.js";
+import { reportReviewDecision } from "./report-review-decision.js";
 
 interface CreateDashboardAuditDependencies {
   addDashboardCadenceBucket: (
@@ -230,6 +231,7 @@ export function createDashboardAudit(dependencies: CreateDashboardAuditDependenc
     const path = join(dir, file);
     const markdown = readFileSync(path, "utf8");
     const repo = markdownRepository(markdown, file);
+    const review = reportReviewDecision(markdown);
     return {
       repo,
       number: numberForMarkdownFile(file),
@@ -238,9 +240,9 @@ export function createDashboardAudit(dependencies: CreateDashboardAuditDependenc
       kind: frontMatterValue(markdown, "type") as ItemKind | undefined,
       title: frontMatterValue(markdown, "title") ?? "",
       labels: frontMatterStringArray(markdown, "labels"),
-      decision: frontMatterValue(markdown, "decision"),
-      closeReason: frontMatterValue(markdown, "close_reason"),
-      confidence: frontMatterValue(markdown, "confidence"),
+      decision: review.decision,
+      closeReason: review.closeReason,
+      confidence: review.confidence,
       reviewedAt: frontMatterValue(markdown, "reviewed_at"),
       action: frontMatterValue(markdown, "action_taken"),
       reviewStatus: effectiveReviewStatus(markdown),
@@ -700,12 +702,13 @@ export function createDashboardAudit(dependencies: CreateDashboardAuditDependenc
       );
       const repo = entry.repo;
       const number = entry.number;
+      const review = reportReviewDecision(markdown);
       const reviewedAt = frontMatterValue(markdown, "reviewed_at");
       const reviewStatus = effectiveReviewStatus(markdown);
       const action = frontMatterValue(markdown, "action_taken") ?? "unknown";
-      const decision = frontMatterValue(markdown, "decision") ?? "unknown";
-      const workCandidate = frontMatterValue(markdown, "work_candidate") ?? "none";
-      const workPriority = frontMatterValue(markdown, "work_priority") ?? "low";
+      const decision = review.decision ?? "unknown";
+      const workCandidate = review.workCandidate ?? "none";
+      const workPriority = review.workPriority ?? "low";
       const workStatus = frontMatterValue(markdown, "work_status") ?? "none";
       const kind = (frontMatterValue(markdown, "type") as ItemKind | undefined) ?? "issue";
       const freshReview = isFresh({ reviewedAt, reviewStatus });

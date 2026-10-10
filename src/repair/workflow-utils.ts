@@ -12,6 +12,8 @@ import {
   frontMatterValue,
   sectionValue,
 } from "../report-front-matter.js";
+import { reportReviewDecision } from "../report-review-decision.js";
+import { readReviewRecordOrLegacy } from "../review-record.js";
 import { AUTOMATION_LIMITS, WORKER_CONFIG, workerLimit, type WorkerLane } from "../limits.js";
 import {
   fetchExactReviewQueuePressure,
@@ -1416,10 +1418,10 @@ function selectedProposedItemCandidates(
           if (repoFor(markdown, name) !== options.targetRepo) return [];
           const type = frontMatterValue(markdown, "type") ?? "";
           if (options.applyKind !== "all" && type && type !== options.applyKind) return [];
-          const decision = frontMatterValue(markdown, "decision");
+          const reviewed = reportReviewDecision(markdown);
+          const { decision, confidence } = reviewed;
+          const reason = reviewed.closeReason ?? "";
           const action = frontMatterValue(markdown, "action_taken") ?? "";
-          const confidence = frontMatterValue(markdown, "confidence");
-          const reason = frontMatterValue(markdown, "close_reason") ?? "";
           const selectableClose =
             decision === "close" &&
             confidence === "high" &&
@@ -1602,7 +1604,7 @@ function inconsistentOrStaleProposedItemCount(
       if (options.applyKind !== "all" && type && type !== options.applyKind) return false;
       const action = frontMatterValue(markdown, "action_taken");
       if (action !== "proposed_close" && action !== "retry_pr_close_coverage_proof") return false;
-      const reason = frontMatterValue(markdown, "close_reason") ?? "";
+      const reason = reportReviewDecision(markdown).closeReason ?? "";
       if (allowedCloseReasons && !allowedCloseReasons.has(reason)) return false;
       if (
         ALLOWED_CLOSE_REASONS.has(reason) &&
@@ -1814,10 +1816,15 @@ function pullRequestClosePromotionReasons(
 // Report prose never selects a supersession candidate.
 function hasCanonicalPullRequest(markdown: string, targetRepo: string): boolean {
   let cluster: unknown;
-  try {
-    cluster = JSON.parse(frontMatterValue(markdown, "root_cause_cluster") ?? "");
-  } catch {
-    return false;
+  const { decision } = readReviewRecordOrLegacy(markdown, () => null);
+  if (decision) {
+    cluster = decision.rootCauseCluster;
+  } else {
+    try {
+      cluster = JSON.parse(frontMatterValue(markdown, "root_cause_cluster") ?? "");
+    } catch {
+      return false;
+    }
   }
   const canonicalRef = isJsonObject(cluster) ? cluster.canonicalRef : null;
   if (typeof canonicalRef !== "string") return false;
@@ -1828,7 +1835,10 @@ function hasCanonicalPullRequest(markdown: string, targetRepo: string): boolean 
 }
 
 function hasRecommendedPauseOrCloseOption(markdown: string): boolean {
-  return frontMatterJsonArray(markdown, "merge_risk_options").some((entry) => {
+  const { decision } = readReviewRecordOrLegacy(markdown, () => null);
+  const options =
+    decision?.mergeRiskOptions ?? frontMatterJsonArray(markdown, "merge_risk_options");
+  return options.some((entry) => {
     if (!isJsonObject(entry)) return false;
     return entry.category === "pause_or_close" && entry.recommended === true;
   });
@@ -1857,6 +1867,14 @@ function trustedPromotionValue(
 }
 
 function hasLowSignalPullRequestPromotionSignal(markdown: string): boolean {
+  const { decision } = readReviewRecordOrLegacy(markdown, () => null);
+  if (decision) {
+    return (
+      decision.prRating.overallTier === "F" &&
+      (decision.prRating.proofTier === "F" ||
+        ["missing", "mock_only", "insufficient"].includes(decision.realBehaviorProof.status))
+    );
+  }
   const ratingSection = sectionValue(markdown, "PR Rating");
   const proofSection = sectionValue(markdown, "Real Behavior Proof");
   const overallTier = trustedPromotionValue(
@@ -1886,6 +1904,19 @@ function hasLowSignalPullRequestPromotionSignal(markdown: string): boolean {
 }
 
 function hasAuthorPrBudgetPromotionSignal(markdown: string): boolean {
+  const { decision } = readReviewRecordOrLegacy(markdown, () => null);
+  if (decision) {
+    if (
+      ["S", "A", "B"].includes(decision.prRating.overallTier) &&
+      ["sufficient", "override"].includes(decision.realBehaviorProof.status)
+    ) {
+      return false;
+    }
+    return (
+      ["D", "F"].includes(decision.prRating.overallTier) ||
+      ["missing", "mock_only", "insufficient"].includes(decision.realBehaviorProof.status)
+    );
+  }
   const ratingSection = sectionValue(markdown, "PR Rating");
   const proofSection = sectionValue(markdown, "Real Behavior Proof");
   const overallTier = trustedPromotionValue(
@@ -2277,9 +2308,9 @@ function commentSyncCandidates(
       if (reviewStatus !== "complete" && !failedReview) return [];
       if (!frontMatterValue(markdown, "item_snapshot_hash")) return [];
       const actionTaken = frontMatterValue(markdown, "action_taken");
+      const reviewed = reportReviewDecision(markdown);
       if (actionTaken === "skipped_invalid_decision") {
-        const decision = frontMatterValue(markdown, "decision");
-        const closeReason = frontMatterValue(markdown, "close_reason");
+        const { decision, closeReason } = reviewed;
         if (
           decision === "close" &&
           !repositoryProfileFor(targetRepo).applyCloseRules[
@@ -2304,8 +2335,8 @@ function commentSyncCandidates(
         Boolean(storedReviewCommentUrl && !["none", "unknown"].includes(storedReviewCommentUrl));
       const changedDuplicateClose =
         actionTaken === "skipped_changed_since_review" &&
-        frontMatterValue(markdown, "decision") === "close" &&
-        frontMatterValue(markdown, "close_reason") === "duplicate_or_superseded" &&
+        reviewed.decision === "close" &&
+        reviewed.closeReason === "duplicate_or_superseded" &&
         hasStoredReviewComment;
       const reviewCommentHash = frontMatterValue(markdown, "review_comment_sha256") ?? "";
       const invalidReviewCommentHash = !/^[a-f\d]{64}$/i.test(reviewCommentHash);

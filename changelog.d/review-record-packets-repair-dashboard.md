@@ -1,0 +1,1 @@
+- Read decision packets, repair eligibility, and dashboard outcomes from the typed review record, retaining legacy-report compatibility and rejecting unreadable records rather than trusting stale report prose.

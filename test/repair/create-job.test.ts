@@ -4,6 +4,7 @@ import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { withReviewRecord } from "../helpers.ts";
 
 test("create-job ignores report front matter lookalikes in the document body", () => {
   const root = mkdtempSync(path.join(tmpdir(), "clawsweeper-create-job-"));
@@ -211,5 +212,57 @@ test("create-job preserves empty-field defaults and rejects later competing reco
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
+  }
+});
+
+test("create-job uses recorded work fields and rejects unreadable records", () => {
+  const root = mkdtempSync(path.join(tmpdir(), "clawsweeper-create-job-record-"));
+  const reportPath = path.join(root, "321.md");
+  const legacy = `---
+repository: openclaw/openclaw
+number: 321
+type: issue
+work_validation: ["check legacy"]
+work_likely_files: ["src/legacy.ts"]
+work_cluster_refs: ["#322"]
+---
+
+## ClawSweeper Work Prompt
+
+Use the legacy prompt.
+`;
+  const recorded = withReviewRecord(legacy, {
+    workPrompt: "Use the recorded prompt.",
+    workValidation: ["check recorded"],
+    workLikelyFiles: ["src/recorded.ts"],
+    workClusterRefs: ["#323"],
+  });
+  const args = [
+    path.resolve("dist/repair/create-job.js"),
+    "--from-report",
+    reportPath,
+    "--dry-run",
+    "--no-check-existing",
+  ];
+  try {
+    for (const [markdown, expected, absent] of [
+      [legacy, "legacy", "recorded"],
+      [recorded, "recorded", "legacy"],
+    ]) {
+      writeFileSync(reportPath, markdown);
+      const output = execFileSync(process.execPath, args, { encoding: "utf8" });
+      assert.match(output, new RegExp(`Use the ${expected} prompt`));
+      assert.match(output, new RegExp(`check ${expected}`));
+      assert.match(output, new RegExp(`src/${expected}\\.ts`));
+      assert.doesNotMatch(output, new RegExp(absent));
+      assert.match(output, expected === "recorded" ? /#323/ : /#322/);
+    }
+    writeFileSync(reportPath, recorded.replace(/^review_record: \{/m, "review_record: {broken"));
+    assert.throws(
+      () => execFileSync(process.execPath, args, { encoding: "utf8", stdio: "pipe" }),
+      /review_record/,
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
   }
 });
