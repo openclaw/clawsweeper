@@ -11,7 +11,13 @@ import {
 } from "../dist/clawsweeper-apply-close-policies.js";
 import { LiveReadGeneration } from "../dist/live-read-generation.js";
 import type { ReportEntry } from "../src/clawsweeper-types.ts";
-import { implementedCloseReport, item, tmpPrefix } from "./helpers.ts";
+import {
+  implementedCloseReport,
+  item,
+  reviewReportFrontMatter,
+  tmpPrefix,
+  withReviewRecord,
+} from "./helpers.ts";
 
 const currentItem = {
   ...item(),
@@ -20,6 +26,15 @@ const currentItem = {
   author: "reporter",
   authorAssociation: "CONTRIBUTOR",
 };
+const currentMarkdown = withReviewRecord(
+  reviewReportFrontMatter({
+    repository: currentItem.repo,
+    number: currentItem.number,
+    type: currentItem.kind,
+    item_updated_at: currentItem.updatedAt,
+  }),
+  { decision: "close", closeReason: "implemented_on_main" },
+);
 function counterpartAdmission(
   closeReason: "implemented_on_main" | "stale_version_bug" | "stale_insufficient_info",
   changeAfterAdmission: "locked" | "closed" | "unknown" | null = null,
@@ -93,7 +108,7 @@ function counterpartAdmission(
         currentCloseState: () => ({
           closedCount: 0,
           closeReason: "implemented_on_main",
-          markdown: "",
+          markdown: currentMarkdown,
           needsReviewCommentSync: false,
           processedCount: 0,
           storedUpdatedAt: currentItem.updatedAt,

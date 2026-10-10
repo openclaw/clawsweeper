@@ -88,8 +88,7 @@ const recordedPullRequestDecision = {
 
 test("PR review comment label details come from the review record", () => {
   const report = pullRequestReport();
-  const legacyDetails = detailsBody(renderReviewCommentFromReport(report, "none"), "Label changes");
-  assert.match(legacyDetails, /- add `P1`: The report text selects P1\./);
+  assert.throws(() => renderReviewCommentFromReport(report, "none"), ReviewRecordFormatError);
 
   const typed = withReviewRecord(report, recordedPullRequestDecision);
   const labelDetails = detailsBody(renderReviewCommentFromReport(typed, "none"), "Label changes");
@@ -123,8 +122,7 @@ test("issue advisory label changes come from the review record", () => {
 
 The issue reports a crash on startup.
 `;
-  const legacyDetails = detailsBody(renderReviewCommentFromReport(report, "none"), "Label changes");
-  assert.match(legacyDetails, /- add `clawsweeper:needs-info`/);
+  assert.throws(() => renderReviewCommentFromReport(report, "none"), ReviewRecordFormatError);
 
   const typed = withReviewRecord(report, {
     decision: "keep_open",
@@ -169,7 +167,7 @@ function syncedPullRequestLabels(report: string): string[] {
 
 test("apply PR label sync reads the Telegram proof label from the review record", () => {
   const report = pullRequestReport();
-  assert.ok(!syncedPullRequestLabels(report).includes("proof: telegram-e2e"));
+  assert.throws(() => syncedPullRequestLabels(report), ReviewRecordFormatError);
   const typed = syncedPullRequestLabels(withReviewRecord(report, recordedPullRequestDecision));
   assert.ok(typed.includes("proof: telegram-e2e"));
 });
@@ -422,7 +420,7 @@ test("author budget guards and promotion facts prefer recorded proof and rating"
       nextSteps: [],
     },
   });
-  assert.notEqual(authorPrBudgetSignalBlockReason(legacy), null);
+  assert.throws(() => authorPrBudgetSignalBlockReason(legacy), ReviewRecordFormatError);
   assert.equal(authorPrBudgetSignalBlockReason(typed), null);
   const promotion = facts.authorPrBudgetPromotion(typed, {
     author: "contributor",
@@ -443,7 +441,7 @@ test("author budget guards and promotion facts prefer recorded proof and rating"
   );
 });
 
-test("pause or close recommendations come only from the recorded review when present", () => {
+test("pause or close recommendations require the recorded review", () => {
   const guards = createApplyGuards({ ghJson, ghPaged, targetRepo });
   const { pullRequestClosePromotion } = createPullRequestClosePromotion(
     guards.pullRequestHeadActivity,
@@ -468,7 +466,10 @@ test("pause or close recommendations come only from the recorded review when pre
   });
   const sourceItem = item({ kind: "pull_request" });
   const context = { issue: {}, comments: [], timeline: [] };
-  assert.equal(pullRequestClosePromotion(legacy, sourceItem, context, 0), null);
+  assert.throws(
+    () => pullRequestClosePromotion(legacy, sourceItem, context, 0),
+    ReviewRecordFormatError,
+  );
   assert.equal(
     pullRequestClosePromotion(typed, sourceItem, context, 0)?.closeReason,
     "duplicate_or_superseded",
@@ -509,8 +510,10 @@ test("coverage proof demotion preserves recorded evidence rather than stale repo
   assert.match(reviewSectionValue(demoted, "evidence"), /recorded evidence/);
   assert.doesNotMatch(reviewSectionValue(demoted, "evidence"), /stale report evidence/);
   assert.equal(readReviewRecord(demoted)?.decision.evidence.length, 2);
-  const legacyDemoted = coverage.applyPrCloseCoverageProofBlockedReport(legacy, block);
-  assert.match(reviewSectionValue(legacyDemoted, "evidence"), /stale report evidence/);
+  assert.throws(
+    () => coverage.applyPrCloseCoverageProofBlockedReport(legacy, block),
+    ReviewRecordFormatError,
+  );
   assert.throws(
     () =>
       coverage.applyPrCloseCoverageProofBlockedReport(
@@ -549,7 +552,10 @@ test("canonical PR selection uses the recorded cluster rather than report metada
       canonicalPullRequestClusterForTest("https://github.com/openclaw/openclaw/pull/123"),
     ),
   });
-  assert.deepEqual(facts.canonicalPullRequestNumbersFromReport(legacy, 74461), []);
+  assert.throws(
+    () => facts.canonicalPullRequestNumbersFromReport(legacy, 74461),
+    ReviewRecordFormatError,
+  );
   assert.deepEqual(facts.canonicalPullRequestNumbersFromReport(typed, 74461), [123]);
   assert.deepEqual(facts.canonicalPullRequestNumbersFromReport(typed, 123), []);
   assert.throws(

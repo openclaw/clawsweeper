@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import {
   chmodSync,
   cpSync,
+  existsSync,
   mkdtempSync,
   mkdirSync,
   readFileSync,
@@ -167,10 +169,124 @@ test("implementation intake rejects unreadable records rather than using eligibl
   assert.throws(() => parseReviewReport(markdown), /review_record/);
 });
 
-test("implementation intake and revision identity reject reports without a typed record", () => {
+test("implementation intake rejects missing records while preserving their revision identity", () => {
   const markdown = reportWithoutReviewRecord(report());
   assert.throws(() => parseReviewReport(markdown), /review_record: missing record/);
-  assert.throws(() => reportRevisionSha256(markdown), /review_record: missing record/);
+  assert.equal(reportRevisionSha256(markdown), createHash("sha256").update(markdown).digest("hex"));
+});
+
+test("implementation discovery keeps valid items in mixed source and canonical batches", () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), "intake-record-isolation-"));
+  try {
+    const canonicalDir = path.join(root, "records/openclaw-openclaw/items");
+    const sourceDir = path.join(root, "artifacts");
+    mkdirSync(canonicalDir, { recursive: true });
+    mkdirSync(sourceDir, { recursive: true });
+    for (const number of [1, 2, 3, 4]) {
+      const markdown = report({
+        number: String(number),
+        reviewed_at: "2026-07-31T10:00:00Z",
+      });
+      writeFileSync(
+        path.join(sourceDir, `${number}.md`),
+        number === 2
+          ? reportWithoutReviewRecord(markdown)
+          : number === 3
+            ? markdown.replace(/^review_record:.*$/m, "review_record: {broken")
+            : markdown,
+      );
+    }
+    const options = {
+      enabled: true,
+      candidateKind: "strict_bug" as const,
+      targetRepo: "openclaw/openclaw",
+      reportRepo: "openclaw/clawsweeper-state",
+      sourceDirs: [sourceDir],
+      jobRoot: root,
+    };
+    assert.deepEqual(
+      discoverImplementationCandidates(options).map(({ item_number }) => item_number),
+      [1, 4],
+    );
+    for (const number of [1, 2, 3, 4]) {
+      const markdown = report({
+        number: String(number),
+        reviewed_at: "2026-07-31T10:05:00Z",
+      });
+      writeFileSync(
+        path.join(canonicalDir, `${number}.md`),
+        number === 2
+          ? reportWithoutReviewRecord(markdown)
+          : number === 3
+            ? markdown.replace(/^review_record:.*$/m, "review_record: {broken")
+            : markdown,
+      );
+      writeFileSync(path.join(sourceDir, `${number}.md`), report({ number: String(number) }));
+    }
+    for (const sourceDirs of [
+      [sourceDir, canonicalDir],
+      [canonicalDir, sourceDir],
+    ]) {
+      assert.deepEqual(
+        discoverImplementationCandidates({ ...options, sourceDirs }).map(
+          ({ item_number }) => item_number,
+        ),
+        [1, 4],
+      );
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("single issue intake requests fresh review without GitHub calls or job writes", () => {
+  const root = realpathSync(mkdtempSync(path.join(os.tmpdir(), "intake-invalid-record-")));
+  try {
+    for (const entry of ["dist", "config", "package.json"]) {
+      cpSync(entry, path.join(root, entry), { recursive: true });
+    }
+    symlinkSync(path.resolve("node_modules"), path.join(root, "node_modules"), "dir");
+    const reportPath = path.join(root, "report.md");
+    const calledPath = path.join(root, "github-called");
+    const fakeGh = path.join(root, "fake-gh");
+    writeFileSync(fakeGh, `#!/bin/sh\ntouch '${calledPath}'\nexit 2\n`);
+    chmodSync(fakeGh, 0o755);
+    const valid = report();
+    for (const markdown of [
+      reportWithoutReviewRecord(valid),
+      valid.replace(/^review_record:.*$/m, "review_record: {broken"),
+    ]) {
+      writeFileSync(reportPath, markdown);
+      const result = spawnSync(
+        process.execPath,
+        [
+          path.join(root, "dist/repair/issue-implementation-intake.js"),
+          "prepare",
+          "--enabled",
+          "true",
+          "--target-repo",
+          "openclaw/openclaw",
+          "--item-number",
+          "123",
+          "--report-file",
+          reportPath,
+        ],
+        { cwd: root, encoding: "utf8", env: { ...process.env, GH_BIN: fakeGh } },
+      );
+      assert.equal(result.status, 0, result.stderr);
+      const decision = JSON.parse(result.stdout);
+      assert.equal(decision.status, "skipped_invalid_review_record");
+      assert.equal(decision.should_repair, false);
+      assert.match(decision.reason, /fresh review/);
+      assert.equal(decision.job_path, "");
+      assert.equal(decision.existing_job_path, "");
+      assert.equal(existsSync(calledPath), false);
+      assert.equal(existsSync(path.join(root, "jobs")), false);
+      assert.equal(existsSync(path.join(root, "results")), false);
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test("implementation discovery refuses persisted manual and ambiguous policies with automation enabled", () => {
@@ -1911,12 +2027,14 @@ test("issue build overrides on protected issues only prepare a handoff", () => {
   }
 });
 
-test("typed revisions track effective job inputs and ignore unused work reasons", () => {
-  const legacy = report({
-    implementation_complexity: "small",
-    vision_fit: "not_applicable",
-    work_priority: "high",
-  });
+test("equivalent typed records preserve revisions while effective job changes invalidate them", () => {
+  const legacy = reportWithoutReviewRecord(
+    report({
+      implementation_complexity: "small",
+      vision_fit: "not_applicable",
+      work_priority: "high",
+    }),
+  );
   const jobInputs = {
     decision: "keep_open",
     closeReason: "none",
@@ -1942,7 +2060,7 @@ test("typed revisions track effective job inputs and ignore unused work reasons"
   };
   const backfilled = withReviewRecord(legacy, jobInputs);
   assert.notEqual(backfilled, legacy);
-  assert.notEqual(reportRevisionSha256(backfilled), reportRevisionSha256(legacy));
+  assert.equal(reportRevisionSha256(backfilled), reportRevisionSha256(legacy));
   const audit = parseAudit(
     `---\nreport_revision_sha256: ${reportRevisionSha256(backfilled)}\ndecision: queued_for_repair\nworker_dispatched: false\n---\n`,
   );
@@ -2000,7 +2118,7 @@ test("typed revisions track effective job inputs and ignore unused work reasons"
   );
 });
 
-test("typed revision identity includes host metadata and requires a readable record", () => {
+test("revision identity includes host metadata and preserves record-free digests", () => {
   const markdown = report({ work_priority: "high" });
   const decision = readReviewRecord(markdown)!.decision;
   const subject = { repo: "openclaw/openclaw", number: 123, kind: "issue" as const };
@@ -2012,9 +2130,14 @@ test("typed revision identity includes host metadata and requires a readable rec
     reportRevisionSha256(markdown.replace(/^work_priority: high$/m, "work_priority: low")),
     reportRevisionSha256(markdown),
   );
-  assert.throws(
-    () => reportRevisionSha256(reportWithoutReviewRecord(markdown)),
-    /review_record: missing record/,
+  const legacy = reportWithoutReviewRecord(markdown);
+  assert.equal(reportRevisionSha256(legacy), createHash("sha256").update(legacy).digest("hex"));
+  const equivalent = withReviewRecord(markdown, { autoImplementationCandidate: "none" });
+  assert.equal(reportRevisionSha256(equivalent), reportRevisionSha256(legacy));
+  const unconvertible = equivalent.replace(/^work_priority: high\n/m, "");
+  assert.notEqual(
+    reportRevisionSha256(unconvertible),
+    reportRevisionSha256(reportWithoutReviewRecord(unconvertible)),
   );
 });
 

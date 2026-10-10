@@ -25,6 +25,7 @@ import {
 } from "../dist/live-proof/verification.js";
 import { repositoryProfileFor } from "../dist/repository-profiles.js";
 import { ReviewRecordFormatError } from "../dist/review-record.js";
+import { reportWithoutReviewRecord } from "../dist/report-front-matter.js";
 import {
   legacyLiveProofSection,
   parseLegacyLiveProofPlan,
@@ -54,7 +55,10 @@ function noExecutionPlan(status: "declined_suspicious" | "not_applicable"): Live
 
 function renderedReport(plan: LiveProofPlan, suffix = ""): string {
   assert.deepEqual(parseLegacyLiveProofPlan(plan), plan);
-  return `${reportFrontMatter({ repository: "openclaw/clawsweeper", type: "pull_request", number: 42, pull_head_sha: HEAD })}\n## Live Proof\n\n${legacyLiveProofSection(plan)}${suffix}\n\n## Work Candidate\n\nCandidate: none\n`;
+  return withReviewRecord(
+    `${reportFrontMatter({ repository: "openclaw/clawsweeper", type: "pull_request", number: 42, pull_head_sha: HEAD })}\n## Live Proof\n\n${legacyLiveProofSection(plan)}${suffix}\n\n## Work Candidate\n\nCandidate: none\n`,
+    { decision: "keep_open", closeReason: "none" },
+  );
 }
 
 function withSteps(report: string, payload: string): string {
@@ -130,8 +134,8 @@ test("host live proof plans remain independent of the typed reviewer decision", 
   };
   const report = renderedReport(plan);
   const typed = withReviewRecord(report, {
-    decision: "keep_open",
-    closeReason: "none",
+    decision: "close",
+    closeReason: "implemented_on_main",
     summary: "The typed reviewer does not own the host execution plan.",
   });
   assert.deepEqual(reportLiveProofPlan(report), plan);
@@ -140,23 +144,25 @@ test("host live proof plans remain independent of the typed reviewer decision", 
   assert.equal(reportLiveProofRecordingBlock(typed), "");
 });
 
-test("unreadable review records stop host proof readers before legacy plan fallback", (t) => {
+test("missing or corrupt review records stop host proof readers before legacy plan fallback", (t) => {
   const fixture = reviewFixture(t);
   const typed = withReviewRecord(renderedReport(noExecutionPlan("not_applicable")), {
     decision: "keep_open",
     closeReason: "none",
   });
   const corrupt = typed.replace(/^review_record: \{/m, "review_record: {broken");
-  for (const reader of [
-    reportLiveProofPlan,
-    reportAttachedLiveVerification,
-    reportLiveProofRecordingBlock,
-  ]) {
-    assert.throws(() => reader(corrupt), ReviewRecordFormatError);
+  for (const unreadable of [reportWithoutReviewRecord(typed), corrupt]) {
+    for (const reader of [
+      reportLiveProofPlan,
+      reportAttachedLiveVerification,
+      reportLiveProofRecordingBlock,
+    ]) {
+      assert.throws(() => reader(unreadable), ReviewRecordFormatError);
+    }
+    fixture.write(unreadable);
+    assert.throws(fixture.inspect, ReviewRecordFormatError);
+    assert.throws(fixture.execute, ReviewRecordFormatError);
   }
-  fixture.write(corrupt);
-  assert.throws(fixture.inspect, ReviewRecordFormatError);
-  assert.throws(fixture.execute, ReviewRecordFormatError);
   fixture.assertRecordsOnly();
 });
 

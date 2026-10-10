@@ -9,7 +9,6 @@ import { createReviewPlanningDashboard } from "../dist/clawsweeper-review-planni
 import * as planning from "../dist/clawsweeper-review-planning-dashboard.js";
 import { markdownFiles, markdownRepository } from "../dist/clawsweeper-repository-paths.js";
 import { repositoryProfileFor } from "../dist/repository-profiles.js";
-import { ReviewRecordFormatError } from "../dist/review-record.js";
 import { reportFrontMatter, tmpPrefix, withReviewRecord } from "./helpers.ts";
 
 const overlay = createReviewPlanningDashboard({
@@ -127,9 +126,9 @@ test("audit records prefer typed decision, confidence and close reason without r
   assert.equal(Object.hasOwn(typed, "markdown"), false);
   assert.equal(Object.hasOwn(typed, "review"), false);
   const legacy = findings.find((finding) => finding.number === 43);
-  assert.equal(legacy.decision, "close");
-  assert.equal(legacy.confidence, "low");
-  assert.equal(legacy.closeReason, "legacy_reason");
+  for (const key of ["decision", "confidence", "closeReason"]) {
+    assert.equal(Object.hasOwn(legacy, key), false);
+  }
   const missing = findings.find((finding) => finding.number === 44);
   for (const key of ["decision", "confidence", "closeReason"]) {
     assert.equal(Object.hasOwn(missing, key), false);
@@ -190,9 +189,6 @@ test("audit projection preserves metadata and output while filtering other repos
       title: "Item 43",
       labels: [],
       action: "kept_open",
-      decision: "keep_open",
-      closeReason: "none",
-      confidence: "high",
       reviewedAt,
       reviewStatus: "complete",
       currentState: "open",
@@ -238,19 +234,19 @@ test("dashboard outcomes, work queue priority and recent closes prefer the revie
   );
   const dashboard = f.dashboard();
   assert.match(dashboard, /\| Proposed closes awaiting apply \| 1 /);
-  assert.match(dashboard, /\| Work candidates awaiting promotion \| 2 \|/);
+  assert.match(dashboard, /\| Work candidates awaiting promotion \| 1 \|/);
   assert.match(
     dashboard,
     /\[close \/ proposed_close\]\(https:\/\/github\.com\/openclaw\/clawsweeper\/blob\/main\/items\/42\.md\)/,
   );
   assert.match(dashboard, /Item 43 \| high \| candidate \|/);
-  assert.match(dashboard, /Item 44 \| medium \| candidate \|/);
-  assert.ok(dashboard.indexOf("Item 43 | high") < dashboard.indexOf("Item 44 | medium"));
+  assert.match(dashboard, /\[unknown \/ kept_open\].*items\/44\.md/);
+  assert.doesNotMatch(dashboard, /Item 44 \| medium \| candidate \|/);
   assert.doesNotMatch(dashboard, /legacy_reason/);
   assert.match(dashboard, /implemented on main/i);
 });
 
-test("legacy dashboard outcomes preserve defaults and work queue fields", (t) => {
+test("missing dashboard decisions ignore legacy proposal and work fields", (t) => {
   const f = fixture(t);
   f.put(
     42,
@@ -266,9 +262,10 @@ test("legacy dashboard outcomes preserve defaults and work queue fields", (t) =>
     report(43, { decision: undefined, work_candidate: undefined, work_priority: undefined }),
   );
   const dashboard = f.dashboard();
-  assert.match(dashboard, /\| Proposed closes awaiting apply \| 1 /);
-  assert.match(dashboard, /\| Work candidates awaiting promotion \| 1 \|/);
-  assert.match(dashboard, /Item 42 \| high \| candidate \|/);
+  assert.match(dashboard, /\| Proposed closes awaiting apply \| 0 /);
+  assert.match(dashboard, /\| Work candidates awaiting promotion \| 0 \|/);
+  assert.doesNotMatch(dashboard, /Item 42 \| high \| candidate \|/);
+  assert.match(dashboard, /\[unknown \/ proposed_close\].*items\/42\.md/);
   assert.match(
     dashboard,
     /\[unknown \/ kept_open\]\(https:\/\/github\.com\/openclaw\/clawsweeper\/blob\/main\/items\/43\.md\)/,
@@ -299,12 +296,13 @@ test("typed keep-open and no-work decisions suppress stale legacy proposals", (t
   assert.doesNotMatch(dashboard, /Item 42 \| high \| candidate/);
 });
 
-test("dashboard activity counts typed decisions and preserves legacy unknown decisions", () => {
+test("dashboard activity counts typed decisions but not missing decisions", () => {
   const now = Date.now();
   const legacy = report(42, { reviewed_at: new Date(now).toISOString() });
   for (const [markdown, closeDecisions, keepOpenDecisions] of [
     [withReviewRecord(legacy), 1, 0],
-    [legacy, 0, 1],
+    [withReviewRecord(legacy, { decision: "keep_open", closeReason: "none" }), 0, 1],
+    [legacy, 0, 0],
     [report(42, { reviewed_at: new Date(now).toISOString(), decision: undefined }), 0, 0],
   ] as const) {
     const activity = planning.emptyDashboardActivityStats();
@@ -333,7 +331,7 @@ test("dashboard close reasons retain host-owned external-close descriptions", ()
   }
   assert.equal(
     presentation.dashboardCloseReason(report(42, { close_reason: "legacy_reason" })),
-    "legacy_reason",
+    undefined,
   );
   assert.equal(
     presentation.dashboardCloseReason(report(42, { close_reason: undefined })),
@@ -342,32 +340,99 @@ test("dashboard close reasons retain host-owned external-close descriptions", ()
 });
 
 for (const location of ["items", "closed"] as const) {
-  test(`unreadable ${location} review record fails audit and dashboard closed`, (t) => {
+  test(`mixed ${location} records retain host metadata without unreadable decisions`, (t) => {
     const f = fixture(t);
-    const corrupt = withReviewRecord(
-      report(42, { action_taken: "closed", applied_at: new Date().toISOString() }),
-    ).replace(/^review_record: \{/m, "review_record: {broken");
-    f.put(42, corrupt, location === "closed");
-    assert.throws(() => f.auditResult(), ReviewRecordFormatError);
-    assert.throws(() => f.dashboard(), ReviewRecordFormatError);
-    assert.equal(
-      readFileSync(join(f.root, "README.md"), "utf8"),
-      "## Dashboard\n\n## How It Works\n",
+    const timestamp = new Date().toISOString();
+    const fields = {
+      action_taken: location === "closed" ? "closed" : "proposed_close",
+      applied_at: location === "closed" ? timestamp : undefined,
+      decision: "close",
+      close_reason: "legacy_reason",
+      confidence: "high",
+      work_candidate: "queue_fix_pr",
+      work_priority: "high",
+    };
+    const missing = report(42, fields);
+    const corrupt = withReviewRecord(report(43, fields)).replace(
+      /^review_record: \{/m,
+      "review_record: {broken",
     );
+    const valid = withReviewRecord(report(44, fields), {
+      decision: "close",
+      confidence: "medium",
+      closeReason: "implemented_on_main",
+      workCandidate: "queue_fix_pr",
+      workPriority: "high",
+    });
+    f.put(42, missing, location === "closed");
+    f.put(43, corrupt, location === "closed");
+    f.put(44, valid, location === "closed");
+
+    const result = f.auditResult();
+    assert.equal(result.counts[location === "closed" ? "closedRecords" : "itemRecords"], 3);
+    if (location === "items") {
+      const findings = result.findings.staleItemRecords;
+      for (const number of [42, 43]) {
+        const finding = findings.find((entry) => entry.number === number);
+        assert.equal(finding.title, `Item ${number}`);
+        assert.equal(finding.action, "proposed_close");
+        assert.equal(finding.reviewStatus, "complete");
+        for (const key of ["decision", "closeReason", "confidence"]) {
+          assert.equal(Object.hasOwn(finding, key), false);
+        }
+      }
+      const typed = findings.find((entry) => entry.number === 44);
+      assert.equal(typed.decision, "close");
+      assert.equal(typed.closeReason, "implemented_on_main");
+      assert.equal(typed.confidence, "medium");
+    }
+
+    const dashboard = f.dashboard();
+    const dir = location === "closed" ? f.closedDir : f.itemsDir;
+    assert.equal(readFileSync(join(dir, "42.md"), "utf8"), missing);
+    assert.equal(readFileSync(join(dir, "43.md"), "utf8"), corrupt);
+    assert.equal(readFileSync(join(dir, "44.md"), "utf8"), valid);
+    assert.doesNotMatch(dashboard, /legacy_reason/);
+    for (const number of [42, 43, 44]) {
+      assert.match(dashboard, new RegExp(`Item ${number}`));
+    }
+    if (location === "items") {
+      assert.match(dashboard, /\| Proposed closes awaiting apply \| 1 /);
+      assert.match(dashboard, /\| Work candidates awaiting promotion \| 1 \|/);
+      assert.match(dashboard, /Item 44 \| high \| candidate \|/);
+      for (const number of [42, 43]) {
+        assert.match(dashboard, new RegExp(`\\[unknown / proposed_close\\].*items/${number}\\.md`));
+        assert.doesNotMatch(dashboard, new RegExp(`Item ${number} \\| high \\| candidate`));
+      }
+    } else {
+      assert.match(dashboard, /Item 42 \| unknown \|/);
+      assert.match(dashboard, /Item 43 \| unknown \|/);
+      assert.match(dashboard, /Item 44 \| already implemented on main \|/i);
+    }
   });
 }
 
-test("unreadable review records never fall back in activity or external close descriptions", () => {
-  const corrupt = withReviewRecord(
-    report(42, {
-      action_taken: "kept_open",
-      current_state: "closed",
-    }),
-  ).replace(/^review_record: \{/m, "review_record: {broken");
-  assert.throws(() => presentation.dashboardCloseReason(corrupt), ReviewRecordFormatError);
-  assert.throws(
-    () =>
-      planning.recordDashboardActivity(corrupt, planning.emptyDashboardActivityStats(), Date.now()),
-    ReviewRecordFormatError,
+test("unreadable review activity and external close descriptions retain only host metadata", () => {
+  const now = Date.now();
+  const missing = report(42, {
+    reviewed_at: new Date(now).toISOString(),
+    action_taken: "kept_open",
+    current_state: "closed",
+    applied_at: new Date(now).toISOString(),
+  });
+  const corrupt = withReviewRecord(missing).replace(
+    /^review_record: \{/m,
+    "review_record: {broken",
   );
+  for (const markdown of [missing, corrupt]) {
+    assert.equal(presentation.dashboardCloseReason(markdown), "closed externally after review");
+    const activity = planning.emptyDashboardActivityStats();
+    planning.recordDashboardActivity(markdown, activity, now);
+    for (const bucket of [activity.last15Minutes, activity.lastHour, activity.last24Hours]) {
+      assert.equal(bucket.reviews, 1);
+      assert.equal(bucket.closes, 1);
+      assert.equal(bucket.closeDecisions, 0);
+      assert.equal(bucket.keepOpenDecisions, 0);
+    }
+  }
 });

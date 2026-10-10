@@ -1821,7 +1821,7 @@ if (args[0] === "api" && /\\/issues\\/321\\/comments(?:\\?|$)/.test(path)) {
   }
 });
 
-test("closed legacy reports archive without hydrating their irrelevant source snapshot", () => {
+test("closed typed reports archive without hydrating their incomplete source snapshot", () => {
   const root = mkdtempSync(tmpPrefix);
   try {
     const itemsDir = join(root, "items");

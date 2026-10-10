@@ -3,7 +3,7 @@ import test from "node:test";
 
 import { validateCloseDecision } from "../dist/clawsweeper.js";
 import { validateReportClose } from "../dist/clawsweeper-apply-close-decision.js";
-import { replaceFrontMatterValue } from "../dist/report-front-matter.js";
+import { replaceFrontMatterValue, reportWithoutReviewRecord } from "../dist/report-front-matter.js";
 import type { Decision } from "../src/clawsweeper-types.ts";
 import { implementedCloseReport, withReviewRecord } from "./helpers.ts";
 
@@ -55,7 +55,7 @@ test("the record decides the close when the report text disagrees", () => {
 });
 
 test("a report without a review record blocks the close and asks for a fresh review", () => {
-  const { result, decision } = validate(implementedCloseReport());
+  const { result, decision } = validate(reportWithoutReviewRecord(implementedCloseReport()));
   assert.deepEqual(result, {
     ok: false,
     actionTaken: "skipped_changed_since_review",

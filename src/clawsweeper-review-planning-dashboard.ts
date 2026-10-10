@@ -11,6 +11,7 @@ import { parseIsoMs } from "./iso-time.js";
 import { frontMatterValue } from "./report-front-matter.js";
 import { effectiveReviewStatus } from "./clawsweeper-record-metadata.js";
 import { reportReviewDecision } from "./report-review-decision.js";
+import { ReviewRecordFormatError } from "./review-record.js";
 
 export function emptyDashboardKindStats(): DashboardKindStats {
   return {
@@ -105,7 +106,12 @@ export function recordDashboardActivity(
   const commentSyncedAtMs = parseIsoMs(commentSyncedAt);
   const applyCheckedAt = frontMatterValue(markdown, "apply_checked_at");
   const applyCheckedAtMs = parseIsoMs(applyCheckedAt);
-  const decision = reportReviewDecision(markdown).decision ?? "unknown";
+  let decision: string | undefined;
+  try {
+    decision = reportReviewDecision(markdown).decision;
+  } catch (error) {
+    if (!(error instanceof ReviewRecordFormatError)) throw error;
+  }
   const action = frontMatterValue(markdown, "action_taken") ?? "unknown";
   const failedReviewRetryStatus = frontMatterValue(markdown, "failed_review_retry_status");
   const failedReviewRetryLastAt = frontMatterValue(markdown, "failed_review_retry_last_at");

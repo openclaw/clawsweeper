@@ -107,10 +107,10 @@ item_created_at: 2024-01-01T00:00:00Z
     minAgeMinutes: null,
   };
   try {
-    write(item, legacy, false);
-    assert.throws(
-      () => withCwd(root, () => proposedItemNumbers(options)),
-      /review_record: missing record/,
+    write(item, legacy);
+    assert.deepEqual(
+      withCwd(root, () => proposedItemNumbers(options)),
+      [],
     );
     write(
       item,
@@ -136,14 +136,74 @@ item_created_at: 2024-01-01T00:00:00Z
       );
     }
     write(item, legacy.replace("\n---\n", "\nreview_record: {broken\n---\n"));
-    assert.throws(() => withCwd(root, () => proposedItemNumbers(options)), /review_record/);
+    assert.deepEqual(
+      withCwd(root, () => proposedItemNumbers(options)),
+      [],
+    );
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("repair bulk scans isolate missing and corrupt records from valid proposals", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-scan-isolation-"));
+  const options = {
+    targetRepo: "openclaw/openclaw",
+    applyKind: "all",
+    applyCloseReasons: "all",
+    staleMinAgeDays: 60,
+    minAgeDays: 0,
+    minAgeMinutes: null,
+  };
+  try {
+    for (const number of [1, 2, 3, 4]) {
+      const header = `---
+repository: openclaw/openclaw
+number: ${number}
+type: pull_request
+review_status: complete
+item_snapshot_hash: snapshot
+action_taken: proposed_close
+item_created_at: 2024-01-01T00:00:00Z
+---
+`;
+      const markdown = withReviewRecord(header, {
+        decision: "close",
+        confidence: "high",
+        closeReason: "duplicate_or_superseded",
+      });
+      write(
+        path.join(root, `records/openclaw-openclaw/items/${number}.md`),
+        number === 2
+          ? header
+          : number === 3
+            ? markdown.replace(/^review_record:.*$/m, "review_record: {broken")
+            : markdown,
+      );
+    }
+    withCwd(root, () => {
+      assert.deepEqual(proposedItemNumbers(options), [1, 4]);
+      assert.deepEqual(proposedPrCloseCoverageItemNumbers(options), [1, 4]);
+      assert.equal(proposedItemCount(options), 2);
+      assert.equal(proposedItemInventory(options).inconsistent_or_stale, 0);
+      assert.equal(proposedItemQualitySummary(options).total, 2);
+      assert.equal(
+        commentSyncBatchOutput({
+          targetRepo: options.targetRepo,
+          applyKind: options.applyKind,
+          batchSize: 10,
+          cursorPath: path.join(root, "cursor.json"),
+        }).item_numbers,
+        "1,4",
+      );
+    });
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
 
 // Typed root-cause cluster front matter that names PR #400 as the canonical PR.
-const CANONICAL_PULL_REQUEST_CLUSTER = `root_cause_cluster: ${JSON.stringify({
+const CANONICAL_CLUSTER = {
   confidence: "high",
   canonicalRef: "https://github.com/openclaw/openclaw/pull/400",
   currentItemRelationship: "superseded",
@@ -155,7 +215,8 @@ const CANONICAL_PULL_REQUEST_CLUSTER = `root_cause_cluster: ${JSON.stringify({
       reason: "Canonical PR for this work.",
     },
   ],
-})}`;
+};
+const CANONICAL_PULL_REQUEST_CLUSTER = `root_cause_cluster: ${JSON.stringify(CANONICAL_CLUSTER)}`;
 
 for (const markdown of [
   "## PR Rating\n\nOverall tier: F\n\nProof tier: F\n\n## Real Behavior Proof\n\nStatus: missing\n",
@@ -317,8 +378,9 @@ test("workflow utilities accept positional automation limit CLI paths", () => {
 
 test("workflow utility CLI initializes close-selection constants before preselecting", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-workflow-cli-"));
-  write(
+  writeReview(
     path.join(root, "records/openclaw-clawhub/items/openclaw-clawhub-7.md"),
+    7,
     [
       "---",
       "repository: openclaw/clawhub",
@@ -331,6 +393,7 @@ test("workflow utility CLI initializes close-selection constants before preselec
       "---",
       "",
     ].join("\n"),
+    { decision: "close", confidence: "high", closeReason: "implemented_on_main" },
   );
 
   const output = execFileSync(
@@ -1257,21 +1320,19 @@ test("workflow utilities select eligible proposed close records", () => {
   ] satisfies [number, string, string, string, string?][]) {
     writeProposedRecord(root, number, type, action, reason, createdAt);
   }
-  for (const [number, fields, createdAt = oldDate] of [
-    [20, []],
-    [21, [CANONICAL_PULL_REQUEST_CLUSTER]],
-    [22, ["pr_rating_overall: F", "pr_rating_proof: F"]],
-    [23, ["pr_rating_overall: F"], new Date().toISOString()],
-    [32, ["pr_rating_overall: F", "pr_rating_proof: F", CANONICAL_PULL_REQUEST_CLUSTER]],
-    [33, ["pr_rating_overall: B", "pr_rating_proof: F", "real_behavior_proof_status: missing"]],
-    [34, ["pr_rating_overall: F", "pr_rating_proof: A", "real_behavior_proof_status: sufficient"]],
-    [
-      35,
-      ["pr_rating_overall: F", "pr_rating_proof: A", "real_behavior_proof_status: insufficient"],
-    ],
-  ] satisfies [number, string[], string?][]) {
-    write(
+  for (const [number, overallTier, proofTier, proofStatus, canonical, createdAt = oldDate] of [
+    [20, "NA", "NA", "not_applicable", false],
+    [21, "NA", "NA", "not_applicable", true],
+    [22, "F", "F", "not_applicable", false],
+    [23, "F", "NA", "not_applicable", false, new Date().toISOString()],
+    [32, "F", "F", "not_applicable", true],
+    [33, "B", "F", "missing", false],
+    [34, "F", "A", "sufficient", false],
+    [35, "F", "A", "insufficient", false],
+  ] as const) {
+    writeReview(
       path.join(root, `records/openclaw-openclaw/items/openclaw-openclaw-${number}.md`),
+      number,
       [
         "---",
         "repository: openclaw/openclaw",
@@ -1283,10 +1344,25 @@ test("workflow utilities select eligible proposed close records", () => {
         "action_taken: kept_open",
         "close_reason: none",
         `item_created_at: ${createdAt}`,
-        ...fields,
         "---",
         "",
       ].join("\n"),
+      {
+        ...(canonical ? { rootCauseCluster: CANONICAL_CLUSTER } : {}),
+        prRating: {
+          overallTier,
+          proofTier,
+          patchTier: "NA",
+          summary: "Fixture rating.",
+          nextSteps: [],
+        },
+        realBehaviorProof: {
+          status: proofStatus,
+          summary: "Fixture proof.",
+          evidenceKind: "not_applicable",
+          needsContributorAction: false,
+        },
+      },
     );
   }
 
@@ -1348,8 +1424,9 @@ test("workflow utilities select eligible proposed close records", () => {
 
 test("workflow utilities allow ClawHub implemented-on-main issue proposals", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-workflow-"));
-  write(
+  writeReview(
     path.join(root, "records/openclaw-clawhub/items/openclaw-clawhub-7.md"),
+    7,
     [
       "---",
       "repository: openclaw/clawhub",
@@ -1362,9 +1439,11 @@ test("workflow utilities allow ClawHub implemented-on-main issue proposals", () 
       "---",
       "",
     ].join("\n"),
+    { decision: "close", confidence: "high", closeReason: "implemented_on_main" },
   );
-  write(
+  writeReview(
     path.join(root, "records/openclaw-clawhub/items/openclaw-clawhub-8.md"),
+    8,
     [
       "---",
       "repository: openclaw/clawhub",
@@ -1377,9 +1456,11 @@ test("workflow utilities allow ClawHub implemented-on-main issue proposals", () 
       "---",
       "",
     ].join("\n"),
+    { decision: "close", confidence: "high", closeReason: "duplicate_or_superseded" },
   );
-  write(
+  writeReview(
     path.join(root, "records/openclaw-clawhub/items/openclaw-clawhub-9.md"),
+    9,
     [
       "---",
       "repository: openclaw/clawhub",
@@ -1526,8 +1607,9 @@ test("workflow utilities select proposed PR closes that can need coverage proof"
     "low_signal_unmergeable_pr",
     oldDate,
   );
-  write(
+  writeReview(
     path.join(root, "records/openclaw-openclaw/items/openclaw-openclaw-10.md"),
+    10,
     [
       "---",
       "repository: openclaw/openclaw",
@@ -1543,9 +1625,11 @@ test("workflow utilities select proposed PR closes that can need coverage proof"
       "---",
       "",
     ].join("\n"),
+    { rootCauseCluster: CANONICAL_CLUSTER },
   );
-  write(
+  writeReview(
     path.join(root, "records/openclaw-openclaw/items/openclaw-openclaw-11.md"),
+    11,
     [
       "---",
       "repository: openclaw/openclaw",
@@ -1562,8 +1646,9 @@ test("workflow utilities select proposed PR closes that can need coverage proof"
       "",
     ].join("\n"),
   );
-  write(
+  writeReview(
     path.join(root, "records/openclaw-openclaw/items/openclaw-openclaw-12.md"),
+    12,
     [
       "---",
       "repository: openclaw/openclaw",
@@ -1587,9 +1672,21 @@ test("workflow utilities select proposed PR closes that can need coverage proof"
       "---",
       "",
     ].join("\n"),
+    {
+      mergeRiskOptions: [
+        {
+          category: "pause_or_close",
+          recommended: true,
+          title: "Pause or close",
+          body: "No replacement PR is identified.",
+          automergeInstruction: "",
+        },
+      ],
+    },
   );
-  write(
+  writeReview(
     path.join(root, "records/openclaw-openclaw/items/openclaw-openclaw-13.md"),
+    13,
     [
       "---",
       "repository: openclaw/openclaw",
@@ -1606,6 +1703,15 @@ test("workflow utilities select proposed PR closes that can need coverage proof"
       "---",
       "",
     ].join("\n"),
+    {
+      prRating: {
+        overallTier: "F",
+        proofTier: "F",
+        patchTier: "NA",
+        summary: "Fixture rating.",
+        nextSteps: [],
+      },
+    },
   );
 
   const options = {
@@ -1683,8 +1789,9 @@ test("workflow utilities select gated product-direction PR close proposals", () 
 
 test("workflow utilities select apply-side author-budget promotion probes", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-workflow-"));
-  write(
+  writeReview(
     path.join(root, "records/openclaw-openclaw/items/openclaw-openclaw-15.md"),
+    15,
     [
       "---",
       "repository: openclaw/openclaw",
@@ -1701,6 +1808,21 @@ test("workflow utilities select apply-side author-budget promotion probes", () =
       "---",
       "",
     ].join("\n"),
+    {
+      prRating: {
+        overallTier: "D",
+        proofTier: "NA",
+        patchTier: "NA",
+        summary: "Fixture rating.",
+        nextSteps: [],
+      },
+      realBehaviorProof: {
+        status: "missing",
+        summary: "Fixture proof.",
+        evidenceKind: "not_applicable",
+        needsContributorAction: false,
+      },
+    },
   );
 
   const selected = withCwd(root, () =>
@@ -1788,8 +1910,9 @@ test("workflow utilities run a bounded confirmed prefix before proof and defer p
     oldDate,
   );
   writeProposedRecord(root, 40, "pull_request", "proposed_close", "stalled_unproven_pr", oldDate);
-  write(
+  writeReview(
     path.join(root, "records/openclaw-openclaw/items/openclaw-openclaw-50.md"),
+    50,
     [
       "---",
       "repository: openclaw/openclaw",
@@ -1806,6 +1929,15 @@ test("workflow utilities run a bounded confirmed prefix before proof and defer p
       "---",
       "",
     ].join("\n"),
+    {
+      prRating: {
+        overallTier: "F",
+        proofTier: "F",
+        patchTier: "NA",
+        summary: "Fixture rating.",
+        nextSteps: [],
+      },
+    },
   );
 
   assert.deepEqual(
@@ -1852,8 +1984,9 @@ test("workflow utilities backfill promotion probes after confirmed close proposa
     [10, "2026-01-02T00:00:00Z"],
     [20, "2026-01-04T00:00:00Z"],
   ]) {
-    write(
+    writeReview(
       path.join(root, `records/openclaw-openclaw/items/openclaw-openclaw-${number}.md`),
+      number,
       [
         "---",
         "repository: openclaw/openclaw",
@@ -1871,6 +2004,15 @@ test("workflow utilities backfill promotion probes after confirmed close proposa
         "---",
         "",
       ].join("\n"),
+      {
+        prRating: {
+          overallTier: "F",
+          proofTier: "F",
+          patchTier: "NA",
+          summary: "Fixture rating.",
+          nextSteps: [],
+        },
+      },
     );
   }
   write(
@@ -1906,8 +2048,9 @@ test("workflow utilities cool down recently examined promotion probes", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-workflow-"));
   const oldDate = "2024-01-01T00:00:00Z";
   const promotionRecord = (number, applyCheckedAt, coverageProof = false, reviewedAt = "") =>
-    write(
+    writeReview(
       path.join(root, `records/openclaw-openclaw/items/openclaw-openclaw-${number}.md`),
+      number,
       [
         "---",
         "repository: openclaw/openclaw",
@@ -1927,6 +2070,17 @@ test("workflow utilities cool down recently examined promotion probes", () => {
         "---",
         "",
       ].join("\n"),
+      coverageProof
+        ? { rootCauseCluster: CANONICAL_CLUSTER }
+        : {
+            prRating: {
+              overallTier: "F",
+              proofTier: "F",
+              patchTier: "NA",
+              summary: "Fixture rating.",
+              nextSteps: [],
+            },
+          },
     );
   promotionRecord(10, new Date(Date.now() - 60 * 60 * 1000).toISOString());
   promotionRecord(20, new Date(Date.now() - 25 * 60 * 60 * 1000).toISOString());
@@ -1982,8 +2136,9 @@ test("workflow utilities report truthful eligible inventory across cursor and pr
     oldDate,
   );
   const writePromotion = (number, applyCheckedAt) =>
-    write(
+    writeReview(
       path.join(root, `records/openclaw-openclaw/items/openclaw-openclaw-${number}.md`),
+      number,
       [
         "---",
         "repository: openclaw/openclaw",
@@ -2001,11 +2156,21 @@ test("workflow utilities report truthful eligible inventory across cursor and pr
         "---",
         "",
       ].join("\n"),
+      {
+        prRating: {
+          overallTier: "F",
+          proofTier: "F",
+          patchTier: "NA",
+          summary: "Fixture rating.",
+          nextSteps: [],
+        },
+      },
     );
   writePromotion(40, new Date(Date.now() - 25 * 60 * 60 * 1000).toISOString());
   writePromotion(50, new Date(Date.now() - 60 * 60 * 1000).toISOString());
-  write(
+  writeReview(
     path.join(root, "records/openclaw-openclaw/items/openclaw-openclaw-60.md"),
+    60,
     [
       "---",
       "repository: openclaw/openclaw",
@@ -2089,8 +2254,9 @@ test("workflow utilities do not call policy- or age-excluded proposals inconsist
     "stale_insufficient_info",
     staleGateDate,
   );
-  write(
+  writeReview(
     path.join(root, "records/openclaw-openclaw/items/openclaw-openclaw-50.md"),
+    50,
     [
       "---",
       "repository: openclaw/openclaw",
@@ -2103,6 +2269,7 @@ test("workflow utilities do not call policy- or age-excluded proposals inconsist
       "---",
       "",
     ].join("\n"),
+    { decision: "keep_open", confidence: "high", closeReason: "implemented_on_main" },
   );
 
   const inventory = withCwd(root, () =>
@@ -2151,8 +2318,9 @@ test("workflow utilities use spare proof capacity to rotate promotion probes", (
     [60, "2026-01-03T00:00:00Z"],
     [70, "2026-01-04T00:00:00Z"],
   ]) {
-    write(
+    writeReview(
       path.join(root, `records/openclaw-openclaw/items/openclaw-openclaw-${number}.md`),
+      number,
       [
         "---",
         "repository: openclaw/openclaw",
@@ -2169,6 +2337,7 @@ test("workflow utilities use spare proof capacity to rotate promotion probes", (
         "---",
         "",
       ].join("\n"),
+      { rootCauseCluster: CANONICAL_CLUSTER },
     );
   }
   const options = {
@@ -3238,10 +3407,16 @@ for (const [input, expectedSlug] of [
     ].join("\n");
     const repoRoot = path.join(root, "records", profile.slug);
     const item = path.join(repoRoot, "items", "41.md");
-    write(item, record);
-    write(
+    writeReview(item, 41, record, {
+      decision: "close",
+      confidence: "high",
+      closeReason: "implemented_on_main",
+    });
+    writeReview(
       path.join(repoRoot, "items", "42.md"),
+      42,
       record.replace("confidence: high", "confidence: low"),
+      { decision: "close", confidence: "low", closeReason: "implemented_on_main" },
     );
     const options = {
       targetRepo: profile.targetRepo,
@@ -3323,52 +3498,21 @@ function withCwd(cwd, callback) {
   }
 }
 
-function write(file, content, typedRecord = true) {
+function write(file, content) {
   fs.mkdirSync(path.dirname(file), { recursive: true });
-  // Encode the decision supplied by these fixture fields as a current report.
-  // Non-report artifacts and explicitly missing/corrupt record cases stay byte-for-byte.
-  if (typedRecord && /\/records\/.*\/items\//.test(file) && !/^review_record:/m.test(content)) {
-    const number = Number(path.basename(file).match(/(\d+)\.md$/)?.[1]);
-    const header = content.match(/^---\n([\s\S]*?)\n---\n?/)?.[1] ?? "";
-    const fields = Object.fromEntries(
-      header.split("\n").flatMap((line) => {
-        const match = line.match(/^([a-z_]+):\s*(.*)$/);
-        return match ? [[match[1], match[2]]] : [];
-      }),
-    );
-    const markdown = Object.hasOwn(fields, "number")
-      ? content
-      : content.replace(/^---\n/, `---\nnumber: ${number}\n`);
-    content = withReviewRecord(markdown, {
-      decision: fields.decision ?? "keep_open",
-      confidence: fields.confidence ?? "high",
-      closeReason: fields.close_reason ?? "none",
-      rootCauseCluster: fields.root_cause_cluster
-        ? JSON.parse(fields.root_cause_cluster)
-        : {
-            confidence: "low",
-            canonicalRef: null,
-            currentItemRelationship: "independent",
-            summary: "No cluster.",
-            members: [],
-          },
-      mergeRiskOptions: JSON.parse(fields.merge_risk_options ?? "[]"),
-      prRating: {
-        overallTier: fields.pr_rating_overall ?? "NA",
-        proofTier: fields.pr_rating_proof ?? "NA",
-        patchTier: "NA",
-        summary: "Fixture rating.",
-        nextSteps: [],
-      },
-      realBehaviorProof: {
-        status: fields.real_behavior_proof_status ?? "not_applicable",
-        summary: "Fixture proof.",
-        evidenceKind: "not_applicable",
-        needsContributorAction: false,
-      },
-    });
-  }
   fs.writeFileSync(file, content);
+}
+
+function writeReview(file, number, content, decision = {}) {
+  write(
+    file,
+    withReviewRecord(content.replace(/^---\n/, `---\nnumber: ${number}\n`), {
+      decision: "keep_open",
+      confidence: "high",
+      closeReason: "none",
+      ...decision,
+    }),
+  );
 }
 
 function writeProposedRecord(
@@ -3392,9 +3536,11 @@ function writeProposedRecord(
   ];
   if (options.applyCheckedAt) lines.push(`apply_checked_at: ${options.applyCheckedAt}`);
   lines.push("---", "");
-  write(
+  writeReview(
     path.join(root, `records/openclaw-openclaw/items/openclaw-openclaw-${number}.md`),
+    number,
     lines.join("\n"),
+    { decision: "close", confidence: "high", closeReason },
   );
 }
 
@@ -3425,8 +3571,14 @@ function writeCommentSyncRecord(root, number, type, actionTaken, options = {}) {
   if (options.reviewCommentSyncedAt)
     lines.push(`review_comment_synced_at: ${options.reviewCommentSyncedAt}`);
   lines.push("---", "");
-  write(
+  writeReview(
     path.join(root, `records/${targetSlug}/items/${targetSlug}-${number}.md`),
+    number,
     lines.join("\n"),
+    {
+      decision: options.decision ?? "keep_open",
+      confidence: "high",
+      closeReason: options.closeReason ?? "none",
+    },
   );
 }

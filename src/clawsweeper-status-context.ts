@@ -30,7 +30,8 @@ import {
   profileStatusEnd,
   sweepStatusPath,
 } from "./clawsweeper-sweep-status.js";
-import { reportReviewDecision } from "./report-review-decision.js";
+import { reportReviewDecision, type ReportReviewDecision } from "./report-review-decision.js";
+import { ReviewRecordFormatError } from "./review-record.js";
 
 export const MAX_IMPLEMENTATION_LINKED_ISSUE_REFERENCES = 5;
 
@@ -296,7 +297,14 @@ function linkedPullRequest(pull: FixedPullRequest): string {
 
 export function fixedInReportText(markdown: string, profile: RepositoryProfile): string {
   const parts: string[] = [];
-  const { fixedPullRequest, fixedRelease, fixedSha, fixedAt } = reportReviewDecision(markdown);
+  let review: ReportReviewDecision;
+  try {
+    review = reportReviewDecision(markdown);
+  } catch (error) {
+    if (!(error instanceof ReviewRecordFormatError)) throw error;
+    return "not determined";
+  }
+  const { fixedPullRequest, fixedRelease, fixedSha, fixedAt } = review;
   if (fixedPullRequest?.confidence === "high")
     parts.push(`merged PR ${linkedPullRequest(fixedPullRequest)}`);
   if (fixedRelease && fixedRelease !== "unknown")

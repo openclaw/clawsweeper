@@ -16,6 +16,7 @@ import type {
 import { parseIsoMs } from "./iso-time.js";
 import { frontMatterValue } from "./report-front-matter.js";
 import { reportReviewDecision } from "./report-review-decision.js";
+import { ReviewRecordFormatError } from "./review-record.js";
 
 import { closeReasonText } from "./clawsweeper-close-reasons.js";
 import { displayTitle, formatStatusNumber, formatTimestamp } from "./clawsweeper-status-context.js";
@@ -78,7 +79,12 @@ export function dashboardClosedAt(markdown: string): string | undefined {
 }
 
 export function dashboardCloseReason(markdown: string): string | undefined {
-  const closeReason = reportReviewDecision(markdown).closeReason;
+  let closeReason: string | undefined;
+  try {
+    closeReason = reportReviewDecision(markdown).closeReason;
+  } catch (error) {
+    if (!(error instanceof ReviewRecordFormatError)) throw error;
+  }
   const action = frontMatterValue(markdown, "action_taken");
   if (action === "closed") return closeReason;
   if (action === "skipped_already_closed") return "already closed before apply";

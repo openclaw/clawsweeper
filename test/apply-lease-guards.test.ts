@@ -4,6 +4,7 @@ import test from "node:test";
 import { executeApplyClose } from "../dist/clawsweeper-apply-close-execution.js";
 import { createApplyLeaseGuards } from "../dist/clawsweeper-apply-lease-guards.js";
 import { renderReviewStartStatusComment } from "../dist/clawsweeper.js";
+import { reviewReportFrontMatter, withReviewRecord } from "./helpers.ts";
 
 const headSha = "a".repeat(40);
 const leaseOwner = "exact-pr-42";
@@ -121,7 +122,14 @@ test("apply does not close an item after it loses its mutation lease during clos
     const closed: number[] = [];
     const leaseSkips: string[] = [];
     let leaseChecks = 0;
-    let markdown = "---\nitem_updated_at: 2026-05-01T00:00:00Z\n---\n";
+    let markdown = withReviewRecord(
+      reviewReportFrontMatter({
+        number: 42,
+        type: "issue",
+        item_updated_at: "2026-05-01T00:00:00Z",
+      }),
+      { decision: "close", closeReason: "not_actionable_in_repo", closeComment: "Closing." },
+    );
     executeApplyClose(
       strict("dependency", {
         closeReasonEnabled: () => true,

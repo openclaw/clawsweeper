@@ -8,7 +8,7 @@ import { parseArgs } from "./lib.js";
 import { isJsonObject } from "./json-types.js";
 import { frontMatterValue } from "../report-front-matter.js";
 import { reportReviewDecision } from "../report-review-decision.js";
-import { requireReviewRecord } from "../review-record.js";
+import { requireReviewRecord, ReviewRecordFormatError } from "../review-record.js";
 import { AUTOMATION_LIMITS, WORKER_CONFIG, workerLimit, type WorkerLane } from "../limits.js";
 import {
   fetchExactReviewQueuePressure,
@@ -1378,6 +1378,15 @@ function prioritizeFastCloseCandidates(
   );
 }
 
+function readableReviewDecision(markdown: string) {
+  try {
+    return reportReviewDecision(markdown);
+  } catch (error) {
+    if (!(error instanceof ReviewRecordFormatError)) throw error;
+    return null;
+  }
+}
+
 function selectedProposedItemCandidates(
   options: ProposedItemOptions,
   selection: ProposedItemSelection,
@@ -1413,7 +1422,8 @@ function selectedProposedItemCandidates(
           if (repoFor(markdown, name) !== options.targetRepo) return [];
           const type = frontMatterValue(markdown, "type") ?? "";
           if (options.applyKind !== "all" && type && type !== options.applyKind) return [];
-          const reviewed = reportReviewDecision(markdown);
+          const reviewed = readableReviewDecision(markdown);
+          if (!reviewed) return [];
           const { decision, confidence } = reviewed;
           const reason = reviewed.closeReason ?? "";
           const action = frontMatterValue(markdown, "action_taken") ?? "";
@@ -1599,7 +1609,9 @@ function inconsistentOrStaleProposedItemCount(
       if (options.applyKind !== "all" && type && type !== options.applyKind) return false;
       const action = frontMatterValue(markdown, "action_taken");
       if (action !== "proposed_close" && action !== "retry_pr_close_coverage_proof") return false;
-      const reason = reportReviewDecision(markdown).closeReason ?? "";
+      const reviewed = readableReviewDecision(markdown);
+      if (!reviewed) return false;
+      const reason = reviewed.closeReason ?? "";
       if (allowedCloseReasons && !allowedCloseReasons.has(reason)) return false;
       if (
         ALLOWED_CLOSE_REASONS.has(reason) &&
@@ -2214,7 +2226,8 @@ function commentSyncCandidates(
       if (reviewStatus !== "complete" && !failedReview) return [];
       if (!frontMatterValue(markdown, "item_snapshot_hash")) return [];
       const actionTaken = frontMatterValue(markdown, "action_taken");
-      const reviewed = reportReviewDecision(markdown);
+      const reviewed = readableReviewDecision(markdown);
+      if (!reviewed) return [];
       if (actionTaken === "skipped_invalid_decision") {
         const { decision, closeReason } = reviewed;
         if (

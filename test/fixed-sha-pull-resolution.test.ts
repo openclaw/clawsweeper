@@ -26,7 +26,7 @@ test("fixed report text uses recorded evidence without overriding host repositor
     fixed_at: "legacy-time",
   });
   const profile = repositoryProfileFor("openclaw/openclaw");
-  assert.match(fixedInReportText(legacy, profile), /v-legacy/);
+  assert.equal(fixedInReportText(legacy, profile), "not determined");
   const typed = withReviewRecord(legacy, {
     fixedRelease: "v2026.10.1",
     fixedSha: "a".repeat(40),
@@ -36,10 +36,9 @@ test("fixed report text uses recorded evidence without overriding host repositor
   assert.match(rendered, /v2026\.10\.1/);
   assert.match(rendered, /openclaw\/openclaw/);
   assert.doesNotMatch(rendered, /legacy/);
-  assert.throws(
-    () =>
-      fixedInReportText(typed.replace(/^review_record: \{/m, "review_record: {broken"), profile),
-    ReviewRecordFormatError,
+  assert.equal(
+    fixedInReportText(typed.replace(/^review_record: \{/m, "review_record: {broken"), profile),
+    "not determined",
   );
 });
 
@@ -224,17 +223,47 @@ function pull(number: number, sha: string, issueNumber: number) {
 }
 
 function persistedReview(issueNumber: number, fixedSha: string, pullNumber: number): string {
-  return reportFrontMatter({
-    repository: "openclaw/openclaw",
-    number: String(issueNumber),
-    fixed_sha: fixedSha,
-    fixed_pr_url: `https://github.com/openclaw/openclaw/pull/${pullNumber}`,
-    fixed_pr_number: String(pullNumber),
-    fixed_pr_title: JSON.stringify(`fix: issue ${issueNumber}`),
-    fixed_pr_merged_at: "2026-08-01T12:00:00Z",
-    fixed_pr_sha: fixedSha,
-    fixed_pr_confidence: "high",
-    fixed_pr_source: JSON.stringify("GitHub commit PR lookup"),
+  return withReviewRecord(
+    reportFrontMatter({
+      repository: "openclaw/openclaw",
+      number: String(issueNumber),
+      fixed_sha: fixedSha,
+      fixed_pr_url: `https://github.com/openclaw/openclaw/pull/${pullNumber}`,
+      fixed_pr_number: String(pullNumber),
+      fixed_pr_title: JSON.stringify(`fix: issue ${issueNumber}`),
+      fixed_pr_merged_at: "2026-08-01T12:00:00Z",
+      fixed_pr_sha: fixedSha,
+      fixed_pr_confidence: "high",
+      fixed_pr_source: JSON.stringify("GitHub commit PR lookup"),
+    }),
+    {
+      fixedSha,
+      fixedPullRequest: {
+        repo: "openclaw/openclaw",
+        number: pullNumber,
+        url: `https://github.com/openclaw/openclaw/pull/${pullNumber}`,
+        title: `fix: issue ${issueNumber}`,
+        mergedAt: "2026-08-01T12:00:00Z",
+        sha: fixedSha,
+        confidence: "high",
+        source: "GitHub commit PR lookup",
+      },
+    },
+  );
+}
+
+function fixingPullRequestReport(): string {
+  return withReviewRecord(reportFrontMatter({ number: 123, type: "pull_request" }), {
+    fixedPullRequest: {
+      repo: "openclaw/openclaw",
+      number: 900,
+      url: "https://github.com/openclaw/openclaw/pull/900",
+      title: "Fix",
+      mergedAt: "2026-08-01T12:00:00Z",
+      sha: null,
+      confidence: "high",
+      source: "GitHub commit PR lookup",
+    },
   });
 }
 
@@ -404,7 +433,7 @@ test("PR implementation closeout rejects a fixing merge commit no longer on the 
 test("apply-time PR closeout rejects stale issue linkage", (t) => {
   const { calls, context } = statusContextWithCalls(t);
   const block = context.implementedOnMainPullRequestProvenanceApplyBlock(
-    reportFrontMatter({ fixed_pr_number: "900" }),
+    fixingPullRequestReport(),
     item({ number: 123, kind: "pull_request" }),
     "implemented_on_main",
   );
@@ -421,7 +450,7 @@ test("apply-time PR closeout propagates GitHub rate limits", (t) => {
   assert.throws(
     () =>
       context.implementedOnMainPullRequestProvenanceApplyBlock(
-        reportFrontMatter({ fixed_pr_number: "900" }),
+        fixingPullRequestReport(),
         item({ number: 123, kind: "pull_request" }),
         "implemented_on_main",
       ),
@@ -463,7 +492,7 @@ test("apply-time PR closeout propagates GitHub runtime budget exhaustion", (t) =
     () =>
       withGitHubRuntimeBudget({ startedAtMs: Date.now(), maxRuntimeMs: 3000 }, () =>
         applyRead.context.implementedOnMainPullRequestProvenanceApplyBlock(
-          reportFrontMatter({ fixed_pr_number: "900" }),
+          fixingPullRequestReport(),
           item({ number: 123, kind: "pull_request" }),
           "implemented_on_main",
         ),
@@ -480,7 +509,7 @@ test("apply-time PR closeout propagates GitHub runtime budget exhaustion", (t) =
     () =>
       withGitHubRuntimeBudget({ startedAtMs: Date.now(), maxRuntimeMs: 3000 }, () =>
         canonicalPull.context.implementedOnMainPullRequestProvenanceApplyBlock(
-          reportFrontMatter({ fixed_pr_number: "900" }),
+          fixingPullRequestReport(),
           item({ number: 123, kind: "pull_request" }),
           "implemented_on_main",
         ),
@@ -496,7 +525,7 @@ test("apply-time PR closeout accepts the merged canonical PR's formal relationsh
   });
   assert.equal(
     context.implementedOnMainPullRequestProvenanceApplyBlock(
-      reportFrontMatter({ fixed_pr_number: "900" }),
+      fixingPullRequestReport(),
       item({ number: 123, kind: "pull_request" }),
       "implemented_on_main",
     ),
@@ -511,7 +540,7 @@ test("apply-time PR closeout fails closed when the canonical PR identifies a dif
   });
   assert.equal(
     context.implementedOnMainPullRequestProvenanceApplyBlock(
-      reportFrontMatter({ fixed_pr_number: "900" }),
+      fixingPullRequestReport(),
       item({ number: 123, kind: "pull_request" }),
       "implemented_on_main",
     ),
@@ -526,7 +555,7 @@ test("apply-time PR closeout fails closed when GitHub has no canonical closing r
   });
   assert.equal(
     context.implementedOnMainPullRequestProvenanceApplyBlock(
-      reportFrontMatter({ fixed_pr_number: "900" }),
+      fixingPullRequestReport(),
       item({ number: 123, kind: "pull_request" }),
       "implemented_on_main",
     ),
@@ -541,7 +570,7 @@ test("apply-time PR closeout fails closed when the canonical PR only generically
   });
   assert.equal(
     context.implementedOnMainPullRequestProvenanceApplyBlock(
-      reportFrontMatter({ fixed_pr_number: "900" }),
+      fixingPullRequestReport(),
       item({ number: 123, kind: "pull_request" }),
       "implemented_on_main",
     ),
@@ -556,7 +585,7 @@ test("apply-time PR closeout fails closed when the formally linked issue is alre
   });
   assert.equal(
     context.implementedOnMainPullRequestProvenanceApplyBlock(
-      reportFrontMatter({ fixed_pr_number: "900" }),
+      fixingPullRequestReport(),
       item({ number: 123, kind: "pull_request" }),
       "implemented_on_main",
     ),
@@ -571,7 +600,7 @@ test("apply-time PR closeout fails closed when the fixing merge commit left the 
   });
   assert.equal(
     context.implementedOnMainPullRequestProvenanceApplyBlock(
-      reportFrontMatter({ fixed_pr_number: "900" }),
+      fixingPullRequestReport(),
       item({ number: 123, kind: "pull_request" }),
       "implemented_on_main",
     ),
@@ -587,7 +616,7 @@ test("apply-time PR closeout propagates fixing-commit containment rate limits", 
   assert.throws(
     () =>
       context.implementedOnMainPullRequestProvenanceApplyBlock(
-        reportFrontMatter({ fixed_pr_number: "900" }),
+        fixingPullRequestReport(),
         item({ number: 123, kind: "pull_request" }),
         "implemented_on_main",
       ),

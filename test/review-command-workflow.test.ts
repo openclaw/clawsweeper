@@ -19,7 +19,7 @@ import { useFakeScanner } from "./agent-input-scan-helpers.ts";
 import { runAgentCheckoutInspection, runAgentProcess } from "../dist/agent-runner.js";
 import { createReviewActionLedger } from "../dist/clawsweeper-review-ledger.js";
 import { readAllSpooledActionEvents } from "../dist/action-ledger.js";
-import { closeDecision, reviewFinding, withMockGh } from "./helpers.ts";
+import { closeDecision, reviewFinding, withMockGh, withReviewRecord } from "./helpers.ts";
 import { AgentInputScanError, agentInputScanFailureExitCode } from "../dist/agent-input-scan.js";
 import { prepareOpenClawCodexSourceForReview } from "../dist/openclaw-codex-source.js";
 import { reviewStatusForDecision } from "../dist/clawsweeper-report-document.js";
@@ -491,7 +491,14 @@ else {
       scenario === "changed-pr-proof-invalid-cursor"
         ? "unusable-cursor"
         : `v2:0:${digest("activity")}`;
-    const priorMarkdown = `---\n${publicationCase?.cachedPolicy ?? ""}decision: keep_open\nreview_status: complete\nreview_activity_cursor: ${activityCursor}\n---\nCached review\n${oversized}`;
+    const priorMarkdown = withReviewRecord(
+      `---\nrepository: ${REPO}\nnumber: ${ITEM_NUMBER}\ntype: ${item.kind}\n${publicationCase?.cachedPolicy ?? ""}decision: keep_open\nreview_status: complete\nreview_activity_cursor: ${activityCursor}\n---\nCached review\n${oversized}`,
+      {
+        decision: "keep_open",
+        closeReason: "none",
+        summary: "Cached review",
+      },
+    );
     if (publicationCase) {
       mkdirSync(itemsDir);
       writeFileSync(join(itemsDir, `${ITEM_NUMBER}.md`), priorMarkdown);
@@ -774,7 +781,7 @@ process.exitCode = 1;
           return {
             decision: closeDecision({
               decision: "keep_open",
-              closeReason: null,
+              closeReason: "none",
               summary: "Codex review failed: source preparation.",
               localCheckoutAccess: "unverified",
             }),
@@ -867,7 +874,7 @@ process.exitCode = 1;
         );
         return closeDecision({
           decision: "keep_open",
-          closeReason: null,
+          closeReason: "none",
           localCheckoutAccess: "verified",
           ...(invalidProofPrior
             ? {
@@ -890,8 +897,11 @@ process.exitCode = 1;
       },
       verifyRegressionProvenance: (decision) => decision,
       reviewActionForDecision: () => ({ actionTaken: "none" }),
-      markdownFor: ({ decision }) =>
-        `---\nreview_status: ${reviewStatusForDecision(decision)}\ndecision: keep_open\n---\nFresh Codex review\n${decision.reviewFindings.map((finding) => finding.title).join("\n")}\n${oversized}`,
+      markdownFor: ({ item: reviewItem, decision }) =>
+        withReviewRecord(
+          `---\nrepository: ${reviewItem.repo}\nnumber: ${reviewItem.number}\ntype: ${reviewItem.kind}\nreview_status: ${reviewStatusForDecision(decision)}\ndecision: keep_open\n---\nFresh Codex review\n${decision.reviewFindings.map((finding) => finding.title).join("\n")}\n${oversized}`,
+          decision,
+        ),
       selectCandidates: () => ({
         candidates: twoItems
           ? [

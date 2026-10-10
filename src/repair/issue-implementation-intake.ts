@@ -4,7 +4,15 @@ import { reportAllowsAutomation } from "../manual-publication-policy.js";
 import { asJsonObject, type JsonValue, type LooseRecord } from "./json-types.js";
 import { sha256 } from "../content-hash.js";
 import { parseFrontMatterStringArray, reportWithoutReviewRecord } from "../report-front-matter.js";
-import { requireReviewRecord } from "../review-record.js";
+import {
+  readReviewRecord,
+  requireReviewRecord,
+  ReviewRecordFormatError,
+} from "../review-record.js";
+import {
+  legacyInputsForReportRevision,
+  type ReportRevisionInputs,
+} from "../report-revision-legacy-inputs.js";
 import fs from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -240,7 +248,23 @@ function prepare() {
     );
     return;
   }
-  const report = parseReviewReport(reportMarkdown);
+  const report = readableReviewReport(reportMarkdown);
+  if (!report) {
+    const out = {
+      status: "skipped_invalid_review_record",
+      should_repair: false,
+      reason: "review record is missing or invalid; a fresh review is required",
+      target_repo: targetRepo,
+      item_number: itemNumber,
+      report_path: reportPath,
+      report_url: reportUrl,
+      job_path: "",
+      existing_job_path: "",
+    };
+    writeStepOutputs(out);
+    console.log(JSON.stringify(out, null, 2));
+    return;
+  }
   const live = truthy(enabled)
     ? liveIssueContext({
         repo: targetRepo,
@@ -478,7 +502,8 @@ export function discoverImplementationCandidates({
     if (!fs.existsSync(sourceDir)) continue;
     for (const file of findMarkdownFiles(sourceDir)) {
       const sourceMarkdown = fs.readFileSync(file, "utf8");
-      const sourceReport = parseReviewReport(sourceMarkdown);
+      const sourceReport = readableReviewReport(sourceMarkdown);
+      if (!sourceReport) continue;
       const number = Number(sourceReport.frontmatter.number);
       const repository = sourceReport.frontmatter.repository || targetRepo;
       if (!Number.isSafeInteger(number) || number <= 0) continue;
@@ -487,9 +512,12 @@ export function discoverImplementationCandidates({
       const canonicalMarkdown = fs.existsSync(canonicalReportPath)
         ? fs.readFileSync(canonicalReportPath, "utf8")
         : null;
-      const canonicalFreshness = canonicalMarkdown
-        ? reviewFreshness(parseReviewReport(canonicalMarkdown))
-        : null;
+      const canonicalReport =
+        canonicalMarkdown === null ? null : readableReviewReport(canonicalMarkdown);
+      // An existing canonical report without a valid record cannot authorize work,
+      // even when an older source artifact still contains an eligible decision.
+      if (canonicalMarkdown !== null && !canonicalReport) continue;
+      const canonicalFreshness = canonicalReport ? reviewFreshness(canonicalReport) : null;
       const sourceFreshness = reviewFreshness(sourceReport);
       // Publication hydrates records before reviewing, so its accepted artifact can
       // be newer than the runner's local snapshot of authoritative Worker state.
@@ -657,6 +685,15 @@ function parseIntakeMetadata(markdown: string): ReviewReport {
   }
   const body = match ? markdown.slice(match[0].length) : markdown;
   return { frontmatter, body, workPrompt: "", workReason: "", securityStatus: "" };
+}
+
+function readableReviewReport(markdown: string): ReviewReport | null {
+  try {
+    return parseReviewReport(markdown);
+  } catch (error) {
+    if (!(error instanceof ReviewRecordFormatError)) throw error;
+    return null;
+  }
 }
 
 export function parseReviewReport(markdown: string): ReviewReport {
@@ -1096,35 +1133,47 @@ ${context.decision.blockers.length ? context.decision.blockers.map((blocker: str
   fs.writeFileSync(context.auditPath, body, "utf8");
 }
 
-// Bind intake revisions to host metadata and the typed eligibility and job inputs.
+// Equivalent backfills preserve the old revision. Record-only changes to eligibility
+// or effective job inputs must invalidate prior intake audits and prepared jobs.
 export function reportRevisionSha256(markdown: string) {
-  const hostRevision = sha256(reportWithoutReviewRecord(markdown));
-  const { decision: recorded } = requireReviewRecord(markdown);
-  const workPrompt = recorded.workPrompt.trim();
-  const intakeInputs = JSON.stringify({
-    decision: recorded.decision,
-    closeReason: recorded.closeReason,
-    confidence: recorded.confidence,
-    requiresProductDecision: recorded.requiresProductDecision,
-    requiresNewFeature: recorded.requiresNewFeature,
-    requiresNewConfigOption: recorded.requiresNewConfigOption,
-    workCandidate: recorded.workCandidate,
-    workConfidence: recorded.workConfidence,
-    autoImplementationCandidate: recorded.autoImplementationCandidate,
-    securityStatus: recorded.securityReview.status,
-    workPrompt,
-    workReason: workPrompt ? "" : recorded.workReason,
-    validation: recorded.workValidation,
-    likelyFiles: recorded.workLikelyFiles,
-    clusterRefs: recorded.workClusterRefs,
-    itemCategory: recorded.itemCategory,
-    reproductionStatus: recorded.reproductionStatus,
-    reproductionConfidence: recorded.reproductionConfidence,
-    visionFit: recorded.visionFit,
-    implementationComplexity: recorded.implementationComplexity,
-    visionEvidence: recorded.visionFitEvidence,
-  });
-  return sha256(JSON.stringify([hostRevision, intakeInputs]));
+  const legacy = reportWithoutReviewRecord(markdown);
+  const legacyRevision = sha256(legacy);
+  const recorded = readReviewRecord(markdown)?.decision;
+  if (!recorded) return legacyRevision;
+  const intakeInputs = (decision: ReportRevisionInputs) => {
+    const workPrompt = decision.workPrompt.trim();
+    return JSON.stringify({
+      decision: decision.decision,
+      closeReason: decision.closeReason,
+      confidence: decision.confidence,
+      requiresProductDecision: decision.requiresProductDecision,
+      requiresNewFeature: decision.requiresNewFeature,
+      requiresNewConfigOption: decision.requiresNewConfigOption,
+      workCandidate: decision.workCandidate,
+      workConfidence: decision.workConfidence,
+      autoImplementationCandidate: decision.autoImplementationCandidate,
+      securityStatus: decision.securityReview.status,
+      workPrompt,
+      workReason: workPrompt ? "" : decision.workReason,
+      validation: decision.workValidation,
+      likelyFiles: decision.workLikelyFiles,
+      clusterRefs: decision.workClusterRefs,
+      itemCategory: decision.itemCategory,
+      reproductionStatus: decision.reproductionStatus,
+      reproductionConfidence: decision.reproductionConfidence,
+      visionFit: decision.visionFit,
+      implementationComplexity: decision.implementationComplexity,
+      visionEvidence: decision.visionFitEvidence,
+    });
+  };
+  const recordedInputs = intakeInputs(recorded);
+  try {
+    if (intakeInputs(legacyInputsForReportRevision(legacy)) === recordedInputs)
+      return legacyRevision;
+  } catch {
+    // An unconvertible legacy report cannot establish equivalence with its record.
+  }
+  return sha256(JSON.stringify([legacyRevision, recordedInputs]));
 }
 
 function matchingIntakeAudit({

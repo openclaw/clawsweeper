@@ -28,6 +28,7 @@ import {
 import { sanitizedLiveProofEnvironment } from "../dist/live-proof/environment.js";
 import { parseLiveVerificationResult } from "../dist/live-proof/verification.js";
 import { repositoryProfileFor } from "../dist/repository-profiles.js";
+import { withReviewRecord } from "./helpers.ts";
 
 const softWrapMarker = "prepares pruned esm output with an actual peerDependencies host";
 // End peerD at the driver's existing 160-column boundary.
@@ -55,7 +56,10 @@ test("review live proof inspection rejects invalid persisted plans", () => {
   mkdirSync(records);
   writeFileSync(
     join(records, "42.md"),
-    "---\ntype: pull_request\n---\n\n## Live Proof\n\nStatus: recommended\n",
+    withReviewRecord(
+      "---\nrepository: example/repo\nnumber: 42\ntype: pull_request\n---\n\n## Live Proof\n\nStatus: recommended\n",
+      { decision: "keep_open", closeReason: "none" },
+    ),
   );
   try {
     assert.throws(
@@ -150,7 +154,10 @@ test(
       const checkoutBefore = git(target, "status", "--porcelain");
       writeFileSync(
         join(records, "42.md"),
-        `---\nnumber: 42\nrepository: openclaw/sanitized-fixture\ntype: pull_request\npull_head_sha: ${head}\n---\n\n## Live Proof\n\nStatus: recommended\n\nSurface: terminal\n\nTerminal completion: exit_zero\n\nReason: The command prints a deterministic result.\n\nPayoff: static_text\n\nPayoff justification: A recording adds no value.\n\nEntry: ${plan.entry}\n\nSteps:\n\n- {"action":"expect_output","text":"sanitized-ready"}\n\n## Work Candidate\n\nCandidate: none\n`,
+        withReviewRecord(
+          `---\nnumber: 42\nrepository: openclaw/sanitized-fixture\ntype: pull_request\npull_head_sha: ${head}\n---\n\n## Live Proof\n\nStatus: recommended\n\nSurface: terminal\n\nTerminal completion: exit_zero\n\nReason: The command prints a deterministic result.\n\nPayoff: static_text\n\nPayoff justification: A recording adds no value.\n\nEntry: ${plan.entry}\n\nSteps:\n\n- {"action":"expect_output","text":"sanitized-ready"}\n\n## Work Candidate\n\nCandidate: none\n`,
+          { decision: "keep_open", closeReason: "none" },
+        ),
       );
       const logs: string[] = [];
       let materializations = 0;
@@ -1472,7 +1479,10 @@ process.exit(process.argv.includes('fail') ? 7 : 0);
         };
         writeFileSync(
           join(records, `${item}.md`),
-          `---\nnumber: ${item}\nrepository: ${repo}\ntype: pull_request\npull_head_sha: ${head}\n---\n\n## Live Proof\n\nStatus: recommended\n\nSurface: terminal\n\nTerminal completion: exit_zero\n\nReason: ${plan.reason}\n\nPayoff: static_text\n\nPayoff justification: ${plan.payoff.justification}\n\nEntry: ${plan.entry}\n\nSteps:\n\n- ${JSON.stringify(plan.steps[0])}\n\n## Work Candidate\n\nCandidate: none\n`,
+          withReviewRecord(
+            `---\nnumber: ${item}\nrepository: ${repo}\ntype: pull_request\npull_head_sha: ${head}\n---\n\n## Live Proof\n\nStatus: recommended\n\nSurface: terminal\n\nTerminal completion: exit_zero\n\nReason: ${plan.reason}\n\nPayoff: static_text\n\nPayoff justification: ${plan.payoff.justification}\n\nEntry: ${plan.entry}\n\nSteps:\n\n- ${JSON.stringify(plan.steps[0])}\n\n## Work Candidate\n\nCandidate: none\n`,
+            { decision: "keep_open", closeReason: "none" },
+          ),
         );
         const logs: string[] = [];
         const inspection = executeReviewLiveProofs(

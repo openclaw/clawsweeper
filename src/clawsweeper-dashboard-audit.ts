@@ -62,7 +62,8 @@ import {
   markdownRepository,
   numberForMarkdownFile,
 } from "./clawsweeper-repository-paths.js";
-import { reportReviewDecision } from "./report-review-decision.js";
+import { reportReviewDecision, type ReportReviewDecision } from "./report-review-decision.js";
+import { ReviewRecordFormatError } from "./review-record.js";
 import {
   addDashboardCadenceBucket,
   capDashboardCadenceBucket,
@@ -196,6 +197,16 @@ export function createDashboardAudit(dependencies: CreateDashboardAuditDependenc
     writeSweepStatus,
   } = dependencies;
 
+  function scannedReviewDecision(markdown: string): ReportReviewDecision | undefined {
+    try {
+      return reportReviewDecision(markdown);
+    } catch (error) {
+      if (!(error instanceof ReviewRecordFormatError)) throw error;
+      // Keep host metadata visible without granting unreadable evidence decision authority.
+      return undefined;
+    }
+  }
+
   function markdownAuditRecord(
     location: AuditRecordLocation,
     dir: string,
@@ -204,7 +215,7 @@ export function createDashboardAudit(dependencies: CreateDashboardAuditDependenc
     const path = join(dir, file);
     const markdown = readFileSync(path, "utf8");
     const repo = markdownRepository(markdown, file);
-    const review = reportReviewDecision(markdown);
+    const review = scannedReviewDecision(markdown);
     // Metadata readers return V8 string slices. Detach the small audit projection
     // before retaining it, or each title/timestamp pins the entire report (including
     // its typed review_record and evidence) for the lifetime of the corpus scan.
@@ -216,9 +227,9 @@ export function createDashboardAudit(dependencies: CreateDashboardAuditDependenc
       kind: frontMatterValue(markdown, "type") as ItemKind | undefined,
       title: frontMatterValue(markdown, "title") ?? "",
       labels: frontMatterStringArray(markdown, "labels"),
-      decision: review.decision,
-      closeReason: review.closeReason,
-      confidence: review.confidence,
+      decision: review?.decision,
+      closeReason: review?.closeReason,
+      confidence: review?.confidence,
       reviewedAt: frontMatterValue(markdown, "reviewed_at"),
       action: frontMatterValue(markdown, "action_taken"),
       reviewStatus: effectiveReviewStatus(markdown),
@@ -678,13 +689,13 @@ export function createDashboardAudit(dependencies: CreateDashboardAuditDependenc
       );
       const repo = entry.repo;
       const number = entry.number;
-      const review = reportReviewDecision(markdown);
+      const review = scannedReviewDecision(markdown);
       const reviewedAt = frontMatterValue(markdown, "reviewed_at");
       const reviewStatus = effectiveReviewStatus(markdown);
       const action = frontMatterValue(markdown, "action_taken") ?? "unknown";
-      const decision = review.decision ?? "unknown";
-      const workCandidate = review.workCandidate ?? "none";
-      const workPriority = review.workPriority ?? "low";
+      const decision = review?.decision ?? "unknown";
+      const workCandidate = review?.workCandidate ?? "unknown";
+      const workPriority = review?.workPriority ?? "unknown";
       const workStatus = frontMatterValue(markdown, "work_status") ?? "none";
       const kind = (frontMatterValue(markdown, "type") as ItemKind | undefined) ?? "issue";
       const freshReview = isFresh({ reviewedAt, reviewStatus });

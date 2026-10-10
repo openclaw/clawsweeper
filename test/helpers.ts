@@ -8,7 +8,7 @@ import { delimiter, join } from "node:path";
 import { writeFakeScanner } from "./agent-input-scan-helpers.ts";
 
 import { reviewPromptForTest } from "../dist/clawsweeper.js";
-import { frontMatterValue } from "../dist/report-front-matter.js";
+import { frontMatterValue, reportWithoutReviewRecord } from "../dist/report-front-matter.js";
 import { reviewRecordFrontMatterLine } from "../dist/review-record.js";
 import { createReviewedPrActivityCursor } from "../dist/review-activity-cursor.js";
 import { createDecisionParser, reviewDecisionParser } from "../dist/clawsweeper-decision-parser.js";
@@ -561,8 +561,8 @@ export function auditRecord(number, overrides = {}) {
   };
 }
 
-export function workPlanCandidateReport(overrides = {}) {
-  const frontmatter = {
+export function workPlanCandidateReport(overrides = {}, decisionOverrides = {}) {
+  const frontmatter: Record<string, unknown> = {
     number: 321,
     repository: "openclaw/clawsweeper",
     type: "issue",
@@ -588,7 +588,7 @@ export function workPlanCandidateReport(overrides = {}) {
   ) {
     Object.assign(frontmatter, { review_activity_cursor: emptyReviewedPrActivityCursor });
   }
-  return `---
+  const report = `---
 ${Object.entries(frontmatter)
   .map(([key, value]) => `${key}: ${value}`)
   .join("\n")}
@@ -604,6 +604,46 @@ The dashboard has queue_fix_pr candidates but no generated coding plan.
 
 Render generated plan markdown from existing report fields.
 `;
+  return withReviewRecord(report, {
+    decision: frontmatter.decision,
+    closeReason: frontmatter.close_reason ?? "none",
+    confidence: frontmatter.confidence ?? "high",
+    summary: "The dashboard has queue_fix_pr candidates but no generated coding plan.",
+    workCandidate: frontmatter.work_candidate,
+    workConfidence: frontmatter.work_confidence,
+    workPriority: frontmatter.work_priority,
+    workPrompt: "Render generated plan markdown from existing report fields.",
+    workLikelyFiles: JSON.parse(String(frontmatter.work_likely_files)),
+    workValidation: JSON.parse(String(frontmatter.work_validation)),
+    workClusterRefs: JSON.parse(String(frontmatter.work_cluster_refs)),
+    fixedSha: frontmatter.fixed_sha ?? null,
+    fixedRelease: frontmatter.fixed_release ?? null,
+    fixedAt: frontmatter.fixed_at ?? null,
+    ...(frontmatter.next_step
+      ? { nextStep: JSON.parse(String(frontmatter.next_step)) }
+      : { nextStep: { kind: "none", text: "" } }),
+    ...(frontmatter.root_cause_cluster
+      ? { rootCauseCluster: JSON.parse(String(frontmatter.root_cause_cluster)) }
+      : {}),
+    ...(frontmatter.merge_risk_options
+      ? { mergeRiskOptions: JSON.parse(String(frontmatter.merge_risk_options)) }
+      : {}),
+    ...(frontmatter.fixed_pr_url
+      ? {
+          fixedPullRequest: {
+            repo: String(frontmatter.repository),
+            number: Number(frontmatter.fixed_pr_number),
+            url: String(frontmatter.fixed_pr_url),
+            title: "",
+            mergedAt: String(frontmatter.fixed_pr_merged_at),
+            sha: null,
+            confidence: frontmatter.fixed_pr_confidence,
+            source: frontmatter.fixed_pr_source,
+          },
+        }
+      : {}),
+    ...decisionOverrides,
+  });
 }
 
 export function implementedCloseReport(overrides = {}) {
@@ -640,30 +680,47 @@ export function verifiedImplementationPullRequestReport(overrides = {}) {
 }
 
 export function stalePullRequestReport(overrides = {}) {
-  return `${workPlanCandidateReport({
-    repository: "openclaw/openclaw",
-    number: 330,
-    type: "pull_request",
-    title: "Stale F PR",
-    url: "https://github.com/openclaw/openclaw/pull/330",
-    author: "reporter",
-    author_association: "CONTRIBUTOR",
-    decision: "keep_open",
-    close_reason: "none",
-    confidence: "high",
-    action_taken: "kept_open",
-    work_candidate: "manual_review",
-    work_status: "manual_review",
-    item_snapshot_hash: "reviewed-snapshot",
-    item_created_at: "2026-02-01T00:00:00Z",
-    item_updated_at: "2026-05-01T00:00:00Z",
-    reviewed_at: "2026-05-01T00:00:00Z",
-    labels: JSON.stringify(["status: 📣 needs proof"]),
-    pr_rating_overall: "F",
-    pr_rating_proof: "F",
-    pr_rating_patch: "F",
-    ...overrides,
-  })}\n\n## Real Behavior Proof\n\nStatus: missing\nEvidence kind: none\nNeeds contributor action: true\nSummary: No live proof was supplied.\n\n## PR Rating\n\nOverall tier: F\nProof tier: F\nPatch tier: F\nSummary: The PR is not merge-ready.\nNext rank-up steps:\n- Rebase and provide proof.\n`;
+  return `${workPlanCandidateReport(
+    {
+      repository: "openclaw/openclaw",
+      number: 330,
+      type: "pull_request",
+      title: "Stale F PR",
+      url: "https://github.com/openclaw/openclaw/pull/330",
+      author: "reporter",
+      author_association: "CONTRIBUTOR",
+      decision: "keep_open",
+      close_reason: "none",
+      confidence: "high",
+      action_taken: "kept_open",
+      work_candidate: "manual_review",
+      work_status: "manual_review",
+      item_snapshot_hash: "reviewed-snapshot",
+      item_created_at: "2026-02-01T00:00:00Z",
+      item_updated_at: "2026-05-01T00:00:00Z",
+      reviewed_at: "2026-05-01T00:00:00Z",
+      labels: JSON.stringify(["status: 📣 needs proof"]),
+      pr_rating_overall: "F",
+      pr_rating_proof: "F",
+      pr_rating_patch: "F",
+      ...overrides,
+    },
+    {
+      realBehaviorProof: {
+        status: "missing",
+        evidenceKind: "none",
+        needsContributorAction: true,
+        summary: "No live proof was supplied.",
+      },
+      prRating: {
+        overallTier: "F",
+        proofTier: "F",
+        patchTier: "F",
+        summary: "The PR is not merge-ready.",
+        nextSteps: ["Rebase and provide proof."],
+      },
+    },
+  )}\n\n## Real Behavior Proof\n\nStatus: missing\nEvidence kind: none\nNeeds contributor action: true\nSummary: No live proof was supplied.\n\n## PR Rating\n\nOverall tier: F\nProof tier: F\nPatch tier: F\nSummary: The PR is not merge-ready.\nNext rank-up steps:\n- Rebase and provide proof.\n`;
 }
 
 export function stripProofAndRatingFrontMatter(report: string): string {
@@ -1192,17 +1249,38 @@ export function reportWithSyncedReviewComment(
   };
 }
 
-/** Adds the typed record that the review writes as the last front-matter line. */
+/** Writes exactly one typed record as the last front-matter line. */
 export function withReviewRecord(report: string, decision: Record<string, unknown> = {}): string {
+  report = reportWithoutReviewRecord(report);
   const subject = {
     repo: frontMatterValue(report, "repository"),
     number: Number(frontMatterValue(report, "number")),
     kind: frontMatterValue(report, "type"),
   };
-  const line = reviewRecordFrontMatterLine(
-    { decision: reviewDecisionParser.parseStoredDecisionFields(closeDecision(decision), subject) },
+  const {
+    oversizedPullRequest,
+    oversizedPullRequestSource,
+    localCheckoutAccess,
+    checkoutInspectionFailed,
+    codexTerminalFailure,
+    fixedPullRequest,
+    ...schemaFields
+  } = decision;
+  // The model parser normalizes schema fields only; the record writer validates
+  // runner-owned evidence after it is restored to the complete decision.
+  const parsedDecision = reviewDecisionParser.parseStoredDecisionFields(
+    closeDecision(schemaFields),
     subject,
   );
+  Object.assign(parsedDecision, {
+    oversizedPullRequest,
+    oversizedPullRequestSource,
+    localCheckoutAccess,
+    checkoutInspectionFailed,
+    codexTerminalFailure,
+    fixedPullRequest,
+  });
+  const line = reviewRecordFrontMatterLine({ decision: parsedDecision }, subject);
   assert.ok(line, "fixture decision must be a valid review record");
   return report.replace(/\n---\n/, () => `\n${line}\n---\n`);
 }
