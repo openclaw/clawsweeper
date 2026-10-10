@@ -5,6 +5,8 @@ import { asJsonObject, type JsonValue, type LooseRecord } from "./json-types.js"
 import { sha256 } from "../content-hash.js";
 import { parseFrontMatterStringArray, reportWithoutReviewRecord } from "../report-front-matter.js";
 import { readReviewRecordOrLegacy } from "../review-record.js";
+import { legacyReviewDecision } from "../review-record-backfill.js";
+import type { Decision } from "../clawsweeper-types.js";
 import fs from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -1106,10 +1108,48 @@ ${context.decision.blockers.length ? context.decision.blockers.map((blocker: str
   fs.writeFileSync(context.auditPath, body, "utf8");
 }
 
-// The review_record line repeats the review. A backfill that adds it must not look
-// like a new review to implementation jobs.
+// Equivalent backfills preserve the old revision. Record-only changes to eligibility
+// or effective job inputs must invalidate prior intake audits and prepared jobs.
 export function reportRevisionSha256(markdown: string) {
-  return sha256(reportWithoutReviewRecord(markdown));
+  const legacy = reportWithoutReviewRecord(markdown);
+  const legacyRevision = sha256(legacy);
+  const { decision: recorded } = readReviewRecordOrLegacy(markdown, () => null);
+  if (!recorded) return legacyRevision;
+  const intakeInputs = (decision: Decision) => {
+    const workPrompt = decision.workPrompt.trim();
+    return JSON.stringify({
+      decision: decision.decision,
+      closeReason: decision.closeReason,
+      confidence: decision.confidence,
+      requiresProductDecision: decision.requiresProductDecision,
+      requiresNewFeature: decision.requiresNewFeature,
+      requiresNewConfigOption: decision.requiresNewConfigOption,
+      workCandidate: decision.workCandidate,
+      workConfidence: decision.workConfidence,
+      autoImplementationCandidate: decision.autoImplementationCandidate,
+      securityStatus: decision.securityReview.status,
+      workPrompt,
+      workReason: workPrompt ? "" : decision.workReason,
+      validation: decision.workValidation,
+      likelyFiles: decision.workLikelyFiles,
+      clusterRefs: decision.workClusterRefs,
+      itemCategory: decision.itemCategory,
+      reproductionStatus: decision.reproductionStatus,
+      reproductionConfidence: decision.reproductionConfidence,
+      visionFit: decision.visionFit,
+      implementationComplexity: decision.implementationComplexity,
+      visionEvidence: decision.visionFitEvidence,
+    });
+  };
+  const recordedInputs = intakeInputs(recorded);
+  try {
+    // The backfill normalizes absent fields and placeholders. Compare against
+    // that same canonical baseline, not the historical text reader's defaults.
+    if (intakeInputs(legacyReviewDecision(legacy)) === recordedInputs) return legacyRevision;
+  } catch {
+    // An unconvertible legacy report cannot establish equivalence with its record.
+  }
+  return sha256(JSON.stringify([legacyRevision, recordedInputs]));
 }
 
 function matchingIntakeAudit({

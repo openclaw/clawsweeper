@@ -34,6 +34,8 @@ import {
   REVIEW_VISION_FIT_TRIGGER_SOURCE,
 } from "../../dist/repair/comment-router/dispatch.js";
 import { withReviewRecord } from "../helpers.ts";
+import { legacyReviewDecision } from "../../dist/review-record-backfill.js";
+import { reviewRecordFrontMatterLine } from "../../dist/review-record.js";
 
 function report(overrides = {}, securityStatus = "not_applicable") {
   const fields = {
@@ -1859,19 +1861,171 @@ test("issue build overrides on protected issues only prepare a handoff", () => {
   }
 });
 
-// The backfill adds a review_record line to stored reports. That line repeats the
-// review; it must not change the review revision that implementation jobs track.
-test("adding the review record does not change the implementation-intake revision", () => {
-  const legacy = report();
-  const backfilled = withReviewRecord(legacy);
+// A backfill may add richer decision metadata, but identical effective job inputs
+// must retain the revision already recorded by prepared implementation jobs.
+test("equivalent backfills retain revisions while recorded job changes require regeneration", () => {
+  const legacy = report({
+    implementation_complexity: "small",
+    vision_fit: "not_applicable",
+    work_priority: "high",
+  });
+  const jobInputs = {
+    decision: "keep_open",
+    closeReason: "none",
+    confidence: "high",
+    requiresProductDecision: false,
+    requiresNewFeature: false,
+    requiresNewConfigOption: false,
+    workCandidate: "queue_fix_pr",
+    workConfidence: "high",
+    autoImplementationCandidate: "none",
+    securityReview: { status: "not_applicable", summary: "No security boundary.", concerns: [] },
+    itemCategory: "bug",
+    reproductionStatus: "reproduced",
+    reproductionConfidence: "high",
+    implementationComplexity: "small",
+    visionFit: "not_applicable",
+    visionFitEvidence: [],
+    workPrompt: "Fix the reproduced existing-behavior bug and add a regression test.",
+    workReason: "This unused reason is not present in the old report.",
+    workValidation: ["pnpm test src/example.test.ts"],
+    workLikelyFiles: ["src/example.ts", "src/example.test.ts"],
+    workClusterRefs: ["#123"],
+  };
+  const backfilled = withReviewRecord(legacy, jobInputs);
   assert.notEqual(backfilled, legacy);
   assert.equal(reportRevisionSha256(backfilled), reportRevisionSha256(legacy));
   const audit = parseReviewReport(
     `---\nreport_revision_sha256: ${reportRevisionSha256(legacy)}\ndecision: queued_for_repair\nworker_dispatched: false\n---\n`,
   );
   assert.equal(issueImplementationJobNeedsRefresh(audit, backfilled), false);
+  for (const changedInputs of [
+    { workPrompt: "Use the new recorded implementation plan." },
+    { workValidation: ["pnpm test src/new-regression.test.ts"] },
+    { workLikelyFiles: ["src/new-implementation.ts"] },
+    { workClusterRefs: ["#123", "#456"] },
+    { visionFitEvidence: ["New implementation constraint."] },
+    { itemCategory: "regression" },
+    { reproductionStatus: "source_reproducible" },
+    { reproductionConfidence: "medium" },
+    { implementationComplexity: "medium" },
+    { visionFit: "aligned" },
+    { decision: "close", closeReason: "not_actionable_in_repo" },
+    { confidence: "medium" },
+    { requiresProductDecision: true },
+    { requiresNewFeature: true },
+    { requiresNewConfigOption: true },
+    { workCandidate: "none" },
+    { workConfidence: "medium" },
+    { autoImplementationCandidate: "strict_bug" },
+    { securityReview: { status: "needs_attention", summary: "Review boundary.", concerns: [] } },
+  ]) {
+    const changed = withReviewRecord(legacy, { ...jobInputs, ...changedInputs });
+    assert.notEqual(reportRevisionSha256(changed), reportRevisionSha256(backfilled));
+    assert.equal(issueImplementationJobNeedsRefresh(audit, changed), true);
+  }
+  const changedUnusedReason = withReviewRecord(legacy, {
+    ...jobInputs,
+    workReason: "Another unused reason.",
+  });
+  assert.equal(reportRevisionSha256(changedUnusedReason), reportRevisionSha256(backfilled));
+  assert.notEqual(
+    reportRevisionSha256(withReviewRecord(legacy, { ...jobInputs, workValidation: [] })),
+    reportRevisionSha256(
+      withReviewRecord(legacy, { ...jobInputs, workValidation: ["pnpm check:changed"] }),
+    ),
+  );
+  const withoutPrompt = withReviewRecord(legacy, {
+    ...jobInputs,
+    workPrompt: "",
+    workReason: "First plan.",
+  });
+  const changedFallback = withReviewRecord(legacy, {
+    ...jobInputs,
+    workPrompt: "",
+    workReason: "Second plan.",
+  });
+  assert.notEqual(reportRevisionSha256(withoutPrompt), reportRevisionSha256(changedFallback));
   assert.notEqual(
     reportRevisionSha256(backfilled.replace(/^confidence: high$/m, "confidence: low")),
     reportRevisionSha256(legacy),
   );
+});
+
+test("revision equivalence uses canonical backfill defaults and fails closed on conversion errors", () => {
+  const legacy = report({ work_priority: "high" });
+  const decision = legacyReviewDecision(legacy);
+  const subject = { repo: "openclaw/openclaw", number: 123, kind: "issue" as const };
+  const line = reviewRecordFrontMatterLine({ decision, origin: "backfill" }, subject);
+  assert.ok(line);
+  const backfilled = legacy.replace("\n---\n", `\n${line}\n---\n`);
+  assert.equal(reportRevisionSha256(backfilled), reportRevisionSha256(legacy));
+  const changedLine = reviewRecordFrontMatterLine(
+    { decision: { ...decision, workValidation: ["pnpm test a-new-command"] }, origin: "backfill" },
+    subject,
+  );
+  assert.ok(changedLine);
+  const changed = legacy.replace("\n---\n", `\n${changedLine}\n---\n`);
+  assert.notEqual(reportRevisionSha256(changed), reportRevisionSha256(legacy));
+  const unconvertible = legacy.replace(/^work_priority: high\n/m, "");
+  assert.notEqual(
+    reportRevisionSha256(unconvertible.replace("\n---\n", `\n${line}\n---\n`)),
+    reportRevisionSha256(unconvertible),
+  );
+});
+
+test("record-only eligibility changes rediscover issues blocked by an earlier intake audit", () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), "clawsweeper-typed-intake-retry-"));
+  try {
+    const reports = path.join(root, "records/openclaw-openclaw/items");
+    const auditDir = path.join(root, "results/issue-implementation-intake/openclaw-openclaw");
+    mkdirSync(reports, { recursive: true });
+    mkdirSync(auditDir, { recursive: true });
+    for (const blocker of ["security", "product"]) {
+      const legacy = report(
+        {
+          work_priority: "high",
+          auto_implementation_candidate: "strict_bug",
+          requires_product_decision: String(blocker === "product"),
+        },
+        blocker === "security" ? "needs_attention" : "not_applicable",
+      );
+      const original = legacyReviewDecision(legacy);
+      writeFileSync(path.join(reports, "123.md"), legacy);
+      writeFileSync(
+        path.join(auditDir, "123.md"),
+        `---\ndecision: not_eligible\nreport_revision_sha256: ${reportRevisionSha256(legacy)}\n---\n`,
+      );
+      const options = {
+        enabled: true,
+        candidateKind: "strict_bug" as const,
+        targetRepo: "openclaw/openclaw",
+        reportRepo: "openclaw/clawsweeper-state",
+        sourceDirs: [reports],
+        jobRoot: root,
+      };
+      assert.deepEqual(discoverImplementationCandidates(options), []);
+      const line = reviewRecordFrontMatterLine(
+        {
+          decision: {
+            ...original,
+            requiresProductDecision: false,
+            securityReview: {
+              status: "not_applicable",
+              summary: "Boundary cleared.",
+              concerns: [],
+            },
+          },
+        },
+        { repo: "openclaw/openclaw", number: 123, kind: "issue" },
+      );
+      assert.ok(line);
+      const updated = legacy.replace("\n---\n", `\n${line}\n---\n`);
+      assert.notEqual(reportRevisionSha256(updated), reportRevisionSha256(legacy));
+      writeFileSync(path.join(reports, "123.md"), updated);
+      assert.equal(discoverImplementationCandidates(options).length, 1, blocker);
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
