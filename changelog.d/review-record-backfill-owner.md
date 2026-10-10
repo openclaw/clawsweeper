@@ -1,0 +1,1 @@
+- Import the review-record backfill renderer directly, removing its stateless factory without changing report classification, dry-run behavior, or compare-and-swap publication.

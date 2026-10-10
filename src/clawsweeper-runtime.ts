@@ -152,7 +152,7 @@ import { renderReviewCommentFromReport } from "./clawsweeper-report-comment-pres
 import { syncWorkPlanFromReport } from "./clawsweeper-report-context.js";
 import { workPlanPathForReport } from "./clawsweeper-label-presentation.js";
 import { reportLiveProofPlan } from "./live-proof/report.js";
-import { createReviewRecordBackfill } from "./review-record-backfill.js";
+import { backfillReviewRecordsCommand } from "./review-record-backfill.js";
 import { existingReview } from "./clawsweeper-record-metadata.js";
 import {
   markdownFiles,
@@ -633,8 +633,6 @@ function verifyRegressionProvenance(
     regressionProvenance,
   };
 }
-
-const { backfillReviewRecordsCommand } = createReviewRecordBackfill({ markdownFor });
 
 const labelMutations = createLabelMutationOperations({ ghJson, ghObservedMutationCommand });
 const labelSyncOperations = createLabelSyncOperations(labelMutations);
