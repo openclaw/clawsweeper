@@ -95,6 +95,10 @@ reserves a small part of its budget. The lower-level
 The repair executor requests OpenClaw's `--timed` summary and records core
 typecheck, core-test typecheck, and core lint durations in Actions logs, including
 successful validation. Other command output is not echoed by this timing logger.
+Outside strict validation, a failed changed gate gets one retry
+(`CLAWSWEEPER_VALIDATION_RETRIES`) inside the same command budget, and only when
+the remaining budget can fit the failed attempt again. Otherwise the executor
+reports that failure, which the issue or repair worker can still fix.
 
 Edit, validation-fix, and review-fix workers run focused checks and return the
 patch for one full executor acceptance pass. Worker claims and shell transcripts

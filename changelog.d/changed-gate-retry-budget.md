@@ -1,0 +1,1 @@
+- Retry a failed changed-gate validation command only when its remaining budget can fit the failed attempt again. A late `pnpm check:changed` failure no longer starts a retry that can only time out, so issue and repair workers get the real failure to fix instead of ending the run on that timeout.

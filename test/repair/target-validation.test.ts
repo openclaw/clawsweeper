@@ -9650,6 +9650,59 @@ test("changed validation shares one timeout with checkout identity proof", (t) =
   }
 });
 
+test("changed validation retries only when the budget can fit the failed attempt again", (t) => {
+  const cwd = gitPackageFixture({ "check:changed": "node check.js" });
+  fs.writeFileSync(path.join(cwd, "check.js"), 'throw new Error("late changed gate failure");\n');
+  git(cwd, "add", ".");
+  git(cwd, "commit", "-m", "initial");
+  attachOrigin(cwd);
+  const origin = git(cwd, "remote", "get-url", "origin");
+  const previousRetries = process.env.CLAWSWEEPER_VALIDATION_RETRIES;
+  process.env.CLAWSWEEPER_VALIDATION_RETRIES = "1";
+  try {
+    // 100s budget, 30s identity reserve: the first attempt gets 70s. A 10s
+    // failure leaves 60s, enough to repeat it. A 50s failure leaves 20s, so a
+    // retry could only time out and hide the failure behind that timeout.
+    for (const attemptMs of [10_000, 50_000]) {
+      let now = 10_000;
+      const commandBudgets: number[] = [];
+      withVirtualDeadlineCommands(
+        t,
+        () => now,
+        ({ command, timeoutMs }) => {
+          if (command === "git") return;
+          assert.equal(command, "pnpm");
+          commandBudgets.push(timeoutMs);
+          now += attemptMs;
+          return { status: 1, stderr: "late changed gate failure" };
+        },
+        () =>
+          assert.throws(
+            () =>
+              runAllowedValidationCommands(
+                ["pnpm check:changed"],
+                cwd,
+                validationOptions("openclaw/openclaw", { validationTimeoutMs: 100_000 }),
+              ),
+            (error: Error) => {
+              assert.equal(
+                error.message,
+                "validation command failed (pnpm check:changed): late changed gate failure",
+              );
+              return true;
+            },
+          ),
+      );
+      assert.deepEqual(commandBudgets, attemptMs === 10_000 ? [70_000, 60_000] : [70_000]);
+      assert.equal(git(cwd, "status", "--porcelain"), "");
+    }
+  } finally {
+    restoreEnv("CLAWSWEEPER_VALIDATION_RETRIES", previousRetries);
+    fs.rmSync(cwd, { recursive: true, force: true });
+    fs.rmSync(origin, { recursive: true, force: true });
+  }
+});
+
 test("a confirmed timeout remains primary when subsequent identity proof is inconclusive", (t) => {
   const cwd = gitPackageFixture({ verify: "node verify.js" });
   git(cwd, "add", ".");

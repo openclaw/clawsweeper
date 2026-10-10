@@ -1475,6 +1475,7 @@ export function runAllowedValidationCommandsWithBinding(
       const activeRuntimeBuild = runtimeBuild ?? pendingRuntimeBuild;
       const preservedRuntimeRoots = activeRuntimeBuild?.outputRoots ?? [];
       while (true) {
+        const attemptStartedAt = Date.now();
         let executionError: Error | null = null;
         try {
           resetValidationEnvironment(deadlineAt - identityReserveMs);
@@ -1647,8 +1648,12 @@ export function runAllowedValidationCommandsWithBinding(
           break;
         }
         const retryBudgetMs = remainingCommandBudget(deadlineAt, identityReserveMs);
+        // A retry repeats the whole command. When the remaining budget cannot fit
+        // the attempt that just failed, the retry can only time out, and that
+        // timeout would replace a failure the caller can still act on.
         if (
-          retryBudgetMs >= MIN_VALIDATION_RETRY_BUDGET_MS &&
+          retryBudgetMs >=
+            Math.max(MIN_VALIDATION_RETRY_BUDGET_MS, Date.now() - attemptStartedAt) &&
           shouldRetryValidationCommand({ parts, error: executionError, attempts, options })
         ) {
           continue;
