@@ -1,0 +1,1 @@
+- Fix apply heap exhaustion after review-record backfills by excluding typed decision payloads from the local related-title index and copying its retained metadata instead of pinning whole reports.

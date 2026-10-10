@@ -13,7 +13,7 @@ import type {
   LocalRelatedTitleEntry,
 } from "./clawsweeper-types.js";
 import { asRecord, isDigitsOnly, login } from "./value-coerce.js";
-import { frontMatterValue } from "./report-front-matter.js";
+import { frontMatterValue, REVIEW_RECORD_KEY } from "./report-front-matter.js";
 import { effectiveReviewStatus, reviewSectionValue } from "./clawsweeper-record-metadata.js";
 import { markdownFiles, numberForMarkdownFile } from "./clawsweeper-repository-paths.js";
 
@@ -28,6 +28,27 @@ export function redactCredentialUriUserinfo(text: string): string {
       return uri;
     }
   });
+}
+
+const REVIEW_RECORD_LINE_PREFIX = Buffer.from(`\n${REVIEW_RECORD_KEY}:`);
+
+// The title index never reads the typed decision. Skip its bytes before decoding;
+// keep the rest of the report for the normal metadata ambiguity and section rules.
+function readLocalRelatedReport(path: string): string {
+  const bytes = readFileSync(path);
+  const headerEnd = bytes.indexOf("\n---", 3);
+  if (bytes.indexOf("---") !== 0 || headerEnd < 0) return bytes.toString("utf8");
+  let recordStart = bytes.indexOf(REVIEW_RECORD_LINE_PREFIX);
+  if (recordStart < 0 || recordStart >= headerEnd) return bytes.toString("utf8");
+  const parts: string[] = [];
+  let start = 0;
+  while (recordStart >= 0 && recordStart < headerEnd) {
+    parts.push(bytes.toString("utf8", start, recordStart));
+    start = bytes.indexOf("\n", recordStart + 1);
+    recordStart = bytes.indexOf(REVIEW_RECORD_LINE_PREFIX, start);
+  }
+  parts.push(bytes.toString("utf8", start));
+  return parts.join("");
 }
 
 interface RelatedContextDependencies {
@@ -364,22 +385,25 @@ export function createRelatedContext({
     ] as const) {
       for (const file of markdownFiles(dir)) {
         const path = join(dir, file);
-        const markdown = readFileSync(path, "utf8");
+        const markdown = readLocalRelatedReport(path);
         if (!isMarkdownForActiveRepo(markdown, file)) continue;
-        entries.push({
-          number: numberForMarkdownFile(file),
-          kind: frontMatterValue(markdown, "type") as ItemKind | undefined,
-          title: displayTitle(frontMatterValue(markdown, "title") ?? ""),
-          url: frontMatterValue(markdown, "url"),
-          author: frontMatterValue(markdown, "author"),
-          location,
-          path: repoRelativePath(path),
-          decision: frontMatterValue(markdown, "decision"),
-          closeReason: frontMatterValue(markdown, "close_reason"),
-          action: frontMatterValue(markdown, "action_taken"),
-          reviewStatus: effectiveReviewStatus(markdown),
-          summary: reviewSectionValue(markdown, "summary"),
-        });
+        // Parser substrings can otherwise pin every full report in the cache.
+        entries.push(
+          structuredClone({
+            number: numberForMarkdownFile(file),
+            kind: frontMatterValue(markdown, "type") as ItemKind | undefined,
+            title: displayTitle(frontMatterValue(markdown, "title") ?? ""),
+            url: frontMatterValue(markdown, "url"),
+            author: frontMatterValue(markdown, "author"),
+            location,
+            path: repoRelativePath(path),
+            decision: frontMatterValue(markdown, "decision"),
+            closeReason: frontMatterValue(markdown, "close_reason"),
+            action: frontMatterValue(markdown, "action_taken"),
+            reviewStatus: effectiveReviewStatus(markdown),
+            summary: reviewSectionValue(markdown, "summary"),
+          }),
+        );
       }
     }
     localRelatedTitleIndexCache = { repo: targetRepo(), entries };
