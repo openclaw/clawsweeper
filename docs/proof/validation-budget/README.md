@@ -3,7 +3,7 @@
 Active executable proof owned by repair execution and target validation.
 Update when budget selection, process containment, or disposable ownership changes.
 
-Claim: the checked-in configuration gives only OpenClaw a 25-minute repair
+Claim: the checked-in configuration gives only OpenClaw a 50-minute repair
 validation budget, and a timed-out changed gate reports a timeout after its
 entire command tree exits and its newly generated lock is removed.
 

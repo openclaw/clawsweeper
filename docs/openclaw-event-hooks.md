@@ -291,6 +291,13 @@ You ingest ClawSweeper events and general GitHub activity.
 
 ## Target Repository Activity Forwarding
 
+Exact issue and PR review events do not use this path: the target dispatcher
+enqueues them directly into the exact-review queue with its GitHub Actions OIDC
+identity and sends `repository_dispatch` only as a fallback, so they cost no
+ClawSweeper Actions run. See
+[target-dispatcher.md](target-dispatcher.md#direct-queue-intake). General
+activity has no queue consumer, so it stays on `repository_dispatch`.
+
 Target repositories that already dispatch exact ClawSweeper work can also
 forward general activity:
 

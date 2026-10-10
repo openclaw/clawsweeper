@@ -12,15 +12,27 @@ test("automatic issue dispatcher filters exact issues and preserves bounded back
   try {
     const bin = join(root, "bin");
     const log = join(root, "dispatch.log");
+    const healthLog = join(root, "health.log");
+    writeFileSync(healthLog, "");
     mkdirSync(bin);
     const pnpm = join(bin, "pnpm.mjs");
     const gh = join(bin, "gh.mjs");
     writeFileSync(
       pnpm,
       [
+        'import { appendFileSync } from "node:fs";',
         "const args = process.argv.slice(2);",
         'if (args[2] === "workflow") {',
         '  process.stdout.write("2\\n");',
+        "  process.exit(0);",
+        "}",
+        'if (args[4] === "lane-health") {',
+        '  appendFileSync(process.env.HEALTH_LOG, args.slice(5).join(" ") + "\\n");',
+        "  process.stdout.write(process.env.FAKE_HEALTH || JSON.stringify({ paused: false, notice: null }));",
+        "  process.exit(0);",
+        "}",
+        'if (process.env.NO_CANDIDATES === "1") {',
+        '  process.stdout.write(JSON.stringify({ candidates: [] }) + "\\n");',
         "  process.exit(0);",
         "}",
         "process.stdout.write(JSON.stringify({ candidates: [",
@@ -45,6 +57,7 @@ test("automatic issue dispatcher filters exact issues and preserves bounded back
       PNPM_BIN: process.execPath,
       PNPM_BIN_ARGS: JSON.stringify([pnpm]),
       DISPATCH_LOG: log,
+      HEALTH_LOG: healthLog,
       GITHUB_REPOSITORY: "openclaw/clawsweeper",
     };
 
@@ -84,6 +97,48 @@ test("automatic issue dispatcher filters exact issues and preserves bounded back
       { encoding: "utf8", env },
     );
     assert.deepEqual(JSON.parse(paused), { discovered: 0, dispatched: 0 });
+    assert.equal(readFileSync(log, "utf8"), "");
+    assert.equal(readFileSync(healthLog, "utf8"), "--target-repo openclaw/openclaw\n".repeat(2));
+
+    writeFileSync(healthLog, "");
+    execFileSync(process.execPath, [script, "--target-repo", "openclaw/openclaw"], {
+      encoding: "utf8",
+      env: { ...env, NO_CANDIDATES: "1" },
+    });
+    assert.equal(readFileSync(healthLog, "utf8"), "", "no candidate means no health read");
+
+    const notice =
+      "Automatic issue implementation for openclaw/openclaw is paused: 2 of 10 finished worker runs succeeded.";
+    const pausedByHealth = execFileSync(
+      process.execPath,
+      [script, "--target-repo", "openclaw/openclaw", "--report-dir", "/tmp/reports"],
+      {
+        encoding: "utf8",
+        env: {
+          ...env,
+          MIN_SUCCESS_PERCENT: "70",
+          FAKE_HEALTH: JSON.stringify({ paused: true, notice }),
+        },
+      },
+    );
+    assert.equal(readFileSync(log, "utf8"), "", "a paused lane dispatches nothing");
+    assert.equal(
+      readFileSync(healthLog, "utf8"),
+      "--target-repo openclaw/openclaw --min-success-percent 70\n",
+    );
+    const pausedLines = pausedByHealth.trim().split("\n");
+    assert.deepEqual(pausedLines, [
+      `::warning title=Automatic issue implementation paused::${notice}`,
+      JSON.stringify({ discovered: 3, dispatched: 0, paused: true }),
+    ]);
+
+    const invalidHealth = spawnSync(
+      process.execPath,
+      [script, "--target-repo", "openclaw/openclaw", "--item-number", "42"],
+      { encoding: "utf8", env: { ...env, FAKE_HEALTH: JSON.stringify({ notice: null }) } },
+    );
+    assert.equal(invalidHealth.status, 1);
+    assert.match(invalidHealth.stderr, /lane health returned no pause decision/);
     assert.equal(readFileSync(log, "utf8"), "");
 
     const failed = spawnSync(

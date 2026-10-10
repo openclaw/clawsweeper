@@ -1,0 +1,274 @@
+{
+  "date": "2026-09-30",
+  "platform": "darwin",
+  "node": "v26.10.0",
+  "scanner": "3.97.4",
+  "positive": {
+    "baseSha": "9b5b439dcb6e11b929c982d9b40e8ddcb4c9b2e5",
+    "headSha": "08d64d3b5ec802237eff61e10e0f1a3aeb8761b0",
+    "baseline": {
+      "runs": 3,
+      "admitted": 0,
+      "refused": 3,
+      "classifiedFindings": 0,
+      "diagnostics": [
+        {
+          "reason": "literal_mismatch",
+          "detectorType": 968,
+          "decoder": "PLAIN",
+          "findingCount": 10,
+          "scannerLine": 732,
+          "blob": "1a6fb18eae08a6fc51ec07f4d128b58253f2a911",
+          "material": "blob",
+          "role": "base"
+        },
+        {
+          "reason": "literal_mismatch",
+          "detectorType": 968,
+          "decoder": "PLAIN",
+          "findingCount": 8,
+          "scannerLine": 732,
+          "blob": "1a6fb18eae08a6fc51ec07f4d128b58253f2a911",
+          "material": "blob",
+          "role": "base"
+        },
+        {
+          "reason": "finding_not_reviewed",
+          "detectorType": 895,
+          "decoder": "HTML",
+          "findingCount": 10,
+          "scannerLine": 726,
+          "blob": "1a6fb18eae08a6fc51ec07f4d128b58253f2a911",
+          "material": "blob",
+          "role": "base"
+        }
+      ]
+    },
+    "candidate": {
+      "runs": 8,
+      "admitted": 8,
+      "refused": 0,
+      "classifiedFindings": 66,
+      "diagnostics": [],
+      "decodersByIdentityAndRole": {
+        "MongoDB 087c10edd5d2": {
+          "base": [
+            "ESCAPED_UNICODE",
+            "HTML",
+            "PLAIN"
+          ],
+          "head": [
+            "ESCAPED_UNICODE",
+            "PLAIN"
+          ]
+        },
+        "Postgres 050c1ddf61dd": {
+          "base": [
+            "ESCAPED_UNICODE",
+            "HTML",
+            "PLAIN"
+          ],
+          "head": [
+            "ESCAPED_UNICODE",
+            "HTML",
+            "PLAIN"
+          ]
+        },
+        "Postgres 39a0315176e4": {
+          "base": [
+            "ESCAPED_UNICODE",
+            "HTML",
+            "PLAIN"
+          ],
+          "head": [
+            "ESCAPED_UNICODE",
+            "HTML",
+            "PLAIN"
+          ]
+        },
+        "URI 198d323e34c2": {
+          "base": [
+            "ESCAPED_UNICODE",
+            "HTML",
+            "PLAIN"
+          ],
+          "head": [
+            "ESCAPED_UNICODE",
+            "HTML",
+            "PLAIN"
+          ]
+        },
+        "URI 839b16fa1dd8": {
+          "base": [
+            "HTML"
+          ],
+          "head": [
+            "ESCAPED_UNICODE",
+            "PLAIN"
+          ]
+        }
+      },
+      "scannerLinesByIdentity": {
+        "MongoDB 087c10edd5d2": [
+          "1a6fb18e:726",
+          "a2d4c9ad:754"
+        ],
+        "Postgres 050c1ddf61dd": [
+          "1a6fb18e:732",
+          "a2d4c9ad:760"
+        ],
+        "Postgres 39a0315176e4": [
+          "1a6fb18e:725",
+          "a2d4c9ad:753"
+        ],
+        "URI 198d323e34c2": [
+          "1a6fb18e:723",
+          "a2d4c9ad:751"
+        ],
+        "URI 839b16fa1dd8": [
+          "1a6fb18e:724",
+          "a2d4c9ad:752"
+        ]
+      }
+    }
+  },
+  "knownLimit": {
+    "issue": "https://github.com/openclaw/clawsweeper/issues/1724",
+    "blobScenario": {
+      "description": "Local-only OpenClaw commits: an entity-encoded copy of the approved browser URI at line 4 of src/logging/redact.test.ts in both base and head; the patch touches only the file end.",
+      "baseSha": "851eb11b6fdbeee145fdbaeb7f417957123c7377",
+      "headSha": "461c70b60f575d588e23cf23b97b23457190ca47",
+      "runs": 2,
+      "admitted": 2,
+      "refused": 0,
+      "classifiedFindings": 18,
+      "diagnostics": [],
+      "decodersByIdentityAndRole": {
+        "MongoDB 087c10edd5d2": {
+          "base": [
+            "PLAIN"
+          ],
+          "head": [
+            "ESCAPED_UNICODE",
+            "PLAIN"
+          ]
+        },
+        "Postgres 050c1ddf61dd": {
+          "base": [
+            "ESCAPED_UNICODE",
+            "PLAIN"
+          ],
+          "head": [
+            "HTML"
+          ]
+        },
+        "Postgres 39a0315176e4": {
+          "base": [
+            "ESCAPED_UNICODE"
+          ],
+          "head": [
+            "ESCAPED_UNICODE"
+          ]
+        },
+        "URI 198d323e34c2": {
+          "base": [
+            "ESCAPED_UNICODE",
+            "HTML"
+          ],
+          "head": [
+            "ESCAPED_UNICODE",
+            "HTML"
+          ]
+        }
+      },
+      "scannerLinesByIdentity": {
+        "MongoDB 087c10edd5d2": [
+          "9377f76e:755",
+          "b8d33e9c:755"
+        ],
+        "Postgres 050c1ddf61dd": [
+          "9377f76e:761",
+          "b8d33e9c:761"
+        ],
+        "Postgres 39a0315176e4": [
+          "9377f76e:754",
+          "b8d33e9c:754"
+        ],
+        "URI 198d323e34c2": [
+          "9377f76e:4",
+          "9377f76e:752",
+          "b8d33e9c:4",
+          "b8d33e9c:752"
+        ]
+      }
+    },
+    "patchScenario": {
+      "description": "Local-only OpenClaw commit on the #160888 head: an entity-encoded copy inserted two lines above the approved browser URI, so the hunk context carries the plain line as a witness.",
+      "baseSha": "9b5b439dcb6e11b929c982d9b40e8ddcb4c9b2e5",
+      "headSha": "82eec3887499a7e081bf0be09d123afef78cfa86",
+      "runs": 2,
+      "admitted": 2,
+      "refused": 0,
+      "classifiedFindings": 21,
+      "diagnostics": [],
+      "decodersByIdentityAndRole": {
+        "MongoDB 087c10edd5d2": {
+          "base": [
+            "ESCAPED_UNICODE"
+          ],
+          "head": [
+            "ESCAPED_UNICODE",
+            "PLAIN"
+          ]
+        },
+        "Postgres 050c1ddf61dd": {
+          "base": [
+            "HTML"
+          ],
+          "head": [
+            "ESCAPED_UNICODE",
+            "HTML"
+          ]
+        },
+        "Postgres 39a0315176e4": {
+          "base": [
+            "ESCAPED_UNICODE"
+          ],
+          "head": [
+            "PLAIN"
+          ]
+        },
+        "URI 198d323e34c2": {
+          "base": [
+            "HTML",
+            "PLAIN"
+          ],
+          "head": [
+            "HTML",
+            "PLAIN"
+          ]
+        }
+      },
+      "scannerLinesByIdentity": {
+        "MongoDB 087c10edd5d2": [
+          "1a6fb18e:726",
+          "3e4f643e:755"
+        ],
+        "Postgres 050c1ddf61dd": [
+          "1a6fb18e:732",
+          "3e4f643e:761"
+        ],
+        "Postgres 39a0315176e4": [
+          "1a6fb18e:725",
+          "3e4f643e:754"
+        ],
+        "URI 198d323e34c2": [
+          "1:135",
+          "1:136"
+        ]
+      }
+    }
+  },
+  "policySourceSHA256": "dff0321769fe91b9565b06b39f6e91737cdaefbeeff6690b558bf416426e049b",
+  "limits": "Complete committed source ranges with a controlled prompt and normal native verification; emitted finding subsets and decoder labels vary per run. Baseline is ClawSweeper main at the pull request base. Not a hosted review and no model invocation."
+}

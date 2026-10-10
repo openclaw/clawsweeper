@@ -316,6 +316,36 @@ test("cluster intake accepts empty portable and legacy stores", (t) => {
   }
 });
 
+test("cluster intake offers every cluster with a live candidate to the model", (t) => {
+  const tempDir = temporaryDirectory(t);
+  for (const schema of ["portable", "legacy"] as const) {
+    const dbPath = path.join(tempDir, `${schema}.db`);
+    const database = createGitcrawlStore(dbPath, schema);
+    // One open member is enough; the selector model judges whether the cluster is useful.
+    database.exec("update threads set state = 'closed' where number = 42");
+    const intake = () => {
+      const outDir = path.join(tempDir, `${schema}-jobs`);
+      fs.rmSync(outDir, { recursive: true, force: true });
+      const result = runCli(CLUSTER_IMPORTER, [
+        "--from-gitcrawl",
+        "--allow-empty",
+        "--skip-existing",
+        "false",
+        "--db",
+        dbPath,
+        "--out",
+        outDir,
+      ]);
+      assert.equal(result.status, 0, result.stderr);
+      return fs.existsSync(outDir) ? fs.readdirSync(outDir) : [];
+    };
+    assert.equal(intake().length, 1, schema);
+    database.exec("update threads set state = 'closed' where number = 43");
+    database.close();
+    assert.deepEqual(intake(), [], schema);
+  }
+});
+
 function temporaryDirectory(t: test.TestContext): string {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-sqlite-test-"));
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
@@ -428,27 +458,14 @@ function relatedContextFor(root: string, dbPath: string) {
     defaultClosedDir: () => path.join(root, "closed"),
     isMarkdownForActiveRepo: () => false,
     gitHubRuntimeBudgetError: class GitHubRuntimeBudgetError extends Error {},
-    ghJson: () => {
-      throw new Error("unexpected GitHub request");
-    },
+    ghJsonEach: (requests: readonly string[][]) =>
+      requests.map(() => ({ ok: false as const, error: new Error("unexpected GitHub request") })),
     ghJsonOnce: () => {
       throw new Error("unexpected GitHub request");
     },
-    asRecord: (value: unknown) =>
-      value && typeof value === "object" && !Array.isArray(value)
-        ? (value as Record<string, unknown>)
-        : {},
-    login: () => undefined,
     compactIssue: (value: unknown) => value,
     compactPullRequest: (value: unknown) => value,
-    envFlagEnabled: () => false,
-    envFlagDisabled: () => false,
-    frontMatterValue: () => undefined,
-    reviewSectionValue: () => "",
-    effectiveReviewStatus: () => "",
     displayTitle: (value: string) => value,
-    markdownFiles: () => [],
-    numberForMarkdownFile: () => 0,
     repoRelativePath: (value: string) => value,
   });
   const withDatabase = <T>(operation: () => T): T => {

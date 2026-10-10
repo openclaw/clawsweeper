@@ -1,4 +1,5 @@
-import { createHash, createHmac } from "node:crypto";
+import { createHmac } from "node:crypto";
+import { sha256 } from "../content-hash.js";
 import { existsSync, readFileSync } from "node:fs";
 import {
   GITHUB_EGRESS_CLAIM_GENERATION_BUCKETS,
@@ -75,10 +76,7 @@ export function githubEgressTelemetrySubmissions(options: {
       process.env.GITHUB_RUN_ID || "local",
       process.env.GITHUB_RUN_ATTEMPT || "1",
       process.env.GITHUB_JOB || "unknown-job",
-      createHash("sha256")
-        .update(`${options.metricsPath}\0${options.rateLimitPath}`)
-        .digest("hex")
-        .slice(0, 16),
+      sha256(`${options.metricsPath}\0${options.rateLimitPath}`).slice(0, 16),
     ].join(":");
   const chunks = Math.max(
     Math.ceil(metrics.length / MAX_METRICS_PER_SUBMISSION),
@@ -99,9 +97,7 @@ export function githubEgressTelemetrySubmissions(options: {
       rateLimitObservations: rateChunk,
     });
     submissions.push({
-      receiptId: createHash("sha256")
-        .update(`github-egress-v2:${receiptScope}:${index}:${body}`)
-        .digest("hex"),
+      receiptId: sha256(`github-egress-v2:${receiptScope}:${index}:${body}`),
       metrics: metricChunk,
       rateLimitObservations: rateChunk,
     });
@@ -190,8 +186,7 @@ function aggregateMetrics(values: readonly unknown[]): {
 }
 
 function incompleteMetric(reason = "invalid-input", nowMs = Date.now()): GitHubEgressMetricV2 {
-  const digest = (value: string, length: number) =>
-    createHash("sha256").update(value).digest("hex").slice(0, length);
+  const digest = (value: string, length: number) => sha256(value).slice(0, length);
   return {
     version: GITHUB_EGRESS_TELEMETRY_VERSION,
     bucketStart: githubEgressFiveMinuteBucket(nowMs),

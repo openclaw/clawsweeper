@@ -11,7 +11,8 @@ import {
 } from "node:fs";
 import { basename, dirname, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
+import { sha256 } from "../content-hash.js";
 
 import {
   clusterJobTargetRepository,
@@ -92,7 +93,7 @@ export function restoreClusterIntakeJob(options: RestoreClusterIntakeJobOptions)
   if (content.toString("base64") !== options.payload) {
     throw new Error("durable cluster intake payload encoding is not canonical");
   }
-  if (createHash("sha256").update(content).digest("hex") !== options.digest) {
+  if (sha256(content) !== options.digest) {
     throw new Error("durable cluster intake job digest mismatch");
   }
   const targetRepo = clusterJobTargetRepository(content.toString("utf8"));

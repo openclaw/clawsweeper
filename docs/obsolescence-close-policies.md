@@ -10,11 +10,11 @@ close after fresh GitHub verification.
 `CLAWSWEEPER_STALE_VERSION_BUG_CLOSE_ENABLED=true`. Review requires a bug at
 least 120 days old, an outdated reported version/build or visibly replaced code
 path, no current-release reproduction, no maintainer engagement, and no
-protected or security-ish label.
+protected or security label (exact names in `SECURITY_PROTECTED_LABEL_NAMES`).
 
 Apply rechecks that the live issue is open and at least 120 days old, has no
 assignee or milestone, fewer than 20 reactions, no open-linked-PR or
-security-ish label, no maintainer comment, and no human comment in the last 90
+security label, no maintainer comment, and no human comment in the last 90
 days. Missing or failed GitHub reads keep the issue open. The close comment asks
 for a current-release retest and promises reopening on a fresh reproduction.
 

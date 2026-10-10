@@ -3,12 +3,14 @@ import fs from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 
-import { escapeRegExp as escapeRegex } from "../clawsweeper-text.js";
+import { escapeRegExp } from "../clawsweeper-markdown.js";
 import { DEFAULT_TRUSTED_BOTS } from "./config.js";
-import { repoSlug } from "./comment-router-core.js";
-import { isAllowedMutationActor, writePayload } from "./comment-router-utils.js";
+import { isAllowedMutationActor } from "./comment-router/admission.js";
+import { issueImplementationSource, repoSlug } from "./comment-router/dispatch.js";
+import { writePayload } from "./comment-router-utils.js";
 import { ghJsonWithRetry, ghPagedWithRetry, ghText } from "./github-cli.js";
 import type { JsonValue, LooseRecord } from "./json-types.js";
+import { commandStatusMarker } from "./markers.js";
 import { parseArgs, parseJob, repoRoot } from "./lib.js";
 
 const PROGRESS_START = "<!-- clawsweeper-issue-implementation-progress:start -->";
@@ -43,9 +45,10 @@ async function main() {
     return;
   }
 
-  const repo = stringArg(args.repo) || String(job?.frontmatter.source_issue_repo ?? "");
+  const jobSource = job ? issueImplementationSource(job.frontmatter) : null;
+  const repo = stringArg(args.repo) || jobSource?.repo || "";
   const itemNumber = positiveInteger(
-    stringArg(args["item-number"]) || String(job?.frontmatter.source_issue_number ?? ""),
+    stringArg(args["item-number"]) || String(jobSource?.number ?? ""),
   );
   const state = stringArg(args.state) || "Queued";
   const detail = stringArg(args.detail) || "ClawSweeper is preparing the implementation worker.";
@@ -128,7 +131,7 @@ async function main() {
 }
 
 export function issueImplementationStatusMarker(itemNumber: number) {
-  return `<!-- clawsweeper-command-status:${itemNumber}:implement_issue:auto -->`;
+  return commandStatusMarker(itemNumber, "implement_issue", "auto");
 }
 
 export function renderIssueImplementationStatusComment(
@@ -277,7 +280,7 @@ function validateRepo(repo: string) {
 
 function validatePrUrl(prUrl: string, repo: string) {
   if (!prUrl) return;
-  if (!new RegExp(`^https://github\\.com/${escapeRegex(repo)}/pull/[1-9][0-9]*$`).test(prUrl)) {
+  if (!new RegExp(`^https://github\\.com/${escapeRegExp(repo)}/pull/[1-9][0-9]*$`).test(prUrl)) {
     throw new Error(`invalid pull request URL: ${prUrl}`);
   }
 }

@@ -1,48 +1,37 @@
 import assert from "node:assert/strict";
-import fs from "node:fs";
 import test from "node:test";
+import { parse as parseYaml } from "yaml";
 
-const workflow = fs.readFileSync(".github/workflows/repair-containment-smoke.yml", "utf8");
+import { readText } from "../helpers.ts";
 
-test("containment smoke uses two production-class runner samples", () => {
-  assert.match(
-    workflow,
-    /runs-on: \$\{\{ vars\.CLAWSWEEPER_E2E_RUNNER \|\| 'blacksmith-16vcpu-ubuntu-2404' \}\}/,
+type Workflow = {
+  on: Record<string, { paths?: string[] } | null>;
+  jobs: Record<
+    string,
+    { "continue-on-error"?: unknown; steps: Array<{ run?: string; "continue-on-error"?: unknown }> }
+  >;
+};
+
+// The smoke is the only pre-merge run of real containment on a production-class runner.
+test("containment smoke runs the compiled preflight for every containment change", () => {
+  const document = parseYaml(
+    readText(".github/workflows/repair-containment-smoke.yml"),
+  ) as Workflow;
+  const job = document.jobs["containment-smoke"]!;
+  const jobSteps = job.steps;
+  assert.deepEqual(
+    jobSteps.filter((step) => step.run).map((step) => step.run),
+    ["pnpm run repair:containment-smoke"],
   );
-  assert.match(workflow, /max-parallel: 2/);
-  assert.match(workflow, /sample: \[1, 2\]/);
-  assert.match(workflow, /run: pnpm run repair:containment-smoke/);
-  assert.doesNotMatch(workflow, /continue-on-error/);
-});
-
-test("containment smoke is read-only and excludes untrusted fork pull requests", () => {
-  assert.match(workflow, /permissions:\n  contents: read/);
-  assert.match(
-    workflow,
-    /github\.event\.pull_request\.head\.repo\.full_name == github\.repository/,
-  );
-  assert.match(workflow, /persist-credentials: false/);
-  assert.doesNotMatch(workflow, /\$\{\{\s*secrets\.|create-github-app-token|GH_TOKEN:/);
-  assert.doesNotMatch(
-    workflow,
-    /repair:dispatch|repair:worker|repair:execute-fix|repair:apply-result|git push|gh pr/,
-  );
-});
-
-test("containment changes trigger the smoke workflow", () => {
-  for (const changedPath of [
-    ".github/workflows/repair-cluster-worker.yml",
-    ".github/workflows/repair-containment-smoke.yml",
+  assert.ok(jobSteps.every((step) => step["continue-on-error"] === undefined));
+  assert.equal(job["continue-on-error"], undefined);
+  for (const source of [
+    "src/repair/contained-command-sandbox.ts",
     "src/repair/contained-command-worker.ts",
     "src/repair/containment-preflight.ts",
     "src/repair/process-tree-containment.ts",
-    "test/repair/containment-preflight.test.ts",
   ]) {
-    assert.equal(workflow.match(new RegExp(escapeRegExp(`- "${changedPath}"`), "g"))?.length, 2);
+    assert.ok(document.on.push?.paths?.includes(source), source);
+    assert.ok(document.on.pull_request?.paths?.includes(source), source);
   }
-  assert.match(workflow, /workflow_dispatch:/);
 });
-
-function escapeRegExp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}

@@ -1,0 +1,1 @@
+- Restore the automatic dead-letter reconcile lane: look up the prior queued-run zombie state by one fixed artifact name instead of the repository-wide artifact listing, which GitHub answers with an empty HTTP 500, and fail with the HTTP status when that lookup does not succeed.

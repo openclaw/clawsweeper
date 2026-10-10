@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-import { shouldSyncReviewComment } from "../dist/clawsweeper.js";
+import { shouldSyncReviewComment } from "../dist/clawsweeper-record-metadata.js";
 import { createReviewCommentLeases } from "../dist/clawsweeper-review-comment-leases.js";
 import {
   createReviewCommentPublication,
@@ -16,7 +16,7 @@ import {
   createReviewCommentState,
   expireReviewStartStatusLease,
 } from "../dist/clawsweeper-review-comment-state.js";
-import { freshExactHeadReviewStartLease } from "../dist/repair/comment-router-core.js";
+import { freshExactHeadReviewStartLease } from "../dist/repair/comment-router/admission.js";
 
 import { manualPublicationOwnerFromEnv } from "../dist/manual-publication-authority.js";
 
@@ -121,19 +121,9 @@ function reviewCommentState(comments: () => Record<string, unknown>[]) {
     targetRepo: () => "openclaw/openclaw",
     ghPaged: comments,
     reviewCommentBodyDigest: sha256,
-    asRecord: (value: unknown) => value as Record<string, unknown>,
     parseGitHubItemRef: () => ({ repo: "openclaw/openclaw", kind: "pull_request", number: 1 }),
-    frontMatterValue: () => undefined,
-    timestampMs: (value: string | undefined) => {
-      const parsed = Date.parse(value ?? "");
-      return Number.isFinite(parsed) ? parsed : null;
-    },
-    linkedPullRequestRefsFromText: () => [],
-    linkedPullRequestSignalContextsFromText: () => [],
     reviewCommentMarker: () => reviewMarker,
     pullHeadShaFromContext: () => headSha,
-    pullHeadShaFromReport: () => headSha,
-    reviewLeaseRevisionFromReport: () => headSha,
     markerAttributeValue: (value: string) => value,
   } as never);
 }
@@ -148,21 +138,11 @@ function reviewCommentPublication(options: {
     root: options.root,
     targetRepo: () => "openclaw/openclaw",
     ghObservedMutationCommand: options.mutate,
-    sha256,
     ghPaged: options.comments,
     reviewCommentBodyDigest: sha256,
-    asRecord: (value: unknown) => value as Record<string, unknown>,
     ensureDir: (path: string) => mkdirSync(path, { recursive: true }),
-    frontMatterValue: () => undefined,
-    replaceFrontMatterValue: (markdown: string) => markdown,
-    sectionValue: () => "",
-    timestampMs: (value: string | undefined) => {
-      const parsed = Date.parse(value ?? "");
-      return Number.isFinite(parsed) ? parsed : null;
-    },
     sentence: (value: string) => value,
     normalizedLabelSet: () => new Set<string>(),
-    sectionLineValue: () => undefined,
     markdownLink: (label: string) => label,
     closeAppliedCommentMarker: () => "",
     ...options.state,
@@ -237,21 +217,23 @@ test("review version timestamps round-trip through the durable parser", () => {
   const fields: Record<string, string> = {
     type: "pull_request",
     number: String(itemNumber),
+    pull_head_sha: headSha,
     reviewed_at: "2026-08-08T20:00:00+02:00",
     item_source_revision: "a".repeat(64),
     review_lease_owner: "fixture",
     review_lease_comment_id: "20",
   };
+  const report = [
+    "---",
+    ...Object.entries(fields).map(([key, value]) => `${key}: ${value}`),
+    "---",
+    "Review",
+    "",
+  ].join("\n");
   const automation = createReviewCommentAutomation({
-    frontMatterValue: (_markdown: string, key: string) => fields[key],
-    pullHeadShaFromReport: () => headSha,
     markerAttributeValue: (value: string) => value.trim().replace(/[^\w./:@-]/g, "_") || "unknown",
-    timestampMs: (value: string | undefined) => {
-      const parsed = Date.parse(value ?? "");
-      return Number.isFinite(parsed) ? parsed : null;
-    },
   } as never);
-  const versionMarker = automation.reviewVersionMarkerFromReport("report");
+  const versionMarker = automation.reviewVersionMarkerFromReport(report);
   const comment = {
     id: 20,
     user: { login: "clawsweeper[bot]" },
@@ -263,7 +245,7 @@ test("review version timestamps round-trip through the durable parser", () => {
   assert.ok(parsed);
   assert.equal(parsed.reviewedAt, "2026-08-08T18:00:00.000Z");
   assert.equal(Date.parse(parsed.reviewedAt), Date.parse(fields.reviewed_at));
-  const restricted = "---\npublication_policy: record_comment_only\n---\nReview\n";
+  const restricted = report.replace("---\n", "---\npublication_policy: record_comment_only\n");
   assert.equal(automation.reviewAutomationMarkersFromReport(restricted), "");
   assert.equal(automation.reviewVersionMarkerFromReport(restricted), versionMarker);
 });
@@ -338,21 +320,11 @@ test("oversized durable review publication replaces ready state with a verified 
           body: publishedBody,
         });
       },
-      sha256,
       ghPaged: () => [],
       reviewCommentBodyDigest: sha256,
-      asRecord: (value: unknown) => value as Record<string, unknown>,
       ensureDir: (path: string) => mkdirSync(path, { recursive: true }),
-      frontMatterValue: () => undefined,
-      replaceFrontMatterValue: (markdown: string) => markdown,
-      sectionValue: () => "",
-      timestampMs: (value: string | undefined) => {
-        const parsed = Date.parse(value ?? "");
-        return Number.isFinite(parsed) ? parsed : null;
-      },
       sentence: (value: string) => value,
       normalizedLabelSet: () => new Set<string>(),
-      sectionLineValue: () => undefined,
       markdownLink: (label: string) => label,
       closeAppliedCommentMarker: () => "",
       ...state,
@@ -640,19 +612,9 @@ test("newest exact durable comment wins over older trusted duplicates", () => {
     targetRepo: () => "openclaw/openclaw",
     ghPaged: () => [],
     reviewCommentBodyDigest: sha256,
-    asRecord: (value: unknown) => value as Record<string, unknown>,
     parseGitHubItemRef: () => ({ repo: "openclaw/openclaw", kind: "pull_request", number: 1 }),
-    frontMatterValue: () => undefined,
-    timestampMs: (value: string | undefined) => {
-      const parsed = Date.parse(value ?? "");
-      return Number.isFinite(parsed) ? parsed : null;
-    },
-    linkedPullRequestRefsFromText: () => [],
-    linkedPullRequestSignalContextsFromText: () => [],
     reviewCommentMarker: () => reviewMarker,
     pullHeadShaFromContext: () => headSha,
-    pullHeadShaFromReport: () => headSha,
-    reviewLeaseRevisionFromReport: () => headSha,
     markerAttributeValue: (value: string) => value,
   } as never);
 

@@ -114,6 +114,18 @@ fact; it does not manufacture router, acknowledgement, or review-result receipts
 OpenClaw Bay needs no schema or UI change: its existing observer-only projection
 shows the requeue disposition without inventing review success or failure.
 
+Every review revision of an item comes from the durable per-item counter that
+re-review commands already used. A completed queue row is deleted, but its
+`(fence, revision)` tuple outlives it: a direct-publication receipt is kept for
+seven days and rejects different bytes at the same revision, and lifecycle
+projections are kept indefinitely. Each allocation therefore starts above the
+counter, the fence's highest retained direct receipt, the target's highest
+lifecycle projection under both the lowercase and the GitHub-cased key, and the
+publication head. A re-admitted item and an artifact-refresh recovery never
+reuse a published revision. Publication fences (`<target>@publish:<run>:<attempt>`)
+keep numbering their own revisions. No table or column is added; an item
+without a counter row is seeded from those floors on its next allocation.
+
 Exact-review publication retries use R2 only as a cache in front of GitHub
 Artifacts. After a GitHub download passes the normal bundle validator, the
 publisher stores a deterministic byte-preserving archive at

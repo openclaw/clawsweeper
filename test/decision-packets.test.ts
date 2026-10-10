@@ -10,8 +10,10 @@ import {
   maintainerDecisionBlocksClose,
   maintainerDecisionFromReport,
   parseMaintainerDecision,
+  renderDecisionPacketPublicBlock,
   syncDecisionPacketRecord,
 } from "../dist/decision-packets.js";
+import { renderReviewCommentFromReport } from "../dist/clawsweeper.js";
 import { ambiguityGuardedMaintainerDecision } from "../dist/clawsweeper-promotion-facts.js";
 import { tmpPrefix } from "./helpers.ts";
 
@@ -105,6 +107,34 @@ test("maintainer decision validation requires one recommendation and an exact ow
       }),
     /must be empty when no decision is required/,
   );
+});
+
+test("required decision packets need at least two distinct choices", () => {
+  for (const options of [[], productDecision.options.slice(0, 1)]) {
+    const decision = { ...productDecision, options };
+    assert.throws(() => parseMaintainerDecision(decision), /at least 2 options/);
+    const report = decisionReport({ maintainer_decision: JSON.stringify(decision) });
+    assert.throws(() => buildDecisionPacketFromReport(report), /at least 2 options/);
+    assert.equal(maintainerDecisionBlocksClose(report), true);
+  }
+  assert.throws(
+    () =>
+      parseMaintainerDecision({
+        ...productDecision,
+        options: [
+          productDecision.options[0],
+          {
+            ...productDecision.options[0],
+            title: ` ${productDecision.options[0].title.toUpperCase()} `,
+            recommended: false,
+          },
+        ],
+      }),
+    /distinct options/,
+  );
+  const report = decisionReport({ maintainer_decision: JSON.stringify(emptyMaintainerDecision()) });
+  assert.equal(buildDecisionPacketFromReport(report), null);
+  assert.equal(maintainerDecisionBlocksClose(report), false);
 });
 
 test("present malformed maintainer decisions fail closed", () => {
@@ -242,6 +272,81 @@ test("decision packet sync writes pointers and removes stale generated state", (
     assert.match(second.markdown, /^decision_packet_sha256: none$/m);
   } finally {
     rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("decision packet sync writes packet pointers literally and keeps CRLF headers", () => {
+  const root = mkdtempSync(tmpPrefix);
+  try {
+    const packetsDir = join(root, "records", "a$&b$'c$`d", "decision-packets");
+    const markdown = decisionReport({ maintainer_decision: JSON.stringify(productDecision) });
+    for (const input of [
+      markdown,
+      markdown.replace(/^---\n/, "---\ndecision_packet_path: old\n"),
+      markdown.replaceAll("\n", "\r\n"),
+    ]) {
+      const result = syncDecisionPacketRecord({
+        markdown: input,
+        reportPath: join(root, "records", "a$&b$'c$`d", "items", "321.md"),
+        packetsDir,
+        repoRoot: root,
+      });
+      assert.match(
+        result.markdown,
+        /^decision_packet_path: records\/a\$&b\$'c\$`d\/decision-packets\/321\.json\r?$/m,
+      );
+      assert.match(result.markdown, /^decision_packet_sha256: [a-f0-9]{64}\r?$/m);
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("packet sync removes invalid legacy sidecars without clearing the report hold", () => {
+  const invalidDecisions = [
+    { ...productDecision, options: productDecision.options.slice(0, 1) },
+    {
+      ...productDecision,
+      options: [productDecision.options[0], { ...productDecision.options[0], recommended: false }],
+    },
+  ];
+  for (const decision of invalidDecisions) {
+    const root = mkdtempSync(tmpPrefix);
+    try {
+      const packetsDir = join(root, "decision-packets");
+      const packetPath = join(packetsDir, "321.json");
+      mkdirSync(packetsDir);
+      writeFileSync(packetPath, "stale legacy packet\n");
+      const rawDecision = JSON.stringify(decision);
+      const result = syncDecisionPacketRecord({
+        markdown: decisionReport({ maintainer_decision: rawDecision }),
+        reportPath: join(root, "items", "321.md"),
+        packetsDir,
+        repoRoot: root,
+      });
+      assert.equal(result.packet, null);
+      assert.equal(existsSync(packetPath), false);
+      assert.ok(result.markdown.includes(`maintainer_decision: ${rawDecision}\n`));
+      assert.match(result.markdown, /^decision_packet_path: none$/m);
+      assert.match(result.markdown, /^decision_packet_sha256: none$/m);
+      assert.equal(maintainerDecisionBlocksClose(result.markdown), true);
+      assert.match(renderDecisionPacketPublicBlock(result.markdown), /Run a fresh review/);
+      assert.match(renderReviewCommentFromReport(result.markdown, "none"), /Run a fresh review/);
+
+      mkdirSync(packetPath);
+      assert.throws(
+        () =>
+          syncDecisionPacketRecord({
+            markdown: result.markdown,
+            reportPath: join(root, "items", "321.md"),
+            packetsDir,
+            repoRoot: root,
+          }),
+        /EISDIR|EPERM/,
+      );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   }
 });
 

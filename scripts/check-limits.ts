@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import fs from "node:fs";
 import path from "node:path";
-import { escapeRegExp } from "../src/clawsweeper-text.ts";
+import { escapeRegExp } from "../src/clawsweeper-markdown.ts";
 
 type WorkerConfig = {
   audit: { max_parallel_targets: number };

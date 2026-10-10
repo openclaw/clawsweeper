@@ -92,17 +92,11 @@ function leaseGuards(generation) {
     lease: { owner: leaseOwner, commentId: 700042, headSha: reviewedHead },
   };
   return createApplyLeaseGuards({
-    asRecord: (value) => (value && typeof value === "object" && !Array.isArray(value) ? value : {}),
     canonicalBoundStaleReviewReason: (_markdown, comment) =>
       comment?.id === 800042 ? "new durable comment arrived between generations" : null,
     closeDelayMs: 0,
     currentReviewActivityBlock: () => null,
     dryRun: false,
-    frontMatterValue: (_markdown, key) => {
-      if (key === "review_lease_owner") return leaseOwner;
-      if (key === "review_lease_comment_id") return "700042";
-      return undefined;
-    },
     getActiveApplyMutationLease: () => active,
     ghJson: () => get("/pull"),
     GitHubRuntimeBudgetError: class extends Error {},
@@ -123,7 +117,7 @@ function leaseGuards(generation) {
     },
     liveIssueSourceRevision: () => "",
     liveReadGeneration: generation,
-    markdownBeforeApplyDecisionMutations: "proof",
+    markdownBeforeApplyDecisionMutations: `---\nreview_lease_owner: ${leaseOwner}\nreview_lease_comment_id: 700042\n---\nproof\n`,
     number: 42,
     PATCHABLE_REVIEW_COMMENT_AUTHORS: new Set(["clawsweeper[bot]"]),
     postReviewStartStatusComment: () => ({ status: "held" }),

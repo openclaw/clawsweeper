@@ -4,7 +4,7 @@ import { dirname, join, resolve } from "node:path";
 import { boolArg, itemNumbersArg, numberArg, stringArg } from "./clawsweeper-args.js";
 import { DEFAULT_CODEX_MODEL, DEFAULT_REVIEW_CODEX_TIMEOUT_MS } from "./clawsweeper-policy.js";
 import type { GitInfo } from "./clawsweeper-types.js";
-import { UserFacingCommandError } from "./command.js";
+import { rejectRetiredCodexProfileArgs, UserFacingCommandError } from "./command.js";
 import {
   isolateGitHubConfigDir,
   localReviewAdditionalPrompt,
@@ -162,11 +162,10 @@ export function prepareReviewCommand(
     const batchSize = numberArg(args.batch_size, DEFAULT_PLAN_BATCH_SIZE);
     const maxPages = numberArg(args.max_pages, 250);
     const model = stringArg(args.codex_model, DEFAULT_CODEX_MODEL);
-    if (args.codex_reasoning_effort !== undefined || args.codex_service_tier !== undefined) {
-      throw new UserFacingCommandError(
-        "--codex-reasoning-effort and --codex-service-tier are retired for item reviews; author association selects the fixed profile.",
-      );
-    }
+    rejectRetiredCodexProfileArgs(
+      args,
+      "item reviews; author association selects the fixed profile",
+    );
     const sandboxMode = stringArg(args.codex_sandbox, "read-only");
     const timeoutMs = numberArg(args.codex_timeout_ms, DEFAULT_REVIEW_CODEX_TIMEOUT_MS);
     const expectedSourceRevision = stringArg(args.expected_source_revision, "").trim();
@@ -190,7 +189,7 @@ export function prepareReviewCommand(
     const bodyFile = stringArg(args.body_file, "");
     if (bodyFile) {
       const providedBody = readFileSync(bodyFile, "utf8");
-      additionalPrompt = `${additionalPrompt}\n\n## AUTHORITATIVE PR BODY (review THIS exact body)\nTreat the text below as the pull request's current body/description and review it as such — assess its real-behavior proof, telegram-visible-proof, and mantis recommendation against it. Do NOT fetch, prefer, or assume any other version of the body from the GitHub API. The diff, code, and comments are still the live PR.\n\n----- BEGIN PROVIDED PR BODY -----\n${providedBody}\n----- END PROVIDED PR BODY -----`;
+      additionalPrompt = `${additionalPrompt}\n\n## AUTHORITATIVE PR BODY (review THIS exact body)\nTreat the text below as the pull request's current body/description and review it as such — assess its real-behavior proof and telegram-visible-proof against it. Do NOT fetch, prefer, or assume any other version of the body from the GitHub API. The diff, code, and comments are still the live PR.\n\n----- BEGIN PROVIDED PR BODY -----\n${providedBody}\n----- END PROVIDED PR BODY -----`;
     }
     const localRangeData = localRange
       ? buildLocalRangeReview(openclawDir, targetRepo(), stringArg(args.base, ""))

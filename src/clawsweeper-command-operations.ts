@@ -1,6 +1,7 @@
 import { existsSync, readdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { recordWorkflowPhaseEvent } from "./action-ledger-runtime.js";
+import { sha256 } from "./content-hash.js";
 import {
   ACTION_EVENT_REASON_CODES,
   ACTION_EVENT_STATUSES,
@@ -11,6 +12,7 @@ import {
   type ActionEventStatus,
   type ActionEventSubject,
 } from "./action-ledger.js";
+import { CLAWSWEEPER_BOT_LOGINS } from "./clawsweeper-policy.js";
 import { createApplyActionLedger } from "./clawsweeper-apply-ledger.js";
 import { boolArg, numberArg, stringArg, type Args } from "./clawsweeper-args.js";
 import { createFailedReviewRetryWorkflow } from "./clawsweeper-failed-review-retry.js";
@@ -19,14 +21,10 @@ import { ReviewLeaseSupersededError } from "./clawsweeper-review-comment-leases.
 import type {
   ExactReviewQueueAuthority,
   ExpectedIssueSourceRevisionOptions,
-  FailedReviewRetryResult,
-  FailedReviewRetryRevision,
-  FailedReviewRetryRevisionKind,
   GitHubDispatchOutcome,
   GitHubRetryOptions,
   GitHubRuntimeBudget,
   Item,
-  ItemKind,
   MutationRunner,
   ReconcileResult,
   ReviewActionLedger,
@@ -43,6 +41,14 @@ import {
   type LiveReadGeneration,
   type LiveReadOptions,
 } from "./live-read-generation.js";
+import { frontMatterValue } from "./report-front-matter.js";
+import { reportItemKind, reviewLeaseRevisionFromReport } from "./clawsweeper-record-metadata.js";
+import {
+  markdownRepository,
+  numberForMarkdownFile,
+  parseReportFileName,
+  reportFileName,
+} from "./clawsweeper-repository-paths.js";
 
 interface CreateCommandOperationsDependencies {
   actionLedgerFailureDisposition: (error: unknown) => {
@@ -55,7 +61,6 @@ interface CreateCommandOperationsDependencies {
     redactionVersion: string;
     fieldsDropped: readonly ["body", "comments", "diff", "logs", "patch", "prompt"];
   };
-  appendSectionValue: (markdown: string, heading: string, value: string) => string;
   applyDecisionsCommandInner: (args: Args, runtimeBudget: GitHubRuntimeBudget) => void;
   artifactTargetIsOpen: (number: number, openNumbers: Set<number> | null) => boolean;
   codexFailureReason: (detail: string, errorCode?: string | null) => string;
@@ -64,31 +69,11 @@ interface CreateCommandOperationsDependencies {
   defaultClosedDir: (profile?: RepositoryProfile) => string;
   defaultItemsDir: (profile?: RepositoryProfile) => string;
   defaultPlansDir: (profile?: RepositoryProfile) => string;
-  effectiveReviewStatus: (markdown: string) => string;
   ensureDir: (path: string) => void;
   ensureGitHubRuntimeAvailable: (phase: string) => void;
   exactReviewQueueAuthorityFromEnv: (env?: NodeJS.ProcessEnv) => ExactReviewQueueAuthority | null;
-  failedReviewFailureDetail: (markdown: string) => string;
-  failedReviewRetryEligibility: (options: {
-    markdown: string;
-    liveState: string;
-    liveLocked?: boolean;
-    liveActiveLockReason?: string | null;
-    liveHeadSha?: string | null;
-    liveSourceRevision?: string | null;
-    now: number;
-    maxAttempts: number;
-    cooldownMs: number;
-  }) => FailedReviewRetryResult;
-  failedReviewRetryResultRevision: (revision: FailedReviewRetryRevision) => {
-    headSha?: string;
-    revisionKind: FailedReviewRetryRevisionKind;
-    revision: string;
-  };
-  failedReviewRetryRevisionForReport: (markdown: string) => FailedReviewRetryRevision | null;
   fetchItem: (number: number) => { item: Item; state: string };
   fetchOpenItemNumbers: (maxPages: number) => { numbers: Set<number>; pagesScanned: number };
-  frontMatterValue: (markdown: string, key: string) => string | undefined;
   ghJson: <T>(args: string[]) => T;
   ghPaged: <T>(path: string) => T[];
   ghRawOnceWithCheckpoint: (
@@ -104,17 +89,8 @@ interface CreateCommandOperationsDependencies {
     readonly cause: unknown;
   };
   GitHubRuntimeBudgetError: new (reason: string) => Error & { readonly reason: string };
-  isFailedReviewRetryAlreadyExhausted: (
-    markdown: string,
-    revision: FailedReviewRetryRevision,
-  ) => boolean;
   isMarkdownForActiveRepo: (markdown: string, file?: string) => boolean;
   itemSourceRevisionSha256: (issue: unknown, comments?: unknown[]) => string;
-  lockedConversationApplyReason: (item: Pick<Item, "activeLockReason" | "locked">) => string | null;
-  markdownFiles: (dir: string) => string[];
-  markdownRepository: (markdown: string, file?: string) => string;
-  numberForMarkdownFile: (file: string) => number;
-  parseReportFileName: (file: string) => { repo: string | undefined; number: number } | null;
   postReviewStartStatusComment: (options: {
     item: Item;
     headSha?: string;
@@ -139,12 +115,8 @@ interface CreateCommandOperationsDependencies {
     fetchClosedAt?: boolean;
     preserveItemNumbers?: readonly number[];
   }) => ReconcileResult;
-  replaceFrontMatterValue: (markdown: string, key: string, value: string) => string;
-  replaceSectionValue: (markdown: string, heading: string, value: string) => string;
   repoFromArgs: (args: Args) => RepositoryProfile;
   repoRelativePath: (path: string) => string;
-  reportFileName: (repo: string, number: number) => string;
-  reportItemKind: (markdown: string) => ItemKind | undefined;
   reviewActionLedger: {
     actionLedgerFailureDisposition: (error: unknown) => {
       status: ActionEventStatus;
@@ -207,15 +179,7 @@ interface CreateCommandOperationsDependencies {
     action: string | undefined,
     itemIsOpen: boolean,
   ) => ReviewArtifactDestination;
-  reviewLeaseRevisionFromReport: (markdown: string) => string | null;
   ROOT: string;
-  sameFailedReviewRetryRevision: (
-    left: FailedReviewRetryRevision,
-    right: FailedReviewRetryRevision,
-  ) => boolean;
-  sectionValue: (markdown: string, heading: string) => string;
-  sha256: (text: string) => string;
-  storedFailedReviewRetryRevision: (markdown: string) => FailedReviewRetryRevision | null;
   syncWorkPlanFromReport: (options: {
     markdown: string;
     reportPath: string;
@@ -232,7 +196,6 @@ export function createCommandOperations(dependencies: CreateCommandOperationsDep
   const {
     actionLedgerFailureDisposition,
     actionLedgerPrivacy,
-    appendSectionValue,
     applyDecisionsCommandInner,
     artifactTargetIsOpen,
     codexFailureReason,
@@ -241,47 +204,26 @@ export function createCommandOperations(dependencies: CreateCommandOperationsDep
     defaultClosedDir,
     defaultItemsDir,
     defaultPlansDir,
-    effectiveReviewStatus,
     ensureDir,
     ensureGitHubRuntimeAvailable,
     exactReviewQueueAuthorityFromEnv,
-    failedReviewFailureDetail,
-    failedReviewRetryEligibility,
-    failedReviewRetryResultRevision,
-    failedReviewRetryRevisionForReport,
     fetchItem,
     fetchOpenItemNumbers,
-    frontMatterValue,
     ghJson,
     ghPaged,
     ghRawOnceWithCheckpoint,
     ghWithRetry,
     GitHubDispatchError,
     GitHubRuntimeBudgetError,
-    isFailedReviewRetryAlreadyExhausted,
     isMarkdownForActiveRepo,
     itemSourceRevisionSha256,
-    lockedConversationApplyReason,
-    markdownFiles,
-    markdownRepository,
-    numberForMarkdownFile,
-    parseReportFileName,
     postReviewStartStatusComment,
     reconcileFolders,
-    replaceFrontMatterValue,
-    replaceSectionValue,
     repoFromArgs,
     repoRelativePath,
-    reportFileName,
-    reportItemKind,
     reviewActionLedger,
     reviewArtifactDestination,
-    reviewLeaseRevisionFromReport,
     ROOT,
-    sameFailedReviewRetryRevision,
-    sectionValue,
-    sha256,
-    storedFailedReviewRetryRevision,
     syncWorkPlanFromReport,
     targetRepo,
     withGitHubRuntimeBudget,
@@ -299,12 +241,7 @@ export function createCommandOperations(dependencies: CreateCommandOperationsDep
     const path = `repos/${targetRepo()}/issues/comments/${commentId}`;
     const comment = ghJson<{ body?: string; user?: { login?: string } }>(["api", path]);
     const body = comment.body ?? "";
-    if (
-      !["clawsweeper", "clawsweeper[bot]", "openclaw-clawsweeper[bot]"].includes(
-        comment.user?.login ?? "",
-      )
-    )
-      return;
+    if (!CLAWSWEEPER_BOT_LOGINS.has(comment.user?.login ?? "")) return;
     const expired = expireReviewStartStatusLease(body, new Date().toISOString(), itemNumber);
     if (expired !== body) {
       ghWithRetry(["api", path, "--method", "PATCH", "-f", `body=${expired}`]);
@@ -476,25 +413,17 @@ export function createCommandOperations(dependencies: CreateCommandOperationsDep
 
   const failedReviewRetryWorkflow = createFailedReviewRetryWorkflow({
     root: ROOT,
-    appendSectionValue,
     codexFailureReason,
     defaultItemsDir,
-    effectiveReviewStatus,
     ensureDir,
     ensureGitHubRuntimeAvailable,
-    failedReviewFailureDetail,
-    failedReviewRetryEligibility,
-    failedReviewRetryResultRevision,
-    failedReviewRetryRevisionForReport,
     fetchItem,
-    frontMatterValue,
     ghRawOnceWithCheckpoint,
     ghWithRetry,
     isDispatchError: (
       error,
     ): error is InstanceType<CreateCommandOperationsDependencies["GitHubDispatchError"]> =>
       error instanceof GitHubDispatchError,
-    isFailedReviewRetryAlreadyExhausted,
     isMarkdownForActiveRepo,
     isRuntimeBudgetError: (
       error,
@@ -502,19 +431,9 @@ export function createCommandOperations(dependencies: CreateCommandOperationsDep
       error instanceof GitHubRuntimeBudgetError,
     liveIssueSourceRevision,
     livePullHeadSha,
-    lockedConversationApplyReason,
-    markdownFiles,
-    numberForMarkdownFile,
-    replaceFrontMatterValue,
-    replaceSectionValue,
     repoFromArgs,
     repoRelativePath,
-    reportItemKind,
-    reviewLeaseRevisionFromReport,
     reviewLedger: reviewActionLedger,
-    sameFailedReviewRetryRevision,
-    sectionValue,
-    storedFailedReviewRetryRevision,
     targetRepo,
     withGitHubRuntimeBudget,
   });
@@ -539,18 +458,12 @@ export function createCommandOperations(dependencies: CreateCommandOperationsDep
     root: ROOT,
     targetRepo,
     repoRelativePath,
-    sha256,
-    frontMatterValue,
-    reviewLeaseRevisionFromReport,
-    reportItemKind,
+
     reviewLedger: reviewActionLedger,
   });
 
   const {
     applyActionEventDisposition,
-    applyItemBusinessIdempotencyIdentityForTest,
-    applyMutationBusinessIdempotencyIdentityForTest,
-    applyPhaseSequenceForTest,
     applyRuntimeBudgetYieldResultsForTest,
     reviewCommentPublicationEventDisposition,
   } = applyActionLedger;
@@ -971,9 +884,6 @@ export function createCommandOperations(dependencies: CreateCommandOperationsDep
     applyActionEventDisposition,
     applyArtifactsCommand,
     applyDecisionsCommand,
-    applyItemBusinessIdempotencyIdentityForTest,
-    applyMutationBusinessIdempotencyIdentityForTest,
-    applyPhaseSequenceForTest,
     applyRuntimeBudgetForTest,
     applyRuntimeBudgetYieldResults,
     applyRuntimeBudgetYieldResultsForTest,

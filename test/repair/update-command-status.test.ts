@@ -17,7 +17,6 @@ import {
   terminalLockedConversationSkip,
   verifiedTerminalStatusReceipt,
 } from "../../dist/repair/update-command-status.js";
-import { readText } from "../helpers.ts";
 
 function withEnv(values: Record<string, string | undefined>, run: () => void) {
   const previous = new Map<string, string | undefined>();
@@ -467,16 +466,33 @@ test("parseOptions enables the terminal locked-conversation skip only when reque
 });
 
 test("terminal locked-conversation skip covers status selection", () => {
-  const source = readText("src/repair/update-command-status.ts");
-  const selection = source.indexOf("comment = await findCommandStatusComment(options)");
-  const caught = source.indexOf(
-    "recordTerminalLockedConversationSkip(options, lifecycle, error)",
-    selection,
-  );
+  for (const skip of [true, false]) {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-update-command-status-"));
+    try {
+      const result = runUpdateCommandStatus(
+        tmp,
+        [
+          "--repo",
+          "openclaw/openclaw",
+          "--item-number",
+          "81564",
+          "--marker",
+          "<!-- clawsweeper-command-status:81564:automerge:320c867f -->",
+          "--state",
+          "Complete",
+          ...(skip ? ["--locked-conversation-terminal-skip"] : []),
+        ],
+        undefined,
+        [],
+        { GH_TEST_LIST_ERROR: "gh: Issue is locked. (HTTP 403)" },
+      );
 
-  assert.ok(selection >= 0);
-  assert.ok(caught > selection);
-  assert.match(source.slice(selection, caught), /catch \(error\)/);
+      assert.equal(result.status === 0, skip, result.stderr);
+      assert.equal(/^locked_conversation=true$/m.test(result.output), skip);
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  }
 });
 
 function runUpdateCommandStatus(
@@ -489,6 +505,7 @@ function runUpdateCommandStatus(
     user: { login: string };
     updated_at?: string;
   }> = [],
+  extraEnv: Record<string, string> = {},
 ) {
   const ghPath = path.join(tmp, "gh.js");
   const patchPath = path.join(tmp, "patched-comment.json");
@@ -509,6 +526,8 @@ function runUpdateCommandStatus(
       "  const exact = comments.find((candidate) => Number(candidate.id) === commentId);",
       "  if (!exact) { console.error('HTTP 404: Not Found'); process.exit(1); }",
       "  process.stdout.write(JSON.stringify({ ...exact, issue_url: process.env.GH_TEST_ISSUE_URL }));",
+      "} else if (process.env.GH_TEST_LIST_ERROR) {",
+      "  console.error(process.env.GH_TEST_LIST_ERROR); process.exit(1);",
       "} else {",
       "  process.stdout.write(JSON.stringify([comments]));",
       "}",
@@ -535,6 +554,7 @@ function runUpdateCommandStatus(
         GH_TEST_STATUS_PATCH_PATH: patchPath,
         GITHUB_OUTPUT: outputPath,
         CLAWSWEEPER_ACTION_LEDGER_DISABLED: "1",
+        ...extraEnv,
       },
       stdio: ["ignore", "pipe", "pipe"],
     });
@@ -787,6 +807,91 @@ test("missing status comment still fails non-terminal required mutations", () =>
     fs.rmSync(tmp, { recursive: true, force: true });
   }
 });
+
+test("command status updates record the write attempt and its outcome", () => {
+  const tmp = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-status-ledger-")));
+  const marker = "<!-- clawsweeper-command-status:113663:automerge:320c867f -->";
+  const receipts = (
+    invocation: string,
+    comment?: { id: number; body: string; user: { login: string } },
+  ) => {
+    const root = path.join(tmp, invocation);
+    const outputRoot = path.join(root, "output");
+    fs.mkdirSync(outputRoot, { recursive: true });
+    const result = runUpdateCommandStatus(
+      root,
+      [
+        "--repo",
+        "openclaw/openclaw",
+        "--item-number",
+        "113663",
+        "--marker",
+        marker,
+        "--state",
+        "Complete",
+        "--detail",
+        "Durable review routing completed.",
+      ],
+      comment,
+      [],
+      {
+        CLAWSWEEPER_ACTION_LEDGER_FORCE: "1",
+        CLAWSWEEPER_ACTION_LEDGER_DISABLED: "0",
+        CLAWSWEEPER_ACTION_LEDGER_ROOT: root,
+        CLAWSWEEPER_ACTION_LEDGER_OUTPUT_ROOT: outputRoot,
+        CLAWSWEEPER_ACTION_LEDGER_INVOCATION: invocation,
+        GITHUB_REPOSITORY: "openclaw/clawsweeper",
+        GITHUB_SHA: "a".repeat(40),
+        GITHUB_WORKFLOW: "repair comment router",
+        GITHUB_WORKFLOW_REF: "",
+        GITHUB_JOB: "route-comments",
+        GITHUB_RUN_ID: "42",
+        GITHUB_RUN_ATTEMPT: "1",
+        GITHUB_ACTION: "status",
+        GITHUB_RUN_STARTED_AT: "2026-09-05T00:00:00Z",
+        CLAWSWEEPER_CRABFLEET_AGENT_TOKEN: "",
+        CLAWSWEEPER_CRABFLEET_SESSION_ID: "",
+      },
+    );
+    assert.equal(result.status, 0, result.stderr);
+    return readLedgerEvents(outputRoot).map((event) => [
+      event.event_type,
+      event.action.status,
+      event.action.mutation,
+    ]);
+  };
+  try {
+    assert.deepEqual(
+      receipts("update", {
+        id: 7001,
+        body: `${marker}\nQueued.`,
+        user: { login: "clawsweeper[bot]" },
+      }),
+      [
+        ["command.mutation", "started", false],
+        ["command.mutation", "executed", true],
+        ["command.progress", "completed", true],
+      ],
+    );
+    assert.deepEqual(receipts("missing"), [["command.progress", "skipped", false]]);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+function readLedgerEvents(root: string): Record<string, any>[] {
+  return fs
+    .readdirSync(root, { recursive: true, withFileTypes: true })
+    .filter((entry) => entry.isFile() && entry.name.endsWith(".jsonl"))
+    .flatMap((entry) =>
+      fs
+        .readFileSync(path.join(entry.parentPath, entry.name), "utf8")
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line)),
+    )
+    .sort((left, right) => left.phase_seq - right.phase_seq);
+}
 
 test("parseOptions reads STATUS_COMMENT_ID env fallback", () => {
   withEnv({ STATUS_COMMENT_ID: "4466202000" }, () => {

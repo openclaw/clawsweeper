@@ -18,6 +18,13 @@ const limit = numberArg("limit", 20);
 const batchSize = numberArg("batch-size", 5);
 const minScore = numberArg("min-score", 2);
 const maxFiles = numberArg("max-files", 120);
+const staleDays = numberArg("stale-days", 30);
+const OUTSIDE_AUTHOR_ASSOCIATIONS: Record<string, true> = {
+  NONE: true,
+  FIRST_TIMER: true,
+  FIRST_TIME_CONTRIBUTOR: true,
+};
+const BROAD_CHANGE_FILE_COUNT = 12;
 const sort = String(args.sort ?? "stale");
 const skipExisting = args["skip-existing"] !== "false";
 const dryRun = Boolean(args["dry-run"]);
@@ -98,33 +105,24 @@ function scoreCandidate(row: LooseRecord) {
   );
   const title = String(row.title ?? "");
   const body = String(row.body ?? "");
-  const signals: LooseRecord[] = [];
-  const blockers: LooseRecord[] = [];
+  const updatedAt = String(row.updated_at_gh ?? row.last_pulled_at ?? "");
+  // Selection uses facts only. The repair worker judges whether a PR is low-signal.
+  const signals: string[] = [];
+  const blockers: string[] = [];
 
   if (isMaintainerAssociated(raw.author_association))
     blockers.push(`author association is ${raw.author_association}`);
   if (assignees.length > 0) blockers.push("assigned PR");
   if (hasSecuritySignalText(title, body, labels))
-    blockers.push("security-sensitive text or labels");
+    blockers.push("security label, marker, or advisory ID");
 
-  addSignal(signals, blankTemplateSignal(body), "blank_template");
-  addSignal(signals, docsOnlySignal(title, files), "docs_only");
-  addSignal(signals, testsOnlySignal(title, files), "test_only");
-  addSignal(signals, refactorOnlySignal(title, body, files), "refactor_or_cleanup");
-  addSignal(
-    signals,
-    thirdPartyCoreSignal(title, body, files),
-    "third_party_or_external_capability",
-  );
-  addSignal(signals, riskyInfraSignal(title, files), "risky_infra");
-  addSignal(signals, dirtyBranchSignal(files), "dirty_branch");
-
-  const hasConcreteFix = /\b(fixes|fixes?|root cause|repro|regression|bug|problem)\b/i.test(
-    `${title}\n${body}`,
-  );
-  if (hasConcreteFix && signals.length === 1 && !signals.includes("blank_template")) {
-    blockers.push("possible focused fix needs human review");
+  const ageDays = (Date.now() - Date.parse(updatedAt)) / 86_400_000;
+  if (ageDays >= staleDays) signals.push(`no_update_${staleDays}d`);
+  if (OUTSIDE_AUTHOR_ASSOCIATIONS[String(raw.author_association ?? "").toUpperCase()]) {
+    signals.push("outside_author");
   }
+  if (row.is_draft) signals.push("draft");
+  if (files.length >= BROAD_CHANGE_FILE_COUNT) signals.push("broad_change");
 
   const score = blockers.length > 0 ? 0 : signals.length;
   return {
@@ -134,7 +132,7 @@ function scoreCandidate(row: LooseRecord) {
     author: row.author_login,
     author_association: raw.author_association ?? null,
     created_at: row.created_at_gh,
-    updated_at: row.updated_at_gh ?? row.last_pulled_at,
+    updated_at: updatedAt,
     is_draft: Boolean(row.is_draft),
     files,
     file_count: files.length,
@@ -200,7 +198,7 @@ function writeJob(batch: JsonValue, index: JsonValue) {
     "",
     "The deterministic applicator will re-fetch live state, reject non-PRs, reject maintainer-authored/reviewed/commented/assigned PRs, and close only planned `close_low_signal` actions.",
     "",
-    "## Gitcrawl Candidate Signals",
+    "## Gitcrawl Candidate Facts",
     "",
     ...batch.flatMap(candidateBlock),
     "",
@@ -221,7 +219,7 @@ function candidateBlock(candidate: LooseRecord) {
     `- author: ${candidate.author}`,
     `- updated: ${candidate.updated_at}`,
     `- score: ${candidate.score}`,
-    `- signals: ${candidate.signals.join(", ")}`,
+    `- facts: ${candidate.signals.join(", ") || "none"}`,
     `- files: ${candidate.file_count}`,
     `- body excerpt: ${candidate.body_excerpt || "none"}`,
     `- changed files: ${candidate.files.slice(0, 18).join(", ") || "not hydrated in gitcrawl"}`,
@@ -253,86 +251,8 @@ function staleCompare(left: JsonValue, right: JsonValue) {
   return String(left.updated_at).localeCompare(String(right.updated_at));
 }
 
-function blankTemplateSignal(body: string) {
-  const text = String(body ?? "");
-  if (
-    /Describe the problem and fix in 2.?5 bullets:\s*[\r\n]+\s*-\s*Problem:\s*[\r\n]+\s*-\s*Fix:/i.test(
-      text,
-    )
-  ) {
-    return true;
-  }
-  const placeholders = ["Problem:", "Why it matters:", "Describe the problem and fix"];
-  return (
-    placeholders.filter((placeholder: JsonValue) => text.includes(placeholder)).length >= 2 &&
-    text.length < 700
-  );
-}
-
-function docsOnlySignal(title: JsonValue, files: LooseRecord[]) {
-  return (
-    /\bdocs?\b/i.test(title) &&
-    files.length > 0 &&
-    files.every((file: JsonValue) => isDocsPath(file))
-  );
-}
-
-function testsOnlySignal(title: JsonValue, files: LooseRecord[]) {
-  return (
-    /\btest\b/i.test(title) &&
-    files.length > 0 &&
-    files.every((file: JsonValue) => isTestPath(file))
-  );
-}
-
-function refactorOnlySignal(title: JsonValue, body: string, files: LooseRecord[]) {
-  return (
-    /\b(refactor|cleanup|format|chore)\b/i.test(title) &&
-    !/#\d+\b/.test(`${title}\n${body}`) &&
-    files.length > 0
-  );
-}
-
-function thirdPartyCoreSignal(title: JsonValue, body: string, files: LooseRecord[]) {
-  const text = `${title}\n${body}`.toLowerCase();
-  return (
-    /\b(new|add|feat).*(plugin|provider|channel|skill|tool|app)\b/.test(text) ||
-    files.some((file: JsonValue) => String(file).startsWith("apps/linux/"))
-  );
-}
-
-function riskyInfraSignal(title: JsonValue, files: LooseRecord[]) {
-  return (
-    /\b(ci|infra|docker|build|release|workflow)\b/i.test(title) &&
-    files.some((file: JsonValue) =>
-      /^\.github\/|^Dockerfile|^scripts\/|^fly\.|^render\.|^docker-compose/.test(file),
-    )
-  );
-}
-
-function dirtyBranchSignal(files: LooseRecord[]) {
-  if (files.length < 12) return false;
-  const topLevels = new Set(files.map((file: JsonValue) => file.split("/")[0]));
-  return (
-    topLevels.size >= 4 ||
-    (files.some((file: JsonValue) => file.includes(".generated")) && topLevels.size >= 2)
-  );
-}
-
-function isDocsPath(file: JsonValue) {
-  return /(^docs\/|^README|\.md$|\.mdx$|^skills\/|^\.github\/ISSUE_TEMPLATE)/.test(file);
-}
-
-function isTestPath(file: JsonValue) {
-  return /(\.test\.|\.spec\.|__tests__|^test\/|^test-fixtures\/)/.test(file);
-}
-
 function isMaintainerAssociated(value: JsonValue) {
   return ["OWNER", "MEMBER", "COLLABORATOR"].includes(String(value ?? "").toUpperCase());
-}
-
-function addSignal(signals: LooseRecord[], enabled: JsonValue, name: string) {
-  if (enabled) signals.push(name);
 }
 
 function sqliteJson(sql: JsonValue): JsonValue {

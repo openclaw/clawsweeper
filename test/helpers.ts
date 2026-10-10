@@ -6,8 +6,16 @@ import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { writeFakeScanner } from "./agent-input-scan-helpers.ts";
 
-import { renderReviewCommentFromReport } from "../dist/clawsweeper.js";
+import {
+  parseDecision,
+  renderReviewCommentFromReport,
+  reviewPromptForTest,
+} from "../dist/clawsweeper.js";
+import { frontMatterValue } from "../dist/report-front-matter.js";
+import { reviewRecordFrontMatterLine } from "../dist/review-record.js";
 import { createReviewedPrActivityCursor } from "../dist/review-activity-cursor.js";
+import { createDecisionParser } from "../dist/clawsweeper-decision-parser.js";
+import type { LiveProofPlan } from "../dist/clawsweeper-types.js";
 
 export const tmpPrefix = join(tmpdir(), "clawsweeper-test-");
 export const emptyReviewedPrActivityCursor =
@@ -36,6 +44,11 @@ export function item(overrides = {}) {
   };
 }
 
+/** Assembled static review prompt for one item kind and target repository. */
+export function reviewPrompt(kind: "issue" | "pull_request", repo = "openclaw/openclaw"): string {
+  return reviewPromptForTest(item({ kind, repo }), { issue: {}, comments: [], timeline: [] }, git);
+}
+
 export function closeDecision(overrides = {}) {
   return {
     decision: "close",
@@ -43,6 +56,7 @@ export function closeDecision(overrides = {}) {
     confidence: "high",
     summary: "Current main already implements this.",
     changeSummary: "Requests confirmation that the feature works on current main.",
+    changeExample: { scenario: "", before: "", after: "" },
     systemContext: "",
     architectureDiagram: "",
     evidence: [
@@ -143,6 +157,19 @@ export function closeDecision(overrides = {}) {
       status: "found_applied",
       summary: "Found AGENTS.md and applied relevant repository review guidance.",
     },
+    productReview: {
+      kind: "not_applicable",
+      userProblem: "",
+      fixScope: "not_applicable",
+      worthIt: "not_applicable",
+      reason: "Product review does not apply to this issue cleanup decision.",
+    },
+    provenance: [],
+    testingReview: {
+      proofPath: "not_applicable",
+      lowValueTests: [],
+      missingE2e: "",
+    },
     reviewFindings: [],
     securityReview: {
       status: "not_applicable",
@@ -165,24 +192,6 @@ export function closeDecision(overrides = {}) {
     telegramVisibleProof: {
       status: "not_needed",
       summary: "This non-PR issue triage does not need Telegram visible proof.",
-    },
-    liveProofPlan: {
-      status: "not_applicable",
-      surface: "none",
-      terminalCompletion: "not_applicable",
-      reason: "This non-PR issue triage does not need live proof.",
-      payoff: {
-        kind: "static_text",
-        justification: "No recording payoff exists for this non-PR issue triage.",
-      },
-      entry: "",
-      steps: [],
-    },
-    mantisRecommendation: {
-      status: "not_recommended",
-      scenario: "none",
-      reason: "Mantis proof is not useful for this issue triage.",
-      maintainerComment: "",
     },
     featureShowcase: {
       status: "none",
@@ -239,6 +248,44 @@ export function changelogReviewDecision(overrides = {}) {
   });
 }
 
+/** Parses a historical live-proof plan the way the retained live-proof commands do. */
+export function parseLegacyLiveProofPlan(value: unknown): LiveProofPlan {
+  return legacyDecisionParser.parseLiveProofPlan(value, "liveProofPlan");
+}
+
+const legacyDecisionParser = createDecisionParser({
+  neutralizeOwnedSectionSpoofing: (value: string) => value,
+  sanitizeArchitectureDiagram: (value: string) => value,
+});
+
+/** Historical `## Live Proof` section body, as reports written before the field was retired. */
+export function legacyLiveProofSection(plan: LiveProofPlan): string {
+  const sentence = (value: string) => {
+    const trimmed = value.trim();
+    if (!trimmed) return "";
+    return /[.!?)]$/.test(trimmed) ? trimmed : `${trimmed}.`;
+  };
+  return [
+    `Status: ${plan.status}`,
+    "",
+    `Surface: ${plan.surface}`,
+    "",
+    `Terminal completion: ${plan.terminalCompletion}`,
+    "",
+    `Reason: ${sentence(plan.reason)}`,
+    "",
+    `Payoff: ${plan.payoff.kind}`,
+    "",
+    `Payoff justification: ${sentence(plan.payoff.justification)}`,
+    "",
+    `Entry: ${plan.entry.trim()}`,
+    "",
+    "Steps:",
+    "",
+    plan.steps.length ? plan.steps.map((step) => `- ${JSON.stringify(step)}`).join("\n") : "[]",
+  ].join("\n");
+}
+
 export function reportFrontMatter(overrides = {}) {
   const values: Record<string, unknown> = {
     repository: "openclaw/openclaw",
@@ -261,8 +308,13 @@ export function reportFrontMatter(overrides = {}) {
   if (values.type === "pull_request" && !Object.hasOwn(values, "reviewed_at")) {
     Object.assign(values, { reviewed_at: "2026-05-01T00:00:00Z" });
   }
+  // Current reports always carry a typed next step. Pass `next_step: undefined` for a legacy report.
+  if (values.type === "pull_request" && !Object.hasOwn(values, "next_step")) {
+    Object.assign(values, { next_step: JSON.stringify({ kind: "none", text: "" }) });
+  }
   return `---
 ${Object.entries(values)
+  .filter(([, value]) => value !== undefined)
   .map(([key, value]) => `${key}: ${value}`)
   .join("\n")}
 ---
@@ -330,6 +382,90 @@ Summary: ${values.summary}
 Next rank-up steps:
 
 ${values.nextSteps}
+`;
+}
+
+/** A pull request report with a recorded proof assessment. */
+export function pullRequestProofReport(options: {
+  author: string;
+  association: string;
+  status?: "missing" | "mock_only" | "insufficient" | "sufficient";
+  securityAttention?: boolean;
+  authorityChainProofRequired?: boolean;
+  labels?: string[];
+  frontMatter?: Record<string, unknown>;
+  sections?: string;
+}): string {
+  const status = options.status ?? "missing";
+  const sufficient = status === "sufficient";
+  const proofTier = sufficient ? "A" : status === "missing" ? "F" : "D";
+  return `${reviewReportFrontMatter({
+    type: "pull_request",
+    number: "119610",
+    decision: "keep_open",
+    close_reason: "none",
+    review_status: "complete",
+    confidence: "high",
+    author: options.author,
+    author_association: options.association,
+    labels: JSON.stringify(options.labels ?? ["clawsweeper:automerge"]),
+    work_candidate: "none",
+    pull_head_sha: "abc123def456abc123def456abc123def456abcd",
+    ...options.frontMatter,
+  })}
+
+## Summary
+
+Keep this focused pull request open for maintainer review.
+
+## What This Changes
+
+Keeps pull request evidence checks aligned with their actual scope.
+
+## Best Possible Solution
+
+Continue normal maintainer review.
+
+${realBehaviorProofReportSection({
+  status,
+  evidenceKind: sufficient ? "terminal" : "none",
+  needsContributorAction: !sufficient,
+  summary: options.authorityChainProofRequired
+    ? sufficient
+      ? "Authority-chain proof required: a terminal trace shows the nearest forbidden principal rejected before provider I/O."
+      : "Authority-chain proof required: the nearest forbidden principal was not exercised before provider I/O."
+    : sufficient
+      ? "The maintainer supplied terminal output from the changed production path."
+      : "The reviewer did not find contributor-supplied live proof.",
+})}
+
+${prRatingReportSection({
+  overallTier: proofTier,
+  proofTier,
+  patchTier: "A",
+  summary: "The model capped readiness based on its recorded proof assessment.",
+  nextSteps: sufficient ? "- none" : "- Add real behavior proof.",
+})}
+
+${
+  options.securityAttention
+    ? `## Security Review
+
+Status: needs_attention
+
+Summary: The changed authorization boundary requires maintainer review.
+
+`
+    : ""
+}${options.sections ?? ""}## Review Findings
+
+Overall correctness: patch is correct
+
+Overall confidence: 0.9
+
+Full review comments:
+
+- none
 `;
 }
 
@@ -501,6 +637,23 @@ export function stripProofAndRatingFrontMatter(report: string): string {
     /\n(?:real_behavior_proof_status|pr_rating_overall|pr_rating_proof|pr_rating_patch):[^\n]*/g,
     "",
   );
+}
+
+// Front matter value for a typed root-cause cluster that names one canonical PR.
+// A duplicate/superseded PR close needs this; prose PR links never count.
+export function canonicalPullRequestClusterForTest(
+  canonicalUrl: string,
+  currentItemRelationship: "duplicate" | "superseded" = "superseded",
+): string {
+  return JSON.stringify({
+    confidence: "high",
+    canonicalRef: canonicalUrl,
+    currentItemRelationship,
+    summary: "The canonical PR carries the same change.",
+    members: [
+      { ref: canonicalUrl, relationship: "canonical", reason: "Canonical PR for this work." },
+    ],
+  });
 }
 
 export function lowSignalCloseReport(overrides = {}) {
@@ -1003,6 +1156,21 @@ export function reportWithSyncedReviewComment(
     ),
     comment,
   };
+}
+
+/** Adds the typed record that the review writes as the last front-matter line. */
+export function withReviewRecord(report: string, decision: Record<string, unknown> = {}): string {
+  const subject = {
+    repo: frontMatterValue(report, "repository"),
+    number: Number(frontMatterValue(report, "number")),
+    kind: frontMatterValue(report, "type"),
+  };
+  const line = reviewRecordFrontMatterLine(
+    { decision: parseDecision(closeDecision(decision), subject) },
+    subject,
+  );
+  assert.ok(line, "fixture decision must be a valid review record");
+  return report.replace(/\n---\n/, () => `\n${line}\n---\n`);
 }
 
 export function withMockCodexProof(

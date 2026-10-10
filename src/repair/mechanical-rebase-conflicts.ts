@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { unmergedPaths, type RebaseOntoBaseResult } from "./git-repo-utils.js";
+import { unmergedPaths, type RebaseOntoBaseResult } from "./git.js";
 
 export type MechanicalRebaseConflictResult =
   | {

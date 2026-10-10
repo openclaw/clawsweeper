@@ -284,7 +284,7 @@ pnpm run repair:dispatch -- jobs/openclaw/cluster-*.md --mode plan --runner blac
 ClawSweeper uses Codex by default. Set `CLAWSWEEPER_RUNNER=openclaw` to run the
 agent lanes through the released OpenClaw CLI instead, and set the required
 `CLAWSWEEPER_OPENCLAW_MODEL` to a `provider/model` reference such as
-`openai/gpt-5.6-sol`. `CLAWSWEEPER_OPENCLAW_BIN` may override the executable;
+`openai/gpt-6.1-sol`. `CLAWSWEEPER_OPENCLAW_BIN` may override the executable;
 otherwise ClawSweeper runs `openclaw` from `PATH`.
 
 Providers that are not bundled with OpenClaw can be supplied through

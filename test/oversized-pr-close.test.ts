@@ -1,4 +1,3 @@
-import { assertMatchesJsonSchema } from "../scripts/hosted-review-canary-proof.mjs";
 import { parseDecision } from "../dist/clawsweeper.js";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
@@ -75,18 +74,15 @@ test("oversized PR predicate boundaries, missing metadata, exemptions and thresh
   assert.equal(evaluateOversizedPullRequest({ ...size, threshold: 200000 }).admitted, true);
   assert.equal(ALLOWED_REASONS.has("oversized_pull_request"), true);
   assert.equal(closeReasonEnabled("oversized_pull_request", closeReasonsArg("all")), true);
+  // The host synthesizes oversized closes; the model cannot choose this reason.
   const schema = JSON.parse(readFileSync("schema/clawsweeper-decision.schema.json", "utf8"));
-  assert.ok(schema.properties.closeReason.enum.includes("oversized_pull_request"));
-  const schemaDecision = closeDecision({
+  assert.ok(!schema.properties.closeReason.enum.includes("oversized_pull_request"));
+  const storedDecision = closeDecision({
     closeReason: "oversized_pull_request",
     nextStep: { kind: "none", text: "" },
   });
-  assertMatchesJsonSchema(
-    JSON.parse(JSON.stringify(schemaDecision.closeReason)),
-    schema.properties.closeReason,
-  );
   assert.equal(
-    parseDecision(JSON.parse(JSON.stringify(schemaDecision))).closeReason,
+    parseDecision(JSON.parse(JSON.stringify(storedDecision))).closeReason,
     "oversized_pull_request",
   );
   for (const threshold of [undefined, null, 0, -1, "50000", 1.5]) {

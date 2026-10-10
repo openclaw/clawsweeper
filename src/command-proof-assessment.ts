@@ -1,11 +1,11 @@
-import { createHash } from "node:crypto";
+import { sha256 } from "./content-hash.js";
 import { primaryBodySourceSha256 } from "./clawsweeper-primary-body.js";
 import { type CommandProofScenario, proofText } from "./command-proof-contract.js";
 import { commandProofBatchBinding } from "./command-proof-contract.js";
 
 /** Hash the exact bounded ref; never normalize or infer a missing target. */
 export function commandProofBaseRefSha256(ref: unknown): string | null {
-  return proofText(ref, 200) ? createHash("sha256").update(ref).digest("hex") : null;
+  return proofText(ref, 200) ? sha256(ref) : null;
 }
 
 export function commandProofBinding(prompt: string): {
@@ -43,9 +43,7 @@ export function assertCommandProofSubject(
   if (
     head !== binding.headSha ||
     commandProofBaseRefSha256(baseRef) !== binding.baseRefSha256 ||
-    (typeof body === "string"
-      ? createHash("sha256").update(body).digest("hex")
-      : primaryBodySourceSha256(body)) !== binding.bodySha256
+    (typeof body === "string" ? sha256(body) : primaryBodySourceSha256(body)) !== binding.bodySha256
   )
     throw new Error("commanded proof subject changed; new explicit proof request required");
 }

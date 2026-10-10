@@ -1,0 +1,1 @@
+- Cut the review prompt and decision schema text by about 40% per review without dropping a rule: each rule is stated once, schema descriptions say only what a value is, and the pull request template follows the review order step by step.

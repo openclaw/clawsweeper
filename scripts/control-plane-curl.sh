@@ -40,3 +40,18 @@ NODE
     sleep "$delay"
   done
 )
+
+# Sign the body with CLAWSWEEPER_WEBHOOK_SECRET and send it as a JSON POST.
+# Usage: control_plane_signed_post <url> <body> [curl options...]
+# The URL stays the last curl argument.
+control_plane_signed_post() {
+  local url="$1" body="$2" signature
+  shift 2
+  signature="$(BODY="$body" node -e 'const crypto=require("node:crypto"); process.stdout.write(`sha256=${crypto.createHmac("sha256", process.env.CLAWSWEEPER_WEBHOOK_SECRET).update(process.env.BODY).digest("hex")}`)')" || return 1
+  control_plane_curl "$@" \
+    --request POST \
+    --header "content-type: application/json" \
+    --header "x-clawsweeper-exact-review-signature: $signature" \
+    --data-binary "$body" \
+    "$url"
+}

@@ -2,8 +2,11 @@ import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
+import { sectionValue } from "../dist/report-front-matter.js";
+import { readReviewRecord } from "../dist/review-record.js";
 
 import {
+  canonicalPullRequestClusterForTest,
   lowSignalCloseReport,
   promotionGhMock,
   reportWithSyncedReviewComment,
@@ -14,6 +17,7 @@ import {
   withApplyTestWorkspace,
   withMockCodexProof,
   withMockGh,
+  withReviewRecord,
   workPlanCandidateReport,
 } from "./helpers.ts";
 
@@ -122,7 +126,13 @@ function assertResolvedPromotionRespectsCloseReasonFilter(options: {
       title: "Ambiguous stale promotion",
       pull_files: JSON.stringify(options.sourceFiles),
       pull_files_truncated: false,
-      work_cluster_refs: JSON.stringify(options.linkedFiles ? ["Superseded by #400"] : []),
+      ...(options.linkedFiles
+        ? {
+            root_cause_cluster: canonicalPullRequestClusterForTest(
+              "https://github.com/openclaw/openclaw/pull/400",
+            ),
+          }
+        : {}),
     }).replace(
       "## Summary\n\nThe dashboard has queue_fix_pr candidates but no generated coding plan.",
       `## Summary\n\n${keepOpenSummary}`,
@@ -492,7 +502,11 @@ test("apply-decisions promotes old F-rated stale PRs with low-signal close seman
       "## Summary\n\nThe dashboard has queue_fix_pr candidates but no generated coding plan.",
       "## Summary\n\nKeep open: this branch needs contributor follow-up before any close decision.",
     );
-    const synced = reportWithSyncedReviewComment(staleReport, 330, "none");
+    const synced = reportWithSyncedReviewComment(
+      withReviewRecord(staleReport, { decision: "keep_open", closeReason: "none" }),
+      330,
+      "none",
+    );
     writeFileSync(join(itemsDir, "330.md"), synced.report, "utf8");
 
     withMockGh(
@@ -556,12 +570,69 @@ test("apply-decisions promotes old F-rated stale PRs with low-signal close seman
       /## Summary\n\nClose this stale PR: the latest review rated it F, it still lacks merge-ready proof, and there has been no human follow-up after the durable review\./,
     );
     assert.doesNotMatch(promoted, /## Summary\n\nKeep open:/);
+    const record = readReviewRecord(promoted)?.decision;
+    assert.equal(record?.decision, "close");
+    assert.equal(record?.closeReason, "low_signal_unmergeable_pr");
+    assert.equal(record?.workCandidate, "none");
+    assert.equal(record?.summary, sectionValue(promoted, "Summary"));
+    assert.equal(record?.bestSolution, sectionValue(promoted, "Best Possible Solution"));
+    // Close execution later replaces the Close Comment section with the posted review
+    // comment. The record keeps the close comment of the promotion.
+    assert.match(
+      record?.closeComment ?? "",
+      /^Thanks for the contribution\. I’m closing this stale PR/,
+    );
+    assert.deepEqual(
+      record?.evidence.map((entry) => entry.label),
+      ["stale F-rated PR", "proof blocker", "no human follow-up"],
+    );
     const closeAppliedBody = readFileSync(closeAppliedBodyLogPath, "utf8");
     assert.match(closeAppliedBody, /Close reason: low-signal unmergeable PR\./);
     assert.match(closeAppliedBody, /recorded closeout evidence/);
     assert.match(closeAppliedBody, /Review evidence: \[durable ClawSweeper review\]/);
     assert.doesNotMatch(closeAppliedBody, /Implementation evidence:/);
     assert.doesNotMatch(closeAppliedBody, /Keep open:/);
+  });
+});
+
+test("apply-decisions does not promote a report whose review record does not read", () => {
+  withApplyTestWorkspace(tmpPrefix, ({ root, itemsDir, closedDir, plansDir, reportPath }) => {
+    // The comment renderer stops on a record that does not read, so break the record after sync.
+    const synced = reportWithSyncedReviewComment(
+      withReviewRecord(stalePullRequestReport({ pull_head_sha: "head-sha" }), {
+        decision: "keep_open",
+        closeReason: "none",
+      }),
+      330,
+      "none",
+    );
+    writeFileSync(
+      join(itemsDir, "330.md"),
+      synced.report.replace(/^review_record: \{/m, "review_record: {broken"),
+      "utf8",
+    );
+
+    withMockGh(
+      root,
+      promotionGhMock({ number: 330, comment: synced.comment, headRunPullRequests: [] }),
+      () => {
+        withMockCodexProof(root, { type: "failure", message: "proof should not run" }, () => {
+          runOpenClawApplyDecisionsForTest({ itemsDir, closedDir, plansDir, reportPath });
+        });
+      },
+    );
+
+    assert.deepEqual(JSON.parse(readFileSync(reportPath, "utf8")), [
+      {
+        number: 330,
+        action: "skipped_changed_since_review",
+        reason: "review_record: the value is not JSON; fresh review required",
+      },
+    ]);
+    assert.equal(existsSync(join(closedDir, "330.md")), false);
+    const report = readFileSync(join(itemsDir, "330.md"), "utf8");
+    assert.match(report, /^action_taken: skipped_changed_since_review$/m);
+    assert.match(report, /^review_record: \{broken/m);
   });
 });
 
@@ -1150,67 +1221,6 @@ test("apply-decisions promotes recommended pause-or-close PRs", () => {
     assert.equal(
       report.some((entry) => entry.action === "closed"),
       true,
-    );
-  });
-});
-
-test("apply-decisions does not promote docs-only PRs superseded by code-only pull requests", () => {
-  withApplyTestWorkspace(tmpPrefix, ({ root, itemsDir, closedDir, plansDir, reportPath }) => {
-    const docsOnlyReport = stalePullRequestReport({
-      number: 337,
-      title: "ENETDOWN docs companion",
-      pr_rating_overall: "D",
-      pr_rating_proof: "D",
-      pr_rating_patch: "D",
-      pull_files: JSON.stringify(["docs/gateway/troubleshooting.md", "docs/platforms/macos.md"]),
-      pull_files_truncated: false,
-      work_cluster_refs: JSON.stringify([
-        "Superseded by https://github.com/openclaw/openclaw/pull/400",
-      ]),
-    })
-      .replace("Overall tier: F", "Overall tier: D")
-      .replace("Proof tier: F", "Proof tier: D")
-      .replace("Patch tier: F", "Patch tier: D");
-    const synced = reportWithSyncedReviewComment(docsOnlyReport, 337, "none");
-    writeFileSync(join(itemsDir, "337.md"), synced.report, "utf8");
-
-    withMockGh(
-      root,
-      promotionGhMock({
-        number: 337,
-        title: "ENETDOWN docs companion",
-        comment: synced.comment,
-        linkedPulls: {
-          400: {
-            number: 400,
-            title: "Canonical ENETDOWN runtime fix",
-            html_url: "https://github.com/openclaw/openclaw/pull/400",
-            state: "closed",
-            merged_at: "2026-05-26T17:40:32Z",
-            mergeable_state: "clean",
-            labels: ["proof: sufficient"],
-            files: [
-              "src/infra/unhandled-rejections.ts",
-              "extensions/telegram/src/network-errors.ts",
-            ],
-          },
-        },
-      }),
-      () => {
-        runOpenClawApplyDecisionsForTest({
-          itemsDir,
-          closedDir,
-          plansDir,
-          reportPath,
-          dryRun: true,
-        });
-      },
-    );
-
-    const report = JSON.parse(readFileSync(reportPath, "utf8")) as Array<{ action: string }>;
-    assert.equal(
-      report.some((entry) => entry.action === "closed"),
-      false,
     );
   });
 });

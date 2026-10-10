@@ -2,11 +2,13 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
-  commandAckMarkerFromBody,
-  commandStatusMarkerFromBody,
   legacyCommandCommentId,
   planCommandAckConvergence,
 } from "../../dist/repair/command-ack-convergence.js";
+import {
+  commandAckMarkerFromBody,
+  commandStatusMarkerFromBody,
+} from "../../dist/repair/markers.js";
 
 test("command acknowledgement convergence preserves parsing and keeper priority", () => {
   const requestedStatus = "<!-- clawsweeper-command-status:81564:re_review:new -->";

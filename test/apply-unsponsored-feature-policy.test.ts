@@ -310,10 +310,10 @@ test("unsponsored feature apply blocks a recent human comment", () => {
   assert.equal(result.closedExists, false);
 });
 
-test("unsponsored feature apply blocks any live security-ish label", () => {
+test("unsponsored feature apply blocks a live security label", () => {
   const result = runUnsponsoredApply({
     gateEnabled: true,
-    labels: ["topic:security-assessment"],
+    labels: ["impact:security"],
   });
   assert.deepEqual(result.entries, [
     {

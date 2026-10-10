@@ -264,6 +264,54 @@ test(
 );
 
 test(
+  "Linux containment gives private directories new writable storage and keeps /tmp read-only",
+  { skip: process.platform !== "linux" },
+  (context) => {
+    if (!linuxValidationNamespacesAvailable()) {
+      context.skip("runner does not provide delegated validation namespaces");
+      return;
+    }
+    const root = mkdtempSync(join(tmpdir(), "clawsweeper-private-directory-"));
+    const privateDirectory = `/tmp/clawsweeper-private-${process.pid}`;
+    try {
+      const output = runContainedCommand(
+        process.execPath,
+        [
+          "-e",
+          [
+            'const fs = require("node:fs");',
+            "const [privateDirectory] = process.argv.slice(1);",
+            "const metadata = fs.lstatSync(privateDirectory);",
+            "if (!metadata.isDirectory() || metadata.uid !== process.geteuid()) process.exit(70);",
+            "if ((metadata.mode & 0o777) !== 0o700) process.exit(71);",
+            'fs.writeFileSync(privateDirectory + "/lock", "held");',
+            "try { fs.mkdirSync('/tmp/clawsweeper-not-private'); process.exit(72); }",
+            "catch (error) { if (!['EACCES', 'EPERM', 'EROFS'].includes(error.code)) throw error; }",
+            'process.stdout.write("private");',
+          ].join("\n"),
+          privateDirectory,
+        ],
+        {
+          cwd: root,
+          env: {
+            ...process.env,
+            CLAWSWEEPER_TEST_FORCE_LINUX_CONTAINMENT: "1",
+          },
+          privateDirectories: [privateDirectory],
+          timeoutMs: 3_000,
+          writableRoots: [root],
+        },
+      );
+
+      assert.equal(output, "private");
+      assert.equal(existsSync(privateDirectory), false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  },
+);
+
+test(
   "Linux containment protects namespace init from target termination",
   { skip: process.platform !== "linux" },
   (context) => {

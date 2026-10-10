@@ -9,10 +9,13 @@
   authority, or installation steps change
 
 `openclaw/clawsweeper` cannot receive native `issues` or `pull_request` events
-from sibling repositories directly. Target repositories should forward those
-events with `repository_dispatch` so ClawSweeper can run a single-job exact
-one-item review, sync the durable review comment, and immediately apply a safe
-close proposal for that same item.
+from sibling repositories directly. Target repositories forward those events so
+ClawSweeper can run a single-job exact one-item review, sync the durable review
+comment, and immediately apply a safe close proposal for that same item. The
+dispatcher first enqueues the event directly with its GitHub Actions OIDC
+identity (see [Direct queue intake](#direct-queue-intake)) and falls back to
+`repository_dispatch` only when that fails, so a forwarded event no longer costs
+a ClawSweeper Actions relay run.
 
 This document covers issue and PR item dispatch via
 `.github/workflows/clawsweeper-dispatch.yml`; `openclaw/openclaw` uses this
@@ -50,7 +53,9 @@ Before enabling the workflow:
 3. Install exactly one target dispatcher. Do not add separate comment, spam, and
    generic-activity dispatch workflows that forward the same event twice.
 4. Keep the target write token limited to the comment acknowledgement path.
-   Issue/PR review dispatch only needs the ClawSweeper installation token.
+   Issue/PR review dispatch only needs the ClawSweeper installation token for
+   its fallback, plus the dispatch job's `id-token: write` permission for
+   direct queue intake.
 
 ```yaml
 name: ClawSweeper Dispatch
@@ -98,6 +103,11 @@ jobs:
   dispatch:
     needs: hosted-target-admission
     runs-on: ubuntu-latest
+    # id-token proves this repository, event, branch, and run to the queue.
+    # The job never checks out or executes pull request code.
+    permissions:
+      contents: read
+      id-token: write
     if: ${{ needs.hosted-target-admission.outputs.outcome == 'public' && !(endsWith(github.actor, '[bot]') && (github.event.action == 'labeled' || github.event.action == 'unlabeled')) }}
     env:
       HAS_CLAWSWEEPER_APP_PRIVATE_KEY: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY != '' }}
@@ -265,6 +275,7 @@ jobs:
           SOURCE_EVENT: ${{ github.event_name }}
           SOURCE_ACTION: ${{ github.event.action }}
           REVIEW_ACKNOWLEDGEMENT_COMMENT_ID: ${{ steps.pr_acknowledgement.outputs.status_comment_id }}
+          TARGET_DISPATCH_URL: https://clawsweeper.openclaw.ai/github/target-dispatch
         run: |
           if [ -z "$GH_TOKEN" ]; then
             echo "::notice::Skipping ClawSweeper dispatch because no dispatch credential is configured."
@@ -377,7 +388,7 @@ jobs:
           }
           NODE
           )"
-          payload="$(jq -nc \
+          client_payload="$(jq -nc \
             --arg target_repo "$TARGET_REPO" \
             --arg target_branch "$TARGET_BRANCH" \
             --argjson item_number "$ITEM_NUMBER" \
@@ -386,7 +397,28 @@ jobs:
             --arg source_action "$SOURCE_ACTION" \
             --argjson source_identity "$source_identity_json" \
             --argjson supersedes_in_progress "$SUPERSEDES_IN_PROGRESS" \
-            '{event_type:"clawsweeper_item",client_payload:({target_repo:$target_repo,target_branch:$target_branch,item_number:$item_number,item_kind:$item_kind,source_event:$source_event,source_action:$source_action,supersedes_in_progress:$supersedes_in_progress} + $source_identity)}')"
+            '{target_repo:$target_repo,target_branch:$target_branch,item_number:$item_number,item_kind:$item_kind,source_event:$source_event,source_action:$source_action,supersedes_in_progress:$supersedes_in_progress} + $source_identity')"
+          # Direct queue intake costs no ClawSweeper Actions run. Any failure
+          # falls back to the repository_dispatch relay, so no event is lost.
+          if [ -n "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ] &&
+            [ -n "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}" ] &&
+            oidc_token="$(curl --fail --silent --show-error --connect-timeout 5 --max-time 15 \
+              --header "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+              --get --data-urlencode "audience=$TARGET_DISPATCH_URL" \
+              "$ACTIONS_ID_TOKEN_REQUEST_URL" | jq -er '.value | strings | select(length > 0)')"; then
+            echo "::add-mask::$oidc_token"
+            if direct_response="$(curl --fail --silent --show-error --connect-timeout 5 --max-time 20 \
+              --request POST \
+              --header "authorization: Bearer $oidc_token" \
+              --header "content-type: application/json" \
+              --data "$client_payload" \
+              "$TARGET_DISPATCH_URL")"; then
+              echo "Queued exact ClawSweeper review directly: $(jq -c . <<< "$direct_response" 2>/dev/null || echo '{}')"
+              exit 0
+            fi
+          fi
+          echo "::notice::Direct ClawSweeper queue intake was unavailable; dispatching through repository_dispatch."
+          payload="$(jq -nc --argjson client_payload "$client_payload" '{event_type:"clawsweeper_item",client_payload:$client_payload}')"
           gh api repos/openclaw/clawsweeper/dispatches \
             --method POST \
             --input - <<< "$payload"
@@ -467,6 +499,47 @@ read. During a rolling upgrade, a branchless legacy payload is held in the
 durable control plane until the target App resolves and validates the repository
 default branch; it is never silently rewritten to `main`.
 
+## Direct queue intake
+
+Each `repository_dispatch` to `openclaw/clawsweeper` starts a
+`Review event item` workflow run whose only job relays the payload into the
+exact-review queue. The dispatcher therefore posts the same `client_payload`
+directly to `https://clawsweeper.openclaw.ai/github/target-dispatch`,
+authenticated by a GitHub Actions OIDC token whose audience is that URL. The
+Worker accepts it only when the signed token proves all of the following:
+
+- the token was issued for the payload's `target_repo`;
+- the run was triggered by `issues` or `pull_request_target`, matching the
+  payload's `source_event` and `item_kind`;
+- its `ref` is `refs/heads/<target_branch>` and the running workflow is that
+  repository's `.github/workflows/clawsweeper-dispatch.yml` at that ref; other
+  workflows, including reusable-workflow callers, are refused.
+
+The payload may carry only the copied dispatcher's fields (`target_repo`,
+`target_branch`, `item_number`, `item_kind`, `source_event`, `source_action`,
+`supersedes_in_progress`, `queue_claim` identity fields, and the PR ingress
+fingerprint). The Worker builds the same queue decision as the relay, keeps the
+`target_dispatcher` ingress route, and runs the same hosted-target eligibility
+and public-visibility admission before `/enqueue`. Its delivery id is
+`target-dispatch:<repository_id>:<run_id>:<run_attempt>`, so a replayed or
+retried request from the same run is an exact delivery dedupe, and the
+cross-route identity below still collapses it against the direct App webhook.
+
+Any non-2xx answer, an unavailable OIDC token, or a network failure makes the
+dispatcher send the unchanged `repository_dispatch`, so no event is lost. That
+includes pull requests to a non-default base branch (their token `ref` is that
+base branch), a combined dispatcher under another file name, and payloads with
+relay-only fields such as `installation_id`, `additional_prompt`, or command
+markers. The relay job remains for that
+fallback and for dispatchers that have not adopted this template.
+
+A copied dispatcher only stops spending relay runs after it adopts this
+template: the dispatch job needs `id-token: write`, and the review step needs
+the direct-intake block. Deploy the Worker route first; a dispatcher updated
+before that deploy simply falls back. `openclaw/openclaw` maintains its own dispatcher
+variant, which must gain the same two changes there; until then its events
+keep using the relay.
+
 Non-draft pull request receipts get one best-effort `clawsweeper-pr-ack`
 comment. Later pull-request events recover that exact trusted bot comment id and
 carry it with the durable review decision, so a terminal input refusal can edit
@@ -522,8 +595,9 @@ installation token for repository dispatch, and queues exact
 direct durable command-intake route described above. The durable Worker queue
 dispatches at most 80 leased exact-review executors, with up to 64 active
 reviews per target repository. Keep the Actions
-dispatcher installed as a compatibility fallback; its legacy dispatch is
-bridged into the same queue before Codex starts.
+dispatcher installed as a compatibility fallback; it enqueues through
+[direct queue intake](#direct-queue-intake) and its legacy dispatch is bridged
+into the same queue before Codex starts.
 
 The standalone Node listener limits raw request bodies to 2 MiB before verifying
 their signature. Declared-length and chunked deliveries are supported. Oversized
@@ -582,8 +656,9 @@ The full dispatcher example above is the copy-pasteable job definition and the
 canonical reference for its rate-limit behavior.
 
 The job mints one short-lived `clawsweeper` App token scoped to
-`openclaw/clawsweeper`, then sends one `clawsweeper_item` or
-`clawsweeper_comment` `repository_dispatch`. For comments, the
+`openclaw/clawsweeper`. An issue or PR event is then enqueued directly; only
+when that fails does it send one `clawsweeper_item` `repository_dispatch`.
+A command comment sends one `clawsweeper_comment` `repository_dispatch`. For comments, the
 `Pre-filter ClawSweeper comment` step runs before the target write token is
 minted, so ordinary comments consume neither a target installation token nor a
 dispatch. The prefilter is only an ingress guard: `/clawsweeper` may carry any
@@ -593,15 +668,17 @@ The router remains authoritative. Do not use a PAT or dispatch the same comment
 through both the exact router and a second spam/generic workflow.
 
 To verify a target installation, open a pull request or issue and confirm one
-`ClawSweeper Dispatch` run. Add a maintainer comment containing `@clawsweeper`
+`ClawSweeper Dispatch` run whose review step logs
+`Queued exact ClawSweeper review directly`, with no matching
+`Review event item` run in `openclaw/clawsweeper`. Add a maintainer comment containing `@clawsweeper`
 or a supported slash command and confirm one `clawsweeper_comment` dispatch.
 An ordinary comment should produce no ClawSweeper comment dispatch and no
 target-token step. If the target app secret is absent, the workflow should
 finish with a notice rather than fall back to a maintainer PAT.
 
-The ClawSweeper `github-activity` workflow performs spam-candidate
-classification in-process and only dispatches the scanner for an accepted
-candidate. This keeps ordinary comments to one activity run instead of an
-activity run plus a second intake workflow. Preserve the source delivery or
+The ClawSweeper `github-activity` workflow runs the fact-only spam admission
+in-process and dispatches the scanner only for an admitted comment (an
+unprotected author with a body of at least 12 characters, a link, or a GitHub
+minimization). Protected authors stay at one activity run. Preserve the source delivery or
 comment id in every payload so receiver-side deduplication can collapse
 redeliveries.

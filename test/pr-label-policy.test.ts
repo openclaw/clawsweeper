@@ -1,70 +1,155 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { createLabelPolicy } from "../dist/clawsweeper-label-policy.js";
-import { createLabelSynchronization } from "../dist/clawsweeper-label-sync.js";
-import { createRecordMetadata } from "../dist/clawsweeper-record-metadata.js";
-import { createReportParser } from "../dist/clawsweeper-report-parser.js";
-import { createReportHelpers } from "../dist/clawsweeper-report-helpers.js";
-import { createRealBehaviorProofPolicy } from "../dist/clawsweeper-proof-policy.js";
-import { syncApplyPullRequestLabels } from "../dist/clawsweeper-apply-pull-request-labels.js";
-import type { RealBehaviorProof } from "../dist/clawsweeper-types.js";
+import { createLabelMutationOperations } from "../dist/clawsweeper-label-mutations.js";
+import { createLabelSyncOperations } from "../dist/clawsweeper-label-operations.js";
 import {
-  featureShowcaseLabelsForTest,
+  hasRecentReReviewRequest,
+  hasRepairLoopPauseLabel,
+  nextFeatureShowcaseLabels,
+  nextPrStatusLabels,
+  prStatusLabelKind,
+  prStatusLabelKindFromReport,
+} from "../dist/clawsweeper-label-policy.js";
+import {
+  nextImpactLabels,
+  nextIssueAdvisoryLabels,
+  nextMaturityLabels,
+  nextMergeRiskLabels,
+  nextPriorityLabels,
+  nextTelegramVisibleProofLabels,
+} from "../dist/clawsweeper-label-selection.js";
+import {
+  IMPACT_LABELS,
+  LIVE_VERIFICATION_MARKER,
+  MATURITY_LABELS,
+  MERGE_RISK_LABELS,
+  PR_RATING_LABELS,
+  PR_STATUS_LABELS,
+  PRIORITY_LABELS,
+} from "../dist/clawsweeper-policy.js";
+import { reportRealBehaviorProofPolicy } from "../dist/clawsweeper-proof-policy.js";
+import { nextPrRatingLabels } from "../dist/clawsweeper-rating.js";
+import { reportAttachedLiveVerification } from "../dist/clawsweeper-report-parser.js";
+import { syncApplyPullRequestLabels } from "../dist/clawsweeper-apply-pull-request-labels.js";
+import type {
+  LiveProofPlan,
+  MergeRiskOption,
+  PublicBeforeMergeItem,
+} from "../dist/clawsweeper-types.js";
+import {
+  buildLiveVerificationResult,
+  encodeLiveVerificationReportPayload,
+} from "../dist/live-proof/verification.js";
+import {
   goodFirstIssueLabelOptedOutForTest,
-  impactLabelsForTest,
-  impactLabelSchemeForTest,
-  issueAdvisoryLabelsForTest,
   labelJustificationsMarkdownForTest,
-  mergeRiskLabelsForTest,
-  mergeRiskLabelSchemeForTest,
-  maturityLabelSchemeForTest,
-  maturityLabelsForTest,
   parseDecision,
-  prRatingLabelsForTest,
-  prRatingLabelSchemeForTest,
-  prStatusLabelsForTest,
-  prStatusLabelSchemeForTest,
-  priorityLabelsForTest,
-  priorityLabelSchemeForTest,
   reviewDecisionSchemaText,
-  reviewPromptTemplate,
-  telegramVisibleProofLabelsForTest,
 } from "../dist/clawsweeper.js";
 import {
   closeDecision,
   item,
+  legacyLiveProofSection,
+  pullRequestProofReport,
   realBehaviorProofReportSection,
   reportFrontMatter,
+  reviewPrompt,
 } from "./helpers.ts";
+
+const noActivity = { comments: [], timeline: [] };
+
+// Label sync that records each gh command and reads an empty label catalog.
+function recordingLabelSync(commands: string[][]) {
+  return createLabelSyncOperations(
+    createLabelMutationOperations({
+      ghJson: <T>(): T => [] as T,
+      ghObservedMutationCommand: ({ args }) => {
+        commands.push(args);
+        return "";
+      },
+    }),
+  );
+}
+
+function labelScheme(labels: readonly { name: string; color: string; description: string }[]) {
+  return labels.map(({ name, color, description }) => ({ name, color, description }));
+}
+
+function featureShowcaseLabels(
+  labels: readonly string[],
+  options: {
+    itemCategory: string;
+    status: "showcase" | "none";
+    securityReviewStatus: "cleared" | "needs_attention";
+    overallCorrectness: "patch is correct" | "patch is incorrect";
+  },
+): string[] {
+  return nextFeatureShowcaseLabels(labels, {
+    isPullRequest: true,
+    itemCategory: options.itemCategory,
+    requiresNewFeature: false,
+    showcase: {
+      status: options.status,
+      reason: options.status === "showcase" ? "This is a high-signal feature idea." : "",
+    },
+    securityReview: { status: options.securityReviewStatus },
+    overallCorrectness: options.overallCorrectness,
+  });
+}
+
+// Applies the status that the label policy picks for these typed review facts.
+function prStatusLabels(
+  labels: readonly string[],
+  options: {
+    isPullRequest?: boolean;
+    proofStatus?: string;
+    needsContributorAction?: boolean;
+    beforeMergeItems?: readonly PublicBeforeMergeItem["state"][];
+    securityStatus?: "cleared" | "needs_attention";
+    mergeRiskOptions?: readonly Pick<MergeRiskOption, "category" | "recommended">[];
+    hasAutomergeLabel?: boolean;
+    hasRecentReReviewRequest?: boolean;
+    hasRecentAuthorActivity?: boolean;
+    reviewedAt?: string;
+    comments?: readonly {
+      author?: string;
+      body?: string;
+      createdAt?: string;
+      updatedAt?: string;
+    }[];
+  },
+): string[] {
+  if (options.isPullRequest === false) return nextPrStatusLabels(labels, null);
+  const unresolvedProof = ["missing", "mock_only", "insufficient"].includes(
+    options.proofStatus ?? "",
+  );
+  return nextPrStatusLabels(
+    labels,
+    prStatusLabelKind({
+      reviewFailed: false,
+      proofPolicy: {
+        blocksMerge: unresolvedProof,
+        needsContributorAction: unresolvedProof && (options.needsContributorAction ?? true),
+      },
+      beforeMergeItems: (options.beforeMergeItems ?? []).map((state) => ({ state })),
+      securityReview: { status: options.securityStatus ?? "cleared" },
+      mergeRiskOptions: options.mergeRiskOptions ?? [],
+      hasAutomergeLabel: options.hasAutomergeLabel ?? labels.includes("clawsweeper:automerge"),
+      hasRepairLoopPauseLabel: hasRepairLoopPauseLabel(labels),
+      hasRecentReReviewRequest:
+        options.hasRecentReReviewRequest ??
+        hasRecentReReviewRequest(
+          { comments: [...(options.comments ?? [])] },
+          options.reviewedAt ?? "2026-01-01T00:00:00Z",
+        ),
+      hasRecentAuthorActivity: options.hasRecentAuthorActivity === true,
+    }),
+  );
+}
 
 for (const proofStatus of ["missing", "not_applicable"] as const) {
   test(`failed ${proofStatus} reports remove positive statuses through apply label sync`, () => {
-    const metadata = createRecordMetadata({} as never);
-    const parser = createReportParser({
-      ...metadata,
-      ...createReportHelpers({
-        OWNED_REVIEW_SECTION_HEADINGS: new Set(),
-        parseBacktickLocation: () => null,
-      }),
-      isDocsOnlyPullRequestReport: () => false,
-      isExternalPullRequestReport: () => true,
-    } as Parameters<typeof createReportParser>[0]);
-    const reportRealBehaviorProofPolicy = createRealBehaviorProofPolicy({
-      ...metadata,
-      ...parser,
-      isDocsOnlyPullRequestReport: () => false,
-      isExternalPullRequestReport: () => true,
-    });
-    const policy = createLabelPolicy({
-      ...metadata,
-      ...parser,
-      reportRealBehaviorProofPolicy,
-      asRecord: (value) => value as Record<string, unknown>,
-      isAutomationReportAuthor: () => false,
-      stringOrUndefined: (value) => (typeof value === "string" ? value : undefined),
-      timestampMs: (value) => (value ? Date.parse(value) : null),
-    });
     const oldStatuses = ["status: 🚀 automerge armed", "status: 👀 ready for maintainer look"];
     for (const [extraLabels, comment, incorrect, expected] of [
       [["clawsweeper:automerge"], "", false, null],
@@ -106,26 +191,10 @@ Full review comments:
         timeline: [],
       };
       const commands: string[][] = [];
-      const synchronization = createLabelSynchronization({
-        ...metadata,
-        ...parser,
-        labelPolicy: policy,
-        ghObservedMutationCommand: ({ args }) => {
-          commands.push(args);
-          return "";
-        },
-        hasNormalizedLabel: (current, label) => current.includes(label),
-        normalizeLabelName: (label) => label.toLowerCase(),
-        protectedLabels: () => [],
-        isBulkFilerExemptAuthorAssociation: () => false,
-        isBulkFilerExemptRepositoryPermission: () => false,
-      } as Parameters<typeof createLabelSynchronization>[0]);
       const result = syncApplyPullRequestLabels(
         {
-          ...metadata,
-          ...parser,
-          ...synchronization,
-          prStatusLabelKindFromReport: policy.prStatusLabelKindFromReport,
+          ...recordingLabelSync(commands),
+          syncStalePullRequestReviewLabels: () => assert.fail("the review head is current"),
         },
         {
           markdown: report,
@@ -139,7 +208,7 @@ Full review comments:
         },
       );
       assert.equal(result.currentPrStatusKind, expected);
-      assert.equal(policy.prStatusLabelKindFromReport(report, context, labels), expected);
+      assert.equal(prStatusLabelKindFromReport(report, context, labels), expected);
       assert.equal(reportRealBehaviorProofPolicy(report).blocksMerge, false);
       for (const oldStatus of oldStatuses) {
         assert.ok(!result.labels.includes(oldStatus), oldStatus);
@@ -159,151 +228,56 @@ Full review comments:
   });
 }
 
-test("report-based status selection requires external N/A proof without an action flag", () => {
-  const metadata = createRecordMetadata({} as never);
-  const reportRealBehaviorProofPolicy = createRealBehaviorProofPolicy({
-    ...metadata,
-    isDocsOnlyPullRequestReport: () => false,
-    isExternalPullRequestReport: (markdown) =>
-      metadata.frontMatterValue(markdown, "author_association") === "CONTRIBUTOR",
-    reportAttachedLiveVerification: () => ({ status: "absent" }),
-    reportRealBehaviorProof: () => ({
-      status: "not_applicable",
-      evidenceKind: "not_applicable",
-      needsContributorAction: false,
-      summary: "Recorded reviewer assessment.",
-    }),
-  });
-  const policy = createLabelPolicy({
-    ...metadata,
-    asRecord: (value) => value as Record<string, unknown>,
-    isAutomationReportAuthor: () => false,
-    mergeRiskOptionsFromReport: () => [],
-    reportOverallCorrectness: () => "patch is correct",
-    reportRealBehaviorProofPolicy,
-    reportReviewFindings: () => [],
-    reportSecurityReview: () => ({ status: "cleared", summary: "", concerns: [] }),
-    stringOrUndefined: (value) => (typeof value === "string" ? value : undefined),
-    timestampMs: (value) => (value ? Date.parse(value) : null),
-  });
+test("report-based status selection follows the model proof assessment for external PRs", () => {
   for (const path of ["README.md", "src/arbitrary.ts"]) {
-    const report = reportFrontMatter({
-      type: "pull_request",
-      review_status: "complete",
-      author: "contributor",
-      author_association: "CONTRIBUTOR",
-      pull_files: JSON.stringify([path]),
-      pull_files_truncated: false,
-      reviewed_at: "2026-08-30T12:00:00Z",
-    });
-    assert.equal(
-      policy.prStatusLabelKindFromReport(report, { comments: [], timeline: [] }, [
-        "clawsweeper:automerge",
-      ]),
-      "needs_proof",
-      path,
-    );
-    for (const [labels, comments, expected] of [
-      [["clawsweeper:human-review"], [], null],
-      [["clawsweeper:manual-only"], [], null],
-      [["clawsweeper:merge-ready"], [], null],
+    for (const [proof, needsProof] of [
       [
-        [],
-        [
-          {
-            author: "contributor",
-            body: "@clawsweeper re-review",
-            createdAt: "2026-08-30T13:00:00Z",
-          },
-        ],
-        "re_review_loop",
+        { status: "not_applicable", evidenceKind: "not_applicable", needsContributorAction: false },
+        false,
       ],
-      [
-        [],
-        [{ author: "contributor", body: "Added evidence", createdAt: "2026-08-30T13:00:00Z" }],
-        "actively_grinding",
-      ],
+      [{ status: "missing", evidenceKind: "none", needsContributorAction: true }, true],
     ] as const) {
-      assert.equal(
-        policy.prStatusLabelKindFromReport(
-          report,
-          { comments: [...comments], timeline: [] },
-          labels,
-        ),
-        expected,
-      );
+      const report = `${reportFrontMatter({
+        type: "pull_request",
+        review_status: "complete",
+        author: "contributor",
+        author_association: "CONTRIBUTOR",
+        pull_files: JSON.stringify([path]),
+        pull_files_truncated: false,
+        reviewed_at: "2026-08-30T12:00:00Z",
+      })}
+${realBehaviorProofReportSection({ ...proof, summary: "Recorded reviewer assessment." })}`;
+      const statusKind = prStatusLabelKindFromReport(report, noActivity, ["clawsweeper:automerge"]);
+      if (needsProof) assert.equal(statusKind, "needs_proof", path);
+      else assert.notEqual(statusKind, "needs_proof", path);
     }
-    const commands: string[][] = [];
-    const synchronization = createLabelSynchronization({
-      ...metadata,
-      ghObservedMutationCommand: ({ args }) => {
-        commands.push(args);
-        return "";
-      },
-      hasNormalizedLabel: (labels, label) => labels.includes(label),
-      normalizeLabelName: (label) => label.toLowerCase(),
-      protectedLabels: () => [],
-      isBulkFilerExemptAuthorAssociation: () => false,
-      isBulkFilerExemptRepositoryPermission: () => false,
-      reportSecurityReview: () => ({ status: "cleared", summary: "", concerns: [] }),
-      labelPolicy: policy,
-    } as Parameters<typeof createLabelSynchronization>[0]);
-    const decision = closeDecision();
-    const result = syncApplyPullRequestLabels(
-      {
-        ...metadata,
-        ...synchronization,
-        prStatusLabelKindFromReport: policy.prStatusLabelKindFromReport,
-        reportRealBehaviorProof: (markdown) => reportRealBehaviorProofPolicy(markdown).assessment,
-        reportPrRating: () => decision.prRating,
-        reportFeatureShowcase: () => decision.featureShowcase,
-        reportOverallCorrectness: () => "patch is correct",
-        reportSecurityReview: () => decision.securityReview,
-        reportTelegramVisibleProof: () => decision.telegramVisibleProof,
-      },
-      {
-        markdown: report,
-        item: item({ kind: "pull_request", labels: ["clawsweeper:automerge"] }),
-        number: 74465,
-        currentItemContext: () => ({ comments: [], timeline: [] }) as never,
-        dryRun: false,
-        labelSyncFreshEnough: () => true,
-        staleReviewHead: null,
-        onMutation: () => {},
-      },
-    );
-    assert.equal(result.currentPrStatusKind, "needs_proof", path);
-    assert.ok(result.labels.includes("status: 📣 needs proof"), path);
-    assert.ok(!result.labels.includes("proof: sufficient"), path);
-    assert.equal(result.markdown, report, path);
-    assert.ok(
-      commands.some(
-        (args) => args.includes("--add-label") && args.includes("status: 📣 needs proof"),
-      ),
-      path,
-    );
-    assert.ok(!commands.some((args) => args.includes("status: 🚀 automerge armed")), path);
   }
 });
 
 test("ClawSweeper PR rating labels use one themed overall label", () => {
-  assert.deepEqual(prRatingLabelsForTest(["bug"], "A"), ["bug", "rating: 🦞 diamond lobster"]);
+  assert.deepEqual(nextPrRatingLabels(["bug"], { overallTier: "A" }), [
+    "bug",
+    "rating: 🦞 diamond lobster",
+  ]);
   assert.deepEqual(
-    prRatingLabelsForTest(["rating: 🦀 challenger crab", "bug", "rating: 🦐 gold shrimp"], "D"),
+    nextPrRatingLabels(["rating: 🦀 challenger crab", "bug", "rating: 🦐 gold shrimp"], {
+      overallTier: "D",
+    }),
     ["bug", "rating: 🦪 silver shellfish"],
   );
-  assert.deepEqual(prRatingLabelsForTest(["bug"], "bogus"), [
+  assert.deepEqual(nextPrRatingLabels(["bug"], { overallTier: "NA" }), [
     "bug",
     "rating: 🌊 off-meta tidepool",
   ]);
-  assert.deepEqual(prRatingLabelsForTest(["bug", "rating: 🌊 off-meta tidepool"], "NA", true), [
-    "bug",
-  ]);
+  assert.deepEqual(
+    nextPrRatingLabels(["bug", "rating: 🌊 off-meta tidepool"], { overallTier: "NA" }, true),
+    ["bug"],
+  );
 });
 
 test("ClawSweeper PR rating label scheme exposes boring internal tiers", () => {
   assert.deepEqual(
-    prRatingLabelSchemeForTest().map(({ tier, name, color }) => ({ tier, name, color })),
+    PR_RATING_LABELS.map(({ tier, name, color }) => ({ tier, name, color })),
     [
       { tier: "S", name: "rating: 🦀 challenger crab", color: "1F883D" },
       { tier: "A", name: "rating: 🦞 diamond lobster", color: "0969DA" },
@@ -318,7 +292,7 @@ test("ClawSweeper PR rating label scheme exposes boring internal tiers", () => {
 
 test("ClawSweeper feature showcase label is positive-only and high signal", () => {
   assert.deepEqual(
-    featureShowcaseLabelsForTest(["enhancement"], {
+    featureShowcaseLabels(["enhancement"], {
       itemCategory: "feature",
       status: "showcase",
       securityReviewStatus: "cleared",
@@ -327,7 +301,7 @@ test("ClawSweeper feature showcase label is positive-only and high signal", () =
     ["enhancement", "feature: ✨ showcase"],
   );
   assert.deepEqual(
-    featureShowcaseLabelsForTest(["enhancement"], {
+    featureShowcaseLabels(["enhancement"], {
       itemCategory: "feature",
       status: "none",
       securityReviewStatus: "cleared",
@@ -336,7 +310,7 @@ test("ClawSweeper feature showcase label is positive-only and high signal", () =
     ["enhancement"],
   );
   assert.deepEqual(
-    featureShowcaseLabelsForTest(["feature: ✨ showcase"], {
+    featureShowcaseLabels(["feature: ✨ showcase"], {
       itemCategory: "feature",
       status: "none",
       securityReviewStatus: "cleared",
@@ -348,7 +322,7 @@ test("ClawSweeper feature showcase label is positive-only and high signal", () =
 
 test("ClawSweeper feature showcase label does not apply to unsafe or non-feature PRs", () => {
   assert.deepEqual(
-    featureShowcaseLabelsForTest(["bug"], {
+    featureShowcaseLabels(["bug"], {
       itemCategory: "bug",
       status: "showcase",
       securityReviewStatus: "cleared",
@@ -357,7 +331,7 @@ test("ClawSweeper feature showcase label does not apply to unsafe or non-feature
     ["bug"],
   );
   assert.deepEqual(
-    featureShowcaseLabelsForTest(["enhancement"], {
+    featureShowcaseLabels(["enhancement"], {
       itemCategory: "feature",
       status: "showcase",
       securityReviewStatus: "needs_attention",
@@ -366,7 +340,7 @@ test("ClawSweeper feature showcase label does not apply to unsafe or non-feature
     ["enhancement"],
   );
   assert.deepEqual(
-    featureShowcaseLabelsForTest(["enhancement"], {
+    featureShowcaseLabels(["enhancement"], {
       itemCategory: "feature",
       status: "showcase",
       securityReviewStatus: "cleared",
@@ -378,72 +352,60 @@ test("ClawSweeper feature showcase label does not apply to unsafe or non-feature
 
 test("ClawSweeper PR status labels use one current workflow status", () => {
   assert.deepEqual(
-    prStatusLabelsForTest(["bug", "status: ⏳ waiting on author"], {
-      findingPriorities: [2],
+    prStatusLabels(["bug", "status: ⏳ waiting on author"], {
+      beforeMergeItems: ["needs-changes"],
       hasRecentAuthorActivity: true,
     }),
     ["bug", "status: 🛠️ actively grinding"],
   );
   assert.deepEqual(
-    prStatusLabelsForTest(["bug", "status: 🛠️ actively grinding"], {
+    prStatusLabels(["bug", "status: 🛠️ actively grinding"], {
       proofStatus: "sufficient",
-      overallCorrectness: "patch is correct",
     }),
     ["bug", "status: 👀 ready for maintainer look"],
   );
 });
 
-test("ClawSweeper PR status routes security owner acceptance to maintainer look", () => {
-  const ownerAcceptanceLabels = prStatusLabelsForTest([], {
-    proofStatus: "sufficient",
-    securityStatus: "needs_attention",
-    mergeRiskOptions: [{ category: "accept_risk", recommended: true }],
-    overallCorrectness: "patch is correct",
-  });
-
-  assert.equal(
-    ownerAcceptanceLabels.some((label) => label.endsWith("ready for maintainer look")),
-    true,
+test("ClawSweeper PR status is ready only when Before merge lists no item", () => {
+  const readyLabel = "status: 👀 ready for maintainer look";
+  assert.deepEqual(prStatusLabels([readyLabel], { beforeMergeItems: [] }), [readyLabel]);
+  assert.deepEqual(prStatusLabels([readyLabel], { beforeMergeItems: ["blocked"] }), []);
+  assert.deepEqual(prStatusLabels([readyLabel], { beforeMergeItems: ["needs-changes"] }), [
+    "status: ⏳ waiting on author",
+  ]);
+  // A maintainer-owned security acceptance is still a Before-merge item.
+  assert.deepEqual(
+    prStatusLabels([readyLabel], {
+      proofStatus: "sufficient",
+      securityStatus: "needs_attention",
+      mergeRiskOptions: [{ category: "accept_risk", recommended: true }],
+      beforeMergeItems: ["blocked"],
+    }),
+    [],
   );
-  assert.equal(
-    ownerAcceptanceLabels.some((label) => label.endsWith("waiting on author")),
-    false,
-  );
-
-  const authorFixLabels = prStatusLabelsForTest([], {
-    proofStatus: "sufficient",
-    securityStatus: "needs_attention",
-    mergeRiskOptions: [{ category: "fix_before_merge", recommended: true }],
-    overallCorrectness: "patch is correct",
-  });
-
-  assert.equal(
-    authorFixLabels.some((label) => label.endsWith("waiting on author")),
-    true,
-  );
-
-  const ambiguousSecurityLabels = prStatusLabelsForTest([], {
-    proofStatus: "sufficient",
-    securityStatus: "needs_attention",
-    overallCorrectness: "patch is correct",
-  });
-
-  assert.equal(
-    ambiguousSecurityLabels.some((label) => label.endsWith("waiting on author")),
-    true,
-  );
+  for (const mergeRiskOptions of [[{ category: "fix_before_merge", recommended: true }], []]) {
+    assert.deepEqual(
+      prStatusLabels([], {
+        proofStatus: "sufficient",
+        securityStatus: "needs_attention",
+        mergeRiskOptions,
+        beforeMergeItems: ["blocked"],
+      }),
+      ["status: ⏳ waiting on author"],
+    );
+  }
 });
 
 test("unresolved proof routes contributors and maintainers to distinct owners", () => {
   assert.deepEqual(
-    prStatusLabelsForTest(["clawsweeper:automerge"], {
+    prStatusLabels(["clawsweeper:automerge"], {
       proofStatus: "insufficient",
       needsContributorAction: true,
     }),
     ["clawsweeper:automerge", "status: 📣 needs proof"],
   );
   assert.deepEqual(
-    prStatusLabelsForTest(["clawsweeper:automerge"], {
+    prStatusLabels(["clawsweeper:automerge"], {
       proofStatus: "insufficient",
       needsContributorAction: false,
     }),
@@ -452,51 +414,66 @@ test("unresolved proof routes contributors and maintainers to distinct owners", 
 });
 
 test("historical receipt failures route to the proof owner without erasing independent proof", () => {
-  let receiptStatus = "failed";
-  let needsContributorAction = false;
-  let reviewFailed = false;
-  const reportRealBehaviorProofPolicy = createRealBehaviorProofPolicy({
-    frontMatterValue: (_markdown, key) =>
-      key === "review_status" && reviewFailed ? "failed" : undefined,
-    frontMatterStringArray: () => [],
-    isDocsOnlyPullRequestReport: () => false,
-    isExternalPullRequestReport: () => true,
-    reviewSectionValue: () => "",
-    reportAttachedLiveVerification: () => ({ status: receiptStatus }) as never,
-    reportRealBehaviorProof: (): RealBehaviorProof => ({
-      status: needsContributorAction ? "missing" : "sufficient",
-      evidenceKind: "terminal",
-      needsContributorAction,
-      summary: "Contributor-supplied terminal output already proves the changed behavior.",
-    }),
-  });
-  const policy = createLabelPolicy({
-    asRecord: (value) => value as Record<string, unknown>,
-    frontMatterValue: (_markdown, key) =>
-      key === "type"
-        ? "pull_request"
-        : key === "reviewed_at"
-          ? "2026-08-27T12:00:00.000Z"
-          : key === "review_status" && reviewFailed
-            ? "failed"
-            : undefined,
-    isAutomationReportAuthor: () => false,
-    mergeRiskOptionsFromReport: () => [],
-    reportOverallCorrectness: () => "patch is correct",
-    reportRealBehaviorProofPolicy,
-    reportReviewFindings: () => [],
-    reportSecurityReview: () => ({ status: "cleared", summary: "", concerns: [] }),
-    stringOrUndefined: (value) => (typeof value === "string" ? value : undefined),
-    timestampMs: (value) => (value ? Date.parse(value) : null),
-  });
+  const headSha = "abc123def456abc123def456abc123def456abcd";
+  const plan: LiveProofPlan = {
+    status: "recommended",
+    surface: "terminal",
+    terminalCompletion: "exit_zero",
+    reason: "Run the changed command once.",
+    payoff: { kind: "static_text", justification: "The command output shows the behavior." },
+    entry: "synthetic-command",
+    steps: [
+      { action: "run", command: "synthetic-command" },
+      { action: "expect_output", text: "Synthetic output." },
+    ],
+  };
+  const receipt = (status: "completed" | "failed") =>
+    `${LIVE_VERIFICATION_MARKER}\nResult: ${encodeLiveVerificationReportPayload(
+      buildLiveVerificationResult({
+        repo: "openclaw/openclaw",
+        item: 119610,
+        headSha,
+        plan,
+        driveStatus: status,
+        stepLog: plan.steps.map((step) => ({
+          action: step.action,
+          status,
+          detail: "Synthetic outcome.",
+          presentAtStart: false,
+          satisfied: status === "completed",
+        })),
+        output: "Synthetic output.",
+        verifiedAt: "2026-08-27T00:00:00.000Z",
+      }),
+    )}`;
+  const receipts = {
+    absent: "",
+    passed: receipt("completed"),
+    failed: receipt("failed"),
+    malformed: `${LIVE_VERIFICATION_MARKER}\nResult: invalid!`,
+  };
 
-  for (reviewFailed of [false, true]) {
-    for (receiptStatus of ["absent", "passed", "failed", "malformed"]) {
-      for (needsContributorAction of [false, true]) {
+  for (const reviewFailed of [false, true]) {
+    for (const receiptStatus of ["absent", "passed", "failed", "malformed"] as const) {
+      for (const needsContributorAction of [false, true]) {
+        const report = pullRequestProofReport({
+          author: "contributor",
+          association: "CONTRIBUTOR",
+          status: needsContributorAction ? "missing" : "sufficient",
+          frontMatter: {
+            repository: "openclaw/openclaw",
+            pull_head_sha: headSha,
+            reviewed_at: "2026-08-27T12:00:00.000Z",
+            review_status: reviewFailed ? "failed" : "complete",
+          },
+          sections: `## Live Proof\n\n${legacyLiveProofSection(plan)}${
+            receipts[receiptStatus] ? `\n\n${receipts[receiptStatus]}` : ""
+          }\n\n`,
+        });
+        const context = `${receiptStatus}: contributor action=${needsContributorAction}, failed review=${reviewFailed}`;
+        assert.equal(reportAttachedLiveVerification(report).status, receiptStatus, context);
         assert.equal(
-          policy.prStatusLabelKindFromReport("report", { comments: [], timeline: [] }, [
-            "clawsweeper:automerge",
-          ]),
+          prStatusLabelKindFromReport(report, noActivity, ["clawsweeper:automerge"]),
           needsContributorAction && !reviewFailed
             ? "needs_proof"
             : receiptStatus === "failed" || receiptStatus === "malformed"
@@ -504,7 +481,7 @@ test("historical receipt failures route to the proof owner without erasing indep
               : reviewFailed
                 ? null
                 : "automerge_armed",
-          `${receiptStatus}: contributor action=${needsContributorAction}, failed review=${reviewFailed}`,
+          context,
         );
       }
     }
@@ -513,7 +490,7 @@ test("historical receipt failures route to the proof owner without erasing indep
 
 test("ClawSweeper PR status labels preserve other label families", () => {
   assert.deepEqual(
-    prStatusLabelsForTest(
+    prStatusLabels(
       [
         "rating: 🦞 diamond lobster",
         "merge-risk: 🚨 compatibility",
@@ -535,53 +512,42 @@ test("ClawSweeper PR status labels preserve other label families", () => {
 });
 
 test("ClawSweeper PR status labels respect priority ordering", () => {
-  const automergeArmedLabel = prStatusLabelSchemeForTest().find(
+  const automergeArmedLabel = PR_STATUS_LABELS.find(
     (label) => label.kind === "automerge_armed",
   )?.name;
-  const reReviewLabel = prStatusLabelSchemeForTest().find(
-    (label) => label.kind === "re_review_loop",
-  )?.name;
+  const reReviewLabel = PR_STATUS_LABELS.find((label) => label.kind === "re_review_loop")?.name;
   assert.ok(automergeArmedLabel);
   assert.ok(reReviewLabel);
   assert.deepEqual(
-    prStatusLabelsForTest(["clawsweeper:automerge"], {
+    prStatusLabels(["clawsweeper:automerge"], {
       proofStatus: "missing",
       hasRecentReReviewRequest: true,
     }),
     ["clawsweeper:automerge", reReviewLabel],
   );
   assert.deepEqual(
-    prStatusLabelsForTest(
-      ["clawsweeper:automerge", "clawsweeper:human-review", automergeArmedLabel],
-      {
-        proofStatus: "missing",
-        hasRecentReReviewRequest: true,
-      },
-    ),
+    prStatusLabels(["clawsweeper:automerge", "clawsweeper:human-review", automergeArmedLabel], {
+      proofStatus: "missing",
+      hasRecentReReviewRequest: true,
+    }),
     ["clawsweeper:automerge", "clawsweeper:human-review"],
   );
   assert.deepEqual(
-    prStatusLabelsForTest(
-      ["clawsweeper:automerge", "clawsweeper:merge-ready", automergeArmedLabel],
-      {
-        proofStatus: "missing",
-        hasRecentReReviewRequest: true,
-      },
-    ),
+    prStatusLabels(["clawsweeper:automerge", "clawsweeper:merge-ready", automergeArmedLabel], {
+      proofStatus: "missing",
+      hasRecentReReviewRequest: true,
+    }),
     ["clawsweeper:automerge", "clawsweeper:merge-ready"],
   );
   assert.deepEqual(
-    prStatusLabelsForTest(
-      ["clawsweeper:automerge", "clawsweeper:manual-only", automergeArmedLabel],
-      {
-        proofStatus: "missing",
-        hasRecentReReviewRequest: true,
-      },
-    ),
+    prStatusLabels(["clawsweeper:automerge", "clawsweeper:manual-only", automergeArmedLabel], {
+      proofStatus: "missing",
+      hasRecentReReviewRequest: true,
+    }),
     ["clawsweeper:automerge", "clawsweeper:manual-only"],
   );
   assert.deepEqual(
-    prStatusLabelsForTest([], {
+    prStatusLabels([], {
       proofStatus: "missing",
       hasRecentAuthorActivity: true,
       hasRecentReReviewRequest: true,
@@ -589,21 +555,21 @@ test("ClawSweeper PR status labels respect priority ordering", () => {
     ["status: 🔁 re-review loop"],
   );
   assert.deepEqual(
-    prStatusLabelsForTest([], {
+    prStatusLabels([], {
       proofStatus: "missing",
       hasRecentAuthorActivity: true,
     }),
     ["status: 🛠️ actively grinding"],
   );
   assert.deepEqual(
-    prStatusLabelsForTest([], {
+    prStatusLabels([], {
       proofStatus: "missing",
     }),
     ["status: 📣 needs proof"],
   );
   assert.deepEqual(
-    prStatusLabelsForTest([], {
-      findingPriorities: [2],
+    prStatusLabels([], {
+      beforeMergeItems: ["needs-changes"],
     }),
     ["status: ⏳ waiting on author"],
   );
@@ -611,7 +577,7 @@ test("ClawSweeper PR status labels respect priority ordering", () => {
 
 test("ClawSweeper PR status ignores bot-authored re-review guidance", () => {
   assert.deepEqual(
-    prStatusLabelsForTest([], {
+    prStatusLabels([], {
       proofStatus: "missing",
       reviewedAt: "2026-01-01T00:00:00Z",
       comments: [
@@ -625,7 +591,7 @@ test("ClawSweeper PR status ignores bot-authored re-review guidance", () => {
     ["status: 📣 needs proof"],
   );
   assert.deepEqual(
-    prStatusLabelsForTest([], {
+    prStatusLabels([], {
       proofStatus: "missing",
       reviewedAt: "2026-01-01T00:00:00Z",
       comments: [
@@ -640,24 +606,10 @@ test("ClawSweeper PR status ignores bot-authored re-review guidance", () => {
   );
 });
 
-test("ClawSweeper PR status treats maintainer-only rank-up moves as ready", () => {
-  assert.deepEqual(
-    prStatusLabelsForTest([], {
-      nextSteps: [
-        "Maintainer accepts the relative details.reportPath contract change before merge.",
-      ],
-      proofStatus: "sufficient",
-      overallCorrectness: "patch is correct",
-    }),
-    ["status: 👀 ready for maintainer look"],
-  );
-});
-
 test("ClawSweeper PR status labels are PR-only", () => {
   assert.deepEqual(
-    prStatusLabelsForTest(["bug", "status: ⏳ waiting on author"], {
+    prStatusLabels(["bug", "status: ⏳ waiting on author"], {
       isPullRequest: false,
-      nextSteps: ["Add proof."],
     }),
     ["bug"],
   );
@@ -665,7 +617,7 @@ test("ClawSweeper PR status labels are PR-only", () => {
 
 test("ClawSweeper PR status label scheme exposes workflow states", () => {
   assert.deepEqual(
-    prStatusLabelSchemeForTest().map(({ kind, name, color }) => ({ kind, name, color })),
+    PR_STATUS_LABELS.map(({ kind, name, color }) => ({ kind, name, color })),
     [
       { kind: "automerge_armed", name: "status: 🚀 automerge armed", color: "0E8A16" },
       { kind: "re_review_loop", name: "status: 🔁 re-review loop", color: "8250DF" },
@@ -687,49 +639,33 @@ test("ClawSweeper PR status label scheme exposes workflow states", () => {
 });
 
 test("ClawSweeper Telegram proof judgement controls the E2E proof label", () => {
-  assert.deepEqual(telegramVisibleProofLabelsForTest(["channel: telegram"], "needed"), [
+  assert.deepEqual(nextTelegramVisibleProofLabels(["channel: telegram"], { status: "needed" }), [
     "channel: telegram",
     "proof: telegram-e2e",
   ]);
   assert.deepEqual(
-    telegramVisibleProofLabelsForTest(["channel: telegram", "proof: telegram-e2e"], "not_needed"),
+    nextTelegramVisibleProofLabels(["channel: telegram", "proof: telegram-e2e"], {
+      status: "not_needed",
+    }),
     ["channel: telegram"],
   );
   assert.deepEqual(
-    telegramVisibleProofLabelsForTest(
-      ["channel: telegram", "mantis: telegram-visible-proof"],
-      "needed",
-    ),
+    nextTelegramVisibleProofLabels(["channel: telegram", "mantis: telegram-visible-proof"], {
+      status: "needed",
+    }),
     ["channel: telegram", "proof: telegram-e2e"],
   );
   assert.deepEqual(
-    telegramVisibleProofLabelsForTest(
-      ["channel: telegram", "mantis: telegram-visible-proof"],
-      "not_needed",
-    ),
+    nextTelegramVisibleProofLabels(["channel: telegram", "mantis: telegram-visible-proof"], {
+      status: "not_needed",
+    }),
     ["channel: telegram"],
   );
 });
 
 test("ClawSweeper replaces the legacy Telegram proof label during synchronization", () => {
   const commands: string[][] = [];
-  const labels = createLabelSynchronization({
-    ghObservedMutationCommand: ({ args }: { args: string[] }) => {
-      commands.push(args);
-      return "";
-    },
-    hasNormalizedLabel: (current: readonly string[], label: string) =>
-      current.some((candidate) => candidate.toLowerCase() === label.toLowerCase()),
-    normalizeLabelName: (label: string) => label.toLowerCase(),
-    protectedLabels: () => [],
-    isBulkFilerExemptAuthorAssociation: () => false,
-    isBulkFilerExemptRepositoryPermission: () => false,
-    frontMatterValue: () => undefined,
-    frontMatterStringArray: () => [],
-    reportSecurityReview: () => ({ status: "not_applicable", evidence: [] }),
-    reviewSectionValue: () => "",
-    labelPolicy: {},
-  } as never);
+  const labels = recordingLabelSync(commands);
 
   labels.syncTelegramVisibleProofLabel({
     number: 42,
@@ -754,7 +690,7 @@ test("ClawSweeper replaces the legacy Telegram proof label during synchronizatio
 });
 
 test("ClawSweeper priority label scheme exposes P0 through P3 labels", () => {
-  assert.deepEqual(priorityLabelSchemeForTest(), [
+  assert.deepEqual(labelScheme(PRIORITY_LABELS), [
     {
       name: "P0",
       color: "B60205",
@@ -779,7 +715,7 @@ test("ClawSweeper priority label scheme exposes P0 through P3 labels", () => {
 });
 
 test("ClawSweeper priority label descriptions fit GitHub label limits", () => {
-  for (const label of priorityLabelSchemeForTest()) {
+  for (const label of labelScheme(PRIORITY_LABELS)) {
     assert.ok(
       label.description.length <= 100,
       `${label.name} description is ${label.description.length} characters`,
@@ -787,7 +723,7 @@ test("ClawSweeper priority label descriptions fit GitHub label limits", () => {
   }
 });
 
-test("ClawSweeper priority label descriptions stay aligned with prompt and schema", () => {
+test("ClawSweeper priority label descriptions live in the schema only", () => {
   const schema = JSON.parse(reviewDecisionSchemaText()) as {
     properties?: {
       triagePriority?: {
@@ -796,11 +732,11 @@ test("ClawSweeper priority label descriptions stay aligned with prompt and schem
     };
   };
   const schemaDescription = schema.properties?.triagePriority?.description ?? "";
-  const prompt = reviewPromptTemplate();
-  for (const label of priorityLabelSchemeForTest()) {
+  const prompt = `${reviewPrompt("issue")}\n${reviewPrompt("pull_request")}`;
+  for (const label of labelScheme(PRIORITY_LABELS)) {
     assert.ok(
-      prompt.includes(`\`${label.name}\`: ${label.description}`),
-      `${label.name} description is missing from the review prompt`,
+      !prompt.includes(`\`${label.name}\`: `),
+      `${label.name} description is restated in the review prompt`,
     );
     assert.ok(
       schemaDescription.includes(`${label.name}: ${label.description}`),
@@ -809,31 +745,10 @@ test("ClawSweeper priority label descriptions stay aligned with prompt and schem
   }
 });
 
-test("review prompt keeps unrelated CI noise out of triage priority", () => {
-  const schema = JSON.parse(reviewDecisionSchemaText()) as {
-    properties?: {
-      triagePriority?: {
-        description?: string;
-      };
-    };
-  };
-  const schemaDescription = schema.properties?.triagePriority?.description ?? "";
-  const prompt = reviewPromptTemplate();
-
-  assert.match(prompt, /Do not raise `triagePriority` solely because CI or status checks/);
-  assert.match(
-    prompt,
-    /failing,\s+pending,\s+missing,\s+flaky,\s+or require routine maintainer follow-up/,
-  );
-  assert.match(prompt, /PR diff plausibly caused an urgent regression/);
-  assert.match(schemaDescription, /Do not raise priority solely because CI or status checks/);
-  assert.match(schemaDescription, /diff-caused urgent regressions/);
-});
-
 test("ClawSweeper priority labels follow triage priority", () => {
-  assert.deepEqual(priorityLabelsForTest(["bug"], "P2"), ["bug", "P2"]);
-  assert.deepEqual(priorityLabelsForTest(["bug", "P3"], "P1"), ["bug", "P1"]);
-  assert.deepEqual(priorityLabelsForTest(["P0", "bug"], "none"), ["bug"]);
+  assert.deepEqual(nextPriorityLabels(["bug"], "P2"), ["bug", "P2"]);
+  assert.deepEqual(nextPriorityLabels(["bug", "P3"], "P1"), ["bug", "P1"]);
+  assert.deepEqual(nextPriorityLabels(["P0", "bug"], "none"), ["bug"]);
 });
 
 test("ClawSweeper label justifications render selected label reasons", () => {
@@ -861,7 +776,7 @@ test("ClawSweeper label justifications render selected label reasons", () => {
 });
 
 test("ClawSweeper impact label scheme exposes owned impact labels", () => {
-  assert.deepEqual(impactLabelSchemeForTest(), [
+  assert.deepEqual(labelScheme(IMPACT_LABELS), [
     {
       name: "impact:data-loss",
       color: "B60205",
@@ -919,7 +834,7 @@ test("ClawSweeper impact label scheme exposes owned impact labels", () => {
 });
 
 test("ClawSweeper impact label descriptions fit GitHub label limits", () => {
-  for (const label of impactLabelSchemeForTest()) {
+  for (const label of labelScheme(IMPACT_LABELS)) {
     assert.ok(
       label.description.length <= 100,
       `${label.name} description is ${label.description.length} characters`,
@@ -927,7 +842,7 @@ test("ClawSweeper impact label descriptions fit GitHub label limits", () => {
   }
 });
 
-test("ClawSweeper impact label descriptions stay aligned with prompt and schema", () => {
+test("ClawSweeper impact label descriptions live in the schema only", () => {
   const schema = JSON.parse(reviewDecisionSchemaText()) as {
     properties?: {
       impactLabels?: {
@@ -936,11 +851,11 @@ test("ClawSweeper impact label descriptions stay aligned with prompt and schema"
     };
   };
   const schemaDescription = schema.properties?.impactLabels?.description ?? "";
-  const prompt = reviewPromptTemplate();
-  for (const label of impactLabelSchemeForTest()) {
+  const prompt = `${reviewPrompt("issue")}\n${reviewPrompt("pull_request")}`;
+  for (const label of labelScheme(IMPACT_LABELS)) {
     assert.ok(
-      prompt.includes(`\`${label.name}\`: ${label.description}`),
-      `${label.name} description is missing from the review prompt`,
+      !prompt.includes(`\`${label.name}\`: `),
+      `${label.name} description is restated in the review prompt`,
     );
     assert.ok(
       schemaDescription.includes(`${label.name}: ${label.description}`),
@@ -962,7 +877,6 @@ test("review prompt and schema define UX release-blocker override", () => {
   const schema = JSON.parse(reviewDecisionSchemaText()) as {
     properties?: {
       impactLabels?: {
-        description?: string;
         items?: {
           enum?: string[];
         };
@@ -978,21 +892,10 @@ test("review prompt and schema define UX release-blocker override", () => {
       };
     };
   };
-  const schemaDescription = schema.properties?.impactLabels?.description ?? "";
   const impactLabelEnum = schema.properties?.impactLabels?.items?.enum ?? [];
   const justificationLabelEnum =
     schema.properties?.labelJustifications?.items?.properties?.label?.enum ?? [];
-  const prompt = reviewPromptTemplate();
 
-  assert.match(prompt, /Apply this UX override before falling back to ordinary technical severity/);
-  assert.match(prompt, /non-technical first-time or community user/);
-  assert.match(prompt, /terminal commands, config edits, log inspection, manual file edits/);
-  assert.match(prompt, /override requires a\s+blocked user-facing path/);
-  assert.match(prompt, /Set `triagePriority: "P0"` and include `impact:ux-release-blocker`/);
-  assert.match(prompt, /Doctor button,\s+Fix button,\s+setup wizard,\s+inline\s+recovery/);
-  assert.match(schemaDescription, /UX override:/);
-  assert.match(schemaDescription, /non-technical first-time or community user/);
-  assert.match(schemaDescription, /Doctor button, Fix button, setup wizard, inline recovery/);
   assert.ok(impactLabelEnum.includes("impact:ux-release-blocker"));
   assert.ok(impactLabelEnum.includes("impact:ux-friction"));
   assert.ok(justificationLabelEnum.includes("impact:ux-release-blocker"));
@@ -1000,7 +903,7 @@ test("review prompt and schema define UX release-blocker override", () => {
 });
 
 test("ClawSweeper merge-risk label scheme exposes PR-only merge warning labels", () => {
-  assert.deepEqual(mergeRiskLabelSchemeForTest(), [
+  assert.deepEqual(labelScheme(MERGE_RISK_LABELS), [
     {
       name: "merge-risk: 🚨 compatibility",
       color: "D1242F",
@@ -1052,7 +955,7 @@ test("ClawSweeper merge-risk label scheme exposes PR-only merge warning labels",
 });
 
 test("ClawSweeper merge-risk label descriptions fit GitHub label limits", () => {
-  for (const label of mergeRiskLabelSchemeForTest()) {
+  for (const label of labelScheme(MERGE_RISK_LABELS)) {
     assert.ok(
       label.description.length <= 100,
       `${label.name} description is ${label.description.length} characters`,
@@ -1060,7 +963,7 @@ test("ClawSweeper merge-risk label descriptions fit GitHub label limits", () => 
   }
 });
 
-test("ClawSweeper merge-risk label descriptions stay aligned with prompt and schema", () => {
+test("ClawSweeper merge-risk label descriptions live in the schema only", () => {
   const schema = JSON.parse(reviewDecisionSchemaText()) as {
     properties?: {
       mergeRiskLabels?: {
@@ -1069,11 +972,11 @@ test("ClawSweeper merge-risk label descriptions stay aligned with prompt and sch
     };
   };
   const schemaDescription = schema.properties?.mergeRiskLabels?.description ?? "";
-  const prompt = reviewPromptTemplate();
-  for (const label of mergeRiskLabelSchemeForTest()) {
+  const prompt = `${reviewPrompt("issue")}\n${reviewPrompt("pull_request")}`;
+  for (const label of labelScheme(MERGE_RISK_LABELS)) {
     assert.ok(
-      prompt.includes(`\`${label.name}\`: ${label.description}`),
-      `${label.name} description is missing from the review prompt`,
+      !prompt.includes(`\`${label.name}\`: `),
+      `${label.name} description is restated in the review prompt`,
     );
     assert.ok(
       schemaDescription.includes(`${label.name}: ${label.description}`),
@@ -1082,57 +985,38 @@ test("ClawSweeper merge-risk label descriptions stay aligned with prompt and sch
   }
 });
 
-test("review prompt uses automation merge risk only for diff-caused automation risk", () => {
-  const schema = JSON.parse(reviewDecisionSchemaText()) as {
-    properties?: {
-      mergeRiskLabels?: {
-        description?: string;
-      };
-    };
-  };
-  const schemaDescription = schema.properties?.mergeRiskLabels?.description ?? "";
-  const prompt = reviewPromptTemplate();
-
-  assert.match(prompt, /Do not use `merge-risk: 🚨 automation` only because CI is red/);
-  assert.match(prompt, /pending,\s+flaky,\s+or absent/);
-  assert.match(prompt, /PR diff changes automation behavior/);
-  assert.match(prompt, /plausibly causes CI,\s+automerge,\s+proof capture,\s+label sync/);
-  assert.match(schemaDescription, /Do not use merge-risk: 🚨 automation only because CI is red/);
-  assert.match(schemaDescription, /PR diff changes automation behavior/);
-});
-
 test("ClawSweeper merge-risk labels remove stale owned labels and preserve unrelated labels", () => {
   assert.deepEqual(
-    mergeRiskLabelsForTest(
+    nextMergeRiskLabels(
       ["bug", "merge-risk: 🚨 compatibility", "merge-risk: 🚨 availability", "impact:message-loss"],
       ["merge-risk: 🚨 message-delivery", "merge-risk: 🚨 other", "not-a-merge-risk-label"],
     ),
     ["bug", "impact:message-loss", "merge-risk: 🚨 message-delivery", "merge-risk: 🚨 other"],
   );
-  assert.deepEqual(mergeRiskLabelsForTest(["bug", "merge-risk: 🚨 auth-provider"], []), ["bug"]);
+  assert.deepEqual(nextMergeRiskLabels(["bug", "merge-risk: 🚨 auth-provider"], []), ["bug"]);
 });
 
 test("ClawSweeper impact labels remove stale owned labels and preserve unrelated labels", () => {
   assert.deepEqual(
-    impactLabelsForTest(
+    nextImpactLabels(
       ["bug", "impact:data-loss", "impact:security", "proof: sufficient", "P1"],
       ["impact:message-loss", "impact:other", "not-an-impact-label"],
     ),
     ["bug", "proof: sufficient", "P1", "impact:message-loss", "impact:other"],
   );
-  assert.deepEqual(impactLabelsForTest(["bug", "impact:auth-provider"], []), ["bug"]);
+  assert.deepEqual(nextImpactLabels(["bug", "impact:auth-provider"], []), ["bug"]);
 });
 
 test("ClawSweeper maturity labels remove stale owned labels and preserve unrelated labels", () => {
-  assert.deepEqual(maturityLabelSchemeForTest(), [
+  assert.deepEqual(labelScheme(MATURITY_LABELS), [
     {
       name: "maturity:stable",
       color: "1F883D",
       description: "Broken existing behavior primarily owned by an M4/M5 scorecard surface.",
     },
   ]);
-  assert.deepEqual(maturityLabelsForTest(["bug"], ["maturity:stable"]), ["bug", "maturity:stable"]);
-  assert.deepEqual(maturityLabelsForTest(["bug", "maturity:stable", "impact:security"], []), [
+  assert.deepEqual(nextMaturityLabels(["bug"], ["maturity:stable"]), ["bug", "maturity:stable"]);
+  assert.deepEqual(nextMaturityLabels(["bug", "maturity:stable", "impact:security"], []), [
     "bug",
     "impact:security",
   ]);
@@ -1145,23 +1029,7 @@ test("ClawSweeper updates each managed label category before applying it", () =>
     ["syncMergeRiskLabels", "mergeRiskLabels", "merge-risk: 🚨 session-state"],
   ] as const) {
     const commands: string[][] = [];
-    const labels = createLabelSynchronization({
-      ghObservedMutationCommand: ({ args }: { args: string[] }) => {
-        commands.push(args);
-        return "";
-      },
-      hasNormalizedLabel: (current: readonly string[], expected: string) =>
-        current.some((candidate) => candidate.toLowerCase() === expected.toLowerCase()),
-      normalizeLabelName: (name: string) => name.toLowerCase(),
-      protectedLabels: () => [],
-      isBulkFilerExemptAuthorAssociation: () => false,
-      isBulkFilerExemptRepositoryPermission: () => false,
-      frontMatterValue: () => undefined,
-      frontMatterStringArray: () => [],
-      reportSecurityReview: () => ({ status: "not_applicable", evidence: [] }),
-      reviewSectionValue: () => "",
-      labelPolicy: {},
-    } as never);
+    const labels = recordingLabelSync(commands);
 
     const result = labels[method]({
       number: 42,
@@ -1235,7 +1103,7 @@ test("ClawSweeper impact labels do not alter PR review finding priorities", () =
 
 test("ClawSweeper issue advisory labels expose high-confidence reproduction state", () => {
   assert.deepEqual(
-    issueAdvisoryLabelsForTest(["bug"], {
+    nextIssueAdvisoryLabels(["bug"], {
       type: "issue",
       reproductionStatus: "reproduced",
       reproductionConfidence: "high",
@@ -1243,7 +1111,7 @@ test("ClawSweeper issue advisory labels expose high-confidence reproduction stat
     ["bug", "issue-rating: 🦀 challenger crab", "clawsweeper:current-main-repro"],
   );
   assert.deepEqual(
-    issueAdvisoryLabelsForTest(["bug"], {
+    nextIssueAdvisoryLabels(["bug"], {
       type: "issue",
       reproductionStatus: "source_reproducible",
       reproductionConfidence: "high",
@@ -1251,7 +1119,7 @@ test("ClawSweeper issue advisory labels expose high-confidence reproduction stat
     ["bug", "issue-rating: 🦞 diamond lobster", "clawsweeper:source-repro"],
   );
   assert.deepEqual(
-    issueAdvisoryLabelsForTest(["bug"], {
+    nextIssueAdvisoryLabels(["bug"], {
       type: "issue",
       reproductionStatus: "reproduced",
       reproductionConfidence: "medium",
@@ -1259,7 +1127,7 @@ test("ClawSweeper issue advisory labels expose high-confidence reproduction stat
     ["bug", "issue-rating: 🐚 platinum hermit"],
   );
   assert.deepEqual(
-    issueAdvisoryLabelsForTest(["bug"], {
+    nextIssueAdvisoryLabels(["bug"], {
       type: "issue",
       reproductionStatus: "not_reproduced",
       reproductionConfidence: "high",
@@ -1267,7 +1135,7 @@ test("ClawSweeper issue advisory labels expose high-confidence reproduction stat
     ["bug", "issue-rating: 🦪 silver shellfish", "clawsweeper:not-repro-on-main"],
   );
   assert.deepEqual(
-    issueAdvisoryLabelsForTest(["bug"], {
+    nextIssueAdvisoryLabels(["bug"], {
       type: "issue",
       reproductionStatus: "source_reproducible",
       reproductionConfidence: "medium",
@@ -1275,7 +1143,7 @@ test("ClawSweeper issue advisory labels expose high-confidence reproduction stat
     ["bug", "issue-rating: 🐚 platinum hermit", "clawsweeper:needs-live-repro"],
   );
   assert.deepEqual(
-    issueAdvisoryLabelsForTest(["bug"], {
+    nextIssueAdvisoryLabels(["bug"], {
       type: "issue",
       reproductionStatus: "unclear",
       reproductionConfidence: "low",
@@ -1286,7 +1154,7 @@ test("ClawSweeper issue advisory labels expose high-confidence reproduction stat
 
 test("ClawSweeper issue advisory labels expose work-lane routing state", () => {
   assert.deepEqual(
-    issueAdvisoryLabelsForTest(["clawsweeper"], {
+    nextIssueAdvisoryLabels(["clawsweeper"], {
       type: "issue",
       workCandidate: "queue_fix_pr",
       workStatus: "candidate",
@@ -1302,7 +1170,7 @@ test("ClawSweeper issue advisory labels expose work-lane routing state", () => {
     ],
   );
   assert.deepEqual(
-    issueAdvisoryLabelsForTest(["clawsweeper"], {
+    nextIssueAdvisoryLabels(["clawsweeper"], {
       type: "issue",
       workCandidate: "queue_fix_pr",
       workStatus: "candidate",
@@ -1311,7 +1179,7 @@ test("ClawSweeper issue advisory labels expose work-lane routing state", () => {
     ["clawsweeper", "issue-rating: 🧂 unranked krab"],
   );
   assert.deepEqual(
-    issueAdvisoryLabelsForTest(["clawsweeper"], {
+    nextIssueAdvisoryLabels(["clawsweeper"], {
       type: "issue",
       workCandidate: "manual_review",
     }),
@@ -1323,7 +1191,7 @@ test("ClawSweeper issue advisory labels expose work-lane routing state", () => {
     ],
   );
   assert.deepEqual(
-    issueAdvisoryLabelsForTest(["clawsweeper"], {
+    nextIssueAdvisoryLabels(["clawsweeper"], {
       type: "issue",
       workStatus: "manual_review",
     }),
@@ -1337,7 +1205,7 @@ test("ClawSweeper issue advisory labels expose work-lane routing state", () => {
 });
 
 test("bulk-filed issues never enter automated fix dispatch", () => {
-  const labels = issueAdvisoryLabelsForTest(["bug", "clawsweeper:bulk-filed"], {
+  const labels = nextIssueAdvisoryLabels(["bug", "clawsweeper:bulk-filed"], {
     type: "issue",
     itemCategory: "bug",
     reproductionStatus: "reproduced",
@@ -1382,10 +1250,7 @@ test("ClawSweeper labels only small verified strict bugs as good first issues", 
     hasOpenLinkedPullRequest: false,
   };
 
-  assert.equal(
-    issueAdvisoryLabelsForTest(["bug"], eligibleState).includes("good first issue"),
-    true,
-  );
+  assert.equal(nextIssueAdvisoryLabels(["bug"], eligibleState).includes("good first issue"), true);
 
   for (const ineligibleState of [
     { reproductionStatus: "source_reproducible" },
@@ -1407,7 +1272,7 @@ test("ClawSweeper labels only small verified strict bugs as good first issues", 
     { hasOpenLinkedPullRequest: true },
   ]) {
     assert.equal(
-      issueAdvisoryLabelsForTest(["bug"], { ...eligibleState, ...ineligibleState }).includes(
+      nextIssueAdvisoryLabels(["bug"], { ...eligibleState, ...ineligibleState }).includes(
         "good first issue",
       ),
       false,
@@ -1423,19 +1288,17 @@ test("ClawSweeper labels only small verified strict bugs as good first issues", 
     "impact:security",
   ]) {
     assert.equal(
-      issueAdvisoryLabelsForTest(["bug", securityLabel], eligibleState).includes(
-        "good first issue",
-      ),
+      nextIssueAdvisoryLabels(["bug", securityLabel], eligibleState).includes("good first issue"),
       false,
       securityLabel,
     );
   }
   assert.equal(
-    issueAdvisoryLabelsForTest(["bug", "maintainer"], eligibleState).includes("good first issue"),
+    nextIssueAdvisoryLabels(["bug", "maintainer"], eligibleState).includes("good first issue"),
     false,
   );
   assert.equal(
-    issueAdvisoryLabelsForTest(["bug", "good first issue"], {
+    nextIssueAdvisoryLabels(["bug", "good first issue"], {
       ...eligibleState,
       implementationComplexity: "medium",
     }).includes("good first issue"),
@@ -1511,7 +1374,7 @@ test("ClawSweeper respects human good first issue removal", () => {
 });
 
 test("ClawSweeper issue advisory labels protect queueable issues from stale automation", () => {
-  const queueableLabels = issueAdvisoryLabelsForTest(["bug", "stale"], {
+  const queueableLabels = nextIssueAdvisoryLabels(["bug", "stale"], {
     type: "issue",
     workCandidate: "queue_fix_pr",
     workStatus: "candidate",
@@ -1524,7 +1387,7 @@ test("ClawSweeper issue advisory labels protect queueable issues from stale auto
   assert.equal(queueableLabels.includes("clawsweeper:queueable-fix"), true);
   assert.equal(queueableLabels.includes("clawsweeper:fix-shape-clear"), true);
 
-  const alreadyProtectedLabels = issueAdvisoryLabelsForTest(["bug", "no-stale"], {
+  const alreadyProtectedLabels = nextIssueAdvisoryLabels(["bug", "no-stale"], {
     type: "issue",
     workCandidate: "queue_fix_pr",
     workStatus: "candidate",
@@ -1537,7 +1400,7 @@ test("ClawSweeper issue advisory labels protect queueable issues from stale auto
 });
 
 test("ClawSweeper issue advisory labels do not stale-proof non-queueable issues", () => {
-  const lowerConfidenceLabels = issueAdvisoryLabelsForTest(["bug", "stale"], {
+  const lowerConfidenceLabels = nextIssueAdvisoryLabels(["bug", "stale"], {
     type: "issue",
     workCandidate: "queue_fix_pr",
     workStatus: "candidate",
@@ -1549,7 +1412,7 @@ test("ClawSweeper issue advisory labels do not stale-proof non-queueable issues"
   assert.equal(lowerConfidenceLabels.includes("no-stale"), false);
   assert.equal(lowerConfidenceLabels.includes("clawsweeper:queueable-fix"), false);
 
-  const manualReviewLabels = issueAdvisoryLabelsForTest(["bug", "stale"], {
+  const manualReviewLabels = nextIssueAdvisoryLabels(["bug", "stale"], {
     type: "issue",
     workCandidate: "manual_review",
     workConfidence: "high",
@@ -1562,7 +1425,7 @@ test("ClawSweeper issue advisory labels do not stale-proof non-queueable issues"
   assert.equal(manualReviewLabels.includes("clawsweeper:fix-shape-clear"), true);
   assert.equal(manualReviewLabels.includes("clawsweeper:needs-maintainer-review"), true);
 
-  const demotedQueueableLabels = issueAdvisoryLabelsForTest(
+  const demotedQueueableLabels = nextIssueAdvisoryLabels(
     ["bug", "no-stale", "clawsweeper:queueable-fix"],
     {
       type: "issue",
@@ -1575,7 +1438,7 @@ test("ClawSweeper issue advisory labels do not stale-proof non-queueable issues"
   assert.equal(demotedQueueableLabels.includes("no-stale"), false);
   assert.equal(demotedQueueableLabels.includes("clawsweeper:queueable-fix"), false);
 
-  const manuallyProtectedLabels = issueAdvisoryLabelsForTest(["bug", "no-stale"], {
+  const manuallyProtectedLabels = nextIssueAdvisoryLabels(["bug", "no-stale"], {
     type: "issue",
     workCandidate: "manual_review",
   });
@@ -1583,7 +1446,7 @@ test("ClawSweeper issue advisory labels do not stale-proof non-queueable issues"
   assert.equal(manuallyProtectedLabels.includes("no-stale"), true);
   assert.equal(manuallyProtectedLabels.includes("clawsweeper:needs-maintainer-review"), true);
 
-  const pullRequestLabels = issueAdvisoryLabelsForTest(["bug", "stale"], {
+  const pullRequestLabels = nextIssueAdvisoryLabels(["bug", "stale"], {
     type: "pull_request",
     workCandidate: "queue_fix_pr",
     workStatus: "candidate",
@@ -1596,7 +1459,7 @@ test("ClawSweeper issue advisory labels do not stale-proof non-queueable issues"
 
 test("ClawSweeper issue advisory labels expose linked PR and human decision blockers", () => {
   assert.deepEqual(
-    issueAdvisoryLabelsForTest(["bug"], {
+    nextIssueAdvisoryLabels(["bug"], {
       type: "issue",
       hasOpenLinkedPullRequest: true,
     }),
@@ -1608,7 +1471,7 @@ test("ClawSweeper issue advisory labels expose linked PR and human decision bloc
     ],
   );
   assert.deepEqual(
-    issueAdvisoryLabelsForTest(["bug"], {
+    nextIssueAdvisoryLabels(["bug"], {
       type: "issue",
       requiresProductDecision: true,
     }),
@@ -1620,7 +1483,7 @@ test("ClawSweeper issue advisory labels expose linked PR and human decision bloc
     ],
   );
   assert.deepEqual(
-    issueAdvisoryLabelsForTest(["bug"], {
+    nextIssueAdvisoryLabels(["bug"], {
       type: "issue",
       securityReviewStatus: "needs_attention",
     }),
@@ -1632,7 +1495,7 @@ test("ClawSweeper issue advisory labels expose linked PR and human decision bloc
     ],
   );
   assert.deepEqual(
-    issueAdvisoryLabelsForTest(["bug"], {
+    nextIssueAdvisoryLabels(["bug"], {
       type: "issue",
       itemCategory: "security",
     }),
@@ -1647,7 +1510,7 @@ test("ClawSweeper issue advisory labels expose linked PR and human decision bloc
 
 test("ClawSweeper issue advisory labels remove stale owned labels and preserve other labels", () => {
   assert.deepEqual(
-    issueAdvisoryLabelsForTest(
+    nextIssueAdvisoryLabels(
       [
         "bug",
         "clawsweeper:source-repro",
@@ -1693,7 +1556,7 @@ test("ClawSweeper issue advisory labels remove stale owned labels and preserve o
 
 test("ClawSweeper issue advisory labels do not apply to pull requests", () => {
   assert.deepEqual(
-    issueAdvisoryLabelsForTest(["bug"], {
+    nextIssueAdvisoryLabels(["bug"], {
       type: "pull_request",
       reproductionStatus: "reproduced",
       reproductionConfidence: "high",

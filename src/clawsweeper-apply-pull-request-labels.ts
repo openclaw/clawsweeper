@@ -5,18 +5,19 @@ import type {
   PrStatusLabelKind,
   StalePullRequestReviewHead,
 } from "./clawsweeper-types.js";
+import { frontMatterValue, replaceFrontMatterValue } from "./report-front-matter.js";
+import {
+  reportFeatureShowcase,
+  reportOverallCorrectness,
+  reportPrRating,
+  reportRealBehaviorProof,
+  reportSecurityReview,
+} from "./clawsweeper-report-parser.js";
+import { reportReviewDecision } from "./report-review-decision.js";
+import { prStatusLabelKindFromReport } from "./clawsweeper-label-policy.js";
 
 type ApplyPullRequestLabelDependencies = Pick<
   CreateApplyDecisionWorkflowDependencies,
-  | "frontMatterValue"
-  | "prStatusLabelKindFromReport"
-  | "reportFeatureShowcase"
-  | "reportOverallCorrectness"
-  | "reportPrRating"
-  | "reportRealBehaviorProof"
-  | "reportSecurityReview"
-  | "reportTelegramVisibleProof"
-  | "replaceFrontMatterValue"
   | "syncFeatureShowcaseLabel"
   | "syncPrRatingLabel"
   | "syncPrStatusLabel"
@@ -47,15 +48,6 @@ export function syncApplyPullRequestLabels(
   markdown: string;
 } {
   const {
-    frontMatterValue,
-    prStatusLabelKindFromReport,
-    reportFeatureShowcase,
-    reportOverallCorrectness,
-    reportPrRating,
-    reportRealBehaviorProof,
-    reportSecurityReview,
-    reportTelegramVisibleProof,
-    replaceFrontMatterValue,
     syncFeatureShowcaseLabel,
     syncPrRatingLabel,
     syncPrStatusLabel,
@@ -96,6 +88,8 @@ export function syncApplyPullRequestLabels(
     return { changed, currentPrStatusKind, labels, markdown };
   }
 
+  // Proof, rating, feature showcase, and status labels read the report text with PR merge
+  // readiness, which reads the same fields.
   const proof = reportRealBehaviorProof(markdown);
   applyLabels(syncRealBehaviorProofSufficientLabel({ number, labels, proof, dryRun, onMutation }));
 
@@ -136,7 +130,8 @@ export function syncApplyPullRequestLabels(
     syncTelegramVisibleProofLabel({
       number,
       labels,
-      proof: reportTelegramVisibleProof(markdown),
+      // The apply skips a report whose review record does not read before this step.
+      proof: reportReviewDecision(markdown).telegramVisibleProof,
       dryRun,
       onMutation,
     }),

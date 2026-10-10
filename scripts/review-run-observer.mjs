@@ -43,7 +43,6 @@ export const REVIEW_RUN_OBSERVER_TITLE_LANES = Object.freeze({
   "Review hot ClawSweeper items": "hot_intake",
   "Review hot target repo ": "hot_intake",
   "Review manual hot target": "hot_intake",
-  "Retry failed Codex reviews": "recovery",
   "Review target repo ": "normal_backfill",
   "Review ClawSweeper items": "normal_backfill",
   "Review manual target": "normal_backfill",

@@ -1,0 +1,1 @@
+- Replace workflow and boundary source-text tests with behavior tests of the real admission, dispatcher, setup-state, assist, and publisher paths, and keep the hosted-admission, exact-review secret, and assist token guards as parsed structural invariants.

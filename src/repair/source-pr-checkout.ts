@@ -1,8 +1,7 @@
-import { currentHead } from "./git-repo-utils.js";
+import { currentHead, runGit } from "./git.js";
 import type { GitHubRef } from "./github-ref.js";
 import { parsePullRequestUrl, sameRepoSlug } from "./github-ref.js";
 import type { JsonValue } from "./json-types.js";
-import { runCommand as run } from "./command-runner.js";
 
 const gitNetworkTimeoutMs = Math.max(
   30_000,
@@ -54,7 +53,7 @@ export function checkoutSourcePullRequestHead({
   }
 
   const sourceRef = fetchSourcePullRequestHead({ targetDir, sourcePr });
-  run("git", ["checkout", "-B", branch, sourceRef], { cwd: targetDir });
+  runGit(["checkout", "-B", branch, sourceRef], { cwd: targetDir });
 
   const sourceHeadSha = currentHead(targetDir);
   const expectedHeadSha = pullRequestHeadSha(pull);
@@ -88,7 +87,7 @@ export function fetchSourcePullRequestHead({
   sourcePr: GitHubRef;
 }): string {
   const sourceRef = sourcePullRequestRemoteRef(sourcePr.number);
-  run("git", ["fetch", "origin", sourcePullRequestFetchSpec(sourcePr.number, sourceRef)], {
+  runGit(["fetch", "origin", sourcePullRequestFetchSpec(sourcePr.number, sourceRef)], {
     cwd: targetDir,
     timeoutMs: gitNetworkTimeoutMs,
   });

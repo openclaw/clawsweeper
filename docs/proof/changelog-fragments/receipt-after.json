@@ -1,0 +1,93 @@
+{
+  "proof": "changelog-fragments",
+  "revision": "c2b98a820d51fe2e557755ef6b05c18e9378f4d7",
+  "mechanism": "changelog.d fragments",
+  "environment": {
+    "node": "v24.21.0",
+    "git": "git version 2.54.0 (Apple Git-157)",
+    "pnpm": "12.4.1",
+    "platform": "darwin-arm64"
+  },
+  "changelog_sha256": "0734c09981f8c9d641c3b5b58a3ad3f0785583769d7b04926fef36f95ff8b373",
+  "unreleased_heading": "## 0.3.1 - Unreleased",
+  "concurrent_pull_requests": {
+    "pr_entry_file": "changelog.d/pr-a-entry.md",
+    "merge_exit_status": 0,
+    "merge_conflicted": false,
+    "conflicted_paths": [],
+    "merged_tree_check": {
+      "command": "node <tmp>/tree/scripts/changelog-stitch.mjs --check --root <tmp>/concurrent",
+      "status": 0,
+      "stdout": "Changelog fragment checks passed (2 pending).",
+      "stderr": ""
+    }
+  },
+  "stitch": {
+    "first_run": {
+      "command": "node scripts/changelog-stitch.mjs",
+      "status": 0,
+      "stdout": "Stitched 4 fragment(s) into CHANGELOG.md; removed 4.\n- changelog.d/1719-beta.md\n- changelog.d/1720-alpha.md\n- changelog.d/changelog-fragments.md\n- changelog.d/docs-gamma.md",
+      "stderr": ""
+    },
+    "stitched": true,
+    "remaining_fragments_after_first_run": [],
+    "unreleased_head_after_first_run": [
+      "## 0.3.1 - Unreleased",
+      "",
+      "- Synthetic beta entry.",
+      "- Synthetic alpha entry.",
+      "- Record new ClawSweeper changelog entries as one-bullet `changelog.d/` fragments that `pnpm run changelog:stitch` folds into `CHANGELOG.md` at release time, so concurrent pull requests no longer conflict on the top of the Unreleased section or need a fresh review after each conflict resolution; `pnpm run check:changelog` rejects malformed, duplicate, or stale fragments.",
+      "- Synthetic gamma entry."
+    ],
+    "changelog_sha256_before": "0734c09981f8c9d641c3b5b58a3ad3f0785583769d7b04926fef36f95ff8b373",
+    "changelog_sha256_after_first_run": "80acdbe0951bcdb626b1f670af02393ea07e3b68f344630499eb910331a6d8d0",
+    "changelog_bytes_added": 448,
+    "only_insertion": true,
+    "second_run": {
+      "command": "node scripts/changelog-stitch.mjs",
+      "status": 0,
+      "stdout": "No changelog fragments to stitch.",
+      "stderr": ""
+    },
+    "idempotent": true,
+    "reversed_creation_order_run": {
+      "command": "node scripts/changelog-stitch.mjs",
+      "status": 0,
+      "stdout": "Stitched 4 fragment(s) into CHANGELOG.md; removed 4.\n- changelog.d/1719-beta.md\n- changelog.d/1720-alpha.md\n- changelog.d/changelog-fragments.md\n- changelog.d/docs-gamma.md",
+      "stderr": ""
+    },
+    "deterministic": true
+  },
+  "validation": {
+    "check_static_runs_check_changelog": true,
+    "clean_tree": {
+      "command": "pnpm run --silent check:changelog",
+      "status": 0,
+      "stdout": "Changelog fragment checks passed (1 pending).",
+      "stderr": ""
+    },
+    "stale_entry_sha256": "1e87897b5679b1ea1e3cbf8acbd28919d643cdbc57976e6db6f4b7ac58a6f043",
+    "malformed_and_stale_fragments": {
+      "command": "pnpm run --silent check:changelog",
+      "status": 1,
+      "stdout": "",
+      "stderr": "Changelog fragment checks failed (2):\n- changelog.d/malformed.md: must contain exactly one line: one bullet, no wrapping or blank lines\n- changelog.d/stale.md: re-adds an entry that CHANGELOG.md already lists outside the Unreleased section\n[ELIFECYCLE] Command failed with exit code 1."
+    }
+  },
+  "diagnostic_merge_only_carry_forward": {
+    "changelog_conflict_merge": {
+      "merge_conflicted": true,
+      "patch_id_equal": false,
+      "pr_files_changed_between_merge_bases": [
+        "CHANGELOG.md"
+      ],
+      "carry_forward_preconditions_hold": false
+    },
+    "unrelated_base_merge": {
+      "merge_conflicted": false,
+      "patch_id_equal": true,
+      "pr_files_changed_between_merge_bases": [],
+      "carry_forward_preconditions_hold": true
+    }
+  }
+}

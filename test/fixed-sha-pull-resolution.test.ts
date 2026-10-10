@@ -164,23 +164,11 @@ function statusContextWithCalls(
     targetRepo: () => "openclaw/openclaw",
     markdownLink: (label) => label,
     repoUrlFor: () => "",
-    linkedRelease: (tag) => tag,
-    linkedSha: (sha) => sha,
     profileStatusStart: () => "",
     profileStatusEnd: () => "",
     sweepStatusPath: () => "",
-    markdownRepository: () => "openclaw/openclaw",
     ghJson,
     GitHubRuntimeBudgetError: TestGitHubRuntimeBudgetError,
-    asRecord: (value) =>
-      value && typeof value === "object" && !Array.isArray(value)
-        ? (value as Record<string, unknown>)
-        : {},
-    frontMatterValue: (markdown, key) => {
-      const value = markdown.match(new RegExp(`^${key}: (.*)$`, "m"))?.[1];
-      return value?.startsWith('"') && value.endsWith('"') ? value.slice(1, -1) : value;
-    },
-    stringOrUndefined: (value) => (typeof value === "string" ? value : undefined),
     numberOrUndefined: (value) => (typeof value === "number" ? value : undefined),
     recordOrUndefined: (value) =>
       value && typeof value === "object" && !Array.isArray(value)

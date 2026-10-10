@@ -10,6 +10,8 @@ import {
   worker,
   ExactReviewQueue,
   exactReviewQueueNextWakeAt,
+  ExactReviewDirectPublicationStore,
+  validateDirectPublicationPlan,
   ExactReviewLifecycleProjectionStore,
   lifecycleState,
   captureCanonicalRecordBaseline,
@@ -11479,6 +11481,191 @@ test("dead-letter fresh recovery seeds a review revision that can still publish"
           "8661",
           "artifact_retention_recovery",
           recovered.items["openclaw/openclaw#866"].revision,
+          "openclaw/openclaw",
+        ),
+      ),
+    )
+  ).json();
+  assert.equal(republished.queued, true);
+  assert.equal(republished.superseded, undefined);
+});
+
+function directPublicationPlan(target: string, revision: number, content: string) {
+  const bytes = Buffer.from(content);
+  const [repo, number] = target.split("#");
+  return {
+    canonicalTargetKey: target,
+    fenceKey: target,
+    revision,
+    sourceSha: "c".repeat(40),
+    identity: { canonicalTargetKey: target, fenceKey: target, revision, claimGeneration: 1 },
+    operations: [
+      {
+        path: `records/${repo!.replace("/", "-").toLowerCase()}/items/${number}.md`,
+        deleted: false,
+        mode: "100644" as const,
+        bytes: bytes.byteLength,
+        contentBase64: bytes.toString("base64"),
+      },
+    ],
+    totalBytes: bytes.byteLength,
+    lifecycle: { kind: "router_not_required" as const },
+  };
+}
+
+test("a re-admitted item never reuses a revision it already published directly", async () => {
+  const storage = new MemoryDurableStorage();
+  const queue = new ExactReviewQueue(
+    { storage },
+    { hostedTargetPredicate: () => true, hostedPublicTargetProbe: async () => "public" },
+  );
+  const env = {
+    CLAWSWEEPER_WEBHOOK_SECRET: "revision-floor-secret",
+    EXACT_REVIEW_QUEUE: new MemoryDurableNamespace(queue),
+  };
+  const publishDirectly = async (revision: number, content: string) => {
+    const body = JSON.stringify(directPublicationPlan("openclaw/openclaw#867", revision, content));
+    const signature = createHmac("sha256", env.CLAWSWEEPER_WEBHOOK_SECRET)
+      .update(body)
+      .digest("hex");
+    const response = await worker.fetch(
+      new Request("https://clawsweeper.openclaw.ai/internal/exact-review/publication-results", {
+        method: "POST",
+        headers: { "x-clawsweeper-exact-review-signature": `sha256=${signature}` },
+        body,
+      }),
+      env,
+    );
+    return { status: response.status, body: await response.json() };
+  };
+  const readState = async () =>
+    (await storage.get("exact-review-queue")) as {
+      deliveries: Record<string, number>;
+      items: Record<string, ReturnType<typeof leasedExactReviewQueueItem>>;
+    };
+  const key = "openclaw/openclaw#867";
+  const first = leasedExactReviewQueueItem(867, "8670");
+  await storage.put("exact-review-queue", { deliveries: {}, items: { [key]: first } });
+  const accepted = await publishDirectly(1, "first review");
+  assert.equal(accepted.status, 202);
+  assert.equal(accepted.body.accepted, true);
+  const completed = await queue.fetch(
+    new Request("https://clawsweeper-exact-review-queue/complete", {
+      method: "POST",
+      body: JSON.stringify({
+        lease_id: first.leaseId,
+        item_key: key,
+        lease_revision: 1,
+        claim_generation: 1,
+        run_id: first.claimedRunId,
+        run_attempt: first.claimedRunAttempt,
+        outcome: "success",
+        completion_kind: "published",
+        reason_code: "publication_applied",
+      }),
+    }),
+  );
+  assert.deepEqual(await completed.json(), { ok: true, requeued: false });
+  assert.equal((await readState()).items[key], undefined);
+
+  // The completed row is gone, but its direct receipt still owns revision 1.
+  const readmitted = await queue.fetch(
+    buildExactReviewQueueRequest("readmit-867", 867, "edited", "issue", "openclaw/openclaw"),
+  );
+  assert.equal(readmitted.status, 202);
+  const state = await readState();
+  assert.equal(state.items[key]!.revision, 2);
+
+  state.items[key] = { ...leasedExactReviewQueueItem(867, "8671"), revision: 2, leaseRevision: 2 };
+  await storage.put("exact-review-queue", state);
+  const republished = await publishDirectly(2, "second review");
+  assert.equal(republished.status, 202, JSON.stringify(republished.body));
+  assert.equal(republished.body.accepted, true);
+  assert.equal(republished.body.state_commit_sha, "do-revision:2");
+});
+
+test("ordinary revisions clear retained receipts, mixed-case projections, and refreshed heads", async () => {
+  const storage = new MemoryDurableStorage();
+  // A receipt retained without its queue row, lifecycle projection, or counter row.
+  const directStore = new ExactReviewDirectPublicationStore(storage);
+  directStore.ensureSchemaSync();
+  const retained = await validateDirectPublicationPlan(
+    directPublicationPlan("openclaw/openclaw#868", 7, "retained review"),
+  );
+  assert.equal(directStore.accept(retained, Date.now()).outcome, "accepted");
+  // Lifecycle projections keep GitHub casing for mixed-case repositories.
+  new ExactReviewLifecycleProjectionStore(storage).recordAdmission({
+    canonicalTargetKey: "openclaw/Peekaboo#364",
+    fenceKey: "openclaw/Peekaboo#364",
+    revision: 5,
+    deliveryId: "peekaboo-364-admission",
+    sourceAction: "opened",
+    commandOriginated: false,
+    statusMarker: null,
+    statusCommentId: null,
+    observedAt: Date.now(),
+  });
+  // A publication whose deterministic artifact is unusable gets refreshed.
+  const refreshed = leasedExactReviewPublicationItem(869, "8690");
+  refreshed.decision.publication.leaseRevision = 2;
+  await storage.put("exact-review-queue", {
+    deliveries: {},
+    items: { [refreshed.key]: refreshed },
+  });
+  const queue = new ExactReviewQueue({ storage }, { EXACT_REVIEW_DISPATCH_DEBOUNCE_MS: "0" });
+
+  for (const [deliveryId, number, repo] of [
+    ["receipt-868", 868, "openclaw/openclaw"],
+    ["mixed-case-364", 364, "openclaw/Peekaboo"],
+    ["fresh-870", 870, "openclaw/openclaw"],
+  ] as const) {
+    const response = await queue.fetch(
+      buildExactReviewQueueRequest(deliveryId, number, "opened", "issue", repo),
+    );
+    assert.equal(response.status, 202, deliveryId);
+  }
+  const refresh = await queue.fetch(
+    new Request("https://clawsweeper-exact-review-queue/complete", {
+      method: "POST",
+      body: JSON.stringify({
+        lease_id: refreshed.leaseId,
+        item_key: refreshed.key,
+        lease_revision: refreshed.leaseRevision,
+        claim_generation: refreshed.claimGeneration,
+        run_id: refreshed.claimedRunId,
+        run_attempt: refreshed.claimedRunAttempt,
+        outcome: "success",
+        completion_kind: "refresh_required",
+        reason_code: "invalid_artifact",
+      }),
+    }),
+  );
+  assert.deepEqual(await refresh.json(), { ok: true, requeued: false });
+
+  const state = (await storage.get("exact-review-queue")) as {
+    items: Record<string, { revision: number; decision: { sourceAction: string } }>;
+  };
+  assert.equal(state.items["openclaw/openclaw#868"]!.revision, 8);
+  assert.equal(state.items["openclaw/Peekaboo#364"]!.revision, 6);
+  assert.equal(state.items["openclaw/openclaw#870"]!.revision, 1);
+  assert.equal(
+    state.items["openclaw/openclaw#869"]!.decision.sourceAction,
+    "artifact_retention_recovery",
+  );
+  assert.equal(state.items["openclaw/openclaw#869"]!.revision, 3);
+  const republished = await (
+    await queue.fetch(
+      buildExactReviewQueueRequest(
+        "refresh-publish-869",
+        869,
+        "exact_review_artifact_publish",
+        "issue",
+        "openclaw/openclaw",
+        exactReviewPublicationOverrides(
+          869,
+          "8691",
+          "artifact_retention_recovery",
+          state.items["openclaw/openclaw#869"]!.revision,
           "openclaw/openclaw",
         ),
       ),

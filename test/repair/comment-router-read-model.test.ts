@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { readRepairLoopComments } from "../../dist/repair/comment-router-read-model.js";
+import { readRepairLoopComments } from "../../dist/repair/comment-router/admission.js";
 
 test("repair-loop comment snapshots preserve router decisions and reduce GitHub reads", () => {
   const comments = [

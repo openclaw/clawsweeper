@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import http from "node:http";
+import os from "node:os";
+import path from "node:path";
 import test from "node:test";
+import { parse } from "yaml";
 
 import {
   ISSUE_STATUS_INGEST_TIMEOUT_MS,
@@ -9,6 +13,10 @@ import {
   postDashboardStatus,
   renderIssueImplementationStatusComment,
 } from "../../dist/repair/issue-implementation-status.js";
+import {
+  REVIEW_REPRODUCIBLE_BUG_TRIGGER_SOURCE,
+  renderIssueImplementationJob,
+} from "../../dist/repair/comment-router/dispatch.js";
 
 const options = {
   repo: "steipete/example",
@@ -71,14 +79,184 @@ test("issue implementation status collapses an opened PR to a concise terminal c
 });
 
 test("issue build workflow reports an opened PR without calling pending CI blocked", () => {
-  const workflow = fs.readFileSync(".github/workflows/repair-cluster-worker.yml", "utf8");
+  const workflow = parse(
+    fs.readFileSync(".github/workflows/repair-cluster-worker.yml", "utf8"),
+  ) as {
+    jobs: Record<string, { steps?: Array<{ name?: string; run?: string }> }>;
+  };
+  const run = Object.values(workflow.jobs)
+    .flatMap((job) => job.steps ?? [])
+    .find((step) => step.name === "Publish automatic implementation completion status")?.run;
+  assert.ok(run);
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "issue-status-step-"));
+  try {
+    const prUrl = "https://github.com/steipete/example/pull/43";
+    const runDir = path.join(root, ".clawsweeper-repair/runs/run-1");
+    fs.mkdirSync(runDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(runDir, "fix-execution-report.json"),
+      JSON.stringify({ actions: [{ action: "open_fix_pr", status: "opened", pr_url: prUrl }] }),
+    );
+    fs.writeFileSync(
+      path.join(runDir, "post-flight-report.json"),
+      JSON.stringify({
+        actions: [
+          {
+            action: "finalize_fix_pr",
+            source_action: "open_fix_pr",
+            status: "blocked",
+            target: prUrl,
+            reason: "checks are still running: build",
+          },
+        ],
+      }),
+    );
+    const argsPath = path.join(root, "args");
+    const result = spawnSync("bash", ["-c", `pnpm() { printf '%s\\0' "$@" > "$ARGS"; }\n${run}`], {
+      cwd: root,
+      encoding: "utf8",
+      env: {
+        PATH: process.env.PATH,
+        ARGS: argsPath,
+        EXECUTE_OUTCOME: "success",
+        POST_FLIGHT_OUTCOME: "success",
+        CLUSTER_JOB_PATH: "jobs/steipete/inbox/issue-42.md",
+        CLUSTER_RUN_URL: options.runUrl,
+      },
+    });
+    assert.equal(result.status, 0, result.stderr);
+    const args = fs.readFileSync(argsPath, "utf8").split("\0");
+    assert.equal(args[args.indexOf("--state") + 1], "PR Opened");
+    assert.equal(
+      args[args.indexOf("--detail") + 1],
+      "The implementation PR is open. Post-flight status: checks are still running: build",
+    );
+    assert.equal(args[args.indexOf("--pr-url") + 1], prUrl);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
 
-  assert.match(workflow, /state="PR Opened"/);
-  assert.match(workflow, /The implementation PR is open\. Post-flight status:/);
-  assert.doesNotMatch(
-    workflow,
-    /detail="The automatic implementation worker stopped before all post-flight gates passed:/,
+test("issue worker status reaches the issue from the intake job and the restored job", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "issue-status-cli-"));
+  const repo = "openclaw/openclaw";
+  const issueNumber = 167865;
+  const jobPath = "jobs/openclaw/inbox/issue-openclaw-openclaw-167865.md";
+  const bin = path.join(root, "bin");
+  const ghLog = path.join(root, "gh.log");
+  const ghBodies = path.join(root, "gh-bodies.jsonl");
+  const comments = path.join(root, "comments.json");
+  const issue = path.join(root, "issue.json");
+  fs.mkdirSync(bin);
+  fs.writeFileSync(
+    path.join(bin, "gh"),
+    [
+      "#!/usr/bin/env bash",
+      'printf "%s\\n" "$*" >> "$GH_LOG"',
+      'case "$*" in',
+      '  *"--method PATCH"*) cat "${@: -1}" >> "$GH_BODIES"; echo "{}" ;;',
+      '  *comments*--paginate*) cat "$GH_COMMENTS" ;;',
+      '  *) cat "$GH_ISSUE" ;;',
+      "esac",
+      "",
+    ].join("\n"),
+    { mode: 0o755 },
   );
+  fs.writeFileSync(issue, JSON.stringify({ title: "Gateway drops queued replies" }));
+  fs.writeFileSync(
+    comments,
+    JSON.stringify([
+      [
+        {
+          id: 6085201584,
+          user: { login: "clawsweeper[bot]" },
+          body: renderIssueImplementationStatusComment("", {
+            ...options,
+            repo,
+            itemNumber: issueNumber,
+            state: "Queued",
+          }),
+        },
+      ],
+    ]),
+  );
+  const env = {
+    PATH: `${bin}${path.delimiter}${process.env.PATH}`,
+    HOME: root,
+    GH_TOKEN: "test-token",
+    GH_LOG: ghLog,
+    GH_BODIES: ghBodies,
+    GH_COMMENTS: comments,
+    GH_ISSUE: issue,
+    GITHUB_OUTPUT: path.join(root, "github-output"),
+  };
+  const writers = {
+    intake: () =>
+      fs.writeFileSync(
+        path.join(root, jobPath),
+        renderIssueImplementationJob({
+          repo,
+          issueNumber,
+          triggerSource: REVIEW_REPRODUCIBLE_BUG_TRIGGER_SOURCE,
+          strictBugOnly: true,
+        }),
+      ),
+    restored: () => {
+      const restored = spawnSync(
+        "bash",
+        [path.join(process.cwd(), "scripts/restore-repair-job.sh"), jobPath, "this worker"],
+        { cwd: root, encoding: "utf8", env },
+      );
+      assert.equal(restored.status, 0, restored.stderr);
+      assert.match(restored.stdout, /Restored issue implementation job/);
+    },
+  };
+  const transitions = [
+    { state: "Building", prUrl: "", body: /State: Building/ },
+    { state: "Blocked", prUrl: "", body: /stopped before completion\.\nReason: worker failed/ },
+    {
+      state: "PR Opened",
+      prUrl: "https://github.com/openclaw/openclaw/pull/170001",
+      body: /Implementation PR opened: https:\/\/github\.com\/openclaw\/openclaw\/pull\/170001/,
+    },
+  ];
+  try {
+    for (const [writer, writeJob] of Object.entries(writers)) {
+      fs.rmSync(path.join(root, "jobs"), { recursive: true, force: true });
+      fs.mkdirSync(path.dirname(path.join(root, jobPath)), { recursive: true });
+      writeJob();
+      for (const transition of transitions) {
+        fs.rmSync(ghBodies, { force: true });
+        const result = spawnSync(
+          process.execPath,
+          [
+            path.join(process.cwd(), "dist/repair/issue-implementation-status.js"),
+            "--job",
+            jobPath,
+            "--state",
+            transition.state,
+            "--detail",
+            "worker failed",
+            "--run-url",
+            options.runUrl,
+            "--pr-url",
+            transition.prUrl,
+          ],
+          { cwd: root, encoding: "utf8", env },
+        );
+        assert.equal(result.status, 0, `${writer} ${transition.state}: ${result.stderr}`);
+        assert.equal(JSON.parse(result.stdout).item_number, issueNumber);
+        const patched = JSON.parse(fs.readFileSync(ghBodies, "utf8")).body;
+        assert.match(patched, transition.body, `${writer} ${transition.state}`);
+      }
+    }
+    assert.match(
+      fs.readFileSync(ghLog, "utf8"),
+      /^api repos\/openclaw\/openclaw\/issues\/comments\/6085201584 --method PATCH --input /m,
+    );
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test("issue implementation status ingest skips when no token is configured", async () => {

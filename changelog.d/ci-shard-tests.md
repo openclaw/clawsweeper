@@ -1,0 +1,1 @@
+- Split the CI `pnpm check` gate into parallel test shards whose raw V8 coverage is replayed through Node's own coverage report with unchanged thresholds, behind one aggregate `pnpm check` status, cutting the PR critical path.

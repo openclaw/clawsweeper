@@ -176,7 +176,11 @@ stale-head worker without cancelling the active run's gate cleanup.
 
 ## Creating Implementation PRs
 
-Script: `src/repair/execute-fix-artifact.ts`
+Script: `src/repair/execute-fix-artifact.ts`. Its Git work (target checkout,
+remote branch reads, rebase completion, checkpoint commits, history compaction
+and branch pushes) is in `src/repair/execute-fix/git-ops.ts`. Its Codex handoff
+(the worker process, `/review`, and the review-fix and validation-fix workers)
+and the fix execution report are in `src/repair/execute-fix/run-and-report.ts`.
 
 This is the PR creation and branch repair engine.
 
@@ -410,6 +414,9 @@ Scripts:
 
 - `src/repair/comment-router.ts`
 - `src/repair/comment-router-core.ts`
+- `src/repair/comment-router/admission.ts`
+- `src/repair/comment-router/dispatch.ts`
+- `src/repair/comment-router/ledger.ts`
 
 Comment routing scans recent target-repo issue/PR comments and accepts only
 maintainer-authored commands. Default allowed GitHub `author_association`
@@ -615,13 +622,15 @@ Important defaults:
 
 - `CLAWSWEEPER_MODEL`: GitHub Actions secret containing the actual worker model.
   Public workflow inputs and generated state use only `internal`.
-- Item review and repair profiles are fixed by author association. OWNER,
-  MEMBER, and COLLABORATOR-authored canonical items use `high` reasoning with
-  `fast` service; all other items use `medium` reasoning and standard service.
+- Item review and repair profiles are fixed by the canonical author. OWNER,
+  MEMBER, and COLLABORATOR-authored items, and items whose author has live
+  `write`, `maintain`, or `admin` repository permission, use `medium` reasoning
+  with `fast` (priority) service; all other items use `medium` reasoning and
+  standard service. Assist always uses `fast` service.
   `CLAWSWEEPER_CODEX_REASONING_EFFORT`, `CLAWSWEEPER_CODEX_SERVICE_TIER`, and
   `CLAWSWEEPER_FIX_PR_REASONING_EFFORT` are retired; remove them from repository
   variables and local environments. `CLAWSWEEPER_FIX_PR_MODEL` still selects
-  the automatic issue fix/PR model and defaults to `gpt-6-sol`.
+  the automatic issue fix/PR model and defaults to `gpt-6.1-sol`.
 - `CLAWSWEEPER_CODEX_LOGIN_METHOD`: Codex login mode for local runs. Defaults
   to `api`; set `chatgpt` to preserve an existing Codex OAuth session. Any other
   non-empty value fails before Codex starts.
@@ -654,7 +663,7 @@ Important defaults:
   writes the same job schema.
 - Better CI self-repair: extend `finalize-open-prs` to collect failed check
   logs and classify rerun vs repair.
-- New maintainer command: extend `comment-router-core.ts` parsing and
+- New maintainer command: extend `comment-router/admission.ts` parsing and
   `comment-router.ts` execution.
 - New mutation type: add schema support, worker prompt policy, result review
   validation, and deterministic application in `apply-result`.

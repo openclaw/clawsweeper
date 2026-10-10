@@ -1,6 +1,13 @@
 #!/usr/bin/env node
 import { sha256 } from "../content-hash.js";
 import { normalizeAuthorAssociation } from "../clawsweeper-item-policy.js";
+import {
+  CLAWSWEEPER_BOT_LOGINS,
+  PROOF_OVERRIDE_LABEL,
+  PROOF_SUFFICIENT_LABEL,
+  PR_RATING_LABELS,
+  PR_STATUS_LABELS,
+} from "../clawsweeper-policy.js";
 import { repositoryManagedPullRequestCloseReason } from "../repository-profiles.js";
 import type { JsonValue, LooseRecord } from "./json-types.js";
 import fs from "node:fs";
@@ -61,20 +68,30 @@ const CLOSE_CLASSIFICATIONS = new Set([
   "fixed_by_candidate",
   "low_signal",
 ]);
+const CLOSE_CLASSIFICATION_BY_ACTION: Record<string, string> = {
+  close_duplicate: "duplicate",
+  close_superseded: "superseded",
+  close_fixed_by_candidate: "fixed_by_candidate",
+  close_low_signal: "low_signal",
+  post_merge_close: "fixed_by_candidate",
+};
 const PASSING_CHECK_CONCLUSIONS = new Set(["SUCCESS", "SKIPPED", "NEUTRAL"]);
 const CLEAN_MERGE_STATES = new Set(["CLEAN"]);
 // A covering PR may need a base update, but actual merge actions remain CLEAN-only.
 const VIABLE_COVERING_PR_MERGE_STATES = new Set(["CLEAN", "BEHIND"]);
 const PR_CLOSE_COVERAGE_PROOF_COMMENT_LIMIT = 50;
 const GITHUB_MAX_PAGE_SIZE = 100;
+const PROOF_PASSED_LABELS = new Set([PROOF_SUFFICIENT_LABEL, PROOF_OVERRIDE_LABEL]);
+const NEEDS_PROOF_LABELS = new Set([
+  "triage: needs-real-behavior-proof",
+  ...PR_STATUS_LABELS.filter((label) => label.kind === "needs_proof").map((label) => label.name),
+]);
+const F_RATING_LABEL = PR_RATING_LABELS.find((label) => label.tier === "F")!.name;
 const CLAWSWEEPER_COMMAND_ONLY_PATTERN = /^@clawsweeper\s+(?:re-review|re-run|review)\s*$/i;
 const CLAWSWEEPER_BOT_AUTHORS = new Set(
-  [
-    "clawsweeper",
-    "clawsweeper[bot]",
-    "openclaw-clawsweeper[bot]",
-    process.env.CLAWSWEEPER_COMMENT_AUTHOR_LOGIN,
-  ].filter((login): login is string => typeof login === "string" && login.length > 0),
+  [...CLAWSWEEPER_BOT_LOGINS, process.env.CLAWSWEEPER_COMMENT_AUTHOR_LOGIN].filter(
+    (login): login is string => typeof login === "string" && login.length > 0,
+  ),
 );
 
 type PrCloseCoverageProofValidation =
@@ -1106,14 +1123,11 @@ function validatePrCloseCoverageCoveringSafety({
     return `linked canonical PR #${coveringRef} is itself proposed for close`;
   }
 
+  // Exact ClawSweeper-owned label names only.
   const labels = labelNames(coveringIssue.labels).map(normalizeLabelName);
-  const proofPassed = labels.some((label) => /^proof:\s*(sufficient|override)\b/i.test(label));
-  const needsProof = labels.some(
-    (label) =>
-      label === "triage: needs-real-behavior-proof" ||
-      (label.startsWith("status:") && label.includes("needs proof")),
-  );
-  if (labels.some((label) => label.startsWith("rating:") && label.includes("unranked"))) {
+  const proofPassed = labels.some((label) => PROOF_PASSED_LABELS.has(label));
+  const needsProof = labels.some((label) => NEEDS_PROOF_LABELS.has(label));
+  if (labels.includes(F_RATING_LABEL)) {
     return `linked canonical PR #${coveringRef} is F-rated`;
   }
   if (needsProof && !proofPassed) {
@@ -1442,7 +1456,7 @@ function prCloseCoverageProofRuntime() {
     reasoningEffort: stringSetting(
       args["pr-close-coverage-proof-reasoning-effort"] ??
         process.env.CLAWSWEEPER_PR_CLOSE_COVERAGE_PROOF_REASONING_EFFORT,
-      "high",
+      "medium",
     ),
     sandboxMode: stringSetting(
       args["pr-close-coverage-proof-sandbox"] ??
@@ -1521,21 +1535,12 @@ function normalizeIssueRef(value: JsonValue, expectedRepo: JsonValue = "") {
   return issueNumberFromRef(value, String(expectedRepo ?? ""));
 }
 
+// The worker classification is a typed enum. When it is null, the close action name gives it.
 function normalizeClassification(action: LooseRecord) {
-  const raw = String(
-    action.classification ?? action.close_reason ?? action.reason ?? "",
-  ).toLowerCase();
-  if (raw.includes("low_signal") || raw.includes("low-signal") || raw.includes("low signal"))
-    return "low_signal";
-  if (raw.includes("fixed") || raw.includes("candidate")) return "fixed_by_candidate";
-  if (raw.includes("superseded") || raw.includes("supersede")) return "superseded";
-  if (raw.includes("duplicate") || raw.includes("dupe")) return "duplicate";
-  if (action.action === "close_fixed_by_candidate") return "fixed_by_candidate";
-  if (action.action === "close_low_signal") return "low_signal";
-  if (action.action === "close_superseded") return "superseded";
-  if (action.action === "close_duplicate") return "duplicate";
-  if (action.action === "post_merge_close") return "fixed_by_candidate";
-  return raw;
+  if (typeof action.classification === "string" && action.classification) {
+    return action.classification;
+  }
+  return CLOSE_CLASSIFICATION_BY_ACTION[String(action.action ?? "")] ?? "";
 }
 
 function defaultIdempotencyKey(

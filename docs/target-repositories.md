@@ -26,11 +26,17 @@ configured profiles allow `implemented_on_main` for issues and PRs, and some
 profiles additionally allow age-gated `mostly_implemented_on_main` for PRs.
 
 Review guidance belongs to the selected profile's `promptNote` in
-`src/repository-profiles.ts` or `config/target-repositories.json`. The production
-prompt assembler selects it with `repositoryProfileFor(item.repo)`, using the
+`src/repository-profiles.ts` or `config/target-repositories.json`; a built-in
+profile can add `kindPromptNotes` for guidance that applies only to issues or
+only to PRs. The production prompt assembler selects them with
+`repositoryProfileFor(item.repo)`, using the
 normalized exact owner/repository, not the organization, display name, PR body,
-linked repository, or author association. The built-in `openclaw/openclaw`
-profile alone supplies its release-owned `CHANGELOG.md` review restriction.
+linked repository, or author association, and renders them as the prompt's
+`Repository Policy` section. The same profile's `apply_close_rules` for the item
+kind select which entries of `prompts/review-close-reasons.md` the prompt shows.
+The built-in `openclaw/openclaw` profile alone supplies its release-owned
+`CHANGELOG.md` review restriction, Telegram proof routing, and maturity-label
+guidance.
 `openclaw/clawsweeper`, ClawHub, and generic targets follow their own release-note
 policies; being a non-core target does not grant contributors or workers
 permission to edit release-owned files.
@@ -62,11 +68,18 @@ gates. Issue and pull-request close rules remain empty; enabling the target
 dispatcher does not grant automatic close authority. The profile keeps review
 and read-only comment commands available but rejects issue implementation,
 autofix, automerge, CI/review repair, rebase, and trusted repair/merge automation
-before the router can create a repair job or mutate the target repository.
+before the router can create a repair job. The repair worker independently
+rechecks the same profile before planning or execution effects, so a job queued
+before the policy changed and a replayed execute job cannot mutate the target.
 
 Repair validation defaults to 480,000 ms per command. Set `validation_timeout_ms`
 in an exact repository entry (or `core_target_overrides`) to override it:
-`openclaw/openclaw` uses 1,500,000 ms (25 minutes) for its cold changed gate.
+`openclaw/openclaw` uses 3,000,000 ms (50 minutes) for its cold changed gate.
+When a change selects every core test graph, that gate typechecks 27 graphs one
+at a time from a cold cache and then runs three Knip dead-export scans. On the
+16-vCPU execution runner (2026-10-03 to 10-09), finished runs took 19 to 24
+minutes before the Knip scans, and slower runners were on pace for up to 36
+minutes. The Knip scans add about 7 to 8 minutes.
 Other repositories retain eight minutes. The repair workflow's optional
 `target_validation_timeout_ms` input takes precedence over the ClawSweeper
 repository variable `CLAWSWEEPER_FIX_TARGET_VALIDATION_TIMEOUT_MS`, then this
@@ -77,16 +90,22 @@ Each top-level validation command receives a fresh budget. OpenClaw's
 stages share that budget. The overall executor budget is the larger of 70 minutes
 and 10 minutes of setup + the configured edit-worker budget + twice the validation
 budget + 10 minutes for review/reporting, capped at 110 minutes. With the default
-30-minute worker budget, OpenClaw receives 100 minutes. An explicit
+30-minute worker budget, OpenClaw receives the 110-minute ceiling. An explicit
 `CLAWSWEEPER_FIX_STEP_TIMEOUT_MS` overrides that derivation within the existing
 15-minute floor and new 110-minute ceiling. Actions resolves the same budget and
-adds two minutes for executor shutdown; the job retains its 120-minute ceiling.
+adds two minutes for executor shutdown. The job allows 130 minutes, so a step at
+that ceiling still leaves time for setup (at most 2.2 minutes measured) and for
+publication and post-flight, whose check wait is capped at 10 minutes.
 Checkout identity proof
 reserves a small part of its budget. The lower-level
 `CLAWSWEEPER_TARGET_VALIDATION_TIMEOUT_MS` can further shorten that budget.
 The repair executor requests OpenClaw's `--timed` summary and records core
 typecheck, core-test typecheck, and core lint durations in Actions logs, including
 successful validation. Other command output is not echoed by this timing logger.
+Outside strict validation, a failed changed gate gets one retry
+(`CLAWSWEEPER_VALIDATION_RETRIES`) inside the same command budget, and only when
+the remaining budget can fit the failed attempt again. Otherwise the executor
+reports that failure, which the issue or repair worker can still fix.
 
 Edit, validation-fix, and review-fix workers run focused checks and return the
 patch for one full executor acceptance pass. Worker claims and shell transcripts

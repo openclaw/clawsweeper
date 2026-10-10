@@ -33,7 +33,7 @@ import {
 } from "../../dist/repair/target-validation.js";
 import { compactText } from "../../dist/repair/text-utils.js";
 import { validationRecoveryRequired } from "../../dist/repair/validation-recovery.js";
-import { gitChangedFiles } from "../../dist/repair/git-repo-utils.js";
+import { gitChangedFiles } from "../../dist/repair/git.js";
 import {
   __resetTargetRepoToolchainCache,
   resolveTargetRepoToolchain,
@@ -3805,6 +3805,79 @@ child.unref();
   },
 );
 
+test(
+  "contained pnpm setup and validation can open the fixed pnpm 12.7 store operation lock",
+  { skip: process.platform !== "linux" },
+  (context) => {
+    if (!linuxValidationContainmentAvailable()) {
+      context.skip("runner does not provide delegated user namespaces and Landlock ABI 3+");
+      return;
+    }
+    const cwd = gitPackageFixture({ verify: "node check.js" });
+    const packagePath = path.join(cwd, "package.json");
+    const packageJson = JSON.parse(fs.readFileSync(packagePath, "utf8"));
+    packageJson.packageManager = "pnpm@12.7.0";
+    fs.writeFileSync(packagePath, `${JSON.stringify(packageJson, null, 2)}\n`);
+    fs.writeFileSync(path.join(cwd, "check.js"), "process.exit(0);\n");
+    git(cwd, "add", ".");
+    git(cwd, "commit", "-m", "initial");
+    attachOrigin(cwd);
+
+    // pnpm 12.7 opens "/tmp/pnpm-store-operation-locks-<euid>" before it installs
+    // or runs a command. These are the same checks that its secure lock code does.
+    const targetPnpm = `#!/usr/bin/env node
+const fs = require("node:fs");
+const directory = "/tmp/pnpm-store-operation-locks-" + process.geteuid();
+fs.mkdirSync(directory, { recursive: true });
+const metadata = fs.lstatSync(directory);
+if (!metadata.isDirectory() || metadata.uid !== process.geteuid()) process.exit(3);
+fs.chmodSync(directory, 0o700);
+fs.closeSync(fs.openSync(directory + "/all-stores.lock", "a"));
+if (process.argv[2] === "install") fs.mkdirSync("node_modules", { recursive: true });
+`;
+    const hostBin = makeFixtureDir("clawsweeper-pnpm-store-lock-");
+    writeNodeCommandShim(
+      hostBin,
+      "corepack",
+      `#!/usr/bin/env node
+const fs = require("node:fs");
+const path = require("node:path");
+const args = process.argv.slice(2);
+if (args[0] === "enable") {
+  const destination = args[args.indexOf("--install-directory") + 1];
+  fs.mkdirSync(destination, { recursive: true });
+  fs.writeFileSync(path.join(destination, "pnpm"), ${JSON.stringify(targetPnpm)}, { mode: 0o755 });
+}
+`,
+    );
+    const options = {
+      ...validationOptions("steipete/example", {
+        toolchain: {
+          packageManager: "pnpm",
+          baseValidationCommands: ["pnpm verify"],
+          changedGate: null,
+        },
+      }),
+      installTargetDeps: true,
+      installTimeoutMs: FAKE_TOOLCHAIN_TIMEOUT_MS,
+      setupTimeoutMs: FAKE_TOOLCHAIN_TIMEOUT_MS,
+    };
+
+    const previousForceContainment = process.env.CLAWSWEEPER_TEST_FORCE_LINUX_CONTAINMENT;
+    process.env.CLAWSWEEPER_TEST_FORCE_LINUX_CONTAINMENT = "1";
+    try {
+      withPreparedPnpmToolchain(cwd, hostBin, options, () => {
+        assert.equal(fs.existsSync(path.join(cwd, "node_modules")), true);
+        assert.deepEqual(runAllowedValidationCommands(["pnpm verify"], cwd, options), [
+          "pnpm verify",
+        ]);
+      });
+    } finally {
+      restoreEnv("CLAWSWEEPER_TEST_FORCE_LINUX_CONTAINMENT", previousForceContainment);
+    }
+  },
+);
+
 test("pnpm validation reuses the prepared target version and rejects stale setup", () => {
   const cwd = gitPackageFixture({ verify: "node check.js" });
   const packagePath = path.join(cwd, "package.json");
@@ -3951,7 +4024,24 @@ for (const [extension, knipVersion, pnpmVersion] of [
 const fs = require("node:fs");
 const path = require("node:path");
 const args = process.argv.slice(2);
-fs.appendFileSync(${JSON.stringify(logPath)}, JSON.stringify({ args, cwd: process.cwd(), cache: process.env.XDG_CACHE_HOME, jitiFsCache: process.env.JITI_FS_CACHE, offline: process.env.PNPM_CONFIG_OFFLINE, legacyOffline: process.env.npm_config_offline, registry: process.env.PNPM_CONFIG_REGISTRY }) + "\\n");
+fs.appendFileSync(${JSON.stringify(logPath)}, JSON.stringify({ args, cwd: process.cwd(), cache: process.env.XDG_CACHE_HOME, jitiFsCache: process.env.JITI_FS_CACHE, offline: process.env.PNPM_CONFIG_OFFLINE, legacyOffline: process.env.npm_config_offline, registry: process.env.PNPM_CONFIG_REGISTRY, store: process.env.PNPM_CONFIG_STORE_DIR }) + "\\n");
+// Only this fake pnpm knows its dlx key. ClawSweeper must ask for it.
+const dlxKey = require("node:crypto")
+  .createHash("sha256")
+  .update(JSON.stringify(["${pnpmVersion}", "knip@${knipVersion}", process.env.PNPM_CONFIG_REGISTRY, process.platform, process.arch]))
+  .digest("hex")
+  .slice(0, 32);
+if (args[0] === "dlx") {
+  if (args.join(" ") !== "dlx --package knip@${knipVersion} clawsweeper-dlx-cache-key-probe") process.exit(50);
+  if (fs.existsSync(${JSON.stringify(path.join(hostBin, "probe-no-key"))})) process.exit(1);
+  fs.mkdirSync(path.join(process.env.XDG_CACHE_HOME, "pnpm", "dlx", dlxKey, "probe-prepare"), { recursive: true });
+  if (fs.existsSync(${JSON.stringify(path.join(hostBin, "probe-kill-supervisor"))})) {
+    process.kill(process.ppid, "SIGKILL");
+    process.exit(1);
+  }
+  process.stderr.write("ERR_PNPM_NO_OFFLINE_TARBALL\\n");
+  process.exit(1);
+}
 if (args[0] === "install") {
   fs.mkdirSync("node_modules", { recursive: true });
   if (process.cwd().includes(".__clawsweeper_pnpm_helper_cache__")) {
@@ -3977,15 +4067,11 @@ if (args[0] === "install") {
 }
 if (args.at(-1) === "first" || args.at(-1) === "second") {
   const registry = process.env.PNPM_CONFIG_REGISTRY;
-  const registries = ${pnpmVersion === "12.3.4" ? '[["default", registry]]' : '[["@jsr", "https://npm.jsr.io/"], ["default", registry]]'};
-  const fullCacheKey = require("node:crypto")
-    .createHash("sha256")
-    .update(JSON.stringify([["knip@${knipVersion}"], registries]))
-    .digest("hex");
-  const cacheKey = fullCacheKey.slice(0, 32);
-  const marker = path.join(process.env.XDG_CACHE_HOME, "pnpm", "dlx", cacheKey, "marker");
+  const cacheRoot = path.join(process.env.XDG_CACHE_HOME, "pnpm", "dlx", dlxKey);
+  const marker = path.join(cacheRoot, "marker");
   if (fs.readFileSync(marker, "utf8") !== "frozen helper") process.exit(42);
-  if (fs.readFileSync(path.join(process.env.XDG_CACHE_HOME, "pnpm", "dlx", fullCacheKey, "marker"), "utf8") !== "frozen helper") process.exit(44);
+  if (!fs.existsSync(path.join(cacheRoot, "pkg", "pnpm-lock.yaml"))) process.exit(44);
+  if (fs.existsSync(path.join(cacheRoot, "probe-prepare"))) process.exit(47);
   const host = new URL(registry).host.replace(":", "+");
   for (const metadataPath of [
     path.join(process.env.XDG_CACHE_HOME, "pnpm", "v11", "metadata-full-filtered", host, "knip.jsonl"),
@@ -3995,7 +4081,7 @@ if (args.at(-1) === "first" || args.at(-1) === "second") {
     if (Object.keys(metadata.versions).join(",") !== "${knipVersion}") process.exit(45);
     if (!metadata.versions["${knipVersion}"].dist.integrity.startsWith("sha512-")) process.exit(46);
   }
-  const knip = path.join(path.dirname(marker), "pinned", "node_modules", ".bin", "knip");
+  const knip = path.join(cacheRoot, "pinned", "node_modules", ".bin", "knip");
   if (!fs.readFileSync(knip, "utf8").includes("JITI_FS_CACHE=0")) process.exit(43);
   if (args.at(-1) === "first") fs.writeFileSync(marker, "validation mutated its own cache");
 }
@@ -4075,6 +4161,14 @@ if (args[0] === "enable") {
       assert.ok(validations.every(({ offline }) => offline === "true"));
       assert.ok(validations.every(({ legacyOffline }) => legacyOffline === "true"));
       assert.ok(validations.every(({ registry }) => registry === "https://registry.npmjs.org/"));
+      const probes = invocations.filter(({ args }) => args[0] === "dlx");
+      assert.equal(probes.length, 1, "setup asks pnpm for the dlx key once");
+      assert.equal(probes[0].cwd, fs.realpathSync(cwd), "probe uses the target checkout config");
+      assert.equal(probes[0].offline, "true");
+      assert.equal(probes[0].legacyOffline, "true");
+      assert.equal(probes[0].registry, "https://registry.npmjs.org/");
+      assert.ok(!probes[0].cache.includes(".__clawsweeper_pnpm_helper_cache__"));
+      assert.ok(!probes[0].store.startsWith(fs.realpathSync(cwd)));
 
       withCommandOverridesUnset(["corepack", "pnpm"], () =>
         withPathOnlyPrefix(hostBin, () => {
@@ -4084,6 +4178,13 @@ if (args[0] === "enable") {
             /dependency lockfile does not match the trusted graph/,
           );
           fs.rmSync(path.join(hostBin, "tamper-lock"));
+
+          fs.writeFileSync(path.join(hostBin, "probe-no-key"), "1");
+          assert.throws(
+            () => prepareTargetToolchain(cwd, options, ["pnpm check:changed"]),
+            /pnpm did not report one dlx cache key for the pinned OpenClaw Knip helper/,
+          );
+          fs.rmSync(path.join(hostBin, "probe-no-key"));
 
           const previousRegistry = process.env.npm_config_registry;
           process.env.npm_config_registry = "https://registry.example.invalid:8443/";
@@ -4244,6 +4345,29 @@ if (args[0] === "enable") {
           );
           assert.equal(prefetchCount(), beforeUnsupportedPin, "unsupported pins never install");
           fs.writeFileSync(runnerPath, `const KNIP_VERSION = "${knipVersion}";\n`);
+
+          // Runs last: a recovery error blocks this checkout for the rest of the process.
+          fs.writeFileSync(path.join(hostBin, "probe-kill-supervisor"), "1");
+          let recoveryMessage = "";
+          assert.throws(
+            () => prepareTargetToolchain(cwd, options, ["pnpm check:changed -- src/unchanged.ts"]),
+            (error: Error) => {
+              recoveryMessage = error.message;
+              return /Validation recovery required/.test(error.message);
+            },
+          );
+          const retainedPaths = recoveryMessage.split("Retained paths: ")[1]?.split(", ") ?? [];
+          const retainedProbe = retainedPaths.find((retained) =>
+            path.basename(retained).startsWith("dlx-key-probe-"),
+          );
+          assert.ok(retainedProbe, "the recovery error names the probe state");
+          assert.equal(
+            fs.existsSync(path.join(retainedProbe, "cache")),
+            true,
+            "probe state is kept",
+          );
+          for (const retained of retainedPaths)
+            fs.rmSync(retained, { recursive: true, force: true });
         }),
       );
     },
@@ -9517,6 +9641,59 @@ test("changed validation shares one timeout with checkout identity proof", (t) =
       );
       assert.equal(completedIdentities, commandBudgets.length + 1);
       assert.equal(now, identityCostMs === 900 ? 12_000 : 11_001);
+      assert.equal(git(cwd, "status", "--porcelain"), "");
+    }
+  } finally {
+    restoreEnv("CLAWSWEEPER_VALIDATION_RETRIES", previousRetries);
+    fs.rmSync(cwd, { recursive: true, force: true });
+    fs.rmSync(origin, { recursive: true, force: true });
+  }
+});
+
+test("changed validation retries only when the budget can fit the failed attempt again", (t) => {
+  const cwd = gitPackageFixture({ "check:changed": "node check.js" });
+  fs.writeFileSync(path.join(cwd, "check.js"), 'throw new Error("late changed gate failure");\n');
+  git(cwd, "add", ".");
+  git(cwd, "commit", "-m", "initial");
+  attachOrigin(cwd);
+  const origin = git(cwd, "remote", "get-url", "origin");
+  const previousRetries = process.env.CLAWSWEEPER_VALIDATION_RETRIES;
+  process.env.CLAWSWEEPER_VALIDATION_RETRIES = "1";
+  try {
+    // 100s budget, 30s identity reserve: the first attempt gets 70s. A 10s
+    // failure leaves 60s, enough to repeat it. A 50s failure leaves 20s, so a
+    // retry could only time out and hide the failure behind that timeout.
+    for (const attemptMs of [10_000, 50_000]) {
+      let now = 10_000;
+      const commandBudgets: number[] = [];
+      withVirtualDeadlineCommands(
+        t,
+        () => now,
+        ({ command, timeoutMs }) => {
+          if (command === "git") return;
+          assert.equal(command, "pnpm");
+          commandBudgets.push(timeoutMs);
+          now += attemptMs;
+          return { status: 1, stderr: "late changed gate failure" };
+        },
+        () =>
+          assert.throws(
+            () =>
+              runAllowedValidationCommands(
+                ["pnpm check:changed"],
+                cwd,
+                validationOptions("openclaw/openclaw", { validationTimeoutMs: 100_000 }),
+              ),
+            (error: Error) => {
+              assert.equal(
+                error.message,
+                "validation command failed (pnpm check:changed): late changed gate failure",
+              );
+              return true;
+            },
+          ),
+      );
+      assert.deepEqual(commandBudgets, attemptMs === 10_000 ? [70_000, 60_000] : [70_000]);
       assert.equal(git(cwd, "status", "--porcelain"), "");
     }
   } finally {

@@ -487,6 +487,48 @@ resets that recovery budget; after three unsuccessful recovery cycles the item
 stays parked for operator inspection. Publication dead-letter-capacity parks
 retain their separate operator-controlled recovery path.
 
+Review items parked as `source_drift_loop` have no automatic recovery ladder.
+They used `EXACT_REVIEW_SOURCE_DRIFT_REQUEUE_LIMIT` consecutive automatic
+source-drift review generations without organic input; see
+[Automation limits](limits.md) for the counter and its reset rules. The next
+organic webhook event, explicit command, or manual review admits the item
+normally and resets the counter. A scheduled offer with a newer `sourceUpdatedAt`
+admits one review without resetting it, so another drift requeue re-parks the
+item at once. Operators can list, resolve,
+or `recover-fresh` these rows through the signed parked-review routes, and the
+periodic terminal check still removes closed or head-advanced targets. The lane
+breakdown counts them under `parked_reasons.source_drift_loop`.
+
+Review items parked as `locked_conversation` or `oversized_pull_request` are
+holds for deterministic no-ops, not failures. A review run for an open but
+locked conversation completes without Codex, and a run for a PR above the size
+limit takes the metadata-only size path; neither writes anything the scheduled
+planners can see, so without the hold the same unchanged item is offered and
+claimed again every tick. The queue keeps the completed row parked instead,
+scheduled offers dedupe against it with that reason, and automatic recoveries
+dedupe with `dedupe_scope: review_hold`. Any other admitted input releases the
+hold: an organic webhook event such as `unlocked` or `synchronize`, an explicit
+command, or a manual review. The periodic terminal check removes closed and
+head-advanced targets, and the parked-review reconciler recovers a row whose
+source identity changed (for example an unlock or a `size: accepted-large`
+label). Command reviews and PRs without a pinned head are never held. Bay keeps
+the item's completed lifecycle card instead of showing the hold as active work.
+
+`review_runaway_health` is the companion alert for any self-feeding loop the
+breaker does not stop, such as a command continuation. The queue records each
+newly claimed review run per item (publication and finalizer-only claims
+excluded) and reports `degraded` with reason `review_runaway` when any item
+claimed more than `EXACT_REVIEW_RUNAWAY_REVIEWS_PER_DAY` (production: 24)
+reviews in the trailing 24 hours; otherwise it is `healthy`. A failed history
+read reports `unknown` with reason `telemetry_unavailable`. The object carries
+`window_hours`, `threshold_reviews_per_day`, the `runaway_items` count across all
+repositories, and `sample_item_keys`: at most five `owner/repo#number` keys,
+highest review count first, limited to repositories in `PUBLIC_BAY_REPOS`.
+Private-repository runaways count but are never named. The dashboard health
+summary raises `review_runaway` (or `review_runaway_telemetry_unavailable`) to
+amber. Snapshots without the object, and malformed objects, project as `null`
+and do not change health, so the field is optional for older cached statuses.
+
 Every failed exact-review completion first records one durable, deduplicated
 attempt keyed by its claim tuple. The record contains only closed stage/reason,
 retryability, source and failure fingerprints, immutable source identifiers,
@@ -499,7 +541,8 @@ corresponding target and run identities for investigation.
 
 `/api/exact-review-queue` is an explicit, closed aggregate projection. It
 contains `generated_at`, `ready_pending`, `admissible_pending`, `pressure`,
-`handoff_health`, `review_failure_health`, and bounded counts and oldest timestamps or ages for the
+`handoff_health`, `review_failure_health`, the optional `review_runaway_health`,
+and bounded counts and oldest timestamps or ages for the
 pending, dispatching, and leased phases. `ready_pending` excludes retry-delayed
 items. `admissible_pending` further excludes ready items blocked by their
 target's exact-review cap. `pressure` is a deterministic observation from that
@@ -593,7 +636,10 @@ For capacity displays, `/api/exact-review-queue` also exposes compatible
 pending, ready, backoff, dispatching, leased, capacity, active, available-slot,
 oldest-pending, and next-attempt values. `backoff_reasons` and `parked_reasons`
 count the causes represented by those lane totals, and the dashboard renders
-the same breakdown beside the lane counts. The existing top-level aggregate
+the same breakdown beside the lane counts. The publication lane reports a
+retained stale-revision row as `parked` with reason `stale_revision`, not as
+pending or ready, so it no longer pins `oldest_ready_at` or `next_attempt_at`
+(see the stale-revision retention paragraph below). The existing top-level aggregate
 fields remain available for older consumers. Both lanes additionally report
 `enqueued_total` and `completed_total`; the review lane's existing
 `shed_since_reset` supplies overload demand. The public response omits item
@@ -614,7 +660,11 @@ production values from `dashboard/wrangler.toml`, not only fallback constants
 in `dashboard/exact-review-queue.ts`.
 
 Canonical record snapshots for `openclaw/openclaw` are produced every six hours
-by `worker-records-ops.yml`, at minute 9 UTC. Manual dispatch remains available
+by `worker-records-ops.yml`, at minute 9 UTC. The same scheduled run then runs
+`node scripts/worker-records.ts snapshot-bootstrap-cold`, which lists every
+canonical repository slug and uploads a first snapshot for each one that has
+none; one slug's failure is reported without stopping the rest, and the step
+fails if any slug failed. Manual dispatch remains available
 for a selected repository; scheduled and manual snapshots share a concurrency
 group so snapshot runs do not overlap. Full record hydration replays changes
 since the latest snapshot.
@@ -693,7 +743,13 @@ available for descriptor registration. The existing
 `/internal/state/records/snapshots/trigger` endpoint remains for explicit
 object-side production, but neither scheduled nor manual ops invokes it.
 Cold hydration retains its existing record bound; a large repository without
-any snapshot still needs an initial snapshot before normal hydration can run.
+any snapshot still needs an initial snapshot before normal hydration can run,
+and the scheduled cold bootstrap above provides it.
+The runner's `snapshot-upload` producer can build that first snapshot directly
+from the paginated export, bounded by 250,000 journal identities and the existing
+1 GiB archive limit. Ordinary cold hydration still refuses above 2,000 records;
+only snapshot production uses the larger bound. Once a snapshot exists, both
+paths reuse the same snapshot-plus-delta materialization and first-page watermark.
 No bindings or Durable Object migrations change. The existing descriptor table
 gains a nullable `identity_digest` column; existing snapshots remain readable.
 OpenClaw Bay is unaffected because its public observer contract does not use
@@ -729,8 +785,9 @@ arrivals wait for the next departure; changed or removed members are skipped.
 An empty subset retires that reservation and requests another preflight.
 
 The Worker preserves structured retryable Durable Object 5xx responses, including
-`503 {error: "target_visibility_unverified", retryable: true}`, through both
-`/github/webhook` item enqueue and the `/internal/exact-review/*` proxies. The
+`503 {error: "target_visibility_unverified", retryable: true}`, through
+`/github/webhook` item enqueue, `/github/target-dispatch` direct intake, and the
+`/internal/exact-review/*` proxies. The
 status, JSON body, and optional `Retry-After` header reach the caller unchanged;
 unexpected exceptions still produce 500 and the structured server-response
 telemetry remains intact. Visibility admission precedes delivery persistence,
@@ -764,6 +821,14 @@ can block authority but cannot establish it. Malformed or mismatched evidence
 fails closed. Historical rows whose successor disappeared before evidence was
 retained are not automatically repaired. This private queue state changes no
 Bay response or action contract.
+While batching is enabled, stats classify a pending batchable row that claim and
+departure exclude as superseded, and that no active batch owns, as `parked` with
+the stats-only reason `stale_revision`. The durable row stays pending; retention,
+pruning, supersession, the 80-day artifact refresh, and claim fences are unchanged.
+The row leaves the queue only through a newer revision's fenced cleanup, the
+closed-target retirement runbook below, or that refresh. Publication health keeps the age-based
+severity these rows had as pending work: degraded `stale_revision_over_1h` and
+critical `stale_revision_over_6h`. Real dead letters keep `dead_letter_capacity`.
 Authenticated reconciliation samples report `successor_fence_state` only for
 `stale_revision` rows whose acknowledgement is unavailable because the terminal
 disposition is missing. `verified` is diagnostic evidence, never mutation

@@ -1,5 +1,5 @@
 import { errorMessage } from "../value-coerce.js";
-import { createHash } from "node:crypto";
+import { sha256 } from "../content-hash.js";
 import { existsSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { resolve, sep } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -9,7 +9,7 @@ import type { LooseRecord } from "./json-types.js";
 import {
   dispatchClaimDecision,
   hasSuccessfulDispatchExecutionJob,
-} from "./comment-router-utils.js";
+} from "./comment-router/dispatch.js";
 import { ghJson, githubCommandTimeoutMs } from "./github-cli.js";
 import { liveWorkerCapacity } from "./live-worker-capacity.js";
 import { workerLimit } from "../limits.js";
@@ -181,7 +181,7 @@ function dispatchClusterLedger(
         throw new Error(`unresolved cluster job is missing or outside checkout: ${entry.job}`);
       }
       const content = readFileSync(absoluteJob, "utf8");
-      if (createHash("sha256").update(content).digest("hex") !== entry.digest) {
+      if (sha256(content) !== entry.digest) {
         throw new Error(`unresolved cluster job digest mismatch: ${entry.job}`);
       }
       validateClusterJobContent(content, ledger.target_repo, entry.cluster_id);

@@ -8,6 +8,7 @@ import {
   runApplyDecisionsForTest,
   tmpPrefix,
   withMockGh,
+  withReviewRecord,
   workPlanCandidateReport,
 } from "./helpers.ts";
 
@@ -54,6 +55,7 @@ type RunOptions = {
   createdAt?: string;
   maintainerComment?: boolean;
   recentHumanComment?: boolean;
+  report?: (report: string) => string;
 };
 
 function staleVersionGhMock(reviewComment: string, options: RunOptions) {
@@ -141,7 +143,11 @@ function runStaleVersionApply(options: RunOptions = {}) {
     const reportPath = join(root, "apply-report.json");
     mkdirSync(itemsDir, { recursive: true });
     mkdirSync(plansDir, { recursive: true });
-    const synced = reportWithSyncedReviewComment(staleVersionReport(), 321, "stale_version_bug");
+    const synced = reportWithSyncedReviewComment(
+      (options.report ?? ((report) => report))(staleVersionReport()),
+      321,
+      "stale_version_bug",
+    );
     writeFileSync(join(itemsDir, "321.md"), synced.report, "utf8");
     if (options.enabled === false) delete process.env.CLAWSWEEPER_STALE_VERSION_BUG_CLOSE_ENABLED;
     else process.env.CLAWSWEEPER_STALE_VERSION_BUG_CLOSE_ENABLED = "true";
@@ -196,13 +202,42 @@ test("stale-version bug apply closes an old inactive report", () => {
   assert.match(result.comment, /will be reopened/);
 });
 
+test("stale-version bug apply reads the item category from the review record", () => {
+  const result = runStaleVersionApply({
+    report: (report) =>
+      withReviewRecord(report, { closeReason: "stale_version_bug", itemCategory: "feature" }),
+  });
+  assert.equal(result.entries[0]?.action, "skipped_invalid_decision");
+  assert.equal(result.entries[0]?.reason, "stale_version_bug requires bug item category");
+});
+
+test("a review record that does not read keeps the item open for a fresh review", () => {
+  const result = runStaleVersionApply({
+    report: (report) =>
+      withReviewRecord(report, { closeReason: "stale_version_bug", itemCategory: "bug" }).replace(
+        /^review_record: \{/m,
+        "review_record: {broken",
+      ),
+  });
+  assert.deepEqual(
+    result.entries.map((entry) => [entry.action, entry.reason]),
+    [
+      [
+        "skipped_changed_since_review",
+        "review_record: the value is not JSON; fresh review required",
+      ],
+    ],
+  );
+  assert.equal(result.closed, false);
+});
+
 for (const [name, options, message] of [
   ["assignee", { assignees: [{ login: "maintainer" }] }, /assigned issue/],
   ["milestone", { milestone: { title: "Next" } }, /milestoned issue/],
   ["reactions", { reactions: 20 }, /20 or more reactions/],
   ["missing reaction count", { omitReactions: true }, /reaction count is unavailable/],
   ["live age", { createdAt: "2026-07-01T00:00:00Z" }, /older than 120 days/],
-  ["security label", { labels: ["topic:security-regression"] }, /protected label/],
+  ["security label", { labels: ["area: security"] }, /protected label: area: security/],
   ["protected label", { labels: ["clawsweeper:human-review"] }, /protected label/],
   ["linked PR", { labels: ["clawsweeper:linked-pr-open"] }, /linked-pr-open/],
   ["maintainer comment", { maintainerComment: true }, /maintainer issue comment/],

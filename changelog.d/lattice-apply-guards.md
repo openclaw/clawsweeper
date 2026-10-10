@@ -1,0 +1,1 @@
+- Build the apply guards over one memoized read context (`ghJson`, `ghPaged`, `targetRepo`) instead of a 25-member dependency interface. Pure guard checks such as `prAutoCloseExemptLabel` and the age skip reasons are module exports that callers import, and `apply-guard-dependencies` is gone.

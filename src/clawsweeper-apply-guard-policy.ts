@@ -1,38 +1,39 @@
 import { ideaRevivalReactionThreshold, positiveReactionCount } from "./idea-archive-revival.js";
 import {
   PR_AUTO_CLOSE_EXEMPT_LABELS,
+  SECURITY_PROTECTED_LABELS,
   STALE_VERSION_BUG_MIN_INACTIVE_DAYS,
   UNSPONSORED_FEATURE_MIN_INACTIVE_DAYS,
 } from "./clawsweeper-policy.js";
 import type { GitHubUser, Item } from "./clawsweeper-types.js";
-import type { ApplyGuardDependencies } from "./clawsweeper-apply-guard-dependencies.js";
-import type { createApplyGuardActivity } from "./clawsweeper-apply-guard-activity.js";
+import {
+  issueRecentHumanCommentBlockReasonFromComments,
+  lowSignalUnmergeablePrAuthorActivityBlockReason,
+  lowSignalUnmergeablePrConflictBlockReason,
+  maintainerAssociatedEntries,
+  prAutoCloseExemptLabel,
+  type ApplyGuardActivity,
+  type GuardReads,
+} from "./clawsweeper-apply-guard-activity.js";
+import {
+  labelNames,
+  normalizeLabelName,
+  protectedLabels,
+  staleVersionBugAgeSkipReason,
+  unconfirmedProductDirectionAgeSkipReason,
+  unsponsoredFeatureAgeSkipReason,
+} from "./clawsweeper-item-policy.js";
+import {
+  staleVersionBugCloseEnabled,
+  unconfirmedProductDirectionCloseEnabled,
+  unsponsoredFeatureCloseEnabled,
+} from "./policy-flags.js";
+import { asRecord } from "./value-coerce.js";
 
 export function createApplyGuardPolicy(
-  dependencies: ApplyGuardDependencies & ReturnType<typeof createApplyGuardActivity>,
+  { ghJson, ghPaged, targetRepo }: GuardReads,
+  { pullRequestHeadActivity }: ApplyGuardActivity,
 ) {
-  const {
-    asRecord,
-    ghJson,
-    ghPaged,
-    labelNames,
-    normalizeLabelName,
-    protectedLabels,
-    staleVersionBugAgeSkipReason,
-    staleVersionBugCloseEnabled,
-    targetRepo,
-    unconfirmedProductDirectionAgeSkipReason,
-    unconfirmedProductDirectionCloseEnabled,
-    unsponsoredFeatureAgeSkipReason,
-    unsponsoredFeatureCloseEnabled,
-    maintainerAssociatedEntries,
-    lowSignalUnmergeablePrConflictBlockReason,
-    lowSignalUnmergeablePrAuthorActivityBlockReason,
-    issueRecentHumanCommentBlockReasonFromComments,
-    pullRequestHeadActivity,
-    prAutoCloseExemptLabel,
-  } = dependencies;
-
   function lowSignalUnmergeablePrApplyBlockReason(
     number: number,
     staleMinAgeDays: number,
@@ -189,7 +190,7 @@ export function createApplyGuardPolicy(
     if (
       labelNames(issue.labels)
         .map(normalizeLabelName)
-        .some((label) => label.includes("security"))
+        .some((label) => SECURITY_PROTECTED_LABELS.has(label))
     ) {
       return "security-labeled issue requires human triage";
     }
@@ -255,9 +256,6 @@ export function createApplyGuardPolicy(
       protectedLabels(labelNames(issue.labels))[0] ??
       prAutoCloseExemptLabel(labelNames(issue.labels));
     if (protectedLabel) return `protected label: ${protectedLabel}`;
-    if (labels.some((label) => label.includes("security"))) {
-      return "security-labeled issue requires human triage";
-    }
     if ((issue.assignees ?? []).length > 0) return "assigned issue has maintainer engagement";
     if (issue.milestone) return "milestoned issue has maintainer engagement";
     const totalReactions = asRecord(issue.reactions).total_count;

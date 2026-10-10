@@ -176,17 +176,21 @@ test("Codex decision schema avoids unsupported strict-output keywords recursivel
 
 test("Codex failure logs distinguish provider throttling from content output failures", () => {
   assert.equal(
-    codexFailureLogKindForTest(
-      "Codex review failed: retryable codex transport failure (capacity).",
-    ),
+    codexFailureLogKindForTest(1, "Codex failed", "", "", {
+      diagnostic: "Rate limit reached for model-test on tokens per min (TPM).",
+    }),
     "provider_throttle",
   );
+  assert.equal(codexFailureLogKindForTest(1, "Codex wrote invalid JSON"), "content_or_output");
+  assert.equal(codexFailureLogKindForTest(null, "Codex review timed out."), "timeout");
+  // Captured model output is evidence only. It does not change the log kind.
   assert.equal(
-    codexFailureLogKindForTest("Codex review failed: invalid structured output."),
-    "content_or_output",
-  );
-  assert.equal(
-    codexFailureLogKindForTest("Codex review failed: codex execution failed."),
+    codexFailureLogKindForTest(
+      1,
+      "Codex failed",
+      "Codex review failed: invalid structured output.",
+      "retryable codex transport failure (capacity)",
+    ),
     "codex_execution",
   );
 });
@@ -1045,18 +1049,6 @@ test("codex failure decisions expose stderr and stdout separately", () => {
     "user\nThe reviewed prompt discusses rate limits.",
   );
   assert.equal(decision.regressionAssessment, null);
-  assert.deepEqual(decision.liveProofPlan, {
-    status: "not_applicable",
-    surface: "none",
-    terminalCompletion: "not_applicable",
-    reason: "Live proof was not assessed because the Codex review failed.",
-    payoff: {
-      kind: "static_text",
-      justification: "No recording payoff was assessed because the Codex review failed.",
-    },
-    entry: "",
-    steps: [],
-  });
   assert.match(
     decision.evidence.find((entry) => entry.label === "codex stdout")?.detail ?? "",
     /"type":"turn.failed"/,

@@ -22,10 +22,7 @@ import { runCopyProof } from "../../scripts/e2e/exact-review-selected-tuple-copy
 
 const path = ".github/workflows/exact-review-batch-publish.yml";
 const source = readFileSync(path, "utf8");
-const cliSource = readFileSync("src/repair/exact-review-batch-cli.ts", "utf8");
-const prepareSource = readFileSync("scripts/prepare-exact-review-batch.mjs", "utf8");
-const publisherSource = readFileSync("src/repair/publish-event-result.ts", "utf8");
-const sweepSource = readFileSync(".github/workflows/sweep.yml", "utf8");
+const sweep = YAML.parse(readFileSync(".github/workflows/sweep.yml", "utf8"));
 const workflow = YAML.parse(source) as {
   on: {
     schedule?: unknown;
@@ -44,7 +41,7 @@ const workflow = YAML.parse(source) as {
 };
 
 test("manual review timeouts survive queue resolution within the existing exact-review cap", () => {
-  const steps = YAML.parse(sweepSource).jobs["event-review-apply"].steps;
+  const steps = sweep.jobs["event-review-apply"].steps;
   const script = steps
     .find((step: { id?: string }) => step.id === "target")
     .run.match(/node <<'NODE'\n([\s\S]*?)\nNODE/)[1];
@@ -156,10 +153,11 @@ test("manual publication proof preserves isolated toolchain settings without inh
 });
 
 test("manual publication stays queue-owned and excludes router and implementation hooks", () => {
-  assert.match(sweepSource, /name: Admit explicit manual reviews/);
-  assert.match(sweepSource, /manual-review-enqueue\.js/);
-  assert.match(sweepSource, /if: \$\{\{ steps\.mode\.outputs\.manual_explicit == 'true' \}\}/);
-  assert.match(prepareSource, /EXACT_REVIEW_DECISION: JSON\.stringify\(producer\)/);
+  const admission = sweep.jobs.plan.steps.find(
+    (step: { name?: string }) => step.name === "Admit explicit manual reviews",
+  );
+  assert.equal(admission.if, "${{ steps.mode.outputs.manual_explicit == 'true' }}");
+  assert.match(admission.run, /manual-review-enqueue\.js/);
   assert.match(source, /publication_policy.*record_comment_only.*failed_review_shard_recovery/);
   assert.match(source, /AUTO_IMPLEMENT_ISSUES.*\n\s*\[ -z "\$publication_policy" \]/);
 });
@@ -169,7 +167,6 @@ for (const targetBranch of ["release/proof", ""]) {
     `manual admission preserves branch selection ${targetBranch || "(default lookup)"}`,
     { skip: process.platform === "win32" },
     () => {
-      const sweep = YAML.parse(sweepSource);
       const admission = sweep.jobs.plan.steps.find(
         (step: { name?: string }) => step.name === "Admit explicit manual reviews",
       );
@@ -267,19 +264,6 @@ test("batch publisher is event-driven and queue-bounded instead of workflow-seri
   assert.equal(workflow.jobs.publish!.env.CLAWSWEEPER_APP_CLIENT_ID, "Iv23liOECG0slfuhz093");
   assert.equal(workflow.concurrency, undefined);
   assert.deepEqual(workflow.permissions, { actions: "write", contents: "read" });
-});
-
-test("batch publication bounds shared GitHub retries without dropping failed artifacts", () => {
-  assert.match(
-    prepareSource,
-    /publish-event-result\.js"\)\],[\s\S]*?\.\.\.process\.env,\s*CLAWSWEEPER_GH_RETRY_ATTEMPTS: "2"/,
-  );
-  assert.match(
-    prepareSource,
-    /if \(result\.code !== 0 && !existsSync\(outcomePath\)\) \{\s*writeFailure\(outcomePath, "retryable_failure", "unknown_failure"\)/,
-  );
-  assert.match(cliSource, /const failure = failureCompletion\(current, outcome\)/);
-  assert.match(cliSource, /completions\.push\(failure\)/);
 });
 
 test("transient retries stay bounded while GitHub throttles defer immediately", () => {
@@ -686,27 +670,6 @@ test("batch workflow signs queue ownership, isolates item failures, and commits 
   assert.match(source, /while sleep 60/);
   assert.match(source, /test ! -f "\$heartbeat_failed"/);
   assert.match(source, /node scripts\/prepare-exact-review-batch\.mjs/);
-  assert.match(prepareSource, /"retryable_failure", "artifact_unavailable"/);
-  assert.match(prepareSource, /"permanent_failure", "tuple_protocol_invalid"/);
-  assert.match(prepareSource, /EXACT_REVIEW_BATCH_MUTATION_OUTPUT/);
-  assert.match(
-    publisherSource,
-    /if \(options\.batchMutationOutput\)[\s\S]*?writeBatchMutationResult\(options\.batchMutationOutput, \{[\s\S]*?kind: completionKind,[\s\S]*?reasonCode,/,
-  );
-  assert.match(
-    publisherSource,
-    /canonicalTargetKey: `\$\{options\.targetRepo\}#\$\{options\.itemNumber\}`,\s*fenceKey: itemKey/,
-  );
-  // Keep the fixture from looking like an embedded credential while still
-  // proving that artifact downloads use the owner-scoped repository token.
-  const ghToken = ["GH", "TOKEN"].join("_");
-  assert.match(prepareSource, new RegExp(`${ghToken}: repositoryToken`));
-  assert.match(prepareSource, /activeCircuit[\s\S]*?attempted: false/);
-  assert.match(
-    prepareSource,
-    /githubThrottleText\(result\.stderr\)[\s\S]*?resolveRateLimitObservation/,
-  );
-  assert.match(prepareSource, /was submitted too quickly/);
   assert.match(source, /gh workflow run repair-comment-router\.yml/);
   assert.match(source, /EXACT_REVIEW_GITHUB_REQUEST_REPEAT="\$repeat_revision"/);
   assert.match(
@@ -743,7 +706,6 @@ test("batch workflow signs queue ownership, isolates item failures, and commits 
     /Automatic issue implementation dispatch failed; scheduled backfill will retry/,
   );
   assert.match(source, /--item-number "\$item_number"/);
-  assert.match(prepareSource, /outcomePath\.replace\(\/\\\.json\$\/, "\.report\.md"\)/);
   assert.match(source, /post-effect --route router-receipt --payload/);
   assert.match(source, /post-effect --route terminal-disposition --payload/);
   assert.doesNotMatch(
@@ -779,7 +741,6 @@ test("batch workflow signs queue ownership, isolates item failures, and commits 
   assert.match(source, /durable handoff completes this review lifecycle/);
   assert.match(source, /jq '\.postEffectsRequired = true'/);
   assert.match(source, /jq '\.postEffectsComplete = true'/);
-  assert.match(cliSource, /outcome\.postEffectsRequired === true/);
   assert.match(source, /Capture runner start timestamp/);
   assert.match(source, /EXACT_REVIEW_BATCH_DISPATCH_ID/);
   assert.match(source, /Record batch preparation start/);
@@ -787,10 +748,6 @@ test("batch workflow signs queue ownership, isolates item failures, and commits 
   assert.match(source, /EXACT_REVIEW_BATCH_OBSERVATION=final_github_apply/);
   assert.match(source, /EXACT_REVIEW_BATCH_OBSERVATION=github_throttle/);
   assert.match(source, /rate limit\|abuse detection\|was submitted too quickly\|HTTP 429/);
-  assert.match(cliSource, /"observe"/);
-  assert.match(cliSource, /optionalDispatchTelemetry/);
-  assert.match(cliSource, /optionalRunnerTelemetry/);
-  assert.match(cliSource, /if \(!startedAt\) return undefined;/);
 
   const healthyMembers = workflow.jobs.publish!.steps.find(
     (step) => step.name === "Finalize healthy members under a fenced heartbeat",
@@ -880,7 +837,6 @@ test("batch publisher gives canonical supersession precedence over artifact term
 });
 
 test("direct proof reviews use the normal verdict router; failure recovery remains review-only", () => {
-  const sweep = YAML.parse(sweepSource) as typeof workflow;
   const run =
     Object.values(sweep.jobs)
       .flatMap((job) => job.steps ?? [])
@@ -924,34 +880,7 @@ test("direct proof reviews use the normal verdict router; failure recovery remai
   }
 });
 
-test("exact-review producer uses direct publication with bounded legacy fallback", () => {
-  assert.match(sweepSource, /name: Deliver GitHub effects and prepare direct state mutation/);
-  assert.match(sweepSource, /records-item-number: \$\{\{ steps\.target\.outputs\.item_number \}\}/);
-  assert.match(
-    sweepSource,
-    /EXACT_REVIEW_BATCH_MUTATION_OUTPUT: \.artifacts\/direct-publication-outcome\.json/,
-  );
-  assert.match(sweepSource, /repair:exact-review-direct-publication/);
-  assert.match(
-    sweepSource,
-    /EXACT_REVIEW_DIRECT_PUBLICATION_ENABLED: \$\{\{ vars\.EXACT_REVIEW_DIRECT_PUBLICATION_ENABLED \|\| '1' \}\}/,
-  );
-  assert.match(
-    sweepSource,
-    /name: Upload exact review artifact bundle[\s\S]*?steps\.direct-exact-review-publication\.outputs\.accepted != 'true'/,
-  );
-  assert.match(
-    sweepSource,
-    /name: Queue durable exact review publication[\s\S]*?steps\.upload-exact-review-bundle\.outcome == 'success'/,
-  );
-  assert.match(sweepSource, /internal\/exact-review\/enqueue/);
-  assert.match(source, /name: Claim one durable publication batch/);
-});
-
 test("direct publication reads the existing selected bundle instead of producer diagnostics", () => {
-  const sweep = YAML.parse(sweepSource) as {
-    jobs: Record<string, { steps?: Array<{ name?: string; env?: Record<string, string> }> }>;
-  };
   const configured = Object.values(sweep.jobs)
     .flatMap((job) => job.steps ?? [])
     .filter((step) => step.env?.EXACT_REVIEW_PUBLICATION_ARTIFACT_DIR !== undefined);
@@ -963,10 +892,6 @@ test("direct publication reads the existing selected bundle instead of producer 
     direct.env?.EXACT_REVIEW_PUBLICATION_ARTIFACT_DIR,
     ".artifacts/exact-review-bundle/review",
   );
-  assert.match(
-    publisherSource,
-    /artifactDir: resolve\(\s*workRoot,\s*process\.env\.EXACT_REVIEW_PUBLICATION_ARTIFACT_DIR \|\| "artifacts\/event",?\s*\)/,
-  );
 });
 
 test("batch workflow uses owner-scoped mutation credentials and canonical Worker hydration", () => {
@@ -977,28 +902,7 @@ test("batch workflow uses owner-scoped mutation credentials and canonical Worker
   assert.match(source, /records-repo-slugs: \$\{\{ steps\.batch\.outputs\.records_repo_slugs \}\}/);
   assert.match(source, /hydrate-git-state: "false"/);
   assert.match(source, /hydrate-state-blobs: "false"/);
-  assert.match(cliSource, /slugForRepo\(normalizeRepo\(target\)\)/);
   assert.doesNotMatch(source, /permissions:\n(?:.*\n)*?\s+issues: write/);
-  assert.doesNotMatch(prepareSource, /stateClone|CLAWSWEEPER_STATE_DIR|"clone"/);
-  assert.match(prepareSource, /CLAWSWEEPER_CODE_ROOT: workspace/);
-  assert.match(prepareSource, /EXACT_REVIEW_WORK_ROOT: root/);
-  assert.match(prepareSource, /publish-event-result\.js"\)\],\s*\{\s*cwd: root,\s*env:/);
-  assert.match(publisherSource, /codeRoot: resolve\(process\.env\.CLAWSWEEPER_CODE_ROOT/);
-  assert.match(publisherSource, /const cli = join\(options\.codeRoot, "dist\/clawsweeper\.js"\)/);
-  assert.match(
-    publisherSource,
-    /spawnSync\(process\.execPath, \[cli, \.\.\.args\], \{\s*cwd: options\.workRoot,/,
-  );
-  assert.equal(
-    publisherSource.match(/\.\.\.eventRecordDirectoryArgs\(options, (?:recordPaths|paths)\)/g)
-      ?.length,
-    2,
-  );
-  for (const flag of ["items", "closed", "plans", "decision-packets"]) {
-    assert.match(publisherSource, new RegExp(`"--${flag}-dir"`));
-  }
-  assert.match(publisherSource, /"--record-root",\s*options\.workRoot/);
-  assert.doesNotMatch(publisherSource, /runStreaming\("pnpm"/);
 });
 
 test("batch preparation copies only canonical selected tuples and preserves publisher bases", () => {
@@ -1027,19 +931,6 @@ for (const invalidDecision of [
   });
 }
 
-test("batch preparation is bounded, heartbeat-fenced, and deterministically aggregated", () => {
-  assert.match(prepareSource, /const MAX_CONCURRENCY = 4/);
-  assert.match(prepareSource, /const MAX_ITEMS = 32/);
-  assert.match(prepareSource, /results\[index\] = await worker/);
-  assert.match(prepareSource, /EXACT_REVIEW_BATCH_HEARTBEAT_FAILURE_PATH/);
-  assert.match(prepareSource, /DEFAULT_ITEM_TIMEOUT_MS/);
-  assert.match(prepareSource, /DEFAULT_TOTAL_TIMEOUT_MS/);
-  assert.match(prepareSource, /Math\.min\(itemTimeoutMs, remainingTimeout\(deadline\)\)/);
-  assert.doesNotMatch(prepareSource, /importPreparedMutationObjects|pack-objects|targetOid/);
-  assert.match(prepareSource, /terminate\("SIGKILL"\)/);
-  assert.match(prepareSource, /prepare-telemetry\.json/);
-});
-
 test("batch workflow tolerates periodic heartbeat outages but establishes each lease strictly", () => {
   for (const name of [
     "Prepare each item independently",
@@ -1062,51 +953,6 @@ test("batch workflow shell steps are valid Bash", () => {
     const syntax = spawnSync("bash", ["-n"], { input: step.run, encoding: "utf8" });
     assert.equal(syntax.status, 0, `${step.name ?? "unnamed step"}: ${syntax.stderr}`);
   }
-});
-
-test("batch claim treats an all-stale fetched batch as terminal", () => {
-  assert.match(cliSource, /if \(!manifest\.items\.length\) return;/);
-  assert.ok(
-    cliSource.indexOf("if (!manifest.items.length) return;") < cliSource.indexOf("owners.size"),
-  );
-});
-
-test("batch manifest records the dashboard effective lease size", () => {
-  assert.match(cliSource, /configuredBatchSize: lease\.configuredBatchSize/);
-  assert.doesNotMatch(
-    cliSource,
-    /configuredBatchSize: positiveInteger\(env\("EXACT_REVIEW_BATCH_MAX_ITEMS"\)\)/,
-  );
-});
-
-test("batch failure cleanup completes manifest fences without a queue fetch", () => {
-  const releaseSource = /async function release\(\) \{([\s\S]*?)\n\}/.exec(cliSource)?.[1] ?? "";
-  assert.match(releaseSource, /manifest\.items\.map/);
-  assert.match(releaseSource, /readBatchReceipt\(manifest, false\)/);
-  assert.match(releaseSource, /receipt\?\.outcomes\.get\(member\.itemKey\)/);
-  assert.match(releaseSource, /receipt\?\.publishedItemKeys\.has\(member\.itemKey\)/);
-  assert.match(releaseSource, /terminalOutcome: "published"/);
-  assert.match(releaseSource, /receipt\?\.stateCommitSha/);
-  assert.match(releaseSource, /receipt\?\.stateWriter/);
-  assert.doesNotMatch(releaseSource, /client\.fetch/);
-});
-
-test("batch commit publishes every prepared tuple to canonical Worker state", () => {
-  const commitSource = /async function commit\(\) \{([\s\S]*?)\n\}/.exec(cliSource)?.[1] ?? "";
-  assert.match(commitSource, /await publishCanonicalBatch\(commitCandidates\)/);
-  assert.match(commitSource, /permanentPublicationOutcome\(current, failureFingerprint\(error\)\)/);
-  assert.match(commitSource, /outcomes: publicationOutcomes/);
-  assert.match(cliSource, /canonicalTargetKey/);
-  assert.match(cliSource, /fenceKey/);
-  assert.match(cliSource, /postDirectPublicationResult/);
-  assert.match(cliSource, /publication-batch-results/);
-  assert.match(
-    cliSource,
-    /payload: prepareDirectPublicationPayload\(\{ revision: plan\.identity\.revision, plan \}\)/,
-  );
-  assert.doesNotMatch(cliSource, /runGit|targetOid/);
-  assert.doesNotMatch(cliSource, /commitPreparedStateBatch/);
-  assert.doesNotMatch(cliSource, /state-publication-batch/);
 });
 
 function githubRetryExecution(

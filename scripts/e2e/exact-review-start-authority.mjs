@@ -81,6 +81,7 @@ cat "$PROOF_ROOT/pull.json"
   );
   writeFileSync(join(cwd, "bin/pnpm"), templateFixture(), { mode: 0o700 });
   const requests = [];
+  const statuses = [];
   const server = createServer(async (request, response) => {
     let body = "";
     for await (const part of request) body += part;
@@ -89,7 +90,7 @@ cat "$PROOF_ROOT/pull.json"
     assert.equal(request.url, "/internal/exact-review/heartbeat");
     assert.equal(request.method, "POST");
     assert.deepEqual(
-      { ...payload, phase: undefined },
+      { ...payload, phase: undefined, generation_start: undefined },
       {
         item_key: "example/project#1",
         lease_id: "synthetic-lease",
@@ -99,6 +100,7 @@ cat "$PROOF_ROOT/pull.json"
         run_attempt: 1,
         source_head_sha: "a".repeat(40),
         phase: undefined,
+        generation_start: undefined,
       },
     );
     let status = 200;
@@ -122,6 +124,7 @@ cat "$PROOF_ROOT/pull.json"
     if (scenario === "service-failure" || (scenario === "retry-current" && requests.length === 1))
       status = 503;
     if (scenario === "transport-failure") {
+      statuses.push("transport");
       request.socket.destroy();
       return;
     }
@@ -132,6 +135,7 @@ cat "$PROOF_ROOT/pull.json"
       status = 409;
       error = "lease_superseded";
     }
+    statuses.push(status);
     response.writeHead(status, { "content-type": "application/json", "retry-after": "0" });
     response.end(JSON.stringify(error ? { error } : { ok: status === 200 }));
   });
@@ -213,6 +217,19 @@ cat "$PROOF_ROOT/pull.json"
     assert.equal(requests.length === 0, scenario === "invalid-tuple");
     if (scenario === "service-failure" || scenario === "transport-failure")
       assert.equal(requests.length, 4);
+    // The startup check, and its retries until accepted, charges generation
+    // start; periodic heartbeats after an accepted start never do.
+    const accepted = statuses.indexOf(200);
+    const generationStarts = requests.map((payload) => payload.generation_start);
+    if (guarded && !baselineRef) {
+      generationStarts.forEach((value, index) =>
+        assert.equal(
+          value,
+          accepted === -1 || index <= accepted ? true : undefined,
+          `${scenario} request ${index}`,
+        ),
+      );
+    }
     if (launched) {
       for (const file of ["started", "descendant"]) {
         const pid = Number(readFileSync(join(cwd, file), "utf8"));
@@ -230,6 +247,7 @@ cat "$PROOF_ROOT/pull.json"
       code,
       launched,
       requests: requests.length,
+      generationStartRequests: generationStarts.filter((value) => value === true).length,
       superseded: outputs.superseded === "true",
       mayPublish,
       processesReaped: true,

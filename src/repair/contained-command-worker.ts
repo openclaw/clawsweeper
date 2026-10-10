@@ -16,6 +16,8 @@ type WorkerInput = {
   input?: string;
   isolateNetwork: boolean;
   maxBuffer: number;
+  /** Sandbox paths under /tmp that each get a new private writable tmpfs. */
+  privateDirectories: string[];
   timeoutMs?: number;
   writableRoots: string[];
   windowsVerbatimArguments: boolean;
@@ -74,6 +76,7 @@ export async function runTrustedGitAcquisitionWorker(): Promise<void> {
       ...input,
       ...invocation,
       isolateNetwork: false,
+      privateDirectories: [],
       writableRoots: [],
       windowsVerbatimArguments: invocation.windowsVerbatimArguments === true,
     },
@@ -115,6 +118,7 @@ async function runContained(
           LINUX_SUBREAPER_SCRIPT,
           JSON.stringify(input.writableRoots),
           JSON.stringify(input.isolateNetwork),
+          JSON.stringify(input.privateDirectories),
           sandboxRoot!,
           input.command,
           ...input.args,

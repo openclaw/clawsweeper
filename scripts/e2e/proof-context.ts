@@ -12,6 +12,7 @@ import {
   proofMediaUrlsFromContextForTest,
 } from "../../dist/clawsweeper-media-proof.js";
 import type { PrimaryBodyContext } from "../../dist/clawsweeper-primary-body.js";
+import { sha256 } from "../../dist/content-hash.js";
 import {
   assertBodyCoverage,
   hydratePrimaryBody,
@@ -19,7 +20,6 @@ import {
   longProofBody,
   mediaFixtureUrls,
   scriptSentinel,
-  sha256,
   sourceTools,
 } from "../../test/primary-body-fixture.ts";
 

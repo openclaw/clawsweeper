@@ -1,4 +1,5 @@
 import { type Args } from "./clawsweeper-args.js";
+import type { MergeRiskLabelName } from "./clawsweeper-policy.js";
 import type {
   AcquiredReviewStartLease,
   ActionTaken,
@@ -13,7 +14,6 @@ import type {
   CanonicalPullRequestCommentSyncBlock,
   CloseReason,
   Decision,
-  ExactEventReviewLeaseDisposition,
   ExactReviewQueueAuthority,
   FeatureShowcase,
   ImpactLabelName,
@@ -22,7 +22,6 @@ import type {
   ItemContext,
   ItemKind,
   MaturityLabelName,
-  MergeRiskLabelName,
   MutationRunner,
   OverallCorrectness,
   PrCloseCoverageProofGateBlock,
@@ -72,26 +71,18 @@ export interface CreateApplyDecisionWorkflowDependencies {
     gateResult: PrCloseCoverageProofGateResult | undefined,
   ) => string;
   applyProtectedLabelReason: (labels: readonly string[], closeReason: unknown) => string;
-  applyQueueSortFields: (
-    markdown: string,
-    syncCommentsOnly: boolean,
-    applyKind: ApplyKind,
-  ) => { priority: number; applyCheckedAt: number };
   applyRuntimeBudgetYieldResults: (number: number, reason: string) => ApplyResult[];
-  asRecord: (value: unknown) => Record<string, unknown>;
   authorPrBudgetAgeSkipReason: (item: Pick<Item, "createdAt">, now?: number) => string | null;
   authorPrBudgetApplyGateSafe: (
     number: number,
     item: Pick<Item, "author" | "authorAssociation" | "createdAt" | "kind" | "labels">,
     markdown: string,
   ) => AuthorPrBudgetApplyGate;
-  authorPrBudgetCloseEnabled: (env?: Record<string, string | undefined>) => boolean;
   authorPrBudgetMaxClosesPerRun: (env?: Record<string, string | undefined>) => number;
   authorPrBudgetPromotion: (
     markdown: string,
     state: AuthorPrBudgetApplyState,
   ) => PullRequestClosePromotion;
-  authorPrBudgetSignalBlockReason: (markdown: string) => string | null;
   bulkFilerRepositoryPermission: (
     author: string,
     cache: BulkFilerRepositoryPermissionCache,
@@ -178,10 +169,6 @@ export interface CreateApplyDecisionWorkflowDependencies {
   ensureDir: (path: string) => void;
   ensureIdeaArchiveLabel: (onMutation?: () => void) => void;
   ensureRuntimeDelayFits: (waitMs: number, phase: string) => void;
-  exactEventReviewLeaseDisposition: (
-    markdown: string,
-    liveRevision: string,
-  ) => ExactEventReviewLeaseDisposition;
   fetchIssueReviewComments: (number: number) => Record<string, unknown>[];
   fetchItem: (
     number: number,
@@ -207,20 +194,12 @@ export interface CreateApplyDecisionWorkflowDependencies {
     skippedAdditions: string[];
   };
   freshPullRequestReviewHead: (markdown: string, context: ItemContext) => boolean;
-  frontMatterBoolean: (markdown: string, key: string) => boolean;
-  frontMatterStringArray: (markdown: string, key: string) => string[];
-  frontMatterValue: (markdown: string, key: string) => string | undefined;
   ghJson: <T>(args: string[]) => T;
   GitHubRuntimeBudgetError: new (reason: string) => Error & { readonly reason: string };
   guardedOpenApplyProofFields: (
     actionTaken: string,
     options: { emitEventApplyProof: boolean; liveGuardVerified: boolean },
   ) => { guardedOpenStateVerified?: true };
-  hasAutoCloseAllowedMetadata: (markdown: string) => boolean;
-  hasNormalizedLabel: (labels: readonly string[], label: string) => boolean;
-  hasVerifiedLocalCheckoutAccess: (markdown: string) => boolean;
-  impactLabelsFromReport: (markdown: string) => ImpactLabelName[];
-  isApplyCloseCandidateReport: (markdown: string) => boolean;
   implementedOnMainPullRequestProvenanceApplyBlock: (
     markdown: string,
     item: Item,
@@ -229,26 +208,8 @@ export interface CreateApplyDecisionWorkflowDependencies {
   ) => string | null;
   isBulkFilerExemptAuthorAssociation: (value: unknown) => boolean;
   isExactEventSourceRevisionChange: (itemKind: Item["kind"], reason: string) => boolean;
-  isGoodFirstIssue: (state: IssueAdvisoryLabelState, currentLabels: readonly string[]) => boolean;
-  isLiveRecheckCloseGuardReport: (markdown: string) => boolean;
   isMaintainerAuthorAssociation: (value: unknown) => boolean;
-  isPairBlockedCloseReport: (markdown: string) => boolean;
-  isRetryableCloseSkipReport: (markdown: string) => boolean;
-  isRetryableKeptOpenCloseReport: (markdown: string) => boolean;
-  isRetryablePrCloseCoverageProofReport: (markdown: string) => boolean;
-  issueAdvisoryLabelStateFromReport: (
-    markdown: string,
-    options?: {
-      goodFirstIssueOptedOut?: boolean;
-      hasOpenLinkedPullRequest?: boolean;
-      locked?: boolean;
-    },
-  ) => IssueAdvisoryLabelState;
   issueRecentHumanCommentBlockReasonSafe: (number: number, days: number) => string | null;
-  issueRecentHumanCommentBlockReasonFromComments: (
-    comments: readonly unknown[],
-    days: number,
-  ) => string | null;
   issueReviewComment: (
     number: number,
     fallbackBodies?: readonly string[],
@@ -272,20 +233,14 @@ export interface CreateApplyDecisionWorkflowDependencies {
     options?: LiveReadOptions & { liveReadGeneration?: LiveReadGeneration },
   ) => string;
   livePullRequestHasNoDiff: (context: ItemContext) => boolean;
-  lockedConversationApplyReason: (item: Pick<Item, "activeLockReason" | "locked">) => string | null;
-  login: (value: unknown) => string | undefined;
   lowSignalUnmergeablePrApplyBlockReasonSafe: (
     number: number,
     staleMinAgeDays: number,
   ) => string | null;
-  markdownRepository: (markdown: string, file?: string) => string;
   markedReviewCommentBody: (number: number, body: string) => string;
-  maturityLabelsFromReport: (markdown: string) => MaturityLabelName[];
-  mergeRiskLabelsFromReport: (markdown: string) => MergeRiskLabelName[];
   mutationErrorMessage: (error: unknown) => string;
   normalizeAuthorAssociation: (value: unknown) => string;
   normalizeLabelName: (label: string) => string;
-  numberForMarkdownFile: (file: string) => number;
   obsoleteFixPrApplyBlockReasonSafe: (
     number: number,
     item: Pick<Item, "createdAt">,
@@ -313,10 +268,6 @@ export interface CreateApplyDecisionWorkflowDependencies {
     allowSupersededLeaseCleanup?: boolean;
   }) => ReviewStartStatusCommentResult;
   PR_CLOSE_COVERAGE_PROOF_SCHEMA_PATH: string;
-  prAutoCloseExemptDecisionReason: (
-    item: Pick<Item, "kind" | "labels">,
-    closeReason: CloseReason | undefined,
-  ) => string | null;
   prCloseCoverageProofGateResult: (options: {
     markdown: string;
     item: Item;
@@ -326,11 +277,6 @@ export interface CreateApplyDecisionWorkflowDependencies {
     runtimeBudget?: PrCloseCoverageRuntimeBudget;
   }) => PrCloseCoverageProofGateResult;
   prCloseCoverageProofPromptTemplate: () => string;
-  prStatusLabelKindFromReport: (
-    markdown: string,
-    context: ItemContext,
-    currentLabels: readonly string[],
-  ) => PrStatusLabelKind | null;
   pullHeadShaFromContext: (context: ItemContext) => string | null;
   pullRequestClosePromotion: (
     markdown: string,
@@ -377,19 +323,9 @@ export interface CreateApplyDecisionWorkflowDependencies {
     reason: CloseReason,
     options?: ReviewCommentRenderOptions,
   ) => string;
-  replaceFrontMatterValue: (markdown: string, key: string, value: string) => string;
-  replaceSectionValue: (markdown: string, heading: string, value: string) => string;
   repoFromArgs: (args: Args) => RepositoryProfile;
-  reportCloseReason: (markdown: string) => CloseReason | undefined;
   reportDecision: (markdown: string, closeReason: CloseReason) => Decision;
   reportEntriesForDir: (dir: string, itemNumbers?: ReadonlySet<number>) => ReportEntry[];
-  reportFeatureShowcase: (markdown: string) => FeatureShowcase;
-  reportItemKind: (markdown: string) => ItemKind | undefined;
-  reportOverallCorrectness: (markdown: string) => OverallCorrectness;
-  reportPrRating: (markdown: string) => PrRating;
-  reportRealBehaviorProof: (markdown: string) => RealBehaviorProof;
-  reportSecurityReview: (markdown: string) => SecurityReview;
-  reportTelegramVisibleProof: (markdown: string) => TelegramVisibleProof;
   resetGuardReadCache: () => void;
   setGuardReadGeneration: (generation: LiveReadGeneration | null) => void;
   withGuardReadOptions: <T>(options: LiveReadOptions, read: () => T) => T;
@@ -407,36 +343,6 @@ export interface CreateApplyDecisionWorkflowDependencies {
     expectedHash: string,
     options?: { allowApplyCloseActionUpgrade?: boolean },
   ) => boolean;
-  reviewLeaseRevisionFromReport: (markdown: string) => string | null;
-  reviewReportCanPromoteToClose: (markdown: string) => boolean;
-  reviewSectionValue: (
-    markdown: string,
-    section:
-      | "summary"
-      | "changeSummary"
-      | "systemContext"
-      | "architectureDiagram"
-      | "bestSolution"
-      | "maintainerDecision"
-      | "reproductionAssessment"
-      | "solutionAssessment"
-      | "visionFit"
-      | "rootCauseCluster"
-      | "reviewFindings"
-      | "securityReview"
-      | "realBehaviorProof"
-      | "prRating"
-      | "telegramVisibleProof"
-      | "mantisRecommendation"
-      | "featureShowcase"
-      | "agentsPolicyStatus"
-      | "workCandidate"
-      | "repairWorkPrompt"
-      | "evidence"
-      | "likelyOwners"
-      | "risks"
-      | "closeComment",
-  ) => string;
   reviewStartLeaseOwner: (comment: Record<string, unknown> | undefined) => string | null;
   ROOT: string;
   runtimeBudgetExceeded: (startedAtMs: number, maxRuntimeMs: number, nowMs: number) => boolean;
@@ -449,7 +355,6 @@ export interface CreateApplyDecisionWorkflowDependencies {
       state: string;
     },
   ) => string | null;
-  sha256: (text: string) => string;
   shouldPreserveReviewStartLease: (options: {
     currentHeadSha: string;
     reportHeadSha: string | undefined;
@@ -457,23 +362,6 @@ export interface CreateApplyDecisionWorkflowDependencies {
     reportLeaseCommentId: string | undefined;
     leaseOwner: string | null;
     leaseCommentId: number | null;
-  }) => boolean;
-  shouldProbeClosedStateReport: (markdown: string) => boolean;
-  shouldSyncReviewComment: (options: {
-    syncCommentsOnly: boolean;
-    isCloseProposal: boolean;
-    commentSyncMinAgeDays: number;
-    reviewCommentSyncedAt: string | undefined;
-    reviewCommentVerifiedAt?: string | undefined;
-    reviewedAt?: string | undefined;
-    lastFullReviewAt?: string | undefined;
-    guardedReviewedAt?: string | undefined;
-    hasExistingReviewComment: boolean;
-    needsReviewCommentBodySync: boolean;
-    needsReviewCommentHashSync: boolean;
-    needsReviewCommentReferenceSync: boolean;
-    forceReviewCommentBodySync?: boolean;
-    now?: number;
   }) => boolean;
   sleepMs: (milliseconds: number) => void;
   staleCanonicalCommentSyncPendingReason: (markdown: string) => string | null;
@@ -525,7 +413,6 @@ export interface CreateApplyDecisionWorkflowDependencies {
     receiptIdentity: string,
     idempotencyIdentity: string,
   ) => ApplyMutationAttempt | null;
-  stringOrUndefined: (value: unknown) => string | undefined;
   syncBulkFilerLabel: (options: {
     number: number;
     labels: readonly string[];
@@ -637,20 +524,16 @@ export interface CreateApplyDecisionWorkflowDependencies {
     requestedTimeoutMs: number,
     nowMs: number,
   ) => number | null;
-  timestampMs: (iso: string | undefined) => number | null;
-  triagePriorityFromReport: (markdown: string) => TriagePriority;
   unconfirmedProductDirectionApplyBlockReasonSafe: (
     number: number,
     item: Pick<Item, "createdAt" | "labels">,
     reviewedUpdatedAt: string | undefined,
     reviewedAt: string | undefined,
   ) => string | null;
-  unconfirmedProductDirectionCloseEnabled: (env?: Record<string, string | undefined>) => boolean;
   unsponsoredFeatureApplyBlockReasonSafe: (
     number: number,
     item: Pick<Item, "createdAt">,
   ) => string | null;
-  unsponsoredFeatureCloseEnabled: (env?: Record<string, string | undefined>) => boolean;
   updateReviewCommentMetadata: (
     markdown: string,
     comment: Record<string, unknown> | undefined,

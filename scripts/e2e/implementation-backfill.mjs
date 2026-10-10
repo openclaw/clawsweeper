@@ -21,9 +21,12 @@ const step = workflow.jobs.plan.steps.find(
 );
 const capture = path.join(root, "dispatch.jsonl");
 const gh = path.join(root, "gh.mjs");
+// Lane health lists recent worker runs; an empty history keeps the lane open.
 fs.writeFileSync(
   gh,
-  `import fs from "node:fs"; fs.appendFileSync(${JSON.stringify(capture)}, JSON.stringify(process.argv.slice(2))+"\\n");`,
+  `import fs from "node:fs"; const args = process.argv.slice(2);
+if (args[0] === "api") { process.stdout.write(JSON.stringify({ total_count: 0, workflow_runs: [] })); process.exit(0); }
+fs.appendFileSync(${JSON.stringify(capture)}, JSON.stringify(args)+"\\n");`,
 );
 const pnpm = path.join(root, "pnpm.mjs");
 fs.writeFileSync(
@@ -70,7 +73,9 @@ for (const [repo, kind] of [
       path.join(reports, `${number}.md`),
       `---\n${Object.entries(fields)
         .map(([key, value]) => `${key}: ${value}`)
-        .join("\n")}\n---\n\n## Repair Work Prompt\n\nImplement the narrow reviewed behavior.\n`,
+        .join(
+          "\n",
+        )}\n---\n\n## Security Review\n\nStatus: not_applicable\n\nSummary: No patch security review is needed for this issue.\n\n## Repair Work Prompt\n\nImplement the narrow reviewed behavior.\n`,
     );
   }
   fs.writeFileSync(capture, "");

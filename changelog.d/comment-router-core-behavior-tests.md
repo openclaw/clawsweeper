@@ -1,0 +1,1 @@
+- Comment router core tests no longer read router source text: `comment-router-core.ts` now owns merge readiness (`automergeReadinessBlockReason`) and automerge job mode selection (`automergeJobRepairPlan`), and the router loopback proof covers dispatch claim recovery and the linked-PR block on implementation requests.

@@ -1,0 +1,1 @@
+- Keep the review prompt an index instead of an archive: send a pull request body once instead of under both `issue` and `pullRequest`, count passing checks and list only the checks that did not pass, and omit linked-item bodies when the reviewer can read GitHub, which it does with `gh` when a linked item matters.

@@ -1,3 +1,5 @@
+import { publicTimestamp } from "./public-timestamp.ts";
+
 export const LIVE_ACTIVITY_MAX_AGE_MS = 60_000;
 // Public status deliberately caps the complete worker census at 100 rows.
 // Larger or explicitly incomplete inputs are never summarized as complete.
@@ -100,20 +102,6 @@ export function liveActivityBaySnapshot(
       by_kind: byKind,
     },
   };
-}
-
-function publicTimestamp(value: unknown): string | null {
-  if (
-    typeof value !== "string" ||
-    value.length > 35 ||
-    !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?(?:Z|[+-]\d{2}:\d{2})$/.test(value)
-  ) {
-    return null;
-  }
-  const parsed = Date.parse(value);
-  return Number.isFinite(parsed) && parsed >= Date.UTC(2020, 0, 1) && parsed < Date.UTC(2100, 0, 1)
-    ? new Date(parsed).toISOString()
-    : null;
 }
 
 function object(value: unknown): ObjectRecord {

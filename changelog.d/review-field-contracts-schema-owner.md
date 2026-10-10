@@ -1,0 +1,1 @@
+- Keep only cross-field rules in the review prompt and let the decision schema own per-field guidance and the label catalogs, including a real `closeComment` description, so each field contract and label definition is stated once.

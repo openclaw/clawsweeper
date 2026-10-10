@@ -1,9 +1,9 @@
 #!/usr/bin/env node
-import { escapeRegExp } from "../clawsweeper-text.js";
+import { escapeRegExp } from "../clawsweeper-markdown.js";
 import { reportAllowsAutomation } from "../manual-publication-policy.js";
-import type { JsonValue, LooseRecord } from "./json-types.js";
-import { asJsonObject as asRecord } from "./json-types.js";
-import crypto from "node:crypto";
+import { asJsonObject, type JsonValue, type LooseRecord } from "./json-types.js";
+import { sha256 } from "../content-hash.js";
+import { parseFrontMatterStringArray, reportWithoutReviewRecord } from "../report-front-matter.js";
 import fs from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -12,20 +12,23 @@ import {
   isAllowedRepairOwner,
   parseArgs,
   parseJob,
+  parseSimpleYaml,
   repoRoot,
   validateJob,
 } from "./lib.js";
 import { ghErrorText, ghJsonWithRetry } from "./github-cli.js";
+import { issueImplementationOverrideAction } from "./comment-router-core.js";
 import {
+  issueImplementationClusterId,
   issueImplementationJobBranch,
   issueImplementationJobPath,
-  issueImplementationBlockerClass,
-  issueImplementationOverrideAction,
+  issueImplementationSource,
   renderIssueImplementationJob,
   REVIEW_REPRODUCIBLE_BUG_TRIGGER_SOURCE,
   REVIEW_VIABLE_ISSUE_TRIGGER_SOURCE,
   REVIEW_VISION_FIT_TRIGGER_SOURCE,
-} from "./comment-router-core.js";
+} from "./comment-router/dispatch.js";
+import { DEFAULT_STATE_REPOSITORY } from "./state-repo-size.js";
 import { issueSourceRevisionSha256 } from "./issue-source-guard.js";
 import {
   dispatchedIssueImplementationWorkerRetryDue,
@@ -33,11 +36,18 @@ import {
   nextIssueImplementationWorkerRetry,
   recoverableIssueImplementationWorker,
 } from "./issue-worker-recovery.js";
+import {
+  currentIssueImplementationLaneHealth,
+  issueImplementationLaneHealthSummary,
+} from "./issue-implementation-lane-health.js";
 import { hasSecuritySignal } from "./security-signals.js";
 import {
+  BULK_FILED_LABEL,
   CLOSE_PROTECTED_LABEL_NAMES,
   HUMAN_REVIEW_LABEL,
   MANUAL_ONLY_LABEL,
+  NEEDS_MAINTAINER_REVIEW_LABEL,
+  NEEDS_PRODUCT_DECISION_LABEL,
 } from "./exact-review-guard-labels.js";
 
 type CandidateKind = "strict_bug" | "vision_fit" | "viable";
@@ -93,7 +103,100 @@ function main() {
   if (command === "prepare") prepare();
   else if (command === "candidates") candidates();
   else if (command === "mark-dispatched") markDispatched();
+  else if (command === "restore-job") restoreJob();
+  else if (command === "lane-health") laneHealth();
   else die(`unknown command: ${command}`);
+}
+
+const RESTORED_ISSUE_JOB_HANDOFF_REASON =
+  "ClawSweeper lost the job file for this issue and could not get the original job back. This run cannot change code or open a pull request.";
+
+// A worker can start after its job file left the state checkout. Get the last
+// version of the job back from the state branch history, so that the job keeps
+// its original permissions. If that is not possible, write a job that cannot
+// change code. A restored job never gets more permissions than the original job.
+function restoreJob() {
+  const targetRepo = stringArg("target-repo").trim();
+  const itemNumber = Number(stringArg("item-number"));
+  const jobPath = stringArg("job-path").trim();
+  if (!targetRepo || !Number.isInteger(itemNumber) || itemNumber <= 0) {
+    die("restore-job requires --target-repo and a positive --item-number");
+  }
+  if (path.normalize(jobPath) !== issueImplementationJobPath(targetRepo, itemNumber)) {
+    die(`restore-job path ${jobPath} is not the job path of ${targetRepo}#${itemNumber}`);
+  }
+  const original = jobFromStateHistory(jobPath, targetRepo, itemNumber);
+  fs.mkdirSync(path.dirname(jobPath), { recursive: true });
+  fs.writeFileSync(
+    jobPath,
+    original ??
+      renderIssueImplementationJob({
+        repo: targetRepo,
+        issueNumber: itemNumber,
+        handoffReason: RESTORED_ISSUE_JOB_HANDOFF_REASON,
+      }),
+    "utf8",
+  );
+  const errors = validateJob(parseJob(jobPath));
+  if (errors.length) die(errors.join("\n"));
+  const restore = original ? "history" : "handoff";
+  const reason = original ? "" : RESTORED_ISSUE_JOB_HANDOFF_REASON;
+  writeStepOutputs({ job_restore: restore, job_restore_reason: reason });
+  console.log(JSON.stringify({ job_restore: restore, job_path: jobPath, reason }));
+}
+
+// Return the job as it was after the last state commit that changed it, or,
+// when that commit removed it, as it was before that commit. Return null when
+// any step fails or when the content is not the job of this issue.
+function jobFromStateHistory(jobPath: string, targetRepo: string, itemNumber: number) {
+  const token = String(process.env.CLAWSWEEPER_STATE_REPO_TOKEN ?? "").trim();
+  if (!token) return null;
+  const options = { env: { GH_TOKEN: token }, attempts: 3 };
+  const [owner, name] = DEFAULT_STATE_REPOSITORY.split("/");
+  // GraphQL gives a null object, not an error, when the file is not in the commit.
+  const blob = (commit: string) =>
+    ghJsonWithRetry<LooseRecord>(
+      [
+        "api",
+        "graphql",
+        "-f",
+        `query=query($expression: String!) { repository(owner: "${owner}", name: "${name}") { object(expression: $expression) { ... on Blob { text } } } }`,
+        "-f",
+        `expression=${commit}:${jobPath}`,
+      ],
+      options,
+    ).data?.repository?.object ?? null;
+  try {
+    const [latest] = ghJsonWithRetry<LooseRecord[]>(
+      [
+        "api",
+        `repos/${DEFAULT_STATE_REPOSITORY}/commits?sha=state&path=${encodeURIComponent(jobPath)}&per_page=1`,
+      ],
+      options,
+    );
+    if (!latest?.sha) return null;
+    const parent = latest.parents?.[0]?.sha;
+    // When the latest commit removed the file, the job is the parent version.
+    const content = (blob(latest.sha) ?? (parent ? blob(parent) : null))?.text;
+    if (typeof content !== "string") return null;
+    const match = content.match(/^---\n([\s\S]*?)\n---\n?/);
+    if (!match) return null;
+    const frontmatter = parseSimpleYaml(match[1] ?? "");
+    const source = issueImplementationSource(frontmatter);
+    if (
+      validateJob({ frontmatter }).length > 0 ||
+      frontmatter.source !== "issue_implementation" ||
+      frontmatter.cluster_id !== issueImplementationClusterId(targetRepo, itemNumber) ||
+      source.repo.toLowerCase() !== targetRepo.toLowerCase() ||
+      source.number !== itemNumber
+    ) {
+      return null;
+    }
+    return content;
+  } catch (error) {
+    console.warn(`issue implementation job history unavailable: ${ghErrorText(error)}`);
+    return null;
+  }
 }
 
 function prepare() {
@@ -138,7 +241,7 @@ function prepare() {
     ? liveIssueContext({
         repo: targetRepo,
         number: itemNumber,
-        references: frontMatterStringArray(report.frontmatter.work_cluster_refs),
+        references: parseFrontMatterStringArray(report.frontmatter.work_cluster_refs),
       })
     : {
         issue: null,
@@ -287,6 +390,28 @@ function prepare() {
   };
   writeStepOutputs(out);
   console.log(JSON.stringify(out, null, 2));
+}
+
+function laneHealth() {
+  const floor = stringArg("min-success-percent", "").trim();
+  const minSuccessPercent = floor === "" ? undefined : Number(floor);
+  if (
+    minSuccessPercent !== undefined &&
+    (!Number.isInteger(minSuccessPercent) || minSuccessPercent < 0 || minSuccessPercent > 100)
+  ) {
+    die(`invalid minimum success percent: ${floor}`);
+  }
+  const health = currentIssueImplementationLaneHealth({
+    targetRepo: stringArg("target-repo", "openclaw/openclaw"),
+    ...(minSuccessPercent === undefined ? {} : { minSuccessPercent }),
+  });
+  if (process.env.GITHUB_STEP_SUMMARY) {
+    fs.appendFileSync(
+      process.env.GITHUB_STEP_SUMMARY,
+      issueImplementationLaneHealthSummary(health),
+    );
+  }
+  console.log(JSON.stringify(health));
 }
 
 function candidates() {
@@ -613,6 +738,12 @@ function eligibilityDecision({
   }
   const fm = report.frontmatter;
   const blockers: string[] = [];
+  // The code that writes a hard blocker records the class here. Do not derive it from blocker text.
+  let hardBlocked = false;
+  const blockHard = (reason: string) => {
+    blockers.push(reason);
+    hardBlocked = true;
+  };
   if (Number(fm.number) !== itemNumber)
     blockers.push(`report item number is ${fm.number || "unknown"}`);
   if (
@@ -620,9 +751,9 @@ function eligibilityDecision({
       .trim()
       .toLowerCase() !== normalizedTargetRepo
   )
-    blockers.push(`report repository is ${fm.repository || "unknown"}`);
+    blockHard(`report repository is ${fm.repository || "unknown"}`);
   if (fm.type !== "issue") blockers.push(`report type is ${fm.type || "unknown"}`);
-  if (fm.state_at_review !== "open") blockers.push("item was not open at review");
+  if (fm.state_at_review !== "open") blockHard("item was not open at review");
   if (fm.review_status !== "complete")
     blockers.push(`review status is ${fm.review_status || "unknown"}`);
   if (fm.decision !== "keep_open") blockers.push(`decision is ${fm.decision || "unknown"}`);
@@ -665,35 +796,37 @@ function eligibilityDecision({
       blockers.push(`implementation complexity is ${fm.implementation_complexity || "unknown"}`);
     if (!visionFitItemCategoryAllowed(fm.item_category))
       blockers.push(`item category is ${fm.item_category || "unknown"}`);
-    if (frontMatterStringArray(fm.vision_fit_evidence).length === 0)
+    if (parseFrontMatterStringArray(fm.vision_fit_evidence).length === 0)
       blockers.push("missing vision-fit evidence");
   }
-  const reportLabels = frontMatterStringArray(fm.labels);
+  const reportLabels = parseFrontMatterStringArray(fm.labels);
   if (
     fm.bulk_filer_detected === "true" ||
-    reportLabels.some((label) => label.trim().toLowerCase() === "clawsweeper:bulk-filed")
+    reportLabels.some((label) => label.trim().toLowerCase() === BULK_FILED_LABEL)
   ) {
     blockers.push("bulk-filed issues are not eligible for automatic implementation");
   }
-  if (reportLabels.some(isProtectedLabel)) blockers.push("protected label present");
+  if (reportLabels.some(isProtectedLabel)) blockHard("protected label present");
   const reportPauseLabels = reportLabels.filter(isAutomaticImplementationPauseLabel);
   if (reportPauseLabels.length > 0)
     blockers.push(`automatic issue implementation is paused by ${reportPauseLabels.join(", ")}`);
-  if (reportSecurityNeedsAttention(reportMarkdown))
-    blockers.push("security-sensitive signal present");
+  const securityStatus = reportSecurityReviewStatus(reportMarkdown);
+  if (securityStatus === "needs_attention") blockHard("security-sensitive signal present");
+  else if (securityStatus !== "cleared" && securityStatus !== "not_applicable") {
+    blockHard(`security review status is ${securityStatus || "missing"}`);
+  }
   if (candidateKind !== "viable") {
-    if (!section(report.body, "Repair Work Prompt").trim())
-      blockers.push("missing repair work prompt");
-    if (frontMatterStringArray(fm.work_validation).length === 0)
+    if (!section(report.body, "Repair Work Prompt").trim()) blockHard("missing repair work prompt");
+    if (parseFrontMatterStringArray(fm.work_validation).length === 0)
       blockers.push("missing validation commands");
   }
   if (live) {
-    const issue = asRecord(live.issue);
+    const issue = asJsonObject(live.issue);
     const labels = (issue.labels ?? []).map((label: JsonValue) => String(label?.name ?? label));
-    if (issue.state !== "open") blockers.push(`live issue state is ${issue.state || "unknown"}`);
-    if (issue.locked === true) blockers.push("live issue is locked");
-    if (labels.some(isProtectedLabel)) blockers.push("live issue has protected label");
-    if (labels.some((label: string) => label.trim().toLowerCase() === "clawsweeper:bulk-filed")) {
+    if (issue.state !== "open") blockHard(`live issue state is ${issue.state || "unknown"}`);
+    if (issue.locked === true) blockHard("live issue is locked");
+    if (labels.some(isProtectedLabel)) blockHard("live issue has protected label");
+    if (labels.some((label: string) => label.trim().toLowerCase() === BULK_FILED_LABEL)) {
       blockers.push("live issue is bulk-filed and is not eligible for automatic implementation");
     }
     const livePauseLabels = labels.filter(isAutomaticImplementationPauseLabel);
@@ -704,24 +837,23 @@ function eligibilityDecision({
         labels: Array.isArray(issue.labels) ? issue.labels : [],
         comments: Array.isArray(live.comments) ? live.comments : [],
         text: [issue.title, issue.body],
-      }) ||
-      liveSecuritySensitiveText([issue.title, issue.body].join("\n"))
+      })
     ) {
-      blockers.push("live issue has security-sensitive signal");
+      blockHard("live issue has security-sensitive signal");
     }
     if (Array.isArray(live.existingPrs) && live.existingPrs.length > 0) {
-      blockers.push("open PR already mentions this issue");
+      blockHard("open PR already mentions this issue");
     }
     if (Array.isArray(live.existingBranchPrs) && live.existingBranchPrs.length > 0) {
-      blockers.push("existing ClawSweeper issue implementation PR is open");
+      blockHard("existing ClawSweeper issue implementation PR is open");
     }
     if (Array.isArray(live.clusterExistingPrs) && live.clusterExistingPrs.length > 0) {
-      blockers.push("open PR already covers a related issue in this work cluster");
+      blockHard("open PR already covers a related issue in this work cluster");
     }
     const explicitPullReferences = referencedPullRequestCoordinates({
       targetRepo,
       itemNumber,
-      references: frontMatterStringArray(fm.work_cluster_refs),
+      references: parseFrontMatterStringArray(fm.work_cluster_refs),
     }).filter((reference) => reference.knownPullRequest);
     if (
       (explicitPullReferences.length > 0 &&
@@ -734,19 +866,15 @@ function eligibilityDecision({
           ))) ||
       (Array.isArray(live.referencedPrs) &&
         live.referencedPrs.some(
-          (pullRequest: JsonValue) => asRecord(pullRequest).state !== "closed",
+          (pullRequest: JsonValue) => asJsonObject(pullRequest).state !== "closed",
         ))
     ) {
-      blockers.push("review report references an open or unverifiable pull request");
+      blockHard("review report references an open or unverifiable pull request");
     }
   }
 
   if (blockers.length) {
-    const blockerClass = blockers.some(
-      (blocker) => issueImplementationBlockerClass(blocker) === "hard",
-    )
-      ? "hard"
-      : "soft";
+    const blockerClass = hardBlocked ? "hard" : "soft";
     if (operatorOverride) {
       return {
         status: blockerClass === "hard" ? "override_handoff" : "override_queued_for_repair",
@@ -778,7 +906,7 @@ function eligibilityDecision({
 
 function writeJob(context: IntakeContext) {
   const fm = context.report.frontmatter;
-  const issue = asRecord(context.live.issue);
+  const issue = asJsonObject(context.live.issue);
   const candidateKind = context.candidateKind;
   const body = renderIssueImplementationJob({
     repo: context.targetRepo,
@@ -805,7 +933,7 @@ function writeJob(context: IntakeContext) {
     overrideBlockerClass: context.decision.blockerClass,
     overrideAction:
       context.operatorOverride === true
-        ? issueImplementationOverrideAction(context.decision.reason)
+        ? issueImplementationOverrideAction(context.decision.blockerClass)
         : null,
     sourceIssueRevision: issueSourceRevisionSha256(
       issue,
@@ -836,9 +964,9 @@ function viableImplementationPrompt(context: IntakeContext) {
 
 function reviewImplementationPrompt(context: IntakeContext) {
   const fm = context.report.frontmatter;
-  const validation = frontMatterStringArray(fm.work_validation);
-  const likelyFiles = frontMatterStringArray(fm.work_likely_files);
-  const visionEvidence = frontMatterStringArray(fm.vision_fit_evidence);
+  const validation = parseFrontMatterStringArray(fm.work_validation);
+  const likelyFiles = parseFrontMatterStringArray(fm.work_likely_files);
+  const visionEvidence = parseFrontMatterStringArray(fm.vision_fit_evidence);
   const visionFit = context.candidateKind === "vision_fit";
   const workPrompt = section(context.report.body, "Repair Work Prompt");
   return [
@@ -934,8 +1062,10 @@ ${context.decision.blockers.length ? context.decision.blockers.map((blocker: str
   fs.writeFileSync(context.auditPath, body, "utf8");
 }
 
+// The review_record line repeats the review. A backfill that adds it must not look
+// like a new review to implementation jobs.
 export function reportRevisionSha256(markdown: string) {
-  return crypto.createHash("sha256").update(markdown).digest("hex");
+  return sha256(reportWithoutReviewRecord(markdown));
 }
 
 function matchingIntakeAudit({
@@ -1244,7 +1374,7 @@ function verifiedClosedPullReference(
   value: JsonValue,
   reference: { owner: string; name: string; number: number },
 ): boolean {
-  const pullRequest = asRecord(value);
+  const pullRequest = asJsonObject(value);
   if (
     pullRequest.is_pull !== true ||
     pullRequest.state !== "closed" ||
@@ -1323,7 +1453,7 @@ function inspectReferencedPullRequests({
   return referencedPullRequestCoordinates({ targetRepo, itemNumber, references }).flatMap(
     ({ owner, name, number, knownPullRequest }) => {
       try {
-        const item = asRecord(
+        const item = asJsonObject(
           ghJsonWithRetry(
             [
               "api",
@@ -1389,21 +1519,6 @@ function section(markdown: string, heading: string) {
   return match?.[1]?.trim() ?? "";
 }
 
-function frontMatterStringArray(value: string | undefined): string[] {
-  if (!value || value === "none") return [];
-  try {
-    const parsed = JSON.parse(value) as unknown;
-    if (Array.isArray(parsed))
-      return parsed.filter((entry): entry is string => typeof entry === "string");
-  } catch {
-    // Legacy comma-separated reports.
-  }
-  return value
-    .split(",")
-    .map((entry) => entry.trim())
-    .filter(Boolean);
-}
-
 function decision(status: string, shouldRepair: boolean, reason: string): IntakeDecision {
   return { status, shouldRepair, reason, blockers: shouldRepair ? [] : [reason] };
 }
@@ -1432,8 +1547,8 @@ function isProtectedLabel(label: string): boolean {
 function isAutomaticImplementationPauseLabel(label: string): boolean {
   return [
     "clawsweeper:no-new-fix-pr",
-    "clawsweeper:needs-maintainer-review",
-    "clawsweeper:needs-product-decision",
+    NEEDS_MAINTAINER_REVIEW_LABEL,
+    NEEDS_PRODUCT_DECISION_LABEL,
   ].includes(label.trim().toLowerCase());
 }
 
@@ -1441,30 +1556,13 @@ function visionFitItemCategoryAllowed(value: string | undefined): boolean {
   return ["bug", "regression", "feature", "skill", "docs", "cleanup"].includes(value ?? "");
 }
 
-function securitySensitiveText(text: string): boolean {
-  return /\b(?:security|vulnerability|cve|ghsa|secret|credential|token|exploit|xss|csrf|ssrf|rce)\b/i.test(
-    text,
-  );
-}
-
-function liveSecuritySensitiveText(text: string): boolean {
+// The review model owns the security judgement. Read only its typed status line.
+function reportSecurityReviewStatus(markdown: string): string {
   return (
-    /\b(?:vulnerability|exploit|xss|csrf|ssrf|rce)\b/i.test(text) ||
-    /\b(?:secret|credential|token)s?\b.{0,40}\b(?:exfiltrat(?:e|ed|ion)|expos(?:e|ed|ure)|leak(?:ed|age)?|steal|stolen|theft)\b/i.test(
-      text,
-    ) ||
-    /\b(?:exfiltrat(?:e|ed|ion)|expos(?:e|ed|ure)|leak(?:ed|age)?|steal|stolen|theft)\b.{0,40}\b(?:secret|credential|token)s?\b/i.test(
-      text,
-    )
+    section(markdown, "Security Review")
+      .match(/^Status:\s*([a-z_]+)\s*$/im)?.[1]
+      ?.toLowerCase() ?? ""
   );
-}
-
-function reportSecurityNeedsAttention(markdown: string): boolean {
-  const securityReview = section(markdown, "Security Review");
-  const status = securityReview.match(/^Status:\s*([a-z_]+)\s*$/im)?.[1]?.toLowerCase();
-  if (status === "needs_attention") return true;
-  if (["not_applicable", "clear", "cleared", "none"].includes(status ?? "")) return false;
-  return securitySensitiveText(securityReview || markdown);
 }
 
 function stringArg(key: string, fallback = ""): string {

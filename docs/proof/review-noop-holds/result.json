@@ -1,0 +1,201 @@
+{
+  "claim": "origin/main claims a new review run for every scheduled offer of an open-but-locked issue and of an oversized PR on an unchanged head, so both exceed the 24/day runaway threshold; the branch keeps each completed no-op parked as locked_conversation or oversized_pull_request, dedupes every later scheduled offer and automatic recovery without a run, and releases the hold on an organic unlock or a pushed head.",
+  "base": "dd58d9ec74fbfa5f757caab1b24c07194bef6f2b",
+  "head": "56214cc1928851cf8f1fc3501a375cc2d38c1045",
+  "working_tree_dirty": false,
+  "node": "v24.21.0",
+  "workerd": "1.20260701.1",
+  "miniflare": "4.20260701.0",
+  "runtime": "workerd / real dashboard Worker + ExactReviewQueue SQLite Durable Object / loopback GitHub fixture / fake clock",
+  "model": {
+    "cadence": "24 simulated hours in 10-minute steps; #56312 gets a scheduled_normal_backfill offer every step; #119055 alternates scheduled_hot_intake and scheduled_normal_backfill every step with sourceUpdatedAt set to its previous completion (the lease comment create/delete)",
+    "review_generation": "queue alarm dispatches the item, the fixture claims it with a fresh run id, then completes it with the sweep.yml payload: outcome=success plus review_hold (locked_conversation for the guarded locked path, oversized_pull_request for the size path)",
+    "recovery": "a failed_review_shard_recovery decision for #56312 after the loop",
+    "unlock_release": "the issue is unlocked in the fixture and an issues/unlocked webhook decision arrives",
+    "push_release": "the fixture head of #119055 moves to a new SHA with no webhook; the next parked terminal check runs on the alarm, then hot intake offers the PR again",
+    "legacy_producer": "candidate Worker, 2 hours of #56312 offers completed without review_hold"
+  },
+  "variants": {
+    "baseline": {
+      "source_sha256": {
+        ".github/workflows/sweep.yml": "41c5114c24b5b673c1003aab018a3f53e8938b4f94291d6ec6998a83ee84cde5",
+        "dashboard/exact-review-queue.ts": "3eb1ede675c1831cbb23ccbea524c16097d7f311c91f4e7d25788863cc3497fd",
+        "dashboard/exact-review-read-model.ts": "0f00ee4d882781a6d76dcc6db55567b247d620e1fa7c93b4fa6062c9f4a1259a",
+        "dashboard/exact-review-review-loop.ts": "031ca8e51017bf27b152513d9c53eaa76f77f61dfa1b4d665e4e34bce5dd931a",
+        "dashboard/worker.ts": "1732e988f8d445aeb030504293eea042b8778dbaeeb131117ab249cb56157dcc",
+        "dashboard/wrangler.toml": "921780efd70c1d80cb629f25a43427bb54691feae53947cbf60b4e58c8bc84ff"
+      },
+      "config": {
+        "EXACT_REVIEW_RUNAWAY_REVIEWS_PER_DAY": "24",
+        "EXACT_REVIEW_TARGET_RATE_PER_HOUR": "220",
+        "EXACT_REVIEW_HOT_INTAKE_RATE_PER_HOUR": "30",
+        "PUBLIC_BAY_REPOS": "openclaw/openclaw,openclaw/clawhub,openclaw/clawsweeper,openclaw/fs-safe"
+      },
+      "scenarios": {
+        "scheduled_loops": {
+          "locked": {
+            "item": "openclaw/openclaw#56312",
+            "scheduled_offers": 144,
+            "offer_dispositions": {
+              "queued": 144
+            },
+            "claimed_reviews": 144,
+            "holds_reported": {}
+          },
+          "oversized": {
+            "item": "openclaw/openclaw#119055",
+            "scheduled_offers": 144,
+            "offer_dispositions": {
+              "queued": 144
+            },
+            "claimed_reviews": 144,
+            "holds_reported": {}
+          },
+          "after_24h_review_lane": {
+            "parked": 0,
+            "parked_reasons": {},
+            "bay_projection_complete": true,
+            "bay_cards": []
+          },
+          "public_status": 200,
+          "public_collection": "complete",
+          "public_review_parked_reasons": {},
+          "public_review_runaway_health": {
+            "status": "degraded",
+            "reason": "review_runaway",
+            "window_hours": 24,
+            "threshold_reviews_per_day": 24,
+            "runaway_items": 2,
+            "sample_item_keys": [
+              "openclaw/openclaw#119055",
+              "openclaw/openclaw#56312"
+            ]
+          },
+          "recovery_while_held": "queued",
+          "recovery_dispatched": 1,
+          "unlocked_webhook": "queued",
+          "unlocked_review_dispatched": 0,
+          "push_without_webhook": {
+            "ticks": 1,
+            "released": true,
+            "target_reads": {
+              "issues/56312": 1
+            },
+            "next_hot_offer": "queued",
+            "next_hot_offer_dispatched_head": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+          }
+        }
+      }
+    },
+    "candidate": {
+      "source_sha256": {
+        ".github/workflows/sweep.yml": "1b384c455470b758cceef72802c26d60e4bb7704adab8b845a7cbd18205f9181",
+        "dashboard/exact-review-queue.ts": "9b9c70aa4b7ee80e698bab796b7480605d79f6d3d49bef8efbdddad7f6862560",
+        "dashboard/exact-review-read-model.ts": "7e026c89be074ece4af896a5095e9717301c4af54e94b3f3effb6feef3055fad",
+        "dashboard/exact-review-review-loop.ts": "9629f9675e9c6d0353c3ee4acdac6186cc4d169566f023300081d20079a60021",
+        "dashboard/worker.ts": "f9015c5db9492d6c9572fb6354b41109d2cd663fafb4ceef475c030560f38598",
+        "dashboard/wrangler.toml": "921780efd70c1d80cb629f25a43427bb54691feae53947cbf60b4e58c8bc84ff"
+      },
+      "config": {
+        "EXACT_REVIEW_RUNAWAY_REVIEWS_PER_DAY": "24",
+        "EXACT_REVIEW_TARGET_RATE_PER_HOUR": "220",
+        "EXACT_REVIEW_HOT_INTAKE_RATE_PER_HOUR": "30",
+        "PUBLIC_BAY_REPOS": "openclaw/openclaw,openclaw/clawhub,openclaw/clawsweeper,openclaw/fs-safe"
+      },
+      "scenarios": {
+        "scheduled_loops": {
+          "locked": {
+            "item": "openclaw/openclaw#56312",
+            "scheduled_offers": 144,
+            "offer_dispositions": {
+              "queued": 1,
+              "deduped:scheduled_queue_item:locked_conversation": 143
+            },
+            "claimed_reviews": 1,
+            "holds_reported": {
+              "locked_conversation": 1
+            }
+          },
+          "oversized": {
+            "item": "openclaw/openclaw#119055",
+            "scheduled_offers": 144,
+            "offer_dispositions": {
+              "queued": 1,
+              "deduped:scheduled_queue_item:oversized_pull_request": 143
+            },
+            "claimed_reviews": 1,
+            "holds_reported": {
+              "oversized_pull_request": 1
+            }
+          },
+          "after_24h_review_lane": {
+            "parked": 2,
+            "parked_reasons": {
+              "locked_conversation": 1,
+              "oversized_pull_request": 1
+            },
+            "bay_projection_complete": true,
+            "bay_cards": []
+          },
+          "public_status": 200,
+          "public_collection": "complete",
+          "public_review_parked_reasons": {
+            "locked_conversation": 1,
+            "oversized_pull_request": 1
+          },
+          "public_review_runaway_health": {
+            "status": "healthy",
+            "reason": null,
+            "window_hours": 24,
+            "threshold_reviews_per_day": 24,
+            "runaway_items": 0,
+            "sample_item_keys": []
+          },
+          "recovery_while_held": "deduped:review_hold:locked_conversation",
+          "recovery_dispatched": 0,
+          "unlocked_webhook": "queued",
+          "unlocked_review_dispatched": 1,
+          "push_without_webhook": {
+            "ticks": 1,
+            "released": true,
+            "target_reads": {
+              "pulls/119055": 1
+            },
+            "next_hot_offer": "queued",
+            "next_hot_offer_dispatched_head": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+          }
+        },
+        "legacy_producer": {
+          "hours": 2,
+          "locked_claims": 12,
+          "oversized_claims": 12,
+          "review_lane": {
+            "parked": 0,
+            "parked_reasons": {},
+            "bay_projection_complete": true,
+            "bay_cards": []
+          }
+        }
+      }
+    }
+  },
+  "assertions": {
+    "baseline_locked_claims_every_offer": true,
+    "baseline_oversized_claims_every_offer": true,
+    "baseline_accepts_new_completion_payload": true,
+    "baseline_runaway_degraded": true,
+    "candidate_locked_one_claim": true,
+    "candidate_oversized_one_claim": true,
+    "candidate_locked_offers_deduped": true,
+    "candidate_oversized_offers_deduped": true,
+    "candidate_parked_reasons": true,
+    "candidate_bay_keeps_lifecycle_cards": true,
+    "candidate_public_projection": true,
+    "candidate_runaway_healthy": true,
+    "candidate_recovery_deduped": true,
+    "candidate_unlock_releases": true,
+    "candidate_push_releases_without_webhook": true,
+    "candidate_legacy_producer_unchanged": true
+  },
+  "limits": "Synthetic GitHub fixture and RSA credential; the sweep.yml live-check, review, and completion steps are reproduced by sending the completion payload they produce, not by running GitHub Actions; review execution is replaced by claim+complete; scheduled planners are reproduced by their enqueue payloads at a fixed 10-minute cadence (the planner-side locked skip is covered by test/review-planning-locked.test.ts); the 5-minute reconcile-parked workflow is not run; no live inference, production state, or GitHub mutation."
+}

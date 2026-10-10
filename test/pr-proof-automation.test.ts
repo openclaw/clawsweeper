@@ -1,12 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { parseTrustedAutomation } from "../dist/repair/comment-router-core.js";
-import { createRecordMetadata } from "../dist/clawsweeper-record-metadata.js";
-import { createReportHelpers } from "../dist/clawsweeper-report-helpers.js";
-import { createReportParser } from "../dist/clawsweeper-report-parser.js";
+import { frontMatterJsonArray, frontMatterValue } from "../dist/report-front-matter.js";
 import { createReportDocumentRendering } from "../dist/clawsweeper-report-document.js";
 import { createReportContextRendering } from "../dist/clawsweeper-report-context.js";
 import { createDashboardPresentation } from "../dist/clawsweeper-dashboard.js";
+import { repositoryProfileFor } from "../dist/repository-profiles.js";
 import {
   buildDecisionPacketFromReport,
   maintainerDecisionBlocksClose,
@@ -14,9 +12,7 @@ import {
 import { pullRequestClosePromotionSignalsForTest } from "../dist/repair/workflow-utils.js";
 
 import {
-  configSurfaceChangeFromPullFilesForTest,
   parseDecision,
-  prRatingLabelsForTest,
   pullRequestFilePathsFromContextForTest,
   renderReviewCommentFromReport,
   reviewAutomationMarkersFromReport,
@@ -33,68 +29,16 @@ import {
   detailsBody,
   item,
   prRatingReportSection,
+  pullRequestProofReport,
   realBehaviorProofReportSection,
   reviewReportFrontMatter as reportFrontMatter,
   reviewFinding,
 } from "./helpers.ts";
-
-for (const status of ["sufficient", "missing", "mock_only", "insufficient", "not_applicable"]) {
-  test(`test-only config review clears only the config gate with ${status} contributor proof`, () => {
-    for (const filename of ["src/config/schema.test.ts", "src/config/schema.test-support.ts"]) {
-      const detection = configSurfaceChangeFromPullFilesForTest({
-        pullFiles: [{ filename, patch: "@@\n+  expect(result).toEqual(expected);" }],
-      });
-      assert.deepEqual(detection, { change: false, keys: [] });
-      const report = `${reportFrontMatter({
-        type: "pull_request",
-        number: "74466",
-        review_status: "complete",
-        author: "contributor",
-        author_association: "CONTRIBUTOR",
-        labels: JSON.stringify(["clawsweeper:automerge"]),
-        work_candidate: "none",
-        pull_head_sha: "a".repeat(40),
-        pull_files: JSON.stringify([filename]),
-        pull_files_truncated: false,
-        config_surface_change: detection.change,
-        config_surface_keys: JSON.stringify(detection.keys),
-      })}
-
-## Summary
-
-The test-only patch has no actionable source findings.
-
-${realBehaviorProofReportSection({
-  status,
-  evidenceKind:
-    status === "sufficient" ? "terminal" : status === "not_applicable" ? "not_applicable" : "none",
-  needsContributorAction: status !== "sufficient" && status !== "not_applicable",
-  summary: "Synthetic contributor proof assessment for the comment regression.",
-})}
-
-## Review Findings
-
-Overall correctness: patch is correct
-
-Full review comments:
-
-- none
-`;
-      const comment = renderReviewCommentFromReport(report, "none");
-      const markers = reviewAutomationMarkersFromReport(report);
-      assert.doesNotMatch(comment, /Config surface change detected|unknown-config-surface-change/);
-      if (status === "sufficient") {
-        assert.match(markers, /clawsweeper-verdict:pass/);
-        assert.doesNotMatch(markers, /needs-human|fix-required/);
-        assert.match(comment, /^Codex review: passed\./);
-      } else {
-        assert.match(markers, /clawsweeper-verdict:needs-human/);
-        assert.doesNotMatch(comment, /clawsweeper-verdict:pass|clawsweeper-action:fix-required/);
-        assert.match(comment, /^Codex review: needs real behavior proof before merge\./);
-      }
-    }
-  });
-}
+import {
+  reportPrRating,
+  reportRealBehaviorProof,
+  reportVisionFit,
+} from "../dist/clawsweeper-report-parser.js";
 
 const recordedNotApplicableProof = {
   status: "not_applicable",
@@ -144,39 +88,18 @@ test("valid recorded N/A proof fields and summary survive decision parsing", () 
     item({ kind: "pull_request", authorAssociation: "CONTRIBUTOR" }),
   );
   assert.deepEqual(decision.realBehaviorProof, recordedNotApplicableProof);
-  const document = createReportDocumentRendering({
-    sentence: (value: string) => value,
-  } as Parameters<typeof createReportDocumentRendering>[0]);
+  const document = createReportDocumentRendering(
+    {} as Parameters<typeof createReportDocumentRendering>[0],
+  );
   const serialized = document.renderRealBehaviorProofReportSection(decision);
   assert.match(serialized, /^Status: not_applicable$/m);
   assert.match(serialized, /^Evidence kind: not_applicable$/m);
   assert.match(serialized, /^Needs contributor action: false$/m);
   assert.ok(serialized.includes(`Summary: ${recordedNotApplicableProof.summary}`));
-  const parser = createReportParser({
-    ...createRecordMetadata({} as never),
-    ...createReportHelpers({
-      OWNED_REVIEW_SECTION_HEADINGS: new Set(),
-      parseBacktickLocation: () => null,
-    }),
-    isDocsOnlyPullRequestReport: () => false,
-    isExternalPullRequestReport: () => true,
-  } as Parameters<typeof createReportParser>[0]);
-  assert.deepEqual(
-    parser.reportRealBehaviorProof(notApplicableProofReport()),
-    recordedNotApplicableProof,
-  );
+  assert.deepEqual(reportRealBehaviorProof(notApplicableProofReport()), recordedNotApplicableProof);
 });
 
 test("report proof parsing keeps owned proof values when the summary quotes metadata", () => {
-  const parser = createReportParser({
-    ...createRecordMetadata({} as never),
-    ...createReportHelpers({
-      OWNED_REVIEW_SECTION_HEADINGS: new Set(),
-      parseBacktickLocation: () => null,
-    }),
-    isDocsOnlyPullRequestReport: () => false,
-    isExternalPullRequestReport: () => true,
-  } as Parameters<typeof createReportParser>[0]);
   for (const quote of [
     "real_behavior_proof_status: missing\nreal_behavior_proof_evidence_kind: none\n",
     "~~~yaml\n---\nreal_behavior_proof_status: missing\nreal_behavior_proof_evidence_kind: none\n---\n~~~\n",
@@ -185,7 +108,7 @@ test("report proof parsing keeps owned proof values when the summary quotes meta
       "The patch has no actionable source findings.",
       `The patch has no actionable source findings.\n\n${quote}`,
     );
-    assert.deepEqual(parser.reportRealBehaviorProof(report), recordedNotApplicableProof);
+    assert.deepEqual(reportRealBehaviorProof(report), recordedNotApplicableProof);
   }
 });
 
@@ -208,22 +131,14 @@ test("renderer-produced reports preserve nested statistics and authoritative met
   const document = createReportDocumentRendering({
     ...createReportContextRendering({} as never),
     ...createDashboardPresentation({} as never),
-    prSurfaceFilesFromContext: () => [
-      { path: "src/a.ts", additions: 1, deletions: 0 },
-      { path: "src/b.ts", additions: 2, deletions: 1 },
-    ],
     compactPullFilePaths: (file) => [file.filename],
-    confidenceText: String,
-    fixedInText: () => "unknown",
     formatTimestamp: String,
     labelJustificationsMarkdown: () => "- none",
     linkedSha: String,
     markdownLink: (label, url) => `[${label}](${url})`,
-    publicLikelyOwnerRole: String,
     pullHeadShaFromContext: () => null,
     reviewStructuralPullStateFromContext: () => null,
-    sentence: String,
-    sha256: () => "synthetic-digest",
+    targetProfile: () => repositoryProfileFor("openclaw/clawsweeper"),
   } as Parameters<typeof createReportDocumentRendering>[0]);
   const report = document.markdownFor({
     item: subject,
@@ -245,10 +160,9 @@ test("renderer-produced reports preserve nested statistics and authoritative met
     reviewPolicy: "synthetic-policy",
     runtime: { model: "Codex", reasoningEffort: "high" },
   } as Parameters<typeof document.markdownFor>[0]);
-  const metadata = createRecordMetadata({} as never);
-  assert.equal(metadata.frontMatterValue(report, "title"), "Original");
-  assert.equal(metadata.frontMatterValue(report, "repository"), "openclaw/clawsweeper");
-  assert.equal(metadata.frontMatterJsonArray(report, "pr_surface_files").length, 2);
+  assert.equal(frontMatterValue(report, "title"), "Original");
+  assert.equal(frontMatterValue(report, "repository"), "openclaw/clawsweeper");
+  assert.equal(frontMatterJsonArray(report, "pr_surface_files").length, 2);
   assert.equal(maintainerDecisionBlocksClose(report), false);
   assert.equal(buildDecisionPacketFromReport(report), null);
   const headerOnly = report.slice(0, report.indexOf("\n---\n") + 5);
@@ -258,118 +172,163 @@ test("renderer-produced reports preserve nested statistics and authoritative met
   );
 });
 
-for (const path of ["README.md", "src/arbitrary.ts"]) {
-  test(`host requires proof for external N/A in ${path} even with an NA overall rating`, () => {
+for (const path of ["README.md", "src/arbitrary.ts", "docs/usage.md"]) {
+  test(`model N/A proof clears the external proof gate in ${path}`, () => {
     const report = notApplicableProofReport({ pull_files: JSON.stringify([path]) });
     const markers = reviewAutomationMarkersFromReport(report);
-    assert.match(markers, /clawsweeper-verdict:needs-human/);
-    assert.doesNotMatch(markers, /clawsweeper-verdict:pass|clawsweeper-action:fix-required/);
+    assert.match(markers, /clawsweeper-verdict:pass/);
+    assert.doesNotMatch(markers, /clawsweeper-verdict:needs-human/);
     const comment = renderReviewCommentFromReport(report, "none");
-    assert.ok(comment.includes(markers));
-    assert.match(comment, /^Codex review: needs real behavior proof before merge\./);
-    assert.match(comment, /\| \*\*Real behavior\*\* \| Required(?: by policy)? \|/);
-    assert.match(comment, /⛔ \*\*Blocked before merge/);
-    for (const line of comment
-      .split("\n")
-      .filter((line) =>
-        /\*\*(?:Real behavior|Proof confidence|Add real behavior proof)\*\*/.test(line),
-      )) {
-      assert.match(line, /required|policy/i);
-      assert.match(line, /recorded.*not.applicable/i);
-      assert.match(line, /main PR body/);
-      assert.match(line, /fresh review|re-review/);
-      assert.doesNotMatch(line, /\| Not applicable \|| - Not applicable:/);
-    }
-    assert.match(comment, /\| \*\*Proof confidence\*\* \| 🌊 off-meta tidepool \|/);
-    assert.match(comment, /recorded reviewer rating/i);
-    assert.ok(comment.includes(recordedNotApplicableProof.summary));
-    assert.match(report, /^real_behavior_proof_status: not_applicable$/m);
-    assert.match(report, /^real_behavior_proof_evidence_kind: not_applicable$/m);
-    assert.match(report, /^real_behavior_proof_needs_contributor_action: false$/m);
-    const parsed = parseTrustedAutomation(
-      { user: { login: "clawsweeper[bot]" }, body: comment },
-      { trustedAuthors: new Set(["clawsweeper[bot]"]) },
+    assert.doesNotMatch(comment, /\*\*Add real behavior proof\*\*|Required by policy/);
+    assert.match(
+      comment,
+      /\| \*\*Proof confidence\*\* \| 🌊 off-meta tidepool \| Not applicable: /,
     );
-    assert.equal(parsed?.intent, "clawsweeper_needs_human");
-    assert.match(parsed?.repair_reason ?? "", /Add real behavior proof/);
-    assert.match(parsed?.repair_reason ?? "", /policy/);
-  });
-
-  test(`public status labels require proof for external N/A in ${path}`, () => {
-    const report = notApplicableProofReport({ pull_files: JSON.stringify([path]) });
-    const labels = detailsBody(renderReviewCommentFromReport(report, "none"), "Label changes");
-    assert.match(labels, /add `status: 📣 needs proof`/);
-    assert.doesNotMatch(labels, /add `status: 🚀 automerge armed`|add `proof: sufficient`/);
-    assert.match(labels, /recorded.*not.applicable.*policy/i);
+    const labels = detailsBody(comment, "Label changes");
+    assert.doesNotMatch(labels, /status: 📣 needs proof/);
   });
 }
 
-test("N/A projection preserves scope, trust, authority, and exact override boundaries", () => {
-  for (const [name, metadata, blocked] of [
-    ["actual docs", { pull_files: JSON.stringify(["docs/usage.md"]) }, false],
-    ["mixed", { pull_files: JSON.stringify(["docs/usage.md", "src/runtime.ts"]) }, true],
-    ["empty", { pull_files: "[]" }, true],
-    [
-      "truncated",
-      { pull_files: JSON.stringify(["docs/usage.md"]), pull_files_truncated: true },
-      true,
-    ],
-    [
-      "source rename",
-      {
-        pull_files: JSON.stringify(
-          pullRequestFilePathsFromContextForTest({
-            pullFiles: [
-              {
-                filename: "docs/runtime.md",
-                previous_filename: "src/runtime.ts",
-                status: "renamed",
-              },
-            ],
-          }),
-        ),
-      },
-      true,
-    ],
-    ["member", { author_association: "MEMBER" }, false],
-    ["owner", { author_association: "OWNER" }, false],
-    ["collaborator", { author_association: "COLLABORATOR" }, false],
-    ["bot", { author: "dependabot[bot]" }, false],
-    ["app", { author: "app/clawsweeper" }, false],
-    ["label alone", { labels: JSON.stringify(["maintainer", "clawsweeper:automerge"]) }, true],
-    ["override", { labels: JSON.stringify(["proof: override", "clawsweeper:automerge"]) }, false],
-    [
-      "wrong-case override",
-      { labels: JSON.stringify(["Proof: Override", "clawsweeper:automerge"]) },
-      true,
-    ],
-    ["closed snapshot", { state_at_review: "closed" }, true],
+test("missing proof is a waivable proof hold only when it is the one blocker", () => {
+  const mockOnly = (overrides = {}) =>
+    notApplicableProofReport({
+      pull_files: JSON.stringify(["src/arbitrary.ts"]),
+      real_behavior_proof_status: "mock_only",
+      real_behavior_proof_evidence_kind: "terminal",
+      real_behavior_proof_needs_contributor_action: true,
+      ...overrides,
+    }).replace(
+      /## Real Behavior Proof[\s\S]*?(?=\n## )/,
+      realBehaviorProofReportSection({
+        status: "mock_only",
+        evidenceKind: "terminal",
+        needsContributorAction: true,
+        summary: "The output mocks the transport client.",
+      }),
+    );
+  assert.match(
+    reviewAutomationMarkersFromReport(mockOnly()),
+    /clawsweeper-verdict:needs-human [^>]* hold=proof findings=0 -->/,
+  );
+  const markers = reviewAutomationMarkersFromReport(mockOnly({ confidence: "medium" }));
+  assert.match(markers, /clawsweeper-verdict:needs-human [^>]* hold=blocked findings=0 -->/);
+  assert.doesNotMatch(markers, /hold=proof/);
+});
+
+test("maintainer PR proof row keeps the rated tier and proof summary, not Not applicable", () => {
+  // #167367, #167372: the contributor proof gate does not apply, but proof quality is still rated.
+  const report = notApplicableProofReport(
+    { author_association: "MEMBER", pull_files: JSON.stringify(["src/arbitrary.ts"]) },
+    { overallTier: "C", proofTier: "C", patchTier: "B" },
+  );
+  const proofRow = renderReviewCommentFromReport(report, "none")
+    .split("\n")
+    .find((line) => line.startsWith("| **Proof confidence** |"));
+  assert.equal(
+    proofRow,
+    `| **Proof confidence** | 🦐 gold shrimp **(3/6)** | ${recordedNotApplicableProof.summary} |`,
+  );
+});
+
+test("blocking proof gap renders once, in Before merge, without a doubled prefix", () => {
+  // #167360: one proof ask rendered in the proof row, Before merge, Tests, and the status label.
+  const summary =
+    "Needs real behavior proof before merge: the updated output mocks the transport client, so it does not establish production reconnect recovery.";
+  const report = `${reportFrontMatter({
+    type: "pull_request",
+    number: "74466",
+    review_status: "complete",
+    author: "contributor",
+    author_association: "CONTRIBUTOR",
+    labels: JSON.stringify(["status: 📣 needs proof"]),
+    pull_head_sha: "0123456789abcdef0123456789abcdef01234567",
+    pull_files: JSON.stringify(["src/arbitrary.ts"]),
+    pull_files_truncated: false,
+    real_behavior_proof_status: "mock_only",
+    real_behavior_proof_evidence_kind: "terminal",
+    real_behavior_proof_needs_contributor_action: true,
+  })}
+
+## Summary
+
+The patch needs real behavior proof.
+
+${realBehaviorProofReportSection({ status: "mock_only", evidenceKind: "terminal", needsContributorAction: true, summary })}
+
+${prRatingReportSection({ overallTier: "C", proofTier: "C", patchTier: "C" })}
+
+## Testing Review
+
+Proof path: in_process_harness
+
+Missing E2E: Run the real Gateway reconnect after the credential drain times out.
+
+Low-value tests:
+
+- none
+
+## Review Findings
+
+Overall correctness: patch is correct
+
+Full review comments:
+
+- none
+`;
+  const comment = renderReviewCommentFromReport(report, "none");
+  assert.equal(comment.split(summary).length, 2, "the proof ask renders exactly once");
+  assert.ok(comment.includes(`- [ ] **Add real behavior proof** - ${summary}`));
+  assert.doesNotMatch(comment, /before merge: Needs real behavior proof before merge/i);
+  assert.match(
+    comment,
+    /\| \*\*Proof confidence\*\* \| 🦐 gold shrimp \*\*\(3\/6\)\*\* \| Real behavior proof is necessary before merge\. See \[Before merge\]\(#before-merge\)\. \|/,
+  );
+  // The required scenario is a different fact from the proof assessment, so Tests keeps it.
+  assert.match(comment, /Missing end-to-end proof: Run the real Gateway reconnect/);
+});
+
+test("model N/A proof clears the gate for any scope, author, or label, but not authority-chain proof", () => {
+  for (const [name, metadata] of [
+    ["mixed", { pull_files: JSON.stringify(["docs/usage.md", "src/runtime.ts"]) }],
+    ["empty", { pull_files: "[]" }],
+    ["truncated", { pull_files: JSON.stringify(["docs/usage.md"]), pull_files_truncated: true }],
+    ["member", { author_association: "MEMBER" }],
+    ["bot", { author: "dependabot[bot]" }],
+    ["label alone", { labels: JSON.stringify(["maintainer", "clawsweeper:automerge"]) }],
+    ["override", { labels: JSON.stringify(["proof: override", "clawsweeper:automerge"]) }],
   ] as const) {
     const report = notApplicableProofReport(metadata);
     const comment = renderReviewCommentFromReport(report, "none");
-    assert.equal(/\| \*\*Real behavior\*\* \| Required by policy \|/.test(comment), blocked, name);
-    assert.equal(/\*\*Add real behavior proof\*\*/.test(comment), blocked, name);
-    assert.equal(
-      /clawsweeper-verdict:pass/.test(reviewAutomationMarkersFromReport(report)),
-      !blocked,
-      name,
+    assert.doesNotMatch(comment, /Required by policy:|\*\*Add real behavior proof\*\*/, name);
+    assert.match(reviewAutomationMarkersFromReport(report), /clawsweeper-verdict:pass/, name);
+  }
+  for (const association of ["MEMBER", "CONTRIBUTOR"]) {
+    const authorityReport = notApplicableProofReport({ author_association: association }).replace(
+      recordedNotApplicableProof.summary,
+      "Authority-chain proof required: the nearest forbidden principal was not exercised.",
+    );
+    assert.match(renderReviewCommentFromReport(authorityReport, "none"), /Required by policy/);
+    assert.match(
+      reviewAutomationMarkersFromReport(authorityReport),
+      /clawsweeper-verdict:needs-human/,
     );
   }
-  const unknownAuthorReport = notApplicableProofReport().replace(/^author_association:.*\n/m, "");
-  assert.doesNotMatch(
-    renderReviewCommentFromReport(unknownAuthorReport, "none"),
-    /Required by policy/,
-  );
-  assert.match(reviewAutomationMarkersFromReport(unknownAuthorReport), /clawsweeper-verdict:pass/);
-  const authorityReport = notApplicableProofReport({ author_association: "MEMBER" }).replace(
-    recordedNotApplicableProof.summary,
-    "Authority-chain proof required: the nearest forbidden principal was not exercised.",
-  );
-  assert.match(renderReviewCommentFromReport(authorityReport, "none"), /Required by policy/);
-  assert.match(
-    reviewAutomationMarkersFromReport(authorityReport),
-    /clawsweeper-verdict:needs-human/,
-  );
+});
+
+test("external PRs without a recorded proof assessment fail closed to missing proof", () => {
+  const recorded = notApplicableProofReport();
+  for (const report of [
+    recorded
+      .replace(/^real_behavior_proof_.*\n/gm, "")
+      .replace(/## Real Behavior Proof[\s\S]*?(?=## PR Rating)/, ""),
+    recorded
+      .replace(/^real_behavior_proof_.*\n/gm, "")
+      .replace("Status: not_applicable", "Status: unknown"),
+  ]) {
+    const markers = reviewAutomationMarkersFromReport(report);
+    assert.match(markers, /clawsweeper-verdict:needs-human/);
+    assert.match(renderReviewCommentFromReport(report, "none"), /\*\*Add real behavior proof\*\*/);
+  }
 });
 
 test("failed reviews, issues, and close proposals retain their distinct contracts", () => {
@@ -387,20 +346,10 @@ test("failed reviews, issues, and close proposals retain their distinct contract
     decision: "close",
     close_reason: "obsolete_fix_pr",
   });
-  assert.match(reviewAutomationMarkersFromReport(closeReport), /clawsweeper-verdict:needs-human/);
-  assert.doesNotMatch(
-    reviewAutomationMarkersFromReport(closeReport),
-    /clawsweeper-action:close-required/,
-  );
+  assert.match(reviewAutomationMarkersFromReport(closeReport), /clawsweeper-action:close-required/);
   const closeComment = renderReviewCommentFromReport(closeReport, "obsolete_fix_pr");
   assert.doesNotMatch(closeComment, /## Before merge|Required by policy/);
   assert.match(closeComment, /this fix no longer applies/);
-  const exemptClose = notApplicableProofReport({
-    decision: "close",
-    close_reason: "obsolete_fix_pr",
-    pull_files: '["docs/usage.md"]',
-  });
-  assert.match(reviewAutomationMarkersFromReport(exemptClose), /clawsweeper-action:close-required/);
 });
 
 test("media proof receives a shiny proof rating boost", () => {
@@ -463,11 +412,11 @@ Full review comments:
     comment,
     /\| \*\*Proof confidence\*\* \| 🦀 challenger crab \*\*\(6\/6\)\*\* ✨ media proof bonus \|/,
   );
-  assert.match(comment, /Shiny media proof means a screenshot, video, or linked artifact/);
+  assert.match(comment, /✨ marks media proof \(a screenshot, video, or linked artifact\)/);
   assert.doesNotMatch(comment, /Rank-up moves:/);
 });
 
-test("docs-only external PRs do not require real behavior proof", () => {
+test("docs-only external PRs follow the model proof assessment, not the file paths", () => {
   const report = `${reportFrontMatter({
     type: "pull_request",
     number: "74462",
@@ -514,22 +463,20 @@ Full review comments:
 - none
 `;
 
-  const comment = renderReviewCommentFromReport(report, "none");
   const markers = reviewAutomationMarkersFromReport(report);
-
-  assert.match(comment, /## Merge readiness/);
-  assert.match(comment, /\| \*\*Proof confidence\*\* \| 🌊 off-meta tidepool \|/);
-  assert.match(markers, /clawsweeper-verdict:pass/);
-  assert.doesNotMatch(markers, /clawsweeper-verdict:needs-human/);
-  const mockOnlyReport = report.replace("Status: missing", "Status: mock_only");
-  assert.equal(reviewAutomationMarkersFromReport(mockOnlyReport), markers);
+  assert.match(markers, /clawsweeper-verdict:needs-human/);
   assert.match(
-    renderReviewCommentFromReport(mockOnlyReport, "none"),
-    /\| \*\*Real behavior\*\* \| Not applicable \|/,
+    renderReviewCommentFromReport(report, "none"),
+    /Codex review: needs real behavior proof before merge\./,
   );
+  const notApplicableReport = report
+    .replace("Status: missing", "Status: not_applicable")
+    .replace("Evidence kind: none", "Evidence kind: not_applicable")
+    .replace("Needs contributor action: true", "Needs contributor action: false");
+  assert.match(reviewAutomationMarkersFromReport(notApplicableReport), /clawsweeper-verdict:pass/);
 });
 
-test("renamed source paths remain part of docs-only proof checks", () => {
+test("renamed source paths stay in the pull request file list", () => {
   assert.deepEqual(
     pullRequestFilePathsFromContextForTest({
       pullFiles: [
@@ -544,142 +491,7 @@ test("renamed source paths remain part of docs-only proof checks", () => {
   );
 });
 
-test("mixed docs and source external PRs still require real behavior proof", () => {
-  const report = `${reportFrontMatter({
-    type: "pull_request",
-    number: "74463",
-    decision: "keep_open",
-    close_reason: "none",
-    review_status: "complete",
-    confidence: "high",
-    author: "contributor",
-    author_association: "CONTRIBUTOR",
-    labels: JSON.stringify(["clawsweeper:automerge"]),
-    work_candidate: "none",
-    pull_head_sha: "abc123def456abc123def456abc123def456abcd",
-    pull_files: JSON.stringify(["docs/usage.md", "src/runtime.ts"]),
-    pull_files_truncated: false,
-  })}
-
-## Summary
-
-Keep this PR open until the contributor proves the fix in a real setup.
-
-## What This Changes
-
-Changes runtime behavior and docs.
-
-## Best Possible Solution
-
-Ask the contributor to add after-fix proof from their real setup.
-
-${realBehaviorProofReportSection({
-  status: "missing",
-  evidenceKind: "none",
-  needsContributorAction: true,
-  summary: "The PR body does not include after-fix evidence from a real setup.",
-})}
-
-## Review Findings
-
-Overall correctness: patch is correct
-
-Overall confidence: 0.9
-
-Full review comments:
-
-- none
-`;
-
-  const comment = renderReviewCommentFromReport(report, "none");
-  const markers = reviewAutomationMarkersFromReport(report);
-
-  assert.match(comment, /Codex review: needs real behavior proof before merge\./);
-  assert.match(markers, /clawsweeper-verdict:needs-human/);
-  assert.doesNotMatch(markers, /clawsweeper-verdict:pass/);
-});
-
 test("maintainer and bot proof exemptions keep readiness, ratings, and security consistent", () => {
-  const reportFor = (options: {
-    author: string;
-    association: string;
-    status?: "missing" | "mock_only" | "insufficient" | "sufficient";
-    securityAttention?: boolean;
-    authorityChainProofRequired?: boolean;
-    labels?: string[];
-  }) => {
-    const status = options.status ?? "missing";
-    const sufficient = status === "sufficient";
-    const proofTier = sufficient ? "A" : status === "missing" ? "F" : "D";
-    return `${reportFrontMatter({
-      type: "pull_request",
-      number: "119610",
-      decision: "keep_open",
-      close_reason: "none",
-      review_status: "complete",
-      confidence: "high",
-      author: options.author,
-      author_association: options.association,
-      labels: JSON.stringify(options.labels ?? ["clawsweeper:automerge"]),
-      work_candidate: "none",
-      pull_head_sha: "abc123def456abc123def456abc123def456abcd",
-    })}
-
-## Summary
-
-Keep this focused pull request open for maintainer review.
-
-## What This Changes
-
-Keeps pull request evidence checks aligned with their actual scope.
-
-## Best Possible Solution
-
-Continue normal maintainer review.
-
-${realBehaviorProofReportSection({
-  status,
-  evidenceKind: sufficient ? "terminal" : "none",
-  needsContributorAction: !sufficient,
-  summary: options.authorityChainProofRequired
-    ? sufficient
-      ? "Authority-chain proof required: a terminal trace shows the nearest forbidden principal rejected before provider I/O."
-      : "Authority-chain proof required: the nearest forbidden principal was not exercised before provider I/O."
-    : sufficient
-      ? "The maintainer supplied terminal output from the changed production path."
-      : "The reviewer did not find contributor-supplied live proof.",
-})}
-
-${prRatingReportSection({
-  overallTier: proofTier,
-  proofTier,
-  patchTier: "A",
-  summary: "The model capped readiness based on its recorded proof assessment.",
-  nextSteps: sufficient ? "- none" : "- Add real behavior proof.",
-})}
-
-${
-  options.securityAttention
-    ? `## Security Review
-
-Status: needs_attention
-
-Summary: The changed authorization boundary requires maintainer review.
-
-`
-    : ""
-}## Review Findings
-
-Overall correctness: patch is correct
-
-Overall confidence: 0.9
-
-Full review comments:
-
-- none
-`;
-  };
-
   for (const scenario of [
     { author: "maintainer", association: "MEMBER", status: "missing" as const },
     { author: "owner", association: "OWNER", status: "mock_only" as const },
@@ -687,15 +499,19 @@ Full review comments:
     { author: "dependabot[bot]", association: "NONE", status: "missing" as const },
     { author: "app/clawsweeper", association: "NONE", status: "insufficient" as const },
   ]) {
-    const report = reportFor(scenario);
+    const report = pullRequestProofReport(scenario);
     const comment = renderReviewCommentFromReport(report, "none", {
       prStatusKind: "ready_for_maintainer_look",
     });
     const markers = reviewAutomationMarkersFromReport(report);
 
     assert.match(comment, /✅ \*\*Ready for maintainer review\*\*/, scenario.author);
-    assert.match(comment, /\| \*\*Overall readiness\*\* \| 🦞 diamond lobster/, scenario.author);
-    assert.match(comment, /\| \*\*Proof confidence\*\* \| 🌊 off-meta tidepool/, scenario.author);
+    // The model rating stays as recorded; the proof gate does not apply to these authors.
+    assert.match(
+      comment,
+      /\| \*\*Overall readiness\*\* \| [^|]+ \| The model capped readiness based on its recorded proof assessment\. \|/,
+      scenario.author,
+    );
     assert.doesNotMatch(comment, /needs real behavior proof before merge/i, scenario.author);
     assert.doesNotMatch(comment, /status: 📣 needs proof/, scenario.author);
     assert.match(markers, /clawsweeper-verdict:pass/, scenario.author);
@@ -710,7 +526,7 @@ Full review comments:
       authorAssociation: "CONTRIBUTOR",
       labels: ["size: XS", "status: 📣 needs proof"],
     });
-    const redactedReport = reportFor({
+    const redactedReport = pullRequestProofReport({
       author: canary.author,
       association: canary.authorAssociation,
       status: "mock_only",
@@ -731,7 +547,7 @@ Full review comments:
     assert.equal(lookups, 1);
     assert.equal(canary.authorAssociation, "MEMBER");
 
-    const correctedReport = reportFor({
+    const correctedReport = pullRequestProofReport({
       author: canary.author,
       association: canary.authorAssociation,
       status: "mock_only",
@@ -801,7 +617,7 @@ Full review comments:
   }
 
   const suppliedComment = renderReviewCommentFromReport(
-    reportFor({ author: "maintainer", association: "MEMBER", status: "sufficient" }),
+    pullRequestProofReport({ author: "maintainer", association: "MEMBER", status: "sufficient" }),
     "none",
   );
   assert.match(suppliedComment, /maintainer supplied terminal output/);
@@ -814,7 +630,7 @@ Full review comments:
     { author: "dependabot[bot]", association: "NONE" },
     { author: "app/clawsweeper", association: "NONE" },
   ]) {
-    const report = reportFor({
+    const report = pullRequestProofReport({
       ...scenario,
       status: "missing",
       authorityChainProofRequired: true,
@@ -827,7 +643,7 @@ Full review comments:
     assert.doesNotMatch(markers, /clawsweeper-verdict:pass/, scenario.author);
   }
 
-  const authorityProofOnlyReport = reportFor({
+  const authorityProofOnlyReport = pullRequestProofReport({
     author: "maintainer",
     association: "MEMBER",
     status: "sufficient",
@@ -846,7 +662,7 @@ Full review comments:
     /clawsweeper-verdict:needs-human/,
   );
 
-  const authorityProofOverrideReport = reportFor({
+  const authorityProofOverrideReport = pullRequestProofReport({
     author: "maintainer",
     association: "MEMBER",
     status: "missing",
@@ -862,34 +678,10 @@ Full review comments:
     /clawsweeper-verdict:needs-human/,
   );
 
-  const normalizedAuthoritySensitiveReport = reportFor({
-    author: "maintainer",
-    association: "MEMBER",
-    status: "sufficient",
-  })
-    .replace("Evidence kind: terminal", "Evidence kind: screenshot")
-    .replace(
-      "Summary: The maintainer supplied terminal output from the changed production path.",
-      "Summary: Authority-chain proof required: a screenshot claims no visible console errors.",
-    );
-  const normalizedAuthoritySensitiveComment = renderReviewCommentFromReport(
-    normalizedAuthoritySensitiveReport,
-    "none",
-  );
-  assert.match(
-    normalizedAuthoritySensitiveComment,
-    /Needs stronger real behavior proof before merge/i,
-  );
-  assert.match(
-    reviewAutomationMarkersFromReport(normalizedAuthoritySensitiveReport),
-    /clawsweeper-verdict:needs-human/,
-  );
-  assert.doesNotMatch(
-    reviewAutomationMarkersFromReport(normalizedAuthoritySensitiveReport),
-    /clawsweeper-verdict:pass/,
-  );
-
-  const contributorReport = reportFor({ author: "contributor", association: "CONTRIBUTOR" });
+  const contributorReport = pullRequestProofReport({
+    author: "contributor",
+    association: "CONTRIBUTOR",
+  });
   const contributorComment = renderReviewCommentFromReport(contributorReport, "none");
   assert.match(contributorComment, /needs real behavior proof before merge/i);
   assert.match(
@@ -898,11 +690,15 @@ Full review comments:
   );
 
   const securityComment = renderReviewCommentFromReport(
-    reportFor({ author: "maintainer", association: "MEMBER", securityAttention: true }),
+    pullRequestProofReport({
+      author: "maintainer",
+      association: "MEMBER",
+      securityAttention: true,
+    }),
     "none",
   );
   assert.match(securityComment, /needs changes before merge/i);
-  assert.match(securityComment, /\| \*\*Security\*\* \| Needs attention/);
+  assert.match(securityComment, /### Security\n\nNeeds attention:/);
   assert.doesNotMatch(securityComment, /needs real behavior proof before merge/i);
 });
 
@@ -977,7 +773,6 @@ Full review comments:
   const markers = reviewAutomationMarkersFromReport(report);
 
   assert.doesNotMatch(comment, /needs real behavior proof before merge/i);
-  assert.doesNotMatch(comment, /Mantis proof suggestion/);
   assert.match(markers, /clawsweeper-verdict:pass/);
   assert.doesNotMatch(markers, /clawsweeper-verdict:needs-human/);
 
@@ -995,64 +790,6 @@ Full review comments:
   assert.match(mockOnlyComment, /needs real behavior proof before merge/i);
   assert.match(mockOnlyMarkers, /clawsweeper-verdict:needs-human/);
   assert.doesNotMatch(mockOnlyMarkers, /clawsweeper-verdict:pass/);
-});
-
-test("screenshot-only browser runtime proof blocks pass markers", () => {
-  const report = `${reportFrontMatter({
-    type: "pull_request",
-    number: "74460",
-    decision: "keep_open",
-    close_reason: "none",
-    review_status: "complete",
-    confidence: "high",
-    author: "contributor",
-    author_association: "CONTRIBUTOR",
-    labels: JSON.stringify(["clawsweeper:automerge"]),
-    work_candidate: "none",
-    pull_head_sha: "abc123def456abc123def456abc123def456abcd",
-  })}
-
-## Summary
-
-Keep this focused PR open for automerge.
-
-## What This Changes
-
-Adds tweakcn.com to the Control UI connect-src directive.
-
-## Best Possible Solution
-
-Ask the contributor to add browser runtime proof from their real setup.
-
-${realBehaviorProofReportSection({
-  status: "sufficient",
-  evidenceKind: "screenshot",
-  needsContributorAction: false,
-  summary:
-    "The inspected screenshot shows an after-fix Control UI import success state for a tweakcn theme, with no visible console CSP violation.",
-})}
-
-## Review Findings
-
-Overall correctness: patch is correct
-
-Overall confidence: 0.9
-
-Full review comments:
-
-- none
-`;
-
-  const comment = renderReviewCommentFromReport(report, "none");
-  const markers = reviewAutomationMarkersFromReport(report);
-
-  assert.match(comment, /Codex review: needs real behavior proof before merge\./);
-  assert.match(comment, /Needs stronger real behavior proof before merge:/);
-  assert.match(comment, /not enough for browser runtime or security behavior/);
-  assert.match(comment, /console, network, terminal, live output, or logs/);
-  assert.match(markers, /clawsweeper-verdict:needs-human/);
-  assert.doesNotMatch(markers, /clawsweeper-verdict:pass/);
-  assert.doesNotMatch(markers, /proof: sufficient/);
 });
 
 test("missing real behavior proof blocks pass and repair markers", () => {
@@ -1200,7 +937,6 @@ test("historical receipts preserve assessed proof, exemptions, patch caps, and m
     payload,
     labels = ["clawsweeper:automerge"],
     planEntry = plan.entry,
-    pullFiles,
     proof,
     association = "CONTRIBUTOR",
     rating = {},
@@ -1208,7 +944,6 @@ test("historical receipts preserve assessed proof, exemptions, patch caps, and m
     payload: string | null;
     labels?: string[];
     planEntry?: string;
-    pullFiles?: string[];
     proof?: Parameters<typeof realBehaviorProofReportSection>[0];
     association?: string;
     rating?: Parameters<typeof prRatingReportSection>[0];
@@ -1224,7 +959,6 @@ test("historical receipts preserve assessed proof, exemptions, patch caps, and m
     labels: JSON.stringify(labels),
     work_candidate: "none",
     pull_head_sha: headSha,
-    ...(pullFiles ? { pull_files: JSON.stringify(pullFiles), pull_files_truncated: false } : {}),
   })}
 
 ## Summary
@@ -1321,9 +1055,9 @@ Full review comments:
       verdict: "needs-human",
     },
     {
-      name: "failed receipt blocks docs-only exemption",
+      name: "failed receipt blocks model N/A proof",
       payload: encodeLiveVerificationReportPayload(failed),
-      pullFiles: ["docs/usage.md"],
+      proof: recordedNotApplicableProof,
       state: "failed",
       verdict: "needs-human",
       result: "FAIL",
@@ -1337,9 +1071,9 @@ Full review comments:
       result: "FAIL",
     },
     {
-      name: "malformed receipt blocks docs-only exemption",
+      name: "malformed receipt blocks model N/A proof",
       payload: "invalid!",
-      pullFiles: ["docs/usage.md"],
+      proof: recordedNotApplicableProof,
       state: "malformed",
       verdict: "needs-human",
     },
@@ -1364,11 +1098,11 @@ Full review comments:
       preservedProof: true,
     },
     {
-      name: "passed receipt cannot exempt applicable N/A proof",
+      name: "passed receipt keeps model N/A proof",
       payload: encodeLiveVerificationReportPayload(passed),
       proof: recordedNotApplicableProof,
       state: "passed",
-      verdict: "needs-human",
+      verdict: "pass",
       result: "PASS",
     },
     {
@@ -1423,18 +1157,18 @@ Full review comments:
     if (scenario.preservedProof) {
       assert.match(labelDetails, /add `proof: sufficient`/, scenario.name);
       assert.doesNotMatch(comment, /needs real behavior proof before merge/i, scenario.name);
-      assert.match(comment, /\| \*\*Real behavior\*\* \| Verified \|/, scenario.name);
+      assert.match(comment, /\| \*\*Proof confidence\*\* \| [^|]+ \| Sufficient \(/, scenario.name);
       assert.doesNotMatch(comment, /\*\*Add real behavior proof\*\*/, scenario.name);
     }
     if (scenario.state === "failed" || scenario.state === "malformed") {
       assert.match(comment, /\*\*Resolve historical verification\*\*/, scenario.name);
       assert.match(
         comment,
-        /\| \*\*Historical verification\*\* \| Needs maintainer review \|/,
+        /A historical verification receipt failed or is malformed\./,
         scenario.name,
       );
       if (
-        scenario.pullFiles ||
+        scenario.proof?.status === "not_applicable" ||
         scenario.labels?.includes("proof: override") ||
         scenario.preservedProof
       ) {
@@ -1448,9 +1182,14 @@ Full review comments:
   const missingComment = renderReviewCommentFromReport(reportFor({ payload: passPayload }), "none");
   assert.doesNotMatch(
     missingComment,
-    /add `proof: sufficient`|\| \*\*Real behavior\*\* \| Verified/,
+    /add `proof: sufficient`|\| \*\*Proof confidence\*\* \| [^|]+ \| Sufficient \(/,
   );
-  assert.match(missingComment, /\| \*\*Proof confidence\*\* \| [^|]*\*\*\(1\/6\)\*\*/);
+  // A receipt never changes the tiers that the model recorded.
+  const missingDirect = renderReviewCommentFromReport(reportFor({ payload: null }), "none");
+  for (const axis of ["Proof confidence", "Patch quality", "Overall readiness"]) {
+    const row = new RegExp(`\\| \\*\\*${axis}\\*\\* \\| [^|]+ \\|`);
+    assert.equal(missingComment.match(row)?.[0], missingDirect.match(row)?.[0], axis);
+  }
 
   for (const evidenceKind of ["recording", "linked_artifact", "terminal"] as const) {
     const proof = {
@@ -1523,17 +1262,18 @@ Full review comments:
 
   for (const exemption of [
     { association: "MEMBER" },
-    { pullFiles: ["docs/usage.md"] },
+    { proof: recordedNotApplicableProof },
     { labels: ["clawsweeper:automerge", "proof: override"] },
   ]) {
     const direct = reportFor({ payload: null, ...exemption });
     const attached = reportFor({ payload: passPayload, ...exemption });
     assert.match(reviewAutomationMarkersFromReport(direct), /clawsweeper-verdict:pass/);
     assert.match(reviewAutomationMarkersFromReport(attached), /clawsweeper-verdict:pass/);
-    const proofRow = /\| \*\*Real behavior\*\* \|[^\n]+/;
+    // The assessed proof statement must match; the tier is the reviewer's rating.
+    const proofStatement = /\| \*\*Proof confidence\*\* \|[^|\n]+\|([^\n]+)/;
     assert.equal(
-      renderReviewCommentFromReport(attached, "none").match(proofRow)?.[0],
-      renderReviewCommentFromReport(direct, "none").match(proofRow)?.[0],
+      renderReviewCommentFromReport(attached, "none").match(proofStatement)?.[1],
+      renderReviewCommentFromReport(direct, "none").match(proofStatement)?.[1],
     );
     assert.doesNotMatch(renderReviewCommentFromReport(attached, "none"), /add `proof: sufficient`/);
   }
@@ -1583,193 +1323,6 @@ Full review comments:
   assert.match(markers, /clawsweeper-verdict:needs-human/);
   assert.doesNotMatch(markers, /clawsweeper-action:fix-required/);
   assert.doesNotMatch(markers, /clawsweeper-verdict:needs-changes/);
-});
-
-test("OpenClaw contributor changelog-entry findings are normalized", () => {
-  const maintainerDecision = {
-    required: true,
-    kind: "product_direction",
-    question: "Should this public behavior become the supported contract?",
-    rationale: "The patch is correct, but the behavior still needs an explicit product choice.",
-    options: [
-      {
-        title: "Accept the behavior",
-        body: "Adopt and document this behavior as the supported contract.",
-        recommended: true,
-      },
-      {
-        title: "Keep the existing behavior",
-        body: "Decline this contract change while retaining current behavior.",
-        recommended: false,
-      },
-    ],
-    likelyOwner: {
-      person: "@alice",
-      reason: "Recent implementation history identifies Alice as the likely product owner.",
-      confidence: "high",
-    },
-  } as const;
-  const decision = parseDecision(
-    changelogReviewDecision({
-      maintainerDecision,
-      requiresProductDecision: true,
-      realBehaviorProof: {
-        status: "sufficient",
-        summary: "Terminal output from a real OpenClaw checkout shows the changed behavior.",
-        evidenceKind: "terminal",
-        needsContributorAction: false,
-      },
-      prRating: {
-        proofTier: "A",
-        patchTier: "D",
-        overallTier: "D",
-        summary: "The PR is blocked because the changelog entry is missing.",
-        nextSteps: ["Add changelog entry."],
-      },
-      overallConfidenceScore: 0.9,
-    }),
-    item({ repo: "openclaw/openclaw", kind: "pull_request" }),
-  );
-
-  assert.deepEqual(decision.reviewFindings, []);
-  assert.equal(decision.overallCorrectness, "patch is correct");
-  assert.equal(decision.prRating.patchTier, "A");
-  assert.equal(decision.prRating.overallTier, "A");
-  assert.deepEqual(decision.prRating.nextSteps, []);
-  assert.equal(decision.workCandidate, "none");
-  assert.equal(decision.workReason, "");
-  assert.deepEqual(decision.maintainerDecision, maintainerDecision);
-
-  const comment = renderReviewCommentFromReport(
-    `${reportFrontMatter({
-      type: "pull_request",
-      number: "74470",
-      decision: "keep_open",
-      close_reason: "none",
-      review_status: "complete",
-      confidence: "high",
-      labels: JSON.stringify(["clawsweeper:automerge"]),
-      work_candidate: decision.workCandidate,
-      pull_head_sha: "abc123def456abc123def456abc123def456abcd",
-      pr_rating_overall: decision.prRating.overallTier,
-      pr_rating_proof: decision.prRating.proofTier,
-      pr_rating_patch: decision.prRating.patchTier,
-    })}
-
-## Summary
-
-Keep this PR open for normal maintainer review.
-
-## What This Changes
-
-Removes the stale review blocker.
-
-## Best Possible Solution
-
-${decision.bestSolution}
-
-${realBehaviorProofReportSection(decision.realBehaviorProof)}
-
-## Review Findings
-
-Overall correctness: ${decision.overallCorrectness}
-
-Overall confidence: ${decision.overallConfidenceScore}
-
-Full review comments:
-
-- none
-
-${prRatingReportSection({
-  overallTier: decision.prRating.overallTier,
-  proofTier: decision.prRating.proofTier,
-  patchTier: decision.prRating.patchTier,
-  summary: decision.prRating.summary,
-  nextSteps: "- none",
-})}`,
-    "none",
-  );
-
-  assert.deepEqual(prRatingLabelsForTest([], decision.prRating.overallTier), [
-    "rating: 🦞 diamond lobster",
-  ]);
-  assert.match(comment, /\| \*\*Patch quality\*\* \| 🦞 diamond lobster \*\*\(5\/6\)\*\* \|/);
-  assert.match(comment, /✅ \*\*Ready for maintainer review\*\*/);
-  assert.doesNotMatch(comment, /Blocked by patch quality or review findings\./);
-  assert.doesNotMatch(comment, /Add changelog entry/i);
-});
-
-test("OpenClaw maintainer changelog-entry findings stay actionable", () => {
-  const decision = parseDecision(
-    changelogReviewDecision(),
-    item({ repo: "openclaw/openclaw", kind: "pull_request", authorAssociation: "MEMBER" }),
-  );
-
-  assert.deepEqual(
-    decision.reviewFindings.map((finding) => finding.title),
-    ["Add the required changelog entry"],
-  );
-  assert.equal(decision.overallCorrectness, "patch is incorrect");
-  assert.equal(decision.workCandidate, "queue_fix_pr");
-});
-
-test("OpenClaw changelog normalization keeps real findings actionable", () => {
-  const decision = parseDecision(
-    changelogReviewDecision({
-      reviewFindings: [
-        reviewFinding({ file: "CHANGELOG.md" }),
-        reviewFinding({
-          title: "Preserve the existing option value",
-          body: "The patch resets configured values when the dialog is reopened.",
-          priority: 1,
-          confidenceScore: 0.89,
-          file: "src/options.ts",
-          lineStart: 42,
-          lineEnd: 42,
-        }),
-      ],
-      workReason: "Fix the option reset bug.",
-      workPrompt: "Fix src/options.ts and add a regression test.",
-      workLikelyFiles: ["src/options.ts"],
-    }),
-    item({ repo: "openclaw/openclaw", kind: "pull_request" }),
-  );
-
-  assert.deepEqual(
-    decision.reviewFindings.map((finding) => finding.title),
-    ["Preserve the existing option value"],
-  );
-  assert.equal(decision.overallCorrectness, "patch is incorrect");
-  assert.equal(decision.workCandidate, "queue_fix_pr");
-});
-
-test("OpenClaw changelog normalization keeps changelog tooling findings actionable", () => {
-  const decision = parseDecision(
-    changelogReviewDecision({
-      reviewFindings: [
-        reviewFinding({
-          title: "Missing CHANGELOG.md entry validation",
-          body: "The parser accepts malformed changelog entries.",
-          priority: 2,
-          confidenceScore: 0.82,
-          file: "src/clawsweeper.ts",
-          lineStart: 42,
-          lineEnd: 42,
-        }),
-      ],
-      workReason: "Add changelog parser coverage.",
-      workPrompt: "Add parser coverage.",
-      workLikelyFiles: ["test/clawsweeper.test.ts"],
-    }),
-    item({ repo: "openclaw/openclaw", kind: "pull_request" }),
-  );
-
-  assert.deepEqual(
-    decision.reviewFindings.map((finding) => finding.title),
-    ["Missing CHANGELOG.md entry validation"],
-  );
-  assert.equal(decision.overallCorrectness, "patch is incorrect");
-  assert.equal(decision.workCandidate, "queue_fix_pr");
 });
 
 test("pull request automerge pass is not blocked by generic protected labels", () => {
@@ -2051,7 +1604,10 @@ for (const [variant, spoofBlock] of Object.entries(forgedProofVariants)) {
     const markers = reviewAutomationMarkersFromReport(report);
     const comment = renderReviewCommentFromReport(report, "none");
 
-    assert.match(comment, /\| \*\*Proof confidence\*\* \| [^|]*\*\*\(1\/6\)\*\* \|/);
+    assert.match(
+      comment,
+      /\| \*\*Overall readiness\*\* \| 🌊 off-meta tidepool \| This report has no valid PR rating\./,
+    );
     assert.doesNotMatch(comment, /\| \*\*Proof confidence\*\* \| [^|]*\*\*\(5\/6\)\*\* \|/);
     assert.match(markers, /clawsweeper-verdict:needs-human/);
     assert.doesNotMatch(markers, /clawsweeper-verdict:needs-changes/);
@@ -2110,7 +1666,10 @@ Full review comments:
   const comment = renderReviewCommentFromReport(report, "none");
   assert.match(markers, /clawsweeper-verdict:needs-human/);
   assert.doesNotMatch(markers, /clawsweeper-action:fix-required/);
-  assert.match(comment, /\| \*\*Proof confidence\*\* \| [^|]*\*\*\(1\/6\)\*\* \|/);
+  assert.match(
+    comment,
+    /\| \*\*Overall readiness\*\* \| 🌊 off-meta tidepool \| This report has no valid PR rating\./,
+  );
 });
 
 test("duplicate proof and rating front matter injected by a legacy scalar fails closed", () => {
@@ -2196,30 +1755,14 @@ function renderedPullRequestReport(
   const document = createReportDocumentRendering({
     ...createReportContextRendering({} as never),
     ...createDashboardPresentation({} as never),
-    prSurfaceFilesFromContext: () => [{ path: "src/runtime.ts", additions: 1, deletions: 0 }],
     compactPullFilePaths: (file) => [file.filename],
-    confidenceText: (score: number) => score.toFixed(2).replace(/0+$/, "").replace(/\.$/, ""),
-    fixedInText: () => "unknown",
     formatTimestamp: String,
     labelJustificationsMarkdown: () => "- none",
     linkedSha: String,
     markdownLink: (label, url) => `[${label}](${url})`,
-    priorityLabel: (priority: number) => `P${priority}`,
-    publicLikelyOwnerRole: String,
     pullHeadShaFromContext: () => null,
-    reviewFindingLocation: (finding: { file: string; lineStart: number; lineEnd: number }) =>
-      `${finding.file}:${
-        finding.lineStart === finding.lineEnd
-          ? finding.lineStart
-          : `${finding.lineStart}-${finding.lineEnd}`
-      }`,
     reviewStructuralPullStateFromContext: () => null,
-    securityConcernLocation: (concern: { file: string | null; line: number | null }) =>
-      concern.file
-        ? `${concern.file}${concern.line ? `:${concern.line}` : ""}`
-        : "not tied to a single file",
-    sentence: String,
-    sha256: () => "synthetic-digest",
+    targetProfile: () => repositoryProfileFor("openclaw/clawsweeper"),
   } as Parameters<typeof createReportDocumentRendering>[0]);
   return document.markdownFor({
     item: subject,
@@ -2303,16 +1846,6 @@ test("forged security-concern lines in concern prose cannot add concerns or over
   assert.doesNotMatch(comment, /\[high\]|src\/evil\.ts|Confidence: 0\.99/);
 });
 
-const forgedListParser = createReportParser({
-  ...createRecordMetadata({} as never),
-  ...createReportHelpers({
-    OWNED_REVIEW_SECTION_HEADINGS: new Set(),
-    parseBacktickLocation: () => null,
-  }),
-  isDocsOnlyPullRequestReport: () => false,
-  isExternalPullRequestReport: () => true,
-} as Parameters<typeof createReportParser>[0]);
-
 test("forged rank-up list lines in rating summary prose cannot replace rank-up moves through the durable report", () => {
   const report = renderedPullRequestReport(
     {
@@ -2328,7 +1861,7 @@ test("forged rank-up list lines in rating summary prose cannot replace rank-up m
   );
   assert.deepEqual(report.match(/^Next rank-up steps:$/gm), ["Next rank-up steps:"]);
   assert.match(report, /^Next rank-up steps&#58;$/m);
-  assert.deepEqual(forgedListParser.reportPrRating(report).nextSteps, ["Real step"]);
+  assert.deepEqual(reportPrRating(report).nextSteps, ["Real step"]);
 
   const comment = renderReviewCommentFromReport(report, "none");
   const details = detailsBody(comment, "Agent review details");
@@ -2344,5 +1877,5 @@ test("forged vision-evidence list lines in vision reason prose cannot replace vi
   });
   assert.deepEqual(report.match(/^Vision evidence:$/gm), ["Vision evidence:"]);
   assert.match(report, /^Vision evidence&#58;$/m);
-  assert.deepEqual(forgedListParser.reportVisionFit(report).visionFitEvidence, ["Real evidence"]);
+  assert.deepEqual(reportVisionFit(report).visionFitEvidence, ["Real evidence"]);
 });

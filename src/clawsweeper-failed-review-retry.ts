@@ -24,11 +24,31 @@ import type {
   GitHubDispatchOutcome,
   GitHubRuntimeBudget,
   Item,
-  ItemKind,
   ReviewRetryActionLedger,
 } from "./clawsweeper-types.js";
 import { UserFacingCommandError } from "./command.js";
 import type { RepositoryProfile } from "./repository-profiles.js";
+import {
+  appendSectionValue,
+  frontMatterValue,
+  replaceFrontMatterValue,
+  replaceSectionValue,
+  sectionValue,
+} from "./report-front-matter.js";
+import {
+  effectiveReviewStatus,
+  failedReviewFailureDetail,
+  failedReviewRetryEligibility,
+  failedReviewRetryResultRevision,
+  failedReviewRetryRevisionForReport,
+  isFailedReviewRetryAlreadyExhausted,
+  reportItemKind,
+  reviewLeaseRevisionFromReport,
+  sameFailedReviewRetryRevision,
+  storedFailedReviewRetryRevision,
+} from "./clawsweeper-record-metadata.js";
+import { lockedConversationApplyReason } from "./clawsweeper-item-policy.js";
+import { markdownFiles, numberForMarkdownFile } from "./clawsweeper-repository-paths.js";
 
 type RetryRuntimeBudgetError = Error & { reason: string };
 type RetryDispatchError = Error & {
@@ -38,101 +58,45 @@ type RetryDispatchError = Error & {
 
 interface FailedReviewRetryDependencies {
   root: string;
-  appendSectionValue: (markdown: string, heading: string, value: string) => string;
   codexFailureReason: (detail: string) => string;
   defaultItemsDir: () => string;
-  effectiveReviewStatus: (markdown: string) => string;
   ensureDir: (directory: string) => void;
   ensureGitHubRuntimeAvailable: (phase: string) => void;
-  failedReviewFailureDetail: (markdown: string) => string;
-  failedReviewRetryEligibility: (options: {
-    markdown: string;
-    liveState: string;
-    liveLocked?: boolean;
-    liveActiveLockReason?: string | null;
-    liveHeadSha?: string | null;
-    liveSourceRevision?: string | null;
-    now: number;
-    maxAttempts: number;
-    cooldownMs: number;
-  }) => FailedReviewRetryResult;
-  failedReviewRetryResultRevision: (revision: FailedReviewRetryRevision) => {
-    headSha?: string;
-    revisionKind: FailedReviewRetryRevisionKind;
-    revision: string;
-  };
-  failedReviewRetryRevisionForReport: (markdown: string) => FailedReviewRetryRevision | null;
   fetchItem: (number: number) => { item: Item; state: string };
-  frontMatterValue: (markdown: string, key: string) => string | undefined;
   ghRawOnceWithCheckpoint: (
     args: string[],
     onBeforeRun: () => void,
   ) => { outcome: "accepted"; output: string };
   ghWithRetry: (args: string[]) => string;
   isDispatchError: (error: unknown) => error is RetryDispatchError;
-  isFailedReviewRetryAlreadyExhausted: (
-    markdown: string,
-    revision: FailedReviewRetryRevision,
-  ) => boolean;
   isMarkdownForActiveRepo: (markdown: string, file?: string) => boolean;
   isRuntimeBudgetError: (error: unknown) => error is RetryRuntimeBudgetError;
   liveIssueSourceRevision: (number: number) => string;
   livePullHeadSha: (number: number) => string | null;
-  lockedConversationApplyReason: (item: Pick<Item, "activeLockReason" | "locked">) => string | null;
-  markdownFiles: (directory: string) => string[];
-  numberForMarkdownFile: (file: string) => number;
-  replaceFrontMatterValue: (markdown: string, key: string, value: string) => string;
-  replaceSectionValue: (markdown: string, heading: string, value: string) => string;
   repoFromArgs: (args: Args) => RepositoryProfile;
   repoRelativePath: (filePath: string) => string;
-  reportItemKind: (markdown: string) => ItemKind | undefined;
-  reviewLeaseRevisionFromReport: (markdown: string) => string | null;
   reviewLedger: ReturnType<typeof createReviewActionLedger>;
-  sameFailedReviewRetryRevision: (
-    left: FailedReviewRetryRevision,
-    right: FailedReviewRetryRevision,
-  ) => boolean;
-  sectionValue: (markdown: string, heading: string) => string;
-  storedFailedReviewRetryRevision: (markdown: string) => FailedReviewRetryRevision | null;
   targetRepo: () => string;
   withGitHubRuntimeBudget: <T>(budget: GitHubRuntimeBudget, operation: () => T) => T;
 }
 
 export function createFailedReviewRetryWorkflow({
   root,
-  appendSectionValue,
   codexFailureReason,
   defaultItemsDir,
-  effectiveReviewStatus,
   ensureDir,
   ensureGitHubRuntimeAvailable,
-  failedReviewFailureDetail,
-  failedReviewRetryEligibility,
-  failedReviewRetryResultRevision,
-  failedReviewRetryRevisionForReport,
   fetchItem,
-  frontMatterValue,
   ghRawOnceWithCheckpoint,
   ghWithRetry,
   isDispatchError,
-  isFailedReviewRetryAlreadyExhausted,
   isMarkdownForActiveRepo,
   isRuntimeBudgetError,
   liveIssueSourceRevision,
   livePullHeadSha,
-  lockedConversationApplyReason,
-  markdownFiles,
-  numberForMarkdownFile,
-  replaceFrontMatterValue,
-  replaceSectionValue,
   repoFromArgs,
   repoRelativePath,
-  reportItemKind,
-  reviewLeaseRevisionFromReport,
   reviewLedger,
-  sameFailedReviewRetryRevision,
-  sectionValue,
-  storedFailedReviewRetryRevision,
   targetRepo,
   withGitHubRuntimeBudget,
 }: FailedReviewRetryDependencies) {

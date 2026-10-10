@@ -5,7 +5,88 @@ import { join } from "node:path";
 import test from "node:test";
 
 import { capturedCanonicalRecordBaselineKeys } from "../dist/repair/canonical-record-baseline.js";
+import { maintainerDecisionBlocksClose } from "../dist/decision-packets.js";
+import { reviewAutomationMarkersFromReport } from "../dist/clawsweeper.js";
 import { reportFrontMatter, tmpPrefix, withMockGh } from "./helpers.ts";
+
+test("reconcile contains legacy decision failures across archive, reopen and sidecar cleanup", () => {
+  const root = mkdtempSync(tmpPrefix);
+  const itemsDir = join(root, "items");
+  const closedDir = join(root, "closed");
+  const packetsDir = join(root, "decision-packets");
+  const plansDir = join(root, "plans");
+  for (const dir of [itemsDir, closedDir, packetsDir, plansDir]) mkdirSync(dir);
+  const decision = {
+    required: true,
+    kind: "product_direction",
+    question: "Which public contract should ship?",
+    rationale: "The choice remains undecided.",
+    options: [{ title: "Preserve", body: "Keep the existing API.", recommended: true }],
+    likelyOwner: { person: "unknown", reason: "Owner not identified.", confidence: "low" },
+  };
+  const rawDecision = JSON.stringify(decision);
+  for (const number of [1, 2, 3]) {
+    writeFileSync(
+      join(number === 1 ? itemsDir : closedDir, `${number}.md`),
+      reportFrontMatter({
+        number,
+        type: "pull_request",
+        current_state: number === 1 ? "open" : "closed",
+        maintainer_decision: rawDecision,
+        decision_packet_path: `decision-packets/${number}.json`,
+        decision_packet_sha256: "legacy",
+      }),
+    );
+    writeFileSync(join(packetsDir, `${number}.json`), "stale packet\n");
+  }
+  writeFileSync(join(itemsDir, "4.md"), reportFrontMatter({ number: 4, current_state: "open" }));
+  const ghMock = `
+const args = process.argv.slice(2);
+if (args[0] === "api" && args[1]?.includes("/issues?state=open")) {
+  process.stdout.write(JSON.stringify({number:2,title:"Reopened",state:"open",user:{login:"fixture"},labels:[]}));
+} else { throw new Error("unexpected gh args: " + JSON.stringify(args)); }
+`;
+  try {
+    let stdout = "";
+    withMockGh(root, ghMock, () => {
+      stdout = execFileSync(
+        process.execPath,
+        [
+          "dist/clawsweeper.js",
+          "reconcile",
+          "--target-repo",
+          "openclaw/openclaw",
+          "--items-dir",
+          itemsDir,
+          "--closed-dir",
+          closedDir,
+          "--plans-dir",
+          plansDir,
+          "--decision-packets-dir",
+          packetsDir,
+          "--skip-closed-at",
+        ],
+        { encoding: "utf8" },
+      );
+    });
+    assert.deepEqual(JSON.parse(stdout).changedItemNumbers, [1, 2, 3, 4]);
+    for (const number of [1, 2, 3]) {
+      const markdown = readFileSync(
+        join(number === 2 ? itemsDir : closedDir, `${number}.md`),
+        "utf8",
+      );
+      assert.ok(markdown.includes(`maintainer_decision: ${rawDecision}\n`));
+      assert.equal(maintainerDecisionBlocksClose(markdown), true);
+      assert.doesNotMatch(reviewAutomationMarkersFromReport(markdown), /clawsweeper-verdict:pass/);
+      assert.match(markdown, /^decision_packet_path: none$/m);
+      assert.equal(existsSync(join(packetsDir, `${number}.json`)), false);
+    }
+    assert.match(readFileSync(join(itemsDir, "2.md"), "utf8"), /^review_status: stale_reopened$/m);
+    assert.ok(existsSync(join(closedDir, "4.md")));
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
 
 test("scoped publication archives an item closed after hydration without changing unrelated records", () => {
   const root = mkdtempSync(tmpPrefix);

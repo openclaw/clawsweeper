@@ -1,7 +1,9 @@
-import crypto from "node:crypto";
+import { sha256 } from "../content-hash.js";
 
-import type { JsonValue, LooseRecord } from "./json-types.js";
+import { CLAWSWEEPER_BOT_LOGINS } from "../clawsweeper-policy.js";
+import { asJsonObject, type JsonValue, type LooseRecord } from "./json-types.js";
 import {
+  BULK_FILED_LABEL,
   CLOSE_PROTECTED_LABEL_NAMES,
   HUMAN_REVIEW_LABEL,
   MANUAL_ONLY_LABEL,
@@ -12,12 +14,6 @@ const PROTECTED_LABELS = new Set<string>([
   HUMAN_REVIEW_LABEL,
   MANUAL_ONLY_LABEL,
 ]);
-const CLAWSWEEPER_BOTS = new Set([
-  "clawsweeper",
-  "clawsweeper[bot]",
-  "openclaw-clawsweeper",
-  "openclaw-clawsweeper[bot]",
-]);
 
 export function issueSourceRevisionSha256(issue: LooseRecord, comments: JsonValue[] = []): string {
   const snapshot = {
@@ -25,7 +21,7 @@ export function issueSourceRevisionSha256(issue: LooseRecord, comments: JsonValu
     body: String(issue.body ?? ""),
     labels: revisionLabels(issue.labels ?? []),
     comments: comments
-      .map(asRecord)
+      .map(asJsonObject)
       .filter((comment) => !isClawSweeperComment(comment))
       .map((comment) => ({
         id: String(comment.id ?? ""),
@@ -37,7 +33,7 @@ export function issueSourceRevisionSha256(issue: LooseRecord, comments: JsonValu
         `${left.id}:${left.updated_at}`.localeCompare(`${right.id}:${right.updated_at}`),
       ),
   };
-  return crypto.createHash("sha256").update(JSON.stringify(snapshot)).digest("hex");
+  return sha256(JSON.stringify(snapshot));
 }
 
 function normalizedLabels(labels: JsonValue[]): string[] {
@@ -60,7 +56,7 @@ function isIgnorableAutomationLabel(label: string) {
     isClawSweeperAdvisoryLabel(label) ||
     (label.startsWith("clawsweeper:") &&
       !PROTECTED_LABELS.has(label) &&
-      label !== "clawsweeper:bulk-filed") ||
+      label !== BULK_FILED_LABEL) ||
     label === "no-stale" ||
     label === "stale"
   );
@@ -80,13 +76,9 @@ function isClawSweeperAdvisoryLabel(label: string): boolean {
 }
 
 function isClawSweeperComment(comment: LooseRecord): boolean {
-  return CLAWSWEEPER_BOTS.has(
+  return CLAWSWEEPER_BOT_LOGINS.has(
     String(comment.user?.login ?? "")
       .trim()
       .toLowerCase(),
   );
-}
-
-function asRecord(value: JsonValue): LooseRecord {
-  return value && typeof value === "object" && !Array.isArray(value) ? value : {};
 }

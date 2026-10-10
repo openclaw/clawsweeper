@@ -68,13 +68,8 @@ jobs:
               include_all_claimed: true,
             }));
           ')"
-          signature="$(PAYLOAD="$payload" node -e 'const crypto=require("node:crypto"); process.stdout.write(`sha256=${crypto.createHmac("sha256", process.env.CLAWSWEEPER_WEBHOOK_SECRET).update(process.env.PAYLOAD).digest("hex")}`)')"
-          if control_plane_curl --fail --silent --show-error --connect-timeout 5 --max-time 120 \
-            --request POST \
-            --header "content-type: application/json" \
-            --header "x-clawsweeper-exact-review-signature: $signature" \
-            --data-binary "$payload" \
-            "$queue_url/internal/exact-review/reconcile" >/dev/null; then
+          if control_plane_signed_post "$queue_url/internal/exact-review/reconcile" "$payload" \
+            --fail --silent --show-error --connect-timeout 5 --max-time 120 >/dev/null; then
             exit 0
           fi
           exit 1

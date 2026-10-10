@@ -12,6 +12,7 @@ const PASS_HTTP_URI = ["http://user", "pass@chrome.example.com"].join(":");
 
 function relatedContextWith(records: Record<string, unknown>) {
   const requested: string[] = [];
+  const batches: string[][] = [];
   const context = createRelatedContext({
     root: process.cwd(),
     targetRepo: () => TARGET_REPO,
@@ -20,33 +21,25 @@ function relatedContextWith(records: Record<string, unknown>) {
     defaultClosedDir: () => "closed",
     isMarkdownForActiveRepo: () => false,
     gitHubRuntimeBudgetError: class GitHubRuntimeBudgetError extends Error {},
-    ghJson: <T>(args: string[]): T => {
-      const path = args[1] ?? "";
-      requested.push(path);
-      if (!(path in records)) throw new Error(`unexpected GitHub request: ${path}`);
-      return records[path] as T;
+    ghJsonEach: <T>(requests: readonly string[][]) => {
+      const paths = requests.map((args) => args[1] ?? "");
+      if (paths.length > 0) batches.push(paths);
+      requested.push(...paths);
+      return paths.map((path) =>
+        path in records
+          ? { ok: true as const, value: records[path] as T }
+          : { ok: false as const, error: new Error(`unexpected GitHub request: ${path}`) },
+      );
     },
     ghJsonOnce: () => {
       throw new Error("unexpected GitHub request");
     },
-    asRecord: (value: unknown) =>
-      value && typeof value === "object" && !Array.isArray(value)
-        ? (value as Record<string, unknown>)
-        : {},
-    login: () => undefined,
     compactIssue: (value: unknown) => value,
     compactPullRequest: (value: unknown) => value,
-    envFlagEnabled: () => false,
-    envFlagDisabled: () => false,
-    frontMatterValue: () => undefined,
-    reviewSectionValue: () => "",
-    effectiveReviewStatus: () => "",
     displayTitle: (value: string) => value,
-    markdownFiles: () => [],
-    numberForMarkdownFile: () => 0,
     repoRelativePath: (value: string) => value,
   });
-  return { context, requested };
+  return { context, requested, batches };
 }
 
 const item = {
@@ -152,4 +145,48 @@ test("timeline cross-references from other repositories are not fetched from the
     [5, 7],
   );
   assert.ok(!requested.some((path) => path.endsWith("/issues/436")));
+});
+
+test("related items read every issue in one batch, then their pull requests, failing per item", () => {
+  const { context, batches } = relatedContextWith({
+    [`repos/${TARGET_REPO}/issues/11`]: { number: 11, pull_request: { url: "x" }, body: "a" },
+    [`repos/${TARGET_REPO}/pulls/11`]: { number: 11, body: "a pull" },
+    [`repos/${TARGET_REPO}/issues/22`]: { number: 22, body: "b" },
+    [`repos/${TARGET_REPO}/issues/44`]: { number: 44, pull_request: { url: "y" }, body: "d" },
+  });
+  const related = context.relatedItemsContext({
+    item,
+    issue: { body: "See #44, #11, #33 and #22." },
+    comments: [],
+    timeline: [],
+  });
+
+  assert.deepEqual(batches, [
+    [11, 22, 33, 44].map((number) => `repos/${TARGET_REPO}/issues/${number}`),
+    [11, 44].map((number) => `repos/${TARGET_REPO}/pulls/${number}`),
+  ]);
+  assert.deepEqual(related, [
+    {
+      mentionedIn: ["item body"],
+      issue: { number: 11, pull_request: { url: "x" }, body: "a" },
+      commentCount: undefined,
+      pullRequest: { number: 11, body: "a pull" },
+    },
+    {
+      mentionedIn: ["item body"],
+      issue: { number: 22, body: "b" },
+      commentCount: undefined,
+    },
+    {
+      number: 33,
+      mentionedIn: ["item body"],
+      error: `unexpected GitHub request: repos/${TARGET_REPO}/issues/33`,
+    },
+    {
+      mentionedIn: ["item body"],
+      issue: { number: 44, pull_request: { url: "y" }, body: "d" },
+      commentCount: undefined,
+      pullRequestError: `unexpected GitHub request: repos/${TARGET_REPO}/pulls/44`,
+    },
+  ]);
 });

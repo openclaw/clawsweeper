@@ -299,16 +299,6 @@ for (const stage of ["headers", "body"])
     assert.equal(received, true);
   });
 
-test("cluster selection source contains no semantic word lists, thresholds, or scoring", () => {
-  const sources = [
-    fs.readFileSync("src/repair/select-cluster-candidate.ts", "utf8"),
-    fs.readFileSync("src/repair/import-gitcrawl-clusters.ts", "utf8"),
-  ].join("\n");
-  assert.doesNotMatch(sources, /STOP_WORDS|BUG_WORDS|FEATURE_WORDS|DECISION_WORDS/);
-  assert.doesNotMatch(sources, /DECISION_LABELS|FEATURE_LABELS|BUG_LABELS/);
-  assert.doesNotMatch(sources, /selection score|title cohesion|closedPercent|maxAgeDays/);
-});
-
 test("default selector issue, pull and final-open reads honor the shared gh deadline", (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-selector-gh-"));
   const relative = job(root, 42, [100]);

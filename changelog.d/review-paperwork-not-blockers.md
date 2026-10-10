@@ -1,0 +1,1 @@
+- Keep PR-body paperwork (timings, CI seconds, headings, reruns of passing commands) out of Before-merge items, claim merge conflicts only from GitHub's merge state for the reviewed head, ask for plain-word author actions, count a regression test as proof path above `none`, and keep tool plumbing out of public review prose.

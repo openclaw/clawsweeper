@@ -1,0 +1,1 @@
+- Launch the app-server Codex stand-in in `test/codex-app-server-output.test.ts` and the orphaned blocker in `test/review-output-policy.test.ts` without `NODE_V8_COVERAGE`, so a signal landing during their exit-time profile write can no longer leave an empty coverage file that fails `pnpm check` after every test passed.

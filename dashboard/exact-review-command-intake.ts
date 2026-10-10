@@ -432,14 +432,11 @@ export class ExactReviewCommandIntakeStore {
     );
   }
 
-  allocateItemRevision(
-    itemKey: string,
-    minimumRevision: number,
-    lifecycleRevision: number,
-    publicationRevision: number,
-  ) {
+  // Durable per-item counter: the result is at least `minimumRevision` and
+  // above every prior allocation and every retained revision passed in.
+  allocateItemRevision(itemKey: string, minimumRevision: number, ...retainedRevisions: number[]) {
     const canonicalKey = itemKey.split("@publish:")[0]!.toLowerCase();
-    const floor = Math.max(0, minimumRevision - 1, lifecycleRevision, publicationRevision);
+    const floor = Math.max(0, minimumRevision - 1, ...retainedRevisions);
     this.storage.sql.exec(
       `INSERT INTO ${ITEM_REVISION_TABLE} (item_key, last_revision)
        VALUES (?, ?)

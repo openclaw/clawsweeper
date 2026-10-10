@@ -74,7 +74,7 @@ globalThis.fetch = async (url) => {
 test("direct API setup preserves the complete native catalogue and existing proxy authentication", () => {
   const supportedModels = [
     modelInfo,
-    ...["gpt-6-sol", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"].map((slug) => ({
+    ...["gpt-6.1-sol", "gpt-6-sol", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"].map((slug) => ({
       ...modelInfo,
       slug,
       node_repl_auto_review_required: false,

@@ -20,5 +20,9 @@ test(
     assert.equal(result.guarded, true);
     assert.equal(result.cases.length, 12);
     assert.ok(result.cases.every((entry: { processesReaped: boolean }) => entry.processesReaped));
+    const current = result.cases.find(
+      (entry: { scenario: string }) => entry.scenario === "current",
+    );
+    assert.equal(current.generationStartRequests, 1, "the startup check charges generation start");
   },
 );

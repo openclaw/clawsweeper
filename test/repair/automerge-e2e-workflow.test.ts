@@ -1,49 +1,40 @@
 import assert from "node:assert/strict";
-import fs from "node:fs";
 import test from "node:test";
+import { parse as parseYaml } from "yaml";
 
-const workflow = fs.readFileSync(".github/workflows/automerge-e2e.yml", "utf8");
+import { readText } from "../helpers.ts";
 
-test("automerge E2E uses the production containment runner and container entrypoint", () => {
-  assert.match(
-    workflow,
-    /runs-on: \$\{\{ vars\.CLAWSWEEPER_E2E_RUNNER \|\| 'blacksmith-16vcpu-ubuntu-2404' \}\}/,
-  );
-  assert.match(workflow, /node scripts\/e2e\/automerge-container\.mjs/);
-  assert.match(workflow, /--scenario all/);
-  assert.match(workflow, /--fixture all/);
-  assert.match(workflow, /--output test-results\/automerge/);
-  assert.doesNotMatch(workflow, /\.\/\.github\/actions\/setup-pnpm/);
+type Step = { uses?: string; run?: string; with?: Record<string, string> };
+type Workflow = {
+  permissions?: unknown;
+  jobs: Record<string, { if?: string; env?: Record<string, string>; steps?: Step[] }>;
+};
+
+// E2E workflows run repository code on shared runners and must never hold write tokens or secrets.
+test("E2E workflows are read-only and skip fork pull requests", () => {
+  for (const name of ["automerge-e2e.yml", "repair-containment-smoke.yml"]) {
+    const document = parseYaml(readText(`.github/workflows/${name}`)) as Workflow;
+    assert.deepEqual(document.permissions, { contents: "read" }, name);
+    for (const job of Object.values(document.jobs)) {
+      assert.match(
+        job.if ?? "",
+        /github\.event\.pull_request\.head\.repo\.full_name == github\.repository/,
+      );
+      const checkout = job.steps?.find((step) => step.uses?.startsWith("actions/checkout@"));
+      assert.equal(checkout?.with?.["persist-credentials"], false, name);
+    }
+    assert.doesNotMatch(readText(`.github/workflows/${name}`), /secrets\.|GH_TOKEN|app-token/);
+  }
 });
 
-test("automerge E2E builds its cached base from repository-controlled source", () => {
-  assert.match(workflow, /uses: actions\/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6/);
-  assert.match(
-    workflow,
-    /automerge-e2e-base-\$\{\{ hashFiles\('test\/e2e\/automerge\/Dockerfile\.base'\) \}\}/,
-  );
-  assert.match(workflow, /docker load --input "\$AUTOMERGE_E2E_BASE_ARCHIVE"/);
-  assert.match(
-    workflow,
-    /docker build \\\n\s+--file test\/e2e\/automerge\/Dockerfile\.base \\\n\s+--tag "\$AUTOMERGE_E2E_BASE_IMAGE"/,
-  );
-  assert.match(workflow, /docker save \\\n\s+--output "\$AUTOMERGE_E2E_BASE_ARCHIVE"/);
-  assert.match(workflow, /--base-image "\$AUTOMERGE_E2E_BASE_IMAGE"/);
-  assert.doesNotMatch(workflow, /masonxhuang\/clawsweeper-automerge-e2e-base/);
-});
-
-test("automerge E2E is read-only and excludes untrusted fork pull requests", () => {
-  assert.match(workflow, /permissions:\n  contents: read/);
-  assert.match(
-    workflow,
-    /github\.event\.pull_request\.head\.repo\.full_name == github\.repository/,
-  );
-  assert.match(workflow, /persist-credentials: false/);
-  assert.doesNotMatch(workflow, /\$\{\{\s*secrets\.|create-github-app-token|GH_TOKEN:/);
-});
-
-test("automerge E2E uploads the container proof even when a scenario fails", () => {
-  assert.match(workflow, /if: always\(\)/);
-  assert.match(workflow, /path: test-results\/automerge/);
-  assert.match(workflow, /if-no-files-found: error/);
+// The automerge E2E image must come from repository source, not from a registry or a stale cache.
+test("automerge E2E builds its base image from the repository Dockerfile", () => {
+  const document = parseYaml(readText(".github/workflows/automerge-e2e.yml")) as Workflow;
+  const job = document.jobs["automerge-e2e"]!;
+  assert.doesNotMatch(job.env?.AUTOMERGE_E2E_BASE_IMAGE ?? "", /\//);
+  const cache = job.steps?.find((step) => step.uses?.startsWith("actions/cache@"));
+  assert.match(String(cache?.with?.key), /hashFiles\('test\/e2e\/automerge\/Dockerfile\.base'\)/);
+  const runs = (job.steps ?? []).map((step) => step.run ?? "").join("\n");
+  assert.match(runs, /docker build \\\n\s+--file test\/e2e\/automerge\/Dockerfile\.base/);
+  assert.doesNotMatch(runs, /docker pull/);
 });

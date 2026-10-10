@@ -15,8 +15,13 @@ instruction file for agents.
   the repository's security handling instead of a normal public PR.
 - For an `openclaw/openclaw` target PR, do not submit a normal PR that edits
   `CHANGELOG.md`. That changelog is release-owned; put release-note context in
-  the PR body and commit message. For ClawSweeper or another target repository,
-  follow that repository's release-note policy.
+  the PR body and commit message. For another target repository, follow that
+  repository's release-note policy.
+- For a user-visible ClawSweeper change, add one new
+  `changelog.d/<pr-or-slug>.md` fragment with a single bullet line instead of
+  editing `CHANGELOG.md`; see the [fragment rules](changelog.d/README.md).
+  Fragments do not conflict with other pull requests, so changelog edits no
+  longer force a merge from `main` and the fresh review every new head needs.
 - Read the root `AGENTS.md`, then any scoped instructions for files you touch.
   Coding agents must follow those instructions even when this guide is shorter.
 

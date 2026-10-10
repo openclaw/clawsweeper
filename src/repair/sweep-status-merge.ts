@@ -1,4 +1,5 @@
 import { isDeepStrictEqual } from "node:util";
+import { isIsoTimestamp } from "../iso-time.js";
 
 type JsonPrimitive = boolean | null | number | string;
 type JsonValue = JsonObject | JsonPrimitive | JsonValue[];
@@ -29,7 +30,6 @@ const STATUS_SNAPSHOT_KEYS = new Set([
   "bot_owned_proof_dispatches",
   "updated_at",
 ]);
-const ISO_TIMESTAMP_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$/;
 
 export function mergeSweepStatusJson(options: {
   path: string;
@@ -282,11 +282,7 @@ function optionalTimestamp(
   label: string,
 ): number | null {
   if (value === undefined || value === null) return null;
-  if (
-    typeof value !== "string" ||
-    !ISO_TIMESTAMP_PATTERN.test(value) ||
-    !Number.isFinite(Date.parse(value))
-  ) {
+  if (typeof value !== "string" || !isIsoTimestamp(value, { allowOffset: false })) {
     throw new Error(`Refusing to merge sweep status with invalid timestamp ${path}:${label}`);
   }
   return Date.parse(value);

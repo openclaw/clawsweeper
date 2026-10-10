@@ -1,0 +1,1 @@
+- Conflict self-heal's publish-before-dispatch order is now tested by running the script against a local state remote and a stub `gh` that refuses a dispatch whose job is not on the remote, instead of comparing call positions in its source text.

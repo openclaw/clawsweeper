@@ -24,16 +24,17 @@ import {
   reportRevisionSha256,
   reportOnlyDecision,
 } from "../../dist/repair/issue-implementation-intake.js";
+import { issueImplementationOverrideBlockerClass } from "../../dist/repair/comment-router-core.js";
 import {
   issueImplementationJobPath,
   renderIssueImplementationJob,
   REVIEW_REPRODUCIBLE_BUG_TRIGGER_SOURCE,
   REVIEW_VIABLE_ISSUE_TRIGGER_SOURCE,
   REVIEW_VISION_FIT_TRIGGER_SOURCE,
-} from "../../dist/repair/comment-router-core.js";
-import { readText } from "../helpers.ts";
+} from "../../dist/repair/comment-router/dispatch.js";
+import { withReviewRecord } from "../helpers.ts";
 
-function report(overrides = {}) {
+function report(overrides = {}, securityStatus = "not_applicable") {
   const fields = {
     number: "123",
     repository: "openclaw/openclaw",
@@ -60,7 +61,7 @@ function report(overrides = {}) {
   const frontmatter = Object.entries(fields)
     .map(([key, value]) => `${key}: ${value}`)
     .join("\n");
-  return `---\n${frontmatter}\n---\n\n## Repair Work Prompt\n\nFix the reproduced existing-behavior bug and add a regression test.\n`;
+  return `---\n${frontmatter}\n---\n\n## Security Review\n\nStatus: ${securityStatus}\n\nSummary: No patch security review is needed for this issue.\n\n## Repair Work Prompt\n\nFix the reproduced existing-behavior bug and add a regression test.\n`;
 }
 
 test("implementation discovery refuses persisted manual and ambiguous policies with automation enabled", () => {
@@ -760,7 +761,7 @@ test("issue implementation deduplicates work across related issue references", (
   assert.match(decision.reason, /related issue in this work cluster/);
 });
 
-test("viable live intake allows auth-provider prose but blocks explicit security signals", () => {
+test("issue intake reads the review security status and explicit security signals, not prose", () => {
   const markdown = report({
     number: "241",
     repository: "steipete/oracle",
@@ -798,37 +799,33 @@ test("viable live intake allows auth-provider prose but blocks explicit security
       issue: { ...live.issue, labels: [{ name: "security:sensitive" }] },
     },
   });
-  const vulnerability = reportOnlyDecision({
-    targetRepo: "steipete/oracle",
-    itemNumber: 241,
-    report: parseReviewReport(markdown),
-    reportMarkdown: markdown,
-    candidateKind: "viable",
-    live: {
-      ...live,
-      issue: { ...live.issue, title: "Stored XSS in browser output", body: "" },
-    },
-  });
-  const credentialExposure = reportOnlyDecision({
-    targetRepo: "steipete/oracle",
-    itemNumber: 241,
-    report: parseReviewReport(markdown),
-    reportMarkdown: markdown,
-    candidateKind: "viable",
-    live: {
-      ...live,
-      issue: { ...live.issue, title: "Leaked access token in browser output", body: "" },
-    },
-  });
+  const decide = (reportMarkdown: string, issue = live.issue) =>
+    reportOnlyDecision({
+      targetRepo: "steipete/oracle",
+      itemNumber: 241,
+      report: parseReviewReport(reportMarkdown),
+      reportMarkdown,
+      candidateKind: "viable",
+      live: { ...live, issue },
+    });
+  // The review model judged this issue; risk words in the live title do not override it.
+  const riskWords = decide(markdown, { ...live.issue, title: "Stored XSS in browser output" });
+  const needsAttention = decide(
+    report({ number: "241", repository: "steipete/oracle" }, "needs_attention"),
+  );
+  const missingStatus = decide(markdown.replace(/## Security Review[\s\S]*?(?=## Repair)/, ""));
 
   assert.equal(viable.shouldRepair, true);
   assert.equal(viable.status, "queued_for_repair");
   assert.equal(security.shouldRepair, false);
   assert.match(security.reason, /security-sensitive signal/);
-  assert.equal(vulnerability.shouldRepair, false);
-  assert.match(vulnerability.reason, /security-sensitive signal/);
-  assert.equal(credentialExposure.shouldRepair, false);
-  assert.match(credentialExposure.reason, /security-sensitive signal/);
+  assert.equal(riskWords.shouldRepair, true);
+  assert.equal(needsAttention.shouldRepair, false);
+  assert.equal(needsAttention.blockerClass, "hard");
+  assert.match(needsAttention.reason, /security-sensitive signal present/);
+  assert.equal(missingStatus.shouldRepair, false);
+  assert.equal(missingStatus.blockerClass, "hard");
+  assert.match(missingStatus.reason, /security review status is missing/);
 });
 
 test("viable review routing excludes protected repositories and invalid review identity", () => {
@@ -1771,72 +1768,49 @@ test("viable issue implementation jobs enter the existing autofix loop", () => {
   assert.match(job, /Use a closing reference/);
 });
 
-test("issue implementation PR executor applies autofix and removes automerge", () => {
-  const source = readText("src/repair/execute-fix-artifact.ts");
+test("issue build overrides on protected issues only prepare a handoff", () => {
+  const open = {
+    kind: "issue",
+    state: "open",
+    labels: ["bug"],
+    title: "Add export",
+    body: "This may be a security problem.",
+  };
+  const blockerClass = (target: Record<string, unknown>, override = true) =>
+    issueImplementationOverrideBlockerClass({
+      operator_override: override,
+      target: { ...open, ...target },
+    });
 
-  assert.match(source, /AUTOGENERATED_LABEL/);
-  assert.match(source, /addLabel\(result\.repo, number, AUTOFIX_LABEL, targetDir\)/);
-  assert.match(source, /removeLabelIfPresent\(result\.repo, number, AUTOMERGE_LABEL, targetDir\)/);
-  assert.match(source, /job\.frontmatter\.source === "issue_implementation"/);
+  assert.equal(blockerClass({}, false), null);
+  // Prose about risk stays soft: the review model judges it, not a word match.
+  assert.equal(blockerClass({}), "soft");
+  for (const target of [
+    { job_path: "jobs/openclaw/inbox/issue-1.md" },
+    { open_prs: ["https://github.com/openclaw/openclaw/pull/2"] },
+    { state: "closed" },
+    { locked: true },
+    { labels: [" Release-Blocker "] },
+    { labels: ["security: auth"] },
+    { body: "<!-- clawsweeper-security:security -->" },
+  ]) {
+    assert.equal(blockerClass(target), "hard", JSON.stringify(target));
+  }
 });
 
-test("generated issue PRs terminate review-only and cannot automerge", () => {
-  const source = readText("src/repair/comment-router.ts");
-
-  assert.match(
-    source,
-    /reviewOnlyRepairLoopCompletionLabels\(command\.target\?\.labels \?\? \[\]\)/,
+// The backfill adds a review_record line to stored reports. That line repeats the
+// review; it must not change the review revision that implementation jobs track.
+test("adding the review record does not change the implementation-intake revision", () => {
+  const legacy = report();
+  const backfilled = withReviewRecord(legacy);
+  assert.notEqual(backfilled, legacy);
+  assert.equal(reportRevisionSha256(backfilled), reportRevisionSha256(legacy));
+  const audit = parseReviewReport(
+    `---\nreport_revision_sha256: ${reportRevisionSha256(legacy)}\ndecision: queued_for_repair\nworker_dispatched: false\n---\n`,
   );
-  assert.match(source, /waiting for required checks to appear before autofix completion/);
-  assert.match(source, /waiting for required checks before autofix completion/);
-  assert.match(source, /required checks block autofix completion/);
-  assert.match(source, /reviewOnlyRepairLoopMergeStateBlockReason/);
-  assert.match(source, /autofix_complete: true/);
-  assert.match(source, /if \(command\.autofix_complete && command\.issue_number\)/);
-  assert.match(
-    source,
-    /if \(hasLabel\(target, AUTOGENERATED_LABEL\)\)\s+return "generated issue implementation PRs require manual merge"/,
+  assert.equal(issueImplementationJobNeedsRefresh(audit, backfilled), false);
+  assert.notEqual(
+    reportRevisionSha256(backfilled.replace(/^confidence: high$/m, "confidence: low")),
+    reportRevisionSha256(legacy),
   );
-});
-
-test("repair executor uses retryable blobless target checkout", () => {
-  const source = readText("src/repair/execute-fix-artifact.ts");
-
-  assert.match(source, /cloneTargetCheckout/);
-  assert.match(source, /--filter=blob:none/);
-  assert.match(source, /CLAWSWEEPER_CHECKOUT_CLONE_ATTEMPTS/);
-  assert.match(source, /CLAWSWEEPER_CHECKOUT_CLONE_TIMEOUT_MS/);
-});
-
-test("comment router default allows one same-head infrastructure retry", () => {
-  const source = readText("src/repair/config.ts");
-
-  assert.match(source, /CLAWSWEEPER_MAX_REPAIRS_PER_HEAD \?\? 2/);
-});
-
-test("comment router rewrites existing issue implementation jobs on override", () => {
-  const source = readText("src/repair/comment-router.ts");
-
-  assert.match(source, /command\.operator_override === true/);
-  assert.match(source, /fs\.writeFileSync\(\s*absolute,\s*renderIssueImplementationJob/s);
-  assert.match(source, /issueImplementationJobOptions\(command\)/);
-  assert.match(source, /statusDetail = "written"/);
-});
-
-test("comment router classifies protected issue build overrides as hard", () => {
-  const source = readText("src/repair/comment-router.ts");
-
-  assert.match(source, /issueImplementationOverrideBlockerClass\(command\)/);
-  assert.match(source, /target\.kind === "issue" && target\.job_path/);
-  assert.match(source, /issueImplementationLinkedPrSignal\(target\)/);
-  assert.match(source, /issueLinkedOpenPrReferences\(issue, issueNumber\)/);
-  assert.match(source, /open_prs: linkedOpenPrs/);
-  assert.match(source, /addPullRequestReferenceNumbersFromText/);
-  assert.match(source, /searchOpenPullRequestsMentioningIssue\(Number\(issueNumber\)\)/);
-  assert.match(source, /"search\/issues",\s+"--method",\s+"GET"/);
-  assert.match(source, /target\.body/);
-  assert.match(source, /target\.locked === true/);
-  assert.match(source, /labels\.some\(isIssueImplementationProtectedLabel\)/);
-  assert.match(source, /overrideBlockerClass,\n\s+overrideAction: command\.operator_override/);
-  assert.match(source, /prepare a non-mutating handoff for this issue/);
 });

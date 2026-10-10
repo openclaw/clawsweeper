@@ -1,0 +1,780 @@
+{
+  "runs": {
+    "143911": {
+      "node": "v24.21.0",
+      "gh": "gh version 2.101.0 (2026-09-15)",
+      "transport": "native gh HTTP over http_unix_socket to a stateful synthetic GitHub API",
+      "heads": {
+        "baseline": "cac974b3e1da900cac3e7480b91d02a36ca60163",
+        "candidate": "349741921fb9c0002a45d5a1fea53bebfc32db85"
+      },
+      "command": "node scripts/e2e/apply-source-drift-final-effect.mjs run --item 143911 --seed-dir <seed-dir> --baseline <origin/main checkout> --candidate <branch checkout> --out <evidence-dir>",
+      "results": [
+        {
+          "item": 143911,
+          "record": "recorded",
+          "scenario": "batch-after-producer",
+          "build": "baseline",
+          "head": "cac974b3e1da900cac3e7480b91d02a36ca60163",
+          "exit": 0,
+          "applyActions": [
+            "review_comment_synced: updated durable Codex review comment",
+            "kept_open: implemented-on-main close no longer has current GitHub issue-to-fixing-pull-request provenance"
+          ],
+          "disposition": "applied",
+          "requeueSourceDriftReview": false,
+          "applyRequests": 68,
+          "closeRequests": 0,
+          "effects": [
+            "PATCH /repos/openclaw/openclaw/issues/comments/5616705068 -> 200 comment_update(durable_review)",
+            "DELETE /repos/openclaw/openclaw/issues/comments/5904434723 -> 204 comment_delete(review_lease)"
+          ],
+          "batch": {
+            "exit": 0,
+            "applyActions": [
+              "skipped_changed_since_review: updated_at changed"
+            ],
+            "disposition": "source_drift",
+            "requeueSourceDriftReview": true,
+            "applyRequests": 43,
+            "closeRequests": 0,
+            "effects": [
+              "POST /repos/openclaw/openclaw/issues/143911/comments -> 201 comment_create(review_lease)",
+              "DELETE /repos/openclaw/openclaw/issues/comments/9900000000 -> 204 comment_delete(review_lease)"
+            ]
+          },
+          "serverErrors": []
+        },
+        {
+          "item": 143911,
+          "record": "recorded",
+          "scenario": "batch-after-producer",
+          "build": "candidate",
+          "head": "349741921fb9c0002a45d5a1fea53bebfc32db85",
+          "exit": 0,
+          "applyActions": [
+            "review_comment_synced: updated durable Codex review comment",
+            "kept_open: implemented-on-main close no longer has current GitHub issue-to-fixing-pull-request provenance"
+          ],
+          "disposition": "applied",
+          "requeueSourceDriftReview": false,
+          "applyRequests": 68,
+          "closeRequests": 0,
+          "effects": [
+            "PATCH /repos/openclaw/openclaw/issues/comments/5616705068 -> 200 comment_update(durable_review)",
+            "DELETE /repos/openclaw/openclaw/issues/comments/5904434723 -> 204 comment_delete(review_lease)"
+          ],
+          "batch": {
+            "exit": 0,
+            "applyActions": [
+              "review_comment_synced: recorded existing durable comment metadata",
+              "kept_open: implemented-on-main close no longer has current GitHub issue-to-fixing-pull-request provenance"
+            ],
+            "disposition": "applied",
+            "requeueSourceDriftReview": false,
+            "applyRequests": 56,
+            "closeRequests": 0,
+            "effects": [
+              "POST /repos/openclaw/openclaw/issues/143911/comments -> 201 comment_create(review_lease)",
+              "DELETE /repos/openclaw/openclaw/issues/comments/9900000000 -> 204 comment_delete(review_lease)"
+            ]
+          },
+          "serverErrors": []
+        },
+        {
+          "item": 143911,
+          "record": "recorded",
+          "scenario": "batch-human-comment",
+          "build": "baseline",
+          "head": "cac974b3e1da900cac3e7480b91d02a36ca60163",
+          "exit": 0,
+          "applyActions": [
+            "review_comment_synced: updated durable Codex review comment",
+            "kept_open: implemented-on-main close no longer has current GitHub issue-to-fixing-pull-request provenance"
+          ],
+          "disposition": "applied",
+          "requeueSourceDriftReview": false,
+          "applyRequests": 68,
+          "closeRequests": 0,
+          "effects": [
+            "PATCH /repos/openclaw/openclaw/issues/comments/5616705068 -> 200 comment_update(durable_review)",
+            "DELETE /repos/openclaw/openclaw/issues/comments/5904434723 -> 204 comment_delete(review_lease)"
+          ],
+          "batch": {
+            "exit": 0,
+            "applyActions": [
+              "skipped_changed_since_review: updated_at changed"
+            ],
+            "disposition": "source_drift",
+            "requeueSourceDriftReview": true,
+            "applyRequests": 43,
+            "closeRequests": 0,
+            "effects": [
+              "POST /repos/openclaw/openclaw/issues/143911/comments -> 201 comment_create(review_lease)",
+              "DELETE /repos/openclaw/openclaw/issues/comments/9900000001 -> 204 comment_delete(review_lease)"
+            ]
+          },
+          "serverErrors": []
+        },
+        {
+          "item": 143911,
+          "record": "recorded",
+          "scenario": "batch-human-comment",
+          "build": "candidate",
+          "head": "349741921fb9c0002a45d5a1fea53bebfc32db85",
+          "exit": 0,
+          "applyActions": [
+            "review_comment_synced: updated durable Codex review comment",
+            "kept_open: implemented-on-main close no longer has current GitHub issue-to-fixing-pull-request provenance"
+          ],
+          "disposition": "applied",
+          "requeueSourceDriftReview": false,
+          "applyRequests": 68,
+          "closeRequests": 0,
+          "effects": [
+            "PATCH /repos/openclaw/openclaw/issues/comments/5616705068 -> 200 comment_update(durable_review)",
+            "DELETE /repos/openclaw/openclaw/issues/comments/5904434723 -> 204 comment_delete(review_lease)"
+          ],
+          "batch": {
+            "exit": 0,
+            "applyActions": [
+              "skipped_changed_since_review: updated_at changed"
+            ],
+            "disposition": "source_drift",
+            "requeueSourceDriftReview": true,
+            "applyRequests": 43,
+            "closeRequests": 0,
+            "effects": [
+              "POST /repos/openclaw/openclaw/issues/143911/comments -> 201 comment_create(review_lease)",
+              "DELETE /repos/openclaw/openclaw/issues/comments/9900000001 -> 204 comment_delete(review_lease)"
+            ]
+          },
+          "serverErrors": []
+        },
+        {
+          "item": 143911,
+          "record": "recorded",
+          "scenario": "batch-new-head",
+          "build": "baseline",
+          "head": "cac974b3e1da900cac3e7480b91d02a36ca60163",
+          "exit": 0,
+          "applyActions": [
+            "review_comment_synced: updated durable Codex review comment",
+            "kept_open: implemented-on-main close no longer has current GitHub issue-to-fixing-pull-request provenance"
+          ],
+          "disposition": "applied",
+          "requeueSourceDriftReview": false,
+          "applyRequests": 68,
+          "closeRequests": 0,
+          "effects": [
+            "PATCH /repos/openclaw/openclaw/issues/comments/5616705068 -> 200 comment_update(durable_review)",
+            "DELETE /repos/openclaw/openclaw/issues/comments/5904434723 -> 204 comment_delete(review_lease)"
+          ],
+          "batch": {
+            "exit": 0,
+            "applyActions": [
+              "skipped_changed_since_review: live PR head 3333333333333333333333333333333333333333 differs from reviewed head 2f7d3084fce5e3f2887b7091a75da22dfd247108"
+            ],
+            "disposition": "source_drift",
+            "requeueSourceDriftReview": true,
+            "applyRequests": 13,
+            "closeRequests": 0,
+            "effects": []
+          },
+          "serverErrors": []
+        },
+        {
+          "item": 143911,
+          "record": "recorded",
+          "scenario": "batch-new-head",
+          "build": "candidate",
+          "head": "349741921fb9c0002a45d5a1fea53bebfc32db85",
+          "exit": 0,
+          "applyActions": [
+            "review_comment_synced: updated durable Codex review comment",
+            "kept_open: implemented-on-main close no longer has current GitHub issue-to-fixing-pull-request provenance"
+          ],
+          "disposition": "applied",
+          "requeueSourceDriftReview": false,
+          "applyRequests": 68,
+          "closeRequests": 0,
+          "effects": [
+            "PATCH /repos/openclaw/openclaw/issues/comments/5616705068 -> 200 comment_update(durable_review)",
+            "DELETE /repos/openclaw/openclaw/issues/comments/5904434723 -> 204 comment_delete(review_lease)"
+          ],
+          "batch": {
+            "exit": 0,
+            "applyActions": [
+              "skipped_changed_since_review: live PR head 3333333333333333333333333333333333333333 differs from reviewed head 2f7d3084fce5e3f2887b7091a75da22dfd247108"
+            ],
+            "disposition": "source_drift",
+            "requeueSourceDriftReview": true,
+            "applyRequests": 13,
+            "closeRequests": 0,
+            "effects": []
+          },
+          "serverErrors": []
+        },
+        {
+          "item": 143911,
+          "record": "recorded",
+          "scenario": "batch-title-edit",
+          "build": "baseline",
+          "head": "cac974b3e1da900cac3e7480b91d02a36ca60163",
+          "exit": 0,
+          "applyActions": [
+            "review_comment_synced: updated durable Codex review comment",
+            "kept_open: implemented-on-main close no longer has current GitHub issue-to-fixing-pull-request provenance"
+          ],
+          "disposition": "applied",
+          "requeueSourceDriftReview": false,
+          "applyRequests": 68,
+          "closeRequests": 0,
+          "effects": [
+            "PATCH /repos/openclaw/openclaw/issues/comments/5616705068 -> 200 comment_update(durable_review)",
+            "DELETE /repos/openclaw/openclaw/issues/comments/5904434723 -> 204 comment_delete(review_lease)"
+          ],
+          "batch": {
+            "exit": 0,
+            "applyActions": [
+              "skipped_changed_since_review: updated_at changed"
+            ],
+            "disposition": "source_drift",
+            "requeueSourceDriftReview": true,
+            "applyRequests": 43,
+            "closeRequests": 0,
+            "effects": [
+              "POST /repos/openclaw/openclaw/issues/143911/comments -> 201 comment_create(review_lease)",
+              "DELETE /repos/openclaw/openclaw/issues/comments/9900000000 -> 204 comment_delete(review_lease)"
+            ]
+          },
+          "serverErrors": []
+        },
+        {
+          "item": 143911,
+          "record": "recorded",
+          "scenario": "batch-title-edit",
+          "build": "candidate",
+          "head": "349741921fb9c0002a45d5a1fea53bebfc32db85",
+          "exit": 0,
+          "applyActions": [
+            "review_comment_synced: updated durable Codex review comment",
+            "kept_open: implemented-on-main close no longer has current GitHub issue-to-fixing-pull-request provenance"
+          ],
+          "disposition": "applied",
+          "requeueSourceDriftReview": false,
+          "applyRequests": 68,
+          "closeRequests": 0,
+          "effects": [
+            "PATCH /repos/openclaw/openclaw/issues/comments/5616705068 -> 200 comment_update(durable_review)",
+            "DELETE /repos/openclaw/openclaw/issues/comments/5904434723 -> 204 comment_delete(review_lease)"
+          ],
+          "batch": {
+            "exit": 0,
+            "applyActions": [
+              "skipped_changed_since_review: updated_at changed"
+            ],
+            "disposition": "source_drift",
+            "requeueSourceDriftReview": true,
+            "applyRequests": 43,
+            "closeRequests": 0,
+            "effects": [
+              "POST /repos/openclaw/openclaw/issues/143911/comments -> 201 comment_create(review_lease)",
+              "DELETE /repos/openclaw/openclaw/issues/comments/9900000000 -> 204 comment_delete(review_lease)"
+            ]
+          },
+          "serverErrors": []
+        }
+      ],
+      "seedSha256": "7287e4930f862d054930538fe74946a505db0c97da4b38d6208255bd08897efa"
+    },
+    "126549": {
+      "node": "v24.21.0",
+      "gh": "gh version 2.101.0 (2026-09-15)",
+      "transport": "native gh HTTP over http_unix_socket to a stateful synthetic GitHub API",
+      "heads": {
+        "baseline": "cac974b3e1da900cac3e7480b91d02a36ca60163",
+        "candidate": "349741921fb9c0002a45d5a1fea53bebfc32db85"
+      },
+      "command": "node scripts/e2e/apply-source-drift-final-effect.mjs run --item 126549 --seed-dir <seed-dir> --baseline <origin/main checkout> --candidate <branch checkout> --out <evidence-dir>",
+      "results": [
+        {
+          "item": 126549,
+          "record": "recorded",
+          "scenario": "ack-only",
+          "build": "baseline",
+          "head": "cac974b3e1da900cac3e7480b91d02a36ca60163",
+          "exit": 0,
+          "applyActions": [
+            "review_comment_synced: updated durable Codex review comment",
+            "kept_open: implemented-on-main close requires explicit same-repository linked issues for paired closeout"
+          ],
+          "disposition": "applied",
+          "requeueSourceDriftReview": false,
+          "applyRequests": 66,
+          "closeRequests": 0,
+          "effects": [
+            "PATCH /repos/openclaw/openclaw/issues/comments/5351817173 -> 200 comment_update(durable_review)",
+            "DELETE /repos/openclaw/openclaw/issues/comments/5861600942 -> 204 comment_delete(review_lease)"
+          ],
+          "serverErrors": []
+        },
+        {
+          "item": 126549,
+          "record": "recorded",
+          "scenario": "ack-only",
+          "build": "candidate",
+          "head": "349741921fb9c0002a45d5a1fea53bebfc32db85",
+          "exit": 0,
+          "applyActions": [
+            "review_comment_synced: updated durable Codex review comment",
+            "kept_open: implemented-on-main close requires explicit same-repository linked issues for paired closeout"
+          ],
+          "disposition": "applied",
+          "requeueSourceDriftReview": false,
+          "applyRequests": 66,
+          "closeRequests": 0,
+          "effects": [
+            "PATCH /repos/openclaw/openclaw/issues/comments/5351817173 -> 200 comment_update(durable_review)",
+            "DELETE /repos/openclaw/openclaw/issues/comments/5861600942 -> 204 comment_delete(review_lease)"
+          ],
+          "serverErrors": []
+        },
+        {
+          "item": 126549,
+          "record": "recorded",
+          "scenario": "human-comment",
+          "build": "baseline",
+          "head": "cac974b3e1da900cac3e7480b91d02a36ca60163",
+          "exit": 0,
+          "applyActions": [
+            "skipped_changed_since_review: updated_at changed"
+          ],
+          "disposition": "source_drift",
+          "requeueSourceDriftReview": true,
+          "applyRequests": 28,
+          "closeRequests": 0,
+          "effects": [
+            "DELETE /repos/openclaw/openclaw/issues/comments/5861600942 -> 204 comment_delete(review_lease)"
+          ],
+          "serverErrors": []
+        },
+        {
+          "item": 126549,
+          "record": "recorded",
+          "scenario": "human-comment",
+          "build": "candidate",
+          "head": "349741921fb9c0002a45d5a1fea53bebfc32db85",
+          "exit": 0,
+          "applyActions": [
+            "skipped_changed_since_review: updated_at changed"
+          ],
+          "disposition": "source_drift",
+          "requeueSourceDriftReview": true,
+          "applyRequests": 28,
+          "closeRequests": 0,
+          "effects": [
+            "DELETE /repos/openclaw/openclaw/issues/comments/5861600942 -> 204 comment_delete(review_lease)"
+          ],
+          "serverErrors": []
+        },
+        {
+          "item": 126549,
+          "record": "recorded",
+          "scenario": "new-head",
+          "build": "baseline",
+          "head": "cac974b3e1da900cac3e7480b91d02a36ca60163",
+          "exit": 0,
+          "applyActions": [
+            "skipped_changed_since_review: live PR head 3333333333333333333333333333333333333333 differs from reviewed head f96bfcced92e5ec857a13fb537921f1d60e6337a"
+          ],
+          "disposition": "source_drift",
+          "requeueSourceDriftReview": true,
+          "applyRequests": 13,
+          "closeRequests": 0,
+          "effects": [],
+          "serverErrors": []
+        },
+        {
+          "item": 126549,
+          "record": "recorded",
+          "scenario": "new-head",
+          "build": "candidate",
+          "head": "349741921fb9c0002a45d5a1fea53bebfc32db85",
+          "exit": 0,
+          "applyActions": [
+            "skipped_changed_since_review: live PR head 3333333333333333333333333333333333333333 differs from reviewed head f96bfcced92e5ec857a13fb537921f1d60e6337a"
+          ],
+          "disposition": "source_drift",
+          "requeueSourceDriftReview": true,
+          "applyRequests": 12,
+          "closeRequests": 0,
+          "effects": [],
+          "serverErrors": []
+        },
+        {
+          "item": 126549,
+          "record": "recorded",
+          "scenario": "title-edit",
+          "build": "baseline",
+          "head": "cac974b3e1da900cac3e7480b91d02a36ca60163",
+          "exit": 0,
+          "applyActions": [
+            "skipped_changed_since_review: updated_at changed"
+          ],
+          "disposition": "source_drift",
+          "requeueSourceDriftReview": true,
+          "applyRequests": 28,
+          "closeRequests": 0,
+          "effects": [
+            "DELETE /repos/openclaw/openclaw/issues/comments/5861600942 -> 204 comment_delete(review_lease)"
+          ],
+          "serverErrors": []
+        },
+        {
+          "item": 126549,
+          "record": "recorded",
+          "scenario": "title-edit",
+          "build": "candidate",
+          "head": "349741921fb9c0002a45d5a1fea53bebfc32db85",
+          "exit": 0,
+          "applyActions": [
+            "skipped_changed_since_review: updated_at changed"
+          ],
+          "disposition": "source_drift",
+          "requeueSourceDriftReview": true,
+          "applyRequests": 28,
+          "closeRequests": 0,
+          "effects": [
+            "DELETE /repos/openclaw/openclaw/issues/comments/5861600942 -> 204 comment_delete(review_lease)"
+          ],
+          "serverErrors": []
+        },
+        {
+          "item": 126549,
+          "record": "close-capable",
+          "scenario": "ack-only",
+          "build": "baseline",
+          "head": "cac974b3e1da900cac3e7480b91d02a36ca60163",
+          "exit": 0,
+          "applyActions": [
+            "review_comment_synced: updated durable Codex review comment",
+            "closed: stalled PR without requested real-behavior proof; posted close-applied comment"
+          ],
+          "disposition": "applied",
+          "requeueSourceDriftReview": false,
+          "applyRequests": 227,
+          "closeRequests": 1,
+          "effects": [
+            "PATCH /repos/openclaw/openclaw/issues/comments/5351817173 -> 200 comment_update(durable_review)",
+            "POST /repos/openclaw/openclaw/issues/126549/comments -> 201 comment_create(closeout_note)",
+            "POST /graphql -> 200 close",
+            "DELETE /repos/openclaw/openclaw/issues/comments/5861600942 -> 204 comment_delete(review_lease)"
+          ],
+          "serverErrors": []
+        },
+        {
+          "item": 126549,
+          "record": "close-capable",
+          "scenario": "ack-only",
+          "build": "candidate",
+          "head": "349741921fb9c0002a45d5a1fea53bebfc32db85",
+          "exit": 0,
+          "applyActions": [
+            "review_comment_synced: updated durable Codex review comment",
+            "closed: stalled PR without requested real-behavior proof; posted close-applied comment"
+          ],
+          "disposition": "applied",
+          "requeueSourceDriftReview": false,
+          "applyRequests": 227,
+          "closeRequests": 1,
+          "effects": [
+            "PATCH /repos/openclaw/openclaw/issues/comments/5351817173 -> 200 comment_update(durable_review)",
+            "POST /repos/openclaw/openclaw/issues/126549/comments -> 201 comment_create(closeout_note)",
+            "POST /graphql -> 200 close",
+            "DELETE /repos/openclaw/openclaw/issues/comments/5861600942 -> 204 comment_delete(review_lease)"
+          ],
+          "serverErrors": []
+        },
+        {
+          "item": 126549,
+          "record": "close-capable",
+          "scenario": "human-comment",
+          "build": "baseline",
+          "head": "cac974b3e1da900cac3e7480b91d02a36ca60163",
+          "exit": 0,
+          "applyActions": [
+            "skipped_changed_since_review: updated_at changed"
+          ],
+          "disposition": "source_drift",
+          "requeueSourceDriftReview": true,
+          "applyRequests": 36,
+          "closeRequests": 0,
+          "effects": [
+            "DELETE /repos/openclaw/openclaw/issues/comments/5861600942 -> 204 comment_delete(review_lease)"
+          ],
+          "serverErrors": []
+        },
+        {
+          "item": 126549,
+          "record": "close-capable",
+          "scenario": "human-comment",
+          "build": "candidate",
+          "head": "349741921fb9c0002a45d5a1fea53bebfc32db85",
+          "exit": 0,
+          "applyActions": [
+            "skipped_changed_since_review: updated_at changed"
+          ],
+          "disposition": "source_drift",
+          "requeueSourceDriftReview": true,
+          "applyRequests": 36,
+          "closeRequests": 0,
+          "effects": [
+            "DELETE /repos/openclaw/openclaw/issues/comments/5861600942 -> 204 comment_delete(review_lease)"
+          ],
+          "serverErrors": []
+        },
+        {
+          "item": 126549,
+          "record": "close-capable",
+          "scenario": "new-head",
+          "build": "baseline",
+          "head": "cac974b3e1da900cac3e7480b91d02a36ca60163",
+          "exit": 0,
+          "applyActions": [
+            "skipped_changed_since_review: live PR head 3333333333333333333333333333333333333333 differs from reviewed head f96bfcced92e5ec857a13fb537921f1d60e6337a"
+          ],
+          "disposition": "source_drift",
+          "requeueSourceDriftReview": true,
+          "applyRequests": 12,
+          "closeRequests": 0,
+          "effects": [],
+          "serverErrors": []
+        },
+        {
+          "item": 126549,
+          "record": "close-capable",
+          "scenario": "new-head",
+          "build": "candidate",
+          "head": "349741921fb9c0002a45d5a1fea53bebfc32db85",
+          "exit": 0,
+          "applyActions": [
+            "skipped_changed_since_review: live PR head 3333333333333333333333333333333333333333 differs from reviewed head f96bfcced92e5ec857a13fb537921f1d60e6337a"
+          ],
+          "disposition": "source_drift",
+          "requeueSourceDriftReview": true,
+          "applyRequests": 13,
+          "closeRequests": 0,
+          "effects": [],
+          "serverErrors": []
+        },
+        {
+          "item": 126549,
+          "record": "close-capable",
+          "scenario": "title-edit",
+          "build": "baseline",
+          "head": "cac974b3e1da900cac3e7480b91d02a36ca60163",
+          "exit": 0,
+          "applyActions": [
+            "skipped_changed_since_review: updated_at changed"
+          ],
+          "disposition": "source_drift",
+          "requeueSourceDriftReview": true,
+          "applyRequests": 36,
+          "closeRequests": 0,
+          "effects": [
+            "DELETE /repos/openclaw/openclaw/issues/comments/5861600942 -> 204 comment_delete(review_lease)"
+          ],
+          "serverErrors": []
+        },
+        {
+          "item": 126549,
+          "record": "close-capable",
+          "scenario": "title-edit",
+          "build": "candidate",
+          "head": "349741921fb9c0002a45d5a1fea53bebfc32db85",
+          "exit": 0,
+          "applyActions": [
+            "skipped_changed_since_review: updated_at changed"
+          ],
+          "disposition": "source_drift",
+          "requeueSourceDriftReview": true,
+          "applyRequests": 36,
+          "closeRequests": 0,
+          "effects": [
+            "DELETE /repos/openclaw/openclaw/issues/comments/5861600942 -> 204 comment_delete(review_lease)"
+          ],
+          "serverErrors": []
+        }
+      ],
+      "seedSha256": "63342b6cd2a04d6d0e297908712f4964d2c48defc53af4c9a1ac695fc7f2582d"
+    },
+    "158447": {
+      "node": "v24.21.0",
+      "gh": "gh version 2.101.0 (2026-09-15)",
+      "transport": "native gh HTTP over http_unix_socket to a stateful synthetic GitHub API",
+      "heads": {
+        "baseline": "cac974b3e1da900cac3e7480b91d02a36ca60163",
+        "candidate": "349741921fb9c0002a45d5a1fea53bebfc32db85"
+      },
+      "command": "node scripts/e2e/apply-source-drift-final-effect.mjs run --item 158447 --seed-dir <seed-dir> --baseline <origin/main checkout> --candidate <branch checkout> --out <evidence-dir>",
+      "results": [
+        {
+          "item": 158447,
+          "record": "recorded",
+          "scenario": "ack-only",
+          "build": "baseline",
+          "head": "cac974b3e1da900cac3e7480b91d02a36ca60163",
+          "exit": 0,
+          "applyActions": [
+            "review_comment_synced: updated durable Codex review comment",
+            "kept_open: implemented-on-main close requires explicit same-repository linked issues for paired closeout"
+          ],
+          "disposition": "applied",
+          "requeueSourceDriftReview": false,
+          "applyRequests": 96,
+          "closeRequests": 0,
+          "effects": [
+            "POST /graphql -> 200 labels_remove [\"status: 👀 ready for maintainer look\"]",
+            "PATCH /repos/openclaw/openclaw/issues/comments/5841242718 -> 200 comment_update(durable_review)",
+            "DELETE /repos/openclaw/openclaw/issues/comments/5861136195 -> 204 comment_delete(review_lease)"
+          ],
+          "serverErrors": []
+        },
+        {
+          "item": 158447,
+          "record": "recorded",
+          "scenario": "ack-only",
+          "build": "candidate",
+          "head": "349741921fb9c0002a45d5a1fea53bebfc32db85",
+          "exit": 0,
+          "applyActions": [
+            "review_comment_synced: updated durable Codex review comment",
+            "kept_open: implemented-on-main close requires explicit same-repository linked issues for paired closeout"
+          ],
+          "disposition": "applied",
+          "requeueSourceDriftReview": false,
+          "applyRequests": 96,
+          "closeRequests": 0,
+          "effects": [
+            "POST /graphql -> 200 labels_remove [\"status: 👀 ready for maintainer look\"]",
+            "PATCH /repos/openclaw/openclaw/issues/comments/5841242718 -> 200 comment_update(durable_review)",
+            "DELETE /repos/openclaw/openclaw/issues/comments/5861136195 -> 204 comment_delete(review_lease)"
+          ],
+          "serverErrors": []
+        },
+        {
+          "item": 158447,
+          "record": "recorded",
+          "scenario": "human-comment",
+          "build": "baseline",
+          "head": "cac974b3e1da900cac3e7480b91d02a36ca60163",
+          "exit": 0,
+          "applyActions": [
+            "skipped_changed_since_review: updated_at changed"
+          ],
+          "disposition": "source_drift",
+          "requeueSourceDriftReview": true,
+          "applyRequests": 29,
+          "closeRequests": 0,
+          "effects": [
+            "DELETE /repos/openclaw/openclaw/issues/comments/5861136195 -> 204 comment_delete(review_lease)"
+          ],
+          "serverErrors": []
+        },
+        {
+          "item": 158447,
+          "record": "recorded",
+          "scenario": "human-comment",
+          "build": "candidate",
+          "head": "349741921fb9c0002a45d5a1fea53bebfc32db85",
+          "exit": 0,
+          "applyActions": [
+            "skipped_changed_since_review: updated_at changed"
+          ],
+          "disposition": "source_drift",
+          "requeueSourceDriftReview": true,
+          "applyRequests": 29,
+          "closeRequests": 0,
+          "effects": [
+            "DELETE /repos/openclaw/openclaw/issues/comments/5861136195 -> 204 comment_delete(review_lease)"
+          ],
+          "serverErrors": []
+        },
+        {
+          "item": 158447,
+          "record": "recorded",
+          "scenario": "new-head",
+          "build": "baseline",
+          "head": "cac974b3e1da900cac3e7480b91d02a36ca60163",
+          "exit": 0,
+          "applyActions": [
+            "skipped_changed_since_review: live PR head 3333333333333333333333333333333333333333 differs from reviewed head aa0ac129d45bf972e0c1e0b30624e98727385888"
+          ],
+          "disposition": "source_drift",
+          "requeueSourceDriftReview": true,
+          "applyRequests": 14,
+          "closeRequests": 0,
+          "effects": [],
+          "serverErrors": []
+        },
+        {
+          "item": 158447,
+          "record": "recorded",
+          "scenario": "new-head",
+          "build": "candidate",
+          "head": "349741921fb9c0002a45d5a1fea53bebfc32db85",
+          "exit": 0,
+          "applyActions": [
+            "skipped_changed_since_review: live PR head 3333333333333333333333333333333333333333 differs from reviewed head aa0ac129d45bf972e0c1e0b30624e98727385888"
+          ],
+          "disposition": "source_drift",
+          "requeueSourceDriftReview": true,
+          "applyRequests": 14,
+          "closeRequests": 0,
+          "effects": [],
+          "serverErrors": []
+        },
+        {
+          "item": 158447,
+          "record": "recorded",
+          "scenario": "title-edit",
+          "build": "baseline",
+          "head": "cac974b3e1da900cac3e7480b91d02a36ca60163",
+          "exit": 0,
+          "applyActions": [
+            "skipped_changed_since_review: updated_at changed"
+          ],
+          "disposition": "source_drift",
+          "requeueSourceDriftReview": true,
+          "applyRequests": 29,
+          "closeRequests": 0,
+          "effects": [
+            "DELETE /repos/openclaw/openclaw/issues/comments/5861136195 -> 204 comment_delete(review_lease)"
+          ],
+          "serverErrors": []
+        },
+        {
+          "item": 158447,
+          "record": "recorded",
+          "scenario": "title-edit",
+          "build": "candidate",
+          "head": "349741921fb9c0002a45d5a1fea53bebfc32db85",
+          "exit": 0,
+          "applyActions": [
+            "skipped_changed_since_review: updated_at changed"
+          ],
+          "disposition": "source_drift",
+          "requeueSourceDriftReview": true,
+          "applyRequests": 29,
+          "closeRequests": 0,
+          "effects": [
+            "DELETE /repos/openclaw/openclaw/issues/comments/5861136195 -> 204 comment_delete(review_lease)"
+          ],
+          "serverErrors": []
+        }
+      ],
+      "seedSha256": "8bc5eb51659f9866a928c4038a2b4ce1251902748bdc16af461536fec420445d"
+    }
+  }
+}

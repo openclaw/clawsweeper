@@ -6,9 +6,10 @@ import {
   reviewAutomationMarkersFromReport,
 } from "../dist/clawsweeper.js";
 import { detailsBody, reviewReportFrontMatter as reportFrontMatter } from "./helpers.ts";
-import { asRecord } from "../dist/clawsweeper-item-policy.js";
-import { createReportOrchestrationFoundation } from "../dist/clawsweeper-orchestration-foundation.js";
-import { createRecordMetadata } from "../dist/clawsweeper-record-metadata.js";
+import {
+  prSurfaceFilesFromContext,
+  prSurfaceFilesFromReport,
+} from "../dist/clawsweeper-orchestration-foundation.js";
 import { pinnedTestRolePaths } from "./openclaw-file-role-fixture.ts";
 
 test("support-only surface moves +57 to Tests while the reviewer production metric stays intact", () => {
@@ -193,22 +194,28 @@ Reason: ${duplicateRisk}
   );
 
   assert.match(comment, /## Before merge/);
-  assert.ok(comment.includes(`- [ ] **Resolve merge risk (P1)** - ${duplicateRisk}`));
+  assert.ok(comment.includes(`- [ ] **Resolve merge risk** - ${duplicateRisk}`));
   assert.doesNotMatch(comment, /Remaining risk \/ open question:/);
   assert.doesNotMatch(comment, /### Merge-risk options/);
   assert.equal(comment.split(duplicateRisk).length - 1, 1);
 });
 
-test("pull request keep-open review comments prefix each merge risk bullet", () => {
-  const comment = renderReviewCommentFromReport(
-    `${reportFrontMatter({
-      type: "pull_request",
-      number: "74269",
-      decision: "keep_open",
-      close_reason: "none",
-      work_candidate: "none",
-      pull_head_sha: "abc123def456abc123def456abc123def456abcd",
-    })}
+test("every pull request merge risk is a blocked item without an inferred priority", () => {
+  const risks = [
+    "Blocked workflow actions could cause a data loss outage.",
+    "Timeout fallback wording should remain scannable.",
+    "CI checks are red on this branch and may be unrelated to the diff.",
+    "CI checks pass but maintainer review is still required.",
+  ];
+  const report = `${reportFrontMatter({
+    type: "pull_request",
+    number: "74269",
+    decision: "keep_open",
+    close_reason: "none",
+    review_status: "complete",
+    work_candidate: "none",
+    pull_head_sha: "abc123def456abc123def456abc123def456abcd",
+  })}
 
 ## Summary
 
@@ -220,298 +227,20 @@ Changes generated review-comment formatting.
 
 ## Best Possible Solution
 
-Confirm both merge risks before merge.
+Merge after required checks are green.
 
 ## Risks / Open Questions
 
-- Blocked workflow actions must render as P1.
-- Timeout fallback wording should remain scannable.
-`,
-    "none",
-  );
-
-  assert.match(comment, /## Before merge/);
-  assert.match(
-    comment,
-    /- \[ \] \*\*Resolve merge risk \(P1\)\*\* - Blocked workflow actions must render as P1\./,
-  );
-  assert.match(
-    comment,
-    /- \[ \] \*\*Resolve merge risk \(P2\)\*\* - Timeout fallback wording should remain scannable\./,
-  );
-});
-
-test("pull request risk text does not priority-prefix routine CI noise", () => {
-  const routineCiRisk = "CI checks are red on this branch and may be unrelated to the diff.";
-  const comment = renderReviewCommentFromReport(
-    `${reportFrontMatter({
-      type: "pull_request",
-      number: "74269",
-      decision: "keep_open",
-      close_reason: "none",
-      work_candidate: "none",
-      pull_head_sha: "abc123def456abc123def456abc123def456abcd",
-    })}
-
-## Summary
-
-Keep this PR open while maintainers verify check state.
-
-## What This Changes
-
-Updates review guidance.
-
-## Best Possible Solution
-
-Merge after the unrelated CI state is understood.
-
-## Risks / Open Questions
-
-${routineCiRisk}
-`,
-    "none",
-  );
-
-  assert.match(comment, /## Before merge/);
-  // Routine CI noise stays visible in the collapsed details but is not counted as
-  // remaining merge work.
-  assert.doesNotMatch(comment, /- \[ \] \*\*Resolve merge risk\*\*/);
-  assert.ok(comment.includes(routineCiRisk));
-  assert.doesNotMatch(
-    comment,
-    new RegExp(`\\[P[12]\\] ${routineCiRisk.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`),
-  );
-});
-
-test("pull request next step does not priority-prefix routine required status checks", () => {
-  const routineStatusSteps = [
-    "Merge after required status checks are green.",
-    "Merge after required checks pass.",
-    "Merge after status checks pass.",
-    "Merge once required checks have passed.",
-    "Wait for status checks to pass.",
-    "Merge after required checks.",
-    "Wait for required checks.",
-    "Merge after required checks pass and no failures are seen.",
-    "Merge after required checks pass without failures.",
-    "Merge after required checks pass without any failures.",
-    "CI checks pass without test failures.",
-    "Merge after required checks pass without any test failures.",
-    "CI checks pass but no failures are seen.",
-    "CI checks pass but maintainer review is still required.",
-    "Required checks pass and required approvals are complete.",
-    "CI checks are red but may pass on rerun.",
-    "Merge after required checks and maintainer review.",
-  ];
-  for (const routineStatusStep of routineStatusSteps) {
-    const comment = renderReviewCommentFromReport(
-      `${reportFrontMatter({
-        type: "pull_request",
-        number: "74273",
-        decision: "keep_open",
-        close_reason: "none",
-        work_candidate: "none",
-        pull_head_sha: "abc123def460abc123def460abc123def460abcd",
-      })}
-
-## Summary
-
-Keep this PR open until normal merge gates pass.
-
-## What This Changes
-
-Updates review guidance.
-
-## Best Possible Solution
-
-${routineStatusStep}
-`,
-      "none",
-    );
-
-    assert.match(comment, /## Before merge/);
-    assert.doesNotMatch(
-      comment,
-      new RegExp(`\\[P[12]\\] ${routineStatusStep.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`),
-    );
+${risks.map((risk) => `- ${risk}`).join("\n")}
+`;
+  const comment = renderReviewCommentFromReport(report, "none");
+  const beforeMerge = comment.split("## Before merge\n\n")[1]?.split("\n## ")[0] ?? "";
+  for (const risk of risks) {
+    assert.ok(beforeMerge.includes(`- [ ] **Resolve merge risk** - ${risk}`), risk);
   }
-});
-
-test("pull request risk text keeps diff-caused CI risk actionable", () => {
-  const actionableCiRisk = "The workflow change could cause CI checks to fail after merge.";
-  const comment = renderReviewCommentFromReport(
-    `${reportFrontMatter({
-      type: "pull_request",
-      number: "74270",
-      decision: "keep_open",
-      close_reason: "none",
-      work_candidate: "none",
-      pull_head_sha: "abc123def457abc123def457abc123def457abcd",
-    })}
-
-## Summary
-
-Keep this PR open while maintainers verify workflow behavior.
-
-## What This Changes
-
-Updates workflow handling.
-
-## Best Possible Solution
-
-Merge after the workflow risk is addressed.
-
-## Risks / Open Questions
-
-${actionableCiRisk}
-`,
-    "none",
-  );
-
-  assert.match(comment, /## Before merge/);
-  assert.ok(comment.includes(`- [ ] **Resolve merge risk (P1)** - ${actionableCiRisk}`));
-});
-
-test("pull request risk text keeps diff-caused status-check risk actionable", () => {
-  const actionableStatusRisk = "The workflow change could cause status checks to fail after merge.";
-  const comment = renderReviewCommentFromReport(
-    `${reportFrontMatter({
-      type: "pull_request",
-      number: "74271",
-      decision: "keep_open",
-      close_reason: "none",
-      work_candidate: "none",
-      pull_head_sha: "abc123def458abc123def458abc123def458abcd",
-    })}
-
-## Summary
-
-Keep this PR open while maintainers verify workflow behavior.
-
-## What This Changes
-
-Updates workflow handling.
-
-## Best Possible Solution
-
-Merge after the status-check risk is addressed.
-
-## Risks / Open Questions
-
-${actionableStatusRisk}
-`,
-    "none",
-  );
-
-  assert.match(comment, /## Before merge/);
-  assert.ok(comment.includes(`- [ ] **Resolve merge risk (P1)** - ${actionableStatusRisk}`));
-});
-
-test("pull request risk text keeps diff-caused required-check risk actionable", () => {
-  const actionableRequiredRisk =
-    "The workflow change could cause required checks to fail after merge.";
-  const comment = renderReviewCommentFromReport(
-    `${reportFrontMatter({
-      type: "pull_request",
-      number: "74272",
-      decision: "keep_open",
-      close_reason: "none",
-      work_candidate: "none",
-      pull_head_sha: "abc123def459abc123def459abc123def459abcd",
-    })}
-
-## Summary
-
-Keep this PR open while maintainers verify workflow behavior.
-
-## What This Changes
-
-Updates workflow handling.
-
-## Best Possible Solution
-
-Merge after the required-check risk is addressed.
-
-## Risks / Open Questions
-
-${actionableRequiredRisk}
-`,
-    "none",
-  );
-
-  assert.match(comment, /## Before merge/);
-  assert.ok(comment.includes(`- [ ] **Resolve merge risk (P1)** - ${actionableRequiredRisk}`));
-});
-
-test("pull request risk text keeps broken passing-check risk actionable", () => {
-  const actionablePassingRisks = [
-    "The workflow change makes required checks pass even when tests fail.",
-    "CI checks are passing despite tests failing.",
-    "Security exposure remains even though status checks are green.",
-    "CI checks are green but snapshot drift blocks merge.",
-    "CI checks are green but the app crashes on startup.",
-    "Status checks pass despite data loss.",
-    "CI checks pass without running tests for the changed path.",
-    "CI checks pass with tests disabled.",
-    "Required checks pass after skipping the changed-path tests.",
-    "CI checks pass without failures, but required docs are missing.",
-    "CI checks pass and tests fail.",
-    "Required checks pass and required docs are missing.",
-    "Required checks pass and required approvals are complete, but required docs are missing.",
-    "CI checks pass and required approvals are complete, but coverage is too low.",
-    "CI checks pass because tests are mock-only.",
-    "Status checks pass because validation is stubbed.",
-    "CI checks pass but maintainer review is still required because tests were skipped.",
-    "CI checks pass and required approvals are complete, but tests are disabled.",
-    "CI checks pass with no tests for the changed path.",
-    "CI checks are green with no validation.",
-    "CI checks pass with only mocked tests.",
-    "CI checks pass with insufficient coverage.",
-    "CI checks pass and no tests run for this path.",
-    "CI checks pass and no validation runs.",
-    "CI checks pass and do not run tests for the changed path.",
-    "CI checks pass and tests do not cover the changed path.",
-    "CI checks pass and the changed path is untested.",
-    "CI checks pass and a manual data migration is required before merge.",
-  ];
-  for (const actionablePassingRisk of actionablePassingRisks) {
-    const comment = renderReviewCommentFromReport(
-      `${reportFrontMatter({
-        type: "pull_request",
-        number: "74274",
-        decision: "keep_open",
-        close_reason: "none",
-        work_candidate: "none",
-        pull_head_sha: "abc123def461abc123def461abc123def461abcd",
-      })}
-
-## Summary
-
-Keep this PR open while maintainers verify workflow behavior.
-
-## What This Changes
-
-Updates workflow handling.
-
-## Best Possible Solution
-
-Merge after the required-check risk is addressed.
-
-## Risks / Open Questions
-
-${actionablePassingRisk}
-`,
-      "none",
-    );
-
-    assert.match(comment, /## Before merge/);
-    assert.match(
-      comment,
-      new RegExp(
-        `- \\[ \\] \\*\\*Resolve merge risk \\(P[01]\\)\\*\\* - ${actionablePassingRisk.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`,
-      ),
-    );
-  }
+  assert.doesNotMatch(comment, /\(P[0-3]\)|\[P[0-3]\]/);
+  assert.equal((beforeMerge.match(/\*\*Resolve merge risk\*\*/g) ?? []).length, risks.length);
+  assert.match(reviewAutomationMarkersFromReport(report), /clawsweeper-review-state:blocked/);
 });
 
 test("OpenClaw pull request comments render PR surface inside evidence details", () => {
@@ -564,8 +293,8 @@ Adds a small runtime change with tests and docs.
     evidenceDetails,
     /\| \*\*Total\*\* \| \*\*3\*\* \| \*\*21\*\* \| \*\*3\*\* \| \*\*\+18\*\* \|/,
   );
-  assert.match(evidenceDetails, /### Review metrics\n\nNone\./);
-  assert.ok(comment.indexOf("### PR surface") < comment.indexOf("### Review metrics"));
+  // An empty metrics digest is omitted rather than rendered as "None.".
+  assert.doesNotMatch(evidenceDetails, /### Review metrics/);
 });
 
 test("pull request comments render one review metric digest item", () => {
@@ -700,15 +429,8 @@ function surfaceReport(files: unknown, truncated = false): string {
   })}\n\n## Summary\n\nReview completed.\n`;
 }
 
-// Use the existing production factories; the CLI regression covers actual report persistence.
-const surfaceFoundation = createReportOrchestrationFoundation({
-  ...createRecordMetadata({} as Parameters<typeof createRecordMetadata>[0]),
-  asRecord,
-  labelPolicy: {},
-} as Parameters<typeof createReportOrchestrationFoundation>[0]);
-
 test("PR surface context and report normalization preserve strict counts and exact paths", () => {
-  const files = surfaceFoundation.prSurfaceFilesFromContext({
+  const files = prSurfaceFilesFromContext({
     issue: {},
     comments: [],
     timeline: [],
@@ -722,9 +444,30 @@ test("PR surface context and report normalization preserve strict counts and exa
     { path: " src/space.ts ", additions: 0, deletions: 0 },
     { path: "src/max.ts", additions: Number.MAX_SAFE_INTEGER, deletions: 1 },
   ]);
-  assert.deepEqual(surfaceFoundation.prSurfaceFilesFromReport(surfaceReport(files)), files);
+  assert.deepEqual(prSurfaceFilesFromReport(surfaceReport(files)), files);
   const zero = renderReviewCommentFromReport(surfaceReport([files![0]]), "none");
   assert.match(zero, /\| \*\*Total\*\* \| \*\*1\*\* \| \*\*0\*\* \| \*\*0\*\* \| \*\*0\*\* \|/);
+});
+
+test("PR surface states added test files from GitHub file status only", () => {
+  const files = prSurfaceFilesFromContext({
+    issue: {},
+    comments: [],
+    timeline: [],
+    pullFiles: [
+      { filename: "src/runtime.ts", additions: 4, deletions: 1, status: "modified" },
+      { filename: "src/runtime.test.ts", additions: 9, deletions: 2, status: "modified" },
+      { filename: "src/owner.test.ts", additions: 30, deletions: 0, status: "added" },
+    ],
+  });
+  const comment = renderReviewCommentFromReport(surfaceReport(files), "none");
+  assert.match(comment, /Total \+40 across 3 files\. Added test files: 1\./);
+  // Reports written before file status was stored cannot tell added from changed.
+  const legacy = files!.map(({ status: _status, ...file }) => file);
+  assert.doesNotMatch(
+    renderReviewCommentFromReport(surfaceReport(legacy), "none"),
+    /Added test files/,
+  );
 });
 
 test("PR surface missing or invalid statistics round-trip as unknown, never partial totals", () => {
@@ -746,7 +489,7 @@ test("PR surface missing or invalid statistics round-trip as unknown, never part
   ]) {
     for (const field of ["additions", "deletions"]) {
       const input = { filename: "src/unknown.ts", additions: 0, deletions: 0, [field]: value };
-      const files = surfaceFoundation.prSurfaceFilesFromContext({
+      const files = prSurfaceFilesFromContext({
         issue: {},
         comments: [],
         timeline: [],
@@ -759,13 +502,13 @@ test("PR surface missing or invalid statistics round-trip as unknown, never part
         [field]: null,
       });
       const report = surfaceReport(files);
-      assert.deepEqual(surfaceFoundation.prSurfaceFilesFromReport(report), files);
+      assert.deepEqual(prSurfaceFilesFromReport(report), files);
       // Old persisted reports may contain malformed values without passing through context extraction.
       const directReport = surfaceReport([
         { path: input.filename, additions: 0, deletions: 0, [field]: value },
         files![1],
       ]);
-      assert.deepEqual(surfaceFoundation.prSurfaceFilesFromReport(directReport), files);
+      assert.deepEqual(prSurfaceFilesFromReport(directReport), files);
       for (const candidate of [report, directReport]) {
         const comment = renderReviewCommentFromReport(candidate, "none");
         assert.match(comment, /PR surface statistics unavailable: complete line counts/);
@@ -788,7 +531,7 @@ test("PR surface incomplete file lists cannot produce a numeric aggregate", () =
     { pullFiles: "1" },
   ]) {
     assert.equal(
-      surfaceFoundation.prSurfaceFilesFromContext({
+      prSurfaceFilesFromContext({
         issue: {},
         comments: [],
         timeline: [],
@@ -800,7 +543,7 @@ test("PR surface incomplete file lists cannot produce a numeric aggregate", () =
   }
   for (const entry of [{ omitted: 1 }, { filename: "", additions: 0, deletions: 0 }, null]) {
     assert.equal(
-      surfaceFoundation.prSurfaceFilesFromContext({
+      prSurfaceFilesFromContext({
         issue: {},
         comments: [],
         timeline: [],
@@ -819,7 +562,7 @@ test("PR surface incomplete file lists cannot produce a numeric aggregate", () =
     surfaceReport({ files: [known] }),
     surfaceReport([known]).replace(/^pr_surface_files: .*$/m, 'pr_surface_files: [{"path":'),
   ]) {
-    assert.equal(surfaceFoundation.prSurfaceFilesFromReport(report), null);
+    assert.equal(prSurfaceFilesFromReport(report), null);
     const comment = renderReviewCommentFromReport(report, "none");
     assert.match(comment, /PR surface statistics unavailable: the file list is incomplete/);
     assert.doesNotMatch(comment, /\| \*\*Total\*\* \|/);

@@ -2,7 +2,7 @@
 import type { JsonValue, LooseRecord } from "./json-types.js";
 import fs from "node:fs";
 import path from "node:path";
-import { spawnSync } from "node:child_process";
+import { runCommandResult } from "./command-runner.js";
 import {
   activeRepairWorkflowRunForJobAfterDispatchRecheck,
   assertLiveWorkerCapacity,
@@ -17,6 +17,7 @@ import {
 import { publishMainCommit, publishRoot } from "./git-publish.js";
 import { ghJson, ghJsonWithRetry, ghPaged, ghText, githubCommandTimeoutMs } from "./github-cli.js";
 import { DEFAULT_TARGET_REPO, REPAIR_CLUSTER_WORKFLOW } from "./constants.js";
+import { CLAWSWEEPER_BOT_LOGINS } from "../clawsweeper-policy.js";
 import { writePayload } from "./comment-router-utils.js";
 import {
   DEFAULT_SELF_HEAL_HEAD_PREFIX,
@@ -415,7 +416,7 @@ function findSelfHealStatusComment(number: JsonValue) {
 }
 
 function dispatchRepair(candidate: LooseRecord) {
-  const result = spawnSync(
+  const result = runCommandResult(
     "gh",
     [
       "workflow",
@@ -436,9 +437,7 @@ function dispatchRepair(candidate: LooseRecord) {
     ],
     {
       cwd: repoRoot(),
-      encoding: "utf8",
-      stdio: "pipe",
-      timeout: githubCommandTimeoutMs(process.env),
+      timeoutMs: githubCommandTimeoutMs(process.env),
       killSignal: "SIGKILL",
     },
   );
@@ -591,12 +590,7 @@ function currentActionsRunUrl() {
 }
 
 function isTrustedStatusComment(comment: LooseRecord) {
-  const author = String(comment.user?.login ?? "").toLowerCase();
-  return (
-    author === "clawsweeper" ||
-    author === "clawsweeper[bot]" ||
-    author === "openclaw-clawsweeper[bot]"
-  );
+  return CLAWSWEEPER_BOT_LOGINS.has(String(comment.user?.login ?? "").toLowerCase());
 }
 
 function writeGithubOutput(values: Record<string, string>) {

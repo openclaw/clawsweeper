@@ -1,4 +1,4 @@
-import { recordOrEmpty as record } from "./value-coerce.js";
+import { asRecord as record } from "./value-coerce.js";
 import { createHmac } from "node:crypto";
 import { spawnSync } from "node:child_process";
 

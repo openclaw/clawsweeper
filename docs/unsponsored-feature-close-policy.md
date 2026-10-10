@@ -9,8 +9,10 @@ ClawSweeper can propose `unsponsored_feature_request` only for
 - `item_category: feature`;
 - `requires_product_decision: true`;
 - `maintainer_decision.required: true` with `kind: product_direction`;
-- no label whose normalized name contains `security`, including
-  `impact:security` or `clawsweeper:needs-security-review`.
+- no security label from `SECURITY_PROTECTED_LABEL_NAMES`
+  (`src/repair/exact-review-guard-labels.ts`), such as `security`,
+  `impact:security`, or `clawsweeper:needs-security-review`. The match is
+  exact after trim and lowercase.
 
 The review lane only writes a durable close proposal. Apply is default-off and
 requires the repository variable
@@ -21,7 +23,7 @@ Even when enabled, apply fails closed unless the issue is older than 90 days.
 It re-fetches live state and keeps the issue open when it is assigned,
 milestoned, no longer open, already meets the positive-reaction revival
 threshold, has 20 or more total reactions, has a
-`clawsweeper:linked-pr-open` label, has any security-named label, has any
+`clawsweeper:linked-pr-open` label, has any security label, has any
 maintainer comment, or has any non-bot comment from the last 60 days.
 
 GitHub reads are mandatory evidence. Any issue or paginated-comment read

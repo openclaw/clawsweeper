@@ -1,0 +1,1 @@
+- Build the publication enqueue body in `event-review-apply` and the source-drift requeue body in `event-review-publish` with `exact-review-queue-request.js enqueue publication` and `enqueue source-drift`, instead of two inline Node scripts in `sweep.yml`; no step in `sweep.yml` builds a queue request body inline now.

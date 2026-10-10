@@ -22,6 +22,7 @@ import {
   validateLiveVerificationReportPlan,
   type LiveVerificationResult,
 } from "./verification.js";
+import { frontMatterValue, replaceSectionValue, sectionValue } from "../report-front-matter.js";
 
 export interface LiveProofAttachOptions {
   bundleDir: string;
@@ -41,9 +42,6 @@ export interface LiveProofAttachDependencies {
   runner?: MediaProofCommandRunner;
   fetchPullRequest: (repo: string, item: number) => Promise<LiveProofPullRequestState>;
   reportLiveProofPlan: (markdown: string) => LiveProofPlan;
-  frontMatterValue: (markdown: string, key: string) => string | undefined;
-  sectionValue: (markdown: string, heading: string) => string;
-  replaceSectionValue: (markdown: string, heading: string, value: string) => string;
   reviewSections: typeof REVIEW_SECTIONS;
   renderReviewCommentFromReport: (markdown: string, closeReason: CloseReason) => string;
   markedReviewCommentBody: (number: number, body: string) => string;
@@ -97,7 +95,7 @@ async function attachLiveProofInternal(
       JSON.parse(readFileSync(join(bundleDir, "live-verification.json"), "utf8")) as unknown,
     );
     const report = readFileSync(recordPath, "utf8");
-    validateReportIdentity(report, verification, dependencies.frontMatterValue);
+    validateReportIdentity(report, verification);
     validateLiveVerificationReportPlan(verification, dependencies.reportLiveProofPlan(report));
     const manifestPath = join(bundleDir, "live-proof-manifest.json");
     const manifest = existsSync(manifestPath)
@@ -115,7 +113,7 @@ async function attachLiveProofInternal(
   });
   dependencies.selectTarget?.(verification.repo);
 
-  const reportHead = dependencies.frontMatterValue(report, "pull_head_sha")?.toLowerCase() ?? "";
+  const reportHead = frontMatterValue(report, "pull_head_sha")?.toLowerCase() ?? "";
   let liveHead: string;
   if (reviewedHeadIsAuthoritative) {
     liveHead = reportHead;
@@ -150,15 +148,13 @@ async function attachLiveProofInternal(
     dependencies.reviewSections.liveProof,
     verificationBlock,
     recordingBlock,
-    dependencies.sectionValue,
   );
-  let updatedReport = dependencies.replaceSectionValue(
+  let updatedReport = replaceSectionValue(
     report,
     dependencies.reviewSections.liveProof,
     liveProofSection,
   );
-  const closeReason = (dependencies.frontMatterValue(updatedReport, "close_reason") ??
-    "none") as CloseReason;
+  const closeReason = (frontMatterValue(updatedReport, "close_reason") ?? "none") as CloseReason;
   const comment = dependencies.renderReviewCommentFromReport(updatedReport, closeReason);
   const markedComment = dependencies.markedReviewCommentBody(verification.item, comment);
 
@@ -228,13 +224,8 @@ export function detachLiveProof(
   const log = dependencies.log ?? console.log;
   const recordPath = resolve(options.recordPath);
   const report = readFileSync(recordPath, "utf8");
-  validateDetachedReportIdentity(
-    report,
-    options.repositorySlug,
-    options.item,
-    dependencies.frontMatterValue,
-  );
-  const section = dependencies.sectionValue(report, dependencies.reviewSections.liveProof);
+  validateDetachedReportIdentity(report, options.repositorySlug, options.item);
+  const section = sectionValue(report, dependencies.reviewSections.liveProof);
   const markerIndex = section.lastIndexOf(LIVE_PROOF_RECORDING_MARKER);
   if (markerIndex < 0) {
     log(
@@ -245,13 +236,12 @@ export function detachLiveProof(
 
   const liveProofSection = section.slice(0, markerIndex).trimEnd();
   if (!liveProofSection) throw new Error("record is missing the Live Proof plan section");
-  const updatedReport = dependencies.replaceSectionValue(
+  const updatedReport = replaceSectionValue(
     report,
     dependencies.reviewSections.liveProof,
     liveProofSection,
   );
-  const closeReason = (dependencies.frontMatterValue(updatedReport, "close_reason") ??
-    "none") as CloseReason;
+  const closeReason = (frontMatterValue(updatedReport, "close_reason") ?? "none") as CloseReason;
   const comment = dependencies.renderReviewCommentFromReport(updatedReport, closeReason);
   const markedComment = dependencies.markedReviewCommentBody(options.item, comment);
 
@@ -280,12 +270,12 @@ export function syncLiveProofComment(
     JSON.parse(readFileSync(join(bundleDir, "live-verification.json"), "utf8")) as unknown,
   );
   const report = readFileSync(recordPath, "utf8");
-  validateReportIdentity(report, verification, dependencies.frontMatterValue);
+  validateReportIdentity(report, verification);
   const plan = dependencies.reportLiveProofPlan(report);
   validateLiveVerificationReportPlan(verification, plan);
   const attached = parseAttachedLiveVerification(
-    dependencies.sectionValue(report, dependencies.reviewSections.liveProof),
-    reportIdentity(report, dependencies.frontMatterValue),
+    sectionValue(report, dependencies.reviewSections.liveProof),
+    reportIdentity(report),
     plan,
   );
   if (attached.status === "absent") {
@@ -297,8 +287,7 @@ export function syncLiveProofComment(
   ) {
     throw new Error("record Live Verification result does not match the proof bundle");
   }
-  const closeReason = (dependencies.frontMatterValue(report, "close_reason") ??
-    "none") as CloseReason;
+  const closeReason = (frontMatterValue(report, "close_reason") ?? "none") as CloseReason;
   const comment = dependencies.renderReviewCommentFromReport(report, closeReason);
   const markedComment = dependencies.markedReviewCommentBody(verification.item, comment);
   dependencies.upsertReviewComment(verification.item, markedComment);
@@ -313,21 +302,15 @@ export function syncDetachedLiveProofComment(
 ): void {
   const recordPath = resolve(options.recordPath);
   const report = readFileSync(recordPath, "utf8");
-  validateDetachedReportIdentity(
-    report,
-    options.repositorySlug,
-    options.item,
-    dependencies.frontMatterValue,
-  );
+  validateDetachedReportIdentity(report, options.repositorySlug, options.item);
   if (
-    dependencies
-      .sectionValue(report, dependencies.reviewSections.liveProof)
-      .includes(LIVE_PROOF_RECORDING_MARKER)
+    sectionValue(report, dependencies.reviewSections.liveProof).includes(
+      LIVE_PROOF_RECORDING_MARKER,
+    )
   ) {
     throw new Error("record still contains the Live Proof recording");
   }
-  const closeReason = (dependencies.frontMatterValue(report, "close_reason") ??
-    "none") as CloseReason;
+  const closeReason = (frontMatterValue(report, "close_reason") ?? "none") as CloseReason;
   const comment = dependencies.renderReviewCommentFromReport(report, closeReason);
   const markedComment = dependencies.markedReviewCommentBody(options.item, comment);
   dependencies.upsertReviewComment(options.item, markedComment);
@@ -339,15 +322,11 @@ export function syncDetachedLiveProofComment(
 function validateReportIdentity(
   report: string,
   result: Pick<LiveVerificationResult, "repo" | "item" | "head_sha">,
-  frontMatterValue: (markdown: string, key: string) => string | undefined,
 ): void {
-  validateLiveVerificationReportIdentity(result, reportIdentity(report, frontMatterValue));
+  validateLiveVerificationReportIdentity(result, reportIdentity(report));
 }
 
-function reportIdentity(
-  report: string,
-  frontMatterValue: (markdown: string, key: string) => string | undefined,
-) {
+function reportIdentity(report: string) {
   return {
     repository: frontMatterValue(report, "repository"),
     number: frontMatterValue(report, "number"),
@@ -360,7 +339,6 @@ function validateDetachedReportIdentity(
   report: string,
   repositorySlug: string,
   item: number,
-  frontMatterValue: (markdown: string, key: string) => string | undefined,
 ): void {
   const repository = frontMatterValue(report, "repository") ?? "";
   const actualSlug = repository
@@ -453,7 +431,6 @@ function liveProofSectionWithResult(
   heading: string,
   verificationBlock: string,
   recordingBlock: string | undefined,
-  sectionValue: (markdown: string, heading: string) => string,
 ): string {
   const section = sectionValue(report, heading);
   const markerIndexes = [

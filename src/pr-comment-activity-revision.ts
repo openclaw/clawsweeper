@@ -1,6 +1,6 @@
-import { createHash } from "node:crypto";
+import { sha256 } from "./content-hash.js";
 import { compareCodeUnits, stableJson } from "./stable-json.js";
-import { recordOrEmpty as jsonRecord } from "./value-coerce.js";
+import { asRecord as jsonRecord } from "./value-coerce.js";
 
 export const PR_ACTIVITY_REVISION_QUERY_PAGE_SIZE = 100;
 export const PR_ACTIVITY_REVISION_CONNECTION_LIMIT = 40;
@@ -110,9 +110,7 @@ export function prCommentActivityRevision(value: unknown): string | null {
     threads.push({ id, commentCount, comments: normalizedComments });
   }
   threads.sort((left, right) => compareCodeUnits(left.id, right.id));
-  return `sha256:${createHash("sha256")
-    .update(stableJson({ reviewCount, threadCount, threads }))
-    .digest("hex")}`;
+  return `sha256:${sha256(stableJson({ reviewCount, threadCount, threads }))}`;
 }
 
 function nonnegativeIntegerOrNull(value: unknown): number | null {

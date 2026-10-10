@@ -1,0 +1,1 @@
+- Reserve maintainer decisions for concrete unresolved choices, honor recorded design acceptance, keep stored-state compatibility proof separate from routine landing sign-off, and reconcile legacy packets without clearing their review holds.

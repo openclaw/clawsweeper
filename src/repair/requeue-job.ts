@@ -1,10 +1,10 @@
 #!/usr/bin/env node
 import type { JsonValue, LooseRecord } from "./json-types.js";
-import { createHash } from "node:crypto";
+import { sha256 } from "../content-hash.js";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { spawnSync } from "node:child_process";
+import { runCommandResult } from "./command-runner.js";
 import {
   assertLiveWorkerCapacity,
   currentProjectRepo,
@@ -32,7 +32,7 @@ import {
   normalizedRequeueSourceJobPath,
 } from "./requeue-job-key.js";
 import { findFilesByBasenameSync } from "./glob-files.js";
-import { currentMainHeadSha } from "./git-repo-utils.js";
+import { currentMainHeadSha } from "./git.js";
 
 const DEFAULT_REPO = currentProjectRepo();
 const DEFAULT_WORKFLOW = REPAIR_CLUSTER_WORKFLOW;
@@ -74,7 +74,7 @@ if (!resolved.source_job) {
 
 const job = parseJob(resolved.source_job);
 const sourceJobPath = normalizedRequeueSourceJobPath(args["source-job-path"], job.relativePath);
-const authorizationSha256 = createHash("sha256").update(job.raw).digest("hex");
+const authorizationSha256 = sha256(job.raw);
 const errors = validateJob(job);
 if (errors.length > 0) {
   console.error(`invalid job: ${job.relativePath}`);
@@ -206,10 +206,10 @@ function resolveFromRunId(runId: string) {
   const artifactDir = fs.mkdtempSync(
     path.join(os.tmpdir(), `clawsweeper-repair-requeue-${runId}-`),
   );
-  const downloaded = spawnSync(
+  const downloaded = runCommandResult(
     "gh",
     ["run", "download", runId, "--repo", repo, "--dir", artifactDir],
-    { cwd: repoRoot(), encoding: "utf8", stdio: "pipe" },
+    { cwd: repoRoot() },
   );
   if (downloaded.status !== 0) {
     throw new Error(`could not resolve run ${runId}: ${downloaded.stderr || downloaded.stdout}`);
@@ -250,7 +250,7 @@ function dispatchJob(
     },
     component: "repair_requeue",
     operation: () =>
-      spawnSync(
+      runCommandResult(
         "gh",
         [
           "workflow",
@@ -275,9 +275,9 @@ function dispatchJob(
           "-f",
           `requeue_depth=${nextRequeueDepth}`,
         ],
-        { cwd: repoRoot(), encoding: "utf8", stdio: "pipe" },
+        { cwd: repoRoot() },
       ),
-    outcome: (dispatch) => (dispatch.status === 0 && !dispatch.error ? "accepted" : "unknown"),
+    outcome: (dispatch) => (dispatch.status === 0 ? "accepted" : "unknown"),
   });
   if (result.status !== 0) {
     throw new Error(`failed to dispatch ${jobPath}: ${result.stderr || result.stdout}`);

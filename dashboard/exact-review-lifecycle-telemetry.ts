@@ -2296,7 +2296,10 @@ export class ExactReviewLifecycleTelemetryStore {
         WHERE repository_scope = ?`,
       scope,
     );
-    for (const event of retained.slice(Math.max(0, tideBoundary - 20), tideBoundary))
+    for (const event of retained.slice(
+      Math.max(0, tideBoundary - EXACT_REVIEW_LIFECYCLE_BAY_TIDE_THRESHOLD),
+      tideBoundary,
+    ))
       this.insertTideBufferRowSync(scope, "washed", event);
     for (const event of retained.slice(tideBoundary))
       this.insertTideBufferRowSync(scope, "terminal", event);

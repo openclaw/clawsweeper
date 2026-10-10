@@ -1,15 +1,14 @@
 import type { JsonValue, LooseRecord } from "./json-types.js";
 import { renderJobIntentFrontmatter } from "./job-intent.js";
-import { repoSlug } from "./comment-router-core.js";
+import { commandStatusMarker, commandStatusMarkerPrefix } from "./markers.js";
+import { repoSlug } from "./comment-router/dispatch.js";
+import { HUMAN_REVIEW_LABEL, MERGE_READY_LABEL } from "./exact-review-guard-labels.js";
 
 export const CLAWSWEEPER_SELF_REBASE_SOURCE = "clawsweeper_self_rebase";
 export const CLAWSWEEPER_SELF_REBASE_INTENT = "clawsweeper_self_rebase";
 export const DEFAULT_SELF_HEAL_HEAD_PREFIX = "clawsweeper/";
 export const SELF_HEAL_STATUS_MARKER_INTENT = "clawsweeper_self_rebase";
-export const SELF_HEAL_PAUSE_LABELS = new Set([
-  "clawsweeper:human-review",
-  "clawsweeper:merge-ready",
-]);
+export const SELF_HEAL_PAUSE_LABELS = new Set<string>([HUMAN_REVIEW_LABEL, MERGE_READY_LABEL]);
 
 export function selfHealClusterId(repo: string, issueNumber: JsonValue) {
   return `self-heal-${repoSlug(repo)}-${Number(issueNumber)}`;
@@ -21,7 +20,11 @@ export function selfHealJobPath(repo: string, issueNumber: JsonValue) {
 }
 
 export function selfHealStatusMarker(issueNumber: JsonValue, headSha: JsonValue) {
-  return `<!-- clawsweeper-command-status:${Number(issueNumber) || "unknown"}:${SELF_HEAL_STATUS_MARKER_INTENT}:${String(headSha ?? "na") || "na"} -->`;
+  return commandStatusMarker(
+    Number(issueNumber) || "unknown",
+    SELF_HEAL_STATUS_MARKER_INTENT,
+    String(headSha ?? "na") || "na",
+  );
 }
 
 export function selfHealMergeStateReason(target: LooseRecord = {}): string | null {
@@ -173,7 +176,10 @@ export function renderSelfHealStatusComment({
 }
 
 export function selfHealStatusMarkerPrefix(issueNumber: JsonValue) {
-  return `<!-- clawsweeper-command-status:${Number(issueNumber) || "unknown"}:${SELF_HEAL_STATUS_MARKER_INTENT}:`;
+  return commandStatusMarkerPrefix(
+    Number(issueNumber) || "unknown",
+    SELF_HEAL_STATUS_MARKER_INTENT,
+  );
 }
 
 function normalizedAuthor(author: JsonValue) {

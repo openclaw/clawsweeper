@@ -1,0 +1,1 @@
+- Fail "Queue durable exact review publication" when the publication enqueue returns a non-2xx status, no response, or a body that is not one queued, deduped or superseded JSON response. Before, the step dropped the curl failure and passed on the empty response with jq 1.6, so a 400 or 503 could pass the step and skip the lease release.

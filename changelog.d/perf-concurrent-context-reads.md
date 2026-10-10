@@ -1,0 +1,1 @@
+- Collect review context faster: related-item issue and pull reads, check-run and status reads, and the head and tail pages of large file and commit windows now start together (up to 8 `gh` processes), while retries, rate-limit fallback, runtime budget, and the resulting context stay the same.

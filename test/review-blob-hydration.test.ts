@@ -35,7 +35,6 @@ import { writeExactReviewFailureDiagnostics } from "../dist/clawsweeper-review-f
 import { createContextHydration } from "../dist/clawsweeper-context-hydration.js";
 import { createGitHubRuntime } from "../dist/clawsweeper-github-runtime.js";
 import { createGitHubExecution } from "../dist/clawsweeper-github-execution.js";
-import { asRecord } from "../dist/clawsweeper-item-policy.js";
 import { createReviewRuntime } from "../dist/clawsweeper-review-runtime.js";
 import { main, reviewPolicyHashForTest } from "../dist/clawsweeper-runtime.js";
 import { runText } from "../dist/command.js";
@@ -617,24 +616,22 @@ function prepareFixtureCommits(fixture: { target: string; baseSha: string; headS
   );
 }
 
-function reviewRuntime(releaseTag?: string) {
+function reviewRuntime(releases: () => unknown = () => []) {
   const unavailable = (): never => {
     throw new Error("Unexpected dependency in native Git preparation fixture");
   };
   return createReviewRuntime({
-    reviewItemPromptPath: "",
+    reviewItemPromptPaths: { core: "", issue: "", pull_request: "", closeReasons: "" },
     decisionSchemaPath: "",
     prCloseCoverageProofPromptPath: "",
     targetRepo: () => "fixture/repository",
     run: runText,
-    ghJson: <T>() => (releaseTag ? [{ tagName: releaseTag, isLatest: true }] : []) as T,
+    ghJson: <T>() => releases() as T,
     evidenceEntry: unavailable,
     untrustedCodexEnv: unavailable,
-    asRecord: unavailable,
     defaultRootCauseCluster: unavailable,
     parseDecision: unavailable,
     ensureDir: unavailable,
-    stringOrUndefined: unavailable,
   });
 }
 
@@ -653,7 +650,9 @@ for (const withRelease of [false, true]) {
         git(fixture.source, "-c", "tag.gpgsign=false", "tag", releaseTag, fixture.branchPoint);
         git(fixture.source, "push", "-q", "origin", `refs/tags/${releaseTag}`);
       }
-      const gitInfo = reviewRuntime(withRelease ? releaseTag : undefined).gitInfo;
+      const gitInfo = reviewRuntime(() =>
+        withRelease ? [{ tagName: releaseTag, isLatest: true }] : [],
+      ).gitInfo;
       const expectedAncestors = reachable(fixture.source, fixture.baseSha);
       assert.equal(git(fixture.target, "rev-parse", "--is-shallow-repository"), "false");
       const info = gitInfo(fixture.target);
@@ -719,6 +718,50 @@ for (const withRelease of [false, true]) {
     }
   });
 }
+
+test("review git info trusts only the release marked latest and fails closed otherwise", () => {
+  const fixture = reviewHistoryFixture({
+    commitsBeforeBranch: 1,
+    commitsAfterBranch: 1,
+    baseRefreshDepth: null,
+  });
+  try {
+    git(fixture.source, "-c", "tag.gpgsign=false", "tag", "v1", fixture.branchPoint);
+    git(fixture.source, "-c", "tag.gpgsign=false", "tag", "v2", fixture.baseSha);
+    git(fixture.source, "push", "-q", "origin", "refs/tags/v1", "refs/tags/v2");
+    const older = { tagName: "v1", isLatest: false };
+    for (const [name, releases, expected] of [
+      [
+        "latest is not first",
+        () => [older, { tagName: "v2", isLatest: true }],
+        { complete: true, tag: "v2", sha: fixture.baseSha },
+      ],
+      ["no releases", () => [], { complete: true, tag: null, sha: null }],
+      ["no release marked latest", () => [older], { complete: false, tag: null, sha: null }],
+      ["malformed response", () => ({}), { complete: false, tag: null, sha: null }],
+      [
+        "release list failure",
+        () => {
+          throw new Error("gh release list failed");
+        },
+        { complete: false, tag: null, sha: null },
+      ],
+    ] as const) {
+      const info = reviewRuntime(releases).gitInfo(fixture.target);
+      assert.deepEqual(
+        {
+          complete: info.releaseStateComplete,
+          tag: info.latestRelease?.tagName ?? null,
+          sha: info.latestRelease?.sha ?? null,
+        },
+        expected,
+        name,
+      );
+    }
+  } finally {
+    rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
 
 for (const retryable of [true, false]) {
   test(`target branch acquisition never accepts a stale ref after failed fetch: retryable=${retryable}`, (t) => {
@@ -882,8 +925,6 @@ test("optional pinned-base blobs cannot suppress unsettled acquisition", (t) => 
   const context = createContextHydration(
     new Proxy(
       {
-        asRecord,
-        stringOrUndefined: (value: unknown) => (typeof value === "string" ? value : undefined),
         isSafeGitBranchName: (branch: string) => branch === "main",
         targetRepo: () => "fixture/repository",
         ghJson: (args: string[]) => {
@@ -2437,8 +2478,6 @@ test("introduced blob hydration does not start metadata work after its deadline"
   const context = createContextHydration(
     new Proxy(
       {
-        asRecord,
-        stringOrUndefined: (value: unknown) => (typeof value === "string" ? value : undefined),
         isSafeGitBranchName: (branch: string) => branch === "main",
         targetRepo: () => "fixture/repository",
         ghJson: execution.ghJson,
@@ -2484,8 +2523,6 @@ test("source preparation reports unavailable historical blobs before restricted 
   const { hydratePullRequestReviewSource } = createContextHydration(
     new Proxy(
       {
-        asRecord,
-        stringOrUndefined: (value: unknown) => (typeof value === "string" ? value : undefined),
         isSafeGitBranchName: (branch: string) => branch === "main",
         targetRepo: () => "fixture/repository",
         ghJson: (args: string[]) => {
@@ -2676,7 +2713,6 @@ test("review checkout preserves large tree metadata within the GitHub CLI captur
   const context = createContextHydration(
     new Proxy(
       {
-        asRecord,
         targetRepo: () => "fixture/repository",
         ghJsonOnce: (args: string[], timeoutMs: number) => {
           const output = runtime.ghOnce(args, timeoutMs);

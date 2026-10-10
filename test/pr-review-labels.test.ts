@@ -176,44 +176,44 @@ ${malformedReceipt ? `## Live Proof\n\n${LIVE_VERIFICATION_MARKER}\nResult: inva
 test("report proof requirements preserve workflow precedence and contributor ownership", () => {
   for (const fixture of [
     {
-      status: "not_applicable",
-      action: false,
+      status: "missing",
+      action: true,
       labels: ["clawsweeper:automerge"],
       expected: "status: 📣 needs proof",
     },
     {
-      status: "not_applicable",
-      action: false,
+      status: "missing",
+      action: true,
       labels: ["status: 📣 needs proof"],
       expected: "status: 📣 needs proof",
     },
     {
-      status: "not_applicable",
-      action: false,
+      status: "missing",
+      action: true,
       labels: ["status: 🔁 re-review loop"],
       expected: "status: 🔁 re-review loop",
     },
     {
-      status: "not_applicable",
-      action: false,
+      status: "missing",
+      action: true,
       labels: ["status: 🛠️ actively grinding"],
       expected: "status: 🛠️ actively grinding",
     },
     {
-      status: "not_applicable",
-      action: false,
+      status: "missing",
+      action: true,
       labels: ["clawsweeper:human-review"],
       expected: null,
     },
     {
-      status: "not_applicable",
-      action: false,
+      status: "missing",
+      action: true,
       labels: ["clawsweeper:manual-only"],
       expected: null,
     },
     {
-      status: "not_applicable",
-      action: false,
+      status: "missing",
+      action: true,
       labels: ["clawsweeper:merge-ready"],
       expected: null,
     },
@@ -247,7 +247,7 @@ test("report proof requirements preserve workflow precedence and contributor own
     })}
 ${realBehaviorProofReportSection({
   status: fixture.status,
-  evidenceKind: fixture.status === "not_applicable" ? "not_applicable" : "none",
+  evidenceKind: "none",
   needsContributorAction: fixture.action,
   summary: "Recorded assessment for the changed path.",
 })}`;
@@ -260,7 +260,7 @@ ${realBehaviorProofReportSection({
     );
     assert.match(reviewAutomationMarkersFromReport(report), /clawsweeper-verdict:needs-human/);
     assert.match(comment, /⛔ \*\*Blocked before merge/);
-    if (fixture.status !== "not_applicable") {
+    if (!fixture.action) {
       assert.doesNotMatch(comment, /\*\*Add real behavior proof\*\*/);
       assert.match(comment, /\*\*Resolve real behavior proof assessment\*\*/);
     }
@@ -295,6 +295,8 @@ Merge after required checks are green.
 
 ${realBehaviorProofReportSection()}
 
+${prRatingReportSection({ overallTier: "A", proofTier: "A", patchTier: "A" })}
+
 ## Review Findings
 
 Overall correctness: patch is correct
@@ -319,13 +321,13 @@ Full review comments:
   assert.doesNotMatch(comment, /\*\*PR rating\*\*/);
   assert.doesNotMatch(comment, /\*\*Real behavior proof\*\*/);
   assert.match(comment, /<summary><strong>Agent review details<\/strong><\/summary>/);
-  assert.match(comment, /\| \*\*6\/6\*\* \| S \| 🦀 challenger crab \|/);
-  assert.match(comment, /\| \*\*1\/6\*\* \| F \| 🧂 unranked krab \|/);
+  assert.match(comment, /### Rating scale\n\n6\/6 🦀 challenger crab · 5\/6 🦞 diamond lobster ·/);
+  assert.match(comment, /· 1\/6 🧂 unranked krab\. Overall follows the weaker of proof/);
   assert.match(markers, /clawsweeper-verdict:pass/);
   assert.doesNotMatch(markers, /clawsweeper-verdict:needs-human/);
 });
 
-test("proof-blocked PR comments show proof cap while preserving patch quality", () => {
+test("proof-blocked PR comments show the model rating while preserving patch quality", () => {
   const report = `${reportFrontMatter({
     type: "pull_request",
     number: "74460",
@@ -359,6 +361,8 @@ ${realBehaviorProofReportSection({
   summary: "The PR has no real ingestion-run proof yet.",
 })}
 
+${prRatingReportSection({ overallTier: "F", proofTier: "F", patchTier: "A", nextSteps: "- none" })}
+
 ## Review Findings
 
 Overall correctness: patch is correct
@@ -376,9 +380,11 @@ Full review comments:
   assert.match(comment, /\| \*\*Overall readiness\*\* \| 🧂 unranked krab \*\*\(1\/6\)\*\* \|/);
   assert.match(comment, /\| \*\*Proof confidence\*\* \| 🧂 unranked krab \*\*\(1\/6\)\*\* \|/);
   assert.match(comment, /\| \*\*Patch quality\*\* \| 🦞 diamond lobster \*\*\(5\/6\)\*\* \|/);
-  assert.match(comment, /⛔ \*\*Blocked before merge - 2 items remain\*\*/);
-  assert.match(comment, /- \[ \] \*\*Add real behavior proof\*\* - Needs real behavior proof/);
-  assert.match(comment, /The PR has no real ingestion-run proof yet\./);
+  assert.match(comment, /⛔ \*\*Blocked before merge - 1 item remains\*\*/);
+  assert.match(
+    comment,
+    /- \[ \] \*\*Add real behavior proof\*\* - The PR has no real ingestion-run proof yet\./,
+  );
   assert.match(comment, /After adding proof, update the PR body/);
   assert.match(comment, /@clawsweeper re-review/);
   assert.match(
@@ -514,13 +520,13 @@ Result: ${encodeLiveVerificationReportPayload({
       labels: ["status: 📣 needs proof"],
       stale: "status: 📣 needs proof",
       expected: "status: 📣 needs proof",
-      resolvedExpected: null,
+      resolvedExpected: "status: 👀 ready for maintainer look",
     },
     {
       labels: ["status: needs maintainer proof decision"],
       stale: "status: needs maintainer proof decision",
       expected: "status: 📣 needs proof",
-      resolvedExpected: null,
+      resolvedExpected: "status: 👀 ready for maintainer look",
     },
     {
       labels: ["status: 🚀 automerge armed", "status: 📣 needs proof", "status: 🔁 re-review loop"],
@@ -810,7 +816,7 @@ Full review comments:
   );
 });
 
-test("public PR review details justify derived rating label changes", () => {
+test("public PR review details justify model rating label changes", () => {
   const report = `${reportFrontMatter({
     type: "pull_request",
     number: "84006",
@@ -845,6 +851,8 @@ ${realBehaviorProofReportSection({
   needsContributorAction: true,
   summary: "The PR still needs current real-environment proof for the changed behavior.",
 })}
+
+${prRatingReportSection({ overallTier: "D", proofTier: "D", patchTier: "A", nextSteps: "- none" })}
 
 ## Review Findings
 

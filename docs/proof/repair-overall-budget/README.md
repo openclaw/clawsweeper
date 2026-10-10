@@ -1,7 +1,7 @@
 # Overall repair budget proof
 
-Claim: the production workflow budget resolver gives OpenClaw 100 executor
-minutes and 102 Actions step minutes at its configured 25-minute validation
+Claim: the production workflow budget resolver gives OpenClaw 110 executor
+minutes and 112 Actions step minutes at its configured 50-minute validation
 budget, honors overrides, and never exceeds 110/112 minutes. All edit-worker
 prompts defer full acceptance to the executor; contained validation remains required.
 

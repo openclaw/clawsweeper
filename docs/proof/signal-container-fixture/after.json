@@ -1,0 +1,40 @@
+{
+  "targetHead": "fe0e5b6c9b585d8dbd3e8accb5e40c174cfc8aec",
+  "base": "1dd6ae5fdb8a8bfe605eb46cfd205b17cf9e5e55",
+  "source": "complete committed range, canonical pinned native scanner",
+  "prompt": {
+    "kind": "controlled",
+    "bytes": 71,
+    "sha256": "ec04b7c204ee8e5aafb5fc4f81351c69e8fa7375aba79b95e50ecc86c127f66f"
+  },
+  "schema": null,
+  "limits": "No model execution; hosted review must rescan its own prompt, schema, and source inputs.",
+  "verification": "canonical enabled",
+  "result": "admitted",
+  "elapsedMs": 5448,
+  "notices": [
+    {
+      "event": "agent_input_scan_classified",
+      "notice": "Reviewed synthetic fixture findings classified as non-sensitive.",
+      "fixtureSha256": "7849c0ac39a4f42a5cd5cb1b029c7132193f270454865f2f4a49a83da3444665",
+      "source": "extensions/signal/src/client-container.test.ts",
+      "detector": "URI",
+      "findings": [
+        {
+          "blob": "2a410dbef8f316266a5efe0c0fbd5b808a2a43b4",
+          "scannerLine": 78,
+          "literalLine": 78,
+          "decoder": "HTML",
+          "occurrences": 1
+        },
+        {
+          "blob": "37a3ee094c4823e2d33aa98f719bc2476945fdcf",
+          "scannerLine": 79,
+          "literalLine": 79,
+          "decoder": "HTML",
+          "occurrences": 1
+        }
+      ]
+    }
+  ]
+}

@@ -25,6 +25,7 @@ for (const scenario of scenarios) {
     const outputPath = join(root, "result.json");
     const requestsPath = join(root, "requests");
     const binary = join(root, "codex");
+    const fixture = join(root, "codex-fixture.cjs");
     const priorState = JSON.stringify({ threadId: uuid, sessionId: uuid, updatedAt: "prior" });
     const stateOverhead = Buffer.byteLength(
       JSON.stringify(
@@ -45,9 +46,8 @@ for (const scenario of scenarios) {
     try {
       if (scenario === "oversized-thread") writeFileSync(statePath, priorState);
       writeFileSync(
-        binary,
-        `#!${process.execPath}
-const fs = require("node:fs");
+        fixture,
+        `const fs = require("node:fs");
 const rl = require("node:readline").createInterface({ input: process.stdin });
 const scenario = ${JSON.stringify(scenario)};
 const threadId = ${JSON.stringify(threadId)};
@@ -79,6 +79,13 @@ rl.on("line", (line) => {
   }
 });
 `,
+      );
+      // This stands in for the external Codex CLI. Its own exit after the turn races the
+      // worker's process-group SIGTERM, which can cut its V8 coverage write short and
+      // leave an empty profile that fails the whole coverage report.
+      writeFileSync(
+        binary,
+        `#!/bin/sh\nexec /usr/bin/env -u NODE_V8_COVERAGE ${JSON.stringify(process.execPath)} ${JSON.stringify(fixture)} "$@"\n`,
         { mode: 0o700 },
       );
       const result = runCodexProcess({

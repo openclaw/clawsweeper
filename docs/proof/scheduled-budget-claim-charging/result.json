@@ -1,0 +1,3368 @@
+{
+  "claim": "Scheduled admission with bounded organic debt: per-hour organic admissions, claimed review executions, scheduled admissions and sheds, rolling execution totals, organic overload, and throttle pause for origin/main versus this branch.",
+  "base": "cac974b3e1da900cac3e7480b91d02a36ca60163",
+  "head": "3febf5e6628f5be132e3d13cc0d35d36d9123d2f",
+  "working_tree_dirty": false,
+  "node": "v24.21.0",
+  "workerd": "1.20260701.1",
+  "miniflare": "4.20260701.0",
+  "runtime": "workerd / SQLite Durable Object / native loopback GitHub fixture / fake clock",
+  "model": {
+    "organic_new": "new-item webhook enqueues (issues/opened), seeded Poisson arrivals; always a new key",
+    "organic_supersede": "issues/edited with supersedesInProgress for a random dispatching or leased organic item (production_2026_10_01: dispatching only, before its run claims); revokes the owner",
+    "organic_requeue": "an organic completion reports requeue_latest with the scenario's probability, as source-drift completions do",
+    "organic_closed_before_dispatch": "production_2026_10_01 only: a seeded share of new organic items reads closed at the queue's dispatch-time live check and is completed without a run",
+    "execution": "a successful /claim of a dispatched review lease (one workflow run attempt)",
+    "offers": "each offer follows scheduled-review-enqueue: fresh candidates until the first shed; direct planners +3 min, fanout planners +6 min after cron",
+    "candidates_per_offer": {
+      "direct": 50,
+      "hot_fanout": 20,
+      "normal_fanout": 50
+    },
+    "claim_latency_minutes": 1,
+    "review_minutes": "uniform 4-10 (mean 7) per execution",
+    "alarms": "delivered at the queue's own requested wake time (min 1 s apart); stats sampled each simulated minute",
+    "admission": "organic new key admitted, supersede admitted, requeue_latest completion requeued, or scheduled item admitted"
+  },
+  "variants": {
+    "baseline": {
+      "source_sha256": {
+        "dashboard/exact-review-queue.ts": "a1ff68d15b46f8fec2717221d10b15e5e44553023b461260bc0547200ecd3cd3",
+        "dashboard/wrangler.toml": "90db5d9b3093c7edc647b3329ffde989603d1c8b9fe68d76058336b6289ed673",
+        ".github/workflows/sweep.yml": "60ed1e5b2130a7522e404cd0dfb358ae7cd60d819652a367711f56bc619801f1"
+      },
+      "config": {
+        "EXACT_REVIEW_TARGET_RATE_PER_HOUR": "220",
+        "EXACT_REVIEW_TARGET_BURST": "24",
+        "EXACT_REVIEW_HOT_INTAKE_RATE_PER_HOUR": "30",
+        "EXACT_REVIEW_SCHEDULED_MAX_CONCURRENT": "32",
+        "EXACT_REVIEW_QUEUE_MAX_CONCURRENT": "80",
+        "EXACT_REVIEW_PENDING_SOFT_LIMIT": "600"
+      },
+      "cadence": {
+        "hotDirect": "*/5 * * * *",
+        "normalDirect": "9/20 * * * *",
+        "hotFanout": "4/20 * * * *",
+        "normalFanout": "14/20 * * * *"
+      },
+      "scenarios": {
+        "organic_130_new_keys": {
+          "target_organic_per_hour": {
+            "new": 130,
+            "supersede": 0,
+            "requeue": 0
+          },
+          "requeue_probability": 0,
+          "hours": [
+            {
+              "organic": {
+                "new": 142,
+                "supersede": 0,
+                "requeue": 0
+              },
+              "organic_attempted": {
+                "new": 142,
+                "supersede": 0
+              },
+              "organic_closed_before_dispatch": 0,
+              "scheduled": {
+                "hot_intake": 35,
+                "normal_backfill": 49
+              },
+              "scheduled_offers": {
+                "hot_intake": 15,
+                "normal_backfill": 5
+              },
+              "offer_sequences_fully_shed": 2,
+              "shed": {
+                "scheduled_rate": 20,
+                "backpressure": 0
+              },
+              "dispatched": {
+                "organic": 140,
+                "scheduled": 84
+              },
+              "executed": {
+                "organic": 136,
+                "scheduled": 84
+              },
+              "completed": 198,
+              "min_token_balance": -3,
+              "organic_total": 142,
+              "total_admissions": 226,
+              "total_executions": 220
+            },
+            {
+              "organic": {
+                "new": 131,
+                "supersede": 0,
+                "requeue": 0
+              },
+              "organic_attempted": {
+                "new": 131,
+                "supersede": 0
+              },
+              "organic_closed_before_dispatch": 0,
+              "scheduled": {
+                "hot_intake": 28,
+                "normal_backfill": 66
+              },
+              "scheduled_offers": {
+                "hot_intake": 15,
+                "normal_backfill": 6
+              },
+              "offer_sequences_fully_shed": 1,
+              "shed": {
+                "scheduled_rate": 21,
+                "backpressure": 0
+              },
+              "dispatched": {
+                "organic": 131,
+                "scheduled": 94
+              },
+              "executed": {
+                "organic": 131,
+                "scheduled": 94
+              },
+              "completed": 218,
+              "min_token_balance": -2,
+              "organic_total": 131,
+              "total_admissions": 225,
+              "total_executions": 225
+            },
+            {
+              "organic": {
+                "new": 138,
+                "supersede": 0,
+                "requeue": 0
+              },
+              "organic_attempted": {
+                "new": 138,
+                "supersede": 0
+              },
+              "organic_closed_before_dispatch": 0,
+              "scheduled": {
+                "hot_intake": 32,
+                "normal_backfill": 46
+              },
+              "scheduled_offers": {
+                "hot_intake": 15,
+                "normal_backfill": 6
+              },
+              "offer_sequences_fully_shed": 0,
+              "shed": {
+                "scheduled_rate": 21,
+                "backpressure": 0
+              },
+              "dispatched": {
+                "organic": 134,
+                "scheduled": 78
+              },
+              "executed": {
+                "organic": 138,
+                "scheduled": 78
+              },
+              "completed": 224,
+              "min_token_balance": -2,
+              "organic_total": 138,
+              "total_admissions": 216,
+              "total_executions": 216
+            }
+          ],
+          "max_rolling_hour_admissions": 238,
+          "max_rolling_hour_window": {
+            "start_minute": 0.9699,
+            "end_minute": 60.92706666666667,
+            "organic": 144,
+            "scheduled": 94
+          },
+          "max_rolling_hour_executions": 238,
+          "max_rolling_hour_execution_window": {
+            "start_minute": 3.4699,
+            "end_minute": 63.42706666666667,
+            "organic": 144,
+            "scheduled": 94
+          },
+          "scheduled_allowance_rate_plus_burst": 244,
+          "min_global_token_balance": -3,
+          "max_scheduled_active": 30,
+          "scheduled_cap": 32,
+          "max_review_active": 48,
+          "stale_claims_after_supersede": 0,
+          "stale_completions_after_supersede": 0,
+          "supersede_skipped_no_active_owner": 0,
+          "dispatch_delay_minutes": {
+            "organic": {
+              "p50": 1.5,
+              "p95": 1.5,
+              "max": 1.5682
+            },
+            "scheduled": {
+              "p50": 0.016666666666666666,
+              "p95": 0.26666666666666666,
+              "max": 0.35
+            }
+          }
+        },
+        "organic_180_new_keys": {
+          "target_organic_per_hour": {
+            "new": 180,
+            "supersede": 0,
+            "requeue": 0
+          },
+          "requeue_probability": 0,
+          "hours": [
+            {
+              "organic": {
+                "new": 165,
+                "supersede": 0,
+                "requeue": 0
+              },
+              "organic_attempted": {
+                "new": 165,
+                "supersede": 0
+              },
+              "organic_closed_before_dispatch": 0,
+              "scheduled": {
+                "hot_intake": 31,
+                "normal_backfill": 39
+              },
+              "scheduled_offers": {
+                "hot_intake": 15,
+                "normal_backfill": 5
+              },
+              "offer_sequences_fully_shed": 4,
+              "shed": {
+                "scheduled_rate": 20,
+                "backpressure": 0
+              },
+              "dispatched": {
+                "organic": 163,
+                "scheduled": 70
+              },
+              "executed": {
+                "organic": 160,
+                "scheduled": 70
+              },
+              "completed": 204,
+              "min_token_balance": -3,
+              "organic_total": 165,
+              "total_admissions": 235,
+              "total_executions": 230
+            },
+            {
+              "organic": {
+                "new": 180,
+                "supersede": 0,
+                "requeue": 0
+              },
+              "organic_attempted": {
+                "new": 180,
+                "supersede": 0
+              },
+              "organic_closed_before_dispatch": 0,
+              "scheduled": {
+                "hot_intake": 34,
+                "normal_backfill": 11
+              },
+              "scheduled_offers": {
+                "hot_intake": 15,
+                "normal_backfill": 6
+              },
+              "offer_sequences_fully_shed": 5,
+              "shed": {
+                "scheduled_rate": 21,
+                "backpressure": 0
+              },
+              "dispatched": {
+                "organic": 175,
+                "scheduled": 45
+              },
+              "executed": {
+                "organic": 177,
+                "scheduled": 45
+              },
+              "completed": 222,
+              "min_token_balance": -2,
+              "organic_total": 180,
+              "total_admissions": 225,
+              "total_executions": 222
+            },
+            {
+              "organic": {
+                "new": 187,
+                "supersede": 0,
+                "requeue": 0
+              },
+              "organic_attempted": {
+                "new": 187,
+                "supersede": 0
+              },
+              "organic_closed_before_dispatch": 0,
+              "scheduled": {
+                "hot_intake": 21,
+                "normal_backfill": 11
+              },
+              "scheduled_offers": {
+                "hot_intake": 15,
+                "normal_backfill": 6
+              },
+              "offer_sequences_fully_shed": 10,
+              "shed": {
+                "scheduled_rate": 21,
+                "backpressure": 0
+              },
+              "dispatched": {
+                "organic": 188,
+                "scheduled": 32
+              },
+              "executed": {
+                "organic": 187,
+                "scheduled": 32
+              },
+              "completed": 221,
+              "min_token_balance": -6,
+              "organic_total": 187,
+              "total_admissions": 219,
+              "total_executions": 219
+            }
+          ],
+          "max_rolling_hour_admissions": 245,
+          "max_rolling_hour_window": {
+            "start_minute": 10.37005,
+            "end_minute": 70.26348333333334,
+            "organic": 173,
+            "scheduled": 72
+          },
+          "max_rolling_hour_executions": 244,
+          "max_rolling_hour_execution_window": {
+            "start_minute": 12.87005,
+            "end_minute": 72.77291666666666,
+            "organic": 173,
+            "scheduled": 71
+          },
+          "scheduled_allowance_rate_plus_burst": 244,
+          "min_global_token_balance": -6,
+          "max_scheduled_active": 25,
+          "scheduled_cap": 32,
+          "max_review_active": 48,
+          "stale_claims_after_supersede": 0,
+          "stale_completions_after_supersede": 0,
+          "supersede_skipped_no_active_owner": 0,
+          "dispatch_delay_minutes": {
+            "organic": {
+              "p50": 1.5,
+              "p95": 1.5081333333333333,
+              "max": 1.5727166666666668
+            },
+            "scheduled": {
+              "p50": 0.016666666666666666,
+              "p95": 0.18333333333333332,
+              "max": 0.35
+            }
+          }
+        },
+        "organic_130_with_30pct_supersede_requeue": {
+          "target_organic_per_hour": {
+            "new": 91,
+            "supersede": 19.5,
+            "requeue": 19.5
+          },
+          "requeue_probability": 0.1765,
+          "hours": [
+            {
+              "organic": {
+                "new": 83,
+                "supersede": 21,
+                "requeue": 13
+              },
+              "organic_attempted": {
+                "new": 83,
+                "supersede": 21
+              },
+              "organic_closed_before_dispatch": 0,
+              "scheduled": {
+                "hot_intake": 35,
+                "normal_backfill": 66
+              },
+              "scheduled_offers": {
+                "hot_intake": 15,
+                "normal_backfill": 5
+              },
+              "offer_sequences_fully_shed": 0,
+              "shed": {
+                "scheduled_rate": 20,
+                "backpressure": 0
+              },
+              "dispatched": {
+                "organic": 115,
+                "scheduled": 101
+              },
+              "executed": {
+                "organic": 108,
+                "scheduled": 101
+              },
+              "completed": 165,
+              "min_token_balance": 1,
+              "organic_total": 117,
+              "total_admissions": 218,
+              "total_executions": 209
+            },
+            {
+              "organic": {
+                "new": 89,
+                "supersede": 18,
+                "requeue": 14
+              },
+              "organic_attempted": {
+                "new": 89,
+                "supersede": 18
+              },
+              "organic_closed_before_dispatch": 0,
+              "scheduled": {
+                "hot_intake": 30,
+                "normal_backfill": 68
+              },
+              "scheduled_offers": {
+                "hot_intake": 15,
+                "normal_backfill": 6
+              },
+              "offer_sequences_fully_shed": 1,
+              "shed": {
+                "scheduled_rate": 21,
+                "backpressure": 0
+              },
+              "dispatched": {
+                "organic": 122,
+                "scheduled": 98
+              },
+              "executed": {
+                "organic": 121,
+                "scheduled": 98
+              },
+              "completed": 210,
+              "min_token_balance": -2,
+              "organic_total": 121,
+              "total_admissions": 219,
+              "total_executions": 219
+            },
+            {
+              "organic": {
+                "new": 101,
+                "supersede": 19,
+                "requeue": 18
+              },
+              "organic_attempted": {
+                "new": 101,
+                "supersede": 19
+              },
+              "organic_closed_before_dispatch": 0,
+              "scheduled": {
+                "hot_intake": 30,
+                "normal_backfill": 66
+              },
+              "scheduled_offers": {
+                "hot_intake": 15,
+                "normal_backfill": 6
+              },
+              "offer_sequences_fully_shed": 2,
+              "shed": {
+                "scheduled_rate": 21,
+                "backpressure": 0
+              },
+              "dispatched": {
+                "organic": 132,
+                "scheduled": 96
+              },
+              "executed": {
+                "organic": 129,
+                "scheduled": 96
+              },
+              "completed": 200,
+              "min_token_balance": -2,
+              "organic_total": 138,
+              "total_admissions": 234,
+              "total_executions": 225
+            }
+          ],
+          "max_rolling_hour_admissions": 237,
+          "max_rolling_hour_window": {
+            "start_minute": 52.34495,
+            "end_minute": 112.07446666666667,
+            "organic": 129,
+            "scheduled": 108
+          },
+          "max_rolling_hour_executions": 230,
+          "max_rolling_hour_execution_window": {
+            "start_minute": 4.35505,
+            "end_minute": 64.12551666666667,
+            "organic": 115,
+            "scheduled": 115
+          },
+          "scheduled_allowance_rate_plus_burst": 244,
+          "min_global_token_balance": -2,
+          "max_scheduled_active": 29,
+          "scheduled_cap": 32,
+          "max_review_active": 45,
+          "stale_claims_after_supersede": 8,
+          "stale_completions_after_supersede": 50,
+          "supersede_skipped_no_active_owner": 2,
+          "dispatch_delay_minutes": {
+            "organic": {
+              "p50": 1.5,
+              "p95": 1.5,
+              "max": 1.5817333333333334
+            },
+            "scheduled": {
+              "p50": 0.016666666666666666,
+              "p95": 0.26666666666666666,
+              "max": 0.35
+            }
+          }
+        },
+        "production_like_today": {
+          "target_organic_per_hour": {
+            "new": 45,
+            "supersede": 67.5,
+            "requeue": 67.5
+          },
+          "requeue_probability": 0.6,
+          "hours": [
+            {
+              "organic": {
+                "new": 36,
+                "supersede": 57,
+                "requeue": 33
+              },
+              "organic_attempted": {
+                "new": 36,
+                "supersede": 57
+              },
+              "organic_closed_before_dispatch": 0,
+              "scheduled": {
+                "hot_intake": 35,
+                "normal_backfill": 63
+              },
+              "scheduled_offers": {
+                "hot_intake": 15,
+                "normal_backfill": 5
+              },
+              "offer_sequences_fully_shed": 2,
+              "shed": {
+                "scheduled_rate": 20,
+                "backpressure": 0
+              },
+              "dispatched": {
+                "organic": 122,
+                "scheduled": 98
+              },
+              "executed": {
+                "organic": 102,
+                "scheduled": 98
+              },
+              "completed": 139,
+              "min_token_balance": -1,
+              "organic_total": 126,
+              "total_admissions": 224,
+              "total_executions": 200
+            },
+            {
+              "organic": {
+                "new": 39,
+                "supersede": 61,
+                "requeue": 38
+              },
+              "organic_attempted": {
+                "new": 39,
+                "supersede": 61
+              },
+              "organic_closed_before_dispatch": 0,
+              "scheduled": {
+                "hot_intake": 26,
+                "normal_backfill": 63
+              },
+              "scheduled_offers": {
+                "hot_intake": 15,
+                "normal_backfill": 6
+              },
+              "offer_sequences_fully_shed": 2,
+              "shed": {
+                "scheduled_rate": 21,
+                "backpressure": 0
+              },
+              "dispatched": {
+                "organic": 140,
+                "scheduled": 89
+              },
+              "executed": {
+                "organic": 121,
+                "scheduled": 89
+              },
+              "completed": 168,
+              "min_token_balance": -2,
+              "organic_total": 138,
+              "total_admissions": 227,
+              "total_executions": 210
+            },
+            {
+              "organic": {
+                "new": 34,
+                "supersede": 62,
+                "requeue": 63
+              },
+              "organic_attempted": {
+                "new": 34,
+                "supersede": 62
+              },
+              "organic_closed_before_dispatch": 0,
+              "scheduled": {
+                "hot_intake": 32,
+                "normal_backfill": 25
+              },
+              "scheduled_offers": {
+                "hot_intake": 15,
+                "normal_backfill": 6
+              },
+              "offer_sequences_fully_shed": 5,
+              "shed": {
+                "scheduled_rate": 21,
+                "backpressure": 0
+              },
+              "dispatched": {
+                "organic": 161,
+                "scheduled": 57
+              },
+              "executed": {
+                "organic": 158,
+                "scheduled": 57
+              },
+              "completed": 159,
+              "min_token_balance": -7,
+              "organic_total": 159,
+              "total_admissions": 216,
+              "total_executions": 215
+            }
+          ],
+          "max_rolling_hour_admissions": 235,
+          "max_rolling_hour_window": {
+            "start_minute": 2.8892166666666665,
+            "end_minute": 62.37695,
+            "organic": 132,
+            "scheduled": 103
+          },
+          "max_rolling_hour_executions": 222,
+          "max_rolling_hour_execution_window": {
+            "start_minute": 73.51666666666667,
+            "end_minute": 133.43363333333335,
+            "organic": 134,
+            "scheduled": 88
+          },
+          "scheduled_allowance_rate_plus_burst": 244,
+          "min_global_token_balance": -7,
+          "max_scheduled_active": 31,
+          "scheduled_cap": 32,
+          "max_review_active": 41,
+          "stale_claims_after_supersede": 40,
+          "stale_completions_after_supersede": 136,
+          "supersede_skipped_no_active_owner": 3,
+          "dispatch_delay_minutes": {
+            "organic": {
+              "p50": 0.016666666666666666,
+              "p95": 1.5,
+              "max": 1.5566833333333334
+            },
+            "scheduled": {
+              "p50": 0.016666666666666666,
+              "p95": 0.26666666666666666,
+              "max": 0.35
+            }
+          }
+        },
+        "production_like_after_lane_a": {
+          "target_organic_per_hour": {
+            "new": 45,
+            "supersede": 35,
+            "requeue": 35
+          },
+          "requeue_probability": 0.4375,
+          "hours": [
+            {
+              "organic": {
+                "new": 36,
+                "supersede": 34,
+                "requeue": 29
+              },
+              "organic_attempted": {
+                "new": 36,
+                "supersede": 34
+              },
+              "organic_closed_before_dispatch": 0,
+              "scheduled": {
+                "hot_intake": 35,
+                "normal_backfill": 77
+              },
+              "scheduled_offers": {
+                "hot_intake": 15,
+                "normal_backfill": 5
+              },
+              "offer_sequences_fully_shed": 0,
+              "shed": {
+                "scheduled_rate": 20,
+                "backpressure": 0
+              },
+              "dispatched": {
+                "organic": 96,
+                "scheduled": 112
+              },
+              "executed": {
+                "organic": 85,
+                "scheduled": 112
+              },
+              "completed": 147,
+              "min_token_balance": -1,
+              "organic_total": 99,
+              "total_admissions": 211,
+              "total_executions": 197
+            },
+            {
+              "organic": {
+                "new": 39,
+                "supersede": 29,
+                "requeue": 16
+              },
+              "organic_attempted": {
+                "new": 39,
+                "supersede": 29
+              },
+              "organic_closed_before_dispatch": 0,
+              "scheduled": {
+                "hot_intake": 30,
+                "normal_backfill": 95
+              },
+              "scheduled_offers": {
+                "hot_intake": 15,
+                "normal_backfill": 6
+              },
+              "offer_sequences_fully_shed": 0,
+              "shed": {
+                "scheduled_rate": 21,
+                "backpressure": 0
+              },
+              "dispatched": {
+                "organic": 87,
+                "scheduled": 125
+              },
+              "executed": {
+                "organic": 81,
+                "scheduled": 125
+              },
+              "completed": 181,
+              "min_token_balance": 1,
+              "organic_total": 84,
+              "total_admissions": 209,
+              "total_executions": 206
+            },
+            {
+              "organic": {
+                "new": 34,
+                "supersede": 24,
+                "requeue": 28
+              },
+              "organic_attempted": {
+                "new": 34,
+                "supersede": 24
+              },
+              "organic_closed_before_dispatch": 0,
+              "scheduled": {
+                "hot_intake": 30,
+                "normal_backfill": 96
+              },
+              "scheduled_offers": {
+                "hot_intake": 15,
+                "normal_backfill": 6
+              },
+              "offer_sequences_fully_shed": 0,
+              "shed": {
+                "scheduled_rate": 21,
+                "backpressure": 0
+              },
+              "dispatched": {
+                "organic": 86,
+                "scheduled": 126
+              },
+              "executed": {
+                "organic": 88,
+                "scheduled": 126
+              },
+              "completed": 203,
+              "min_token_balance": 1,
+              "organic_total": 86,
+              "total_admissions": 212,
+              "total_executions": 214
+            }
+          ],
+          "max_rolling_hour_admissions": 227,
+          "max_rolling_hour_window": {
+            "start_minute": 3.1733833333333332,
+            "end_minute": 63.03415,
+            "organic": 100,
+            "scheduled": 127
+          },
+          "max_rolling_hour_executions": 221,
+          "max_rolling_hour_execution_window": {
+            "start_minute": 87.58965,
+            "end_minute": 147.55933333333334,
+            "organic": 95,
+            "scheduled": 126
+          },
+          "scheduled_allowance_rate_plus_burst": 244,
+          "min_global_token_balance": -1,
+          "max_scheduled_active": 31,
+          "scheduled_cap": 32,
+          "max_review_active": 42,
+          "stale_claims_after_supersede": 15,
+          "stale_completions_after_supersede": 72,
+          "supersede_skipped_no_active_owner": 1,
+          "dispatch_delay_minutes": {
+            "organic": {
+              "p50": 1.5,
+              "p95": 1.5,
+              "max": 1.5761
+            },
+            "scheduled": {
+              "p50": 0.1,
+              "p95": 0.26666666666666666,
+              "max": 0.35
+            }
+          }
+        },
+        "throttle_organic_130": {
+          "target_organic_per_hour": {
+            "new": 130,
+            "supersede": 0,
+            "requeue": 0
+          },
+          "requeue_probability": 0,
+          "hours": [
+            {
+              "organic": {
+                "new": 142,
+                "supersede": 0,
+                "requeue": 0
+              },
+              "organic_attempted": {
+                "new": 142,
+                "supersede": 0
+              },
+              "organic_closed_before_dispatch": 0,
+              "scheduled": {
+                "hot_intake": 35,
+                "normal_backfill": 49
+              },
+              "scheduled_offers": {
+                "hot_intake": 15,
+                "normal_backfill": 5
+              },
+              "offer_sequences_fully_shed": 2,
+              "shed": {
+                "scheduled_rate": 20,
+                "backpressure": 0
+              },
+              "dispatched": {
+                "organic": 140,
+                "scheduled": 84
+              },
+              "executed": {
+                "organic": 136,
+                "scheduled": 84
+              },
+              "completed": 198,
+              "min_token_balance": -3,
+              "organic_total": 142,
+              "total_admissions": 226,
+              "total_executions": 220
+            },
+            {
+              "organic": {
+                "new": 131,
+                "supersede": 0,
+                "requeue": 0
+              },
+              "organic_attempted": {
+                "new": 131,
+                "supersede": 0
+              },
+              "organic_closed_before_dispatch": 0,
+              "scheduled": {
+                "hot_intake": 28,
+                "normal_backfill": 59
+              },
+              "scheduled_offers": {
+                "hot_intake": 15,
+                "normal_backfill": 6
+              },
+              "offer_sequences_fully_shed": 5,
+              "shed": {
+                "scheduled_rate": 21,
+                "backpressure": 0
+              },
+              "dispatched": {
+                "organic": 132,
+                "scheduled": 87
+              },
+              "executed": {
+                "organic": 132,
+                "scheduled": 87
+              },
+              "completed": 211,
+              "min_token_balance": -2,
+              "organic_total": 131,
+              "total_admissions": 218,
+              "total_executions": 219
+            }
+          ],
+          "max_rolling_hour_admissions": 238,
+          "max_rolling_hour_window": {
+            "start_minute": 0.9699,
+            "end_minute": 60.92706666666667,
+            "organic": 144,
+            "scheduled": 94
+          },
+          "max_rolling_hour_executions": 238,
+          "max_rolling_hour_execution_window": {
+            "start_minute": 3.4699,
+            "end_minute": 63.42706666666667,
+            "organic": 144,
+            "scheduled": 94
+          },
+          "scheduled_allowance_rate_plus_burst": 244,
+          "min_global_token_balance": -3,
+          "max_scheduled_active": 30,
+          "scheduled_cap": 32,
+          "max_review_active": 48,
+          "stale_claims_after_supersede": 0,
+          "stale_completions_after_supersede": 0,
+          "supersede_skipped_no_active_owner": 0,
+          "dispatch_delay_minutes": {
+            "organic": {
+              "p50": 1.5,
+              "p95": 1.5,
+              "max": 1.5682
+            },
+            "scheduled": {
+              "p50": 0.016666666666666666,
+              "p95": 0.26666666666666666,
+              "max": 0.35
+            }
+          },
+          "throttle": {
+            "at": "2030-01-01T01:15:03.339Z",
+            "until": "2030-01-01T01:30:03.339Z",
+            "signalled_minute": 75.05565,
+            "stats_throttle_source": "review_completion",
+            "stats_throttle_recovery_at": "2030-01-01T01:30:03.339Z",
+            "scheduled_admitted_while_paused": 0,
+            "scheduled_shed_while_paused": 4,
+            "organic_admitted_while_paused": 31,
+            "scheduled_admitted_30_minutes_after_recovery": 53
+          }
+        },
+        "organic_spike_300_for_one_hour": {
+          "target_organic_per_hour": {
+            "new": [
+              130,
+              300,
+              130
+            ],
+            "supersede": 0,
+            "requeue": 0
+          },
+          "requeue_probability": 0,
+          "hours": [
+            {
+              "organic": {
+                "new": 142,
+                "supersede": 0,
+                "requeue": 0
+              },
+              "organic_attempted": {
+                "new": 142,
+                "supersede": 0
+              },
+              "organic_closed_before_dispatch": 0,
+              "scheduled": {
+                "hot_intake": 35,
+                "normal_backfill": 49
+              },
+              "scheduled_offers": {
+                "hot_intake": 15,
+                "normal_backfill": 5
+              },
+              "offer_sequences_fully_shed": 2,
+              "shed": {
+                "scheduled_rate": 20,
+                "backpressure": 0
+              },
+              "dispatched": {
+                "organic": 140,
+                "scheduled": 84
+              },
+              "executed": {
+                "organic": 136,
+                "scheduled": 84
+              },
+              "completed": 198,
+              "min_token_balance": -3,
+              "organic_total": 142,
+              "total_admissions": 226,
+              "total_executions": 220
+            },
+            {
+              "organic": {
+                "new": 320,
+                "supersede": 0,
+                "requeue": 0
+              },
+              "organic_attempted": {
+                "new": 320,
+                "supersede": 0
+              },
+              "organic_closed_before_dispatch": 0,
+              "scheduled": {
+                "hot_intake": 2,
+                "normal_backfill": 9
+              },
+              "scheduled_offers": {
+                "hot_intake": 15,
+                "normal_backfill": 6
+              },
+              "offer_sequences_fully_shed": 19,
+              "shed": {
+                "scheduled_rate": 21,
+                "backpressure": 0
+              },
+              "dispatched": {
+                "organic": 311,
+                "scheduled": 11
+              },
+              "executed": {
+                "organic": 306,
+                "scheduled": 11
+              },
+              "completed": 304,
+              "min_token_balance": -24,
+              "organic_total": 320,
+              "total_admissions": 331,
+              "total_executions": 317
+            },
+            {
+              "organic": {
+                "new": 130,
+                "supersede": 0,
+                "requeue": 0
+              },
+              "organic_attempted": {
+                "new": 130,
+                "supersede": 0
+              },
+              "organic_closed_before_dispatch": 0,
+              "scheduled": {
+                "hot_intake": 28,
+                "normal_backfill": 34
+              },
+              "scheduled_offers": {
+                "hot_intake": 15,
+                "normal_backfill": 6
+              },
+              "offer_sequences_fully_shed": 6,
+              "shed": {
+                "scheduled_rate": 21,
+                "backpressure": 0
+              },
+              "dispatched": {
+                "organic": 139,
+                "scheduled": 62
+              },
+              "executed": {
+                "organic": 144,
+                "scheduled": 62
+              },
+              "completed": 212,
+              "min_token_balance": -22,
+              "organic_total": 130,
+              "total_admissions": 192,
+              "total_executions": 206
+            }
+          ],
+          "max_rolling_hour_admissions": 332,
+          "max_rolling_hour_window": {
+            "start_minute": 59.934133333333335,
+            "end_minute": 119.92498333333333,
+            "organic": 321,
+            "scheduled": 11
+          },
+          "max_rolling_hour_executions": 328,
+          "max_rolling_hour_execution_window": {
+            "start_minute": 61.516666666666666,
+            "end_minute": 121.5163,
+            "organic": 317,
+            "scheduled": 11
+          },
+          "scheduled_allowance_rate_plus_burst": 244,
+          "min_global_token_balance": -24,
+          "max_scheduled_active": 30,
+          "scheduled_cap": 32,
+          "max_review_active": 64,
+          "stale_claims_after_supersede": 0,
+          "stale_completions_after_supersede": 0,
+          "supersede_skipped_no_active_owner": 0,
+          "dispatch_delay_minutes": {
+            "organic": {
+              "p50": 1.5,
+              "p95": 1.5049833333333333,
+              "max": 1.57995
+            },
+            "scheduled": {
+              "p50": 0.016666666666666666,
+              "p95": 0.26666666666666666,
+              "max": 0.35
+            }
+          }
+        },
+        "organic_400_above_target": {
+          "target_organic_per_hour": {
+            "new": 400,
+            "supersede": 0,
+            "requeue": 0
+          },
+          "requeue_probability": 0,
+          "hours": [
+            {
+              "organic": {
+                "new": 411,
+                "supersede": 0,
+                "requeue": 0
+              },
+              "organic_attempted": {
+                "new": 411,
+                "supersede": 0
+              },
+              "organic_closed_before_dispatch": 0,
+              "scheduled": {
+                "hot_intake": 6,
+                "normal_backfill": 0
+              },
+              "scheduled_offers": {
+                "hot_intake": 15,
+                "normal_backfill": 5
+              },
+              "offer_sequences_fully_shed": 19,
+              "shed": {
+                "scheduled_rate": 20,
+                "backpressure": 0
+              },
+              "dispatched": {
+                "organic": 404,
+                "scheduled": 6
+              },
+              "executed": {
+                "organic": 400,
+                "scheduled": 6
+              },
+              "completed": 352,
+              "min_token_balance": -24,
+              "organic_total": 411,
+              "total_admissions": 417,
+              "total_executions": 406
+            },
+            {
+              "organic": {
+                "new": 402,
+                "supersede": 0,
+                "requeue": 0
+              },
+              "organic_attempted": {
+                "new": 402,
+                "supersede": 0
+              },
+              "organic_closed_before_dispatch": 0,
+              "scheduled": {
+                "hot_intake": 0,
+                "normal_backfill": 0
+              },
+              "scheduled_offers": {
+                "hot_intake": 15,
+                "normal_backfill": 6
+              },
+              "offer_sequences_fully_shed": 21,
+              "shed": {
+                "scheduled_rate": 21,
+                "backpressure": 0
+              },
+              "dispatched": {
+                "organic": 399,
+                "scheduled": 0
+              },
+              "executed": {
+                "organic": 397,
+                "scheduled": 0
+              },
+              "completed": 407,
+              "min_token_balance": -24,
+              "organic_total": 402,
+              "total_admissions": 402,
+              "total_executions": 397
+            },
+            {
+              "organic": {
+                "new": 365,
+                "supersede": 0,
+                "requeue": 0
+              },
+              "organic_attempted": {
+                "new": 365,
+                "supersede": 0
+              },
+              "organic_closed_before_dispatch": 0,
+              "scheduled": {
+                "hot_intake": 0,
+                "normal_backfill": 0
+              },
+              "scheduled_offers": {
+                "hot_intake": 15,
+                "normal_backfill": 6
+              },
+              "offer_sequences_fully_shed": 21,
+              "shed": {
+                "scheduled_rate": 21,
+                "backpressure": 0
+              },
+              "dispatched": {
+                "organic": 367,
+                "scheduled": 0
+              },
+              "executed": {
+                "organic": 367,
+                "scheduled": 0
+              },
+              "completed": 372,
+              "min_token_balance": -24,
+              "organic_total": 365,
+              "total_admissions": 365,
+              "total_executions": 367
+            }
+          ],
+          "max_rolling_hour_admissions": 418,
+          "max_rolling_hour_window": {
+            "start_minute": 0.1319,
+            "end_minute": 60.1214,
+            "organic": 412,
+            "scheduled": 6
+          },
+          "max_rolling_hour_executions": 418,
+          "max_rolling_hour_execution_window": {
+            "start_minute": 2.6319,
+            "end_minute": 62.6214,
+            "organic": 412,
+            "scheduled": 6
+          },
+          "scheduled_allowance_rate_plus_burst": 244,
+          "min_global_token_balance": -24,
+          "max_scheduled_active": 6,
+          "scheduled_cap": 32,
+          "max_review_active": 64,
+          "stale_claims_after_supersede": 0,
+          "stale_completions_after_supersede": 0,
+          "supersede_skipped_no_active_owner": 0,
+          "dispatch_delay_minutes": {
+            "organic": {
+              "p50": 1.5,
+              "p95": 1.5693833333333334,
+              "max": 2.6921833333333334
+            },
+            "scheduled": {
+              "p50": 0.016666666666666666,
+              "p95": 0.1,
+              "max": 0.1
+            }
+          }
+        },
+        "organic_spike_then_recovery": {
+          "target_organic_per_hour": {
+            "new": 0,
+            "supersede": 0,
+            "requeue": 0
+          },
+          "requeue_probability": 0,
+          "hours": [
+            {
+              "organic": {
+                "new": 400,
+                "supersede": 0,
+                "requeue": 0
+              },
+              "organic_attempted": {
+                "new": 400,
+                "supersede": 0
+              },
+              "organic_closed_before_dispatch": 0,
+              "scheduled": {
+                "hot_intake": 35,
+                "normal_backfill": 63
+              },
+              "scheduled_offers": {
+                "hot_intake": 15,
+                "normal_backfill": 5
+              },
+              "offer_sequences_fully_shed": 2,
+              "shed": {
+                "scheduled_rate": 20,
+                "backpressure": 0
+              },
+              "dispatched": {
+                "organic": 341,
+                "scheduled": 31
+              },
+              "executed": {
+                "organic": 332,
+                "scheduled": 31
+              },
+              "completed": 309,
+              "min_token_balance": -21,
+              "organic_total": 400,
+              "total_admissions": 498,
+              "total_executions": 363
+            },
+            {
+              "organic": {
+                "new": 0,
+                "supersede": 0,
+                "requeue": 0
+              },
+              "organic_attempted": {
+                "new": 0,
+                "supersede": 0
+              },
+              "organic_closed_before_dispatch": 0,
+              "scheduled": {
+                "hot_intake": 30,
+                "normal_backfill": 96
+              },
+              "scheduled_offers": {
+                "hot_intake": 15,
+                "normal_backfill": 6
+              },
+              "offer_sequences_fully_shed": 0,
+              "shed": {
+                "scheduled_rate": 21,
+                "backpressure": 0
+              },
+              "dispatched": {
+                "organic": 59,
+                "scheduled": 193
+              },
+              "executed": {
+                "organic": 68,
+                "scheduled": 193
+              },
+              "completed": 305,
+              "min_token_balance": 9,
+              "organic_total": 0,
+              "total_admissions": 126,
+              "total_executions": 261
+            },
+            {
+              "organic": {
+                "new": 0,
+                "supersede": 0,
+                "requeue": 0
+              },
+              "organic_attempted": {
+                "new": 0,
+                "supersede": 0
+              },
+              "organic_closed_before_dispatch": 0,
+              "scheduled": {
+                "hot_intake": 30,
+                "normal_backfill": 96
+              },
+              "scheduled_offers": {
+                "hot_intake": 15,
+                "normal_backfill": 6
+              },
+              "offer_sequences_fully_shed": 0,
+              "shed": {
+                "scheduled_rate": 21,
+                "backpressure": 0
+              },
+              "dispatched": {
+                "organic": 0,
+                "scheduled": 126
+              },
+              "executed": {
+                "organic": 0,
+                "scheduled": 126
+              },
+              "completed": 125,
+              "min_token_balance": 9,
+              "organic_total": 0,
+              "total_admissions": 126,
+              "total_executions": 126
+            }
+          ],
+          "max_rolling_hour_admissions": 514,
+          "max_rolling_hour_window": {
+            "start_minute": 3.5,
+            "end_minute": 60.5,
+            "organic": 400,
+            "scheduled": 114
+          },
+          "max_rolling_hour_executions": 466,
+          "max_rolling_hour_execution_window": {
+            "start_minute": 22.5,
+            "end_minute": 82.19385,
+            "organic": 400,
+            "scheduled": 66
+          },
+          "scheduled_allowance_rate_plus_burst": 244,
+          "min_global_token_balance": -21,
+          "max_scheduled_active": 32,
+          "scheduled_cap": 32,
+          "max_review_active": 64,
+          "stale_claims_after_supersede": 0,
+          "stale_completions_after_supersede": 0,
+          "supersede_skipped_no_active_owner": 0,
+          "dispatch_delay_minutes": {
+            "organic": {
+              "p50": 22.49915,
+              "p95": 44.96941666666667,
+              "max": 47.11558333333333
+            },
+            "scheduled": {
+              "p50": 0.26666666666666666,
+              "p95": 36.2839,
+              "max": 39.42883333333333
+            }
+          },
+          "spike_recovery": {
+            "organic_admissions": 400,
+            "first_scheduled_admission_minute": 28.5
+          }
+        },
+        "production_2026_10_01": {
+          "target_organic_per_hour": {
+            "new": 215,
+            "supersede": 12,
+            "requeue": 6,
+            "closed_before_dispatch": "52%"
+          },
+          "requeue_probability": 0.055,
+          "closed_before_dispatch_fraction": 0.52,
+          "supersede_owner": "dispatching",
+          "hours": [
+            {
+              "organic": {
+                "new": 207,
+                "supersede": 5,
+                "requeue": 3
+              },
+              "organic_attempted": {
+                "new": 207,
+                "supersede": 5
+              },
+              "organic_closed_before_dispatch": 103,
+              "scheduled": {
+                "hot_intake": 23,
+                "normal_backfill": 13
+              },
+              "scheduled_offers": {
+                "hot_intake": 15,
+                "normal_backfill": 5
+              },
+              "offer_sequences_fully_shed": 7,
+              "shed": {
+                "scheduled_rate": 20,
+                "backpressure": 0
+              },
+              "dispatched": {
+                "organic": 109,
+                "scheduled": 36
+              },
+              "executed": {
+                "organic": 103,
+                "scheduled": 36
+              },
+              "completed": 126,
+              "min_token_balance": -9,
+              "organic_total": 215,
+              "total_admissions": 251,
+              "total_executions": 139
+            },
+            {
+              "organic": {
+                "new": 217,
+                "supersede": 9,
+                "requeue": 12
+              },
+              "organic_attempted": {
+                "new": 217,
+                "supersede": 9
+              },
+              "organic_closed_before_dispatch": 100,
+              "scheduled": {
+                "hot_intake": 0,
+                "normal_backfill": 0
+              },
+              "scheduled_offers": {
+                "hot_intake": 15,
+                "normal_backfill": 6
+              },
+              "offer_sequences_fully_shed": 21,
+              "shed": {
+                "scheduled_rate": 21,
+                "backpressure": 0
+              },
+              "dispatched": {
+                "organic": 139,
+                "scheduled": 0
+              },
+              "executed": {
+                "organic": 127,
+                "scheduled": 0
+              },
+              "completed": 126,
+              "min_token_balance": -24,
+              "organic_total": 238,
+              "total_admissions": 238,
+              "total_executions": 127
+            },
+            {
+              "organic": {
+                "new": 224,
+                "supersede": 10,
+                "requeue": 6
+              },
+              "organic_attempted": {
+                "new": 224,
+                "supersede": 10
+              },
+              "organic_closed_before_dispatch": 120,
+              "scheduled": {
+                "hot_intake": 0,
+                "normal_backfill": 0
+              },
+              "scheduled_offers": {
+                "hot_intake": 15,
+                "normal_backfill": 6
+              },
+              "offer_sequences_fully_shed": 21,
+              "shed": {
+                "scheduled_rate": 21,
+                "backpressure": 0
+              },
+              "dispatched": {
+                "organic": 118,
+                "scheduled": 0
+              },
+              "executed": {
+                "organic": 107,
+                "scheduled": 0
+              },
+              "completed": 106,
+              "min_token_balance": -24,
+              "organic_total": 240,
+              "total_admissions": 240,
+              "total_executions": 107
+            }
+          ],
+          "max_rolling_hour_admissions": 259,
+          "max_rolling_hour_window": {
+            "start_minute": 80.35718333333334,
+            "end_minute": 140.3252,
+            "organic": 259,
+            "scheduled": 0
+          },
+          "max_rolling_hour_executions": 143,
+          "max_rolling_hour_execution_window": {
+            "start_minute": 3.1378833333333334,
+            "end_minute": 61.884,
+            "organic": 107,
+            "scheduled": 36
+          },
+          "scheduled_allowance_rate_plus_burst": 244,
+          "min_global_token_balance": -24,
+          "max_scheduled_active": 15,
+          "scheduled_cap": 32,
+          "max_review_active": 30,
+          "stale_claims_after_supersede": 24,
+          "stale_completions_after_supersede": 0,
+          "supersede_skipped_no_active_owner": 2,
+          "dispatch_delay_minutes": {
+            "organic": {
+              "p50": 1.5,
+              "p95": 1.5043833333333334,
+              "max": 1.5473166666666667
+            },
+            "scheduled": {
+              "p50": 0.016666666666666666,
+              "p95": 0.18333333333333332,
+              "max": 0.18333333333333332
+            }
+          }
+        }
+      },
+      "reconciliation": {
+        "executions": 2,
+        "total_debits": 2,
+        "charged_steps": {
+          "admission": 1,
+          "reconcile_requeue": 1
+        },
+        "replay_debits": 0
+      }
+    },
+    "candidate": {
+      "source_sha256": {
+        "dashboard/exact-review-queue.ts": "b527afa1465b4a0b984b548dd380a4689e310e41ba78cc3ba5be4b5540c65123",
+        "dashboard/wrangler.toml": "b059e1e08b4667df581345b2d3bc560089585a5268838cd0cd0ed111d76987cc",
+        ".github/workflows/sweep.yml": "60ed1e5b2130a7522e404cd0dfb358ae7cd60d819652a367711f56bc619801f1"
+      },
+      "config": {
+        "EXACT_REVIEW_TARGET_RATE_PER_HOUR": "220",
+        "EXACT_REVIEW_TARGET_BURST": "24",
+        "EXACT_REVIEW_HOT_INTAKE_RATE_PER_HOUR": "30",
+        "EXACT_REVIEW_SCHEDULED_MAX_CONCURRENT": "32",
+        "EXACT_REVIEW_QUEUE_MAX_CONCURRENT": "80",
+        "EXACT_REVIEW_PENDING_SOFT_LIMIT": "600"
+      },
+      "cadence": {
+        "hotDirect": "*/5 * * * *",
+        "normalDirect": "9/20 * * * *",
+        "hotFanout": "4/20 * * * *",
+        "normalFanout": "14/20 * * * *"
+      },
+      "scenarios": {
+        "organic_130_new_keys": {
+          "target_organic_per_hour": {
+            "new": 130,
+            "supersede": 0,
+            "requeue": 0
+          },
+          "requeue_probability": 0,
+          "hours": [
+            {
+              "organic": {
+                "new": 142,
+                "supersede": 0,
+                "requeue": 0
+              },
+              "organic_attempted": {
+                "new": 142,
+                "supersede": 0
+              },
+              "organic_closed_before_dispatch": 0,
+              "scheduled": {
+                "hot_intake": 35,
+                "normal_backfill": 50
+              },
+              "scheduled_offers": {
+                "hot_intake": 15,
+                "normal_backfill": 5
+              },
+              "offer_sequences_fully_shed": 1,
+              "shed": {
+                "scheduled_rate": 20,
+                "backpressure": 0
+              },
+              "dispatched": {
+                "organic": 140,
+                "scheduled": 85
+              },
+              "executed": {
+                "organic": 136,
+                "scheduled": 85
+              },
+              "completed": 201,
+              "min_token_balance": -4,
+              "organic_total": 142,
+              "total_admissions": 227,
+              "total_executions": 221
+            },
+            {
+              "organic": {
+                "new": 131,
+                "supersede": 0,
+                "requeue": 0
+              },
+              "organic_attempted": {
+                "new": 131,
+                "supersede": 0
+              },
+              "organic_closed_before_dispatch": 0,
+              "scheduled": {
+                "hot_intake": 30,
+                "normal_backfill": 66
+              },
+              "scheduled_offers": {
+                "hot_intake": 15,
+                "normal_backfill": 6
+              },
+              "offer_sequences_fully_shed": 1,
+              "shed": {
+                "scheduled_rate": 21,
+                "backpressure": 0
+              },
+              "dispatched": {
+                "organic": 131,
+                "scheduled": 96
+              },
+              "executed": {
+                "organic": 131,
+                "scheduled": 96
+              },
+              "completed": 219,
+              "min_token_balance": -5,
+              "organic_total": 131,
+              "total_admissions": 227,
+              "total_executions": 227
+            },
+            {
+              "organic": {
+                "new": 138,
+                "supersede": 0,
+                "requeue": 0
+              },
+              "organic_attempted": {
+                "new": 138,
+                "supersede": 0
+              },
+              "organic_closed_before_dispatch": 0,
+              "scheduled": {
+                "hot_intake": 29,
+                "normal_backfill": 53
+              },
+              "scheduled_offers": {
+                "hot_intake": 15,
+                "normal_backfill": 6
+              },
+              "offer_sequences_fully_shed": 2,
+              "shed": {
+                "scheduled_rate": 21,
+                "backpressure": 0
+              },
+              "dispatched": {
+                "organic": 134,
+                "scheduled": 82
+              },
+              "executed": {
+                "organic": 138,
+                "scheduled": 82
+              },
+              "completed": 226,
+              "min_token_balance": -3,
+              "organic_total": 138,
+              "total_admissions": 220,
+              "total_executions": 220
+            }
+          ],
+          "max_rolling_hour_admissions": 240,
+          "max_rolling_hour_window": {
+            "start_minute": 0.9699,
+            "end_minute": 60.92706666666667,
+            "organic": 144,
+            "scheduled": 96
+          },
+          "max_rolling_hour_executions": 240,
+          "max_rolling_hour_execution_window": {
+            "start_minute": 3.4699,
+            "end_minute": 63.42706666666667,
+            "organic": 144,
+            "scheduled": 96
+          },
+          "scheduled_allowance_rate_plus_burst": 244,
+          "min_global_token_balance": -5,
+          "max_scheduled_active": 30,
+          "scheduled_cap": 32,
+          "max_review_active": 48,
+          "stale_claims_after_supersede": 0,
+          "stale_completions_after_supersede": 0,
+          "supersede_skipped_no_active_owner": 0,
+          "dispatch_delay_minutes": {
+            "organic": {
+              "p50": 1.5,
+              "p95": 1.5,
+              "max": 1.57675
+            },
+            "scheduled": {
+              "p50": 0.016666666666666666,
+              "p95": 0.26666666666666666,
+              "max": 0.35
+            }
+          }
+        },
+        "organic_180_new_keys": {
+          "target_organic_per_hour": {
+            "new": 180,
+            "supersede": 0,
+            "requeue": 0
+          },
+          "requeue_probability": 0,
+          "hours": [
+            {
+              "organic": {
+                "new": 165,
+                "supersede": 0,
+                "requeue": 0
+              },
+              "organic_attempted": {
+                "new": 165,
+                "supersede": 0
+              },
+              "organic_closed_before_dispatch": 0,
+              "scheduled": {
+                "hot_intake": 35,
+                "normal_backfill": 32
+              },
+              "scheduled_offers": {
+                "hot_intake": 15,
+                "normal_backfill": 5
+              },
+              "offer_sequences_fully_shed": 3,
+              "shed": {
+                "scheduled_rate": 20,
+                "backpressure": 0
+              },
+              "dispatched": {
+                "organic": 163,
+                "scheduled": 67
+              },
+              "executed": {
+                "organic": 160,
+                "scheduled": 67
+              },
+              "completed": 204,
+              "min_token_balance": -2,
+              "organic_total": 165,
+              "total_admissions": 232,
+              "total_executions": 227
+            },
+            {
+              "organic": {
+                "new": 180,
+                "supersede": 0,
+                "requeue": 0
+              },
+              "organic_attempted": {
+                "new": 180,
+                "supersede": 0
+              },
+              "organic_closed_before_dispatch": 0,
+              "scheduled": {
+                "hot_intake": 29,
+                "normal_backfill": 19
+              },
+              "scheduled_offers": {
+                "hot_intake": 15,
+                "normal_backfill": 6
+              },
+              "offer_sequences_fully_shed": 4,
+              "shed": {
+                "scheduled_rate": 21,
+                "backpressure": 0
+              },
+              "dispatched": {
+                "organic": 175,
+                "scheduled": 48
+              },
+              "executed": {
+                "organic": 177,
+                "scheduled": 48
+              },
+              "completed": 221,
+              "min_token_balance": -2,
+              "organic_total": 180,
+              "total_admissions": 228,
+              "total_executions": 225
+            },
+            {
+              "organic": {
+                "new": 187,
+                "supersede": 0,
+                "requeue": 0
+              },
+              "organic_attempted": {
+                "new": 187,
+                "supersede": 0
+              },
+              "organic_closed_before_dispatch": 0,
+              "scheduled": {
+                "hot_intake": 23,
+                "normal_backfill": 9
+              },
+              "scheduled_offers": {
+                "hot_intake": 15,
+                "normal_backfill": 6
+              },
+              "offer_sequences_fully_shed": 9,
+              "shed": {
+                "scheduled_rate": 21,
+                "backpressure": 0
+              },
+              "dispatched": {
+                "organic": 188,
+                "scheduled": 32
+              },
+              "executed": {
+                "organic": 187,
+                "scheduled": 32
+              },
+              "completed": 223,
+              "min_token_balance": -5,
+              "organic_total": 187,
+              "total_admissions": 219,
+              "total_executions": 219
+            }
+          ],
+          "max_rolling_hour_admissions": 240,
+          "max_rolling_hour_window": {
+            "start_minute": 10.37005,
+            "end_minute": 70.26348333333334,
+            "organic": 173,
+            "scheduled": 67
+          },
+          "max_rolling_hour_executions": 240,
+          "max_rolling_hour_execution_window": {
+            "start_minute": 12.87005,
+            "end_minute": 72.77291666666666,
+            "organic": 173,
+            "scheduled": 67
+          },
+          "scheduled_allowance_rate_plus_burst": 244,
+          "min_global_token_balance": -5,
+          "max_scheduled_active": 23,
+          "scheduled_cap": 32,
+          "max_review_active": 46,
+          "stale_claims_after_supersede": 0,
+          "stale_completions_after_supersede": 0,
+          "supersede_skipped_no_active_owner": 0,
+          "dispatch_delay_minutes": {
+            "organic": {
+              "p50": 1.5,
+              "p95": 1.5080666666666667,
+              "max": 1.5727166666666668
+            },
+            "scheduled": {
+              "p50": 0.016666666666666666,
+              "p95": 0.18333333333333332,
+              "max": 0.35
+            }
+          }
+        },
+        "organic_130_with_30pct_supersede_requeue": {
+          "target_organic_per_hour": {
+            "new": 91,
+            "supersede": 19.5,
+            "requeue": 19.5
+          },
+          "requeue_probability": 0.1765,
+          "hours": [
+            {
+              "organic": {
+                "new": 83,
+                "supersede": 21,
+                "requeue": 13
+              },
+              "organic_attempted": {
+                "new": 83,
+                "supersede": 21
+              },
+              "organic_closed_before_dispatch": 0,
+              "scheduled": {
+                "hot_intake": 35,
+                "normal_backfill": 66
+              },
+              "scheduled_offers": {
+                "hot_intake": 15,
+                "normal_backfill": 5
+              },
+              "offer_sequences_fully_shed": 1,
+              "shed": {
+                "scheduled_rate": 20,
+                "backpressure": 0
+              },
+              "dispatched": {
+                "organic": 115,
+                "scheduled": 101
+              },
+              "executed": {
+                "organic": 108,
+                "scheduled": 101
+              },
+              "completed": 165,
+              "min_token_balance": 0,
+              "organic_total": 117,
+              "total_admissions": 218,
+              "total_executions": 209
+            },
+            {
+              "organic": {
+                "new": 89,
+                "supersede": 18,
+                "requeue": 14
+              },
+              "organic_attempted": {
+                "new": 89,
+                "supersede": 18
+              },
+              "organic_closed_before_dispatch": 0,
+              "scheduled": {
+                "hot_intake": 30,
+                "normal_backfill": 78
+              },
+              "scheduled_offers": {
+                "hot_intake": 15,
+                "normal_backfill": 6
+              },
+              "offer_sequences_fully_shed": 1,
+              "shed": {
+                "scheduled_rate": 21,
+                "backpressure": 0
+              },
+              "dispatched": {
+                "organic": 122,
+                "scheduled": 108
+              },
+              "executed": {
+                "organic": 121,
+                "scheduled": 108
+              },
+              "completed": 218,
+              "min_token_balance": -3,
+              "organic_total": 121,
+              "total_admissions": 229,
+              "total_executions": 229
+            },
+            {
+              "organic": {
+                "new": 101,
+                "supersede": 19,
+                "requeue": 18
+              },
+              "organic_attempted": {
+                "new": 101,
+                "supersede": 19
+              },
+              "organic_closed_before_dispatch": 0,
+              "scheduled": {
+                "hot_intake": 30,
+                "normal_backfill": 63
+              },
+              "scheduled_offers": {
+                "hot_intake": 15,
+                "normal_backfill": 6
+              },
+              "offer_sequences_fully_shed": 0,
+              "shed": {
+                "scheduled_rate": 21,
+                "backpressure": 0
+              },
+              "dispatched": {
+                "organic": 132,
+                "scheduled": 93
+              },
+              "executed": {
+                "organic": 129,
+                "scheduled": 93
+              },
+              "completed": 196,
+              "min_token_balance": 0,
+              "organic_total": 138,
+              "total_admissions": 231,
+              "total_executions": 222
+            }
+          ],
+          "max_rolling_hour_admissions": 243,
+          "max_rolling_hour_window": {
+            "start_minute": 52.34495,
+            "end_minute": 112.07446666666667,
+            "organic": 129,
+            "scheduled": 114
+          },
+          "max_rolling_hour_executions": 236,
+          "max_rolling_hour_execution_window": {
+            "start_minute": 53.516666666666666,
+            "end_minute": 113.32028333333334,
+            "organic": 122,
+            "scheduled": 114
+          },
+          "scheduled_allowance_rate_plus_burst": 244,
+          "min_global_token_balance": -3,
+          "max_scheduled_active": 31,
+          "scheduled_cap": 32,
+          "max_review_active": 45,
+          "stale_claims_after_supersede": 8,
+          "stale_completions_after_supersede": 50,
+          "supersede_skipped_no_active_owner": 2,
+          "dispatch_delay_minutes": {
+            "organic": {
+              "p50": 1.5,
+              "p95": 1.5,
+              "max": 1.5817333333333334
+            },
+            "scheduled": {
+              "p50": 0.016666666666666666,
+              "p95": 0.26666666666666666,
+              "max": 0.35
+            }
+          }
+        },
+        "production_like_today": {
+          "target_organic_per_hour": {
+            "new": 45,
+            "supersede": 67.5,
+            "requeue": 67.5
+          },
+          "requeue_probability": 0.6,
+          "hours": [
+            {
+              "organic": {
+                "new": 36,
+                "supersede": 57,
+                "requeue": 33
+              },
+              "organic_attempted": {
+                "new": 36,
+                "supersede": 57
+              },
+              "organic_closed_before_dispatch": 0,
+              "scheduled": {
+                "hot_intake": 35,
+                "normal_backfill": 70
+              },
+              "scheduled_offers": {
+                "hot_intake": 15,
+                "normal_backfill": 5
+              },
+              "offer_sequences_fully_shed": 0,
+              "shed": {
+                "scheduled_rate": 20,
+                "backpressure": 0
+              },
+              "dispatched": {
+                "organic": 122,
+                "scheduled": 105
+              },
+              "executed": {
+                "organic": 102,
+                "scheduled": 105
+              },
+              "completed": 145,
+              "min_token_balance": 0,
+              "organic_total": 126,
+              "total_admissions": 231,
+              "total_executions": 207
+            },
+            {
+              "organic": {
+                "new": 39,
+                "supersede": 61,
+                "requeue": 38
+              },
+              "organic_attempted": {
+                "new": 39,
+                "supersede": 61
+              },
+              "organic_closed_before_dispatch": 0,
+              "scheduled": {
+                "hot_intake": 30,
+                "normal_backfill": 76
+              },
+              "scheduled_offers": {
+                "hot_intake": 15,
+                "normal_backfill": 6
+              },
+              "offer_sequences_fully_shed": 1,
+              "shed": {
+                "scheduled_rate": 21,
+                "backpressure": 0
+              },
+              "dispatched": {
+                "organic": 141,
+                "scheduled": 106
+              },
+              "executed": {
+                "organic": 121,
+                "scheduled": 106
+              },
+              "completed": 182,
+              "min_token_balance": 0,
+              "organic_total": 138,
+              "total_admissions": 244,
+              "total_executions": 227
+            },
+            {
+              "organic": {
+                "new": 34,
+                "supersede": 62,
+                "requeue": 45
+              },
+              "organic_attempted": {
+                "new": 34,
+                "supersede": 62
+              },
+              "organic_closed_before_dispatch": 0,
+              "scheduled": {
+                "hot_intake": 30,
+                "normal_backfill": 46
+              },
+              "scheduled_offers": {
+                "hot_intake": 15,
+                "normal_backfill": 6
+              },
+              "offer_sequences_fully_shed": 3,
+              "shed": {
+                "scheduled_rate": 21,
+                "backpressure": 0
+              },
+              "dispatched": {
+                "organic": 142,
+                "scheduled": 76
+              },
+              "executed": {
+                "organic": 144,
+                "scheduled": 76
+              },
+              "completed": 168,
+              "min_token_balance": -2,
+              "organic_total": 141,
+              "total_admissions": 217,
+              "total_executions": 220
+            }
+          ],
+          "max_rolling_hour_admissions": 249,
+          "max_rolling_hour_window": {
+            "start_minute": 2.8892166666666665,
+            "end_minute": 62.37695,
+            "organic": 132,
+            "scheduled": 117
+          },
+          "max_rolling_hour_executions": 234,
+          "max_rolling_hour_execution_window": {
+            "start_minute": 61.09278333333334,
+            "end_minute": 121.05501666666666,
+            "organic": 128,
+            "scheduled": 106
+          },
+          "scheduled_allowance_rate_plus_burst": 244,
+          "min_global_token_balance": -2,
+          "max_scheduled_active": 31,
+          "scheduled_cap": 32,
+          "max_review_active": 41,
+          "stale_claims_after_supersede": 38,
+          "stale_completions_after_supersede": 139,
+          "supersede_skipped_no_active_owner": 3,
+          "dispatch_delay_minutes": {
+            "organic": {
+              "p50": 0.016666666666666666,
+              "p95": 1.5,
+              "max": 1.5761
+            },
+            "scheduled": {
+              "p50": 0.016666666666666666,
+              "p95": 0.26666666666666666,
+              "max": 0.35
+            }
+          }
+        },
+        "production_like_after_lane_a": {
+          "target_organic_per_hour": {
+            "new": 45,
+            "supersede": 35,
+            "requeue": 35
+          },
+          "requeue_probability": 0.4375,
+          "hours": [
+            {
+              "organic": {
+                "new": 36,
+                "supersede": 34,
+                "requeue": 29
+              },
+              "organic_attempted": {
+                "new": 36,
+                "supersede": 34
+              },
+              "organic_closed_before_dispatch": 0,
+              "scheduled": {
+                "hot_intake": 35,
+                "normal_backfill": 80
+              },
+              "scheduled_offers": {
+                "hot_intake": 15,
+                "normal_backfill": 5
+              },
+              "offer_sequences_fully_shed": 0,
+              "shed": {
+                "scheduled_rate": 20,
+                "backpressure": 0
+              },
+              "dispatched": {
+                "organic": 96,
+                "scheduled": 115
+              },
+              "executed": {
+                "organic": 85,
+                "scheduled": 115
+              },
+              "completed": 150,
+              "min_token_balance": 5,
+              "organic_total": 99,
+              "total_admissions": 214,
+              "total_executions": 200
+            },
+            {
+              "organic": {
+                "new": 39,
+                "supersede": 29,
+                "requeue": 16
+              },
+              "organic_attempted": {
+                "new": 39,
+                "supersede": 29
+              },
+              "organic_closed_before_dispatch": 0,
+              "scheduled": {
+                "hot_intake": 30,
+                "normal_backfill": 96
+              },
+              "scheduled_offers": {
+                "hot_intake": 15,
+                "normal_backfill": 6
+              },
+              "offer_sequences_fully_shed": 0,
+              "shed": {
+                "scheduled_rate": 21,
+                "backpressure": 0
+              },
+              "dispatched": {
+                "organic": 87,
+                "scheduled": 126
+              },
+              "executed": {
+                "organic": 81,
+                "scheduled": 126
+              },
+              "completed": 183,
+              "min_token_balance": 5,
+              "organic_total": 84,
+              "total_admissions": 210,
+              "total_executions": 207
+            },
+            {
+              "organic": {
+                "new": 34,
+                "supersede": 24,
+                "requeue": 28
+              },
+              "organic_attempted": {
+                "new": 34,
+                "supersede": 24
+              },
+              "organic_closed_before_dispatch": 0,
+              "scheduled": {
+                "hot_intake": 30,
+                "normal_backfill": 96
+              },
+              "scheduled_offers": {
+                "hot_intake": 15,
+                "normal_backfill": 6
+              },
+              "offer_sequences_fully_shed": 0,
+              "shed": {
+                "scheduled_rate": 21,
+                "backpressure": 0
+              },
+              "dispatched": {
+                "organic": 86,
+                "scheduled": 126
+              },
+              "executed": {
+                "organic": 88,
+                "scheduled": 126
+              },
+              "completed": 199,
+              "min_token_balance": 1,
+              "organic_total": 86,
+              "total_admissions": 212,
+              "total_executions": 214
+            }
+          ],
+          "max_rolling_hour_admissions": 231,
+          "max_rolling_hour_window": {
+            "start_minute": 3.1733833333333332,
+            "end_minute": 63.03415,
+            "organic": 100,
+            "scheduled": 131
+          },
+          "max_rolling_hour_executions": 222,
+          "max_rolling_hour_execution_window": {
+            "start_minute": 11.485133333333334,
+            "end_minute": 69.9607,
+            "organic": 96,
+            "scheduled": 126
+          },
+          "scheduled_allowance_rate_plus_burst": 244,
+          "min_global_token_balance": 1,
+          "max_scheduled_active": 31,
+          "scheduled_cap": 32,
+          "max_review_active": 41,
+          "stale_claims_after_supersede": 15,
+          "stale_completions_after_supersede": 72,
+          "supersede_skipped_no_active_owner": 1,
+          "dispatch_delay_minutes": {
+            "organic": {
+              "p50": 1.5,
+              "p95": 1.5,
+              "max": 1.5761
+            },
+            "scheduled": {
+              "p50": 0.1,
+              "p95": 0.26666666666666666,
+              "max": 0.35
+            }
+          }
+        },
+        "throttle_organic_130": {
+          "target_organic_per_hour": {
+            "new": 130,
+            "supersede": 0,
+            "requeue": 0
+          },
+          "requeue_probability": 0,
+          "hours": [
+            {
+              "organic": {
+                "new": 142,
+                "supersede": 0,
+                "requeue": 0
+              },
+              "organic_attempted": {
+                "new": 142,
+                "supersede": 0
+              },
+              "organic_closed_before_dispatch": 0,
+              "scheduled": {
+                "hot_intake": 35,
+                "normal_backfill": 50
+              },
+              "scheduled_offers": {
+                "hot_intake": 15,
+                "normal_backfill": 5
+              },
+              "offer_sequences_fully_shed": 1,
+              "shed": {
+                "scheduled_rate": 20,
+                "backpressure": 0
+              },
+              "dispatched": {
+                "organic": 140,
+                "scheduled": 85
+              },
+              "executed": {
+                "organic": 136,
+                "scheduled": 85
+              },
+              "completed": 201,
+              "min_token_balance": -4,
+              "organic_total": 142,
+              "total_admissions": 227,
+              "total_executions": 221
+            },
+            {
+              "organic": {
+                "new": 131,
+                "supersede": 0,
+                "requeue": 0
+              },
+              "organic_attempted": {
+                "new": 131,
+                "supersede": 0
+              },
+              "organic_closed_before_dispatch": 0,
+              "scheduled": {
+                "hot_intake": 29,
+                "normal_backfill": 58
+              },
+              "scheduled_offers": {
+                "hot_intake": 15,
+                "normal_backfill": 6
+              },
+              "offer_sequences_fully_shed": 5,
+              "shed": {
+                "scheduled_rate": 21,
+                "backpressure": 0
+              },
+              "dispatched": {
+                "organic": 132,
+                "scheduled": 87
+              },
+              "executed": {
+                "organic": 132,
+                "scheduled": 87
+              },
+              "completed": 212,
+              "min_token_balance": -5,
+              "organic_total": 131,
+              "total_admissions": 218,
+              "total_executions": 219
+            }
+          ],
+          "max_rolling_hour_admissions": 240,
+          "max_rolling_hour_window": {
+            "start_minute": 0.9699,
+            "end_minute": 60.92706666666667,
+            "organic": 144,
+            "scheduled": 96
+          },
+          "max_rolling_hour_executions": 240,
+          "max_rolling_hour_execution_window": {
+            "start_minute": 3.4699,
+            "end_minute": 63.42706666666667,
+            "organic": 144,
+            "scheduled": 96
+          },
+          "scheduled_allowance_rate_plus_burst": 244,
+          "min_global_token_balance": -5,
+          "max_scheduled_active": 30,
+          "scheduled_cap": 32,
+          "max_review_active": 49,
+          "stale_claims_after_supersede": 0,
+          "stale_completions_after_supersede": 0,
+          "supersede_skipped_no_active_owner": 0,
+          "dispatch_delay_minutes": {
+            "organic": {
+              "p50": 1.5,
+              "p95": 1.5,
+              "max": 1.57675
+            },
+            "scheduled": {
+              "p50": 0.016666666666666666,
+              "p95": 0.26666666666666666,
+              "max": 0.35
+            }
+          },
+          "throttle": {
+            "at": "2030-01-01T01:15:03.339Z",
+            "until": "2030-01-01T01:30:03.339Z",
+            "signalled_minute": 75.05565,
+            "stats_throttle_source": "review_completion",
+            "stats_throttle_recovery_at": "2030-01-01T01:30:03.339Z",
+            "scheduled_admitted_while_paused": 0,
+            "scheduled_shed_while_paused": 4,
+            "organic_admitted_while_paused": 31,
+            "scheduled_admitted_30_minutes_after_recovery": 53
+          }
+        },
+        "organic_spike_300_for_one_hour": {
+          "target_organic_per_hour": {
+            "new": [
+              130,
+              300,
+              130
+            ],
+            "supersede": 0,
+            "requeue": 0
+          },
+          "requeue_probability": 0,
+          "hours": [
+            {
+              "organic": {
+                "new": 142,
+                "supersede": 0,
+                "requeue": 0
+              },
+              "organic_attempted": {
+                "new": 142,
+                "supersede": 0
+              },
+              "organic_closed_before_dispatch": 0,
+              "scheduled": {
+                "hot_intake": 35,
+                "normal_backfill": 50
+              },
+              "scheduled_offers": {
+                "hot_intake": 15,
+                "normal_backfill": 5
+              },
+              "offer_sequences_fully_shed": 1,
+              "shed": {
+                "scheduled_rate": 20,
+                "backpressure": 0
+              },
+              "dispatched": {
+                "organic": 140,
+                "scheduled": 85
+              },
+              "executed": {
+                "organic": 136,
+                "scheduled": 85
+              },
+              "completed": 201,
+              "min_token_balance": -4,
+              "organic_total": 142,
+              "total_admissions": 227,
+              "total_executions": 221
+            },
+            {
+              "organic": {
+                "new": 320,
+                "supersede": 0,
+                "requeue": 0
+              },
+              "organic_attempted": {
+                "new": 320,
+                "supersede": 0
+              },
+              "organic_closed_before_dispatch": 0,
+              "scheduled": {
+                "hot_intake": 3,
+                "normal_backfill": 11
+              },
+              "scheduled_offers": {
+                "hot_intake": 15,
+                "normal_backfill": 6
+              },
+              "offer_sequences_fully_shed": 19,
+              "shed": {
+                "scheduled_rate": 21,
+                "backpressure": 0
+              },
+              "dispatched": {
+                "organic": 311,
+                "scheduled": 14
+              },
+              "executed": {
+                "organic": 306,
+                "scheduled": 14
+              },
+              "completed": 305,
+              "min_token_balance": -24,
+              "organic_total": 320,
+              "total_admissions": 334,
+              "total_executions": 320
+            },
+            {
+              "organic": {
+                "new": 130,
+                "supersede": 0,
+                "requeue": 0
+              },
+              "organic_attempted": {
+                "new": 130,
+                "supersede": 0
+              },
+              "organic_closed_before_dispatch": 0,
+              "scheduled": {
+                "hot_intake": 25,
+                "normal_backfill": 32
+              },
+              "scheduled_offers": {
+                "hot_intake": 15,
+                "normal_backfill": 6
+              },
+              "offer_sequences_fully_shed": 8,
+              "shed": {
+                "scheduled_rate": 21,
+                "backpressure": 0
+              },
+              "dispatched": {
+                "organic": 139,
+                "scheduled": 57
+              },
+              "executed": {
+                "organic": 144,
+                "scheduled": 57
+              },
+              "completed": 205,
+              "min_token_balance": -24,
+              "organic_total": 130,
+              "total_admissions": 187,
+              "total_executions": 201
+            }
+          ],
+          "max_rolling_hour_admissions": 335,
+          "max_rolling_hour_window": {
+            "start_minute": 59.934133333333335,
+            "end_minute": 119.92498333333333,
+            "organic": 321,
+            "scheduled": 14
+          },
+          "max_rolling_hour_executions": 331,
+          "max_rolling_hour_execution_window": {
+            "start_minute": 61.516666666666666,
+            "end_minute": 121.5163,
+            "organic": 317,
+            "scheduled": 14
+          },
+          "scheduled_allowance_rate_plus_burst": 244,
+          "min_global_token_balance": -24,
+          "max_scheduled_active": 30,
+          "scheduled_cap": 32,
+          "max_review_active": 64,
+          "stale_claims_after_supersede": 0,
+          "stale_completions_after_supersede": 0,
+          "supersede_skipped_no_active_owner": 0,
+          "dispatch_delay_minutes": {
+            "organic": {
+              "p50": 1.5,
+              "p95": 1.5052666666666668,
+              "max": 1.57675
+            },
+            "scheduled": {
+              "p50": 0.016666666666666666,
+              "p95": 0.26666666666666666,
+              "max": 0.35
+            }
+          }
+        },
+        "organic_400_above_target": {
+          "target_organic_per_hour": {
+            "new": 400,
+            "supersede": 0,
+            "requeue": 0
+          },
+          "requeue_probability": 0,
+          "hours": [
+            {
+              "organic": {
+                "new": 411,
+                "supersede": 0,
+                "requeue": 0
+              },
+              "organic_attempted": {
+                "new": 411,
+                "supersede": 0
+              },
+              "organic_closed_before_dispatch": 0,
+              "scheduled": {
+                "hot_intake": 8,
+                "normal_backfill": 0
+              },
+              "scheduled_offers": {
+                "hot_intake": 15,
+                "normal_backfill": 5
+              },
+              "offer_sequences_fully_shed": 19,
+              "shed": {
+                "scheduled_rate": 20,
+                "backpressure": 0
+              },
+              "dispatched": {
+                "organic": 404,
+                "scheduled": 8
+              },
+              "executed": {
+                "organic": 400,
+                "scheduled": 8
+              },
+              "completed": 354,
+              "min_token_balance": -24,
+              "organic_total": 411,
+              "total_admissions": 419,
+              "total_executions": 408
+            },
+            {
+              "organic": {
+                "new": 402,
+                "supersede": 0,
+                "requeue": 0
+              },
+              "organic_attempted": {
+                "new": 402,
+                "supersede": 0
+              },
+              "organic_closed_before_dispatch": 0,
+              "scheduled": {
+                "hot_intake": 0,
+                "normal_backfill": 0
+              },
+              "scheduled_offers": {
+                "hot_intake": 15,
+                "normal_backfill": 6
+              },
+              "offer_sequences_fully_shed": 21,
+              "shed": {
+                "scheduled_rate": 21,
+                "backpressure": 0
+              },
+              "dispatched": {
+                "organic": 399,
+                "scheduled": 0
+              },
+              "executed": {
+                "organic": 397,
+                "scheduled": 0
+              },
+              "completed": 407,
+              "min_token_balance": -24,
+              "organic_total": 402,
+              "total_admissions": 402,
+              "total_executions": 397
+            },
+            {
+              "organic": {
+                "new": 365,
+                "supersede": 0,
+                "requeue": 0
+              },
+              "organic_attempted": {
+                "new": 365,
+                "supersede": 0
+              },
+              "organic_closed_before_dispatch": 0,
+              "scheduled": {
+                "hot_intake": 0,
+                "normal_backfill": 0
+              },
+              "scheduled_offers": {
+                "hot_intake": 15,
+                "normal_backfill": 6
+              },
+              "offer_sequences_fully_shed": 21,
+              "shed": {
+                "scheduled_rate": 21,
+                "backpressure": 0
+              },
+              "dispatched": {
+                "organic": 367,
+                "scheduled": 0
+              },
+              "executed": {
+                "organic": 367,
+                "scheduled": 0
+              },
+              "completed": 372,
+              "min_token_balance": -24,
+              "organic_total": 365,
+              "total_admissions": 365,
+              "total_executions": 367
+            }
+          ],
+          "max_rolling_hour_admissions": 420,
+          "max_rolling_hour_window": {
+            "start_minute": 0.1319,
+            "end_minute": 60.1214,
+            "organic": 412,
+            "scheduled": 8
+          },
+          "max_rolling_hour_executions": 420,
+          "max_rolling_hour_execution_window": {
+            "start_minute": 2.6319,
+            "end_minute": 62.6214,
+            "organic": 412,
+            "scheduled": 8
+          },
+          "scheduled_allowance_rate_plus_burst": 244,
+          "min_global_token_balance": -24,
+          "max_scheduled_active": 8,
+          "scheduled_cap": 32,
+          "max_review_active": 64,
+          "stale_claims_after_supersede": 0,
+          "stale_completions_after_supersede": 0,
+          "supersede_skipped_no_active_owner": 0,
+          "dispatch_delay_minutes": {
+            "organic": {
+              "p50": 1.5,
+              "p95": 1.6123,
+              "max": 2.9268666666666667
+            },
+            "scheduled": {
+              "p50": 0.016666666666666666,
+              "p95": 0.1,
+              "max": 0.1
+            }
+          }
+        },
+        "organic_spike_then_recovery": {
+          "target_organic_per_hour": {
+            "new": 0,
+            "supersede": 0,
+            "requeue": 0
+          },
+          "requeue_probability": 0,
+          "hours": [
+            {
+              "organic": {
+                "new": 400,
+                "supersede": 0,
+                "requeue": 0
+              },
+              "organic_attempted": {
+                "new": 400,
+                "supersede": 0
+              },
+              "organic_closed_before_dispatch": 0,
+              "scheduled": {
+                "hot_intake": 15,
+                "normal_backfill": 32
+              },
+              "scheduled_offers": {
+                "hot_intake": 15,
+                "normal_backfill": 5
+              },
+              "offer_sequences_fully_shed": 13,
+              "shed": {
+                "scheduled_rate": 20,
+                "backpressure": 0
+              },
+              "dispatched": {
+                "organic": 326,
+                "scheduled": 47
+              },
+              "executed": {
+                "organic": 317,
+                "scheduled": 47
+              },
+              "completed": 309,
+              "min_token_balance": -24,
+              "organic_total": 400,
+              "total_admissions": 447,
+              "total_executions": 364
+            },
+            {
+              "organic": {
+                "new": 0,
+                "supersede": 0,
+                "requeue": 0
+              },
+              "organic_attempted": {
+                "new": 0,
+                "supersede": 0
+              },
+              "organic_closed_before_dispatch": 0,
+              "scheduled": {
+                "hot_intake": 28,
+                "normal_backfill": 55
+              },
+              "scheduled_offers": {
+                "hot_intake": 15,
+                "normal_backfill": 6
+              },
+              "offer_sequences_fully_shed": 6,
+              "shed": {
+                "scheduled_rate": 21,
+                "backpressure": 0
+              },
+              "dispatched": {
+                "organic": 74,
+                "scheduled": 83
+              },
+              "executed": {
+                "organic": 83,
+                "scheduled": 83
+              },
+              "completed": 208,
+              "min_token_balance": -24,
+              "organic_total": 0,
+              "total_admissions": 83,
+              "total_executions": 166
+            },
+            {
+              "organic": {
+                "new": 0,
+                "supersede": 0,
+                "requeue": 0
+              },
+              "organic_attempted": {
+                "new": 0,
+                "supersede": 0
+              },
+              "organic_closed_before_dispatch": 0,
+              "scheduled": {
+                "hot_intake": 30,
+                "normal_backfill": 96
+              },
+              "scheduled_offers": {
+                "hot_intake": 15,
+                "normal_backfill": 6
+              },
+              "offer_sequences_fully_shed": 0,
+              "shed": {
+                "scheduled_rate": 21,
+                "backpressure": 0
+              },
+              "dispatched": {
+                "organic": 0,
+                "scheduled": 126
+              },
+              "executed": {
+                "organic": 0,
+                "scheduled": 126
+              },
+              "completed": 123,
+              "min_token_balance": 9,
+              "organic_total": 0,
+              "total_admissions": 126,
+              "total_executions": 126
+            }
+          ],
+          "max_rolling_hour_admissions": 447,
+          "max_rolling_hour_window": {
+            "start_minute": 3.5,
+            "end_minute": 20.5,
+            "organic": 400,
+            "scheduled": 47
+          },
+          "max_rolling_hour_executions": 437,
+          "max_rolling_hour_execution_window": {
+            "start_minute": 11.516666666666667,
+            "end_minute": 69.63546666666667,
+            "organic": 400,
+            "scheduled": 37
+          },
+          "scheduled_allowance_rate_plus_burst": 244,
+          "min_global_token_balance": -24,
+          "max_scheduled_active": 31,
+          "scheduled_cap": 32,
+          "max_review_active": 64,
+          "stale_claims_after_supersede": 0,
+          "stale_completions_after_supersede": 0,
+          "supersede_skipped_no_active_owner": 0,
+          "dispatch_delay_minutes": {
+            "organic": {
+              "p50": 24.234566666666666,
+              "p95": 46.550383333333336,
+              "max": 48.635466666666666
+            },
+            "scheduled": {
+              "p50": 0.1,
+              "p95": 0.26666666666666666,
+              "max": 0.26666666666666666
+            }
+          },
+          "spike_recovery": {
+            "organic_admissions": 400,
+            "first_scheduled_admission_minute": 20.5
+          }
+        },
+        "production_2026_10_01": {
+          "target_organic_per_hour": {
+            "new": 215,
+            "supersede": 12,
+            "requeue": 6,
+            "closed_before_dispatch": "52%"
+          },
+          "requeue_probability": 0.055,
+          "closed_before_dispatch_fraction": 0.52,
+          "supersede_owner": "dispatching",
+          "hours": [
+            {
+              "organic": {
+                "new": 207,
+                "supersede": 5,
+                "requeue": 3
+              },
+              "organic_attempted": {
+                "new": 207,
+                "supersede": 5
+              },
+              "organic_closed_before_dispatch": 103,
+              "scheduled": {
+                "hot_intake": 35,
+                "normal_backfill": 80
+              },
+              "scheduled_offers": {
+                "hot_intake": 15,
+                "normal_backfill": 5
+              },
+              "offer_sequences_fully_shed": 0,
+              "shed": {
+                "scheduled_rate": 20,
+                "backpressure": 0
+              },
+              "dispatched": {
+                "organic": 109,
+                "scheduled": 115
+              },
+              "executed": {
+                "organic": 103,
+                "scheduled": 115
+              },
+              "completed": 188,
+              "min_token_balance": 4,
+              "organic_total": 215,
+              "total_admissions": 330,
+              "total_executions": 218
+            },
+            {
+              "organic": {
+                "new": 217,
+                "supersede": 9,
+                "requeue": 12
+              },
+              "organic_attempted": {
+                "new": 217,
+                "supersede": 9
+              },
+              "organic_closed_before_dispatch": 100,
+              "scheduled": {
+                "hot_intake": 30,
+                "normal_backfill": 68
+              },
+              "scheduled_offers": {
+                "hot_intake": 15,
+                "normal_backfill": 6
+              },
+              "offer_sequences_fully_shed": 2,
+              "shed": {
+                "scheduled_rate": 21,
+                "backpressure": 0
+              },
+              "dispatched": {
+                "organic": 139,
+                "scheduled": 98
+              },
+              "executed": {
+                "organic": 127,
+                "scheduled": 98
+              },
+              "completed": 230,
+              "min_token_balance": -1,
+              "organic_total": 238,
+              "total_admissions": 336,
+              "total_executions": 225
+            },
+            {
+              "organic": {
+                "new": 224,
+                "supersede": 10,
+                "requeue": 6
+              },
+              "organic_attempted": {
+                "new": 224,
+                "supersede": 10
+              },
+              "organic_closed_before_dispatch": 120,
+              "scheduled": {
+                "hot_intake": 30,
+                "normal_backfill": 77
+              },
+              "scheduled_offers": {
+                "hot_intake": 15,
+                "normal_backfill": 6
+              },
+              "offer_sequences_fully_shed": 2,
+              "shed": {
+                "scheduled_rate": 21,
+                "backpressure": 0
+              },
+              "dispatched": {
+                "organic": 118,
+                "scheduled": 107
+              },
+              "executed": {
+                "organic": 107,
+                "scheduled": 107
+              },
+              "completed": 211,
+              "min_token_balance": -2,
+              "organic_total": 240,
+              "total_admissions": 347,
+              "total_executions": 214
+            }
+          ],
+          "max_rolling_hour_admissions": 351,
+          "max_rolling_hour_window": {
+            "start_minute": 80.53136666666667,
+            "end_minute": 140.5,
+            "organic": 258,
+            "scheduled": 93
+          },
+          "max_rolling_hour_executions": 236,
+          "max_rolling_hour_execution_window": {
+            "start_minute": 33.516666666666666,
+            "end_minute": 93.46735,
+            "organic": 122,
+            "scheduled": 114
+          },
+          "scheduled_allowance_rate_plus_burst": 244,
+          "min_global_token_balance": -2,
+          "max_scheduled_active": 31,
+          "scheduled_cap": 32,
+          "max_review_active": 44,
+          "stale_claims_after_supersede": 24,
+          "stale_completions_after_supersede": 0,
+          "supersede_skipped_no_active_owner": 2,
+          "dispatch_delay_minutes": {
+            "organic": {
+              "p50": 1.5,
+              "p95": 1.5163,
+              "max": 1.5780833333333333
+            },
+            "scheduled": {
+              "p50": 0.09593333333333333,
+              "p95": 0.26666666666666666,
+              "max": 0.35
+            }
+          }
+        }
+      },
+      "reconciliation": {
+        "executions": 2,
+        "total_debits": 2,
+        "charged_steps": {
+          "claim": 1,
+          "successor_claim": 1
+        },
+        "replay_debits": 0
+      }
+    }
+  },
+  "upgrade_rollback": [
+    {
+      "profile": "rate_60_burst_6",
+      "seed": "positive",
+      "base_admitted": {
+        "organic": 2,
+        "scheduled": 0
+      },
+      "base_balance": 4,
+      "upgraded_balance": 4,
+      "candidate_organic_admission_debit": 0,
+      "candidate_scheduled_admitted_prepaid": true,
+      "claims_after_upgrade": 3,
+      "balance_before_claims": 4,
+      "balance_after_claims": 1,
+      "base_admitted_work_charged_again_at_claim": 2,
+      "rollback_balance": 1,
+      "rollback_prepaid_claim_debit": 0,
+      "rollback_organic_admission_debit": 1,
+      "upgrade_rows_sha256": "d479117f159e7dca9912c4cd469fb0c3a32774358038c289c9f037bcbd6bd588",
+      "rollback_rows_sha256": "2df8bb45553ab5e477325ba09bef0d97370fec39f701c0afca8ea5417d8aa67a",
+      "item_records_preserved": true,
+      "delivery_records_preserved": true,
+      "lane_buckets_preserved": false
+    },
+    {
+      "profile": "rate_60_burst_6",
+      "seed": "exhausted",
+      "base_admitted": {
+        "organic": 6,
+        "scheduled": 0
+      },
+      "base_balance": 0,
+      "upgraded_balance": 0,
+      "candidate_organic_admission_debit": 0,
+      "candidate_scheduled_admitted_prepaid": false,
+      "claims_after_upgrade": 7,
+      "balance_before_claims": 2,
+      "balance_after_claims": -5,
+      "base_admitted_work_charged_again_at_claim": 6,
+      "rollback_balance": -5,
+      "rollback_prepaid_claim_debit": null,
+      "rollback_organic_admission_debit": 1,
+      "upgrade_rows_sha256": "6ac8f795031fa65be217678a69d0757745481803b5396f796924df2a986ce618",
+      "rollback_rows_sha256": "4b40fe32899c8b0e6c3e1c6736e5e0c3b5fe17eea1d448f68ae9961036d54e19",
+      "item_records_preserved": true,
+      "delivery_records_preserved": true,
+      "lane_buckets_preserved": false
+    },
+    {
+      "profile": "rate_60_burst_6",
+      "seed": "persisted_lanes",
+      "base_admitted": {
+        "organic": 1,
+        "scheduled": 2
+      },
+      "base_balance": 3,
+      "upgraded_balance": 3,
+      "candidate_organic_admission_debit": 0,
+      "candidate_scheduled_admitted_prepaid": true,
+      "claims_after_upgrade": 4,
+      "balance_before_claims": 3,
+      "balance_after_claims": -1,
+      "base_admitted_work_charged_again_at_claim": 3,
+      "rollback_balance": -1,
+      "rollback_prepaid_claim_debit": 0,
+      "rollback_organic_admission_debit": 1,
+      "upgrade_rows_sha256": "dc31d48eb00833a145d13948169ac20ef2335f3f91aa73c8333cd43626ebd367",
+      "rollback_rows_sha256": "eb4e248a145f7fe5408de8e64b446fd4ad2b44a7d49e8902f24795feb23e6c7f",
+      "item_records_preserved": true,
+      "delivery_records_preserved": true,
+      "lane_buckets_preserved": true
+    },
+    {
+      "profile": "production_220_24",
+      "seed": "positive",
+      "base_admitted": {
+        "organic": 2,
+        "scheduled": 0
+      },
+      "base_balance": 22,
+      "upgraded_balance": 22,
+      "candidate_organic_admission_debit": 0,
+      "candidate_scheduled_admitted_prepaid": true,
+      "claims_after_upgrade": 3,
+      "balance_before_claims": 24,
+      "balance_after_claims": 21,
+      "base_admitted_work_charged_again_at_claim": 2,
+      "rollback_balance": 21,
+      "rollback_prepaid_claim_debit": 0,
+      "rollback_organic_admission_debit": 1,
+      "upgrade_rows_sha256": "d479117f159e7dca9912c4cd469fb0c3a32774358038c289c9f037bcbd6bd588",
+      "rollback_rows_sha256": "e6c3f69d21186f711c7f445ecda190363a12b83ece338f26adc67fa5bcf88fa1",
+      "item_records_preserved": true,
+      "delivery_records_preserved": true,
+      "lane_buckets_preserved": false
+    },
+    {
+      "profile": "production_220_24",
+      "seed": "exhausted",
+      "base_admitted": {
+        "organic": 24,
+        "scheduled": 0
+      },
+      "base_balance": 0,
+      "upgraded_balance": 0,
+      "candidate_organic_admission_debit": 0,
+      "candidate_scheduled_admitted_prepaid": false,
+      "claims_after_upgrade": 25,
+      "balance_before_claims": 16,
+      "balance_after_claims": -9,
+      "base_admitted_work_charged_again_at_claim": 24,
+      "rollback_balance": -9,
+      "rollback_prepaid_claim_debit": null,
+      "rollback_organic_admission_debit": 1,
+      "upgrade_rows_sha256": "fae3c48f6101433548fb530e8fba35364f7740dbadbced949e03db30115d45bd",
+      "rollback_rows_sha256": "164d85e5ce364f73c88f44ab5b0cf0266ac7f0e4fb4cb2af319174626bdf5c24",
+      "item_records_preserved": true,
+      "delivery_records_preserved": true,
+      "lane_buckets_preserved": false
+    },
+    {
+      "profile": "production_220_24",
+      "seed": "persisted_lanes",
+      "base_admitted": {
+        "organic": 1,
+        "scheduled": 2
+      },
+      "base_balance": 21,
+      "upgraded_balance": 21,
+      "candidate_organic_admission_debit": 0,
+      "candidate_scheduled_admitted_prepaid": true,
+      "claims_after_upgrade": 4,
+      "balance_before_claims": 24,
+      "balance_after_claims": 20,
+      "base_admitted_work_charged_again_at_claim": 3,
+      "rollback_balance": 20,
+      "rollback_prepaid_claim_debit": 0,
+      "rollback_organic_admission_debit": 1,
+      "upgrade_rows_sha256": "dc31d48eb00833a145d13948169ac20ef2335f3f91aa73c8333cd43626ebd367",
+      "rollback_rows_sha256": "95ffdd27476f703b62663b7e40155795ea6d39315009a8f087eecd80c1e0751e",
+      "item_records_preserved": true,
+      "delivery_records_preserved": true,
+      "lane_buckets_preserved": true
+    }
+  ],
+  "limits": "Synthetic GitHub fixture, RSA credential, organic arrival process and mix, closed-before-dispatch share, planner latency and review durations. Real queue admission, token buckets, supersession, requeue, dispatch-time live checks, dispatch, claim, completion, reconciliation, throttle feedback, alarms and SQLite storage. An execution is a successful claim; a run that claims and then exits early is still counted. No live inference, production state or GitHub mutations. clawhub/other-target supply, stale-head pull request deletes and GitHub Actions scheduling jitter are not modeled. Candidate supply is unlimited, the pessimistic case for the budget and for normal-backfill share."
+}

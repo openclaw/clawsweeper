@@ -6,7 +6,7 @@ import {
   localCheckoutAccessSourceForDecision,
   reviewStatusForDecision,
 } from "../dist/clawsweeper-report-document.js";
-import { effectiveReviewStatusForTest } from "../dist/clawsweeper.js";
+import { effectiveReviewStatus } from "../dist/clawsweeper-record-metadata.js";
 
 test("review publication trusts runner-owned checkout access instead of review prose", () => {
   const decision = {
@@ -18,7 +18,7 @@ test("review publication trusts runner-owned checkout access instead of review p
   assert.equal(localCheckoutAccessSourceForDecision(decision), "runner_preflight_v1");
   assert.equal(reviewStatusForDecision(decision), "complete");
   assert.equal(
-    effectiveReviewStatusForTest(
+    effectiveReviewStatus(
       `---\nreview_status: complete\nlocal_checkout_access: verified\nlocal_checkout_access_source: runner_preflight_v1\n---\n${decision.summary}`,
     ),
     "complete",
@@ -44,7 +44,7 @@ test("review publication fails closed without verified runner inspection", () =>
   );
   assert.equal(localCheckoutAccessSourceForDecision({}), "unknown");
   assert.equal(
-    effectiveReviewStatusForTest(
+    effectiveReviewStatus(
       "---\nreview_status: complete\nlocal_checkout_access: verified\n---\nLegacy report",
     ),
     "stale_local_checkout_unverified",

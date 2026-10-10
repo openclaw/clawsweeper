@@ -149,7 +149,7 @@ For a PR that needs work, the visible comment starts with:
 Codex review: needs changes before merge.
 ```
 
-The visible `Summary` also includes `Reviewed head: <full-sha>`. This makes the
+The visible `Merge readiness` also includes `Reviewed head: <full-sha>`. This makes the
 human-facing verdict self-identifying without requiring maintainers to inspect
 hidden markers. Publication still verifies the durable tuple against live state;
 the visible SHA is evidence of the captured review revision, not a substitute
@@ -162,33 +162,139 @@ starts with:
 Codex review: needs real behavior proof before merge.
 ```
 
-PR comments use a human-first shape:
+PR comments use a verdict-first shape. The visible part answers "should this
+merge, and why not yet" in this order:
 
-1. `## What this changes` is first. It comes from the typed `changeSummary`
-   field and should define unfamiliar subsystem terms briefly and explain the
-   effect in plain language.
-2. `## Merge readiness` comes directly after the change summary. It leads with
-   one dynamic plain-language outcome, the number of real items remaining, a
-   short bottom line, priority, and an owner-decision pointer only when a
-   decision packet exists.
+1. The verdict line (`Codex review: ...`).
+2. `## What this changes` comes from the typed `changeSummary` field and
+   should define unfamiliar subsystem terms briefly and explain the effect in
+   plain language. When the typed `changeExample` has a scenario, before,
+   and after, an `Example:` block shows that concrete case under the summary.
 3. `## Review scores` separates the three ratings into a scannable
-   `Measure | Result | What it means` table. Crab ranks stay visible, but every
+   `Measure | Result | What it means` table. Crab ranks stay visible, and every
    ranked value also shows its six-point score: S is `6/6`, A is `5/6`, B is
-   `4/6`, C is `3/6`, D is `2/6`, and F is `1/6`.
-4. `## Verification` folds proof, concrete evidence/checks, findings, and
-   security into one compact `Check | Result | Evidence` table. Uneventful
-   findings and security rows say `None.`
-5. `## How this fits together` appears when the review can establish concrete
-   system context. It uses one or two plain-language sentences plus a compact
-   Mermaid flowchart showing the changed subsystem's inputs, decisions, and
-   outputs.
-6. `## Decision needed` appears only when a maintainer decision packet exists.
-   It shows the concrete question and recommended option in a table.
-7. `## Before merge` uses native Markdown task checkboxes for real remaining
+   `4/6`, C is `3/6`, D is `2/6`, and F is `1/6`. The `Proof confidence` row
+   shows the rated proof summary. When the contributor proof gate does not
+   apply, the tier stays rated and the row says what proof exists, not "Not
+   applicable"; only an `NA` tier reads "Not applicable". When missing proof
+   blocks merge, the row only points to `Before merge`, which owns the proof
+   ask. Evidence entries that only repeat the proof statement are dropped, and
+   label justifications state only the label meaning. The rating scale and
+   workflow notes in the details are one line each.
+4. `## Product` shows the typed `productReview` in one compact block: kind,
+   worth it, fix scope (omitted when not applicable), user problem, and reason.
+   Reports written before `productReview` existed omit the section.
+5. `## Regression provenance` appears only when a verified or suspected
+   regression source exists.
+6. `## Merge readiness` leads with one dynamic plain-language outcome, the
+   number of real items remaining, a short bottom line, priority, the reviewed
+   head, and an owner-decision pointer only when a decision packet exists.
+7. `## Decision needed` appears only when a maintainer decision packet exists.
+   It lists the concrete question, the recommended option (or every option when
+   none is recommended), and why, as bullet points.
+8. `## Before merge` uses native Markdown task checkboxes for real remaining
    actions or risks. Routine CI, ordinary maintainer review, and no-op guidance
-   collapse to `None.`
-8. `## Findings` appears only when actionable review or security findings need
-   a little more visible detail.
+   collapse to `None.` These items are the one source of merge readiness: the
+   PR status label is `status: 👀 ready for maintainer look` only when this
+   section is `None.`, and `status: ⏳ waiting on author` when an item needs
+   changes from the author. When a duplicate close is kept open because the
+   close check did not confirm coverage, the item asks a maintainer to close or
+   keep the PR, not the author.
+9. `## Findings` always renders for completed reviews. Its leading block lists
+   up to three review findings and three security concerns as
+   `- [P1] title — \`file:line\``, or `None.`; review history and the comment
+router parse only this block. A `### Provenance`subsection lists`overrides_without_reason`and`unknown`provenance entries, and a`### Tests` subsection lists low-value tests (file and reason) and the
+   missing end-to-end scenario. Neither subsection uses P-severity labels, so
+   neither starts repair routing.
+
+Maintainer decision packets are reserved for unresolved choices between at least
+two distinct viable options that evidence cannot settle and a maintainer has not
+already decided. Routine landing approval, PR size, and PR-body merge/sign-off
+notes do not create decisions or Before-merge blockers. A recorded design decision
+cited in a maintainer-authored PR counts as accepted within its current scope.
+Stored-data changes require compatibility evidence, not human acknowledgement.
+Codex records this in `realBehaviorProof.dataModelCompatibility`; only
+`insufficient` adds the `Add data-model compatibility proof` blocker. The host
+does not classify paths or patches for config or stored-data changes. Defects,
+security concerns, missing proof, and undecided product or plugin API direction
+still block. Readiness does not itself grant merge authority.
+
+The review prompt keeps evidence-backed implementation choices with the PR owner:
+individually source-verified oracle/snapshot/baseline exceptions for tool-owned
+metadata that preserve exact user data without masking regressions; recovery
+removal of only invalid or unreachable data after a verified backup,
+with counts reported and valid data untouched; and ownership, ordering, or
+internal transaction/lifecycle choices within an authorized maintainer
+repair-and-land request. The PR body records the choice and evidence, which the
+review verifies. These choices do not request design acceptance or create a
+`Resolve maintainer decision` item, including through product review or risk
+fields. Broad exceptions and missing data-model compatibility proof still need
+PR-owner action. Unresolved new config options, breaking public API/SDK changes,
+new schemas/tables, changed retention of valid data, and paid services retain
+the maintainer-decision requirement. This changes reviewer guidance only;
+OpenClaw Bay's observer fields, routes, and controls are unchanged.
+The OpenClaw profile supplies the Doctor examples for these choices.
+
+PR reviews use `prompts/review-item-pr.md`, whose `Review Rules` section
+guides three typed assessments: `productReview`
+(kind, user problem, fix scope, `worthIt`), `provenance` (the introducing commit
+or PR and stated reason for each changed behavior), and `testingReview` (proof
+path, low-value tests, missing end-to-end scenario). `worthIt: no` and
+`worthIt: needs_maintainer` add blocked Before-merge items; each
+`overrides_without_reason` provenance entry adds a needs-changes item asking the
+author to explain or restore the original intent. Low-value tests never block.
+The rating is the reviewer's judgement: the rules rubric tells the model how
+weak proof, low-value tests, product calls, partial fixes, and unexplained
+overrides should weigh, and code applies no tier caps from these fields. Reports
+written before these fields existed parse as `not_applicable` and keep their
+stored rating and readiness.
+
+The review checkout is a `blob:none` partial clone, and the review proxy allows
+only read methods, so Git's lazy object fetch (a smart-HTTP `POST`) fails there
+with HTTP 403. Before the model runs, the host makes the history of the PR's
+changed files local: one `git log --raw` walk from the head, base, GitHub test
+merge, and fetched main tip lists every version of the changed files (up to
+100), newest first, and one noop-negotiation fetch downloads the missing blobs.
+It also fetches the files deleted in each file's creation commit, detects renames
+among them, and repeats the walk for up to two generations of earlier names, so
+`git log -S/-G/-L`, `git show <old>:<path>`, and `git blame` work in the sandbox.
+The bound is 5,000 blobs, 1 GiB estimated (the largest local version of a path
+times its versions), 128 MiB estimated per path, and 60 seconds; a path cut by a
+bound keeps its newest versions, and an earlier name that could not be checked
+counts as a cut. On openclaw/openclaw the full history of 2 to 20 changed files
+and their earlier names is 160 to 1,058 blobs, 0.3 to 6.6 MiB, in 2.5 to 12 seconds.
+The prompt's Runtime Capabilities line names the earlier file names and any
+history that was not prefetched. Behind the allowlisted proxy (codex runner,
+`clawsweeper-review` sandbox) the reviewer runs with `GIT_NO_LAZY_FETCH=1`, so any
+other missing blob fails at once with `lazy fetching disabled` instead of a 403;
+`git log --follow` still ends with that error at a file's creation commit, because
+its copy detection reads the whole parent tree. The unrestricted OpenClaw runner
+keeps lazy fetch, so reads beyond the prefetch still download on demand.
+
+The host also computes the PR prompt's `## Provenance Evidence`: from the merge-base to head diff it
+takes up to 12 files that existed on the merge base (most modified or deleted
+base lines first, at most 4 hunks each; a pure insertion contributes the up to
+three unchanged base lines around it as `insertion_context`). It runs
+`git blame --porcelain` on those base lines at the merge base, reading the
+prefetched history (lazily fetching anything beyond its bounds on the host),
+all within one 45-second deadline, and resolves up to
+15 distinct introducing commits through
+`GET /repos/{owner}/{repo}/commits/{sha}/pulls` with the same `gh` reader that
+collects item context (title, URL, merge time, 1,200-character body excerpt,
+cached per run). Deadlines, Git errors, and API errors degrade the evidence to
+`partial` or `unavailable` with a reason; the review still runs. The evidence
+supplies facts only: the model still decides each provenance verdict.
+
+The parser rejects required packets with fewer than two options or duplicate
+options; malformed reports remain fail-closed and need a fresh review, rather
+than silently losing a possible real blocker. Semantic intent belongs to the
+review producer, not keyword filtering in comment rendering. Packet synchronization
+removes an invalid report's derived sidecar and pointer without changing its
+decision or hold, so legacy packets cannot abort archive, reopen, or closed-sidecar
+reconciliation for other records. Filesystem errors still propagate.
+Issue comments render a fresh-review notice for invalid stored decisions; PRs
+retain their malformed-report blocker. OpenClaw Bay needs
+no code or schema change: the packet fields and observer projection are unchanged.
 
 New reviewer output requires a producer-owned `nextStep` assessment. Issues use
 none and retain their existing next-action guidance in `workReason`. Canonical
@@ -199,8 +305,8 @@ One PR readiness calculation supplies the visible checklist, its count, the
 readiness state, and repair-loop pass eligibility. Explicit none suppresses only
 the derived next-step item, while required actions survive
 negation, contrast, routine-sounding prose, or lack of action keywords. Human-owned
-actions may be required even when `workCandidate` is none. Contributor changelog
-requests remain subject to OpenClaw's release-owned changelog normalization.
+actions may be required even when `workCandidate` is none. Code does not remove
+or rewrite model findings, next steps, risks, correctness, or ratings.
 
 Historical Decisions may omit the assessment, and reports are not migrated or
 rewritten. An unusable next-step field retains conservative legacy prose
@@ -246,11 +352,17 @@ The [next-step intent proof recipe](proof/review-next-step-intent/README.md)
 compares identical synthetic reports against pinned baseline and candidate
 renderers and exercises producer-to-report persistence without live publication.
 
-Everything primarily useful to agents or deep reviewers lives under one
-collapsed `Agent review details` section: security evidence, PR surface,
-review metrics, stored-data warnings, root-cause clusters, proof suggestions,
-merge-risk options, full review comments, labels, evidence, optional rank-up
-moves, the rank legend, workflow notes, and review history.
+Everything else lives under one collapsed `Agent review details` section, in
+this order: how this fits together (system context and Mermaid flowchart), live
+verification, technical review (best solution, reproduction and solution
+questions, full review comments, AGENTS.md status, remaining risk), merge-risk
+options, provenance entries that respect or explain the original intent, the
+testing proof path, security, evidence (security concern detail, acceptance
+criteria, what was checked, likely related people tied to a verified commit;
+unverified routing candidates are not published), PR surface, review metrics
+(only when present), stored-data warnings, root-cause clusters, proof
+suggestions, labels, optional rank-up moves, a one-line rating scale, a
+one-line workflow note, and review history.
 
 The label section explicitly says `No label changes.` when the publisher supplies
 confirmed previous labels, the review is not failed, and owned-label
@@ -258,45 +370,35 @@ justifications remain but there are no add/remove transitions. Report metadata
 alone does not establish this no-op claim. Existing nonempty transitions and
 automation markers are unchanged.
 
-For OpenClaw, the PR surface table and config detector share explicit test-role
-names: test/spec code leaves, Go `*_test.go` files, terminal dotted or hyphenated
-`test-support`, `test-helpers`, `test-utils`, `test-harness`, and `test-fixtures`
-code suffixes, and explicit test directories. Generic support/helper names remain production
-candidates. Generated files retain table precedence; config detection filters
-each rename side before patch uncertainty, retaining production or semantic docs
-evidence and truncated-list warnings. Reviewer production/test metrics remain
-separately assessed. Test roles grant no contributor-proof exemption. Storage
-warnings retain their separate persistence-evidence and upgrade-proof rules.
+For OpenClaw, the PR surface table uses explicit test-role names: test/spec code
+leaves, Go `*_test.go` files, terminal dotted or hyphenated `test-support`,
+`test-helpers`, `test-utils`, `test-harness`, and `test-fixtures` code suffixes,
+explicit test directories, and native app test targets (Swift `*Tests/`
+directories and Gradle `src/test*/` and `src/androidTest*/` source sets). Source
+roots are `src/`, `ui/`, `packages/`, `extensions/`, and `apps/` (native Swift and
+Kotlin apps). The summary line adds `Added test files: N`, counting only test-role
+files whose GitHub status is `added`; reports written before file status was
+stored omit it. Generic support/helper names remain production candidates.
+Generated files retain table precedence. Reviewer production/test metrics remain
+separately assessed. Test roles grant no contributor-proof exemption.
 
 Codex assesses stored-data compatibility in
 `realBehaviorProof.dataModelCompatibility`, independently of general behavior
 proof. The report writer persists it as the canonical
-`real_behavior_proof_data_model_compatibility` field. Only a unique, valid
-`sufficient` value clears a detected data-model compatibility hold. Missing,
-malformed, duplicate, `insufficient`, and contradictory `not_applicable` values
-retain the hold. Summaries, evidence prose, ratings, general proof sufficiency,
-`proof: override`, and maintainer/bot or docs-only exemptions cannot grant it.
+`real_behavior_proof_data_model_compatibility` field. Summaries, evidence prose,
+ratings, general proof sufficiency, `proof: override`, maintainer/bot authorship,
+and a `not_applicable` proof status cannot waive an `insufficient` assessment. Reports without
+the field add no stored-data blocker.
 
-Historical reports remain readable. A report with a stored-data change but no
-typed compatibility assessment requires a fresh Codex review; deployment alone
-does not reinterpret its old prose or markers. Prompt/schema changes use the
-existing review policy hash to invalidate cached assessments.
-Run `pnpm run build` followed by `node scripts/e2e/data-model-proof.ts` to exercise
-the compiled parser, report writer, reader and renderer with synthetic assessments.
-The proof retains input/output Markdown and receipts under
-`.artifacts/typed-compatibility-proof/`, without publishing to GitHub or claiming
-to exercise an actual database upgrade.
-OpenClaw Bay needs no change because its observer API and data contract are unchanged.
-
-The recorded reviewer proof assessment and the host's existing proof requirement
-are separate. An applicable external PR assessed as `not_applicable` still needs
-proof: the verdict, readiness, verification, checklist, and status label explain
-that the assessment does not satisfy current policy. Put relevant after-change
-evidence in the main PR body, then request a fresh review. This includes root
-`README.md` changes; the existing docs exemption requires a complete, nonempty
-file list entirely under `docs/`. Recorded proof fields, summaries, ratings, and
-rating labels remain unchanged; the comment identifies reviewer context without
-presenting it as a host exemption.
+The reviewer model decides whether real behavior proof applies. For an external
+PR, the proof gate accepts `sufficient`, `override`, or `not_applicable`, unless
+the model also sets `needsContributorAction` or starts the proof summary with the
+authority-chain marker. File paths do not change this decision; the review rules
+tell the model to use `not_applicable` for docs-only PRs. A report without a
+usable proof assessment for an external PR counts as `missing` proof. A report
+without a usable PR rating shows `NA` tiers and asks for a fresh review; code does
+not compute a replacement rating, and an attached verification receipt does not
+change the model's tiers.
 
 Failed or malformed historical verification receipts remain separate,
 maintainer-owned blockers. They do not erase independently sufficient contributor
@@ -467,7 +569,7 @@ use plain priority prefixes such as `[P0]`, `[P1]`, or `[P2]`. Keep those
 prefixes unbolded and attached to plain-language consequences or required
 actions. Do not add priority prefixes to non-actions such as `none`, routine
 maintainer review, normal CI/status-check follow-up, or audit-only details such
-as label justifications, AGENTS.md notes, Mantis/workflow notes, model metadata,
+as label justifications, AGENTS.md notes, workflow notes, model metadata,
 related people, PR stats, or generic evidence lists.
 
 Full review comments, source links, owner routing, acceptance criteria, and
@@ -651,15 +753,30 @@ repair or pass marker:
 
 ```html
 <!-- clawsweeper-security:security-sensitive item=<number> sha=<pull-head-sha> confidence=<confidence> -->
-<!-- clawsweeper-verdict:needs-human item=<number> sha=<pull-head-sha> confidence=<confidence> -->
+<!-- clawsweeper-verdict:needs-human item=<number> sha=<pull-head-sha> confidence=<confidence> hold=security findings=<count> -->
 ```
 
 For failed reviews, ambiguous reviews, or PR comments that should stay in human
 hands, ClawSweeper emits a human-only verdict:
 
 ```html
-<!-- clawsweeper-verdict:needs-human item=<number> sha=<pull-head-sha> confidence=<confidence> -->
+<!-- clawsweeper-verdict:needs-human item=<number> sha=<pull-head-sha> confidence=<confidence> hold=<hold> findings=<count> -->
 ```
+
+Every PR `needs-human` verdict has two typed attributes. The repair router
+routes on these attributes. It does not read the comment prose.
+
+- `hold` tells why the verdict is human-only: `normalization_failed`,
+  `review_identity`, `maintainer_decision`, `review_failed`, `security`,
+  `proof`, `not_opted_in` (the review is ready, but the PR has no repair-loop
+  label), `blocked`, or `undecided`. `maintainer_decision` and `proof` appear
+  only when that hold is the one Before-merge item; otherwise the hold is
+  `blocked`. A maintainer can waive `not_opted_in`, `maintainer_decision` and
+  `proof`; see [auto-update-prs.md](repair/auto-update-prs.md).
+- `findings` is the number of typed review findings. It is `0` for a failed or
+  unnormalized review. A value above `0` sends the PR to the repair lane.
+
+A `needs-human` verdict without these attributes stays a human pause.
 
 Missing, mock-only, or insufficient `realBehaviorProof` is always human-only:
 ClawSweeper must not emit `clawsweeper-action:fix-required` or pass/automerge
@@ -716,7 +833,7 @@ pnpm run apply-decisions -- --target-repo openclaw/openclaw --sync-comments-only
 
 Hosted Codex issue/PR review tools use the `clawsweeper-review` permission profile in
 `.github/actions/setup-codex/review-permissions.toml`, owned by ClawSweeper
-maintainers and verified with Codex 0.158.0-alpha.2. Update this guidance when
+maintainers and verified with Codex 0.162.1. Update this guidance when
 the pinned CLI, profile, credential handling, or setup smoke changes. The active profile
 extends read-only filesystem access and enables the managed proxy in limited
 mode for its explicit GitHub, npm, Node, MDN, and OpenClaw documentation hosts.

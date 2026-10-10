@@ -427,9 +427,9 @@ The workflow needs:
   only the public `internal` alias
 - Codex CLI and its responses API proxy install from their latest npm tags on
   every worker run
-- repair planning and execution use `gpt-6-sol`; maintainer-authored canonical
-  items use high reasoning with fast service, while other items use medium
-  reasoning with standard service
+- repair planning and execution use `gpt-6.1-sol` with medium reasoning;
+  canonical items authored by maintainers or anyone with write access use
+  priority (fast) service, while other items use standard service
 - optional `CLAWSWEEPER_MAX_LIVE_WORKERS` variable for dispatch/requeue/self-heal worker fan-out; dispatch defaults are derived from `job_intent`, cluster-lane classification, `workers.max`, and `lanes.repair.cluster_max_live_runs`
 - optional `CLAWSWEEPER_MAX_ACTIVE_PRS_PER_AREA` variable for replacement PR backpressure; default is `50` open ClawSweeper PRs per touched area, `0` disables the area cap, and common changelog/release-note files are ignored for this check
 - ClawSweeper commit-finding repair PRs are labeled `clawsweeper:commit-finding`
@@ -437,9 +437,10 @@ The workflow needs:
   and `CLAWSWEEPER_FIX_STEP_TIMEOUT_MS` variables; worker planning defaults to
   30 minutes, as does each fix Codex call. The executor derives its budget from
   setup, the edit-worker allowance, twice the configured validation budget, and
-  review/report margin: 70 minutes by default, 100 minutes for OpenClaw, with a
+  review/report margin: 70 minutes by default, 110 minutes for OpenClaw, with a
   110-minute hard ceiling. Actions adds two minutes of step headroom inside the
-  120-minute job. See [target budget configuration](../target-repositories.md).
+  130-minute job, which also leaves room for publication and post-flight. See
+  [target budget configuration](../target-repositories.md).
   Edit workers use focused checks; the executor owns full deterministic acceptance.
 - optional `CLAWSWEEPER_CODEX_RETRY_DELAY_MS` variable for edit-worker backoff
   after retryable Codex transport or TPM rate-limit exits; default is `15000`.

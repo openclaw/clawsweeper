@@ -28,11 +28,12 @@ import {
 } from "./clawsweeper-media-proof.js";
 import { safeOutputTail, trimMiddle } from "./clawsweeper-text.js";
 import { buildPullRequestReviewEvidence } from "./pr-review-evidence.js";
+import { reviewHistoryCapability } from "./pr-review-history.js";
+import { PROVENANCE_NOT_RUN } from "./pr-review-provenance.js";
+import { reviewPromptContext } from "./clawsweeper-prompt-context.js";
 import { verifyLikelyOwnerHistory } from "./clawsweeper-regression-provenance.js";
 import type {
   Decision,
-  DecisionNormalizationItem,
-  Evidence,
   FileModeSnapshot,
   GitInfo,
   Item,
@@ -46,6 +47,7 @@ import type {
   ReviewPromptRuntimeHints,
   ReviewPromptTelemetry,
   RootCauseClusterAssessment,
+  RootCauseNormalizationItem,
 } from "./clawsweeper-types.js";
 import { codexLoginConfig, redactInternalCodexModel } from "./codex-env.js";
 import { codexProcessErrorCode, type CodexProcessResult } from "./codex-process.js";
@@ -67,13 +69,38 @@ import {
 import { repositoryProfileFor, type RepositoryProfile } from "./repository-profiles.js";
 import { reviewProofCapabilityFromEnv } from "./review-proof-client.js";
 import { readBoundedReviewResult } from "./review-output-policy.js";
+import { asRecord, nonBlankStringOrUndefined } from "./value-coerce.js";
+import { evidenceEntry } from "./clawsweeper-report-parser.js";
+
+/** Prompt sources for an item review: the shared core, one template per item kind, and close reasons. */
+export type ReviewItemPrompts = Readonly<Record<"core" | Item["kind"] | "closeReasons", string>>;
+
+// Each Codex failure reason has one log kind. The review run logs this kind.
+const CODEX_FAILURE_LOG_KINDS = {
+  "dirty checkout": "codex_execution",
+  "missing structured output": "content_or_output",
+  "invalid structured output": "content_or_output",
+  "output buffer overflow": "content_or_output",
+  "model unavailable or access denied": "model_access",
+  timeout: "timeout",
+  "retryable codex transport failure (capacity)": "provider_throttle",
+  "retryable codex transport failure (network)": "transport_network",
+  "codex execution failed": "codex_execution",
+} as const;
+type CodexFailureReason = keyof typeof CODEX_FAILURE_LOG_KINDS;
+export type CodexFailureLogKind = (typeof CODEX_FAILURE_LOG_KINDS)[CodexFailureReason];
+type CodexProcessFailure = {
+  errorCode?: string | null;
+  signal?: NodeJS.Signals | null;
+  diagnostic?: string;
+  retryHint?: string;
+};
 
 interface ReviewRuntimeDependencies {
-  reviewItemPromptPath: string;
+  reviewItemPromptPaths: ReviewItemPrompts;
   decisionSchemaPath: string;
   prCloseCoverageProofPromptPath: string;
   targetRepo: () => string;
-  evidenceEntry: (options: Partial<Evidence> & Pick<Evidence, "label" | "detail">) => Evidence;
   run: (
     command: string,
     args: string[],
@@ -84,29 +111,24 @@ interface ReviewRuntimeDependencies {
     preserveCodexAuth?: boolean | undefined;
   }) => NodeJS.ProcessEnv;
   ghJson: <T>(args: string[]) => T;
-  asRecord: (value: unknown) => Record<string, unknown>;
   defaultRootCauseCluster: () => RootCauseClusterAssessment;
-  parseDecision: (value: unknown, item?: DecisionNormalizationItem) => Decision;
+  parseDecision: (value: unknown, item?: RootCauseNormalizationItem) => Decision;
   ensureDir: (path: string) => void;
-  stringOrUndefined: (value: unknown) => string | undefined;
 }
 
 export function createReviewRuntime({
-  reviewItemPromptPath: REVIEW_ITEM_PROMPT_PATH,
+  reviewItemPromptPaths: REVIEW_ITEM_PROMPT_PATHS,
   decisionSchemaPath: CLAWSWEEPER_DECISION_SCHEMA_PATH,
   prCloseCoverageProofPromptPath: PR_CLOSE_COVERAGE_PROOF_PROMPT_PATH,
   targetRepo,
-  evidenceEntry,
   run,
   untrustedCodexEnv,
   ghJson,
-  asRecord,
   defaultRootCauseCluster,
   parseDecision,
   ensureDir,
-  stringOrUndefined,
 }: ReviewRuntimeDependencies) {
-  let reviewPromptTemplateCache: string | undefined;
+  let reviewPromptTemplatesCache: ReviewItemPrompts | undefined;
   let reviewDecisionSchemaCache: string | undefined;
   let prCloseCoverageProofPromptTemplateCache: string | undefined;
 
@@ -199,7 +221,7 @@ export function createReviewRuntime({
   function localPullMetadata(itemNumber: number): LocalPullMetadata {
     try {
       const pull = asRecord(ghJson<unknown>(["api", `repos/${targetRepo()}/pulls/${itemNumber}`]));
-      const baseRef = stringOrUndefined(asRecord(pull.base).ref);
+      const baseRef = nonBlankStringOrUndefined(asRecord(pull.base).ref);
       if (!baseRef) throw new Error("pull request base ref was missing");
       return { baseRef: requireSafeGitBranchName(baseRef, "pull request base branch") };
     } catch (error) {
@@ -451,9 +473,35 @@ export function createReviewRuntime({
     prepareManagedLocalReviewCheckout(options);
   }
 
-  function reviewPromptTemplate(): string {
-    reviewPromptTemplateCache ??= readFileSync(REVIEW_ITEM_PROMPT_PATH, "utf8");
-    return reviewPromptTemplateCache;
+  function reviewPromptTemplates(): ReviewItemPrompts {
+    reviewPromptTemplatesCache ??= {
+      core: readFileSync(REVIEW_ITEM_PROMPT_PATHS.core, "utf8"),
+      issue: readFileSync(REVIEW_ITEM_PROMPT_PATHS.issue, "utf8"),
+      pull_request: readFileSync(REVIEW_ITEM_PROMPT_PATHS.pull_request, "utf8"),
+      closeReasons: readFileSync(REVIEW_ITEM_PROMPT_PATHS.closeReasons, "utf8"),
+    };
+    return reviewPromptTemplatesCache;
+  }
+
+  // Keep only the close reasons that the repository profile enables for this item kind.
+  function closeReasonsPrompt(guidance: string, reasons: readonly string[]): string {
+    const lines = guidance.trim().split("\n");
+    const enabled = lines.filter((line) =>
+      reasons.some((reason) => line.startsWith(`- \`${reason}\`: `)),
+    );
+    if (enabled.length === 0) {
+      return "This repository enables no close reason for this item kind: keep the item open.";
+    }
+    const preamble = lines
+      .filter((line) => !line.startsWith("- "))
+      .join("\n")
+      .trim();
+    return `${preamble}\n\n${enabled.join("\n")}`;
+  }
+
+  function fillPromptSlot(template: string, slot: string, value: string): string {
+    if (!template.includes(slot)) throw new Error(`Review prompt template has no ${slot} slot`);
+    return template.replace(slot, () => value);
   }
 
   function prCloseCoverageProofPromptTemplate(): string {
@@ -469,8 +517,14 @@ export function createReviewRuntime({
     return reviewDecisionSchemaCache;
   }
 
-  function contextJsonForPrompt(context: ItemContext, kind: Item["kind"]): string {
-    const { pullCommitsRevision: __, prHydrationSnapshot: ___, ...promptContext } = context;
+  function contextJsonForPrompt(
+    context: ItemContext,
+    kind: Item["kind"],
+    networkCapability: ReviewPromptRuntimeHints["networkCapability"],
+  ): string {
+    const promptContext = reviewPromptContext(context, {
+      agentCanReadGitHub: networkCapability !== undefined && networkCapability !== "none",
+    });
     return serializeReviewContext(promptContext, kind === "pull_request" ? context.pullFiles : []);
   }
 
@@ -481,8 +535,16 @@ export function createReviewRuntime({
     additionalPrompt = "",
     runtimeHints: ReviewPromptRuntimeHints = {},
   ): ReviewPromptBuild {
-    const prompt = reviewPromptTemplate();
-    const contextJson = contextJsonForPrompt(context, item.kind);
+    const templates = reviewPromptTemplates();
+    const profile = repositoryProfileFor(item.repo);
+    const prompt = fillPromptSlot(
+      fillPromptSlot(templates.core, "{{item_kind_review}}", templates[item.kind].trim()),
+      "{{close_reasons}}",
+      closeReasonsPrompt(templates.closeReasons, profile.applyCloseRules[item.kind] ?? []),
+    );
+    const kindPolicy = profile.kindPromptNotes?.[item.kind];
+    const repositoryPolicy = `\n## Repository Policy\n\n${profile.promptNote}${kindPolicy ? `\n\n${kindPolicy}` : ""}\n`;
+    const contextJson = contextJsonForPrompt(context, item.kind, runtimeHints.networkCapability);
     const prEvidence =
       item.kind === "pull_request"
         ? buildPullRequestReviewEvidence({
@@ -496,8 +558,12 @@ export function createReviewRuntime({
           prEvidence.introduced,
         ])}\n\`\`\`\n`
       : "";
+    const provenanceEvidence = prEvidence
+      ? `\n## Provenance Evidence\n\n\`\`\`json\n${serializeReviewContext(
+          runtimeHints.provenanceEvidence ?? PROVENANCE_NOT_RUN,
+        )}\n\`\`\`\n`
+      : "";
     const schema = reviewDecisionSchemaText();
-    const profile = repositoryProfileFor(item.repo);
     const proofScratchDir = runtimeHints.proofScratchDir?.trim();
     const mediaProofPrompt = mediaProofRuntimePrompt(
       runtimeHints.mediaProofSummary,
@@ -521,12 +587,10 @@ ${additionalPrompt.trim()}
     const tokenDescription = runtimeHints.hasGitHubToken
       ? "A read-only GitHub App token for the target repository is available as `GH_TOKEN` (contents, issues, and pull requests read; expires within the hour); use it for `gh api`/authenticated GitHub reads so public rate limits do not apply; it cannot write. Never place it in a URL, log it, or send it to any non-GitHub host."
       : "No GitHub token is supplied to the review process; use public endpoints or pre-fetched context.";
-    const text = `${prompt}
-
+    const text = `${prompt}${repositoryPolicy}
 ## Repository State
 
 - Target repo: ${item.repo}
-- Repository policy: ${profile.promptNote}
 - Item: #${item.number}
 - Type: ${item.kind}
 - Title: ${omitReviewedFixtureReferences(item.title)}
@@ -543,9 +607,9 @@ ${additionalPrompt.trim()}
 - ${networkDescription}
 - ${tokenDescription}
 - Linked screenshots and videos are downloaded before review into the media proof manifest; read those files rather than re-fetching.
-- ${runtimeHints.networkCapability === "unrestricted" ? "Treat the target checkout as read-only; OpenClaw gateway execution does not enforce the Codex filesystem sandbox." : "The target checkout is read-only."} Use ${proofScratchDir ? `\`${proofScratchDir}\`` : "the proof scratch directory"} for evidence and generated video stills/contact sheets.
+- ${runtimeHints.networkCapability === "unrestricted" ? "Treat the target checkout as read-only; OpenClaw gateway execution does not enforce the Codex filesystem sandbox." : "The target checkout is read-only."} Use ${proofScratchDir ? `\`${proofScratchDir}\`` : "the proof scratch directory"} for evidence and generated video stills/contact sheets.${prEvidence && runtimeHints.historyCoverage ? `\n- ${reviewHistoryCapability(runtimeHints.historyCoverage, runtimeHints.networkCapability)}` : ""}
 ${mediaProofPrompt}
-${introductionEvidence}
+${introductionEvidence}${provenanceEvidence}
 
 ## GitHub Context
 
@@ -560,8 +624,8 @@ ${extra}
       text,
       telemetry: {
         promptChars: text.length,
-        staticPromptChars: prompt.length,
-        contextChars: contextJson.length + introductionEvidence.length,
+        staticPromptChars: prompt.length + repositoryPolicy.length,
+        contextChars: contextJson.length + introductionEvidence.length + provenanceEvidence.length,
         schemaChars: schema.length,
         additionalPromptChars: additionalPrompt.trim().length,
       },
@@ -596,7 +660,11 @@ ${extra}
     return buildReviewPrompt(item, context, git, additionalPrompt, runtimeHints).text;
   }
 
-  function codexFailureReason(detail: string, errorCode?: string | null, retryHint = ""): string {
+  function codexFailureReason(
+    detail: string,
+    errorCode?: string | null,
+    retryHint = "",
+  ): CodexFailureReason {
     if (detail.includes("Codex dirtied the OpenClaw checkout")) return "dirty checkout";
     if (detail.includes("did not produce output")) return "missing structured output";
     if (detail.includes("invalid JSON")) return "invalid structured output";
@@ -625,39 +693,13 @@ ${extra}
     return "codex execution failed";
   }
 
-  function codexFailureLogKind(markdown: string): string {
-    if (/retryable codex transport failure \(capacity\)/i.test(markdown)) {
-      return "provider_throttle";
-    }
-    if (/retryable codex transport failure \(network\)/i.test(markdown)) {
-      return "transport_network";
-    }
-    if (
-      /missing structured output|invalid structured output|output buffer overflow/i.test(markdown)
-    ) {
-      return "content_or_output";
-    }
-    if (/model unavailable or access denied/i.test(markdown)) return "model_access";
-    if (/Codex review failed: timeout/i.test(markdown)) return "timeout";
-    return "codex_execution";
-  }
-
-  function codexFailureLogKindForTest(markdown: string): string {
-    return codexFailureLogKind(markdown);
-  }
-
-  function codexFailureDecision(
+  function codexFailure(
     status: number | null,
     detail: string,
     stdout = "",
     stderr = "",
-    processResult: {
-      errorCode?: string | null;
-      signal?: NodeJS.Signals | null;
-      diagnostic?: string;
-      retryHint?: string;
-    } = {},
-  ): Decision {
+    processResult: CodexProcessFailure = {},
+  ): { decision: Decision; logKind: CodexFailureLogKind } {
     const failureDetail = redactInternalCodexModel(detail || "No failure detail.");
     const safeStdout = redactedOutputTail(stdout || "No stdout captured.");
     const safeStderr = redactedOutputTail(stderr || "No stderr captured.");
@@ -668,12 +710,13 @@ ${extra}
     const terminalError = codexTerminalErrorDetail(diagnostic);
     const processFailureDetail = [failureDetail, diagnostic].filter(Boolean).join("\n");
     const reason = codexFailureReason(processFailureDetail, processResult.errorCode, retryHint);
-    return {
+    const decision: Decision = {
       decision: "keep_open",
       closeReason: "none",
       confidence: "low",
       summary: `Codex review failed: ${reason}${status === null ? "" : ` (exit ${status})`}.`,
       changeSummary: "Review failed before ClawSweeper could summarize the requested change.",
+      changeExample: { scenario: "", before: "", after: "" },
       systemContext: "",
       architectureDiagram: "",
       evidence: [
@@ -749,6 +792,19 @@ ${extra}
         status: "unreadable_or_unclear",
         summary: "AGENTS.md policy status was not assessed because the Codex review failed.",
       },
+      productReview: {
+        kind: "not_applicable",
+        userProblem: "",
+        fixScope: "not_applicable",
+        worthIt: "not_applicable",
+        reason: "Product review was not assessed because the Codex review failed.",
+      },
+      provenance: [],
+      testingReview: {
+        proofPath: "not_applicable",
+        lowValueTests: [],
+        missingE2e: "",
+      },
       reviewFindings: [],
       securityReview: {
         status: "not_applicable",
@@ -771,24 +827,6 @@ ${extra}
       telegramVisibleProof: {
         status: "not_needed",
         summary: "Telegram visible proof was not assessed because the Codex review failed.",
-      },
-      liveProofPlan: {
-        status: "not_applicable",
-        surface: "none",
-        terminalCompletion: "not_applicable",
-        reason: "Live proof was not assessed because the Codex review failed.",
-        payoff: {
-          kind: "static_text",
-          justification: "No recording payoff was assessed because the Codex review failed.",
-        },
-        entry: "",
-        steps: [],
-      },
-      mantisRecommendation: {
-        status: "not_recommended",
-        scenario: "none",
-        reason: "Mantis was not assessed because the Codex review failed.",
-        maintainerComment: "",
       },
       featureShowcase: {
         status: "none",
@@ -815,6 +853,27 @@ ${extra}
       workValidation: [],
       workLikelyFiles: [],
     };
+    return { decision, logKind: CODEX_FAILURE_LOG_KINDS[reason] };
+  }
+
+  // Builds the failed-review decision and log kind for one per-item review error.
+  function codexReviewFailure(error: unknown): {
+    decision: Decision;
+    logKind: CodexFailureLogKind;
+  } {
+    if (error instanceof CodexReviewError) {
+      return codexFailure(error.status, error.message, error.stdout, error.stderr, {
+        errorCode: error.errorCode,
+        signal: error.signal,
+        diagnostic: error.diagnostic,
+        ...(error.retryHint ? { retryHint: error.retryHint } : {}),
+      });
+    }
+    return codexFailure(
+      null,
+      error instanceof Error ? error.message : String(error),
+      "Per-item Codex failure; continuing with the rest of the shard.",
+    );
   }
 
   function codexFailureDecisionForTest(
@@ -822,14 +881,19 @@ ${extra}
     detail: string,
     stdout = "",
     stderr = "",
-    processResult: {
-      errorCode?: string | null;
-      signal?: NodeJS.Signals | null;
-      diagnostic?: string;
-      retryHint?: string;
-    } = {},
+    processResult: CodexProcessFailure = {},
   ): Decision {
-    return codexFailureDecision(status, detail, stdout, stderr, processResult);
+    return codexFailure(status, detail, stdout, stderr, processResult).decision;
+  }
+
+  function codexFailureLogKindForTest(
+    status: number | null,
+    detail: string,
+    stdout = "",
+    stderr = "",
+    processResult: CodexProcessFailure = {},
+  ): CodexFailureLogKind {
+    return codexFailure(status, detail, stdout, stderr, processResult).logKind;
   }
 
   function redactedOutputTail(value: string | Buffer | null | undefined, maxLength = 6000): string {
@@ -987,11 +1051,17 @@ ${extra}
     });
   }
 
-  function reviewEnvironment(preserveCodexAuth?: boolean): NodeJS.ProcessEnv {
-    return untrustedCodexEnv({
+  function reviewEnvironment(sandboxMode: string, preserveCodexAuth?: boolean): NodeJS.ProcessEnv {
+    const env = untrustedCodexEnv({
       ghToken: process.env.CLAWSWEEPER_PROOF_INSPECTION_TOKEN,
       preserveCodexAuth,
     });
+    // The allowlisted proxy rejects Git's POST object fetch with HTTP 403. The
+    // host prefetches the history the reviewer needs; any other miss fails at
+    // once. Unrestricted runners keep lazy fetch for reads beyond the prefetch.
+    if (reviewNetworkCapability(sandboxMode, env).networkCapability === "allowlisted-proxy")
+      env.GIT_NO_LAZY_FETCH = "1";
+    return env;
   }
 
   function runCodex(options: {
@@ -1039,7 +1109,8 @@ ${extra}
       : prepareMediaProofArtifacts(options.context, proofScratchDir);
     const outputPath = join(options.workDir, `${options.item.number}.json`);
     if (existsSync(outputPath)) unlinkSync(outputPath);
-    const codexEnv = options.reviewEnv ?? reviewEnvironment(options.preserveCodexAuth);
+    const codexEnv =
+      options.reviewEnv ?? reviewEnvironment(options.sandboxMode, options.preserveCodexAuth);
     const prompt =
       options.prompt ??
       buildReviewPrompt(options.item, options.context, options.git, options.additionalPrompt, {
@@ -1061,8 +1132,8 @@ ${extra}
       options.item.kind === "pull_request"
         ? {
             kind: "committed",
-            baseSha: stringOrUndefined(asRecord(pull.base).sha) ?? "",
-            headSha: stringOrUndefined(asRecord(pull.head).sha) ?? "",
+            baseSha: nonBlankStringOrUndefined(asRecord(pull.base).sha) ?? "",
+            headSha: nonBlankStringOrUndefined(asRecord(pull.head).sha) ?? "",
           }
         : { kind: "prompt" };
     const checkoutInspection = runReviewCheckoutInspection({
@@ -1113,7 +1184,7 @@ ${extra}
       options.item.kind === "pull_request"
         ? reviewProofCapabilityFromEnv(
             options.item.repo,
-            stringOrUndefined(asRecord(pull.head).sha) ?? "",
+            nonBlankStringOrUndefined(asRecord(pull.head).sha) ?? "",
           )
         : undefined;
     const result = runAgentProcess({
@@ -1187,7 +1258,10 @@ ${extra}
         return {
           ...verifyLikelyOwnerHistory(decision, {
             checkoutDir: options.openclawDir,
-            reviewedCommitShas: [options.git.mainSha, stringOrUndefined(asRecord(pull.head).sha)],
+            reviewedCommitShas: [
+              options.git.mainSha,
+              nonBlankStringOrUndefined(asRecord(pull.head).sha),
+            ],
           }),
           localCheckoutAccess: "verified",
         };
@@ -1263,13 +1337,11 @@ ${extra}
     reviewDecisionSchemaText,
     reviewPromptForTest,
     reviewPromptTelemetryForTest,
-    reviewPromptTemplate,
+    reviewPromptTemplates,
     runCodexForTest,
-    CodexReviewError,
     buildReviewPrompt,
     reviewEnvironment,
-    codexFailureDecision,
-    codexFailureLogKind,
+    codexReviewFailure,
     codexFailureReason,
     codexReviewFailureRetryable,
     defaultLocalRangeArtifactDir,

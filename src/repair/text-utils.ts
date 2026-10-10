@@ -26,10 +26,6 @@ export function compactCommentText(value: unknown, maxLength: number): string {
   return `${text.slice(0, maxLength - 3).trimEnd()}...`;
 }
 
-export function escapeRegExp(value: unknown) {
-  return String(value ?? "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
 export function slug(value: unknown, fallback = "unknown", maxLength = 120) {
   return (
     String(value ?? "")

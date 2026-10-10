@@ -7,13 +7,9 @@ import {
   type TerminalReviewFailureReason,
 } from "../exact-review-failure-reason.js";
 import { repoRoot } from "./paths.js";
-import { DEFAULT_TRUSTED_BOTS } from "./config.js";
-import {
-  commaSet,
-  isAllowedMutationActor,
-  issueNumberFromUrl,
-  writePayload,
-} from "./comment-router-utils.js";
+import { CLAWSWEEPER_BOT_LOGINS } from "../clawsweeper-policy.js";
+import { isAllowedMutationActor } from "./comment-router/admission.js";
+import { commaSet, issueNumberFromUrl, writePayload } from "./comment-router-utils.js";
 
 const REVIEW_PROGRESS_START = "<!-- clawsweeper-review-progress:start -->";
 const REVIEW_PROGRESS_END = "<!-- clawsweeper-review-progress:end -->";
@@ -238,7 +234,7 @@ export function parseOptions(argv: string[]): Options {
     trustedBots: commaSet(
       args["trusted-bots"] ??
         process.env.CLAWSWEEPER_TRUSTED_BOTS ??
-        [...DEFAULT_TRUSTED_BOTS, "clawsweeper"].join(","),
+        [...CLAWSWEEPER_BOT_LOGINS].join(","),
     ),
     state,
     failureReason,

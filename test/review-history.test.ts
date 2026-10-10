@@ -87,6 +87,10 @@ function keepOpenPullReport(overrides = {}): string {
     work_candidate: "none",
     pull_head_sha: CURRENT_REVIEW_HEAD_SHA,
     reviewed_at: "2026-06-24T12:00:00.000Z",
+    next_step: JSON.stringify({
+      kind: "required",
+      text: "Fix the remaining finding before merge.",
+    }),
     ...overrides,
   })}
 
@@ -463,7 +467,7 @@ test("durable review identity changes with every verdict-bearing section", () =>
     ],
     [
       "likely owner",
-      `${base}\n## Likely Related People\n\n- **@cache-team:** owns cache invalidation\n  - reason: Maintains the review cache.\n  - confidence: high\n`,
+      `${base}\n## Likely Related People\n\n- **Cache Author:** source-line author\n  - attribution source: raw_parent_line_v1\n  - reason: Raw commit adds src/cache.ts:1.\n  - confidence: high\n  - commits: ${"c".repeat(40)}\n  - files: src/cache.ts\n`,
     ],
     [
       "label rationale",
@@ -555,7 +559,10 @@ test("previous durable comment converts into a ledger cycle", () => {
 
 test("next-step priority bullets do not become review findings", () => {
   const comment = renderReviewCommentFromReport(keepOpenPullReport(), "none");
-  assert.match(comment, /## Before merge[\s\S]*- \[ \] \*\*Complete next step \(P2\)\*\*/);
+  assert.match(
+    comment,
+    /## Before merge[\s\S]*- \[ \] \*\*Complete next step\*\* - Fix the remaining/,
+  );
   assert.deepEqual(reviewHistoryCycleFromCommentBody(comment)?.findings, []);
 });
 
@@ -1024,13 +1031,8 @@ test("late findings round-trip through decisions and comment rendering", () => {
 });
 
 test("review prompt and schema document re-review continuity", () => {
-  const prompt = readFileSync("prompts/review-item.md", "utf8");
   const schema = readFileSync("schema/clawsweeper-decision.schema.json", "utf8");
 
-  assert.match(prompt, /re-review continuity/);
-  assert.match(prompt, /never hold back a visible concern for a later cycle/);
-  assert.match(prompt, /`lateFinding: true`/);
-  assert.match(prompt, /git diff <earlier-sha>\.\.HEAD -- <file>/);
   assert.match(schema, /"lateFinding"/);
 });
 

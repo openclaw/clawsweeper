@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { createHash } from "node:crypto";
+import { sha256 } from "../content-hash.js";
 import { existsSync, lstatSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { relative, resolve, sep } from "node:path";
 
@@ -45,7 +45,7 @@ function fileDigest(path: string): string | null {
   const stat = lstatSync(path);
   if (!stat.isFile() || stat.isSymbolicLink())
     throw new Error(`state delta path is not a regular file: ${path}`);
-  return createHash("sha256").update(readFileSync(path)).digest("hex");
+  return sha256(readFileSync(path));
 }
 
 if (process.argv[1]?.endsWith("state-delta-paths.js")) {

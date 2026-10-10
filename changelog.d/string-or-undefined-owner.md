@@ -1,0 +1,1 @@
+- `src/value-coerce.ts` now owns `stringOrUndefined` (any string) and `nonBlankStringOrUndefined` (a string with non-whitespace text, returned unchanged); callers import them instead of taking `stringOrUndefined` through dependency objects, and the two divergent local copies are gone.

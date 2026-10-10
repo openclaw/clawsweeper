@@ -43,6 +43,11 @@ jobs:
   dispatch:
     needs: hosted-target-admission
     runs-on: ubuntu-latest
+    # id-token proves this repository, event, branch, and run to the queue.
+    # The job never checks out or executes pull request code.
+    permissions:
+      contents: read
+      id-token: write
     if: ${{ needs.hosted-target-admission.outputs.outcome == 'public' && !(endsWith(github.actor, '[bot]') && (github.event.action == 'labeled' || github.event.action == 'unlabeled')) }}
     env:
       HAS_CLAWSWEEPER_APP_PRIVATE_KEY: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY != '' }}
@@ -210,6 +215,7 @@ jobs:
           SOURCE_EVENT: ${{ github.event_name }}
           SOURCE_ACTION: ${{ github.event.action }}
           REVIEW_ACKNOWLEDGEMENT_COMMENT_ID: ${{ steps.pr_acknowledgement.outputs.status_comment_id }}
+          TARGET_DISPATCH_URL: https://clawsweeper.openclaw.ai/github/target-dispatch
         run: |
           if [ -z "$GH_TOKEN" ]; then
             echo "::notice::Skipping ClawSweeper dispatch because no dispatch credential is configured."
@@ -322,7 +328,7 @@ jobs:
           }
           NODE
           )"
-          payload="$(jq -nc \
+          client_payload="$(jq -nc \
             --arg target_repo "$TARGET_REPO" \
             --arg target_branch "$TARGET_BRANCH" \
             --argjson item_number "$ITEM_NUMBER" \
@@ -331,7 +337,28 @@ jobs:
             --arg source_action "$SOURCE_ACTION" \
             --argjson source_identity "$source_identity_json" \
             --argjson supersedes_in_progress "$SUPERSEDES_IN_PROGRESS" \
-            '{event_type:"clawsweeper_item",client_payload:({target_repo:$target_repo,target_branch:$target_branch,item_number:$item_number,item_kind:$item_kind,source_event:$source_event,source_action:$source_action,supersedes_in_progress:$supersedes_in_progress} + $source_identity)}')"
+            '{target_repo:$target_repo,target_branch:$target_branch,item_number:$item_number,item_kind:$item_kind,source_event:$source_event,source_action:$source_action,supersedes_in_progress:$supersedes_in_progress} + $source_identity')"
+          # Direct queue intake costs no ClawSweeper Actions run. Any failure
+          # falls back to the repository_dispatch relay, so no event is lost.
+          if [ -n "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ] &&
+            [ -n "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}" ] &&
+            oidc_token="$(curl --fail --silent --show-error --connect-timeout 5 --max-time 15 \
+              --header "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+              --get --data-urlencode "audience=$TARGET_DISPATCH_URL" \
+              "$ACTIONS_ID_TOKEN_REQUEST_URL" | jq -er '.value | strings | select(length > 0)')"; then
+            echo "::add-mask::$oidc_token"
+            if direct_response="$(curl --fail --silent --show-error --connect-timeout 5 --max-time 20 \
+              --request POST \
+              --header "authorization: Bearer $oidc_token" \
+              --header "content-type: application/json" \
+              --data "$client_payload" \
+              "$TARGET_DISPATCH_URL")"; then
+              echo "Queued exact ClawSweeper review directly: $(jq -c . <<< "$direct_response" 2>/dev/null || echo '{}')"
+              exit 0
+            fi
+          fi
+          echo "::notice::Direct ClawSweeper queue intake was unavailable; dispatching through repository_dispatch."
+          payload="$(jq -nc --argjson client_payload "$client_payload" '{event_type:"clawsweeper_item",client_payload:$client_payload}')"
           gh api repos/openclaw/clawsweeper/dispatches \
             --method POST \
             --input - <<< "$payload"

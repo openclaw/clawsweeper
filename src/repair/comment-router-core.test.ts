@@ -2,13 +2,15 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
-  automergeMergeFailureRepairReason,
-  automergeRebaseRepairReason,
   existingRepairLoopModeOutcome,
   isAutomergeMergeStateReady,
   latestRepairLoopResumeTime,
   maintainerAutomergeOptInApprovesNeedsHuman,
 } from "./comment-router-core.js";
+import {
+  automergeMergeFailureRepairReason,
+  automergeRebaseRepairReason,
+} from "./comment-router/dispatch.js";
 
 test("automerge rebase repair reason detects dirty merge state", () => {
   assert.match(
@@ -65,14 +67,43 @@ test("explicit maintainer replay records resume intent for an enabled automerge"
   );
   assert.equal(
     maintainerAutomergeOptInApprovesNeedsHuman({
-      reason:
-        "No repair lane is needed; the member-sponsored automerge path should make the final exact-head decision.",
+      hold: "not_opted_in",
+      findings: "0",
       commentCreatedAt: "2026-07-18T21:31:21Z",
       optInTime: resumeTime,
       liveVerification: "passed",
     }),
     true,
   );
+});
+
+test("automerge opt-in approval reads the typed needs-human hold, not review prose", () => {
+  const approves = (attrs: Record<string, string | undefined>) =>
+    maintainerAutomergeOptInApprovesNeedsHuman({
+      ...attrs,
+      commentCreatedAt: "2026-07-18T21:31:21Z",
+      optInTime: Date.parse("2026-07-18T21:40:00Z"),
+    });
+  assert.equal(approves({ hold: "not_opted_in", findings: "0", liveVerification: "absent" }), true);
+  assert.equal(approves({ hold: "proof", findings: "0", liveVerification: "absent" }), true);
+  // A passed live verification cannot also be the missing proof that the opt-in waives.
+  assert.equal(approves({ hold: "proof", findings: "0", liveVerification: "passed" }), false);
+  assert.equal(
+    approves({ hold: "maintainer_decision", findings: "0", liveVerification: "absent" }),
+    true,
+  );
+  // Security and integrity holds stay hard.
+  for (const hold of ["security", "review_identity", "normalization_failed", "review_failed"]) {
+    assert.equal(approves({ hold, findings: "0", liveVerification: "absent" }), false, hold);
+  }
+  assert.equal(approves({ hold: "blocked", findings: "0", liveVerification: "absent" }), false);
+  assert.equal(
+    approves({ hold: "not_opted_in", findings: "1", liveVerification: "absent" }),
+    false,
+  );
+  // Legacy verdicts without typed attributes fail closed.
+  assert.equal(approves({ liveVerification: "absent" }), false);
+  assert.equal(approves({ hold: "not_opted_in", liveVerification: "absent" }), false);
 });
 
 test("automerge merge failure repair reason detects GitHub merge conflict errors", () => {

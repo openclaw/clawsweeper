@@ -93,13 +93,6 @@ test("hosted review requires explicit debug retention and destination", () => {
   );
 });
 
-test("canonical hosted review launchers declare required debug retention", () => {
-  const workflow = readFileSync(".github/workflows/sweep.yml", "utf8");
-  const start = workflow.indexOf("--artifact-dir artifacts/event");
-  assert.notEqual(start, -1);
-  assert.match(workflow.slice(start, start + 220), /--output-retention debug/);
-});
-
 test("transient review output is private and removed by its owner cleanup", () => {
   const first = createTransientReviewOutput("clawsweeper-output-test-");
   const second = createTransientReviewOutput("clawsweeper-output-test-");
@@ -127,7 +120,9 @@ test(
           `import { createTransientReviewOutput } from ${JSON.stringify(new URL("../dist/review-output-policy.js", import.meta.url).href)};`,
           `const output = createTransientReviewOutput("clawsweeper-signal-test-");`,
           `console.log(output.path);`,
-          `spawnSync(process.execPath, ["-e", "setTimeout(() => {}, 1000)"]);`,
+          // The blocker outlives the SIGTERMed child, so its late coverage write could
+          // land while the runner reads profiles; it carries none.
+          `spawnSync(process.execPath, ["-e", "setTimeout(() => {}, 1000)"], { env: { ...process.env, NODE_V8_COVERAGE: undefined } });`,
           `console.log("unexpected completion");`,
         ].join("\n"),
       ],

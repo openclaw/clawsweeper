@@ -12,7 +12,7 @@ import {
   expiredReviewStartStatusLeases,
   freshExactHeadReviewStartLease,
   supersededReviewStartStatusLeases,
-} from "./repair/comment-router-core.js";
+} from "./repair/comment-router/admission.js";
 import type { ReviewCommentWorkflowDependencies } from "./clawsweeper-review-comment-dependencies.js";
 import type { createReviewCommentIdentity } from "./clawsweeper-review-comment-identity.js";
 import type { createReviewCommentState } from "./clawsweeper-review-comment-state.js";

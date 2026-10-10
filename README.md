@@ -268,8 +268,8 @@ Common commands:
   current state: `👀` for acknowledgement, `🧹` for review, `🔧` for repair, and
   `✅` for completed/paused work.
 - Freeform `@clawsweeper ...` mentions and explicit `ask ...` questions dispatch
-  the maintainer-only assist lane. Assist runs the internal model with high reasoning,
-  a 120-second per-item timeout, and its own five-job cap. It posts a separate
+  the maintainer-only assist lane. Assist runs the internal model with medium reasoning and priority (fast)
+  service, a 120-second per-item timeout, and its own five-job cap. It posts a separate
   non-durable answer comment and never edits the durable ClawSweeper review
   comment, closes, merges, labels, pushes, repairs, or emits review/apply
   markers. The model job has read-only GitHub access and emits a bounded artifact;
@@ -440,10 +440,15 @@ Review is proposal-only. It never closes items.
   and `apply_after_review` inputs are retired. Use the separate `apply_existing`
   lane to apply eligible proposals.
 - Each admitted item gets its own review workflow for the selected target.
-- Codex reviews use the configured model profiles. OWNER, MEMBER, and COLLABORATOR-authored issues
-  and pull requests use high reasoning with fast service; other items use medium
-  reasoning with standard service. Sweep planning, assist answers, and
-  close-coverage proofs use the configured ordinary-item defaults. Reviews have
+- Codex reviews use `gpt-6.1-sol` with medium reasoning in the direct API auth
+  modes (`login` and `proxy`); `clawrouter` mode instead runs its private
+  inference alias. Issues and pull requests authored by an OWNER, MEMBER, or
+  COLLABORATOR, or by anyone whose live repository permission is `write`,
+  `maintain`, or `admin`, use priority (fast) service; other items use standard
+  service. Write access alone does not make an item maintainer-authored for
+  close policy. Assist answers always use priority service because only
+  write-access maintainers can request them. Sweep planning and close-coverage
+  proofs use the configured ordinary-item defaults. Reviews have
   a 10-minute per-item timeout.
 - Each item becomes a flat report under
   `records/<repo-slug>/items/<number>.md` with the decision, evidence,
@@ -651,7 +656,8 @@ the [MCP Apps sandbox-origin rejection fixture](https://github.com/openclaw/open
 the [Gateway config CDP-redaction fixture](https://github.com/openclaw/openclaw/blob/4b5987829d0f82ea44ae50f2f418ffe5ea445e7f/src/gateway/server.config-patch.test.ts),
 the [mocked marketplace telemetry-redaction fixture](https://github.com/openclaw/openclaw/blob/9c5ee4676d0732e72ee9a939ae4918dc89bcaab8/src/cli/plugins-cli.marketplace-refresh.test.ts),
 the Signal URL-rejection fixtures in [client tests](https://github.com/openclaw/openclaw/blob/75d633a7b97240280ebf13e121a1960eb2ec2765/extensions/signal/src/client.test.ts#L172)
-and [container tests](https://github.com/openclaw/openclaw/blob/41dd2e04897b9bdbde971cad8c6ff21ecccd38b7/extensions/signal/src/client-container.test.ts#L1461),
+and [container tests](https://github.com/openclaw/openclaw/blob/41dd2e04897b9bdbde971cad8c6ff21ecccd38b7/extensions/signal/src/client-container.test.ts#L1461)
+(including the exact [table-driven replacement](https://github.com/openclaw/openclaw/blob/1e49231d063bad36e4b6b187727d957fbfc7fdfb/extensions/signal/src/client-container.test.ts#L78)),
 and the OpenClaw config [URL-redaction](https://github.com/openclaw/openclaw/blob/5fe22a7d88919f260e7999fc775733feff3cb1fa/src/config/redact-snapshot.test.ts)
 and [restoration fixtures](https://github.com/openclaw/openclaw/blob/5fe22a7d88919f260e7999fc775733feff3cb1fa/src/config/redact-snapshot.restore.test.ts)
 after a complete scan. Static host policy associates each
@@ -682,7 +688,10 @@ and the reviewed Crabbox PostgreSQL operations example use a separate flat
 attribution table without changing the legacy URI policy above. Each row binds
 the exact detector ID and name, observed native decoder, `Raw`, `RawV2`, and
 complete source-line SHA-256 digests, path, and mode. The logging rows permit
-only their observed `PLAIN` or `ESCAPED_UNICODE` variants; the Crabbox
+only their observed `PLAIN`, `ESCAPED_UNICODE`, or `HTML` variants. `HTML` is
+qualified only for the [rewritten fixtures](https://github.com/openclaw/openclaw/blob/58b18602329e5f6113056aa34c6daba0ecddd7f8/src/logging/redact.test.ts)
+from OpenClaw #160879; the pre-rewrite rows remain for merge bases that predate
+it ([proof](docs/proof/logging-redaction-fixtures/README.md)). The Crabbox
 documentation row permits only its observed `PLAIN` or `HTML` variants. These
 exact attribution rows are role-neutral; every logical staged reference must
 independently match the row and have a committed `base` or `head` role. URI
@@ -692,7 +701,10 @@ every occurrence exactly; missing, extra, reordered, or changed lines refuse
 admission. Derived host, username, and password fields must match native metadata;
 the host preserves explicit default ports and original spelling, as TruffleHog
 does. MongoDB and Postgres findings bind the scanner-reported line
-and their exact native metadata shape. Any emitted subset and order may qualify;
+and their exact native metadata shape. URI findings are attributed to the plain
+literal wherever it occurs in the blob or patch; a decoded finding is not yet
+bound to its own source location ([#1724](https://github.com/openclaw/clawsweeper/issues/1724)).
+Any emitted subset and order may qualify;
 duplicate exact findings, unknown variants, lossy decoder buckets, or an
 unqualified deduplicated blob reference refuse admission.
 
@@ -1116,7 +1128,7 @@ default, subject to the selected repository profile; pass `target_repo`,
 `apply_kind=issue`, or `apply_kind=pull_request` to narrow a manual run.
 
 Scheduled runs cover the configured product profiles. `openclaw/openclaw` runs
-normal backfill hourly; scheduled hot intake and normal backfill share a
+normal backfill every 20 minutes; scheduled hot intake and normal backfill share a
 32-worker cap in the durable review queue. `openclaw/clawhub` runs on offset review/apply/audit crons so its reports
 live under `records/openclaw-clawhub/` without colliding with default repo
 records. `openclaw/clawsweeper` has a scheduled read-only audit row and is
@@ -1138,7 +1150,9 @@ control-plane workflows and do not consume these 128 slots.
 Lane limits are derived from that number: manual normal review defaults to 89
 requested shards and hot intake to 44; the interactive and expansion reserves
 leave 104 background slots when quiet. Scheduled work has a separate
-32-slot admission cap and a 60-review/hour target with a six-item burst. The
+32-slot admission cap and fills what organic reviews leave of a 220-review/hour
+admission target with a 24-item burst; hot intake is capped at 30/hour. Organic
+work remains unconditional, so this is not a total-execution or spend cap. The
 existing repair/issue implementation lanes use 40% of `workers.max`, currently
 51 live workers. Imported gitcrawl cluster repair allows 2 live workers by default.
 Exact-item review, repair, and issue implementation are priority work; normal
@@ -1170,14 +1184,19 @@ pnpm run oxformat
 ```
 
 `oxformat` is an alias for `oxfmt`; there is no separate `oxformat` pnpm package.
-The `CI` GitHub Actions workflow uses the latest Node 24 release and runs
-`pnpm run check` on pushes, pull requests, and manual dispatches. The check gate
-includes the full test suite, a strict changed-surface coverage threshold, and a
-full compiled-repo coverage ratchet. It builds once, runs independent static and
-lint checks with bounded phase-level parallelism, and uses the full coverage run
-as the single source of complete test results. Standalone `test`, `test:repair`,
-and coverage commands still build their required outputs; their internal
-`*:no-build` variants are for the composed gate after `build:all`.
+The `CI` GitHub Actions workflow uses the latest Node 24 release. Locally,
+`pnpm run check` runs the whole gate: the full test suite, a strict
+changed-surface coverage threshold, and a full compiled-repo coverage ratchet.
+It builds once, runs `check:fast` (static checks, build, lint, and the
+changed-surface coverage), then the full coverage run. CI splits the same gate
+into parallel jobs on pushes, pull requests, and manual dispatches:
+`check fast gates` runs `check:fast`; `check tests (i/N)` jobs each run one
+round-robin shard of the suite and upload its raw V8 coverage profiles; and
+`check coverage` replays every shard's profiles through Node's own coverage
+report with the same thresholds. The single `pnpm check` job passes only when
+all of them pass. Standalone `test`, `test:repair`, and coverage commands still
+build their required outputs; their internal `*:no-build` variants are for the
+composed gate after `build:all`.
 
 Node test files are expanded by `scripts/run-node-tests.mjs` instead of the
 shell, so the same targets work on Linux, macOS, and Windows. The runner defaults
@@ -1185,7 +1204,10 @@ to the smaller of the machine's available parallelism and 16, prints the chosen
 value, and accepts an explicit `--test-concurrency` override for diagnostics.
 `CLAWSWEEPER_TEST_CONCURRENCY` sets the default for CLI runs when that flag is
 absent, allowing controlled concurrency experiments through package scripts.
-CI retains the adaptive default. Crabbox diagnostic bundles under `.crabbox/` are generated scratch
+CI retains the adaptive default. The runner owns each target's coverage
+thresholds (`--coverage`), and its `--shard`, `--coverage-out`, and
+`--coverage-from` options are the CI shard and merge steps; see
+`node scripts/run-node-tests.mjs --help`. Crabbox diagnostic bundles under `.crabbox/` are generated scratch
 and are ignored by Git.
 
 On Linux and macOS, the shared synthetic GitHub CLI fixtures clear

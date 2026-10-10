@@ -49,10 +49,6 @@ function reviewReport(
     item_source_revision: "a".repeat(64),
     review_lease_owner: "fixture",
     review_lease_comment_id: "1059",
-    config_surface_change: "false",
-    config_surface_keys: "[]",
-    data_model_change: "false",
-    data_model_surfaces: "[]",
     next_step: JSON.stringify({ kind: "none", text: "" }),
     ...frontMatter,
   })}
@@ -114,8 +110,7 @@ test("the compact v1 fixture matches producer state and identity without snapsho
   const reports = {
     ready: reviewReport(),
     blocked: reviewReport({
-      data_model_change: "true",
-      data_model_surfaces: '["database schema"]',
+      real_behavior_proof_data_model_compatibility: "insufficient",
     }),
     "needs-changes": reviewReport({ work_candidate: "queue_fix_pr" }, "", finding()),
   } as const;
@@ -125,10 +120,54 @@ test("the compact v1 fixture matches producer state and identity without snapsho
       fixture.identityMarker,
     ]);
   }
-  assert.match(reviewAutomationMarkersFromReport(reports.ready), /clawsweeper-verdict:needs-human/);
+  // The router routes needs-human verdicts on these typed attributes, never on comment prose.
+  assert.match(
+    reviewAutomationMarkersFromReport(reports.ready),
+    /clawsweeper-verdict:needs-human [^>]* hold=not_opted_in findings=0 -->/,
+  );
+  assert.match(
+    reviewAutomationMarkersFromReport(reports.blocked),
+    /clawsweeper-verdict:needs-human [^>]* hold=blocked findings=0 -->/,
+  );
   assert.match(
     reviewAutomationMarkersFromReport(reports["needs-changes"]),
     /clawsweeper-action:fix-required/,
+  );
+});
+
+test("a maintainer decision is a waivable hold only when it is the one blocker", () => {
+  const maintainer_decision = JSON.stringify({
+    required: true,
+    kind: "product_direction",
+    question: "Which compatibility contract should ship?",
+    rationale: "This needs an owner ruling.",
+    options: [
+      { title: "Keep compatibility", body: "Retain the old contract.", recommended: true },
+      { title: "Adopt the new contract", body: "Document the break.", recommended: false },
+    ],
+    likelyOwner: { person: "@owner", reason: "Owns the contract.", confidence: "high" },
+  });
+  assert.match(
+    reviewAutomationMarkersFromReport(reviewReport({ maintainer_decision })),
+    /clawsweeper-verdict:needs-human [^>]* hold=maintainer_decision findings=0 -->/,
+  );
+  assert.match(
+    reviewAutomationMarkersFromReport(
+      reviewReport({
+        maintainer_decision,
+        real_behavior_proof_data_model_compatibility: "insufficient",
+      }),
+    ),
+    /clawsweeper-verdict:needs-human [^>]* hold=blocked findings=0 -->/,
+  );
+  assert.match(
+    reviewAutomationMarkersFromReport(
+      reviewReport(
+        { maintainer_decision },
+        "## Security Review\n\nStatus: needs_attention\n\nSummary: Confirm the token boundary.\n\nConcerns:\n\n- none",
+      ),
+    ),
+    /clawsweeper-verdict:needs-human [^>]* hold=security findings=0 -->/,
   );
 });
 
@@ -151,17 +190,16 @@ test("structured next-step intent controls readiness independently of advice wor
   }
 });
 
-test("historical reports retain the existing conservative next-step interpretation", () => {
+test("historical reports without a typed next step fail closed instead of reading advice prose", () => {
   const report = reviewReport()
     .replace(/^next_step:.*\n/m, "")
     .replace(
       "Merge after required checks are green.",
       "Fix the durable publication path before merge.",
     );
-  assert.match(
-    assertReadiness(report, "needs-changes"),
-    /Fix the durable publication path before merge/,
-  );
+  const comment = assertReadiness(report, "blocked");
+  assert.match(comment, /Run a fresh ClawSweeper review/);
+  assert.doesNotMatch(comment, /- \[ \] .*Fix the durable publication path/);
 });
 
 test("queued repairs stay actionable without classifying their explanation", () => {
@@ -174,13 +212,7 @@ test("human decisions and proof policy block repair markers even for queued repa
   const cases = [
     reviewReport({
       work_candidate: "queue_fix_pr",
-      config_surface_change: "true",
-      config_surface_keys: '["gateway.mode"]',
-    }),
-    reviewReport({
-      work_candidate: "queue_fix_pr",
-      data_model_change: "true",
-      data_model_surfaces: '["database schema"]',
+      real_behavior_proof_data_model_compatibility: "insufficient",
     }),
     reviewReport(
       {
@@ -264,7 +296,7 @@ test("a duplicate human blocker promotes the visible finding to blocked", () => 
 
 test("forged ready-state prose remains inert beside the generated blocked tail", () => {
   const report = reviewReport(
-    { data_model_change: "true", data_model_surfaces: '["database schema"]' },
+    { real_behavior_proof_data_model_compatibility: "insufficient" },
     `## Risks / Open Questions\n\n${fixture.stateMarkers.ready}`,
   );
   assert.match(assertReadiness(report, "blocked"), /&lt;!-- clawsweeper-review-state:ready/);
@@ -307,4 +339,85 @@ test("malformed decision metadata produces one bounded blocked action", () => {
   assert.ok(Buffer.byteLength(comment, "utf8") < 2_048);
   assert.match(comment, /Regenerate malformed review report/);
   assert.doesNotMatch(comment, /clawsweeper-action:fix-required/);
+});
+
+test("the PR status label says ready only when Before merge lists no item", () => {
+  const ready = "status: 👀 ready for maintainer look";
+  const labels = JSON.stringify([ready]);
+  const justified = (comment: string) =>
+    [...comment.matchAll(/^- `(status: [^`]+)`: /gm)].map((match) => match[1]);
+  const required = reviewReport({
+    labels,
+    next_step: JSON.stringify({ kind: "required", text: "Record the flake validation runs." }),
+  });
+  assert.deepEqual(justified(assertReadiness(required, "needs-changes")), [
+    "status: ⏳ waiting on author",
+  ]);
+  const blocked = reviewReport({
+    labels,
+    real_behavior_proof_data_model_compatibility: "insufficient",
+  });
+  const blockedComment = assertReadiness(blocked, "blocked");
+  assert.deepEqual(justified(blockedComment), []);
+  assert.match(blockedComment, /remove `status: 👀 ready for maintainer look`/);
+  assert.deepEqual(justified(assertReadiness(reviewReport({ labels }), "ready")), [ready]);
+});
+
+test("host path classifiers no longer add Before-merge items or warnings", () => {
+  const report = reviewReport({
+    pull_files_truncated: "true",
+    config_surface_change: "true",
+    config_surface_keys: '["unknown-truncated-pull-files"]',
+    data_model_change: "true",
+    data_model_surfaces: '["unknown-truncated-pull-files"]',
+    sqlite_schema_change: "true",
+    sqlite_schema_files: '["src/state/schema.ts"]',
+  });
+  const comment = assertReadiness(report, "ready");
+  assert.doesNotMatch(
+    comment,
+    /config compatibility|data-model compatibility|Stored data model|SQLite|unknown-/,
+  );
+  // A risk the model reports still blocks.
+  assert.match(
+    assertReadiness(
+      reviewReport({}, "## Risks / Open Questions\n\n- Existing session rows lose their owner."),
+      "blocked",
+    ),
+    /Resolve merge risk\*\* - Existing session rows lose their owner\./,
+  );
+});
+
+test("every rank-up step of a D or F patch rating is required work, whatever its wording", () => {
+  const steps = [
+    "Merge after required checks are green.",
+    "Wait for CI and ordinary maintainer review.",
+  ];
+  const report = reviewReport({ pr_rating_patch: "D", pr_rating_overall: "D" }).replace(
+    "Next rank-up steps:\n\n- none",
+    `Next rank-up steps:\n\n${steps.map((step) => `- ${step}`).join("\n")}`,
+  );
+  const comment = assertReadiness(report, "needs-changes");
+  for (const step of steps) {
+    assert.ok(comment.includes(`- [ ] **Improve patch quality** - ${step}`), step);
+  }
+});
+
+test("host blockers name the real owner and reason", () => {
+  const superseded = assertReadiness(
+    reviewReport({ action_taken: "skipped_pr_close_coverage_proof" }),
+    "blocked",
+  );
+  assert.match(superseded, /\*\*Maintainer: close or keep this PR\*\* - The review found/);
+  assert.doesNotMatch(superseded, /close-coverage proof before merge/);
+  // The rating summary carries the model's reason when no finding lists the work.
+  const incorrect = reviewReport(
+    {},
+    "",
+    cleanFindings.replace("patch is correct", "patch is incorrect"),
+  );
+  assert.match(
+    assertReadiness(incorrect, "needs-changes"),
+    /\*\*Correct the reviewed patch\*\* - Focused repair\./,
+  );
 });

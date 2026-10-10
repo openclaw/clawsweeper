@@ -1,7 +1,7 @@
 import { resolve } from "node:path";
 import { boolArg, itemNumbersArg, numberArg, stringArg, type Args } from "./clawsweeper-args.js";
 import { DEFAULT_BACKFILL_REVIEW_AGE_MINUTES, DEFAULT_CODEX_MODEL } from "./clawsweeper-policy.js";
-import { UserFacingCommandError } from "./command.js";
+import { rejectRetiredCodexProfileArgs } from "./command.js";
 import type { createReviewPlanning } from "./clawsweeper-review-planning.js";
 import type { RepositoryProfile } from "./repository-profiles.js";
 import { coverageTrackedItemIdsFromManifest } from "./review-coverage-manifest.js";
@@ -38,11 +38,10 @@ export function createPlanCommand(dependencies: PlanCommandDependencies): (args:
     const hasItemNumbersInput = typeof args.item_numbers === "string" && args.item_numbers.trim();
     const hotIntake = boolArg(args.hot_intake);
     const model = stringArg(args.codex_model, DEFAULT_CODEX_MODEL);
-    if (args.codex_reasoning_effort !== undefined || args.codex_service_tier !== undefined) {
-      throw new UserFacingCommandError(
-        "--codex-reasoning-effort and --codex-service-tier are retired for item reviews; author association selects the fixed profile.",
-      );
-    }
+    rejectRetiredCodexProfileArgs(
+      args,
+      "item reviews; author association selects the fixed profile",
+    );
     const sandboxMode = stringArg(args.codex_sandbox, "read-only");
     const reviewPolicy = dependencies.reviewPolicyHash({
       model,

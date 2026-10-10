@@ -1,13 +1,17 @@
 #!/usr/bin/env node
-import { stringOrEmpty as stringValue } from "../value-coerce.js";
-import { escapeRegExp } from "../clawsweeper-text.js";
+import { escapeRegExp } from "../clawsweeper-markdown.js";
 import type { JsonValue, LooseRecord } from "./json-types.js";
 import fs from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { parseArgs } from "./lib.js";
 import { isJsonObject } from "./json-types.js";
-import { readReportFrontMatterField, type FrontMatterField } from "../report-front-matter.js";
+import {
+  frontMatterField,
+  frontMatterJsonArray,
+  frontMatterValue,
+  sectionValue,
+} from "../report-front-matter.js";
 import { AUTOMATION_LIMITS, WORKER_CONFIG, workerLimit, type WorkerLane } from "../limits.js";
 import {
   fetchExactReviewQueuePressure,
@@ -1410,12 +1414,12 @@ function selectedProposedItemCandidates(
           if (options.itemNumbers && !options.itemNumbers.has(number)) return [];
           const markdown = fs.readFileSync(path.join(itemsDir, name), "utf8");
           if (repoFor(markdown, name) !== options.targetRepo) return [];
-          const type = frontMatterValue(markdown, "type");
+          const type = frontMatterValue(markdown, "type") ?? "";
           if (options.applyKind !== "all" && type && type !== options.applyKind) return [];
           const decision = frontMatterValue(markdown, "decision");
-          const action = frontMatterValue(markdown, "action_taken");
+          const action = frontMatterValue(markdown, "action_taken") ?? "";
           const confidence = frontMatterValue(markdown, "confidence");
-          const reason = frontMatterValue(markdown, "close_reason");
+          const reason = frontMatterValue(markdown, "close_reason") ?? "";
           const selectableClose =
             decision === "close" &&
             confidence === "high" &&
@@ -1448,7 +1452,7 @@ function selectedProposedItemCandidates(
           const selectableProofPromotion =
             selectablePromotion &&
             selectedPromotionCloseReasons.includes("duplicate_or_superseded") &&
-            hasLinkedPullRequestSupersessionSignal(markdown, options.targetRepo);
+            hasCanonicalPullRequest(markdown, options.targetRepo);
           if (!selectableClose && !selectablePromotion) return [];
           const prCloseCoverageProofCanRun =
             type === "pull_request" &&
@@ -1470,8 +1474,8 @@ function selectedProposedItemCandidates(
           return [
             {
               number,
-              applyCheckedAt: frontMatterValue(markdown, "apply_checked_at"),
-              reviewedAt: frontMatterValue(markdown, "reviewed_at"),
+              applyCheckedAt: frontMatterValue(markdown, "apply_checked_at") ?? "",
+              reviewedAt: frontMatterValue(markdown, "reviewed_at") ?? "",
               action,
               stage: selectablePromotion
                 ? ("promotion_probe" as const)
@@ -1594,11 +1598,11 @@ function inconsistentOrStaleProposedItemCount(
       if (options.itemNumbers && !options.itemNumbers.has(number)) return false;
       const markdown = fs.readFileSync(path.join(itemsDir, name), "utf8");
       if (repoFor(markdown, name) !== options.targetRepo) return false;
-      const type = frontMatterValue(markdown, "type");
+      const type = frontMatterValue(markdown, "type") ?? "";
       if (options.applyKind !== "all" && type && type !== options.applyKind) return false;
       const action = frontMatterValue(markdown, "action_taken");
       if (action !== "proposed_close" && action !== "retry_pr_close_coverage_proof") return false;
-      const reason = frontMatterValue(markdown, "close_reason");
+      const reason = frontMatterValue(markdown, "close_reason") ?? "";
       if (allowedCloseReasons && !allowedCloseReasons.has(reason)) return false;
       if (
         ALLOWED_CLOSE_REASONS.has(reason) &&
@@ -1769,7 +1773,7 @@ function hasPullRequestClosePromotionSignal(
   return (
     (hasAuthorPrBudgetPromotionSignal(markdown) &&
       olderThan(frontMatterValue(markdown, "item_created_at"), 7 * 24 * 60 * 60 * 1000)) ||
-    hasLinkedPullRequestSupersessionSignal(markdown, targetRepo) ||
+    hasCanonicalPullRequest(markdown, targetRepo) ||
     ((hasRecommendedPauseOrCloseOption(markdown) ||
       hasLowSignalPullRequestPromotionSignal(markdown)) &&
       olderThan(frontMatterValue(markdown, "item_created_at"), options.staleMinAgeMs))
@@ -1781,7 +1785,7 @@ function pullRequestClosePromotionReasons(
   targetRepo: string,
   options: { staleMinAgeMs: number },
 ): Array<"author_pr_budget_exceeded" | "duplicate_or_superseded" | "low_signal_unmergeable_pr"> {
-  const linkedSupersession = hasLinkedPullRequestSupersessionSignal(markdown, targetRepo);
+  const canonicalPullRequest = hasCanonicalPullRequest(markdown, targetRepo);
   const recommendedPauseOrClose = hasRecommendedPauseOrCloseOption(markdown);
   const reasons: Array<
     "author_pr_budget_exceeded" | "duplicate_or_superseded" | "low_signal_unmergeable_pr"
@@ -1792,10 +1796,10 @@ function pullRequestClosePromotionReasons(
   ) {
     reasons.push("author_pr_budget_exceeded");
   }
-  if (linkedSupersession || recommendedPauseOrClose) reasons.push("duplicate_or_superseded");
-  // Pause-or-close is a deterministic duplicate promotion. A linked PR is only
+  if (canonicalPullRequest || recommendedPauseOrClose) reasons.push("duplicate_or_superseded");
+  // Pause-or-close is a deterministic duplicate promotion. A canonical PR is only
   // speculative until live hydration, so an F-rated report can still fall back
-  // to the low-signal promotion when that linked candidate does not cover it.
+  // to the low-signal promotion when that canonical PR does not cover it.
   if (
     !recommendedPauseOrClose &&
     hasLowSignalPullRequestPromotionSignal(markdown) &&
@@ -1806,52 +1810,25 @@ function pullRequestClosePromotionReasons(
   return reasons;
 }
 
-function hasLinkedPullRequestSupersessionSignal(markdown: string, targetRepo: string): boolean {
-  const pullRef = sameRepoPullRequestRefRegex(targetRepo);
-  if (!pullRef) return false;
-  const signal =
-    /\b(supersed(?:e|ed|es|ing)|replace(?:s|d|ment)?|duplicate|duplicated|canonical|covered by|landed in)\b/i;
-  return closePromotionSignalTexts(markdown).some(
-    (text) =>
-      pullRef.test(normalizePullRequestMarkdownLinks(text, targetRepo)) && signal.test(text),
-  );
-}
-
-function normalizePullRequestMarkdownLinks(value: string, targetRepo: string): string {
-  const sameRepoPullRequestUrl = sameRepoPullRequestUrlRegex(targetRepo);
-  if (!sameRepoPullRequestUrl) return value;
-  return value.replace(markdownLinkRegex(), (_link, target: string) =>
-    sameRepoPullRequestUrl.test(target) ? target : " ",
-  );
-}
-
-function markdownLinkRegex(): RegExp {
-  return /\[[^\]\n]{1,200}\]\(([^\s)]{1,1000})\)/gi;
-}
-
-function sameRepoPullRequestUrlRegex(targetRepo: string): RegExp | null {
-  const [owner, repo] = targetRepo.split("/");
-  if (!owner || !repo) return null;
-  const escapedRepo = `${escapeRegExp(owner)}\\/${escapeRegExp(repo)}`;
-  return new RegExp(`^https:\\/\\/github\\.com\\/${escapedRepo}\\/pull\\/\\d+\\b`, "i");
-}
-
-function sameRepoPullRequestRefRegex(targetRepo: string): RegExp | null {
-  const [owner, repo] = targetRepo.split("/");
-  if (!owner || !repo) return null;
-  const escapedRepo = `${escapeRegExp(owner)}\\/${escapeRegExp(repo)}`;
-  return new RegExp(
-    [
-      `https:\\/\\/github\\.com\\/${escapedRepo}\\/pull\\/\\d+\\b`,
-      `(?:^|[^\\w/.-])${escapedRepo}#\\d+\\b`,
-      "(?:^|[^\\w/#-])#\\d+\\b",
-    ].join("|"),
-    "i",
-  );
+// The review model names the covering PR in `root_cause_cluster.canonicalRef`.
+// Report prose never selects a supersession candidate.
+function hasCanonicalPullRequest(markdown: string, targetRepo: string): boolean {
+  let cluster: unknown;
+  try {
+    cluster = JSON.parse(frontMatterValue(markdown, "root_cause_cluster") ?? "");
+  } catch {
+    return false;
+  }
+  const canonicalRef = isJsonObject(cluster) ? cluster.canonicalRef : null;
+  if (typeof canonicalRef !== "string") return false;
+  const canonicalNumber = canonicalRef.match(
+    new RegExp(`^https://github\\.com/${escapeRegExp(targetRepo)}/pull/(\\d+)$`, "i"),
+  )?.[1];
+  return Boolean(canonicalNumber) && canonicalNumber !== frontMatterValue(markdown, "number");
 }
 
 function hasRecommendedPauseOrCloseOption(markdown: string): boolean {
-  return jsonArrayFrontMatter(markdown, "merge_risk_options").some((entry) => {
+  return frontMatterJsonArray(markdown, "merge_risk_options").some((entry) => {
     if (!isJsonObject(entry)) return false;
     return entry.category === "pause_or_close" && entry.recommended === true;
   });
@@ -1944,18 +1921,6 @@ export function pullRequestClosePromotionSignalsForTest(markdown: string): {
     authorBudget: hasAuthorPrBudgetPromotionSignal(markdown),
     lowSignal: hasLowSignalPullRequestPromotionSignal(markdown),
   };
-}
-
-function closePromotionSignalTexts(markdown: string): string[] {
-  return [
-    ...stringArrayFrontMatter(markdown, "work_cluster_refs"),
-    ...jsonArrayFrontMatter(markdown, "merge_risk_options").flatMap((entry) =>
-      isJsonObject(entry) ? [stringValue(entry.title), stringValue(entry.body)] : [],
-    ),
-    sectionValue(markdown, "Best Possible Solution"),
-    sectionValue(markdown, "Evidence"),
-    sectionValue(markdown, "Close Comment"),
-  ].filter(Boolean);
 }
 
 export function commentSyncBatchOutput(options: CommentSyncBatchOptions): Record<string, string> {
@@ -2212,7 +2177,9 @@ function applyCheckedAtForItem(targetRepo: string, itemNumber: number): string {
       .readdirSync(dir)
       .find((entry) => /(?:^|[a-z0-9-]-)\d+\.md$/.test(entry) && numberFor(entry) === itemNumber);
     if (!name) continue;
-    return frontMatterValue(fs.readFileSync(path.join(dir, name), "utf8"), "apply_checked_at");
+    return (
+      frontMatterValue(fs.readFileSync(path.join(dir, name), "utf8"), "apply_checked_at") ?? ""
+    );
   }
   return "";
 }
@@ -2340,7 +2307,7 @@ function commentSyncCandidates(
         frontMatterValue(markdown, "decision") === "close" &&
         frontMatterValue(markdown, "close_reason") === "duplicate_or_superseded" &&
         hasStoredReviewComment;
-      const reviewCommentHash = frontMatterValue(markdown, "review_comment_sha256");
+      const reviewCommentHash = frontMatterValue(markdown, "review_comment_sha256") ?? "";
       const invalidReviewCommentHash = !/^[a-f\d]{64}$/i.test(reviewCommentHash);
       const requiresDurableCommentRepair =
         actionTaken === "retry_stale_canonical_comment_sync" ||
@@ -2592,42 +2559,6 @@ function checkpointNumber(name: string): number {
   return Number(name.match(/\d+/)?.[0] ?? 0);
 }
 
-function frontMatterField(markdown: string, key: string): FrontMatterField {
-  const field = readReportFrontMatterField(markdown, key);
-  if (field.status !== "value") return field;
-  const value = field.value.trim().replace(/^"|"$/g, "");
-  return value ? { status: "value", value } : { status: "ambiguous" };
-}
-
-function frontMatterValue(markdown: string, key: string): string {
-  const field = frontMatterField(markdown, key);
-  return field.status === "value" ? field.value : "";
-}
-
-function jsonArrayFrontMatter(markdown: string, key: string): JsonValue[] {
-  const raw = frontMatterValue(markdown, key);
-  if (!raw) return [];
-  try {
-    const parsed: unknown = JSON.parse(raw);
-    return Array.isArray(parsed) ? parsed : [];
-  } catch {
-    return [];
-  }
-}
-
-function stringArrayFrontMatter(markdown: string, key: string): string[] {
-  return jsonArrayFrontMatter(markdown, key).filter(
-    (entry): entry is string => typeof entry === "string",
-  );
-}
-
-function sectionValue(markdown: string, heading: string): string {
-  const match = markdown.match(
-    new RegExp(`(?:^|\\n)## ${escapeRegExp(heading)}\\n\\n([\\s\\S]*?)(?=\\n## |\\n?$)`),
-  );
-  return match?.[1]?.trim() ?? "";
-}
-
 function sectionLineValue(markdown: string, key: string): string {
   const match = markdown.match(new RegExp(`^${escapeRegExp(key)}:\\s*(.+)$`, "m"));
   return match?.[1]?.trim() ?? "";
@@ -2665,9 +2596,9 @@ function allowedForTarget(
   return allowedReasons.has(reason);
 }
 
-function olderThan(iso: string, milliseconds: number): boolean {
+function olderThan(iso: string | undefined, milliseconds: number): boolean {
   if (milliseconds <= 0) return true;
-  const parsed = Date.parse(iso);
+  const parsed = Date.parse(iso ?? "");
   return Number.isFinite(parsed) && Date.now() - parsed > milliseconds;
 }
 

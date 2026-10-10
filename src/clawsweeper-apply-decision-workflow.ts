@@ -1,3 +1,4 @@
+import { sha256 } from "./content-hash.js";
 import {
   createOversizedPrFreshnessGuard,
   parseOversizedPrSourceSnapshot,
@@ -13,6 +14,10 @@ import { dirname, join, resolve } from "node:path";
 import { reportPublicationPolicy } from "./manual-publication-policy.js";
 import { assertManualPublicationAuthority } from "./manual-publication-authority.js";
 import { createApplyCandidateGuards } from "./clawsweeper-apply-candidate-guards.js";
+import {
+  unreadableReviewRecordReason,
+  validateReportClose,
+} from "./clawsweeper-apply-close-decision.js";
 import { executeApplyClose } from "./clawsweeper-apply-close-execution.js";
 import {
   createApplyCloseGuards,
@@ -52,6 +57,7 @@ import {
   DEFAULT_REASONING_EFFORT,
   DEFAULT_SERVICE_TIER,
   STALE_INSUFFICIENT_INFO_MIN_AGE_DAYS,
+  isGitHubVerifiedFixedPullRequestSource,
 } from "./clawsweeper-policy.js";
 import { rawCommentBody } from "./clawsweeper-review-comments.js";
 import { DurableReviewPublicationBlockedError } from "./clawsweeper-review-comment-publication.js";
@@ -93,6 +99,29 @@ import { isAutoCloseAllowed, repositoryProfileFor } from "./repository-profiles.
 import { stableJson } from "./stable-json.js";
 import { LiveReadGeneration, type GenerationBoundValue } from "./live-read-generation.js";
 import { parsePrHydrationSnapshot } from "./pr-hydration-snapshot.js";
+import { asRecord, login } from "./value-coerce.js";
+import {
+  frontMatterStringArray,
+  frontMatterValue,
+  replaceFrontMatterValue,
+  replaceSectionValue,
+} from "./report-front-matter.js";
+import {
+  exactEventReviewLeaseDisposition,
+  hasVerifiedLocalCheckoutAccess,
+  isApplyCloseCandidateReport,
+  isLiveRecheckCloseGuardReport,
+  isPairBlockedCloseReport,
+  isRetryableCloseSkipReport,
+  isRetryableKeptOpenCloseReport,
+  isRetryablePrCloseCoverageProofReport,
+  reviewLeaseRevisionFromReport,
+  reviewSectionValue,
+  shouldProbeClosedStateReport,
+  shouldSyncReviewComment,
+} from "./clawsweeper-record-metadata.js";
+import { lockedConversationApplyReason } from "./clawsweeper-item-policy.js";
+import { prAutoCloseExemptDecisionReason } from "./clawsweeper-apply-guard-activity.js";
 
 export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWorkflowDependencies) {
   const {
@@ -124,30 +153,18 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
     discardIssueLabelMutationBatch,
     duplicateCanonicalPullRequestBlockReason,
     ensureDir,
-    exactEventReviewLeaseDisposition,
     fetchItem,
     fetchReviewedPrActivityCursor,
     finishApplyMutationAttempt,
     flushIssueLabelMutationBatch,
     freshPullRequestReviewHead,
-    frontMatterStringArray,
-    frontMatterValue,
     ghJson,
     GitHubRuntimeBudgetError,
     guardedOpenApplyProofFields,
-    hasVerifiedLocalCheckoutAccess,
-    isApplyCloseCandidateReport,
-    isLiveRecheckCloseGuardReport,
     isMaintainerAuthorAssociation,
-    isPairBlockedCloseReport,
-    isRetryableCloseSkipReport,
-    isRetryableKeptOpenCloseReport,
-    isRetryablePrCloseCoverageProofReport,
     issueReviewComment,
     isVerifiedFixedCloseReason,
     liveIssueSourceRevision,
-    login,
-    lockedConversationApplyReason,
     lowSignalUnmergeablePrApplyBlockReasonSafe,
     markedReviewCommentBody,
     mutationErrorMessage,
@@ -157,7 +174,6 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
     orderedApplyItemNumbers,
     pairCloseKey,
     PR_CLOSE_COVERAGE_PROOF_SCHEMA_PATH,
-    prAutoCloseExemptDecisionReason,
     prCloseCoverageProofPromptTemplate,
     pullHeadShaFromContext,
     recordApplyActionEvents,
@@ -168,19 +184,13 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
     removeCurrentCursorTraceItem,
     removeIssueLabel,
     renderReviewCommentFromReport,
-    replaceFrontMatterValue,
     repoFromArgs,
-    reportDecision,
     reportEntriesForDir,
     reviewCommentBodyDigest,
     reviewCommentHashMatches,
-    reviewLeaseRevisionFromReport,
-    reviewSectionValue,
     ROOT,
     runtimeBudgetExceeded,
     sameAuthorCounterpartApplyReason,
-    shouldProbeClosedStateReport,
-    shouldSyncReviewComment,
     staleCanonicalCommentSyncPendingReason,
     stalePullRequestReviewComment,
     stalePullRequestReviewHead,
@@ -191,7 +201,6 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
     targetRepo,
     updateReviewCommentMetadata,
     upsertReviewComment,
-    validateCloseDecision,
     withGuardReadOptions,
   } = dependencies;
 
@@ -833,7 +842,7 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
           !parentFixedPrUrl ||
           parentFixedPrUrl !== pairedFixedPrUrl ||
           pairedFixedPrConfidence !== "high" ||
-          !pairedFixedPrSource?.includes("GitHub ") ||
+          !isGitHubVerifiedFixedPullRequestSource(pairedFixedPrSource) ||
           !pairedFixedPrMergedAt ||
           pairedFixedPrMergedAt === "unknown"
         ) {
@@ -919,6 +928,12 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
         ) {
           break;
         }
+        continue;
+      }
+      // A promotion removes a record that does not read, so do this check before a promotion.
+      const unreadableRecordReason = unreadableReviewRecordReason(markdown);
+      if (unreadableRecordReason) {
+        if (markApplySkipped("skipped_changed_since_review", unreadableRecordReason)) break;
         continue;
       }
       const markLabelSyncAuthSkipped = (labelKind: string): boolean => {
@@ -1077,7 +1092,7 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
       };
       const currentItemContext = (): ItemContext => {
         if (oversizedMetadataDecision) {
-          currentContext ??= liveReadGeneration.bind(oversizedPullRequestContext(dependencies.asRecord(ghJson(["api", `repos/${repo}/pulls/${number}`]))));
+          currentContext ??= liveReadGeneration.bind(oversizedPullRequestContext(asRecord(ghJson(["api", `repos/${repo}/pulls/${number}`]))));
           return liveReadGeneration.value(currentContext);
         }
         currentContext ??= liveReadGeneration.bind(
@@ -1669,7 +1684,7 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
         requiresApplyMutationLease,
         storedHash,
       });
-      const markChangedSinceReview = createApplyChangedSinceReviewMarker(dependencies, {
+      const markChangedSinceReview = createApplyChangedSinceReviewMarker({
         dryRun,
         emitEventApplyProof,
         getMarkdown: () => markdown,
@@ -2083,14 +2098,16 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
         (applyKind === "all" || item.kind === applyKind) &&
         closeReasonEnabled(closeReason, applyCloseReasons)
       ) {
-        const preSyncReportValidation = validateCloseDecision(
+        const preSyncReportValidation = validateReportClose(
+          dependencies,
           {
             repo,
             kind: item.kind,
             labels: item.labels,
             authorAssociation: item.authorAssociation,
           },
-          reportDecision(markdown, closeReason),
+          markdown,
+          closeReason,
           { requireCloseComment: !isRetryableSkippedClose },
         );
         const preSyncValidationPassed =
@@ -2631,7 +2648,14 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
         const storedHash = frontMatterValue(reviewMarkdown, "review_comment_sha256");
         const storedId = Number(frontMatterValue(reviewMarkdown, "review_comment_id"));
         const storedUrl = frontMatterValue(reviewMarkdown, "review_comment_url");
-        if (!storedHash || !Number.isSafeInteger(storedId) || storedId <= 0 || !storedUrl) {
+        // A paired report whose record does not read has no comment that apply can verify.
+        if (
+          !storedHash ||
+          !Number.isSafeInteger(storedId) ||
+          storedId <= 0 ||
+          !storedUrl ||
+          unreadableReviewRecordReason(reviewMarkdown)
+        ) {
           return null;
         }
         const reviewComment = issueReviewComment(reviewNumber, [
@@ -2678,15 +2702,7 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
         pairedIssueDurableReviewCommentUpdatedAt: (pairedNumber) => {
           const pairedMarkdown = openReportEntry(pairedNumber)?.markdown;
           if (!pairedMarkdown) return null;
-          const pairedCloseReason = reportDecision(
-            pairedMarkdown,
-            "implemented_on_main",
-          ).closeReason;
-          return durableReviewCommentUpdatedAt(
-            pairedMarkdown,
-            pairedNumber,
-            pairedCloseReason,
-          );
+          return durableReviewCommentUpdatedAt(pairedMarkdown, pairedNumber, "implemented_on_main");
         },
         closeDelayMs,
         closeLimitReached: closedCount >= limit,
@@ -2769,8 +2785,8 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
           const completedBody = markedReviewCommentForApply(renderReviewCommentFromReport(markdown, "oversized_pull_request", renderOptions));
           const completedComment = upsertReviewComment(number, completedBody, liveComment, undefined, { suppressAutomationMarkers });
           markdown = updateReviewCommentMetadata(markdown, completedComment, completedBody);
-          markdown = dependencies.replaceSectionValue(markdown, REVIEW_SECTIONS.closeComment, completedBody);
-          markdown = replaceFrontMatterValue(markdown, "close_comment_sha256", dependencies.sha256(completedBody));
+          markdown = replaceSectionValue(markdown, REVIEW_SECTIONS.closeComment, completedBody);
+          markdown = replaceFrontMatterValue(markdown, "close_comment_sha256", sha256(completedBody));
           writeReportMarkdown(join(closedDir, file), markdown);
           } catch (error) {
             // Closing already succeeded; a notice failure must not recreate an open record.

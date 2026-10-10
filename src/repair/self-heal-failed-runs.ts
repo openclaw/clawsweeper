@@ -2,7 +2,7 @@
 import type { JsonValue, LooseRecord } from "./json-types.js";
 import fs from "node:fs";
 import path from "node:path";
-import { spawnSync } from "node:child_process";
+import { runCommandResult } from "./command-runner.js";
 import {
   assertLiveWorkerCapacity,
   currentProjectRepo,
@@ -16,7 +16,7 @@ import {
 import { ghErrorText, ghJson, ghText, githubCommandTimeoutMs } from "./github-cli.js";
 import { sleepMs } from "./timing.js";
 import { REPAIR_CLUSTER_WORKFLOW } from "./constants.js";
-import { currentMainHeadSha } from "./git-repo-utils.js";
+import { currentMainHeadSha } from "./git.js";
 
 const DEFAULT_REPO = currentProjectRepo();
 const DEFAULT_WORKFLOW = REPAIR_CLUSTER_WORKFLOW;
@@ -285,7 +285,7 @@ function sourceJobFromRunTitle(title: string) {
 }
 
 function dispatchCandidate(candidate: LooseRecord) {
-  const result = spawnSync(
+  const result = runCommandResult(
     "gh",
     [
       "workflow",
@@ -306,9 +306,7 @@ function dispatchCandidate(candidate: LooseRecord) {
     ],
     {
       cwd: repoRoot(),
-      encoding: "utf8",
-      stdio: "pipe",
-      timeout: githubCommandTimeoutMs(process.env),
+      timeoutMs: githubCommandTimeoutMs(process.env),
       killSignal: "SIGKILL",
     },
   );

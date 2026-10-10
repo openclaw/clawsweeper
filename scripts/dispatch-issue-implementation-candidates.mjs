@@ -69,6 +69,12 @@ if (!Array.isArray(discovery.candidates)) fail("candidate discovery returned no 
 const candidates = discovery.candidates
   .filter((candidate) => !selectedItem || String(candidate.item_number) === selectedItem)
   .slice(0, limit);
+if (candidates.length > 0 && laneHealth().paused) {
+  process.stdout.write(
+    `${JSON.stringify({ discovered: discovery.candidates.length, dispatched: 0, paused: true })}\n`,
+  );
+  process.exit(0);
+}
 for (const candidate of candidates) {
   const itemNumber = String(candidate.item_number);
   if (!/^[1-9]\d*$/.test(itemNumber)) fail("candidate has an invalid issue number");
@@ -101,6 +107,35 @@ for (const candidate of candidates) {
 process.stdout.write(
   `${JSON.stringify({ discovered: discovery.candidates.length, dispatched: candidates.length })}\n`,
 );
+
+// Reads the 7-day worker run success rate, publishes it to the run summary and
+// announces a pause. Only called when there is a candidate to dispatch.
+function laneHealth() {
+  const healthArgs = [
+    "run",
+    "--silent",
+    "repair:issue-implementation-intake",
+    "--",
+    "lane-health",
+    "--target-repo",
+    targetRepo,
+  ];
+  const floor = process.env.MIN_SUCCESS_PERCENT?.trim();
+  if (floor) healthArgs.push("--min-success-percent", floor);
+  let health;
+  try {
+    health = JSON.parse(run("pnpm", healthArgs));
+  } catch (error) {
+    fail(`lane health returned invalid JSON: ${error.message}`);
+  }
+  if (typeof health?.paused !== "boolean") fail("lane health returned no pause decision");
+  if (health.paused) {
+    process.stdout.write(
+      `::warning title=Automatic issue implementation paused::${health.notice}\n`,
+    );
+  }
+  return health;
+}
 
 function parseArgs(argv) {
   const values = new Map();

@@ -6,6 +6,8 @@ export interface PrSurfaceFile {
   path: string;
   additions: number | null;
   deletions: number | null;
+  /** GitHub file status ("added", "modified", ...). Absent in reports written before it was stored. */
+  status?: string;
 }
 
 export interface PrSurfaceStatsRow {
@@ -88,6 +90,14 @@ export function renderOpenClawPrSurfaceSummary(stats: readonly PrSurfaceStatsRow
   return `${parts.join(", ")}. Total ${formatNet(total.net)} across ${total.files} ${pluralize("file", total.files)}.`;
 }
 
+/** New test files: GitHub status "added" only, not changed ones. Null when a status is unknown. */
+export function countOpenClawAddedTestFiles(files: readonly PrSurfaceFile[]): number | null {
+  if (files.some((file) => file.status === undefined)) return null;
+  return files.filter(
+    (file) => file.status === "added" && openClawPrSurfaceBucket(file.path) === "tests",
+  ).length;
+}
+
 export function renderOpenClawPrSurfaceTable(stats: readonly PrSurfaceStatsRow[]): string {
   const total = totalPrSurfaceStats(stats);
   return [
@@ -115,8 +125,9 @@ function totalPrSurfaceStats(
   );
 }
 
+// Product code roots, including the native apps (Swift, Kotlin) under `apps/`.
 function isOpenClawSourcePath(file: string): boolean {
-  return /^(?:src|ui|packages|extensions)\//.test(file);
+  return /^(?:src|ui|packages|extensions|apps)\//.test(file);
 }
 
 function isOpenClawDocsPath(file: string, basename: string): boolean {

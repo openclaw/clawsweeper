@@ -1,0 +1,166 @@
+name: Review record backfill
+
+# dry-run reports what the review_record backfill would do for every stored report and
+# writes nothing back. write adds the review_record line to the lossless and filled
+# reports of one repository and publishes them through the reconcile path.
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "dry-run classifies and writes nothing; write adds review_record to lossless and filled reports"
+        required: true
+        type: choice
+        options:
+          - dry-run
+          - write
+        default: dry-run
+      repo_slugs:
+        description: "dry-run: optional comma-separated canonical repository slugs (empty discovers all)"
+        required: false
+        type: string
+        default: ""
+      target_repo:
+        description: "write: the repository whose reports get the record"
+        required: false
+        type: string
+        default: openclaw/openclaw
+      limit:
+        description: "write: optional most reports to write in this run (empty writes all)"
+        required: false
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  dry-run:
+    if: ${{ inputs.mode == 'dry-run' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: main
+          filter: blob:none
+          fetch-depth: 1
+          persist-credentials: false
+
+      - uses: ./.github/actions/setup-pnpm
+        with:
+          build-script: build
+
+      # Read-only, like report-metadata-audit: setup-state also enables the state
+      # writer coordinator, which this job must not have. It hydrates records only.
+      - name: Hydrate canonical records
+        env:
+          CLAWSWEEPER_RECORDS_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
+          CLAWSWEEPER_RECORDS_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
+          CLAWSWEEPER_RECORDS_REPO_SLUGS: ${{ inputs.repo_slugs || vars.CLAWSWEEPER_RECORDS_REPO_SLUGS || '' }}
+        run: node scripts/hydrate-state.ts --skip-git-state --skip-state-blobs
+
+      - name: Classify stored reports
+        run: |
+          mkdir -p .artifacts/review-record-backfill
+          for dir in records/*/; do
+            slug="$(basename "$dir")"
+            node dist/clawsweeper.js backfill-review-records \
+              --records-dir "$dir" \
+              --output ".artifacts/review-record-backfill/$slug.json"
+          done
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: review-record-backfill
+          path: .artifacts/review-record-backfill
+          if-no-files-found: error
+          retention-days: 14
+
+  # Writes like apply: setup-state hydrates the target's records and enables the state
+  # writer coordinator, the command captures each tuple baseline before it writes, and
+  # publish_reconciled_records sends the tuples in batches of 50 with compare-and-swap
+  # on the baseline digest. A run that stops part way can run again: written reports
+  # are typed and the classification skips them.
+  write:
+    if: ${{ inputs.mode == 'write' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    concurrency:
+      group: review-record-backfill-write-${{ inputs.target_repo }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: main
+          filter: blob:none
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Resolve target repository
+        id: target
+        env:
+          TARGET_REPO: ${{ inputs.target_repo }}
+        run: |
+          set -euo pipefail
+          target_slug="$(printf '%s' "$TARGET_REPO" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9_.-]+/-/g')"
+          echo "target_slug=$target_slug" >> "$GITHUB_OUTPUT"
+
+      - name: Create state token
+        id: state-token
+        uses: ./.github/actions/create-state-token
+        with:
+          client-id: Iv23liOECG0slfuhz093
+          private-key: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
+
+      - uses: ./.github/actions/setup-state
+        with:
+          coordinator-url: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
+          records-url: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
+          records-secret: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
+          records-repo-slugs: ${{ steps.target.outputs.target_slug }}
+          hydrate-state-blobs: "false"
+          token: ${{ steps.state-token.outputs.token }}
+
+      - uses: ./.github/actions/setup-pnpm
+        with:
+          build-script: build:node
+
+      - name: Write and publish review records
+        env:
+          CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
+          QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
+          TARGET_REPO: ${{ inputs.target_repo }}
+          TARGET_SLUG: ${{ steps.target.outputs.target_slug }}
+          WRITE_LIMIT: ${{ inputs.limit }}
+        run: |
+          set -euo pipefail
+          source scripts/apply-workflow-helpers.sh
+          mkdir -p .artifacts/review-record-backfill
+          output=".artifacts/review-record-backfill/$TARGET_SLUG.json"
+          limit_args=()
+          if [ -n "$WRITE_LIMIT" ]; then
+            limit_args=(--limit "$WRITE_LIMIT")
+          fi
+          begin_canonical_record_mutation
+          node dist/clawsweeper.js backfill-review-records \
+            --records-dir "records/$TARGET_SLUG" \
+            --output "$output" \
+            --write \
+            "${limit_args[@]}"
+          changed_records="$(jq -c '{changedRecordFiles}' "$output")"
+          publish_log=".artifacts/review-record-backfill/$TARGET_SLUG-publish.log"
+          publish_reconciled_records "chore: backfill review records" "$changed_records" 2>&1 | tee "$publish_log"
+          # The Worker rejects a tuple whose report changed since hydration (a fresh
+          # review); the publisher keeps that report and logs "Skipped <tuple>: ...".
+          skipped_by_canonical="$(grep -c '^Skipped ' "$publish_log" || true)"
+          jq -r --argjson skipped "$skipped_by_canonical" \
+            '"written=\(.written) changedSinceClassification=\(.changedSinceClassification) skippedByCanonicalCompareAndSwap=\($skipped) counts=\(.counts | tojson)"' \
+            "$output" | tee -a "${GITHUB_STEP_SUMMARY:-/dev/null}"
+
+      - uses: actions/upload-artifact@v7
+        if: ${{ always() }}
+        with:
+          name: review-record-backfill-write
+          path: .artifacts/review-record-backfill
+          if-no-files-found: ignore
+          retention-days: 14

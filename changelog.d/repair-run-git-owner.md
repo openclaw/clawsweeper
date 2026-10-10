@@ -1,0 +1,1 @@
+- Route every repair Git call through one `runGit`/`runGitResult` owner in `src/repair/git.ts` (formerly `git-repo-utils.ts`) instead of 58 inline `execFileSync`/`spawnSync`/`runCommand("git")` sites, so a Git spawn failure always throws, and build the review lane's offline Git env in one helper.

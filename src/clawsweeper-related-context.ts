@@ -1,14 +1,21 @@
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
-import { escapeRegExp, truncateText } from "./clawsweeper-text.js";
+import { truncateText } from "./clawsweeper-text.js";
+import { escapeRegExp } from "./clawsweeper-markdown.js";
 import { querySqliteRows, querySqliteScalar } from "./sqlite-readonly.js";
+import { envFlagDisabled, envFlagEnabled } from "./policy-flags.js";
 import type {
   GitcrawlClusterSource,
+  GitHubJsonResult,
   Item,
   ItemKind,
   LocalRelatedTitleEntry,
 } from "./clawsweeper-types.js";
+import { asRecord, isDigitsOnly, login } from "./value-coerce.js";
+import { frontMatterValue } from "./report-front-matter.js";
+import { effectiveReviewStatus, reviewSectionValue } from "./clawsweeper-record-metadata.js";
+import { markdownFiles, numberForMarkdownFile } from "./clawsweeper-repository-paths.js";
 
 const CREDENTIAL_URI =
   /(https?:\/\/)[\w!#$%&()*+,\-./;<=>?@[\\\]^_{|}~]{0,50}:[\w!#$%&()*+,\-./:;<=>?[\\\]^_{|}~]{3,50}@([a-zA-Z0-9.-]+)/g;
@@ -31,21 +38,16 @@ interface RelatedContextDependencies {
   defaultClosedDir: () => string;
   isMarkdownForActiveRepo: (markdown: string, file?: string) => boolean;
   gitHubRuntimeBudgetError: new (reason: string) => Error;
-  ghJson: <T>(args: string[]) => T;
+  ghJsonEach: <T>(requests: readonly string[][]) => GitHubJsonResult<T>[];
   ghJsonOnce: <T>(args: string[], timeoutMs: number) => T;
-  asRecord: (value: unknown) => Record<string, unknown>;
-  login: (value: unknown) => string | undefined;
   compactIssue: (value: unknown) => unknown;
   compactPullRequest: (value: unknown) => unknown;
-  envFlagEnabled: (value: string | undefined) => boolean;
-  envFlagDisabled: (value: string | undefined) => boolean;
-  frontMatterValue: (markdown: string, key: string) => string | undefined;
-  reviewSectionValue: (markdown: string, section: "summary") => string;
-  effectiveReviewStatus: (markdown: string) => string;
   displayTitle: (title: string) => string;
-  markdownFiles: (dir: string) => string[];
-  numberForMarkdownFile: (file: string) => number;
   repoRelativePath: (filePath: string) => string;
+}
+
+export function quoteGitHubSearchTerm(term: string): string {
+  return /^[a-z0-9_]+$/i.test(term) ? term : `"${term.replaceAll('"', "")}"`;
 }
 
 export function createRelatedContext({
@@ -56,20 +58,11 @@ export function createRelatedContext({
   defaultClosedDir,
   isMarkdownForActiveRepo,
   gitHubRuntimeBudgetError: GitHubRuntimeBudgetError,
-  ghJson,
+  ghJsonEach,
   ghJsonOnce,
-  asRecord,
-  login,
   compactIssue,
   compactPullRequest,
-  envFlagEnabled,
-  envFlagDisabled,
-  frontMatterValue,
-  reviewSectionValue,
-  effectiveReviewStatus,
   displayTitle,
-  markdownFiles,
-  numberForMarkdownFile,
   repoRelativePath,
 }: RelatedContextDependencies) {
   function collectRelatedMentions(options: {
@@ -136,37 +129,54 @@ export function createRelatedContext({
       : value;
   }
 
-  function compactRelatedItem(
-    number: number,
-    mentionedIn: string[],
-  ): Record<string, unknown> | null {
-    try {
-      const issue = ghJson<unknown>(["api", `repos/${targetRepo()}/issues/${number}`]);
-      const issueRecord = asRecord(issue);
-      const related: Record<string, unknown> = {
-        mentionedIn: mentionedIn.slice(0, 6),
-        issue: redactRelatedBody(compactIssue(issue)),
-        commentCount: issueRecord.comments,
-      };
+  // Mentioned items are independent reads: all issues together, then the pull
+  // requests among them together. Each entry still fails on its own.
+  function compactRelatedItems(
+    mentioned: ReadonlyArray<readonly [number, string[]]>,
+  ): Record<string, unknown>[] {
+    const issueReads = ghJsonEach<unknown>(
+      mentioned.map(([number]) => ["api", `repos/${targetRepo()}/issues/${number}`]),
+    );
+    const pullNumbers = mentioned.flatMap(([number], index) => {
+      const issueRead = issueReads[index];
+      return issueRead?.ok && asRecord(issueRead.value).pull_request ? [number] : [];
+    });
+    const pullReads = ghJsonEach<unknown>(
+      pullNumbers.map((number) => ["api", `repos/${targetRepo()}/pulls/${number}`]),
+    );
+    const pullReadsByNumber = new Map(
+      pullNumbers.map((number, index) => [number, pullReads[index]] as const),
+    );
+    return mentioned.map(([number, mentionedIn], index) => {
+      try {
+        const issueRead = issueReads[index];
+        if (!issueRead?.ok) throw issueRead?.error;
+        const issueRecord = asRecord(issueRead.value);
+        const related: Record<string, unknown> = {
+          mentionedIn: mentionedIn.slice(0, 6),
+          issue: redactRelatedBody(compactIssue(issueRead.value)),
+          commentCount: issueRecord.comments,
+        };
 
-      if (issueRecord.pull_request) {
-        try {
-          related.pullRequest = redactRelatedBody(
-            compactPullRequest(ghJson<unknown>(["api", `repos/${targetRepo()}/pulls/${number}`])),
-          );
-        } catch (error) {
-          related.pullRequestError = error instanceof Error ? error.message : String(error);
+        if (pullReadsByNumber.has(number)) {
+          try {
+            const pullRead = pullReadsByNumber.get(number);
+            if (!pullRead?.ok) throw pullRead?.error;
+            related.pullRequest = redactRelatedBody(compactPullRequest(pullRead.value));
+          } catch (error) {
+            related.pullRequestError = error instanceof Error ? error.message : String(error);
+          }
         }
-      }
 
-      return related;
-    } catch (error) {
-      return {
-        number,
-        mentionedIn: mentionedIn.slice(0, 6),
-        error: error instanceof Error ? error.message : String(error),
-      };
-    }
+        return related;
+      } catch (error) {
+        return {
+          number,
+          mentionedIn: mentionedIn.slice(0, 6),
+          error: error instanceof Error ? error.message : String(error),
+        };
+      }
+    });
   }
 
   const RELATED_TITLE_STOP_WORDS = new Set([
@@ -344,15 +354,6 @@ export function createRelatedContext({
     return value.slice(start, end);
   }
 
-  function isDigitsOnly(value: string): boolean {
-    if (!value) return false;
-    for (const char of value) {
-      const code = char.charCodeAt(0);
-      if (code < 48 || code > 57) return false;
-    }
-    return true;
-  }
-
   function localRelatedTitleIndex(): LocalRelatedTitleEntry[] {
     if (localRelatedTitleIndexCache?.repo === targetRepo())
       return localRelatedTitleIndexCache.entries;
@@ -406,10 +407,6 @@ export function createRelatedContext({
           reportUrl: reportUrl(`/blob/main/${entry.path}`),
         },
       }));
-  }
-
-  function quoteGitHubSearchTerm(term: string): string {
-    return /^[a-z0-9_]+$/i.test(term) ? term : `"${term.replaceAll('"', "")}"`;
   }
 
   function relatedGitHubIssueSearchQuery(repo: string, title: string): string | null {
@@ -769,11 +766,9 @@ export function createRelatedContext({
     pullReviewComments?: unknown[];
   }): unknown[] {
     const mentions = collectRelatedMentions(options);
-    const explicitRelated = [...mentions.entries()]
-      .sort(([left], [right]) => left - right)
-      .slice(0, 10)
-      .map(([number, mentionedIn]) => compactRelatedItem(number, mentionedIn))
-      .filter((entry) => entry !== null);
+    const explicitRelated = compactRelatedItems(
+      [...mentions.entries()].sort(([left], [right]) => left - right).slice(0, 10),
+    );
     const seen = new Set<number>([options.item.number]);
     const related: unknown[] = [];
     appendUniqueRelatedItems(related, seen, explicitRelated);
@@ -799,7 +794,6 @@ export function createRelatedContext({
     referencingMergedPullRequestsForIssueForTest,
     relatedGitHubIssueSearchQueryForTest,
     relatedTitleSearchTerms,
-    isDigitsOnly,
     quoteGitHubSearchTerm,
     referencingMergedPullRequestsForIssue,
     relatedItemsContext,

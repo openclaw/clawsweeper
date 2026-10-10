@@ -1,8 +1,16 @@
 import type {
   CloseReason,
-  ItemKind,
+  ProductFixScope,
+  ProductReview,
+  ProductReviewKind,
+  ProductWorthIt,
+  ProvenanceEntry,
   PullRequestReviewReadiness,
   ReviewCommentRenderOptions,
+  ReviewFinding,
+  SecurityReview,
+  TestingProofPath,
+  TestingReview,
 } from "./clawsweeper-types.js";
 import {
   isVerifiedRegressionProvenance,
@@ -13,112 +21,245 @@ import {
   maintainerDecisionFromReport,
   renderDecisionPacketPublicBlock,
 } from "./decision-packets.js";
+import {
+  mergeRiskOptionsFromReport,
+  reportAgentsPolicyStatus,
+  reportChangeExample,
+  reportEvidence,
+  reportLikelyOwners,
+  reportLiveProofRecordingBlock,
+  reportOverallConfidenceScore,
+  reportOverallCorrectness,
+  reportProductReview,
+  reportProvenance,
+  reportPrRating,
+  reportReviewFindings,
+  reportRootCauseCluster,
+  reportSecurityReview,
+  reportTestingReview,
+} from "./clawsweeper-report-parser.js";
+import { reportReviewDecision } from "./report-review-decision.js";
 import { neutralizeReviewControlMarkers, renderReviewHistorySection } from "./review-history.js";
 import type { CreateReportRenderingDependencies } from "./clawsweeper-report-rendering-dependencies.js";
-import type { createReportContextRendering } from "./clawsweeper-report-context.js";
-import type { createReportCommentHelpers } from "./clawsweeper-report-comment-helpers.js";
+import {
+  appendHeadingSection,
+  appendPublicSection,
+  appendReviewQuestionDetails,
+  publicBeforeMergeBlock,
+  publicChecklistText,
+  publicMergeRiskLine,
+  publicRootCauseClusterBlock,
+  publicSummaryBody,
+  pullRequestReviewReadinessFromReport,
+  renderCloseCommentFromReport,
+  reportWorkCandidateReason,
+  REVIEW_HISTORY_RENDER_SLOT,
+  reviewFreshnessText,
+  reviewHistoryForRender,
+  reviewWorkflowCallout,
+  reviewWorkflowSummaryLine,
+} from "./clawsweeper-report-comment-helpers.js";
+import { frontMatterStringArray, frontMatterValue } from "./report-front-matter.js";
+import {
+  agentsPolicyStatusLine,
+  collapsedDetailsBlock,
+  neutralizeOwnedSectionSpoofing,
+  sanitizeArchitectureDiagram,
+} from "./clawsweeper-report-helpers.js";
+import { pullHeadShaFromReport, reviewSectionValue } from "./clawsweeper-record-metadata.js";
+import { reportRealBehaviorProofPolicy } from "./clawsweeper-proof-policy.js";
+import {
+  closeEvidenceLine,
+  confidenceText,
+  isReportNoneList,
+  likelyOwnerLines,
+  publicFailedReviewReadinessBlock,
+  publicMergeReadinessBlock,
+  publicRankScaleLine,
+  publicReviewScoresBlock,
+  publicReviewTextDiffers,
+  publicReviewTextIsSame,
+  publicRiskBullets,
+  publicSecurityReviewLine,
+  reviewFindingDetailedLine,
+  reviewFindingSummaryLine,
+  securityConcernDetailedLine,
+  securityConcernSummaryLine,
+  sentence,
+  stripListMarker,
+} from "./clawsweeper-review-presentation.js";
+import { closeReviewLineFromReport } from "./clawsweeper-report-context.js";
+import {
+  renderOpenClawPrSurfaceFromReport,
+  renderReviewMetricsDigest,
+  reviewMetricsFromReport,
+} from "./clawsweeper-orchestration-foundation.js";
+import {
+  regressionAssessmentFromReport,
+  regressionProvenanceFromReport,
+} from "./clawsweeper-status-context.js";
 
-export function createReportCommentPresentation(
-  dependencies: CreateReportRenderingDependencies &
-    ReturnType<typeof createReportContextRendering> &
-    ReturnType<typeof createReportCommentHelpers>,
-) {
+const PRODUCT_KIND_TEXT: Record<ProductReviewKind, string> = {
+  bug_fix: "Bug fix",
+  preference: "Preference",
+  feature: "Feature",
+  refactor: "Refactor",
+  performance: "Performance",
+  test_only: "Test only",
+  docs: "Docs",
+  maintenance: "Maintenance",
+  not_applicable: "Not applicable",
+};
+
+const PRODUCT_WORTH_TEXT: Record<ProductWorthIt, string> = {
+  yes: "Yes",
+  no: "No",
+  needs_maintainer: "Needs a maintainer decision",
+  not_applicable: "Not applicable",
+};
+
+const PRODUCT_FIX_SCOPE_TEXT: Record<ProductFixScope, string> = {
+  complete: "Complete",
+  partial: "Partial",
+  not_applicable: "Not applicable",
+};
+
+const TESTING_PROOF_PATH_TEXT: Record<TestingProofPath, string> = {
+  shipped_entry_point: "shipped entry point",
+  in_process_harness: "in-process harness",
+  unit_only: "unit tests only",
+  none: "none",
+  not_applicable: "not applicable",
+};
+
+export function createReportCommentPresentation(dependencies: CreateReportRenderingDependencies) {
   const {
-    REVIEW_HISTORY_RENDER_SLOT,
-    agentsPolicyStatusLine,
-    appendHeadingSection,
-    appendPublicSection,
-    appendReviewQuestionDetails,
-    closeEvidenceLine,
-    closeReviewLineFromReport,
-    collapsedDetailsBlock,
-    confidenceText,
-    frontMatterStringArray,
-    frontMatterValue,
-    isReportNoneList,
     labelJustificationsFromPublicReport,
     labelJustificationsMarkdown,
     labelTransitionJustificationsFromPublicReport,
     labelTransitionJustificationsMarkdown,
-    likelyOwnerLine,
-    mergeRiskOptionsFromReport,
-    neutralizeOwnedSectionSpoofing,
-    publicBeforeMergeBlock,
-    publicChecklistText,
-    publicFailedReviewReadinessBlock,
-    publicMantisRecommendationBlock,
-    publicMergeReadinessBlock,
-    publicMergeRiskLine,
-    publicNonDispatchableMantisRecommendationBlock,
-    publicPriorityBulletFromText,
-    publicPriorityBulletIfActionable,
-    publicRankDetailsBlock,
-    publicReviewScoresBlock,
-    publicReviewTextDiffers,
-    publicRiskBulletsFromText,
-    publicRootCauseClusterBlock,
-    publicSecurityReviewLine,
-    publicSummaryBody,
-    publicVerificationBlock,
-    pullHeadShaFromReport,
-    pullRequestReviewReadinessFromReport,
-    renderCloseCommentFromReport,
-    renderDataModelWarningFromReport,
-    renderSqliteSchemaWarningFromReport,
-    renderOpenClawPrSurfaceFromReport,
-    renderReviewMetricsDigest,
     repairLoopPassModeFromReport,
-    reportAgentsPolicyStatus,
-    reportEvidence,
-    reportLikelyOwners,
-    reportLiveProofRecordingBlock,
-    reportMantisRecommendation,
-    reportOverallConfidenceScore,
-    reportOverallCorrectness,
-    reportPrRating,
-    reportRealBehaviorProofPolicy,
-    reportReviewFindings,
-    reportRootCauseCluster,
-    reportSecurityReview,
-    reportWorkCandidateReason,
-    regressionAssessmentFromReport,
-    regressionProvenanceFromReport,
     reviewAutomationMarkersFromReport,
-    reviewFindingDetailedLine,
-    reviewFindingSummaryLine,
-    reviewFreshnessText,
-    reviewHistoryForRender,
-    reviewMetricsFromReport,
-    reviewSectionValue,
     reviewVersionMarkerFromReport,
-    reviewWorkflowCallout,
-    reviewWorkflowLines,
-    sanitizeArchitectureDiagram,
-    sanitizePublicSelfReferences,
-    securityConcernDetailedLine,
-    securityConcernSummaryLine,
-    sentence,
-    stripPriorityPrefix,
-    triagePriorityFromReport,
+    targetProfile,
   } = dependencies;
+
+  function publicInlineText(value: string): string {
+    return sentence(publicChecklistText(value));
+  }
+
+  function publicInlineCode(value: string): string {
+    return `\`${publicChecklistText(value).replaceAll("`", "'")}\``;
+  }
+
+  // Old reports carry no product review; an all-empty review has nothing to show.
+  function publicProductBlock(product: ProductReview): string {
+    if (
+      product.kind === "not_applicable" &&
+      product.worthIt === "not_applicable" &&
+      product.fixScope === "not_applicable" &&
+      !product.userProblem.trim() &&
+      !product.reason.trim()
+    ) {
+      return "";
+    }
+    const facts = [
+      `**Kind:** ${PRODUCT_KIND_TEXT[product.kind]}`,
+      `**Worth it:** ${PRODUCT_WORTH_TEXT[product.worthIt]}`,
+      ...(product.fixScope === "not_applicable"
+        ? []
+        : [`**Fix scope:** ${PRODUCT_FIX_SCOPE_TEXT[product.fixScope]}`]),
+    ];
+    return [
+      facts.join(" · "),
+      ...(product.userProblem.trim()
+        ? [`**User problem:** ${publicInlineText(product.userProblem)}`]
+        : []),
+      ...(product.reason.trim() ? [`**Reason:** ${publicInlineText(product.reason)}`] : []),
+    ].join("\n");
+  }
+
+  function publicProvenanceLine(entry: ProvenanceEntry): string {
+    const area = publicInlineCode(entry.area);
+    const origin = `${publicChecklistText(entry.introducedBy)}: ${
+      publicInlineText(entry.originalReason) || "reason not recorded."
+    }`;
+    switch (entry.verdict) {
+      case "overrides_without_reason":
+        return `- ${area} changes intended behavior without addressing why it exists (${origin})`;
+      case "unknown":
+        return `- ${area}: original intent not found (${origin})`;
+      case "overrides_with_reason":
+        return `- ${area} changes intended behavior with a stated reason (${origin})`;
+      case "respects":
+        return `- ${area} keeps the original intent (${origin})`;
+    }
+  }
+
+  // The leading block keeps the renderer's finding grammar ("- [P1] title" or
+  // "None.") that review history and the comment router parse; provenance and test
+  // notes sit under their own subheadings so they never read as P-severity findings.
+  function publicFindingsBlock(
+    reviewFindings: readonly ReviewFinding[],
+    securityReview: SecurityReview,
+    provenance: readonly ProvenanceEntry[],
+    testingReview: TestingReview,
+  ): string {
+    const findingLines = [
+      ...reviewFindings.slice(0, 3).map(reviewFindingSummaryLine),
+      ...securityReview.concerns.slice(0, 3).map(securityConcernSummaryLine),
+    ];
+    const blocks = [findingLines.length ? findingLines.join("\n") : "None."];
+    const provenanceLines = provenance
+      .filter(
+        (entry) => entry.verdict === "overrides_without_reason" || entry.verdict === "unknown",
+      )
+      .map(publicProvenanceLine);
+    if (provenanceLines.length) blocks.push("### Provenance", provenanceLines.join("\n"));
+    const testLines = [
+      ...testingReview.lowValueTests.map(
+        (test) =>
+          `- Low-value test ${publicInlineCode(test.file)}: ${
+            publicInlineText(test.reason) || "reason not recorded."
+          }`,
+      ),
+      ...(testingReview.missingE2e.trim()
+        ? [`- Missing end-to-end proof: ${publicInlineText(testingReview.missingE2e)}`]
+        : []),
+    ];
+    if (testLines.length) blocks.push("### Tests", testLines.join("\n"));
+    return blocks.join("\n\n");
+  }
 
   function renderKeepOpenCommentFromReport(
     markdown: string,
     options: ReviewCommentRenderOptions = {},
     precomputedReadiness?: PullRequestReviewReadiness,
   ): string {
-    // Keep the full list for verification counts; only the rendered evidence list is
-    // abbreviated.
-    const allEvidenceEntries = reportEvidence(markdown);
-    const evidenceEntries = allEvidenceEntries.slice(0, 6);
-    const evidence = evidenceEntries.map(closeEvidenceLine);
-    const likelyOwners = reportLikelyOwners(markdown).slice(0, 5).map(likelyOwnerLine);
+    const profile = targetProfile();
+    const isPullRequest = frontMatterValue(markdown, "type") === "pull_request";
+    const reviewDecision = reportReviewDecision(markdown);
+    const proofPolicy = reportRealBehaviorProofPolicy(markdown);
+    // PR comments state the proof sentence once: in Review scores, or in Before merge
+    // when proof blocks merge. An evidence entry that only repeats it adds nothing.
+    // Entries that carry a location, commit, command, or link stay, because that is
+    // the support for the proof.
+    const proofSummary = isPullRequest ? proofPolicy.assessment.summary : "";
+    const evidence = reportEvidence(markdown)
+      .filter(
+        (entry) =>
+          !proofSummary ||
+          Boolean(entry.file || entry.sha || entry.command) ||
+          /https?:\/\//i.test(entry.detail) ||
+          !publicReviewTextIsSame(entry.detail, proofSummary),
+      )
+      .slice(0, 6)
+      .map((entry) => closeEvidenceLine(entry, profile));
+    const likelyOwners = likelyOwnerLines(reportLikelyOwners(markdown), profile);
     const reviewFindings = reportReviewFindings(markdown);
     const securityReview = reportSecurityReview(markdown);
-    const proofPolicy = reportRealBehaviorProofPolicy(markdown);
     const prRating = reportPrRating(markdown);
     const liveProofRecordingBlock = reportLiveProofRecordingBlock(markdown);
-    const mantisRecommendation = reportMantisRecommendation(markdown);
     const agentsPolicyStatus = reportAgentsPolicyStatus(markdown);
     const rootCauseCluster = reportRootCauseCluster(markdown);
     const regressionProvenance = regressionProvenanceFromReport(markdown);
@@ -151,34 +292,37 @@ export function createReportCommentPresentation(
     const mergeRiskOptions = mergeRiskOptionsFromReport(markdown);
     const reviewMetrics = reviewMetricsFromReport(markdown);
     const workReason = reportWorkCandidateReason(markdown);
-    const isPullRequest = frontMatterValue(markdown, "type") === "pull_request";
     const reviewReadiness = isPullRequest
       ? (precomputedReadiness ?? pullRequestReviewReadinessFromReport(markdown))
       : undefined;
     const reviewFailed = frontMatterValue(markdown, "review_status") === "failed";
     const validation = frontMatterStringArray(markdown, "work_validation")
       .slice(0, 5)
-      .map((step) =>
-        isPullRequest ? publicPriorityBulletFromText(step, "P1") : `- ${stripPriorityPrefix(step)}`,
-      );
+      .map((step) => `- ${stripListMarker(step)}`);
     const isRepairLoopPass = isPullRequest && Boolean(repairLoopPassModeFromReport(markdown));
     const hasRealBehaviorProofBlocker =
       isPullRequest && !reviewFailed && proofPolicy.proofBlocksMerge;
     const summaryLine =
       neutralizeOwnedSectionSpoofing(sentence(summary)) || "_No summary provided._";
-    const changeSummaryLine =
+    const changeSummarySentence =
       neutralizeOwnedSectionSpoofing(sentence(changeSummary || summary)) ||
       "_No change summary provided._";
+    const changeExample = reportChangeExample(markdown);
+    const changeSummaryLine =
+      changeExample.scenario && changeExample.before && changeExample.after
+        ? [
+            changeSummarySentence,
+            "",
+            `**Example:** ${neutralizeOwnedSectionSpoofing(changeExample.scenario)}`,
+            `- **Before:** ${neutralizeOwnedSectionSpoofing(changeExample.before)}`,
+            `- **After:** ${neutralizeOwnedSectionSpoofing(changeExample.after)}`,
+          ].join("\n")
+        : changeSummarySentence;
     const fallbackNextStep =
       "Continue tracking this item until the missing behavior is implemented or a maintainer decides the product direction.";
     const nextStepLine = sentence(
       workReason || bestSolution || (isPullRequest ? "" : fallbackNextStep),
     );
-    const publicNextStepLine = isPullRequest
-      ? hasRealBehaviorProofBlocker
-        ? publicPriorityBulletFromText(nextStepLine, "P1")
-        : publicPriorityBulletIfActionable(nextStepLine, "P2")
-      : nextStepLine;
     const bestSolutionLine = sentence(bestSolution);
     const mergeRiskLine = isPullRequest
       ? publicMergeRiskLine(risks, nextStepLine, bestSolutionLine, mergeRiskOptions)
@@ -186,7 +330,7 @@ export function createReportCommentPresentation(
     const reviewDetails: string[] = [];
     const labelDetails: string[] = [];
     const evidenceDetails: string[] = [];
-    const triagePriority = triagePriorityFromReport(markdown);
+    const { triagePriority } = reviewDecision;
     const verdictLine = reviewFailed
       ? "ClawSweeper review: did not complete due to Codex infrastructure failure."
       : reviewReadiness?.state === "blocked"
@@ -204,17 +348,9 @@ export function createReportCommentPresentation(
               : "Codex review: this still needs some work.";
     const reviewHistory = reviewHistoryForRender(markdown, options.previousReviewCommentBody);
     const revision = reviewHistory.totalCompletedCycles + 1;
-    const lines = [`${verdictLine}${reviewFreshnessText(markdown, revision)}`, ""];
+    const lines = [verdictLine, ""];
     const prSurface = renderOpenClawPrSurfaceFromReport(markdown);
-    const dataModelWarning = renderDataModelWarningFromReport(markdown);
-    const sqliteSchemaWarning = renderSqliteSchemaWarningFromReport(markdown);
     const rootCauseClusterBlock = publicRootCauseClusterBlock(rootCauseCluster);
-    const mantisSuggestion = isPullRequest
-      ? publicMantisRecommendationBlock(mantisRecommendation)
-      : "";
-    const unsupportedMantisSuggestion = isPullRequest
-      ? publicNonDispatchableMantisRecommendationBlock(mantisRecommendation)
-      : "";
     // The decision rationale is model text rendered above owned sections; escape
     // heading-shaped lines so it cannot spoof them.
     const decisionPacketBlock = neutralizeOwnedSectionSpoofing(
@@ -225,9 +361,14 @@ export function createReportCommentPresentation(
       reviewDetails.push("Best possible solution:", "", bestSolutionLine);
     }
     appendReviewQuestionDetails(reviewDetails, reproductionAssessment, solutionAssessment);
-    const labelJustifications = labelJustificationsFromPublicReport(markdown, options);
+    const labelJustifications = labelJustificationsFromPublicReport(
+      markdown,
+      reviewDecision,
+      options,
+    );
     const labelTransitionJustifications = labelTransitionJustificationsFromPublicReport(
       markdown,
+      reviewDecision,
       labelJustifications,
       options,
     );
@@ -309,10 +450,10 @@ export function createReportCommentPresentation(
         ...(reviewDetails.length ? [""] : []),
         "Remaining risk / open question:",
         "",
-        isPullRequest ? publicRiskBulletsFromText(risks, "P2") : risks,
+        isPullRequest ? publicRiskBullets(risks) : risks,
       );
     }
-    const reviewLine = closeReviewLineFromReport(markdown);
+    const reviewLine = closeReviewLineFromReport(markdown, profile);
     if (reviewLine) reviewDetails.push(...(reviewDetails.length ? [""] : []), reviewLine);
     const reviewHistoryBlock = renderReviewHistorySection(reviewHistory);
 
@@ -325,9 +466,17 @@ export function createReportCommentPresentation(
       const patchQualityBlocked =
         !reviewFailed && (prRating.patchTier === "F" || prRating.patchTier === "D");
       const beforeMergeItems = reviewReadiness.items;
-      lines.push("# ClawSweeper review", "");
       appendHeadingSection(lines, "What this changes", changeSummaryLine);
-      if (sqliteSchemaWarning) lines.push(sqliteSchemaWarning, "");
+      if (!reviewFailed) {
+        // The proof summary renders here, or only in Before merge when proof blocks merge.
+        appendHeadingSection(
+          lines,
+          "Review scores",
+          publicReviewScoresBlock(prRating, proofPolicy, reviewFindings, securityReview),
+        );
+      }
+      const productBlock = publicProductBlock(reportProductReview(markdown));
+      if (productBlock) appendHeadingSection(lines, "Product", productBlock);
       if (regressionPublicLine) {
         appendHeadingSection(lines, "Regression provenance", regressionPublicLine);
       }
@@ -345,103 +494,67 @@ export function createReportCommentPresentation(
               pullHeadShaFromReport(markdown) ?? "",
             ),
       );
-      if (!reviewFailed) {
-        appendHeadingSection(
-          lines,
-          "Review scores",
-          publicReviewScoresBlock(prRating, proofPolicy, reviewFindings, securityReview),
-        );
-        appendHeadingSection(
-          lines,
-          "Verification",
-          publicVerificationBlock(proofPolicy, allEvidenceEntries, reviewFindings, securityReview),
-        );
-      }
-      if (liveProofRecordingBlock) {
-        lines.push("", "### Live Verification", "", liveProofRecordingBlock, "");
-      }
-      if (systemContext && architectureDiagram) {
-        appendHeadingSection(
-          lines,
-          "How this fits together",
-          `${systemContext}\n\n\`\`\`mermaid\n${architectureDiagram}\n\`\`\``,
-        );
-      }
       if (decisionPacketBlock) {
         appendHeadingSection(lines, "Decision needed", decisionPacketBlock);
       }
       appendHeadingSection(lines, "Before merge", publicBeforeMergeBlock(beforeMergeItems));
-      if (reviewFindings.length || securityReview.concerns.length) {
+      const provenance = reportProvenance(markdown);
+      const testingReview = reportTestingReview(markdown);
+      if (!reviewFailed) {
         appendHeadingSection(
           lines,
           "Findings",
-          [
-            ...reviewFindings.slice(0, 3).map(reviewFindingSummaryLine),
-            ...securityReview.concerns.slice(0, 3).map(securityConcernSummaryLine),
-          ].join("\n"),
+          publicFindingsBlock(reviewFindings, securityReview, provenance, testingReview),
         );
       }
 
-      const agentDetails: string[] = ["### Security", "", securityLine || "None."];
-      if (prSurface) agentDetails.push("", "### PR surface", "", prSurface);
-      agentDetails.push("", "### Review metrics", "", renderReviewMetricsDigest(reviewMetrics));
-      if (dataModelWarning) {
-        agentDetails.push("", "### Stored data model", "", dataModelWarning);
-      }
-      if (rootCauseClusterBlock) {
-        agentDetails.push("", "### Root-cause cluster", "", rootCauseClusterBlock);
-      }
-      if (mantisSuggestion) {
-        agentDetails.push("", "### Mantis proof suggestion", "", mantisSuggestion);
-      }
-      if (unsupportedMantisSuggestion) {
-        agentDetails.push("", "### Proof path suggestion", "", unsupportedMantisSuggestion);
-      }
-      if (mergeRiskLine) {
-        // Routine risks are not counted as Before-merge work, so keep their text
-        // visible next to the maintainer options even when actionable risks coexist.
-        const riskBullets = !isReportNoneList(risks) ? publicRiskBulletsFromText(risks, "P1") : "";
-        const routineRiskContext = riskBullets
-          .split("\n")
-          .filter((line) => line.startsWith("- ") && !/^- \[P[0-2]\]/.test(line))
-          .join("\n");
-        agentDetails.push(
-          "",
-          "### Merge-risk options",
-          "",
-          ...(routineRiskContext ? [routineRiskContext, ""] : []),
-          mergeRiskLine,
+      const agentDetails: string[] = [];
+      const appendDetails = (heading: string, ...body: string[]) => {
+        agentDetails.push(...(agentDetails.length ? [""] : []), `### ${heading}`, "", ...body);
+      };
+      if (systemContext && architectureDiagram) {
+        appendDetails(
+          "How this fits together",
+          `${systemContext}\n\n\`\`\`mermaid\n${architectureDiagram}\n\`\`\``,
         );
       }
-      if (reviewDetails.length) {
-        agentDetails.push("", "### Technical review", "", ...reviewDetails);
+      if (liveProofRecordingBlock) appendDetails("Live Verification", liveProofRecordingBlock);
+      if (reviewDetails.length) appendDetails("Technical review", ...reviewDetails);
+      if (mergeRiskLine) appendDetails("Merge-risk options", mergeRiskLine);
+      const checkedProvenance = provenance.filter(
+        (entry) => entry.verdict === "respects" || entry.verdict === "overrides_with_reason",
+      );
+      if (checkedProvenance.length) {
+        appendDetails("Provenance checked", checkedProvenance.map(publicProvenanceLine).join("\n"));
       }
-      if (labelDetails.length) {
-        agentDetails.push("", "### Labels", "", ...labelDetails);
+      if (testingReview.proofPath !== "not_applicable") {
+        appendDetails(
+          "Testing",
+          `Proof path: ${TESTING_PROOF_PATH_TEXT[testingReview.proofPath]}.`,
+        );
       }
-      if (evidenceDetails.length) {
-        agentDetails.push("", "### Evidence", "", ...evidenceDetails);
+      appendDetails("Security", securityLine || "None.");
+      if (evidenceDetails.length) appendDetails("Evidence", ...evidenceDetails);
+      if (prSurface) appendDetails("PR surface", prSurface);
+      if (reviewMetrics.length) {
+        appendDetails("Review metrics", renderReviewMetricsDigest(reviewMetrics));
       }
+      if (rootCauseClusterBlock) appendDetails("Root-cause cluster", rootCauseClusterBlock);
+      if (labelDetails.length) appendDetails("Labels", ...labelDetails);
       const rankUpMoves = prRating.nextSteps
         .map((step) => sentence(step))
         .filter((step) => step && !isReportNoneList(step) && !/^none[.!]?$/i.test(step));
       if (!reviewFailed && !patchQualityBlocked && rankUpMoves.length) {
-        agentDetails.push(
-          "",
-          "### Rank-up moves",
-          "",
+        appendDetails(
+          "Rank-up moves",
           "Optional improvements that raise the rating; they are not merge blockers.",
           "",
           rankUpMoves.map((step) => `- ${publicChecklistText(step)}`).join("\n"),
         );
       }
-      if (!reviewFailed) {
-        agentDetails.push("", "### Rating scale", "", publicRankDetailsBlock());
-      }
-      agentDetails.push("", "### Workflow", "", ...reviewWorkflowLines());
-      if (reviewHistoryBlock) {
-        agentDetails.push("", "### History", "", REVIEW_HISTORY_RENDER_SLOT);
-      }
+      if (!reviewFailed) appendDetails("Rating scale", publicRankScaleLine());
+      appendDetails("Workflow", reviewWorkflowSummaryLine());
+      if (reviewHistoryBlock) appendDetails("History", REVIEW_HISTORY_RENDER_SLOT);
       lines.push("", collapsedDetailsBlock("<strong>Agent review details</strong>", agentDetails));
     } else {
       appendPublicSection(lines, "Summary", publicSummaryBody(summaryLine, reproductionAssessment));
@@ -454,7 +567,7 @@ export function createReportCommentPresentation(
       if (decisionPacketBlock) {
         appendPublicSection(lines, "Maintainer decision needed", decisionPacketBlock);
       }
-      appendPublicSection(lines, "Next step", publicNextStepLine);
+      appendPublicSection(lines, "Next step", nextStepLine);
       if (securityReview.status !== "not_applicable" || securityReview.concerns.length > 0) {
         appendPublicSection(lines, "Security", securityLine);
       }
@@ -466,13 +579,9 @@ export function createReportCommentPresentation(
       if (evidenceDetailsBlock) lines.push("", evidenceDetailsBlock);
       lines.push("", ...reviewWorkflowCallout());
     }
-    const publicBody = neutralizeReviewControlMarkers(
-      sanitizePublicSelfReferences(
-        lines.join("\n"),
-        Number(frontMatterValue(markdown, "number")),
-        (frontMatterValue(markdown, "type") as ItemKind | undefined) ?? "issue",
-      ),
-    );
+    const freshness = reviewFreshnessText(markdown, revision);
+    if (freshness) lines.push("", freshness);
+    const publicBody = neutralizeReviewControlMarkers(lines.join("\n"));
     if (!reviewHistoryBlock) return publicBody;
     // Issues keep the pre-redesign trailing history block; only PRs moved it into the
     // collapsed details slot.
@@ -495,7 +604,7 @@ export function createReportCommentPresentation(
   ): string {
     if (reason === "oversized_pull_request") {
       return [
-        renderCloseCommentFromReport(markdown, reason),
+        renderCloseCommentFromReport(markdown, reason, targetProfile()),
         reviewVersionMarkerFromReport(markdown),
       ]
         .filter(Boolean)
@@ -512,8 +621,6 @@ export function createReportCommentPresentation(
         : "The exact reviewed head could not be recovered.";
       const body = [
         "Codex review: blocked before merge.",
-        "",
-        "# ClawSweeper review",
         "",
         "## What this changes",
         "",
@@ -546,7 +653,7 @@ export function createReportCommentPresentation(
       (!requiresMaintainerDecision ||
         reason === "unsponsored_feature_request" ||
         reason === "author_pr_budget_exceeded")
-        ? renderCloseCommentFromReport(markdown, reason)
+        ? renderCloseCommentFromReport(markdown, reason, targetProfile())
         : renderKeepOpenCommentFromReport(markdown, options, reviewReadiness);
     const markers = options.suppressAutomationMarkers
       ? ""

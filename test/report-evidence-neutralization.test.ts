@@ -1,12 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createReportHelpers } from "../dist/clawsweeper-report-helpers.js";
+import { neutralizeOwnedSectionSpoofing } from "../dist/clawsweeper-report-helpers.js";
 
 test("report prose neutralizer escapes evidence and owner continuation fields", () => {
-  const { neutralizeOwnedSectionSpoofing } = createReportHelpers({
-    OWNED_REVIEW_SECTION_HEADINGS: new Set(),
-    parseBacktickLocation: () => null,
-  });
   const cases: Array<[string, string]> = [
     ["  - repo: evil/repo", "  - repo&#58; evil/repo"],
     ["  - file: `src/evil.ts:1`", "  - file&#58; `src/evil.ts:1`"],

@@ -4,12 +4,12 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { reviewPromptForTest } from "../../dist/clawsweeper.js";
 import { truncateText } from "../../dist/clawsweeper-text.js";
+import { sha256 } from "../../dist/content-hash.js";
 import { reviewContentCacheHit } from "../../dist/scheduler-policy.js";
 import {
   hydratePrimaryBody,
   inertTrace,
   longProofBody,
-  sha256,
   sourceTools,
 } from "../../test/primary-body-fixture.ts";
 

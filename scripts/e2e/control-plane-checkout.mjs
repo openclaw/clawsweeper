@@ -64,11 +64,21 @@ try {
       assert.equal(git(workspace, "config", "--local", "--list"), configBefore);
       const downloaded = readFileSync(join(runnerTemp, "control-plane-curl.sh"));
       assert.deepEqual(downloaded, readFileSync(join(root, "scripts/control-plane-curl.sh")));
+      // Some jobs also download the queue request command source for pre-checkout steps.
+      const request = join(runnerTemp, "exact-review-queue-request.mts");
+      const requestDownloaded = bootstrap.run.includes("exact-review-queue-request.mts");
+      assert.equal(existsSync(request), requestDownloaded);
+      if (requestDownloaded) {
+        assert.deepEqual(
+          readFileSync(request),
+          readFileSync(join(root, "src/repair/exact-review-queue-request.ts")),
+        );
+      }
       git(workspace, "checkout", "--force", "--detach", head);
       assert.ok(existsSync(join(workspace, action)));
       assert.equal(git(workspace, "ls-files", "-t", action), `H ${action}`);
       record(
-        `NEW ${file}:${jobName}: actual bootstrap curl --retry 3 + source succeeded; Git config unchanged; full checkout => ${action}=PRESENT; helper_sha256=${createHash("sha256").update(downloaded).digest("hex")}`,
+        `NEW ${file}:${jobName}: actual bootstrap curl --retry 3 + source succeeded; Git config unchanged; full checkout => ${action}=PRESENT; helper_sha256=${createHash("sha256").update(downloaded).digest("hex")}${requestDownloaded ? "; request command source downloaded" : ""}`,
       );
     }
   }

@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
 import { createHmac } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { once } from "node:events";
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
 import test from "node:test";
 
 import {
@@ -103,36 +106,25 @@ test("placeholder snapshot and repair poll choose the same recovery with fewer G
   assert.equal(polled.githubReads, 3);
 });
 
-test("scheduled placeholder recovery also performs bounded recovery-label reconciliation", () => {
-  const source = readFileSync("src/review-placeholder-recovery.ts", "utf8");
-  const cli = source.slice(source.indexOf("if (invokedPath && invokedPath ==="));
-  const runner = source.slice(source.indexOf("export async function runReviewPlaceholderRecovery"));
-
-  assert.match(cli, /runReviewPlaceholderRecovery\(\{ reconcileRecoveryLabels: true \}\)/);
-  assert.match(runner, /if \(options\.reconcileRecoveryLabels && targetWriteToken\)/);
-  assert.match(runner, /runReviewRecoveryLabelBackfill\(\{/);
-  assert.match(runner, /github,[\s\S]*fetchComments: fetchReviewComments/);
-  assert.match(runner, /review-recovery label reconciliation skipped:/);
-});
-
-test("the scheduled reconciler reuses recovery transport to clear an exact-head completed PR", async () => {
+test("the scheduled recovery CLI clears the recovery label of an exact-head completed PR", async () => {
   const head = "da73f50fbca83cc89f3e8f33f61e27963351403b";
+  const requests: string[] = [];
   let deletions = 0;
-  const fetchImpl = async (
-    input: string | URL | Request,
-    init?: RequestInit,
-  ): Promise<Response> => {
-    const url = new URL(input instanceof Request ? input.url : input.toString());
+  const server = createServer((request, response) => {
+    const url = new URL(request.url ?? "/", "http://loopback.invalid");
+    requests.push(`${request.method} ${url.pathname}`);
+    const json = (value: unknown) => {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify(value));
+    };
     if (url.pathname === "/search/issues") {
-      const query = url.searchParams.get("q") ?? "";
-      return Response.json(
-        query.includes("label:")
+      json(
+        (url.searchParams.get("q") ?? "").includes("label:")
           ? { total_count: 1, items: [{ number: 112370, pull_request: {} }] }
           : { total_count: 0, items: [] },
       );
-    }
-    if (url.pathname === "/repos/openclaw/openclaw/issues/112370/comments") {
-      return Response.json([
+    } else if (url.pathname === "/repos/openclaw/openclaw/issues/112370/comments") {
+      json([
         {
           body: [
             "ClawSweeper review: keep open.",
@@ -143,36 +135,43 @@ test("the scheduled reconciler reuses recovery transport to clear an exact-head 
           user: { login: "clawsweeper[bot]", type: "Bot" },
         },
       ]);
-    }
-    if (url.pathname === "/repos/openclaw/openclaw/pulls/112370") {
-      return Response.json({ head: { sha: head } });
-    }
-    if (
+    } else if (url.pathname === "/repos/openclaw/openclaw/pulls/112370") {
+      json({ head: { sha: head } });
+    } else if (
+      request.method === "DELETE" &&
       url.pathname === "/repos/openclaw/openclaw/issues/112370/labels/clawsweeper-recovery-stuck"
     ) {
-      assert.equal(init?.method, "DELETE");
-      assert.equal(new Headers(init?.headers).get("authorization"), "Bearer target-token");
-      deletions += 1;
-      return new Response(null, { status: 204 });
+      // Label writes must use the target write token, not the read token.
+      if (request.headers.authorization === "Bearer target-token") deletions += 1;
+      response.writeHead(204).end();
+    } else {
+      response.writeHead(404).end();
     }
-    throw new Error(`unexpected request: ${init?.method ?? "GET"} ${url.pathname}`);
-  };
-
-  await runReviewPlaceholderRecovery({
-    env: {
-      GH_TOKEN: "read-token",
-      TARGET_WRITE_TOKEN: "target-token",
-      CLAWSWEEPER_WEBHOOK_SECRET: "webhook-secret",
-      GITHUB_API_URL: "https://api.github.test",
-      QUEUE_URL: "https://queue.test",
-      TARGET_REPO: "openclaw/openclaw",
-    },
-    fetchImpl: fetchImpl as typeof fetch,
-    now: new Date("2026-08-05T12:00:00.000Z"),
-    reconcileRecoveryLabels: true,
   });
-
-  assert.equal(deletions, 1);
+  await new Promise<void>((resolveListen) => server.listen(0, "127.0.0.1", resolveListen));
+  try {
+    const { port } = server.address() as AddressInfo;
+    const child = spawn(process.execPath, ["dist/review-placeholder-recovery.js"], {
+      env: {
+        PATH: process.env.PATH,
+        GH_TOKEN: "read-token",
+        TARGET_WRITE_TOKEN: "target-token",
+        CLAWSWEEPER_WEBHOOK_SECRET: "webhook-secret",
+        GITHUB_API_URL: `http://127.0.0.1:${port}`,
+        QUEUE_URL: `http://127.0.0.1:${port}`,
+        TARGET_REPO: "openclaw/openclaw",
+      },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let output = "";
+    child.stdout.on("data", (chunk) => (output += chunk));
+    child.stderr.on("data", (chunk) => (output += chunk));
+    const [status] = await once(child, "exit");
+    assert.equal(deletions, 1, `${output}\n${requests.join("\n")}`);
+    assert.equal(status, 0, output);
+  } finally {
+    server.close();
+  }
 });
 
 const now = new Date("2026-07-17T12:00:00.000Z");

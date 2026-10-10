@@ -285,19 +285,21 @@ test("state-hydrating sparse repair workflows keep hydration dependencies", () =
 });
 
 test("CI and CodeQL avoid fragile lazy promisor checkouts", () => {
-  for (const [workflowPath, jobName] of [
-    [".github/workflows/ci.yml", "check"],
-    [".github/workflows/codeql.yml", "analyze"],
-  ]) {
+  for (const [workflowPath, jobNames] of [
+    [".github/workflows/ci.yml", ["check-fast", "check-tests", "check-coverage"]],
+    [".github/workflows/codeql.yml", ["analyze"]],
+  ] as const) {
     const workflow = parse(readText(workflowPath)) as {
       jobs: Record<string, { steps: Array<{ uses?: string; with?: Record<string, unknown> }> }>;
     };
-    const checkout = workflow.jobs[jobName]!.steps.find((step) =>
-      step.uses?.startsWith("actions/checkout@"),
-    );
-    assert.ok(checkout, `${workflowPath}:${jobName} must check out its source`);
-    assert.equal(checkout.with?.["sparse-checkout"], undefined);
-    assert.equal(checkout.with?.filter, undefined);
+    for (const jobName of jobNames) {
+      const checkout = workflow.jobs[jobName]!.steps.find((step) =>
+        step.uses?.startsWith("actions/checkout@"),
+      );
+      assert.ok(checkout, `${workflowPath}:${jobName} must check out its source`);
+      assert.equal(checkout.with?.["sparse-checkout"], undefined);
+      assert.equal(checkout.with?.filter, undefined);
+    }
   }
 });
 

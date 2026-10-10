@@ -1,7 +1,7 @@
 import type { JsonValue, LooseRecord } from "./json-types.js";
 import { CLAWSWEEPER_CO_AUTHOR, coAuthorKey } from "./co-author-credit.js";
 import { runCommand as run } from "./command-runner.js";
-import { parsePullRequestUrl, sameRepoSlug } from "./github-ref.js";
+import { issueNumberFromRef, parsePullRequestUrl, sameRepoSlug } from "./github-ref.js";
 import { repoRoot } from "./lib.js";
 import { repairGhEnv as ghEnv } from "./process-env.js";
 import { uniqueStrings } from "./validation-command-utils.js";
@@ -132,35 +132,40 @@ export function publicContributorCredit(credit: JsonValue): LooseRecord {
   };
 }
 
+// The replacement PR takes the place of the first same-repo source PR. Another source PR
+// is closed with it only when its close_superseded action names no other fix or canonical
+// PR (the worker keeps candidate_fix null until the replacement exists). A close bound
+// to another PR stays with the guarded applicator.
 export function supersededReplacementSources({
   fixArtifact,
+  actions,
   repo,
 }: {
   fixArtifact: LooseRecord;
+  actions: LooseRecord[];
   repo: string;
 }): JsonValue[] {
-  if (
-    Array.isArray(fixArtifact.supersede_source_prs) &&
-    fixArtifact.supersede_source_prs.length > 0
-  ) {
-    return fixArtifact.supersede_source_prs.filter((source: JsonValue) =>
-      sameRepoSlug(parsePullRequestUrl(source)?.repo, repo),
-    );
-  }
-
-  const blockerText = (fixArtifact.branch_update_blockers ?? []).join("\n");
-  const directUneditableSources = (fixArtifact.source_prs ?? []).filter((source: JsonValue) => {
-    const parsed = parsePullRequestUrl(source);
-    if (!parsed || !sameRepoSlug(parsed.repo, repo)) return false;
-    const sourcePattern = new RegExp(`(?:#|pull/)${parsed.number}(?!\\d)[\\s\\S]{0,220}`, "i");
-    const sourceBlocker = blockerText.match(sourcePattern)?.[0] ?? "";
-    return /maintainer_can_modify\s*=\s*false|uneditable|cannot safely update|branch is unsafe|mergeability unknown/i.test(
-      sourceBlocker,
-    );
-  });
-  return directUneditableSources.length > 0
-    ? directUneditableSources
-    : (fixArtifact.source_prs ?? []).slice(0, 1);
+  const supersededNumbers = new Set(
+    actions
+      .filter(
+        (action) =>
+          action?.action === "close_superseded" &&
+          !action.candidate_fix &&
+          !action.fixed_by &&
+          !action.fix_candidate &&
+          !action.canonical &&
+          !action.duplicate_of,
+      )
+      .map((action) => issueNumberFromRef(action.target, repo))
+      .filter((number) => number > 0),
+  );
+  const sameRepoSources = (fixArtifact.source_prs ?? []).filter((source: JsonValue) =>
+    sameRepoSlug(parsePullRequestUrl(source)?.repo, repo),
+  );
+  return sameRepoSources.filter(
+    (source: JsonValue, index: number) =>
+      index === 0 || supersededNumbers.has(parsePullRequestUrl(source)?.number ?? 0),
+  );
 }
 
 export function prepareReviewThreadsForMerge({

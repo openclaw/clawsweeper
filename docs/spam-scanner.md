@@ -55,19 +55,19 @@ drop a newly added workflow's first tick. Manual dispatch is the immediate
 verification path.
 
 New or edited issue and pull-request review comments also have an event-driven
-path. The GitHub activity workflow runs the deterministic spam intake filter;
+path. The GitHub activity workflow runs the fact-only spam intake admission;
 target repositories may forward the same normalized activity through
-`clawsweeper_spam_comment_intake`. Only comments with a qualifying deterministic
-signal dispatch `clawsweeper_spam_comment`, which invokes `spam-scanner.yml` for
+`clawsweeper_spam_comment_intake`. Each admitted comment (see Detection)
+dispatches `clawsweeper_spam_comment`, which invokes `spam-scanner.yml` for
 that exact comment with `max_comments=1`. The hourly scan remains the bounded
 catch-up path.
 
 ## Comment Sources
 
 The scanner reads recent comments newest-first and over-fetches a bounded
-window before applying the `max_comments` cap. Broad scans prioritize
-deterministic spam-shaped candidates first, then fill the rest of the scan
-sample with normal recent comments so stale audit cleanup still runs.
+window before applying the `max_comments` cap. Broad scans put comments that
+qualify for the model first, then fill the rest of the scan sample with normal
+recent comments so stale audit cleanup still runs.
 
 The scanner reads:
 
@@ -79,7 +79,7 @@ The scanner reads:
 
 It also hydrates GraphQL minimization metadata for scanned comment node ids. If
 GitHub has already minimized a comment as spam or abuse, that becomes a
-deterministic signal.
+deterministic fact.
 
 Protected authors are skipped before model spend:
 
@@ -97,30 +97,36 @@ Outputs in `openclaw/clawsweeper-state`:
 - `results/spam-audit/<repo-slug>/<kind>-<comment-id>.json`: per-comment audit
 
 Audit records include the comment URL, author association, body hash, short body
-excerpt, deterministic signals, model, model result, and `action: none`.
-When a reprocessed comment no longer qualifies as a candidate, its stale
+excerpt, deterministic facts, model, model result, and `action: none`.
+When a reprocessed comment no longer qualifies for the model, its stale
 per-comment audit file is removed from generated state.
 
 ## Detection
 
-Deterministic signals are intentionally simple and cheap:
+Admission to the model uses facts only. A comment goes to the internal model
+when its author is not protected and either:
+
+- its body is at least 12 characters long, or
+- it has a link, or GitHub has minimized it.
+
+Keyword patterns do not decide admission. Code records these deterministic facts
+and sends them to the model as labelled input (`deterministic_facts` and
+`technical_context_facts`). They are inputs for the model's judgement, not
+verdicts:
 
 - GitHub minimized reason contains `spam` or `abuse`
 - known URL shortener
 - service-pitch wording such as web scraping, data extraction, flash sale, or
   sample work
 - priced short service pitch
+- multiple non-GitHub external links, and outside-author external links
+- technical context such as code blocks, diffs, test commands, and tables
 
 GitHub, raw GitHub content, and localhost links are treated as project context,
 not spam links. Maintainer, collaborator, member, contributor, and trusted bot
 comments are not sent to the cheap model.
 
-Multiple non-GitHub external links and outside-author external links are
-recorded as supporting signals only. They do not make a comment a model
-candidate unless a stronger spam-shaped signal is also present.
-
-Only comments with deterministic signals are sent to the internal model. The model
-returns strict JSON:
+The model returns strict JSON:
 
 - `spam_signal`: `none`, `low`, `medium`, or `high`
 - `confidence`: 0-1

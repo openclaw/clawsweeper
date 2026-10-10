@@ -1,11 +1,27 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { parseBooleanEnv } from "../../dist/repair/env-utils.js";
 import {
+  isBlockedFixError,
+  isRetryableCodexFailure,
+  repositoryRepairExecutionBlockReason,
   shouldCloseSupersededSourcePrs,
   shouldSeedReplacementBranchFromSource,
   sourceBranchWriteBlockReason,
 } from "../../dist/repair/execute-fix-policy.js";
+
+test("Enterprise repair execution is denied independently of router admission", () => {
+  assert.equal(
+    repositoryRepairExecutionBlockReason("openclaw/openclaw-enterprise"),
+    "repair execution is disabled for openclaw/openclaw-enterprise by repository profile",
+  );
+  assert.equal(repositoryRepairExecutionBlockReason("openclaw/openclaw"), null);
+  assert.equal(
+    repositoryRepairExecutionBlockReason(""),
+    "repair execution requires a target repository",
+  );
+});
 
 test("superseded source PR closeout defaults on for replacement PRs", () => {
   assert.equal(shouldCloseSupersededSourcePrs(undefined), true);
@@ -17,6 +33,22 @@ test("superseded source PR closeout defaults on for replacement PRs", () => {
 test("superseded source PR closeout can be explicitly disabled", () => {
   assert.equal(shouldCloseSupersededSourcePrs("0"), false);
   assert.equal(shouldCloseSupersededSourcePrs("false"), false);
+});
+
+test("boolean config coercion preserves tokens without trimming and owner defaults", () => {
+  for (const value of ["1", "TrUe", "YeS", "On", true, 1]) {
+    assert.equal(parseBooleanEnv(value, false), true, String(value));
+    assert.equal(shouldCloseSupersededSourcePrs(value), true, String(value));
+  }
+  for (const value of ["0", "FaLsE", "No", "OfF", false, 0]) {
+    assert.equal(parseBooleanEnv(value, true), false, String(value));
+    assert.equal(shouldCloseSupersededSourcePrs(value), false, String(value));
+  }
+  for (const value of [undefined, null, "", "unknown", " ", " true", "false ", 2]) {
+    assert.equal(parseBooleanEnv(value, false), false, String(value));
+    assert.equal(parseBooleanEnv(value, true), true, String(value));
+    assert.equal(shouldCloseSupersededSourcePrs(value), true, String(value));
+  }
 });
 
 test("only replacement fixes seed the repair branch from a source PR head", () => {
@@ -78,4 +110,26 @@ test("sourceBranchWriteBlockReason blocks missing head details", () => {
     }),
     "source PR is missing head repo/ref",
   );
+});
+
+for (const phase of ["fix worker", "review-fix worker", "validation-fix worker", "/review"]) {
+  for (const failure of ["timed out after 1800000ms", "failed"]) {
+    test(`${phase} ${failure} retains the blocked recovery outcome`, () => {
+      const message = `Codex ${phase} ${failure}`;
+      assert.equal(isBlockedFixError(new Error(message)), true);
+      assert.equal(isRetryableCodexFailure(message), true);
+    });
+  }
+}
+
+test("terminal Codex and persistent setup failures do not request repair requeue", () => {
+  const terminal = "The model fixture-model does not exist or you do not have access to it.";
+  assert.equal(isRetryableCodexFailure(`Codex fix worker failed: ${terminal}`, terminal), false);
+  assert.equal(
+    isRetryableCodexFailure("Codex validation-fix worker failed: login required"),
+    false,
+  );
+  assert.equal(isRetryableCodexFailure("Codex validation-fix worker failed: bwrap setup"), false);
+  assert.equal(isRetryableCodexFailure("Codex fix worker failed: sandbox startup"), false);
+  assert.equal(isBlockedFixError(new Error("unexpected executor invariant failure")), false);
 });

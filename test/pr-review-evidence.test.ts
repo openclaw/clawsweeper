@@ -5,7 +5,35 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-import { readReviewGit } from "../dist/pr-review-evidence.js";
+import {
+  buildPullRequestReviewEvidence,
+  readReviewGit,
+  reviewRecord,
+} from "../dist/pr-review-evidence.js";
+
+test("review evidence retains pinned identities on array-backed records", () => {
+  const sha = "a".repeat(40);
+  const pullRequest = Object.assign([], {
+    base: Object.assign([], { sha }),
+    head: Object.assign([], { sha }),
+  });
+  const evidence = buildPullRequestReviewEvidence({ context: { pullRequest }, mainSha: sha });
+  assert.equal(evidence.baseSha, sha);
+  assert.equal(evidence.originalHead.sha, sha);
+});
+
+test("reviewRecord does not read accessors, while review callers preserve their errors", () => {
+  const value = Object.defineProperty({}, "base", {
+    get() {
+      throw new TypeError("fixture base access");
+    },
+  });
+  assert.equal(reviewRecord(value), value);
+  assert.throws(
+    () => buildPullRequestReviewEvidence({ context: { pullRequest: value }, mainSha: "" }),
+    { name: "TypeError", message: "fixture base access" },
+  );
+});
 
 test("readReviewGit keeps raw reads isolated with a Git-compatible null device", () => {
   const root = mkdtempSync(join(tmpdir(), "clawsweeper-review-git-"));

@@ -1,0 +1,1 @@
+- Read the close-policy env flags from one `policy-flags` module for both the review lane and the comment router, and reject the retired `--codex-reasoning-effort`/`--codex-service-tier` flags through one arg-parser check.

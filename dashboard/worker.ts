@@ -21,9 +21,16 @@ import {
   authenticateReviewProofProducerToken,
   reviewProofProducerMatches,
 } from "./review-proof-producer-auth.ts";
+import {
+  authenticateTargetDispatchToken,
+  TARGET_DISPATCH_MAX_BODY_BYTES,
+  targetDispatchQueueIntake,
+} from "./target-dispatch-ingress.ts";
 import { legacyCommandCommentId } from "../src/repair/command-ack-convergence.ts";
+import { commandAckMarker } from "../src/repair/markers.ts";
 import { directReReviewIntake } from "../src/repair/direct-re-review-admission.ts";
 import { isExactReviewCloseGuardLabel } from "../src/repair/exact-review-guard-labels.ts";
+import { EXACT_REVIEW_LIFECYCLE_BAY_TIDE_THRESHOLD } from "./exact-review-lifecycle-telemetry.ts";
 import { sha256Hex } from "./exact-review-direct-publication.ts";
 import { exactReviewSourceRevisionMaterial } from "./exact-review-source-revision.ts";
 import {
@@ -1153,6 +1160,8 @@ export default {
       return json({ ok: true, service: "clawsweeper-github-webhook" });
     if (url.pathname === "/github/webhook" && request.method === "POST")
       return githubWebhook(request, env, ctx);
+    if (url.pathname === "/github/target-dispatch" && request.method === "POST")
+      return githubTargetDispatch(request, env);
     if (url.pathname === "/internal/exact-review/proof" && request.method === "POST")
       return reviewProofRequest(request, env);
     if (url.pathname === "/internal/exact-review/proof/producer" && request.method === "POST")
@@ -1956,6 +1965,8 @@ const PUBLIC_STATUS_TEXT_VALUES = new Set([
   "review_failure_telemetry_unavailable",
   "review_status_delivery_failed",
   "review_retries_exhausted",
+  "review_runaway",
+  "review_runaway_telemetry_unavailable",
   "workflow_execution_stalled",
   "workflow_execution_degraded",
   "worker_failures_unresolved",
@@ -2161,6 +2172,9 @@ const PUBLIC_STATUS_COUNT_FIELDS = new Set([
   "dispatch_rejected",
   "review_retry_exhausted",
   "direct_publication",
+  "source_drift_loop",
+  "locked_conversation",
+  "oversized_pull_request",
   "claim_timeout",
   "execution_timeout",
   "workflow_cancelled",
@@ -5517,8 +5531,16 @@ const PUBLIC_QUEUE_PARKED_REASONS = [
   "source_incompatible",
   "scanner_refused",
   "direct_publication",
+  "stale_revision",
+  "source_drift_loop",
+  "locked_conversation",
+  "oversized_pull_request",
   "unknown",
 ] as const;
+const PUBLIC_QUEUE_SHED_REASONS = ["backpressure", "scheduled_rate", "unattributed"] as const;
+const PUBLIC_RUNAWAY_SAMPLE_LIMIT = 5;
+const PUBLIC_RUNAWAY_SOURCE_SAMPLE_LIMIT = 20;
+const PUBLIC_RUNAWAY_ITEM_KEY_PATTERN = /^([a-z0-9_.-]+\/[a-z0-9_.-]+)#([1-9]\d{0,9})$/;
 const PUBLIC_QUEUE_RECOVERY_REASONS = [
   "claim_timeout",
   "execution_timeout",
@@ -5535,6 +5557,32 @@ function publicQueueCount(value, maximum = PUBLIC_QUEUE_COUNT_LIMIT) {
 function publicQueueTimestamp(value) {
   if (value === null || value === undefined) return null;
   return publicTimestamp(value);
+}
+
+// Scheduled admission balances carry organic debt down to -burst, so they may be negative.
+function publicSignedQueueCount(value, maximum = PUBLIC_SCHEDULED_FEED_RATE_LIMIT) {
+  return Number.isSafeInteger(value) && Math.abs(Number(value)) <= maximum ? Number(value) : null;
+}
+
+function publicScheduledFeedLane(value) {
+  const source = objectValue(value);
+  const targetRate = publicQueueCount(
+    source.target_rate_per_hour,
+    PUBLIC_SCHEDULED_FEED_RATE_LIMIT,
+  );
+  const burst = publicQueueCount(source.burst, PUBLIC_SCHEDULED_FEED_RATE_LIMIT);
+  const tokenBalance = publicSignedQueueCount(source.token_balance);
+  if (targetRate === null || burst === null || tokenBalance === null) return null;
+  return { target_rate_per_hour: targetRate, burst, token_balance: tokenBalance };
+}
+
+function publicScheduledFeedLanes(value) {
+  const source = objectValue(value);
+  const hotIntake = publicScheduledFeedLane(source.hot_intake);
+  const normalBackfill = publicScheduledFeedLane(source.normal_backfill);
+  return hotIntake && normalBackfill
+    ? { hot_intake: hotIntake, normal_backfill: normalBackfill }
+    : null;
 }
 
 function publicQueueCounts(value, keys: readonly string[], maximum = PUBLIC_QUEUE_COUNT_LIMIT) {
@@ -5629,6 +5677,14 @@ function publicExactReviewQueueLane(value) {
   );
   result.backoff_reasons = backoffReasons.counts;
   result.parked_reasons = parkedReasons.counts;
+  // Only the review lane attributes sheds; the publication lane never sheds.
+  if (Object.prototype.hasOwnProperty.call(source, "shed_reasons_since_reset")) {
+    result.shed_reasons_since_reset = publicQueueCounts(
+      source.shed_reasons_since_reset,
+      PUBLIC_QUEUE_SHED_REASONS,
+      PUBLIC_QUEUE_TOTAL_LIMIT,
+    );
+  }
   return { value: result, reasonsComplete: backoffReasons.complete && parkedReasons.complete };
 }
 
@@ -5718,6 +5774,61 @@ function publicExactReviewFailureHealth(value) {
       last_seen_at: lastSeenAt,
       by_stage: byStage,
     },
+  };
+}
+
+// Optional and fail-closed to null: older snapshots without the field keep a
+// complete queue projection. Samples are re-validated on every projection and
+// keep only verified-public repository item keys.
+function publicExactReviewRunawayHealth(value, allowedRepositories: ReadonlySet<string>) {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return null;
+  const source = objectValue(value);
+  const status = String(source.status || "");
+  const reason = source.reason ?? null;
+  const windowHours = publicQueueCount(source.window_hours, 24 * 7);
+  const threshold = publicQueueCount(source.threshold_reviews_per_day, 10_000);
+  const runawayItems = publicQueueCount(source.runaway_items);
+  const keys = source.sample_item_keys;
+  const expectedReason =
+    status === "degraded"
+      ? "review_runaway"
+      : status === "unknown"
+        ? "telemetry_unavailable"
+        : status === "healthy"
+          ? null
+          : undefined;
+  if (
+    expectedReason === undefined ||
+    reason !== expectedReason ||
+    windowHours === null ||
+    windowHours < 1 ||
+    threshold === null ||
+    threshold < 1 ||
+    runawayItems === null ||
+    (status === "degraded") !== runawayItems > 0 ||
+    !Array.isArray(keys) ||
+    keys.length > PUBLIC_RUNAWAY_SOURCE_SAMPLE_LIMIT
+  ) {
+    return null;
+  }
+  const sample: string[] = [];
+  for (const entry of keys) {
+    const match =
+      typeof entry === "string" ? PUBLIC_RUNAWAY_ITEM_KEY_PATTERN.exec(entry.trim()) : null;
+    if (!match) return null;
+    const itemNumber = Number(match[2]);
+    if (!allowedRepositories.has(match[1]) || itemNumber > PUBLIC_BAY_ITEM_NUMBER_LIMIT) continue;
+    const itemKey = `${match[1]}#${itemNumber}`;
+    if (!sample.includes(itemKey)) sample.push(itemKey);
+    if (sample.length >= PUBLIC_RUNAWAY_SAMPLE_LIMIT) break;
+  }
+  return {
+    status,
+    reason,
+    window_hours: windowHours,
+    threshold_reviews_per_day: threshold,
+    runaway_items: runawayItems,
+    sample_item_keys: sample,
   };
 }
 
@@ -5815,6 +5926,11 @@ export function publicExactReviewQueueProjection(
     scheduledFeed.enqueue_replay === "scheduled_disposition_v1" ? "scheduled_disposition_v1" : null;
   const scheduledMaxConcurrent = publicQueueCount(scheduledFeed.max_concurrent);
   const scheduledActive = publicQueueCount(scheduledFeed.active);
+  const scheduledBurst = publicQueueCount(scheduledFeed.burst, PUBLIC_SCHEDULED_FEED_RATE_LIMIT);
+  const scheduledTokenBalance = publicSignedQueueCount(scheduledFeed.token_balance);
+  const scheduledThrottleObservedAt = publicQueueTimestamp(scheduledFeed.throttle_observed_at);
+  const scheduledThrottleRecoveryAt = publicQueueTimestamp(scheduledFeed.throttle_recovery_at);
+  const scheduledLanes = publicScheduledFeedLanes(scheduledFeed.lanes);
   const requiredCounts = [
     source.pending,
     source.ready_pending,
@@ -5914,6 +6030,10 @@ export function publicExactReviewQueueProjection(
     handoff_health: projectedHandoff,
     pressure: projectedPressure,
     review_failure_health: projectedReviewFailureHealth.value,
+    review_runaway_health: publicExactReviewRunawayHealth(
+      source.review_runaway_health,
+      allowedRepositories,
+    ),
     manual_publication:
       objectValue(source.manual_publication).policy === "record_comment_only"
         ? {
@@ -5928,6 +6048,15 @@ export function publicExactReviewQueueProjection(
             enqueue_replay: scheduledEnqueueReplay,
             ...(scheduledMaxConcurrent !== null ? { max_concurrent: scheduledMaxConcurrent } : {}),
             ...(scheduledActive !== null ? { active: scheduledActive } : {}),
+            ...(scheduledBurst !== null ? { burst: scheduledBurst } : {}),
+            ...(scheduledTokenBalance !== null ? { token_balance: scheduledTokenBalance } : {}),
+            ...(scheduledThrottleObservedAt && scheduledThrottleRecoveryAt
+              ? {
+                  throttle_observed_at: scheduledThrottleObservedAt,
+                  throttle_recovery_at: scheduledThrottleRecoveryAt,
+                }
+              : {}),
+            ...(scheduledLanes ? { lanes: scheduledLanes } : {}),
           }
         : null,
     lanes: {
@@ -6539,7 +6668,10 @@ async function exactReviewBayLifecycleMetricsSnapshot(env) {
       ? allAverage !== null || allMedian !== null
       : allAverage === null || allMedian === null) ||
     (samples !== null && allSamples < samples);
-  const terminalCount = publicQueueCount(terminal.terminal_count, 20);
+  const terminalCount = publicQueueCount(
+    terminal.terminal_count,
+    EXACT_REVIEW_LIFECYCLE_BAY_TIDE_THRESHOLD,
+  );
   const tideThreshold = publicQueueCount(terminal.tide_threshold, 100);
   const tideGeneration = publicQueueCount(terminal.tide_generation, 1_000_000);
   const lastTideAt =
@@ -6557,7 +6689,7 @@ async function exactReviewBayLifecycleMetricsSnapshot(env) {
     !history ||
     !includingLegacyBatchHistory ||
     terminalCount === null ||
-    tideThreshold !== 20 ||
+    tideThreshold !== EXACT_REVIEW_LIFECYCLE_BAY_TIDE_THRESHOLD ||
     tideGeneration === null ||
     (terminal.last_tide_at !== null && !lastTideAt) ||
     !terminalBuffer ||
@@ -6598,7 +6730,8 @@ async function exactReviewBayLifecycleMetricsSnapshot(env) {
 }
 
 function bayLifecycleTerminalRows(value) {
-  if (!Array.isArray(value) || value.length > 20) return null;
+  if (!Array.isArray(value) || value.length > EXACT_REVIEW_LIFECYCLE_BAY_TIDE_THRESHOLD)
+    return null;
   const rows = [];
   for (const entry of value) {
     const row = objectValue(entry);
@@ -6657,7 +6790,10 @@ function bayLifecycleTimingHistory(value) {
   return { bucket_minutes: 5, points: result };
 }
 
-async function boundedCommandProofBody(request: Request): Promise<string | null> {
+async function boundedCommandProofBody(
+  request: Request,
+  maxBytes = 128 * 1024,
+): Promise<string | null> {
   if (!request.body) return "";
   const reader = request.body.getReader();
   const chunks: Uint8Array[] = [];
@@ -6667,7 +6803,7 @@ async function boundedCommandProofBody(request: Request): Promise<string | null>
       const result = await reader.read();
       if (result.done) break;
       size += result.value.byteLength;
-      if (size > 128 * 1024) return null;
+      if (size > maxBytes) return null;
       chunks.push(result.value);
     }
     const bytes = new Uint8Array(size);
@@ -6755,9 +6891,28 @@ async function authenticatedHostedTargetQueueRequest(request, env, path: string)
   if (!(await verifyGithubWebhookSignature({ secret, signature, bodyText: body }))) {
     return json({ error: "invalid_signature" }, 401);
   }
+  return hostedTargetQueueRequest(env, path, body);
+}
+
+// Target dispatchers enqueue here with their workflow's OIDC identity instead of
+// spending one ClawSweeper Actions relay run per `repository_dispatch`. Any
+// non-2xx answer makes the dispatcher fall back to that unchanged relay.
+async function githubTargetDispatch(request: Request, env) {
+  const text = await boundedCommandProofBody(request, TARGET_DISPATCH_MAX_BODY_BYTES);
+  if (text === null) return json({ error: "target_dispatch_too_large_or_invalid" }, 413);
+  const identity = await authenticateTargetDispatchToken(bearerToken(request));
+  if (!identity) return json({ error: "target_dispatch_not_authorized" }, 401);
+  const intake = targetDispatchQueueIntake(parseJsonObject(text), identity);
+  if ("error" in intake) return json({ error: intake.error }, intake.status);
+  return hostedTargetQueueRequest(env, "/enqueue", JSON.stringify(intake.body));
+}
+
+async function hostedTargetQueueRequest(env, path: string, body: string) {
+  // The queue trims the repository. Trim it here too, so that a padded slug gets
+  // the same eligibility check before the header tells the queue it passed.
   const targetRepo = String(
     objectValue(objectValue(parseJsonObject(body)).decision).targetRepo || "",
-  );
+  ).trim();
   if (/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(targetRepo)) {
     const eligibility = await workerHostedTargetEligibility(env, targetRepo);
     if (eligibility.outcome === "terminal") {
@@ -6770,10 +6925,14 @@ async function authenticatedHostedTargetQueueRequest(request, env, path: string)
       });
     }
   }
-  const headers = new Headers({
-    "content-type": "application/json",
-    [HOSTED_TARGET_ELIGIBILITY_HEADER]: targetRepo,
-  });
+  const headers = new Headers({ "content-type": "application/json" });
+  try {
+    headers.set(HOSTED_TARGET_ELIGIBILITY_HEADER, targetRepo);
+  } catch {
+    // Headers rejects a value with CR, LF or NUL inside it, or with a character
+    // above U+00FF. Such a value is not a repository slug. Send the request
+    // without this header, and the queue rejects the decision with its own error.
+  }
   if (path === "/enqueue") {
     headers.set(
       EXACT_REVIEW_AUTHENTICATED_BODY_FINGERPRINT_HEADER,
@@ -7305,7 +7464,7 @@ async function createFastAckComment({
   repo,
   itemNumber,
   sourceCommentId = undefined,
-  ackMarker = fastAckMarker(sourceCommentId),
+  ackMarker = commandAckMarker(sourceCommentId),
   ackMatch = undefined,
   ackBody = renderFastAckComment(sourceCommentId),
   sinceMs = 24 * 60 * 60 * 1000,
@@ -7341,7 +7500,7 @@ function settleFastAckComments({
   repo,
   itemNumber,
   sourceCommentId = undefined,
-  ackMarker = fastAckMarker(sourceCommentId),
+  ackMarker = commandAckMarker(sourceCommentId),
   ackMatch = undefined,
   sinceMs = 24 * 60 * 60 * 1000,
   delaysMs = DEFAULT_FAST_ACK_SETTLE_DELAYS_MS,
@@ -7381,7 +7540,7 @@ async function createFastAckCommentOnce({
   repo,
   itemNumber,
   sourceCommentId = undefined,
-  ackMarker = fastAckMarker(sourceCommentId),
+  ackMarker = commandAckMarker(sourceCommentId),
   ackMatch = undefined,
   ackDedupeKey = ackMarker,
   ackBody = renderFastAckComment(sourceCommentId),
@@ -7423,7 +7582,7 @@ async function pruneFastAckComments({
   repo,
   itemNumber,
   sourceCommentId = undefined,
-  ackMarker = fastAckMarker(sourceCommentId),
+  ackMarker = commandAckMarker(sourceCommentId),
   ackMatch = undefined,
   sinceMs = 24 * 60 * 60 * 1000,
 }) {
@@ -7534,16 +7693,12 @@ async function listFastAckComments({
 
 function renderFastAckComment(sourceCommentId) {
   return [
-    fastAckMarker(sourceCommentId),
+    commandAckMarker(sourceCommentId),
     "🦞👀",
     "ClawSweeper picked this up.",
     "",
     "Command router queued. I will update this comment with the next step.",
   ].join("\n");
-}
-
-function fastAckMarker(sourceCommentId) {
-  return `<!-- clawsweeper-command-ack:${sourceCommentId} -->`;
 }
 
 async function addIssueCommentReaction({ env, token, repo, commentId, content }) {

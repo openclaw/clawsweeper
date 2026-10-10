@@ -331,3 +331,33 @@ test("idle publication activity is healthy regardless of retired writer history"
   );
   assert.deepEqual(delayed, { status: "degraded", reason: "oldest_pending_over_1h" });
 });
+
+test("retained stale revisions keep age-based publication severity, not dead-letter severity", () => {
+  const flow = { last_15_minutes: { net_drain_rate_per_hour: 0 } };
+  const held = (age: number, deadLetters = 0) =>
+    summarizeExactReviewPublicationHealth(
+      {
+        pending: 0,
+        active: 0,
+        parked: 1 + deadLetters,
+        oldest_pending_age_seconds: null,
+        parked_reasons: {
+          stale_revision: 1,
+          ...(deadLetters ? { dead_letter_capacity: deadLetters } : {}),
+        },
+        oldest_stale_revision_age_seconds: age,
+      },
+      flow,
+    );
+  assert.deepEqual(held(60), { status: "healthy", reason: null });
+  assert.deepEqual(held(3_600), { status: "degraded", reason: "stale_revision_over_1h" });
+  assert.deepEqual(held(6 * 3_600), { status: "critical", reason: "stale_revision_over_6h" });
+  assert.deepEqual(held(60, 1), { status: "critical", reason: "dead_letter_capacity" });
+  assert.deepEqual(
+    summarizeExactReviewPublicationHealth(
+      { pending: 0, active: 0, parked: 1, oldest_pending_age_seconds: null },
+      flow,
+    ),
+    { status: "critical", reason: "dead_letter_capacity" },
+  );
+});

@@ -94,11 +94,6 @@ test("hosted sweep graph has no direct matrix bypass or retired manual control",
 });
 
 test("automatic retry dispatch is serialized as automatic queue work with its source pin", () => {
-  const intake = workflow.jobs["legacy-event-queue-intake"].steps.find(
-    (step) => step.name === "Enqueue legacy event through the durable control plane",
-  ).run;
-  const scripts = [...intake.matchAll(/node <<'NODE'\n([\s\S]*?)\nNODE\n/g)].map((m) => m[1]);
-  assert.equal(scripts.length, 2);
   for (const kind of ["issue", "pull_request"]) {
     const payload = {
       target_repo: "openclaw/gogcli",
@@ -113,18 +108,19 @@ test("automatic retry dispatch is serialized as automatic queue work with its so
         : { source_head_sha: "b".repeat(40) }),
     };
     const result = JSON.parse(
-      execFileSync(process.execPath, ["-"], {
-        input: scripts[1],
-        encoding: "utf8",
-        env: {
-          ...process.env,
-          CLIENT_PAYLOAD: JSON.stringify(payload),
-          TARGET_REPO: payload.target_repo,
-          TARGET_BRANCH: "main",
-          GITHUB_RUN_ID: "1001",
-          GITHUB_RUN_ATTEMPT: "1",
+      execFileSync(
+        process.execPath,
+        ["dist/repair/exact-review-queue-request.js", "enqueue", "body"],
+        {
+          encoding: "utf8",
+          env: {
+            ...process.env,
+            CLIENT_PAYLOAD: JSON.stringify({ ...payload, target_branch: "main" }),
+            GITHUB_RUN_ID: "1001",
+            GITHUB_RUN_ATTEMPT: "1",
+          },
         },
-      }),
+      ),
     );
     assert.equal(result.decision.sourceAction, "failed_review_shard_recovery");
     assert.equal(result.decision.itemKind, kind);

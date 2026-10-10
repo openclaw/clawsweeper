@@ -1,0 +1,1 @@
+- Build the exact-review lifecycle router receipts, canonical receipt and terminal disposition after checkout with `exact-review-queue-request.js lifecycle`, which validates the target revision, outcome and terminal kind; this replaces six copied inline Node builders in `sweep.yml`.

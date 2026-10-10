@@ -2,11 +2,10 @@ import { AgentInputScanError } from "./agent-input-scan.js";
 import { GitHubOperationDeadlineError } from "./clawsweeper-github-runtime.js";
 import { ReviewSourcePreparationError } from "./review-source-preparation.js";
 import { validationRecoveryRequired } from "./repair/validation-recovery.js";
+import { BULK_FILED_LABEL } from "./repair/exact-review-guard-labels.js";
 import {
-  BULK_FILED_LABEL,
   BULK_FILER_SEARCH_TIMEOUT_MS,
   DAY_MS,
-  DEFAULT_AUTHOR_PR_BUDGET,
   DEFAULT_AUTHOR_PR_BUDGET_MAX_CLOSES_PER_RUN,
   DEFAULT_BULK_FILER_THRESHOLD,
   DEFAULT_BULK_FILER_WINDOW_DAYS,
@@ -40,6 +39,7 @@ import type {
   ContextHydration,
   GoodFirstIssueHumanLabelState,
   GitHubDeadlineOptions,
+  GitHubJsonResult,
   Item,
   ItemKind,
   PreviousClawSweeperReview,
@@ -47,6 +47,10 @@ import type {
 import { isGitHubNotFoundError } from "./github-retry.js";
 import { type RepositoryProfile } from "./repository-profiles.js";
 import { compareCodeUnits, stableJson } from "./stable-json.js";
+import { asRecord, login, nonBlankStringOrUndefined } from "./value-coerce.js";
+import { frontMatterValue, replaceFrontMatterValue } from "./report-front-matter.js";
+import { isAutomationReportAuthor } from "./clawsweeper-item-policy.js";
+import { authorPrBudget, positiveIntegerEnv } from "./policy-flags.js";
 
 const REVIEW_TREE_METADATA_JQ =
   '{truncated, tree: (.tree | if type == "array" then map(if type == "object" then {type, sha, size} else . end) else . end)}';
@@ -56,96 +60,51 @@ export function reviewTreeMetadataArgs(path: string): string[] {
 }
 
 interface CreateContextHydrationDependencies {
-  asRecord: (value: unknown) => Record<string, unknown>;
   CLAWSWEEPER_BOT_AUTHORS: Set<string>;
   defaultClosedDir: (profile?: RepositoryProfile) => string;
   defaultItemsDir: (profile?: RepositoryProfile) => string;
   displayTitle: (title: string) => string;
-  effectiveReviewStatus: (markdown: string) => string;
   fetchIssueReviewComments: (number: number) => Record<string, unknown>[];
-  frontMatterValue: (markdown: string, key: string) => string | undefined;
   ghJson: <T>(args: string[], options?: GitHubDeadlineOptions) => T;
   ghJsonOnce: <T>(args: string[], timeoutMs: number) => T;
+  ghJsonEach: <T>(requests: readonly string[][]) => GitHubJsonResult<T>[];
   githubCount: (value: unknown) => number | null;
   GitHubRuntimeBudgetError: new (reason: string) => Error & { readonly reason: string };
-  isAutomationReportAuthor: (author: string | undefined) => boolean;
   isBulkFilerExemptAuthorAssociation: (value: unknown) => boolean;
   isMarkdownForActiveRepo: (markdown: string, file?: string) => boolean;
   isSafeGitBranchName: (branch: string) => boolean;
   labelNames: (value: unknown) => string[];
-  login: (value: unknown) => string | undefined;
-  markdownFiles: (dir: string) => string[];
   normalizeAuthorAssociation: (value: unknown) => string;
   normalizeLabelName: (label: string) => string;
-  numberForMarkdownFile: (file: string) => number;
-  replaceFrontMatterValue: (markdown: string, key: string, value: string) => string;
   repoRelativePath: (path: string) => string;
   reportUrl: (path?: string) => string;
   reviewCommentBodyDigest: (body: string) => string;
-  reviewSectionValue: (
-    markdown: string,
-    section:
-      | "summary"
-      | "changeSummary"
-      | "systemContext"
-      | "architectureDiagram"
-      | "bestSolution"
-      | "maintainerDecision"
-      | "reproductionAssessment"
-      | "solutionAssessment"
-      | "visionFit"
-      | "rootCauseCluster"
-      | "reviewFindings"
-      | "securityReview"
-      | "realBehaviorProof"
-      | "prRating"
-      | "telegramVisibleProof"
-      | "mantisRecommendation"
-      | "featureShowcase"
-      | "agentsPolicyStatus"
-      | "workCandidate"
-      | "repairWorkPrompt"
-      | "evidence"
-      | "likelyOwners"
-      | "risks"
-      | "closeComment",
-  ) => string;
   ROOT: string;
-  stringOrUndefined: (value: unknown) => string | undefined;
   targetRepo: () => string;
 }
 
 export function createContextHydration(dependencies: CreateContextHydrationDependencies) {
   const {
-    asRecord,
     CLAWSWEEPER_BOT_AUTHORS,
     defaultClosedDir,
     defaultItemsDir,
     displayTitle,
-    effectiveReviewStatus,
     fetchIssueReviewComments,
-    frontMatterValue,
     ghJson,
     ghJsonOnce,
+    ghJsonEach,
     githubCount,
     GitHubRuntimeBudgetError,
-    isAutomationReportAuthor,
     isBulkFilerExemptAuthorAssociation,
     isMarkdownForActiveRepo,
     isSafeGitBranchName,
     labelNames,
-    login,
-    markdownFiles,
     normalizeAuthorAssociation,
     normalizeLabelName,
-    numberForMarkdownFile,
-    replaceFrontMatterValue,
     repoRelativePath,
     reportUrl,
     reviewCommentBodyDigest,
-    reviewSectionValue,
     ROOT,
-    stringOrUndefined,
     targetRepo,
   } = dependencies;
 
@@ -332,15 +291,17 @@ export function createContextHydration(dependencies: CreateContextHydrationDepen
         const label =
           typeof labelValue === "string"
             ? labelValue
-            : (stringOrUndefined(asRecord(labelValue).name) ?? "");
+            : (nonBlankStringOrUndefined(asRecord(labelValue).name) ?? "");
         const actorValue = event.actor;
         const actor = typeof actorValue === "string" ? actorValue : (login(actorValue) ?? "");
         return {
-          event: stringOrUndefined(event.event) ?? "",
+          event: nonBlankStringOrUndefined(event.event) ?? "",
           label: normalizeLabelName(label),
           actor: actor.toLowerCase(),
           createdAt:
-            stringOrUndefined(event.createdAt) ?? stringOrUndefined(event.created_at) ?? "",
+            nonBlankStringOrUndefined(event.createdAt) ??
+            nonBlankStringOrUndefined(event.created_at) ??
+            "",
           id: Number(event.id ?? 0),
         };
       })
@@ -422,15 +383,16 @@ export function createContextHydration(dependencies: CreateContextHydrationDepen
 
   function pullChecksContext(number: number, headSha: string): unknown {
     try {
-      const checkResponse = asRecord(
-        ghJson<unknown>([
-          "api",
-          `repos/${targetRepo()}/commits/${headSha}/check-runs?per_page=100`,
-        ]),
-      );
-      const statusResponse = asRecord(
-        ghJson<unknown>([`api`, `repos/${targetRepo()}/commits/${headSha}/status?per_page=100`]),
-      );
+      // Both reads run together; the first failure in request order is reported.
+      const [checkPayload, statusPayload] = ghJsonEach<unknown>([
+        ["api", `repos/${targetRepo()}/commits/${headSha}/check-runs?per_page=100`],
+        [`api`, `repos/${targetRepo()}/commits/${headSha}/status?per_page=100`],
+      ]).map((read) => {
+        if (!read.ok) throw read.error;
+        return read.value;
+      });
+      const checkResponse = asRecord(checkPayload);
+      const statusResponse = asRecord(statusPayload);
       const rawCheckRuns = Array.isArray(checkResponse.check_runs)
         ? checkResponse.check_runs
         : null;
@@ -580,20 +542,11 @@ export function createContextHydration(dependencies: CreateContextHydrationDepen
     defaultClosedDir,
     isMarkdownForActiveRepo,
     gitHubRuntimeBudgetError: GitHubRuntimeBudgetError,
-    ghJson,
     ghJsonOnce,
-    asRecord,
-    login,
+    ghJsonEach,
     compactIssue,
     compactPullRequest,
-    envFlagEnabled,
-    envFlagDisabled,
-    frontMatterValue,
-    reviewSectionValue,
-    effectiveReviewStatus,
     displayTitle: (title) => displayTitle(title),
-    markdownFiles,
-    numberForMarkdownFile,
     repoRelativePath,
   });
 
@@ -606,61 +559,11 @@ export function createContextHydration(dependencies: CreateContextHydrationDepen
   } = relatedContext;
 
   const {
-    isDigitsOnly,
     quoteGitHubSearchTerm,
     referencingMergedPullRequestsForIssue,
     relatedItemsContext,
     structuralExternalRelationSensitivity,
   } = relatedContext;
-
-  function envFlagEnabled(value: string | undefined): boolean {
-    if (!value) return false;
-    return ["1", "true", "yes", "on"].includes(value.trim().toLowerCase());
-  }
-
-  function envFlagDisabled(value: string | undefined): boolean {
-    if (!value) return false;
-    return ["0", "false", "no", "off", "disabled"].includes(value.trim().toLowerCase());
-  }
-
-  function unconfirmedProductDirectionCloseEnabled(
-    env: Record<string, string | undefined> = process.env,
-  ): boolean {
-    return envFlagEnabled(env.CLAWSWEEPER_UNCONFIRMED_PRODUCT_DIRECTION_CLOSE_ENABLED);
-  }
-
-  function unsponsoredFeatureCloseEnabled(
-    env: Record<string, string | undefined> = process.env,
-  ): boolean {
-    return envFlagEnabled(env.CLAWSWEEPER_UNSPONSORED_FEATURE_CLOSE_ENABLED);
-  }
-
-  function authorPrBudgetCloseEnabled(
-    env: Record<string, string | undefined> = process.env,
-  ): boolean {
-    return envFlagEnabled(env.CLAWSWEEPER_AUTHOR_PR_BUDGET_CLOSE_ENABLED);
-  }
-
-  function staleVersionBugCloseEnabled(
-    env: Record<string, string | undefined> = process.env,
-  ): boolean {
-    return envFlagEnabled(env.CLAWSWEEPER_STALE_VERSION_BUG_CLOSE_ENABLED);
-  }
-
-  function obsoleteFixPrCloseEnabled(
-    env: Record<string, string | undefined> = process.env,
-  ): boolean {
-    return envFlagEnabled(env.CLAWSWEEPER_OBSOLETE_FIX_PR_CLOSE_ENABLED);
-  }
-
-  function positiveIntegerEnv(value: string | undefined, fallback: number): number {
-    const parsed = Number(value);
-    return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
-  }
-
-  function authorPrBudget(env: Record<string, string | undefined> = process.env): number {
-    return positiveIntegerEnv(env.CLAWSWEEPER_AUTHOR_PR_BUDGET, DEFAULT_AUTHOR_PR_BUDGET);
-  }
 
   function authorPrBudgetMaxClosesPerRun(
     env: Record<string, string | undefined> = process.env,
@@ -942,9 +845,9 @@ export function createContextHydration(dependencies: CreateContextHydrationDepen
     const pull = asRecord(options.pullRequest);
     const base = asRecord(pull.base);
     const head = asRecord(pull.head);
-    const baseSha = stringOrUndefined(base.sha) ?? "";
-    const headSha = stringOrUndefined(head.sha) ?? "";
-    const baseRef = stringOrUndefined(base.ref) ?? "";
+    const baseSha = nonBlankStringOrUndefined(base.sha) ?? "";
+    const headSha = nonBlankStringOrUndefined(head.sha) ?? "";
+    const baseRef = nonBlankStringOrUndefined(base.ref) ?? "";
     try {
       if (
         ![baseSha, headSha].every((sha) => /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/.test(sha)) ||
@@ -973,7 +876,7 @@ export function createContextHydration(dependencies: CreateContextHydrationDepen
       }
       const testMergeSha =
         pull.merged === false && pull.state === "open"
-          ? stringOrUndefined(pull.merge_commit_sha)
+          ? nonBlankStringOrUndefined(pull.merge_commit_sha)
           : undefined;
       const mergeBaseSha = hydratePullRequestReviewHistory({
         targetDir: options.targetDir,
@@ -1071,7 +974,6 @@ export function createContextHydration(dependencies: CreateContextHydrationDepen
   return {
     authorIssueCountInBulkFilerWindow,
     authorPrBudget,
-    authorPrBudgetCloseEnabled,
     authorPrBudgetMaxClosesPerRun,
     bulkFilerPolicyInvalidatesCachedReview,
     bulkFilerPolicyInvalidatesCachedReviewForTest,
@@ -1104,9 +1006,7 @@ export function createContextHydration(dependencies: CreateContextHydrationDepen
     goodFirstIssueHumanLabelState,
     goodFirstIssueLabelOptedOutForTest,
     isClawSweeperComment,
-    isDigitsOnly,
     liveClawSweeperReviewDigest,
-    obsoleteFixPrCloseEnabled,
     openClosingPullRequestApplyReason,
     pairCloseKey,
     previousClawSweeperReviewDigestFromReport,
@@ -1145,10 +1045,7 @@ export function createContextHydration(dependencies: CreateContextHydrationDepen
       });
     },
     removePullRequestReviewTree,
-    staleVersionBugCloseEnabled,
     structuralExternalRelationSensitivity,
-    unconfirmedProductDirectionCloseEnabled,
-    unsponsoredFeatureCloseEnabled,
     updateBulkFilerDetectedFrontMatter,
     updateBulkFilerDetectedFrontMatterForTest,
   };

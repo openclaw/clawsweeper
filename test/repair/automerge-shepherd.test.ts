@@ -280,7 +280,7 @@ test("automerge shepherd routes repairable needs-human findings back to repair",
         "**Review findings**",
         "- [P1] Fix the exact-head regression.",
         "",
-        "<!-- clawsweeper-verdict:needs-human item=1 sha=abc123 confidence=high -->",
+        "<!-- clawsweeper-verdict:needs-human item=1 sha=abc123 confidence=high hold=blocked findings=1 -->",
       ].join("\n"),
     },
   ];

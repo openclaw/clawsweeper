@@ -1,0 +1,346 @@
+{
+  "claim": "origin/main admits a source-drift requeue after every successful review generation forever; the branch parks the item as source_drift_loop after three consecutive automatic generations, an organic event or explicit command admits it normally, a newer scheduled offer releases one review whose next drift requeue re-parks immediately, and /api/exact-review-queue reports review_runaway_health degraded for an item past 24 claimed reviews per day.",
+  "base": "cac974b3e1da900cac3e7480b91d02a36ca60163",
+  "head": "2f91363b9d6081ea7ae4e4ea31450e3a3ec5feb7",
+  "working_tree_dirty": false,
+  "node": "v24.21.0",
+  "workerd": "1.20260701.1",
+  "miniflare": "4.20260701.0",
+  "runtime": "workerd / real dashboard Worker + ExactReviewQueue SQLite Durable Object / loopback GitHub fixture / fake clock",
+  "model": {
+    "review_generation": "queue alarm dispatches the item, the fixture claims it with a fresh run id, then completes it with outcome=success (the item leaves the queue)",
+    "source_drift_requeue": "after each generation the harness sends the payload of sweep.yml 'Queue fresh review after source drift': the claimed decision with sourceAction=source_drift_requeue, supersedesInProgress=true, delivery publisher-source-drift:<run>:1",
+    "organic_release": "issues/edited webhook decision for the same item",
+    "scheduled_release": "scheduled_normal_backfill offer whose sourceUpdatedAt is one minute after the park, then the publisher's drift requeue after that review",
+    "command_release": "re_review decision with a clawsweeper-command-status marker and status comment id",
+    "runaway": "25 organic edits, each claimed and completed, within 4 simulated hours"
+  },
+  "variants": {
+    "baseline": {
+      "source_sha256": {
+        "dashboard/exact-review-queue.ts": "a1ff68d15b46f8fec2717221d10b15e5e44553023b461260bc0547200ecd3cd3",
+        "dashboard/exact-review-read-model.ts": "c0decb1737c1042ac756e95396d17ee379f32a70132710a69dac638744be4b3d",
+        "dashboard/worker.ts": "935140fa3c06cc27cd3b5a898304101d9168048ac608612bb5786d0fc9d90eba",
+        "dashboard/dashboard-health.ts": "d5a4f053d8ec3436fef218f8bf9061b2319797b53e58e0eed2f8775fbb329ab7",
+        "dashboard/wrangler.toml": "90db5d9b3093c7edc647b3329ffde989603d1c8b9fe68d76058336b6289ed673"
+      },
+      "config": {
+        "EXACT_REVIEW_SOURCE_DRIFT_REQUEUE_LIMIT": null,
+        "EXACT_REVIEW_RUNAWAY_REVIEWS_PER_DAY": null,
+        "PUBLIC_BAY_REPOS": "openclaw/openclaw,openclaw/clawhub,openclaw/clawsweeper,openclaw/fs-safe"
+      },
+      "scenarios": {
+        "self_requeue_then_release": {
+          "item": "openclaw/openclaw#97616",
+          "source_drift_cycles": [
+            {
+              "cycle": 1,
+              "requeue": "queued",
+              "queue_state_after_requeue": "pending",
+              "parked_reasons": {},
+              "review_dispatched": true
+            },
+            {
+              "cycle": 2,
+              "requeue": "queued",
+              "queue_state_after_requeue": "pending",
+              "parked_reasons": {},
+              "review_dispatched": true
+            },
+            {
+              "cycle": 3,
+              "requeue": "queued",
+              "queue_state_after_requeue": "pending",
+              "parked_reasons": {},
+              "review_dispatched": true
+            },
+            {
+              "cycle": 4,
+              "requeue": "queued",
+              "queue_state_after_requeue": "pending",
+              "parked_reasons": {},
+              "review_dispatched": true
+            },
+            {
+              "cycle": 5,
+              "requeue": "queued",
+              "queue_state_after_requeue": "pending",
+              "parked_reasons": {},
+              "review_dispatched": true
+            },
+            {
+              "cycle": 6,
+              "requeue": "queued",
+              "queue_state_after_requeue": "pending",
+              "parked_reasons": {},
+              "review_dispatched": true
+            }
+          ],
+          "review_generations_spent": 7,
+          "before_release": {
+            "review_lane_parked": 0,
+            "review_lane_parked_reasons": {},
+            "queue_state": null,
+            "bay_stage": null
+          },
+          "organic_edited": "queued",
+          "after_release": {
+            "review_lane_parked": 0,
+            "review_lane_parked_reasons": {},
+            "queue_state": "pending",
+            "bay_stage": "arriving"
+          },
+          "released_review_dispatched": true,
+          "next_source_drift_after_release": "queued"
+        },
+        "scheduled_release": {
+          "item": "openclaw/openclaw#97618",
+          "source_drift_cycles": [
+            "queued",
+            "queued",
+            "queued",
+            "queued"
+          ],
+          "scheduled_offer": "queued",
+          "after_offer": {
+            "review_lane_parked": 0,
+            "review_lane_parked_reasons": {},
+            "queue_state": "pending",
+            "bay_stage": "arriving"
+          },
+          "scheduled_review_dispatched": true,
+          "drift_after_scheduled_review": "queued",
+          "after_drift": {
+            "review_lane_parked": 0,
+            "review_lane_parked_reasons": {},
+            "queue_state": "pending",
+            "bay_stage": "repairing"
+          },
+          "further_review_dispatched": true,
+          "review_generations_spent": 7
+        },
+        "command": {
+          "item": "openclaw/openclaw#123774",
+          "source_drift_cycles": [
+            "queued",
+            "queued",
+            "queued",
+            "queued"
+          ],
+          "command": "queued",
+          "after_command": {
+            "review_lane_parked": 0,
+            "review_lane_parked_reasons": {},
+            "queue_state": "pending",
+            "bay_stage": "arriving"
+          },
+          "command_review_dispatched": true,
+          "dispatched_command_marker_present": true
+        },
+        "runaway": {
+          "item": "openclaw/openclaw#200001",
+          "claimed_reviews": 25,
+          "elapsed_hours": 3.3,
+          "public_status": 200,
+          "public_collection": {
+            "state": "complete"
+          },
+          "public_review_runaway_health": "absent",
+          "dashboard_health": {
+            "conclusion": "needs_attention",
+            "severity": "amber",
+            "reasons": [
+              "workflow_execution_degraded"
+            ]
+          },
+          "after_25_hours": "absent"
+        }
+      }
+    },
+    "candidate": {
+      "source_sha256": {
+        "dashboard/exact-review-queue.ts": "88c4679c05778f93f74598b971c41720dc75b1a924bb6ccfe8cf2d70447b6c01",
+        "dashboard/exact-review-read-model.ts": "0f00ee4d882781a6d76dcc6db55567b247d620e1fa7c93b4fa6062c9f4a1259a",
+        "dashboard/worker.ts": "7712ee6bc17d6a9e3bf9ccd9bd131e6e684761a63aa8f29e6407b067c664430d",
+        "dashboard/dashboard-health.ts": "7aa184aba04fda07f51ed3dbf06e2068344e25aa9389ce86ba4b069383370b3f",
+        "dashboard/wrangler.toml": "2b2503f81cdb85466e8961d4f57ca9b7200467a05061e6e2575934fa63e33702"
+      },
+      "config": {
+        "EXACT_REVIEW_SOURCE_DRIFT_REQUEUE_LIMIT": "3",
+        "EXACT_REVIEW_RUNAWAY_REVIEWS_PER_DAY": "24",
+        "PUBLIC_BAY_REPOS": "openclaw/openclaw,openclaw/clawhub,openclaw/clawsweeper,openclaw/fs-safe"
+      },
+      "scenarios": {
+        "self_requeue_then_release": {
+          "item": "openclaw/openclaw#97616",
+          "source_drift_cycles": [
+            {
+              "cycle": 1,
+              "requeue": "queued",
+              "queue_state_after_requeue": "pending",
+              "parked_reasons": {},
+              "review_dispatched": true
+            },
+            {
+              "cycle": 2,
+              "requeue": "queued",
+              "queue_state_after_requeue": "pending",
+              "parked_reasons": {},
+              "review_dispatched": true
+            },
+            {
+              "cycle": 3,
+              "requeue": "queued",
+              "queue_state_after_requeue": "pending",
+              "parked_reasons": {},
+              "review_dispatched": true
+            },
+            {
+              "cycle": 4,
+              "requeue": "deduped:source_drift_loop:requeue_limit_reached",
+              "queue_state_after_requeue": "parked",
+              "parked_reasons": {
+                "source_drift_loop": 1
+              },
+              "review_dispatched": false
+            },
+            {
+              "cycle": 5,
+              "requeue": "deduped:source_drift_loop:item_parked",
+              "queue_state_after_requeue": "parked",
+              "parked_reasons": {
+                "source_drift_loop": 1
+              },
+              "review_dispatched": false
+            },
+            {
+              "cycle": 6,
+              "requeue": "deduped:source_drift_loop:item_parked",
+              "queue_state_after_requeue": "parked",
+              "parked_reasons": {
+                "source_drift_loop": 1
+              },
+              "review_dispatched": false
+            }
+          ],
+          "review_generations_spent": 4,
+          "before_release": {
+            "review_lane_parked": 1,
+            "review_lane_parked_reasons": {
+              "source_drift_loop": 1
+            },
+            "queue_state": "parked",
+            "bay_stage": "repairing"
+          },
+          "organic_edited": "queued",
+          "after_release": {
+            "review_lane_parked": 0,
+            "review_lane_parked_reasons": {},
+            "queue_state": "pending",
+            "bay_stage": "arriving"
+          },
+          "released_review_dispatched": true,
+          "next_source_drift_after_release": "queued"
+        },
+        "scheduled_release": {
+          "item": "openclaw/openclaw#97618",
+          "source_drift_cycles": [
+            "queued",
+            "queued",
+            "queued",
+            "deduped:source_drift_loop:requeue_limit_reached"
+          ],
+          "scheduled_offer": "queued",
+          "after_offer": {
+            "review_lane_parked": 0,
+            "review_lane_parked_reasons": {},
+            "queue_state": "pending",
+            "bay_stage": "arriving"
+          },
+          "scheduled_review_dispatched": true,
+          "drift_after_scheduled_review": "deduped:source_drift_loop:requeue_limit_reached",
+          "after_drift": {
+            "review_lane_parked": 1,
+            "review_lane_parked_reasons": {
+              "source_drift_loop": 1
+            },
+            "queue_state": "parked",
+            "bay_stage": "repairing"
+          },
+          "further_review_dispatched": false,
+          "review_generations_spent": 5
+        },
+        "command": {
+          "item": "openclaw/openclaw#123774",
+          "source_drift_cycles": [
+            "queued",
+            "queued",
+            "queued",
+            "deduped:source_drift_loop:requeue_limit_reached"
+          ],
+          "command": "queued",
+          "after_command": {
+            "review_lane_parked": 0,
+            "review_lane_parked_reasons": {},
+            "queue_state": "pending",
+            "bay_stage": "arriving"
+          },
+          "command_review_dispatched": true,
+          "dispatched_command_marker_present": true
+        },
+        "runaway": {
+          "item": "openclaw/openclaw#200001",
+          "claimed_reviews": 25,
+          "elapsed_hours": 3.3,
+          "public_status": 200,
+          "public_collection": {
+            "state": "complete"
+          },
+          "public_review_runaway_health": {
+            "status": "degraded",
+            "reason": "review_runaway",
+            "window_hours": 24,
+            "threshold_reviews_per_day": 24,
+            "runaway_items": 1,
+            "sample_item_keys": [
+              "openclaw/openclaw#200001"
+            ]
+          },
+          "dashboard_health": {
+            "conclusion": "needs_attention",
+            "severity": "amber",
+            "reasons": [
+              "review_runaway",
+              "workflow_execution_degraded"
+            ]
+          },
+          "after_25_hours": {
+            "status": "healthy",
+            "reason": null,
+            "window_hours": 24,
+            "threshold_reviews_per_day": 24,
+            "runaway_items": 0,
+            "sample_item_keys": []
+          }
+        }
+      }
+    }
+  },
+  "assertions": {
+    "baseline_requeues_every_cycle": true,
+    "baseline_review_generations": 7,
+    "candidate_first_three_requeues_admitted": true,
+    "candidate_fourth_requeue_parks": true,
+    "candidate_later_requeues_deduped": true,
+    "candidate_review_generations": 4,
+    "candidate_organic_release": true,
+    "baseline_scheduled_then_requeues": true,
+    "candidate_scheduled_releases_one_review_then_reparks": true,
+    "candidate_command_release": true,
+    "baseline_command_admitted": true,
+    "baseline_runaway_field": "absent",
+    "candidate_runaway_degraded": true,
+    "candidate_runaway_ages_out": true
+  },
+  "limits": "Synthetic GitHub fixture and RSA credential; issue items only (the breaker has no item-kind branch; PR release is covered by unit tests); the publisher workflow step is reproduced by sending its exact payload, not by running GitHub Actions; review execution is replaced by claim+complete; no live inference, production state, or GitHub mutation."
+}

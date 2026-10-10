@@ -1,12 +1,18 @@
+import { sha256 } from "./content-hash.js";
 import {
   oversizedPullRequestLiveBlockReason,
   parseOversizedPullRequestEvidence,
 } from "./clawsweeper-oversized-pr-policy.js";
 import type { CreateApplyDecisionWorkflowDependencies } from "./clawsweeper-apply-dependencies.js";
+import { validateReportClose } from "./clawsweeper-apply-close-decision.js";
 import { liveApplyCloseReasonPolicyBlock } from "./clawsweeper-apply-close-policies.js";
 import { closeReasonText } from "./clawsweeper-close-reasons.js";
 import { linkedIssueNumbersForImplementationProvenance } from "./clawsweeper-status-context.js";
-import { EVENT_GUARDED_OPEN_ACTIONS, REVIEW_SECTIONS } from "./clawsweeper-policy.js";
+import {
+  EVENT_GUARDED_OPEN_ACTIONS,
+  REVIEW_SECTIONS,
+  isGitHubVerifiedFixedPullRequestSource,
+} from "./clawsweeper-policy.js";
 import type {
   ActionTaken,
   ApplyKind,
@@ -25,19 +31,21 @@ import {
   isLockedConversationCommentError,
 } from "./github-retry.js";
 import { stableJson } from "./stable-json.js";
+import { asRecord } from "./value-coerce.js";
+import {
+  frontMatterValue,
+  replaceFrontMatterValue,
+  replaceSectionValue,
+} from "./report-front-matter.js";
 
 type ApplyCloseExecutionDependencies = Pick<
   CreateApplyDecisionWorkflowDependencies,
   | "CLAWSWEEPER_BOT_AUTHORS"
-  | "asRecord"
   | "abandonedPrApplyBlockReasonSafe"
   | "applyAuthorPrBudgetStateToReport"
-  | "issueRecentHumanCommentBlockReasonFromComments"
   | "resetGuardReadCache"
   | "withGuardReadOptions"
   | "unconfirmedProductDirectionApplyBlockReasonSafe"
-  | "unconfirmedProductDirectionCloseEnabled"
-  | "unsponsoredFeatureCloseEnabled"
   | "addIssueLabel"
   | "applyPrCloseCoverageProofReportSection"
   | "closeItem"
@@ -49,7 +57,6 @@ type ApplyCloseExecutionDependencies = Pick<
   | "ensureRuntimeDelayFits"
   | "fetchIssueReviewComments"
   | "fetchItem"
-  | "frontMatterValue"
   | "GitHubRuntimeBudgetError"
   | "ghJson"
   | "implementedOnMainPullRequestProvenanceApplyBlock"
@@ -57,10 +64,7 @@ type ApplyCloseExecutionDependencies = Pick<
   | "lowSignalUnmergeablePrApplyBlockReasonSafe"
   | "normalizeLabelName"
   | "removeCurrentCursorTraceItem"
-  | "replaceFrontMatterValue"
-  | "replaceSectionValue"
   | "reportDecision"
-  | "sha256"
   | "sleepMs"
   | "stalledUnprovenPrApplyBlockReasonSafe"
   | "unsponsoredFeatureApplyBlockReasonSafe"
@@ -90,7 +94,7 @@ export function implementedOnMainCloseProvenanceBlock(
   const repository = markdown.match(/^repository: (.+)$/m)?.[1]?.trim();
   const fixedPrNumber = markdown.match(/^fixed_pr_number: (\d+)$/m)?.[1]?.trim();
   const fixedPrConfidence = markdown.match(/^fixed_pr_confidence: (.+)$/m)?.[1]?.trim();
-  const fixedPrSource = markdown.match(/^fixed_pr_source: (.+)$/m)?.[1]?.trim();
+  const fixedPrSource = markdown.match(/^fixed_pr_source: "?([^"\n]+)"?$/m)?.[1];
   const fixedPrMergedAt = markdown.match(/^fixed_pr_merged_at: (.+)$/m)?.[1]?.trim();
   if (
     fixedPrUrl &&
@@ -99,9 +103,7 @@ export function implementedOnMainCloseProvenanceBlock(
     fixedPrNumber !== String(itemNumber) &&
     fixedPrUrl === `https://github.com/${repository}/pull/${fixedPrNumber}` &&
     fixedPrConfidence === "high" &&
-    fixedPrSource &&
-    fixedPrSource !== "unknown" &&
-    fixedPrSource.includes("GitHub ") &&
+    isGitHubVerifiedFixedPullRequestSource(fixedPrSource) &&
     fixedPrMergedAt &&
     fixedPrMergedAt !== "unknown"
   ) {
@@ -183,7 +185,6 @@ export function executeApplyClose(
 ): ApplyCloseFlow {
   const {
     CLAWSWEEPER_BOT_AUTHORS,
-    asRecord,
     addIssueLabel,
     applyPrCloseCoverageProofReportSection,
     closeItem,
@@ -195,19 +196,13 @@ export function executeApplyClose(
     ensureRuntimeDelayFits,
     fetchIssueReviewComments,
     fetchItem,
-    frontMatterValue,
     GitHubRuntimeBudgetError,
     ghJson,
     implementedOnMainPullRequestProvenanceApplyBlock,
     lowSignalUnmergeablePrApplyBlockReasonSafe,
     normalizeLabelName,
     removeCurrentCursorTraceItem,
-    replaceFrontMatterValue,
-    replaceSectionValue,
-    reportDecision,
-    sha256,
     sleepMs,
-    validateCloseDecision,
   } = dependencies;
   const {
     applyCloseReasons,
@@ -404,9 +399,11 @@ export function executeApplyClose(
     return skip("kept_open", currentImplementationProvenanceBlock);
   }
 
-  const currentReportValidation = validateCloseDecision(
+  const currentReportValidation = validateReportClose(
+    dependencies,
     { repo, kind: item.kind, labels: item.labels, authorAssociation: item.authorAssociation },
-    reportDecision(getMarkdown(), closeReason),
+    getMarkdown(),
+    closeReason,
     { requireCloseComment: !isRetryableSkippedClose },
   );
   if (!currentReportValidation.ok && currentReportValidation.actionTaken !== "kept_open") {
@@ -563,17 +560,16 @@ export function executeApplyClose(
         "implemented-on-main paired closeout requires the linked issue to remain unchanged since its independent review",
       );
     }
-    const issueValidation = validateCloseDecision(
+    const issueValidation = validateReportClose(
+      dependencies,
       {
         repo,
         kind: liveIssue.item.kind,
         labels: liveIssue.item.labels,
         authorAssociation: liveIssue.item.authorAssociation,
       },
-      {
-        ...reportDecision(pairedMarkdown, linkedIssueCloseReason),
-        closeReason: linkedIssueCloseReason,
-      },
+      pairedMarkdown,
+      linkedIssueCloseReason,
       { requireCloseComment: true },
     );
     if (!issueValidation.ok) return skip("kept_open", issueValidation.reason);
@@ -794,17 +790,16 @@ export function executeApplyClose(
       currentLinkedIssue.item.number,
       pairedReviewedAtMs,
     );
-    const postCommentIssueValidation = validateCloseDecision(
+    const postCommentIssueValidation = validateReportClose(
+      dependencies,
       {
         repo,
         kind: postCommentLinkedIssue.item.kind,
         labels: postCommentLinkedIssue.item.labels,
         authorAssociation: postCommentLinkedIssue.item.authorAssociation,
       },
-      {
-        ...reportDecision(pairedMarkdown, linkedIssueCloseReason),
-        closeReason: linkedIssueCloseReason,
-      },
+      pairedMarkdown,
+      linkedIssueCloseReason,
       { requireCloseComment: true },
     );
     if (

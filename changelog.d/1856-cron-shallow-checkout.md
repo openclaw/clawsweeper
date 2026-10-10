@@ -1,0 +1,1 @@
+- Check out only the current ClawSweeper commit in the scheduled review planner, target fanout, and apply-existing jobs. None of their steps reads ClawSweeper Git history. Audit and failed-review retry keep full history because they run `git pull --rebase`.

@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { createHash, createHmac } from "node:crypto";
 import fs, { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { type TestContext } from "node:test";
+import { parse } from "yaml";
 
 import { hydrateState } from "../../scripts/hydrate-state.ts";
 import { materializeWorkerItems } from "../../scripts/worker-records.ts";
@@ -20,6 +22,10 @@ test("Git-only hydration preserves operational state without Worker credentials 
   const worktreeRoot = join(root, "worktree");
   mkdirSync(join(stateRoot, "results", "runs"), { recursive: true });
   writeFileSync(join(stateRoot, "results", "runs", "123.json"), '{"status":"blocked"}\n');
+  for (const tree of [join("records", repoSlug, "items"), "ledger", "assets"]) {
+    mkdirSync(join(stateRoot, tree), { recursive: true });
+    writeFileSync(join(stateRoot, tree, "123.md"), "stale git copy\n");
+  }
   mkdirSync(join(worktreeRoot, "records", repoSlug, "items"), { recursive: true });
   const record = join(worktreeRoot, "records", repoSlug, "items", "123.md");
   writeFileSync(record, "preserve canonical data\n");
@@ -38,6 +44,8 @@ test("Git-only hydration preserves operational state without Worker credentials 
     '{"status":"blocked"}\n',
   );
   assert.equal(readFileSync(record, "utf8"), "preserve canonical data\n");
+  assert.equal(fs.existsSync(join(worktreeRoot, "ledger")), false);
+  assert.equal(fs.existsSync(join(worktreeRoot, "assets")), false);
   assert.deepEqual(result.hydrated, [
     "jobs",
     "results",
@@ -58,32 +66,61 @@ test("skipping records does not bypass credentials for requested state blobs", a
   );
 });
 
-test("result publisher opts out of unused canonical record and blob hydration", () => {
-  const workflow = readFileSync(".github/workflows/repair-publish-results.yml", "utf8");
-  const start = workflow.indexOf("uses: ./.github/actions/setup-state");
-  const end = workflow.indexOf("uses: ./.github/actions/setup-pnpm", start);
-  const setup = workflow.slice(start, end);
-  assert.match(setup, /hydrate-records: "false"/);
-  assert.match(setup, /hydrate-state-blobs: "false"/);
-  assert.doesNotMatch(setup, /records-secret:/);
-  assert.doesNotMatch(setup, /hydrate-git-state: "false"/);
-  const action = readFileSync(".github/actions/setup-state/action.yml", "utf8");
-  const recordInput = action.slice(
-    action.indexOf("  hydrate-records:"),
-    action.indexOf("  hydrate-state-blobs:"),
-  );
-  assert.match(recordInput, /default: "true"/);
-  for (const name of [
-    "Resolve canonical record snapshot cache key",
-    "Restore canonical record snapshot",
-  ]) {
-    const start = action.indexOf(`- name: ${name}`);
-    const end = action.indexOf("\n    - ", start + 1);
-    assert.ok(start >= 0);
-    assert.match(action.slice(start, end), /if:.*inputs\.hydrate-records == 'true'/);
+test("result publisher opts out of unused canonical record and blob hydration", (t) => {
+  type Step = { name?: string; if?: string; uses?: string; run?: string; with?: object };
+  const publisher = parse(readFileSync(".github/workflows/repair-publish-results.yml", "utf8"));
+  const setups = (Object.values(publisher.jobs) as Array<{ steps?: Step[] }>)
+    .flatMap((job) => job.steps ?? [])
+    .filter((step) => step.uses === "./.github/actions/setup-state");
+  assert.ok(setups.length > 0);
+  for (const setup of setups) {
+    assert.deepEqual(
+      Object.entries(setup.with ?? {}).filter(([key]) => /^(hydrate-|records-secret)/.test(key)),
+      [
+        ["hydrate-records", "false"],
+        ["hydrate-state-blobs", "false"],
+      ],
+    );
   }
-  assert.match(action, /HYDRATE_RECORDS: \$\{\{ inputs\.hydrate-records \}\}/);
-  assert.match(action, /false\) hydrate_args\+=\(--skip-records\)/);
+
+  const action = parse(readFileSync(".github/actions/setup-state/action.yml", "utf8"));
+  const steps = action.runs.steps as Step[];
+  assert.equal(action.inputs["hydrate-records"].default, "true");
+  for (const step of steps.filter((candidate) => candidate.name?.includes("record snapshot"))) {
+    assert.match(step.if ?? "", /inputs\.hydrate-records == 'true'/, step.name);
+  }
+  const root = mkdtempSync(join(tmpdir(), "clawsweeper-setup-state-args-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  writeFileSync(join(root, "node"), `#!/bin/sh\necho "$@"\n`, { mode: 0o755 });
+  const run = steps
+    .find((step) => step.name === "Hydrate generated state")!
+    .run!.replaceAll("${{ inputs.state-path }}", "state")
+    .replaceAll("${{ inputs.worktree-path }}", "code");
+  for (const [env, args] of [
+    [
+      { HYDRATE_RECORDS: "false", HYDRATE_STATE_BLOBS: "false" },
+      "--skip-records --skip-state-blobs",
+    ],
+    [
+      { HYDRATE_GIT_STATE: "false", RECORDS_ITEM_NUMBER: "42" },
+      "--skip-git-state --records-item-number 42",
+    ],
+  ] as const) {
+    const result = spawnSync("bash", ["-c", run], {
+      encoding: "utf8",
+      env: {
+        PATH: `${root}:${process.env.PATH}`,
+        HYDRATE_RECORDS: "true",
+        HYDRATE_STATE_BLOBS: "true",
+        HYDRATE_GIT_STATE: "true",
+        ...env,
+      },
+    });
+    assert.equal(
+      result.stdout,
+      `code/scripts/hydrate-state.ts --state-dir state --worktree code ${args}\n`,
+    );
+  }
 });
 
 function captureRetryDelays(t: TestContext) {

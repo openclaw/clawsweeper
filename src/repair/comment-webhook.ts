@@ -1,20 +1,22 @@
 #!/usr/bin/env node
 import crypto from "node:crypto";
+import { sha256 } from "../content-hash.js";
 import http from "node:http";
 
+import { CLAWSWEEPER_BOT_LOGINS } from "../clawsweeper-policy.js";
 import { repositoryProfileFor } from "../repository-profiles.js";
 import {
   hostedTargetRetryableAdmission,
   probeHostedPublicTarget,
   type HostedTargetAdmission,
 } from "../hosted-target-admission.js";
-import type { JsonValue, LooseRecord } from "./json-types.js";
+import { asJsonObject, type JsonValue, type LooseRecord } from "./json-types.js";
 import {
   isAssistPublicationCommentBody,
   isProofNudgeCommentBody,
   parseCommand,
-  staleClosedItemCommandReason,
-} from "./comment-router-core.js";
+} from "./comment-router/admission.js";
+import { staleClosedItemCommandReason } from "./comment-router-core.js";
 import { adaptiveReviewBudgetForPullRequest } from "./adaptive-review-budget.js";
 import {
   isExactReviewCloseGuardLabel,
@@ -31,6 +33,7 @@ import {
   compareCommandAckKeepPriority,
   isCommandAckStatusComment,
 } from "./command-ack-convergence.js";
+import { commandAckMarker } from "./markers.js";
 
 const DEFAULT_PORT = 8787;
 export const WEBHOOK_MAX_BODY_BYTES = 2 * 1024 * 1024;
@@ -267,9 +270,9 @@ export function classifyIssueCommentWebhook({
   if (!["created", "edited"].includes(String(payload.action ?? ""))) {
     return { accepted: false, reason: "unsupported action" };
   }
-  const comment = asRecord(payload.comment);
-  const issue = asRecord(payload.issue);
-  const repo = asRecord(payload.repository);
+  const comment = asJsonObject(payload.comment);
+  const issue = asJsonObject(payload.issue);
+  const repo = asJsonObject(payload.repository);
   const association = String(comment.author_association ?? "").toUpperCase();
   if (isAssistPublicationCommentBody(String(comment.body ?? ""))) {
     return { accepted: false, reason: "assist publication comment" };
@@ -308,7 +311,7 @@ export function classifyIssueCommentWebhook({
   if (staleReason) return { accepted: false, reason: staleReason };
   const itemNumber = Number(issue.number);
   const commentId = Number(comment.id);
-  const installationId = Number(asRecord(payload.installation).id);
+  const installationId = Number(asJsonObject(payload.installation).id);
   if (!Number.isInteger(itemNumber) || itemNumber <= 0) {
     return { accepted: false, reason: "missing issue number" };
   }
@@ -331,7 +334,7 @@ export function classifyIssueCommentWebhook({
     installationId,
     sourceAction: String(payload.action ?? "created"),
     commentBody: String(comment.body ?? ""),
-    commentAuthor: String(asRecord(comment.user).login ?? ""),
+    commentAuthor: String(asJsonObject(comment.user).login ?? ""),
     commentUrl: String(comment.html_url ?? ""),
     maintainerAuthorized: ALLOWED_ASSOCIATIONS.has(association),
     ...(commentUpdatedAt
@@ -350,12 +353,12 @@ function exactWebhookTimestamp(value: JsonValue) {
 
 export function classifyItemWebhook({ event, payload }: { event: string; payload: LooseRecord }) {
   const action = String(payload.action ?? "");
-  const repo = asRecord(payload.repository);
+  const repo = asJsonObject(payload.repository);
   if (!isEligibleRepositoryPayload(repo))
     return { accepted: false, reason: "repository not eligible" };
   const targetRepo = String(repo.full_name ?? "");
   const targetBranch = targetDefaultBranch(repo);
-  const installationId = Number(asRecord(payload.installation).id);
+  const installationId = Number(asJsonObject(payload.installation).id);
   if (!Number.isInteger(installationId) || installationId <= 0) {
     return { accepted: false, reason: "missing installation id" };
   }
@@ -365,7 +368,7 @@ export function classifyItemWebhook({ event, payload }: { event: string; payload
     if (action === "unlabeled" && !isCloseGuardLabel(payload.label)) {
       return { accepted: false, reason: "unsupported action" };
     }
-    const issue = asRecord(payload.issue);
+    const issue = asJsonObject(payload.issue);
     const itemNumber = Number(issue.number);
     if (!Number.isInteger(itemNumber) || itemNumber <= 0) {
       return { accepted: false, reason: "missing issue number" };
@@ -393,15 +396,15 @@ export function classifyItemWebhook({ event, payload }: { event: string; payload
     if (action === "unlabeled" && !isCloseGuardLabel(payload.label)) {
       return { accepted: false, reason: "unsupported action" };
     }
-    const pull = asRecord(payload.pull_request);
+    const pull = asJsonObject(payload.pull_request);
     const itemNumber = Number(pull.number);
     if (!Number.isInteger(itemNumber) || itemNumber <= 0) {
       return { accepted: false, reason: "missing pull request number" };
     }
-    const sourceHeadSha = String(asRecord(pull.head).sha ?? "")
+    const sourceHeadSha = String(asJsonObject(pull.head).sha ?? "")
       .trim()
       .toLowerCase();
-    const sourceBaseSha = String(asRecord(pull.base).sha ?? "")
+    const sourceBaseSha = String(asJsonObject(pull.base).sha ?? "")
       .trim()
       .toLowerCase();
     const sourceContentRevision = itemContentRevision(pull);
@@ -440,7 +443,7 @@ export function classifyItemWebhook({ event, payload }: { event: string; payload
 function itemContentRevision(item: LooseRecord) {
   const revisionMaterial = sourceRevisionMaterial(item);
   if (!revisionMaterial) return null;
-  return crypto.createHash("sha256").update(JSON.stringify(revisionMaterial)).digest("hex");
+  return sha256(JSON.stringify(revisionMaterial));
 }
 
 function sourceRevisionMaterial(source: LooseRecord) {
@@ -464,7 +467,7 @@ function sourceRevisionMaterial(source: LooseRecord) {
 }
 
 function isCloseGuardLabel(value: JsonValue) {
-  const label = String(asRecord(value).name ?? "")
+  const label = String(asJsonObject(value).name ?? "")
     .trim()
     .toLowerCase();
   return isExactReviewCloseGuardLabel(label);
@@ -492,9 +495,11 @@ function targetDefaultBranch(repo: LooseRecord) {
   return /^[A-Za-z0-9_./-]+$/.test(branch) ? branch : "main";
 }
 
+// REST gives the App login with the "[bot]" suffix. Do not match the plain
+// "clawsweeper" login here, because the caller deletes the comments it finds.
 function isClawsweeperWebhookSender(sender: LooseRecord) {
   const login = normalizedLogin(sender.login);
-  return login === "clawsweeper[bot]" || login === "openclaw-clawsweeper[bot]";
+  return login.endsWith("[bot]") && CLAWSWEEPER_BOT_LOGINS.has(login);
 }
 
 function isAuthorReadOnlyWebhookCommand({
@@ -506,8 +511,8 @@ function isAuthorReadOnlyWebhookCommand({
 }) {
   const parsed = parseCommand(String(comment.body ?? ""));
   if (parsed?.intent !== "re_review") return false;
-  const commentAuthor = normalizedLogin(asRecord(comment.user).login);
-  const issueAuthor = normalizedLogin(asRecord(issue.user).login);
+  const commentAuthor = normalizedLogin(asJsonObject(comment.user).login);
+  const issueAuthor = normalizedLogin(asJsonObject(issue.user).login);
   return Boolean(commentAuthor && issueAuthor && commentAuthor === issueAuthor);
 }
 
@@ -519,16 +524,12 @@ function normalizedLogin(value: JsonValue) {
 
 export function renderFastAckComment(sourceCommentId: number) {
   return [
-    fastAckMarker(sourceCommentId),
+    commandAckMarker(sourceCommentId),
     "🦞👀",
     "ClawSweeper picked this up.",
     "",
     "Command router queued. I will update this comment with the next step.",
   ].join("\n");
-}
-
-function fastAckMarker(sourceCommentId: number) {
-  return `<!-- clawsweeper-command-ack:${sourceCommentId} -->`;
 }
 
 export function verifyGitHubSignature({
@@ -781,7 +782,7 @@ async function listFastAckComments({
   sourceCommentId: number;
 }) {
   const comments: LooseRecord[] = [];
-  const marker = fastAckMarker(sourceCommentId);
+  const marker = commandAckMarker(sourceCommentId);
   const since = encodeURIComponent(new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString());
   for (let page = 1; page <= 5; page += 1) {
     const response = await githubFetch({
@@ -791,10 +792,10 @@ async function listFastAckComments({
     });
     if (!Array.isArray(response)) return comments;
     for (const comment of response) {
-      const record = asRecord(comment);
+      const record = asJsonObject(comment);
       if (
         String(record.body ?? "").includes(marker) &&
-        isClawsweeperWebhookSender(asRecord(record.user))
+        isClawsweeperWebhookSender(asJsonObject(record.user))
       ) {
         comments.push(record);
       }
@@ -974,8 +975,4 @@ function base64Url(value: string | Buffer) {
 
 function repoName(targetRepo: string) {
   return targetRepo.split("/")[1] ?? "";
-}
-
-function asRecord(value: JsonValue): LooseRecord {
-  return value && typeof value === "object" && !Array.isArray(value) ? value : {};
 }

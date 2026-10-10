@@ -1,5 +1,6 @@
 import type { CreateApplyDecisionWorkflowDependencies } from "./clawsweeper-apply-dependencies.js";
-import { BULK_FILED_LABEL, GOOD_FIRST_ISSUE_LABEL } from "./clawsweeper-policy.js";
+import { GOOD_FIRST_ISSUE_LABEL } from "./clawsweeper-policy.js";
+import { BULK_FILED_LABEL } from "./repair/exact-review-guard-labels.js";
 import type {
   BulkFilerRepositoryPermissionCache,
   Item,
@@ -8,28 +9,23 @@ import type {
 } from "./clawsweeper-types.js";
 import { isGitHubRequiresAuthenticationError } from "./github-retry.js";
 import { reportAllowsAutomation } from "./manual-publication-policy.js";
+import { frontMatterBoolean, replaceFrontMatterValue } from "./report-front-matter.js";
+import { hasNormalizedLabel } from "./clawsweeper-item-policy.js";
+import { isGoodFirstIssue, issueAdvisoryLabelState } from "./clawsweeper-label-selection.js";
+import { reportReviewDecision } from "./report-review-decision.js";
 
 type ApplyReportLabelDependencies = Pick<
   CreateApplyDecisionWorkflowDependencies,
   | "bulkFilerRepositoryPermission"
   | "closingPullRequestsForIssue"
-  | "frontMatterBoolean"
-  | "hasNormalizedLabel"
-  | "impactLabelsFromReport"
   | "isBulkFilerExemptAuthorAssociation"
-  | "isGoodFirstIssue"
-  | "issueAdvisoryLabelStateFromReport"
-  | "maturityLabelsFromReport"
-  | "mergeRiskLabelsFromReport"
   | "openClosingPullRequestApplyReason"
-  | "replaceFrontMatterValue"
   | "syncBulkFilerLabel"
   | "syncImpactLabels"
   | "syncIssueAdvisoryLabels"
   | "syncMaturityLabels"
   | "syncMergeRiskLabels"
   | "syncPriorityLabel"
-  | "triagePriorityFromReport"
 >;
 
 interface ApplyReportLabelOptions {
@@ -71,23 +67,14 @@ export function syncApplyReportLabels(
   const {
     bulkFilerRepositoryPermission,
     closingPullRequestsForIssue,
-    frontMatterBoolean,
-    hasNormalizedLabel,
-    impactLabelsFromReport,
     isBulkFilerExemptAuthorAssociation,
-    isGoodFirstIssue,
-    issueAdvisoryLabelStateFromReport,
-    maturityLabelsFromReport,
-    mergeRiskLabelsFromReport,
     openClosingPullRequestApplyReason,
-    replaceFrontMatterValue,
     syncBulkFilerLabel,
     syncImpactLabels,
     syncIssueAdvisoryLabels,
     syncMaturityLabels,
     syncMergeRiskLabels,
     syncPriorityLabel,
-    triagePriorityFromReport,
   } = dependencies;
   const {
     bulkFilerRepositoryPermissionCache,
@@ -125,6 +112,8 @@ export function syncApplyReportLabels(
     return result(true, recordReviewLeaseSkip(blockReason, false));
   };
   if (!reportAllowsAutomation(markdown)) return result();
+  // The apply skips a report whose review record does not read before this step.
+  const decision = reportReviewDecision(markdown);
   const skipLabelAuth = (kind: string): ApplyReportLabelResult => {
     setMarkdown(markdown);
     return result(true, markLabelSyncAuthSkipped(kind));
@@ -177,7 +166,7 @@ export function syncApplyReportLabels(
         syncPriorityLabel({
           number,
           labels: item.labels,
-          triagePriority: triagePriorityFromReport(markdown),
+          triagePriority: decision.triagePriority,
           dryRun,
           onMutation,
         }),
@@ -186,7 +175,7 @@ export function syncApplyReportLabels(
         syncImpactLabels({
           number,
           labels: item.labels,
-          impactLabels: item.kind === "pull_request" ? [] : impactLabelsFromReport(markdown),
+          impactLabels: item.kind === "pull_request" ? [] : decision.impactLabels,
           dryRun,
           onMutation,
         }),
@@ -195,7 +184,7 @@ export function syncApplyReportLabels(
         syncMaturityLabels({
           number,
           labels: item.labels,
-          maturityLabels: item.kind === "pull_request" ? [] : maturityLabelsFromReport(markdown),
+          maturityLabels: item.kind === "pull_request" ? [] : decision.maturityLabels,
           dryRun,
           onMutation,
         }),
@@ -205,7 +194,7 @@ export function syncApplyReportLabels(
           syncMergeRiskLabels({
             number,
             labels: item.labels,
-            mergeRiskLabels: mergeRiskLabelsFromReport(markdown),
+            mergeRiskLabels: decision.mergeRiskLabels,
             dryRun,
             onMutation,
           }),
@@ -228,7 +217,7 @@ export function syncApplyReportLabels(
     const hasOpenLinkedPullRequest =
       openClosingPullRequestApplyReason(currentClosingPullRequests) !== null;
     renderOptions.hasOpenLinkedPullRequest = hasOpenLinkedPullRequest;
-    const advisory = issueAdvisoryLabelStateFromReport(markdown, {
+    const advisory = issueAdvisoryLabelState(markdown, decision, {
       hasOpenLinkedPullRequest,
       locked: item.locked === true,
     });

@@ -7,9 +7,10 @@ import {
   detectBulkFilerForTest,
   bulkFilerPolicyInvalidatesCachedReviewForTest,
   renderReviewStartStatusComment,
-  syncBulkFilerLabelForTest,
   updateBulkFilerDetectedFrontMatterForTest,
 } from "../dist/clawsweeper.js";
+import { createLabelMutationOperations } from "../dist/clawsweeper-label-mutations.js";
+import { createLabelSyncOperations } from "../dist/clawsweeper-label-operations.js";
 import { item } from "./helpers.ts";
 
 test("bulk-filer defaults and positive env overrides are bounded", () => {
@@ -141,8 +142,14 @@ test("review-start comments stay neutral when a bulk filer is detected", () => {
 });
 
 test("the publisher applies a detected bulk-filer label only for non-exempt authors", () => {
+  const offline = () => {
+    throw new Error("a dry run must not call gh");
+  };
+  const { syncBulkFilerLabel } = createLabelSyncOperations(
+    createLabelMutationOperations({ ghJson: offline, ghObservedMutationCommand: offline }),
+  );
   assert.deepEqual(
-    syncBulkFilerLabelForTest({
+    syncBulkFilerLabel({
       number: 44,
       labels: [],
       bulkFilerDetected: true,
@@ -152,7 +159,7 @@ test("the publisher applies a detected bulk-filer label only for non-exempt auth
     { labels: [], changed: false },
   );
   assert.deepEqual(
-    syncBulkFilerLabelForTest({
+    syncBulkFilerLabel({
       number: 44,
       labels: [],
       bulkFilerDetected: true,
@@ -162,7 +169,7 @@ test("the publisher applies a detected bulk-filer label only for non-exempt auth
     { labels: ["clawsweeper:bulk-filed"], changed: true },
   );
   assert.deepEqual(
-    syncBulkFilerLabelForTest({
+    syncBulkFilerLabel({
       number: 44,
       labels: ["clawsweeper:bulk-filed", "maintainer"],
       bulkFilerDetected: false,
@@ -172,7 +179,7 @@ test("the publisher applies a detected bulk-filer label only for non-exempt auth
     { labels: ["maintainer"], changed: true },
   );
   assert.deepEqual(
-    syncBulkFilerLabelForTest({
+    syncBulkFilerLabel({
       number: 44,
       labels: ["clawsweeper:bulk-filed", "maintainer"],
       bulkFilerDetected: true,
@@ -183,7 +190,7 @@ test("the publisher applies a detected bulk-filer label only for non-exempt auth
     { labels: ["maintainer"], changed: true },
   );
   assert.deepEqual(
-    syncBulkFilerLabelForTest({
+    syncBulkFilerLabel({
       number: 44,
       labels: ["clawsweeper:bulk-filed", "maintainer"],
       bulkFilerDetected: true,
@@ -194,7 +201,7 @@ test("the publisher applies a detected bulk-filer label only for non-exempt auth
     { labels: ["maintainer"], changed: true },
   );
   assert.deepEqual(
-    syncBulkFilerLabelForTest({
+    syncBulkFilerLabel({
       number: 44,
       labels: [],
       bulkFilerDetected: true,

@@ -43,7 +43,7 @@ export function nextStepFromReport(markdown: string): NextStepAssessment | undef
     const value: unknown = JSON.parse(field.value);
     return parseNextStep(value, "next_step");
   } catch {
-    // Malformed historical metadata retains the legacy conservative projection.
+    // Malformed metadata gives no typed next step, so readiness fails closed.
     return undefined;
   }
 }

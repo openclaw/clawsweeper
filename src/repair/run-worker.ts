@@ -2,9 +2,10 @@
 import type { JsonValue, LooseRecord } from "./json-types.js";
 import fs from "node:fs";
 import path from "node:path";
-import { spawn, spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
+import { runCommandResult } from "./command-runner.js";
 import { runAgentProcess } from "../agent-runner.js";
-import { canonicalItemAuthorAssociations, codexItemProfile } from "../codex-item-profile.js";
+import { canonicalItemCodexProfile } from "../codex-item-profile.js";
 import { codexAppServerProcessOptionsFromEnv } from "../codex-process.js";
 import { deterministicAutomergeResult } from "./deterministic-automerge-result.js";
 import {
@@ -16,7 +17,7 @@ import {
   repoRoot,
   validateJob,
 } from "./lib.js";
-import { codexLoginConfig, codexSubprocessEnv, codexModelArgs } from "./process-env.js";
+import { repairCodexConfigArgs, codexSubprocessEnv, codexModelArgs } from "./process-env.js";
 import { prepareTargetCheckout } from "./target-checkout.js";
 import { sanitizeResultEvidence } from "./url-safety.js";
 
@@ -95,11 +96,7 @@ if (!dryRun) {
     "--run-dir",
     runDir,
   ];
-  const planner = spawnSync(process.execPath, plannerArgs, {
-    cwd: repoRoot(),
-    encoding: "utf8",
-    env: process.env,
-  });
+  const planner = runCommandResult(process.execPath, plannerArgs, { cwd: repoRoot() });
   if (planner.status !== 0) {
     console.error(planner.stderr || planner.stdout);
     process.exit(planner.status ?? 1);
@@ -125,11 +122,7 @@ if (!dryRun) {
     runDir,
     "--offline",
   ];
-  const planner = spawnSync(process.execPath, plannerArgs, {
-    cwd: repoRoot(),
-    encoding: "utf8",
-    env: process.env,
-  });
+  const planner = runCommandResult(process.execPath, plannerArgs, { cwd: repoRoot() });
   if (planner.status !== 0) {
     console.error(planner.stderr || planner.stdout);
     process.exit(planner.status ?? 1);
@@ -142,9 +135,7 @@ const clusterPlanPath = path.join(runDir, "cluster-plan.json");
 const clusterPlan = fs.existsSync(clusterPlanPath)
   ? JSON.parse(fs.readFileSync(clusterPlanPath, "utf8"))
   : null;
-const codexProfile = codexItemProfile(
-  canonicalItemAuthorAssociations(job.frontmatter, clusterPlan),
-);
+const codexProfile = canonicalItemCodexProfile(job.frontmatter, clusterPlan);
 const codexReasoningEffort = codexProfile.reasoningEffort;
 const codexServiceTier = codexProfile.serviceTier;
 
@@ -230,7 +221,7 @@ function runCodex({
     ...codexModelArgs(String(model)),
     "--sandbox",
     codexPlannerSandbox,
-    ...codexConfigArgs(),
+    ...repairCodexConfigArgs(codexReasoningEffort, codexServiceTier),
     "--output-schema",
     path.join(repoRoot(), "schema", "repair", "codex-result.schema.json"),
     "--output-last-message",
@@ -307,16 +298,6 @@ function codexWorkspaceRoot(): string {
   return targetCheckout || repoRoot();
 }
 
-function codexConfigArgs() {
-  const configs = [
-    'approval_policy="never"',
-    codexLoginConfig(),
-    `model_reasoning_effort=${JSON.stringify(codexReasoningEffort)}`,
-  ];
-  if (codexServiceTier) configs.push(`service_tier=${JSON.stringify(codexServiceTier)}`);
-  return configs.flatMap((config: JsonValue) => ["-c", config]);
-}
-
 async function repairResultIfNeeded() {
   for (let attempt = 1; attempt <= resultRepairAttempts; attempt += 1) {
     const review = reviewResult();
@@ -333,8 +314,8 @@ async function repairResultIfNeeded() {
       "You are repairing a ClawSweeper Repair structured JSON result that failed deterministic validation.",
       "",
       "Do not mutate GitHub. Do not change the job scope. Return a complete replacement JSON result only.",
-      "Fix the validation failures with the narrowest safe changes. If a PR closeout comment is missing contributor credit, update that action comment to explicitly preserve credit, including wording such as `credit`, `attribution`, `thanks @user`, or `source PR`, and keep the canonical/fix links intact.",
-      "If a validator failure reveals that an action is not safely repairable from the provided artifacts, downgrade only that action to a non-mutating `keep_related`, `keep_independent`, blocked fix-first action, or `needs_human` with exact evidence.",
+      "Fix the validation failures with the narrowest safe changes.",
+      "If a validator failure reveals that an action is not safely repairable from the provided artifacts, downgrade only that action to a non-mutating `keep_related`, `keep_independent`, blocked close or fix action, or `needs_human` with exact evidence.",
       "",
       "## Validator output",
       "```json",
@@ -374,14 +355,10 @@ async function repairResultIfNeeded() {
 }
 
 function reviewResult() {
-  return spawnSync(
+  return runCommandResult(
     process.execPath,
     [path.join(repoRoot(), "dist/repair/review-results.js"), runDir],
-    {
-      cwd: repoRoot(),
-      encoding: "utf8",
-      env: process.env,
-    },
+    { cwd: repoRoot() },
   );
 }
 

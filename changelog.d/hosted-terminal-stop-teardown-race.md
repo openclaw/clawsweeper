@@ -1,0 +1,1 @@
+- Fix the hosted canary terminal stop so the controller's own post-DONE teardown, which can end the tmux server and remove its socket between two reads, goes through the fresh-receipt and quiescence proof instead of failing on a second identity read or a vanished socket.

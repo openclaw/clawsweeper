@@ -8,18 +8,14 @@ import type { ItemContext, StalePullRequestReviewHead } from "./clawsweeper-type
 import { renderReviewHistorySection } from "./review-history.js";
 import type { ReviewStructuralPullState } from "./review-structural-cache.js";
 import type { ReviewCommentWorkflowDependencies } from "./clawsweeper-review-comment-dependencies.js";
+import { asRecord, nonBlankStringOrUndefined } from "./value-coerce.js";
+import { frontMatterValue } from "./report-front-matter.js";
+import { pullHeadShaFromReport } from "./clawsweeper-record-metadata.js";
+import { isIssueAdvisoryLabel } from "./clawsweeper-label-selection.js";
+import { reviewHistoryForStaleComment } from "./clawsweeper-report-comment-helpers.js";
 
 export function createReviewCommentIdentity(dependencies: ReviewCommentWorkflowDependencies) {
-  const {
-    githubCount,
-    asRecord,
-    frontMatterValue,
-    stringOrUndefined,
-    isIssueAdvisoryLabel,
-    removeIssueLabel,
-    isClawSweeperOwnedLabel,
-    reviewHistoryForStaleComment,
-  } = dependencies;
+  const { githubCount, removeIssueLabel, isClawSweeperOwnedLabel } = dependencies;
 
   function reviewCommentMarker(number: number): string {
     return `${REVIEW_COMMENT_MARKER_PREFIX} item=${number} -->`;
@@ -42,9 +38,9 @@ export function createReviewCommentIdentity(dependencies: ReviewCommentWorkflowD
     const pull = asRecord(context.pullRequest);
     const head = asRecord(pull.head);
     const base = asRecord(pull.base);
-    const headSha = stringOrUndefined(head.sha);
-    const baseSha = stringOrUndefined(base.sha);
-    const mergeStateStatus = stringOrUndefined(pull.mergeableState);
+    const headSha = nonBlankStringOrUndefined(head.sha);
+    const baseSha = nonBlankStringOrUndefined(base.sha);
+    const mergeStateStatus = nonBlankStringOrUndefined(pull.mergeableState);
     const additions = githubCount(pull.additions);
     const deletions = githubCount(pull.deletions);
     const changedFiles = githubCount(pull.changedFiles);
@@ -77,19 +73,6 @@ export function createReviewCommentIdentity(dependencies: ReviewCommentWorkflowD
       changedFiles,
       commitCount,
     };
-  }
-
-  function pullHeadShaFromReport(markdown: string): string | null {
-    const value = frontMatterValue(markdown, "pull_head_sha");
-    return value && value !== "unknown" ? value : null;
-  }
-
-  function reviewLeaseRevisionFromReport(markdown: string): string | null {
-    if (frontMatterValue(markdown, "type") === "pull_request") {
-      return pullHeadShaFromReport(markdown);
-    }
-    const value = frontMatterValue(markdown, "item_source_revision");
-    return value && value !== "unknown" ? value : null;
   }
 
   function stalePullRequestReviewHead(
@@ -179,7 +162,6 @@ export function createReviewCommentIdentity(dependencies: ReviewCommentWorkflowD
     pullHeadShaFromContext,
     reviewStructuralPullStateFromContext,
     pullHeadShaFromReport,
-    reviewLeaseRevisionFromReport,
     stalePullRequestReviewHead,
     freshPullRequestReviewHead,
     isStalePullRequestReviewLabel,

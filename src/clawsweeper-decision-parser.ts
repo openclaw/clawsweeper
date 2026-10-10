@@ -22,16 +22,23 @@ import {
   LIVE_PROOF_STEP_SCHEMA_KEYS,
   LIVE_PROOF_SURFACES,
   LIVE_PROOF_TERMINAL_COMPLETIONS,
-  MANTIS_RECOMMENDATION_SCENARIOS,
-  MANTIS_RECOMMENDATION_SCHEMA_KEYS,
-  MANTIS_RECOMMENDATION_STATUSES,
   MATURITY_LABEL_VALUES,
   MERGE_RISK_LABEL_VALUES,
   MERGE_RISK_OPTION_CATEGORIES,
   MERGE_RISK_OPTION_SCHEMA_KEYS,
   OVERALL_CORRECTNESS_VALUES,
+  LOW_VALUE_TEST_SCHEMA_KEYS,
+  MAX_LOW_VALUE_TESTS,
+  MAX_PROVENANCE_ENTRIES,
   PR_RATING_SCHEMA_KEYS,
   PR_RATING_TIERS,
+  PRODUCT_FIX_SCOPES,
+  PRODUCT_REVIEW_KINDS,
+  CHANGE_EXAMPLE_SCHEMA_KEYS,
+  PRODUCT_REVIEW_SCHEMA_KEYS,
+  PRODUCT_WORTH_IT_VALUES,
+  PROVENANCE_ENTRY_SCHEMA_KEYS,
+  PROVENANCE_VERDICTS,
   REAL_BEHAVIOR_PROOF_EVIDENCE_KINDS,
   REAL_BEHAVIOR_PROOF_SCHEMA_KEYS,
   REAL_BEHAVIOR_PROOF_STATUSES,
@@ -52,14 +59,16 @@ import {
   SECURITY_REVIEW_STATUSES,
   TELEGRAM_VISIBLE_PROOF_SCHEMA_KEYS,
   TELEGRAM_VISIBLE_PROOF_STATUSES,
+  TESTING_PROOF_PATHS,
+  TESTING_REVIEW_SCHEMA_KEYS,
   TRIAGE_PRIORITIES,
   VISION_FIT_STATUSES,
   WORK_CANDIDATES,
+  type MergeRiskLabelName,
 } from "./clawsweeper-policy.js";
 import type {
   AgentsPolicyStatus,
   Decision,
-  DecisionNormalizationItem,
   Evidence,
   FeatureShowcase,
   ImpactLabelName,
@@ -67,12 +76,13 @@ import type {
   LiveProofPlan,
   LiveProofStep,
   LikelyOwner,
-  MantisRecommendation,
   MaturityLabelName,
-  MergeRiskLabelName,
   MergeRiskOption,
   ParsedGitHubItemRef,
   PrRating,
+  ChangeExample,
+  ProductReview,
+  ProvenanceEntry,
   RealBehaviorProof,
   ReviewFinding,
   ReviewLabelName,
@@ -86,20 +96,23 @@ import type {
   SecurityConcern,
   SecurityReview,
   TelegramVisibleProof,
+  TestingReview,
 } from "./clawsweeper-types.js";
-import { derivedPrRating, normalizePrRating } from "./clawsweeper-rating.js";
+import { normalizePrRating } from "./clawsweeper-rating.js";
 import { parseNextStep } from "./clawsweeper-next-step.js";
 import { parseMaintainerDecision } from "./decision-packets.js";
-import { DEFAULT_TARGET_REPO, normalizeRepo } from "./repository-profiles.js";
+import { normalizeRepo } from "./repository-profiles.js";
+import {
+  neutralizeOwnedSectionSpoofing,
+  sanitizeArchitectureDiagram,
+} from "./clawsweeper-report-helpers.js";
 
 export interface DecisionParserDependencies {
-  isMaintainerAuthorAssociation: (value: unknown) => boolean;
   neutralizeOwnedSectionSpoofing: (value: string) => string;
   sanitizeArchitectureDiagram: (value: string) => string;
 }
 
 export function createDecisionParser({
-  isMaintainerAuthorAssociation,
   neutralizeOwnedSectionSpoofing,
   sanitizeArchitectureDiagram,
 }: DecisionParserDependencies) {
@@ -183,6 +196,11 @@ export function createDecisionParser({
 
   function requireReportTextArray(value: unknown, path: string): string[] {
     return requireStringArray(value, path).map(neutralizeOwnedSectionSpoofing);
+  }
+
+  // Report sections store these short fields on one line each.
+  function requireReportLine(value: unknown, path: string): string {
+    return requireReportText(value, path).replace(/\s+/g, " ").trim();
   }
 
   function requireSingleLineStringArray(value: unknown, path: string): string[] {
@@ -380,12 +398,6 @@ export function createDecisionParser({
     }
   }
 
-  function isEnvironmentAccessCaveat(value: string): boolean {
-    return /(?:GH_TOKEN|GITHUB_TOKEN|authenticated gh|gh (?:was |is )?unavailable|unauthenticated gh|shallow clone|GitHub auth(?:entication)? (?:was |is )?unavailable|could not use authenticated GitHub)/i.test(
-      value,
-    );
-  }
-
   function parseEvidence(value: unknown, path: string): Evidence {
     const record = requireRecord(value, path);
     rejectUnexpectedKeys(record, EVIDENCE_SCHEMA_KEYS, path);
@@ -404,9 +416,16 @@ export function createDecisionParser({
     };
   }
 
-  function parseLikelyOwner(value: unknown, path: string): LikelyOwner {
+  // The runner verifies owners and marks them with attributionSource. Only a stored
+  // decision can have it; model output cannot.
+  function parseLikelyOwner(value: unknown, path: string, source: "model" | "stored"): LikelyOwner {
     const record = requireRecord(value, path);
-    rejectUnexpectedKeys(record, LIKELY_OWNER_SCHEMA_KEYS, path);
+    const { attributionSource, ...modelFields } = record;
+    rejectUnexpectedKeys(
+      source === "stored" ? modelFields : record,
+      LIKELY_OWNER_SCHEMA_KEYS,
+      path,
+    );
     let history: LikelyOwner["history"];
     if (record.history !== undefined && record.history !== null) {
       const source = requireRecord(record.history, `${path}.history`);
@@ -434,6 +453,15 @@ export function createDecisionParser({
       commits: requireSingleLineStringArray(record.commits, `${path}.commits`),
       files: requireSingleLineStringArray(record.files, `${path}.files`),
       confidence: requireEnum(record.confidence, CONFIDENCES, `${path}.confidence`),
+      ...(attributionSource === undefined
+        ? {}
+        : {
+            attributionSource: requireEnum(
+              attributionSource,
+              new Set(["raw_parent_line_v1"] as const),
+              `${path}.attributionSource`,
+            ),
+          }),
     };
   }
 
@@ -466,102 +494,6 @@ export function createDecisionParser({
       currentItemRelationship: "independent",
       summary: "No evidence-backed root-cause cluster was established.",
       members: [],
-    };
-  }
-
-  const CHANGELOG_ENTRY_REVIEW_PATTERN =
-    /\b(?:changelog\.md|changelog\s+entry|release[- ]?note)\b/i;
-  const MISSING_CHANGELOG_ACTION_PATTERN =
-    /\b(?:add|include|missing|no|lacks?|needs?|requires?|required|without)\b/i;
-  const CHANGELOG_TOOLING_PATTERN =
-    /\b(?:coverage|duplicate|generator|malformed|parser|validation|validator|wrong\s+section)\b/i;
-
-  function isOpenClawContributorPullRequest(item: DecisionNormalizationItem | undefined): boolean {
-    return (
-      item !== undefined &&
-      normalizeRepo(item.repo) === DEFAULT_TARGET_REPO &&
-      item.kind === "pull_request" &&
-      !isMaintainerAuthorAssociation(item.authorAssociation)
-    );
-  }
-
-  function isContributorChangelogEntryFinding(
-    item: DecisionNormalizationItem | undefined,
-    finding: ReviewFinding,
-  ): boolean {
-    const text = `${finding.title}\n${finding.body}`;
-    return (
-      isOpenClawContributorPullRequest(item) &&
-      CHANGELOG_ENTRY_REVIEW_PATTERN.test(text) &&
-      MISSING_CHANGELOG_ACTION_PATTERN.test(text) &&
-      !CHANGELOG_TOOLING_PATTERN.test(text)
-    );
-  }
-
-  const CLEAN_OPENCLAW_PR_REVIEW_NEXT_STEP =
-    "Continue normal maintainer review; ClawSweeper found no patch-correctness issue.";
-
-  const STANDALONE_CHANGELOG_ENTRY_REQUEST =
-    /^(?:please\s+)?(?:add|include)\s+(?:(?:a|an|the)\s+)?(?:(?:missing|required)\s+)?(?:changelog(?:\.md)?\s+entr(?:y|ies)|release[- ]notes?)(?:\s+before\s+merge)?[.!]?\s*$/i;
-  const NEXT_STEP_CLAUSE_SEPARATOR =
-    /([.;]\s+|\n+|\s+(?:and|but)\s+(?=(?:add|include|repair|fix|verify|confirm|resolve|prove|run)\s+(?:the|a|an|this|that)\s+\S))/i;
-
-  function normalizeDecisionForItem(
-    decision: Decision,
-    item: DecisionNormalizationItem | undefined,
-  ): Decision {
-    if (decision.nextStep?.kind === "required" && isOpenClawContributorPullRequest(item)) {
-      // Unlike findings, action prose must directly request only a changelog entry;
-      // mentions in a different or ambiguous instruction retain required intent.
-      // Split conjunctions only before clear imperative clauses, not compound
-      // objects such as "a changelog entry and repair notes". Unrecognized forms
-      // stay together so an ambiguous additional action cannot be stripped.
-      const parts = decision.nextStep.text.split(NEXT_STEP_CLAUSE_SEPARATOR);
-      const retained = parts.flatMap((text, index) =>
-        index % 2 === 0 && !STANDALONE_CHANGELOG_ENTRY_REQUEST.test(text) ? [index] : [],
-      );
-      if (retained.length !== (parts.length + 1) / 2) {
-        const text = retained
-          .map((index, position) => `${position === 0 ? "" : parts[index - 1]}${parts[index]}`)
-          .join("")
-          .trim();
-        decision = { ...decision, nextStep: { kind: text ? "required" : "none", text } };
-      }
-    }
-    const reviewFindings = decision.reviewFindings.filter(
-      (finding) => !isContributorChangelogEntryFinding(item, finding),
-    );
-    if (reviewFindings.length === decision.reviewFindings.length) return decision;
-    if (reviewFindings.length > 0) return { ...decision, reviewFindings };
-    const overallCorrectness =
-      decision.overallCorrectness === "patch is incorrect"
-        ? "patch is correct"
-        : decision.overallCorrectness;
-
-    return {
-      ...decision,
-      reviewFindings,
-      bestSolution: CLEAN_OPENCLAW_PR_REVIEW_NEXT_STEP,
-      triagePriority: decision.triagePriority,
-      mergeRiskOptions: decision.mergeRiskOptions,
-      labelJustifications: decision.labelJustifications,
-      overallCorrectness,
-      prRating: derivedPrRating({
-        isPullRequest: item?.kind === "pull_request",
-        proof: decision.realBehaviorProof,
-        findings: reviewFindings,
-        securityReview: decision.securityReview,
-        overallCorrectness,
-        overallConfidenceScore: decision.overallConfidenceScore,
-      }),
-      workCandidate: "none",
-      workConfidence: "low",
-      workPriority: "low",
-      workReason: "",
-      workPrompt: "",
-      workClusterRefs: [],
-      workValidation: [],
-      workLikelyFiles: [],
     };
   }
 
@@ -634,6 +566,64 @@ export function createDecisionParser({
       summary: requireReportText(record.summary, `${path}.summary`),
       nextSteps: requireReportTextArray(record.nextSteps, `${path}.nextSteps`).slice(0, 3),
     });
+  }
+
+  function parseProductReview(value: unknown, path: string): ProductReview {
+    const record = requireRecord(value, path);
+    rejectUnexpectedKeys(record, PRODUCT_REVIEW_SCHEMA_KEYS, path);
+    return {
+      kind: requireEnum(record.kind, PRODUCT_REVIEW_KINDS, `${path}.kind`),
+      userProblem: requireReportLine(record.userProblem, `${path}.userProblem`),
+      fixScope: requireEnum(record.fixScope, PRODUCT_FIX_SCOPES, `${path}.fixScope`),
+      worthIt: requireEnum(record.worthIt, PRODUCT_WORTH_IT_VALUES, `${path}.worthIt`),
+      reason: requireReportLine(record.reason, `${path}.reason`),
+    };
+  }
+
+  function parseChangeExample(value: unknown, path: string): ChangeExample {
+    const record = requireRecord(value, path);
+    rejectUnexpectedKeys(record, CHANGE_EXAMPLE_SCHEMA_KEYS, path);
+    return {
+      scenario: requireReportLine(record.scenario, `${path}.scenario`),
+      before: requireReportLine(record.before, `${path}.before`),
+      after: requireReportLine(record.after, `${path}.after`),
+    };
+  }
+
+  function parseProvenance(value: unknown, path: string): ProvenanceEntry[] {
+    if (!Array.isArray(value)) throw new Error(`${path} must be an array`);
+    return value.slice(0, MAX_PROVENANCE_ENTRIES).map((entry, index) => {
+      const entryPath = `${path}[${index}]`;
+      const record = requireRecord(entry, entryPath);
+      rejectUnexpectedKeys(record, PROVENANCE_ENTRY_SCHEMA_KEYS, entryPath);
+      return {
+        area: requireReportLine(record.area, `${entryPath}.area`),
+        introducedBy: requireReportLine(record.introducedBy, `${entryPath}.introducedBy`),
+        originalReason: requireReportLine(record.originalReason, `${entryPath}.originalReason`),
+        verdict: requireEnum(record.verdict, PROVENANCE_VERDICTS, `${entryPath}.verdict`),
+      };
+    });
+  }
+
+  function parseTestingReview(value: unknown, path: string): TestingReview {
+    const record = requireRecord(value, path);
+    rejectUnexpectedKeys(record, TESTING_REVIEW_SCHEMA_KEYS, path);
+    if (!Array.isArray(record.lowValueTests)) {
+      throw new Error(`${path}.lowValueTests must be an array`);
+    }
+    return {
+      proofPath: requireEnum(record.proofPath, TESTING_PROOF_PATHS, `${path}.proofPath`),
+      lowValueTests: record.lowValueTests.slice(0, MAX_LOW_VALUE_TESTS).map((entry, index) => {
+        const entryPath = `${path}.lowValueTests[${index}]`;
+        const test = requireRecord(entry, entryPath);
+        rejectUnexpectedKeys(test, LOW_VALUE_TEST_SCHEMA_KEYS, entryPath);
+        return {
+          file: requireReportLine(test.file, `${entryPath}.file`),
+          reason: requireReportLine(test.reason, `${entryPath}.reason`),
+        };
+      }),
+      missingE2e: requireReportLine(record.missingE2e, `${path}.missingE2e`),
+    };
   }
 
   function parseTelegramVisibleProof(value: unknown, path: string): TelegramVisibleProof {
@@ -762,17 +752,6 @@ export function createDecisionParser({
       }
     }
     return { status, surface, terminalCompletion, reason, payoff, entry, steps };
-  }
-
-  function parseMantisRecommendation(value: unknown, path: string): MantisRecommendation {
-    const record = requireRecord(value, path);
-    rejectUnexpectedKeys(record, MANTIS_RECOMMENDATION_SCHEMA_KEYS, path);
-    return {
-      status: requireEnum(record.status, MANTIS_RECOMMENDATION_STATUSES, `${path}.status`),
-      scenario: requireEnum(record.scenario, MANTIS_RECOMMENDATION_SCENARIOS, `${path}.scenario`),
-      reason: requireReportText(record.reason, `${path}.reason`),
-      maintainerComment: requireReportText(record.maintainerComment, `${path}.maintainerComment`),
-    };
   }
 
   function parseFeatureShowcase(value: unknown, path: string): FeatureShowcase {
@@ -1012,9 +991,32 @@ export function createDecisionParser({
     throw new Error(`${path} has invalid value`);
   }
 
-  function parseDecision(value: unknown, item?: DecisionNormalizationItem): Decision {
+  // Model output must fill every schema field, name an owner and keep its fields
+  // consistent (merge-risk options, maintainer owner, label justifications). An invalid
+  // root-cause cluster becomes the empty cluster. A stored review record also holds
+  // decisions that the host built or changed (failed and oversized reviews, apply
+  // promotions). Those skip the model rules, but any invalid field fails.
+  function parseDecisionFields(
+    value: unknown,
+    item: RootCauseNormalizationItem | undefined,
+    source: "model" | "stored",
+  ): Decision {
     const record = requireRecord(value, "decision");
     rejectUnexpectedKeys(record, DECISION_SCHEMA_KEYS, "decision");
+    const optional = <
+      K extends
+        | "fixedRelease"
+        | "fixedSha"
+        | "fixedAt"
+        | "regressionAssessment"
+        | "regressionProvenance",
+    >(
+      key: K,
+      parse: (value: unknown, path: string) => Decision[K],
+    ) =>
+      (source === "stored" && record[key] === undefined
+        ? {}
+        : { [key]: parse(record[key], `decision.${key}`) }) as Pick<Decision, K>;
     const evidence = Array.isArray(record.evidence)
       ? record.evidence.map((entry, index) => parseEvidence(entry, `decision.evidence[${index}]`))
       : (() => {
@@ -1022,12 +1024,14 @@ export function createDecisionParser({
         })();
     const likelyOwners = Array.isArray(record.likelyOwners)
       ? record.likelyOwners.map((entry, index) =>
-          parseLikelyOwner(entry, `decision.likelyOwners[${index}]`),
+          parseLikelyOwner(entry, `decision.likelyOwners[${index}]`, source),
         )
       : (() => {
           throw new Error("decision.likelyOwners must be an array");
         })();
-    if (likelyOwners.length === 0) throw new Error("decision.likelyOwners must not be empty");
+    if (source === "model" && likelyOwners.length === 0) {
+      throw new Error("decision.likelyOwners must not be empty");
+    }
     const reviewFindings = Array.isArray(record.reviewFindings)
       ? record.reviewFindings.map((entry, index) =>
           parseReviewFinding(entry, `decision.reviewFindings[${index}]`),
@@ -1039,6 +1043,9 @@ export function createDecisionParser({
       record.maintainerDecision,
       "decision.maintainerDecision",
     );
+    const productReview = parseProductReview(record.productReview, "decision.productReview");
+    const provenance = parseProvenance(record.provenance, "decision.provenance");
+    const testingReview = parseTestingReview(record.testingReview, "decision.testingReview");
     const nextStep =
       record.nextStep === undefined
         ? undefined
@@ -1049,15 +1056,14 @@ export function createDecisionParser({
       confidence: requireEnum(record.confidence, CONFIDENCES, "decision.confidence"),
       summary: requireReportText(record.summary, "decision.summary"),
       changeSummary: requireReportText(record.changeSummary, "decision.changeSummary"),
+      changeExample: parseChangeExample(record.changeExample, "decision.changeExample"),
       systemContext: requireReportText(record.systemContext, "decision.systemContext"),
       architectureDiagram: sanitizeArchitectureDiagram(
         requireString(record.architectureDiagram, "decision.architectureDiagram"),
       ),
       evidence,
       likelyOwners,
-      risks: requireReportTextArray(record.risks, "decision.risks").filter(
-        (risk) => !isEnvironmentAccessCaveat(risk),
-      ),
+      risks: requireReportTextArray(record.risks, "decision.risks"),
       bestSolution: requireReportText(record.bestSolution, "decision.bestSolution"),
       maintainerDecision: {
         ...maintainerDecision,
@@ -1129,15 +1135,21 @@ export function createDecisionParser({
         AUTO_IMPLEMENTATION_CANDIDATES,
         "decision.autoImplementationCandidate",
       ),
-      rootCauseCluster: parseRootCauseClusterOrDefault(
-        record.rootCauseCluster,
-        "decision.rootCauseCluster",
-        item,
-      ),
+      rootCauseCluster:
+        source === "model"
+          ? parseRootCauseClusterOrDefault(
+              record.rootCauseCluster,
+              "decision.rootCauseCluster",
+              item,
+            )
+          : parseRootCauseCluster(record.rootCauseCluster, "decision.rootCauseCluster", item),
       agentsPolicyStatus: parseAgentsPolicyStatus(
         record.agentsPolicyStatus,
         "decision.agentsPolicyStatus",
       ),
+      productReview,
+      provenance,
+      testingReview,
       reviewFindings,
       securityReview: parseSecurityReview(record.securityReview, "decision.securityReview"),
       realBehaviorProof: parseRealBehaviorProof(
@@ -1149,11 +1161,6 @@ export function createDecisionParser({
         record.telegramVisibleProof,
         "decision.telegramVisibleProof",
       ),
-      liveProofPlan: parseLiveProofPlan(record.liveProofPlan, "decision.liveProofPlan"),
-      mantisRecommendation: parseMantisRecommendation(
-        record.mantisRecommendation,
-        "decision.mantisRecommendation",
-      ),
       featureShowcase: parseFeatureShowcase(record.featureShowcase, "decision.featureShowcase"),
       overallCorrectness: requireEnum(
         record.overallCorrectness,
@@ -1164,17 +1171,11 @@ export function createDecisionParser({
         record.overallConfidenceScore,
         "decision.overallConfidenceScore",
       ),
-      fixedRelease: requireNullableSingleLineString(record.fixedRelease, "decision.fixedRelease"),
-      fixedSha: requireNullableSingleLineString(record.fixedSha, "decision.fixedSha"),
-      fixedAt: requireNullableSingleLineString(record.fixedAt, "decision.fixedAt"),
-      regressionAssessment: parseRegressionAssessment(
-        record.regressionAssessment,
-        "decision.regressionAssessment",
-      ),
-      regressionProvenance: parseRegressionProvenanceCandidate(
-        record.regressionProvenance,
-        "decision.regressionProvenance",
-      ),
+      ...optional("fixedRelease", requireNullableSingleLineString),
+      ...optional("fixedSha", requireNullableSingleLineString),
+      ...optional("fixedAt", requireNullableSingleLineString),
+      ...optional("regressionAssessment", parseRegressionAssessment),
+      ...optional("regressionProvenance", parseRegressionProvenanceCandidate),
       closeComment: requireReportText(record.closeComment, "decision.closeComment"),
       workCandidate: requireEnum(record.workCandidate, WORK_CANDIDATES, "decision.workCandidate"),
       workConfidence: requireEnum(record.workConfidence, CONFIDENCES, "decision.workConfidence"),
@@ -1202,15 +1203,27 @@ export function createDecisionParser({
         "decision.workLikelyFiles",
       ),
     };
-    validateMergeRiskOptions(decision);
-    validateMaintainerDecisionOwner(decision);
-    validateLabelJustifications(decision);
-    return normalizeDecisionForItem(decision, item);
+    if (source === "model") {
+      validateMergeRiskOptions(decision);
+      validateMaintainerDecisionOwner(decision);
+      validateLabelJustifications(decision);
+    }
+    return decision;
+  }
+
+  function parseDecision(value: unknown, item?: RootCauseNormalizationItem): Decision {
+    return parseDecisionFields(value, item, "model");
+  }
+
+  /** Parses the schema fields of a decision from a stored review record. */
+  function parseStoredDecisionFields(value: unknown, item: RootCauseNormalizationItem): Decision {
+    return parseDecisionFields(value, item, "stored");
   }
 
   return {
     defaultRootCauseCluster,
     parseDecision,
+    parseStoredDecisionFields,
     parseGitHubItemRef,
     parseLabelJustification,
     parseLiveProofPlan,
@@ -1219,3 +1232,9 @@ export function createDecisionParser({
     selectedReviewLabels,
   };
 }
+
+/** Parser for model review output: it neutralizes owned report headings in free text. */
+export const reviewDecisionParser = createDecisionParser({
+  neutralizeOwnedSectionSpoofing,
+  sanitizeArchitectureDiagram,
+});

@@ -1,10 +1,11 @@
 import { existsSync, readFileSync } from "node:fs";
-import { CONFIDENCES } from "./clawsweeper-policy.js";
-import { escapeRegExp } from "./clawsweeper-text.js";
+import { CONFIDENCES, isGitHubVerifiedFixedPullRequestSource } from "./clawsweeper-policy.js";
+import { escapeRegExp } from "./clawsweeper-markdown.js";
 import type {
   Confidence,
   Decision,
   FixedPullRequest,
+  FixedPullRequestSource,
   Item,
   ItemContext,
   RegressionAssessment,
@@ -13,10 +14,15 @@ import type {
 } from "./clawsweeper-types.js";
 import {
   isRegressionAssessment,
-  isPublicRegressionProvenance,
+  isSuspectedRegressionProvenance,
+  isVerifiedRegressionProvenance,
 } from "./clawsweeper-regression-provenance.js";
 import { GitHubRateLimitError, isGitHubNotFoundError } from "./github-retry.js";
 import type { RepositoryProfile } from "./repository-profiles.js";
+import { asRecord, nonBlankStringOrUndefined } from "./value-coerce.js";
+import { frontMatterValue } from "./report-front-matter.js";
+import { markdownRepository } from "./clawsweeper-repository-paths.js";
+import { linkedRelease, linkedSha, markdownLink } from "./clawsweeper-links.js";
 
 export const MAX_IMPLEMENTATION_LINKED_ISSUE_REFERENCES = 5;
 
@@ -222,22 +228,181 @@ function hasCurrentClosingIssueReference(
   });
 }
 
+export function formatReviewFreshnessTimestamp(iso: string | undefined): string {
+  if (!iso) return "";
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return iso;
+  const utcTime = date.toISOString().slice(11, 16);
+  const eastern = new Intl.DateTimeFormat("en-US", {
+    year: "numeric",
+    month: "long",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+    hour12: true,
+    timeZone: "America/New_York",
+  })
+    .format(date)
+    .replace(" at ", ", ");
+  const easternDate = new Intl.DateTimeFormat("en-US", {
+    year: "numeric",
+    month: "long",
+    day: "numeric",
+    timeZone: "America/New_York",
+  }).format(date);
+  const utcDate = new Intl.DateTimeFormat("en-US", {
+    year: "numeric",
+    month: "long",
+    day: "numeric",
+    timeZone: "UTC",
+  }).format(date);
+  const utc = easternDate === utcDate ? utcTime : `${utcDate}, ${utcTime}`;
+  return `${eastern} ET / ${utc} UTC`;
+}
+
+export function displayTitle(title: string): string {
+  try {
+    const parsed = JSON.parse(title) as unknown;
+    if (typeof parsed === "string") return parsed;
+  } catch {
+    // Front matter from older files may be a plain string.
+  }
+  return title.replace(/^"|"$/g, "");
+}
+
+export function fixedInText(decision: Decision, profile: RepositoryProfile): string {
+  const parts: string[] = [];
+  if (decision.fixedPullRequest?.confidence === "high")
+    parts.push(`merged PR ${linkedPullRequest(decision.fixedPullRequest)}`);
+  if (decision.fixedRelease)
+    parts.push(`release ${linkedRelease(decision.fixedRelease, profile.targetRepo)}`);
+  if (decision.fixedSha) parts.push(`commit ${linkedSha(decision.fixedSha, profile.targetRepo)}`);
+  if (!decision.fixedRelease && decision.fixedAt)
+    parts.push(`main fix timestamp ${decision.fixedAt}`);
+  return parts.length ? parts.join(", ") : "not determined";
+}
+
+function linkedPullRequest(pull: FixedPullRequest): string {
+  return markdownLink(`#${pull.number}`, pull.url);
+}
+
+export function fixedInReportText(markdown: string, profile: RepositoryProfile): string {
+  const parts: string[] = [];
+  const fixedPullRequest = fixedPullRequestFromReport(markdown);
+  const fixedRelease = frontMatterValue(markdown, "fixed_release");
+  const fixedSha = frontMatterValue(markdown, "fixed_sha");
+  const fixedAt = frontMatterValue(markdown, "fixed_at");
+  if (fixedPullRequest?.confidence === "high")
+    parts.push(`merged PR ${linkedPullRequest(fixedPullRequest)}`);
+  if (fixedRelease && fixedRelease !== "unknown")
+    parts.push(`release ${linkedRelease(fixedRelease, profile.targetRepo)}`);
+  if (fixedSha && fixedSha !== "unknown")
+    parts.push(`commit ${linkedSha(fixedSha, profile.targetRepo)}`);
+  if ((!fixedRelease || fixedRelease === "unknown") && fixedAt && fixedAt !== "unknown")
+    parts.push(`main fix timestamp ${fixedAt}`);
+  return parts.length ? parts.join(", ") : "not determined";
+}
+
+export function fixedPullRequestFromReport(markdown: string): FixedPullRequest | null {
+  const url = frontMatterValue(markdown, "fixed_pr_url");
+  const rawNumber = frontMatterValue(markdown, "fixed_pr_number");
+  const number = rawNumber ? Number(rawNumber) : NaN;
+  if (!url || url === "unknown" || !Number.isInteger(number) || number <= 0) return null;
+  const confidence = frontMatterValue(markdown, "fixed_pr_confidence") as Confidence | undefined;
+  const fixedPullRequestSource = frontMatterValue(markdown, "fixed_pr_source");
+  return {
+    repo: markdownRepository(markdown),
+    number,
+    url,
+    title: displayTitle(frontMatterValue(markdown, "fixed_pr_title") ?? `#${number}`),
+    mergedAt: nonUnknownFrontMatter(markdown, "fixed_pr_merged_at"),
+    sha: nonUnknownFrontMatter(markdown, "fixed_pr_sha"),
+    confidence: confidence && CONFIDENCES.has(confidence) ? confidence : "low",
+    source: isGitHubVerifiedFixedPullRequestSource(fixedPullRequestSource)
+      ? fixedPullRequestSource
+      : "report metadata",
+  };
+}
+
+// The runner writes a verified provenance (blame to a merge commit) or a suspected one
+// (a source line); each shape has only its own keys.
+export function regressionProvenanceFromReport(
+  markdown: string,
+): PublicRegressionProvenance | null {
+  const rawSourceLine = frontMatterValue(markdown, "regression_provenance_source_line");
+  const sourceLine = rawSourceLine ? Number(rawSourceLine) : NaN;
+  const sourceCommitSha = nonUnknownFrontMatter(
+    markdown,
+    "regression_provenance_source_commit_sha",
+  );
+  const rawSourceAuthor = frontMatterValue(markdown, "regression_provenance_source_author");
+  const sourceAuthor = sourceCommitSha && rawSourceAuthor ? rawSourceAuthor : null;
+  const verificationSource = frontMatterValue(
+    markdown,
+    "regression_provenance_verification_source",
+  );
+  const evidenceType = frontMatterValue(markdown, "regression_provenance_evidence_type");
+  const sourcePath = frontMatterValue(markdown, "regression_provenance_source_path");
+  if (evidenceType === "blame_to_merge_commit") {
+    const rawNumber = frontMatterValue(markdown, "regression_provenance_pr_number");
+    const verified = {
+      repo: frontMatterValue(markdown, "regression_provenance_repo"),
+      pullRequestNumber: rawNumber ? Number(rawNumber) : NaN,
+      pullRequestUrl: frontMatterValue(markdown, "regression_provenance_pr_url"),
+      mergeCommitSha: frontMatterValue(markdown, "regression_provenance_merge_sha"),
+      sourcePath,
+      sourceLine,
+      verificationSource,
+      evidenceType,
+      mergedAt: frontMatterValue(markdown, "regression_provenance_merged_at"),
+      reviewedCommitSha: frontMatterValue(markdown, "regression_provenance_reviewed_sha"),
+      ...(sourceCommitSha ? { sourceCommitSha } : {}),
+      ...(sourceAuthor ? { sourceAuthor } : {}),
+    };
+    return isVerifiedRegressionProvenance(verified) ? verified : null;
+  }
+  const relatedPullRequestNumber = nonUnknownFrontMatter(
+    markdown,
+    "regression_provenance_related_pr_number",
+  );
+  const suspected = {
+    verificationSource,
+    evidenceType,
+    sourceCommitSha,
+    sourceAuthor,
+    sourcePath,
+    sourceLine,
+    relatedPullRequestNumber: relatedPullRequestNumber ? Number(relatedPullRequestNumber) : null,
+    relatedPullRequestUrl: nonUnknownFrontMatter(markdown, "regression_provenance_related_pr_url"),
+    relatedRepo: nonUnknownFrontMatter(markdown, "regression_provenance_related_repo"),
+  };
+  return isSuspectedRegressionProvenance(suspected) ? suspected : null;
+}
+
+export function regressionAssessmentFromReport(markdown: string): RegressionAssessment | null {
+  const rawEvidence = frontMatterValue(markdown, "regression_assessment_evidence");
+  const assessment = {
+    confidence: frontMatterValue(markdown, "regression_assessment_confidence"),
+    supportingEvidence: rawEvidence ? rawEvidence.split(",") : [],
+  };
+  return isRegressionAssessment(assessment) ? assessment : null;
+}
+
+function nonUnknownFrontMatter(markdown: string, key: string): string | null {
+  const value = frontMatterValue(markdown, key);
+  return value && value !== "unknown" ? value : null;
+}
+
 interface StatusContextDependencies {
   targetProfile: () => RepositoryProfile;
   targetRepo: () => string;
   markdownLink: (label: string, url: string) => string;
   repoUrlFor: (repo: string, relativePath?: string) => string;
-  linkedRelease: (tag: string) => string;
-  linkedSha: (sha: string) => string;
   profileStatusStart: (profile?: RepositoryProfile) => string;
   profileStatusEnd: (profile?: RepositoryProfile) => string;
   sweepStatusPath: (profile?: RepositoryProfile) => string;
-  markdownRepository: (markdown: string, file?: string) => string;
   ghJson: <T>(args: string[]) => T;
   GitHubRuntimeBudgetError: new (reason: string) => Error & { readonly reason: string };
-  asRecord: (value: unknown) => Record<string, unknown>;
-  frontMatterValue: (markdown: string, key: string) => string | undefined;
-  stringOrUndefined: (value: unknown) => string | undefined;
   numberOrUndefined: (value: unknown) => number | undefined;
   recordOrUndefined: (value: unknown) => Record<string, unknown> | undefined;
 }
@@ -247,17 +412,11 @@ export function createStatusContext({
   targetRepo,
   markdownLink,
   repoUrlFor,
-  linkedRelease,
-  linkedSha,
   profileStatusStart,
   profileStatusEnd,
   sweepStatusPath,
-  markdownRepository,
   ghJson,
   GitHubRuntimeBudgetError,
-  asRecord,
-  frontMatterValue,
-  stringOrUndefined,
   numberOrUndefined,
   recordOrUndefined,
 }: StatusContextDependencies) {
@@ -279,38 +438,6 @@ export function createStatusContext({
       timeZone: "UTC",
       timeZoneName: "short",
     }).format(date);
-  }
-
-  function formatReviewFreshnessTimestamp(iso: string | undefined): string {
-    if (!iso) return "";
-    const date = new Date(iso);
-    if (Number.isNaN(date.getTime())) return iso;
-    const utcTime = date.toISOString().slice(11, 16);
-    const eastern = new Intl.DateTimeFormat("en-US", {
-      year: "numeric",
-      month: "long",
-      day: "numeric",
-      hour: "numeric",
-      minute: "2-digit",
-      hour12: true,
-      timeZone: "America/New_York",
-    })
-      .format(date)
-      .replace(" at ", ", ");
-    const easternDate = new Intl.DateTimeFormat("en-US", {
-      year: "numeric",
-      month: "long",
-      day: "numeric",
-      timeZone: "America/New_York",
-    }).format(date);
-    const utcDate = new Intl.DateTimeFormat("en-US", {
-      year: "numeric",
-      month: "long",
-      day: "numeric",
-      timeZone: "UTC",
-    }).format(date);
-    const utc = easternDate === utcDate ? utcTime : `${utcDate}, ${utcTime}`;
-    return `${eastern} ET / ${utc} UTC`;
   }
 
   function workflowStatusBlock(options?: {
@@ -433,10 +560,11 @@ ${profileStatusEnd(profile)}`;
     try {
       const parsed = JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
       return {
-        updatedAt: stringOrUndefined(parsed.updated_at),
-        state: stringOrUndefined(parsed.state) ?? "Idle",
-        detail: stringOrUndefined(parsed.detail) ?? "No workflow status has been published yet.",
-        runUrl: stringOrUndefined(parsed.run_url),
+        updatedAt: nonBlankStringOrUndefined(parsed.updated_at),
+        state: nonBlankStringOrUndefined(parsed.state) ?? "Idle",
+        detail:
+          nonBlankStringOrUndefined(parsed.detail) ?? "No workflow status has been published yet.",
+        runUrl: nonBlankStringOrUndefined(parsed.run_url),
         applyHealth: recordOrUndefined(parsed.apply_health),
         lastCloseApplyHealth: recordOrUndefined(parsed.last_close_apply_health),
         plannedCount: numberOrUndefined(parsed.planned_count),
@@ -444,8 +572,8 @@ ${profileStatusEnd(profile)}`;
         plannedShards: numberOrUndefined(parsed.planned_shards),
         activeCodex: numberOrUndefined(parsed.active_codex),
         dueBacklog: numberOrUndefined(parsed.due_backlog),
-        oldestUnreviewedAt: stringOrUndefined(parsed.oldest_unreviewed_at),
-        capacityReason: stringOrUndefined(parsed.capacity_reason),
+        oldestUnreviewedAt: nonBlankStringOrUndefined(parsed.oldest_unreviewed_at),
+        capacityReason: nonBlankStringOrUndefined(parsed.capacity_reason),
         inheritedLabelCleanups: numberOrUndefined(parsed.inherited_label_cleanups),
         selfHealConflictRepairs: numberOrUndefined(parsed.self_heal_conflict_repairs),
         failedReviewRetries: numberOrUndefined(parsed.failed_review_retries),
@@ -535,28 +663,10 @@ ${profileStatusEnd(profile)}`;
     };
   }
 
-  function displayTitle(title: string): string {
-    try {
-      const parsed = JSON.parse(title) as unknown;
-      if (typeof parsed === "string") return parsed;
-    } catch {
-      // Front matter from older files may be a plain string.
-    }
-    return title.replace(/^"|"$/g, "");
-  }
-
-  function fixedInText(decision: Decision): string {
-    const parts: string[] = [];
-    if (decision.fixedPullRequest?.confidence === "high")
-      parts.push(`merged PR ${linkedPullRequest(decision.fixedPullRequest)}`);
-    if (decision.fixedRelease) parts.push(`release ${linkedRelease(decision.fixedRelease)}`);
-    if (decision.fixedSha) parts.push(`commit ${linkedSha(decision.fixedSha)}`);
-    if (!decision.fixedRelease && decision.fixedAt)
-      parts.push(`main fix timestamp ${decision.fixedAt}`);
-    return parts.length ? parts.join(", ") : "not determined";
-  }
-
-  function fixedPullRequestFromUnknown(value: unknown, source: string): FixedPullRequest | null {
+  function fixedPullRequestFromUnknown(
+    value: unknown,
+    source: FixedPullRequestSource,
+  ): FixedPullRequest | null {
     const pull = asRecord(value);
     const number = pull.number;
     if (typeof number !== "number" || !Number.isInteger(number) || number <= 0) return null;
@@ -685,7 +795,7 @@ ${profileStatusEnd(profile)}`;
 
   function verifiedFixedPullRequestForNumber(
     number: number,
-    source: string,
+    source: FixedPullRequestSource,
   ): FixedPullRequest | null {
     try {
       const defaultBranch = defaultBranchForFixedSha();
@@ -867,7 +977,7 @@ ${profileStatusEnd(profile)}`;
 
   function fixedPullRequestFromCommitPulls(
     pulls: readonly unknown[],
-    source: string,
+    source: FixedPullRequestSource,
     issueNumber: number,
     commitMessage = "",
     defaultBranch = "main",
@@ -1089,91 +1199,6 @@ ${profileStatusEnd(profile)}`;
     return fixedPullRequest ? { ...decision, fixedPullRequest } : decision;
   }
 
-  function linkedPullRequest(pull: FixedPullRequest): string {
-    return markdownLink(`#${pull.number}`, pull.url);
-  }
-
-  function fixedInReportText(markdown: string): string {
-    const parts: string[] = [];
-    const fixedPullRequest = fixedPullRequestFromReport(markdown);
-    const fixedRelease = frontMatterValue(markdown, "fixed_release");
-    const fixedSha = frontMatterValue(markdown, "fixed_sha");
-    const fixedAt = frontMatterValue(markdown, "fixed_at");
-    if (fixedPullRequest?.confidence === "high")
-      parts.push(`merged PR ${linkedPullRequest(fixedPullRequest)}`);
-    if (fixedRelease && fixedRelease !== "unknown")
-      parts.push(`release ${linkedRelease(fixedRelease)}`);
-    if (fixedSha && fixedSha !== "unknown") parts.push(`commit ${linkedSha(fixedSha)}`);
-    if ((!fixedRelease || fixedRelease === "unknown") && fixedAt && fixedAt !== "unknown")
-      parts.push(`main fix timestamp ${fixedAt}`);
-    return parts.length ? parts.join(", ") : "not determined";
-  }
-
-  function fixedPullRequestFromReport(markdown: string): FixedPullRequest | null {
-    const url = frontMatterValue(markdown, "fixed_pr_url");
-    const rawNumber = frontMatterValue(markdown, "fixed_pr_number");
-    const number = rawNumber ? Number(rawNumber) : NaN;
-    if (!url || url === "unknown" || !Number.isInteger(number) || number <= 0) return null;
-    const confidence = frontMatterValue(markdown, "fixed_pr_confidence") as Confidence | undefined;
-    return {
-      repo: markdownRepository(markdown),
-      number,
-      url,
-      title: displayTitle(frontMatterValue(markdown, "fixed_pr_title") ?? `#${number}`),
-      mergedAt: nonUnknownFrontMatter(markdown, "fixed_pr_merged_at"),
-      sha: nonUnknownFrontMatter(markdown, "fixed_pr_sha"),
-      confidence: confidence && CONFIDENCES.has(confidence) ? confidence : "low",
-      source: nonUnknownFrontMatter(markdown, "fixed_pr_source") ?? "report metadata",
-    };
-  }
-
-  function regressionProvenanceFromReport(markdown: string): PublicRegressionProvenance | null {
-    const rawNumber = frontMatterValue(markdown, "regression_provenance_pr_number");
-    const sourceLine = frontMatterValue(markdown, "regression_provenance_source_line");
-    const sourceCommitSha = nonUnknownFrontMatter(
-      markdown,
-      "regression_provenance_source_commit_sha",
-    );
-    const rawSourceAuthor = frontMatterValue(markdown, "regression_provenance_source_author");
-    const sourceAuthor = sourceCommitSha && rawSourceAuthor ? rawSourceAuthor : null;
-    const provenance = {
-      verificationSource: frontMatterValue(markdown, "regression_provenance_verification_source"),
-      repo: frontMatterValue(markdown, "regression_provenance_repo"),
-      pullRequestNumber: rawNumber ? Number(rawNumber) : NaN,
-      pullRequestUrl: frontMatterValue(markdown, "regression_provenance_pr_url"),
-      mergeCommitSha: frontMatterValue(markdown, "regression_provenance_merge_sha"),
-      sourcePath: frontMatterValue(markdown, "regression_provenance_source_path"),
-      sourceLine: sourceLine ? Number(sourceLine) : NaN,
-      evidenceType: frontMatterValue(markdown, "regression_provenance_evidence_type"),
-      mergedAt: frontMatterValue(markdown, "regression_provenance_merged_at"),
-      reviewedCommitSha: frontMatterValue(markdown, "regression_provenance_reviewed_sha"),
-      ...(sourceCommitSha ? { sourceCommitSha } : {}),
-      ...(sourceAuthor ? { sourceAuthor } : {}),
-      relatedPullRequestUrl:
-        nonUnknownFrontMatter(markdown, "regression_provenance_related_pr_url") ?? null,
-      relatedPullRequestNumber: (() => {
-        const raw = nonUnknownFrontMatter(markdown, "regression_provenance_related_pr_number");
-        return raw ? Number(raw) : null;
-      })(),
-      relatedRepo: nonUnknownFrontMatter(markdown, "regression_provenance_related_repo") ?? null,
-    };
-    return isPublicRegressionProvenance(provenance) ? provenance : null;
-  }
-
-  function regressionAssessmentFromReport(markdown: string): RegressionAssessment | null {
-    const rawEvidence = frontMatterValue(markdown, "regression_assessment_evidence");
-    const assessment = {
-      confidence: frontMatterValue(markdown, "regression_assessment_confidence"),
-      supportingEvidence: rawEvidence ? rawEvidence.split(",") : [],
-    };
-    return isRegressionAssessment(assessment) ? assessment : null;
-  }
-
-  function nonUnknownFrontMatter(markdown: string, key: string): string | null {
-    const value = frontMatterValue(markdown, key);
-    return value && value !== "unknown" ? value : null;
-  }
-
   return {
     fixedPullRequestFromCommitPullsForTest,
     linkedIssueNumbersForPullRequestBodyForTest: linkedIssueNumbersForPullRequestBody,
@@ -1181,12 +1206,6 @@ ${profileStatusEnd(profile)}`;
     implementedOnMainPullRequestProvenanceApplyBlock,
     currentWorkflowStatusBlock,
     displayTitle,
-    fixedInReportText,
-    fixedInText,
-    fixedPullRequestFromReport,
-    regressionAssessmentFromReport,
-    regressionProvenanceFromReport,
-    formatReviewFreshnessTimestamp,
     formatStatusNumber,
     formatTimestamp,
     readSweepStatusSummary,

@@ -39,6 +39,21 @@ import {
 const APPLY_RUN_PATH = ".github/workflows/sweep.yml";
 const DEFAULT_APPLY_TITLE = "Apply default ClawSweeper closures for openclaw/openclaw";
 
+// Typed root-cause cluster front matter that names PR #400 as the canonical PR.
+const CANONICAL_PULL_REQUEST_CLUSTER = `root_cause_cluster: ${JSON.stringify({
+  confidence: "high",
+  canonicalRef: "https://github.com/openclaw/openclaw/pull/400",
+  currentItemRelationship: "superseded",
+  summary: "PR #400 carries the same change.",
+  members: [
+    {
+      ref: "https://github.com/openclaw/openclaw/pull/400",
+      relationship: "canonical",
+      reason: "Canonical PR for this work.",
+    },
+  ],
+})}`;
+
 test("repair close-promotion readers prefer durable proof and rating front matter", () => {
   const report = `---
 pr_rating_overall: F
@@ -1310,24 +1325,10 @@ test("workflow utilities select eligible proposed close records", () => {
   }
   for (const [number, fields, createdAt = oldDate] of [
     [20, []],
-    [
-      21,
-      [
-        `work_cluster_refs: ${JSON.stringify(["Superseded by https://github.com/openclaw/openclaw/pull/400"])}`,
-      ],
-    ],
+    [21, [CANONICAL_PULL_REQUEST_CLUSTER]],
     [22, ["pr_rating_overall: F", "pr_rating_proof: F"]],
-    [24, [`work_cluster_refs: ${JSON.stringify(["Superseded by openclaw/openclaw#400"])}`]],
-    [25, [`work_cluster_refs: ${JSON.stringify(["Superseded by #400"])}`]],
     [23, ["pr_rating_overall: F"], new Date().toISOString()],
-    [
-      32,
-      [
-        "pr_rating_overall: F",
-        "pr_rating_proof: F",
-        `work_cluster_refs: ${JSON.stringify(["Superseded by #400"])}`,
-      ],
-    ],
+    [32, ["pr_rating_overall: F", "pr_rating_proof: F", CANONICAL_PULL_REQUEST_CLUSTER]],
     [33, ["pr_rating_overall: B", "pr_rating_proof: F", "real_behavior_proof_status: missing"]],
     [34, ["pr_rating_overall: F", "pr_rating_proof: A", "real_behavior_proof_status: sufficient"]],
     [
@@ -1368,7 +1369,7 @@ test("workflow utilities select eligible proposed close records", () => {
 
   assert.deepEqual(
     selected,
-    [5, 12, 15, 17, 18, 21, 22, 24, 25, 26, 27, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39],
+    [5, 12, 15, 17, 18, 21, 22, 26, 27, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39],
   );
   assert.deepEqual(
     withCwd(root, () =>
@@ -1394,7 +1395,7 @@ test("workflow utilities select eligible proposed close records", () => {
         minAgeMinutes: null,
       }),
     ),
-    [17, 18, 21, 24, 25, 26, 32],
+    [17, 18, 21, 26, 32],
   );
   assert.deepEqual(
     withCwd(root, () =>
@@ -1604,7 +1605,7 @@ test("workflow utilities select proposed PR closes that can need coverage proof"
       "action_taken: kept_open",
       "close_reason: none",
       `item_created_at: ${oldDate}`,
-      `work_cluster_refs: ${JSON.stringify(["Superseded by #400"])}`,
+      CANONICAL_PULL_REQUEST_CLUSTER,
       "---",
       "",
     ].join("\n"),
@@ -1986,7 +1987,7 @@ test("workflow utilities cool down recently examined promotion probes", () => {
         `apply_checked_at: ${applyCheckedAt}`,
         ...(reviewedAt ? [`reviewed_at: ${reviewedAt}`] : []),
         ...(coverageProof
-          ? [`work_cluster_refs: ${JSON.stringify(["Superseded by #400"])}`]
+          ? [CANONICAL_PULL_REQUEST_CLUSTER]
           : ["pr_rating_overall: F", "pr_rating_proof: F"]),
         "---",
         "",
@@ -2229,7 +2230,7 @@ test("workflow utilities use spare proof capacity to rotate promotion probes", (
         "close_reason: none",
         `item_created_at: ${oldDate}`,
         `apply_checked_at: ${applyCheckedAt}`,
-        `work_cluster_refs: ${JSON.stringify(["Superseded by #400"])}`,
+        CANONICAL_PULL_REQUEST_CLUSTER,
         "---",
         "",
       ].join("\n"),

@@ -1,0 +1,1 @@
+- Point reviewers at REST `gh api` reads: the review network allows only read methods, so the GraphQL-backed `gh issue view`, `gh pr view`, `gh issue list`, `gh pr list`, and `gh release list` the prompt suggested failed with HTTP 403.

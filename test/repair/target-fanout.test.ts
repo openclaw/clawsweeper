@@ -359,6 +359,38 @@ test("target fanout summarizes trailing weekly coverage from canonical open reco
   }
 });
 
+test("target fanout coverage ignores review metadata inside a fenced report sample", () => {
+  const root = mkdtempSync(join(tmpdir(), "clawsweeper-coverage-"));
+  try {
+    const items = join(root, "openclaw-a", "items");
+    mkdirSync(items, { recursive: true });
+    writeFileSync(
+      join(items, "1.md"),
+      [
+        "---",
+        "number: 1",
+        "---",
+        "",
+        "```yaml",
+        "review_status: complete",
+        "reviewed_at: 2026-07-28T12:00:00Z",
+        "```",
+        "",
+      ].join("\n"),
+    );
+    const coverage = summarizeFleetReviewCoverage({
+      repositories: [{ targetRepo: "openclaw/a", defaultBranch: "main", visibility: "PUBLIC" }],
+      openCounts: new Map([["openclaw/a", { issues: 1, pullRequests: 0 }]]),
+      windowDays: 7,
+      recordsRoot: root,
+      now: Date.parse("2026-07-29T12:00:00Z"),
+    });
+    assert.equal(coverage.scannedOpenRecords, 0);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("target fanout publishes signed live open counts for dashboard coverage", async () => {
   const now = Date.parse("2026-07-29T12:00:00Z");
   const repositories = [
@@ -790,29 +822,43 @@ globalThis.fetch = async (input, init) => {
   );
 });
 
-test("target fanout uses explicit inventory and central metadata tokens in Actions", () => {
-  const source = readFileSync("src/repair/target-fanout.ts", "utf8");
-  const inventoryStart = source.indexOf("function inventoryAccess(");
-  const inventoryEnd = source.indexOf("function publicInventoryEnv(", inventoryStart);
-  const metadataStart = source.indexOf("function hostedTargetMetadataToken(");
-  const metadataEnd = source.indexOf("function dispatchEnv(", metadataStart);
-
-  assert.notEqual(inventoryStart, -1);
-  assert.notEqual(inventoryEnd, -1);
-  assert.notEqual(metadataStart, -1);
-  assert.notEqual(metadataEnd, -1);
-  const inventoryHelper = source.slice(inventoryStart, inventoryEnd);
-  assert.match(inventoryHelper, /CLAWSWEEPER_INVENTORY_TOKEN_/);
-  assert.match(inventoryHelper, /if \(process\.env\.GITHUB_ACTIONS === "true"\) return null;/);
-  assert.match(inventoryHelper, /kind: "installation"/);
-  assert.match(inventoryHelper, /kind: "public"/);
-  const metadataHelper = source.slice(metadataStart, metadataEnd);
-  assert.match(metadataHelper, /CLAWSWEEPER_HOSTED_TARGET_METADATA_TOKEN/);
-  assert.match(
-    metadataHelper,
-    /if \(explicit \|\| process\.env\.GITHUB_ACTIONS === "true"\) return explicit;/,
-  );
-  assert.doesNotMatch(source, /CLAWSWEEPER_TARGET_METADATA_TOKEN/);
+test("target fanout never probes with the dispatch token in Actions", async () => {
+  const names = [
+    "GITHUB_ACTIONS",
+    "CLAWSWEEPER_DISPATCH_TOKEN",
+    "CLAWSWEEPER_HOSTED_TARGET_METADATA_TOKEN",
+    "CLAWSWEEPER_PUBLIC_INVENTORY_TOKEN",
+    "CLAWSWEEPER_TARGET_METADATA_TOKEN",
+  ];
+  const previous = names.map((name) => process.env[name]);
+  // Only the explicit metadata token may probe; the retired variable name grants nothing.
+  const values = ["true", "dispatch-token", undefined, undefined, "retired-metadata"];
+  names.forEach((name, index) => {
+    if (values[index] === undefined) delete process.env[name];
+    else process.env[name] = values[index];
+  });
+  let probes = 0;
+  try {
+    await assert.rejects(
+      admitSelectedRepositories(
+        [{ targetRepo: "openclaw/clawhub", defaultBranch: "main", visibility: "PUBLIC" }],
+        {
+          policy: config.hostedTargetPolicy,
+          reader: async () => {
+            probes += 1;
+            return Response.json({ full_name: "openclaw/clawhub", visibility: "public" });
+          },
+        },
+      ),
+      /retryable for openclaw\/clawhub/,
+    );
+  } finally {
+    names.forEach((name, index) => {
+      if (previous[index] === undefined) delete process.env[name];
+      else process.env[name] = previous[index];
+    });
+  }
+  assert.equal(probes, 0);
 });
 
 test("target fanout selection advances cursor with wraparound", () => {
@@ -1370,14 +1416,19 @@ test("audit fanout requires batch-aware storage before advancing the cursor", as
 test("scheduled inventory forwards default and configured GitHub CLI budgets", async (t) => {
   const original = process.env;
   const timeouts: unknown[] = [];
-  t.mock.method(childProcess, "execFileSync", (_file, _args, options) => {
+  t.mock.method(childProcess, "spawnSync", (_file, _args, options) => {
     timeouts.push(options.timeout);
-    return JSON.stringify({
-      full_name: "openclaw/clawhub",
-      has_issues: true,
-      visibility: "public",
-      default_branch: "main",
-    });
+    return {
+      status: 0,
+      signal: null,
+      stderr: "",
+      stdout: JSON.stringify({
+        full_name: "openclaw/clawhub",
+        has_issues: true,
+        visibility: "public",
+        default_branch: "main",
+      }),
+    };
   });
   syncBuiltinESMExports();
   t.after(() => {

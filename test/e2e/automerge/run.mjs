@@ -847,10 +847,11 @@ export function addCanonicalNeedsHumanVerdict(statePath, headSha) {
     body: [
       "ClawSweeper needs maintainer judgment.",
       "",
-      "**Next step before merge**",
-      "- [P2] No repair lane is needed: the PR already contains the narrow fix, but missing real behavior proof needs maintainer handling.",
+      "**Before merge**",
+      "- [ ] **Add real behavior proof** - The PR needs real behavior proof before merge.",
       "",
-      `<!-- clawsweeper-verdict:needs-human live_verification=absent item=${state.pr.number} sha=${headSha} reviewed_at=${now} -->`,
+      // The router routes on the typed hold and finding count, not on the prose above.
+      `<!-- clawsweeper-verdict:needs-human live_verification=absent item=${state.pr.number} sha=${headSha} reviewed_at=${now} hold=proof findings=0 -->`,
     ].join("\n"),
     timestamp: now,
   });

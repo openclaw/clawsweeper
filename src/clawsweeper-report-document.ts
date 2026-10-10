@@ -1,9 +1,5 @@
+import { sha256 } from "./content-hash.js";
 import { parseOversizedPullRequestEvidence } from "./clawsweeper-oversized-pr-policy.js";
-import {
-  configSurfaceChangeFromContext,
-  dataModelChangeFromContext,
-  sqliteSchemaChangeFromContext,
-} from "./clawsweeper-change-detection.js";
 import { closeReasonText } from "./clawsweeper-close-reasons.js";
 import { REVIEW_SECTIONS } from "./clawsweeper-policy.js";
 import { hasShinyProof, themedRatingName } from "./clawsweeper-rating.js";
@@ -22,6 +18,7 @@ import type {
   GitInfo,
   Item,
   ItemContext,
+  LikelyOwner,
   PrRating,
   RealBehaviorProof,
   ReviewRuntime,
@@ -33,12 +30,24 @@ import {
 } from "./review-structural-cache.js";
 import type { CreateReportRenderingDependencies } from "./clawsweeper-report-rendering-dependencies.js";
 import type { createReportContextRendering } from "./clawsweeper-report-context.js";
-import type { createReportCommentHelpers } from "./clawsweeper-report-comment-helpers.js";
 import {
   fitPrHydrationSnapshotToPublicationLimit,
   serializePrHydrationSnapshot,
 } from "./pr-hydration-snapshot.js";
 import { parseNextStep } from "./clawsweeper-next-step.js";
+import { replaceFrontMatterValue } from "./report-front-matter.js";
+import { reviewRecordFrontMatterLine } from "./review-record.js";
+import { normalizeEvidence } from "./clawsweeper-links.js";
+import {
+  confidenceText,
+  priorityLabel,
+  reviewFindingLocation,
+  securityConcernLocation,
+  sentence,
+} from "./clawsweeper-review-presentation.js";
+import { runtimeReviewText } from "./clawsweeper-report-context.js";
+import { prSurfaceFilesFromContext } from "./clawsweeper-orchestration-foundation.js";
+import { fixedInText } from "./clawsweeper-status-context.js";
 
 export function localCheckoutAccessForDecision(
   decision: Pick<Decision, "localCheckoutAccess">,
@@ -67,37 +76,40 @@ export function reviewStatusForDecision(
     : "failed";
 }
 
+/** The Likely Related People section for owners as given; the report shows public owners. */
+export function likelyOwnersMarkdown(owners: readonly LikelyOwner[]): string {
+  if (!owners.length) return "- none";
+  return owners
+    .map((owner) => {
+      const bits = [`- **${owner.person}:** ${owner.role.trim()}`];
+      if (owner.attributionSource) bits.push(`  - attribution source: ${owner.attributionSource}`);
+      bits.push(`  - reason: ${owner.reason}`);
+      bits.push(`  - confidence: ${owner.confidence}`);
+      if (owner.commits.length) bits.push(`  - commits: ${owner.commits.join(", ")}`);
+      if (owner.files.length) bits.push(`  - files: ${owner.files.join(", ")}`);
+      return bits.join("\n");
+    })
+    .join("\n");
+}
+
 export function createReportDocumentRendering(
-  dependencies: CreateReportRenderingDependencies &
-    ReturnType<typeof createReportContextRendering> &
-    ReturnType<typeof createReportCommentHelpers>,
+  dependencies: CreateReportRenderingDependencies & ReturnType<typeof createReportContextRendering>,
 ) {
   const {
     compactPullFilePaths,
-    confidenceText,
     contextCountText,
     fileUrl,
-    normalizeEvidence,
-    fixedInText,
     formatTimestamp,
     jsonFrontMatterValue,
     labelJustificationsMarkdown,
     linkedRelease,
     linkedSha,
     markdownLink,
-    prSurfaceFilesFromContext,
-    priorityLabel,
-    publicLikelyOwnerRole,
     pullHeadShaFromContext,
     renderReviewContextBudget,
-    replaceFrontMatterValue,
-    reviewFindingLocation,
     reviewStructuralPullStateFromContext,
     reviewTelemetryNumber,
-    runtimeReviewText,
-    securityConcernLocation,
-    sentence,
-    sha256,
+    targetProfile,
     workStatusForDecision,
   } = dependencies;
 
@@ -212,6 +224,65 @@ export function createReportDocumentRendering(
     return lines.join("\n");
   }
 
+  function renderChangeExampleReportSection(decision: Decision): string {
+    const example = decision.changeExample;
+    return [
+      `Scenario: ${example.scenario}`.trimEnd(),
+      "",
+      `Before: ${example.before}`.trimEnd(),
+      "",
+      `After: ${example.after}`.trimEnd(),
+    ].join("\n");
+  }
+
+  function renderProductReviewReportSection(decision: Decision): string {
+    const product = decision.productReview;
+    return [
+      `Kind: ${product.kind}`,
+      "",
+      `Worth it: ${product.worthIt}`,
+      "",
+      `Fix scope: ${product.fixScope}`,
+      "",
+      `User problem: ${product.userProblem}`.trimEnd(),
+      "",
+      `Reason: ${product.reason}`.trimEnd(),
+    ].join("\n");
+  }
+
+  function renderProvenanceReportSection(decision: Decision): string {
+    if (!decision.provenance.length) return "- none";
+    return decision.provenance
+      .map((entry) =>
+        [
+          `- Area: ${entry.area}`.trimEnd(),
+          `  - Introduced by: ${entry.introducedBy}`.trimEnd(),
+          `  - Original reason: ${entry.originalReason}`.trimEnd(),
+          `  - Verdict: ${entry.verdict}`,
+        ].join("\n"),
+      )
+      .join("\n");
+  }
+
+  function renderTestingReviewReportSection(decision: Decision): string {
+    const testing = decision.testingReview;
+    return [
+      `Proof path: ${testing.proofPath}`,
+      "",
+      `Missing E2E: ${testing.missingE2e}`.trimEnd(),
+      "",
+      "Low-value tests:",
+      "",
+      testing.lowValueTests.length
+        ? testing.lowValueTests
+            .map((test) =>
+              [`- File: ${test.file}`.trimEnd(), `  - Reason: ${test.reason}`.trimEnd()].join("\n"),
+            )
+            .join("\n")
+        : "- none",
+    ].join("\n");
+  }
+
   function renderSecurityReviewReportSection(decision: Decision): string {
     const lines = [
       `Status: ${decision.securityReview.status}`,
@@ -294,42 +365,6 @@ export function createReportDocumentRendering(
       `Status: ${decision.telegramVisibleProof.status}`,
       "",
       `Summary: ${sentence(decision.telegramVisibleProof.summary)}`,
-    ].join("\n");
-  }
-
-  function renderLiveProofReportSection(decision: Decision): string {
-    return [
-      `Status: ${decision.liveProofPlan.status}`,
-      "",
-      `Surface: ${decision.liveProofPlan.surface}`,
-      "",
-      `Terminal completion: ${decision.liveProofPlan.terminalCompletion}`,
-      "",
-      `Reason: ${sentence(decision.liveProofPlan.reason)}`,
-      "",
-      `Payoff: ${decision.liveProofPlan.payoff.kind}`,
-      "",
-      `Payoff justification: ${sentence(decision.liveProofPlan.payoff.justification)}`,
-      "",
-      `Entry: ${decision.liveProofPlan.entry.trim()}`,
-      "",
-      "Steps:",
-      "",
-      decision.liveProofPlan.steps.length
-        ? markdownList(decision.liveProofPlan.steps.map((step) => JSON.stringify(step)))
-        : "[]",
-    ].join("\n");
-  }
-
-  function renderMantisRecommendationReportSection(decision: Decision): string {
-    return [
-      `Status: ${decision.mantisRecommendation.status}`,
-      "",
-      `Scenario: ${decision.mantisRecommendation.scenario}`,
-      "",
-      `Reason: ${sentence(decision.mantisRecommendation.reason)}`,
-      "",
-      `Maintainer comment: ${decision.mantisRecommendation.maintainerComment.trim()}`,
     ].join("\n");
   }
 
@@ -526,21 +561,7 @@ export function createReportDocumentRendering(
     const risks = options.decision.risks.length
       ? options.decision.risks.map((risk) => `- ${risk}`).join("\n")
       : "- none";
-    const likelyOwners = options.decision.likelyOwners.length
-      ? options.decision.likelyOwners
-          .map(publicLikelyOwner)
-          .map((owner) => {
-            const bits = [`- **${owner.person}:** ${publicLikelyOwnerRole(owner.role)}`];
-            if (owner.attributionSource)
-              bits.push(`  - attribution source: ${owner.attributionSource}`);
-            bits.push(`  - reason: ${owner.reason}`);
-            bits.push(`  - confidence: ${owner.confidence}`);
-            if (owner.commits.length) bits.push(`  - commits: ${owner.commits.join(", ")}`);
-            if (owner.files.length) bits.push(`  - files: ${owner.files.join(", ")}`);
-            return bits.join("\n");
-          })
-          .join("\n")
-      : "- none";
+    const likelyOwners = likelyOwnersMarkdown(options.decision.likelyOwners.map(publicLikelyOwner));
     const bestSolution = options.decision.bestSolution.trim() || "_Not provided._";
     const maintainerDecision = renderMaintainerDecisionReportSection(options.decision);
     const reproductionAssessment =
@@ -548,24 +569,36 @@ export function createReportDocumentRendering(
     const solutionAssessment = options.decision.solutionAssessment.trim() || "_Not provided._";
     const visionFit = renderVisionFitReportSection(options.decision);
     const rootCauseCluster = renderRootCauseClusterReportSection(options.decision);
+    // Product, provenance, and testing reviews judge pull requests only.
+    const pullRequestReviewSections =
+      options.item.kind === "pull_request"
+        ? [
+            `## ${REVIEW_SECTIONS.productReview}`,
+            renderProductReviewReportSection(options.decision),
+            `## ${REVIEW_SECTIONS.provenance}`,
+            renderProvenanceReportSection(options.decision),
+            `## ${REVIEW_SECTIONS.testingReview}`,
+            renderTestingReviewReportSection(options.decision),
+            "",
+          ].join("\n\n")
+        : "";
     const reviewFindings = renderReviewFindingsReportSection(options.decision);
     const securityReview = renderSecurityReviewReportSection(options.decision);
     const realBehaviorProof = renderRealBehaviorProofReportSection(options.decision);
     const prRating = renderPrRatingReportSection(options.decision);
     const telegramVisibleProof = renderTelegramVisibleProofReportSection(options.decision);
-    const liveProof = renderLiveProofReportSection(options.decision);
-    const mantisRecommendation = renderMantisRecommendationReportSection(options.decision);
     const featureShowcase = renderFeatureShowcaseReportSection(options.decision);
     const agentsPolicyStatus = renderAgentsPolicyStatusReportSection(options.decision);
     const workCandidateSection = renderWorkCandidateReportSection(options.decision);
     const repairWorkPromptSection = renderRepairWorkPromptReportSection(options.decision);
     const pullFiles = pullRequestFilePathsFromContext(options.context);
     const pullFilesTruncated = Boolean(options.context.counts?.pullFilesTruncated);
-    const configSurfaceChange = configSurfaceChangeFromContext(options.item.repo, options.context);
-    const dataModelChange = dataModelChangeFromContext(options.item.repo, options.context);
-    const sqliteSchemaChange = sqliteSchemaChangeFromContext(options.item.repo, options.context);
     const prSurfaceFiles = prSurfaceFilesFromContext(options.context);
     const reviewedPullStateDigest = reviewStructuralPullStateFromContext(options.context);
+    const reviewRecordLine = reviewRecordFrontMatterLine(
+      { decision: options.decision },
+      options.item,
+    );
     const markdown = `---
 number: ${options.item.number}
 repository: ${options.item.repo}
@@ -693,12 +726,6 @@ review_metrics: ${JSON.stringify(options.decision.reviewMetrics)}
 label_justifications: ${JSON.stringify(options.decision.labelJustifications)}
 pull_files: ${jsonFrontMatterValue(pullFiles)}
 pull_files_truncated: ${pullFilesTruncated}
-config_surface_change: ${configSurfaceChange.change}
-config_surface_keys: ${jsonFrontMatterValue(configSurfaceChange.keys)}
-data_model_change: ${dataModelChange.change}
-data_model_surfaces: ${jsonFrontMatterValue(dataModelChange.surfaces)}
-sqlite_schema_change: ${sqliteSchemaChange.change}
-sqlite_schema_files: ${jsonFrontMatterValue(sqliteSchemaChange.files)}
 pr_surface_files: ${jsonFrontMatterValue(prSurfaceFiles ?? [])}
 pr_surface_files_truncated: ${prSurfaceFiles === null}
 item_category: ${options.decision.itemCategory}
@@ -718,13 +745,18 @@ ${options.decision.realBehaviorProof.dataModelCompatibility ? `real_behavior_pro
 pr_rating_proof: ${options.decision.prRating.proofTier}
 pr_rating_patch: ${options.decision.prRating.patchTier}
 telegram_visible_proof_status: ${options.decision.telegramVisibleProof.status}
-live_proof_status: ${options.decision.liveProofPlan.status}
-live_proof_surface: ${options.decision.liveProofPlan.surface}
-mantis_recommendation_status: ${options.decision.mantisRecommendation.status}
-mantis_recommendation_scenario: ${options.decision.mantisRecommendation.scenario}
 feature_showcase_status: ${options.decision.featureShowcase.status}
 agents_policy_status: ${options.decision.agentsPolicyStatus.status}
----
+product_kind: ${options.decision.productReview.kind}
+product_worth: ${options.decision.productReview.worthIt}
+product_fix_scope: ${options.decision.productReview.fixScope}
+testing_proof_path: ${options.decision.testingReview.proofPath}
+low_value_tests: ${options.decision.testingReview.lowValueTests.length}
+provenance_overrides_without_reason: ${
+      options.decision.provenance.filter((entry) => entry.verdict === "overrides_without_reason")
+        .length
+    }
+${reviewRecordLine === null ? "" : `${reviewRecordLine}\n`}---
 
 # ${markdownLink(`#${options.item.number}: ${options.item.title}`, options.item.url)}
 
@@ -752,7 +784,7 @@ Latest release at review time: ${
         : "unknown"
     }${options.git.latestRelease?.sha ? ` (${linkedSha(options.git.latestRelease.sha)})` : ""}
 
-Fixed in: ${fixedInText(options.decision)}
+Fixed in: ${fixedInText(options.decision, targetProfile())}
 
 ${regressionPublicLines || "Regression provenance: not assessed."}
 
@@ -775,6 +807,10 @@ ${options.decision.summary}
 ## ${REVIEW_SECTIONS.changeSummary}
 
 ${options.decision.changeSummary}
+
+## ${REVIEW_SECTIONS.changeExample}
+
+${renderChangeExampleReportSection(options.decision)}
 
 ## ${REVIEW_SECTIONS.systemContext}
 
@@ -808,7 +844,7 @@ ${visionFit}
 
 ${rootCauseCluster}
 
-## ${REVIEW_SECTIONS.reviewFindings}
+${pullRequestReviewSections}## ${REVIEW_SECTIONS.reviewFindings}
 
 ${reviewFindings}
 
@@ -827,14 +863,6 @@ ${prRating}
 ## ${REVIEW_SECTIONS.telegramVisibleProof}
 
 ${telegramVisibleProof}
-
-## ${REVIEW_SECTIONS.liveProof}
-
-${liveProof}
-
-## ${REVIEW_SECTIONS.mantisRecommendation}
-
-${mantisRecommendation}
 
 ## ${REVIEW_SECTIONS.featureShowcase}
 
@@ -927,8 +955,6 @@ ${renderReviewContextBudget(options.context)}
     renderPrRatingAssessmentReportSection,
     renderPrRatingReportSection,
     renderTelegramVisibleProofReportSection,
-    renderLiveProofReportSection,
-    renderMantisRecommendationReportSection,
     renderFeatureShowcaseReportSection,
     renderRootCauseClusterAssessmentReportSection,
     renderRootCauseClusterReportSection,

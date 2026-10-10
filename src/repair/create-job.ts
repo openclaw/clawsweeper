@@ -2,12 +2,12 @@
 import type { JsonValue, LooseRecord } from "./json-types.js";
 import fs from "node:fs";
 import path from "node:path";
-import { spawnSync } from "node:child_process";
+import { runCommandResult } from "./command-runner.js";
 import { parseArgs, parseJob, repoRoot, validateJob } from "./lib.js";
+import { runGitResult } from "./git.js";
 import { ghJsonBestEffort } from "./github-cli.js";
-import { escapeRegExp } from "./text-utils.js";
 import { renderJobIntentFrontmatter } from "./job-intent.js";
-import { readReportFrontMatterField } from "../report-front-matter.js";
+import { frontMatterStringArray, frontMatterValue, sectionValue } from "../report-front-matter.js";
 
 const args = parseArgs(process.argv.slice(2));
 const fromReport = args["from-report"] ?? args.from_report;
@@ -118,11 +118,13 @@ console.log(
 
 if (dispatch) {
   assertDispatchable(relativeOutPath);
-  const result = spawnSync("npm", ["run", "dispatch", "--", relativeOutPath, "--mode", mode], {
-    cwd: repoRoot(),
-    encoding: "utf8",
-    stdio: "inherit",
-  });
+  const result = runCommandResult(
+    process.execPath,
+    [path.join(repoRoot(), "dist/repair/dispatch-jobs.js"), relativeOutPath, "--mode", mode],
+    { cwd: repoRoot() },
+  );
+  process.stdout.write(result.stdout);
+  process.stderr.write(result.stderr);
   process.exit(result.status ?? 1);
 }
 
@@ -241,45 +243,17 @@ function sanitizeClusterId(value: JsonValue) {
 function parseClawSweeperReport(filePath: string) {
   const absolute = path.resolve(filePath);
   const markdown = fs.readFileSync(absolute, "utf8");
+  const prompt = sectionValue(markdown, "ClawSweeper Work Prompt");
   return {
     repo: frontMatterValue(markdown, "repository") || undefined,
     refs: [
       `#${frontMatterValue(markdown, "number")}`,
-      ...frontMatterArray(markdown, "work_cluster_refs"),
+      ...frontMatterStringArray(markdown, "work_cluster_refs"),
     ].filter((ref: JsonValue) => /^#?[0-9]+$/.test(ref)),
-    prompt: sectionValue(markdown, "ClawSweeper Work Prompt"),
-    validation: frontMatterArray(markdown, "work_validation"),
-    likelyFiles: frontMatterArray(markdown, "work_likely_files"),
+    prompt: prompt === "_No ClawSweeper prompt drafted._" ? "" : prompt,
+    validation: frontMatterStringArray(markdown, "work_validation"),
+    likelyFiles: frontMatterStringArray(markdown, "work_likely_files"),
   };
-}
-
-function frontMatterValue(markdown: string, key: string) {
-  const field = readReportFrontMatterField(markdown, key);
-  return field.status === "value" ? field.value.trim().replace(/^"|"$/g, "") : "";
-}
-
-function frontMatterArray(markdown: string, key: string) {
-  const value = frontMatterValue(markdown, key);
-  if (!value || value === "none") return [];
-  try {
-    const parsed = JSON.parse(value);
-    if (Array.isArray(parsed))
-      return parsed.filter((entry: JsonValue) => typeof entry === "string");
-  } catch {
-    return value
-      .split(",")
-      .map((entry: JsonValue) => entry.trim())
-      .filter(Boolean);
-  }
-  return [];
-}
-
-function sectionValue(markdown: string, heading: string) {
-  const match = markdown.match(
-    new RegExp(`(?:^|\\n)## ${escapeRegExp(heading)}\\n\\n([\\s\\S]*?)(?=\\n## |\\n?$)`),
-  );
-  const value = match?.[1]?.trim() ?? "";
-  return value === "_No ClawSweeper prompt drafted._" ? "" : value;
 }
 
 function findExistingWork({ repo, branch, clusterId }: LooseRecord) {
@@ -318,14 +292,9 @@ function findExistingWork({ repo, branch, clusterId }: LooseRecord) {
   );
   for (const pr of bodyPrs ?? []) existing.push({ type: "open_pr_body", ...pr });
 
-  const remoteBranch = spawnSync(
-    "git",
+  const remoteBranch = runGitResult(
     ["ls-remote", `https://github.com/${repo}.git`, `refs/heads/${branch}`],
-    {
-      cwd: repoRoot(),
-      encoding: "utf8",
-      stdio: "pipe",
-    },
+    { cwd: repoRoot() },
   );
   if (remoteBranch.status === 0 && remoteBranch.stdout.trim()) {
     existing.push({ type: "remote_branch", branch });
@@ -345,16 +314,8 @@ function uniqueExisting(existing: JsonValue) {
 }
 
 function assertDispatchable(relativePath: string) {
-  const tracked = spawnSync("git", ["ls-files", "--error-unmatch", relativePath], {
-    cwd: repoRoot(),
-    encoding: "utf8",
-    stdio: "pipe",
-  });
-  const clean = spawnSync("git", ["status", "--porcelain", "--", relativePath], {
-    cwd: repoRoot(),
-    encoding: "utf8",
-    stdio: "pipe",
-  });
+  const tracked = runGitResult(["ls-files", "--error-unmatch", relativePath], { cwd: repoRoot() });
+  const clean = runGitResult(["status", "--porcelain", "--", relativePath], { cwd: repoRoot() });
   if (tracked.status !== 0 || clean.stdout.trim()) {
     die(`refusing --dispatch because ${relativePath} is not committed and pushed yet`);
   }

@@ -4,24 +4,26 @@ import {
   parseOversizedPullRequestEvidence,
 } from "./clawsweeper-oversized-pr-policy.js";
 import type { CreateApplyDecisionWorkflowDependencies } from "./clawsweeper-apply-dependencies.js";
+import {
+  unconfirmedProductDirectionCloseEnabled,
+  unsponsoredFeatureCloseEnabled,
+} from "./policy-flags.js";
 import { repositoryManagedPullRequestCloseReason } from "./repository-profiles.js";
 import { STALE_INSUFFICIENT_INFO_MIN_INACTIVE_DAYS } from "./clawsweeper-policy.js";
 import type { ApplyKind, AuthorPrBudgetApplyGate, CloseReason, Item } from "./clawsweeper-types.js";
+import { frontMatterValue } from "./report-front-matter.js";
+import { issueRecentHumanCommentBlockReasonFromComments } from "./clawsweeper-apply-guard-activity.js";
 
 type ApplyClosePolicyDependencies = Pick<
   CreateApplyDecisionWorkflowDependencies,
   | "abandonedPrApplyBlockReasonSafe"
   | "applyAuthorPrBudgetStateToReport"
   | "closeReasonEnabled"
-  | "frontMatterValue"
   | "ghJson"
-  | "issueRecentHumanCommentBlockReasonFromComments"
   | "issueRecentHumanCommentBlockReasonSafe"
   | "stalledUnprovenPrApplyBlockReasonSafe"
   | "unconfirmedProductDirectionApplyBlockReasonSafe"
-  | "unconfirmedProductDirectionCloseEnabled"
   | "unsponsoredFeatureApplyBlockReasonSafe"
-  | "unsponsoredFeatureCloseEnabled"
 >;
 
 interface ApplyClosePolicyOptions {
@@ -72,7 +74,7 @@ export function evaluateApplyCloseReasonPolicy(
         try {
           const reason = oversizedPullRequestLiveBlockReason(
             parseOversizedPullRequestEvidence(
-              dependencies.frontMatterValue(options.markdown, "oversized_pull_request"),
+              frontMatterValue(options.markdown, "oversized_pull_request"),
             ),
             dependencies.ghJson(["api", `repos/${options.item.repo}/pulls/${options.number}`]),
           );
@@ -89,7 +91,7 @@ export function evaluateApplyCloseReasonPolicy(
         return gate.allowed ? allowed(gate) : blocked(gate.reason);
       }
       case "unsponsored_feature_request": {
-        if (!dependencies.unsponsoredFeatureCloseEnabled()) {
+        if (!unsponsoredFeatureCloseEnabled()) {
           return blocked("unsponsored feature-request apply policy is disabled", true);
         }
         const reason = dependencies.unsponsoredFeatureApplyBlockReasonSafe(
@@ -113,7 +115,7 @@ export function evaluateApplyCloseReasonPolicy(
                 options.number,
                 STALE_INSUFFICIENT_INFO_MIN_INACTIVE_DAYS,
               )
-            : dependencies.issueRecentHumanCommentBlockReasonFromComments(
+            : issueRecentHumanCommentBlockReasonFromComments(
                 options.comments,
                 STALE_INSUFFICIENT_INFO_MIN_INACTIVE_DAYS,
               );
@@ -126,14 +128,14 @@ export function evaluateApplyCloseReasonPolicy(
 
   switch (closeReason) {
     case "unconfirmed_product_direction": {
-      if (!dependencies.unconfirmedProductDirectionCloseEnabled()) {
+      if (!unconfirmedProductDirectionCloseEnabled()) {
         return blocked("unconfirmed product-direction apply policy is disabled", true);
       }
       const reason = dependencies.unconfirmedProductDirectionApplyBlockReasonSafe(
         options.number,
         options.item,
         options.storedUpdatedAt,
-        dependencies.frontMatterValue(options.markdown, "reviewed_at"),
+        frontMatterValue(options.markdown, "reviewed_at"),
       );
       return reason ? blocked(reason) : allowed();
     }

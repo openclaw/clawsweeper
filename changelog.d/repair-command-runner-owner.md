@@ -1,0 +1,1 @@
+- Run repair's gh dispatch, planner, proof-request and fence subprocesses through `command-runner.ts` instead of raw `spawnSync`/`execFileSync`, so a spawn failure or timeout now reports its cause instead of an empty error, and `create-job --dispatch` runs `repair:dispatch` instead of the missing `npm run dispatch` script.

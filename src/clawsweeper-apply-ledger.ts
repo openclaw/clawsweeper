@@ -1,3 +1,4 @@
+import { sha256 } from "./content-hash.js";
 import {
   ACTION_EVENT_REASON_CODES,
   ACTION_EVENT_STATUSES,
@@ -20,18 +21,15 @@ import type {
   ApplyPhaseCursor,
   ApplyResult,
   CloseReason,
-  ItemKind,
   ReportEntry,
 } from "./clawsweeper-types.js";
+import { frontMatterValue } from "./report-front-matter.js";
+import { reportItemKind, reviewLeaseRevisionFromReport } from "./clawsweeper-record-metadata.js";
 
 interface ApplyActionLedgerDependencies {
   root: string;
   targetRepo: () => string;
   repoRelativePath: (filePath: string) => string;
-  sha256: (value: string) => string;
-  frontMatterValue: (markdown: string, key: string) => string | undefined;
-  reviewLeaseRevisionFromReport: (markdown: string) => string | null;
-  reportItemKind: (markdown: string) => ItemKind | undefined;
   reviewLedger: ReturnType<typeof createReviewActionLedger>;
 }
 
@@ -39,10 +37,6 @@ export function createApplyActionLedger({
   root,
   targetRepo,
   repoRelativePath,
-  sha256,
-  frontMatterValue,
-  reviewLeaseRevisionFromReport,
-  reportItemKind,
   reviewLedger,
 }: ApplyActionLedgerDependencies) {
   const {
@@ -57,11 +51,6 @@ export function createApplyActionLedger({
     const phaseSeq = cursor.nextPhaseSeq;
     cursor.nextPhaseSeq += 1;
     return phaseSeq;
-  }
-
-  function applyPhaseSequenceForTest(count: number): number[] {
-    const cursor: ApplyPhaseCursor = { nextPhaseSeq: 2 };
-    return Array.from({ length: Math.max(0, count) }, () => nextApplyPhaseSeq(cursor));
   }
 
   function startApplyActionLedger(options: {
@@ -151,7 +140,7 @@ export function createApplyActionLedger({
     };
   }
 
-  function applyItemBusinessIdempotencyIdentityForTest(options: {
+  function applyItemBusinessIdempotencyIdentity(options: {
     slot: "apply_item" | "apply_mutation" | "review_comment";
     repository: string;
     number: number;
@@ -174,13 +163,13 @@ export function createApplyActionLedger({
     state: ApplyLedgerItem,
     slot: "apply_item" | "apply_mutation" | "review_comment",
   ): ApplyItemBusinessIdempotencyIdentity {
-    return applyItemBusinessIdempotencyIdentityForTest({
+    return applyItemBusinessIdempotencyIdentity({
       ...state.businessIdentity,
       slot,
     });
   }
 
-  function applyMutationBusinessIdempotencyIdentityForTest(options: {
+  function applyMutationBusinessIdempotencyIdentity(options: {
     repository: string;
     number: number;
     sourceRevision: string;
@@ -189,7 +178,7 @@ export function createApplyActionLedger({
     mutationIdentity: string;
   }): ApplyMutationBusinessIdempotencyIdentity {
     return {
-      ...applyItemBusinessIdempotencyIdentityForTest({
+      ...applyItemBusinessIdempotencyIdentity({
         ...options,
         slot: "apply_mutation",
       }),
@@ -271,7 +260,7 @@ export function createApplyActionLedger({
     if (!state) return null;
     const mutationIndex = state.mutationAttemptCount;
     state.mutationAttemptCount += 1;
-    const businessIdempotencyIdentity = applyMutationBusinessIdempotencyIdentityForTest({
+    const businessIdempotencyIdentity = applyMutationBusinessIdempotencyIdentity({
       ...state.businessIdentity,
       mutationIdentity: idempotencyIdentity,
     });
@@ -990,9 +979,6 @@ export function createApplyActionLedger({
 
   return {
     applyActionEventDisposition,
-    applyItemBusinessIdempotencyIdentityForTest,
-    applyMutationBusinessIdempotencyIdentityForTest,
-    applyPhaseSequenceForTest,
     applyRuntimeBudgetYieldResults,
     applyRuntimeBudgetYieldResultsForTest,
     finishApplyMutationAttempt,

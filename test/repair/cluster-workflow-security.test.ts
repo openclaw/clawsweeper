@@ -6,17 +6,28 @@ import path from "node:path";
 import test from "node:test";
 import { parse } from "yaml";
 
+import {
+  MAX_FIX_STEP_TIMEOUT_MS,
+  repairActionsStepTimeoutMinutes,
+} from "../../dist/repair/execute-fix-timeout-budget.js";
+
 type Workflow = {
   jobs?: Record<
     string,
     {
+      if?: string;
       env?: Record<string, string>;
+      "timeout-minutes"?: number;
       steps?: Array<{
+        id?: string;
+        if?: string;
         name?: string;
         run?: string;
         env?: Record<string, string>;
         uses?: string;
         with?: Record<string, string>;
+        "timeout-minutes"?: string;
+        "continue-on-error"?: unknown;
       }>;
     }
   >;
@@ -62,7 +73,7 @@ test("generated issue workers can create PRs but never inherit the maintainer me
 
   assert.match(
     workflow.jobs?.execute?.env?.CLAWSWEEPER_OPENCLAW_MODEL ?? "",
-    /CLAWSWEEPER_FIX_PR_MODEL \|\| 'gpt-6-sol'/,
+    /CLAWSWEEPER_FIX_PR_MODEL \|\| 'gpt-6\.1-sol'/,
   );
   assert.equal(workflow.jobs?.execute?.env?.CLAWSWEEPER_CODEX_REASONING_EFFORT, undefined);
 });
@@ -436,6 +447,10 @@ test("repair jobs hydrate exactly their issue or pull-request record", () => {
         hydrate?.with?.["records-item-number"],
         "${{ steps.target.outputs.records_item_number || '' }}",
       );
+      assert.equal(
+        hydrate?.with?.["records-repo-slugs"],
+        "${{ steps.target.outputs.target_slug || '' }}",
+      );
     }
 
     const issue = resolveTarget("jobs/openclaw/inbox/issue-openclaw-openclaw-98276.md");
@@ -561,4 +576,129 @@ test("cluster intake validates one safe repository token before exporting output
   assert.match(resolveStep.run, /\^\[A-Za-z0-9_\.-\]\+\/\[A-Za-z0-9_\.-\]\+\$/);
   assert.match(resolveStep.run, /printf 'name=%s\\n'/);
   assert.doesNotMatch(resolveStep.run, /echo "name=\$target_name"/);
+});
+
+function repairWorkerJob(job: "cluster" | "execute") {
+  const workflow = parse(
+    fs.readFileSync(".github/workflows/repair-cluster-worker.yml", "utf8"),
+  ) as Workflow;
+  return workflow.jobs?.[job];
+}
+
+// Fix execution runs target code, so the containment preflight must pass first under the same gate.
+test("containment preflight gates every fix execution", () => {
+  const steps = repairWorkerJob("execute")?.steps ?? [];
+  const preflight = steps.findIndex((step) => step.run === "pnpm run repair:containment-smoke");
+  const execute = steps.findIndex((step) => step.name === "Execute credited fix artifact");
+  assert.ok(preflight >= 0 && preflight < execute);
+  assert.equal(steps[preflight]!.if, steps[execute]!.if);
+  assert.equal(steps[preflight]!["continue-on-error"], undefined);
+});
+
+// A plan-only or unauthorized planning run must never reach the execute job.
+test("execute job runs only after allowed execute or autonomous planning", () => {
+  const condition = repairWorkerJob("execute")?.if ?? "";
+  assert.ok(condition.includes("needs.cluster.outputs.allow_execute == '1'"));
+  assert.ok(
+    condition.includes(
+      "(needs.cluster.outputs.effective_mode == 'execute' || needs.cluster.outputs.effective_mode == 'autonomous')",
+    ),
+  );
+});
+
+test("repair policy gates every planning and execution effect", () => {
+  for (const [job, effects] of [
+    [
+      "cluster",
+      [
+        "Register steerable Action session",
+        "Publish automatic implementation planning status",
+        "Run worker",
+      ],
+    ],
+    [
+      "execute",
+      [
+        "Resume steerable Action session",
+        "Publish automatic implementation build status",
+        "Execute credited fix artifact",
+        "Publish automatic implementation completion status",
+      ],
+    ],
+  ] as const) {
+    const steps = repairWorkerJob(job)?.steps ?? [];
+    const gate = steps.findIndex((step) => step.id === "repair_policy");
+    assert.ok(gate >= 0, job);
+    for (const name of effects) {
+      const index = steps.findIndex((step) => step.name === name);
+      const step = steps[index];
+      assert.ok(index > gate, `${job}: ${name}`);
+      assert.ok(
+        step?.if?.includes("steps.repair_policy.outputs.allowed == '1'") ||
+          step?.run?.includes("pnpm run repair:policy-run --"),
+        `${job}: ${name}`,
+      );
+    }
+  }
+});
+
+test("deferred repair outcome publishes with a token renewed after execution", () => {
+  const steps = repairWorkerJob("execute")?.steps ?? [];
+  const index = (name: string) => steps.findIndex((step) => step.name === name);
+  const execute = steps[index("Execute credited fix artifact")];
+  const publish = steps[index("Publish deferred fix outcome")];
+  assert.ok(
+    index("Execute credited fix artifact") < index("Renew target write token for post-flight") &&
+      index("Renew target write token for post-flight") < index("Publish deferred fix outcome") &&
+      index("Publish deferred fix outcome") < index("Post-flight finalize fix PRs"),
+  );
+  assert.match(execute?.run ?? "", /--latest --defer-publication$/);
+  assert.match(publish?.run ?? "", /--latest --publish-report-only$/);
+  assert.equal(publish?.env?.GH_TOKEN, "${{ steps.target_post_flight_token.outputs.token }}");
+});
+
+test("repair execution step timeout comes from the resolved budget and fits the job", () => {
+  const job = repairWorkerJob("execute");
+  const steps = job?.steps ?? [];
+  const budget = steps.findIndex((step) => step.id === "repair_budget");
+  const execute = steps.findIndex((step) => step.id === "execute_fix");
+  assert.ok(budget >= 0 && budget < execute);
+  assert.equal(
+    steps[execute]?.["timeout-minutes"],
+    "${{ fromJSON(steps.repair_budget.outputs.timeout_minutes) }}",
+  );
+
+  // Resolve the budget with the workflow defaults that apply when no repository variable is set.
+  const root = fs.mkdtempSync(path.join(tmpdir(), "clawsweeper-repair-budget-"));
+  try {
+    const jobPath = path.join(root, "job.md");
+    const output = path.join(root, "github-output");
+    fs.writeFileSync(jobPath, "---\nrepo: openclaw/fixture\n---\nFixture\n");
+    fs.writeFileSync(output, "");
+    const defaults = Object.fromEntries(
+      Object.entries(job?.env ?? {}).map(([name, value]) => [
+        name,
+        /'([^']*)' \}\}$/.exec(value)?.[1] ?? "",
+      ]),
+    );
+    const command = steps[budget]?.run?.replace('"$CLUSTER_JOB_PATH"', jobPath) ?? "";
+    const child = spawnSync("sh", ["-c", command], {
+      encoding: "utf8",
+      env: { PATH: process.env.PATH, ...defaults, GITHUB_OUTPUT: output },
+    });
+    assert.equal(child.status, 0, child.stderr);
+    const minutes = Number(/^timeout_minutes=(\d+)$/m.exec(fs.readFileSync(output, "utf8"))?.[1]);
+    assert.ok(minutes > 0 && minutes < Number(job?.["timeout-minutes"]), String(minutes));
+    // At the executor ceiling, the job must still fit setup (3) and
+    // finalization: the 10-minute post-flight check wait plus publish/status
+    // steps (1).
+    const ceilingStepMinutes = repairActionsStepTimeoutMinutes({
+      codexTimeoutMs: 0,
+      fixStepTimeoutMs: MAX_FIX_STEP_TIMEOUT_MS,
+      lateWorkerReserveMs: 0,
+    });
+    assert.ok(Number(job?.["timeout-minutes"]) >= ceilingStepMinutes + 3 + 10 + 1);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
 });

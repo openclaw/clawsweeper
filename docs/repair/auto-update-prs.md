@@ -242,12 +242,17 @@ stop` is stronger and also removes repair-loop labels so older automerge/autofix
 comments cannot resume the loop. If ClawSweeper wants the bounded repair/rebase
 loop to continue, it must emit an accepted repair verdict or action marker.
 
-There is one narrow approval shortcut for existing reviews: if ClawSweeper's
-`needs-human` text says no repair lane is needed and the maintainer action is to
-land the canonical PR, a later maintainer `/clawsweeper automerge` on the same
-head is treated as that approval. The router still applies the normal exact-head
-merge gates and refuses security notes, P-severity findings, stale heads, draft
-PRs, conflicts, failing checks, and the global merge gate being closed.
+There is one narrow approval shortcut for existing reviews. A later maintainer
+`/clawsweeper automerge` or `/clawsweeper approve` on the same head approves a
+`needs-human` verdict only when its typed attributes allow it: `findings=0`, and
+`hold=not_opted_in` or `hold=maintainer_decision` (live verification `absent` or
+`passed`), or `hold=proof` (live verification `absent`). ClawSweeper sets
+`maintainer_decision` and `proof` only when that hold is the one Before-merge
+item; otherwise the hold is `blocked`. Security holds (`hold=security`) and
+integrity holds (`review_identity`, `normalization_failed`, `review_failed`)
+are never waived. The router does not read the review prose for this decision.
+It still applies the normal exact-head merge gates and refuses stale heads,
+draft PRs, conflicts, failing checks, and the global merge gate being closed.
 
 After a `needs-human` pause, `/clawsweeper approve` is a maintainer-only exact-head
 approval. It clears pause labels and uses the same merge readiness checks and
@@ -448,6 +453,9 @@ Scripts:
 - `src/repair/comment-router.ts`
 - `src/repair/comment-router-core.ts`
 - `src/repair/comment-router-utils.ts`
+- `src/repair/comment-router/admission.ts`
+- `src/repair/comment-router/dispatch.ts`
+- `src/repair/comment-router/ledger.ts`
 
 Durable state:
 

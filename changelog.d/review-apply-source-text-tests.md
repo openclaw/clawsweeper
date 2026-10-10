@@ -1,0 +1,1 @@
+- Review and apply tests no longer read `src/` or workflow text: sweep status, placeholder recovery, activity cursor, start lease, release lookup, coordination hold and close-time lease rules now run through the status and recovery CLIs or their exported owners, and `sweepStatusApplyHealthForTest` is gone.

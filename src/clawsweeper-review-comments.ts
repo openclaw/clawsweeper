@@ -21,6 +21,7 @@ import {
   reviewRankUpMovesForReviewer,
   type ReviewHistoryCycle,
 } from "./review-history.js";
+import { asRecord } from "./value-coerce.js";
 
 export interface ReviewCommentContext {
   isClawSweeperComment: (value: unknown) => boolean;
@@ -40,10 +41,6 @@ const AUTOMATION_NOISE_PATTERNS = [
   /clawsweeper-repair:close:/i,
   /^ClawSweeper status: review started\./i,
 ] as const;
-
-function asRecord(value: unknown): Record<string, unknown> {
-  return value && typeof value === "object" ? (value as Record<string, unknown>) : {};
-}
 
 export function rawCommentBody(value: unknown): string {
   const body = asRecord(value).body;

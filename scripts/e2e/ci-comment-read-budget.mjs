@@ -87,8 +87,8 @@ if (process.argv.includes("--server")) {
   );
   const { LiveReadGeneration, generationReadKey } =
     await import("../../dist/live-read-generation.js");
-  const { asRecord } = await import("../../dist/clawsweeper-item-policy.js");
-  const { hydration, sourceTools, sha256 } = await import("../../test/primary-body-fixture.ts");
+  const { hydration, sourceTools } = await import("../../test/primary-body-fixture.ts");
+  const { sha256 } = await import("../../dist/content-hash.js");
   const baseline = process.argv.includes("--baseline");
   const child = spawn(
     process.execPath,
@@ -112,6 +112,7 @@ if (process.argv.includes("--server")) {
   process.env.CLAWSWEEPER_WEBHOOK_SECRET = "synthetic-loopback-only";
   const github = createGitHubContext({
     ghJson: (args) => get(args[1]),
+    ghJsonEach: (requests) => requests.map((args) => ({ ok: true, value: get(args[1]) })),
     ghWithRetry: () => {
       throw new Error("unexpected transport");
     },
@@ -122,9 +123,8 @@ if (process.argv.includes("--server")) {
     ...hydration,
     ...sourceTools,
     ...github,
-    asRecord,
+    // The --baseline item-context build predates direct content-hash imports.
     sha256,
-    stringOrUndefined: (value) => (typeof value === "string" ? value : undefined),
     targetRepo: () => repo,
     ghJson: (args) => get(args[1]),
     ghPagedLinkHeaderContextWindow: () => empty,

@@ -1,9 +1,39 @@
 import { parseOversizedPullRequestEvidence } from "./clawsweeper-oversized-pr-policy.js";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { isDocsPath } from "./clawsweeper-change-detection.js";
-import { AUTHOR_PR_BUDGET_MIN_INACTIVE_DAYS, REVIEW_SECTIONS } from "./clawsweeper-policy.js";
+import {
+  AUTHOR_PR_BUDGET_MIN_INACTIVE_DAYS,
+  REVIEW_SECTIONS,
+  isGitHubVerifiedFixedPullRequestSource,
+} from "./clawsweeper-policy.js";
 import { createPullRequestReferenceParser } from "./clawsweeper-pr-references.js";
+import {
+  defaultAgentsPolicyStatus,
+  impactLabelsFromReport,
+  labelJustificationsFromReport,
+  maturityLabelsFromReport,
+  mergeRiskLabelsFromReport,
+  mergeRiskOptionsFromReport,
+  reportAgentsPolicyStatus,
+  reportChangeExample,
+  evidenceEntry,
+  reportEvidence,
+  reportFeatureShowcase,
+  reportLikelyOwners,
+  reportOverallConfidenceScore,
+  reportOverallCorrectness,
+  reportProductReview,
+  reportProvenance,
+  reportPrRating,
+  reportRealBehaviorProof,
+  reportReviewFindings,
+  reportRootCauseCluster,
+  reportSecurityReview,
+  reportTelegramVisibleProof,
+  reportTestingReview,
+  reportVisionFit,
+  triagePriorityFromReport,
+} from "./clawsweeper-report-parser.js";
 import type {
   AuthorPrBudgetApplyState,
   CloseReason,
@@ -26,59 +56,37 @@ import {
   type MaintainerDecision,
 } from "./decision-packets.js";
 import type { CreateReportOrchestrationDependencies } from "./clawsweeper-report-orchestration-dependencies.js";
-import type { createReportOrchestrationFoundation } from "./clawsweeper-orchestration-foundation.js";
-import type { createReportRendering } from "./clawsweeper-report-rendering.js";
+import { renderCloseCommentFromReport } from "./clawsweeper-report-comment-helpers.js";
+import { reviewMetricsFromReport } from "./clawsweeper-orchestration-foundation.js";
+import { fixedPullRequestFromReport } from "./clawsweeper-status-context.js";
+import { asRecord, nonBlankStringOrUndefined } from "./value-coerce.js";
+import { parseIsoMs } from "./iso-time.js";
+import { hostEvidenceMarkdown } from "./clawsweeper-report-helpers.js";
+import { updateReviewRecordDecision } from "./review-record.js";
+import {
+  frontMatterStringArray,
+  frontMatterValue,
+  replaceFrontMatterValue,
+  replaceSectionValue,
+} from "./report-front-matter.js";
+import { isAutomationReportAuthor } from "./clawsweeper-item-policy.js";
+import { reportFileName } from "./clawsweeper-repository-paths.js";
+import { reviewSectionValue } from "./clawsweeper-record-metadata.js";
+import { eventTimestampMs, isAfterReview } from "./clawsweeper-label-policy.js";
 
 export function createPullRequestPromotionFacts(
-  dependencies: CreateReportOrchestrationDependencies &
-    ReturnType<typeof createReportOrchestrationFoundation> &
-    Pick<ReturnType<typeof createReportRendering>, "renderCloseCommentFromReport">,
+  dependencies: CreateReportOrchestrationDependencies,
 ) {
   const {
-    asRecord,
-    defaultAgentsPolicyStatus,
-    eventTimestampMs,
-    fixedPullRequestFromReport,
-    frontMatterStringArray,
-    frontMatterValue,
+    defaultRootCauseCluster,
     ghJson,
-    impactLabelsFromReport,
-    isAfterReview,
-    isAutomationReportAuthor,
-    isDocsOnlyPullRequestReport,
     itemSnapshotHash,
-    labelJustificationsFromReport,
     labelNames,
-    maturityLabelsFromReport,
-    mergeRiskLabelsFromReport,
-    mergeRiskOptionsFromReport,
     normalizeLabelName,
-    renderCloseCommentFromReport,
-    replaceFrontMatterValue,
-    replaceSectionValue,
+    parseGitHubItemRef,
     repoUrlFor,
-    reportAgentsPolicyStatus,
-    reportEvidence,
-    reportFeatureShowcase,
-    reportFileName,
-    reportLikelyOwners,
-    reportLiveProofPlan,
-    reportMantisRecommendation,
-    reportOverallConfidenceScore,
-    reportOverallCorrectness,
-    reportPrRating,
-    reportRealBehaviorProof,
-    reportReviewFindings,
-    reportRootCauseCluster,
-    reportSecurityReview,
-    reportTelegramVisibleProof,
-    reportVisionFit,
-    reviewMetricsFromReport,
-    reviewSectionValue,
-    stringOrUndefined,
+    targetProfile,
     targetRepo,
-    timestampMs,
-    triagePriorityFromReport,
   } = dependencies;
 
   function reportDecision(markdown: string, closeReason: CloseReason): Decision {
@@ -103,6 +111,7 @@ export function createPullRequestPromotionFacts(
       confidence: "high",
       summary: reviewSectionValue(markdown, "summary"),
       changeSummary: reviewSectionValue(markdown, "changeSummary"),
+      changeExample: reportChangeExample(markdown),
       systemContext: reviewSectionValue(markdown, "systemContext"),
       architectureDiagram: reviewSectionValue(markdown, "architectureDiagram"),
       evidence: reportEvidence(markdown),
@@ -137,13 +146,14 @@ export function createPullRequestPromotionFacts(
       ...visionFit,
       rootCauseCluster: reportRootCauseCluster(markdown),
       agentsPolicyStatus: reportAgentsPolicyStatus(markdown) ?? defaultAgentsPolicyStatus(),
+      productReview: reportProductReview(markdown),
+      provenance: reportProvenance(markdown),
+      testingReview: reportTestingReview(markdown),
       reviewFindings: reportReviewFindings(markdown),
       securityReview: reportSecurityReview(markdown),
       realBehaviorProof: reportRealBehaviorProof(markdown),
       prRating: reportPrRating(markdown),
       telegramVisibleProof: reportTelegramVisibleProof(markdown),
-      liveProofPlan: reportLiveProofPlan(markdown),
-      mantisRecommendation: reportMantisRecommendation(markdown),
       featureShowcase: reportFeatureShowcase(markdown),
       overallCorrectness: reportOverallCorrectness(markdown),
       overallConfidenceScore: reportOverallConfidenceScore(markdown),
@@ -177,37 +187,65 @@ export function createPullRequestPromotionFacts(
 
   function upgradeNoDiffPullRequestReport(markdown: string, item: Item): string {
     const command = `gh api repos/${item.repo}/pulls/${item.number} --jq '{state:.state,changed_files:.changed_files,base:.base.ref,head:.head.sha}'`;
+    const summary =
+      "Close this PR: GitHub reports no changed files against the current base branch.";
+    const bestSolution =
+      "Close this PR: GitHub reports no changed files against the current base branch, so the branch is already empty or superseded by `main`.";
+    const evidence = [
+      evidenceEntry({
+        label: "live no-diff PR",
+        detail:
+          "GitHub reports `changed_files: 0` for this open PR, so there is no remaining branch diff to merge.",
+        command,
+      }),
+    ];
+    const rootCauseCluster = defaultRootCauseCluster();
     let upgraded = markdown;
     upgraded = replaceFrontMatterValue(upgraded, "decision", "close");
     upgraded = replaceFrontMatterValue(upgraded, "close_reason", "duplicate_or_superseded");
     upgraded = replaceFrontMatterValue(upgraded, "confidence", "high");
     upgraded = replaceFrontMatterValue(upgraded, "action_taken", "proposed_close");
-    upgraded = replaceFrontMatterValue(upgraded, "pr_close_coverage_proof_fallback_refs", "false");
+    // GitHub's zero-file diff is the close evidence. Clear the typed canonical
+    // and fixing-PR candidates so no coverage proof can block this close.
+    upgraded = replaceFrontMatterValue(upgraded, "pr_close_requires_canonical_pr", "false");
+    upgraded = replaceFrontMatterValue(
+      upgraded,
+      "root_cause_cluster",
+      JSON.stringify(rootCauseCluster),
+    );
+    upgraded = replaceFrontMatterValue(upgraded, "fixed_pr_url", "unknown");
+    upgraded = replaceFrontMatterValue(upgraded, "fixed_pr_number", "unknown");
     upgraded = replaceFrontMatterValue(upgraded, "work_cluster_refs", "[]");
     upgraded = replaceFrontMatterValue(upgraded, "merge_risk_options", "[]");
     upgraded = replaceFrontMatterValue(upgraded, "work_candidate", "none");
     upgraded = replaceFrontMatterValue(upgraded, "work_status", "none");
-    upgraded = replaceSectionValue(
-      upgraded,
-      REVIEW_SECTIONS.summary,
-      "Close this PR: GitHub reports no changed files against the current base branch.",
-    );
-    upgraded = replaceSectionValue(
-      upgraded,
-      REVIEW_SECTIONS.bestSolution,
-      "Close this PR: GitHub reports no changed files against the current base branch, so the branch is already empty or superseded by `main`.",
-    );
+    upgraded = replaceSectionValue(upgraded, REVIEW_SECTIONS.summary, summary);
+    upgraded = replaceSectionValue(upgraded, REVIEW_SECTIONS.bestSolution, bestSolution);
     upgraded = replaceSectionValue(
       upgraded,
       REVIEW_SECTIONS.evidence,
-      `- **live no-diff PR:** GitHub reports \`changed_files: 0\` for this open PR, so there is no remaining branch diff to merge.\n  - command: \`${command}\``,
+      hostEvidenceMarkdown(evidence),
     );
-    upgraded = replaceSectionValue(
+    const closeComment = renderCloseCommentFromReport(
       upgraded,
-      REVIEW_SECTIONS.closeComment,
-      renderCloseCommentFromReport(upgraded, "duplicate_or_superseded"),
+      "duplicate_or_superseded",
+      targetProfile(),
     );
-    return upgraded;
+    upgraded = replaceSectionValue(upgraded, REVIEW_SECTIONS.closeComment, closeComment);
+    return updateReviewRecordDecision(upgraded, () => ({
+      decision: "close",
+      closeReason: "duplicate_or_superseded",
+      confidence: "high",
+      rootCauseCluster,
+      fixedPullRequest: null,
+      workClusterRefs: [],
+      mergeRiskOptions: [],
+      workCandidate: "none",
+      summary,
+      bestSolution,
+      evidence,
+      closeComment,
+    }));
   }
 
   function upgradePullRequestClosePromotionReport(
@@ -221,11 +259,9 @@ export function createPullRequestPromotionFacts(
     upgraded = replaceFrontMatterValue(upgraded, "close_reason", promotion.closeReason);
     upgraded = replaceFrontMatterValue(upgraded, "confidence", "high");
     upgraded = replaceFrontMatterValue(upgraded, "action_taken", "proposed_close");
-    upgraded = replaceFrontMatterValue(
-      upgraded,
-      "pr_close_coverage_proof_fallback_refs",
-      promotion.coverageProofFallbackRefs ? "true" : "false",
-    );
+    // A promotion closes on GitHub facts or a typed review field, not on a model
+    // duplicate claim, so it does not need rootCauseCluster.canonicalRef.
+    upgraded = replaceFrontMatterValue(upgraded, "pr_close_requires_canonical_pr", "false");
     upgraded = replaceFrontMatterValue(upgraded, "work_candidate", "none");
     upgraded = replaceFrontMatterValue(upgraded, "work_status", "none");
     upgraded = replaceFrontMatterValue(upgraded, "item_updated_at", item.updatedAt);
@@ -241,9 +277,22 @@ export function createPullRequestPromotionFacts(
     );
     upgraded = replaceSectionValue(upgraded, REVIEW_SECTIONS.summary, promotion.summary);
     upgraded = replaceSectionValue(upgraded, REVIEW_SECTIONS.bestSolution, promotion.bestSolution);
-    upgraded = replaceSectionValue(upgraded, REVIEW_SECTIONS.evidence, promotion.evidence);
+    upgraded = replaceSectionValue(
+      upgraded,
+      REVIEW_SECTIONS.evidence,
+      hostEvidenceMarkdown(promotion.evidence),
+    );
     upgraded = replaceSectionValue(upgraded, REVIEW_SECTIONS.closeComment, promotion.closeComment);
-    return upgraded;
+    return updateReviewRecordDecision(upgraded, () => ({
+      decision: "close",
+      closeReason: promotion.closeReason,
+      confidence: "high",
+      workCandidate: "none",
+      summary: promotion.summary,
+      bestSolution: promotion.bestSolution,
+      evidence: promotion.evidence,
+      closeComment: promotion.closeComment,
+    }));
   }
 
   function authorPrBudgetPromotion(
@@ -257,14 +306,22 @@ export function createPullRequestPromotionFacts(
     return {
       closeReason: "author_pr_budget_exceeded",
       summary,
-      coverageProofFallbackRefs: false,
       bestSolution:
         "Close this lowest-signal PR for now. Finish or close other open PRs to free review budget, then reopen this PR once the author is under budget; adding real behavior proof also makes it eligible for reconsideration.",
       evidence: [
-        `- **live author budget:** ${author} has ${state.openPrCount} open PRs in this repository; the configured budget is ${state.budget}.`,
-        `- **lowest-signal classification:** overall PR rating is \`${rating.overallTier}\` and real behavior proof is \`${proof.status}\`.`,
-        `- **inactivity floor:** the PR and its current-head commit, status, and check-run activity are all older than ${AUTHOR_PR_BUDGET_MIN_INACTIVE_DAYS} days.`,
-      ].join("\n"),
+        evidenceEntry({
+          label: "live author budget",
+          detail: `${author} has ${state.openPrCount} open PRs in this repository; the configured budget is ${state.budget}.`,
+        }),
+        evidenceEntry({
+          label: "lowest-signal classification",
+          detail: `overall PR rating is \`${rating.overallTier}\` and real behavior proof is \`${proof.status}\`.`,
+        }),
+        evidenceEntry({
+          label: "inactivity floor",
+          detail: `the PR and its current-head commit, status, and check-run activity are all older than ${AUTHOR_PR_BUDGET_MIN_INACTIVE_DAYS} days.`,
+        }),
+      ],
       closeComment: `Thanks for the contribution. ${summary}`,
     };
   }
@@ -276,15 +333,25 @@ export function createPullRequestPromotionFacts(
     const promotion = authorPrBudgetPromotion(markdown, state);
     let next = replaceSectionValue(markdown, REVIEW_SECTIONS.summary, promotion.summary);
     next = replaceSectionValue(next, REVIEW_SECTIONS.bestSolution, promotion.bestSolution);
-    next = replaceSectionValue(next, REVIEW_SECTIONS.evidence, promotion.evidence);
-    return replaceSectionValue(next, REVIEW_SECTIONS.closeComment, promotion.closeComment);
+    next = replaceSectionValue(
+      next,
+      REVIEW_SECTIONS.evidence,
+      hostEvidenceMarkdown(promotion.evidence),
+    );
+    next = replaceSectionValue(next, REVIEW_SECTIONS.closeComment, promotion.closeComment);
+    return updateReviewRecordDecision(next, () => ({
+      summary: promotion.summary,
+      bestSolution: promotion.bestSolution,
+      evidence: promotion.evidence,
+      closeComment: promotion.closeComment,
+    }));
   }
 
   function closePromotionHasNonAutomationActivityAfterReview(
     markdown: string,
     context: ItemContext,
   ): boolean {
-    const reviewedAtMs = timestampMs(frontMatterValue(markdown, "reviewed_at"));
+    const reviewedAtMs = parseIsoMs(frontMatterValue(markdown, "reviewed_at"));
     if (reviewedAtMs === null) return true;
     return contextHasNonAutomationActivityAfter(context, reviewedAtMs);
   }
@@ -318,17 +385,17 @@ export function createPullRequestPromotionFacts(
       const record = asRecord(comment);
       return (
         isAfterReview(comment, reviewedAtMs) &&
-        !isAutomationReportAuthor(stringOrUndefined(record.author))
+        !isAutomationReportAuthor(nonBlankStringOrUndefined(record.author))
       );
     };
     const hasNonAutomationEvent = (event: unknown): boolean => {
       const record = asRecord(event);
-      const eventActor = (stringOrUndefined(record.actor) ?? "").trim().toLowerCase();
+      const eventActor = (nonBlankStringOrUndefined(record.actor) ?? "").trim().toLowerCase();
       const trustedTimelineComment = options.ignoreTrustedTimelineComment;
       if (
-        stringOrUndefined(record.event) === "commented" &&
+        nonBlankStringOrUndefined(record.event) === "commented" &&
         trustedTimelineComment &&
-        eventTimestampMs(event) === timestampMs(trustedTimelineComment.createdAt) &&
+        eventTimestampMs(event) === parseIsoMs(trustedTimelineComment.createdAt) &&
         trustedTimelineComment.authors.has(eventActor)
       ) {
         return false;
@@ -337,7 +404,7 @@ export function createPullRequestPromotionFacts(
       // duplicates only through the completed review; later commands are fresh
       // activity and must keep stale labels from being restored.
       if (
-        stringOrUndefined(record.event) === "commented" &&
+        nonBlankStringOrUndefined(record.event) === "commented" &&
         options.ignoreTimelineCommentsThroughMs !== undefined
       ) {
         const eventMs = eventTimestampMs(event);
@@ -345,7 +412,7 @@ export function createPullRequestPromotionFacts(
       }
       return (
         isAfterReview(event, reviewedAtMs) &&
-        !isAutomationReportAuthor(stringOrUndefined(record.actor))
+        !isAutomationReportAuthor(nonBlankStringOrUndefined(record.actor))
       );
     };
     return (
@@ -398,47 +465,33 @@ export function createPullRequestPromotionFacts(
     });
   }
 
-  const pullRequestReferenceParser = createPullRequestReferenceParser({
-    targetRepo,
-    repoUrlFor,
-    reportReferenceTexts(markdown) {
-      return [
-        ...frontMatterStringArray(markdown, "work_cluster_refs"),
-        ...mergeRiskOptionsFromReport(markdown).flatMap((option) => [option.title, option.body]),
-        reviewSectionValue(markdown, "bestSolution"),
-        reviewSectionValue(markdown, "evidence"),
-        reviewSectionValue(markdown, "closeComment"),
-      ];
-    },
-  });
+  const pullRequestReferenceParser = createPullRequestReferenceParser({ targetRepo, repoUrlFor });
 
-  const {
-    linkedPullRequestNumbersFromReport,
-    linkedPullRequestRefsFromReport,
-    linkedPullRequestRefsFromText,
-    linkedPullRequestSignalContextsFromText,
-    pullRequestUrlForNumber,
-  } = pullRequestReferenceParser;
+  const { linkedPullRequestSignalContextsFromText, pullRequestUrlForNumber } =
+    pullRequestReferenceParser;
 
-  function linkedPullRequestHasSupersessionSignal(
+  // The review model names the canonical item in `rootCauseCluster.canonicalRef`,
+  // and the runtime records a GitHub-verified merged fixing PR in `fixed_pr_*`.
+  // Only these typed facts name a PR that can cover this one; report prose never does.
+  function canonicalPullRequestNumbersFromReport(
     markdown: string,
     currentNumber: number,
-    linkedNumber: number,
-  ): boolean {
-    const signal =
-      /\b(supersed(?:e|ed|es|ing)|replace(?:s|d|ment)?|duplicate|duplicated|canonical|covered by|landed in)\b/i;
-    const texts = [
-      ...frontMatterStringArray(markdown, "work_cluster_refs"),
-      ...mergeRiskOptionsFromReport(markdown).flatMap((option) => [option.title, option.body]),
-      reviewSectionValue(markdown, "bestSolution"),
-      reviewSectionValue(markdown, "evidence"),
-      reviewSectionValue(markdown, "closeComment"),
-    ];
-    return texts.some((text) =>
-      linkedPullRequestSignalContextsFromText(text, currentNumber, linkedNumber).some((context) =>
-        signal.test(context),
-      ),
-    );
+  ): number[] {
+    const numbers = new Set<number>();
+    const canonicalRef = reportRootCauseCluster(markdown).canonicalRef;
+    if (canonicalRef) {
+      const parsed = parseGitHubItemRef(canonicalRef, "root_cause_cluster.canonicalRef");
+      if (parsed.kind === "pull_request") numbers.add(parsed.number);
+    }
+    const fixedPullRequest = fixedPullRequestFromReport(markdown);
+    if (
+      fixedPullRequest?.confidence === "high" &&
+      isGitHubVerifiedFixedPullRequestSource(fixedPullRequest.source)
+    ) {
+      numbers.add(fixedPullRequest.number);
+    }
+    numbers.delete(currentNumber);
+    return [...numbers];
   }
 
   function linkedPullRequestSupersession(
@@ -447,31 +500,21 @@ export function createPullRequestPromotionFacts(
     options: { reportDirs?: readonly string[] } = {},
   ): LinkedPullRequestSupersessionResolution {
     let unsafeReason: string | null = null;
-    for (const number of linkedPullRequestNumbersFromReport(markdown, item.number)) {
+    for (const number of canonicalPullRequestNumbersFromReport(markdown, item.number)) {
       try {
-        const hasSupersessionSignal = linkedPullRequestHasSupersessionSignal(
-          markdown,
-          item.number,
-          number,
-        );
         const pull = asRecord(ghJson<unknown>(["api", `repos/${targetRepo()}/pulls/${number}`]));
-        const state = stringOrUndefined(pull.state)?.toLowerCase() ?? "";
-        const mergedAt = stringOrUndefined(pull.merged_at) ?? null;
-        if (!hasSupersessionSignal) continue;
-        const linkedFiles = linkedPullRequestFiles(number);
+        const state = nonBlankStringOrUndefined(pull.state)?.toLowerCase() ?? "";
+        const mergedAt = nonBlankStringOrUndefined(pull.merged_at) ?? null;
         const linkedPull: LinkedPullRequestSupersession = {
           number,
-          title: stringOrUndefined(pull.title) ?? `PR #${number}`,
-          url: stringOrUndefined(pull.html_url) ?? pullRequestUrlForNumber(number),
+          title: nonBlankStringOrUndefined(pull.title) ?? `PR #${number}`,
+          url: nonBlankStringOrUndefined(pull.html_url) ?? pullRequestUrlForNumber(number),
           state,
           mergedAt,
-          mergeableState: stringOrUndefined(pull.mergeable_state)?.toLowerCase() ?? null,
+          mergeableState: nonBlankStringOrUndefined(pull.mergeable_state)?.toLowerCase() ?? null,
           draft: pull.draft === true,
           labels: linkedPullRequestLabels(number, pull),
-          files: linkedFiles.files,
-          filesKnown: linkedFiles.known,
         };
-        if (linkedPullCannotSupersedeDocsOnlySource(markdown, linkedPull)) continue;
         const candidateUnsafeReason = unsafeCanonicalPullRequestReason(linkedPull, options);
         if (candidateUnsafeReason !== null) {
           unsafeReason ??= candidateUnsafeReason;
@@ -498,32 +541,6 @@ export function createPullRequestPromotionFacts(
     } catch {
       return [];
     }
-  }
-
-  function linkedPullRequestFiles(number: number): { files: string[]; known: boolean } {
-    try {
-      const files = ghJson<unknown[]>([
-        "api",
-        `repos/${targetRepo()}/pulls/${number}/files?per_page=100`,
-        "--jq",
-        "[.[].filename]",
-      ]);
-      return {
-        files: files.filter((file): file is string => typeof file === "string"),
-        known: true,
-      };
-    } catch {
-      return { files: [], known: false };
-    }
-  }
-
-  function linkedPullCannotSupersedeDocsOnlySource(
-    sourceMarkdown: string,
-    linkedPull: LinkedPullRequestSupersession,
-  ): boolean {
-    if (!isDocsOnlyPullRequestReport(sourceMarkdown)) return false;
-    if (!linkedPull.filesKnown) return true;
-    return linkedPull.files.length === 0 || !linkedPull.files.every(isDocsPath);
   }
 
   function linkedPullRequestReportMarkdown(
@@ -628,16 +645,11 @@ export function createPullRequestPromotionFacts(
     contextHasNonAutomationActivityAfter,
     contextHasNonAutomationActivityAfterForTest,
     pullRequestReferenceParser,
-    linkedPullRequestNumbersFromReport,
-    linkedPullRequestRefsFromReport,
-    linkedPullRequestRefsFromText,
     linkedPullRequestSignalContextsFromText,
     pullRequestUrlForNumber,
-    linkedPullRequestHasSupersessionSignal,
+    canonicalPullRequestNumbersFromReport,
     linkedPullRequestSupersession,
     linkedPullRequestLabels,
-    linkedPullRequestFiles,
-    linkedPullCannotSupersedeDocsOnlySource,
     linkedPullRequestReportMarkdown,
     proofPassedInReport,
     proofPassedInLabels,

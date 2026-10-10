@@ -201,7 +201,10 @@ Mandatory containment remains:
 
 - delegated user, mount, PID, and requested network namespaces;
 - chroot and the minimal runtime bind mounts;
-- recursive readonly mount policy with only explicit writable roots;
+- recursive readonly mount policy with only explicit writable roots, plus
+  explicit private directories: each is a direct child of `/tmp`, gets a new
+  1 MiB tmpfs that exists only in the command's mount namespace, and never maps
+  to a host path (pnpm 12.6–12.8 need `/tmp/pnpm-store-operation-locks-0`);
 - host-path and write-escape preflight checks;
 - capability bounding, effective, permitted, inheritable, and ambient sets all
   dropped;

@@ -1,0 +1,1 @@
+- Fix direct-lifecycle publication recovery completing as `superseded`/`live_terminal`: the publisher now keeps the replayed `published`/`publication_applied` result, so a recovered requeue completes instead of getting `invalid_direct_lifecycle_requeue`.

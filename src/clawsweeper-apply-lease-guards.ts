@@ -2,22 +2,22 @@ import type { CreateApplyDecisionWorkflowDependencies } from "./clawsweeper-appl
 import { trimMiddle } from "./clawsweeper-text.js";
 import type { AcquiredReviewStartLease, Item } from "./clawsweeper-types.js";
 import { GitHubRateLimitError } from "./github-retry.js";
-import { freshExactHeadReviewStartLease } from "./repair/comment-router-core.js";
+import { freshExactHeadReviewStartLease } from "./repair/comment-router/admission.js";
 import { generationReadKey, type LiveReadGeneration } from "./live-read-generation.js";
+import { asRecord } from "./value-coerce.js";
+import { frontMatterValue } from "./report-front-matter.js";
+import { reviewLeaseRevisionFromReport } from "./clawsweeper-record-metadata.js";
 
 type ActiveApplyMutationLease = { itemNumber: number; lease: AcquiredReviewStartLease } | null;
 
 type ApplyLeaseGuardDependencies = Pick<
   CreateApplyDecisionWorkflowDependencies,
-  | "asRecord"
-  | "frontMatterValue"
   | "ghJson"
   | "GitHubRuntimeBudgetError"
   | "issueReviewCommentState"
   | "liveIssueSourceRevision"
   | "PATCHABLE_REVIEW_COMMENT_AUTHORS"
   | "postReviewStartStatusComment"
-  | "reviewLeaseRevisionFromReport"
   | "shouldPreserveReviewStartLease"
   | "targetRepo"
 > & {
@@ -40,12 +40,10 @@ type ApplyLeaseGuardDependencies = Pick<
 };
 
 export function createApplyLeaseGuards({
-  asRecord,
   canonicalBoundStaleReviewReason,
   closeDelayMs,
   currentReviewActivityBlock,
   dryRun,
-  frontMatterValue,
   getActiveApplyMutationLease,
   ghJson,
   GitHubRuntimeBudgetError,
@@ -60,7 +58,6 @@ export function createApplyLeaseGuards({
   postReviewStartStatusComment,
   reportReviewRevision,
   requiresApplyMutationLease,
-  reviewLeaseRevisionFromReport,
   setActiveApplyMutationLease,
   shouldPreserveReviewStartLease,
   targetRepo,

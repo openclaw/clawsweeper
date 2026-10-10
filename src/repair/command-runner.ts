@@ -21,8 +21,12 @@ export type CommandRunOptions = {
   cwd?: string;
   env?: NodeJS.ProcessEnv;
   input?: string;
+  /** Signal for a timed-out plain command. The default is SIGTERM. */
+  killSignal?: NodeJS.Signals;
   isolateNetwork?: boolean;
   maxBuffer?: number;
+  /** Contained commands only: sandbox paths under /tmp that get private writable storage. */
+  privateDirectories?: readonly string[];
   timeoutMs?: number;
   writableRoots?: readonly string[];
 };
@@ -139,7 +143,7 @@ export function runGitAcquisitionResult(
 
 export function runCommand(
   command: string,
-  commandArgs: string[],
+  commandArgs: readonly string[],
   options: CommandRunOptions = {},
 ): string {
   const child = runCommandResult(command, commandArgs, options);
@@ -202,6 +206,7 @@ export function runContainedCommandResult(
         input: options.input,
         isolateNetwork: options.isolateNetwork !== false,
         maxBuffer,
+        privateDirectories: options.privateDirectories ?? [],
         timeoutMs: options.timeoutMs,
         writableRoots: options.writableRoots?.map((root) => fs.realpathSync(root)) ?? [],
         windowsVerbatimArguments: invocation.windowsVerbatimArguments === true,
@@ -260,7 +265,7 @@ function serializedWorkerMaxBuffer(maxBuffer: number) {
 
 export function runCommandResult(
   command: string,
-  commandArgs: string[],
+  commandArgs: readonly string[],
   options: CommandRunOptions = {},
 ): SpawnSyncReturns<string> {
   const env = options.env ?? process.env;
@@ -275,6 +280,7 @@ export function runCommandResult(
     encoding: "utf8",
     maxBuffer: options.maxBuffer ?? DEFAULT_COMMAND_MAX_BUFFER,
     timeout: options.timeoutMs,
+    killSignal: options.killSignal,
     windowsHide: true,
     ...(invocation.windowsVerbatimArguments ? { windowsVerbatimArguments: true } : {}),
   });

@@ -3,12 +3,12 @@ import { oversizedPullRequestAdmission } from "./clawsweeper-oversized-pr-policy
 import type { Item } from "./clawsweeper-types.js";
 import { labelNames } from "./clawsweeper-item-policy.js";
 import { normalizeRepo } from "./repository-profiles.js";
-import { recordOrEmpty, stringOrEmpty } from "./value-coerce.js";
+import { asRecord, stringOrEmpty } from "./value-coerce.js";
 
 /** Workflow-owned handoff of the metadata already read during live admission. */
 export function readPrAdmissionInput(path: string, repo: string, numbers: readonly number[]) {
-  const input = recordOrEmpty(JSON.parse(readFileSync(path, "utf8")));
-  const pull = recordOrEmpty(input.pull);
+  const input = asRecord(JSON.parse(readFileSync(path, "utf8")));
+  const pull = asRecord(input.pull);
   const number = Number(pull.number);
   // The workflow records the repo as GitHub spells it; fallback profiles carry
   // the lowercased slug, so compare the normalized forms.
@@ -30,7 +30,7 @@ export function readPrAdmissionInput(path: string, repo: string, numbers: readon
     url: `https://github.com/${repo}/pull/${number}`,
     createdAt: stringOrEmpty(pull.created_at),
     updatedAt: stringOrEmpty(pull.updated_at),
-    author: stringOrEmpty(recordOrEmpty(pull.user).login),
+    author: stringOrEmpty(asRecord(pull.user).login),
     authorAssociation: stringOrEmpty(pull.author_association) || "NONE",
     labels,
     locked: pull.locked === true,

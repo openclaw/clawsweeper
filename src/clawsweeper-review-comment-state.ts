@@ -3,13 +3,13 @@ import {
   LIVE_RECHECK_CLOSE_GUARD_ACTIONS,
 } from "./apply-close-actions.js";
 import {
+  CLAWSWEEPER_BOT_LOGINS,
   DEFAULT_REVIEW_CODEX_TIMEOUT_MS,
   PAIR_BLOCKED_CLOSE_ACTIONS,
   REVIEW_START_STATUS_MARKER_PREFIX,
 } from "./clawsweeper-policy.js";
 import type {
   CloseReason,
-  Item,
   ItemContext,
   ReviewStartStatusCommentOptions,
 } from "./clawsweeper-types.js";
@@ -22,6 +22,7 @@ import { normalizeRepo } from "./repository-profiles.js";
 import { trailingHtmlComments, validReviewLeaseIdentity } from "./review-comment-markers.js";
 import { neutralizeReviewControlMarkers } from "./review-history.js";
 import type { ReviewCommentWorkflowDependencies } from "./clawsweeper-review-comment-dependencies.js";
+import { asRecord } from "./value-coerce.js";
 
 export function normalizeNoopReviewMarkerMetadata(body: string): string {
   // A completed re-review must publish its freshness even when the verdict is unchanged.
@@ -31,6 +32,12 @@ export function normalizeNoopReviewMarkerMetadata(body: string): string {
   );
 }
 import type { createReviewCommentIdentity } from "./clawsweeper-review-comment-identity.js";
+import { parseIsoMs } from "./iso-time.js";
+import { frontMatterValue } from "./report-front-matter.js";
+import {
+  pullHeadShaFromReport,
+  reviewLeaseRevisionFromReport,
+} from "./clawsweeper-record-metadata.js";
 
 export function expireReviewStartStatusLease(
   body: string,
@@ -65,16 +72,9 @@ export function createReviewCommentState(
     targetRepo,
     ghPaged,
     reviewCommentBodyDigest,
-    asRecord,
     parseGitHubItemRef,
-    frontMatterValue,
-    timestampMs,
-    linkedPullRequestRefsFromText,
-    linkedPullRequestSignalContextsFromText,
     reviewCommentMarker,
     pullHeadShaFromContext,
-    pullHeadShaFromReport,
-    reviewLeaseRevisionFromReport,
     markerAttributeValue,
   } = dependencies;
 
@@ -228,11 +228,11 @@ export function createReviewCommentState(
     comments: readonly Record<string, unknown>[],
   ): Record<string, unknown> | undefined {
     return [...comments].sort((left, right) => {
-      const leftReviewedAt = timestampMs(durableReviewVersion(left, number)?.reviewedAt) ?? -1;
-      const rightReviewedAt = timestampMs(durableReviewVersion(right, number)?.reviewedAt) ?? -1;
+      const leftReviewedAt = parseIsoMs(durableReviewVersion(left, number)?.reviewedAt) ?? -1;
+      const rightReviewedAt = parseIsoMs(durableReviewVersion(right, number)?.reviewedAt) ?? -1;
       if (leftReviewedAt !== rightReviewedAt) return rightReviewedAt - leftReviewedAt;
-      const leftUpdatedAt = timestampMs(commentUpdatedAt(left)) ?? -1;
-      const rightUpdatedAt = timestampMs(commentUpdatedAt(right)) ?? -1;
+      const leftUpdatedAt = parseIsoMs(commentUpdatedAt(left)) ?? -1;
+      const rightUpdatedAt = parseIsoMs(commentUpdatedAt(right)) ?? -1;
       if (leftUpdatedAt !== rightUpdatedAt) return rightUpdatedAt - leftUpdatedAt;
       const leftId = commentId(left) ?? -1;
       const rightId = commentId(right) ?? -1;
@@ -515,7 +515,7 @@ export function createReviewCommentState(
         attributes.match(new RegExp(`\\b${name}=([^\\s>]+)`))?.[1] ?? null;
       if (Number(attribute("item")) !== number || attribute("v") !== "1") continue;
       const reviewedAt = attribute("reviewed_at");
-      if (!reviewedAt || timestampMs(reviewedAt) === null) continue;
+      if (!reviewedAt || parseIsoMs(reviewedAt) === null) continue;
       const headSha = attribute("sha");
       const sourceRevision = attribute("source_revision");
       return {
@@ -658,39 +658,26 @@ export function createReviewCommentState(
         reason: attributes.match(/\breason=([^\s>]+)/)?.[1],
       };
     }
-    const supersessionSignal =
-      /\b(supersed(?:e|ed|es|ing)|replace(?:s|d|ment)?|duplicate|duplicated|canonical|covered by|landed in)\b/i;
-    const signaledRefs = linkedPullRequestRefsFromText(body, number).filter((ref) =>
-      linkedPullRequestSignalContextsFromText(body, number, ref.number).some((context) =>
-        supersessionSignal.test(context),
-      ),
-    );
+    // The comment binds to a canonical PR only through the rendered
+    // `Canonical:` line of the typed root-cause cluster, never through prose.
     const explicitCanonicalRefs = [...body.matchAll(/^Canonical:\s+(\S+)\s*$/gm)];
-    let commentCanonicalNumber: number | undefined;
-    if (explicitCanonicalRefs.length > 0) {
-      const canonicalNumbers = new Set<number>();
-      for (const match of explicitCanonicalRefs) {
-        try {
-          const parsed = parseGitHubItemRef(
-            match[1] ?? "",
-            "durable review comment root-cause canonical",
-          );
-          // The explicit public canonical is authoritative; never reinterpret a member PR as it.
-          if (parsed.kind !== "pull_request") return false;
-          if (normalizeRepo(parsed.repo) !== normalizeRepo(targetRepo())) return false;
-          canonicalNumbers.add(parsed.number);
-        } catch {
-          return false;
-        }
+    const canonicalNumbers = new Set<number>();
+    for (const match of explicitCanonicalRefs) {
+      try {
+        const parsed = parseGitHubItemRef(
+          match[1] ?? "",
+          "durable review comment root-cause canonical",
+        );
+        // The explicit public canonical is authoritative; never reinterpret a member PR as it.
+        if (parsed.kind !== "pull_request") return false;
+        if (normalizeRepo(parsed.repo) !== normalizeRepo(targetRepo())) return false;
+        canonicalNumbers.add(parsed.number);
+      } catch {
+        return false;
       }
-      if (canonicalNumbers.size !== 1) return false;
-      commentCanonicalNumber = [...canonicalNumbers][0];
     }
-    if (explicitCanonicalRefs.length === 0) {
-      const signaledCanonicalNumbers = new Set(signaledRefs.map((ref) => ref.number));
-      if (signaledCanonicalNumbers.size !== 1) return false;
-      commentCanonicalNumber = [...signaledCanonicalNumbers][0];
-    }
+    if (canonicalNumbers.size !== 1) return false;
+    const commentCanonicalNumber = [...canonicalNumbers][0];
     return (
       latestVerdict?.verdict === "close" &&
       latestVerdict.reason === reason &&
@@ -718,8 +705,8 @@ export function createReviewCommentState(
         ? newestReviewMarkerAttribute(existingReviewComment, number, "sha")
         : undefined);
     const reportReviewedAt = frontMatterValue(markdown, "reviewed_at");
-    const liveReviewedAtMs = timestampMs(liveReviewedAt);
-    const reportReviewedAtMs = timestampMs(reportReviewedAt);
+    const liveReviewedAtMs = parseIsoMs(liveReviewedAt);
+    const reportReviewedAtMs = parseIsoMs(reportReviewedAt);
     if (liveReviewedAtMs === null) return null;
     const reportLeaseOwner = frontMatterValue(markdown, "review_lease_owner");
     const reportLeaseCommentId = frontMatterValue(markdown, "review_lease_comment_id");
@@ -757,7 +744,7 @@ export function createReviewCommentState(
       if (reportReviewedAtMs !== null && liveReviewedAtMs > reportReviewedAtMs) {
         return `live durable review comment is newer than the local report: comment reviewed_at=${liveReviewedAt}, report reviewed_at=${reportReviewedAt}`;
       }
-      const liveCommentUpdatedAtMs = timestampMs(commentUpdatedAt(existingReviewComment));
+      const liveCommentUpdatedAtMs = parseIsoMs(commentUpdatedAt(existingReviewComment));
       if (
         reportReviewedAtMs !== null &&
         liveCommentUpdatedAtMs !== null &&
@@ -877,12 +864,9 @@ export function createReviewCommentState(
   }
 
   const PATCHABLE_REVIEW_COMMENT_AUTHORS = new Set(
-    [
-      "clawsweeper",
-      "clawsweeper[bot]",
-      "openclaw-clawsweeper[bot]",
-      process.env.CLAWSWEEPER_COMMENT_AUTHOR_LOGIN,
-    ].filter((login): login is string => typeof login === "string" && login.length > 0),
+    [...CLAWSWEEPER_BOT_LOGINS, process.env.CLAWSWEEPER_COMMENT_AUTHOR_LOGIN].filter(
+      (login): login is string => typeof login === "string" && login.length > 0,
+    ),
   );
 
   function commentAuthorLogin(comment: Record<string, unknown> | undefined): string | undefined {
@@ -895,13 +879,6 @@ export function createReviewCommentState(
   function canPatchReviewComment(comment: Record<string, unknown> | undefined): boolean {
     const login = commentAuthorLogin(comment);
     return Boolean(login && PATCHABLE_REVIEW_COMMENT_AUTHORS.has(login));
-  }
-
-  function lockedConversationApplyReason(
-    item: Pick<Item, "activeLockReason" | "locked">,
-  ): string | null {
-    if (!item.locked) return null;
-    return `conversation is locked${item.activeLockReason ? ` (${item.activeLockReason})` : ""}`;
   }
 
   return {
@@ -944,6 +921,5 @@ export function createReviewCommentState(
     PATCHABLE_REVIEW_COMMENT_AUTHORS,
     commentAuthorLogin,
     canPatchReviewComment,
-    lockedConversationApplyReason,
   };
 }

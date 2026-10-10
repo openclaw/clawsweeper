@@ -336,7 +336,7 @@ test("introduced downgrade and cross-file trigger remain reviewer-owned evidence
     f.put(upgradeFiles[4]!, "Codex 0.149.1\n");
     f.put("src/caller.ts", 'export const mode = "unsafe";\n');
     const H = f.commit("real introduced downgrade and caller regression");
-    const { evidence, prompt } = promptEvidence({ ...f, H }, { mergeCommitSha: undefined });
+    const { evidence } = promptEvidence({ ...f, H }, { mergeCommitSha: undefined });
     assert.equal(evidence.mergeBase.sha, f.M);
     assert.match(
       git(f.root, "diff", evidence.introduced.fromSha, evidence.introduced.toSha),
@@ -345,8 +345,6 @@ test("introduced downgrade and cross-file trigger remain reviewer-owned evidence
     assert.equal(Object.hasOwn(evidence.introduced, "patch"), false);
     assert.ok(evidence.introduced.files.includes("src/caller.ts"));
     assert.ok(!evidence.introduced.files.includes("src/consumer.ts"));
-    assert.match(prompt, /untouched affected file/);
-    assert.match(prompt, /causal link/);
   } finally {
     rmSync(f.root, { recursive: true, force: true });
   }

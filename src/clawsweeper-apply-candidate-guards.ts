@@ -8,13 +8,13 @@ import type {
   PrCloseCoverageProofGateResult,
 } from "./clawsweeper-types.js";
 import type { PrCloseCoverageProofRuntime } from "./pr-close-coverage-proof.js";
+import { frontMatterValue } from "./report-front-matter.js";
 
 type ApplyCandidateGuardDependencies = Pick<
   CreateApplyDecisionWorkflowDependencies,
   | "authorPrBudgetApplyGateSafe"
   | "authorPrBudgetMaxClosesPerRun"
   | "coverageProofRetryExhaustedRuntimeBudget"
-  | "frontMatterValue"
   | "obsoleteFixPrApplyBlockReasonSafe"
   | "prCloseCoverageProofGateResult"
   | "staleVersionBugApplyBlockReasonSafe"
@@ -42,7 +42,6 @@ export function createApplyCandidateGuards(
     authorPrBudgetApplyGateSafe,
     authorPrBudgetMaxClosesPerRun,
     coverageProofRetryExhaustedRuntimeBudget,
-    frontMatterValue,
     obsoleteFixPrApplyBlockReasonSafe,
     prCloseCoverageProofGateResult,
     staleVersionBugApplyBlockReasonSafe,

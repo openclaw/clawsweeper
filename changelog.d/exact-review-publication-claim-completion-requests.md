@@ -1,0 +1,1 @@
+- Build the exact-review publication claim and completion bodies and classify the publication claim's safe 409 conflicts with `exact-review-queue-request.ts claim publication`, `complete publication` and `claim conflict`, downloaded for the pinned workflow commit, instead of three inline Node scripts in `sweep.yml`.

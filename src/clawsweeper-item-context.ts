@@ -1,3 +1,4 @@
+import { sha256 } from "./content-hash.js";
 import type {
   ContextHydration,
   GithubPageWithHeaders,
@@ -20,9 +21,9 @@ import {
   type LiveReadGeneration,
   type LiveReadOptions,
 } from "./live-read-generation.js";
+import { asRecord, nonBlankStringOrUndefined } from "./value-coerce.js";
 
 interface CreateItemContextDependencies {
-  asRecord: (value: unknown) => Record<string, unknown>;
   closingPullRequestsForIssue: (number: number) => unknown[];
   compactComment: (value: unknown) => unknown;
   compactIssue: (value: unknown) => unknown;
@@ -94,14 +95,12 @@ interface CreateItemContextDependencies {
     pullRequest: unknown;
     targetDir: string;
   }) => void;
-  sha256: (text: string) => string;
-  stringOrUndefined: (value: unknown) => string | undefined;
+
   targetRepo: () => string;
 }
 
 export function createItemContext(dependencies: CreateItemContextDependencies) {
   const {
-    asRecord,
     closingPullRequestsForIssue,
     compactComment,
     compactIssue,
@@ -128,8 +127,7 @@ export function createItemContext(dependencies: CreateItemContextDependencies) {
     reviewCommentContentRevision,
     reviewTimelineDigestParts,
     hydratePullRequestReviewSource,
-    sha256,
-    stringOrUndefined,
+
     targetRepo,
   } = dependencies;
 
@@ -288,8 +286,8 @@ export function createItemContext(dependencies: CreateItemContextDependencies) {
         options.pullRequestPayload ??
         readJson<unknown>(["api", `repos/${targetRepo()}/pulls/${item.number}`]);
       const pullRecord = asRecord(pullRequest);
-      const pullUpdatedAt = stringOrUndefined(pullRecord.updated_at);
-      const pullHeadSha = stringOrUndefined(asRecord(pullRecord.head).sha);
+      const pullUpdatedAt = nonBlankStringOrUndefined(pullRecord.updated_at);
+      const pullHeadSha = nonBlankStringOrUndefined(asRecord(pullRecord.head).sha);
       const pullChangedFileCount = nonnegativeCount(pullRecord.changed_files);
       const pullCommitCount = nonnegativeCount(pullRecord.commits);
       const pullReviewCommentCount = nonnegativeCount(pullRecord.review_comments);
@@ -423,7 +421,7 @@ export function createItemContext(dependencies: CreateItemContextDependencies) {
           fullPullReviewComments,
         );
         if (pullReviewActivityCursor) context.pullReviewActivityCursor = pullReviewActivityCursor;
-        const headSha = stringOrUndefined(asRecord(pullRecord.head).sha);
+        const headSha = nonBlankStringOrUndefined(asRecord(pullRecord.head).sha);
         context.pullChecks = headSha
           ? pullChecksContext(item.number, headSha)
           : {

@@ -32,7 +32,8 @@ import {
   githubReadModelRequestSync,
   usableGithubReadModelResponse,
 } from "./github-webhook-read-model-client.js";
-import { recordOrEmpty as jsonRecord } from "./value-coerce.js";
+import { asRecord as jsonRecord } from "./value-coerce.js";
+import { indexedExistingReview } from "./clawsweeper-record-metadata.js";
 
 export {
   PR_ACTIVITY_REVISION_CONNECTION_LIMIT,
@@ -47,8 +48,7 @@ export interface PlannedPrActivityRevisions {
 }
 
 export function createReviewPlanningInventory(dependencies: ReviewPlanningDependencies) {
-  const { targetRepo, ghJson, ghJsonLines, normalizeAuthorAssociation, indexedExistingReview } =
-    dependencies;
+  const { targetRepo, ghJson, ghJsonLines, normalizeAuthorAssociation } = dependencies;
   const readModelRequest = dependencies.githubReadModelRequestSync ?? githubReadModelRequestSync;
 
   function isFresh(
@@ -127,7 +127,7 @@ export function createReviewPlanningInventory(dependencies: ReviewPlanningDepend
       "api",
       `repos/${targetRepo()}/issues?state=open&sort=${sort}&direction=${direction}&per_page=100&page=${page}`,
       "--jq",
-      ".[] | {number,title,html_url,created_at,updated_at,author_association,user:{login:.user.login},labels:[.labels[].name],pull_request:(.pull_request // null)}",
+      ".[] | {number,title,html_url,created_at,updated_at,author_association,user:{login:.user.login},labels:[.labels[].name],pull_request:(.pull_request // null),locked}",
     ]);
     return items
       .map((item) => ({
@@ -141,6 +141,7 @@ export function createReviewPlanningInventory(dependencies: ReviewPlanningDepend
         author: item.user?.login ?? "unknown",
         authorAssociation: normalizeAuthorAssociation(item.author_association),
         labels: item.labels ?? [],
+        locked: item.locked === true,
       }))
       .sort((a, b) => a.number - b.number);
   }

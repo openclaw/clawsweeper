@@ -1,4 +1,4 @@
-import { recordOrEmpty as object } from "../src/value-coerce.ts";
+import { asRecord as object } from "../src/value-coerce.ts";
 
 export const APPLY_OBSERVABILITY_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 export const APPLY_OBSERVABILITY_RANGES = {

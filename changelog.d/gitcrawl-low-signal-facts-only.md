@@ -1,0 +1,1 @@
+- Gitcrawl low-signal PR selection scores facts only (no update in `--stale-days`, outside author, draft, broad file count) instead of title, body and path keywords, and no longer holds back PRs whose text mentions a bug or fix; the repair worker judges `close_low_signal`.

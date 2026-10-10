@@ -65,8 +65,6 @@ test("review live proof inspection rejects invalid persisted plans", () => {
           {
             materializePullRequestReviewTree: () =>
               assert.fail("inspection must not materialize a target checkout"),
-            frontMatterValue: (markdown, key) =>
-              new RegExp(`^${key}:\\s*(.*)$`, "m").exec(markdown)?.[1]?.trim(),
             reportLiveProofPlan: () => ({
               status: "not_applicable",
               surface: "none",
@@ -182,8 +180,6 @@ test(
             DATABASE_PASSWORD: "must-not-cross",
             PACKAGE_KEY: "must-not-cross",
           },
-          frontMatterValue: (markdown, key) =>
-            new RegExp(`^${key}:\\s*(.*)$`, "m").exec(markdown)?.[1]?.trim(),
           reportLiveProofPlan: () => plan,
           repositoryProfileFor: () => ({
             targetRepo: "openclaw/sanitized-fixture",
@@ -1499,8 +1495,6 @@ process.exit(process.argv.includes('fail') ? 7 : 0);
               DATABASE_PASSWORD: "must-not-cross",
               PACKAGE_KEY: "must-not-cross",
             },
-            frontMatterValue: (markdown, key) =>
-              new RegExp(`^${key}:\\s*(.*)$`, "m").exec(markdown)?.[1]?.trim(),
             reportLiveProofPlan: () => plan,
             repositoryProfileFor,
             log: (message) => logs.push(message),

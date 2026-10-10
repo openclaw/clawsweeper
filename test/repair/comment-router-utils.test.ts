@@ -6,28 +6,30 @@ import test from "node:test";
 
 import {
   SUPERSEDED_RE_REVIEW_REASON,
-  appendLedger,
   commentBodySha256,
-  dispatchClaimDecision,
-  dispatchClaimLookupKeys,
-  dispatchReceiptKeyMaterial,
-  endorReviewRevisionDeliveryId,
   exactCommentVersionFastPathDecision,
   exactCommentVersionMatchesLive,
-  hasSuccessfulDispatchExecutionJob,
-  isGitHubAppIntegrationAuthError,
-  isAllowedMutationActor,
-  normalizeGitHubActor,
-  readLedger,
-  routerDispatchReceiptKey,
   routedCommentSourceDeliveryId,
   selectCommentsForRouting,
   shouldSuppressProcessedCommentVersion,
   sortCommentsForRouting,
   supersededReReviewCommentVersions,
   summarizeChecks,
-  writeLedger,
 } from "../../dist/repair/comment-router-utils.js";
+import {
+  dispatchClaimDecision,
+  dispatchClaimLookupKeys,
+  dispatchReceiptKeyMaterial,
+  endorReviewRevisionDeliveryId,
+  hasSuccessfulDispatchExecutionJob,
+  routerDispatchReceiptKey,
+} from "../../dist/repair/comment-router/dispatch.js";
+import {
+  isAllowedMutationActor,
+  isGitHubAppIntegrationAuthError,
+  normalizeGitHubActor,
+} from "../../dist/repair/comment-router/admission.js";
+import { appendLedger, readLedger, writeLedger } from "../../dist/repair/comment-router/ledger.js";
 import { forcedReplayCommandFields, readCommentRouterConfig } from "../../dist/repair/config.js";
 
 test("exact terminal comment versions short-circuit duplicate created deliveries", () => {

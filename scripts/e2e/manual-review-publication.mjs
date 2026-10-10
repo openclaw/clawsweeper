@@ -859,7 +859,9 @@ exec '${process.execPath}' '${transport}' curl "\${args[@]}"
     }
     const work = join(root, repeatRunId ? `${number}-${runId}` : String(number));
     mkdirSync(join(work, "artifacts/event"), { recursive: true });
+    // Workflow steps run from a built checkout: scripts and dist sit side by side.
     symlinkSync(join(source, "scripts"), join(work, "scripts"));
+    symlinkSync(join(source, "dist"), join(work, "dist"));
     const env = {
       GITHUB_RUN_ID: runId,
       EXACT_REVIEW_ITEM_KEY: tuple.item_key,

@@ -1,3 +1,5 @@
+import type { MergeRiskLabelName } from "./clawsweeper-policy.js";
+import type { BULK_FILED_LABEL } from "./repair/exact-review-guard-labels.js";
 import type { MaintainerDecision } from "./decision-packets.js";
 import type { PrCloseCoverageProofModelResult } from "./pr-close-coverage-proof.js";
 import type { RepositoryProfile } from "./repository-profiles.js";
@@ -8,6 +10,8 @@ import type {
 } from "./review-history.js";
 import type { ReviewStructuralRecord } from "./review-structural-cache.js";
 import type { PrHydrationSnapshot } from "./pr-hydration-snapshot.js";
+import type { ReviewHistoryCoverage } from "./pr-review-history.js";
+import type { ProvenanceEvidence } from "./pr-review-provenance.js";
 import type { SchedulerDueCandidate } from "./scheduler-policy.js";
 
 /** Shared ClawSweeper domain, review, scheduling, and dashboard shapes. */
@@ -61,15 +65,6 @@ export type ImpactLabelName =
   | "impact:ux-release-blocker"
   | "impact:ux-friction"
   | "impact:other";
-export type MergeRiskLabelName =
-  | "merge-risk: 🚨 compatibility"
-  | "merge-risk: 🚨 message-delivery"
-  | "merge-risk: 🚨 session-state"
-  | "merge-risk: 🚨 auth-provider"
-  | "merge-risk: 🚨 security-boundary"
-  | "merge-risk: 🚨 availability"
-  | "merge-risk: 🚨 automation"
-  | "merge-risk: 🚨 other";
 export type MaturityLabelName = "maturity:stable";
 export type MergeRiskOptionCategory = "fix_before_merge" | "accept_risk" | "pause_or_close";
 export type ReviewLabelName =
@@ -120,6 +115,29 @@ export type RealBehaviorProofEvidenceKind =
   | "none"
   | "not_applicable";
 export type PrRatingTier = "S" | "A" | "B" | "C" | "D" | "F" | "NA";
+export type ProductReviewKind =
+  | "bug_fix"
+  | "preference"
+  | "feature"
+  | "refactor"
+  | "performance"
+  | "test_only"
+  | "docs"
+  | "maintenance"
+  | "not_applicable";
+export type ProductFixScope = "complete" | "partial" | "not_applicable";
+export type ProductWorthIt = "yes" | "no" | "needs_maintainer" | "not_applicable";
+export type ProvenanceVerdict =
+  | "respects"
+  | "overrides_with_reason"
+  | "overrides_without_reason"
+  | "unknown";
+export type TestingProofPath =
+  | "shipped_entry_point"
+  | "in_process_harness"
+  | "unit_only"
+  | "none"
+  | "not_applicable";
 export type PrStatusLabelKind =
   | "automerge_armed"
   | "re_review_loop"
@@ -152,14 +170,6 @@ export type LiveProofTerminalStep =
   | { action: "wait"; seconds: number }
   | { action: "expect_output"; text: string };
 export type LiveProofStep = LiveProofBrowserStep | LiveProofTerminalStep;
-export type MantisRecommendationStatus = "recommended" | "not_recommended";
-export type MantisRecommendationScenario =
-  | "none"
-  | "discord_status_reactions"
-  | "discord_thread_attachment"
-  | "web_ui_chat_proof"
-  | "slack_desktop_smoke"
-  | "visual_task";
 export type VisionFitStatus = "aligned" | "rejected" | "unclear" | "not_applicable";
 export type ImplementationComplexity = "small" | "medium" | "large" | "unclear" | "not_applicable";
 export type AutoImplementationCandidate = "none" | "strict_bug" | "vision_fit";
@@ -233,6 +243,7 @@ export interface GitHubIssueListItem {
   user?: GitHubUser;
   labels?: string[];
   pull_request?: unknown;
+  locked?: boolean;
 }
 
 export interface Item {
@@ -257,7 +268,7 @@ export interface BulkFilerReviewContext {
   threshold: number;
   windowDays: number;
   windowStart: string;
-  label: "clawsweeper:bulk-filed";
+  label: typeof BULK_FILED_LABEL;
 }
 
 export interface BulkFilerDetectionResult {
@@ -423,6 +434,38 @@ export interface PrRating {
   nextSteps: string[];
 }
 
+export interface ChangeExample {
+  scenario: string;
+  before: string;
+  after: string;
+}
+
+export interface ProductReview {
+  kind: ProductReviewKind;
+  userProblem: string;
+  fixScope: ProductFixScope;
+  worthIt: ProductWorthIt;
+  reason: string;
+}
+
+export interface ProvenanceEntry {
+  area: string;
+  introducedBy: string;
+  originalReason: string;
+  verdict: ProvenanceVerdict;
+}
+
+export interface LowValueTest {
+  file: string;
+  reason: string;
+}
+
+export interface TestingReview {
+  proofPath: TestingProofPath;
+  lowValueTests: LowValueTest[];
+  missingE2e: string;
+}
+
 export interface TelegramVisibleProof {
   status: TelegramVisibleProofStatus;
   summary: string;
@@ -440,13 +483,6 @@ export interface LiveProofPlan {
   };
   entry: string;
   steps: LiveProofStep[];
-}
-
-export interface MantisRecommendation {
-  status: MantisRecommendationStatus;
-  scenario: MantisRecommendationScenario;
-  reason: string;
-  maintainerComment: string;
 }
 
 export interface FeatureShowcase {
@@ -468,6 +504,14 @@ export interface RootCauseClusterAssessment {
   members: RootCauseClusterMember[];
 }
 
+/** Who identified the fixing PR. Only the "GitHub ..." sources are GitHub-verified. */
+export type FixedPullRequestSource =
+  | "GitHub closing PR reference"
+  | "GitHub linked-issue current closing PR"
+  | "GitHub reviewed implementation landing"
+  | "GitHub commit PR lookup"
+  | "report metadata";
+
 export interface FixedPullRequest {
   repo: string;
   number: number;
@@ -476,7 +520,7 @@ export interface FixedPullRequest {
   mergedAt: string | null;
   sha: string | null;
   confidence: Confidence;
-  source: string;
+  source: FixedPullRequestSource;
 }
 
 /**
@@ -574,6 +618,7 @@ export interface Decision {
   confidence: Confidence;
   summary: string;
   changeSummary: string;
+  changeExample: ChangeExample;
   systemContext: string;
   architectureDiagram: string;
   evidence: Evidence[];
@@ -603,13 +648,14 @@ export interface Decision {
   autoImplementationCandidate: AutoImplementationCandidate;
   rootCauseCluster: RootCauseClusterAssessment;
   agentsPolicyStatus: AgentsPolicyStatus;
+  productReview: ProductReview;
+  provenance: ProvenanceEntry[];
+  testingReview: TestingReview;
   reviewFindings: ReviewFinding[];
   securityReview: SecurityReview;
   realBehaviorProof: RealBehaviorProof;
   prRating: PrRating;
   telegramVisibleProof: TelegramVisibleProof;
-  liveProofPlan: LiveProofPlan;
-  mantisRecommendation: MantisRecommendation;
   featureShowcase: FeatureShowcase;
   overallCorrectness: OverallCorrectness;
   overallConfidenceScore: number;
@@ -785,6 +831,10 @@ export interface ReviewPromptRuntimeHints {
   proofScratchDir?: string;
   mediaProofManifestPath?: string;
   mediaProofSummary?: string;
+  // Host-computed before the review; pull request prompts render it as evidence.
+  provenanceEvidence?: ProvenanceEvidence;
+  // Host-prefetched Git history; pull request prompts state what is local.
+  historyCoverage?: ReviewHistoryCoverage;
 }
 
 export interface DashboardItem {
@@ -1124,9 +1174,17 @@ export type GitHubFallbackClaim = GitHubRequestReservation & {
   env: NodeJS.ProcessEnv;
 };
 
+/** The outcome of a request's first attempt, already dispatched elsewhere. */
+export type GitHubFirstAttempt = { output: string } | { error: unknown };
+
+/** One read of a `ghJsonEach` batch: its value, or the error `ghJson` threw. */
+export type GitHubJsonResult<T> = { ok: true; value: T } | { ok: false; error: unknown };
+
 export type GitHubRetryOptions = GitHubDeadlineOptions & {
   request?: ((args: string[], attempt: number) => string) | undefined;
   sleepBeforeRetry?: ((waitMs: number) => void) | undefined;
+  /** Replayed as attempt one; later attempts, fallbacks and checks are unchanged. */
+  firstAttempt?: GitHubFirstAttempt | undefined;
 };
 
 export type MutationRunner = <T>(options: {
@@ -1142,10 +1200,6 @@ export type GitHubDispatchOutcome =
   | "ambiguous_transport"
   | "accepted";
 
-export type DecisionNormalizationItem = Pick<
-  Item,
-  "repo" | "number" | "kind" | "authorAssociation"
->;
 export type RootCauseNormalizationItem = Pick<Item, "repo" | "number" | "kind">;
 
 export interface ParsedGitHubItemRef {
@@ -1290,23 +1344,6 @@ export interface FileModeSnapshot {
   mode: number;
 }
 
-export type PublicPriority = "P0" | "P1" | "P2";
-
-export interface ConfigSurfaceChange {
-  change: boolean;
-  keys: string[];
-}
-
-export interface DataModelChange {
-  change: boolean;
-  surfaces: string[];
-}
-
-export interface SqliteSchemaChange {
-  change: boolean;
-  files: string[];
-}
-
 export interface IssueAdvisoryLabelState {
   type: string | undefined;
   itemCategory: string | undefined;
@@ -1333,9 +1370,8 @@ export interface PullRequestClosePromotion {
   closeReason: CloseReason;
   summary: string;
   bestSolution: string;
-  evidence: string;
+  evidence: Evidence[];
   closeComment: string;
-  coverageProofFallbackRefs: boolean;
 }
 
 export interface LinkedPullRequestSupersession {
@@ -1347,8 +1383,6 @@ export interface LinkedPullRequestSupersession {
   mergeableState: string | null;
   draft: boolean;
   labels: string[];
-  files: string[];
-  filesKnown: boolean;
 }
 
 export interface LinkedPullRequestSupersessionResolution {

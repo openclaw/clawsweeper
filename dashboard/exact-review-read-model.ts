@@ -9,6 +9,7 @@ import {
   isLowPriorityExactReviewDecision,
 } from "./exact-review-decision.ts";
 import { exactReviewScheduledLane, numberFrom } from "./exact-review-queue-shared.ts";
+import { exactReviewHoldReason } from "./exact-review-review-loop.ts";
 import type {
   ExactReviewDispatchFailureDetail,
   ExactReviewGithubCredentialCircuit,
@@ -100,6 +101,8 @@ export function exactReviewParkedOperatorEligible(item: ExactReviewQueueItem) {
     item.state === "parked" &&
     !exactReviewQueueIsPublication(item) &&
     (item.parkedReason === "source_incompatible" ||
+      item.parkedReason === "source_drift_loop" ||
+      exactReviewHoldReason(item.parkedReason) !== null ||
       ((item.parkedReason === "dispatch_rejected" ||
         item.parkedReason === "review_retry_exhausted") &&
         exactReviewParkedRecoveryAttempts(item.parkedRecoveryAttempts) >=
@@ -174,6 +177,8 @@ const EXACT_REVIEW_BAY_TARGET_PATTERN = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
 const EXACT_REVIEW_BAY_ITEM_KEY_PATTERN = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+#\d+$/;
 const EXACT_REVIEW_BAY_MAX_TIMESTAMP = 8_640_000_000_000_000;
 const EXACT_REVIEW_QUEUE_STATES = new Set(["pending", "dispatching", "leased", "parked"]);
+// Stats-only parked reason; the durable row keeps its pending state.
+const EXACT_REVIEW_STALE_REVISION_PARKED_REASON = "stale_revision";
 const EXACT_REVIEW_BAY_STAGES = [
   "arriving",
   "setting-up",
@@ -343,7 +348,15 @@ function observeExactReviewQueueLane(
   item: ExactReviewQueueItem,
   state: ExactReviewQueueState,
   now: number,
+  staleRevisionHold = false,
 ) {
+  // A superseded publication retained for its command acknowledgement is
+  // durably pending but excluded from every claim. Report it as held, not ready.
+  if (staleRevisionHold) {
+    lane.parked += 1;
+    incrementExactReviewReason(lane.parkedReasons, EXACT_REVIEW_STALE_REVISION_PARKED_REASON);
+    return;
+  }
   if (item.state === "pending") {
     lane.pending += 1;
     if (
@@ -439,6 +452,7 @@ function buildExactReviewQueueCensus(
     publicationDispatchLeaseMs = DEFAULT_EXACT_REVIEW_PUBLICATION_DISPATCH_LEASE_MS,
     heartbeatGraceMs = DEFAULT_EXACT_REVIEW_HEARTBEAT_GRACE_MS,
     excludedItemKeys = new Set<string>(),
+    staleRevisionItemKeys = new Set<string>(),
     collectBay = true,
   }: {
     state: ExactReviewQueueState;
@@ -448,6 +462,7 @@ function buildExactReviewQueueCensus(
     publicationDispatchLeaseMs?: number;
     heartbeatGraceMs?: number;
     excludedItemKeys?: ReadonlySet<string>;
+    staleRevisionItemKeys?: ReadonlySet<string>;
     collectBay?: boolean;
   },
 ): ExactReviewQueueCensus {
@@ -528,9 +543,11 @@ function buildExactReviewQueueCensus(
       decision?.sourceAction === FAILED_REVIEW_SHARD_RECOVERY_SOURCE_ACTION &&
       typeof item.key === "string" &&
       publishingReviewKeys.has(item.key.toLowerCase());
+    const staleRevisionHold =
+      isPublication && item.state === "pending" && staleRevisionItemKeys.has(item.key);
     const lane = isPublication ? publication : review;
-    observeExactReviewQueueLane(lane, item, state, now);
-    observeExactReviewQueueLane(all, item, state, now);
+    observeExactReviewQueueLane(lane, item, state, now, staleRevisionHold);
+    observeExactReviewQueueLane(all, item, state, now, staleRevisionHold);
 
     if (targetRepo !== null) {
       const target = census.targets.get(targetRepo) ?? {
@@ -541,7 +558,7 @@ function buildExactReviewQueueCensus(
         parked: 0,
         oldest_pending_at: null,
       };
-      if (item.state === "pending") {
+      if (item.state === "pending" && !staleRevisionHold) {
         target.pending += 1;
         target.oldest_pending_at =
           target.oldest_pending_at === null
@@ -561,6 +578,7 @@ function buildExactReviewQueueCensus(
       decision &&
       targetRepo !== null &&
       !excludedItemKeys.has(item.key) &&
+      !staleRevisionHold &&
       !deferredShardRecovery &&
       stateValid
     ) {
@@ -690,6 +708,8 @@ function observeExactReviewBayCandidate(
   // The retained refusal is a terminal failure, not a waiting review. Bay's
   // lifecycle projection owns its failed card; the queue only retains the hold.
   if (item.state === "parked" && item.parkedReason === "scanner_refused") return true;
+  // A held no-op already completed; the lifecycle projection owns its card.
+  if (item.state === "parked" && exactReviewHoldReason(item.parkedReason) !== null) return true;
   // Show the publication while its settlement still gates the retained recovery.
   if (deferredShardRecovery) return true;
   const canonicalRepository = repository.toLowerCase();
@@ -1098,6 +1118,7 @@ export function exactReviewQueueStats(
   excludedItemKeys: ReadonlySet<string> = new Set(),
   publicationBlockedUntil: number | null = null,
   scheduledCapacity = Number.POSITIVE_INFINITY,
+  staleRevisionItemKeys: ReadonlySet<string> = new Set(),
 ) {
   const items = Object.values(state.items);
   const census = buildExactReviewQueueCensus(items, {
@@ -1108,6 +1129,7 @@ export function exactReviewQueueStats(
     publicationDispatchLeaseMs,
     heartbeatGraceMs,
     excludedItemKeys,
+    staleRevisionItemKeys,
   });
   const safeNow = finiteExactReviewTimestamp(now, Date.now());
   const handoffHealth = projectExactReviewHandoff({

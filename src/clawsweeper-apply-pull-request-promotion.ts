@@ -1,4 +1,5 @@
 import type { CreateApplyDecisionWorkflowDependencies } from "./clawsweeper-apply-dependencies.js";
+import { authorPrBudgetCloseEnabled } from "./policy-flags.js";
 import { reportAllowsAutomation } from "./manual-publication-policy.js";
 import type {
   AuthorPrBudgetApplyGate,
@@ -7,18 +8,17 @@ import type {
   ItemContext,
   PullRequestClosePromotion,
 } from "./clawsweeper-types.js";
+import { reviewReportCanPromoteToClose } from "./clawsweeper-record-metadata.js";
+import { authorPrBudgetSignalBlockReason } from "./clawsweeper-apply-guard-activity.js";
 
 type ApplyPullRequestPromotionDependencies = Pick<
   CreateApplyDecisionWorkflowDependencies,
   | "authorPrBudgetAgeSkipReason"
-  | "authorPrBudgetCloseEnabled"
   | "authorPrBudgetPromotion"
-  | "authorPrBudgetSignalBlockReason"
   | "closeReasonEnabled"
   | "itemSnapshotHash"
   | "livePullRequestHasNoDiff"
   | "pullRequestClosePromotion"
-  | "reviewReportCanPromoteToClose"
   | "upgradeNoDiffPullRequestReport"
   | "upgradePullRequestClosePromotionReport"
 >;
@@ -48,14 +48,11 @@ export function promoteApplyPullRequest(
 ) {
   const {
     authorPrBudgetAgeSkipReason,
-    authorPrBudgetCloseEnabled,
     authorPrBudgetPromotion,
-    authorPrBudgetSignalBlockReason,
     closeReasonEnabled,
     itemSnapshotHash,
     livePullRequestHasNoDiff,
     pullRequestClosePromotion,
-    reviewReportCanPromoteToClose,
     upgradeNoDiffPullRequestReport,
     upgradePullRequestClosePromotionReport,
   } = dependencies;

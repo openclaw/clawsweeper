@@ -20,6 +20,7 @@ import {
   prRatingReportSection,
   promotionGhMock,
   realBehaviorProofReportSection,
+  readText,
   reportFrontMatter,
   reportWithSyncedReviewComment,
   runApplyDecisionsForTest,
@@ -81,7 +82,7 @@ fixed_pr_merged_at: unknown`;
 fixed_pr_url: https://github.com/openclaw/openclaw/pull/456
 fixed_pr_number: 456
 fixed_pr_confidence: high
-fixed_pr_source: GitHub linked-issue closing PR reference
+fixed_pr_source: "GitHub linked-issue current closing PR"
 fixed_pr_merged_at: 2026-08-18T12:00:00Z`;
   assert.equal(
     implementedOnMainCloseProvenanceBlock(verified, "pull_request", 118679, "implemented_on_main"),
@@ -131,9 +132,7 @@ test("closeout receipts ignore spoofed markers after posting the owned receipt",
       root,
       targetRepo: () => "openclaw/clawsweeper",
       ghPaged: () => comments,
-      asRecord: (value: unknown) => value as Record<string, unknown>,
       ensureDir: (directory: string) => mkdirSync(directory, { recursive: true }),
-      sha256: () => "body-digest",
       ghObservedMutationCommand: ({ args }) => {
         mutationCount += 1;
         const input = args[args.indexOf("--input") + 1];
@@ -141,13 +140,8 @@ test("closeout receipts ignore spoofed markers after posting the owned receipt",
         comments.push({ id: 2, user: { login: "clawsweeper[bot]" }, body });
         return JSON.stringify({ id: 2 });
       },
-      frontMatterValue: () => undefined,
-      replaceFrontMatterValue: (markdown: string) => markdown,
-      sectionValue: () => "",
-      timestampMs: () => null,
       sentence: (value: string) => value,
       normalizedLabelSet: () => new Set<string>(),
-      sectionLineValue: () => undefined,
       markdownLink: (label: string, url: string) => `[${label}](${url})`,
       closeAppliedCommentMarker: (number: number) =>
         `<!-- clawsweeper-close-applied item=${number} -->`,
@@ -3027,7 +3021,7 @@ if (args[0] === "api" && /\\/issues\\/74484$/.test(path)) {
   }
 });
 
-test("apply-decisions routes parsed security owner acceptance to maintainer review", () => {
+test("apply-decisions keeps a listed security owner acceptance out of ready and author wait", () => {
   const root = mkdtempSync(tmpPrefix);
   try {
     const { itemsDir, closedDir, plansDir, reportPath } = createApplyDirectories(root);
@@ -3113,12 +3107,13 @@ Full review comments:
       },
     );
 
+    // The acceptance is still a Before-merge item, so no status label claims readiness.
     const updatedReport = readFileSync(itemPath, "utf8");
-    assert.match(updatedReport, /status: 👀 ready for maintainer look/);
+    assert.doesNotMatch(updatedReport, /status: 👀 ready for maintainer look/);
     assert.doesNotMatch(updatedReport, /status: ⏳ waiting on author/);
     const labelCalls = readFileSync(labelLogPath, "utf8");
     assert.match(labelCalls, /--remove-label status: ⏳ waiting on author/);
-    assert.match(labelCalls, /--add-label status: 👀 ready for maintainer look/);
+    assert.doesNotMatch(labelCalls, /--add-label status:/);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -3879,7 +3874,7 @@ for (const scenario of [
           : `https://github.com/openclaw/clawsweeper/pull/${mismatchedCanonical ? "901" : "900"}`,
         fixed_pr_number: mismatchedCanonical ? "901" : "900",
         fixed_pr_confidence: "high",
-        fixed_pr_source: "GitHub verified implementation landing",
+        fixed_pr_source: "GitHub reviewed implementation landing",
         fixed_pr_merged_at: "2026-05-01T02:00:00Z",
         fixed_sha: "1234567890abcdef1234567890abcdef12345678",
         fixed_at: "2026-05-01T02:00:00Z",
@@ -3893,7 +3888,7 @@ for (const scenario of [
         fixed_pr_url: "https://github.com/openclaw/clawsweeper/pull/900",
         fixed_pr_number: "900",
         fixed_pr_confidence: "high",
-        fixed_pr_source: "GitHub verified implementation landing",
+        fixed_pr_source: "GitHub reviewed implementation landing",
         fixed_pr_merged_at: missingCanonicalMerge ? "unknown" : "2026-05-01T02:00:00Z",
       }).replaceAll("openclaw/openclaw", "openclaw/clawsweeper");
       const linkedIssueSynced = reportWithSyncedReviewComment(
@@ -4735,4 +4730,20 @@ if (args[0] === "api" && args[1] === "-i" && /\\/issues\\/322\\/timeline(?:\\?|$
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+test("a blocked exact close discards staged labels before it writes the report", () => {
+  // Staged labels must not reach GitHub when the close is blocked and only the report changes.
+  const source = readText("src/clawsweeper-apply-decision-workflow.ts");
+  const start = source.indexOf("if (closeBlockedForCommentSync) {");
+  const blocked = source.slice(start, source.indexOf("clawSweeperLabelsChanged &&", start));
+  assert.match(blocked, /discardIssueLabelBatch\(\);[^]*writeReportMarkdown\(path, markdown\)/);
+});
+
+test("labels_synced_at is recorded only after a confirmed label mutation", () => {
+  // An unconfirmed label write must not claim that the labels are in sync.
+  assert.match(
+    readText("src/clawsweeper-apply-decision-workflow.ts"),
+    /if \(confirmed\) rememberPublishedLabelSync\(\);/,
+  );
 });

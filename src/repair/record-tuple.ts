@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { sha256 } from "../content-hash.ts";
 
 export type RecordTupleIdentity = {
   repository: string;
@@ -440,7 +440,7 @@ function validatePacketReference(
   if (tuple.packet === null) {
     throw tupleError(tuple.paths, `${label} references a missing decision packet`);
   }
-  const actual = createHash("sha256").update(tuple.packet).digest("hex");
+  const actual = sha256(tuple.packet);
   if (actual !== digest) {
     throw tupleError(tuple.paths, `${label} decision packet digest mismatch`);
   }

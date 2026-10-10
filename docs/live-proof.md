@@ -129,30 +129,15 @@ Historical `liveProofPlan` artifacts retain the publication compatibility below.
 
 ## Decision compatibility
 
-`liveProofPlan` remains a required decision and report field so older records
-continue to parse. New model output is constrained to this empty compatibility
-shape:
-
-```json
-{
-  "status": "not_applicable",
-  "surface": "none",
-  "terminalCompletion": "not_applicable",
-  "reason": "Automatic live proof is retired.",
-  "payoff": {
-    "kind": "static_text",
-    "justification": "No recording payoff is assessed."
-  },
-  "entry": "",
-  "steps": []
-}
-```
-
-The runtime parser deliberately continues to accept historical
-`recommended` and `declined_suspicious` plans, browser and terminal surfaces,
-visual payoff kinds, entries, and typed steps. Report generation and parsing
-also retain those values. This backward compatibility does not authorize new
-automatic execution.
+`liveProofPlan` is no longer a decision field: the review schema, prompt, and
+report renderer omit it, and new reports carry no `## Live Proof` section or
+`live_proof_*` front matter. Historical reports keep their `## Live Proof`
+section, and the report reader still parses it (including `recommended` and
+`declined_suspicious` plans, browser and terminal surfaces, visual payoff
+kinds, entries, and typed steps) for the retained live-proof commands and
+attached-verification markers. A report without the section reads as a
+non-runnable plan with no attached verification. This backward compatibility
+does not authorize new automatic execution.
 
 Repository `live_test` profiles and the low-level live-proof modules remain
 only because historical tooling and records still depend on their types and

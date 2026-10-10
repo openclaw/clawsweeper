@@ -47,8 +47,11 @@ import {
   EXACT_REVIEW_LIFECYCLE_BAY_PENDING_TABLE,
   EXACT_REVIEW_LIFECYCLE_BAY_SCOPE_TABLE,
   EXACT_REVIEW_LIFECYCLE_BAY_TIDE_BUFFER_TABLE,
+  EXACT_REVIEW_LIFECYCLE_BAY_TIDE_THRESHOLD,
   EXACT_REVIEW_LIFECYCLE_TELEMETRY_DIRECT_TABLE,
 } from "../dashboard/exact-review-lifecycle-telemetry.ts";
+
+const TIDE = EXACT_REVIEW_LIFECYCLE_BAY_TIDE_THRESHOLD;
 
 let nextBayFinalReceiptCommentId = 900_000;
 
@@ -897,7 +900,7 @@ test("Bay lifecycle tides are derived from all durable terminal revisions", () =
   const lifecycle = new ExactReviewLifecycleProjectionStore(storage);
   const telemetry = new ExactReviewLifecycleTelemetryStore(storage);
   const now = Date.now();
-  for (let index = 0; index < 21; index += 1) {
+  for (let index = 0; index <= TIDE; index += 1) {
     const identity = {
       canonicalTargetKey: `openclaw/openclaw#${9_200 + index}`,
       fenceKey: `openclaw/openclaw#${9_200 + index}@exact:${index + 1}`,
@@ -914,7 +917,7 @@ test("Bay lifecycle tides are derived from all durable terminal revisions", () =
       triggeredAt,
       observedAt: triggeredAt,
     });
-    const completedAt = index === 20 ? now + 21_000 : triggeredAt + 1_000;
+    const completedAt = index === TIDE ? now + (TIDE + 1) * 1_000 : triggeredAt + 1_000;
     recordBayFinalReceipt(lifecycle, identity, completedAt);
     const completed = lifecycle.recordTerminalDisposition({
       ...identity,
@@ -927,11 +930,11 @@ test("Bay lifecycle tides are derived from all durable terminal revisions", () =
   assert.equal(snapshot.collection.state, "complete");
   assert.equal(snapshot.terminal?.tide_generation, 1);
   assert.equal(snapshot.terminal?.terminal_count, 1);
-  assert.equal(snapshot.terminal?.last_tide_at, new Date(now + 21_000).toISOString());
-  assert.equal(snapshot.terminal?.recently_washed.length, 20);
+  assert.equal(snapshot.terminal?.last_tide_at, new Date(now + (TIDE + 1) * 1_000).toISOString());
+  assert.equal(snapshot.terminal?.recently_washed.length, TIDE);
   assert.deepEqual(
     snapshot.terminal?.terminal_buffer.map((entry) => entry.item_key),
-    ["openclaw/openclaw#9220"],
+    [`openclaw/openclaw#${9_200 + TIDE}`],
   );
 });
 
@@ -942,7 +945,8 @@ test("Bay lifecycle keeps only bounded tide detail after many completions", () =
   const now = Date.now();
   const publicScope = new Set(["openclaw/openclaw"]);
   telemetry.syncBayRepositoryScope(publicScope, now);
-  for (let index = 0; index < 119; index += 1) {
+  const completions = 6 * TIDE - 1;
+  for (let index = 0; index < completions; index += 1) {
     const identity = {
       canonicalTargetKey: `openclaw/openclaw#${9_240 + index}`,
       fenceKey: `openclaw/openclaw#${9_240 + index}@exact:${index + 1}`,
@@ -967,11 +971,11 @@ test("Bay lifecycle keeps only bounded tide detail after many completions", () =
       }),
     );
   }
-  const snapshot = telemetry.baySnapshot(now + 120_000, publicScope);
+  const snapshot = telemetry.baySnapshot(now + (completions + 1) * 1_000, publicScope);
   assert.equal(snapshot.terminal?.tide_generation, 5);
-  assert.equal(snapshot.terminal?.terminal_count, 19);
-  assert.equal(snapshot.terminal?.terminal_buffer.length, 19);
-  assert.equal(snapshot.terminal?.recently_washed.length, 20);
+  assert.equal(snapshot.terminal?.terminal_count, TIDE - 1);
+  assert.equal(snapshot.terminal?.terminal_buffer.length, TIDE - 1);
+  assert.equal(snapshot.terminal?.recently_washed.length, TIDE);
   const bufferRows = Number(
     Array.from(
       storage.sql.exec(
@@ -979,9 +983,9 @@ test("Bay lifecycle keeps only bounded tide detail after many completions", () =
       ),
     )[0]?.count || 0,
   );
-  // Global and the one public Bay scope each retain at most the
-  // current 19-item tide plus one 20-item washed tide.
-  assert.equal(bufferRows, 78);
+  // Global and the one public Bay scope each retain at most the current
+  // (TIDE - 1)-item tide plus one TIDE-item washed tide.
+  assert.equal(bufferRows, 2 * (TIDE - 1 + TIDE));
 });
 
 test("Bay lifecycle keeps an empty public scope separate from the global tide", () => {
@@ -1026,7 +1030,7 @@ test("Bay lifecycle orders delayed terminal delivery by completion time", () => 
   const lifecycle = new ExactReviewLifecycleProjectionStore(storage);
   const telemetry = new ExactReviewLifecycleTelemetryStore(storage);
   const now = Date.now();
-  for (let index = 0; index < 19; index += 1) {
+  for (let index = 0; index < TIDE - 1; index += 1) {
     const identity = {
       canonicalTargetKey: `openclaw/openclaw#${9_360 + index}`,
       fenceKey: `openclaw/openclaw#${9_360 + index}@exact:1`,
@@ -1052,9 +1056,10 @@ test("Bay lifecycle orders delayed terminal delivery by completion time", () => 
       }),
     );
   }
+  const laterKey = `openclaw/openclaw#${9_360 + TIDE}`;
   const laterIdentity = {
-    canonicalTargetKey: "openclaw/openclaw#9380",
-    fenceKey: "openclaw/openclaw#9380@exact:1",
+    canonicalTargetKey: laterKey,
+    fenceKey: `${laterKey}@exact:1`,
     revision: 1,
   };
   lifecycle.recordAdmission({
@@ -1064,20 +1069,23 @@ test("Bay lifecycle orders delayed terminal delivery by completion time", () => 
     commandOriginated: false,
     statusMarker: null,
     statusCommentId: null,
-    triggeredAt: now + 29_000,
-    observedAt: now + 29_000,
+    triggeredAt: now + (TIDE + 9) * 1_000,
+    observedAt: now + (TIDE + 9) * 1_000,
   });
-  recordBayFinalReceipt(lifecycle, laterIdentity, now + 30_000);
+  recordBayFinalReceipt(lifecycle, laterIdentity, now + (TIDE + 10) * 1_000);
   telemetry.syncBayLifecycle(
     lifecycle.recordTerminalDisposition({
       ...laterIdentity,
       kind: "review_completed_routed",
-      observedAt: now + 30_000,
+      observedAt: now + (TIDE + 10) * 1_000,
     }),
   );
+  // Completes after the first TIDE - 1 items but is delivered after the later one.
+  const delayedKey = `openclaw/openclaw#${9_360 + TIDE - 1}`;
+  const delayedCompletedAt = now + (TIDE - 1) * 1_000;
   const delayedIdentity = {
-    canonicalTargetKey: "openclaw/openclaw#9379",
-    fenceKey: "openclaw/openclaw#9379@exact:1",
+    canonicalTargetKey: delayedKey,
+    fenceKey: `${delayedKey}@exact:1`,
     revision: 1,
   };
   lifecycle.recordAdmission({
@@ -1087,25 +1095,25 @@ test("Bay lifecycle orders delayed terminal delivery by completion time", () => 
     commandOriginated: false,
     statusMarker: null,
     statusCommentId: null,
-    triggeredAt: now + 18_500,
-    observedAt: now + 18_500,
+    triggeredAt: delayedCompletedAt - 500,
+    observedAt: delayedCompletedAt - 500,
   });
-  recordBayFinalReceipt(lifecycle, delayedIdentity, now + 19_000);
+  recordBayFinalReceipt(lifecycle, delayedIdentity, delayedCompletedAt);
   telemetry.syncBayLifecycle(
     lifecycle.recordTerminalDisposition({
       ...delayedIdentity,
       kind: "review_completed_routed",
-      observedAt: now + 19_000,
+      observedAt: delayedCompletedAt,
     }),
   );
 
   const snapshot = telemetry.baySnapshot(now + 60_000);
   assert.equal(snapshot.terminal?.tide_generation, 1);
   assert.equal(snapshot.terminal?.terminal_count, 1);
-  assert.equal(snapshot.terminal?.last_tide_at, new Date(now + 19_000).toISOString());
+  assert.equal(snapshot.terminal?.last_tide_at, new Date(delayedCompletedAt).toISOString());
   assert.deepEqual(
     snapshot.terminal?.terminal_buffer.map((entry) => entry.item_key),
-    ["openclaw/openclaw#9380"],
+    [laterKey],
   );
 });
 
@@ -1324,7 +1332,7 @@ test("Bay lifecycle telemetry migrates durable tide metadata", () => {
      VALUES (1, 'openclaw/openclaw', ?)`,
     now,
   );
-  for (let index = 0; index < 21; index += 1) {
+  for (let index = 0; index <= TIDE; index += 1) {
     storage.sql.exec(
       `INSERT INTO ${EXACT_REVIEW_LIFECYCLE_BAY_EVENT_TABLE}
          (event_id, canonical_target_key, fence_key, revision, outcome, triggered_at, completed_at)
@@ -1368,7 +1376,7 @@ test("Bay lifecycle telemetry migrates durable tide metadata", () => {
   ]) {
     assert.equal(snapshot.terminal?.tide_generation, 1);
     assert.equal(snapshot.terminal?.terminal_count, 1);
-    assert.equal(snapshot.terminal?.recently_washed.length, 20);
+    assert.equal(snapshot.terminal?.recently_washed.length, TIDE);
   }
 });
 
@@ -1860,7 +1868,10 @@ test("Bay lifecycle rebuilds compact tide state from more than ten thousand comp
     triggeredAt: now,
     observedAt: now,
   });
-  for (let index = 0; index < 10_001; index += 1) {
+  // Exceed ten thousand completions, ending one record past a tide boundary.
+  const tideGenerations = Math.ceil(10_000 / TIDE);
+  const completions = tideGenerations * TIDE + 1;
+  for (let index = 0; index < completions; index += 1) {
     const canonicalTargetKey = `openclaw/openclaw#${20_000 + index}`;
     const fenceKey = `${canonicalTargetKey}@exact:1`;
     storage.sql.exec(
@@ -1887,11 +1898,14 @@ test("Bay lifecycle rebuilds compact tide state from more than ten thousand comp
   assert.equal(telemetry.syncBayRepositoryScope(publicScope, now), true);
   const snapshot = telemetry.baySnapshot(now + 20_000, publicScope);
   assert.equal(snapshot.collection.state, "complete");
-  assert.equal(snapshot.terminal?.tide_generation, 500);
+  assert.equal(snapshot.terminal?.tide_generation, tideGenerations);
   assert.equal(snapshot.terminal?.terminal_count, 1);
-  assert.equal(snapshot.terminal?.recently_washed.length, 20);
+  assert.equal(snapshot.terminal?.recently_washed.length, TIDE);
   assert.equal(snapshot.terminal?.terminal_buffer.length, 1);
-  assert.equal(snapshot.terminal?.last_tide_at, new Date(now + 10_000).toISOString());
+  assert.equal(
+    snapshot.terminal?.last_tide_at,
+    new Date(now + tideGenerations * TIDE).toISOString(),
+  );
 });
 
 test("Bay lifecycle tide progress survives terminal-fact retention", () => {
@@ -1905,7 +1919,7 @@ test("Bay lifecycle tide progress survives terminal-fact retention", () => {
     const telemetry = new ExactReviewLifecycleTelemetryStore(storage);
     const publicScope = new Set(["openclaw/openclaw"]);
     telemetry.syncBayRepositoryScope(publicScope, now);
-    for (let index = 0; index < 21; index += 1) {
+    for (let index = 0; index <= TIDE; index += 1) {
       const identity = {
         canonicalTargetKey: `openclaw/openclaw#${9_300 + index}`,
         fenceKey: `openclaw/openclaw#${9_300 + index}@exact:${index + 1}`,
@@ -1933,10 +1947,11 @@ test("Bay lifecycle tide progress survives terminal-fact retention", () => {
     }
 
     now = coverageStartedAt + 31 * 24 * 60 * 60_000;
+    const currentKey = `openclaw/openclaw#${9_300 + TIDE + 1}`;
     const currentIdentity = {
-      canonicalTargetKey: "openclaw/openclaw#9400",
-      fenceKey: "openclaw/openclaw#9400@exact:22",
-      revision: 22,
+      canonicalTargetKey: currentKey,
+      fenceKey: `${currentKey}@exact:${TIDE + 2}`,
+      revision: TIDE + 2,
     };
     lifecycle.recordAdmission({
       ...currentIdentity,
@@ -1958,10 +1973,11 @@ test("Bay lifecycle tide progress survives terminal-fact retention", () => {
     );
     // This revision has already been compacted by the unrelated current
     // completion above. A late requeue must still retract it from the tide.
+    const requeuedKey = `openclaw/openclaw#${9_300 + TIDE}`;
     const requeuedIdentity = {
-      canonicalTargetKey: "openclaw/openclaw#9320",
-      fenceKey: "openclaw/openclaw#9320@exact:21",
-      revision: 21,
+      canonicalTargetKey: requeuedKey,
+      fenceKey: `${requeuedKey}@exact:${TIDE + 1}`,
+      revision: TIDE + 1,
     };
     telemetry.syncBayLifecycle(
       lifecycle.recordTerminalDisposition({
@@ -1976,7 +1992,7 @@ test("Bay lifecycle tide progress survives terminal-fact retention", () => {
     assert.equal(snapshot.terminal?.terminal_count, 1);
     assert.equal(
       snapshot.terminal?.last_tide_at,
-      new Date(coverageStartedAt + 19_500).toISOString(),
+      new Date(coverageStartedAt + (TIDE - 1) * 1_000 + 500).toISOString(),
     );
   } finally {
     Date.now = originalNow;
@@ -1992,7 +2008,7 @@ test("Bay lifecycle tide compaction is retry-safe after terminal deletion fails"
     const storage = new MemoryDurableStorage();
     const lifecycle = new ExactReviewLifecycleProjectionStore(storage);
     const telemetry = new ExactReviewLifecycleTelemetryStore(storage);
-    for (let index = 0; index < 20; index += 1) {
+    for (let index = 0; index < TIDE; index += 1) {
       const identity = {
         canonicalTargetKey: `openclaw/openclaw#${9_500 + index}`,
         fenceKey: `openclaw/openclaw#${9_500 + index}@exact:${index + 1}`,
@@ -2020,10 +2036,11 @@ test("Bay lifecycle tide compaction is retry-safe after terminal deletion fails"
     }
 
     now = coverageStartedAt + 31 * 24 * 60 * 60_000;
+    const currentKey = `openclaw/openclaw#${9_500 + TIDE}`;
     const currentIdentity = {
-      canonicalTargetKey: "openclaw/openclaw#9520",
-      fenceKey: "openclaw/openclaw#9520@exact:21",
-      revision: 21,
+      canonicalTargetKey: currentKey,
+      fenceKey: `${currentKey}@exact:${TIDE + 1}`,
+      revision: TIDE + 1,
     };
     lifecycle.recordAdmission({
       ...currentIdentity,
@@ -2399,8 +2416,8 @@ test("Bay lifecycle recovery drains source markers in bounded batches", () => {
   );
   const recovered = telemetry.baySnapshot(now);
   assert.equal(recovered.collection.state, "complete");
-  assert.equal(recovered.terminal?.tide_generation, 12);
-  assert.equal(recovered.terminal?.terminal_count, 17);
+  assert.equal(recovered.terminal?.tide_generation, Math.floor(257 / TIDE));
+  assert.equal(recovered.terminal?.terminal_count, 257 % TIDE);
 });
 
 test("Bay lifecycle recovery reports no progress for malformed and unmaterialized sources", () => {
@@ -2865,7 +2882,7 @@ test("public Bay status rejects an over-cap aggregate from the lifecycle metrics
   };
   malformed.bay_lifecycle_metrics.terminal = {
     terminal_count: 0,
-    tide_threshold: 20,
+    tide_threshold: TIDE,
     tide_generation: 0,
     last_tide_at: null,
     terminal_buffer: [],

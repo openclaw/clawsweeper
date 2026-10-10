@@ -1,7 +1,3 @@
-export function escapeRegExp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
 export function trimTrailingUrlPunctuation(raw: string): string {
   let end = raw.length;
   while (end > 0) {

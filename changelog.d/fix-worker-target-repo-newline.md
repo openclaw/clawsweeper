@@ -1,0 +1,1 @@
+- Fix signed exact-review enqueue, branch-authority, and source-authority intake so a `decision.targetRepo` that a header cannot carry (CR, LF, NUL, or a character above U+00FF) gets the queue's route-specific 400 instead of an uncaught Worker 500; every other value, including a space-padded slug, behaves as before.

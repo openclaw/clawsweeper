@@ -52,8 +52,7 @@ async function record(modulePath, root) {
   const recorder = createApplyActionLedger({
     ...dependencies,
     reviewLedger: createReviewActionLedger(dependencies),
-    frontMatterValue: (_, key) =>
-      ({ review_content_digest: "b".repeat(64), decision_packet_sha256: "c".repeat(64) })[key],
+    // Builds before the report readers became module exports read these callbacks.
     reviewLeaseRevisionFromReport: () => "a".repeat(40),
     reportItemKind: () => "issue",
   });
@@ -61,7 +60,7 @@ async function record(modulePath, root) {
     repo: "example/fixture",
     number: 321,
     path: join(root, "records/example-fixture/items/321.md"),
-    markdown: "synthetic issue",
+    markdown: `---\ntype: issue\nitem_source_revision: ${"a".repeat(40)}\n---\nsynthetic issue\n`,
   };
   const ledger = recorder.startApplyActionLedger({
     applyKind: "all",

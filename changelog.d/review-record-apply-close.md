@@ -1,0 +1,1 @@
+- The apply close checks read the reviewed decision from the report's typed `review_record`. A report without the line still reads its decision from the report text until the backfill gives every report a record. Apply does not close or promote an item whose `review_record` does not read: it records `skipped_changed_since_review`, and the item gets a fresh review.

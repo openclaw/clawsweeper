@@ -1,32 +1,31 @@
 import { maintainerDecisionFromReport } from "./decision-packets.js";
 import { reportAllowsAutomation } from "./manual-publication-policy.js";
-import { validReviewLeaseIdentity } from "./review-comment-markers.js";
+import { validReviewLeaseIdentity, type NeedsHumanHold } from "./review-comment-markers.js";
 import { AUTOFIX_LABEL, AUTOMERGE_LABEL } from "./repair/exact-review-guard-labels.js";
 import type { ReviewCommentWorkflowDependencies } from "./clawsweeper-review-comment-dependencies.js";
 import type { createReviewCommentIdentity } from "./clawsweeper-review-comment-identity.js";
 import type { PullRequestReviewReadiness } from "./clawsweeper-types.js";
+import { parseIsoMs } from "./iso-time.js";
+import { frontMatterStringArray, frontMatterValue } from "./report-front-matter.js";
+import { pullHeadShaFromReport } from "./clawsweeper-record-metadata.js";
+import {
+  reportAttachedLiveVerification,
+  reportReviewFindings,
+  reportSecurityReview,
+} from "./clawsweeper-report-parser.js";
+import {
+  pullRequestReviewReadinessFromReport,
+  securitySensitiveRepairAllowed,
+} from "./clawsweeper-report-comment-helpers.js";
+import { realBehaviorProofBlocksMerge } from "./clawsweeper-orchestration-foundation.js";
 
 export function createReviewCommentAutomation(
   dependencies: ReviewCommentWorkflowDependencies & ReturnType<typeof createReviewCommentIdentity>,
 ) {
-  const {
-    reportSecurityReview,
-    reportReviewFindings,
-    frontMatterValue,
-    frontMatterStringArray,
-    configSurfaceReviewRequired,
-    dataModelSurfaceReviewRequired,
-    realBehaviorProofBlocksMerge,
-    reportAttachedLiveVerification,
-    pullHeadShaFromReport,
-    pullRequestReviewReadinessFromReport,
-    securitySensitiveRepairAllowed,
-    markerAttributeValue,
-    timestampMs,
-  } = dependencies;
+  const { markerAttributeValue } = dependencies;
 
   function canonicalReviewTimestamp(value: string | undefined): string | null {
-    const parsed = timestampMs(value);
+    const parsed = parseIsoMs(value);
     return parsed === null ? null : new Date(parsed).toISOString();
   }
 
@@ -125,36 +124,44 @@ export function createReviewCommentAutomation(
         : "";
     const withReviewState = (...markers: string[]): string =>
       [...markers.filter(Boolean), reviewStateMarker].join("\n");
+    // The router reads `hold` and `findings` to route a needs-human verdict.
+    // It must not read the review prose for this decision. A failed or unnormalized
+    // review has no findings that automation can act on.
+    const findingCount =
+      reviewReadiness.normalizationFailed ||
+      frontMatterValue(markdown, "review_status") === "failed"
+        ? 0
+        : reportReviewFindings(markdown).length;
+    const needsHumanVerdict = (hold: NeedsHumanHold): string =>
+      `<!-- clawsweeper-verdict:needs-human ${baseAttrs} hold=${hold} findings=${findingCount} -->`;
     if (reviewReadiness.normalizationFailed) {
-      return withReviewState(`<!-- clawsweeper-verdict:needs-human ${baseAttrs} -->`);
+      return withReviewState(needsHumanVerdict("normalization_failed"));
     }
     const securityNeedsAttention = reportSecurityReview(markdown).status === "needs_attention";
-    const humanReviewMarkers = (): string => {
+    const humanReviewMarkers = (hold: NeedsHumanHold): string => {
       const markers = [];
       if (securityNeedsAttention) {
         markers.push(`<!-- clawsweeper-security:security-sensitive ${baseAttrs} -->`);
       }
-      markers.push(`<!-- clawsweeper-verdict:needs-human ${baseAttrs} -->`);
+      markers.push(needsHumanVerdict(hold));
       return withReviewState(...markers);
     };
 
-    if (!hasDurableReviewIdentity) return humanReviewMarkers();
+    if (!hasDurableReviewIdentity) return humanReviewMarkers("review_identity");
+    // A maintainer opt-in can waive a hold only when that hold is the one Before-merge item.
+    // Security attention is never waivable.
+    const onlyBlocker = reviewReadiness.items.length === 1;
     try {
-      if (maintainerDecisionFromReport(markdown)?.required) return humanReviewMarkers();
+      if (maintainerDecisionFromReport(markdown)?.required) {
+        return humanReviewMarkers(
+          securityNeedsAttention ? "security" : onlyBlocker ? "maintainer_decision" : "blocked",
+        );
+      }
     } catch {
-      return humanReviewMarkers();
+      return humanReviewMarkers("normalization_failed");
     }
     if (frontMatterValue(markdown, "review_status") === "failed") {
-      return humanReviewMarkers();
-    }
-    if (configSurfaceReviewRequired(markdown)) {
-      return humanReviewMarkers();
-    }
-    if (dataModelSurfaceReviewRequired(markdown)) {
-      return humanReviewMarkers();
-    }
-    if (frontMatterValue(markdown, "action_taken") === "skipped_pr_close_coverage_proof") {
-      return humanReviewMarkers();
+      return humanReviewMarkers("review_failed");
     }
     const hasRealBehaviorProofBlocker = realBehaviorProofBlocksMerge(markdown);
     if (securityNeedsAttention) {
@@ -170,10 +177,10 @@ export function createReviewCommentAutomation(
           `<!-- clawsweeper-action:fix-required ${baseAttrs} finding=security-review -->`,
         );
       }
-      return withReviewState(...markers, `<!-- clawsweeper-verdict:needs-human ${baseAttrs} -->`);
+      return withReviewState(...markers, needsHumanVerdict("security"));
     }
     if (hasRealBehaviorProofBlocker) {
-      return withReviewState(`<!-- clawsweeper-verdict:needs-human ${baseAttrs} -->`);
+      return withReviewState(needsHumanVerdict(onlyBlocker ? "proof" : "blocked"));
     }
     if (decision === "keep_open") {
       if (reviewReadiness.state === "ready" && repairLoopPassModeFromReport(markdown)) {
@@ -185,11 +192,14 @@ export function createReviewCommentAutomation(
           `<!-- clawsweeper-action:fix-required ${baseAttrs} finding=review-feedback -->`,
         );
       }
+      if (reviewReadiness.state === "ready") {
+        return withReviewState(needsHumanVerdict("not_opted_in"));
+      }
       if (
         reviewReadiness.state !== "needs-changes" ||
         frontMatterValue(markdown, "work_candidate") !== "queue_fix_pr"
       ) {
-        return withReviewState(`<!-- clawsweeper-verdict:needs-human ${baseAttrs} -->`);
+        return withReviewState(needsHumanVerdict("blocked"));
       }
       return withReviewState(
         `<!-- clawsweeper-verdict:needs-changes ${baseAttrs} -->`,
@@ -205,7 +215,7 @@ export function createReviewCommentAutomation(
         `<!-- clawsweeper-action:close-required ${closeAttrs} -->`,
       );
     }
-    return withReviewState(`<!-- clawsweeper-verdict:needs-human ${baseAttrs} -->`);
+    return withReviewState(needsHumanVerdict("undecided"));
   }
 
   function repairLoopPassModeFromReport(markdown: string): "" | "autofix" | "automerge" {

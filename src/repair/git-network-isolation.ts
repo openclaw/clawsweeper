@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { runCommand as run, runCommandResult as runResult } from "./command-runner.js";
+import { runGit, runGitResult } from "./git.js";
 
 export type IsolatedGitNetworkOptions = {
   args: string[];
@@ -41,22 +41,18 @@ export function hydrateTargetRebaseRange({
     GIT_NO_REPLACE_OBJECTS: "1",
     GIT_TERMINAL_PROMPT: "0",
   });
-  const mergeBase = run("git", ["-c", "protocol.allow=never", "merge-base", baseSha, sourceHead], {
+  const mergeBase = runGit(["-c", "protocol.allow=never", "merge-base", baseSha, sourceHead], {
     cwd,
     env: inspectEnv,
     timeoutMs,
   }).trim();
   assertObjectId(mergeBase, source.objectFormat, "target rebase merge base");
   const commitCount = Number.parseInt(
-    run(
-      "git",
-      ["-c", "protocol.allow=never", "rev-list", "--count", `${mergeBase}..${sourceHead}`],
-      {
-        cwd,
-        env: inspectEnv,
-        timeoutMs,
-      },
-    ).trim(),
+    runGit(["-c", "protocol.allow=never", "rev-list", "--count", `${mergeBase}..${sourceHead}`], {
+      cwd,
+      env: inspectEnv,
+      timeoutMs,
+    }).trim(),
     10,
   );
   if (
@@ -149,8 +145,7 @@ export function runIsolatedGitNetwork({
     XDG_CONFIG_HOME: root,
   });
   try {
-    run(
-      "git",
+    runGit(
       [
         "init",
         "--bare",
@@ -168,8 +163,7 @@ export function runIsolatedGitNetwork({
       source,
       timeoutMs,
     });
-    const output = run(
-      "git",
+    const output = runGit(
       [
         `--git-dir=${networkGitDir}`,
         "-c",
@@ -217,7 +211,7 @@ function targetGitObjectStore(
   const commonDir = fs.realpathSync(
     path.resolve(
       cwd,
-      run("git", ["-c", "core.fsmonitor=false", "rev-parse", "--git-common-dir"], {
+      runGit(["-c", "core.fsmonitor=false", "rev-parse", "--git-common-dir"], {
         cwd,
         env,
         timeoutMs,
@@ -226,7 +220,7 @@ function targetGitObjectStore(
   );
   const objectDirectory = path.join(commonDir, "objects");
   assertUnredirectedTargetObjectStore(objectDirectory);
-  const objectFormat = run("git", ["rev-parse", "--show-object-format"], {
+  const objectFormat = runGit(["rev-parse", "--show-object-format"], {
     cwd,
     env,
     timeoutMs,
@@ -304,7 +298,7 @@ function prepareIsolatedFetch({
     timeoutMs,
   });
   if (negotiationTip) {
-    run("git", [`--git-dir=${networkGitDir}`, "update-ref", destination, negotiationTip], {
+    runGit([`--git-dir=${networkGitDir}`, "update-ref", destination, negotiationTip], {
       cwd,
       env,
       timeoutMs,
@@ -333,8 +327,7 @@ function sourceRefSha({
 }) {
   const localEnv = isolatedNetworkEnv(env);
   delete localEnv.GIT_OBJECT_DIRECTORY;
-  const result = runResult(
-    "git",
+  const result = runGitResult(
     [`--git-dir=${source.commonDir}`, "rev-parse", "--verify", "--quiet", destination],
     { cwd, env: localEnv, timeoutMs },
   );
@@ -390,8 +383,7 @@ function readOptionalLocalGitConfig(
   env: NodeJS.ProcessEnv,
   timeoutMs: number,
 ) {
-  const result = runResult(
-    "git",
+  const result = runGitResult(
     [`--git-dir=${commonDir}`, "config", "--local", "--no-includes", "--get", key],
     { cwd, env, timeoutMs },
   );
@@ -439,11 +431,11 @@ function mirrorFetchedRef({
 }) {
   if (args[0] !== "fetch") return;
   const destination = isolatedFetchDestination(args);
-  const fetchedSha = run(
-    "git",
-    [`--git-dir=${networkGitDir}`, "rev-parse", "--verify", destination],
-    { cwd, env, timeoutMs },
-  ).trim();
+  const fetchedSha = runGit([`--git-dir=${networkGitDir}`, "rev-parse", "--verify", destination], {
+    cwd,
+    env,
+    timeoutMs,
+  }).trim();
   assertObjectId(fetchedSha, source.objectFormat, `isolated Git fetch result ${destination}`);
   const localEnv = isolatedNetworkEnv(env);
   delete localEnv.CLAWSWEEPER_GIT_TOKEN;
@@ -451,8 +443,7 @@ function mirrorFetchedRef({
   delete localEnv.GIT_ASKPASS_REQUIRE;
   delete localEnv.GIT_OBJECT_DIRECTORY;
   assertUnredirectedTargetRefStorage(source.commonDir, destination);
-  run(
-    "git",
+  runGit(
     [
       `--git-dir=${source.commonDir}`,
       "-c",

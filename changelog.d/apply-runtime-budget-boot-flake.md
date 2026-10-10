@@ -1,0 +1,1 @@
+- Make the apply hung-GitHub-command budget test prove the bound from the child's own clock (the hung mock never finishes) instead of a 4s wall bound that also charged process boot on loaded CI runners.

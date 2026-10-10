@@ -1,3 +1,4 @@
+import { sha256 } from "./content-hash.js";
 import {
   closeSync,
   existsSync,
@@ -20,6 +21,7 @@ import {
   type AssistRequestBinding,
 } from "./assist-artifact.js";
 import { numberArg, stringArg, type Args } from "./clawsweeper-args.js";
+import { rejectRetiredCodexProfileArgs } from "./command.js";
 import { safeOutputTail } from "./clawsweeper-text.js";
 import type {
   AssistSourceCommentSnapshot,
@@ -30,10 +32,10 @@ import type {
 import { codexLoginConfig, PUBLIC_CODEX_MODEL } from "./codex-env.js";
 import type { RepositoryProfile } from "./repository-profiles.js";
 import { stableJson } from "./stable-json.js";
+import { asRecord } from "./value-coerce.js";
 
 interface AssistWorkflowDependencies {
   root: string;
-  asRecord: (value: unknown) => Record<string, unknown>;
   canPatchReviewComment: (comment: Record<string, unknown> | undefined) => boolean;
   collectItemContext: (item: Item) => ItemContext;
   ensureDir: (path: string) => void;
@@ -42,7 +44,6 @@ interface AssistWorkflowDependencies {
   ghPaged: <T>(path: string) => T[];
   ghWithRetry: (args: string[]) => string;
   repoFromArgs: (args: Args) => RepositoryProfile;
-  sha256: (text: string) => string;
   targetRepo: () => string;
   untrustedCodexEnv: () => NodeJS.ProcessEnv;
   writeCommentPayload: (number: number, body: string) => string;
@@ -50,7 +51,6 @@ interface AssistWorkflowDependencies {
 
 export function createAssistWorkflow({
   root,
-  asRecord,
   canPatchReviewComment,
   collectItemContext,
   ensureDir,
@@ -59,7 +59,6 @@ export function createAssistWorkflow({
   ghPaged,
   ghWithRetry,
   repoFromArgs,
-  sha256,
   targetRepo,
   untrustedCodexEnv,
   writeCommentPayload,
@@ -259,7 +258,8 @@ export function createAssistWorkflow({
       ...(options.mode === undefined ? {} : { mode: options.mode }),
       ...(options.lens === undefined ? {} : { lens: options.lens }),
     });
-    const codexConfig = [codexLoginConfig(), 'approval_policy="never"'];
+    // Assist is maintainer-only, so every request comes from someone with write access.
+    const codexConfig = [codexLoginConfig(), 'approval_policy="never"', 'service_tier="fast"'];
     const emptyGitHubConfigDir = join(options.workDir, ".gh-empty");
     ensureDir(emptyGitHubConfigDir);
     const result = runAgentProcess({
@@ -498,11 +498,10 @@ export function createAssistWorkflow({
     if (requestedLens !== "auto" && !VISUAL_LENSES.has(requestedLens)) {
       throw new Error("--lens is invalid for assist");
     }
-    if (args.codex_reasoning_effort !== undefined || args.codex_service_tier !== undefined) {
-      throw new Error(
-        "--codex-reasoning-effort and --codex-service-tier are retired for assist; assist uses the fixed medium profile.",
-      );
-    }
+    rejectRetiredCodexProfileArgs(
+      args,
+      "assist; assist uses the fixed medium reasoning, priority service profile",
+    );
     const request: AssistRequestBinding = {
       targetRepo: targetRepo(),
       itemNumber,

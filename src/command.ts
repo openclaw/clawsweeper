@@ -1,6 +1,7 @@
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { delimiter, dirname, isAbsolute, join, normalize, resolve } from "node:path";
+import type { Args } from "./clawsweeper-args.js";
 
 export const SWEEPER_COMMAND_MAX_BUFFER_BYTES = 128 * 1024 * 1024;
 
@@ -41,6 +42,17 @@ export function isUserFacingCommandError(error: unknown): error is UserFacingCom
   return error instanceof UserFacingCommandError;
 }
 
+/**
+ * Stop a command that selects a fixed Codex profile when a caller still sends the retired flags.
+ * clawsweeper-args stays import-free because workflows run it as raw source.
+ */
+export function rejectRetiredCodexProfileArgs(args: Args, reason: string): void {
+  if (args.codex_reasoning_effort === undefined && args.codex_service_tier === undefined) return;
+  throw new UserFacingCommandError(
+    `--codex-reasoning-effort and --codex-service-tier are retired for ${reason}.`,
+  );
+}
+
 export function runText(
   command: string,
   args: string[],
@@ -71,6 +83,168 @@ export function runText(
   if (trim === "both") return text.trim();
   if (trim === "end") return text.trimEnd();
   return text;
+}
+
+/** A command that reached its deadline while queued never starts (`expired`). */
+export type ConcurrentRunResult = { output: string } | { error: unknown } | { expired: true };
+
+/** `runText` options, with an absolute deadline in place of a relative timeout. */
+export type ConcurrentRunOptions = Omit<RunTextOptions, "timeoutMs"> & {
+  deadlineAt?: number | undefined;
+};
+
+type SpawnedCommandResult =
+  | { expired: true }
+  | {
+      expired?: undefined;
+      status: number | null;
+      signal: NodeJS.Signals | null;
+      stdout: string;
+      stderr: string;
+      errorCode?: string;
+    };
+
+// Runs in a short-lived Node child: starts at most `concurrency` commands at a
+// time, each with the time left before its deadline when it starts, and reports
+// spawnSync-style results (timeout ETIMEDOUT, output limit ENOBUFS, spawn
+// failures by code) in input order.
+const CONCURRENT_RUN_SCRIPT = `
+const { spawn } = require("node:child_process");
+let input = "";
+process.stdin.setEncoding("utf8");
+process.stdin.on("data", (chunk) => { input += chunk; });
+process.stdin.on("end", () => {
+  const { concurrency, commands } = JSON.parse(input);
+  const results = new Array(commands.length);
+  let started = 0;
+  let finished = 0;
+  const startNext = () => {
+    // An expired command completes synchronously and may already have started the rest.
+    if (started >= commands.length) return;
+    const index = started++;
+    run(commands[index], (result) => {
+      results[index] = result;
+      finished += 1;
+      if (finished === commands.length) process.stdout.write(JSON.stringify(results));
+      else if (started < commands.length) startNext();
+    });
+  };
+  if (commands.length === 0) process.stdout.write("[]");
+  for (let slot = 0; slot < Math.min(concurrency, commands.length); slot += 1) startNext();
+});
+function run(command, done) {
+  const timeoutMs = command.deadlineAt === undefined ? undefined : command.deadlineAt - Date.now();
+  if (timeoutMs !== undefined && timeoutMs <= 0) {
+    done({ expired: true });
+    return;
+  }
+  const stdout = [];
+  const stderr = [];
+  let bytes = 0;
+  let errorCode;
+  const child = spawn(command.file, command.args, {
+    cwd: command.cwd,
+    env: command.env,
+    stdio: ["ignore", "pipe", command.stderr],
+  });
+  const fail = (code) => {
+    if (errorCode) return;
+    errorCode = code;
+    child.kill("SIGTERM");
+  };
+  const collect = (chunks) => (chunk) => {
+    bytes += chunk.length;
+    if (bytes > command.maxBuffer) fail("ENOBUFS");
+    else chunks.push(chunk);
+  };
+  child.stdout.on("data", collect(stdout));
+  if (child.stderr) child.stderr.on("data", collect(stderr));
+  const timer = timeoutMs === undefined ? undefined : setTimeout(() => fail("ETIMEDOUT"), timeoutMs);
+  child.on("error", (error) => { errorCode ??= error.code ?? "EUNKNOWN"; });
+  child.on("close", (status, signal) => {
+    clearTimeout(timer);
+    done({
+      status: errorCode ? null : status,
+      signal,
+      stdout: Buffer.concat(stdout).toString("utf8"),
+      stderr: Buffer.concat(stderr).toString("utf8"),
+      errorCode,
+    });
+  });
+}
+`;
+
+/**
+ * `runText` for independent commands, at most `concurrency` running at once.
+ * Blocks until all finish; each result has `runText`'s output trimming, the
+ * error `runText` would have thrown, or `expired` when the command's deadline
+ * passed before a slot was free.
+ */
+export function runTextConcurrently(
+  commands: ReadonlyArray<{ command: string; args: string[]; options?: ConcurrentRunOptions }>,
+  concurrency: number,
+): ConcurrentRunResult[] {
+  const prepared = commands.map(({ command, args, options = {} }) => {
+    const env = { ...process.env, GIT_OPTIONAL_LOCKS: "0", ...options.env };
+    return { resolved: resolveCommand(command, args, env), env, options };
+  });
+  const outputLimit = prepared.reduce(
+    (total, { options }) => total + (options.maxBuffer ?? 64 * 1024 * 1024),
+    0,
+  );
+  const batch = spawnSync(process.execPath, ["-e", CONCURRENT_RUN_SCRIPT], {
+    encoding: "utf8",
+    input: JSON.stringify({
+      concurrency: Math.max(1, Math.floor(concurrency)),
+      commands: prepared.map(({ resolved, env, options }) => ({
+        file: resolved.command,
+        args: resolved.args,
+        cwd: options.cwd,
+        env,
+        maxBuffer: options.maxBuffer ?? 64 * 1024 * 1024,
+        stderr: options.stdio?.[2] ?? "pipe",
+        deadlineAt: options.deadlineAt,
+      })),
+    }),
+    // JSON escaping can double the commands' combined output; stay under one string's limit.
+    maxBuffer: Math.min(outputLimit * 2 + 1024 * 1024, 1024 * 1024 * 1024),
+    stdio: ["pipe", "pipe", "pipe"],
+  });
+  if (batch.error || batch.status !== 0) {
+    const failure =
+      batch.error ?? new Error(`Concurrent command runner failed: ${String(batch.stderr).trim()}`);
+    return commands.map(() => ({ error: failure }));
+  }
+  const results = JSON.parse(batch.stdout) as SpawnedCommandResult[];
+  return results.map((result, index): ConcurrentRunResult => {
+    if (result.expired) return { expired: true };
+    const { resolved, options } = prepared[index]!;
+    const details = {
+      status: result.status,
+      signal: result.signal,
+      output: [null, result.stdout, result.stderr],
+      stdout: result.stdout,
+      stderr: result.stderr,
+    };
+    // Same messages execFileSync produces, so failure classification is shared.
+    if (result.errorCode) {
+      const error = Object.assign(new Error(`spawnSync ${resolved.command} ${result.errorCode}`), {
+        code: result.errorCode,
+        ...details,
+      });
+      return { error: explainSpawnFailure(error, resolved.command, options.cwd) };
+    }
+    if (result.status !== 0) {
+      const message = `Command failed: ${[resolved.command, ...resolved.args].join(" ")}${
+        result.stderr ? `\n${result.stderr}` : ""
+      }`;
+      return { error: Object.assign(new Error(message), details) };
+    }
+    const trim = options.trim ?? "end";
+    if (trim === "both") return { output: result.stdout.trim() };
+    if (trim === "end") return { output: result.stdout.trimEnd() };
+    return { output: result.stdout };
+  });
 }
 
 export function explainSpawnFailure(error: unknown, command: string, cwd?: string): unknown {

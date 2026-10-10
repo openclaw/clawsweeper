@@ -17,7 +17,7 @@ import {
   HOT_REVIEW_DAYS,
   RECENT_ISSUE_DAYS,
 } from "./clawsweeper-policy.js";
-import { escapeRegExp } from "./clawsweeper-text.js";
+import { escapeRegExp } from "./clawsweeper-markdown.js";
 import type {
   AuditRecord,
   AuditRecordLocation,
@@ -46,6 +46,18 @@ import {
   type RepositoryProfile,
 } from "./repository-profiles.js";
 import { WEEKLY_COVERAGE_REVIEW_DAYS } from "./scheduler-policy.js";
+import { parseIsoMs } from "./iso-time.js";
+import {
+  frontMatterStringArray,
+  frontMatterValue,
+  replaceFrontMatterValue,
+} from "./report-front-matter.js";
+import { effectiveReviewStatus } from "./clawsweeper-record-metadata.js";
+import {
+  markdownFiles,
+  markdownRepository,
+  numberForMarkdownFile,
+} from "./clawsweeper-repository-paths.js";
 
 interface CreateDashboardAuditDependencies {
   addDashboardCadenceBucket: (
@@ -71,7 +83,6 @@ interface CreateDashboardAuditDependencies {
   defaultItemsDir: (profile?: RepositoryProfile) => string;
   defaultPlansDir: (profile?: RepositoryProfile) => string;
   displayTitle: (title: string) => string;
-  effectiveReviewStatus: (markdown: string) => string;
   emptyDashboardActivityStats: () => DashboardActivityStats;
   emptyDashboardCadenceBucket: () => DashboardCadenceBucket;
   emptyDashboardKindStats: () => DashboardKindStats;
@@ -86,8 +97,6 @@ interface CreateDashboardAuditDependencies {
   formatPercent: (numerator: number, denominator: number) => string;
   formatStatusNumber: (value: number | undefined) => string;
   formatTimestamp: (iso: string | undefined) => string;
-  frontMatterStringArray: (markdown: string, key: string) => string[];
-  frontMatterValue: (markdown: string, key: string) => string | undefined;
   ghJson: <T>(args: string[]) => T;
   isCurrentForCadence: (options: {
     reviewedAt: string | undefined;
@@ -106,10 +115,7 @@ interface CreateDashboardAuditDependencies {
     current: string | undefined,
     candidate: string | undefined,
   ) => string | undefined;
-  markdownFiles: (dir: string) => string[];
   markdownLink: (label: string, url: string) => string;
-  markdownRepository: (markdown: string, file?: string) => string;
-  numberForMarkdownFile: (file: string) => number;
   profileAuditEnd: (profile?: RepositoryProfile) => string;
   profileAuditStart: (profile?: RepositoryProfile) => string;
   recordDashboardActivity: (
@@ -117,7 +123,6 @@ interface CreateDashboardAuditDependencies {
     activity: DashboardActivityStats,
     now: number,
   ) => void;
-  replaceFrontMatterValue: (markdown: string, key: string, value: string) => string;
   repoFromArgs: (args: Args) => RepositoryProfile;
   repoRelativePath: (path: string) => string;
   reportEntriesForDir: (dir: string, itemNumbers?: ReadonlySet<number>) => ReportEntry[];
@@ -134,7 +139,6 @@ interface CreateDashboardAuditDependencies {
   }) => boolean;
   targetProfile: () => RepositoryProfile;
   targetRepo: () => string;
-  timestampMs: (iso: string | undefined) => number | null;
   withTargetProfile: <T>(profile: RepositoryProfile, fn: () => T) => T;
   workflowStatusSummary: (block: string) => WorkflowStatusSummary;
   workPlanPathForReport: (file: string, plansDir?: string) => string;
@@ -175,7 +179,6 @@ export function createDashboardAudit(dependencies: CreateDashboardAuditDependenc
     defaultItemsDir,
     defaultPlansDir,
     displayTitle,
-    effectiveReviewStatus,
     emptyDashboardActivityStats,
     emptyDashboardCadenceBucket,
     emptyDashboardKindStats,
@@ -190,8 +193,6 @@ export function createDashboardAudit(dependencies: CreateDashboardAuditDependenc
     formatPercent,
     formatStatusNumber,
     formatTimestamp,
-    frontMatterStringArray,
-    frontMatterValue,
     ghJson,
     isCurrentForCadence,
     isFresh,
@@ -200,14 +201,10 @@ export function createDashboardAudit(dependencies: CreateDashboardAuditDependenc
     isProtectedItem,
     itemUrlFor,
     latestTimestamp,
-    markdownFiles,
     markdownLink,
-    markdownRepository,
-    numberForMarkdownFile,
     profileAuditEnd,
     profileAuditStart,
     recordDashboardActivity,
-    replaceFrontMatterValue,
     repoFromArgs,
     repoRelativePath,
     reportEntriesForDir,
@@ -219,7 +216,6 @@ export function createDashboardAudit(dependencies: CreateDashboardAuditDependenc
     syncWorkPlanFromReport,
     targetProfile,
     targetRepo,
-    timestampMs,
     withTargetProfile,
     workflowStatusSummary,
     workPlanPathForReport,
@@ -796,8 +792,8 @@ export function createDashboardAudit(dependencies: CreateDashboardAuditDependenc
     );
     recentClosed.sort(
       (a, b) =>
-        (timestampMs(b.closedAt ?? b.appliedAt) ?? Number.NEGATIVE_INFINITY) -
-          (timestampMs(a.closedAt ?? a.appliedAt) ?? Number.NEGATIVE_INFINITY) ||
+        (parseIsoMs(b.closedAt ?? b.appliedAt) ?? Number.NEGATIVE_INFINITY) -
+          (parseIsoMs(a.closedAt ?? a.appliedAt) ?? Number.NEGATIVE_INFINITY) ||
         b.number - a.number,
     );
     const open = fetchDashboardOpenItemCounts(profile, {
@@ -862,14 +858,12 @@ export function createDashboardAudit(dependencies: CreateDashboardAuditDependenc
     formatPercent,
     formatStatusNumber,
     formatTimestamp,
-    frontMatterValue,
     itemUrlFor,
     latestTimestamp,
     markdownLink,
     repoUrlFor,
     reportFileUrl,
     targetRepo,
-    timestampMs,
   });
 
   const { dashboardClosedAt, formatRecentClosedRows } = dashboardPresentation;

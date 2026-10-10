@@ -1,8 +1,8 @@
-import { createHash } from "node:crypto";
+import { sha256 } from "../content-hash.js";
 
 export function errorFingerprintDigest(error: unknown): string {
   const message = error instanceof Error ? `${error.name}:${error.message}` : String(error);
-  return createHash("sha256").update(message).digest("hex");
+  return sha256(message);
 }
 
 export function failureFingerprint(error: unknown): string {

@@ -1,0 +1,1 @@
+- Keep evidence-backed metadata exceptions, backed-up invalid-data repairs, and authorized repair implementation choices with the PR owner instead of requesting maintainer design acceptance, while preserving compatibility proof and public-contract decisions.

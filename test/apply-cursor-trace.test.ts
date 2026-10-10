@@ -32,13 +32,11 @@ test("apply resolves only requested paired dependencies and preserves selected s
   const reads: number[][] = [];
   const records = createApplyRecordOperations({
     applyKind: "all",
-    applyQueueSortFields: () => ({ priority: 0, applyCheckedAt: 0 }),
     canonicalBaselineDir: "",
     closedDir: "closed",
     decisionPacketsDir: "packets",
     dryRun: true,
     itemsDir: "items",
-    numberForMarkdownFile: (name) => Number(name.replace(".md", "")),
     plansDir: "plans",
     profile: repositoryProfileFor("openclaw/openclaw"),
     recordRoot: ".",

@@ -102,10 +102,10 @@ jobs:
           path: ${{ runner.temp }}/hosted-review-scan-proof.json
           if-no-files-found: error
 
-  check:
-    name: pnpm check
+  check-fast:
+    name: check fast gates
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
 
@@ -127,8 +127,76 @@ jobs:
 
       - uses: ./.github/actions/setup-pnpm
 
-      - name: Run check
-        run: pnpm run check
+      # Everything in `pnpm run check` except the full suite, which the shards run.
+      - name: Run static checks, build, lint, and changed-surface coverage
+        run: pnpm run check:fast
+
+  check-tests:
+    name: check tests (${{ matrix.shard }}/${{ strategy.job-total }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      # Finish every shard so one run reports all failures, like the unsharded suite.
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    steps:
+      - uses: actions/checkout@v7
+
+      # Compiling takes seconds, cheaper than a serial build job plus artifact hop.
+      - uses: ./.github/actions/setup-pnpm
+        with:
+          build-script: build:all
+
+      - name: Run test shard with raw V8 coverage
+        env:
+          SHARD: ${{ matrix.shard }}/${{ strategy.job-total }}
+        run: node scripts/run-node-tests.mjs all --shard "$SHARD" --coverage-out "$RUNNER_TEMP/coverage"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: coverage-shard-${{ matrix.shard }}
+          path: ${{ runner.temp }}/coverage
+          if-no-files-found: error
+          retention-days: 1
+          overwrite: true
+
+  check-coverage:
+    name: check coverage
+    needs: check-tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+
+      # Node's coverage report reads the compiled sources the shards executed.
+      - uses: ./.github/actions/setup-pnpm
+        with:
+          build-script: build:all
+
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: coverage-shard-*
+          path: ${{ runner.temp }}/coverage
+
+      - name: Enforce coverage thresholds over every shard
+        run: node scripts/run-node-tests.mjs all --coverage-from "$RUNNER_TEMP/coverage"
+
+  # Single required status: passes only when every gate above passed. `always()`
+  # keeps it from being skipped (which would read as success) when a gate fails.
+  check:
+    name: pnpm check
+    if: always()
+    needs: [check-fast, check-tests, check-coverage]
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Require every check job to pass
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          jq -r 'to_entries[] | "\(.key): \(.value.result)"' <<<"$NEEDS"
+          jq -e 'all(.[]; .result == "success")' <<<"$NEEDS" >/dev/null
 
   sparse-repair-builds:
     name: sparse repair build smoke

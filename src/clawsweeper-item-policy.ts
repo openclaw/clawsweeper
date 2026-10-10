@@ -6,12 +6,15 @@ import {
   DAY_MS,
   OBSOLETE_FIX_PR_MIN_AGE_DAYS,
   PROTECTED_LABELS,
+  SECURITY_PROTECTED_LABELS,
   STALE_VERSION_BUG_MIN_AGE_DAYS,
   UNCONFIRMED_PRODUCT_DIRECTION_MIN_AGE_DAYS,
   UNCONFIRMED_PRODUCT_DIRECTION_MIN_INACTIVE_DAYS,
   UNSPONSORED_FEATURE_MIN_AGE_DAYS,
 } from "./clawsweeper-policy.js";
 import type { ApplyKind, CloseReason, Item } from "./clawsweeper-types.js";
+import { asRecord } from "./value-coerce.js";
+import { isOlderThanDays, isOlderThanMs } from "./iso-time.js";
 
 const MAINTAINER_AUTHOR_ASSOCIATIONS = new Set(["OWNER", "MEMBER", "COLLABORATOR"]);
 
@@ -23,15 +26,7 @@ const BULK_FILER_EXEMPT_AUTHOR_ASSOCIATIONS = new Set(["OWNER", "MEMBER"]);
 // readable admin/maintain permissions provide the narrow fallback.
 const BULK_FILER_EXEMPT_REPOSITORY_PERMISSIONS = new Set(["admin", "maintain"]);
 
-export function asRecord(value: unknown): Record<string, unknown> {
-  return value && typeof value === "object" ? (value as Record<string, unknown>) : {};
-}
-
-export function login(value: unknown): string | undefined {
-  const user = asRecord(value);
-  const name = user.login;
-  return typeof name === "string" ? name : undefined;
-}
+const WRITE_ACCESS_REPOSITORY_PERMISSIONS = new Set(["admin", "maintain", "write"]);
 
 export function labelNames(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
@@ -52,6 +47,17 @@ export function isMaintainerAuthorAssociation(value: unknown): boolean {
   return MAINTAINER_AUTHOR_ASSOCIATIONS.has(normalizeAuthorAssociation(value));
 }
 
+export function isAutomationReportAuthor(author: string | undefined): boolean {
+  return Boolean(author && (/\[bot\]$/i.test(author) || author.startsWith("app/")));
+}
+
+export function lockedConversationApplyReason(
+  item: Pick<Item, "activeLockReason" | "locked">,
+): string | null {
+  if (!item.locked) return null;
+  return `conversation is locked${item.activeLockReason ? ` (${item.activeLockReason})` : ""}`;
+}
+
 export function isBulkFilerExemptAuthorAssociation(value: unknown): boolean {
   return BULK_FILER_EXEMPT_AUTHOR_ASSOCIATIONS.has(normalizeAuthorAssociation(value));
 }
@@ -60,6 +66,12 @@ export function isBulkFilerExemptRepositoryPermission(value: unknown): boolean {
   return (
     typeof value === "string" &&
     BULK_FILER_EXEMPT_REPOSITORY_PERMISSIONS.has(value.trim().toLowerCase())
+  );
+}
+
+export function isWriteAccessRepositoryPermission(value: unknown): boolean {
+  return (
+    typeof value === "string" && WRITE_ACCESS_REPOSITORY_PERMISSIONS.has(value.trim().toLowerCase())
   );
 }
 
@@ -89,12 +101,20 @@ export function normalizeLabelName(label: string): string {
   return label.trim().toLowerCase();
 }
 
+export function normalizedLabelSet(labels: readonly string[]): Set<string> {
+  return new Set(labels.map(normalizeLabelName));
+}
+
+export function hasNormalizedLabel(labels: readonly string[], label: string): boolean {
+  return normalizedLabelSet(labels).has(normalizeLabelName(label));
+}
+
 export function protectedLabels(labels: readonly string[]): string[] {
   return labels
     .map((label) => normalizeLabelName(label))
     .filter(
       (label, index, normalized) =>
-        (PROTECTED_LABELS.has(label) || label.includes("security")) &&
+        (PROTECTED_LABELS.has(label) || SECURITY_PROTECTED_LABELS.has(label)) &&
         normalized.indexOf(label) === index,
     );
 }
@@ -111,7 +131,7 @@ export function applyBlockingProtectedLabels(
     .map((label) => normalizeLabelName(label))
     .filter(
       (label, index, normalized) =>
-        (APPLY_PROTECTED_LABELS.has(label) || label.includes("security")) &&
+        (APPLY_PROTECTED_LABELS.has(label) || SECURITY_PROTECTED_LABELS.has(label)) &&
         normalized.indexOf(label) === index,
     );
   if (!isVerifiedFixedCloseReason(closeReason) && closeReason !== "oversized_pull_request")
@@ -125,17 +145,6 @@ export function applyProtectedLabelReason(labels: readonly string[], closeReason
 
 export function shouldPlanItem(item: Pick<Item, "authorAssociation" | "labels">): boolean {
   return protectedLabels(item.labels).every((label) => label === "maintainer");
-}
-
-export function isOlderThanDays(isoTimestamp: string, days: number, now = Date.now()): boolean {
-  return isOlderThanMs(isoTimestamp, days * DAY_MS, now);
-}
-
-function isOlderThanMs(isoTimestamp: string, milliseconds: number, now = Date.now()): boolean {
-  if (milliseconds <= 0) return true;
-  const timestamp = Date.parse(isoTimestamp);
-  if (!Number.isFinite(timestamp)) return false;
-  return now - timestamp > milliseconds;
 }
 
 export function applyKindArg(value: string | boolean | string[] | undefined): ApplyKind {

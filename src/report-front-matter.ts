@@ -1,4 +1,4 @@
-import { markdownFenceStateAfterLine } from "./clawsweeper-markdown.ts";
+import { escapeRegExp, markdownFenceStateAfterLine } from "./clawsweeper-markdown.ts";
 
 export type FrontMatterField =
   | { status: "absent" }
@@ -6,10 +6,10 @@ export type FrontMatterField =
   | { status: "value"; value: string };
 
 interface ReportFrontMatter {
-  fields: Map<string, string[]>;
-  bodyKeys: Set<string>;
-  competingKeys: Set<string>;
-  ambiguous: boolean;
+  readonly fields: ReadonlyMap<string, readonly string[]>;
+  readonly bodyKeys: ReadonlySet<string>;
+  readonly competingKeys: ReadonlySet<string>;
+  readonly ambiguous: boolean;
 }
 
 // Preserve literal keys and raw single-line values; decoding belongs to each reader.
@@ -20,7 +20,22 @@ function fieldEntry(line: string): [string, string] | null {
   return separator > 0 ? [line.slice(0, separator), line.slice(separator + 1)] : null;
 }
 
+// A reader asks for many fields of the same report, and a comparison reads two reports
+// in turn. Each field read would otherwise parse the whole report again. The result is
+// read-only, so callers can share it.
+const PARSE_CACHE_SIZE = 4;
+const parseCache = new Map<string, ReportFrontMatter | null>();
+
 export function parseReportFrontMatter(markdown: string): ReportFrontMatter | null {
+  const cached = parseCache.get(markdown);
+  if (cached !== undefined) return cached;
+  const parsed = parseUncached(markdown);
+  if (parseCache.size >= PARSE_CACHE_SIZE) parseCache.delete(parseCache.keys().next().value!);
+  parseCache.set(markdown, parsed);
+  return parsed;
+}
+
+function parseUncached(markdown: string): ReportFrontMatter | null {
   const header = markdown.match(/^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/);
   if (!header) return null;
   const fields = new Map<string, string[]>();
@@ -83,4 +98,104 @@ export function readReportFrontMatterField(markdown: string, key: string): Front
     return { status: parsed.bodyKeys.has(key) ? "ambiguous" : "absent" };
   }
   return { status: "value", value: values[0]! };
+}
+
+// Decoded field: trimmed, with one pair of enclosing double quotes removed. An empty
+// value, quoted or not, is ambiguous.
+export function frontMatterField(markdown: string, key: string): FrontMatterField {
+  const field = readReportFrontMatterField(markdown, key);
+  if (field.status !== "value") return field;
+  const raw = field.value.trim();
+  const value = raw.length > 1 && raw.startsWith('"') && raw.endsWith('"') ? raw.slice(1, -1) : raw;
+  return value ? { status: "value", value } : { status: "ambiguous" };
+}
+
+export function frontMatterValue(markdown: string, key: string): string | undefined {
+  const field = frontMatterField(markdown, key);
+  return field.status === "value" ? field.value : undefined;
+}
+
+// A list value is a JSON array of strings. Older reports use a comma-separated list.
+export function parseFrontMatterStringArray(value: string | undefined): string[] {
+  if (!value || value === "none") return [];
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    if (Array.isArray(parsed)) {
+      return parsed.filter((entry): entry is string => typeof entry === "string");
+    }
+  } catch {
+    // Not JSON: read the comma-separated form.
+  }
+  return value
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+}
+
+export function frontMatterStringArray(markdown: string, key: string): string[] {
+  return parseFrontMatterStringArray(frontMatterValue(markdown, key));
+}
+
+export function frontMatterJsonArray(markdown: string, key: string): unknown[] {
+  const value = frontMatterValue(markdown, key);
+  if (!value || value === "none") return [];
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+export function frontMatterBoolean(markdown: string, key: string): boolean {
+  return /^true$/i.test(frontMatterValue(markdown, key) ?? "");
+}
+
+/** The front-matter field that holds the typed review record (see review-record.ts). */
+export const REVIEW_RECORD_KEY = "review_record";
+
+// The review_record line repeats the review. Code that tracks review revisions, and
+// the record writer when it drops an invalid record, use the report without it.
+export function reportWithoutReviewRecord(markdown: string): string {
+  const end = markdown.indexOf("\n---", 3);
+  if (!markdown.startsWith("---") || end === -1) return markdown;
+  const frontMatter = markdown
+    .slice(0, end)
+    .split("\n")
+    .filter((line) => !line.startsWith(`${REVIEW_RECORD_KEY}:`));
+  return `${frontMatter.join("\n")}${markdown.slice(end)}`;
+}
+
+// `value` is record data, for example `JSON.stringify(item.labels)` with GitHub label
+// names. A replacement string would expand `$&`, `` $` `` and `$'` against the match, so
+// a replacement function inserts the text literally. A new key uses the line ending of
+// the opening delimiter.
+export function replaceFrontMatterValue(markdown: string, key: string, value: string): string {
+  const line = `${key}: ${value}`;
+  const pattern = new RegExp(`^${escapeRegExp(key)}:\\s*.*$`, "m");
+  if (pattern.test(markdown)) return markdown.replace(pattern, () => line);
+  return markdown.replace(/^---(\r?\n)/, (opening, ending: string) => `${opening}${line}${ending}`);
+}
+
+function sectionPattern(heading: string): RegExp {
+  return new RegExp(`((?:^|\\n)## ${escapeRegExp(heading)}\\n\\n)([\\s\\S]*?)(?=\\n## |\\n?$)`);
+}
+
+export function sectionValue(markdown: string, heading: string): string {
+  return markdown.match(sectionPattern(heading))?.[2]?.trim() ?? "";
+}
+
+// `value` is often model text. A replacement function keeps `$1` and `$&` literal.
+export function replaceSectionValue(markdown: string, heading: string, value: string): string {
+  const pattern = sectionPattern(heading);
+  if (pattern.test(markdown)) {
+    return markdown.replace(pattern, (_match, prefix: string) => `${prefix}${value.trim()}\n`);
+  }
+  return `${markdown.trimEnd()}\n\n## ${heading}\n\n${value.trim()}\n`;
+}
+
+export function appendSectionValue(markdown: string, heading: string, value: string): string {
+  const existing = sectionValue(markdown, heading);
+  const nextValue = existing ? `${existing.trimEnd()}\n\n${value.trim()}` : value.trim();
+  return replaceSectionValue(markdown, heading, nextValue);
 }

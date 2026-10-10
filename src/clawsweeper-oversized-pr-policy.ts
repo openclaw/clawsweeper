@@ -1,6 +1,7 @@
 import type { OversizedPrSourceSnapshot } from "./clawsweeper-oversized-pr-freshness.js";
 import { applyBlockingProtectedLabels, labelNames } from "./clawsweeper-item-policy.js";
 import { emptyMaintainerDecision } from "./decision-packets.js";
+import { envFlagEnabled } from "./policy-flags.js";
 import {
   ACCEPTED_LARGE_LABEL,
   PR_AUTO_CLOSE_EXEMPT_LABEL_NAMES,
@@ -25,7 +26,7 @@ export function maxPrChangedLines(env: NodeJS.ProcessEnv = process.env): number 
 }
 
 export function oversizedPrCloseEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
-  return /^(1|true|yes|on)$/i.test(env.CLAWSWEEPER_OVERSIZED_PR_CLOSE_ENABLED?.trim() ?? "");
+  return envFlagEnabled(env.CLAWSWEEPER_OVERSIZED_PR_CLOSE_ENABLED);
 }
 
 function count(value: unknown): value is number {
@@ -138,6 +139,7 @@ export function oversizedPullRequestDecision(
     ...(source ? { oversizedPullRequestSource: source } : {}),
     summary: `Pull request changes ${size.additions + size.deletions} lines, exceeding the ${size.threshold}-line review limit.`,
     changeSummary: unassessed,
+    changeExample: { scenario: "", before: "", after: "" },
     systemContext: "",
     architectureDiagram: "",
     evidence: [
@@ -190,6 +192,19 @@ export function oversizedPullRequestDecision(
       status: "unreadable_or_unclear",
       summary: unassessed,
     },
+    productReview: {
+      kind: "not_applicable",
+      userProblem: "",
+      fixScope: "not_applicable",
+      worthIt: "not_applicable",
+      reason: unassessed,
+    },
+    provenance: [],
+    testingReview: {
+      proofPath: "not_applicable",
+      lowValueTests: [],
+      missingE2e: "",
+    },
     reviewFindings: [],
     securityReview: { status: "not_applicable", summary: unassessed, concerns: [] },
     realBehaviorProof: {
@@ -206,21 +221,6 @@ export function oversizedPullRequestDecision(
       nextSteps: [],
     },
     telegramVisibleProof: { status: "not_needed", summary: unassessed },
-    liveProofPlan: {
-      status: "not_applicable",
-      surface: "none",
-      terminalCompletion: "not_applicable",
-      reason: unassessed,
-      payoff: { kind: "static_text", justification: unassessed },
-      entry: "",
-      steps: [],
-    },
-    mantisRecommendation: {
-      status: "not_recommended",
-      scenario: "none",
-      reason: unassessed,
-      maintainerComment: "",
-    },
     featureShowcase: { status: "none", reason: unassessed },
     overallCorrectness: "not a patch",
     overallConfidenceScore: 0,

@@ -1,4 +1,4 @@
-import { recordOrEmpty as record } from "./value-coerce.js";
+import { asRecord as record } from "./value-coerce.js";
 import type { ContextHydration } from "./clawsweeper-types.js";
 import { EXACT_REVIEW_DIRECT_PUBLICATION_MAX_FILE_BYTES } from "./exact-review-publication-limits.js";
 

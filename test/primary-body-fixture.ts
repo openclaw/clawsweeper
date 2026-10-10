@@ -1,15 +1,14 @@
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
+import { sha256 } from "../dist/content-hash.js";
 import { createContextHydration } from "../dist/clawsweeper-context-hydration.js";
 import { createItemContext } from "../dist/clawsweeper-item-context.js";
 import { createSourceRevisionTools } from "../dist/clawsweeper-source-revision.js";
 import {
-  asRecord,
   labelNames,
-  login,
   normalizeAuthorAssociation,
   normalizeLabelName,
 } from "../dist/clawsweeper-item-policy.js";
+import { asRecord, login, stringOrUndefined } from "../dist/value-coerce.js";
 import type { PrimaryBodyContext } from "../dist/clawsweeper-primary-body.js";
 import type { Item, ItemKind } from "../dist/clawsweeper-types.js";
 import { item } from "./helpers.ts";
@@ -59,28 +58,19 @@ export function longProofBody(): string {
   return body.padEnd(60641, ".");
 }
 
-export function sha256(text: string): string {
-  return createHash("sha256").update(text).digest("hex");
-}
-
-const stringOrUndefined = (value: unknown) => (typeof value === "string" ? value : undefined);
 const githubCount = (value: unknown) => (typeof value === "number" ? value : null);
 const CLAWSWEEPER_BOT_AUTHORS = new Set(["clawsweeper[bot]"]);
 const isClawSweeperComment = (value: unknown) =>
   CLAWSWEEPER_BOT_AUTHORS.has((login(asRecord(value).user) ?? "").toLowerCase());
 
 export const sourceTools = createSourceRevisionTools({
-  asRecord,
   clawsweeperBotAuthors: CLAWSWEEPER_BOT_AUTHORS,
   githubCount,
   isClawSweeperComment,
-  login,
   normalizeAuthorAssociation,
   normalizeLabelName,
   pullHeadShaFromContext: (context) =>
     stringOrUndefined(asRecord(asRecord(context.pullRequest).head).sha) ?? null,
-  sha256,
-  stringOrUndefined,
 });
 
 function unavailable(): never {
@@ -91,13 +81,10 @@ function unavailable(): never {
 export const hydration = createContextHydration(
   new Proxy(
     {
-      asRecord,
       CLAWSWEEPER_BOT_AUTHORS,
       labelNames,
-      login,
       normalizeAuthorAssociation,
       normalizeLabelName,
-      stringOrUndefined,
       githubCount,
       reviewCommentBodyDigest: sourceTools.reviewCommentBodyDigest,
     },
@@ -150,9 +137,7 @@ export function hydratePrimaryBody(
   const { collectItemContext } = createItemContext({
     ...hydration,
     ...sourceTools,
-    asRecord,
-    sha256,
-    stringOrUndefined,
+
     targetRepo: () => target.repo,
     ghJson: <T>(args: string[]) => {
       if (args[1] === `repos/${target.repo}/issues/${target.number}`) return rawIssue as T;

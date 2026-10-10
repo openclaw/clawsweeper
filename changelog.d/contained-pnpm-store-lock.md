@@ -1,0 +1,1 @@
+- Let contained target `pnpm` 12.6–12.8 open its fixed `/tmp/pnpm-store-operation-locks-0` store lock through a private in-sandbox tmpfs, so repair workers no longer stop on `ERR_PNPM_STORE_DIR_OPEN_OPERATION_LOCK` before dependency setup while the rest of `/tmp` stays read-only.

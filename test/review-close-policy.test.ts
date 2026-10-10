@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
+import { parse } from "yaml";
 
 import {
   currentClosingPullRequestReferenceFromIssueTimeline,
@@ -19,73 +20,37 @@ import {
   validateCloseDecision,
 } from "../dist/clawsweeper.js";
 import { parseCoAuthors } from "../dist/commit-sweeper.js";
-import { closeDecision, git, item, reportFrontMatter } from "./helpers.ts";
+import { closeDecision, git, item, reportFrontMatter, reviewPrompt } from "./helpers.ts";
 
-test("review prompt documents gated backlog close policies", () => {
-  const prompt = readFileSync(new URL("../prompts/review-item.md", import.meta.url), "utf8");
-  const sweepWorkflow = readFileSync(
-    new URL("../.github/workflows/sweep.yml", import.meta.url),
-    "utf8",
+function renderedCloseReasons(prompt: string): string[] {
+  const section = prompt.slice(
+    prompt.indexOf("### Close reasons"),
+    prompt.indexOf("### Canonical search and partial work"),
   );
-  assert.match(prompt, /`unsponsored_feature_request`/);
-  assert.match(prompt, /reversible idea-archive park, not a rejection/);
-  assert.match(prompt, /label whose normalized name contains `security`/);
-  assert.match(prompt, /configured positive-reaction threshold automatically reopens it/);
-  assert.match(prompt, /commenting `@clawsweeper revive`/);
-  assert.match(prompt, /no human comment in the last 60 days/);
-  assert.match(prompt, /significantly outdated version or behavior/);
-  assert.match(prompt, /not cleanly mergeable \(merge conflicts\) on its current head/);
-  assert.match(prompt, /`author_pr_budget_exceeded`/);
-  assert.match(prompt, /Never propose this reason when the author open-PR count is unknown/);
-  assert.match(prompt, /default path is apply-side deterministic promotion/);
-  assert.match(prompt, /`stale_version_bug`/);
-  assert.match(prompt, /fresh current-version reproduction/);
-  assert.match(prompt, /`obsolete_fix_pr`/);
-  assert.match(prompt, /every touched path was substantially rewritten or removed/);
-  assert.match(prompt, /`bulkFiler\.detected`/);
-  assert.match(prompt, /extra duplicate scrutiny/);
-  assert.match(prompt, /Never route it to proof-nudge or automated fix-dispatch work/);
-  assert.match(prompt, /do not invent a bulk-filing close reason/);
-  assert.match(prompt, /GitHub-verified, merged fixing PR in\s+the same repository/);
-  assert.match(prompt, /linked issue is not permission or proof to close either item/);
-  assert.ok(
-    [...sweepWorkflow.matchAll(/CLAWSWEEPER_IDEA_REVIVAL_REACTIONS:.*\|\| '5'/g)].length >= 2,
+  return [...section.matchAll(/^- `([a-z_]+)`: /gm)].map((match) => match[1]!);
+}
+
+test("review prompt renders close reasons from the repository profile for the item kind", () => {
+  const schema = JSON.parse(readFileSync("schema/clawsweeper-decision.schema.json", "utf8"));
+  const issueReasons = renderedCloseReasons(reviewPrompt("issue"));
+  const pullRequestReasons = renderedCloseReasons(reviewPrompt("pull_request"));
+  assert.deepEqual(
+    [...new Set([...issueReasons, ...pullRequestReasons, "none"])].sort(),
+    [...schema.properties.closeReason.enum].sort(),
   );
-});
-
-test("review prompt closes independently disproven nonexistent-source bug reports", () => {
-  const prompt = readFileSync(new URL("../prompts/review-item.md", import.meta.url), "utf8");
-
-  assert.match(prompt, /For `cannot_reproduce`, distinguish missing reporter evidence/);
-  assert.match(prompt, /Search the complete current tree,\s+source history, renamed paths/);
-  assert.match(prompt, /actual owner, callers, dependency contract, and relevant regression tests/);
-  assert.match(prompt, /named implementation never existed or cannot perform the alleged/);
-  assert.match(prompt, /propose a high-confidence close with that source-backed evidence/);
-  assert.match(prompt, /Do not keep a source-disproven issue open/);
-  assert.match(prompt, /Bulk filing is not itself a close reason/);
-  assert.match(prompt, /each claim is\s+independently disproved/);
-  assert.match(prompt, /Keep open when an affected shipped version/);
+  assert.ok(issueReasons.includes("stale_insufficient_info"));
+  assert.ok(!issueReasons.includes("obsolete_fix_pr"));
+  assert.ok(pullRequestReasons.includes("obsolete_fix_pr"));
+  assert.ok(!pullRequestReasons.includes("stale_insufficient_info"));
+  assert.deepEqual(renderedCloseReasons(reviewPrompt("issue", "openclaw/clawhub")), [
+    "implemented_on_main",
+  ]);
+  const closedRepoPrompt = reviewPrompt("pull_request", "steipete/camsnap");
+  assert.deepEqual(renderedCloseReasons(closedRepoPrompt), []);
+  assert.match(closedRepoPrompt, /enables no close reason for this item kind: keep the item open/);
 });
 
 test("external desktop-product bugs close without inventing upstream maintainer work", () => {
-  const prompt = readFileSync(new URL("../prompts/review-item.md", import.meta.url), "utf8");
-
-  assert.match(prompt, /QClaw `0\.x` desktop\/client reports/);
-  assert.match(prompt, /`qclaw\/\*` providers/);
-  assert.match(prompt, /externally maintained WeChat adapters/);
-  assert.match(prompt, /propose a high-confidence `not_actionable_in_repo` close immediately/);
-  assert.match(prompt, /do not request private\/encrypted third-party traces/);
-  assert.match(prompt, /do not turn missing third-party logs into a maintainer-review blocker/);
-  assert.match(
-    prompt,
-    /evidence demonstrates an actual failure in an official OpenClaw release or owned source path/,
-  );
-  assert.match(
-    prompt,
-    /Merely citing healthy owned source paths, generic fallback\/delivery plumbing/,
-  );
-  assert.match(prompt, /set `workCandidate: "none"`/);
-
   const decision = closeDecision({
     closeReason: "not_actionable_in_repo",
     itemCategory: "bug",
@@ -103,20 +68,6 @@ test("external desktop-product bugs close without inventing upstream maintainer 
 });
 
 test("close-first triage keeps actionable upstream work and invites better reports", () => {
-  const prompt = readFileSync(new URL("../prompts/review-item.md", import.meta.url), "utf8");
-
-  assert.match(prompt, /Maintainer attention is scarce/);
-  assert.match(prompt, /Default to closure when an unprotected item does not establish/);
-  assert.match(
-    prompt,
-    /Confidence applies to whether this submission merits scarce maintainer attention/,
-  );
-  assert.match(prompt, /explicitly invite the author to reopen with that evidence/);
-  assert.match(prompt, /Keep open for actual current upstream bugs/);
-  assert.match(prompt, /official affected release or owned source failure/);
-  assert.match(prompt, /security-sensitive items, protected labels, maintainer-engaged work/);
-  assert.match(prompt, /Do not invent a new close reason or misclassify an actual upstream defect/);
-
   for (const closeReason of ["not_actionable_in_repo", "incoherent", "cannot_reproduce"] as const) {
     const decision = closeDecision({
       closeReason,
@@ -147,74 +98,31 @@ test("close-first triage keeps actionable upstream work and invites better repor
 });
 
 test("all exact-review publication paths inherit the shared automatic-close policy", () => {
-  const sweepWorkflow = readFileSync(
-    new URL("../.github/workflows/sweep.yml", import.meta.url),
-    "utf8",
-  );
-  const batchWorkflow = readFileSync(
-    new URL("../.github/workflows/exact-review-batch-publish.yml", import.meta.url),
-    "utf8",
-  );
-  const batchPreparation = readFileSync(
-    new URL("../scripts/prepare-exact-review-batch.mjs", import.meta.url),
-    "utf8",
-  );
-  const publisher = readFileSync(
-    new URL("../src/repair/publish-event-result.ts", import.meta.url),
-    "utf8",
-  );
-
-  for (const workflow of [sweepWorkflow, batchWorkflow]) {
-    assert.match(
-      workflow,
-      /CLAWSWEEPER_AUTO_CLOSE_REASONS: \$\{\{ vars\.CLAWSWEEPER_AUTO_CLOSE_REASONS \|\| 'all' \}\}/,
+  const sweep = parse(readFileSync(".github/workflows/sweep.yml", "utf8"));
+  const batch = parse(readFileSync(".github/workflows/exact-review-batch-publish.yml", "utf8"));
+  for (const env of [sweep.env, batch.jobs.publish.env]) {
+    assert.equal(
+      env.CLAWSWEEPER_AUTO_CLOSE_REASONS,
+      "${{ vars.CLAWSWEEPER_AUTO_CLOSE_REASONS || 'all' }}",
     );
-    for (const flag of [
-      "UNCONFIRMED_PRODUCT_DIRECTION",
-      "UNSPONSORED_FEATURE",
-      "STALE_VERSION_BUG",
-      "OBSOLETE_FIX_PR",
-    ]) {
-      assert.match(workflow, new RegExp(`CLAWSWEEPER_${flag}_CLOSE_ENABLED:`), flag);
-    }
-    for (const setting of [
+    for (const name of [
+      "UNCONFIRMED_PRODUCT_DIRECTION_CLOSE_ENABLED",
+      "UNSPONSORED_FEATURE_CLOSE_ENABLED",
+      "STALE_VERSION_BUG_CLOSE_ENABLED",
+      "OBSOLETE_FIX_PR_CLOSE_ENABLED",
       "AUTHOR_PR_BUDGET",
       "AUTHOR_PR_BUDGET_MAX_CLOSES_PER_RUN",
       "IDEA_REVIVAL_REACTIONS",
     ]) {
-      assert.match(workflow, new RegExp(`CLAWSWEEPER_${setting}:`), setting);
+      assert.ok(env[`CLAWSWEEPER_${name}`], name);
+    }
+    assert.equal(env.CLAWSWEEPER_AUTHOR_PR_BUDGET_CLOSE_ENABLED, undefined);
+  }
+  for (const document of [sweep, batch]) {
+    for (const job of Object.values(document.jobs) as Array<{ steps?: Array<{ env?: object }> }>) {
+      for (const step of job.steps ?? []) assert.equal("CLOSE_REASONS" in (step.env ?? {}), false);
     }
   }
-
-  const sweepGlobalEnv = sweepWorkflow.slice(
-    sweepWorkflow.indexOf("\nenv:\n"),
-    sweepWorkflow.indexOf("\nconcurrency:\n"),
-  );
-  const batchJobEnv = batchWorkflow.slice(
-    batchWorkflow.indexOf("    env:\n"),
-    batchWorkflow.indexOf("    steps:\n"),
-  );
-  assert.doesNotMatch(sweepGlobalEnv, /CLAWSWEEPER_AUTHOR_PR_BUDGET_CLOSE_ENABLED:/);
-  assert.doesNotMatch(batchJobEnv, /CLAWSWEEPER_AUTHOR_PR_BUDGET_CLOSE_ENABLED:/);
-  assert.match(sweepWorkflow, /CLAWSWEEPER_AUTHOR_PR_BUDGET_CLOSE_ENABLED:/);
-  assert.equal(
-    [
-      ...sweepWorkflow.matchAll(
-        /inputs\.apply_close_reasons \|\| env\.CLAWSWEEPER_AUTO_CLOSE_REASONS/g,
-      ),
-    ].length,
-    3,
-  );
-  assert.doesNotMatch(
-    sweepWorkflow,
-    /CLOSE_REASONS: implemented_on_main,duplicate_or_superseded,low_signal_unmergeable_pr/,
-  );
-  assert.doesNotMatch(batchPreparation, /CLOSE_REASONS:\s*"implemented_on_main/);
-  assert.match(
-    publisher,
-    /process\.env\.CLOSE_REASONS \|\| process\.env\.CLAWSWEEPER_AUTO_CLOSE_REASONS \|\| "all"/,
-  );
-  assert.match(publisher, /"--stale-min-age-days",\s*"60"/);
 });
 
 test("unsponsored feature issue proposals emit source-bound trusted close markers", () => {
@@ -390,12 +298,8 @@ test("review actions only propose valid closes and never apply directly", () => 
     action.closeComment.indexOf("Is this the best way to solve the issue?") <
       action.closeComment.indexOf("What I checked:"),
   );
-  assert.match(action.closeComment, /Likely related people:/);
-  for (const person of ["alice", "bob"]) {
-    assert.match(action.closeComment, new RegExp(`@${String.fromCodePoint(0x200b)}${person}`));
-  }
-  assert.doesNotMatch(action.closeComment, /@alice|@bob|role: introduced behavior|role: recent/);
-  assert.match(action.closeComment, /role: unverified routing candidate; confidence: low/);
+  // closeDecision owners carry no verified history, so no names are published.
+  assert.doesNotMatch(action.closeComment, /Likely related people:|alice|bob|routing candidate/);
   assert.match(action.closeComment, /Codex review notes: model gpt-5\.6-sol, reasoning high;/);
 });
 

@@ -1,7 +1,7 @@
-import { recordOrEmpty as record } from "./value-coerce.js";
-import { createHash } from "node:crypto";
+import { asRecord as record } from "./value-coerce.js";
+import { sha256 } from "./content-hash.js";
 
-import { stableJsonCodeUnit } from "./stable-json.js";
+import { compareCodeUnits, stableJsonCodeUnit } from "./stable-json.js";
 
 export const MAX_REVIEWED_PR_ACTIVITY = 1_000;
 export const MAX_REVIEWED_PR_ACTIVITY_CURSOR_BYTES = 1024 * 1024;
@@ -92,7 +92,7 @@ function createVersionedReviewedPrActivityCursor(
   entries.sort(compareCodeUnits);
   const canonical = `[${entries.join(",")}]`;
   if (Buffer.byteLength(canonical, "utf8") > MAX_REVIEWED_PR_ACTIVITY_CURSOR_BYTES) return null;
-  return `${version}:${entries.length}:${createHash("sha256").update(canonical).digest("hex")}`;
+  return `${version}:${entries.length}:${sha256(canonical)}`;
 }
 
 export function readStableReviewedPrActivityCursor(readCursor: () => string | null): string | null {
@@ -516,9 +516,5 @@ function scalar(value: unknown): string {
 }
 
 function digestScalar(value: unknown): string {
-  return createHash("sha256").update(scalar(value)).digest("hex");
-}
-
-function compareCodeUnits(left: string, right: string): number {
-  return left < right ? -1 : left > right ? 1 : 0;
+  return sha256(scalar(value));
 }

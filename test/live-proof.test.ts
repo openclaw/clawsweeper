@@ -15,7 +15,8 @@ import { spawnSync } from "node:child_process";
 import test from "node:test";
 import YAML from "yaml";
 
-import { renderReviewCommentFromReport, reportLiveProofPlanForTest } from "../dist/clawsweeper.js";
+import { renderReviewCommentFromReport } from "../dist/clawsweeper.js";
+import { reportLiveProofPlan } from "../dist/clawsweeper-report-parser.js";
 import { createDecisionParser } from "../dist/clawsweeper-decision-parser.js";
 import { mediaProofSpawnDetail } from "../dist/clawsweeper-media-proof.js";
 import { LIVE_VERIFICATION_MARKER, REVIEW_SECTIONS } from "../dist/clawsweeper-policy.js";
@@ -43,6 +44,7 @@ import {
 } from "../dist/live-proof/environment.js";
 import { MediaProbeExecutionError, parseLiveProofManifest } from "../dist/live-proof/manifest.js";
 import { publishReviewLiveProofArtifacts } from "../dist/live-proof/publication-artifacts.js";
+import { sectionValue } from "../dist/report-front-matter.js";
 import {
   buildLiveVerificationResult,
   encodeLiveVerificationReportPayload,
@@ -55,7 +57,6 @@ import {
 
 const HEAD = "0123456789abcdef0123456789abcdef01234567";
 const liveProofPlanParser = createDecisionParser({
-  isMaintainerAuthorAssociation: () => false,
   neutralizeOwnedSectionSpoofing: (value) => value,
   sanitizeArchitectureDiagram: (value) => value,
 }).parseLiveProofPlan;
@@ -1175,7 +1176,7 @@ test("parsed finite terminal expectations wait for a summary after thirty second
         },
         "liveProofPlan",
       );
-      const plan = reportLiveProofPlanForTest(`## Live Proof
+      const plan = reportLiveProofPlan(`## Live Proof
 
 Status: ${parsed.status}
 Surface: ${parsed.surface}
@@ -4340,10 +4341,8 @@ test("live-proof attach dry-run prints exact uploads and mutations without perfo
 
 // Workflow guard: historical proof is folded before publication, and maintenance stays manual.
 test("automatic live proof is retired while historical artifact publication remains", () => {
-  assert.throws(() => readFileSync(".github/workflows/live-proof.yml", "utf8"));
-  assert.throws(() => readFileSync(".github/actions/dispatch-live-proofs/action.yml", "utf8"));
-  const sweep = readFileSync(".github/workflows/sweep.yml", "utf8");
-  const sweepWorkflow = YAML.parse(sweep) as {
+  assert.equal(existsSync(".github/actions/dispatch-live-proofs/action.yml"), false);
+  const sweepWorkflow = YAML.parse(readFileSync(".github/workflows/sweep.yml", "utf8")) as {
     jobs: Record<
       string,
       {
@@ -4406,10 +4405,6 @@ test("automatic live proof is retired while historical artifact publication rema
     "Publish event result and apply safe close",
   ]);
   assert.match(JSON.stringify(exactPublishSteps), /CLAWSWEEPER_LIVE_PROOF_AWS/);
-  assert.doesNotMatch(
-    sweep,
-    /dispatch-live-proofs|clawsweeper_live_proof|live-proof-attach-publish/,
-  );
 
   const batchWorkflow = YAML.parse(
     readFileSync(".github/workflows/exact-review-batch-publish.yml", "utf8"),
@@ -4432,16 +4427,19 @@ test("automatic live proof is retired while historical artifact publication rema
     (step) => step.name === "Prepare each item independently",
   );
   assert.match(JSON.stringify(batchPrepare?.env), /CLAWSWEEPER_LIVE_PROOF_AWS/);
-  assert.match(
-    readFileSync("scripts/prepare-exact-review-batch.mjs", "utf8"),
-    /live-proof-publish-artifacts/,
-  );
 
-  const maintenance = readFileSync(".github/workflows/live-proof-maintenance.yml", "utf8");
-  assert.match(maintenance, /workflow_dispatch:/);
-  assert.doesNotMatch(maintenance, /repository_dispatch:/);
-  assert.match(maintenance, /live-proof-attach[\s\S]*--detach/);
-  assert.match(maintenance, /live-proof-comment[\s\S]*--detach/);
+  const maintenance = YAML.parse(
+    readFileSync(".github/workflows/live-proof-maintenance.yml", "utf8"),
+  ) as { on: object; jobs: Record<string, { steps?: Array<{ run?: string }> }> };
+  assert.deepEqual(Object.keys(maintenance.on), ["workflow_dispatch"]);
+  const runs = Object.values(maintenance.jobs).flatMap((job) =>
+    (job.steps ?? []).map((step) => step.run ?? ""),
+  );
+  for (const command of ["live-proof-attach", "live-proof-comment"]) {
+    const invocations = runs.filter((run) => run.includes(`clawsweeper.js ${command}`));
+    assert.ok(invocations.length > 0, command);
+    for (const run of invocations) assert.match(run, /--detach/, command);
+  }
 });
 
 function validManifest() {
@@ -5194,10 +5192,7 @@ function attachDependencies(options: {
     },
     runner: options.runner,
     fetchPullRequest: options.fetchPullRequest,
-    reportLiveProofPlan: reportLiveProofPlanForTest,
-    frontMatterValue,
-    sectionValue,
-    replaceSectionValue,
+    reportLiveProofPlan: reportLiveProofPlan,
     reviewSections: REVIEW_SECTIONS,
     renderReviewCommentFromReport: (markdown: string) =>
       `Review comment\n\n### Live Verification\n\n${sectionValue(markdown, REVIEW_SECTIONS.liveProof)}`,
@@ -5206,23 +5201,4 @@ function attachDependencies(options: {
     upsertReviewComment: options.upsertReviewComment,
     log: (message: string) => options.logs.push(message),
   };
-}
-
-function frontMatterValue(markdown: string, key: string): string | undefined {
-  return new RegExp(`^${key}:\\s*(.*)$`, "m").exec(markdown)?.[1]?.trim();
-}
-
-function sectionValue(markdown: string, heading: string): string {
-  const escaped = heading.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  return (
-    new RegExp(`(?:^|\\n)## ${escaped}\\n\\n([\\s\\S]*?)(?=\\n## |\\n?$)`)
-      .exec(markdown)?.[1]
-      ?.trim() ?? ""
-  );
-}
-
-function replaceSectionValue(markdown: string, heading: string, value: string): string {
-  const escaped = heading.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const pattern = new RegExp(`((?:^|\\n)## ${escaped}\\n\\n)([\\s\\S]*?)(?=\\n## |\\n?$)`);
-  return markdown.replace(pattern, `$1${value.trim()}\n`);
 }
