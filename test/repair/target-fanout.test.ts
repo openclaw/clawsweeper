@@ -78,6 +78,92 @@ test("target fanout defaults match the scheduled cursor batch sizes", () => {
   assert.equal(defaultLimit("audit"), "12");
 });
 
+test("audit fanout plans standalone audit dispatches with only the target input", () => {
+  const root = mkdtempSync(join(tmpdir(), "clawsweeper-audit-dispatch-"));
+  const ghPath = join(root, "gh.js");
+  const preloadPath = join(root, "fetch-preload.cjs");
+  try {
+    writeFileSync(
+      ghPath,
+      `#!/usr/bin/env node
+const args = process.argv.slice(2);
+if (args[0] === "api" && args.includes("/installation/repositories?per_page=100")) {
+  console.log(JSON.stringify({full_name:"openclaw/clawhub",archived:false,disabled:false,fork:false,has_issues:true,visibility:"public",default_branch:"main"}));
+} else {
+  throw new Error("unexpected gh command " + JSON.stringify(args));
+}
+`,
+    );
+    chmodSync(ghPath, 0o755);
+    writeFileSync(
+      preloadPath,
+      `globalThis.fetch = async (input) => {
+  const url = new URL(String(input));
+  if (url.hostname === "api.github.com" && url.pathname === "/repos/openclaw/clawhub") {
+    return Response.json({full_name:"openclaw/clawhub",private:false,visibility:"public"});
+  }
+  if (url.hostname === "cursor.invalid") {
+    return Response.json({ok:true,mode:"audit",next_cursor:0,revision:0,updated_at:null,audit_batch:null});
+  }
+  throw new Error("unexpected fetch " + String(input));
+};
+`,
+    );
+    for (const workflowArgs of [[], ["--workflow", "audit.yml"]]) {
+      const output = execFileSync(
+        process.execPath,
+        [
+          "--require",
+          preloadPath,
+          "dist/repair/target-fanout.js",
+          "plan",
+          "--mode",
+          "audit",
+          "--owners",
+          "openclaw",
+          "--repo",
+          "openclaw/clawsweeper",
+          "--ref",
+          "audit-ref",
+          "--cursor-store-url",
+          "https://cursor.invalid",
+          ...workflowArgs,
+        ],
+        {
+          encoding: "utf8",
+          env: {
+            ...process.env,
+            ...mockGhBinEnv(ghPath),
+            GITHUB_ACTIONS: "true",
+            CLAWSWEEPER_INVENTORY_TOKEN_OPENCLAW: "inventory-openclaw",
+            CLAWSWEEPER_HOSTED_TARGET_METADATA_TOKEN: "central-metadata",
+            CLAWSWEEPER_WEBHOOK_SECRET: "cursor-secret",
+          },
+        },
+      );
+      const plan = JSON.parse(output) as { commands: string[][] };
+      assert.deepEqual(plan.commands, [
+        [
+          "api",
+          "repos/openclaw/clawsweeper/actions/workflows/audit.yml/dispatches",
+          "--method",
+          "POST",
+          "-H",
+          "X-GitHub-Api-Version: 2022-11-28",
+          "-f",
+          "ref=audit-ref",
+          "-F",
+          "return_run_details=true",
+          "-f",
+          "inputs[target_repo]=openclaw/clawhub",
+        ],
+      ]);
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("audit waves retain queued slots and drain failures before dispatching all twelve targets", async () => {
   let dispatched = 0;
   let polls = 0;

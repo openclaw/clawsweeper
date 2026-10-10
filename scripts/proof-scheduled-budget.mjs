@@ -115,6 +115,7 @@ const FILES = [
   "dashboard/wrangler.toml",
   ".github/workflows/sweep.yml",
   ".github/workflows/target-fanout.yml",
+  ".github/workflows/audit.yml",
 ];
 
 function mulberry32(seed) {
@@ -357,11 +358,18 @@ try {
     }
     const read = (file) => readFileSync(path.join(dir, file), "utf8");
     const vars = wranglerVars(read("dashboard/wrangler.toml"));
-    // Historical baselines predate the fanout workflow split.
-    const fanoutPath = ".github/workflows/target-fanout.yml";
+    // Historical baselines predate the fanout and audit workflow splits.
+    const optionalWorkflowPaths = [
+      ".github/workflows/target-fanout.yml",
+      ".github/workflows/audit.yml",
+    ];
     const cadence = sweepCadence(
-      read(".github/workflows/sweep.yml") +
-        (existsSync(path.join(dir, fanoutPath)) ? read(fanoutPath) : ""),
+      [
+        read(".github/workflows/sweep.yml"),
+        ...optionalWorkflowPaths.map((file) =>
+          existsSync(path.join(dir, file)) ? read(file) : "",
+        ),
+      ].join("\n"),
     );
     const entry = path.join(out, `${variant}-proof-worker.ts`);
     writeFileSync(

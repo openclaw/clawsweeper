@@ -134,7 +134,7 @@ export async function runTargetFanout(argv: string[]): Promise<void> {
       process.env.CLAWSWEEPER_CURSOR_STORE_URL ?? stringArg(args["publish-url"], ""),
     ),
     dispatchRepo: stringArg(args.repo, process.env.GITHUB_REPOSITORY ?? "openclaw/clawsweeper"),
-    workflow: stringArg(args.workflow, "sweep.yml"),
+    workflow: stringArg(args.workflow, "audit.yml"),
     ref: stringArg(args.ref, "main"),
     dryRun: Boolean(args["dry-run"]),
     owners: csvArg(args.owners),
@@ -718,8 +718,6 @@ function workflowDispatchArgs(
     "return_run_details=true",
     "-f",
     `inputs[target_repo]=${repository.targetRepo}`,
-    "-f",
-    "inputs[audit_dashboard]=true",
   ];
 }
 

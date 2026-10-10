@@ -311,6 +311,7 @@ test("audit coverage refreshes inventory tokens after dispatching the waves", ()
   const coverage = steps.findIndex(
     (step: any) => step.name === "Summarize trailing weekly review coverage",
   );
+  assert.equal(steps[coverage].if, "${{ github.event.schedule == '37 */6 * * *' }}");
   for (const owner of ["openclaw", "steipete"]) {
     const refresh = steps.findIndex((step: any) => step.id === `${owner}-coverage-token`);
     assert.ok(refresh > dispatch && refresh < coverage);

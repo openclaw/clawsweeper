@@ -434,9 +434,9 @@ scheduling, capacity, and monitoring behavior is documented in
 Review is proposal-only. It never closes items.
 
 - A planner selects due items and offers them to the shared exact-review queue.
-- Manual runs can select `item_number` or comma-separated `item_numbers`, target
-  branch, prompt, timeout, and hot-intake mode. Broad runs use the same queue
-  capacity and pacing as scheduled feeds; per-run `batch_size`, `shard_count`,
+- Manual review runs in `sweep.yml` can select `item_number` or comma-separated
+  `item_numbers`, target branch, prompt, timeout, and hot-intake mode. Broad runs
+  use the same queue capacity and pacing as scheduled feeds; per-run `batch_size`, `shard_count`,
   and `apply_after_review` inputs are retired. Use the separate `apply_existing`
   lane to apply eligible proposals.
 - Each admitted item gets its own review workflow for the selected target.
@@ -958,12 +958,18 @@ Use `--update-dashboard` to publish the latest audit state under
 `results/audit/` in `openclaw/clawsweeper-state` without making every normal
 status update scan all open GitHub items. The state repo renders reviewable
 findings such as missing eligible records, reopened archived records, and stale
-reviews from that state. The
-workflow refreshes audit state on a separate six-hour schedule, and it can be run
-manually with `audit_dashboard=true`. The read-only audit lane covers
-`openclaw/openclaw`, `openclaw/clawhub`, and `openclaw/clawsweeper`; it falls
-back to public workflow-token reads when the ClawSweeper App token is not
-available for a target.
+reviews from that state. The separate `audit.yml` workflow refreshes audit state
+on the existing six-hour schedules. Every manual dispatch of `audit.yml` runs an
+audit; it accepts only `target_repo`, with no `audit_dashboard` input:
+
+```bash
+gh workflow run audit.yml -f target_repo=openclaw/openclaw
+```
+
+Review dispatch remains in `sweep.yml`; target fanout dispatches reviews there
+and audits to `audit.yml`. The read-only audit lane covers `openclaw/openclaw`,
+`openclaw/clawhub`, and `openclaw/clawsweeper`; it falls back to public
+workflow-token reads when the ClawSweeper App token is not available for a target.
 
 ## Local Run
 

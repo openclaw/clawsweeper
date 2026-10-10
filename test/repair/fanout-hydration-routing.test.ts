@@ -43,8 +43,13 @@ test("only normal-review fanout uses identities; hot intake skips preflight and 
     "${{ github.event.schedule == '37 */6 * * *' && '.artifacts/worker-records-manifest.json' || '.artifacts/worker-coverage-manifest.json' }}",
   );
   assert.match(dispatch.run, /--coverage-tracked-items-manifest "\$COVERAGE_MANIFEST"/);
-  const sweep = parse(readFileSync(".github/workflows/sweep.yml", "utf8"));
-  const jobs = Object.values<{ steps?: Array<{ uses?: string; name?: string }> }>(sweep.jobs);
+  assert.match(dispatch.run, /--workflow audit\.yml(?:\s|$)/);
+  assert.doesNotMatch(dispatch.run, /audit_dashboard/);
+  const jobs = ["sweep.yml", "audit.yml"].flatMap((file) =>
+    Object.values<{ steps?: Array<{ uses?: string; name?: string }> }>(
+      parse(readFileSync(`.github/workflows/${file}`, "utf8")).jobs,
+    ),
+  );
   const otherHydrations = jobs.flatMap((job) =>
     (job.steps ?? []).filter((step) => step.uses?.endsWith("/.github/actions/setup-state")),
   );

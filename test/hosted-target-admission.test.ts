@@ -359,9 +359,10 @@ test("hosted admission has no permissions and mints only a metadata-read token a
 });
 
 // Privileged jobs run only after admission reports a public target.
-test("privileged sweep and router jobs need a public hosted admission", () => {
+test("privileged sweep, audit, and router jobs need a public hosted admission", () => {
   for (const [file, names] of [
-    ["sweep.yml", ["plan", "audit-dashboard", "apply-proof"]],
+    ["sweep.yml", ["plan", "apply-proof"]],
+    ["audit.yml", ["audit-dashboard"]],
     ["target-fanout.yml", ["target-fanout"]],
     ["failed-review-retry.yml", ["retry-failed-reviews"]],
     ["repair-comment-router.yml", ["route-comments"]],

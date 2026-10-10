@@ -167,6 +167,7 @@ test("post-side-effect git bookkeeping is non-fatal while durability fences stay
     ],
     [".github/workflows/repair-issue-implementation-intake.yml", "intake", "Commit intake ledger"],
     [".github/workflows/repair-publish-results.yml", "publish", "Commit result ledger"],
+    [".github/workflows/audit.yml", "audit-dashboard", "Commit Audit Health"],
   ]) {
     assert.notEqual(step(file, job, name)["continue-on-error"], true, `${file}:${job}:${name}`);
   }

@@ -2858,7 +2858,7 @@ function publishMainCalls(run: string, env: Record<string, string>) {
 // apart with "theirs", so a status publish can never overwrite a record tuple.
 test("audit publication keeps record tuples apart from status files", () => {
   type Step = { name?: string; run?: string; env?: Record<string, string> };
-  const workflow = YAML.parse(readText(".github/workflows/sweep.yml")) as {
+  const workflow = YAML.parse(readText(".github/workflows/audit.yml")) as {
     jobs: Record<string, { steps: Step[] }>;
   };
   const step = (name: string) => {
@@ -2884,6 +2884,107 @@ test("audit publication keeps record tuples apart from status files", () => {
       call.paths.some((path) => path.startsWith("records")),
       false,
     );
+  }
+});
+
+test("audit cron and manual dispatches route exclusively through the standalone audit workflow", () => {
+  const audit = YAML.parse(readText(".github/workflows/audit.yml"));
+  const sweep = YAML.parse(readText(".github/workflows/sweep.yml"));
+  const crons = ["7 */6 * * *", "12 */6 * * *", "17 */6 * * *"];
+  assert.deepEqual(
+    audit.on.schedule.map(({ cron }: { cron: string }) => cron),
+    crons,
+  );
+  assert.deepEqual(Object.keys(audit.on).sort(), ["schedule", "workflow_dispatch"]);
+  assert.deepEqual(Object.keys(audit.on.workflow_dispatch.inputs), ["target_repo"]);
+  assert.equal(audit.on.workflow_dispatch.inputs.target_repo.default, "openclaw/openclaw");
+  assert.equal(audit["run-name"], "Audit ClawSweeper state");
+  assert.deepEqual(audit.permissions, sweep.permissions);
+  assert.deepEqual(audit.env, sweep.env);
+  assert.deepEqual(Object.keys(audit.jobs).sort(), ["audit-dashboard", "hosted-target-admission"]);
+  assert.equal(sweep.jobs["audit-dashboard"], undefined);
+  assert.equal(sweep.on.workflow_dispatch.inputs.audit_dashboard, undefined);
+  for (const { cron } of sweep.on.schedule) assert.ok(!crons.includes(cron), cron);
+  assert.equal(audit.concurrency["cancel-in-progress"], false);
+
+  const format = (template: string, ...values: unknown[]) =>
+    template.replace(/\{(\d+)\}/g, (_, index: string) => String(values[Number(index)] ?? ""));
+  const evaluate = (expression: string, github: unknown, outcome = "public") =>
+    new Function(
+      "github",
+      "needs",
+      "always",
+      "format",
+      `return (${expression.replace(/^\$\{\{\s*|\s*\}\}$/g, "").replaceAll("needs.hosted-target-admission", 'needs["hosted-target-admission"]')});`,
+    )(github, { "hosted-target-admission": { outputs: { outcome } } }, () => true, format);
+  const admission = audit.jobs["hosted-target-admission"];
+  const job = audit.jobs["audit-dashboard"];
+  const resolve = job.steps.find((step: { id?: string }) => step.id === "target");
+  assert.ok(resolve);
+  const scenarios = [
+    { eventName: "schedule", cron: crons[0], input: "", target: "openclaw/openclaw" },
+    { eventName: "schedule", cron: crons[1], input: "", target: "openclaw/clawhub" },
+    { eventName: "schedule", cron: crons[2], input: "", target: "openclaw/clawsweeper" },
+    { eventName: "workflow_dispatch", cron: "", input: "", target: "openclaw/openclaw" },
+    {
+      eventName: "workflow_dispatch",
+      cron: "",
+      input: "steipete/camsnap",
+      target: "steipete/camsnap",
+    },
+  ];
+  const root = mkdtempSync(`${tmpPrefix}audit-routing-`);
+  try {
+    for (const scenario of scenarios) {
+      const github = {
+        event_name: scenario.eventName,
+        run_id: 123,
+        event: {
+          schedule: scenario.cron,
+          inputs: { target_repo: scenario.input },
+          client_payload: {},
+        },
+      };
+      assert.equal(evaluate(admission.if, github), true);
+      assert.equal(evaluate(job.if, github), true);
+      assert.equal(evaluate(job.if, github, "private"), false);
+      assert.equal(evaluate(admission.with.target_repo, github), scenario.target);
+      assert.equal(
+        evaluate(audit.concurrency.group, github),
+        `${scenario.eventName === "schedule" ? "clawsweeper-audit" : "clawsweeper-operator-dispatch-123"}-${scenario.target}`,
+      );
+      const output = join(root, "outputs");
+      writeFileSync(output, "");
+      execFileSync(
+        "bash",
+        [
+          "-e",
+          "-c",
+          resolve.run.replace(/\$\{\{[\s\S]*?\}\}/g, (expression: string) =>
+            evaluate(expression, github),
+          ),
+        ],
+        { env: { ...process.env, GITHUB_OUTPUT: output } },
+      );
+      assert.ok(
+        readFileSync(output, "utf8").split("\n").includes(`target_repo=${scenario.target}`),
+      );
+    }
+    for (const eventName of ["repository_dispatch", "pull_request", "push"]) {
+      assert.equal(
+        evaluate(job.if, {
+          event_name: eventName,
+          event: { inputs: {}, client_payload: {}, schedule: "" },
+        }),
+        false,
+      );
+    }
+    assert.equal(
+      evaluate(job.if, { event_name: "schedule", event: { schedule: "3 * * * *" } }),
+      false,
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
   }
 });
 
@@ -5036,7 +5137,11 @@ test("public OpenClaw reads use workflow tokens without moving mutation identity
     "${{ steps.target.outputs.target_repo == 'openclaw/openclaw' && github.token || steps.target-write-token.outputs.token }}",
   );
 
-  const auditSelection = find("audit-dashboard", "Select target read token");
+  const audit = YAML.parse(readText(".github/workflows/audit.yml")) as Workflow;
+  const auditSelection = audit.jobs["audit-dashboard"]?.steps.find(
+    (candidate) => candidate.name === "Select target read token",
+  );
+  assert.ok(auditSelection);
   assert.equal(auditSelection.env?.PRIMARY_TOKEN, "${{ github.token }}");
   assert.equal(
     auditSelection.env?.APP_FALLBACK_TOKEN,
@@ -5451,7 +5556,7 @@ function cronFiringMinutesOfDay(cron: string): number[] {
 }
 
 test("workflow schedules are distinct, every compared schedule fires, and fanout stays contained", () => {
-  const paths = ["sweep.yml", "target-fanout.yml", "failed-review-retry.yml"];
+  const paths = ["sweep.yml", "target-fanout.yml", "failed-review-retry.yml", "audit.yml"];
   const workflows = paths.map((path) => {
     const source = readText(`.github/workflows/${path}`);
     const workflow = YAML.parse(source) as {
@@ -5535,12 +5640,12 @@ test("manual review docs name only declared sweep inputs", () => {
   const scheduler = readText("docs/scheduler.md");
   const guidanceSections = [
     readme.slice(
-      readme.indexOf("- Manual runs can select"),
-      readme.indexOf("  capacity and pacing as scheduled feeds;"),
+      readme.indexOf("- Manual review runs"),
+      readme.indexOf("  use the same queue capacity and pacing as scheduled feeds;"),
     ),
     scheduler.slice(
       scheduler.indexOf("supports `target_repo`"),
-      scheduler.indexOf("Per-run `batch_size`"),
+      scheduler.indexOf("Per-run\n`batch_size`"),
     ),
   ];
   const requiredInputs = ["item_number", "item_numbers"];
@@ -5863,7 +5968,6 @@ test("durable cursor sync coalesces safely without discarding targeted batches",
         item_number: "",
         item_numbers: "",
         hot_intake: "",
-        audit_dashboard: "",
       },
       client_payload: { target_repo: "", queue_lease_id: "", item_number: "" },
     },
@@ -6059,6 +6163,7 @@ test("every action-ledger publication authenticates the expected producer job", 
   type WorkflowJobs = { jobs: Record<string, { steps?: Array<{ run?: string }> }> };
   const jobs = [
     ".github/workflows/sweep.yml",
+    ".github/workflows/audit.yml",
     ".github/workflows/failed-review-retry.yml",
     ".github/workflows/target-fanout.yml",
   ].flatMap((path) => Object.values((YAML.parse(readText(path)) as WorkflowJobs).jobs));

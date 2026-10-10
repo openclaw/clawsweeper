@@ -1,0 +1,206 @@
+name: ClawSweeper audit
+
+run-name: Audit ClawSweeper state
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_repo:
+        description: "Repository to sweep"
+        required: false
+        default: "openclaw/openclaw"
+  schedule:
+    - cron: "7 */6 * * *"
+    - cron: "12 */6 * * *"
+    - cron: "17 */6 * * *"
+
+permissions:
+  contents: write
+  actions: write
+  issues: write
+  pull-requests: write
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+  CLAWSWEEPER_AUTO_CLOSE_REASONS: ${{ vars.CLAWSWEEPER_AUTO_CLOSE_REASONS || 'all' }}
+  CLAWSWEEPER_UNCONFIRMED_PRODUCT_DIRECTION_CLOSE_ENABLED: ${{ vars.CLAWSWEEPER_UNCONFIRMED_PRODUCT_DIRECTION_CLOSE_ENABLED || 'false' }}
+  CLAWSWEEPER_OVERSIZED_PR_CLOSE_ENABLED: ${{ vars.CLAWSWEEPER_OVERSIZED_PR_CLOSE_ENABLED || 'true' }}
+  CLAWSWEEPER_MAX_PR_CHANGED_LINES: ${{ vars.CLAWSWEEPER_MAX_PR_CHANGED_LINES || '50000' }}
+  CLAWSWEEPER_UNSPONSORED_FEATURE_CLOSE_ENABLED: ${{ vars.CLAWSWEEPER_UNSPONSORED_FEATURE_CLOSE_ENABLED || 'false' }}
+  CLAWSWEEPER_STALE_VERSION_BUG_CLOSE_ENABLED: ${{ vars.CLAWSWEEPER_STALE_VERSION_BUG_CLOSE_ENABLED || 'false' }}
+  CLAWSWEEPER_OBSOLETE_FIX_PR_CLOSE_ENABLED: ${{ vars.CLAWSWEEPER_OBSOLETE_FIX_PR_CLOSE_ENABLED || 'false' }}
+  CLAWSWEEPER_AUTHOR_PR_BUDGET: ${{ vars.CLAWSWEEPER_AUTHOR_PR_BUDGET || '15' }}
+  CLAWSWEEPER_AUTHOR_PR_BUDGET_MAX_CLOSES_PER_RUN: ${{ vars.CLAWSWEEPER_AUTHOR_PR_BUDGET_MAX_CLOSES_PER_RUN || '5' }}
+  CLAWSWEEPER_IDEA_REVIVAL_REACTIONS: ${{ vars.CLAWSWEEPER_IDEA_REVIVAL_REACTIONS || '5' }}
+  CLAWSWEEPER_APP_CLIENT_ID: Iv23liOECG0slfuhz093
+  CLAWSWEEPER_MODEL: internal
+  CLAWSWEEPER_RUNNER: ${{ vars.CLAWSWEEPER_RUNNER || 'codex' }}
+  CLAWSWEEPER_OPENCLAW_MODEL: ${{ secrets.CLAWSWEEPER_OPENCLAW_MODEL }}
+  CLAWSWEEPER_OPENCLAW_PROVIDERS_JSON: ${{ secrets.CLAWSWEEPER_OPENCLAW_PROVIDERS_JSON }}
+  CLAWSWEEPER_OPENCLAW_OPENAI_KEY: ${{ vars.CLAWSWEEPER_RUNNER == 'openclaw' && secrets.OPENAI_API_KEY || '' }}
+  ANTHROPIC_API_KEY: ${{ vars.CLAWSWEEPER_RUNNER == 'openclaw' && secrets.ANTHROPIC_API_KEY || '' }}
+  GEMINI_API_KEY: ${{ vars.CLAWSWEEPER_RUNNER == 'openclaw' && secrets.GEMINI_API_KEY || '' }}
+  KIMI_API_KEY: ${{ vars.CLAWSWEEPER_RUNNER == 'openclaw' && secrets.KIMI_API_KEY || '' }}
+  OPENROUTER_API_KEY: ${{ vars.CLAWSWEEPER_RUNNER == 'openclaw' && secrets.OPENROUTER_API_KEY || '' }}
+
+concurrency:
+  group: ${{ format('{0}-{1}', github.event_name == 'workflow_dispatch' && format('clawsweeper-operator-dispatch-{0}', github.run_id) || 'clawsweeper-audit', github.event.inputs.target_repo || ((github.event.schedule == '17 */6 * * *') && 'openclaw/clawsweeper' || ((github.event.schedule == '12 */6 * * *') && 'openclaw/clawhub' || 'openclaw/openclaw'))) }}
+  cancel-in-progress: false
+
+jobs:
+  hosted-target-admission:
+    if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || (github.event_name == 'repository_dispatch' && github.event.action == 'clawsweeper_target_sweep') }}
+    uses: ./.github/workflows/hosted-target-admission.yml
+    with:
+      target_repo: ${{ github.event.inputs.target_repo || github.event.client_payload.target_repo || ((github.event.schedule == '17 */6 * * *') && 'openclaw/clawsweeper' || ((github.event.schedule == '12 */6 * * *') && 'openclaw/clawhub' || 'openclaw/openclaw')) }}
+    secrets:
+      CLAWSWEEPER_APP_PRIVATE_KEY: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
+
+  audit-dashboard:
+    name: Audit state
+    needs: hosted-target-admission
+    if: ${{ always() && needs.hosted-target-admission.outputs.outcome == 'public' && (github.event_name == 'workflow_dispatch' || (github.event_name == 'schedule' && (github.event.schedule == '7 */6 * * *' || github.event.schedule == '12 */6 * * *' || github.event.schedule == '17 */6 * * *'))) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          filter: blob:none
+          fetch-depth: 0
+
+      - name: Resolve target repository
+        id: target
+        run: |
+          target_repo="${{ github.event.inputs.target_repo || github.event.client_payload.target_repo || '' }}"
+          if [ -z "$target_repo" ]; then
+            case "${{ github.event.schedule || '' }}" in
+              "12 */6 * * *")
+                target_repo="openclaw/clawhub"
+                ;;
+              "17 */6 * * *")
+                target_repo="openclaw/clawsweeper"
+                ;;
+              *)
+                target_repo="openclaw/openclaw"
+                ;;
+            esac
+          fi
+          target_slug="$(printf '%s' "$target_repo" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9_.-]+/-/g')"
+          target_owner="${target_repo%%/*}"
+          target_name="${target_repo#*/}"
+          {
+            echo "target_repo=$target_repo"
+            echo "target_slug=$target_slug"
+            echo "target_repo_owner=$target_owner"
+            echo "target_repo_name=$target_name"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Create target read token
+        id: target-read-token
+        continue-on-error: true
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ env.CLAWSWEEPER_APP_CLIENT_ID }}
+          private-key: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
+          owner: ${{ steps.target.outputs.target_repo_owner }}
+          repositories: ${{ steps.target.outputs.target_repo_name }}
+          permission-contents: read
+          permission-issues: read
+          permission-pull-requests: read
+
+      - name: Select target read token
+        id: target-token
+        env:
+          PRIMARY_TOKEN: ${{ github.token }}
+          APP_FALLBACK_TOKEN: ${{ steps.target-read-token.outputs.token }}
+        run: |
+          if [ -n "$PRIMARY_TOKEN" ]; then
+            echo "Using workflow token for public audit reads."
+            echo "token=$PRIMARY_TOKEN" >> "$GITHUB_OUTPUT"
+          else
+            echo "Using ClawSweeper App token fallback for audit reads."
+            echo "token=$APP_FALLBACK_TOKEN" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create state token
+        id: state-token
+        uses: ./.github/actions/create-state-token
+        with:
+          client-id: ${{ env.CLAWSWEEPER_APP_CLIENT_ID }}
+          private-key: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
+
+      - uses: ./.github/actions/setup-state
+        with:
+          coordinator-url: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
+          records-url: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
+          records-secret: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
+          records-repo-slugs: ${{ steps.target.outputs.target_slug }}
+          hydrate-state-blobs: "false"
+          token: ${{ steps.state-token.outputs.token }}
+
+      - uses: ./.github/actions/setup-pnpm
+        with:
+          build-script: build:all
+
+      - name: Refresh Audit Health
+        env:
+          CLAWSWEEPER_CANONICAL_RECORD_BASELINE_DIR: .artifacts/audit-canonical-baseline
+          GH_TOKEN: ${{ steps.target-token.outputs.token }}
+          TARGET_REPO: ${{ steps.target.outputs.target_repo }}
+        run: |
+          set -euo pipefail
+          git pull --rebase --autostash
+          reconcile_json="$(pnpm run --silent reconcile -- \
+            --target-repo "$TARGET_REPO" \
+            --max-pages 250 \
+            --skip-closed-at \
+            --canonical-record-baseline-dir "$CLAWSWEEPER_CANONICAL_RECORD_BASELINE_DIR")"
+          echo "$reconcile_json"
+          moved_to_closed="$(jq -r '.movedToClosed' <<<"$reconcile_json")"
+          moved_to_items="$(jq -r '.movedToItems' <<<"$reconcile_json")"
+          removed_stale_closed_copies="$(jq -r '.removedStaleClosedCopies' <<<"$reconcile_json")"
+          mkdir -p .artifacts
+          pnpm run audit -- --target-repo "$TARGET_REPO" --max-pages 250 --sample-limit 25 --output .artifacts/clawsweeper-audit.json --update-dashboard
+          pnpm run status -- \
+            --target-repo "$TARGET_REPO" \
+            --state "Audit finished" \
+            --detail "Reconciled durable $TARGET_REPO records before audit: moved ${moved_to_closed} closed records, restored ${moved_to_items} reopened records, removed ${removed_stale_closed_copies} stale archived copies. Refreshed audit state from a full live scan." \
+            --run-url "https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+
+      - name: Upload canonical close-verdict audit
+        uses: actions/upload-artifact@v7
+        with:
+          name: close-verdict-audit-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .artifacts/clawsweeper-audit.json
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Commit Audit Health
+        env:
+          CLAWSWEEPER_CANONICAL_RECORD_BASELINE_DIR: .artifacts/audit-canonical-baseline
+          CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
+          QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
+          TARGET_REPO: ${{ steps.target.outputs.target_repo }}
+        run: |
+          target_slug="$TARGET_REPO"
+          target_slug="${target_slug//\//-}"
+          pnpm run repair:publish-main -- \
+            --message "chore: update sweep audit state" \
+            --path "records/${target_slug}" \
+            --rebase-strategy normal
+          if ! pnpm run repair:publish-main -- \
+            --message "chore: publish sweep audit status" \
+            --path README.md \
+            --path "results/audit/${target_slug}.json" \
+            --path "results/sweep-status/${target_slug}.json" \
+            --rebase-strategy theirs; then
+            echo "::warning title=Audit dashboard publish failed::Canonical reconciliation is complete; continuing without the best-effort Git dashboard update."
+          fi
+
+      - name: Refresh state dashboard
+        env:
+          GH_TOKEN: ${{ steps.state-token.outputs.token }}
+        run: |
+          gh workflow run dashboard.yml \
+            --repo openclaw/clawsweeper-state \
+            --ref main || echo "Best-effort dashboard refresh dispatch failed; scheduled state dashboard will retry."
