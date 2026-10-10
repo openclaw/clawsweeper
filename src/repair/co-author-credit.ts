@@ -1,6 +1,11 @@
+import {
+  CLAWSWEEPER_APP_LOGIN,
+  CLAWSWEEPER_APP_NOREPLY_EMAIL,
+} from "../clawsweeper-bot-identity.js";
+
 export const CLAWSWEEPER_CO_AUTHOR = {
-  name: "clawsweeper[bot]",
-  email: "274271284+clawsweeper[bot]@users.noreply.github.com",
+  name: CLAWSWEEPER_APP_LOGIN,
+  email: CLAWSWEEPER_APP_NOREPLY_EMAIL,
 } as const;
 
 export const CLAWSWEEPER_CO_AUTHOR_TRAILER = `Co-authored-by: ${CLAWSWEEPER_CO_AUTHOR.name} <${CLAWSWEEPER_CO_AUTHOR.email}>`;

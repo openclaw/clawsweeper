@@ -14,6 +14,11 @@ import {
   repairCodexConfigArgs,
   repairCodexReasoningEffort,
 } from "../../dist/repair/process-env.js";
+import {
+  CLAWSWEEPER_APP_LOGIN,
+  CLAWSWEEPER_APP_NOREPLY_EMAIL,
+  CLAWSWEEPER_APP_SLUG,
+} from "../../dist/clawsweeper-bot-identity.js";
 
 test("codexSubprocessEnv forces ClawSweeper git identity and strips tokens", () => {
   withEnv(
@@ -76,15 +81,19 @@ test("codexSubprocessEnv forces ClawSweeper git identity and strips tokens", () 
   );
 });
 
+// Workflows pass an unset repository variable as an empty string.
 test("clawsweeper git identity defaults to avatar-friendly bot name", () => {
   withEnv({ CLAWSWEEPER_GIT_USER_NAME: "", CLAWSWEEPER_GIT_USER_EMAIL: "" }, () => {
-    assert.equal(clawsweeperGitUserName(), "clawsweeper");
+    assert.equal(clawsweeperGitUserName(), CLAWSWEEPER_APP_SLUG);
     assert.deepEqual(clawsweeperGitIdentityEnv(), {
-      GIT_AUTHOR_NAME: "clawsweeper",
-      GIT_AUTHOR_EMAIL: "274271284+clawsweeper[bot]@users.noreply.github.com",
-      GIT_COMMITTER_NAME: "clawsweeper",
-      GIT_COMMITTER_EMAIL: "274271284+clawsweeper[bot]@users.noreply.github.com",
+      GIT_AUTHOR_NAME: CLAWSWEEPER_APP_SLUG,
+      GIT_AUTHOR_EMAIL: CLAWSWEEPER_APP_NOREPLY_EMAIL,
+      GIT_COMMITTER_NAME: CLAWSWEEPER_APP_SLUG,
+      GIT_COMMITTER_EMAIL: CLAWSWEEPER_APP_NOREPLY_EMAIL,
     });
+  });
+  withEnv({ CLAWSWEEPER_GIT_USER_NAME: CLAWSWEEPER_APP_LOGIN }, () => {
+    assert.equal(clawsweeperGitUserName(), CLAWSWEEPER_APP_SLUG);
   });
 });
 
