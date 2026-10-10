@@ -1,0 +1,1 @@
+- Count only unproven issues toward the bulk-filer threshold: issues closed as completed or rated `issue-rating: 🦀 challenger crab` or `issue-rating: 🦞 diamond lobster` no longer push an author into `clawsweeper:bulk-filed`, while open, unrated, lower-rated, not-planned, and duplicate issues still count (https://github.com/openclaw/clawsweeper/issues/1770).

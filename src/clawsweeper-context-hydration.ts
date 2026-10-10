@@ -10,6 +10,7 @@ import { validationRecoveryRequired } from "./repair/validation-recovery.js";
 import { BULK_FILED_LABEL } from "./repair/exact-review-guard-labels.js";
 import {
   BULK_FILER_SEARCH_TIMEOUT_MS,
+  BULK_FILER_UNCOUNTED_ISSUE_RATING_LABELS,
   DAY_MS,
   DEFAULT_AUTHOR_PR_BUDGET_MAX_CLOSES_PER_RUN,
   DEFAULT_BULK_FILER_THRESHOLD,
@@ -566,19 +567,34 @@ function bulkFilerPolicyInvalidatesCachedReview(
   return !/^false$/i.test(frontMatterValue(markdown, "last_full_review_bulk_filer_detected") ?? "");
 }
 
+function bulkFilerIssueSearchQuery(options: {
+  repo: string;
+  author: string;
+  windowStart: string;
+  windowEnd: string;
+}): string {
+  // GitHub search ranges include both ends; start 1 ms later to keep the window start exclusive.
+  const rangeStart = new Date(Date.parse(options.windowStart) + 1).toISOString();
+  return [
+    `repo:${options.repo}`,
+    "type:issue",
+    `author:${quoteGitHubSearchTerm(options.author)}`,
+    `created:${rangeStart}..${options.windowEnd}`,
+    // Only issues that have not proven themselves count: closed as completed or
+    // rated with a high-confidence reproduction is left out, everything else stays.
+    "-reason:completed",
+    ...BULK_FILER_UNCOUNTED_ISSUE_RATING_LABELS.map(
+      (label) => `-label:${quoteGitHubSearchTerm(label)}`,
+    ),
+  ].join(" ");
+}
+
 function authorIssueCountInBulkFilerWindow(
   author: string,
   windowStart: string,
   windowEnd: string,
 ): number {
-  // GitHub search ranges include both ends; start 1 ms later to keep the window start exclusive.
-  const rangeStart = new Date(Date.parse(windowStart) + 1).toISOString();
-  const query = [
-    `repo:${targetRepo()}`,
-    "type:issue",
-    `author:${quoteGitHubSearchTerm(author)}`,
-    `created:${rangeStart}..${windowEnd}`,
-  ].join(" ");
+  const query = bulkFilerIssueSearchQuery({ repo: targetRepo(), author, windowStart, windowEnd });
   const result = ghJsonOnce<{ total_count?: number; incomplete_results?: boolean }>(
     ["api", "search/issues", "--method", "GET", "-f", `q=${query}`, "-f", "per_page=1"],
     BULK_FILER_SEARCH_TIMEOUT_MS,
@@ -889,6 +905,7 @@ export function materializePullRequestReviewTree(
 export {
   authorIssueCountInBulkFilerWindow,
   authorPrBudgetMaxClosesPerRun,
+  bulkFilerIssueSearchQuery,
   bulkFilerPolicyInvalidatesCachedReview,
   bulkFilerRepositoryPermission,
   bulkFilerThreshold,

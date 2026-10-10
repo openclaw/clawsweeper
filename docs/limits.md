@@ -30,10 +30,16 @@ budget:
 | `CLAWSWEEPER_AUTHOR_PR_BUDGET_CLOSE_ENABLED`      | `false` | Enables live per-author budget closes.               |
 | `CLAWSWEEPER_AUTHOR_PR_BUDGET`                    |      15 | Allowed open PRs per external author and repository. |
 | `CLAWSWEEPER_AUTHOR_PR_BUDGET_MAX_CLOSES_PER_RUN` |       5 | Gradual trim cap per author in one apply run.        |
-| `CLAWSWEEPER_BULK_FILER_THRESHOLD`                |      10 | Recent authored-issue count that marks bulk filing.  |
+| `CLAWSWEEPER_BULK_FILER_THRESHOLD`                |      10 | Recent unproven authored issues marking bulk filing. |
 | `CLAWSWEEPER_BULK_FILER_WINDOW_DAYS`              |       7 | Lookback window ending at the issue's creation.      |
 | `CLAWSWEEPER_STALE_VERSION_BUG_CLOSE_ENABLED`     | `false` | Enables stale-version bug closes after 120 days.     |
 | `CLAWSWEEPER_OBSOLETE_FIX_PR_CLOSE_ENABLED`       | `false` | Enables obsolete small-fix PR closes after 90 days.  |
+
+The bulk-filer count leaves out issues that have proven themselves: closed as
+completed, or rated `issue-rating: 🦀 challenger crab` or
+`issue-rating: 🦞 diamond lobster`. Every other issue in the window counts,
+including open, unrated, lower-rated, not-planned, and duplicate issues.
+Priority labels do not change the count.
 
 See [`author-pr-budget-close-policy.md`](author-pr-budget-close-policy.md) for
 the rating, proof, inactivity, engagement, and fail-closed gates.

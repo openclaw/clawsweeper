@@ -7,12 +7,18 @@ import {
   renderReviewStartStatusComment,
 } from "../dist/clawsweeper.js";
 import {
+  bulkFilerIssueSearchQuery,
   detectBulkFiler,
   bulkFilerPolicyInvalidatesCachedReview,
   updateBulkFilerDetectedFrontMatter,
 } from "../dist/clawsweeper-context-hydration.js";
 import { createLabelMutationOperations } from "../dist/clawsweeper-label-mutations.js";
 import { createLabelSyncOperations } from "../dist/clawsweeper-label-operations.js";
+import { issueRatingLabelForState } from "../dist/clawsweeper-label-selection.js";
+import {
+  BULK_FILER_UNCOUNTED_ISSUE_RATING_LABELS,
+  ISSUE_ADVISORY_LABELS,
+} from "../dist/clawsweeper-policy.js";
 import { item } from "./helpers.ts";
 
 test("bulk-filer defaults and positive env overrides are bounded", () => {
@@ -117,6 +123,52 @@ test("bulk-filer count ends at the issue's creation, not at review time", () => 
   assert.equal(tenth.context?.issueCount, 10);
   assert.equal(tenth.labelPending, true);
   assert.equal(cache.size, 2);
+});
+
+test("bulk-filer count leaves out only completed and high-confidence reproduced issues", () => {
+  const query = bulkFilerIssueSearchQuery({
+    repo: "openclaw/openclaw",
+    author: "reporter",
+    windowStart: "2026-10-03T11:00:00.000Z",
+    windowEnd: "2026-10-10T11:00:00.000Z",
+  });
+  // The author's filing window stays as before; the exclusions only narrow it.
+  for (const term of [
+    "repo:openclaw/openclaw",
+    "type:issue",
+    "author:reporter",
+    "created:2026-10-03T11:00:00.001Z..2026-10-10T11:00:00.000Z",
+    "-reason:completed",
+    '-label:"issue-rating: 🦀 challenger crab"',
+    '-label:"issue-rating: 🦞 diamond lobster"',
+  ]) {
+    assert.ok(query.includes(term), term);
+  }
+
+  // The uncounted ratings are exactly the ones the review assigns for a
+  // high-confidence reproduction, so a renamed rating cannot silently drift.
+  assert.deepEqual(
+    [...BULK_FILER_UNCOUNTED_ISSUE_RATING_LABELS].sort(),
+    [
+      issueRatingLabelForState({
+        type: "issue",
+        reproductionStatus: "reproduced",
+        reproductionConfidence: "high",
+      }),
+      issueRatingLabelForState({
+        type: "issue",
+        reproductionStatus: "source_reproducible",
+        reproductionConfidence: "high",
+      }),
+    ].sort(),
+  );
+  for (const { name } of ISSUE_ADVISORY_LABELS) {
+    if (!name.startsWith("issue-rating:")) continue;
+    const uncounted = BULK_FILER_UNCOUNTED_ISSUE_RATING_LABELS.includes(name);
+    assert.equal(query.includes(name), uncounted, name);
+  }
+  // Open, unrated, not-planned and duplicate issues keep counting.
+  assert.doesNotMatch(query, /is:(open|closed)|reason:(?!completed)/);
 });
 
 test("bulk-filer policy exempts only owners and members", () => {
