@@ -192,6 +192,42 @@ test("generated shared-channel review prompt preserves scoped policy and real fa
   assert.doesNotMatch(runtimePrompt, /extensions\/telegram\/AGENTS\.md/);
 });
 
+test("runtime prompt renders only the applicable PR review instructions", () => {
+  const pullFiles = [{ filename: "docs/guide.md" }];
+  const context = {
+    issue: {},
+    comments: [],
+    timeline: [],
+    pullFiles,
+    counts: { comments: 0, timeline: 0, pullFiles: pullFiles.length },
+  };
+  const git = { mainSha: "abc123", latestRelease: null };
+  const firstReview = reviewPromptForTest(item({ kind: "pull_request" }), context, git);
+  assert.match(firstReview, /For this external PR, real-behavior proof gates merge/);
+  assert.doesNotMatch(firstReview, /This PR is maintainer-authored|Re-review: when the context/);
+  assert.match(firstReview, /Authority chain, inside the existing outputs/);
+  assert.doesNotMatch(firstReview, /Keep repository-managed locale PRs open/);
+  assert.doesNotMatch(firstReview, /<!-- \/?review-section/);
+  assert.match(firstReview, /Claim malicious intent only on concrete evidence/);
+
+  const followUp = reviewPromptForTest(
+    item({ kind: "pull_request", authorAssociation: "MEMBER" }),
+    { ...context, previousClawSweeperReview: { summary: "Prior findings" } },
+    git,
+  );
+  assert.match(followUp, /This PR is maintainer-authored/);
+  assert.match(followUp, /Re-review: when the context/);
+  assert.doesNotMatch(followUp, /For this external PR, real-behavior proof gates merge/);
+  assert.doesNotMatch(followUp, /<!-- \/?review-section/);
+
+  const codeReview = reviewPromptForTest(
+    item({ kind: "pull_request" }),
+    { ...context, pullFiles: [{ filename: "src/authority.ts" }] },
+    git,
+  );
+  assert.match(codeReview, /Authority chain, inside the existing outputs/);
+});
+
 test("media proof discovers both GitHub attachment shapes only on the approved host and paths", () => {
   const attachment = mediaFixtureUrls.attachment;
   const legacy = mediaFixtureUrls.legacyAttachment;
@@ -692,7 +728,7 @@ test("runtime capabilities describe the configured network and credential bounda
       assert.doesNotMatch(authenticatedPrompt, /No GitHub token|synthetic-inspection-token/);
     }
     assert.match(prompt, /No GitHub token is supplied to the review process/);
-    assert.match(prompt, /read those files rather than re-fetching/);
+    assert.doesNotMatch(prompt, /ClawSweeper downloaded linked image and video proof/);
     assert.doesNotMatch(prompt, /available network and read-only GitHub token/);
     if (expected === "allowlisted-proxy") {
       assert.match(
@@ -755,6 +791,13 @@ test("runtime prompt tells Codex to inspect local media artifacts before browser
     prompt,
     /If browser video playback fails but ffprobe metadata and ffmpeg contact sheets are readable/,
   );
+  assert.match(prompt, /Media proves only what it shows/);
+  const withoutArtifacts = reviewPromptForTest(item({ kind: "pull_request" }), context, {
+    mainSha: "abc123",
+    latestRelease: null,
+  });
+  assert.match(withoutArtifacts, /Media proves only what it shows/);
+  assert.doesNotMatch(withoutArtifacts, /downloaded linked image and video proof/);
 });
 
 test("media proof URL discovery includes screenshots and videos", () => {

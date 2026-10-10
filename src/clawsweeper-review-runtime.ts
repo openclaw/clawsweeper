@@ -71,6 +71,11 @@ import { reviewProofCapabilityFromEnv } from "./review-proof-client.js";
 import { readBoundedReviewResult } from "./review-output-policy.js";
 import { asRecord, nonBlankStringOrUndefined } from "./value-coerce.js";
 import { evidenceEntry } from "./clawsweeper-report-parser.js";
+import {
+  applicableCloseReasons,
+  renderReviewSections,
+  reviewPromptSections,
+} from "./review-prompt-sections.js";
 
 /** Prompt sources for an item review: the shared core, one template per item kind, and close reasons. */
 export type ReviewItemPrompts = Readonly<Record<"core" | Item["kind"] | "closeReasons", string>>;
@@ -483,14 +488,14 @@ export function createReviewRuntime({
     return reviewPromptTemplatesCache;
   }
 
-  // Keep only the close reasons that the repository profile enables for this item kind.
+  // The applicability owner has already filtered these reasons against host facts.
   function closeReasonsPrompt(guidance: string, reasons: readonly string[]): string {
     const lines = guidance.trim().split("\n");
     const enabled = lines.filter((line) =>
       reasons.some((reason) => line.startsWith(`- \`${reason}\`: `)),
     );
     if (enabled.length === 0) {
-      return "This repository enables no close reason for this item kind: keep the item open.";
+      return "No close reason applies to this item's host facts: keep it open with `closeReason: none`.";
     }
     const preamble = lines
       .filter((line) => !line.startsWith("- "))
@@ -537,13 +542,21 @@ export function createReviewRuntime({
   ): ReviewPromptBuild {
     const templates = reviewPromptTemplates();
     const profile = repositoryProfileFor(item.repo);
+    const sections = reviewPromptSections(item, context, runtimeHints);
     const prompt = fillPromptSlot(
-      fillPromptSlot(templates.core, "{{item_kind_review}}", templates[item.kind].trim()),
+      fillPromptSlot(
+        templates.core,
+        "{{item_kind_review}}",
+        renderReviewSections(templates[item.kind], sections).trim(),
+      ),
       "{{close_reasons}}",
-      closeReasonsPrompt(templates.closeReasons, profile.applyCloseRules[item.kind] ?? []),
+      closeReasonsPrompt(
+        templates.closeReasons,
+        applicableCloseReasons(item, context, profile.applyCloseRules[item.kind] ?? []),
+      ),
     );
     const kindPolicy = profile.kindPromptNotes?.[item.kind];
-    const repositoryPolicy = `\n## Repository Policy\n\n${profile.promptNote}${kindPolicy ? `\n\n${kindPolicy}` : ""}\n`;
+    const repositoryPolicy = `\n## Repository Policy\n\n${renderReviewSections(profile.promptNote, sections)}${kindPolicy ? `\n\n${renderReviewSections(kindPolicy, sections)}` : ""}\n`;
     const contextJson = contextJsonForPrompt(context, item.kind, runtimeHints.networkCapability);
     const prEvidence =
       item.kind === "pull_request"
@@ -565,10 +578,9 @@ export function createReviewRuntime({
       : "";
     const schema = reviewDecisionSchemaText();
     const proofScratchDir = runtimeHints.proofScratchDir?.trim();
-    const mediaProofPrompt = mediaProofRuntimePrompt(
-      runtimeHints.mediaProofSummary,
-      runtimeHints.mediaProofManifestPath,
-    );
+    const mediaProofPrompt = sections.media
+      ? mediaProofRuntimePrompt(runtimeHints.mediaProofSummary, runtimeHints.mediaProofManifestPath)
+      : "";
     // Keep raw maintainer input scanner-visible; omit fixtures only from sourced GitHub fields.
     const extra = additionalPrompt.trim()
       ? `
@@ -606,7 +618,6 @@ ${additionalPrompt.trim()}
 
 - ${networkDescription}
 - ${tokenDescription}
-- Linked screenshots and videos are downloaded before review into the media proof manifest; read those files rather than re-fetching.
 - ${runtimeHints.networkCapability === "unrestricted" ? "Treat the target checkout as read-only; OpenClaw gateway execution does not enforce the Codex filesystem sandbox." : "The target checkout is read-only."} Use ${proofScratchDir ? `\`${proofScratchDir}\`` : "the proof scratch directory"} for evidence and generated video stills/contact sheets.${prEvidence && runtimeHints.historyCoverage ? `\n- ${reviewHistoryCapability(runtimeHints.historyCoverage, runtimeHints.networkCapability)}` : ""}
 ${mediaProofPrompt}
 ${introductionEvidence}${provenanceEvidence}

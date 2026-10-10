@@ -20,6 +20,7 @@ import {
 } from "../dist/clawsweeper.js";
 import { parseArgs as parseClawsweeperArgs } from "../dist/clawsweeper-args.js";
 import { REPOSITORY_PROFILES, repositoryProfileFor } from "../dist/repository-profiles.js";
+import { renderReviewSections, reviewPromptSections } from "../dist/review-prompt-sections.js";
 import {
   git,
   item,
@@ -822,9 +823,14 @@ test("item prompts carry only the review template for their kind", () => {
     timeline: [],
     counts: { comments: 0, timeline: 0 },
   };
-  const prompt = reviewPromptForTest(item({ kind: "pull_request" }), context, git);
+  const prItem = item({ kind: "pull_request" });
+  const prompt = reviewPromptForTest(prItem, context, git);
   const issuePrompt = reviewPromptForTest(item({ kind: "issue" }), context, git);
-  assert.ok(prompt.includes(templates.pull_request.trim()));
+  assert.ok(
+    prompt.includes(
+      renderReviewSections(templates.pull_request, reviewPromptSections(prItem, context)).trim(),
+    ),
+  );
   assert.ok(!prompt.includes(templates.issue.trim()));
   assert.ok(issuePrompt.includes(templates.issue.trim()));
   assert.ok(!issuePrompt.includes("\n## Review Rules\n"));
