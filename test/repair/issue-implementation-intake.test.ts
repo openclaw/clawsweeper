@@ -796,7 +796,7 @@ test("issue intake reads the review security status and explicit security signal
     candidateKind: "viable",
     live: {
       ...live,
-      issue: { ...live.issue, labels: [{ name: "security:sensitive" }] },
+      issue: { ...live.issue, labels: [{ name: "security-sensitive" }] },
     },
   });
   const decide = (reportMarkdown: string, issue = live.issue) =>
@@ -1785,13 +1785,18 @@ test("issue build overrides on protected issues only prepare a handoff", () => {
   assert.equal(blockerClass({}, false), null);
   // Prose about risk stays soft: the review model judges it, not a word match.
   assert.equal(blockerClass({}), "soft");
+  assert.equal(blockerClass({ labels: ["security: auth"] }), "soft");
+  assert.equal(
+    blockerClass({ body: "Security advisory GHSA-1234-5678-abcd CVE-2026-12345" }),
+    "soft",
+  );
   for (const target of [
     { job_path: "jobs/openclaw/inbox/issue-1.md" },
     { open_prs: ["https://github.com/openclaw/openclaw/pull/2"] },
     { state: "closed" },
     { locked: true },
     { labels: [" Release-Blocker "] },
-    { labels: ["security: auth"] },
+    { labels: ["security-sensitive"] },
     { body: "<!-- clawsweeper-security:security -->" },
   ]) {
     assert.equal(blockerClass(target), "hard", JSON.stringify(target));

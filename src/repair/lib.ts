@@ -37,7 +37,7 @@ export {
   repairRunNamePrefixForJob,
   waitForLiveWorkerCapacity,
 } from "./live-worker-capacity.js";
-export { hasDeterministicSecuritySignal, hasSecuritySignalText } from "./security-signals.js";
+export { hasDeterministicSecuritySignal } from "./security-signals.js";
 
 const PROMPT_ARTIFACT_MAX_CHARS = Number(
   process.env.CLAWSWEEPER_PROMPT_ARTIFACT_MAX_CHARS ?? 320_000,

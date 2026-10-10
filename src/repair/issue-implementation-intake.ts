@@ -835,8 +835,7 @@ function eligibilityDecision({
     if (
       hasSecuritySignal({
         labels: Array.isArray(issue.labels) ? issue.labels : [],
-        comments: Array.isArray(live.comments) ? live.comments : [],
-        text: [issue.title, issue.body],
+        comments: [...(Array.isArray(live.comments) ? live.comments : []), issue.body],
       })
     ) {
       blockHard("live issue has security-sensitive signal");

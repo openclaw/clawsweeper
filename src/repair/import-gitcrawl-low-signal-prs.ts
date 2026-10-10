@@ -3,7 +3,7 @@ import type { JsonValue, LooseRecord } from "./json-types.js";
 import fs from "node:fs";
 import path from "node:path";
 import { querySqliteRows } from "../sqlite-readonly.js";
-import { hasSecuritySignalText, parseArgs, repoRoot } from "./lib.js";
+import { hasDeterministicSecuritySignal, parseArgs, repoRoot } from "./lib.js";
 import { renderJobIntentFrontmatter } from "./job-intent.js";
 import { resolveGitcrawlDbPath } from "./gitcrawl-store.js";
 
@@ -113,8 +113,7 @@ function scoreCandidate(row: LooseRecord) {
   if (isMaintainerAssociated(raw.author_association))
     blockers.push(`author association is ${raw.author_association}`);
   if (assignees.length > 0) blockers.push("assigned PR");
-  if (hasSecuritySignalText(title, body, labels))
-    blockers.push("security label, marker, or advisory ID");
+  if (hasDeterministicSecuritySignal({ labels })) blockers.push("security label");
 
   const ageDays = (Date.now() - Date.parse(updatedAt)) / 86_400_000;
   if (ageDays >= staleDays) signals.push(`no_update_${staleDays}d`);

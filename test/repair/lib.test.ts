@@ -5,7 +5,6 @@ import {
   allowedRepairOwners,
   assertAllowedOwner,
   hasDeterministicSecuritySignal,
-  hasSecuritySignalText,
   isAllowedRepairOwner,
   parseArgs,
   parseSimpleYaml,
@@ -80,19 +79,35 @@ candidates:
   );
 });
 
-test("security signal detection ignores non-security advisory wording", () => {
-  assert.equal(
-    hasSecuritySignalText(
-      "pnpm lint:tmp:dynamic-import-warts (advisory-only; no new run-loop.ts advisory)",
-    ),
-    false,
-  );
-});
-
-test("security signal detection keeps explicit security advisory wording", () => {
-  assert.equal(hasSecuritySignalText("security advisory triage for GHSA-1234-5678-abcd"), true);
-  assert.equal(hasSecuritySignalText("CVE-2026-12345 is routed to the security lane"), true);
-  assert.equal(hasSecuritySignalText({ name: "security:sensitive" }), true);
+test("security signals recognize only the seven exact owner labels", () => {
+  const labels = [
+    "security",
+    "security-sensitive",
+    "security sensitive",
+    "type: security",
+    "type:security",
+    "kind: security",
+    "kind:security",
+  ];
+  for (const label of labels) {
+    assert.equal(hasDeterministicSecuritySignal({ labels: [label] }), true, label);
+    assert.equal(
+      hasDeterministicSecuritySignal({ labels: [{ name: ` ${label.toUpperCase()} ` }] }),
+      true,
+      label,
+    );
+  }
+  for (const label of [
+    "security:sensitive",
+    "security/internal",
+    "type: security review",
+    "insecurity",
+    "security advisory triage for GHSA-1234-5678-abcd",
+    "CVE-2026-12345 is routed to the security lane",
+  ]) {
+    assert.equal(hasDeterministicSecuritySignal({ labels: [label] }), false, label);
+    assert.equal(hasDeterministicSecuritySignal({ comments: [label] }), false, label);
+  }
 });
 
 test("deterministic security signals ignore prose credential wording", () => {
@@ -107,13 +122,20 @@ test("deterministic security signals ignore prose credential wording", () => {
 });
 
 test("deterministic security signals accept labels and structured ClawSweeper markers", () => {
-  assert.equal(hasDeterministicSecuritySignal({ labels: ["security:sensitive"] }), true);
+  assert.equal(hasDeterministicSecuritySignal({ labels: ["security-sensitive"] }), true);
   assert.equal(
     hasDeterministicSecuritySignal({
       comments: ["<!-- clawsweeper-security:security-sensitive item=123 sha=abc -->"],
     }),
     true,
   );
+  for (const comment of [
+    "clawsweeper-security:security-sensitive item=123 sha=abc",
+    "<!-- clawsweeper-security:security-not-a-label -->",
+    "<!-- clawsweeper-security:security-sensitive",
+  ]) {
+    assert.equal(hasDeterministicSecuritySignal({ comments: [comment] }), false, comment);
+  }
 });
 
 test("repair owner policy accepts a comma or whitespace separated owner list", () => {

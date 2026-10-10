@@ -26,7 +26,7 @@ function gitcrawlDb(dir: string, threads: Record<string, unknown>[]) {
     insert into repositories values (1, 'openclaw', 'openclaw');
   `);
   const insert = db.prepare(
-    "insert into threads values (?, 1, 'pull_request', ?, 'open', ?, ?, 'author', 'User', '[]', ?, ?, ?, ?, ?, ?, null)",
+    "insert into threads values (?, 1, 'pull_request', ?, 'open', ?, ?, 'author', 'User', ?, ?, ?, ?, ?, ?, ?, null)",
   );
   for (const thread of threads) {
     insert.run(
@@ -34,6 +34,7 @@ function gitcrawlDb(dir: string, threads: Record<string, unknown>[]) {
       thread.number as number,
       thread.title as string,
       (thread.body as string) ?? "",
+      JSON.stringify(thread.labels ?? []),
       JSON.stringify(thread.assignees ?? []),
       JSON.stringify({ author_association: thread.association ?? "NONE" }),
       thread.draft ? 1 : 0,
@@ -81,4 +82,46 @@ test("low-signal selection scores facts, not title or body keywords", (t) => {
     candidates.map((candidate) => [candidate.number, candidate.signals]),
     [[1, ["no_update_30d", "outside_author"]]],
   );
+});
+
+test("low-signal importer excludes exact security labels, not prefixes or prose", (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "gitcrawl-security-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const labels = [
+    "security",
+    "security-sensitive",
+    "security sensitive",
+    "type: security",
+    "type:security",
+    "kind: security",
+    "kind:security",
+  ];
+  const dbPath = gitcrawlDb(dir, [
+    ...labels.map((label, index) => ({
+      number: index + 1,
+      title: "Small change",
+      labels: [{ name: label.toUpperCase() }],
+    })),
+    { number: 8, title: "Security advisory CVE-2026-12345", body: "GHSA-1234-5678-abcd" },
+    { number: 9, title: "Small change", labels: ["security/internal", "security:sensitive"] },
+    { number: 10, title: "Small change", body: "<!-- clawsweeper-security:security -->" },
+  ]);
+  const result = spawnSync(
+    process.execPath,
+    [
+      IMPORTER,
+      "--db",
+      dbPath,
+      "--dry-run",
+      "--json",
+      "--skip-existing",
+      "false",
+      "--out",
+      path.join(dir, "out"),
+    ],
+    { encoding: "utf8" },
+  );
+  assert.equal(result.status, 0, result.stderr);
+  const candidates = JSON.parse(result.stdout).candidates as { number: number }[];
+  assert.deepEqual(candidates.map((candidate) => candidate.number).sort(), [8, 9, 10].sort());
 });

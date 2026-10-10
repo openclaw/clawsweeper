@@ -3,7 +3,6 @@ import type { JsonValue, LooseRecord } from "./json-types.js";
 export type SecuritySignalInput = {
   labels?: LooseRecord[];
   comments?: LooseRecord[];
-  text?: LooseRecord[];
   frontmatter?: LooseRecord;
 };
 
@@ -17,7 +16,6 @@ const SECURITY_LABELS = new Set([
   "kind:security",
 ]);
 
-const SECURITY_LABEL_PREFIXES = ["security:", "security/"];
 const SECURITY_MARKERS = [
   "clawsweeper-security:security",
   "clawsweeper-security:security-sensitive",
@@ -29,10 +27,6 @@ const SECURITY_MARKERS = [
   "clawsweeper-verdict:security-sensitive",
 ];
 
-export function hasSecuritySignalText(...values: LooseRecord[]) {
-  return hasSecuritySignal({ text: values });
-}
-
 export function hasDeterministicSecuritySignal({ labels = [], comments = [] }: LooseRecord = {}) {
   return hasSecuritySignal({ labels, comments });
 }
@@ -40,13 +34,12 @@ export function hasDeterministicSecuritySignal({ labels = [], comments = [] }: L
 export function hasSecuritySignal({
   labels = [],
   comments = [],
-  text = [],
   frontmatter = {},
 }: SecuritySignalInput = {}) {
   return (
     hasSecurityFrontmatter(frontmatter) ||
-    hasSecurityLabel([...labels, ...text]) ||
-    [...comments, ...text].some(hasStructuredSecurityText)
+    hasSecurityLabel(labels) ||
+    comments.some(hasStructuredSecurityText)
   );
 }
 
@@ -71,31 +64,22 @@ function labelTexts(value: JsonValue): string[] {
   return [String(value ?? "")];
 }
 
-function isSecurityLabel(value: string) {
-  const normalized = normalizeToken(value);
-  return (
-    SECURITY_LABELS.has(normalized) ||
-    SECURITY_LABEL_PREFIXES.some((prefix) => normalized.startsWith(prefix))
-  );
+export function isSecurityLabel(value: string): boolean {
+  return SECURITY_LABELS.has(normalizeToken(value));
 }
 
 function hasStructuredSecurityText(value: JsonValue): boolean {
-  return flattenSecurityText(value).some((entry) => {
-    const normalized = normalizeToken(entry);
-    return (
-      SECURITY_MARKERS.some((marker) => normalized.includes(marker)) ||
-      containsAdvisoryIdentifier(normalized)
-    );
-  });
-}
-
-function containsAdvisoryIdentifier(value: string) {
-  return value.split(/[^a-z0-9-]+/i).some((part) => {
-    const token = part.toLowerCase();
-    return (
-      /^cve-\d{4}-\d{4,}$/.test(token) || /^ghsa-[a-z0-9]{4}-[a-z0-9]{4}-[a-z0-9]{4}$/.test(token)
-    );
-  });
+  return flattenSecurityText(value).some((entry) =>
+    entry
+      .split("<!--")
+      .slice(1)
+      .some((comment) => {
+        const end = comment.indexOf("-->");
+        if (end === -1) return false;
+        const marker = normalizeToken(comment.slice(0, end)).split(" ")[0] ?? "";
+        return SECURITY_MARKERS.includes(marker);
+      }),
+  );
 }
 
 function normalizeToken(value: string) {

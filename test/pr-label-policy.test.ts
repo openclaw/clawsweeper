@@ -1283,14 +1283,30 @@ test("ClawSweeper labels only small verified strict bugs as good first issues", 
   for (const securityLabel of [
     "security",
     "security-sensitive",
-    "security:sensitive",
-    "security/internal",
+    "security sensitive",
+    "type: security",
+    "type:security",
+    "kind: security",
+    "kind:security",
+    " SECURITY ",
     "impact:security",
   ]) {
     assert.equal(
       nextIssueAdvisoryLabels(["bug", securityLabel], eligibleState).includes("good first issue"),
       false,
       securityLabel,
+    );
+  }
+  for (const label of [
+    "security:sensitive",
+    "security/internal",
+    "security review",
+    "insecurity",
+  ]) {
+    assert.equal(
+      nextIssueAdvisoryLabels(["bug", label], eligibleState).includes("good first issue"),
+      true,
+      label,
     );
   }
   assert.equal(

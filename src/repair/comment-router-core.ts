@@ -1558,9 +1558,9 @@ export function issueImplementationOverrideBlockerClass(
   const labels: string[] = (target.labels ?? []).map((label: JsonValue) => String(label));
   if (labels.some((label) => ISSUE_IMPLEMENTATION_PROTECTED_LABELS.has(label.trim().toLowerCase())))
     return "hard";
-  // Only explicit security labels, ClawSweeper security markers and advisory IDs count here.
+  // Only exact security labels and structured ClawSweeper security markers count here.
   // The review model judges security risk; do not grep the issue prose for risk words.
-  if (hasSecuritySignal({ labels, text: [target.title, target.body] })) return "hard";
+  if (hasSecuritySignal({ labels, comments: [target.body] })) return "hard";
   return "soft";
 }
 

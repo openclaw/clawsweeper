@@ -1,0 +1,1 @@
+- Match the seven owned security labels exactly across advisory and repair gates, and use explicit security metadata instead of advisory IDs or prose when selecting cleanup work.

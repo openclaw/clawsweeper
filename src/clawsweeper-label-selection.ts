@@ -34,12 +34,9 @@ import {
   NEEDS_PRODUCT_DECISION_LABEL,
   NEEDS_SECURITY_REVIEW_LABEL,
 } from "./repair/exact-review-guard-labels.js";
-import {
-  hasNormalizedLabel,
-  normalizeLabelName,
-  protectedLabels,
-} from "./clawsweeper-item-policy.js";
+import { hasNormalizedLabel, protectedLabels } from "./clawsweeper-item-policy.js";
 import { frontMatterValue } from "./report-front-matter.js";
+import { isSecurityLabel } from "./repair/security-signals.js";
 import type { ReportReviewDecision } from "./report-review-decision.js";
 
 export function nextRealBehaviorProofSufficientLabels(
@@ -119,21 +116,6 @@ export function nextMergeRiskLabels(
 export function isIssueAdvisoryLabel(label: string): boolean {
   return ISSUE_ADVISORY_LABEL_NAMES.has(label.toLowerCase());
 }
-export function isSecuritySensitiveLabel(label: string): boolean {
-  const normalized = normalizeLabelName(label);
-  return (
-    normalized === "impact:security" ||
-    normalized === "security" ||
-    normalized === "security-sensitive" ||
-    normalized === "security sensitive" ||
-    normalized === "type: security" ||
-    normalized === "type:security" ||
-    normalized === "kind: security" ||
-    normalized === "kind:security" ||
-    normalized.startsWith("security:") ||
-    normalized.startsWith("security/")
-  );
-}
 export function isGoodFirstIssue(
   state: IssueAdvisoryLabelState,
   currentLabels: readonly string[],
@@ -157,7 +139,8 @@ export function isGoodFirstIssue(
     !state.goodFirstIssueOptedOut &&
     !state.locked &&
     !hasNormalizedLabel(currentLabels, BULK_FILED_LABEL) &&
-    !currentLabels.some(isSecuritySensitiveLabel) &&
+    !currentLabels.some(isSecurityLabel) &&
+    !hasNormalizedLabel(currentLabels, "impact:security") &&
     protectedLabels(currentLabels).length === 0 &&
     !state.hasOpenLinkedPullRequest
   );

@@ -2,7 +2,8 @@
 import type { JsonValue, LooseRecord } from "./json-types.js";
 import fs from "node:fs";
 import path from "node:path";
-import { hasSecuritySignalText, parseArgs, parseJob, repoRoot, validateJob } from "./lib.js";
+import { parseArgs, parseJob, repoRoot, validateJob } from "./lib.js";
+import { hasSecuritySignal } from "./security-signals.js";
 import { ghJson } from "./github-cli.js";
 import { REPAIR_CLUSTER_WORKFLOW } from "./constants.js";
 import { readJsonFileIfExists as readJson } from "./json-file.js";
@@ -106,7 +107,7 @@ function classifyJob(jobPath: string) {
   if (isExampleJob(job)) {
     return { ...row, status: "keep", reason: "example job is referenced by local run docs" };
   }
-  if (job.frontmatter.security_sensitive === true || hasSecuritySignalText(job.raw)) {
+  if (hasSecuritySignal({ frontmatter: job.frontmatter })) {
     return {
       ...row,
       status: "security_hold",
