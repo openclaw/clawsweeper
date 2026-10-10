@@ -295,16 +295,34 @@ async function main() {
     const load = (name) => import(pathToFileURL(join(root, "dist", `${name}.js`)).href);
     const [
       { createContextHydration },
-      gitHubRuntime,
+      runtimeModule,
       { createGitHubExecution },
-      { resolveCommand },
+      { resolveCommand, runText, runTextConcurrently, SWEEPER_COMMAND_MAX_BUFFER_BYTES },
     ] = await Promise.all([
       load("clawsweeper-context-hydration"),
       load("clawsweeper-github-runtime"),
       load("clawsweeper-github-execution"),
       load("command"),
     ]);
-    const { GitHubRuntimeBudgetError, githubCommandTimeoutMs, withGitHubRun } = gitHubRuntime;
+    let gitHubRuntime = runtimeModule;
+    let withGitHubRun = runtimeModule.withGitHubRun;
+    if (typeof runtimeModule.createGitHubRuntime === "function") {
+      // Archived source roots predate command scopes and retain the factory contract.
+      gitHubRuntime = runtimeModule.createGitHubRuntime({
+        ROOT: target,
+        targetRepo: () => "fixture/repository",
+        run: (command, args, options = {}) =>
+          runText(command, args, {
+            ...options,
+            maxBuffer: SWEEPER_COMMAND_MAX_BUFFER_BYTES,
+            stdio: ["ignore", "pipe", "pipe"],
+            trim: "both",
+          }),
+        runConcurrently: runTextConcurrently,
+      });
+      withGitHubRun = (operation) => operation();
+    }
+    const { GitHubRuntimeBudgetError, githubCommandTimeoutMs } = gitHubRuntime;
     const { ghJson, ghJsonOnce } = createGitHubExecution({
       ROOT: target,
       gitHubRuntime,
@@ -341,10 +359,7 @@ async function main() {
             } catch (error) {
               record("request_error", {
                 name: error.name,
-                code: error.code ?? null,
-                pid: error.pid ?? null,
-                status: error.status ?? null,
-                signal: error.signal ?? null,
+                deadlineAt: error.deadlineAt ?? null,
               });
               throw error;
             }
@@ -443,7 +458,11 @@ async function main() {
       );
       assert.equal(
         report.requests.some(
-          (entry) => entry.event === "request_error" && entry.code === "ETIMEDOUT",
+          (entry) =>
+            entry.event === "request_error" &&
+            entry.name === "GitHubOperationDeadlineError" &&
+            entry.deadlineAt ===
+              report.requests.find((request) => request.event === "metadata_admission").deadlineAt,
         ),
         true,
       );
