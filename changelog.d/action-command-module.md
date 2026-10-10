@@ -1,0 +1,1 @@
+- Simplify action-ledger CLI wiring to direct module imports, and exercise publication validation through the real CLI, filesystem, and Worker HTTP interface instead of a test-only parser export.

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { execFile, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
   cpSync,
@@ -12,12 +12,13 @@ import {
   symlinkSync,
   writeFileSync,
 } from "node:fs";
+import { createServer } from "node:http";
 import { dirname, join, relative, resolve } from "node:path";
 import test, { after, type TestContext } from "node:test";
+import { promisify } from "node:util";
 import { parse as parseYaml } from "yaml";
 
 import {
-  actionEventPublishPathsForTest,
   actionLedgerFailureDisposition,
   applyActionEventDisposition,
   applyRuntimeBudgetYieldResultsForTest,
@@ -330,7 +331,13 @@ test("failed-review retry events distinguish dispatch, exhaustion, and backpress
   );
 });
 
-test("action event publication accepts only sorted canonical event and binding paths", () => {
+test("action event publication validates manifests before sending canonical files to the Worker", async (t) => {
+  const root = realpathSync(mkdtempSync(tmpPrefix));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  cpSync("dist", join(root, "dist"), { recursive: true });
+  for (const entry of CLI_INPUTS.filter((input) => input !== "dist")) {
+    symlinkSync(resolve(entry), join(root, entry));
+  }
   const paths = [
     "ledger/v1/events/2026/07/12/openclaw-clawsweeper/review/run-part-1-of-1.jsonl",
     `ledger/v1/import-bindings/completed-shard-sets/${"a".repeat(64)}.json`,
@@ -338,15 +345,68 @@ test("action event publication accepts only sorted canonical event and binding p
     `ledger/v1/import-bindings/producer-runs/${"c".repeat(64)}.json`,
     `ledger/v1/import-bindings/shard-sets/${"d".repeat(64)}.json`,
   ].sort();
-  assert.deepEqual(actionEventPublishPathsForTest(`${paths.join("\n")}\n`), paths);
-  assert.throws(
-    () => actionEventPublishPathsForTest(`${paths[1]}\n${paths[0]}\n`),
-    /sorted and unique/,
+  for (const path of paths) {
+    mkdirSync(dirname(join(root, path)), { recursive: true });
+    writeFileSync(join(root, path), JSON.stringify({ path }));
+  }
+  const received: Array<{ path: string; contentBase64: string; digest: string }> = [];
+  const requests: Array<{ method: string | undefined; url: string | undefined }> = [];
+  const server = createServer(async (request, response) => {
+    const chunks: Buffer[] = [];
+    for await (const chunk of request) chunks.push(Buffer.from(chunk));
+    received.push(JSON.parse(Buffer.concat(chunks).toString("utf8")));
+    requests.push({ method: request.method, url: request.url });
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end(JSON.stringify({ unchanged: received.length === 1 }));
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise<void>((resolve) => server.close(() => resolve())));
+  const address = server.address();
+  assert.ok(address && typeof address !== "string");
+  const manifest = join(root, "publish-paths.txt");
+  const command = [
+    join(root, "dist", "clawsweeper.js"),
+    "publish-action-event-paths",
+    "--paths-file",
+    manifest,
+  ];
+  const options = {
+    cwd: root,
+    env: {
+      ...process.env,
+      QUEUE_URL: `http://127.0.0.1:${address.port}`,
+      CLAWSWEEPER_WEBHOOK_SECRET: "synthetic-publication-test",
+      CLAWSWEEPER_ACTION_LEDGER_OUTPUT_ROOT: join(root, "ledger-output"),
+    },
+  };
+  for (const [content, error] of [
+    ["", /manifest is empty/],
+    [`${paths[1]}\n${paths[0]}\n`, /sorted and unique/],
+    [`${paths[0]}\n${paths[0]}\n`, /sorted and unique/],
+    ["ledger/v1/import-bindings/private/raw.json\n", /invalid action event publish path/],
+  ] as const) {
+    writeFileSync(manifest, content);
+    await assert.rejects(promisify(execFile)(process.execPath, command, options), error);
+    assert.deepEqual(received, []);
+  }
+  writeFileSync(manifest, `${paths.join("\n")}\n`);
+  const { stdout } = await promisify(execFile)(process.execPath, command, options);
+  assert.deepEqual(JSON.parse(stdout), {
+    result: "published",
+    path_count: paths.length,
+    uploaded: paths.length - 1,
+    unchanged: 1,
+  });
+  assert.deepEqual(
+    received.map(({ path }) => path),
+    paths,
   );
-  assert.throws(
-    () => actionEventPublishPathsForTest("ledger/v1/import-bindings/private/raw.json\n"),
-    /invalid action event publish path/,
-  );
+  for (const [index, payload] of received.entries()) {
+    const content = readFileSync(join(root, paths[index]!));
+    assert.equal(payload.contentBase64, content.toString("base64"));
+    assert.equal(payload.digest, createHash("sha256").update(content).digest("hex"));
+    assert.deepEqual(requests[index], { method: "POST", url: "/internal/state/blobs/put" });
+  }
 });
 
 test("retry business idempotency binds source revision and review content", () => {

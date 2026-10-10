@@ -22,7 +22,12 @@ import {
 import { stableJson } from "./stable-json.js";
 import { asRecord, nonBlankStringOrUndefined } from "./value-coerce.js";
 
-import { createActionCommands } from "./clawsweeper-action-commands.js";
+import {
+  finalizeActionEventsCommand,
+  isExplicitActionLedgerCommand,
+  publishActionEventPathsCommand,
+  publishActionEventsCommand,
+} from "./clawsweeper-action-commands.js";
 import { createApplyDecisionWorkflow } from "./clawsweeper-apply-decision-workflow.js";
 import { implementedOnMainCloseProvenanceBlock } from "./clawsweeper-apply-close-execution.js";
 import { createApplyGuards } from "./clawsweeper-apply-guards.js";
@@ -1063,21 +1068,13 @@ function checkCommand(): void {
   console.log("ok");
 }
 
-const actionCommands = createActionCommands({
-  defaultClosedDir,
-  defaultItemsDir,
-  repoFromArgs,
-  ROOT,
-  updateDashboard,
-});
-export const { actionEventPublishPathsForTest } = actionCommands;
-const {
-  dashboardCommand,
-  finalizeActionEventsCommand,
-  isExplicitActionLedgerCommand,
-  publishActionEventPathsCommand,
-  publishActionEventsCommand,
-} = actionCommands;
+function dashboardCommand(args: Args): void {
+  repoFromArgs(args);
+  updateDashboard(
+    resolve(stringArg(args.items_dir, defaultItemsDir())),
+    resolve(stringArg(args.closed_dir, defaultClosedDir())),
+  );
+}
 
 const liveProofAttachDependencies = {
   reportLiveProofPlan,
