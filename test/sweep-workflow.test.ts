@@ -19,7 +19,6 @@ import { delimiter, dirname, join } from "node:path";
 import test from "node:test";
 import YAML from "yaml";
 import { AGENT_INPUT_SCAN_FAILURE_REASONS } from "../dist/exact-review-failure-reason.js";
-import { MAX_MEDIA_PROOF_URLS, MEDIA_PROOF_TIMEOUT_MS } from "../dist/clawsweeper-media-proof.js";
 import { DEFAULT_EXACT_REVIEW_HEARTBEAT_GRACE_MS } from "../dashboard/exact-review-read-model.ts";
 
 import { makeTreeReadOnlyForTest, restoreTreeModesForTest } from "../dist/clawsweeper.js";
@@ -33,6 +32,7 @@ import {
   workPlanCandidateReport,
 } from "./helpers.ts";
 import { scheduledReviewSemanticSourceRevision } from "../dist/scheduled-review-noop.js";
+import { MAX_MEDIA_PROOF_TIMEOUT_MS } from "../dist/media-proof-budget.js";
 import { runExactReviewDirectPublicationFromEnv } from "../dist/repair/exact-review-direct-publication.js";
 
 test("review workflow emits terminal reasons for non-retryable scanner manifests", () => {
@@ -349,7 +349,8 @@ test("queue-only command review proves allowed and superseded authority before G
         TARGET_REPO: "openclaw/clawsweeper",
         ITEM_NUMBER: "1675",
         CODEX_TIMEOUT_MS: "2700000",
-        MEDIA_PROOF_TIMEOUT_MS: String(MAX_MEDIA_PROOF_URLS * MEDIA_PROOF_TIMEOUT_MS),
+        MEDIA_PROOF_TIMEOUT_MS: String(MAX_MEDIA_PROOF_TIMEOUT_MS),
+        MEDIA_PREPROCESSING_RESERVE_SECONDS: String(MAX_MEDIA_PROOF_TIMEOUT_MS / 1000),
         RESOLVED_STATUS_COMMENT_ID: "7001",
         COMMAND_STATUS_MARKER: "<!-- clawsweeper-command-status:1675:re_review:fixture -->",
         RUN_URL: "https://github.com/openclaw/clawsweeper/actions/runs/4242",

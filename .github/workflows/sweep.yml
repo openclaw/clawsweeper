@@ -494,8 +494,10 @@ jobs:
           CONFIGURED_CODEX_TIMEOUT_MS: ${{ vars.CLAWSWEEPER_CODEX_TIMEOUT_MS || '1200000' }}
         run: |
           set -euo pipefail
-          node <<'NODE'
-          const fs = require("node:fs");
+          # The runner Node strips the TypeScript types of the imported owner.
+          node --input-type=module <<'NODE'
+          import fs from "node:fs";
+          import { MAX_MEDIA_PROOF_TIMEOUT_MS } from "./src/media-proof-budget.ts";
           const decision = JSON.parse(process.env.CLAIM_DECISION || "{}");
           const targetRepo = String(decision.targetRepo || "");
           const itemNumber = Number(decision.itemNumber);
@@ -503,8 +505,9 @@ jobs:
           if (!Number.isInteger(itemNumber) || itemNumber < 1) process.exit(1);
 
           // The review-start lease permits at most two hours, including its ten-minute
-          // cushion. The 120-minute job leaves 64 minutes for target checkout/setup and
-          // artifact/publication finalizers after this cap and the 11-minute review reserve.
+          // cushion. The job keeps the rest of its timeout for target checkout/setup and
+          // artifact/publication finalizers after this cap and the review reserve: the
+          // largest media proof allowance plus three minutes.
           const maxExactReviewCodexTimeoutMs = 2_700_000;
           const configuredValue = Number(process.env.CONFIGURED_CODEX_TIMEOUT_MS);
           const configuredTimeout =
@@ -522,9 +525,12 @@ jobs:
             Number.isInteger(adaptiveValue) && adaptiveValue > 0
               ? adaptiveValue
               : Math.max(configuredTimeout, adaptiveTimeout);
+          // Manual review options can carry any media allowance; preparation never needs more.
           const mediaValue = Number(decision.mediaProofTimeoutMs);
           const mediaTimeout =
-            Number.isInteger(mediaValue) && mediaValue > 0 ? Math.min(480_000, mediaValue) : 0;
+            Number.isInteger(mediaValue) && mediaValue > 0
+              ? Math.min(MAX_MEDIA_PROOF_TIMEOUT_MS, mediaValue)
+              : 0;
           const [owner, name] = targetRepo.split("/");
           const targetSlug = targetRepo.trim().toLowerCase().replace(/[^a-z0-9_.-]+/g, "-");
           const checkoutDir = targetRepo === process.env.GITHUB_REPOSITORY ? `${name}-target` : name;
@@ -543,6 +549,7 @@ jobs:
               requestedTimeout,
             ),
             media_proof_timeout_ms: mediaTimeout,
+            media_preprocessing_reserve_seconds: Math.ceil(MAX_MEDIA_PROOF_TIMEOUT_MS / 1000),
             has_command_context: hasCommandContext,
             target_enabled: targetEnabled,
           };
@@ -858,6 +865,7 @@ jobs:
           ITEM_NUMBER: ${{ steps.target.outputs.item_number }}
           CODEX_TIMEOUT_MS: ${{ steps.target.outputs.codex_timeout_ms }}
           MEDIA_PROOF_TIMEOUT_MS: ${{ steps.target.outputs.media_proof_timeout_ms }}
+          MEDIA_PREPROCESSING_RESERVE_SECONDS: ${{ steps.target.outputs.media_preprocessing_reserve_seconds }}
           EXACT_REVIEW_ITEM_KEY: ${{ steps.claim-exact-review-queue.outputs.item_key }}
           EXACT_REVIEW_LEASE_ID: ${{ steps.claim-exact-review-queue.outputs.lease_id }}
           EXACT_REVIEW_LEASE_REVISION: ${{ steps.claim-exact-review-queue.outputs.lease_revision }}
@@ -881,9 +889,12 @@ jobs:
             echo "Invalid media proof timeout: $MEDIA_PROOF_TIMEOUT_MS" >&2
             exit 1
           fi
+          if ! [[ "$MEDIA_PREPROCESSING_RESERVE_SECONDS" =~ ^[1-9][0-9]*$ ]]; then
+            echo "Invalid media preprocessing reserve: $MEDIA_PREPROCESSING_RESERVE_SECONDS" >&2
+            exit 1
+          fi
           codex_timeout_seconds=$(((CODEX_TIMEOUT_MS + 999) / 1000))
-          media_preprocessing_reserve_seconds=480
-          review_timeout_ms=$(((codex_timeout_seconds + media_preprocessing_reserve_seconds + 180) * 1000))
+          review_timeout_ms=$(((codex_timeout_seconds + MEDIA_PREPROCESSING_RESERVE_SECONDS + 180) * 1000))
           if [ -n "$RESOLVED_STATUS_COMMENT_ID" ]; then
             if ! [[ "$RESOLVED_STATUS_COMMENT_ID" =~ ^[1-9][0-9]*$ ]]; then
               echo "Invalid resolved command status comment id: $RESOLVED_STATUS_COMMENT_ID" >&2
@@ -1291,7 +1302,11 @@ jobs:
           codex_timeout_seconds=$(((codex_timeout_ms + 999) / 1000))
           media_proof_timeout_ms="${{ steps.target.outputs.media_proof_timeout_ms }}"
           media_proof_timeout_seconds=$(((media_proof_timeout_ms + 999) / 1000))
-          media_preprocessing_reserve_seconds=480
+          media_preprocessing_reserve_seconds="${{ steps.target.outputs.media_preprocessing_reserve_seconds }}"
+          if ! [[ "$media_preprocessing_reserve_seconds" =~ ^[1-9][0-9]*$ ]]; then
+            echo "Invalid media preprocessing reserve: $media_preprocessing_reserve_seconds" >&2
+            exit 1
+          fi
           review_timeout_seconds=$((codex_timeout_seconds + media_preprocessing_reserve_seconds + 180))
           echo "::notice::Exact event review timeout is ${review_timeout_seconds}s for per-item Codex timeout ${codex_timeout_seconds}s, reserved media preprocessing ${media_preprocessing_reserve_seconds}s, and detected media allowance ${media_proof_timeout_seconds}s."
           verify_startup_authority

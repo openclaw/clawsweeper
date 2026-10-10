@@ -1,10 +1,6 @@
-import {
-  isGitHubMediaAttachmentUrl,
-  MAX_MEDIA_PROOF_URLS,
-  MEDIA_PROOF_TIMEOUT_MS,
-  VIDEO_PROOF_EXTENSIONS,
-} from "../clawsweeper-media-proof.js";
+import { isGitHubMediaAttachmentUrl, VIDEO_PROOF_EXTENSIONS } from "../clawsweeper-media-proof.js";
 import { trimTrailingUrlPunctuation } from "../clawsweeper-text.js";
+import { MAX_MEDIA_PROOF_URLS, MEDIA_PROOF_TIMEOUT_MS } from "../media-proof-budget.js";
 import type { JsonValue, LooseRecord } from "./json-types.js";
 
 const DEFAULT_ADAPTIVE_CODEX_TIMEOUT_MS = 600_000;

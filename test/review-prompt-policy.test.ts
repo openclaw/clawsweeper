@@ -21,13 +21,12 @@ import {
   reviewPromptForTest,
 } from "../dist/clawsweeper.js";
 import {
-  MAX_MEDIA_PROOF_URLS,
   MEDIA_PROOF_MAX_DERIVED_BYTES,
   MEDIA_PROOF_MAX_DOWNLOAD_BYTES,
   MEDIA_PROOF_MAX_TOTAL_DOWNLOAD_BYTES,
-  MEDIA_PROOF_TIMEOUT_MS,
   mediaProofCommandRunner,
 } from "../dist/clawsweeper-media-proof.js";
+import { MAX_MEDIA_PROOF_URLS, MEDIA_PROOF_TIMEOUT_MS } from "../dist/media-proof-budget.js";
 import { LIVE_VERIFICATION_MARKER } from "../dist/clawsweeper-policy.js";
 import { labelCapacityError, missingLabelError } from "../dist/clawsweeper-label-mutations.js";
 import {

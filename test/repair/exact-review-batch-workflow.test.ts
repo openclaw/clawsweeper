@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { spawnSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import {
   cpSync,
   existsSync,
@@ -19,6 +19,7 @@ import YAML from "yaml";
 import { createGitHubExecution } from "../../dist/clawsweeper-github-execution.js";
 import { createGitHubRuntime } from "../../dist/clawsweeper-github-runtime.js";
 import { runCopyProof } from "../../scripts/e2e/exact-review-selected-tuple-copy.mjs";
+import { MAX_MEDIA_PROOF_TIMEOUT_MS } from "../../dist/media-proof-budget.js";
 
 const path = ".github/workflows/exact-review-batch-publish.yml";
 const source = readFileSync(path, "utf8");
@@ -40,11 +41,35 @@ const workflow = YAML.parse(source) as {
   >;
 };
 
+// Runs the claimed-payload step as the workflow does: from the checkout root,
+// before the build, with the runner Node.
+function resolveEventPayload(decision: Record<string, unknown>, configuredTimeoutMs: number) {
+  const run = sweep.jobs["event-review-apply"].steps.find(
+    (step: { id?: string }) => step.id === "target",
+  ).run;
+  const root = mkdtempSync(join(tmpdir(), "resolve-event-payload-"));
+  try {
+    const output = join(root, "output");
+    execFileSync("bash", ["-c", run], {
+      env: {
+        PATH: process.env.PATH,
+        CLAIM_DECISION: JSON.stringify({
+          targetRepo: "openclaw/openclaw",
+          itemNumber: 71,
+          ...decision,
+        }),
+        CONFIGURED_CODEX_TIMEOUT_MS: String(configuredTimeoutMs),
+        GITHUB_OUTPUT: output,
+        GITHUB_REPOSITORY: "openclaw/clawsweeper",
+      },
+    });
+    return readFileSync(output, "utf8");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+
 test("manual review timeouts survive queue resolution within the existing exact-review cap", () => {
-  const steps = sweep.jobs["event-review-apply"].steps;
-  const script = steps
-    .find((step: { id?: string }) => step.id === "target")
-    .run.match(/node <<'NODE'\n([\s\S]*?)\nNODE/)[1];
   for (const [sourceAction, codexTimeoutMs, configuredTimeoutMs, expected] of [
     ["manual_explicit_review", 300_000, 1_200_000, 300_000],
     ["manual_explicit_review", 2_400_000, 1_200_000, 2_400_000],
@@ -52,29 +77,32 @@ test("manual review timeouts survive queue resolution within the existing exact-
     ["opened", 2_400_000, 1_200_000, 1_800_000],
     ["opened", 2_400_000, 3_600_000, 2_700_000],
     ["opened", -1, -1, 1_200_000],
-  ]) {
-    let output = "";
-    runInNewContext(script, {
-      require: () => ({
-        appendFileSync: (_path: string, value: string) => {
-          output += value;
-        },
-      }),
-      process: {
-        env: {
-          CLAIM_DECISION: JSON.stringify({
-            targetRepo: "openclaw/openclaw",
-            itemNumber: 71,
-            sourceAction,
-            codexTimeoutMs,
-            publicationPolicy:
-              sourceAction === "manual_explicit_review" ? "record_comment_only" : undefined,
-          }),
-          CONFIGURED_CODEX_TIMEOUT_MS: String(configuredTimeoutMs),
-        },
+  ] as const) {
+    const output = resolveEventPayload(
+      {
+        sourceAction,
+        codexTimeoutMs,
+        publicationPolicy:
+          sourceAction === "manual_explicit_review" ? "record_comment_only" : undefined,
       },
-    });
+      configuredTimeoutMs,
+    );
     assert.match(output, new RegExp(`^codex_timeout_ms=${expected}$`, "m"));
+  }
+});
+
+test("claimed media allowance and review reserve come from the media proof budget", () => {
+  for (const [mediaProofTimeoutMs, expected] of [
+    [MAX_MEDIA_PROOF_TIMEOUT_MS * 10, MAX_MEDIA_PROOF_TIMEOUT_MS],
+    [1_000, 1_000],
+    [-1, 0],
+  ]) {
+    const output = resolveEventPayload({ mediaProofTimeoutMs }, 1_200_000);
+    assert.match(output, new RegExp(`^media_proof_timeout_ms=${expected}$`, "m"));
+    assert.match(
+      output,
+      new RegExp(`^media_preprocessing_reserve_seconds=${MAX_MEDIA_PROOF_TIMEOUT_MS / 1000}$`, "m"),
+    );
   }
 });
 

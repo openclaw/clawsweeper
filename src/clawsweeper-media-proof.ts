@@ -10,13 +10,12 @@ import type {
   PreparedMediaProofArtifact,
   ReviewPromptRuntimeHints,
 } from "./clawsweeper-types.js";
+import { MAX_MEDIA_PROOF_URLS, MEDIA_PROOF_TIMEOUT_MS } from "./media-proof-budget.js";
 const IMAGE_PROOF_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".webp", ".gif", ".avif", ".bmp"]);
 export const VIDEO_PROOF_EXTENSIONS = new Set([".mov", ".mp4", ".m4v", ".webm", ".avi", ".mkv"]);
 const MEDIA_PROOF_EXTENSIONS = new Set([...IMAGE_PROOF_EXTENSIONS, ...VIDEO_PROOF_EXTENSIONS]);
 const MEDIA_PROOF_MANIFEST_FILE = "media-proof-manifest.json";
 const MEDIA_PROOF_SUMMARY_FILE = "media-proof-summary.md";
-export const MAX_MEDIA_PROOF_URLS = 4;
-export const MEDIA_PROOF_TIMEOUT_MS = 120_000;
 const MEDIA_PROOF_DETAIL_MAX_CHARS = 1000;
 export const MEDIA_PROOF_MAX_DOWNLOAD_BYTES = 32 * 1024 * 1024;
 export const MEDIA_PROOF_MAX_TOTAL_DOWNLOAD_BYTES = 64 * 1024 * 1024;
