@@ -1,4 +1,5 @@
 import { parseDecision } from "../dist/clawsweeper.js";
+import { verifyLikelyOwnerHistory } from "../dist/clawsweeper-regression-provenance.js";
 import { createReportDocumentRendering } from "../dist/clawsweeper-report-document.js";
 import { createReportContextRendering } from "../dist/clawsweeper-report-context.js";
 import * as dashboardPresentation from "../dist/clawsweeper-dashboard.js";
@@ -73,7 +74,7 @@ Full review comments:
 `;
 }
 
-// Use the real decision parser and report writer; only surrounding context/formatting is synthetic.
+// Use the real model parser, host owner projection and report writer; surrounding context is synthetic.
 export function generatedCompatibilityReport(
   compatibility: DataModelCompatibility,
   decisionOverrides: Record<string, unknown> = {},
@@ -134,7 +135,13 @@ export function generatedCompatibilityReport(
       labels: ["clawsweeper:automerge"],
       authorAssociation: "MEMBER",
     }),
-    decision: { ...decision, localCheckoutAccess: "verified" },
+    decision: {
+      ...verifyLikelyOwnerHistory(decision, {
+        checkoutDir: process.cwd(),
+        reviewedCommitShas: [],
+      }),
+      localCheckoutAccess: "verified",
+    },
     context: {
       issue: {},
       comments: [],

@@ -6,15 +6,11 @@ import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { writeFakeScanner } from "./agent-input-scan-helpers.ts";
 
-import {
-  parseDecision,
-  renderReviewCommentFromReport,
-  reviewPromptForTest,
-} from "../dist/clawsweeper.js";
+import { renderReviewCommentFromReport, reviewPromptForTest } from "../dist/clawsweeper.js";
 import { frontMatterValue } from "../dist/report-front-matter.js";
 import { reviewRecordFrontMatterLine } from "../dist/review-record.js";
 import { createReviewedPrActivityCursor } from "../dist/review-activity-cursor.js";
-import { createDecisionParser } from "../dist/clawsweeper-decision-parser.js";
+import { createDecisionParser, reviewDecisionParser } from "../dist/clawsweeper-decision-parser.js";
 import type { LiveProofPlan } from "../dist/clawsweeper-types.js";
 
 export const tmpPrefix = join(tmpdir(), "clawsweeper-test-");
@@ -1166,7 +1162,7 @@ export function withReviewRecord(report: string, decision: Record<string, unknow
     kind: frontMatterValue(report, "type"),
   };
   const line = reviewRecordFrontMatterLine(
-    { decision: parseDecision(closeDecision(decision), subject) },
+    { decision: reviewDecisionParser.parseStoredDecisionFields(closeDecision(decision), subject) },
     subject,
   );
   assert.ok(line, "fixture decision must be a valid review record");

@@ -226,7 +226,7 @@ test("a product call with a maintainer decision packet asks the owner once", () 
         { title: "Accept the setting", body: "Ship it default-off.", recommended: true },
         { title: "Decline the setting", body: "Keep current behavior.", recommended: false },
       ],
-      likelyOwner: { person: "unknown", reason: "Owner is not identified.", confidence: "low" },
+      likelyOwner: { person: "unknown" },
     },
   });
   assert.match(result.comment, /Resolve maintainer decision/);

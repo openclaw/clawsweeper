@@ -61,14 +61,15 @@ test("sufficient compatibility preserves an undecided plugin API direction", () 
           recommended: false,
         },
       ],
-      likelyOwner: {
-        person: "unknown",
-        reason: "Contract owner is not identified.",
-        confidence: "low",
-      },
+      likelyOwner: { person: "unknown" },
     },
   });
   assert.equal(buildDecisionPacketFromReport(report)?.options.length, 2);
+  assert.deepEqual(buildDecisionPacketFromReport(report)?.likelyOwner, {
+    person: "unknown",
+    reason: "Suggested for follow-up; no historical authorship or introduction is verified.",
+    confidence: "low",
+  });
   assert.match(renderReviewCommentFromReport(report, "none"), /Resolve maintainer decision/);
   assert.doesNotMatch(reviewAutomationMarkersFromReport(report), /clawsweeper-verdict:pass/);
 });
