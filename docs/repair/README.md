@@ -437,9 +437,10 @@ The workflow needs:
   and `CLAWSWEEPER_FIX_STEP_TIMEOUT_MS` variables; worker planning defaults to
   30 minutes, as does each fix Codex call. The executor derives its budget from
   setup, the edit-worker allowance, twice the configured validation budget, and
-  review/report margin: 70 minutes by default, 100 minutes for OpenClaw, with a
+  review/report margin: 70 minutes by default, 110 minutes for OpenClaw, with a
   110-minute hard ceiling. Actions adds two minutes of step headroom inside the
-  120-minute job. See [target budget configuration](../target-repositories.md).
+  130-minute job, which also leaves room for publication and post-flight. See
+  [target budget configuration](../target-repositories.md).
   Edit workers use focused checks; the executor owns full deterministic acceptance.
 - optional `CLAWSWEEPER_CODEX_RETRY_DELAY_MS` variable for edit-worker backoff
   after retryable Codex transport or TPM rate-limit exits; default is `15000`.

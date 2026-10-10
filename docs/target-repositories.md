@@ -93,7 +93,9 @@ budget + 10 minutes for review/reporting, capped at 110 minutes. With the defaul
 30-minute worker budget, OpenClaw receives the 110-minute ceiling. An explicit
 `CLAWSWEEPER_FIX_STEP_TIMEOUT_MS` overrides that derivation within the existing
 15-minute floor and new 110-minute ceiling. Actions resolves the same budget and
-adds two minutes for executor shutdown; the job retains its 120-minute ceiling.
+adds two minutes for executor shutdown. The job allows 130 minutes, so a step at
+that ceiling still leaves time for setup (at most 2.2 minutes measured) and for
+publication and post-flight, whose check wait is capped at 10 minutes.
 Checkout identity proof
 reserves a small part of its budget. The lower-level
 `CLAWSWEEPER_TARGET_VALIDATION_TIMEOUT_MS` can further shorten that budget.

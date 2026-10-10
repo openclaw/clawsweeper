@@ -490,7 +490,12 @@ jobs:
     needs: cluster
     if: ${{ needs.cluster.result == 'success' && needs.cluster.outputs.job_exists == '1' && needs.cluster.outputs.allow_execute == '1' && (needs.cluster.outputs.effective_mode == 'execute' || needs.cluster.outputs.effective_mode == 'autonomous') && !inputs.dry_run }}
     runs-on: ${{ inputs.execution_runner }}
-    timeout-minutes: 120
+    # The fix step can take its 110-minute ceiling plus 2 minutes of shutdown
+    # headroom. Setup before it measured at most 2.2 minutes (2026-10-03 to
+    # 10-09). Finalization after it is bounded by the 10-minute post-flight
+    # check wait plus under a minute of publish/status steps; the last
+    # PR-opening run spent 8.7 minutes there.
+    timeout-minutes: 130
     permissions:
       actions: read
       contents: read

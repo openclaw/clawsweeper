@@ -684,6 +684,10 @@ test("repair execution step timeout comes from the resolved budget and fits the 
     assert.equal(child.status, 0, child.stderr);
     const minutes = Number(/^timeout_minutes=(\d+)$/m.exec(fs.readFileSync(output, "utf8"))?.[1]);
     assert.ok(minutes > 0 && minutes < Number(job?.["timeout-minutes"]), String(minutes));
+    // At the 110-minute executor ceiling (112-minute step), the job must still
+    // fit setup (3) and finalization: the 10-minute post-flight check wait
+    // plus publish/status steps (1).
+    assert.ok(Number(job?.["timeout-minutes"]) >= 112 + 3 + 10 + 1);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
