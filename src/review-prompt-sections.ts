@@ -18,10 +18,8 @@ import {
   UNSPONSORED_FEATURE_MIN_AGE_DAYS,
 } from "./clawsweeper-policy.js";
 import type { Item, ItemContext, ReviewPromptRuntimeHints } from "./clawsweeper-types.js";
-import {
-  repositoryManagedPullRequestCloseReason,
-  type RepositoryCloseReason,
-} from "./repository-profiles.js";
+import { repositoryManagedPullRequestSymbol } from "./clawsweeper-types.js";
+import type { RepositoryCloseReason } from "./repository-profiles.js";
 import { asRecord } from "./value-coerce.js";
 
 export type ReviewPromptSection =
@@ -45,8 +43,7 @@ export function reviewPromptSections(
     maintainer_author: maintainer,
     external_author: !maintainer,
     authority_chain: item.kind === "pull_request",
-    managed_locale:
-      repositoryManagedPullRequestCloseReason(item, () => context.pullRequest) !== null,
+    managed_locale: context[repositoryManagedPullRequestSymbol] === true,
   };
 }
 
@@ -111,7 +108,7 @@ export function applicableCloseReasons(
   now = Date.now(),
 ): RepositoryCloseReason[] {
   const guarded = isMaintainerAuthorAssociation(item.authorAssociation) || isProtectedItem(item);
-  const managed = repositoryManagedPullRequestCloseReason(item, () => context.pullRequest) !== null;
+  const managed = context[repositoryManagedPullRequestSymbol] === true;
   const pull = asRecord(context.pullRequest);
   const age = (now - Date.parse(item.createdAt)) / DAY_MS;
   return reasons.filter((reason) => {

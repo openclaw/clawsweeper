@@ -25,6 +25,7 @@ import {
   maxPrChangedLines,
 } from "../dist/clawsweeper-oversized-pr-policy.js";
 import type { Item, ItemContext, ReviewPromptRuntimeHints } from "../dist/clawsweeper-types.js";
+import { repositoryManagedPullRequestSymbol } from "../dist/clawsweeper-types.js";
 import type { RepositoryCloseReason } from "../dist/repository-profiles.js";
 import { applyBlockingProtectedLabels } from "../dist/clawsweeper-item-policy.js";
 
@@ -138,57 +139,17 @@ test("authority review stays available for every PR, including runtime-consumed 
   }
 });
 
-const managedItem = target({ author: "openclaw-mantis[bot]" });
-const managedPull = {
-  user: { login: "openclaw-mantis[bot]" },
-  head: { ref: "automation/native-app-locale-refresh", repo: { full_name: managedItem.repo } },
-  base: { ref: "main", repo: { full_name: managedItem.repo } },
-};
-
-test("managed locale instructions require the complete publisher identity", () => {
-  for (const author of ["openclaw-mantis[bot]", "app/openclaw-mantis"]) {
-    for (const ref of [
-      "automation/native-app-locale-refresh",
-      "automation/control-ui-locale-refresh",
-    ]) {
-      const item = { ...managedItem, author };
-      const input = context({
-        pullRequest: { ...managedPull, head: { ...managedPull.head, ref } },
-      });
-      assertSection("managed_locale", true, item, input);
-      assert.deepEqual(applicableCloseReasons(item, input, reasons, now), []);
-    }
-  }
-  const size = oversizedPull();
-  const oversizedManaged = context({
-    pullRequest: {
-      ...managedPull,
-      ...size,
-      head: { ...managedPull.head, ...size.head },
-    },
+test("managed locale instructions consume the host identity fact and suppress all close reasons", () => {
+  const managed = context({
+    [repositoryManagedPullRequestSymbol]: true,
+    pullRequest: oversizedPull(),
   });
-  assert.deepEqual(applicableCloseReasons(managedItem, oversizedManaged, reasons, now), []);
-  for (const [item, pullRequest] of [
-    [target(), managedPull],
-    [{ ...managedItem, repo: "example/openclaw" }, managedPull],
-    [{ ...managedItem, kind: "issue" as const }, managedPull],
-    [managedItem, undefined],
-    [managedItem, { ...managedPull, user: { login: "other-bot[bot]" } }],
-    [managedItem, { ...managedPull, head: { ...managedPull.head, ref: "contributor/locales" } }],
-    [
-      managedItem,
-      { ...managedPull, head: { ...managedPull.head, repo: { full_name: "fork/openclaw" } } },
-    ],
-    [managedItem, { ...managedPull, base: { ...managedPull.base, ref: "release" } }],
-    [
-      managedItem,
-      { ...managedPull, base: { ...managedPull.base, repo: { full_name: "fork/openclaw" } } },
-    ],
-  ] as const) {
-    const input = context({ pullRequest });
-    assertSection("managed_locale", false, item, input);
-    assert.ok(applicableCloseReasons(item, input, reasons, now).includes("implemented_on_main"));
-  }
+  assertSection("managed_locale", true, target(), managed);
+  assert.deepEqual(applicableCloseReasons(target(), managed, reasons, now), []);
+  assertSection("managed_locale", false);
+  assert.ok(
+    applicableCloseReasons(target(), context(), reasons, now).includes("implemented_on_main"),
+  );
 });
 
 test("renderer composes adjacent sections without exposing markers or changing literal content", () => {

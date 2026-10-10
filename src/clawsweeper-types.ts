@@ -16,6 +16,8 @@ import type { SchedulerDueCandidate } from "./scheduler-policy.js";
 
 /** Shared ClawSweeper domain, review, scheduling, and dashboard shapes. */
 export const completeActivityContextSymbol = Symbol("completeActivityContext");
+/** Raw-payload publisher identity, retained only during this review (not serialized). */
+export const repositoryManagedPullRequestSymbol = Symbol("repositoryManagedPullRequest");
 
 export type ItemKind = "issue" | "pull_request";
 export type ApplyKind = ItemKind | "all";
@@ -706,6 +708,7 @@ export interface CompleteActivityContext {
 
 export interface ItemContext {
   [completeActivityContextSymbol]?: CompleteActivityContext;
+  [repositoryManagedPullRequestSymbol]?: true;
   issue: unknown;
   comments: unknown[];
   timeline: unknown[];
