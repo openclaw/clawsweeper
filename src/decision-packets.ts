@@ -121,6 +121,7 @@ const OWNER_KEYS = new Set(["person", "reason", "confidence"]);
 export function parseMaintainerDecision(
   value: unknown,
   path = "maintainerDecision",
+  source: "model" | "stored" = "stored",
 ): MaintainerDecision {
   const record = objectValue(value, path);
   rejectUnexpectedKeys(record, DECISION_KEYS, path);
@@ -133,7 +134,11 @@ export function parseMaintainerDecision(
     parseMaintainerDecisionOption(entry, `${path}.options[${index}]`),
   );
   if (options.length > 3) throw new Error(`${path}.options must contain at most 3 options`);
-  const likelyOwner = parseMaintainerDecisionOwner(record.likelyOwner, `${path}.likelyOwner`);
+  const likelyOwner = parseMaintainerDecisionOwner(
+    record.likelyOwner,
+    `${path}.likelyOwner`,
+    source,
+  );
 
   if (!required) {
     if (kind !== "none") throw new Error(`${path}.kind must be none when no decision is required`);
@@ -155,7 +160,8 @@ export function parseMaintainerDecision(
       throw new Error(`${path}.options must contain exactly 1 recommended option`);
     }
     if (!likelyOwner.person) throw new Error(`${path}.likelyOwner.person must not be empty`);
-    if (!likelyOwner.reason) throw new Error(`${path}.likelyOwner.reason must not be empty`);
+    if (source === "stored" && !likelyOwner.reason)
+      throw new Error(`${path}.likelyOwner.reason must not be empty`);
   }
 
   return { required, kind, question, rationale, options, likelyOwner };
@@ -373,13 +379,18 @@ function parseMaintainerDecisionOption(value: unknown, path: string): Maintainer
   return { title, body, recommended: booleanValue(record.recommended, `${path}.recommended`) };
 }
 
-function parseMaintainerDecisionOwner(value: unknown, path: string): MaintainerDecisionOwner {
+function parseMaintainerDecisionOwner(
+  value: unknown,
+  path: string,
+  source: "model" | "stored",
+): MaintainerDecisionOwner {
   const record = objectValue(value, path);
   rejectUnexpectedKeys(record, OWNER_KEYS, path);
   return {
     person: stringValue(record.person, `${path}.person`).trim(),
-    reason: stringValue(record.reason, `${path}.reason`).trim(),
-    confidence: enumValue(record.confidence, CONFIDENCES, `${path}.confidence`),
+    reason: source === "model" ? "" : stringValue(record.reason, `${path}.reason`).trim(),
+    confidence:
+      source === "model" ? "low" : enumValue(record.confidence, CONFIDENCES, `${path}.confidence`),
   };
 }
 

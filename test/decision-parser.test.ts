@@ -18,6 +18,41 @@ import {
 } from "./helpers.ts";
 import { neutralizeOwnedSectionSpoofing } from "../dist/clawsweeper-report-helpers.js";
 
+test("model decisions omit host-owned owner and policy fields", () => {
+  const raw = closeDecision();
+  const owner = raw.likelyOwners[0]!;
+  const { reason: _reason, ...modelOwner } = owner;
+  const model = {
+    ...raw,
+    likelyOwners: [{ ...modelOwner, history: null }],
+    maintainerDecision: {
+      ...raw.maintainerDecision,
+      likelyOwner: { person: "" },
+    },
+    agentsPolicyStatus: { status: "found_applied" },
+  };
+  const schema = JSON.parse(
+    readFileSync(new URL("../schema/clawsweeper-decision.schema.json", import.meta.url), "utf8"),
+  ).properties;
+  assertMatchesJsonSchema(model.likelyOwners, schema.likelyOwners);
+  assertMatchesJsonSchema(model.maintainerDecision, schema.maintainerDecision);
+  assertMatchesJsonSchema(model.agentsPolicyStatus, schema.agentsPolicyStatus);
+  const parsed = parseDecision(model);
+  assert.equal(parsed.likelyOwners[0]?.reason, "");
+  assert.deepEqual(parsed.maintainerDecision.likelyOwner, {
+    person: "",
+    reason: "",
+    confidence: "low",
+  });
+  assert.deepEqual(parsed.agentsPolicyStatus, {
+    status: "found_applied",
+    found: true,
+    readFully: true,
+    applied: true,
+    summary: "AGENTS.md: found and applied where relevant.",
+  });
+});
+
 test("next-step parsing preserves absent legacy intent and validates supplied assessments", () => {
   assert.equal(parseDecision(closeDecision()).nextStep, undefined);
   for (const nextStep of [
@@ -932,10 +967,10 @@ test("decision parser keeps maintainer intent model-authored and owner-consisten
     },
   };
 
-  assert.deepEqual(
-    parseDecision(closeDecision({ maintainerDecision })).maintainerDecision,
-    maintainerDecision,
-  );
+  assert.deepEqual(parseDecision(closeDecision({ maintainerDecision })).maintainerDecision, {
+    ...maintainerDecision,
+    likelyOwner: { person: "@alice", reason: "", confidence: "low" },
+  });
   assert.throws(
     () =>
       parseDecision(
@@ -1338,7 +1373,6 @@ test("decision parser neutralizes headings in every model-authored report prose 
     parsed.evidence[0]?.detail,
     parsed.likelyOwners[0]?.person,
     parsed.likelyOwners[0]?.role,
-    parsed.likelyOwners[0]?.reason,
     parsed.risks[0],
     parsed.bestSolution,
     parsed.maintainerDecision.question,
@@ -1346,7 +1380,6 @@ test("decision parser neutralizes headings in every model-authored report prose 
     parsed.maintainerDecision.options[0]?.title,
     parsed.maintainerDecision.options[0]?.body,
     parsed.maintainerDecision.likelyOwner.person,
-    parsed.maintainerDecision.likelyOwner.reason,
     parsed.mergeRiskOptions[0]?.title,
     parsed.mergeRiskOptions[0]?.body,
     parsed.mergeRiskOptions[0]?.automergeInstruction,
@@ -1360,7 +1393,6 @@ test("decision parser neutralizes headings in every model-authored report prose 
     parsed.visionFitReason,
     parsed.visionFitEvidence[0],
     parsed.rootCauseCluster.summary,
-    parsed.agentsPolicyStatus.summary,
     parsed.reviewFindings[0]?.title,
     parsed.reviewFindings[0]?.body,
     parsed.securityReview.summary,
