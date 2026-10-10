@@ -9,10 +9,13 @@ ClawSweeper can propose `unsponsored_feature_request` only for
 - `item_category: feature`;
 - `requires_product_decision: true`;
 - `maintainer_decision.required: true` with `kind: product_direction`;
-- no security label from `SECURITY_PROTECTED_LABEL_NAMES`
-  (`src/repair/exact-review-guard-labels.ts`), such as `security`,
-  `impact:security`, or `clawsweeper:needs-security-review`. The match is
-  exact after trim and lowercase.
+- no security label recognized by `isSecurityLabel`
+  (`src/repair/security-signals.ts`), such as `security`,
+  `security-sensitive`, or `type: security`. The match is exact after
+  whitespace normalization and lowercase.
+
+The separate automation holds in `CLOSE_PROTECTED_LABEL_NAMES` remain enforced,
+including `impact:security` and explicit security-review-required statuses.
 
 The review lane only writes a durable close proposal. Apply is default-off and
 requires the repository variable

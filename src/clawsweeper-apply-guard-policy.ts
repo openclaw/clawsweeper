@@ -1,7 +1,6 @@
 import { ideaRevivalReactionThreshold, positiveReactionCount } from "./idea-archive-revival.js";
 import {
   PR_AUTO_CLOSE_EXEMPT_LABELS,
-  SECURITY_PROTECTED_LABELS,
   STALE_VERSION_BUG_MIN_INACTIVE_DAYS,
   UNSPONSORED_FEATURE_MIN_INACTIVE_DAYS,
 } from "./clawsweeper-policy.js";
@@ -187,11 +186,7 @@ export function createApplyGuardPolicy(
       state?: string;
     }>(["api", `repos/${targetRepo()}/issues/${number}`]);
     if (issue.state !== "open") return "live issue is not open";
-    if (
-      labelNames(issue.labels)
-        .map(normalizeLabelName)
-        .some((label) => SECURITY_PROTECTED_LABELS.has(label))
-    ) {
+    if (protectedLabels(labelNames(issue.labels)).length > 0) {
       return "security-labeled issue requires human triage";
     }
     if ((issue.assignees ?? []).length > 0) return "assigned issue has maintainer engagement";

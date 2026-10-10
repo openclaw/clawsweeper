@@ -7,7 +7,7 @@ import test from "node:test";
 
 import { mockGhBinEnv } from "../helpers.ts";
 
-test("finalizer ignores an older failed run after the same check succeeds", () => {
+test("finalizer rolls up checks and preserves explicit non-security automation holds", () => {
   const temporary = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-finalizer-"));
   const fakeBin = path.join(temporary, "bin");
   fs.mkdirSync(fakeBin, { recursive: true });
@@ -24,7 +24,7 @@ test("finalizer ignores an older failed run after the same check succeeds", () =
       "  process.stdout.write(JSON.stringify({",
       "    number: 123, title: 'fix: example', url: 'https://github.com/openclaw/openclaw/pull/123',",
       "    baseRefName: 'main', headRefName: 'clawsweeper/example', headRefOid: 'a'.repeat(40),",
-      "    isDraft: false, labels: [], mergeable: 'MERGEABLE', mergeStateStatus: 'CLEAN',",
+      "    isDraft: false, labels: JSON.parse(process.env.FINALIZER_TEST_LABELS), mergeable: 'MERGEABLE', mergeStateStatus: 'CLEAN',",
       "    reviewDecision: null, reviews: [], comments: [], state: 'OPEN', updatedAt: '2026-08-10T12:00:00Z',",
       "    statusCheckRollup: [",
       "      { name: 'unit', workflowName: 'CI', status: 'COMPLETED', conclusion: 'FAILURE', startedAt: '2026-08-10T10:00:00Z', completedAt: '2026-08-10T10:05:00Z' },",
@@ -44,23 +44,36 @@ test("finalizer ignores an older failed run after the same check succeeds", () =
   );
 
   try {
-    const output = execFileSync(process.execPath, ["dist/repair/finalize-open-prs.js"], {
-      cwd: process.cwd(),
-      env: {
-        ...process.env,
-        ...mockGhBinEnv(path.join(fakeBin, "gh"), fakeBin),
-      },
-      encoding: "utf8",
-    });
-    const report = JSON.parse(output);
+    for (const label of [
+      null,
+      "area: security",
+      "impact:security",
+      "security-review-required",
+      "security-sensitive-changed",
+      "merge-risk: 🚨 security-boundary",
+      "clawsweeper:needs-security-review",
+    ]) {
+      const output = execFileSync(process.execPath, ["dist/repair/finalize-open-prs.js"], {
+        cwd: process.cwd(),
+        env: {
+          ...process.env,
+          FINALIZER_TEST_LABELS: JSON.stringify(label ? [{ name: label }] : []),
+          ...mockGhBinEnv(path.join(fakeBin, "gh"), fakeBin),
+        },
+        encoding: "utf8",
+      });
+      const report = JSON.parse(output);
 
-    assert.equal(report.prs[0]?.checks.total, 1);
-    assert.deepEqual(report.prs[0]?.checks.counts, { SUCCESS: 1 });
-    assert.deepEqual(report.prs[0]?.checks.blockers, []);
-    assert.equal(
-      report.prs[0]?.blockers.some((blocker: string) => blocker.startsWith("needs_checks:")),
-      false,
-    );
+      assert.equal(report.prs[0]?.checks.total, 1);
+      assert.deepEqual(report.prs[0]?.checks.counts, { SUCCESS: 1 });
+      assert.deepEqual(report.prs[0]?.checks.blockers, []);
+      assert.equal(
+        report.prs[0]?.blockers.some((blocker: string) => blocker.startsWith("needs_checks:")),
+        false,
+      );
+      assert.equal(report.prs[0]?.security_hold, false);
+      assert.equal(report.prs[0]?.blockers.includes("protected_label"), label !== null);
+    }
   } finally {
     fs.rmSync(temporary, { recursive: true, force: true });
   }

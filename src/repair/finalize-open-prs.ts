@@ -20,6 +20,7 @@ import { numberEnv } from "./env-utils.js";
 import { compactText } from "./text-utils.js";
 import { escapeRegExp } from "../clawsweeper-markdown.js";
 import { rollUpStatusChecks } from "./status-check-rollup.js";
+import { labelNames, protectedLabels } from "../clawsweeper-item-policy.js";
 
 const DEFAULT_HEAD_PREFIX = "clawsweeper/";
 const PASSING_CHECK_CONCLUSIONS = new Set(["SUCCESS", "SKIPPED", "NEUTRAL"]);
@@ -177,6 +178,7 @@ function classifyPullRequest(pull: LooseRecord, publishedRecords: JsonValue) {
   if (String(pull.baseRefName ?? "") !== "main")
     blockers.push(`base is ${pull.baseRefName || "unknown"}`);
   if (hasDeterministicPullSecuritySignal(pull)) blockers.push("security_hold");
+  else if (protectedLabels(labelNames(pull.labels)).length > 0) blockers.push("protected_label");
   if (isSecurityRoutedAction(latestApplyAction)) blockers.push("security_route");
   if (pull.mergeable === "UNKNOWN") {
     blockers.push("mergeability_unknown");
@@ -528,6 +530,7 @@ function isDispatchableFinalizerPr(pr: JsonValue) {
     pr.security_hold ||
     pr.blockers.includes("security_hold") ||
     pr.blockers.includes("security_route") ||
+    pr.blockers.includes("protected_label") ||
     pr.blockers.includes("draft")
   )
     return false;

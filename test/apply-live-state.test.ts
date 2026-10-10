@@ -677,6 +677,17 @@ if (args[0] === "api" && /\\/issues\\/321$/.test(path)) {
 test("event apply emits proof only while a captured protected-label guard remains live", () => {
   for (const labels of [
     ["security"],
+    ["security-sensitive"],
+    ["security sensitive"],
+    ["type: security"],
+    ["type:security"],
+    ["kind: security"],
+    ["kind:security"],
+    ["area: security"],
+    ["impact:security"],
+    ["security-review-required"],
+    ["security-sensitive-changed"],
+    ["merge-risk: 🚨 security-boundary"],
     ["clawsweeper:needs-security-review"],
     ["clawsweeper:needs-maintainer-review"],
     ["clawsweeper:needs-product-decision"],

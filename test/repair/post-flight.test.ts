@@ -389,7 +389,12 @@ test("post-flight rechecks repair mode and live authorization immediately before
       "  process.stdout.write(JSON.stringify({number,state:merged?'closed':'open',title:'fix: safe merge',draft:false,labels,base:{ref:'main'},merged_at:merged?'2026-07-31T00:00:00Z':null,merge_commit_sha:merged?'b'.repeat(40):null,head:{sha:'a'.repeat(40)}}));",
       "  process.exit(0);",
       "}",
-      "if (args[0] === 'api' && args[1].includes('/comments?')) process.exit(0);",
+      "if (args[0] === 'api' && args[1].includes('/comments?')) {",
+      "  const count = Number(fs.readFileSync(process.env.FAKE_GH_PULL_COUNT, 'utf8'));",
+      "  const sequences = JSON.parse(process.env.FAKE_GH_COMMENT_SEQUENCES);",
+      "  process.stdout.write(sequences[Math.min(count - 1, sequences.length - 1)].join('\\n'));",
+      "  process.exit(0);",
+      "}",
       "if (args[0] === 'api' && args[1] === 'graphql') {",
       "  process.stdout.write(JSON.stringify({data:{repository:{pullRequest:{reviewThreads:{pageInfo:{hasNextPage:false},nodes:[]}}}}}));",
       "  process.exit(0);",
@@ -412,6 +417,8 @@ test("post-flight rechecks repair mode and live authorization immediately before
     plannedStrategy = "replace_uneditable_branch",
     executedFallback = false,
     canonicalNumber = 123,
+    commentSequences = [[]],
+    source = "pr_automerge",
   }: {
     mode: "autofix" | "automerge";
     sequences: string[][];
@@ -420,11 +427,19 @@ test("post-flight rechecks repair mode and live authorization immediately before
     plannedStrategy?: "replace_uneditable_branch" | "repair_contributor_branch";
     executedFallback?: boolean;
     canonicalNumber?: number;
+    commentSequences?: string[][];
+    source?: "pr_automerge" | "manual";
   }) => {
     fs.rmSync(mergedPath, { force: true });
     fs.rmSync(pullCountPath, { force: true });
     fs.rmSync(sourceCountPath, { force: true });
     writeMergeJob(jobPath);
+    if (source === "manual") {
+      fs.writeFileSync(
+        jobPath,
+        fs.readFileSync(jobPath, "utf8").replace("source: pr_automerge", "source: manual"),
+      );
+    }
     if (canonicalNumber !== 123) {
       fs.writeFileSync(
         jobPath,
@@ -468,6 +483,7 @@ test("post-flight rechecks repair mode and live authorization immediately before
         FAKE_GH_MERGED_FILE: mergedPath,
         FAKE_GH_CALLS: callsPath,
         FAKE_GH_LABEL_SEQUENCES: JSON.stringify(sequences),
+        FAKE_GH_COMMENT_SEQUENCES: JSON.stringify(commentSequences),
         FAKE_GH_SOURCE_LABEL_SEQUENCES: JSON.stringify(sourceSequences ?? []),
         FAKE_GH_REPLACEMENT: sourceSequences ? "1" : "0",
         FAKE_GH_TARGET_NUMBER: sourceSequences ? "456" : "123",
@@ -497,6 +513,51 @@ test("post-flight rechecks repair mode and live authorization immediately before
       assert.match(paused.actions[0]?.reason, /protected or paused repair label/, label);
       assert.equal(fs.existsSync(mergedPath), false, label);
       assert.equal(fs.readFileSync(pullCountPath, "utf8"), "2", label);
+    }
+
+    for (const source of ["pr_automerge", "manual"] as const) {
+      for (const label of [
+        "security",
+        "security-sensitive",
+        "security sensitive",
+        "type: security",
+        "type:security",
+        "kind: security",
+        "kind:security",
+      ]) {
+        const paused = execute({
+          mode: "automerge",
+          source,
+          sequences: [["clawsweeper:automerge"], ["clawsweeper:automerge", label]],
+        });
+        assert.equal(paused.actions[0]?.status, "blocked", `${source}: ${label}`);
+        assert.match(paused.actions[0]?.reason, /security/, `${source}: ${label}`);
+        assert.equal(fs.existsSync(mergedPath), false, `${source}: ${label}`);
+        assert.equal(fs.readFileSync(pullCountPath, "utf8"), "2", `${source}: ${label}`);
+      }
+
+      const marked = execute({
+        mode: "automerge",
+        source,
+        sequences: [["clawsweeper:automerge"]],
+        commentSequences: [[], ["<!-- clawsweeper-route:security -->"]],
+      });
+      assert.equal(marked.actions[0]?.status, "blocked", source);
+      assert.match(marked.actions[0]?.reason, /security-sensitive/, source);
+      assert.equal(fs.existsSync(mergedPath), false, source);
+      assert.equal(fs.readFileSync(pullCountPath, "utf8"), "2", source);
+
+      const securityish = execute({
+        mode: "automerge",
+        source,
+        sequences: [["clawsweeper:automerge"], ["clawsweeper:automerge", "securityish"]],
+        commentSequences: [
+          [],
+          ["Security review discusses vulnerability and exploit documentation."],
+        ],
+      });
+      assert.equal(securityish.actions[0]?.status, "executed", source);
+      assert.equal(fs.existsSync(mergedPath), true, source);
     }
 
     const revoked = execute({ mode: "automerge", sequences: [["clawsweeper:automerge"], []] });

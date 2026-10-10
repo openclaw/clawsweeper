@@ -8,7 +8,6 @@ import {
   NEEDS_SECURITY_REVIEW_LABEL,
   PR_AUTO_CLOSE_EXEMPT_LABEL_NAMES,
   SECURITY_BOUNDARY_MERGE_RISK_LABEL,
-  SECURITY_PROTECTED_LABEL_NAMES,
 } from "./repair/exact-review-guard-labels.js";
 import type {
   AgentsPolicyStatusKind,
@@ -536,11 +535,9 @@ export const ISSUE_STALE_PROTECTION_LABEL = {
 export const PROTECTED_LABELS = new Set<string>(CLOSE_PROTECTED_LABEL_NAMES);
 export const APPLY_PROTECTED_LABELS = new Set<string>([
   ...CLOSE_PROTECTED_LABEL_NAMES,
-  NEEDS_SECURITY_REVIEW_LABEL,
   NEEDS_MAINTAINER_REVIEW_LABEL,
   NEEDS_PRODUCT_DECISION_LABEL,
 ]);
-export const SECURITY_PROTECTED_LABELS = new Set<string>(SECURITY_PROTECTED_LABEL_NAMES);
 // The runtime sets these sources only after GitHub confirms the merged fixing PR.
 export const GITHUB_VERIFIED_FIXED_PULL_REQUEST_SOURCES = new Set<FixedPullRequestSource>([
   "GitHub closing PR reference",

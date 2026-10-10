@@ -5,7 +5,6 @@ import {
 import {
   ALLOWED_REASONS,
   PR_AUTO_CLOSE_EXEMPT_LABELS,
-  SECURITY_PROTECTED_LABELS,
   STALLED_UNPROVEN_PROOF_STATUSES,
   isGitHubVerifiedFixedPullRequestSource,
 } from "./clawsweeper-policy.js";
@@ -13,6 +12,7 @@ import { isAutoCloseAllowed, repositoryProfileFor } from "./repository-profiles.
 import type { ActionTaken, CloseReason, Decision, Item } from "./clawsweeper-types.js";
 import { NEEDS_SECURITY_REVIEW_LABEL } from "./repair/exact-review-guard-labels.js";
 import { isIsoTimestamp } from "./iso-time.js";
+import { protectedLabels } from "./clawsweeper-item-policy.js";
 import {
   prAutoCloseExemptDecisionReason,
   prAutoCloseExemptLabel,
@@ -239,9 +239,7 @@ export function createCloseDecisionWorkflow({
   ): string | null {
     if (item.kind !== "issue") return "stale_version_bug is allowed only for issues";
     if (decision.itemCategory !== "bug") return "stale_version_bug requires bug item category";
-    const securityLabel = item.labels
-      .map(normalizeLabelName)
-      .find((label) => SECURITY_PROTECTED_LABELS.has(label));
+    const securityLabel = protectedLabels(item.labels)[0];
     if (securityLabel) return `${securityLabel} blocks stale-version bug auto-close`;
     return null;
   }

@@ -243,6 +243,14 @@ function finalizeFixPr(action: LooseRecord) {
   if (currentPolicyBlock) {
     return { ...prBase, status: "blocked", reason: currentPolicyBlock, waited_ms: waitedMs };
   }
+  if (hasLiveSecuritySignal(parsed.number, currentPull.labels ?? [])) {
+    return {
+      ...prBase,
+      status: "blocked",
+      reason: "security-sensitive PR requires central security triage",
+      waited_ms: waitedMs,
+    };
+  }
   if (currentPull.head?.sha !== pull.head?.sha) {
     return {
       ...prBase,
