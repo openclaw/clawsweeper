@@ -53,7 +53,7 @@ export function renderReviewSections(
   const lines: string[] = [];
   let include = true;
   let active: ReviewPromptSection | undefined;
-  for (const line of template.split("\n")) {
+  for (const line of template.split(/\r?\n/)) {
     if (line.startsWith("<!-- review-section: ") && line.endsWith(" -->")) {
       if (active !== undefined) throw new Error("Nested review prompt section");
       const name = line.slice("<!-- review-section: ".length, -" -->".length);

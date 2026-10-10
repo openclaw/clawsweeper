@@ -20,6 +20,7 @@ import {
   validateCloseDecision,
 } from "../dist/clawsweeper.js";
 import { parseCoAuthors } from "../dist/commit-sweeper.js";
+import { repositoryProfileFor } from "../dist/repository-profiles.js";
 import { closeDecision, git, item, reportFrontMatter, reviewPrompt } from "./helpers.ts";
 
 function renderedCloseReasons(prompt: string): string[] {
@@ -34,10 +35,23 @@ test("review prompt renders close reasons from the repository profile for the it
   const schema = JSON.parse(readFileSync("schema/clawsweeper-decision.schema.json", "utf8"));
   const issueReasons = renderedCloseReasons(reviewPrompt("issue"));
   const pullRequestReasons = renderedCloseReasons(reviewPrompt("pull_request"));
+  const profile = repositoryProfileFor("openclaw/openclaw");
+  // Oversized closure is host-owned and deliberately absent from the model schema.
   assert.deepEqual(
-    [...new Set([...issueReasons, ...pullRequestReasons, "none"])].sort(),
+    [...new Set([...Object.values(profile.applyCloseRules).flat(), "none"])]
+      .filter((reason) => reason !== "oversized_pull_request")
+      .sort(),
     [...schema.properties.closeReason.enum].sort(),
   );
+  // Schema compatibility includes reasons that host facts cannot enable in this context.
+  assert.deepEqual(
+    [...new Set([...issueReasons, ...pullRequestReasons, "none"])].sort(),
+    schema.properties.closeReason.enum
+      .filter((reason: string) => reason !== "author_pr_budget_exceeded")
+      .sort(),
+  );
+  assert.ok(!pullRequestReasons.includes("author_pr_budget_exceeded"));
+  assert.ok(!pullRequestReasons.includes("oversized_pull_request"));
   assert.ok(issueReasons.includes("stale_insufficient_info"));
   assert.ok(!issueReasons.includes("obsolete_fix_pr"));
   assert.ok(pullRequestReasons.includes("obsolete_fix_pr"));
@@ -47,7 +61,10 @@ test("review prompt renders close reasons from the repository profile for the it
   ]);
   const closedRepoPrompt = reviewPrompt("pull_request", "steipete/camsnap");
   assert.deepEqual(renderedCloseReasons(closedRepoPrompt), []);
-  assert.match(closedRepoPrompt, /enables no close reason for this item kind: keep the item open/);
+  assert.match(
+    closedRepoPrompt,
+    /No close reason applies to this item's host facts: keep it open with `closeReason: none`/,
+  );
 });
 
 test("external desktop-product bugs close without inventing upstream maintainer work", () => {

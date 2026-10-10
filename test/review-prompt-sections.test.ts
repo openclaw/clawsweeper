@@ -12,7 +12,6 @@ import {
   DAY_MS,
   OBSOLETE_FIX_PR_MIN_AGE_DAYS,
   PROTECTED_LABELS,
-  SECURITY_PROTECTED_LABELS,
   STALE_INSUFFICIENT_INFO_MIN_AGE_DAYS,
   STALE_VERSION_BUG_MIN_AGE_DAYS,
   STALLED_UNPROVEN_PR_MIN_AGE_DAYS,
@@ -151,10 +150,12 @@ test("renderer composes adjacent sections without exposing markers or changing l
   const sections = reviewPromptSections(target(), context());
   const template =
     "prefix\n<!-- review-section: external_author -->\nexternal\n<!-- /review-section -->\n<!-- review-section: maintainer_author -->\nmaintainer\n<!-- /review-section -->\n<!-- review-section: external_author -->\nexternal again\n<!-- /review-section -->\nsuffix\n";
-  assert.equal(
-    renderReviewSections(template, sections),
-    "prefix\nexternal\nexternal again\nsuffix\n",
-  );
+  for (const lineEnding of ["\n", "\r\n"]) {
+    assert.equal(
+      renderReviewSections(template.replaceAll("\n", lineEnding), sections),
+      "prefix\nexternal\nexternal again\nsuffix\n",
+    );
+  }
   const literal =
     "prefix\n\n  <!-- review-section: external_author --> inline\n{{unchanged}}\nsuffix\n";
   assert.equal(renderReviewSections(literal, sections), literal);
@@ -168,8 +169,11 @@ test("renderer rejects unknown, nested and unbalanced sections, including exclud
     "<!-- review-section: external_author -->\nbody",
     "<!-- review-section: maintainer_author -->\nbody",
     "<!-- review-section: maintainer_author -->\n<!-- review-section: external_author -->\n<!-- /review-section -->\n<!-- /review-section -->",
-  ])
-    assert.throws(() => renderReviewSections(template, sections));
+  ]) {
+    for (const lineEnding of ["\n", "\r\n"]) {
+      assert.throws(() => renderReviewSections(template.replaceAll("\n", lineEnding), sections));
+    }
+  }
 });
 
 const ageGates: readonly [RepositoryCloseReason, Item["kind"], number][] = [
@@ -253,7 +257,7 @@ test("maintainer and protected close guards preserve only evaluator-authorized o
     ...["OWNER", "MEMBER", "COLLABORATOR"].map((authorAssociation) =>
       target({ authorAssociation }),
     ),
-    ...new Set([...PROTECTED_LABELS, ...SECURITY_PROTECTED_LABELS]),
+    ...PROTECTED_LABELS,
   ].map((candidate) =>
     typeof candidate === "string" ? target({ labels: [candidate] }) : candidate,
   );
