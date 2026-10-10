@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
+import { once } from "node:events";
 import {
   chmodSync,
   copyFileSync,
@@ -18,6 +19,8 @@ import { delimiter, dirname, join } from "node:path";
 import test from "node:test";
 import YAML from "yaml";
 import { AGENT_INPUT_SCAN_FAILURE_REASONS } from "../dist/exact-review-failure-reason.js";
+import { MAX_MEDIA_PROOF_URLS, MEDIA_PROOF_TIMEOUT_MS } from "../dist/clawsweeper-media-proof.js";
+import { DEFAULT_EXACT_REVIEW_HEARTBEAT_GRACE_MS } from "../dashboard/exact-review-read-model.ts";
 
 import { makeTreeReadOnlyForTest, restoreTreeModesForTest } from "../dist/clawsweeper.js";
 import { createReviewRuntime } from "../dist/clawsweeper-review-runtime.js";
@@ -346,7 +349,7 @@ test("queue-only command review proves allowed and superseded authority before G
         TARGET_REPO: "openclaw/clawsweeper",
         ITEM_NUMBER: "1675",
         CODEX_TIMEOUT_MS: "2700000",
-        MEDIA_PROOF_TIMEOUT_MS: "480000",
+        MEDIA_PROOF_TIMEOUT_MS: String(MAX_MEDIA_PROOF_URLS * MEDIA_PROOF_TIMEOUT_MS),
         RESOLVED_STATUS_COMMENT_ID: "7001",
         COMMAND_STATUS_MARKER: "<!-- clawsweeper-command-status:1675:re_review:fixture -->",
         RUN_URL: "https://github.com/openclaw/clawsweeper/actions/runs/4242",
@@ -1293,10 +1296,6 @@ test("exact event review publishes directly with a queue-bounded canonical fallb
   );
   assert.match(step(reviewer, "Review exact event item").run ?? "", /--review-lease-owner/);
   assert.match(step(reviewer, "Review exact event item").run ?? "", /--review-lease-comment-id/);
-  assert.match(
-    step(reviewer, "Review exact event item").run ?? "",
-    /exact-review-queue-request\.js heartbeat --phase review\)/,
-  );
   assert.equal(
     step(reviewer, "Review exact event item").env?.EXACT_REVIEW_ITEM_KIND,
     "${{ fromJSON(steps.claim-exact-review-queue.outputs.decision).itemKind }}",
@@ -1317,11 +1316,6 @@ test("exact event review publishes directly with a queue-bounded canonical fallb
     step(reviewer, "Review exact event item").run ?? "",
     /failure_stage=.*failure\.stage[\s\S]*failure_reason_code=.*failure\.reason_code[\s\S]*failure_retryable=.*retryable/,
   );
-  assert.match(
-    step(reviewer, "Review exact event item").run ?? "",
-    /kill -TERM -- "-\$review_pgid"/,
-  );
-  assert.match(step(reviewer, "Review exact event item").run ?? "", /sleep 60/);
 
   const create = step(reviewer, "Create exact review artifact bundle");
   const directSetupState = reviewer.steps.find(
@@ -2528,7 +2522,7 @@ test("exact event claim accepts only the requested queue tuple", () => {
   }
 });
 
-test("exact event review heartbeats its queue lease while Codex runs", () => {
+test("exact event review heartbeats its queue lease while Codex runs", async () => {
   type Step = { name?: string; env?: Record<string, string>; run?: string };
   const workflow = YAML.parse(readText(".github/workflows/sweep.yml")) as {
     jobs: Record<string, { steps: Step[] }>;
@@ -2543,31 +2537,140 @@ test("exact event review heartbeats its queue lease while Codex runs", () => {
   // The Codex-adjacent review step must never receive the shared webhook secret;
   // the heartbeat authenticates by lease tuple like /claim and /complete.
   assert.equal(review.env?.CLAWSWEEPER_WEBHOOK_SECRET, undefined);
-  assert.match(
-    review.run ?? "",
-    /heartbeat_payload="\$\(node dist\/repair\/exact-review-queue-request\.js heartbeat --phase review\)"/,
-  );
-  assert.match(
-    review.run ?? "",
-    /startup_payload="\$\(node dist\/repair\/exact-review-queue-request\.js heartbeat --phase review --generation-start\)"/,
-  );
-  assert.match(
-    review.run ?? "",
-    /finalizing_payload="\$\(node dist\/repair\/exact-review-queue-request\.js heartbeat --phase finalizing\)"/,
-  );
-  assert.doesNotMatch(review.run ?? "", /x-clawsweeper-exact-review-signature/);
   assert.doesNotMatch(review.run ?? "", /CLAWSWEEPER_WEBHOOK_SECRET/);
-  assert.match(review.run ?? "", /internal\/exact-review\/heartbeat/);
-  assert.match(review.run ?? "", /^\s*sleep 60\s*$/m);
-  assert.match(review.run ?? "", /heartbeat_payload=.*\|\| return 1/s);
-  assert.doesNotMatch(review.run ?? "", /test -n "\$CLAWSWEEPER_WEBHOOK_SECRET"/);
-  assert.match(review.run ?? "", /trap cleanup_heartbeat EXIT/);
-  assert.match(review.run ?? "", /kill "\$heartbeat_pid" 2>\/dev\/null \|\| true/);
-  assert.match(review.run ?? "", /setsid timeout --kill-after=30s/);
+  assert.doesNotMatch(review.run ?? "", /x-clawsweeper-exact-review-signature/);
+  // Kept as text: running the launch needs the full Codex deadline. The review runs in its own
+  // process group under a hard deadline, so a lost lease or a timeout can kill all of it.
+  assert.match(review.run ?? "", /setsid timeout --kill-after=\d+s /);
   assert.match(review.run ?? "", /review_pgid=\$review_pid/);
-  assert.match(review.run ?? "", /kill -TERM -- "-\$review_pgid"/);
-  assert.match(review.run ?? "", /kill -KILL -- "-\$review_pgid"/);
-  assert.match(review.run ?? "", /wait_for_review_group/);
+
+  // Run the step up to its startup check: helpers, the EXIT trap and the lease bodies.
+  const run = review.run ?? "";
+  const setup = run.slice(0, run.indexOf("verify_startup_authority() {"));
+  assert.match(setup, /prepare_heartbeat\s*$/);
+  // The Worker reclaims a lease whose heartbeat is older than this grace window.
+  const configuredGraceMs = /^EXACT_REVIEW_HEARTBEAT_GRACE_MS = "(\d+)"$/m.exec(
+    readText("dashboard/wrangler.toml"),
+  )?.[1];
+  const graceMs = Number(configuredGraceMs ?? DEFAULT_EXACT_REVIEW_HEARTBEAT_GRACE_MS);
+  const runStep = (root: string, body: string, env: NodeJS.ProcessEnv = {}) =>
+    spawnSync("bash", ["-c", `${setup}\n${body}`], {
+      cwd: process.cwd(),
+      encoding: "utf8",
+      timeout: 60_000,
+      env: {
+        ...process.env,
+        GH_TOKEN: "fixture-token",
+        RUNNER_TEMP: root,
+        QUEUE_URL: "http://127.0.0.1",
+        EXACT_REVIEW_ITEM_KEY: "openclaw/openclaw#1",
+        EXACT_REVIEW_LEASE_ID: "lease-1",
+        EXACT_REVIEW_LEASE_REVISION: "1",
+        EXACT_REVIEW_CLAIM_GENERATION: "1",
+        EXACT_REVIEW_SOURCE_HEAD_SHA: "",
+        GITHUB_RUN_ID: "10",
+        GITHUB_RUN_ATTEMPT: "1",
+        HEARTBEAT_CALLS: join(root, "calls"),
+        HEARTBEAT_SLEEPS: join(root, "sleeps"),
+        ...env,
+      },
+    });
+  // Record each heartbeat; the queue answers 409 from the third heartbeat on.
+  const stubs = `
+    control_plane_curl() {
+      local url="\${@: -1}" body=""
+      while [ "$#" -gt 0 ]; do
+        if [ "$1" = "--data-binary" ]; then body="$2"; shift; fi
+        shift
+      done
+      printf '%s\\t%s\\n' "$url" "$body" >> "$HEARTBEAT_CALLS"
+      if [ "$(wc -l < "$HEARTBEAT_CALLS")" -ge "\${HEARTBEAT_LOST_AT:-1000000}" ]; then printf 409; else printf 200; fi
+    }
+    sleep() { printf '%s\\n' "$1" >> "$HEARTBEAT_SLEEPS"; command sleep 0.02; }
+  `;
+  const lines = (file: string) => (existsSync(file) ? readText(file).trim().split("\n") : []);
+
+  const lost = mkdtempSync(tmpPrefix);
+  // A stand-in for the Codex process group the heartbeat must stop when its lease is lost.
+  const group = spawn("sleep", ["600"], { detached: true, stdio: "ignore" });
+  try {
+    const result = runStep(
+      lost,
+      `${stubs}
+      review_pgid="$REVIEW_PGID"
+      start_heartbeat
+      wait "$heartbeat_pid"`,
+      { HEARTBEAT_LOST_AT: "3", REVIEW_PGID: String(group.pid) },
+    );
+    assert.equal(result.status, 0, result.stderr);
+    const calls = lines(join(lost, "calls")).map((line) => line.split("\t"));
+    assert.equal(calls.length, 3);
+    for (const [url, body] of calls) {
+      assert.equal(url, "http://127.0.0.1/internal/exact-review/heartbeat");
+      assert.deepEqual(JSON.parse(body!), {
+        item_key: "openclaw/openclaw#1",
+        lease_id: "lease-1",
+        lease_revision: 1,
+        claim_generation: 1,
+        run_id: "10",
+        run_attempt: 1,
+        phase: "review",
+      });
+    }
+    // Several heartbeats land inside one grace window, so one slow or failed request never
+    // lets the Worker reclaim a live review.
+    const intervals = lines(join(lost, "sleeps")).map(Number);
+    assert.equal(intervals.length, 2);
+    for (const seconds of intervals) {
+      assert.ok(seconds > 0 && seconds * 1000 * 3 <= graceMs, `${seconds}s vs ${graceMs}ms`);
+    }
+    assert.ok(existsSync(join(lost, "exact-review-superseded-10-1")));
+    const groupState = spawnSync("ps", ["-o", "stat=", "-p", String(group.pid)], {
+      encoding: "utf8",
+    }).stdout.trim();
+    assert.ok(groupState === "" || groupState.startsWith("Z"), `review group: ${groupState}`);
+    if (group.exitCode === null && group.signalCode === null) await once(group, "exit");
+    assert.equal(group.signalCode, "SIGTERM");
+  } finally {
+    if (group.exitCode === null && group.signalCode === null) group.kill("SIGKILL");
+    rmSync(lost, { recursive: true, force: true });
+  }
+
+  const exited = mkdtempSync(tmpPrefix);
+  let heartbeatPid = 0;
+  try {
+    // The step's EXIT trap stops the heartbeat, so a finished step never extends its lease.
+    // Output goes to /dev/null so a surviving heartbeat cannot hold this test's pipes open.
+    const result = runStep(
+      exited,
+      `${stubs}
+      exec >/dev/null 2>&1
+      start_heartbeat
+      printf '%s' "$heartbeat_pid" > "$RUNNER_TEMP/heartbeat-pid"
+      until [ -s "$HEARTBEAT_CALLS" ]; do command sleep 0.02; done
+      exit 0`,
+    );
+    assert.equal(result.status, 0, result.stderr);
+    heartbeatPid = Number(readText(join(exited, "heartbeat-pid")));
+    assert.throws(() => process.kill(heartbeatPid, 0), { code: "ESRCH" });
+  } finally {
+    if (heartbeatPid > 0) spawnSync("kill", ["-KILL", String(heartbeatPid)]);
+    rmSync(exited, { recursive: true, force: true });
+  }
+
+  const invalid = mkdtempSync(tmpPrefix);
+  try {
+    // An invalid lease tuple stops the step before any heartbeat or review starts. The queue
+    // answers 409 at once, so a heartbeat that does start ends on its own.
+    const result = runStep(invalid, `${stubs}\nstart_heartbeat\nwait "$heartbeat_pid"`, {
+      EXACT_REVIEW_LEASE_ID: "",
+      HEARTBEAT_LOST_AT: "1",
+    });
+    assert.notEqual(result.status, 0);
+    assert.deepEqual(lines(join(invalid, "calls")), []);
+  } finally {
+    rmSync(invalid, { recursive: true, force: true });
+  }
 
   const publisher = workflow.jobs["event-review-publish"]!;
   assert.equal(
@@ -5318,25 +5421,48 @@ test("audit target fanout waits in bounded waves without changing cadence or sel
   assert.match(fanout["timeout-minutes"], /'37 \*\/6 \* \* \*' && 240 \|\| 30/);
 });
 
-test("hot fleet fanout stays at twenty minutes and normal backfill offers every twenty minutes", () => {
-  const workflow = YAML.parse(readText(".github/workflows/sweep.yml")) as {
+// Minutes of the day a GitHub cron fires, for minute and hour fields of the forms
+// `*`, `N`, `*/S`, `N/S` and comma lists.
+function cronFiringMinutesOfDay(cron: string): number[] {
+  const [minuteField, hourField, ...rest] = cron.split(" ");
+  assert.deepEqual(rest, ["*", "*", "*"], cron);
+  const expand = (field: string, max: number) =>
+    field.split(",").flatMap((part) => {
+      const [range, step] = part.split("/");
+      const start = range === "*" ? 0 : Number(range);
+      const end = range === "*" || step ? max : start;
+      const values: number[] = [];
+      for (let value = start; value <= end; value += Number(step ?? 1)) values.push(value);
+      return values;
+    });
+  return expand(hourField!, 23).flatMap((hour) =>
+    expand(minuteField!, 59).map((minute) => hour * 60 + minute),
+  );
+}
+
+test("workflow schedules are distinct, every compared schedule fires, and fanout stays contained", () => {
+  const source = readText(".github/workflows/sweep.yml");
+  const workflow = YAML.parse(source) as {
     on: { schedule: Array<{ cron: string }> };
+    jobs: Record<string, { if?: string }>;
   };
   const schedules = workflow.on.schedule.map(({ cron }) => cron);
+  const compared = (text: string) =>
+    [...text.matchAll(/github\.event\.schedule == '([^']+)'/g)].map((match) => match[1]!);
 
-  assert.ok(schedules.includes("4/20 * * * *"));
-  assert.ok(!schedules.includes("4/5 * * * *"));
-  assert.ok(schedules.includes("*/5 * * * *"));
-  assert.ok(schedules.includes("2/5 * * * *"));
-  // Fleet normal fanout and the direct openclaw/openclaw normal planner each
-  // offer every 20 minutes on distinct cron strings.
-  assert.ok(schedules.includes("14/20 * * * *"));
-  assert.ok(schedules.includes("9/20 * * * *"));
-  for (const retired of ["41 * * * *", "1 * * * *", "1/5 * * * *", "41/10 * * * *"]) {
-    assert.ok(!schedules.includes(retired), retired);
-  }
   assert.equal(new Set(schedules).size, schedules.length);
-  assert.ok(schedules.includes("37 */6 * * *"));
+  // A branch on a schedule that is not registered never runs.
+  for (const cron of new Set(compared(source))) assert.ok(schedules.includes(cron), cron);
+  // Containment: each fleet fanout schedule fires at most once every twenty minutes.
+  const fanout = compared(workflow.jobs["target-fanout"]?.if ?? "");
+  assert.ok(fanout.length > 0);
+  for (const cron of fanout) {
+    const minutes = cronFiringMinutesOfDay(cron).sort((left, right) => left - right);
+    const gaps = minutes.map((minute, index) =>
+      index === 0 ? minute + 24 * 60 - minutes.at(-1)! : minute - minutes[index - 1]!,
+    );
+    assert.ok(Math.min(...gaps) >= 20, `${cron} fires every ${Math.min(...gaps)} minutes`);
+  }
 });
 
 test("review git info follows the checked-out target branch", () => {
