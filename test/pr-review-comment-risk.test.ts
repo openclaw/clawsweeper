@@ -797,7 +797,7 @@ test("pull request keep-open review comments allow multiple fix-before-merge opt
 
   assert.match(comment, /1\. \*\*Guard retries with delivery state \(recommended\)\*\*/);
   assert.match(comment, /2\. \*\*Disable fallback after partial sends\*\*/);
-  assert.match(comment, /@clawsweeper automerge/);
+  assert.doesNotMatch(comment, /@clawsweeper (?:automerge|autofix)/);
 });
 
 test("pull request keep-open review comments include pause or close when risk may outweigh value", () => {
