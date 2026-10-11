@@ -56,6 +56,7 @@ import {
   summarizeHostedReviewTrace,
   summarizeHostedMultilineFailure,
 } from "../scripts/hosted-review-canary-proof.mjs";
+import { withReviewRecord } from "./helpers.ts";
 
 test("hosted process identity handles an exiting process without hiding other read errors", (t) => {
   for (const code of ["ENOENT", "ESRCH", "EACCES", "EPERM", "EIO"]) {
@@ -2405,7 +2406,10 @@ test(
     const head = git("rev-parse", "HEAD");
     writeFileSync(
       join(recordsDir, "990001.md"),
-      `---\nnumber: 990001\nrepository: steipete/camsnap\ntype: pull_request\npull_head_sha: ${head}\n---\n\n## Live Proof\n\nStatus: recommended\n\nSurface: terminal\n\nTerminal completion: exit_zero\n\nReason: Exercise cleanup.\n\nPayoff: static_text\n\nPayoff justification: Text is sufficient.\n\nEntry: sleep 60\n\nSteps:\n\n- {"action":"expect_output","text":"never"}\n\n## Work Candidate\n\nCandidate: none\n`,
+      withReviewRecord(
+        `---\nnumber: 990001\nrepository: steipete/camsnap\ntype: pull_request\npull_head_sha: ${head}\n---\n\n## Live Proof\n\nStatus: recommended\n\nSurface: terminal\n\nTerminal completion: exit_zero\n\nReason: Exercise cleanup.\n\nPayoff: static_text\n\nPayoff justification: Text is sufficient.\n\nEntry: sleep 60\n\nSteps:\n\n- {"action":"expect_output","text":"never"}\n\n## Work Candidate\n\nCandidate: none\n`,
+        { decision: "keep_open", closeReason: "none" },
+      ),
     );
     const child = spawn(
       process.execPath,
