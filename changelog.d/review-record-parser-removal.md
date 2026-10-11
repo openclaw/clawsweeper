@@ -1,1 +1,1 @@
-- Remove the now-unreachable legacy report decision parsers and backfill converter after the typed-record-only cutover; retain host-owned lifecycle readers and the stored record format.
+- Remove legacy report decision parsers and the backfill converter after the typed-record-only cutover; retain only a revision-identity projection, host-owned lifecycle readers, and the stored record format.
