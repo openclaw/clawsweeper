@@ -399,7 +399,6 @@ test("dashboard polling ignores workflow snapshots without disabling other durab
     const env = {
       CLAWSWEEPER_REPO: "openclaw/clawsweeper",
       TARGET_REPOS: "openclaw/openclaw",
-      CLAWSWEEPER_DASHBOARD_WORKFLOW_SOURCE: "poll",
       CLAWSWEEPER_WEBHOOK_SECRET: "synthetic-polling-secret",
       EXACT_REVIEW_QUEUE: namespace,
       STATUS_STORE: new MemoryKv(),
@@ -441,7 +440,6 @@ test("polling job censuses preserve versioned caches, incomplete pages, and erro
     const store = new MemoryKv();
     let queueReads = 0;
     const env = {
-      CLAWSWEEPER_DASHBOARD_WORKFLOW_SOURCE: "poll",
       CLAWSWEEPER_WEBHOOK_SECRET: "synthetic-polling-secret",
       STATUS_STORE: store,
       EXACT_REVIEW_QUEUE: new MemoryDurableNamespace({
@@ -575,7 +573,7 @@ test("worker job cache requires an exact versioned total before claiming complet
   }
 });
 
-test("live worker job fetch versions complete cache and durable coverage", async () => {
+test("live worker job fetch versions its complete cache without repairing webhook state", async () => {
   const statusStore = new MemoryKv();
   let repairBody = null;
   const live = await workflowJobsForRunSnapshot(
@@ -609,8 +607,7 @@ test("live worker job fetch versions complete cache and durable coverage", async
   assert.equal(stored.schema_version, 2);
   assert.equal(stored.complete, true);
   assert.equal(stored.total_count, 1);
-  assert.equal(repairBody.workflow_job_census_version, 2);
-  assert.deepEqual(repairBody.complete_workflow_job_runs, [41]);
+  assert.equal(repairBody, null);
   const restarted = await workflowJobsForRunSnapshot(
     { STATUS_STORE: statusStore },
     "generated-owner/generated-repo",
@@ -674,11 +671,7 @@ test("live worker job fetch cannot claim a complete malformed or cross-run censu
     stored.jobs.map((job) => job.id),
     [2],
   );
-  assert.equal(repairBody.objects.length, 1);
-  assert.equal(repairBody.objects[0].runId, 41);
-  assert.equal("complete_workflow_job_runs" in repairBody, false);
-  assert.equal("workflow_job_census_started_at" in repairBody, false);
-  assert.equal("workflow_job_census_version" in repairBody, false);
+  assert.equal(repairBody, null);
 });
 
 test("live worker job fetch rejects malformed pages and ambiguous job identities", async () => {
@@ -747,15 +740,7 @@ test("live worker job fetch requires a strict stable total before completion", a
       String(await statusStore.get("workflow-jobs:generated-owner/generated-repo:41")),
     );
     assert.equal(stored.complete, false);
-    assert.equal(
-      repairBodies.some(
-        (body) =>
-          "complete_workflow_job_runs" in body ||
-          "workflow_job_census_started_at" in body ||
-          "workflow_job_census_version" in body,
-      ),
-      false,
-    );
+    assert.deepEqual(repairBodies, []);
   }
 
   const statusStore = new MemoryKv();
@@ -4104,150 +4089,138 @@ test("dashboard skips raw event persistence when the private status store is not
   }
 });
 
-for (const sources of [
-  [undefined, undefined],
-  [undefined, "webhook"],
-  ["poll", "poll"],
-  ["poll", "webhook"],
-]) {
-  test(`dashboard stale refresh coalescing respects workflow sources ${sources.join("/")}`, async () => {
-    const originalFetch = globalThis.fetch;
-    const originalCaches = globalThis.caches;
-    const cache = new MemoryCache();
-    Object.defineProperty(globalThis, "caches", {
-      configurable: true,
-      value: { default: cache },
-    });
-    await cache.put(
-      new Request("https://clawsweeper.openclaw.ai/api/status-cache/v7/_/stale"),
-      jsonResponse({
-        schema_version: 1,
-        generated_at: "2026-06-13T18:00:00Z",
-        source: {
-          clawsweeper_repo: "openclaw/clawsweeper",
-          target_repositories: ["openclaw/openclaw"],
-        },
-        fleet: { active_workflow_runs: 1 },
-        workers: [],
-        automatic_work: [],
-        pipeline: [{ id: "stale-row" }],
-        bay: {},
-        recent: {},
-        exact_review_queue: {
-          pending: 1,
-          dispatching: 1,
-          leased: 0,
-          handoff_health: { status: "stalled" },
-        },
-        diagnostics: { errors: [], exact_review_queue_error: null },
-      }),
-    );
-
-    const currentQueue = {
-      pending: 7,
-      dispatching: 0,
-      leased: 28,
-      storage_schema_version: 1,
-      handoff_health: {
-        status: "healthy",
-        reason: "handoff_current",
-        phases: {
-          pending: { count: 7 },
-          dispatching: { count: 0 },
-          leased: { count: 28 },
-        },
-      },
-    };
-    let queueReads = 0;
-    const exactReviewQueue = new MemoryDurableNamespace({
-      fetch: async () => {
-        queueReads += 1;
-        return jsonResponse(currentQueue);
-      },
-    });
-
-    let releaseFetch!: () => void;
-    const fetchGate = new Promise<void>((resolve) => {
-      releaseFetch = resolve;
-    });
-    let unfilteredRunRequests = 0;
-    globalThis.fetch = async (input) => {
-      const url = new URL(String(input));
-      await fetchGate;
-      if (url.pathname.includes("/actions/")) {
-        if (url.pathname.endsWith("/actions/runs") && !url.searchParams.has("status")) {
-          unfilteredRunRequests += 1;
-        }
-        return jsonResponse({ workflow_runs: [] });
-      }
-      if (url.pathname === "/search/issues") return jsonResponse({ items: [] });
-      if (url.pathname === "/repos/openclaw/openclaw/issues") return jsonResponse([]);
-      return new Response(JSON.stringify({ message: "not found" }), { status: 404 });
-    };
-
-    try {
-      const waitUntilPromises: Promise<unknown>[] = [];
-      const env = {
-        CLAWSWEEPER_REPO: "openclaw/clawsweeper",
-        CLAWSWEEPER_DASHBOARD_WORKFLOW_SOURCE: sources[0],
-        TARGET_REPOS: "openclaw/openclaw",
-        CACHE_TTL_SECONDS: "20",
-        EXACT_REVIEW_QUEUE: exactReviewQueue,
-      };
-      const context = {
-        waitUntil(promise: Promise<unknown>) {
-          waitUntilPromises.push(promise);
-        },
-      };
-      const caller = new AbortController();
-      const request = new Request("https://clawsweeper.openclaw.ai/api/status", {
-        signal: caller.signal,
-      });
-      const [first, second] = await Promise.all([
-        worker.fetch(
-          request,
-          { ...env, CLAWSWEEPER_DASHBOARD_WORKFLOW_SOURCE: sources[1] },
-          context,
-        ),
-        worker.fetch(request, env, context),
-      ]);
-
-      assert.equal(first.headers.get("x-clawsweeper-cache"), "stale");
-      assert.equal(second.headers.get("x-clawsweeper-cache"), "stale");
-      const firstStatus = await first.json();
-      const secondStatus = await second.json();
-      assert.equal(firstStatus.pipeline[0].id, undefined);
-      assert.equal(firstStatus.exact_review_queue.pending, 1);
-      assert.equal(firstStatus.exact_review_queue.handoff_health.status, "stalled");
-      assert.equal(firstStatus.freshness.state, "stale");
-      assert.equal(firstStatus.freshness.cache_state, "stale");
-      assert.equal(firstStatus.freshness.maximum_age_ms, 20_000);
-      assert.equal(secondStatus.exact_review_queue.handoff_health.status, "stalled");
-      assert.equal(queueReads, 0);
-      const refreshes = sources[0] === "poll" && sources[1] === "webhook" ? 2 : 1;
-      assert.equal(waitUntilPromises.length, refreshes, "each refresh owns its Worker lifetime");
-
-      caller.abort();
-      releaseFetch();
-      await Promise.all(waitUntilPromises);
-      assert.equal(unfilteredRunRequests, refreshes);
-      assert.equal(queueReads, 3 * refreshes);
-
-      const refreshed = await worker.fetch(request, env);
-      assert.equal(refreshed.headers.get("x-clawsweeper-cache"), "fresh");
-      const refreshedStatus = await refreshed.json();
-      assert.deepEqual(refreshedStatus.pipeline, []);
-      assert.equal(refreshedStatus.freshness.state, "fresh");
-      assert.equal(refreshedStatus.freshness.cache_state, "fresh");
-      assert.equal(refreshedStatus.exact_review_queue.pending, 7);
-      assert.equal(refreshedStatus.exact_review_queue.handoff_health.status, "healthy");
-      assert.equal(queueReads, 3 * refreshes);
-    } finally {
-      globalThis.fetch = originalFetch;
-      Object.defineProperty(globalThis, "caches", { configurable: true, value: originalCaches });
-    }
+test("dashboard stale refresh coalesces concurrent polling requests", async () => {
+  const originalFetch = globalThis.fetch;
+  const originalCaches = globalThis.caches;
+  const cache = new MemoryCache();
+  Object.defineProperty(globalThis, "caches", {
+    configurable: true,
+    value: { default: cache },
   });
-}
+  await cache.put(
+    new Request("https://clawsweeper.openclaw.ai/api/status-cache/v7/_/stale"),
+    jsonResponse({
+      schema_version: 1,
+      generated_at: "2026-06-13T18:00:00Z",
+      source: {
+        clawsweeper_repo: "openclaw/clawsweeper",
+        target_repositories: ["openclaw/openclaw"],
+      },
+      fleet: { active_workflow_runs: 1 },
+      workers: [],
+      automatic_work: [],
+      pipeline: [{ id: "stale-row" }],
+      bay: {},
+      recent: {},
+      exact_review_queue: {
+        pending: 1,
+        dispatching: 1,
+        leased: 0,
+        handoff_health: { status: "stalled" },
+      },
+      diagnostics: { errors: [], exact_review_queue_error: null },
+    }),
+  );
+
+  const currentQueue = {
+    pending: 7,
+    dispatching: 0,
+    leased: 28,
+    storage_schema_version: 1,
+    handoff_health: {
+      status: "healthy",
+      reason: "handoff_current",
+      phases: {
+        pending: { count: 7 },
+        dispatching: { count: 0 },
+        leased: { count: 28 },
+      },
+    },
+  };
+  let queueReads = 0;
+  const exactReviewQueue = new MemoryDurableNamespace({
+    fetch: async () => {
+      queueReads += 1;
+      return jsonResponse(currentQueue);
+    },
+  });
+
+  let releaseFetch!: () => void;
+  const fetchGate = new Promise<void>((resolve) => {
+    releaseFetch = resolve;
+  });
+  let unfilteredRunRequests = 0;
+  globalThis.fetch = async (input) => {
+    const url = new URL(String(input));
+    await fetchGate;
+    if (url.pathname.includes("/actions/")) {
+      if (url.pathname.endsWith("/actions/runs") && !url.searchParams.has("status")) {
+        unfilteredRunRequests += 1;
+      }
+      return jsonResponse({ workflow_runs: [] });
+    }
+    if (url.pathname === "/search/issues") return jsonResponse({ items: [] });
+    if (url.pathname === "/repos/openclaw/openclaw/issues") return jsonResponse([]);
+    return new Response(JSON.stringify({ message: "not found" }), { status: 404 });
+  };
+
+  try {
+    const waitUntilPromises: Promise<unknown>[] = [];
+    const env = {
+      CLAWSWEEPER_REPO: "openclaw/clawsweeper",
+      TARGET_REPOS: "openclaw/openclaw",
+      CACHE_TTL_SECONDS: "20",
+      EXACT_REVIEW_QUEUE: exactReviewQueue,
+    };
+    const context = {
+      waitUntil(promise: Promise<unknown>) {
+        waitUntilPromises.push(promise);
+      },
+    };
+    const caller = new AbortController();
+    const request = new Request("https://clawsweeper.openclaw.ai/api/status", {
+      signal: caller.signal,
+    });
+    const [first, second] = await Promise.all([
+      worker.fetch(request, env, context),
+      worker.fetch(request, env, context),
+    ]);
+
+    assert.equal(first.headers.get("x-clawsweeper-cache"), "stale");
+    assert.equal(second.headers.get("x-clawsweeper-cache"), "stale");
+    const firstStatus = await first.json();
+    const secondStatus = await second.json();
+    assert.equal(firstStatus.pipeline[0].id, undefined);
+    assert.equal(firstStatus.exact_review_queue.pending, 1);
+    assert.equal(firstStatus.exact_review_queue.handoff_health.status, "stalled");
+    assert.equal(firstStatus.freshness.state, "stale");
+    assert.equal(firstStatus.freshness.cache_state, "stale");
+    assert.equal(firstStatus.freshness.maximum_age_ms, 20_000);
+    assert.equal(secondStatus.exact_review_queue.handoff_health.status, "stalled");
+    assert.equal(queueReads, 0);
+    const refreshes = 1;
+    assert.equal(waitUntilPromises.length, refreshes, "each refresh owns its Worker lifetime");
+
+    caller.abort();
+    releaseFetch();
+    await Promise.all(waitUntilPromises);
+    assert.equal(unfilteredRunRequests, refreshes);
+    assert.equal(queueReads, 3 * refreshes);
+
+    const refreshed = await worker.fetch(request, env);
+    assert.equal(refreshed.headers.get("x-clawsweeper-cache"), "fresh");
+    const refreshedStatus = await refreshed.json();
+    assert.deepEqual(refreshedStatus.pipeline, []);
+    assert.equal(refreshedStatus.freshness.state, "fresh");
+    assert.equal(refreshedStatus.freshness.cache_state, "fresh");
+    assert.equal(refreshedStatus.exact_review_queue.pending, 7);
+    assert.equal(refreshedStatus.exact_review_queue.handoff_health.status, "healthy");
+    assert.equal(queueReads, 3 * refreshes);
+  } finally {
+    globalThis.fetch = originalFetch;
+    Object.defineProperty(globalThis, "caches", { configurable: true, value: originalCaches });
+  }
+});
 
 test("dashboard status survives cache persistence failures", async () => {
   const originalFetch = globalThis.fetch;

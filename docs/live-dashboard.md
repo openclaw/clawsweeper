@@ -157,14 +157,12 @@ is absent or a cache event lands in another Cloudflare colo.
 
 ### Workflow health source
 
-The deployment sets `CLAWSWEEPER_DASHBOARD_WORKFLOW_SOURCE=poll` to collect
-workflow health through the existing bounded GitHub run/job polls. It skips
-workflow read-model reads, repairs, and missing-subscription warnings even when
-the shared webhook signing secret is configured. Unset or `webhook` retains
-the existing webhook-first behavior. Snapshot and job-cache TTLs, pagination,
-freshness, genuine GitHub errors, and the public Bay contract are unchanged.
-Changing source does not flush persisted snapshots; normal expiry refreshes
-them. Concurrent refreshes with different resolved sources do not coalesce.
+Workflow health uses bounded GitHub run/job polling exclusively. The retired
+workflow-source setting is no longer read. Workflow read-model reads, repairs,
+and missing-subscription warnings are not part of dashboard health, even when
+the shared webhook signing secret is configured. Snapshot and job-cache TTLs,
+pagination, freshness, genuine GitHub errors, and the public Bay contract are
+unchanged.
 
 ## What It Shows
 

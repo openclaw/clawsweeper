@@ -29,14 +29,12 @@ Subscription readiness is detected per event class. A class remains unavailable 
 
 ### Dashboard workflow source
 
-`CLAWSWEEPER_DASHBOARD_WORKFLOW_SOURCE=poll` selects the existing bounded
-GitHub run/job polls for dashboard health. This deployment selects `poll` in
-`dashboard/wrangler.toml`; it neither reads nor repairs the workflow read model
-and does not warn about missing workflow subscriptions. Leaving the setting
-unset, or setting `webhook`, preserves snapshot reuse, fallback warnings, and
-repair. The shared signing secret remains required for those read-model calls.
-Item/comment consumers, signed ingress, queue operations, and ETag caching are
-unchanged. Poll mode does not require new GitHub App event subscriptions.
+Dashboard workflow health always uses bounded GitHub run/job polling. The
+retired workflow-source setting is no longer read: dashboard health neither
+reads nor repairs workflow webhook snapshots and does not warn about missing
+workflow subscriptions. Item/comment consumers, signed ingress, queue
+operations, and ETag caching are unchanged. Dashboard polling does not require
+new GitHub App event subscriptions.
 
 ## Stored schema and bounds
 
@@ -70,25 +68,16 @@ source digest; the live head-drift and mutation guards are unchanged.
 
 Publisher-authenticated POST routes live below `/internal/state/github-read-model/`: `item`, `comments`, `activity`, `workflows`, `placeholders`, and `repair`. Authentication uses the same body HMAC as the other automated queue data-plane routes. Responses carry `watermark`, per-class subscription state, `freshness`, and `usable`; callers must not infer freshness from a successful HTTP response alone.
 
-The migrated consumers are exact-item review planning, dashboard workflow-run/job health, review-placeholder discovery, and repair-loop comment hydration in the comment router. Each retains a bounded repair poll. The dashboard's composed live snapshot TTL is 60 seconds; webhook workflow state is independently capped at 5 minutes.
+The consumers are exact-item review planning, review-placeholder discovery,
+and repair-loop comment hydration in the comment router. Each retains a bounded
+repair poll. Dashboard workflow health instead uses GitHub polling exclusively.
 
-Workflow rows alone never establish completeness. Dashboard run snapshots require a persisted successful bounded run census, and job snapshots require fresh complete coverage for each run before that run can avoid its live job poll. Census repair removes older rows absent from the authoritative result while preserving webhook rows received after the census began.
+Stored workflow rows alone never establish completeness. Workflow read-model
+snapshots require a persisted successful bounded run census, and job snapshots
+require fresh complete coverage for each run. Census repair removes older rows
+absent from the authoritative result while preserving webhook rows received
+after the census began.
 
-Each workflow-run row also exposes its last delivery-or-poll confirmation time.
-Before an over-threshold queued row with an expired confirmation can affect
-operational health, the dashboard re-reads that exact run from GitHub. Each
-20-second status refresh checks at most the ten oldest stale rows, which keeps
-the work to two five-way request waves. Unconfirmed rows omitted from that
-batch are excluded from queue pressure and make health `unknown`; later
-refreshes continue with the next-oldest rows. Structured
-`github_read_model_workflow_run_revalidation_batch` telemetry records the batch
-limit, selected count, and omitted count. A live active run refreshes the row;
-a completed or missing run is evicted with
-`github_read_model_workflow_run_evicted` telemetry. If exact verification
-fails, operational health is `unknown` rather than reporting an unconfirmed
-queued run. The eviction is bounded by the verification start time so a newer
-webhook delivery cannot be deleted by the repair. Rows beyond the existing
-24-hour zombie boundary remain separately observable without exact rechecks.
 
 Publisher-HMAC remains the normal automated read credential. Exact-review planning intentionally does not receive that shared secret; its item read instead uses the already-issued full lease tuple as a scoped capability. The queue accepts that capability only for the tuple's live leased repository and item, and it cannot write or repair the read model.
 

@@ -68,8 +68,6 @@ import {
 import {
   HEALTH_HISTORY_RETENTION_DAYS,
   HEALTH_HISTORY_SAMPLE_MS,
-  OPERATIONAL_QUEUE_DEGRADED_MS,
-  OPERATIONAL_QUEUE_ZOMBIE_MS,
   exactReviewHistorySample,
   mergeHealthHistorySample,
   normalizeHealthHistorySample,
@@ -151,7 +149,6 @@ import {
   type SnapshotUploadOperation,
 } from "./record-snapshot-uploads.ts";
 import {
-  GITHUB_WEBHOOK_READ_MODEL_WORKFLOW_TTL_MS,
   githubWebhookReadModelDeliveryFromWebhook,
   type GithubWebhookReadModelDelivery,
 } from "./github-webhook-read-model.ts";
@@ -169,7 +166,6 @@ export {
 
 const ACTIVE_RUN_STATUSES = new Set(["queued", "in_progress", "waiting", "requested", "pending"]);
 const QUEUED_RUN_STATUSES = new Set(["queued", "waiting", "requested", "pending"]);
-const OPERATIONAL_QUEUED_RUN_STATUSES = new Set(["queued", "requested", "pending"]);
 type DashboardContext = { waitUntil?: (promise: Promise<unknown>) => void };
 type GithubJsonReader = (path: string) => ReturnType<typeof githubJson>;
 type StoredValue = {
@@ -473,12 +469,8 @@ class FastAckLookupLimitError extends Error {
   }
 }
 const inFlightFastAcks = new Map();
-let githubReadModelDashboardFallbackReported = false;
 const CLAWSWEEPER_WEBHOOK_DENY_REPOS = new Set(["openclaw/clawsweeper-state", "openclaw/.github"]);
 const OPTIONAL_SECTION_TIMEOUT_MS = 6000;
-// Ten exact reads are two five-way waves: below the 20-second status refresh
-// cadence even at the 4.5-second GitHub timeout, while healing up to 30 rows/minute.
-const STALE_WORKFLOW_HEALTH_RECHECK_BATCH_SIZE = 10;
 const STALE_CACHE_TTL_SECONDS = 900;
 const CI_STATUS_TTL_SECONDS = 7200;
 const WORKER_JOB_CACHE_TTL_SECONDS = 60;
@@ -3613,7 +3605,6 @@ function refreshStatus(request, env, ctx?: DashboardContext, deadline?: number) 
   const key = [
     new URL(request.url).origin,
     env.CLAWSWEEPER_REPO || "openclaw/clawsweeper",
-    dashboardWorkflowSource(env),
     env.TARGET_REPOS || "openclaw/openclaw",
     env.PUBLIC_BAY_REPOS || "",
     env.CLAWSWEEPER_STATE_REPO || CLAWSWEEPER_STATE_REPO,
@@ -4369,248 +4360,6 @@ async function materializeGithubWebhookReadModel(
   if (!response.ok) {
     throw new Error(`github read-model ingest returned ${response.status}`);
   }
-}
-
-async function githubWebhookReadModelQueuePost(
-  env: DashboardEnv,
-  operation: "workflows" | "repair",
-  body: Record<string, unknown>,
-): Promise<Record<string, unknown> | null> {
-  const response = await exactReviewQueueRequest(
-    env,
-    `/github-read-model/${operation}`,
-    new Request(`https://clawsweeper-exact-review-queue/github-read-model/${operation}`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(body),
-    }),
-  );
-  if (!response.ok) return null;
-  return objectValue(await response.json().catch(() => null));
-}
-
-function dashboardWorkflowSource(env: DashboardEnv): "poll" | "webhook" {
-  // The shared signing secret also serves unrelated queue and ingress routes.
-  // Its presence does not mean this dashboard consumes workflow webhooks.
-  return stringEnv(env.CLAWSWEEPER_DASHBOARD_WORKFLOW_SOURCE) === "poll" ? "poll" : "webhook";
-}
-
-function githubWebhookReadModelWorkflowObject(
-  repository: string,
-  kind: "workflow_run" | "workflow_job",
-  value: unknown,
-): Record<string, unknown> | null {
-  const source = objectValue(value);
-  const id = Number(source.id);
-  const sourceUpdatedAt = exactWebhookTimestamp(
-    source.updated_at || source.completed_at || source.started_at || source.created_at,
-  );
-  if (!Number.isSafeInteger(id) || id <= 0 || !sourceUpdatedAt) return null;
-  const runId = kind === "workflow_run" ? id : Number(source.run_id);
-  return {
-    kind,
-    repository: repository.toLowerCase(),
-    id,
-    runId: Number.isSafeInteger(runId) && runId > 0 ? runId : null,
-    sourceUpdatedAt,
-    snapshot: source,
-  };
-}
-
-function reportGithubReadModelDashboardFallback(snapshot: Record<string, unknown> | null): void {
-  if (githubReadModelDashboardFallbackReported) return;
-  githubReadModelDashboardFallbackReported = true;
-  const classState = objectValue(snapshot?.class_state);
-  const sourceReason = String(classState.reason || "");
-  const reason = ["observed", "never_observed"].includes(sourceReason)
-    ? sourceReason
-    : snapshot
-      ? "snapshot_stale_or_gap"
-      : "unavailable";
-  console.warn(
-    JSON.stringify({
-      event: "github_read_model_degraded",
-      consumer: "dashboard_workflow_health",
-      event_class: "workflow_runs",
-      reason,
-      probe_window_elapsed: classState.probe_window_elapsed === true,
-      fallback: "live_poll",
-    }),
-  );
-}
-
-async function revalidateStaleWorkflowHealthRuns({
-  env,
-  repo,
-  runs,
-  observations,
-  checkedAt,
-  github,
-}: {
-  env: DashboardEnv;
-  repo: string;
-  runs: unknown[];
-  observations: unknown[];
-  checkedAt: string;
-  github: GithubJsonReader;
-}): Promise<{ runs: unknown[]; errors: string[] }> {
-  const checkedAtMs = Date.parse(checkedAt);
-  const now = Number.isFinite(checkedAtMs) ? checkedAtMs : Date.now();
-  const confirmedAtByRun = new Map(
-    observations.flatMap((value) => {
-      const observation = objectValue(value);
-      const runId = Number(observation.run_id);
-      const confirmedAt = Date.parse(String(observation.confirmed_at || ""));
-      return Number.isSafeInteger(runId) && runId > 0 && Number.isFinite(confirmedAt)
-        ? ([[runId, confirmedAt]] as const)
-        : [];
-    }),
-  );
-  const candidates = runs
-    .filter((value) => {
-      const run = objectValue(value);
-      if (!OPERATIONAL_QUEUED_RUN_STATUSES.has(String(run.status || ""))) return false;
-      const createdAt = Date.parse(String(run.created_at || ""));
-      if (!Number.isFinite(createdAt) || now - createdAt < OPERATIONAL_QUEUE_DEGRADED_MS) {
-        return false;
-      }
-      if (now - createdAt > OPERATIONAL_QUEUE_ZOMBIE_MS) return false;
-      const confirmedAt = confirmedAtByRun.get(Number(run.id));
-      return (
-        confirmedAt === undefined || now - confirmedAt > GITHUB_WEBHOOK_READ_MODEL_WORKFLOW_TTL_MS
-      );
-    })
-    .sort((left, right) => {
-      const leftRun = objectValue(left);
-      const rightRun = objectValue(right);
-      return (
-        Date.parse(String(leftRun.created_at || "")) -
-          Date.parse(String(rightRun.created_at || "")) || Number(leftRun.id) - Number(rightRun.id)
-      );
-    });
-  if (candidates.length === 0) return { runs, errors: [] };
-  const recheckBatch = candidates.slice(0, STALE_WORKFLOW_HEALTH_RECHECK_BATCH_SIZE);
-  const omittedCandidates = new Set(candidates.slice(STALE_WORKFLOW_HEALTH_RECHECK_BATCH_SIZE));
-  console.warn(
-    JSON.stringify({
-      event: "github_read_model_workflow_run_revalidation_batch",
-      consumer: "dashboard_workflow_health",
-      candidate_count: candidates.length,
-      batch_limit: STALE_WORKFLOW_HEALTH_RECHECK_BATCH_SIZE,
-      batch_size: recheckBatch.length,
-      omitted_count: omittedCandidates.size,
-    }),
-  );
-
-  const outcomes = await mapWithConcurrency(
-    recheckBatch,
-    5,
-    async (value) => {
-      const snapshotRun = objectValue(value);
-      const runId = Number(snapshotRun.id);
-      if (!Number.isSafeInteger(runId) || runId <= 0) {
-        return { runId, error: "snapshot run has no valid id" };
-      }
-      const verificationStartedAt = new Date().toISOString();
-      try {
-        const liveRun = objectValue(await github(`/repos/${repo}/actions/runs/${runId}`));
-        if (Number(liveRun.id) !== runId) {
-          return { runId, error: "live workflow response id mismatch" };
-        }
-        if (isActiveWorkflowRun(liveRun)) {
-          const object = githubWebhookReadModelWorkflowObject(repo, "workflow_run", liveRun);
-          if (object) {
-            await githubWebhookReadModelQueuePost(env, "repair", {
-              repository: repo,
-              repair_kind: "workflows",
-              objects: [object],
-            }).catch(() => null);
-          }
-          return { runId, liveRun };
-        }
-        const repair = await githubWebhookReadModelQueuePost(env, "repair", {
-          repository: repo,
-          repair_kind: "workflows",
-          workflow_run_verification_started_at: verificationStartedAt,
-          evict_workflow_run_ids: [runId],
-          objects: [],
-        }).catch(() => null);
-        const verdict = String(liveRun.status || "completed");
-        reportGithubReadModelWorkflowRunEvicted({
-          snapshotRun,
-          verdict,
-          evicted: Number(repair?.evicted_workflow_runs || 0) > 0,
-        });
-        return { runId, evicted: true };
-      } catch (error) {
-        if (/GitHub 404 for /.test(String(error instanceof Error ? error.message : error))) {
-          const repair = await githubWebhookReadModelQueuePost(env, "repair", {
-            repository: repo,
-            repair_kind: "workflows",
-            workflow_run_verification_started_at: verificationStartedAt,
-            evict_workflow_run_ids: [runId],
-            objects: [],
-          }).catch(() => null);
-          reportGithubReadModelWorkflowRunEvicted({
-            snapshotRun,
-            verdict: "absent",
-            evicted: Number(repair?.evicted_workflow_runs || 0) > 0,
-          });
-          return { runId, evicted: true };
-        }
-        return { runId, error: error instanceof Error ? error.message : String(error) };
-      }
-    },
-    statusRequestSignal(env),
-  );
-  const byRunId = new Map(outcomes.map((outcome) => [outcome.runId, outcome]));
-  return {
-    runs: runs.flatMap((value) => {
-      if (omittedCandidates.has(value)) return [];
-      const outcome = byRunId.get(Number(objectValue(value).id));
-      if (!outcome) return [value];
-      if (outcome.error || outcome.evicted) return [];
-      return outcome.liveRun ? [outcome.liveRun] : [];
-    }),
-    errors: [
-      ...(omittedCandidates.size > 0
-        ? [
-            `workflow run reverify omitted ${omittedCandidates.size} stale candidates after batch ${recheckBatch.length}`,
-          ]
-        : []),
-      ...outcomes.flatMap((outcome) =>
-        outcome.error ? [`workflow run ${outcome.runId} reverify: ${outcome.error}`] : [],
-      ),
-    ],
-  };
-}
-
-function reportGithubReadModelWorkflowRunEvicted({ snapshotRun, verdict, evicted }) {
-  const snapshotStatus = String(snapshotRun.status || "");
-  const publicSnapshotStatus = ["queued", "in_progress", "pending", "waiting"].includes(
-    snapshotStatus,
-  )
-    ? snapshotStatus
-    : "unknown";
-  const publicVerdict = [
-    "queued",
-    "in_progress",
-    "pending",
-    "waiting",
-    "completed",
-    "absent",
-  ].includes(String(verdict || ""))
-    ? String(verdict)
-    : "unknown";
-  console.warn(
-    JSON.stringify({
-      event: "github_read_model_workflow_run_evicted",
-      consumer: "dashboard_workflow_health",
-      snapshot_status: publicSnapshotStatus,
-      verdict: publicVerdict,
-      read_model_evicted: evicted,
-    }),
-  );
 }
 
 function bayJourneyTriggerFromGithubWebhook({
@@ -7894,55 +7643,18 @@ async function statusSnapshot(env) {
     .filter(Boolean);
   const budget = numberFrom(env.WORKER_BUDGET, 32);
   const activeRunErrors = [];
-  const useWorkflowReadModel = dashboardWorkflowSource(env) === "webhook";
-  const workflowReadModel =
-    useWorkflowReadModel && stringEnv(env.CLAWSWEEPER_WEBHOOK_SECRET)
-      ? await githubWebhookReadModelQueuePost(env, "workflows", {
-          repository: repo,
-        }).catch(() => null)
-      : null;
-  const workflowReadModelUsable = workflowReadModel?.usable === true;
-  if (useWorkflowReadModel && !workflowReadModelUsable) {
-    reportGithubReadModelDashboardFallback(workflowReadModel);
-  }
-  let runs;
-  let completedRuns;
-  let activeRunCandidates;
-  let operationalRunCandidates;
-  if (workflowReadModelUsable) {
-    const reconciled = await revalidateStaleWorkflowHealthRuns({
-      env,
-      repo,
-      runs: Array.isArray(workflowReadModel.runs) ? workflowReadModel.runs : [],
-      observations: Array.isArray(workflowReadModel.run_observations)
-        ? workflowReadModel.run_observations
-        : [],
-      checkedAt: generatedAt,
-      github,
-    });
-    activeRunErrors.push(...reconciled.errors);
-    runs = { workflow_runs: reconciled.runs };
-    completedRuns = {
-      workflow_runs: reconciled.runs.filter((run) => objectValue(run).status === "completed"),
-    };
-    activeRunCandidates = reconciled.runs.filter((run) => isActiveWorkflowRun(run));
-    operationalRunCandidates = reconciled.runs.filter((run) =>
-      ACTIVE_RUN_STATUSES.has(String(objectValue(run).status || "")),
-    );
-  } else {
-    [runs, completedRuns, activeRunCandidates] = await Promise.all([
-      github(`/repos/${repo}/actions/runs?per_page=100`).catch((error) => {
-        errors.push(`workflow runs: ${error.message}`);
-        return null;
-      }),
-      github(`/repos/${repo}/actions/runs?status=completed&per_page=100`).catch((error) => {
-        errors.push(`workflow runs completed: ${error.message}`);
-        return null;
-      }),
-      activeWorkflowRunCandidates(env, repo, activeRunErrors, github),
-    ]);
-    operationalRunCandidates = activeRunCandidates;
-  }
+  const [runs, completedRuns, activeRunCandidates] = await Promise.all([
+    github(`/repos/${repo}/actions/runs?per_page=100`).catch((error) => {
+      errors.push(`workflow runs: ${error.message}`);
+      return null;
+    }),
+    github(`/repos/${repo}/actions/runs?status=completed&per_page=100`).catch((error) => {
+      errors.push(`workflow runs completed: ${error.message}`);
+      return null;
+    }),
+    activeWorkflowRunCandidates(env, repo, activeRunErrors, github),
+  ]);
+  const operationalRunCandidates = activeRunCandidates;
   errors.push(...activeRunErrors);
   const workflowRuns = Array.isArray(runs?.workflow_runs) ? runs.workflow_runs : [];
   const completedWorkflowRuns = uniqueWorkflowRuns([
@@ -7953,33 +7665,6 @@ async function statusSnapshot(env) {
     ...activeRunCandidates.filter((run) => isActiveWorkflowRun(run)),
     ...workflowRuns.filter((run) => isActiveWorkflowRun(run)),
   ]).sort(newestWorkflowRunFirst);
-  if (
-    useWorkflowReadModel &&
-    !workflowReadModelUsable &&
-    stringEnv(env.CLAWSWEEPER_WEBHOOK_SECRET)
-  ) {
-    const objects = uniqueWorkflowRuns([
-      ...workflowRuns,
-      ...completedWorkflowRuns,
-      ...activeRuns,
-    ]).flatMap((run) => {
-      const object = githubWebhookReadModelWorkflowObject(repo, "workflow_run", run);
-      return object ? [object] : [];
-    });
-    if (objects.length > 0) {
-      await githubWebhookReadModelQueuePost(env, "repair", {
-        repository: repo,
-        repair_kind: "workflows",
-        ...(runs && completedRuns && activeRunErrors.length === 0
-          ? {
-              workflow_run_census_complete: true,
-              workflow_run_census_started_at: generatedAt,
-            }
-          : {}),
-        objects,
-      }).catch(() => null);
-    }
-  }
   const workerRuns = activeRuns.filter((run) => !isSupportWorkflowRun(run));
   const supportRuns = activeRuns.filter((run) => isSupportWorkflowRun(run));
   const controlPlane = controlPlaneSnapshot(activeRuns);
@@ -7995,26 +7680,11 @@ async function statusSnapshot(env) {
       isCodexWorkflowFallback(run) &&
       TERMINAL_BAD_CONCLUSIONS.has(String(run.conclusion)),
   );
-  const readModelJobs =
-    workflowReadModel?.jobs_usable === true && Array.isArray(workflowReadModel?.jobs)
-      ? {
-          jobs: workflowReadModel.jobs as unknown[],
-          coveredRunIds: new Set<number>(
-            (Array.isArray(workflowReadModel.job_coverage_run_ids)
-              ? workflowReadModel.job_coverage_run_ids
-              : []
-            )
-              .map((value) => Number(value))
-              .filter((value) => Number.isSafeInteger(value) && value > 0),
-          ),
-        }
-      : undefined;
   const activeJobs = await activeWorkerSnapshot(
     env,
     repo,
     workerRuns,
     github,
-    readModelJobs,
     activeRunErrors.length === 0,
   );
   statusCollections.get(env)?.check();
@@ -8029,7 +7699,7 @@ async function statusSnapshot(env) {
     storedEvents,
   ] = await Promise.all([
     withTimeout(
-      recentWorkerHealth(env, repo, completedWorkflowRuns, github, readModelJobs),
+      recentWorkerHealth(env, repo, completedWorkflowRuns, github),
       workerHealthSectionTimeoutMs(
         workerHealthFetchConcurrency(env),
         env.WORKER_HEALTH_SECTION_TIMEOUT_MS,
@@ -8965,7 +8635,6 @@ async function activeWorkerSnapshot(
   repo,
   runs,
   github: GithubJsonReader = (path) => githubJson(env, path),
-  readModelJobs?: { jobs: unknown[]; coveredRunIds: Set<number> },
   runCensusComplete = false,
 ) {
   const detailRunLimit = Math.max(
@@ -8982,14 +8651,7 @@ async function activeWorkerSnapshot(
     fetchConcurrency,
     async (run) => {
       try {
-        const jobSnapshot = await workflowJobsForRunSnapshot(
-          env,
-          repo,
-          run.id,
-          github,
-          run,
-          readModelJobs,
-        );
+        const jobSnapshot = await workflowJobsForRunSnapshot(env, repo, run.id, github, run);
         const jobs = jobSnapshot.jobs;
         const activeJobs = jobs.filter((job) => isActiveWorkflowJob(job));
         return {
@@ -9088,7 +8750,6 @@ async function recentWorkerHealth(
   repo,
   runs: WorkflowRunSummary[],
   github: GithubJsonReader = (path) => githubJson(env, path),
-  readModelJobs?: { jobs: unknown[]; coveredRunIds: Set<number> },
 ) {
   const cacheKey = `worker-health:v3:${String(repo || "").toLowerCase()}`;
   const cached = await readStoredJson(env, cacheKey);
@@ -9102,7 +8763,7 @@ async function recentWorkerHealth(
     async (run) => {
       try {
         return {
-          attempts: (await workflowJobsForRun(env, repo, run.id, github, run, readModelJobs))
+          attempts: (await workflowJobsForRun(env, repo, run.id, github, run))
             .filter((job) => isCodexWorkerJob(job))
             .map((job) => workerHealthAttempt(run, job))
             .filter(Boolean),
@@ -10449,9 +10110,8 @@ async function workflowJobsForRun(
   runId,
   github: GithubJsonReader = (path) => githubJson(env, path),
   run?: WorkflowRunSummary,
-  readModelJobs?: { jobs: unknown[]; coveredRunIds: Set<number> },
 ) {
-  return (await workflowJobsForRunSnapshot(env, repo, runId, github, run, readModelJobs)).jobs;
+  return (await workflowJobsForRunSnapshot(env, repo, runId, github, run)).jobs;
 }
 
 function boundedWorkflowJobCensus(value: unknown, runId, claimedComplete: boolean) {
@@ -10484,15 +10144,7 @@ export async function workflowJobsForRunSnapshot(
   runId,
   github: GithubJsonReader = (path) => githubJson(env, path),
   run?: WorkflowRunSummary,
-  readModelJobs?: { jobs: unknown[]; coveredRunIds: Set<number> },
 ) {
-  if (readModelJobs?.coveredRunIds.has(Number(runId))) {
-    return boundedWorkflowJobCensus(
-      readModelJobs.jobs.filter((job) => Number(objectValue(job).run_id) === Number(runId)),
-      runId,
-      true,
-    );
-  }
   const key = `workflow-jobs:${repo}:${runId}`;
   const cached = await readStoredJson(env, key);
   if (Array.isArray(cached)) return boundedWorkflowJobCensus(cached, runId, false);
@@ -10520,7 +10172,6 @@ export async function workflowJobsForRunSnapshot(
   const jobs = [];
   let complete = false;
   let expectedTotalCount: number | null = null;
-  const jobCensusStartedAt = new Date().toISOString();
   for (let page = 1; page <= WORKER_JOB_PAGE_LIMIT; page += 1) {
     const payload = await github(
       `/repos/${repo}/actions/runs/${runId}/jobs?filter=latest&per_page=100&page=${page}`,
@@ -10561,24 +10212,6 @@ export async function workflowJobsForRunSnapshot(
       ? numberFrom(env.WORKER_JOB_CACHE_TTL_SECONDS, WORKER_JOB_CACHE_TTL_SECONDS)
       : WORKER_JOB_IDLE_CACHE_TTL_SECONDS,
   );
-  const repairObjects = census.jobs.flatMap((job) => {
-    const object = githubWebhookReadModelWorkflowObject(repo, "workflow_job", job);
-    return object ? [object] : [];
-  });
-  if (
-    dashboardWorkflowSource(env) === "webhook" &&
-    (repairObjects.length > 0 || census.complete) &&
-    stringEnv(env.CLAWSWEEPER_WEBHOOK_SECRET)
-  ) {
-    await githubWebhookReadModelQueuePost(env, "repair", {
-      repository: repo,
-      repair_kind: "workflows",
-      ...(census.complete ? { complete_workflow_job_runs: [Number(runId)] } : {}),
-      ...(census.complete ? { workflow_job_census_started_at: jobCensusStartedAt } : {}),
-      ...(census.complete ? { workflow_job_census_version: 2 } : {}),
-      objects: repairObjects,
-    }).catch(() => null);
-  }
   return census;
 }
 
