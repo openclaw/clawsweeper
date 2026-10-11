@@ -125,6 +125,12 @@ confidential-identifier checks as every other durable machine-text field.
   workflow run and bounded before another dispatch.
 - Mutation events require an explicit business `idempotencyIdentity`; outcome
   status and failure reason never define side-effect identity.
+- Review and apply share the mutation-attempt recorder: it owns receipt hashes,
+  causal parent links, attempt counts, and accepted/rejected/unknown outcomes.
+  Their business identities remain separate: review binds coordination writes to
+  the observed item update, while apply binds writes to the source revision,
+  review content, and decision packet. Each caller retains its own phase,
+  subject, operation identity, and mutation bookkeeping.
 - Review operation identity binds each selected item's repository, kind, number,
   and observed `updated_at`, while item starts are written only when processing
   actually begins. Apply operation identity may retain checkpoint and batch

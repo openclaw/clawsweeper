@@ -553,6 +553,16 @@ test("apply ledger starts items lazily and chains every receipt in phase order",
       "label_create:P1",
     );
     assert.ok(receipt);
+    assert.deepEqual(receipt.idempotencyIdentity, {
+      ...receipt.state.businessIdentity,
+      slot: "apply_mutation",
+      mutationIdentitySha256: createHash("sha256").update("label_create:P1").digest("hex"),
+    });
+    assert.equal(receipt.mutationIndex, attempt - 1);
+    assert.equal(
+      receipt.receiptIdentitySha256,
+      createHash("sha256").update(`label_create:P1:request_attempt:${attempt}`).digest("hex"),
+    );
     applyLedger.finishApplyMutationAttempt({ ledger, entry: first, attempt: receipt, outcome });
   }
   const results = [
@@ -703,6 +713,21 @@ test("review ledger starts items lazily and closes every started item", (t) => {
   );
   assert.equal(new Set(attempts.map((event) => event.event_id)).size, 3);
   assert.equal(new Set(attempts.map((event) => event.idempotency_key_sha256)).size, 1);
+  assert.equal(
+    attempts[0]?.idempotency_key_sha256,
+    actionIdempotencyKey({
+      operation: "review",
+      slot: "coordination_mutation",
+      repository: active.repo,
+      number: active.number,
+      itemUpdatedAt: active.updatedAt,
+      mutationIdentitySha256: createHash("sha256").update("review_lease_post:51").digest("hex"),
+    }),
+  );
+  assert.deepEqual(
+    attempts.map((event) => event.phase_seq),
+    [3, 5, 7],
+  );
   const itemEnd = recorded.at(-2);
   const batchEnd = recorded.at(-1);
   // An unknown mutation outcome stays visible and blocks a blind retry.

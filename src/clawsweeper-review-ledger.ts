@@ -12,7 +12,11 @@ import {
   type ActionEventStatus,
   type ActionEventSubject,
 } from "./action-ledger.js";
-import { recordWorkflowPhaseEvent } from "./action-ledger-runtime.js";
+import {
+  finishWorkflowMutationAttempt,
+  recordWorkflowPhaseEvent,
+  startWorkflowMutationAttempt,
+} from "./action-ledger-runtime.js";
 import type {
   Item,
   MutationRunner,
@@ -246,56 +250,25 @@ export function createReviewActionLedger({
       state = ledger.items.get(actionLedgerItemKey(item));
     }
     if (!state) return null;
-    const mutationIndex = state.mutationAttemptCount;
-    state.mutationAttemptCount += 1;
-    const businessIdempotencyIdentity = {
-      operation: "review" as const,
-      slot: "coordination_mutation" as const,
-      repository: item.repo,
-      number: item.number,
-      itemUpdatedAt: item.updatedAt,
-      mutationIdentitySha256: sha256(idempotencyIdentity),
-    };
-    const receiptIdentitySha256 = sha256(receiptIdentity);
-    const attempt = recordWorkflowPhaseEvent(root, {
+    return startWorkflowMutationAttempt(root, state, receiptIdentity, {
       phase: ACTION_EVENT_TYPES.reviewItem,
-      status: ACTION_EVENT_STATUSES.started,
-      reasonCode: ACTION_EVENT_REASON_CODES.selected,
-      retryable: true,
-      mutation: false,
-      identity: {
-        slot: "review_coordination_mutation_attempt",
-        index: state.index,
-        mutationIndex,
-        receiptIdentitySha256,
-        repository: item.repo,
-        number: item.number,
-      },
+      slot: "review_coordination_mutation_attempt",
       operation: "review",
       operationIdentity: ledger.operationIdentity,
-      parentEventId: state.lastEventId ?? state.startEventId,
       phaseSeq: nextReviewPhaseSeq(ledger),
-      idempotencyIdentity: businessIdempotencyIdentity,
+      idempotencyIdentity: {
+        operation: "review" as const,
+        slot: "coordination_mutation" as const,
+        repository: item.repo,
+        number: item.number,
+        itemUpdatedAt: item.updatedAt,
+        mutationIdentitySha256: sha256(idempotencyIdentity),
+      },
       component: "review",
       subject: actionLedgerItemSubject(item),
       evidence: workflowRunEvidence(),
-      attributes: {
-        batch_index: state.index,
-        attempt: mutationIndex + 1,
-        action_count: 1,
-        partial: true,
-        completion_reason: "mutation_attempted",
-      },
       privacy: actionLedgerPrivacy(),
     });
-    state.lastEventId = attempt?.event_id ?? state.lastEventId;
-    return {
-      state,
-      eventId: attempt?.event_id ?? null,
-      idempotencyIdentity: businessIdempotencyIdentity,
-      mutationIndex,
-      receiptIdentitySha256,
-    };
   }
 
   function finishReviewMutationAttempt(options: {
@@ -304,64 +277,23 @@ export function createReviewActionLedger({
     attempt: ReviewMutationAttempt;
     outcome: "accepted" | "rejected" | "unknown";
   }): string | null {
-    const mutation = options.outcome !== "rejected";
-    const event = recordWorkflowPhaseEvent(root, {
+    const eventId = finishWorkflowMutationAttempt(root, options.attempt, options.outcome, {
       phase: ACTION_EVENT_TYPES.reviewItem,
-      status:
-        options.outcome === "accepted"
-          ? ACTION_EVENT_STATUSES.executed
-          : options.outcome === "rejected"
-            ? ACTION_EVENT_STATUSES.skipped
-            : ACTION_EVENT_STATUSES.failed,
-      reasonCode:
-        options.outcome === "accepted"
-          ? ACTION_EVENT_REASON_CODES.completed
-          : options.outcome === "rejected"
-            ? ACTION_EVENT_REASON_CODES.notApplicable
-            : ACTION_EVENT_REASON_CODES.unavailable,
-      retryable: options.outcome === "unknown",
-      mutation,
-      identity: {
-        slot: "review_coordination_mutation_outcome",
-        index: options.attempt.state.index,
-        mutationIndex: options.attempt.mutationIndex,
-        receiptIdentitySha256: options.attempt.receiptIdentitySha256,
-        outcome: options.outcome,
-        repository: options.item.repo,
-        number: options.item.number,
-      },
+      slot: "review_coordination_mutation_outcome",
       operation: "review",
       operationIdentity: options.ledger.operationIdentity,
-      parentEventId: options.attempt.eventId,
       phaseSeq: nextReviewPhaseSeq(options.ledger),
-      idempotencyIdentity: options.attempt.idempotencyIdentity,
       component: "review",
       subject: actionLedgerItemSubject(options.item),
       evidence: workflowRunEvidence(),
-      attributes: {
-        batch_index: options.attempt.state.index,
-        attempt: options.attempt.mutationIndex + 1,
-        action_count: mutation ? 1 : 0,
-        partial: options.outcome === "unknown",
-        completion_reason:
-          options.outcome === "accepted"
-            ? "mutation_accepted"
-            : options.outcome === "rejected"
-              ? "mutation_rejected"
-              : "mutation_outcome_unknown",
-      },
       privacy: actionLedgerPrivacy(),
     });
-    options.attempt.state.lastEventId = event?.event_id ?? options.attempt.state.lastEventId;
-    if (mutation) {
+    if (options.outcome !== "rejected") {
       options.attempt.state.mutationObserved = true;
       options.ledger.mutationObserved = true;
     }
-    if (options.outcome === "unknown") {
-      options.attempt.state.uncertainMutationObserved = true;
-      options.ledger.uncertainMutationObserved = true;
-    }
-    return event?.event_id ?? null;
+    if (options.outcome === "unknown") options.ledger.uncertainMutationObserved = true;
+    return eventId;
   }
 
   function reviewMutationRunner(ledger: ReviewActionLedger, item: Item): MutationRunner {

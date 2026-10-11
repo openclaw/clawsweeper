@@ -12,11 +12,10 @@ import {
   ACTION_EVENT_SHARD_IMPORT_MAX_PUBLISH_PATHS,
   ACTION_EVENT_SHARD_IMPORT_LIMITS,
   CRABFLEET_PROJECTION_LIMITS,
-  flushPendingCrabFleetPosts,
+  flushPendingCrabFleetPostsForRoot,
   flushWorkflowActionEvents,
   importActionEventShards,
   interruptOpenWorkflowActionEvents,
-  postActionEventToCrabFleet,
   recordWorkflowActionEvent,
   recordWorkflowPhaseEvent,
   workflowActionProducer,
@@ -32,8 +31,8 @@ import {
   actionLedgerJson,
   createActionEvent,
   readAllSpooledActionEvents,
-  readActionEventShard,
   readActionEventShardAt,
+  validateActionEvent,
   writeActionEventShard,
   writeActionEventShards,
   type ActionEvent,
@@ -3017,23 +3016,26 @@ test("full producer identity prevents cross-repository shard collisions", async 
 
 test("CrabFleet projection sends the validated ledger event and bearer token", async () => {
   const root = tempRoot();
-  const event = recordReview(root);
-  assert.ok(event);
   const requests: Array<{ url: string; init?: RequestInit }> = [];
-  await postActionEventToCrabFleet(
-    event,
+  const event = recordReview(
+    root,
     workflowEnv({
       CLAWSWEEPER_CRABFLEET_AGENT_TOKEN: "agent-token",
       CLAWSWEEPER_CRABFLEET_SESSION_ID: "session-1",
     }),
-    (async (url: string | URL | Request, init?: RequestInit) => {
-      requests.push({
-        url: typeof url === "string" ? url : url instanceof URL ? url.href : url.url,
-        init,
-      });
-      return new Response(JSON.stringify({ duplicate: false }), { status: 200 });
-    }) as typeof fetch,
+    new Date("2026-07-12T10:01:00.000Z"),
+    {
+      fetchImpl: (async (url: string | URL | Request, init?: RequestInit) => {
+        requests.push({
+          url: typeof url === "string" ? url : url instanceof URL ? url.href : url.url,
+          init,
+        });
+        return new Response(JSON.stringify({ duplicate: false }), { status: 200 });
+      }) as typeof fetch,
+    },
   );
+  assert.ok(event);
+  await flushPendingCrabFleetPostsForRoot(root);
 
   const request = requests[0];
   assert.ok(request);
@@ -3053,28 +3055,30 @@ test("CrabFleet projection sends the validated ledger event and bearer token", a
 
 test("CrabFleet projection preserves a custom base bound to session provenance", async () => {
   const customBase = "https://fleet.example.test/staging";
-  const event = recordReview(tempRoot());
-  assert.ok(event);
+  const root = tempRoot();
   let requestUrl = "";
-  await postActionEventToCrabFleet(
-    event,
+  const event = recordReview(
+    root,
     workflowEnv({
       CLAWSWEEPER_CRABFLEET_AGENT_TOKEN: "agent-token",
       CLAWSWEEPER_CRABFLEET_SESSION_ID: "session-1",
       CLAWSWEEPER_CRABFLEET_URL: customBase,
       CLAWSWEEPER_CRABFLEET_WORK_STATE_URL: `${customBase}/api/agent/interactive-sessions/session-1/work-state`,
     }),
-    (async (url: string | URL | Request) => {
-      requestUrl = String(url);
-      return new Response(null, { status: 204 });
-    }) as typeof fetch,
+    new Date("2026-07-12T10:01:00.000Z"),
+    {
+      fetchImpl: (async (url: string | URL | Request) => {
+        requestUrl = String(url);
+        return new Response(null, { status: 204 });
+      }) as typeof fetch,
+    },
   );
+  assert.ok(event);
+  await flushPendingCrabFleetPostsForRoot(root);
   assert.equal(requestUrl, `${customBase}/api/agent/interactive-sessions/session-1/events`);
 });
 
 test("CrabFleet projection rejects unsafe URLs and registration-origin drift", async () => {
-  const event = recordReview(tempRoot());
-  assert.ok(event);
   let requests = 0;
   for (const configuredUrl of [
     "http://crabfleet.openclaw.ai",
@@ -3083,22 +3087,28 @@ test("CrabFleet projection rejects unsafe URLs and registration-origin drift", a
     "https://crabfleet.openclaw.ai/api",
     "https://crabfleet.openclaw.ai?redirect=https://evil.example",
   ]) {
-    await assert.rejects(
-      postActionEventToCrabFleet(
-        event,
-        workflowEnv({
-          CLAWSWEEPER_CRABFLEET_AGENT_TOKEN: "agent-token",
-          CLAWSWEEPER_CRABFLEET_SESSION_ID: "session-1",
-          CLAWSWEEPER_CRABFLEET_URL: configuredUrl,
-        }),
-        (async () => {
+    const root = tempRoot();
+    const event = recordReview(
+      root,
+      workflowEnv({
+        CLAWSWEEPER_CRABFLEET_AGENT_TOKEN: "agent-token",
+        CLAWSWEEPER_CRABFLEET_SESSION_ID: "session-1",
+        CLAWSWEEPER_CRABFLEET_URL: configuredUrl,
+      }),
+      new Date("2026-07-12T10:01:00.000Z"),
+      {
+        fetchImpl: (async () => {
           requests += 1;
           return new Response(null, { status: 204 });
         }) as typeof fetch,
-      ),
-      /credential-free HTTPS URL|registered session provenance/,
-      configuredUrl,
+      },
     );
+    assert.ok(event);
+    await flushPendingCrabFleetPostsForRoot(root);
+    const failures = readAllSpooledActionEvents(root).filter(
+      (entry) => entry.event_type === ACTION_EVENT_TYPES.projectionFailed,
+    );
+    assert.equal(failures.length, 1, configuredUrl);
   }
   assert.equal(requests, 0);
 });
@@ -3147,7 +3157,7 @@ test("CrabFleet projection bounds active fetches and queued work", async () => {
     );
 
     release();
-    await flushPendingCrabFleetPosts();
+    await flushPendingCrabFleetPostsForRoot(root);
     assert.equal(
       started,
       CRABFLEET_PROJECTION_LIMITS.maxConcurrent + CRABFLEET_PROJECTION_LIMITS.maxQueued,
@@ -3155,7 +3165,7 @@ test("CrabFleet projection bounds active fetches and queued work", async () => {
     assert.equal(maxActive, CRABFLEET_PROJECTION_LIMITS.maxConcurrent);
   } finally {
     release();
-    await flushPendingCrabFleetPosts();
+    await flushPendingCrabFleetPostsForRoot(root);
     console.error = originalError;
   }
 
@@ -3224,85 +3234,12 @@ test("CrabFleet projection admission is fair across spool roots", async () => {
     // Release held slots on failure so later tests do not inherit a starved pool.
     releaseFirstWave = true;
     for (const resolve of firstWaveResolvers) resolve(new Response(null, { status: 204 }));
-    await flushPendingCrabFleetPosts();
+    await Promise.all([
+      flushPendingCrabFleetPostsForRoot(saturatedRoot),
+      flushPendingCrabFleetPostsForRoot(independentRoot),
+    ]);
   }
   assert.equal(startOrder.filter((entry) => entry === "saturated").length, saturatedTotal);
-});
-
-test("exported CrabFleet posts share the four-request admission bound", async () => {
-  const event = recordReview(tempRoot());
-  assert.ok(event);
-  const env = workflowEnv({
-    CLAWSWEEPER_CRABFLEET_AGENT_TOKEN: "agent-token",
-    CLAWSWEEPER_CRABFLEET_SESSION_ID: "session-1",
-  });
-  let release!: () => void;
-  const gate = new Promise<void>((resolve) => {
-    release = resolve;
-  });
-  let active = 0;
-  let maxActive = 0;
-  let started = 0;
-  const posts = Array.from({ length: CRABFLEET_PROJECTION_LIMITS.maxConcurrent * 2 }, () =>
-    postActionEventToCrabFleet(event, env, (async () => {
-      started += 1;
-      active += 1;
-      maxActive = Math.max(maxActive, active);
-      await gate;
-      active -= 1;
-      return new Response(null, { status: 204 });
-    }) as typeof fetch),
-  );
-
-  await new Promise((resolve) => setImmediate(resolve));
-  assert.equal(started, CRABFLEET_PROJECTION_LIMITS.maxConcurrent);
-  assert.equal(maxActive, CRABFLEET_PROJECTION_LIMITS.maxConcurrent);
-  release();
-  await Promise.all(posts);
-  assert.equal(started, CRABFLEET_PROJECTION_LIMITS.maxConcurrent * 2);
-  assert.equal(maxActive, CRABFLEET_PROJECTION_LIMITS.maxConcurrent);
-});
-
-test("queued direct CrabFleet posts validate before admission and reject without hanging", async () => {
-  const event = recordReview(tempRoot());
-  assert.ok(event);
-  const env = workflowEnv({
-    CLAWSWEEPER_CRABFLEET_AGENT_TOKEN: "agent-token",
-    CLAWSWEEPER_CRABFLEET_SESSION_ID: "session-1",
-    CLAWSWEEPER_CRABFLEET_TIMEOUT_MS: "1000",
-  });
-  let release!: () => void;
-  const gate = new Promise<void>((resolve) => {
-    release = resolve;
-  });
-  const active = Array.from({ length: CRABFLEET_PROJECTION_LIMITS.maxConcurrent }, () =>
-    postActionEventToCrabFleet(event, env, (async () => {
-      await gate;
-      return new Response(null, { status: 204 });
-    }) as typeof fetch),
-  );
-  await new Promise((resolve) => setImmediate(resolve));
-
-  const unhandled: unknown[] = [];
-  const onUnhandled = (error: unknown) => unhandled.push(error);
-  process.on("unhandledRejection", onUnhandled);
-  try {
-    await Promise.race([
-      assert.rejects(
-        postActionEventToCrabFleet({ ...event, event_id: "invalid" }, env),
-        /invalid action event identity|invalid action event schema/,
-      ),
-      new Promise<never>((_resolve, reject) =>
-        setTimeout(() => reject(new Error("invalid queued post hung")), 200),
-      ),
-    ]);
-    await new Promise((resolve) => setImmediate(resolve));
-    assert.deepEqual(unhandled, []);
-  } finally {
-    release();
-    await Promise.all(active);
-    process.off("unhandledRejection", onUnhandled);
-  }
 });
 
 test("CrabFleet queued projections snapshot endpoint and credentials", async () => {
@@ -3350,7 +3287,7 @@ test("CrabFleet queued projections snapshot endpoint and credentials", async () 
   env.CLAWSWEEPER_CRABFLEET_TIMEOUT_MS = "1";
 
   release();
-  await flushPendingCrabFleetPosts();
+  await flushPendingCrabFleetPostsForRoot(root);
   assert.deepEqual(queuedRequest, {
     url: `${customBase}/api/agent/interactive-sessions/original-session/events`,
     authorization: "Bearer original-token",
@@ -3424,7 +3361,7 @@ test("CrabFleet timeouts keep unresolved fetches inside the concurrency bound", 
       });
       assert.ok(event);
     }
-    await flushPendingCrabFleetPosts();
+    await flushPendingCrabFleetPostsForRoot(root);
     assert.equal(started, CRABFLEET_PROJECTION_LIMITS.maxConcurrent);
 
     for (let index = 0; index < CRABFLEET_PROJECTION_LIMITS.maxConcurrent; index += 1) {
@@ -3436,7 +3373,7 @@ test("CrabFleet timeouts keep unresolved fetches inside the concurrency bound", 
       });
       assert.ok(event);
     }
-    await flushPendingCrabFleetPosts();
+    await flushPendingCrabFleetPostsForRoot(root);
     assert.equal(started, CRABFLEET_PROJECTION_LIMITS.maxConcurrent);
     assert.equal(
       errors.filter((entry) => entry.includes("unresolved CrabFleet requests")).length,
@@ -3446,7 +3383,7 @@ test("CrabFleet timeouts keep unresolved fetches inside the concurrency bound", 
     for (const resolve of resolvers) resolve(new Response(null, { status: 204 }));
     await new Promise((resolve) => setImmediate(resolve));
     await new Promise((resolve) => setImmediate(resolve));
-    await flushPendingCrabFleetPosts();
+    await flushPendingCrabFleetPostsForRoot(root);
     console.error = originalError;
   }
 
@@ -3458,51 +3395,8 @@ test("CrabFleet timeouts keep unresolved fetches inside the concurrency bound", 
     }) as typeof fetch,
   });
   assert.ok(recovered);
-  await flushPendingCrabFleetPosts();
+  await flushPendingCrabFleetPostsForRoot(root);
   assert.equal(recoveryStarted, 1);
-});
-
-test("queued direct CrabFleet posts terminate when every active cleanup is stuck", async () => {
-  const event = recordReview(tempRoot());
-  assert.ok(event);
-  const env = workflowEnv({
-    CLAWSWEEPER_CRABFLEET_AGENT_TOKEN: "agent-token",
-    CLAWSWEEPER_CRABFLEET_SESSION_ID: "session-1",
-    CLAWSWEEPER_CRABFLEET_TIMEOUT_MS: "10",
-  });
-  const cleanupResolvers: Array<() => void> = [];
-  const fetchImpl = (async () =>
-    ({
-      ok: true,
-      status: 204,
-      body: {
-        cancel: () =>
-          new Promise<void>((resolve) => {
-            cleanupResolvers.push(resolve);
-          }),
-      },
-    }) as unknown as Response) as typeof fetch;
-  const posts = Array.from({ length: CRABFLEET_PROJECTION_LIMITS.maxConcurrent + 1 }, () =>
-    postActionEventToCrabFleet(event, env, fetchImpl),
-  );
-  const settled = await Promise.race([
-    Promise.allSettled(posts),
-    new Promise<never>((_resolve, reject) =>
-      setTimeout(() => reject(new Error("queued direct posts did not terminate")), 500),
-    ),
-  ]);
-  assert.equal(
-    settled.every((result) => result.status === "rejected"),
-    true,
-  );
-  assert.match(
-    String((settled.at(-1) as PromiseRejectedResult).reason),
-    /blocked by .* unresolved CrabFleet requests|queue timed out/,
-  );
-  assert.equal(cleanupResolvers.length, CRABFLEET_PROJECTION_LIMITS.maxConcurrent);
-  for (const resolve of cleanupResolvers) resolve();
-  await new Promise((resolve) => setImmediate(resolve));
-  await new Promise((resolve) => setImmediate(resolve));
 });
 
 test("cleanup-stuck projection rejection is scoped to the affected spool root", async () => {
@@ -3569,7 +3463,10 @@ test("cleanup-stuck projection rejection is scoped to the affected spool root", 
     // The flag makes any cleanup registered after this point resolve immediately.
     releaseCleanups = true;
     while (cleanupResolvers.length > 0) cleanupResolvers.shift()!();
-    await flushPendingCrabFleetPosts();
+    await Promise.all([
+      flushPendingCrabFleetPostsForRoot(blockedRoot),
+      flushPendingCrabFleetPostsForRoot(independentRoot),
+    ]);
   }
   assert.equal(independentStarted, 1);
 });
@@ -3607,7 +3504,7 @@ test("CrabFleet timeouts hold slots until response cleanup settles", async () =>
         }),
       );
     }
-    await flushPendingCrabFleetPosts();
+    await flushPendingCrabFleetPostsForRoot(root);
     assert.equal(started, CRABFLEET_PROJECTION_LIMITS.maxConcurrent);
     assert.equal(cleanupResolvers.length, CRABFLEET_PROJECTION_LIMITS.maxConcurrent);
 
@@ -3621,7 +3518,7 @@ test("CrabFleet timeouts hold slots until response cleanup settles", async () =>
         }),
       );
     }
-    await flushPendingCrabFleetPosts();
+    await flushPendingCrabFleetPostsForRoot(root);
     assert.equal(secondWaveStarted, 0);
     assert.equal(
       errors.filter((entry) => entry.includes("unresolved CrabFleet requests")).length,
@@ -3631,7 +3528,7 @@ test("CrabFleet timeouts hold slots until response cleanup settles", async () =>
     for (const resolve of cleanupResolvers) resolve();
     await new Promise((resolve) => setImmediate(resolve));
     await new Promise((resolve) => setImmediate(resolve));
-    await flushPendingCrabFleetPosts();
+    await flushPendingCrabFleetPostsForRoot(root);
     console.error = originalError;
   }
 
@@ -3644,11 +3541,11 @@ test("CrabFleet timeouts hold slots until response cleanup settles", async () =>
       }) as typeof fetch,
     }),
   );
-  await flushPendingCrabFleetPosts();
+  await flushPendingCrabFleetPostsForRoot(root);
   assert.equal(recoveryStarted, 1);
 });
 
-test("CrabFleet rejects forged confidential event keys before projection", async () => {
+test("ledger validation rejects forged confidential event keys before projection", () => {
   const event = recordReview(tempRoot());
   assert.ok(event);
   const forgedKey = `ghp_${"A".repeat(20)}:${event.event_key.split(":")[1]}`;
@@ -3659,26 +3556,10 @@ test("CrabFleet rejects forged confidential event keys before projection", async
       .update(`${event.subject.repository}\n${forgedKey}`)
       .digest("hex"),
   };
-  let requests = 0;
-
-  await assert.rejects(
-    postActionEventToCrabFleet(
-      forged,
-      workflowEnv({
-        CLAWSWEEPER_CRABFLEET_AGENT_TOKEN: "agent-token",
-        CLAWSWEEPER_CRABFLEET_SESSION_ID: "session-1",
-      }),
-      (async () => {
-        requests += 1;
-        return new Response(null, { status: 204 });
-      }) as typeof fetch,
-    ),
-    /confidential identifier/,
-  );
-  assert.equal(requests, 0);
+  assert.throws(() => validateActionEvent(forged), /confidential identifier/);
 });
 
-test("CrabFleet rejects forged event bodies before projection", async () => {
+test("ledger validation rejects forged event bodies before projection", () => {
   const event = recordReview(tempRoot());
   assert.ok(event);
   const forgedEvents = [
@@ -3694,47 +3575,38 @@ test("CrabFleet rejects forged event bodies before projection", async () => {
       prompt: "unhashed private text",
     },
   ];
-  let requests = 0;
-
   for (const forged of forgedEvents) {
-    await assert.rejects(
-      postActionEventToCrabFleet(
-        forged,
-        workflowEnv({
-          CLAWSWEEPER_CRABFLEET_AGENT_TOKEN: "agent-token",
-          CLAWSWEEPER_CRABFLEET_SESSION_ID: "session-1",
-        }),
-        (async () => {
-          requests += 1;
-          return new Response(null, { status: 204 });
-        }) as typeof fetch,
-      ),
+    assert.throws(
+      () => validateActionEvent(forged),
       /invalid action event semantic digest|unknown or non-canonical fields/,
     );
   }
-  assert.equal(requests, 0);
 });
 
 test("CrabFleet projection cancels successful response bodies", async () => {
-  const event = recordReview(tempRoot());
-  assert.ok(event);
+  const root = tempRoot();
   let cancelled = 0;
-  await postActionEventToCrabFleet(
-    event,
+  const event = recordReview(
+    root,
     workflowEnv({
       CLAWSWEEPER_CRABFLEET_AGENT_TOKEN: "agent-token",
       CLAWSWEEPER_CRABFLEET_SESSION_ID: "session-1",
     }),
-    (async () =>
-      new Response(
-        new ReadableStream({
-          cancel() {
-            cancelled += 1;
-          },
-        }),
-        { status: 200 },
-      )) as typeof fetch,
+    new Date("2026-07-12T10:01:00.000Z"),
+    {
+      fetchImpl: (async () =>
+        new Response(
+          new ReadableStream({
+            cancel() {
+              cancelled += 1;
+            },
+          }),
+          { status: 200 },
+        )) as typeof fetch,
+    },
   );
+  assert.ok(event);
+  await flushPendingCrabFleetPostsForRoot(root);
   assert.equal(cancelled, 1);
 });
 
@@ -4006,8 +3878,7 @@ test("CrabFleet timeouts preserve canonical events and record projection failure
 });
 
 test("late CrabFleet response cleanup failures are consumed after timeout", async () => {
-  const event = recordReview(tempRoot());
-  assert.ok(event);
+  const root = tempRoot();
   let resolveResponse!: (response: Response) => void;
   const response = new Promise<Response>((resolve) => {
     resolveResponse = resolve;
@@ -4016,17 +3887,22 @@ test("late CrabFleet response cleanup failures are consumed after timeout", asyn
   const onUnhandled = (error: unknown) => unhandled.push(error);
   process.on("unhandledRejection", onUnhandled);
   try {
-    await assert.rejects(
-      postActionEventToCrabFleet(
-        event,
-        workflowEnv({
-          CLAWSWEEPER_CRABFLEET_AGENT_TOKEN: "agent-token",
-          CLAWSWEEPER_CRABFLEET_SESSION_ID: "session-1",
-          CLAWSWEEPER_CRABFLEET_TIMEOUT_MS: "10",
-        }),
-        (() => response) as typeof fetch,
+    const event = recordReview(
+      root,
+      workflowEnv({
+        CLAWSWEEPER_CRABFLEET_AGENT_TOKEN: "agent-token",
+        CLAWSWEEPER_CRABFLEET_SESSION_ID: "session-1",
+        CLAWSWEEPER_CRABFLEET_TIMEOUT_MS: "10",
+      }),
+      new Date("2026-07-12T10:01:00.000Z"),
+      { fetchImpl: (() => response) as typeof fetch },
+    );
+    assert.ok(event);
+    await flushPendingCrabFleetPostsForRoot(root);
+    assert.ok(
+      readAllSpooledActionEvents(root).some(
+        (entry) => entry.event_type === ACTION_EVENT_TYPES.projectionFailed,
       ),
-      /timed out after 10ms/,
     );
     resolveResponse({
       ok: true,
@@ -5175,10 +5051,6 @@ importActionEventShards(process.argv[1], process.argv[2]);`;
     const interrupted = published[0]!;
     assert.throws(
       () => readActionEventShardAt(destination, interrupted.relativePath),
-      /import transaction is incomplete/,
-    );
-    assert.throws(
-      () => readActionEventShard(path.join(destination, interrupted.relativePath)),
       /import transaction is incomplete/,
     );
     const reservationRoot = path.join(destination, "ledger", "v1", "import-bindings", "shard-sets");

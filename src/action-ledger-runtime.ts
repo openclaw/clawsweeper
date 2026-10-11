@@ -74,7 +74,6 @@ const ACTION_EVENT_FINALIZATION_MAX_BYTES = 1024 * 1024;
 const ACTION_EVENT_PARTITION_MARKER_MAX_BYTES = 64;
 const ACTION_EVENT_PRODUCER_LOCK_MAX_BYTES = 1024;
 const ACTION_EVENT_PRODUCER_LOCK_WAIT_MS = 10_000;
-const pendingCrabFleetPosts = new Set<Promise<void>>();
 const pendingWorkflowCrabFleetPosts = new Map<string, Set<Promise<void>>>();
 const workflowCrabFleetRequests = new Map<string, Set<CrabFleetProjectionRequest>>();
 const activeCrabFleetRequests = new Set<CrabFleetProjectionRequest>();
@@ -146,6 +145,120 @@ export type WorkflowActionPhaseEventInput = Omit<
   retryable: boolean;
   mutation: boolean;
 };
+
+type MutationAttemptState = {
+  index: number;
+  mutationAttemptCount: number;
+  startEventId: string | null;
+  lastEventId: string | null;
+  uncertainMutationObserved: boolean;
+};
+
+type MutationEventContext = Pick<
+  WorkflowActionPhaseEventInput,
+  "phase" | "operation" | "operationIdentity" | "component" | "subject" | "evidence" | "privacy"
+> & { slot: string; phaseSeq: number };
+
+export function startWorkflowMutationAttempt<S extends MutationAttemptState, I>(
+  root: string,
+  state: S,
+  receiptIdentity: string,
+  context: MutationEventContext & { idempotencyIdentity: I },
+) {
+  const mutationIndex = state.mutationAttemptCount++;
+  const receiptIdentitySha256 = sha256(receiptIdentity);
+  const { slot, ...eventContext } = context;
+  const event = recordWorkflowPhaseEvent(root, {
+    ...eventContext,
+    status: ACTION_EVENT_STATUSES.started,
+    reasonCode: ACTION_EVENT_REASON_CODES.selected,
+    retryable: true,
+    mutation: false,
+    identity: {
+      slot,
+      index: state.index,
+      mutationIndex,
+      receiptIdentitySha256,
+      repository: context.subject.repository,
+      number: context.subject.number,
+    },
+    parentEventId: state.lastEventId ?? state.startEventId,
+    attributes: {
+      batch_index: state.index,
+      attempt: mutationIndex + 1,
+      action_count: 1,
+      partial: true,
+      completion_reason: "mutation_attempted",
+    },
+  });
+  state.lastEventId = event?.event_id ?? state.lastEventId;
+  return {
+    state,
+    eventId: event?.event_id ?? null,
+    idempotencyIdentity: context.idempotencyIdentity,
+    mutationIndex,
+    receiptIdentitySha256,
+  };
+}
+
+export function finishWorkflowMutationAttempt(
+  root: string,
+  attempt: {
+    state: MutationAttemptState;
+    eventId: string | null;
+    idempotencyIdentity: unknown;
+    mutationIndex: number;
+    receiptIdentitySha256: string;
+  },
+  outcome: "accepted" | "rejected" | "unknown",
+  context: MutationEventContext,
+): string | null {
+  const mutation = outcome !== "rejected";
+  const { slot, ...eventContext } = context;
+  const event = recordWorkflowPhaseEvent(root, {
+    ...eventContext,
+    status:
+      outcome === "accepted"
+        ? ACTION_EVENT_STATUSES.executed
+        : outcome === "rejected"
+          ? ACTION_EVENT_STATUSES.skipped
+          : ACTION_EVENT_STATUSES.failed,
+    reasonCode:
+      outcome === "accepted"
+        ? ACTION_EVENT_REASON_CODES.completed
+        : outcome === "rejected"
+          ? ACTION_EVENT_REASON_CODES.notApplicable
+          : ACTION_EVENT_REASON_CODES.unavailable,
+    retryable: outcome === "unknown",
+    mutation,
+    identity: {
+      slot,
+      index: attempt.state.index,
+      mutationIndex: attempt.mutationIndex,
+      receiptIdentitySha256: attempt.receiptIdentitySha256,
+      outcome,
+      repository: context.subject.repository,
+      number: context.subject.number,
+    },
+    parentEventId: attempt.eventId,
+    idempotencyIdentity: attempt.idempotencyIdentity,
+    attributes: {
+      batch_index: attempt.state.index,
+      attempt: attempt.mutationIndex + 1,
+      action_count: mutation ? 1 : 0,
+      partial: outcome === "unknown",
+      completion_reason:
+        outcome === "accepted"
+          ? "mutation_accepted"
+          : outcome === "rejected"
+            ? "mutation_rejected"
+            : "mutation_outcome_unknown",
+    },
+  });
+  attempt.state.lastEventId = event?.event_id ?? attempt.state.lastEventId;
+  if (outcome === "unknown") attempt.state.uncertainMutationObserved = true;
+  return event?.event_id ?? null;
+}
 
 export type ActionEventShardImportResult = {
   created: number;
@@ -821,17 +934,7 @@ function groupWorkflowActionEvents(events: readonly ActionEvent[]): Map<string, 
   return groups;
 }
 
-export async function flushPendingCrabFleetPosts(
-  options: { timeoutMs?: number } = {},
-): Promise<void> {
-  await flushCrabFleetProjectionPosts(
-    () => pendingCrabFleetPosts,
-    (error) => failPendingWorkflowCrabFleetRequests(error),
-    options,
-  );
-}
-
-async function flushPendingCrabFleetPostsForRoot(
+export async function flushPendingCrabFleetPostsForRoot(
   rootKey: string,
   options: { timeoutMs?: number } = {},
 ): Promise<void> {
@@ -866,18 +969,6 @@ async function flushCrabFleetProjectionPosts(
   } finally {
     if (timeout) clearTimeout(timeout);
   }
-}
-
-export async function postActionEventToCrabFleet(
-  event: ActionEvent,
-  env: NodeJS.ProcessEnv = process.env,
-  fetchImpl: typeof fetch = fetch,
-): Promise<void> {
-  const config = crabFleetProjectionConfig(env);
-  if (!config) return;
-  const request = createCrabFleetProjectionRequest(event, config, fetchImpl);
-  admitCrabFleetProjection(request);
-  await request.promise;
 }
 
 function startActionEventCrabFleetPost(
@@ -1657,11 +1748,9 @@ function queueCrabFleetEvent(
       if (requests.size === 0) workflowCrabFleetRequests.delete(rootKey);
       rootPosts.delete(post);
       if (rootPosts.size === 0) pendingWorkflowCrabFleetPosts.delete(rootKey);
-      pendingCrabFleetPosts.delete(post);
     });
   rootPosts.add(post);
   pendingWorkflowCrabFleetPosts.set(rootKey, rootPosts);
-  pendingCrabFleetPosts.add(post);
   admitCrabFleetProjection(request);
 }
 

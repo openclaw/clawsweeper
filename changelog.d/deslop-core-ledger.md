@@ -1,0 +1,1 @@
+- Share review/apply mutation receipt mechanics while retaining their business identities, and replace unused ledger convenience APIs with root-scoped and safe-target operations.

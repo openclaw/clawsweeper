@@ -31,8 +31,8 @@ import {
   isActionEventPhaseType,
   isActionEventReasonCode,
   isActionEventStatus,
-  readActionEvent,
-  readActionEventShard,
+  readActionEventTarget,
+  readActionEventShardAt,
   readAllSpooledActionEvents,
   strictUtcCalendarDate,
   validateActionEvent,
@@ -45,6 +45,7 @@ import {
 } from "../dist/action-ledger.js";
 import {
   isNotFoundError,
+  prepareSafeReadTarget,
   prepareSafeWriteTarget,
   removeUtf8FileIfContentNoFollow,
   tryAcquireUtf8FileLockNoFollow,
@@ -1299,11 +1300,14 @@ test("direct event and shard reads enforce bounded allocation", () => {
   fs.writeFileSync(shardPath, Buffer.alloc(ACTION_EVENT_SHARD_FILE_LIMITS.maxBytes + 1, 0x61));
 
   assert.throws(
-    () => readActionEvent(eventPath),
+    () =>
+      readActionEventTarget(
+        prepareSafeReadTarget(root, path.relative(root, eventPath), "action event"),
+      ),
     new RegExp(`${ACTION_LEDGER_CANONICAL_JSON_LIMITS.maxBytes} byte limit`),
   );
   assert.throws(
-    () => readActionEventShard(shardPath),
+    () => readActionEventShardAt(root, path.relative(root, shardPath)),
     new RegExp(`${ACTION_EVENT_SHARD_FILE_LIMITS.maxBytes} byte limit`),
   );
 });
@@ -1360,13 +1364,19 @@ test("direct shard readers enforce non-empty unique ordered acyclic collections 
   const root = tempRoot();
   const emptyPath = path.join(root, "empty.jsonl");
   fs.writeFileSync(emptyPath, "");
-  assert.throws(() => readActionEventShard(emptyPath), /requires events/);
+  assert.throws(
+    () => readActionEventShardAt(root, path.relative(root, emptyPath)),
+    /requires events/,
+  );
 
   const base = createActionEvent(reviewInput());
   const duplicatePath = path.join(root, "duplicate.jsonl");
   const baseLine = actionLedgerJson(base);
   fs.writeFileSync(duplicatePath, `${baseLine}\n${baseLine}\n`);
-  assert.throws(() => readActionEventShard(duplicatePath), /duplicate event/);
+  assert.throws(
+    () => readActionEventShardAt(root, path.relative(root, duplicatePath)),
+    /duplicate event/,
+  );
 
   const earlier = createActionEvent(
     reviewInput({
@@ -1382,7 +1392,10 @@ test("direct shard readers enforce non-empty unique ordered acyclic collections 
   );
   const unorderedPath = path.join(root, "unordered.jsonl");
   fs.writeFileSync(unorderedPath, `${actionLedgerJson(later)}\n${actionLedgerJson(earlier)}\n`);
-  assert.throws(() => readActionEventShard(unorderedPath), /canonical causal order/);
+  assert.throws(
+    () => readActionEventShardAt(root, path.relative(root, unorderedPath)),
+    /canonical causal order/,
+  );
 
   const firstKey = reviewEventKey("review.cycle", { node: "first" });
   const secondKey = reviewEventKey("review.cycle", { node: "second" });
@@ -1400,7 +1413,7 @@ test("direct shard readers enforce non-empty unique ordered acyclic collections 
   );
   const cyclePath = path.join(root, "cycle.jsonl");
   fs.writeFileSync(cyclePath, `${actionLedgerJson(first)}\n${actionLedgerJson(second)}\n`);
-  assert.throws(() => readActionEventShard(cyclePath), /causal cycle/);
+  assert.throws(() => readActionEventShardAt(root, path.relative(root, cyclePath)), /causal cycle/);
 
   const excessivePath = path.join(root, "excessive.jsonl");
   fs.writeFileSync(
@@ -1410,7 +1423,7 @@ test("direct shard readers enforce non-empty unique ordered acyclic collections 
     )}\n`,
   );
   assert.throws(
-    () => readActionEventShard(excessivePath),
+    () => readActionEventShardAt(root, path.relative(root, excessivePath)),
     new RegExp(`${ACTION_EVENT_SHARD_FILE_LIMITS.maxEvents} event limit`),
   );
 });
@@ -1500,7 +1513,9 @@ test("durable shards batch sorted events once per producer job", () => {
     /^ledger\/v1\/events\/2026\/07\/12\/openclaw-clawsweeper\/review\/100-2-review-3-[a-f0-9]{12}\.jsonl$/,
   );
   assert.deepEqual(
-    readActionEventShard(created.path).map((event) => event.event_type),
+    readActionEventShardAt(root, path.relative(root, created.path)).map(
+      (event) => event.event_type,
+    ),
     [ACTION_EVENT_TYPES.reviewStarted, ACTION_EVENT_TYPES.reviewCompleted],
   );
 });
@@ -1664,7 +1679,7 @@ test("durable shards preserve sub-millisecond ordering across timestamp offsets"
   const shard = writeActionEventShard(root, identity, [later, earlier]);
 
   assert.deepEqual(
-    readActionEventShard(shard.path).map((event) => event.occurred_at),
+    readActionEventShardAt(root, path.relative(root, shard.path)).map((event) => event.occurred_at),
     [earlier.occurred_at, later.occurred_at],
   );
 });
@@ -1706,7 +1721,7 @@ test("durable shards preserve causal order ahead of source timestamps", () => {
     [child, parent],
   );
 
-  const events = readActionEventShard(shard.path);
+  const events = readActionEventShardAt(root, path.relative(root, shard.path));
   assert.deepEqual(
     events.map((event) => event.event_id),
     [parent.event_id, child.event_id],
@@ -1852,12 +1867,13 @@ test("shard path components stay below portable filesystem name limits", () => {
     runAttempt: longProducer.runAttempt,
     partitionDate: "2026-07-12",
   };
-  const written = writeActionEventShard(tempRoot(), identity, [event]);
+  const root = tempRoot();
+  const written = writeActionEventShard(root, identity, [event]);
   const components = written.relativePath.split("/");
 
   assert.ok(components.every((component) => Buffer.byteLength(component, "utf8") < 255));
   assert.ok(Buffer.byteLength(path.basename(written.path), "utf8") < 255);
-  assert.equal(readActionEventShard(written.path).length, 1);
+  assert.equal(readActionEventShardAt(root, path.relative(root, written.path)).length, 1);
   assert.notEqual(
     written.relativePath,
     actionEventShardRelativePath({ ...identity, runId: `${"r".repeat(255)}x` }, [event]),
@@ -1920,7 +1936,7 @@ test("duplicate event IDs preserve recording metadata and reject changed source 
   });
   const root = tempRoot();
   const written = writeActionEventShard(root, identity, [first, replay]);
-  const [persisted] = readActionEventShard(written.path);
+  const [persisted] = readActionEventShardAt(root, path.relative(root, written.path));
   assert.equal(persisted?.recorded_at, first.recorded_at);
 });
 
@@ -2018,7 +2034,7 @@ test("generated occurrence clocks cannot reverse deterministic shard ordering", 
   assert.equal(replay.status, "unchanged");
   assert.equal(replay.path, first.path);
   assert.deepEqual(
-    readActionEventShard(first.path).map((event) => event.event_id),
+    readActionEventShardAt(root, path.relative(root, first.path)).map((event) => event.event_id),
     firstEvents.map((event) => event.event_id).sort(),
   );
 });

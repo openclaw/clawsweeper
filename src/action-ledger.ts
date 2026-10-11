@@ -515,8 +515,6 @@ const HIGH_RISK_CREDENTIAL_FIELD_NAMES = new Set([
 ]);
 
 export type ActionEventAttributeKey = (typeof ACTION_EVENT_ATTRIBUTE_KEYS)[number];
-export type ActionEventType = (typeof ACTION_EVENT_TYPES)[keyof typeof ACTION_EVENT_TYPES];
-export type ActionEventFamily = keyof typeof ACTION_EVENT_FAMILIES;
 export type ActionEventPhaseType =
   (typeof ACTION_EVENT_PHASE_TYPES)[keyof typeof ACTION_EVENT_PHASE_TYPES];
 export type ActionEventStatus = (typeof ACTION_EVENT_STATUSES)[keyof typeof ACTION_EVENT_STATUSES];
@@ -995,39 +993,12 @@ export function writeActionEventShards(
   );
 }
 
-export function readActionEvent(filePath: string): ActionEvent {
-  return readActionEventTarget(
-    prepareSafeReadTarget(path.dirname(filePath), path.basename(filePath), "action event"),
-  );
-}
-
-export function readActionEventShard(filePath: string): ActionEvent[] {
-  return readActionEventShardTarget(prepareActionEventShardReadTarget(filePath));
-}
-
 export function readActionEventShardAt(
   root: string | SafeReadRoot,
   relativePath: string,
 ): ActionEvent[] {
   return readActionEventShardTarget(
     prepareSafeReadTarget(root, relativePath, "action event shard"),
-  );
-}
-
-function prepareActionEventShardReadTarget(filePath: string): SafeWriteTarget {
-  const resolved = path.resolve(filePath);
-  const marker = `${path.sep}ledger${path.sep}v1${path.sep}events${path.sep}`;
-  const markerIndex = resolved.indexOf(marker);
-  if (markerIndex >= 0) {
-    const filesystemRoot = path.parse(resolved).root;
-    const rootPath =
-      markerIndex < filesystemRoot.length ? filesystemRoot : resolved.slice(0, markerIndex);
-    return prepareSafeReadTarget(rootPath, path.relative(rootPath, resolved), "action event shard");
-  }
-  return prepareSafeReadTarget(
-    path.dirname(resolved),
-    path.basename(resolved),
-    "action event shard",
   );
 }
 
@@ -1886,7 +1857,7 @@ function validateDirectActionEventShard(events: readonly ActionEvent[], filePath
   }
 }
 
-function readActionEventTarget(target: SafeWriteTarget): ActionEvent {
+export function readActionEventTarget(target: SafeWriteTarget): ActionEvent {
   return parseCanonicalActionEventFile(
     readUtf8FileNoFollow(target, ACTION_LEDGER_CANONICAL_JSON_LIMITS.maxBytes),
     target.path,

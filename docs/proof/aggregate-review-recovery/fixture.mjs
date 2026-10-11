@@ -14,7 +14,7 @@ import {
   actionOperationId,
   actionAttemptId,
   createActionEvent,
-  readActionEventShard,
+  readActionEventShardAt,
   writeActionEventShard,
 } from "../../../dist/action-ledger.js";
 
@@ -178,7 +178,12 @@ Complete retained review.
       }
       const retryable = start(3);
       if (kind === "accepted-mutation") mutation(retryable, "accepted");
-      finish(retryable, "failed", true, kind === "mixed-identities" ? { sourceRevision: digest("reviewed discussion") } : {});
+      finish(
+        retryable,
+        "failed",
+        true,
+        kind === "mixed-identities" ? { sourceRevision: digest("reviewed discussion") } : {},
+      );
       const deferred = start(4);
       mutation(deferred, "rejected");
       finish(deferred, "blocked", true, { completionReason: "coordination_deferred" });
@@ -218,7 +223,7 @@ export function rewriteLedger(ledgerDir, transform, partCount = 1) {
   const files = readdirSync(ledgerDir, { recursive: true }).filter((name) =>
     name.endsWith(".jsonl"),
   );
-  const events = files.flatMap((name) => readActionEventShard(join(ledgerDir, name)));
+  const events = files.flatMap((name) => readActionEventShardAt(ledgerDir, name));
   const modified = transform(events).map((event) =>
     createActionEvent({
       eventKey: event.event_key,
