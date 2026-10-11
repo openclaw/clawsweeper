@@ -389,11 +389,6 @@ function stringValue(value: unknown, label: string): string {
   return value;
 }
 
-function booleanValue(value: unknown, label: string): boolean {
-  if (typeof value !== "boolean") throw new Error(`${label} must be a boolean`);
-  return value;
-}
-
 function numberValue(value: unknown, label: string): number {
   if (typeof value !== "number") throw new Error(`${label} must be a number`);
   return value;

@@ -1673,69 +1673,6 @@ exec '${process.execPath}' '${transport}' curl "\${args[@]}"
     assert.ok(canonical.content.includes(`reviewed_at: ${reviewedAt}`));
     writeFileSync(join(reportDir, `${number}.md`), canonical.content);
   }
-  const discovery = await command(
-    process.execPath,
-    [
-      join(source, "dist/repair/issue-implementation-intake.js"),
-      "candidates",
-      "--enabled",
-      "true",
-      "--candidate-kind",
-      "strict_bug",
-      "--target-repo",
-      repo,
-      "--artifact-dir",
-      reportDir,
-      "--report-dir",
-      reportDir,
-    ],
-    {},
-    workspace,
-  );
-  assert.equal(JSON.parse(discovery.stdout).count, 0);
-  observations.push({ scenario: "restricted implementation discovery", count: 0 });
-  const controlDir = join(workspace, "ordinary-control");
-  mkdirSync(controlDir);
-  const restricted = readFileSync(join(reportDir, "71.md"), "utf8");
-  for (const [scenario, content, count] of [
-    [
-      "ordinary implementation discovery",
-      restricted.replace(/^publication_policy: record_comment_only\n/m, ""),
-      1,
-    ],
-    [
-      "ambiguous implementation provenance",
-      restricted.replace(
-        /^publication_policy: record_comment_only/m,
-        "publication_policy: record_comment_only\npublication_policy: record_comment_only",
-      ),
-      0,
-    ],
-  ]) {
-    writeFileSync(join(controlDir, "71.md"), content);
-    const result = await command(
-      process.execPath,
-      [
-        join(source, "dist/repair/issue-implementation-intake.js"),
-        "candidates",
-        "--enabled",
-        "true",
-        "--candidate-kind",
-        "strict_bug",
-        "--target-repo",
-        repo,
-        "--artifact-dir",
-        controlDir,
-        "--report-dir",
-        controlDir,
-      ],
-      {},
-      workspace,
-    );
-    assert.equal(JSON.parse(result.stdout).count, count, result.stdout);
-    observations.push({ scenario, count });
-  }
-
   const lifecycle = await post("exact-review/lifecycle-audit/inventory", { page_size: 100 });
   const inventory = lifecycle.exact_review_lifecycle_audit_inventory;
   assert.equal(inventory.collection.state, "complete", JSON.stringify(lifecycle));

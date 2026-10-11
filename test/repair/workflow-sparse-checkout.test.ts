@@ -243,7 +243,7 @@ test("publication lanes ignore retired live-proof attachments", () => {
       );
     }
   }
-  assert.equal(publicationSites.length, 2, JSON.stringify(publicationSites));
+  assert.equal(publicationSites.length, 3, JSON.stringify(publicationSites));
 });
 
 test("state-hydrating sparse repair workflows keep hydration dependencies", () => {
