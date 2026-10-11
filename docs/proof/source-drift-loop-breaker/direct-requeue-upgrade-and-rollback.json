@@ -1,0 +1,645 @@
+{
+  "claim": "Direct publication completion and reconciliation count automatic generations, stop at the source-drift limit, preserve command exemptions, and reopen persisted deployed state without migration.",
+  "base": "472765315dd11b112847ed39a0b2e7d9912f293b",
+  "head": "2930a5ae888c198b8c1472854699951d2a29e6b6",
+  "working_tree_dirty": false,
+  "node": "v24.21.0",
+  "workerd": "1.20261006.1",
+  "miniflare": "5.20261006.1-alpha",
+  "runtime": "workerd / real dashboard Worker + ExactReviewQueue SQLite Durable Object persisted on disk / loopback GitHub fixture / fake clock",
+  "source_sha256": {
+    "baseline": {
+      "dashboard/exact-review-queue.ts": "3a72a2e26af6811f4b2e4e31d8f69952d15e94808a2b47fede69fdfbd576fce2",
+      "dashboard/exact-review-read-model.ts": "0c5cad4356fdaf1ea04a8c30f40fbeb411ac6ca43ab62c377297d4b836b7ef51",
+      "dashboard/worker.ts": "a375171775e7e2649545f96d13ea4309179598f6c7a3d4bff02454b0cd5b6bb7",
+      "dashboard/wrangler.toml": "8aa9a2d9eed2299046846a2c091a33ff893a8f85b3381fe71b4f3fb21267a406",
+      "dashboard/dashboard-health.ts": "7aa184aba04fda07f51ed3dbf06e2068344e25aa9389ce86ba4b069383370b3f"
+    },
+    "candidate": {
+      "dashboard/exact-review-queue.ts": "f6541de8ef6842bf4ff23082a14903964ee3e285e7fb33a32b131b729e0e5e4e",
+      "dashboard/exact-review-read-model.ts": "0c5cad4356fdaf1ea04a8c30f40fbeb411ac6ca43ab62c377297d4b836b7ef51",
+      "dashboard/worker.ts": "a375171775e7e2649545f96d13ea4309179598f6c7a3d4bff02454b0cd5b6bb7",
+      "dashboard/wrangler.toml": "8aa9a2d9eed2299046846a2c091a33ff893a8f85b3381fe71b4f3fb21267a406",
+      "dashboard/dashboard-health.ts": "7aa184aba04fda07f51ed3dbf06e2068344e25aa9389ce86ba4b069383370b3f"
+    }
+  },
+  "phases": {
+    "baseline_create": {
+      "item_states": [
+        {
+          "key": "openclaw/openclaw#133001",
+          "state": "leased",
+          "action": "exact_review_artifact_publish"
+        },
+        {
+          "key": "openclaw/openclaw#133002",
+          "state": "pending",
+          "action": "source_drift_requeue"
+        }
+      ],
+      "loop_rows": [
+        {
+          "item_key": "openclaw/openclaw#133001",
+          "consecutive": 1,
+          "updated_at": 1893456660000
+        },
+        {
+          "item_key": "openclaw/openclaw#133002",
+          "consecutive": 1,
+          "updated_at": 1893457320000
+        }
+      ],
+      "raw_rows_sha256": "b76ea358f1c1e63dc7706f3b5099da12339245e611c7b5389657eb6d2e4454a0"
+    },
+    "candidate_upgrade": {
+      "raw_rows_preserved": true,
+      "rows_preserved_after_read": true,
+      "old_lease_successor": {
+        "state": "pending",
+        "revision": 3
+      },
+      "counter_after_old_lease": {
+        "item_key": "openclaw/openclaw#133001",
+        "consecutive": 2,
+        "updated_at": 1893457620000
+      },
+      "steps": [
+        {
+          "cycle": 1,
+          "state": "pending",
+          "parked_reason": null,
+          "dispatches": 1
+        },
+        {
+          "cycle": 2,
+          "state": "parked",
+          "parked_reason": "source_drift_loop",
+          "dispatches": 0
+        }
+      ],
+      "final": {
+        "state": "parked",
+        "revision": 5,
+        "parked_reason": "source_drift_loop",
+        "stats_parked_reasons": {
+          "source_drift_loop": 1
+        },
+        "public_projection": {
+          "collection": {
+            "state": "complete"
+          },
+          "generated_at": "2030-01-01T01:10:00.000Z",
+          "pending": 0,
+          "ready_pending": 0,
+          "admissible_pending": 0,
+          "shed_since_reset": 0,
+          "dispatching": 0,
+          "leased": 0,
+          "oldest_pending_at": null,
+          "oldest_pending_age_seconds": null,
+          "oldest_dispatching_at": null,
+          "oldest_dispatching_age_seconds": null,
+          "oldest_leased_at": null,
+          "oldest_leased_age_seconds": null,
+          "next_wake_at": "2030-01-01T01:15:00.000Z",
+          "handoff_health": {
+            "status": "idle",
+            "reason": "queue_empty",
+            "observed_at": "2030-01-01T01:10:00.000Z",
+            "recovery_reasons": {
+              "claim_timeout": 0,
+              "execution_timeout": 0,
+              "workflow_cancelled": 0,
+              "workflow_failed": 0
+            },
+            "phases": {
+              "pending": {
+                "count": 0,
+                "oldest_at": null,
+                "oldest_age_seconds": null
+              },
+              "dispatching": {
+                "count": 0,
+                "oldest_at": null,
+                "oldest_age_seconds": null
+              },
+              "leased": {
+                "count": 0,
+                "oldest_at": null,
+                "oldest_age_seconds": null
+              }
+            },
+            "warning_after_seconds": 120,
+            "stalled_after_seconds": 240,
+            "capacity": 80,
+            "active": 0,
+            "available_slots": 80,
+            "pending_depth": 0,
+            "shed_since_reset": 0
+          },
+          "pressure": {
+            "status": "idle",
+            "reason": "no_ready_backlog",
+            "capacity": 80,
+            "active": 0,
+            "pending": 0,
+            "ready_pending": 0,
+            "admissible_pending": 0
+          },
+          "review_failure_health": {
+            "status": "healthy",
+            "reasons": [],
+            "window_minutes": 60,
+            "attempts": 0,
+            "affected_targets": 0,
+            "retryable_attempts": 0,
+            "terminal_attempts": 0,
+            "terminal_status_observed": 0,
+            "terminal_status_failed": 0,
+            "repeated_identities": 0,
+            "first_seen_at": null,
+            "last_seen_at": null,
+            "by_stage": {
+              "agent_input_scan": 0,
+              "source_preparation": 0,
+              "provider_or_model": 0,
+              "workflow": 0
+            }
+          },
+          "review_runaway_health": {
+            "status": "healthy",
+            "reason": null,
+            "window_hours": 24,
+            "threshold_reviews_per_day": 24,
+            "runaway_items": 0,
+            "sample_item_keys": []
+          },
+          "manual_publication": {
+            "policy": "record_comment_only",
+            "enabled": false
+          },
+          "scheduled_feed": {
+            "target_rate_per_hour": 220,
+            "enqueue_replay": "scheduled_disposition_v1",
+            "max_concurrent": 32,
+            "active": 0,
+            "burst": 24,
+            "token_balance": 24,
+            "lanes": {
+              "hot_intake": {
+                "target_rate_per_hour": 30,
+                "burst": 8,
+                "token_balance": 8
+              },
+              "normal_backfill": {
+                "target_rate_per_hour": 190,
+                "burst": 16,
+                "token_balance": 16
+              }
+            }
+          },
+          "lanes": {
+            "review": {
+              "pending": 0,
+              "pending_depth": 0,
+              "shed_since_reset": 0,
+              "ready": 0,
+              "backoff": 0,
+              "dispatching": 0,
+              "leased": 0,
+              "parked": 1,
+              "capacity": 80,
+              "active": 0,
+              "available_slots": 80,
+              "enqueued_total": 3,
+              "completed_total": 5,
+              "superseded_total": 0,
+              "semantic_deduped_total": 0,
+              "oldest_pending_at": null,
+              "oldest_ready_at": null,
+              "oldest_backoff_at": null,
+              "next_attempt_at": null,
+              "backoff_reasons": {
+                "dispatch_debounce": 0,
+                "dispatcher_backoff": 0,
+                "admission_retry": 0,
+                "coordination_retry": 0,
+                "throttle_retry": 0,
+                "review_retry": 0,
+                "publication_retry": 0
+              },
+              "parked_reasons": {
+                "dead_letter_capacity": 0,
+                "dispatch_rejected": 0,
+                "review_retry_exhausted": 0,
+                "source_incompatible": 0,
+                "scanner_refused": 0,
+                "direct_publication": 0,
+                "stale_revision": 0,
+                "source_drift_loop": 1,
+                "locked_conversation": 0,
+                "oversized_pull_request": 0,
+                "unknown": 0
+              },
+              "shed_reasons_since_reset": {
+                "backpressure": 0,
+                "scheduled_rate": 0,
+                "unattributed": 0
+              }
+            },
+            "publication": {
+              "pending": 0,
+              "pending_depth": 0,
+              "shed_since_reset": 0,
+              "ready": 0,
+              "backoff": 0,
+              "dispatching": 0,
+              "leased": 0,
+              "parked": 0,
+              "capacity": 32,
+              "active": 0,
+              "available_slots": 32,
+              "enqueued_total": 3,
+              "completed_total": 0,
+              "published_total": 0,
+              "superseded_total": 0,
+              "semantic_deduped_total": 0,
+              "retried_total": 0,
+              "dead_lettered_total": 0,
+              "refreshed_total": 0,
+              "oldest_pending_at": null,
+              "oldest_ready_at": null,
+              "oldest_backoff_at": null,
+              "next_attempt_at": null,
+              "backoff_reasons": {
+                "dispatch_debounce": 0,
+                "dispatcher_backoff": 0,
+                "admission_retry": 0,
+                "coordination_retry": 0,
+                "throttle_retry": 0,
+                "review_retry": 0,
+                "publication_retry": 0
+              },
+              "parked_reasons": {
+                "dead_letter_capacity": 0,
+                "dispatch_rejected": 0,
+                "review_retry_exhausted": 0,
+                "source_incompatible": 0,
+                "scanner_refused": 0,
+                "direct_publication": 0,
+                "stale_revision": 0,
+                "source_drift_loop": 0,
+                "locked_conversation": 0,
+                "oversized_pull_request": 0,
+                "unknown": 0
+              }
+            }
+          },
+          "bay_projection": {
+            "complete": true,
+            "sample_limit": 24,
+            "total": 1,
+            "stages": {
+              "arriving": 0,
+              "setting-up": 0,
+              "reviewing": 0,
+              "publishing": 0,
+              "applying": 0,
+              "repairing": 1
+            },
+            "legacy_batch_stages": {
+              "arriving": 0,
+              "setting-up": 0,
+              "reviewing": 0,
+              "publishing": 0,
+              "applying": 0,
+              "repairing": 0
+            },
+            "activity": {
+              "complete": false,
+              "queue_stages": null,
+              "live_stages": null,
+              "queue_legacy_batch_stages": null,
+              "live_legacy_batch_stages": null,
+              "total": null
+            },
+            "items": [
+              {
+                "repository": "openclaw/openclaw",
+                "item_number": 133001,
+                "stage": "repairing",
+                "source": "queue",
+                "queue_disposition": "parked",
+                "legacy_batch_path": false,
+                "timing": {
+                  "kind": "queue",
+                  "started_at": "2030-01-01T00:59:00.000Z"
+                }
+              }
+            ]
+          }
+        },
+        "loop_rows": [
+          {
+            "item_key": "openclaw/openclaw#133001",
+            "consecutive": 3,
+            "updated_at": 1893459540000
+          },
+          {
+            "item_key": "openclaw/openclaw#133002",
+            "consecutive": 1,
+            "updated_at": 1893457320000
+          }
+        ]
+      },
+      "raw_rows_sha256": "e9d305b53bce5c766429ed40e77c499f2001b37a27eac2ad979f1ecad70ee935"
+    },
+    "baseline_rollback": {
+      "raw_rows_preserved": true,
+      "rows_preserved_after_read": true,
+      "parked": {
+        "state": "parked",
+        "revision": 5,
+        "parked_reason": "source_drift_loop",
+        "stats_parked_reasons": {
+          "source_drift_loop": 1
+        },
+        "public_projection": {
+          "collection": {
+            "state": "complete"
+          },
+          "generated_at": "2030-01-01T01:10:00.000Z",
+          "pending": 0,
+          "ready_pending": 0,
+          "admissible_pending": 0,
+          "shed_since_reset": 0,
+          "dispatching": 0,
+          "leased": 0,
+          "oldest_pending_at": null,
+          "oldest_pending_age_seconds": null,
+          "oldest_dispatching_at": null,
+          "oldest_dispatching_age_seconds": null,
+          "oldest_leased_at": null,
+          "oldest_leased_age_seconds": null,
+          "next_wake_at": "2030-01-01T01:15:00.000Z",
+          "handoff_health": {
+            "status": "idle",
+            "reason": "queue_empty",
+            "observed_at": "2030-01-01T01:10:00.000Z",
+            "recovery_reasons": {
+              "claim_timeout": 0,
+              "execution_timeout": 0,
+              "workflow_cancelled": 0,
+              "workflow_failed": 0
+            },
+            "phases": {
+              "pending": {
+                "count": 0,
+                "oldest_at": null,
+                "oldest_age_seconds": null
+              },
+              "dispatching": {
+                "count": 0,
+                "oldest_at": null,
+                "oldest_age_seconds": null
+              },
+              "leased": {
+                "count": 0,
+                "oldest_at": null,
+                "oldest_age_seconds": null
+              }
+            },
+            "warning_after_seconds": 120,
+            "stalled_after_seconds": 240,
+            "capacity": 80,
+            "active": 0,
+            "available_slots": 80,
+            "pending_depth": 0,
+            "shed_since_reset": 0
+          },
+          "pressure": {
+            "status": "idle",
+            "reason": "no_ready_backlog",
+            "capacity": 80,
+            "active": 0,
+            "pending": 0,
+            "ready_pending": 0,
+            "admissible_pending": 0
+          },
+          "review_failure_health": {
+            "status": "healthy",
+            "reasons": [],
+            "window_minutes": 60,
+            "attempts": 0,
+            "affected_targets": 0,
+            "retryable_attempts": 0,
+            "terminal_attempts": 0,
+            "terminal_status_observed": 0,
+            "terminal_status_failed": 0,
+            "repeated_identities": 0,
+            "first_seen_at": null,
+            "last_seen_at": null,
+            "by_stage": {
+              "agent_input_scan": 0,
+              "source_preparation": 0,
+              "provider_or_model": 0,
+              "workflow": 0
+            }
+          },
+          "review_runaway_health": {
+            "status": "healthy",
+            "reason": null,
+            "window_hours": 24,
+            "threshold_reviews_per_day": 24,
+            "runaway_items": 0,
+            "sample_item_keys": []
+          },
+          "manual_publication": {
+            "policy": "record_comment_only",
+            "enabled": false
+          },
+          "scheduled_feed": {
+            "target_rate_per_hour": 220,
+            "enqueue_replay": "scheduled_disposition_v1",
+            "max_concurrent": 32,
+            "active": 0,
+            "burst": 24,
+            "token_balance": 24,
+            "lanes": {
+              "hot_intake": {
+                "target_rate_per_hour": 30,
+                "burst": 8,
+                "token_balance": 8
+              },
+              "normal_backfill": {
+                "target_rate_per_hour": 190,
+                "burst": 16,
+                "token_balance": 16
+              }
+            }
+          },
+          "lanes": {
+            "review": {
+              "pending": 0,
+              "pending_depth": 0,
+              "shed_since_reset": 0,
+              "ready": 0,
+              "backoff": 0,
+              "dispatching": 0,
+              "leased": 0,
+              "parked": 1,
+              "capacity": 80,
+              "active": 0,
+              "available_slots": 80,
+              "enqueued_total": 3,
+              "completed_total": 5,
+              "superseded_total": 0,
+              "semantic_deduped_total": 0,
+              "oldest_pending_at": null,
+              "oldest_ready_at": null,
+              "oldest_backoff_at": null,
+              "next_attempt_at": null,
+              "backoff_reasons": {
+                "dispatch_debounce": 0,
+                "dispatcher_backoff": 0,
+                "admission_retry": 0,
+                "coordination_retry": 0,
+                "throttle_retry": 0,
+                "review_retry": 0,
+                "publication_retry": 0
+              },
+              "parked_reasons": {
+                "dead_letter_capacity": 0,
+                "dispatch_rejected": 0,
+                "review_retry_exhausted": 0,
+                "source_incompatible": 0,
+                "scanner_refused": 0,
+                "direct_publication": 0,
+                "stale_revision": 0,
+                "source_drift_loop": 1,
+                "locked_conversation": 0,
+                "oversized_pull_request": 0,
+                "unknown": 0
+              },
+              "shed_reasons_since_reset": {
+                "backpressure": 0,
+                "scheduled_rate": 0,
+                "unattributed": 0
+              }
+            },
+            "publication": {
+              "pending": 0,
+              "pending_depth": 0,
+              "shed_since_reset": 0,
+              "ready": 0,
+              "backoff": 0,
+              "dispatching": 0,
+              "leased": 0,
+              "parked": 0,
+              "capacity": 32,
+              "active": 0,
+              "available_slots": 32,
+              "enqueued_total": 3,
+              "completed_total": 0,
+              "published_total": 0,
+              "superseded_total": 0,
+              "semantic_deduped_total": 0,
+              "retried_total": 0,
+              "dead_lettered_total": 0,
+              "refreshed_total": 0,
+              "oldest_pending_at": null,
+              "oldest_ready_at": null,
+              "oldest_backoff_at": null,
+              "next_attempt_at": null,
+              "backoff_reasons": {
+                "dispatch_debounce": 0,
+                "dispatcher_backoff": 0,
+                "admission_retry": 0,
+                "coordination_retry": 0,
+                "throttle_retry": 0,
+                "review_retry": 0,
+                "publication_retry": 0
+              },
+              "parked_reasons": {
+                "dead_letter_capacity": 0,
+                "dispatch_rejected": 0,
+                "review_retry_exhausted": 0,
+                "source_incompatible": 0,
+                "scanner_refused": 0,
+                "direct_publication": 0,
+                "stale_revision": 0,
+                "source_drift_loop": 0,
+                "locked_conversation": 0,
+                "oversized_pull_request": 0,
+                "unknown": 0
+              }
+            }
+          },
+          "bay_projection": {
+            "complete": true,
+            "sample_limit": 24,
+            "total": 1,
+            "stages": {
+              "arriving": 0,
+              "setting-up": 0,
+              "reviewing": 0,
+              "publishing": 0,
+              "applying": 0,
+              "repairing": 1
+            },
+            "legacy_batch_stages": {
+              "arriving": 0,
+              "setting-up": 0,
+              "reviewing": 0,
+              "publishing": 0,
+              "applying": 0,
+              "repairing": 0
+            },
+            "activity": {
+              "complete": false,
+              "queue_stages": null,
+              "live_stages": null,
+              "queue_legacy_batch_stages": null,
+              "live_legacy_batch_stages": null,
+              "total": null
+            },
+            "items": [
+              {
+                "repository": "openclaw/openclaw",
+                "item_number": 133001,
+                "stage": "repairing",
+                "source": "queue",
+                "queue_disposition": "parked",
+                "legacy_batch_path": false,
+                "timing": {
+                  "kind": "queue",
+                  "started_at": "2030-01-01T00:59:00.000Z"
+                }
+              }
+            ]
+          }
+        },
+        "loop_rows": [
+          {
+            "item_key": "openclaw/openclaw#133001",
+            "consecutive": 3,
+            "updated_at": 1893459540000
+          },
+          {
+            "item_key": "openclaw/openclaw#133002",
+            "consecutive": 1,
+            "updated_at": 1893457320000
+          }
+        ]
+      },
+      "organic_release": "pending",
+      "release_dispatches": 1
+    }
+  },
+  "assertions": {
+    "upgrade_raw_rows_unchanged": true,
+    "upgrade_uses_existing_counter": true,
+    "rollback_reads_and_releases": true
+  },
+  "limits": "Real Worker routes and real DO alarm dispatcher in workerd; synthetic loopback GitHub responses, RSA credential and review publications; no GitHub Actions execution, inference, production state or GitHub mutation. Clock and alarm scheduling are controlled by the harness. Proof-only routes tick the real alarm and read raw SQLite rows; they do not write queue state."
+}

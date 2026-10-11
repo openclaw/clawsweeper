@@ -23,12 +23,28 @@ import path from "node:path";
 
 const [baseRef, toolPrefix, output] = process.argv.slice(2);
 assert.ok(baseRef && toolPrefix && output, "expected BASE_REF TOOL_PREFIX FRESH_OUTPUT_DIR");
+// The direct-lifecycle case uses the same bundled Worker harness as the loop
+// comparison, with a single SQLite Durable Object reopened across versions.
+if (process.argv[5] === "direct") {
+  execFileSync(
+    process.execPath,
+    [
+      path.resolve("docs/proof/source-drift-loop-breaker/run-proof.mjs"),
+      baseRef,
+      toolPrefix,
+      output,
+      "direct-upgrade",
+    ],
+    { stdio: "inherit" },
+  );
+  process.exit(0);
+}
 const root = process.cwd();
 const out = path.resolve(output);
 mkdirSync(path.dirname(out), { recursive: true });
 mkdirSync(out);
 const require = createRequire(path.resolve(toolPrefix, "package.json"));
-const { Miniflare } = require("miniflare");
+const { Miniflare, convertV4MiniflareOptions } = require("miniflare");
 const { build } = require("esbuild");
 const git = (...args) => execFileSync("git", args, { encoding: "utf8" }).trim();
 
@@ -208,20 +224,31 @@ export default {
     });
     factories[variant] = () =>
       new Miniflare({
-        name: "source-drift-loop-upgrade-proof",
-        modules: true,
-        script: bundle.outputFiles[0].text,
-        compatibilityDate: "2026-07-08",
-        compatibilityFlags: ["nodejs_compat"],
-        durableObjects: { EXACT_REVIEW_QUEUE: { className: "ProofQueue", useSQLite: true } },
-        durableObjectsPersist: persist,
-        bindings: {
-          ...vars,
-          GITHUB_API_URL: `http://${address}`,
-          CLAWSWEEPER_APP_CLIENT_ID: "Iv23fixture",
-          CLAWSWEEPER_APP_PRIVATE_KEY: privateKey,
-        },
-        outboundService: { external: { address, http: {} } },
+        ...convertV4MiniflareOptions({
+          name: "source-drift-loop-upgrade-proof",
+          modules: true,
+          script: bundle.outputFiles[0].text,
+          compatibilityDate: "2026-07-08",
+          compatibilityFlags: ["nodejs_compat"],
+          durableObjects: { EXACT_REVIEW_QUEUE: { className: "ProofQueue", useSQLite: true } },
+          bindings: {
+            ...vars,
+            GITHUB_API_URL: `http://${address}`,
+            CLAWSWEEPER_APP_CLIENT_ID: "Iv23fixture",
+            CLAWSWEEPER_APP_PRIVATE_KEY: privateKey,
+          },
+          outboundService: async (request) => {
+            const url = new URL(request.url);
+            return fetch(`http://${address}${url.pathname}${url.search}`, {
+              method: request.method,
+              headers: request.headers,
+              ...(request.method === "GET" || request.method === "HEAD"
+                ? {}
+                : { body: await request.arrayBuffer() }),
+            });
+          },
+        }),
+        resourcePersistencePath: persist,
       });
   }
 
@@ -253,7 +280,7 @@ export default {
     const tick = async () => {
       const ready = new Map();
       for (let pass = 0; pass < 5; pass += 1) {
-        clock.now += pass === 0 ? 2 * MINUTE : 5_000;
+        clock.now += pass === 0 ? 11 * MINUTE : 5_000;
         await call("/q/__tick", {});
         const fresh = dispatches.slice(clock.seen);
         clock.seen = dispatches.length;
