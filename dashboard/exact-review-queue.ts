@@ -10237,9 +10237,9 @@ export class ExactReviewQueue {
     const body = objectValue(value);
     const identity = exactReviewLifecycleIdentity(body);
     const receiptId = typeof body.receipt_id === "string" ? body.receipt_id : "";
-    // Publishers send not_required for the configured scheduled-router target,
-    // whose missed commands have independent recovery. Other targets retain a
-    // dispatch and durable receipt; durable also covers separate deferred close proof.
+    // Publishers send not_required only for the configured scheduled-router
+    // target with execution enabled, whose missed commands have recovery.
+    // Other targets retain dispatch; durable also covers deferred close proof.
     const outcome = body.outcome === undefined ? "durable" : body.outcome;
     if (!identity || !receiptId || (outcome !== "durable" && outcome !== "not_required")) {
       return json({ error: "invalid_lifecycle_router_receipt" }, 400);

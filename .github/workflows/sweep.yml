@@ -1316,6 +1316,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           COMMENT_ROUTER_RECOVERY_REPO: ${{ vars.CLAWSWEEPER_TARGET_REPO || 'openclaw/openclaw' }}
+          COMMENT_ROUTER_RECOVERY_EXECUTE: ${{ vars.CLAWSWEEPER_COMMENT_ROUTER_EXECUTE || '0' }}
           CLAWSWEEPER_COMMENT_LOOKBACK_MINUTES: ${{ vars.CLAWSWEEPER_COMMENT_LOOKBACK_MINUTES || '180' }}
           CLAWSWEEPER_COMMENT_MAX_COMMENTS: ${{ vars.CLAWSWEEPER_COMMENT_MAX_COMMENTS || '1000' }}
           CLAWSWEEPER_GITHUB_POOL_CLASS: repository_actions
@@ -1360,7 +1361,7 @@ jobs:
               lifecycle_router_outcome="not_required"
             elif jq -e '.disposition.routableSyncExpected == true' "$DIRECT_OUTCOME" >/dev/null; then
               lifecycle_router_outcome="not_required"
-              if [ "$TARGET_REPO" != "$COMMENT_ROUTER_RECOVERY_REPO" ]; then
+              if [ "$COMMENT_ROUTER_RECOVERY_EXECUTE" != "1" ] || [ "$TARGET_REPO" != "$COMMENT_ROUTER_RECOVERY_REPO" ]; then
                 gh workflow run repair-comment-router.yml --repo "$GITHUB_REPOSITORY" --ref main \
                   -f execute=true -f target_repo="$TARGET_REPO" -f target_branch="$TARGET_BRANCH" \
                   -f item_numbers="$ITEM_NUMBER" \
@@ -1953,6 +1954,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           COMMENT_ROUTER_RECOVERY_REPO: ${{ vars.CLAWSWEEPER_TARGET_REPO || 'openclaw/openclaw' }}
+          COMMENT_ROUTER_RECOVERY_EXECUTE: ${{ vars.CLAWSWEEPER_COMMENT_ROUTER_EXECUTE || '0' }}
           TARGET_REPO: ${{ steps.publication-context.outputs.target_repo }}
           TARGET_BRANCH: ${{ steps.publication-context.outputs.target_branch }}
           ITEM_NUMBER: ${{ steps.publication-context.outputs.item_number }}
@@ -1996,7 +1998,7 @@ jobs:
             case "$lifecycle_kind" in
               router)
                 router_outcome="not_required"
-                if [ "$TARGET_REPO" != "$COMMENT_ROUTER_RECOVERY_REPO" ]; then
+                if [ "$COMMENT_ROUTER_RECOVERY_EXECUTE" != "1" ] || [ "$TARGET_REPO" != "$COMMENT_ROUTER_RECOVERY_REPO" ]; then
                   gh workflow run repair-comment-router.yml --repo "$GITHUB_REPOSITORY" --ref main \
                     -f execute=true -f target_repo="$TARGET_REPO" -f target_branch="$TARGET_BRANCH" \
                     -f item_numbers="$ITEM_NUMBER" \
@@ -2346,6 +2348,9 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           COMMENT_ROUTER_RECOVERY_REPO: ${{ vars.CLAWSWEEPER_TARGET_REPO || 'openclaw/openclaw' }}
+          COMMENT_ROUTER_RECOVERY_EXECUTE: ${{ vars.CLAWSWEEPER_COMMENT_ROUTER_EXECUTE || '0' }}
+          CLAWSWEEPER_GITHUB_POOL_CLASS: repository_actions
+          CLAWSWEEPER_GITHUB_STAGE: publication_router
           TARGET_BRANCH: ${{ steps.publication-context.outputs.target_branch }}
           CLAWSWEEPER_COMMENT_LOOKBACK_MINUTES: ${{ vars.CLAWSWEEPER_COMMENT_LOOKBACK_MINUTES || '180' }}
           CLAWSWEEPER_COMMENT_MAX_COMMENTS: ${{ vars.CLAWSWEEPER_COMMENT_MAX_COMMENTS || '1000' }}
@@ -2359,7 +2364,7 @@ jobs:
           set -euo pipefail
           source scripts/control-plane-curl.sh
           router_outcome="not_required"
-          if [ "$TARGET_REPO" != "$COMMENT_ROUTER_RECOVERY_REPO" ]; then
+          if [ "$COMMENT_ROUTER_RECOVERY_EXECUTE" != "1" ] || [ "$TARGET_REPO" != "$COMMENT_ROUTER_RECOVERY_REPO" ]; then
             gh workflow run repair-comment-router.yml --repo "$GITHUB_REPOSITORY" --ref main \
               -f execute=true -f target_repo="$TARGET_REPO" -f target_branch="$TARGET_BRANCH" \
               -f item_numbers="$ITEM_NUMBER" \

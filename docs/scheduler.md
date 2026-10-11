@@ -163,10 +163,10 @@ is `--receipt-id-prefix` plus the run id and run attempt.
 
 Review publication for the configured scheduled-router target
 (`CLAWSWEEPER_TARGET_REPO`, default `openclaw/openclaw`) records `router-receipt`
-with `outcome=not_required`; it does not dispatch a comment-history scan.
-Other targets retain the post-publication router dispatch and `durable` receipt
-because the five-minute schedule does not scan those repositories.
-The Worker still records that
+with `outcome=not_required` only while scheduled execution is enabled
+(`CLAWSWEEPER_COMMENT_ROUTER_EXECUTE=1`); it does not dispatch a comment-history
+scan. Other targets, or disabled scheduled execution, retain the post-publication
+router dispatch and `durable` receipt. The Worker still records that
 receipt and the terminal `review_completed_routed` disposition atomically, then
 drives any required command-status acknowledgement independently. Deferred
 close-proof coverage retains its `durable` receipt and existing proof owner.

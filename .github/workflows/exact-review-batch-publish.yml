@@ -158,6 +158,7 @@ jobs:
           CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
           GH_TOKEN: ${{ github.token }}
           COMMENT_ROUTER_RECOVERY_REPO: ${{ vars.CLAWSWEEPER_TARGET_REPO || 'openclaw/openclaw' }}
+          COMMENT_ROUTER_RECOVERY_EXECUTE: ${{ vars.CLAWSWEEPER_COMMENT_ROUTER_EXECUTE || '0' }}
           CLAWSWEEPER_COMMENT_LOOKBACK_MINUTES: ${{ vars.CLAWSWEEPER_COMMENT_LOOKBACK_MINUTES || '180' }}
           CLAWSWEEPER_COMMENT_MAX_COMMENTS: ${{ vars.CLAWSWEEPER_COMMENT_MAX_COMMENTS || '1000' }}
         run: |
@@ -259,7 +260,7 @@ jobs:
               lifecycle_router_outcome="not_required"
             elif jq -e '.disposition.routableSyncExpected == true' "$outcome_path" >/dev/null; then
               lifecycle_router_outcome="not_required"
-              if [ "$target_repo" != "$COMMENT_ROUTER_RECOVERY_REPO" ]; then
+              if [ "$COMMENT_ROUTER_RECOVERY_EXECUTE" != "1" ] || [ "$target_repo" != "$COMMENT_ROUTER_RECOVERY_REPO" ]; then
                 github_apply_error="$(mktemp)"
                 if gh workflow run repair-comment-router.yml --repo "$GITHUB_REPOSITORY" --ref main \
                   -f execute=true -f target_repo="$target_repo" -f target_branch="$target_branch" \

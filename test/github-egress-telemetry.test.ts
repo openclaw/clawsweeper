@@ -428,6 +428,7 @@ test("publication workflows retain v1 metrics while wiring bounded v2 observatio
   );
   for (const step of [
     direct.find((candidate) => candidate.id === "finalize-direct-exact-review-lifecycle"),
+    artifact.find((candidate) => candidate.id === "record-publication-router-coverage"),
   ] as Array<{ env?: Record<string, string> } | undefined>) {
     assert.equal(step?.env?.CLAWSWEEPER_GITHUB_POOL_CLASS, "repository_actions");
     assert.equal(step?.env?.CLAWSWEEPER_GITHUB_STAGE, "publication_router");
