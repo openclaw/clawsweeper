@@ -16,7 +16,7 @@ import {
   MemoryDurableNamespace,
   MemoryDurableStorage,
   test,
-  summarizeBayJourneyTimings,
+  bayJourneyTimingSnapshot,
   worker,
 } from "./dashboard-worker-harness.ts";
 
@@ -651,7 +651,7 @@ test("hosted durable command intake keeps the GitHub delivery identity for Bay j
   assert.equal(stateAfterAcknowledgement.journeys.length, 1);
   assert.equal(stateAfterAcknowledgement.journeys[0]?.source_delivery_id, commandDeliveryId);
   assert.equal(
-    summarizeBayJourneyTimings(stateAfterAcknowledgement.journeys, new Date().toISOString()).overall
+    bayJourneyTimingSnapshot(stateAfterAcknowledgement.journeys, new Date().toISOString()).overall
       .samples,
     1,
   );
@@ -704,7 +704,7 @@ test("hosted durable command intake keeps the GitHub delivery identity for Bay j
   assert.ok(state.journeys[0]?.triggered_at);
   assert.ok(state.journeys[0]?.completed_at);
   assert.equal(
-    summarizeBayJourneyTimings(state.journeys, new Date().toISOString()).overall.samples,
+    bayJourneyTimingSnapshot(state.journeys, new Date().toISOString()).overall.samples,
     1,
   );
 });

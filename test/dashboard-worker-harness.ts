@@ -12,7 +12,6 @@ import { gunzipSync } from "node:zlib";
 import runtimeWorker, {
   automaticIssueWork,
   ExactReviewQueue as RuntimeExactReviewQueue,
-  completedBayReviews,
   exactReviewEffectiveLeaseExpiresAt,
   exactReviewJitteredDelayMs,
   exactReviewPublicationCapacity,
@@ -28,7 +27,6 @@ import runtimeWorker, {
   readCachedSnapshot,
   StatusStore,
   summarizeAutomergeReliability,
-  summarizeBayJourneyTimings,
   workerWorkKind,
   workflowJobsForRunSnapshot,
 } from "../dashboard/worker.ts";
@@ -1138,6 +1136,37 @@ function unclaimedExactReviewQueueItem(itemNumber: number) {
   };
 }
 
+export function bayJourneyTimingSnapshot(journeys, generatedAt) {
+  const storage = new MemoryDurableStorage();
+  try {
+    const telemetry = new ExactReviewLifecycleTelemetryStore(storage);
+    telemetry.ensureSchemaSync();
+    const now = Date.parse(generatedAt);
+    storage.sql.exec(
+      "UPDATE exact_review_lifecycle_bay_meta_v2 SET coverage_started_at = ? WHERE singleton = 1",
+      now - 24 * 60 * 60_000,
+    );
+    for (const [index, journey] of journeys.entries()) {
+      const triggeredAt = Date.parse(String(journey.triggered_at || ""));
+      const completedAt = Date.parse(String(journey.completed_at || ""));
+      if (!Number.isFinite(triggeredAt) || !Number.isFinite(completedAt)) continue;
+      storage.sql.exec(
+        `INSERT INTO exact_review_lifecycle_bay_event_v2
+           (event_id, canonical_target_key, fence_key, revision, outcome, triggered_at, completed_at, legacy_batch_path)
+         VALUES (?, ?, ?, 1, 'success', ?, ?, 0)`,
+        `fixture:${index}`,
+        `openclaw/openclaw#${index + 1}`,
+        `fixture:${index}`,
+        triggeredAt,
+        completedAt,
+      );
+    }
+    return telemetry.baySnapshot(now).timings!;
+  } finally {
+    storage.sql.close();
+  }
+}
+
 export {
   assert,
   createHash,
@@ -1155,7 +1184,6 @@ export {
   worker,
   automaticIssueWork,
   ExactReviewQueue,
-  completedBayReviews,
   exactReviewEffectiveLeaseExpiresAt,
   exactReviewJitteredDelayMs,
   exactReviewPublicationCapacity,
@@ -1171,7 +1199,6 @@ export {
   readCachedSnapshot,
   StatusStore,
   summarizeAutomergeReliability,
-  summarizeBayJourneyTimings,
   workerWorkKind,
   workflowJobsForRunSnapshot,
   ExactReviewPublicationBatchStore,

@@ -1,10 +1,7 @@
 import {
   EXACT_REVIEW_LIFECYCLE_PROJECTION_TABLE,
-  commandAcknowledgementState,
-  lifecycleState,
   validLifecycleProjectionJson,
   type ExactReviewLifecycleProjection,
-  type LifecycleTerminalDisposition,
 } from "./exact-review-lifecycle.ts";
 import { inlineProofParticipation, type InlineProofCohorts } from "./inline-proof-telemetry.ts";
 import { sqlColumnNames, type DurableStorage } from "./durable-storage.ts";
@@ -48,44 +45,6 @@ const BAY_GLOBAL_TIDE_SCOPE = "__all_repositories__";
 export type DirectPublicationTelemetryOutcome = "accepted" | "deduped" | "superseded" | "fallback";
 
 export type BatchPublicationTelemetryOutcome = "superseded" | "retryable" | "permanent";
-
-/**
- * Producer-only durable telemetry contract. Its counts are derived from the
- * lifecycle projection and server-observed publication results, never from a
- * workflow run or a visible command-status acknowledgement.
- */
-export type ExactReviewLifecycleTelemetryV1 = {
-  version: 1;
-  generatedAt: number;
-  inventory: {
-    uniqueTargets: number;
-    targetRevisions: number;
-    lifecycleRecords: number;
-  };
-  age: {
-    activeRecords: number;
-    oldestActiveMs: number | null;
-  };
-  terminalCoverage: {
-    trackedRecords: number;
-    currentRecords: number;
-    durableTerminalRecords: number;
-    durableTerminalCoveragePercent: number | null;
-    unknownTerminalRecords: number;
-    acknowledgementPendingRecords: number;
-    nonCurrentRecords: number;
-    terminalClasses: Record<LifecycleTerminalDisposition, number>;
-  };
-  publication: {
-    direct: Record<DirectPublicationTelemetryOutcome | "unknown", number>;
-    batch: Record<"accepted" | "deduped" | BatchPublicationTelemetryOutcome, number>;
-    lifecycleRetries: number;
-    lastSuccessfulCanonicalAcceptanceAt: number | null;
-  };
-  invalidProjectionRows: number;
-};
-
-export type ExactReviewLifecycleTelemetrySummary = ExactReviewLifecycleTelemetryV1;
 
 type DirectOutcomeInput = {
   canonicalTargetKey: string;
@@ -227,18 +186,6 @@ type BayReconciliationAggregate = {
     samples: number;
   };
 };
-
-const TERMINAL_CLASSES: LifecycleTerminalDisposition[] = [
-  "review_completed_routed",
-  "superseded",
-  "requeue",
-  "dead_letter",
-  "target_closed",
-  "target_missing",
-  "policy_noop",
-  "guarded_open",
-  "failure",
-];
 
 export class ExactReviewLifecycleTelemetryStore {
   private readonly storage: DurableStorage;
@@ -1442,151 +1389,6 @@ export class ExactReviewLifecycleTelemetryStore {
     });
   }
 
-  /**
-   * Intentionally has no queue fetch route in Workstream 3. A future,
-   * maintainer-approved authenticated operator reader may aggregate this
-   * producer contract, but must not turn it into Bay/public status data.
-   */
-  summary(now: number): ExactReviewLifecycleTelemetrySummary {
-    const retentionCutoff = now - EXACT_REVIEW_LIFECYCLE_TELEMETRY_RETENTION_MS;
-    const projections: ExactReviewLifecycleProjection[] = [];
-    let invalidProjectionRows = 0;
-    for (const row of this.storage.sql.exec(
-      `SELECT projection_json FROM ${EXACT_REVIEW_LIFECYCLE_PROJECTION_TABLE}`,
-    )) {
-      const projection = projectionFromRow(String(row.projection_json || ""));
-      if (projection) projections.push(projection);
-      else invalidProjectionRows += 1;
-    }
-
-    const maxRevisionByTarget = new Map<string, number>();
-    for (const projection of projections) {
-      maxRevisionByTarget.set(
-        projection.canonicalTargetKey,
-        Math.max(maxRevisionByTarget.get(projection.canonicalTargetKey) ?? 0, projection.revision),
-      );
-    }
-
-    const terminalClasses = Object.fromEntries(TERMINAL_CLASSES.map((kind) => [kind, 0])) as Record<
-      LifecycleTerminalDisposition,
-      number
-    >;
-    const direct = emptyDirectOutcomes();
-    const batch = emptyBatchOutcomes();
-    let activeRecords = 0;
-    let oldestActiveMs: number | null = null;
-    let durableTerminalRecords = 0;
-    let unknownTerminalRecords = 0;
-    let acknowledgementPendingRecords = 0;
-    let nonCurrentRecords = 0;
-    let lifecycleRetries = 0;
-    let lastSuccessfulCanonicalAcceptanceAt: number | null = null;
-    const directKnownByRecord = new Set<string>();
-
-    for (const row of this.storage.sql.exec(
-      `SELECT canonical_target_key, fence_key, revision
-         FROM ${EXACT_REVIEW_LIFECYCLE_TELEMETRY_DIRECT_TABLE}
-        WHERE observed_at >= ?`,
-      retentionCutoff,
-    )) {
-      directKnownByRecord.add(
-        identityKey({
-          canonicalTargetKey: String(row.canonical_target_key || ""),
-          fenceKey: String(row.fence_key || ""),
-          revision: Number(row.revision),
-        }),
-      );
-    }
-    for (const row of this.storage.sql.exec(
-      `SELECT outcome, COUNT(*) AS count FROM ${EXACT_REVIEW_LIFECYCLE_TELEMETRY_DIRECT_TABLE}
-        WHERE observed_at >= ?
-        GROUP BY outcome`,
-      retentionCutoff,
-    )) {
-      const outcome = String(row.outcome || "") as DirectPublicationTelemetryOutcome;
-      if (DIRECT_OUTCOMES.has(outcome)) direct[outcome] = Number(row.count || 0);
-    }
-    for (const row of this.storage.sql.exec(
-      `SELECT outcome, COUNT(*) AS count FROM ${EXACT_REVIEW_LIFECYCLE_TELEMETRY_BATCH_TABLE}
-        WHERE observed_at >= ?
-        GROUP BY outcome`,
-      retentionCutoff,
-    )) {
-      const outcome = String(row.outcome || "") as BatchPublicationTelemetryOutcome;
-      if (BATCH_OUTCOMES.has(outcome)) batch[outcome] = Number(row.count || 0);
-    }
-
-    for (const projection of projections) {
-      const state = lifecycleState(projection);
-      const acknowledgement = commandAcknowledgementState(projection);
-      const terminal = projection.terminalDisposition?.kind ?? null;
-      const isCurrent =
-        projection.revision === maxRevisionByTarget.get(projection.canonicalTargetKey) &&
-        state !== "superseded" &&
-        state !== "requeue";
-      if (!isCurrent) nonCurrentRecords += 1;
-      if (terminal) {
-        durableTerminalRecords += 1;
-        terminalClasses[terminal] += 1;
-      } else {
-        unknownTerminalRecords += 1;
-        activeRecords += 1;
-        const age = Math.max(0, now - projection.admission.admittedAt);
-        oldestActiveMs = Math.max(oldestActiveMs ?? 0, age);
-      }
-      if (acknowledgement === "pending") acknowledgementPendingRecords += 1;
-      lifecycleRetries += Math.max(0, projection.claims.length - 1);
-      for (const receipt of projection.canonicalReceipts) {
-        if (receipt.observedAt < retentionCutoff) continue;
-        if (receipt.outcome === "accepted" || receipt.outcome === "deduped") {
-          lastSuccessfulCanonicalAcceptanceAt = Math.max(
-            lastSuccessfulCanonicalAcceptanceAt ?? 0,
-            receipt.observedAt,
-          );
-        }
-        if (isBatchFence(projection.fenceKey)) batch[receipt.outcome] += 1;
-      }
-      if (!isBatchFence(projection.fenceKey)) {
-        const key = identityKey(projection);
-        if (!directKnownByRecord.has(key) && !projection.canonicalReceipts.length)
-          direct.unknown += 1;
-      }
-    }
-
-    const targetRevisions = new Set(
-      projections.map((projection) => `${projection.canonicalTargetKey}:${projection.revision}`),
-    ).size;
-    return {
-      version: 1,
-      generatedAt: now,
-      inventory: {
-        uniqueTargets: maxRevisionByTarget.size,
-        targetRevisions,
-        lifecycleRecords: projections.length,
-      },
-      age: { activeRecords, oldestActiveMs },
-      terminalCoverage: {
-        trackedRecords: projections.length,
-        currentRecords: projections.length - nonCurrentRecords,
-        durableTerminalRecords,
-        durableTerminalCoveragePercent: projections.length
-          ? Math.round((durableTerminalRecords / projections.length) * 10_000) / 100
-          : null,
-        unknownTerminalRecords,
-        acknowledgementPendingRecords,
-        nonCurrentRecords,
-        terminalClasses,
-      },
-      publication: {
-        direct,
-        batch,
-        lifecycleRetries,
-        lastSuccessfulCanonicalAcceptanceAt,
-      },
-      invalidProjectionRows,
-    };
-  }
-
   private pruneSync(now: number) {
     const cutoff = now - EXACT_REVIEW_LIFECYCLE_TELEMETRY_RETENTION_MS;
     for (const table of [
@@ -2697,14 +2499,6 @@ const BATCH_OUTCOMES = new Set<BatchPublicationTelemetryOutcome>([
   "permanent",
 ]);
 
-function emptyDirectOutcomes() {
-  return { accepted: 0, deduped: 0, superseded: 0, fallback: 0, unknown: 0 };
-}
-
-function emptyBatchOutcomes() {
-  return { accepted: 0, deduped: 0, superseded: 0, retryable: 0, permanent: 0 };
-}
-
 function projectionFromRow(value: string): ExactReviewLifecycleProjection | null {
   try {
     const projection = JSON.parse(value) as ExactReviewLifecycleProjection;
@@ -2740,14 +2534,6 @@ function validateIdentity(input: {
   ) {
     throw new Error("invalid lifecycle telemetry identity");
   }
-}
-
-function identityKey(input: { canonicalTargetKey: string; fenceKey: string; revision: number }) {
-  return `${input.canonicalTargetKey}\u0000${input.fenceKey}\u0000${input.revision}`;
-}
-
-function isBatchFence(fenceKey: string) {
-  return fenceKey.includes("@publish:");
 }
 
 function validCanonicalTargetKey(value: string) {

@@ -32,8 +32,8 @@ import {
   type ExactReviewQueueItem,
 } from "./dashboard-worker-harness.ts";
 import { reviewCommandProofBinding } from "../dist/clawsweeper-review-command-workflow.js";
-import { skipAutomaticEndorReview } from "../dist/repair/endor-automerge-intake.js";
 import { COMMAND_PROOF_SOURCE_ACTION } from "../src/command-proof-contract.ts";
+import { skipAutomaticEndorReview } from "../dist/repair/endor-automerge-intake.js";
 
 function credentialRecoveryJitterMs(key: string) {
   let hash = 2166136261;
@@ -930,26 +930,33 @@ test("lifecycle telemetry counts durable terminal coverage without treating ackn
     observedAt: admittedAt - 7 * 24 * 60 * 60 * 1_000 - 1,
   });
 
-  const summary = telemetry.summary(admittedAt + 10_000);
-  assert.equal(summary.terminalCoverage.acknowledgementPendingRecords, 1);
-  assert.equal(summary.terminalCoverage.unknownTerminalRecords, 5);
-  assert.equal(summary.terminalCoverage.nonCurrentRecords, 2);
-  assert.equal(summary.terminalCoverage.terminalClasses.review_completed_routed, 3);
-  assert.equal(summary.terminalCoverage.terminalClasses.superseded, 2);
-  assert.equal(summary.publication.direct.accepted, 1);
-  assert.equal(summary.publication.direct.superseded, 1);
-  assert.equal(summary.publication.direct.fallback, 0);
-  assert.equal(summary.publication.direct.unknown, 2);
-  assert.deepEqual(summary.publication.batch, {
-    accepted: 1,
-    deduped: 1,
-    superseded: 1,
-    retryable: 1,
-    permanent: 1,
-  });
-  assert.equal(summary.publication.lifecycleRetries, 1);
-  assert.equal(summary.publication.lastSuccessfulCanonicalAcceptanceAt, admittedAt + 816);
-  assert.equal(JSON.stringify(summary).includes("openclaw/openclaw"), false);
+  const pending = lifecycle.read(
+    acknowledgementPending.canonicalTargetKey,
+    acknowledgementPending.fenceKey,
+    acknowledgementPending.revision,
+  )!;
+  assert.equal(commandAcknowledgementState(pending), "pending");
+  assert.equal(pending.terminalDisposition?.kind, "review_completed_routed");
+  assert.equal(pending.claims.length, 2);
+  const cutoff = admittedAt + 10_000 - 7 * 24 * 60 * 60 * 1_000;
+  assert.deepEqual(
+    Array.from(
+      storage.sql.exec(
+        "SELECT outcome FROM exact_review_lifecycle_telemetry_direct_v1 WHERE observed_at >= ? ORDER BY outcome",
+        cutoff,
+      ),
+    ).map((row) => row.outcome),
+    ["accepted", "superseded"],
+  );
+  assert.deepEqual(
+    Array.from(
+      storage.sql.exec(
+        "SELECT outcome FROM exact_review_lifecycle_telemetry_batch_v1 WHERE observed_at >= ? ORDER BY outcome",
+        cutoff,
+      ),
+    ).map((row) => row.outcome),
+    ["permanent", "retryable"],
+  );
 });
 
 test("full review admission does not inflate staged publication capacity", () => {

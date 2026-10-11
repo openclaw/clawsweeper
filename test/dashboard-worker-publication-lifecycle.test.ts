@@ -1189,14 +1189,16 @@ test("direct publication endpoint authenticates, dedupes, and returns a structur
       ?.canonicalReceipts.map((receipt) => receipt.receiptId),
     ["direct-v2:openclaw/openclaw#701:4:accepted", "direct-v2:openclaw/openclaw#701:4:deduped"],
   );
-  const directTelemetry = new ExactReviewLifecycleTelemetryStore(storage).summary(Date.now());
-  assert.deepEqual(directTelemetry.publication.direct, {
-    accepted: 1,
-    deduped: 1,
-    superseded: 0,
-    fallback: 1,
-    unknown: 0,
-  });
+  assert.deepEqual(
+    Object.fromEntries(
+      Array.from(
+        storage.sql.exec(
+          "SELECT outcome, COUNT(*) AS count FROM exact_review_lifecycle_telemetry_direct_v1 GROUP BY outcome",
+        ),
+      ).map((row) => [row.outcome, row.count]),
+    ),
+    { accepted: 1, deduped: 1, fallback: 1 },
+  );
   const directState = (await storage.get("exact-review-queue")) as {
     items: Record<
       string,
@@ -1490,8 +1492,8 @@ test("direct publication endpoint authenticates, dedupes, and returns a structur
     state_commit_sha: null,
   });
   assert.deepEqual(
-    new ExactReviewLifecycleTelemetryStore(storage).summary(Date.now()).publication.batch,
-    { accepted: 1, deduped: 1, superseded: 0, retryable: 0, permanent: 0 },
+    Array.from(storage.sql.exec("SELECT outcome FROM exact_review_lifecycle_telemetry_batch_v1")),
+    [],
   );
   const afterBatch = (await storage.get("exact-review-queue")) as typeof queueState;
   assert.equal(afterBatch.items[batchLeased.key]?.state, "pending");
@@ -1515,8 +1517,10 @@ test("direct publication endpoint authenticates, dedupes, and returns a structur
   assert.equal(staleBatchCompletion.status, 200);
   assert.equal((await staleBatchCompletion.json()).accepted, 1);
   assert.deepEqual(
-    new ExactReviewLifecycleTelemetryStore(storage).summary(Date.now()).publication.batch,
-    { accepted: 1, deduped: 1, superseded: 1, retryable: 0, permanent: 0 },
+    Array.from(
+      storage.sql.exec("SELECT outcome FROM exact_review_lifecycle_telemetry_batch_v1"),
+    ).map((row) => row.outcome),
+    ["superseded"],
   );
 
   const recordUrl =
@@ -1956,8 +1960,10 @@ test("fetching a stale publication batch records a durable superseded telemetry 
   assert.equal(fetchedBody.superseded, 1);
   assert.deepEqual(fetchedBody.items, []);
   assert.deepEqual(
-    new ExactReviewLifecycleTelemetryStore(storage).summary(Date.now()).publication.batch,
-    { accepted: 0, deduped: 0, superseded: 1, retryable: 0, permanent: 0 },
+    Array.from(
+      storage.sql.exec("SELECT outcome FROM exact_review_lifecycle_telemetry_batch_v1"),
+    ).map((row) => row.outcome),
+    ["superseded"],
   );
 });
 
@@ -2004,8 +2010,12 @@ test("non-batch publication completions record durable terminal outcomes without
   await complete(published, "success", "published", "publication_applied");
 
   assert.deepEqual(
-    new ExactReviewLifecycleTelemetryStore(storage).summary(Date.now()).publication.batch,
-    { accepted: 0, deduped: 0, superseded: 1, retryable: 1, permanent: 1 },
+    Array.from(
+      storage.sql.exec(
+        "SELECT outcome FROM exact_review_lifecycle_telemetry_batch_v1 ORDER BY outcome",
+      ),
+    ).map((row) => row.outcome),
+    ["permanent", "retryable", "superseded"],
   );
 });
 

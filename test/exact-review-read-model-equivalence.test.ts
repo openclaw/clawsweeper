@@ -1,12 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { summarizeExactReviewHandoff } from "../dashboard/exact-review-health.ts";
+import { summarizeExactReviewHandoff } from "./fixtures/exact-review-read-model-old.ts";
 import {
   exactReviewPrioritizePublicationItems,
   exactReviewQueueActivePublicationCount,
   exactReviewQueueActiveReviewCount,
   exactReviewQueueAdmittedItems,
-  exactReviewQueueBayProjection,
+  exactReviewQueueBayProjectionFromStats,
+  exactReviewQueueStats as queueCensus,
   exactReviewQueueLaneStats,
   exactReviewQueueNextWakeAt,
   exactReviewQueueStats,
@@ -30,7 +31,12 @@ import {
 const NOW = Date.parse("2026-08-11T18:00:00.000Z");
 const SEEDS = [0x1, 0x2a, 0x1234abcd, 0x5eedc0de, 0x7fffffff, 0xdeadbeef];
 
-function bayProjectionInvariants(projection: ReturnType<typeof exactReviewQueueBayProjection>) {
+function bayProjectionInvariants(projection: {
+  complete: boolean;
+  sample_limit: number;
+  total: number | null;
+  items: unknown[];
+}) {
   return {
     complete: projection.complete,
     sample_limit: projection.sample_limit,
@@ -173,7 +179,13 @@ test("single-census read model is property-equivalent to the extracted implement
         `stats bytes seed=${seed} population=${population}`,
       );
       assert.deepEqual(
-        bayProjectionInvariants(exactReviewQueueBayProjection(items, priorityKeys, batchByItemKey)),
+        bayProjectionInvariants(
+          exactReviewQueueBayProjectionFromStats(
+            queueCensus({ items: Object.fromEntries(items.map((item) => [item.key, item])) }),
+            priorityKeys,
+            batchByItemKey,
+          ),
+        ),
         bayProjectionInvariants(
           oldExactReviewQueueBayProjection(items, priorityKeys, batchByItemKey),
         ),

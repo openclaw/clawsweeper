@@ -756,26 +756,6 @@ function exactReviewQueueBayTimestamp(value: unknown): value is number {
   );
 }
 
-export function exactReviewQueueBayProjection(
-  items: ExactReviewQueueItem[],
-  priorityItemKeys: string[] = [],
-  batchByItemKey: ReadonlyMap<string, ExactReviewBayBatchOwner> = new Map(),
-  activeItemKeys: string[] = [],
-  activeLegacyItemKeys: string[] = [],
-) {
-  const census = buildExactReviewQueueCensus(items, {
-    state: { items: {} },
-    now: 0,
-  });
-  return exactReviewQueueBayProjectionFromCensus(
-    census,
-    priorityItemKeys,
-    batchByItemKey,
-    activeItemKeys,
-    activeLegacyItemKeys,
-  );
-}
-
 function exactReviewQueueBayProjectionFromCensus(
   census: ExactReviewQueueCensus,
   priorityItemKeys: string[] = [],

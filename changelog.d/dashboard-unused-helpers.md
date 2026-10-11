@@ -1,0 +1,1 @@
+- Remove unused dashboard telemetry summaries and Bay aggregation wrappers, keeping public lifecycle metrics, publication outcomes, and queue compatibility unchanged.

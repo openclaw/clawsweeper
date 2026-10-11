@@ -3,7 +3,13 @@
 // straightforward multi-pass implementations so randomized tests compare the
 // single-census refactor against the behavior it replaced.
 import {
-  summarizeExactReviewHandoff,
+  projectExactReviewHandoff,
+  type ExactReviewHealthItem,
+  type ExactReviewHealthDispatcher,
+  type ExactReviewHandoffHealth,
+  type ExactReviewHandoffPhaseCensus,
+  type ExactReviewPhase,
+  type ExactReviewReviewRecoveryReason,
   summarizeExactReviewPressure,
 } from "../../dashboard/exact-review-health.ts";
 import {
@@ -606,4 +612,123 @@ export function oldExactReviewQueueStats(
     },
     target_stats: targetStats,
   };
+}
+export function summarizeExactReviewHandoff({
+  items,
+  dispatcher,
+  now = Date.now(),
+  capacity,
+  dispatchLeaseMs,
+  executionLeaseMs,
+  shedSinceReset = 0,
+}: {
+  items: ExactReviewHealthItem[];
+  dispatcher?: ExactReviewHealthDispatcher;
+  now?: number;
+  capacity: number;
+  dispatchLeaseMs: number;
+  executionLeaseMs: number;
+  shedSinceReset?: number;
+}): ExactReviewHandoffHealth {
+  const safeNow = finiteTimestamp(now, Date.now());
+  const safeLeaseMs = Math.max(1_000, finiteNumber(dispatchLeaseMs, 10 * 60_000));
+  const safeExecutionLeaseMs = Math.max(1_000, finiteNumber(executionLeaseMs, 130 * 60_000));
+  const phaseValues: Record<ExactReviewPhase, ExactReviewHandoffPhaseCensus> = {
+    pending: { count: 0, oldestAt: null, oldestKey: null },
+    dispatching: { count: 0, oldestAt: null, oldestKey: null },
+    leased: { count: 0, oldestAt: null, oldestKey: null },
+  };
+  const recoveryReasons: Record<ExactReviewReviewRecoveryReason, number> = {
+    claim_timeout: 0,
+    execution_timeout: 0,
+    workflow_cancelled: 0,
+    workflow_failed: 0,
+  };
+
+  for (const item of items) {
+    const recoveryReason = String(item.reviewRecoveryReason || "");
+    if (recoveryReason in recoveryReasons) {
+      recoveryReasons[recoveryReason as ExactReviewReviewRecoveryReason] += 1;
+    }
+    const startedAt = exactReviewPhaseStartedAt(item, safeNow, safeLeaseMs, safeExecutionLeaseMs);
+    const phase = phaseValues[item.state];
+    if (!phase) continue;
+    phase.count += 1;
+    const key = item.key?.trim() || null;
+    if (
+      phase.oldestAt === null ||
+      startedAt < phase.oldestAt ||
+      (startedAt === phase.oldestAt &&
+        key !== null &&
+        (phase.oldestKey === null || key < phase.oldestKey))
+    ) {
+      phase.oldestAt = startedAt;
+      phase.oldestKey = key;
+    }
+  }
+
+  return projectExactReviewHandoff({
+    itemCount: items.length,
+    phaseCensus: phaseValues,
+    recoveryReasons,
+    dispatcher,
+    now: safeNow,
+    capacity,
+    dispatchLeaseMs: safeLeaseMs,
+    shedSinceReset,
+  });
+}
+function exactReviewPhaseStartedAt(
+  item: ExactReviewHealthItem,
+  now: number,
+  dispatchLeaseMs: number,
+  executionLeaseMs: number,
+) {
+  if (item.state === "dispatching") {
+    const dispatchedAt = validTimestamp(item.dispatchedAt);
+    const leaseExpiresAt = validTimestamp(item.leaseExpiresAt);
+    const leaseStartedAt =
+      leaseExpiresAt === null ? null : timestampAtOrBefore(leaseExpiresAt - dispatchLeaseMs, now);
+    // Rolling deploys can expose rows created before dispatchedAt existed, while a rollback can
+    // leave an old dispatchedAt behind. The current lease start is the reliable compatibility
+    // marker; prefer the newest plausible transition and keep an unknown age non-alarming.
+    return newestTimestamp(dispatchedAt, leaseStartedAt) ?? now;
+  }
+  if (item.state === "leased") {
+    const claimedAt = validTimestamp(item.claimedAt);
+    const leaseExpiresAt = validTimestamp(item.leaseExpiresAt);
+    const leaseStartedAt =
+      leaseExpiresAt === null ? null : validTimestamp(leaseExpiresAt - executionLeaseMs);
+    return newestTimestamp(claimedAt, leaseStartedAt) ?? now;
+  }
+  return finiteTimestamp(item.createdAt, finiteTimestamp(item.updatedAt, now));
+}
+
+function newestTimestamp(...values: Array<number | null>) {
+  let newest: number | null = null;
+  for (const value of values) {
+    if (value === null) continue;
+    newest = newest === null ? value : Math.max(newest, value);
+  }
+  return newest;
+}
+
+function validTimestamp(value: unknown): number | null {
+  if (value === null || value === undefined || value === "") return null;
+  const number = Number(value);
+  return Number.isFinite(number) && number > 0 && number <= 8_640_000_000_000_000 ? number : null;
+}
+
+function timestampAtOrBefore(value: unknown, maximum: number): number | null {
+  const timestamp = validTimestamp(value);
+  return timestamp !== null && timestamp <= maximum ? timestamp : null;
+}
+
+function finiteTimestamp(value: unknown, fallback: number) {
+  return validTimestamp(value) ?? fallback;
+}
+
+function finiteNumber(value: unknown, fallback: number) {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : fallback;
 }

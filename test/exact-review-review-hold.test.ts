@@ -3,7 +3,8 @@ import test from "node:test";
 import type { ExactReviewQueueState } from "../dashboard/exact-review-queue.ts";
 import {
   exactReviewParkedOperatorEligible,
-  exactReviewQueueBayProjection,
+  exactReviewQueueBayProjectionFromStats,
+  exactReviewQueueStats as queueCensus,
 } from "../dashboard/exact-review-read-model.ts";
 import { publicExactReviewQueueProjection } from "../dashboard/worker.ts";
 import {
@@ -166,7 +167,13 @@ test("a locked issue's guarded no-op holds until an organic unlock", async () =>
     assert.equal(projected.lanes.review.parked_reasons.locked_conversation, 1);
     assert.equal(projected.lanes.review.parked_reasons.unknown, 0);
     // Bay keeps the completed lifecycle card instead of showing active work.
-    const bay = exactReviewQueueBayProjection(Object.values((await queueState(h)).items));
+    const bay = exactReviewQueueBayProjectionFromStats(
+      queueCensus({
+        items: Object.fromEntries(
+          Object.values((await queueState(h)).items).map((item) => [item.key, item]),
+        ),
+      }),
+    );
     assert.equal(bay.complete, true);
     assert.equal(bay.total, 0);
     assert.equal(bay.stages?.repairing, 0);

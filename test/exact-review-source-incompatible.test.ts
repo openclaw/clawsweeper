@@ -10,7 +10,8 @@ import { ExactReviewLifecycleProjectionStore } from "../dashboard/exact-review-l
 import {
   exactReviewParkedOperatorEligible,
   exactReviewParkedRecoveryAt,
-  exactReviewQueueBayProjection,
+  exactReviewQueueBayProjectionFromStats,
+  exactReviewQueueStats as queueCensus,
 } from "../dashboard/exact-review-read-model.ts";
 import { TestStorage } from "./exact-review-test-storage.ts";
 import {
@@ -304,10 +305,15 @@ test("pinned incompatible PR survives restart and dedupes both scheduled lanes",
   assert.equal(exactReviewParkedRecoveryAt(stopped), null);
   assert.equal(exactReviewParkedOperatorEligible(stopped), true);
   assert.equal(h.lifecycle.read(key, key, 1)?.terminalDisposition?.kind, "failure");
-  assert.deepEqual(exactReviewQueueBayProjection([stopped]).items?.[0]?.review_failure, {
-    stage: "source_preparation",
-    reason: "source_incompatible",
-  });
+  assert.deepEqual(
+    exactReviewQueueBayProjectionFromStats(
+      queueCensus({ items: Object.fromEntries([stopped].map((item) => [item.key, item])) }),
+    ).items?.[0]?.review_failure,
+    {
+      stage: "source_preparation",
+      reason: "source_incompatible",
+    },
+  );
   const restarted = new ExactReviewQueue(
     { storage: h.storage },
     { hostedTargetPredicate: () => true, hostedPublicTargetProbe: async () => "public" },

@@ -9222,48 +9222,6 @@ function boundedBayTimingDuration(startedAt, completedAt) {
   return duration;
 }
 
-export function summarizeBayJourneyTimings(journeys, generatedAt) {
-  const parsedNow = Date.parse(String(generatedAt || ""));
-  const now = Number.isFinite(parsedNow) ? parsedNow : Date.now();
-  const cutoff = now - BAY_TIMING_WINDOW_MS;
-  const overallDurations: number[] = [];
-  for (const journey of Array.isArray(journeys) ? journeys : []) {
-    const triggeredAt = Date.parse(String(journey?.triggered_at || ""));
-    const completedAt = Date.parse(String(journey?.completed_at || ""));
-    if (!Number.isFinite(completedAt) || completedAt < cutoff || completedAt > now) continue;
-    const totalDuration = completedAt - triggeredAt;
-    if (
-      Number.isFinite(totalDuration) &&
-      totalDuration >= 0 &&
-      totalDuration <= BAY_TIMING_MAX_SAMPLE_MS
-    ) {
-      overallDurations.push(totalDuration);
-    }
-  }
-  return {
-    window_minutes: BAY_TIMING_WINDOW_MS / 60_000,
-    sample_kind: "completed_review_journeys",
-    sample_limit: BAY_JOURNEY_LIMIT,
-    overall: {
-      average_ms: overallDurations.length
-        ? Math.round(
-            overallDurations.reduce((total, value) => total + value, 0) / overallDurations.length,
-          )
-        : null,
-      median_ms: overallDurations.length
-        ? (() => {
-            const ordered = [...overallDurations].sort((left, right) => left - right);
-            const middle = Math.floor(ordered.length / 2);
-            return ordered.length % 2
-              ? ordered[middle]
-              : Math.round((ordered[middle - 1] + ordered[middle]) / 2);
-          })()
-        : null,
-      samples: overallDurations.length,
-    },
-  };
-}
-
 function bayJourneyId(repository, itemNumber, sourceCommentId, sourceDeliveryId, triggeredAt) {
   const prefix = `${String(repository || "").toLowerCase()}#${Number(itemNumber)}:command:${Number(sourceCommentId)}`;
   return sourceDeliveryId
@@ -9742,85 +9700,6 @@ function workerHealthAttempt(run, job) {
     steps: actionSteps,
     total_duration_ms: boundedBayTimingDuration(run.created_at || startedAt, completedAt),
   };
-}
-
-export function activeBayItemKeys(workers, limits: { workers?: number; items?: number } = {}) {
-  const keys = new Set<string>();
-  const workerList = Array.isArray(workers) ? workers : [];
-  const boundedWorkers = Number.isSafeInteger(limits.workers)
-    ? workerList.slice(0, Math.max(0, Number(limits.workers)))
-    : workerList;
-  for (const worker of boundedWorkers) {
-    const targetItems = Array.isArray(worker?.target_items) ? worker.target_items : [];
-    const boundedTargetItems = Number.isSafeInteger(limits.items)
-      ? targetItems.slice(0, Math.max(0, Number(limits.items)))
-      : targetItems;
-    const targets = new Map<number, Record<string, unknown>>(
-      boundedTargetItems.map((item): [number, Record<string, unknown>] => {
-        const target = objectValue(item);
-        return [Number(target.number), target];
-      }),
-    );
-    const sourceNumbers = Array.isArray(worker?.item_numbers)
-      ? worker.item_numbers
-      : worker?.item_number
-        ? [worker.item_number]
-        : [];
-    const numbers = Number.isSafeInteger(limits.items)
-      ? sourceNumbers.slice(0, Math.max(0, Number(limits.items)))
-      : sourceNumbers;
-    for (const value of numbers) {
-      const number = Number(value);
-      const target = targets.get(number);
-      const repository = nullableString(worker?.repository || target?.repository);
-      const itemKey = repository ? `${repository}#${number}` : "";
-      if (
-        Number.isInteger(number) &&
-        number > 0 &&
-        /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+#\d+$/.test(itemKey)
-      ) {
-        keys.add(itemKey.toLowerCase());
-      }
-    }
-  }
-  return [...keys];
-}
-
-export function completedBayReviews(journeys) {
-  return (Array.isArray(journeys) ? journeys : []).flatMap((journey) => {
-    const record = normalizeBayJourneyRecord(journey);
-    if (
-      !record?.triggered_at ||
-      !record.completed_at ||
-      !record.repository ||
-      !Number.isInteger(record.number) ||
-      !new Set(["success", "failure", "cancelled"]).has(String(record.completion_outcome || ""))
-    )
-      return [];
-    return [
-      {
-        event_id: [
-          "review",
-          record.repository,
-          record.number,
-          "completion",
-          record.completion_source_delivery_id || "legacy",
-          record.completion_comment_id || "status",
-          record.completed_at,
-        ].join(":"),
-        target: {
-          repository: record.repository,
-          number: record.number,
-          url: `https://github.com/${record.repository}/issues/${record.number}`,
-        },
-        revision: record.source_delivery_id || record.id,
-        outcome: record.completion_outcome,
-        trigger_kind: "review_journey",
-        triggered_at: record.triggered_at,
-        completed_at: record.completed_at,
-      },
-    ];
-  });
 }
 
 export function mergeBayTerminalState(

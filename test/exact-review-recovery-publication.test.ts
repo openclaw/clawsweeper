@@ -8,7 +8,10 @@ import {
   exactReviewQueueAdmittedItems,
   exactReviewQueueNextWakeAt,
 } from "./dashboard-worker-harness.ts";
-import { exactReviewQueueBayProjection } from "../dashboard/exact-review-read-model.ts";
+import {
+  exactReviewQueueBayProjectionFromStats,
+  exactReviewQueueStats as queueCensus,
+} from "../dashboard/exact-review-read-model.ts";
 
 for (const publicationRepo of ["openclaw/gogcli", "OpenClaw/GogCli"]) {
   test(`failed shard recovery waits for ${publicationRepo} publication`, async () => {
@@ -43,7 +46,11 @@ for (const publicationRepo of ["openclaw/gogcli", "OpenClaw/GogCli"]) {
     assert.deepEqual(exactReviewQueueAdmittedItems(after, now, 8, 8, 8), []);
     assert.equal(exactReviewQueueNextWakeAt(after, now), now + 30_000);
     assert.equal(
-      exactReviewQueueBayProjection(Object.values(after.items)).items[0]?.stage,
+      exactReviewQueueBayProjectionFromStats(
+        queueCensus({
+          items: Object.fromEntries(Object.values(after.items).map((item) => [item.key, item])),
+        }),
+      ).items[0]?.stage,
       "publishing",
     );
 
@@ -55,7 +62,11 @@ for (const publicationRepo of ["openclaw/gogcli", "OpenClaw/GogCli"]) {
       [reviewKey],
     );
     assert.equal(
-      exactReviewQueueBayProjection(Object.values(after.items)).items[0]?.stage,
+      exactReviewQueueBayProjectionFromStats(
+        queueCensus({
+          items: Object.fromEntries(Object.values(after.items).map((item) => [item.key, item])),
+        }),
+      ).items[0]?.stage,
       "repairing",
     );
   });

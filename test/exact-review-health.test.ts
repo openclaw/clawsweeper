@@ -3,10 +3,10 @@ import test from "node:test";
 
 import {
   projectExactReviewHandoff,
-  summarizeExactReviewHandoff,
   summarizeExactReviewPublicationHealth,
   summarizeExactReviewPressure,
 } from "../dashboard/exact-review-health.ts";
+import { summarizeExactReviewHandoff } from "./fixtures/exact-review-read-model-old.ts";
 
 const NOW = Date.parse("2026-07-13T02:00:00.000Z");
 const DISPATCH_LEASE_MS = 10 * 60_000;

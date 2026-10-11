@@ -10,7 +10,6 @@ import {
   gunzipSync,
   worker,
   ExactReviewQueue,
-  completedBayReviews,
   exactReviewQueueAdmittedItems,
   exactReviewQueueNextWakeAt,
   exactReviewQueueStatusSnapshot,
@@ -18,7 +17,7 @@ import {
   mergeBayTerminalState,
   recentWorkerHealthRunSample,
   workerHealthSectionTimeoutMs,
-  summarizeBayJourneyTimings,
+  bayJourneyTimingSnapshot,
   commandAcknowledgementState,
   ExactReviewLifecycleProjectionStore,
   ExactReviewLifecycleTelemetryStore,
@@ -3017,7 +3016,7 @@ test("Bay reconciles fenced completion delivery, legacy journeys, and same-secon
     const newer = state.journeys.find((journey) => journey.source_delivery_id === "delivery-b");
     assert.equal(older?.completed_at, completedAt, order);
     assert.equal(newer?.completed_at, null, order);
-    assert.equal(summarizeBayJourneyTimings(state.journeys, generatedAt).overall.samples, 1, order);
+    assert.equal(bayJourneyTimingSnapshot(state.journeys, generatedAt).overall.samples, 1, order);
   }
 
   const legacy = mergeBayJourneyState(
@@ -3076,7 +3075,7 @@ test("Bay reconciles fenced completion delivery, legacy journeys, and same-secon
   );
   assert.equal(legacyTrigger.journeys.length, 1);
   assert.equal(legacyTrigger.journeys[0]?.completed_at, completedAt);
-  assert.equal(summarizeBayJourneyTimings(legacyTrigger.journeys, generatedAt).overall.samples, 1);
+  assert.equal(bayJourneyTimingSnapshot(legacyTrigger.journeys, generatedAt).overall.samples, 1);
 
   let legacyThenTagged = mergeBayJourneyState(
     null,
@@ -3103,10 +3102,7 @@ test("Bay reconciles fenced completion delivery, legacy journeys, and same-secon
     legacyThenTagged.journeys.find((journey) => !journey.source_delivery_id)?.completed_at,
     null,
   );
-  assert.equal(
-    summarizeBayJourneyTimings(legacyThenTagged.journeys, generatedAt).overall.samples,
-    1,
-  );
+  assert.equal(bayJourneyTimingSnapshot(legacyThenTagged.journeys, generatedAt).overall.samples, 1);
 
   const newerCompletion = {
     ...completion,
@@ -3143,7 +3139,7 @@ test("Bay reconciles fenced completion delivery, legacy journeys, and same-secon
     assert.equal(older?.completed_at, completedAt, `older permutation ${index}`);
     assert.equal(newer?.completed_at, newerCompletion.completed_at, `newer permutation ${index}`);
     assert.equal(
-      summarizeBayJourneyTimings(state!.journeys, generatedAt).overall.samples,
+      bayJourneyTimingSnapshot(state!.journeys, generatedAt).overall.samples,
       2,
       `samples permutation ${index}`,
     );
@@ -3192,7 +3188,7 @@ test("Bay transfers a stolen legacy completion when the correct fenced completio
     state.journeys.find((journey) => journey.source_delivery_id === "legacy-b")?.completed_at,
     legacyCompletion.completed_at,
   );
-  assert.equal(summarizeBayJourneyTimings(state.journeys, generatedAt).overall.samples, 2);
+  assert.equal(bayJourneyTimingSnapshot(state.journeys, generatedAt).overall.samples, 2);
 });
 
 test("Bay prefers a delivery-matched orphan over an earlier anonymous completion", () => {
@@ -3279,7 +3275,7 @@ test("Bay reassigns a displaced anonymous completion once its sole journey is id
     state.journeys.find((journey) => journey.source_delivery_id === "delivery-b")?.completed_at,
     anonymousCompletion.completed_at,
   );
-  assert.equal(summarizeBayJourneyTimings(state.journeys, generatedAt).overall.samples, 2);
+  assert.equal(bayJourneyTimingSnapshot(state.journeys, generatedAt).overall.samples, 2);
 });
 
 test("Bay keeps the newest fenced completion received before its trigger", () => {
@@ -8721,8 +8717,8 @@ test("OpenClaw Bay keeps completion IDs stable when an orphaned receipt gains it
     "2026-07-11T12:05:02.000Z",
   );
 
-  assert.equal(completedBayReviews(orphaned.journeys).length, 0);
-  assert.equal(completedBayReviews(correlated.journeys)[0]?.outcome, "failure");
+  assert.ok(!orphaned.journeys[0]?.triggered_at);
+  assert.equal(correlated.journeys[0]?.completion_outcome, "failure");
 });
 
 test("OpenClaw Bay preserves failed review completions", () => {
@@ -8749,16 +8745,7 @@ test("OpenClaw Bay preserves failed review completions", () => {
     ],
     "2026-07-11T12:06:01.000Z",
   );
-  const state = mergeBayTerminalState(
-    null,
-    [],
-    [],
-    "2026-07-11T12:06:02.000Z",
-    [],
-    completedBayReviews(journeys.journeys),
-  );
-
-  assert.equal(state.terminal_buffer[0]?.outcome, "failure");
+  assert.equal(journeys.journeys[0]?.completion_outcome, "failure");
 });
 
 test("OpenClaw Bay excludes legacy completions with an unknown outcome", () => {
@@ -8785,7 +8772,7 @@ test("OpenClaw Bay excludes legacy completions with an unknown outcome", () => {
     "2026-07-11T12:06:01.000Z",
   );
 
-  assert.deepEqual(completedBayReviews(journeys.journeys), []);
+  assert.ok(!journeys.journeys[0]?.completion_outcome);
 });
 
 test("OpenClaw Bay keeps same-second delivery-fenced revisions distinct", () => {
@@ -8832,10 +8819,8 @@ test("OpenClaw Bay keeps same-second delivery-fenced revisions distinct", () => 
     ],
     "2026-07-11T12:07:01.000Z",
   );
-  const reviews = completedBayReviews(journeys.journeys);
-
-  assert.equal(reviews.length, 2);
-  assert.notEqual(reviews[0]?.event_id, reviews[1]?.event_id);
+  assert.equal(journeys.journeys.length, 2);
+  assert.notEqual(journeys.journeys[0]?.id, journeys.journeys[1]?.id);
 });
 
 test("OpenClaw Bay replaces a matching worker fallback with its lifecycle completion", () => {
@@ -9194,16 +9179,16 @@ test("OpenClaw Bay averages completed trigger-to-summary journeys from the last 
     ],
     generatedAt,
   );
-  const timings = summarizeBayJourneyTimings(journeys.journeys, generatedAt);
+  const timings = bayJourneyTimingSnapshot(journeys.journeys, generatedAt);
 
   assert.equal(timings.window_minutes, 60);
   assert.equal("lanes" in timings, false);
   assert.deepEqual(timings.overall, { average_ms: 210_000, median_ms: 210_000, samples: 2 });
-  assert.equal(timings.sample_kind, "completed_review_journeys");
+  assert.equal(timings.sample_kind, "completed_final_review_journeys");
 });
 
 test("OpenClaw Bay reports the median completed journey alongside the mean", () => {
-  const timings = summarizeBayJourneyTimings(
+  const timings = bayJourneyTimingSnapshot(
     [
       { triggered_at: "2026-07-13T11:58:00Z", completed_at: "2026-07-13T12:00:00Z" },
       { triggered_at: "2026-07-13T11:56:00Z", completed_at: "2026-07-13T12:00:00Z" },
@@ -9244,7 +9229,7 @@ test("OpenClaw Bay retains pre-delivery journey records during normalization", (
 
   assert.equal(state.journeys.length, 1);
   assert.equal(state.journeys[0]?.triggered_at, "2026-07-13T11:56:00Z");
-  assert.deepEqual(summarizeBayJourneyTimings(state.journeys, "2026-07-13T12:00:00Z").overall, {
+  assert.deepEqual(bayJourneyTimingSnapshot(state.journeys, "2026-07-13T12:00:00Z").overall, {
     average_ms: 180_000,
     median_ms: 180_000,
     samples: 1,
@@ -9299,7 +9284,7 @@ test("OpenClaw Bay retains a completed journey for each edit of the same command
 
   assert.equal(second.journeys.length, 2);
   assert.notEqual(second.journeys[0]?.id, second.journeys[1]?.id);
-  assert.deepEqual(summarizeBayJourneyTimings(second.journeys, "2026-07-13T12:15:00Z").overall, {
+  assert.deepEqual(bayJourneyTimingSnapshot(second.journeys, "2026-07-13T12:15:00Z").overall, {
     average_ms: 270_000,
     median_ms: 270_000,
     samples: 2,
@@ -9346,7 +9331,7 @@ test("OpenClaw Bay retains same-second command edits from separate GitHub delive
 
   assert.equal(journeys.journeys.length, 2);
   assert.notEqual(journeys.journeys[0]?.id, journeys.journeys[1]?.id);
-  assert.deepEqual(summarizeBayJourneyTimings(journeys.journeys, "2026-07-13T12:07:00Z").overall, {
+  assert.deepEqual(bayJourneyTimingSnapshot(journeys.journeys, "2026-07-13T12:07:00Z").overall, {
     average_ms: 330_000,
     median_ms: 330_000,
     samples: 2,
@@ -9413,7 +9398,7 @@ test("OpenClaw Bay joins an out-of-order reused status completion to its later t
 
   assert.equal(completed.journeys.length, 2);
   assert.equal(completed.journeys.filter((journey) => !journey.triggered_at).length, 0);
-  assert.deepEqual(summarizeBayJourneyTimings(completed.journeys, "2026-07-13T12:15:00Z").overall, {
+  assert.deepEqual(bayJourneyTimingSnapshot(completed.journeys, "2026-07-13T12:15:00Z").overall, {
     average_ms: 270_000,
     median_ms: 270_000,
     samples: 2,
@@ -9584,7 +9569,7 @@ test("hosted webhook records an edited review command through its final command 
       completion_comment_id: 790,
     },
   ]);
-  const timings = summarizeBayJourneyTimings(state.journeys, at(5_213_000));
+  const timings = bayJourneyTimingSnapshot(state.journeys, at(5_213_000));
   assert.deepEqual(timings.overall, {
     average_ms: 4_820_000,
     median_ms: 4_820_000,

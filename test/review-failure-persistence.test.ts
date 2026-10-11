@@ -6,7 +6,10 @@ import {
   leasedExactReviewQueueItem,
 } from "./dashboard-worker-harness.ts";
 import { publicStatusProjection } from "../dashboard/worker.ts";
-import { exactReviewQueueBayProjection } from "../dashboard/exact-review-read-model.ts";
+import {
+  exactReviewQueueBayProjectionFromStats,
+  exactReviewQueueStats as queueCensus,
+} from "../dashboard/exact-review-read-model.ts";
 import {
   currentReviewFailure,
   reviewFailureDecisionFingerprint,
@@ -88,7 +91,9 @@ test("old lease, invalid diagnostics and absent legacy metadata cannot invent a 
     item.parkedRecoveryAttempts = 3;
     return item;
   });
-  for (const item of exactReviewQueueBayProjection(examples).items!)
+  for (const item of exactReviewQueueBayProjectionFromStats(
+    queueCensus({ items: Object.fromEntries(examples.map((item) => [item.key, item])) }),
+  ).items!)
     assert.equal(item.review_failure, undefined);
 });
 
@@ -117,7 +122,9 @@ test("Worker public projection only includes safe failure pairs for allowed queu
   item.parkedRecoveryAttempts = 3;
   item.reviewFailure = known;
   item.reviewFailureDecisionFingerprint = reviewFailureDecisionFingerprint(item.decision);
-  const projection = exactReviewQueueBayProjection([item]);
+  const projection = exactReviewQueueBayProjectionFromStats(
+    queueCensus({ items: Object.fromEntries([item].map((item) => [item.key, item])) }),
+  );
   const stages = projection.stages!;
   const zero = Object.fromEntries(Object.keys(stages).map((k) => [k, 0]));
   const snapshot = {

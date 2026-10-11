@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { exactReviewQueueBayProjection } from "../dashboard/exact-review-read-model.ts";
+import {
+  exactReviewQueueBayProjectionFromStats,
+  exactReviewQueueStats as queueCensus,
+} from "../dashboard/exact-review-read-model.ts";
 import { publicStatusProjection } from "../dashboard/worker.ts";
 import { unclaimedExactReviewQueueItem } from "./dashboard-worker-harness.ts";
 
@@ -19,9 +22,13 @@ test("Bay retains exhausted, recoverable and unscheduled parked dispositions wit
     ...exhausted,
     key: "openclaw/gogcli#990003",
     decision: { ...exhausted.decision, itemNumber: 990003 },
-    parkedReason: "dead_letter_capacity",
+    parkedReason: "dead_letter_capacity" as const,
   };
-  const projection = exactReviewQueueBayProjection([exhausted, retry, attention] as never);
+  const projection = exactReviewQueueBayProjectionFromStats(
+    queueCensus({
+      items: Object.fromEntries([exhausted, retry, attention].map((item) => [item.key, item])),
+    }),
+  );
   assert.equal(projection.complete, true);
   assert.deepEqual(
     projection.items.map((item) => item.queue_disposition),
@@ -135,7 +142,9 @@ test("dispatch recovery exhaustion stays neutral queue attention without claimin
   item.parkedReason = "dispatch_rejected";
   item.parkedRecoveryAttempts = 3;
   item.reviewFailureAttempts = 0;
-  const projection = exactReviewQueueBayProjection([item]);
+  const projection = exactReviewQueueBayProjectionFromStats(
+    queueCensus({ items: Object.fromEntries([item].map((item) => [item.key, item])) }),
+  );
   assert.equal(projection.items[0]?.queue_disposition, "parked");
   const { bayReviewStatusScript } = await import("../dashboard/bay-review-status.ts");
   const { runInNewContext } = await import("node:vm");
