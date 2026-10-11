@@ -1,0 +1,5 @@
+[apply] 2026-10-11T21:59:31.106Z starting apply: files=1 dry_run=false apply_kind=all min_age=0 days apply_close_reasons=all stale_min_age_days=60 close_delay_ms=0 sync_comments_only=false suppress_automation_markers=false comment_sync_min_age_days=0 comment_sync_cursor=none max_runtime_ms=0 item_numbers=158915 reconciliation_deferred=none closed=0/1 processed=0/1 counts={}
+{"event":"reviewed_pr_activity_cursor_v2_fallback","repo":"openclaw/openclaw","number":158915,"from_version":2,"to_version":1,"reason":"missing_pull_request"}
+[apply] 2026-10-11T21:59:34.943Z closing #158915 closed=0/1 processed=0/1 counts={}
+[apply] 2026-10-11T21:59:39.844Z closed #158915 closed=1/1 processed=1/1 counts={"closed":1}
+[apply] 2026-10-11T21:59:39.847Z finished apply closed=1/1 processed=1/1 counts={"closed":1}

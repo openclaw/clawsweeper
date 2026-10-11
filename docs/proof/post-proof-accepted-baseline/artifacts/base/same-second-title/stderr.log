@@ -1,0 +1,4 @@
+[apply] 2026-10-11T21:59:50.776Z starting apply: files=1 dry_run=false apply_kind=all min_age=0 days apply_close_reasons=all stale_min_age_days=60 close_delay_ms=0 sync_comments_only=false suppress_automation_markers=false comment_sync_min_age_days=0 comment_sync_cursor=none max_runtime_ms=0 item_numbers=158915 reconciliation_deferred=none closed=0/1 processed=0/1 counts={}
+{"event":"reviewed_pr_activity_cursor_v2_fallback","repo":"openclaw/openclaw","number":158915,"from_version":2,"to_version":1,"reason":"missing_pull_request"}
+[apply] post-proof drift #158915 {"stored_updated_at":"2026-05-01T00:00:00Z","item_updated_at":"2026-05-01T01:00:00Z","automation_item_updated_at":null,"self_mutation_receipt_updated_ats":[],"candidate_receipts":0,"receipt_matches":false,"persisted_receipt_matches":false,"command_status_only":false}
+[apply] 2026-10-11T21:59:53.197Z finished apply closed=0/1 processed=1/1 counts={"skipped_changed_since_review":1}

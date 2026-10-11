@@ -1,0 +1,168 @@
+{
+  "schema": "clawsweeper-apply-path-proof/v1",
+  "claim": "The accepted acknowledgement timestamp requires a fresh complete structural receipt before publication or close.",
+  "base_head": "f3be2fcbbdad33596d1d3874d42340486cb339f2",
+  "candidate_code_head": "3d7cd274b6935ffa73e45ba57226ef8e20632ab9",
+  "provider": "local-container",
+  "crabbox_version": "0.74.0",
+  "lease": "cbx_123bf98cfac9",
+  "run_id": "run_9d82d0bfad10108e325106d0190841f2",
+  "image": "node:24-bookworm",
+  "image_id": "sha256:3d27e5c11e5786e309ec3e03f93ae536eb36e6e5eb3714d5eb3300a36157add0",
+  "docker_version": "29.4.0",
+  "runtime": {
+    "node": "v24.21.0",
+    "pnpm": "12.4.1",
+    "architecture": "arm64",
+    "os": "Linux"
+  },
+  "mounts": [
+    "Crabbox read-only bootstrap directory; no home or credential mount"
+  ],
+  "command": "bash docs/proof/post-proof-accepted-baseline/run-proof.sh <base-archive> <temporary-output>",
+  "exit_code": 0,
+  "pueue_task": 3929,
+  "commands": [
+    {
+      "command": "pnpm install --frozen-lockfile (base and candidate)",
+      "exit_code": 0
+    },
+    {
+      "command": "pnpm run build (base and candidate)",
+      "exit_code": 0
+    },
+    {
+      "command": "node docs/proof/post-proof-accepted-baseline/run-proof.ts <output> <revision> (base and candidate)",
+      "exit_code": 0
+    }
+  ],
+  "results": [
+    {
+      "revision": "base",
+      "scenario": "acknowledgement-only",
+      "exit_code": 0,
+      "action_taken": "skipped_changed_since_review",
+      "reason": "updated_at changed",
+      "drift_log": true,
+      "close_writes": 0,
+      "durable_writes": 0,
+      "coverage_proof_ran": true,
+      "trace": "docs/proof/post-proof-accepted-baseline/artifacts/base/acknowledgement-only/requests.json"
+    },
+    {
+      "revision": "base",
+      "scenario": "same-second-title",
+      "exit_code": 0,
+      "action_taken": "skipped_changed_since_review",
+      "reason": "updated_at changed",
+      "drift_log": true,
+      "close_writes": 0,
+      "durable_writes": 0,
+      "coverage_proof_ran": true,
+      "trace": "docs/proof/post-proof-accepted-baseline/artifacts/base/same-second-title/requests.json"
+    },
+    {
+      "revision": "base",
+      "scenario": "human-comment-after-proof",
+      "exit_code": 0,
+      "action_taken": "skipped_changed_since_review",
+      "reason": "updated_at changed",
+      "drift_log": true,
+      "close_writes": 0,
+      "durable_writes": 0,
+      "coverage_proof_ran": true,
+      "trace": "docs/proof/post-proof-accepted-baseline/artifacts/base/human-comment-after-proof/requests.json"
+    },
+    {
+      "revision": "candidate",
+      "scenario": "acknowledgement-only",
+      "exit_code": 0,
+      "action_taken": "closed",
+      "reason": "duplicate or superseded; posted close-applied comment",
+      "drift_log": false,
+      "close_writes": 1,
+      "durable_writes": 1,
+      "coverage_proof_ran": true,
+      "trace": "docs/proof/post-proof-accepted-baseline/artifacts/candidate/acknowledgement-only/requests.json"
+    },
+    {
+      "revision": "candidate",
+      "scenario": "same-second-title",
+      "exit_code": 0,
+      "action_taken": "skipped_changed_since_review",
+      "reason": "updated_at changed",
+      "drift_log": true,
+      "close_writes": 0,
+      "durable_writes": 0,
+      "coverage_proof_ran": true,
+      "trace": "docs/proof/post-proof-accepted-baseline/artifacts/candidate/same-second-title/requests.json"
+    },
+    {
+      "revision": "candidate",
+      "scenario": "human-comment-after-proof",
+      "exit_code": 0,
+      "action_taken": "skipped_changed_since_review",
+      "reason": "updated_at changed",
+      "drift_log": true,
+      "close_writes": 0,
+      "durable_writes": 0,
+      "coverage_proof_ran": true,
+      "trace": "docs/proof/post-proof-accepted-baseline/artifacts/candidate/human-comment-after-proof/requests.json"
+    }
+  ],
+  "artifacts_sha256": {
+    "docs/proof/post-proof-accepted-baseline/artifacts/base/acknowledgement-only/apply-report.json": "5b5416092547c921c028750cc96d2e4d0dc8f6dcc3a7b9a5b37355621e403f83",
+    "docs/proof/post-proof-accepted-baseline/artifacts/base/acknowledgement-only/proof.log": "f6ed42a9d765eeb230a069bbc3d5dc346b2669594bb0b83cc6d14d5d967b8961",
+    "docs/proof/post-proof-accepted-baseline/artifacts/base/acknowledgement-only/requests.json": "912e27cafc975b7bf972406e07e5afaa3ec852da9f564a70d2ac8049de8aed51",
+    "docs/proof/post-proof-accepted-baseline/artifacts/base/acknowledgement-only/review-snapshot.md": "17a43974c03d1fb9f0e918d6115bd768ec159bd5a5088125010ca382bc852709",
+    "docs/proof/post-proof-accepted-baseline/artifacts/base/acknowledgement-only/service-responses.jsonl": "ca24abce160992c3b9ff66ff0a9f0b3069f81de5856f8d1170d34c028d8001c2",
+    "docs/proof/post-proof-accepted-baseline/artifacts/base/acknowledgement-only/stderr.log": "ffa738f6156a7e0dcf072cbaa9608fc6d4f857020422713a9a07461ee298ab09",
+    "docs/proof/post-proof-accepted-baseline/artifacts/base/acknowledgement-only/stdout.log": "6565277d50e934addde79b983f326957d522ab95e5f8bb7c7c14b923e79753e8",
+    "docs/proof/post-proof-accepted-baseline/artifacts/base/human-comment-after-proof/apply-report.json": "5b5416092547c921c028750cc96d2e4d0dc8f6dcc3a7b9a5b37355621e403f83",
+    "docs/proof/post-proof-accepted-baseline/artifacts/base/human-comment-after-proof/proof.log": "f6ed42a9d765eeb230a069bbc3d5dc346b2669594bb0b83cc6d14d5d967b8961",
+    "docs/proof/post-proof-accepted-baseline/artifacts/base/human-comment-after-proof/requests.json": "912e27cafc975b7bf972406e07e5afaa3ec852da9f564a70d2ac8049de8aed51",
+    "docs/proof/post-proof-accepted-baseline/artifacts/base/human-comment-after-proof/review-snapshot.md": "17a43974c03d1fb9f0e918d6115bd768ec159bd5a5088125010ca382bc852709",
+    "docs/proof/post-proof-accepted-baseline/artifacts/base/human-comment-after-proof/service-responses.jsonl": "ca24abce160992c3b9ff66ff0a9f0b3069f81de5856f8d1170d34c028d8001c2",
+    "docs/proof/post-proof-accepted-baseline/artifacts/base/human-comment-after-proof/stderr.log": "0290fdf102fbb86c1c5344c85fdfa46499c3ca941b2ce4cb0c269a91b49b559f",
+    "docs/proof/post-proof-accepted-baseline/artifacts/base/human-comment-after-proof/stdout.log": "6565277d50e934addde79b983f326957d522ab95e5f8bb7c7c14b923e79753e8",
+    "docs/proof/post-proof-accepted-baseline/artifacts/base/results.json": "7fc92d440a5bf4bd4fba1e8bd9dff0a5d173bdcc3cfd4c48a26cb8e6abed7623",
+    "docs/proof/post-proof-accepted-baseline/artifacts/base/same-second-title/apply-report.json": "5b5416092547c921c028750cc96d2e4d0dc8f6dcc3a7b9a5b37355621e403f83",
+    "docs/proof/post-proof-accepted-baseline/artifacts/base/same-second-title/proof.log": "f6ed42a9d765eeb230a069bbc3d5dc346b2669594bb0b83cc6d14d5d967b8961",
+    "docs/proof/post-proof-accepted-baseline/artifacts/base/same-second-title/requests.json": "912e27cafc975b7bf972406e07e5afaa3ec852da9f564a70d2ac8049de8aed51",
+    "docs/proof/post-proof-accepted-baseline/artifacts/base/same-second-title/review-snapshot.md": "17a43974c03d1fb9f0e918d6115bd768ec159bd5a5088125010ca382bc852709",
+    "docs/proof/post-proof-accepted-baseline/artifacts/base/same-second-title/service-responses.jsonl": "c9d55925fc0a9a5e4bb3cd136179e7c583268c7d207dedb149bb7aace4c8319f",
+    "docs/proof/post-proof-accepted-baseline/artifacts/base/same-second-title/stderr.log": "65b98305f954638bf72656b351eb8044c1586733d4006141080432c825688281",
+    "docs/proof/post-proof-accepted-baseline/artifacts/base/same-second-title/stdout.log": "6565277d50e934addde79b983f326957d522ab95e5f8bb7c7c14b923e79753e8",
+    "docs/proof/post-proof-accepted-baseline/artifacts/candidate/acknowledgement-only/apply-report.json": "4374b55117954b62c45929492a5c31d522b730a66db092548dbacf9515d66556",
+    "docs/proof/post-proof-accepted-baseline/artifacts/candidate/acknowledgement-only/proof.log": "f6ed42a9d765eeb230a069bbc3d5dc346b2669594bb0b83cc6d14d5d967b8961",
+    "docs/proof/post-proof-accepted-baseline/artifacts/candidate/acknowledgement-only/requests.json": "84654ac01adf05699dba8a5310ee776341ec4542202089bf2559b384afbfc408",
+    "docs/proof/post-proof-accepted-baseline/artifacts/candidate/acknowledgement-only/review-snapshot.md": "17a43974c03d1fb9f0e918d6115bd768ec159bd5a5088125010ca382bc852709",
+    "docs/proof/post-proof-accepted-baseline/artifacts/candidate/acknowledgement-only/service-responses.jsonl": "b6354445c817f0c5a738405cc39109098b733c105189a3e1e5a77c69ce589d79",
+    "docs/proof/post-proof-accepted-baseline/artifacts/candidate/acknowledgement-only/stderr.log": "808f24575413fae8efda979d9c691ec46924ea4b3db929d14659895cac401c9b",
+    "docs/proof/post-proof-accepted-baseline/artifacts/candidate/acknowledgement-only/stdout.log": "43303e79a879ae87e0cd295a3bd47aa7e59e9dd668b67bbec6940e35b1e00ab8",
+    "docs/proof/post-proof-accepted-baseline/artifacts/candidate/human-comment-after-proof/apply-report.json": "5b5416092547c921c028750cc96d2e4d0dc8f6dcc3a7b9a5b37355621e403f83",
+    "docs/proof/post-proof-accepted-baseline/artifacts/candidate/human-comment-after-proof/proof.log": "f6ed42a9d765eeb230a069bbc3d5dc346b2669594bb0b83cc6d14d5d967b8961",
+    "docs/proof/post-proof-accepted-baseline/artifacts/candidate/human-comment-after-proof/requests.json": "ea0d7a58fa4c0d0364e10acf74318beaecf72e50b4216def18060d4ec23d4e0b",
+    "docs/proof/post-proof-accepted-baseline/artifacts/candidate/human-comment-after-proof/review-snapshot.md": "17a43974c03d1fb9f0e918d6115bd768ec159bd5a5088125010ca382bc852709",
+    "docs/proof/post-proof-accepted-baseline/artifacts/candidate/human-comment-after-proof/service-responses.jsonl": "1a24de8450582278059493e7ce1267bb4eb7e331ec1c24ad4b5ce308a5bdfe1b",
+    "docs/proof/post-proof-accepted-baseline/artifacts/candidate/human-comment-after-proof/stderr.log": "bb968da7bd43bf9d6f66201fb52efbf21fa7fca151811935bfc00c2661929807",
+    "docs/proof/post-proof-accepted-baseline/artifacts/candidate/human-comment-after-proof/stdout.log": "6565277d50e934addde79b983f326957d522ab95e5f8bb7c7c14b923e79753e8",
+    "docs/proof/post-proof-accepted-baseline/artifacts/candidate/results.json": "4d4bf8b7776b0c4e49a2523acdab7cd0a14a41652be0242279918e79571c0a84",
+    "docs/proof/post-proof-accepted-baseline/artifacts/candidate/same-second-title/apply-report.json": "5b5416092547c921c028750cc96d2e4d0dc8f6dcc3a7b9a5b37355621e403f83",
+    "docs/proof/post-proof-accepted-baseline/artifacts/candidate/same-second-title/proof.log": "f6ed42a9d765eeb230a069bbc3d5dc346b2669594bb0b83cc6d14d5d967b8961",
+    "docs/proof/post-proof-accepted-baseline/artifacts/candidate/same-second-title/requests.json": "ea0d7a58fa4c0d0364e10acf74318beaecf72e50b4216def18060d4ec23d4e0b",
+    "docs/proof/post-proof-accepted-baseline/artifacts/candidate/same-second-title/review-snapshot.md": "17a43974c03d1fb9f0e918d6115bd768ec159bd5a5088125010ca382bc852709",
+    "docs/proof/post-proof-accepted-baseline/artifacts/candidate/same-second-title/service-responses.jsonl": "722b9c11c46739b99bc0eb35c9522012cdbdeb0b2a57bb8b0383ad270e500faa",
+    "docs/proof/post-proof-accepted-baseline/artifacts/candidate/same-second-title/stderr.log": "155b95002b04e117e60292be6ee7fbc6bf8cfe7e71b6c0d0532eb9240cad90a9",
+    "docs/proof/post-proof-accepted-baseline/artifacts/candidate/same-second-title/stdout.log": "6565277d50e934addde79b983f326957d522ab95e5f8bb7c7c14b923e79753e8"
+  },
+  "limits": [
+    "GitHub and the coverage model are controlled local processes. No live GitHub write is made.",
+    "Only title edits are exercised; body edits are not a separate case.",
+    "A managed rating label is pre-seeded to prevent an unrelated apply-owned label receipt from hiding the base regression.",
+    "The human comment changes the structural receipt and is rejected before the later non-automation-activity check.",
+    "The empty PR activity cursor uses the shipped v2-to-v1 fallback because the fixture has no GraphQL pull-request identity.",
+    "Network is available for container setup and package installation; apply uses local mocks.",
+    "The candidate code head is recorded separately from the subsequent proof-only commit."
+  ]
+}
