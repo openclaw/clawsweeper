@@ -13,7 +13,6 @@
     { "path": "/api/review-coverage", "method": "GET" },
     { "path": "/api/apply-observability", "method": "GET" },
     { "path": "/api/health-history", "method": "GET" },
-    { "path": "/api/automerge-metrics", "method": "GET" },
     { "path": "/api/status", "method": "ANY" },
     { "path": "/api/triage", "method": "ANY" },
     { "path": "/api/pr-proof-triage", "method": "ANY" }
