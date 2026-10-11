@@ -3,7 +3,6 @@ import test from "node:test";
 
 import {
   publicApplyObservabilityProjection,
-  publicAutomergeMetricsProjection,
   publicGithubEgressObservabilityProjection,
   publicRecentDurablePublicationEventsProjection,
   publicReviewCoverageProjection,
@@ -238,140 +237,6 @@ test("apply observability omits repository inventory and failure links", () => {
   assert.ok(unknownProjection);
   assert.equal(unknownProjection.last_15_minutes.net_drain, null);
   assert.equal(unknownProjection.retry_amplification, null);
-});
-
-function automergeBuckets() {
-  const start = Date.parse("2026-08-15T06:00:00Z");
-  return Array.from({ length: 12 }, (_, index) => {
-    const bucketStart = start + index * 30 * 60_000;
-    const populated = index === 0;
-    return {
-      start: new Date(bucketStart).toISOString(),
-      end: new Date(bucketStart + 30 * 60_000).toISOString(),
-      terminal_count: populated ? 3 : 0,
-      merged_count: populated ? 1 : 0,
-      success_rate_percent: populated ? 33.3 : null,
-      command_to_merge_p50_ms: populated ? 1_000 : null,
-      command_to_merge_p90_ms: populated ? 1_000 : null,
-      low_sample: populated,
-    };
-  });
-}
-
-function automergeFixture() {
-  return {
-    generated_at: NOW,
-    range: "6h",
-    range_start: "2026-08-15T06:00:00Z",
-    telemetry_since: "2026-08-15T06:00:00Z",
-    coverage_percent: 100,
-    filters: {
-      repo: null,
-      policy_version: null,
-      repositories: [PRIVATE_MARKERS.repository],
-      policy_versions: [PRIVATE_MARKERS.item],
-    },
-    summary: {
-      terminal_sessions: 3,
-      merged_sessions: 1,
-      merge_success_rate_percent: 33.3,
-      command_to_merge_p50_ms: 1_000,
-      command_to_merge_p90_ms: 1_000,
-      base_sync_p50: 1,
-      base_sync_p90: 2,
-      multi_rebase_rate_percent: 33.3,
-      active_sessions: 2,
-    },
-    buckets: automergeBuckets(),
-    terminal_outcomes: {
-      merged: 1,
-      repair_failed: 1,
-      [PRIVATE_MARKERS.item]: 1,
-    },
-    repair_efficiency: {
-      zero_base_sync: 1,
-      one_base_sync: 1,
-      multiple_base_sync: 1,
-    },
-    sessions: [
-      {
-        session_id: PRIVATE_MARKERS.token,
-        repository: PRIVATE_MARKERS.repository,
-        item_number: 74291,
-        pr_url: PRIVATE_MARKERS.url,
-        run_url: PRIVATE_MARKERS.url,
-        last_reason: PRIVATE_MARKERS.secret,
-      },
-    ],
-  };
-}
-
-test("automerge metrics collapse unknown outcomes and omit sessions and filters", () => {
-  const projected = publicAutomergeMetricsProjection(automergeFixture());
-  assert.ok(projected);
-  assert.equal(Object.hasOwn(projected, "filters"), false);
-  assert.equal(Object.hasOwn(projected, "sessions"), false);
-  assert.equal(projected.terminal_outcomes.unknown, 1);
-  assert.equal(Object.hasOwn(projected.terminal_outcomes, PRIVATE_MARKERS.item), false);
-  assertPrivateMarkersAbsent(projected);
-
-  const filtered = automergeFixture();
-  filtered.filters.repo = PRIVATE_MARKERS.repository;
-  assert.equal(publicAutomergeMetricsProjection(filtered), null);
-
-  const malformed = automergeFixture();
-  malformed.buckets[0]!.terminal_count = 4;
-  assert.equal(publicAutomergeMetricsProjection(malformed), null);
-
-  const inconsistentCoverage = automergeFixture();
-  inconsistentCoverage.coverage_percent = 12.3456789;
-  assert.equal(publicAutomergeMetricsProjection(inconsistentCoverage), null);
-
-  const inconsistentMultiRebase = automergeFixture();
-  inconsistentMultiRebase.summary.multi_rebase_rate_percent = 12.3456789;
-  assert.equal(publicAutomergeMetricsProjection(inconsistentMultiRebase), null);
-
-  const malformedSummaryLatency = automergeFixture();
-  malformedSummaryLatency.summary.command_to_merge_p50_ms = null as never;
-  assert.equal(publicAutomergeMetricsProjection(malformedSummaryLatency), null);
-
-  const malformedBucketLatency = automergeFixture();
-  malformedBucketLatency.buckets[0]!.command_to_merge_p50_ms = null as never;
-  assert.equal(publicAutomergeMetricsProjection(malformedBucketLatency), null);
-
-  const malformedBaseSync = automergeFixture();
-  malformedBaseSync.summary.base_sync_p50 = null as never;
-  assert.equal(publicAutomergeMetricsProjection(malformedBaseSync), null);
-
-  const empty = automergeFixture();
-  empty.telemetry_since = null as never;
-  empty.coverage_percent = 0;
-  empty.summary = {
-    terminal_sessions: 0,
-    merged_sessions: 0,
-    merge_success_rate_percent: null as never,
-    command_to_merge_p50_ms: null as never,
-    command_to_merge_p90_ms: null as never,
-    base_sync_p50: null as never,
-    base_sync_p90: null as never,
-    multi_rebase_rate_percent: null as never,
-    active_sessions: 2,
-  };
-  empty.buckets = empty.buckets.map((bucket) => ({
-    ...bucket,
-    terminal_count: 0,
-    merged_count: 0,
-    success_rate_percent: null,
-    command_to_merge_p50_ms: null,
-    command_to_merge_p90_ms: null,
-    low_sample: false,
-  })) as typeof empty.buckets;
-  empty.terminal_outcomes = {};
-  empty.repair_efficiency = { zero_base_sync: 0, one_base_sync: 0, multiple_base_sync: 0 };
-  const emptyProjection = publicAutomergeMetricsProjection(empty);
-  assert.ok(emptyProjection);
-  assert.equal(emptyProjection.coverage_percent, 0);
-  assert.equal(emptyProjection.summary.multi_rebase_rate_percent, null);
 });
 
 function githubRollup(overrides: Record<string, unknown> = {}) {
@@ -722,7 +587,6 @@ test("all public projectors fail closed for non-object and nested malformed inpu
     publicReviewObservabilityProjection,
     publicReviewCoverageProjection,
     publicApplyObservabilityProjection,
-    publicAutomergeMetricsProjection,
     publicGithubEgressObservabilityProjection,
     publicRecentDurablePublicationEventsProjection,
   ]) {
@@ -737,7 +601,6 @@ test("public observability projections are idempotent and reject non-ISO timesta
     [publicReviewObservabilityProjection, reviewObservabilityFixture, "generated_at"],
     [publicReviewCoverageProjection, reviewCoverageFixture, "generated_at"],
     [publicApplyObservabilityProjection, applyObservabilityFixture, "generated_at"],
-    [publicAutomergeMetricsProjection, automergeFixture, "generated_at"],
     [publicGithubEgressObservabilityProjection, githubEgressFixture, "generated_at"],
     [publicRecentDurablePublicationEventsProjection, recentPublicationFixture, "captured_at"],
   ] as const;

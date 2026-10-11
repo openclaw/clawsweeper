@@ -1,0 +1,1 @@
+- Remove retired repair, cluster, automatic issue implementation, and automerge telemetry from the dashboard and Worker APIs while preserving review, publication, queue, and generic worker health.

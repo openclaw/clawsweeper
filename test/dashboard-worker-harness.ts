@@ -10,7 +10,6 @@ import { createContext, Script } from "node:vm";
 import { gunzipSync } from "node:zlib";
 
 import runtimeWorker, {
-  automaticIssueWork,
   ExactReviewQueue as RuntimeExactReviewQueue,
   exactReviewEffectiveLeaseExpiresAt,
   exactReviewJitteredDelayMs,
@@ -26,8 +25,6 @@ import runtimeWorker, {
   workerHealthSectionTimeoutMs,
   readCachedSnapshot,
   StatusStore,
-  summarizeAutomergeReliability,
-  workerWorkKind,
   workflowJobsForRunSnapshot,
 } from "../dashboard/worker.ts";
 import { ExactReviewPublicationBatchStore } from "../dashboard/exact-review-publication-batches.ts";
@@ -1182,7 +1179,6 @@ export {
   Script,
   gunzipSync,
   worker,
-  automaticIssueWork,
   ExactReviewQueue,
   exactReviewEffectiveLeaseExpiresAt,
   exactReviewJitteredDelayMs,
@@ -1198,8 +1194,6 @@ export {
   workerHealthSectionTimeoutMs,
   readCachedSnapshot,
   StatusStore,
-  summarizeAutomergeReliability,
-  workerWorkKind,
   workflowJobsForRunSnapshot,
   ExactReviewPublicationBatchStore,
   ExactReviewDirectPublicationStore,

@@ -800,7 +800,6 @@ h2::before { content: ""; flex: 0 0 auto; width: 14px; height: 2px; border-radiu
 .trend-empty { display: grid; place-items: center; height: 130px; color: var(--muted); font-size: 12px; }
 .overview-shell { margin: 0; padding: 0; border: 0; background: transparent; }
 .overview-head,
-.automatic-head,
 .workers-head,
 .worker-toolbar {
   display: flex;
@@ -809,13 +808,10 @@ h2::before { content: ""; flex: 0 0 auto; width: 14px; height: 2px; border-radiu
   gap: 12px;
 }
 .overview-head,
-.automatic-head,
 .workers-head { margin-top: 44px; }
 .overview-head h2,
-.automatic-head h2,
 .workers-head h2 { margin: 0; }
 .overview-head .muted,
-.automatic-head .muted,
 .workers-head .muted,
 .worker-toolbar .muted { font-size: 12px; }
 .flow-map {
@@ -1167,7 +1163,6 @@ h2::before { content: ""; flex: 0 0 auto; width: 14px; height: 2px; border-radiu
   gap: 12px;
   align-items: center;
 }
-.automatic-row .worker-row-main { grid-template-columns: auto auto minmax(0, 1fr) auto; }
 .worker-name {
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1399,11 +1394,8 @@ a.pill:hover { color: var(--claw); text-decoration: none; }
   align-content: start;
 }
 .pipeline-col { overflow: hidden; }
-.cluster-col,
 .side-col { min-width: 0; }
-.cluster-col-mobile { display: none; }
 #pipeline,
-#automerge,
 #closed,
 #events {
   min-width: 0;
@@ -1558,31 +1550,6 @@ a.pill:hover { color: var(--claw); text-decoration: none; }
   text-align: center;
 }
 .empty::before { content: "🦞 "; opacity: 0.5; }
-.automerge-health { margin: 28px 0; padding: 22px; border: 1px solid var(--line); border-radius: 14px; background: var(--panel); }
-.automerge-health-head, .automerge-controls, .automerge-meta, .automerge-tabs { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-.automerge-health-head { justify-content: space-between; }
-.automerge-health h2 { margin: 0; }
-.automerge-controls select { max-width: 220px; padding: 6px 9px; border: 1px solid var(--line); border-radius: 8px; color: var(--text); background: var(--panel); font: inherit; font-size: 11px; }
-.automerge-meta { margin-top: 8px; color: var(--muted); font-size: 11px; }
-.automerge-kpis { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); margin-top: 20px; border-block: 1px solid var(--line-soft); }
-.automerge-kpi { padding: 18px; border-left: 1px solid var(--line-soft); }
-.automerge-kpi:first-child { border-left: 0; }
-.automerge-kpi span { display: block; color: var(--muted); font-size: 10px; text-transform: uppercase; letter-spacing: .08em; }
-.automerge-kpi strong { display: block; margin: 8px 0 5px; font-size: 25px; font-weight: 560; }
-.automerge-kpi small { color: var(--muted); }
-.automerge-chart-shell { margin-top: 20px; }
-.automerge-tabs button { border: 0; border-bottom: 2px solid transparent; padding: 7px 2px; background: transparent; color: var(--muted); cursor: pointer; font: inherit; }
-.automerge-tabs button.active { color: var(--text); border-color: var(--claw); }
-.automerge-chart { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(18px, 1fr); align-items: end; gap: 3px; height: 190px; margin-top: 12px; padding: 12px 4px 22px; border-bottom: 1px solid var(--line); background: repeating-linear-gradient(to bottom, var(--line-soft) 0 1px, transparent 1px 42px); overflow-x: auto; }
-.automerge-point { position: relative; height: 100%; min-width: 18px; }
-.automerge-dot { position: absolute; left: 50%; width: 9px; height: 9px; translate: -50% 50%; border-radius: 50%; background: var(--claw); box-shadow: 0 0 0 3px var(--panel); }
-.automerge-dot.low { background: var(--panel); border: 2px solid var(--claw); }
-.automerge-dot.p90 { width: 7px; height: 7px; background: var(--amber); }
-.automerge-n { position: absolute; left: 50%; bottom: -19px; translate: -50% 0; color: var(--muted); font-size: 9px; white-space: nowrap; }
-.automerge-chart-legend { margin-top: 7px; color: var(--muted); font-size: 10px; }
-.automerge-details { display: grid; grid-template-columns: 1fr 1fr; gap: 28px; margin-top: 22px; }
-.automerge-details h3 { margin: 0 0 10px; font-size: 12px; text-transform: uppercase; letter-spacing: .08em; }
-.automerge-detail-row { display: flex; justify-content: space-between; padding: 7px 0; border-bottom: 1px solid var(--line-soft); font-size: 12px; }
 .health-strip { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 16px; }
 .health-strip:empty { display: none; }
 .health-chip {
@@ -1672,8 +1639,6 @@ a.pill:hover { color: var(--claw); text-decoration: none; }
   .split { grid-template-columns: 1fr; }
   .left-col { order: 1; }
   .side-col { order: 2; }
-  .cluster-col-desktop { display: none; }
-  .cluster-col-mobile { display: block; order: 3; }
   header { align-items: start; flex-direction: column; }
   .top-links { justify-content: flex-start; }
 }
@@ -1687,10 +1652,6 @@ a.pill:hover { color: var(--claw); text-decoration: none; }
   .apply-observability .apply-observability-kpis { grid-template-columns: 1fr; }
 }
 @media (max-width: 760px) {
-  .automerge-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .automerge-kpi:nth-child(3) { border-left: 0; border-top: 1px solid var(--line-soft); }
-  .automerge-kpi:nth-child(4) { border-top: 1px solid var(--line-soft); }
-  .automerge-details { grid-template-columns: 1fr; }
   .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .metric:nth-child(3n + 1) { border-left: 1px solid var(--line-soft); padding-left: 18px; }
   .metric:nth-child(2n + 1) { border-left: 0; padding-left: 0; }
@@ -1784,11 +1745,6 @@ a.pill:hover { color: var(--claw); text-decoration: none; }
     <div id="exact-review-handoff" aria-live="polite"></div>
     <div id="recent-durable-publication-events" aria-live="polite"></div>
     <div id="apply-health"></div>
-    <div class="automatic-head">
-      <h2>Automatic Builds</h2>
-      <span class="muted" id="automatic-summary"></span>
-    </div>
-    <div id="automatic-work"></div>
     <div class="workers-head">
       <h2>Active Workers</h2>
       <span class="muted" id="worker-summary"></span>
@@ -1820,29 +1776,11 @@ a.pill:hover { color: var(--claw); text-decoration: none; }
     </summary>
     <div id="review-coverage-body" aria-live="polite" aria-labelledby="review-coverage-title"><div class="empty">Loading review coverage…</div></div>
   </details>
-  <section class="automerge-health" aria-labelledby="automerge-product-title">
-    <div class="automerge-health-head">
-      <h2 id="automerge-product-title">Automerge Product Health</h2>
-      <div class="automerge-controls">
-        <div class="trend-ranges" id="automerge-ranges" aria-label="Automerge metric range">
-          <button class="trend-range" type="button" data-automerge-range="6h">6h</button>
-          <button class="trend-range" type="button" data-automerge-range="24h">24h</button>
-          <button class="trend-range active" type="button" data-automerge-range="7d">7d</button>
-        </div>
-      </div>
-    </div>
-    <div class="automerge-meta" id="automerge-meta">Loading product telemetry…</div>
-    <div id="automerge-product"><div class="empty">Loading automerge product metrics…</div></div>
-  </section>
   <section class="split">
     <div class="left-col">
       <div class="pipeline-col">
         <h2>Active Pipeline</h2>
         <div id="pipeline"></div>
-      </div>
-      <div class="cluster-col cluster-col-desktop">
-        <h2>Cluster Intake</h2>
-        <div class="cluster-repair"></div>
       </div>
     </div>
     <aside class="side-col">
@@ -1851,16 +1789,11 @@ a.pill:hover { color: var(--claw); text-decoration: none; }
       <div id="closed"></div>
       <h2>Worker Health</h2>
       <div id="worker-health"></div>
-      <div id="automerge" hidden></div>
       <h2>Operations</h2>
       <div id="operations"></div>
       <h2>Recent Activity</h2>
       <div id="events"></div>
     </aside>
-    <div class="cluster-col cluster-col-mobile">
-      <h2>Cluster Intake</h2>
-      <div class="cluster-repair"></div>
-    </div>
   </section>
 </main>
 <dialog id="worker-dialog" aria-labelledby="worker-dialog-title">
@@ -1939,12 +1872,12 @@ function ciBadge(ci) {
 }
 const STATUS_CONTAINER_FIELDS = new Set([
   "root", "source", "fleet", "control_plane", "publishers", "comment_routers", "reconcilers",
-  "health", "operational_health", "averages", "workers", "automatic_work", "pipeline", "bay",
+  "health", "operational_health", "workers", "pipeline", "bay",
   "recent", "diagnostics", "dashboard_health", "progress", "steps", "timeline", "ci", "timings",
-  "overall", "terminal_buffer", "recently_washed", "cluster_repair", "markers", "latest_runs",
+  "overall", "terminal_buffer", "recently_washed", "markers", "latest_runs",
   "active_intake_runs", "active_worker_runs", "apply_health", "items", "failures", "skip_reasons",
   "closure", "next_action_buckets", "next_actions", "cycle", "candidate_counts", "lanes",
-  "comment_sync", "automerge", "automerge_reliability", "closed_items", "closed_stats",
+  "comment_sync", "closed_items", "closed_stats",
   "operation_counts", "events", "reasons", "cursor", "exact_review_queue",
   "recent_durable_publication_events", "collection", "review", "publication", "handoff_health",
   "review_failure_health", "by_stage",
@@ -1962,12 +1895,12 @@ const STATUS_TEXT_FIELDS = new Set([
   "status", "terminal_outcome", "work_kind", "errors", "reasons", "cache_state"
 ]);
 const STATUS_TEXT_VALUES = new Set([
-  "active", "apply", "applying", "arriving", "all_clear", "amber", "assist", "automerge",
+  "active", "apply", "applying", "arriving", "all_clear", "amber", "assist",
   "background-review", "cancelled", "closing", "complete", "congested", "critical", "commit-review", "completed",
   "completed_review_journeys", "degraded", "exact-review", "failure", "github-checks", "green",
-  "healthy", "hot-review", "in_progress", "idle", "issue_to_pr", "job", "live", "neutral",
-  "needs_attention", "other", "pending", "processed", "publishing", "pr_repair", "queued",
-  "recovered", "repair", "repair_cluster", "repairing", "red", "requested", "reviewing",
+  "healthy", "hot-review", "in_progress", "idle", "job", "live", "neutral",
+  "needs_attention", "other", "pending", "processed", "publishing", "queued",
+  "recovered", "repairing", "red", "requested", "reviewing",
   "running", "setting-up", "skipped", "skipped_changed_since_review", "stale", "stalled",
   "success", "telemetry_unavailable", "timed_out", "unavailable", "unresolved", "unknown",
   "waiting", "workflow", "workflow-fallback", "6h", "24h", "7d", "accepted", "deduped",
@@ -1983,7 +1916,7 @@ const STATUS_TEXT_VALUES = new Set([
   "review_failures_repeated", "review_failures_recent", "review_failure_telemetry_unavailable", "review_status_delivery_failed",
   "review_retries_exhausted", "review_runaway", "review_runaway_telemetry_unavailable",
   "workflow_execution_stalled", "workflow_execution_degraded",
-  "worker_failures_unresolved", "apply_health_attention", "automerge_attention"
+  "worker_failures_unresolved", "apply_health_attention"
 ]);
 const STATUS_TIME_FIELDS = new Set([
   "at", "client_checked_at", "completed_at", "generated_at", "observed_at", "oldest_at", "oldest_pending_at",
@@ -1996,23 +1929,23 @@ const STATUS_TIMESTAMP_PATTERN =
 const STATUS_NUMBER_FIELDS = new Set([
   "schema_version", "applying", "arriving", "active_codex_jobs", "active", "active_intake_runs",
   "active_worker_runs", "active_workflow_runs", "action_records", "attempts", "available_slots",
-  "automerge_samples", "bot_owned_proof_decisions_requested", "bot_owned_proof_dispatches",
+  "bot_owned_proof_decisions_requested", "bot_owned_proof_dispatches",
   "budget_used_percent", "capacity", "cancelled_attempts", "closed", "comment_synced",
   "completed", "confirmed_proposal", "count", "dispatching", "error_rate_percent", "examined",
   "failed_review_retries", "failed_review_retry_exhaustions", "failed_attempts", "failed_recent_runs",
-  "failing", "fallbacks", "guarded_retry", "inherited_label_cleanups", "inconsistent_or_stale",
+  "failing", "fallbacks", "guarded_retry", "inconsistent_or_stale",
   "issues", "leased", "measured_attempts", "oldest_queued_minutes", "oldest_running_minutes",
   "oldest_wedged_rerun_minutes", "oldest_zombie_queued_minutes", "pending", "pending_depth", "processed", "publishing",
   "promotion_cooldown_eligible", "promotion_eligible", "promotion_total", "cooldown_eligible_total",
   "proof_required", "prs", "queued_over_threshold", "queued_runs", "queued_workflow_runs",
   "recovered_failures", "recovery_rate_percent", "review_refresh", "repairing", "reviewing",
   "running_over_threshold", "running", "sample_limit", "sampled_runs", "setting_up", "samples",
-  "self_heal_conflict_repairs", "support_queued_workflow_runs", "support_workflow_runs",
+  "support_queued_workflow_runs", "support_workflow_runs",
   "stalled_after_seconds", "successful_attempts", "skipped", "skipped_changed_since_review",
   "tide_generation", "tide_threshold", "target_repository_count", "total", "unresolved_failures",
   "worker_budget", "worker_detail_fallbacks", "worker_detail_runs", "waiting", "window_minutes",
   "window_hours", "wedged_rerun_runs", "zombie_queued_runs", "apply_ready_count", "attention_count",
-  "automerge_command_to_merge_ms", "average_duration_ms", "average_ms", "candidate_count",
+  "average_duration_ms", "average_ms", "candidate_count",
   "completed_attempts", "duration_ms", "elapsed_ms", "age_ms", "error_count", "estimated_full_cycle_minutes",
   "failure_rate_percent", "generated_count", "longest_duration_ms", "maximum_age_ms", "median_ms",
   "oldest_age_seconds", "oldest_dispatching_age_seconds", "oldest_leased_age_seconds",
@@ -2209,7 +2142,6 @@ function dashboardStatusSnapshot(value) {
     operational_health: source.operational_health || { status: "unknown" },
     averages: source.averages || {},
     workers: Array.isArray(source.workers) ? source.workers : [],
-    automatic_work: Array.isArray(source.automatic_work) ? source.automatic_work : [],
     pipeline: Array.isArray(source.pipeline) ? source.pipeline : [],
     bay: source.bay || {},
     recent: source.recent || {},
@@ -2281,15 +2213,10 @@ function dashboardStatusFreshness(source) {
 }
 let lastData = null;
 let loading = false;
-let activeAutomergeRange = "7d";
-let activeAutomergeChart = "success";
-let lastAutomergeMetrics = null;
-let automergeMetricsRequestGeneration = 0;
 let activeWorkerFilter = "all";
 let publicReferenceQuery = "";
 let publicReferenceIndex = new Map();
 let workerIndex = new Map();
-let automaticIndex = new Map();
 let activeHealthRange = "6h";
 let activeApplyRange = "24h";
 let healthHistoryLoadedAt = 0;
@@ -2596,16 +2523,6 @@ const DASHBOARD_APPLY_FAILURE_KINDS = [
   "state_lease_timeout", "state_lease_contention", "action_ledger_failure",
   "state_publication_failure", "safe_close_blocked", "safe_close_failure", "workflow_failure"
 ];
-const DASHBOARD_AUTOMERGE_OUTCOMES = [
-  "merged", "repair_failed", "maintainer_stopped", "repair_cap_exhausted",
-  "pr_closed", "automerge_disabled"
-];
-const DASHBOARD_AUTOMERGE_BUCKET_COUNTS = { "6h": 12, "24h": 12, "7d": 14 };
-const DASHBOARD_AUTOMERGE_RANGE_MS = {
-  "6h": 6 * 60 * 60 * 1000,
-  "24h": 24 * 60 * 60 * 1000,
-  "7d": 7 * 24 * 60 * 60 * 1000
-};
 function dashboardObservabilityObject(value) {
   return value && typeof value === "object" && !Array.isArray(value) ? value : null;
 }
@@ -3076,160 +2993,6 @@ function dashboardApplyObservabilitySnapshot(value) {
     failures
   };
 }
-function dashboardAutomergeSummary(value) {
-  const source = dashboardObservabilityObject(value);
-  if (!source) return null;
-  const terminalSessions = dashboardObservabilityCount(source.terminal_sessions);
-  const mergedSessions = dashboardObservabilityCount(source.merged_sessions);
-  const activeSessions = dashboardObservabilityCount(source.active_sessions);
-  const successRate = dashboardObservabilityNullableNumber(source.merge_success_rate_percent, 0, 100);
-  const latencyP50 = dashboardObservabilityNullableCount(source.command_to_merge_p50_ms, DASHBOARD_OBSERVABILITY_MAX_DURATION_MS);
-  const latencyP90 = dashboardObservabilityNullableCount(source.command_to_merge_p90_ms, DASHBOARD_OBSERVABILITY_MAX_DURATION_MS);
-  const baseSyncP50 = dashboardObservabilityNullableCount(source.base_sync_p50);
-  const baseSyncP90 = dashboardObservabilityNullableCount(source.base_sync_p90);
-  const multiRebaseRate = dashboardObservabilityNullableNumber(source.multi_rebase_rate_percent, 0, 100);
-  if (
-    terminalSessions === null || mergedSessions === null || activeSessions === null ||
-    successRate === undefined || latencyP50 === undefined || latencyP90 === undefined ||
-    baseSyncP50 === undefined || baseSyncP90 === undefined || multiRebaseRate === undefined ||
-    mergedSessions > terminalSessions
-  ) return null;
-  const expectedSuccessRate = terminalSessions
-    ? Math.round((mergedSessions / terminalSessions) * 1000) / 10
-    : null;
-  const latencyPairValid =
-    (latencyP50 === null) === (latencyP90 === null) &&
-    (latencyP50 === null || latencyP50 <= latencyP90) &&
-    (mergedSessions > 0 || latencyP50 === null);
-  const baseSyncPairValid = terminalSessions
-    ? baseSyncP50 !== null && baseSyncP90 !== null && baseSyncP50 <= baseSyncP90
-    : baseSyncP50 === null && baseSyncP90 === null;
-  if (successRate !== expectedSuccessRate || !latencyPairValid || !baseSyncPairValid) return null;
-  return {
-    terminal_sessions: terminalSessions,
-    merged_sessions: mergedSessions,
-    merge_success_rate_percent: expectedSuccessRate,
-    command_to_merge_p50_ms: latencyP50,
-    command_to_merge_p90_ms: latencyP90,
-    base_sync_p50: baseSyncP50,
-    base_sync_p90: baseSyncP90,
-    multi_rebase_rate_percent: multiRebaseRate,
-    active_sessions: activeSessions
-  };
-}
-function dashboardAutomergeBuckets(value, range) {
-  if (!Array.isArray(value) || value.length !== DASHBOARD_AUTOMERGE_BUCKET_COUNTS[range]) return null;
-  const result = [];
-  let priorEnd = null;
-  for (const entry of value) {
-    const source = dashboardObservabilityObject(entry);
-    if (!source) return null;
-    const start = dashboardObservabilityTimestamp(source.start);
-    const end = dashboardObservabilityTimestamp(source.end);
-    const terminalCount = dashboardObservabilityCount(source.terminal_count);
-    const mergedCount = dashboardObservabilityCount(source.merged_count);
-    const successRate = dashboardObservabilityNullableNumber(source.success_rate_percent, 0, 100);
-    const latencyP50 = dashboardObservabilityNullableCount(source.command_to_merge_p50_ms, DASHBOARD_OBSERVABILITY_MAX_DURATION_MS);
-    const latencyP90 = dashboardObservabilityNullableCount(source.command_to_merge_p90_ms, DASHBOARD_OBSERVABILITY_MAX_DURATION_MS);
-    const latencyPairValid =
-      (latencyP50 === null) === (latencyP90 === null) &&
-      (latencyP50 === null || latencyP50 <= latencyP90) &&
-      (mergedCount === 0 ? latencyP50 === null : true);
-    if (
-      !start || !end || Date.parse(start) >= Date.parse(end) ||
-      (priorEnd !== null && start !== priorEnd) || terminalCount === null ||
-      mergedCount === null || mergedCount > terminalCount || successRate === undefined ||
-      latencyP50 === undefined || latencyP90 === undefined || !latencyPairValid ||
-      typeof source.low_sample !== "boolean" ||
-      successRate !== (terminalCount ? Math.round((mergedCount / terminalCount) * 1000) / 10 : null) ||
-      source.low_sample !== (terminalCount > 0 && terminalCount < 5)
-    ) return null;
-    result.push({
-      start,
-      end,
-      terminal_count: terminalCount,
-      merged_count: mergedCount,
-      success_rate_percent: successRate,
-      command_to_merge_p50_ms: latencyP50,
-      command_to_merge_p90_ms: latencyP90,
-      low_sample: source.low_sample
-    });
-    priorEnd = end;
-  }
-  return result;
-}
-function dashboardAutomergeOutcomes(value) {
-  const source = dashboardObservabilityObject(value);
-  if (!source || Object.keys(source).length > 32) return null;
-  const result = Object.fromEntries(DASHBOARD_AUTOMERGE_OUTCOMES.map(outcome => [outcome, 0]));
-  let unknown = 0;
-  for (const [outcome, value] of Object.entries(source)) {
-    const parsed = dashboardObservabilityCount(value);
-    if (parsed === null) return null;
-    if (dashboardObservabilityMember(DASHBOARD_AUTOMERGE_OUTCOMES, outcome)) result[outcome] = parsed;
-    else unknown += parsed;
-    if (unknown > DASHBOARD_OBSERVABILITY_MAX_COUNT) return null;
-  }
-  return { ...result, unknown };
-}
-function dashboardAutomergeMetricsSnapshot(value) {
-  const source = dashboardObservabilityObject(value);
-  if (!source || !dashboardObservabilityMember(DASHBOARD_OBSERVABILITY_RANGES, source.range)) return null;
-  const filters = dashboardObservabilityObject(source.filters);
-  if (
-    (source.filters !== undefined && !filters) ||
-    (filters && (filters.repo !== null || filters.policy_version !== null))
-  ) return null;
-  const generatedAt = dashboardObservabilityTimestamp(source.generated_at);
-  const rangeStart = dashboardObservabilityTimestamp(source.range_start);
-  const telemetrySince = dashboardObservabilityNullableTimestamp(source.telemetry_since);
-  const coveragePercent = dashboardObservabilityNullableNumber(source.coverage_percent, 0, 100);
-  const summary = dashboardAutomergeSummary(source.summary);
-  const buckets = dashboardAutomergeBuckets(source.buckets, source.range);
-  const outcomes = dashboardAutomergeOutcomes(source.terminal_outcomes);
-  const efficiency = dashboardObservabilityCountObject(source.repair_efficiency, [
-    "zero_base_sync", "one_base_sync", "multiple_base_sync"
-  ]);
-  const generatedAtMs = generatedAt ? Date.parse(generatedAt) : Number.NaN;
-  const rangeStartMs = rangeStart ? Date.parse(rangeStart) : Number.NaN;
-  const expectedCoveragePercent = telemetrySince === null
-    ? 0
-    : Math.max(0, Math.min(100, Math.round(
-      ((generatedAtMs - Math.max(rangeStartMs, Date.parse(String(telemetrySince)))) /
-        DASHBOARD_AUTOMERGE_RANGE_MS[source.range]) * 100
-    )));
-  if (
-    !generatedAt || !rangeStart || telemetrySince === undefined || coveragePercent === undefined ||
-    !summary || !buckets || !outcomes || !efficiency ||
-    generatedAtMs - rangeStartMs !== DASHBOARD_AUTOMERGE_RANGE_MS[source.range] ||
-    coveragePercent !== expectedCoveragePercent || buckets[0]?.start !== rangeStart ||
-    buckets.at(-1)?.end !== generatedAt
-  ) return null;
-  const outcomeTotal = Object.values(outcomes).reduce((total, item) => total + item, 0);
-  const bucketTerminalTotal = buckets.reduce((total, bucket) => total + bucket.terminal_count, 0);
-  const bucketMergedTotal = buckets.reduce((total, bucket) => total + bucket.merged_count, 0);
-  const efficiencyTotal = Object.values(efficiency).reduce((total, item) => total + item, 0);
-  const expectedMultiRebaseRate = summary.terminal_sessions
-    ? Math.round((efficiency.multiple_base_sync / summary.terminal_sessions) * 1000) / 10
-    : null;
-  if (
-    outcomeTotal !== summary.terminal_sessions || outcomes.merged !== summary.merged_sessions ||
-    bucketTerminalTotal !== summary.terminal_sessions || bucketMergedTotal !== summary.merged_sessions ||
-    efficiencyTotal !== summary.terminal_sessions ||
-    summary.multi_rebase_rate_percent !== expectedMultiRebaseRate
-  ) return null;
-  return {
-    generated_at: generatedAt,
-    range: source.range,
-    range_start: rangeStart,
-    telemetry_since: telemetrySince,
-    coverage_percent: expectedCoveragePercent,
-    summary: { ...summary, multi_rebase_rate_percent: expectedMultiRebaseRate },
-    buckets,
-    terminal_outcomes: outcomes,
-    repair_efficiency: efficiency
-  };
-}
 function applyValue(value) {
   if (value == null) return "unknown";
   return Number.isFinite(Number(value)) ? fmt.format(Number(value)) : "unknown";
@@ -3438,19 +3201,10 @@ async function loadHealthHistory(range, force) {
 
 function workerGroup(worker) {
   const text = (worker.mode + " " + worker.name + " " + worker.workflow_title).toLowerCase();
-  if (worker.work_kind === "issue_to_pr") return "issue-to-pr";
-  if (worker.work_kind === "pr_repair") return "pr-repair";
   if (text.includes("assist")) return "assist";
-  if (text.includes("repair") || text.includes("automerge")) return "repair";
   if (text.includes("commit")) return "commit";
   if (text.includes("review")) return "review";
   return "other";
-}
-function workerKindLabel(kind) {
-  if (kind === "issue_to_pr") return "Issue to PR";
-  if (kind === "pr_repair") return "PR repair";
-  if (kind === "repair_cluster") return "Repair cluster";
-  return "";
 }
 function workerStatusClass(status) {
   if (["in_progress", "running"].includes(status)) return "active";
@@ -3509,13 +3263,13 @@ function renderSystemMap(data) {
   const fleet = data.fleet || {};
   const workerRunIds = new Set(workers.map(worker => String(worker.run_id)));
   const planning = pipeline.filter(row => !workerRunIds.has(String(row.id))).length;
-  const applying = pipeline.filter(row => row.mode === "apply" || row.mode === "automerge").length;
+  const applying = pipeline.filter(row => row.mode === "apply").length;
   const closed = data.recent?.closed_stats?.total || 0;
   const nodes = [
     ["01 · Intake", fleet.queued_workflow_runs || 0, "Events and scheduled sweeps waiting to start"],
     ["02 · Plan", planning, "Runs selecting work or expanding a matrix"],
-    ["03 · Workers", codexWorkers.length, "Codex jobs reviewing, repairing, or assisting"],
-    ["04 · Apply", applying, "Deterministic comment, close, merge, and publish lanes"],
+    ["03 · Workers", codexWorkers.length, "Codex jobs reviewing or assisting"],
+    ["04 · Apply", applying, "Deterministic comment, close, and publish lanes"],
     ["05 · Results", closed, (data.recent?.closed_stats?.window_hours || 24) + "h ClawSweeper closes"]
   ];
   document.getElementById("flow-map").innerHTML = nodes.map(node =>
@@ -3849,7 +3603,7 @@ function renderRecentDurablePublicationEvents(events) {
 }
 function renderWorkers(rows) {
   workerIndex = new Map(rows.map((worker, index) => [String(index), worker]));
-  const groups = ["issue-to-pr", "pr-repair", "review", "repair", "commit", "assist", "other"];
+  const groups = ["review", "commit", "assist", "other"];
   const counts = Object.fromEntries(groups.map(group => [group, rows.filter(worker => workerGroup(worker) === group).length]));
   const filters = [["all", "All", rows.length], ...groups.filter(group => counts[group]).map(group => [group, group[0].toUpperCase() + group.slice(1), counts[group]])];
   if (!filters.some(filter => filter[0] === activeWorkerFilter)) activeWorkerFilter = "all";
@@ -3865,12 +3619,11 @@ function renderWorkers(rows) {
   document.getElementById("workers").innerHTML = '<div class="worker-list">' + visible.map(worker => {
     const viewKey = rows.indexOf(worker);
     const progress = worker.progress?.total ? Math.round((worker.progress.completed / worker.progress.total) * 100) : 0;
-    const kind = workerKindLabel(worker.work_kind);
     const targetTitle = workerTargetTitle(worker);
     return '<button type="button" class="worker-row" data-worker-id="' + viewKey + '" aria-label="Open worker details">' +
       '<div class="worker-row-main">' +
       '<i class="status-dot ' + workerStatusClass(worker.status) + '"></i>' +
-      '<span class="pill">' + esc(modeLabel(worker.mode)) + (kind ? " · " + esc(kind) : "") + '</span>' +
+      '<span class="pill">' + esc(modeLabel(worker.mode)) + '</span>' +
       '<strong class="worker-name">Active worker</strong>' +
       '<span class="worker-step">' + esc(worker.stage || "Status telemetry") + '</span>' +
       '<span class="worker-time mono">' + elapsed(worker.elapsed_ms) + '</span>' +
@@ -3959,36 +3712,6 @@ function renderPublicReferenceDialog(row, key) {
   if (!dialog.open) dialog.showModal();
   history.replaceState(null, "", "#public-reference-" + encodeURIComponent(key));
 }
-function renderAutomaticWork(rows) {
-  automaticIndex = new Map(rows.map((row, index) => [String(index), row]));
-  const active = rows.filter(row => row.active || ["queued", "running", "in_progress"].includes(row.status)).length;
-  document.getElementById("automatic-summary").textContent =
-    fmt.format(rows.length) + " recent · " + fmt.format(active) + " active";
-  if (!rows.length) {
-    document.getElementById("automatic-work").innerHTML =
-      '<div class="empty">No automatic issue builds have started yet.</div>';
-    return;
-  }
-  document.getElementById("automatic-work").innerHTML =
-    '<div class="worker-list">' +
-    rows.map((row, index) => {
-      const phase = compactText(row.phase || row.status || "queued").replaceAll("_", " ");
-      return '<button type="button" class="worker-row automatic-row" data-automatic-id="' + index +
-        '" aria-label="Open automatic build details">' +
-        '<div class="worker-row-main">' +
-        '<i class="status-dot ' + workerStatusClass(row.status) + '"></i>' +
-        '<span class="pill">' + esc(phase) + '</span>' +
-        '<strong class="worker-name">Automatic work</strong>' +
-        '<span class="worker-time mono">' + esc(row.updated_at ? since(row.updated_at) : "") + '</span>' +
-        '</div>' +
-        '<div class="worker-row-sub">' +
-        '<span class="worker-target-ref mono">Identity-safe status</span>' +
-        '<span class="worker-target-title">' + esc(row.pr_url ? "PR opened" : row.active ? "worker active" : row.status) + '</span>' +
-        '</div>' +
-        '</button>';
-    }).join("") +
-    '</div>';
-}
 function renderWorkerDialog(worker, viewKey) {
   const dialog = document.getElementById("worker-dialog");
   const statusClass = workerStatusClass(worker.status);
@@ -3996,7 +3719,7 @@ function renderWorkerDialog(worker, viewKey) {
   const targetItems = new Map((worker.target_items || []).map(target => [Number(target.number), target]));
   const targetUrls = worker.repository
     ? (worker.item_numbers || (worker.item_number ? [worker.item_number] : [])).map(number => ({
-        url: targetItems.get(Number(number))?.url || "https://github.com/" + worker.repository + "/" + (worker.work_kind === "pr_repair" ? "pull" : "issues") + "/" + number,
+        url: targetItems.get(Number(number))?.url || "https://github.com/" + worker.repository + "/issues/" + number,
         label: "#" + number + (targetItems.get(Number(number))?.title ? " · " + compactText(targetItems.get(Number(number)).title) : "")
       }))
     : [];
@@ -4018,43 +3741,10 @@ function renderWorkerDialog(worker, viewKey) {
   if (!dialog.open) dialog.showModal();
   history.replaceState(null, "", "#worker-" + encodeURIComponent(viewKey));
 }
-function renderAutomaticDialog(row, viewKey) {
-  const dialog = document.getElementById("worker-dialog");
-  const phase = compactText(row.phase || row.status || "queued").replaceAll("_", " ");
-  document.getElementById("worker-dialog-heading").innerHTML =
-    '<div><span class="pill"><i class="status-dot ' + workerStatusClass(row.status) + '"></i>' +
-    esc(row.status) + '</span> <span class="pill">Automatic issue build</span></div>' +
-    '<h3 id="worker-dialog-title">Automatic work</h3>' +
-    '<div class="muted">Identity-safe status</div>';
-  const timeline = (row.timeline || []).map(entry =>
-    '<li class="step-row ' + esc(entry.status) + '"><i class="step-mark"></i><strong>' +
-    esc(compactText(entry.phase).replaceAll("_", " ")) + '</strong><span>' +
-    esc(entry.received_at ? since(entry.received_at) : entry.status) + '</span>' +
-    (entry.note ? '<div class="muted" style="grid-column:2 / -1">' + esc(entry.note) + '</div>' : '') +
-    '</li>'
-  ).join("");
-  document.getElementById("worker-dialog-body").innerHTML =
-    '<div class="drawer-grid">' +
-      '<div class="drawer-stat"><span>Current phase</span><strong>' + esc(phase) + '</strong></div>' +
-      '<div class="drawer-stat"><span>Status</span><strong>' + esc(row.status) + '</strong></div>' +
-      '<div class="drawer-stat"><span>Source</span><strong>Identity-safe status</strong></div>' +
-      '<div class="drawer-stat"><span>Updated</span><strong>' + esc(row.updated_at ? since(row.updated_at) : "unknown") + '</strong></div>' +
-    '</div>' +
-    '<div class="drawer-links">' +
-      linkClass(row.issue_url, "Open issue", "pill run-link") +
-      linkClass(row.run_url, "Open workflow run", "pill run-link") +
-      linkClass(row.pr_url, "Open generated PR", "pill run-link") +
-      (row.worker_id ? '<button type="button" class="filter-button" data-linked-worker-id="' + esc(row.worker_id) + '">Open live worker</button>' : '') +
-    '</div>' +
-    '<h2>Lifecycle Timeline</h2>' +
-    (timeline ? '<ol class="step-list">' + timeline + '</ol>' : '<div class="empty">No lifecycle events recorded yet.</div>');
-  if (!dialog.open) dialog.showModal();
-  history.replaceState(null, "", "#automatic-" + encodeURIComponent(viewKey));
-}
 function closeWorkerDialog() {
   const dialog = document.getElementById("worker-dialog");
   if (dialog.open) dialog.close();
-  if (location.hash.startsWith("#worker-") || location.hash.startsWith("#automatic-") || location.hash.startsWith("#public-reference-")) {
+  if (location.hash.startsWith("#worker-") || location.hash.startsWith("#public-reference-")) {
     history.replaceState(null, "", location.pathname + location.search);
   }
 }
@@ -4070,11 +3760,6 @@ function openWorkerFromHash() {
     const key = decodedHashValue("#worker-");
     const worker = key === null ? null : workerIndex.get(key);
     if (worker) renderWorkerDialog(worker, key);
-    else closeWorkerDialog();
-  } else if (location.hash.startsWith("#automatic-")) {
-    const key = decodedHashValue("#automatic-");
-    const row = key === null ? null : automaticIndex.get(key);
-    if (row) renderAutomaticDialog(row, key);
     else closeWorkerDialog();
   } else if (location.hash.startsWith("#public-reference-")) {
     const key = decodedHashValue("#public-reference-");
@@ -4134,7 +3819,6 @@ async function load() {
   loadHealthHistory(activeHealthRange, false).catch(() => undefined);
   loadApplyObservability().catch(() => undefined);
   loadReviewCoverage().catch(() => undefined);
-  loadAutomergeMetrics().catch(() => undefined);
   } catch {
     if (lastData) {
       renderDashboard(lastData, "Live refresh failed; showing last good status.");
@@ -4162,9 +3846,7 @@ function renderDashboard(data, note) {
         (data.recent?.apply_health?.items || []).some(item => applyHealthNeedsAttention(item.status)) ||
         Boolean(data.diagnostics?.exact_review_queue_error) ||
         ["degraded", "stalled"].includes(handoffStatus) ||
-        ["degraded", "stalled", "unknown"].includes(operationalStatus) ||
-        (data.recent?.automerge_reliability?.unresolved_failures || 0) > 0 ||
-        (data.recent?.automerge_reliability?.stalled_attempts || 0) > 0
+        ["degraded", "stalled", "unknown"].includes(operationalStatus)
       );
   const severity = serverHealth?.severity ||
     (handoffStatus === "stalled" || operationalStatus === "stalled" ? "red" : needsAttention ? "amber" : "green");
@@ -4207,16 +3889,13 @@ function renderDashboard(data, note) {
   renderExactReviewHandoff(data.exact_review_queue);
   renderRecentDurablePublicationEvents(data.recent_durable_publication_events);
   renderApplyHealth(data);
-  renderAutomaticWork(data.automatic_work || []);
   renderWorkers(data.workers || []);
   renderPublicReferences(data);
   openWorkerFromHash();
-  renderClusterRepair(data.recent?.cluster_repair);
   renderPipeline(data.pipeline || []);
-  renderAutomerge(data.recent.automerge || []);
   renderClosedStats(data.recent.closed_stats);
   renderClosedItems(data.recent.closed_items || []);
-  renderWorkerHealth(data.health, data.recent?.automerge_reliability);
+  renderWorkerHealth(data.health);
   renderOperations(data.recent.operation_counts);
   renderEvents(data.recent.events || []);
 }
@@ -4554,109 +4233,6 @@ function renderPipeline(rows) {
     return '<article class="work-row"><div class="work-main" title="' + esc(compactText(row.title)) + '"><div class="row-top"><span class="pill" title="' + esc(row.mode) + '">' + esc(modeLabel(row.mode)) + '</span>' + pipelineItemLabel(row) + '</div>' + (detail ? '<div class="muted work-title">' + esc(detail) + '</div>' : "") + '</div><div class="work-state"><div class="stage-block"><strong>' + esc(row.stage) + '</strong><span class="muted">' + esc(row.status) + '</span></div>' + ciBadge(row.ci) + linkClass(row.run_url, "run", "pill run-link") + '</div><div class="timebox"><strong>' + elapsed(row.elapsed_ms) + '</strong><span>elapsed</span></div></article>';
   }).join("") + '</div>';
 }
-function renderClusterRepair(cluster) {
-  const targets = Array.from(document.querySelectorAll(".cluster-repair"));
-  if (!targets.length) return;
-  if (!cluster) {
-    for (const target of targets) {
-      target.innerHTML = '<div class="empty">No cluster intake telemetry in this snapshot.</div>';
-    }
-    return;
-  }
-  const markerRows = (cluster.markers || []).map(marker => {
-    const jobs = (marker.generated_jobs || []).slice(0, 3).map(job => '<span class="pill mono">' + esc(job.split("/").pop() || job) + '</span>').join("");
-    const jobText = marker.generated_count ? fmt.format(marker.generated_count) + " job" + (marker.generated_count === 1 ? "" : "s") : "no jobs";
-    return '<article class="work-row cluster-marker-row"><div class="work-main"><div class="row-top"><span class="pill">' + esc(marker.status || "unknown") + '</span><span class="item-link">' + esc(marker.target_repo || "unknown repo") + '</span></div><div class="muted work-title">store ' + esc(marker.last_processed_store_short_sha || "unknown") + " · " + esc(jobText) + (marker.last_processed_store_exported_at ? " · exported " + esc(since(marker.last_processed_store_exported_at)) : "") + '</div><div class="row-top">' + jobs + '</div></div><div class="work-state"><div class="stage-block"><strong>' + esc(marker.updated_at ? since(marker.updated_at) : "never") + '</strong><span class="muted">marker</span></div>' + linkClass(marker.run_url, "run", "pill run-link") + '</div></article>';
-  }).join("");
-  const runRows = (cluster.latest_runs || []).slice(0, 3).map(run => '<article class="side-row"><div class="side-main">' + linkClass(run.url, compactText(run.title || run.workflow), "item-link") + '<div class="muted side-title">' + esc(run.status || "") + (run.conclusion ? " · " + esc(run.conclusion) : "") + '</div></div><div class="side-meta"><span>' + esc(run.started_at ? since(run.started_at) : "") + '</span></div></article>').join("");
-  const activeText = fmt.format((cluster.active_intake_runs || []).length) + " intake · " + fmt.format((cluster.active_worker_runs || []).length) + " workers";
-  const html =
-    '<div class="split"><div class="pipeline-col"><div class="muted" style="margin-bottom:8px">Runs on ' + esc(cluster.workflow || "repair-cluster-intake.yml") + " · " + esc(activeText) + '</div><div class="work-list">' + (markerRows || '<div class="empty">No processed-store markers yet.</div>') + '</div></div><aside class="side-col"><div class="muted" style="margin-bottom:8px">Recent intake workflow runs</div><div class="side-list">' + (runRows || '<div class="empty">No intake runs found.</div>') + '</div></aside></div>';
-  for (const target of targets) {
-    target.innerHTML = html;
-  }
-}
-function renderAutomerge(rows) {
-  if (!rows.length) {
-    document.getElementById("automerge").innerHTML = '<div class="empty">No automerge data yet... claws resting</div>';
-    return;
-  }
-  document.getElementById("automerge").innerHTML = '<div class="side-list">' + rows.map(row => '<article class="side-row"><div class="side-main">' + linkClass(row.url, "#" + row.number, "item-link") + '<div class="muted side-title">' + esc(row.title) + '</div></div><div class="side-meta"><span class="pill violet">' + (row.duration_ms ? elapsed(row.duration_ms) : "unknown") + '</span><span>' + (row.merged_at ? since(row.merged_at) : "") + '</span></div></article>').join("") + '</div>';
-}
-async function loadAutomergeMetrics() {
-  const generation = ++automergeMetricsRequestGeneration;
-  try {
-    const params = new URLSearchParams({ range: activeAutomergeRange });
-    const response = await fetch("/api/automerge-metrics?" + params.toString(), { cache: "no-store" });
-    if (!response.ok) throw new Error("automerge metrics unavailable");
-    const metrics = dashboardAutomergeMetricsSnapshot(await response.json());
-    if (generation !== automergeMetricsRequestGeneration) return;
-    if (!metrics || metrics.range !== activeAutomergeRange) throw new Error("invalid automerge metrics");
-    lastAutomergeMetrics = metrics;
-    renderAutomergeProduct(metrics);
-  } catch {
-    if (generation !== automergeMetricsRequestGeneration) return;
-    lastAutomergeMetrics = null;
-    renderAutomergeProduct(null);
-  }
-}
-function renderAutomergeProduct(data) {
-  data = dashboardAutomergeMetricsSnapshot(data);
-  if (!data) {
-    document.getElementById("automerge-meta").textContent = "Telemetry unavailable";
-    document.getElementById("automerge-product").innerHTML = '<div class="empty">Automerge product telemetry could not be loaded.</div>';
-    return;
-  }
-  const summary = data.summary || {};
-  const sinceText = data.telemetry_since ? new Date(data.telemetry_since).toLocaleString() : "not started";
-  const terminalSamples = Number(summary.terminal_sessions) || 0;
-  document.getElementById("automerge-meta").textContent = "Telemetry since " + sinceText + " · Time-window coverage " + fmt.format(data.coverage_percent || 0) + "% · Active sessions " + fmt.format(summary.active_sessions || 0) + " · terminal sample n=" + fmt.format(terminalSamples) + " · Updated " + since(data.generated_at);
-  const value = (number, suffix) => number == null ? "—" : fmt.format(number) + (suffix || "");
-  const duration = number => number == null ? "—" : elapsed(number);
-  const kpis = terminalSamples < 1
-    ? '<div class="empty">No terminal samples yet. Active sessions remain outside the success-rate denominator.</div>'
-    : '<div class="automerge-kpis">' +
-    '<div class="automerge-kpi"><span>Merge success rate</span><strong>' + value(summary.merge_success_rate_percent, "%") + '</strong><small>merged ' + fmt.format(summary.merged_sessions || 0) + ' / terminal ' + fmt.format(summary.terminal_sessions || 0) + '</small></div>' +
-    '<div class="automerge-kpi"><span>Command → Merge p50</span><strong>' + duration(summary.command_to_merge_p50_ms) + '</strong><small>successful sessions only</small></div>' +
-    '<div class="automerge-kpi"><span>Command → Merge p90</span><strong>' + duration(summary.command_to_merge_p90_ms) + '</strong><small>nearest-rank percentile</small></div>' +
-    '<div class="automerge-kpi"><span>Base sync / session</span><strong>' + value(summary.base_sync_p50) + ' · ' + value(summary.base_sync_p90) + '</strong><small>p50 · p90 · multi-rebase ' + value(summary.multi_rebase_rate_percent, "%") + '</small></div></div>';
-  const maxLatency = Math.max(1, ...(data.buckets || []).flatMap(bucket => [bucket.command_to_merge_p50_ms || 0, bucket.command_to_merge_p90_ms || 0]));
-  const points = (data.buckets || []).map(bucket => {
-    if (activeAutomergeChart === "success") {
-      if (bucket.success_rate_percent == null) return '<div class="automerge-point" title="No terminal samples"></div>';
-      return '<div class="automerge-point" title="' + esc(bucket.start + ' · ' + bucket.success_rate_percent + '% · n=' + bucket.terminal_count) + '"><i class="automerge-dot' + (bucket.low_sample ? ' low' : '') + '" style="bottom:' + bucket.success_rate_percent + '%"></i><span class="automerge-n">n=' + fmt.format(bucket.terminal_count) + '</span></div>';
-    }
-    if (bucket.command_to_merge_p50_ms == null) return '<div class="automerge-point" title="No merged samples"></div>';
-    const p50 = Math.round(bucket.command_to_merge_p50_ms / maxLatency * 100);
-    const p90 = Math.round(bucket.command_to_merge_p90_ms / maxLatency * 100);
-    return '<div class="automerge-point" title="' + esc(bucket.start + ' · p50 ' + duration(bucket.command_to_merge_p50_ms) + ' · p90 ' + duration(bucket.command_to_merge_p90_ms)) + '"><i class="automerge-dot" style="bottom:' + p50 + '%"></i><i class="automerge-dot p90" style="bottom:' + p90 + '%"></i><span class="automerge-n">n=' + fmt.format(bucket.merged_count) + '</span></div>';
-  }).join("");
-  const chart = '<div class="automerge-chart-shell"><div class="automerge-tabs"><button type="button" data-automerge-chart="success" class="' + (activeAutomergeChart === "success" ? "active" : "") + '">Merge success</button><button type="button" data-automerge-chart="latency" class="' + (activeAutomergeChart === "latency" ? "active" : "") + '">Merge latency</button></div><div class="automerge-chart" role="img" aria-label="Automerge ' + esc(activeAutomergeChart) + ' trend over ' + esc(activeAutomergeRange) + '">' + points + '</div><div class="automerge-chart-legend">' + (activeAutomergeChart === "success" ? '● normal sample · ○ fewer than 5 terminal sessions · gaps mean no terminal sample' : '● p50 · amber p90 · gaps mean no merged sample') + '</div></div>';
-  const outcomeLabels = { merged: "Merged", repair_failed: "Repair workflow failed", maintainer_stopped: "Maintainer stopped", repair_cap_exhausted: "Repair cap exhausted", pr_closed: "PR closed", automerge_disabled: "Automerge disabled", unknown: "Other terminal outcome" };
-  const outcomes = Object.entries(outcomeLabels).map(entry => '<div class="automerge-detail-row"><span>' + esc(entry[1]) + '</span><strong>' + fmt.format(data.terminal_outcomes?.[entry[0]] || 0) + '</strong></div>').join("");
-  const efficiency = [['0 base sync sessions', data.repair_efficiency?.zero_base_sync], ['1 base sync session', data.repair_efficiency?.one_base_sync], ['2+ base sync sessions', data.repair_efficiency?.multiple_base_sync], ['Multi-rebase rate', value(summary.multi_rebase_rate_percent, "%")]].map(entry => '<div class="automerge-detail-row"><span>' + esc(entry[0]) + '</span><strong>' + esc(entry[1] ?? 0) + '</strong></div>').join("");
-  const details = '<div class="automerge-details"><div><h3>Terminal outcomes</h3>' + outcomes + '</div><div><h3>Repair efficiency</h3>' + efficiency + '</div></div>';
-  document.getElementById("automerge-product").innerHTML = kpis + chart + details;
-}
-function automergeWorkerHealthHtml(reliability) {
-  const safe = reliability || {
-    sampled_runs: 0,
-    completed_attempts: 0,
-    failed_attempts: 0,
-    failure_rate_percent: null,
-    active_attempts: 0,
-    stalled_attempts: 0,
-    average_duration_ms: null,
-    longest_duration_ms: null,
-    failures: []
-  };
-  const active = fmt.format(safe.active_attempts || 0) + " / " + fmt.format(safe.stalled_attempts || 0);
-  const outcomes = fmt.format(safe.recovered_failures || 0) + " / " + fmt.format(safe.unresolved_failures || 0);
-  const stats = '<div class="closed-stats"><div class="closed-stat"><span>Active / stalled</span><strong>' + esc(active) + '</strong></div><div class="closed-stat"><span>Failed attempts</span><strong>' + fmt.format(safe.failed_attempts || 0) + '</strong></div><div class="closed-stat"><span>Recovered / unresolved</span><strong>' + esc(outcomes) + '</strong></div></div>';
-  const sample = '<div class="muted" style="margin:8px 0">' + fmt.format(safe.sampled_runs || 0) + " runs sampled · " + fmt.format(safe.completed_attempts || 0) + " completed · avg runtime " + elapsed(safe.average_duration_ms) + " · longest " + elapsed(safe.longest_duration_ms) + '</div>';
-  const rows = (safe.failures || []).map(failure => '<article class="side-row"><div class="side-main"><div class="row-top">' + linkClass(failure.item_url, failure.repository + "#" + failure.number, "item-link") + linkClass(failure.run_url, "run", "pill run-link") + '</div><div class="muted side-title">' + esc(failure.conclusion || "failure") + " · " + elapsed(failure.duration_ms) + " · " + esc(failure.completed_at ? since(failure.completed_at) : "") + '</div></div><div class="side-meta"><span class="pill ' + (failure.recovered ? "" : "red") + '">' + (failure.recovered ? "recovered" : "unresolved") + '</span></div></article>').join("");
-  return '<section class="worker-health-section" aria-labelledby="automerge-worker-health-title"><div class="worker-health-subhead"><strong id="automerge-worker-health-title">Automerge worker operations</strong><span class="muted">Repair workflow reliability only · separate from Automerge Product Health success rate.</span></div>' + stats + sample + (rows ? '<div class="side-list">' + rows + '</div>' : '<div class="empty">No automerge worker failures in the recent sample.</div>') + '</section>';
-}
 function renderClosedItems(rows) {
   const visible = (Array.isArray(rows) ? rows : []).filter(row =>
     Number.isFinite(Date.parse(row?.closed_at || ""))
@@ -4671,18 +4247,16 @@ function renderClosedStats(stats) {
   const safe = stats || { total: 0, issues: 0, prs: 0, window_hours: 24 };
   document.getElementById("closed-stats").innerHTML = '<div class="closed-stats"><div class="closed-stat"><span>' + esc((safe.window_hours || 24) + "h total") + '</span><strong>' + fmt.format(safe.total || 0) + '</strong></div><div class="closed-stat"><span>Issues</span><strong>' + fmt.format(safe.issues || 0) + '</strong></div><div class="closed-stat"><span>PRs</span><strong>' + fmt.format(safe.prs || 0) + '</strong></div></div>';
 }
-function renderWorkerHealth(health, automergeReliability) {
+function renderWorkerHealth(health) {
   const safe = health || { attempts: 0, failed_attempts: 0, recovered_failures: 0, unresolved_failures: 0, failures: [] };
   const stats = '<div class="closed-stats"><div class="closed-stat"><span>Attempts sampled</span><strong>' + fmt.format(safe.attempts || 0) + '</strong></div><div class="closed-stat"><span>Failed attempts</span><strong>' + fmt.format(safe.failed_attempts || 0) + '</strong></div><div class="closed-stat"><span>Recovered</span><strong>' + fmt.format(safe.recovered_failures || 0) + '</strong></div></div>';
   const rows = (safe.failures || []).map(failure => '<article class="side-row"><div class="side-main">' + linkClass(failure.url, compactText(failure.workflow_title || failure.job_name), "item-link") + '<div class="muted side-title">' + esc(failure.failed_step || failure.conclusion || "worker failure") + '</div></div><div class="side-meta"><span class="pill ' + (failure.recovered ? "" : "red") + '">' + (failure.recovered ? "recovered" : "unresolved") + '</span><span>' + esc(failure.started_at ? since(failure.started_at) : "") + '</span></div></article>').join("");
   const workflowHealth = '<section class="worker-health-section">' + stats + (rows ? '<div class="side-list">' + rows + '</div>' : '<div class="empty">No worker failures in the recent sample.</div>') + '</section>';
-  document.getElementById("worker-health").innerHTML = workflowHealth + automergeWorkerHealthHtml(automergeReliability);
+  document.getElementById("worker-health").innerHTML = workflowHealth;
 }
 function renderOperations(counts) {
   const safe = counts || {};
   const rows = [
-    ["Inherited labels", safe.inherited_label_cleanups || 0],
-    ["Conflict self-heal", safe.self_heal_conflict_repairs || 0],
     ["Review retries", safe.failed_review_retries || 0],
     ["Retry exhausted", safe.failed_review_retry_exhaustions || 0],
     ["Proof decisions", safe.bot_owned_proof_decisions_requested || 0],
@@ -4733,30 +4307,11 @@ document.getElementById("apply-observability-ranges").addEventListener("click", 
   document.querySelectorAll("button[data-apply-range]").forEach(item => item.classList.toggle("active", item === button));
   loadApplyObservability().catch(() => undefined);
 });
-document.getElementById("automerge-ranges").addEventListener("click", event => {
-  const button = event.target.closest("button[data-automerge-range]");
-  if (!button) return;
-  activeAutomergeRange = button.dataset.automergeRange || "7d";
-  document.querySelectorAll("button[data-automerge-range]").forEach(item => item.classList.toggle("active", item === button));
-  loadAutomergeMetrics().catch(() => undefined);
-});
-document.getElementById("automerge-product").addEventListener("click", event => {
-  const button = event.target.closest("button[data-automerge-chart]");
-  if (!button || !lastAutomergeMetrics) return;
-  activeAutomergeChart = button.dataset.automergeChart || "success";
-  renderAutomergeProduct(lastAutomergeMetrics);
-});
 document.getElementById("workers").addEventListener("click", event => {
   const button = event.target.closest("button[data-worker-id]");
   if (!button) return;
   const worker = workerIndex.get(String(button.dataset.workerId));
   if (worker) renderWorkerDialog(worker, String(button.dataset.workerId));
-});
-document.getElementById("automatic-work").addEventListener("click", event => {
-  const button = event.target.closest("button[data-automatic-id]");
-  if (!button) return;
-  const row = automaticIndex.get(String(button.dataset.automaticId));
-  if (row) renderAutomaticDialog(row, String(button.dataset.automaticId));
 });
 document.addEventListener("click", event => {
   const button = event.target.closest("button[data-copy-command]");
@@ -4784,7 +4339,7 @@ document.getElementById("worker-dialog").addEventListener("click", event => {
   if (event.target === event.currentTarget) closeWorkerDialog();
 });
 document.getElementById("worker-dialog").addEventListener("close", () => {
-  if (location.hash.startsWith("#worker-") || location.hash.startsWith("#automatic-") || location.hash.startsWith("#public-reference-")) {
+  if (location.hash.startsWith("#worker-") || location.hash.startsWith("#public-reference-")) {
     history.replaceState(null, "", location.pathname + location.search);
   }
 });

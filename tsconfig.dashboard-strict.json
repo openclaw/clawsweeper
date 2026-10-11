@@ -8,7 +8,6 @@
   // Monotonic ratchet: never remove files; add each new root to the checker's baseline in the same PR.
   "files": [
     "dashboard/apply-observability.ts",
-    "dashboard/automerge-metrics.ts",
     "dashboard/bay-activity-kind.ts",
     "dashboard/bay-inline-proof.ts",
     "dashboard/bay-journey-interaction.ts",

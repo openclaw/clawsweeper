@@ -13,7 +13,6 @@ const tscPath = path.resolve("node_modules/typescript/bin/tsc");
 
 export const DASHBOARD_STRICT_BASELINE_FILES = Object.freeze([
   "dashboard/apply-observability.ts",
-  "dashboard/automerge-metrics.ts",
   "dashboard/bay-activity-kind.ts",
   "dashboard/bay-inline-proof.ts",
   "dashboard/bay-journey-interaction.ts",

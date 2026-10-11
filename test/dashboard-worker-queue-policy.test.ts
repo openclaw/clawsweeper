@@ -12,7 +12,6 @@ import {
   exactReviewPublicationCapacityForState,
   exactReviewQueueAdmittedItems,
   exactReviewQueueCapacity,
-  summarizeAutomergeReliability,
   commandAcknowledgementState,
   EXACT_REVIEW_ACKNOWLEDGEMENT_ATTEMPT_LEASE_MS,
   ExactReviewLifecycleProjectionStore,
@@ -1656,58 +1655,6 @@ test("exact-review supersession audit migration keeps existing rows non-authorit
   );
   assert.equal(completion.status, 409);
   assert.deepEqual(await completion.json(), { error: "lease_not_claimed" });
-});
-
-test("automerge reliability summarizes failures, recovery, duration, and stalled runs", () => {
-  const run = (
-    id: number,
-    number: number,
-    status: string,
-    conclusion: string | null,
-    createdAt: string,
-    updatedAt: string,
-  ) => ({
-    id,
-    display_title: `automerge repair jobs/openclaw/inbox/automerge-openclaw-openclaw-${number}.md`,
-    status,
-    conclusion,
-    html_url: `https://github.com/openclaw/clawsweeper/actions/runs/${id}`,
-    created_at: createdAt,
-    updated_at: updatedAt,
-  });
-  const summary = summarizeAutomergeReliability(
-    [
-      run(1, 107691, "completed", "failure", "2026-07-16T09:00:00Z", "2026-07-16T09:20:00Z"),
-      run(2, 107691, "completed", "success", "2026-07-16T09:30:00Z", "2026-07-16T09:40:00Z"),
-      run(3, 107692, "completed", "failure", "2026-07-16T10:00:00Z", "2026-07-16T10:20:00Z"),
-      run(6, 107692, "completed", "failure", "2026-07-16T08:00:00Z", "2026-07-16T08:05:00Z"),
-      run(4, 107693, "in_progress", null, "2026-07-16T09:30:00Z", "2026-07-16T09:30:00Z"),
-      {
-        ...run(5, 107694, "completed", "failure", "2026-07-16T11:00:00Z", "2026-07-16T11:05:00Z"),
-        display_title: "repair cluster jobs/openclaw/inbox/gitcrawl-55.md",
-      },
-    ],
-    ["openclaw/openclaw"],
-    "2026-07-16T12:00:00Z",
-  );
-
-  assert.equal(summary.sampled_runs, 5);
-  assert.equal(summary.completed_attempts, 4);
-  assert.equal(summary.failed_attempts, 3);
-  assert.equal(summary.failure_rate_percent, 75);
-  assert.equal(summary.average_duration_ms, 825_000);
-  assert.equal(summary.longest_duration_ms, 1_200_000);
-  assert.equal(summary.active_attempts, 1);
-  assert.equal(summary.stalled_attempts, 1);
-  assert.equal(summary.recovered_failures, 1);
-  assert.equal(summary.unresolved_failures, 1);
-  assert.deepEqual(
-    summary.failures.map((failure) => [failure.number, failure.status]),
-    [
-      [107692, "unresolved"],
-      [107691, "recovered"],
-    ],
-  );
 });
 
 test("exact-review publication scales bounded capacity with ready backlog", () => {

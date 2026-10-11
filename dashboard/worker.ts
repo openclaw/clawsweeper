@@ -106,19 +106,6 @@ import {
   newExactReviewQueueTraceId,
 } from "./exact-review-queue-observability.ts";
 import {
-  AUTOMERGE_METRICS_EVENT_TYPE,
-  AUTOMERGE_METRICS_EVENT_KEY_PREFIX,
-  AUTOMERGE_METRICS_EVENT_ID_KEY_PREFIX,
-  AUTOMERGE_METRICS_EVENT_LIMIT,
-  AUTOMERGE_METRICS_SESSION_CONTEXT_MS,
-  AUTOMERGE_METRICS_STORE_KEY,
-  AUTOMERGE_METRICS_TTL_SECONDS,
-  automergeMetricRange,
-  automergeMetricRangeStart,
-  normalizeAutomergeMetricEvent,
-  summarizeAutomergeMetrics,
-} from "./automerge-metrics.ts";
-import {
   APPLY_OBSERVABILITY_IN_PROGRESS_MAX_SILENCE_MS,
   APPLY_OBSERVABILITY_RANGES,
   APPLY_OBSERVABILITY_RETENTION_MS,
@@ -128,7 +115,6 @@ import {
 } from "./apply-observability.ts";
 import {
   publicApplyObservabilityProjection,
-  publicAutomergeMetricsProjection,
   publicGithubEgressObservabilityProjection,
   publicRecentDurablePublicationEventsProjection,
   publicReviewCoverageProjection,
@@ -393,7 +379,6 @@ const BAY_INITIAL_TERMINAL_LOOKBACK_MS = BAY_TIMING_WINDOW_MS;
 const BAY_TIMING_MAX_SAMPLE_MS = 24 * 60 * 60 * 1000;
 const BAY_JOURNEY_LIMIT = 100;
 const BAY_JOURNEY_TTL_SECONDS = 24 * 60 * 60;
-const AVERAGE_LIMIT = 4;
 const RECENT_CLOSED_LIMIT = 8;
 const CLOSED_STATS_HOURS = 24;
 const CLOSED_STATS_PAGE_LIMIT = 10;
@@ -407,7 +392,6 @@ const APPLY_OBSERVABILITY_LEGACY_LIMIT = 5_000;
 const CLAWSWEEPER_REVIEW_REPO = "openclaw/clawsweeper";
 const CLAWSWEEPER_STATE_REPO = "openclaw/clawsweeper-state";
 const CLAWSWEEPER_STATE_REF = "state";
-const CLUSTER_REPAIR_INTAKE_WORKFLOW = "repair-cluster-intake.yml";
 const CLAWSWEEPER_ALLOWED_ASSOCIATIONS = new Set(["OWNER", "MEMBER", "COLLABORATOR"]);
 const CLAWSWEEPER_ISSUE_ITEM_ACTIONS = new Set([
   "opened",
@@ -526,11 +510,6 @@ export function workerHealthSectionTimeoutMs(
 }
 const WORKER_TARGET_CACHE_TTL_SECONDS = 900;
 const WORKER_TARGET_BATCH_SIZE = 50;
-const AUTOMERGE_CACHE_TTL_SECONDS = 300;
-const AUTOMERGE_REPAIR_WORKFLOW = "repair-cluster-worker.yml";
-const AUTOMERGE_RELIABILITY_RUN_LIMIT = 100;
-const AUTOMERGE_STALLED_AFTER_MS = 90 * 60 * 1000;
-const AUTOMERGE_FAILURE_DISPLAY_LIMIT = 5;
 const RECENT_CLOSED_CACHE_TTL_SECONDS = 300;
 const DEFAULT_WORKER_DETAIL_RUN_LIMIT = 32;
 const SUPPORT_WORKFLOW_NAMES = new Set([
@@ -792,46 +771,6 @@ export class StatusStore {
       });
     }
 
-    if (request.method === "GET" && key === AUTOMERGE_METRICS_STORE_KEY) {
-      const now = Date.now();
-      const range = automergeMetricRange(url.searchParams.get("range"));
-      const rangeStart = automergeMetricRangeStart(range, now);
-      const contextStart = rangeStart - AUTOMERGE_METRICS_SESSION_CONTEXT_MS;
-      const upperBound = `${AUTOMERGE_METRICS_EVENT_KEY_PREFIX}${new Date(now).toISOString()}:\uffff`;
-      const entries = (await this.storage.list({
-        prefix: AUTOMERGE_METRICS_EVENT_KEY_PREFIX,
-        start: `${AUTOMERGE_METRICS_EVENT_KEY_PREFIX}${new Date(contextStart).toISOString()}`,
-        end: upperBound,
-        limit: AUTOMERGE_METRICS_EVENT_LIMIT,
-        reverse: false,
-      })) as Map<string, StoredValue>;
-      const events = [];
-      for (const [entryKey, stored] of entries) {
-        if (!entryKey.startsWith(AUTOMERGE_METRICS_EVENT_KEY_PREFIX)) continue;
-        if (stored.expires_at && stored.expires_at <= Date.now()) continue;
-        try {
-          const event = normalizeAutomergeMetricEvent(JSON.parse(stored.value));
-          if (event) events.push(event);
-        } catch {
-          // A malformed isolated event must not hide the rest of the metric history.
-        }
-      }
-      return json(
-        summarizeAutomergeMetrics(
-          { version: 1, telemetry_since: events[0]?.occurred_at ?? null, events },
-          {
-            range,
-            repo: url.searchParams.get("repo"),
-            policyVersion: url.searchParams.get("policy_version"),
-            sessionId: url.searchParams.get("session_id"),
-            activeOnly: url.searchParams.get("active_only") === "true",
-            sessionLimit: Number(url.searchParams.get("session_limit")),
-            now: new Date(now).toISOString(),
-          },
-        ),
-      );
-    }
-
     if (request.method === "GET" && key === "apply-observability") {
       return json(await this.summarizeApplyObservability(url));
     }
@@ -933,28 +872,6 @@ export class StatusStore {
       await this.storage.put("events", {
         value: JSON.stringify(events),
         expires_at: expiresAt,
-      });
-      await this.scheduleCleanup(expiresAt);
-      return json({ ok: true });
-    }
-
-    if (request.method === "POST" && key === AUTOMERGE_METRICS_STORE_KEY) {
-      const body = await request.json();
-      const event = normalizeAutomergeMetricEvent(body?.event);
-      if (!event) return new Response("invalid automerge metric event", { status: 400 });
-      const expiresAt = Date.parse(event.occurred_at) + AUTOMERGE_METRICS_TTL_SECONDS * 1000;
-      if (expiresAt <= Date.now()) return json({ ok: true, expired: true });
-      const idKey = `${AUTOMERGE_METRICS_EVENT_ID_KEY_PREFIX}${encodeURIComponent(event.event_id)}`;
-      const existing = (await this.storage.get(idKey)) as StoredValue | undefined;
-      if (existing && (!existing.expires_at || existing.expires_at > Date.now())) {
-        return json({ ok: true, duplicate: true });
-      }
-      const eventKey = `${AUTOMERGE_METRICS_EVENT_KEY_PREFIX}${event.occurred_at}:${encodeURIComponent(event.event_id)}`;
-      // Durable Object multi-key put is atomic, so a retry cannot observe an ID
-      // receipt without its time-ordered event (or vice versa).
-      await this.storage.put({
-        [eventKey]: { value: JSON.stringify(event), expires_at: expiresAt },
-        [idKey]: { value: eventKey, expires_at: expiresAt },
       });
       await this.scheduleCleanup(expiresAt);
       return json({ ok: true });
@@ -1479,8 +1396,6 @@ export default {
       return applyObservabilityJson(request, env);
     if (url.pathname === "/api/health-history" && request.method === "GET")
       return healthHistoryJson(request, env);
-    if (url.pathname === "/api/automerge-metrics" && request.method === "GET")
-      return automergeMetricsJson(request, env);
     if (url.pathname === "/api/status") return statusJson(request, env, ctx);
     if (url.pathname === "/api/triage") return triageJson(request, env, ctx);
     if (url.pathname === "/api/pr-proof-triage") return prProofTriageJson(request, env, ctx);
@@ -3270,7 +3185,6 @@ function unavailablePublicStatusProjection() {
       budget_used_percent: 0,
     },
     workers: [],
-    automatic_work: [],
     pipeline: [],
     bay: {},
     recent: {},
@@ -3313,7 +3227,6 @@ export function publicStatusProjection(
     typeof snapshot.fleet !== "object" ||
     Array.isArray(snapshot.fleet) ||
     !Array.isArray(snapshot.workers) ||
-    !Array.isArray(snapshot.automatic_work) ||
     !Array.isArray(snapshot.pipeline) ||
     !snapshot.bay ||
     typeof snapshot.bay !== "object" ||
@@ -3844,51 +3757,15 @@ async function ingestEvent(request, env) {
   if (!env.INGEST_TOKEN || token !== env.INGEST_TOKEN) return json({ error: "unauthorized" }, 401);
   const body = await request.json().catch(() => null);
   if (!body || typeof body !== "object") return json({ error: "invalid_json" }, 400);
-  let metricEvent = null;
-  if (body.event_type === AUTOMERGE_METRICS_EVENT_TYPE) {
-    metricEvent = normalizeAutomergeMetricEvent(body);
-    if (!metricEvent) return json({ error: "invalid_automerge_metric_event" }, 400);
-    if (!isDurableStatusStore(env.STATUS_STORE)) {
-      return json({ error: "automerge_metrics_store_unavailable" }, 503);
-    }
-  }
   const event = normalizeEvent(body);
   const writes = [
     prependStoredEvent(env, event),
     writeStoredJson(env, "latest-event", event, EVENT_STORE_TTL_SECONDS),
   ];
-  if (metricEvent) writes.push(storeAutomergeMetricEvent(env, metricEvent));
   const ci = normalizeCiStatus(body);
   if (ci) writes.push(writeCiStatus(env, ci));
   await Promise.all(writes);
   return json({ ok: true, event });
-}
-
-async function automergeMetricsJson(request, env) {
-  const url = new URL(request.url);
-  if (!isDurableStatusStore(env.STATUS_STORE)) {
-    return json({ error: "automerge_metrics_store_unavailable" }, 503);
-  }
-  const storeUrl = new URL(statusStoreRequest(AUTOMERGE_METRICS_STORE_KEY).url);
-  storeUrl.searchParams.set("range", publicReviewRange(url.searchParams));
-  try {
-    const response = await durableStatusStoreStub(env.STATUS_STORE).fetch(new Request(storeUrl));
-    if (!response.ok) return json({ error: "automerge_metrics_unavailable" }, 503);
-    const projection = publicAutomergeMetricsProjection(await response.json().catch(() => null));
-    return projection ? json(projection) : json({ error: "automerge_metrics_unavailable" }, 503);
-  } catch {
-    return json({ error: "automerge_metrics_unavailable" }, 503);
-  }
-}
-
-async function storeAutomergeMetricEvent(env, event) {
-  const store = env.STATUS_STORE;
-  if (!isDurableStatusStore(store)) throw new Error("automerge metrics require durable storage");
-  const response = await durableStatusStoreStub(store).fetch(
-    statusStoreRequest(AUTOMERGE_METRICS_STORE_KEY, "POST"),
-    { method: "POST", body: JSON.stringify({ event }) },
-  );
-  if (!response.ok) throw new Error(`automerge metric write failed: ${response.status}`);
 }
 
 async function githubWebhook(request, env, ctx) {
@@ -7674,16 +7551,7 @@ async function statusSnapshot(env) {
     activeRunErrors.length === 0,
   );
   statusCollections.get(env)?.check();
-  const [
-    workerHealth,
-    pipeline,
-    clusterRepair,
-    applyHealth,
-    automerge,
-    automergeReliability,
-    closed,
-    storedEvents,
-  ] = await Promise.all([
+  const [workerHealth, pipeline, applyHealth, closed, storedEvents] = await Promise.all([
     withTimeout(
       recentWorkerHealth(env, repo, completedWorkflowRuns, github),
       workerHealthSectionTimeoutMs(
@@ -7704,36 +7572,12 @@ async function statusSnapshot(env) {
       return workerRuns.slice(0, 30).map((run) => classifyRun(run));
     }),
     withTimeout(
-      clusterRepairStatus(env, repo, targetRepos, activeRuns, github),
-      OPTIONAL_SECTION_TIMEOUT_MS,
-      "cluster repair intake",
-    ).catch((error) => {
-      errors.push(error.message);
-      return emptyClusterRepairStatus(targetRepos);
-    }),
-    withTimeout(
       applyHealthStatus(env, targetRepos, github),
       OPTIONAL_SECTION_TIMEOUT_MS,
       "apply health",
     ).catch((error) => {
       errors.push(error.message);
       return emptyApplyHealthStatus(targetRepos);
-    }),
-    withTimeout(
-      recentAutomerge(env, targetRepos[0] || "openclaw/openclaw", github),
-      OPTIONAL_SECTION_TIMEOUT_MS,
-      "automerge timing",
-    ).catch((error) => {
-      errors.push(error.message);
-      return { average_ms: null, samples: 0, items: [] };
-    }),
-    withTimeout(
-      recentAutomergeReliability(env, repo, targetRepos, github),
-      OPTIONAL_SECTION_TIMEOUT_MS,
-      "automerge reliability",
-    ).catch((error) => {
-      errors.push(error.message);
-      return emptyAutomergeReliability(generatedAt);
     }),
     withTimeout(
       recentClawsweeperClosed(env, targetRepos, github),
@@ -7805,19 +7649,11 @@ async function statusSnapshot(env) {
     control_plane: controlPlane,
     health: publicWorkerHealth,
     operational_health: operationalHealth,
-    averages: {
-      automerge_command_to_merge_ms: automerge.average_ms,
-      automerge_samples: automerge.samples,
-    },
     workers: activeJobs.workers,
-    automatic_work: automaticIssueWork(storedEvents, activeJobs.workers),
     pipeline,
     bay,
     recent: {
-      cluster_repair: clusterRepair,
       apply_health: applyHealth,
-      automerge: automerge.items,
-      automerge_reliability: automergeReliability,
       closed_items: closed.items,
       closed_stats: closed.stats,
       operation_counts: operationEventCounts(storedEvents),
@@ -10116,7 +9952,6 @@ function normalizeWorkerJob(run, job) {
   const runItem = classifyRun(run);
   const target = workerTargetFromJob(runItem, job.name);
   const mode = workerMode(runItem.mode, job.name);
-  const workKind = workerWorkKind(runItem, job.name);
   const steps = Array.isArray(job.steps)
     ? job.steps.map((step) => ({
         number: numberOrNull(step.number),
@@ -10137,7 +9972,6 @@ function normalizeWorkerJob(run, job) {
     is_codex_worker: isCodexWorkerJob(job),
     name: String(job.name || runItem.title || "Codex worker"),
     mode,
-    work_kind: workKind,
     stage: runItem.stage,
     status: String(job.status || run.status || "unknown"),
     conclusion: nullableString(job.conclusion),
@@ -10164,29 +9998,7 @@ function workerMode(runMode, jobName) {
   const name = String(jobName || "").toLowerCase();
   if (name.includes("assist")) return "assist";
   if (name.includes("review commit")) return "commit-review";
-  if (name.includes("cluster actions") || name.includes("review cluster")) return "repair";
   return runMode;
-}
-
-export function workerWorkKind(runItem, jobName) {
-  const text = `${runItem?.title || ""} ${runItem?.workflow || ""} ${jobName || ""}`.toLowerCase();
-  if (
-    text.includes("issue implementation") ||
-    /\bissue-[a-z0-9_.-]+-[a-z0-9_.-]+-\d+\b/.test(text)
-  ) {
-    return "issue_to_pr";
-  }
-  if (text.includes("automerge") || text.includes("autofix") || text.includes("pr repair")) {
-    return "pr_repair";
-  }
-  if (
-    text.includes("repair cluster") ||
-    text.includes("cluster actions") ||
-    text.includes("review cluster")
-  ) {
-    return "repair_cluster";
-  }
-  return "other";
 }
 
 function normalizeFallbackWorker(run) {
@@ -10197,7 +10009,6 @@ function normalizeFallbackWorker(run) {
     is_codex_worker: true,
     name: item.title || item.workflow || "Codex worker",
     mode: item.mode,
-    work_kind: workerWorkKind(item, ""),
     stage: item.stage,
     status: item.status,
     conclusion: item.conclusion,
@@ -10343,13 +10154,7 @@ function classifyRun(run) {
   const lower = `${workflow} ${title}`.toLowerCase();
   let mode = "background-review";
   let stage = "running";
-  if (lower.includes("automerge")) {
-    mode = "automerge";
-    stage = lower.includes("repair") ? "repairing" : "reviewing";
-  } else if (lower.includes("repair cluster")) {
-    mode = "repair";
-    stage = "repairing";
-  } else if (lower.includes("review event item")) {
+  if (lower.includes("review event item")) {
     mode = "exact-review";
     stage = "reviewing";
   } else if (lower.includes("apply clawsweeper closures")) {
@@ -10443,318 +10248,6 @@ async function attachCiStatus(
     if (!item.ci)
       item.ci = { state: "unknown", source: "live", error: String(error?.message || error) };
   }
-}
-
-function emptyAutomergeReliability(updatedAt) {
-  return {
-    sampled_runs: 0,
-    completed_attempts: 0,
-    failed_attempts: 0,
-    failure_rate_percent: null,
-    active_attempts: 0,
-    stalled_attempts: 0,
-    average_duration_ms: null,
-    longest_duration_ms: null,
-    unresolved_failures: 0,
-    recovered_failures: 0,
-    failures: [],
-    updated_at: updatedAt,
-  };
-}
-
-function automergeRepairTarget(run, targetRepos) {
-  const title = String(run?.display_title || "").toLowerCase();
-  const candidates = targetRepos
-    .map((repository) => ({
-      repository: String(repository).trim(),
-      slug: String(repository).trim().toLowerCase().replaceAll("/", "-"),
-    }))
-    .filter((candidate) => candidate.repository && candidate.slug)
-    .sort((left, right) => right.slug.length - left.slug.length);
-  for (const candidate of candidates) {
-    const marker = `automerge-${candidate.slug}-`;
-    const markerIndex = title.indexOf(marker);
-    if (markerIndex < 0) continue;
-    const suffix = title.slice(markerIndex + marker.length);
-    const match = suffix.match(/^(\d+)\.md(?:\s|$)/);
-    if (!match) continue;
-    const number = Number(match[1]);
-    return {
-      repository: candidate.repository,
-      number,
-      item_url: `https://github.com/${candidate.repository}/pull/${number}`,
-    };
-  }
-  return null;
-}
-
-function automergeRunDurationMs(run, nowMs) {
-  const startedMs = Date.parse(String(run?.created_at || ""));
-  if (!Number.isFinite(startedMs)) return null;
-  const completedMs =
-    run?.status === "completed" ? Date.parse(String(run?.updated_at || "")) : nowMs;
-  if (!Number.isFinite(completedMs) || completedMs < startedMs) return null;
-  return completedMs - startedMs;
-}
-
-export function summarizeAutomergeReliability(runs, targetRepos, now = new Date().toISOString()) {
-  const nowMs = Date.parse(now);
-  const effectiveNowMs = Number.isFinite(nowMs) ? nowMs : Date.now();
-  const attempts = runs
-    .filter((run) => /\bautomerge repair\b/i.test(String(run?.display_title || "")))
-    .map((run) => {
-      const target = automergeRepairTarget(run, targetRepos);
-      if (!target) return null;
-      return {
-        run,
-        target,
-        startedMs: Date.parse(String(run?.created_at || "")),
-        completedMs: Date.parse(String(run?.updated_at || "")),
-        duration_ms: automergeRunDurationMs(run, effectiveNowMs),
-      };
-    })
-    .filter(Boolean);
-  const completed = attempts.filter((attempt) => attempt.run.status === "completed");
-  const failed = completed.filter((attempt) =>
-    TERMINAL_BAD_CONCLUSIONS.has(String(attempt.run.conclusion)),
-  );
-  const successes = completed.filter((attempt) => attempt.run.conclusion === "success");
-  const active = attempts.filter((attempt) => ACTIVE_RUN_STATUSES.has(String(attempt.run.status)));
-  const durations = completed
-    .map((attempt) => attempt.duration_ms)
-    .filter((duration) => Number.isFinite(duration) && duration >= 0);
-  const failureAttempts = failed
-    .map((attempt) => {
-      const recovery = successes.find(
-        (candidate) =>
-          candidate.target.repository === attempt.target.repository &&
-          candidate.target.number === attempt.target.number &&
-          candidate.startedMs >= attempt.completedMs,
-      );
-      return {
-        repository: attempt.target.repository,
-        number: attempt.target.number,
-        item_url: attempt.target.item_url,
-        run_url: attempt.run.html_url,
-        status: recovery ? "recovered" : "unresolved",
-        conclusion: attempt.run.conclusion,
-        started_at: attempt.run.created_at,
-        completed_at: attempt.run.updated_at,
-        duration_ms: attempt.duration_ms,
-        recovered: Boolean(recovery),
-      };
-    })
-    .sort(
-      (left, right) =>
-        Date.parse(String(right.started_at || "")) - Date.parse(String(left.started_at || "")),
-    );
-  const failuresByTarget = new Map();
-  for (const failure of failureAttempts) {
-    const targetKey = `${failure.repository}#${failure.number}`;
-    if (!failuresByTarget.has(targetKey)) failuresByTarget.set(targetKey, failure);
-  }
-  const failures = [...failuresByTarget.values()]
-    // Unresolved targets stay visible even when recovered retries fill the sample.
-    .sort(
-      (left, right) =>
-        Number(left.recovered) - Number(right.recovered) ||
-        Date.parse(String(right.started_at || "")) - Date.parse(String(left.started_at || "")),
-    );
-  const unresolvedFailures = failures.filter((failure) => !failure.recovered).length;
-  const result = emptyAutomergeReliability(new Date(effectiveNowMs).toISOString());
-  return {
-    ...result,
-    sampled_runs: attempts.length,
-    completed_attempts: completed.length,
-    failed_attempts: failed.length,
-    failure_rate_percent: completed.length
-      ? Math.round((failed.length / completed.length) * 1000) / 10
-      : null,
-    active_attempts: active.length,
-    stalled_attempts: active.filter(
-      (attempt) =>
-        Number.isFinite(attempt.duration_ms) && attempt.duration_ms >= AUTOMERGE_STALLED_AFTER_MS,
-    ).length,
-    average_duration_ms: durations.length
-      ? Math.round(durations.reduce((sum, duration) => sum + duration, 0) / durations.length)
-      : null,
-    longest_duration_ms: durations.length ? Math.max(...durations) : null,
-    unresolved_failures: unresolvedFailures,
-    recovered_failures: failures.length - unresolvedFailures,
-    failures: failures.slice(0, AUTOMERGE_FAILURE_DISPLAY_LIMIT),
-  };
-}
-
-async function recentAutomergeReliability(
-  env,
-  repo,
-  targetRepos,
-  github: GithubJsonReader = (path) => githubJson(env, path),
-) {
-  const targetKey = targetRepos
-    .map((target) => target.toLowerCase())
-    .sort()
-    .join(",");
-  const cacheKey = `automerge-reliability:${String(repo).toLowerCase()}:${targetKey}`;
-  const cached = await readStoredJson(env, cacheKey);
-  if (cached && Array.isArray(cached.failures)) return cached;
-
-  const response = await github(
-    `/repos/${repo}/actions/workflows/${AUTOMERGE_REPAIR_WORKFLOW}/runs?per_page=${AUTOMERGE_RELIABILITY_RUN_LIMIT}`,
-  );
-  const runs = Array.isArray(response?.workflow_runs) ? response.workflow_runs : [];
-  const result = summarizeAutomergeReliability(runs, targetRepos);
-  await writeStoredJson(
-    env,
-    cacheKey,
-    result,
-    numberFrom(env.AUTOMERGE_CACHE_TTL_SECONDS, AUTOMERGE_CACHE_TTL_SECONDS),
-  ).catch(() => undefined);
-  return result;
-}
-
-async function recentAutomerge(
-  env,
-  repo,
-  github: GithubJsonReader = (path) => githubJson(env, path),
-) {
-  const cacheKey = `recent-automerge:${String(repo).toLowerCase()}`;
-  const cached = await readStoredJson(env, cacheKey);
-  if (cached?.items && Array.isArray(cached.items)) return cached;
-
-  const search = await github(
-    `/search/issues?q=${encodeURIComponent(`repo:${repo} is:pr is:merged label:clawsweeper:automerge sort:updated-desc`)}&per_page=${AVERAGE_LIMIT}`,
-  );
-  const issues = Array.isArray(search?.items) ? search.items : [];
-  const items = await recentAutomergeItems(env, repo, issues, github);
-  const durations = items
-    .map((item) => item.duration_ms)
-    .filter((value) => Number.isFinite(value) && value >= 0);
-  const result = {
-    average_ms: durations.length
-      ? Math.round(durations.reduce((sum, value) => sum + value, 0) / durations.length)
-      : null,
-    samples: durations.length,
-    items,
-  };
-  await writeStoredJson(
-    env,
-    cacheKey,
-    result,
-    numberFrom(env.AUTOMERGE_CACHE_TTL_SECONDS, AUTOMERGE_CACHE_TTL_SECONDS),
-  ).catch(() => undefined);
-  return result;
-}
-
-async function recentAutomergeItems(env, repo, issues, github: GithubJsonReader) {
-  if (hasGithubAuth(env) && issues.length) {
-    try {
-      return await recentAutomergeItemsGraphql(env, repo, issues);
-    } catch {
-      // Keep dashboards on the existing REST path when GraphQL hydration is unavailable.
-    }
-  }
-  return Promise.all(issues.map((issue) => recentAutomergeItemRest(repo, issue, github)));
-}
-
-async function recentAutomergeItemsGraphql(env, repo, issues) {
-  const [owner, name] = String(repo || "").split("/");
-  if (!owner || !name) throw new Error(`invalid repository ${repo}`);
-  const aliases = issues
-    .map(
-      (issue, index) => `
-        pr${index}: pullRequest(number: ${Number(issue.number)}) {
-          mergedAt
-          mergeCommit { oid }
-          comments(first: 100) {
-            nodes {
-              body
-              createdAt
-            }
-          }
-        }`,
-    )
-    .join("\n");
-  const data = await githubGraphql(
-    env,
-    `query RecentAutomerge($owner: String!, $name: String!) {
-      repository(owner: $owner, name: $name) {
-        ${aliases}
-      }
-    }`,
-    { owner, name },
-  );
-  const repository = data?.repository || {};
-  return issues.map((issue, index) => {
-    const pr = repository[`pr${index}`];
-    if (!pr) throw new Error(`missing automerge PR ${issue.number}`);
-    const comments = Array.isArray(pr?.comments?.nodes)
-      ? pr.comments.nodes.map((comment) => ({
-          body: comment?.body || "",
-          created_at: comment?.createdAt || null,
-        }))
-      : [];
-    return recentAutomergeItem(issue, {
-      merged_at: pr.mergedAt || null,
-      merge_commit_sha: pr.mergeCommit?.oid || null,
-      comments,
-    });
-  });
-}
-
-async function recentAutomergeItemRest(repo, issue, github: GithubJsonReader) {
-  const number = issue.number;
-  const [pr, comments] = await Promise.all([
-    github(`/repos/${repo}/pulls/${number}`),
-    github(`/repos/${repo}/issues/${number}/comments?per_page=100`),
-  ]);
-  return recentAutomergeItem(issue, {
-    merged_at: pr?.merged_at || null,
-    merge_commit_sha: pr?.merge_commit_sha || null,
-    comments,
-  });
-}
-
-function recentAutomergeItem(issue, details) {
-  const commandAt = firstAutomergeCommandAt(details.comments);
-  const mergedAt = details.merged_at || null;
-  const durationMs = commandAt && mergedAt ? Date.parse(mergedAt) - Date.parse(commandAt) : null;
-  return {
-    url: issue.html_url,
-    title: issue.title,
-    number: issue.number,
-    command_at: commandAt,
-    merged_at: mergedAt,
-    duration_ms: durationMs,
-    merge_commit_sha: details.merge_commit_sha || null,
-  };
-}
-
-async function clusterRepairStatus(
-  env,
-  repo,
-  targetRepos,
-  activeRuns,
-  github: GithubJsonReader = (path) => githubJson(env, path),
-) {
-  const [workflowRuns, markers] = await Promise.all([
-    github(
-      `/repos/${repo}/actions/workflows/${encodeURIComponent(CLUSTER_REPAIR_INTAKE_WORKFLOW)}/runs?per_page=5`,
-    ).catch(() => ({ workflow_runs: [] })),
-    Promise.all(targetRepos.map((targetRepo) => readClusterRepairMarker(env, targetRepo, github))),
-  ]);
-  const intakeRuns = Array.isArray(workflowRuns?.workflow_runs) ? workflowRuns.workflow_runs : [];
-  return {
-    workflow: CLUSTER_REPAIR_INTAKE_WORKFLOW,
-    markers,
-    latest_runs: intakeRuns.slice(0, 5).map(workflowRunSummary),
-    active_intake_runs: activeRuns
-      .filter((run) => workflowRunNameIncludes(run, "repair cluster intake"))
-      .map(workflowRunSummary),
-    active_worker_runs: activeRuns
-      .filter((run) => workflowRunNameIncludes(run, "repair cluster worker"))
-      .map(workflowRunSummary),
-  };
 }
 
 async function applyHealthStatus(
@@ -10993,75 +10486,6 @@ function numericRecord(value) {
   );
 }
 
-async function readClusterRepairMarker(
-  env,
-  targetRepo,
-  github: GithubJsonReader = (path) => githubJson(env, path),
-) {
-  const stateRepo = String(env.CLAWSWEEPER_STATE_REPO || CLAWSWEEPER_STATE_REPO);
-  const stateRef = String(env.CLAWSWEEPER_STATE_REF || CLAWSWEEPER_STATE_REF);
-  const repoSlug = String(targetRepo || "").replace(/\//g, "-");
-  const markerPath = `results/cluster-repair-intake/${repoSlug}.json`;
-  try {
-    const content = await github(
-      `/repos/${stateRepo}/contents/${githubPath(markerPath)}?ref=${encodeURIComponent(stateRef)}`,
-    );
-    const marker = JSON.parse(decodeGithubContent(content?.content));
-    const generatedJobs = Array.isArray(marker.generated_jobs) ? marker.generated_jobs : [];
-    const storeSha = nullableString(marker.last_processed_store_sha256);
-    return {
-      target_repo: nullableString(marker.target_repo) || targetRepo,
-      marker_path: markerPath,
-      status: generatedJobs.length > 0 ? "imported" : "checked",
-      last_processed_store_sha256: storeSha,
-      last_processed_store_short_sha: storeSha ? storeSha.slice(0, 10) : null,
-      last_processed_store_exported_at: nullableString(marker.last_processed_store_exported_at),
-      generated_count: Math.max(0, numberOrNull(marker.generated_count) ?? generatedJobs.length),
-      generated_jobs: generatedJobs.slice(0, 8).map((job) => String(job)),
-      run_url: nullableString(marker.run_url),
-      updated_at: nullableString(marker.updated_at),
-    };
-  } catch {
-    return {
-      target_repo: targetRepo,
-      marker_path: markerPath,
-      status: "not_recorded",
-      last_processed_store_sha256: null,
-      last_processed_store_short_sha: null,
-      last_processed_store_exported_at: null,
-      generated_count: 0,
-      generated_jobs: [],
-      run_url: null,
-      updated_at: null,
-    };
-  }
-}
-
-function emptyClusterRepairStatus(targetRepos) {
-  return {
-    workflow: CLUSTER_REPAIR_INTAKE_WORKFLOW,
-    markers: targetRepos.map((targetRepo) => ({
-      target_repo: targetRepo,
-      marker_path: `results/cluster-repair-intake/${String(targetRepo).replace(/\//g, "-")}.json`,
-      status: "unavailable",
-      last_processed_store_sha256: null,
-      last_processed_store_short_sha: null,
-      last_processed_store_exported_at: null,
-      generated_count: 0,
-      generated_jobs: [],
-      run_url: null,
-      updated_at: null,
-    })),
-    latest_runs: [],
-    active_intake_runs: [],
-    active_worker_runs: [],
-  };
-}
-
-function workflowRunNameIncludes(run, needle) {
-  return `${run?.name || ""} ${run?.display_title || ""}`.toLowerCase().includes(needle);
-}
-
 function githubPath(value) {
   return String(value).split("/").map(encodeURIComponent).join("/");
 }
@@ -11186,182 +10610,8 @@ function recentActivityEvents(storedEvents, closedItems) {
     .slice(0, 25);
 }
 
-export function automaticIssueWork(storedEvents, workers) {
-  const grouped = new Map();
-  const allEvents = Array.isArray(storedEvents) ? storedEvents : [];
-  const automaticKeys = new Set();
-  for (const event of allEvents) {
-    if (
-      event?.automatic !== true &&
-      !String(event?.event_type || "").startsWith("clawsweeper.issue_build_")
-    ) {
-      continue;
-    }
-    const repository = nullableString(event.repository);
-    const issueNumber =
-      numberOrNull(event.source_item_number) ??
-      issueNumberFromUrl(event.source_item_url) ??
-      issueNumberFromUrl(event.item_url);
-    if (repository && issueNumber) automaticKeys.add(`${repository}#${issueNumber}`);
-  }
-  for (const event of [...allEvents].reverse()) {
-    const repository = nullableString(event.repository);
-    const issueNumber =
-      numberOrNull(event.source_item_number) ??
-      issueNumberFromUrl(event.source_item_url) ??
-      issueNumberFromUrl(event.item_url);
-    if (!repository || !issueNumber) continue;
-    const key = `${repository}#${issueNumber}`;
-    if (!automaticKeys.has(key)) continue;
-    const row = grouped.get(key) ?? {
-      id: key,
-      repository,
-      issue_number: issueNumber,
-      issue_url:
-        nullableString(event.source_item_url) ||
-        `https://github.com/${repository}/issues/${issueNumber}`,
-      title: nullableString(event.title) || `Issue #${issueNumber}`,
-      phase: "queued",
-      status: "queued",
-      run_url: null,
-      pr_url: null,
-      updated_at: null,
-      active: false,
-      worker_id: null,
-      timeline: [],
-    };
-    const eventTitle = nullableString(event.title);
-    if (
-      eventTitle &&
-      isAutomaticWorkPlaceholderTitle(row.title, repository, issueNumber) &&
-      !isAutomaticWorkPlaceholderTitle(eventTitle, repository, issueNumber)
-    ) {
-      row.title = eventTitle;
-    }
-    row.phase = nullableString(event.stage) || row.phase;
-    row.status = nullableString(event.status) || row.status;
-    row.run_url = nullableString(event.run_url) || row.run_url;
-    row.pr_url =
-      nullableString(event.pr_url) ||
-      (String(event.item_url || "").includes("/pull/") ? event.item_url : row.pr_url);
-    row.updated_at = nullableString(event.received_at) || row.updated_at;
-    row.timeline.push({
-      event_type: nullableString(event.event_type),
-      phase: nullableString(event.stage) || "update",
-      status: nullableString(event.status) || "unknown",
-      note: nullableString(event.note),
-      run_url: nullableString(event.run_url),
-      received_at: nullableString(event.received_at),
-    });
-    grouped.set(key, row);
-  }
-
-  for (const worker of Array.isArray(workers) ? workers : []) {
-    if (worker?.work_kind !== "issue_to_pr") continue;
-    const issueNumber = numberOrNull(worker.item_number) ?? numberOrNull(worker.item_numbers?.[0]);
-    let key = worker.repository && issueNumber ? `${worker.repository}#${issueNumber}` : null;
-    if (!key && worker.run_url) {
-      const matches = [...grouped.values()].filter((row) => row.run_url === worker.run_url);
-      if (matches.length === 1) key = matches[0].id;
-    }
-    if (!key) continue;
-    if (!grouped.has(key)) continue;
-    const matchedRow = grouped.get(key);
-    const resolvedIssueNumber = issueNumber || matchedRow.issue_number;
-    worker.repository ||= matchedRow.repository;
-    worker.item_number ||= resolvedIssueNumber;
-    if (!Array.isArray(worker.item_numbers) || !worker.item_numbers.length) {
-      worker.item_numbers = [resolvedIssueNumber];
-    }
-    if (!Array.isArray(worker.target_items) || !worker.target_items.length) {
-      worker.target_items = [
-        {
-          repository: matchedRow.repository,
-          number: resolvedIssueNumber,
-          title: matchedRow.title,
-          url: matchedRow.issue_url,
-          type: "issue",
-        },
-      ];
-    }
-    const target = (worker.target_items || []).find(
-      (item) => Number(item.number) === resolvedIssueNumber,
-    );
-    const row = grouped.get(key) ?? {
-      id: key,
-      repository: worker.repository,
-      issue_number: worker.item_number,
-      issue_url:
-        target?.url || `https://github.com/${worker.repository}/issues/${worker.item_number}`,
-      title: target?.title || `Issue #${worker.item_number}`,
-      phase: "worker",
-      status: worker.status || "running",
-      run_url: worker.run_url || null,
-      pr_url: null,
-      updated_at: worker.updated_at || worker.started_at || null,
-      active: true,
-      worker_id: String(worker.id),
-      timeline: [],
-    };
-    row.active = true;
-    row.worker_id = String(worker.id);
-    row.phase = worker.current_step || worker.stage || row.phase;
-    row.status = worker.status || row.status;
-    row.run_url = worker.run_url || row.run_url;
-    row.updated_at = worker.updated_at || worker.started_at || row.updated_at;
-    if (
-      target?.title &&
-      isAutomaticWorkPlaceholderTitle(row.title, row.repository, row.issue_number) &&
-      !isAutomaticWorkPlaceholderTitle(target.title, row.repository, row.issue_number)
-    ) {
-      row.title = target.title;
-    }
-    row.timeline.push({
-      event_type: "clawsweeper.worker_active",
-      phase: worker.current_step || worker.stage || "worker",
-      status: worker.status || "running",
-      note: worker.name || null,
-      run_url: worker.run_url || null,
-      received_at: worker.updated_at || worker.started_at || null,
-    });
-    grouped.set(key, row);
-  }
-
-  return [...grouped.values()]
-    .map((row) => ({
-      ...row,
-      timeline: row.timeline.sort(
-        (left, right) => Date.parse(left.received_at || "") - Date.parse(right.received_at || ""),
-      ),
-    }))
-    .sort(
-      (left, right) =>
-        Number(right.active) - Number(left.active) ||
-        Date.parse(right.updated_at || "") - Date.parse(left.updated_at || ""),
-    )
-    .slice(0, 20);
-}
-
-function issueNumberFromUrl(value) {
-  const match = String(value || "").match(/\/issues\/(\d+)(?:\/|$)/);
-  return match ? Number(match[1]) : null;
-}
-
-function isAutomaticWorkPlaceholderTitle(value, repository, issueNumber) {
-  const title = String(value || "").trim();
-  if (!title) return true;
-  const escapedRepository = String(repository || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  return (
-    new RegExp(`^Issue #${issueNumber}$`, "i").test(title) ||
-    /^PR #\d+$/i.test(title) ||
-    new RegExp(`^${escapedRepository}#\\d+$`, "i").test(title)
-  );
-}
-
 function operationEventCounts(storedEvents) {
   const counts = {
-    inherited_label_cleanups: 0,
-    self_heal_conflict_repairs: 0,
     failed_review_retries: 0,
     failed_review_retry_exhaustions: 0,
     bot_owned_proof_decisions_requested: 0,
@@ -11381,20 +10631,6 @@ function countOperationEvent(event, counts) {
         .replaceAll("-", "_"),
     )
     .join(" ");
-  if (
-    key.includes("inherited_label_cleanup") ||
-    key.includes("replacement_label_cleanup") ||
-    key.includes("removed_inherited_labels")
-  ) {
-    counts.inherited_label_cleanups += 1;
-  }
-  if (
-    key.includes("self_heal_conflict") ||
-    key.includes("conflict_self_heal") ||
-    key.includes("clawsweeper_self_rebase")
-  ) {
-    counts.self_heal_conflict_repairs += 1;
-  }
   if (
     key.includes("failed_review_retry_exhausted") ||
     key.includes("failed_review_retries_exhausted")
@@ -11506,24 +10742,6 @@ function emptyClosedStats(generatedAt) {
     prs: 0,
     by_repository: {},
   };
-}
-
-function firstAutomergeCommandAt(comments) {
-  if (!Array.isArray(comments)) return null;
-  const command = comments
-    .slice()
-    .sort((left, right) => automergeCommentTime(left) - automergeCommentTime(right))
-    .find((comment) =>
-      /@clawsweeper\s+auto\s*-?\s*merge|@clawsweeper\s+automerge|\/clawsweeper\s+auto\s*-?\s*merge|\/clawsweeper\s+automerge/i.test(
-        String(comment.body || ""),
-      ),
-    );
-  return command?.created_at || null;
-}
-
-function automergeCommentTime(comment) {
-  const timestamp = Date.parse(String(comment?.created_at || ""));
-  return Number.isFinite(timestamp) ? timestamp : Number.MAX_SAFE_INTEGER;
 }
 
 const STATUS_SNAPSHOT_KEY = "snapshot";
@@ -12056,8 +11274,6 @@ function controlPlaneSnapshot(runs) {
 function laneRank(mode) {
   return (
     {
-      automerge: 0,
-      repair: 1,
       "exact-review": 2,
       "hot-review": 3,
       apply: 4,

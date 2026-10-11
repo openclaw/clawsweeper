@@ -33,6 +33,7 @@ still exclude workflow, item, and step titles, raw or source URLs, queries, raw
 failure keys and payloads, internal opaque keys, credentials, tokens, private
 or non-allowlisted repositories, and per-job diagnostic text.
 
+
 Queue transport failures keep the fixed public `exact_review_queue_unavailable`
 response. Server logs for `exact_review_queue_request_failed` retain only the
 Cloudflare `remote`, `retryable`, and `overloaded` boolean flags; exception text,
@@ -159,6 +160,7 @@ the shared webhook signing secret is configured. Snapshot and job-cache TTLs,
 pagination, freshness, genuine GitHub errors, and the public Bay contract are
 unchanged.
 
+
 ## What It Shows
 
 - bounded active-work counts and closed workflow, worker, status, stage, and
@@ -281,10 +283,6 @@ queue and auxiliary work retain ownership of alarm scheduling.
 - `/api/apply-observability` returns global queue, result, retry, lease, and
   closed failure-category counts for a normalized range. It omits repository
   inventories, run links, and failure messages.
-- `/api/automerge-metrics` returns global summaries, time buckets, closed
-  terminal-outcome counts, and repair-efficiency counts. It omits repository
-  and policy filters and every session row; unrecognized terminal outcomes are
-  combined into `unknown`.
 - `/api/exact-review-queue/item` does not perform a public per-item lookup, and
   `/api/exact-review-queue/reviews` returns a stable empty aggregate envelope.
 
