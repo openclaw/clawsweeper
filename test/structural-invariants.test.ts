@@ -32,52 +32,6 @@ function steps(document: Workflow): Step[] {
   return Object.values(document.jobs).flatMap((job) => job.steps ?? []);
 }
 
-// test/repair source-text guards
-
-// Cluster intake makes state durable and recovers pending dispatches before it selects new work.
-test("cluster intake publishes jobs durably before dispatch", () => {
-  const intake = workflow("repair-cluster-intake.yml").jobs.intake?.steps ?? [];
-  const order = [
-    intake.findIndex((step) => step.uses === "./.github/actions/create-state-token"),
-    intake.findIndex((step) => step.uses === "./.github/actions/setup-state"),
-    intake.findIndex((step) => step.name === "Recover pending cluster dispatches"),
-    intake.findIndex((step) => step.name === "Prepare unprocessed cluster candidates"),
-    intake.findIndex((step) => step.name === "Durably accept cluster intake"),
-  ];
-  assert.ok(order[0]! >= 0, "missing state token step");
-  assert.deepEqual(
-    order,
-    [...order].sort((left, right) => left - right),
-  );
-});
-
-// The selector model judges cluster quality. Code never ranks clusters with word lists or scores.
-test("cluster selection has no semantic word lists, thresholds, or scores", () => {
-  const sources = [
-    "src/repair/select-cluster-candidate.ts",
-    "src/repair/import-gitcrawl-clusters.ts",
-  ]
-    .map(readText)
-    .join("\n");
-  assert.doesNotMatch(sources, /_WORDS\b|DECISION_LABELS|FEATURE_LABELS|BUG_LABELS/);
-  assert.doesNotMatch(sources, /selection score|title cohesion|closedPercent|maxAgeDays/);
-});
-
-// Repair target read tokens cover only the validated target, never a fixed repository.
-test("repair target read tokens are scoped to the resolved target", () => {
-  const intake = steps(workflow("repair-cluster-intake.yml")).find(
-    (step) => step.name === "Create target read token",
-  );
-  assert.equal(intake?.with?.owner, "${{ steps.target.outputs.owner }}");
-  assert.equal(intake?.with?.repositories, "${{ steps.target.outputs.name }}");
-  const publish = steps(workflow("repair-publish-results.yml"));
-  const reader = publish.find((step) => step.name === "Create target read token");
-  assert.equal(reader?.with?.owner, "${{ steps.result-targets.outputs.owner }}");
-  assert.equal(reader?.with?.repositories, "${{ steps.result-targets.outputs.repositories }}");
-  // Result publication writes state with the state credential, never with an app token.
-  for (const step of publish) assert.notEqual(step.with?.["permission-contents"], "write");
-});
-
 // review-prompt-context.test.ts guards
 
 // Product-direction closes act on contributor items. The workflow must keep them off unless a
@@ -124,13 +78,6 @@ test("spam scanner exact dispatches never cancel other scans", () => {
 });
 
 // A requeue dispatch needs a durable ledger, and session reports follow the dispatch outcome.
-test("repair worker requeue dispatch waits for its durable ledger", () => {
-  const all = steps(workflow("repair-cluster-worker.yml"));
-  const dispatch = all.find((step) => step.id === "requeue_dispatch");
-  assert.match(dispatch?.if ?? "", /steps\.repair-requeue-ledger\.outcome == 'success'/);
-  const failure = all.find((step) => step.name === "Record work failure");
-  assert.match(failure?.if ?? "", /steps\.requeue_dispatch\.outcome != 'success'/);
-});
 
 // Agent CLIs install exact releases, never a moving tag; OpenClaw source builds stay opt-in.
 test("agent CLI setup actions install exact pinned releases", () => {
@@ -163,28 +110,6 @@ test("workflows never expose model credentials at workflow or job scope", () => 
         assert.equal(Object.hasOwn(env ?? {}, secret), false, `${name}: ${secret}`);
       }
     }
-  }
-});
-
-// Repair planning stays read-only unless an operator picks the trusted-runner fallback.
-test("repair worker planner sandbox defaults to read-only", () => {
-  const input = workflow("repair-cluster-worker.yml").on.workflow_dispatch?.inputs.planner_sandbox;
-  assert.equal(input?.default, "read-only");
-});
-
-// Scheduled cluster intake is gated at job level, before any credential is created.
-test("scheduled cluster intake is gated before it creates credentials", () => {
-  const intake = workflow("repair-cluster-intake.yml").jobs.intake;
-  assert.equal(
-    intake?.if,
-    "${{ github.event_name != 'schedule' || vars.CLAWSWEEPER_FEATURE_CLUSTER_REPAIR_ENABLED == '1' }}",
-  );
-});
-
-// Cluster intake dispatches workers only through the durable intake publisher.
-test("cluster intake never dispatches workers before durable acceptance", () => {
-  for (const step of steps(workflow("repair-cluster-intake.yml"))) {
-    assert.doesNotMatch(step.run ?? "", /repair:dispatch\b|state-materializer\.yml/, step.name);
   }
 });
 

@@ -192,7 +192,7 @@ test("manual publication stays queue-owned and excludes router and implementatio
   assert.equal(admission.if, "${{ steps.mode.outputs.manual_explicit == 'true' }}");
   assert.match(admission.run, /manual-review-enqueue\.js/);
   assert.match(source, /publication_policy.*record_comment_only.*failed_review_shard_recovery/);
-  assert.match(source, /AUTO_IMPLEMENT_ISSUES.*\n\s*\[ -z "\$publication_policy" \]/);
+  assert.doesNotMatch(source, /AUTO_IMPLEMENT|dispatch-issue-implementation/);
 });
 
 for (const targetBranch of ["release/proof", ""]) {
@@ -660,31 +660,10 @@ test("batch workflow signs queue ownership, isolates item failures, and commits 
     source,
     /EXACT_REVIEW_GITHUB_REQUEST_OUTCOME=error[\s\S]*?repair:exact-review-batch request-metric/,
   );
-  assert.match(
+  assert.doesNotMatch(
     source,
-    /AUTO_IMPLEMENT_ISSUES: \$\{\{ vars\.CLAWSWEEPER_AUTO_IMPLEMENT_ISSUES \}\}/,
+    /AUTO_IMPLEMENT|dispatch-issue-implementation|remaining_implementations/,
   );
-  assert.match(source, /node scripts\/dispatch-issue-implementation-candidates\.mjs/);
-  assert.match(
-    source,
-    /MAX_DISPATCH: \$\{\{ vars\.CLAWSWEEPER_AUTO_IMPLEMENT_MAX_DISPATCH_PER_SWEEP \|\| '' \}\}/,
-  );
-  assert.match(source, /remaining_implementations="\$MAX_DISPATCH"/);
-  assert.match(source, /\[ "\$remaining_implementations" -gt 0 \]/);
-  assert.match(source, /--max-dispatch "\$remaining_implementations"/);
-  assert.match(
-    source,
-    /remaining_implementations=\$\(\(remaining_implementations - dispatched\)\)/,
-  );
-  assert.match(
-    source,
-    /if implementation_output="\$\(node scripts\/dispatch-issue-implementation-candidates\.mjs/,
-  );
-  assert.match(
-    source,
-    /Automatic issue implementation dispatch failed; scheduled backfill will retry/,
-  );
-  assert.match(source, /--item-number "\$item_number"/);
   assert.match(source, /post-effect --route router-receipt --payload/);
   assert.match(source, /post-effect --route terminal-disposition --payload/);
   assert.doesNotMatch(
@@ -698,13 +677,8 @@ test("batch workflow signs queue ownership, isolates item failures, and commits 
   assert.match(source, /lifecycle_terminal="superseded"/);
   assert.doesNotMatch(source, /lifecycle_terminal="failure"/);
   const lifecycleHandoff = source.indexOf("post-effect --route terminal-disposition");
-  const implementationDispatch = source.indexOf("dispatch-issue-implementation-candidates.mjs");
   const postEffectsComplete = source.indexOf(".postEffectsComplete = true");
-  assert.ok(
-    lifecycleHandoff >= 0 &&
-      lifecycleHandoff < implementationDispatch &&
-      implementationDispatch < postEffectsComplete,
-  );
+  assert.ok(lifecycleHandoff >= 0 && lifecycleHandoff < postEffectsComplete);
   assert.doesNotMatch(source, /TARGET_GH_TOKEN/);
   assert.doesNotMatch(source, /lifecycle\/command-ack\/attempt/);
   assert.doesNotMatch(source, /repair:update-command-status/);
@@ -735,15 +709,6 @@ test("batch workflow signs queue ownership, isolates item failures, and commits 
     /permanent publisher result remains retryable until the durable/,
   );
   assert.match(healthyMembers.run ?? "", /\[ "\$outcome_kind" = "permanent_failure" \].*continue/s);
-  const implementationBlock = (healthyMembers.run ?? "").slice(
-    (healthyMembers.run ?? "").indexOf("# The optional implementation lane"),
-    (healthyMembers.run ?? "").indexOf('report_path="${outcome_path%.json}.report.md"'),
-  );
-  assert.match(
-    implementationBlock,
-    /\{ \[ "\$receipt_outcome" = "accepted" \] \|\| \[ "\$receipt_outcome" = "deduped" \]; \} &&/,
-  );
-  assert.doesNotMatch(implementationBlock, /superseded|permanent/);
   assert.equal(
     workflow.jobs.publish!.steps.some(
       (step) => step.name === "Acknowledge terminal batch command lifecycle status",

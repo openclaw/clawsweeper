@@ -15,20 +15,12 @@ const expectedRunnerByJob = new Map([
     "${{ vars.CLAWSWEEPER_REVIEW_RUNNER || 'ubuntu-latest' }}",
   ],
   [
-    ".github/workflows/automerge-e2e.yml:automerge-e2e",
-    "${{ vars.CLAWSWEEPER_E2E_RUNNER || 'blacksmith-16vcpu-ubuntu-2404' }}",
-  ],
-  [
     ".github/workflows/maintainer-report-discord.yml:notify",
     "${{ vars.CLAWSWEEPER_REPORT_RUNNER || 'blacksmith-4vcpu-ubuntu-2404' }}",
   ],
   [
     ".github/workflows/repair-containment-smoke.yml:containment-smoke",
     "${{ vars.CLAWSWEEPER_E2E_RUNNER || 'blacksmith-16vcpu-ubuntu-2404' }}",
-  ],
-  [
-    ".github/workflows/repair-publish-results.yml:publish",
-    "${{ vars.CLAWSWEEPER_WORKER_RUNNER || 'blacksmith-4vcpu-ubuntu-2404' }}",
   ],
   [
     ".github/workflows/spam-comment-intake.yml:intake",

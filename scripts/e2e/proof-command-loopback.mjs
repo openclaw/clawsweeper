@@ -247,7 +247,7 @@ try {
     );
   } else if (ackOwnership) {
     const receipts = [];
-    for (const intent of ["re-review", "proof"]) {
+    for (const intent of ["re-review"]) {
       for (const outcome of ["accepted", "deduped"]) {
         for (const state of ["Complete", "Failed"]) {
           selected = { ...comment(300 + receipts.length, 1), body: `@clawsweeper ${intent}` };

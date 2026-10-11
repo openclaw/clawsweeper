@@ -144,7 +144,7 @@ replacement PR. Direct mutation still happens outside Codex.
 
 ## Cloud Worker Flow
 
-Workflow: `.github/workflows/repair-cluster-worker.yml`
+Historical workflow: repair cluster worker (retired; no new execution).
 
 The cluster worker has two jobs:
 
@@ -395,7 +395,7 @@ clearly transient jobs, and pass branch-caused failures into the repair prompt.
 
 ## Self-Heal Failed ClawSweeper Runs
 
-Workflow: `.github/workflows/repair-self-heal.yml`
+Historical workflow: repair self-heal (retired; no new retries).
 Script: `src/repair/self-heal-failed-runs.ts`
 
 Self-heal retries failed ClawSweeper cluster-worker runs. It reads published
@@ -577,7 +577,7 @@ inventory and dispatch pressure.
 
 ## Dashboard Publishing
 
-Workflow: `.github/workflows/repair-publish-results.yml`
+Historical workflow: repair result publisher (retired after existing workers drain).
 Script: `src/repair/publish-result.ts`
 
 Publishing turns raw run artifacts into durable, sanitized summaries. It updates

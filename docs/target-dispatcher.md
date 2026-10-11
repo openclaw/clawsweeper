@@ -332,8 +332,6 @@ jobs:
                       "stale",
                     ].includes(label)) return false;
                     return !label.startsWith("clawsweeper:") || [
-                      "clawsweeper:automerge",
-                      "clawsweeper:autofix",
                       "clawsweeper:human-review",
                       "clawsweeper:manual-only",
                       "clawsweeper:bulk-filed",

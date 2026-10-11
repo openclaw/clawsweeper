@@ -401,20 +401,3 @@ jobs:
             echo
             echo "Selected candidate age (hours): p50 $(jq -r '.ageHours.p50 // "n/a"' <<<"$result"), p90 $(jq -r '.ageHours.p90 // "n/a"' <<<"$result"), oldest $(jq -r '.ageHours.max // "n/a"' <<<"$result")."
           } >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Backfill existing implementation candidates
-        if: ${{ steps.mode.outputs.manual_explicit != 'true' && vars.CLAWSWEEPER_AUTO_IMPLEMENT_ISSUES == '1' && steps.target-read-token.outputs.token != '' && steps.target.outputs.target_repo != 'openclaw/clawhub' && (steps.target.outputs.target_repo != 'openclaw/openclaw' || vars.CLAWSWEEPER_AUTO_IMPLEMENT_VISION_FIT == '1') }}
-        working-directory: clawsweeper
-        env:
-          GH_TOKEN: ${{ github.token }}
-          TARGET_REPO: ${{ steps.target.outputs.target_repo }}
-          CANDIDATE_KIND: ${{ steps.target.outputs.target_repo == 'openclaw/openclaw' && 'vision_fit' || 'viable' }}
-          MAX_DISPATCH: ${{ steps.target.outputs.target_repo == 'openclaw/openclaw' && vars.CLAWSWEEPER_AUTO_IMPLEMENT_VISION_FIT_MAX_DISPATCH_PER_SWEEP || vars.CLAWSWEEPER_AUTO_IMPLEMENT_MAX_DISPATCH_PER_SWEEP || '' }}
-          MIN_SUCCESS_PERCENT: ${{ vars.CLAWSWEEPER_AUTO_IMPLEMENT_MIN_SUCCESS_PERCENT || '' }}
-        run: |
-          set -euo pipefail
-          target_slug="${TARGET_REPO//\//-}"
-          node scripts/dispatch-issue-implementation-candidates.mjs \
-            --target-repo "$TARGET_REPO" \
-            --candidate-kind "$CANDIDATE_KIND" \
-            --report-dir "records/$target_slug/items"

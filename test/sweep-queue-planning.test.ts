@@ -170,20 +170,6 @@ test("automatic retry dispatch is serialized as automatic queue work with its so
   }
 });
 
-test("canonical implementation backfill preserves vision-fit and non-core policy gates", () => {
-  const step = workflow.jobs.plan.steps.find(
-    (candidate) => candidate.name === "Backfill existing implementation candidates",
-  );
-  assert.match(step.if, /manual_explicit != 'true'/);
-  assert.match(step.if, /AUTO_IMPLEMENT_ISSUES == '1'/);
-  assert.match(step.if, /target-read-token.outputs.token != ''/);
-  assert.match(step.if, /target_repo != 'openclaw\/clawhub'/);
-  assert.match(step.if, /AUTO_IMPLEMENT_VISION_FIT == '1'/);
-  assert.match(step.env.CANDIDATE_KIND, /openclaw\/openclaw.*vision_fit.*viable/);
-  assert.match(step.env.MAX_DISPATCH, /AUTO_IMPLEMENT_VISION_FIT_MAX_DISPATCH_PER_SWEEP/);
-  assert.match(step.run, /--report-dir "records\/\$target_slug\/items"/);
-});
-
 test("queue planning retains nested dispatch options before legacy flat fallbacks", () => {
   const modeStep = workflow.jobs.plan.steps.find((step) => step.id === "mode");
   const enqueue = workflow.jobs.plan.steps.find((step) => step.id === "enqueue-scheduled");

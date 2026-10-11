@@ -6,9 +6,14 @@ import { readText } from "../helpers.ts";
 
 type Workflow = {
   on: Record<string, { paths?: string[] } | null>;
+  permissions: Record<string, string>;
   jobs: Record<
     string,
-    { "continue-on-error"?: unknown; steps: Array<{ run?: string; "continue-on-error"?: unknown }> }
+    {
+      if?: string;
+      "continue-on-error"?: unknown;
+      steps: Array<{ run?: string; "continue-on-error"?: unknown }>;
+    }
   >;
 };
 
@@ -18,6 +23,12 @@ test("containment smoke runs the compiled preflight for every containment change
     readText(".github/workflows/repair-containment-smoke.yml"),
   ) as Workflow;
   const job = document.jobs["containment-smoke"]!;
+  assert.deepEqual(document.permissions, { contents: "read" });
+  assert.match(job.if ?? "", /github\.event_name != 'pull_request'/);
+  assert.match(
+    job.if ?? "",
+    /github\.event\.pull_request\.head\.repo\.full_name == github\.repository/,
+  );
   const jobSteps = job.steps;
   assert.deepEqual(
     jobSteps.filter((step) => step.run).map((step) => step.run),

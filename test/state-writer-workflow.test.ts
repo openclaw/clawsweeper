@@ -59,19 +59,6 @@ test("per-target state hydration is slug-scoped while fleet lanes retain discove
   }
 });
 
-test("automatic issue implementation joins the priority intake state-writer lane", () => {
-  const workflow = parse(
-    readFileSync(".github/workflows/repair-issue-implementation-intake.yml", "utf8"),
-  ) as WorkflowDocument;
-  const stateSetup = workflow.jobs?.intake?.steps?.find(isSetupState);
-
-  assert.equal(stateSetup?.with?.["coordinator-class"], "cluster_intake");
-  assert.equal(
-    stateSetup?.with?.["records-item-number"],
-    "${{ github.event.inputs.item_number || github.event.client_payload.item_number }}",
-  );
-});
-
 test("setup-state checks out only the remaining operational git tree", () => {
   const action = parse(readFileSync(".github/actions/setup-state/action.yml", "utf8")) as {
     inputs?: Record<string, unknown>;
@@ -107,8 +94,6 @@ test("setup-state checks out only the remaining operational git tree", () => {
 test("all remaining git publishers join setup-state and receive a step-scoped coordinator secret", () => {
   const patterns = [
     /repair:publish-main\b/,
-    /repair:publish-cluster-intake\b/,
-    /repair:conflict-self-heal\b(?![^\n]*--verify-job-head)/,
     /\b(?:persist_reconciliation|publish_reconciled_records|publish_changes|publish_status)\b/,
   ];
   let publishers = 0;
@@ -144,12 +129,6 @@ test("post-side-effect git bookkeeping is non-fatal while durability fences stay
   for (const [file, job, name] of [
     [".github/workflows/spam-scanner.yml", "scan", "Commit spam scanner audit"],
     [
-      ".github/workflows/repair-conflict-self-heal.yml",
-      "self-heal",
-      "Commit conflict self-heal ledger",
-    ],
-    [".github/workflows/repair-self-heal.yml", "self-heal", "Commit self-heal ledger"],
-    [
       ".github/workflows/failed-review-retry.yml",
       "retry-failed-reviews",
       "Publish failed-review retry state",
@@ -165,8 +144,6 @@ test("post-side-effect git bookkeeping is non-fatal while durability fences stay
       "route-comments",
       "Commit comment router ledger",
     ],
-    [".github/workflows/repair-issue-implementation-intake.yml", "intake", "Commit intake ledger"],
-    [".github/workflows/repair-publish-results.yml", "publish", "Commit result ledger"],
     [".github/workflows/audit.yml", "audit-dashboard", "Commit Audit Health"],
   ]) {
     assert.notEqual(step(file, job, name)["continue-on-error"], true, `${file}:${job}:${name}`);
@@ -205,6 +182,14 @@ test("retired migration and Git recovery surfaces stay deleted", () => {
     ".github/workflows/repair-finalize-open-prs.yml",
     ".github/workflows/state-compaction.yml",
     ".github/workflows/state-materializer.yml",
+    ".github/workflows/repair-cluster-intake.yml",
+    ".github/workflows/repair-cluster-worker.yml",
+    ".github/workflows/repair-issue-implementation-intake.yml",
+    ".github/workflows/repair-issue-implementation-backfill.yml",
+    ".github/workflows/repair-self-heal.yml",
+    ".github/workflows/repair-conflict-self-heal.yml",
+    ".github/workflows/repair-publish-results.yml",
+    ".github/workflows/automerge-e2e.yml",
     "src/repair/state-publication-batch.ts",
     "src/repair/state-materializer.ts",
     "src/repair/state-compaction.ts",

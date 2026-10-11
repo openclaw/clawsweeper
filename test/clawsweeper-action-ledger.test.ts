@@ -1324,12 +1324,9 @@ test("sweep finalizes open ledger attempts and publishes shards through the sign
 
 test("comment router publishes command receipts per invocation through the signed queue", () => {
   const workflow: Workflow = parseYaml(readText(".github/workflows/repair-comment-router.yml"));
-  // Initial and retry runs write separate shards.
-  assert.deepEqual(
-    ["Route ClawSweeper comments", "Retry waiting repair dispatches"].map(
-      (name) => workflowStep(workflow, name).env?.CLAWSWEEPER_ACTION_LEDGER_INVOCATION,
-    ),
-    ["initial", "retry"],
+  assert.equal(
+    workflowStep(workflow, "Route ClawSweeper comments").env?.CLAWSWEEPER_ACTION_LEDGER_INVOCATION,
+    "initial",
   );
   // An empty manifest is valid only when the router saw no command.
   assert.match(

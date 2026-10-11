@@ -117,7 +117,7 @@ embedded runtime and executes its syscall decision path deterministically.
 
 The runtime is also difficult to test and diagnose because the path spans:
 
-1. `.github/workflows/repair-cluster-worker.yml`
+1. the now-retired repair cluster worker workflow
 2. `src/repair/contained-command-worker.ts`
 3. the embedded Python in `src/repair/process-tree-containment.ts`
 4. host kernel syscalls and provider seccomp policy
@@ -188,7 +188,7 @@ remote-validation path.
 ### P2: reduce workflow/runtime duplication
 
 - [x] Move the inline Node preflight in
-      `.github/workflows/repair-cluster-worker.yml` behind one compiled,
+      the now-retired repair cluster worker workflow behind one compiled,
       locally callable CLI so workflow and local tests execute the same probe.
 - [x] Keep workflow YAML responsible for orchestration and gates, not the
       containment implementation.

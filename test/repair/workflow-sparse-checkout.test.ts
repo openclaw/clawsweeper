@@ -17,8 +17,6 @@ import {
 const REPAIR_RUNTIME_PATHS = [
   ".github/actions/setup-pnpm",
   "config/automation-limits.json",
-  "prompts/pr-close-coverage-proof.md",
-  "schema/clawsweeper-pr-close-coverage-proof.schema.json",
   "package.json",
   "pnpm-lock.yaml",
   "pnpm-workspace.yaml",
@@ -102,23 +100,6 @@ test("every review and apply setup-pnpm step follows a full checkout at its acti
     }
   }
   assert.ok(audited > 0, "must audit review and apply setup-pnpm consumers");
-});
-
-test("repair planning and execution use a Node runtime accepted by current OpenClaw", () => {
-  const workflow = parse(
-    fs.readFileSync(".github/workflows/repair-cluster-worker.yml", "utf8"),
-  ) as {
-    jobs?: Record<
-      string,
-      { steps?: { id?: unknown; uses?: unknown; with?: Record<string, unknown> }[] }
-    >;
-  };
-  for (const jobName of ["cluster", "execute"]) {
-    const setup = workflow.jobs?.[jobName]?.steps?.find(
-      (step) => step.uses === "./.github/actions/setup-pnpm",
-    );
-    assert.equal(setup?.with?.["node-version"], "24.21.0", `${jobName} runtime`);
-  }
 });
 
 test("sparse repair build workflows include runtime dependencies", () => {
@@ -328,7 +309,7 @@ test("repair comment router workflow preserves repository dispatch target branch
         /if \[ -n "\$target_branch" \]; then\n\s+args\+=\(--target-branch "\$target_branch"\)\n\s+fi/g,
       ),
     ].length,
-    2,
+    1,
   );
 });
 

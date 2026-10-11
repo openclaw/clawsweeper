@@ -30,12 +30,10 @@ test("comment router defers GitHub throttles without advancing its cursor", asyn
     empty_finalization_succeeded: true,
     partial_receipts_finalized: true,
     throttled_write_stops_command: true,
-    throttled_dispatch_defers_command: true,
     deleted_ack_converges_without_write: true,
     forced_replay_attempt_routed: true,
-    review_dispatch_keeps_status_comment: true,
-    claimed_dispatch_recovered: true,
-    linked_pr_blocks_implementation: true,
+    review_uses_canonical_queue: true,
+    retired_commands_reply_once: true,
   });
   assert.equal(receipt.transport, "loopback HTTP via GITHUB_API_URL");
 });
@@ -52,26 +50,20 @@ test("comment router workflow publishes only successfully advanced scan cursors"
   const steps = Object.values(workflow.jobs).flatMap((job) => job.steps ?? []);
   const directory = mkdtempSync(path.join(tmpdir(), "clawsweeper-router-cursor-publish-"));
   t.after(() => rmSync(directory, { recursive: true, force: true }));
-  for (const name of ["Commit comment router ledger", "Commit comment router retry ledger"]) {
-    const run = steps.find((step) => step.name === name)?.run;
-    assert.ok(run, name);
-    assert.deepEqual(publishArgs(path.join(directory, `${name} unchanged`), run, false), [], name);
-    const publish = publishArgs(path.join(directory, `${name} changed`), run, true);
-    assert.deepEqual(publish.slice(0, 2), ["run", "repair:publish-main"], name);
-    assert.deepEqual(
-      publish.slice(-2),
-      ["--path", "results/comment-router-cursors/openclaw-openclaw.json"],
-      name,
-    );
-  }
+  const run = steps.find((step) => step.name === "Commit comment router ledger")?.run;
+  assert.ok(run);
+  assert.deepEqual(publishArgs(path.join(directory, "unchanged"), run, false), []);
+  const publish = publishArgs(path.join(directory, "changed"), run, true);
+  assert.deepEqual(publish.slice(0, 2), ["run", "repair:publish-main"]);
+  assert.deepEqual(publish.slice(-2), [
+    "--path",
+    "results/comment-router-cursors/openclaw-openclaw.json",
+  ]);
 });
 
-// Run one publish step with an unchanged ledger and jobs tree, and return the publish call.
+// Run the publish step with an unchanged ledger, and return the publish call.
 function publishArgs(cwd: string, run: string, cursorChanged: boolean): string[] {
-  const state = path.join(cwd, "state");
   mkdirSync(path.join(cwd, "results"), { recursive: true });
-  mkdirSync(path.join(cwd, "jobs"), { recursive: true });
-  mkdirSync(path.join(state, "jobs"), { recursive: true });
   writeFileSync(
     path.join(cwd, "results", "comment-router-latest.json"),
     JSON.stringify({ routing_cursor_changed: cursorChanged, ledger_claimed: 0, ledger_changed: 0 }),
@@ -80,7 +72,7 @@ function publishArgs(cwd: string, run: string, cursorChanged: boolean): string[]
   const output = execFileSync("bash", ["-eu", "-c", `pnpm() { printf '%s\\n' "$@"; }\n${script}`], {
     cwd,
     encoding: "utf8",
-    env: { PATH: process.env.PATH, CLAWSWEEPER_STATE_DIR: state },
+    env: { PATH: process.env.PATH },
   });
   return output.includes("skipping state publication") ? [] : output.trim().split("\n");
 }

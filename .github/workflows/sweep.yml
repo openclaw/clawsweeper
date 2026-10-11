@@ -1398,24 +1398,6 @@ jobs:
           fi
           echo "direct_lifecycle_requeue=$direct_lifecycle_requeue" >> "$GITHUB_OUTPUT"
 
-      # This is deliberately after the durable lifecycle handoff. Command
-      # acknowledgement is performed later by the dedicated finalizer and is
-      # not a precondition for optional implementation dispatch.
-      - name: Dispatch exact high-confidence bug implementation
-        if: ${{ steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.finalize-direct-exact-review-lifecycle.outcome == 'success' && vars.CLAWSWEEPER_AUTO_IMPLEMENT_ISSUES == '1' && fromJSON(steps.claim-exact-review-queue.outputs.decision).publicationPolicy != 'record_comment_only' && steps.target.outputs.target_repo == 'openclaw/openclaw' && fromJSON(steps.claim-exact-review-queue.outputs.decision).itemKind == 'issue' }}
-        continue-on-error: true
-        env:
-          GH_TOKEN: ${{ github.token }}
-          TARGET_REPO: ${{ steps.target.outputs.target_repo }}
-          ITEM_NUMBER: ${{ steps.target.outputs.item_number }}
-          MAX_DISPATCH: ${{ vars.CLAWSWEEPER_AUTO_IMPLEMENT_MAX_DISPATCH_PER_SWEEP || '' }}
-          MIN_SUCCESS_PERCENT: ${{ vars.CLAWSWEEPER_AUTO_IMPLEMENT_MIN_SUCCESS_PERCENT || '' }}
-        run: |
-          node scripts/dispatch-issue-implementation-candidates.mjs \
-            --target-repo "$TARGET_REPO" \
-            --item-number "$ITEM_NUMBER" \
-            --artifact-dir artifacts/event
-
       - name: Upload exact review artifact bundle
         id: upload-exact-review-bundle
         # Keep the artifact if direct publication needs publisher recovery after
@@ -2459,21 +2441,6 @@ jobs:
           queue_url="${QUEUE_URL%/}"
           control_plane_signed_post "$queue_url/internal/exact-review/lifecycle/router-receipt" "$payload" \
             --fail --silent --show-error --connect-timeout 5 --max-time 20 >/dev/null
-
-      - name: Dispatch deferred high-confidence bug implementation
-        if: ${{ steps.publication-context.outputs.claimed == 'true' && steps.publication-context.outputs.direct_lifecycle_recovery != 'true' && steps.publish-event-result.outcome == 'success' && steps.publish-event-result.outputs.remote_tuple_verified == 'true' && steps.record-fallback-canonical-lifecycle-receipt.outcome == 'success' && vars.CLAWSWEEPER_AUTO_IMPLEMENT_ISSUES == '1' && fromJSON(steps.publication-context.outputs.decision).publicationPolicy != 'record_comment_only' && steps.publication-context.outputs.target_repo == 'openclaw/openclaw' && fromJSON(steps.publication-context.outputs.decision).itemKind == 'issue' && (((fromJSON(steps.publication-context.outputs.decision).sourceAction == 'failed_review_shard_recovery' || fromJSON(steps.publication-context.outputs.decision).publicationPolicy == 'record_comment_only') && steps.record-no-router-lifecycle-receipt.outcome == 'success') || ((fromJSON(steps.publication-context.outputs.decision).sourceAction != 'failed_review_shard_recovery' && fromJSON(steps.publication-context.outputs.decision).publicationPolicy != 'record_comment_only') && (steps.publish-event-result.outputs.routing_deferred != 'true' || steps.queue-deferred-verdict-router.outcome == 'success'))) }}
-        continue-on-error: true
-        env:
-          GH_TOKEN: ${{ github.token }}
-          TARGET_REPO: ${{ steps.publication-context.outputs.target_repo }}
-          ITEM_NUMBER: ${{ steps.publication-context.outputs.item_number }}
-          MAX_DISPATCH: ${{ vars.CLAWSWEEPER_AUTO_IMPLEMENT_MAX_DISPATCH_PER_SWEEP || '' }}
-          MIN_SUCCESS_PERCENT: ${{ vars.CLAWSWEEPER_AUTO_IMPLEMENT_MIN_SUCCESS_PERCENT || '' }}
-        run: |
-          node scripts/dispatch-issue-implementation-candidates.mjs \
-            --target-repo "$TARGET_REPO" \
-            --item-number "$ITEM_NUMBER" \
-            --artifact-dir artifacts/event
 
       - name: Queue fresh review after source drift
         id: queue-source-drift-review

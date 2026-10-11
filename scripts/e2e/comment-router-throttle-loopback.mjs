@@ -2,7 +2,7 @@
 
 import assert from "node:assert/strict";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, createHmac } from "node:crypto";
 import fs from "node:fs";
 import http from "node:http";
 import os from "node:os";
@@ -117,31 +117,17 @@ process.stdout.write(JSON.stringify(args.includes("--slurp") ? [body] : body));
 
 let mode = "throttle";
 const requests = [];
-// Executed commands: status replies on issues 3 and 5, an assist dispatch on issue 4,
-// and an autofix review dispatch on pull request 6.
+// Retained read-only commands and retired mutation requests share the same transport.
 const executionCommands = {
   3: commandComment({ id: 300, issueNumber: 3 }),
-  4: commandComment({
-    id: 400,
-    issueNumber: 4,
-    body: "/clawsweeper ask is this blocked on flaky CI?",
-  }),
+  4: commandComment({ id: 400, issueNumber: 4, body: "/clawsweeper re-review" }),
   5: commandComment({ id: 500, issueNumber: 5 }),
   6: commandComment({ id: 600, issueNumber: 6, body: "/clawsweeper autofix" }),
   7: commandComment({ id: 700, issueNumber: 7, body: "/clawsweeper implement" }),
+  8: commandComment({ id: 800, issueNumber: 8, body: "/clawsweeper automerge" }),
 };
-// Dispatch keys that GitHub accepted. Each one starts a successful assist run.
-const acceptedDispatchKeys = [];
-// The status comment that an earlier autofix command on pull request 6 left behind.
-const retainedStatus = {
-  id: 650,
-  body: "<!-- clawsweeper-command-status:6:autofix:0000000 -->\nAutofix is active.",
-  issue_url: `https://api.github.com/repos/${targetRepo}/issues/6`,
-  user: { login: "openclaw-clawsweeper[bot]" },
-  created_at: "2026-08-13T11:00:00.000Z",
-  updated_at: "2026-08-13T11:00:00.000Z",
-};
-const dispatchBodies = [];
+const queueIntakes = [];
+const commentBodies = [];
 // The webhook acknowledgement for comment 500. It is deleted before the router updates it.
 const deletedAck = {
   id: 501,
@@ -152,45 +138,40 @@ const deletedAck = {
 const server = http.createServer(async (request, response) => {
   const url = new URL(request.url || "/", "http://loopback.invalid");
   requests.push(`${request.method} ${url.pathname}${url.search}`);
-  if (mode === "dispatch-lost-response" && url.pathname.endsWith("/dispatches")) {
-    // GitHub accepts the dispatch, but the router does not get the response.
+  if (url.pathname === "/internal/exact-review/command-intake") {
     let body = "";
     for await (const chunk of request) body += chunk;
-    acceptedDispatchKeys.push(JSON.parse(body).client_payload.dispatch_key);
-    return json(response, 502, { message: "Bad Gateway" });
-  }
-  if (url.pathname === "/repos/openclaw/clawsweeper/actions/workflows/assist.yml/runs") {
+    assert.equal(
+      request.headers["x-clawsweeper-exact-review-signature"],
+      `sha256=${createHmac("sha256", "loopback-secret").update(body).digest("hex")}`,
+    );
+    const intake = JSON.parse(body);
+    const claim = JSON.parse(fs.readFileSync(ledgerPath, "utf8")).commands.find(
+      (entry) => String(entry.comment_id) === String(intake.sourceCommentId),
+    );
+    assert.equal(claim?.status, "claimed");
+    queueIntakes.push(intake);
     return json(response, 200, {
-      workflow_runs: acceptedDispatchKeys.map((key, index) => ({
-        id: 900 + index,
-        display_title: `Assist ${targetRepo}#4 [${key}]`,
-        status: "completed",
-        conclusion: "success",
-        created_at: new Date().toISOString(),
-        html_url: `https://github.com/openclaw/clawsweeper/actions/runs/${900 + index}`,
-      })),
+      ok: true,
+      accepted: true,
+      deduped: false,
+      command_version_id: intake.commandVersionId,
     });
-  }
-  if (/^\/repos\/openclaw\/clawsweeper\/actions\/runs\/9\d\d\/jobs$/.test(url.pathname)) {
-    return json(response, 200, { jobs: [{ name: "assist", conclusion: "success" }] });
   }
   if (mode === "before-discovery") {
     return json(response, 429, { message: "Too Many Requests" });
   }
   if (request.method !== "GET") {
-    if (
-      mode === "mutation-throttle" ||
-      (mode === "dispatch-throttle" && url.pathname.endsWith("/dispatches"))
-    ) {
+    if (mode === "mutation-throttle") {
       return json(response, 403, { message: "API rate limit exceeded for installation" });
     }
     if (url.pathname.endsWith(`/issues/comments/${deletedAck.id}`)) {
       return json(response, 404, { message: "Not Found" });
     }
-    if (url.pathname.endsWith("/dispatches")) {
-      let body = "";
-      for await (const chunk of request) body += chunk;
-      dispatchBodies.push(JSON.parse(body));
+    let body = "";
+    for await (const chunk of request) body += chunk;
+    if (body && /\/issues(?:\/comments\/\d+|\/\d+\/comments)$/.test(url.pathname)) {
+      commentBodies.push(JSON.parse(body).body);
     }
     return json(response, 201, { id: 1 });
   }
@@ -220,9 +201,6 @@ const server = http.createServer(async (request, response) => {
       url: `https://github.com/${targetRepo}/pull/6`,
     });
   }
-  if (url.pathname === `/repos/${targetRepo}/issues/6/comments`) {
-    return json(response, 200, [retainedStatus, executionCommands[6]]);
-  }
   if (url.pathname === "/user") return json(response, 200, { login: "openclaw-clawsweeper[bot]" });
   if (url.pathname === `/repos/${targetRepo}/issues/comments/${deletedAck.id}`) {
     return json(response, 200, deletedAck);
@@ -238,22 +216,13 @@ const server = http.createServer(async (request, response) => {
         state: "open",
         locked: false,
         title: "Executed command issue",
-        // Issue 7 names issue 8, which is an open pull request.
-        body: issueNumber === "7" ? "Follow-up to #8." : "Router mutation throttle fixture",
+        body: "Router command fixture",
         user: { login: "reporter" },
         labels: [],
         ...(issueNumber === "6" ? { pull_request: { url: `${issuePath}/pull` } } : {}),
       });
     }
     if (url.pathname === `${issuePath}/comments`) return json(response, 200, [comment]);
-  }
-  if (url.pathname === `/repos/${targetRepo}/issues/8`) {
-    return json(response, 200, {
-      number: 8,
-      state: "open",
-      title: "Open fix",
-      pull_request: { url: `https://api.github.com/repos/${targetRepo}/pulls/8` },
-    });
   }
   if (url.pathname === "/repos/openclaw/router-throttle-proof/issues/comments/100") {
     return json(response, 200, commandComment());
@@ -428,17 +397,6 @@ try {
   ]);
   assert.equal(reactionThrottle.command?.status, "waiting");
 
-  // A throttled dispatch defers the command instead of failing the run.
-  mode = "dispatch-throttle";
-  const dispatchThrottle = await runExecutedCommand(apiUrl, 4);
-  assert.equal(dispatchThrottle.status, 0, dispatchThrottle.stderr || dispatchThrottle.stdout);
-  assert.match(dispatchThrottle.stdout, /comment_router_skip .*"reason":"github_throttled"/);
-  assert.deepEqual(dispatchThrottle.writes, [
-    `POST /repos/${targetRepo}/issues/comments/400/reactions`,
-    "POST /repos/openclaw/clawsweeper/dispatches",
-  ]);
-  assert.equal(dispatchThrottle.command?.status, "waiting");
-
   // A replayed webhook whose acknowledgement is already deleted converges with no write.
   mode = "success";
   const processed = await runExecutedCommand(apiUrl, 5);
@@ -482,61 +440,47 @@ try {
   assert.equal(forcedCommand.forced_replay, true);
   assert.equal(forcedCommand.attempt_id, "forced-replay-42");
 
-  // An autofix review follow-up keeps the existing status comment in its dispatch.
-  const autofix = await runExecutedCommand(apiUrl, 6);
-  assert.equal(autofix.status, 0, autofix.stderr || autofix.stdout);
-  const reviewDispatch = dispatchBodies.find((body) => body.event_type === "clawsweeper_item");
-  assert.ok(reviewDispatch, JSON.stringify(autofix.report));
-  assert.equal(reviewDispatch.client_payload.target_repo, targetRepo);
-  assert.equal(reviewDispatch.client_payload.item_number, "6");
-  assert.equal(reviewDispatch.client_payload.item_kind, "pull_request");
-  assert.equal(reviewDispatch.client_payload.status_comment_id, String(retainedStatus.id));
-  assert.match(
-    reviewDispatch.client_payload.command_status_marker,
-    /^<!-- clawsweeper-command-status:6:autofix:/,
-  );
-  assert.ok(reviewDispatch.client_payload.review_options);
-  assert.equal(
-    reviewDispatch.client_payload.dispatch_key,
-    autofix.command?.actions.find((action) => action.action === "dispatch_clawsweeper")
-      ?.dispatch_key,
-  );
+  // The review command only enters the canonical queue, with a durable claim already written.
+  const review = await runExecutedCommand(apiUrl, 4);
+  assert.equal(review.status, 0, review.stderr || review.stdout);
+  assert.equal(review.command?.status, "executed");
+  assert.equal(queueIntakes.length, 1);
+  assert.equal(queueIntakes[0].decision.targetRepo, targetRepo);
+  assert.equal(queueIntakes[0].decision.itemNumber, 4);
+  assert.equal(queueIntakes[0].sourceCommentId, 400);
+  assert.equal(queueIntakes[0].commandOrigin, "comment_router");
+  assert.ok(queueIntakes[0].commandVersionId);
+  assert.ok(!review.writes.some((request) => request.endsWith("/dispatches")));
 
-  // The dispatch claim is durable before the dispatch. After a lost dispatch response,
-  // the next run finds the accepted run and records it without a second dispatch.
-  mode = "dispatch-lost-response";
-  const lost = await runExecutedCommand(apiUrl, 4);
-  assert.notEqual(lost.status, 0, "a lost dispatch response must fail the run");
-  assert.ok(acceptedDispatchKeys.length > 0);
-  const claim = JSON.parse(fs.readFileSync(ledgerPath, "utf8")).commands.find(
-    (entry) => String(entry.comment_id) === "400",
-  );
-  assert.equal(claim?.status, "claimed");
-  mode = "success";
-  const recovered = await runExecutedCommand(apiUrl, 4);
-  assert.equal(recovered.status, 0, recovered.stderr || recovered.stdout);
-  assert.deepEqual(
-    recovered.writes.filter((request) => request.endsWith("/dispatches")),
-    [],
-  );
-  assert.equal(recovered.command?.status, "executed");
-  assert.equal(
-    recovered.command?.actions.find((action) => action.action === "dispatch_assist")?.recovered,
-    true,
-  );
-
-  // An implementation request stops when the issue names an open pull request.
-  const linked = await runRouter(apiUrl, {
-    selection: ["--comment-ids", "700", "--item-numbers", "7"],
-  });
-  assert.equal(linked.status, 0, linked.stderr || linked.stdout);
-  const linkedCommand = JSON.parse(fs.readFileSync(resultPath, "utf8")).commands[0];
-  assert.equal(linkedCommand.intent, "implement_issue");
-  assert.match(linkedCommand.reason, /blocked by an existing linked PR \(#8\)/);
-  assert.deepEqual(
-    linkedCommand.actions.map((action) => action.action),
-    ["comment"],
-  );
+  // Retired commands only write their own durable reply, never dispatch or opt in.
+  for (const [number, intent] of [
+    [6, "autofix"],
+    [7, "implement_issue"],
+    [8, "automerge"],
+  ]) {
+    const retired = await runExecutedCommand(apiUrl, number);
+    assert.equal(retired.status, 0, retired.stderr || retired.stdout);
+    assert.equal(retired.command?.intent, intent);
+    assert.equal(retired.command?.retired, true);
+    assert.equal(retired.command?.status, "executed");
+    assert.deepEqual(
+      retired.command.actions.map((action) => action.action),
+      ["comment"],
+    );
+    assert.ok(retired.writes.every((request) => request.includes("/issues/")));
+    assert.ok(!retired.writes.some((request) => /labels|dispatches|merge/.test(request)));
+    const reply = commentBodies.at(-1);
+    assert.match(reply, /is retired; ClawSweeper now only reviews\./);
+    assert.equal(
+      reply.replace(/<!--[\s\S]*?-->/g, "").trim(),
+      `\`@clawsweeper ${intent.replaceAll("_", "-")}\` is retired; ClawSweeper now only reviews.`,
+    );
+    const repliesBefore = commentBodies.length;
+    const replayed = await runExecutedCommand(apiUrl, number);
+    assert.equal(replayed.status, 0, replayed.stderr || replayed.stdout);
+    assert.equal(commentBodies.length, repliesBefore);
+  }
+  assert.equal(queueIntakes.length, 1);
 
   process.stdout.write(
     `${JSON.stringify(
@@ -568,12 +512,10 @@ try {
           empty_finalization_succeeded: true,
           partial_receipts_finalized: true,
           throttled_write_stops_command: true,
-          throttled_dispatch_defers_command: true,
           deleted_ack_converges_without_write: true,
           forced_replay_attempt_routed: true,
-          review_dispatch_keeps_status_comment: true,
-          claimed_dispatch_recovered: true,
-          linked_pr_blocks_implementation: true,
+          review_uses_canonical_queue: true,
+          retired_commands_reply_once: true,
         },
         requests,
       },
@@ -639,6 +581,9 @@ function runRouter(
         GH_BIN: fakeGh,
         GH_TOKEN: "loopback-proof-token",
         GITHUB_API_URL: apiUrl,
+        QUEUE_URL: apiUrl,
+        CLAWSWEEPER_WEBHOOK_SECRET: "loopback-secret",
+        CLAWSWEEPER_TARGET_INSTALLATION_ID: "123",
         CLAWSWEEPER_COMMENT_LOOKUP_CONCURRENCY: "1",
         CLAWSWEEPER_STATE_DIR: root,
         ...(receipts ? producerEnv : { CLAWSWEEPER_ACTION_LEDGER_FORCE: "0" }),
@@ -675,7 +620,7 @@ function finalize(report) {
   );
 }
 
-function commandComment({ id = 100, issueNumber = 1, body = "/clawsweeper status" } = {}) {
+function commandComment({ id = 100, issueNumber = 1, body = "/clawsweeper explain" } = {}) {
   return {
     id,
     body,

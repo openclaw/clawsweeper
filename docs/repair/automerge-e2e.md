@@ -107,7 +107,7 @@ pnpm e2e:automerge:container -- \
 
 ## CI and Crabbox
 
-`.github/workflows/automerge-e2e.yml` runs every scenario against both fixtures for repair,
+The retired automerge E2E workflow ran every scenario against both fixtures for repair,
 harness, package-manager, and workflow changes. CI calls the repository-owned
 container wrapper on the same production-class Blacksmith runner used by repair
 execution. Pull requests from forks are excluded because untrusted code must not

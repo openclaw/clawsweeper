@@ -3211,7 +3211,10 @@ test("renderResponse keeps public command replies friendly and scoped", () => {
 
   const body = renderResponse(command, null);
   assert.match(body, /ClawSweeper is here and listening/);
-  assert.match(body, /only act for maintainers/);
+  assert.match(
+    body,
+    /Supported commands:.*@clawsweeper review.*@clawsweeper re-review.*@clawsweeper explain.*@clawsweeper stop/,
+  );
   assert.doesNotMatch(body, /ClawSweeper Repair/i);
 });
 
@@ -3275,8 +3278,7 @@ test("renderResponse gives command replies stateful lobster badges", () => {
   assert.match(reviewBody, /\n🦞🧹\nClawSweeper re-review requested/);
   assert.match(repairBody, /\n🦞🔧\nClawSweeper issue implementation requested/);
   assert.match(doneBody, /\n🦞✅\nClawSweeper merged this PR/);
-  assert.match(body, /@clawsweeper fix/);
-  assert.match(body, /\/clawsweeper visualize \[lens\]/);
+  assert.doesNotMatch(body, /@clawsweeper fix|visualize/);
 });
 
 test("renderResponse describes stop as revoking repair-loop labels", () => {

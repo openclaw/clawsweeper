@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       execute:
-        description: "Post replies and dispatch repair workers"
+        description: "Post replies and queue exact reviews"
         required: true
         default: false
         type: boolean
@@ -55,16 +55,6 @@ on:
         required: false
         default: ""
         type: string
-      runner:
-        description: "Runner label for repair planning/review work"
-        required: true
-        default: blacksmith-4vcpu-ubuntu-2404
-        type: string
-      execution_runner:
-        description: "Runner label for fix/apply execution work"
-        required: true
-        default: blacksmith-16vcpu-ubuntu-2404
-        type: string
   schedule:
     - cron: "*/5 * * * *"
 
@@ -77,14 +67,6 @@ permissions:
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
   CLAWSWEEPER_APP_CLIENT_ID: Iv23liOECG0slfuhz093
-  CLAWSWEEPER_PROOF_WORKFLOW_PATH: ${{ vars.CLAWSWEEPER_PROOF_WORKFLOW_PATH }}
-  CLAWSWEEPER_PROOF_WORKFLOW_REF: ${{ vars.CLAWSWEEPER_PROOF_WORKFLOW_REF }}
-  CLAWSWEEPER_PROOF_WORKFLOW_SHA: ${{ vars.CLAWSWEEPER_PROOF_WORKFLOW_SHA }}
-  CLAWSWEEPER_PROOF_HARNESS_SHA: ${{ vars.CLAWSWEEPER_PROOF_HARNESS_SHA }}
-  CLAWSWEEPER_TELEGRAM_PROOF_WORKFLOW_PATH: ${{ vars.CLAWSWEEPER_TELEGRAM_PROOF_WORKFLOW_PATH }}
-  CLAWSWEEPER_TELEGRAM_PROOF_WORKFLOW_REF: ${{ vars.CLAWSWEEPER_TELEGRAM_PROOF_WORKFLOW_REF }}
-  CLAWSWEEPER_TELEGRAM_PROOF_WORKFLOW_SHA: ${{ vars.CLAWSWEEPER_TELEGRAM_PROOF_WORKFLOW_SHA }}
-  CLAWSWEEPER_TELEGRAM_PROOF_HARNESS_SHA: ${{ vars.CLAWSWEEPER_TELEGRAM_PROOF_HARNESS_SHA }}
   CLAWSWEEPER_UNSPONSORED_FEATURE_CLOSE_ENABLED: ${{ vars.CLAWSWEEPER_UNSPONSORED_FEATURE_CLOSE_ENABLED || 'false' }}
   CLAWSWEEPER_AUTHOR_PR_BUDGET_CLOSE_ENABLED: ${{ vars.CLAWSWEEPER_AUTHOR_PR_BUDGET_CLOSE_ENABLED || 'false' }}
 
@@ -115,10 +97,7 @@ jobs:
           sparse-checkout: |
             .github
             config
-            jobs
-            prompts/pr-close-coverage-proof.md
             results
-            schema/clawsweeper-pr-close-coverage-proof.schema.json
             scripts/hydrate-state.ts
             scripts/comment-router-runner.mjs
             scripts/operator-skip-reasons.mjs
@@ -212,35 +191,6 @@ jobs:
           # dashboard leg the job never runs.
           build-script: build:node
 
-      - name: Schedule Endor test repository automerge
-        if: ${{ github.event_name == 'schedule' && vars.CLAWSWEEPER_COMMENT_ROUTER_EXECUTE == '1' && steps.target.outputs.target_repo != 'openclaw/endor-clawsweeper-e2e' }}
-        continue-on-error: true
-        env:
-          GH_TOKEN: ${{ steps.dispatch-token.outputs.token }}
-        run: |
-          gh workflow run repair-comment-router.yml \
-            --repo "$GITHUB_REPOSITORY" --ref "$GITHUB_REF_NAME" \
-            -f execute=true -f target_repo=openclaw/endor-clawsweeper-e2e
-
-      - name: Enrol Endor remediation PRs
-        if: ${{ steps.target.outputs.target_repo == 'openclaw/endor-clawsweeper-e2e' && ((github.event_name == 'schedule' && vars.CLAWSWEEPER_COMMENT_ROUTER_EXECUTE == '1') || (github.event_name == 'workflow_dispatch' && inputs.execute)) }}
-        continue-on-error: true
-        env:
-          GH_TOKEN: ${{ steps.app_token.outputs.token }}
-          TARGET_REPO: ${{ steps.target.outputs.target_repo }}
-        run: node dist/repair/endor-automerge-intake.js --repo "$TARGET_REPO" --execute
-
-      - name: Prepare bounded proof planner
-        if: ${{ steps.target.outputs.target_repo == 'openclaw/openclaw' && (vars.CLAWSWEEPER_PROOF_WORKFLOW_SHA != '' || vars.CLAWSWEEPER_TELEGRAM_PROOF_WORKFLOW_SHA != '') && (github.event_name == 'repository_dispatch' || (github.event_name == 'workflow_dispatch' && inputs.execute) || (github.event_name == 'schedule' && vars.CLAWSWEEPER_COMMENT_ROUTER_EXECUTE == '1')) }}
-        continue-on-error: true
-        uses: ./.github/actions/setup-codex
-        env:
-          OPENAI_API_KEY: ${{ vars.CLAWSWEEPER_CODEX_AUTH_MODE != 'clawrouter' && secrets.OPENAI_API_KEY || '' }}
-          CLAWSWEEPER_INTERNAL_MODEL: ${{ vars.CLAWSWEEPER_CODEX_AUTH_MODE != 'clawrouter' && secrets.CLAWSWEEPER_MODEL || '' }}
-          CLAWSWEEPER_CLAWROUTER_CONFIG: ${{ secrets.CLAWSWEEPER_CLAWROUTER_CONFIG }}
-        with:
-          auth-mode: ${{ vars.CLAWSWEEPER_CODEX_AUTH_MODE || 'proxy' }}
-
       - name: Route ClawSweeper comments
         id: route-comments
         env:
@@ -248,8 +198,6 @@ jobs:
           CLAWSWEEPER_PUBLIC_GH_TOKEN: ${{ github.token }}
           CLAWSWEEPER_DISPATCH_TOKEN: ${{ steps.dispatch-token.outputs.token }}
           CLAWSWEEPER_MUTATION_TOKEN_SOURCE: clawsweeper-app
-          CLAWSWEEPER_ALLOW_MERGE: ${{ vars.CLAWSWEEPER_ALLOW_MERGE || '0' }}
-          CLAWSWEEPER_STATUS_INGEST_TOKEN: ${{ secrets.CLAWSWEEPER_STATUS_INGEST_TOKEN }}
           CLAWSWEEPER_ACTION_LEDGER_INVOCATION: initial
           CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
           CLAWSWEEPER_TARGET_INSTALLATION_ID: ${{ steps.app_token.outputs.installation-id }}
@@ -263,8 +211,6 @@ jobs:
           max_comments="${{ github.event_name == 'workflow_dispatch' && inputs.max_comments || vars.CLAWSWEEPER_COMMENT_MAX_COMMENTS || '100' }}"
           item_numbers="${{ github.event_name == 'workflow_dispatch' && inputs.item_numbers || '' }}"
           comment_ids="${{ github.event_name == 'workflow_dispatch' && inputs.comment_ids || '' }}"
-          runner="${{ github.event_name == 'workflow_dispatch' && inputs.runner || vars.CLAWSWEEPER_WORKER_RUNNER || 'blacksmith-4vcpu-ubuntu-2404' }}"
-          execution_runner="${{ github.event_name == 'workflow_dispatch' && inputs.execution_runner || vars.CLAWSWEEPER_EXECUTION_RUNNER || 'blacksmith-16vcpu-ubuntu-2404' }}"
           force_reprocess="${{ github.event_name == 'workflow_dispatch' && inputs.force_reprocess || 'false' }}"
           attempt_id="${{ github.event_name == 'workflow_dispatch' && inputs.attempt_id || '' }}"
           if [ "${{ github.event_name }}" = "repository_dispatch" ]; then
@@ -308,9 +254,6 @@ jobs:
             --repo "$target_repo"
             --lookback-minutes "$lookback_minutes"
             --max-comments "$max_comments"
-            --runner "$runner"
-            --execution-runner "$execution_runner"
-            --wait-for-capacity
           )
           if [ -n "$target_branch" ]; then
             args+=(--target-branch "$target_branch")
@@ -359,15 +302,6 @@ jobs:
           fi
           pnpm run repair:comment-router -- "${args[@]}"
 
-      - name: Reconcile explicitly requested behavioral proof
-        if: ${{ success() && steps.target.outputs.target_repo == 'openclaw/openclaw' && (github.event_name == 'repository_dispatch' || (github.event_name == 'workflow_dispatch' && inputs.execute) || (github.event_name == 'schedule' && vars.CLAWSWEEPER_COMMENT_ROUTER_EXECUTE == '1')) }}
-        continue-on-error: true
-        env:
-          GH_TOKEN: ${{ steps.app_token.outputs.token }}
-          CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
-          QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
-        run: node dist/repair/command-proof-cli.js reconcile
-
       - name: Commit comment router ledger
         if: always()
         env:
@@ -378,13 +312,8 @@ jobs:
             echo "Exact terminal comment version already recorded; skipping state publication."
             exit 0
           fi
-          jobs_changed=0
           cursor_changed="$(jq -r '.routing_cursor_changed == true' results/comment-router-latest.json 2>/dev/null || true)"
-          if ! git diff --no-index --quiet -- "$CLAWSWEEPER_STATE_DIR/jobs" jobs; then
-            jobs_changed=1
-          fi
-          if [ "$jobs_changed" = "0" ] &&
-             [ "$cursor_changed" != "true" ] &&
+          if [ "$cursor_changed" != "true" ] &&
              jq -e '((.ledger_claimed // 0) + (.ledger_changed // 0)) == 0' results/comment-router-latest.json >/dev/null 2>&1; then
             echo "No durable router state changed; skipping state publication."
             exit 0
@@ -394,171 +323,6 @@ jobs:
             --path results/comment-router.json \
             --rebase-strategy theirs
           )
-          # The latest scan report is run-local. Only commands that actually
-          # changed repair jobs need the serialized Git state writer.
-          if [ "$jobs_changed" = "1" ]; then
-            publish_args+=(--path jobs)
-          fi
-          if [ "$cursor_changed" = "true" ]; then
-            publish_args+=(--path "results/comment-router-cursors/${{ steps.target.outputs.target_slug }}.json")
-          fi
-          pnpm run repair:publish-main -- "${publish_args[@]}"
-
-      - name: Detect waiting repair dispatches
-        id: waiting-repair-dispatches
-        if: ${{ success() }}
-        run: |
-          set -euo pipefail
-          count="0"
-          if [ -f results/comment-router-latest.json ]; then
-            count="$(pnpm run --silent workflow -- count-command-actions --report results/comment-router-latest.json --action dispatch_repair --status waiting,active)"
-          fi
-          echo "count=$count" >> "$GITHUB_OUTPUT"
-
-      - name: Retry waiting repair dispatches
-        if: ${{ steps.waiting-repair-dispatches.outputs.count != '' && steps.waiting-repair-dispatches.outputs.count != '0' }}
-        env:
-          GH_TOKEN: ${{ steps.app_token.outputs.token }}
-          CLAWSWEEPER_PUBLIC_GH_TOKEN: ${{ github.token }}
-          CLAWSWEEPER_DISPATCH_TOKEN: ${{ steps.dispatch-token.outputs.token }}
-          CLAWSWEEPER_MUTATION_TOKEN_SOURCE: clawsweeper-app
-          CLAWSWEEPER_ALLOW_MERGE: ${{ vars.CLAWSWEEPER_ALLOW_MERGE || '0' }}
-          CLAWSWEEPER_STATUS_INGEST_TOKEN: ${{ secrets.CLAWSWEEPER_STATUS_INGEST_TOKEN }}
-          CLAWSWEEPER_ACTION_LEDGER_INVOCATION: retry
-          CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
-          CLAWSWEEPER_TARGET_INSTALLATION_ID: ${{ steps.app_token.outputs.installation-id }}
-          QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
-        run: |
-          set -euo pipefail
-          target_repo="${{ github.event_name == 'workflow_dispatch' && inputs.target_repo || vars.CLAWSWEEPER_TARGET_REPO || 'openclaw/openclaw' }}"
-          target_branch="${{ github.event_name == 'workflow_dispatch' && inputs.target_branch || '' }}"
-          lookback_minutes="${{ github.event_name == 'workflow_dispatch' && inputs.lookback_minutes || vars.CLAWSWEEPER_COMMENT_LOOKBACK_MINUTES || '180' }}"
-          since="${{ github.event_name == 'workflow_dispatch' && inputs.since || '' }}"
-          max_comments="${{ github.event_name == 'workflow_dispatch' && inputs.max_comments || vars.CLAWSWEEPER_COMMENT_MAX_COMMENTS || '100' }}"
-          item_numbers="${{ github.event_name == 'workflow_dispatch' && inputs.item_numbers || '' }}"
-          comment_ids="${{ github.event_name == 'workflow_dispatch' && inputs.comment_ids || '' }}"
-          runner="${{ github.event_name == 'workflow_dispatch' && inputs.runner || vars.CLAWSWEEPER_WORKER_RUNNER || 'blacksmith-4vcpu-ubuntu-2404' }}"
-          execution_runner="${{ github.event_name == 'workflow_dispatch' && inputs.execution_runner || vars.CLAWSWEEPER_EXECUTION_RUNNER || 'blacksmith-16vcpu-ubuntu-2404' }}"
-          force_reprocess="${{ github.event_name == 'workflow_dispatch' && inputs.force_reprocess || 'false' }}"
-          attempt_id="${{ github.event_name == 'workflow_dispatch' && inputs.attempt_id || '' }}"
-          if [ "${{ github.event_name }}" = "repository_dispatch" ]; then
-            target_repo="${{ github.event.client_payload.target_repo || 'openclaw/openclaw' }}"
-            target_branch="${{ github.event.client_payload.target_branch || '' }}"
-            lookback_minutes="${{ github.event.client_payload.lookback_minutes || vars.CLAWSWEEPER_COMMENT_LOOKBACK_MINUTES || '180' }}"
-            since=""
-            max_comments="${{ github.event.client_payload.max_comments || '1' }}"
-            item_numbers="${{ github.event.client_payload.item_number || '' }}"
-            comment_ids="${{ github.event.client_payload.comment_id || '' }}"
-            status_comment_id="${{ github.event.client_payload.status_comment_id || '' }}"
-            source_delivery_id="${{ github.event.client_payload.source_delivery_id || '' }}"
-            source_event="${{ github.event.client_payload.source_event || 'issue_comment' }}"
-            source_action="${{ github.event.client_payload.source_action || '' }}"
-            dispatch_actor="${{ github.actor }}"
-            comment_event_auth="${{ github.event.client_payload.comment_event_auth || '' }}"
-            comment_updated_at="${{ github.event.client_payload.comment_updated_at || '' }}"
-            comment_body_sha256="${{ github.event.client_payload.comment_body_sha256 || '' }}"
-            force_reprocess="${{ github.event.client_payload.force_reprocess || 'false' }}"
-            attempt_id="${{ github.event.client_payload.attempt_id || '' }}"
-          else
-            status_comment_id=""
-            source_delivery_id=""
-            source_event=""
-            source_action=""
-            dispatch_actor=""
-            comment_event_auth=""
-            comment_updated_at=""
-            comment_body_sha256=""
-          fi
-          if [ "$force_reprocess" = "true" ] && [ -z "$attempt_id" ]; then
-            attempt_id="forced-replay-${GITHUB_RUN_ID}"
-          fi
-          if [ "$force_reprocess" != "true" ] && [ -n "$attempt_id" ]; then
-            echo "attempt_id requires force_reprocess=true" >&2
-            exit 1
-          fi
-
-          args=(
-            --write-report
-            --repo "$target_repo"
-            --lookback-minutes "$lookback_minutes"
-            --max-comments "$max_comments"
-            --runner "$runner"
-            --execution-runner "$execution_runner"
-            --wait-for-capacity
-          )
-          if [ -n "$target_branch" ]; then
-            args+=(--target-branch "$target_branch")
-          fi
-          if [ -n "$since" ]; then
-            args+=(--since "$since")
-          fi
-          if [ -n "$item_numbers" ]; then
-            args+=(--item-numbers "$item_numbers")
-          fi
-          if [ -n "$comment_ids" ]; then
-            args+=(--comment-ids "$comment_ids")
-          fi
-          if [ -n "$status_comment_id" ]; then
-            args+=(--status-comment-id "$status_comment_id")
-          fi
-          if [ -n "$source_delivery_id" ]; then
-            args+=(--source-delivery-id "$source_delivery_id")
-          fi
-          if [ -n "$source_event" ]; then
-            args+=(--source-event "$source_event")
-          fi
-          if [ -n "$source_action" ]; then
-            args+=(--source-action "$source_action")
-          fi
-          if [ -n "$dispatch_actor" ]; then
-            args+=(--dispatch-actor "$dispatch_actor")
-          fi
-          if [ -n "$comment_event_auth" ]; then
-            args+=(--comment-event-auth "$comment_event_auth")
-          fi
-          if [ -n "$comment_updated_at" ]; then
-            args+=(--comment-updated-at "$comment_updated_at")
-          fi
-          if [ -n "$comment_body_sha256" ]; then
-            args+=(--comment-body-sha256 "$comment_body_sha256")
-          fi
-          if [ "$force_reprocess" = "true" ]; then
-            args+=(--force-reprocess)
-            args+=(--attempt-id "$attempt_id")
-          fi
-          args+=(--execute)
-
-          echo "Retrying ${{ steps.waiting-repair-dispatches.outputs.count }} waiting repair dispatch(es) after publishing router state."
-          pnpm run repair:comment-router -- "${args[@]}"
-
-      - name: Commit comment router retry ledger
-        if: ${{ always() && steps.waiting-repair-dispatches.outputs.count != '' && steps.waiting-repair-dispatches.outputs.count != '0' }}
-        env:
-          CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
-          QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
-        run: |
-          # The initial publish copies every published path back into the state
-          # checkout, making it the baseline for retry-only job mutations.
-          jobs_changed=0
-          cursor_changed="$(jq -r '.routing_cursor_changed == true' results/comment-router-latest.json 2>/dev/null || true)"
-          if ! git diff --no-index --quiet -- "$CLAWSWEEPER_STATE_DIR/jobs" jobs; then
-            jobs_changed=1
-          fi
-          if [ "$jobs_changed" = "0" ] &&
-             [ "$cursor_changed" != "true" ] &&
-             jq -e '((.ledger_claimed // 0) + (.ledger_changed // 0)) == 0' results/comment-router-latest.json >/dev/null 2>&1; then
-            echo "No durable router retry state changed; skipping state publication."
-            exit 0
-          fi
-          publish_args=(
-            --message "chore: record ClawSweeper repair dispatch retry" \
-            --path results/comment-router.json \
-            --rebase-strategy theirs
-          )
-          # Retry receipts are append-only unless the retry changed a repair job.
-          if [ "$jobs_changed" = "1" ]; then
-            publish_args+=(--path jobs)
-          fi
           if [ "$cursor_changed" = "true" ]; then
             publish_args+=(--path "results/comment-router-cursors/${{ steps.target.outputs.target_slug }}.json")
           fi

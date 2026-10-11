@@ -664,108 +664,11 @@ test("Codex source setup normalizes OpenClaw casing and stays out of the OpenCla
   );
 });
 
-test("automatic OpenClaw bug dispatch uses one gate across direct and deferred publication", () => {
-  const workflow = YAML.parse(readText(".github/workflows/sweep.yml")) as {
-    jobs: Record<
-      string,
-      { steps: Array<{ name?: string; if?: string; run?: string; env?: Record<string, string> }> }
-    >;
-  };
-  for (const [jobName, stepName] of [
-    ["event-review-apply", "Dispatch exact high-confidence bug implementation"],
-    ["event-review-publish", "Dispatch deferred high-confidence bug implementation"],
-  ]) {
-    const step = workflow.jobs[jobName]?.steps.find((candidate) => candidate.name === stepName);
-    assert.ok(step, `${jobName}: ${stepName}`);
-    assert.match(step.if ?? "", /vars\.CLAWSWEEPER_AUTO_IMPLEMENT_ISSUES == '1'/);
-    assert.doesNotMatch(step.if ?? "", /CLAWSWEEPER_AUTO_IMPLEMENT_REPRO_BUGS/);
-    assert.match(step.run ?? "", /dispatch-issue-implementation-candidates\.mjs/);
-    assert.equal(
-      step.env?.MAX_DISPATCH,
-      "${{ vars.CLAWSWEEPER_AUTO_IMPLEMENT_MAX_DISPATCH_PER_SWEEP || '' }}",
-    );
+test("review workflows do not dispatch automatic issue implementation", () => {
+  for (const file of ["sweep.yml", "review-plan.yml", "exact-review-batch-publish.yml"]) {
+    const source = readText(`.github/workflows/${file}`);
+    assert.doesNotMatch(source, /dispatch-issue-implementation|CLAWSWEEPER_AUTO_IMPLEMENT/, file);
   }
-});
-
-test("issue implementation dispatches omit the deleted model input", () => {
-  const dispatches = ["sweep.yml", "review-plan.yml"].flatMap((file) => {
-    const workflow = YAML.parse(readText(`.github/workflows/${file}`)) as {
-      jobs: Record<string, { steps?: Array<{ name?: string; run?: string }> }>;
-    };
-    return Object.entries(workflow.jobs).flatMap(([jobName, job]) =>
-      (job.steps ?? [])
-        .filter((step) => step.run?.includes("dispatch-issue-implementation-candidates.mjs"))
-        .map((step) => ({ jobName: `${file}:${jobName}`, step })),
-    );
-  });
-
-  assert.ok(dispatches.length > 0);
-  for (const { jobName, step } of dispatches) {
-    assert.doesNotMatch(step.run ?? "", /-f\s+model=/, `${jobName}: ${step.name}`);
-  }
-});
-
-test("every automatic issue dispatcher receives the lane health floor override", () => {
-  const dispatches = [
-    ".github/workflows/sweep.yml",
-    ".github/workflows/review-plan.yml",
-    ".github/workflows/exact-review-batch-publish.yml",
-    ".github/workflows/repair-issue-implementation-backfill.yml",
-  ].flatMap((file) => {
-    const workflow = YAML.parse(readText(file)) as {
-      jobs: Record<
-        string,
-        { steps?: Array<{ name?: string; run?: string; env?: Record<string, string> }> }
-      >;
-    };
-    return Object.values(workflow.jobs).flatMap((job) =>
-      (job.steps ?? [])
-        .filter((step) => step.run?.includes("dispatch-issue-implementation-candidates.mjs"))
-        .map((step) => ({ file, step })),
-    );
-  });
-
-  assert.equal(dispatches.length, 5);
-  for (const { file, step } of dispatches) {
-    assert.equal(
-      step.env?.MIN_SUCCESS_PERCENT,
-      "${{ vars.CLAWSWEEPER_AUTO_IMPLEMENT_MIN_SUCCESS_PERCENT || '' }}",
-      `${file}: ${step.name}`,
-    );
-  }
-});
-
-test("automatic bug backfill runs independently of queue-fed scheduled sweeps", () => {
-  const workflow = YAML.parse(
-    readText(".github/workflows/repair-issue-implementation-backfill.yml"),
-  ) as {
-    on: { schedule: Array<{ cron: string }>; workflow_dispatch: unknown };
-    permissions: Record<string, string>;
-    jobs: Record<
-      string,
-      {
-        if: string;
-        steps: Array<{ uses?: string; name?: string; run?: string; with?: Record<string, string> }>;
-      }
-    >;
-  };
-  assert.deepEqual(workflow.on.schedule, [{ cron: "7/10 * * * *" }]);
-  assert.ok(Object.hasOwn(workflow.on, "workflow_dispatch"));
-  assert.deepEqual(workflow.permissions, { actions: "write", contents: "read" });
-  assert.match(workflow.jobs.backfill!.if, /CLAWSWEEPER_AUTO_IMPLEMENT_ISSUES == '1'/);
-  const checkout = workflow.jobs.backfill!.steps.find((step) =>
-    step.uses?.startsWith("actions/checkout@"),
-  );
-  assert.equal(checkout?.uses, "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1");
-  assert.equal(checkout?.with?.["persist-credentials"], false);
-  const state = workflow.jobs.backfill!.steps.find((step) => step.uses?.endsWith("/setup-state"));
-  assert.equal(state?.with?.["coordinator-class"], "cluster_intake");
-  assert.equal(state?.with?.["records-repo-slugs"], "openclaw-openclaw");
-  const dispatch = workflow.jobs.backfill!.steps.find(
-    (step) => step.name === "Dispatch bounded high-confidence bug candidates",
-  );
-  assert.match(dispatch?.run ?? "", /dispatch-issue-implementation-candidates\.mjs/);
-  assert.match(dispatch?.run ?? "", /--report-dir records\/openclaw-openclaw\/items/);
 });
 
 test("review and apply primary boundaries ignore ledger-only failures", () => {
@@ -1325,10 +1228,6 @@ test("exact event review publishes directly with a queue-bounded canonical fallb
   const prepareDirect = step(reviewer, "Deliver GitHub effects and prepare direct state mutation");
   const postDirect = step(reviewer, "Post direct exact review publication result");
   const finalizeDirect = step(reviewer, "Finalize direct exact review lifecycle");
-  const directImplementationDispatch = step(
-    reviewer,
-    "Dispatch exact high-confidence bug implementation",
-  );
   const upload = step(reviewer, "Upload exact review artifact bundle");
   const failureDiagnostics = step(reviewer, "Upload exact review failure diagnostics");
   const queuePublication = step(reviewer, "Queue durable exact review publication");
@@ -1480,18 +1379,7 @@ test("exact event review publishes directly with a queue-bounded canonical fallb
     (finalizeDirect.run ?? "").indexOf("lifecycle/terminal-disposition"),
   );
   assert.ok(directLifecycleHandoff >= 0);
-  assert.match(
-    directImplementationDispatch.run ?? "",
-    /dispatch-issue-implementation-candidates\.mjs/,
-  );
-  assert.match(
-    directImplementationDispatch.if ?? "",
-    /finalize-direct-exact-review-lifecycle\.outcome == 'success'/,
-  );
-  assert.ok(
-    reviewer.steps.indexOf(finalizeDirect) < reviewer.steps.indexOf(directImplementationDispatch),
-  );
-  assert.ok(reviewer.steps.indexOf(directImplementationDispatch) < reviewer.steps.indexOf(upload));
+  assert.ok(reviewer.steps.indexOf(finalizeDirect) < reviewer.steps.indexOf(upload));
   assert.doesNotMatch(finalizeDirect.run ?? "", /lifecycle\/command-ack\/attempt/);
   assert.doesNotMatch(finalizeDirect.run ?? "", /repair:update-command-status/);
   assert.match(reviewer.if ?? "", /source_action != 'exact_review_command_acknowledgement'/);
@@ -2253,12 +2141,6 @@ test("exact event publication derives lifecycle receipt and final command acknow
     /lifecycle router-receipt \\\n\s*--outcome not_required --receipt-id-prefix router-not-required\)/,
   );
   assert.match(noRouter.run ?? "", /internal\/exact-review\/lifecycle\/router-receipt/);
-
-  const deferredDispatch = step("Dispatch deferred high-confidence bug implementation");
-  assert.match(deferredDispatch.run ?? "", /dispatch-issue-implementation-candidates\.mjs/);
-  assert.ok(steps.indexOf(canonical) < steps.indexOf(deferredDispatch));
-  assert.ok(steps.indexOf(router) < steps.indexOf(deferredDispatch));
-  assert.ok(steps.indexOf(noRouter) < steps.indexOf(deferredDispatch));
 
   // The publication completion body is behavior-tested in
   // test/repair/exact-review-queue-request.test.ts.

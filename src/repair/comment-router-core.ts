@@ -1207,6 +1207,13 @@ export function renderResponse(command: LooseRecord, dispatched: LooseRecord) {
     commandResponseMarker(markerId, command.intent, command.target?.head_sha ?? "na"),
     commandReplyBadge(command, dispatched),
   ].join("\n");
+  if (command.retired) {
+    return [
+      commandStatusMarkerForCommand(command),
+      commandResponseMarker(markerId, command.intent, command.target?.head_sha ?? "na"),
+      `\`@clawsweeper ${String(command.intent).replaceAll("_", "-")}\` is retired; ClawSweeper now only reviews.`,
+    ].join("\n");
+  }
   if (command.intent === "request_proof" && command.proof_admission) {
     return [marker, renderProofCommandAdmission(command.proof_admission)].join("\n");
   }
@@ -1215,9 +1222,7 @@ export function renderResponse(command: LooseRecord, dispatched: LooseRecord) {
       marker,
       "ClawSweeper is here and listening for maintainer commands.",
       "",
-      "Supported commands: `/review`, `/clawsweeper status`, `/clawsweeper re-review`, `/clawsweeper implement`, `@clawsweeper fix`, `/clawsweeper build`, `/clawsweeper ask <question>`, `/clawsweeper visualize [lens]`, `/clawsweeper fix ci`, `/clawsweeper address review`, `/clawsweeper rebase`, `/clawsweeper autofix`, `/clawsweeper automerge`, `/clawsweeper approve`, `/autoclose <reason>`, `/clawsweeper explain`, `/clawsweeper stop`.",
-      "",
-      `I only act for maintainers, or for trusted ClawSweeper feedback on a ClawSweeper PR or PR opted into \`${AUTOFIX_LABEL}\` or \`${AUTOMERGE_LABEL}\`.`,
+      "Supported commands: `@clawsweeper review`, `@clawsweeper re-review`, `@clawsweeper explain`, `@clawsweeper stop`.",
     ].join("\n");
   }
   if (["status", "explain"].includes(command.intent)) {

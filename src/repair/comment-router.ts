@@ -48,10 +48,10 @@ import {
   issueImplementationOverrideBlockerClass,
   pendingRepairLoopOptIns,
   maintainerModeCommandCanResumePausedMode,
+  repositoryRepairCommandBlockReason,
   maintainerAutomergeOptInApprovesNeedsHuman as maintainerAutomergeOptInApprovesNeedsHumanReason,
   latestRepairLoopResumeTime,
   pausedModeStatusBlocksReplay,
-  repositoryRepairCommandBlockReason,
   reviewOnlyRepairLoopCompletionLabels,
   reviewOnlyRepairLoopMergeStateBlockReason,
   reviewOnlyRepairLoopMissingChecks,
@@ -182,6 +182,9 @@ import {
 import { postExactReviewCommandIntakeSync } from "./exact-review-command-queue.js";
 
 const automergeMetricWrites: Promise<boolean>[] = [];
+
+// Admission stops before the retired implementation is removed in the next change.
+const REPAIR_AUTOMATION_RETIRED = true;
 
 const args = parseArgs(process.argv.slice(2));
 const config = readCommentRouterConfig(args);
@@ -512,7 +515,7 @@ function reviewFollowupFromCommentBody(body: JsonValue): string | null {
 
 function routedCommandForComment(comment: JsonValue): LooseRecord | null {
   const parsed: LooseRecord = parseRoutedCommentCommand(comment, { trustedAuthors: trustedBots });
-  if (!parsed) return null;
+  if (!parsed || parsed.trusted_bot) return null;
   const issueNumber = issueNumberFromUrl(comment.issue_url);
   const commandIdentity = {
     idempotency_key: idempotencyKey(parsed, issueNumber, comment.id, comment.updated_at),
@@ -1022,6 +1025,14 @@ function classifyCommand(command: LooseRecord): JsonValue {
       ...next,
       status: "skipped",
       reason: "matching ClawSweeper response comment already exists",
+    };
+  }
+  if (!["re_review", "explain", "stop", "help"].includes(String(command.intent))) {
+    return {
+      ...next,
+      status: "ready",
+      retired: true,
+      actions: [{ action: "comment", status: execute ? "pending" : "planned" }],
     };
   }
 
@@ -2544,6 +2555,7 @@ function executeCommandWithReceipt(command: LooseRecord) {
 }
 
 function queueAutomergeProductMetrics(command: LooseRecord) {
+  if (command.retired) return;
   const activation = latestAutomergeActivation(command);
   if (!activation) return;
   const events = [];
@@ -2845,6 +2857,7 @@ function applyDescriptionNoteActions(command: LooseRecord) {
 function workerCapacityRequests(commands: LooseRecord[]) {
   const counts = new Map<string, { count: number; automergeLane: boolean }>();
   for (const command of commands) {
+    if (command.retired) continue;
     if (!REPAIR_INTENTS.has(command.intent) && !MERGE_INTENTS.has(command.intent)) continue;
     const automergeLane = usesAutomergeRepairLane(command);
     const key = automergeLane ? "automerge" : "default";
@@ -4624,6 +4637,7 @@ function repairLoopIssueComments(number: number): JsonValue[] {
 }
 
 function listRepairLoopSweepCommands(existingCommands: LooseRecord[]) {
+  if (REPAIR_AUTOMATION_RETIRED) return [];
   if (itemNumbers.size > 0 || commentIds.size > 0) return [];
   const commands: LooseRecord[] = [];
   const modes = [
@@ -4898,13 +4912,14 @@ function postComment(command: LooseRecord, body: string) {
   const existing = existingStatus ?? precreated;
   const ackMarker = existing ? commandAckMarkerFromBody(existing.body) : null;
   const responseBody = ackMarker && !body.includes(ackMarker) ? `${ackMarker}\n${body}` : body;
-  const nextBody = usesSharedAutomergeStatus(command)
-    ? mergeAutomergeTimelineSection({
-        body: responseBody,
-        existingBody: existing?.body,
-        events: automergeTimelineEvents(command, body),
-      })
-    : responseBody;
+  const nextBody =
+    !command.retired && usesSharedAutomergeStatus(command)
+      ? mergeAutomergeTimelineSection({
+          body: responseBody,
+          existingBody: existing?.body,
+          events: automergeTimelineEvents(command, body),
+        })
+      : responseBody;
   const payloadPath = writePayload(repoRoot(), `comment-router-${command.comment_id}`, {
     body: nextBody,
   });

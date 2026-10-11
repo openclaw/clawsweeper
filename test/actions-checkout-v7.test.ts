@@ -48,10 +48,6 @@ test("trusted-event workflows explicitly checkout the default branch", () => {
   const expectedRefs: Record<string, string> = {
     ".github/workflows/dashboard-ci.yml": "${{ github.event.repository.default_branch }}",
     ".github/workflows/github-activity.yml": "${{ github.event.repository.default_branch }}",
-    // workflow_run events stay pinned to trusted default-branch code; the
-    // manual publication lane runs its own write-gated dispatch ref.
-    ".github/workflows/repair-publish-results.yml":
-      "${{ github.event_name == 'workflow_dispatch' && github.ref_name || github.event.repository.default_branch }}",
   };
   for (const [path, expectedRef] of Object.entries(expectedRefs)) {
     const workflow = parse(readFileSync(path, "utf8")) as WorkflowDocument;

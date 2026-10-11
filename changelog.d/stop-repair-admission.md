@@ -1,0 +1,1 @@
+- Stop issue implementation, cluster repair, autofix, automerge and self-heal admission; retired commands receive a short reply while review, re-review, explain, stop and apply remain available.

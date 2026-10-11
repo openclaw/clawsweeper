@@ -14,51 +14,6 @@ import {
 } from "../../dist/repair/comment-router/admission.js";
 import { renderResponse } from "../../dist/repair/comment-router-core.js";
 
-test("compiled proof command preserves inconclusive status and replay protection", async () => {
-  const { stdout } = await promisify(execFile)(
-    process.execPath,
-    ["scripts/e2e/proof-command-loopback.mjs"],
-    { timeout: 60000 },
-  );
-  const receipt = JSON.parse(stdout);
-  assert.equal(receipt.ok, true);
-  assert.deepEqual(receipt.observations, {
-    exact_head_inconclusive: true,
-    replay_suppressed: true,
-    stale_head_rejected: true,
-    cross_pr_identity_distinct: true,
-    nonmaintainer_denied: true,
-    issue_rejected: true,
-    untrusted_extra_text_rejected: true,
-    disk_ledger_recorded: true,
-    no_execution_or_promotion: true,
-  });
-});
-
-test("compiled router denies stale issue implementation authority before final effects", async () => {
-  const { stdout } = await promisify(execFile)(
-    process.execPath,
-    ["scripts/e2e/proof-command-loopback.mjs", "--authority-final-effect"],
-    { timeout: 60000 },
-  );
-  const receipt = JSON.parse(stdout);
-  assert.equal(receipt.ok, true);
-  assert.deepEqual(
-    receipt.receipts.map((entry: Record<string, unknown>) => ({
-      scenario: entry.scenario,
-      status: entry.routerStatus,
-      jobs: entry.implementationJobsCreated,
-      writes: entry.outboundWrites,
-    })),
-    [
-      { scenario: "current-writer", status: "waiting", jobs: 1, writes: 1 },
-      { scenario: "read-only-member", status: "ignored", jobs: 0, writes: 0 },
-      { scenario: "revoked-member", status: "ignored", jobs: 0, writes: 0 },
-      { scenario: "nonmember", status: "ignored", jobs: 0, writes: 0 },
-    ],
-  );
-});
-
 test("compiled Enterprise router keeps re-review and rejects repair before final effects", async () => {
   const { stdout } = await promisify(execFile)(
     process.execPath,
@@ -103,23 +58,9 @@ test("re-review recovery leaves queue-owned terminal acknowledgements intact", a
   const receipt = JSON.parse(stdout);
   assert.equal(receipt.ok, true);
   assert.equal(receipt.baseline, false);
-  assert.equal(receipt.receipts.length, 10);
+  assert.equal(receipt.receipts.length, 6);
   assert.equal(receipt.intakeFailurePropagated, true);
   assert.equal(receipt.diskLedgerRecorded, true);
-});
-
-test("maintainer proof CLI routes selected scenarios and current head to one inline review", async () => {
-  const { stdout } = await promisify(execFile)(
-    process.execPath,
-    ["scripts/e2e/proof-command-loopback.mjs", "--inline"],
-    { timeout: 60000 },
-  );
-  assert.deepEqual(JSON.parse(stdout), {
-    ok: true,
-    inlineReviews: 5,
-    exactHead: head,
-    legacyDispatches: 0,
-  });
 });
 
 test("manual proof selection is a closed execution allowlist rather than prompt guidance", () => {
