@@ -1178,7 +1178,14 @@ test("parsed finite terminal expectations wait for a summary after thirty second
         },
         "liveProofPlan",
       );
-      const plan = reportLiveProofPlan(`## Live Proof
+      const plan = reportLiveProofPlan(
+        withReviewRecord(
+          `---
+repository: example/repo
+number: 42
+type: pull_request
+---
+## Live Proof
 
 Status: ${parsed.status}
 Surface: ${parsed.surface}
@@ -1191,7 +1198,10 @@ Entry: ${parsed.entry}
 Steps:
 
 ${parsed.steps.map((step) => `- ${JSON.stringify(step)}`).join("\n")}
-`);
+`,
+          { decision: "keep_open", closeReason: "none" },
+        ),
+      );
       assert.deepEqual(plan, parsed);
       const calls: string[] = [];
       const fixtureRunner = terminalLifecycleRunner(calls, {
@@ -2243,9 +2253,10 @@ test("terminal entry executes once and publishes only its final visible viewport
   assert.match(verification.output, /FINAL_HELP_RESULT/);
 
   const fixture = attachmentFixture();
-  const report = readFileSync(fixture.recordPath, "utf8").replace(
-    /## Live Proof[\s\S]*?\n## Work Candidate/,
-    `## Live Proof
+  const report = withReviewRecord(
+    readFileSync(fixture.recordPath, "utf8").replace(
+      /## Live Proof[\s\S]*?\n## Work Candidate/,
+      `## Live Proof
 
 Status: recommended
 
@@ -2269,6 +2280,11 @@ ${LIVE_VERIFICATION_MARKER}
 Result: ${encodeLiveVerificationReportPayload(verification)}
 
 ## Work Candidate`,
+    ),
+    {
+      decision: "keep_open",
+      closeReason: "none",
+    },
   );
   const comment = renderReviewCommentFromReport(report, "none");
   const publicOutput = comment.match(/```text\n([\s\S]*?)\n```/)?.[1];
@@ -3385,7 +3401,13 @@ test("live-proof attach rejects a receipt for an older same-head plan", async ()
   const fixture = attachmentFixture();
   writeFileSync(
     fixture.recordPath,
-    readFileSync(fixture.recordPath, "utf8").replace("Entry: /settings", "Entry: /new-settings"),
+    withReviewRecord(
+      readFileSync(fixture.recordPath, "utf8").replace("Entry: /settings", "Entry: /new-settings"),
+      {
+        decision: "keep_open",
+        closeReason: "none",
+      },
+    ),
     "utf8",
   );
   const commands: string[] = [];
@@ -4143,10 +4165,10 @@ test("live-proof maintenance syncs a comment without the detached recording", ()
   assert.doesNotMatch(publishedBody, /clawsweeper-live-proof-recording|Live proof recording/);
 });
 
-test("detached comment sync reads the typed close reason and fails closed on corrupt records", () => {
+test("detached comment sync reads the typed close reason and fails closed on missing or corrupt records", () => {
   const fixture = attachmentFixture();
-  const legacy = readFileSync(fixture.recordPath, "utf8");
-  const typed = withReviewRecord(legacy, {
+  const initial = readFileSync(fixture.recordPath, "utf8");
+  const typed = withReviewRecord(initial, {
     decision: "close",
     closeReason: "implemented_on_main",
   });
@@ -4172,6 +4194,11 @@ test("detached comment sync reads the typed close reason and fails closed on cor
   assert.deepEqual(reasons, ["none", "implemented_on_main"]);
   writeFileSync(fixture.recordPath, typed.replace(/^review_record: \{/m, "review_record: {broken"));
   assert.throws(() => syncDetachedLiveProofComment(options, dependencies), ReviewRecordFormatError);
+  assert.deepEqual(reasons, ["none", "implemented_on_main"]);
+  const missing = initial.replace(/^review_record:.*\n/m, "");
+  writeFileSync(fixture.recordPath, missing);
+  assert.throws(() => syncDetachedLiveProofComment(options, dependencies), ReviewRecordFormatError);
+  assert.equal(readFileSync(fixture.recordPath, "utf8"), missing);
   assert.deepEqual(reasons, ["none", "implemented_on_main"]);
 });
 
@@ -4206,7 +4233,13 @@ test("live-proof comment sync rejects a receipt for an older same-head plan", ()
   const fixture = recordedAttachmentFixture();
   writeFileSync(
     fixture.recordPath,
-    readFileSync(fixture.recordPath, "utf8").replace("Entry: /settings", "Entry: /new-settings"),
+    withReviewRecord(
+      readFileSync(fixture.recordPath, "utf8").replace("Entry: /settings", "Entry: /new-settings"),
+      {
+        decision: "keep_open",
+        closeReason: "none",
+      },
+    ),
     "utf8",
   );
 
@@ -4329,7 +4362,10 @@ test("live-proof detach rejects record identity mismatches without requiring a m
   );
   writeFileSync(
     fixture.recordPath,
-    readFileSync(fixture.recordPath, "utf8").replace("type: pull_request", "type: issue"),
+    withReviewRecord(
+      readFileSync(fixture.recordPath, "utf8").replace("type: pull_request", "type: issue"),
+      { decision: "keep_open", closeReason: "none" },
+    ),
     "utf8",
   );
   assert.throws(
@@ -4538,7 +4574,8 @@ function attachmentFixture() {
   writeFileSync(join(bundleDir, "poster.jpg"), "jpg", "utf8");
   writeFileSync(
     recordPath,
-    `---
+    withReviewRecord(
+      `---
 number: 42
 repository: example/repo
 type: pull_request
@@ -4570,6 +4607,11 @@ Steps:
 
 Candidate: none
 `,
+      {
+        decision: "keep_open",
+        closeReason: "none",
+      },
+    ),
     "utf8",
   );
   return { bundleDir, recordPath, logs };

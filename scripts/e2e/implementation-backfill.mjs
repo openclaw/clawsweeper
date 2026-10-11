@@ -4,6 +4,7 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import YAML from "yaml";
+import { withReviewRecord } from "../../test/helpers.ts";
 
 const source = path.resolve(".");
 fs.mkdirSync(path.join(source, ".artifacts"), { recursive: true });
@@ -43,6 +44,7 @@ for (const [repo, kind] of [
   const reports = path.join(root, "records", repo.replace("/", "-"), "items");
   fs.mkdirSync(reports, { recursive: true });
   for (const number of [41, 42, 43]) {
+    const autoImplementationCandidate = kind === "vision_fit" ? "vision_fit" : "none";
     const fields = {
       number,
       repository: repo,
@@ -63,7 +65,7 @@ for (const [repo, kind] of [
       requires_new_feature: "true",
       requires_new_config_option: "false",
       requires_product_decision: "false",
-      auto_implementation_candidate: kind,
+      auto_implementation_candidate: autoImplementationCandidate,
       vision_fit: "aligned",
       vision_fit_evidence: '["Synthetic narrow product direction"]',
       implementation_complexity: "small",
@@ -71,11 +73,32 @@ for (const [repo, kind] of [
     };
     fs.writeFileSync(
       path.join(reports, `${number}.md`),
-      `---\n${Object.entries(fields)
-        .map(([key, value]) => `${key}: ${value}`)
-        .join(
-          "\n",
-        )}\n---\n\n## Security Review\n\nStatus: not_applicable\n\nSummary: No patch security review is needed for this issue.\n\n## Repair Work Prompt\n\nImplement the narrow reviewed behavior.\n`,
+      withReviewRecord(
+        `---\n${Object.entries(fields)
+          .map(([key, value]) => `${key}: ${value}`)
+          .join(
+            "\n",
+          )}\n---\n\n## Security Review\n\nStatus: not_applicable\n\nSummary: No patch security review is needed for this issue.\n\n## Repair Work Prompt\n\nImplement the narrow reviewed behavior.\n`,
+        {
+          decision: "keep_open",
+          closeReason: "none",
+          workCandidate: "queue_fix_pr",
+          workConfidence: "high",
+          workValidation: ["pnpm test"],
+          workLikelyFiles: ["src/example.ts"],
+          workClusterRefs: [`#${number}`],
+          workPrompt: "Implement the narrow reviewed behavior.",
+          itemCategory: "feature",
+          reproductionStatus: "not_applicable",
+          requiresNewFeature: true,
+          requiresNewConfigOption: false,
+          requiresProductDecision: false,
+          autoImplementationCandidate,
+          visionFit: "aligned",
+          visionFitEvidence: ["Synthetic narrow product direction"],
+          implementationComplexity: "small",
+        },
+      ),
     );
   }
   fs.writeFileSync(capture, "");

@@ -52,6 +52,7 @@ import {
   realBehaviorProofReportSection,
   reportFrontMatter,
   reviewPrompt,
+  withReviewRecord,
 } from "./helpers.ts";
 
 const noActivity = { comments: [], timeline: [] };
@@ -158,15 +159,16 @@ for (const proofStatus of ["missing", "not_applicable"] as const) {
       [[], "Working on the remaining finding", true, "actively_grinding"],
     ] as const) {
       const labels = [...oldStatuses, ...extraLabels];
-      const report = `${reportFrontMatter({
-        type: "pull_request",
-        number: "74466",
-        review_status: "failed",
-        author: "contributor",
-        author_association: "CONTRIBUTOR",
-        reviewed_at: "2026-08-30T12:00:00Z",
-        labels: JSON.stringify(labels),
-      })}
+      const report = withReviewRecord(
+        `${reportFrontMatter({
+          type: "pull_request",
+          number: "74466",
+          review_status: "failed",
+          author: "contributor",
+          author_association: "CONTRIBUTOR",
+          reviewed_at: "2026-08-30T12:00:00Z",
+          labels: JSON.stringify(labels),
+        })}
 ${realBehaviorProofReportSection({
   status: proofStatus,
   evidenceKind: proofStatus === "missing" ? "none" : "not_applicable",
@@ -180,7 +182,21 @@ Overall correctness: ${incorrect ? "patch is incorrect" : "patch is correct"}
 Full review comments:
 
 - none
-`;
+`,
+        {
+          decision: "keep_open",
+          closeReason: "none",
+          triagePriority: "none",
+          labelJustifications: [],
+          overallCorrectness: incorrect ? "patch is incorrect" : "patch is correct",
+          realBehaviorProof: {
+            status: proofStatus,
+            evidenceKind: proofStatus === "missing" ? "none" : "not_applicable",
+            needsContributorAction: proofStatus === "missing",
+            summary: "Retained proof assessment from an incomplete review.",
+          },
+        },
+      );
       const context = {
         comments: comment
           ? [{ author: "contributor", body: comment, createdAt: "2026-08-30T13:00:00Z" }]
@@ -234,16 +250,26 @@ test("report-based status selection follows the model proof assessment for exter
       ],
       [{ status: "missing", evidenceKind: "none", needsContributorAction: true }, true],
     ] as const) {
-      const report = `${reportFrontMatter({
-        type: "pull_request",
-        review_status: "complete",
-        author: "contributor",
-        author_association: "CONTRIBUTOR",
-        pull_files: JSON.stringify([path]),
-        pull_files_truncated: false,
-        reviewed_at: "2026-08-30T12:00:00Z",
-      })}
-${realBehaviorProofReportSection({ ...proof, summary: "Recorded reviewer assessment." })}`;
+      const report = withReviewRecord(
+        `${reportFrontMatter({
+          type: "pull_request",
+          number: "74467",
+          review_status: "complete",
+          author: "contributor",
+          author_association: "CONTRIBUTOR",
+          pull_files: JSON.stringify([path]),
+          pull_files_truncated: false,
+          reviewed_at: "2026-08-30T12:00:00Z",
+        })}
+${realBehaviorProofReportSection({ ...proof, summary: "Recorded reviewer assessment." })}`,
+        {
+          decision: "keep_open",
+          closeReason: "none",
+          triagePriority: "none",
+          labelJustifications: [],
+          realBehaviorProof: { ...proof, summary: "Recorded reviewer assessment." },
+        },
+      );
       const statusKind = prStatusLabelKindFromReport(report, noActivity, ["clawsweeper:automerge"]);
       if (needsProof) assert.equal(statusKind, "needs_proof", path);
       else assert.notEqual(statusKind, "needs_proof", path);

@@ -4,16 +4,37 @@ import test from "node:test";
 import { parseDecision, reviewAutomationMarkersFromReport } from "../dist/clawsweeper.js";
 import {
   compatibilityField,
-  compatibilityReport,
+  compatibilityReport as legacyCompatibilityReport,
   generatedCompatibilityReport,
   neutralCompatibility,
 } from "./compatibility-proof-fixture.ts";
-import { closeDecision } from "./helpers.ts";
+import { closeDecision, reviewFinding, withReviewRecord } from "./helpers.ts";
 import {
   buildDecisionPacketFromReport,
   emptyMaintainerDecision,
 } from "../dist/decision-packets.js";
 
+function compatibilityReport(
+  options: Parameters<typeof legacyCompatibilityReport>[0] = {},
+  decision: Record<string, unknown> = {},
+): string {
+  const metadata = options.metadata ?? {};
+  return withReviewRecord(legacyCompatibilityReport(options), {
+    decision: "keep_open",
+    closeReason: "none",
+    summary: "Synthetic stored-data compatibility assessment.",
+    overallCorrectness: "patch is correct",
+    nextStep: { kind: "none", text: "" },
+    realBehaviorProof: {
+      status: metadata.real_behavior_proof_status ?? "sufficient",
+      evidenceKind: "terminal",
+      needsContributorAction: metadata.real_behavior_proof_needs_contributor_action === "true",
+      summary: options.summary ?? "Existing database upgrade compatibility was verified.",
+      dataModelCompatibility: options.compatibility ?? "not_applicable",
+    },
+    ...decision,
+  });
+}
 test("accepted persistent-state design needs no landing sign-off but still needs compatibility proof", () => {
   // Faithful review facts from https://github.com/openclaw/openclaw/pull/166060.
   for (const compatibility of ["sufficient", "insufficient"] as const) {
@@ -80,11 +101,17 @@ function assertHold(report: string, held: boolean) {
   );
 }
 
-for (const compatibility of [undefined, "sufficient", "not_applicable", "invalid"]) {
+for (const compatibility of [undefined, "sufficient", "not_applicable"]) {
   test(`only the model's insufficient assessment holds merge: ${compatibility}`, () => {
     assertHold(compatibilityReport({ compatibility }), false);
   });
 }
+
+test("historical invalid compatibility reports require a fresh typed review", () => {
+  const report = legacyCompatibilityReport({ compatibility: "invalid" });
+  assert.throws(() => renderReviewCommentFromReport(report, "none"), /missing record/);
+  assert.throws(() => reviewAutomationMarkersFromReport(report), /missing record/);
+});
 
 for (const metadata of [
   { labels: '["clawsweeper:automerge","proof: override"]' },
@@ -114,9 +141,20 @@ for (const metadata of [
 }
 
 test("sufficient compatibility cannot clear unrelated findings", () => {
-  const report = compatibilityReport({ compatibility: "sufficient" }).replace(
-    "- none",
-    "- **[P2] Separate defect:** `src/runtime.ts:1-1`\n  - body: A distinct actionable defect remains.\n  - confidence: 0.9",
+  const report = compatibilityReport(
+    { compatibility: "sufficient" },
+    {
+      reviewFindings: [
+        reviewFinding({
+          title: "Separate defect",
+          body: "A distinct actionable defect remains.",
+          priority: 2,
+          file: "src/runtime.ts",
+          lineStart: 1,
+          lineEnd: 1,
+        }),
+      ],
+    },
   );
   assert.doesNotMatch(
     renderReviewCommentFromReport(report, "none"),

@@ -608,6 +608,7 @@ Render generated plan markdown from existing report fields.
     decision: frontmatter.decision,
     closeReason: frontmatter.close_reason ?? "none",
     confidence: frontmatter.confidence ?? "high",
+    triagePriority: frontmatter.triage_priority ?? "none",
     summary: "The dashboard has queue_fix_pr candidates but no generated coding plan.",
     workCandidate: frontmatter.work_candidate,
     workConfidence: frontmatter.work_confidence,

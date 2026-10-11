@@ -29,6 +29,7 @@ import {
   runApplyDecisionsForTest,
   tmpPrefix,
   withMockGh,
+  withReviewRecord,
   workPlanCandidateReport,
 } from "./helpers.ts";
 import { scheduledReviewSemanticSourceRevision } from "../dist/scheduled-review-noop.js";
@@ -3587,7 +3588,10 @@ test("scheduled all-item comment sync remains bounded to one cursor window", () 
   for (let number = 1; number <= 41; number += 1) {
     writeFileSync(
       join(records, `openclaw-openclaw-${number}.md`),
-      `---\nrepository: openclaw/openclaw\ntype: issue\nreview_status: complete\nitem_snapshot_hash: abc123\naction_taken: kept_open\n---\n`,
+      withReviewRecord(
+        `---\nnumber: ${number}\nrepository: openclaw/openclaw\ntype: issue\nreview_status: complete\nitem_snapshot_hash: abc123\naction_taken: kept_open\n---\n`,
+        { decision: "keep_open", closeReason: "none" },
+      ),
     );
   }
   try {
@@ -3631,7 +3635,10 @@ test("background and scheduled maintenance advance the same immediate all-item c
   for (let number = 1; number <= 41; number += 1) {
     writeFileSync(
       join(records, `openclaw-openclaw-${number}.md`),
-      `---\nrepository: openclaw/openclaw\ntype: issue\nreview_status: complete\nitem_snapshot_hash: abc123\naction_taken: kept_open\n---\n`,
+      withReviewRecord(
+        `---\nnumber: ${number}\nrepository: openclaw/openclaw\ntype: issue\nreview_status: complete\nitem_snapshot_hash: abc123\naction_taken: kept_open\n---\n`,
+        { decision: "keep_open", closeReason: "none" },
+      ),
     );
   }
   try {
@@ -3701,7 +3708,10 @@ test("uncursored default comment sync preserves the same cross-repository contin
       for (let number = 1; number <= 41; number += 1) {
         writeFileSync(
           join(records, `${targetSlug}-${number}.md`),
-          `---\nrepository: ${targetRepo}\ntype: pull_request\nreview_status: complete\nitem_snapshot_hash: abc123\naction_taken: kept_open\n---\n`,
+          withReviewRecord(
+            `---\nnumber: ${number}\nrepository: ${targetRepo}\ntype: pull_request\nreview_status: complete\nitem_snapshot_hash: abc123\naction_taken: kept_open\n---\n`,
+            { decision: "keep_open", closeReason: "none" },
+          ),
         );
       }
     }
@@ -3770,7 +3780,10 @@ test("custom mutation-policy comment sync retains its own cursor and continuatio
   for (let number = 1; number <= 41; number += 1) {
     writeFileSync(
       join(records, `openclaw-openclaw-${number}.md`),
-      `---\nrepository: openclaw/openclaw\ntype: pull_request\nreview_status: complete\nitem_snapshot_hash: abc123\naction_taken: kept_open\n---\n`,
+      withReviewRecord(
+        `---\nnumber: ${number}\nrepository: openclaw/openclaw\ntype: pull_request\nreview_status: complete\nitem_snapshot_hash: abc123\naction_taken: kept_open\n---\n`,
+        { decision: "keep_open", closeReason: "none" },
+      ),
     );
   }
   try {
@@ -3822,12 +3835,18 @@ test("urgent records do not falsely wrap a customized comment-sync cursor", () =
   writeFileSync(join(cursors, "openclaw-clawhub.json"), '{"next_after_number":20}\n');
   writeFileSync(
     join(records, "5.md"),
-    `---\nrepository: openclaw/clawhub\ntype: issue\nreview_status: complete\nlocal_checkout_access: verified\nlocal_checkout_access_source: runner_preflight_v1\nitem_snapshot_hash: abc123\naction_taken: kept_open\nreviewed_at: ${now}\n---\n`,
+    withReviewRecord(
+      `---\nnumber: 5\nrepository: openclaw/clawhub\ntype: issue\nreview_status: complete\nlocal_checkout_access: verified\nlocal_checkout_access_source: runner_preflight_v1\nitem_snapshot_hash: abc123\naction_taken: kept_open\nreviewed_at: ${now}\n---\n`,
+      { decision: "keep_open", closeReason: "none" },
+    ),
   );
   for (let number = 21; number <= 61; number += 1) {
     writeFileSync(
       join(records, `${number}.md`),
-      `---\nrepository: openclaw/clawhub\ntype: pull_request\nreview_status: complete\nitem_snapshot_hash: abc123\naction_taken: kept_open\nreviewed_at: 2025-01-01T00:00:00Z\nreview_comment_id: 9000\nreview_comment_url: https://github.com/openclaw/clawhub/pull/${number}#issuecomment-9000\nreview_comment_sha256: ${"a".repeat(64)}\nreview_comment_synced_at: ${now}\n---\n`,
+      withReviewRecord(
+        `---\nnumber: ${number}\nrepository: openclaw/clawhub\ntype: pull_request\nreview_status: complete\nitem_snapshot_hash: abc123\naction_taken: kept_open\nreviewed_at: 2025-01-01T00:00:00Z\nreview_comment_id: 9000\nreview_comment_url: https://github.com/openclaw/clawhub/pull/${number}#issuecomment-9000\nreview_comment_sha256: ${"a".repeat(64)}\nreview_comment_synced_at: ${now}\n---\n`,
+        { decision: "keep_open", closeReason: "none" },
+      ),
     );
   }
   try {
@@ -3872,7 +3891,10 @@ test("uncursored synchronization continues repositories without scheduled mainte
   for (let number = 1; number <= 41; number += 1) {
     writeFileSync(
       join(records, `openclaw-clawhub-${number}.md`),
-      `---\nrepository: openclaw/clawhub\ntype: pull_request\nreview_status: complete\nitem_snapshot_hash: abc123\naction_taken: kept_open\n---\n`,
+      withReviewRecord(
+        `---\nnumber: ${number}\nrepository: openclaw/clawhub\ntype: pull_request\nreview_status: complete\nitem_snapshot_hash: abc123\naction_taken: kept_open\n---\n`,
+        { decision: "keep_open", closeReason: "none" },
+      ),
     );
   }
   try {
@@ -3910,7 +3932,10 @@ test("manual OpenClaw issue synchronization continues beyond scheduled PR covera
   for (let number = 1; number <= 41; number += 1) {
     writeFileSync(
       join(records, `openclaw-openclaw-${number}.md`),
-      `---\nrepository: openclaw/openclaw\ntype: issue\nreview_status: complete\nitem_snapshot_hash: abc123\naction_taken: kept_open\n---\n`,
+      withReviewRecord(
+        `---\nnumber: ${number}\nrepository: openclaw/openclaw\ntype: issue\nreview_status: complete\nitem_snapshot_hash: abc123\naction_taken: kept_open\n---\n`,
+        { decision: "keep_open", closeReason: "none" },
+      ),
     );
   }
   const sharedCursor = join(root, "results", "comment-sync-cursors", "openclaw-openclaw.json");
@@ -3954,7 +3979,10 @@ test("unscheduled cursor synchronization continues lower-numbered records after 
   for (const number of [5, 21]) {
     writeFileSync(
       join(records, `openclaw-clawhub-${number}.md`),
-      `---\nrepository: openclaw/clawhub\ntype: pull_request\nreview_status: complete\nitem_snapshot_hash: abc123\naction_taken: kept_open\n---\n`,
+      withReviewRecord(
+        `---\nnumber: ${number}\nrepository: openclaw/clawhub\ntype: pull_request\nreview_status: complete\nitem_snapshot_hash: abc123\naction_taken: kept_open\n---\n`,
+        { decision: "keep_open", closeReason: "none" },
+      ),
     );
   }
   const scopedCursor = join(root, "results", "comment-sync-cursors", "openclaw-clawhub.json");
@@ -3998,7 +4026,10 @@ test("unscheduled wrapped synchronization drains every bounded window and then s
   for (let number = 1; number <= 7; number += 1) {
     writeFileSync(
       join(records, `openclaw-clawhub-${number}.md`),
-      `---\nrepository: openclaw/clawhub\ntype: pull_request\nreview_status: complete\nitem_snapshot_hash: abc123\naction_taken: kept_open\n---\n`,
+      withReviewRecord(
+        `---\nnumber: ${number}\nrepository: openclaw/clawhub\ntype: pull_request\nreview_status: complete\nitem_snapshot_hash: abc123\naction_taken: kept_open\n---\n`,
+        { decision: "keep_open", closeReason: "none" },
+      ),
     );
   }
   const policyFingerprint = createHash("sha256")
@@ -4069,8 +4100,35 @@ test("wrapped cursor synchronization continues past newer out-of-cycle urgent re
   for (let number = 41; number <= 100; number += 1) {
     writeFileSync(
       join(records, `openclaw-clawhub-${number}.md`),
+      withReviewRecord(
+        [
+          "---",
+          `number: ${number}`,
+          "repository: openclaw/clawhub",
+          "type: pull_request",
+          "review_status: complete",
+          "local_checkout_access: verified",
+          "local_checkout_access_source: runner_preflight_v1",
+          "item_snapshot_hash: abc123",
+          "action_taken: kept_open",
+          `review_comment_id: ${9_000 + number}`,
+          `review_comment_url: https://github.com/openclaw/clawhub/pull/${number}#issuecomment-${9_000 + number}`,
+          `review_comment_sha256: ${"a".repeat(64)}`,
+          `reviewed_at: ${syncedAt}`,
+          `review_comment_synced_at: ${syncedAt}`,
+          "---",
+          "",
+        ].join("\n"),
+        { decision: "keep_open", closeReason: "none" },
+      ),
+    );
+  }
+  writeFileSync(
+    join(records, "openclaw-clawhub-150.md"),
+    withReviewRecord(
       [
         "---",
+        "number: 150",
         "repository: openclaw/clawhub",
         "type: pull_request",
         "review_status: complete",
@@ -4078,31 +4136,12 @@ test("wrapped cursor synchronization continues past newer out-of-cycle urgent re
         "local_checkout_access_source: runner_preflight_v1",
         "item_snapshot_hash: abc123",
         "action_taken: kept_open",
-        `review_comment_id: ${9_000 + number}`,
-        `review_comment_url: https://github.com/openclaw/clawhub/pull/${number}#issuecomment-${9_000 + number}`,
-        `review_comment_sha256: ${"a".repeat(64)}`,
-        `reviewed_at: ${syncedAt}`,
-        `review_comment_synced_at: ${syncedAt}`,
+        "reviewed_at: 2026-08-02T00:00:00Z",
         "---",
         "",
       ].join("\n"),
-    );
-  }
-  writeFileSync(
-    join(records, "openclaw-clawhub-150.md"),
-    [
-      "---",
-      "repository: openclaw/clawhub",
-      "type: pull_request",
-      "review_status: complete",
-      "local_checkout_access: verified",
-      "local_checkout_access_source: runner_preflight_v1",
-      "item_snapshot_hash: abc123",
-      "action_taken: kept_open",
-      "reviewed_at: 2026-08-02T00:00:00Z",
-      "---",
-      "",
-    ].join("\n"),
+      { decision: "keep_open", closeReason: "none" },
+    ),
   );
   writeFileSync(
     cursorPath,
@@ -4257,7 +4296,10 @@ test("unscheduled cursor synchronization stops after its final full batch", () =
   for (let number = 1; number <= 40; number += 1) {
     writeFileSync(
       join(records, `openclaw-clawhub-${number}.md`),
-      `---\nrepository: openclaw/clawhub\ntype: pull_request\nreview_status: complete\nitem_snapshot_hash: abc123\naction_taken: kept_open\n---\n`,
+      withReviewRecord(
+        `---\nnumber: ${number}\nrepository: openclaw/clawhub\ntype: pull_request\nreview_status: complete\nitem_snapshot_hash: abc123\naction_taken: kept_open\n---\n`,
+        { decision: "keep_open", closeReason: "none" },
+      ),
     );
   }
 
@@ -4312,16 +4354,25 @@ test("uncursored comment synchronization selects and continues the full eligible
   for (let number = 1; number <= 1002; number += 1) {
     writeFileSync(
       join(records, `openclaw-openclaw-${number}.md`),
-      `---\nrepository: openclaw/openclaw\ntype: pull_request\nreview_status: complete\nitem_snapshot_hash: abc123\naction_taken: ${number === 1002 ? "retry_pr_close_coverage_proof" : "kept_open"}\n---\n`,
+      withReviewRecord(
+        `---\nnumber: ${number}\nrepository: openclaw/openclaw\ntype: pull_request\nreview_status: complete\nitem_snapshot_hash: abc123\naction_taken: ${number === 1002 ? "retry_pr_close_coverage_proof" : "kept_open"}\n---\n`,
+        { decision: "keep_open", closeReason: "none" },
+      ),
     );
   }
   writeFileSync(
     join(records, "openclaw-openclaw-1003.md"),
-    "---\nrepository: openclaw/openclaw\ntype: pull_request\nreview_status: failed\nitem_snapshot_hash: abc123\naction_taken: kept_open\n---\n",
+    withReviewRecord(
+      "---\nnumber: 1003\nrepository: openclaw/openclaw\ntype: pull_request\nreview_status: failed\nitem_snapshot_hash: abc123\naction_taken: kept_open\n---\n",
+      { decision: "keep_open", closeReason: "none" },
+    ),
   );
   writeFileSync(
     join(records, "openclaw-openclaw-1004.md"),
-    "---\nrepository: openclaw/openclaw\ntype: pull_request\nreview_status: complete\naction_taken: kept_open\n---\n",
+    withReviewRecord(
+      "---\nnumber: 1004\nrepository: openclaw/openclaw\ntype: pull_request\nreview_status: complete\naction_taken: kept_open\n---\n",
+      { decision: "keep_open", closeReason: "none" },
+    ),
   );
 
   try {
@@ -4555,7 +4606,10 @@ test("comment synchronization advances past records archived during scoped recon
   for (const number of [20, 30]) {
     writeFileSync(
       join(recordsDir, "items", `${targetSlug}-${number}.md`),
-      `---\nrepository: openclaw/clawhub\ntype: pull_request\nreview_status: complete\nitem_snapshot_hash: abc123\naction_taken: kept_open\n---\n`,
+      withReviewRecord(
+        `---\nnumber: ${number}\nrepository: openclaw/clawhub\ntype: pull_request\nreview_status: complete\nitem_snapshot_hash: abc123\naction_taken: kept_open\n---\n`,
+        { decision: "keep_open", closeReason: "none" },
+      ),
     );
   }
   writeFileSync(tracePath, JSON.stringify({ schema_version: 1, examined_item_numbers: [20] }));
@@ -4785,7 +4839,10 @@ test("unscheduled cursor synchronization never continues after cursor publicatio
   for (const number of [10, 20]) {
     writeFileSync(
       join(records, `openclaw-clawhub-${number}.md`),
-      `---\nrepository: openclaw/clawhub\ntype: pull_request\nreview_status: complete\nitem_snapshot_hash: abc123\naction_taken: kept_open\n---\n`,
+      withReviewRecord(
+        `---\nnumber: ${number}\nrepository: openclaw/clawhub\ntype: pull_request\nreview_status: complete\nitem_snapshot_hash: abc123\naction_taken: kept_open\n---\n`,
+        { decision: "keep_open", closeReason: "none" },
+      ),
     );
   }
   const reportPath = join(root, "report.json");

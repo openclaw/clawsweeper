@@ -21,7 +21,14 @@ import {
 import { createStatusContext } from "../dist/clawsweeper-status-context.js";
 import { parseCoAuthors } from "../dist/commit-sweeper.js";
 import { repositoryProfileFor } from "../dist/repository-profiles.js";
-import { closeDecision, git, item, reportFrontMatter, reviewPrompt } from "./helpers.ts";
+import {
+  closeDecision,
+  git,
+  item,
+  reportFrontMatter,
+  reviewPrompt,
+  withReviewRecord,
+} from "./helpers.ts";
 
 const { fixedPullRequestFromCommitPulls } = createStatusContext();
 
@@ -146,17 +153,24 @@ test("all exact-review publication paths inherit the shared automatic-close poli
 
 test("unsponsored feature issue proposals emit source-bound trusted close markers", () => {
   const markers = reviewAutomationMarkersFromReport(
-    reportFrontMatter({
-      type: "issue",
-      number: 321,
-      decision: "close",
-      confidence: "high",
-      close_reason: "unsponsored_feature_request",
-      action_taken: "proposed_close",
-      item_updated_at: "2026-01-01T00:00:00Z",
-      reviewed_at: "2026-07-11T00:00:00Z",
-      item_source_revision: "0123456789abcdef",
-    }),
+    withReviewRecord(
+      reportFrontMatter({
+        type: "issue",
+        number: 321,
+        decision: "close",
+        confidence: "high",
+        close_reason: "unsponsored_feature_request",
+        action_taken: "proposed_close",
+        item_updated_at: "2026-01-01T00:00:00Z",
+        reviewed_at: "2026-07-11T00:00:00Z",
+        item_source_revision: "0123456789abcdef",
+      }),
+      {
+        decision: "close",
+        closeReason: "unsponsored_feature_request",
+        confidence: "high",
+      },
+    ),
   );
   assert.match(markers, /clawsweeper-verdict:close/);
   assert.match(markers, /clawsweeper-action:close-required/);
@@ -711,26 +725,27 @@ test("commit PR lookup rejects closing references on a non-default branch", () =
 
 test("report-rendered close comments keep merged fixing PR provenance", () => {
   const comment = renderReviewCommentFromReport(
-    `${reportFrontMatter({
-      type: "issue",
-      number: "123",
-      title: JSON.stringify("Sample item"),
-      decision: "close",
-      close_reason: "implemented_on_main",
-      action_taken: "proposed_close",
-      fixed_pr_url: "https://github.com/openclaw/openclaw/pull/456",
-      fixed_pr_number: "456",
-      fixed_pr_title: JSON.stringify("fix: wire the shell check"),
-      fixed_pr_merged_at: "2026-04-28T12:00:00Z",
-      fixed_pr_sha: "fedcba9876543210",
-      fixed_pr_confidence: "high",
-      fixed_pr_source: JSON.stringify("GitHub closing PR reference"),
-      fixed_sha: "abcdef1234567890",
-      fixed_at: "2026-04-28T12:00:00Z",
-      main_sha: "abcdef1234567890",
-      review_model: "gpt-5.6-sol",
-      review_reasoning_effort: "high",
-    })}
+    withReviewRecord(
+      `${reportFrontMatter({
+        type: "issue",
+        number: "123",
+        title: JSON.stringify("Sample item"),
+        decision: "close",
+        close_reason: "implemented_on_main",
+        action_taken: "proposed_close",
+        fixed_pr_url: "https://github.com/openclaw/openclaw/pull/456",
+        fixed_pr_number: "456",
+        fixed_pr_title: JSON.stringify("fix: wire the shell check"),
+        fixed_pr_merged_at: "2026-04-28T12:00:00Z",
+        fixed_pr_sha: "fedcba9876543210",
+        fixed_pr_confidence: "high",
+        fixed_pr_source: JSON.stringify("GitHub closing PR reference"),
+        fixed_sha: "abcdef1234567890",
+        fixed_at: "2026-04-28T12:00:00Z",
+        main_sha: "abcdef1234567890",
+        review_model: "gpt-5.6-sol",
+        review_reasoning_effort: "high",
+      })}
 
 ## Summary
 
@@ -762,6 +777,22 @@ Yes. Keeping the implementation as-is is the narrowest maintainable outcome.
   - commits: abcdef1234567890
   - files: src/example.ts
 `,
+      {
+        decision: "close",
+        closeReason: "implemented_on_main",
+        summary: "Current main already implements this.",
+        fixedPullRequest: {
+          repo: "openclaw/openclaw",
+          number: 456,
+          url: "https://github.com/openclaw/openclaw/pull/456",
+          title: "fix: wire the shell check",
+          mergedAt: "2026-04-28T12:00:00Z",
+          sha: "fedcba9876543210",
+          confidence: "high",
+          source: "GitHub closing PR reference",
+        },
+      },
+    ),
     "implemented_on_main",
   );
 

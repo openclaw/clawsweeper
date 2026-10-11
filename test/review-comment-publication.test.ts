@@ -168,7 +168,7 @@ test("canonical lease expiry releases admission without rewriting surrounding by
     assert.equal(state.expireReviewStartStatusLease(noncanonical, queuedAt), noncanonical);
 });
 
-test("close-applied evidence uses typed fixing PR metadata and preserves legacy links", () => {
+test("close-applied evidence uses typed fixing PR metadata and rejects legacy records", () => {
   const legacy = reviewReportFrontMatter({
     type: "pull_request",
     number: String(itemNumber),
@@ -188,10 +188,11 @@ test("close-applied evidence uses typed fixing PR metadata and preserves legacy 
     });
     return body;
   };
-  assert.ok(
-    publishedBody(legacy).includes("[fix PR #11](https://github.com/openclaw/openclaw/pull/11)"),
-  );
-  const typed = withReviewRecord(legacy).replace(/^review_record: (.+)$/m, (_line, value) => {
+  assert.throws(() => publishedBody(legacy), ReviewRecordFormatError);
+  const typed = withReviewRecord(legacy, {
+    decision: "close",
+    closeReason: "implemented_on_main",
+  }).replace(/^review_record: (.+)$/m, (_line, value) => {
     const record = JSON.parse(value);
     record.decision.fixedPullRequest = {
       repo: "openclaw/openclaw",

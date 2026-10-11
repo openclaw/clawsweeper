@@ -47,7 +47,7 @@ import { runText } from "../dist/command.js";
 import { readReviewGit, reviewMergeBase } from "../dist/pr-review-evidence.js";
 import { ReviewSourcePreparationError } from "../dist/review-source-preparation.js";
 import { validationRecoveryRequired } from "../dist/repair/validation-recovery.js";
-import { withMockGh } from "./helpers.ts";
+import { withMockGh, withReviewRecord } from "./helpers.ts";
 
 const { withGitHubRun } = gitHubRuntime;
 
@@ -1510,7 +1510,13 @@ test("manual live proof admits pinned promisor trees with the requested reposito
       mkdirSync(records);
       writeFileSync(
         join(records, "982.md"),
-        `---\nnumber: 982\nrepository: ${repo}\ntype: pull_request\npull_head_sha: ${fixture.headSha}\n---\n\n## Live Proof\n\nStatus: recommended\n\nSurface: terminal\n\nTerminal completion: exit_zero\n\nReason: Verify the pinned fixture.\n\nPayoff: static_text\n\nPayoff justification: Text is sufficient.\n\nEntry: printf fixture-ready\n\nSteps:\n\n- {"action":"expect_output","text":"fixture-ready"}\n\n## Work Candidate\n\nCandidate: none\n`,
+        withReviewRecord(
+          `---\nnumber: 982\nrepository: ${repo}\ntype: pull_request\npull_head_sha: ${fixture.headSha}\n---\n\n## Live Proof\n\nStatus: recommended\n\nSurface: terminal\n\nTerminal completion: exit_zero\n\nReason: Verify the pinned fixture.\n\nPayoff: static_text\n\nPayoff justification: Text is sufficient.\n\nEntry: printf fixture-ready\n\nSteps:\n\n- {"action":"expect_output","text":"fixture-ready"}\n\n## Work Candidate\n\nCandidate: none\n`,
+          {
+            decision: "keep_open",
+            closeReason: "none",
+          },
+        ),
       );
       const tree = git(
         fixture.source,

@@ -13,10 +13,46 @@ import {
   detailsBody,
   prRatingReportSection,
   realBehaviorProofReportSection,
-  reviewReportFrontMatter as reportFrontMatter,
+  reviewReportFrontMatter,
+  withReviewRecord,
 } from "./helpers.ts";
 
 const REVIEW_HEAD_SHA = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+
+const sufficientProof = {
+  status: "sufficient",
+  evidenceKind: "terminal",
+  needsContributorAction: false,
+  summary:
+    "The PR includes a terminal transcript from a real OpenClaw setup showing the fixed behavior after the patch.",
+};
+const normalRating = {
+  overallTier: "B",
+  proofTier: "A",
+  patchTier: "B",
+  summary: "This PR has strong proof and normal merge-ready implementation quality.",
+  nextSteps: [],
+};
+
+function reportFrontMatter(
+  fields: Record<string, unknown>,
+  decision: Record<string, unknown> = {},
+) {
+  return withReviewRecord(reviewReportFrontMatter({ number: "180", ...fields }), {
+    decision: "keep_open",
+    closeReason: "none",
+    overallCorrectness: "patch is correct",
+    nextStep: { kind: "none", text: "" },
+    workCandidate: fields.work_candidate ?? "none",
+    triagePriority: fields.triage_priority ?? "none",
+    impactLabels: JSON.parse(String(fields.impact_labels ?? "[]")),
+    mergeRiskLabels: JSON.parse(String(fields.merge_risk_labels ?? "[]")),
+    labelJustifications: JSON.parse(String(fields.label_justifications ?? "[]")),
+    realBehaviorProof: sufficientProof,
+    prRating: normalRating,
+    ...decision,
+  });
+}
 
 test("explicit no-op label plans require publisher confirmation and a completed owned plan", () => {
   const desiredLabels = [
@@ -25,18 +61,23 @@ test("explicit no-op label plans require publisher confirmation and a completed 
     "rating: 🐚 platinum hermit",
     "status: 👀 ready for maintainer look",
   ];
-  const report = (overrides = {}) => `${reportFrontMatter({
-    type: "pull_request",
-    number: "180",
-    review_status: "complete",
-    author: "contributor",
-    author_association: "CONTRIBUTOR",
-    pull_head_sha: REVIEW_HEAD_SHA,
-    triage_priority: "P2",
-    labels: JSON.stringify(desiredLabels),
-    label_justifications: JSON.stringify([{ label: "P2", reason: "A bounded presentation fix." }]),
-    ...overrides,
-  })}
+  const report = (overrides = {}, decision = {}) => `${reportFrontMatter(
+    {
+      type: "pull_request",
+      number: "180",
+      review_status: "complete",
+      author: "contributor",
+      author_association: "CONTRIBUTOR",
+      pull_head_sha: REVIEW_HEAD_SHA,
+      triage_priority: "P2",
+      labels: JSON.stringify(desiredLabels),
+      label_justifications: JSON.stringify([
+        { label: "P2", reason: "A bounded presentation fix." },
+      ]),
+      ...overrides,
+    },
+    decision,
+  )}
 ${realBehaviorProofReportSection()}
 ${prRatingReportSection()}
 ## Review Findings
@@ -72,12 +113,18 @@ Full review comments:
     },
     {
       name: "unowned justification",
-      markdown: report({
-        type: "issue",
-        triage_priority: "none",
-        label_justifications: JSON.stringify([{ label: "bug", reason: "Unowned label." }]),
-        labels: '["bug"]',
-      }),
+      markdown: report(
+        {
+          type: "issue",
+          triage_priority: "none",
+          label_justifications: JSON.stringify([{ label: "bug", reason: "Unowned label." }]),
+          labels: '["bug"]',
+        },
+        {
+          // Unowned frontmatter remains inert; it is not a valid model label selection.
+          labelJustifications: [],
+        },
+      ),
       previousLabels: ["bug"],
       publishedLabels: ["bug"],
       noOp: false,
@@ -117,14 +164,24 @@ for (const proofStatus of ["missing", "not_applicable"] as const) {
         ["status: 🛠️ actively grinding"],
         ["clawsweeper:human-review"],
       ]) {
-        const report = `${reportFrontMatter({
-          type: "pull_request",
-          number: "74466",
-          review_status: "failed",
-          author: "contributor",
-          author_association: "CONTRIBUTOR",
-          labels: JSON.stringify([...oldStatuses, ...extraLabels]),
-        })}
+        const report = `${reportFrontMatter(
+          {
+            type: "pull_request",
+            number: "74466",
+            review_status: "failed",
+            author: "contributor",
+            author_association: "CONTRIBUTOR",
+            labels: JSON.stringify([...oldStatuses, ...extraLabels]),
+          },
+          {
+            realBehaviorProof: {
+              status: proofStatus,
+              evidenceKind: proofStatus === "missing" ? "none" : "not_applicable",
+              needsContributorAction: proofStatus === "missing",
+              summary: "Retained proof assessment from an incomplete review.",
+            },
+          },
+        )}
 ${realBehaviorProofReportSection({
   status: proofStatus,
   evidenceKind: proofStatus === "missing" ? "none" : "not_applicable",
@@ -234,15 +291,25 @@ test("report proof requirements preserve workflow precedence and contributor own
       expected: "status: needs maintainer proof decision",
     },
   ]) {
-    const report = `${reportFrontMatter({
-      type: "pull_request",
-      review_status: "complete",
-      author_association: "CONTRIBUTOR",
-      author: "contributor",
-      labels: JSON.stringify(fixture.labels),
-      pull_files: '["src/runtime.ts"]',
-      pull_files_truncated: false,
-    })}
+    const report = `${reportFrontMatter(
+      {
+        type: "pull_request",
+        review_status: "complete",
+        author_association: "CONTRIBUTOR",
+        author: "contributor",
+        labels: JSON.stringify(fixture.labels),
+        pull_files: '["src/runtime.ts"]',
+        pull_files_truncated: false,
+      },
+      {
+        realBehaviorProof: {
+          status: fixture.status,
+          evidenceKind: "none",
+          needsContributorAction: fixture.action,
+          summary: "Recorded assessment for the changed path.",
+        },
+      },
+    )}
 ${realBehaviorProofReportSection({
   status: fixture.status,
   evidenceKind: "none",
@@ -265,19 +332,27 @@ ${realBehaviorProofReportSection({
   }
 });
 test("sufficient real behavior proof allows automerge pass markers", () => {
-  const report = `${reportFrontMatter({
-    type: "pull_request",
-    number: "74459",
-    decision: "keep_open",
-    close_reason: "none",
-    review_status: "complete",
-    confidence: "high",
-    author: "contributor",
-    author_association: "CONTRIBUTOR",
-    labels: JSON.stringify(["clawsweeper:automerge"]),
-    work_candidate: "none",
-    pull_head_sha: REVIEW_HEAD_SHA,
-  })}
+  const report = `${reportFrontMatter(
+    {
+      type: "pull_request",
+      number: "74459",
+      decision: "keep_open",
+      close_reason: "none",
+      review_status: "complete",
+      confidence: "high",
+      author: "contributor",
+      author_association: "CONTRIBUTOR",
+      labels: JSON.stringify(["clawsweeper:automerge"]),
+      work_candidate: "none",
+      pull_head_sha: REVIEW_HEAD_SHA,
+    },
+    {
+      summary: "Keep this focused PR open for automerge.",
+      changeSummary: "Fixes the gateway status output.",
+      bestSolution: "Merge after required checks are green.",
+      prRating: { ...normalRating, overallTier: "A", patchTier: "A" },
+    },
+  )}
 
 ## Summary
 
@@ -326,19 +401,30 @@ Full review comments:
 });
 
 test("proof-blocked PR comments show the model rating while preserving patch quality", () => {
-  const report = `${reportFrontMatter({
-    type: "pull_request",
-    number: "74460",
-    decision: "keep_open",
-    close_reason: "none",
-    review_status: "complete",
-    confidence: "high",
-    author: "contributor",
-    author_association: "CONTRIBUTOR",
-    labels: JSON.stringify([]),
-    work_candidate: "none",
-    pull_head_sha: REVIEW_HEAD_SHA,
-  })}
+  const report = `${reportFrontMatter(
+    {
+      type: "pull_request",
+      number: "74460",
+      decision: "keep_open",
+      close_reason: "none",
+      review_status: "complete",
+      confidence: "high",
+      author: "contributor",
+      author_association: "CONTRIBUTOR",
+      labels: JSON.stringify([]),
+      work_candidate: "none",
+      pull_head_sha: REVIEW_HEAD_SHA,
+    },
+    {
+      realBehaviorProof: {
+        status: "missing",
+        evidenceKind: "none",
+        needsContributorAction: true,
+        summary: "The PR has no real ingestion-run proof yet.",
+      },
+      prRating: { ...normalRating, overallTier: "F", proofTier: "F", patchTier: "A" },
+    },
+  )}
 
 ## Summary
 
@@ -409,19 +495,29 @@ test("active repair-loop statuses outrank proof fallback without preserving stal
   ];
 
   for (const [index, fixture] of cases.entries()) {
-    const report = `${reportFrontMatter({
-      type: "pull_request",
-      number: String(74500 + index),
-      decision: "keep_open",
-      close_reason: "none",
-      review_status: "complete",
-      confidence: "high",
-      author: "contributor",
-      author_association: "CONTRIBUTOR",
-      labels: JSON.stringify(fixture.labels),
-      work_candidate: "none",
-      pull_head_sha: "abc123def456",
-    })}
+    const report = `${reportFrontMatter(
+      {
+        type: "pull_request",
+        number: String(74500 + index),
+        decision: "keep_open",
+        close_reason: "none",
+        review_status: "complete",
+        confidence: "high",
+        author: "contributor",
+        author_association: "CONTRIBUTOR",
+        labels: JSON.stringify(fixture.labels),
+        work_candidate: "none",
+        pull_head_sha: "abc123def456",
+      },
+      {
+        realBehaviorProof: {
+          status: "insufficient",
+          evidenceKind: "none",
+          needsContributorAction: true,
+          summary: "The current review has no usable real behavior proof.",
+        },
+      },
+    )}
 
 ## Summary
 
@@ -544,19 +640,31 @@ Result: ${encodeLiveVerificationReportPayload({
 
   for (const fixture of cases) {
     for (const sufficient of [false, true]) {
-      const report = `${reportFrontMatter({
-        type: "pull_request",
-        number: "74510",
-        decision: "keep_open",
-        close_reason: "none",
-        review_status: "complete",
-        confidence: "high",
-        author: "contributor",
-        author_association: "CONTRIBUTOR",
-        labels: JSON.stringify(fixture.labels),
-        work_candidate: "none",
-        pull_head_sha: headSha,
-      })}
+      const report = `${reportFrontMatter(
+        {
+          type: "pull_request",
+          number: "74510",
+          decision: "keep_open",
+          close_reason: "none",
+          review_status: "complete",
+          confidence: "high",
+          author: "contributor",
+          author_association: "CONTRIBUTOR",
+          labels: JSON.stringify(fixture.labels),
+          work_candidate: "none",
+          pull_head_sha: headSha,
+        },
+        {
+          realBehaviorProof: {
+            status: sufficient ? "sufficient" : "missing",
+            evidenceKind: sufficient ? "recording" : "none",
+            needsContributorAction: !sufficient,
+            summary: sufficient
+              ? "Reviewer-assessed recording exercises the changed authorization boundary."
+              : "The model did not record real behavior proof.",
+          },
+        },
+      )}
 
 ## Summary
 
@@ -645,26 +753,46 @@ Full review comments:
 });
 
 test("failed Codex review comments suppress PR readiness ratings", () => {
-  const report = `${reportFrontMatter({
-    type: "pull_request",
-    number: "91210",
-    decision: "keep_open",
-    close_reason: "none",
-    review_status: "failed",
-    confidence: "low",
-    author: "contributor",
-    author_association: "CONTRIBUTOR",
-    labels: JSON.stringify(["proof: supplied", "rating: 🌊 off-meta tidepool"]),
-    work_candidate: "none",
-    pull_head_sha: REVIEW_HEAD_SHA,
-    triage_priority: "none",
-    impact_labels: JSON.stringify([]),
-    merge_risk_labels: JSON.stringify([]),
-    label_justifications: JSON.stringify([]),
-    pr_rating_overall: "NA",
-    pr_rating_proof: "NA",
-    pr_rating_patch: "NA",
-  })}
+  const report = `${reportFrontMatter(
+    {
+      type: "pull_request",
+      number: "91210",
+      decision: "keep_open",
+      close_reason: "none",
+      review_status: "failed",
+      confidence: "low",
+      author: "contributor",
+      author_association: "CONTRIBUTOR",
+      labels: JSON.stringify(["proof: supplied", "rating: 🌊 off-meta tidepool"]),
+      work_candidate: "none",
+      pull_head_sha: REVIEW_HEAD_SHA,
+      triage_priority: "none",
+      impact_labels: JSON.stringify([]),
+      merge_risk_labels: JSON.stringify([]),
+      label_justifications: JSON.stringify([]),
+      pr_rating_overall: "NA",
+      pr_rating_proof: "NA",
+      pr_rating_patch: "NA",
+    },
+    {
+      summary: "Codex review failed: retryable codex transport failure (network).",
+      changeSummary: "Review failed before ClawSweeper could summarize the requested change.",
+      bestSolution: "Retry the Codex review after fixing the execution failure.",
+      realBehaviorProof: {
+        status: "not_applicable",
+        evidenceKind: "not_applicable",
+        needsContributorAction: false,
+        summary: "Real behavior proof was not assessed because the Codex review failed.",
+      },
+      prRating: {
+        overallTier: "NA",
+        proofTier: "NA",
+        patchTier: "NA",
+        nextSteps: [],
+        summary: "PR readiness rating was not assessed because the Codex review failed.",
+      },
+    },
+  )}
 
 ## Summary
 
@@ -725,35 +853,46 @@ ${prRatingReportSection({
 });
 
 test("public PR review comments explain label changes without duplicate justifications", () => {
-  const report = `${reportFrontMatter({
-    type: "pull_request",
-    number: "74461",
-    decision: "keep_open",
-    close_reason: "none",
-    review_status: "complete",
-    confidence: "high",
-    author: "contributor",
-    author_association: "CONTRIBUTOR",
-    labels: JSON.stringify([]),
-    work_candidate: "none",
-    triage_priority: "P1",
-    impact_labels: JSON.stringify(["impact:message-loss"]),
-    merge_risk_labels: JSON.stringify(["merge-risk: 🚨 compatibility"]),
-    label_justifications: JSON.stringify([
-      {
-        label: "P1",
-        reason: "The PR changes an active channel workflow affecting real users.",
+  const report = `${reportFrontMatter(
+    {
+      type: "pull_request",
+      number: "74461",
+      decision: "keep_open",
+      close_reason: "none",
+      review_status: "complete",
+      confidence: "high",
+      author: "contributor",
+      author_association: "CONTRIBUTOR",
+      labels: JSON.stringify([]),
+      work_candidate: "none",
+      triage_priority: "P1",
+      impact_labels: JSON.stringify(["impact:message-loss"]),
+      merge_risk_labels: JSON.stringify(["merge-risk: 🚨 compatibility"]),
+      label_justifications: JSON.stringify([
+        {
+          label: "P1",
+          reason: "The PR changes an active channel workflow affecting real users.",
+        },
+        {
+          label: "impact:message-loss",
+          reason: "The diff touches message retry and delivery ordering.",
+        },
+        {
+          label: "merge-risk: 🚨 compatibility",
+          reason: "Merging changes the default upgrade behavior for existing configs.",
+        },
+      ]),
+    },
+    {
+      risks: ["Compatibility risk remains for existing configs."],
+      realBehaviorProof: {
+        ...sufficientProof,
+        status: "insufficient",
+        needsContributorAction: true,
+        summary: "The PR has tests but no real setup proof yet.",
       },
-      {
-        label: "impact:message-loss",
-        reason: "The diff touches message retry and delivery ordering.",
-      },
-      {
-        label: "merge-risk: 🚨 compatibility",
-        reason: "Merging changes the default upgrade behavior for existing configs.",
-      },
-    ]),
-  })}
+    },
+  )}
 
 ## Summary
 
@@ -815,22 +954,33 @@ Full review comments:
 });
 
 test("public PR review details justify model rating label changes", () => {
-  const report = `${reportFrontMatter({
-    type: "pull_request",
-    number: "84006",
-    decision: "keep_open",
-    close_reason: "none",
-    review_status: "complete",
-    confidence: "high",
-    author: "contributor",
-    author_association: "CONTRIBUTOR",
-    labels: JSON.stringify(["rating: 🦞 diamond lobster"]),
-    work_candidate: "none",
-    triage_priority: "none",
-    impact_labels: JSON.stringify([]),
-    merge_risk_labels: JSON.stringify([]),
-    label_justifications: JSON.stringify([]),
-  })}
+  const report = `${reportFrontMatter(
+    {
+      type: "pull_request",
+      number: "84006",
+      decision: "keep_open",
+      close_reason: "none",
+      review_status: "complete",
+      confidence: "high",
+      author: "contributor",
+      author_association: "CONTRIBUTOR",
+      labels: JSON.stringify(["rating: 🦞 diamond lobster"]),
+      work_candidate: "none",
+      triage_priority: "none",
+      impact_labels: JSON.stringify([]),
+      merge_risk_labels: JSON.stringify([]),
+      label_justifications: JSON.stringify([]),
+    },
+    {
+      realBehaviorProof: {
+        ...sufficientProof,
+        status: "insufficient",
+        needsContributorAction: true,
+        summary: "The PR still needs current real-environment proof for the changed behavior.",
+      },
+      prRating: { ...normalRating, overallTier: "D", proofTier: "D", patchTier: "A" },
+    },
+  )}
 
 ## Summary
 
@@ -883,22 +1033,32 @@ Full review comments:
 });
 
 test("public PR review details justify stale owned label removals", () => {
-  const report = `${reportFrontMatter({
-    type: "pull_request",
-    number: "84007",
-    decision: "keep_open",
-    close_reason: "none",
-    review_status: "complete",
-    confidence: "high",
-    author: "contributor",
-    author_association: "CONTRIBUTOR",
-    labels: JSON.stringify(["status: 📣 needs proof"]),
-    work_candidate: "none",
-    triage_priority: "none",
-    impact_labels: JSON.stringify([]),
-    merge_risk_labels: JSON.stringify([]),
-    label_justifications: JSON.stringify([]),
-  })}
+  const report = `${reportFrontMatter(
+    {
+      type: "pull_request",
+      number: "84007",
+      decision: "keep_open",
+      close_reason: "none",
+      review_status: "complete",
+      confidence: "high",
+      author: "contributor",
+      author_association: "CONTRIBUTOR",
+      labels: JSON.stringify(["status: 📣 needs proof"]),
+      work_candidate: "none",
+      triage_priority: "none",
+      impact_labels: JSON.stringify([]),
+      merge_risk_labels: JSON.stringify([]),
+      label_justifications: JSON.stringify([]),
+    },
+    {
+      realBehaviorProof: {
+        status: "insufficient",
+        evidenceKind: "none",
+        needsContributorAction: true,
+        summary: "The current review has no usable real behavior proof.",
+      },
+    },
+  )}
 
 ## Summary
 

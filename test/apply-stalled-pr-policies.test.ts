@@ -12,22 +12,42 @@ import {
 } from "./helpers.ts";
 
 function stalledUnprovenCloseReport(overrides = {}) {
-  return `${workPlanCandidateReport({
-    repository: "openclaw/openclaw",
-    type: "pull_request",
-    decision: "close",
-    action_taken: "proposed_close",
-    close_reason: "stalled_unproven_pr",
-    confidence: "high",
-    work_candidate: "none",
-    work_status: "none",
-    item_snapshot_hash: "reviewed-snapshot",
-    item_created_at: "2026-05-01T00:00:00Z",
-    item_updated_at: "2026-05-01T00:00:00Z",
-    author_association: "CONTRIBUTOR",
-    item_category: "bug",
-    ...overrides,
-  })}
+  return `${workPlanCandidateReport(
+    {
+      repository: "openclaw/openclaw",
+      type: "pull_request",
+      decision: "close",
+      action_taken: "proposed_close",
+      close_reason: "stalled_unproven_pr",
+      confidence: "high",
+      work_candidate: "none",
+      work_status: "none",
+      item_snapshot_hash: "reviewed-snapshot",
+      item_created_at: "2026-05-01T00:00:00Z",
+      item_updated_at: "2026-05-01T00:00:00Z",
+      author_association: "CONTRIBUTOR",
+      item_category: "bug",
+      ...overrides,
+    },
+    {
+      itemCategory: "bug",
+      realBehaviorProof: {
+        status: "missing",
+        evidenceKind: "not_applicable",
+        needsContributorAction: true,
+        summary: "The review asked for real behavior proof and none was supplied.",
+      },
+      prRating: {
+        overallTier: "F",
+        proofTier: "F",
+        patchTier: "D",
+        summary: "The patch is low quality and carries no real behavior proof.",
+        nextSteps: ["Provide a live run, logs, or a reproducible validation transcript."],
+      },
+      closeComment:
+        "ClawSweeper proposes closing this PR because the requested real-behavior proof never arrived.",
+    },
+  )}
 
 ## Evidence
 
@@ -56,22 +76,42 @@ ClawSweeper proposes closing this PR because the requested real-behavior proof n
 }
 
 function abandonedCloseReport(overrides = {}) {
-  return `${workPlanCandidateReport({
-    repository: "openclaw/openclaw",
-    type: "pull_request",
-    decision: "close",
-    action_taken: "proposed_close",
-    close_reason: "abandoned_pr",
-    confidence: "high",
-    work_candidate: "none",
-    work_status: "none",
-    item_snapshot_hash: "reviewed-snapshot",
-    item_created_at: "2026-05-01T00:00:00Z",
-    item_updated_at: "2026-05-01T00:00:00Z",
-    author_association: "CONTRIBUTOR",
-    item_category: "bug",
-    ...overrides,
-  })}
+  return `${workPlanCandidateReport(
+    {
+      repository: "openclaw/openclaw",
+      type: "pull_request",
+      decision: "close",
+      action_taken: "proposed_close",
+      close_reason: "abandoned_pr",
+      confidence: "high",
+      work_candidate: "none",
+      work_status: "none",
+      item_snapshot_hash: "reviewed-snapshot",
+      item_created_at: "2026-05-01T00:00:00Z",
+      item_updated_at: "2026-05-01T00:00:00Z",
+      author_association: "CONTRIBUTOR",
+      item_category: "bug",
+      ...overrides,
+    },
+    {
+      itemCategory: "bug",
+      realBehaviorProof: {
+        status: "missing",
+        evidenceKind: "not_applicable",
+        needsContributorAction: true,
+        summary: "The branch stalled before proof or fixes arrived.",
+      },
+      prRating: {
+        overallTier: "D",
+        proofTier: "F",
+        patchTier: "D",
+        summary: "The patch is stalled with failing checks and no author activity.",
+        nextSteps: ["Rebase the branch and get checks green."],
+      },
+      closeComment:
+        "ClawSweeper proposes closing this PR as abandoned after a long inactivity window.",
+    },
+  )}
 
 ## Evidence
 

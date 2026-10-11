@@ -3,12 +3,46 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { reviewAutomationMarkersFromReport } from "../dist/clawsweeper.js";
-import { detailsBody, reviewReportFrontMatter as reportFrontMatter } from "./helpers.ts";
+import { detailsBody, reviewReportFrontMatter, withReviewRecord } from "./helpers.ts";
 import {
   prSurfaceFilesFromContext,
   prSurfaceFilesFromReport,
 } from "../dist/clawsweeper-orchestration-foundation.js";
 import { pinnedTestRolePaths } from "./openclaw-file-role-fixture.ts";
+
+function reportFrontMatter(
+  fields: Record<string, unknown>,
+  decision: Record<string, unknown> = {},
+) {
+  return withReviewRecord(reviewReportFrontMatter({ number: "12345", ...fields }), {
+    decision: "keep_open",
+    closeReason: "none",
+    nextStep: { kind: "none", text: "" },
+    overallCorrectness: "patch is correct",
+    workCandidate: fields.work_candidate ?? "none",
+    reviewMetrics: JSON.parse(String(fields.review_metrics ?? "[]")),
+    mergeRiskOptions: JSON.parse(String(fields.merge_risk_options ?? "[]")),
+    ...decision,
+  });
+}
+
+const securityDecision = {
+  overallCorrectness: "patch is incorrect",
+  securityReview: {
+    status: "needs_attention",
+    summary: "The patch exposes a broader token scope and needs maintainer security review.",
+    concerns: [
+      {
+        title: "Avoid broad token reuse",
+        body: "The patch can reuse a token with broader scopes than the caller requested.",
+        severity: "high",
+        confidenceScore: 0.91,
+        file: "src/auth/token.ts",
+        line: 42,
+      },
+    ],
+  },
+};
 
 test("support-only surface moves +57 to Tests while the reviewer production metric stays intact", () => {
   const metric = {
@@ -68,14 +102,17 @@ Full review comments:
 
 - none
 `;
-  const repairMarkers = reviewAutomationMarkersFromReport(`${reportFrontMatter({
-    type: "pull_request",
-    number: "74123",
-    pull_head_sha: "abc123def456abc123def456abc123def456abcd",
-    decision: "keep_open",
-    confidence: "high",
-    work_candidate: "queue_fix_pr",
-  })}
+  const repairMarkers = reviewAutomationMarkersFromReport(`${reportFrontMatter(
+    {
+      type: "pull_request",
+      number: "74123",
+      pull_head_sha: "abc123def456abc123def456abc123def456abcd",
+      decision: "keep_open",
+      confidence: "high",
+      work_candidate: "queue_fix_pr",
+    },
+    securityDecision,
+  )}
 
 ## Summary
 
@@ -93,16 +130,19 @@ ${securitySection}
   assert.doesNotMatch(repairMarkers, /clawsweeper-verdict:needs-changes/);
   assert.doesNotMatch(repairMarkers, /clawsweeper-action:fix-required/);
 
-  const autofixRepairMarkers = reviewAutomationMarkersFromReport(`${reportFrontMatter({
-    type: "pull_request",
-    number: "74125",
-    pull_head_sha: "abc789def123abc789def123abc789def123abcd",
-    decision: "keep_open",
-    confidence: "high",
-    review_status: "complete",
-    labels: JSON.stringify(["clawsweeper:autofix"]),
-    work_candidate: "queue_fix_pr",
-  })}
+  const autofixRepairMarkers = reviewAutomationMarkersFromReport(`${reportFrontMatter(
+    {
+      type: "pull_request",
+      number: "74125",
+      pull_head_sha: "abc789def123abc789def123abc789def123abcd",
+      decision: "keep_open",
+      confidence: "high",
+      review_status: "complete",
+      labels: JSON.stringify(["clawsweeper:autofix"]),
+      work_candidate: "queue_fix_pr",
+    },
+    securityDecision,
+  )}
 
 ## Summary
 
@@ -122,16 +162,19 @@ ${securitySection}
   assert.doesNotMatch(autofixRepairMarkers, /clawsweeper-verdict:needs-human/);
   assert.doesNotMatch(autofixRepairMarkers, /clawsweeper-verdict:pass/);
 
-  const automergeMarkers = reviewAutomationMarkersFromReport(`${reportFrontMatter({
-    type: "pull_request",
-    number: "74124",
-    pull_head_sha: "def456abc123def456abc123def456abc123abcd",
-    decision: "keep_open",
-    confidence: "high",
-    review_status: "complete",
-    labels: JSON.stringify(["clawsweeper:automerge"]),
-    work_candidate: "none",
-  })}
+  const automergeMarkers = reviewAutomationMarkersFromReport(`${reportFrontMatter(
+    {
+      type: "pull_request",
+      number: "74124",
+      pull_head_sha: "def456abc123def456abc123def456abc123abcd",
+      decision: "keep_open",
+      confidence: "high",
+      review_status: "complete",
+      labels: JSON.stringify(["clawsweeper:automerge"]),
+      work_candidate: "none",
+    },
+    securityDecision,
+  )}
 
 ## Summary
 
@@ -155,14 +198,17 @@ ${securitySection}
 test("pull request keep-open review comments suppress duplicate remaining risk text", () => {
   const duplicateRisk = "Run the automerge smoke after the repair lane is green.";
   const comment = renderReviewCommentFromReport(
-    `${reportFrontMatter({
-      type: "pull_request",
-      number: "74267",
-      decision: "keep_open",
-      close_reason: "none",
-      work_candidate: "none",
-      pull_head_sha: "abc123def456abc123def456abc123def456abcd",
-    })}
+    `${reportFrontMatter(
+      {
+        type: "pull_request",
+        number: "74267",
+        decision: "keep_open",
+        close_reason: "none",
+        work_candidate: "none",
+        pull_head_sha: "abc123def456abc123def456abc123def456abcd",
+      },
+      { risks: [duplicateRisk], workReason: duplicateRisk },
+    )}
 
 ## Summary
 
@@ -205,15 +251,18 @@ test("every pull request merge risk is a blocked item without an inferred priori
     "CI checks are red on this branch and may be unrelated to the diff.",
     "CI checks pass but maintainer review is still required.",
   ];
-  const report = `${reportFrontMatter({
-    type: "pull_request",
-    number: "74269",
-    decision: "keep_open",
-    close_reason: "none",
-    review_status: "complete",
-    work_candidate: "none",
-    pull_head_sha: "abc123def456abc123def456abc123def456abcd",
-  })}
+  const report = `${reportFrontMatter(
+    {
+      type: "pull_request",
+      number: "74269",
+      decision: "keep_open",
+      close_reason: "none",
+      review_status: "complete",
+      work_candidate: "none",
+      pull_head_sha: "abc123def456abc123def456abc123def456abcd",
+    },
+    { risks },
+  )}
 
 ## Summary
 
@@ -577,15 +626,18 @@ function mergeRiskReviewComment({
   bestSolution?: string;
 }): string {
   return renderReviewCommentFromReport(
-    `${reportFrontMatter({
-      type: "pull_request",
-      number: "83400",
-      decision: "keep_open",
-      close_reason: "none",
-      work_candidate: "none",
-      pull_head_sha: "abc123def456abc123def456abc123def456abcd",
-      merge_risk_options: JSON.stringify(options),
-    })}
+    `${reportFrontMatter(
+      {
+        type: "pull_request",
+        number: "83400",
+        decision: "keep_open",
+        close_reason: "none",
+        work_candidate: "none",
+        pull_head_sha: "abc123def456abc123def456abc123def456abcd",
+        merge_risk_options: JSON.stringify(options),
+      },
+      { risks: [risk], bestSolution },
+    )}
 
 ## Summary
 
@@ -805,15 +857,22 @@ function escapeRegExpForTest(value: string): string {
 }
 
 test("pull request review reports carry verdict and repair markers", () => {
-  const markdown = `${reportFrontMatter({
-    type: "pull_request",
-    number: "74065",
-    pull_head_sha: "abc123def456abc123def456abc123def456abcd",
-    decision: "keep_open",
-    confidence: "high",
-    review_status: "complete",
-    work_candidate: "queue_fix_pr",
-  })}
+  const markdown = `${reportFrontMatter(
+    {
+      type: "pull_request",
+      number: "74065",
+      pull_head_sha: "abc123def456abc123def456abc123def456abcd",
+      decision: "keep_open",
+      confidence: "high",
+      review_status: "complete",
+      work_candidate: "queue_fix_pr",
+    },
+    {
+      overallCorrectness: "patch is incorrect",
+      summary: "Needs one more repair.",
+      bestSolution: "Fix the durable review marker before merge.",
+    },
+  )}
 
 ## Summary
 

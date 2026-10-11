@@ -32,6 +32,7 @@ import {
   prRatingReportSection,
   realBehaviorProofReportSection,
   reportFrontMatter,
+  withReviewRecord,
 } from "./helpers.ts";
 import type { PrimaryBodyContext } from "../dist/clawsweeper-primary-body.js";
 import {
@@ -251,18 +252,19 @@ for (const scenario of ["optional", "recursive", "concrete", "missing-context"] 
       scenario === "recursive"
         ? "Check unspecified filtered prior rank-up moves before merge."
         : "Document the cache eviction boundary.";
-    const report = `${reportFrontMatter({
-      type: "pull_request",
-      number: "101",
-      review_status: "complete",
-      reviewed_at: "2026-08-30T10:00:00Z",
-      pull_head_sha: "a".repeat(40),
-      review_lease_owner: "continuity-fixture",
-      review_lease_comment_id: "79",
-      author: "contributor",
-      author_association: "CONTRIBUTOR",
-      work_candidate: "none",
-    })}
+    const report = withReviewRecord(
+      `${reportFrontMatter({
+        type: "pull_request",
+        number: "101",
+        review_status: "complete",
+        reviewed_at: "2026-08-30T10:00:00Z",
+        pull_head_sha: "a".repeat(40),
+        review_lease_owner: "continuity-fixture",
+        review_lease_comment_id: "79",
+        author: "contributor",
+        author_association: "CONTRIBUTOR",
+        work_candidate: "none",
+      })}
 
 ## Summary
 
@@ -293,7 +295,49 @@ Overall confidence: 0.9
 Full review comments:
 
 ${scenario === "concrete" ? "- **[P1] Invalidate revoked credentials:** `src/cache.ts:10-12`\n  - body: A revoked session still reuses the cached credential.\n  - confidence: 0.9" : "- none"}
-`;
+`,
+      {
+        decision: "keep_open",
+        closeReason: "none",
+        summary: "Review the session-cache change.",
+        changeSummary: "Changes cache invalidation.",
+        workReason: "",
+        evidence: [],
+        likelyOwners: [],
+        bestSolution: "None.",
+        realBehaviorProof: {
+          status: "sufficient",
+          evidenceKind: "terminal",
+          needsContributorAction: false,
+          summary: "Synthetic fixture records successful cache invalidation.",
+        },
+        prRating: {
+          overallTier: "B",
+          proofTier: "A",
+          patchTier: "B",
+          summary: "This PR has strong proof and normal merge-ready implementation quality.",
+          nextSteps: [rank],
+        },
+        risks: risk === "None." ? [] : [risk],
+        nextStep: risk === "None." ? { kind: "none", text: "" } : { kind: "required", text: risk },
+        overallCorrectness: scenario === "concrete" ? "patch is incorrect" : "patch is correct",
+        overallConfidenceScore: 0.9,
+        reviewFindings:
+          scenario === "concrete"
+            ? [
+                {
+                  title: "Invalidate revoked credentials",
+                  body: "A revoked session still reuses the cached credential.",
+                  priority: 1,
+                  confidenceScore: 0.9,
+                  file: "src/cache.ts",
+                  lineStart: 10,
+                  lineEnd: 12,
+                },
+              ]
+            : [],
+      },
+    );
     const body = markedReviewCommentForTest(101, renderReviewCommentFromReport(report, "none"));
     const previousComment = {
       id: 80,

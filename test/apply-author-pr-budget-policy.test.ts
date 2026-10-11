@@ -28,29 +28,49 @@ function budgetCandidateReport(
   const rating = options.rating ?? "D";
   const proof = options.proof ?? "missing";
   const proposed = options.proposed === true;
-  return `${workPlanCandidateReport({
-    number,
-    repository: "openclaw/openclaw",
-    type: "pull_request",
-    title: "Idle low-signal PR",
-    author: "reporter",
-    author_association: options.authorAssociation ?? "CONTRIBUTOR",
-    labels: JSON.stringify(options.labels ?? []),
-    decision: proposed ? "close" : "keep_open",
-    close_reason: proposed ? "author_pr_budget_exceeded" : "none",
-    confidence: "high",
-    action_taken: proposed ? "proposed_close" : "kept_open",
-    work_candidate: "none",
-    work_status: "none",
-    item_snapshot_hash: "reviewed-snapshot",
-    item_created_at: "2026-05-01T00:00:00Z",
-    item_updated_at: "2026-05-01T00:00:00Z",
-    reviewed_at: "2026-05-01T00:00:00Z",
-    pull_head_sha: "head-sha",
-    pr_rating_overall: rating,
-    pr_rating_proof: rating,
-    pr_rating_patch: rating,
-  })}
+  return `${workPlanCandidateReport(
+    {
+      number,
+      repository: "openclaw/openclaw",
+      type: "pull_request",
+      title: "Idle low-signal PR",
+      author: "reporter",
+      author_association: options.authorAssociation ?? "CONTRIBUTOR",
+      labels: JSON.stringify(options.labels ?? []),
+      decision: proposed ? "close" : "keep_open",
+      close_reason: proposed ? "author_pr_budget_exceeded" : "none",
+      confidence: "high",
+      action_taken: proposed ? "proposed_close" : "kept_open",
+      work_candidate: "none",
+      work_status: "none",
+      item_snapshot_hash: "reviewed-snapshot",
+      item_created_at: "2026-05-01T00:00:00Z",
+      item_updated_at: "2026-05-01T00:00:00Z",
+      reviewed_at: "2026-05-01T00:00:00Z",
+      pull_head_sha: "head-sha",
+      pr_rating_overall: rating,
+      pr_rating_proof: rating,
+      pr_rating_patch: rating,
+    },
+    {
+      realBehaviorProof: {
+        status: proof,
+        evidenceKind: proof === "sufficient" ? "terminal" : "none",
+        needsContributorAction: proof !== "sufficient" && proof !== "override",
+        summary:
+          proof === "sufficient"
+            ? "A real live run proves the behavior."
+            : "No adequate live proof was supplied.",
+      },
+      prRating: {
+        overallTier: rating,
+        proofTier: rating,
+        patchTier: rating,
+        summary: "The latest review assigned this readiness tier.",
+        nextSteps: ["Add real behavior proof."],
+      },
+    },
+  )}
 
 ## Real Behavior Proof
 

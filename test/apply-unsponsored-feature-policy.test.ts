@@ -36,24 +36,33 @@ const maintainerDecision = {
 };
 
 function unsponsoredCloseReport(overrides = {}) {
-  return `${workPlanCandidateReport({
-    repository: "openclaw/openclaw",
-    type: "issue",
-    decision: "close",
-    action_taken: "proposed_close",
-    close_reason: "unsponsored_feature_request",
-    confidence: "high",
-    work_candidate: "none",
-    work_status: "none",
-    item_snapshot_hash: "reviewed-snapshot",
-    item_created_at: "2026-01-01T00:00:00Z",
-    item_updated_at: "2026-01-01T00:00:00Z",
-    author_association: "CONTRIBUTOR",
-    item_category: "feature",
-    requires_product_decision: "true",
-    maintainer_decision: JSON.stringify(maintainerDecision),
-    ...overrides,
-  })}
+  return `${workPlanCandidateReport(
+    {
+      repository: "openclaw/openclaw",
+      type: "issue",
+      decision: "close",
+      action_taken: "proposed_close",
+      close_reason: "unsponsored_feature_request",
+      confidence: "high",
+      work_candidate: "none",
+      work_status: "none",
+      item_snapshot_hash: "reviewed-snapshot",
+      item_created_at: "2026-01-01T00:00:00Z",
+      item_updated_at: "2026-01-01T00:00:00Z",
+      author_association: "CONTRIBUTOR",
+      item_category: "feature",
+      requires_product_decision: "true",
+      maintainer_decision: JSON.stringify(maintainerDecision),
+      ...overrides,
+    },
+    {
+      itemCategory: "feature",
+      requiresProductDecision: true,
+      maintainerDecision,
+      closeComment:
+        "This is not planned unless a maintainer sponsors the direction. Reopening is welcome if that changes.",
+    },
+  )}
 
 ## Evidence
 
@@ -66,22 +75,29 @@ This is not planned unless a maintainer sponsors the direction. Reopening is wel
 }
 
 function staleInsufficientInfoCloseReport(overrides = {}) {
-  return `${workPlanCandidateReport({
-    repository: "openclaw/openclaw",
-    type: "issue",
-    decision: "close",
-    action_taken: "proposed_close",
-    close_reason: "stale_insufficient_info",
-    confidence: "high",
-    work_candidate: "none",
-    work_status: "none",
-    item_snapshot_hash: "reviewed-snapshot",
-    item_created_at: "2026-01-01T00:00:00Z",
-    item_updated_at: "2026-01-01T00:00:00Z",
-    author_association: "CONTRIBUTOR",
-    item_category: "bug",
-    ...overrides,
-  })}
+  return `${workPlanCandidateReport(
+    {
+      repository: "openclaw/openclaw",
+      type: "issue",
+      decision: "close",
+      action_taken: "proposed_close",
+      close_reason: "stale_insufficient_info",
+      confidence: "high",
+      work_candidate: "none",
+      work_status: "none",
+      item_snapshot_hash: "reviewed-snapshot",
+      item_created_at: "2026-01-01T00:00:00Z",
+      item_updated_at: "2026-01-01T00:00:00Z",
+      author_association: "CONTRIBUTOR",
+      item_category: "bug",
+      ...overrides,
+    },
+    {
+      itemCategory: "bug",
+      closeComment:
+        "Please open a new issue with current reproduction details if this still occurs.",
+    },
+  )}
 
 ## Evidence
 

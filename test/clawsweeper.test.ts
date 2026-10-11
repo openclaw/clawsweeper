@@ -53,6 +53,7 @@ import {
   reportWithSyncedReviewComment,
   runApplyDecisionsForTest,
   tmpPrefix,
+  withReviewRecord,
   withMockGh,
   workPlanCandidateReport,
 } from "./helpers.ts";
@@ -93,13 +94,16 @@ function createApplyDirectories(root: string) {
 
 test("review comments include a compact maintainer decision packet block", () => {
   const comment = renderReviewCommentFromReport(
-    workPlanCandidateReport({
-      decision: "keep_open",
-      action_taken: "kept_open",
-      labels: JSON.stringify(["clawsweeper:needs-product-decision"]),
-      requires_product_decision: "true",
-      maintainer_decision: JSON.stringify(maintainerDecision),
-    }),
+    workPlanCandidateReport(
+      {
+        decision: "keep_open",
+        action_taken: "kept_open",
+        labels: JSON.stringify(["clawsweeper:needs-product-decision"]),
+        requires_product_decision: "true",
+        maintainer_decision: JSON.stringify(maintainerDecision),
+      },
+      { maintainerDecision, requiresProductDecision: true },
+    ),
     "none",
   );
 
@@ -114,14 +118,22 @@ test("review comments include a compact maintainer decision packet block", () =>
 
 test("close proposals that require maintainer decisions render as kept open", () => {
   const comment = renderReviewCommentFromReport(
-    implementedCloseReport({
-      repository: "openclaw/openclaw",
-      type: "pull_request",
-      pull_head_sha: "abc123def456",
-      labels: JSON.stringify(["clawsweeper:needs-product-decision"]),
-      requires_product_decision: "true",
-      maintainer_decision: JSON.stringify(maintainerDecision),
-    }),
+    withReviewRecord(
+      implementedCloseReport({
+        repository: "openclaw/openclaw",
+        type: "pull_request",
+        pull_head_sha: "abc123def456",
+        labels: JSON.stringify(["clawsweeper:needs-product-decision"]),
+        requires_product_decision: "true",
+        maintainer_decision: JSON.stringify(maintainerDecision),
+      }),
+      {
+        decision: "close",
+        closeReason: "implemented_on_main",
+        maintainerDecision,
+        requiresProductDecision: true,
+      },
+    ),
     "implemented_or_shipped",
   );
 
@@ -227,12 +239,15 @@ test("apply-decisions records closed decision packet state during comment-only s
     const packetPath = join(root, "decision-packets", "321.json");
     writeFileSync(
       join(itemsDir, "321.md"),
-      implementedCloseReport({
-        action_taken: "skipped_open_closing_pr",
-        close_reason: "duplicate_or_superseded",
-        labels: JSON.stringify(["clawsweeper:needs-product-decision"]),
-        maintainer_decision: JSON.stringify(maintainerDecision),
-      }),
+      withReviewRecord(
+        implementedCloseReport({
+          action_taken: "skipped_open_closing_pr",
+          close_reason: "duplicate_or_superseded",
+          labels: JSON.stringify(["clawsweeper:needs-product-decision"]),
+          maintainer_decision: JSON.stringify(maintainerDecision),
+        }),
+        { decision: "close", closeReason: "duplicate_or_superseded", maintainerDecision },
+      ),
       "utf8",
     );
 
@@ -293,13 +308,21 @@ test("apply-decisions writes decision packets for protected close-guard reports"
     const { itemsDir, closedDir, plansDir, reportPath } = createApplyDirectories(root);
     writeFileSync(
       join(itemsDir, "321.md"),
-      implementedCloseReport({
-        labels: JSON.stringify(["clawsweeper:needs-product-decision"]),
-        requires_product_decision: "true",
-        maintainer_decision: JSON.stringify(maintainerDecision),
-        item_snapshot_hash: "reviewed-snapshot-321",
-        item_updated_at: "2026-05-01T00:00:00Z",
-      }),
+      withReviewRecord(
+        implementedCloseReport({
+          labels: JSON.stringify(["clawsweeper:needs-product-decision"]),
+          requires_product_decision: "true",
+          maintainer_decision: JSON.stringify(maintainerDecision),
+          item_snapshot_hash: "reviewed-snapshot-321",
+          item_updated_at: "2026-05-01T00:00:00Z",
+        }),
+        {
+          decision: "close",
+          closeReason: "implemented_on_main",
+          maintainerDecision,
+          requiresProductDecision: true,
+        },
+      ),
       "utf8",
     );
 
@@ -363,11 +386,19 @@ test("apply-decisions keeps required maintainer decisions open", () => {
     const { itemsDir, closedDir, plansDir, reportPath } = createApplyDirectories(root);
     const packetPath = join(root, "decision-packets", "321.json");
     const synced = reportWithSyncedReviewComment(
-      implementedCloseReport({
-        labels: JSON.stringify(["clawsweeper:needs-product-decision"]),
-        requires_product_decision: "true",
-        maintainer_decision: JSON.stringify(maintainerDecision),
-      }),
+      withReviewRecord(
+        implementedCloseReport({
+          labels: JSON.stringify(["clawsweeper:needs-product-decision"]),
+          requires_product_decision: "true",
+          maintainer_decision: JSON.stringify(maintainerDecision),
+        }),
+        {
+          decision: "close",
+          closeReason: "implemented_on_main",
+          maintainerDecision,
+          requiresProductDecision: true,
+        },
+      ),
       321,
     );
     writeFileSync(join(itemsDir, "321.md"), synced.report, "utf8");
@@ -447,23 +478,23 @@ if (/\\/issues\\/321\\/comments(?:\\?|$)/.test(path)) {
   }
 });
 
-test("apply-decisions makes no GitHub mutation for malformed maintainer decisions", () => {
+test("apply-decisions makes no GitHub mutation for malformed review records", () => {
   const root = mkdtempSync(tmpPrefix);
   try {
     const { itemsDir, closedDir, plansDir, reportPath } = createApplyDirectories(root);
     writeFileSync(
       join(itemsDir, "321.md"),
-      implementedCloseReport({ maintainer_decision: "{" }),
+      implementedCloseReport().replace(/^review_record: .+$/m, "review_record: {"),
       "utf8",
     );
     writeFileSync(
       join(itemsDir, "322.md"),
-      implementedCloseReport({ number: 322, maintainer_decision: "{" }),
+      implementedCloseReport({ number: 322 }).replace(/^review_record: .+$/m, "review_record: {"),
       "utf8",
     );
 
     const ghMock = `
-console.error("malformed maintainer decision reached GitHub");
+console.error("malformed review record reached GitHub");
 process.exit(1);
 `;
     withMockGh(root, ghMock, () => {
@@ -484,8 +515,8 @@ process.exit(1);
     assert.deepEqual(JSON.parse(readFileSync(reportPath, "utf8")), [
       {
         number: 321,
-        action: "kept_open",
-        reason: "invalid maintainer_decision: maintainer_decision must contain valid JSON",
+        action: "skipped_changed_since_review",
+        reason: "review_record: the value is not JSON; fresh review required",
       },
     ]);
 
@@ -503,8 +534,8 @@ process.exit(1);
     assert.deepEqual(JSON.parse(readFileSync(reportPath, "utf8")), [
       {
         number: 322,
-        action: "kept_open",
-        reason: "invalid maintainer_decision: maintainer_decision must contain valid JSON",
+        action: "skipped_changed_since_review",
+        reason: "review_record: the value is not JSON; fresh review required",
       },
     ]);
   } finally {
@@ -519,17 +550,20 @@ test("apply-decisions skips advisory labels for failed or stale kept-open report
     const logPath = join(root, "gh.log");
 
     const failed = reportWithSyncedReviewComment(
-      workPlanCandidateReport({
-        number: 321,
-        review_status: "failed",
-        item_snapshot_hash: "reviewed-snapshot-321",
-        item_updated_at: "2026-05-01T00:00:00Z",
-        reproduction_status: "unclear",
-        reproduction_confidence: "low",
-        work_candidate: "none",
-        work_status: "none",
-        work_confidence: "low",
-      }),
+      workPlanCandidateReport(
+        {
+          number: 321,
+          review_status: "failed",
+          item_snapshot_hash: "reviewed-snapshot-321",
+          item_updated_at: "2026-05-01T00:00:00Z",
+          reproduction_status: "unclear",
+          reproduction_confidence: "low",
+          work_candidate: "none",
+          work_status: "none",
+          work_confidence: "low",
+        },
+        { reproductionStatus: "unclear", reproductionConfidence: "low" },
+      ),
       321,
     );
     const stale = reportWithSyncedReviewComment(
@@ -863,25 +897,33 @@ test("apply-decisions syncs labels when first review placeholder advanced issue 
       pull_request: null,
     };
     const sourceRevision = itemSourceRevisionSha256(issue, []);
-    const report = workPlanCandidateReport({
-      number: 321,
-      reviewed_at: "2026-05-01T00:05:00Z",
-      item_snapshot_hash: "reviewed-snapshot-321",
-      item_updated_at: "2026-05-01T00:00:00Z",
-      item_source_revision: sourceRevision,
-      review_lease_owner: "review-owner",
-      review_lease_comment_id: "9321",
-      triage_priority: "P1",
-      impact_labels: JSON.stringify(["impact:message-loss"]),
-      item_category: "bug",
-      reproduction_status: "reproduced",
-      reproduction_confidence: "high",
-      requires_new_feature: false,
-      requires_new_config_option: false,
-      requires_product_decision: false,
-      implementation_complexity: "small",
-      auto_implementation_candidate: "strict_bug",
-    });
+    const report = workPlanCandidateReport(
+      {
+        number: 321,
+        reviewed_at: "2026-05-01T00:05:00Z",
+        item_snapshot_hash: "reviewed-snapshot-321",
+        item_updated_at: "2026-05-01T00:00:00Z",
+        item_source_revision: sourceRevision,
+        review_lease_owner: "review-owner",
+        review_lease_comment_id: "9321",
+        triage_priority: "P1",
+        impact_labels: JSON.stringify(["impact:message-loss"]),
+        item_category: "bug",
+        reproduction_status: "reproduced",
+        reproduction_confidence: "high",
+        requires_new_feature: false,
+        requires_new_config_option: false,
+        requires_product_decision: false,
+        implementation_complexity: "small",
+        auto_implementation_candidate: "strict_bug",
+      },
+      {
+        triagePriority: "P1",
+        impactLabels: ["impact:message-loss"],
+        implementationComplexity: "small",
+        autoImplementationCandidate: "strict_bug",
+      },
+    );
     writeFileSync(join(itemsDir, "321.md"), report, "utf8");
     const placeholder = renderReviewStartStatusComment({
       number: 321,
@@ -1116,13 +1158,16 @@ test("apply-decisions skips cleanly when ClawSweeper label sync loses authentica
     const logPath = join(root, "gh.log");
 
     const synced = reportWithSyncedReviewComment(
-      workPlanCandidateReport({
-        number: 321,
-        reviewed_at: "2026-05-01T00:00:00Z",
-        item_snapshot_hash: "reviewed-snapshot-321",
-        item_updated_at: "2026-05-01T00:00:00Z",
-        impact_labels: JSON.stringify(["impact:message-loss"]),
-      }),
+      workPlanCandidateReport(
+        {
+          number: 321,
+          reviewed_at: "2026-05-01T00:00:00Z",
+          item_snapshot_hash: "reviewed-snapshot-321",
+          item_updated_at: "2026-05-01T00:00:00Z",
+          impact_labels: JSON.stringify(["impact:message-loss"]),
+        },
+        { impactLabels: ["impact:message-loss"] },
+      ),
       321,
     );
     const itemPath = join(itemsDir, "321.md");
@@ -1225,49 +1270,58 @@ test("planned review shards stay within the Codex worker cap", () => {
 });
 
 test("apply mode prioritizes matching close proposals before comment sync", () => {
-  const issueClose = reportFrontMatter({
+  const issueClose = workPlanCandidateReport({
+    repository: "openclaw/openclaw",
     decision: "close",
     close_reason: "implemented_on_main",
     action_taken: "proposed_close",
   });
-  const legacyMaintainerSkip = reportFrontMatter({
+  const legacyMaintainerSkip = workPlanCandidateReport({
+    repository: "openclaw/openclaw",
     decision: "close",
     close_reason: "implemented_on_main",
     action_taken: "skipped_maintainer_authored",
   });
-  const legacyInvalidDecision = reportFrontMatter({
+  const legacyInvalidDecision = workPlanCandidateReport({
+    repository: "openclaw/openclaw",
     decision: "close",
     close_reason: "implemented_on_main",
     action_taken: "skipped_invalid_decision",
   });
-  const legacyKeptOpen = reportFrontMatter({
+  const legacyKeptOpen = workPlanCandidateReport({
+    repository: "openclaw/openclaw",
     decision: "close",
     close_reason: "implemented_on_main",
     action_taken: "kept_open",
   });
-  const lowSignalLiveGuard = reportFrontMatter({
+  const lowSignalLiveGuard = workPlanCandidateReport({
+    repository: "openclaw/openclaw",
     type: "pull_request",
     decision: "close",
     close_reason: "low_signal_unmergeable_pr",
     action_taken: "skipped_low_signal_live_guard",
   });
-  const pairBlockedOpenClosingPr = reportFrontMatter({
+  const pairBlockedOpenClosingPr = workPlanCandidateReport({
+    repository: "openclaw/openclaw",
     decision: "close",
     close_reason: "implemented_on_main",
     action_taken: "skipped_open_closing_pr",
   });
-  const pairBlockedSameAuthor = reportFrontMatter({
+  const pairBlockedSameAuthor = workPlanCandidateReport({
+    repository: "openclaw/openclaw",
     decision: "close",
     close_reason: "implemented_on_main",
     action_taken: "skipped_same_author_pair",
   });
-  const pullRequestClose = reportFrontMatter({
+  const pullRequestClose = workPlanCandidateReport({
+    repository: "openclaw/openclaw",
     type: "pull_request",
     decision: "close",
     close_reason: "implemented_on_main",
     action_taken: "proposed_close",
   });
-  const duplicateSkip = reportFrontMatter({
+  const duplicateSkip = workPlanCandidateReport({
+    repository: "openclaw/openclaw",
     decision: "close",
     close_reason: "duplicate_or_superseded",
     action_taken: "skipped_invalid_decision",
@@ -1282,7 +1336,7 @@ test("apply mode prioritizes matching close proposals before comment sync", () =
   assert.equal(applyDecisionPriority(pairBlockedSameAuthor, "issue"), 1);
   assert.equal(applyDecisionPriority(pullRequestClose, "issue"), 1);
   assert.equal(applyDecisionPriority(duplicateSkip, "issue"), 2);
-  assert.equal(applyDecisionPriority(reportFrontMatter(), "issue"), 2);
+  assert.equal(applyDecisionPriority(workPlanCandidateReport(), "issue"), 2);
 });
 
 test("comment-only sync creates or refreshes stale durable review comments", () => {

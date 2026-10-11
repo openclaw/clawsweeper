@@ -76,8 +76,12 @@ if (args[0] === "api" && args[1]?.includes("/issues?state=open")) {
         "utf8",
       );
       assert.ok(markdown.includes(`maintainer_decision: ${rawDecision}\n`));
+      assert.doesNotMatch(markdown, /^review_record:/m);
       assert.equal(maintainerDecisionBlocksClose(markdown), true);
-      assert.doesNotMatch(reviewAutomationMarkersFromReport(markdown), /clawsweeper-verdict:pass/);
+      assert.throws(
+        () => reviewAutomationMarkersFromReport(markdown),
+        /review_record: missing record/,
+      );
       assert.match(markdown, /^decision_packet_path: none$/m);
       assert.equal(existsSync(join(packetsDir, `${number}.json`)), false);
     }

@@ -38,7 +38,7 @@ import {
   encodeLiveVerificationReportPayload,
   liveProofPlanSha256,
 } from "../dist/live-proof/verification.js";
-import { item, reportFrontMatter, reviewPrompt } from "./helpers.ts";
+import { item, reportFrontMatter, reviewPrompt, withReviewRecord } from "./helpers.ts";
 import {
   hydratePrimaryBody,
   inertTrace,
@@ -900,15 +900,16 @@ test("pull request comments render live verification with optional recording", (
     entry: "pnpm cli --help",
     steps: [{ action: "expect_output", text: "Usage" }],
   };
-  const planOnly = `${reportFrontMatter({
-    repository: "example/repo",
-    type: "pull_request",
-    number: "83150",
-    decision: "keep_open",
-    close_reason: "none",
-    work_candidate: "none",
-    pull_head_sha: headSha,
-  })}
+  const planOnly = withReviewRecord(
+    `${reportFrontMatter({
+      repository: "example/repo",
+      type: "pull_request",
+      number: "83150",
+      decision: "keep_open",
+      close_reason: "none",
+      work_candidate: "none",
+      pull_head_sha: headSha,
+    })}
 
 ## Summary
 
@@ -943,7 +944,13 @@ Confidence: low
 Priority: low
 
 Status: none
-`;
+`,
+    {
+      decision: "keep_open",
+      closeReason: "none",
+      summary: "Keep this CLI PR open for maintainer review.",
+    },
+  );
   const planOnlyComment = renderReviewCommentFromReport(planOnly, "none");
   assert.doesNotMatch(planOnlyComment, /### Live Verification/);
   assert.doesNotMatch(planOnlyComment, /Live proof recording/);
@@ -1023,14 +1030,15 @@ Status: none
 
 test("historical Mantis Recommendation sections no longer render in review comments", () => {
   const comment = renderReviewCommentFromReport(
-    `${reportFrontMatter({
-      type: "pull_request",
-      number: "83140",
-      decision: "keep_open",
-      close_reason: "none",
-      work_candidate: "none",
-      pull_head_sha: "abc123def456",
-    })}
+    withReviewRecord(
+      `${reportFrontMatter({
+        type: "pull_request",
+        number: "83140",
+        decision: "keep_open",
+        close_reason: "none",
+        work_candidate: "none",
+        pull_head_sha: "abc123def456",
+      })}
 
 ## Summary
 
@@ -1072,6 +1080,19 @@ Status: none
 
 Reason: Maintainers should review the proof before merge.
 	`,
+      {
+        decision: "keep_open",
+        closeReason: "none",
+        summary: "Keep this Discord PR open for maintainer review.",
+        changeSummary: "Fixes Discord status reactions.",
+        realBehaviorProof: {
+          status: "mock_only",
+          evidenceKind: "none",
+          needsContributorAction: true,
+          summary: "Current proof is test-only for visible Discord reaction behavior.",
+        },
+      },
+    ),
     "none",
   );
 

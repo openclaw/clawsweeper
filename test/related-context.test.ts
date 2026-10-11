@@ -230,7 +230,7 @@ The body is unrelated to the review record.
       timeline: [],
     };
     const before = relatedContextWith({}, root).context.relatedItemsContext(options);
-    assert.equal(before.length, 2);
+    assert.equal(before.length, 0, "reports without typed records are excluded");
     paths.forEach((path, index) => {
       writeFileSync(
         path,

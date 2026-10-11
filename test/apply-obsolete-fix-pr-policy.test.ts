@@ -13,30 +13,60 @@ import {
 } from "./helpers.ts";
 
 function obsoleteFixReport(headSha = "head-sha") {
-  const base = workPlanCandidateReport({
-    number: 321,
-    repository: "openclaw/openclaw",
-    type: "pull_request",
-    title: "Fix old CI bootstrap",
-    author: "reporter",
-    author_association: "CONTRIBUTOR",
-    labels: "[]",
-    decision: "close",
-    action_taken: "proposed_close",
-    close_reason: "obsolete_fix_pr",
-    confidence: "high",
-    work_candidate: "none",
-    work_status: "none",
-    item_snapshot_hash: "reviewed-snapshot",
-    item_created_at: "2026-01-01T00:00:00Z",
-    item_updated_at: "2026-01-01T00:00:00Z",
-    pull_head_sha: headSha,
-    pr_rating_overall: "A",
-    pr_rating_proof: "A",
-    pr_rating_patch: "A",
-  }).replace(
-    "The dashboard has queue_fix_pr candidates but no generated coding plan.",
-    "This was a careful, well-proven contribution, but `src/runtime.ts` and `test/runtime.test.ts` were rewritten on main after its head commit.",
+  const base = workPlanCandidateReport(
+    {
+      number: 321,
+      repository: "openclaw/openclaw",
+      type: "pull_request",
+      title: "Fix old CI bootstrap",
+      author: "reporter",
+      author_association: "CONTRIBUTOR",
+      labels: "[]",
+      decision: "close",
+      action_taken: "proposed_close",
+      close_reason: "obsolete_fix_pr",
+      confidence: "high",
+      work_candidate: "none",
+      work_status: "none",
+      item_snapshot_hash: "reviewed-snapshot",
+      item_created_at: "2026-01-01T00:00:00Z",
+      item_updated_at: "2026-01-01T00:00:00Z",
+      pull_head_sha: headSha,
+      pr_rating_overall: "A",
+      pr_rating_proof: "A",
+      pr_rating_patch: "A",
+    },
+    {
+      summary:
+        "This was a careful, well-proven contribution, but `src/runtime.ts` and `test/runtime.test.ts` were rewritten on main after its head commit.",
+      realBehaviorProof: {
+        status: "sufficient",
+        evidenceKind: "terminal",
+        needsContributorAction: false,
+        summary: "The original patch was well proven before the target workflow was replaced.",
+      },
+      prRating: {
+        overallTier: "A",
+        proofTier: "A",
+        patchTier: "A",
+        summary: "Strong contribution made obsolete by later main-branch work.",
+        nextSteps: [],
+      },
+      evidence: [
+        {
+          label: "main rewrite",
+          detail:
+            "Current main rewrote src/runtime.ts and test/runtime.test.ts after this PR's head commit.",
+          repo: "openclaw/openclaw",
+          file: "src/runtime.ts",
+          line: null,
+          command: null,
+          sha: null,
+        },
+      ],
+      closeComment:
+        "Thank you for the careful fix. `src/runtime.ts` and `test/runtime.test.ts` were rewritten on main after this contribution, so the original patch is now moot. If the problem still reproduces, a fresh PR against current main is welcome.",
+    },
   );
   return `${base}
 

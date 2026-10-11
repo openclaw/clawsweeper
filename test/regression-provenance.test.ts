@@ -9,7 +9,8 @@ import { fileURLToPath } from "node:url";
 import * as provenance from "../dist/clawsweeper-regression-provenance.js";
 import { parseDecision } from "../dist/clawsweeper.js";
 import { renderReviewCommentFromReport } from "../dist/clawsweeper-report-comment-presentation.js";
-import { closeDecision, reportFrontMatter } from "./helpers.ts";
+import { ReviewRecordFormatError } from "../dist/review-record.js";
+import { closeDecision, reportFrontMatter, withReviewRecord } from "./helpers.ts";
 import { maintainerDecisionFromReport } from "../dist/decision-packets.js";
 import { useFakeScanner } from "./agent-input-scan-helpers.ts";
 
@@ -578,7 +579,15 @@ test("rewrite equivalence retains only exact location-and-context-preserving pat
 test("legacy public reports cannot publish unverified owner prose", () => {
   const report = `${reportFrontMatter({ number: 946, repository: "openclaw/clawsweeper" })}\n## Likely Related People\n\n- **Mobile Author:** introduced the target structure\n  - reason: Blame proves feature introduction.\n  - confidence: high\n  - commits: ${"a".repeat(40)}\n  - files: target.ts\n`;
   for (const reason of ["none", "duplicate_or_superseded"]) {
-    const comment = renderReviewCommentFromReport(report, reason);
+    assert.throws(() => renderReviewCommentFromReport(report, reason), ReviewRecordFormatError);
+    const comment = renderReviewCommentFromReport(
+      withReviewRecord(report, {
+        decision: reason === "none" ? "keep_open" : "close",
+        closeReason: reason,
+        likelyOwners: [],
+      }),
+      reason,
+    );
     assert.doesNotMatch(comment, /Mobile Author|Likely related people/);
     assert.doesNotMatch(comment, /introduced the target|Blame proves|confidence: high/);
   }

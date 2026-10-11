@@ -13,7 +13,20 @@ import {
   tmpPrefix,
   withApplyTestWorkspace,
   withMockGh,
+  withReviewRecord,
 } from "./helpers.ts";
+
+const keepOpenSupersessionDecision = {
+  decision: "keep_open",
+  closeReason: "none",
+  triagePriority: "none",
+  fixedSha: null,
+  fixedAt: null,
+  closeComment: "",
+  summary: "Keep this distinct change open.",
+  workCandidate: "manual_review",
+  workClusterRefs: ["Superseded by https://github.com/openclaw/openclaw/pull/400"],
+};
 
 function recentItemCreatedAt() {
   // These cases isolate relationship classification, so keep age-based stale
@@ -31,15 +44,33 @@ test("apply-decisions does not promote PRs superseded by PRs already proposed fo
     mkdirSync(itemsDir, { recursive: true });
     mkdirSync(plansDir, { recursive: true });
     const synced = reportWithSyncedReviewComment(
-      stalePullRequestReport({
-        number: 337,
-        title: "Old activity PR",
-        pr_rating_overall: "D",
-        pr_rating_proof: "D",
-        work_cluster_refs: JSON.stringify([
-          "Superseded by https://github.com/openclaw/openclaw/pull/400",
-        ]),
-      }),
+      withReviewRecord(
+        stalePullRequestReport({
+          number: 337,
+          title: "Old activity PR",
+          pr_rating_overall: "D",
+          pr_rating_proof: "D",
+          work_cluster_refs: JSON.stringify([
+            "Superseded by https://github.com/openclaw/openclaw/pull/400",
+          ]),
+        }).replace("Overall tier: F\nProof tier: F", "Overall tier: D\nProof tier: D"),
+        {
+          ...keepOpenSupersessionDecision,
+          realBehaviorProof: {
+            status: "missing",
+            evidenceKind: "none",
+            needsContributorAction: true,
+            summary: "No live proof was supplied.",
+          },
+          prRating: {
+            overallTier: "D",
+            proofTier: "D",
+            patchTier: "F",
+            summary: "The PR is not merge-ready.",
+            nextSteps: ["Rebase and provide proof."],
+          },
+        },
+      ),
       337,
       "none",
     );
@@ -111,22 +142,39 @@ test("apply-decisions does not promote PRs superseded by skipped close proposal 
     const reportPath = join(root, "apply-report.json");
     mkdirSync(itemsDir, { recursive: true });
     mkdirSync(plansDir, { recursive: true });
-    const sourceReport = stalePullRequestReport({
-      number: 339,
-      title: "Old activity PR",
-      labels: JSON.stringify([]),
-      pr_rating_overall: "D",
-      pr_rating_proof: "D",
-      pr_rating_patch: "D",
-      work_cluster_refs: JSON.stringify([
-        "Superseded by https://github.com/openclaw/openclaw/pull/400",
-      ]),
-    })
-      .replace("Status: missing", "Status: sufficient")
-      .replace(
-        "Overall tier: F\nProof tier: F\nPatch tier: F",
-        "Overall tier: D\nProof tier: D\nPatch tier: D",
-      );
+    const sourceReport = withReviewRecord(
+      stalePullRequestReport({
+        number: 339,
+        title: "Old activity PR",
+        labels: JSON.stringify([]),
+        pr_rating_overall: "D",
+        pr_rating_proof: "D",
+        pr_rating_patch: "D",
+        work_cluster_refs: JSON.stringify([
+          "Superseded by https://github.com/openclaw/openclaw/pull/400",
+        ]),
+      })
+        .replace("Status: missing", "Status: sufficient")
+        .replace("Evidence kind: none", "Evidence kind: terminal")
+        .replace("Needs contributor action: true", "Needs contributor action: false")
+        .replaceAll("tier: F", "tier: D"),
+      {
+        ...keepOpenSupersessionDecision,
+        realBehaviorProof: {
+          status: "sufficient",
+          evidenceKind: "terminal",
+          needsContributorAction: false,
+          summary: "Live proof was supplied.",
+        },
+        prRating: {
+          overallTier: "D",
+          proofTier: "D",
+          patchTier: "D",
+          summary: "The PR is not merge-ready.",
+          nextSteps: ["Rebase and provide proof."],
+        },
+      },
+    );
     const synced = reportWithSyncedReviewComment(sourceReport, 339, "none");
     writeFileSync(join(itemsDir, "339.md"), synced.report, "utf8");
     writeFileSync(
@@ -191,13 +239,32 @@ test("apply-decisions does not promote PRs superseded by skipped close proposal 
 test("apply-decisions does not promote unrelated linked open PRs", () => {
   withApplyTestWorkspace(tmpPrefix, ({ root, itemsDir, closedDir, plansDir, reportPath }) => {
     const synced = reportWithSyncedReviewComment(
-      stalePullRequestReport({
-        number: 333,
-        title: "Related activity PR",
-        pr_rating_overall: "D",
-        pr_rating_proof: "D",
-        work_cluster_refs: JSON.stringify(["https://github.com/openclaw/openclaw/pull/401"]),
-      }),
+      withReviewRecord(
+        stalePullRequestReport({
+          number: 333,
+          title: "Related activity PR",
+          pr_rating_overall: "D",
+          pr_rating_proof: "D",
+          work_cluster_refs: JSON.stringify(["https://github.com/openclaw/openclaw/pull/401"]),
+        }).replace("Overall tier: F\nProof tier: F", "Overall tier: D\nProof tier: D"),
+        {
+          ...keepOpenSupersessionDecision,
+          workClusterRefs: ["https://github.com/openclaw/openclaw/pull/401"],
+          realBehaviorProof: {
+            status: "missing",
+            evidenceKind: "none",
+            needsContributorAction: true,
+            summary: "No live proof was supplied.",
+          },
+          prRating: {
+            overallTier: "D",
+            proofTier: "D",
+            patchTier: "F",
+            summary: "The PR is not merge-ready.",
+            nextSteps: ["Rebase and provide proof."],
+          },
+        },
+      ),
       333,
       "none",
     );
@@ -242,13 +309,32 @@ test("apply-decisions does not promote unrelated linked open PRs", () => {
 test("apply-decisions does not promote unrelated linked merged PRs", () => {
   withApplyTestWorkspace(tmpPrefix, ({ root, itemsDir, closedDir, plansDir, reportPath }) => {
     const synced = reportWithSyncedReviewComment(
-      stalePullRequestReport({
-        number: 334,
-        title: "Related merged activity PR",
-        pr_rating_overall: "D",
-        pr_rating_proof: "D",
-        work_cluster_refs: JSON.stringify(["https://github.com/openclaw/openclaw/pull/402"]),
-      }),
+      withReviewRecord(
+        stalePullRequestReport({
+          number: 334,
+          title: "Related merged activity PR",
+          pr_rating_overall: "D",
+          pr_rating_proof: "D",
+          work_cluster_refs: JSON.stringify(["https://github.com/openclaw/openclaw/pull/402"]),
+        }).replace("Overall tier: F\nProof tier: F", "Overall tier: D\nProof tier: D"),
+        {
+          ...keepOpenSupersessionDecision,
+          workClusterRefs: ["https://github.com/openclaw/openclaw/pull/402"],
+          realBehaviorProof: {
+            status: "missing",
+            evidenceKind: "none",
+            needsContributorAction: true,
+            summary: "No live proof was supplied.",
+          },
+          prRating: {
+            overallTier: "D",
+            proofTier: "D",
+            patchTier: "F",
+            summary: "The PR is not merge-ready.",
+            nextSteps: ["Rebase and provide proof."],
+          },
+        },
+      ),
       334,
       "none",
     );
