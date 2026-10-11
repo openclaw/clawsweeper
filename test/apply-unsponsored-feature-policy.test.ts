@@ -341,7 +341,7 @@ test("unsponsored feature apply blocks a live security label", () => {
   assert.equal(result.closedExists, false);
 });
 
-test("unsponsored feature apply blocks issues already at the revival reaction threshold", () => {
+test("unsponsored feature apply blocks issues with positive community traction", () => {
   const result = runUnsponsoredApply({
     gateEnabled: true,
     reactions: { total_count: 5, "+1": 3, heart: 1, hooray: 1 },
@@ -350,13 +350,13 @@ test("unsponsored feature apply blocks issues already at the revival reaction th
     {
       number: 321,
       action: "kept_open",
-      reason: "issue already meets the idea-revival reaction threshold",
+      reason: "issue has enough positive reactions for maintainer consideration",
     },
   ]);
   assert.equal(result.closedExists, false);
 });
 
-test("unsponsored feature close parks the issue with archive label and revival contract", () => {
+test("unsponsored feature close parks the issue for a maintainer decision", () => {
   const result = runUnsponsoredApply({ dryRun: false, gateEnabled: true });
   assert.equal(result.entries[0]?.action, "closed");
   assert.equal(result.closedExists, true);
@@ -376,8 +376,8 @@ test("unsponsored feature close parks the issue with archive label and revival c
     ),
   );
   assert.match(result.reviewComment, /This idea is parked, not rejected\./);
-  assert.match(result.reviewComment, /comment `@clawsweeper revive`/);
-  assert.match(result.reviewComment, /at least 5 positive reactions/);
+  assert.match(result.reviewComment, /A maintainer can reopen this issue/);
+  assert.doesNotMatch(result.reviewComment, /automatically|@clawsweeper revive/);
 });
 
 test("unsponsored feature close keeps the archive label after an uncertain close", () => {

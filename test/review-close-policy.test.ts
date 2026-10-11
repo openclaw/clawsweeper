@@ -74,6 +74,11 @@ test("review prompt renders close reasons from the repository profile for the it
     closedRepoPrompt,
     /No close reason applies to this item's host facts: keep it open with `closeReason: none`/,
   );
+  assert.match(reviewPrompt("issue"), /a maintainer can reopen it manually/);
+  assert.doesNotMatch(
+    reviewPrompt("issue"),
+    /@clawsweeper revive|threshold reopens it automatically/,
+  );
 });
 
 test("external desktop-product bugs close without inventing upstream maintainer work", () => {

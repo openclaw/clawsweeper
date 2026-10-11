@@ -24,8 +24,8 @@ apply records the skip without consuming or rewriting the durable proposal.
 
 Even when enabled, apply fails closed unless the issue is older than 90 days.
 It re-fetches live state and keeps the issue open when it is assigned,
-milestoned, no longer open, already meets the positive-reaction revival
-threshold, has 20 or more total reactions, has a
+milestoned, no longer open, already meets the positive-reaction threshold
+(`CLAWSWEEPER_IDEA_REVIVAL_REACTIONS`, default 5), has 20 or more total reactions, has a
 `clawsweeper:linked-pr-open` label, has any security label, has any
 maintainer comment, or has any non-bot comment from the last 60 days.
 
@@ -35,33 +35,10 @@ protected-label gates still apply.
 
 Successful closes use GitHub's `not_planned` state reason but are reversible
 idea-archive parks, not rejections. Apply creates and adds the
-`clawsweeper:idea-archive` label before closing. The public comment explains
-that the issue automatically reopens after a maintainer or configured
-allowlisted login comments `@clawsweeper revive` (or `@clawsweeper sponsor`),
-or after its `+1`, heart, and hooray reactions reach
-`CLAWSWEEPER_IDEA_REVIVAL_REACTIONS` (default 5), and points to ClawHub when the
-request can live as an extension. Apply and revival workflow jobs read the same
-repository variable so an issue already at that threshold is never parked only
-to be reopened by the next watcher run.
+`clawsweeper:idea-archive` label before closing. A maintainer can reopen an issue
+after reconsidering it. ClawSweeper no longer watches reactions or comments to
+reopen archived ideas automatically; `@clawsweeper revive` and
+`@clawsweeper sponsor` are not supported commands.
 
-`.github/workflows/idea-archive-revival.yml` checks the archive every six hours.
-It uses a target-repository GitHub App token with `issues: write`, scans a
-bounded number of closed labeled issues and comment pages, and reopens at most
-10 issues per run by default. A two-page updated-descending pass finds new
-sponsorship commands regardless of archive size. Successive six-hour UTC slots
-then alternate created-descending and created-ascending scans for reaction-only
-revivals. Those revivals can lag in a very large archive; tune the bounded scan
-with `CLAWSWEEPER_IDEA_ARCHIVE_SCAN_PAGES`. Comment requests sort newest-first
-and use one second before the issue's close timestamp as `since`, then locally
-reject pre-close comments. This includes close-second commands despite GitHub's
-strictly-after, second-precision filter.
-
-Reopen, archive-label removal, and revival-comment posting are isolated
-mutations. A bounded open-and-archive-labeled reconciliation pass retries
-cleanup in the same run. It posts only when complete post-close comment history
-shows no existing bot revival comment; uncertain history stays uncommented.
-An indeterminate apply close keeps the archive label so this reconciliation can
-remove it if the issue remained open; a successfully closed issue remains
-discoverable for revival.
-API or mutation failures are logged and skipped so the next issue can still be
-evaluated.
+The archive label remains after an uncertain close so the record is not lost.
+Existing issue state is not rewritten when automatic revival is retired.

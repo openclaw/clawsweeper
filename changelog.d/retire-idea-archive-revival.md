@@ -1,0 +1,1 @@
+- Retire automatic idea-archive reopening and sponsorship commands; preserve guarded feature-request closes, community-traction exemptions, archive labels, and explicit maintainer reopening.

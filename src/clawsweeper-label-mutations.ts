@@ -1,4 +1,4 @@
-import { IDEA_ARCHIVE_LABEL } from "./idea-archive-revival.js";
+import { IDEA_ARCHIVE_LABEL } from "./clawsweeper-policy.js";
 import { ratingLabelForTier } from "./clawsweeper-rating.js";
 import {
   ACCEPTED_LARGE_LABEL_DEFINITION,

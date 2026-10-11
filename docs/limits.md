@@ -528,18 +528,9 @@ These limits are owned by `dashboard/exact-review-queue.ts`, implemented in
   default is 10 (clamped 1-1000). The former hardcoded 50 pinned the lane at
   its minimum under hourly rate-limit bursts because the counter resets on
   every failure.
-- `CLAWSWEEPER_MAINTAINER_LOGINS` (comma-separated) supplements the maintainer
-  author-association check in the idea-archive revival watcher — needed where
-  GitHub reports an org owner as `CONTRIBUTOR` on app-operated repositories. A
-  qualifying maintainer or allowlisted author sponsors revival by commenting
-  `@clawsweeper revive` (or `@clawsweeper sponsor`) on the closed issue.
-- `CLAWSWEEPER_IDEA_REVIVAL_REACTIONS` overrides the positive-reaction threshold
-  for reopening an issue parked with `clawsweeper:idea-archive`; the default is 5.
-- `CLAWSWEEPER_IDEA_ARCHIVE_SCAN_PAGES` overrides the bounded created-order scan
-  page count; the default is 5 and the maximum is 10. The watcher first checks
-  the two most recently updated pages for sponsorship commands, then alternates
-  newest/oldest created-order scans. Reaction-only revival can lag in very large
-  archives; raise this override to scan deeper per run.
+- `CLAWSWEEPER_IDEA_REVIVAL_REACTIONS` retains the positive-reaction threshold
+  that prevents closing an old feature request with community traction; the
+  default is 5. It no longer configures an automatic reopening watcher.
 - `REVIEW_PLACEHOLDER_MAX_CHECKS` overrides the number of search candidates
   examined per open and closed state class by each 15-minute
   orphaned-placeholder recovery pass; the default is 20 and the maximum is 1000. Independent durable cursors rotate both state classes so non-actionable

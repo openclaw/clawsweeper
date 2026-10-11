@@ -66,7 +66,6 @@ import { parseIsoMs } from "./iso-time.js";
 import { frontMatterStringArray, frontMatterValue } from "./report-front-matter.js";
 import { agentsPolicyStatusLine, collapsedDetailsBlock } from "./clawsweeper-report-helpers.js";
 import { markdownLink, repoUrlFor } from "./clawsweeper-links.js";
-import { ideaRevivalReactionThreshold } from "./idea-archive-revival.js";
 import type { RepositoryProfile } from "./repository-profiles.js";
 import { formatReviewFreshnessTimestamp } from "./clawsweeper-status-context.js";
 import { markdownRepository } from "./clawsweeper-repository-paths.js";
@@ -444,7 +443,7 @@ function closeOutro(
     case "unconfirmed_product_direction":
       return "This is a proposal only until the separate default-off apply policy is enabled and all live maintainer-signal checks pass. A maintainer can sponsor the direction, request a narrower version, or apply `clawsweeper:human-review` to keep it open.";
     case "unsponsored_feature_request":
-      return `This idea is parked, not rejected. A maintainer can comment \`@clawsweeper revive\` on this closed issue to bring it back automatically. It will also reopen when it reaches at least ${ideaRevivalReactionThreshold()} positive reactions (thumbs-up, heart, or hooray). When the idea fits an extension, ${markdownLink("ClawHub.com", profile.communityUrl ?? "https://clawhub.ai/")} remains the self-serve path.`;
+      return `This idea is parked, not rejected. A maintainer can reopen this issue after reconsidering it. When the idea fits an extension, ${markdownLink("ClawHub.com", profile.communityUrl ?? "https://clawhub.ai/")} remains the self-serve path.`;
     case "author_pr_budget_exceeded":
       return "Closing or finishing other open PRs frees review budget. This PR can be reopened once the author is under budget, or sooner when real behavior proof is added.";
     case "stale_version_bug":

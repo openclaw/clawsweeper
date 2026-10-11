@@ -25,7 +25,7 @@ import type {
   PrCloseCoverageProofGateResult,
 } from "./clawsweeper-types.js";
 import type { MaintainerDecision } from "./decision-packets.js";
-import { IDEA_ARCHIVE_LABEL } from "./idea-archive-revival.js";
+import { IDEA_ARCHIVE_LABEL } from "./clawsweeper-policy.js";
 import {
   isGitHubRequiresAuthenticationError,
   isLockedConversationCommentError,
@@ -688,7 +688,7 @@ export function executeApplyClose(
     return skip(finalCoveringPrFreshnessBlock.actionTaken, finalCoveringPrFreshnessBlock.reason);
   }
   if (implementationBasedPrClose) {
-    // Preserve the archive label after an uncertain close; the revival watcher reconciles it.
+    // Preserve the archive label after an uncertain close for maintainer triage.
     // The earlier check avoids unnecessary apply work; this one closes the race with the mutation.
     const finalImplementationProvenanceBlock = implementedOnMainPullRequestProvenanceApplyBlock(
       getMarkdown(),

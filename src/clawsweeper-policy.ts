@@ -113,9 +113,9 @@ export const FEATURE_SHOWCASE_LABEL = "feature: ✨ showcase";
 export const FEATURE_SHOWCASE_LABEL_COLOR = "A371F7";
 export const FEATURE_SHOWCASE_LABEL_DESCRIPTION =
   "ClawSweeper spotlight: unusually compelling feature idea for maintainer attention.";
+export const IDEA_ARCHIVE_LABEL = "clawsweeper:idea-archive";
 export const IDEA_ARCHIVE_LABEL_COLOR = "8250DF";
-export const IDEA_ARCHIVE_LABEL_DESCRIPTION =
-  "Parked feature idea eligible for automatic community or maintainer revival.";
+export const IDEA_ARCHIVE_LABEL_DESCRIPTION = "Parked feature idea awaiting a maintainer decision.";
 export const PROOF_MEDIA_LABELS = [
   {
     evidenceKind: "screenshot",

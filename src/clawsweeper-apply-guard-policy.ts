@@ -1,4 +1,3 @@
-import { ideaRevivalReactionThreshold, positiveReactionCount } from "./idea-archive-revival.js";
 import {
   PR_AUTO_CLOSE_EXEMPT_LABELS,
   STALE_VERSION_BUG_MIN_INACTIVE_DAYS,
@@ -191,8 +190,8 @@ export function createApplyGuardPolicy(
     }
     if ((issue.assignees ?? []).length > 0) return "assigned issue has maintainer engagement";
     if (issue.milestone) return "milestoned issue has maintainer engagement";
-    if (positiveReactionCount(issue.reactions) >= ideaRevivalReactionThreshold()) {
-      return "issue already meets the idea-revival reaction threshold";
+    if (positiveReactionCount(issue.reactions) >= positiveReactionThreshold()) {
+      return "issue has enough positive reactions for maintainer consideration";
     }
     const totalReactions = asRecord(issue.reactions).total_count;
     if (typeof totalReactions === "number" && totalReactions >= 20) {
@@ -295,4 +294,18 @@ export function createApplyGuardPolicy(
     staleVersionBugApplyBlockReason,
     staleVersionBugApplyBlockReasonSafe,
   };
+}
+
+function positiveReactionThreshold(): number {
+  const configured = Number(process.env.CLAWSWEEPER_IDEA_REVIVAL_REACTIONS);
+  return Number.isInteger(configured) && configured > 0 && configured <= 1_000 ? configured : 5;
+}
+
+function positiveReactionCount(reactions: unknown): number {
+  if (!reactions || typeof reactions !== "object" || Array.isArray(reactions)) return 0;
+  const record = reactions as Record<string, unknown>;
+  return ["+1", "heart", "hooray"].reduce((total, name) => {
+    const value = record[name];
+    return total + (typeof value === "number" && Number.isFinite(value) && value > 0 ? value : 0);
+  }, 0);
 }
