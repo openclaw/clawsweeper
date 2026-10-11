@@ -7,9 +7,9 @@ import {
   type GithubReadModelResponse,
 } from "../../github-webhook-read-model-client.js";
 import {
-  extractClawSweeperCommandLine,
+  normalizeClawSweeperCommandLine,
   isClawSweeperReReviewCommandText,
-  reviewPromptFromClawSweeperCommandText,
+  reReviewContextFromClawSweeperComment,
 } from "../comment-command-text.js";
 import { asJsonObject, type JsonObject, type JsonValue, type LooseRecord } from "../json-types.js";
 import { markerAttributes } from "../markers.js";
@@ -101,14 +101,14 @@ export function isGitHubAppIntegrationAuthError(message: JsonValue) {
 
 export function parseCommand(body: string) {
   if (isProofNudgeCommentBody(body)) return null;
-  const line = extractClawSweeperCommandLine(body);
+  const line = normalizeClawSweeperCommandLine(body);
   if (!line) return null;
   const raw = line.commandText.trim();
   const command = raw.toLowerCase().replace(/[.!]+$/g, "");
   const parsed: LooseRecord = { trigger: line.trigger, command, intent: "retired" };
   if (isClawSweeperReReviewCommandText(command)) {
     parsed.intent = "re_review";
-    const prompt = reviewPromptFromClawSweeperCommandText(raw);
+    const prompt = reReviewContextFromClawSweeperComment(body);
     if (prompt) parsed.freeform_prompt = prompt;
   } else if (["stop", "pause", "human review", "handoff"].includes(command)) {
     parsed.intent = "stop";
@@ -116,9 +116,6 @@ export function parseCommand(body: string) {
     parsed.intent = "explain";
   } else if (["help", "?"].includes(command)) {
     parsed.intent = "help";
-  }
-  if (line.supportsContinuation && line.rest && command === "status") {
-    return parseCommand(`@clawsweeper ${line.rest}`);
   }
   return parsed;
 }

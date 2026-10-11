@@ -1065,6 +1065,14 @@ test("kept command spellings still enter the review-only router", () => {
   for (const text of ["review", "re-review", "review again", "re_review"]) {
     assert.equal(parseCommand(`@clawsweeper ${text}`)?.intent, "re_review", text);
   }
+  for (const body of [
+    "@clawsweeper\nreview\nFocus on the timeout failure",
+    "@clawsweeper review\nFocus on the timeout failure",
+    "/clawsweeper review\nFocus on the timeout failure",
+  ]) {
+    assert.equal(parseCommand(body)?.intent, "re_review");
+    assert.equal(parseCommand(body)?.freeform_prompt, "Focus on the timeout failure");
+  }
   assert.equal(parseCommand("@clawsweeper explain")?.intent, "explain");
   assert.equal(parseCommand("@clawsweeper stop")?.intent, "stop");
   assert.equal(parseCommand("/review")?.intent, "re_review");
