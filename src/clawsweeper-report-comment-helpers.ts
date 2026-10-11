@@ -61,7 +61,7 @@ import {
   closeReviewLineFromReport,
 } from "./clawsweeper-report-context.js";
 import { parseIsoMs } from "./iso-time.js";
-import { frontMatterStringArray, frontMatterValue } from "./report-front-matter.js";
+import { frontMatterValue } from "./report-front-matter.js";
 import { agentsPolicyStatusLine, collapsedDetailsBlock } from "./clawsweeper-report-helpers.js";
 import { markdownLink, repoUrlFor } from "./clawsweeper-links.js";
 import type { RepositoryProfile } from "./repository-profiles.js";
