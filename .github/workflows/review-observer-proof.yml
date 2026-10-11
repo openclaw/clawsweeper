@@ -40,5 +40,5 @@ jobs:
         if: ${{ always() }}
         env:
           GH_TOKEN: ${{ github.token }}
-          REVIEW_RUN_CANCELLED: ${{ cancelled() }}
+          REVIEW_RUN_CANCELLED: ${{ contains(needs.*.result, 'cancelled') }}
         run: node scripts/review-run-observer.mjs --current-run --dry-run

@@ -4274,5 +4274,5 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
           QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
-          REVIEW_RUN_CANCELLED: ${{ cancelled() }}
+          REVIEW_RUN_CANCELLED: ${{ contains(needs.*.result, 'cancelled') }}
         run: node scripts/review-run-observer.mjs --current-run
