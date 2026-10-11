@@ -11177,6 +11177,17 @@ export class ExactReviewQueue {
           : EXACT_REVIEW_SOURCE_DRIFT_REQUEUE_SOURCE_ACTION,
       supersedesInProgress: true,
     };
+    // The successor is the same automatic source-drift generation that /enqueue
+    // admits, so the same loop breaker applies. Without it, a review whose own
+    // writes keep moving updated_at would requeue itself forever.
+    const loopKey = exactReviewLoopItemKey(decision);
+    const sourceDriftRequeueLimit = exactReviewSourceDriftRequeueLimit(this.env);
+    const sourceDriftLoopCounted =
+      sourceDriftRequeueLimit > 0 && exactReviewSourceDriftLoopCounted(decision);
+    const parksSourceDriftLoop =
+      sourceDriftLoopCounted &&
+      (this.reviewLoopStore.sourceDriftLoopSync(loopKey, now)?.consecutive ?? 0) >=
+        sourceDriftRequeueLimit;
     // This is a new review revision, not a replay of the direct receipt. The
     // old fenced projection retains its requeue terminal fact while the new
     // item receives fresh admission and claim facts when it is dispatched.
@@ -11201,7 +11212,23 @@ export class ExactReviewQueue {
     item.lastFailureReason = undefined;
     clearExactReviewDispatchFailure(item);
     clearExactReviewReviewRecovery(item);
-    Object.assign(item, exactReviewQueueDebouncedAttempt(state, decision, now, now, this.env));
+    if (parksSourceDriftLoop) {
+      // Park the successor as /enqueue does; organic input, commands, and newer
+      // scheduled offers release it through ordinary admission.
+      item.state = "parked";
+      item.parkedReason = "source_drift_loop";
+      item.parkedTerminalCheckedAt = now;
+      item.nextAttemptAt = now;
+      this.reviewLoopStore.markSourceDriftLoopParkedSync(loopKey, now);
+      console.warn("exact-review source-drift loop parked", {
+        event: "source_drift_loop_parked",
+        configured_limit: ordinaryLogCount(sourceDriftRequeueLimit),
+      });
+    } else {
+      Object.assign(item, exactReviewQueueDebouncedAttempt(state, decision, now, now, this.env));
+      if (sourceDriftLoopCounted)
+        this.reviewLoopStore.recordSourceDriftGenerationSync(loopKey, now);
+    }
     advanceExactReviewSourceAuthorityWatermark(item, decision);
     return {
       requeued: true,

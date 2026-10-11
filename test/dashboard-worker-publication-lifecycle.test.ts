@@ -27,6 +27,7 @@ import {
   leasedExactReviewPublicationItem,
   type ExactReviewQueueItem,
 } from "./dashboard-worker-harness.ts";
+import { ExactReviewReviewLoopStore } from "../dashboard/exact-review-review-loop.ts";
 
 test("early policy no-op workflow completion finishes the queue and Bay lifecycle without publication", async () => {
   const storage = new MemoryDurableStorage();
@@ -2240,6 +2241,50 @@ async function savedDirectRequeueFixture(
   };
   return { storage, queue, leased, post, readState, projection, counters, complete, terminalRun };
 }
+
+test("direct lifecycle requeues count toward and trip the source-drift loop breaker", async () => {
+  for (const priorGenerations of [2, 3]) {
+    const { storage, queue, leased, readState, complete } = await savedDirectRequeueFixture();
+    const loops = new ExactReviewReviewLoopStore(storage);
+    for (let generation = 0; generation < priorGenerations; generation += 1) {
+      loops.recordSourceDriftGenerationSync(leased.key, Date.now());
+    }
+    const completed = await queue.fetch(
+      new Request("https://clawsweeper-exact-review-queue/complete", {
+        method: "POST",
+        body: JSON.stringify(complete),
+      }),
+    );
+    assert.deepEqual(await completed.json(), { ok: true, requeued: true });
+    const successor = (await readState()).items[leased.key]!;
+    assert.equal(successor.revision, 5);
+    assert.equal(successor.decision.sourceAction, "source_drift_requeue");
+    if (priorGenerations < 3) {
+      assert.equal(successor.state, "pending", "below the limit the successor is reviewed");
+      assert.equal(loops.sourceDriftLoopSync(leased.key, Date.now())?.consecutive, 3);
+      continue;
+    }
+    assert.equal(successor.state, "parked", "at the limit the successor spends no review");
+    assert.equal(successor.parkedReason, "source_drift_loop");
+    assert.equal(loops.sourceDriftLoopSync(leased.key, Date.now())?.consecutive, 3);
+
+    const organic = await queue.fetch(
+      new Request("https://clawsweeper-exact-review-queue/enqueue", {
+        method: "POST",
+        body: JSON.stringify({
+          delivery_id: "organic-edit-705",
+          decision: { ...leased.decision, sourceAction: "edited" },
+        }),
+      }),
+    );
+    assert.equal(organic.status, 202);
+    assert.equal((await organic.json()).queued, true);
+    const released = (await readState()).items[leased.key]!;
+    assert.equal(released.state, "pending");
+    assert.equal(released.parkedReason, undefined);
+    assert.equal(loops.sourceDriftLoopSync(leased.key, Date.now()), null);
+  }
+});
 
 test("active pull request supersession preserves the command without its publication receipt", async () => {
   const marker =

@@ -292,7 +292,12 @@ deletes the queue item. Once an item has used
 next source-drift requeue is not admitted: the item is parked with reason
 `source_drift_loop`, and later automatic requeues are deduped against it with
 `dedupe_scope: source_drift_loop`. The publisher still receives a successful
-dedupe, so the parked item is the only new state. An organic webhook item action
+dedupe, so the parked item is the only new state. A direct-publication
+completion that owes a lifecycle requeue (`direct_lifecycle_requeue`) creates the
+same automatic generation without `/enqueue`, so it counts and parks the same
+way: below the limit its successor revision is pending; at the limit the
+successor revision is parked with reason `source_drift_loop`, while the
+completed revision keeps its `requeue` lifecycle fact. An organic webhook item action
 (`opened`, `reopened`, `edited`, `synchronize`, `ready_for_review`,
 `converted_to_draft`, `unlocked`, `unlabeled`), an explicit command, a manual
 review, or an operator `recover-fresh` both resets the counter and admits the
