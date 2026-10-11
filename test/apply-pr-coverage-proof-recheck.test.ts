@@ -128,21 +128,26 @@ test("forced final freshness rechecks an item without coverage proof or a new se
   assert.equal(fetchCount, 1);
 });
 
-test("post-proof freshness keeps an updated_at the pre-apply gate accepted, and blocks any later change", () => {
+test("post-proof freshness keeps a structurally verified accepted updated_at and blocks every other change", () => {
   // openclaw/openclaw#158915: the review read the PR at 20:55:06; the automatic review progress
   // edit moved updated_at to 20:59:05 before apply; the pre-apply gate accepted that owned write.
   const storedUpdatedAt = "2026-10-11T20:55:06Z";
   const acceptedUpdatedAt = "2026-10-11T20:59:05Z";
-  const guards = (liveUpdatedAt: string, accepted: string | undefined) =>
+  const guards = ({
+    live = acceptedUpdatedAt,
+    accepted = acceptedUpdatedAt as string | null,
+    receiptMatches = true,
+    humanActivityAfterProof = false,
+  } = {}) =>
     createApplyProofFreshnessGuards({
       action: undefined,
       automationItemUpdatedAt: undefined,
       collectItemContext: () => ({}),
-      completeReviewActivityReceiptMatches: () => true,
-      contextHasNonAutomationActivityAfter: () => false,
+      completeReviewActivityReceiptMatches: () => receiptMatches,
+      contextHasNonAutomationActivityAfter: () => humanActivityAfterProof,
       coveringPrCloseCoveragePullRequestSnapshotSha256: () => "c".repeat(64),
       currentProofState: () => ({
-        acceptedUpdatedAt: accepted,
+        acceptedUpdatedAt: accepted ?? undefined,
         cachedPrCloseCoverageProofGateResult: { status: "allowed" },
         prCloseCoverageProofGateChecked: true,
         prCloseCoverageProofStartedAtMs: Date.parse("2026-10-11T21:00:00Z"),
@@ -150,10 +155,7 @@ test("post-proof freshness keeps an updated_at the pre-apply gate accepted, and 
         storedUpdatedAt,
       }),
       expectedReviewActivityCursor: emptyReviewedPrActivityCursor,
-      fetchItem: () => ({
-        state: "open",
-        item: { kind: "pull_request", updatedAt: liveUpdatedAt },
-      }),
+      fetchItem: () => ({ state: "open", item: { kind: "pull_request", updatedAt: live } }),
       fetchReviewedPrActivityCursor: () => emptyReviewedPrActivityCursor,
       freshPullRequestReviewHead: () => true,
       GitHubRuntimeBudgetError: class extends Error {},
@@ -164,16 +166,21 @@ test("post-proof freshness keeps an updated_at the pre-apply gate accepted, and 
       reviewMarkdown: "---\ntype: pull_request\n---\n",
       retryCloseCoverageCommandStatusOnlyUpdate: () => false,
       selfMutationItemReceipts: [],
-    } as never);
+    } as never).postProofFreshnessBlock()?.reason ?? null;
 
-  assert.equal(guards(acceptedUpdatedAt, acceptedUpdatedAt).postProofFreshnessBlock(), null);
+  assert.equal(guards(), null, "acknowledgement-only update keeps the accepted review");
   assert.equal(
-    guards("2026-10-11T21:01:00Z", acceptedUpdatedAt).postProofFreshnessBlock()?.reason,
+    guards({ receiptMatches: false }),
     "updated_at changed",
-    "a change after the accepted gate still blocks the close",
+    "a same-second title/body edit changes the structural receipt and blocks",
   );
   assert.equal(
-    guards(acceptedUpdatedAt, undefined).postProofFreshnessBlock()?.reason,
+    guards({ humanActivityAfterProof: true }),
+    "non-automation activity after coverage proof",
+  );
+  assert.equal(guards({ live: "2026-10-11T21:01:00Z" }), "updated_at changed");
+  assert.equal(
+    guards({ accepted: null }),
     "updated_at changed",
     "without the gate's acceptance the review snapshot stays the baseline",
   );
