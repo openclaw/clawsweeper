@@ -175,6 +175,60 @@ test("implementation intake rejects missing records while preserving their revis
   assert.equal(reportRevisionSha256(markdown), createHash("sha256").update(markdown).digest("hex"));
 });
 
+test("implementation discovery validates the freshest report after ordering host metadata", () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), "intake-fresh-record-"));
+  try {
+    const canonicalDir = path.join(root, "records/openclaw-openclaw/items");
+    const sourceDir = path.join(root, "artifacts");
+    mkdirSync(canonicalDir, { recursive: true });
+    mkdirSync(sourceDir);
+    for (const corrupt of [false, true]) {
+      for (const newerLocation of ["source", "canonical"] as const) {
+        const old = reportWithoutReviewRecord(report({ reviewed_at: "2026-07-31T10:00:00Z" }));
+        const unreadable = corrupt
+          ? old.replace("\n---\n", "\nreview_record: {broken\n---\n")
+          : old;
+        const fresh = report({ reviewed_at: "2026-07-31T10:05:00Z" });
+        writeFileSync(
+          path.join(canonicalDir, "123.md"),
+          newerLocation === "source" ? unreadable : fresh,
+        );
+        writeFileSync(
+          path.join(sourceDir, "123.md"),
+          newerLocation === "source" ? fresh : unreadable,
+        );
+        for (const sourceDirs of [
+          [sourceDir, canonicalDir],
+          [canonicalDir, sourceDir],
+        ]) {
+          const options = {
+            enabled: true,
+            candidateKind: "strict_bug" as const,
+            targetRepo: "openclaw/openclaw",
+            reportRepo: "openclaw/clawsweeper-state",
+            sourceDirs,
+            jobRoot: root,
+          };
+          assert.deepEqual(
+            discoverImplementationCandidates(options).map(({ item_number }) => item_number),
+            [123],
+          );
+          const newestUnreadable = unreadable.replace("10:00:00Z", "10:10:00Z");
+          const unreadablePath = path.join(
+            newerLocation === "source" ? canonicalDir : sourceDir,
+            "123.md",
+          );
+          writeFileSync(unreadablePath, newestUnreadable);
+          assert.deepEqual(discoverImplementationCandidates(options), []);
+          writeFileSync(unreadablePath, unreadable);
+        }
+      }
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("implementation discovery keeps valid items in mixed source and canonical batches", () => {
   const root = mkdtempSync(path.join(os.tmpdir(), "intake-record-isolation-"));
   try {

@@ -502,8 +502,7 @@ export function discoverImplementationCandidates({
     if (!fs.existsSync(sourceDir)) continue;
     for (const file of findMarkdownFiles(sourceDir)) {
       const sourceMarkdown = fs.readFileSync(file, "utf8");
-      const sourceReport = readableReviewReport(sourceMarkdown);
-      if (!sourceReport) continue;
+      const sourceReport = parseIntakeMetadata(sourceMarkdown);
       const number = Number(sourceReport.frontmatter.number);
       const repository = sourceReport.frontmatter.repository || targetRepo;
       if (!Number.isSafeInteger(number) || number <= 0) continue;
@@ -512,12 +511,8 @@ export function discoverImplementationCandidates({
       const canonicalMarkdown = fs.existsSync(canonicalReportPath)
         ? fs.readFileSync(canonicalReportPath, "utf8")
         : null;
-      const canonicalReport =
-        canonicalMarkdown === null ? null : readableReviewReport(canonicalMarkdown);
-      // An existing canonical report without a valid record cannot authorize work,
-      // even when an older source artifact still contains an eligible decision.
-      if (canonicalMarkdown !== null && !canonicalReport) continue;
-      const canonicalFreshness = canonicalReport ? reviewFreshness(canonicalReport) : null;
+      const canonicalFreshness =
+        canonicalMarkdown === null ? null : reviewFreshness(parseIntakeMetadata(canonicalMarkdown));
       const sourceFreshness = reviewFreshness(sourceReport);
       // Publication hydrates records before reviewing, so its accepted artifact can
       // be newer than the runner's local snapshot of authoritative Worker state.
@@ -549,7 +544,8 @@ export function discoverImplementationCandidates({
   }
   const candidates: { candidate: LooseRecord; existingJob: boolean; retryDue: boolean }[] = [];
   for (const { markdown, number, reportPath, repository } of reviewsByIssue.values()) {
-    const parsedReport = parseReviewReport(markdown);
+    const parsedReport = readableReviewReport(markdown);
+    if (!parsedReport) continue;
     const decision = reportOnlyDecision({
       targetRepo,
       report: parsedReport,
