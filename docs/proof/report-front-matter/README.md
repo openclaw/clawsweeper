@@ -18,7 +18,7 @@
 - Owner: ClawSweeper report and repair maintainers
 - Source of truth: [shared structure reader](../../../src/report-front-matter.ts),
   [decision packets](../../../src/decision-packets.ts),
-  [repair intake](../../../src/repair/create-job.ts), and
+  [historical repair intake](https://github.com/openclaw/clawsweeper/blob/aba9826ab8c010a8f5a2b4411484dc4cb7e94f51/src/repair/create-job.ts), and
   [workflow selectors](../../../src/repair/workflow-utils.ts)
 - Prepared against main: `aba9826ab8c010a8f5a2b4411484dc4cb7e94f51`
 - Update when: report structure, adapter decoding, promotion eligibility,

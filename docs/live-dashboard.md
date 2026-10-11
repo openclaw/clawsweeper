@@ -33,11 +33,6 @@ still exclude workflow, item, and step titles, raw or source URLs, queries, raw
 failure keys and payloads, internal opaque keys, credentials, tokens, private
 or non-allowlisted repositories, and per-job diagnostic text.
 
-For the end-to-end relationship between GitHub Actions workers, durable jobs,
-CrabFleet action sessions, Codex steering, completion reasons, and dashboard
-rows, see
-[`steerable-repair-automation.md`](steerable-repair-automation.md).
-
 Queue transport failures keep the fixed public `exact_review_queue_unavailable`
 response. Server logs for `exact_review_queue_request_failed` retain only the
 Cloudflare `remote`, `retryable`, and `overloaded` boolean flags; exception text,

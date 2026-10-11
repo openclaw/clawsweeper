@@ -732,18 +732,11 @@ the existing review-policy hash used for cache reuse.
 OpenClaw Bay is unaffected: this is reviewer input and guidance only, with no
 observer schema, routes, or control changes.
 
-## Repair Markers
+## Review Markers
 
-For an actionable PR repair request, ClawSweeper appends both markers:
-
-```html
-<!-- clawsweeper-verdict:needs-changes item=<number> sha=<pull-head-sha> confidence=<confidence> -->
-<!-- clawsweeper-action:fix-required item=<number> sha=<pull-head-sha> confidence=<confidence> finding=review-feedback -->
-```
-
-The verdict marker says what the review decided. The action marker is the
-permission for the repair lane to wake up. If the action marker is absent, the
-repair lane must not start a repair run.
+ClawSweeper emits typed verdict, security, and review-state markers for review
+publication. Repair action markers and their executor are retired. Historical
+markers remain readable but never authorize a branch mutation or merge.
 
 For a PR whose typed `securityReview.status` is `needs_attention`, ClawSweeper
 must emit a deterministic security marker and a human-only verdict, never a
@@ -761,28 +754,22 @@ hands, ClawSweeper emits a human-only verdict:
 <!-- clawsweeper-verdict:needs-human item=<number> sha=<pull-head-sha> confidence=<confidence> hold=<hold> findings=<count> -->
 ```
 
-Every PR `needs-human` verdict has two typed attributes. The repair router
-routes on these attributes. It does not read the comment prose.
+Every PR `needs-human` verdict has two typed attributes for review consumers.
+Neither attribute enrolls a repair or merge workflow.
 
 - `hold` tells why the verdict is human-only: `normalization_failed`,
   `review_identity`, `maintainer_decision`, `review_failed`, `security`,
-  `proof`, `not_opted_in` (the review is ready, but the PR has no repair-loop
-  label), `blocked`, or `undecided`. `maintainer_decision` and `proof` appear
-  only when that hold is the one Before-merge item; otherwise the hold is
-  `blocked`. A maintainer can waive `not_opted_in`, `maintainer_decision` and
-  `proof`; see [auto-update-prs.md](repair/auto-update-prs.md).
+  `proof`, `not_opted_in` (a retained historical readiness classification),
+  `blocked`, or `undecided`. `maintainer_decision` and `proof` appear only when
+  that hold is the one Before-merge item; otherwise the hold is `blocked`.
 - `findings` is the number of typed review findings. It is `0` for a failed or
-  unnormalized review. A value above `0` sends the PR to the repair lane.
+  unnormalized review. Findings remain work for the contributor or maintainer.
 
 A `needs-human` verdict without these attributes stays a human pause.
 
-Missing, mock-only, or insufficient `realBehaviorProof` is always human-only:
-ClawSweeper must not emit `clawsweeper-action:fix-required` or pass/automerge
-markers for proof-only blockers because automation cannot prove the
-contributor's real setup for them.
-
-Clean/close-style PR verdicts also stay human-only from the repair point of
-view. Closing remains outside the repair loop.
+Missing, mock-only, or insufficient `realBehaviorProof` remains human-only:
+automation cannot prove the contributor's real setup for them. Closing remains
+owned by the separate guarded apply lane.
 
 ## Stale-Head Guard
 
@@ -794,31 +781,13 @@ GitHub's timestamp precision even when `reviewed_at` includes milliseconds.
 OpenClaw Bay is unaffected: no observer data contract or controls change.
 
 PR reports include `pull_head_sha` in front matter when GitHub provides it.
-ClawSweeper copies that SHA into the hidden markers. The repair lane compares
-the marker SHA with the live PR head SHA and skips the comment if they differ.
-
-This keeps an old review comment from repairing a branch after the PR already
-moved.
-
-## Iteration Limits
-
-ClawSweeper caps trusted repair dispatches:
-
-- `CLAWSWEEPER_MAX_REPAIRS_PER_PR=10` total automatic repair
-  iterations per PR by default.
-- `CLAWSWEEPER_MAX_REPAIRS_PER_HEAD=2` repair dispatches per PR head
-  SHA by default.
-
-The per-head cap prevents unbounded duplicate workers for the same commit while
-leaving room for one infrastructure retry. The per-PR
-cap stops an automatic review/repair loop after ten ClawSweeper-triggered
-iterations even if each repair pushes a new head SHA.
+ClawSweeper copies that SHA into the hidden markers, and review publication
+checks the current source identity before applying the result.
 
 ## Operational Notes
 
-- ClawSweeper should generate actionable text for maintainers and structured
-  markers for automation. Do not make repair automation depend on exact prose
-  when a marker exists.
+- ClawSweeper generates actionable text for maintainers and structured
+  markers for review consumers. Automation must not infer authority from prose.
 - Sync comments without closing by running apply in comment-sync mode:
 
 ```bash

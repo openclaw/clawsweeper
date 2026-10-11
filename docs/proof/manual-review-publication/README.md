@@ -108,5 +108,5 @@ publication authority. Physical receipts and leases retain their original fences
 Missing or conflicting lineage cannot complete another producer journey. Bay's
 public field set and mutation-free UI remain unchanged; its data projection is
 part of this proof. Admission remains default-off until the separately authorized
-[coordinated rollout](../../repair/operations.md#manual-publication-rollout).
+[historical coordinated rollout](https://github.com/openclaw/clawsweeper/blob/27d4174225bba4558644d4bc0d03c85592e34478/docs/repair/operations.md#manual-publication-rollout).
 No historical batch or foreign target is recovered or mutated by this harness.
