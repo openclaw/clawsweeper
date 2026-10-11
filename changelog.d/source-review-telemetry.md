@@ -1,0 +1,1 @@
+- Record review reliability telemetry in the source workflow's final job instead of spawning a reconciliation workflow for every completion; retain the independent 15-minute terminal-lease census.

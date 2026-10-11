@@ -1,9 +1,6 @@
 name: Reconcile exact-review leases
 
 on:
-  workflow_run:
-    workflows: [ClawSweeper, ClawSweeper Review Plan]
-    types: [completed]
   schedule:
     - cron: "*/15 * * * *"
   workflow_dispatch:
@@ -14,68 +11,6 @@ env:
   CLAWSWEEPER_APP_CLIENT_ID: Iv23liOECG0slfuhz093
 
 jobs:
-  reconcile:
-    name: Reconcile leases
-    if: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.event == 'repository_dispatch' && startsWith(github.event.workflow_run.display_title, 'Review event item ') }}
-    # Hold the lock across the cooldown check AND repair. Telemetry stays per-run.
-    concurrency:
-      group: exact-review-reconcile-workflow-run
-      cancel-in-progress: false
-    permissions:
-      actions: read
-      contents: read
-    uses: ./.github/workflows/exact-review-reconcile-run.yml
-    secrets:
-      CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
-
-  observe:
-    name: Observe terminal review run
-    concurrency:
-      group: exact-review-observe-${{ github.event.workflow_run.id }}-${{ github.event.workflow_run.run_attempt }}
-      cancel-in-progress: false
-    # Schedule a runner only for titles the observer can classify. Queue-backed
-    # "Review exact item" runs and support runs otherwise start an ubuntu runner
-    # only to print "skipped", starving the Blacksmith jobs that must claim their
-    # six-minute queue reservations. The test suite keeps this allowlist aligned
-    # with REVIEW_RUN_OBSERVER_TITLE_LANES.
-    if: >-
-      ${{
-        github.event_name == 'workflow_run' &&
-        (
-          startsWith(github.event.workflow_run.display_title, 'Review scheduled hot item ') ||
-          startsWith(github.event.workflow_run.display_title, 'Review scheduled normal item ') ||
-          startsWith(github.event.workflow_run.display_title, 'Review event item') ||
-          startsWith(github.event.workflow_run.display_title, 'Review manual item') ||
-          startsWith(github.event.workflow_run.display_title, 'Review manual batch ') ||
-          startsWith(github.event.workflow_run.display_title, 'Review hot ClawSweeper items') ||
-          startsWith(github.event.workflow_run.display_title, 'Review hot target repo ') ||
-          startsWith(github.event.workflow_run.display_title, 'Review manual hot target') ||
-          startsWith(github.event.workflow_run.display_title, 'Review target repo ') ||
-          startsWith(github.event.workflow_run.display_title, 'Review ClawSweeper items') ||
-          startsWith(github.event.workflow_run.display_title, 'Review manual target')
-        )
-      }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    permissions:
-      actions: read
-      contents: read
-    steps:
-      - uses: actions/checkout@v7
-        if: ${{ always() }}
-        # workflow_run may expose secrets, so execute observer code only from the trusted default branch.
-        with:
-          ref: ${{ github.event.repository.default_branch }}
-          persist-credentials: false
-
-      - name: Record terminal review wave
-        if: ${{ always() }}
-        env:
-          CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
-          GH_TOKEN: ${{ github.token }}
-          QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
-        run: node scripts/review-run-observer.mjs --event-file "$GITHUB_EVENT_PATH"
-
   sweep:
     name: Sweep terminal exact-review runs
     concurrency:

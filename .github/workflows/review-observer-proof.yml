@@ -1,0 +1,44 @@
+name: Review observer controlled proof
+run-name: Review manual target observer proof
+on:
+  workflow_dispatch:
+    inputs:
+      outcome:
+        type: choice
+        options: [success, failure, cancel]
+        default: success
+permissions:
+  actions: read
+  contents: read
+jobs:
+  plan:
+    name: Plan review candidates
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Controlled terminal result
+        env:
+          OUTCOME: ${{ inputs.outcome }}
+        run: |
+          case "$OUTCOME" in
+            failure) exit 1 ;;
+            cancel) sleep 300 ;;
+            success) true ;;
+          esac
+  observe-review:
+    name: Observe review run
+    needs: plan
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+        if: ${{ always() }}
+        with:
+          persist-credentials: false
+      - name: Record terminal review wave
+        if: ${{ always() }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REVIEW_RUN_CANCELLED: ${{ cancelled() }}
+        run: node scripts/review-run-observer.mjs --current-run --dry-run

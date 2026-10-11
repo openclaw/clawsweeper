@@ -12,7 +12,7 @@ const preload = fileURLToPath(
   new URL("./fixtures/review-run-observer-transport.mjs", import.meta.url),
 );
 const secret = "synthetic-observer-signing-key";
-function runObserver(mode: string) {
+function runObserver(mode: string, currentRun = false) {
   const root = mkdtempSync(join(tmpdir(), "observer-transport-"));
   try {
     const event = join(root, "event.json");
@@ -34,7 +34,12 @@ function runObserver(mode: string) {
     );
     const result = spawnSync(
       process.execPath,
-      ["--import", preload, observer, "--event-file", event],
+      [
+        "--import",
+        preload,
+        observer,
+        ...(currentRun ? ["--current-run"] : ["--event-file", event]),
+      ],
       {
         env: {
           PATH: process.env.PATH,
@@ -42,6 +47,9 @@ function runObserver(mode: string) {
           GH_TOKEN: "synthetic-github-token",
           GITHUB_REPOSITORY: "openclaw/clawsweeper",
           GITHUB_API_URL: "https://github.example.test",
+          GITHUB_RUN_ID: "1234",
+          GITHUB_RUN_ATTEMPT: "2",
+          REVIEW_RUN_CANCELLED: mode === "current-cancelled" ? "true" : "false",
           QUEUE_URL: "https://queue.example.test",
           CLAWSWEEPER_WEBHOOK_SECRET: secret,
         },
@@ -115,3 +123,16 @@ test("observer CLI fails after its bounded transient attempts and settles every 
   assert.match(result.stderr, /review telemetry write returned 503/);
   assert.doesNotMatch(result.stderr, /synthetic upstream response/);
 });
+
+for (const outcome of ["success", "failure", "cancelled"]) {
+  test(`source observer records ${outcome} before its enclosing attempt completes`, () => {
+    const result = runObserver(`current-${outcome}`, true);
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.calls.length, 1);
+    const record = JSON.parse(result.calls[0].body);
+    assert.equal(record.workflow_outcome, outcome);
+    assert.equal(record.completed_at, "2026-09-21T00:01:00Z");
+    assert.equal(record.run_attempt, 2);
+    assert.equal(record.item_count, 1);
+  });
+}

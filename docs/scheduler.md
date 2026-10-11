@@ -113,9 +113,9 @@ and runtime packaging rules.
 
 ### Control-plane workflow retries
 
-Shell calls to the control plane in `review-plan.yml`, `sweep.yml`,
-`exact-review-reconcile-run.yml`, and `exact-review-dead-letter-reconcile.yml` use
-`scripts/control-plane-curl.sh`. Each request retries connection failures and
+Shell calls to the control plane in `review-plan.yml`, `sweep.yml`, and
+`exact-review-dead-letter-reconcile.yml` use `scripts/control-plane-curl.sh`.
+Each request retries connection failures and
 HTTP 5xx up to four attempts. A valid `Retry-After` delay (seconds or HTTP-date)
 is capped at 60 seconds; otherwise the waits are 2, 4, and 8 seconds. Each
 attempt emits a notice. The helper preserves the caller's final curl exit code,
@@ -351,30 +351,26 @@ requeue plan to preserve one owed source-drift review. The terminal `requeue`
 disposition is recorded before completion and stays on the old fenced revision.
 A superseded receipt cannot authorize a requeue; a newer command keeps its
 current decision and revision through the ordinary finishing path.
-The terminal-run backstop retains its `*/15 * * * *` schedule. Event-triggered
-lease repair uses the reusable `exact-review-reconcile-run.yml` job with the
-`exact-review-reconcile-workflow-run` concurrency group and
-`cancel-in-progress: false`: one running job and one pending follow-up, with
-new events replacing superseded pending jobs. The lock covers both the cooldown
-check and reconciliation. Per-run reliability observations remain separate so
-coalescing does not drop telemetry; eligible events still create observer jobs.
+The terminal-run backstop retains its `*/15 * * * *` schedule and manual
+dispatch. It inspects all claimed runs and normally reconciles a terminal
+attempt within about 15 minutes, plus Actions scheduling and execution delay.
+This is a cadence backstop, not a hard wall-clock guarantee during platform
+outages. Completion events no longer start separate reconciliation workflows.
 
-Before event repair, `scripts/exact-review-reconcile-guard.mjs` reads the latest
-30 runs of `exact-review-reconcile.yml` using
-`gh run list --json databaseId,updatedAt`. For runs updated within five minutes,
-`gh run view --json jobs` verifies that a lease-reconciliation job actually
-succeeded within that window, even if its observer job is still running.
-Observer-only runs, skipped repairs, and failed repairs do not extend the
-cooldown. A job-level output guard skips repair after a recent
-success; unavailable history or the 60-second aggregate history-read deadline
-allows repair to proceed. Each lookup is bounded by the remaining deadline,
-and a successful result is checked for freshness after the read. Scheduled and
-manual sweeps bypass the guard and inspect all claimed runs, so a terminal attempt
-whose event was coalesced or skipped is normally reconciled within about
-15 minutes worst case, plus Actions scheduling and execution delay. This is a
-cadence backstop, not a hard wall-clock guarantee during platform outages.
-OpenClaw Bay is unaffected: queue schemas, telemetry observations, and public
-observer data contracts do not change.
+Run reliability telemetry is published by the final `Observe review run` job
+inside `sweep.yml` and `review-plan.yml`, after their other jobs finish.
+The existing title allowlist still excludes `Review exact item` and support
+runs. The observer reads the exact GitHub run attempt and its jobs, excludes
+itself, and derives the terminal outcome before the enclosing run completes.
+Failed and normally cancelled jobs remain observable through `always()`;
+force-cancellation or a platform outage that prevents the final job from
+running can still lose telemetry. Rerunning review jobs also reruns their
+dependent observer under the new run-attempt identity.
+
+The Worker ignores duplicate `(run_id, run_attempt)` posts. No storage schema,
+queue recovery policy, or public observer contract changes. OpenClaw Bay is
+unaffected; the aggregate remains a read-only reporting surface, not a recovery
+or admission input.
 
 Queue-completion failures remain visible separately from Codex or content
 failures, using the logical generation result and typed deferral rather than

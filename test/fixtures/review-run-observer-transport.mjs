@@ -45,6 +45,33 @@ function response(status, headers = {}) {
 
 globalThis.fetch = async (url, init) => {
   if (init?.method !== "POST") {
+    if (mode.startsWith("current-")) {
+      if (!String(url).includes("/jobs?")) {
+        return Response.json({
+          id: 1234,
+          run_attempt: 2,
+          status: "in_progress",
+          conclusion: null,
+          event: "repository_dispatch",
+          display_title: "Review scheduled hot item openclaw/openclaw#674",
+          run_started_at: "2026-09-21T00:00:00Z",
+          updated_at: "2026-09-21T00:00:00Z",
+          html_url: "https://github.com/openclaw/clawsweeper/actions/runs/1234",
+        });
+      }
+      return Response.json({
+        total_count: 2,
+        jobs: [
+          {
+            name: "Review exact event item",
+            status: "completed",
+            conclusion: mode.slice(8),
+            completed_at: "2026-09-21T00:01:00Z",
+          },
+          { name: "Observe review run", status: "in_progress", conclusion: null },
+        ],
+      });
+    }
     return Response.json({
       total_count: 1,
       jobs: [{ name: "Review exact event item", conclusion: "success" }],
