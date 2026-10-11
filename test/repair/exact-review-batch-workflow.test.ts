@@ -649,17 +649,7 @@ test("batch workflow signs queue ownership, isolates item failures, and commits 
   assert.match(source, /while sleep 60/);
   assert.match(source, /test ! -f "\$heartbeat_failed"/);
   assert.match(source, /node scripts\/prepare-exact-review-batch\.mjs/);
-  assert.match(source, /gh workflow run repair-comment-router\.yml/);
   assert.match(source, /EXACT_REVIEW_GITHUB_REQUEST_REPEAT="\$repeat_revision"/);
-  assert.match(
-    source,
-    /EXACT_REVIEW_GITHUB_REQUEST_OUTCOME=success[\s\S]*?repair:exact-review-batch request-metric/,
-  );
-  assert.match(source, /was submitted too quickly[\s\S]*?repair:exact-review-batch rate-limit/);
-  assert.match(
-    source,
-    /EXACT_REVIEW_GITHUB_REQUEST_OUTCOME=error[\s\S]*?repair:exact-review-batch request-metric/,
-  );
   assert.doesNotMatch(
     source,
     /AUTO_IMPLEMENT|dispatch-issue-implementation|remaining_implementations/,
@@ -697,8 +687,7 @@ test("batch workflow signs queue ownership, isolates item failures, and commits 
   assert.match(source, /Record batch preparation start/);
   assert.match(source, /Record batch preparation finish/);
   assert.match(source, /EXACT_REVIEW_BATCH_OBSERVATION=final_github_apply/);
-  assert.match(source, /EXACT_REVIEW_BATCH_OBSERVATION=github_throttle/);
-  assert.match(source, /rate limit\|abuse detection\|was submitted too quickly\|HTTP 429/);
+  assert.doesNotMatch(source, /gh workflow run repair-comment-router/);
 
   const healthyMembers = workflow.jobs.publish!.steps.find(
     (step) => step.name === "Finalize healthy members under a fenced heartbeat",
@@ -717,7 +706,7 @@ test("batch workflow signs queue ownership, isolates item failures, and commits 
   );
 });
 
-test("legacy batch proof reviews use the normal verdict router; failure recovery remains review-only", () => {
+test("batch publications complete without dispatching a command router", () => {
   const run =
     workflow.jobs.publish!.steps.find(
       (step) => step.name === "Finalize healthy members under a fenced heartbeat",
@@ -754,13 +743,8 @@ test("legacy batch proof reviews use the normal verdict router; failure recovery
       { encoding: "utf8", env: { ...process.env, SOURCE_ACTION_CASE: action } },
     );
     assert.equal(result.status, 0, result.stderr);
-    if (action !== "failed_review_shard_recovery") {
-      assert.match(result.stdout, /router_called/);
-      assert.match(result.stdout, /outcome=durable/);
-    } else {
-      assert.doesNotMatch(result.stdout, /router_called/);
-      assert.match(result.stdout, /outcome=not_required/);
-    }
+    assert.doesNotMatch(result.stdout, /router_called/);
+    assert.match(result.stdout, /outcome=not_required/);
   }
 });
 
@@ -778,7 +762,7 @@ test("batch publisher gives canonical supersession precedence over artifact term
   assert.ok(supersededTerminal > supersededReceipt && supersededTerminal < staleArtifactPlan);
 });
 
-test("direct proof reviews use the normal verdict router; failure recovery remains review-only", () => {
+test("direct publications complete without dispatching a command router", () => {
   const run =
     Object.values(sweep.jobs)
       .flatMap((job) => job.steps ?? [])
@@ -812,13 +796,7 @@ test("direct proof reviews use the normal verdict router; failure recovery remai
       },
     );
     assert.equal(result.status, 0, result.stderr);
-    assert.equal(
-      result.stdout,
-      action !== "failed_review_shard_recovery"
-        ? "router_called\noutcome=durable\nterminal=\n"
-        : "outcome=not_required\nterminal=\n",
-      action,
-    );
+    assert.equal(result.stdout, "outcome=not_required\nterminal=\n", action);
   }
 });
 

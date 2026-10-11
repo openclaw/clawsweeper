@@ -39,7 +39,7 @@ export class ExactReviewQueue {
         ...input,
         deliveryId: input.fenceKey,
         sourceAction: "legacy_dispatch",
-        commandOriginated: true,
+        commandOriginated: input.commandOriginated !== false,
         statusMarker:
           "<!-- clawsweeper-command-status:706:re_review:0123456789abcdef0123456789abcdef01234567 -->",
         statusCommentId: 7061,

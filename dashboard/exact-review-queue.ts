@@ -10237,6 +10237,9 @@ export class ExactReviewQueue {
     const body = objectValue(value);
     const identity = exactReviewLifecycleIdentity(body);
     const receiptId = typeof body.receipt_id === "string" ? body.receipt_id : "";
+    // A normal publication needs no command scan: webhook intake and the
+    // scheduled router own commands independently. Publishers explicitly send
+    // not_required; durable remains valid for deferred close-proof coverage.
     const outcome = body.outcome === undefined ? "durable" : body.outcome;
     if (!identity || !receiptId || (outcome !== "durable" && outcome !== "not_required")) {
       return json({ error: "invalid_lifecycle_router_receipt" }, 400);

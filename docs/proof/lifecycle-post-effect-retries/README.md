@@ -23,6 +23,9 @@ returns one HTTP 500 before forwarding or drops a response after the queue has
 committed it. In the latter case, the queue instance is reconstructed over the
 same SQLite storage before retry; a paired scenario also submits a newer requeue.
 The receipt records each request count and final persisted lifecycle/driver state.
+An automatic non-command admission also receives a normal publication
+`not_required` router receipt. Its lifecycle must become `completed`, retain
+that result across queue reconstruction, and make no outbound router dispatch.
 
 Fixture-only routes seed and inspect state. The fixture blocks all outbound
 Worker fetches and suppresses alarm dispatch; no GitHub, model, or production
