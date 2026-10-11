@@ -1587,14 +1587,27 @@ function inspectReferencedPullRequests({
 
 function readReport({ reportRepo, reportPath }: { reportRepo: string; reportPath: string }) {
   const local = args["report-file"] ?? args.report_file;
-  if (typeof local === "string") return fs.readFileSync(path.resolve(local), "utf8");
+  const localMarkdown =
+    typeof local === "string" ? fs.readFileSync(path.resolve(local), "utf8") : null;
   const canonicalPath = path.join(repoRoot(), reportPath);
   if (
     reportRepo.trim().toLowerCase() === "openclaw/clawsweeper-state" &&
     fs.existsSync(canonicalPath)
   ) {
-    return fs.readFileSync(canonicalPath, "utf8");
+    const canonicalMarkdown = fs.readFileSync(canonicalPath, "utf8");
+    // Recovered jobs must use the same freshness boundary as discovery, even
+    // when a caller supplies an older accepted artifact explicitly.
+    if (
+      localMarkdown === null ||
+      compareReviewFreshness(
+        reviewFreshness(parseIntakeMetadata(canonicalMarkdown)),
+        reviewFreshness(parseIntakeMetadata(localMarkdown)),
+      ) >= 0
+    ) {
+      return canonicalMarkdown;
+    }
   }
+  if (localMarkdown !== null) return localMarkdown;
   const content = ghJsonWithRetry<{ content?: string }>([
     "api",
     `repos/${reportRepo}/contents/${reportPath}`,

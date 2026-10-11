@@ -4,6 +4,7 @@ import fs from "node:fs";
 import http from "node:http";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { withReviewRecord } from "../../helpers.ts";
 
 const self = fileURLToPath(import.meta.url);
 
@@ -144,23 +145,26 @@ export function runGitHubQuotaFault({ runtimeRoot, artifacts, fixture }) {
 }
 
 function quotaProofReport() {
-  return [
-    "---",
-    "number: 42",
-    "repository: openclaw/openclaw",
-    "type: issue",
-    "review_status: complete",
-    "local_checkout_access: verified",
-    "local_checkout_access_source: runner_preflight_v1",
-    "decision: keep_open",
-    "action_taken: kept_open",
-    "item_snapshot_hash: quota-proof",
-    `reviewed_at: ${new Date().toISOString()}`,
-    "---",
-    "",
-    "# GitHub quota fault injection",
-    "",
-  ].join("\n");
+  return withReviewRecord(
+    [
+      "---",
+      "number: 42",
+      "repository: openclaw/openclaw",
+      "type: issue",
+      "review_status: complete",
+      "local_checkout_access: verified",
+      "local_checkout_access_source: runner_preflight_v1",
+      "decision: keep_open",
+      "action_taken: kept_open",
+      "item_snapshot_hash: quota-proof",
+      `reviewed_at: ${new Date().toISOString()}`,
+      "---",
+      "",
+      "# GitHub quota fault injection",
+      "",
+    ].join("\n"),
+    { decision: "keep_open", closeReason: "none", localCheckoutAccess: "verified" },
+  );
 }
 
 function waitForServer(server, ready) {

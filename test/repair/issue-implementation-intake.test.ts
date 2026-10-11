@@ -343,6 +343,64 @@ test("single issue intake requests fresh review without GitHub calls or job writ
   }
 });
 
+test("single issue intake cannot recover an old job past a newer unreadable canonical review", () => {
+  const root = realpathSync(mkdtempSync(path.join(os.tmpdir(), "intake-superseded-record-")));
+  try {
+    for (const entry of ["dist", "config", "package.json"]) {
+      cpSync(entry, path.join(root, entry), { recursive: true });
+    }
+    symlinkSync(path.resolve("node_modules"), path.join(root, "node_modules"), "dir");
+    const reportPath = path.join(root, "report.md");
+    const canonicalPath = path.join(root, "records/openclaw-openclaw/items/123.md");
+    const jobPath = path.join(root, issueImplementationJobPath("openclaw/openclaw", 123));
+    const calledPath = path.join(root, "github-called");
+    const fakeGh = path.join(root, "fake-gh");
+    writeFileSync(fakeGh, `#!/bin/sh\ntouch '${calledPath}'\nexit 2\n`);
+    chmodSync(fakeGh, 0o755);
+    mkdirSync(path.dirname(canonicalPath), { recursive: true });
+    mkdirSync(path.dirname(jobPath), { recursive: true });
+    writeFileSync(jobPath, "existing job must not be recovered or overwritten\n");
+    writeFileSync(reportPath, report({ reviewed_at: "2026-07-31T10:00:00Z" }));
+    const newer = report({ reviewed_at: "2026-07-31T10:10:00Z" });
+    for (const canonical of [
+      reportWithoutReviewRecord(newer),
+      newer.replace(/^review_record:.*$/m, "review_record: {broken"),
+    ]) {
+      writeFileSync(canonicalPath, canonical);
+      const result = spawnSync(
+        process.execPath,
+        [
+          path.join(root, "dist/repair/issue-implementation-intake.js"),
+          "prepare",
+          "--enabled",
+          "true",
+          "--target-repo",
+          "openclaw/openclaw",
+          "--item-number",
+          "123",
+          "--report-file",
+          reportPath,
+        ],
+        { cwd: root, encoding: "utf8", env: { ...process.env, GH_BIN: fakeGh } },
+      );
+      assert.equal(result.status, 0, result.stderr);
+      const decision = JSON.parse(result.stdout);
+      assert.equal(decision.status, "skipped_invalid_review_record");
+      assert.equal(decision.should_repair, false);
+      assert.equal(decision.job_path, "");
+      assert.equal(decision.existing_job_path, "");
+      assert.equal(existsSync(calledPath), false);
+      assert.equal(
+        readFileSync(jobPath, "utf8"),
+        "existing job must not be recovered or overwritten\n",
+      );
+      assert.equal(existsSync(path.join(root, "results")), false);
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("implementation discovery refuses persisted manual and ambiguous policies with automation enabled", () => {
   const root = mkdtempSync(path.join(os.tmpdir(), "manual-discovery-"));
   try {
