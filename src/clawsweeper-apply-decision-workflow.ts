@@ -1891,6 +1891,7 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
           completeReviewActivityReceiptMatches,
           currentProofState: () => ({
             ...coverageProofState,
+            acceptedUpdatedAt: reviewedSourceFresh() ? item.updatedAt : undefined,
             storedHash,
             storedUpdatedAt,
           }),

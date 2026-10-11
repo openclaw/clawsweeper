@@ -1,0 +1,1 @@
+- Stop PR close proposals from re-reviewing the same head forever: the post-proof freshness check now starts from the `updated_at` that the pre-apply gate already accepted, so ClawSweeper's own review-progress acknowledgement edit no longer reads as source drift. Any change after that point still blocks the close and requeues.

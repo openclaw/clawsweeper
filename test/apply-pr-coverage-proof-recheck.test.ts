@@ -128,6 +128,57 @@ test("forced final freshness rechecks an item without coverage proof or a new se
   assert.equal(fetchCount, 1);
 });
 
+test("post-proof freshness keeps an updated_at the pre-apply gate accepted, and blocks any later change", () => {
+  // openclaw/openclaw#158915: the review read the PR at 20:55:06; the automatic review progress
+  // edit moved updated_at to 20:59:05 before apply; the pre-apply gate accepted that owned write.
+  const storedUpdatedAt = "2026-10-11T20:55:06Z";
+  const acceptedUpdatedAt = "2026-10-11T20:59:05Z";
+  const guards = (liveUpdatedAt: string, accepted: string | undefined) =>
+    createApplyProofFreshnessGuards({
+      action: undefined,
+      automationItemUpdatedAt: undefined,
+      collectItemContext: () => ({}),
+      completeReviewActivityReceiptMatches: () => true,
+      contextHasNonAutomationActivityAfter: () => false,
+      coveringPrCloseCoveragePullRequestSnapshotSha256: () => "c".repeat(64),
+      currentProofState: () => ({
+        acceptedUpdatedAt: accepted,
+        cachedPrCloseCoverageProofGateResult: { status: "allowed" },
+        prCloseCoverageProofGateChecked: true,
+        prCloseCoverageProofStartedAtMs: Date.parse("2026-10-11T21:00:00Z"),
+        storedHash: undefined,
+        storedUpdatedAt,
+      }),
+      expectedReviewActivityCursor: emptyReviewedPrActivityCursor,
+      fetchItem: () => ({
+        state: "open",
+        item: { kind: "pull_request", updatedAt: liveUpdatedAt },
+      }),
+      fetchReviewedPrActivityCursor: () => emptyReviewedPrActivityCursor,
+      freshPullRequestReviewHead: () => true,
+      GitHubRuntimeBudgetError: class extends Error {},
+      itemKind: "pull_request",
+      itemSnapshotHash: () => "d".repeat(64),
+      number: 158915,
+      reviewHasCompleteActivityIdentity: true,
+      reviewMarkdown: "---\ntype: pull_request\n---\n",
+      retryCloseCoverageCommandStatusOnlyUpdate: () => false,
+      selfMutationItemReceipts: [],
+    } as never);
+
+  assert.equal(guards(acceptedUpdatedAt, acceptedUpdatedAt).postProofFreshnessBlock(), null);
+  assert.equal(
+    guards("2026-10-11T21:01:00Z", acceptedUpdatedAt).postProofFreshnessBlock()?.reason,
+    "updated_at changed",
+    "a change after the accepted gate still blocks the close",
+  );
+  assert.equal(
+    guards(acceptedUpdatedAt, undefined).postProofFreshnessBlock()?.reason,
+    "updated_at changed",
+    "without the gate's acceptance the review snapshot stays the baseline",
+  );
+});
+
 function sourceRevisionForTest(title: string): string {
   return createHash("sha256")
     .update(

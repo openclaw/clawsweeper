@@ -720,6 +720,13 @@ requeues a fresh `source_drift_requeue` review. Without these receipts, a close
 proposal kept open by its producer made every deferred re-apply drift and
 requeue indefinitely.
 
+The post-proof freshness check that runs before a PR close (after the coverage
+proof) starts from the `updated_at` this pre-apply check accepted. It blocks
+only on a change after that point; it does not judge the accepted
+acknowledgement or receipt write again against the older review snapshot. When
+the pre-apply check did not accept the update, the review snapshot stays its
+baseline.
+
 ## Capacity
 
 The exact-review queue owns hosted review concurrency and retry authority. Each

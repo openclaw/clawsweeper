@@ -40,6 +40,12 @@ type ApplyProofFreshnessDependencies = Pick<
   automationItemUpdatedAt: string | undefined;
   completeReviewActivityReceiptMatches: (context: ItemContext) => boolean;
   currentProofState: () => {
+    /**
+     * Live `updated_at` that the pre-apply source-freshness gate already accepted as the
+     * reviewed source (unchanged, or moved only by receipt-backed ClawSweeper writes). Absent
+     * when that gate did not accept it.
+     */
+    acceptedUpdatedAt: string | undefined;
     cachedPrCloseCoverageProofGateResult: PrCloseCoverageProofGateResult | undefined;
     prCloseCoverageProofGateChecked: boolean;
     prCloseCoverageProofStartedAtMs: number | null;
@@ -84,6 +90,7 @@ export function createApplyProofFreshnessGuards({
     currentSnapshotHash?: string;
   } | null => {
     const {
+      acceptedUpdatedAt,
       cachedPrCloseCoverageProofGateResult,
       prCloseCoverageProofGateChecked,
       prCloseCoverageProofStartedAtMs,
@@ -107,6 +114,17 @@ export function createApplyProofFreshnessGuards({
         reason: `state changed to ${refreshed.state}`,
         currentUpdatedAt: refreshed.item.updatedAt,
       };
+    }
+    // Nothing changed since the pre-apply gate accepted this updated_at. That gate already
+    // proved any move from the review snapshot was ClawSweeper's own receipt-backed write
+    // (such as the automatic review progress edit), so judging it again against the older
+    // snapshot would requeue an unchanged review forever.
+    if (
+      acceptedUpdatedAt !== undefined &&
+      acceptedUpdatedAt !== storedUpdatedAt &&
+      refreshed.item.updatedAt === acceptedUpdatedAt
+    ) {
+      return null;
     }
     let refreshedContext: ItemContext | null = null;
     const refreshedCommandStatusOnlyUpdate =
