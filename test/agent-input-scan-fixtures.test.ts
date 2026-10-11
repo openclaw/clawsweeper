@@ -8,9 +8,14 @@ import test from "node:test";
 import {
   classifyReviewedFixtureScan,
   serializeReviewContext,
+  validateReviewedAttributionPolicy,
   type ReviewedAttribution,
   type StagedScanInput,
 } from "../dist/agent-input-scan-fixtures.js";
+
+test("host-owned reviewed attribution policy is valid and has no duplicate rows", () => {
+  assert.doesNotThrow(validateReviewedAttributionPolicy);
+});
 
 test("WebVNC fixture policy retains both exact native identities and source witnesses", () => {
   // Inspect only the static policy data, without copying credential-shaped fixture values.

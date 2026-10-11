@@ -786,6 +786,11 @@ reference must qualify under the same exact attribution policy before any source
 is eligible for classification or an audit notice.
 The policy does not trust checkout ignore rules, domain patterns, fixture words,
 test names, or unchanged-line inference; no nearby fixture is implicitly approved.
+The mandatory scanner regression suite validates the immutable host-owned
+attribution table for malformed or duplicate rows. Normal scans do not repeat
+that static policy check: native scan completeness, staged source material,
+line attribution, and secret matching are still verified for every scan.
+Explicitly supplied test policies are validated before classification.
 When review evidence quotes an exact reviewed synthetic URI, prompt preparation
 replaces the URI with a visible reference to its source file, preserving closing
 Markdown and sentence punctuation. The original context is preserved, and changed

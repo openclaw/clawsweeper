@@ -576,7 +576,10 @@ function validateReviewedAttributions(rows: readonly ReviewedAttribution[]): voi
   }
 }
 
-validateReviewedAttributions(REVIEWED_ATTRIBUTIONS);
+/** Mandatory policy check used by the scanner regression suite, not by each scan. */
+export function validateReviewedAttributionPolicy(): void {
+  validateReviewedAttributions(REVIEWED_ATTRIBUTIONS);
+}
 
 export function serializeReviewContext(
   context: object,
@@ -779,7 +782,9 @@ export function classifyReviewedFixtureScan(
   inputs: ReadonlyMap<string, StagedScanInput>,
   reviewedAttributions: readonly ReviewedAttribution[] = REVIEWED_ATTRIBUTIONS,
 ): ClassifiedScan | RefusedScan {
-  validateReviewedAttributions(reviewedAttributions);
+  if (reviewedAttributions !== REVIEWED_ATTRIBUTIONS) {
+    validateReviewedAttributions(reviewedAttributions);
+  }
   const nativeFailure = (
     reason: Extract<ScanRefusalDiagnostic, { kind: "native_contract" }>["reason"],
   ): RefusedScan => ({
