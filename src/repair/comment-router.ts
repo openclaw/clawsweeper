@@ -1,9 +1,7 @@
 #!/usr/bin/env node
 import type { JsonValue, LooseRecord } from "./json-types.js";
-import { CLAWSWEEPER_APP_LOGIN } from "../clawsweeper-bot-identity.js";
 import fs from "node:fs";
 import path from "node:path";
-import { errorMessage } from "../value-coerce.js";
 import {
   AUTOFIX_LABEL,
   AUTOMERGE_LABEL,
