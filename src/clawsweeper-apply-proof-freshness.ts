@@ -15,6 +15,11 @@ import { stableJson } from "./stable-json.js";
 
 export interface ApplySelfMutationItemReceipt {
   updatedAt: string;
+  /**
+   * `updated_at` of the ClawSweeper write itself, when it differs from the item `updated_at` read
+   * right after the write. GitHub can move the item to this time later.
+   */
+  ownedWriteUpdatedAt?: string;
   sourceRevision: string;
   activityReceipt: string;
   allowsPostReviewAutomationActivity?: boolean;
@@ -127,7 +132,9 @@ export function createApplyProofFreshnessGuards({
         })),
       );
     const candidateItemReceipts = selfMutationItemReceipts.filter(
-      (receipt) => receipt.updatedAt === refreshed.item.updatedAt,
+      (receipt) =>
+        receipt.updatedAt === refreshed.item.updatedAt ||
+        receipt.ownedWriteUpdatedAt === refreshed.item.updatedAt,
     );
     const mayMatchPersistedAutomationReceipt =
       Boolean(automationItemUpdatedAt) && refreshed.item.updatedAt === automationItemUpdatedAt;
@@ -274,6 +281,9 @@ export function createApplyProofFreshnessGuards({
           automation_item_updated_at: automationItemUpdatedAt ?? null,
           self_mutation_receipt_updated_ats: selfMutationItemReceipts.map(
             (receipt) => receipt.updatedAt,
+          ),
+          self_mutation_owned_write_updated_ats: selfMutationItemReceipts.flatMap((receipt) =>
+            receipt.ownedWriteUpdatedAt ? [receipt.ownedWriteUpdatedAt] : [],
           ),
           candidate_receipts: candidateItemReceipts.length,
           receipt_matches: refreshedItemReceiptMatches,

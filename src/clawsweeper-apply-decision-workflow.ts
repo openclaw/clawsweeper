@@ -567,6 +567,7 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
       let publishedIssueLabelMutation = false;
       let rememberSelfMutationUpdatedAt = (
         _options: {
+          ownedWriteUpdatedAt?: string | undefined;
           postReviewActivityStartedAtMs?: number;
           requiresReviewedPrActivityCursor?: boolean;
         } = {},
@@ -1289,6 +1290,8 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
       if (initialCanonicalCommentSyncGuard.skipCurrentItem) continue;
       rememberSelfMutationUpdatedAt = (
         options?: {
+          /** `updated_at` GitHub returned for the ClawSweeper write itself (the comment). */
+          ownedWriteUpdatedAt?: string | undefined;
           postReviewActivityStartedAtMs?: number;
           requiresReviewedPrActivityCursor?: boolean;
         },
@@ -1357,6 +1360,11 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
         if (!completeActivityContext) return false;
         selfMutationItemReceipts.push({
           updatedAt: automationItemUpdatedAt,
+          // GitHub can report the item's updated_at before it reflects this write, then move it
+          // to the write's own time. Keep both so the final gate recognizes either.
+          ...(options?.ownedWriteUpdatedAt && options.ownedWriteUpdatedAt !== automationItemUpdatedAt
+            ? { ownedWriteUpdatedAt: options.ownedWriteUpdatedAt }
+            : {}),
           sourceRevision: receiptContext.sourceRevision ?? "",
           activityReceipt: stableJson(completeActivityContext),
           allowsPostReviewAutomationActivity,
@@ -2335,7 +2343,7 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
                 // Persist the original baseline and exact write identity before any further reads.
                 persistOversizedActivityReceipt();
               }
-              rememberSelfMutationUpdatedAt();
+              rememberSelfMutationUpdatedAt({ ownedWriteUpdatedAt: commentUpdatedAt(syncedComment) });
               deferredSelfMutationReceipt = false;
               syncReasons.push("updated durable Codex review comment");
               if (complete && item.labels.includes(REVIEW_RECOVERY_STUCK_LABEL)) {

@@ -6,6 +6,7 @@ import test from "node:test";
 
 import { createApplyProofFreshnessGuards } from "../dist/clawsweeper-apply-proof-freshness.js";
 import { completeActivityContextSymbol } from "../dist/clawsweeper-types.js";
+import { stableJson } from "../dist/stable-json.js";
 import {
   canonicalPullRequestClusterForTest,
   emptyReviewedPrActivityCursor,
@@ -183,6 +184,76 @@ test("post-proof freshness keeps a structurally verified accepted updated_at and
     guards({ accepted: null }),
     "updated_at changed",
     "without the gate's acceptance the review snapshot stays the baseline",
+  );
+});
+
+test("post-proof freshness recognizes an owned write that GitHub reflects on the item later", () => {
+  // openclaw/openclaw#142693: apply synced its durable review comment (updated_at 22:29:54), but the
+  // item read right after the write still said 22:28:58; the final gate later read 22:29:54.
+  const itemReadAfterWrite = "2026-10-11T22:28:58Z";
+  const ownedWriteUpdatedAt = "2026-10-11T22:29:54Z";
+  const activity = { comments: [], timeline: [], pullReviewComments: [] };
+  const context = {
+    sourceRevision: "a".repeat(64),
+    pullHeadSha: "b".repeat(40),
+    [completeActivityContextSymbol]: activity,
+  };
+  const reason = ({
+    ownedWrite = ownedWriteUpdatedAt as string | null,
+    sourceRevision = "a".repeat(64),
+  } = {}) =>
+    createApplyProofFreshnessGuards({
+      action: undefined,
+      automationItemUpdatedAt: undefined,
+      collectItemContext: () => context,
+      completeReviewActivityReceiptMatches: () => true,
+      contextHasNonAutomationActivityAfter: () => false,
+      coveringPrCloseCoveragePullRequestSnapshotSha256: () => "c".repeat(64),
+      currentProofState: () => ({
+        acceptedUpdatedAt: undefined,
+        cachedPrCloseCoverageProofGateResult: { status: "allowed" },
+        prCloseCoverageProofGateChecked: true,
+        prCloseCoverageProofStartedAtMs: Date.parse("2026-10-11T22:29:00Z"),
+        storedHash: undefined,
+        storedUpdatedAt: "2026-10-11T22:23:58Z",
+      }),
+      expectedReviewActivityCursor: emptyReviewedPrActivityCursor,
+      fetchItem: () => ({
+        state: "open",
+        item: { kind: "pull_request", updatedAt: ownedWriteUpdatedAt },
+      }),
+      fetchReviewedPrActivityCursor: () => emptyReviewedPrActivityCursor,
+      freshPullRequestReviewHead: () => true,
+      GitHubRuntimeBudgetError: class extends Error {},
+      itemKind: "pull_request",
+      itemSnapshotHash: () => "d".repeat(64),
+      number: 142693,
+      reviewHasCompleteActivityIdentity: true,
+      reviewMarkdown: "---\ntype: pull_request\n---\n",
+      retryCloseCoverageCommandStatusOnlyUpdate: () => false,
+      selfMutationItemReceipts: [
+        {
+          updatedAt: itemReadAfterWrite,
+          ...(ownedWrite ? { ownedWriteUpdatedAt: ownedWrite } : {}),
+          sourceRevision,
+          activityReceipt: stableJson(activity),
+          prHeadSha: null,
+          prHeadMatches: true,
+          reviewActivityCursor: emptyReviewedPrActivityCursor,
+        },
+      ],
+    } as never).postProofFreshnessBlock()?.reason ?? null;
+
+  assert.equal(reason(), null, "the owned write's own time identifies the receipt");
+  assert.equal(
+    reason({ sourceRevision: "e".repeat(64) }),
+    "updated_at changed",
+    "a receipt whose structural source no longer matches still blocks",
+  );
+  assert.equal(
+    reason({ ownedWrite: null }),
+    "updated_at changed",
+    "without the write time it blocks",
   );
 });
 
