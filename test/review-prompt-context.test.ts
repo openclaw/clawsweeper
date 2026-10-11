@@ -6,13 +6,14 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import test from "node:test";
+import { execFileSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 
 import {
   assistPromptContextForTest,
   reviewDecisionSchemaText,
   reviewPromptForTest,
   reviewPromptTelemetryForTest,
-  reviewPolicyHashForTest,
   reviewPromptTemplates,
   reviewAutomationMarkersFromReport,
 } from "../dist/clawsweeper.js";
@@ -890,14 +891,38 @@ test("item prompts carry only the review template for their kind", () => {
   for (const text of [prompt, issuePrompt]) assert.doesNotMatch(text, /\{\{\w+\}\}/);
 });
 
-test("review policy hash changes when a review prompt template changes", () => {
-  const templates = reviewPromptTemplates();
-  assert.equal(reviewPolicyHashForTest({}, templates), reviewPolicyHashForTest());
-  assert.notEqual(
-    reviewPolicyHashForTest(
-      {},
-      { ...templates, pull_request: `${templates.pull_request}\nOne more rule.\n` },
-    ),
-    reviewPolicyHashForTest(),
-  );
+test("public planning policy changes when a review prompt template changes", () => {
+  const cli = fileURLToPath(new URL("../dist/clawsweeper.js", import.meta.url));
+  const planPolicy = (preload?: string) =>
+    JSON.parse(
+      execFileSync(
+        process.execPath,
+        [
+          ...(preload ? ["--import", `data:text/javascript,${encodeURIComponent(preload)}`] : []),
+          cli,
+          "plan",
+          "--target-repo",
+          "openclaw/openclaw",
+          "--item-numbers",
+          "none",
+        ],
+        { encoding: "utf8" },
+      ),
+    ).reviewPolicy;
+  const preload = (suffix: string) => `
+    import fs from "node:fs";
+    import { syncBuiltinESMExports } from "node:module";
+    const read = fs.readFileSync;
+    fs.readFileSync = function(path, ...args) {
+      const result = read.call(this, path, ...args);
+      return String(path).endsWith("/prompts/review-item-pr.md")
+        ? result + ${JSON.stringify(suffix)}
+        : result;
+    };
+    syncBuiltinESMExports();
+  `;
+  const original = planPolicy();
+  assert.match(original, /^[0-9a-f]{16}$/);
+  assert.equal(planPolicy(preload("")), original);
+  assert.notEqual(planPolicy(preload("\nOne more rule.\n")), original);
 });

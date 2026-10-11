@@ -218,7 +218,7 @@ test("review jobs upload completed reviews without automatic live proof", () => 
   }
 });
 
-test("historical publication lanes preserve live-proof folding after generation retirement", () => {
+test("publication lanes ignore retired live-proof attachments", () => {
   const publicationSites: string[] = [];
   for (const workflowPath of fs.globSync(".github/workflows/*.yml").sort()) {
     const workflow = parse(fs.readFileSync(workflowPath, "utf8")) as {
@@ -249,19 +249,17 @@ test("historical publication lanes preserve live-proof folding after generation 
         continue;
       }
       if (site === ".github/workflows/exact-review-batch-publish.yml:publish") {
-        assert.match(
+        assert.doesNotMatch(
           fs.readFileSync("scripts/prepare-exact-review-batch.mjs", "utf8"),
           /live-proof-publish-artifacts/,
           site,
         );
         continue;
       }
-      const fold = runs.findIndex((run) => run.includes("live-proof-publish-artifacts"));
-      const publish = runs.findIndex(
-        (run) =>
-          run.includes("repair:publish-event-result") || run.includes("pnpm run apply-artifacts"),
+      assert.ok(
+        runs.every((run) => !run.includes("live-proof-publish-artifacts")),
+        site,
       );
-      assert.ok(fold >= 0 && publish > fold, `${site} must fold live proof before publication`);
     }
   }
   assert.equal(publicationSites.length, 3, JSON.stringify(publicationSites));

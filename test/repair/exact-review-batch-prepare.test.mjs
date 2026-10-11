@@ -68,7 +68,7 @@ test("artifact cache archive rejects corrupted bytes before writing a bundle", (
   }
 });
 
-test("batch preparation refreshes deterministic invalid live-proof artifacts", () => {
+test("batch preparation publishes without invoking the retired live-proof CLI", () => {
   const root = mkdtempSync(join(tmpdir(), "exact-review-invalid-live-proof-"));
   const workspace = join(root, "workspace");
   const workerRoot = join(root, "worker");
@@ -98,6 +98,11 @@ writeFileSync(join(output, "bundle.json"), "{}");
     writeFileSync(
       join(workspace, "dist", "clawsweeper.js"),
       'console.log(JSON.stringify({ status: "invalid_artifact" })); process.exitCode = 1;\n',
+      "utf8",
+    );
+    writeFileSync(
+      join(workspace, "dist", "repair", "publish-event-result.js"),
+      'require("node:fs").writeFileSync(process.env.EXACT_REVIEW_BATCH_MUTATION_OUTPUT, JSON.stringify({ kind: "fixture_published" }));\n',
       "utf8",
     );
     writeFileSync(
@@ -155,8 +160,7 @@ writeFileSync(join(output, "bundle.json"), "{}");
     );
     assert.equal(result.status, 0, result.stderr);
     assert.deepEqual(JSON.parse(readFileSync(outcomePath, "utf8")), {
-      kind: "refresh_required",
-      reasonCode: "invalid_artifact",
+      kind: "fixture_published",
     });
   } finally {
     rmSync(root, { recursive: true, force: true });

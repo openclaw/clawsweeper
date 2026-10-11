@@ -31,7 +31,6 @@ import {
   likelyOwnerLines,
   normalizePublicReviewText,
   priorityLabel,
-  publicHistoricalVerificationBlockerLine,
   publicRealBehaviorProofLine,
   publicReviewTextDiffers,
   publicReviewTextIsSame,
@@ -128,14 +127,6 @@ function publicBeforeMergeItems(options: {
         ? "Add real behavior proof"
         : "Resolve real behavior proof assessment",
       publicRealBehaviorProofLine(options.proofPolicy),
-      undefined,
-      "blocked",
-    );
-  }
-  if (!options.reviewFailed && options.proofPolicy.verificationBlocksMerge) {
-    add(
-      "Resolve historical verification",
-      publicHistoricalVerificationBlockerLine(),
       undefined,
       "blocked",
     );

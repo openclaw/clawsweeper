@@ -400,12 +400,10 @@ without a usable PR rating shows `NA` tiers and asks for a fresh review; code do
 not compute a replacement rating, and an attached verification receipt does not
 change the model's tiers.
 
-Failed or malformed historical verification receipts remain separate,
-maintainer-owned blockers. They do not erase independently sufficient contributor
-proof or turn an exempt change into a contributor proof request. These projections
-do not change merge, repair, or close eligibility. OpenClaw Bay needs no code or
-schema change because its observer projection does not consume this assessment
-or checklist.
+Historical post-review verification receipts and recording attachments are
+ignored. They do not alter the recorded proof assessment, readiness, automation
+markers, or rendered comments. Existing stored reports are not rewritten;
+current inline proof returns observations to the original review instead.
 
 For OpenClaw PRs, stored-data warnings flag possible persistence changes in
 production source or documented storage contracts, not setup in test, fixture,

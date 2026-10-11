@@ -14,28 +14,22 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer } from "node:http";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { pathToFileURL } from "node:url";
 import { runAgentProcess } from "../dist/agent-runner.js";
 import { codexEnv } from "../dist/codex-env.js";
 import { AgentInputScanError } from "../dist/agent-input-scan.js";
 import { TRUFFLEHOG_VERSION } from "../dist/review-tool-bootstrap.js";
 import { runCodexForTest } from "../dist/clawsweeper.js";
-import { sanitizedLiveProofEnvironment } from "../dist/live-proof/environment.js";
-import { parseLiveVerificationResult } from "../dist/live-proof/verification.js";
 import { TRANSIENT_REVIEW_RESULT_MAX_BYTES } from "../dist/review-output-policy.js";
 import {
   assertBooleanCountArtifact,
-  assertHostedBlobStarts,
   assertHostedMultilineRequest,
   assertHostedNativeQuiescent,
   assertHostedProcessGroupGone,
-  assertHostedTerminalQuiescent,
   assertMatchesJsonSchema,
   HOSTED_MULTILINE_PROVIDER_ERROR,
-  hostedBlobPreloadSource,
   hostedNativeFailureLine,
   hostedProcessIdentity,
-  hostedTerminalObserverSource,
   hostedTreeMetadataSource,
   latchHostedNativeFailure,
   readHostedLifecycle,
@@ -44,7 +38,6 @@ import {
   runWithWithheldDiagnostics,
   snapshotHostedReviewRollouts,
   stopHostedNativeGroup,
-  stopHostedTerminal,
   summarizeHostedReviewTrace,
   withHostedFixtureSignals,
 } from "./hosted-review-canary-proof.mjs";
@@ -541,18 +534,12 @@ try {
 async function proveMissingBlobChild({ root, cwd, baseSha, headSha, itemNumber, marker }) {
   const origin = join(root, "blob-origin.git");
   const target = join(root, "blob-target");
-  const records = join(root, "blob-records");
   const output = join(root, "blob-output");
   const home = join(root, "blob-home");
   const temporaryRoot = join(root, "blob-tmp");
   const startsPath = join(root, "blob-starts.jsonl");
   const metadataCallsPath = join(root, "blob-metadata-calls");
-  const preload = join(root, "blob-starts.mjs");
-  const terminalReceipts = join(root, "blob-terminal.jsonl");
-  const terminalObserver = join(root, "blob-observer.sh");
-  const nonce = randomUUID();
-  const tmux = execFileSync("which", ["tmux"], { encoding: "utf8" }).trim();
-  const entrypoint = fileURLToPath(new URL("../dist/clawsweeper.js", import.meta.url));
+  const entrypoint = join(root, "blob-review.mjs");
   const repo = "steipete/camsnap";
   const git = (directory, ...args) =>
     execFileSync(gitExecutable, args, {
@@ -562,7 +549,6 @@ async function proveMissingBlobChild({ root, cwd, baseSha, headSha, itemNumber, 
       timeout: 30_000,
       maxBuffer: 1024 * 1024,
     }).trim();
-  mkdirSync(records);
   mkdirSync(home);
   mkdirSync(temporaryRoot, { mode: 0o700 });
   git(root, "init", "--bare", "-q", origin);
@@ -629,56 +615,59 @@ async function proveMissingBlobChild({ root, cwd, baseSha, headSha, itemNumber, 
       const [type, sha, size] = line.split(" ");
       return { type, sha, size: Number(size) };
     });
-  const entry = `node -e ${JSON.stringify(
-    `const assert = require("node:assert/strict"); const fs = require("node:fs"); for (const key of ["OPENAI_API_KEY", "GH_TOKEN", "AWS_SECRET_ACCESS_KEY", "DATABASE_PASSWORD"]) assert.equal(process.env[key], undefined); const text = fs.readFileSync("review-fixture.js", "utf8"); const match = /canaryMarker = "([^"]+)"/.exec(text); assert.ok(match); console.log("canary-marker:" + match[1]);`,
-  )}`;
+  // Exercise the active review-tree admission owner, then read the admitted
+  // exact-head tree in a credential-free child. Never execute a historic plan.
+  const blobsModule = new URL("../dist/clawsweeper-review-blobs.js", import.meta.url).href;
+  const contextModule = new URL("../dist/clawsweeper-context-hydration.js", import.meta.url).href;
   writeFileSync(
-    join(records, `${itemNumber}.md`),
-    `---\nnumber: ${itemNumber}\nrepository: ${repo}\ntype: pull_request\npull_head_sha: ${headSha}\n---\n\n## Live Proof\n\nStatus: recommended\n\nSurface: terminal\n\nTerminal completion: exit_zero\n\nReason: Read the admitted committed fixture.\n\nPayoff: static_text\n\nPayoff justification: Text is sufficient.\n\nEntry: ${entry}\n\nSteps:\n\n- {"action":"expect_output","text":"canary-marker:"}\n\n## Work Candidate\n\nCandidate: none\n`,
-    { mode: 0o600 },
-  );
-  // The preload passes reads through unchanged and observes the real child before cleanup.
-  writeFileSync(
-    preload,
-    hostedBlobPreloadSource({ entrypoint, startsPath, terminalReceipts, nonce }),
-    { mode: 0o600 },
-  );
-  // Observe only the unchanged watchdog's successful atomic publications.
-  // The real mv status is preserved; absent observation makes cleanup unknown.
-  writeFileSync(terminalObserver, hostedTerminalObserverSource(terminalReceipts, nonce), {
-    mode: 0o600,
+    entrypoint,
+    `
+import assert from "node:assert/strict";
+import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { spawnSync } from "node:child_process";
+import { materializePullRequestReviewTree, removePullRequestReviewTree, githubReviewTreeBlobSizes } from ${JSON.stringify(blobsModule)};
+import { reviewTreeMetadataArgs } from ${JSON.stringify(contextModule)};
+const [target, output, starts, repo, headSha, item, temporaryRoot] = process.argv.slice(2);
+const worktreeDir = join(temporaryRoot, "review-tree");
+let sizes;
+try {
+  materializePullRequestReviewTree({
+    targetDir: target, worktreeDir, itemNumber: Number(item), headSha,
+    resolveBlobSizes() {
+      return sizes ??= githubReviewTreeBlobSizes({
+        repository: repo, headSha,
+        request(path) {
+          const response = spawnSync(process.execPath, ["--input-type=module", "--eval", process.env.BLOB_METADATA_SOURCE, ...reviewTreeMetadataArgs(path)], { encoding: "utf8", timeout: 15000 });
+          assert.equal(response.status, 0);
+          return JSON.parse(response.stdout);
+        },
+      });
+    },
   });
-  const env = {
-    PATH: originalPath,
-    HOME: home,
-    TMPDIR: temporaryRoot,
-    SHELL: "/bin/bash",
-    LANG: "C",
-    LC_ALL: "C",
-    GIT_CONFIG_GLOBAL: "/dev/null",
-    GIT_CONFIG_NOSYSTEM: "1",
-    CLAWSWEEPER_TARGET_REPO: "openclaw/clawsweeper",
-    // Replace inherited options; the sanitized child currently preserves NODE_OPTIONS.
-    NODE_OPTIONS: `--import=${pathToFileURL(preload).href}`,
-    BASH_ENV: terminalObserver,
-    OPENAI_API_KEY: "fixture-must-not-cross",
-    GH_TOKEN: "fixture-must-not-cross",
-    AWS_SECRET_ACCESS_KEY: "fixture-must-not-cross",
-    DATABASE_PASSWORD: "fixture-must-not-cross",
-  };
-  for (const [command, args] of [
-    ["npm", ["--version"]],
-    ["tmux", ["-V"]],
-  ]) {
-    const probe = spawnSync(command, args, {
-      env: sanitizedLiveProofEnvironment(env),
-      encoding: "utf8",
-      timeout: 15_000,
-      maxBuffer: 1024 * 1024,
-    });
-    assert.equal(probe.error, undefined, "hosted live-proof prerequisite unavailable");
-    assert.equal(probe.status, 0, "hosted live-proof prerequisite failed");
-  }
+  const result = spawnSync(process.execPath, ["--input-type=module", "--eval", \`
+    import assert from "node:assert/strict";
+    import { appendFileSync, readFileSync } from "node:fs";
+    import { execFileSync } from "node:child_process";
+    for (const key of ["OPENAI_API_KEY", "GH_TOKEN", "AWS_SECRET_ACCESS_KEY", "DATABASE_PASSWORD"]) assert.equal(process.env[key], undefined);
+    const headSha = execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8", timeout: 5000 }).trim();
+    assert.equal(headSha, process.env.BLOB_HEAD);
+    appendFileSync(process.env.BLOB_STARTS, JSON.stringify({ headSha }) + "\\\\n");
+    process.stdout.write(readFileSync("review-fixture.js", "utf8"));
+  \`], {
+    cwd: worktreeDir, encoding: "utf8", timeout: 15000,
+    env: { PATH: process.env.PATH, HOME: process.env.HOME, TMPDIR: temporaryRoot, BLOB_STARTS: starts, BLOB_HEAD: headSha },
+  });
+  assert.equal(result.error, undefined);
+  assert.equal(result.status, 0);
+  mkdirSync(output, { recursive: true });
+  writeFileSync(join(output, "result.json"), JSON.stringify({ repo, headSha, output: result.stdout }));
+} finally {
+  assert.equal(removePullRequestReviewTree({ targetDir: target, worktreeDir }), true);
+}
+`,
+    { mode: 0o600 },
+  );
   const readStarts = () => {
     if (!existsSync(startsPath)) return [];
     assert.ok(statSync(startsPath).size <= 16 * 1024);
@@ -701,17 +690,13 @@ async function proveMissingBlobChild({ root, cwd, baseSha, headSha, itemNumber, 
     });
     const args = [
       entrypoint,
-      "live-proof-review",
-      "--repo",
-      repo,
-      "--records-dir",
-      records,
-      "--checkout",
       target,
-      "--output",
       output,
-      "--item",
+      startsPath,
+      repo,
+      headSha,
       String(itemNumber),
+      temporaryRoot,
     ];
     let failed = false;
     let resolveAbort;
@@ -726,9 +711,16 @@ async function proveMissingBlobChild({ root, cwd, baseSha, headSha, itemNumber, 
       const child = spawn(process.execPath, args, {
         cwd,
         env: {
-          ...env,
-          GH_BIN: process.execPath,
-          GH_BIN_ARGS: JSON.stringify(["--input-type=module", "--eval", metadataSource]),
+          PATH: originalPath,
+          HOME: home,
+          TMPDIR: temporaryRoot,
+          GIT_CONFIG_GLOBAL: "/dev/null",
+          GIT_CONFIG_NOSYSTEM: "1",
+          BLOB_METADATA_SOURCE: metadataSource,
+          OPENAI_API_KEY: "fixture-must-not-cross",
+          GH_TOKEN: "fixture-must-not-cross",
+          AWS_SECRET_ACCESS_KEY: "fixture-must-not-cross",
+          DATABASE_PASSWORD: "fixture-must-not-cross",
         },
         detached: true,
         stdio: ["ignore", "pipe", "pipe"],
@@ -744,30 +736,22 @@ async function proveMissingBlobChild({ root, cwd, baseSha, headSha, itemNumber, 
           resolve({ status, signal });
         }),
       );
-      const stdout = [];
       let captured = 0;
       for (const stream of [child.stdout, child.stderr]) {
         stream.on("data", (chunk) => {
           captured += chunk.length;
           if (captured > 1024 * 1024) refuse();
-          else if (stream === child.stdout) stdout.push(chunk);
         });
       }
       const timer = setTimeout(refuse, 120_000);
       let result;
       try {
         await Promise.race([completion, aborted]);
-        if (failed) {
-          await stopHostedTerminal({ path: terminalReceipts, nonce, tmux });
-          if (!closed) await stopHostedNativeGroup(outerIdentity);
-        }
-        result = { ...(await completion), stdout: Buffer.concat(stdout).toString("utf8") };
+        if (failed && !closed) await stopHostedNativeGroup(outerIdentity);
+        result = await completion;
         assertHostedProcessGroupGone(outerIdentity);
-        if (!truncated) {
-          await assertHostedTerminalQuiescent(readHostedLifecycle(terminalReceipts, nonce));
-        } else assert.equal(existsSync(terminalReceipts), false);
         fixtureQuiescent = true;
-        assert.equal(failed, false, "hosted live-proof CLI failed to complete");
+        assert.equal(failed, false, "hosted review-tree admission failed to complete");
       } finally {
         clearTimeout(timer);
         if (!closed) {
@@ -778,8 +762,7 @@ async function proveMissingBlobChild({ root, cwd, baseSha, headSha, itemNumber, 
       }
       assert.equal(result.signal, null);
       const starts = readStarts().slice(startsBefore);
-      assertHostedBlobStarts(starts, repo, itemNumber, truncated ? 0 : 1, temporaryRoot);
-      assert.deepEqual(starts[0].args, args.slice(2));
+      assert.equal(starts.length, truncated ? 0 : 1);
       assert.equal(readFileSync(metadataCallsPath, "utf8").length - callsBefore, 1);
       if (truncated) {
         assert.notEqual(result.status, 0);
@@ -788,22 +771,12 @@ async function proveMissingBlobChild({ root, cwd, baseSha, headSha, itemNumber, 
       } else {
         assert.equal(result.status, 0);
         assert.equal(missing(), false);
-        assert.ok(result.stdout.includes("sanitized environment assertion passed: credentials=0"));
-        const verification = parseLiveVerificationResult(
-          JSON.parse(
-            readFileSync(join(output, String(itemNumber), "live-verification.json"), "utf8"),
-          ),
-        );
+        assert.equal(starts[0].headSha, headSha);
+        const verification = JSON.parse(readFileSync(join(output, "result.json"), "utf8"));
         assert.equal(verification.repo, repo);
-        assert.equal(verification.head_sha, headSha);
-        assert.equal(verification.overall_pass, true);
+        assert.equal(verification.headSha, headSha);
         assert.ok(verification.output.includes(marker));
         assert.ok(!verification.output.includes("fixture-must-not-cross"));
-        assert.ok(
-          readdirSync(join(output, String(itemNumber))).every((name) =>
-            ["live-verification.json", "live-proof-manifest.json"].includes(name),
-          ),
-        );
       }
       assert.equal(git(target, "rev-parse", "HEAD"), beforeHead);
       assert.equal(git(target, "status", "--porcelain"), beforeStatus);

@@ -18,7 +18,6 @@ import {
   regressionProvenancePublicLine,
 } from "./clawsweeper-regression-provenance.js";
 import { renderDecisionPacketPublicBlock } from "./decision-packets.js";
-import { reportLiveProofRecordingBlock } from "./live-proof/report.js";
 import { reportReviewDecision } from "./report-review-decision.js";
 import { neutralizeReviewControlMarkers, renderReviewHistorySection } from "./review-history.js";
 import {
@@ -231,7 +230,6 @@ function renderKeepOpenCommentFromReport(
   const reviewFindings = reviewDecision.reviewFindings;
   const securityReview = reviewDecision.securityReview;
   const prRating = reviewDecision.prRating;
-  const liveProofRecordingBlock = reportLiveProofRecordingBlock(markdown);
   const agentsPolicyStatus = reviewDecision.agentsPolicyStatus;
   const rootCauseCluster = reviewDecision.rootCauseCluster;
   const regressionProvenance = reviewDecision.regressionProvenance;
@@ -303,9 +301,7 @@ function renderKeepOpenCommentFromReport(
     : reviewReadiness?.state === "blocked"
       ? hasRealBehaviorProofBlocker
         ? "Codex review: needs real behavior proof before merge."
-        : proofPolicy.verificationBlocksMerge
-          ? "Codex review: needs historical verification review before merge."
-          : "Codex review: blocked before merge."
+        : "Codex review: blocked before merge."
       : reviewReadiness?.state === "needs-changes"
         ? "Codex review: needs changes before merge."
         : isRepairLoopPass
@@ -485,7 +481,6 @@ function renderKeepOpenCommentFromReport(
         `${systemContext}\n\n\`\`\`mermaid\n${architectureDiagram}\n\`\`\``,
       );
     }
-    if (liveProofRecordingBlock) appendDetails("Live Verification", liveProofRecordingBlock);
     if (reviewDetails.length) appendDetails("Technical review", ...reviewDetails);
     if (mergeRiskLine) appendDetails("Merge-risk options", mergeRiskLine);
     const checkedProvenance = provenance.filter(

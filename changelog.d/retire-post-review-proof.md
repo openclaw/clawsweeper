@@ -1,0 +1,1 @@
+- Retire the old post-review proof executor, CLI, media publication and compatibility readers; historical attachments no longer affect review readiness or comments, while current inline proof and stored reports remain intact.

@@ -11,8 +11,7 @@ import { reviewPromptForTest } from "../dist/clawsweeper.js";
 import { frontMatterValue, reportWithoutReviewRecord } from "../dist/report-front-matter.js";
 import { reviewRecordFrontMatterLine } from "../dist/review-record.js";
 import { createReviewedPrActivityCursor } from "../dist/review-activity-cursor.js";
-import { createDecisionParser, reviewDecisionParser } from "../dist/clawsweeper-decision-parser.js";
-import type { LiveProofPlan } from "../dist/clawsweeper-types.js";
+import { reviewDecisionParser } from "../dist/clawsweeper-decision-parser.js";
 
 export const tmpPrefix = join(tmpdir(), "clawsweeper-test-");
 export const emptyReviewedPrActivityCursor =
@@ -243,44 +242,6 @@ export function changelogReviewDecision(overrides = {}) {
     workLikelyFiles: ["CHANGELOG.md"],
     ...overrides,
   });
-}
-
-/** Parses a historical live-proof plan the way the retained live-proof commands do. */
-export function parseLegacyLiveProofPlan(value: unknown): LiveProofPlan {
-  return legacyDecisionParser.parseLiveProofPlan(value, "liveProofPlan");
-}
-
-const legacyDecisionParser = createDecisionParser({
-  neutralizeOwnedSectionSpoofing: (value: string) => value,
-  sanitizeArchitectureDiagram: (value: string) => value,
-});
-
-/** Historical `## Live Proof` section body, as reports written before the field was retired. */
-export function legacyLiveProofSection(plan: LiveProofPlan): string {
-  const sentence = (value: string) => {
-    const trimmed = value.trim();
-    if (!trimmed) return "";
-    return /[.!?)]$/.test(trimmed) ? trimmed : `${trimmed}.`;
-  };
-  return [
-    `Status: ${plan.status}`,
-    "",
-    `Surface: ${plan.surface}`,
-    "",
-    `Terminal completion: ${plan.terminalCompletion}`,
-    "",
-    `Reason: ${sentence(plan.reason)}`,
-    "",
-    `Payoff: ${plan.payoff.kind}`,
-    "",
-    `Payoff justification: ${sentence(plan.payoff.justification)}`,
-    "",
-    `Entry: ${plan.entry.trim()}`,
-    "",
-    "Steps:",
-    "",
-    plan.steps.length ? plan.steps.map((step) => `- ${JSON.stringify(step)}`).join("\n") : "[]",
-  ].join("\n");
 }
 
 export function reportFrontMatter(overrides = {}) {

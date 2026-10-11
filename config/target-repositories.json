@@ -13,16 +13,7 @@
       },
       "package_manager": "bun",
       "validation_commands": ["bun run check"],
-      "changed_gate": null,
-      "live_test": {
-        "enabled": true,
-        "surface_default": "browser",
-        "setup": ["bun install"],
-        "start": "bun run dev",
-        "url": "http://127.0.0.1:3000",
-        "ready_timeout_seconds": 240,
-        "max_recording_seconds": 90
-      }
+      "changed_gate": null
     },
     {
       "target_repo": "openclaw/clawsweeper",
@@ -38,15 +29,6 @@
       "changed_gate": {
         "command": "pnpm check:changed",
         "required_script": "check:changed"
-      },
-      "live_test": {
-        "enabled": true,
-        "surface_default": "browser",
-        "setup": ["pnpm install --frozen-lockfile"],
-        "start": "./scripts/live-proof/bay-demo/start.sh",
-        "url": "http://127.0.0.1:8787",
-        "ready_timeout_seconds": 240,
-        "max_recording_seconds": 90
       }
     },
     {
@@ -80,14 +62,7 @@
       },
       "package_manager": "pnpm",
       "validation_commands": ["pnpm typecheck", "pnpm test", "pnpm build"],
-      "changed_gate": null,
-      "live_test": {
-        "enabled": true,
-        "surface_default": "terminal",
-        "setup": ["pnpm install --frozen-lockfile"],
-        "ready_timeout_seconds": 240,
-        "max_recording_seconds": 90
-      }
+      "changed_gate": null
     },
     {
       "target_repo": "openclaw/fs-safe",
@@ -100,14 +75,7 @@
       },
       "package_manager": "pnpm",
       "validation_commands": [],
-      "changed_gate": null,
-      "live_test": {
-        "enabled": true,
-        "surface_default": "terminal",
-        "setup": ["pnpm install --frozen-lockfile"],
-        "ready_timeout_seconds": 240,
-        "max_recording_seconds": 90
-      }
+      "changed_gate": null
     },
     {
       "target_repo": "openclaw/crabbox",
@@ -120,14 +88,7 @@
       },
       "package_manager": "npm",
       "validation_commands": [],
-      "changed_gate": null,
-      "live_test": {
-        "enabled": true,
-        "surface_default": "terminal",
-        "setup": ["npm ci --prefix worker"],
-        "ready_timeout_seconds": 240,
-        "max_recording_seconds": 90
-      }
+      "changed_gate": null
     },
     {
       "target_repo": "steipete/camsnap",
@@ -140,14 +101,7 @@
       },
       "package_manager": "npm",
       "validation_commands": [],
-      "changed_gate": null,
-      "live_test": {
-        "enabled": true,
-        "surface_default": "terminal",
-        "setup": [],
-        "ready_timeout_seconds": 240,
-        "max_recording_seconds": 90
-      }
+      "changed_gate": null
     }
   ],
   "generic_fallbacks": [
@@ -162,14 +116,7 @@
       },
       "package_manager": "pnpm",
       "validation_commands": [],
-      "changed_gate": null,
-      "live_test": {
-        "enabled": true,
-        "surface_default": "terminal",
-        "setup": ["pnpm install --frozen-lockfile"],
-        "ready_timeout_seconds": 240,
-        "max_recording_seconds": 90
-      }
+      "changed_gate": null
     },
     {
       "owner": "steipete",
@@ -182,14 +129,7 @@
       },
       "package_manager": "pnpm",
       "validation_commands": [],
-      "changed_gate": null,
-      "live_test": {
-        "enabled": true,
-        "surface_default": "terminal",
-        "setup": ["pnpm install --frozen-lockfile"],
-        "ready_timeout_seconds": 240,
-        "max_recording_seconds": 90
-      }
+      "changed_gate": null
     }
   ],
   "core_target_overrides": {

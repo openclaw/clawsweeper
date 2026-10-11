@@ -434,10 +434,6 @@ test("explicit none leaves independent blockers, decision counts and low ratings
       metadata: { author_association: "NONE" },
       label: "Add real behavior proof",
     },
-    {
-      sections: "## Live Proof\n\n<!-- clawsweeper-live-verification -->\nResult: invalid",
-      label: "Resolve historical verification",
-    },
     { decision: { maintainerDecision: decision }, label: "Decision needed" },
     {
       decision: {

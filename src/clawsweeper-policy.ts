@@ -21,10 +21,6 @@ import type {
   ImpactLabelName,
   ImplementationComplexity,
   ItemCategory,
-  LiveProofPlanStatus,
-  LiveProofPayoffKind,
-  LiveProofSurface,
-  LiveProofTerminalCompletion,
   MaturityLabelName,
   MergeRiskOptionCategory,
   OverallCorrectness,
@@ -105,8 +101,6 @@ export const PROOF_OVERRIDE_LABEL = "proof: override";
 export const AUTHORITY_CHAIN_PROOF_MARKER = "Authority-chain proof required:";
 export const PROOF_SUFFICIENT_LABEL = "proof: sufficient";
 export const PROOF_NUDGE_MARKER_PREFIX = "<!-- clawsweeper-proof-nudge";
-export const LIVE_VERIFICATION_MARKER = "<!-- clawsweeper-live-verification -->";
-export const LIVE_PROOF_RECORDING_MARKER = "<!-- clawsweeper-live-proof-recording -->";
 export const PROOF_SUFFICIENT_LABEL_COLOR = "1A7F37";
 export const PROOF_SUFFICIENT_LABEL_DESCRIPTION = "Contributor real behavior proof is sufficient.";
 export const FEATURE_SHOWCASE_LABEL = "feature: ✨ showcase";
@@ -729,24 +723,6 @@ export const TESTING_PROOF_PATHS = new Set<TestingProofPath>([
 ]);
 export const MAX_PROVENANCE_ENTRIES = 8;
 export const MAX_LOW_VALUE_TESTS = 10;
-export const LIVE_PROOF_PLAN_STATUSES = new Set<LiveProofPlanStatus>([
-  "recommended",
-  "not_applicable",
-  "declined_suspicious",
-]);
-export const LIVE_PROOF_SURFACES = new Set<LiveProofSurface>(["browser", "terminal", "none"]);
-export const LIVE_PROOF_TERMINAL_COMPLETIONS = new Set<LiveProofTerminalCompletion>([
-  "exit_zero",
-  "ready_while_running",
-  "not_applicable",
-]);
-export const LIVE_PROOF_PAYOFF_KINDS = new Set<LiveProofPayoffKind>([
-  "progressive_output",
-  "ui_interaction",
-  "tui_or_color",
-  "animation",
-  "static_text",
-]);
 export const FEATURE_SHOWCASE_STATUSES = new Set<FeatureShowcaseStatus>(["showcase", "none"]);
 export const OVERALL_CORRECTNESS_VALUES = new Set<OverallCorrectness>([
   "patch is correct",
@@ -898,27 +874,6 @@ export const PROVENANCE_ENTRY_SCHEMA_KEYS = new Set([
 ]);
 export const TESTING_REVIEW_SCHEMA_KEYS = new Set(["proofPath", "lowValueTests", "missingE2e"]);
 export const LOW_VALUE_TEST_SCHEMA_KEYS = new Set(["file", "reason"]);
-export const LIVE_PROOF_PLAN_SCHEMA_KEYS = new Set([
-  "status",
-  "surface",
-  "terminalCompletion",
-  "reason",
-  "payoff",
-  "entry",
-  "steps",
-]);
-export const LIVE_PROOF_PAYOFF_SCHEMA_KEYS = new Set(["kind", "justification"]);
-export const LIVE_PROOF_STEP_SCHEMA_KEYS = {
-  goto: new Set(["action", "path"]),
-  click: new Set(["action", "target"]),
-  fill: new Set(["action", "target", "value"]),
-  press: new Set(["action", "key"]),
-  wait_for: new Set(["action", "target"]),
-  wait: new Set(["action", "seconds"]),
-  expect_text: new Set(["action", "text"]),
-  run: new Set(["action", "command"]),
-  expect_output: new Set(["action", "text"]),
-} as const;
 export const FEATURE_SHOWCASE_SCHEMA_KEYS = new Set(["status", "reason"]);
 export const ROOT_CAUSE_CLUSTER_SCHEMA_KEYS = new Set([
   "confidence",
@@ -991,7 +946,6 @@ export const REVIEW_SECTIONS = {
   realBehaviorProof: "Real Behavior Proof",
   prRating: "PR Rating",
   telegramVisibleProof: "Telegram Visible Proof",
-  liveProof: "Live Proof",
   featureShowcase: "Feature Showcase",
   agentsPolicyStatus: "AGENTS.md Policy Status",
   workCandidate: "Work Candidate",

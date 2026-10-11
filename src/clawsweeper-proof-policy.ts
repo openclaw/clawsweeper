@@ -2,14 +2,12 @@ import { PROOF_OVERRIDE_LABEL } from "./clawsweeper-policy.js";
 import type { RealBehaviorProof } from "./clawsweeper-types.js";
 import { frontMatterStringArray, frontMatterValue } from "./report-front-matter.js";
 import { isExternalPullRequestReport } from "./clawsweeper-record-metadata.js";
-import { reportAttachedLiveVerification } from "./live-proof/report.js";
 import { reportReviewDecision } from "./report-review-decision.js";
 
 export interface RealBehaviorProofPolicy {
   readonly assessment: RealBehaviorProof;
   readonly required: boolean;
   readonly proofBlocksMerge: boolean;
-  readonly verificationBlocksMerge: boolean;
   readonly needsContributorAction: boolean;
   readonly blocksMerge: boolean;
 }
@@ -17,8 +15,6 @@ export interface RealBehaviorProofPolicy {
 export function reportRealBehaviorProofPolicy(markdown: string): RealBehaviorProofPolicy {
   const { realBehaviorProof: assessment, authorityChainProofRequired } =
     reportReviewDecision(markdown);
-  const attached = reportAttachedLiveVerification(markdown);
-  const verificationBlocksMerge = attached.status === "failed" || attached.status === "malformed";
   const required =
     frontMatterValue(markdown, "review_status") !== "failed" &&
     !frontMatterStringArray(markdown, "labels").includes(PROOF_OVERRIDE_LABEL) &&
@@ -34,11 +30,9 @@ export function reportRealBehaviorProofPolicy(markdown: string): RealBehaviorPro
     assessment,
     required,
     proofBlocksMerge,
-    verificationBlocksMerge,
-    // Receipt failures remain maintainer-owned.
     needsContributorAction:
       proofBlocksMerge &&
       (assessment.needsContributorAction || assessment.status === "not_applicable"),
-    blocksMerge: proofBlocksMerge || verificationBlocksMerge,
+    blocksMerge: proofBlocksMerge,
   };
 }

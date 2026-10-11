@@ -148,28 +148,6 @@ export type PrStatusLabelKind =
   | "ready_for_maintainer_look";
 export type FeatureShowcaseStatus = "showcase" | "none";
 export type TelegramVisibleProofStatus = "needed" | "not_needed";
-export type LiveProofPlanStatus = "recommended" | "not_applicable" | "declined_suspicious";
-export type LiveProofSurface = "browser" | "terminal" | "none";
-export type LiveProofTerminalCompletion = "exit_zero" | "ready_while_running" | "not_applicable";
-export type LiveProofPayoffKind =
-  | "progressive_output"
-  | "ui_interaction"
-  | "tui_or_color"
-  | "animation"
-  | "static_text";
-export type LiveProofBrowserStep =
-  | { action: "goto"; path: string }
-  | { action: "click"; target: string }
-  | { action: "fill"; target: string; value: string }
-  | { action: "press"; key: string }
-  | { action: "wait_for"; target: string }
-  | { action: "wait"; seconds: number }
-  | { action: "expect_text"; text: string };
-export type LiveProofTerminalStep =
-  | { action: "run"; command: string }
-  | { action: "wait"; seconds: number }
-  | { action: "expect_output"; text: string };
-export type LiveProofStep = LiveProofBrowserStep | LiveProofTerminalStep;
 export type VisionFitStatus = "aligned" | "rejected" | "unclear" | "not_applicable";
 export type ImplementationComplexity = "small" | "medium" | "large" | "unclear" | "not_applicable";
 export type AutoImplementationCandidate = "none" | "strict_bug" | "vision_fit";
@@ -471,20 +449,6 @@ export interface TestingReview {
 export interface TelegramVisibleProof {
   status: TelegramVisibleProofStatus;
   summary: string;
-}
-
-export interface LiveProofPlan {
-  status: LiveProofPlanStatus;
-  surface: LiveProofSurface;
-  terminalCompletion: LiveProofTerminalCompletion;
-  invalid?: true;
-  reason: string;
-  payoff: {
-    kind: LiveProofPayoffKind;
-    justification: string;
-  };
-  entry: string;
-  steps: LiveProofStep[];
 }
 
 export interface FeatureShowcase {

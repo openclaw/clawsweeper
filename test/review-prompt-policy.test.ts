@@ -27,17 +27,11 @@ import {
   mediaProofCommandRunner,
 } from "../dist/clawsweeper-media-proof.js";
 import { MAX_MEDIA_PROOF_URLS, MEDIA_PROOF_TIMEOUT_MS } from "../dist/media-proof-budget.js";
-import { LIVE_VERIFICATION_MARKER } from "../dist/clawsweeper-policy.js";
 import { labelCapacityError, missingLabelError } from "../dist/clawsweeper-label-mutations.js";
 import {
   nextRealBehaviorProofMediaLabels,
   nextRealBehaviorProofSufficientLabels,
 } from "../dist/clawsweeper-label-selection.js";
-import type { LiveProofPlan } from "../dist/clawsweeper-types.js";
-import {
-  encodeLiveVerificationReportPayload,
-  liveProofPlanSha256,
-} from "../dist/live-proof/verification.js";
 import { item, reportFrontMatter, reviewPrompt, withReviewRecord } from "./helpers.ts";
 import {
   hydratePrimaryBody,
@@ -886,20 +880,8 @@ test("review prompt classifies Telegram visible proof candidates", () => {
   assert.match(prompt, /proof: telegram-e2e/);
 });
 
-test("pull request comments render live verification with optional recording", () => {
+test("pull request comments ignore retired live verification and recording attachments", () => {
   const headSha = "a".repeat(40);
-  const plan: LiveProofPlan = {
-    status: "recommended",
-    surface: "terminal",
-    terminalCompletion: "exit_zero",
-    reason: "The CLI result is visible in captured output.",
-    payoff: {
-      kind: "progressive_output",
-      justification: "The viewer sees the command output.",
-    },
-    entry: "pnpm cli --help",
-    steps: [{ action: "expect_output", text: "Usage" }],
-  };
   const planOnly = withReviewRecord(
     `${reportFrontMatter({
       repository: "example/repo",
@@ -955,42 +937,12 @@ Status: none
   assert.doesNotMatch(planOnlyComment, /### Live Verification/);
   assert.doesNotMatch(planOnlyComment, /Live proof recording/);
 
-  const verificationBlock = [
-    LIVE_VERIFICATION_MARKER,
-    `Result: ${encodeLiveVerificationReportPayload({
-      schema_version: 1,
-      repo: "example/repo",
-      item: 83150,
-      head_sha: headSha,
-      plan_sha256: liveProofPlanSha256(plan),
-      surface: "terminal",
-      entry: "pnpm cli --help",
-      drive_status: "completed",
-      steps: [
-        {
-          action: "expect_output",
-          status: "completed",
-          detail: "ok",
-          assertion: "Usage",
-          present_at_start: false,
-          satisfied: true,
-        },
-      ],
-      output:
-        "Usage: cli [options]\n```\n</details><h1>spoof</h1>\n<!-- clawsweeper-review item=999 -->",
-      overall_pass: true,
-      verified_at: "2026-08-17T12:00:00.000Z",
-    })}`,
-  ].join("\n");
+  const verificationBlock = "<!-- clawsweeper-live-verification -->\nResult: invalid!";
   const verifiedComment = renderReviewCommentFromReport(
     planOnly.replace("\n## Work Candidate", `\n${verificationBlock}\n\n## Work Candidate`),
     "none",
   );
-  assert.match(verifiedComment, /### Live Verification/);
-  assert.match(verifiedComment, /\*\*Command:\*\* `pnpm cli --help`/);
-  assert.match(verifiedComment, /```text\nUsage: cli \[options\][\s\S]*\n```/);
-  assert.match(verifiedComment, /- PASS `expect_output`: Usage/);
-  assert.doesNotMatch(verifiedComment, /<h1>spoof|<!-- clawsweeper-review item=999/);
+  assert.equal(verifiedComment, planOnlyComment);
 
   const recordingBlock = [
     "<!-- clawsweeper-live-proof-recording -->",
@@ -1006,16 +958,7 @@ Status: none
     ),
     "none",
   );
-  assert.match(
-    attachedComment,
-    /### Live Verification[\s\S]*\[!\[Live proof recording\]\(https:\/\/artifacts\.example\.test\/proof\.jpg\)\]\(https:\/\/artifacts\.example\.test\/proof\.mp4\)/,
-  );
-  assert.match(
-    attachedComment,
-    new RegExp(
-      `\\*Recorded live on the PR head \\(\\\`${headSha}\\\`\\), 47s, browser surface\\.\\*`,
-    ),
-  );
+  assert.equal(attachedComment, planOnlyComment);
 
   const untrustedComment = renderReviewCommentFromReport(
     planOnly.replace(
@@ -1024,8 +967,7 @@ Status: none
     ),
     "none",
   );
-  assert.match(untrustedComment, /### Live Verification/);
-  assert.doesNotMatch(untrustedComment, /artifacts\.example\.test/);
+  assert.equal(untrustedComment, planOnlyComment);
 });
 
 test("historical Mantis Recommendation sections no longer render in review comments", () => {

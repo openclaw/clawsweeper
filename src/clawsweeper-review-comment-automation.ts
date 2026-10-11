@@ -7,7 +7,6 @@ import type { PullRequestReviewReadiness } from "./clawsweeper-types.js";
 import { parseIsoMs } from "./iso-time.js";
 import { frontMatterStringArray, frontMatterValue } from "./report-front-matter.js";
 import { pullHeadShaFromReport } from "./clawsweeper-record-metadata.js";
-import { reportAttachedLiveVerification } from "./live-proof/report.js";
 import {
   pullRequestReviewReadinessFromReport,
   securitySensitiveRepairAllowed,
@@ -88,7 +87,6 @@ export function reviewAutomationMarkersFromReport(
   const reviewLeaseOwner = frontMatterValue(markdown, "review_lease_owner") ?? "unknown";
   const reviewLeaseCommentId = frontMatterValue(markdown, "review_lease_comment_id") ?? "unknown";
   const sourceRevision = frontMatterValue(markdown, "item_source_revision") ?? "unknown";
-  const liveVerification = reportAttachedLiveVerification(markdown).status;
   const baseAttrs = [
     `item=${markerAttributeValue(number)}`,
     `sha=${markerAttributeValue(headSha)}`,
@@ -98,7 +96,8 @@ export function reviewAutomationMarkersFromReport(
     `lease_owner=${markerAttributeValue(reviewLeaseOwner)}`,
     `lease_comment_id=${markerAttributeValue(reviewLeaseCommentId)}`,
     `source_revision=${markerAttributeValue(sourceRevision)}`,
-    `live_verification=${liveVerification}`,
+    // The retained repair marker reader requires this field; no legacy receipt is read.
+    "live_verification=absent",
   ].join(" ");
   const reviewReadiness =
     precomputedReadiness?.headSha === headSha.toLowerCase()

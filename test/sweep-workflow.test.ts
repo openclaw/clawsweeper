@@ -1750,7 +1750,6 @@ test("exact event review publishes directly with a queue-bounded canonical fallb
 
   const download = step(publisher, "Download exact review artifact bundle");
   const validate = step(publisher, "Validate exact review artifact bundle");
-  const foldLiveProof = step(publisher, "Fold exact live proof into the review artifact");
   const legacyArtifact = step(publisher, "Identify legacy tuple-less exact artifact");
   const targetWriteStep = step(publisher, "Create target write token");
   const stateSetup = publisher.steps.find((candidate) => candidate.uses?.endsWith("/setup-state"));
@@ -1776,77 +1775,10 @@ test("exact event review publishes directly with a queue-bounded canonical fallb
   assert.match(validate.run ?? "", /repair:exact-review-bundle validate/);
   assert.match(validate.if ?? "", /direct_lifecycle_recovery != 'true'/);
   assert.equal(validate["continue-on-error"], true);
-  assert.equal(foldLiveProof.id, "fold-exact-live-proof");
-  assert.equal(foldLiveProof["continue-on-error"], true);
-  const foldFixtureRoot = mkdtempSync(`${tmpPrefix}exact-live-proof-fold-`);
-  const fakeBin = join(foldFixtureRoot, "bin");
-  mkdirSync(fakeBin);
-  const fakeNode = join(fakeBin, "node");
-  writeFileSync(
-    fakeNode,
-    '#!/bin/sh\nprintf \'%s\\n\' "$FAKE_NODE_STDOUT"\nexit "${FAKE_NODE_STATUS:-0}"\n',
-    "utf8",
+  assert.equal(
+    publisher.steps.some((candidate) => candidate.id === "fold-exact-live-proof"),
+    false,
   );
-  chmodSync(fakeNode, 0o755);
-  try {
-    for (const [index, scenario] of [
-      {
-        name: "published success",
-        stdout: '{"status":"published","results":[]}',
-        commandStatus: 0,
-        expectedStatus: 0,
-        expectedResult: "published",
-      },
-      {
-        name: "invalid artifact",
-        stdout: '{"status":"invalid_artifact"}',
-        commandStatus: 1,
-        expectedStatus: 1,
-        expectedResult: "invalid_artifact",
-      },
-      {
-        name: "retryable failure",
-        stdout: '{"status":"retryable_failure"}',
-        commandStatus: 1,
-        expectedStatus: 1,
-        expectedResult: "retryable_failure",
-      },
-      {
-        name: "nonzero junk",
-        stdout: "not-json",
-        commandStatus: 1,
-        expectedStatus: 1,
-        expectedResult: "retryable_failure",
-      },
-      {
-        name: "zero-exit junk",
-        stdout: "not-json",
-        commandStatus: 0,
-        expectedStatus: 1,
-        expectedResult: "retryable_failure",
-      },
-    ].entries()) {
-      const outputPath = join(foldFixtureRoot, `github-output-${index}`);
-      const execution = spawnSync("bash", ["-c", foldLiveProof.run ?? ""], {
-        encoding: "utf8",
-        env: {
-          ...process.env,
-          FAKE_NODE_STATUS: String(scenario.commandStatus),
-          FAKE_NODE_STDOUT: scenario.stdout,
-          GITHUB_OUTPUT: outputPath,
-          PATH: `${fakeBin}${delimiter}${process.env.PATH ?? ""}`,
-        },
-      });
-      assert.equal(execution.status, scenario.expectedStatus, scenario.name);
-      assert.equal(
-        readFileSync(outputPath, "utf8").trim(),
-        `result=${scenario.expectedResult}`,
-        scenario.name,
-      );
-    }
-  } finally {
-    rmSync(foldFixtureRoot, { recursive: true, force: true });
-  }
   assert.match(legacyArtifact.run ?? "", /exact-review-queue-response\.ts legacyArtifact/);
   assert.doesNotMatch(create.run ?? "", /repair:exact-review-bundle -- create/);
   assert.doesNotMatch(validate.run ?? "", /repair:exact-review-bundle -- validate/);
@@ -1859,8 +1791,8 @@ test("exact event review publishes directly with a queue-bounded canonical fallb
     stateSetup,
     step(publisher, "Publish event result and apply safe close"),
   ]) {
-    assert.match(guardedStep.if ?? "", /fold-exact-live-proof\.outcome == 'success'/);
-    assert.doesNotMatch(guardedStep.if ?? "", /validate-exact-review-bundle/);
+    assert.match(guardedStep.if ?? "", /validate-exact-review-bundle\.outcome == 'success'/);
+    assert.doesNotMatch(guardedStep.if ?? "", /fold-exact-live-proof/);
   }
   assert.match(stateSetup.if ?? "", /legacy-exact-artifact\.outputs\.legacy_tupleless != 'true'/);
   assert.match(stateSetup.if ?? "", /direct_lifecycle_recovery != 'true'/);
@@ -1966,7 +1898,6 @@ test("exact event review publishes directly with a queue-bounded canonical fallb
   assert.doesNotMatch(publishResult.env?.FAILURE_KIND ?? "", /publication-pressure/);
   assert.match(publishResult.env?.DOWNLOAD_OUTCOME ?? "", /download-exact-review-bundle/);
   assert.match(publishResult.env?.VALIDATE_OUTCOME ?? "", /validate-exact-review-bundle/);
-  assert.match(publishResult.env?.LIVE_PROOF_RESULT ?? "", /fold-exact-live-proof/);
   assert.match(publishResult.env?.PUBLISH_COMPLETION_KIND ?? "", /publish-event-result/);
   assert.match(publishResult.env?.PUBLISH_RETRY_AT ?? "", /publish-event-result/);
   assert.match(publishResult.env?.DIRECT_RECOVERY_OUTCOME ?? "", /replay-direct-lifecycle/);
@@ -1993,15 +1924,9 @@ test("exact event review publishes directly with a queue-bounded canonical fallb
   );
   assert.match(publishResult.run ?? "", /reason_code=artifact_unavailable/);
   assert.match(publishResult.run ?? "", /reason_code=invalid_artifact/);
-  assert.match(
-    publishResult.run ?? "",
-    /LIVE_PROOF_RESULT.*invalid_artifact[\s\S]*completion_kind=refresh_required[\s\S]*reason_code=invalid_artifact/,
-  );
-  const runPublicationResult = (
-    liveProofResult: string,
-    overrides: Record<string, string> = {},
-  ) => {
-    const publicationResultRoot = mkdtempSync(`${tmpPrefix}live-proof-result-`);
+  assert.doesNotMatch(publishResult.run ?? "", /LIVE_PROOF_RESULT/);
+  const runPublicationResult = (overrides: Record<string, string> = {}) => {
+    const publicationResultRoot = mkdtempSync(`${tmpPrefix}publication-result-`);
     const publicationResultOutput = join(publicationResultRoot, "github-output");
     try {
       execFileSync("bash", ["-c", publishResult.run ?? ""], {
@@ -2021,7 +1946,6 @@ test("exact event review publishes directly with a queue-bounded canonical fallb
           FAILURE_KIND: "",
           DOWNLOAD_OUTCOME: "success",
           VALIDATE_OUTCOME: "success",
-          LIVE_PROOF_RESULT: liveProofResult,
           PUBLISH_COMPLETION_KIND: "",
           PUBLISH_REASON_CODE: "",
           PUBLISH_RETRY_AT: "",
@@ -2050,20 +1974,6 @@ test("exact event review publishes directly with a queue-bounded canonical fallb
       rmSync(publicationResultRoot, { recursive: true, force: true });
     }
   };
-  assert.deepEqual(runPublicationResult("invalid_artifact"), {
-    outcome: "success",
-    completion_kind: "refresh_required",
-    reason_code: "invalid_artifact",
-    requeue_latest: "",
-    direct_requeue: "false",
-  });
-  assert.deepEqual(runPublicationResult("retryable_failure"), {
-    outcome: "failure",
-    completion_kind: "retryable_failure",
-    reason_code: "unknown_failure",
-    requeue_latest: "",
-    direct_requeue: "false",
-  });
   // A direct lifecycle recovery skips the artifact publication. Its replayed
   // result is the completion, and the queue accepts a direct requeue only on a
   // published completion.
@@ -2081,7 +1991,7 @@ test("exact event review publishes directly with a queue-bounded canonical fallb
     ["false", "superseded", "remote_newer_tuple"],
   ]) {
     assert.deepEqual(
-      runPublicationResult("", {
+      runPublicationResult({
         ...directRecovery,
         DIRECT_RECOVERY_COMPLETION_KIND: completionKind!,
         DIRECT_RECOVERY_REASON_CODE: reasonCode!,
@@ -2177,25 +2087,6 @@ test("direct publication picks the router lifecycle from the claimed source acti
     globalThis.fetch = originalFetch;
     rmSync(root, { recursive: true, force: true });
   }
-});
-
-test("scheduled review shards retire automatic live proof without removing historical publication", () => {
-  type Step = {
-    name?: string;
-    if?: string;
-    uses?: string;
-    run?: string;
-    env?: Record<string, string>;
-    with?: Record<string, string | number | boolean>;
-  };
-  const workflow = YAML.parse(readText(".github/workflows/sweep.yml")) as {
-    jobs: Record<string, { steps: Step[] }>;
-  };
-  assert.ok(
-    workflow.jobs["event-review-publish"]!.steps.some(
-      (candidate) => candidate.name === "Fold exact live proof into the review artifact",
-    ),
-  );
 });
 
 test("exact event publication derives lifecycle receipt and final command acknowledgement from the projection", () => {

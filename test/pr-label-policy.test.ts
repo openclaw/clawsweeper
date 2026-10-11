@@ -22,7 +22,6 @@ import {
 } from "../dist/clawsweeper-label-selection.js";
 import {
   IMPACT_LABELS,
-  LIVE_VERIFICATION_MARKER,
   MATURITY_LABELS,
   MERGE_RISK_LABELS,
   PR_RATING_LABELS,
@@ -31,23 +30,13 @@ import {
 } from "../dist/clawsweeper-policy.js";
 import { reportRealBehaviorProofPolicy } from "../dist/clawsweeper-proof-policy.js";
 import { nextPrRatingLabels } from "../dist/clawsweeper-rating.js";
-import { reportAttachedLiveVerification } from "../dist/live-proof/report.js";
 import { syncApplyPullRequestLabels } from "../dist/clawsweeper-apply-pull-request-labels.js";
-import type {
-  LiveProofPlan,
-  MergeRiskOption,
-  PublicBeforeMergeItem,
-} from "../dist/clawsweeper-types.js";
-import {
-  buildLiveVerificationResult,
-  encodeLiveVerificationReportPayload,
-} from "../dist/live-proof/verification.js";
+import type { MergeRiskOption, PublicBeforeMergeItem } from "../dist/clawsweeper-types.js";
 import { parseDecision, reviewDecisionSchemaText } from "../dist/clawsweeper.js";
 import { goodFirstIssueHumanLabelState } from "../dist/clawsweeper-context-hydration.js";
 import {
   closeDecision,
   item,
-  legacyLiveProofSection,
   pullRequestProofReport,
   realBehaviorProofReportSection,
   reportFrontMatter,
@@ -436,44 +425,13 @@ test("unresolved proof routes contributors and maintainers to distinct owners", 
   );
 });
 
-test("historical receipt failures route to the proof owner without erasing independent proof", () => {
+test("historical receipt failures do not alter the recorded proof owner", () => {
   const headSha = "abc123def456abc123def456abc123def456abcd";
-  const plan: LiveProofPlan = {
-    status: "recommended",
-    surface: "terminal",
-    terminalCompletion: "exit_zero",
-    reason: "Run the changed command once.",
-    payoff: { kind: "static_text", justification: "The command output shows the behavior." },
-    entry: "synthetic-command",
-    steps: [
-      { action: "run", command: "synthetic-command" },
-      { action: "expect_output", text: "Synthetic output." },
-    ],
-  };
-  const receipt = (status: "completed" | "failed") =>
-    `${LIVE_VERIFICATION_MARKER}\nResult: ${encodeLiveVerificationReportPayload(
-      buildLiveVerificationResult({
-        repo: "openclaw/openclaw",
-        item: 119610,
-        headSha,
-        plan,
-        driveStatus: status,
-        stepLog: plan.steps.map((step) => ({
-          action: step.action,
-          status,
-          detail: "Synthetic outcome.",
-          presentAtStart: false,
-          satisfied: status === "completed",
-        })),
-        output: "Synthetic output.",
-        verifiedAt: "2026-08-27T00:00:00.000Z",
-      }),
-    )}`;
   const receipts = {
     absent: "",
-    passed: receipt("completed"),
-    failed: receipt("failed"),
-    malformed: `${LIVE_VERIFICATION_MARKER}\nResult: invalid!`,
+    passed: "<!-- clawsweeper-live-verification -->\nResult: eyJvdmVyYWxsX3Bhc3MiOnRydWV9",
+    failed: "<!-- clawsweeper-live-verification -->\nResult: eyJvdmVyYWxsX3Bhc3MiOmZhbHNlfQ",
+    malformed: "<!-- clawsweeper-live-verification -->\nResult: invalid!",
   };
 
   for (const reviewFailed of [false, true]) {
@@ -489,21 +447,16 @@ test("historical receipt failures route to the proof owner without erasing indep
             reviewed_at: "2026-08-27T12:00:00.000Z",
             review_status: reviewFailed ? "failed" : "complete",
           },
-          sections: `## Live Proof\n\n${legacyLiveProofSection(plan)}${
-            receipts[receiptStatus] ? `\n\n${receipts[receiptStatus]}` : ""
-          }\n\n`,
+          sections: `## Live Proof\n\n${receipts[receiptStatus]}\n\n`,
         });
         const context = `${receiptStatus}: contributor action=${needsContributorAction}, failed review=${reviewFailed}`;
-        assert.equal(reportAttachedLiveVerification(report).status, receiptStatus, context);
         assert.equal(
           prStatusLabelKindFromReport(report, noActivity, ["clawsweeper:automerge"]),
           needsContributorAction && !reviewFailed
             ? "needs_proof"
-            : receiptStatus === "failed" || receiptStatus === "malformed"
-              ? "needs_maintainer_proof_decision"
-              : reviewFailed
-                ? null
-                : "automerge_armed",
+            : reviewFailed
+              ? null
+              : "automerge_armed",
           context,
         );
       }

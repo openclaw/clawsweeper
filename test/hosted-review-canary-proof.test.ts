@@ -6,7 +6,6 @@ import fs from "node:fs";
 import { syncBuiltinESMExports } from "node:module";
 import {
   existsSync,
-  lstatSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -19,7 +18,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { pathToFileURL } from "node:url";
 import { Readable } from "node:stream";
 import { gzipSync } from "node:zlib";
 
@@ -28,21 +27,16 @@ import { codexFailureDecisionForTest } from "../dist/clawsweeper.js";
 import { reviewTreeMetadataArgs } from "../dist/clawsweeper-context-hydration.js";
 import {
   assertBooleanCountArtifact,
-  assertHostedBlobStarts,
   assertHostedMultilineRequest,
   assertHostedNativeQuiescent,
   assertHostedProcessGroupGone,
-  assertHostedTerminalDone,
-  assertHostedTerminalQuiescent,
   assertMatchesJsonSchema,
   HOSTED_MULTILINE_PROVIDER_ERROR,
   HOSTED_MULTILINE_RETRY_HINT,
   HOSTED_REVIEW_ROLLOUT_MAX_BYTES,
-  hostedBlobPreloadSource,
   hostedNativeChildFailureFacts,
   hostedNativeFailureLine,
   hostedProcessIdentity,
-  hostedTerminalObserverSource,
   hostedTreeMetadataSource,
   latchHostedNativeFailure,
   readHostedLifecycle,
@@ -52,11 +46,9 @@ import {
   runWithWithheldDiagnostics,
   snapshotHostedReviewRollouts,
   stopHostedNativeGroup,
-  stopHostedTerminal,
   summarizeHostedReviewTrace,
   summarizeHostedMultilineFailure,
 } from "../scripts/hosted-review-canary-proof.mjs";
-import { withReviewRecord } from "./helpers.ts";
 
 test("hosted process identity handles an exiting process without hiding other read errors", (t) => {
   for (const code of ["ENOENT", "ESRCH", "EACCES", "EPERM", "EIO"]) {
@@ -1517,42 +1509,6 @@ test("hosted native diagnostics preserve failed receipt and child-assertion gate
   }
 });
 
-test("hosted blob proof requires the real outer CLI and exact sanitized child starts", () => {
-  const repo = "steipete/camsnap";
-  const item = 990_001;
-  const temporaryRoot = "/tmp/fixture-owned-tmp";
-  const outer = {
-    command: "live-proof-review",
-    args: ["--repo", repo, "--item", String(item)],
-    temporaryRoot,
-  };
-  const scratch = join(temporaryRoot, `clawsweeper-live-proof-${item}-fixture`);
-  const child = {
-    command: "live-proof",
-    args: [...outer.args, "--output", join(scratch, "bundle")],
-    temporaryRoot: join(scratch, "profile", "tmp"),
-  };
-  assertHostedBlobStarts([outer], repo, item, 0, temporaryRoot);
-  assertHostedBlobStarts([outer, child], repo, item, 1, temporaryRoot);
-  for (const starts of [
-    [],
-    [child],
-    [outer],
-    [outer, child, child],
-    [child, outer],
-    [outer, { ...child, args: ["--repo", "other/repo", "--item", String(item)] }],
-    [outer, { ...child, args: ["--repo", repo, "--item", "1"] }],
-    [outer, { ...child, temporaryRoot: "/tmp/other-fixture" }],
-    [outer, { ...child, temporaryRoot }],
-    [outer, { ...child, args: [...outer.args, "--output", "/tmp/other-fixture/bundle"] }],
-    [outer, { ...child, args: [...outer.args, "--output", join(scratch, "other")] }],
-    [{ ...outer, temporaryRoot: "/tmp/other-fixture" }, child],
-  ]) {
-    assert.throws(() => assertHostedBlobStarts(starts, repo, item, 1, temporaryRoot));
-  }
-  assert.throws(() => assertHostedBlobStarts([outer, child], repo, item, 0, temporaryRoot));
-});
-
 test("hosted changed-surface proof keeps native execution and passive blob observations", () => {
   const source = readFileSync(
     new URL("../scripts/hosted-review-scan-smoke.mjs", import.meta.url),
@@ -1561,13 +1517,14 @@ test("hosted changed-surface proof keeps native execution and passive blob obser
   assert.match(source, /sandboxMode: "read-only"/);
   assert.match(source, /await assertHostedMultilineRequest\(request, \+\+requests\)/);
   assert.match(source, /summarizeHostedMultilineFailure\(failure, decision/);
-  assert.match(source, /NODE_OPTIONS: `--import=\$\{pathToFileURL\(preload\)\.href\}`/);
-  assert.match(source, /env: sanitizedLiveProofEnvironment\(env\)/);
+  assert.match(source, /materializePullRequestReviewTree/);
+  assert.doesNotMatch(source, /live-proof-review|sanitizedLiveProofEnvironment/);
   assert.match(source, /for \(const truncated of \[true, false\]\)/);
   assert.match(source, /const child = spawn\(process\.execPath, args,/);
+  assert.match(source, /assert\.equal\(starts\.length, truncated \? 0 : 1\)/);
   assert.match(
     source,
-    /assertHostedBlobStarts\(starts, repo, itemNumber, truncated \? 0 : 1, temporaryRoot\)/,
+    /for \(const key of \["OPENAI_API_KEY", "GH_TOKEN", "AWS_SECRET_ACCESS_KEY", "DATABASE_PASSWORD"\]\) assert\.equal\(process\.env\[key\], undefined\)/,
   );
   assert.match(source, /TMPDIR: temporaryRoot/);
   assert.match(source, /GIT_NO_LAZY_FETCH: "1"/);
@@ -2070,416 +2027,3 @@ test("hosted lifecycle readers refuse missing, symlinked, mismatched, and incomp
     rmSync(root, { recursive: true, force: true });
   }
 });
-
-function hostedTerminalRecords() {
-  const fixtureNonce = randomUUID();
-  const nonce = randomUUID();
-  const identity = `${nonce}|123|/dev/pts/1|1:2`;
-  const shared = {
-    kind: "terminal",
-    fixtureNonce,
-    socket: "/tmp/fixture-owned-socket",
-    socketIdentity: "3:4",
-    server: { pid: 321, pgid: 321, start: "10" },
-    session: "$0",
-    lease: "/tmp/fixture-owned-lease",
-    request: "/tmp/fixture-owned-request",
-    result: "/tmp/fixture-owned-result",
-  };
-  return [
-    {
-      ...shared,
-      publication: `v1|armed|${identity}|456\n`,
-      watchdog: { pid: 456, pgid: 456, start: "20" },
-    },
-    { ...shared, publication: `v1|done|${identity}|controller|ok|0\n` },
-  ];
-}
-
-test("hosted terminal cleanup requires its exact armed and successful done publications", () => {
-  const records = hostedTerminalRecords();
-  assert.equal(assertHostedTerminalDone(records), records[0]);
-  for (const changed of [
-    [],
-    [records[0]],
-    [records[1], records[0]],
-    [records[0], { ...records[1], fixtureNonce: randomUUID() }],
-    [records[0], { ...records[1], session: "$1" }],
-    [records[0], { ...records[1], socketIdentity: "3:5" }],
-    [
-      records[0],
-      { ...records[1], publication: records[1].publication.replace("|ok|0", "|error:survivors|1") },
-    ],
-    [records[0], { ...records[1], publication: records[1].publication.replace("|1:2|", "|1:3|") }],
-    [{ ...records[0], watchdog: null }, records[1]],
-  ])
-    assert.throws(() => assertHostedTerminalDone(changed));
-});
-
-for (const scenario of [
-  "finished",
-  "query",
-  "kill",
-  "live",
-  "mismatch",
-  "empty",
-  "empty-live",
-  "empty-mismatch",
-] as const) {
-  test(
-    `hosted terminal post-DONE ${scenario} requires fresh receipts and quiescence without retry`,
-    { skip: process.platform !== "linux", timeout: 10_000 },
-    async () => {
-      const root = mkdtempSync(join(tmpdir(), "hosted-done-race-"));
-      const live = join(root, "live");
-      mkdirSync(live);
-      const socket = join(live, "tmux.sock");
-      const receipt = join(root, "receipt.jsonl");
-      const calls = join(root, "calls.jsonl");
-      const wrapper = join(root, "tmux-fixture.mjs");
-      const tmux = execFileSync("which", ["tmux"], { encoding: "utf8" }).trim();
-      const command = (...args: string[]) =>
-        execFileSync(tmux, ["-S", socket, ...args], { encoding: "utf8", timeout: 2000 }).trim();
-      const foreign = await hostedSentinel();
-      let server: ReturnType<typeof hostedProcessIdentity> | undefined;
-      let started = false;
-      try {
-        command("-f", "/dev/null", "new-session", "-d", "-s", "proof", "sleep 60");
-        started = true;
-        const [serverPid, panePid, tty, session] = command(
-          "display-message",
-          "-p",
-          "-t",
-          "proof:0.0",
-          "#{pid}|#{pane_pid}|#{pane_tty}|#{session_id}",
-        ).split("|");
-        server = hostedProcessIdentity(Number(serverPid));
-        assert.ok(server);
-        const socketStat = lstatSync(socket);
-        const nonce = randomUUID();
-        const identity = `${randomUUID()}|${panePid}|${tty}|1:2`;
-        const lease = join(live, "proof.lease");
-        writeFileSync(lease, "fixture");
-        const shared = {
-          kind: "terminal",
-          fixtureNonce: nonce,
-          socket,
-          socketIdentity: `${socketStat.dev}:${socketStat.ino}`,
-          server,
-          session,
-          lease,
-          request: join(live, "proof.start"),
-          result: join(live, "proof.cleanup.result"),
-        };
-        const records = [
-          {
-            ...shared,
-            publication: `v1|armed|${identity}|${process.pid}\n`,
-            watchdog: hostedProcessIdentity(process.pid),
-          },
-          { ...shared, publication: `v1|done|${identity}|controller|ok|0\n` },
-        ];
-        for (const record of records) recordHostedLifecycle(receipt, record);
-        writeFileSync(
-          wrapper,
-          `#!${process.execPath}
-import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
-import fs from "node:fs";
-import { hostedProcessIdentity } from ${JSON.stringify(new URL("../scripts/hosted-review-canary-proof.mjs", import.meta.url).href)};
-const server = ${JSON.stringify(server)};
-const finish = async () => {
-  assert.deepEqual(hostedProcessIdentity(server.pid), server);
-  execFileSync(${JSON.stringify(tmux)}, ["-S", ${JSON.stringify(socket)}, "kill-session", "-t", ${JSON.stringify(session)}]);
-  const deadline = Date.now() + 2000;
-  while (hostedProcessIdentity(server.pid)) {
-    assert.ok(Date.now() < deadline);
-    await new Promise(resolve => setTimeout(resolve, 10));
-  }
-  fs.rmSync(${JSON.stringify(live)}, { recursive: true });
-};
-if (process.argv[2] === "finish") {
-  await finish();
-} else {
-  const args = process.argv.slice(2);
-  fs.appendFileSync(${JSON.stringify(calls)}, JSON.stringify(args[2]) + "\\n");
-  const race = ${JSON.stringify(scenario)};
-  if (race === "kill" && args[2] === "display-message") {
-    process.stdout.write(execFileSync(${JSON.stringify(tmux)}, args));
-  } else {
-    if (race !== "live" && race !== "empty-live") await finish();
-    if (race === "mismatch" || race === "empty-mismatch") {
-      const records = ${JSON.stringify(records)};
-      records[1].session = "$999";
-      fs.writeFileSync(${JSON.stringify(receipt)}, records.map(value => JSON.stringify(value) + "\\n").join(""));
-    }
-    if (race.startsWith("empty")) process.stdout.write("|");
-    else process.exitCode = 1;
-  }
-}
-`,
-          { mode: 0o700 },
-        );
-        if (scenario === "finished") {
-          execFileSync(process.execPath, [wrapper, "finish"], { timeout: 3000 });
-          assert.equal(existsSync(live), false);
-        }
-        const operation = stopHostedTerminal({ path: receipt, nonce, tmux: wrapper });
-        if (
-          scenario === "live" ||
-          scenario === "mismatch" ||
-          scenario === "empty-live" ||
-          scenario === "empty-mismatch"
-        )
-          await assert.rejects(operation);
-        else await operation;
-        const observed = existsSync(calls)
-          ? readFileSync(calls, "utf8")
-              .trim()
-              .split("\n")
-              .map((line) => JSON.parse(line))
-          : [];
-        assert.deepEqual(
-          observed,
-          scenario === "finished"
-            ? []
-            : scenario === "kill"
-              ? ["display-message", "kill-session"]
-              : ["display-message"],
-        );
-        assert.deepEqual(hostedProcessIdentity(foreign.identity.pid), foreign.identity);
-        if (scenario === "live" || scenario === "empty-live")
-          assert.deepEqual(hostedProcessIdentity(server.pid), server);
-        else assert.equal(hostedProcessIdentity(server.pid), null);
-      } finally {
-        let quiescent = !started;
-        try {
-          if (server) {
-            if (hostedProcessIdentity(server.pid)) {
-              assert.deepEqual(hostedProcessIdentity(server.pid), server);
-              command("kill-session", "-t", "proof");
-              const deadline = Date.now() + 2000;
-              while (hostedProcessIdentity(server.pid)) {
-                assert.ok(Date.now() < deadline);
-                await new Promise((resolve) => setTimeout(resolve, 10));
-              }
-            }
-            quiescent = true;
-          }
-        } finally {
-          await finishHostedSentinel(foreign);
-          if (quiescent) rmSync(root, { recursive: true, force: true });
-        }
-      }
-    },
-  );
-}
-
-test(
-  "hosted done observation follows the original published-result read before immediate teardown",
-  {
-    skip: process.platform !== "linux",
-    timeout: 10_000,
-  },
-  () => {
-    const root = mkdtempSync(join(tmpdir(), "hosted-read-observer-"));
-    const receipt = join(root, "receipt.jsonl");
-    const entrypoint = join(root, "controller.mjs");
-    const preload = join(root, "preload.mjs");
-    const startsPath = join(root, "starts.jsonl");
-    const [armed, done] = hostedTerminalRecords();
-    armed.result = join(root, "proof.cleanup.result");
-    done.result = armed.result;
-    try {
-      recordHostedLifecycle(receipt, armed);
-      writeFileSync(
-        preload,
-        hostedBlobPreloadSource({
-          entrypoint,
-          startsPath,
-          terminalReceipts: receipt,
-          nonce: armed.fixtureNonce,
-        }),
-      );
-      writeFileSync(
-        entrypoint,
-        `
-import assert from "node:assert/strict";
-import fs from "node:fs";
-const receipt = ${JSON.stringify(receipt)};
-const result = ${JSON.stringify(armed.result)};
-const publication = ${JSON.stringify(done.publication)};
-const count = () => fs.readFileSync(receipt, "utf8").trim().split("\\n").length;
-const read = (path) => {
-  const fd = fs.openSync(path, "r");
-  try {
-    const buffer = Buffer.alloc(513);
-    const bytes = fs.readSync(fd, buffer, 0, 513, 0);
-    assert.equal(buffer.subarray(0, bytes).toString(), fs.readFileSync(path, "utf8"));
-    return bytes;
-  } finally { fs.closeSync(fd); }
-};
-fs.writeFileSync(result + ".tmp", publication);
-read(result + ".tmp");
-assert.equal(count(), 1, "temporary intent is not publication");
-assert.throws(() => fs.renameSync(result + ".absent", result));
-assert.equal(count(), 1, "failed rename is not publication");
-fs.writeFileSync(result + ".wrong", publication);
-read(result + ".wrong");
-assert.equal(count(), 1, "wrong path is not publication");
-fs.writeFileSync(result, publication.replace("|1:2|", "|1:3|"));
-read(result);
-assert.equal(count(), 1, "wrong identity is not publication");
-fs.renameSync(result + ".tmp", result);
-assert.equal(read(result), Buffer.byteLength(publication));
-assert.equal(count(), 2);
-read(result);
-assert.equal(count(), 2, "publication must be recorded once");
-fs.rmSync(result);
-assert.equal(count(), 2, "immediate owner teardown must not erase the observation");
-const closed = fs.openSync(receipt, "r");
-fs.closeSync(closed);
-assert.throws(() => fs.readSync(closed, Buffer.alloc(513), 0, 513, 0), { code: "EBADF" });
-`,
-      );
-      execFileSync(process.execPath, [entrypoint, "live-proof"], {
-        env: { ...process.env, NODE_OPTIONS: `--import=${pathToFileURL(preload).href}` },
-        timeout: 5000,
-        maxBuffer: 4096,
-      });
-      assertHostedTerminalDone(readHostedLifecycle(receipt, armed.fixtureNonce));
-      assert.equal(existsSync(armed.result), false);
-    } finally {
-      rmSync(root, { recursive: true, force: true });
-    }
-  },
-);
-
-test(
-  "hosted actual review CLI keeps its TMPDIR and waits for the watchdog before ending its private session",
-  {
-    skip: process.platform !== "linux",
-    timeout: 30_000,
-  },
-  async () => {
-    const root = mkdtempSync(join(tmpdir(), "hosted-terminal-lifecycle-"));
-    const receiptPath = join(root, "terminal.jsonl");
-    const observer = join(root, "observer.sh");
-    const preload = join(root, "preload.mjs");
-    const startsPath = join(root, "starts.jsonl");
-    const temporaryRoot = join(root, "tmp");
-    const checkout = join(root, "checkout");
-    const recordsDir = join(root, "records");
-    const output = join(root, "output");
-    const entrypoint = fileURLToPath(new URL("../dist/clawsweeper.js", import.meta.url));
-    for (const directory of [temporaryRoot, checkout, recordsDir]) mkdirSync(directory);
-    const nonce = randomUUID();
-    const foreign = await hostedSentinel();
-    writeFileSync(observer, hostedTerminalObserverSource(receiptPath, nonce));
-    writeFileSync(
-      preload,
-      hostedBlobPreloadSource({
-        entrypoint,
-        startsPath,
-        terminalReceipts: receiptPath,
-        nonce,
-      }),
-    );
-    const git = (...args: string[]) =>
-      execFileSync("git", args, {
-        cwd: checkout,
-        encoding: "utf8",
-      }).trim();
-    git("init", "-q", "--initial-branch=main");
-    git(
-      "-c",
-      "user.name=Fixture",
-      "-c",
-      "user.email=fixture@example.invalid",
-      "-c",
-      "commit.gpgsign=false",
-      "commit",
-      "--allow-empty",
-      "-qm",
-      "fixture",
-    );
-    const head = git("rev-parse", "HEAD");
-    writeFileSync(
-      join(recordsDir, "990001.md"),
-      withReviewRecord(
-        `---\nnumber: 990001\nrepository: steipete/camsnap\ntype: pull_request\npull_head_sha: ${head}\n---\n\n## Live Proof\n\nStatus: recommended\n\nSurface: terminal\n\nTerminal completion: exit_zero\n\nReason: Exercise cleanup.\n\nPayoff: static_text\n\nPayoff justification: Text is sufficient.\n\nEntry: sleep 60\n\nSteps:\n\n- {"action":"expect_output","text":"never"}\n\n## Work Candidate\n\nCandidate: none\n`,
-        { decision: "keep_open", closeReason: "none" },
-      ),
-    );
-    const child = spawn(
-      process.execPath,
-      [
-        entrypoint,
-        "live-proof-review",
-        "--repo",
-        "steipete/camsnap",
-        "--records-dir",
-        recordsDir,
-        "--checkout",
-        checkout,
-        "--output",
-        output,
-        "--item",
-        "990001",
-      ],
-      {
-        env: {
-          ...process.env,
-          TMPDIR: temporaryRoot,
-          BASH_ENV: observer,
-          NODE_OPTIONS: `--import=${pathToFileURL(preload).href}`,
-        },
-        detached: true,
-        stdio: ["ignore", "ignore", "ignore"],
-      },
-    );
-    const closed = once(child, "close");
-    let records;
-    try {
-      const end = Date.now() + 10_000;
-      while (!existsSync(receiptPath)) {
-        assert.ok(Date.now() < end, "unchanged watchdog did not publish its armed identity");
-        await new Promise((resolve) => setTimeout(resolve, 25));
-      }
-      records = readHostedLifecycle(receiptPath, nonce);
-      assert.equal(records.length, 1);
-      assertHostedBlobStarts(
-        readFileSync(startsPath, "utf8")
-          .trim()
-          .split("\n")
-          .map((line) => JSON.parse(line)),
-        "steipete/camsnap",
-        990001,
-        1,
-        temporaryRoot,
-      );
-      assert.ok(records[0].lease.startsWith(temporaryRoot + "/"));
-      const original = readFileSync(receiptPath);
-      const mismatched = { ...records[0], socketIdentity: "0:0" };
-      writeFileSync(receiptPath, JSON.stringify(mismatched) + "\n");
-      const tmux = execFileSync("which", ["tmux"], { encoding: "utf8" }).trim();
-      await assert.rejects(stopHostedTerminal({ path: receiptPath, nonce, tmux }));
-      assert.equal(existsSync(records[0].request), false);
-      assert.deepEqual(hostedProcessIdentity(foreign.identity.pid), foreign.identity);
-      writeFileSync(receiptPath, original);
-      await stopHostedTerminal({ path: receiptPath, nonce, tmux });
-      await closed;
-      records = readHostedLifecycle(receiptPath, nonce);
-      assertHostedTerminalDone(records);
-      await assertHostedTerminalQuiescent(records);
-      assert.deepEqual(hostedProcessIdentity(foreign.identity.pid), foreign.identity);
-    } finally {
-      await finishHostedSentinel(foreign);
-      // An unproven terminal lifecycle must keep its exact fixture for diagnosis.
-      if (child.exitCode !== null || child.signalCode !== null) {
-        await closed;
-        if (records?.length === 2) rmSync(root, { recursive: true, force: true });
-      } else child.unref();
-    }
-  },
-);

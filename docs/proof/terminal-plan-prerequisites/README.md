@@ -1,5 +1,9 @@
 # Generated terminal-plan prerequisites
 
+> Historical evidence only. The post-review terminal-plan executor and its tests
+> have been retired. Commands and implementation claims below describe the
+> captured revisions, not the current runtime; the saved evidence is unchanged.
+
 ## Claim and owner
 
 A generated terminal plan must include build/code-generation prerequisites not

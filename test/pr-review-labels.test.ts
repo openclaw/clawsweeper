@@ -3,12 +3,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { reviewAutomationMarkersFromReport } from "../dist/clawsweeper.js";
-import { LIVE_VERIFICATION_MARKER } from "../dist/clawsweeper-policy.js";
-import type { LiveProofPlan } from "../dist/clawsweeper-types.js";
-import {
-  encodeLiveVerificationReportPayload,
-  liveProofPlanSha256,
-} from "../dist/live-proof/verification.js";
+const LIVE_VERIFICATION_MARKER = "<!-- clawsweeper-live-verification -->";
 import {
   detailsBody,
   prRatingReportSection,
@@ -211,15 +206,9 @@ ${malformedReceipt ? `## Live Proof\n\n${LIVE_VERIFICATION_MARKER}\nResult: inva
         }
         const workflowStatus = extraLabels.find((label) => label.startsWith("status:"));
         if (workflowStatus) assert.ok(!details.includes(`remove \`${workflowStatus}\``));
-        assert.equal(
-          details.includes("add `status: needs maintainer proof decision`"),
-          malformedReceipt && !workflowStatus && !extraLabels.includes("clawsweeper:human-review"),
-        );
+        assert.equal(details.includes("add `status: needs maintainer proof decision`"), false);
         const markers = reviewAutomationMarkersFromReport(report);
-        assert.match(
-          markers,
-          new RegExp(`live_verification=${malformedReceipt ? "malformed" : "absent"}`),
-        );
+        assert.match(markers, /live_verification=absent/);
         assert.match(markers, /clawsweeper-verdict:needs-human/);
         assert.doesNotMatch(markers, /clawsweeper-verdict:pass|clawsweeper-action:fix-required/);
         assert.ok(comment.includes(markers));
@@ -561,42 +550,7 @@ Full review comments:
 
 test("recorded proof reconciles public proof statuses independently of historical receipts", () => {
   const headSha = "a".repeat(40);
-  const plan: LiveProofPlan = {
-    status: "recommended",
-    surface: "terminal",
-    terminalCompletion: "exit_zero",
-    reason: "The changed CLI output is visible.",
-    payoff: {
-      kind: "progressive_output",
-      justification: "The viewer sees the clean help output.",
-    },
-    entry: "node scripts/run-node.mjs --help",
-    steps: [{ action: "expect_output", text: "Usage: openclaw" }],
-  };
-  const attachedVerification = `${LIVE_VERIFICATION_MARKER}
-Result: ${encodeLiveVerificationReportPayload({
-    schema_version: 1,
-    repo: "openclaw/openclaw",
-    item: 74510,
-    head_sha: headSha,
-    plan_sha256: liveProofPlanSha256(plan),
-    surface: "terminal",
-    entry: "node scripts/run-node.mjs --help",
-    drive_status: "completed",
-    steps: [
-      {
-        action: "expect_output",
-        status: "completed",
-        detail: "clean help output was observed",
-        assertion: "Usage: openclaw",
-        present_at_start: false,
-        satisfied: true,
-      },
-    ],
-    output: "Usage: openclaw",
-    overall_pass: true,
-    verified_at: "2026-08-27T12:00:00.000Z",
-  })}`;
+  const attachedVerification = "<!-- clawsweeper-live-verification -->\nResult: invalid!";
   const cases = [
     {
       labels: ["clawsweeper:automerge", "status: 📣 needs proof"],

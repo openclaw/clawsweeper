@@ -1,11 +1,10 @@
 # Historical proof classification
 
-> **Historical-only after S7b.** `run-proof.mjs` intentionally throws before
-> execution: its no-record fixtures and body edits assume the retired Markdown
-> parser is authoritative. Recover the original driver and README from pinned
-> pre-cutover commit `dbb40525904c2176d192ef6e92c588853e676207`; use that runtime
-> and the historical baseline below. Frozen expectations and saved evidence are
-> unchanged. The production-path description below describes that historical code.
+> **Historical-only.** The obsolete driver was removed with the post-review
+> proof stack. Recover the original driver and README from pinned pre-cutover
+> commit `dbb40525904c2176d192ef6e92c588853e676207` to inspect that implementation.
+> Saved evidence is unchanged. Current readers ignore historical attachments;
+> they no longer fold receipts, render recordings, or derive blockers from them.
 >
 > Current record authority and proof projections are covered by
 > `test/review-record.test.ts`, `test/review-comment-rendering.test.ts`, and
@@ -17,35 +16,12 @@
 - Status: historical repair proof recipe; not an execution runbook
 - Owner: ClawSweeper review and publication maintainers
 - Baseline: `f72ea010c1d7fd134b1bd0826b3a707778c312bc`
-- Update when: historical receipt folding, report proof classification, labels,
-  ratings, or merge markers change
+- Current contract: [Live proof](../../live-proof.md#retired-post-review-proof).
 
-This proves ClawSweeper's classification of historical artifacts, **not Gateway
-authorization**. Automatic live proof remains retired. The recipe runs the
-retained production CLI and public report projections, without executing a
-target checkout or creating a replacement proof lane.
-
-## Reproduce locally
-
-From this checkout, using existing Node >=24 and pinned pnpm 11.10.0:
-
-```sh
-pnpm run build:all
-node docs/proof/historical-proof-classification/run-proof.mjs .artifacts/historical-proof-classification
-```
-
-The output directory must not exist. The recipe works with local Node on macOS
-and Linux; it needs no tmux, browser, video toolchain, accounts, or credentials.
-It passes only PATH, a new local HOME, and LANG to the child CLI. Every bundle
-lacks a media manifest, so there is no R2 upload. The production publication
-command rejects live-head lookup and folds local records without syncing GitHub
-comments. The synthetic `clawsweeper:automerge` label tests marker generation
-only; nothing enables or executes automerge.
-
-`result.json` records the source HEAD, production diff hash, recipe and fixture
-hashes, Node/platform/provider, and each observation. Each scenario retains a
-small receipt where applicable, folded report, rendered comment, publication
-result, and markers. Generated outputs are local evidence, not files to commit.
+The observations below describe the historical classification repair, not the
+current runtime. There is no runnable receipt-republication recipe in this
+checkout. Current attachment-ignore regression coverage is in
+`test/live-proof-report.test.ts`.
 
 ## Input provenance and boundary
 
@@ -64,14 +40,9 @@ dummy PR binding is never looked up. The recipe also constructs failed and
 malformed controls and independent reviewer assessments; these are explicitly
 fixture data, not claimed fresh executions or newly verified owner traces.
 
-The exercised production path is `src/clawsweeper-runtime.ts` →
-`src/live-proof/publication-artifacts.ts` →
-`src/live-proof/attach.ts` (`attachReviewLiveProofArtifact`), followed by
-`renderReviewCommentFromReport` and `reviewAutomationMarkersFromReport`.
-Classification comes from `src/clawsweeper-report-parser.ts`, status ownership
-from the label/presentation owners, and merge proof gates from
-`src/clawsweeper-orchestration-foundation.ts`. Schema-v1 plan/identity validation
-is still the unmodified production verifier.
+The historical path used the now-retired post-review artifact publication and
+attachment modules followed by comment rendering and automation projections.
+That execution and compatibility contract has expired.
 
 ## Before and after
 
@@ -88,17 +59,9 @@ assessment. The intended rejection assertion failed. The fresh terminal
 attempts on that baseline instead failed cleanup and produced no receipt;
 they are a separate driver issue and are not evidence for this repair.
 
-The maintained recipe expects publication to remain `published` / `attached`,
-while the same help success leaves missing proof unresolved, proposes no
-sufficient label, and cannot produce a merge-pass marker. It also checks that
-independent recording, linked-artifact, and terminal assessments retain their
-summary, media attribution, patch cap, and rank-up advice across passed and
-failed receipts. Failed/malformed receipts still block merge; unresolved
-authority-chain proof is enforced for trusted and external authors. Exemptions,
-explicit override, invalid identity rejection, and direct publication without
-an attachment are separate controls. Independently sufficient proof clears stale
-contributor and maintainer proof-status justifications for both attached and
-direct publication, without treating receipt success as proof.
+At that revision, the recipe expected successful attachment publication while
+preserving the independent proof assessment, patch rating and authority-chain
+requirements. Current readers instead ignore those attachments entirely.
 
 The residual guidance/PASS-scope follow-up extends the recipe to 27 cases. Five
 synthetic cases cover an `ExecHostExecutor.swift` coverage gap with unrelated help,

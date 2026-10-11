@@ -3,12 +3,11 @@ import { sha256 } from "./content-hash.js";
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { flushWorkflowActionEvents } from "./action-ledger-runtime.js";
-import { boolArg, itemNumbersArg, parseArgs, stringArg, type Args } from "./clawsweeper-args.js";
+import { parseArgs, stringArg, type Args } from "./clawsweeper-args.js";
 import { dispatchCommand, type CommandHandler } from "./clawsweeper-command-dispatch.js";
 import { reviewDecisionParser } from "./clawsweeper-decision-parser.js";
 import { runText, SWEEPER_COMMAND_MAX_BUFFER_BYTES } from "./command.js";
 import { AUTOMATION_LIMITS } from "./limits.js";
-import { repositoryProfileFor } from "./repository-profiles.js";
 import { reviewPullChecksDigestParts } from "./review-checks-digest.js";
 import {
   reviewStructuralQuery,
@@ -97,13 +96,9 @@ import {
 } from "./clawsweeper-item-policy.js";
 import { createLabelMutationOperations } from "./clawsweeper-label-mutations.js";
 import { createLabelSyncOperations } from "./clawsweeper-label-operations.js";
-import { createLiveProofCommands } from "./live-proof/commands.js";
-import { publishReviewLiveProofArtifacts } from "./live-proof/publication-artifacts.js";
-import { executeReviewLiveProofs, inspectReviewLiveProofs } from "./live-proof/review-artifacts.js";
 import * as repositoryLinks from "./clawsweeper-links.js";
 import {
   repoFromArgs,
-  setTargetRepo,
   targetProfile,
   targetRepo,
   withTargetProfile,
@@ -115,7 +110,6 @@ import { CLAWSWEEPER_BOT_AUTHORS } from "./clawsweeper-review-comments.js";
 import {
   EVENT_GUARDED_OPEN_ACTIONS,
   FRESH_DAYS,
-  REVIEW_SECTIONS,
   REVIEW_POLICY_VERSION,
 } from "./clawsweeper-policy.js";
 import { createRegressionProvenanceVerifier } from "./clawsweeper-regression-provenance.js";
@@ -150,7 +144,6 @@ import { markdownFor, updateReviewStructuralFrontMatter } from "./clawsweeper-re
 import { renderReviewCommentFromReport } from "./clawsweeper-report-comment-presentation.js";
 import { syncWorkPlanFromReport } from "./clawsweeper-report-context.js";
 import { workPlanPathForReport } from "./clawsweeper-label-presentation.js";
-import { reportLiveProofPlan } from "./live-proof/report.js";
 import { existingReview } from "./clawsweeper-record-metadata.js";
 import {
   markdownFiles,
@@ -169,7 +162,7 @@ import {
 } from "./clawsweeper-review-lease.js";
 import { createReviewActionLedger } from "./clawsweeper-review-ledger.js";
 import { createReviewPlanning } from "./clawsweeper-review-planning.js";
-import { createReviewRuntime, type ReviewItemPrompts } from "./clawsweeper-review-runtime.js";
+import { createReviewRuntime } from "./clawsweeper-review-runtime.js";
 import {
   isExactEventSourceRevisionChange,
   isIgnorableSourceRevisionLabel,
@@ -208,7 +201,6 @@ import type {
   ReportEntry,
   RootCauseNormalizationItem,
 } from "./clawsweeper-types.js";
-import { frontMatterValue } from "./report-front-matter.js";
 export {
   authorPrBudgetAgeSkipReason,
   closeReasonApplyAgeSkipReason,
@@ -330,10 +322,7 @@ function run(
 
 export { isExactEventSourceRevisionChange };
 
-function reviewPolicyHash(
-  options: { model?: string; sandboxMode?: string },
-  prompts: ReviewItemPrompts = reviewPromptTemplates(),
-): string {
+function reviewPolicyHash(options: { model?: string; sandboxMode?: string }): string {
   const policyTargetRepo = targetRepo();
   return sha256(
     stableJson({
@@ -352,20 +341,10 @@ function reviewPolicyHash(
         ? { openclawCodexSourceProvisioning: "v1" }
         : {}),
       repositoryProfile: targetProfile(),
-      prompts,
+      prompts: reviewPromptTemplates(),
       schema: reviewDecisionSchemaText(),
     }),
   ).slice(0, 16);
-}
-
-export function reviewPolicyHashForTest(
-  options: {
-    model?: string;
-    sandboxMode?: string;
-  } = {},
-  prompts?: ReviewItemPrompts,
-): string {
-  return reviewPolicyHash(options, prompts);
 }
 
 const { defaultRootCauseCluster } = reviewDecisionParser;
@@ -676,14 +655,6 @@ const buildLocalRangeReview = createLocalRangeReviewer({
   reviewCommentContentRevision,
 });
 
-export function buildLocalRangeReviewForTest(
-  targetDir: string,
-  repo: string,
-  baseRef: string,
-): { item: Item; context: ItemContext; baseSha: string; headSha: string } {
-  return buildLocalRangeReview(targetDir, repo, baseRef);
-}
-
 const reviewActionLedger = createReviewActionLedger({
   root: ROOT,
   targetRepo,
@@ -962,88 +933,6 @@ function dashboardCommand(args: Args): void {
   );
 }
 
-const liveProofAttachDependencies = {
-  reportLiveProofPlan,
-  reviewSections: REVIEW_SECTIONS,
-  renderReviewCommentFromReport,
-  markedReviewCommentBody: reviewCommentWorkflow.markedReviewCommentBody,
-  upsertReviewComment: reviewCommentWorkflow.upsertReviewComment,
-  selectTarget: (repo: string) => setTargetRepo(repo),
-};
-
-const liveProofCommands = createLiveProofCommands({
-  repositoryProfileFor,
-  reportLiveProofPlan,
-  parseLiveProofPlan: (value) => reviewDecisionParser.parseLiveProofPlan(value, "liveProofPlan"),
-  attach: liveProofAttachDependencies,
-});
-
-const liveProofCommand = liveProofCommands.liveProofCommand;
-
-async function liveProofAttachCommand(args: Args): Promise<void> {
-  await liveProofCommands.liveProofAttachCommand(args);
-}
-
-function liveProofReviewCommand(args: Args): void {
-  const repo = stringArg(args.repo ?? args.target_repo, "").trim();
-  const recordsDir = stringArg(args.records_dir, "").trim();
-  const checkoutPath = stringArg(args.checkout, "").trim();
-  const outputRoot = stringArg(args.output, "").trim();
-  const itemNumbers = itemNumbersArg(args.item_numbers, args.item ?? args.item_number);
-  if (!repo || !recordsDir || !checkoutPath || !outputRoot || itemNumbers.length === 0) {
-    throw new Error(
-      "live-proof-review requires --repo, --records-dir, --checkout, --output, and --item-numbers",
-    );
-  }
-  const options = {
-    checkoutPath,
-    entrypoint: join(ROOT, "dist", "clawsweeper.js"),
-    itemNumbers,
-    outputRoot,
-    recordsDir,
-    repo,
-  };
-  const dependencies = {
-    materializePullRequestReviewTree: (
-      options: Parameters<typeof contextHydration.materializePullRequestReviewTree>[0],
-    ) =>
-      // The synchronous metadata resolver reads the active target; restore it before execution.
-      withTargetProfile(repositoryProfileFor(repo), () =>
-        contextHydration.materializePullRequestReviewTree(options),
-      ),
-    reportLiveProofPlan,
-    repositoryProfileFor,
-  };
-  const result = boolArg(args.inspect)
-    ? inspectReviewLiveProofs(options, dependencies)
-    : executeReviewLiveProofs(options, dependencies);
-  console.log(JSON.stringify(result));
-}
-
-async function liveProofPublishArtifactsCommand(args: Args): Promise<void> {
-  const artifactDir = stringArg(args.artifact_dir, "").trim();
-  if (!artifactDir) throw new Error("live-proof-publish-artifacts requires --artifact-dir");
-  const result = await publishReviewLiveProofArtifacts(artifactDir, {
-    ...liveProofAttachDependencies,
-    log: () => {},
-    fetchPullRequest: async () => {
-      throw new Error("merged live-proof publication must not perform a live-head lookup");
-    },
-  }).catch(() => ({ status: "retryable_failure" }) as const);
-  console.log(JSON.stringify(result));
-  if (result.status !== "published") process.exitCode = 1;
-}
-
-function liveProofCommentCommand(args: Args): void {
-  const recordPath = stringArg(args.record, "");
-  if (recordPath) {
-    const markdown = readFileSync(resolve(recordPath), "utf8");
-    const repo = frontMatterValue(markdown, "repository");
-    if (repo) setTargetRepo(repo);
-  }
-  liveProofCommands.liveProofCommentCommand(args);
-}
-
 const COMMAND_HANDLERS: Readonly<Record<string, CommandHandler<Args>>> = {
   plan: planCommand,
   "reserve-review-lease": reserveReviewLeaseCommand,
@@ -1051,11 +940,6 @@ const COMMAND_HANDLERS: Readonly<Record<string, CommandHandler<Args>>> = {
   review: reviewCommand,
   "retry-failed-reviews": retryFailedReviewsCommand,
   "apply-artifacts": applyArtifactsCommand,
-  "live-proof": liveProofCommand,
-  "live-proof-review": liveProofReviewCommand,
-  "live-proof-attach": liveProofAttachCommand,
-  "live-proof-comment": liveProofCommentCommand,
-  "live-proof-publish-artifacts": liveProofPublishArtifactsCommand,
   "apply-decisions": applyDecisionsCommand,
   "publish-action-events": publishActionEventsCommand,
   "publish-action-event-paths": publishActionEventPathsCommand,

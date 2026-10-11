@@ -20,11 +20,25 @@ import { tmpdir } from "node:os";
 import { basename, delimiter, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { buildLocalRangeReviewForTest } from "../dist/clawsweeper.js";
+import {
+  pullCommitContentRevision,
+  reviewCommentContentRevision,
+} from "../dist/clawsweeper-source-revision.js";
 import { buildPullRequestReviewEvidence, readReviewGit } from "../dist/pr-review-evidence.js";
 import { createLocalRangeReviewer } from "../dist/clawsweeper-local-review.js";
 import { runText, SWEEPER_COMMAND_MAX_BUFFER_BYTES } from "../dist/command.js";
 import { changelogReviewDecision, reviewFinding } from "./helpers.ts";
+
+const buildLocalRangeReviewForTest = createLocalRangeReviewer({
+  run: (command, args, options = {}) =>
+    runText(command, args, {
+      ...options,
+      maxBuffer: SWEEPER_COMMAND_MAX_BUFFER_BYTES,
+      trim: "both",
+    }),
+  pullCommitContentRevision,
+  reviewCommentContentRevision,
+});
 
 const CLI = fileURLToPath(new URL("../dist/clawsweeper.js", import.meta.url));
 

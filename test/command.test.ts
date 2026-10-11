@@ -19,7 +19,6 @@ import {
   isSuppliedReviewStartLeaseForTest,
   localExactReviewHistoryPathForTest,
   prepareManagedLocalReviewCheckoutForTest,
-  reviewPolicyHashForTest,
   reviewLeaseStillMatchesContextForTest,
 } from "../dist/clawsweeper.js";
 import { itemSourceRevisionSha256 } from "../dist/clawsweeper-source-revision.js";
@@ -368,7 +367,13 @@ test("CSW-088 scheduled hot planning suppresses #117063, observes an in-flight u
         number,
         title: pull.title,
         reviewed_at: reviewedAt,
-        review_policy: reviewPolicyHashForTest(),
+        review_policy: JSON.parse(
+          execFileSync(
+            process.execPath,
+            [CLI, "plan", "--target-repo", "openclaw/openclaw", "--item-numbers", "none"],
+            { encoding: "utf8" },
+          ),
+        ).reviewPolicy,
         item_updated_at: reviewedAt,
         item_source_revision: sourceRevision,
         pull_head_sha: headSha,

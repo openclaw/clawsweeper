@@ -123,10 +123,6 @@ function realBehaviorProofBlockerSummary(summary: string, fallback: string): str
   return `${body} ${realBehaviorProofReReviewGuidance()}`;
 }
 
-export function publicHistoricalVerificationBlockerLine(): string {
-  return "A historical verification receipt failed or is malformed. A maintainer must resolve that verification blocker before merge; independently assessed contributor proof remains valid.";
-}
-
 // The Before merge item owns the proof ask. Other sections point to it.
 export function publicRealBehaviorProofLine(policy: RealBehaviorProofPolicy): string {
   const proof = policy.assessment;
