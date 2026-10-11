@@ -32,14 +32,6 @@ function steps(document: Workflow): Step[] {
   return Object.values(document.jobs).flatMap((job) => job.steps ?? []);
 }
 
-test("draining repair result publication keeps target read tokens scoped", () => {
-  const publish = steps(workflow("repair-publish-results.yml"));
-  const reader = publish.find((step) => step.name === "Create target read token");
-  assert.equal(reader?.with?.owner, "${{ steps.result-targets.outputs.owner }}");
-  assert.equal(reader?.with?.repositories, "${{ steps.result-targets.outputs.repositories }}");
-  for (const step of publish) assert.notEqual(step.with?.["permission-contents"], "write");
-});
-
 // review-prompt-context.test.ts guards
 
 // Product-direction closes act on contributor items. The workflow must keep them off unless a

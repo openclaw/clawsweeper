@@ -3,8 +3,8 @@
 - Status: active integration and operator reference
 - Owner: ClawSweeper notification and activity-stream maintainers
 - Source of truth: `.github/workflows/github-activity.yml`,
-  `.github/workflows/repair-publish-results.yml`, and `src/repair/*notify*`
-- Last verified: `openclaw/clawsweeper@42226a81c43c2c8ded17a684a706e58f3a58577a`
+  `src/repair/notify-github-activity.ts`, and `src/repair/notify-maintainer-report.ts`
+- Verified scope: review-only retirement; general GitHub activity and maintainer reports
 - Update when: hook payloads, delivery policy, activity filtering, runtime setup,
   notification ledgers, or workflow ownership changes
 
@@ -22,8 +22,8 @@ GitHub mutation still belongs in deterministic ClawSweeper scripts.
 
 The normal event flow is:
 
-1. A ClawSweeper workflow produces a durable event source, such as
-   `repair-apply-report.json`.
+1. A ClawSweeper workflow produces a durable event source, such as a received
+   GitHub activity event.
 2. A small notifier script filters the event source and writes a local report.
 3. The notifier checks a durable ledger before sending anything.
 4. The notifier posts `POST /hooks/agent` to the OpenClaw Gateway with bearer
@@ -71,7 +71,7 @@ reverse proxy.
   "deliver": true,
   "channel": "discord",
   "to": "channel:1499243561407741994",
-  "idempotencyKey": "clawsweeper:merge:openclaw/openclaw:123:abc123",
+  "idempotencyKey": "clawsweeper:github-activity:openclaw/openclaw:123:delivery-id",
   "thinking": "low",
   "timeoutSeconds": 300,
   "waitForCompletion": true
@@ -107,8 +107,8 @@ OpenClaw call itself:
 - read a durable event source, not live GitHub state, when possible;
 - filter only events this notifier owns;
 - skip historical catch-up rows unless the operator explicitly asks to replay;
-- build a stable idempotency key from event identity and the final mutation
-  result, such as repo, PR number, action, and merge commit SHA;
+- build a stable idempotency key from event identity, such as repository, item,
+  event kind, and delivery id;
 - check a durable ledger before sending;
 - write a report for attempted, skipped, sent, and failed notifications;
 - request completion for direct agent hooks and write its bounded delivery
@@ -118,8 +118,7 @@ OpenClaw call itself:
 
 The message sent to OpenClaw should be explicit enough that the agent does not
 need to inspect GitHub before posting a notification. Include the repository,
-item number, title, URL, action, reason, timestamp, commit SHA, workflow run,
-and any cluster or job id that helps later debugging.
+item number, title, URL, action, reason, timestamp, and workflow run when available.
 
 For the general GitHub activity stream, each prompt represents one exact
 received event, not a complete repository activity window. It may inspect the
@@ -189,39 +188,10 @@ When adding another ClawSweeper-to-OpenClaw event:
 Do not send directly from every worker. Send once from the publish/finalizer job
 after deterministic apply has produced a single authoritative report.
 
-## ClawSweeper Event Stream
-
-The repair publish workflow sends Discord notifications for important
-ClawSweeper-controlled events. The notifier reads `repair-apply-report.json`
-and the run record under `results/runs/<run-id>.json`, filters the current
-workflow run, skips catch-up rows whose reason is `already merged`, and posts
-each selected event through `/hooks/agent`.
-
-Successful sends are recorded in:
-
-```text
-notifications/clawsweeper-event-ledger.json
-```
-
-The current event classes are:
-
-- `clawsweeper.pr_merged`: executed `merge_candidate` or `merge_canonical`;
-- `clawsweeper.item_closed`: executed close actions;
-- `clawsweeper.merge_blocked` and `clawsweeper.close_blocked`: blocked or
-  failed apply actions;
-- `clawsweeper.fix_pr_opened`: replacement fix PR opened or planned;
-- `clawsweeper.contributor_branch_repaired`: contributor PR branch repaired;
-- `clawsweeper.repair_blocked`: blocked or failed repair action.
-
-These events use `deliver: true`, so OpenClaw can post the final answer to the
-Discord target. The prompt still permits `NO_REPLY` for an event that is clearly
-routine or not useful.
-
 ## GitHub Activity Stream
 
-The `github activity to openclaw` workflow feeds broader GitHub activity to the
-same agent. This lane is intentionally different from the ClawSweeper event
-stream: it is observation, not notification-by-default.
+The `github activity to openclaw` workflow feeds GitHub activity to the
+agent as observation, not notification-by-default.
 
 Native events on `openclaw/clawsweeper` include issues, issue comments, PR
 state changes, reviews, review comments, and selected workflow completions.
@@ -251,12 +221,12 @@ model turns.
 The workflow coalesces observer runs by event, repository, and action,
 cancelling older in-progress observer runs during bursts. This activity stream
 is intentionally lossy because it is not a source of truth. Exact review,
-repair, automerge, apply, and command-router workflows have separate
-concurrency groups and are not cancelled by this observer lane.
+apply, and command-router workflows have separate concurrency groups and are
+not cancelled by this observer lane.
 
 The workflow pins Node 24 with `actions/setup-node`, enables the repository's
 pinned pnpm version, and caches the pnpm store before installing and building
-the repair notifier. The activity stream can burst dozens of runs at once, so
+the activity notifier. The activity stream can burst dozens of runs at once, so
 its concurrency group remains lossy even though each admitted run uses the
 normal supported runtime and dependency cache.
 

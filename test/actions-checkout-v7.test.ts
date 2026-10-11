@@ -48,9 +48,6 @@ test("trusted-event workflows explicitly checkout the default branch", () => {
   const expectedRefs: Record<string, string> = {
     ".github/workflows/dashboard-ci.yml": "${{ github.event.repository.default_branch }}",
     ".github/workflows/github-activity.yml": "${{ github.event.repository.default_branch }}",
-    // workflow_run stays on trusted default-branch code during the repair drain.
-    ".github/workflows/repair-publish-results.yml":
-      "${{ github.event_name == 'workflow_dispatch' && github.ref_name || github.event.repository.default_branch }}",
   };
   for (const [path, expectedRef] of Object.entries(expectedRefs)) {
     const workflow = parse(readFileSync(path, "utf8")) as WorkflowDocument;
