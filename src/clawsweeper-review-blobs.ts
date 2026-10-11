@@ -21,7 +21,6 @@ import {
 import { resolveSpawnCommand } from "./command.js";
 import { runGitAcquisitionResult } from "./repair/command-runner.js";
 
-const MAX_BLOB_SIZE_OBJECTS = 160;
 const MAX_GIT_OUTPUT_BYTES = 4 * 1024 * 1024;
 const MAX_REVIEW_TREE_LIST_BYTES = 64 * 1024 * 1024;
 const MAX_REVIEW_ATTRIBUTE_OUTPUT_BYTES = 16 * 1024 * 1024;
@@ -40,18 +39,7 @@ export const REVIEW_TREE_MAX_BYTES = 2 * 1024 * 1024 * 1024;
 export const REVIEW_TREE_DISK_RESERVE_BYTES = 1024 * 1024 * 1024;
 export const REVIEW_TREE_WORKING_COPY_EXPANSION_FACTOR = 2;
 
-export interface ReviewTreeMaterializationBudget {
-  maxFiles: number;
-  maxBytes: number;
-  diskReserveBytes: number;
-  diskCapacity?: {
-    workspaceAvailableBytes: number;
-    objectStoreAvailableBytes: number;
-    sameFileSystem: boolean;
-  };
-}
-
-export interface ReviewTreeMetadata {
+interface ReviewTreeMetadata {
   paths: string[];
   blobBytes: bigint;
   missingBlobs?: ReadonlyArray<{ objectId: string; bytes: number }>;
@@ -884,11 +872,11 @@ function assertReviewTreeHasBoundedTransforms(
       ),
       "review_git_inspection_failed",
     );
-    const totals = reviewTreeTotals(indexDir, {
-      maxFiles: REVIEW_ATTRIBUTE_INDEX_MAX_FILES,
-      maxBytes: REVIEW_ATTRIBUTE_INDEX_MAX_BYTES,
-      diskReserveBytes: 0,
-    });
+    const totals = reviewTreeTotals(
+      indexDir,
+      REVIEW_ATTRIBUTE_INDEX_MAX_FILES,
+      REVIEW_ATTRIBUTE_INDEX_MAX_BYTES,
+    );
     if (
       totals.files > REVIEW_ATTRIBUTE_INDEX_MAX_FILES ||
       totals.bytes > REVIEW_ATTRIBUTE_INDEX_MAX_BYTES
@@ -955,7 +943,8 @@ function assertReviewTreeHasBoundedTransforms(
 
 function reviewTreeTotals(
   root: string,
-  limits: ReviewTreeMaterializationBudget,
+  maxFiles: number,
+  maxBytes: number,
 ): {
   files: number;
   bytes: number;
@@ -975,80 +964,53 @@ function reviewTreeTotals(
         files += 1;
         bytes += metadata.size;
       } else {
-        return { files: limits.maxFiles + 1, bytes: limits.maxBytes + 1 };
+        return { files: maxFiles + 1, bytes: maxBytes + 1 };
       }
-      if (files > limits.maxFiles || bytes > limits.maxBytes) return { files, bytes };
+      if (files > maxFiles || bytes > maxBytes) return { files, bytes };
     }
   }
   return { files, bytes };
 }
 
-function materializePullRequestReviewTreeWithBudget(
-  {
-    targetDir,
-    worktreeDir,
-    itemNumber,
-    headSha,
-    resolveBlobSizes,
-  }: ReviewTreeMaterializationOptions,
-  budget: ReviewTreeMaterializationBudget,
-  metadataOverride?: ReviewTreeMetadata,
-): boolean {
+export function materializePullRequestReviewTree({
+  targetDir,
+  worktreeDir,
+  itemNumber,
+  headSha,
+  resolveBlobSizes,
+}: ReviewTreeMaterializationOptions): boolean {
   if (!ensurePullRequestReviewHead({ targetDir, itemNumber, headSha })) return false;
   if (existsSync(worktreeDir)) return false;
-  const metadata =
-    metadataOverride ??
-    reviewTreeMetadata(targetDir, headSha, dirname(worktreeDir), resolveBlobSizes);
-  if (metadata.paths.length > budget.maxFiles) {
+  const metadata = reviewTreeMetadata(targetDir, headSha, dirname(worktreeDir), resolveBlobSizes);
+  if (metadata.paths.length > REVIEW_TREE_MAX_FILES) {
     throw reviewTreeBudgetError(
       headSha,
-      `${metadata.paths.length} tracked paths exceed the ${budget.maxFiles}-file limit`,
+      `${metadata.paths.length} tracked paths exceed the ${REVIEW_TREE_MAX_FILES}-file limit`,
     );
   }
   const projectedBytes = metadata.blobBytes * BigInt(REVIEW_TREE_WORKING_COPY_EXPANSION_FACTOR);
-  if (projectedBytes > BigInt(budget.maxBytes)) {
+  if (projectedBytes > BigInt(REVIEW_TREE_MAX_BYTES)) {
     throw reviewTreeBudgetError(
       headSha,
-      `${projectedBytes} conservatively projected bytes exceed the ${budget.maxBytes}-byte limit`,
+      `${projectedBytes} conservatively projected bytes exceed the ${REVIEW_TREE_MAX_BYTES}-byte limit`,
     );
   }
   const acquisitionBytes = (metadata.missingBlobs ?? []).reduce(
     (total, blob) => total + BigInt(blob.bytes),
     0n,
   );
-  let capacities: {
-    workspaceAvailableBytes: bigint;
-    objectStoreAvailableBytes: bigint;
-    sameFileSystem: boolean;
+  const workspace = reviewTreeDiskCapacity(dirname(worktreeDir), headSha);
+  const objectStore = reviewTreeObjectStoreCapacity(targetDir, headSha);
+  const capacities = {
+    workspaceAvailableBytes: workspace.availableBytes,
+    objectStoreAvailableBytes: objectStore.availableBytes,
+    sameFileSystem: workspace.device === objectStore.device,
   };
-  if (budget.diskCapacity) {
-    if (
-      !Number.isSafeInteger(budget.diskCapacity.workspaceAvailableBytes) ||
-      budget.diskCapacity.workspaceAvailableBytes < 0 ||
-      !Number.isSafeInteger(budget.diskCapacity.objectStoreAvailableBytes) ||
-      budget.diskCapacity.objectStoreAvailableBytes < 0
-    ) {
-      throw reviewTreeBudgetError(headSha, "filesystem capacity metadata is invalid");
-    }
-    capacities = {
-      workspaceAvailableBytes: BigInt(budget.diskCapacity.workspaceAvailableBytes),
-      objectStoreAvailableBytes: BigInt(budget.diskCapacity.objectStoreAvailableBytes),
-      sameFileSystem: budget.diskCapacity.sameFileSystem,
-    };
-  } else {
-    const workspace = reviewTreeDiskCapacity(dirname(worktreeDir), headSha);
-    const objectStore = reviewTreeObjectStoreCapacity(targetDir, headSha);
-    capacities = {
-      workspaceAvailableBytes: workspace.availableBytes,
-      objectStoreAvailableBytes: objectStore.availableBytes,
-      sameFileSystem: workspace.device === objectStore.device,
-    };
-  }
   assertReviewTreeDiskAdmission(
     headSha,
     projectedBytes,
     acquisitionBytes,
-    BigInt(budget.diskReserveBytes),
+    BigInt(REVIEW_TREE_DISK_RESERVE_BYTES),
     capacities,
   );
   fetchMissingReviewTreeBlobs(targetDir, headSha, metadata.missingBlobs ?? []);
@@ -1072,33 +1034,15 @@ function materializePullRequestReviewTreeWithBudget(
     },
   );
   checkedReviewGit(worktree, "review_checkout_failed");
-  const totals = reviewTreeTotals(worktreeDir, budget);
-  if (totals.files > budget.maxFiles || totals.bytes > budget.maxBytes) {
+  const totals = reviewTreeTotals(worktreeDir, REVIEW_TREE_MAX_FILES, REVIEW_TREE_MAX_BYTES);
+  if (totals.files > REVIEW_TREE_MAX_FILES || totals.bytes > REVIEW_TREE_MAX_BYTES) {
     removePullRequestReviewTree({ targetDir, worktreeDir });
     throw reviewTreeBudgetError(
       headSha,
-      `${totals.files} files and ${totals.bytes} bytes exceed the ${budget.maxFiles}-file or ${budget.maxBytes}-byte limit`,
+      `${totals.files} files and ${totals.bytes} bytes exceed the ${REVIEW_TREE_MAX_FILES}-file or ${REVIEW_TREE_MAX_BYTES}-byte limit`,
     );
   }
   return reviewTreeMatchesCommit({ targetDir: worktreeDir, sha: headSha });
-}
-
-export function materializePullRequestReviewTree(
-  options: ReviewTreeMaterializationOptions,
-): boolean {
-  return materializePullRequestReviewTreeWithBudget(options, {
-    maxFiles: REVIEW_TREE_MAX_FILES,
-    maxBytes: REVIEW_TREE_MAX_BYTES,
-    diskReserveBytes: REVIEW_TREE_DISK_RESERVE_BYTES,
-  });
-}
-
-export function materializePullRequestReviewTreeForTest(
-  options: ReviewTreeMaterializationOptions,
-  budget: ReviewTreeMaterializationBudget,
-  metadataOverride?: ReviewTreeMetadata,
-): boolean {
-  return materializePullRequestReviewTreeWithBudget(options, budget, metadataOverride);
 }
 
 export function removePullRequestReviewTree({
@@ -1374,50 +1318,6 @@ export function githubReviewTreeBlobSizes({
     sizes.set(entry.sha, entry.size);
   }
   return sizes;
-}
-
-export function githubReviewBlobSizes({
-  repository,
-  objectIds,
-  request,
-}: {
-  repository: string;
-  objectIds: readonly string[];
-  request: (query: string) => unknown;
-}): ReadonlyMap<string, number> {
-  const match = repository.match(/^([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)$/);
-  if (!match || match[1] === "." || match[1] === ".." || match[2] === "." || match[2] === "..") {
-    throw new Error("invalid bounded review blob metadata request");
-  }
-  if (objectIds.some((objectId) => !GIT_OBJECT_ID.test(objectId))) {
-    throw new Error("invalid review blob object ID");
-  }
-  const result = new Map<string, number>();
-  const deadlineAt = Date.now() + 30_000;
-  for (let offset = 0; offset < objectIds.length; offset += MAX_BLOB_SIZE_OBJECTS) {
-    if (Date.now() >= deadlineAt) throw new AgentInputScanError("deadline");
-    const batch = objectIds.slice(offset, offset + MAX_BLOB_SIZE_OBJECTS);
-    const objects = batch.map(
-      (objectId, index) => `b${index}: object(oid: "${objectId}") { ... on Blob { byteSize } }`,
-    );
-    const query = `query { repository(owner: "${match[1]}", name: "${match[2]}") { ${objects.join(" ")} } }`;
-    const response = request(query);
-    if (!response || typeof response !== "object") throw new Error("invalid review blob response");
-    const data = (response as { data?: unknown }).data;
-    if (!data || typeof data !== "object") throw new Error("missing review blob response data");
-    const values = (data as { repository?: unknown }).repository;
-    if (!values || typeof values !== "object") throw new Error("missing review blob repository");
-    for (const [index, objectId] of batch.entries()) {
-      const object = (values as Record<string, unknown>)[`b${index}`];
-      const bytes =
-        object && typeof object === "object" ? (object as { byteSize?: unknown }).byteSize : null;
-      if (typeof bytes !== "number" || !Number.isSafeInteger(bytes) || bytes < 0) {
-        throw new Error("invalid review blob size");
-      }
-      result.set(objectId, bytes);
-    }
-  }
-  return result;
 }
 
 function safeReviewPath(value: unknown): string | null {

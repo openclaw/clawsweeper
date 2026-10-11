@@ -7,7 +7,6 @@ import { longProofBody } from "./primary-body-fixture.ts";
 import {
   REVIEW_STRUCTURAL_CACHE_VERSION,
   createReviewStructuralRecord,
-  reviewStructuralActivitiesForTest,
   reviewStructuralCacheDecision,
   reviewStructuralCacheProbeDecision,
   reviewStructuralQuery,
@@ -1049,45 +1048,25 @@ test("PR structural records require a complete check-state digest", () => {
 });
 
 test("metadata probes ignore ClawSweeper comments but fail closed on malformed entries", () => {
-  const result = reviewStructuralActivitiesForTest(
-    {
-      pageInfo: { hasPreviousPage: false },
-      nodes: [
-        {
-          id: "bot-comment",
-          updatedAt: "2026-07-10T10:00:00Z",
-          body: "Automated status",
-          author: { login: "ClawSweeper[bot]" },
-          authorAssociation: "NONE",
-        },
-        {
-          id: "human-comment",
-          updatedAt: "2026-07-10T10:01:00Z",
-          body: "No related item",
-          author: { login: "maintainer" },
-          authorAssociation: "MEMBER",
-        },
-      ],
-    },
-    ["clawsweeper[bot]"],
-  );
-  assert.equal(result.truncated, false);
-  assert.deepEqual(result.activities, [
-    {
-      id: "human-comment",
-      updatedAt: "2026-07-10T10:01:00Z",
-      author: "maintainer",
-      authorAssociation: "MEMBER",
-      state: null,
-      commitSha: null,
-      bodyDigest: digest("No related item"),
-    },
-  ]);
+  const node = graphqlNode("issue");
+  const withBot = graphqlRecord("issue", node);
+  assert.ok(withBot);
+  const withoutBot = graphqlRecord("issue", {
+    ...node,
+    comments: graphqlConnection(
+      node.comments.nodes.filter(
+        (entry) => entry.author.login.toLowerCase() !== "clawsweeper[bot]",
+      ),
+    ),
+  });
+  assert.deepEqual(withBot, withoutBot);
   assert.equal(
-    reviewStructuralActivitiesForTest({
-      pageInfo: { hasPreviousPage: false },
-      nodes: [{ id: "missing-timestamp", author: { login: "maintainer" } }],
-    }).truncated,
-    true,
+    graphqlRecord("issue", {
+      ...node,
+      comments: graphqlConnection([
+        { id: "missing-timestamp", body: "Malformed", author: { login: "maintainer" } },
+      ]),
+    }),
+    null,
   );
 });

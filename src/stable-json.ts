@@ -15,8 +15,7 @@
  *      keys such as `changedFiles` and `checksDigest`. A digest computed on one
  *      runner would then not match the same input on another.
  *
- * `stableJsonCodeUnit` / `sortStableCodeUnit` are retained as explicit aliases;
- * they are equivalent to the unsuffixed pair.
+ * `stableJsonCodeUnit` is an explicit alias of `stableJson`.
  *
  * One caveat: array-index-like keys ("0", "2", "10") are not emitted in code-unit
  * order. `Object.fromEntries` rebuilds the object and the engine re-applies its
@@ -37,10 +36,6 @@ export function sortStable(value: unknown): unknown {
 
 export function stableJsonCodeUnit(value: unknown): string {
   return stableJson(value);
-}
-
-export function sortStableCodeUnit(value: unknown): unknown {
-  return sortStable(value);
 }
 
 /** Total order over UTF-16 code units; never returns 0 for distinct strings. */

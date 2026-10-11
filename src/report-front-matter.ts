@@ -136,17 +136,6 @@ export function frontMatterStringArray(markdown: string, key: string): string[] 
   return parseFrontMatterStringArray(frontMatterValue(markdown, key));
 }
 
-export function frontMatterJsonArray(markdown: string, key: string): unknown[] {
-  const value = frontMatterValue(markdown, key);
-  if (!value || value === "none") return [];
-  try {
-    const parsed = JSON.parse(value) as unknown;
-    return Array.isArray(parsed) ? parsed : [];
-  } catch {
-    return [];
-  }
-}
-
 export function frontMatterBoolean(markdown: string, key: string): boolean {
   return /^true$/i.test(frontMatterValue(markdown, key) ?? "");
 }

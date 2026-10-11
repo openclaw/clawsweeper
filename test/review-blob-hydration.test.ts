@@ -20,12 +20,10 @@ import test from "node:test";
 import {
   ensurePullRequestReviewHead,
   ensureReviewTreeCommit,
-  githubReviewBlobSizes,
   githubReviewTreeBlobSizes,
   hydratePullRequestReviewBlobs,
   hydratePullRequestReviewHistory,
   materializePullRequestReviewTree,
-  materializePullRequestReviewTreeForTest,
   removePullRequestReviewTree,
   REVIEW_TREE_MAX_BYTES,
   ReviewGitError,
@@ -1651,28 +1649,13 @@ test("restricted review rejects one tracked 2.5 GiB blob before worktree materia
     const worktreesBefore = git(fixture.target, "worktree", "list", "--porcelain");
     assert.throws(
       () =>
-        materializePullRequestReviewTreeForTest(
-          {
-            targetDir: fixture.target,
-            worktreeDir: reviewTree,
-            itemNumber: 982,
-            headSha: fixture.headSha,
-          },
-          {
-            maxFiles: 200_000,
-            maxBytes: 2 * 1024 * 1024 * 1024,
-            diskReserveBytes: 1024 * 1024 * 1024,
-            diskCapacity: {
-              workspaceAvailableBytes: 3 * 1024 * 1024 * 1024,
-              objectStoreAvailableBytes: 3 * 1024 * 1024 * 1024,
-              sameFileSystem: true,
-            },
-          },
-          {
-            paths: ["oversized.bin"],
-            blobBytes: BigInt(2.5 * 1024 * 1024 * 1024),
-          },
-        ),
+        materializePullRequestReviewTree({
+          targetDir: fixture.target,
+          worktreeDir: reviewTree,
+          itemNumber: 982,
+          headSha: fixture.headSha,
+          resolveBlobSizes: (ids) => new Map(ids.map((id) => [id, 2.5 * 1024 * 1024 * 1024])),
+        }),
       (error) =>
         error instanceof ReviewSourcePreparationError &&
         error.diagnosticReason === "review_checkout_unavailable" &&
@@ -1685,84 +1668,70 @@ test("restricted review rejects one tracked 2.5 GiB blob before worktree materia
   }
 });
 
-test("restricted review admits shared and separate filesystem budgets independently", () => {
+test("restricted review admits shared and separate filesystem budgets independently", (t) => {
   const fixture = partialCloneFixture({ prefetchHead: false });
   const worktreesBefore = git(fixture.target, "worktree", "list", "--porcelain");
-  const missingBlob = "a".repeat(40);
+  const originalStatfs = fs.statfsSync;
+  const originalStat = fs.statSync;
+  const reserve = 1024 * 1024 * 1024;
+  const mb = 1024 * 1024;
   const scenarios = [
     {
       name: "shared",
-      worktreeDir: join(fixture.root, "shared-capacity-tree"),
-      blobBytes: 40n,
-      missingBytes: 30,
-      reserveBytes: 10,
-      capacity: {
-        workspaceAvailableBytes: 100,
-        objectStoreAvailableBytes: 100,
-        sameFileSystem: true,
-      },
+      workspace: 300,
+      objects: 300,
+      shared: true,
       message: /shared-filesystem bytes/,
     },
-    {
-      name: "workspace",
-      worktreeDir: join(fixture.root, "workspace-capacity-tree"),
-      blobBytes: 50n,
-      missingBytes: 1,
-      reserveBytes: 10,
-      capacity: {
-        workspaceAvailableBytes: 109,
-        objectStoreAvailableBytes: 1_000,
-        sameFileSystem: false,
-      },
-      message: /workspace bytes/,
-    },
+    { name: "workspace", workspace: 300, objects: 1000, shared: false, message: /workspace bytes/ },
     {
       name: "object store",
-      worktreeDir: join(fixture.root, "object-capacity-tree"),
-      blobBytes: 1n,
-      missingBytes: 100,
-      reserveBytes: 10,
-      capacity: {
-        workspaceAvailableBytes: 1_000,
-        objectStoreAvailableBytes: 109,
-        sameFileSystem: false,
-      },
+      workspace: 1000,
+      objects: 200,
+      shared: false,
       message: /object-store bytes/,
     },
-  ] as const;
+  ];
   try {
     for (const scenario of scenarios) {
+      const worktreeDir = join(fixture.root, `${scenario.name}-capacity-tree`);
+      t.mock.method(fs, "statfsSync", (path: fs.PathLike) => ({
+        ...originalStatfs(path),
+        bsize: 1,
+        bavail:
+          reserve +
+          (String(path).endsWith("/.git/objects") ? scenario.objects : scenario.workspace) * mb,
+      }));
+      t.mock.method(fs, "statSync", (path: fs.PathLike) => {
+        const result = originalStat(path);
+        result.dev = scenario.shared || !String(path).endsWith("/.git/objects") ? 1 : 2;
+        return result;
+      });
+      syncBuiltinESMExports();
       assert.throws(
         () =>
-          materializePullRequestReviewTreeForTest(
-            {
-              targetDir: fixture.target,
-              worktreeDir: scenario.worktreeDir,
-              itemNumber: 982,
-              headSha: fixture.headSha,
-            },
-            {
-              maxFiles: 100,
-              maxBytes: 1_000,
-              diskReserveBytes: scenario.reserveBytes,
-              diskCapacity: scenario.capacity,
-            },
-            {
-              paths: ["fixture.txt"],
-              blobBytes: scenario.blobBytes,
-              missingBlobs: [{ objectId: missingBlob, bytes: scenario.missingBytes }],
-            },
-          ),
+          materializePullRequestReviewTree({
+            targetDir: fixture.target,
+            worktreeDir,
+            itemNumber: 982,
+            headSha: fixture.headSha,
+            resolveBlobSizes: (ids) => new Map(ids.map((id) => [id, 64 * mb])),
+          }),
         (error) =>
           error instanceof ReviewSourcePreparationError &&
           error.diagnosticReason === "review_checkout_unavailable" &&
           scenario.message.test(error.message),
         scenario.name,
       );
-      assert.equal(existsSync(scenario.worktreeDir), false, scenario.name);
+      assert.equal(existsSync(worktreeDir), false, scenario.name);
+      t.mock.restoreAll();
+      syncBuiltinESMExports();
     }
     assert.equal(git(fixture.target, "worktree", "list", "--porcelain"), worktreesBefore);
+    assert.equal(objectExistsOffline(fixture.target, fixture.addedBlobSha), false);
   } finally {
+    t.mock.restoreAll();
+    syncBuiltinESMExports();
     rmSync(fixture.root, { recursive: true, force: true });
   }
 });
@@ -1853,24 +1822,12 @@ test("restricted review refuses unbounded filters and admits bounded EOL expansi
     const filteredHead = git(fixture.source, "rev-parse", "HEAD");
     assert.throws(
       () =>
-        materializePullRequestReviewTreeForTest(
-          {
-            targetDir: fixture.source,
-            worktreeDir: rejectedTree,
-            itemNumber: 982,
-            headSha: filteredHead,
-          },
-          {
-            maxFiles: 100,
-            maxBytes: 1024 * 1024,
-            diskReserveBytes: 0,
-            diskCapacity: {
-              workspaceAvailableBytes: 1024 * 1024,
-              objectStoreAvailableBytes: 1024 * 1024,
-              sameFileSystem: true,
-            },
-          },
-        ),
+        materializePullRequestReviewTree({
+          targetDir: fixture.source,
+          worktreeDir: rejectedTree,
+          itemNumber: 982,
+          headSha: filteredHead,
+        }),
       (error) =>
         error instanceof ReviewSourcePreparationError &&
         error.diagnosticReason === "review_checkout_unavailable" &&
@@ -1887,24 +1844,12 @@ test("restricted review refuses unbounded filters and admits bounded EOL expansi
     writeFileSync(postCheckoutHook, `#!/bin/sh\n/usr/bin/touch ${hookMarker}\n`);
     chmodSync(postCheckoutHook, 0o755);
     assert.equal(
-      materializePullRequestReviewTreeForTest(
-        {
-          targetDir: fixture.source,
-          worktreeDir: admittedTree,
-          itemNumber: 982,
-          headSha: eolHead,
-        },
-        {
-          maxFiles: 100,
-          maxBytes: 1024 * 1024,
-          diskReserveBytes: 0,
-          diskCapacity: {
-            workspaceAvailableBytes: 1024 * 1024,
-            objectStoreAvailableBytes: 1024 * 1024,
-            sameFileSystem: true,
-          },
-        },
-      ),
+      materializePullRequestReviewTree({
+        targetDir: fixture.source,
+        worktreeDir: admittedTree,
+        itemNumber: 982,
+        headSha: eolHead,
+      }),
       true,
     );
     assert.match(readFileSync(join(admittedTree, "changed.txt"), "utf8"), /\r\n$/);
@@ -1970,24 +1915,12 @@ exec /usr/bin/git "$@"
 
     assert.throws(
       () =>
-        materializePullRequestReviewTreeForTest(
-          {
-            targetDir: fixture.source,
-            worktreeDir: reviewTree,
-            itemNumber: 982,
-            headSha: filteredHead,
-          },
-          {
-            maxFiles: 100,
-            maxBytes: 1024 * 1024,
-            diskReserveBytes: 0,
-            diskCapacity: {
-              workspaceAvailableBytes: 1024 * 1024,
-              objectStoreAvailableBytes: 1024 * 1024,
-              sameFileSystem: true,
-            },
-          },
-        ),
+        materializePullRequestReviewTree({
+          targetDir: fixture.source,
+          worktreeDir: reviewTree,
+          itemNumber: 982,
+          headSha: filteredHead,
+        }),
       /unbounded filter/,
     );
     const commands = readFileSync(commandLog, "utf8");
@@ -2028,24 +1961,12 @@ test("restricted review treats zero inode statistics as unavailable", () => {
     }) as typeof fs.statfsSync;
     syncBuiltinESMExports();
     assert.equal(
-      materializePullRequestReviewTreeForTest(
-        {
-          targetDir: fixture.source,
-          worktreeDir: reviewTree,
-          itemNumber: 982,
-          headSha: fixture.headSha,
-        },
-        {
-          maxFiles: 100,
-          maxBytes: 1024 * 1024,
-          diskReserveBytes: 0,
-          diskCapacity: {
-            workspaceAvailableBytes: 1024 * 1024,
-            objectStoreAvailableBytes: 1024 * 1024,
-            sameFileSystem: true,
-          },
-        },
-      ),
+      materializePullRequestReviewTree({
+        targetDir: fixture.source,
+        worktreeDir: reviewTree,
+        itemNumber: 982,
+        headSha: fixture.headSha,
+      }),
       true,
     );
   } finally {
@@ -2715,35 +2636,6 @@ test("source preparation reports unavailable historical blobs before restricted 
   );
 });
 
-test("review blob sizes use one bounded GraphQL metadata request", () => {
-  const objectIds = ["a".repeat(40), "b".repeat(40)];
-  let requests = 0;
-  const result = githubReviewBlobSizes({
-    repository: "openclaw/clawsweeper",
-    objectIds,
-    request: (query) => {
-      requests += 1;
-      assert.match(query, /repository\(owner: "openclaw", name: "clawsweeper"\)/);
-      assert.match(query, /b0: object\(oid:/);
-      assert.match(query, /b1: object\(oid:/);
-      return { data: { repository: { b0: { byteSize: 12 }, b1: { byteSize: 34 } } } };
-    },
-  });
-
-  assert.equal(requests, 1);
-  assert.deepEqual(
-    [...result],
-    [
-      [objectIds[0], 12],
-      [objectIds[1], 34],
-    ],
-  );
-  assert.throws(
-    () => githubReviewBlobSizes({ repository: "../unsafe", objectIds, request: () => ({}) }),
-    /invalid bounded review blob metadata request/,
-  );
-});
-
 test("review checkout preserves large tree metadata within the GitHub CLI capture limit", () => {
   const fixture = partialCloneFixture();
   const reviewTree = join(fixture.root, "review-tree");
@@ -2921,26 +2813,13 @@ test("large pinned deltas hydrate historical blobs after head checkout and produ
       targetDir: reviewTree,
       baseSha: mergeBase.sha!,
       headSha: fixture.headSha,
-      resolveBlobSizes: (objectIds) =>
-        githubReviewBlobSizes({
-          repository: "openclaw/clawsweeper",
-          objectIds,
-          request: (query) => {
-            const ids = [...query.matchAll(/b(\d+): object\(oid: "([0-9a-f]+)"\)/g)];
-            batches.push(ids.length);
-            const sizes = resolveFixtureBlobSizes(fixture.source)(ids.map((match) => match[2]!));
-            return {
-              data: {
-                repository: Object.fromEntries(
-                  ids.map((match) => [`b${match[1]}`, { byteSize: sizes.get(match[2]!) }]),
-                ),
-              },
-            };
-          },
-        }),
+      resolveBlobSizes: (objectIds) => {
+        batches.push(objectIds.length);
+        return resolveFixtureBlobSizes(fixture.source)(objectIds);
+      },
     });
     assert.equal(result, 349);
-    assert.deepEqual(batches, [160, 13]);
+    assert.deepEqual(batches, [173]);
     assert.equal(objectExistsOffline(reviewTree, removedOid), true);
     git(fixture.target, "remote", "set-url", "origin", join(fixture.root, "offline.git"));
     const patch = readReviewGit(reviewTree, patchArgs);

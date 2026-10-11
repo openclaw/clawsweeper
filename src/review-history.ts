@@ -271,21 +271,6 @@ export function reviewHistoryForReviewer(body: string) {
   };
 }
 
-export function normalizeDurableReviewVerdictBody(body: string): string {
-  const normalized = body.replace(/\r\n?/g, "\n");
-  const parsed = latestParsedReviewHistory(normalized);
-  const withoutHistory = parsed
-    ? [normalized.slice(0, parsed.start).trimEnd(), normalized.slice(parsed.end).trimStart()]
-        .filter(Boolean)
-        .join("\n\n")
-    : normalized;
-  return withoutHistory
-    .split("\n")
-    .map((line) => line.trimEnd())
-    .join("\n")
-    .trim();
-}
-
 function reviewHistoryCycleKey(cycle: ReviewHistoryCycle): string {
   return `${cycle.reviewedAt}\u0000${cycle.sha}`;
 }

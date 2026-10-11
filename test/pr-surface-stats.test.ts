@@ -3,7 +3,7 @@ import test from "node:test";
 import { prSurfaceFilesFromContext } from "../dist/clawsweeper-orchestration-foundation.js";
 import { markdownFor } from "../dist/clawsweeper-report-document.js";
 import { parseDecision } from "../dist/clawsweeper.js";
-import { frontMatterJsonArray } from "../dist/report-front-matter.js";
+import { frontMatterValue } from "../dist/report-front-matter.js";
 import { closeDecision, git, item } from "./helpers.ts";
 
 import {
@@ -52,7 +52,7 @@ test("surface counts use only the current rename path while proof retains both s
       runtime: { model: "Codex", reasoningEffort: "high" },
     } as Parameters<typeof markdownFor>[0]);
     assert.deepEqual(
-      new Set(frontMatterJsonArray(report, "pull_files")),
+      new Set(JSON.parse(frontMatterValue(report, "pull_files")!)),
       new Set([filename, previous_filename]),
     );
     assert.deepEqual(

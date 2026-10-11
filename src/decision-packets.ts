@@ -182,14 +182,6 @@ export function maintainerDecisionFromReport(markdown: string): MaintainerDecisi
   return requireReviewRecord(markdown).decision.maintainerDecision;
 }
 
-export function maintainerDecisionBlocksClose(markdown: string): boolean {
-  try {
-    return maintainerDecisionFromReport(markdown)?.required === true;
-  } catch {
-    return true;
-  }
-}
-
 export function buildDecisionPacketFromReport(
   markdown: string,
   options: DecisionPacketBuildOptions = {},

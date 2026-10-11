@@ -393,17 +393,6 @@ function structuralActivities(
   return { activities, truncated: connection.truncated || malformed };
 }
 
-export function reviewStructuralActivitiesForTest(
-  value: unknown,
-  ignoredAuthors: readonly string[] = [],
-): {
-  activities: ReviewStructuralActivity[];
-  truncated: boolean;
-} {
-  const ignored = new Set(ignoredAuthors.map((author) => author.toLowerCase()));
-  return structuralActivities(value, (author) => ignored.has(author.toLowerCase()));
-}
-
 function structuralLabels(
   value: unknown,
   ignoreLabel: (label: string) => boolean,

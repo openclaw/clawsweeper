@@ -1,17 +1,10 @@
 import { renderReviewCommentFromReport } from "../dist/clawsweeper-report-comment-presentation.js";
 import assert from "node:assert/strict";
 import test from "node:test";
-import {
-  frontMatterJsonArray,
-  frontMatterValue,
-  sectionValue,
-} from "../dist/report-front-matter.js";
+import { frontMatterValue, sectionValue } from "../dist/report-front-matter.js";
 import * as document from "../dist/clawsweeper-report-document.js";
 import { repositoryProfileFor, withTargetProfile } from "../dist/repository-profiles.js";
-import {
-  buildDecisionPacketFromReport,
-  maintainerDecisionBlocksClose,
-} from "../dist/decision-packets.js";
+import { buildDecisionPacketFromReport } from "../dist/decision-packets.js";
 import { pullRequestClosePromotionSignalsForTest } from "../dist/repair/workflow-utils.js";
 
 import { parseDecision, reviewAutomationMarkersFromReport } from "../dist/clawsweeper.js";
@@ -174,8 +167,7 @@ test("renderer-produced reports preserve nested statistics and authoritative met
   );
   assert.equal(frontMatterValue(report, "title"), "Original");
   assert.equal(frontMatterValue(report, "repository"), "openclaw/clawsweeper");
-  assert.equal(frontMatterJsonArray(report, "pr_surface_files").length, 2);
-  assert.equal(maintainerDecisionBlocksClose(report), false);
+  assert.equal(JSON.parse(frontMatterValue(report, "pr_surface_files")!).length, 2);
   assert.equal(buildDecisionPacketFromReport(report), null);
   const headerOnly = report.slice(0, report.indexOf("\n---\n") + 5);
   assert.deepEqual(
@@ -539,7 +531,7 @@ test("renamed source paths stay in the pull request file list", () => {
       ],
     },
   );
-  assert.deepEqual(frontMatterJsonArray(report, "pull_files"), [
+  assert.deepEqual(JSON.parse(frontMatterValue(report, "pull_files")!), [
     "docs/runtime.md",
     "src/runtime.ts",
   ]);

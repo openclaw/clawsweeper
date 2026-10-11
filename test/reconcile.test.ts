@@ -5,7 +5,6 @@ import { join } from "node:path";
 import test from "node:test";
 
 import { capturedCanonicalRecordBaselineKeys } from "../dist/repair/canonical-record-baseline.js";
-import { maintainerDecisionBlocksClose } from "../dist/decision-packets.js";
 import { reviewAutomationMarkersFromReport } from "../dist/clawsweeper.js";
 import { reportFrontMatter, tmpPrefix, withMockGh } from "./helpers.ts";
 
@@ -77,7 +76,6 @@ if (args[0] === "api" && args[1]?.includes("/issues?state=open")) {
       );
       assert.ok(markdown.includes(`maintainer_decision: ${rawDecision}\n`));
       assert.doesNotMatch(markdown, /^review_record:/m);
-      assert.equal(maintainerDecisionBlocksClose(markdown), true);
       assert.throws(
         () => reviewAutomationMarkersFromReport(markdown),
         /review_record: missing record/,

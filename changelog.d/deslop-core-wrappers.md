@@ -1,0 +1,1 @@
+- Retire unused core parsing and GraphQL blob-size helpers, and exercise checkout, structural-cache, and typed-record safety directly through retained APIs instead of test-only wrappers.

@@ -7,7 +7,6 @@ import test from "node:test";
 import {
   buildDecisionPacketFromReport,
   emptyMaintainerDecision,
-  maintainerDecisionBlocksClose,
   maintainerDecisionFromReport,
   parseMaintainerDecision,
   renderDecisionPacketPublicBlock,
@@ -108,11 +107,9 @@ test("packet readers use the typed decision instead of stale report metadata", (
   assert.equal(packet?.priority, "P2");
   assert.deepEqual(packet?.options, productDecision.options);
   assert.deepEqual(maintainerDecisionFromReport(report), productDecision);
-  assert.equal(maintainerDecisionBlocksClose(report), true);
   const corrupt = report.replace(line, "review_record: {broken");
   assert.throws(() => buildDecisionPacketFromReport(corrupt), /review_record/);
   assert.throws(() => maintainerDecisionFromReport(corrupt), /review_record/);
-  assert.equal(maintainerDecisionBlocksClose(corrupt), true);
 });
 
 test("labels and report prose cannot invent a maintainer decision", () => {
@@ -153,7 +150,6 @@ test("required decision packets need at least two distinct choices", () => {
     assert.throws(() => parseMaintainerDecision(decision), /at least 2 options/);
     const report = decisionReport({ maintainer_decision: JSON.stringify(decision) });
     assert.throws(() => buildDecisionPacketFromReport(report), /at least 2 options/);
-    assert.equal(maintainerDecisionBlocksClose(report), true);
   }
   assert.throws(
     () =>
@@ -172,7 +168,6 @@ test("required decision packets need at least two distinct choices", () => {
   );
   const report = decisionReport({ maintainer_decision: JSON.stringify(emptyMaintainerDecision()) });
   assert.equal(buildDecisionPacketFromReport(report), null);
-  assert.equal(maintainerDecisionBlocksClose(report), false);
 });
 
 test("reports without a record cannot provide a maintainer decision or packet", () => {
@@ -181,7 +176,6 @@ test("reports without a record cannot provide a maintainer decision or packet", 
     "",
   );
   assert.throws(() => maintainerDecisionFromReport(report), /missing record/);
-  assert.equal(maintainerDecisionBlocksClose(report), true);
   assert.equal(buildDecisionPacketFromReport(report), null);
   assert.equal(renderDecisionPacketPublicBlock(report), "");
 });
@@ -203,7 +197,6 @@ maintainer_decision: ${JSON.stringify(emptyMaintainerDecision())}
 
   assert.equal(buildDecisionPacketFromReport(report), null);
   assert.throws(() => maintainerDecisionFromReport(report), /review_record/);
-  assert.equal(maintainerDecisionBlocksClose(report), true);
 
   const root = mkdtempSync(tmpPrefix);
   try {
@@ -336,7 +329,6 @@ test("packet sync removes invalid legacy sidecars without clearing the report ho
       assert.ok(result.markdown.includes(`maintainer_decision: ${rawDecision}\n`));
       assert.match(result.markdown, /^decision_packet_path: none$/m);
       assert.match(result.markdown, /^decision_packet_sha256: none$/m);
-      assert.equal(maintainerDecisionBlocksClose(result.markdown), true);
       assert.throws(() => renderDecisionPacketPublicBlock(result.markdown), /review_record/);
       assert.throws(() => renderReviewCommentFromReport(result.markdown, "none"), /review_record/);
 
@@ -450,7 +442,6 @@ for (const body of [
 ]) {
   test(`decision packets retain header authority through body quotes: ${JSON.stringify(body)}`, () => {
     const none = `${decisionReport({ maintainer_decision: "none" })}\n${body}`;
-    assert.equal(maintainerDecisionBlocksClose(none), false);
     assert.equal(buildDecisionPacketFromReport(none), null);
     const required = `${decisionReport({ title: JSON.stringify('Original "quoted"\nline'), maintainer_decision: JSON.stringify(productDecision) })}\n${body}`;
     const packet = buildDecisionPacketFromReport(required);
@@ -459,7 +450,6 @@ for (const body of [
     assert.equal(packet.subject.repo, "openclaw/clawsweeper");
     assert.equal(packet.subject.number, 321);
     assert.equal(packet.question, productDecision.question);
-    assert.equal(maintainerDecisionBlocksClose(required), true);
   });
 }
 
@@ -469,7 +459,6 @@ test("decision packets fail closed on duplicate and later competing headers, wit
     base.replace("number: 321", "number: 7\nnumber: 321"),
     `${base}\nLater record.\n---\nnumber: 7\nmaintainer_decision: ${JSON.stringify(productDecision)}\n---\n`,
   ]) {
-    assert.equal(maintainerDecisionBlocksClose(report), true);
     assert.throws(() => buildDecisionPacketFromReport(report), /review_record/);
     assert.throws(() => maintainerDecisionFromReport(report), /review_record/);
     const root = mkdtempSync(tmpPrefix);
@@ -504,7 +493,6 @@ test("packet structural validation ignores body-only keys and nested data, prese
   assert.ok(packet);
   assert.equal(packet.subject.title, "Render maintainer decision");
   assert.equal(packet.subject.number, 321);
-  assert.equal(maintainerDecisionBlocksClose("maintainer_decision: {bad JSON\n"), true);
   assert.equal(buildDecisionPacketFromReport("maintainer_decision: {bad JSON\n"), null);
 });
 
@@ -518,14 +506,12 @@ for (const [name, suffix] of [
     const report = withReviewRecord(
       `---\nrepository: openclaw/clawsweeper\ntype: issue\nnumber: 321\ntitle: Original\nmaintainer_decision: none\n${suffix}`,
     );
-    assert.equal(maintainerDecisionBlocksClose(report), false);
     assert.deepEqual(maintainerDecisionFromReport(report), emptyMaintainerDecision());
     assert.equal(buildDecisionPacketFromReport(report), null);
 
     const required = withReviewRecord(report.replace(/^review_record: .*\n/m, ""), {
       maintainerDecision: productDecision,
     });
-    assert.equal(maintainerDecisionBlocksClose(required), true);
     assert.deepEqual(maintainerDecisionFromReport(required), productDecision);
     const packet = buildDecisionPacketFromReport(required);
     assert.ok(packet);
@@ -540,7 +526,6 @@ for (const [name, suffix] of [
 test("competing mapping records remain ambiguous through comments and indentless lists", () => {
   for (const list of ["- detail: one\n- detail: two", "- first\n-\n-\tlast"]) {
     const report = `${decisionReport({ maintainer_decision: "none" })}\nPlain summary.\n\n---\n# Record metadata\nmaintainer_decision: ${JSON.stringify(productDecision)}\nnumber: 999\nnotes:\n${list}\n---\n`;
-    assert.equal(maintainerDecisionBlocksClose(report), true);
     assert.throws(() => maintainerDecisionFromReport(report), /review_record/);
     assert.throws(() => buildDecisionPacketFromReport(report), /review_record/);
   }
@@ -555,14 +540,12 @@ for (const [name, body] of [
 ]) {
   test(`packet ambiguity requires header ownership: ${name}`, () => {
     const report = `${decisionReport({ title: JSON.stringify("Original"), maintainer_decision: "none" })}\n${body}`;
-    assert.equal(maintainerDecisionBlocksClose(report), false);
     assert.deepEqual(maintainerDecisionFromReport(report), emptyMaintainerDecision());
     assert.equal(buildDecisionPacketFromReport(report), null);
 
     const required = withReviewRecord(report.replace(/^review_record: .*\n/m, ""), {
       maintainerDecision: productDecision,
     });
-    assert.equal(maintainerDecisionBlocksClose(required), true);
     assert.deepEqual(maintainerDecisionFromReport(required), productDecision);
     const packet = buildDecisionPacketFromReport(required);
     assert.ok(packet);
@@ -580,7 +563,6 @@ for (const [headerKey, bodyKey] of [
 ]) {
   test(`packet competing keys use trimmed spelling: ${JSON.stringify(headerKey)} -> ${JSON.stringify(bodyKey)}`, () => {
     const report = `${decisionReport({ maintainer_decision: "none" }).replace("title:", `${headerKey}:`)}\nExample.\n---\n${bodyKey}: Competing\n---\n`;
-    assert.equal(maintainerDecisionBlocksClose(report), false);
     assert.deepEqual(maintainerDecisionFromReport(report), emptyMaintainerDecision());
     assert.equal(buildDecisionPacketFromReport(report), null);
   });

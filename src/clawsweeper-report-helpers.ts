@@ -1,11 +1,4 @@
-import { SECURITY_CONCERN_SEVERITIES } from "./clawsweeper-policy.js";
-import type {
-  AgentsPolicyStatus,
-  Evidence,
-  ReviewFinding,
-  SecurityConcernSeverity,
-} from "./clawsweeper-types.js";
-import { isDigitsOnly } from "./value-coerce.js";
+import type { AgentsPolicyStatus, Evidence } from "./clawsweeper-types.js";
 
 export const OWNED_REVIEW_SECTION_HEADINGS = new Set([
   "summary",
@@ -28,99 +21,6 @@ export const OWNED_REVIEW_SECTION_HEADINGS = new Set([
   "label changes",
 ]);
 
-export function parseBacktickLocation(value: string): {
-  file: string;
-  lineStart: number;
-  lineEnd: number;
-} | null {
-  if (!value.startsWith("`") || !value.endsWith("`")) return null;
-  const location = value.slice(1, -1);
-  const separator = location.lastIndexOf(":");
-  if (separator <= 0) return null;
-  const file = location.slice(0, separator);
-  const range = parseLineRange(location.slice(separator + 1));
-  return range ? { file, ...range } : null;
-}
-
-function parseLineRange(value: string): { lineStart: number; lineEnd: number } | null {
-  const separator = value.indexOf("-");
-  const lineStartText = separator === -1 ? value : value.slice(0, separator);
-  const lineEndText = separator === -1 ? value : value.slice(separator + 1);
-  if (!isDigitsOnly(lineStartText) || !isDigitsOnly(lineEndText)) return null;
-  const lineStart = Number(lineStartText);
-  const lineEnd = Number(lineEndText);
-  return lineStart > 0 && lineEnd >= lineStart ? { lineStart, lineEnd } : null;
-}
-
-export function parseBoldListHeading(line: string): { label: string; detail: string } | null {
-  const prefix = "- **";
-  if (!line.startsWith(prefix)) return null;
-  const delimiter = ":**";
-  const delimiterIndex = line.indexOf(delimiter, prefix.length);
-  if (delimiterIndex === -1) return null;
-  return {
-    label: line.slice(prefix.length, delimiterIndex),
-    detail: line.slice(delimiterIndex + delimiter.length).trimStart(),
-  };
-}
-
-export function parseReviewFindingHeading(line: string): {
-  priority: ReviewFinding["priority"];
-  title: string;
-  file: string;
-  lineStart: number;
-  lineEnd: number;
-} | null {
-  const prefix = "- **[P";
-  if (!line.startsWith(prefix)) return null;
-  const priority = Number(line[prefix.length]);
-  if (!Number.isInteger(priority) || priority < 0 || priority > 3) return null;
-  const titleStart = prefix.length + 3;
-  if (line.slice(prefix.length + 1, titleStart) !== "] ") return null;
-  const titleEnd = line.indexOf(":**", titleStart);
-  if (titleEnd === -1) return null;
-
-  const location = parseBacktickLocation(line.slice(titleEnd + 3).trim());
-  if (!location) return null;
-  return {
-    priority: priority as ReviewFinding["priority"],
-    title: line.slice(titleStart, titleEnd),
-    ...location,
-  };
-}
-
-export function parseSecurityConcernHeading(line: string): {
-  severity: SecurityConcernSeverity;
-  title: string;
-  file: string | null;
-  line: number | null;
-} | null {
-  const prefix = "- **[";
-  if (!line.startsWith(prefix)) return null;
-  const severityEnd = line.indexOf("] ", prefix.length);
-  if (severityEnd === -1) return null;
-  const severity = line.slice(prefix.length, severityEnd);
-  if (!SECURITY_CONCERN_SEVERITIES.has(severity as SecurityConcernSeverity)) return null;
-  const titleStart = severityEnd + 2;
-  const titleEnd = line.indexOf(":**", titleStart);
-  if (titleEnd === -1) return null;
-
-  // The renderer writes `file:line`, or `file` alone for a concern without a line.
-  const locationText = line.slice(titleEnd + 3).trim();
-  const location = locationText ? parseBacktickLocation(locationText) : null;
-  const file =
-    location?.file ??
-    (locationText.length > 2 && locationText.startsWith("`") && locationText.endsWith("`")
-      ? locationText.slice(1, -1)
-      : null);
-  return {
-    severity: severity as SecurityConcernSeverity,
-    title: line.slice(titleStart, titleEnd),
-    file,
-    line: location?.lineStart ?? null,
-  };
-}
-
 export function sectionLineValue(section: string, label: string): string | undefined {
   const prefix = `${label}:`;
   for (const line of section.split("\n")) {
@@ -132,21 +32,6 @@ export function sectionLineValue(section: string, label: string): string | undef
   return undefined;
 }
 
-export function sectionList(section: string, label: string): string[] {
-  const lines = section.split("\n");
-  const start = lines.findIndex((line) => line.trim() === `${label}:`);
-  if (start === -1) return [];
-  const values: string[] = [];
-  for (let index = start + 1; index < lines.length; index += 1) {
-    const line = lines[index]!;
-    if (/^[A-Z][A-Za-z -]+:/.test(line)) break;
-    const trimmed = line.trimStart();
-    if (!trimmed.startsWith("- ")) continue;
-    const item = trimmed.slice(2).trim();
-    if (item) values.push(item);
-  }
-  return values;
-}
 export function evidenceEntry(
   options: Partial<Evidence> & Pick<Evidence, "label" | "detail">,
 ): Evidence {

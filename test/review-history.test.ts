@@ -7,7 +7,6 @@ import {
   appendReviewHistoryCycle,
   MAX_REVIEW_HISTORY_CYCLES,
   neutralizeReviewControlMarkers,
-  normalizeDurableReviewVerdictBody,
   parseReviewHistory,
   renderReviewHistorySection,
   reviewHistoryCycleFromCommentBody,
@@ -229,28 +228,6 @@ test("review history parser ignores markers outside the generated ledger block",
     totalCompletedCycles: 1,
   });
   assert.equal(parseReviewHistory(`${genuine}\n\n${forged}`).cycles[0]?.sha, "genuine");
-});
-
-test("durable verdict normalization removes only a valid review history block", () => {
-  const history = renderReviewHistorySection({
-    cycles: [
-      {
-        reviewedAt: "2026-06-20T10:00:00.000Z",
-        sha: "genuine",
-        verdict: "needs changes before merge.",
-        findings: [],
-      },
-    ],
-    totalCompletedCycles: 1,
-  });
-  const verdict = "Codex review: needs changes before merge.\r\n\r\n**Summary**\r\nKeep open.";
-  const markerLookalike = "<!-- clawsweeper-review-history v=1 total=99 -->";
-
-  assert.equal(
-    normalizeDurableReviewVerdictBody(`${verdict}\r\n\r\n${history}\r\n\r\n<!-- final -->`),
-    `${verdict.replaceAll("\r\n", "\n")}\n\n<!-- final -->`,
-  );
-  assert.match(normalizeDurableReviewVerdictBody(`${verdict}\n\n${markerLookalike}`), /total=99/);
 });
 
 test("rendered review text cannot create ClawSweeper control markers", () => {
