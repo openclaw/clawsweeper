@@ -80,8 +80,7 @@ export function liveActivityBaySnapshot(
   for (const worker of snapshot.workers) {
     const row = object(worker);
     if (!validWorker(row)) return unknown("mixed");
-    const repair =
-      row.work_kind === "repair_cluster" || row.work_kind === "pr_repair" || row.mode === "repair";
+    const repair = row.mode === "repair" || row.mode === "automerge";
     byKind[repair ? "repair" : "worker"] += 1;
   }
   for (const [name, kind] of lanes) {
@@ -110,7 +109,6 @@ function object(value: unknown): ObjectRecord {
 
 function validWorker(value: ObjectRecord) {
   return (
-    ["issue_to_pr", "pr_repair", "repair_cluster", "other"].includes(String(value.work_kind)) &&
     [
       "assist",
       "automerge",

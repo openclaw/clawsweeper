@@ -80,14 +80,13 @@ test("live activity is bounded, redacted, expiring, and separate from lifecycle 
       diagnostics: { errors: [] },
       workers: [
         {
-          work_kind: "pr_repair",
           mode: "repair",
           status: "in_progress",
           run_id: "private-run-marker",
           repository: "private-owner/private-project",
           current_step: "private step marker",
         },
-        { work_kind: "other", mode: "exact-review", status: "queued" },
+        { mode: "exact-review", status: "queued" },
       ],
       bay: { active_census_complete: true },
       control_plane: {
@@ -124,7 +123,6 @@ test("live activity is bounded, redacted, expiring, and separate from lifecycle 
       generated_at: new Date(now).toISOString(),
       diagnostics: { errors: [] },
       workers: Array.from({ length: LIVE_ACTIVITY_SOURCE_LIMIT }, () => ({
-        work_kind: "other",
         mode: "exact-review",
         status: "in_progress",
       })),
@@ -198,7 +196,6 @@ test("live activity fails closed for stale, mixed, unavailable, and over-bound s
       {
         ...source,
         workers: Array.from({ length: LIVE_ACTIVITY_SOURCE_LIMIT }, () => ({
-          work_kind: "other",
           mode: "exact-review",
           status: "in_progress",
         })),
@@ -214,8 +211,7 @@ test("live activity fails closed for stale, mixed, unavailable, and over-bound s
         ...source,
         workers: [
           {
-            work_kind: { nested_private_marker: "must-not-surface" },
-            mode: "exact-review",
+            mode: { nested_private_marker: "must-not-surface" },
             status: "in_progress",
           },
         ],
@@ -244,8 +240,7 @@ test("live activity fails closed for stale, mixed, unavailable, and over-bound s
           ...source,
           workers: [
             {
-              work_kind: { nested_private_marker: "must-not-surface" },
-              mode: "exact-review",
+              mode: { nested_private_marker: "must-not-surface" },
               status: "in_progress",
             },
           ],
