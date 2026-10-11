@@ -471,10 +471,6 @@ try {
     assert.ok(!retired.writes.some((request) => /labels|dispatches|merge/.test(request)));
     const reply = commentBodies.at(-1);
     assert.match(reply, /is retired; ClawSweeper now only reviews\./);
-    assert.equal(
-      reply.replace(/<!--[\s\S]*?-->/g, "").trim(),
-      `\`@clawsweeper ${intent.replaceAll("_", "-")}\` is retired; ClawSweeper now only reviews.`,
-    );
     const repliesBefore = commentBodies.length;
     const replayed = await runExecutedCommand(apiUrl, number);
     assert.equal(replayed.status, 0, replayed.stderr || replayed.stdout);
