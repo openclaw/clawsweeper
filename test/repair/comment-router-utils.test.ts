@@ -17,11 +17,8 @@ import {
   summarizeChecks,
 } from "../../dist/repair/comment-router-utils.js";
 import {
-  dispatchClaimDecision,
   dispatchClaimLookupKeys,
   dispatchReceiptKeyMaterial,
-  endorReviewRevisionDeliveryId,
-  hasSuccessfulDispatchExecutionJob,
   routerDispatchReceiptKey,
 } from "../../dist/repair/comment-router/dispatch.js";
 import {
@@ -340,38 +337,6 @@ test("synthetic dispatch receipt material is stable within an attempt and change
   );
 });
 
-test("Endor review identity follows the current source, not the delivery attempt", () => {
-  const input = {
-    repo: "openclaw/endor-clawsweeper-e2e",
-    issueNumber: 42,
-    intent: "automerge",
-    headSha: "a".repeat(40),
-    sourceRevision: "b".repeat(64),
-  };
-  const identity = endorReviewRevisionDeliveryId(input);
-  assert.match(identity, /^endor-review-revision:[0-9a-f]{64}$/);
-  assert.equal(endorReviewRevisionDeliveryId({ ...input }), identity);
-  for (const change of [
-    { sourceRevision: "c".repeat(64) },
-    { headSha: "d".repeat(40) },
-    { intent: "autofix" },
-    { issueNumber: 43 },
-  ]) {
-    assert.notEqual(endorReviewRevisionDeliveryId({ ...input, ...change }), identity);
-  }
-  assert.throws(() => endorReviewRevisionDeliveryId({ ...input, repo: "openclaw/openclaw" }));
-  assert.throws(() => endorReviewRevisionDeliveryId({ ...input, headSha: "missing" }));
-  const command = {
-    idempotency_key: "repair-loop-label-sweep:openclaw/endor-clawsweeper-e2e:automerge:42",
-    automation_source: "repair_loop_label_sweep",
-    source_delivery_id: identity,
-  };
-  assert.notEqual(
-    routerDispatchReceiptKey(command, { processed_at: "2026-09-23T01:00:00Z" }),
-    routerDispatchReceiptKey(command, { processed_at: "2026-09-23T02:00:00Z" }),
-  );
-});
-
 test("production forced replay parsing scopes claims and dispatch keys by durable attempt", () => {
   const baseArgs = {
     repo: "openclaw/openclaw",
@@ -646,18 +611,6 @@ test("forced replay claims survive ledger interruption without cross-attempt ali
   const recoveredClaim = claimFor(firstAttempt);
   assert.equal(recoveredClaim, restored.commands[0]);
   assert.equal(claimFor({ ...base, forced_replay: false, attempt_id: undefined }), null);
-  assert.deepEqual(
-    dispatchClaimDecision({
-      claim: recoveredClaim,
-      runs: [],
-      expectedTitle: `Review event item openclaw/openclaw#74499 [${routerDispatchReceiptKey(
-        firstAttempt,
-        recoveredClaim,
-      )}]`,
-      nowMs: Date.parse("2026-07-12T20:06:00Z"),
-    }),
-    { action: "wait", run: null },
-  );
 
   assert.equal(
     appendLedger(restored, [{ ...firstAttempt, attempt_id: "forced-replay-41002" }]),
@@ -723,18 +676,6 @@ test("refreshed forced replay claims survive bounded ledger trimming and restart
       dispatchClaimLookupKeys(entry).some((key) => forcedKeys.has(key)),
     ) ?? null;
   assert.equal(recoveredClaim?.attempt_id, forcedClaim.attempt_id);
-  assert.deepEqual(
-    dispatchClaimDecision({
-      claim: recoveredClaim,
-      runs: [],
-      expectedTitle: `Review event item openclaw/openclaw#74000 [${routerDispatchReceiptKey(
-        forcedClaim,
-        recoveredClaim,
-      )}]`,
-      nowMs: Date.parse("2026-07-12T20:06:00Z"),
-    }),
-    { action: "wait", run: null },
-  );
 });
 
 test("atomic ledger writes preserve the previous forced claim across interruption", (t) => {
@@ -777,18 +718,6 @@ test("atomic ledger writes preserve the previous forced claim across interruptio
   const restored = readLedger(ledgerPath);
   assert.equal(restored.commands.length, 1);
   assert.equal(restored.commands[0]?.attempt_id, forcedClaim.attempt_id);
-  assert.deepEqual(
-    dispatchClaimDecision({
-      claim: restored.commands[0],
-      runs: [],
-      expectedTitle: `Review event item openclaw/openclaw#74499 [${routerDispatchReceiptKey(
-        forcedClaim,
-        restored.commands[0],
-      )}]`,
-      nowMs: Date.parse("2026-07-12T20:06:00Z"),
-    }),
-    { action: "wait", run: null },
-  );
 });
 
 test("readLedger initializes only missing files and fails closed on torn state", (t) => {
@@ -859,13 +788,8 @@ test("readLedger fails closed on malformed claimed state before restart dispatch
 
   let dispatchReached = false;
   assert.throws(() => {
-    const restored = readLedger(ledgerPath);
+    readLedger(ledgerPath);
     dispatchReached = true;
-    dispatchClaimDecision({
-      claim: restored.commands[0] ?? null,
-      runs: [],
-      expectedTitle: "Review event item openclaw/openclaw#74499 [router-abc]",
-    });
   }, /requires a durable lookup identity/);
   assert.equal(dispatchReached, false);
 });
@@ -919,162 +843,6 @@ test("readLedger validates compact command entry structure", (t) => {
   assert.equal(readLedger(ledgerPath).commands.length, 2);
 });
 
-test("fresh dispatch claims wait for the Actions receipt visibility window", () => {
-  const claim = { processed_at: "2026-04-29T03:01:00Z" };
-
-  assert.deepEqual(
-    dispatchClaimDecision({
-      claim,
-      runs: [],
-      expectedTitle: "Review event item openclaw/openclaw#74499 [router-abc]",
-      nowMs: Date.parse("2026-04-29T03:04:00Z"),
-    }),
-    { action: "wait", run: null },
-  );
-});
-
-test("dispatch claims recover the exact Actions receipt created after the claim", () => {
-  const claim = { processed_at: "2026-04-29T03:01:00Z" };
-  const matchingRun = {
-    id: 991,
-    display_title: "Review event item openclaw/openclaw#74499 [router-abc]",
-    created_at: "2026-04-29T03:01:02Z",
-    status: "completed",
-    conclusion: "success",
-  };
-
-  assert.deepEqual(
-    dispatchClaimDecision({
-      claim,
-      runs: [
-        {
-          id: 990,
-          display_title: matchingRun.display_title,
-          created_at: "2026-04-29T02:59:00Z",
-        },
-        matchingRun,
-      ],
-      expectedTitle: matchingRun.display_title,
-      nowMs: Date.parse("2026-04-29T03:10:00Z"),
-    }),
-    { action: "recover", run: matchingRun },
-  );
-});
-
-test("dispatch claims wait for active receipts and retry terminal failures", () => {
-  const claim = { processed_at: "2026-04-29T03:01:00Z" };
-  const expectedTitle = "Review event item openclaw/openclaw#74499 [router-abc]";
-  const run = {
-    id: 991,
-    display_title: expectedTitle,
-    created_at: "2026-04-29T03:01:02Z",
-  };
-
-  assert.deepEqual(
-    dispatchClaimDecision({
-      claim,
-      runs: [{ ...run, status: "in_progress", conclusion: null }],
-      expectedTitle,
-      nowMs: Date.parse("2026-04-29T03:10:00Z"),
-    }),
-    { action: "wait", run: null },
-  );
-  for (const conclusion of ["cancelled", "failure", "skipped", "timed_out"]) {
-    assert.deepEqual(
-      dispatchClaimDecision({
-        claim,
-        runs: [{ ...run, status: "completed", conclusion }],
-        expectedTitle,
-        nowMs: Date.parse("2026-04-29T03:10:00Z"),
-      }),
-      { action: "dispatch", run: null },
-    );
-  }
-});
-
-test("dispatch claim recovery prefers an older success over a newer cancelled duplicate", () => {
-  const claim = { processed_at: "2026-04-29T03:01:00Z" };
-  const expectedTitle = "Review event item openclaw/openclaw#74499 [router-abc]";
-  const successfulRun = {
-    id: 991,
-    display_title: expectedTitle,
-    created_at: "2026-04-29T03:01:02Z",
-    status: "completed",
-    conclusion: "success",
-  };
-
-  assert.deepEqual(
-    dispatchClaimDecision({
-      claim,
-      runs: [
-        {
-          ...successfulRun,
-          id: 992,
-          created_at: "2026-04-29T03:02:00Z",
-          conclusion: "cancelled",
-        },
-        successfulRun,
-      ],
-      expectedTitle,
-      nowMs: Date.parse("2026-04-29T03:10:00Z"),
-    }),
-    { action: "recover", run: successfulRun },
-  );
-});
-
-test("dispatch claims ignore receipt-only duplicate successes", () => {
-  const expectedTitle = "Assist openclaw/openclaw#74499 [router-abc]";
-  assert.deepEqual(
-    dispatchClaimDecision({
-      claim: { processed_at: "2026-04-29T03:01:00Z" },
-      runs: [
-        {
-          id: 991,
-          display_title: expectedTitle,
-          created_at: "2026-04-29T03:01:02Z",
-          status: "completed",
-          conclusion: "failure",
-        },
-        {
-          id: 992,
-          display_title: expectedTitle,
-          created_at: "2026-04-29T03:02:00Z",
-          status: "completed",
-          conclusion: "success",
-          dispatch_execution_verified: false,
-        },
-      ],
-      expectedTitle,
-      nowMs: Date.parse("2026-04-29T03:10:00Z"),
-      graceMs: 300_000,
-    }),
-    { action: "dispatch", run: null },
-  );
-});
-
-test("dispatch execution verification requires the real worker job to succeed", () => {
-  assert.equal(
-    hasSuccessfulDispatchExecutionJob(
-      [
-        { name: "Deduplicate command dispatch receipt", conclusion: "success" },
-        { name: "assist", conclusion: "skipped" },
-      ],
-      "assist",
-    ),
-    false,
-  );
-  assert.equal(
-    hasSuccessfulDispatchExecutionJob(
-      [
-        { name: "Deduplicate command dispatch receipt", conclusion: "success" },
-        { name: "assist", conclusion: "success" },
-      ],
-      "assist",
-    ),
-    true,
-  );
-});
-
 test("appendLedger refreshes a stale dispatch claim before retry", () => {
   const ledger = { updated_at: null, commands: [] };
   const base = {
@@ -1090,43 +858,6 @@ test("appendLedger refreshes a stale dispatch claim before retry", () => {
 
   assert.equal(ledger.commands.length, 1);
   assert.equal(ledger.commands[0]?.processed_at, "2026-04-29T03:10:00Z");
-});
-
-test("stale dispatch claims without an exact receipt become retryable", () => {
-  assert.deepEqual(
-    dispatchClaimDecision({
-      claim: { processed_at: "2026-04-29T03:01:00Z" },
-      runs: [
-        {
-          id: 990,
-          display_title: "Review event item openclaw/openclaw#74499 [router-other]",
-          created_at: "2026-04-29T03:01:02Z",
-        },
-      ],
-      expectedTitle: "Review event item openclaw/openclaw#74499 [router-abc]",
-      nowMs: Date.parse("2026-04-29T03:10:00Z"),
-      graceMs: Number.NaN,
-    }),
-    { action: "dispatch", run: null },
-  );
-});
-
-test("dispatch claims with malformed timestamps fail closed", () => {
-  assert.deepEqual(
-    dispatchClaimDecision({
-      claim: { processed_at: "not-a-timestamp" },
-      runs: [
-        {
-          id: 991,
-          display_title: "Review event item openclaw/openclaw#74499 [router-abc]",
-          created_at: "2026-04-29T03:01:02Z",
-        },
-      ],
-      expectedTitle: "Review event item openclaw/openclaw#74499 [router-abc]",
-      nowMs: Date.parse("2026-04-29T03:10:00Z"),
-    }),
-    { action: "wait", run: null },
-  );
 });
 
 test("appendLedger preserves the original timestamp while a claim waits", () => {

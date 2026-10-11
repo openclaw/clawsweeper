@@ -38,7 +38,6 @@ import { reviewOutputItemBudget } from "../dist/review-output-policy.js";
 import { parseArgs } from "../dist/clawsweeper-args.js";
 import {
   createReviewCommandWorkflow,
-  reviewCommandProofBinding,
   localExactBootstrapReviewCommentBody,
   withRunnerPreflightProvenance,
 } from "../dist/clawsweeper-review-command-workflow.js";
@@ -48,8 +47,6 @@ import {
   suppliedReviewStartLeaseFromArgs,
 } from "../dist/clawsweeper-review-lease.js";
 import { PUBLIC_CODEX_MODEL } from "../dist/codex-env.js";
-import { proofFixture } from "./helpers/command-proof-fixtures.ts";
-import { verifyCommandProof } from "../dist/repair/proof-receipt-verification.js";
 import {
   createReviewStructuralRecord,
   type ReviewStructuralSnapshot,
@@ -115,51 +112,6 @@ function structuralRecord(
   assert.ok(record);
   return record;
 }
-
-test("evidence-triggered full review requires its trusted source action and complete subject binding", () => {
-  const fixture = proofFixture();
-  const verified = verifyCommandProof(fixture);
-  assert.notEqual(verified.outcome, "inconclusive");
-  if (verified.outcome === "inconclusive") throw new Error(verified.reason);
-  const prompt = verified.reviewContext;
-  for (const sourceAction of [
-    undefined,
-    "",
-    "re_review",
-    "manual",
-    "internal",
-    "scheduled_normal_backfill",
-  ]) {
-    assert.throws(
-      () => reviewCommandProofBinding(sourceAction, prompt),
-      /lost its trusted source action; full review required/,
-      String(sourceAction),
-    );
-  }
-  assert.equal(reviewCommandProofBinding("scheduled_normal_backfill", "ordinary review"), null);
-  assert.deepEqual(reviewCommandProofBinding("command_proof_result", prompt), {
-    headSha: fixture.claim.headSha,
-    bodySha256: fixture.claim.bodySha256,
-    baseRefSha256: digest(fixture.claim.targetBranch),
-    baseSha: fixture.claim.baseSha,
-    requestId: fixture.claim.requestId,
-    scenario: fixture.claim.scenario,
-  });
-  for (const invalid of [
-    "",
-    "ordinary review",
-    prompt.replace(" base=" + digest("main"), ""),
-    prompt.replace("base=" + digest("main"), "base=unknown"),
-    prompt.replace(" base_sha=" + fixture.claim.baseSha, ""),
-    prompt.replace("base_sha=" + fixture.claim.baseSha, "base_sha=unknown"),
-    "prefix\n" + prompt,
-  ]) {
-    assert.throws(
-      () => reviewCommandProofBinding("command_proof_result", invalid),
-      /missing its exact-subject binding/,
-    );
-  }
-});
 
 test("exact local bootstrap rejects a same-number report from another repository", () => {
   const report = [
@@ -968,13 +920,7 @@ process.exitCode = 1;
                     "--review-lease-comment-id",
                     String(LEASE_COMMENT_ID),
                     "--review-source-action",
-                    invalidProofPrior ? "command_proof_result" : "scheduled_normal_backfill",
-                    ...(invalidProofPrior
-                      ? [
-                          "--additional-prompt",
-                          `<!-- command-proof-assessment-v1 head=${headSha} body=${digest("body")} base=${digest("main")} base_sha=${baseSha} request=${digest("request")} scenario=web-ui-chat-proof -->\nProof assessment`,
-                        ]
-                      : []),
+                    "scheduled_normal_backfill",
                   ],
           ),
         );

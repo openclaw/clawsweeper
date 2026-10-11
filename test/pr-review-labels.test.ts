@@ -208,7 +208,7 @@ ${malformedReceipt ? `## Live Proof\n\n${LIVE_VERIFICATION_MARKER}\nResult: inva
         if (workflowStatus) assert.ok(!details.includes(`remove \`${workflowStatus}\``));
         assert.equal(details.includes("add `status: needs maintainer proof decision`"), false);
         const markers = reviewAutomationMarkersFromReport(report);
-        assert.match(markers, /live_verification=absent/);
+        assert.doesNotMatch(markers, /live_verification=/);
         assert.match(markers, /clawsweeper-verdict:needs-human/);
         assert.doesNotMatch(markers, /clawsweeper-verdict:pass|clawsweeper-action:fix-required/);
         assert.ok(comment.includes(markers));

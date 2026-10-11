@@ -63,8 +63,6 @@ import { createCommitPullResolver, pullRequestProvenanceEvidence } from "./pr-re
 import { pullRequestHistoryCoverage } from "./pr-review-history.js";
 import { ReviewSourcePreparationError } from "./review-source-preparation.js";
 import { validationRecoveryRequired } from "./repair/validation-recovery.js";
-import { commandProofBinding, assertCommandProofSubject } from "./command-proof-assessment.js";
-import { COMMAND_PROOF_SOURCE_ACTION } from "./command-proof-contract.js";
 import {
   assertActiveReviewOutputBudget,
   assertReviewOutputFilePeak,
@@ -83,25 +81,6 @@ import { asRecord, nonBlankStringOrUndefined } from "./value-coerce.js";
 import { frontMatterValue, replaceFrontMatterValue } from "./report-front-matter.js";
 import { reviewStatusForDecision } from "./clawsweeper-report-document.js";
 import type { CodexFailureLogKind } from "./clawsweeper-review-runtime.js";
-
-/** Bind verified evidence to its candidate before an ordinary full review. */
-export function reviewCommandProofBinding(sourceAction: unknown, additionalPrompt: string) {
-  const binding = commandProofBinding(additionalPrompt);
-  if (sourceAction !== COMMAND_PROOF_SOURCE_ACTION) {
-    if (binding) {
-      throw new UserFacingCommandError(
-        "commanded proof reassessment lost its trusted source action; full review required",
-      );
-    }
-    return null;
-  }
-  if (!binding) {
-    throw new UserFacingCommandError(
-      "commanded proof reassessment is missing its exact-subject binding",
-    );
-  }
-  return binding;
-}
 
 function reviewStartLeaseCommentUpdatedAt(
   comment: Record<string, unknown> | undefined,
@@ -322,7 +301,6 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
         assertActiveReviewOutputBudget(retainedReviewOutput);
       }
     };
-    let proofBinding: ReturnType<typeof reviewCommandProofBinding> = null;
     let { git } = preparation;
     const readonlyModeSnapshots: FileModeSnapshot[] = [];
     const acquiredReviewLeases: Array<{ itemNumber: number; lease: AcquiredReviewStartLease }> = [];
@@ -379,7 +357,6 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
     let cacheHits = 0;
     try {
       const reviewTreesDir = join(realpathSync(reviewWorkspaceDir), "review-trees");
-      proofBinding = reviewCommandProofBinding(args.review_source_action, additionalPrompt);
       if (readonlyOpenclaw) makeTreeReadOnly(openclawDir, readonlyModeSnapshots);
       assertCurrentOutputBudget();
       const selectionOptions: Parameters<typeof selectCandidates>[0] = {
@@ -1434,9 +1411,6 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
           assertCurrentOutputBudget();
           pruneItemOutput(reportPath);
           continue;
-        }
-        if (proofBinding) {
-          assertCommandProofSubject(proofBinding, pullHeadShaFromContext(context), context.pullRequest ?? context.issue, asRecord(asRecord(context.pullRequest).base).ref, asRecord(asRecord(context.pullRequest).base).sha);
         }
         // --local-range is a pre-PR LOCAL code review — it has no telegram-visible-proof to
         // capture, and prepareMediaProofArtifacts would host-side download media URLs and transcode

@@ -496,10 +496,9 @@ function commandAckComments(comments: LooseRecord[], marker: string, trustedBots
     .sort(compareCommentsByCreatedAt);
 }
 
-// Router-dispatched autofix/automerge commands are enqueued without a source head
-// (the queue binds them to its current authority), so a claimed PR decision may
-// lack sourceHeadSha. The admission live head is what the review later claims the
-// lease against; the command status marker head only covers a failed live read.
+// A queued review may bind its source only when claimed. Prefer that claimed
+// source, then the admission live head; the status marker is a fallback when
+// the live read did not supply a head.
 export function commandReviewLeaseHeadSha(input: {
   repo: string;
   itemNumber: number;

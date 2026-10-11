@@ -60,24 +60,21 @@ test("test runner expands named targets with sorted de-duplicated files", () => 
     "test/a.test.ts",
     "test/repair/b.test.ts",
     "dist/repair/z.test.js",
-    "dist/repair/fix-prompt-builder.test.js",
+    "dist/repair/a.test.js",
   ]);
   try {
     assert.deepEqual(resolveTestFiles("unit", root), ["test/a.test.ts", "test/z.test.ts"]);
     assert.deepEqual(resolveTestFiles("repair", root), [
-      "dist/repair/fix-prompt-builder.test.js",
+      "dist/repair/a.test.js",
       "dist/repair/z.test.js",
       "test/repair/b.test.ts",
     ]);
     assert.deepEqual(resolveTestFiles("all", root), [
-      "dist/repair/fix-prompt-builder.test.js",
+      "dist/repair/a.test.js",
       "dist/repair/z.test.js",
       "test/a.test.ts",
       "test/repair/b.test.ts",
       "test/z.test.ts",
-    ]);
-    assert.deepEqual(resolveTestFiles("fix-prompt-builder", root), [
-      "dist/repair/fix-prompt-builder.test.js",
     ]);
   } finally {
     rmSync(root, { recursive: true, force: true });
@@ -137,7 +134,7 @@ test("test runner parses shard and coverage modes", () => {
     mode: "replay",
     directory: "profiles",
   });
-  assert.deepEqual(parseArguments(["fix-prompt-builder", "--coverage"]).coverage, {
+  assert.deepEqual(parseArguments(["all", "--coverage"]).coverage, {
     mode: "check",
   });
   assert.deepEqual(parseArguments(["unit", "--shard=1/1"]).shard, { index: 1, total: 1 });
@@ -191,13 +188,6 @@ test("coverage policies keep the established thresholds", () => {
     "--test-coverage-branches=66",
     "--test-coverage-functions=57",
   ]);
-  assert.deepEqual(coverageArguments("fix-prompt-builder"), [
-    "--experimental-test-coverage",
-    "--test-coverage-include=dist/repair/fix-prompt-builder.js",
-    "--test-coverage-lines=85",
-    "--test-coverage-branches=85",
-    "--test-coverage-functions=85",
-  ]);
   assert.throws(() => coverageArguments("repair"), /no coverage policy/);
 });
 
@@ -208,28 +198,17 @@ test("composed no-build scripts preserve standalone build contracts", () => {
   assert.match(scripts.test, /^pnpm run build:all && pnpm run test:no-build$/);
   assert.match(scripts["test:repair"], /^pnpm run build:node && pnpm run test:repair:no-build$/);
   assert.match(scripts["test:coverage"], /^pnpm run build:all && pnpm run test:coverage:no-build$/);
-  assert.match(
-    scripts["test:coverage:changed"],
-    /^pnpm run build:repair && pnpm run test:coverage:changed:no-build$/,
-  );
+  assert.equal(scripts["test:coverage:changed"], undefined);
   assert.equal(scripts["test:coverage:no-build"], "node scripts/run-node-tests.mjs all --coverage");
-  assert.equal(
-    scripts["test:coverage:changed:no-build"],
-    "node scripts/run-node-tests.mjs fix-prompt-builder --coverage",
-  );
+  assert.equal(scripts["test:coverage:changed:no-build"], undefined);
   assert.equal(scripts.check, "pnpm run check:parallel");
   assert.equal(
     scripts["check:fast"],
-    "pnpm run check:static && pnpm run build:all && pnpm run lint && pnpm run test:coverage:changed:no-build",
+    "pnpm run check:static && pnpm run build:all && pnpm run lint",
   );
   assert.equal(scripts["check:parallel"], "pnpm run check:fast && pnpm run test:coverage:no-build");
 
-  for (const name of [
-    "test:no-build",
-    "test:repair:no-build",
-    "test:coverage:no-build",
-    "test:coverage:changed:no-build",
-  ]) {
+  for (const name of ["test:no-build", "test:repair:no-build", "test:coverage:no-build"]) {
     assert.doesNotMatch(scripts[name], /\b(?:build|tsc)\b/, `${name} must not start a build`);
   }
 });

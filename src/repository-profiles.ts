@@ -38,7 +38,6 @@ export interface RepositoryProfile {
   promptNote: string;
   /** Repository policy that applies to one item kind only. */
   kindPromptNotes?: Partial<Record<RepositoryItemKind, string>>;
-  allowRepairCommands?: boolean;
   applyCloseRules: Partial<Record<RepositoryItemKind, readonly RepositoryCloseReason[]>>;
 }
 
@@ -56,7 +55,6 @@ interface ConfiguredRepositoryProfile {
   docsUrl?: string;
   communityUrl?: string;
   promptNote: string;
-  allowRepairCommands: boolean;
   applyCloseRules: Partial<Record<RepositoryItemKind, readonly RepositoryCloseReason[]>>;
 }
 
@@ -116,7 +114,6 @@ const CORE_OPENCLAW_PROFILE: RepositoryProfile = {
       'Always fill `telegramVisibleProof`. Use `status: "needed"` only when the PR changes user-visible Telegram behavior that Telegram\'s Test Server can observe, whether or not the repository `telegram-e2e-userbot` skill already covers that API path, such as message formatting, slash-command output, replies, attachments, reactions, threading, or mentions. The resulting `proof: telegram-e2e` label tells the execution worker to use that skill, exercise the exact changed behavior, and extend its harness or recipes when coverage cannot expose it. Use `status: "not_needed"` for non-Telegram PRs and for internal-only, test-only, docs-only, logging-only, retry/network reliability only, auth/secret plumbing only, or otherwise unobservable changes. A label, title, consumer, or example does not make internal shared retry/ordering work visible; for that work, set `telegramVisibleProof.status: "not_needed"`.\n\n' +
       "In implementer-owned decisions, OpenClaw tool-owned metadata includes Doctor bookkeeping tables and config provenance in an upgrade snapshot, and a Doctor repair that removes rows whose referenced parent is missing is a recovery repair.",
   },
-  allowRepairCommands: true,
   applyCloseRules: {
     issue: OPENCLAW_CLOSE_REASONS.filter(
       (reason) => reason !== "author_pr_budget_exceeded" && reason !== "obsolete_fix_pr",
@@ -210,7 +207,6 @@ function configuredRepositoryProfile(profile: ConfiguredRepositoryProfile): Repo
     checkoutDir: profile.checkoutDir,
     packageManager: profile.packageManager,
     promptNote: profile.promptNote,
-    allowRepairCommands: profile.allowRepairCommands,
     applyCloseRules: profile.applyCloseRules,
   };
   if (profile.docsUrl) result.docsUrl = profile.docsUrl;
@@ -234,7 +230,6 @@ function fallbackRepositoryProfile(normalizedTargetRepo: string): RepositoryProf
     promptNote: fallback.promptNote
       .replaceAll("{target_repo}", normalizedTargetRepo)
       .replaceAll("{repo_name}", repoName),
-    allowRepairCommands: true,
     applyCloseRules: fallback.applyCloseRules,
   };
   return result;
@@ -316,10 +311,6 @@ function validateConfiguredRepositoryProfile(
     checkoutDir: pathSegmentValue(profile.checkout_dir, `${label}.checkout_dir`),
     packageManager: packageManagerValue(profile.package_manager, `${label}.package_manager`),
     promptNote: stringValue(profile.prompt_note, `${label}.prompt_note`),
-    allowRepairCommands:
-      profile.allow_repair_commands === undefined
-        ? true
-        : booleanValue(profile.allow_repair_commands, `${label}.allow_repair_commands`),
     applyCloseRules: closeRulesValue(profile.apply_close_rules, `${label}.apply_close_rules`),
   };
   if (profile.docs_url !== undefined) {

@@ -20,9 +20,6 @@ type WorkerConfig = {
     assist: {
       max: number;
     };
-    repair: {
-      cluster_max_live_runs: number;
-    };
   };
 };
 
@@ -41,16 +38,6 @@ type AutomationLimits = {
     hot_intake_default: number;
     exact_item_default: number;
     hard_cap: number;
-  };
-  repair_live_runs: {
-    default: number;
-    hard_cap: number;
-    automerge_default: number;
-    issue_implementation_default: number;
-    cluster_default: number;
-  };
-  issue_implementation: {
-    dispatches_per_sweep_default: number;
   };
 };
 
@@ -103,18 +90,6 @@ const expectations: { file: string; label: string; pattern: RegExp }[] = [
     file: "README.md",
     label: "manual plan shard-count example",
     pattern: new RegExp(`--shard-count ${limits.review_shards.normal_default}\\b`),
-  },
-  {
-    file: "docs/repair/README.md",
-    label: "normal repair live run default",
-    pattern: new RegExp(`CLAWSWEEPER_MAX_LIVE_WORKERS=${limits.repair_live_runs.default}\\b`),
-  },
-  {
-    file: "docs/repair/README.md",
-    label: "imported cluster repair live run example",
-    pattern: new RegExp(
-      `CLAWSWEEPER_MAX_LIVE_WORKERS=${limits.repair_live_runs.cluster_default}\\b`,
-    ),
   },
   {
     file: "docs/scheduler.md",
@@ -218,7 +193,6 @@ function flattenLimits(value: unknown, prefix = ""): Record<string, number> {
 
 function deriveAutomationLimits(workerConfig: WorkerConfig): AutomationLimits {
   const max = workerConfig.workers.max;
-  const clusterRepairMax = Math.min(workerConfig.lanes.repair.cluster_max_live_runs, max);
   return {
     audit: { max_parallel_targets: workerConfig.audit.max_parallel_targets },
     exact_review: {
@@ -238,16 +212,6 @@ function deriveAutomationLimits(workerConfig: WorkerConfig): AutomationLimits {
       hot_intake_default: percent(max, 35),
       exact_item_default: 1,
       hard_cap: max,
-    },
-    repair_live_runs: {
-      default: percent(max, 40),
-      hard_cap: max,
-      automerge_default: percent(max, 40),
-      issue_implementation_default: percent(max, 40),
-      cluster_default: clusterRepairMax,
-    },
-    issue_implementation: {
-      dispatches_per_sweep_default: percent(max, 4),
     },
   };
 }

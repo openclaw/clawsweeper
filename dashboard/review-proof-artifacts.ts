@@ -8,10 +8,10 @@ export {
   type ProofProducerIdentity,
 } from "../src/proof-artifact-contract.ts";
 import {
-  commandProofProfile,
+  reviewProofProfile,
   proofRecord,
-  type CommandProofScenario,
-} from "../src/command-proof-contract.ts";
+  type ReviewProofScenario,
+} from "../src/review-proof-contract.ts";
 import { sha256Hex } from "./exact-review-direct-publication.ts";
 
 export const proofDigest = (bytes: string | Uint8Array) =>
@@ -20,9 +20,9 @@ export function proofEvidenceArtifactName(
   _id: string,
   runId: string,
   attempt: number,
-  scenario: CommandProofScenario,
+  scenario: ReviewProofScenario,
 ) {
-  return commandProofProfile(scenario)!.evidenceArtifactPrefix + "-" + runId + "-" + attempt;
+  return reviewProofProfile(scenario)!.evidenceArtifactPrefix + "-" + runId + "-" + attempt;
 }
 export async function trustedArtifact(
   value: unknown,

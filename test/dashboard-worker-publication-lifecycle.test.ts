@@ -2295,13 +2295,8 @@ test("active pull request supersession preserves the command without its publica
   });
 });
 
-test("all exact-review recovery paths preserve proof authority and the complete producer context", async (t) => {
-  for (const sourceAction of [
-    "command_proof_result",
-    "failed_review_shard_recovery",
-    "opened",
-    "command_proof_result_extra",
-  ]) {
+test("all exact-review recovery paths preserve the complete producer context", async (t) => {
+  for (const sourceAction of ["failed_review_shard_recovery", "opened"]) {
     const producerDecision: ExactReviewQueueItem["decision"] = {
       targetRepo: "openclaw/openclaw",
       targetBranch: "main",
@@ -2312,29 +2307,17 @@ test("all exact-review recovery paths preserve proof authority and the complete 
       supersedesInProgress: false,
       sourceHeadSha: "a".repeat(40),
       sourceBaseSha: "c".repeat(40),
-      sourceDeliveryId: "command-proof-request",
+      sourceDeliveryId: "review-command-request",
       sourceCommentId: 200,
       sourceCommentUpdatedAt: "2026-09-04T10:00:00Z",
       commandBodyDigest: "e".repeat(64),
       commandOrigin: "comment_router",
       sourceCommentVerified: true,
       commandStatusMarker:
-        "<!-- clawsweeper-command-status:705:request_proof:" + "d".repeat(64) + " -->",
-      additionalPrompt:
-        "<!-- command-proof-assessment-v1 head=" +
-        "a".repeat(40) +
-        " body=" +
-        "b".repeat(64) +
-        " base=" +
-        createHash("sha256").update("main").digest("hex") +
-        " base_sha=" +
-        "c".repeat(40) +
-        " request=" +
-        "d".repeat(64) +
-        " scenario=web-ui-chat-proof -->\nVerified request-bound observer evidence; preserve this entire context.",
+        "<!-- clawsweeper-command-status:705:re_review:" + "d".repeat(64) + " -->",
+      additionalPrompt: "Inspect the reported regression using the preserved reviewer context.",
     };
-    const preserved =
-      sourceAction === "command_proof_result" || sourceAction === "failed_review_shard_recovery";
+    const preserved = sourceAction === "failed_review_shard_recovery";
     const direct = await savedDirectRequeueFixture("accepted", true, producerDecision);
     t.after(() => direct.storage.sql.close());
     assert.deepEqual(await (await direct.post("complete", direct.complete)).json(), {

@@ -1,11 +1,11 @@
-import { COMMAND_PROOF_ARCHIVE_MAX_BYTES, proofSafePath } from "../src/command-proof-contract.ts";
+import { REVIEW_PROOF_ARCHIVE_MAX_BYTES, proofSafePath } from "../src/review-proof-contract.ts";
 
 /** Read bounded ordinary ZIP files without extracting any path onto disk. */
 export async function readReviewProofZip(bytes: Uint8Array): Promise<Map<string, Uint8Array>> {
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   const u16 = (offset: number) => view.getUint16(offset, true);
   const u32 = (offset: number) => view.getUint32(offset, true);
-  if (bytes.length > COMMAND_PROOF_ARCHIVE_MAX_BYTES || bytes.length < 22)
+  if (bytes.length > REVIEW_PROOF_ARCHIVE_MAX_BYTES || bytes.length < 22)
     throw new Error("invalid_proof_zip_size");
   let end = -1;
   for (let p = bytes.length - 22; p >= Math.max(0, bytes.length - 65557); p--) {
@@ -44,7 +44,7 @@ export async function readReviewProofZip(bytes: Uint8Array): Promise<Map<string,
       (flags & ~0x080e) !== 0 ||
       ![0, 8].includes(method) ||
       compressed === 0xffffffff ||
-      expanded > COMMAND_PROOF_ARCHIVE_MAX_BYTES ||
+      expanded > REVIEW_PROOF_ARCHIVE_MAX_BYTES ||
       local + 30 > offset
     )
       throw new Error("unsupported_proof_zip_entry");

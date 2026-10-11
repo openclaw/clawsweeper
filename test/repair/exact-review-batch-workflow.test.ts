@@ -192,7 +192,7 @@ test("manual publication stays queue-owned and excludes router and implementatio
   assert.equal(admission.if, "${{ steps.mode.outputs.manual_explicit == 'true' }}");
   assert.match(admission.run, /manual-review-enqueue\.js/);
   assert.match(source, /publication_policy.*record_comment_only.*failed_review_shard_recovery/);
-  assert.doesNotMatch(source, /AUTO_IMPLEMENT|dispatch-issue-implementation/);
+  assert.doesNotMatch(source, /AUTO_IMPLEMENT_ISSUES/);
 });
 
 for (const targetBranch of ["release/proof", ""]) {

@@ -1,7 +1,7 @@
 import { createHash, generateKeyPairSync, sign } from "node:crypto";
 import { createServer } from "node:http";
 import { executeReviewProof } from "../dashboard/review-proof-execution.ts";
-import { proofFixture } from "./helpers/command-proof-fixtures.ts";
+import { proofFixture } from "./helpers/review-proof-fixtures.ts";
 import { requestReviewProof } from "../dist/review-proof-client.js";
 import { REVIEW_PROOF_PRODUCER_ENDPOINT } from "../dashboard/review-proof-producer-auth.ts";
 import { stableJson } from "../src/stable-json.ts";

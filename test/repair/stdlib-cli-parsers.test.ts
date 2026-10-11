@@ -1,18 +1,13 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
 const entries = {
   actionLedger: path.resolve("dist/repair/action-ledger-cli.js"),
   publishMain: path.resolve("dist/repair/publish-main.js"),
-  collectCodexDebug: path.resolve("dist/repair/collect-codex-debug.js"),
   deadLetter: path.resolve("scripts/exact-review-dead-letter-operator.mjs"),
   hydrateState: path.resolve("scripts/hydrate-state.ts"),
-  automerge: path.resolve("scripts/e2e/automerge.mjs"),
-  automergeContainer: path.resolve("scripts/e2e/automerge-container.mjs"),
 };
 
 for (const edge of [
@@ -49,22 +44,6 @@ for (const edge of [
     missing: ["--state-dir"],
     missingMessage: "--state-dir requires a value",
   },
-  {
-    name: "automerge E2E",
-    entry: entries.automerge,
-    unknown: ["--unknown"],
-    unknownMessage: "unknown option: --unknown; use --help for usage",
-    missing: ["--scenario"],
-    missingMessage: "--scenario requires a value",
-  },
-  {
-    name: "automerge container E2E",
-    entry: entries.automergeContainer,
-    unknown: ["--unknown"],
-    unknownMessage: "unknown option: --unknown; use --help for usage",
-    missing: ["--scenario"],
-    missingMessage: "--scenario requires a value",
-  },
 ]) {
   test(`${edge.name} preserves unknown-option and missing-value errors`, () => {
     const unknown = run(edge.entry, edge.unknown);
@@ -76,29 +55,6 @@ for (const edge of [
     assert.match(missing.stderr, new RegExp(escapeRegex(edge.missingMessage)));
   });
 }
-
-test("collect-codex-debug preserves permissive unknown and missing-value defaults", () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-collect-parser-"));
-  try {
-    const unknown = run(
-      entries.collectCodexDebug,
-      ["--unknown", "ignored", "--codex-home", path.join(root, "missing"), "--out", "out"],
-      root,
-    );
-    assert.equal(unknown.status, 0, unknown.stderr);
-    assert.equal(JSON.parse(unknown.stdout).out_dir, "out");
-
-    const missing = run(
-      entries.collectCodexDebug,
-      ["--codex-home", path.join(root, "missing"), "--out"],
-      root,
-    );
-    assert.equal(missing.status, 0, missing.stderr);
-    assert.equal(JSON.parse(missing.stdout).out_dir, ".clawsweeper-repair/codex-debug");
-  } finally {
-    fs.rmSync(root, { recursive: true, force: true });
-  }
-});
 
 function run(entry: string, args: string[], cwd = process.cwd()) {
   return spawnSync(process.execPath, [entry, ...args], { cwd, encoding: "utf8" });

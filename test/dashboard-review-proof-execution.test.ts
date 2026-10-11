@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { executeReviewProof, type InlineProofIO } from "../dashboard/review-proof-execution.ts";
-import { proofFixture, replaceProofEvidence, digest } from "./helpers/command-proof-fixtures.ts";
+import { proofFixture, replaceProofEvidence, digest } from "./helpers/review-proof-fixtures.ts";
 import { readReviewProofZip } from "../dashboard/review-proof-zip.ts";
 
 async function fixture(web = false) {

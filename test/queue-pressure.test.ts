@@ -207,13 +207,7 @@ test("worker limits scale every background lane and leave priority lanes unchang
     );
   }
 
-  const priorityLanes: WorkerLane[] = [
-    "repair",
-    "automerge_repair",
-    "issue_implementation",
-    "cluster_repair",
-    "exact_item",
-  ];
+  const priorityLanes: WorkerLane[] = ["exact_item"];
   for (const lane of priorityLanes) {
     assert.equal(workerLimit(lane, { pressureLevel: "hard" }), workerLimit(lane));
     assert.equal(workerLimit(lane, { pressureLevel: "unknown" }), workerLimit(lane));

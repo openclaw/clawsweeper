@@ -78,7 +78,7 @@ Updates test support.
   assert.ok(truncated.includes(metric.value));
 });
 
-test("security-needs-attention reports block unopted repair and automerge pass markers", () => {
+test("security-needs-attention reports stay blocked regardless of historical repair labels", () => {
   const securitySection = `
 ## Security Review
 
@@ -156,10 +156,12 @@ ${securitySection}
 `);
 
   assert.match(autofixRepairMarkers, /clawsweeper-security:security-sensitive/);
-  assert.match(autofixRepairMarkers, /clawsweeper-verdict:needs-changes/);
-  assert.match(autofixRepairMarkers, /clawsweeper-action:fix-required/);
-  assert.match(autofixRepairMarkers, /finding=security-review/);
-  assert.doesNotMatch(autofixRepairMarkers, /clawsweeper-verdict:needs-human/);
+  assert.match(autofixRepairMarkers, /clawsweeper-verdict:needs-human/);
+  assert.doesNotMatch(
+    autofixRepairMarkers,
+    /clawsweeper-action:fix-required|finding=security-review/,
+  );
+  assert.doesNotMatch(autofixRepairMarkers, /clawsweeper-verdict:needs-changes/);
   assert.doesNotMatch(autofixRepairMarkers, /clawsweeper-verdict:pass/);
 
   const automergeMarkers = reviewAutomationMarkersFromReport(`${reportFrontMatter(
@@ -188,11 +190,12 @@ ${securitySection}
 `);
 
   assert.match(automergeMarkers, /clawsweeper-security:security-sensitive/);
-  assert.match(automergeMarkers, /clawsweeper-verdict:needs-changes/);
-  assert.match(automergeMarkers, /clawsweeper-action:fix-required/);
-  assert.match(automergeMarkers, /finding=security-review/);
-  assert.doesNotMatch(automergeMarkers, /clawsweeper-verdict:pass/);
-  assert.doesNotMatch(automergeMarkers, /clawsweeper-verdict:needs-human/);
+  assert.match(automergeMarkers, /clawsweeper-verdict:needs-human/);
+  assert.doesNotMatch(automergeMarkers, /clawsweeper-action:fix-required|finding=security-review/);
+  assert.doesNotMatch(
+    automergeMarkers,
+    /clawsweeper-verdict:pass|clawsweeper-verdict:needs-changes/,
+  );
 });
 
 test("pull request keep-open review comments suppress duplicate remaining risk text", () => {
@@ -895,7 +898,7 @@ Full review comments:
 
   const markers = reviewAutomationMarkersFromReport(markdown);
   assert.match(markers, /clawsweeper-verdict:needs-changes/);
-  assert.match(markers, /clawsweeper-action:fix-required/);
+  assert.doesNotMatch(markers, /clawsweeper-action:fix-required/);
   assert.match(markers, /item=74065/);
   assert.match(markers, /sha=abc123def456abc123def456abc123def456abcd/);
 });

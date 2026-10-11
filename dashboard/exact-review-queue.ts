@@ -17,7 +17,6 @@ import {
   type TerminalReviewFailureReason as ExactReviewFailureReason,
 } from "../src/exact-review-failure-reason.ts";
 import { REVIEW_PROOF_RESULT_MAX_BYTES } from "../src/review-proof-limits.ts";
-import { CommandProofRequestStore } from "./command-proof-requests.ts";
 import {
   parseReviewProofLease,
   parseReviewProofRequest,
@@ -1013,8 +1012,6 @@ export class ExactReviewQueue {
     this.statsComputation = null;
   }
 
-  private readonly commandProofStore: CommandProofRequestStore;
-
   private reviewCoverageCache: { at: number; summary: ReviewCoverageSummary } | null = null;
   // Back off a wedged Bay row without adding durable queue state. Any durable
   // progress clears this single-slot deadline so the one-second drain resumes.
@@ -1050,7 +1047,6 @@ export class ExactReviewQueue {
     this.reviewLoopStore = new ExactReviewReviewLoopStore(this.storage);
     this.githubEgressTelemetryStore = new GithubEgressTelemetryStore(this.storage);
     this.commandIntakeStore = new ExactReviewCommandIntakeStore(this.storage);
-    this.commandProofStore = new CommandProofRequestStore(this.storage);
     this.artifactReceiptStore = new ExactReviewArtifactReceiptStore(
       this.storage,
       env.STATE_SNAPSHOTS,
@@ -1396,25 +1392,6 @@ export class ExactReviewQueue {
           targetBranch: decision.targetBranch,
         },
       });
-    }
-    if (request.method === "POST" && url.pathname.startsWith("/command-proof/")) {
-      const body = objectValue(await request.json().catch(() => null));
-      const now = Date.now();
-      if (url.pathname === "/command-proof/claim") {
-        const result = this.commandProofStore.claim(body.claim, now, body.batch === true);
-        return json({ ok: true, ...result });
-      }
-      if (url.pathname === "/command-proof/pending")
-        return json({ ok: true, records: this.commandProofStore.pending(now) });
-      if (url.pathname === "/command-proof/get" && /^[0-9a-f]{64}$/.test(String(body.requestId))) {
-        const record = this.commandProofStore.get(String(body.requestId));
-        return json({ ok: true, record });
-      }
-      if (url.pathname === "/command-proof/update") {
-        const record = this.commandProofStore.update(body, now);
-        return record ? json({ ok: true, record }) : json({ error: "invalid_proof_update" }, 409);
-      }
-      return json({ error: "invalid_proof_request" }, 400);
     }
     if (request.method === "POST" && url.pathname === "/github-egress-telemetry") {
       const now = Date.now();
@@ -1818,9 +1795,7 @@ export class ExactReviewQueue {
         return json({ error: "manual_publication_admission_disabled" }, 409);
       }
       const scheduledLane = exactReviewScheduledLane(decision);
-      const storesAdmissionReceipt = Boolean(
-        scheduledLane || manualAdmission || decision.sourceAction === "command_proof_result",
-      );
+      const storesAdmissionReceipt = Boolean(scheduledLane || manualAdmission);
       const bodyFingerprintHeader = request.headers.get(
         EXACT_REVIEW_AUTHENTICATED_BODY_FINGERPRINT_HEADER,
       );
@@ -1897,8 +1872,6 @@ export class ExactReviewQueue {
           if (!storedDispositionJson) return { deduped: true as const };
           const disposition = exactReviewScheduledDispositionFromJson(storedDispositionJson);
           if (!disposition) return { deduped: true as const };
-          if ("queued" in disposition && disposition.queued === true)
-            this.commandProofStore.completeAdmittedReviewSync(deliveryId, decision);
           return {
             replayed: true as const,
             disposition,
@@ -2275,23 +2248,6 @@ export class ExactReviewQueue {
               authenticatedBodyFingerprint,
               disposition,
             ),
-          };
-        }
-        if (
-          current &&
-          (current.reviewRetryPolicyEpoch || DEFAULT_EXACT_REVIEW_RETRY_POLICY_EPOCH) ===
-            exactReviewRetryPolicyEpoch(this.env) &&
-          isSameEndorContinuationReview(current, decision)
-        ) {
-          // Persist lease reclamation even when this delivery adds no new work.
-          this.writeStateSync(state);
-          this.incrementQueueMetricsSync({ reviewSemanticDeduped: 1 });
-          return {
-            deduped: true as const,
-            semantic: true as const,
-            key,
-            state,
-            semanticDuplicatesRemoved: 0,
           };
         }
         let supersededRunId: string | null = null;
@@ -2757,7 +2713,6 @@ export class ExactReviewQueue {
               superseded_publications: supersededPublications,
             })
           : null;
-        this.commandProofStore.completeAdmittedReviewSync(deliveryId, decision);
         return {
           deduped: false as const,
           key,
@@ -11386,7 +11341,6 @@ export class ExactReviewQueue {
   private async initializeStorage() {
     this.ensureStorageSchemaSync();
     this.commandIntakeStore.ensureSchemaSync();
-    this.commandProofStore.ensureSchemaSync();
     this.batchStore.ensureSchemaSync();
     this.directPublicationStore.ensureSchemaSync();
     this.recordSnapshotStore.ensureSchemaSync();
@@ -16075,9 +16029,6 @@ function exactReviewInputIdentityChanged(
       ? stableJson({
           commandStatusMarker: decision.commandStatusMarker ?? null,
           statusCommentId: decision.statusCommentId ?? null,
-          sourceDeliveryId: hasEndorContinuationIdentity(decision)
-            ? decision.sourceDeliveryId
-            : null,
           additionalPrompt: decision.additionalPrompt ?? null,
           sourceCommentId: decision.sourceCommentId ?? null,
           sourceCommentUpdatedAt: decision.sourceCommentUpdatedAt ?? null,
@@ -16093,44 +16044,6 @@ function exactReviewInputIdentityChanged(
       stableJson(exactReviewProofAllowedScenarios(nextDecision)) ||
     commandIdentity(priorDecision) !== commandIdentity(nextDecision)
   );
-}
-
-function hasEndorContinuationIdentity(decision: ExactReviewDecision) {
-  return (
-    decision.targetRepo === "openclaw/endor-clawsweeper-e2e" &&
-    decision.itemKind === "pull_request" &&
-    !decision.publication &&
-    /^endor-review-revision:[0-9a-f]{64}$/.test(String(decision.sourceDeliveryId ?? "")) &&
-    new RegExp(
-      `^<!-- clawsweeper-command-status:${decision.itemNumber}:(?:autofix|automerge):[0-9a-f]{40} -->$`,
-    ).test(String(decision.commandStatusMarker ?? "")) &&
-    (decision.statusCommentId === undefined ||
-      (Number.isSafeInteger(decision.statusCommentId) && Number(decision.statusCommentId) > 0))
-  );
-}
-
-function isSameEndorContinuationReview(
-  current: ExactReviewQueueItem,
-  incoming: ExactReviewDecision,
-) {
-  if (
-    current.terminalFinalization ||
-    exactReviewQueueIsPublication(current) ||
-    !hasEndorContinuationIdentity(current.decision) ||
-    incoming.sourceEvent !== "issues" ||
-    incoming.sourceAction !== "legacy_dispatch" ||
-    !hasEndorContinuationIdentity(incoming)
-  ) {
-    return false;
-  }
-  const merged = mergePendingExactReviewDecision(current.decision, incoming);
-  // PR-event coalescing retains the semantic revision but changes the action.
-  // A continuation's transport action is not a new source for that owner.
-  merged.sourceAction = current.decision.sourceAction;
-  // The first dispatch may precede status-comment creation. Resolving its
-  // unchanged marker's address later must not replace the admitted owner.
-  if (current.decision.statusCommentId === undefined) delete merged.statusCommentId;
-  return !exactReviewInputIdentityChanged(current.decision, merged);
 }
 
 function exactReviewRetryIdentityChanged(

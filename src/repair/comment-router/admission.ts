@@ -101,33 +101,26 @@ export function isGitHubAppIntegrationAuthError(message: JsonValue) {
 
 export function parseCommand(body: string) {
   if (isProofNudgeCommentBody(body)) return null;
-  const commandLine = extractClawSweeperCommandLine(body);
-  if (!commandLine) return null;
-  const command = commandFromText(commandLine.trigger, commandLine.commandText);
-  if (!commandLine.supportsContinuation) return command;
-  const rest = commandLine.rest;
-  if (command.intent === "request_proof" && rest) {
-    command.proof_command_text += "\n" + rest;
+  const line = extractClawSweeperCommandLine(body);
+  if (!line) return null;
+  const raw = line.commandText.trim();
+  const command = raw.toLowerCase().replace(/[.!]+$/g, "");
+  const parsed: LooseRecord = { trigger: line.trigger, command, intent: "retired" };
+  if (isClawSweeperReReviewCommandText(command)) {
+    parsed.intent = "re_review";
+    const prompt = reviewPromptFromClawSweeperCommandText(raw);
+    if (prompt) parsed.freeform_prompt = prompt;
+  } else if (["stop", "pause", "human review", "handoff"].includes(command)) {
+    parsed.intent = "stop";
+  } else if (["explain", "why"].includes(command)) {
+    parsed.intent = "explain";
+  } else if (["help", "?"].includes(command)) {
+    parsed.intent = "help";
   }
-  if (command.intent !== "freeform_assist") {
-    if (command.intent === "implement_issue" && rest) {
-      return commandFromText(
-        commandLine.trigger,
-        `${issueImplementationRestPrefix(command)}\n${rest}`,
-      );
-    }
-    if (command.intent === "automerge" && rest) {
-      command.automerge_instructions = rest;
-      return command;
-    }
-    if (commandLine.trigger === "mention" && command.command === "status" && rest) {
-      return commandFromText(commandLine.trigger, rest);
-    }
-    return command;
+  if (line.supportsContinuation && line.rest && command === "status") {
+    return parseCommand(`@clawsweeper ${line.rest}`);
   }
-  return commandLine.trigger === "mention" && rest
-    ? commandFromText(commandLine.trigger, `${commandLine.commandText}\n${rest}`)
-    : command;
+  return parsed;
 }
 
 export function parseTrustedAutomation(
@@ -208,15 +201,6 @@ export function parseTrustedAutomation(
     });
   }
   if (verdict && ["pass", "approved", "no-changes"].includes(verdict.action)) {
-    const liveVerification = markerLiveVerificationState(verdict);
-    if (liveVerification === "failed" || liveVerification === "malformed") {
-      return trustedCommand("clawsweeper_needs_human", {
-        author,
-        reason: `attached live verification is ${liveVerification}`,
-        marker: verdict,
-      });
-    }
-    if (liveVerification === "unknown") return null;
     return trustedCommand("clawsweeper_auto_merge", {
       author,
       reason: `structured ClawSweeper verdict: ${verdict.action}${markerReasonSuffix(verdict.attrs)}`,
@@ -551,8 +535,8 @@ export function parseRoutedCommentCommand(
 ) {
   if (isAssistPublicationCommentBody(String(comment?.body ?? ""))) return null;
   if (isTrustedReviewStartStatusComment({ comment, trustedAuthors })) return null;
-  const trusted = parseTrustedAutomation(comment, { trustedAuthors });
-  if (trusted) return trusted;
+  // Structured bot feedback remains readable as history, but never becomes a command.
+  if (trustedAuthors.has(String(comment?.user?.login ?? "").toLowerCase())) return null;
   return parseCommand(String(comment?.body ?? ""));
 }
 
@@ -623,160 +607,6 @@ function compactReason(value: JsonValue, max = 300) {
   if (!text) return "";
   if (text.length <= max) return text;
   return `${text.slice(0, Math.max(0, max - 1)).trimEnd()}...`;
-}
-
-function commandFromText(trigger: JsonValue, value: JsonValue) {
-  const rawText = String(value ?? "status").trim();
-  const rawCommand = rawText.replace(/\s+/g, " ");
-  const rawNormalized = rawCommand.toLowerCase();
-  const command = normalizeCommandForIntent(rawNormalized);
-  let intent = normalizeIntent(command);
-  if (
-    trigger === "mention" &&
-    intent === "help" &&
-    !["", "help", "?", "help.", "help!", "help?"].includes(rawNormalized)
-  ) {
-    intent = "freeform_assist";
-  }
-  const parsedCommand =
-    intent === "freeform_assist" || intent === "autoclose" || intent === "visualize"
-      ? rawNormalized
-      : command;
-  const parsed: LooseRecord = { trigger, command: parsedCommand, intent };
-  if (intent === "autoclose") parsed.autoclose_message = autocloseReasonFromCommand(rawCommand);
-  if (intent === "freeform_assist") parsed.freeform_prompt = assistPromptFromCommand(rawCommand);
-  if (intent === "request_proof") parsed.proof_command_text = rawText;
-  if (intent === "re_review") {
-    const prompt = reviewPromptFromClawSweeperCommandText(rawText);
-    if (prompt) parsed.freeform_prompt = prompt;
-  }
-  if (intent === "visualize") parsed.visual_lens = visualLensFromCommand(rawCommand);
-  if (intent === "implement_issue") {
-    parsed.implementation_prompt = implementationPromptFromCommand(rawText);
-    if (isIssueImplementationOverride(rawCommand)) parsed.operator_override = true;
-  }
-  return parsed;
-}
-
-function normalizeCommandForIntent(command: string) {
-  if (command === "?" || command.startsWith("autoclose ")) return command;
-  return command.replace(/[.!]+$/g, "");
-}
-
-export function autocloseReasonFromCommand(command: LooseRecord) {
-  const match = String(command ?? "")
-    .trim()
-    .match(/^autoclose(?:\s+([\s\S]+))?$/i);
-  return String(match?.[1] ?? "").trim();
-}
-
-function implementationPromptFromCommand(command: LooseRecord) {
-  return String(command ?? "")
-    .trim()
-    .replace(
-      /^(?:implement|build(?:\s+override)?|create\s+pr|open\s+pr|fix\s+issue|fix)\b[:\s-]*/i,
-      "",
-    )
-    .trim();
-}
-
-function isIssueImplementationOverride(command: string) {
-  return /^build\s+override(?:\s|$)/i.test(command.trim());
-}
-
-function assistPromptFromCommand(command: LooseRecord) {
-  const prompt = String(command ?? "").trim();
-  return prompt.replace(/^(?:ask|explain)\b[:\s-]*/i, "").trim() || prompt;
-}
-
-export const VISUAL_LENSES = new Set([
-  "ux",
-  "flow",
-  "state",
-  "data",
-  "proof",
-  "risk",
-  "maintainer",
-]);
-
-function visualLensFromCommand(command: LooseRecord) {
-  const lens =
-    String(command ?? "")
-      .trim()
-      .toLowerCase()
-      .replace(/^visuali[sz]e\b[:\s-]*/i, "")
-      .split(/\s+/)[0] ?? "";
-  return VISUAL_LENSES.has(lens) ? lens : "auto";
-}
-
-function issueImplementationRestPrefix(command: LooseRecord) {
-  return command.command === "fix" ? "fix issue" : command.command;
-}
-
-function normalizeIntent(command: LooseRecord) {
-  if (!command || command === "status") return "status";
-  if (command === "proof" || command.startsWith("proof ")) return "request_proof";
-  if (["help", "?"].includes(command)) return "help";
-  if (["explain", "why"].includes(command)) return "explain";
-  if (
-    command === "ask" ||
-    command.startsWith("ask ") ||
-    command.startsWith("explain ") ||
-    command.startsWith("why ")
-  ) {
-    return "freeform_assist";
-  }
-  if (
-    command === "visualize" ||
-    command === "visualise" ||
-    command.startsWith("visualize ") ||
-    command.startsWith("visualise ")
-  ) {
-    return "visualize";
-  }
-  if (["fix ci", "fix-ci", "ci", "repair ci", "repair checks", "fix checks"].includes(command))
-    return "fix_ci";
-  if (["address review", "address-review", "fix review"].includes(command)) return "address_review";
-  if (
-    command === "implement" ||
-    command.startsWith("implement ") ||
-    command === "build" ||
-    command.startsWith("build ") ||
-    command === "create pr" ||
-    command.startsWith("create pr ") ||
-    command === "open pr" ||
-    command.startsWith("open pr ") ||
-    command === "fix" ||
-    command === "fix issue" ||
-    command.startsWith("fix issue ")
-  ) {
-    return "implement_issue";
-  }
-  if (isClawSweeperReReviewCommandText(command)) return "re_review";
-  if (["rebase", "update branch", "sync"].includes(command)) return "rebase";
-  if (["autofix", "auto fix", "fix when needed", "repair only", "autofix on"].includes(command)) {
-    return "autofix";
-  }
-  if (
-    [
-      "automerge",
-      "auto-merge",
-      "auto merge",
-      "merge when clean",
-      "merge when ready",
-      "automerge on",
-      "auto-merge on",
-      "auto merge on",
-    ].includes(command)
-  ) {
-    return "automerge";
-  }
-  if (["approve", "approve automerge", "approve merge", "merge"].includes(command)) {
-    return "maintainer_approve_automerge";
-  }
-  if (command === "autoclose" || command.startsWith("autoclose ")) return "autoclose";
-  if (["stop", "pause", "human review", "handoff"].includes(command)) return "stop";
-  return "help";
 }
 
 function trustedCommand(
@@ -914,11 +744,7 @@ export function latestTrustedExactHeadReview({
       if (verdict && String(verdict.attrs.sha ?? "") === headSha) {
         const liveVerification = markerLiveVerificationState(verdict);
         review = {
-          decision:
-            ["pass", "approved", "no-changes"].includes(verdict.action) &&
-            liveVerification === "unknown"
-              ? "legacy"
-              : "non_landing",
+          decision: "non_landing",
           liveVerification,
           command: null,
           commentCreatedAt,

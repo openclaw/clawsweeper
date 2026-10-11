@@ -4,11 +4,6 @@ import {
   type InlineProofScenario,
 } from "../src/repair/direct-re-review-admission.ts";
 import {
-  COMMAND_PROOF_BATCH_CONTEXT_MAX,
-  COMMAND_PROOF_SOURCE_ACTION,
-  commandProofBatchBinding,
-} from "../src/command-proof-contract.ts";
-import {
   decisionPublicationPolicy,
   MANUAL_REVIEW_SOURCE_ACTION,
   type PublicationPolicy,
@@ -475,10 +470,7 @@ export function exactReviewBaseDecisionFrom(value: unknown): ExactReviewBaseDeci
   if (
     hasAdditionalPrompt &&
     (typeof additionalPrompt !== "string" ||
-      additionalPrompt.length >
-        (sourceAction === "command_proof_result" && commandProofBatchBinding(additionalPrompt)
-          ? COMMAND_PROOF_BATCH_CONTEXT_MAX
-          : EXACT_REVIEW_ADDITIONAL_PROMPT_MAX_CHARS) ||
+      additionalPrompt.length > EXACT_REVIEW_ADDITIONAL_PROMPT_MAX_CHARS ||
       additionalPrompt.includes("\0"))
   ) {
     return null;
@@ -788,8 +780,8 @@ export function mergePendingExactReviewDecision(
   // ordinary event keeps the command lifecycle, but must not reuse proof
   // evidence. An explicitly supplied successor prompt remains its own input.
   if (
-    current.sourceAction === COMMAND_PROOF_SOURCE_ACTION &&
-    next.sourceAction !== COMMAND_PROOF_SOURCE_ACTION &&
+    current.sourceAction === "command_proof_result" &&
+    next.sourceAction !== "command_proof_result" &&
     !Object.hasOwn(next, "additionalPrompt")
   ) {
     delete merged.additionalPrompt;

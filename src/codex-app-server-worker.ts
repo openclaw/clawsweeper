@@ -1,5 +1,4 @@
 import { errorMessage } from "./value-coerce.js";
-import { createCodexWorkStatePublisher } from "./codex-work-state.js";
 import {
   existsSync,
   mkdirSync,
@@ -35,10 +34,6 @@ import {
 interface AppServerOptions {
   statePath: string;
   reviewProof?: ReviewProofCapability;
-  label?: string;
-  runnerPtyUrl?: string;
-  workStateUrl?: string;
-  agentToken?: string;
 }
 
 interface WorkerOptions {
@@ -138,28 +133,12 @@ let turnId = "";
 let finalMessage = "";
 let turnStatus = "";
 let turnStarted: Promise<Record<string, unknown>> | undefined;
-let turnActivation: Promise<void> | undefined;
 let turnCompleted = false;
 let settled = false;
 let decisionRepairError = "";
 let terminating = false;
 let forceKillTimer: NodeJS.Timeout | undefined;
-let terminal: WebSocket | null = null;
-let terminalInput = "";
-let heartbeat: NodeJS.Timeout | undefined;
 const proofAbort = new AbortController();
-const publishWorkState = createCodexWorkStatePublisher({
-  url: options.appServer.workStateUrl,
-  token: options.appServer.agentToken,
-  signal: proofAbort.signal,
-  deadlineAt: reviewDeadline,
-  onError: (error) => {
-    appendCodexOutputCapture(
-      stderr,
-      Buffer.from(`CrabFleet work-state update failed: ${errorMessage(error)}\n`),
-    );
-  },
-});
 const proofCalls = new Set<string>();
 let proofBusy = false;
 const timeout = setTimeout(() => {
@@ -231,17 +210,8 @@ try {
     ...(sessionId ? { sessionId } : {}),
     updatedAt: new Date().toISOString(),
   });
-  connectTerminal();
-  startHeartbeat();
-  await updateWorkState("running", "codex", "Codex turn starting");
   turnStarted = startTurn(prompt);
   await turnStarted;
-  await turnActivation;
-  if (!turnCompleted)
-    terminalWrite(
-      `\r\n[ClawSweeper] ${options.appServer.label ?? "Codex"} active` +
-        `${turnId ? ` (${turnId})` : ""}. Type a message and press Enter to steer.\r\n\r\n`,
-    );
 } catch (error) {
   await finish(1, null, error instanceof Error ? error : new Error(String(error)));
 }
@@ -301,8 +271,11 @@ async function resumeThread(previousThreadId: string): Promise<Record<string, un
       ...(execOptions.effort ? { config: { model_reasoning_effort: execOptions.effort } } : {}),
     });
   } catch (error) {
-    terminalWrite(
-      `\r\n[ClawSweeper] Stored Codex thread unavailable; starting a new thread: ${errorMessage(error)}\r\n`,
+    appendCodexOutputCapture(
+      stderr,
+      Buffer.from(
+        `Stored Codex thread unavailable; starting a new thread: ${errorMessage(error)}\n`,
+      ),
     );
     return startThread();
   }
@@ -389,22 +362,16 @@ async function handleRpcMessage(message: RpcMessage): Promise<void> {
       const result = message.result ?? {};
       if (waiter.method === "turn/start") {
         turnId = stringAt(result, ["turn", "id"]);
-        turnActivation = updateWorkState("running", "codex", "Codex turn active");
       }
       waiter.resolve(result);
     }
     return;
   }
   // A single stdout chunk can contain both the start response and turn events.
-  // Register the turn and enqueue its active state before consuming those events.
+  // Register the turn before consuming events from the same chunk.
   if (!turnStarted) return;
   await turnStarted;
   if (settled || turnCompleted) return;
-  if (message.method === "item/agentMessage/delta") {
-    const delta = typeof message.params?.delta === "string" ? message.params.delta : "";
-    terminalWrite(delta);
-    return;
-  }
   if (message.method === "item/completed") {
     const item = recordAt(message.params, ["item"]);
     if (item?.type === "agentMessage" && typeof item.text === "string") {
@@ -416,7 +383,6 @@ async function handleRpcMessage(message: RpcMessage): Promise<void> {
   const turn = recordAt(message.params, ["turn"]);
   if (turnId && turn?.id !== turnId) return;
   turnCompleted = true;
-  if (heartbeat) clearInterval(heartbeat);
   turnStatus = typeof turn?.status === "string" ? turn.status : "";
   const failed = turnStatus !== "completed";
   // Codex clears partial messages on failed/interrupted turns. Only confirmed
@@ -437,7 +403,6 @@ async function handleRpcMessage(message: RpcMessage): Promise<void> {
     turnId = "";
     turnStatus = "";
     turnCompleted = false;
-    startHeartbeat();
     turnStarted = startTurn(decisionRepairPrompt(repairError));
     await turnStarted;
     return;
@@ -463,15 +428,7 @@ async function handleRpcMessage(message: RpcMessage): Promise<void> {
         : { encoding: "utf8", flag: "wx", mode: 0o600 },
     );
   }
-  terminalWrite(
-    `\r\n\r\n[ClawSweeper] Codex turn ${turnStatus || "finished"}. Deterministic repair gates continue in GitHub Actions.\r\n`,
-  );
   clearTimeout(timeout);
-  await updateWorkState(
-    failed ? "blocked" : "running",
-    failed ? "codex_failed" : "validating",
-    failed ? `Codex turn ${turnStatus || "failed"}` : "Codex turn complete; validating result",
-  );
   await finish(failed ? 1 : 0, null, failed ? turnFailureError(turn) : undefined);
 }
 
@@ -496,98 +453,11 @@ function notify(method: string): void {
   child.stdin.write(`${JSON.stringify({ method })}\n`);
 }
 
-function connectTerminal(): void {
-  const url = options.appServer.runnerPtyUrl?.trim();
-  if (!url) return;
-  try {
-    terminal = new WebSocket(url);
-    terminal.binaryType = "arraybuffer";
-    terminal.addEventListener("open", () => {
-      terminalWrite(`\r\n[ClawSweeper] GitHub Actions session connected. Thread ${threadId}.\r\n`);
-    });
-    terminal.addEventListener("message", (event) => void handleTerminalInput(event.data));
-    terminal.addEventListener("error", () => {
-      appendCodexOutputCapture(stderr, Buffer.from("CrabFleet terminal bridge error.\n"));
-    });
-  } catch (error) {
-    appendCodexOutputCapture(
-      stderr,
-      Buffer.from(`CrabFleet terminal bridge failed: ${errorMessage(error)}\n`),
-    );
-  }
-}
-
-async function handleTerminalInput(data: string | ArrayBuffer | Blob): Promise<void> {
-  const text =
-    typeof data === "string"
-      ? data
-      : data instanceof Blob
-        ? await data.text()
-        : new TextDecoder().decode(data);
-  for (const char of text) {
-    if (char === "\u0003") {
-      if (threadId && turnId) {
-        await request("turn/interrupt", { threadId, turnId }).catch(() => undefined);
-      }
-      continue;
-    }
-    if (char === "\r" || char === "\n") {
-      const instruction = terminalInput.trim();
-      terminalInput = "";
-      if (!instruction) continue;
-      if (!threadId || !turnId || turnStatus) {
-        terminalWrite("\r\n[ClawSweeper] No active steerable Codex turn.\r\n");
-        continue;
-      }
-      terminalWrite(`\r\n[steer] ${instruction}\r\n`);
-      await request("turn/steer", {
-        threadId,
-        expectedTurnId: turnId,
-        input: [{ type: "text", text: instruction }],
-      }).catch((error) => {
-        terminalWrite(`\r\n[ClawSweeper] Steering rejected: ${errorMessage(error)}\r\n`);
-      });
-      continue;
-    }
-    if (char === "\u007f" || char === "\b") {
-      terminalInput = terminalInput.slice(0, -1);
-      continue;
-    }
-    if (char >= " " && terminalInput.length < 8_000) terminalInput += char;
-  }
-}
-
-function startHeartbeat(): void {
-  heartbeat = setInterval(() => {
-    if (turnCompleted || settled) return;
-    void updateWorkState("running", "codex", turnId ? "Codex turn active" : "Codex turn starting");
-    terminalWrite(
-      `\r\n[ClawSweeper] ${new Date().toISOString()} still running; thread ${threadId}, turn ${turnId || "starting"}.\r\n`,
-    );
-  }, 60_000);
-  heartbeat.unref();
-}
-
-function updateWorkState(state: string, phase: string, summary: string): Promise<void> {
-  return publishWorkState({
-    state,
-    phase,
-    summary,
-    ...(threadId ? { codexThreadId: threadId } : {}),
-    ...(turnId ? { codexTurnId: turnId } : {}),
-  });
-}
-
-function terminalWrite(value: string): void {
-  if (terminal?.readyState === WebSocket.OPEN) terminal.send(value);
-}
-
 async function finish(status: number, signal: NodeJS.Signals | null, error?: Error): Promise<void> {
   if (settled) return;
   settled = true;
   proofAbort.abort();
   clearTimeout(timeout);
-  if (heartbeat) clearInterval(heartbeat);
   for (const waiter of pending.values())
     waiter.reject(error ?? new Error("Codex app-server closed."));
   pending.clear();
@@ -601,7 +471,6 @@ async function finish(status: number, signal: NodeJS.Signals | null, error?: Err
     // A closed direct child does not prove that the whole process group exited.
     terminateCodexProcessTree(child, "SIGKILL");
   }
-  terminal?.close(1000, "turn complete");
   closeCodexOutputCapture(stdout);
   closeCodexOutputCapture(stderr);
   writeFileSync(

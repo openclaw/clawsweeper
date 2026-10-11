@@ -1,21 +1,20 @@
 import {
-  COMMAND_PROOF_ARCHIVE_MAX_BYTES,
-  commandProofProfile,
+  REVIEW_PROOF_ARCHIVE_MAX_BYTES,
+  reviewProofProfile,
   proofNumericId,
   proofRecord,
-  type CommandProofClaim,
-} from "./command-proof-contract.ts";
+} from "./review-proof-contract.ts";
+import type { ReviewProofScenario } from "./review-proof-contract.ts";
 
-export type ProofProducerIdentity = Pick<
-  CommandProofClaim,
-  | "requestId"
-  | "repository"
-  | "repositoryId"
-  | "scenario"
-  | "workflowPath"
-  | "workflowRef"
-  | "workflowSha"
->;
+export type ProofProducerIdentity = {
+  requestId: string;
+  repository: string;
+  repositoryId: string;
+  scenario: ReviewProofScenario;
+  workflowPath: string;
+  workflowRef: string;
+  workflowSha: string;
+};
 
 export function proofApiNumericId(value: unknown): string | null {
   const id = typeof value === "number" && Number.isSafeInteger(value) ? String(value) : value;
@@ -36,7 +35,7 @@ export function trustedRun(claim: ProofProducerIdentity, value: unknown): boolea
     (run.path === claim.workflowPath ||
       run.path === claim.workflowPath + "@" + claim.workflowRef) &&
     run.display_title ===
-      commandProofProfile(claim.scenario)?.runName + " [" + claim.requestId + "]" &&
+      reviewProofProfile(claim.scenario)?.runName + " [" + claim.requestId + "]" &&
     run.head_sha === claim.workflowSha &&
     proofApiNumericId(proofRecord(run.repository).id) === claim.repositoryId &&
     proofRecord(run.repository).full_name === claim.repository &&
@@ -60,7 +59,7 @@ export function proofArtifactMetadataMatches(
     artifact.expired === false &&
     Number.isSafeInteger(artifact.size_in_bytes) &&
     artifact.size_in_bytes === byteLength &&
-    byteLength <= COMMAND_PROOF_ARCHIVE_MAX_BYTES &&
+    byteLength <= REVIEW_PROOF_ARCHIVE_MAX_BYTES &&
     proofApiNumericId(producer.id) === proofApiNumericId(run.id) &&
     producer.head_sha === claim.workflowSha &&
     proofApiNumericId(producer.repository_id) === claim.repositoryId &&

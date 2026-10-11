@@ -23,14 +23,12 @@ manual.
 | Add or operate a target repository                  | [Target repositories](target-repositories.md) | [Target dispatcher](target-dispatcher.md)           |
 | Inspect production without mutation                 | [Live dashboard](live-dashboard.md)           | [OpenClaw Bay](openclaw-bay-demo.md)                |
 | Inspect observer routes and configuration ownership | [Public observer API](public-api.md)          | [Operator configuration](operator-configuration.md) |
-| Operate repair or automerge                         | [Repair entry point](repair/README.md)        | [Repair operations](repair/operations.md)           |
 | Prepare proof for a change                          | [Contributing](../CONTRIBUTING.md)            | [Agent instructions](../AGENTS.md)                  |
 | Review a local committed range                      | [Local branch review](commit-sweeper.md)      | `pnpm local-review -- --base origin/main`           |
 
 Production mutation commands are intentionally not repeated here. Follow the
-linked runbook, confirm its status and source of truth, and keep all execution,
-fix, merge, automerge, deployment, and queue gates closed unless the current
-operator has explicit authority to open them.
+linked runbook, confirm its status and source of truth, and keep deployment,
+queue, and apply gates closed unless the current operator has explicit authority.
 
 ## Document lifecycle
 
@@ -59,10 +57,10 @@ everything else requires human comparison with current main.
   ownership
 - [Action ledger](action-ledger.md) — active; mutation receipts and replay
   boundaries
-- [Work lane](work-lane.md) — active; bounded workflow admission
+- [Issue review advisory labels](work-lane.md) — active; structured review labels
 - [Review cache](review-cache.md) — active; reusable review-state contract
 - [GitHub webhook read model](github-webhook-read-model.md) — active; signed
-  ingress, App subscriptions, snapshot freshness, repair, and safety boundary
+  ingress, App subscriptions, snapshot freshness, and safety boundary
 
 ## Configuration and repository onboarding
 
@@ -81,8 +79,6 @@ everything else requires human comparison with current main.
   operator diagnostics
 - [Queue-service split runbook](queue-service-split-runbook.md) — proposed;
   unapproved production migration plan
-- [Repair operations](repair/operations.md) — active; canonical repair operator
-  procedures, trust checks, gates, and token boundaries
 - [Local ClawSweeper skill](local-clawsweeper-skill.md) — active; read-only
   local exact-item or committed-range review
 
@@ -107,8 +103,8 @@ everything else requires human comparison with current main.
 - [PR review comments](pr-review-comments.md) — active; review-thread handling
 - [Related issue discovery](related-issue-discovery.md) — active; duplicate and
   adjacent-report context
-- [Live proof](live-proof.md) — retired for automatic generation;
-  compatibility-only validation, rendering, publication, and retraction
+- [Live proof](live-proof.md) — active inline review proof; retired post-review
+  attachments are ignored without rewriting historical records
 
 `docs/proof/**` contains inspectable artifacts for specific changes. Those
 files support their recorded claim but do not override current runbooks.
@@ -126,25 +122,6 @@ Keep a heavy binary only when an active canonical document embeds or links it,
 or when runtime or test tooling consumes it. Prefer one current compressed
 poster or WebP over accumulated before/after sets.
 
-## Repair and automerge
-
-- [Repair entry point](repair/README.md) — active; concepts, task map, and local
-  command reference
-- [Repair operations](repair/operations.md) — active; canonical operator
-  procedures
-- [Internal feature map](repair/internal-features.md) — active implementation
-  reference, not an operator runbook
-- [Steerable repair architecture](steerable-repair-automation.md) — active;
-  end-to-end protocol and control boundaries
-- [Trusted PR repair](repair/auto-update-prs.md) — active; autofix/automerge
-  contract
-- [Automatic issue PRs](repair/automatic-issue-prs.md) — active; guarded issue
-  implementation intake
-- [Automerge flow](repair/automerge-flow.md) — active; state machine
-- [Automerge proof](repair/automerge-e2e.md) — active; controlled proof harness
-- [Containment validation history](repair/containment-validation-todo.md) —
-  historical; completed July 2026 work
-
 ## Close policy
 
 - [Implemented-on-main paired close policy](implemented-on-main-close-policy.md)
@@ -160,7 +137,6 @@ poster or WebP over accumulated before/after sets.
 
 ## Security and special-purpose surfaces
 
-- [Spam scanner](spam-scanner.md) — active; trust and classification boundary
 - Security-sensitive work must use maintainer security handling rather than a
   normal public PR or public documentation page.
 

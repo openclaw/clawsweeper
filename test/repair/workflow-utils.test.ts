@@ -13,8 +13,6 @@ import {
   automationLimit,
   commentSyncBatchOutput,
   countActions,
-  countCommandActions,
-  countRequeueRequired,
   mergeApplyReports,
   planOutputFields,
   plannedItemNumberCsv,
@@ -360,11 +358,23 @@ test("workflow utilities expose automation limits", () => {
     automationLimit("review_shards.normal_default"),
     AUTOMATION_LIMITS.review_shards.normal_default,
   );
-  assert.equal(
-    automationLimit("repair_live_runs.default"),
-    AUTOMATION_LIMITS.repair_live_runs.default,
-  );
   assert.throws(() => automationLimit("missing.default"), /unknown automation limit/);
+});
+
+test("worker limits retain review and assist quotas without repair lanes", () => {
+  assert.deepEqual(Object.keys(WORKER_CONFIG.lanes).sort(), ["assist", "exact_review"]);
+  assert.deepEqual(AUTOMATION_LIMITS, {
+    audit: { max_parallel_targets: 3 },
+    exact_review: { concurrent_max: 80, target_concurrent_max: 64 },
+    assist: { default: 10 },
+    review_shards: {
+      normal_default: 89,
+      normal_active_floor: 38,
+      hot_intake_default: 44,
+      exact_item_default: 1,
+      hard_cap: 128,
+    },
+  });
 });
 
 test("workflow utilities accept positional automation limit CLI paths", () => {
@@ -434,16 +444,6 @@ test("worker scheduler lets background lanes yield to active work", () => {
     }),
     1,
   );
-  assert.equal(workerLimit("repair"), AUTOMATION_LIMITS.repair_live_runs.default);
-  assert.equal(
-    workerLimit("automerge_repair"),
-    AUTOMATION_LIMITS.repair_live_runs.automerge_default,
-  );
-  assert.equal(
-    workerLimit("issue_implementation"),
-    AUTOMATION_LIMITS.repair_live_runs.issue_implementation_default,
-  );
-  assert.equal(workerLimit("cluster_repair"), AUTOMATION_LIMITS.repair_live_runs.cluster_default);
   assert.equal(workerLimit("assist"), AUTOMATION_LIMITS.assist.default);
   assert.equal(workerLimit("assist", { activeCritical: WORKER_CONFIG.workers.max - 2 }), 2);
 });
@@ -467,14 +467,7 @@ test("workflow worker scheduler applies queue pressure only to background lanes"
       Math.max(1, Math.floor(normalBudget * 0.1)),
     );
   }
-  for (const lane of [
-    "repair",
-    "automerge_repair",
-    "issue_implementation",
-    "cluster_repair",
-    "exact_item",
-    "assist",
-  ] as const) {
+  for (const lane of ["exact_item", "assist"] as const) {
     assert.equal(workerLimit(lane, { pressureLevel: "hard" }), workerLimit(lane));
   }
 });
@@ -503,7 +496,6 @@ test("worker config defaults omitted per-lane overrides", () => {
     }),
   );
 
-  assert.equal(readWorkerConfig(configPath).lanes.repair.cluster_max_live_runs, 1);
   assert.equal(readWorkerConfig(configPath).lanes.exact_review.target_max_concurrent, 16);
 });
 
@@ -1057,58 +1049,6 @@ test("workflow utilities keep all-benign skip windows quiet", () => {
     skipped_not_open: 1,
   });
   assert.deepEqual(summary.attention_reasons, []);
-});
-
-test("workflow utilities count nested command actions by status", () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-workflow-"));
-  const report = path.join(root, "comment-router-latest.json");
-  write(
-    report,
-    JSON.stringify({
-      commands: [
-        {
-          actions: [
-            { action: "dispatch_repair", status: "waiting" },
-            { action: "dispatch_repair", status: "active" },
-            { action: "dispatch_repair", status: "executed" },
-          ],
-        },
-        {
-          actions: [{ action: "dispatch_clawsweeper", status: "waiting" }],
-        },
-      ],
-    }),
-  );
-
-  assert.equal(countCommandActions(report, "dispatch_repair"), 3);
-  assert.equal(countCommandActions(report, "dispatch_repair", "waiting"), 1);
-  assert.equal(countCommandActions(report, "dispatch_repair", "waiting,active"), 2);
-  assert.equal(countCommandActions(report, "dispatch_clawsweeper", "waiting"), 1);
-});
-
-test("workflow utilities count repair results that require requeue", () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-workflow-"));
-  write(
-    path.join(root, "runs/a/result.json"),
-    JSON.stringify({
-      actions: [
-        { action: "repair_contributor_branch", status: "blocked", requeue_required: true },
-        { action: "automerge_repair_outcome_comment", status: "updated" },
-      ],
-    }),
-  );
-  write(
-    path.join(root, "runs/b/result.json"),
-    JSON.stringify({ actions: [{ action: "repair_contributor_branch", status: "pushed" }] }),
-  );
-  write(
-    path.join(root, "runs/c/apply-report.json"),
-    JSON.stringify({
-      actions: [{ action: "close_duplicate", status: "blocked", requeue_required: true }],
-    }),
-  );
-
-  assert.equal(countRequeueRequired(path.join(root, "runs")), 2);
 });
 
 test("workflow utilities merge checkpoint reports in numeric order", () => {

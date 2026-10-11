@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { zip } from "./helpers/command-proof-fixtures.ts";
+import { zip } from "./helpers/review-proof-fixtures.ts";
 import { readReviewProofZip } from "../dashboard/review-proof-zip.ts";
 
 test("Web runtime reads stored and raw-deflated proof ZIP without Node runtime APIs", async () => {

@@ -1161,20 +1161,6 @@ export default {
       return reviewProofRequest(request, env);
     if (url.pathname === "/internal/exact-review/proof/producer" && request.method === "POST")
       return reviewProofProducerRequest(request, env);
-    if (
-      /^\/internal\/command-proof\/(claim|pending|get|update)$/.test(url.pathname) &&
-      request.method === "POST"
-    ) {
-      const declared = Number(request.headers.get("content-length") || "0");
-      if (declared > 128 * 1024) return json({ error: "proof_request_too_large" }, 413);
-      const body = await boundedCommandProofBody(request);
-      if (body === null) return json({ error: "proof_request_too_large_or_invalid" }, 413);
-      return authenticatedExactReviewQueueRequest(
-        new Request(request, { method: "POST", body }),
-        env,
-        url.pathname.slice("/internal".length),
-      );
-    }
     if (url.pathname === "/internal/exact-review/command-intake" && request.method === "POST")
       return authenticatedHostedTargetQueueRequest(request, env, "/command-intake");
     if (

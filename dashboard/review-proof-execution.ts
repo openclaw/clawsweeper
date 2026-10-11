@@ -1,10 +1,11 @@
 import {
-  commandProofProfile,
+  reviewProofProfile,
   parseMantisProofReceipt,
   proofRecord,
   proofSha,
-} from "../src/command-proof-contract.ts";
-import type { CommandProofScenario } from "../src/command-proof-contract.ts";
+  REVIEW_PROOF_RECEIPT_MAX_BYTES,
+} from "../src/review-proof-contract.ts";
+import type { ReviewProofScenario } from "../src/review-proof-contract.ts";
 import {
   proofDigest,
   proofReceiptArtifactName,
@@ -28,7 +29,7 @@ export interface ReviewProofProducer {
 }
 export interface InlineProofRecord {
   requestId: string;
-  scenario: CommandProofScenario;
+  scenario: ReviewProofScenario;
   proofPlan: Record<string, unknown>;
   planSha256: string;
   createdAt: number;
@@ -87,7 +88,7 @@ export async function executeReviewProof(io: InlineProofIO): Promise<Record<stri
     return { state: record.state, result: record.result, reason: record.reason };
   if (Date.now() >= record.expiresAt) return stop("proof_deadline_expired");
   const prefix = "repos/openclaw/openclaw";
-  const profile = commandProofProfile(record.scenario);
+  const profile = reviewProofProfile(record.scenario);
   const web = record.scenario === "web-ui-chat-proof";
   if (
     !profile ||
@@ -231,7 +232,11 @@ export async function executeReviewProof(io: InlineProofIO): Promise<Record<stri
       return stop("untrusted_receipt_archive");
     const receiptFiles = await readProofZip(receiptArchive);
     const receiptBytes = receiptFiles.get("receipt.json");
-    if (receiptFiles.size !== 1 || !receiptBytes || receiptBytes.length > 65536)
+    if (
+      receiptFiles.size !== 1 ||
+      !receiptBytes ||
+      receiptBytes.length > REVIEW_PROOF_RECEIPT_MAX_BYTES
+    )
       return stop("invalid_receipt_inventory");
     const receipt = parseMantisProofReceipt(
       JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(receiptBytes)),

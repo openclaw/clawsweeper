@@ -1,36 +1,32 @@
 import { createHash } from "node:crypto";
 import { deflateRawSync } from "node:zlib";
 import {
-  COMMAND_PROOF_PROFILES,
-  COMMAND_PROOF_SCENARIO,
+  REVIEW_PROOF_PROFILES,
+  REVIEW_PROOF_SCENARIO,
   TELEGRAM_PROOF_SCENARIO,
-  type CommandProofScenario,
-  type CommandProofClaim,
+  type ReviewProofScenario,
   type MantisProofReceipt,
-} from "../../src/command-proof-contract.ts";
+} from "../../src/review-proof-contract.ts";
 import { telegramProofFixture } from "./telegram-proof-fixtures.ts";
-import { telegramQaFiles } from "./telegram-qa-fixtures.ts";
 import {
   proofReceiptArtifactName,
   proofEvidenceArtifactName,
-} from "../../dist/repair/proof-receipt-verification.js";
+} from "../../dashboard/review-proof-artifacts.ts";
 export const digest = (value: string | Buffer) => createHash("sha256").update(value).digest("hex");
 export function proofFixture(
   requestId = "d".repeat(64),
-  scenario: CommandProofScenario = COMMAND_PROOF_SCENARIO,
+  scenario: ReviewProofScenario = REVIEW_PROOF_SCENARIO,
   outcome: "pass" | "fail" = "pass",
   head = "a".repeat(40),
   runId = 300,
 ) {
-  const profile = COMMAND_PROOF_PROFILES[scenario];
-  const workflow = (scenario === COMMAND_PROOF_SCENARIO ? "b" : "e").repeat(40),
+  const profile = REVIEW_PROOF_PROFILES[scenario];
+  const workflow = (scenario === REVIEW_PROOF_SCENARIO ? "b" : "e").repeat(40),
     body =
-      scenario === COMMAND_PROOF_SCENARIO
+      scenario === REVIEW_PROOF_SCENARIO
         ? "Change browser chat rendering."
         : "Change Telegram bot DM handling.";
-  const command = "/clawsweeper proof " + scenario + " " + head;
-  const updatedAt = new Date().toISOString();
-  const claim: CommandProofClaim = {
+  const claim = {
     requestId,
     repository: "openclaw/openclaw",
     repositoryId: "123",
@@ -41,13 +37,9 @@ export function proofFixture(
     targetBranch: "main",
     scenario,
     workflowPath: profile.workflowPath,
-    workflowRef:
-      scenario === COMMAND_PROOF_SCENARIO ? "mantis-proof-v1" : "mantis-telegram-proof-v1",
+    workflowRef: "main",
     workflowSha: workflow,
     harnessSha: workflow,
-    sourceCommentId: "200",
-    sourceCommentUpdatedAt: updatedAt,
-    sourceCommentBodySha256: digest(command),
   };
   const live = {
     repository: { id: 123, full_name: claim.repository, private: false, archived: false },
@@ -59,14 +51,6 @@ export function proofFixture(
       head: { sha: head, repo: { id: 123 } },
       base: { ref: "main", sha: claim.baseSha },
     },
-    comment: {
-      id: 200,
-      body: command,
-      updated_at: updatedAt,
-      user: { type: "User", login: "maintainer" },
-      issue_url: "https://api.github.com/repos/openclaw/openclaw/issues/42",
-    },
-    permission: { permission: "maintain" },
   };
   const run = {
     id: runId,
@@ -91,14 +75,8 @@ export function proofFixture(
         )
       : null;
   const sourceFiles = profile.observations.map(([, file]) => file);
-  const evidenceFiles =
-    scenario === "telegram-markdown-parser-fidelity"
-      ? telegramQaFiles(
-          { requestId, headSha: head, harnessSha: workflow, runId: String(runId) },
-          outcome,
-        )
-      : (telegram?.files ?? new Map(sourceFiles.map((name) => [name, observation])));
-  if (scenario === COMMAND_PROOF_SCENARIO)
+  const evidenceFiles = telegram?.files ?? new Map(sourceFiles.map((name) => [name, observation]));
+  if (scenario === REVIEW_PROOF_SCENARIO)
     evidenceFiles.set(
       "observer.json",
       Buffer.from(
@@ -158,7 +136,7 @@ export function proofFixture(
       authority: "trusted_observer",
     })),
     limits: [
-      scenario === COMMAND_PROOF_SCENARIO
+      scenario === REVIEW_PROOF_SCENARIO
         ? "UI with mocked Gateway only; not live channel or provider proof."
         : profile.scopeNotice,
     ],

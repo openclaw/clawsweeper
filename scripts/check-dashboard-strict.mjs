@@ -20,7 +20,6 @@ export const DASHBOARD_STRICT_BASELINE_FILES = Object.freeze([
   "dashboard/bay-layout.ts",
   "dashboard/bay-page.ts",
   "dashboard/bay-review-status.ts",
-  "dashboard/command-proof-requests.ts",
   "dashboard/dashboard-health.ts",
   "dashboard/dashboard-pages.ts",
   "dashboard/durable-storage.ts",

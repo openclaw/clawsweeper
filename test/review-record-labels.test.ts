@@ -380,7 +380,7 @@ test("typed findings drive the repair marker with the same readiness as the comm
   });
   assert.equal(pullRequestReviewReadinessFromReport(typed).state, "needs-changes");
   const comment = renderReviewCommentFromReport(typed, "none");
-  assert.match(comment, /clawsweeper-action:fix-required/);
+  assert.doesNotMatch(comment, /clawsweeper-action:fix-required/);
   assert.doesNotMatch(comment, /hold=blocked findings=0/);
 });
 

@@ -4,124 +4,41 @@ import { CLAWSWEEPER_APP_LOGIN } from "../clawsweeper-bot-identity.js";
 import fs from "node:fs";
 import path from "node:path";
 import { errorMessage } from "../value-coerce.js";
-import { runCommandResult } from "./command-runner.js";
-import { adaptiveReviewBudgetForPullRequest } from "./adaptive-review-budget.js";
 import {
   AUTOFIX_LABEL,
-  AUTOMERGE_BLOCKING_LABEL_NAMES,
   AUTOMERGE_LABEL,
   HUMAN_REVIEW_LABEL,
   MERGE_READY_LABEL,
 } from "./exact-review-guard-labels.js";
+import { parseArgs } from "./lib.js";
+import { repoRoot } from "./paths.js";
 import {
-  activeRepairWorkflowRunForJobAfterDispatchRecheck,
-  assertLiveWorkerCapacity,
-  parseArgs,
-  parseJob,
-  repairRunNameForJob,
-  repoRoot,
-  validateJob,
-  waitForLiveWorkerCapacity,
-} from "./lib.js";
-import {
-  AUTOCLOSE_INTENTS,
-  MERGE_INTENTS,
-  REPAIR_INTENTS,
-  autoRepairBlockReason,
-  autoRepairHeadKey,
-  automergeGateBlockReason,
-  automergeRequestedByFromBody,
-  automergeReadinessBlockReason,
-  automergeTransientWaitConfig,
-  buildAutomergeMergeArgs,
-  buildAutomergeSquashMessage,
   commandHasAction,
   createCachedIssueCommentsLookup,
   createCachedIssueCommentsLookupAsync,
-  createCachedLabelNumberLookup,
   hasCommandResponseMarker,
   commandStatusMarkerForCommand,
   existingCommandStatusBlocksReplay,
-  existingModeStatusBlocksReplay,
-  existingRepairLoopModeOutcome,
-  issueImplementationLinkedPrSignal,
-  issueImplementationOverrideBlockerClass,
-  pendingRepairLoopOptIns,
-  maintainerModeCommandCanResumePausedMode,
-  repositoryRepairCommandBlockReason,
-  maintainerAutomergeOptInApprovesNeedsHuman as maintainerAutomergeOptInApprovesNeedsHumanReason,
-  latestRepairLoopResumeTime,
-  pausedModeStatusBlocksReplay,
-  reviewOnlyRepairLoopCompletionLabels,
-  reviewOnlyRepairLoopMergeStateBlockReason,
-  reviewOnlyRepairLoopMissingChecks,
-  reviewOnlyRepairLoopPendingChecks,
-  reviewOnlyRepairLoopTerminalChecks,
-  repairLoopPauseLabels,
-  repairLoopStopPauseReason,
-  reviewSummaryFromCommentBody,
-  reviewedHeadShaBlockReason,
   renderResponse,
   staleClosedItemCommandReason,
   shouldClearMaintainerCommandReaction,
-  trustedCloseBlockReason,
-  usesSharedAutomergeStatus,
 } from "./comment-router-core.js";
 import {
-  autocloseReasonFromCommand,
-  freshExactHeadReviewStartLease,
   isAllowedMutationActor,
   isAuthorReadOnlyCommandAllowed,
   isGitHubAppIntegrationAuthError,
   isMaintainerCommandAllowed,
   isTrustedStatusCommentAuthor,
-  latestTrustedExactHeadReview,
   parseRoutedCommentCommand,
-  parseTrustedAutomation,
-  readRepairLoopComments,
-  trustedAutomationPredatesReviewStartLease,
-  trustedExactHeadReviewCompletionSince,
 } from "./comment-router/admission.js";
-import {
-  automergeClusterId,
-  automergeFailedChecksRepairReason,
-  automergeJobPath,
-  automergeJobRepairPlan,
-  automergeMergeFailureRepairReason,
-  automergeReadinessRepairReason,
-  automergeRebaseRepairReason,
-  buildClawSweeperAssistDispatchPayload,
-  dispatchClaimDecision,
-  dispatchClaimLookupKeys,
-  endorReviewRevisionDeliveryId,
-  hasSuccessfulDispatchExecutionJob,
-  issueImplementationClusterId,
-  issueImplementationJobPath,
-  repairableCheckBlockers,
-  renderAutomergeJob,
-  renderIssueImplementationJob,
-  routerDispatchReceiptKey,
-  selectPullRepairJob,
-  syncAutomergeJobRepairMode,
-} from "./comment-router/dispatch.js";
+import { dispatchClaimLookupKeys, routerDispatchReceiptKey } from "./comment-router/dispatch.js";
 import { planCommandAckConvergence } from "./command-ack-convergence.js";
 import {
-  hasAutomergeCommandStatusMarker,
   commandAckMarker,
   commandAckMarkerFromBody,
   commandResponseMarker,
   commandStatusMarkerFromBody,
-  commandStatusMarkerPrefix,
-  itemCommandStatusMarkerPrefix,
 } from "./markers.js";
-import { mergeAutomergeTimelineSection } from "./automerge-status-timeline.js";
-import { isEndorPullRequest } from "./endor-automerge-intake.js";
-import {
-  automergeSessionId,
-  automergeMetricEvent,
-  latestAutomergeActivationForCommand,
-  postAutomergeMetricBestEffort,
-} from "./automerge-product-telemetry.js";
 
 import {
   SUPERSEDED_RE_REVIEW_REASON,
@@ -150,18 +67,14 @@ import {
   ghPagedLimitWithRetry as ghPagedLimit,
   ghPagedWithRetry as ghPaged,
   ghPagedWithRetryAsync as ghPagedAsync,
-  ghSpawn,
   ghTextWithRetry,
   type GhRetryOptions,
 } from "./github-cli.js";
 import { GitHubRateLimitError, ghRetryKind, ghRetryWaitMs } from "../github-retry.js";
-import { issueSourceRevisionSha256 } from "./issue-source-guard.js";
 import { compactText, stripAnsi } from "./text-utils.js";
-import { escapeRegExp, markdownTopLevelSection } from "../clawsweeper-markdown.js";
 import {
   flushCommandActionEvents,
   recordCommandClaimed,
-  recordCommandClaimRefreshed,
   recordCommandClassified,
   recordCommandFailure,
   recordCommandOutcome,
@@ -169,48 +82,21 @@ import {
   runCommandMutation,
   runCommandMutationWithRetry,
 } from "./command-action-ledger.js";
-import {
-  decideReviewDispatchCoordination,
-  type ReviewDispatchCoordinationDecision,
-} from "./review-dispatch-coordination.js";
 import { directReReviewIntake } from "./direct-re-review-admission.js";
-import {
-  admitProofCommand,
-  proofCommandAllowedScenarios,
-  proofCommandReviewPrompt,
-} from "./proof-command.js";
 import { postExactReviewCommandIntakeSync } from "./exact-review-command-queue.js";
-
-const automergeMetricWrites: Promise<boolean>[] = [];
-
-// Admission stops before the retired implementation is removed in the next change.
-const REPAIR_AUTOMATION_RETIRED = true;
 
 const args = parseArgs(process.argv.slice(2));
 const config = readCommentRouterConfig(args);
 const {
   targetRepo,
   targetBranch,
-  repairRepo,
-  workflow,
   reviewRepo,
   reviewWorkflow,
-  runner,
-  executionRunner,
-  model,
-  headPrefix,
   execute,
   forceReprocess,
   attemptId,
   writeReport,
-  waitForCapacity,
-  maxLiveWorkers,
-  automergeMaxLiveWorkers,
-  automergeRunNamePrefix,
   maxComments,
-  maxAutocloseTargets,
-  maxAutoRepairsPerHead,
-  maxAutoRepairsPerPr,
   lookupConcurrency,
   since,
   sinceCommentIds,
@@ -278,16 +164,12 @@ const retryPendingCommentVersions = new Set(
 );
 // Pending replay is intentional: active-run checks prevent duplicate workers, and
 // marker-backed status replies are updated in place until dispatch can continue.
-const plannedAutoRepairHeads = new Set<string>();
-let repairLoopControlEntriesCache: LooseRecord[] | null = null;
 const collaboratorPermissionCache = new Map();
-const activeRepairRunsByPrefix = new Map<string, LooseRecord[]>();
 const liveTargetCache = new Map<number, LooseRecord>();
 const issueCommentsCache = new Map<number, JsonValue[]>();
 const throttledIssueCommentLookups = new Set<number>();
 const throttledCollaboratorLookups = new Set<string>();
 let deferredGitHubThrottle: GitHubRateLimitError | null = null;
-const PROOF_OVERRIDE_DESCRIPTION_MARKER = "<!-- clawsweeper-proof-override-note -->";
 const cachedIssueComments = createCachedIssueCommentsLookup(
   (number) => ghPaged<JsonValue>(`repos/${targetRepo}/issues/${number}/comments?per_page=100`),
   issueCommentsCache,
@@ -295,11 +177,6 @@ const cachedIssueComments = createCachedIssueCommentsLookup(
 const cachedIssueCommentsAsync = createCachedIssueCommentsLookupAsync(
   (number) => ghPagedAsync<JsonValue>(`repos/${targetRepo}/issues/${number}/comments?per_page=100`),
   issueCommentsCache,
-);
-const openIssueNumbersByLabel = createCachedLabelNumberLookup((label) =>
-  ghPaged<JsonValue>(
-    `repos/${targetRepo}/issues?state=open&labels=${encodeURIComponent(label)}&per_page=100`,
-  ).map((issue: JsonValue) => issue.number),
 );
 let recentCommentCursorCandidate: LooseRecord | null = null;
 const comments = measure("list_candidate_comments", () =>
@@ -322,28 +199,13 @@ await measureAsync("prehydrate_comment_commands", () =>
 const classifiedCommentCommands = measure("classify_comment_commands", () =>
   rawCommands.map((command) => classifyAndRecordCommand(command)),
 );
-for (const command of listRepairLoopSweepCommands(classifiedCommentCommands)) {
-  rawCommands.push(command);
-  recordCommandReceived(command);
-}
-
-const sweepCommands = rawCommands.slice(classifiedCommentCommands.length);
-await measureAsync("prehydrate_repair_loop_sweeps", () =>
-  prehydrateCommandLookups(sweepCommands, { refreshIssueComments: true }),
-);
-const commands = [
-  ...classifiedCommentCommands,
-  ...measure("classify_repair_loop_sweeps", () =>
-    sweepCommands.map((command) => classifyAndRecordCommand(command)),
-  ),
-];
+const commands = classifiedCommentCommands;
 
 let actionable = commands.filter((command: JsonValue) => command.status === "ready");
 const report: LooseRecord = {
   status: execute ? "executed" : "dry_run",
   generated_at: new Date().toISOString(),
   repo: targetRepo,
-  repair_repo: repairRepo,
   review_repo: reviewRepo,
   since,
   execute,
@@ -353,14 +215,11 @@ const report: LooseRecord = {
   item_numbers: [...itemNumbers],
   comment_ids: [...commentIds],
   status_comment_id: statusCommentId,
-  max_autoclose_targets: maxAutocloseTargets,
   scanned_comments: comments.length,
   commands_seen: commands.length,
   actionable: actionable.length,
   trusted_bots: [...trustedBots],
   allowed_repository_permissions: [...allowedRepositoryPermissions],
-  max_auto_repairs_per_head: maxAutoRepairsPerHead,
-  max_auto_repairs_per_pr: maxAutoRepairsPerPr,
   lookup_concurrency: lookupConcurrency,
   commands,
   exact_comment_version_fast_path: exactCommentVersionFastPath,
@@ -404,16 +263,7 @@ if (execute && exactCommentVersionFastPath.suppress && exactCommentVersionFastPa
     const resumedClassified = measure("classify_cleanup_drift_commands", () =>
       resumedRawCommands.map((command) => classifyAndRecordCommand(command)),
     );
-    const resumedSweepCommands = listRepairLoopSweepCommands(resumedClassified);
-    rawCommands.push(...resumedSweepCommands);
-    for (const command of resumedSweepCommands) recordCommandReceived(command);
-    await measureAsync("prehydrate_cleanup_drift_sweeps", () =>
-      prehydrateCommandLookups(resumedSweepCommands, { refreshIssueComments: true }),
-    );
-    commands.push(
-      ...resumedClassified,
-      ...resumedSweepCommands.map((command) => classifyAndRecordCommand(command)),
-    );
+    commands.push(...resumedClassified);
     actionable = commands.filter((command: JsonValue) => command.status === "ready");
     report.scanned_comments = Number(report.scanned_comments ?? 0) + resumedComments.length;
     report.commands_seen = commands.length;
@@ -426,14 +276,6 @@ if (execute && exactCommentVersionFastPath.suppress && exactCommentVersionFastPa
 if (execute && !exactCommentVersionFastPath.suppress) {
   await measureAsync("execute_commands", async () => {
     assertMutationActorIsClawsweeperBot();
-    const capacityRequests = workerCapacityRequests(actionable);
-    if (capacityRequests.length > 0) {
-      const capacities = capacityRequests.map((request) =>
-        waitForCapacity ? waitForLiveWorkerCapacity(request) : assertLiveWorkerCapacity(request),
-      );
-      report.live_worker_capacity_before_dispatch =
-        capacities.length === 1 ? capacities[0] : capacities;
-    }
     const claimedCommands = measure("claim_dispatch_commands", () =>
       claimDispatchCommands(actionable),
     );
@@ -447,7 +289,6 @@ if (execute && !exactCommentVersionFastPath.suppress) {
     for (const command of commands) {
       if (command.status !== "ready") {
         recordCommandOutcome(command);
-        queueAutomergeProductMetrics(command);
       }
     }
     for (const command of actionable) executeCommandWithReceipt(command);
@@ -462,7 +303,6 @@ report.timings = {
 };
 if (writeReport) writeReportFile(repoRoot(), report);
 await flushCommandActionEvents();
-await Promise.allSettled(automergeMetricWrites);
 console.log(JSON.stringify(report, null, 2));
 if (deferredGitHubThrottle) throw deferredGitHubThrottle;
 
@@ -482,35 +322,6 @@ async function measureAsync<T>(name: string, fn: () => Promise<T>): Promise<T> {
   } finally {
     timings.push({ name, ms: Date.now() - start });
   }
-}
-
-function reviewFollowupFromCommentBody(body: JsonValue): string | null {
-  const text = String(body ?? "");
-  const beforeMerge = markdownTopLevelSection(text, "Before merge");
-  if (beforeMerge) {
-    // A present Before merge section is authoritative: "None." and fully checked
-    // checklists mean no checklist follow-up, and legacy headings elsewhere in the
-    // comment (possibly model-injected) must not be consulted. A decision-only
-    // review still carries its maintainer question as the follow-up.
-    if (/^none[.!]?$/i.test(beforeMerge.trim())) {
-      return markdownTopLevelSection(text, "Decision needed") || null;
-    }
-    const lines = beforeMerge.split(/\r?\n/).map((line) => line.trim());
-    const tasks = lines.filter((line) => /^- \[[ xX]\]/.test(line));
-    if (tasks.length) {
-      return (
-        tasks.find((line) => line.startsWith("- [ ]")) ??
-        (markdownTopLevelSection(text, "Decision needed") || null)
-      );
-    }
-    return beforeMerge;
-  }
-  return (
-    markdownTopLevelSection(text, "Next step before merge") ||
-    markdownTopLevelSection(text, "Automerge follow-up") ||
-    markdownTopLevelSection(text, "Autofix follow-up") ||
-    null
-  );
 }
 
 function routedCommandForComment(comment: JsonValue): LooseRecord | null {
@@ -565,32 +376,8 @@ function routedCommandForComment(comment: JsonValue): LooseRecord | null {
     trigger: parsed.trigger,
     command: parsed.command,
     intent: parsed.intent,
-    autoclose_message: parsed.autoclose_message ?? null,
-    implementation_prompt: parsed.implementation_prompt ?? null,
-    automerge_instructions: parsed.automerge_instructions ?? null,
-    operator_override: parsed.operator_override ?? null,
-    trusted_bot: Boolean(parsed.trusted_bot),
-    trusted_bot_author: parsed.trusted_bot_author ?? null,
-    automation_source: parsed.automation_source ?? null,
-    repair_reason: parsed.repair_reason ?? null,
-    live_verification: parsed.live_verification ?? null,
-    needs_human_hold: parsed.needs_human_hold ?? null,
-    review_findings: parsed.review_findings ?? null,
-    review_summary: reviewSummaryFromCommentBody(comment.body),
-    review_followup: reviewFollowupFromCommentBody(comment.body),
+    trusted_bot: false,
     freeform_prompt: parsed.freeform_prompt ?? null,
-    proof_command_text: parsed.proof_command_text ?? null,
-    visual_lens: parsed.visual_lens ?? null,
-    expected_head_sha: parsed.expected_head_sha ?? null,
-    close_reason: parsed.close_reason ?? null,
-    close_confidence: parsed.close_confidence ?? null,
-    close_action_taken: parsed.close_action_taken ?? null,
-    reviewed_at: parsed.reviewed_at ?? null,
-    review_lease_owner: parsed.review_lease_owner ?? null,
-    review_lease_comment_id: parsed.review_lease_comment_id ?? null,
-    expected_item_updated_at: parsed.expected_item_updated_at ?? null,
-    expected_source_revision: parsed.expected_source_revision ?? null,
-    finding_id: parsed.finding_id ?? null,
     ...forcedReplayCommandFields({ forceReprocess, attemptId }),
     status: "pending",
     actions: [],
@@ -619,27 +406,12 @@ function dispatchClaimEntry(command: LooseRecord, processedAt: string) {
   };
 }
 
-function refreshDispatchClaim(command: LooseRecord) {
-  const claim = dispatchClaimEntry(command, new Date().toISOString());
-  appendLedger(ledger, [claim]);
-  writeLedger(ledgerPath(), ledger);
-  for (const key of dispatchClaimLookupKeys(claim)) priorDispatchClaims.set(key, claim);
-  recordCommandClaimRefreshed(claim);
-}
-
 function commandNeedsDurableDispatchClaim(command: LooseRecord) {
-  return (
-    String(command.status ?? "") === "ready" &&
-    (commandHasAction(command, "dispatch_clawsweeper") ||
-      commandHasAction(command, "dispatch_repair") ||
-      commandHasAction(command, "dispatch_assist"))
-  );
+  return command.status === "ready" && commandHasAction(command, "dispatch_clawsweeper");
 }
 
 function actionNeedsDurableDispatchClaim(action: JsonValue) {
-  return ["dispatch_clawsweeper", "dispatch_repair", "dispatch_assist"].includes(
-    String(action?.action ?? ""),
-  );
+  return action?.action === "dispatch_clawsweeper";
 }
 
 function priorDispatchClaim(command: LooseRecord) {
@@ -662,142 +434,6 @@ function dispatchReceiptKey(command: LooseRecord) {
   return routerDispatchReceiptKey(command, priorDispatchClaim(command));
 }
 
-function claimedDispatchState({
-  command,
-  repo,
-  workflowName,
-  expectedTitle,
-}: {
-  command: LooseRecord;
-  repo: string;
-  workflowName: string;
-  expectedTitle: string | readonly string[];
-}) {
-  const claim = priorDispatchClaim(command);
-  if (!claim) return null;
-  const runs: LooseRecord[] = [];
-  try {
-    for (let page = 1; page <= 3; page += 1) {
-      const response = ghJson<LooseRecord>(
-        [
-          "api",
-          "--method",
-          "GET",
-          `repos/${repo}/actions/workflows/${encodeURIComponent(workflowName)}/runs?per_page=100&page=${page}`,
-        ],
-        { env: dispatchTokenEnv() },
-      );
-      const pageRuns = Array.isArray(response.workflow_runs) ? response.workflow_runs : [];
-      runs.push(...pageRuns);
-      if (pageRuns.length < 100) break;
-    }
-  } catch (error) {
-    if (error instanceof GitHubRateLimitError) throw error;
-    return {
-      status: "claimed",
-      dispatch_key: dispatchReceiptKey(command),
-      reason: `waiting to verify the previous dispatch claim: ${compactText(ghErrorText(error), 300)}`,
-    };
-  }
-  let verifiedRuns: LooseRecord[];
-  try {
-    verifiedRuns = verifyDispatchExecutionRuns({
-      claim,
-      runs,
-      repo,
-      workflowName,
-      expectedTitle,
-    });
-  } catch (error) {
-    if (error instanceof GitHubRateLimitError) throw error;
-    return {
-      status: "claimed",
-      dispatch_key: dispatchReceiptKey(command),
-      reason: `waiting to verify the previous dispatch execution: ${compactText(ghErrorText(error), 300)}`,
-    };
-  }
-  const decision = dispatchClaimDecision({
-    claim,
-    runs: verifiedRuns,
-    expectedTitle,
-    graceMs: dispatchClaimGraceMs(),
-  });
-  if (decision.action === "dispatch") {
-    refreshDispatchClaim(command);
-    return null;
-  }
-  if (decision.action === "wait") {
-    return {
-      status: "claimed",
-      dispatch_key: dispatchReceiptKey(command),
-      reason: "waiting for the previous dispatch to become visible before retrying",
-    };
-  }
-  const run = decision.run ?? {};
-  return {
-    status: "recovered",
-    dispatch_key: dispatchReceiptKey(command),
-    recovered: true,
-    run_id: run.id ?? run.databaseId ?? null,
-    run_url: run.html_url ?? run.url ?? null,
-    event: run.event ?? null,
-  };
-}
-
-function verifyDispatchExecutionRuns({
-  claim,
-  runs,
-  repo,
-  workflowName,
-  expectedTitle,
-}: {
-  claim: LooseRecord;
-  runs: LooseRecord[];
-  repo: string;
-  workflowName: string;
-  expectedTitle: string | readonly string[];
-}) {
-  const expectedTitles = typeof expectedTitle === "string" ? [expectedTitle] : expectedTitle;
-  const requiredJobName =
-    workflowName === "assist.yml"
-      ? "assist"
-      : workflowName === "repair-cluster-worker.yml"
-        ? "Plan and review cluster"
-        : null;
-  if (!requiredJobName) return runs;
-  const claimedAtMs = Date.parse(String(claim.processed_at ?? ""));
-  return runs.map((run) => {
-    const createdAtMs = Date.parse(String(run.created_at ?? run.createdAt ?? ""));
-    if (
-      !expectedTitles.includes(String(run.display_title ?? run.displayTitle ?? "")) ||
-      String(run.status ?? "").toLowerCase() !== "completed" ||
-      !Number.isFinite(claimedAtMs) ||
-      !Number.isFinite(createdAtMs) ||
-      createdAtMs < claimedAtMs - 5_000
-    ) {
-      return run;
-    }
-    const runId = Number(run.id ?? run.databaseId ?? 0);
-    if (!Number.isInteger(runId) || runId <= 0) {
-      return { ...run, dispatch_execution_verified: false };
-    }
-    const response = ghJson<LooseRecord>(
-      ["api", "--method", "GET", `repos/${repo}/actions/runs/${runId}/jobs?per_page=100`],
-      { env: dispatchTokenEnv() },
-    );
-    const jobs = Array.isArray(response.jobs) ? response.jobs : [];
-    return {
-      ...run,
-      dispatch_execution_verified: hasSuccessfulDispatchExecutionJob(jobs, requiredJobName),
-    };
-  });
-}
-
-function dispatchClaimGraceMs() {
-  const configured = Number(process.env.CLAWSWEEPER_DISPATCH_CLAIM_GRACE_MS ?? 300_000);
-  return Number.isFinite(configured) && configured >= 0 ? configured : 300_000;
-}
-
 function dispatchedActionStatus(dispatch: LooseRecord) {
   const { status: dispatchStatus, ...receipt } = dispatch;
   if (dispatchStatus === "claimed") return { ...receipt, status: "claimed" };
@@ -808,12 +444,6 @@ function dispatchedActionStatus(dispatch: LooseRecord) {
       ? { recovered: true, receipt_verified_at: new Date().toISOString() }
       : { dispatched_at: new Date().toISOString() }),
   };
-}
-
-function keepCommandClaimed(command: LooseRecord) {
-  command.status = "claimed";
-  const claimedAt = priorDispatchClaim(command)?.processed_at;
-  if (claimedAt) command.processed_at = claimedAt;
 }
 
 function assertMutationActorIsClawsweeperBot() {
@@ -905,10 +535,6 @@ function classifyCommand(command: LooseRecord): JsonValue {
       reason: "GitHub throttled required routing context; the next cycle will retry",
     };
   }
-  const repairPolicyBlock = repositoryRepairCommandBlockReason(command.repo, command.intent);
-  if (repairPolicyBlock) {
-    return { ...command, status: "ignored", reason: repairPolicyBlock };
-  }
   let authorization: LooseRecord | null = null;
   if (command.trusted_bot) {
     if (!trustedBots.has(String(command.author ?? "").toLowerCase())) {
@@ -925,9 +551,7 @@ function classifyCommand(command: LooseRecord): JsonValue {
   const liveTarget = fetchLiveTarget(command);
   if (liveTarget.status === "waiting") return liveTarget;
   const { issue, pull } = liveTarget;
-  const target = pull
-    ? classifyPullTarget(pull, command.issue_number)
-    : classifyIssueTarget(issue, command.issue_number);
+  const target = pull ? classifyPullTarget(pull) : classifyIssueTarget(issue);
   const authorReadOnlyAllowed =
     !command.trusted_bot &&
     authorization &&
@@ -938,7 +562,7 @@ function classifyCommand(command: LooseRecord): JsonValue {
     target,
     maintainer_authorized: Boolean(authorization?.allowed),
     author_readonly_authorized: Boolean(authorReadOnlyAllowed),
-    endor_review_continuation: false,
+    retired: !["re_review", "stop", "explain", "help"].includes(command.intent),
   };
   if (!command.trusted_bot && authorization && !authorization.allowed && !authorReadOnlyAllowed) {
     return {
@@ -947,67 +571,7 @@ function classifyCommand(command: LooseRecord): JsonValue {
       reason: authorization.reason,
     };
   }
-  const trustedSourceRevisionBlock = trustedAutomationSourceRevisionBlockReason(
-    next,
-    "classification",
-  );
-  if (trustedSourceRevisionBlock) {
-    return {
-      ...next,
-      status: trustedSourceRevisionBlock.retryable ? "waiting" : "skipped",
-      reason: trustedSourceRevisionBlock.reason,
-    };
-  }
-  if (command.trusted_bot && pull) {
-    const currentHeadSha = String(target.head_sha ?? "")
-      .trim()
-      .toLowerCase();
-    const expectedHeadSha = String(command.expected_head_sha ?? "")
-      .trim()
-      .toLowerCase();
-    if (
-      command.automation_source === "clawsweeper" &&
-      (!/^[0-9a-f]{40}$/.test(expectedHeadSha) || expectedHeadSha !== currentHeadSha)
-    ) {
-      return {
-        ...next,
-        status: "skipped",
-        reason: `trusted ClawSweeper verdict head ${expectedHeadSha || "missing"} does not match current head ${currentHeadSha || "missing"}`,
-      };
-    }
-    const activeReviewLease = freshExactHeadReviewStartLease({
-      comments: issueCommentsFor(command.issue_number) as LooseRecord[],
-      itemNumber: Number(command.issue_number),
-      headSha: currentHeadSha,
-      trustedAuthors: trustedBots,
-      nowMs: Date.now(),
-    });
-    const activeLeaseBlocksCommand =
-      command.automation_source === "repair_loop_label_sweep" ||
-      trustedAutomationPredatesReviewStartLease({
-        command,
-        currentHeadSha,
-        lease: activeReviewLease,
-      });
-    if (activeReviewLease && activeLeaseBlocksCommand) {
-      return {
-        ...next,
-        status: command.automation_source === "repair_loop_label_sweep" ? "waiting" : "skipped",
-        reason: `same-head ClawSweeper review is active until ${activeReviewLease?.expiresAt}`,
-      };
-    }
-  }
-  const endorReviewContinuation =
-    command.trusted_bot === true &&
-    command.automation_source === "repair_loop_label_sweep" &&
-    isEndorPullRequest(String(command.repo ?? ""), issue);
-  next.endor_review_continuation = endorReviewContinuation;
-  if (endorReviewContinuation) {
-    const labelBlock = repairLoopDispatchLabelBlockReason(next, target);
-    if (labelBlock) return { ...next, status: "skipped", reason: labelBlock };
-  }
   if (
-    !endorReviewContinuation &&
     existingCommandStatusBlocksReplay({
       hasExistingResponse: hasExistingResponse(
         command.issue_number,
@@ -1036,66 +600,18 @@ function classifyCommand(command: LooseRecord): JsonValue {
     };
   }
 
-  if (command.intent === "request_proof") {
-    const admission = admitProofCommand({
-      commandText: String(command.proof_command_text ?? ""),
-      repository: targetRepo,
-      pullRequest: Number(command.issue_number),
-      isPullRequest: Boolean(pull),
-      isOpen: String(issue.state ?? "").toLowerCase() === "open",
-      maintainerAuthorized:
-        command.author_type === "User" && !command.trusted_bot && authorization?.allowed === true,
-      currentHeadSha: String(target.head_sha ?? ""),
-    });
-    const dispatchProof = admission.request !== undefined && targetRepo === "openclaw/openclaw";
-    return {
-      ...next,
-      status: "ready",
-      proof_admission: admission,
-      actions: [
-        ...(dispatchProof
-          ? [
-              {
-                action: "dispatch_clawsweeper",
-                workflow: reviewWorkflow,
-                status: execute ? "pending" : "planned",
-              },
-            ]
-          : []),
-        { action: "comment", status: execute ? "pending" : "planned" },
-      ],
-    };
-  }
-  if (["status", "explain", "help"].includes(command.intent)) {
+  if (next.retired) {
     return {
       ...next,
       status: "ready",
       actions: [{ action: "comment", status: execute ? "pending" : "planned" }],
     };
   }
-  if (command.intent === "freeform_assist" || command.intent === "visualize") {
-    if (String(issue.state ?? "").toLowerCase() !== "open") {
-      return {
-        ...next,
-        status: "ready",
-        reason:
-          command.intent === "visualize"
-            ? "visualize requires an open issue or PR"
-            : "freeform assist requires an open issue or PR",
-        actions: [{ action: "comment", status: execute ? "pending" : "planned" }],
-      };
-    }
+  if (["explain", "help"].includes(command.intent)) {
     return {
       ...next,
       status: "ready",
-      actions: [
-        {
-          action: "dispatch_assist",
-          workflow: "assist.yml",
-          status: execute ? "pending" : "planned",
-        },
-        { action: "comment", status: execute ? "pending" : "planned" },
-      ],
+      actions: [{ action: "comment", status: execute ? "pending" : "planned" }],
     };
   }
   if (command.intent === "re_review") {
@@ -1122,240 +638,6 @@ function classifyCommand(command: LooseRecord): JsonValue {
       ],
     };
   }
-  if (command.intent === "implement_issue") {
-    if (String(issue.state ?? "").toLowerCase() !== "open") {
-      return {
-        ...next,
-        status: "ready",
-        reason: "implementation PR creation requires an open issue",
-        issue_implementation_blocker_class: "hard",
-        actions: [{ action: "comment", status: execute ? "pending" : "planned" }],
-      };
-    }
-    if (pull) {
-      return {
-        ...next,
-        status: "ready",
-        reason:
-          "implementation PR creation must be requested on an issue; use autofix or automerge for pull requests",
-        issue_implementation_blocker_class: "hard",
-        actions: [{ action: "comment", status: execute ? "pending" : "planned" }],
-      };
-    }
-    const pauseLabels = pauseLabelsOn(target);
-    if (pauseLabels.length > 0) {
-      return {
-        ...next,
-        status: "ready",
-        reason: `issue implementation is paused by ${pauseLabels.join(", ")}`,
-        issue_implementation_blocker_class: "soft",
-        actions: [{ action: "comment", status: execute ? "pending" : "planned" }],
-      };
-    }
-    if (issueImplementationLinkedPrSignal(target) && command.operator_override !== true) {
-      const linkedPrs = [
-        ...(Array.isArray(target.open_prs) ? target.open_prs : []),
-        ...(Array.isArray(target.linked_prs) ? target.linked_prs : []),
-        ...(Array.isArray(target.existing_prs) ? target.existing_prs : []),
-      ]
-        .map((value: JsonValue) => String(value))
-        .filter(Boolean);
-      return {
-        ...next,
-        status: "ready",
-        reason: `implementation PR creation is blocked by an existing linked PR${
-          linkedPrs.length ? ` (${linkedPrs.join(", ")})` : ""
-        }`,
-        issue_implementation_blocker_class: "hard",
-        actions: [{ action: "comment", status: execute ? "pending" : "planned" }],
-      };
-    }
-    return {
-      ...next,
-      status: "ready",
-      actions: [
-        ...(target.job_path
-          ? []
-          : [
-              {
-                action: "ensure_issue_implementation_job",
-                job_path: target.issue_implementation_job_path,
-                status: execute ? "pending" : "planned",
-              },
-            ]),
-        {
-          action: "dispatch_repair",
-          workflow,
-          job_path: target.job_path ?? target.issue_implementation_job_path,
-          mode: target.mode ?? "autonomous",
-          status: execute ? "pending" : "planned",
-        },
-        { action: "comment", status: execute ? "pending" : "planned" },
-      ],
-    };
-  }
-  if (["autofix", "automerge"].includes(command.intent)) {
-    const mode = command.intent === "autofix" ? "autofix" : "automerge";
-    const modeLabel = command.intent === "autofix" ? AUTOFIX_LABEL : AUTOMERGE_LABEL;
-    const oppositeModeLabel = command.intent === "autofix" ? AUTOMERGE_LABEL : AUTOFIX_LABEL;
-    if (String(issue.state ?? "").toLowerCase() !== "open") {
-      const staleReason = staleClosedItemCommandReason({ command: next, issue, pull });
-      if (staleReason) return { ...next, status: "skipped", reason: staleReason };
-      if (command.automation_source === "repair_loop_label_sweep") {
-        return { ...next, status: "skipped", reason: `${mode} label sweep requires an open PR` };
-      }
-      return automergeBlocked(next, `${mode} requires an open PR`);
-    }
-    if (!pull) {
-      if (command.automation_source === "repair_loop_label_sweep") {
-        return {
-          ...next,
-          status: "skipped",
-          reason: `${mode} label sweep requires a pull request`,
-        };
-      }
-      return automergeBlocked(next, `${mode} requires a pull request`);
-    }
-    const stoppedReason = repairLoopStoppedReason(next);
-    if (stoppedReason) return { ...next, status: "skipped", reason: stoppedReason };
-    const pauseLabels = pauseLabelsOn(target);
-    const failedChecksRepairReason = automergeFailedChecksRepairReason(target.checks);
-    const rebaseRepairReason = automergeRebaseRepairReason(target);
-    const activationRepairReason = failedChecksRepairReason ?? rebaseRepairReason;
-    if (
-      command.trusted_bot &&
-      command.automation_source === "repair_loop_label_sweep" &&
-      pauseLabels.length > 0
-    ) {
-      return { ...next, status: "skipped", reason: "PR is paused for human review" };
-    }
-    if (activationRepairReason) {
-      const alreadyPlanned = autoRepairAlreadyPlanned(next);
-      if (alreadyPlanned) return { ...next, status: "skipped", reason: alreadyPlanned };
-    }
-    const existingEnabledMode =
-      !activationRepairReason &&
-      existingModeStatusBlocksReplay({
-        hasModeLabel: hasLabel(target, modeLabel),
-        hasJobPath: Boolean(target.has_automerge_job),
-        hasPauseLabels: pauseLabels.length > 0,
-        hasOppositeModeLabel: hasLabel(target, oppositeModeLabel),
-        hasExistingModeStatusResponse: hasExistingModeStatusResponse(
-          command.issue_number,
-          command.intent,
-        ),
-        forceReprocess,
-      });
-    // Endor's ordinary events are suppressed; its enrolled sweep owns new heads too.
-    if (existingEnabledMode && command.trusted_bot && !endorReviewContinuation) {
-      // Label sweeps may stop at an already-armed plan, but a fresh maintainer
-      // resume must still coordinate an exact-head completed or active review.
-      return {
-        ...next,
-        ...existingRepairLoopModeOutcome({
-          intent: command.intent,
-          trustedBot: command.trusted_bot,
-        }),
-      };
-    }
-    if (existingEnabledMode) next.reuse_prior_exact_head_review = true;
-    const approvedProofOverride =
-      command.intent === "automerge" && !activationRepairReason
-        ? approvedMissingProofNeedsHuman(command, target)
-        : null;
-    if (
-      !approvedProofOverride &&
-      pausedModeStatusBlocksReplay({
-        hasPauseLabels: pauseLabels.length > 0,
-        hasExistingModeStatusResponse: hasExistingModeStatusResponse(
-          command.issue_number,
-          command.intent,
-        ),
-        allowNewMaintainerModeCommand: maintainerModeCommandCanResumePausedMode({
-          command: next,
-          entries: repairLoopControlEntries(),
-        }),
-        forceReprocess,
-      })
-    ) {
-      return {
-        ...next,
-        status: "skipped",
-        reason: "PR is paused for human review",
-      };
-    }
-    const actions: LooseRecord[] = [];
-    if (!target.has_automerge_job) {
-      actions.push({
-        action: "ensure_automerge_job",
-        job_path: target.automerge_job_path,
-        status: execute ? "pending" : "planned",
-      });
-    }
-    if (hasLabel(target, oppositeModeLabel)) {
-      actions.push({
-        action: "remove_label",
-        label: oppositeModeLabel,
-        status: execute ? "pending" : "planned",
-      });
-    }
-    for (const pausedLabel of pauseLabels) {
-      actions.push({
-        action: "remove_label",
-        label: pausedLabel,
-        status: execute ? "pending" : "planned",
-      });
-    }
-    return {
-      ...next,
-      status: "ready",
-      actions: [
-        ...actions,
-        { action: "label", label: modeLabel, status: execute ? "pending" : "planned" },
-        ...(approvedProofOverride
-          ? [
-              {
-                action: "update_description_note",
-                note: approvedProofOverride.note,
-                status: execute ? "pending" : "planned",
-              },
-              { action: "merge", status: execute ? "pending" : "planned" },
-            ]
-          : activationRepairReason
-            ? [
-                {
-                  action: "dispatch_repair",
-                  workflow,
-                  job_path: target.automerge_job_path,
-                  mode: target.has_automerge_job ? target.mode : "autonomous",
-                  status: execute ? "pending" : "planned",
-                },
-              ]
-            : [
-                {
-                  action: "dispatch_clawsweeper",
-                  workflow: reviewWorkflow,
-                  status: execute ? "pending" : "planned",
-                },
-              ]),
-        { action: "comment", status: execute ? "pending" : "planned" },
-      ],
-      ...(approvedProofOverride
-        ? {
-            intent: "clawsweeper_auto_merge",
-            expected_head_sha: approvedProofOverride.expected_head_sha,
-            repair_reason: approvedProofOverride.reason,
-            validated_maintainer_human_approval: true,
-          }
-        : activationRepairReason
-          ? { repair_reason: `${mode} enabled; ${activationRepairReason}` }
-          : {}),
-    };
-  }
-  if (AUTOCLOSE_INTENTS.has(command.intent)) {
-    return classifyAutoclose(next, issue, pull);
-  }
-
   if (command.intent === "stop") {
     const removeRepairLoopLabelActions = [AUTOMERGE_LABEL, AUTOFIX_LABEL, MERGE_READY_LABEL]
       .filter((label) => hasLabel(target, label))
@@ -1374,85 +656,10 @@ function classifyCommand(command: LooseRecord): JsonValue {
       ],
     };
   }
-  if (!REPAIR_INTENTS.has(command.intent)) {
-    if (command.intent === "maintainer_approve_automerge")
-      return classifyMaintainerApprovedAutomerge(next, issue, pull);
-    if (MERGE_INTENTS.has(command.intent)) return classifyAutomergePass(next, issue, pull);
-    if (command.intent === "clawsweeper_needs_human") return classifyNeedsHuman(next, issue, pull);
-    return {
-      ...next,
-      status: "ready",
-      actions: [{ action: "comment", status: execute ? "pending" : "planned" }],
-    };
-  }
-  if (String(issue.state ?? "").toLowerCase() !== "open") {
-    return repairBlocked(next, "repair commands require an open issue or PR");
-  }
-  if (!pull) {
-    return repairBlocked(next, "repair commands require a pull request");
-  }
-  if (command.trusted_bot) {
-    const stoppedReason = repairLoopStoppedReason(next);
-    if (stoppedReason) return { ...next, status: "skipped", reason: stoppedReason };
-  }
-  if (!canRepairPullTarget(target)) {
-    return repairBlocked(
-      next,
-      "repair commands require a ClawSweeper PR or a PR opted into ClawSweeper autofix or automerge",
-    );
-  }
-  if (command.trusted_bot && hasLabel(target, HUMAN_REVIEW_LABEL)) {
-    return { ...next, status: "skipped", reason: "PR is paused for human review" };
-  }
-  if (command.intent === "clawsweeper_auto_repair") {
-    if (
-      command.expected_head_sha &&
-      command.expected_head_sha !== "unknown" &&
-      target.head_sha &&
-      command.expected_head_sha !== target.head_sha
-    ) {
-      return {
-        ...next,
-        status: "skipped",
-        reason: "ClawSweeper repair marker targets a stale PR head SHA",
-      };
-    }
-    const alreadyPlanned = autoRepairAlreadyPlanned(next);
-    if (alreadyPlanned) return { ...next, status: "skipped", reason: alreadyPlanned };
-  }
-  const actions: LooseRecord[] = [];
-  const repairJobPath = target.automerge_job_path;
-  if (!target.has_automerge_job) {
-    actions.push({
-      action: "ensure_automerge_job",
-      job_path: repairJobPath,
-      status: execute ? "pending" : "planned",
-    });
-  }
-  if (!command.trusted_bot) {
-    for (const pausedLabel of pauseLabelsOn(target)) {
-      actions.push({
-        action: "remove_label",
-        label: pausedLabel,
-        status: execute ? "pending" : "planned",
-      });
-    }
-  }
-
   return {
     ...next,
     status: "ready",
-    actions: [
-      ...actions,
-      {
-        action: "dispatch_repair",
-        workflow,
-        job_path: repairJobPath,
-        mode: target.has_automerge_job ? target.mode : "autonomous",
-        status: execute ? "pending" : "planned",
-      },
-      { action: "comment", status: execute ? "pending" : "planned" },
-    ],
+    actions: [{ action: "comment", status: execute ? "pending" : "planned" }],
   };
 }
 
@@ -1462,940 +669,17 @@ function classifyAndRecordCommand(command: LooseRecord): LooseRecord {
   return classified;
 }
 
-function classifyAutoclose(command: LooseRecord, issue: LooseRecord, pull: LooseRecord): JsonValue {
-  const reason = autocloseReason(command);
-  if (!reason) {
-    return {
-      ...command,
-      status: "ready",
-      reason: "autoclose requires a maintainer close reason",
-      actions: [{ action: "comment", status: execute ? "pending" : "planned" }],
-    };
-  }
-  if (String(issue.state ?? "").toLowerCase() !== "open") {
-    return {
-      ...command,
-      autoclose_reason: reason,
-      status: "ready",
-      reason: "autoclose requires an open issue or PR",
-      actions: [{ action: "comment", status: execute ? "pending" : "planned" }],
-    };
-  }
-  if (command.trusted_bot && pull) {
-    const closeReason = String(command.close_reason ?? "");
-    const comments = cachedIssueComments(command.issue_number);
-    const needsCloseSignalContext =
-      closeReason === "unconfirmed_product_direction" ||
-      closeReason === "low_signal_unmergeable_pr";
-    const pullApi = needsCloseSignalContext ? fetchPullRequestApi(command.issue_number) : {};
-    const reviews = needsCloseSignalContext
-      ? ghPaged<JsonValue>(`repos/${targetRepo}/pulls/${command.issue_number}/reviews?per_page=100`)
-      : [];
-    const reviewComments =
-      closeReason === "unconfirmed_product_direction"
-        ? ghPaged<JsonValue>(
-            `repos/${targetRepo}/pulls/${command.issue_number}/comments?per_page=100`,
-          )
-        : [];
-    const trustedCloseBlock = trustedCloseBlockReason({
-      repo: command.repo,
-      kind: "pull_request",
-      labels: targetLabelsFromPull(pull),
-      closeReason: command.close_reason,
-      closeConfidence: command.close_confidence,
-      closeActionTaken: command.close_action_taken,
-      createdAt: issue.created_at,
-      expectedHeadSha: command.expected_head_sha,
-      currentHeadSha: pull.headRefOid,
-      expectedItemUpdatedAt: command.expected_item_updated_at,
-      currentItemUpdatedAt: issue.updated_at,
-      expectedSourceRevision: command.expected_source_revision,
-      currentSourceRevision: issueSourceRevisionSha256(issue, comments),
-      authorAssociation: issue.author_association,
-      reviewedAt: command.reviewed_at ?? command.expected_item_updated_at,
-      assignees: issue.assignees,
-      requestedReviewers: pullApi.requested_reviewers,
-      requestedTeams: pullApi.requested_teams,
-      comments,
-      reviews,
-      reviewComments,
-      sourceCommentId: command.comment_id,
-      trustedAuthors: trustedBots,
-    });
-    if (trustedCloseBlock) {
-      return {
-        ...command,
-        autoclose_reason: reason,
-        status: "skipped",
-        reason: trustedCloseBlock,
-      };
-    }
-  }
-  if (
-    command.trusted_bot &&
-    !pull &&
-    String(command.close_reason ?? "") === "unsponsored_feature_request"
-  ) {
-    const linkedPrBlock = unsponsoredFeatureLinkedPrBlockReason(command.issue_number);
-    if (linkedPrBlock) {
-      return {
-        ...command,
-        autoclose_reason: reason,
-        status: "skipped",
-        reason: linkedPrBlock,
-      };
-    }
-    const comments = cachedIssueComments(command.issue_number);
-    const trustedCloseBlock = trustedCloseBlockReason({
-      repo: command.repo,
-      kind: "issue",
-      labels: issue.labels,
-      closeReason: command.close_reason,
-      closeConfidence: command.close_confidence,
-      closeActionTaken: command.close_action_taken,
-      createdAt: issue.created_at,
-      expectedItemUpdatedAt: command.expected_item_updated_at,
-      currentItemUpdatedAt: issue.updated_at,
-      expectedSourceRevision: command.expected_source_revision,
-      currentSourceRevision: issueSourceRevisionSha256(issue, comments),
-      authorAssociation: issue.author_association,
-      reviewedAt: command.reviewed_at ?? command.expected_item_updated_at,
-      assignees: issue.assignees,
-      milestone: issue.milestone,
-      reactions: issue.reactions,
-      comments,
-      sourceCommentId: command.comment_id,
-      trustedAuthors: trustedBots,
-    });
-    if (trustedCloseBlock) {
-      return {
-        ...command,
-        autoclose_reason: reason,
-        status: "skipped",
-        reason: trustedCloseBlock,
-      };
-    }
-  }
-  const targets = discoverAutocloseTargets({ command, issue, pull });
-  if (targets.length === 0) {
-    return {
-      ...command,
-      autoclose_reason: reason,
-      status: "ready",
-      reason: "autoclose found no open same-repo targets",
-      actions: [{ action: "comment", status: execute ? "pending" : "planned" }],
-    };
-  }
-  return {
-    ...command,
-    autoclose_reason: reason,
-    autoclose_targets: targets,
-    status: "ready",
-    actions: [
-      {
-        action: "autoclose",
-        reason,
-        targets: targets.map((target: JsonValue) => ({
-          ref: target.ref,
-          kind: target.kind,
-          title: target.title,
-        })),
-        status: execute ? "pending" : "planned",
-      },
-      { action: "comment", status: execute ? "pending" : "planned" },
-    ],
-  };
-}
-
-function classifyAutomergePass(
-  command: LooseRecord,
-  issue: LooseRecord,
-  pull: LooseRecord,
-): JsonValue {
-  if (String(issue.state ?? "").toLowerCase() !== "open")
-    return { ...command, status: "skipped", reason: "PR is not open" };
-  if (!pull)
-    return { ...command, status: "skipped", reason: "ClawSweeper pass marker is not on a PR" };
-  const stoppedReason = repairLoopStoppedReason(command);
-  if (stoppedReason) return { ...command, status: "skipped", reason: stoppedReason };
-  if (!hasRepairLoopLabel(command.target))
-    return {
-      ...command,
-      status: "skipped",
-      reason: "PR is not opted into ClawSweeper autofix or automerge",
-    };
-  const headBlock = reviewedHeadShaBlockReason({
-    expectedHeadSha: command.expected_head_sha,
-    currentHeadSha: command.target?.head_sha,
-    markerName: "pass",
-  });
-  if (headBlock) return { ...command, status: "skipped", reason: headBlock };
-  const pauseLabels = pauseLabelsOn(command.target);
-  const pauseLabelActions = pauseLabels.map((label) => ({
-    action: "remove_label",
-    label,
-    status: execute ? "pending" : "planned",
-  }));
-  const failedCheckBlockers = repairableCheckBlockers(command.target?.checks);
-  if (failedCheckBlockers.length > 0) {
-    return classifyPassedAutomergeRepair(
-      command,
-      pauseLabelActions,
-      `${command.repair_reason ?? "structured ClawSweeper verdict: pass"}; current checks are failing: ${failedCheckBlockers.slice(0, 5).join(", ")}`,
-    );
-  }
-  const rebaseRepairReason = automergeRebaseRepairReason(command.target);
-  if (rebaseRepairReason) {
-    return classifyPassedAutomergeRepair(
-      command,
-      pauseLabelActions,
-      `${command.repair_reason ?? "structured ClawSweeper verdict: pass"}; ${rebaseRepairReason}`,
-    );
-  }
-  const completionLabels = reviewOnlyRepairLoopCompletionLabels(command.target?.labels ?? []);
-  if (reviewOnlyRepairLoopMissingChecks(command.target?.labels ?? [], command.target?.checks)) {
-    return {
-      ...command,
-      status: "waiting",
-      reason: "waiting for required checks to appear before autofix completion",
-      actions: [],
-    };
-  }
-  const pendingChecks = reviewOnlyRepairLoopPendingChecks(
-    command.target?.labels ?? [],
-    command.target?.checks,
-  );
-  if (pendingChecks.length > 0) {
-    return {
-      ...command,
-      status: "waiting",
-      reason: `waiting for required checks before autofix completion: ${pendingChecks.slice(0, 8).join(", ")}`,
-      actions: [],
-    };
-  }
-  const terminalChecks = reviewOnlyRepairLoopTerminalChecks(
-    command.target?.labels ?? [],
-    command.target?.checks,
-  );
-  if (terminalChecks.length > 0) {
-    return {
-      ...command,
-      status: "waiting",
-      reason: `required checks block autofix completion: ${terminalChecks.slice(0, 8).join(", ")}`,
-      actions: [],
-    };
-  }
-  const mergeStateBlock = reviewOnlyRepairLoopMergeStateBlockReason(
-    command.target?.labels ?? [],
-    command.target ?? {},
-  );
-  if (mergeStateBlock) {
-    return {
-      ...command,
-      status: "waiting",
-      reason: mergeStateBlock,
-      actions: [],
-    };
-  }
-  if (completionLabels.length > 0) {
-    return {
-      ...command,
-      autofix_complete: true,
-      status: "ready",
-      actions: [
-        ...completionLabels.map((label) => ({
-          action: "remove_label",
-          label,
-          status: execute ? "pending" : "planned",
-        })),
-        { action: "comment", status: execute ? "pending" : "planned" },
-      ],
-    };
-  }
-  return {
-    ...command,
-    status: "ready",
-    actions: [
-      ...pauseLabelActions,
-      { action: "merge", status: execute ? "pending" : "planned" },
-      { action: "comment", status: execute ? "pending" : "planned" },
-    ],
-  };
-}
-
-function classifyPassedAutomergeRepair(
-  command: LooseRecord,
-  pauseLabelActions: LooseRecord[],
-  repairReason: string,
-): JsonValue {
-  const alreadyPlanned = autoRepairAlreadyPlanned(command);
-  if (alreadyPlanned) return { ...command, status: "skipped", reason: alreadyPlanned };
-  const repairJobPath = command.target?.automerge_job_path;
-  return {
-    ...command,
-    repair_reason: repairReason,
-    status: "ready",
-    actions: [
-      ...pauseLabelActions,
-      ...(command.target?.has_automerge_job
-        ? []
-        : [
-            {
-              action: "ensure_automerge_job",
-              job_path: repairJobPath,
-              status: execute ? "pending" : "planned",
-            },
-          ]),
-      {
-        action: "dispatch_repair",
-        workflow,
-        job_path: repairJobPath,
-        mode: command.target?.has_automerge_job ? command.target?.mode : "autonomous",
-        status: execute ? "pending" : "planned",
-      },
-      { action: "comment", status: execute ? "pending" : "planned" },
-    ],
-  };
-}
-
-function classifyMaintainerApprovedAutomerge(
-  command: LooseRecord,
-  issue: LooseRecord,
-  pull: LooseRecord,
-): JsonValue {
-  if (String(issue.state ?? "").toLowerCase() !== "open")
-    return { ...command, status: "skipped", reason: "PR is not open" };
-  if (!pull) return { ...command, status: "skipped", reason: "maintainer approval is not on a PR" };
-  if (!hasLabel(command.target, AUTOMERGE_LABEL))
-    return { ...command, status: "skipped", reason: "PR is not opted into ClawSweeper automerge" };
-  const pauseLabels = pauseLabelsOn(command.target);
-  if (pauseLabels.length === 0) {
-    return {
-      ...command,
-      status: "skipped",
-      reason: "maintainer approval requires an active ClawSweeper pause label",
-    };
-  }
-  const expectedHeadSha = command.target?.head_sha ?? null;
-  if (!expectedHeadSha) {
-    return {
-      ...command,
-      status: "skipped",
-      reason: "maintainer approval could not resolve the current PR head SHA",
-    };
-  }
-  const review = latestTrustedExactHeadReview({
-    comments: freshIssueCommentsFor(command.issue_number),
-    headSha: expectedHeadSha,
-    trustedAuthors: trustedBots,
-  });
-  const validatedMaintainerHumanApproval =
-    review?.decision === "human" &&
-    maintainerAutomergeOptInApprovesNeedsHumanReason({
-      hold: review.command?.needs_human_hold,
-      findings: review.command?.review_findings,
-      commentCreatedAt: review.commentCreatedAt,
-      commentUpdatedAt: review.commentUpdatedAt,
-      optInTime: command.comment_updated_at ?? command.comment_created_at,
-      replacementAutomergeRequestedBy: automergeRequestedByFromBody(command.target?.body),
-      liveVerification: review.liveVerification,
-    });
-  const removePauseLabelActions = pauseLabels.map((label) => ({
-    action: "remove_label",
-    label,
-    status: execute ? "pending" : "planned",
-  }));
-  return {
-    ...command,
-    expected_head_sha: expectedHeadSha,
-    validated_maintainer_human_approval: validatedMaintainerHumanApproval,
-    status: "ready",
-    actions: [
-      ...removePauseLabelActions,
-      { action: "merge", status: execute ? "pending" : "planned" },
-      { action: "comment", status: execute ? "pending" : "planned" },
-    ],
-  };
-}
-
-function classifyNeedsHuman(
-  command: LooseRecord,
-  issue: LooseRecord,
-  pull: LooseRecord,
-): JsonValue {
-  if (String(issue.state ?? "").toLowerCase() !== "open")
-    return { ...command, status: "skipped", reason: "target is not open" };
-  if (!pull) return { ...command, status: "skipped", reason: "human-review marker is not on a PR" };
-  if (!hasRepairLoopLabel(command.target))
-    return {
-      ...command,
-      status: "skipped",
-      reason: "PR is not opted into ClawSweeper autofix or automerge",
-    };
-  const headBlock = reviewedHeadShaBlockReason({
-    expectedHeadSha: command.expected_head_sha,
-    currentHeadSha: command.target?.head_sha,
-    markerName: "human-review",
-  });
-  if (headBlock) return { ...command, status: "skipped", reason: headBlock };
-  if (maintainerAutomergeOptInApprovesNeedsHuman(command)) {
-    return {
-      ...command,
-      intent: "clawsweeper_auto_merge",
-      validated_maintainer_human_approval: true,
-      repair_reason: `${command.repair_reason ?? "structured ClawSweeper verdict: needs-human"}; later maintainer automerge opt-in approves landing the canonical PR`,
-      status: "ready",
-      actions: [
-        ...(hasLabel(command.target, HUMAN_REVIEW_LABEL)
-          ? [
-              {
-                action: "remove_label",
-                label: HUMAN_REVIEW_LABEL,
-                status: execute ? "pending" : "planned",
-              },
-            ]
-          : []),
-        ...(command.needs_human_hold === "proof"
-          ? [
-              {
-                action: "update_description_note",
-                note: proofOverrideDescriptionNote(command),
-                status: execute ? "pending" : "planned",
-              },
-            ]
-          : []),
-        { action: "merge", status: execute ? "pending" : "planned" },
-        { action: "comment", status: execute ? "pending" : "planned" },
-      ],
-    };
-  }
-  return {
-    ...command,
-    status: "ready",
-    actions: [
-      { action: "label", label: HUMAN_REVIEW_LABEL, status: execute ? "pending" : "planned" },
-      { action: "comment", status: execute ? "pending" : "planned" },
-    ],
-  };
-}
-
-function maintainerAutomergeOptInApprovesNeedsHuman(command: LooseRecord) {
-  if (!command.trusted_bot) return false;
-  if (!hasLabel(command.target, AUTOMERGE_LABEL)) return false;
-  return maintainerAutomergeOptInApprovesNeedsHumanReason({
-    hold: command.needs_human_hold,
-    findings: command.review_findings,
-    liveVerification: command.live_verification,
-    commentCreatedAt: command.comment_created_at,
-    commentUpdatedAt: command.comment_updated_at,
-    optInTime: latestAutomergeResumeAt(command),
-    replacementAutomergeRequestedBy: automergeRequestedByFromBody(command.target?.body),
-  });
-}
-
-function approvedMissingProofNeedsHuman(command: LooseRecord, target: LooseRecord) {
-  if (command.trusted_bot === true) return null;
-  const comments = cachedIssueComments(command.issue_number);
-  const trusted = comments
-    .map((comment: JsonValue) => {
-      const parsed = parseTrustedAutomation(comment, {
-        trustedAuthors: trustedBots,
-      }) as LooseRecord | null;
-      if (!parsed || parsed.intent !== "clawsweeper_needs_human") return null;
-      if (parsed.live_verification !== "absent") return null;
-      if (parsed.needs_human_hold !== "proof") return null;
-      if (
-        reviewedHeadShaBlockReason({
-          expectedHeadSha: parsed.expected_head_sha,
-          currentHeadSha: target.head_sha,
-          markerName: "human-review",
-        })
-      ) {
-        return null;
-      }
-      return {
-        parsed,
-        commentCreatedAt: comment.created_at,
-        commentUpdatedAt: comment.updated_at,
-      };
-    })
-    .filter(Boolean)
-    .sort(
-      (left: JsonValue, right: JsonValue) =>
-        (Date.parse(String(right.commentUpdatedAt ?? right.commentCreatedAt ?? "")) || 0) -
-        (Date.parse(String(left.commentUpdatedAt ?? left.commentCreatedAt ?? "")) || 0),
-    );
-  const latest = trusted[0];
-  if (!latest) return null;
-  const reason = `${latest.parsed.repair_reason}; maintainer automerge opt-in records proof: override and approves landing the canonical PR`;
-  if (
-    !maintainerAutomergeOptInApprovesNeedsHumanReason({
-      hold: latest.parsed.needs_human_hold,
-      findings: latest.parsed.review_findings,
-      liveVerification: latest.parsed.live_verification,
-      commentCreatedAt: latest.commentCreatedAt,
-      commentUpdatedAt: latest.commentUpdatedAt,
-      optInTime: command.comment_updated_at ?? command.comment_created_at,
-      replacementAutomergeRequestedBy: automergeRequestedByFromBody(target.body),
-    })
-  ) {
-    return null;
-  }
-  return {
-    reason,
-    expected_head_sha: latest.parsed.expected_head_sha,
-    note: proofOverrideDescriptionNote({
-      ...command,
-      repair_reason: reason,
-      expected_head_sha: latest.parsed.expected_head_sha,
-    }),
-  };
-}
-
-function proofOverrideDescriptionNote(command: LooseRecord) {
-  const maintainer = String(command.author ?? "")
-    .replace(/^@/, "")
-    .trim();
-  const maintainerLine =
-    maintainer && !maintainer.includes("[bot]")
-      ? `Maintainer: @${maintainer}`
-      : "Maintainer: recorded by ClawSweeper automerge.";
-  const sha = String(command.expected_head_sha ?? "").trim();
-  return [
-    PROOF_OVERRIDE_DESCRIPTION_MARKER,
-    "### Maintainer authorization: proof override",
-    "",
-    "A maintainer authorized ClawSweeper to waive only the missing real behavior proof requirement for the reviewed head.",
-    "",
-    "This authorization does not state that the PR is ready or merged. It does not bypass any current or later review finding, security or policy blocker, required check, head change, mergeability gate, or other landing requirement.",
-    "",
-    `- ${maintainerLine}`,
-    sha ? `- Reviewed head: ${sha}` : null,
-  ]
-    .filter(Boolean)
-    .join("\n");
-}
-
-function automergeBlocked(command: LooseRecord, reason: string) {
-  return {
-    ...command,
-    status: "ready",
-    actions: [{ action: "comment", status: execute ? "pending" : "planned" }],
-    reason,
-  };
-}
-
-function repairBlocked(command: LooseRecord, reason: string) {
-  if (command.trusted_bot) return { ...command, status: "skipped", reason };
-  return {
-    ...command,
-    status: "ready",
-    actions: [{ action: "comment", status: execute ? "pending" : "planned" }],
-    reason,
-  };
-}
-
-function canRepairPullTarget(target: LooseRecord) {
-  if (target?.kind !== "pull_request") return false;
-  return Boolean(target.job_path || target.is_clawsweeper_pr || hasRepairLoopLabel(target));
-}
-
-function hasRepairLoopLabel(target: LooseRecord) {
-  return hasLabel(target, AUTOFIX_LABEL) || hasLabel(target, AUTOMERGE_LABEL);
-}
-
-function autoRepairAlreadyPlanned(command: LooseRecord) {
-  const resumeBoundary = latestAutomergeResumeAt(command);
-  const block = autoRepairBlockReason({
-    entries: ledger.commands ?? [],
-    plannedHeads: plannedAutoRepairHeads,
-    repo: command.repo,
-    issueNumber: command.issue_number,
-    headSha: command.target?.head_sha,
-    maxRepairsPerPr: maxAutoRepairsPerPr,
-    maxRepairsPerHead: maxAutoRepairsPerHead,
-    resumeBoundary,
-  });
-  if (block) return block;
-
-  const headKey = autoRepairHeadKey({
-    repo: command.repo,
-    issueNumber: command.issue_number,
-    headSha: command.target?.head_sha,
-  });
-  if (headKey) plannedAutoRepairHeads.add(headKey);
-  return null;
-}
-
-function latestAutomergeResumeAt(command: LooseRecord) {
-  return latestRepairLoopResumeTime(ledger.commands ?? [], command);
-}
-
-function latestAutomergeMaintainerAttribution(command: LooseRecord) {
-  const candidates: LooseRecord[] = [];
-  if (
-    !command.trusted_bot &&
-    ["automerge", "maintainer_approve_automerge"].includes(command.intent)
-  ) {
-    candidates.push(command);
-  }
-  for (const entry of ledger.commands ?? []) {
-    if (entry.repo !== command.repo) continue;
-    if (Number(entry.issue_number) !== Number(command.issue_number)) continue;
-    if (!["automerge", "maintainer_approve_automerge"].includes(String(entry.intent ?? ""))) {
-      continue;
-    }
-    if (entry.trusted_bot) continue;
-    if (!["executed", "waiting"].includes(String(entry.status ?? ""))) continue;
-    candidates.push(entry);
-  }
-  for (const entry of commands ?? []) {
-    if (entry === command) continue;
-    if (entry.repo !== command.repo) continue;
-    if (Number(entry.issue_number) !== Number(command.issue_number)) continue;
-    if (!["automerge", "maintainer_approve_automerge"].includes(String(entry.intent ?? ""))) {
-      continue;
-    }
-    if (entry.trusted_bot) continue;
-    if (!["ready", "executed", "waiting"].includes(String(entry.status ?? ""))) continue;
-    candidates.push(entry);
-  }
-  const latest = candidates
-    .map((entry) => ({
-      entry,
-      at: Date.parse(String(entry.comment_updated_at ?? entry.comment_created_at ?? "")) || 0,
-    }))
-    .sort((left, right) => right.at - left.at)[0]?.entry;
-  if (!latest?.author) return null;
-  return {
-    author: latest.author,
-    author_id: latest.author_id,
-    author_name: latest.author_name,
-  };
-}
-
-function repairLoopStoppedReason(command: LooseRecord) {
-  return repairLoopStopPauseReason({
-    command,
-    entries: repairLoopControlEntries(),
-  });
-}
-
-function repairLoopControlEntries() {
-  if (repairLoopControlEntriesCache) return repairLoopControlEntriesCache;
-  const entries: LooseRecord[] = [];
-  for (const entry of ledger.commands ?? []) {
-    if (!isRepairLoopControlIntent(entry)) continue;
-    if (!["executed", "waiting"].includes(String(entry.status ?? ""))) continue;
-    entries.push(entry);
-  }
-  for (const command of rawCommands) {
-    if (!isRepairLoopControlIntent(command) || command.trusted_bot) continue;
-    const authorization = resolveMaintainerCommandAuthorization(command);
-    if (authorization.allowed) entries.push(command);
-  }
-  repairLoopControlEntriesCache = entries;
-  return entries;
-}
-
-function isRepairLoopControlIntent(command: LooseRecord) {
-  return ["stop", "autofix", "automerge", "clawsweeper_needs_human"].includes(
-    String(command?.intent ?? ""),
-  );
-}
-
 function executeCommand(command: LooseRecord) {
   try {
-    const trustedAutomationLeaseBlock =
-      trustedAutomationReviewLeaseBlockReason(command) ??
-      endorContinuationPreMutationBlockReason(command);
-    if (trustedAutomationLeaseBlock) {
-      const status = trustedAutomationLeaseBlock.retryable ? "waiting" : "skipped";
-      command.status = status;
-      command.reason = trustedAutomationLeaseBlock.reason;
-      command.actions = command.actions.map((action: JsonValue) => ({
-        ...action,
-        status,
-        reason: trustedAutomationLeaseBlock.reason,
-      }));
-      return;
-    }
     let dispatched = null;
-    const shouldDispatchRepair = command.actions?.some(
-      (action: JsonValue) => action.action === "dispatch_repair",
-    );
     const shouldDispatchClawSweeper = commandHasAction(command, "dispatch_clawsweeper");
-    const shouldDispatchAssist = commandHasAction(command, "dispatch_assist");
-    const shouldMerge = commandHasAction(command, "merge");
     const shouldApplyHumanReviewLabel = commandHasAction(command, "label");
     if (!command.trusted_bot) reactToComment(command, "eyes");
-    if (command.intent === "request_proof" && commandHasAction(command, "dispatch_proof")) {
-      const input = writePayload(repoRoot(), "proof-request-" + command.comment_id, {
-        repository: command.repo,
-        pullRequest: Number(command.issue_number),
-        commentId: String(command.comment_id),
-      });
-      const result = runCommandMutation(command, {
-        kind: "proof_request_dispatch",
-        identity: {
-          repository: command.repo,
-          number: command.issue_number,
-          commentId: command.comment_id,
-        },
-        operation: () => {
-          try {
-            return runCommandResult(
-              process.execPath,
-              [path.join(repoRoot(), "dist/repair/command-proof-cli.js"), "request", input],
-              { timeoutMs: 180000 },
-            );
-          } catch (error) {
-            console.error(`proof request transport failed: ${errorMessage(error)}`);
-            return null;
-          }
-        },
-        outcome: (result) => (result?.status === 0 ? "accepted" : "unknown"),
-      });
-      if (result?.status !== 0) {
-        command.status = "waiting";
-        command.reason =
-          "Proof request transport unavailable; durable ownership will be rechecked without blind redispatch.";
-        command.actions = command.actions.map((action: JsonValue) => ({
-          ...action,
-          status: "waiting",
-        }));
-        return;
-      }
-      const proof = JSON.parse(result.stdout);
-      if (/^[0-9a-f]{64}$/.test(String(proof.requestId)))
-        command.command_status_revision = proof.requestId;
-      command.proof_admission = {
-        ...command.proof_admission,
-        status: proof.status === "queued" ? "queued" : "inconclusive",
-        reason: String(proof.reason || "proof_request_inconclusive"),
-        ...(command.proof_admission.request && /^[0-9a-f]{64}$/.test(String(proof.requestId))
-          ? {
-              request: {
-                ...command.proof_admission.request,
-                requestId: proof.requestId,
-                ...(/^[0-9a-f]{40}$/.test(String(proof.headSha)) ? { headSha: proof.headSha } : {}),
-                ...(Array.isArray(proof.scenarios)
-                  ? { scenarioId: proof.scenarios.join(", ") }
-                  : {}),
-              },
-            }
-          : {}),
-      };
-      command.actions = command.actions.map((action: JsonValue) =>
-        action.action === "dispatch_proof" ? { ...action, status: "executed" } : action,
-      );
-    }
-    if (
-      shouldDispatchRepair &&
-      (canRepairPullTarget(command.target) ||
-        ["autofix", "automerge", "implement_issue"].includes(command.intent))
-    ) {
-      if (["autofix", "automerge"].includes(command.intent)) {
-        applyRepairLoopOptIn(command);
-      }
-      const job =
-        command.intent === "implement_issue"
-          ? ensureIssueImplementationJob(command)
-          : ensureAutomergeJob(command);
-      if (job.status_detail === "written") {
-        command.actions = command.actions.map((action: JsonValue) => {
-          if (
-            action.action === "ensure_automerge_job" ||
-            action.action === "ensure_issue_implementation_job"
-          )
-            return { ...action, status: "executed", ...job };
-          if (action.action === "label")
-            return { ...action, status: "executed", label: action.label };
-          if (action.action === "remove_label")
-            return { ...action, status: "executed", label: action.label };
-          if (action.action === "dispatch_repair") {
-            return {
-              ...action,
-              job_path: command.target.job_path,
-              mode: command.target.mode,
-              status: "waiting",
-              reason: "adopted job must be committed before worker dispatch",
-            };
-          }
-          return action;
-        });
-        command.status = "waiting";
-        return;
-      }
-      const repair = dispatchRepair(command);
-      dispatched = REPAIR_INTENTS.has(command.intent) ? repair : { repair };
-      if (repair.status === "claimed") {
-        command.actions = command.actions.map((action: JsonValue) =>
-          action.action === "dispatch_repair"
-            ? {
-                ...action,
-                job_path: command.target.job_path,
-                mode: command.target.mode,
-                ...dispatchRepairActionStatus(repair),
-              }
-            : action,
-        );
-        keepCommandClaimed(command);
-        return;
-      }
-      const labelsToRemove = command.actions
-        .filter((action: JsonValue) => action.action === "remove_label")
-        .map((action: JsonValue) => String(action.label ?? ""))
-        .filter(Boolean);
-      for (const pausedLabel of labelsToRemove) {
-        editIssueLabel(command, pausedLabel, "remove");
-      }
-      command.actions = command.actions.map((action: JsonValue) => {
-        if (
-          action.action === "ensure_automerge_job" ||
-          action.action === "ensure_issue_implementation_job"
-        )
-          return { ...action, status: "executed", ...job };
-        if (action.action === "label")
-          return { ...action, status: "executed", label: action.label };
-        if (action.action === "remove_label")
-          return { ...action, status: "executed", label: action.label };
-        if (action.action === "dispatch_repair") {
-          return {
-            ...action,
-            job_path: command.target.job_path,
-            mode: command.target.mode,
-            ...dispatchRepairActionStatus(repair),
-          };
-        }
-        return action;
-      });
-    }
-    if (
-      ["autofix", "automerge"].includes(command.intent) &&
-      command.issue_number &&
-      shouldDispatchClawSweeper
-    ) {
-      const modeLabel = command.intent === "autofix" ? AUTOFIX_LABEL : AUTOMERGE_LABEL;
-      const oppositeModeLabel = command.intent === "autofix" ? AUTOMERGE_LABEL : AUTOFIX_LABEL;
-      const preMutationDecision = repairLoopPreMutationReviewDispatchDecision(command);
-      if (preMutationDecision.action !== "dispatch") {
-        const status = reviewDispatchActionStatus(preMutationDecision);
-        command.status = status;
-        command.reason = preMutationDecision.reason;
-        command.actions = command.actions.map((action: JsonValue) => ({
-          ...action,
-          status,
-          reason: preMutationDecision.reason,
-          coordination_action: preMutationDecision.action,
-        }));
-        return;
-      }
-      const job = ensureAutomergeJob(command);
-      ensureRepairLoopLabel(command, modeLabel);
-      for (const pausedLabel of pauseLabelsOn(command.target)) {
-        editIssueLabel(command, pausedLabel, "remove");
-      }
-      if (hasLabel(command.target, oppositeModeLabel)) {
-        editIssueLabel(command, oppositeModeLabel, "remove");
-      }
-      editIssueLabel(command, modeLabel, "add");
-      const dispatchDecision = reviewDispatchDecisionForCommand(command);
-      if (dispatchDecision.action !== "dispatch") {
-        const verdictRouter =
-          dispatchDecision.action === "reuse_completed_review"
-            ? dispatchCompletedReviewVerdict(command, dispatchDecision)
-            : null;
-        const dispatchStatus = markCoordinatedReviewDispatchActions({
-          command,
-          job,
-          modeLabel,
-          decision: dispatchDecision,
-        });
-        if (dispatchDecision.action !== "stop") {
-          dispatched = {
-            ...dispatched,
-            clawsweeper: {
-              status: dispatchStatus,
-              coordination_action: dispatchDecision.action,
-              reason: dispatchDecision.reason,
-              ...(verdictRouter ? { verdict_router: verdictRouter } : {}),
-            },
-          };
-        }
-      } else {
-        if (command.endor_review_continuation === true && command.forced_replay !== true) {
-          command.source_delivery_id = endorReviewRevisionDeliveryId({
-            repo: String(command.repo),
-            issueNumber: Number(command.issue_number),
-            intent: String(command.intent),
-            headSha: dispatchDecision.headSha,
-            sourceRevision: dispatchDecision.sourceRevision,
-          });
-        } else if (command.endor_review_continuation === true) {
-          delete command.source_delivery_id;
-        }
-        const clawsweeper = dispatchClawSweeperReview(command);
-        dispatched = { ...dispatched, clawsweeper };
-        command.actions = command.actions.map((action: JsonValue) => {
-          if (action.action === "label")
-            return { ...action, status: "executed", label: action.label ?? modeLabel };
-          if (action.action === "remove_label")
-            return { ...action, status: "executed", label: action.label };
-          if (action.action === "ensure_automerge_job")
-            return { ...action, status: "executed", ...job };
-          if (action.action === "dispatch_clawsweeper") {
-            return {
-              ...action,
-              ...dispatchedActionStatus(clawsweeper),
-            };
-          }
-          return action;
-        });
-        if (clawsweeper.status === "claimed") {
-          keepCommandClaimed(command);
-          return;
-        }
-      }
-    }
-    if (
-      (command.intent === "freeform_assist" || command.intent === "visualize") &&
-      command.issue_number &&
-      shouldDispatchAssist
-    ) {
-      const clawsweeper = dispatchClawSweeperAssist(command);
-      dispatched = { ...dispatched, clawsweeper };
-      command.actions = command.actions.map((action: JsonValue) => {
-        if (action.action === "dispatch_assist") {
-          return {
-            ...action,
-            ...dispatchedActionStatus(clawsweeper),
-          };
-        }
-        return action;
-      });
-      if (clawsweeper.status === "claimed") {
-        keepCommandClaimed(command);
-        return;
-      }
-    }
-    if (
-      ["re_review", "request_proof"].includes(command.intent) &&
-      command.issue_number &&
-      shouldDispatchClawSweeper
-    ) {
-      const clawsweeper = dispatchClawSweeperReview(command);
+    if (command.intent === "re_review" && command.issue_number && shouldDispatchClawSweeper) {
+      const clawsweeper = enqueueClawSweeperReReview(command);
       const stale = clawsweeper.admission === "stale";
       if (stale) command.reason = clawsweeper.reason;
-      if (command.intent === "request_proof" && !stale) {
-        command.proof_admission = {
-          ...command.proof_admission,
-          status: "queued",
-          reason:
-            "Queued one review with requested proof focus. The reviewer selects relevant supported checks and uses their observations before its final decision; no separate follow-up review is scheduled.",
-        };
-      }
-      dispatched = { ...dispatched, clawsweeper };
+      dispatched = { clawsweeper };
       command.actions = command.actions.map((action: JsonValue) => {
         if (action.action === "dispatch_clawsweeper") {
           return {
@@ -2420,88 +704,7 @@ function executeCommand(command: LooseRecord) {
       command.status = stale ? "skipped" : "executed";
       return;
     }
-    if (
-      AUTOCLOSE_INTENTS.has(command.intent) &&
-      command.issue_number &&
-      command.autoclose_targets?.length > 0
-    ) {
-      const autoclose = executeAutoclose(command);
-      dispatched = { ...dispatched, autoclose };
-      command.actions = command.actions.map((action: JsonValue) =>
-        action.action === "autoclose"
-          ? { ...action, ...autoclose, completed_at: new Date().toISOString() }
-          : action,
-      );
-    }
-    if (
-      MERGE_INTENTS.has(command.intent) &&
-      !shouldDispatchRepair &&
-      command.issue_number &&
-      shouldMerge
-    ) {
-      if (commandHasAction(command, "label")) {
-        applyLabelActions(command);
-      }
-      const merge = executeAutomerge(command);
-      dispatched = { ...dispatched, merge };
-      command.actions = command.actions.map((action: JsonValue) =>
-        action.action === "label"
-          ? { ...action, status: "executed", label: action.label }
-          : action.action === "merge"
-            ? { ...action, ...merge, completed_at: new Date().toISOString() }
-            : action,
-      );
-      if (merge.status === "waiting") {
-        command.status = "waiting";
-        return;
-      }
-      if (merge.status === "repair_needed" && canRepairPullTarget(command.target)) {
-        const alreadyPlanned = autoRepairAlreadyPlanned(command);
-        if (alreadyPlanned) {
-          command.actions = command.actions.map((action: JsonValue) =>
-            action.action === "merge"
-              ? { ...action, status: "blocked", reason: alreadyPlanned }
-              : action,
-          );
-        } else {
-          command.repair_reason = `${command.repair_reason ?? "structured ClawSweeper verdict: pass"}; ${merge.repair_reason ?? merge.reason}`;
-          const job = ensureAutomergeJob(command);
-          if (job.status_detail === "written") {
-            command.actions.push({
-              action: "dispatch_repair",
-              workflow,
-              job_path: command.target.job_path,
-              mode: command.target.mode,
-              status: "waiting",
-              reason: "adopted job must be committed before worker dispatch",
-            });
-            command.status = "waiting";
-            return;
-          }
-          const repair = dispatchRepair(command);
-          dispatched = { ...dispatched, repair };
-          command.actions.push({
-            action: "dispatch_repair",
-            workflow,
-            job_path: command.target.job_path,
-            mode: command.target.mode,
-            ...dispatchRepairActionStatus(repair),
-          });
-          if (repair.status === "claimed") {
-            keepCommandClaimed(command);
-            return;
-          }
-        }
-      }
-      if (merge.status === "executed") {
-        applyRemoveLabelActions(command);
-      }
-    }
-    if (
-      ["clawsweeper_needs_human", "stop"].includes(command.intent) &&
-      command.issue_number &&
-      shouldApplyHumanReviewLabel
-    ) {
+    if (command.intent === "stop" && command.issue_number && shouldApplyHumanReviewLabel) {
       if (command.intent === "stop") applyRemoveLabelActions(command);
       ensureHumanReviewLabel(command);
       editIssueLabel(command, HUMAN_REVIEW_LABEL, "add");
@@ -2510,9 +713,6 @@ function executeCommand(command: LooseRecord) {
           ? { ...action, status: "executed", label: HUMAN_REVIEW_LABEL }
           : action,
       );
-    }
-    if (command.autofix_complete && command.issue_number) {
-      applyRemoveLabelActions(command);
     }
 
     const commentResult = postComment(command, renderResponse(command, dispatched));
@@ -2527,11 +727,7 @@ function executeCommand(command: LooseRecord) {
           }
         : action,
     );
-    command.status = commandHasClaimedDispatch(command)
-      ? "claimed"
-      : commandHasWaitingDispatch(command)
-        ? "waiting"
-        : "executed";
+    command.status = "executed";
   } finally {
     clearTerminalMaintainerCommandReaction(command);
   }
@@ -2541,7 +737,6 @@ function executeCommandWithReceipt(command: LooseRecord) {
   try {
     executeCommand(command);
     recordCommandOutcome(command);
-    queueAutomergeProductMetrics(command);
   } catch (error) {
     recordCommandFailure(command, error);
     if (error instanceof GitHubRateLimitError) {
@@ -2552,114 +747,6 @@ function executeCommandWithReceipt(command: LooseRecord) {
     }
     throw error;
   }
-}
-
-function queueAutomergeProductMetrics(command: LooseRecord) {
-  if (command.retired) return;
-  const activation = latestAutomergeActivation(command);
-  if (!activation) return;
-  const events = [];
-  if (command === activation && command.intent === "automerge" && !command.trusted_bot) {
-    events.push(
-      automergeMetricEvent({
-        activation,
-        command,
-        phase: "activated",
-        state: command.status === "waiting" ? "waiting" : "active",
-        reason: command.reason,
-      }),
-    );
-  }
-  const repair = command.actions?.find(
-    (action: JsonValue) =>
-      action.action === "dispatch_repair" && ["executed", "active"].includes(String(action.status)),
-  );
-  if (repair) {
-    events.push(
-      automergeMetricEvent({
-        activation,
-        command,
-        phase: "repair_dispatched",
-        state: "repairing",
-        reason: command.repair_reason ?? repair.reason,
-        runUrl: repair.run_url,
-      }),
-    );
-  }
-  const merge = command.actions?.find(
-    (action: JsonValue) => action.action === "merge" && action.status === "executed",
-  );
-  if (merge) {
-    events.push(
-      automergeMetricEvent({
-        activation,
-        command,
-        phase: "terminal",
-        outcome: "merged",
-        reason: merge.reason,
-        runUrl: merge.run_url,
-      }),
-    );
-  } else if (command.intent === "stop" && command.status === "executed") {
-    events.push(
-      automergeMetricEvent({
-        activation,
-        command,
-        phase: "terminal",
-        outcome: "maintainer_stopped",
-        reason: command.reason ?? "maintainer stopped automerge",
-      }),
-    );
-  } else if (/auto repair already dispatched .* total time/i.test(String(command.reason ?? ""))) {
-    events.push(
-      automergeMetricEvent({
-        activation,
-        command,
-        phase: "terminal",
-        outcome: "repair_cap_exhausted",
-        reason: command.reason,
-      }),
-    );
-  } else if (/\b(?:PR|target) is not open\b/i.test(String(command.reason ?? ""))) {
-    events.push(
-      automergeMetricEvent({
-        activation,
-        command,
-        phase: "terminal",
-        outcome: "pr_closed",
-        reason: command.reason,
-      }),
-    );
-  } else if (/not opted into ClawSweeper automerge/i.test(String(command.reason ?? ""))) {
-    events.push(
-      automergeMetricEvent({
-        activation,
-        command,
-        phase: "terminal",
-        outcome: "automerge_disabled",
-        reason: command.reason,
-      }),
-    );
-  } else if (command.status === "waiting") {
-    events.push(
-      automergeMetricEvent({
-        activation,
-        command,
-        phase: "state_changed",
-        state: "waiting",
-        reason: command.reason,
-      }),
-    );
-  }
-  for (const event of events) automergeMetricWrites.push(postAutomergeMetricBestEffort(event));
-}
-
-function latestAutomergeActivation(command: LooseRecord) {
-  return latestAutomergeActivationForCommand(command, [
-    command,
-    ...(commands ?? []),
-    ...(ledger.commands ?? []),
-  ]);
 }
 
 function runGitHubTextMutation(
@@ -2685,7 +772,13 @@ function runGitHubTextMutation(
       }
       return ghRetryKind(error) === "transient";
     },
-    beforeRetry: (_error, attempt) => sleepMs(ghRetryWaitMs("transient", attempt - 1)),
+    beforeRetry: (_error, attempt) =>
+      Atomics.wait(
+        new Int32Array(new SharedArrayBuffer(4)),
+        0,
+        0,
+        ghRetryWaitMs("transient", attempt - 1),
+      ),
     ...(knownNoMutation ? { knownNoMutation } : {}),
   });
 }
@@ -2703,27 +796,6 @@ function runGitHubTextMutationOnce(
     identity,
     operation: () => ghTextWithRetry(ghArgs, { ...options, attempts: 1 }),
     ...(knownNoMutation ? { knownNoMutation } : {}),
-  });
-}
-
-function runGitHubSpawnMutation(
-  command: LooseRecord,
-  kind: string,
-  identity: unknown,
-  ghArgs: string[],
-  options: Parameters<typeof ghSpawn>[1] = {},
-) {
-  return runCommandMutation(command, {
-    kind,
-    identity,
-    operation: () => {
-      const result = ghSpawn(ghArgs, options);
-      if (result.status !== 0 && ghRetryKind(result) === "throttle") {
-        throw new GitHubRateLimitError(result);
-      }
-      return result;
-    },
-    outcome: (result) => (result.status === 0 && !result.error ? "accepted" : "unknown"),
   });
 }
 
@@ -2802,107 +874,6 @@ function applyRemoveLabelActions(command: LooseRecord) {
   );
 }
 
-function applyLabelActions(command: LooseRecord) {
-  const labels = (command.actions ?? [])
-    .filter((action: JsonValue) => action.action === "label")
-    .map((action: JsonValue) => String(action.label ?? ""))
-    .filter(Boolean);
-  if (labels.length === 0) return;
-  for (const label of labels) {
-    if (label === AUTOMERGE_LABEL || label === AUTOFIX_LABEL) ensureRepairLoopLabel(command, label);
-    editIssueLabel(command, label, "add");
-  }
-  command.target = {
-    ...command.target,
-    labels: [...new Set([...(command.target?.labels ?? []), ...labels])],
-  };
-}
-
-function applyDescriptionNoteActions(command: LooseRecord) {
-  const notes = (command.actions ?? [])
-    .filter((action: JsonValue) => action.action === "update_description_note")
-    .map((action: JsonValue) => String(action.note ?? "").trim())
-    .filter(Boolean);
-  if (notes.length === 0) return;
-  let body = String(command.target?.body ?? "").trimEnd();
-  for (const note of notes) {
-    body = body.includes(PROOF_OVERRIDE_DESCRIPTION_MARKER)
-      ? body.replace(
-          new RegExp(`${escapeRegExp(PROOF_OVERRIDE_DESCRIPTION_MARKER)}[\\s\\S]*$`),
-          note,
-        )
-      : `${body}${body ? "\n\n" : ""}${note}`;
-  }
-  const payloadPath = writePayload(repoRoot(), `pr-description-${command.issue_number}`, { body });
-  runGitHubTextMutation(
-    command,
-    "description_update",
-    {
-      repository: command.repo,
-      number: command.issue_number,
-      bodySha256: commentBodySha256(body),
-    },
-    [
-      "api",
-      `repos/${command.repo}/issues/${command.issue_number}`,
-      "--method",
-      "PATCH",
-      "--input",
-      payloadPath,
-    ],
-  );
-  command.target = { ...command.target, body };
-}
-
-function workerCapacityRequests(commands: LooseRecord[]) {
-  const counts = new Map<string, { count: number; automergeLane: boolean }>();
-  for (const command of commands) {
-    if (command.retired) continue;
-    if (!REPAIR_INTENTS.has(command.intent) && !MERGE_INTENTS.has(command.intent)) continue;
-    const automergeLane = usesAutomergeRepairLane(command);
-    const key = automergeLane ? "automerge" : "default";
-    const entry = counts.get(key) ?? { count: 0, automergeLane };
-    entry.count += 1;
-    counts.set(key, entry);
-  }
-  return [...counts.values()].map(({ count, automergeLane }) => ({
-    repo: repairRepo,
-    workflow,
-    requested: count,
-    maxLiveWorkers: automergeLane ? automergeMaxLiveWorkers : maxLiveWorkers,
-    ...(automergeLane
-      ? { runNamePrefix: automergeRunNamePrefix }
-      : { excludeRunNamePrefix: automergeRunNamePrefix }),
-  }));
-}
-
-function usesAutomergeRepairLane(command: LooseRecord) {
-  return (
-    command.intent === "automerge" ||
-    command.intent === "clawsweeper_auto_merge" ||
-    hasLabel(command.target, AUTOMERGE_LABEL)
-  );
-}
-
-function applyRepairLoopOptIn(command: LooseRecord) {
-  const modeLabel = command.intent === "autofix" ? AUTOFIX_LABEL : AUTOMERGE_LABEL;
-  const oppositeModeLabel = command.intent === "autofix" ? AUTOMERGE_LABEL : AUTOFIX_LABEL;
-  ensureRepairLoopLabel(command, modeLabel);
-
-  const labels = new Set((command.target?.labels ?? []).map((label: JsonValue) => String(label)));
-  for (const pausedLabel of pauseLabelsOn(command.target)) {
-    editIssueLabel(command, pausedLabel, "remove");
-    labels.delete(pausedLabel);
-  }
-  if (labels.has(oppositeModeLabel)) {
-    editIssueLabel(command, oppositeModeLabel, "remove");
-    labels.delete(oppositeModeLabel);
-  }
-  editIssueLabel(command, modeLabel, "add");
-  labels.add(modeLabel);
-  command.target = { ...command.target, labels: [...labels] };
-}
-
 function acknowledgeTerminalNoopMaintainerCommand(command: LooseRecord) {
   if (command.trusted_bot || !["executed", "skipped"].includes(String(command.status ?? ""))) {
     return;
@@ -2914,7 +885,7 @@ function acknowledgeTerminalNoopMaintainerCommand(command: LooseRecord) {
   }
   const targetedProcessedComment =
     itemNumbers.size > 0 && reason === "comment version already processed in ledger";
-  if (!targetedProcessedComment && !/already enabled for this PR/i.test(reason)) return;
+  if (!targetedProcessedComment) return;
   let quotaExhausted = false;
   try {
     reactToComment(command, "eyes");
@@ -2925,550 +896,6 @@ function acknowledgeTerminalNoopMaintainerCommand(command: LooseRecord) {
     // A throttled reaction must not spend another privileged request on cleanup.
     if (!quotaExhausted) clearTerminalMaintainerCommandReaction(command);
   }
-}
-
-function ensureAutomergeJob(command: LooseRecord) {
-  if (command.target?.kind !== "pull_request" || !command.issue_number) {
-    throw new Error("automerge repair job requires a pull request target");
-  }
-
-  const relative =
-    command.target.has_automerge_job && command.target.job_path
-      ? command.target.job_path
-      : (command.target.automerge_job_path ?? automergeJobPath(command.repo, command.issue_number));
-  const absolute = path.join(repoRoot(), relative);
-  let statusDetail = "existing";
-  if (!fs.existsSync(absolute)) {
-    fs.mkdirSync(path.dirname(absolute), { recursive: true });
-    fs.writeFileSync(
-      absolute,
-      renderAutomergeJob({
-        repo: command.repo,
-        issueNumber: command.issue_number,
-        title: command.target.title,
-        repairMode: automergeJobRepairPlan(command).repairMode,
-        author: command.author,
-        authorId: command.author_id,
-        commentUrl: command.comment_url,
-        automergeInstructions: command.automerge_instructions,
-      }),
-    );
-    statusDetail = "written";
-  } else {
-    const current = fs.readFileSync(absolute, "utf8");
-    const plan = automergeJobRepairPlan(command, parseJob(relative).frontmatter.repair_mode);
-    const updated = syncAutomergeJobRepairMode(current, plan.repairMode, plan.authorization);
-    if (updated !== current) {
-      fs.writeFileSync(absolute, updated);
-      statusDetail = "written";
-    }
-  }
-
-  const job = parseJob(relative);
-  const errors = validateJob(job);
-  if (errors.length > 0) throw new Error(`invalid automerge job ${relative}: ${errors.join("; ")}`);
-  command.target = {
-    ...command.target,
-    cluster_id: job.frontmatter.cluster_id,
-    job_path: job.relativePath,
-    has_automerge_job: true,
-    mode: dispatchMode(job.relativePath),
-  };
-  return {
-    job_path: command.target.job_path,
-    mode: command.target.mode,
-    cluster_id: command.target.cluster_id,
-    status_detail: statusDetail,
-  };
-}
-
-function ensureIssueImplementationJob(command: LooseRecord) {
-  if (command.target?.job_path) {
-    let statusDetail = "existing";
-    if (command.operator_override === true) {
-      const absolute = path.join(repoRoot(), command.target.job_path);
-      if (fs.existsSync(absolute)) {
-        fs.writeFileSync(
-          absolute,
-          renderIssueImplementationJob(issueImplementationJobOptions(command)),
-        );
-        statusDetail = "written";
-      }
-    }
-    return {
-      job_path: command.target.job_path,
-      mode: command.target.mode ?? dispatchMode(command.target.job_path),
-      status_detail: statusDetail,
-    };
-  }
-  if (command.target?.kind !== "issue" || !command.issue_number) {
-    throw new Error("issue implementation job requires an issue target");
-  }
-
-  const relative =
-    command.target.issue_implementation_job_path ??
-    issueImplementationJobPath(command.repo, command.issue_number);
-  const absolute = path.join(repoRoot(), relative);
-  let statusDetail = "existing";
-  if (!fs.existsSync(absolute)) {
-    fs.mkdirSync(path.dirname(absolute), { recursive: true });
-    fs.writeFileSync(
-      absolute,
-      renderIssueImplementationJob(issueImplementationJobOptions(command)),
-    );
-    statusDetail = "written";
-  }
-
-  const job = parseJob(relative);
-  const errors = validateJob(job);
-  if (errors.length > 0)
-    throw new Error(`invalid issue implementation job ${relative}: ${errors.join("; ")}`);
-  command.target = {
-    ...command.target,
-    cluster_id: job.frontmatter.cluster_id,
-    job_path: job.relativePath,
-    mode: dispatchMode(job.relativePath),
-  };
-  return {
-    job_path: command.target.job_path,
-    mode: command.target.mode,
-    cluster_id: command.target.cluster_id,
-    status_detail: statusDetail,
-  };
-}
-
-function issueImplementationJobOptions(command: LooseRecord) {
-  const overrideBlockerClass = issueImplementationOverrideBlockerClass(command);
-  return {
-    repo: command.repo,
-    issueNumber: command.issue_number,
-    title: command.target.title,
-    commentUrl: command.comment_url,
-    author: command.author,
-    implementationPrompt: command.implementation_prompt,
-    operatorOverride: command.operator_override === true,
-    overrideRequestedBy: command.author,
-    overrideReason: command.operator_override
-      ? "maintainer requested /clawsweeper build override"
-      : null,
-    overrideBlockerClass,
-    overrideAction: command.operator_override
-      ? overrideBlockerClass === "hard"
-        ? "prepare a non-mutating handoff for this issue"
-        : "try the narrowest useful reviewable PR for this issue"
-      : null,
-    sourceIssueRevision: issueSourceRevisionSha256(
-      command.target ?? {},
-      issueCommentsFor(command.issue_number),
-    ),
-  };
-}
-
-type ReviewLeaseGuardBlock = { reason: string; retryable: boolean };
-type VerifiedReviewDispatchDecision =
-  | Exclude<ReviewDispatchCoordinationDecision, { action: "dispatch" }>
-  | { action: "dispatch"; headSha: string; sourceRevision: string };
-type FinalAutomergeSnapshot =
-  | { status: "blocked"; block: ReviewLeaseGuardBlock }
-  | { status: "not_ready"; block: string }
-  | {
-      status: "ready";
-      view: LooseRecord;
-      target: LooseRecord;
-      comments: JsonValue[];
-    };
-
-function repairLoopPreMutationReviewDispatchDecision(
-  command: LooseRecord,
-): ReviewDispatchCoordinationDecision {
-  if (command.automation_source !== "repair_loop_label_sweep") return { action: "dispatch" };
-  return reviewDispatchDecisionForCommand(command);
-}
-
-function repairLoopDispatchLabelBlockReason(command: LooseRecord, target: LooseRecord) {
-  const modeLabel = command.intent === "autofix" ? AUTOFIX_LABEL : AUTOMERGE_LABEL;
-  const blockingLabels = command.endor_review_continuation
-    ? AUTOMERGE_BLOCKING_LABEL_NAMES.filter(
-        (label) => label !== modeLabel && hasLabel(target, label),
-      )
-    : pauseLabelsOn(target);
-  if (blockingLabels.length > 0) return `PR is paused by ${blockingLabels.join(", ")}`;
-  const oppositeModeLabel = command.intent === "autofix" ? AUTOMERGE_LABEL : AUTOFIX_LABEL;
-  if (!hasLabel(target, modeLabel)) return `${modeLabel} is no longer enabled`;
-  if (hasLabel(target, oppositeModeLabel)) return `${oppositeModeLabel} now owns the repair loop`;
-  return null;
-}
-
-function endorContinuationPreMutationBlockReason(
-  command: LooseRecord,
-): ReviewLeaseGuardBlock | null {
-  if (command.endor_review_continuation !== true) return null;
-  try {
-    const view = fetchPullRequestView(Number(command.issue_number));
-    const reason =
-      String(view.state ?? "").toUpperCase() !== "OPEN"
-        ? "target is no longer an open PR"
-        : repairLoopDispatchLabelBlockReason(command, latestAutomergeTarget(command, view));
-    return reason ? { reason, retryable: false } : null;
-  } catch (error) {
-    return {
-      reason: `Endor continuation label check failed; next sweep will retry: ${compactGhError(error)}`,
-      retryable: true,
-    };
-  }
-}
-
-function reviewDispatchDecisionForCommand(command: LooseRecord): VerifiedReviewDispatchDecision {
-  const number = Number(command.issue_number);
-  if (!Number.isInteger(number) || number <= 0) {
-    return { action: "stop", reason: "review dispatch target is invalid" };
-  }
-  try {
-    const before = fetchPullRequestView(number);
-    const headBefore = String(before.headRefOid ?? "")
-      .trim()
-      .toLowerCase();
-    if (String(before.state ?? "").toUpperCase() !== "OPEN") {
-      return { action: "stop", reason: "target is no longer an open PR" };
-    }
-    const commentsBefore = ghPaged<JsonValue>(
-      `repos/${targetRepo}/issues/${number}/comments?per_page=100`,
-    );
-    const after = fetchPullRequestView(number);
-    const commentsAfter = ghPaged<JsonValue>(
-      `repos/${targetRepo}/issues/${number}/comments?per_page=100`,
-    );
-    const headAfter = String(after.headRefOid ?? "")
-      .trim()
-      .toLowerCase();
-    const activeReviewLease = freshExactHeadReviewStartLease({
-      comments: commentsAfter as LooseRecord[],
-      itemNumber: number,
-      headSha: headAfter,
-      trustedAuthors: trustedBots,
-      nowMs: Date.now(),
-    });
-    // An already-armed exact-head plan can have completed before the maintainer
-    // resume comment. Its head binding, rather than comment order, makes reuse safe.
-    const commandStartedAtMs = command.reuse_prior_exact_head_review
-      ? 0
-      : Date.parse(String(command.comment_updated_at ?? command.comment_created_at ?? ""));
-    const completedReview = trustedExactHeadReviewCompletionSince({
-      comments: commentsAfter as LooseRecord[],
-      headSha: headAfter,
-      trustedAuthors: trustedBots,
-      sinceMs: commandStartedAtMs,
-    });
-    const sourceRevisionBefore = issueSourceRevisionSha256(before, commentsBefore);
-    const sourceRevisionAfter = issueSourceRevisionSha256(after, commentsAfter);
-    const decision = decideReviewDispatchCoordination({
-      stateBefore: String(before.state ?? ""),
-      stateAfter: String(after.state ?? ""),
-      headBefore,
-      headAfter,
-      activeLeaseExpiresAt: activeReviewLease?.expiresAt ?? null,
-      completedReviewAt:
-        completedReview?.publishedAt ??
-        completedReview?.reviewedAt ??
-        (completedReview ? "recently" : null),
-      completedReviewCommentId: completedReview?.commentId ?? null,
-      completedReviewSourceRevision: completedReview?.sourceRevision ?? null,
-      sourceRevisionBefore,
-      sourceRevisionAfter,
-    });
-    if (decision.action === "retry" || decision.action === "stop") return decision;
-    if (command.automation_source === "repair_loop_label_sweep") {
-      const labelBlock = repairLoopDispatchLabelBlockReason(
-        command,
-        latestAutomergeTarget(command, after),
-      );
-      if (labelBlock) return { action: "stop", reason: labelBlock };
-    }
-    if (decision.action !== "dispatch") return decision;
-    return { ...decision, headSha: headAfter, sourceRevision: sourceRevisionAfter };
-  } catch (error) {
-    return {
-      action: "retry",
-      reason: `dispatch-time review lease check failed; next sweep will retry: ${compactGhError(error)}`,
-    };
-  }
-}
-
-function reviewDispatchActionStatus(decision: ReviewDispatchCoordinationDecision) {
-  if (decision.action === "reuse_completed_review") return "executed";
-  return ["wait_for_active_review", "retry"].includes(decision.action) ? "waiting" : "skipped";
-}
-
-function markCoordinatedReviewDispatchActions({
-  command,
-  job,
-  modeLabel,
-  decision,
-}: {
-  command: LooseRecord;
-  job: LooseRecord;
-  modeLabel: string;
-  decision: Exclude<ReviewDispatchCoordinationDecision, { action: "dispatch" }>;
-}) {
-  const dispatchStatus = reviewDispatchActionStatus(decision);
-  command.reason = decision.reason;
-  command.actions = command.actions.map((action: JsonValue) => {
-    if (action.action === "ensure_automerge_job") {
-      return { ...action, status: "executed", ...job };
-    }
-    if (action.action === "label") {
-      return { ...action, status: "executed", label: action.label ?? modeLabel };
-    }
-    if (action.action === "remove_label") {
-      return { ...action, status: "executed", label: action.label };
-    }
-    if (action.action === "dispatch_clawsweeper") {
-      return {
-        ...action,
-        status: dispatchStatus,
-        reason: decision.reason,
-        coordination_action: decision.action,
-      };
-    }
-    return action;
-  });
-  return dispatchStatus;
-}
-
-function trustedAutomationSourceRevisionBlockReason(
-  command: LooseRecord,
-  phase: "classification" | "execution",
-): ReviewLeaseGuardBlock | null {
-  if (command.trusted_bot !== true || command.automation_source !== "clawsweeper") return null;
-  const expectedRevision = String(command.expected_source_revision ?? "")
-    .trim()
-    .toLowerCase();
-  // Preserve legacy markers. Current ClawSweeper verdicts always carry the 64-character tuple.
-  if (!expectedRevision || expectedRevision === "unknown") return null;
-  if (!/^[0-9a-f]{64}$/.test(expectedRevision)) {
-    return {
-      reason: `trusted ClawSweeper verdict has invalid source revision ${expectedRevision}`,
-      retryable: false,
-    };
-  }
-  const number = Number(command.issue_number);
-  if (!Number.isInteger(number) || number <= 0) {
-    return { reason: "trusted review target is invalid", retryable: false };
-  }
-  try {
-    const before = fetchIssue(number);
-    const comments = ghPaged<JsonValue>(
-      `repos/${targetRepo}/issues/${number}/comments?per_page=100`,
-    );
-    const after = fetchIssue(number);
-    const revisionBefore = issueSourceRevisionSha256(before, comments);
-    const revisionAfter = issueSourceRevisionSha256(after, comments);
-    if (
-      String(before.updated_at ?? "") !== String(after.updated_at ?? "") ||
-      revisionBefore !== revisionAfter
-    ) {
-      return {
-        reason: `item source changed during the ${phase}-time source revision check; next router pass will retry`,
-        retryable: true,
-      };
-    }
-    if (revisionAfter !== expectedRevision) {
-      return {
-        reason: `trusted ClawSweeper verdict source revision ${expectedRevision} does not match current source revision ${revisionAfter}`,
-        retryable: false,
-      };
-    }
-    if (command.target?.kind !== "issue") return null;
-    const activeReviewLease = freshExactHeadReviewStartLease({
-      comments: comments as LooseRecord[],
-      itemNumber: number,
-      headSha: revisionAfter,
-      trustedAuthors: trustedBots,
-      nowMs: Date.now(),
-    });
-    if (
-      trustedAutomationPredatesReviewStartLease({
-        command,
-        currentHeadSha: revisionAfter,
-        lease: activeReviewLease,
-      })
-    ) {
-      return {
-        reason: `same-revision ClawSweeper review is active until ${activeReviewLease?.expiresAt}`,
-        retryable: false,
-      };
-    }
-    return null;
-  } catch (error) {
-    return {
-      reason: `${phase}-time source revision check failed; next router pass will retry: ${compactGhError(error)}`,
-      retryable: true,
-    };
-  }
-}
-
-function trustedAutomationReviewLeaseBlockReason(
-  command: LooseRecord,
-): ReviewLeaseGuardBlock | null {
-  if (command.trusted_bot !== true || command.automation_source !== "clawsweeper") return null;
-  const sourceRevisionBlock = trustedAutomationSourceRevisionBlockReason(command, "execution");
-  if (sourceRevisionBlock) return sourceRevisionBlock;
-  if (command.target?.kind !== "pull_request") return null;
-  const number = Number(command.issue_number);
-  if (!Number.isInteger(number) || number <= 0) {
-    return { reason: "trusted review target is invalid", retryable: false };
-  }
-  try {
-    const before = fetchPullRequestView(number);
-    const comments = ghPaged<JsonValue>(
-      `repos/${targetRepo}/issues/${number}/comments?per_page=100`,
-    );
-    const after = fetchPullRequestView(number);
-    return trustedAutomationPullReviewLeaseBlockReason(command, before, comments, after);
-  } catch (error) {
-    return {
-      reason: `execution-time review lease check failed; next router pass will retry: ${compactGhError(error)}`,
-      retryable: true,
-    };
-  }
-}
-
-function trustedAutomationPullReviewLeaseBlockReason(
-  command: LooseRecord,
-  before: LooseRecord,
-  comments: JsonValue[],
-  after: LooseRecord,
-): ReviewLeaseGuardBlock | null {
-  if (command.trusted_bot !== true || command.automation_source !== "clawsweeper") return null;
-  const headBefore = String(before.headRefOid ?? "")
-    .trim()
-    .toLowerCase();
-  const headAfter = String(after.headRefOid ?? "")
-    .trim()
-    .toLowerCase();
-  if (!headBefore || headBefore !== headAfter) {
-    return {
-      reason:
-        "PR head changed during the execution-time review lease check; next router pass will retry",
-      retryable: true,
-    };
-  }
-  const expectedHeadSha = String(command.expected_head_sha ?? "")
-    .trim()
-    .toLowerCase();
-  if (!/^[0-9a-f]{40}$/.test(expectedHeadSha) || expectedHeadSha !== headAfter) {
-    return {
-      reason: `trusted ClawSweeper verdict head ${expectedHeadSha || "missing"} does not match current head ${headAfter || "missing"}`,
-      retryable: false,
-    };
-  }
-  const activeReviewLease = freshExactHeadReviewStartLease({
-    comments: comments as LooseRecord[],
-    itemNumber: Number(command.issue_number),
-    headSha: headAfter,
-    trustedAuthors: trustedBots,
-    nowMs: Date.now(),
-  });
-  if (
-    trustedAutomationPredatesReviewStartLease({
-      command,
-      currentHeadSha: headAfter,
-      lease: activeReviewLease,
-    })
-  ) {
-    return {
-      reason: `same-head ClawSweeper review is active until ${activeReviewLease?.expiresAt}`,
-      retryable: false,
-    };
-  }
-  return null;
-}
-
-function dispatchClawSweeperReview(command: LooseRecord): LooseRecord {
-  if (["re_review", "request_proof"].includes(command.intent))
-    return enqueueClawSweeperReReview(command);
-  const requiresCommandStatus = ["autofix", "automerge"].includes(String(command.intent ?? ""));
-  let dispatchKey = dispatchReceiptKey(command);
-  const expectedTitle = [
-    `Review event item ${command.repo}#${command.issue_number} [${dispatchKey}]`,
-    `Review manual item [${dispatchKey}]`,
-  ];
-  const claimed = claimedDispatchState({
-    command,
-    repo: reviewRepo,
-    workflowName: reviewWorkflow,
-    expectedTitle,
-  });
-  if (claimed) return { ...claimed, workflow: reviewWorkflow, repo: reviewRepo };
-  if (requiresCommandStatus) {
-    const retainedStatusComment = findExistingCommandStatusComment(command);
-    if (retainedStatusComment?.id) command.status_comment_id = Number(retainedStatusComment.id);
-  }
-  dispatchKey = dispatchReceiptKey(command);
-  const reviewBudget =
-    command.target?.kind === "pull_request"
-      ? adaptiveReviewBudgetForPullRequest(command.target)
-      : null;
-  const commandStatus = requiresCommandStatus
-    ? {
-        command_status_marker: commandStatusMarkerForCommand(command),
-        ...(command.status_comment_id
-          ? { status_comment_id: String(command.status_comment_id) }
-          : {}),
-      }
-    : {};
-  const payload = JSON.stringify({
-    event_type: "clawsweeper_item",
-    client_payload: {
-      target_repo: command.repo,
-      ...(command.target_branch ? { target_branch: String(command.target_branch) } : {}),
-      item_number: String(command.issue_number),
-      item_kind: command.target?.kind ?? "",
-      dispatch_key: dispatchKey,
-      ...(command.source_delivery_id
-        ? { source_delivery_id: String(command.source_delivery_id) }
-        : {}),
-      additional_prompt: freeformReviewPrompt(command),
-      ...(reviewBudget
-        ? {
-            review_options: {
-              codex_timeout_ms: reviewBudget.codexTimeoutMs,
-              media_proof_timeout_ms: reviewBudget.mediaProofTimeoutMs,
-            },
-          }
-        : {}),
-      ...commandStatus,
-    },
-  });
-  const result = runGitHubSpawnMutation(
-    command,
-    "review_dispatch",
-    {
-      repository: reviewRepo,
-      workflow: reviewWorkflow,
-      event: "repository_dispatch",
-      dispatchKey,
-    },
-    ["api", `repos/${reviewRepo}/dispatches`, "--method", "POST", "--input", "-"],
-    {
-      env: dispatchTokenEnv(),
-      input: payload,
-    },
-  );
-  if (result.status !== 0) {
-    throw new Error(
-      `failed to dispatch ClawSweeper review for #${command.issue_number}: repository_dispatch=${
-        result.stderr || result.stdout
-      }`,
-    );
-  }
-  return {
-    workflow: reviewWorkflow,
-    event: "repository_dispatch",
-    repo: reviewRepo,
-    item_number: command.issue_number,
-    dispatch_key: dispatchKey,
-  };
 }
 
 function enqueueClawSweeperReReview(command: LooseRecord): LooseRecord {
@@ -3486,14 +913,6 @@ function enqueueClawSweeperReReview(command: LooseRecord): LooseRecord {
     commandOrigin: "comment_router",
     ...(command.status_comment_id ? { statusCommentId: Number(command.status_comment_id) } : {}),
     additionalPrompt: freeformReviewPrompt(command),
-    ...(command.intent === "request_proof" && command.proof_admission?.request
-      ? {
-          candidateHeadSha: String(command.proof_admission.request.headSha),
-          proofAllowedScenarios: proofCommandAllowedScenarios(
-            String(command.proof_admission.request.scenarioId),
-          ),
-        }
-      : {}),
   });
   command.command_status_revision = intake.commandVersionId;
   const secret = process.env.CLAWSWEEPER_WEBHOOK_SECRET || "";
@@ -3521,106 +940,7 @@ function enqueueClawSweeperReReview(command: LooseRecord): LooseRecord {
   };
 }
 
-function dispatchCompletedReviewVerdict(
-  command: LooseRecord,
-  decision: Extract<ReviewDispatchCoordinationDecision, { action: "reuse_completed_review" }>,
-) {
-  const attemptId = `completed-review-${command.comment_id ?? "sweep"}-${decision.commentId}`;
-  const payload = JSON.stringify({
-    event_type: "clawsweeper_comment",
-    client_payload: {
-      target_repo: command.repo,
-      ...(command.target_branch ? { target_branch: String(command.target_branch) } : {}),
-      item_number: String(command.issue_number),
-      comment_id: String(decision.commentId),
-      max_comments: "1",
-      force_reprocess: "true",
-      attempt_id: attemptId,
-      source_event: "comment_router",
-      source_action: "reuse_completed_review",
-    },
-  });
-  const result = runGitHubSpawnMutation(
-    command,
-    "review_verdict_dispatch",
-    {
-      repository: reviewRepo,
-      workflow: "repair-comment-router.yml",
-      event: "repository_dispatch",
-      commentId: decision.commentId,
-      attemptId,
-    },
-    ["api", `repos/${reviewRepo}/dispatches`, "--method", "POST", "--input", "-"],
-    { env: dispatchTokenEnv(), input: payload },
-  );
-  if (result.status !== 0) {
-    throw new Error(
-      `failed to requeue completed ClawSweeper verdict for #${command.issue_number}: ${stripAnsi(result.stderr || result.stdout).trim()}`,
-    );
-  }
-  return {
-    workflow: "repair-comment-router.yml",
-    event: "repository_dispatch",
-    repo: reviewRepo,
-    item_number: command.issue_number,
-    comment_id: decision.commentId,
-    attempt_id: attemptId,
-  };
-}
-
-function dispatchClawSweeperAssist(command: LooseRecord): LooseRecord {
-  let dispatchKey = dispatchReceiptKey(command);
-  const workflowName = "assist.yml";
-  const expectedTitle = `Assist ${command.repo}#${command.issue_number} [${dispatchKey}]`;
-  const claimed = claimedDispatchState({
-    command,
-    repo: reviewRepo,
-    workflowName,
-    expectedTitle,
-  });
-  if (claimed) return { ...claimed, workflow: workflowName, repo: reviewRepo };
-  dispatchKey = dispatchReceiptKey(command);
-  const baseDispatchPayload = buildClawSweeperAssistDispatchPayload(command);
-  const dispatchPayload = {
-    ...baseDispatchPayload,
-    client_payload: { ...baseDispatchPayload.client_payload, dispatch_key: dispatchKey },
-  };
-  const payload = JSON.stringify(dispatchPayload);
-  const result = runGitHubSpawnMutation(
-    command,
-    "assist_dispatch",
-    {
-      repository: reviewRepo,
-      workflow: workflowName,
-      event: "repository_dispatch",
-      dispatchKey,
-    },
-    ["api", `repos/${reviewRepo}/dispatches`, "--method", "POST", "--input", "-"],
-    {
-      env: dispatchTokenEnv(),
-      input: payload,
-    },
-  );
-  if (result.status !== 0) {
-    throw new Error(
-      `failed to dispatch ClawSweeper assist for #${command.issue_number}: ${
-        result.stderr || result.stdout
-      }`,
-    );
-  }
-  return {
-    workflow: workflowName,
-    event: "repository_dispatch",
-    repo: reviewRepo,
-    item_number: command.issue_number,
-    dispatch_key: dispatchKey,
-  };
-}
-
 function freeformReviewPrompt(command: LooseRecord): string {
-  if (command.intent === "request_proof" && command.proof_admission?.request) {
-    return proofCommandReviewPrompt(command.proof_admission.request);
-  }
   const prompt = String(command.freeform_prompt ?? "").trim();
   if (!prompt) return "";
   if (command.intent === "re_review") {
@@ -3637,737 +957,10 @@ function freeformReviewPrompt(command: LooseRecord): string {
       "Use this only as read-only review context. Do not merge, close, label, or push code from the model.",
     ].join("\n");
   }
-  return [
-    "Maintainer freeform @clawsweeper request.",
-    "",
-    `Author: ${command.author ?? "unknown"}`,
-    `Comment: ${command.comment_url ?? "unknown"}`,
-    "",
-    "Request:",
-    prompt.slice(0, 3000),
-    "",
-    "Answer this request in the public ClawSweeper review comment. Keep the answer concise and evidence-based.",
-    "This is a read-only assist pass: do not merge, close, label, or push code from the model. If the request asks for an action, map it to existing ClawSweeper structured recommendations only when the normal evidence, security, review, and repair gates support it.",
-  ].join("\n");
+  return "";
 }
 
-function dispatchRepair(command: LooseRecord) {
-  let dispatchKey = dispatchReceiptKey(command);
-  const expectedTitle = repairRunNameForJob(
-    command.target.job_path,
-    automergeRunNamePrefix,
-    dispatchKey,
-  );
-  const claimed = claimedDispatchState({
-    command,
-    repo: repairRepo,
-    workflowName: workflow,
-    expectedTitle,
-  });
-  if (claimed) {
-    return {
-      ...claimed,
-      workflow,
-      repair_repo: repairRepo,
-      job_path: command.target.job_path,
-      mode: command.target.mode,
-      runner,
-      execution_runner: executionRunner,
-      model,
-    };
-  }
-  dispatchKey = dispatchReceiptKey(command);
-  const sessionId = automergeSessionId(latestAutomergeActivation(command) ?? {});
-  const activeRun = activeRepairRunForCommand(command);
-  if (activeRun) {
-    return {
-      workflow,
-      repair_repo: repairRepo,
-      job_path: command.target.job_path,
-      mode: command.target.mode,
-      runner,
-      execution_runner: executionRunner,
-      model,
-      status: "already_running",
-      reason: "repair worker already active for this job path",
-      run_url: activeRun.url,
-      run_id: activeRun.databaseId ?? activeRun.id,
-      run_status: activeRun.status,
-    };
-  }
-  const result = runGitHubSpawnMutation(
-    command,
-    "repair_dispatch",
-    {
-      repository: repairRepo,
-      workflow,
-      jobPath: command.target.job_path,
-      dispatchKey,
-    },
-    [
-      "workflow",
-      "run",
-      workflow,
-      "--repo",
-      repairRepo,
-      "-f",
-      `job=${command.target.job_path}`,
-      "-f",
-      `dispatch_key=${dispatchKey}`,
-      "-f",
-      `mode=${command.target.mode}`,
-      "-f",
-      `runner=${runner}`,
-      "-f",
-      `execution_runner=${executionRunner}`,
-      "-f",
-      `model=${model}`,
-      ...(sessionId ? ["-f", `automerge_session_id=${sessionId}`] : []),
-    ],
-    { env: dispatchTokenEnv() },
-  );
-  if (result.status !== 0) {
-    throw new Error(
-      `failed to dispatch ${command.target.job_path}: ${result.stderr || result.stdout}`,
-    );
-  }
-  const runUrl = githubActionsRunUrlFromDispatchOutput(result.stdout);
-  return {
-    workflow,
-    repair_repo: repairRepo,
-    job_path: command.target.job_path,
-    mode: command.target.mode,
-    runner,
-    execution_runner: executionRunner,
-    model,
-    ...(runUrl ? { run_url: runUrl } : {}),
-  };
-}
-
-function dispatchRepairActionStatus(repair: LooseRecord) {
-  if (repair.status === "claimed") {
-    return {
-      status: "claimed",
-      reason: repair.reason,
-      ...(repair.dispatch_key ? { dispatch_key: repair.dispatch_key } : {}),
-    };
-  }
-  if (repair.status === "already_running") {
-    return {
-      status: "active",
-      reason: repair.reason,
-      checked_at: new Date().toISOString(),
-      ...(repair.run_url ? { run_url: repair.run_url } : {}),
-      ...(repair.run_id ? { run_id: repair.run_id } : {}),
-      ...(repair.run_status ? { run_status: repair.run_status } : {}),
-    };
-  }
-  return {
-    status: "executed",
-    ...(repair.status === "recovered"
-      ? { recovered: true, receipt_verified_at: new Date().toISOString() }
-      : { dispatched_at: new Date().toISOString() }),
-    ...(repair.dispatch_key ? { dispatch_key: repair.dispatch_key } : {}),
-    ...(repair.run_url ? { run_url: repair.run_url } : {}),
-    ...(repair.run_id ? { run_id: repair.run_id } : {}),
-  };
-}
-
-function commandHasClaimedDispatch(command: LooseRecord) {
-  return command.actions?.some(
-    (action: JsonValue) => actionNeedsDurableDispatchClaim(action) && action.status === "claimed",
-  );
-}
-
-function commandHasWaitingDispatch(command: LooseRecord) {
-  return command.actions?.some(
-    (action: JsonValue) =>
-      ["dispatch_repair", "dispatch_clawsweeper"].includes(String(action?.action ?? "")) &&
-      (action?.status === "waiting" || action?.status === "active"),
-  );
-}
-
-function activeRepairRunForCommand(command: LooseRecord) {
-  const jobPath = String(command.target?.job_path ?? "");
-  if (!jobPath) return null;
-  return activeRepairWorkflowRunForJobAfterDispatchRecheck({
-    repo: repairRepo,
-    workflow,
-    jobPath,
-    automergeRunNamePrefix,
-    activeRunsByPrefix: activeRepairRunsByPrefix,
-    env: dispatchTokenEnv(),
-    recheckActive: true,
-  });
-}
-
-function dispatchTokenEnv(): NodeJS.ProcessEnv {
-  const token = process.env.CLAWSWEEPER_DISPATCH_TOKEN?.trim();
-  return token ? { GH_TOKEN: token } : {};
-}
-
-function githubActionsRunUrlFromDispatchOutput(output: unknown) {
-  const text = String(output ?? "");
-  return text.match(/https:\/\/github\.com\/[^\s]+\/actions\/runs\/\d+/)?.[0] ?? null;
-}
-
-function executeAutoclose(command: LooseRecord) {
-  const reason = autocloseReason(command);
-  const currentNumber = Number(command.issue_number);
-  const targets = [...(command.autoclose_targets ?? [])].sort(
-    (left: JsonValue, right: JsonValue) => {
-      if (Number(left.number) === currentNumber) return 1;
-      if (Number(right.number) === currentNumber) return -1;
-      return Number(left.number) - Number(right.number);
-    },
-  );
-  const results: JsonValue[] = [];
-  for (const target of targets) {
-    let liveTarget = target;
-    try {
-      liveTarget = issueTargetFromIssue(fetchIssue(target.number));
-      if (String(liveTarget.state ?? "").toLowerCase() !== "open") {
-        results.push({ ...liveTarget, status: "skipped", reason: "already closed" });
-        continue;
-      }
-      if (command.trusted_bot) {
-        const trustedCloseBlock = liveTrustedCloseBlockReason(command, liveTarget);
-        if (trustedCloseBlock) {
-          results.push({ ...liveTarget, status: "skipped", reason: trustedCloseBlock });
-          continue;
-        }
-      }
-      if (Number(liveTarget.number) !== currentNumber) {
-        postIssueComment(
-          command,
-          liveTarget.number,
-          renderAutocloseLinkedComment(command, liveTarget, reason),
-        );
-      }
-      closeIssueOrPullRequest(command, liveTarget.number, liveTarget.kind);
-      results.push({ ...liveTarget, status: "closed", closed_at: new Date().toISOString() });
-    } catch (error) {
-      if (error instanceof GitHubRateLimitError) throw error;
-      results.push({
-        ...liveTarget,
-        status: "blocked",
-        reason: stripAnsi((error as JsonValue)?.message ?? error).trim() || "close command failed",
-      });
-    }
-  }
-  return {
-    action: "autoclose",
-    status: results.some((target: JsonValue) => target.status === "closed")
-      ? "executed"
-      : "blocked",
-    reason,
-    targets: results,
-  };
-}
-
-function discoverAutocloseTargets({ command, issue, pull }: LooseRecord): JsonValue[] {
-  const numbers = collectAutocloseCandidateNumbers({ command, issue, pull });
-  const targets: JsonValue[] = [];
-  for (const number of numbers) {
-    if (targets.length >= maxAutocloseTargets) break;
-    try {
-      const candidate = Number(number) === Number(issue.number) ? issue : fetchIssue(number);
-      const target = issueTargetFromIssue(candidate);
-      if (target.state !== "open") continue;
-      targets.push(target);
-    } catch (error) {
-      if (error instanceof GitHubRateLimitError) throw error;
-      // Broken or private references should not block the explicit target close.
-    }
-  }
-  return targets;
-}
-
-function liveTrustedCloseBlockReason(command: LooseRecord, liveTarget: LooseRecord): string | null {
-  if (liveTarget.kind === "pull_request") {
-    const issue = fetchIssue(liveTarget.number);
-    const pull = fetchPullRequestView(liveTarget.number);
-    const comments = cachedIssueComments(liveTarget.number);
-    const closeReason = String(command.close_reason ?? "");
-    const needsCloseSignalContext =
-      closeReason === "unconfirmed_product_direction" ||
-      closeReason === "low_signal_unmergeable_pr";
-    const pullApi = needsCloseSignalContext ? fetchPullRequestApi(liveTarget.number) : {};
-    const reviews = needsCloseSignalContext
-      ? ghPaged<JsonValue>(`repos/${targetRepo}/pulls/${liveTarget.number}/reviews?per_page=100`)
-      : [];
-    const reviewComments =
-      closeReason === "unconfirmed_product_direction"
-        ? ghPaged<JsonValue>(`repos/${targetRepo}/pulls/${liveTarget.number}/comments?per_page=100`)
-        : [];
-    return trustedCloseBlockReason({
-      repo: command.repo,
-      kind: "pull_request",
-      labels: targetLabelsFromPull(pull),
-      closeReason: command.close_reason,
-      closeConfidence: command.close_confidence,
-      closeActionTaken: command.close_action_taken,
-      createdAt: issue.created_at,
-      expectedHeadSha: command.expected_head_sha,
-      currentHeadSha: pull.headRefOid,
-      expectedItemUpdatedAt: command.expected_item_updated_at,
-      currentItemUpdatedAt: issue.updated_at,
-      expectedSourceRevision: command.expected_source_revision,
-      currentSourceRevision: issueSourceRevisionSha256(issue, comments),
-      authorAssociation: issue.author_association,
-      reviewedAt: command.reviewed_at ?? command.expected_item_updated_at,
-      assignees: issue.assignees,
-      requestedReviewers: pullApi.requested_reviewers,
-      requestedTeams: pullApi.requested_teams,
-      comments,
-      reviews,
-      reviewComments,
-      sourceCommentId: command.comment_id,
-      trustedAuthors: trustedBots,
-    });
-  }
-  if (String(command.close_reason ?? "") === "unsponsored_feature_request") {
-    const linkedPrBlock = unsponsoredFeatureLinkedPrBlockReason(liveTarget.number);
-    if (linkedPrBlock) return linkedPrBlock;
-  }
-  const issue = fetchIssue(liveTarget.number);
-  const comments = cachedIssueComments(liveTarget.number);
-  return trustedCloseBlockReason({
-    repo: command.repo,
-    kind: "issue",
-    labels: issue.labels,
-    closeReason: command.close_reason,
-    closeConfidence: command.close_confidence,
-    closeActionTaken: command.close_action_taken,
-    createdAt: issue.created_at,
-    expectedHeadSha: null,
-    currentHeadSha: null,
-    expectedItemUpdatedAt: command.expected_item_updated_at,
-    currentItemUpdatedAt: issue.updated_at,
-    expectedSourceRevision: command.expected_source_revision,
-    currentSourceRevision: issueSourceRevisionSha256(issue, comments),
-    authorAssociation: issue.author_association,
-    reviewedAt: command.reviewed_at ?? command.expected_item_updated_at,
-    assignees: issue.assignees,
-    milestone: issue.milestone,
-    reactions: issue.reactions,
-    comments,
-    sourceCommentId: command.comment_id,
-    trustedAuthors: trustedBots,
-  });
-}
-
-function unsponsoredFeatureLinkedPrBlockReason(number: JsonValue): string | null {
-  try {
-    const result = ghJson<{ closedByPullRequestsReferences?: unknown }>(
-      [
-        "issue",
-        "view",
-        String(number),
-        "--repo",
-        targetRepo,
-        "--json",
-        "closedByPullRequestsReferences",
-      ],
-      { attempts: TARGET_LOOKUP_RETRY_ATTEMPTS },
-    );
-    if (!Array.isArray(result.closedByPullRequestsReferences)) {
-      return "unsponsored feature linked-PR state could not be verified";
-    }
-    const openReference = result.closedByPullRequestsReferences.find(
-      (reference) => String((reference as LooseRecord).state ?? "").toUpperCase() === "OPEN",
-    ) as LooseRecord | undefined;
-    if (!openReference) return null;
-    const ref = openReference.url ?? openReference.number ?? "an open pull request";
-    return `open closing pull request ${ref} blocks unsponsored feature auto-close`;
-  } catch (error) {
-    return `unsponsored feature linked-PR check failed: ${compactGhError(error)}`;
-  }
-}
-
-function collectAutocloseCandidateNumbers({ command }: LooseRecord): number[] {
-  const numbers = new Set<number>();
-  const add = (value: JsonValue) => {
-    const number = Number(value);
-    if (Number.isInteger(number) && number > 0) numbers.add(number);
-  };
-  add(command.issue_number);
-  addAutocloseNumbersFromText(numbers, command.autoclose_message);
-  return [...numbers];
-}
-
-function addAutocloseNumbersFromText(numbers: Set<number>, text: string) {
-  const value = String(text ?? "");
-  if (!value) return;
-  const urlPattern = new RegExp(
-    `https://github\\.com/${escapeRegExp(targetRepo)}/(?:issues|pull)/(\\d+)`,
-    "gi",
-  );
-  for (const match of value.matchAll(urlPattern)) numbers.add(Number(match[1]));
-  for (const match of value.matchAll(/(?:^|[\s(])#(\d+)\b/g)) numbers.add(Number(match[1]));
-}
-
-function issueTargetFromIssue(issue: LooseRecord) {
-  const number = Number(issue.number);
-  return {
-    number,
-    ref: `#${number}`,
-    kind: issue.pull_request ? "pull_request" : "issue",
-    state: String(issue.state ?? "").toLowerCase(),
-    title: issue.title ?? null,
-    url:
-      issue.html_url ??
-      `https://github.com/${targetRepo}/${issue.pull_request ? "pull" : "issues"}/${number}`,
-  };
-}
-
-function targetLabelsFromPull(pull: LooseRecord): JsonValue[] {
-  return (pull.labels ?? []).map((item: JsonValue) => item?.name ?? item);
-}
-
-function autocloseReason(command: LooseRecord) {
-  return String(command.autoclose_message ?? autocloseReasonFromCommand(command.command)).trim();
-}
-
-function renderAutocloseLinkedComment(command: LooseRecord, target: LooseRecord, reason: string) {
-  return [
-    `<!-- clawsweeper-autoclose:${command.comment_version_key ?? command.comment_id}:#${target.number} -->`,
-    "🐠 ClawSweeper is closing this as not planned based on maintainer direction on a linked item.",
-    "",
-    `Source: #${command.issue_number}`,
-    "",
-    "Maintainer reason:",
-    `> ${reason.replace(/\n/g, "\n> ")}`,
-  ].join("\n");
-}
-
-function postIssueComment(command: LooseRecord, number: number, body: string) {
-  const payloadPath = writePayload(repoRoot(), `autoclose-comment-${number}`, { body });
-  runGitHubTextMutation(
-    command,
-    "comment_create",
-    { repository: command.repo, number, bodySha256: commentBodySha256(body) },
-    [
-      "api",
-      `repos/${command.repo}/issues/${number}/comments`,
-      "--method",
-      "POST",
-      "--input",
-      payloadPath,
-    ],
-  );
-}
-
-function closeIssueOrPullRequest(command: LooseRecord, number: number, kind: string) {
-  if (kind === "pull_request") {
-    runGitHubTextMutation(command, "pull_request_close", { repository: command.repo, number }, [
-      "pr",
-      "close",
-      String(number),
-      "--repo",
-      command.repo,
-    ]);
-    return;
-  }
-  const payloadPath = writePayload(repoRoot(), `autoclose-close-${number}`, {
-    state: "closed",
-    state_reason: "not_planned",
-  });
-  runGitHubTextMutation(
-    command,
-    "issue_close",
-    { repository: command.repo, number, stateReason: "not_planned" },
-    ["api", `repos/${command.repo}/issues/${number}`, "--method", "PATCH", "--input", payloadPath],
-  );
-}
-
-function executeAutomerge(command: LooseRecord): LooseRecord {
-  const stoppedReason = repairLoopStoppedReason(command);
-  if (stoppedReason) {
-    return { action: "merge", status: "blocked", reason: stoppedReason, merge_method: "squash" };
-  }
-  const transientWait = automergeTransientWaitConfig(process.env);
-  const transientObservations: LooseRecord[] = [];
-  let waitedMs = 0;
-  let view = fetchPullRequestView(command.issue_number);
-  let latestTarget = latestAutomergeTarget(command, view);
-  let comments = freshIssueCommentsFor(command.issue_number);
-  const readiness = () =>
-    automergeReadinessBlockReason({
-      command,
-      view,
-      target: latestTarget,
-      comments,
-      trustedAuthors: trustedBots,
-      ledgerCommands: ledger.commands ?? [],
-    });
-  let block = readiness();
-  while (block && isTransientAutomergeBlock(block) && waitedMs < transientWait.maxWaitMs) {
-    const waitMs = Math.min(transientWait.intervalMs, transientWait.maxWaitMs - waitedMs);
-    transientObservations.push(automergeTransientObservation(block, view, waitedMs, waitMs));
-    sleepMs(waitMs);
-    waitedMs += waitMs;
-    view = fetchPullRequestView(command.issue_number);
-    latestTarget = latestAutomergeTarget(command, view);
-    comments = freshIssueCommentsFor(command.issue_number);
-    block = readiness();
-  }
-  if (block) return blockedAutomergeResult(block, waitedMs, transientObservations);
-  const gateBlock = automergeGateBlockReason(process.env);
-  if (gateBlock) {
-    ensureHumanReviewLabel(command);
-    ensureMergeReadyLabel(command);
-    runGitHubBestEffortMutation(
-      command,
-      "label_add",
-      {
-        repository: command.repo,
-        number: command.issue_number,
-        labels: [HUMAN_REVIEW_LABEL, MERGE_READY_LABEL],
-      },
-      [
-        "issue",
-        "edit",
-        String(command.issue_number),
-        "--repo",
-        command.repo,
-        "--add-label",
-        HUMAN_REVIEW_LABEL,
-        "--add-label",
-        MERGE_READY_LABEL,
-      ],
-      githubAlreadyExistsNoMutation,
-    );
-    return { action: "merge", status: "blocked", reason: gateBlock, merge_method: "squash" };
-  }
-  if (commandHasAction(command, "update_description_note")) {
-    applyDescriptionNoteActions(command);
-    command.actions = command.actions.map((action: JsonValue) =>
-      action.action === "update_description_note" ? { ...action, status: "executed" } : action,
-    );
-  }
-  const finalSnapshot = finalAutomergeSnapshot(command);
-  if (finalSnapshot.status === "blocked") {
-    return {
-      action: "merge",
-      status: finalSnapshot.block.retryable ? "waiting" : "blocked",
-      reason: finalSnapshot.block.reason,
-      merge_method: "squash",
-    };
-  }
-  if (finalSnapshot.status === "not_ready") {
-    return blockedAutomergeResult(finalSnapshot.block, waitedMs, transientObservations);
-  }
-  view = finalSnapshot.view;
-  latestTarget = finalSnapshot.target;
-  comments = finalSnapshot.comments;
-  const mergeMessage = buildAutomergeSquashMessage({
-    command: {
-      ...command,
-      maintainer_attribution: latestAutomergeMaintainerAttribution(command),
-    },
-    view,
-    target: latestTarget,
-    comments,
-  });
-  const bodyFile = writeAutomergeMergeBody(command, latestTarget, mergeMessage.body);
-  const result = runGitHubSpawnMutation(
-    command,
-    "pull_request_merge",
-    {
-      repository: command.repo,
-      number: command.issue_number,
-      expectedHeadSha: command.expected_head_sha,
-      method: "squash",
-    },
-    buildAutomergeMergeArgs({
-      issueNumber: command.issue_number,
-      repo: command.repo,
-      expectedHeadSha: command.expected_head_sha,
-      subject: mergeMessage.subject,
-      bodyFile,
-    }),
-  );
-  if (result.status !== 0) {
-    const failure = stripAnsi(result.stderr || result.stdout).trim();
-    const repairReason = automergeMergeFailureRepairReason(failure);
-    if (repairReason) {
-      return {
-        action: "merge",
-        status: "repair_needed",
-        reason: `merge command failed: ${failure}`,
-        repair_reason: repairReason,
-        merge_method: "squash",
-      };
-    }
-    ensureMergeReadyLabel(command);
-    editIssueLabel(command, MERGE_READY_LABEL, "add");
-    return {
-      action: "merge",
-      status: "blocked",
-      reason: `merge command failed: ${failure}`,
-      merge_method: "squash",
-    };
-  }
-  const merged = fetchPullRequestView(command.issue_number);
-  return {
-    action: "merge",
-    status: "executed",
-    reason: "merged by ClawSweeper automerge",
-    merged_at: merged.mergedAt ?? new Date().toISOString(),
-    merge_commit_sha: merged.mergeCommit?.oid ?? null,
-    merge_method: "squash",
-    prepared_head_sha: latestTarget.head_sha ?? null,
-    commit_subject: mergeMessage.subject,
-    summary_lines: mergeMessage.summaryLines,
-    fixup_lines: mergeMessage.fixupLines,
-    transient_wait_ms: waitedMs,
-    transient_observations: transientObservations,
-  };
-}
-
-function finalAutomergeSnapshot(command: LooseRecord): FinalAutomergeSnapshot {
-  const sourceRevisionBlock = trustedAutomationSourceRevisionBlockReason(command, "execution");
-  if (sourceRevisionBlock) return { status: "blocked", block: sourceRevisionBlock };
-  try {
-    const before = fetchPullRequestView(command.issue_number);
-    const comments = freshIssueCommentsFor(command.issue_number);
-    const after = fetchPullRequestView(command.issue_number);
-    const reviewLeaseBlock = trustedAutomationPullReviewLeaseBlockReason(
-      command,
-      before,
-      comments,
-      after,
-    );
-    if (reviewLeaseBlock) return { status: "blocked", block: reviewLeaseBlock };
-    const target = latestAutomergeTarget(command, after);
-    const readinessBlock = automergeReadinessBlockReason({
-      command,
-      view: after,
-      target,
-      comments,
-      trustedAuthors: trustedBots,
-      ledgerCommands: ledger.commands ?? [],
-    });
-    if (readinessBlock) return { status: "not_ready", block: readinessBlock };
-    return { status: "ready", view: after, target, comments };
-  } catch (error) {
-    return {
-      status: "blocked",
-      block: {
-        reason: `final merge review check failed; next router pass will retry: ${compactGhError(error)}`,
-        retryable: true,
-      },
-    };
-  }
-}
-
-function blockedAutomergeResult(
-  block: string,
-  waitedMs: number,
-  transientObservations: LooseRecord[],
-): LooseRecord {
-  if (isTransientAutomergeBlock(block)) {
-    return {
-      action: "merge",
-      status: "waiting",
-      reason: block,
-      merge_method: "squash",
-      transient_wait_ms: waitedMs,
-      transient_observations: transientObservations,
-    };
-  }
-  if (isAutomergeCheckBlock(block)) {
-    return {
-      action: "merge",
-      status: "repair_needed",
-      reason: block,
-      repair_reason: `failed required checks before automerge: ${block.replace(/^checks are not green:\s*/i, "")}`,
-      merge_method: "squash",
-    };
-  }
-  const readinessRepairReason = automergeReadinessRepairReason(block);
-  if (readinessRepairReason) {
-    return {
-      action: "merge",
-      status: "repair_needed",
-      reason: block,
-      repair_reason: readinessRepairReason,
-      merge_method: "squash",
-    };
-  }
-  return { action: "merge", status: "blocked", reason: block, merge_method: "squash" };
-}
-
-function latestAutomergeTarget(command: LooseRecord, view: LooseRecord) {
-  const labels = (view.labels ?? []).map((item: JsonValue) => item.name ?? item);
-  return {
-    ...command.target,
-    ...view,
-    labels,
-    head_sha: view.headRefOid ?? command.target?.head_sha ?? null,
-  };
-}
-
-function automergeTransientObservation(
-  reason: string,
-  view: LooseRecord,
-  waitedMs: number,
-  nextWaitMs: number,
-) {
-  const checks = summarizeChecks(view.statusCheckRollup ?? []);
-  return {
-    reason,
-    waited_ms: waitedMs,
-    next_wait_ms: nextWaitMs,
-    mergeable: view.mergeable ?? null,
-    merge_state_status: view.mergeStateStatus ?? null,
-    review_decision: view.reviewDecision ?? null,
-    check_counts: checks.counts,
-    check_blockers: checks.blockers.slice(0, 8),
-  };
-}
-
-function sleepMs(ms: number) {
-  if (ms <= 0) return;
-  const buffer = new SharedArrayBuffer(4);
-  Atomics.wait(new Int32Array(buffer), 0, 0, ms);
-}
-
-function writeAutomergeMergeBody(command: LooseRecord, target: LooseRecord, body: string) {
-  const dir = path.join(repoRoot(), ".clawsweeper-repair", "payloads");
-  fs.mkdirSync(dir, { recursive: true });
-  const name =
-    `automerge-merge-body-${command.issue_number}-${target.head_sha ?? command.expected_head_sha ?? "head"}`
-      .replace(/[^A-Za-z0-9_.-]+/g, "-")
-      .slice(0, 180);
-  const file = path.join(dir, `${name}.txt`);
-  fs.writeFileSync(file, `${body.trimEnd()}\n`);
-  return file;
-}
-
-function isAutomergeCheckBlock(reason: string) {
-  return /^checks are not green:/i.test(String(reason ?? "").trim());
-}
-
-function isTransientAutomergeBlock(reason: string) {
-  const text = String(reason ?? "").toLowerCase();
-  if (text.includes("checks are not green")) return false;
-  if (text.includes("checks are still running")) return true;
-  return (
-    text.includes("mergeable state is unknown") ||
-    text.includes("merge state status is unknown") ||
-    text.includes("merge state status is unstable") ||
-    text.includes("review decision is review_required") ||
-    text.includes("no pr checks found")
-  );
-}
-
-function classifyIssueTarget(issue: LooseRecord, issueNumber: JsonValue): JsonValue {
-  const implementationCluster = issueImplementationClusterId(targetRepo, issueNumber);
-  const implementationPath = issueImplementationJobPath(targetRepo, issueNumber);
-  const jobPath = existingJobPath(implementationCluster, targetRepo);
-  const linkedOpenPrs = issueLinkedOpenPrReferences(issue, issueNumber);
+function classifyIssueTarget(issue: LooseRecord): JsonValue {
   return {
     kind: "issue",
     state: issue.state ?? null,
@@ -4376,121 +969,13 @@ function classifyIssueTarget(issue: LooseRecord, issueNumber: JsonValue): JsonVa
     body: issue.body ?? null,
     author: issue.user?.login ?? null,
     labels: (issue.labels ?? []).map((item: JsonValue) => item.name ?? item),
-    cluster_id: jobPath ? implementationCluster : null,
-    job_path: jobPath,
-    open_prs: linkedOpenPrs,
-    issue_implementation_cluster_id: implementationCluster,
-    issue_implementation_job_path: jobPath ?? implementationPath,
-    mode: jobPath ? dispatchMode(jobPath) : "autonomous",
   };
 }
 
-function issueLinkedOpenPrReferences(issue: LooseRecord, issueNumber: JsonValue) {
-  const refs = new Set<number>();
-  const relatedIssues = new Set<number>();
-  const comments = issueCommentsFor(issueNumber).map((comment) => comment.body);
-  for (const text of [issue.title, issue.body, ...comments]) {
-    addPullRequestReferenceNumbersFromText(refs, text);
-    addIssueReferenceNumbersFromText(relatedIssues, text);
-  }
-  for (const number of searchOpenPullRequestsMentioningIssue(Number(issueNumber))) {
-    refs.add(number);
-  }
-  const current = Number(issueNumber);
-  for (const relatedNumber of [...relatedIssues]
-    .filter((number) => Number.isFinite(number) && number !== current)
-    .slice(0, 8)) {
-    try {
-      const related = fetchIssue(relatedNumber);
-      if (related.pull_request) {
-        if (String(related.state ?? "").toLowerCase() === "open") refs.add(relatedNumber);
-        continue;
-      }
-      for (const number of searchOpenPullRequestsMentioningIssue(relatedNumber)) refs.add(number);
-      const relatedComments = issueCommentsFor(relatedNumber).map((comment) => comment.body);
-      for (const text of [related.title, related.body, ...relatedComments]) {
-        addPullRequestReferenceNumbersFromText(refs, text);
-      }
-    } catch {
-      // A temporarily unreadable sibling must not make an unrelated number look like a PR.
-    }
-  }
-  return [...refs]
-    .filter((number) => Number.isFinite(number) && number !== current)
-    .filter((number) => {
-      try {
-        const linked = fetchIssue(number);
-        return Boolean(linked.pull_request) && String(linked.state ?? "").toLowerCase() === "open";
-      } catch {
-        return true;
-      }
-    })
-    .map((number) => `#${number}`);
-}
-
-function searchOpenPullRequestsMentioningIssue(issueNumber: number) {
-  try {
-    const result = ghJson(
-      [
-        "api",
-        "search/issues",
-        "--method",
-        "GET",
-        "-f",
-        `q=repo:${targetRepo} is:pr is:open "${issueNumber}"`,
-        "--jq",
-        ".items",
-      ],
-      { attempts: TARGET_LOOKUP_RETRY_ATTEMPTS },
-    );
-    return Array.isArray(result) ? result.map((item) => Number(item.number)).filter(Boolean) : [];
-  } catch {
-    return [];
-  }
-}
-
-function addPullRequestReferenceNumbersFromText(numbers: Set<number>, text: JsonValue) {
-  const value = String(text ?? "");
-  if (!value) return;
-  const urlPattern = new RegExp(
-    `https://github\\.com/${escapeRegExp(targetRepo)}/pull/(\\d+)`,
-    "gi",
-  );
-  for (const match of value.matchAll(urlPattern)) numbers.add(Number(match[1]));
-  for (const match of value.matchAll(/\b(?:pr|pull request)\s+#(\d+)\b/gi)) {
-    numbers.add(Number(match[1]));
-  }
-}
-
-function addIssueReferenceNumbersFromText(numbers: Set<number>, text: JsonValue) {
-  const value = String(text ?? "");
-  if (!value) return;
-  const issueUrlPattern = new RegExp(
-    `https://github\\.com/${escapeRegExp(targetRepo)}/issues/(\\d+)`,
-    "gi",
-  );
-  const repoReferencePattern = new RegExp(`\\b${escapeRegExp(targetRepo)}#(\\d+)\\b`, "gi");
-  for (const match of value.matchAll(issueUrlPattern)) numbers.add(Number(match[1]));
-  for (const match of value.matchAll(repoReferencePattern)) numbers.add(Number(match[1]));
-  for (const match of value.matchAll(/(?:^|[^\w/])#(\d+)\b/g)) {
-    numbers.add(Number(match[1]));
-  }
-}
-
-function classifyPullTarget(pull: LooseRecord, issueNumber: JsonValue): JsonValue {
+function classifyPullTarget(pull: LooseRecord): JsonValue {
   const branch = String(pull.headRefName ?? "");
   const labels = (pull.labels ?? []).map((item: JsonValue) => item.name ?? item);
   const author = String(pull.author?.login ?? pull.author?.name ?? "").toLowerCase();
-  const clusterId = branch.startsWith(headPrefix) ? branch.slice(headPrefix.length) : null;
-  const automergeCluster = automergeClusterId(targetRepo, issueNumber);
-  const automergePath = automergeJobPath(targetRepo, issueNumber);
-  const clawsweeperJobPath = clusterId ? existingJobPath(clusterId, targetRepo) : null;
-  const adoptedJobPath = existingJobPath(automergeCluster, targetRepo);
-  const repairJob = selectPullRepairJob({
-    sourceJobPath: clawsweeperJobPath,
-    adoptedJobPath,
-    automergePath,
-  });
   return {
     kind: "pull_request",
     title: pull.title ?? null,
@@ -4503,41 +988,11 @@ function classifyPullTarget(pull: LooseRecord, issueNumber: JsonValue): JsonValu
     changedFiles: pull.changedFiles ?? null,
     additions: pull.additions ?? null,
     deletions: pull.deletions ?? null,
-    is_clawsweeper_pr: branch.startsWith(headPrefix),
-    cluster_id: adoptedJobPath ? automergeCluster : clusterId,
-    job_path: repairJob.jobPath,
-    source_job_path: repairJob.sourceJobPath,
-    has_automerge_job: repairJob.hasAutomergeJob,
-    automerge_cluster_id: automergeCluster,
-    automerge_job_path: repairJob.automergeJobPath,
-    mode: repairJob.jobPath ? dispatchMode(repairJob.jobPath) : "autonomous",
     mergeable: pull.mergeable ?? null,
     merge_state_status: pull.mergeStateStatus ?? null,
     review_decision: pull.reviewDecision ?? null,
     checks: summarizeChecks(pull.statusCheckRollup ?? []),
   };
-}
-
-function dispatchMode(jobPath: string) {
-  const job = parseJob(jobPath);
-  const errors = validateJob(job);
-  if (errors.length > 0) throw new Error(`invalid job ${jobPath}: ${errors.join("; ")}`);
-  return ["execute", "autonomous"].includes(String(job.frontmatter.mode ?? ""))
-    ? job.frontmatter.mode
-    : "autonomous";
-}
-
-function existingJobPath(clusterId: string, repo: string = targetRepo) {
-  const owner = String(repo ?? "").split("/")[0] || "openclaw";
-  for (const relative of [
-    path.join("jobs", owner, "inbox", `${clusterId}.md`),
-    path.join("jobs", owner, `${clusterId}.md`),
-    path.join("jobs", owner, "outbox", "finalized", `${clusterId}.md`),
-    path.join("jobs", owner, "outbox", "stuck", `${clusterId}.md`),
-  ]) {
-    if (fs.existsSync(path.join(repoRoot(), relative))) return relative;
-  }
-  return null;
 }
 
 function listRecentComments() {
@@ -4601,77 +1056,13 @@ function listCandidateComments() {
   }
   return selectCommentsForRouting({
     recentComments: listRecentComments(),
-    durableComments: listRepairLoopReviewComments(),
+    durableComments: [],
     maxComments,
   });
 }
 
 function issueCommentsFor(number: JsonValue): JsonValue[] {
   return cachedIssueComments(number);
-}
-
-function freshIssueCommentsFor(number: JsonValue): JsonValue[] {
-  const key = Number(number);
-  if (!Number.isInteger(key) || key <= 0) return [];
-  issueCommentsCache.delete(key);
-  return cachedIssueComments(key);
-}
-
-function listRepairLoopReviewComments() {
-  const numbers = unique([
-    ...listOpenIssueNumbersWithLabel(AUTOFIX_LABEL),
-    ...listOpenIssueNumbersWithLabel(AUTOMERGE_LABEL),
-  ]);
-  return numbers.flatMap((number) =>
-    repairLoopIssueComments(number).filter(isClawSweeperReviewMarkerComment),
-  );
-}
-
-function repairLoopIssueComments(number: number): JsonValue[] {
-  return readRepairLoopComments({
-    repository: targetRepo,
-    number,
-    liveRead: () =>
-      ghPaged<LooseRecord>(`repos/${targetRepo}/issues/${number}/comments?per_page=100`),
-  });
-}
-
-function listRepairLoopSweepCommands(existingCommands: LooseRecord[]) {
-  if (REPAIR_AUTOMATION_RETIRED) return [];
-  if (itemNumbers.size > 0 || commentIds.size > 0) return [];
-  const commands: LooseRecord[] = [];
-  const modes = [
-    ["autofix", AUTOFIX_LABEL],
-    ["automerge", AUTOMERGE_LABEL],
-  ] as const;
-  const optedIn = modes.flatMap(([intent, label]) =>
-    listOpenIssueNumbersWithLabel(label).map((number) => ({ intent, number })),
-  );
-  for (const { intent, number } of pendingRepairLoopOptIns(existingCommands, optedIn)) {
-    commands.push({
-      idempotency_key: `repair-loop-label-sweep:${targetRepo}:${intent}:${number}`,
-      comment_id: `repair-loop-label-sweep:${intent}:${number}`,
-      comment_version_key: null,
-      comment_url: `https://github.com/${targetRepo}/pull/${number}`,
-      repo: targetRepo,
-      issue_number: number,
-      author: CLAWSWEEPER_APP_LOGIN,
-      author_association: "NONE",
-      comment_created_at: new Date(startedAtMs).toISOString(),
-      comment_updated_at: new Date(startedAtMs).toISOString(),
-      trigger: "trusted_bot",
-      command: intent,
-      intent,
-      trusted_bot: true,
-      trusted_bot_author: CLAWSWEEPER_APP_LOGIN,
-      automation_source: "repair_loop_label_sweep",
-      repair_reason: "scheduled ClawSweeper repair-loop label sweep",
-      ...forcedReplayCommandFields({ forceReprocess, attemptId }),
-      status: "pending",
-      actions: [],
-    });
-  }
-  return commands;
 }
 
 function fetchIssueComment(commentId: JsonValue): LooseRecord | null {
@@ -4692,19 +1083,6 @@ function fetchIssueComment(commentId: JsonValue): LooseRecord | null {
 
 function isGitHubNotFoundError(error: unknown) {
   return /\bHTTP 404\b|gh:\s*Not Found/i.test(ghErrorText(error));
-}
-
-function listOpenIssueNumbersWithLabel(label: string) {
-  return openIssueNumbersByLabel(label);
-}
-
-function isClawSweeperReviewMarkerComment(comment: JsonValue) {
-  const body = String(comment.body ?? "");
-  return (
-    body.includes("clawsweeper-verdict:") ||
-    body.includes("clawsweeper-finding:") ||
-    body.includes("clawsweeper-review item=")
-  );
 }
 
 function fetchLiveTarget(command: LooseRecord): LooseRecord {
@@ -4790,18 +1168,6 @@ function pullRequestViewArgs(number: JsonValue) {
   ];
 }
 
-function fetchPullRequestApi(number: JsonValue) {
-  return ghJson(
-    [
-      "api",
-      `repos/${targetRepo}/pulls/${number}`,
-      "--jq",
-      "{requested_reviewers:[.requested_reviewers[]? | {login:.login}],requested_teams:[.requested_teams[]? | {slug:.slug}]}",
-    ],
-    { attempts: TARGET_LOOKUP_RETRY_ATTEMPTS },
-  );
-}
-
 function fetchPullRequestViewAsync(number: JsonValue) {
   return ghJsonAsync<LooseRecord>(pullRequestViewArgs(number), {
     attempts: TARGET_LOOKUP_RETRY_ATTEMPTS,
@@ -4876,34 +1242,11 @@ function hasExistingResponse(
   headSha: JsonValue,
 ) {
   const comments = cachedIssueComments(number);
-  return comments.some((comment: JsonValue) => {
-    const body = String(comment.body ?? "");
-    if (!hasCommandResponseMarker(body, { commentId, intent, headSha, matchAnyHead: true })) {
-      return false;
-    }
-    if (
-      MERGE_INTENTS.has(String(intent)) &&
-      (body.includes("did not merge yet") ||
-        body.includes("is not merged yet") ||
-        body.includes("I left the PR open for the remaining gate"))
-    ) {
-      return false;
-    }
-    if (intent === "maintainer_approve_automerge") {
-      return !body.includes("Maintainer-approved ClawSweeper automerge is not merged yet.");
-    }
-    return true;
-  });
-}
-
-function hasExistingModeStatusResponse(number: JsonValue, intent: JsonValue) {
-  const markerPrefix = commandStatusMarkerPrefix(number ?? "unknown", intent);
-  const comments = cachedIssueComments(number);
-  return comments.some((comment: JsonValue) => {
-    if (!isTrustedStatusComment(comment)) return false;
-    const body = String(comment.body ?? "");
-    return body.includes(markerPrefix) && !body.includes("could not enable");
-  });
+  return comments.some(
+    (comment: JsonValue) =>
+      isTrustedStatusComment(comment) &&
+      hasCommandResponseMarker(comment.body, { commentId, intent, headSha, matchAnyHead: true }),
+  );
 }
 
 function postComment(command: LooseRecord, body: string) {
@@ -4911,15 +1254,7 @@ function postComment(command: LooseRecord, body: string) {
   const precreated = findPrecreatedCommandStatusComment(command);
   const existing = existingStatus ?? precreated;
   const ackMarker = existing ? commandAckMarkerFromBody(existing.body) : null;
-  const responseBody = ackMarker && !body.includes(ackMarker) ? `${ackMarker}\n${body}` : body;
-  const nextBody =
-    !command.retired && usesSharedAutomergeStatus(command)
-      ? mergeAutomergeTimelineSection({
-          body: responseBody,
-          existingBody: existing?.body,
-          events: automergeTimelineEvents(command, body),
-        })
-      : responseBody;
+  const nextBody = ackMarker && !body.includes(ackMarker) ? `${ackMarker}\n${body}` : body;
   const payloadPath = writePayload(repoRoot(), `comment-router-${command.comment_id}`, {
     body: nextBody,
   });
@@ -5128,119 +1463,23 @@ function convergePrecreatedCommandAckCommentsInner(command: LooseRecord) {
   return keep;
 }
 
-function automergeTimelineEvents(command: LooseRecord, body: string) {
-  const events: LooseRecord[] = [];
-  const head = command.target?.head_sha ?? command.expected_head_sha ?? "unknown";
-  const commentTime = command.comment_updated_at ?? command.comment_created_at;
-  if (["automerge", "autofix"].includes(String(command.intent ?? ""))) {
-    const action = (command.actions ?? []).find(
-      (candidate: JsonValue) => candidate?.action === "dispatch_clawsweeper",
-    );
-    const coordinationAction = String(action?.coordination_action ?? "");
-    const event =
-      coordinationAction === "wait_for_active_review"
-        ? { id: "review-active-reused", label: "active review reused", status: "waiting" }
-        : coordinationAction === "reuse_completed_review"
-          ? { id: "review-result-reused", label: "review result reused", status: "complete" }
-          : coordinationAction === "retry"
-            ? { id: "review-deferred", label: "review dispatch deferred", status: "waiting" }
-            : coordinationAction === "stop"
-              ? null
-              : { id: "review-queued", label: "review queued", status: "queued" };
-    if (event) {
-      events.push({
-        id: `${event.id}:${head}:${command.comment_id ?? commentTime ?? "unknown"}`,
-        label: event.label,
-        at: action?.dispatched_at ?? commentTime ?? new Date().toISOString(),
-        headSha: head,
-        repo: command.repo,
-        status: event.status,
-        runUrl: action?.run_url,
-      });
-    }
-  }
-  if (
-    ["clawsweeper_auto_repair", "clawsweeper_auto_merge"].includes(String(command.intent ?? ""))
-  ) {
-    events.push({
-      id: `review-result:${head}:${command.comment_id ?? commentTime ?? "unknown"}`,
-      label:
-        String(command.intent) === "clawsweeper_auto_merge"
-          ? "review passed"
-          : "review requested repair",
-      at: commentTime ?? new Date().toISOString(),
-      headSha: head,
-      repo: command.repo,
-      status: compactTimelineStatus(command.repair_reason ?? "verdict received"),
-      runUrl: command.comment_url,
-    });
-  }
-  const repairAction = executedAction(command, "dispatch_repair");
-  if (repairAction) {
-    const runUrl = repairAction.run_url ?? repairRunUrlFromBody(body);
-    events.push({
-      id: `repair-queued:${head}:${runIdFromUrl(runUrl) || repairAction.dispatched_at || command.comment_id || "unknown"}`,
-      label: "repair queued",
-      at: repairAction.dispatched_at ?? new Date().toISOString(),
-      headSha: head,
-      repo: command.repo,
-      status: repairAction.mode ?? command.target?.mode ?? "queued",
-      runUrl,
-    });
-  }
-  const mergeAction = executedAction(command, "merge");
-  if (mergeAction) {
-    events.push({
-      id: `merge:${head}:${mergeAction.merge_commit_sha ?? mergeAction.completed_at ?? command.comment_id ?? "unknown"}`,
-      label: mergeAction.status === "executed" ? "merged" : "merge checked",
-      at: mergeAction.completed_at ?? mergeAction.merged_at ?? new Date().toISOString(),
-      headSha: head,
-      repo: command.repo,
-      status: mergeAction.reason ?? mergeAction.status,
-      runUrl: command.comment_url,
-    });
-  }
-  return events;
-}
-
-function executedAction(command: LooseRecord, name: string) {
-  return (command.actions ?? []).find(
-    (action: JsonValue) => action?.action === name && action?.status === "executed",
-  );
-}
-
-function repairRunUrlFromBody(body: string) {
-  return body.match(/https:\/\/github\.com\/[^\s]+\/actions\/runs\/\d+/)?.[0] ?? "";
-}
-
-function runIdFromUrl(value: JsonValue) {
-  return String(value ?? "").match(/\/actions\/runs\/(\d+)/)?.[1] ?? "";
-}
-
-function compactTimelineStatus(value: JsonValue) {
-  return String(value ?? "")
-    .replace(/\s+/g, " ")
-    .trim()
-    .slice(0, 90);
-}
-
 function findExistingCommandStatusComment(command: LooseRecord) {
   const marker = commandStatusMarkerForCommand(command);
-  const markerPrefix = usesSharedAutomergeStatus(command)
-    ? itemCommandStatusMarkerPrefix(command.issue_number ?? "unknown")
-    : ["autofix"].includes(String(command.intent ?? ""))
-      ? commandStatusMarkerPrefix(command.issue_number ?? "unknown", command.intent)
-      : null;
+  const responseId = command.comment_version_key ?? command.comment_id;
   return cachedIssueComments(command.issue_number)
     .slice()
     .reverse()
     .find((comment: JsonValue) => {
       if (!isTrustedStatusComment(comment)) return false;
       const body = String(comment.body ?? "");
-      if (body.includes(marker)) return true;
-      if (!markerPrefix || !body.includes(markerPrefix)) return false;
-      if (!usesSharedAutomergeStatus(command)) return true;
-      return hasAutomergeCommandStatusMarker(body);
+      return (
+        hasCommandResponseMarker(body, {
+          commentId: responseId,
+          intent: command.intent,
+          matchAnyHead: true,
+        }) ||
+        (!command.retired && body.includes(marker))
+      );
     });
 }
 
@@ -5358,34 +1597,8 @@ function isOwnCommentReaction(reaction: LooseRecord, content: string) {
   return isAllowedMutationActor(login, DEFAULT_TRUSTED_BOTS);
 }
 
-function ensureRepairLoopLabel(command: LooseRecord, label: string) {
-  const autofix = label === AUTOFIX_LABEL;
-  ensureLabel(
-    command,
-    autofix ? AUTOFIX_LABEL : AUTOMERGE_LABEL,
-    autofix ? "0A3069" : "1A7F37",
-    autofix
-      ? "Maintainer opted this PR into bounded ClawSweeper-reviewed autofix without merge"
-      : "Maintainer opted this ClawSweeper PR into bounded ClawSweeper-reviewed automerge",
-  );
-}
-
 function ensureHumanReviewLabel(command: LooseRecord) {
-  ensureLabel(
-    command,
-    HUMAN_REVIEW_LABEL,
-    "B60205",
-    "ClawSweeper automerge is paused for maintainer review",
-  );
-}
-
-function ensureMergeReadyLabel(command: LooseRecord) {
-  ensureLabel(
-    command,
-    MERGE_READY_LABEL,
-    "57606A",
-    "ClawSweeper found the PR merge-ready but a human gate is still closed",
-  );
+  ensureLabel(command, HUMAN_REVIEW_LABEL, "B60205", "ClawSweeper is paused for maintainer review");
 }
 
 function ensureLabel(command: LooseRecord, label: string, color: string, description: string) {
@@ -5412,10 +1625,6 @@ function hasLabel(target: LooseRecord, name: string) {
   return (target?.labels ?? []).some(
     (labelName: JsonValue) => String(labelName).toLowerCase() === String(name).toLowerCase(),
   );
-}
-
-function pauseLabelsOn(target: LooseRecord) {
-  return repairLoopPauseLabels(target?.labels ?? []);
 }
 
 function unique<T>(items: T[]): T[] {
@@ -5469,8 +1678,7 @@ function idempotencyKey(
   commentId: JsonValue,
   commentUpdatedAt: JsonValue,
 ) {
-  const prefix = parsed.trusted_bot ? "clawsweeper-repair" : "comment-router";
-  return `${prefix}:${targetRepo}:${issueNumber}:${commentId}:${commentUpdatedAt ?? "unknown"}:${parsed.intent}`;
+  return `comment-router:${targetRepo}:${issueNumber}:${commentId}:${commentUpdatedAt ?? "unknown"}:${parsed.intent}`;
 }
 
 function commentVersionKey(entry: LooseRecord) {

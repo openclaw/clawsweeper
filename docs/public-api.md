@@ -28,7 +28,6 @@ branch, not a promise that every method will remain supported.
 | `/api/review-coverage`                   | `GET`  | Fleet-wide coverage counts; repository rows are retained only in the private store.                  |
 | `/api/apply-observability`               | `GET`  | Global closed apply-lane counts and failure categories without repository or run links.              |
 | `/api/health-history`                    | `GET`  | Historical health from `healthHistoryJson`.                                                          |
-| `/api/automerge-metrics`                 | `GET`  | Global automerge counts, rates, buckets, and outcomes without filters or session rows.               |
 | `/api/status`                            | `ANY`  | Closed status plus bounded allowlisted public references, reprojected on every cache/store boundary. |
 | `/api/triage`                            | `ANY`  | Closed issue-triage view descriptors, bounded counts, and completeness only.                         |
 | `/api/pr-proof-triage`                   | `ANY`  | Closed proof-triage view descriptors, bounded counts, and completeness only.                         |

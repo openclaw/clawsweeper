@@ -16,9 +16,6 @@
     },
     "assist": {
       "max": 10
-    },
-    "repair": {
-      "cluster_max_live_runs": 2
     }
   }
 }

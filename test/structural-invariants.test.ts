@@ -68,25 +68,6 @@ test("sweep workflow keeps the product-direction close gate off by default", () 
 
 // clawsweeper.test.ts workflow and source guards
 
-// Duplicate deliveries of one comment cancel each other; other comments never do.
-test("spam comment intake cancels only duplicate deliveries of the same comment", () => {
-  const concurrency = workflow("spam-comment-intake.yml").concurrency;
-  assert.equal(concurrency?.["cancel-in-progress"], true);
-  for (const key of ["comment_id", "review_comment_id", "activity.comment.id"]) {
-    assert.ok(concurrency?.group.includes(`client_payload.${key}`), key);
-  }
-});
-
-// Exact spam scans run per comment and never cancel one another.
-test("spam scanner exact dispatches never cancel other scans", () => {
-  const concurrency = workflow("spam-scanner.yml").concurrency;
-  assert.equal(concurrency?.["cancel-in-progress"], false);
-  assert.ok(concurrency?.group.includes("spam-scanner-{0}-issue-comment-{1}"));
-  assert.ok(concurrency?.group.includes("spam-scanner-{0}-review-comment-{1}"));
-});
-
-// A requeue dispatch needs a durable ledger, and session reports follow the dispatch outcome.
-
 // Agent CLIs install exact releases, never a moving tag; OpenClaw source builds stay opt-in.
 test("agent CLI setup actions install exact pinned releases", () => {
   const exact = /^\d+\.\d+\.\d+$/;

@@ -40,21 +40,7 @@
         "target-repositories.md",
         "triage-dashboard.md",
         "related-issue-discovery.md",
-        "spam-scanner.md",
         "local-clawsweeper-skill.md"
-      ]
-    },
-    {
-      "name": "Repair",
-      "pages": [
-        "steerable-repair-automation.md",
-        "repair/README.md",
-        "repair/operations.md",
-        "repair/automatic-issue-prs.md",
-        "repair/auto-update-prs.md",
-        "repair/automerge-flow.md",
-        "repair/automerge-e2e.md",
-        "repair/internal-features.md"
       ]
     }
   ],
@@ -68,11 +54,6 @@
       "path": "sqlite-change-policy-proposal.md",
       "lifecycle": "proposed",
       "banner": "This is an unapproved policy proposal; it grants no review, label, or merge authority."
-    },
-    {
-      "path": "repair/containment-validation-todo.md",
-      "lifecycle": "historical",
-      "banner": "This is historical decision evidence, not current operator guidance."
     },
     {
       "prefix": "proof/",

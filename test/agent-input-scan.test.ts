@@ -30,10 +30,6 @@ import {
   scanAgentInput,
 } from "../dist/agent-input-scan.js";
 import {
-  captureTargetCheckoutBinding,
-  withTargetReviewSnapshot,
-} from "../dist/repair/target-validation.js";
-import {
   classifyReviewedFixtureScan,
   type ReviewedAttribution,
   type ScanSourceRole,
@@ -399,34 +395,6 @@ if (inputs.some(({bytes}) => bytes.includes(${JSON.stringify(needle)}))) {
   });
 }
 
-test("raw snapshots scan uncommitted bytes without normalization and reject source drift", (t) => {
-  const f = fixture(t);
-  const receipt = join(f.root, "raw-bytes");
-  useFakeScanner(
-    t,
-    `fs.writeFileSync(${JSON.stringify(receipt)}, JSON.stringify(inputs.map(({bytes}) => bytes.toString('base64'))));`,
-  );
-  writeFileSync(join(f.cwd, ".gitattributes"), "*.txt text eol=lf\n");
-  writeFileSync(join(f.cwd, "a.txt"), "base\n");
-  const baseSha = f.commit();
-  const dirty = Buffer.from("changed\r\nraw bytes\r\n");
-  writeFileSync(join(f.cwd, "a.txt"), dirty);
-  const expected = captureTargetCheckoutBinding(f.cwd);
-  withTargetReviewSnapshot(
-    { cwd: f.cwd, baseSha, expected, timeoutMs: 30_000 },
-    (source, timeoutMs) => {
-      scanAgentInput({ cwd: f.cwd, prompt: "Review dirty change.", source, timeoutMs });
-      assert.ok(JSON.parse(readFileSync(receipt, "utf8")).includes(dirty.toString("base64")));
-    },
-  );
-  writeFileSync(join(f.cwd, "a.txt"), "drift\n");
-  assert.throws(
-    () => withTargetReviewSnapshot({ cwd: f.cwd, baseSha, expected, timeoutMs: 30_000 }, f.run),
-    /source_drift/,
-  );
-  assert.equal(existsSync(f.calls), false);
-});
-
 test("scan rejects a source changed while the scanner is running", (t) => {
   const f = fixture(t);
   writeFileSync(join(f.cwd, "a.txt"), "base\n");
@@ -577,25 +545,6 @@ for (const location of ["bin", "..tools", "..tools-copy"]) {
     assert.equal(existsSync(f.calls), false);
   });
 }
-
-test("repair admission includes staged bytes when working bytes were restored", (t) => {
-  const f = fixture(t);
-  useFakeScanner(
-    t,
-    `if (inputs.some(({bytes}) => bytes.includes('staged-sensitive-marker'))) process.exit(183);`,
-  );
-  writeFileSync(join(f.cwd, "a.txt"), "clean\n");
-  const baseSha = f.commit();
-  writeFileSync(join(f.cwd, "a.txt"), "staged-sensitive-marker\n");
-  f.git("add", "a.txt");
-  writeFileSync(join(f.cwd, "a.txt"), "clean\n");
-  const expected = captureTargetCheckoutBinding(f.cwd);
-  assert.throws(
-    () => withTargetReviewSnapshot({ cwd: f.cwd, baseSha, expected, timeoutMs: 30_000 }, f.run),
-    /scanner_failed/,
-  );
-  assert.equal(existsSync(f.calls), false);
-});
 
 function useGitConfigHome(t: test.TestContext, root: string) {
   const home = join(root, "home");
@@ -800,34 +749,7 @@ for (const replacement of ["file", "symlink"]) {
   });
 }
 
-test("expired repair scan budgets report a deadline without starting a provider", (t) => {
-  const f = fixture(t);
-  writeFileSync(join(f.cwd, "a.txt"), "base\n");
-  const baseSha = f.commit();
-  const expected = captureTargetCheckoutBinding(f.cwd);
-  assert.throws(
-    () => withTargetReviewSnapshot({ cwd: f.cwd, baseSha, expected, timeoutMs: 0 }, f.run),
-    (error) => error instanceof AgentInputScanError && error.reason === "deadline",
-  );
-  assert.equal(existsSync(f.calls), false);
-});
-
-test("repair scan binds raw bytes even when normalization leaves the same canonical tree", (t) => {
-  const f = fixture(t);
-  useFakeScanner(t, `fs.writeFileSync(${JSON.stringify(join(f.cwd, "a.txt"))}, 'change\\n');`);
-  writeFileSync(join(f.cwd, ".gitattributes"), "*.txt text eol=lf\n");
-  writeFileSync(join(f.cwd, "a.txt"), "base\n");
-  const baseSha = f.commit();
-  writeFileSync(join(f.cwd, "a.txt"), "change\r\n");
-  const expected = captureTargetCheckoutBinding(f.cwd);
-  assert.throws(
-    () => withTargetReviewSnapshot({ cwd: f.cwd, baseSha, expected, timeoutMs: 30_000 }, f.run),
-    /source_drift/,
-  );
-  assert.equal(existsSync(f.calls), false);
-});
-
-for (const expectedRole of ["base", "head", "index", "tree"] as const) {
+for (const expectedRole of ["base", "head"] as const) {
   test(`scan staging preserves ${expectedRole} blob provenance before provider launch`, (t) => {
     const f = fixture(t);
     const markers = {
@@ -840,11 +762,6 @@ for (const expectedRole of ["base", "head", "index", "tree"] as const) {
     const baseSha = f.commit();
     writeFileSync(join(f.cwd, "a.txt"), `${markers.head}\n`);
     const headSha = f.commit();
-    if (expectedRole === "index" || expectedRole === "tree") {
-      writeFileSync(join(f.cwd, "a.txt"), `${markers.index}\n`);
-      f.git("add", "a.txt");
-      writeFileSync(join(f.cwd, "a.txt"), `${markers.tree}\n`);
-    }
     const uri = new URL("https://fixture.example.invalid/path");
     uri.username = "fixture-user";
     uri.password = "fixture-pass";
@@ -872,12 +789,7 @@ process.stderr.write(JSON.stringify({
 process.exit(183);
 `,
     );
-    const run = () => {
-      if (expectedRole === "base" || expectedRole === "head")
-        return f.run({ kind: "committed", baseSha, headSha });
-      const expected = captureTargetCheckoutBinding(f.cwd);
-      return withTargetReviewSnapshot({ cwd: f.cwd, baseSha, expected, timeoutMs: 30_000 }, f.run);
-    };
+    const run = () => f.run({ kind: "committed", baseSha, headSha });
     assert.throws(run, (error) => {
       assert.ok(error instanceof AgentInputScanError);
       assert.equal(error.reason, "findings");
@@ -2082,10 +1994,6 @@ for (const scenarioName of [
   "shared approved and unapproved path OIDs",
   "shared endpoint OID 644 to 755",
   "shared endpoint OID 755 to 644",
-  "executable head snapshot",
-  "executable index snapshot",
-  "executable worktree snapshot",
-  "repeated regular snapshot OID",
   "canonical autoreview path",
   "vendored autoreview path",
   "both autoreview paths",
@@ -2495,8 +2403,7 @@ for (const scenarioName of [
       writeFileSync(join(f.cwd, ".gitattributes"), "*.ts text eol=crlf\n");
     const baseSha = f.commit();
     for (const file of files) {
-      if (scenario === "shared endpoint OID 644 to 755" || scenario === "executable head snapshot")
-        chmodSync(join(f.cwd, file), 0o755);
+      if (scenario === "shared endpoint OID 644 to 755") chmodSync(join(f.cwd, file), 0o755);
       else if (scenario === "shared endpoint OID 755 to 644") chmodSync(join(f.cwd, file), 0o644);
       else
         writeFileSync(
@@ -2512,28 +2419,13 @@ for (const scenarioName of [
         join(f.cwd, files[0]!),
         fixtureContent("// after\n").toString().replaceAll("\n", "\r\n"),
       );
-    const modeOnly =
-      scenario.startsWith("shared endpoint OID") || scenario === "executable head snapshot";
+    const modeOnly = scenario.startsWith("shared endpoint OID");
     if (modeOnly) {
       assert.equal(
         f.git("rev-parse", `${baseSha}:${ledgerSource}`),
         f.git("rev-parse", `${headSha}:${ledgerSource}`),
       );
       assert.equal(f.git("diff", baseSha, headSha, "--", ledgerSource).includes(uri), false);
-    }
-    if (scenario === "executable head snapshot") {
-      chmodSync(join(f.cwd, ledgerSource), 0o644);
-      f.git("add", "--", ledgerSource);
-    } else if (scenario === "executable index snapshot") {
-      chmodSync(join(f.cwd, ledgerSource), 0o755);
-      f.git("add", "--", ledgerSource);
-      chmodSync(join(f.cwd, ledgerSource), 0o644);
-    } else if (scenario === "executable worktree snapshot") {
-      chmodSync(join(f.cwd, ledgerSource), 0o755);
-    } else if (scenario === "repeated regular snapshot OID") {
-      writeFileSync(join(f.cwd, ledgerSource), fixtureContent("// before\n"));
-      f.git("add", "--", ledgerSource);
-      writeFileSync(join(f.cwd, ledgerSource), fixtureContent("// after\n"));
     }
     const receipt = join(f.root, "scan-root");
     const schemaPath = join(f.root, "schema.json");
@@ -2619,14 +2511,6 @@ process.exit(scenario === 'unexpected successful output' ? 0 : 183);
 `,
     );
     const run = () => {
-      if (scenario.includes("snapshot")) {
-        const expected = captureTargetCheckoutBinding(f.cwd);
-        return withTargetReviewSnapshot(
-          // Admission fixtures include repeated Git fences; deadline failures have separate tests.
-          { cwd: f.cwd, baseSha, expected, timeoutMs: 120_000 },
-          f.run,
-        );
-      }
       const source = { kind: "committed" as const, baseSha, headSha };
       if (scenario === "schema" || scenario === "additional") {
         scanAgentInput({
@@ -2700,7 +2584,6 @@ process.exit(scenario === 'unexpected successful output' ? 0 : 183);
         "shifted PLAIN",
         "PLAIN duplicate",
         "HTML duplicate",
-        "repeated regular snapshot OID",
       ].includes(scenario)
     ) {
       assert.equal(run().status, 0);

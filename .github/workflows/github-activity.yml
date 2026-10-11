@@ -103,14 +103,6 @@ jobs:
         with:
           build-script: build:repair
 
-      - name: Dispatch spam scan candidate
-        if: steps.core-budget.outputs.skip != 'true'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          pnpm run repair:spam-comment-intake -- --write-report
-
       - name: Feed activity to OpenClaw
         if: steps.core-budget.outputs.skip != 'true'
         env:

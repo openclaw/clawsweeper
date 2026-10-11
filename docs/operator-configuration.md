@@ -23,7 +23,6 @@ environment settings are authoritative for workflow variables and secrets.
 | `WORKER_JOB_CACHE_TTL_SECONDS`    | Workflow-job cache lifetime.                                               |
 | `WORKER_HEALTH_CACHE_TTL_SECONDS` | Workflow-health cache lifetime.                                            |
 | `WORKER_HEALTH_FETCH_CONCURRENCY` | Concurrency for workflow-health fetching.                                  |
-| `AUTOMERGE_CACHE_TTL_SECONDS`     | Automerge metrics cache lifetime.                                          |
 | `RECENT_CLOSED_CACHE_TTL_SECONDS` | Recently closed item cache lifetime.                                       |
 | `INCLUDE_CI_STATUS`               | Enables CI status in dashboard assembly when selected.                     |
 | `REVIEW_OBSERVABILITY_REQUIRED`   | Selects whether review observability is required for status assembly.      |

@@ -1,4 +1,4 @@
-import { type CommandProofScenario } from "../src/command-proof-contract.ts";
+import { type ReviewProofScenario } from "../src/review-proof-contract.ts";
 import { stableJson } from "../src/stable-json.ts";
 import { validReviewProofPlan } from "../src/review-proof-plan.ts";
 import { sha256Hex } from "./exact-review-direct-publication.ts";
@@ -16,14 +16,14 @@ export type ReviewProofLease = {
 export type ReviewProofRequest = {
   lease: ReviewProofLease;
   operation: "request" | "poll";
-  scenario: CommandProofScenario;
+  scenario: ReviewProofScenario;
   proofPlan: Record<string, unknown>;
   planSha256: string;
 };
 export type ReviewProofRecord = {
   requestId: string;
   owner: ReviewProofLease;
-  scenario: CommandProofScenario;
+  scenario: ReviewProofScenario;
   proofPlan: Record<string, unknown>;
   planSha256: string;
   createdAt: number;
@@ -103,7 +103,7 @@ export async function parseReviewProofRequest(value: unknown): Promise<ReviewPro
   return {
     lease,
     operation: value.operation,
-    scenario: value.scenario as CommandProofScenario,
+    scenario: value.scenario as ReviewProofScenario,
     proofPlan: value.proofPlan,
     planSha256: value.planSha256,
   };

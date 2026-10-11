@@ -1,16 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import {
-  allowedRepairOwners,
-  assertAllowedOwner,
-  hasDeterministicSecuritySignal,
-  isAllowedRepairOwner,
-  parseArgs,
-  parseSimpleYaml,
-  renderPrompt,
-  validateJob,
-} from "../../dist/repair/lib.js";
+import { parseArgs } from "../../dist/repair/lib.js";
+import { hasDeterministicSecuritySignal } from "../../dist/repair/security-signals.js";
 
 test("parseArgs ignores package-manager double dash separators", () => {
   assert.deepEqual(parseArgs(["--", "jobs/openclaw/inbox/example.md"]), {
@@ -21,62 +13,6 @@ test("parseArgs ignores package-manager double dash separators", () => {
     latest: true,
     mode: "autonomous",
   });
-});
-
-test("renderPrompt loads tracked repair prompt templates", () => {
-  const prompt = renderPrompt(
-    {
-      raw: "---\nrepo: openclaw/clawsweeper\ncluster_id: smoke\nmode: autonomous\nrefs:\n  - 1\n---\nRepair smoke.",
-      frontmatter: {
-        repo: "openclaw/clawsweeper",
-        cluster_id: "smoke",
-        mode: "autonomous",
-        refs: [1],
-      },
-    },
-    "autonomous",
-  );
-  assert.match(prompt, /## Job file/);
-  assert.match(prompt, /Repair smoke\./);
-});
-
-test("validateJob rejects unknown canonical job intents", () => {
-  const frontmatter = parseSimpleYaml(`repo: openclaw/openclaw
-cluster_id: smoke
-mode: autonomous
-job_intent: surprise
-allowed_actions:
-  - comment
-candidates:
-  - "#1"
-`);
-  assert.deepEqual(validateJob({ frontmatter }), ["unsupported job_intent: surprise"]);
-});
-
-test("validateJob accepts only explicit autofix or automerge repair modes", () => {
-  const base = `repo: openclaw/openclaw
-cluster_id: smoke
-mode: autonomous
-allowed_actions:
-  - comment
-candidates:
-  - "#1"
-`;
-
-  for (const mode of ["autofix", "automerge"]) {
-    const frontmatter = parseSimpleYaml(`${base}repair_mode: ${mode}\n`);
-    assert.deepEqual(validateJob({ frontmatter }), []);
-  }
-
-  const invalid = parseSimpleYaml(`${base}repair_mode: merge-everything\n`);
-  assert.deepEqual(validateJob({ frontmatter: invalid }), [
-    "unsupported repair_mode: merge-everything",
-  ]);
-
-  assert.throws(
-    () => parseSimpleYaml(`${base}repair_mode: automerge\nrepair_mode: autofix\n`),
-    /duplicate repair_mode/,
-  );
 });
 
 test("security signals recognize only the seven exact owner labels", () => {
@@ -136,23 +72,4 @@ test("deterministic security signals accept labels and structured ClawSweeper ma
   ]) {
     assert.equal(hasDeterministicSecuritySignal({ comments: [comment] }), false, comment);
   }
-});
-
-test("repair owner policy accepts a comma or whitespace separated owner list", () => {
-  assert.deepEqual(allowedRepairOwners("openclaw, steipete"), ["openclaw", "steipete"]);
-  assert.deepEqual(allowedRepairOwners("  OpenClaw   steipete\n"), ["openclaw", "steipete"]);
-  assert.deepEqual(allowedRepairOwners(undefined), []);
-
-  assert.equal(isAllowedRepairOwner("openclaw/openclaw", "openclaw,steipete"), true);
-  assert.equal(isAllowedRepairOwner("steipete/oracle", "openclaw,steipete"), true);
-  assert.equal(isAllowedRepairOwner("Steipete/oracle", "openclaw,steipete"), true);
-  assert.equal(isAllowedRepairOwner("evil/oracle", "openclaw,steipete"), false);
-  // An empty policy keeps the historical fail-open behavior of assertAllowedOwner.
-  assert.equal(isAllowedRepairOwner("anyone/repo", undefined), true);
-
-  assertAllowedOwner("steipete/oracle", "openclaw,steipete");
-  assert.throws(
-    () => assertAllowedOwner("evil/oracle", "openclaw,steipete"),
-    /repo owner evil does not match CLAWSWEEPER_ALLOWED_OWNER=openclaw,steipete/,
-  );
 });

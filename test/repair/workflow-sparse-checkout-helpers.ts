@@ -5,8 +5,6 @@ import { parse } from "yaml";
 
 export const SPARSE_REPAIR_BUILD_WORKFLOWS = [
   ".github/workflows/repair-comment-router.yml",
-  ".github/workflows/spam-comment-intake.yml",
-  ".github/workflows/spam-scanner.yml",
 ] as const;
 
 type WorkflowStep = {

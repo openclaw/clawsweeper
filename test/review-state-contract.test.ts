@@ -166,7 +166,7 @@ test("the compact v1 fixture matches producer state and identity without snapsho
       fixture.identityMarker,
     ]);
   }
-  // The router routes needs-human verdicts on these typed attributes, never on comment prose.
+  // Review markers carry typed outcomes without requesting repair actions.
   assert.match(
     reviewAutomationMarkersFromReport(reports.ready),
     /clawsweeper-verdict:needs-human [^>]* hold=not_opted_in findings=0 -->/,
@@ -175,7 +175,7 @@ test("the compact v1 fixture matches producer state and identity without snapsho
     reviewAutomationMarkersFromReport(reports.blocked),
     /clawsweeper-verdict:needs-human [^>]* hold=blocked findings=0 -->/,
   );
-  assert.match(
+  assert.doesNotMatch(
     reviewAutomationMarkersFromReport(reports["needs-changes"]),
     /clawsweeper-action:fix-required/,
   );
@@ -257,7 +257,7 @@ test("historical reports without a typed record reject advice prose", () => {
 test("queued repairs stay actionable without classifying their explanation", () => {
   const report = reviewReport({ work_candidate: "queue_fix_pr" });
   assert.match(assertReadiness(report, "needs-changes"), /Complete the queued repair/);
-  assert.match(reviewAutomationMarkersFromReport(report), /clawsweeper-action:fix-required/);
+  assert.doesNotMatch(reviewAutomationMarkersFromReport(report), /clawsweeper-action:fix-required/);
 });
 
 test("human decisions and proof policy block repair markers even for queued repairs", () => {
@@ -351,7 +351,7 @@ test("typed findings and security concerns cannot disappear behind none-like det
   }
 });
 
-test("an explicit security repair opt-in changes routing without hiding the concern", () => {
+test("historical repair labels cannot bypass a security blocker", () => {
   const report = reviewReport(
     { labels: '["clawsweeper:autofix"]' },
     "## Security Review\n\nStatus: needs_attention\n\nSummary: Repair the credential exposure.\n\nConcerns:\n\n- none",
@@ -364,11 +364,8 @@ test("an explicit security repair opt-in changes routing without hiding the conc
       },
     },
   );
-  assertReadiness(report, "needs-changes");
-  assert.match(
-    reviewAutomationMarkersFromReport(report),
-    /clawsweeper-action:fix-required[^>]+finding=security-review/,
-  );
+  assertReadiness(report, "blocked");
+  assert.doesNotMatch(reviewAutomationMarkersFromReport(report), /clawsweeper-action:fix-required/);
 });
 
 test("a duplicate human blocker promotes the visible finding to blocked", () => {

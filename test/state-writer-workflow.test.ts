@@ -127,7 +127,6 @@ test("post-side-effect git bookkeeping is non-fatal while durability fences stay
   };
 
   for (const [file, job, name] of [
-    [".github/workflows/spam-scanner.yml", "scan", "Commit spam scanner audit"],
     [
       ".github/workflows/failed-review-retry.yml",
       "retry-failed-reviews",

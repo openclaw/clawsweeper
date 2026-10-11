@@ -22,18 +22,7 @@ const expectedRunnerByJob = new Map([
     ".github/workflows/repair-containment-smoke.yml:containment-smoke",
     "${{ vars.CLAWSWEEPER_E2E_RUNNER || 'blacksmith-16vcpu-ubuntu-2404' }}",
   ],
-  [
-    ".github/workflows/repair-publish-results.yml:publish",
-    "${{ vars.CLAWSWEEPER_WORKER_RUNNER || 'blacksmith-4vcpu-ubuntu-2404' }}",
-  ],
-  [
-    ".github/workflows/spam-comment-intake.yml:intake",
-    "${{ vars.CLAWSWEEPER_SPAM_RUNNER || 'blacksmith-4vcpu-ubuntu-2404' }}",
-  ],
-  [
-    ".github/workflows/spam-scanner.yml:scan",
-    "${{ vars.CLAWSWEEPER_SPAM_RUNNER || 'blacksmith-4vcpu-ubuntu-2404' }}",
-  ],
+
 ]);
 
 test("Blacksmith lanes keep their expected variable names and default labels", () => {

@@ -1,17 +1,14 @@
 import { reportReviewDecision } from "./report-review-decision.js";
 import { reportAllowsAutomation } from "./manual-publication-policy.js";
 import { validReviewLeaseIdentity, type NeedsHumanHold } from "./review-comment-markers.js";
-import { AUTOFIX_LABEL, AUTOMERGE_LABEL } from "./repair/exact-review-guard-labels.js";
 import { markerAttributeValue } from "./clawsweeper-review-comment-identity.js";
 import type { PullRequestReviewReadiness } from "./clawsweeper-types.js";
 import { parseIsoMs } from "./iso-time.js";
 import { frontMatterStringArray, frontMatterValue } from "./report-front-matter.js";
 import { pullHeadShaFromReport } from "./clawsweeper-record-metadata.js";
-import {
-  pullRequestReviewReadinessFromReport,
-  securitySensitiveRepairAllowed,
-} from "./clawsweeper-report-comment-helpers.js";
+import { pullRequestReviewReadinessFromReport } from "./clawsweeper-report-comment-helpers.js";
 import { realBehaviorProofBlocksMerge } from "./clawsweeper-orchestration-foundation.js";
+import { AUTOFIX_LABEL, AUTOMERGE_LABEL } from "./repair/exact-review-guard-labels.js";
 
 function canonicalReviewTimestamp(value: string | undefined): string | null {
   const parsed = parseIsoMs(value);
@@ -96,8 +93,6 @@ export function reviewAutomationMarkersFromReport(
     `lease_owner=${markerAttributeValue(reviewLeaseOwner)}`,
     `lease_comment_id=${markerAttributeValue(reviewLeaseCommentId)}`,
     `source_revision=${markerAttributeValue(sourceRevision)}`,
-    // The retained repair marker reader requires this field; no legacy receipt is read.
-    "live_verification=absent",
   ].join(" ");
   const reviewReadiness =
     precomputedReadiness?.headSha === headSha.toLowerCase()
@@ -148,44 +143,22 @@ export function reviewAutomationMarkersFromReport(
     return humanReviewMarkers("review_failed");
   }
   const hasRealBehaviorProofBlocker = realBehaviorProofBlocksMerge(markdown);
-  if (securityNeedsAttention) {
-    const markers = [`<!-- clawsweeper-security:security-sensitive ${baseAttrs} -->`];
-    if (
-      reviewReadiness.state === "needs-changes" &&
-      !hasRealBehaviorProofBlocker &&
-      securitySensitiveRepairAllowed(markdown)
-    ) {
-      return withReviewState(
-        ...markers,
-        `<!-- clawsweeper-verdict:needs-changes ${baseAttrs} -->`,
-        `<!-- clawsweeper-action:fix-required ${baseAttrs} finding=security-review -->`,
-      );
-    }
-    return withReviewState(...markers, needsHumanVerdict("security"));
-  }
+  if (securityNeedsAttention) return humanReviewMarkers("security");
   if (hasRealBehaviorProofBlocker) {
     return withReviewState(needsHumanVerdict(onlyBlocker ? "proof" : "blocked"));
   }
   if (decision === "keep_open") {
-    if (reviewReadiness.state === "ready" && repairLoopPassModeFromReport(markdown)) {
-      return withReviewState(`<!-- clawsweeper-verdict:pass ${baseAttrs} -->`);
-    }
-    if (reviewReadiness.state === "needs-changes" && repairLoopFindingRepairAllowed(markdown)) {
+    if (reviewReadiness.state === "ready") {
       return withReviewState(
-        `<!-- clawsweeper-verdict:needs-changes ${baseAttrs} -->`,
-        `<!-- clawsweeper-action:fix-required ${baseAttrs} finding=review-feedback -->`,
+        repairLoopPassModeFromReport(markdown)
+          ? `<!-- clawsweeper-verdict:pass ${baseAttrs} -->`
+          : needsHumanVerdict("not_opted_in"),
       );
     }
-    if (reviewReadiness.state === "ready") {
-      return withReviewState(needsHumanVerdict("not_opted_in"));
+    if (reviewReadiness.state === "needs-changes") {
+      return withReviewState(`<!-- clawsweeper-verdict:needs-changes ${baseAttrs} -->`);
     }
-    if (reviewReadiness.state !== "needs-changes" || reviewed.workCandidate !== "queue_fix_pr") {
-      return withReviewState(needsHumanVerdict("blocked"));
-    }
-    return withReviewState(
-      `<!-- clawsweeper-verdict:needs-changes ${baseAttrs} -->`,
-      `<!-- clawsweeper-action:fix-required ${baseAttrs} finding=review-feedback -->`,
-    );
+    return withReviewState(needsHumanVerdict("blocked"));
   }
   if (decision === "close") {
     const closeReason = reviewed.closeReason ?? "unknown";
@@ -199,26 +172,14 @@ export function reviewAutomationMarkersFromReport(
   return withReviewState(needsHumanVerdict("undecided"));
 }
 
+/** Read historical opt-in labels only to preserve existing report presentation. */
 export function repairLoopPassModeFromReport(markdown: string): "" | "autofix" | "automerge" {
-  if (!isRepairLoopPassReport(markdown)) return "";
-  return frontMatterStringArray(markdown, "labels").includes(AUTOFIX_LABEL)
-    ? "autofix"
-    : "automerge";
-}
-
-function repairLoopFindingRepairAllowed(markdown: string): boolean {
   const labels = frontMatterStringArray(markdown, "labels");
-  return (
-    (labels.includes(AUTOMERGE_LABEL) || labels.includes(AUTOFIX_LABEL)) &&
-    !realBehaviorProofBlocksMerge(markdown) &&
-    reportReviewDecision(markdown).reviewFindings.length > 0
-  );
-}
-
-function isRepairLoopPassReport(markdown: string): boolean {
-  const labels = frontMatterStringArray(markdown, "labels");
-  return (
-    (labels.includes(AUTOMERGE_LABEL) || labels.includes(AUTOFIX_LABEL)) &&
-    pullRequestReviewReadinessFromReport(markdown).state === "ready"
-  );
+  if (
+    (!labels.includes(AUTOMERGE_LABEL) && !labels.includes(AUTOFIX_LABEL)) ||
+    pullRequestReviewReadinessFromReport(markdown).state !== "ready"
+  ) {
+    return "";
+  }
+  return labels.includes(AUTOFIX_LABEL) ? "autofix" : "automerge";
 }

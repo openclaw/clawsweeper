@@ -1,16 +1,10 @@
 import type { JsonValue, LooseRecord } from "./json-types.js";
 import { DEFAULT_ALLOWED_REPOSITORY_PERMISSIONS } from "./comment-router/admission.js";
-import { currentProjectRepo, readMaxLiveWorkers } from "./lib.js";
+import { currentProjectRepo } from "./project-repo.js";
 import { assertRepo, commaSet, positiveInteger } from "./comment-router-utils.js";
-import { AUTOMATION_LIMITS } from "../limits.js";
 import { CLAWSWEEPER_APP_BOT_LOGINS } from "../clawsweeper-bot-identity.js";
-import {
-  DEFAULT_HEAD_PREFIX,
-  DEFAULT_TARGET_REPO,
-  REPAIR_CLUSTER_WORKFLOW,
-  SWEEP_WORKFLOW,
-} from "./constants.js";
-export { DEFAULT_HEAD_PREFIX, DEFAULT_TARGET_REPO } from "./constants.js";
+import { DEFAULT_TARGET_REPO, SWEEP_WORKFLOW } from "./constants.js";
+export { DEFAULT_TARGET_REPO } from "./constants.js";
 
 const DEFAULT_ALLOWED_ASSOCIATIONS = ["OWNER", "MEMBER", "COLLABORATOR"];
 // Command trust admits only the GitHub App bot logins, not the plain "clawsweeper" login.
@@ -19,26 +13,13 @@ export const DEFAULT_TRUSTED_BOTS = [...CLAWSWEEPER_APP_BOT_LOGINS];
 export type CommentRouterConfig = {
   targetRepo: string;
   targetBranch: string;
-  repairRepo: string;
-  workflow: string;
   reviewRepo: string;
   reviewWorkflow: string;
-  runner: string;
-  executionRunner: string;
-  model: string;
-  headPrefix: string;
   execute: boolean;
   forceReprocess: boolean;
   attemptId: string | null;
   writeReport: boolean;
-  waitForCapacity: boolean;
-  maxLiveWorkers: number;
-  automergeMaxLiveWorkers: number;
-  automergeRunNamePrefix: string;
   maxComments: number;
-  maxAutocloseTargets: number;
-  maxAutoRepairsPerHead: number;
-  maxAutoRepairsPerPr: number;
   lookupConcurrency: number;
   lookbackMinutes: number;
   since: string;
@@ -60,14 +41,6 @@ export function readCommentRouterConfig(args: LooseRecord): CommentRouterConfig 
     args["target-branch"] ?? args.target_branch ?? process.env.CLAWSWEEPER_TARGET_BRANCH,
     "",
   );
-  const repairRepo = stringSetting(
-    args["repair-repo"] ?? process.env.CLAWSWEEPER_REPO,
-    currentProjectRepo(),
-  );
-  const workflow = stringSetting(
-    args.workflow ?? process.env.CLAWSWEEPER_COMMENT_WORKFLOW,
-    REPAIR_CLUSTER_WORKFLOW,
-  );
   const reviewRepo = stringSetting(
     args["review-repo"] ?? process.env.CLAWSWEEPER_REVIEW_REPO,
     currentProjectRepo(),
@@ -76,26 +49,12 @@ export function readCommentRouterConfig(args: LooseRecord): CommentRouterConfig 
     args["review-workflow"] ?? process.env.CLAWSWEEPER_REVIEW_WORKFLOW,
     SWEEP_WORKFLOW,
   );
-  const runner = stringSetting(
-    args.runner ?? process.env.CLAWSWEEPER_WORKER_RUNNER,
-    "blacksmith-4vcpu-ubuntu-2404",
-  );
-  const executionRunner = stringSetting(
-    args["execution-runner"] ?? args.execution_runner ?? process.env.CLAWSWEEPER_EXECUTION_RUNNER,
-    "blacksmith-16vcpu-ubuntu-2404",
-  );
-  const model = stringSetting(args.model ?? process.env.CLAWSWEEPER_MODEL, "internal");
-  const headPrefix = stringSetting(
-    args["head-prefix"] ?? process.env.CLAWSWEEPER_HEAD_PREFIX,
-    DEFAULT_HEAD_PREFIX,
-  );
   const lookbackMinutes = positiveInteger(
     args["lookback-minutes"] ?? process.env.CLAWSWEEPER_COMMENT_LOOKBACK_MINUTES ?? 180,
     "lookback-minutes",
   );
 
   assertRepo(targetRepo, "repo");
-  assertRepo(repairRepo, "repair-repo");
   assertRepo(reviewRepo, "review-repo");
 
   const forceReprocess = Boolean(
@@ -121,45 +80,15 @@ export function readCommentRouterConfig(args: LooseRecord): CommentRouterConfig 
   return {
     targetRepo,
     targetBranch,
-    repairRepo,
-    workflow,
     reviewRepo,
     reviewWorkflow,
-    runner,
-    executionRunner,
-    model,
-    headPrefix,
     execute: Boolean(args.execute),
     forceReprocess,
     attemptId,
     writeReport: Boolean(args["write-report"] || args.execute),
-    waitForCapacity: Boolean(args["wait-for-capacity"]),
-    maxLiveWorkers: readMaxLiveWorkers(args),
-    automergeMaxLiveWorkers: readMaxLiveWorkers({
-      "max-live-workers":
-        args["automerge-max-live-workers"] ??
-        process.env.CLAWSWEEPER_AUTOMERGE_MAX_LIVE_WORKERS ??
-        AUTOMATION_LIMITS.repair_live_runs.automerge_default,
-    }),
-    automergeRunNamePrefix: stringSetting(
-      args["automerge-run-name-prefix"] ?? process.env.CLAWSWEEPER_AUTOMERGE_RUN_NAME_PREFIX,
-      "automerge repair ",
-    ),
     maxComments: positiveInteger(
       args["max-comments"] ?? process.env.CLAWSWEEPER_COMMENT_MAX_COMMENTS ?? 100,
       "max-comments",
-    ),
-    maxAutocloseTargets: positiveInteger(
-      args["max-autoclose-targets"] ?? process.env.CLAWSWEEPER_AUTOCLOSE_MAX_TARGETS ?? 8,
-      "max-autoclose-targets",
-    ),
-    maxAutoRepairsPerHead: positiveInteger(
-      args["max-auto-repairs-per-head"] ?? process.env.CLAWSWEEPER_MAX_REPAIRS_PER_HEAD ?? 2,
-      "max-auto-repairs-per-head",
-    ),
-    maxAutoRepairsPerPr: positiveInteger(
-      args["max-auto-repairs-per-pr"] ?? process.env.CLAWSWEEPER_MAX_REPAIRS_PER_PR ?? 10,
-      "max-auto-repairs-per-pr",
     ),
     lookupConcurrency: positiveInteger(
       args["lookup-concurrency"] ?? process.env.CLAWSWEEPER_COMMENT_LOOKUP_CONCURRENCY ?? 8,

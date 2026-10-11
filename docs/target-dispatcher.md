@@ -591,10 +591,8 @@ such as issue edits and PR synchronizes update the desired review revision. The
 receiver coalesces by repository and item number, then dispatches only a leased
 executor for the newest revision.
 
-For sub-5s acknowledgement, use the GitHub App webhook receiver instead of
-waiting for GitHub Actions to start the target dispatcher. The hosted Worker
-endpoint is `/github/webhook`; the local equivalent is
-the `build:repair` package script followed by `repair:comment-webhook`. It verifies
+For sub-5s acknowledgement, use the hosted GitHub App webhook at
+`/github/webhook` instead of waiting for GitHub Actions. The Worker verifies
 `CLAWSWEEPER_WEBHOOK_SECRET`, accepts `issue_comment`, `issues`, and
 `pull_request` events for explicitly configured public repositories plus the
 eligible `openclaw/*` and `steipete/*` fallbacks, mints a target installation
@@ -608,10 +606,13 @@ dispatcher installed as a compatibility fallback; it enqueues through
 [direct queue intake](#direct-queue-intake) and its legacy dispatch is bridged
 into the same queue before Codex starts.
 
-The standalone Node listener limits raw request bodies to 2 MiB before verifying
-their signature. Declared-length and chunked deliveries are supported. Oversized
-bodies receive HTTP 400 and a closed connection; Node owns HTTP framing and
-connection teardown.
+For a local receiver, run `pnpm run build:repair` followed by
+`pnpm run repair:comment-webhook`. It preserves the same signed review-command
+admission boundary as the hosted webhook.
+The Node listener limits raw request bodies to 2 MiB before signature validation.
+Declared-length and chunked deliveries are supported; oversized bodies receive
+HTTP 400 and a closed connection.
+
 
 The receiver keeps the review lane proposal-only, then runs exact apply for the
 selected item with only immediate-safe close reasons enabled:

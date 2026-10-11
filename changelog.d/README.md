@@ -38,9 +38,7 @@ Rules enforced by `pnpm run check:changelog`, which also runs in
   another fragment, so a merge cannot quietly re-add a stale entry.
 
 Edit or delete your own fragment when the change evolves. Do not edit other
-fragments or `CHANGELOG.md` in a normal pull request. ClawSweeper's repair,
-autofix, and automerge prompts do not ask workers to edit changelogs; they keep
-release-note context in the PR body and commit message.
+fragments or `CHANGELOG.md` in a normal pull request.
 
 ## Stitch at release time
 

@@ -22,9 +22,6 @@ export type WorkerConfig = {
     assist: {
       max: number;
     };
-    repair: {
-      cluster_max_live_runs: number;
-    };
   };
 };
 
@@ -46,27 +43,9 @@ export type AutomationLimits = {
     exact_item_default: number;
     hard_cap: number;
   };
-  repair_live_runs: {
-    default: number;
-    hard_cap: number;
-    automerge_default: number;
-    issue_implementation_default: number;
-    cluster_default: number;
-  };
-  issue_implementation: {
-    dispatches_per_sweep_default: number;
-  };
 };
 
-export type WorkerLane =
-  | "normal_review"
-  | "hot_intake"
-  | "repair"
-  | "automerge_repair"
-  | "issue_implementation"
-  | "cluster_repair"
-  | "exact_item"
-  | "assist";
+export type WorkerLane = "normal_review" | "hot_intake" | "exact_item" | "assist";
 
 export const WORKER_CONFIG = readWorkerConfig();
 export const AUTOMATION_LIMITS = deriveAutomationLimits(WORKER_CONFIG);
@@ -80,7 +59,6 @@ export function readWorkerConfig(
 
 export function deriveAutomationLimits(config: WorkerConfig): AutomationLimits {
   const max = config.workers.max;
-  const clusterRepairMax = Math.min(config.lanes.repair.cluster_max_live_runs, max);
   return {
     audit: { max_parallel_targets: config.audit.max_parallel_targets },
     exact_review: {
@@ -100,16 +78,6 @@ export function deriveAutomationLimits(config: WorkerConfig): AutomationLimits {
       hot_intake_default: percent(max, 35),
       exact_item_default: 1,
       hard_cap: max,
-    },
-    repair_live_runs: {
-      default: percent(max, 40),
-      hard_cap: max,
-      automerge_default: percent(max, 40),
-      issue_implementation_default: percent(max, 40),
-      cluster_default: clusterRepairMax,
-    },
-    issue_implementation: {
-      dispatches_per_sweep_default: percent(max, 4),
     },
   };
 }
@@ -132,13 +100,6 @@ export function workerLimit(
 ): number {
   if (lane === "exact_item") return limits.review_shards.exact_item_default;
   if (lane === "assist") return priorityLimit(limits.assist.default, activeCritical);
-  if (lane === "repair") return priorityLimit(limits.repair_live_runs.default, activeCritical);
-  if (lane === "automerge_repair")
-    return priorityLimit(limits.repair_live_runs.automerge_default, activeCritical);
-  if (lane === "issue_implementation")
-    return priorityLimit(limits.repair_live_runs.issue_implementation_default, activeCritical);
-  if (lane === "cluster_repair")
-    return priorityLimit(limits.repair_live_runs.cluster_default, activeCritical);
   if (lane === "hot_intake")
     return backgroundLimit(
       limits.review_shards.hot_intake_default,
@@ -191,13 +152,6 @@ function validateWorkerConfig(value: unknown): WorkerConfig {
       },
       assist: {
         max: positiveInteger(value, "lanes.assist.max"),
-      },
-      repair: {
-        cluster_max_live_runs: optionalPositiveInteger(
-          value,
-          "lanes.repair.cluster_max_live_runs",
-          1,
-        ),
       },
     },
   };

@@ -453,15 +453,10 @@ try {
   assert.ok(!review.writes.some((request) => request.endsWith("/dispatches")));
 
   // Retired commands only write their own durable reply, never dispatch or opt in.
-  for (const [number, intent] of [
-    [6, "autofix"],
-    [7, "implement_issue"],
-    [8, "automerge"],
-  ]) {
+  for (const number of [6, 7]) {
     const retired = await runExecutedCommand(apiUrl, number);
     assert.equal(retired.status, 0, retired.stderr || retired.stdout);
-    assert.equal(retired.command?.intent, intent);
-    assert.equal(retired.command?.retired, true);
+    assert.equal(retired.command?.intent, "retired");
     assert.equal(retired.command?.status, "executed");
     assert.deepEqual(
       retired.command.actions.map((action) => action.action),

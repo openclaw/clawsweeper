@@ -290,18 +290,6 @@ async function runCli(): Promise<void> {
       });
       break;
     }
-    case "count-command-actions":
-      console.log(
-        countCommandActions(
-          requiredString("report"),
-          requiredString("action"),
-          optionalString("status"),
-        ),
-      );
-      break;
-    case "count-requeue-required":
-      console.log(countRequeueRequired(requiredString("dir")));
-      break;
     case "limit":
       process.stdout.write(String(automationLimit(optionalString("path") || positionalString(1))));
       break;
@@ -377,16 +365,7 @@ async function runCli(): Promise<void> {
 }
 
 function requiredWorkerLane(value: string): WorkerLane {
-  const allowed = new Set<WorkerLane>([
-    "normal_review",
-    "hot_intake",
-    "repair",
-    "automerge_repair",
-    "issue_implementation",
-    "cluster_repair",
-    "exact_item",
-    "assist",
-  ]);
+  const allowed = new Set<WorkerLane>(["normal_review", "hot_intake", "exact_item", "assist"]);
   if (allowed.has(value as WorkerLane)) return value as WorkerLane;
   throw new Error(`unknown worker lane: ${value}`);
 }
@@ -1165,31 +1144,6 @@ function applyReportHealthSummary(options: {
   const base = `${examined}; ${actionRecords}; ${options.closed} closed, ${options.commentSynced} comments synced, ${options.skipped} skipped; ${cursorText}.`;
   if (options.attentionReasons.length === 0) return base;
   return `${base} Attention: ${options.attentionReasons.join(", ")}.`;
-}
-
-export function countCommandActions(reportPath: string, action: string, status = ""): number {
-  const report = readJsonObject(reportPath);
-  const commands: JsonValue[] = Array.isArray(report.commands) ? report.commands : [];
-  const statuses = new Set(
-    status
-      .split(",")
-      .map((value) => value.trim())
-      .filter(Boolean),
-  );
-  return commands
-    .flatMap((command: JsonValue): JsonValue[] =>
-      isJsonObject(command) && Array.isArray(command.actions) ? command.actions : [],
-    )
-    .filter((entry: JsonValue): entry is LooseRecord => isJsonObject(entry))
-    .filter((entry: LooseRecord) => entry.action === action)
-    .filter((entry: LooseRecord) => statuses.size === 0 || statuses.has(String(entry.status)))
-    .length;
-}
-
-export function countRequeueRequired(reportDir: string): number {
-  return resultFiles(reportDir)
-    .flatMap((file) => resultActions(file))
-    .filter((action) => action.requeue_required === true).length;
 }
 
 export function mergeApplyReports(reportDir: string, outputPath: string): void {
@@ -2384,21 +2338,6 @@ function reportsReviewCommentSync(entry: ApplyAction): boolean {
     entry.action === "review_comment_synced" ||
     (entry.reason || "").split("; ").includes("updated durable Codex review comment")
   );
-}
-
-function resultFiles(reportDir: string): string[] {
-  if (!fs.existsSync(reportDir)) return [];
-  return fs
-    .readdirSync(reportDir, { recursive: true })
-    .map((entry) => path.join(reportDir, String(entry)))
-    .filter((candidate) => ["apply-report.json", "result.json"].includes(path.basename(candidate)))
-    .filter((candidate) => fs.statSync(candidate).isFile());
-}
-
-function resultActions(reportPath: string): LooseRecord[] {
-  const parsed = readJsonObject(reportPath);
-  const actions: JsonValue[] = Array.isArray(parsed.actions) ? parsed.actions : [];
-  return actions.filter((action): action is LooseRecord => isJsonObject(action));
 }
 
 function readJsonObject(filePath: string): LooseRecord {

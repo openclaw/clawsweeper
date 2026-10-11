@@ -64,6 +64,50 @@ test("skipping records does not bypass credentials for requested state blobs", a
   );
 });
 
+test("setup-state supports opting out of canonical record and blob hydration", (t) => {
+  type Step = { name?: string; if?: string; uses?: string; run?: string; with?: object };
+  const action = parse(readFileSync(".github/actions/setup-state/action.yml", "utf8"));
+  const steps = action.runs.steps as Step[];
+  assert.equal(action.inputs["hydrate-records"].default, "true");
+  for (const step of steps.filter((candidate) => candidate.name?.includes("record snapshot"))) {
+    assert.match(step.if ?? "", /inputs\.hydrate-records == 'true'/, step.name);
+  }
+  const root = mkdtempSync(join(tmpdir(), "clawsweeper-setup-state-args-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  writeFileSync(join(root, "node"), `#!/bin/sh\necho "$@"\n`, { mode: 0o755 });
+  const run = steps
+    .find((step) => step.name === "Hydrate generated state")!
+    .run!.replaceAll("${{ inputs.state-path }}", "state")
+    .replaceAll("${{ inputs.worktree-path }}", "code");
+  for (const [env, args] of [
+    [
+      { HYDRATE_RECORDS: "false", HYDRATE_STATE_BLOBS: "false" },
+      "--skip-records --skip-state-blobs",
+    ],
+    [
+      { HYDRATE_GIT_STATE: "false", RECORDS_ITEM_NUMBER: "42" },
+      "--skip-git-state --records-item-number 42",
+    ],
+  ] as const) {
+    const result = spawnSync("bash", ["-c", run], {
+      encoding: "utf8",
+      env: {
+        PATH: `${root}:${process.env.PATH}`,
+        HYDRATE_RECORDS: "true",
+        HYDRATE_STATE_BLOBS: "true",
+        HYDRATE_GIT_STATE: "true",
+        ...env,
+      },
+    });
+    // Node runtime flags (heap size) come before the script; the test checks the
+    // hydration arguments.
+    assert.equal(
+      result.stdout.replace(/^(?:--\S+ )+/, ""),
+      `code/scripts/hydrate-state.ts --state-dir state --worktree code ${args}\n`,
+    );
+  }
+});
+
 function captureRetryDelays(t: TestContext) {
   const delays: number[] = [];
   const immediateSetTimeout = (

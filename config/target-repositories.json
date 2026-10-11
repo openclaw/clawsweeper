@@ -11,9 +11,7 @@
         "issue": ["implemented_on_main"],
         "pull_request": ["implemented_on_main", "mostly_implemented_on_main"]
       },
-      "package_manager": "bun",
-      "validation_commands": ["bun run check"],
-      "changed_gate": null
+      "package_manager": "bun"
     },
     {
       "target_repo": "openclaw/clawsweeper",
@@ -24,32 +22,18 @@
         "issue": ["implemented_on_main"],
         "pull_request": ["implemented_on_main", "mostly_implemented_on_main"]
       },
-      "package_manager": "pnpm",
-      "validation_commands": [],
-      "changed_gate": {
-        "command": "pnpm check:changed",
-        "required_script": "check:changed"
-      }
+      "package_manager": "pnpm"
     },
     {
       "target_repo": "openclaw/openclaw-enterprise",
       "display_name": "OpenClaw Enterprise",
       "checkout_dir": "openclaw-enterprise",
       "prompt_note": "Use the OpenClaw Enterprise source tree and current main branch. Follow its AGENTS.md and authoritative platform design, verify implementation status before treating target-design capabilities as implemented, and preserve workspace, architecture, IAM, audit, persistence, and deployment boundaries. Require target-native integration evidence for platform behavior. Review only: keep issues and pull requests open for maintainer triage.",
-      "allow_repair_commands": false,
       "apply_close_rules": {
         "issue": [],
         "pull_request": []
       },
-      "package_manager": "pnpm",
-      "validation_commands": [
-        "pnpm check:workspace",
-        "pnpm lint",
-        "pnpm format:check",
-        "pnpm openapi:check",
-        "pnpm typecheck"
-      ],
-      "changed_gate": null
+      "package_manager": "pnpm"
     },
     {
       "target_repo": "openclaw/openclaw-facetime",
@@ -60,9 +44,7 @@
         "issue": ["implemented_on_main"],
         "pull_request": ["implemented_on_main"]
       },
-      "package_manager": "pnpm",
-      "validation_commands": ["pnpm typecheck", "pnpm test", "pnpm build"],
-      "changed_gate": null
+      "package_manager": "pnpm"
     },
     {
       "target_repo": "openclaw/fs-safe",
@@ -73,9 +55,7 @@
         "issue": ["implemented_on_main"],
         "pull_request": ["implemented_on_main", "mostly_implemented_on_main"]
       },
-      "package_manager": "pnpm",
-      "validation_commands": [],
-      "changed_gate": null
+      "package_manager": "pnpm"
     },
     {
       "target_repo": "openclaw/crabbox",
@@ -86,9 +66,7 @@
         "issue": ["implemented_on_main"],
         "pull_request": ["implemented_on_main", "mostly_implemented_on_main"]
       },
-      "package_manager": "npm",
-      "validation_commands": [],
-      "changed_gate": null
+      "package_manager": "npm"
     },
     {
       "target_repo": "steipete/camsnap",
@@ -99,9 +77,7 @@
         "issue": [],
         "pull_request": []
       },
-      "package_manager": "npm",
-      "validation_commands": [],
-      "changed_gate": null
+      "package_manager": "npm"
     }
   ],
   "generic_fallbacks": [
@@ -114,9 +90,7 @@
         "issue": ["implemented_on_main"],
         "pull_request": ["implemented_on_main", "mostly_implemented_on_main"]
       },
-      "package_manager": "pnpm",
-      "validation_commands": [],
-      "changed_gate": null
+      "package_manager": "pnpm"
     },
     {
       "owner": "steipete",
@@ -127,22 +101,9 @@
         "issue": [],
         "pull_request": []
       },
-      "package_manager": "pnpm",
-      "validation_commands": [],
-      "changed_gate": null
+      "package_manager": "pnpm"
     }
   ],
-  "core_target_overrides": {
-    "openclaw/openclaw": {
-      "package_manager": "pnpm",
-      "validation_timeout_ms": 3000000,
-      "validation_commands": [],
-      "changed_gate": {
-        "command": "pnpm check:changed",
-        "required_script": "check:changed"
-      }
-    }
-  },
   "target_inventory": {
     "owners": ["openclaw", "steipete"],
     "deny_repositories": ["openclaw/clawsweeper-state", "openclaw/.github"],

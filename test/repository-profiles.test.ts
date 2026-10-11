@@ -15,7 +15,6 @@ import {
   targetRepo,
   withTargetProfile,
 } from "../dist/repository-profiles.js";
-import { resolveTargetRepoToolchain } from "../dist/repair/target-toolchain-config.js";
 import {
   defaultItemsDir,
   isMarkdownForActiveRepo,
@@ -126,19 +125,7 @@ test("OpenClaw Enterprise uses an explicit review-only profile and target-native
   assert.match(profile.promptNote, /authoritative platform design/);
   assert.match(profile.promptNote, /Require target-native integration evidence/);
   assert.match(profile.promptNote, /Review only/);
-  assert.equal(profile.allowRepairCommands, false);
   assert.deepEqual(profile.applyCloseRules, { issue: [], pull_request: [] });
-  assert.deepEqual(resolveTargetRepoToolchain(profile.targetRepo), {
-    packageManager: "pnpm",
-    baseValidationCommands: [
-      "pnpm check:workspace",
-      "pnpm lint",
-      "pnpm format:check",
-      "pnpm openapi:check",
-      "pnpm typecheck",
-    ],
-    changedGate: null,
-  });
 });
 
 test("generic OpenClaw fallback supports conservative event-only onboarding", () => {

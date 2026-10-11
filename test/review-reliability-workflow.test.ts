@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { parse } from "yaml";
-import { zip } from "./helpers/command-proof-fixtures.ts";
+import { zip } from "./helpers/review-proof-fixtures.ts";
 import {
   classifyReviewRun,
   REVIEW_RUN_OBSERVER_TITLE_LANES,

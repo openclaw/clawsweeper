@@ -42,7 +42,6 @@ import {
   stripListMarker,
 } from "./clawsweeper-review-presentation.js";
 import { validReviewLeaseIdentity } from "./review-comment-markers.js";
-import { AUTOFIX_LABEL, AUTOMERGE_LABEL } from "./repair/exact-review-guard-labels.js";
 import {
   isRegressionAssessment,
   isPublicRegressionProvenance,
@@ -75,7 +74,6 @@ function publicBeforeMergeItems(options: {
   proofPolicy: RealBehaviorProofPolicy;
   findings: readonly ReviewFinding[];
   securityReview: SecurityReview;
-  securityRepairAllowed: boolean;
   risks: string;
   nextStepAssessment: NextStepAssessment | undefined;
   patchQualityBlocked: boolean;
@@ -146,7 +144,7 @@ function publicBeforeMergeItems(options: {
       {
         distinctKey: `security ${concern.title}`,
       },
-      options.securityRepairAllowed ? "needs-changes" : "blocked",
+      "blocked",
     );
   }
   if (
@@ -160,7 +158,7 @@ function publicBeforeMergeItems(options: {
         "Resolve the security review before merge.",
       ),
       undefined,
-      options.securityRepairAllowed ? "needs-changes" : "blocked",
+      "blocked",
     );
   }
   // Each `risks` entry is unresolved merge work; the prompt keeps settled points out.
@@ -217,14 +215,6 @@ function typedBlockerDetail(detail: string, fallback: string): string {
     : fallback;
 }
 
-export function securitySensitiveRepairAllowed(markdown: string): boolean {
-  const labels = frontMatterStringArray(markdown, "labels");
-  return (
-    reportReviewDecision(markdown).decision === "keep_open" &&
-    (labels.includes(AUTOFIX_LABEL) || labels.includes(AUTOMERGE_LABEL))
-  );
-}
-
 export function pullRequestReviewReadinessFromReport(markdown: string): PullRequestReviewReadiness {
   let headSha: string | null = null;
   try {
@@ -240,7 +230,6 @@ export function pullRequestReviewReadinessFromReport(markdown: string): PullRequ
       proofPolicy: reportRealBehaviorProofPolicy(markdown),
       findings: decision.reviewFindings,
       securityReview: decision.securityReview,
-      securityRepairAllowed: securitySensitiveRepairAllowed(markdown),
       risks: decision.risks,
       nextStepAssessment: decision.nextStep,
       patchQualityBlocked,

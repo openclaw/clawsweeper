@@ -43,7 +43,6 @@ const TARGET_PATTERNS = Object.freeze({
   unit: ["test/*.test.ts"],
   repair: ["test/repair/*.test.ts", "dist/repair/*.test.js"],
   all: ["test/*.test.ts", "test/repair/*.test.ts", "dist/repair/*.test.js"],
-  "fix-prompt-builder": ["dist/repair/fix-prompt-builder.test.js"],
 });
 // The single owner of the coverage gates: `--coverage` applies them to a full
 // local run, and `--coverage-from` applies the same values to CI shard profiles.
@@ -54,13 +53,6 @@ const COVERAGE_POLICIES = Object.freeze({
     lines: 49,
     branches: 66,
     functions: 57,
-  }),
-  "fix-prompt-builder": Object.freeze({
-    include: ["dist/repair/fix-prompt-builder.js"],
-    exclude: [],
-    lines: 85,
-    branches: 85,
-    functions: 85,
   }),
 });
 // Mirrors the profile names Node's coverage report reads (kCoverageFileRegex).
@@ -81,13 +73,10 @@ Targets:
   unit                test/*.test.ts
   repair              test/repair/*.test.ts and dist/repair/*.test.js
   all                 all unit and repair targets
-  fix-prompt-builder  dist/repair/fix-prompt-builder.test.js
 
 Coverage policies (Node test-runner coverage over files relative to the cwd):
   all                 dist/**/*.js except dist/repair/*.test.js;
                       lines 49, branches 66, functions 57
-  fix-prompt-builder  dist/repair/fix-prompt-builder.js;
-                      lines 85, branches 85, functions 85
 
 Options:
   --test-concurrency <count>  Positive integer overriding the adaptive default

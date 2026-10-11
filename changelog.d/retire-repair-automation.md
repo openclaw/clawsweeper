@@ -1,0 +1,1 @@
+- Retire repair, autofix, automerge, cluster intake, and automatic issue implementation while keeping exact review, apply, and re-review commands backed by the Worker records queue.
