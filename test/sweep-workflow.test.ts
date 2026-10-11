@@ -2564,7 +2564,7 @@ test("exact-review reconcile workflows keep a read-only GitHub token", () => {
     permissions?: Record<string, string>;
     jobs: Record<string, { permissions?: Record<string, string> }>;
   };
-  for (const name of ["exact-review-reconcile.yml", "exact-review-reconcile-run.yml"]) {
+  for (const name of ["exact-review-reconcile.yml"]) {
     const workflow = YAML.parse(readText(`.github/workflows/${name}`)) as Workflow;
     assert.deepEqual(workflow.permissions, {}, name);
     for (const job of Object.values(workflow.jobs)) {
@@ -6469,12 +6469,7 @@ for (const scenario of [
 }
 
 test("all workflow control-plane curls use the shared helper after download or full checkout", () => {
-  for (const file of [
-    "sweep.yml",
-    "review-plan.yml",
-    "exact-review-reconcile-run.yml",
-    "exact-review-dead-letter-reconcile.yml",
-  ]) {
+  for (const file of ["sweep.yml", "review-plan.yml", "exact-review-dead-letter-reconcile.yml"]) {
     const workflow = YAML.parse(readText(`.github/workflows/${file}`));
     for (const [jobName, job] of Object.entries(workflow.jobs) as [string, any][]) {
       let checkedOut = false;

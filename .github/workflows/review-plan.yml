@@ -408,6 +408,8 @@ jobs:
     if: ${{ always() }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    # A telemetry transport failure must not change the review's conclusion.
+    continue-on-error: true
     permissions:
       actions: read
       contents: read

@@ -29,11 +29,12 @@ test("source review workflows observe their terminal dependencies without comple
     assert.match(observer.if, /always\(\)/);
     assert.deepEqual(observer.permissions, { actions: "read", contents: "read" });
     assert.equal(observer["runs-on"], "ubuntu-latest");
+    assert.equal(observer["continue-on-error"], true);
     const step = observer.steps.find((candidate: { run?: string }) =>
       String(candidate.run).includes("review-run-observer.mjs"),
     );
     assert.match(step.run, /--current-run/);
-    assert.equal(step.env.REVIEW_RUN_CANCELLED, "${{ cancelled() }}");
+    assert.equal(step.env.REVIEW_RUN_CANCELLED, "${{ contains(needs.*.result, 'cancelled') }}");
     assert.ok(step.env.CLAWSWEEPER_WEBHOOK_SECRET);
   }
   for (const [prefix, lane] of Object.entries(REVIEW_RUN_OBSERVER_TITLE_LANES)) {
