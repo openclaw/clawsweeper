@@ -1,12 +1,15 @@
 # Active-item debounce proof
 
+Historical evidence only: the one-off manual proof driver has been retired.
+Commands below record the original run, not a supported current entrypoint.
+
 An item that already completed two exact reviews in the last hour must not
 start a full review for every organic push. Its next organic revision waits ten
 minutes from the latest push (capped at fifteen minutes from the first pending
 enqueue) and dispatches once with the latest head. Explicit commands, first-time
 items and a queue store written before the change keep their existing timing.
 
-[`proof-active-item-debounce.mjs`](../../../scripts/proof-active-item-debounce.mjs)
+The retired `proof-active-item-debounce.mjs` driver
 bundles the baseline and candidate queue into real workerd SQLite Durable
 Objects and follows each object's own alarm schedule on a controlled clock. A
 dispatched review claims its lease at once and completes seven minutes later

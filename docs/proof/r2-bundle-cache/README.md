@@ -1,5 +1,8 @@
 # R2 exact-review bundle cache proof
 
+Historical evidence only: the one-off manual proof driver has been retired.
+Commands below record the original run, not a supported current entrypoint.
+
 The controlled behavior proof runs the production signed cache client against
 `wrangler dev --local`, including the real Miniflare R2 and Durable Object
 bindings, while a loopback HTTP server counts authoritative artifact requests.

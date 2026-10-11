@@ -1,0 +1,1 @@
+- Retire completed one-off proof drivers and unused manual maintainer-report and metadata-audit workflows while preserving active regression harnesses and historical proof records.

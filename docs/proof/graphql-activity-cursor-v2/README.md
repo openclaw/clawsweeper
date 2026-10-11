@@ -1,5 +1,8 @@
 # GraphQL PR activity cursor v2 proof
 
+Historical evidence only: the one-off manual proof driver has been retired.
+Commands below record the original run, not a supported current entrypoint.
+
 - Status: historical proof artifact
 - Owner: ClawSweeper publication maintainers
 - Tested source: `openclaw/clawsweeper@221ba1c2cd159dfbc7c2e5a5fb12dbad73467bd7`

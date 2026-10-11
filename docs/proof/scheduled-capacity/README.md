@@ -1,12 +1,15 @@
 # Scheduled review capacity proof
 
+Historical evidence only: the one-off manual proof driver has been retired.
+Commands below record the original run, not a supported current entrypoint.
+
 Scheduled hot intake and normal backfill must share at most eight active review
 owners. Organic and manually requested reviews may use the remaining global
 capacity. Reducing a limit preserves running owners and queued records; backlog
 dispatch resumes as owners complete. Pending backlog must not create a one-second
 alarm loop while its capacity is full.
 
-[`proof-scheduled-capacity.mjs`](../../../scripts/proof-scheduled-capacity.mjs)
+The retired `proof-scheduled-capacity.mjs` driver
 bundles the baseline and candidate queue into real workerd SQLite Durable Objects.
 It seeds eight mixed scheduled owners, two pending scheduled items and one organic
 item, then drives the actual alarm, dispatch and completion handlers. The baseline

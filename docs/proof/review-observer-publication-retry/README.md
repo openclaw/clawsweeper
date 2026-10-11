@@ -1,5 +1,8 @@
 # Terminal review telemetry transport proof
 
+Historical evidence only: the one-off manual proof driver has been retired.
+Commands below record the original run, not a supported current entrypoint.
+
 - Status: historical proof for this change
 - Owner: ClawSweeper maintainers
 - Surface: the actual `scripts/review-run-observer.mjs` CLI and the canonical `ExactReviewQueue` telemetry route

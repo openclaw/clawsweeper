@@ -1,5 +1,8 @@
 # Receipt-based apply freshness proof
 
+Historical evidence only: the one-off manual proof driver has been retired.
+Commands below record the original run, not a supported current entrypoint.
+
 - Status: historical proof artifact
 - Owner: ClawSweeper publication maintainers
 - Baseline: `openclaw/clawsweeper@cac974b3e1da900cac3e7480b91d02a36ca60163` (origin/main)

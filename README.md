@@ -298,10 +298,8 @@ Common commands:
   Existing autofix PRs and human-review holds are not automatically upgraded
   or cleared by this change. Read-only preview:
   `node dist/repair/endor-automerge-intake.js --repo openclaw/endor-clawsweeper-e2e`.
-  The controlled intake/router proof is `node scripts/e2e/endor-automerge.mjs`
-  after `pnpm run build:node`; it uses synthetic GitHub state and verifies
-  review dispatch, automatic merge, human-review pause, stale-review rejection,
-  all late automerge-blocking labels, and replay without duplicate merge calls.
+  The one-off Endor intake/router proof driver is retired; its original
+  results remain in repository history.
 - `implement issue` on an open issue creates or reuses one issue implementation
   job and dispatches the issue-to-PR lane. The requester must have current
   repository `admin`, `maintain`, or `write` permission; organization membership

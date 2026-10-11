@@ -1,5 +1,8 @@
 # Publication quota request-budget proof
 
+Historical evidence only: the one-off manual proof driver has been retired.
+Commands below record the original run, not a supported current entrypoint.
+
 Claim: stop repeatedly calling an exhausted GitHub credential during publication
 without reusing stale responses or changing publication/worker capacity.
 

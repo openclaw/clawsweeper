@@ -1,5 +1,8 @@
 # Scanner refusal hold proof
 
+Historical evidence only: the one-off manual proof driver has been retired.
+Commands below record the original run, not a supported current entrypoint.
+
 Claim: a newly observed terminal input-scanner refusal retains the existing queue row as a durable automatic-review hold. Only a fresh verified re-review, a newly dispatched explicit item request, or an intentional retry-policy epoch change can release it. Automatic source changes cannot.
 
 Surface: production Worker signed enqueue/complete/stats routes, real workerd with SQLite persistence, the owning workflow's continuation gate, and the compiled scheduled-enqueue CLI over a locally trusted HTTPS endpoint. Fixture-only routes seed leases and invoke the production alarm. GitHub responses are synthetic loopback data; the production entrypoint is unchanged.

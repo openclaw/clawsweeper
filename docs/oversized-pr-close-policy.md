@@ -108,18 +108,6 @@ The public comment is:
 
 `node scripts/proof-oversized-pr-close.mjs` exercises metadata admission and
 dry-run retention, with a 49,999-line control.
-`node scripts/proof-oversized-pr-close-effects.mjs` drives the built CLI through
-a loopback HTTP GitHub adapter and inspects service state plus items/closed
-records for first/existing durable review reservation and closing, protected-label refusal, and late exemption, body,
-and human-comment changes. This uses synthetic data and transport; it does not
-close a live GitHub PR. The workflow test also executes a HTTP-409 finalization
-branch and verifies that supersession prevents publication.
-
-`node scripts/e2e/oversized-policy-publication.mjs` exercises closed policy and
-reason gates plus comment-only publication through the built publisher and
-local Workerd/SQLite. Both direct and batch paths retain the canonical proposal,
-record `policy_noop`, and remove the completed immutable attempt without a
-GitHub effect or router receipt. Bay uses its existing `policy_noop` terminal
-attention state; it does not display a delivered GitHub effect. The fixture
-supplies initial runner ownership and denies outbound GitHub calls; it does
-not exercise production dispatch, credentials, or queue contents.
+The retained oversized-admission and sweep workflow tests cover the guarded
+metadata-only path. One-off publication and close-effect proof drivers have
+been retired; their original evidence remains in repository history.

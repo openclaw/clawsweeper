@@ -1,10 +1,13 @@
 # Bounded primary-body producer proof
 
+Historical evidence only: the one-off manual proof driver has been retired.
+Commands below record the original run, not a supported current entrypoint.
+
 - Status: historical proof recipe/artifact, not an operator runbook
 - Scope: raw primary issue/PR body and PR files through production hydration,
   compaction, and final review-prompt JSON; media discovery and complete-source
   freshness
-- Source: [producer script](../../../scripts/e2e/proof-context.ts),
+- Source: retired `proof-context.ts` producer script,
   [shared fixture](../../../test/primary-body-fixture.ts), and
   [primary compactor](../../../src/clawsweeper-primary-body.ts)
 

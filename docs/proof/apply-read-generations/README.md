@@ -1,5 +1,8 @@
 # Apply read generations proof
 
+Historical evidence only: the one-off manual proof driver has been retired.
+Commands below record the original run, not a supported current entrypoint.
+
 - Status: historical proof artifact
 - Owner: ClawSweeper publication maintainers
 - Tested source: `openclaw/clawsweeper@82d9a3b14961793d13f3d0b113078eb84e4caf00`

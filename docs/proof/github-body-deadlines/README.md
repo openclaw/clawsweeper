@@ -1,11 +1,14 @@
 # GitHub response-body deadline proof
 
+Historical evidence only: the one-off manual proof driver has been retired.
+Commands below record the original run, not a supported current entrypoint.
+
 The queue's GitHub deadline must cover response bodies as well as headers.
 Successful-body timeouts must retain typed retry classification in both queue
 and App-token calls. Existing HTTP/rate-limit errors and malformed JSON retain
 their meanings.
 
-[`proof-github-body-deadlines.mjs`](../../../scripts/proof-github-body-deadlines.mjs)
+The retired `proof-github-body-deadlines.mjs` driver
 bundles the baseline and candidate code into workerd. It invokes the actual
 terminal-run resolver and App JSON helper against a Node HTTP fixture that
 flushes headers before delaying or withholding its body. Native workerd egress

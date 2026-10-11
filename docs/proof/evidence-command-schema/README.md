@@ -1,5 +1,8 @@
 # Evidence command schema proof
 
+Historical evidence only: the one-off manual proof driver has been retired.
+Commands below record the original run, not a supported current entrypoint.
+
 The generator must honor the parser's existing physical-line boundary. Multiline
 commands belong verbatim in evidence detail, with a null command field, rather
 than being silently flattened or rejected after a successful inference.

@@ -1,5 +1,8 @@
 # Backlog recovery behavior proof
 
+Historical evidence only: the one-off manual proof driver has been retired.
+Commands below record the original run, not a supported current entrypoint.
+
 Claim: reduce redundant inline-review reads and retry churn without relaxing
 source integrity, source freshness, scanner checks, or queue ownership. Prepare
 two members per batch while preserving identical publication plans and outcomes.

@@ -1,8 +1,11 @@
 # Explicit manual publication proof
 
+Historical evidence only: the one-off manual proof driver has been retired.
+Commands below record the original run, not a supported current entrypoint.
+
 - Status: active proof recipe; current execution evidence belongs in the PR body
 - Owner: ClawSweeper queue and publication maintainers
-- Source of truth: [driver](../../../scripts/e2e/manual-review-publication.mjs) and [entry script](../../../scripts/e2e/manual-review-publication-crabbox.sh)
+- Source of truth: [driver](../../../scripts/e2e/manual-review-publication.mjs); the manual Crabbox entry script is retired
 - Update when: admission, policy, branch selection, artifact inventory, ownership, retry, lifecycle lineage, or consumer behavior changes
 
 ## Behavior contract
