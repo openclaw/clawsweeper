@@ -1267,7 +1267,7 @@ Full review comments:
   assert.doesNotMatch(comment, /\*\*Workflow note:\*\*/);
   assert.match(
     comment,
-    /### Workflow\n\nClawSweeper edits this one comment on every review\. Comment `@clawsweeper re-review` for a fresh review only; repair and merge need explicit maintainer commands/,
+    /### Workflow\n\nClawSweeper edits this one comment on every review\. Comment `@clawsweeper re-review` for a fresh review only\. Repair and merge execution lanes are retired\./,
   );
   // Ordinary maintainer review guidance collapses out of the checklist.
   assert.match(comment, /## Before merge\n\nNone\./);

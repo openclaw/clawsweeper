@@ -33,6 +33,7 @@ test("comment router defers GitHub throttles without advancing its cursor", asyn
     deleted_ack_converges_without_write: true,
     forced_replay_attempt_routed: true,
     review_uses_canonical_queue: true,
+    multiline_review_context_preserved: true,
     retired_commands_reply_once: true,
   });
   assert.equal(receipt.transport, "loopback HTTP via GITHUB_API_URL");

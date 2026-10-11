@@ -826,47 +826,10 @@ function mergeRiskFallbackOptionsLines(bestSolutionLine: string, nextStepLine: s
 }
 
 function mergeRiskOptionsLines(options: readonly MergeRiskOption[]): string[] {
-  const lines = options.flatMap((option, index) => [
+  return options.flatMap((option, index) => [
     `${index + 1}. **${option.title}${option.recommended ? " (recommended)" : ""}**  `,
     `   ${option.body}`,
   ]);
-  const recommendedRepair = options.find(
-    (option) =>
-      option.recommended &&
-      option.category === "fix_before_merge" &&
-      option.automergeInstruction.trim(),
-  );
-  if (recommendedRepair) {
-    lines.push("", mergeRiskAutomergeInstructionBlock(recommendedRepair.automergeInstruction));
-  }
-  return lines;
-}
-
-function mergeRiskAutomergeInstructionBlock(instruction: string): string {
-  const specialInstructions = normalizeMergeRiskAutomergeInstruction(instruction);
-  if (!specialInstructions) return "";
-  return [
-    "<details>",
-    "<summary>Copy recommended automerge instruction</summary>",
-    "",
-    "```text",
-    "@clawsweeper automerge",
-    "",
-    "Special instructions:",
-    specialInstructions,
-    "```",
-    "",
-    "</details>",
-  ].join("\n");
-}
-
-function normalizeMergeRiskAutomergeInstruction(instruction: string): string {
-  return instruction
-    .trim()
-    .replace(/^@clawsweeper\s+(?:automerge|autofix)\b[:\s-]*/i, "")
-    .replace(/^special instructions:\s*/i, "")
-    .replace(/^this PR:\s*/i, "")
-    .trim();
 }
 
 export function appendReviewQuestionDetails(
@@ -895,8 +858,7 @@ function reviewWorkflowLines(): string[] {
     "- A fresh review can be triggered by eligible `@clawsweeper re-review` comments, exact-item GitHub events, scheduled/background review runs, or manual workflow dispatch.",
     "- PR/issue authors and users with repository write access can comment `@clawsweeper re-review` or `@clawsweeper re-run` on an open PR or issue to request a fresh review only.",
     "- Maintainers can also comment `@clawsweeper review` to request a fresh review only.",
-    "- Fresh-review commands do not start repair, autofix, rebase, CI repair, or automerge.",
-    "- Maintainer-only repair and merge flows require explicit commands such as `@clawsweeper autofix`, `@clawsweeper automerge`, `@clawsweeper fix ci`, or `@clawsweeper address review`.",
+    "- Fresh-review commands do not start repair, autofix, rebase, CI repair, or automerge; those execution lanes are retired.",
     "- Maintainers can comment `@clawsweeper explain` to ask for more context, or `@clawsweeper stop` to stop active automation.",
   ];
 }
@@ -908,7 +870,7 @@ export function reviewWorkflowCallout(): string[] {
 // PR comments keep the workflow to one line inside the collapsed details; issue
 // comments keep the full callout.
 export function reviewWorkflowSummaryLine(): string {
-  return "ClawSweeper edits this one comment on every review. Comment `@clawsweeper re-review` for a fresh review only; repair and merge need explicit maintainer commands such as `@clawsweeper autofix` or `@clawsweeper automerge`.";
+  return "ClawSweeper edits this one comment on every review. Comment `@clawsweeper re-review` for a fresh review only. Repair and merge execution lanes are retired.";
 }
 
 export function reviewFreshnessText(markdown: string, revision?: number): string {
