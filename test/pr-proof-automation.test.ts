@@ -931,7 +931,6 @@ Full review comments:
   assert.doesNotMatch(markers, /clawsweeper-action:fix-required/);
 });
 
-
 test("mock-only real behavior proof blocks repair markers", () => {
   const report = typedProofReport(
     `${reportFrontMatter({
