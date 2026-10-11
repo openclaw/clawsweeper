@@ -9,6 +9,8 @@ import path from "node:path";
 import test from "node:test";
 import MarkdownIt from "markdown-it";
 import { parse } from "yaml";
+import { exactReviewSourceRevisionMaterial } from "../dashboard/exact-review-source-revision.ts";
+import { classifyItemWebhook } from "../dist/repair/comment-webhook.js";
 import {
   TARGET_DISPATCH_ENDPOINT,
   TARGET_DISPATCH_WORKFLOW_PATH,
@@ -316,7 +318,11 @@ test("dispatcher queues directly with its OIDC identity and falls back to reposi
         body: "Body",
         locked: false,
         draft: false,
-        labels: [{ name: "bug" }],
+        labels: [
+          { name: "bug" },
+          { name: "clawsweeper:autofix" },
+          { name: "clawsweeper:automerge" },
+        ],
         updated_at: "2026-10-01T03:10:50Z",
         head: { sha: "a".repeat(40) },
         base: { sha: "b".repeat(40) },
@@ -429,7 +435,7 @@ test("dispatcher queues directly with its OIDC identity and falls back to reposi
           title: "Fix parser",
           body: "Body",
           locked: false,
-          close_guard_labels: ["bug"],
+          close_guard_labels: ["bug", "clawsweeper:autofix", "clawsweeper:automerge"],
         }),
       )
       .digest("hex");
@@ -441,6 +447,22 @@ test("dispatcher queues directly with its OIDC identity and falls back to reposi
       source_base_sha: "b".repeat(40),
       source_is_draft: false,
     });
+    const pullRequest = JSON.parse(readFileSync(eventPath, "utf8")).pull_request;
+    const webhook = classifyItemWebhook({
+      event: "pull_request",
+      payload: {
+        action: "opened",
+        repository: { full_name: "openclaw/openclaw", default_branch: "main" },
+        installation: { id: 1 },
+        pull_request: pullRequest,
+      },
+    });
+    assert.equal(webhook.accepted, true);
+    assert.equal(webhook.sourceContentRevision, clientPayload.queue_claim.source_content_revision);
+    const workerRevision = createHash("sha256")
+      .update(JSON.stringify(exactReviewSourceRevisionMaterial(pullRequest)))
+      .digest("hex");
+    assert.equal(workerRevision, clientPayload.queue_claim.source_content_revision);
 
     const fallbacks = [
       { name: "worker rejection", oidc: true, token: 200, direct: 401, posts: 2 },

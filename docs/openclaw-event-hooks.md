@@ -3,7 +3,7 @@
 - Status: active integration and operator reference
 - Owner: ClawSweeper notification and activity-stream maintainers
 - Source of truth: `.github/workflows/github-activity.yml`,
-  and `src/repair/*notify*`. The repair result publisher is retired.
+  `.github/workflows/repair-publish-results.yml`, and `src/repair/*notify*`
 - Last verified: `openclaw/clawsweeper@42226a81c43c2c8ded17a684a706e58f3a58577a`
 - Update when: hook payloads, delivery policy, activity filtering, runtime setup,
   notification ledgers, or workflow ownership changes

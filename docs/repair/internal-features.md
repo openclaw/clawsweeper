@@ -577,7 +577,7 @@ inventory and dispatch pressure.
 
 ## Dashboard Publishing
 
-Historical workflow: repair result publisher (retired after existing workers drain).
+Workflow: `.github/workflows/repair-publish-results.yml` remains active so in-flight workers can publish after admission stops. Its deletion waits for zero in-progress repair runs.
 Script: `src/repair/publish-result.ts`
 
 Publishing turns raw run artifacts into durable, sanitized summaries. It updates
