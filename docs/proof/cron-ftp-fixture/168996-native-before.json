@@ -1,6 +1,6 @@
 {
-  "targetHead": "b2685bbad0ee2b423582ed6da94db97dcc3eb643",
-  "base": "b11fbcf10138fde8df9f8b20a83c20c645a12c47",
+  "targetHead": "c407dec21ac280710a2bec2c0ff524139e00b94c",
+  "base": "b5a9b9b41c343f4a11c44dd511a49c348f63d704",
   "source": "complete committed range, canonical pinned native scanner",
   "prompt": {
     "kind": "controlled",
@@ -11,7 +11,7 @@
   "limits": "No model execution; hosted review must rescan its own prompt, schema, and source inputs.",
   "verification": "canonical enabled",
   "result": "refused",
-  "elapsedMs": 3711,
+  "elapsedMs": 3680,
   "notices": [],
   "failure": {
     "reason": "findings",
@@ -21,7 +21,7 @@
       "findingCount": 2,
       "findingIndex": 0,
       "detectorType": 899,
-      "decoder": "PLAIN",
+      "decoder": "HTML",
       "verified": false,
       "scannerLine": 684,
       "material": {
@@ -30,7 +30,7 @@
         "referenceCount": 1,
         "references": [
           {
-            "revision": "b11fbcf10138fde8df9f8b20a83c20c645a12c47",
+            "revision": "b5a9b9b41c343f4a11c44dd511a49c348f63d704",
             "pathSha256": "3dcb1058fe4bc7012020fc65f6248b9bf9515bb756db44b26f5a69de0544d413",
             "mode": "100644",
             "role": "base"

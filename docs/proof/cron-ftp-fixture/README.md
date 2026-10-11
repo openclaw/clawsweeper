@@ -164,7 +164,7 @@ No Bay, queue, or publication contract changes are involved.
 
 [OpenClaw PR #168996](https://github.com/openclaw/openclaw/pull/168996) retains the
 same synthetic FTP warning-redaction fixture. Its frozen receiving tuple is
-`b11fbcf10138fde8df9f8b20a83c20c645a12c47..b2685bbad0ee2b423582ed6da94db97dcc3eb643`.
+`b5a9b9b41c343f4a11c44dd511a49c348f63d704..c407dec21ac280710a2bec2c0ff524139e00b94c`.
 The [source identity receipt](168996-source-identities.json) records the complete
 base and head files, both at `src/gateway/server-cron-notifications.test.ts` with
 mode `100644`:
@@ -177,8 +177,8 @@ mode `100644`:
 On ClawSweeper `27fbecbbe4a92831a667e76fff1b73412ef89b14`, the maintained native
 runner [refused that exact range](168996-native-before.json) with
 `source_not_reviewed`, identifying the base blob. Adding only these two source
-hashes [admits the unchanged range](168996-native-after.json) in 3.737 seconds.
-The native scan reports one PLAIN FTP finding per role at the lines above.
+hashes [admits the unchanged range](168996-native-after.json) in 3.784 seconds.
+The final native scan reports one PLAIN FTP finding per role at the lines above.
 The complete-line digest remains
 `47389a842fa9b1a3cb74c54ab2455b02b9cb0bd41c4b832eaf83aa52fbccbdc8`.
 

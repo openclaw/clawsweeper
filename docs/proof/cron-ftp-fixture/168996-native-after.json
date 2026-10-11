@@ -1,6 +1,6 @@
 {
-  "targetHead": "b2685bbad0ee2b423582ed6da94db97dcc3eb643",
-  "base": "b11fbcf10138fde8df9f8b20a83c20c645a12c47",
+  "targetHead": "c407dec21ac280710a2bec2c0ff524139e00b94c",
+  "base": "b5a9b9b41c343f4a11c44dd511a49c348f63d704",
   "source": "complete committed range, canonical pinned native scanner",
   "prompt": {
     "kind": "controlled",
@@ -11,7 +11,7 @@
   "limits": "No model execution; hosted review must rescan its own prompt, schema, and source inputs.",
   "verification": "canonical enabled",
   "result": "admitted",
-  "elapsedMs": 3737,
+  "elapsedMs": 3784,
   "notices": [
     {
       "event": "agent_input_scan_classified",
@@ -32,7 +32,7 @@
           "blob": "d5b62b493f2bd24a8e65e8604062bb5b43b785d3",
           "scannerLine": 732,
           "literalLine": 732,
-          "decoder": "HTML",
+          "decoder": "PLAIN",
           "role": "head",
           "occurrences": 1
         }
