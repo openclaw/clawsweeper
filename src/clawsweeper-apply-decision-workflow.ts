@@ -1645,6 +1645,7 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
         continue;
       }
       const {
+        driftDiagnostics,
         labelSyncFreshEnough,
         reviewedSourceFresh,
         retryCloseCoverageCommandStatusOnlyUpdate,
@@ -1686,8 +1687,9 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
           ? stalePullRequestReviewHead(markdown, currentItemContext())
           : null;
       const guardedReviewAction = isGuardedApplyReviewAction(action, isLiveRecheckGuardClose);
-      const markReviewedSourceDrift = () =>
-        markChangedSinceReview({
+      const markReviewedSourceDrift = () => {
+        console.error(`[apply] source drift #${number} ${JSON.stringify(driftDiagnostics())}`);
+        return markChangedSinceReview({
           ...applyReviewedSourceDriftEvidence(dependencies, {
             currentItemContext,
             item,
@@ -1695,6 +1697,7 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
           }),
           preserveAction: guardedReviewAction ? action : undefined,
         });
+      };
       let currentPrStatusKind: PrStatusLabelKind | null = null;
       let lockedMetadataOnly = false;
       if (state === "open") {

@@ -242,6 +242,22 @@ export function createApplyProofFreshnessGuards({
           currentUpdatedAt: refreshed.item.updatedAt,
         };
       }
+      // Names which self-mutation receipt failed, so a self-feeding re-review loop shows
+      // its cause in the workflow log. Booleans and public GitHub timestamps only.
+      console.error(
+        `[apply] post-proof drift #${number} ${JSON.stringify({
+          stored_updated_at: storedUpdatedAt,
+          item_updated_at: refreshed.item.updatedAt,
+          automation_item_updated_at: automationItemUpdatedAt ?? null,
+          self_mutation_receipt_updated_ats: selfMutationItemReceipts.map(
+            (receipt) => receipt.updatedAt,
+          ),
+          candidate_receipts: candidateItemReceipts.length,
+          receipt_matches: refreshedItemReceiptMatches,
+          persisted_receipt_matches: persistedAutomationReceiptMatches,
+          command_status_only: refreshedCommandStatusOnlyUpdate,
+        })}`,
+      );
       return {
         reason: "updated_at changed",
         currentUpdatedAt: refreshed.item.updatedAt,

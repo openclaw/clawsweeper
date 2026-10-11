@@ -1,0 +1,1 @@
+- Log why apply treats an item as changed since review: `[apply] source drift #N` and `[apply] post-proof drift #N` lines name the stored and live `updated_at`, which ClawSweeper-owned-write receipts were checked, and the first receipt condition that failed. The lines reuse values apply already read and add no GitHub requests.

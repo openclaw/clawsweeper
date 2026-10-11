@@ -342,16 +342,32 @@ export function createApplySourceFreshness(
   };
   // Every receipt also requires that no non-automation comment, review comment, or timeline
   // event (including a human edit of a managed label) is visible after the review snapshot.
-  const ownedAutomationReceiptOnlyUpdate = (): boolean =>
-    updatedSinceReview &&
-    reviewHasCompleteActivityIdentity &&
-    storedUpdatedAtMs !== null &&
-    (exactOwnedWriteAccountsForUpdate() || releasedReviewLeaseAccountsForUpdate()) &&
-    completeAutomationReceiptMatchesReview() &&
-    !contextHasNonAutomationActivityAfter(currentItemContext(), storedUpdatedAtMs - 1, {
-      truncationCountsAsActivity: true,
-      useCompleteActivityContext: true,
-    });
+  // The first failed condition is kept for drift diagnostics; evaluation order and short-circuit
+  // are unchanged, so diagnostics add no GitHub reads.
+  let ownedReceiptFailure: string | null = null;
+  const ownedAutomationReceiptOnlyUpdate = (): boolean => {
+    const fail = (reason: string): false => {
+      ownedReceiptFailure = reason;
+      return false;
+    };
+    if (!updatedSinceReview) return fail("not_updated_since_review");
+    if (!reviewHasCompleteActivityIdentity) return fail("no_complete_activity_identity");
+    if (storedUpdatedAtMs === null) return fail("no_stored_updated_at");
+    if (!(exactOwnedWriteAccountsForUpdate() || releasedReviewLeaseAccountsForUpdate())) {
+      return fail("no_owned_write_at_item_updated_at");
+    }
+    if (!completeAutomationReceiptMatchesReview()) return fail("activity_receipt_mismatch");
+    if (
+      contextHasNonAutomationActivityAfter(currentItemContext(), storedUpdatedAtMs - 1, {
+        truncationCountsAsActivity: true,
+        useCompleteActivityContext: true,
+      })
+    ) {
+      return fail("non_automation_activity_after_review");
+    }
+    ownedReceiptFailure = null;
+    return true;
+  };
   const { isCloseProposal } = currentState();
   const automationOnlyUpdate = Boolean(
     (reviewCommentOnlyUpdate ||
@@ -408,8 +424,34 @@ export function createApplySourceFreshness(
     });
   };
 
+  // Names which ClawSweeper-owned-write receipt failed when apply treats an update as source
+  // drift, so a self-feeding re-review loop shows its cause in the workflow log. Uses only values
+  // already read; never fetches. Booleans and public GitHub timestamps only.
+  const driftDiagnostics = () => ({
+    kind: item.kind,
+    close_proposal: isCloseProposal,
+    stored_updated_at: storedUpdatedAt ?? null,
+    item_updated_at: item.updatedAt,
+    review_comment_updated_at: existingReviewCommentUpdatedAt ?? null,
+    complete_activity_identity: reviewHasCompleteActivityIdentity,
+    review_comment_only: reviewCommentOnlyUpdate,
+    label_sync_only: labelSyncOnlyUpdate,
+    owned_issue_lease_only: ownedIssueReviewLeaseOnlyUpdate,
+    command_status_only: commandStatusOnlyUpdate,
+    owned_comment_write_at_item_updated_at:
+      itemUpdatedAtMs !== null && ownedCommentWriteTimes.includes(itemUpdatedAtMs),
+    owned_comment_write_count: ownedCommentWriteTimes.length,
+    review_lease_comment_present: comments.some(
+      (comment) => commentId(comment) === reportReviewLeaseCommentId,
+    ),
+    durable_comment_records_generation: durableCommentRecordsReviewGeneration(),
+    owned_receipt_failure: ownedReceiptFailure,
+    automation_only_update: automationOnlyUpdate,
+  });
+
   return {
     automationOnlyUpdate,
+    driftDiagnostics,
     labelSyncFreshEnough,
     reviewedSourceFresh,
     retryCloseCoverageCommandStatusOnlyUpdate,
