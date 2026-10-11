@@ -200,6 +200,15 @@ try {
         } else if (arm === "candidate") {
           assert.equal(state.drivers.length, 1);
         }
+        if (route === "router-receipt" && arm === "candidate") {
+          const covered = await call("/internal/exact-review/lifecycle/router-receipt", {
+            ...wire,
+            outcome: "not_required",
+            receipt_id: `covered:${identity.fenceKey}`,
+          });
+          assert.equal(covered.ok, true);
+          assert.deepEqual(await call("/__proof/read", identity), state);
+        }
         results.push({
           arm,
           route,

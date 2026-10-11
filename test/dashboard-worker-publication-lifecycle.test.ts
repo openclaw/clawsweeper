@@ -546,7 +546,7 @@ function lifecycleRouterOrderingFixture({
     kind: terminalKind,
     observedAt: terminalObservedAt,
   });
-  const post = () =>
+  const post = (outcome: "durable" | "not_required" = "durable") =>
     queue.fetch(
       new Request("https://clawsweeper-exact-review-queue/lifecycle/router-receipt", {
         method: "POST",
@@ -554,7 +554,7 @@ function lifecycleRouterOrderingFixture({
           canonical_target_key: identity.canonicalTargetKey,
           fence_key: identity.fenceKey,
           revision: identity.revision,
-          outcome: "durable",
+          outcome,
           receipt_id: "router:706:1",
         }),
       }),
@@ -564,6 +564,17 @@ function lifecycleRouterOrderingFixture({
   const driverKey = `terminal-finalization:${identity.fenceKey}:${identity.revision}`;
   return { storage, post, projection, driverKey };
 }
+
+test("an incomplete durable router receipt cannot satisfy a not-required handoff", async () => {
+  const { storage, post, projection } = lifecycleRouterOrderingFixture({
+    terminalKind: "requeue",
+    receiptObservedAt: 3,
+    terminalObservedAt: 5,
+  });
+  const before = { projection: projection(), queue: storage.sql.readNormalizedQueue() };
+  assert.equal((await post("not_required")).status, 409);
+  assert.deepEqual({ projection: projection(), queue: storage.sql.readNormalizedQueue() }, before);
+});
 
 test("router receipt repair preserves matching later or equal terminal outcomes", async (t) => {
   for (const terminalKind of NON_ROUTED_TERMINAL_KINDS) {
@@ -860,14 +871,18 @@ for (const route of ["router-receipt", "terminal-disposition"] as const) {
         );
       }
       if (route === "router-receipt") {
-        const conflicting = await post(
+        const handoff = await post(
           route,
           JSON.stringify({
             ...JSON.parse(payload),
             outcome: routerOutcome === "durable" ? "not_required" : "durable",
           }),
         );
-        assert.equal(conflicting.status, 409);
+        assert.equal(
+          handoff.status,
+          routerOutcome === "durable" ? 200 : 409,
+          "a completed durable receipt covers not_required, never the reverse",
+        );
         assert.deepEqual(
           { projection: projection(), queue: storage.sql.readNormalizedQueue() },
           before,

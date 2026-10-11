@@ -161,8 +161,12 @@ The command reads `TARGET_REPO`, `ITEM_NUMBER`, `FENCE_KEY` and `REVISION`, and
 accepts only the outcomes and terminal kinds that the queue accepts. A receipt id
 is `--receipt-id-prefix` plus the run id and run attempt.
 
-Ordinary review publication records `router-receipt` with `outcome=not_required`;
-it does not dispatch a comment-history scan. The Worker still records that
+Review publication for the configured scheduled-router target
+(`CLAWSWEEPER_TARGET_REPO`, default `openclaw/openclaw`) records `router-receipt`
+with `outcome=not_required`; it does not dispatch a comment-history scan.
+Other targets retain the post-publication router dispatch and `durable` receipt
+because the five-minute schedule does not scan those repositories.
+The Worker still records that
 receipt and the terminal `review_completed_routed` disposition atomically, then
 drives any required command-status acknowledgement independently. Deferred
 close-proof coverage retains its `durable` receipt and existing proof owner.

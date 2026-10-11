@@ -414,7 +414,7 @@ test("publication workflows retain v1 metrics while wiring bounded v2 observatio
     "Download exact review artifact bundle",
     "Record artifact download transport boundary",
     "Publish event result and apply safe close",
-    "Record publication command-router exemption",
+    "Record publication command-router coverage",
     "Submit artifact-publication GitHub egress telemetry",
     "Fail unsuccessful exact review publication",
   ]);

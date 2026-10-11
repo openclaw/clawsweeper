@@ -1314,6 +1314,10 @@ jobs:
         id: finalize-direct-exact-review-lifecycle
         if: ${{ steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.direct-exact-review-publication.outputs.accepted == 'true' }}
         env:
+          GH_TOKEN: ${{ github.token }}
+          COMMENT_ROUTER_RECOVERY_REPO: ${{ vars.CLAWSWEEPER_TARGET_REPO || 'openclaw/openclaw' }}
+          CLAWSWEEPER_COMMENT_LOOKBACK_MINUTES: ${{ vars.CLAWSWEEPER_COMMENT_LOOKBACK_MINUTES || '180' }}
+          CLAWSWEEPER_COMMENT_MAX_COMMENTS: ${{ vars.CLAWSWEEPER_COMMENT_MAX_COMMENTS || '1000' }}
           CLAWSWEEPER_GITHUB_POOL_CLASS: repository_actions
           CLAWSWEEPER_GITHUB_STAGE: publication_router
           TARGET_REPO: ${{ steps.target.outputs.target_repo }}
@@ -1355,8 +1359,15 @@ jobs:
             elif [ "$source_action" = "failed_review_shard_recovery" ] || [ "$source_action" = "manual_explicit_review" ]; then
               lifecycle_router_outcome="not_required"
             elif jq -e '.disposition.routableSyncExpected == true' "$DIRECT_OUTCOME" >/dev/null; then
-              # Commands have their own webhook intake and scheduled recovery.
               lifecycle_router_outcome="not_required"
+              if [ "$TARGET_REPO" != "$COMMENT_ROUTER_RECOVERY_REPO" ]; then
+                gh workflow run repair-comment-router.yml --repo "$GITHUB_REPOSITORY" --ref main \
+                  -f execute=true -f target_repo="$TARGET_REPO" -f target_branch="$TARGET_BRANCH" \
+                  -f item_numbers="$ITEM_NUMBER" \
+                  -f lookback_minutes="$CLAWSWEEPER_COMMENT_LOOKBACK_MINUTES" \
+                  -f max_comments="$CLAWSWEEPER_COMMENT_MAX_COMMENTS"
+                lifecycle_router_outcome="durable"
+              fi
             elif jq -e '.disposition.deferredCloseCoverageExpected == true' "$DIRECT_OUTCOME" >/dev/null; then
               # The close proof remains a separate later concern. The durable
               # handoff means this review itself is complete.
@@ -1941,6 +1952,7 @@ jobs:
         if: ${{ steps.publication-context.outputs.claimed == 'true' && steps.publication-context.outputs.direct_lifecycle_recovery == 'true' }}
         env:
           GH_TOKEN: ${{ github.token }}
+          COMMENT_ROUTER_RECOVERY_REPO: ${{ vars.CLAWSWEEPER_TARGET_REPO || 'openclaw/openclaw' }}
           TARGET_REPO: ${{ steps.publication-context.outputs.target_repo }}
           TARGET_BRANCH: ${{ steps.publication-context.outputs.target_branch }}
           ITEM_NUMBER: ${{ steps.publication-context.outputs.item_number }}
@@ -1983,8 +1995,17 @@ jobs:
           else
             case "$lifecycle_kind" in
               router)
+                router_outcome="not_required"
+                if [ "$TARGET_REPO" != "$COMMENT_ROUTER_RECOVERY_REPO" ]; then
+                  gh workflow run repair-comment-router.yml --repo "$GITHUB_REPOSITORY" --ref main \
+                    -f execute=true -f target_repo="$TARGET_REPO" -f target_branch="$TARGET_BRANCH" \
+                    -f item_numbers="$ITEM_NUMBER" \
+                    -f lookback_minutes="$CLAWSWEEPER_COMMENT_LOOKBACK_MINUTES" \
+                    -f max_comments="$CLAWSWEEPER_COMMENT_MAX_COMMENTS"
+                  router_outcome="durable"
+                fi
                 lifecycle_payload="$(node "$request" lifecycle router-receipt \
-                  --outcome not_required --receipt-id-prefix router-direct-recovery)"
+                  --outcome "$router_outcome" --receipt-id-prefix router-direct-recovery)"
                 post_lifecycle router-receipt "$lifecycle_payload"
                 ;;
               router_deferred_coverage)
@@ -2319,10 +2340,15 @@ jobs:
           control_plane_signed_post "$queue_url/internal/exact-review/lifecycle/canonical-receipt" "$payload" \
             --fail --silent --show-error --connect-timeout 5 --max-time 20 >/dev/null
 
-      - name: Record publication command-router exemption
+      - name: Record publication command-router coverage
         id: record-publication-router-exemption
         if: ${{ steps.publication-context.outputs.claimed == 'true' && steps.publication-context.outputs.direct_lifecycle_recovery != 'true' && (fromJSON(steps.publication-context.outputs.decision).sourceAction != 'failed_review_shard_recovery' && fromJSON(steps.publication-context.outputs.decision).publicationPolicy != 'record_comment_only') && steps.publish-event-result.outcome == 'success' && steps.publish-event-result.outputs.remote_tuple_verified == 'true' && steps.publish-event-result.outputs.routing_deferred == 'true' }}
         env:
+          GH_TOKEN: ${{ github.token }}
+          COMMENT_ROUTER_RECOVERY_REPO: ${{ vars.CLAWSWEEPER_TARGET_REPO || 'openclaw/openclaw' }}
+          TARGET_BRANCH: ${{ steps.publication-context.outputs.target_branch }}
+          CLAWSWEEPER_COMMENT_LOOKBACK_MINUTES: ${{ vars.CLAWSWEEPER_COMMENT_LOOKBACK_MINUTES || '180' }}
+          CLAWSWEEPER_COMMENT_MAX_COMMENTS: ${{ vars.CLAWSWEEPER_COMMENT_MAX_COMMENTS || '1000' }}
           TARGET_REPO: ${{ steps.publication-context.outputs.target_repo }}
           ITEM_NUMBER: ${{ steps.publication-context.outputs.item_number }}
           FENCE_KEY: ${{ steps.publication-context.outputs.publisher_item_key }}
@@ -2332,8 +2358,17 @@ jobs:
         run: |
           set -euo pipefail
           source scripts/control-plane-curl.sh
+          router_outcome="not_required"
+          if [ "$TARGET_REPO" != "$COMMENT_ROUTER_RECOVERY_REPO" ]; then
+            gh workflow run repair-comment-router.yml --repo "$GITHUB_REPOSITORY" --ref main \
+              -f execute=true -f target_repo="$TARGET_REPO" -f target_branch="$TARGET_BRANCH" \
+              -f item_numbers="$ITEM_NUMBER" \
+              -f lookback_minutes="$CLAWSWEEPER_COMMENT_LOOKBACK_MINUTES" \
+              -f max_comments="$CLAWSWEEPER_COMMENT_MAX_COMMENTS"
+            router_outcome="durable"
+          fi
           payload="$(node dist/repair/exact-review-queue-request.js lifecycle router-receipt \
-            --outcome not_required --receipt-id-prefix router)"
+            --outcome "$router_outcome" --receipt-id-prefix router)"
           queue_url="${QUEUE_URL%/}"
           control_plane_signed_post "$queue_url/internal/exact-review/lifecycle/router-receipt" "$payload" \
             --fail --silent --show-error --connect-timeout 5 --max-time 20 >/dev/null
