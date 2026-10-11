@@ -1,0 +1,26 @@
+[
+  {
+    "revision": "candidate",
+    "scenario": "owned-write-lag",
+    "exit_code": 0,
+    "action_taken": "closed",
+    "reason": "duplicate or superseded; posted close-applied comment",
+    "drift_log": false,
+    "close_writes": 1,
+    "durable_writes": 2,
+    "coverage_proof_ran": true,
+    "trace": "docs/proof/post-proof-accepted-baseline/owned-write-lag/artifacts/candidate/owned-write-lag/requests.json"
+  },
+  {
+    "revision": "candidate",
+    "scenario": "owned-write-lag-human-comment",
+    "exit_code": 0,
+    "action_taken": "skipped_changed_since_review",
+    "reason": "updated_at changed",
+    "drift_log": true,
+    "close_writes": 0,
+    "durable_writes": 1,
+    "coverage_proof_ran": true,
+    "trace": "docs/proof/post-proof-accepted-baseline/owned-write-lag/artifacts/candidate/owned-write-lag-human-comment/requests.json"
+  }
+]

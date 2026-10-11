@@ -15,16 +15,21 @@ import {
 
 const output = resolve(process.argv[2]);
 const revision = process.argv[3];
+const ownedWriteLag = process.argv[4] === "owned-write-lag";
 mkdirSync(output, { recursive: true });
 const hash = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
-const number = 158915;
+const number = ownedWriteLag ? 142693 : 158915;
 const title = "Provider route fallback";
 const t0 = "2026-05-01T00:00:00Z";
 const t1 = "2026-05-01T01:00:00Z";
+const t2 = "2026-05-01T02:00:00Z";
 // Keep managed labels in sync so no apply-owned write can mask the pre-apply ack.
 const labels = ["rating: 🌊 off-meta tidepool"];
 const results = [];
-for (const scenario of ["acknowledgement-only", "same-second-title", "human-comment-after-proof"]) {
+const scenarios = ownedWriteLag
+  ? ["owned-write-lag", "owned-write-lag-human-comment"]
+  : ["acknowledgement-only", "same-second-title", "human-comment-after-proof"];
+for (const scenario of scenarios) {
   const root = join(output, scenario);
   const items = join(root, "items");
   mkdirSync(items, { recursive: true });
@@ -65,7 +70,7 @@ for (const scenario of ["acknowledgement-only", "same-second-title", "human-comm
       created_at: t0,
       updated_at: t0,
       user: { login: "clawsweeper[bot]" },
-      body: synced.comment,
+      body: ownedWriteLag ? `Previous durable review content.\n${synced.comment}` : synced.comment,
     },
     {
       id: 5846759305,
@@ -104,7 +109,7 @@ for (const scenario of ["acknowledgement-only", "same-second-title", "human-comm
     const rawArgs = process.argv.slice(2);
     const originalLog = console.log;
     console.log = (...values) => {
-      if (rawArgs.some(value => /\\/(?:issues|pulls)\\/158915(?:[/?]|$)/.test(value))) {
+      if (rawArgs.some(value => new RegExp("/(?:issues|pulls)/${number}(?:[/?]|$)|/issues/comments/").test(value))) {
         appendFileSync(${JSON.stringify(responseLog)}, JSON.stringify({
           request: rawArgs,
           after_coverage_proof_started: existsSync(${JSON.stringify(proofLog)}),
@@ -115,6 +120,39 @@ for (const scenario of ["acknowledgement-only", "same-second-title", "human-comm
     };
   `,
   );
+  if (ownedWriteLag) {
+    // GitHub returns the write's timestamp on the PATCH response before the item reflects it.
+    // Only the first issue read after each durable write returns the old item timestamp.
+    mock = mock.replace("const liveUpdatedAt =", "let liveUpdatedAt =");
+    mock = mock.replace(
+      "const issueCommentCount = ",
+      `
+      if (existsSync(commentStatePath)) {
+        liveUpdatedAt = ${JSON.stringify(t2)};
+        if (path === "repos/openclaw/openclaw/issues/" + number) {
+          const lagPath = join(__dirname, "..", "post-write-item-reads");
+          const reads = existsSync(lagPath) ? Number(readFileSync(lagPath, "utf8")) : 0;
+          writeFileSync(lagPath, String(reads + 1));
+          if (reads === 0) liveUpdatedAt = ${JSON.stringify(t1)};
+        }
+      }
+      const issueCommentCount = `,
+    );
+  }
+  if (scenario === "owned-write-lag-human-comment") {
+    mock = mock.replace(
+      "const liveComments = () => {",
+      `
+      const liveComments = () => {
+        const lagPath = join(__dirname, "..", "post-write-item-reads");
+        if (existsSync(lagPath) && Number(readFileSync(lagPath, "utf8")) >= 2) {
+          comments.push({id: 999999, user: {login: "contributor"}, body: "Please keep this PR open.",
+            created_at: new Date(Date.now() + 1000).toISOString(),
+            updated_at: new Date(Date.now() + 1000).toISOString()});
+        }
+    `,
+    );
+  }
   // Change the service response only after the real coverage-proof process runs.
   // No product function or freshness result is replaced.
   if (scenario === "same-second-title") {
@@ -158,7 +196,7 @@ for (const scenario of ["acknowledgement-only", "same-second-title", "human-comm
             "--limit",
             "1",
             "--processed-limit",
-            "1",
+            ownedWriteLag ? "3" : "1",
             "--close-delay-ms",
             "0",
             "--apply-kind",
@@ -208,13 +246,13 @@ for (const scenario of ["acknowledgement-only", "same-second-title", "human-comm
     revision,
     scenario,
     exit_code: execution!.status,
-    action_taken: apply[0]?.action,
-    reason: apply[0]?.reason,
+    action_taken: apply.at(-1)?.action,
+    reason: apply.at(-1)?.reason,
     drift_log: execution!.stderr.includes("[apply] post-proof drift"),
     close_writes: closeWrites,
     durable_writes: durableWrites,
     coverage_proof_ran: existsSync(proofLog),
-    trace: `docs/proof/post-proof-accepted-baseline/artifacts/${revision}/${scenario}/requests.json`,
+    trace: `docs/proof/post-proof-accepted-baseline/${ownedWriteLag ? "owned-write-lag/" : ""}artifacts/${revision}/${scenario}/requests.json`,
   };
   results.push(result);
   console.log(JSON.stringify(result));
@@ -225,17 +263,47 @@ for (const scenario of ["acknowledgement-only", "same-second-title", "human-comm
     0,
     "managed labels must not create a separate apply-owned receipt",
   );
-  if (scenario === "acknowledgement-only" && revision === "candidate") {
+  if (ownedWriteLag) {
+    assert.ok(
+      requests.some(
+        (request) =>
+          request.method === "PATCH" &&
+          request.path === `repos/openclaw/openclaw/issues/comments/${9000 + number}`,
+      ),
+      "the shipped path must patch the existing durable review",
+    );
+    const responses = readFileSync(responseLog, "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+    const writeIndex = responses.findIndex((entry) => entry.request.includes("PATCH"));
+    const itemReads = responses
+      .slice(writeIndex + 1)
+      .filter((entry) => entry.request.includes(`repos/openclaw/openclaw/issues/${number}`))
+      .map((entry) => JSON.parse(entry.response));
+    assert.equal(itemReads[0]?.updated_at, t1, "the receipt's first item read must lag");
+    assert.ok(
+      itemReads.slice(1).some((item) => item.updated_at === t2),
+      "later item reads must reflect the write",
+    );
+  }
+  if (
+    (scenario === "acknowledgement-only" || scenario === "owned-write-lag") &&
+    revision === "candidate"
+  ) {
     assert.equal(result.action_taken, "closed");
     assert.equal(result.drift_log, false);
     assert.ok(closeWrites > 0);
     assert.ok(durableWrites > 0);
   } else {
     assert.equal(result.action_taken, "skipped_changed_since_review");
-    assert.equal(result.drift_log, true);
-    assert.equal(result.reason, "updated_at changed");
+    if (scenario !== "owned-write-lag-human-comment") {
+      assert.equal(result.reason, "updated_at changed");
+      assert.equal(result.drift_log, true);
+    }
     assert.equal(closeWrites, 0);
-    assert.equal(durableWrites, 0);
+    if (ownedWriteLag) assert.ok(durableWrites >= 1);
+    else assert.equal(durableWrites, 0);
   }
 }
 writeFileSync(join(output, "results.json"), JSON.stringify(results, null, 2) + "\n");

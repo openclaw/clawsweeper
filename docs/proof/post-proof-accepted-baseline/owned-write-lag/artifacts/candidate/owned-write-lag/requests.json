@@ -1,0 +1,1499 @@
+[
+  {
+    "method": "GET",
+    "path": "repos/openclaw/openclaw/issues/142693",
+    "args": [
+      "api",
+      "repos/openclaw/openclaw/issues/142693"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "repos/openclaw/openclaw/issues/142693/comments?per_page=100",
+    "args": [
+      "api",
+      "repos/openclaw/openclaw/issues/142693/comments?per_page=100",
+      "--paginate",
+      "--slurp"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "repos/openclaw/openclaw/issues/142693/timeline?per_page=100&page=1",
+    "args": [
+      "api",
+      "-i",
+      "repos/openclaw/openclaw/issues/142693/timeline?per_page=100&page=1"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "repos/openclaw/openclaw/pulls/142693",
+    "args": [
+      "api",
+      "repos/openclaw/openclaw/pulls/142693"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "repos/openclaw/openclaw/pulls/142693/files?per_page=100&page=1",
+    "args": [
+      "api",
+      "repos/openclaw/openclaw/pulls/142693/files?per_page=100&page=1"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "repos/openclaw/openclaw/pulls/142693/commits?per_page=100&page=1",
+    "args": [
+      "api",
+      "repos/openclaw/openclaw/pulls/142693/commits?per_page=100&page=1"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "graphql",
+    "args": [
+      "api",
+      "graphql",
+      "-f",
+      "query=query ReviewedPrActivityCursorV2 {\n    repository(owner: \"openclaw\", name: \"openclaw\") {\n      pr_142693: pullRequest(number: 142693) {\n        reviews(first: 100) {\n          totalCount\n          pageInfo { hasNextPage }\n          nodes {\n            fullDatabaseId\n            author { login }\n            state\n            body\n            submittedAt\n            commit { oid }\n          }\n        }\n        reviewThreads(first: 100) {\n          totalCount\n          pageInfo { hasNextPage }\n          nodes {\n            id\n            isResolved\n            comments(first: 100) {\n              totalCount\n              pageInfo { hasNextPage }\n              nodes {\n                fullDatabaseId\n                pullRequestReview { fullDatabaseId }\n                replyTo { fullDatabaseId }\n                author { login }\n                body\n                createdAt\n                updatedAt\n                path\n                line\n                startLine\n                originalLine\n                originalCommit { oid }\n                commit { oid }\n              }\n            }\n          }\n        }\n      }\n    }\n  }"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "repos/openclaw/openclaw/pulls/142693/reviews?per_page=100&page=1",
+    "args": [
+      "api",
+      "repos/openclaw/openclaw/pulls/142693/reviews?per_page=100&page=1"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "repos/openclaw/openclaw/commits/head-sha/status?per_page=100",
+    "args": [
+      "api",
+      "repos/openclaw/openclaw/commits/head-sha/status?per_page=100"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "repos/openclaw/openclaw/commits/head-sha/check-runs?per_page=100",
+    "args": [
+      "api",
+      "repos/openclaw/openclaw/commits/head-sha/check-runs?per_page=100"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "repos/openclaw/openclaw/pulls/400",
+    "args": [
+      "api",
+      "repos/openclaw/openclaw/pulls/400"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "repos/openclaw/openclaw/pulls/142693",
+    "args": [
+      "api",
+      "repos/openclaw/openclaw/pulls/142693"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "repos/openclaw/openclaw/issues/142693/comments?per_page=100",
+    "args": [
+      "api",
+      "repos/openclaw/openclaw/issues/142693/comments?per_page=100",
+      "--paginate",
+      "--slurp"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "repos/openclaw/openclaw/pulls/142693",
+    "args": [
+      "api",
+      "repos/openclaw/openclaw/pulls/142693"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "repos/openclaw/openclaw/pulls/142693/reviews?per_page=100&page=1",
+    "args": [
+      "api",
+      "repos/openclaw/openclaw/pulls/142693/reviews?per_page=100&page=1"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "repos/openclaw/openclaw/pulls/142693/comments?per_page=100&page=1",
+    "args": [
+      "api",
+      "repos/openclaw/openclaw/pulls/142693/comments?per_page=100&page=1"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "repos/openclaw/openclaw/pulls/142693/reviews?per_page=100&page=1",
+    "args": [
+      "api",
+      "repos/openclaw/openclaw/pulls/142693/reviews?per_page=100&page=1"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "repos/openclaw/openclaw/pulls/142693/comments?per_page=100&page=1",
+    "args": [
+      "api",
+      "repos/openclaw/openclaw/pulls/142693/comments?per_page=100&page=1"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "repos/openclaw/openclaw/pulls/142693",
+    "args": [
+      "api",
+      "repos/openclaw/openclaw/pulls/142693"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "repos/openclaw/openclaw/issues/142693/comments?per_page=100",
+    "args": [
+      "api",
+      "repos/openclaw/openclaw/issues/142693/comments?per_page=100",
+      "--paginate",
+      "--slurp"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "repos/openclaw/openclaw/pulls/142693",
+    "args": [
+      "api",
+      "repos/openclaw/openclaw/pulls/142693"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "repos/openclaw/openclaw/pulls/142693/reviews?per_page=100&page=1",
+    "args": [
+      "api",
+      "repos/openclaw/openclaw/pulls/142693/reviews?per_page=100&page=1"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "repos/openclaw/openclaw/pulls/142693/comments?per_page=100&page=1",
+    "args": [
+      "api",
+      "repos/openclaw/openclaw/pulls/142693/comments?per_page=100&page=1"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "repos/openclaw/openclaw/pulls/142693/reviews?per_page=100&page=1",
+    "args": [
+      "api",
+      "repos/openclaw/openclaw/pulls/142693/reviews?per_page=100&page=1"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "repos/openclaw/openclaw/pulls/142693/comments?per_page=100&page=1",
+    "args": [
+      "api",
+      "repos/openclaw/openclaw/pulls/142693/comments?per_page=100&page=1"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "repos/openclaw/openclaw/pulls/142693/reviews?per_page=100&page=1",
+    "args": [
+      "api",
+      "repos/openclaw/openclaw/pulls/142693/reviews?per_page=100&page=1"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "repos/openclaw/openclaw/pulls/142693/comments?per_page=100&page=1",
+    "args": [
+      "api",
+      "repos/openclaw/openclaw/pulls/142693/comments?per_page=100&page=1"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "repos/openclaw/openclaw/pulls/142693/reviews?per_page=100&page=1",
+    "args": [
+      "api",
+      "repos/openclaw/openclaw/pulls/142693/reviews?per_page=100&page=1"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "repos/openclaw/openclaw/pulls/142693/comments?per_page=100&page=1",
+    "args": [
+      "api",
+      "repos/openclaw/openclaw/pulls/142693/comments?per_page=100&page=1"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "repos/openclaw/openclaw/pulls/400",
+    "args": [
+      "api",
+      "repos/openclaw/openclaw/pulls/400"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "repos/openclaw/openclaw/issues/400",
+    "args": [
+      "api",
+      "repos/openclaw/openclaw/issues/400",
+      "--jq",
+      "[.labels[].name]"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "repos/openclaw/openclaw/pulls/400",
+    "args": [
+      "api",
+      "repos/openclaw/openclaw/pulls/400"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "repos/openclaw/openclaw/issues/400",
+    "args": [
+      "api",
+      "repos/openclaw/openclaw/issues/400"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "repos/openclaw/openclaw/pulls/400",
+    "args": [
+      "api",
+      "repos/openclaw/openclaw/pulls/400"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "repos/openclaw/openclaw/issues/400",
+    "args": [
+      "api",
+      "repos/openclaw/openclaw/issues/400"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "repos/openclaw/openclaw/issues/142693",
+    "args": [
+      "api",
+      "repos/openclaw/openclaw/issues/142693"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "repos/openclaw/openclaw/pulls/142693/reviews?per_page=100&page=1",
+    "args": [
+      "api",
+      "repos/openclaw/openclaw/pulls/142693/reviews?per_page=100&page=1"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "repos/openclaw/openclaw/pulls/142693/comments?per_page=100&page=1",
+    "args": [
+      "api",
+      "repos/openclaw/openclaw/pulls/142693/comments?per_page=100&page=1"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "repos/openclaw/openclaw/issues/142693",
+    "args": [
+      "api",
+      "repos/openclaw/openclaw/issues/142693"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "repos/openclaw/openclaw/issues/142693/comments?per_page=100",
+    "args": [
+      "api",
+      "repos/openclaw/openclaw/issues/142693/comments?per_page=100",
+      "--paginate",
+      "--slurp"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "repos/openclaw/openclaw/issues/142693/timeline?per_page=100&page=1",
+    "args": [
+      "api",
+      "-i",
+      "repos/openclaw/openclaw/issues/142693/timeline?per_page=100&page=1"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "repos/openclaw/openclaw/pulls/142693",
+    "args": [
+      "api",
+      "repos/openclaw/openclaw/pulls/142693"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "repos/openclaw/openclaw/pulls/142693/files?per_page=100&page=1",
+    "args": [
+      "api",
+      "repos/openclaw/openclaw/pulls/142693/files?per_page=100&page=1"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "repos/openclaw/openclaw/pulls/142693/commits?per_page=100&page=1",
+    "args": [
+      "api",
+      "repos/openclaw/openclaw/pulls/142693/commits?per_page=100&page=1"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "repos/openclaw/openclaw/pulls/142693/reviews?per_page=100&page=1",
+    "args": [
+      "api",
+      "repos/openclaw/openclaw/pulls/142693/reviews?per_page=100&page=1"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "repos/openclaw/openclaw/commits/head-sha/check-runs?per_page=100",
+    "args": [
+      "api",
+      "repos/openclaw/openclaw/commits/head-sha/check-runs?per_page=100"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "repos/openclaw/openclaw/commits/head-sha/status?per_page=100",
+    "args": [
+      "api",
+      "repos/openclaw/openclaw/commits/head-sha/status?per_page=100"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "repos/openclaw/openclaw/pulls/400",
+    "args": [
+      "api",
+      "repos/openclaw/openclaw/pulls/400"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "repos/openclaw/openclaw/pulls/400",
+    "args": [
+      "api",
+      "repos/openclaw/openclaw/pulls/400"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "repos/openclaw/openclaw/pulls/142693/reviews?per_page=100&page=1",
+    "args": [
+      "api",
+      "repos/openclaw/openclaw/pulls/142693/reviews?per_page=100&page=1"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "repos/openclaw/openclaw/pulls/142693/comments?per_page=100&page=1",
+    "args": [
+      "api",
+      "repos/openclaw/openclaw/pulls/142693/comments?per_page=100&page=1"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "repos/openclaw/openclaw/pulls/142693/reviews?per_page=100&page=1",
+    "args": [
+      "api",
+      "repos/openclaw/openclaw/pulls/142693/reviews?per_page=100&page=1"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "repos/openclaw/openclaw/pulls/142693/comments?per_page=100&page=1",
+    "args": [
+      "api",
+      "repos/openclaw/openclaw/pulls/142693/comments?per_page=100&page=1"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "repos/openclaw/openclaw/pulls/142693",
+    "args": [
+      "api",
+      "repos/openclaw/openclaw/pulls/142693"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "repos/openclaw/openclaw/issues/142693/comments?per_page=100",
+    "args": [
+      "api",
+      "repos/openclaw/openclaw/issues/142693/comments?per_page=100",
+      "--paginate",
+      "--slurp"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "repos/openclaw/openclaw/pulls/142693",
+    "args": [
+      "api",
+      "repos/openclaw/openclaw/pulls/142693"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "repos/openclaw/openclaw/pulls/400",
+    "args": [
+      "api",
+      "repos/openclaw/openclaw/pulls/400"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "repos/openclaw/openclaw/pulls/142693/reviews?per_page=100&page=1",
+    "args": [
+      "api",
+      "repos/openclaw/openclaw/pulls/142693/reviews?per_page=100&page=1"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "repos/openclaw/openclaw/pulls/142693/comments?per_page=100&page=1",
+    "args": [
+      "api",
+      "repos/openclaw/openclaw/pulls/142693/comments?per_page=100&page=1"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "repos/openclaw/openclaw/pulls/142693/reviews?per_page=100&page=1",
+    "args": [
+      "api",
+      "repos/openclaw/openclaw/pulls/142693/reviews?per_page=100&page=1"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "repos/openclaw/openclaw/pulls/142693/comments?per_page=100&page=1",
+    "args": [
+      "api",
+      "repos/openclaw/openclaw/pulls/142693/comments?per_page=100&page=1"
+    ]
+  },
+  {
+    "method": "PATCH",
+    "path": "repos/openclaw/openclaw/issues/comments/151693",
+    "args": [
+      "api",
+      "repos/openclaw/openclaw/issues/comments/151693",
+      "--method",
+      "PATCH",
+      "--input",
+      "<checkout>/.artifacts/comment-142693-61d15f71-af17-4bec-ae9e-278d957626b9.json"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "repos/openclaw/openclaw/issues/142693",
+    "args": [
+      "api",
+      "repos/openclaw/openclaw/issues/142693"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "repos/openclaw/openclaw/issues/142693/comments?per_page=100",
+    "args": [
+      "api",
+      "repos/openclaw/openclaw/issues/142693/comments?per_page=100",
+      "--paginate",
+      "--slurp"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "repos/openclaw/openclaw/issues/142693/timeline?per_page=100&page=1",
+    "args": [
+      "api",
+      "-i",
+      "repos/openclaw/openclaw/issues/142693/timeline?per_page=100&page=1"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "repos/openclaw/openclaw/pulls/142693",
+    "args": [
+      "api",
+      "repos/openclaw/openclaw/pulls/142693"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "repos/openclaw/openclaw/pulls/142693/files?per_page=100&page=1",
+    "args": [
+      "api",
+      "repos/openclaw/openclaw/pulls/142693/files?per_page=100&page=1"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "repos/openclaw/openclaw/pulls/142693/commits?per_page=100&page=1",
+    "args": [
+      "api",
+      "repos/openclaw/openclaw/pulls/142693/commits?per_page=100&page=1"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "repos/openclaw/openclaw/pulls/142693/reviews?per_page=100&page=1",
+    "args": [
+      "api",
+      "repos/openclaw/openclaw/pulls/142693/reviews?per_page=100&page=1"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "repos/openclaw/openclaw/commits/head-sha/check-runs?per_page=100",
+    "args": [
+      "api",
+      "repos/openclaw/openclaw/commits/head-sha/check-runs?per_page=100"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "repos/openclaw/openclaw/commits/head-sha/status?per_page=100",
+    "args": [
+      "api",
+      "repos/openclaw/openclaw/commits/head-sha/status?per_page=100"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "repos/openclaw/openclaw/pulls/142693/reviews?per_page=100&page=1",
+    "args": [
+      "api",
+      "repos/openclaw/openclaw/pulls/142693/reviews?per_page=100&page=1"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "repos/openclaw/openclaw/pulls/142693/comments?per_page=100&page=1",
+    "args": [
+      "api",
+      "repos/openclaw/openclaw/pulls/142693/comments?per_page=100&page=1"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "repos/openclaw/openclaw/pulls/400",
+    "args": [
+      "api",
+      "repos/openclaw/openclaw/pulls/400"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "repos/openclaw/openclaw/issues/400",
+    "args": [
+      "api",
+      "repos/openclaw/openclaw/issues/400",
+      "--jq",
+      "[.labels[].name]"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "repos/openclaw/openclaw/pulls/400",
+    "args": [
+      "api",
+      "repos/openclaw/openclaw/pulls/400"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "repos/openclaw/openclaw/issues/400",
+    "args": [
+      "api",
+      "repos/openclaw/openclaw/issues/400",
+      "--jq",
+      "[.labels[].name]"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "repos/openclaw/openclaw/pulls/400",
+    "args": [
+      "api",
+      "repos/openclaw/openclaw/pulls/400"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "repos/openclaw/openclaw/issues/400",
+    "args": [
+      "api",
+      "repos/openclaw/openclaw/issues/400"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "repos/openclaw/openclaw/issues/142693",
+    "args": [
+      "api",
+      "repos/openclaw/openclaw/issues/142693"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "repos/openclaw/openclaw/issues/142693",
+    "args": [
+      "api",
+      "repos/openclaw/openclaw/issues/142693"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "repos/openclaw/openclaw/issues/142693/comments?per_page=100",
+    "args": [
+      "api",
+      "repos/openclaw/openclaw/issues/142693/comments?per_page=100",
+      "--paginate",
+      "--slurp"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "repos/openclaw/openclaw/issues/142693/timeline?per_page=100&page=1",
+    "args": [
+      "api",
+      "-i",
+      "repos/openclaw/openclaw/issues/142693/timeline?per_page=100&page=1"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "repos/openclaw/openclaw/pulls/142693",
+    "args": [
+      "api",
+      "repos/openclaw/openclaw/pulls/142693"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "repos/openclaw/openclaw/pulls/142693/files?per_page=100&page=1",
+    "args": [
+      "api",
+      "repos/openclaw/openclaw/pulls/142693/files?per_page=100&page=1"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "repos/openclaw/openclaw/pulls/142693/commits?per_page=100&page=1",
+    "args": [
+      "api",
+      "repos/openclaw/openclaw/pulls/142693/commits?per_page=100&page=1"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "repos/openclaw/openclaw/pulls/142693/reviews?per_page=100&page=1",
+    "args": [
+      "api",
+      "repos/openclaw/openclaw/pulls/142693/reviews?per_page=100&page=1"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "repos/openclaw/openclaw/commits/head-sha/status?per_page=100",
+    "args": [
+      "api",
+      "repos/openclaw/openclaw/commits/head-sha/status?per_page=100"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "repos/openclaw/openclaw/commits/head-sha/check-runs?per_page=100",
+    "args": [
+      "api",
+      "repos/openclaw/openclaw/commits/head-sha/check-runs?per_page=100"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "repos/openclaw/openclaw/pulls/142693/reviews?per_page=100&page=1",
+    "args": [
+      "api",
+      "repos/openclaw/openclaw/pulls/142693/reviews?per_page=100&page=1"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "repos/openclaw/openclaw/pulls/142693/comments?per_page=100&page=1",
+    "args": [
+      "api",
+      "repos/openclaw/openclaw/pulls/142693/comments?per_page=100&page=1"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "repos/openclaw/openclaw/pulls/142693/reviews?per_page=100&page=1",
+    "args": [
+      "api",
+      "repos/openclaw/openclaw/pulls/142693/reviews?per_page=100&page=1"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "repos/openclaw/openclaw/commits/head-sha/status?per_page=100",
+    "args": [
+      "api",
+      "repos/openclaw/openclaw/commits/head-sha/status?per_page=100"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "repos/openclaw/openclaw/commits/head-sha/check-runs?per_page=100",
+    "args": [
+      "api",
+      "repos/openclaw/openclaw/commits/head-sha/check-runs?per_page=100"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "repos/openclaw/openclaw/pulls/142693/reviews?per_page=100&page=1",
+    "args": [
+      "api",
+      "repos/openclaw/openclaw/pulls/142693/reviews?per_page=100&page=1"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "repos/openclaw/openclaw/pulls/142693/comments?per_page=100&page=1",
+    "args": [
+      "api",
+      "repos/openclaw/openclaw/pulls/142693/comments?per_page=100&page=1"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "repos/openclaw/openclaw/pulls/142693/reviews?per_page=100&page=1",
+    "args": [
+      "api",
+      "repos/openclaw/openclaw/pulls/142693/reviews?per_page=100&page=1"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "repos/openclaw/openclaw/pulls/142693/comments?per_page=100&page=1",
+    "args": [
+      "api",
+      "repos/openclaw/openclaw/pulls/142693/comments?per_page=100&page=1"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "repos/openclaw/openclaw/pulls/142693/reviews?per_page=100&page=1",
+    "args": [
+      "api",
+      "repos/openclaw/openclaw/pulls/142693/reviews?per_page=100&page=1"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "repos/openclaw/openclaw/pulls/142693/comments?per_page=100&page=1",
+    "args": [
+      "api",
+      "repos/openclaw/openclaw/pulls/142693/comments?per_page=100&page=1"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "repos/openclaw/openclaw/pulls/142693/reviews?per_page=100&page=1",
+    "args": [
+      "api",
+      "repos/openclaw/openclaw/pulls/142693/reviews?per_page=100&page=1"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "repos/openclaw/openclaw/pulls/142693/comments?per_page=100&page=1",
+    "args": [
+      "api",
+      "repos/openclaw/openclaw/pulls/142693/comments?per_page=100&page=1"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "repos/openclaw/openclaw/issues/142693/comments?per_page=100",
+    "args": [
+      "api",
+      "repos/openclaw/openclaw/issues/142693/comments?per_page=100",
+      "--paginate",
+      "--slurp"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "repos/openclaw/openclaw/pulls/142693/reviews?per_page=100&page=1",
+    "args": [
+      "api",
+      "repos/openclaw/openclaw/pulls/142693/reviews?per_page=100&page=1"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "repos/openclaw/openclaw/pulls/142693/comments?per_page=100&page=1",
+    "args": [
+      "api",
+      "repos/openclaw/openclaw/pulls/142693/comments?per_page=100&page=1"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "repos/openclaw/openclaw/pulls/142693/reviews?per_page=100&page=1",
+    "args": [
+      "api",
+      "repos/openclaw/openclaw/pulls/142693/reviews?per_page=100&page=1"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "repos/openclaw/openclaw/pulls/142693/comments?per_page=100&page=1",
+    "args": [
+      "api",
+      "repos/openclaw/openclaw/pulls/142693/comments?per_page=100&page=1"
+    ]
+  },
+  {
+    "method": "POST",
+    "path": "repos/openclaw/openclaw/issues/142693/comments",
+    "args": [
+      "api",
+      "repos/openclaw/openclaw/issues/142693/comments",
+      "--method",
+      "POST",
+      "--input",
+      "<checkout>/.artifacts/comment-142693-adf1bfb0-9429-4bff-849f-4acb164c9eed.json"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "repos/openclaw/openclaw/issues/142693",
+    "args": [
+      "api",
+      "repos/openclaw/openclaw/issues/142693"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "repos/openclaw/openclaw/issues/142693/comments?per_page=100",
+    "args": [
+      "api",
+      "repos/openclaw/openclaw/issues/142693/comments?per_page=100",
+      "--paginate",
+      "--slurp"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "repos/openclaw/openclaw/issues/142693/timeline?per_page=100&page=1",
+    "args": [
+      "api",
+      "-i",
+      "repos/openclaw/openclaw/issues/142693/timeline?per_page=100&page=1"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "repos/openclaw/openclaw/pulls/142693",
+    "args": [
+      "api",
+      "repos/openclaw/openclaw/pulls/142693"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "repos/openclaw/openclaw/pulls/142693/files?per_page=100&page=1",
+    "args": [
+      "api",
+      "repos/openclaw/openclaw/pulls/142693/files?per_page=100&page=1"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "repos/openclaw/openclaw/pulls/142693/commits?per_page=100&page=1",
+    "args": [
+      "api",
+      "repos/openclaw/openclaw/pulls/142693/commits?per_page=100&page=1"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "repos/openclaw/openclaw/pulls/142693/reviews?per_page=100&page=1",
+    "args": [
+      "api",
+      "repos/openclaw/openclaw/pulls/142693/reviews?per_page=100&page=1"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "repos/openclaw/openclaw/commits/head-sha/check-runs?per_page=100",
+    "args": [
+      "api",
+      "repos/openclaw/openclaw/commits/head-sha/check-runs?per_page=100"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "repos/openclaw/openclaw/commits/head-sha/status?per_page=100",
+    "args": [
+      "api",
+      "repos/openclaw/openclaw/commits/head-sha/status?per_page=100"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "repos/openclaw/openclaw/pulls/142693/reviews?per_page=100&page=1",
+    "args": [
+      "api",
+      "repos/openclaw/openclaw/pulls/142693/reviews?per_page=100&page=1"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "repos/openclaw/openclaw/pulls/142693/comments?per_page=100&page=1",
+    "args": [
+      "api",
+      "repos/openclaw/openclaw/pulls/142693/comments?per_page=100&page=1"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "repos/openclaw/openclaw/issues/142693",
+    "args": [
+      "api",
+      "repos/openclaw/openclaw/issues/142693"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "repos/openclaw/openclaw/issues/142693",
+    "args": [
+      "api",
+      "repos/openclaw/openclaw/issues/142693"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "repos/openclaw/openclaw/issues/142693/comments?per_page=100",
+    "args": [
+      "api",
+      "repos/openclaw/openclaw/issues/142693/comments?per_page=100",
+      "--paginate",
+      "--slurp"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "repos/openclaw/openclaw/issues/142693/timeline?per_page=100&page=1",
+    "args": [
+      "api",
+      "-i",
+      "repos/openclaw/openclaw/issues/142693/timeline?per_page=100&page=1"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "repos/openclaw/openclaw/pulls/142693",
+    "args": [
+      "api",
+      "repos/openclaw/openclaw/pulls/142693"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "repos/openclaw/openclaw/pulls/142693/files?per_page=100&page=1",
+    "args": [
+      "api",
+      "repos/openclaw/openclaw/pulls/142693/files?per_page=100&page=1"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "repos/openclaw/openclaw/pulls/142693/commits?per_page=100&page=1",
+    "args": [
+      "api",
+      "repos/openclaw/openclaw/pulls/142693/commits?per_page=100&page=1"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "repos/openclaw/openclaw/pulls/142693/reviews?per_page=100&page=1",
+    "args": [
+      "api",
+      "repos/openclaw/openclaw/pulls/142693/reviews?per_page=100&page=1"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "repos/openclaw/openclaw/commits/head-sha/check-runs?per_page=100",
+    "args": [
+      "api",
+      "repos/openclaw/openclaw/commits/head-sha/check-runs?per_page=100"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "repos/openclaw/openclaw/commits/head-sha/status?per_page=100",
+    "args": [
+      "api",
+      "repos/openclaw/openclaw/commits/head-sha/status?per_page=100"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "repos/openclaw/openclaw/pulls/142693/reviews?per_page=100&page=1",
+    "args": [
+      "api",
+      "repos/openclaw/openclaw/pulls/142693/reviews?per_page=100&page=1"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "repos/openclaw/openclaw/pulls/142693/comments?per_page=100&page=1",
+    "args": [
+      "api",
+      "repos/openclaw/openclaw/pulls/142693/comments?per_page=100&page=1"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "repos/openclaw/openclaw/pulls/400",
+    "args": [
+      "api",
+      "repos/openclaw/openclaw/pulls/400"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "repos/openclaw/openclaw/issues/400",
+    "args": [
+      "api",
+      "repos/openclaw/openclaw/issues/400"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "repos/openclaw/openclaw/pulls/142693/reviews?per_page=100&page=1",
+    "args": [
+      "api",
+      "repos/openclaw/openclaw/pulls/142693/reviews?per_page=100&page=1"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "repos/openclaw/openclaw/commits/head-sha/check-runs?per_page=100",
+    "args": [
+      "api",
+      "repos/openclaw/openclaw/commits/head-sha/check-runs?per_page=100"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "repos/openclaw/openclaw/commits/head-sha/status?per_page=100",
+    "args": [
+      "api",
+      "repos/openclaw/openclaw/commits/head-sha/status?per_page=100"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "repos/openclaw/openclaw/pulls/142693/reviews?per_page=100&page=1",
+    "args": [
+      "api",
+      "repos/openclaw/openclaw/pulls/142693/reviews?per_page=100&page=1"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "repos/openclaw/openclaw/pulls/142693/comments?per_page=100&page=1",
+    "args": [
+      "api",
+      "repos/openclaw/openclaw/pulls/142693/comments?per_page=100&page=1"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "repos/openclaw/openclaw/pulls/142693/reviews?per_page=100&page=1",
+    "args": [
+      "api",
+      "repos/openclaw/openclaw/pulls/142693/reviews?per_page=100&page=1"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "repos/openclaw/openclaw/pulls/142693/comments?per_page=100&page=1",
+    "args": [
+      "api",
+      "repos/openclaw/openclaw/pulls/142693/comments?per_page=100&page=1"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "repos/openclaw/openclaw/pulls/142693/reviews?per_page=100&page=1",
+    "args": [
+      "api",
+      "repos/openclaw/openclaw/pulls/142693/reviews?per_page=100&page=1"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "repos/openclaw/openclaw/pulls/142693/comments?per_page=100&page=1",
+    "args": [
+      "api",
+      "repos/openclaw/openclaw/pulls/142693/comments?per_page=100&page=1"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "repos/openclaw/openclaw/pulls/142693/reviews?per_page=100&page=1",
+    "args": [
+      "api",
+      "repos/openclaw/openclaw/pulls/142693/reviews?per_page=100&page=1"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "repos/openclaw/openclaw/pulls/142693/comments?per_page=100&page=1",
+    "args": [
+      "api",
+      "repos/openclaw/openclaw/pulls/142693/comments?per_page=100&page=1"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "repos/openclaw/openclaw/pulls/400",
+    "args": [
+      "api",
+      "repos/openclaw/openclaw/pulls/400"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "repos/openclaw/openclaw/issues/400",
+    "args": [
+      "api",
+      "repos/openclaw/openclaw/issues/400"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "repos/openclaw/openclaw/issues/142693",
+    "args": [
+      "api",
+      "repos/openclaw/openclaw/issues/142693"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "repos/openclaw/openclaw/issues/142693",
+    "args": [
+      "api",
+      "repos/openclaw/openclaw/issues/142693"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "repos/openclaw/openclaw/issues/142693/comments?per_page=100",
+    "args": [
+      "api",
+      "repos/openclaw/openclaw/issues/142693/comments?per_page=100",
+      "--paginate",
+      "--slurp"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "repos/openclaw/openclaw/issues/142693/timeline?per_page=100&page=1",
+    "args": [
+      "api",
+      "-i",
+      "repos/openclaw/openclaw/issues/142693/timeline?per_page=100&page=1"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "repos/openclaw/openclaw/pulls/142693",
+    "args": [
+      "api",
+      "repos/openclaw/openclaw/pulls/142693"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "repos/openclaw/openclaw/pulls/142693/files?per_page=100&page=1",
+    "args": [
+      "api",
+      "repos/openclaw/openclaw/pulls/142693/files?per_page=100&page=1"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "repos/openclaw/openclaw/pulls/142693/commits?per_page=100&page=1",
+    "args": [
+      "api",
+      "repos/openclaw/openclaw/pulls/142693/commits?per_page=100&page=1"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "repos/openclaw/openclaw/pulls/142693/reviews?per_page=100&page=1",
+    "args": [
+      "api",
+      "repos/openclaw/openclaw/pulls/142693/reviews?per_page=100&page=1"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "repos/openclaw/openclaw/commits/head-sha/check-runs?per_page=100",
+    "args": [
+      "api",
+      "repos/openclaw/openclaw/commits/head-sha/check-runs?per_page=100"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "repos/openclaw/openclaw/commits/head-sha/status?per_page=100",
+    "args": [
+      "api",
+      "repos/openclaw/openclaw/commits/head-sha/status?per_page=100"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "repos/openclaw/openclaw/pulls/142693/reviews?per_page=100&page=1",
+    "args": [
+      "api",
+      "repos/openclaw/openclaw/pulls/142693/reviews?per_page=100&page=1"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "repos/openclaw/openclaw/pulls/142693/comments?per_page=100&page=1",
+    "args": [
+      "api",
+      "repos/openclaw/openclaw/pulls/142693/comments?per_page=100&page=1"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "repos/openclaw/openclaw/issues/142693",
+    "args": [
+      "api",
+      "repos/openclaw/openclaw/issues/142693"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "repos/openclaw/openclaw/issues/142693",
+    "args": [
+      "api",
+      "repos/openclaw/openclaw/issues/142693"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "repos/openclaw/openclaw/issues/142693/comments?per_page=100",
+    "args": [
+      "api",
+      "repos/openclaw/openclaw/issues/142693/comments?per_page=100",
+      "--paginate",
+      "--slurp"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "repos/openclaw/openclaw/issues/142693/timeline?per_page=100&page=1",
+    "args": [
+      "api",
+      "-i",
+      "repos/openclaw/openclaw/issues/142693/timeline?per_page=100&page=1"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "repos/openclaw/openclaw/pulls/142693",
+    "args": [
+      "api",
+      "repos/openclaw/openclaw/pulls/142693"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "repos/openclaw/openclaw/pulls/142693/files?per_page=100&page=1",
+    "args": [
+      "api",
+      "repos/openclaw/openclaw/pulls/142693/files?per_page=100&page=1"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "repos/openclaw/openclaw/pulls/142693/commits?per_page=100&page=1",
+    "args": [
+      "api",
+      "repos/openclaw/openclaw/pulls/142693/commits?per_page=100&page=1"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "repos/openclaw/openclaw/pulls/142693/reviews?per_page=100&page=1",
+    "args": [
+      "api",
+      "repos/openclaw/openclaw/pulls/142693/reviews?per_page=100&page=1"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "repos/openclaw/openclaw/commits/head-sha/status?per_page=100",
+    "args": [
+      "api",
+      "repos/openclaw/openclaw/commits/head-sha/status?per_page=100"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "repos/openclaw/openclaw/commits/head-sha/check-runs?per_page=100",
+    "args": [
+      "api",
+      "repos/openclaw/openclaw/commits/head-sha/check-runs?per_page=100"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "repos/openclaw/openclaw/pulls/142693/reviews?per_page=100&page=1",
+    "args": [
+      "api",
+      "repos/openclaw/openclaw/pulls/142693/reviews?per_page=100&page=1"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "repos/openclaw/openclaw/pulls/142693/comments?per_page=100&page=1",
+    "args": [
+      "api",
+      "repos/openclaw/openclaw/pulls/142693/comments?per_page=100&page=1"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "repos/openclaw/openclaw/pulls/400",
+    "args": [
+      "api",
+      "repos/openclaw/openclaw/pulls/400"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "repos/openclaw/openclaw/issues/400",
+    "args": [
+      "api",
+      "repos/openclaw/openclaw/issues/400"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "repos/openclaw/openclaw/pulls/142693/reviews?per_page=100&page=1",
+    "args": [
+      "api",
+      "repos/openclaw/openclaw/pulls/142693/reviews?per_page=100&page=1"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "repos/openclaw/openclaw/pulls/142693/comments?per_page=100&page=1",
+    "args": [
+      "api",
+      "repos/openclaw/openclaw/pulls/142693/comments?per_page=100&page=1"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "repos/openclaw/openclaw/pulls/142693/reviews?per_page=100&page=1",
+    "args": [
+      "api",
+      "repos/openclaw/openclaw/pulls/142693/reviews?per_page=100&page=1"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "repos/openclaw/openclaw/pulls/142693/comments?per_page=100&page=1",
+    "args": [
+      "api",
+      "repos/openclaw/openclaw/pulls/142693/comments?per_page=100&page=1"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "repos/openclaw/openclaw/pulls/142693/reviews?per_page=100&page=1",
+    "args": [
+      "api",
+      "repos/openclaw/openclaw/pulls/142693/reviews?per_page=100&page=1"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "repos/openclaw/openclaw/pulls/142693/comments?per_page=100&page=1",
+    "args": [
+      "api",
+      "repos/openclaw/openclaw/pulls/142693/comments?per_page=100&page=1"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "repos/openclaw/openclaw/pulls/142693/reviews?per_page=100&page=1",
+    "args": [
+      "api",
+      "repos/openclaw/openclaw/pulls/142693/reviews?per_page=100&page=1"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "repos/openclaw/openclaw/pulls/142693/comments?per_page=100&page=1",
+    "args": [
+      "api",
+      "repos/openclaw/openclaw/pulls/142693/comments?per_page=100&page=1"
+    ]
+  },
+  {
+    "method": "CLI",
+    "path": "pr close 142693",
+    "args": [
+      "pr",
+      "close",
+      "142693"
+    ]
+  }
+]

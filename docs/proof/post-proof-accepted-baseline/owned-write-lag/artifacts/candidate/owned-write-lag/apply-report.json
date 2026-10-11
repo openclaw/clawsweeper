@@ -1,0 +1,12 @@
+[
+  {
+    "number": 142693,
+    "action": "review_comment_synced",
+    "reason": "updated durable Codex review comment"
+  },
+  {
+    "number": 142693,
+    "action": "closed",
+    "reason": "duplicate or superseded; posted close-applied comment"
+  }
+]

@@ -92,3 +92,9 @@ source and activity transitions. No production item is changed.
 
 OpenClaw Bay is not affected. This change does not change the queue, status, telemetry, or
 dashboard data contract.
+
+## Related timestamp-lag proof
+
+The [owned-write timestamp-lag proof](owned-write-lag/README.md) extends this harness to cover
+a durable review PATCH whose timestamp reaches the PR only after the first post-write item read.
+Pass `owned-write-lag` as the third argument to `run-proof.sh` to run those cases.
