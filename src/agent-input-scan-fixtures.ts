@@ -249,6 +249,8 @@ const CRON_FTP_SOURCE_SHA256S = [
   "9e9ec747fe268991cde3f65280c0b4480e9d7748b9e9ce4d539a28f6f8fc23a1",
   "64919155ae619bb0159a37d7ea97b6aba473671c50120cf78be7c27f8a15dae4",
   "e181c69bd874b3e50d70631a6f1a94eed2308d765f05046ec66a84089a62c7cb",
+  "dae36fe07e5b25c4c2f306a9a7e5ceaa0a8967d0789c9677b4e7a9eb6b7668c7",
+  "f42428917e28d417c8a6d7867d7abdb3d1ee76e2d9fce6f93965f319e0fcd061",
 ] as const;
 
 // Historical OCE source blobs still referenced by open PRs #14, #115, #252, #253, #307,

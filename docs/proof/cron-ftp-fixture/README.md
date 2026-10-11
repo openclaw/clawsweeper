@@ -160,6 +160,41 @@ and pinned TruffleHog 3.97.4. Detector, decoder, literal, line, path, mode, ref,
 occurrence, native verification, and complete-source checks remain unchanged.
 No Bay, queue, or publication contract changes are involved.
 
+## Destination-owner final-source qualification
+
+[OpenClaw PR #168996](https://github.com/openclaw/openclaw/pull/168996) retains the
+same synthetic FTP warning-redaction fixture. Its frozen receiving tuple is
+`b11fbcf10138fde8df9f8b20a83c20c645a12c47..b2685bbad0ee2b423582ed6da94db97dcc3eb643`.
+The [source identity receipt](168996-source-identities.json) records the complete
+base and head files, both at `src/gateway/server-cron-notifications.test.ts` with
+mode `100644`:
+
+| Role | Blob | Complete-source SHA256 | Fixture line |
+| --- | --- | --- | --- |
+| Base | `4bdb2e246f6859f49ae0312d79900e175050cbc6` | `dae36fe07e5b25c4c2f306a9a7e5ceaa0a8967d0789c9677b4e7a9eb6b7668c7` | 684 |
+| Head | `d5b62b493f2bd24a8e65e8604062bb5b43b785d3` | `f42428917e28d417c8a6d7867d7abdb3d1ee76e2d9fce6f93965f319e0fcd061` | 732 |
+
+On ClawSweeper `27fbecbbe4a92831a667e76fff1b73412ef89b14`, the maintained native
+runner [refused that exact range](168996-native-before.json) with
+`source_not_reviewed`, identifying the base blob. Adding only these two source
+hashes [admits the unchanged range](168996-native-after.json) in 3.737 seconds.
+The native scan reports one PLAIN FTP finding per role at the lines above.
+The complete-line digest remains
+`47389a842fa9b1a3cb74c54ab2455b02b9cb0bd41c4b832eaf83aa52fbccbdc8`.
+
+The same complete source blobs [remain refused at a foreign path](168996-foreign-path.json).
+Appending one newline to the head file [remains refused in the head role](168996-changed-source.json).
+These controls use clean, complete synthetic Git sources and the same native
+production entry point. All 30 existing FTP classifier cases pass, covering
+PLAIN and HTML, native metadata, source identity, and occurrence controls.
+
+Proof ran on macOS arm64 with Node 24.21.0, pnpm 12.4.1, and pinned TruffleHog
+3.97.4. Detector 899, both decoder rows, native Raw/RawV2 digests, full-line,
+path, mode, committed-ref, occurrence, and verification checks are unchanged.
+No scanner flag, policy bypass, test exclusion, Bay, queue, or publication
+contract changes are involved. This admission proof does not itself complete
+a hosted review or release a review hold.
+
 ## Limits
 
 This is source-admission proof with a controlled prompt. It does not run a model,
