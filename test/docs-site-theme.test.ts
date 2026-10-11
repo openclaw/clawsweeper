@@ -64,12 +64,12 @@ test("docs site keeps non-current evidence out of canonical discovery", () => {
   const llms = readSite("llms.txt");
   const sitemap = readSite("sitemap.xml");
   const proposal = readSite("queue-service-split-runbook.html");
-  const historical = readSite("repair/containment-validation-todo.html");
+  const historical = readSite("proof/report-front-matter/index.html");
   const proof = readSite("proof/operational-health-zombie-runs/index.html");
 
   for (const output of [llms, sitemap]) {
     assert.doesNotMatch(output, /queue-service-split-runbook/);
-    assert.doesNotMatch(output, /containment-validation-todo/);
+    assert.doesNotMatch(output, /proof\/report-front-matter/);
     assert.doesNotMatch(output, /proof\/operational-health-zombie-runs/);
   }
   assert.match(llms, /live-dashboard\.html/);
@@ -78,6 +78,6 @@ test("docs site keeps non-current evidence out of canonical discovery", () => {
     assert.match(html, /class="lifecycle-banner"/);
   }
   assert.match(proposal, /unapproved proposal, not current operator guidance/);
-  assert.match(historical, /historical decision evidence, not current operator guidance/);
+  assert.match(historical, /Historical-only after S7b/);
   assert.match(proof, /does not override current documentation/);
 });

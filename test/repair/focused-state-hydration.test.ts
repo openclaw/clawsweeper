@@ -5,6 +5,7 @@ import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { type TestContext } from "node:test";
+import { parse } from "yaml";
 
 import { hydrateState } from "../../scripts/hydrate-state.ts";
 import { materializeWorkerItems } from "../../scripts/worker-records.ts";
