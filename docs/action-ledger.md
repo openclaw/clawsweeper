@@ -417,15 +417,15 @@ first publishes authoritative local shards, then gives the entire optional
 projection drain for that spool root one 10000 ms deadline, bounded to at most
 60000 ms through the runtime flush option. Independent ledger roots do not wait
 for or fail one another's projection queues. Timeout, HTTP, and
-response-cleanup failures remain projection failures. Live delivery, including
-exported direct posts, runs at most four fetches concurrently. Each spool root
+response-cleanup failures remain projection failures. Workflow-owned live
+projections run at most four fetches concurrently. Each spool root
 may queue 64 projections, with 64 queued roots and 256 queued projections
 process-wide. Admission selects the queued root with the fewest active requests,
 so one saturated root cannot deny the next recovered slot to an independent
 root. A timed-out fetch keeps its concurrency slot until the underlying request
 and response-body cleanup settle; only that request set's queued projections
-fail closed if all of its slots remain unresolved. Direct events are validated
-before admission, and queued requests have their own bounded deadline so
+fail closed if all of its slots remain unresolved. Workflow events are validated
+before projection admission, and queued requests have their own bounded deadline so
 invalid events, dead slots, or ignored cancellation cannot leave caller
 promises pending forever. Queued projections snapshot their endpoint, session,
 token, and timeout before admission, so later environment mutation cannot
