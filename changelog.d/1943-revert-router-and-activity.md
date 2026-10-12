@@ -1,0 +1,1 @@
+- Revert the post-publication comment-router exemption (#1935) and the gated GitHub App webhook activity forwarding (#1940); publications dispatch the comment router again and GitHub activity stays on the existing relay.

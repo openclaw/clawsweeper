@@ -1,0 +1,1 @@
+- Stop launching redundant comment-router scans after review publication; retain durable lifecycle completion, real-command intake, and scheduled missed-command recovery.
