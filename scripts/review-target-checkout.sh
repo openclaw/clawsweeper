@@ -82,6 +82,8 @@ missing_tip_blobs() {
 }
 
 # Fetch only the tip blobs the cache lacks, so the checkout below is fully local.
+# A failed fetch still leaves a promisor remote. Checkout can then download the
+# same blobs, so that recovery uses the network deadline too.
 fill_tip_blobs() {
   local missing
   missing="$(missing_tip_blobs)" || return 1
@@ -95,6 +97,16 @@ fill_tip_blobs() {
   [ -z "$missing" ]
 }
 
+# Local objects when the tip cache is complete. Otherwise checkout may talk to
+# the network, and a plain git checkout would ignore the deadline above.
+checkout_branch() {
+  if [ "$cache_ready" = true ]; then
+    git -C "$checkout_dir" checkout --quiet --force "$branch"
+  else
+    git_network -C "$checkout_dir" checkout --quiet --force "$branch"
+  fi
+}
+
 materialize_checkout() {
   rm -rf "$checkout_dir"
   git -c gc.auto=0 clone --quiet --no-checkout --single-branch --branch "$branch" -- "$cache_dir" "$checkout_dir" &&
@@ -102,7 +114,7 @@ materialize_checkout() {
     git -C "$checkout_dir" config remote.origin.url "$url" &&
     git -C "$checkout_dir" config remote.origin.promisor true &&
     git -C "$checkout_dir" config remote.origin.partialclonefilter blob:none &&
-    git -C "$checkout_dir" checkout --quiet --force "$branch" &&
+    checkout_branch &&
     [ "$(git -C "$checkout_dir" rev-parse HEAD)" = "$(cache_git rev-parse "refs/heads/$branch")" ] &&
     [ "$(git -C "$checkout_dir" rev-parse --abbrev-ref HEAD)" = "$branch" ]
 }
