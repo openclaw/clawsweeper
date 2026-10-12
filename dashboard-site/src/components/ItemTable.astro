@@ -1,0 +1,45 @@
+---
+import Icon from './Icon.astro';
+import { ago, label } from '../lib/format';
+import { asOf, type Item } from '../lib/data';
+
+interface Props {
+  items: Item[];
+  limit?: number;
+  meta?: 'reason' | 'maintainer' | 'security' | 'age';
+  showRepo?: boolean;
+}
+const { items, limit = 8, meta = 'age', showRepo = true } = Astro.props;
+const rows = items.slice(0, limit);
+const metaText = (item: Item) =>
+  meta === 'reason' ? label(item.closeReason) : meta === 'maintainer' ? label(item.maintainerKind ?? '') : meta === 'security' ? label(item.security) : null;
+---
+{rows.length ? (
+  <table class="table">
+    <thead>
+      <tr>
+        <th>Item</th>
+        {meta !== 'age' && <th class="hidden sm:table-cell">{meta === 'reason' ? 'Reason' : meta === 'maintainer' ? 'Decision' : 'Security'}</th>}
+        <th class="r">Last review</th>
+      </tr>
+    </thead>
+    <tbody>
+      {rows.map(item => (
+        <tr>
+          <td class="max-w-0 w-full">
+            <a href={item.url} target="_blank" rel="noreferrer" class="group flex min-w-0 items-center gap-2">
+              <span class="tag shrink-0">{label(item.kind)}</span>
+              <span class="num shrink-0 text-fg-muted">{showRepo ? `${item.repo.split('/')[1]}#${item.number}` : `#${item.number}`}</span>
+              <span class="truncate group-hover:underline group-hover:decoration-line-strong group-hover:underline-offset-4">{item.title}</span>
+              <Icon name="external" size={12} class="shrink-0 text-fg-faint opacity-0 transition-opacity group-hover:opacity-100" />
+            </a>
+          </td>
+          {meta !== 'age' && <td class="hidden whitespace-nowrap text-fg-muted sm:table-cell">{metaText(item)}</td>}
+          <td class="r num whitespace-nowrap text-fg-muted">{ago(item.reviewedAt, asOf.corpus)}</td>
+        </tr>
+      ))}
+    </tbody>
+  </table>
+) : (
+  <p class="px-4 pb-4 text-[13px] text-fg-muted">Nothing here.</p>
+)}

@@ -1,0 +1,29 @@
+---
+import Icon from './Icon.astro';
+
+// A card whose header holds a segmented control. Radio inputs pick which direct
+// `.panel` child of the body shows; no JavaScript.
+interface Props {
+  title: string;
+  name: string;
+  tabs: string[];
+  tip?: string;
+  initial?: number;
+  flush?: boolean;
+  class?: string;
+}
+const { title, name, tabs, tip, initial = 0, flush = false, class: className } = Astro.props;
+---
+<section class:list={['card tabset flex min-w-0 flex-col', className]}>
+  {tabs.map((_, index) => <input type="radio" name={name} id={`${name}-${index}`} checked={index === initial} />)}
+  <div class="card-head">
+    <h2 class="card-title flex items-center gap-1.5">
+      {title}
+      {tip && <span data-tip={tip} class="text-fg-faint hover:text-fg-muted"><Icon name="info" size={13} /></span>}
+    </h2>
+    <div class="tabbar seg">{tabs.map((text, index) => <label for={`${name}-${index}`}>{text}</label>)}</div>
+  </div>
+  <div class:list={[flush ? 'mt-3' : 'p-4 pt-3', 'min-w-0 flex-1']}>
+    <slot />
+  </div>
+</section>

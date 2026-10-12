@@ -1,0 +1,138 @@
+---
+import Layout from '../components/Layout.astro';
+import Kpi from '../components/Kpi.astro';
+import Card from '../components/Card.astro';
+import BarList from '../components/BarList.astro';
+import Clear from '../components/Clear.astro';
+import { asOf, entries, live } from '../lib/data';
+import { ago, duration, int, label, pct, short, stamp } from '../lib/format';
+
+const review = live.review;
+const publication = live.publication;
+const lanes = [
+  { name: 'Review', lane: review, tip: 'Codex reviews of issues and PRs.' },
+  { name: 'Publication', lane: publication, tip: 'Writing finished reviews back to GitHub.' },
+];
+const health = [
+  {
+    name: 'Review failures',
+    ok: live.failures.status === 'healthy',
+    value: live.failures.status === 'healthy' ? 'Healthy' : `${live.failures.terminal_attempts} terminal`,
+    detail: `${live.failures.attempts} attempts on ${live.failures.affected_targets} targets in ${live.failures.window_minutes}m`,
+    tip: 'Review attempts that failed in the rolling window. Terminal failures will not retry on their own.',
+  },
+  {
+    name: 'Runaway reviews',
+    ok: live.runaway.status === 'healthy',
+    value: live.runaway.status === 'healthy' ? 'Healthy' : `${live.runaway.runaway_items} items`,
+    detail: `over ${live.runaway.threshold_reviews_per_day} reviews in ${live.runaway.window_hours}h`,
+    tip: 'Items reviewed again and again in a short window. Usually a revision loop or a feed bug.',
+  },
+  {
+    name: 'Handoff',
+    ok: live.handoff.status === 'healthy',
+    value: live.handoff.status === 'healthy' ? 'Healthy' : label(live.handoff.reason),
+    detail: `warn after ${duration(live.handoff.warning_after_seconds)}, stall after ${duration(live.handoff.stalled_after_seconds)}`,
+    tip: 'Whether claimed work moves from pending to dispatching to leased on time.',
+  },
+  {
+    name: 'Pressure',
+    ok: true,
+    value: label(live.pressure.status),
+    detail: label(live.pressure.reason),
+    tip: 'Backlog ready for a slot right now, against capacity.',
+  },
+];
+const failureStages = entries({ ...live.failures.by_stage });
+const recoveries = entries({ ...live.handoff.recovery_reasons });
+const shed = entries({ ...review.shed_reasons_since_reset });
+const feedLanes = Object.entries(live.feed.lanes as Record<string, { target_rate_per_hour: number; burst: number; token_balance: number }>);
+---
+<Layout title="Queue" section="queue">
+  <div class="flex flex-wrap items-end justify-between gap-3">
+    <div>
+      <h1 class="text-[22px] font-semibold tracking-tight">Queue</h1>
+      <p class="mt-1 text-[13px] text-fg-muted">Live state of the review and publication lanes.</p>
+    </div>
+    <span class="pill bg-bg-muted text-fg-muted" data-tip={stamp(asOf.queue)}>Snapshot {ago(asOf.queue, asOf.build)}</span>
+  </div>
+
+  <div class="mt-6 grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-5">
+    <Kpi label="Slots busy" value={`${review.active}/${review.capacity}`} sub={pct(review.active / review.capacity, 0)} tip="Review slots running a review now." />
+    <Kpi label="Pending" value={int(review.pending)} sub={review.oldest_pending_age_seconds ? `oldest ${duration(review.oldest_pending_age_seconds)}` : 'nothing waiting'} tip="Review items waiting for a slot." />
+    <Kpi label="Backoff" value={int(review.backoff)} sub={review.oldest_backoff_age_seconds ? `oldest ${duration(review.oldest_backoff_age_seconds)}` : 'none'} tip="Items waiting out a retry or debounce delay." />
+    <Kpi label="Parked" value={int(review.parked + publication.parked)} sub={`${int(review.parked)} review · ${int(publication.parked)} publish`} tip="Items held back until a person or a new revision clears them." />
+    <Kpi label="Completed" value={short(review.completed_total)} sub={`of ${short(review.enqueued_total)} enqueued`} tip="Lifetime review lane counters since the queue was created." />
+  </div>
+
+  <div class="mt-3 grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-4">
+    {health.map(row => (
+      <div class="card p-4" data-tip={row.tip}>
+        <div class="flex items-center gap-2 text-[13px] text-fg-muted"><span class:list={['dot', row.ok ? 'bg-ok' : 'bg-warn']}></span>{row.name}</div>
+        <div class:list={['mt-2 text-[15px] font-semibold', !row.ok && 'text-warn']}>{row.value}</div>
+        <div class="mt-0.5 text-[12px] text-fg-faint">{row.detail}</div>
+      </div>
+    ))}
+  </div>
+
+  <Card title="Lanes" flush class="mt-3" tip="Current depth of each lane.">
+    <div class="overflow-x-auto">
+      <table class="table">
+        <thead><tr><th>Lane</th><th class="r">Capacity</th><th class="r">Active</th><th class="r">Leased</th><th class="r">Dispatching</th><th class="r">Pending</th><th class="r">Backoff</th><th class="r">Parked</th><th class="r">Oldest pending</th></tr></thead>
+        <tbody>
+          {lanes.map(({ name, lane, tip }) => (
+            <tr>
+              <td class="font-medium"><span data-tip={tip}>{name}</span></td>
+              <td class="r num">{int(lane.capacity)}</td>
+              <td class="r num">{int(lane.active)}</td>
+              <td class="r num">{int(lane.leased)}</td>
+              <td class="r num">{int(lane.dispatching ?? 0)}</td>
+              <td class="r num">{int(lane.pending)}</td>
+              <td class="r num">{int(lane.backoff ?? 0)}</td>
+              <td class="r num">{int(lane.parked)}</td>
+              <td class="r num text-fg-muted">{lane.oldest_pending_age_seconds ? duration(lane.oldest_pending_age_seconds) : '–'}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  </Card>
+
+  <div class="mt-3 grid gap-3 lg:grid-cols-3">
+    <Card title="Parked · review" tip="Why review items are parked.">
+      {live.parkedReasons.length ? <BarList rows={live.parkedReasons} /> : <Clear text="Nothing parked." />}
+    </Card>
+    <Card title="Parked · publication" tip="Why publication items are parked.">
+      {live.publicationParked.length ? <BarList rows={live.publicationParked} /> : <Clear text="Nothing parked." />}
+    </Card>
+    <Card title="Backoff" tip="Why review items wait before their next attempt.">
+      {live.backoffReasons.length ? <BarList rows={live.backoffReasons} /> : <Clear text="Nothing in backoff." />}
+    </Card>
+  </div>
+
+  <div class="mt-3 grid gap-3 lg:grid-cols-3">
+    <Card title="Failures by stage" tip={`Failed review attempts in the last ${live.failures.window_minutes}m, by the stage that failed.`}>
+      {failureStages.length ? <BarList rows={failureStages} /> : <Clear text="No failures in the window." />}
+    </Card>
+    <Card title="Handoff recoveries" tip="Times the queue reclaimed stuck work, by cause.">
+      {recoveries.length ? <BarList rows={recoveries} /> : <Clear text="No recoveries needed." />}
+    </Card>
+    <Card title="Shed since reset" tip="Scheduled feed items the queue declined to enqueue, by cause.">
+      {shed.length ? <BarList rows={shed} /> : <Clear text="Nothing shed." />}
+    </Card>
+  </div>
+
+  <Card title="Scheduled feed" flush class="mt-3" tip="Token buckets that pace scheduled reviews. A negative balance means the feed is ahead of its rate.">
+    <div class="overflow-x-auto">
+      <table class="table">
+        <thead><tr><th>Feed</th><th class="r">Target / hour</th><th class="r">Burst</th><th class="r">Token balance</th></tr></thead>
+        <tbody>
+          <tr class="font-medium"><td>All scheduled</td><td class="r num">{int(live.feed.target_rate_per_hour)}</td><td class="r num">{int(live.feed.burst)}</td><td class:list={['r num', live.feed.token_balance < 0 && 'text-warn']}>{int(live.feed.token_balance)}</td></tr>
+          {feedLanes.map(([name, lane]) => (
+            <tr><td class="pl-8 text-fg-muted">{label(name)}</td><td class="r num">{int(lane.target_rate_per_hour)}</td><td class="r num">{int(lane.burst)}</td><td class:list={['r num', lane.token_balance < 0 && 'text-warn']}>{int(lane.token_balance)}</td></tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  </Card>
+</Layout>

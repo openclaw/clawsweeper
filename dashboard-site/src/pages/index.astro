@@ -1,0 +1,112 @@
+---
+import Layout from '../components/Layout.astro';
+import Kpi from '../components/Kpi.astro';
+import Card from '../components/Card.astro';
+import TabCard from '../components/TabCard.astro';
+import TimeChart from '../components/TimeChart.astro';
+import BarList from '../components/BarList.astro';
+import ItemTable from '../components/ItemTable.astro';
+import Icon from '../components/Icon.astro';
+import { asOf, cover, kpis, live, lists, closeReasons, closedElsewhereTotal, runs, series, status, totals } from '../lib/data';
+import { duration, int, pct, stamp } from '../lib/format';
+
+const reviews30 = series.reviews(30);
+const closes30 = series.closes(30);
+const failure30 = runs.failureRate.slice(-30);
+const success7 = kpis.runSuccess7d;
+---
+<Layout title="Overview" section="overview">
+  <div class="flex flex-wrap items-end justify-between gap-3">
+    <div class="flex items-center gap-4">
+      <img src="/clawsweeper.png" alt="ClawSweeper" width="52" height="52" class="size-13 rounded-xl shadow-sm ring-1 ring-line" />
+      <div>
+        <h1 class="text-[22px] font-semibold tracking-tight">Overview</h1>
+        <p class="mt-1 text-[13px] text-fg-muted">Sweeping {int(cover.reviewable)} reviewable items across {totals.repositories} repositories.</p>
+      </div>
+    </div>
+    <a href="/queue/" class:list={['pill h-auto max-w-full whitespace-normal py-1', status.level === 'ok' ? 'bg-ok-soft text-ok' : 'bg-warn-soft text-warn']} data-tip={`Live queue snapshot\n${stamp(asOf.queue)}`}>
+      <Icon name={status.level === 'ok' ? 'flag' : 'mine'} size={13} class="shrink-0" />{status.text}
+    </a>
+  </div>
+
+  <div class="mt-6 grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6">
+    <Kpi label="Reviews · 7d" value={int(kpis.reviews7d.current)} delta={kpis.reviews7d.delta} spark={series.reviews(14).map(point => point.value)}
+      tip="Items whose latest stored review landed in the last 7 complete days. Re-reviews of the same item count once. Delta compares with the prior 7 days." />
+    <Kpi label="Closes · 7d" value={int(kpis.closes7d.current)} delta={kpis.closes7d.delta} spark={series.closes(14).map(point => point.value)}
+      sub={`+${int(kpis.closedElsewhere7d.current)} closed by others`}
+      tip="Items ClawSweeper closed in the last 7 complete days. Delta compares with the prior 7 days. PRs that were merged and items that a maintainer or another bot closed are counted apart." />
+    <Kpi label="Sweep success · 7d" value={pct(success7.current)} delta={success7.current !== null && success7.previous ? (success7.current - success7.previous) / success7.previous : null}
+      spark={runs.days.slice(-14).map(day => (day.total ? day.success / day.total : 0))} tip="Successful sweep runs ÷ all sweep runs, last 7 complete days. Cancelled runs count as not successful." />
+    <Kpi label="Coverage" value={`${cover.percent.toFixed(1)}%`} sub={`${int(cover.reviewed)} of ${int(cover.reviewable)}`}
+      tip={`Reviewable open items with a review in the last ${cover.windowDays} days.\nSnapshot ${stamp(asOf.coverage)}`} />
+    <Kpi label="Review queue" value={int(live.pending)} sub={live.oldestPendingSeconds ? `oldest ${duration(live.oldestPendingSeconds)}` : 'nothing waiting'}
+      tip={`Items waiting for a review slot. ${live.active} of ${live.capacity} slots busy.\nSnapshot ${stamp(asOf.queue)}`} />
+    <Kpi label="Review time · p50" value={duration(kpis.reviewTime.p50 / 1000)} sub={`p90 ${duration(kpis.reviewTime.p90 / 1000)}`}
+      tip="Codex time per review, from stored review records. Excludes queue wait." />
+  </div>
+
+  <div class="mt-3 grid gap-3 xl:grid-cols-3">
+    <TabCard title="Daily activity" name="activity" tabs={['Reviews', 'Closes', 'Closed by others']} class="xl:col-span-2" tip="Last 30 complete days. Reviews count each item on the day of its latest stored review. Closes are ClawSweeper's own; closed by others means merged, or closed by a maintainer or another bot, after ClawSweeper reviewed it.">
+      <div class="panel"><TimeChart points={reviews30} noun="reviews" /></div>
+      <div class="panel"><TimeChart points={closes30} kind="bar" noun="closes" color="var(--close)" /></div>
+      <div class="panel"><TimeChart points={series.closedElsewhere(30)} kind="bar" noun="merged or closed by others" color="var(--ok)" /></div>
+    </TabCard>
+    <Card title="Close reasons" tip="Items ClawSweeper closed, by reason, all time.">
+      <a slot="action" href="/quality" class="flex items-center text-[12px] text-fg-muted hover:text-fg">Quality<Icon name="chevronRight" size={14} /></a>
+      <BarList rows={closeReasons} limit={7} />
+      <p class="mt-3 border-t border-line pt-3 text-[12px] text-fg-muted" data-tip="ClawSweeper had reviewed these, then they were merged, or a maintainer or another bot closed them. They carry no close reason.">
+        Not counted: <span class="num font-medium text-fg">{int(closedElsewhereTotal)}</span> merged or closed by others
+      </p>
+    </Card>
+  </div>
+
+  <div class="mt-3 grid gap-3 xl:grid-cols-3">
+    <Card title="Sweep failure rate" tip="Failed + startup-failure sweep runs ÷ all sweep runs, per day.">
+      <a slot="action" href="/throughput" class="flex items-center text-[12px] text-fg-muted hover:text-fg">Throughput<Icon name="chevronRight" size={14} /></a>
+      <TimeChart points={failure30} kind="bar" unit="percent" noun="failed" color="var(--bad)" height={170} />
+    </Card>
+    <Card title="Review lane" tip={`Live review queue.\nSnapshot ${stamp(asOf.queue)}`}>
+      <a slot="action" href="/queue" class="flex items-center text-[12px] text-fg-muted hover:text-fg">Queue<Icon name="chevronRight" size={14} /></a>
+      <div class="grid grid-cols-3 gap-px overflow-hidden rounded-lg border border-line bg-line">
+        {[
+          ['Active', `${live.active}/${live.capacity}`, 'Review slots in use'],
+          ['Pending', int(live.pending), 'Waiting for a slot'],
+          ['Parked', int(live.review.parked), 'Held back until a person or a new revision clears them'],
+        ].map(([name, value, tip]) => (
+          <div class="bg-bg px-3 py-2.5" data-tip={tip}><div class="eyebrow">{name}</div><div class="num mt-0.5 text-lg font-semibold">{value}</div></div>
+        ))}
+      </div>
+      <div class="mt-4 eyebrow">Top parked reasons</div>
+      <div class="mt-1.5"><BarList rows={live.parkedReasons} limit={3} /></div>
+    </Card>
+    <Card title="Backlog" tip={`Open items, latest coverage snapshot.\n${stamp(asOf.coverage)}`}>
+      <a slot="action" href="/coverage" class="flex items-center text-[12px] text-fg-muted hover:text-fg">Coverage<Icon name="chevronRight" size={14} /></a>
+      <dl class="grid gap-3 text-[13px]">
+        {[
+          ['Reviewed recently', cover.reviewed, 'var(--ok)'],
+          ['Pending review', cover.pending, 'var(--accent)'],
+          ['Stale', cover.stale, 'var(--warn)'],
+          ['Never reviewed', cover.unreviewed, 'var(--bad)'],
+        ].map(([name, value, color]) => (
+          <div class="flex items-center justify-between">
+            <dt class="flex items-center gap-2 text-fg-muted"><span class="size-2 rounded-[3px]" style={`background:${color}`}></span>{name}</dt>
+            <dd class="num font-medium">{int(value as number)}</dd>
+          </div>
+        ))}
+      </dl>
+      <div class="mt-4 h-1.5 overflow-hidden rounded-full bg-bg-muted" data-tip={`${cover.percent.toFixed(1)}% covered`}>
+        <div class="h-full rounded-full bg-ok" style={`width:${cover.percent}%`}></div>
+      </div>
+    </Card>
+  </div>
+
+  <div class="mt-3 grid gap-3 xl:grid-cols-2">
+    <Card title="Needs a maintainer" flush tip="Latest reviews that flagged a maintainer decision. Historical flags; some may be settled already.">
+      <a slot="action" href="/quality#maintainer" class="flex items-center text-[12px] text-fg-muted hover:text-fg">All flags<Icon name="chevronRight" size={14} /></a>
+      <ItemTable items={lists.maintainer} meta="maintainer" limit={8} />
+    </Card>
+    <Card title="Recent closes" flush tip="Most recent closes ClawSweeper recorded.">
+      <ItemTable items={lists.closes} meta="reason" limit={8} />
+    </Card>
+  </div>
+</Layout>

@@ -1,0 +1,22 @@
+---
+import { areaPath, linePath, niceMax } from '../lib/chart';
+
+interface Props {
+  values: number[];
+  color?: string;
+  height?: number;
+}
+const { values, color = 'var(--accent)', height = 36 } = Astro.props;
+const { top } = niceMax(Math.max(...values, 0), 1);
+const id = `s${Math.random().toString(36).slice(2, 8)}`;
+---
+<svg class="block w-full" style={`height:${height}px`} viewBox="0 0 1000 100" preserveAspectRatio="none" aria-hidden="true">
+  <defs>
+    <linearGradient id={id} x1="0" x2="0" y1="0" y2="1">
+      <stop offset="0%" stop-color={color} stop-opacity="0.18" />
+      <stop offset="100%" stop-color={color} stop-opacity="0" />
+    </linearGradient>
+  </defs>
+  <path d={areaPath(values, top)} fill={`url(#${id})`} />
+  <path d={linePath(values, top)} fill="none" stroke={color} stroke-width="1.5" vector-effect="non-scaling-stroke" stroke-linejoin="round" />
+</svg>

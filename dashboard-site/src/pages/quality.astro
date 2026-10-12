@@ -1,0 +1,91 @@
+---
+import Layout from '../components/Layout.astro';
+import Kpi from '../components/Kpi.astro';
+import Card from '../components/Card.astro';
+import BarList from '../components/BarList.astro';
+import SegmentBar from '../components/SegmentBar.astro';
+import ItemTable from '../components/ItemTable.astro';
+import { distributions, entries, lists, recommendedCloseReasons, totals } from '../lib/data';
+import { int, pct } from '../lib/format';
+
+const d = distributions;
+const share = (value: number) => pct(value / Math.max(totals.typed, 1));
+const ordered = (record: Record<string, number>, keys: string[], names: Record<string, string> = {}) =>
+  keys.filter(key => record[key]).map(key => ({ key, value: record[key], name: names[key] ?? key }));
+
+const ratings = ordered(d.ratings, ['S', 'A', 'B', 'C', 'D', 'F', 'NA'], { NA: 'Not rated' });
+const findings = ordered(d.findings, ['P0', 'P1', 'P2', 'P3'], { P0: 'P0 · critical', P1: 'P1 · high', P2: 'P2 · medium', P3: 'P3 · low' });
+const findingTotal = findings.reduce((total, row) => total + row.value, 0);
+---
+<Layout title="Review quality" section="quality">
+  <h1 class="text-[22px] font-semibold tracking-tight">Review quality</h1>
+  <p class="mt-1 text-[13px] text-fg-muted">What the latest stored review says about each of {int(totals.typed)} typed records.</p>
+
+  <div class="mt-6 grid grid-cols-2 gap-3 md:grid-cols-4">
+    <Kpi label="Close recommended" value={pct((d.decisions.close ?? 0) / totals.typed)} sub={`${int(d.decisions.close ?? 0)} items`}
+      tip="Share of typed records whose latest review recommends closing. A recommendation, not an executed close." />
+    <Kpi label="High confidence" value={pct((d.confidence.high ?? 0) / totals.typed)} sub={`${int(d.confidence.low ?? 0)} low`}
+      tip="Share of typed records where the reviewer reported high confidence." />
+    <Kpi label="Security attention" value={int(d.security.needs_attention ?? 0)} sub={`${share(d.security.needs_attention ?? 0)} of records`}
+      tip="Latest reviews that marked a security concern as needing attention." />
+    <Kpi label="P0 findings" value={int(d.findings.P0 ?? 0)} sub={`${int(findingTotal)} findings total`}
+      tip="Critical findings across all latest reviews." />
+  </div>
+
+  <div class="mt-3 grid gap-3 lg:grid-cols-3">
+    <Card title="Decision" tip="Latest review decision per typed record.">
+      <SegmentBar segments={[
+        { label: 'Keep open', value: d.decisions.keep_open ?? 0, color: 'var(--accent)' },
+        { label: 'Close', value: d.decisions.close ?? 0, color: 'var(--close)' },
+      ]} />
+    </Card>
+    <Card title="Confidence" tip="Reviewer-reported confidence in its decision.">
+      <SegmentBar segments={[
+        { label: 'High', value: d.confidence.high ?? 0, color: 'var(--ok)' },
+        { label: 'Medium', value: d.confidence.medium ?? 0, color: 'var(--warn)' },
+        { label: 'Low', value: d.confidence.low ?? 0, color: 'var(--bad)' },
+      ]} />
+    </Card>
+    <Card title="Security" tip="Security assessment in the latest review.">
+      <SegmentBar segments={[
+        { label: 'Cleared', value: d.security.cleared ?? 0, color: 'var(--ok)' },
+        { label: 'Needs attention', value: d.security.needs_attention ?? 0, color: 'var(--bad)' },
+        { label: 'Not applicable', value: d.security.not_applicable ?? 0, color: 'var(--chart-2)' },
+      ]} />
+    </Card>
+  </div>
+
+  <div class="mt-3 grid gap-3 lg:grid-cols-3">
+    <Card title="PR rating" tip="Overall rating the reviewer gave a pull request. Issues are not rated.">
+      <BarList rows={ratings} />
+    </Card>
+    <Card title="Proof" tip="Whether a PR shows real proof that its change works.">
+      <BarList rows={entries(d.proof)} />
+    </Card>
+    <Card title="Findings by severity" tip="Findings across all latest reviews. One review can hold several.">
+      <BarList rows={findings} />
+    </Card>
+  </div>
+
+  <div class="mt-3 grid gap-3 lg:grid-cols-2">
+    <Card title="Recommended close reasons" tip="Why latest reviews recommend closing. Recommendations, not executed closes.">
+      <BarList rows={recommendedCloseReasons} limit={10} />
+    </Card>
+    <Card title="Maintainer decision kinds" tip="Kinds of maintainer decision that reviews flagged. Historical flags; some may be settled already.">
+      <BarList rows={entries(d.maintainerKinds)} />
+    </Card>
+  </div>
+
+  <div class="mt-3 grid gap-3 xl:grid-cols-2">
+    <div id="maintainer" class="scroll-mt-20">
+      <Card title="Needs a maintainer" flush tip="Latest reviews that flagged a maintainer decision, newest first.">
+        <ItemTable items={lists.maintainer} meta="maintainer" limit={20} />
+      </Card>
+    </div>
+    <div id="security" class="scroll-mt-20">
+      <Card title="Security attention" flush tip="Latest reviews that marked security as needing attention, newest first.">
+        <ItemTable items={lists.security} meta="security" limit={20} />
+      </Card>
+    </div>
+  </div>
+</Layout>

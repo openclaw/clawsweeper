@@ -1,0 +1,22 @@
+{
+  "name": "@clawsweeper/operator-dashboard",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "data": "node scripts/build-data.ts",
+    "dev": "astro dev --host 127.0.0.1",
+    "build": "astro build"
+  },
+  "dependencies": {
+    "@fontsource-variable/geist": "^5.3.0",
+    "@fontsource-variable/geist-mono": "^5.3.0",
+    "@tailwindcss/vite": "^4.3.3",
+    "astro": "^5.13.0",
+    "tailwindcss": "^4.3.3"
+  },
+  "packageManager": "pnpm@12.4.1",
+  "engines": {
+    "node": ">=24"
+  }
+}

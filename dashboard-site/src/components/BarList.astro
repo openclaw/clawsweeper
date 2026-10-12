@@ -1,0 +1,38 @@
+---
+import { int, label, pct } from '../lib/format';
+
+interface Props {
+  rows: { key: string; value: number; href?: string; name?: string }[];
+  limit?: number;
+  total?: number;
+}
+const { rows, limit = rows.length, total: givenTotal } = Astro.props;
+const total = givenTotal ?? rows.reduce((sum, row) => sum + row.value, 0);
+const max = Math.max(...rows.map(row => row.value), 1);
+const shown = rows.slice(0, limit);
+const rest = rows.slice(limit);
+const restValue = rest.reduce((sum, row) => sum + row.value, 0);
+---
+<ul class="flex flex-col gap-1">
+  {shown.map(row => {
+    const Tag = row.href ? 'a' : 'div';
+    return (
+      <li>
+        <Tag href={row.href} class:list={['relative flex h-8 items-center justify-between gap-3 overflow-hidden rounded-md px-2.5 text-[13px]', row.href && 'hover:bg-bg-subtle']}>
+          <span class="absolute inset-y-0 left-0 rounded-md bg-accent-soft" style={`width:${(row.value / max) * 100}%`}></span>
+          <span class="relative truncate">{row.name ?? label(row.key)}</span>
+          <span class="relative flex shrink-0 items-baseline gap-2">
+            <span class="num font-medium">{int(row.value)}</span>
+            <span class="num w-11 text-right text-[12px] text-fg-faint">{pct(row.value / total)}</span>
+          </span>
+        </Tag>
+      </li>
+    );
+  })}
+  {rest.length > 0 && (
+    <li class="flex h-8 items-center justify-between px-2.5 text-[13px] text-fg-muted">
+      <span>{rest.length} more</span>
+      <span class="flex items-baseline gap-2"><span class="num">{int(restValue)}</span><span class="num w-11 text-right text-[12px] text-fg-faint">{pct(restValue / total)}</span></span>
+    </li>
+  )}
+</ul>

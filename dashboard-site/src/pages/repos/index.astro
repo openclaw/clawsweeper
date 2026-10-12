@@ -1,0 +1,69 @@
+---
+import Layout from '../../components/Layout.astro';
+import Card from '../../components/Card.astro';
+import Icon from '../../components/Icon.astro';
+import { repos, totals } from '../../lib/data';
+import { int } from '../../lib/format';
+---
+<Layout title="Repositories" section="repos">
+  <div class="flex flex-wrap items-end justify-between gap-3">
+    <div>
+      <h1 class="text-[22px] font-semibold tracking-tight">Repositories</h1>
+      <p class="mt-1 text-[13px] text-fg-muted">{int(totals.repositories)} repositories, {int(totals.records)} stored records.</p>
+    </div>
+    <label class="flex h-8 w-full items-center gap-2 rounded-md border border-line bg-bg px-2.5 text-[13px] focus-within:border-line-strong sm:w-72">
+      <Icon name="search" size={14} class="text-fg-faint" />
+      <input id="repo-filter" type="search" placeholder="Filter repositories" autocomplete="off" class="w-full bg-transparent outline-none placeholder:text-fg-faint" />
+    </label>
+  </div>
+
+  <Card title="All repositories" flush class="mt-6" tip="Sorted by stored records. Stale means open and last reviewed over seven days ago.">
+    <span slot="action" id="repo-count" class="num text-[12px] text-fg-faint">{repos.length}</span>
+    <div class="overflow-x-auto">
+      <table class="table">
+        <thead><tr><th>Repository</th><th class="r">Records</th><th class="r">Open</th><th class="r">Stale open</th><th class="r">Reviews 7d</th><th class="r">Reviews 30d</th><th class="r">Close rate</th></tr></thead>
+        <tbody id="repo-rows">
+          {repos.map(repo => {
+            const decided = (repo.decisions.close ?? 0) + (repo.decisions.keep_open ?? 0);
+            return (
+              <tr data-name={repo.repo.toLowerCase()}>
+                <td><a href={`/repos/${repo.slug}`} class="font-medium hover:underline">{repo.repo}</a></td>
+                <td class="r num">{int(repo.records)}</td>
+                <td class="r num">{int(repo.open)}</td>
+                <td class:list={['r num', repo.staleOpen > 0 ? 'text-warn' : 'text-fg-faint']}>{int(repo.staleOpen)}</td>
+                <td class="r num text-fg-muted">{int(repo.reviewed7d)}</td>
+                <td class="r num text-fg-muted">{int(repo.reviewed30d)}</td>
+                <td class="r num text-fg-muted">{decided ? `${(((repo.decisions.close ?? 0) / decided) * 100).toFixed(0)}%` : '–'}</td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+      <p id="repo-empty" class="hidden px-4 py-8 text-center text-[13px] text-fg-muted">No repository matches.</p>
+    </div>
+  </Card>
+</Layout>
+
+<script>
+  const input = document.getElementById('repo-filter') as HTMLInputElement;
+  const rows = [...document.querySelectorAll<HTMLTableRowElement>('#repo-rows tr')];
+  const count = document.getElementById('repo-count')!;
+  const empty = document.getElementById('repo-empty')!;
+  const apply = () => {
+    const query = input.value.trim().toLowerCase();
+    let shown = 0;
+    for (const row of rows) {
+      const match = !query || row.dataset.name!.includes(query);
+      row.hidden = !match;
+      if (match) shown++;
+    }
+    count.textContent = String(shown);
+    empty.classList.toggle('hidden', shown > 0);
+  };
+  input.addEventListener('input', apply);
+  const initial = new URLSearchParams(location.search).get('q');
+  if (initial) {
+    input.value = initial;
+    apply();
+  }
+</script>

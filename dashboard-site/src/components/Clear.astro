@@ -1,0 +1,14 @@
+---
+import Icon from './Icon.astro';
+
+// Empty state: a cleared minesweeper tile with a flag.
+interface Props {
+  text: string;
+  class?: string;
+}
+const { text, class: className } = Astro.props;
+---
+<div class:list={['flex items-center gap-2.5 text-[13px] text-fg-muted', className]}>
+  <span class="grid size-7 place-items-center rounded-md border border-line bg-bg-subtle text-ok"><Icon name="flag" size={13} /></span>
+  {text}
+</div>

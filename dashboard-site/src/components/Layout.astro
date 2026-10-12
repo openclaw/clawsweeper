@@ -1,0 +1,189 @@
+---
+import '../styles/global.css';
+import Icon, { type IconName } from './Icon.astro';
+import { asOf, repos, status } from '../lib/data';
+import { ago, stamp } from '../lib/format';
+
+interface Props {
+  title: string;
+  section: 'overview' | 'throughput' | 'quality' | 'queue' | 'coverage' | 'repos';
+  crumb?: string;
+}
+const { title, section, crumb } = Astro.props;
+
+const nav: { id: Props['section']; label: string; href: string; icon: IconName }[] = [
+  { id: 'overview', label: 'Overview', href: '/', icon: 'overview' },
+  { id: 'throughput', label: 'Throughput', href: '/throughput/', icon: 'throughput' },
+  { id: 'quality', label: 'Quality', href: '/quality/', icon: 'quality' },
+  { id: 'queue', label: 'Queue', href: '/queue/', icon: 'queue' },
+  { id: 'coverage', label: 'Coverage', href: '/coverage/', icon: 'coverage' },
+  { id: 'repos', label: 'Repositories', href: '/repos/', icon: 'repos' },
+];
+const current = nav.find(item => item.id === section)!;
+const jump = repos.map(repo => ({ r: repo.repo, s: repo.slug, n: repo.records }));
+---
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="robots" content="noindex, nofollow" />
+    <link rel="icon" type="image/png" href="/favicon.png" />
+    <meta name="theme-color" content="#0b101c" />
+    <title>{title} · ClawSweeper</title>
+    <script is:inline>
+      try {
+        const saved = localStorage.getItem('cs-theme');
+        const dark = saved ? saved === 'dark' : matchMedia('(prefers-color-scheme: dark)').matches;
+        document.documentElement.classList.toggle('dark', dark);
+      } catch {}
+    </script>
+  </head>
+  <body class="bg-bg-subtle text-fg">
+    <div class="flex min-h-screen">
+      <aside class="fixed inset-y-0 left-0 z-30 hidden w-[232px] flex-col border-r border-line bg-bg-subtle md:flex">
+        <a href="/" class="flex h-14 items-center gap-2.5 px-4">
+          <img src="/clawsweeper.png" alt="" width="28" height="28" class="size-7 rounded-md ring-1 ring-line" />
+          <span class="flex flex-col leading-tight">
+            <span class="text-[14px] font-semibold tracking-tight">ClawSweeper</span>
+            <span class="text-[11px] text-fg-faint">Operator console</span>
+          </span>
+        </a>
+        <button data-cmd class="mx-3 mb-3 flex h-8 items-center gap-2 rounded-md border border-line bg-bg px-2.5 text-[13px] text-fg-muted transition-colors hover:border-line-strong">
+          <Icon name="search" size={14} />
+          <span>Jump to repo…</span>
+          <kbd class="ml-auto rounded border border-line px-1 font-mono text-[11px] text-fg-faint">⌘K</kbd>
+        </button>
+        <nav class="flex flex-col gap-px px-3">
+          {nav.map(item => (
+            <a
+              href={item.href}
+              class:list={[
+                'flex h-8 items-center gap-2.5 rounded-md px-2.5 text-[13px] font-medium transition-colors',
+                item.id === section ? 'bg-bg-muted text-fg' : 'text-fg-muted hover:bg-bg-muted/60 hover:text-fg',
+              ]}
+            >
+              <Icon name={item.icon} size={15} class={item.id === section ? 'text-claw' : undefined} />
+              {item.label}
+            </a>
+          ))}
+          <a href="/bay" class="flex h-8 items-center gap-2.5 rounded-md px-2.5 text-[13px] font-medium text-fg-muted transition-colors hover:bg-bg-muted/60 hover:text-fg">
+            <Icon name="external" size={15} />
+            OpenClaw Bay
+          </a>
+        </nav>
+        <div class="mt-auto border-t border-line p-4 text-[12px] text-fg-muted">
+          <a href="/queue/" class="flex items-center gap-2">
+            <Icon name={status.level === 'ok' ? 'flag' : 'mine'} size={14} class={status.level === 'ok' ? 'text-ok' : 'text-warn'} />
+            <span class="font-medium text-fg">{status.level === 'ok' ? 'All clear' : 'Mines on the board'}</span>
+          </a>
+          <div class="mt-1 text-fg-faint" data-tip={`Snapshot built ${stamp(asOf.build)}`}>Sweeping {repos.length} repositories</div>
+        </div>
+      </aside>
+
+      <div class="flex min-w-0 flex-1 flex-col md:pl-[232px]">
+        <header class="sticky top-0 z-20 flex h-14 items-center gap-3 border-b border-line bg-bg-subtle/80 px-4 backdrop-blur md:px-8">
+          <div class="flex min-w-0 items-center gap-1.5 text-[13px]">
+            <img src="/clawsweeper.png" alt="" width="20" height="20" class="size-5 rounded md:hidden" />
+            <span class="text-fg-muted md:hidden">ClawSweeper</span>
+            <Icon name="chevronRight" size={14} class="text-fg-faint md:hidden" />
+            <a href={current.href} class:list={[crumb ? 'text-fg-muted hover:text-fg' : 'font-medium']}>{current.label}</a>
+            {crumb && (
+              <>
+                <Icon name="chevronRight" size={14} class="text-fg-faint" />
+                <span class="truncate font-medium">{crumb}</span>
+              </>
+            )}
+          </div>
+          <div class="ml-auto flex items-center gap-2">
+            <span class="hidden text-[12px] text-fg-muted sm:inline" data-tip={`Review corpus ${stamp(asOf.corpus)}\nQueue ${stamp(asOf.queue)}\nWorkflow runs through ${stamp(asOf.actions)}`}>
+              Data as of {stamp(asOf.corpus)}
+            </span>
+            <button data-theme class="grid size-8 place-items-center rounded-md text-fg-muted transition-colors hover:bg-bg-muted hover:text-fg" aria-label="Toggle theme">
+              <Icon name="moon" size={15} class="dark:hidden" />
+              <Icon name="sun" size={15} class="hidden dark:block" />
+            </button>
+          </div>
+        </header>
+
+        <nav class="flex gap-1 overflow-x-auto border-b border-line bg-bg-subtle px-4 py-2 md:hidden">
+          {nav.map(item => (
+            <a href={item.href} class:list={['shrink-0 rounded-md px-2.5 py-1 text-[13px] font-medium', item.id === section ? 'bg-bg-muted text-fg' : 'text-fg-muted']}>{item.label}</a>
+          ))}
+        </nav>
+
+        <main class="relative mx-auto w-full max-w-[1280px] px-4 pb-16 pt-6 md:px-8 md:pt-8">
+          <div class="tiles" aria-hidden="true"></div>
+          <div class="relative"><slot /></div>
+        </main>
+      </div>
+    </div>
+
+    <div id="tip" role="tooltip"></div>
+
+    <dialog id="cmd" class="m-auto mt-[12vh] w-[min(560px,92vw)] rounded-xl border border-line bg-bg p-0 text-fg shadow-2xl backdrop:bg-black/30 backdrop:backdrop-blur-[2px]">
+      <div class="flex items-center gap-2 border-b border-line px-3">
+        <Icon name="search" size={15} class="text-fg-muted" />
+        <input id="cmd-q" class="h-11 flex-1 bg-transparent text-[14px] outline-none placeholder:text-fg-faint" placeholder="Search 145 repositories…" autocomplete="off" />
+        <kbd class="rounded border border-line px-1 font-mono text-[11px] text-fg-faint">esc</kbd>
+      </div>
+      <ul id="cmd-list" class="max-h-[340px] overflow-y-auto p-1.5"></ul>
+    </dialog>
+
+    <script is:inline define:vars={{ jump }}>
+      const root = document.documentElement;
+      document.querySelector('[data-theme]').addEventListener('click', () => {
+        const dark = !root.classList.contains('dark');
+        root.classList.toggle('dark', dark);
+        try { localStorage.setItem('cs-theme', dark ? 'dark' : 'light'); } catch {}
+      });
+
+      const tip = document.getElementById('tip');
+      let owner = null;
+      const place = event => {
+        const pad = 12;
+        const { innerWidth: w } = window;
+        const rect = tip.getBoundingClientRect();
+        let x = event.clientX + pad;
+        if (x + rect.width > w - 8) x = event.clientX - rect.width - pad;
+        tip.style.left = `${Math.max(8, x)}px`;
+        tip.style.top = `${Math.max(8, event.clientY - rect.height - pad)}px`;
+      };
+      document.addEventListener('pointerover', event => {
+        const target = event.target.closest('[data-tip]');
+        if (target === owner) return;
+        owner = target;
+        if (!target) return tip.classList.remove('on');
+        tip.textContent = target.dataset.tip;
+        tip.classList.add('on');
+        place(event);
+      });
+      document.addEventListener('pointermove', event => owner && place(event));
+
+      const dialog = document.getElementById('cmd');
+      const input = document.getElementById('cmd-q');
+      const list = document.getElementById('cmd-list');
+      let active = 0;
+      const render = () => {
+        const q = input.value.trim().toLowerCase();
+        const rows = jump.filter(item => item.r.toLowerCase().includes(q)).slice(0, 40);
+        active = Math.min(active, Math.max(0, rows.length - 1));
+        list.innerHTML = rows.length
+          ? rows.map((item, i) => `<li><a href="/repos/${item.s}/" data-i="${i}" class="flex items-center justify-between rounded-md px-2.5 py-2 text-[13px] ${i === active ? 'bg-bg-muted' : ''}"><span>${item.r}</span><span class="num text-fg-faint">${item.n.toLocaleString('en-US')}</span></a></li>`).join('')
+          : '<li class="px-2.5 py-6 text-center text-[13px] text-fg-muted">No repositories match.</li>';
+      };
+      const open = () => { input.value = ''; active = 0; render(); dialog.showModal(); input.focus(); };
+      document.querySelector('[data-cmd]').addEventListener('click', open);
+      document.addEventListener('keydown', event => {
+        if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') { event.preventDefault(); dialog.open ? dialog.close() : open(); }
+        if (!dialog.open) return;
+        const links = list.querySelectorAll('a');
+        if (event.key === 'ArrowDown') { event.preventDefault(); active = Math.min(active + 1, links.length - 1); render(); }
+        if (event.key === 'ArrowUp') { event.preventDefault(); active = Math.max(active - 1, 0); render(); }
+        if (event.key === 'Enter' && links[active]) location.href = links[active].href;
+      });
+      input.addEventListener('input', () => { active = 0; render(); });
+      dialog.addEventListener('click', event => event.target === dialog && dialog.close());
+    </script>
+  </body>
+</html>

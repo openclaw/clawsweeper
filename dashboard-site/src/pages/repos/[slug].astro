@@ -1,0 +1,59 @@
+---
+import Layout from '../../components/Layout.astro';
+import Kpi from '../../components/Kpi.astro';
+import Card from '../../components/Card.astro';
+import SegmentBar from '../../components/SegmentBar.astro';
+import ItemTable from '../../components/ItemTable.astro';
+import Clear from '../../components/Clear.astro';
+import Icon from '../../components/Icon.astro';
+import { lists, repos, type Repo } from '../../lib/data';
+import { int, pct } from '../../lib/format';
+
+export function getStaticPaths() {
+  return repos.map(repo => ({ params: { slug: repo.slug }, props: { repo } }));
+}
+
+const { repo } = Astro.props as { repo: Repo };
+const mine = <T extends { repo: string }>(items: T[]) => items.filter(item => item.repo === repo.repo);
+const sections = [
+  { title: 'Stalest open items', tip: 'Open items with the oldest latest review.', items: mine(lists.stale), meta: 'age' as const, empty: 'No stale open items.' },
+  { title: 'Needs a maintainer', tip: 'Latest reviews that flagged a maintainer decision. Historical flags.', items: mine(lists.maintainer), meta: 'maintainer' as const, empty: 'No maintainer flags.' },
+  { title: 'Security attention', tip: 'Latest reviews that marked security as needing attention.', items: mine(lists.security), meta: 'security' as const, empty: 'No security flags.' },
+  { title: 'Recent closes', tip: 'Most recent closes ClawSweeper recorded.', items: mine(lists.closes), meta: 'reason' as const, empty: 'No recent closes.' },
+];
+const fresh = repo.open ? (repo.open - repo.staleOpen) / repo.open : null;
+---
+<Layout title={repo.repo} section="repos" crumb={repo.repo}>
+  <div class="flex flex-wrap items-end justify-between gap-3">
+    <div>
+      <h1 class="text-[22px] font-semibold tracking-tight">{repo.repo}</h1>
+      <p class="mt-1 text-[13px] text-fg-muted">{int(repo.records)} stored records, {int(repo.open)} open.</p>
+    </div>
+    <a href={`https://github.com/${repo.repo}`} class="pill border border-line text-fg-muted hover:text-fg" rel="noreferrer"><Icon name="github" size={13} />GitHub<Icon name="external" size={12} /></a>
+  </div>
+
+  <div class="mt-6 grid grid-cols-2 gap-3 md:grid-cols-5">
+    <Kpi label="Open" value={int(repo.open)} sub={`${int(repo.archived)} archived`} tip="Items open on GitHub at the corpus snapshot." />
+    <Kpi label="Stale open" value={int(repo.staleOpen)} sub={fresh === null ? 'no open items' : `${pct(fresh, 0)} fresh`} tip="Open items last reviewed over seven days ago." />
+    <Kpi label="Reviews · 7d" value={int(repo.reviewed7d)} tip="Items whose latest stored review landed in the last 7 days." />
+    <Kpi label="Reviews · 30d" value={int(repo.reviewed30d)} tip="Items whose latest stored review landed in the last 30 days." />
+    <Kpi label="Untyped" value={int(repo.missingTyped)} sub={`${int(repo.typed)} typed`} tip="Records without a version-1 typed review. They get a fresh review when next due." />
+  </div>
+
+  <Card title="Latest decision" class="mt-3" tip="Latest review decision per typed record in this repository.">
+    <SegmentBar segments={[
+      { label: 'Keep open', value: repo.decisions.keep_open ?? 0, color: 'var(--accent)' },
+      { label: 'Close', value: repo.decisions.close ?? 0, color: 'var(--close)' },
+    ]} />
+  </Card>
+
+  <div class="mt-3 grid gap-3 xl:grid-cols-2">
+    {sections.map(section => (
+      <Card title={section.title} flush tip={`${section.tip}\nFiltered from the 500-item list across all repositories.`}>
+        {section.items.length
+          ? <ItemTable items={section.items} meta={section.meta} limit={10} showRepo={false} />
+          : <Clear text={section.empty} class="px-4 pb-5 pt-1" />}
+      </Card>
+    ))}
+  </div>
+</Layout>

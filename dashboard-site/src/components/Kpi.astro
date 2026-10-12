@@ -1,0 +1,35 @@
+---
+import Icon from './Icon.astro';
+import Sparkline from './Sparkline.astro';
+import { delta as formatDelta } from '../lib/format';
+
+interface Props {
+  label: string;
+  value: string;
+  tip?: string;
+  delta?: number | null;
+  invert?: boolean;
+  sub?: string;
+  spark?: number[];
+}
+const { label, value, tip, delta, invert = false, sub, spark } = Astro.props;
+const change = delta === undefined ? null : formatDelta(delta);
+const good = change && change.sign !== 0 ? (change.sign > 0) !== invert : null;
+---
+<div class="card flex flex-col p-4">
+  <div class="flex items-center gap-1.5 text-[13px] text-fg-muted">
+    {label}
+    {tip && <span data-tip={tip} class="text-fg-faint hover:text-fg-muted"><Icon name="info" size={13} /></span>}
+  </div>
+  <div class="mt-2 flex items-baseline gap-2">
+    <span class="num text-[26px] font-semibold leading-none tracking-tight">{value}</span>
+    {change && (
+      <span class:list={['num inline-flex items-center gap-0.5 rounded px-1 text-[12px] font-medium', good === null ? 'bg-bg-muted text-fg-muted' : good ? 'bg-ok-soft text-ok' : 'bg-bad-soft text-bad']}>
+        {change.sign !== 0 && <Icon name={change.sign > 0 ? 'arrowUp' : 'arrowDown'} size={11} />}
+        {change.text.replace(/^[+-]/, '')}
+      </span>
+    )}
+  </div>
+  {sub && <div class="num mt-1.5 text-[12px] text-fg-muted">{sub}</div>}
+  {spark && <div class="-mx-1 mt-auto pt-3"><Sparkline values={spark} /></div>}
+</div>

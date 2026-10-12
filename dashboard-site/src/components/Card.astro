@@ -1,0 +1,23 @@
+---
+import Icon from './Icon.astro';
+
+interface Props {
+  title: string;
+  tip?: string;
+  flush?: boolean;
+  class?: string;
+}
+const { title, tip, flush = false, class: className } = Astro.props;
+---
+<section class:list={['card flex min-w-0 flex-col', className]}>
+  <div class="card-head">
+    <h2 class="card-title flex items-center gap-1.5">
+      {title}
+      {tip && <span data-tip={tip} class="text-fg-faint hover:text-fg-muted"><Icon name="info" size={13} /></span>}
+    </h2>
+    <div class="flex items-center gap-2"><slot name="action" /></div>
+  </div>
+  <div class:list={[flush ? 'mt-3' : 'p-4 pt-3', 'min-w-0 flex-1']}>
+    <slot />
+  </div>
+</section>
