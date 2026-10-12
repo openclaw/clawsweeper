@@ -8,6 +8,10 @@ import {
 } from "./manual-publication-policy.js";
 import { ExactReviewBatchQueueTransportError } from "./repair/exact-review-queue-transport-error.js";
 import { isJsonObject } from "./repair/json-types.js";
+import {
+  hasQueueReviewLeaseIdentity,
+  queueReviewLeaseIdentityFromReport,
+} from "./review-lease-identity.js";
 
 export class ManualPublicationAuthorityTransportError extends ExactReviewBatchQueueTransportError {
   constructor(reason: ExactReviewBatchQueueTransportError["reason"]) {
@@ -41,12 +45,34 @@ export function manualPublicationOwnerFromEnv(env = process.env) {
 }
 
 // Read the current coordinator fence; this never heartbeats or revives a lease.
-// Reused immediately before each restricted apply mutation, including retries.
+// Reused immediately before each apply mutation, including retries.
+export function assertQueueReviewPublicationAuthority(
+  markdown: string,
+  targetRepo: string,
+  number: number,
+): void {
+  if (!hasQueueReviewLeaseIdentity(markdown)) return;
+  assertPublicationAuthority(markdown, targetRepo, number, false);
+}
+
 export function assertManualPublicationAuthority(
   markdown: string,
   targetRepo: string,
   number: number,
 ): void {
+  assertPublicationAuthority(markdown, targetRepo, number, true);
+}
+
+function assertPublicationAuthority(
+  markdown: string,
+  targetRepo: string,
+  number: number,
+  manual: boolean,
+): void {
+  const queueIdentity = queueReviewLeaseIdentityFromReport(markdown);
+  if (hasQueueReviewLeaseIdentity(markdown) && !queueIdentity) {
+    throw new Error("queue publication requires a valid review lease identity");
+  }
   const env = process.env;
   const baseUrl = env.EXACT_REVIEW_QUEUE_URL || "";
   const secret = env.CLAWSWEEPER_WEBHOOK_SECRET || "";
@@ -128,9 +154,26 @@ export function assertManualPublicationAuthority(
     !isJsonObject(response.decision) ||
     response.decision.targetRepo !== targetRepo ||
     response.decision.itemNumber !== number ||
-    decisionPublicationPolicy(response.decision) !== RECORD_COMMENT_ONLY
+    (manual && decisionPublicationPolicy(response.decision) !== RECORD_COMMENT_ONLY)
   ) {
     throw new Error("manual publication decision differs from queue authority");
   }
-  assertReportPublicationPolicy(markdown, RECORD_COMMENT_ONLY);
+  if (queueIdentity) {
+    const authority = response.queueIdentity;
+    if (
+      !isJsonObject(authority) ||
+      authority.kind !== "queue" ||
+      authority.itemKey !== queueIdentity.itemKey ||
+      authority.leaseRevision !== queueIdentity.leaseRevision ||
+      authority.claimGeneration !== queueIdentity.claimGeneration ||
+      authority.runId !== queueIdentity.runId ||
+      authority.runAttempt !== queueIdentity.runAttempt
+    ) {
+      throw new Error("queue publication review identity differs from queue authority");
+    }
+  }
+  assertReportPublicationPolicy(
+    markdown,
+    manual ? RECORD_COMMENT_ONLY : decisionPublicationPolicy(response.decision),
+  );
 }

@@ -7,6 +7,11 @@ import { generationReadKey, type LiveReadGeneration } from "./live-read-generati
 import { asRecord } from "./value-coerce.js";
 import { frontMatterValue } from "./report-front-matter.js";
 import { reviewLeaseRevisionFromReport } from "./clawsweeper-record-metadata.js";
+import { hasQueueReviewLeaseIdentity } from "./review-lease-identity.js";
+import {
+  assertQueueReviewPublicationAuthority,
+  ManualPublicationAuthorityTransportError,
+} from "./manual-publication-authority.js";
 
 type ActiveApplyMutationLease = { itemNumber: number; lease: AcquiredReviewStartLease } | null;
 
@@ -62,6 +67,38 @@ export function createApplyLeaseGuards({
   shouldPreserveReviewStartLease,
   targetRepo,
 }: ApplyLeaseGuardDependencies) {
+  const usesQueueLease = hasQueueReviewLeaseIdentity(markdownBeforeApplyDecisionMutations);
+  const queuePublicationBlockReason = (reviewActivityChecked = false): string | null => {
+    try {
+      const activityBlock = reviewActivityChecked ? null : currentReviewActivityBlock();
+      if (activityBlock) return activityBlock;
+      const refreshed = refreshReviewStartLeaseState();
+      if (refreshed.blockReason) return refreshed.blockReason;
+      if (refreshed.preserve) return "active legacy review lease blocks queue publication";
+      const staleReason = canonicalBoundStaleReviewReason(
+        markdownBeforeApplyDecisionMutations,
+        refreshed.comment,
+      );
+      if (staleReason) return staleReason;
+      assertQueueReviewPublicationAuthority(
+        markdownBeforeApplyDecisionMutations,
+        targetRepo(),
+        number,
+      );
+      return null;
+    } catch (error) {
+      if (
+        error instanceof GitHubRuntimeBudgetError ||
+        error instanceof GitHubRateLimitError ||
+        error instanceof ManualPublicationAuthorityTransportError
+      )
+        throw error;
+      return `queue publication authority check failed; next apply will retry: ${trimMiddle(
+        (error instanceof Error ? error.message : String(error)).replace(/\s+/g, " "),
+        180,
+      )}`;
+    }
+  };
   const reviewStartLeaseStateForComments = (
     leaseComments: Record<string, unknown>[],
     reviewComment: Record<string, unknown> | undefined,
@@ -247,6 +284,8 @@ export function createApplyLeaseGuards({
     leaseState: ReturnType<typeof refreshReviewStartLeaseState>,
   ): string | null => {
     if (dryRun || !requiresApplyMutationLease) return null;
+    // Queue reports use the publisher's live fence, never an unrelated public comment lock.
+    if (usesQueueLease) return queuePublicationBlockReason();
     let lease: AcquiredReviewStartLease | null = null;
     if (leaseState.lease && !leaseState.preserve) {
       if (!leaseState.lease.owner || leaseState.lease.commentId === null) {
@@ -281,6 +320,7 @@ export function createApplyLeaseGuards({
     const reviewActivityBlock = currentReviewActivityBlock();
     if (reviewActivityBlock) return reviewActivityBlock;
     if (dryRun || !requiresApplyMutationLease) return null;
+    if (usesQueueLease) return queuePublicationBlockReason(true);
     const active = getActiveApplyMutationLease();
     if (!active || active.itemNumber !== number) return "apply mutation lease is not held";
     // The live two-read activity barrier above already ran for this boundary;

@@ -4,6 +4,7 @@ import type { ApplyResult, Item, ItemContext } from "./clawsweeper-types.js";
 import { asRecord, login, nonBlankStringOrUndefined } from "./value-coerce.js";
 import { parseIsoMs } from "./iso-time.js";
 import { frontMatterValue, replaceFrontMatterValue } from "./report-front-matter.js";
+import { hasQueueReviewLeaseIdentity } from "./review-lease-identity.js";
 
 /**
  * A released review lease leaves no live timestamp. Its deletion must follow the review
@@ -173,13 +174,15 @@ export function createApplySourceFreshness(
     storedHash,
   } = options;
   const existingReviewCommentUpdatedAt = commentUpdatedAt(existingReviewComment);
-  const reportOwnedLeaseComments = requiresApplyMutationLease
-    ? leaseComments.filter(
-        (comment) =>
-          commentId(comment) === reportReviewLeaseCommentId &&
-          reviewStartLeaseOwner(comment) === reportReviewLeaseOwner,
-      )
-    : [];
+  const reportUsesQueueLease = hasQueueReviewLeaseIdentity(markdownBeforeApplyDecisionMutations);
+  const reportOwnedLeaseComments =
+    requiresApplyMutationLease && !reportUsesQueueLease
+      ? leaseComments.filter(
+          (comment) =>
+            commentId(comment) === reportReviewLeaseCommentId &&
+            reviewStartLeaseOwner(comment) === reportReviewLeaseOwner,
+        )
+      : [];
   const latestAutomationUpdatedAt = [existingReviewComment, ...reportOwnedLeaseComments]
     .map(commentUpdatedAt)
     .filter((value): value is string => parseIsoMs(value) !== null)
@@ -323,7 +326,12 @@ export function createApplySourceFreshness(
   // The durable review comment names that generation and lease, so accept the deletion only when
   // it follows the generation's last recorded write within the apply-lease hold window.
   const releasedReviewLeaseAccountsForUpdate = (): boolean => {
-    if (!requiresApplyMutationLease || itemUpdatedAtMs === null || storedUpdatedAtMs === null) {
+    if (
+      reportUsesQueueLease ||
+      !requiresApplyMutationLease ||
+      itemUpdatedAtMs === null ||
+      storedUpdatedAtMs === null
+    ) {
       return false;
     }
     if (comments.some((comment) => commentId(comment) === reportReviewLeaseCommentId)) return false;

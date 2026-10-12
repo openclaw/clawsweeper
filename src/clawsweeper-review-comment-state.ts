@@ -50,6 +50,12 @@ import {
   pullHeadShaFromReport,
   reviewLeaseRevisionFromReport,
 } from "./clawsweeper-record-metadata.js";
+import {
+  hasQueueReviewLeaseIdentity,
+  queueReviewLeaseIdentityFromMarker,
+  queueReviewLeaseIdentityFromReport,
+  type ReviewLeaseIdentity,
+} from "./review-lease-identity.js";
 
 export function expireReviewStartStatusLease(
   body: string,
@@ -235,28 +241,66 @@ function newestReviewComment(
 function newestCausalReviewComment(
   number: number,
   comments: readonly Record<string, unknown>[],
-): Record<string, unknown> | undefined {
+): Record<string, unknown> | null | undefined {
   const causalReviews = comments
     .map((comment) => ({
       comment,
-      identity: durableReviewCausalIdentity(comment, number),
+      identity: durableReviewLeaseVersion(comment, number),
     }))
     .filter(
       (
         candidate,
       ): candidate is {
         comment: Record<string, unknown>;
-        identity: NonNullable<ReturnType<typeof durableReviewCausalIdentity>>;
+        identity: DurableReviewLeaseVersion;
       } => candidate.identity !== null,
     );
-  const latestLeaseCommentId = causalReviews.reduce(
-    (latest, candidate) => Math.max(latest, candidate.identity.leaseCommentId),
-    -1,
+  const hasQueueMarker = comments.some((comment) =>
+    /<!--\s+clawsweeper-review-version\b[^>]*(?:\bv=2\b|\blease_kind=|\bqueue_[a-z_]+=)/.test(
+      commentBody(comment) ?? "",
+    ),
   );
+  if (hasQueueMarker) {
+    if (causalReviews.length !== comments.length) return null;
+    const generations = new Map<string, string>();
+    let latest: (typeof causalReviews)[number] | undefined;
+    const latestComments: Record<string, unknown>[] = [];
+    for (const candidate of causalReviews) {
+      const identity = candidate.identity.leaseIdentity;
+      if (identity.kind !== "queue") return null;
+      const latestIdentity = latest?.identity.leaseIdentity;
+      if (latestIdentity?.kind === "queue" && latestIdentity.itemKey !== identity.itemKey) {
+        return null;
+      }
+      const generation = `${identity.leaseRevision}:${identity.claimGeneration}`;
+      const run = `${identity.runId}:${identity.runAttempt}`;
+      const existingRun = generations.get(generation);
+      if (existingRun !== undefined && existingRun !== run) return null;
+      generations.set(generation, run);
+      const comparison =
+        latestIdentity?.kind === "queue"
+          ? Math.sign(identity.leaseRevision - latestIdentity.leaseRevision) ||
+            Math.sign(identity.claimGeneration - latestIdentity.claimGeneration)
+          : 1;
+      if (comparison > 0) {
+        latest = candidate;
+        latestComments.length = 0;
+      }
+      if (comparison >= 0) latestComments.push(candidate.comment);
+    }
+    return newestReviewComment(number, latestComments);
+  }
+  const latestLeaseCommentId = causalReviews.reduce((latest, candidate) => {
+    const identity = candidate.identity.leaseIdentity;
+    return identity.kind === "comment" ? Math.max(latest, identity.commentId) : latest;
+  }, -1);
   return newestReviewComment(
     number,
     causalReviews
-      .filter((candidate) => candidate.identity.leaseCommentId === latestLeaseCommentId)
+      .filter((candidate) => {
+        const identity = candidate.identity.leaseIdentity;
+        return identity.kind === "comment" && identity.commentId === latestLeaseCommentId;
+      })
       .map((candidate) => candidate.comment),
   );
 }
@@ -264,18 +308,22 @@ function newestCausalReviewComment(
 function canonicalMarkedReviewComment(
   number: number,
   comments: readonly Record<string, unknown>[],
-): Record<string, unknown> | undefined {
+): Record<string, unknown> | null | undefined {
   const fallback = comments
     .filter((comment) => identitylessPublicationFallback(number, comment))
     .sort((left, right) => (commentId(right) ?? -1) - (commentId(left) ?? -1))[0];
   if (!fallback) {
-    return newestCausalReviewComment(number, comments) ?? newestReviewComment(number, comments);
+    const causal = newestCausalReviewComment(number, comments);
+    return causal === null ? null : (causal ?? newestReviewComment(number, comments));
   }
   const fallbackCommentId = commentId(fallback);
   if (fallbackCommentId === null) return fallback;
   const supersedingReviews = comments.filter((comment) => {
     const identity = durableReviewCausalIdentity(comment, number);
-    return identity !== null && identity.leaseCommentId > fallbackCommentId;
+    return (
+      identity?.leaseIdentity.kind === "comment" &&
+      identity.leaseIdentity.commentId > fallbackCommentId
+    );
   });
   // Every review lease POST gets a fresh monotonic GitHub comment id. Only
   // a complete review causally started after this POST may clear the veto.
@@ -294,6 +342,11 @@ function selectIssueReviewComment(
     number,
     markedComments.filter(canPatchReviewComment),
   );
+  if (patchableMarked === null) {
+    throw new Error(
+      `durable review comments for item ${number} have ambiguous queue lease identities`,
+    );
+  }
   if (patchableMarked) return patchableMarked;
   const marked = newestReviewComment(number, markedComments);
   if (marked) return marked;
@@ -488,27 +541,57 @@ function durableReviewVersionFromBody(
   sourceRevision: string | null;
   leaseOwner: string | null;
   leaseCommentId: string | null;
+  leaseIdentity: ReviewLeaseIdentity | null;
 } | null {
   const identity = reviewCommentMarker(number);
   const identityIndex = body.lastIndexOf(identity);
   if (identityIndex < 0 || body.slice(identityIndex + identity.length).trim()) return null;
-  for (const markerComment of trailingHtmlComments(body.slice(0, identityIndex)).reverse()) {
+  const versionMarkers = trailingHtmlComments(body.slice(0, identityIndex)).filter((marker) =>
+    /^<!--\s+clawsweeper-review-version\b/.test(marker),
+  );
+  if (
+    versionMarkers.length !== 1 &&
+    versionMarkers.some((marker) => /(?:\bv=2\b|\blease_kind=|\bqueue_[a-z_]+=)/.test(marker))
+  ) {
+    return null;
+  }
+  for (const markerComment of versionMarkers.reverse()) {
     const match = markerComment.match(/^<!--\s+clawsweeper-review-version\b([^>]*)-->$/);
     if (!match) continue;
     const attributes = match[1] ?? "";
     const attribute = (name: string) =>
       attributes.match(new RegExp(`\\b${name}=([^\\s>]+)`))?.[1] ?? null;
-    if (Number(attribute("item")) !== number || attribute("v") !== "1") continue;
+    if (Number(attribute("item")) !== number) continue;
+    const version = attribute("v");
+    if (version !== "1" && version !== "2") continue;
     const reviewedAt = attribute("reviewed_at");
     if (!reviewedAt || parseIsoMs(reviewedAt) === null) continue;
     const headSha = attribute("sha");
     const sourceRevision = attribute("source_revision");
+    const leaseOwner = attribute("lease_owner");
+    const leaseCommentId = attribute("lease_comment_id");
+    const queueIdentity = version === "2" ? queueReviewLeaseIdentityFromMarker(attributes) : null;
+    if (
+      (version === "2" &&
+        (!queueIdentity ||
+          Number(queueIdentity.itemKey.split("#")[1]) !== number ||
+          !leaseOwner?.trim() ||
+          leaseOwner === "unknown")) ||
+      (version === "1" && /(?:^|\s)(?:lease_kind|queue_[a-z_]+)=/.test(attributes))
+    ) {
+      return null;
+    }
     return {
       reviewedAt,
       headSha: headSha && headSha !== "na" && headSha !== "unknown" ? headSha : null,
       sourceRevision: sourceRevision && sourceRevision !== "unknown" ? sourceRevision : null,
-      leaseOwner: attribute("lease_owner"),
-      leaseCommentId: attribute("lease_comment_id"),
+      leaseOwner,
+      leaseCommentId,
+      leaseIdentity:
+        queueIdentity ??
+        (validReviewLeaseIdentity(leaseOwner, leaseCommentId)
+          ? { kind: "comment", owner: leaseOwner!, commentId: Number(leaseCommentId) }
+          : null),
     };
   }
   return null;
@@ -523,6 +606,50 @@ function durableReviewVersion(
   return body ? durableReviewVersionFromBody(body, number) : null;
 }
 
+interface DurableReviewLeaseVersion {
+  reviewedAt: string;
+  headSha: string | null;
+  sourceRevision: string | null;
+  leaseOwner: string;
+  leaseCommentId: number | null;
+  leaseIdentity: ReviewLeaseIdentity;
+}
+
+// Queue publication identity does not grant PR readiness: manual and oversized
+// reviews retain their version marker while deliberately omitting state markers.
+function durableReviewLeaseVersion(
+  comment: Record<string, unknown> | undefined,
+  number: number,
+  includeLegacyVersionOnly = false,
+): DurableReviewLeaseVersion | null {
+  const version = durableReviewVersion(comment, number);
+  if (
+    !version?.leaseIdentity ||
+    (version.leaseIdentity.kind !== "queue" && !includeLegacyVersionOnly)
+  ) {
+    return durableReviewCausalIdentity(comment, number);
+  }
+  const body = commentBody(comment)!;
+  const markers = trailingHtmlComments(
+    body.slice(0, body.lastIndexOf(reviewCommentMarker(number))),
+  );
+  if (markers.some((marker) => /^<!--\s+clawsweeper-review-state:/.test(marker))) {
+    return durableReviewCausalIdentity(comment, number);
+  }
+  if (/^[0-9a-f]{40}$/i.test(version.headSha ?? "")) {
+    return {
+      ...version,
+      headSha: version.headSha!.toLowerCase(),
+      leaseOwner: version.leaseOwner!,
+      leaseCommentId:
+        version.leaseIdentity.kind === "comment" ? version.leaseIdentity.commentId : null,
+      leaseIdentity: version.leaseIdentity,
+    };
+  }
+  // Issue identities still require their explicit sha=na and source revision.
+  return durableReviewCausalIdentity(comment, number);
+}
+
 export function durableReviewCausalIdentityFromBody(
   body: string,
   number: number,
@@ -531,7 +658,8 @@ export function durableReviewCausalIdentityFromBody(
   headSha: string | null;
   sourceRevision: string | null;
   leaseOwner: string;
-  leaseCommentId: number;
+  leaseCommentId: number | null;
+  leaseIdentity: ReviewLeaseIdentity;
   state: "ready" | "blocked" | "needs-changes" | null;
 } | null {
   const identity = reviewCommentMarker(number);
@@ -546,8 +674,9 @@ export function durableReviewCausalIdentityFromBody(
 
   const version = durableReviewVersionFromBody(body, number);
   const leaseOwner = version?.leaseOwner?.trim() ?? "";
-  const leaseCommentId = version?.leaseCommentId ?? "";
-  if (!version || !validReviewLeaseIdentity(leaseOwner, leaseCommentId)) return null;
+  if (!version?.leaseIdentity) return null;
+  const leaseIdentity = version.leaseIdentity;
+  const leaseCommentId = leaseIdentity.kind === "comment" ? leaseIdentity.commentId : null;
   const versionHead = versionMarkers[0]?.match(/\bsha=([^\s>]+)/)?.[1];
   // Issue reviews already use a source revision and sha=na, without a PR state marker.
   if (
@@ -559,7 +688,8 @@ export function durableReviewCausalIdentityFromBody(
       ...version,
       headSha: null,
       leaseOwner,
-      leaseCommentId: Number(leaseCommentId),
+      leaseIdentity,
+      leaseCommentId,
       state: null,
     };
   }
@@ -588,7 +718,8 @@ export function durableReviewCausalIdentityFromBody(
     headSha: versionHeadSha,
     sourceRevision: version.sourceRevision,
     leaseOwner,
-    leaseCommentId: Number(leaseCommentId),
+    leaseIdentity,
+    leaseCommentId,
     state,
   };
 }
@@ -668,12 +799,63 @@ export function reviewCommentHasCloseVerdictForCanonical(
   );
 }
 
+// null means legacy-only; numbers compare live against report queue generations.
+function queueReviewGenerationComparison(
+  markdown: string,
+  existingReviewComment: Record<string, unknown> | undefined,
+  number: number,
+  options: { allowLegacyIdentityTransition?: boolean } = {},
+): number | string | null {
+  const reportHasQueueIdentity = hasQueueReviewLeaseIdentity(markdown);
+  const body = commentBody(existingReviewComment) ?? "";
+  const liveHasQueueIdentity =
+    /<!--\s+clawsweeper-review-version\b[^>]*(?:\bv=2\b|\blease_kind=|\bqueue_[a-z_]+=)/.test(body);
+  if (!reportHasQueueIdentity && !liveHasQueueIdentity) return null;
+  const report = queueReviewLeaseIdentityFromReport(markdown);
+  if (!report) return "local report has an invalid or mixed queue review lease identity";
+  if (Number(report.itemKey.split("#")[1]) !== number) {
+    return "local queue review lease identity belongs to another item";
+  }
+  if (!existingReviewComment) return -1;
+  const live = durableReviewLeaseVersion(existingReviewComment, number, true)?.leaseIdentity;
+  // Read-only proof may examine this transition; writes require a current queue fence.
+  if (live?.kind === "comment" && !liveHasQueueIdentity && options.allowLegacyIdentityTransition) {
+    return -1;
+  }
+  if (live?.kind !== "queue") {
+    return "live durable review has an invalid or mixed queue review lease identity";
+  }
+  if (live.itemKey !== report.itemKey) {
+    return "live durable queue review belongs to another item";
+  }
+  const comparison =
+    Math.sign(live.leaseRevision - report.leaseRevision) ||
+    Math.sign(live.claimGeneration - report.claimGeneration);
+  if (comparison === 0 && (live.runId !== report.runId || live.runAttempt !== report.runAttempt)) {
+    return "equal queue review generations have different run identities";
+  }
+  return comparison;
+}
+
 export function staleReviewCommentSyncReason(
   markdown: string,
   existingReviewComment: Record<string, unknown> | undefined,
   number: number,
   context?: ItemContext,
+  options: { allowLegacyIdentityTransition?: boolean } = {},
 ): string | null {
+  const queueComparison = queueReviewGenerationComparison(
+    markdown,
+    existingReviewComment,
+    number,
+    options,
+  );
+  if (queueComparison !== null) {
+    if (typeof queueComparison === "string") return queueComparison;
+    return queueComparison > 0
+      ? "live durable queue review generation is newer than the local report"
+      : null;
+  }
   // Comment updated_at can move for command/status edits; only review markers prove verdict freshness.
   const liveVersion = durableReviewVersion(existingReviewComment, number);
   const itemKind = frontMatterValue(markdown, "type");
@@ -760,6 +942,14 @@ export function newerDurableReviewTupleVerified(
   existingReviewComment: Record<string, unknown> | undefined,
   number: number,
 ): boolean {
+  const queueComparison = queueReviewGenerationComparison(markdown, existingReviewComment, number);
+  if (queueComparison !== null) {
+    if (typeof queueComparison !== "number" || queueComparison <= 0) return false;
+    const live = durableReviewLeaseVersion(existingReviewComment, number);
+    const liveRevision =
+      frontMatterValue(markdown, "type") === "pull_request" ? live?.headSha : live?.sourceRevision;
+    return Boolean(liveRevision && liveRevision === reviewLeaseRevisionFromReport(markdown));
+  }
   // Superseding is terminal, so require the complete durable tuple rather
   // than a newer timestamp or comment body that could describe another review.
   const liveVersion = durableReviewVersion(existingReviewComment, number);

@@ -24,6 +24,7 @@ import {
 import { eventRecordPaths } from "../dist/repair/event-record-store.js";
 import { assertRepo } from "../dist/repair/comment-router-utils.js";
 import { requirePositiveInteger } from "../dist/value-coerce.js";
+import { hasQueueReviewLeaseIdentity } from "../dist/review-lease-identity.js";
 import {
   exactReviewArtifactReceiptTuple,
   publishExactReviewArtifact,
@@ -693,6 +694,7 @@ function latestActiveRateLimitObservation(path) {
 }
 
 function legacyTupleless(markdown) {
+  if (hasQueueReviewLeaseIdentity(markdown)) return false;
   const owner = /^review_lease_owner:\s*(.+)\s*$/m.exec(markdown)?.[1]?.trim() || "";
   const commentId = Number(/^review_lease_comment_id:\s*(\d+)\s*$/m.exec(markdown)?.[1] || "0");
   return (!owner || owner === "unknown") && (!Number.isInteger(commentId) || commentId <= 0);

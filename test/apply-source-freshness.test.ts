@@ -121,6 +121,7 @@ function sourceFreshness(options: {
   truncatedActivity?: boolean;
   labelSyncRecorded?: boolean;
   timeline?: { event: string; actor: string; createdAt: string; label?: string }[];
+  markdown?: string;
 }) {
   const record = (value: unknown) =>
     value && typeof value === "object" ? (value as Record<string, unknown>) : {};
@@ -176,7 +177,7 @@ function sourceFreshness(options: {
         labels: [],
       },
       leaseComments: [],
-      markdownBeforeApplyDecisionMutations: reviewedReport,
+      markdownBeforeApplyDecisionMutations: options.markdown ?? reviewedReport,
       number,
       reportLabelsBeforeApply: [],
       reportReviewLeaseCommentId: 5861600942,
@@ -194,6 +195,25 @@ test("own acknowledgement progress edit after the review snapshot is not source 
   assert.equal(freshness.automationOnlyUpdate, true);
   assert.equal(freshness.reviewedSourceFresh(), true);
   assert.equal(freshness.labelSyncFreshEnough(), true);
+});
+
+test("queue review keeps acknowledgement receipts but never accepts a released comment receipt", () => {
+  const markdown = reviewedReport.replace(
+    `review_lease_comment_id: ${leaseCommentId}`,
+    [
+      "review_queue_item_key: openclaw/openclaw#126549",
+      "review_queue_lease_revision: 3",
+      "review_queue_claim_generation: 2",
+      "review_queue_run_id: 36365080254",
+      "review_queue_run_attempt: 1",
+    ].join("\n"),
+  );
+  const progress = sourceFreshness({ comments: [acknowledgement()], markdown });
+  assert.equal(progress.automationOnlyUpdate, true);
+  assert.equal(progress.reviewedSourceFresh(), true);
+  const missingComment = releasedLeaseFreshness({ markdown });
+  assert.equal(missingComment.automationOnlyUpdate, false);
+  assert.equal(missingComment.reviewedSourceFresh(), false);
 });
 
 test("acknowledgement edit cannot mask other activity after the review snapshot", () => {

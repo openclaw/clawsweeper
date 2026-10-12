@@ -8,6 +8,8 @@ import type {
   PrCloseCoverageProofGateBlock,
 } from "./clawsweeper-types.js";
 import { replaceFrontMatterValue } from "./report-front-matter.js";
+import { hasQueueReviewLeaseIdentity } from "./review-lease-identity.js";
+import { assertQueueReviewPublicationAuthority } from "./manual-publication-authority.js";
 
 type ApplyReviewGuardDependencies = Pick<
   CreateApplyDecisionWorkflowDependencies,
@@ -222,11 +224,16 @@ export function createApplyReviewGuards(
     sourceMarkdown: string,
     comment: Record<string, unknown> | undefined,
   ): string | null => {
+    const hasQueueIdentity = hasQueueReviewLeaseIdentity(sourceMarkdown);
+    if (hasQueueIdentity && !dryRun) {
+      assertQueueReviewPublicationAuthority(sourceMarkdown, item.repo, number);
+    }
     const staleReason = staleReviewCommentSyncReason(
       sourceMarkdown,
       comment,
       number,
       item.kind === "pull_request" ? currentItemContext() : undefined,
+      { allowLegacyIdentityTransition: hasQueueIdentity },
     );
     const pendingCanonicalNumber = staleCanonicalPullRequestNumber(getState().markdown);
     if (!staleCanonicalClosedUnmergedValidated || pendingCanonicalNumber === null)

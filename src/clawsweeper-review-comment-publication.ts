@@ -36,6 +36,10 @@ import { sectionLineValue } from "./clawsweeper-report-helpers.js";
 import { normalizedLabelSet } from "./clawsweeper-item-policy.js";
 import { sentence } from "./clawsweeper-review-presentation.js";
 import { reportReviewDecision } from "./report-review-decision.js";
+import {
+  queueReviewLeaseMarkerAttributes,
+  type ReviewLeaseIdentity,
+} from "./review-lease-identity.js";
 
 const DURABLE_REVIEW_COMMENT_MAX_BYTES = 60 * 1024;
 
@@ -163,6 +167,7 @@ function boundedReviewVersionMarker(
     sourceRevision: string | null;
     leaseOwner: string | null;
     leaseCommentId: string | null;
+    leaseIdentity?: ReviewLeaseIdentity;
   } | null,
 ): string {
   if (
@@ -182,12 +187,16 @@ function boundedReviewVersionMarker(
     ...(identity.leaseOwner && /^[A-Za-z0-9._:-]{1,200}$/.test(identity.leaseOwner)
       ? [`lease_owner=${identity.leaseOwner}`]
       : []),
-    ...(identity.leaseCommentId &&
-    /^[1-9]\d*$/.test(identity.leaseCommentId) &&
-    Number.isSafeInteger(Number(identity.leaseCommentId))
-      ? [`lease_comment_id=${identity.leaseCommentId}`]
-      : []),
-    "v=1",
+    ...(identity.leaseIdentity?.kind === "queue"
+      ? [queueReviewLeaseMarkerAttributes(identity.leaseIdentity), "v=2"]
+      : [
+          ...(identity.leaseCommentId &&
+          /^[1-9]\d*$/.test(identity.leaseCommentId) &&
+          Number.isSafeInteger(Number(identity.leaseCommentId))
+            ? [`lease_comment_id=${identity.leaseCommentId}`]
+            : []),
+          "v=1",
+        ]),
   ].join(" ");
   return `<!-- clawsweeper-review-version ${attrs} -->`;
 }
@@ -197,7 +206,7 @@ function oversizedReviewCommentFallback(number: number, body: string, bodyBytes:
   const version = identity
     ? boundedReviewVersionMarker(number, {
         ...identity,
-        leaseCommentId: String(identity.leaseCommentId),
+        leaseCommentId: identity.leaseCommentId === null ? null : String(identity.leaseCommentId),
       })
     : "";
   const fallback = markedReviewCommentBody(
@@ -251,7 +260,11 @@ export function upsertReviewComment(
   const id = commentId(existing);
   if (id !== null && identitylessPublicationFallback(number, existing)) {
     const identity = durableReviewCausalIdentityFromBody(markedBody, number);
-    if (!identity || identity.leaseCommentId <= id) {
+    if (
+      !identity ||
+      identity.leaseIdentity.kind !== "comment" ||
+      identity.leaseIdentity.commentId <= id
+    ) {
       throw new Error(
         `durable review comment ${id} is a fail-closed publication fallback; a fresh review lease is required before replacement`,
       );

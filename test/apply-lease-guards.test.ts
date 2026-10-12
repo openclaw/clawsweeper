@@ -5,6 +5,7 @@ import { executeApplyClose } from "../dist/clawsweeper-apply-close-execution.js"
 import { createApplyLeaseGuards } from "../dist/clawsweeper-apply-lease-guards.js";
 import { renderReviewStartStatusComment } from "../dist/clawsweeper.js";
 import { reviewReportFrontMatter, withReviewRecord } from "./helpers.ts";
+import { ManualPublicationAuthorityTransportError } from "../dist/manual-publication-authority.js";
 
 const headSha = "a".repeat(40);
 const leaseOwner = "exact-pr-42";
@@ -27,7 +28,11 @@ const leaseComment = {
   }),
 };
 
-function leaseGuards(calls: string[], activityBlock: string | null = null) {
+function leaseGuards(
+  calls: string[],
+  activityBlock: string | null = null,
+  overrides: Partial<Parameters<typeof createApplyLeaseGuards>[0]> = {},
+) {
   return createApplyLeaseGuards({
     canonicalBoundStaleReviewReason: () => {
       calls.push("canonical");
@@ -61,6 +66,7 @@ function leaseGuards(calls: string[], activityBlock: string | null = null) {
     setActiveApplyMutationLease: () => undefined,
     shouldPreserveReviewStartLease: () => false,
     targetRepo: () => "openclaw/openclaw",
+    ...overrides,
   } as unknown as Parameters<typeof createApplyLeaseGuards>[0]);
 }
 
@@ -100,6 +106,50 @@ test("lease acquisition keeps its own review-activity barrier", () => {
     null,
   );
   assert.deepEqual(calls, ["activity", "pull", "comments", "pull", "canonical"]);
+});
+
+test("queue mutation guards retain source checks and retryable authority failures", () => {
+  const markdown = [
+    "---",
+    "review_lease_owner: github-run-123-1",
+    "review_queue_item_key: openclaw/openclaw#42",
+    "review_queue_lease_revision: 1",
+    "review_queue_claim_generation: 1",
+    "review_queue_run_id: 123",
+    "review_queue_run_attempt: 1",
+    "---",
+  ].join("\n");
+  for (const kind of ["pull_request", "issue"] as const) {
+    let reads = 0;
+    const readRevision = () => (++reads === 1 ? headSha : "b".repeat(40));
+    const guards = leaseGuards([], null, {
+      item: { kind } as Parameters<typeof createApplyLeaseGuards>[0]["item"],
+      markdownBeforeApplyDecisionMutations: markdown,
+      ghJson: () => ({ head: { sha: readRevision() } }),
+      liveIssueSourceRevision: readRevision,
+      issueReviewCommentState: () => ({ comments: [], leaseComments: [] }) as never,
+      postReviewStartStatusComment: () => {
+        throw new Error("queue path cannot post a lease");
+      },
+    });
+    assert.match(
+      guards.currentApplyMutationLeaseBlockReason() ?? "",
+      /changed since context capture/,
+    );
+    assert.equal(reads, 2);
+  }
+  const unavailable = new ManualPublicationAuthorityTransportError("timeout");
+  const guards = leaseGuards([], null, {
+    markdownBeforeApplyDecisionMutations: markdown,
+    issueReviewCommentState: () => ({ comments: [], leaseComments: [] }) as never,
+    canonicalBoundStaleReviewReason: () => {
+      throw unavailable;
+    },
+  });
+  assert.throws(
+    () => guards.currentApplyMutationLeaseBlockReason(),
+    (error) => error === unavailable,
+  );
 });
 
 // Unknown dependencies fail the test, so the close path uses only the listed fakes.

@@ -192,6 +192,111 @@ const readyDecision = {
   },
 };
 
+const queueReviewLeaseFields = [
+  "review_queue_item_key: openclaw/openclaw#74461",
+  "review_queue_lease_revision: 7",
+  "review_queue_claim_generation: 2",
+  "review_queue_run_id: 123456789",
+  "review_queue_run_attempt: 1",
+];
+
+function readyIdentityReport(): string {
+  return withReviewRecord(
+    replaceFrontMatterValue(
+      pullRequestReport(),
+      "pull_head_sha",
+      "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    ),
+    readyDecision,
+  );
+}
+
+test("queue identity preserves legacy ready output and other readiness guards", () => {
+  const legacy = readyIdentityReport();
+  const queue = legacy.replace("review_lease_comment_id: 1059", queueReviewLeaseFields.join("\n"));
+  const expected = pullRequestReviewReadinessFromReport(legacy);
+  assert.deepEqual(expected, {
+    headSha: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    state: "ready",
+    items: [],
+    normalizationFailed: false,
+  });
+  assert.deepEqual(pullRequestReviewReadinessFromReport(queue), expected);
+
+  for (const [field, value] of [
+    ["number", "0"],
+    ["pull_head_sha", "unknown"],
+    ["reviewed_at", "unknown"],
+    ["review_status", "failed"],
+  ] as const) {
+    const legacyReadiness = pullRequestReviewReadinessFromReport(
+      replaceFrontMatterValue(legacy, field, value),
+    );
+    assert.equal(legacyReadiness.state, "blocked", field);
+    assert.deepEqual(
+      pullRequestReviewReadinessFromReport(replaceFrontMatterValue(queue, field, value)),
+      legacyReadiness,
+      field,
+    );
+  }
+});
+
+test("malformed and mixed queue identities cannot fall back to legacy identity", () => {
+  const legacy = readyIdentityReport();
+  const queue = legacy.replace("review_lease_comment_id: 1059", queueReviewLeaseFields.join("\n"));
+  const malformed: string[] = [];
+  for (const field of queueReviewLeaseFields) {
+    const key = field.slice(0, field.indexOf(":"));
+    malformed.push(
+      queue.replace(`${field}\n`, ""),
+      queue.replace(field, `${key}:`),
+      queue.replace(field, `${key}: invalid`),
+      queue.replace(field, `${field}\n${field}`),
+      legacy.replace("review_lease_owner: fixture", `review_lease_owner: fixture\n${field}`),
+    );
+  }
+  for (const commentId of ["1059", "invalid", ""]) {
+    malformed.push(
+      queue.replace(
+        "review_lease_owner: fixture",
+        `review_lease_owner: fixture\nreview_lease_comment_id: ${commentId}`,
+      ),
+    );
+  }
+  for (const owner of ["", "unknown", "invalid owner"]) {
+    malformed.push(queue.replace("review_lease_owner: fixture", `review_lease_owner: ${owner}`));
+  }
+  malformed.push(queue.replace("review_lease_owner: fixture\n", ""));
+  for (const report of malformed) {
+    const readiness = pullRequestReviewReadinessFromReport(report);
+    assert.equal(readiness.state, "blocked", report);
+    assert.equal(readiness.normalizationFailed, false, report);
+    assert.deepEqual(
+      readiness.items.map((item) => item.label),
+      ["Bind the durable review identity"],
+      report,
+    );
+  }
+});
+
+test("legacy readiness still requires both legacy lease identity fields", () => {
+  const legacy = readyIdentityReport();
+  for (const report of [
+    legacy.replace("review_lease_owner: fixture\n", ""),
+    legacy.replace("review_lease_comment_id: 1059\n", ""),
+    legacy.replace("review_lease_owner: fixture", "review_lease_owner: unknown"),
+    legacy.replace("review_lease_comment_id: 1059", "review_lease_comment_id: 0"),
+  ]) {
+    const readiness = pullRequestReviewReadinessFromReport(report);
+    assert.equal(readiness.state, "blocked");
+    assert.equal(readiness.normalizationFailed, false);
+    assert.deepEqual(
+      readiness.items.map((item) => item.label),
+      ["Bind the durable review identity"],
+    );
+  }
+});
+
 test("proof, rating, showcase, status and comment body share the saved decision", () => {
   const report = pullRequestReport().replace(
     "author_association: CONTRIBUTOR",

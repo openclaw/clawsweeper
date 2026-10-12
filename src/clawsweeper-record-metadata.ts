@@ -50,6 +50,10 @@ import {
   validReviewStructuralRecord,
   type ReviewStructuralRecord,
 } from "./review-structural-cache.js";
+import {
+  hasQueueReviewLeaseIdentity,
+  queueReviewLeaseIdentityFromReport,
+} from "./review-lease-identity.js";
 
 type ReviewSection = keyof typeof REVIEW_SECTIONS;
 
@@ -255,6 +259,14 @@ export function exactEventReviewLeaseDisposition(
   }
   if (!liveRevision || reportRevision !== liveRevision) {
     return { status: "source_drift", reportRevision, liveRevision };
+  }
+  if (hasQueueReviewLeaseIdentity(markdown)) {
+    return queueReviewLeaseIdentityFromReport(markdown)
+      ? { status: "current" }
+      : {
+          status: "invalid",
+          reason: "exact event review artifact has an invalid queue review lease identity",
+        };
   }
   const leaseOwner = frontMatterValue(markdown, "review_lease_owner");
   const leaseCommentId = Number(frontMatterValue(markdown, "review_lease_comment_id"));
