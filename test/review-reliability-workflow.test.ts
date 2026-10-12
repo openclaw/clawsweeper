@@ -11,97 +11,53 @@ import {
   REVIEW_RUN_OBSERVER_TITLE_LANES,
 } from "../scripts/review-run-observer.mjs";
 
-test("source review workflows observe their terminal dependencies without completion fanout", () => {
-  const reconcile = parse(readFileSync(".github/workflows/exact-review-reconcile.yml", "utf8"));
-  assert.equal(reconcile.on.workflow_run, undefined);
-  assert.deepEqual(reconcile.on.schedule, [{ cron: "*/15 * * * *" }]);
-  assert.deepEqual(Object.keys(reconcile.jobs), ["sweep"]);
-  for (const path of ["sweep.yml", "review-plan.yml"]) {
-    const workflow = parse(readFileSync(`.github/workflows/${path}`, "utf8"));
-    const observer = workflow.jobs["observe-review"];
-    assert.deepEqual(
-      [...observer.needs].sort(),
-      Object.keys(workflow.jobs)
-        .filter((name) => name !== "observe-review")
-        .sort(),
-      "the observer must follow every other job, including future additions",
-    );
-    assert.match(observer.if, /always\(\)/);
-    assert.deepEqual(observer.permissions, { actions: "read", contents: "read" });
-    assert.equal(observer["runs-on"], "ubuntu-latest");
-    assert.equal(observer["continue-on-error"], true);
-    const step = observer.steps.find((candidate: { run?: string }) =>
-      String(candidate.run).includes("review-run-observer.mjs"),
-    );
-    assert.match(step.run, /--current-run/);
-    assert.equal(step.env.REVIEW_RUN_CANCELLED, "${{ contains(needs.*.result, 'cancelled') }}");
-    assert.ok(step.env.CLAWSWEEPER_WEBHOOK_SECRET);
-  }
+test("review reliability telemetry shares the terminal reconciler workflow", () => {
+  assert.equal(existsSync(".github/workflows/review-reliability-observer.yml"), false);
+  const source = readFileSync(".github/workflows/exact-review-reconcile.yml", "utf8");
+  const workflow = parse(source) as Record<string, any>;
+  assert.deepEqual(workflow.on.workflow_run, {
+    workflows: ["ClawSweeper", "ClawSweeper Review Plan"],
+    types: ["completed"],
+  });
+  assert.deepEqual(workflow.permissions, {});
+  const reconcileIf = String(workflow.jobs.observe.if);
+  assert.match(reconcileIf, /github\.event_name == 'workflow_run'/);
+  const gatedPrefixes = [
+    ...reconcileIf.matchAll(/startsWith\(github\.event\.workflow_run\.display_title, '([^']+)'\)/g),
+  ].map((match) => match[1]);
+  assert.deepEqual(gatedPrefixes, Object.keys(REVIEW_RUN_OBSERVER_TITLE_LANES));
   for (const [prefix, lane] of Object.entries(REVIEW_RUN_OBSERVER_TITLE_LANES)) {
     assert.equal(
-      classifyReviewRun({ display_title: `${prefix}openclaw/openclaw#1` })?.trigger_lane,
+      classifyReviewRun({
+        display_title: `${prefix}openclaw/openclaw#1`,
+        event: "repository_dispatch",
+      })?.trigger_lane,
       lane,
+      prefix,
     );
   }
-  assert.equal(classifyReviewRun({ display_title: "Review exact item openclaw/openclaw#1" }), null);
-});
-
-test("source observer runner gate matches the title allowlist", () => {
-  const workflow = parse(readFileSync(".github/workflows/sweep.yml", "utf8"));
-  const evaluate = (expression: string, github: unknown) =>
-    new Function(
-      "github",
-      "always",
-      "format",
-      `return (${expression.replace(/^\s*\$\{\{|\}\}\s*$/g, "")});`,
-    )(
-      github,
-      () => true,
-      (template: string, ...values: unknown[]) =>
-        template.replace(/\{(\d+)\}/g, (_, index) => String(values[Number(index)])),
-    );
-  const scenarios: Array<[string, Record<string, unknown>, Record<string, string>, string]> = [
-    [
-      "repository_dispatch",
-      { queue_lease_id: "lease", source_action: "scheduled_hot_intake" },
-      {},
-      "",
-    ],
-    [
-      "repository_dispatch",
-      { queue_lease_id: "lease", source_action: "scheduled_normal_backfill" },
-      {},
-      "",
-    ],
-    [
-      "repository_dispatch",
-      { queue_lease_id: "lease", source_action: "exact_review_artifact_publish" },
-      {},
-      "",
-    ],
-    ["repository_dispatch", { queue_lease_id: "lease", source_action: "command" }, {}, ""],
-    ["repository_dispatch", { queue_lease_id: "", source_action: "" }, {}, ""],
-    ["workflow_dispatch", {}, { apply_existing: "false" }, ""],
-    ["workflow_dispatch", {}, { apply_existing: "true" }, ""],
-    ["schedule", {}, {}, "3 * * * *"],
-    ["schedule", {}, {}, "6,21,36,51 * * * *"],
-  ];
-  for (const [eventName, payload, inputs, schedule] of scenarios) {
-    const github = {
-      event_name: eventName,
-      event: {
-        client_payload: { queue_claim: {}, dispatch_key: "", ...payload },
-        inputs,
-        schedule,
-      },
-    };
-    const title = evaluate(workflow["run-name"], github);
-    assert.equal(
-      Boolean(evaluate(workflow.jobs["observe-review"].if, github)),
-      classifyReviewRun({ display_title: title }) !== null,
-      title,
-    );
-  }
+  assert.doesNotMatch(reconcileIf, /Review exact item/);
+  assert.deepEqual(workflow.jobs.observe.permissions, { actions: "read", contents: "read" });
+  const checkout = workflow.jobs.observe.steps.find((candidate: Record<string, unknown>) =>
+    String(candidate.uses || "").startsWith("actions/checkout@"),
+  );
+  assert.equal(checkout.if, "${{ always() }}");
+  assert.equal(checkout.with.ref, "${{ github.event.repository.default_branch }}");
+  assert.equal(checkout.with["persist-credentials"], false);
+  const step = workflow.jobs.observe.steps.find((candidate: Record<string, unknown>) =>
+    String(candidate.run || "").includes("review-run-observer.mjs"),
+  );
+  assert.ok(step);
+  assert.equal(step.if, "${{ always() }}");
+  assert.match(step.run, /--event-file/);
+  assert.ok(step.env.CLAWSWEEPER_WEBHOOK_SECRET);
+  assert.ok(step.env.GH_TOKEN);
+  assert.ok(step.env.QUEUE_URL);
+  assert.match(
+    workflow.jobs.observe.concurrency.group,
+    /exact-review-observe-.*github\.event\.workflow_run\.id.*github\.event\.workflow_run\.run_attempt/,
+  );
+  assert.equal(workflow.jobs.observe.concurrency["cancel-in-progress"], false);
 });
 
 test("queued workflow remediation shares the guarded dead-letter cadence", () => {

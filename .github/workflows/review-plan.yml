@@ -401,28 +401,3 @@ jobs:
             echo
             echo "Selected candidate age (hours): p50 $(jq -r '.ageHours.p50 // "n/a"' <<<"$result"), p90 $(jq -r '.ageHours.p90 // "n/a"' <<<"$result"), oldest $(jq -r '.ageHours.max // "n/a"' <<<"$result")."
           } >> "$GITHUB_STEP_SUMMARY"
-
-  observe-review:
-    name: Observe review run
-    needs: [hosted-target-admission, event-disabled-target, plan]
-    if: ${{ always() }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    # A telemetry transport failure must not change the review's conclusion.
-    continue-on-error: true
-    permissions:
-      actions: read
-      contents: read
-    steps:
-      - uses: actions/checkout@v7
-        if: ${{ always() }}
-        with:
-          persist-credentials: false
-      - name: Record terminal review wave
-        if: ${{ always() }}
-        env:
-          GH_TOKEN: ${{ github.token }}
-          CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
-          QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
-          REVIEW_RUN_CANCELLED: ${{ contains(needs.*.result, 'cancelled') }}
-        run: node scripts/review-run-observer.mjs --current-run

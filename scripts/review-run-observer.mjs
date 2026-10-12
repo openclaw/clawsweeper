@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 
 /**
- * 定义：只读 GitHub review 运行及其作业并写入 ClawSweeper review 观测接口。
- * 参数：--event-file 或 --current-run 必填；--dry-run 可选。
+ * 定义：只读 GitHub workflow_run 终态并写入 ClawSweeper review 观测接口。
+ * 参数：--event-file 必填；--dry-run 可选。认证和 API 地址来自环境变量。
  * 输出：stdout 打印 skipped 或写入摘要；错误写 stderr，退出码 1。
  * 决策：无法证明是 review 的 sweep 运行直接跳过，避免把 apply/audit/router 支持任务计入成功率。
  */
@@ -14,14 +14,13 @@ import { pathToFileURL } from "node:url";
 
 export function usage() {
   return `Usage:
-  node scripts/review-run-observer.mjs (--event-file <path> | --current-run) [--dry-run]
+  node scripts/review-run-observer.mjs --event-file <path> [--dry-run]
 
 Description:
-  Observe a completed event or the dependencies of the current workflow's final job.
+  Observe one completed ClawSweeper workflow_run and publish bounded run-level telemetry.
 
 Options:
-  --event-file <path>  GitHub event JSON containing a completed workflow_run
-  --current-run        Read GITHUB_RUN_ID/GITHUB_RUN_ATTEMPT before this final job completes
+  --event-file <path>  GitHub event JSON containing workflow_run (required)
   --dry-run            Print the normalized record without posting it
   -h, --help           Show this help
 
@@ -150,49 +149,17 @@ async function main(argv) {
     process.stdout.write(usage());
     return;
   }
-  if (Boolean(args.eventFile) === args.currentRun)
-    throw new Error("provide exactly one of --event-file or --current-run");
-  let run;
-  if (args.currentRun) {
-    const id = process.env.GITHUB_RUN_ID;
-    const attempt = process.env.GITHUB_RUN_ATTEMPT;
-    if (!/^\d+$/.test(id || "") || !/^[1-9]\d*$/.test(attempt || ""))
-      throw new Error("GITHUB_RUN_ID and GITHUB_RUN_ATTEMPT are required");
-    run = await fetchCurrentRun(id, attempt);
-  } else {
-    const event = JSON.parse(await readFile(args.eventFile, "utf8"));
-    run = event.workflow_run;
-    if (!run || run.status !== "completed")
-      throw new Error("event does not contain a completed workflow_run");
-  }
+  if (!args.eventFile) throw new Error("--event-file is required; use --help for examples");
+  const event = JSON.parse(await readFile(args.eventFile, "utf8"));
+  const run = event.workflow_run;
+  if (!run || run.status !== "completed")
+    throw new Error("event does not contain a completed workflow_run");
   const classification = classifyReviewRun(run);
   if (!classification) {
     process.stdout.write(`skipped non-review run ${String(run.id || "unknown")}\n`);
     return;
   }
-  let jobs = await fetchJobs(run);
-  if (args.currentRun) {
-    jobs = jobs.filter((job) => job.name !== "Observe review run");
-    if (jobs.some((job) => job.status !== "completed"))
-      throw new Error("review observer must run after all other jobs complete");
-    const cancelled =
-      process.env.REVIEW_RUN_CANCELLED === "true" ||
-      jobs.some((job) => job.conclusion === "cancelled");
-    const failed = jobs.some((job) =>
-      ["failure", "timed_out", "action_required", "startup_failure", "stale"].includes(
-        job.conclusion,
-      ),
-    );
-    run = {
-      ...run,
-      status: "completed",
-      conclusion: cancelled ? "cancelled" : failed ? "failure" : "success",
-      updated_at: jobs.reduce(
-        (latest, job) => (job.completed_at > latest ? job.completed_at : latest),
-        run.run_started_at || run.created_at,
-      ),
-    };
-  }
+  const jobs = await fetchJobs(run);
   const record = buildReviewRunTelemetry(run, jobs);
   if (!record) {
     process.stdout.write(`skipped support-only review run ${String(run.id || "unknown")}\n`);
@@ -209,32 +176,15 @@ async function main(argv) {
 }
 
 function parseArgs(argv) {
-  const result = { eventFile: "", currentRun: false, dryRun: false, help: false };
+  const result = { eventFile: "", dryRun: false, help: false };
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
     if (arg === "-h" || arg === "--help") result.help = true;
     else if (arg === "--dry-run") result.dryRun = true;
-    else if (arg === "--current-run") result.currentRun = true;
     else if (arg === "--event-file") result.eventFile = String(argv[++index] || "");
     else throw new Error(`unknown option ${arg}; use --help`);
   }
   return result;
-}
-
-async function fetchCurrentRun(id, attempt) {
-  const token = process.env.GH_TOKEN;
-  const repository = process.env.GITHUB_REPOSITORY;
-  const apiUrl = process.env.GITHUB_API_URL || "https://api.github.com";
-  if (!token || !repository) throw new Error("GH_TOKEN and GITHUB_REPOSITORY are required");
-  const response = await fetch(
-    `${apiUrl}/repos/${repository}/actions/runs/${id}/attempts/${attempt}`,
-    { headers: { authorization: `Bearer ${token}`, accept: "application/vnd.github+json" } },
-  );
-  if (!response.ok) throw new Error(`GitHub run lookup returned ${response.status}`);
-  const run = await response.json();
-  if (String(run.id) !== id || String(run.run_attempt) !== attempt)
-    throw new Error("GitHub returned a different run attempt");
-  return run;
 }
 
 export async function fetchJobs(run, options = {}) {
