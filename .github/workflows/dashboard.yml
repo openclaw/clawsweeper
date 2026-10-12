@@ -27,7 +27,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: clawsweeper-live-dashboard-${{ github.event_name == 'workflow_dispatch' && inputs.tail_activity_minutes > 0 && 'activity-tail' || 'deploy' }}
+  group: ${{ github.event_name == 'workflow_dispatch' && inputs.tail_activity_minutes > 0 && 'clawsweeper-activity-tail' || 'clawsweeper-live-dashboard' }}
   cancel-in-progress: true
 
 jobs:
