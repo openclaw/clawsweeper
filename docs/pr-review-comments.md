@@ -102,38 +102,6 @@ the same authorized run reuses its own active lease instead of posting another
 status comment. Exhausted service failures remain failures for normal queue
 recovery, not successful supersession. Other workers' leases remain protected.
 
-The queue lease cutover has two stages. Stage 1 adds readers and publication
-checks; it does not change current review writers or contributor-visible status.
-Legacy reports and version 1 durable markers keep their comment-lease identity.
-Version 2 durable markers can carry an explicit queue identity: item key, lease
-revision, claim generation, producer run ID, and run attempt. Queue reports use
-the corresponding `review_queue_*` fields, keep a nonempty `review_lease_owner`,
-and omit `review_lease_comment_id`. Partial or mixed identities fail closed.
-
-Queue generations are ordered only within the same item key. They are never
-compared with GitHub comment IDs. Before each queue-report apply mutation,
-including retries, the signed publication-authority endpoint must return the
-exact producer identity. Batch publisher identity is separate from producer
-identity. The endpoint adds `queueIdentity` without changing its legacy response
-fields. Queue reports cannot use the released-comment freshness time window;
-their own acknowledgement and publication writes still need matching activity
-receipts.
-Read-only apply and coverage-proof generation do not require publication
-authority. Background mutation runs skip queue reports when they have no
-publication claim, without stopping unrelated items.
-
-Stage 2 can stop creating public lease comments only after these readers are
-deployed and older non-queue writers are drained. Hosted writers without queue
-authority must then fail closed. Retain the dual readers during rollback while
-queue-identity reports remain. Do not replace a lease comment ID with a reused
-acknowledgement ID: comment IDs also order legacy review generations.
-
-Before and after stage 1, contributors see the same review-start reaction,
-acknowledgement progress section, and final review. Stage 2 must retain the
-review-start eyes reaction and edit the existing acknowledgement progress
-section; it must not add a replacement status comment. Bay continues to use
-queue lifecycle projections, not public lease markers.
-
 Interactive re-review commands have a separate durable intake marker. The
 ExactReviewQueue records the exact source-comment version before creating or
 editing its acknowledgement, then converges on one status comment containing

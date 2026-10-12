@@ -9,11 +9,6 @@ import { pullHeadShaFromReport } from "./clawsweeper-record-metadata.js";
 import { pullRequestReviewReadinessFromReport } from "./clawsweeper-report-comment-helpers.js";
 import { realBehaviorProofBlocksMerge } from "./clawsweeper-orchestration-foundation.js";
 import { AUTOFIX_LABEL, AUTOMERGE_LABEL } from "./repair/exact-review-guard-labels.js";
-import {
-  hasQueueReviewLeaseIdentity,
-  queueReviewLeaseIdentityFromReport,
-  queueReviewLeaseMarkerAttributes,
-} from "./review-lease-identity.js";
 
 function canonicalReviewTimestamp(value: string | undefined): string | null {
   const parsed = parseIsoMs(value);
@@ -36,17 +31,14 @@ export function reviewVersionMarkerFromReport(markdown: string): string {
   const sourceRevision = frontMatterValue(markdown, "item_source_revision") ?? "unknown";
   const leaseOwner = frontMatterValue(markdown, "review_lease_owner") ?? "unknown";
   const leaseCommentId = frontMatterValue(markdown, "review_lease_comment_id") ?? "unknown";
-  const queueLease = queueReviewLeaseIdentityFromReport(markdown);
-  if (hasQueueReviewLeaseIdentity(markdown) && !queueLease) return "";
   const attrs = [
     `item=${markerAttributeValue(number)}`,
     `reviewed_at=${markerAttributeValue(reviewedAt)}`,
     `sha=${markerAttributeValue(headSha)}`,
     `source_revision=${markerAttributeValue(sourceRevision)}`,
     `lease_owner=${markerAttributeValue(leaseOwner)}`,
-    ...(queueLease
-      ? [queueReviewLeaseMarkerAttributes(queueLease), "v=2"]
-      : [`lease_comment_id=${markerAttributeValue(leaseCommentId)}`, "v=1"]),
+    `lease_comment_id=${markerAttributeValue(leaseCommentId)}`,
+    "v=1",
   ].join(" ");
   return `<!-- clawsweeper-review-version ${attrs} -->`;
 }
@@ -92,7 +84,6 @@ export function reviewAutomationMarkersFromReport(
   const reviewLeaseOwner = frontMatterValue(markdown, "review_lease_owner") ?? "unknown";
   const reviewLeaseCommentId = frontMatterValue(markdown, "review_lease_comment_id") ?? "unknown";
   const sourceRevision = frontMatterValue(markdown, "item_source_revision") ?? "unknown";
-  const queueLease = queueReviewLeaseIdentityFromReport(markdown);
   const baseAttrs = [
     `item=${markerAttributeValue(number)}`,
     `sha=${markerAttributeValue(headSha)}`,
@@ -100,9 +91,7 @@ export function reviewAutomationMarkersFromReport(
     `updated_at=${markerAttributeValue(itemUpdatedAt)}`,
     `reviewed_at=${markerAttributeValue(reviewedAt)}`,
     `lease_owner=${markerAttributeValue(reviewLeaseOwner)}`,
-    ...(queueLease
-      ? [queueReviewLeaseMarkerAttributes(queueLease)]
-      : [`lease_comment_id=${markerAttributeValue(reviewLeaseCommentId)}`]),
+    `lease_comment_id=${markerAttributeValue(reviewLeaseCommentId)}`,
     `source_revision=${markerAttributeValue(sourceRevision)}`,
   ].join(" ");
   const reviewReadiness =
@@ -111,7 +100,7 @@ export function reviewAutomationMarkersFromReport(
       : pullRequestReviewReadinessFromReport(markdown);
   const hasDurableReviewIdentity =
     Boolean(reviewVersionMarkerFromReport(markdown)) &&
-    (Boolean(queueLease) || validReviewLeaseIdentity(reviewLeaseOwner, reviewLeaseCommentId));
+    validReviewLeaseIdentity(reviewLeaseOwner, reviewLeaseCommentId);
   const reviewStateMarker =
     hasDurableReviewIdentity && hasExactItemNumber && /^[0-9a-f]{40}$/i.test(headSha)
       ? `<!-- clawsweeper-review-state:${reviewReadiness.state} ` +

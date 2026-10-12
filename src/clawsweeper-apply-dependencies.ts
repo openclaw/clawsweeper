@@ -379,7 +379,6 @@ export interface CreateApplyDecisionWorkflowDependencies {
     existingReviewComment: Record<string, unknown> | undefined,
     number: number,
     context?: ItemContext,
-    options?: { allowLegacyIdentityTransition?: boolean },
   ) => string | null;
   newerDurableReviewTupleVerified: (
     markdown: string,

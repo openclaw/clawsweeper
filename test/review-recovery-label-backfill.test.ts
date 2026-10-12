@@ -268,39 +268,6 @@ test("recovery-label backfill clears only trusted, canonical completed reviews",
   });
 });
 
-test("recovery-label backfill accepts complete queue versions and rejects malformed ones", async () => {
-  const head = "a".repeat(40);
-  const attributes =
-    `item=301 reviewed_at=2026-08-05T10:00:00.000Z sha=${head} ` +
-    "lease_owner=github-run-123-1 lease_kind=queue queue_item_key=openclaw/openclaw#301 " +
-    "queue_lease_revision=1 queue_claim_generation=1 queue_run_id=123 queue_run_attempt=1 v=2";
-  for (const [marker, accepted] of [
-    [attributes, true],
-    [attributes.replace("v=2", "v=3"), false],
-    [attributes.replace("queue_lease_revision=1", "queue_lease_revision=0"), false],
-    [attributes.replace("#301", "#302"), false],
-    [`${attributes} queue_run_id=456`, false],
-  ] as const) {
-    const fixture = githubFixture({
-      numbers: [301],
-      pullHeads: new Map([[301, head]]),
-      comments: new Map([
-        [
-          301,
-          [
-            completedReview(301, {
-              body: `Codex review: completed.\n\n<!-- clawsweeper-review-version ${marker} -->\n\n<!-- clawsweeper-review item=301 -->`,
-            }),
-          ],
-        ],
-      ]),
-    });
-    const summary = await runBackfill(fixture);
-    assert.deepEqual(fixture.deletions, accepted ? [301] : [], marker);
-    assert.equal(summary.cleared, accepted ? 1 : 0, marker);
-  }
-});
-
 test("a newer started lease overrides old review publication and unrelated comment edits", async () => {
   const missingPlaceholderTimestamp = startedPlaceholder(203, "2026-08-05T09:00:00.000Z");
   delete missingPlaceholderTimestamp.created_at;

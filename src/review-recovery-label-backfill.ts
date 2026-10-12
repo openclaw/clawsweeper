@@ -1,6 +1,5 @@
 import { trailingHtmlComments } from "./review-comment-markers.js";
 import type { ReviewPlaceholderComment } from "./review-placeholder-recovery.js";
-import { queueReviewLeaseIdentityFromMarker } from "./review-lease-identity.js";
 
 export const REVIEW_RECOVERY_STUCK_LABEL = "clawsweeper-recovery-stuck";
 
@@ -101,11 +100,7 @@ function completedReviewSupersedesPlaceholder(
       continue;
     }
     const version = markers.findLast((marker) => markerForItem(marker, "review-version"));
-    if (version && markerAttribute(version, "v") !== "1") {
-      const queueIdentity =
-        markerAttribute(version, "v") === "2" ? queueReviewLeaseIdentityFromMarker(version) : null;
-      if (!queueIdentity || Number(queueIdentity.itemKey.split("#")[1]) !== number) continue;
-    }
+    if (version && markerAttribute(version, "v") !== "1") continue;
     const reviewedAt = version ? Date.parse(markerAttribute(version, "reviewed_at") ?? "") : NaN;
     if (
       headSha &&

@@ -43,10 +43,6 @@ import {
 } from "./clawsweeper-review-presentation.js";
 import { validReviewLeaseIdentity } from "./review-comment-markers.js";
 import {
-  hasQueueReviewLeaseIdentity,
-  queueReviewLeaseIdentityFromReport,
-} from "./review-lease-identity.js";
-import {
   isRegressionAssessment,
   isPublicRegressionProvenance,
   isVerifiedRegressionProvenance,
@@ -243,18 +239,15 @@ export function pullRequestReviewReadinessFromReport(markdown: string): PullRequ
       if (condition) items.push({ state: "blocked", label, detail });
     };
     const number = frontMatterValue(markdown, "number") ?? "";
-    const hasDurableReviewIdentity = hasQueueReviewLeaseIdentity(markdown)
-      ? Boolean(queueReviewLeaseIdentityFromReport(markdown))
-      : validReviewLeaseIdentity(
-          frontMatterValue(markdown, "review_lease_owner"),
-          frontMatterValue(markdown, "review_lease_comment_id"),
-        );
     block(
       !/^[1-9]\d*$/.test(number) ||
         !Number.isSafeInteger(Number(number)) ||
         !headSha ||
         parseIsoMs(frontMatterValue(markdown, "reviewed_at")) === null ||
-        !hasDurableReviewIdentity,
+        !validReviewLeaseIdentity(
+          frontMatterValue(markdown, "review_lease_owner"),
+          frontMatterValue(markdown, "review_lease_comment_id"),
+        ),
       "Bind the durable review identity",
       "Record the exact pull request, head, review time, and owned lease before publishing readiness.",
     );

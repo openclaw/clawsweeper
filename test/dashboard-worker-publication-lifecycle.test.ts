@@ -330,16 +330,7 @@ test("manual publication requires the current lease/run/attempt across ABA and e
   const { storage, item, owner, plan, save, post } = restrictedPublicationFixture();
   await save();
   const queue = publicPublicationQueue(storage);
-  const authority = await post(queue, "publication-authority", plan());
-  assert.equal(authority.status, 200);
-  assert.deepEqual((await authority.json()).queueIdentity, {
-    kind: "queue",
-    itemKey: item.key,
-    leaseRevision: 1,
-    claimGeneration: 1,
-    runId: item.claimedRunId,
-    runAttempt: item.claimedRunAttempt,
-  });
+  assert.equal((await post(queue, "publication-authority", plan())).status, 200);
   for (const invalid of [
     undefined,
     { ...owner, leaseId: "old-lease" },
@@ -497,64 +488,6 @@ test("manual batch publication binds active batch, member, lease owner and runne
     (await (await post(queue, "publication-batch-results", current)).json()).deduped,
     true,
   );
-});
-
-test("batch publication authority exposes the producer tuple, not its publisher tuple", async () => {
-  const storage = new MemoryDurableStorage();
-  const item = leasedExactReviewPublicationItem(75, "1075");
-  item.state = "pending";
-  item.revision = 4;
-  item.leaseRevision = 4;
-  item.decision.publication.leaseRevision = 2;
-  item.decision.publication.claimGeneration = 7;
-  item.decision.publication.producerRunAttempt = 3;
-  await storage.put("exact-review-queue", { deliveries: {}, items: { [item.key]: item } });
-  const batches = new ExactReviewPublicationBatchStore(storage);
-  batches.ensureSchemaSync();
-  const now = Date.now();
-  const batch = batches.claim({
-    batchId: "producer-identity-batch",
-    leaseOwner: "publisher",
-    leaseExpiresAt: now + 60_000,
-    now,
-    maxItems: 1,
-    runner: { runId: "9000", runAttempt: 2, startedAt: now },
-    candidates: [{ itemKey: item.key, revision: 4 }],
-  })!;
-  const payload = {
-    ...publicationPlan(75, item.key, 4, batch.items[0]!.claimGeneration),
-    owner: { batchId: batch.batchId, leaseOwner: batch.leaseOwner, runId: "9000", runAttempt: 2 },
-  };
-  const queue = publicPublicationQueue(storage);
-  const authority = await queue.fetch(
-    new Request("https://queue/publication-authority", {
-      method: "POST",
-      body: JSON.stringify(payload),
-    }),
-  );
-  assert.equal(authority.status, 200);
-  assert.deepEqual((await authority.json()).queueIdentity, {
-    kind: "queue",
-    itemKey: "openclaw/openclaw#75",
-    leaseRevision: 2,
-    claimGeneration: 7,
-    runId: "1075",
-    runAttempt: 3,
-  });
-  // Older publication envelopes cannot authorize queue-format reports without
-  // a complete producer identity, but their legacy authority response survives.
-  item.decision.publication.producerRunId = "";
-  await storage.put("exact-review-queue", { deliveries: {}, items: { [item.key]: item } });
-  const missingProducer = await queue.fetch(
-    new Request("https://queue/publication-authority", {
-      method: "POST",
-      body: JSON.stringify(payload),
-    }),
-  );
-  assert.equal(missingProducer.status, 200);
-  const missingBody = await missingProducer.json();
-  assert.equal(missingBody.ok, true);
-  assert.equal(missingBody.queueIdentity, null);
 });
 
 const NON_ROUTED_TERMINAL_KINDS = [

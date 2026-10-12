@@ -411,9 +411,7 @@ const commands: Record<string, () => void> = {
       const owner = /^review_lease_owner:\s*(.+)\s*$/m.exec(markdown)?.[1]?.trim() || "";
       const commentId = Number(/^review_lease_comment_id:\s*(\d+)\s*$/m.exec(markdown)?.[1] || "0");
       legacyTupleless =
-        !/^review_queue_[a-z_]+\s*:/m.test(markdown) &&
-        (!owner || owner === "unknown") &&
-        (!Number.isInteger(commentId) || commentId <= 0);
+        (!owner || owner === "unknown") && (!Number.isInteger(commentId) || commentId <= 0);
     }
     fs.appendFileSync(outputPath, `legacy_tupleless=${legacyTupleless ? "true" : "false"}\n`);
   },

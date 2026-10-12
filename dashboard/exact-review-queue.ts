@@ -4200,40 +4200,7 @@ export class ExactReviewQueue {
       if (!ownership.validFence || ownership.staleBatchFence || !ownership.owned)
         return json({ error: "publication_fence_not_active" }, 409);
       const decision = ownership.owned.leaseDecision ?? ownership.owned.decision;
-      const publication = decision.publication;
-      // The batch runner owns publication, not the review it is publishing.
-      // Preserve the producer tuple rather than stamping it with the publisher.
-      const producer = publication
-        ? {
-            itemKey: publication.itemKey,
-            leaseRevision: publication.leaseRevision,
-            claimGeneration: publication.claimGeneration,
-            runId: publication.producerRunId,
-            runAttempt: publication.producerRunAttempt,
-          }
-        : {
-            itemKey: ownership.owned.key,
-            leaseRevision: ownership.owned.leaseRevision,
-            claimGeneration: ownership.owned.claimGeneration,
-            runId: ownership.owned.claimedRunId,
-            runAttempt: ownership.owned.claimedRunAttempt,
-          };
-      const positiveInteger = (value: unknown): value is number =>
-        Number.isSafeInteger(value) && Number(value) > 0;
-      const validProducer =
-        typeof producer.itemKey === "string" &&
-        /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+#[1-9]\d*$/.test(producer.itemKey) &&
-        producer.itemKey === body.canonicalTargetKey &&
-        positiveInteger(producer.leaseRevision) &&
-        positiveInteger(producer.claimGeneration) &&
-        typeof producer.runId === "string" &&
-        /^[1-9]\d{0,29}$/.test(producer.runId) &&
-        positiveInteger(producer.runAttempt);
-      return json({
-        ok: true,
-        decision: publication?.producerDecision ?? decision,
-        queueIdentity: validProducer ? { kind: "queue", ...producer } : null,
-      });
+      return json({ ok: true, decision: decision.publication?.producerDecision ?? decision });
     }
 
     if (

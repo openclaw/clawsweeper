@@ -12,11 +12,7 @@ import {
 import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { reportPublicationPolicy } from "./manual-publication-policy.js";
-import {
-  assertManualPublicationAuthority,
-  assertQueueReviewPublicationAuthority,
-} from "./manual-publication-authority.js";
-import { hasQueueReviewLeaseIdentity } from "./review-lease-identity.js";
+import { assertManualPublicationAuthority } from "./manual-publication-authority.js";
 import { createApplyCandidateGuards } from "./clawsweeper-apply-candidate-guards.js";
 import {
   unreadableReviewRecordReason,
@@ -534,9 +530,7 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
       // Background apply has no publication claim. Canonical restrictions outlive
       // queue completion, so only the exact publisher can sync this report.
       if (restrictedPublication && !exactEventPublication) continue;
-      if (hasQueueReviewLeaseIdentity(markdown) && !exactEventPublication && !dryRun) continue;
       if (restrictedPublication) assertManualPublicationAuthority(markdown, entry.repo, entry.number);
-      else if (!dryRun) assertQueueReviewPublicationAuthority(markdown, entry.repo, entry.number);
       const syncCommentsOnly = restrictedPublication || requestedSyncCommentsOnly;
       const suppressAutomationMarkers = restrictedPublication || requestedSuppressAutomationMarkers;
       const repo = entry.repo;
@@ -679,7 +673,7 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
             throw new Error("manual publication forbids this mutation");
           }
           assertManualPublicationAuthority(markdown, repo, number);
-        } else if (!dryRun) assertQueueReviewPublicationAuthority(markdown, repo, number);
+        }
         if (dryRun) return options.operation();
         const attempt = startApplyMutationAttempt(
           applyLedger,
@@ -1155,17 +1149,15 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
       const reportReviewLeaseCommentId = Number(
         frontMatterValue(markdownBeforeApplyDecisionMutations, "review_lease_comment_id"),
       );
-      // Queue reports use the publisher fence; legacy reports use their complete comment tuple.
-      // Tuple-less backlog retains its existing guarded apply path.
-      const requiresApplyMutationLease =
-        hasQueueReviewLeaseIdentity(markdownBeforeApplyDecisionMutations) ||
-        Boolean(
-          reportReviewRevision &&
-          reportReviewLeaseOwner &&
-          reportReviewLeaseOwner !== "unknown" &&
-          Number.isInteger(reportReviewLeaseCommentId) &&
-          reportReviewLeaseCommentId > 0,
-        );
+      // Current reviews carry this complete tuple. Tuple-less backlog reports keep their legacy
+      // apply path, while the active-lease and newer-verdict guards still fail them closed.
+      const requiresApplyMutationLease = Boolean(
+        reportReviewRevision &&
+        reportReviewLeaseOwner &&
+        reportReviewLeaseOwner !== "unknown" &&
+        Number.isInteger(reportReviewLeaseCommentId) &&
+        reportReviewLeaseCommentId > 0,
+      );
       const initialReviewHeadSha =
         item.kind === "pull_request"
           ? (pullHeadShaFromContext(currentItemContext()) ?? "")
