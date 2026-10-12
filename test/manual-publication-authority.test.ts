@@ -208,50 +208,6 @@ try {
   });
 }
 
-test(
-  "queue publication rechecks authority on retry before another mutation",
-  { skip: process.platform === "win32" },
-  () => {
-    const { root, env } = fixture(409, 22, 1);
-    try {
-      const result = spawnSync(
-        process.execPath,
-        [
-          "--input-type=module",
-          "-e",
-          `
-// The compiled module URL is injected by the test fixture.
-const { assertQueueReviewPublicationAuthority } = await import(process.env.AUTHORITY_MODULE);
-let mutations = 0;
-try {
-  for (let retry = 0; retry < 2; retry++) {
-    assertQueueReviewPublicationAuthority(process.env.AUTHORITY_REPORT, "openclaw/openclaw", 7);
-    mutations++;
-  }
-} catch {
-  console.log(mutations);
-}
-`,
-        ],
-        {
-          env: {
-            ...env,
-            AUTHORITY_REPORT: queueReport,
-            CURL_SUCCESS: JSON.stringify({ ok: true, decision, queueIdentity }),
-          },
-          encoding: "utf8",
-          timeout: 15_000,
-        },
-      );
-      assert.equal(result.status, 0, result.stderr);
-      assert.equal(result.stdout.trim(), "1");
-      assert.equal(fs.readFileSync(env.CURL_CALLS, "utf8").length, 2);
-    } finally {
-      fs.rmSync(root, { recursive: true, force: true });
-    }
-  },
-);
-
 for (const scenario of [
   { name: "HTTP 503", http: 503, exit: 22, reason: "HTTP_503" },
   { name: "HTTP 429", http: 429, exit: 22, reason: "HTTP_429" },

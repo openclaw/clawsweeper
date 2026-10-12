@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { createHash, createHmac } from "node:crypto";
 import { createServer } from "node:http";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -55,13 +55,49 @@ if (process.argv[2] === "server") {
     },
   );
   const trace = [];
+  let scenario = "guard";
+  let mutationRequests = 0;
+  const record = (entry) => {
+    trace.push({ scenario, ...entry });
+    writeFileSync(join(output, "queue-requests.json"), JSON.stringify(trace, null, 2));
+    console.error(JSON.stringify(trace.at(-1)));
+  };
   const server = createServer(async (request, response) => {
+    // The caller blocks while shipped synchronous CLIs run; do not retain an idle socket.
+    response.setHeader("connection", "close");
     let body = "";
     for await (const chunk of request) body += chunk;
+    if (request.url === "/scenario") {
+      const next = JSON.parse(body);
+      scenario = next.name;
+      mutationRequests = 0;
+      item.claimGeneration = next.generation ?? 1;
+      item.claimedRunId = next.runId ?? "1074";
+      await save();
+      response.end("ready");
+      return;
+    }
     if (request.url === "/advance") {
-      item.claimGeneration = 2;
+      item.claimGeneration++;
       await save();
       response.end("advanced");
+      return;
+    }
+    if (request.url === "/github-mutation" || request.url === "/github-effect") {
+      const mutation = JSON.parse(body);
+      const failed =
+        request.url === "/github-mutation" &&
+        scenario === "retry-revocation" &&
+        mutationRequests++ === 0;
+      const status = failed ? 503 : 200;
+      record({ route: request.url, request: mutation, status });
+      if (failed) {
+        item.claimGeneration++;
+        item.claimedRunId = "2074";
+        await save();
+      }
+      response.writeHead(status, { "content-type": "application/json" });
+      response.end(JSON.stringify({ ok: !failed }));
       return;
     }
     const route = request.url.replace("/internal/exact-review", "");
@@ -77,14 +113,12 @@ if (process.argv[2] === "server") {
       }),
     );
     const text = await result.text();
-    trace.push({
+    record({
       route,
       request: JSON.parse(body),
       status: result.status,
       response: JSON.parse(text),
     });
-    writeFileSync(join(output, "queue-requests.json"), JSON.stringify(trace, null, 2));
-    console.error(JSON.stringify(trace.at(-1)));
     response.writeHead(result.status, { "content-type": "application/json" });
     response.end(text);
   });
@@ -301,7 +335,6 @@ if (process.argv[2] === "server") {
         },
         acknowledgement,
       ],
-      commandLogPath: requestLog,
       linkedPulls: {
         400: {
           number: 400,
@@ -315,10 +348,68 @@ if (process.argv[2] === "server") {
         },
       },
     });
+    // Trace at the external GitHub process boundary, before the fixture can apply
+    // an effect. The queue child can revoke authority while the CLI is blocked.
+    const trackedMock = (root) => {
+      const fixturePath = join(root, "bin", "promotion.cjs");
+      mkdirSync(join(root, "bin"), { recursive: true });
+      writeFileSync(fixturePath, mock);
+      return `
+const { spawnSync } = require("node:child_process");
+const { appendFileSync, readFileSync } = require("node:fs");
+const raw = process.argv.slice(2);
+appendFileSync(${JSON.stringify(join(root, "requests.jsonl"))}, JSON.stringify(raw) + "\\n");
+const args = raw[0] === "--repo" ? raw.slice(2) : raw;
+const methodIndex = args.findIndex(arg => arg === "--method" || arg === "-X");
+const method = methodIndex < 0 ? (args.some(arg => ["--input", "-f", "-F", "--field", "--raw-field"].includes(arg)) ? "POST" : "GET") : args[methodIndex + 1];
+const mutation = args[0] === "api" ? (args[1] === "graphql"
+  ? args.some(arg => /^query=\\s*mutation\\b/.test(arg)) : !["GET", "HEAD"].includes(method)) :
+  ["pr", "issue", "label"].includes(args[0]) && !["view", "list", "status"].includes(args[1]);
+const inputIndex = args.indexOf("--input");
+const payload = inputIndex < 0 ? null : JSON.parse(readFileSync(args[inputIndex + 1], "utf8"));
+const event = { args: raw, method, payload };
+function record(route) {
+  const response = spawnSync(${JSON.stringify(stockCurl)}, [
+    "--silent", "--show-error", "--max-time", "5", "--write-out", "%{http_code}",
+    "--header", "content-type: application/json", "--data-binary", JSON.stringify(event),
+    ${JSON.stringify(base)} + route
+  ], { encoding: "utf8" });
+  if (response.status !== 0) throw new Error(response.stderr || "trace transport failed");
+  return Number(response.stdout.slice(-3));
+}
+if (mutation) {
+  const status = record("/github-mutation");
+  if (status !== 200) {
+    console.error("gh: Service Unavailable (HTTP " + status + ")");
+    process.exit(1);
+  }
+}
+const result = spawnSync(process.execPath, [${JSON.stringify(fixturePath)}, ...raw], { encoding: "utf8" });
+if (mutation && result.status === 0 && record("/github-effect") !== 200) throw new Error("effect trace failed");
+process.stdout.write(result.stdout || "");
+process.stderr.write(result.stderr || "");
+process.exit(result.status ?? 1);
+`;
+    };
+    const scenarioTrace = (name) =>
+      JSON.parse(readFileSync(join(output, "queue-requests.json"), "utf8")).filter(
+        (entry) => entry.scenario === name,
+      );
+    const mutations = (trace) => trace.filter((entry) => entry.route === "/github-mutation");
+    const effects = (trace) => trace.filter((entry) => entry.route === "/github-effect");
+    const selectScenario = async (name, generation = 1) => {
+      const response = await fetch(`${base}/scenario`, {
+        method: "POST",
+        body: JSON.stringify({ name, generation }),
+      });
+      assert.equal(response.status, 200);
+    };
+    await selectScenario("success");
     let cli;
     let dryRun;
     let background;
-    withMockGh(cliRoot, mock, () =>
+    let applyArgs;
+    withMockGh(cliRoot, trackedMock(cliRoot), () =>
       withMockCodexProof(
         cliRoot,
         {
@@ -353,6 +444,7 @@ if (process.argv[2] === "server") {
             "--item-number",
             "74",
           ];
+          applyArgs = args;
           const unfencedEnv = { ...process.env };
           for (const key of Object.keys(unfencedEnv)) {
             if (key.startsWith("EXACT_REVIEW_")) delete unfencedEnv[key];
@@ -364,6 +456,11 @@ if (process.argv[2] === "server") {
           assert.equal(dryRun.status, 0, dryRun.stderr);
           background = spawnSync(process.execPath, args, { encoding: "utf8", env: unfencedEnv });
           assert.equal(background.status, 0, background.stderr);
+          assert.equal(
+            mutations(scenarioTrace("success")).length,
+            0,
+            "dry-run and unfenced background apply must not mutate GitHub",
+          );
           cli = spawnSync(process.execPath, [...args, "--exact-event-publication"], {
             encoding: "utf8",
           });
@@ -375,18 +472,116 @@ if (process.argv[2] === "server") {
     assert.equal(cli.status, 0, cli.stderr);
     const cliOutcome = JSON.parse(readFileSync(applyReport, "utf8")).at(-1);
     assert.equal(cliOutcome.action, "closed", JSON.stringify(cliOutcome));
-    const cliRequests = readFileSync(requestLog, "utf8").trim().split("\n").map(JSON.parse);
-    const leasePosts = cliRequests.filter((args) => {
-      if (!args.includes("POST") || !args.includes("repos/openclaw/openclaw/issues/74/comments"))
-        return false;
-      const payloadPath = args[args.indexOf("--input") + 1];
-      const payload = JSON.parse(readFileSync(payloadPath, "utf8"));
-      return (
-        payload.body.includes("<!-- clawsweeper-review-status:started") ||
-        payload.body.includes("<!-- clawsweeper-review-lease")
-      );
-    });
+    const leasePosts = mutations(scenarioTrace("success")).filter(
+      ({ request }) =>
+        request.method === "POST" &&
+        typeof request.payload?.body === "string" &&
+        /<!-- clawsweeper-review-(?:status:started|lease)/.test(request.payload.body),
+    );
     assert.equal(leasePosts.length, 0, "apply must not POST a public lease");
+    assert.ok(
+      effects(scenarioTrace("success")).length > 0,
+      "successful apply must publish effects",
+    );
+    const negativeCases = {};
+    for (const name of ["competing-run", "stale-generation", "retry-revocation"]) {
+      await selectScenario(name, name === "stale-generation" ? 2 : 1);
+      const root = join(output, name);
+      mkdirSync(join(root, "items"), { recursive: true });
+      mkdirSync(join(root, "plans"), { recursive: true });
+      writeFileSync(join(root, "items", "74.md"), cliReport.report);
+      let denied;
+      withMockGh(root, trackedMock(root), () =>
+        withMockCodexProof(
+          root,
+          {
+            type: "decision",
+            decision: "covered",
+            reason: "The merged canonical PR includes the fallback.",
+            invocationLogPath: join(root, "coverage-proof.log"),
+          },
+          () => {
+            denied = spawnSync(
+              process.execPath,
+              [
+                ...applyArgs.map((arg) => arg.replaceAll(cliRoot, root)),
+                "--exact-event-publication",
+              ],
+              {
+                encoding: "utf8",
+                env: {
+                  ...process.env,
+                  ...(name === "competing-run" ? { GITHUB_RUN_ID: "2074" } : {}),
+                },
+              },
+            );
+          },
+        ),
+      );
+      writeFileSync(join(root, "stdout.log"), denied.stdout);
+      writeFileSync(join(root, "stderr.log"), denied.stderr);
+      assert.equal(denied.signal, null, `${name}: ${denied.stderr}`);
+      assert.notEqual(denied.status, null, `${name}: ${denied.error}`);
+      const trace = scenarioTrace(name);
+      const requests = mutations(trace);
+      const applied = effects(trace);
+      const fences = trace.filter((entry) => entry.route === "/publication-authority");
+      assert.equal(applied.length, 0, `${name} must not apply any GitHub effect`);
+      assert.ok(
+        fences.some((entry) => entry.status === 409),
+        `${name} must reach the queue fence`,
+      );
+      assert.equal(
+        requests.length,
+        name === "retry-revocation" ? 1 : 0,
+        `${name} must not dispatch forbidden comments, labels, or closes`,
+      );
+      if (name === "retry-revocation") {
+        assert.equal(requests[0].status, 503);
+        const failedIndex = trace.indexOf(requests[0]);
+        assert.ok(
+          trace
+            .slice(0, failedIndex)
+            .some((entry) => entry.route === "/publication-authority" && entry.status === 200),
+        );
+        assert.ok(
+          trace
+            .slice(failedIndex + 1)
+            .some((entry) => entry.route === "/publication-authority" && entry.status === 409),
+        );
+        assert.match(
+          denied.stderr,
+          /Transient GitHub API failure; retrying/,
+          "the shipped GitHub retry machinery must attempt the fenced retry",
+        );
+      }
+      const reportPath = join(root, "apply-report.json");
+      // Initial authority rejection exits before an item result is opened.
+      const outcomes = existsSync(reportPath) ? JSON.parse(readFileSync(reportPath, "utf8")) : [];
+      assert.match(
+        denied.stdout + denied.stderr,
+        /fence is unavailable or expired|queue publication authority check failed/,
+      );
+      if (name !== "retry-revocation") assert.equal(denied.status, 1);
+      else
+        assert.ok(
+          denied.status !== 0 ||
+            outcomes.some((outcome) => String(outcome.action).startsWith("skipped")),
+        );
+      assert.ok(
+        outcomes.every((outcome) => outcome.action !== "closed"),
+        `${name} must not report a successful close`,
+      );
+      negativeCases[name] = {
+        exit: denied.status,
+        outcomes,
+        mutation_requests: requests.length,
+        github_effects: applied.length,
+        authority_statuses: fences.map((entry) => entry.status),
+        trace,
+      };
+      writeFileSync(join(root, "trace.json"), JSON.stringify(trace, null, 2));
+    }
     for (const path of [
       requestLog,
       join(cliRoot, "stdout.log"),
@@ -419,12 +614,34 @@ if (process.argv[2] === "server") {
       unfenced_background_exit: background.status,
       apply_cli_action: cliOutcome.action,
       apply_cli_public_lease_posts: leasePosts.length,
+      successful_apply: { action: cliOutcome.action, trace: scenarioTrace("success") },
+      negative_apply_cases: negativeCases,
       limits:
         "Controlled queue Durable Object with repository SQLite test storage and HTTP bridge; apply uses the shipped CLI with controlled GitHub and coverage-proof processes. Production auth, model quality, notifications and workflow reaction/progress writes are not exercised. Existing review writers are unchanged in stage 1.",
     };
-    writeFileSync(join(output, "result.json"), JSON.stringify(result, null, 2));
+    const redact = (text) =>
+      text
+        .replaceAll(process.cwd(), "<checkout>")
+        .replaceAll(output, "<proof>")
+        .replaceAll(base, "<local-queue>")
+        .replaceAll("https://queue-proof.invalid", "<queue-origin>");
+    for (const name of ["competing-run", "stale-generation", "retry-revocation"]) {
+      for (const file of [
+        "stdout.log",
+        "stderr.log",
+        "trace.json",
+        "requests.jsonl",
+        "apply-report.json",
+      ]) {
+        const path = join(output, name, file);
+        if (existsSync(path)) writeFileSync(path, redact(readFileSync(path, "utf8")));
+      }
+    }
+    const queueTracePath = join(output, "queue-requests.json");
+    writeFileSync(queueTracePath, redact(readFileSync(queueTracePath, "utf8")));
+    writeFileSync(join(output, "result.json"), redact(JSON.stringify(result, null, 2)));
     writeFileSync(join(output, "rendered-marker.txt"), rendered);
-    console.log(JSON.stringify(result));
+    console.log(redact(JSON.stringify(result)));
   } finally {
     child.kill();
   }
