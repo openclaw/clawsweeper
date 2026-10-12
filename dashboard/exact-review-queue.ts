@@ -10270,9 +10270,6 @@ export class ExactReviewQueue {
     const body = objectValue(value);
     const identity = exactReviewLifecycleIdentity(body);
     const receiptId = typeof body.receipt_id === "string" ? body.receipt_id : "";
-    // Publishers send not_required only for the configured scheduled-router
-    // target with execution enabled, whose missed commands have recovery.
-    // Other targets retain dispatch; durable also covers deferred close proof.
     const outcome = body.outcome === undefined ? "durable" : body.outcome;
     if (!identity || !receiptId || (outcome !== "durable" && outcome !== "not_required")) {
       return json({ error: "invalid_lifecycle_router_receipt" }, 400);
@@ -10291,15 +10288,6 @@ export class ExactReviewQueue {
           outcome !== "not_required"
         )
           throw new Error("manual publication router is not required");
-        // A recorded durable receipt already satisfies a not-required handoff.
-        if (
-          outcome === "not_required" &&
-          existing?.routerReceipts.some(
-            (entry) => entry.outcome === "durable" && entry.operationComplete,
-          )
-        ) {
-          return { projection: existing, duplicate: true };
-        }
         const receipt = existing?.routerReceipts.find((entry) => entry.receiptId === receiptId);
         const terminal = existing?.terminalDisposition;
         const result = this.lifecycleProjectionStore.recordRouterReceiptSync({

@@ -649,7 +649,17 @@ test("batch workflow signs queue ownership, isolates item failures, and commits 
   assert.match(source, /while sleep 60/);
   assert.match(source, /test ! -f "\$heartbeat_failed"/);
   assert.match(source, /node scripts\/prepare-exact-review-batch\.mjs/);
+  assert.match(source, /gh workflow run repair-comment-router\.yml/);
   assert.match(source, /EXACT_REVIEW_GITHUB_REQUEST_REPEAT="\$repeat_revision"/);
+  assert.match(
+    source,
+    /EXACT_REVIEW_GITHUB_REQUEST_OUTCOME=success[\s\S]*?repair:exact-review-batch request-metric/,
+  );
+  assert.match(source, /was submitted too quickly[\s\S]*?repair:exact-review-batch rate-limit/);
+  assert.match(
+    source,
+    /EXACT_REVIEW_GITHUB_REQUEST_OUTCOME=error[\s\S]*?repair:exact-review-batch request-metric/,
+  );
   assert.doesNotMatch(
     source,
     /AUTO_IMPLEMENT|dispatch-issue-implementation|remaining_implementations/,
@@ -687,7 +697,8 @@ test("batch workflow signs queue ownership, isolates item failures, and commits 
   assert.match(source, /Record batch preparation start/);
   assert.match(source, /Record batch preparation finish/);
   assert.match(source, /EXACT_REVIEW_BATCH_OBSERVATION=final_github_apply/);
-  assert.match(source, /COMMENT_ROUTER_RECOVERY_REPO/);
+  assert.match(source, /EXACT_REVIEW_BATCH_OBSERVATION=github_throttle/);
+  assert.match(source, /rate limit\|abuse detection\|was submitted too quickly\|HTTP 429/);
 
   const healthyMembers = workflow.jobs.publish!.steps.find(
     (step) => step.name === "Finalize healthy members under a fenced heartbeat",
@@ -706,80 +717,49 @@ test("batch workflow signs queue ownership, isolates item failures, and commits 
   );
 });
 
-test("publication dispatches a router only outside scheduled recovery coverage", () => {
-  const direct =
-    Object.values(sweep.jobs)
-      .flatMap((job) => job.steps ?? [])
-      .find((step) => step.name === "Finalize direct exact review lifecycle")?.run ?? "";
-  const batch =
+test("legacy batch proof reviews use the normal verdict router; failure recovery remains review-only", () => {
+  const run =
     workflow.jobs.publish!.steps.find(
       (step) => step.name === "Finalize healthy members under a fenced heartbeat",
     )?.run ?? "";
-  for (const [mode, run, startText, endText] of [
-    [
-      "direct",
-      direct,
-      'if [ "${DIRECT_PUBLICATION_SUPERSEDED:-false}" != "true" ]; then',
-      'if [ -n "$lifecycle_router_outcome" ]; then',
-    ],
-    [
-      "batch",
-      batch,
-      'if [ "$receipt_outcome" = "superseded" ]; then',
-      'if [ -n "$lifecycle_router_outcome" ] || [ -n "$lifecycle_terminal" ]; then',
-    ],
+  const start = run.indexOf('if [ "$receipt_outcome" = "superseded" ]; then');
+  const end = run.indexOf(
+    'if [ -n "$lifecycle_router_outcome" ] || [ -n "$lifecycle_terminal" ]; then',
+    start,
+  );
+  assert.ok(start >= 0 && end > start);
+  const branch = run.slice(start, end);
+  for (const action of [
+    "command_proof_result",
+    "failed_review_shard_recovery",
+    "legacy_dispatch",
   ]) {
-    const start = run.indexOf(startText);
-    const end = run.indexOf(endText, start);
-    assert.ok(start >= 0 && end > start);
-    for (const execute of ["", "0", "1"]) {
-      for (const target of ["openclaw/openclaw", "openclaw/clawhub"]) {
-        for (const action of [
-          "legacy_dispatch",
-          "command_proof_result",
-          "failed_review_shard_recovery",
-        ]) {
-          const result = spawnSync(
-            "bash",
-            [
-              "-c",
-              [
-                "source_action=$SOURCE_ACTION_CASE",
-                "target_repo=$TARGET_REPO",
-                "receipt_outcome=accepted; outcome_kind=eligible; outcome_path=fixture.json",
-                "DIRECT_PUBLICATION_SUPERSEDED=false; DIRECT_OUTCOME=fixture.json",
-                "lifecycle_router_outcome=; lifecycle_terminal=",
-                'jq() { [ "$1" = "-e" ] && [ "$2" = ".disposition.routableSyncExpected == true" ]; }',
-                'gh() { printf "router_called\\n"; }',
-                "pnpm() { :; }",
-                "for once in only; do",
-                run.slice(start, end),
-                "done",
-                'printf "outcome=%s\\n" "$lifecycle_router_outcome"',
-              ].join("\n"),
-            ],
-            {
-              encoding: "utf8",
-              env: {
-                ...process.env,
-                TARGET_REPO: target,
-                COMMENT_ROUTER_RECOVERY_REPO: "openclaw/openclaw",
-                COMMENT_ROUTER_RECOVERY_EXECUTE: execute,
-                SOURCE_ACTION_CASE: action,
-              },
-            },
-          );
-          assert.equal(result.status, 0, result.stderr);
-          const dispatch =
-            (execute !== "1" || target !== "openclaw/openclaw") &&
-            action !== "failed_review_shard_recovery";
-          assert.equal(
-            result.stdout,
-            dispatch ? "router_called\noutcome=durable\n" : "outcome=not_required\n",
-            `${mode}: ${target}: ${action}: execute=${execute}`,
-          );
-        }
-      }
+    const result = spawnSync(
+      "bash",
+      [
+        "-c",
+        [
+          'source_action="$SOURCE_ACTION_CASE"',
+          "receipt_outcome=accepted; outcome_kind=eligible; outcome_path=fixture.json",
+          "lifecycle_router_outcome=; lifecycle_terminal=",
+          'jq() { [ "$1" = "-e" ] && [ "$2" = ".disposition.routableSyncExpected == true" ]; }',
+          'gh() { printf "router_called\\n"; }',
+          "pnpm() { :; }",
+          "for once in only; do",
+          branch,
+          "done",
+          'printf "outcome=%s\\n" "$lifecycle_router_outcome"',
+        ].join("\n"),
+      ],
+      { encoding: "utf8", env: { ...process.env, SOURCE_ACTION_CASE: action } },
+    );
+    assert.equal(result.status, 0, result.stderr);
+    if (action !== "failed_review_shard_recovery") {
+      assert.match(result.stdout, /router_called/);
+      assert.match(result.stdout, /outcome=durable/);
+    } else {
+      assert.doesNotMatch(result.stdout, /router_called/);
+      assert.match(result.stdout, /outcome=not_required/);
     }
   }
 });
@@ -796,6 +776,50 @@ test("batch publisher gives canonical supersession precedence over artifact term
   assert.ok(supersededReceipt >= 0);
   assert.ok(staleArtifactPlan > supersededReceipt);
   assert.ok(supersededTerminal > supersededReceipt && supersededTerminal < staleArtifactPlan);
+});
+
+test("direct proof reviews use the normal verdict router; failure recovery remains review-only", () => {
+  const run =
+    Object.values(sweep.jobs)
+      .flatMap((job) => job.steps ?? [])
+      .find((step) => step.name === "Finalize direct exact review lifecycle")?.run ?? "";
+  const start = run.indexOf('if [ "${DIRECT_PUBLICATION_SUPERSEDED:-false}" != "true" ]; then');
+  const end = run.indexOf('if [ -n "$lifecycle_router_outcome" ]; then', start);
+  assert.ok(start >= 0 && end > start);
+  const branch = run.slice(start, end);
+  for (const action of [
+    "command_proof_result",
+    "failed_review_shard_recovery",
+    "legacy_dispatch",
+  ]) {
+    const result = spawnSync(
+      "bash",
+      [
+        "-c",
+        [
+          'source_action="$SOURCE_ACTION_CASE"',
+          "DIRECT_PUBLICATION_SUPERSEDED=false; DIRECT_OUTCOME=fixture.json",
+          "lifecycle_router_outcome=; lifecycle_terminal=",
+          'jq() { [ "$1" = "-e" ] && [ "$2" = ".disposition.routableSyncExpected == true" ]; }',
+          'gh() { printf "router_called\n"; }',
+          branch,
+          'printf "outcome=%s\nterminal=%s\n" "$lifecycle_router_outcome" "$lifecycle_terminal"',
+        ].join("\n"),
+      ],
+      {
+        encoding: "utf8",
+        env: { ...process.env, SOURCE_ACTION_CASE: action },
+      },
+    );
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(
+      result.stdout,
+      action !== "failed_review_shard_recovery"
+        ? "router_called\noutcome=durable\nterminal=\n"
+        : "outcome=not_required\nterminal=\n",
+      action,
+    );
+  }
 });
 
 test("direct publication reads the existing selected bundle instead of producer diagnostics", () => {

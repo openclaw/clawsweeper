@@ -1689,7 +1689,7 @@ test("exact event review publishes directly with a queue-bounded canonical fallb
   assert.match(replayDirect.if ?? "", /direct_lifecycle_recovery == 'true'/);
   assert.match(replayDirect.run ?? "", /router_deferred_coverage/);
   assert.match(replayDirect.run ?? "", /router_not_required/);
-  assert.match(replayDirect.run ?? "", /"\$TARGET_REPO" != "\$COMMENT_ROUTER_RECOVERY_REPO"/);
+  assert.match(replayDirect.run ?? "", /repair-comment-router\.yml/);
   assert.match(replayDirect.run ?? "", /"\$request" lifecycle router-receipt/);
   assert.match(replayDirect.run ?? "", /"\$request" lifecycle terminal-disposition/);
   assert.match(replayDirect.run ?? "", /direct_requeue=true/);
@@ -1717,15 +1717,15 @@ test("exact event review publishes directly with a queue-bounded canonical fallb
     publisher.steps.some((candidate) => candidate.name === "Route synced ClawSweeper verdict"),
     false,
   );
-  const deferredRoute = step(publisher, "Record publication command-router coverage");
+  const deferredRoute = step(publisher, "Queue deferred exact verdict router");
   assert.match(deferredRoute.if ?? "", /publish-event-result\.outcome == 'success'/);
   assert.match(deferredRoute.if ?? "", /routing_deferred == 'true'/);
-  assert.match(deferredRoute.run ?? "", /"\$TARGET_REPO" != "\$COMMENT_ROUTER_RECOVERY_REPO"/);
+  assert.match(deferredRoute.run ?? "", /repair-comment-router\.yml/);
   assert.equal(
     deferredRoute.env?.ITEM_NUMBER,
     "${{ steps.publication-context.outputs.item_number }}",
   );
-  assert.match(deferredRoute.run ?? "", /router_outcome="not_required"/);
+  assert.match(deferredRoute.run ?? "", /-f item_numbers="\$ITEM_NUMBER"/);
   const drift = step(publisher, "Queue fresh review after source drift");
   assert.match(drift.if ?? "", /requeue_latest == 'true'/);
   assert.match(drift.if ?? "", /legacy-exact-artifact\.outputs\.legacy_tupleless == 'true'/);
@@ -1996,7 +1996,7 @@ test("exact event publication derives lifecycle receipt and final command acknow
     assert.ok(value, `missing step: ${name}`);
     return value;
   };
-  const router = step("Record publication command-router coverage");
+  const router = step("Queue deferred exact verdict router");
   const canonical = step("Record fallback canonical exact review lifecycle receipt");
   assert.match(canonical.if ?? "", /remote_tuple_verified == 'true'/);
   assert.match(
@@ -2014,10 +2014,7 @@ test("exact event publication derives lifecycle receipt and final command acknow
     "${{ steps.publication-context.outputs.publisher_lease_revision }}",
   );
   assert.match(router.run ?? "", /internal\/exact-review\/lifecycle\/router-receipt/);
-  assert.match(
-    router.run ?? "",
-    /lifecycle router-receipt \\\n\s*--outcome "\$router_outcome" --receipt-id-prefix router\)/,
-  );
+  assert.match(router.run ?? "", /lifecycle router-receipt \\\n\s*--receipt-id-prefix router\)/);
 
   const deferredCloseProof = step("Record deferred close-proof exact review lifecycle receipt");
   assert.match(deferredCloseProof.if ?? "", /completion_kind == 'deferred'/);

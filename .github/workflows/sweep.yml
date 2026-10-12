@@ -1332,10 +1332,6 @@ jobs:
         if: ${{ steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.direct-exact-review-publication.outputs.accepted == 'true' }}
         env:
           GH_TOKEN: ${{ github.token }}
-          COMMENT_ROUTER_RECOVERY_REPO: ${{ vars.CLAWSWEEPER_TARGET_REPO || 'openclaw/openclaw' }}
-          COMMENT_ROUTER_RECOVERY_EXECUTE: ${{ vars.CLAWSWEEPER_COMMENT_ROUTER_EXECUTE || '0' }}
-          CLAWSWEEPER_COMMENT_LOOKBACK_MINUTES: ${{ vars.CLAWSWEEPER_COMMENT_LOOKBACK_MINUTES || '180' }}
-          CLAWSWEEPER_COMMENT_MAX_COMMENTS: ${{ vars.CLAWSWEEPER_COMMENT_MAX_COMMENTS || '1000' }}
           CLAWSWEEPER_GITHUB_POOL_CLASS: repository_actions
           CLAWSWEEPER_GITHUB_STAGE: publication_router
           TARGET_REPO: ${{ steps.target.outputs.target_repo }}
@@ -1348,6 +1344,8 @@ jobs:
           DIRECT_OUTCOME: .artifacts/direct-publication-outcome.json
           QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
           CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
+          CLAWSWEEPER_COMMENT_LOOKBACK_MINUTES: ${{ vars.CLAWSWEEPER_COMMENT_LOOKBACK_MINUTES || '180' }}
+          CLAWSWEEPER_COMMENT_MAX_COMMENTS: ${{ vars.CLAWSWEEPER_COMMENT_MAX_COMMENTS || '1000' }}
         run: |
           set -euo pipefail
           source scripts/control-plane-curl.sh
@@ -1377,15 +1375,16 @@ jobs:
             elif [ "$source_action" = "failed_review_shard_recovery" ] || [ "$source_action" = "manual_explicit_review" ]; then
               lifecycle_router_outcome="not_required"
             elif jq -e '.disposition.routableSyncExpected == true' "$DIRECT_OUTCOME" >/dev/null; then
-              lifecycle_router_outcome="not_required"
-              if [ "$COMMENT_ROUTER_RECOVERY_EXECUTE" != "1" ] || [ "$TARGET_REPO" != "$COMMENT_ROUTER_RECOVERY_REPO" ]; then
-                gh workflow run repair-comment-router.yml --repo "$GITHUB_REPOSITORY" --ref main \
-                  -f execute=true -f target_repo="$TARGET_REPO" -f target_branch="$TARGET_BRANCH" \
-                  -f item_numbers="$ITEM_NUMBER" \
-                  -f lookback_minutes="$CLAWSWEEPER_COMMENT_LOOKBACK_MINUTES" \
-                  -f max_comments="$CLAWSWEEPER_COMMENT_MAX_COMMENTS"
-                lifecycle_router_outcome="durable"
-              fi
+              gh workflow run repair-comment-router.yml \
+                --repo "$GITHUB_REPOSITORY" \
+                --ref main \
+                -f execute=true \
+                -f target_repo="$TARGET_REPO" \
+                -f target_branch="$TARGET_BRANCH" \
+                -f item_numbers="$ITEM_NUMBER" \
+                -f lookback_minutes="$CLAWSWEEPER_COMMENT_LOOKBACK_MINUTES" \
+                -f max_comments="$CLAWSWEEPER_COMMENT_MAX_COMMENTS"
+              lifecycle_router_outcome="durable"
             elif jq -e '.disposition.deferredCloseCoverageExpected == true' "$DIRECT_OUTCOME" >/dev/null; then
               # The close proof remains a separate later concern. The durable
               # handoff means this review itself is complete.
@@ -1970,8 +1969,6 @@ jobs:
         if: ${{ steps.publication-context.outputs.claimed == 'true' && steps.publication-context.outputs.direct_lifecycle_recovery == 'true' }}
         env:
           GH_TOKEN: ${{ github.token }}
-          COMMENT_ROUTER_RECOVERY_REPO: ${{ vars.CLAWSWEEPER_TARGET_REPO || 'openclaw/openclaw' }}
-          COMMENT_ROUTER_RECOVERY_EXECUTE: ${{ vars.CLAWSWEEPER_COMMENT_ROUTER_EXECUTE || '0' }}
           TARGET_REPO: ${{ steps.publication-context.outputs.target_repo }}
           TARGET_BRANCH: ${{ steps.publication-context.outputs.target_branch }}
           ITEM_NUMBER: ${{ steps.publication-context.outputs.item_number }}
@@ -2014,17 +2011,19 @@ jobs:
           else
             case "$lifecycle_kind" in
               router)
-                router_outcome="not_required"
-                if [ "$COMMENT_ROUTER_RECOVERY_EXECUTE" != "1" ] || [ "$TARGET_REPO" != "$COMMENT_ROUTER_RECOVERY_REPO" ]; then
-                  gh workflow run repair-comment-router.yml --repo "$GITHUB_REPOSITORY" --ref main \
-                    -f execute=true -f target_repo="$TARGET_REPO" -f target_branch="$TARGET_BRANCH" \
-                    -f item_numbers="$ITEM_NUMBER" \
-                    -f lookback_minutes="$CLAWSWEEPER_COMMENT_LOOKBACK_MINUTES" \
-                    -f max_comments="$CLAWSWEEPER_COMMENT_MAX_COMMENTS"
-                  router_outcome="durable"
-                fi
+                # Build the body before the router dispatch. A body error then
+                # stops the step before any side effect.
                 lifecycle_payload="$(node "$request" lifecycle router-receipt \
-                  --outcome "$router_outcome" --receipt-id-prefix router-direct-recovery)"
+                  --outcome durable --receipt-id-prefix router-direct-recovery)"
+                gh workflow run repair-comment-router.yml \
+                  --repo "$GITHUB_REPOSITORY" \
+                  --ref main \
+                  -f execute=true \
+                  -f target_repo="$TARGET_REPO" \
+                  -f target_branch="$TARGET_BRANCH" \
+                  -f item_numbers="$ITEM_NUMBER" \
+                  -f lookback_minutes="$CLAWSWEEPER_COMMENT_LOOKBACK_MINUTES" \
+                  -f max_comments="$CLAWSWEEPER_COMMENT_MAX_COMMENTS"
                 post_lifecycle router-receipt "$lifecycle_payload"
                 ;;
               router_deferred_coverage)
@@ -2359,38 +2358,36 @@ jobs:
           control_plane_signed_post "$queue_url/internal/exact-review/lifecycle/canonical-receipt" "$payload" \
             --fail --silent --show-error --connect-timeout 5 --max-time 20 >/dev/null
 
-      - name: Record publication command-router coverage
-        id: record-publication-router-coverage
+      - name: Queue deferred exact verdict router
+        id: queue-deferred-verdict-router
         if: ${{ steps.publication-context.outputs.claimed == 'true' && steps.publication-context.outputs.direct_lifecycle_recovery != 'true' && (fromJSON(steps.publication-context.outputs.decision).sourceAction != 'failed_review_shard_recovery' && fromJSON(steps.publication-context.outputs.decision).publicationPolicy != 'record_comment_only') && steps.publish-event-result.outcome == 'success' && steps.publish-event-result.outputs.remote_tuple_verified == 'true' && steps.publish-event-result.outputs.routing_deferred == 'true' }}
         env:
           GH_TOKEN: ${{ github.token }}
-          COMMENT_ROUTER_RECOVERY_REPO: ${{ vars.CLAWSWEEPER_TARGET_REPO || 'openclaw/openclaw' }}
-          COMMENT_ROUTER_RECOVERY_EXECUTE: ${{ vars.CLAWSWEEPER_COMMENT_ROUTER_EXECUTE || '0' }}
           CLAWSWEEPER_GITHUB_POOL_CLASS: repository_actions
           CLAWSWEEPER_GITHUB_STAGE: publication_router
-          TARGET_BRANCH: ${{ steps.publication-context.outputs.target_branch }}
-          CLAWSWEEPER_COMMENT_LOOKBACK_MINUTES: ${{ vars.CLAWSWEEPER_COMMENT_LOOKBACK_MINUTES || '180' }}
-          CLAWSWEEPER_COMMENT_MAX_COMMENTS: ${{ vars.CLAWSWEEPER_COMMENT_MAX_COMMENTS || '1000' }}
           TARGET_REPO: ${{ steps.publication-context.outputs.target_repo }}
+          TARGET_BRANCH: ${{ steps.publication-context.outputs.target_branch }}
           ITEM_NUMBER: ${{ steps.publication-context.outputs.item_number }}
           FENCE_KEY: ${{ steps.publication-context.outputs.publisher_item_key }}
           REVISION: ${{ steps.publication-context.outputs.publisher_lease_revision }}
           QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
           CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
+          CLAWSWEEPER_COMMENT_LOOKBACK_MINUTES: ${{ vars.CLAWSWEEPER_COMMENT_LOOKBACK_MINUTES || '180' }}
+          CLAWSWEEPER_COMMENT_MAX_COMMENTS: ${{ vars.CLAWSWEEPER_COMMENT_MAX_COMMENTS || '1000' }}
         run: |
-          set -euo pipefail
           source scripts/control-plane-curl.sh
-          router_outcome="not_required"
-          if [ "$COMMENT_ROUTER_RECOVERY_EXECUTE" != "1" ] || [ "$TARGET_REPO" != "$COMMENT_ROUTER_RECOVERY_REPO" ]; then
-            gh workflow run repair-comment-router.yml --repo "$GITHUB_REPOSITORY" --ref main \
-              -f execute=true -f target_repo="$TARGET_REPO" -f target_branch="$TARGET_BRANCH" \
-              -f item_numbers="$ITEM_NUMBER" \
-              -f lookback_minutes="$CLAWSWEEPER_COMMENT_LOOKBACK_MINUTES" \
-              -f max_comments="$CLAWSWEEPER_COMMENT_MAX_COMMENTS"
-            router_outcome="durable"
-          fi
+          gh workflow run repair-comment-router.yml \
+            --repo "$GITHUB_REPOSITORY" \
+            --ref main \
+            -f execute=true \
+            -f target_repo="$TARGET_REPO" \
+            -f target_branch="$TARGET_BRANCH" \
+            -f item_numbers="$ITEM_NUMBER" \
+            -f lookback_minutes="$CLAWSWEEPER_COMMENT_LOOKBACK_MINUTES" \
+            -f max_comments="$CLAWSWEEPER_COMMENT_MAX_COMMENTS"
+
           payload="$(node dist/repair/exact-review-queue-request.js lifecycle router-receipt \
-            --outcome "$router_outcome" --receipt-id-prefix router)"
+            --receipt-id-prefix router)"
           queue_url="${QUEUE_URL%/}"
           control_plane_signed_post "$queue_url/internal/exact-review/lifecycle/router-receipt" "$payload" \
             --fail --silent --show-error --connect-timeout 5 --max-time 20 >/dev/null
@@ -2503,7 +2500,7 @@ jobs:
           echo "confirmed=true" >> "$GITHUB_OUTPUT"
 
       - name: React to target item completion
-        if: ${{ steps.publication-context.outputs.claimed == 'true' && steps.publication-context.outputs.direct_lifecycle_recovery != 'true' && steps.publish-event-result.outputs.requeue_latest != 'true' && (steps.publish-event-result.outputs.terminal_closed == 'true' || steps.publish-event-result.outputs.guarded_open == 'true' || steps.publish-event-result.outputs.policy_noop == 'true' || steps.record-publication-router-coverage.outcome == 'success' || ((fromJSON(steps.publication-context.outputs.decision).sourceAction == 'failed_review_shard_recovery' || fromJSON(steps.publication-context.outputs.decision).publicationPolicy == 'record_comment_only') && steps.publish-event-result.outputs.remote_tuple_verified == 'true')) }}
+        if: ${{ steps.publication-context.outputs.claimed == 'true' && steps.publication-context.outputs.direct_lifecycle_recovery != 'true' && steps.publish-event-result.outputs.requeue_latest != 'true' && (steps.publish-event-result.outputs.terminal_closed == 'true' || steps.publish-event-result.outputs.guarded_open == 'true' || steps.publish-event-result.outputs.policy_noop == 'true' || steps.queue-deferred-verdict-router.outcome == 'success' || ((fromJSON(steps.publication-context.outputs.decision).sourceAction == 'failed_review_shard_recovery' || fromJSON(steps.publication-context.outputs.decision).publicationPolicy == 'record_comment_only') && steps.publish-event-result.outputs.remote_tuple_verified == 'true')) }}
         continue-on-error: true
         env:
           GH_TOKEN: ${{ steps.target-write-token.outputs.token }}
@@ -2575,7 +2572,7 @@ jobs:
           REQUEUE_LATEST: ${{ steps.publish-event-result.outputs.requeue_latest }}
           LEGACY_TUPLELESS: ${{ steps.legacy-exact-artifact.outputs.legacy_tupleless }}
           SOURCE_DRIFT_OUTCOME: ${{ steps.queue-source-drift-review.outcome }}
-          DEFERRED_ROUTE_OUTCOME: ${{ steps.record-publication-router-coverage.outcome }}
+          DEFERRED_ROUTE_OUTCOME: ${{ steps.queue-deferred-verdict-router.outcome }}
           FAILURE_KIND: ${{ steps.publish-event-result.outputs.failure_kind }}
           DOWNLOAD_OUTCOME: ${{ steps.download-exact-review-bundle.outcome }}
           VALIDATE_OUTCOME: ${{ steps.validate-exact-review-bundle.outcome }}

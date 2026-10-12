@@ -414,7 +414,7 @@ test("publication workflows retain v1 metrics while wiring bounded v2 observatio
     "Download exact review artifact bundle",
     "Record artifact download transport boundary",
     "Publish event result and apply safe close",
-    "Record publication command-router coverage",
+    "Queue deferred exact verdict router",
     "Submit artifact-publication GitHub egress telemetry",
     "Fail unsuccessful exact review publication",
   ]);
@@ -428,7 +428,7 @@ test("publication workflows retain v1 metrics while wiring bounded v2 observatio
   );
   for (const step of [
     direct.find((candidate) => candidate.id === "finalize-direct-exact-review-lifecycle"),
-    artifact.find((candidate) => candidate.id === "record-publication-router-coverage"),
+    artifact.find((candidate) => candidate.id === "queue-deferred-verdict-router"),
   ] as Array<{ env?: Record<string, string> } | undefined>) {
     assert.equal(step?.env?.CLAWSWEEPER_GITHUB_POOL_CLASS, "repository_actions");
     assert.equal(step?.env?.CLAWSWEEPER_GITHUB_STAGE, "publication_router");

@@ -161,31 +161,13 @@ The command reads `TARGET_REPO`, `ITEM_NUMBER`, `FENCE_KEY` and `REVISION`, and
 accepts only the outcomes and terminal kinds that the queue accepts. A receipt id
 is `--receipt-id-prefix` plus the run id and run attempt.
 
-Review publication for the configured scheduled-router target
-(`CLAWSWEEPER_TARGET_REPO`, default `openclaw/openclaw`) records `router-receipt`
-with `outcome=not_required` only while scheduled execution is enabled
-(`CLAWSWEEPER_COMMENT_ROUTER_EXECUTE=1`); it does not dispatch a comment-history
-scan. Other targets, or disabled scheduled execution, retain the post-publication
-router dispatch and `durable` receipt. The Worker still records that
-receipt and the terminal `review_completed_routed` disposition atomically, then
-drives any required command-status acknowledgement independently. Deferred
-close-proof coverage retains its `durable` receipt and existing proof owner.
-The legacy `routing_deferred` output describes an open, matching, unguarded
-publication tuple, not an unprocessed command or verdict action.
-
-Real commands arrive through `clawsweeper_comment` repository dispatch and
-Worker command intake. The comment router's five-minute schedule remains the
-bounded recovery producer, using its persisted scan cursor and command-version
-ledger; `CLAWSWEEPER_COMMENT_ROUTER_EXECUTE=1` enables execution on that schedule.
-Publishing a review neither acknowledges a command nor replaces this recovery.
-
 The direct-lifecycle replay in `event-review-publish` runs before checkout. Its
 bootstrap step also downloads `src/repair/exact-review-queue-request.ts`, pinned
 to `GITHUB_SHA` like the curl helper, into
 `RUNNER_TEMP/exact-review-queue-request.mts`. The runner Node strips the types,
 so the source file runs without a build; it imports only Node built-ins. The
 replay builds each body before its side effect, so a body error stops the step
-before any queue write.
+before the router dispatch or any queue write.
 
 The `legacy-event-queue-intake` job has no checkout. Its bootstrap step downloads
 the same command source. `enqueue route` prints the queue path for the

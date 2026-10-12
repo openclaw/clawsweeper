@@ -200,15 +200,6 @@ try {
         } else if (arm === "candidate") {
           assert.equal(state.drivers.length, 1);
         }
-        if (route === "router-receipt" && arm === "candidate") {
-          const covered = await call("/internal/exact-review/lifecycle/router-receipt", {
-            ...wire,
-            outcome: "not_required",
-            receipt_id: `covered:${identity.fenceKey}`,
-          });
-          assert.equal(covered.ok, true);
-          assert.deepEqual(await call("/__proof/read", identity), state);
-        }
         results.push({
           arm,
           route,
@@ -220,37 +211,6 @@ try {
           outbound: state.outbound,
         });
       }
-    }
-    for (const commandOriginated of [false, true]) {
-      const identity = {
-        canonicalTargetKey: "openclaw/clawsweeper#706",
-        fenceKey: `proof:${arm}:publication-without-router:${commandOriginated}`,
-        revision: 1,
-      };
-      await call("/__proof/seed", { ...identity, commandOriginated });
-      active = { kind: "normal", calls: [], identity };
-      const receipt = await call("/internal/exact-review/lifecycle/router-receipt", {
-        canonical_target_key: identity.canonicalTargetKey,
-        fence_key: identity.fenceKey,
-        revision: identity.revision,
-        outcome: "not_required",
-        receipt_id: `router-batch:${identity.fenceKey}`,
-      });
-      assert.equal(receipt.lifecycle_state, commandOriginated ? "acknowledgement_pending" : "completed");
-      await call("/__proof/reconstruct", {});
-      const state = await call("/__proof/read", identity);
-      assert.equal(state.projection.routerReceipt.outcome, "not_required");
-      assert.equal(state.projection.terminalDisposition.kind, "review_completed_routed");
-      assert.equal(state.drivers.length, commandOriginated ? 1 : 0);
-      assert.equal(state.outbound, 0);
-      results.push({
-        arm,
-        scenario: "publication-without-router",
-        commandOriginated,
-        state: receipt.lifecycle_state,
-        drivers: state.drivers.length,
-        routerDispatches: state.outbound,
-      });
     }
   }
   console.log(JSON.stringify(results, null, 2));

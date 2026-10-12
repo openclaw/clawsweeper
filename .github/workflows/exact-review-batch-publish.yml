@@ -157,8 +157,6 @@ jobs:
         env:
           CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
           GH_TOKEN: ${{ github.token }}
-          COMMENT_ROUTER_RECOVERY_REPO: ${{ vars.CLAWSWEEPER_TARGET_REPO || 'openclaw/openclaw' }}
-          COMMENT_ROUTER_RECOVERY_EXECUTE: ${{ vars.CLAWSWEEPER_COMMENT_ROUTER_EXECUTE || '0' }}
           CLAWSWEEPER_COMMENT_LOOKBACK_MINUTES: ${{ vars.CLAWSWEEPER_COMMENT_LOOKBACK_MINUTES || '180' }}
           CLAWSWEEPER_COMMENT_MAX_COMMENTS: ${{ vars.CLAWSWEEPER_COMMENT_MAX_COMMENTS || '1000' }}
         run: |
@@ -259,36 +257,38 @@ jobs:
             elif [ "$publication_policy" = "record_comment_only" ] || [ "$source_action" = "failed_review_shard_recovery" ]; then
               lifecycle_router_outcome="not_required"
             elif jq -e '.disposition.routableSyncExpected == true' "$outcome_path" >/dev/null; then
-              lifecycle_router_outcome="not_required"
-              if [ "$COMMENT_ROUTER_RECOVERY_EXECUTE" != "1" ] || [ "$target_repo" != "$COMMENT_ROUTER_RECOVERY_REPO" ]; then
-                github_apply_error="$(mktemp)"
-                if gh workflow run repair-comment-router.yml --repo "$GITHUB_REPOSITORY" --ref main \
-                  -f execute=true -f target_repo="$target_repo" -f target_branch="$target_branch" \
-                  -f item_numbers="$item_number" \
-                  -f lookback_minutes="$CLAWSWEEPER_COMMENT_LOOKBACK_MINUTES" \
-                  -f max_comments="$CLAWSWEEPER_COMMENT_MAX_COMMENTS" 2>"$github_apply_error"; then
+              github_apply_error="$(mktemp)"
+              if gh workflow run repair-comment-router.yml \
+                --repo "$GITHUB_REPOSITORY" \
+                --ref main \
+                -f execute=true \
+                -f target_repo="$target_repo" \
+                -f target_branch="$target_branch" \
+                -f item_numbers="$item_number" \
+                -f lookback_minutes="$CLAWSWEEPER_COMMENT_LOOKBACK_MINUTES" \
+                -f max_comments="$CLAWSWEEPER_COMMENT_MAX_COMMENTS" \
+                2>"$github_apply_error"; then
+                EXACT_REVIEW_GITHUB_RATE_LIMIT_SCOPE=repository_actions \
+                  EXACT_REVIEW_GITHUB_REQUEST_OUTCOME=success \
+                  pnpm run --silent repair:exact-review-batch request-metric
+                rm -f "$github_apply_error"
+              else
+                github_apply_status=$?
+                if grep -Eqi 'rate limit|abuse detection|was submitted too quickly|HTTP 429' "$github_apply_error"; then
                   EXACT_REVIEW_GITHUB_RATE_LIMIT_SCOPE=repository_actions \
-                    EXACT_REVIEW_GITHUB_REQUEST_OUTCOME=success \
-                    pnpm run --silent repair:exact-review-batch request-metric
-                  rm -f "$github_apply_error"
+                    pnpm run --silent repair:exact-review-batch rate-limit || true
+                  EXACT_REVIEW_BATCH_OBSERVATION=github_throttle \
+                    pnpm run --silent repair:exact-review-batch observe || true
                 else
-                  github_apply_status=$?
-                  if grep -Eqi 'rate limit|abuse detection|was submitted too quickly|HTTP 429' "$github_apply_error"; then
-                    EXACT_REVIEW_GITHUB_RATE_LIMIT_SCOPE=repository_actions \
-                      pnpm run --silent repair:exact-review-batch rate-limit || true
-                    EXACT_REVIEW_BATCH_OBSERVATION=github_throttle \
-                      pnpm run --silent repair:exact-review-batch observe || true
-                  else
-                    EXACT_REVIEW_GITHUB_RATE_LIMIT_SCOPE=repository_actions \
-                      EXACT_REVIEW_GITHUB_REQUEST_OUTCOME=error \
-                      pnpm run --silent repair:exact-review-batch request-metric || true
-                  fi
-                  cat "$github_apply_error" >&2
-                  rm -f "$github_apply_error"
-                  exit "$github_apply_status"
+                  EXACT_REVIEW_GITHUB_RATE_LIMIT_SCOPE=repository_actions \
+                    EXACT_REVIEW_GITHUB_REQUEST_OUTCOME=error \
+                    pnpm run --silent repair:exact-review-batch request-metric || true
                 fi
-                lifecycle_router_outcome="durable"
+                cat "$github_apply_error" >&2
+                rm -f "$github_apply_error"
+                exit "$github_apply_status"
               fi
+              lifecycle_router_outcome="durable"
             elif jq -e '.disposition.deferredCloseCoverageExpected == true' "$outcome_path" >/dev/null; then
               # Target closure remains a later proof-lane concern, while the
               # durable handoff completes this review lifecycle.
