@@ -265,11 +265,57 @@ Exact issue and PR review events do not use this path: the target dispatcher
 enqueues them directly into the exact-review queue with its GitHub Actions OIDC
 identity and sends `repository_dispatch` only as a fallback, so they cost no
 ClawSweeper Actions run. See
-[target-dispatcher.md](target-dispatcher.md#direct-queue-intake). General
-activity has no queue consumer, so it stays on `repository_dispatch`.
+[target-dispatcher.md](target-dispatcher.md#direct-queue-intake).
 
-Target repositories that already dispatch exact ClawSweeper work can also
-forward general activity:
+General activity for the App's subscribed `issues`, `issue_comment`, and
+`pull_request` events can go directly from the signed `/github/webhook` receiver
+to the Gateway. `src/repair/github-activity.ts` owns normalization, routine-event
+filtering, and rendering for both the Worker and the retained CLI relay.
+Forwarding runs only after signature, repository eligibility, and public
+visibility checks, independently of review/command admission.
+
+Set the repository variable `CLAWSWEEPER_GITHUB_ACTIVITY_FROM_WEBHOOK=1` on
+`openclaw/clawsweeper` and deploy the dashboard to enable it. The deploy workflow
+syncs the existing hook URL/token Actions secrets into Worker secrets and copies
+the Discord target, agent ID, and enablement variable into deploy configuration.
+The separate `CLAWSWEEPER_GITHUB_ACTIVITY_RELAY_DISABLED=1` repository variable
+makes `github-activity.yml` skip covered native events and covered
+`repository_dispatch` payloads, including older target dispatchers. Both gates
+default off. Deploy with both unset first; activate and prove Worker forwarding
+before setting `RELAY_DISABLED` in ClawSweeper and OpenClaw in the same cutover
+window. This deliberately allows brief duplicate delivery during verification
+rather than silently losing activity before a successful deploy. The two
+transports have different keys, so duplicates in that overlap are possible.
+Rollback restores both relay variables before disabling Worker forwarding.
+
+The Worker responds without waiting for the hook. Its `waitUntil` task makes at
+most two attempts with a 12-second HTTP deadline each and one 1-second backoff
+for transient errors: a maximum 25-second request budget inside the 30-second
+post-response lifetime. The agent timeout remains 60 seconds; long-running
+turns may continue after the client deadline. Structured `github_activity_hook`
+logs report filtered, admitted, delivered, suppressed, not-requested, or failed
+outcomes without hook configuration or event bodies.
+
+This is deliberately **best effort**, not a durable outbox. Exhausted retries or
+a Worker interruption may lose activity. GitHub does not automatically redeliver
+failed webhooks and marks responses over 10 seconds as failed
+([delivery failure policy](https://docs.github.com/en/webhooks/using-webhooks/handling-failed-webhook-deliveries)).
+The existing Gateway idempotency key uses the verified `x-github-delivery` as its
+seed, so a redelivery keeps the same key. This differs from the legacy relay's
+receiver-run fallback for numeric comment/review IDs; do not enable overlapping
+covered relay delivery and rely on cross-route deduplication. Actions-wide
+cancel-in-progress coalescing is not reproduced by the Worker.
+
+The App currently subscribes only to the three event families above.
+`github-activity.yml` therefore retains pull-request reviews and review comments,
+plus its failed workflow-completion sources (`sweep`, `repair cluster worker`,
+`repair publish cluster results`, `commit review`). Target push-to-main activity
+also stays on `repository_dispatch`; `push` is not an App subscription. Older
+copies may still start skipped relay runs for covered events until their
+manually installed activity steps are updated; there is no central sync.
+
+For these uncovered events, target repositories can continue forwarding compact
+activity through the retained relay:
 
 ```yaml
 - name: Dispatch GitHub activity to ClawSweeper

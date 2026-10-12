@@ -6,6 +6,11 @@ on:
     branches: [main]
     paths:
       - "dashboard/**"
+      - "src/repair/github-activity.ts"
+      - "src/repair/openclaw-hook.ts"
+      - "src/repair/json-types.ts"
+      - "src/clawsweeper-bot-identity.ts"
+      - "src/value-coerce.ts"
       - "scripts/dashboard-refresh-ci.mjs"
       - "scripts/dashboard-smoke.mjs"
       - "package.json"
@@ -34,6 +39,11 @@ jobs:
       CLAWSWEEPER_STATUS_INGEST_TOKEN: ${{ secrets.CLAWSWEEPER_STATUS_INGEST_TOKEN }}
       CLAWSWEEPER_APP_PRIVATE_KEY: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
       CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
+      CLAWSWEEPER_OPENCLAW_HOOK_URL: ${{ secrets.CLAWSWEEPER_OPENCLAW_HOOK_URL }}
+      CLAWSWEEPER_OPENCLAW_HOOK_TOKEN: ${{ secrets.CLAWSWEEPER_OPENCLAW_HOOK_TOKEN }}
+      CLAWSWEEPER_DISCORD_TARGET: ${{ vars.CLAWSWEEPER_DISCORD_TARGET }}
+      CLAWSWEEPER_OPENCLAW_AGENT_ID: ${{ vars.CLAWSWEEPER_OPENCLAW_AGENT_ID || 'clawsweeper' }}
+      CLAWSWEEPER_GITHUB_ACTIVITY_FROM_WEBHOOK: ${{ vars.CLAWSWEEPER_GITHUB_ACTIVITY_FROM_WEBHOOK || '0' }}
     steps:
       - uses: actions/checkout@v7
 
@@ -49,6 +59,12 @@ jobs:
           cp dashboard/wrangler.toml dashboard/wrangler.deploy.toml
           printf 'INGEST_TOKEN = "%s"\n' "$CLAWSWEEPER_STATUS_INGEST_TOKEN" >> dashboard/wrangler.deploy.toml
           printf 'CLAWSWEEPER_DEPLOY_SHA = "%s"\n' "$GITHUB_SHA" >> dashboard/wrangler.deploy.toml
+          node -e '
+            const fs = require("node:fs");
+            const names = ["CLAWSWEEPER_DISCORD_TARGET", "CLAWSWEEPER_OPENCLAW_AGENT_ID", "CLAWSWEEPER_GITHUB_ACTIVITY_FROM_WEBHOOK"];
+            const lines = names.map((name) => `${name} = ${JSON.stringify(process.env[name] || "")}\n`).join("");
+            fs.appendFileSync("dashboard/wrangler.deploy.toml", lines);
+          '
           echo "config=dashboard/wrangler.deploy.toml" >> "$GITHUB_OUTPUT"
 
       - name: Sync Worker secrets
@@ -61,7 +77,12 @@ jobs:
           trap 'rm -f "$secrets_file" "$response_file"' EXIT
           node -e '
             const fs = require("node:fs");
-            const names = ["CLAWSWEEPER_APP_PRIVATE_KEY", "CLAWSWEEPER_WEBHOOK_SECRET"];
+            const names = [
+              "CLAWSWEEPER_APP_PRIVATE_KEY",
+              "CLAWSWEEPER_WEBHOOK_SECRET",
+              "CLAWSWEEPER_OPENCLAW_HOOK_URL",
+              "CLAWSWEEPER_OPENCLAW_HOOK_TOKEN",
+            ];
             const secrets = Object.fromEntries(
               names.map((name) => {
                 const text = process.env[name] || "";

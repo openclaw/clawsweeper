@@ -1,4 +1,4 @@
-import { isJsonObject } from "./json-types.js";
+import { isJsonObject } from "./json-types.ts";
 
 export type OpenClawHookConfig = {
   hookUrl: string;
@@ -85,19 +85,21 @@ export async function postOpenClawAgentHook({
   fetcher,
   post,
   retryDelaysMs = DEFAULT_RETRY_DELAYS_MS,
+  fetchTimeoutMs = (config.timeoutSeconds + 15) * 1000,
   sleep = delay,
 }: {
   config: OpenClawHookConfig;
   fetcher: typeof fetch;
   post: OpenClawHookPost;
   retryDelaysMs?: number[];
+  fetchTimeoutMs?: number;
   sleep?: (ms: number) => Promise<void>;
 }): Promise<OpenClawHookPostResult> {
   const attempts = Math.max(1, Math.floor(config.retryAttempts));
   let lastError: unknown = null;
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
     try {
-      return await postOpenClawAgentHookOnce({ config, fetcher, post });
+      return await postOpenClawAgentHookOnce({ config, fetcher, post, fetchTimeoutMs });
     } catch (error) {
       lastError = error;
       if (attempt >= attempts || !isTransientOpenClawHookError(error)) {
@@ -113,14 +115,16 @@ async function postOpenClawAgentHookOnce({
   config,
   fetcher,
   post,
+  fetchTimeoutMs,
 }: {
   config: OpenClawHookConfig;
   fetcher: typeof fetch;
   post: OpenClawHookPost;
+  fetchTimeoutMs: number;
 }): Promise<OpenClawHookPostResult> {
   const response = await fetcher(config.hookUrl, {
     method: "POST",
-    signal: AbortSignal.timeout((config.timeoutSeconds + 15) * 1000),
+    signal: AbortSignal.timeout(fetchTimeoutMs),
     headers: {
       authorization: `Bearer ${config.token}`,
       "content-type": "application/json",
@@ -158,11 +162,13 @@ async function postOpenClawAgentHookOnce({
 }
 
 export class OpenClawHookHttpError extends Error {
-  constructor(
-    readonly status: number,
-    readonly body: string,
-  ) {
+  readonly status: number;
+  readonly body: string;
+
+  constructor(status: number, body: string) {
     super(`OpenClaw hook returned ${status}: ${body.slice(0, 500)}`);
+    this.status = status;
+    this.body = body;
   }
 }
 

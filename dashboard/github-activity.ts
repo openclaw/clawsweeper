@@ -1,0 +1,93 @@
+import {
+  normalizeGithubActivity,
+  renderGithubActivityMessage,
+  routineGithubActivityReason,
+} from "../src/repair/github-activity.ts";
+import {
+  isConclusiveHookDelivery,
+  postOpenClawAgentHook,
+  resolveOpenClawHookConfig,
+} from "../src/repair/openclaw-hook.ts";
+
+export type GithubActivityEnv = Record<string, string | undefined>;
+
+// These are the App's subscribed events, not every event the normalizer supports.
+const WEBHOOK_EVENTS: Record<string, true> = {
+  issues: true,
+  issue_comment: true,
+  pull_request: true,
+};
+
+export function githubWebhookActivityEnabled(env: GithubActivityEnv, event: string): boolean {
+  return env.CLAWSWEEPER_GITHUB_ACTIVITY_FROM_WEBHOOK === "1" && WEBHOOK_EVENTS[event] === true;
+}
+
+export async function forwardGithubWebhookActivity(
+  input: {
+    event: string;
+    payload: unknown;
+    deliveryId: string | null;
+    env: GithubActivityEnv;
+  },
+  options: {
+    fetch?: typeof fetch;
+    now?: () => Date;
+    log?: (value: unknown) => void;
+  } = {},
+): Promise<void> {
+  if (!githubWebhookActivityEnabled(input.env, input.event)) {
+    return;
+  }
+  const log = options.log ?? ((value: unknown) => console.log(JSON.stringify(value)));
+  const record = (outcome: string, reason?: string) =>
+    log({
+      event: "github_activity_hook",
+      source_event: input.event,
+      delivery_id: input.deliveryId,
+      outcome,
+      ...(reason ? { reason } : {}),
+    });
+  if (!input.deliveryId) {
+    record("failed", "missing_delivery_id");
+    return;
+  }
+  const activity = normalizeGithubActivity({
+    eventName: input.event,
+    payload: input.payload,
+    deliveryId: input.deliveryId,
+  });
+  if (!activity) return;
+  const reason = routineGithubActivityReason(activity);
+  if (reason) {
+    record("filtered", reason);
+    return;
+  }
+  try {
+    const config = resolveOpenClawHookConfig(input.env);
+    if (!config) {
+      record("failed", "hook_not_configured");
+      return;
+    }
+    const result = await postOpenClawAgentHook({
+      config: { ...config, retryAttempts: 2 },
+      fetcher: options.fetch ?? fetch,
+      // waitUntil allows 30s after the webhook response. Two 12s attempts and
+      // one 1s backoff leave headroom; the agent's own timeout stays unchanged.
+      fetchTimeoutMs: 12_000,
+      retryDelaysMs: [1_000],
+      post: {
+        name: `GitHub ${activity.type} ${activity.repo}`,
+        message: renderGithubActivityMessage(activity, {
+          discordTarget: config.discordTarget,
+          observedAt: (options.now ?? (() => new Date()))().toISOString(),
+        }),
+        idempotencyKey: activity.idempotencyKey,
+        deliver: false,
+      },
+    });
+    record(isConclusiveHookDelivery(result.delivery) ? result.delivery.status : "failed");
+  } catch {
+    // Never log the request, hook URL/token, or untrusted response body.
+    record("failed", "hook_request_failed");
+  }
+}

@@ -21,11 +21,36 @@ This document covers issue and PR item dispatch via
 `.github/workflows/clawsweeper-dispatch.yml`; `openclaw/openclaw` uses this
 form. The separate commit-review dispatch lane was retired in July 2026.
 
-General GitHub activity can also be forwarded to the OpenClaw-backed activity
-ingest lane with `repository_dispatch` type `github_activity`. That lane does
-not run ClawSweeper review/apply; it feeds compact activity to the agent, which
-posts to `#clawsweeper` only when the event is surprising or actionable. See
-[openclaw-event-hooks.md](openclaw-event-hooks.md#github-activity-stream).
+General GitHub activity feeds a separate OpenClaw-backed ingest lane, not
+ClawSweeper review/apply. The signed ClawSweeper App webhooks cover `issues`,
+`issue_comment`, and `pull_request` activity. The agent receives compact activity
+and posts to `#clawsweeper` only when the event is surprising or actionable.
+See [openclaw-event-hooks.md](openclaw-event-hooks.md#github-activity-stream).
+
+The `openclaw/openclaw` combined dispatcher retains its existing
+`repository_dispatch` type `github_activity` until repository variable
+`CLAWSWEEPER_GITHUB_ACTIVITY_RELAY_DISABLED` is set to `1`. Activation and
+relay shutdown are separate, default-off gates:
+
+1. Enable `CLAWSWEEPER_GITHUB_ACTIVITY_FROM_WEBHOOK` on the Worker, deploy it,
+   and prove signed App activity delivery live while relays remain enabled.
+2. In the same cutover window, set
+   `CLAWSWEEPER_GITHUB_ACTIVITY_RELAY_DISABLED=1` for the ClawSweeper receiver
+   and the OpenClaw producer. A brief overlap can duplicate activity because
+   the webhook and relay use different delivery keys; prefer that overlap to
+   silently losing activity before the Worker is ready.
+
+After cutover, the activity step still relays `push`, `pull_request_review`,
+and `pull_request_review_comment`, which are not covered by the App's current
+subscriptions. Review and command-dispatch steps remain unchanged. To roll
+back, first unset the relay-disabled gate (or set it to `0`) in both repositories
+to restore relay delivery, then disable the Worker webhook-activity gate.
+
+The copied issue/PR template below and this repository's own dispatcher do not
+contain an activity step. Installation is a per-repository copy/merge, not a
+centrally synced activity workflow. Existing combined dispatcher copies need
+the same activity-step gate before enabling the repository variable; retain
+relay forwarding for events their App subscriptions do not cover.
 
 For issue and PR dispatch, copy this workflow into each target repository as
 `.github/workflows/clawsweeper-dispatch.yml`, or merge these triggers and the

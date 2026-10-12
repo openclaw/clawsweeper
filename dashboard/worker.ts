@@ -30,6 +30,7 @@ import {
   TARGET_DISPATCH_MAX_BODY_BYTES,
   targetDispatchQueueIntake,
 } from "./target-dispatch-ingress.ts";
+import { forwardGithubWebhookActivity, githubWebhookActivityEnabled } from "./github-activity.ts";
 import { legacyCommandCommentId } from "../src/repair/command-ack-convergence.ts";
 import { commandAckMarker } from "../src/repair/markers.ts";
 import { directReReviewIntake } from "../src/repair/direct-re-review-admission.ts";
@@ -3811,12 +3812,33 @@ async function githubWebhook(request, env, ctx) {
     });
   }
 
+  const activityAdmission = githubWebhookActivityEnabled(env, event)
+    ? await workerHostedTargetVisibilityAdmission(env, targetRepo)
+    : null;
+  if (activityAdmission?.outcome === "terminal") {
+    return json({ ok: true, accepted: false, reason: "private target unsupported" }, 202);
+  }
+  if (activityAdmission?.outcome === "retryable") {
+    return hostedTargetProbeResponse(activityAdmission);
+  }
+  if (activityAdmission) {
+    ctx.waitUntil(
+      forwardGithubWebhookActivity({
+        event,
+        payload,
+        deliveryId: deliveryHeaders.deliveryId,
+        env,
+      }),
+    );
+  }
+
   const decision = classifyGithubWebhook({ event, payload, hostedTargetEligible: true });
   if (decision.accepted === false) {
     return json({ ok: true, accepted: false, reason: decision.reason }, 202);
   }
 
-  const admission = await workerHostedTargetVisibilityAdmission(env, targetRepo);
+  const admission =
+    activityAdmission ?? (await workerHostedTargetVisibilityAdmission(env, targetRepo));
   if (admission.outcome === "terminal") {
     return json({ ok: true, accepted: false, reason: "private target unsupported" }, 202);
   }
