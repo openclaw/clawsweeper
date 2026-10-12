@@ -3828,6 +3828,13 @@ async function githubWebhook(request, env, ctx) {
         payload,
         deliveryId: deliveryHeaders.deliveryId,
         env,
+        admitRetry: async () => {
+          const eligibility = await workerHostedTargetEligibility(env, targetRepo);
+          if (eligibility.outcome !== "eligible") return false;
+          return (
+            (await workerHostedTargetVisibilityAdmission(env, targetRepo)).outcome === "public"
+          );
+        },
       }),
     );
   }

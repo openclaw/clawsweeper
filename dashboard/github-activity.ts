@@ -28,6 +28,7 @@ export async function forwardGithubWebhookActivity(
     payload: unknown;
     deliveryId: string | null;
     env: GithubActivityEnv;
+    admitRetry: () => Promise<boolean>;
   },
   options: {
     fetch?: typeof fetch;
@@ -42,6 +43,7 @@ export async function forwardGithubWebhookActivity(
   const startedAt = now();
   let attempts = 0;
   let hookStatus: number | null = null;
+  let admissionRevoked = false;
   const activity = normalizeGithubActivity({
     eventName: input.event,
     payload: input.payload,
@@ -77,16 +79,25 @@ export async function forwardGithubWebhookActivity(
       record("failed", "hook_not_configured");
       return;
     }
+    const deadline = AbortSignal.timeout(25_000);
     const result = await postOpenClawAgentHook({
       config: { ...config, retryAttempts: 2 },
       fetcher: async (request, init) => {
+        if (attempts > 0 && !(await input.admitRetry())) {
+          admissionRevoked = true;
+          throw new Error("activity_retry_admission_revoked");
+        }
+        deadline.throwIfAborted();
         attempts += 1;
-        const response = await (options.fetch ?? fetch)(request, init);
+        const response = await (options.fetch ?? fetch)(request, {
+          ...init,
+          signal: init?.signal ? AbortSignal.any([init.signal, deadline]) : deadline,
+        });
         hookStatus = response.status;
         return response;
       },
-      // waitUntil allows 30s after the webhook response. Two 12s attempts and
-      // one 1s backoff leave headroom; the agent's own timeout stays unchanged.
+      // The overall 25s hook deadline includes retry admission checks; no hook
+      // POST starts after it, leaving headroom in the 30s waitUntil lifetime.
       fetchTimeoutMs: 12_000,
       retryDelaysMs: [1_000],
       post: {
@@ -102,6 +113,6 @@ export async function forwardGithubWebhookActivity(
     record(isConclusiveHookDelivery(result.delivery) ? result.delivery.status : "failed");
   } catch {
     // Never log the request, hook URL/token, or untrusted response body.
-    record("failed", "hook_request_failed");
+    record("failed", admissionRevoked ? "target_admission_changed" : "hook_request_failed");
   }
 }

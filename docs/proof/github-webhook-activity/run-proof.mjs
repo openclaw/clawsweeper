@@ -36,6 +36,7 @@ let mode = "delivered";
 let heldResponse;
 let visibility = "public";
 let hookAttempts = 0;
+let revokedVisibilityProbes = 0;
 const completed = { ok: true, runId: "local-proof-run", completion: { status: "ok", delivered: true } };
 const server = http.createServer(async (request, response) => {
   const chunks = [];
@@ -51,6 +52,10 @@ const server = http.createServer(async (request, response) => {
     hookRequests.push({ headers: request.headers, body: JSON.parse(body) });
     if (mode === "held") { heldResponse = () => send(200, completed); return; }
     if (mode === "retry" && hookAttempts === 1) return send(503, { error: "local transient fixture" });
+    if (mode === "revoke") {
+      visibility = "private";
+      return send(503, { error: "transient before visibility changed" });
+    }
     if (mode === "failed") return send(200, { ok: true, runId: "local-failed", completion: { status: "error", deliveryError: "fixture failure" } });
     return send(200, completed);
   }
@@ -61,7 +66,10 @@ const server = http.createServer(async (request, response) => {
   }
   if (/^\/repos\/[^/]+\/[^/]+\/installation$/.test(url.pathname)) return send(200, { id: 123 });
   if (/^\/app\/installations\/\d+\/access_tokens$/.test(url.pathname)) return send(201, { token: "local-installation-token", expires_at: "2100-01-01T00:00:00Z" });
-  if (url.pathname === "/repos/openclaw/openclaw") return send(200, { ...webhookActivityPayload().repository, private: visibility === "private", visibility });
+  if (url.pathname === "/repos/openclaw/openclaw") {
+    if (mode === "revoke" && visibility === "private") revokedVisibilityProbes++;
+    return send(200, { ...webhookActivityPayload().repository, private: visibility === "private", visibility });
+  }
   unexpected.push(`${request.method} ${url.pathname}`);
   return send(500, { error: "unexpected outbound request" });
 });
@@ -178,6 +186,14 @@ try {
   assert.equal(hookRequests[3].body.idempotencyKey, hookRequests[4].body.idempotencyKey);
   assert.deepEqual(hookRequests[3].body, hookRequests[4].body);
   outcomes.push({ scenario: "transient_retry", status: 202, attempts: 2, identical_body: true });
+
+  mode = "revoke";
+  hookAttempts = 0;
+  await acknowledged(post(mf, { delivery: "revoked-delivery" }));
+  await until(() => revokedVisibilityProbes > 0, "fresh retry visibility probe");
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  assert.equal(hookAttempts, 1, "a newly private repository cannot reach retry hook I/O");
+  outcomes.push({ scenario: "visibility_revoked_before_retry", status: 202, hook_requests: 1, fresh_visibility_probes: revokedVisibilityProbes });
   assert.deepEqual(unexpected, []);
   // Redact dummy credentials too: artifacts contain only observations and bodies.
   const report = {

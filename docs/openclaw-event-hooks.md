@@ -290,11 +290,13 @@ Rollback restores both relay variables before disabling Worker forwarding.
 
 The Worker responds without waiting for the hook. Its `waitUntil` task makes at
 most two attempts with a 12-second HTTP deadline each and one 1-second backoff
-for transient errors: a maximum 25-second request budget inside the 30-second
-post-response lifetime. The agent timeout remains 60 seconds; long-running
-turns may continue after the client deadline. Structured `github_activity_hook`
-logs report filtered, admitted, delivered, suppressed, not-requested, or failed
-outcomes without hook configuration or event bodies.
+for transient errors. An overall 25-second deadline includes retry admission:
+the Worker rechecks repository eligibility and public visibility before another
+credential-bearing hook request, stopping if either is revoked or unverifiable.
+No new hook request starts after that deadline. The agent timeout remains 60
+seconds; long-running turns may continue after the client deadline. Structured
+`github_activity_hook` logs report filtered, admitted, delivered, suppressed,
+not-requested, or failed outcomes without hook configuration or event bodies.
 
 To observe a live cutover without copying Cloudflare credentials locally, run:
 

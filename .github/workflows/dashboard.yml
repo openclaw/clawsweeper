@@ -90,10 +90,15 @@ jobs:
               "CLAWSWEEPER_OPENCLAW_HOOK_TOKEN",
             ];
             const secrets = Object.fromEntries(
-              names.map((name) => {
+              names.flatMap((name) => {
                 const text = process.env[name] || "";
-                if (!text) process.exit(2);
-                return [name, { name, text, type: "secret_text" }];
+                if (!text) {
+                  const optional = process.env.CLAWSWEEPER_GITHUB_ACTIVITY_FROM_WEBHOOK !== "1" &&
+                    name.startsWith("CLAWSWEEPER_OPENCLAW_HOOK_");
+                  if (optional) return [];
+                  process.exit(2);
+                }
+                return [[name, { name, text, type: "secret_text" }]];
               }),
             );
             fs.writeFileSync(process.argv[1], JSON.stringify({ secrets }));

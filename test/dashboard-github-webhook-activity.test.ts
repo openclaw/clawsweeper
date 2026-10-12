@@ -15,6 +15,7 @@ import {
 const delivered = { ok: true, runId: "proof-run", completion: { status: "ok", delivered: true } };
 function harness(
   replies: { status: number; body: unknown }[] = [{ status: 200, body: delivered }],
+  admitRetry: () => Promise<boolean> = async () => true,
 ) {
   const requests: {
     url: string;
@@ -40,7 +41,7 @@ function harness(
     deliveryId: string | null = WEBHOOK_ACTIVITY_DELIVERY,
   ) =>
     forwardGithubWebhookActivity(
-      { event, payload, deliveryId, env },
+      { event, payload, deliveryId, env, admitRetry },
       {
         fetch: fetcher,
         now: () => new Date(WEBHOOK_ACTIVITY_NOW),
@@ -305,6 +306,7 @@ test("transport failure remains a bounded logged best-effort failure", async () 
         payload: webhookActivityPayload(),
         deliveryId: WEBHOOK_ACTIVITY_DELIVERY,
         env: WEBHOOK_ACTIVITY_ENV,
+        admitRetry: async () => true,
       },
       {
         fetch: async () => {
@@ -331,4 +333,26 @@ test("transport failure remains a bounded logged best-effort failure", async () 
       reason: "hook_request_failed",
     },
   ]);
+});
+
+test("revoked or unverifiable admission prevents another credential-bearing hook request", async () => {
+  for (const admitRetry of [
+    async () => false,
+    async () => {
+      throw new Error("admission unavailable");
+    },
+  ]) {
+    const h = harness([{ status: 503, body: { error: "temporary" } }], admitRetry);
+    await h.run();
+    assert.equal(h.requests.length, 1);
+    assert.ok(
+      h.logs.some(
+        (value) =>
+          typeof value === "object" &&
+          value !== null &&
+          "outcome" in value &&
+          value.outcome === "failed",
+      ),
+    );
+  }
 });
