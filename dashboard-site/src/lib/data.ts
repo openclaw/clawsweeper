@@ -1,4 +1,5 @@
 import raw from '../data/dashboard.json';
+import { duration, label } from './format';
 
 // The build snapshot (scripts/build-data.ts). Typed loosely at the edge; every page reads
 // through the view helpers below so presentation never learns the raw shapes.
@@ -146,12 +147,15 @@ export const runs = {
 const reviewLane = queue.lanes.review;
 const publicationLane = queue.lanes.publication;
 
+// Optional queue telemetry: the Worker sends null when a source is missing or malformed.
+const object = (value: unknown): Json => (value && typeof value === 'object' ? value : null);
+
 export const live = {
-  handoff: queue.handoff_health as Json,
-  failures: queue.review_failure_health as Json,
-  runaway: queue.review_runaway_health as Json,
-  feed: queue.scheduled_feed as Json,
-  pressure: queue.pressure as Json,
+  handoff: object(queue.handoff_health),
+  failures: object(queue.review_failure_health),
+  runaway: object(queue.review_runaway_health),
+  feed: object(queue.scheduled_feed),
+  pressure: object(queue.pressure),
   review: reviewLane as Json,
   publication: publicationLane as Json,
   pending: reviewLane.pending as number,
@@ -165,25 +169,73 @@ export const live = {
   backoffReasons: entries({ ...reviewLane.backoff_reasons }),
 };
 
+// One check per health source, in the Worker's own terms: idle and healthy are fine,
+// degraded/critical/stalled need attention, and missing telemetry is never "all clear".
+export interface HealthCheck {
+  name: string;
+  ok: boolean;
+  value: string;
+  detail: string;
+  tip: string;
+  alert: string | null;
+}
+const unavailable = (name: string, tip: string): HealthCheck => ({ name, ok: false, value: 'Unavailable', detail: 'Telemetry missing from the snapshot.', tip, alert: `${name}: telemetry unavailable` });
+
+export const healthChecks: HealthCheck[] = [
+  (() => {
+    const name = 'Review failures';
+    const tip = 'Review attempts that failed in the rolling window. Terminal failures will not retry on their own.';
+    const failures = live.failures;
+    if (!failures || failures.status === 'unknown') return unavailable(name, tip);
+    const detail = `${failures.attempts} attempts on ${failures.affected_targets} targets in ${failures.window_minutes}m`;
+    if (failures.status === 'healthy') return { name, ok: true, value: 'Healthy', detail, tip, alert: null };
+    const value = `${label(failures.status)} · ${failures.terminal_attempts} terminal, ${failures.retryable_attempts} retrying`;
+    return { name, ok: false, value, detail, tip, alert: `Review failures ${failures.status}: ${failures.attempts} failed attempts in ${failures.window_minutes}m` };
+  })(),
+  (() => {
+    const name = 'Runaway reviews';
+    const tip = 'Items reviewed again and again in a short window. Usually a revision loop or a feed bug.';
+    const runaway = live.runaway;
+    if (!runaway || runaway.status === 'unknown') return unavailable(name, tip);
+    const detail = `over ${runaway.threshold_reviews_per_day} reviews in ${runaway.window_hours}h`;
+    if (runaway.status === 'healthy') return { name, ok: true, value: 'Healthy', detail, tip, alert: null };
+    return { name, ok: false, value: `${runaway.runaway_items} items`, detail, tip, alert: `${runaway.runaway_items} items over ${runaway.threshold_reviews_per_day} reviews/day` };
+  })(),
+  (() => {
+    const name = 'Handoff';
+    const tip = 'Whether claimed work moves from pending to dispatching to leased on time.';
+    const handoff = live.handoff;
+    if (!handoff) return unavailable(name, tip);
+    const detail = `warn after ${duration(handoff.warning_after_seconds)}, stall after ${duration(handoff.stalled_after_seconds)}`;
+    if (handoff.status === 'healthy' || handoff.status === 'idle') return { name, ok: true, value: label(handoff.status), detail, tip, alert: null };
+    return { name, ok: false, value: label(handoff.reason), detail, tip, alert: `Review handoff ${handoff.status}: ${label(handoff.reason)}` };
+  })(),
+];
+
 export const status = (() => {
-  const reasons: string[] = [];
-  if (live.failures.status !== 'healthy' && live.failures.terminal_attempts)
-    reasons.push(`${live.failures.terminal_attempts} terminal review ${live.failures.terminal_attempts === 1 ? 'failure' : 'failures'} in ${live.failures.window_minutes}m`);
-  if (live.runaway.status !== 'healthy' && live.runaway.runaway_items)
-    reasons.push(`${live.runaway.runaway_items} items over ${live.runaway.threshold_reviews_per_day} reviews/day`);
-  if (live.handoff.status !== 'healthy') reasons.push('Review handoff degraded');
-  return { level: reasons.length ? 'warn' : 'ok', text: reasons.length ? reasons.join(' · ') : 'All clear' } as const;
+  const alerts = healthChecks.flatMap(check => (check.alert ? [check.alert] : []));
+  return { level: alerts.length ? 'warn' : 'ok', text: alerts.length ? alerts.join(' · ') : 'All clear' } as const;
 })();
 
+// The coverage projection splits reviewable items into disjoint parts:
+// reviewed_recent + stale + failed + expired + unreviewed_records + untracked_open.
+const coverageTotals = coverage.totals;
 export const cover = {
-  percent: coverage.totals.coverage_percent as number,
-  reviewable: coverage.totals.reviewable_records as number,
-  reviewed: coverage.totals.reviewed_recent as number,
-  stale: coverage.totals.stale as number,
-  unreviewed: coverage.totals.unreviewed_records as number,
-  pending: coverage.totals.pending as number,
+  percent: typeof coverageTotals.coverage_percent === 'number' ? (coverageTotals.coverage_percent as number) : null,
+  reviewable: coverageTotals.reviewable_records as number,
+  reviewed: coverageTotals.reviewed_recent as number,
+  stale: coverageTotals.stale as number,
+  pending: coverageTotals.pending as number,
   windowDays: coverage.window_days as number,
+  segments: [
+    { label: 'Reviewed recently', value: coverageTotals.reviewed_recent as number, color: 'var(--ok)' },
+    { label: 'Stale', value: coverageTotals.stale as number, color: 'var(--warn)' },
+    { label: 'Expired', value: coverageTotals.expired as number, color: 'var(--accent)' },
+    { label: 'Failed', value: coverageTotals.failed as number, color: 'var(--bad)' },
+    { label: 'Never reviewed', value: (coverageTotals.unreviewed_records + coverageTotals.untracked_open) as number, color: 'var(--fg-faint)' },
+  ],
 };
+export const coverText = cover.percent === null ? '–' : `${cover.percent.toFixed(1)}%`;
 
 export const totals = corpus.totals as { records: number; typed: number; missingTyped: number; open: number; archived: number; repositories: number };
 export const distributions = corpus.distributions as Record<string, Record<string, number>>;

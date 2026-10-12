@@ -58,6 +58,47 @@ if (values.records) {
   corpus = cached;
 }
 
+// A repository can turn private after the corpus was built. Every build lists the owners'
+// public repositories again; a corpus name not on that list (renamed or transferred) is
+// checked on its own, and GitHub follows the redirect. Anything not public is dropped.
+// A failed listing fails the build: nothing is published without a current answer.
+const github = (path: string) =>
+  fetch(`https://api.github.com/${path}`, { headers: { Accept: 'application/vnd.github+json', Authorization: `Bearer ${token}` } });
+const isPublicMetadata = (value: unknown): value is { visibility: 'public'; full_name?: unknown } =>
+  typeof value === 'object' && value !== null && 'visibility' in value && value.visibility === 'public';
+async function publicRepositories(names: string[]) {
+  const visible = new Set<string>();
+  for (const owner of new Set(names.map(name => name.split('/')[0]))) {
+    for (let page = 1; ; page++) {
+      const response = await github(`users/${owner}/repos?type=owner&per_page=100&page=${page}`);
+      if (!response.ok) throw new Error(`Repository list for ${owner}: HTTP ${response.status}`);
+      const repos: unknown = await response.json();
+      if (!Array.isArray(repos)) throw new Error(`Repository list for ${owner}: not an array`);
+      for (const repo of repos) if (isPublicMetadata(repo) && typeof repo.full_name === 'string') visible.add(repo.full_name.toLowerCase());
+      if (repos.length < 100) break;
+    }
+  }
+  for (const name of names) {
+    if (visible.has(name.toLowerCase())) continue;
+    const response = await github(`repos/${name}`);
+    if (response.status === 404) continue;
+    if (!response.ok) throw new Error(`Repository visibility for ${name}: HTTP ${response.status}`);
+    if (isPublicMetadata(await response.json())) visible.add(name.toLowerCase());
+  }
+  return visible;
+}
+const publicNames = await publicRepositories(corpus.repos.map(repo => repo.repo));
+const keepPublic = (row: { repo: string }) => publicNames.has(row.repo.toLowerCase());
+const hidden = corpus.repos.filter(repo => !keepPublic(repo)).length;
+corpus = {
+  ...corpus,
+  repos: corpus.repos.filter(keepPublic),
+  lists: Object.fromEntries(Object.entries(corpus.lists).map(([key, rows]) => [key, rows.filter(keepPublic)])) as typeof corpus.lists,
+  recordedCloses: { ...corpus.recordedCloses, recent: corpus.recordedCloses.recent.filter(keepPublic) },
+  totals: { ...corpus.totals, repositories: corpus.totals.repositories - hidden },
+  scope: { publicRepositories: corpus.scope.publicRepositories - hidden, excludedRepositories: corpus.scope.excludedRepositories + hidden },
+};
+
 const actionsPath = join(stateDir, 'actions.json');
 const previous = await loadActionsState(actionsPath);
 const actionsState = await refreshActions(previous, previous ? token : (process.env.BOOTSTRAP_GITHUB_TOKEN ?? token));

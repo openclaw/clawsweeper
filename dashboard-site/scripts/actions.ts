@@ -1,8 +1,8 @@
 // Incremental GitHub Actions history for the dashboard.
 //
 // The state file keeps, per workflow and UTC hour, the run count, conclusion counts and
-// completed-run durations. Each build rereads the last REFRESH_HOURS whole hours (so runs that
-// were still in progress get their final conclusion) and replaces exactly those hours.
+// completed-run durations. Each build rereads every whole hour from REFRESH_HOURS before its
+// last refresh (so runs still in progress then get their final conclusion) and replaces exactly those hours.
 // A missing state file bootstraps BOOTSTRAP_DAYS of history; the window then grows to WINDOW_DAYS.
 import { readFile, writeFile } from 'node:fs/promises';
 import { setTimeout as sleep } from 'node:timers/promises';
@@ -74,7 +74,13 @@ export async function saveActionsState(path: string, state: ActionsState) {
 
 export async function refreshActions(previous: ActionsState | null, token: string, now = Date.now()): Promise<ActionsState> {
   const currentHour = Math.floor(now / HOUR_MS) * HOUR_MS;
-  const from = previous ? currentHour - REFRESH_HOURS * HOUR_MS : currentHour - BOOTSTRAP_DAYS * DAY_MS;
+  // Reread from the last refresh (minus the overlap), so a late or failed build never leaves
+  // a gap; bounded by the window, so a very old state costs at most one window of reads.
+  const windowStart = Math.floor((now - WINDOW_DAYS * DAY_MS) / HOUR_MS) * HOUR_MS;
+  const lastHour = Math.floor(Date.parse(previous?.updatedAt ?? '') / HOUR_MS) * HOUR_MS;
+  const from = !previous
+    ? currentHour - BOOTSTRAP_DAYS * DAY_MS
+    : Math.max(windowStart, Math.min(currentHour, Number.isFinite(lastHour) ? lastHour : currentHour) - REFRESH_HOURS * HOUR_MS);
   const fresh: Record<string, { file: string; hours: Record<string, Bucket> }> = {};
   const seen = new Set<number>();
   const hours: number[] = [];

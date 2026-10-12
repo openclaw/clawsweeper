@@ -7,7 +7,7 @@ import TimeChart from '../components/TimeChart.astro';
 import BarList from '../components/BarList.astro';
 import ItemTable from '../components/ItemTable.astro';
 import Icon from '../components/Icon.astro';
-import { asOf, cover, kpis, live, lists, closeReasons, closedElsewhereTotal, runs, series, status, totals } from '../lib/data';
+import { asOf, cover, coverText, kpis, live, lists, closeReasons, closedElsewhereTotal, runs, series, status, totals } from '../lib/data';
 import { duration, int, pct, stamp } from '../lib/format';
 
 const reviews30 = series.reviews(30);
@@ -37,7 +37,7 @@ const success7 = kpis.runSuccess7d;
       tip="Items ClawSweeper closed in the last 7 complete days. Delta compares with the prior 7 days. PRs that were merged and items that a maintainer or another bot closed are counted apart." />
     <Kpi label="Sweep success · 7d" value={pct(success7.current)} delta={success7.current !== null && success7.previous ? (success7.current - success7.previous) / success7.previous : null}
       spark={runs.days.slice(-14).map(day => (day.total ? day.success / day.total : 0))} tip="Successful sweep runs ÷ all sweep runs, last 7 complete days. Cancelled runs count as not successful." />
-    <Kpi label="Coverage" value={`${cover.percent.toFixed(1)}%`} sub={`${int(cover.reviewed)} of ${int(cover.reviewable)}`}
+    <Kpi label="Coverage" value={coverText} sub={`${int(cover.reviewed)} of ${int(cover.reviewable)}`}
       tip={`Reviewable open items with a review in the last ${cover.windowDays} days.\nSnapshot ${stamp(asOf.coverage)}`} />
     <Kpi label="Review queue" value={int(live.pending)} sub={live.oldestPendingSeconds ? `oldest ${duration(live.oldestPendingSeconds)}` : 'nothing waiting'}
       tip={`Items waiting for a review slot. ${live.active} of ${live.capacity} slots busy.\nSnapshot ${stamp(asOf.queue)}`} />
@@ -82,20 +82,15 @@ const success7 = kpis.runSuccess7d;
     <Card title="Backlog" tip={`Open items, latest coverage snapshot.\n${stamp(asOf.coverage)}`}>
       <a slot="action" href="/coverage" class="flex items-center text-[12px] text-fg-muted hover:text-fg">Coverage<Icon name="chevronRight" size={14} /></a>
       <dl class="grid gap-3 text-[13px]">
-        {[
-          ['Reviewed recently', cover.reviewed, 'var(--ok)'],
-          ['Pending review', cover.pending, 'var(--accent)'],
-          ['Stale', cover.stale, 'var(--warn)'],
-          ['Never reviewed', cover.unreviewed, 'var(--bad)'],
-        ].map(([name, value, color]) => (
+        {cover.segments.map(({ label: name, value, color }) => (
           <div class="flex items-center justify-between">
             <dt class="flex items-center gap-2 text-fg-muted"><span class="size-2 rounded-[3px]" style={`background:${color}`}></span>{name}</dt>
-            <dd class="num font-medium">{int(value as number)}</dd>
+            <dd class="num font-medium">{int(value)}</dd>
           </div>
         ))}
       </dl>
-      <div class="mt-4 h-1.5 overflow-hidden rounded-full bg-bg-muted" data-tip={`${cover.percent.toFixed(1)}% covered`}>
-        <div class="h-full rounded-full bg-ok" style={`width:${cover.percent}%`}></div>
+      <div class="mt-4 h-1.5 overflow-hidden rounded-full bg-bg-muted" data-tip={`${coverText} covered`}>
+        <div class="h-full rounded-full bg-ok" style={`width:${cover.percent ?? 0}%`}></div>
       </div>
     </Card>
   </div>

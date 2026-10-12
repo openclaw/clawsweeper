@@ -135,8 +135,10 @@ export async function aggregateRecords(root: string, visibility: Visibility, tok
   const codexMs: number[] = [];
   const createdToReviewHours: number[] = [];
   const recordedCloses = { total: 0, byReason: {} as Counts, days: new Map<string, { date: string; count: number; byReason: Counts }>(), recent: [] as (Row & { closedAt: string })[] };
-  // Apply also writes action_taken: closed when it finds the item already closed on GitHub
-  // (merged, or closed by a maintainer). Only a close decision means ClawSweeper closed it.
+  // Apply also writes action_taken: closed when it archives an item someone else already closed
+  // (merged, or closed by a maintainer, even after a close recommendation). That path records
+  // GitHub's close time as current_item_closed_at; ClawSweeper's own close does not. So only a
+  // close decision without current_item_closed_at counts as a ClawSweeper close.
   const closedElsewhere = { total: 0, days: new Map<string, number>() };
   let excludedRepositories = 0;
   const keep = (list: Row[], row: Row, newestFirst: boolean) => {
@@ -199,10 +201,11 @@ export async function aggregateRecords(root: string, visibility: Visibility, tok
           maintainerKind: decision?.maintainerDecision?.required ? decision.maintainerDecision.kind : null,
         };
 
-        const closedAt = attrs.action_taken === 'closed' ? date(attrs.applied_at) : null;
+        const externalClosedAt = date(attrs.current_item_closed_at);
+        const closedAt = attrs.action_taken === 'closed' ? (externalClosedAt ?? date(attrs.applied_at)) : null;
         if (closedAt) {
           const day = closedAt.slice(0, 10);
-          if (decision?.decision !== 'close') {
+          if (externalClosedAt || decision?.decision !== 'close') {
             closedElsewhere.total++;
             closedElsewhere.days.set(day, (closedElsewhere.days.get(day) ?? 0) + 1);
           } else {

@@ -177,13 +177,19 @@ Each build reads three sources:
   counts), cached in the workflow state. It is rebuilt only when the workflow is
   started by hand with `refresh_corpus`: that run hydrates every canonical
   record read-only with `scripts/hydrate-state.ts`, reads front matter only and
-  keeps repositories that GitHub reports as public. The record export runs
+  keeps repositories that GitHub reports as public. Every build checks
+  visibility again and drops a repository that is no longer public; a failed
+  check fails the build, so nothing is published. A close counts as a
+  ClawSweeper close only when the record has a close decision and no GitHub
+  close time (`current_item_closed_at`), which apply writes only when it
+  archives an item that someone else closed. The record export runs
   inside the exact-review queue Durable Object and slows reviews while it runs
   (a full export on 2026-10-12 failed 26 review runs in 14 minutes), so run it at
-  a quiet hour;
+  a quiet hour. Until the first such run, scheduled builds skip with a notice;
 - the public `/api/exact-review-queue` and `/api/review-coverage` responses;
 - GitHub Actions run history for this repository, kept as per-hour buckets in
-  the workflow cache. Each run rereads the last three hours; a missing cache
+  the workflow cache. Each run rereads from three hours before its last
+  refresh, so a late or failed build leaves no gap; a missing cache
   bootstraps two days with the ClawSweeper app token, and the window then
   grows to 30 days.
 
