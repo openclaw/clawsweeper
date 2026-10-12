@@ -296,6 +296,20 @@ turns may continue after the client deadline. Structured `github_activity_hook`
 logs report filtered, admitted, delivered, suppressed, not-requested, or failed
 outcomes without hook configuration or event bodies.
 
+To observe a live cutover without copying Cloudflare credentials locally, run:
+
+```sh
+gh workflow run dashboard.yml --repo openclaw/clawsweeper -f tail_activity_minutes=3
+```
+
+This manual-only mode observes instead of deploying, accepts 1–5 minutes, and
+uses a separate concurrency group from deployments. Its Actions log contains
+only the delivery ID, source event, public repository/item, outcome, HTTP status,
+attempt count, and duration. The filter discards invocation metadata, URLs,
+tokens, event bodies, and unrelated console logs. Create a harmless comment on a
+test issue while observation is active and confirm `delivered` or `admitted`
+before retiring covered relays. Keep both gates off for the initial deploy.
+
 This is deliberately **best effort**, not a durable outbox. Exhausted retries or
 a Worker interruption may lose activity. GitHub does not automatically redeliver
 failed webhooks and marks responses over 10 seconds as failed

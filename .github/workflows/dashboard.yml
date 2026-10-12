@@ -2,6 +2,11 @@ name: ClawSweeper Live Dashboard
 
 on:
   workflow_dispatch:
+    inputs:
+      tail_activity_minutes:
+        description: "Observe redacted activity outcomes instead of deploying (0 deploys; 1–5 minutes tails)"
+        type: number
+        default: 0
   push:
     branches: [main]
     paths:
@@ -22,12 +27,13 @@ permissions:
   contents: read
 
 concurrency:
-  group: clawsweeper-live-dashboard
+  group: clawsweeper-live-dashboard-${{ github.event_name == 'workflow_dispatch' && inputs.tail_activity_minutes > 0 && 'activity-tail' || 'deploy' }}
   cancel-in-progress: true
 
 jobs:
   deploy:
     name: Deploy dashboard Worker
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.tail_activity_minutes == 0 }}
     runs-on: ubuntu-latest
     env:
       CLOUDFLARE_ACCOUNT_ID: 91b59577e757131d68d55a471fe32aca
@@ -113,3 +119,33 @@ jobs:
 
       - name: Smoke test live dashboard
         run: pnpm run dashboard:smoke -- "$CLAWSWEEPER_STATUS_URL"
+
+  observe-activity:
+    name: Observe redacted activity outcomes
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.tail_activity_minutes > 0 }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.OPENCLAW_CLOUDFLARE_WORKERS_API_TOKEN || secrets.OPENCLAW_CLOUDFLARE_API_TOKEN }}
+      TAIL_MINUTES: ${{ inputs.tail_activity_minutes }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: Tail only redacted activity outcomes
+        run: |
+          set -euo pipefail
+          [[ "$TAIL_MINUTES" =~ ^[1-5]$ ]]
+          test -n "$CLOUDFLARE_API_TOKEN"
+          tail_errors="$RUNNER_TEMP/activity-tail-errors"
+          trap 'rm -f "$tail_errors"' EXIT
+          set +e
+          timeout --signal=TERM --kill-after=10s "${TAIL_MINUTES}m" \
+            npx --yes wrangler@4.131.1 tail --config dashboard/wrangler.toml \
+              --format json --search github_activity_hook 2>"$tail_errors" |
+            node scripts/github-activity-tail.mjs
+          statuses=("${PIPESTATUS[@]}")
+          set -e
+          test "${statuses[1]}" -eq 0
+          if [ "${statuses[0]}" -ne 0 ] && [ "${statuses[0]}" -ne 124 ]; then
+            echo "Activity observation failed; raw tail diagnostics are intentionally withheld." >&2
+            exit 1
+          fi

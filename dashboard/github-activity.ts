@@ -38,12 +38,27 @@ export async function forwardGithubWebhookActivity(
   if (!githubWebhookActivityEnabled(input.env, input.event)) {
     return;
   }
+  const now = options.now ?? (() => new Date());
+  const startedAt = now();
+  let attempts = 0;
+  let hookStatus: number | null = null;
+  const activity = normalizeGithubActivity({
+    eventName: input.event,
+    payload: input.payload,
+    deliveryId: input.deliveryId ?? "",
+  });
+  if (!activity) return;
   const log = options.log ?? ((value: unknown) => console.log(JSON.stringify(value)));
   const record = (outcome: string, reason?: string) =>
     log({
       event: "github_activity_hook",
       source_event: input.event,
       delivery_id: input.deliveryId,
+      repository: activity.repo,
+      item_number: activity.subject.number,
+      hook_status: hookStatus,
+      attempts,
+      duration_ms: Math.max(0, now().getTime() - startedAt.getTime()),
       outcome,
       ...(reason ? { reason } : {}),
     });
@@ -51,12 +66,6 @@ export async function forwardGithubWebhookActivity(
     record("failed", "missing_delivery_id");
     return;
   }
-  const activity = normalizeGithubActivity({
-    eventName: input.event,
-    payload: input.payload,
-    deliveryId: input.deliveryId,
-  });
-  if (!activity) return;
   const reason = routineGithubActivityReason(activity);
   if (reason) {
     record("filtered", reason);
@@ -70,7 +79,12 @@ export async function forwardGithubWebhookActivity(
     }
     const result = await postOpenClawAgentHook({
       config: { ...config, retryAttempts: 2 },
-      fetcher: options.fetch ?? fetch,
+      fetcher: async (request, init) => {
+        attempts += 1;
+        const response = await (options.fetch ?? fetch)(request, init);
+        hookStatus = response.status;
+        return response;
+      },
       // waitUntil allows 30s after the webhook response. Two 12s attempts and
       // one 1s backoff leave headroom; the agent's own timeout stays unchanged.
       fetchTimeoutMs: 12_000,
@@ -79,7 +93,7 @@ export async function forwardGithubWebhookActivity(
         name: `GitHub ${activity.type} ${activity.repo}`,
         message: renderGithubActivityMessage(activity, {
           discordTarget: config.discordTarget,
-          observedAt: (options.now ?? (() => new Date()))().toISOString(),
+          observedAt: startedAt.toISOString(),
         }),
         idempotencyKey: activity.idempotencyKey,
         deliver: false,
