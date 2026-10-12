@@ -8,8 +8,8 @@ import {
   normalizeGithubActivity,
   renderGithubActivityMessage,
   routineGithubActivityReason,
-} from "../../dist/repair/github-activity.js";
-import { runGithubActivityNotifier } from "../../dist/repair/notify-github-activity.js";
+  runGithubActivityNotifier,
+} from "../../dist/repair/notify-github-activity.js";
 
 test("normalizeGithubActivity extracts pull request activity with compact untrusted text", () => {
   const activity = normalizeGithubActivity({

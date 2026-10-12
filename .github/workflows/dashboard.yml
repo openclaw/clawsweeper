@@ -2,20 +2,10 @@ name: ClawSweeper Live Dashboard
 
 on:
   workflow_dispatch:
-    inputs:
-      tail_activity_minutes:
-        description: "Observe redacted activity outcomes instead of deploying (0 deploys; 1–5 minutes tails)"
-        type: number
-        default: 0
   push:
     branches: [main]
     paths:
       - "dashboard/**"
-      - "src/repair/github-activity.ts"
-      - "src/repair/openclaw-hook.ts"
-      - "src/repair/json-types.ts"
-      - "src/clawsweeper-bot-identity.ts"
-      - "src/value-coerce.ts"
       - "scripts/dashboard-refresh-ci.mjs"
       - "scripts/dashboard-smoke.mjs"
       - "package.json"
@@ -27,13 +17,12 @@ permissions:
   contents: read
 
 concurrency:
-  group: ${{ github.event_name == 'workflow_dispatch' && inputs.tail_activity_minutes > 0 && 'clawsweeper-activity-tail' || 'clawsweeper-live-dashboard' }}
+  group: clawsweeper-live-dashboard
   cancel-in-progress: true
 
 jobs:
   deploy:
     name: Deploy dashboard Worker
-    if: ${{ github.event_name != 'workflow_dispatch' || inputs.tail_activity_minutes == 0 }}
     runs-on: ubuntu-latest
     env:
       CLOUDFLARE_ACCOUNT_ID: 91b59577e757131d68d55a471fe32aca
@@ -45,11 +34,6 @@ jobs:
       CLAWSWEEPER_STATUS_INGEST_TOKEN: ${{ secrets.CLAWSWEEPER_STATUS_INGEST_TOKEN }}
       CLAWSWEEPER_APP_PRIVATE_KEY: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
       CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
-      CLAWSWEEPER_OPENCLAW_HOOK_URL: ${{ secrets.CLAWSWEEPER_OPENCLAW_HOOK_URL }}
-      CLAWSWEEPER_OPENCLAW_HOOK_TOKEN: ${{ secrets.CLAWSWEEPER_OPENCLAW_HOOK_TOKEN }}
-      CLAWSWEEPER_DISCORD_TARGET: ${{ vars.CLAWSWEEPER_DISCORD_TARGET }}
-      CLAWSWEEPER_OPENCLAW_AGENT_ID: ${{ vars.CLAWSWEEPER_OPENCLAW_AGENT_ID || 'clawsweeper' }}
-      CLAWSWEEPER_GITHUB_ACTIVITY_FROM_WEBHOOK: ${{ vars.CLAWSWEEPER_GITHUB_ACTIVITY_FROM_WEBHOOK || '0' }}
     steps:
       - uses: actions/checkout@v7
 
@@ -65,12 +49,6 @@ jobs:
           cp dashboard/wrangler.toml dashboard/wrangler.deploy.toml
           printf 'INGEST_TOKEN = "%s"\n' "$CLAWSWEEPER_STATUS_INGEST_TOKEN" >> dashboard/wrangler.deploy.toml
           printf 'CLAWSWEEPER_DEPLOY_SHA = "%s"\n' "$GITHUB_SHA" >> dashboard/wrangler.deploy.toml
-          node -e '
-            const fs = require("node:fs");
-            const names = ["CLAWSWEEPER_DISCORD_TARGET", "CLAWSWEEPER_OPENCLAW_AGENT_ID", "CLAWSWEEPER_GITHUB_ACTIVITY_FROM_WEBHOOK"];
-            const lines = names.map((name) => `${name} = ${JSON.stringify(process.env[name] || "")}\n`).join("");
-            fs.appendFileSync("dashboard/wrangler.deploy.toml", lines);
-          '
           echo "config=dashboard/wrangler.deploy.toml" >> "$GITHUB_OUTPUT"
 
       - name: Sync Worker secrets
@@ -83,22 +61,12 @@ jobs:
           trap 'rm -f "$secrets_file" "$response_file"' EXIT
           node -e '
             const fs = require("node:fs");
-            const names = [
-              "CLAWSWEEPER_APP_PRIVATE_KEY",
-              "CLAWSWEEPER_WEBHOOK_SECRET",
-              "CLAWSWEEPER_OPENCLAW_HOOK_URL",
-              "CLAWSWEEPER_OPENCLAW_HOOK_TOKEN",
-            ];
+            const names = ["CLAWSWEEPER_APP_PRIVATE_KEY", "CLAWSWEEPER_WEBHOOK_SECRET"];
             const secrets = Object.fromEntries(
-              names.flatMap((name) => {
+              names.map((name) => {
                 const text = process.env[name] || "";
-                if (!text) {
-                  const optional = process.env.CLAWSWEEPER_GITHUB_ACTIVITY_FROM_WEBHOOK !== "1" &&
-                    name.startsWith("CLAWSWEEPER_OPENCLAW_HOOK_");
-                  if (optional) return [];
-                  process.exit(2);
-                }
-                return [[name, { name, text, type: "secret_text" }]];
+                if (!text) process.exit(2);
+                return [name, { name, text, type: "secret_text" }];
               }),
             );
             fs.writeFileSync(process.argv[1], JSON.stringify({ secrets }));
@@ -124,33 +92,3 @@ jobs:
 
       - name: Smoke test live dashboard
         run: pnpm run dashboard:smoke -- "$CLAWSWEEPER_STATUS_URL"
-
-  observe-activity:
-    name: Observe redacted activity outcomes
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.tail_activity_minutes > 0 }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 8
-    env:
-      CLOUDFLARE_API_TOKEN: ${{ secrets.OPENCLAW_CLOUDFLARE_WORKERS_API_TOKEN || secrets.OPENCLAW_CLOUDFLARE_API_TOKEN }}
-      TAIL_MINUTES: ${{ inputs.tail_activity_minutes }}
-    steps:
-      - uses: actions/checkout@v7
-      - name: Tail only redacted activity outcomes
-        run: |
-          set -euo pipefail
-          [[ "$TAIL_MINUTES" =~ ^[1-5]$ ]]
-          test -n "$CLOUDFLARE_API_TOKEN"
-          tail_errors="$RUNNER_TEMP/activity-tail-errors"
-          trap 'rm -f "$tail_errors"' EXIT
-          set +e
-          timeout --signal=TERM --kill-after=10s "${TAIL_MINUTES}m" \
-            npx --yes wrangler@4.131.1 tail --config dashboard/wrangler.toml \
-              --format json --search github_activity_hook 2>"$tail_errors" |
-            node scripts/github-activity-tail.mjs
-          statuses=("${PIPESTATUS[@]}")
-          set -e
-          test "${statuses[1]}" -eq 0
-          if [ "${statuses[0]}" -ne 0 ] && [ "${statuses[0]}" -ne 124 ]; then
-            echo "Activity observation failed; raw tail diagnostics are intentionally withheld." >&2
-            exit 1
-          fi

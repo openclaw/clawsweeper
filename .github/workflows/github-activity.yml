@@ -65,9 +65,6 @@ jobs:
   notify:
     if: >-
       ${{
-        !(vars.CLAWSWEEPER_GITHUB_ACTIVITY_RELAY_DISABLED == '1' &&
-          contains(fromJSON('["issues","issue_comment","pull_request","pull_request_target"]'),
-            github.event_name == 'repository_dispatch' && (github.event.client_payload.event_name || github.event.client_payload.activity.type) || github.event_name)) &&
         !(github.event_name == 'pull_request_target' && github.event.action == 'synchronize') &&
         !(github.event_name == 'repository_dispatch' && github.event.client_payload.activity.type == 'pull_request_target' && github.event.client_payload.activity.action == 'synchronize') &&
         !(github.event_name == 'workflow_run' && contains(fromJSON('["success","neutral","skipped"]'), github.event.workflow_run.conclusion))
