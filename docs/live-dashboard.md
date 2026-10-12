@@ -177,9 +177,10 @@ Each build reads three sources:
   counts), cached in the workflow state. It is rebuilt only when the workflow is
   started by hand with `refresh_corpus`: that run hydrates every canonical
   record read-only with `scripts/hydrate-state.ts`, reads front matter only and
-  keeps repositories that GitHub reports as public. Every build checks
-  visibility again and drops a repository that is no longer public; a failed
-  check fails the build, so nothing is published. A close counts as a
+  keeps repositories that GitHub reports as public. The cache keeps each
+  repository's contribution apart, so every build checks visibility again,
+  drops a repository that is no longer public and recomputes every total
+  without it; a failed check fails the build, so nothing is published. A close counts as a
   ClawSweeper close only when the record has a close decision and no GitHub
   close time (`current_item_closed_at`), which apply writes only when it
   archives an item that someone else closed. The record export runs

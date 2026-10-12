@@ -54,6 +54,7 @@ export const asOf = {
 };
 
 const sum = (values: number[]) => values.reduce((total, value) => total + value, 0);
+const scaled = (value: unknown, factor: number) => (typeof value === 'number' ? value * factor : null);
 
 // Daily series end at the corpus snapshot day; the last (partial) day is excluded from
 // period comparisons so a half-finished day never reads as a drop. Sources omit days
@@ -74,15 +75,18 @@ const reviewDays = daily(corpus.days, day => day.reviewed);
 const closeDays = daily(corpus.recordedCloses.days, day => day.count);
 const elsewhereDays = daily(corpus.closedElsewhere.days, day => day.count);
 
-function windowed(series: DayPoint[], days: number, offset = 0): DayPoint[] {
-  const complete = series.slice(0, -1);
+// Complete days only; a window that does not fit in the history is empty, never shifted.
+function lastDays<T>(complete: T[], days: number, offset = 0): T[] {
   const end = complete.length - offset;
-  return complete.slice(Math.max(0, end - days), end);
+  return end > 0 ? complete.slice(Math.max(0, end - days), end) : [];
 }
+const windowed = (series: DayPoint[], days: number, offset = 0) => lastDays(series.slice(0, -1), days, offset);
 
+// The previous period counts only when the history holds all of it.
 function periodDelta(series: DayPoint[], days: number) {
   const current = sum(windowed(series, days).map(point => point.value));
-  const previous = sum(windowed(series, days, days).map(point => point.value));
+  const before = windowed(series, days, days);
+  const previous = before.length === days ? sum(before.map(point => point.value)) : null;
   return { current, previous, delta: previous ? (current - previous) / previous : null };
 }
 
@@ -106,7 +110,8 @@ const runDays: { date: string; total: number; failure: number; success: number; 
 const completeRunDays = runDays.slice(0, -1);
 
 function runRate(days: number, offset = 0) {
-  const slice = completeRunDays.slice(Math.max(0, completeRunDays.length - offset - days), completeRunDays.length - offset);
+  const slice = lastDays(completeRunDays, days, offset);
+  if (offset && slice.length < days) return null;
   const total = sum(slice.map(day => day.total));
   const success = sum(slice.map(day => day.success));
   return total ? success / total : null;
@@ -119,8 +124,9 @@ export const kpis = {
   closes30d: periodDelta(closeDays, 30),
   closedElsewhere7d: periodDelta(elsewhereDays, 7),
   runSuccess7d: { current: runRate(7), previous: runRate(7, 7) },
-  reviewTime: { p50: corpus.timings.codexMs.p50 as number, p90: corpus.timings.codexMs.p90 as number },
-  firstReview: { p50: corpus.timings.createdToReviewHours.p50 as number, p90: corpus.timings.createdToReviewHours.p90 as number },
+  // Seconds; null when the corpus has no samples.
+  reviewTime: { p50: scaled(corpus.timings.codexMs.p50, 1 / 1000), p90: scaled(corpus.timings.codexMs.p90, 1 / 1000) },
+  firstReview: { p50: scaled(corpus.timings.createdToReviewHours.p50, 3600), p90: scaled(corpus.timings.createdToReviewHours.p90, 3600) },
 };
 
 export const runs = {

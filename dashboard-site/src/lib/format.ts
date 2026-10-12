@@ -11,7 +11,8 @@ export function delta(value: number | null) {
   return { text: `${rounded > 0 ? '+' : ''}${rounded.toFixed(1)}%`, sign: rounded > 0 ? 1 : rounded < 0 ? -1 : 0 };
 }
 
-export function duration(seconds: number) {
+export function duration(seconds: number | null) {
+  if (seconds === null || !Number.isFinite(seconds)) return '–';
   if (seconds < 60) return `${Math.round(seconds)}s`;
   const minutes = Math.floor(seconds / 60);
   if (minutes < 60) return `${minutes}m ${String(Math.round(seconds % 60)).padStart(2, '0')}s`;

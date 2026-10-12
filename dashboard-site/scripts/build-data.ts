@@ -11,7 +11,7 @@ import { join } from 'node:path';
 import { parseArgs } from 'node:util';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { loadActionsState, refreshActions, saveActionsState, summarizeActions } from './actions.ts';
-import { aggregateRecords, type Visibility } from './records.ts';
+import { aggregateRecords, combineCorpus, type CorpusCache, type Visibility } from './records.ts';
 
 const ORIGIN = 'https://clawsweeper.openclaw.ai';
 const site = new URL('../', import.meta.url).pathname;
@@ -45,17 +45,17 @@ async function publicApi(path: string) {
 // Records are read only when a run was asked to refresh the corpus: the export runs inside
 // the exact-review queue Durable Object, so every other build reuses the cached aggregate.
 const corpusPath = join(stateDir, 'corpus.json');
-let corpus: Awaited<ReturnType<typeof aggregateRecords>>;
+let cache: CorpusCache;
 if (values.records) {
   const visibilityPath = join(stateDir, 'visibility.json');
   const visibility = await readJson<Visibility>(visibilityPath, {});
-  corpus = await aggregateRecords(values.records, visibility, token);
+  cache = await aggregateRecords(values.records, visibility, token);
   await writeFile(visibilityPath, JSON.stringify(visibility));
-  await writeFile(corpusPath, JSON.stringify(corpus));
+  await writeFile(corpusPath, JSON.stringify(cache));
 } else {
-  const cached = await readJson<typeof corpus | null>(corpusPath, null);
-  if (!cached) throw new Error('no cached corpus: run the workflow once with refresh_corpus');
-  corpus = cached;
+  const cached = await readJson<CorpusCache | null>(corpusPath, null);
+  if (cached?.version !== 2) throw new Error('no cached corpus: run the workflow once with refresh_corpus');
+  cache = cached;
 }
 
 // A repository can turn private after the corpus was built. Every build lists the owners'
@@ -87,17 +87,8 @@ async function publicRepositories(names: string[]) {
   }
   return visible;
 }
-const publicNames = await publicRepositories(corpus.repos.map(repo => repo.repo));
-const keepPublic = (row: { repo: string }) => publicNames.has(row.repo.toLowerCase());
-const hidden = corpus.repos.filter(repo => !keepPublic(repo)).length;
-corpus = {
-  ...corpus,
-  repos: corpus.repos.filter(keepPublic),
-  lists: Object.fromEntries(Object.entries(corpus.lists).map(([key, rows]) => [key, rows.filter(keepPublic)])) as typeof corpus.lists,
-  recordedCloses: { ...corpus.recordedCloses, recent: corpus.recordedCloses.recent.filter(keepPublic) },
-  totals: { ...corpus.totals, repositories: corpus.totals.repositories - hidden },
-  scope: { publicRepositories: corpus.scope.publicRepositories - hidden, excludedRepositories: corpus.scope.excludedRepositories + hidden },
-};
+const publicNames = await publicRepositories(cache.repositories.map(part => part.stats.repo));
+const corpus = combineCorpus(cache, repo => publicNames.has(repo.toLowerCase()));
 
 const actionsPath = join(stateDir, 'actions.json');
 const previous = await loadActionsState(actionsPath);

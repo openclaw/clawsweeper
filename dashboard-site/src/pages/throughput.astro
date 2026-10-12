@@ -23,9 +23,9 @@ const perDay = (points: { value: number }[]) => points.reduce((total, point) => 
       tip="Items ClawSweeper closed in the last 30 complete days. Delta compares with the prior 30 days. Merged PRs and items closed by others are not counted." />
     <Kpi label={`Sweep runs · ${last30.length}d`} value={short(runs30)} sub={`${int(failed30)} failed · ${pct(failed30 / Math.max(runs30, 1))}`}
       tip="All sweep workflow runs in the last complete days the dashboard has recorded (up to 30; history grows from the first build)." />
-    <Kpi label="Review time · p50" value={duration(kpis.reviewTime.p50 / 1000)} sub={`p90 ${duration(kpis.reviewTime.p90 / 1000)}`}
+    <Kpi label="Review time · p50" value={duration(kpis.reviewTime.p50)} sub={`p90 ${duration(kpis.reviewTime.p90)}`}
       tip="Codex time per review, from stored review records. Excludes queue wait." />
-    <Kpi label="Created → review · p50" value={`${kpis.firstReview.p50.toFixed(1)}h`} sub={`p90 ${duration(kpis.firstReview.p90 * 3600)}`}
+    <Kpi label="Created → review · p50" value={duration(kpis.firstReview.p50)} sub={`p90 ${duration(kpis.firstReview.p90)}`}
       tip="Time from item creation to its latest stored review. Re-reviews reset it, so it overstates first-review latency for older items." />
   </div>
 

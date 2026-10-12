@@ -120,38 +120,64 @@ async function isPublic(repo: string, visibility: Visibility, token: string | un
   return result;
 }
 
-export async function aggregateRecords(root: string, visibility: Visibility, token: string | undefined, nowMs = Date.now()) {
+type CloseRow = Row & { closedAt: string };
+type ListName = 'maintainer' | 'security' | 'stale';
+
+// Everything one repository contributes to the corpus. The cache keeps these per repository, so
+// a build can drop a repository that is no longer public and recompute every aggregate without it.
+export type RepoCorpus = {
+  stats: RepoStats;
+  totals: { records: number; typed: number; missingTyped: number; open: number; archived: number };
+  distributions: Record<string, Counts>;
+  days: Record<string, { reviewed: number; archived: number }>;
+  closes: { total: number; byReason: Counts; days: Record<string, { count: number; byReason: Counts }>; recent: CloseRow[] };
+  closedElsewhere: Counts;
+  lists: Record<ListName, Row[]>;
+  codexMs: number[];
+  createdToReviewHours: number[];
+};
+export type CorpusCache = { version: 2; generatedAt: string; excludedRepositories: number; repositories: RepoCorpus[] };
+
+const DISTRIBUTIONS = ['decisions', 'closeReasons', 'confidence', 'ratings', 'findings', 'proof', 'security', 'maintainerKinds', 'policies'];
+const newestReviewFirst = (a: Row, b: Row) => String(b.reviewedAt ?? '').localeCompare(String(a.reviewedAt ?? ''));
+const oldestReviewFirst = (a: Row, b: Row) => -newestReviewFirst(a, b);
+const LIST_ORDER: Record<ListName, (a: Row, b: Row) => number> = { maintainer: newestReviewFirst, security: newestReviewFirst, stale: oldestReviewFirst };
+const newestCloseFirst = (a: CloseRow, b: CloseRow) => b.closedAt.localeCompare(a.closedAt);
+// Keep a bounded list while it grows: trim back to LIST_LIMIT whenever it doubles.
+const keep = <T>(list: T[], row: T, order: (a: T, b: T) => number) => {
+  list.push(row);
+  if (list.length > LIST_LIMIT * 2) {
+    list.sort(order);
+    list.length = LIST_LIMIT;
+  }
+};
+const top = <T>(list: T[], order: (a: T, b: T) => number) => list.sort(order).slice(0, LIST_LIMIT);
+const addCounts = (target: Counts, source: Counts) => {
+  for (const [key, value] of Object.entries(source)) target[key] = (target[key] ?? 0) + value;
+};
+
+export async function aggregateRecords(root: string, visibility: Visibility, token: string | undefined, nowMs = Date.now()): Promise<CorpusCache> {
   const date = (value: unknown) => {
     const time = Date.parse(String(value ?? ''));
     return Number.isFinite(time) && time > Date.UTC(2020, 0, 2) && time <= nowMs + 60_000 ? new Date(time).toISOString() : null;
   };
-  const distributions: Record<string, Counts> = Object.fromEntries(
-    ['decisions', 'closeReasons', 'confidence', 'ratings', 'findings', 'proof', 'security', 'maintainerKinds', 'policies'].map(key => [key, {}]),
-  );
-  const totals = { records: 0, typed: 0, missingTyped: 0, open: 0, archived: 0, repositories: 0 };
-  const days = new Map<string, { date: string; reviewed: number; archived: number }>();
-  const repos: RepoStats[] = [];
-  const lists: Record<'maintainer' | 'security' | 'stale', Row[]> = { maintainer: [], security: [], stale: [] };
-  const codexMs: number[] = [];
-  const createdToReviewHours: number[] = [];
-  const recordedCloses = { total: 0, byReason: {} as Counts, days: new Map<string, { date: string; count: number; byReason: Counts }>(), recent: [] as (Row & { closedAt: string })[] };
-  // Apply also writes action_taken: closed when it archives an item someone else already closed
-  // (merged, or closed by a maintainer, even after a close recommendation). That path records
-  // GitHub's close time as current_item_closed_at; ClawSweeper's own close does not. So only a
-  // close decision without current_item_closed_at counts as a ClawSweeper close.
-  const closedElsewhere = { total: 0, days: new Map<string, number>() };
+  const repositories: RepoCorpus[] = [];
   let excludedRepositories = 0;
-  const keep = (list: Row[], row: Row, newestFirst: boolean) => {
-    list.push(row);
-    if (list.length > LIST_LIMIT * 2) {
-      list.sort((a, b) => (newestFirst ? -1 : 1) * String(a.reviewedAt ?? '').localeCompare(String(b.reviewedAt ?? '')));
-      list.length = LIST_LIMIT;
-    }
-  };
 
   repositories: for (const directory of await readdir(root, { withFileTypes: true })) {
     if (!directory.isDirectory()) continue;
-    const repoStats: RepoStats = { repo: '', slug: directory.name, records: 0, typed: 0, open: 0, archived: 0, reviewed7d: 0, reviewed30d: 0, staleOpen: 0, missingTyped: 0, decisions: {} };
+    const part: RepoCorpus = {
+      stats: { repo: '', slug: directory.name, records: 0, typed: 0, open: 0, archived: 0, reviewed7d: 0, reviewed30d: 0, staleOpen: 0, missingTyped: 0, decisions: {} },
+      totals: { records: 0, typed: 0, missingTyped: 0, open: 0, archived: 0 },
+      distributions: Object.fromEntries(DISTRIBUTIONS.map(key => [key, {}])),
+      days: {},
+      closes: { total: 0, byReason: {}, days: {}, recent: [] },
+      closedElsewhere: {},
+      lists: { maintainer: [], security: [], stale: [] },
+      codexMs: [],
+      createdToReviewHours: [],
+    };
+    const { stats, totals, distributions } = part;
     let repoChecked = false;
     for (const area of ['items', 'closed'] as const) {
       let files: string[];
@@ -180,11 +206,11 @@ export async function aggregateRecords(root: string, visibility: Visibility, tok
         const createdAt = date(attrs.item_created_at);
         const archived = area === 'closed';
         const decision = typedDecision(attrs.review_record);
+        stats.repo = repo;
         totals.records++;
-        repoStats.records++;
-        repoStats.repo = repo;
+        stats.records++;
         totals[archived ? 'archived' : 'open']++;
-        repoStats[archived ? 'archived' : 'open']++;
+        stats[archived ? 'archived' : 'open']++;
         const row: Row = {
           repo,
           number,
@@ -201,55 +227,53 @@ export async function aggregateRecords(root: string, visibility: Visibility, tok
           maintainerKind: decision?.maintainerDecision?.required ? decision.maintainerDecision.kind : null,
         };
 
+        // Apply also writes action_taken: closed when it archives an item someone else already
+        // closed (merged, or closed by a maintainer, even after a close recommendation). That path
+        // records GitHub's close time as current_item_closed_at; ClawSweeper's own close does not.
+        // So only a close decision without current_item_closed_at counts as a ClawSweeper close.
         const externalClosedAt = date(attrs.current_item_closed_at);
         const closedAt = attrs.action_taken === 'closed' ? (externalClosedAt ?? date(attrs.applied_at)) : null;
         if (closedAt) {
           const day = closedAt.slice(0, 10);
           if (externalClosedAt || decision?.decision !== 'close') {
-            closedElsewhere.total++;
-            closedElsewhere.days.set(day, (closedElsewhere.days.get(day) ?? 0) + 1);
+            part.closedElsewhere[day] = (part.closedElsewhere[day] ?? 0) + 1;
           } else {
             const reason = decision.closeReason || 'reason_not_recorded';
-            recordedCloses.total++;
-            bump(recordedCloses.byReason, reason);
-            const closeDay = recordedCloses.days.get(day) ?? { date: day, count: 0, byReason: {} };
+            part.closes.total++;
+            bump(part.closes.byReason, reason);
+            const closeDay = (part.closes.days[day] ??= { count: 0, byReason: {} });
             closeDay.count++;
             bump(closeDay.byReason, reason);
-            recordedCloses.days.set(day, closeDay);
-            recordedCloses.recent.push({ ...row, closedAt });
-            if (recordedCloses.recent.length > LIST_LIMIT * 2) {
-              recordedCloses.recent.sort((a, b) => b.closedAt.localeCompare(a.closedAt));
-              recordedCloses.recent.length = LIST_LIMIT;
-            }
+            keep(part.closes.recent, { ...row, closedAt }, newestCloseFirst);
           }
         }
 
         if (reviewedAt) {
           const age = nowMs - Date.parse(reviewedAt);
-          if (age <= 7 * DAY_MS) repoStats.reviewed7d++;
-          if (age <= 30 * DAY_MS) repoStats.reviewed30d++;
+          if (age <= 7 * DAY_MS) stats.reviewed7d++;
+          if (age <= 30 * DAY_MS) stats.reviewed30d++;
           if (!archived && age > 7 * DAY_MS) {
-            repoStats.staleOpen++;
-            keep(lists.stale, row, false);
+            stats.staleOpen++;
+            keep(part.lists.stale, row, LIST_ORDER.stale);
           }
-          const day = days.get(reviewedAt.slice(0, 10)) ?? { date: reviewedAt.slice(0, 10), reviewed: 0, archived: 0 };
+          const day = (part.days[reviewedAt.slice(0, 10)] ??= { reviewed: 0, archived: 0 });
           day.reviewed++;
           if (archived) day.archived++;
-          days.set(day.date, day);
-          if (createdAt && reviewedAt >= createdAt) createdToReviewHours.push((Date.parse(reviewedAt) - Date.parse(createdAt)) / 3_600_000);
+          if (createdAt && reviewedAt >= createdAt)
+            part.createdToReviewHours.push(Math.round((Date.parse(reviewedAt) - Date.parse(createdAt)) / 36_000) / 100);
         }
         const elapsed = Number(attrs.review_codex_elapsed_ms);
-        if (Number.isFinite(elapsed) && elapsed > 0) codexMs.push(elapsed);
+        if (Number.isFinite(elapsed) && elapsed > 0) part.codexMs.push(Math.round(elapsed));
         bump(distributions.policies, attrs.review_policy);
         if (!decision) {
           totals.missingTyped++;
-          repoStats.missingTyped++;
+          stats.missingTyped++;
           continue;
         }
         totals.typed++;
-        repoStats.typed++;
+        stats.typed++;
         bump(distributions.decisions, decision.decision);
-        bump(repoStats.decisions, decision.decision);
+        bump(stats.decisions, decision.decision);
         bump(distributions.closeReasons, decision.closeReason);
         bump(distributions.confidence, decision.confidence);
         bump(distributions.ratings, decision.prRating?.overallTier);
@@ -258,37 +282,67 @@ export async function aggregateRecords(root: string, visibility: Visibility, tok
         for (const finding of decision.reviewFindings ?? []) bump(distributions.findings, `P${finding.priority}`);
         if (!archived && decision.maintainerDecision?.required) {
           bump(distributions.maintainerKinds, decision.maintainerDecision.kind);
-          keep(lists.maintainer, row, true);
+          keep(part.lists.maintainer, row, LIST_ORDER.maintainer);
         }
-        if (!archived && decision.securityReview?.status === 'needs_attention') keep(lists.security, row, true);
+        if (!archived && decision.securityReview?.status === 'needs_attention') keep(part.lists.security, row, LIST_ORDER.security);
       }
     }
-    if (repoStats.records) repos.push(repoStats);
+    if (!stats.records) continue;
+    for (const name of Object.keys(part.lists) as ListName[]) part.lists[name] = top(part.lists[name], LIST_ORDER[name]);
+    part.closes.recent = top(part.closes.recent, newestCloseFirst);
+    repositories.push(part);
   }
+  return { version: 2, generatedAt: new Date(nowMs).toISOString(), excludedRepositories, repositories };
+}
 
-  totals.repositories = repos.length;
-  const byReviewedAt = (newestFirst: boolean) => (a: Row, b: Row) => (newestFirst ? -1 : 1) * String(a.reviewedAt ?? '').localeCompare(String(b.reviewedAt ?? ''));
-  lists.stale = lists.stale.sort(byReviewedAt(false)).slice(0, LIST_LIMIT);
-  lists.maintainer = lists.maintainer.sort(byReviewedAt(true)).slice(0, LIST_LIMIT);
-  lists.security = lists.security.sort(byReviewedAt(true)).slice(0, LIST_LIMIT);
+// The published corpus: every aggregate is recomputed from the kept repositories only.
+export function combineCorpus(cache: CorpusCache, isKept: (repo: string) => boolean) {
+  const kept = cache.repositories.filter(part => isKept(part.stats.repo));
+  const totals = { records: 0, typed: 0, missingTyped: 0, open: 0, archived: 0, repositories: kept.length };
+  const distributions: Record<string, Counts> = Object.fromEntries(DISTRIBUTIONS.map(key => [key, {}]));
+  const days: Record<string, { reviewed: number; archived: number }> = {};
+  const closes = { total: 0, byReason: {} as Counts, days: {} as Record<string, { count: number; byReason: Counts }>, recent: [] as CloseRow[] };
+  const closedElsewhere: Counts = {};
+  const lists: Record<ListName, Row[]> = { maintainer: [], security: [], stale: [] };
+  const codexMs: number[] = [];
+  const createdToReviewHours: number[] = [];
+  for (const part of kept) {
+    for (const key of Object.keys(part.totals) as (keyof RepoCorpus['totals'])[]) totals[key] += part.totals[key];
+    for (const key of DISTRIBUTIONS) addCounts(distributions[key], part.distributions[key] ?? {});
+    for (const [day, count] of Object.entries(part.days)) {
+      const target = (days[day] ??= { reviewed: 0, archived: 0 });
+      target.reviewed += count.reviewed;
+      target.archived += count.archived;
+    }
+    closes.total += part.closes.total;
+    addCounts(closes.byReason, part.closes.byReason);
+    for (const [day, count] of Object.entries(part.closes.days)) {
+      const target = (closes.days[day] ??= { count: 0, byReason: {} });
+      target.count += count.count;
+      addCounts(target.byReason, count.byReason);
+    }
+    closes.recent.push(...part.closes.recent);
+    addCounts(closedElsewhere, part.closedElsewhere);
+    for (const name of Object.keys(lists) as ListName[]) lists[name].push(...part.lists[name]);
+    codexMs.push(...part.codexMs);
+    createdToReviewHours.push(...part.createdToReviewHours);
+  }
+  const byDate = <T>(record: Record<string, T>) => Object.entries(record).sort(([a], [b]) => a.localeCompare(b));
   return {
-    generatedAt: new Date(nowMs).toISOString(),
+    generatedAt: cache.generatedAt,
     totals,
     distributions,
-    days: [...days.values()].sort((a, b) => a.date.localeCompare(b.date)),
-    repos: repos.sort((a, b) => b.open - a.open),
-    lists,
+    days: byDate(days).map(([day, count]) => ({ date: day, ...count })),
+    repos: kept.map(part => part.stats).sort((a, b) => b.open - a.open),
+    lists: { maintainer: top(lists.maintainer, LIST_ORDER.maintainer), security: top(lists.security, LIST_ORDER.security), stale: top(lists.stale, LIST_ORDER.stale) },
     timings: { codexMs: quantiles(codexMs), createdToReviewHours: quantiles(createdToReviewHours) },
     recordedCloses: {
-      total: recordedCloses.total,
-      byReason: recordedCloses.byReason,
-      days: [...recordedCloses.days.values()].sort((a, b) => a.date.localeCompare(b.date)),
-      recent: recordedCloses.recent.sort((a, b) => b.closedAt.localeCompare(a.closedAt)).slice(0, LIST_LIMIT),
+      total: closes.total,
+      byReason: closes.byReason,
+      days: byDate(closes.days).map(([day, count]) => ({ date: day, ...count })),
+      recent: top(closes.recent, newestCloseFirst),
     },
-    closedElsewhere: {
-      total: closedElsewhere.total,
-      days: [...closedElsewhere.days].map(([day, count]) => ({ date: day, count })).sort((a, b) => a.date.localeCompare(b.date)),
-    },
-    scope: { publicRepositories: repos.length, excludedRepositories },
+    closedElsewhere: { total: Object.values(closedElsewhere).reduce((sum, count) => sum + count, 0), days: byDate(closedElsewhere).map(([day, count]) => ({ date: day, count })) },
+    scope: { publicRepositories: kept.length, excludedRepositories: cache.excludedRepositories + cache.repositories.length - kept.length },
   };
 }

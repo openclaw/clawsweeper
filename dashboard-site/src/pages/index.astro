@@ -41,7 +41,7 @@ const success7 = kpis.runSuccess7d;
       tip={`Reviewable open items with a review in the last ${cover.windowDays} days.\nSnapshot ${stamp(asOf.coverage)}`} />
     <Kpi label="Review queue" value={int(live.pending)} sub={live.oldestPendingSeconds ? `oldest ${duration(live.oldestPendingSeconds)}` : 'nothing waiting'}
       tip={`Items waiting for a review slot. ${live.active} of ${live.capacity} slots busy.\nSnapshot ${stamp(asOf.queue)}`} />
-    <Kpi label="Review time · p50" value={duration(kpis.reviewTime.p50 / 1000)} sub={`p90 ${duration(kpis.reviewTime.p90 / 1000)}`}
+    <Kpi label="Review time · p50" value={duration(kpis.reviewTime.p50)} sub={`p90 ${duration(kpis.reviewTime.p90)}`}
       tip="Codex time per review, from stored review records. Excludes queue wait." />
   </div>
 
