@@ -15,7 +15,26 @@ test("control-plane curl preserves final output and bounded retry semantics over
     { name: "503 then 200", statuses: [503, 503, 200], retryAfter: "1", waits: [1, 1], final: 200 },
     { name: "400 is terminal", statuses: [400], waits: [], final: 400 },
     { name: "429 is terminal", statuses: [429], retryAfter: "1", waits: [], final: 429 },
-    { name: "exhausted 5xx", statuses: [500, 502, 503, 504], waits: [2, 4, 8], final: 504 },
+    {
+      name: "exhausted 5xx",
+      statuses: [500, 502, 503, 504, 500, 502],
+      waits: [2, 4, 8, 16, 32],
+      final: 502,
+    },
+    // A Worker deploy or Durable Object reset fails calls for 15-30 s.
+    {
+      name: "deploy-length outage recovers",
+      statuses: [500, 500, 500, 500, 200],
+      waits: [2, 4, 8, 16],
+      final: 200,
+    },
+    {
+      name: "retry-after drains the wait budget",
+      statuses: [503, 503, 503],
+      retryAfter: "60",
+      waits: [60, 2],
+      final: 503,
+    },
     {
       name: "retry-after seconds capped",
       statuses: [503, 200],
@@ -42,8 +61,8 @@ test("control-plane curl preserves final output and bounded retry semantics over
     { name: "HTTP/2 stream reset", statuses: [200], waits: [2], final: 200, transportExit: 92 },
     {
       name: "fail exit preserved",
-      statuses: [503, 503, 503, 503],
-      waits: [2, 4, 8],
+      statuses: [503, 503, 503, 503, 503, 503],
+      waits: [2, 4, 8, 16, 32],
       final: 503,
       fail: true,
     },

@@ -113,9 +113,12 @@ and runtime packaging rules.
 Shell calls to the control plane in `review-plan.yml`, `sweep.yml`,
 `exact-review-reconcile-run.yml`, and `exact-review-dead-letter-reconcile.yml` use
 `scripts/control-plane-curl.sh`. Each request retries connection failures and
-HTTP 5xx up to four attempts. A valid `Retry-After` delay (seconds or HTTP-date)
-is capped at 60 seconds; otherwise the waits are 2, 4, and 8 seconds. Each
-attempt emits a notice. The helper preserves the caller's final curl exit code,
+HTTP 5xx up to six attempts with at most 62 seconds of total backoff, which
+outlasts the 15-30 second window in which a Worker deploy or Durable Object
+reset fails control-plane calls. The waits are 2, 4, 8, 16, and 32 seconds; a
+valid `Retry-After` delay (seconds or HTTP-date) replaces the next wait, is
+capped at 60 seconds, and draws from the same budget, so the next failure after
+the budget is spent is final. Each attempt emits a notice. The helper preserves the caller's final curl exit code,
 HTTP status output, and body handling. HTTP 4xx responses are not retried;
 callers retain their explicit lease-conflict, supersession, and deployment-skew handling.
 This includes enqueue, claims, review/status heartbeats, completion, lifecycle
