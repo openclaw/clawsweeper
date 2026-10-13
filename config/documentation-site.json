@@ -45,6 +45,11 @@
   ],
   "noncanonical": [
     {
+      "path": "review-authority.md",
+      "lifecycle": "proposed",
+      "banner": "The role classifier is inert. This integration contract does not change current admission or command authority."
+    },
+    {
       "path": "queue-service-split-runbook.md",
       "lifecycle": "proposed",
       "banner": "This is an unapproved proposal, not current operator guidance."
