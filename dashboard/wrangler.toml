@@ -14,9 +14,6 @@ head_sampling_rate = 1
 [triggers]
 crons = ["*/5 * * * *"]
 
-[assets]
-directory = "./public"
-
 [[r2_buckets]]
 binding = "STATE_SNAPSHOTS"
 bucket_name = "clawsweeper-state-snapshots"

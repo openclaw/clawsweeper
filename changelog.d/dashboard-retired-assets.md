@@ -1,0 +1,1 @@
+- Restore dashboard Worker deployment after Bay removal by dropping its obsolete static-assets directory.
