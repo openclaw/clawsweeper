@@ -497,6 +497,11 @@ export function isFailedReviewRetryAlreadyExhausted(
 
 export function failedReviewFailureDetail(markdown: string): string {
   const decision = reportReviewDecision(markdown);
+  // Item titles are contributor text. Drop the title front matter and heading so a
+  // title cannot make a permanent failure look like a retryable provider error.
+  const reportText = markdown
+    .replace(/^(?:title|fixed_pr_title): .*$/gm, "")
+    .replace(/^# .*$/m, "");
   return [
     frontMatterValue(markdown, "review_status") ?? "",
     decision.decision ?? "",
@@ -504,7 +509,7 @@ export function failedReviewFailureDetail(markdown: string): string {
     decision.evidenceMarkdown,
     sectionValue(markdown, "Summary"),
     sectionValue(markdown, "Evidence"),
-    markdown.slice(0, 8000),
+    reportText.slice(0, 8000),
   ].join("\n");
 }
 

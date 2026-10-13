@@ -572,18 +572,23 @@ test("failed review retry matches only the provider model-capacity diagnostic", 
     "planned_failed_review_retry",
   );
 
-  // Report text includes the item title, so a title phrase must not make a
-  // permanent failure retryable.
-  const titled = failedReviewReport({ title: "Service is at capacity" })
-    .replace("Codex review failed: timeout.", "Codex review failed: codex execution failed.")
-    .replace("- **failure reason:** timeout", "- **failure reason:** codex execution failed")
-    .replace("Codex worker timed out after 600000ms with ETIMEDOUT.", "Codex execution failed.");
-  assert.match(titled, /Service is at capacity/);
-  assert.equal(isInfrastructureFailedReview(titled), false);
-  assert.equal(
-    failedReviewRetryEligibility({ markdown: titled, ...retryOptions }).action,
-    "skipped_non_infrastructure_failure",
-  );
+  // Reports carry the item title in front matter and in the heading; even the full
+  // provider diagnostic as a title must not make a permanent failure retryable.
+  for (const title of ["Selected model is at capacity", "Service is at capacity"]) {
+    const titled = failedReviewReport({ title })
+      .replace("Render work plans", title)
+      .replace("Codex review failed: timeout.", "Codex review failed: codex execution failed.")
+      .replace("- **failure reason:** timeout", "- **failure reason:** codex execution failed")
+      .replace("Codex worker timed out after 600000ms with ETIMEDOUT.", "Codex execution failed.");
+    assert.match(titled, new RegExp(`^title: .*${title}`, "m"));
+    assert.match(titled, new RegExp(`^# .*${title}`, "m"));
+    assert.equal(isInfrastructureFailedReview(titled), false, title);
+    assert.equal(
+      failedReviewRetryEligibility({ markdown: titled, ...retryOptions }).action,
+      "skipped_non_infrastructure_failure",
+      title,
+    );
+  }
 });
 
 test("failed review retry eligibility treats checkout inspection failures as infrastructure", () => {
