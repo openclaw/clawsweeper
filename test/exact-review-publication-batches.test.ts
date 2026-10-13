@@ -118,6 +118,85 @@ test("direct publication canonically stores, dedupes, and ratchets revisions", a
   );
 });
 
+test("tuple revisions include every section but exclude other tuples", async () => {
+  const storage = new TestStorage();
+  const store = new ExactReviewDirectPublicationStore(storage);
+  store.ensureSchemaSync();
+  store.accept(await validateDirectPublicationPlan(directPlan("openclaw/openclaw#1", 1)), 1_000);
+  store.accept(await validateDirectPublicationPlan(directPlan("openclaw/openclaw#2", 1)), 1_000);
+  storage.run(
+    "UPDATE exact_review_canonical_records SET revision = 9 WHERE item_id = 1 AND section = 'decision-packets'",
+  );
+  storage.run("UPDATE exact_review_canonical_records SET revision = 100 WHERE item_id = 2");
+  store.accept(await validateDirectPublicationPlan(directPlan("openclaw/openclaw#1", 2)), 1_001);
+  assert.equal(store.readCanonical("openclaw-openclaw", "items", 1)?.revision, 10);
+});
+
+test("record slugs retain tombstoned repositories and reflect later writes", async () => {
+  const storage = new TestStorage();
+  const store = new ExactReviewDirectPublicationStore(storage);
+  store.ensureSchemaSync();
+  assert.deepEqual(store.listRecordRepoSlugs(), []);
+  store.accept(await validateDirectPublicationPlan(directPlan("z/repo#1", 1)), 1_000);
+  store.accept(await validateDirectPublicationPlan(directPlan("a/repo#1", 1)), 1_000);
+  storage.run(
+    "UPDATE exact_review_record_export_index SET deleted = 1, digest = NULL WHERE repo_slug = 'z-repo'",
+  );
+  assert.deepEqual(store.listRecordRepoSlugs(), [
+    { repoSlug: "a-repo", revision: 6 },
+    { repoSlug: "z-repo", revision: 3 },
+  ]);
+  store.accept(await validateDirectPublicationPlan(directPlan("z/repo#2", 1)), 1_001);
+  assert.deepEqual(store.listRecordRepoSlugs(), [
+    { repoSlug: "a-repo", revision: 6 },
+    { repoSlug: "z-repo", revision: 9 },
+  ]);
+});
+
+test("record export merges section pages with both revision bounds and tombstones", async () => {
+  const storage = new TestStorage();
+  const store = new ExactReviewDirectPublicationStore(storage);
+  store.ensureSchemaSync();
+  store.accept(await validateDirectPublicationPlan(directPlan("a/repo#1", 1)), 1_000);
+  store.accept(await validateDirectPublicationPlan(directPlan("a/repo#2", 1)), 1_001);
+  const options = {
+    repoSlug: "a-repo",
+    sections: ["closed", "items", "closed"] as const,
+    sinceRevision: 1,
+    cursor: 0,
+    limit: 1,
+    maxBytes: 100_000,
+    maxSourceBytes: 100_000,
+    maxRecords: 1,
+  };
+  const first = store.exportRecords(options);
+  assert.deepEqual(
+    first.records.map((row) => [row.section, row.id, row.deleted]),
+    [["closed", "1", true]],
+  );
+  assert.equal(first.nextCursor, 2);
+  const second = store.exportRecords({ ...options, cursor: first.nextCursor! });
+  assert.deepEqual(
+    second.records.map((row) => [row.section, row.id, row.deleted]),
+    [["items", "2", false]],
+  );
+  assert.equal(second.nextCursor, 4);
+  const last = store.exportRecords({ ...options, cursor: second.nextCursor! });
+  assert.deepEqual(
+    last.records.map((row) => [row.section, row.id, row.deleted]),
+    [["closed", "2", true]],
+  );
+  assert.equal(last.nextCursor, null);
+  assert.deepEqual(store.exportRecords({ ...options, sections: [] }).records, []);
+  assert.equal(store.snapshotRecordCount("a-repo", 3), 1);
+  assert.deepEqual(store.snapshotRecordIdentities("a-repo", 3), [{ section: "items", id: "1" }]);
+  assert.equal(store.snapshotRecordCount("a-repo", 6), 2);
+  assert.deepEqual(store.snapshotRecordIdentities("a-repo", 6), [
+    { section: "items", id: "1" },
+    { section: "items", id: "2" },
+  ]);
+});
+
 test("direct publication makes section moves canonical with sibling and stale-sidecar tombstones", async () => {
   const storage = new TestStorage();
   const store = new ExactReviewDirectPublicationStore(storage);
