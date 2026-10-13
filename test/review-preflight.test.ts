@@ -29,8 +29,9 @@ test("preflight has a fixed bounded shape and cannot escape its HTML comment", (
   });
   assert.throws(() => serializeReviewPreflight({ ...basePayload, head: "b".repeat(64) }));
   assert.throws(() => serializeReviewPreflight({ ...basePayload, repo: "https://host/a/b" }));
-  assert.throws(() => serializeReviewPreflight({ ...basePayload, summary: "💥".repeat(128) }));
-  assert.throws(() => serializeReviewPreflight({ ...basePayload, summary: "<".repeat(86) }));
+  assert.ok(serializeReviewPreflight({ ...basePayload, summary: "💥".repeat(128) }));
+  assert.ok(serializeReviewPreflight({ ...basePayload, summary: "<".repeat(512) }));
+  assert.throws(() => serializeReviewPreflight({ ...basePayload, summary: "💥".repeat(129) }));
   const withPrivateExtra = {
     ...basePayload,
     privatePath: "/private/example",

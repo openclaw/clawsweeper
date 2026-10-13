@@ -166,6 +166,9 @@ importers:
 
   .:
     dependencies:
+      markdown-it:
+        specifier: ^15.0.2
+        version: 15.0.2
       yaml:
         specifier: ^2.9.0
         version: 2.9.0
@@ -179,9 +182,6 @@ importers:
       '@types/yauzl':
         specifier: 3.4.0
         version: 3.4.0
-      markdown-it:
-        specifier: ^15.0.2
-        version: 15.0.2
       oxfmt:
         specifier: ^0.67.0
         version: 0.67.0

@@ -5,6 +5,25 @@ import { VIDEO_PROOF_EXTENSIONS } from "../../dist/clawsweeper-media-proof.js";
 import { MAX_MEDIA_PROOF_URLS, MEDIA_PROOF_TIMEOUT_MS } from "../../dist/media-proof-budget.js";
 import { adaptiveReviewBudgetForPullRequest } from "../../dist/repair/adaptive-review-budget.js";
 import { mediaFixtureUrls } from "../primary-body-fixture.ts";
+import { serializeReviewPreflightPayload } from "../../dist/review-preflight-contract.js";
+
+test("adaptive review budget excludes advisory metadata URLs but keeps outer proof URLs", () => {
+  const block = serializeReviewPreflightPayload({
+    v: 1,
+    repo: "openclaw/openclaw",
+    base: "a".repeat(40),
+    head: "b".repeat(40),
+    tool: { name: "autoreview", version: "1" },
+    completion: "partial",
+    summary: mediaFixtureUrls.attachment,
+  });
+  assert.equal(adaptiveReviewBudgetForPullRequest({ body: block }).mediaProofTimeoutMs, 0);
+  assert.equal(
+    adaptiveReviewBudgetForPullRequest({ body: `${mediaFixtureUrls.attachment}\n\n${block}` })
+      .mediaProofTimeoutMs,
+    MEDIA_PROOF_TIMEOUT_MS,
+  );
+});
 
 test("adaptive review budget includes unknown GitHub attachments once and excludes known images", () => {
   const { attachment, legacyAttachment, prefix } = mediaFixtureUrls;

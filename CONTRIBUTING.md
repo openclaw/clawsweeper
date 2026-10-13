@@ -93,9 +93,12 @@ not as a handoff.
    optional moves are not blockers by themselves.
 3. Put the updated proof and each finding's disposition or supporting evidence
    in the main PR body. Do not leave required proof only in a comment.
-4. If the branch head or PR body changed after the latest durable review, treat
+4. If the branch head or review-content body changed after the latest durable review, treat
    that review and any affected proof as stale. Rerun the affected proof and
    wait until the next review applies to the current head and body.
+   The canonical preflight reader excludes one valid advisory annotation from
+   review content; human text, proof, and outside whitespace remain material.
+   Metadata edits can still trigger raw event or proof-execution guards.
 5. Request `@clawsweeper re-review` only after the branch, body, proof, and
    relevant checks are current. PR authors and users with repository write
    access may use `@clawsweeper re-review` or `@clawsweeper re-run`; plain

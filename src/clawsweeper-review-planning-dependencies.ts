@@ -1,4 +1,5 @@
 import type { FailedReviewRetryState, Item } from "./clawsweeper-types.js";
+import type { itemSourceRevisionSha256 } from "./clawsweeper-source-revision.js";
 
 export interface ReviewPlanningDependencies {
   maxPlanShardCount: number;
@@ -11,7 +12,7 @@ export interface ReviewPlanningDependencies {
   ) => string | null;
   ghPaged: <T>(path: string) => T[];
   githubCount: (value: unknown) => number | null;
-  itemSourceRevisionSha256: (issue: unknown, comments?: unknown[]) => string;
+  itemSourceRevisionSha256: typeof itemSourceRevisionSha256;
   normalizeAuthorAssociation: (value: unknown) => string;
   shouldPlanItem: (item: Pick<Item, "authorAssociation" | "labels">) => boolean;
   failedReviewRetryStatePath: (stateDir: string, number: number) => string;

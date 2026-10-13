@@ -1,3 +1,7 @@
+import {
+  serializeReviewPreflightPayload,
+  type ReviewPreflightPayload,
+} from "./review-preflight-contract.js";
 import { readFileSync } from "node:fs";
 import { dirtyWorktree } from "./commit-sweeper.js";
 import { runText, UserFacingCommandError } from "./command.js";
@@ -6,51 +10,12 @@ import type { Decision } from "./clawsweeper-types.js";
 
 export type ReviewPreflight = { block: string; error?: never } | { block: null; error: string };
 
-type PreflightPayload = {
-  v: 1;
-  repo: string;
-  base: string;
-  head: string;
-  tool: { name: "clawsweeper"; version: string };
-  completion: "complete" | "failed";
-  summary: string;
-};
-
-function escapedJson(value: unknown): string {
-  return JSON.stringify(value).replace(
-    /[<>&]/g,
-    (character) => `\\u${character.charCodeAt(0).toString(16).padStart(4, "0")}`,
-  );
-}
-
-export function serializeReviewPreflight(payload: PreflightPayload): string {
-  if (
-    payload.v !== 1 ||
-    !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(payload.repo) ||
-    !/^[0-9a-f]{40}$/.test(payload.base) ||
-    !/^[0-9a-f]{40}$/.test(payload.head) ||
-    payload.tool.name !== "clawsweeper" ||
-    !/^[A-Za-z0-9.+-]{1,64}$/.test(payload.tool.version) ||
-    !["complete", "failed"].includes(payload.completion) ||
-    !payload.summary ||
-    Buffer.byteLength(escapedJson(payload.summary)) > 512
-  ) {
+export function serializeReviewPreflight(payload: ReviewPreflightPayload): string {
+  try {
+    return serializeReviewPreflightPayload(payload);
+  } catch {
     throw new UserFacingCommandError("Preflight fields are invalid or exceed their byte limit.");
   }
-  // Reconstruct the closed payload: caller extras cannot leak into the PR body.
-  const block = `<!-- openclaw-preflight:v1\n${escapedJson({
-    v: 1,
-    repo: payload.repo,
-    base: payload.base,
-    head: payload.head,
-    tool: { name: payload.tool.name, version: payload.tool.version },
-    completion: payload.completion,
-    summary: payload.summary,
-  })}\n-->`;
-  if (Buffer.byteLength(block) > 4096) {
-    throw new UserFacingCommandError("Preflight block exceeds 4096 bytes.");
-  }
-  return block;
 }
 
 export function localRangeReviewPreflight(options: {

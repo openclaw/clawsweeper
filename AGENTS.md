@@ -123,13 +123,16 @@ not split reports into issue/PR subtrees.
 - A ClawSweeper result that requires proof or identifies an accepted/actionable
   finding remains PR-owner work, not a handoff. Before a manually requested
   review or re-review, put current proof and the finding disposition or evidence
-  in the main PR body. A head or PR-body change after the durable review marker
+  in the main PR body. A head or review-content body change after the durable review marker
   makes that review and any affected proof stale: rerun the affected proof and
   obtain a review for the current head and body. CI, labels, readiness, and
   maintainer permissions are evidence only; the explicit-user-approval boundary
   below still controls landing.
 - Before merge or automerge, the latest ClawSweeper review must apply to the
-  current PR head and body. Resolve every accepted finding. Apply each
+  current PR head and review-content body. The canonical preflight reader excludes
+  one valid advisory annotation only; human text, proof, and all outside whitespace
+  remain review content. Raw event and proof-execution guards can still invalidate
+  after a metadata edit. Resolve every accepted finding. Apply each
   applicable `Rank-up moves:` item, or explicitly justify the exception in the
   PR body; Rank-up moves remain optional and do not by themselves block merge.
   Do not merge while proof is missing or while the review has an unresolved

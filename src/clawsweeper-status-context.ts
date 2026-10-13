@@ -1,4 +1,5 @@
 import { existsSync, readFileSync } from "node:fs";
+import { reviewBodyWithoutPreflight } from "./review-preflight-body.js";
 import { escapeRegExp } from "./clawsweeper-markdown.js";
 import type {
   Decision,
@@ -976,7 +977,7 @@ ${profileStatusEnd(profile)}`;
   function pullExplicitlyClosesIssue(value: unknown, issueNumber: number): boolean {
     const body = asRecord(value).body;
     if (typeof body !== "string" || !body.trim()) return false;
-    return textExplicitlyClosesIssue(body, issueNumber);
+    return textExplicitlyClosesIssue(reviewBodyWithoutPreflight(body), issueNumber);
   }
 
   function textExplicitlyClosesIssue(text: string, issueNumber: number): boolean {

@@ -83,13 +83,13 @@
     "crabbox:warmup": "crabbox warmup"
   },
   "dependencies": {
+    "markdown-it": "^15.0.2",
     "yaml": "^2.9.0",
     "yauzl": "3.4.0"
   },
   "devDependencies": {
     "@types/node": "^24.13.4",
     "@types/yauzl": "3.4.0",
-    "markdown-it": "^15.0.2",
     "oxfmt": "^0.67.0",
     "oxlint": "^1.82.0",
     "oxlint-tsgolint": "7.0.2001",

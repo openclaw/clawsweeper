@@ -1,3 +1,4 @@
+import { reviewBodyWithoutPreflight } from "./review-preflight-body.ts";
 import { createHash } from "node:crypto";
 import { CLAWSWEEPER_BOT_LOGINS } from "./clawsweeper-bot-identity.ts";
 
@@ -67,7 +68,9 @@ export function scheduledReviewSemanticSourceRevision(
   const source = object(issue);
   const snapshot = {
     title: scalar(source.title),
-    body: scalar(source.body),
+    body: source.pull_request
+      ? reviewBodyWithoutPreflight(scalar(source.body))
+      : scalar(source.body),
     labels: (Array.isArray(source.labels) ? source.labels : [])
       .map(labelName)
       .filter(Boolean)

@@ -1,3 +1,4 @@
+import { reviewBodyWithoutPreflight } from "./review-preflight-body.js";
 import { readPrAdmissionInput } from "./clawsweeper-pr-admission-input.js";
 import { existsSync, readFileSync, unlinkSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -196,7 +197,7 @@ export function prepareReviewCommand(
     const allowClosed = boolArg(args.allow_closed);
     const bodyFile = stringArg(args.body_file, "");
     if (bodyFile) {
-      const providedBody = readFileSync(bodyFile, "utf8");
+      const providedBody = reviewBodyWithoutPreflight(readFileSync(bodyFile, "utf8"));
       additionalPrompt = `${additionalPrompt}\n\n## AUTHORITATIVE PR BODY (review THIS exact body)\nTreat the text below as the pull request's current body/description and review it as such — assess its real-behavior proof and telegram-visible-proof against it. Do NOT fetch, prefer, or assume any other version of the body from the GitHub API. The diff, code, and comments are still the live PR.\n\n----- BEGIN PROVIDED PR BODY -----\n${providedBody}\n----- END PROVIDED PR BODY -----`;
     }
     const localRangeData = localRange

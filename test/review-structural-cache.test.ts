@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import test from "node:test";
 import { compactPrimaryBody } from "../dist/clawsweeper-primary-body.js";
 import { longProofBody } from "./primary-body-fixture.ts";
+import { serializeReviewPreflightPayload } from "../dist/review-preflight-contract.js";
 
 import {
   REVIEW_STRUCTURAL_CACHE_VERSION,
@@ -27,6 +28,39 @@ const TARGET_SHA = "a".repeat(40);
 const HEAD_SHA = "b".repeat(40);
 const BASE_SHA = "c".repeat(40);
 const CHECKS_DIGEST = "d".repeat(64);
+
+test("GraphQL semantic snapshot normalizes only PR metadata before relation detection", () => {
+  const annotation = (summary: string) =>
+    serializeReviewPreflightPayload({
+      v: 1,
+      repo: "openclaw/openclaw",
+      base: BASE_SHA,
+      head: HEAD_SHA,
+      tool: { name: "autoreview", version: "1.0" },
+      completion: "partial",
+      summary,
+    });
+  const firstBody = `Human proof\n\n${annotation("Fixes #777")}`;
+  const secondBody = `Human proof\n\n${annotation("No linkage claim")}`;
+  const first = graphqlRecord("pull_request", { ...graphqlNode("pull_request"), body: firstBody });
+  const second = graphqlRecord("pull_request", {
+    ...graphqlNode("pull_request"),
+    body: secondBody,
+  });
+  assert.ok(first);
+  assert.deepEqual(first, second);
+  assert.notDeepEqual(
+    first,
+    graphqlRecord("pull_request", {
+      ...graphqlNode("pull_request"),
+      body: secondBody.replace("Human proof", "Changed proof"),
+    }),
+  );
+  assert.notDeepEqual(
+    graphqlRecord("issue", { ...graphqlNode("issue"), body: firstBody }),
+    graphqlRecord("issue", { ...graphqlNode("issue"), body: secondBody }),
+  );
+});
 
 test("structural cache version rejects locale-sensitive legacy records", () => {
   assert.equal(REVIEW_STRUCTURAL_CACHE_VERSION, 6);

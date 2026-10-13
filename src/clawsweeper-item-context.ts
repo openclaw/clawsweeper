@@ -1,3 +1,4 @@
+import { reviewBodyWithoutPreflight } from "./review-preflight-body.js";
 import { sha256 } from "./content-hash.js";
 import type { ContextHydration, Item, ItemContext } from "./clawsweeper-types.js";
 import { completeActivityContextSymbol } from "./clawsweeper-types.js";
@@ -159,8 +160,15 @@ export function createItemContext(relatedContext: ItemContextRelations) {
     const timeline = timelineWindow.items;
     const fullTimeline = timelineRead.complete ?? null;
     const context: ItemContext = {
-      issue: { ...asRecord(compactIssue(issue)), ...compactPrimaryBody(issueRecord.body) },
-      sourceRevision: itemSourceRevisionSha256(issue, sourceRevisionComments),
+      issue: {
+        ...asRecord(compactIssue(issue)),
+        ...compactPrimaryBody(
+          item.kind === "pull_request" && typeof issueRecord.body === "string"
+            ? reviewBodyWithoutPreflight(issueRecord.body)
+            : issueRecord.body,
+        ),
+      },
+      sourceRevision: itemSourceRevisionSha256(issue, sourceRevisionComments, item.kind),
       comments: compactMappedWindow(
         filteredComments.included,
         filteredComments.included.length,
@@ -183,6 +191,7 @@ export function createItemContext(relatedContext: ItemContextRelations) {
     const structuralItemStateDigest = hydratedReviewStructuralItemStateDigest(
       issue,
       sourceRevisionComments,
+      item.kind,
     );
     if (structuralItemStateDigest) {
       context.structuralItemStateDigest = structuralItemStateDigest;
@@ -326,7 +335,11 @@ export function createItemContext(relatedContext: ItemContextRelations) {
       if (hydration.snapshot) context.prHydrationSnapshot = hydration.snapshot;
       context.pullRequest = {
         ...asRecord(compactPullRequest(pullRequest)),
-        ...compactPrimaryBody(pullRecord.body),
+        ...compactPrimaryBody(
+          typeof pullRecord.body === "string"
+            ? reviewBodyWithoutPreflight(pullRecord.body)
+            : pullRecord.body,
+        ),
       };
       context.pullFiles = compactMappedWindow(
         pullFiles,

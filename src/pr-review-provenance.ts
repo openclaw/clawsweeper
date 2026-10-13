@@ -1,3 +1,4 @@
+import { reviewBodyWithoutPreflight } from "./review-preflight-body.js";
 import type { ItemContext } from "./clawsweeper-types.js";
 import { ReviewGitError } from "./clawsweeper-review-blobs.js";
 import {
@@ -213,7 +214,10 @@ export function commitPullRequest(pulls: unknown): ProvenancePullRequest | null 
     url: pull.html_url as string,
     title: collapse(pull.title as string, MAX_SUMMARY_CHARS),
     mergedAt: typeof pull.merged_at === "string" ? pull.merged_at : null,
-    bodyExcerpt: typeof pull.body === "string" ? collapse(pull.body, MAX_BODY_EXCERPT_CHARS) : "",
+    bodyExcerpt:
+      typeof pull.body === "string"
+        ? collapse(reviewBodyWithoutPreflight(pull.body), MAX_BODY_EXCERPT_CHARS)
+        : "",
   };
 }
 

@@ -60,7 +60,7 @@ everything else requires human comparison with current main.
 - [Issue review advisory labels](work-lane.md) — active; structured review labels
 - [Review cache](review-cache.md) — active; reusable review-state contract
 - [Local review preflight summary](portable-review-receipt.md) — proposed
-  local-range export; bounded advisory PR-body handoff
+  local-range export; bounded advisory PR-body handoff and review-content reader
 - [GitHub webhook read model](github-webhook-read-model.md) — active; signed
   ingress, App subscriptions, snapshot freshness, and safety boundary
 
