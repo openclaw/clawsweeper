@@ -14,8 +14,6 @@ import { fileURLToPath } from "node:url";
 import { normalizedOutputFileBytes, normalizedTailBytes } from "./codex-output-capture.js";
 import { codexProcessCommand } from "./codex-spawn.js";
 import type { DecisionRepairOptions } from "./review-decision-repair.js";
-import type { ReviewProofCapability } from "./review-proof-client.js";
-import { parseReviewTokenUsage, type ReviewTokenUsage } from "./review-usage.js";
 
 export { codexProcessCommand, codexSpawnInvocation } from "./codex-spawn.js";
 
@@ -26,8 +24,6 @@ export interface CodexProcessResult {
   processError?: boolean;
   // Validator error of the first final message when the worker ran one decision repair turn.
   decisionRepairError?: string;
-  // Token usage the app-server worker observed for this run's threads.
-  usage?: ReviewTokenUsage;
   stdout: string;
   stderr: string;
 }
@@ -41,7 +37,6 @@ interface SerializedCodexProcessResult {
   };
   processError?: boolean;
   decisionRepairError?: string;
-  usage?: unknown;
   stdout: string;
   stderr: string;
 }
@@ -49,14 +44,6 @@ interface SerializedCodexProcessResult {
 const CODEX_PROCESS_WORKER_PATH = fileURLToPath(
   new URL("./codex-process-worker.js", import.meta.url),
 );
-const CODEX_APP_SERVER_WORKER_PATH = fileURLToPath(
-  new URL("./codex-app-server-worker.js", import.meta.url),
-);
-
-export interface CodexAppServerProcessOptions {
-  statePath: string;
-  reviewProof?: ReviewProofCapability;
-}
 
 export function runCodexProcess(options: {
   args: readonly string[];
@@ -70,7 +57,6 @@ export function runCodexProcess(options: {
   outputLastMessageBytes?: number;
   stdoutPath?: string;
   stderrPath?: string;
-  appServer?: CodexAppServerProcessOptions;
   decisionRepair?: DecisionRepairOptions;
 }): CodexProcessResult {
   const workDir = mkdtempSync(join(tmpdir(), "clawsweeper-codex-process-"));
@@ -100,13 +86,11 @@ export function runCodexProcess(options: {
               outputLastMessageBytes,
               outputLastMessagePath: options.outputLastMessagePath,
             }),
-        ...(options.appServer ? { appServer: options.appServer } : {}),
         ...(options.decisionRepair ? { decisionRepair: options.decisionRepair } : {}),
       }),
       { encoding: "utf8", mode: 0o600 },
     );
-    const workerPath = options.appServer ? CODEX_APP_SERVER_WORKER_PATH : CODEX_PROCESS_WORKER_PATH;
-    const worker = spawnSync(process.execPath, [workerPath, optionsPath], {
+    const worker = spawnSync(process.execPath, [CODEX_PROCESS_WORKER_PATH, optionsPath], {
       cwd: options.cwd,
       env: options.env,
       input: options.input,
@@ -198,7 +182,6 @@ function failedProcessResult(
 }
 
 function deserializeProcessResult(value: SerializedCodexProcessResult): CodexProcessResult {
-  const usage = parseReviewTokenUsage(value.usage);
   return {
     status: value.status,
     signal: value.signal,
@@ -207,7 +190,6 @@ function deserializeProcessResult(value: SerializedCodexProcessResult): CodexPro
     ...(value.decisionRepairError === undefined
       ? {}
       : { decisionRepairError: value.decisionRepairError }),
-    ...(usage ? { usage } : {}),
     stdout: value.stdout,
     stderr: value.stderr,
   };

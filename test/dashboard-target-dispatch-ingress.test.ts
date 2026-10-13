@@ -110,7 +110,7 @@ test("target dispatch OIDC binds repository, event, branch, workflow, and run", 
     "issues",
   );
   for (const mismatch of [
-    { aud: "https://clawsweeper.openclaw.ai/internal/exact-review/proof/producer" },
+    { aud: "https://example.invalid/other-audience" },
     { iss: "https://example.invalid" },
     // PR-head code, manual dispatches, and pushes never get queue authority.
     { event_name: "pull_request" },

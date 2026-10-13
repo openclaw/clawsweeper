@@ -5,6 +5,7 @@ import {
   type LifecycleProducerLineage,
 } from "../dashboard/exact-review-lifecycle.ts";
 import { TestStorage } from "./exact-review-test-storage.ts";
+import { MemoryDurableStorage } from "./dashboard-worker-harness.ts";
 
 function producerJourneyFixture() {
   const storage = new TestStorage();
@@ -109,7 +110,6 @@ test("linked producer2/publication1 survives reconstruction and never completes 
   assert.equal(current[0]!.state, "completed");
   assert.deepEqual(current[0]!.facts, {
     admission: "recorded",
-    inline_proof: "unknown",
     claim_count: 0,
     review_result: "completed",
     github_effect_recorded: true,
@@ -154,8 +154,16 @@ test("historical lifecycle metadata preserves canonical facts and idempotent adm
   const f = producerJourneyFixture();
   const expected = f.lifecycle.read(f.producer.canonicalTargetKey, f.producer.fenceKey, 2)!;
   for (const metadata of [
-    { bayTelemetryPending: true, bayTelemetryEventId: "historical-event" },
-    { bayTelemetryPending: "legacy", bayTelemetryEventId: { retired: true } },
+    {
+      bayTelemetryPending: true,
+      bayTelemetryEventId: "historical-event",
+      inlineProof: { requested: true, firstRequestedAt: 10 },
+    },
+    {
+      bayTelemetryPending: "legacy",
+      bayTelemetryEventId: { retired: true },
+      inlineProof: "legacy",
+    },
   ]) {
     f.storage.run(
       `UPDATE exact_review_lifecycle_projection_v1 SET projection_json = ?
@@ -333,4 +341,41 @@ test("standalone legacy fence remains observable but competing fence families ha
     f.cards().filter((card) => card.current_revision),
     [],
   );
+});
+
+test("competing-child lookup uses its full lineage index and tolerates malformed legacy JSON", () => {
+  const storage = new MemoryDurableStorage();
+  new ExactReviewLifecycleProjectionStore(storage).ensureSchemaSync();
+  storage.sql.exec(
+    "INSERT INTO exact_review_lifecycle_projection_v1 (canonical_target_key, revision, fence_key, projection_json, updated_at) VALUES (?, ?, ?, ?, ?)",
+    "openclaw/openclaw#1",
+    1,
+    "invalid",
+    "not json",
+    Date.now(),
+  );
+  const plan = Array.from(
+    storage.sql.exec(
+      "EXPLAIN QUERY PLAN SELECT 1 FROM exact_review_lifecycle_projection_v1 AS sibling WHERE json_valid(sibling.projection_json) AND sibling.canonical_target_key = ? AND json_extract(sibling.projection_json, '$.producerLineage.fenceKey') = ? AND json_extract(sibling.projection_json, '$.producerLineage.revision') = ? AND json_extract(sibling.projection_json, '$.producerLineage.claimGeneration') = ? AND (sibling.fence_key != ? OR sibling.revision != ?)",
+      "openclaw/openclaw#1",
+      "openclaw/openclaw#1",
+      2,
+      4,
+      "publication",
+      1,
+    ),
+  );
+  const details = plan.map((row) => String(row.detail)).join(" ");
+  assert.match(details, /exact_review_lifecycle_projection_producer_lineage_v1/);
+  const malformedPlan = Array.from(
+    storage.sql.exec(
+      "EXPLAIN QUERY PLAN SELECT 1 FROM exact_review_lifecycle_projection_v1 AS malformed WHERE NOT json_valid(malformed.projection_json) AND malformed.canonical_target_key = ?",
+      "openclaw/openclaw#1",
+    ),
+  );
+  assert.match(
+    malformedPlan.map((row) => String(row.detail)).join(" "),
+    /exact_review_lifecycle_projection_malformed_target_v1/,
+  );
+  assert.equal((details.match(/<expr>=\?/g) || []).length, 3);
 });

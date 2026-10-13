@@ -51,6 +51,43 @@ import {
   mergePendingExactReviewDecision,
 } from "../dashboard/exact-review-decision.ts";
 
+test("legacy proof fields are ignored by decision and persisted queue parsing", async () => {
+  for (const proofAllowedScenarios of [null, "invalid", [], ["retired-scenario"]]) {
+    const item = leasedExactReviewQueueItem(70, "700");
+    const decision = { ...item.decision, proofAllowedScenarios };
+    const normalized = exactReviewDecisionFrom(decision);
+    assert.ok(normalized);
+    const storage = new MemoryDurableStorage();
+    await storage.put("exact-review-queue", {
+      deliveries: {},
+      items: {
+        [item.key]: {
+          ...item,
+          decision,
+          leaseDecision: decision,
+          reviewProofRequests: { obsolete: true },
+        },
+      },
+    });
+    const queue = new ExactReviewQueue({ storage }, {});
+    const response = await queue.fetch(
+      new Request("https://queue.invalid/heartbeat", {
+        method: "POST",
+        body: JSON.stringify({
+          item_key: item.key,
+          lease_id: item.leaseId,
+          lease_revision: item.leaseRevision,
+          claim_generation: item.claimGeneration,
+          run_id: item.claimedRunId,
+          run_attempt: item.claimedRunAttempt,
+          phase: "review",
+        }),
+      }),
+    );
+    assert.equal(response.status, 200);
+  }
+});
+
 test("manual queue policy cannot be widened by coalescing or ambiguous decision fields", async () => {
   const decision = {
     targetRepo: "openclaw/gogcli",

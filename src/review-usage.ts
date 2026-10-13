@@ -177,8 +177,6 @@ export function appendReviewUsage(options: {
   codexHome: string | undefined;
   startedAt: number;
   finishedAt: number;
-  /** Usage the process reported itself (app-server threads); otherwise read rollout files. */
-  usage?: ReviewTokenUsage | null;
   env?: NodeJS.ProcessEnv;
 }): void {
   try {
@@ -190,7 +188,7 @@ export function appendReviewUsage(options: {
       schema: 1,
       run_id: env.GITHUB_RUN_ID ?? "",
       run_attempt: Number(env.GITHUB_RUN_ATTEMPT ?? "1"),
-      usage: options.usage ?? readReviewRolloutUsage(options),
+      usage: readReviewRolloutUsage(options),
     };
     const line = `${JSON.stringify(record)}\n`;
     const bytes = Buffer.byteLength(line);

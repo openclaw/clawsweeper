@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { parse } from "yaml";
-import { zip } from "./helpers/review-proof-fixtures.ts";
+import { deflateRawSync } from "node:zlib";
 import {
   classifyReviewRun,
   REVIEW_RUN_OBSERVER_TITLE_LANES,
@@ -274,3 +274,57 @@ test("exact review generation reads the item's prior canonical record", () => {
   // The Worker secret stays scoped to the hydration step.
   assert.doesNotMatch(JSON.stringify(review.env), /CLAWSWEEPER_WEBHOOK_SECRET/);
 });
+
+function zip(
+  entries: Array<{ name: string; content: Buffer; mode?: number; compressed?: boolean }>,
+): Buffer {
+  const local: Buffer[] = [],
+    central: Buffer[] = [];
+  let offset = 0;
+  for (const entry of entries) {
+    const name = Buffer.from(entry.name),
+      data = entry.compressed ? deflateRawSync(entry.content) : entry.content;
+    const method = entry.compressed ? 8 : 0,
+      crc = crc32(entry.content);
+    const header = Buffer.alloc(30);
+    header.writeUInt32LE(0x04034b50);
+    header.writeUInt16LE(20, 4);
+    header.writeUInt16LE(0x800, 6);
+    header.writeUInt16LE(method, 8);
+    header.writeUInt32LE(crc, 14);
+    header.writeUInt32LE(data.length, 18);
+    header.writeUInt32LE(entry.content.length, 22);
+    header.writeUInt16LE(name.length, 26);
+    const index = Buffer.alloc(46);
+    index.writeUInt32LE(0x02014b50);
+    index.writeUInt16LE(0x314, 4);
+    index.writeUInt16LE(20, 6);
+    index.writeUInt16LE(0x800, 8);
+    index.writeUInt16LE(method, 10);
+    index.writeUInt32LE(crc, 16);
+    index.writeUInt32LE(data.length, 20);
+    index.writeUInt32LE(entry.content.length, 24);
+    index.writeUInt16LE(name.length, 28);
+    index.writeUInt32LE(((entry.mode ?? 0x81a4) << 16) >>> 0, 38);
+    index.writeUInt32LE(offset, 42);
+    local.push(header, name, data);
+    central.push(index, name);
+    offset += header.length + name.length + data.length;
+  }
+  const directory = Buffer.concat(central),
+    end = Buffer.alloc(22);
+  end.writeUInt32LE(0x06054b50);
+  end.writeUInt16LE(entries.length, 8);
+  end.writeUInt16LE(entries.length, 10);
+  end.writeUInt32LE(directory.length, 12);
+  end.writeUInt32LE(offset, 16);
+  return Buffer.concat([...local, directory, end]);
+}
+function crc32(value: Buffer) {
+  let crc = 0xffffffff;
+  for (const byte of value) {
+    crc ^= byte;
+    for (let i = 0; i < 8; i++) crc = crc & 1 ? (crc >>> 1) ^ 0xedb88320 : crc >>> 1;
+  }
+  return (crc ^ 0xffffffff) >>> 0;
+}

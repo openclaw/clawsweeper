@@ -25,7 +25,6 @@
     "src/repository-profiles.ts",
     "src/codex-output-capture.ts",
     "src/codex-spawn.ts",
-    "src/codex-app-server-worker.ts",
     "src/codex-process-worker.ts",
     "src/github-egress-descriptor.ts",
     "src/github-egress-observer.ts",

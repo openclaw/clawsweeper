@@ -2,8 +2,6 @@ import { closeSync, ftruncateSync, openSync, writeSync } from "node:fs";
 
 export const DEFAULT_CODEX_OUTPUT_FILE_BYTES = 128 * 1024 * 1024;
 export const DEFAULT_CODEX_OUTPUT_TAIL_BYTES = 64 * 1024;
-// App-server state contains two UUIDs and one ISO timestamp, not model output.
-export const CODEX_THREAD_STATE_MAX_BYTES = 1024;
 
 const TRUNCATION_MARKER = Buffer.from(
   "\n...[Codex output truncated; final tail follows]...\n",

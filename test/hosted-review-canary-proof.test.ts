@@ -365,7 +365,7 @@ const traceMutations: [string, (fixture: ReturnType<typeof nativeTraceFixture>) 
   [
     "different source",
     (f) => {
-      f.records[0]!.payload.source = "app-server";
+      f.records[0]!.payload.source = "different-source";
     },
   ],
   [

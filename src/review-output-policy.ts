@@ -17,7 +17,6 @@ import { dirname, join, resolve, sep } from "node:path";
 import type { Args } from "./clawsweeper-args.js";
 import { stringArg } from "./clawsweeper-args.js";
 import { UserFacingCommandError } from "./command.js";
-import { CODEX_THREAD_STATE_MAX_BYTES } from "./codex-output-capture.js";
 import type { ReviewPreflight } from "./review-preflight.js";
 
 export type ReviewOutputRetention = "none" | "summary" | "debug";
@@ -69,8 +68,8 @@ const PRIVATE_REVIEW_MEDIA_DERIVED_BYTES = 8 * 1024 * 1024;
 const PRIVATE_REVIEW_METADATA_BYTES = 4 * 1024 * 1024;
 const REVIEW_OUTPUT_GLOBAL_MAX_FILES = 7;
 const REVIEW_OUTPUT_SUMMARY_OWNER_FILES = 1;
-const REVIEW_OUTPUT_PRIVATE_ITEM_MAX_FILES = 20;
-const REVIEW_OUTPUT_DEBUG_ITEM_MAX_FILES = 21;
+const REVIEW_OUTPUT_PRIVATE_ITEM_MAX_FILES = 19;
+const REVIEW_OUTPUT_DEBUG_ITEM_MAX_FILES = 20;
 
 export function reviewOutputSelection(
   args: Args,
@@ -271,7 +270,6 @@ export function reviewOutputItemBudget(
   promptFileBytes: number;
   resultFileBytes: number;
   streamFileBytes: number;
-  threadStateBytes: number;
   mediaDownloadBytes: number;
   mediaDerivedBytes: number;
   metadataBytes: number;
@@ -291,7 +289,6 @@ export function reviewOutputItemBudget(
         Math.floor(DEBUG_REVIEW_STREAM_POOL_BYTES / (itemCount * 2)),
       ),
       mediaDownloadBytes: 64 * 1024 * 1024,
-      threadStateBytes: CODEX_THREAD_STATE_MAX_BYTES,
       mediaDerivedBytes: 16 * 1024 * 1024,
       metadataBytes: PRIVATE_REVIEW_METADATA_BYTES,
       reportsBytes: DEBUG_REVIEW_REPORTS_MAX_BYTES,
@@ -301,16 +298,14 @@ export function reviewOutputItemBudget(
     promptFileBytes: 0,
     resultFileBytes: PRIVATE_REVIEW_RESULT_POOL_BYTES,
     streamFileBytes: PRIVATE_REVIEW_STREAM_POOL_BYTES / 2,
-    threadStateBytes: CODEX_THREAD_STATE_MAX_BYTES,
     mediaDownloadBytes: PRIVATE_REVIEW_MEDIA_DOWNLOAD_BYTES,
     mediaDerivedBytes: PRIVATE_REVIEW_MEDIA_DERIVED_BYTES,
-    metadataBytes: PRIVATE_REVIEW_METADATA_BYTES - CODEX_THREAD_STATE_MAX_BYTES,
+    metadataBytes: PRIVATE_REVIEW_METADATA_BYTES,
     reportsBytes: TRANSIENT_REVIEW_REPORTS_MAX_BYTES,
   };
   const allocatedBytes =
     budget.streamFileBytes * 2 +
     budget.resultFileBytes +
-    budget.threadStateBytes +
     budget.reportsBytes +
     budget.mediaDownloadBytes +
     budget.mediaDerivedBytes +
@@ -375,11 +370,7 @@ export function configureReviewOutputItems(
   const item = reviewOutputItemBudget(budget.retention, itemCount);
   const liveItems = budget.retention === "debug" ? itemCount : 1;
   const modelBytes =
-    liveItems *
-    (item.promptFileBytes +
-      item.resultFileBytes +
-      item.streamFileBytes * 2 +
-      item.threadStateBytes);
+    liveItems * (item.promptFileBytes + item.resultFileBytes + item.streamFileBytes * 2);
   budget.item = item;
   budget.mediaMaxBytes = Math.max(
     0,
@@ -389,7 +380,7 @@ export function configureReviewOutputItems(
     0,
     budget.maxFiles -
       REVIEW_OUTPUT_GLOBAL_MAX_FILES -
-      (budget.retention === "debug" ? itemCount * 7 : 5 + itemCount),
+      (budget.retention === "debug" ? itemCount * 6 : 4 + itemCount),
   );
   return item;
 }
@@ -623,7 +614,6 @@ export function pruneReviewOutputItem(options: {
     `${itemPrefix}.json`,
     `${itemPrefix}.1.codex.stdout.log`,
     `${itemPrefix}.1.codex.stderr.log`,
-    `${itemPrefix}.review-thread.json`,
   ]) {
     rmSync(path, { force: true });
   }

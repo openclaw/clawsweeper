@@ -36,8 +36,6 @@ At a high level ClawSweeper:
 - reviews open issues and pull requests on a schedule and on exact GitHub events
 - writes one durable markdown report per item in generated state
 - syncs one marker-backed public review comment per issue or PR, edited in place
-- can request relevant Web UI or Telegram proof within an eligible OpenClaw PR
-  review and evaluate results in that same turn; see [live proof](docs/live-proof.md)
 - closes only unchanged, high-confidence, policy-allowed proposals
 - routes maintainer commands `@clawsweeper review`, `@clawsweeper re-review`,
   `@clawsweeper explain`, and `@clawsweeper stop`
@@ -48,7 +46,6 @@ At a high level ClawSweeper:
 - publishes canonical review records to the Cloudflare Worker, action ledgers
   and assets to R2, and the remaining operational state to
   `openclaw/clawsweeper-state`
-
 
 The [oversized PR close lane](docs/oversized-pr-close-policy.md) proposes closing
 pull requests above 50,000 changed lines before hydration, scanning, or model
@@ -218,7 +215,6 @@ acknowledging them. Exact item work is coalesced and leased by the Worker, so a
 webhook burst does not create capacity-waiting Actions runners. Repair, autofix,
 automerge, issue implementation, fix-ci, and address-review commands are retired.
 
-
 ## Dashboard
 
 Live dashboard and generated state: https://github.com/openclaw/clawsweeper-state
@@ -240,7 +236,6 @@ requests that are blocked on real behavior proof labels, including missing
 proof, supplied-but-not-sufficient proof, mock-only proof, and proof label
 mismatches. See
 [`docs/pr-proof-triage-dashboard.md`](docs/pr-proof-triage-dashboard.md).
-
 
 The default-off unconfirmed product-direction policy can propose closure for a
 strictly bounded class of technically correct, well-proven external feature PRs
@@ -1087,7 +1082,6 @@ Required `clawsweeper` app permissions:
 - Checks: read/write on target repositories, for structural cache state and
   commit Check Run publication.
 - Commit statuses: read on target repositories, for structural cache state.
-
 
 ClawSweeper no longer falls back to PAT-based write tokens. If the GitHub App
 installation does not grant the requested permission set, the workflow fails at

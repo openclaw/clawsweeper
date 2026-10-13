@@ -296,11 +296,7 @@ else {
         mkdirSync(artifactDir);
         const item = reviewOutputItemBudget("debug", 2);
         const reserved =
-          2 *
-            (item.promptFileBytes +
-              item.resultFileBytes +
-              item.streamFileBytes * 2 +
-              item.threadStateBytes) +
+          2 * (item.promptFileBytes + item.resultFileBytes + item.streamFileBytes * 2) +
           item.metadataBytes +
           item.reportsBytes;
         const existing = join(artifactDir, "existing");
