@@ -83,6 +83,8 @@ import {
   EXACT_REVIEW_DIRECT_PUBLICATION_MAX_FILE_BYTES,
   EXACT_REVIEW_DIRECT_PUBLICATION_MAX_POST_BYTES,
   REVIEW_COVERAGE_INVENTORY_KEY,
+  REVIEW_COVERAGE_SCAN_MAX_AGE_MS,
+  REVIEW_COVERAGE_SCAN_PAGE_ROWS,
   ExactReviewDirectPublicationStore,
   RecordExportConsistencyError,
   directPublicationRejectionDetail,
@@ -99,7 +101,8 @@ import {
   type CanonicalRecordTupleMutation,
   type CanonicalCommitRecordInput,
   type RecordSection,
-  type ReviewCoverageSummary,
+  type ReviewCoverageFleetCounts,
+  type ReviewCoverageScan,
 } from "./exact-review-direct-publication.ts";
 import {
   EXACT_REVIEW_QUEUE_TRACE_HEADER,
@@ -1014,7 +1017,40 @@ export class ExactReviewQueue {
     this.statsComputation = null;
   }
 
-  private reviewCoverageCache: { at: number; summary: ReviewCoverageSummary } | null = null;
+  // Finished coverage scan counts. A full scan reads every canonical item head
+  // (seconds of CPU on the production store), so it runs in pages at most once
+  // per REVIEW_COVERAGE_SCAN_MAX_AGE_MS instead of once per dashboard poll.
+  private reviewCoverageScan: ReviewCoverageScan | null = null;
+  private reviewCoverageScanInFlight: Promise<ReviewCoverageScan> | null = null;
+
+  private refreshReviewCoverageScan(): Promise<ReviewCoverageScan> {
+    this.reviewCoverageScanInFlight ??= (async () => {
+      const scannedAt = Date.now();
+      const fleets = new Map<string, ReviewCoverageFleetCounts>();
+      let cursor = this.directPublicationStore.reviewCoverageScanPageSync(
+        fleets,
+        null,
+        REVIEW_COVERAGE_SCAN_PAGE_ROWS,
+        scannedAt,
+      );
+      while (cursor) {
+        // A timer turn lets queued requests and alarms run between pages.
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        cursor = this.directPublicationStore.reviewCoverageScanPageSync(
+          fleets,
+          cursor,
+          REVIEW_COVERAGE_SCAN_PAGE_ROWS,
+          scannedAt,
+        );
+      }
+      this.reviewCoverageScan = { scannedAt, fleets };
+      return this.reviewCoverageScan;
+    })().finally(() => {
+      this.reviewCoverageScanInFlight = null;
+    });
+    return this.reviewCoverageScanInFlight;
+  }
+
   // Back off a wedged Bay row without adding durable queue state. Any durable
   // progress clears this single-slot deadline so the one-second drain resumes.
   private bayTelemetryNoProgressDeadline: number | null = null;
@@ -1442,7 +1478,6 @@ export class ExactReviewQueue {
         return json({ ok: true, accepted: false, stale: true }, 202);
       }
       this.storage.kv.put(REVIEW_COVERAGE_INVENTORY_KEY, inventory);
-      this.reviewCoverageCache = null;
       return json({ ok: true, accepted: true }, 202);
     }
     const operationalCursorMode = operationalCursorModeFromPath(url.pathname);
@@ -4533,23 +4568,25 @@ export class ExactReviewQueue {
     }
 
     if (request.method === "GET" && url.pathname === "/review-coverage") {
-      // The dashboard polls this with the status refresh; cache the bounded
-      // canonical-record scan so polling stays cheap.
+      // Serve the last finished scan and refresh it in the background once it is
+      // stale. Only the first request after a restart waits for a scan.
       const now = Date.now();
-      if (!this.reviewCoverageCache || now - this.reviewCoverageCache.at > 60_000) {
-        this.reviewCoverageCache = {
-          at: now,
-          summary: this.directPublicationStore.reviewCoverageSync(
-            now,
-            undefined,
-            normalizeReviewCoverageInventory(this.storage.kv.get(REVIEW_COVERAGE_INVENTORY_KEY)),
-          ),
-        };
+      const scan = this.reviewCoverageScan ?? (await this.refreshReviewCoverageScan());
+      if (now - scan.scannedAt > REVIEW_COVERAGE_SCAN_MAX_AGE_MS) {
+        this.refreshReviewCoverageScan().catch((error: unknown) => {
+          console.warn("exact_review_coverage_scan_failed", {
+            error: error instanceof Error ? error.name : "unknown",
+          });
+        });
       }
       return json({
         ok: true,
-        generated_at: new Date(this.reviewCoverageCache.at).toISOString(),
-        ...this.reviewCoverageCache.summary,
+        generated_at: new Date(scan.scannedAt).toISOString(),
+        ...this.directPublicationStore.reviewCoverageSummary(
+          scan.fleets,
+          now,
+          normalizeReviewCoverageInventory(this.storage.kv.get(REVIEW_COVERAGE_INVENTORY_KEY)),
+        ),
       });
     }
 

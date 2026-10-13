@@ -33,6 +33,10 @@ import {
   leasedExactReviewPublicationItem,
   unclaimedExactReviewQueueItem,
 } from "./dashboard-worker-harness.ts";
+import type {
+  ReviewCoverageFleetCounts,
+  ReviewCoverageScanCursor,
+} from "../dashboard/exact-review-direct-publication.ts";
 import type { HostedPublicTargetProbe } from "../dashboard/exact-review-queue.ts";
 import { AGENT_INPUT_SCAN_FAILURE_REASONS } from "../src/exact-review-failure-reason.ts";
 import {
@@ -9000,7 +9004,8 @@ test("fallback tuple publication normalizes mixed-case keys onto existing lowerc
 });
 
 test("review coverage summarizes canonical item records per fleet", async () => {
-  const queue = new ExactReviewQueue({ storage: new MemoryDurableStorage() }, {});
+  const storage = new MemoryDurableStorage();
+  const queue = new ExactReviewQueue({ storage }, {});
   const now = Date.now();
   const itemRecord = (repo: string | null, number: number, frontMatter: string) =>
     `---\n${repo ? `repo: ${repo}\n` : ""}number: ${number}\n${frontMatter}---\n\nreview body\n`;
@@ -9141,6 +9146,26 @@ test("review coverage summarizes canonical item records per fleet", async () => 
     coverage_percent: 25,
   });
 
+  // Keyset pages visit every record once, across repository boundaries.
+  const store = new ExactReviewDirectPublicationStore(storage);
+  const scanInPages = (limit: number) => {
+    const fleets = new Map<string, ReviewCoverageFleetCounts>();
+    let cursor: ReviewCoverageScanCursor | null = null;
+    let pages = 0;
+    do {
+      cursor = store.reviewCoverageScanPageSync(fleets, cursor, limit, now);
+      pages += 1;
+    } while (cursor);
+    return { pages, fleets: Object.fromEntries(fleets) };
+  };
+  const whole = scanInPages(1_000);
+  assert.equal(whole.pages, 1);
+  assert.equal(Object.keys(whole.fleets).length, 3);
+  const single = scanInPages(1);
+  assert.equal(single.pages, 8);
+  assert.deepEqual(single.fleets, whole.fleets);
+  assert.deepEqual(scanInPages(7), { pages: 2, fleets: whole.fleets });
+
   // Deleting the record tombstones it out of the open universe.
   await queue.fetch(
     stateAppendQueueRequest("/records/tuples", {
@@ -9165,7 +9190,7 @@ test("review coverage summarizes canonical item records per fleet", async () => 
     generated_at: string;
     totals: Record<string, unknown>;
   };
-  // Responses are cached for up to a minute; the tombstone appears on refresh.
+  // Scan counts are reused for up to 15 minutes; the tombstone appears on refresh.
   assert.equal(cached.generated_at, payload.generated_at);
   assert.equal(cached.totals.open_records, 9);
   assert.equal(cached.totals.tracked_records, 6);
