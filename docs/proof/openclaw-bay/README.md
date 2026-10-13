@@ -74,12 +74,16 @@ The sequence proves:
   sanitized request/response metadata, safe drawer links, the unchanged
   terminal keys before and after both preview modes, the proved real-tide
   clear, and the held terminal failure tunnelling to its bounded live retry.
-- [`run-proof.mjs`](run-proof.mjs) contains the Playwright assertions and
-  artifact renderer. [`run-proof.sh`](run-proof.sh) installs the pinned
-  Playwright package in `/tmp`, starts the real local Wrangler Worker, and runs
-  that script without changing repository dependencies.
-  [`run-throttle-proof.sh`](run-throttle-proof.sh) selects the focused
-  aggregate-only throttle proof path.
+- [`run-proof.mjs`](https://github.com/openclaw/clawsweeper/blob/ad70f614a44359625584df30688e1ffd26f75bf3/docs/proof/openclaw-bay/run-proof.mjs)
+  contains the Playwright assertions and artifact renderer.
+  [`run-proof.sh`](https://github.com/openclaw/clawsweeper/blob/ad70f614a44359625584df30688e1ffd26f75bf3/docs/proof/openclaw-bay/run-proof.sh)
+  installs the pinned Playwright package in `/tmp`, starts the real local
+  Wrangler Worker, and runs that script without changing repository
+  dependencies.
+  [`run-throttle-proof.sh`](https://github.com/openclaw/clawsweeper/blob/ad70f614a44359625584df30688e1ffd26f75bf3/docs/proof/openclaw-bay/run-throttle-proof.sh)
+  selects the focused aggregate-only throttle proof path. These scripts were
+  retired with the `/bay` page; the links point at the last revision that has
+  them.
 - [`fixtures/`](fixtures/) contains the exact three checked-in synthetic
   `/api/status` transition responses. The runner derives dense-terminal and
   real-tide responses from the final fixture, provides a synthetic in-memory
