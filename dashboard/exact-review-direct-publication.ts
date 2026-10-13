@@ -245,11 +245,19 @@ export class ExactReviewDirectPublicationStore {
         `ALTER TABLE ${EXACT_REVIEW_DIRECT_PUBLICATION_TABLE}
            ADD COLUMN canonical_target_key TEXT NOT NULL DEFAULT ''`,
       );
+      this.storage.sql.exec(
+        `UPDATE ${EXACT_REVIEW_DIRECT_PUBLICATION_TABLE}
+            SET canonical_target_key = item_key`,
+      );
     }
     if (!directPublicationColumns.has("fence_key")) {
       this.storage.sql.exec(
         `ALTER TABLE ${EXACT_REVIEW_DIRECT_PUBLICATION_TABLE}
            ADD COLUMN fence_key TEXT NOT NULL DEFAULT ''`,
+      );
+      this.storage.sql.exec(
+        `UPDATE ${EXACT_REVIEW_DIRECT_PUBLICATION_TABLE}
+            SET fence_key = item_key`,
       );
     }
     if (!directPublicationColumns.has("lifecycle_json")) {

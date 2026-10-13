@@ -118,6 +118,31 @@ test("direct publication canonically stores, dedupes, and ratchets revisions", a
   );
 });
 
+test("direct publication upgrades legacy receipt identities once and preserves retries", async () => {
+  const storage = new TestStorage();
+  const original = new ExactReviewDirectPublicationStore(storage);
+  original.ensureSchemaSync();
+  const plan = await validateDirectPublicationPlan(directPlan("openclaw/openclaw#5", 1));
+  original.accept(plan, 1_000);
+  storage.exec(`
+    DROP INDEX exact_review_direct_publication_target_revision;
+    ALTER TABLE exact_review_direct_publication_plans DROP COLUMN canonical_target_key;
+    ALTER TABLE exact_review_direct_publication_plans DROP COLUMN fence_key;
+  `);
+
+  const upgraded = new ExactReviewDirectPublicationStore(storage);
+  upgraded.ensureSchemaSync();
+  const receipt = upgraded.get(plan.fenceKey, plan.revision);
+  assert.equal(receipt?.canonicalTargetKey, plan.canonicalTargetKey);
+  assert.equal(receipt?.fenceKey, plan.fenceKey);
+  assert.equal(upgraded.accept(plan, 1_001).outcome, "deduped");
+
+  const changes = storage.scalar("SELECT total_changes() AS value");
+  upgraded.ensureSchemaSync();
+  assert.equal(storage.scalar("SELECT total_changes() AS value"), changes);
+  assert.equal(upgraded.accept(plan, 1_002).outcome, "deduped");
+});
+
 test("tuple revisions include every section but exclude other tuples", async () => {
   const storage = new TestStorage();
   const store = new ExactReviewDirectPublicationStore(storage);
