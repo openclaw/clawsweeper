@@ -30,6 +30,11 @@ import {
   decisionRepairPrompt,
   type DecisionRepairOptions,
 } from "./review-decision-repair.js";
+import {
+  parseReviewTokenUsage,
+  sumReviewTokenUsage,
+  type ReviewTokenUsage,
+} from "./review-usage.js";
 
 interface AppServerOptions {
   statePath: string;
@@ -141,6 +146,12 @@ let forceKillTimer: NodeJS.Timeout | undefined;
 const proofAbort = new AbortController();
 const proofCalls = new Set<string>();
 let proofBusy = false;
+// This run's usage per thread. A resumed thread replays earlier turns' updates and reports a
+// cumulative total that includes earlier attempts, so only updates for turns this run started
+// count, and the first of them fixes a baseline of total minus last.
+const threadUsage = new Map<string, ReviewTokenUsage>();
+const threadBaseline = new Map<string, ReviewTokenUsage>();
+const startedTurns = new Set<string>();
 const timeout = setTimeout(() => {
   proofAbort.abort();
   timeoutError = new Error(`Codex app-server timed out after ${options.timeoutMs}ms`);
@@ -282,6 +293,11 @@ async function resumeThread(previousThreadId: string): Promise<Record<string, un
 }
 
 async function handleRpcMessage(message: RpcMessage): Promise<void> {
+  // Usage can arrive after turn/completed, so record it before the turn-state gates below.
+  if (message.method === "thread/tokenUsage/updated") {
+    recordThreadUsage(message.params);
+    return;
+  }
   if (message.method === "item/tool/call" && message.id !== undefined) {
     const params = message.params;
     const callId = typeof params?.callId === "string" ? params.callId : "";
@@ -362,6 +378,7 @@ async function handleRpcMessage(message: RpcMessage): Promise<void> {
       const result = message.result ?? {};
       if (waiter.method === "turn/start") {
         turnId = stringAt(result, ["turn", "id"]);
+        if (turnId) startedTurns.add(turnId);
       }
       waiter.resolve(result);
     }
@@ -480,12 +497,54 @@ async function finish(status: number, signal: NodeJS.Signals | null, error?: Err
       signal,
       ...(error ? { error: serializedError(error) } : {}),
       ...(decisionRepairError ? { decisionRepairError } : {}),
+      ...(threadUsage.size ? { usage: sumReviewTokenUsage([...threadUsage.values()]) } : {}),
       stdout: codexOutputTail(stdout),
       stderr: codexOutputTail(stderr),
     }),
     "utf8",
   );
   process.exit(0);
+}
+
+function recordThreadUsage(params: unknown): void {
+  const thread = stringAt(params, ["threadId"]);
+  const total = tokenUsageBreakdown(recordAt(params, ["tokenUsage", "total"]));
+  const last = tokenUsageBreakdown(recordAt(params, ["tokenUsage", "last"]));
+  if (!thread || !total || !last || !startedTurns.has(stringAt(params, ["turnId"]))) return;
+  let baseline = threadBaseline.get(thread);
+  if (!baseline) {
+    baseline = subtractTokenUsage(total, last);
+    threadBaseline.set(thread, baseline);
+  }
+  threadUsage.set(thread, subtractTokenUsage(total, baseline));
+}
+
+function tokenUsageBreakdown(value: Record<string, unknown> | null): ReviewTokenUsage | null {
+  if (!value) return null;
+  return parseReviewTokenUsage({
+    input_tokens: value.inputTokens,
+    cached_input_tokens: value.cachedInputTokens,
+    // Optional in the app-server schema; absent means no cache writes were reported.
+    cache_write_input_tokens: value.cacheWriteInputTokens ?? 0,
+    output_tokens: value.outputTokens,
+    reasoning_output_tokens: value.reasoningOutputTokens,
+  });
+}
+
+function subtractTokenUsage(left: ReviewTokenUsage, right: ReviewTokenUsage): ReviewTokenUsage {
+  return {
+    input_tokens: Math.max(0, left.input_tokens - right.input_tokens),
+    cached_input_tokens: Math.max(0, left.cached_input_tokens - right.cached_input_tokens),
+    cache_write_input_tokens: Math.max(
+      0,
+      left.cache_write_input_tokens - right.cache_write_input_tokens,
+    ),
+    output_tokens: Math.max(0, left.output_tokens - right.output_tokens),
+    reasoning_output_tokens: Math.max(
+      0,
+      left.reasoning_output_tokens - right.reasoning_output_tokens,
+    ),
+  };
 }
 
 function parseExecOptions(args: string[], fallbackCwd: string): ExecOptions {

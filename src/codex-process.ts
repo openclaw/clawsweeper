@@ -15,6 +15,7 @@ import { normalizedOutputFileBytes, normalizedTailBytes } from "./codex-output-c
 import { codexProcessCommand } from "./codex-spawn.js";
 import type { DecisionRepairOptions } from "./review-decision-repair.js";
 import type { ReviewProofCapability } from "./review-proof-client.js";
+import { parseReviewTokenUsage, type ReviewTokenUsage } from "./review-usage.js";
 
 export { codexProcessCommand, codexSpawnInvocation } from "./codex-spawn.js";
 
@@ -25,6 +26,8 @@ export interface CodexProcessResult {
   processError?: boolean;
   // Validator error of the first final message when the worker ran one decision repair turn.
   decisionRepairError?: string;
+  // Token usage the app-server worker observed for this run's threads.
+  usage?: ReviewTokenUsage;
   stdout: string;
   stderr: string;
 }
@@ -38,6 +41,7 @@ interface SerializedCodexProcessResult {
   };
   processError?: boolean;
   decisionRepairError?: string;
+  usage?: unknown;
   stdout: string;
   stderr: string;
 }
@@ -194,6 +198,7 @@ function failedProcessResult(
 }
 
 function deserializeProcessResult(value: SerializedCodexProcessResult): CodexProcessResult {
+  const usage = parseReviewTokenUsage(value.usage);
   return {
     status: value.status,
     signal: value.signal,
@@ -202,6 +207,7 @@ function deserializeProcessResult(value: SerializedCodexProcessResult): CodexPro
     ...(value.decisionRepairError === undefined
       ? {}
       : { decisionRepairError: value.decisionRepairError }),
+    ...(usage ? { usage } : {}),
     stdout: value.stdout,
     stderr: value.stderr,
   };

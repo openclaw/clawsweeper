@@ -245,8 +245,16 @@ window. The hosted setup isolates `CODEX_HOME` by run ID/attempt, and each revie
 process reviews items sequentially. The reader scans backward in 64 KiB chunks
 to find each session's latest token count. Missing homes/files, unreadable
 or changing files, malformed usage, and files larger than 64 MiB produce null
-usage rather than a partial sum. Ephemeral app-server proof sessions may not
-persist rollout files; those reviews report unavailable usage.
+usage rather than a partial sum.
+
+Reviews that run through the Codex app-server (queue-leased
+`openclaw/openclaw` pull requests with proof tools) use ephemeral threads and
+write no rollout file. For them the app-server worker reports usage itself from
+`thread/tokenUsage/updated` notifications: it counts only turns this run
+started, because a resumed thread replays the earlier attempt's last update,
+and it subtracts the thread's usage before this run (`total` minus `last` of
+the first counted update). The rollout reader is the fallback when the process
+reports no usage.
 
 `REVIEW_USAGE_LAYOUT` in [`dashboard/review-usage.ts`](../dashboard/review-usage.ts)
 is the canonical source of the ordered tuples used by the writer. Analytics

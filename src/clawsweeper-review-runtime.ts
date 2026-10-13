@@ -1258,6 +1258,7 @@ ${extra}
       codexHome: codexEnv.CODEX_HOME,
       startedAt: processStartedAt,
       finishedAt: processFinishedAt,
+      ...(result.usage ? { usage: result.usage } : {}),
     });
     const dirtyAfter = openclawDirtyStatus(options.openclawDir);
     if (dirtyAfter) {

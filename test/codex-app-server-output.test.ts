@@ -281,3 +281,90 @@ rl.on("line", (line) => {
     },
   );
 }
+
+test(
+  "app-server usage counts only this run on a resumed thread",
+  { skip: process.platform === "win32" },
+  () => {
+    const root = mkdtempSync(join(tmpdir(), "clawsweeper-app-server-usage-"));
+    const statePath = join(root, "thread.json");
+    const outputPath = join(root, "result.json");
+    const binary = join(root, "codex");
+    const fixture = join(root, "codex-fixture.cjs");
+    // The stored thread already carries 1,000 input / 100 output tokens from an earlier attempt.
+    const breakdown = (input: number, cached: number, write: number, output: number) => ({
+      inputTokens: input,
+      cachedInputTokens: cached,
+      cacheWriteInputTokens: write,
+      outputTokens: output,
+      reasoningOutputTokens: output / 2,
+      totalTokens: input + output,
+    });
+    const earlier = {
+      total: breakdown(1_000, 800, 100, 100),
+      last: breakdown(1_000, 800, 100, 100),
+    };
+    const updates = [
+      { total: breakdown(1_200, 900, 200, 110), last: breakdown(200, 100, 100, 10) },
+      { total: breakdown(1_500, 1_100, 300, 130), last: breakdown(300, 200, 100, 20) },
+    ];
+    try {
+      writeFileSync(
+        statePath,
+        JSON.stringify({ threadId: uuid, sessionId: uuid, updatedAt: "prior" }),
+      );
+      writeFileSync(
+        fixture,
+        `const rl = require("node:readline").createInterface({ input: process.stdin });
+const send = (value) => process.stdout.write(JSON.stringify(value) + "\\n");
+const threadId = ${JSON.stringify(uuid)};
+rl.on("line", (line) => {
+  const message = JSON.parse(line);
+  if (message.method === "initialize") send({ id: message.id, result: {} });
+  if (message.method === "thread/start" || message.method === "thread/resume") {
+    send({ id: message.id, result: { thread: { id: threadId, sessionId: threadId } } });
+    // Codex replays the earlier attempt's last update when it resumes a thread.
+    send({ method: "thread/tokenUsage/updated", params: { threadId, turnId: "earlier-turn", tokenUsage: ${JSON.stringify(earlier)} } });
+  }
+  if (message.method === "turn/start") {
+    send({ id: message.id, result: { turn: { id: "turn", status: "inProgress" } } });
+    for (const tokenUsage of ${JSON.stringify(updates)}) {
+      send({ method: "thread/tokenUsage/updated", params: { threadId, turnId: "turn", tokenUsage } });
+    }
+    send({ method: "item/completed", params: {
+      threadId, turnId: "turn", item: { type: "agentMessage", id: "message", text: '{"decision":"keep_open"}' }
+    } });
+    send({ method: "turn/completed", params: { threadId, turn: { id: "turn", status: "completed", error: null } } });
+  }
+});
+`,
+      );
+      writeFileSync(
+        binary,
+        `#!/bin/sh\nexec /usr/bin/env -u NODE_V8_COVERAGE ${JSON.stringify(process.execPath)} ${JSON.stringify(fixture)} "$@"\n`,
+        { mode: 0o700 },
+      );
+      const result = runCodexProcess({
+        args: ["exec", "--cd", root, "--output-last-message", outputPath, "--json", "-"],
+        cwd: root,
+        env: { ...process.env, CODEX_BIN: binary },
+        input: "Review the fixture.",
+        timeoutMs: 10_000,
+        outputLastMessagePath: outputPath,
+        outputLastMessageBytes: 128,
+        appServer: { statePath },
+      });
+      assert.equal(result.status, 0);
+      // Final total minus the earlier attempt's 1,000/800/100/100; the replayed update is ignored.
+      assert.deepEqual(result.usage, {
+        input_tokens: 500,
+        cached_input_tokens: 300,
+        cache_write_input_tokens: 200,
+        output_tokens: 30,
+        reasoning_output_tokens: 15,
+      });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  },
+);
