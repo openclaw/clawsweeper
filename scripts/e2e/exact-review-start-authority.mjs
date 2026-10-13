@@ -53,9 +53,13 @@ for (const scenario of scenarios) {
   mkdirSync(join(cwd, "scripts"), { recursive: true });
   mkdirSync(join(cwd, "bin"));
   symlinkSync(resolve("dist"), join(cwd, "dist"), "dir");
+  // test/control-plane-curl.test.ts owns retry timing; this proof needs only the
+  // attempt count, so its copy skips the up-to-62 s backoff waits.
+  const helper = readFileSync("scripts/control-plane-curl.sh", "utf8");
+  assert.ok(helper.includes('sleep "$delay"'), "control-plane helper backoff sleep");
   writeFileSync(
     join(cwd, "scripts/control-plane-curl.sh"),
-    readFileSync("scripts/control-plane-curl.sh"),
+    helper.replace('sleep "$delay"', "sleep 0"),
   );
   writeFileSync(join(cwd, "output"), "");
   const oversized = scenario.includes("oversized");
@@ -218,7 +222,7 @@ cat "$PROOF_ROOT/pull.json"
     assert.equal(outputs.superseded === "true", superseded);
     assert.equal(requests.length === 0, scenario === "invalid-tuple");
     if (scenario === "service-failure" || scenario === "transport-failure")
-      assert.equal(requests.length, 4);
+      assert.equal(requests.length, 6);
     // The startup check, and its retries until accepted, charges generation
     // start; periodic heartbeats after an accepted start never do.
     const accepted = statuses.indexOf(200);
