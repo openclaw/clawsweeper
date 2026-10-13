@@ -9146,25 +9146,23 @@ test("review coverage summarizes canonical item records per fleet", async () => 
     coverage_percent: 25,
   });
 
-  // Keyset pages visit every record once, across repository boundaries.
+  // Pages visit every record once, within and across repository boundaries.
   const store = new ExactReviewDirectPublicationStore(storage);
   const scanInPages = (limit: number) => {
     const fleets = new Map<string, ReviewCoverageFleetCounts>();
     let cursor: ReviewCoverageScanCursor | null = null;
-    let pages = 0;
-    do {
-      cursor = store.reviewCoverageScanPageSync(fleets, cursor, limit, now);
-      pages += 1;
-    } while (cursor);
-    return { pages, fleets: Object.fromEntries(fleets) };
+    do cursor = store.reviewCoverageScanPageSync(fleets, cursor, limit, now);
+    while (cursor);
+    return Object.fromEntries(fleets);
   };
   const whole = scanInPages(1_000);
-  assert.equal(whole.pages, 1);
-  assert.equal(Object.keys(whole.fleets).length, 3);
-  const single = scanInPages(1);
-  assert.equal(single.pages, 8);
-  assert.deepEqual(single.fleets, whole.fleets);
-  assert.deepEqual(scanInPages(7), { pages: 2, fleets: whole.fleets });
+  assert.deepEqual(
+    Object.fromEntries(
+      Object.values(whole).map((fleet) => [fleet.repo_slug, fleet.tracked_records]),
+    ),
+    { "openclaw-openclaw": 5, "other-repo": 1, "unmanaged-repo": 1 },
+  );
+  for (const limit of [1, 2, 5, 7]) assert.deepEqual(scanInPages(limit), whole);
 
   // Deleting the record tombstones it out of the open universe.
   await queue.fetch(

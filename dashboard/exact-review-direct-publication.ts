@@ -651,8 +651,8 @@ export class ExactReviewDirectPublicationStore {
     );
   }
 
-  // Folds one keyset page of canonical `items` records into `fleets` and returns
-  // the cursor for the next page, or null after the last page. A full scan reads
+  // Folds one page of canonical `items` records into `fleets` and returns the
+  // cursor for the next page, or null after the last page. A full scan reads
   // every record head and takes seconds of CPU; the caller yields between pages
   // so queue claims, heartbeats and alarms are not held behind it.
   reviewCoverageScanPageSync(
@@ -662,14 +662,17 @@ export class ExactReviewDirectPublicationStore {
     now: number,
     windowMs = REVIEW_COVERAGE_WINDOW_MS,
   ): ReviewCoverageScanCursor | null {
+    const cursor = after ?? this.nextReviewCoverageRepositorySync("");
+    if (!cursor) return null;
     // Canonical `items` records cover items that have reached publication; they
     // are not a complete GitHub-open inventory. Only the front matter is needed,
     // so read a bounded head and combine it with the periodically published live
     // fleet counts instead of treating missing records as nonexistent work.
-    // The cursor compares the full listing-index key so each page is a range read.
+    // Each page stays inside one repository: equality on (repo_slug, section)
+    // and a range on item_id read the listing index in order. A cursor that
+    // spans repositories makes SQLite sort every remaining row for each page.
     const rows = this.storage.sql.exec(
-      `SELECT r.repo_slug AS repo_slug,
-              r.item_id AS item_id,
+      `SELECT r.item_id AS item_id,
               CASE
                 WHEN r.content IS NOT NULL THEN substr(r.content, 1, ${REVIEW_COVERAGE_HEAD_BYTES})
                 ELSE (SELECT substr(c.content_base64, 1, ${REVIEW_COVERAGE_HEAD_BYTES * 2})
@@ -681,22 +684,21 @@ export class ExactReviewDirectPublicationStore {
               END AS head,
               (r.content IS NULL) AS chunked
          FROM ${EXACT_REVIEW_CANONICAL_RECORD_TABLE} r
-        WHERE r.section = 'items' AND r.deleted = 0
-          AND (r.repo_slug, r.section, r.item_id) > (?, 'items', ?)
-        ORDER BY r.repo_slug, r.section, r.item_id
+        WHERE r.repo_slug = ? AND r.section = 'items' AND r.item_id > ? AND r.deleted = 0
+        ORDER BY r.item_id
         LIMIT ?`,
-      after?.repoSlug ?? "",
-      after?.itemId ?? 0,
+      cursor.repoSlug,
+      cursor.itemId,
       limit,
     );
-    let next: ReviewCoverageScanCursor | null = null;
+    const repoSlug = cursor.repoSlug;
+    let lastItemId = cursor.itemId;
     let read = 0;
     for (const row of rows) {
       read += 1;
-      next = { repoSlug: String(row.repo_slug), itemId: Number(row.item_id) };
+      lastItemId = Number(row.item_id);
       const head = reviewCoverageHeadText(row.head, Number(row.chunked) === 1);
       const fields = reviewCoverageFrontMatter(head);
-      const repoSlug = String(row.repo_slug);
       const repo = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(fields.repository ?? "")
         ? fields.repository!
         : /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(fields.repo ?? "")
@@ -736,7 +738,19 @@ export class ExactReviewDirectPublicationStore {
       }
       fleets.set(repoSlug, fleet);
     }
-    return read === limit ? next : null;
+    if (read === limit) return { repoSlug, itemId: lastItemId };
+    return this.nextReviewCoverageRepositorySync(repoSlug);
+  }
+
+  private nextReviewCoverageRepositorySync(after: string): ReviewCoverageScanCursor | null {
+    const [row] = Array.from(
+      this.storage.sql.exec(
+        `SELECT MIN(repo_slug) AS repo_slug FROM ${EXACT_REVIEW_CANONICAL_RECORD_TABLE}
+          WHERE repo_slug > ?`,
+        after,
+      ),
+    );
+    return typeof row?.repo_slug === "string" ? { repoSlug: row.repo_slug, itemId: 0 } : null;
   }
 
   // Combines finished scan counts with the live inventory. This is cheap (one
