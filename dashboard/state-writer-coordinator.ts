@@ -171,11 +171,6 @@ export class StateWriterCoordinator {
         return this.ticketJsonSync(row);
       }
       if (row.state === "queued") {
-        this.storage.sql.exec(
-          `UPDATE ${STATE_WRITER_TICKET_TABLE} SET last_seen_at = ? WHERE ticket_id = ?`,
-          now,
-          input.ticketId,
-        );
         const active = this.activeRowSync();
         const head = this.queuedHeadSync();
         if (!active && String(head?.ticket_id || "") === input.ticketId) {
@@ -228,6 +223,14 @@ export class StateWriterCoordinator {
             input.writerClass,
             input.writerClass,
             input.writerClass,
+          );
+        } else if (Number(row.last_seen_at) !== now) {
+          // Queued polls keep their stale deadline alive; admission writes this
+          // timestamp itself, and a newly inserted ticket already has it.
+          this.storage.sql.exec(
+            `UPDATE ${STATE_WRITER_TICKET_TABLE} SET last_seen_at = ? WHERE ticket_id = ?`,
+            now,
+            input.ticketId,
           );
         }
         row = this.ticketRowSync(input.ticketId);

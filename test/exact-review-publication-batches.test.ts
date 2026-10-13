@@ -917,6 +917,61 @@ test("bounded cleanup preserves active batches and open dead letters", () => {
   assert.equal(storage.scalar("SELECT COUNT(*) AS value FROM exact_review_queue_dead_letters"), 1);
 });
 
+test("publication history and cleanup merge terminal states with global timestamp and id ordering", () => {
+  const storage = new TestStorage();
+  const batches = new ExactReviewPublicationBatchStore(storage);
+  batches.ensureSchemaSync();
+  for (const [batchId, state, completedAt] of [
+    ["a-completed", "completed", 2_000],
+    ["b-expired", "expired", 2_000],
+    ["c-completed", "completed", 2_000],
+    ["d-expired", "expired", 2_000],
+    ["e-newer", "completed", 2_001],
+    ["active", "leased", null],
+  ] as const) {
+    storage.run(
+      `INSERT INTO exact_review_publication_batches
+         (batch_id, state, lease_owner, lease_expires_at, configured_batch_size,
+          attempt, created_at, completed_at)
+       VALUES (?, ?, 'worker', 20_000, 2, 1, 1_000, ?)`,
+      batchId,
+      state,
+      completedAt,
+    );
+    storage.run(
+      `INSERT INTO exact_review_publication_batch_items
+         (batch_id, item_key, revision, claim_generation, terminal_outcome)
+       VALUES (?, ?, 1, 1, 'lease_expired')`,
+      batchId,
+      `${batchId}-terminal`,
+    );
+  }
+  storage.run(
+    `INSERT INTO exact_review_publication_batch_items
+       (batch_id, item_key, revision, claim_generation)
+     VALUES ('active', 'active-unfinished', 1, 1)`,
+  );
+
+  assert.deepEqual(
+    batches.observability(3_000, 3).batches.map((batch) => batch.batchId),
+    ["active", "e-newer", "d-expired", "c-completed"],
+  );
+  const before = batches.stats(3_000, { completedTtlMs: 1_000, cleanupLimit: 0 });
+  assert.equal(before.reclaimedItemsRetained, 6);
+  assert.deepEqual(before.cleanup, { deletedThisPass: 0, eligibleRemaining: 4, limit: 0 });
+
+  const after = batches.stats(3_000, { completedTtlMs: 1_000, cleanupLimit: 2 });
+  assert.deepEqual(after.cleanup, { deletedThisPass: 2, eligibleRemaining: 2, limit: 2 });
+  assert.equal(after.reclaimedItemsRetained, 4);
+  assert.equal(after.activeItems, 1);
+  assert.equal(after.completed, 2);
+  assert.equal(after.expired, 1);
+  assert.deepEqual(
+    batches.observability(3_000, 10).batches.map((batch) => batch.batchId),
+    ["active", "e-newer", "d-expired", "c-completed"],
+  );
+});
+
 test("cleanup retains fencing generations when a batch id is reused", () => {
   const storage = new TestStorage();
   const batches = new ExactReviewPublicationBatchStore(storage);

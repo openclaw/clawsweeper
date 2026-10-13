@@ -443,8 +443,12 @@ export class ExactReviewPublicationBatchStore {
       );
       const historicalBatchIds = Array.from(
         this.storage.sql.exec(
-          `SELECT batch_id FROM ${EXACT_REVIEW_PUBLICATION_BATCH_TABLE}
-            WHERE state <> 'leased' ORDER BY completed_at DESC, batch_id DESC LIMIT ?`,
+          `SELECT batch_id, completed_at FROM ${EXACT_REVIEW_PUBLICATION_BATCH_TABLE}
+            WHERE state = 'completed'
+           UNION ALL
+           SELECT batch_id, completed_at FROM ${EXACT_REVIEW_PUBLICATION_BATCH_TABLE}
+            WHERE state = 'expired'
+           ORDER BY completed_at DESC, batch_id DESC LIMIT ?`,
           Math.max(1, Math.min(100, limit)),
         ),
         (row) => String(row.batch_id),
@@ -543,11 +547,17 @@ export class ExactReviewPublicationBatchStore {
       const completedTtlMs = options.completedTtlMs ?? DEFAULT_COMPLETED_BATCH_TTL_MS;
       const cleanupLimit = options.cleanupLimit ?? DEFAULT_CLEANUP_LIMIT;
       const cutoff = now - completedTtlMs;
+      // Merge the two ordered index ranges, rather than sorting terminal history
+      // across both states before applying the cleanup limit.
       const cleanupIds = Array.from(
         this.storage.sql.exec(
-          `SELECT batch_id FROM ${EXACT_REVIEW_PUBLICATION_BATCH_TABLE}
-            WHERE state IN ('completed', 'expired') AND completed_at <= ?
-            ORDER BY completed_at, batch_id LIMIT ?`,
+          `SELECT batch_id, completed_at FROM ${EXACT_REVIEW_PUBLICATION_BATCH_TABLE}
+            WHERE state = 'completed' AND completed_at <= ?
+           UNION ALL
+           SELECT batch_id, completed_at FROM ${EXACT_REVIEW_PUBLICATION_BATCH_TABLE}
+            WHERE state = 'expired' AND completed_at <= ?
+           ORDER BY completed_at, batch_id LIMIT ?`,
+          cutoff,
           cutoff,
           cleanupLimit,
         ),

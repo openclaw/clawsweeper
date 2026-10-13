@@ -243,6 +243,15 @@ bodies are not logged. Exhaustion remains a failed workflow. This improves
 completeness of the existing review-observability data without changing its
 schema or mutation boundaries.
 
+Run telemetry retains its 30-day window; physical cleanup runs at most once
+per five minutes per queue instance rather than scanning the history on every
+write or dashboard poll. Delivery receipt counts stay exact while reusing the
+previous count and reading only newly appended rowids; deletion discards that
+count before rowids can be reused. Terminal command receipts retain their
+existing cutoff and use the outcome/time index. State-writer acquire retries
+still refresh queued ticket liveness, but do not rewrite timestamps already
+set by admission or lease acquisition.
+
 Maintainer-authored and `maintainer`-labeled items require an explicit review
 request. Automatic intake, scheduled selection, claimed reviews, and hosted
 publication apply this policy; a source-drift retry does not inherit the

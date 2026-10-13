@@ -404,7 +404,7 @@ export class ExactReviewCommandIntakeStore {
   pruneTerminalReceipts(now: number) {
     this.storage.sql.exec(
       `DELETE FROM ${COMMAND_RECEIPT_TABLE}
-        WHERE outcome != 'pending' AND observed_at <= ?`,
+        WHERE outcome IN ('completed', 'rejected', 'superseded') AND observed_at <= ?`,
       now - EXACT_REVIEW_COMMAND_RECEIPT_RETENTION_MS,
     );
     this.storage.sql.exec(

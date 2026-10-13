@@ -963,6 +963,8 @@ export class ExactReviewQueue {
     itemKey,
     minimumRevision,
   ) => this.nextExactReviewItemRevisionSync(itemKey, minimumRevision);
+  private deliveryReceiptCount: { count: number; maxRowid: number } | null = null;
+  private reviewRunTelemetryPrunedAt: number | null = null;
   private readonly baselines = new WeakMap<ExactReviewQueueState, ExactReviewQueueBaseline>();
   private statsCache: {
     key: string;
@@ -1552,12 +1554,16 @@ export class ExactReviewQueue {
         this.pruneDeliveryReceiptsSync(now);
         this.pruneIngressReceiptsSync(now);
         this.pruneEditedSemanticInputsSync(now);
-        this.storage.sql.exec(
-          `DELETE FROM ${EXACT_REVIEW_QUEUE_DELIVERY_TABLE}
-            WHERE delivery_id = ? AND received_at <= ?`,
-          deliveryId,
-          now - EXACT_REVIEW_QUEUE_DELIVERY_TTL_MS,
+        const expiredReceipt = Array.from(
+          this.storage.sql.exec(
+            `DELETE FROM ${EXACT_REVIEW_QUEUE_DELIVERY_TABLE}
+              WHERE delivery_id = ? AND received_at <= ?
+              RETURNING delivery_id`,
+            deliveryId,
+            now - EXACT_REVIEW_QUEUE_DELIVERY_TTL_MS,
+          ),
         );
+        if (expiredReceipt.length) this.deliveryReceiptCount = null;
         const existingReceipt = Array.from(
           this.storage.sql.exec(
             `SELECT authenticated_body_fingerprint, scheduled_disposition_json
@@ -1588,9 +1594,10 @@ export class ExactReviewQueue {
             dispositionJson: storedDispositionJson,
           };
         }
+        let intakeState: ExactReviewQueueState | undefined;
         if (decision.publication) {
           const publication = decision.publication;
-          const state = this.readStateSync();
+          const state = (intakeState ??= this.readStateSync());
           const producer = state.items[publication.itemKey];
           const retained = Object.values(state.items).find((item) => {
             const other = item.decision.publication;
@@ -1643,7 +1650,7 @@ export class ExactReviewQueue {
           : null;
 
         if (semanticEdited && this.isDuplicateEditedSemanticInputSync(semanticEdited, now)) {
-          const state = this.readStateSync();
+          const state = (intakeState ??= this.readStateSync());
           const current =
             state.items[semanticEdited.queueKey] ??
             Object.values(state.items).find(
@@ -1670,7 +1677,7 @@ export class ExactReviewQueue {
           };
         }
 
-        const state = this.readStateSync();
+        const state = intakeState ?? this.readStateSync();
         // A delayed or lost alarm must not let an expired one-shot recovery
         // suppress the next failed shard's recovery delivery.
         reclaimExpiredExactReviewLeases(
@@ -2000,6 +2007,7 @@ export class ExactReviewQueue {
             if (
               exactReviewCommandVersionIsOlder(current.leaseDecision || current.decision, decision)
             ) {
+              this.deliveryReceiptCount = null;
               this.storage.sql.exec(
                 `DELETE FROM ${EXACT_REVIEW_QUEUE_DELIVERY_TABLE} WHERE delivery_id = ?`,
                 deliveryId,
@@ -2065,6 +2073,7 @@ export class ExactReviewQueue {
               exactReviewDecisionCanSupersedeReview(current, decision);
             if (attemptsReviewSupersession && !sourceAuthorityIsNewer) {
               if (decision.sourceCommentId) {
+                this.deliveryReceiptCount = null;
                 this.storage.sql.exec(
                   `DELETE FROM ${EXACT_REVIEW_QUEUE_DELIVERY_TABLE} WHERE delivery_id = ?`,
                   deliveryId,
@@ -3421,7 +3430,7 @@ export class ExactReviewQueue {
       const runId = String(body.run_id || "").trim();
       const runAttempt = exactReviewRunAttempt(body.run_attempt);
       const now = Date.now();
-      const item = this.readStateSync().items[itemKey];
+      const item = this.readItemSync(itemKey);
       const valid =
         progress &&
         item &&
@@ -4318,7 +4327,7 @@ export class ExactReviewQueue {
       ) {
         return json({ error: "invalid_lease_read_tuple" }, 400);
       }
-      const item = this.readStateSync().items[itemKey];
+      const item = this.readItemSync(itemKey);
       const now = Date.now();
       if (
         !item ||
@@ -7260,10 +7269,19 @@ export class ExactReviewQueue {
   }
 
   private pruneReviewRunTelemetrySync(now: number) {
+    // Retention is housekeeping, not an admission or idempotency check.
+    if (
+      this.reviewRunTelemetryPrunedAt !== null &&
+      now >= this.reviewRunTelemetryPrunedAt &&
+      now - this.reviewRunTelemetryPrunedAt < 5 * 60 * 1000
+    ) {
+      return;
+    }
     this.storage.sql.exec(
       `DELETE FROM ${EXACT_REVIEW_RUN_TELEMETRY_TABLE} WHERE completed_at <= ?`,
       now - REVIEW_RUN_TELEMETRY_RETENTION_MS,
     );
+    this.reviewRunTelemetryPrunedAt = now;
   }
 
   private async supersedePublicationCandidates(value: unknown) {
@@ -11146,17 +11164,6 @@ export class ExactReviewQueue {
         `ALTER TABLE ${EXACT_REVIEW_QUEUE_INGRESS_TABLE} ADD COLUMN admitted_at INTEGER`,
       );
     }
-    // Before admission state was explicit, direct-route receipts were the
-    // canonical durable ingress record. Preserve that completed-delivery
-    // meaning on the rolling schema upgrade and on a later re-upgrade after a
-    // rollback. Current code records an unadmitted direct receipt as zero, so
-    // NULL remains exclusive to the pre-admission-schema worker; legacy
-    // fallback receipts stay NULL until this queue admits them.
-    this.storage.sql.exec(
-      `UPDATE ${EXACT_REVIEW_QUEUE_INGRESS_TABLE}
-          SET admitted_at = received_at
-        WHERE route = 'direct_webhook' AND admitted_at IS NULL`,
-    );
     // Flow telemetry is independent of queue rollback compatibility. A
     // separate singleton keeps cumulative lane counters monotonic without
     // changing the normalized queue schema or its legacy shadow contract.
@@ -11808,6 +11815,38 @@ export class ExactReviewQueue {
     };
     this.schedulingStates.add(state);
     return state;
+  }
+
+  private targetAppCircuitRetryAtSync(targetRepo: string, now: number): number {
+    const meta = this.readStorageMetaSync();
+    if (!meta || Number(meta.schema_version) !== EXACT_REVIEW_QUEUE_STORAGE_SCHEMA_VERSION) {
+      throw new Error("exact-review queue storage is not initialized");
+    }
+    const dispatcher = meta.dispatcher_json
+      ? (JSON.parse(meta.dispatcher_json) as ExactReviewQueueState["dispatcher"])
+      : undefined;
+    return exactReviewGithubTargetAppCircuitRetryAt({ items: {}, dispatcher }, targetRepo, now);
+  }
+
+  private readItemSync(itemKey: string): ExactReviewQueueItem | undefined {
+    const row = Array.from(
+      this.storage.sql.exec(
+        `SELECT item_json FROM ${EXACT_REVIEW_QUEUE_ITEM_TABLE} WHERE item_key = ?`,
+        itemKey,
+      ) as Iterable<{ item_json: string }>,
+    )[0];
+    if (!row) return undefined;
+    let item: ExactReviewQueueItem;
+    try {
+      item = JSON.parse(row.item_json) as ExactReviewQueueItem;
+    } catch {
+      throw new Error(`invalid exact-review queue item JSON for ${itemKey}`);
+    }
+    if (!item || typeof item !== "object" || item.key !== itemKey) {
+      throw new Error(`invalid exact-review queue item for ${itemKey}`);
+    }
+    normalizeExactReviewQueueItem(item);
+    return item;
   }
 
   private readStateSync(): ExactReviewQueueState {
@@ -13193,6 +13232,7 @@ export class ExactReviewQueue {
           cutoff,
         ),
       );
+      if (deleted.length) this.deliveryReceiptCount = null;
       if (deleted.length < EXACT_REVIEW_QUEUE_DELIVERY_PRUNE_BATCH) break;
     }
   }
@@ -13386,12 +13426,21 @@ export class ExactReviewQueue {
   }
 
   private deliveryReceiptCountSync() {
+    // Rowids advance for inserts while existing receipts remain. After any
+    // deletion the cache is discarded, so rowid reuse cannot hide a receipt.
+    const previous = this.deliveryReceiptCount;
     const row = Array.from(
       this.storage.sql.exec(
-        `SELECT COUNT(*) AS receipt_count FROM ${EXACT_REVIEW_QUEUE_DELIVERY_TABLE}`,
+        `SELECT COUNT(*) AS receipt_count, COALESCE(MAX(rowid), 0) AS max_rowid
+           FROM ${EXACT_REVIEW_QUEUE_DELIVERY_TABLE} WHERE rowid > ?`,
+        previous?.maxRowid ?? 0,
       ),
-    )[0] as { receipt_count?: number } | undefined;
-    return Number(row?.receipt_count || 0);
+    )[0] as { receipt_count: number; max_rowid: number };
+    this.deliveryReceiptCount = {
+      count: (previous?.count ?? 0) + Number(row.receipt_count),
+      maxRowid: Math.max(previous?.maxRowid ?? 0, Number(row.max_rowid)),
+    };
+    return this.deliveryReceiptCount.count;
   }
 
   private recordScheduledDispositionSync(
@@ -13567,8 +13616,7 @@ export class ExactReviewQueue {
         }
         continue;
       }
-      const circuitRetryAt = exactReviewGithubTargetAppCircuitRetryAt(
-        this.readStateSync(),
+      const circuitRetryAt = this.targetAppCircuitRetryAtSync(
         record.intake.decision.targetRepo,
         observedAt,
       );
@@ -13888,8 +13936,7 @@ export class ExactReviewQueue {
         this.deferSourceAuthorityReservationSync(current, observedAt, admission.retryAt, false);
         continue;
       }
-      const circuitRetryAt = exactReviewGithubTargetAppCircuitRetryAt(
-        this.readStateSync(),
+      const circuitRetryAt = this.targetAppCircuitRetryAtSync(
         current.decision.targetRepo,
         observedAt,
       );
@@ -14009,8 +14056,7 @@ export class ExactReviewQueue {
         this.deferBranchAuthorityReservationSync(current, observedAt, admission.retryAt, false);
         continue;
       }
-      const circuitRetryAt = exactReviewGithubTargetAppCircuitRetryAt(
-        this.readStateSync(),
+      const circuitRetryAt = this.targetAppCircuitRetryAtSync(
         current.decision.targetRepo,
         observedAt,
       );

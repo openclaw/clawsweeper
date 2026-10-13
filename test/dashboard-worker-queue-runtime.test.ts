@@ -5511,6 +5511,70 @@ test("exact-review re-upgrade distinguishes a refreshed rollback receipt", async
   );
 });
 
+test("receipt counts remain exact across inserts, expiry, rowid reuse, and rollback", async () => {
+  const storage = new MemoryDurableStorage();
+  const queue = new ExactReviewQueue({ storage }, {});
+  await queue.fetch(
+    new Request("https://queue.invalid/admission-capabilities", { method: "POST" }),
+  );
+  const internals = queue as unknown as {
+    deliveryReceiptCountSync(): number;
+    pruneDeliveryReceiptsSync(now: number): void;
+  };
+  const now = Date.now();
+  const insert = (id: string, receivedAt: number) =>
+    storage.sql.exec(
+      "INSERT INTO exact_review_queue_deliveries (delivery_id, received_at) VALUES (?, ?)",
+      id,
+      receivedAt,
+    );
+  insert("retained", now);
+  assert.equal(internals.deliveryReceiptCountSync(), 1);
+  insert("expired", now - 8 * 24 * 60 * 60 * 1000);
+  assert.equal(internals.deliveryReceiptCountSync(), 2);
+  assert.throws(() =>
+    storage.transactionSync(() => {
+      internals.pruneDeliveryReceiptsSync(now);
+      throw new Error("rollback");
+    }),
+  );
+  assert.equal(internals.deliveryReceiptCountSync(), 2);
+  internals.pruneDeliveryReceiptsSync(now);
+  assert.equal(internals.deliveryReceiptCountSync(), 1);
+  insert("reused-rowid", now);
+  assert.equal(internals.deliveryReceiptCountSync(), 2);
+  assert.equal(internals.deliveryReceiptCountSync(), 2);
+});
+
+test("run telemetry retention preserves the boundary and eventually prunes between requests", async () => {
+  const storage = new MemoryDurableStorage();
+  const queue = new ExactReviewQueue({ storage }, {});
+  await queue.fetch(
+    new Request("https://queue.invalid/admission-capabilities", { method: "POST" }),
+  );
+  const internals = queue as unknown as { pruneReviewRunTelemetrySync(now: number): void };
+  const now = Date.now();
+  const cutoff = now - 30 * 24 * 60 * 60 * 1000;
+  for (const [id, completedAt] of [
+    ["expired", cutoff],
+    ["retained", cutoff + 1],
+  ] as const) {
+    storage.sql.exec(
+      `INSERT INTO exact_review_run_telemetry
+       (run_id, run_attempt, workflow_outcome, trigger_lane, trigger_origin, completed_at, record_json)
+       VALUES (?, 1, 'success', 'review', 'test', ?, '{}')`,
+      id,
+      completedAt,
+    );
+  }
+  internals.pruneReviewRunTelemetrySync(now);
+  assert.equal(sqlCount(storage, "exact_review_run_telemetry"), 1);
+  internals.pruneReviewRunTelemetrySync(now + 1);
+  assert.equal(sqlCount(storage, "exact_review_run_telemetry"), 1);
+  internals.pruneReviewRunTelemetrySync(now + 5 * 60 * 1000);
+  assert.equal(sqlCount(storage, "exact_review_run_telemetry"), 0);
+});
+
 test("exact-review receipt pruning removes its translated shadow atomically", async () => {
   const storage = new MemoryDurableStorage();
   const queue = new ExactReviewQueue({ storage }, {});
