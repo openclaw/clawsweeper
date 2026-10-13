@@ -5,6 +5,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { runCodexProcess } from "../dist/codex-process.js";
 import { CODEX_THREAD_STATE_MAX_BYTES } from "../dist/codex-output-capture.js";
+import { decisionOutputError } from "../dist/review-decision-repair.js";
 import { closeDecision } from "./helpers.ts";
 
 const uuid = "019f0560-0000-7000-8000-000000000001";
@@ -144,7 +145,12 @@ rl.on("line", (line) => {
   });
 }
 
-for (const scenario of ["repaired", "invalid-twice"] as const) {
+for (const scenario of [
+  "repaired",
+  "invalid-twice",
+  "inactive-decision-repaired",
+  "inactive-decision-invalid-twice",
+] as const) {
   test(
     `app-server decision repair turn: ${scenario}`,
     { skip: process.platform === "win32" },
@@ -166,12 +172,26 @@ for (const scenario of ["repaired", "invalid-twice"] as const) {
           workReason: "Maintainer review is required.",
         }),
       );
+      const inactiveDecision = JSON.parse(validDecision);
+      inactiveDecision.maintainerDecision.likelyOwner = { person: "@alice" };
+      const invalidDecision = JSON.stringify(inactiveDecision);
+      const inactiveScenario = scenario.startsWith("inactive-decision-");
+      const validationError = inactiveScenario
+        ? "decision.maintainerDecision must be empty when no decision is required"
+        : "decision.evidence must be an array";
+      const schema = JSON.parse(
+        readFileSync(new URL("../schema/clawsweeper-decision.schema.json", import.meta.url), "utf8"),
+      );
       const messages = [
-        '{"decision":"keep_open"}',
-        scenario === "repaired" ? validDecision : "not json",
+        inactiveScenario ? invalidDecision : '{"decision":"keep_open"}',
+        scenario === "inactive-decision-invalid-twice"
+          ? invalidDecision
+          : scenario === "invalid-twice"
+            ? "not json"
+            : validDecision,
       ];
       try {
-        writeFileSync(schemaPath, '{"type":"object"}');
+        writeFileSync(schemaPath, JSON.stringify(schema));
         writeFileSync(
           fixture,
           `const fs = require("node:fs");
@@ -225,8 +245,20 @@ rl.on("line", (line) => {
           decisionRepair: { item: { repo: "openclaw/openclaw", number: 123, kind: "issue" } },
         });
         assert.equal(result.error, undefined);
-        assert.equal(result.decisionRepairError, "decision.evidence must be an array");
-        assert.equal(readFileSync(outputPath, "utf8"), messages[1]);
+        assert.equal(result.decisionRepairError, validationError);
+        const output = readFileSync(outputPath, "utf8");
+        assert.equal(output, messages[1]);
+        const outputError = decisionOutputError(output, {
+          repo: "openclaw/openclaw",
+          number: 123,
+          kind: "issue",
+        });
+        if (scenario.endsWith("invalid-twice")) {
+          assert.ok(outputError);
+          if (inactiveScenario) assert.equal(outputError, validationError);
+        } else {
+          assert.equal(outputError, undefined);
+        }
         const turnStarts = readFileSync(requestsPath, "utf8")
           .trim()
           .split("\n")
@@ -236,10 +268,10 @@ rl.on("line", (line) => {
         assert.equal(turnStarts.length, 2);
         const [first, repair] = turnStarts;
         assert.deepEqual(first.input, [{ type: "text", text: "Review the fixture." }]);
-        assert.match(repair.input[0].text, /decision\.evidence must be an array/);
+        assert.ok(repair.input[0].text.includes(validationError));
         // Same thread, sandbox, cwd, and output schema; only the input changes.
         assert.deepEqual({ ...repair, input: first.input }, first);
-        assert.deepEqual(first.outputSchema, { type: "object" });
+        assert.deepEqual(first.outputSchema, schema);
       } finally {
         rmSync(root, { recursive: true, force: true });
       }

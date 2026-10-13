@@ -1033,6 +1033,8 @@ for (const scenario of [
   "invalid-twice",
   "repair-rate-limited",
   "valid-first",
+  "inactive-decision-repaired",
+  "inactive-decision-invalid-twice",
 ] as const) {
   test(`runCodex decision repair turn: ${scenario}`, () => {
     const root = mkdtempSync(tmpPrefix);
@@ -1052,6 +1054,12 @@ for (const scenario of [
         workReason: "Maintainer review is required.",
       }),
     );
+    const inactiveDecision = JSON.parse(validDecision);
+    inactiveDecision.maintainerDecision.likelyOwner = { person: "@alice" };
+    const invalidDecision = JSON.stringify(inactiveDecision);
+    const validationError = scenario.startsWith("inactive-decision-")
+      ? "decision.maintainerDecision must be empty when no decision is required"
+      : "decision.evidence must be an array";
     mkdirSync(openclawDir, { recursive: true });
     mkdirSync(binDir, { recursive: true });
     initTrackedRepo(openclawDir);
@@ -1075,8 +1083,10 @@ if (resumed && scenario === "repair-rate-limited") {
   process.exit(1);
 }
 const output = resumed
-  ? scenario === "invalid-twice" ? "not json" : ${JSON.stringify(validDecision)}
-  : scenario === "valid-first" ? ${JSON.stringify(validDecision)} : '{"decision":"keep_open"}';
+  ? scenario === "inactive-decision-invalid-twice" ? ${JSON.stringify(invalidDecision)}
+    : scenario === "invalid-twice" ? "not json" : ${JSON.stringify(validDecision)}
+  : scenario.startsWith("inactive-decision-") ? ${JSON.stringify(invalidDecision)}
+    : scenario === "valid-first" ? ${JSON.stringify(validDecision)} : '{"decision":"keep_open"}';
 process.stdout.write(output + "\\n");
 `,
     );
@@ -1114,18 +1124,24 @@ process.stdout.write(output + "\\n");
           );
           return true;
         });
-      } else if (scenario === "invalid-twice") {
+      } else if (scenario.endsWith("invalid-twice")) {
         assert.throws(review, (error: Error) => {
           assert.equal(error.name, "CodexReviewError");
-          assert.match(error.message, /schema-invalid output to .*: Unexpected token/);
-          assert.match(
-            error.message,
-            /first final message failed validation: decision\.evidence must be an array/,
+          if (scenario === "invalid-twice") {
+            assert.match(error.message, /schema-invalid output to .*: Unexpected token/);
+          } else {
+            assert.ok(error.message.includes(`: ${validationError}.`));
+          }
+          assert.ok(
+            error.message.includes(`first final message failed validation: ${validationError}`),
           );
           return true;
         });
       } else {
-        assert.equal(review().summary, "Repaired decision.");
+        const decision = review();
+        assert.equal(decision.summary, "Repaired decision.");
+        assert.equal(decision.maintainerDecision.required, false);
+        assert.equal(decision.maintainerDecision.likelyOwner.person, "");
       }
       const [first, repair, ...rest] = calls();
       assert.deepEqual(rest, []);
@@ -1147,7 +1163,7 @@ process.stdout.write(output + "\\n");
         first.args.slice(first.args.indexOf("--sandbox"), first.args.indexOf("--sandbox") + 2),
         ["--sandbox", "read-only"],
       );
-      assert.match(repair.stdin, /decision\.evidence must be an array/);
+      assert.ok(repair.stdin.includes(validationError));
       assert.match(repair.stdin, /Return the corrected full JSON object/);
       assert.match(
         readFileSync(join(workDir, "83396.1.codex.stderr.log"), "utf8"),

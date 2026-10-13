@@ -237,68 +237,132 @@
       "description": "Best end state: for closes the best current outcome, else the best implementation, product, or docs path."
     },
     "maintainerDecision": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["required", "kind", "question", "rationale", "options", "likelyOwner"],
-      "properties": {
-        "required": {
-          "type": "boolean",
-          "description": "Only for an unresolved choice between viable options that evidence cannot settle and no maintainer decided."
-        },
-        "kind": {
-          "type": "string",
-          "enum": [
-            "none",
-            "product_direction",
-            "security_boundary",
-            "proof_sufficiency",
-            "release_inclusion",
-            "merge_risk",
-            "manual_review"
-          ]
-        },
-        "question": {
-          "type": "string",
-          "description": "Exact item-specific question."
-        },
-        "rationale": {
-          "type": "string",
-          "description": "Why evidence and recorded decisions cannot settle it."
-        },
-        "options": {
-          "type": "array",
-          "maxItems": 3,
-          "description": "Two or three viable choices, exactly one recommended.",
-          "items": {
-            "type": "object",
-            "additionalProperties": false,
-            "required": ["title", "body", "recommended"],
-            "properties": {
-              "title": {
-                "type": "string"
-              },
-              "body": {
-                "type": "string"
-              },
-              "recommended": {
-                "type": "boolean"
+      "description": "An unresolved maintainer choice, or the empty decision when no choice is required.",
+      "anyOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["required", "kind", "question", "rationale", "options", "likelyOwner"],
+          "properties": {
+            "required": {
+              "type": "boolean",
+              "enum": [false]
+            },
+            "kind": {
+              "type": "string",
+              "enum": ["none"]
+            },
+            "question": {
+              "type": "string",
+              "enum": [""]
+            },
+            "rationale": {
+              "type": "string",
+              "enum": [""]
+            },
+            "options": {
+              "type": "array",
+              "maxItems": 0,
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["title", "body", "recommended"],
+                "properties": {
+                  "title": {
+                    "type": "string"
+                  },
+                  "body": {
+                    "type": "string"
+                  },
+                  "recommended": {
+                    "type": "boolean"
+                  }
+                }
+              }
+            },
+            "likelyOwner": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["person"],
+              "properties": {
+                "person": {
+                  "type": "string",
+                  "enum": [""]
+                }
               }
             }
           }
         },
-        "likelyOwner": {
+        {
           "type": "object",
           "additionalProperties": false,
-          "required": ["person"],
+          "required": ["required", "kind", "question", "rationale", "options", "likelyOwner"],
           "properties": {
-            "person": {
+            "required": {
+              "type": "boolean",
+              "description": "Only for an unresolved choice between viable options that evidence cannot settle and no maintainer decided.",
+              "enum": [true]
+            },
+            "kind": {
               "type": "string",
-              "description": "Owner from likelyOwners."
+              "enum": [
+                "product_direction",
+                "security_boundary",
+                "proof_sufficiency",
+                "release_inclusion",
+                "merge_risk",
+                "manual_review"
+              ]
+            },
+            "question": {
+              "type": "string",
+              "description": "Exact item-specific question.",
+              "pattern": "\\S"
+            },
+            "rationale": {
+              "type": "string",
+              "description": "Why evidence and recorded decisions cannot settle it.",
+              "pattern": "\\S"
+            },
+            "options": {
+              "type": "array",
+              "maxItems": 3,
+              "description": "Two or three viable choices, exactly one recommended.",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["title", "body", "recommended"],
+                "properties": {
+                  "title": {
+                    "type": "string",
+                    "pattern": "\\S"
+                  },
+                  "body": {
+                    "type": "string",
+                    "pattern": "\\S"
+                  },
+                  "recommended": {
+                    "type": "boolean"
+                  }
+                }
+              },
+              "minItems": 2
+            },
+            "likelyOwner": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["person"],
+              "properties": {
+                "person": {
+                  "type": "string",
+                  "description": "Owner from likelyOwners.",
+                  "pattern": "\\S"
+                }
+              }
             }
           }
         }
-      },
-      "description": "All other fields are empty, none, or [] unless required."
+      ]
     },
     "triagePriority": {
       "type": "string",

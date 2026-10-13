@@ -658,6 +658,66 @@ test("decision parser keeps maintainer intent model-authored and owner-consisten
   );
 });
 
+test("model schema constrains inactive and active maintainer decisions", () => {
+  const schema = JSON.parse(
+    readFileSync(new URL("../schema/clawsweeper-decision.schema.json", import.meta.url), "utf8"),
+  ).properties.maintainerDecision;
+  const inactive = {
+    ...closeDecision().maintainerDecision,
+    likelyOwner: { person: "" },
+  };
+  const active = {
+    required: true,
+    kind: "product_direction",
+    question: "Should the proposed behavior replace the current contract?",
+    rationale: "Both choices are viable and no maintainer has decided.",
+    options: [
+      { title: "Keep the contract", body: "Preserve existing behavior.", recommended: true },
+      { title: "Adopt the proposal", body: "Document the new behavior.", recommended: false },
+    ],
+    likelyOwner: { person: "@alice" },
+  };
+  for (const decision of [
+    inactive,
+    active,
+    {
+      ...active,
+      options: [
+        ...active.options,
+        { title: "Defer the choice", body: "Gather more product evidence.", recommended: false },
+      ],
+    },
+  ]) {
+    assertMatchesJsonSchema(decision, schema);
+    assert.equal(
+      parseDecision(closeDecision({ maintainerDecision: decision })).maintainerDecision.required,
+      decision.required,
+    );
+  }
+  for (const decision of [
+    { ...inactive, kind: "merge_risk" },
+    { ...inactive, question: active.question },
+    { ...inactive, rationale: active.rationale },
+    { ...inactive, options: active.options },
+    { ...inactive, likelyOwner: active.likelyOwner },
+    { ...active, kind: "none" },
+    { ...active, question: "" },
+    { ...active, question: " \n " },
+    { ...active, rationale: "" },
+    { ...active, options: active.options.slice(0, 1) },
+    { ...active, options: [...active.options, ...active.options] },
+    { ...active, options: [{ ...active.options[0], title: "" }, active.options[1]] },
+    { ...active, options: [{ ...active.options[0], body: " \n " }, active.options[1]] },
+    { ...active, likelyOwner: inactive.likelyOwner },
+  ]) {
+    assert.throws(() => assertMatchesJsonSchema(decision, schema), /allowed schema/);
+    assert.throws(
+      () => parseDecision(closeDecision({ maintainerDecision: decision })),
+      /decision\.maintainerDecision/,
+    );
+  }
+});
+
 test("decision parser validates typed root-cause clusters", () => {
   const canonicalRef = "https://github.com/openclaw/openclaw/pull/456";
   const canonicalIssueRef = "https://github.com/openclaw/openclaw/issues/456";
