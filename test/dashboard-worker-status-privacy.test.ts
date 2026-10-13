@@ -50,10 +50,10 @@ const UNAVAILABLE_PUBLIC_STATUS = {
   dashboard_health: { conclusion: "needs_attention", severity: "amber" },
 };
 
-test("status cache generation changes with the Bay comparison schema", () => {
+test("status cache generation changes when Bay metrics are removed", () => {
   const source = readFileSync("dashboard/worker.ts", "utf8");
-  assert.match(source, /\/api\/status-cache\/v7\//);
-  assert.doesNotMatch(source, /\/api\/status-cache\/v6\//);
+  assert.match(source, /\/api\/status-cache\/v8\//);
+  assert.doesNotMatch(source, /\/api\/status-cache\/v7\//);
 });
 
 test("public status projection is fail-closed for nested identity-bearing metadata", () => {
@@ -133,13 +133,9 @@ test("public status projection is fail-closed for nested identity-bearing metada
   ]);
   assert.equal(projected.fleet.active_codex_jobs, 2);
   assert.equal(projected.fleet.worker_detail_runs, 3);
-  assert.equal(projected.bay.terminal_count, 3);
-  assert.deepEqual(projected.bay.terminal_buffer, [
-    { outcome: "failure" },
-    { outcome: "cancelled" },
-    { outcome: "success" },
-  ]);
-  assert.equal(projected.bay.timings.sample_kind, "completed_review_journeys");
+  assert.equal(projected.bay.terminal_count, undefined);
+  assert.equal(projected.bay.terminal_buffer, undefined);
+  assert.equal(projected.bay.timings, undefined);
   assert.deepEqual(projected.diagnostics, {
     errors: ["telemetry_unavailable"],
     error_count: 1,
@@ -786,25 +782,7 @@ test("public Bay references retain only allowlisted canonical GitHub coordinates
       timing: { kind: "run", started_at: STATUS_NOW },
     },
   ]);
-  assert.deepEqual(projected.bay.terminal_buffer, [
-    {
-      repository: "openclaw/openclaw",
-      item_number: 45,
-      outcome: "success",
-      journey_duration_ms: 1_000,
-      legacy_batch_path: false,
-      action: {
-        repository: "openclaw/clawsweeper",
-        run_id: 7002,
-        job_id: 8002,
-        status: "completed",
-        started_at: STATUS_NOW,
-        steps_complete: true,
-        steps: [{ sequence: 1, kind: "publish", status: "completed", conclusion: "success" }],
-      },
-    },
-    { outcome: "failure" },
-  ]);
+  assert.equal(projected.bay.terminal_buffer, undefined);
   const serialized = JSON.stringify(projected);
   assert.equal(serialized.includes("private-owner"), false);
   assert.equal(serialized.includes(marker), false);
@@ -816,10 +794,7 @@ test("public Bay references retain only allowlisted canonical GitHub coordinates
   const noAllowlist = strictPublicStatusProjection(projected);
   assert.equal("items" in noAllowlist.exact_review_queue.bay_projection, false);
   assert.equal("items" in noAllowlist.exact_review_queue.bay_projection.activity, false);
-  assert.deepEqual(noAllowlist.bay.terminal_buffer, [
-    { outcome: "success" },
-    { outcome: "failure" },
-  ]);
+  assert.equal(noAllowlist.bay.terminal_buffer, undefined);
 
   const malformed = strictPublicStatusProjection(
     {
@@ -967,7 +942,7 @@ test("public status rejects supplied live counts from incomplete worker censuses
   assert.equal(projected.bay.active_census_complete, false);
 });
 
-test("public status retains closed workflow categories and bounded tide counters", () => {
+test("public status retains closed workflow categories without Bay metrics", () => {
   const projected = publicStatusProjection({
     pipeline: [
       { mode: "background-review", stage: "running" },
@@ -993,11 +968,6 @@ test("public status retains closed workflow categories and bounded tide counters
     { mode: "apply", stage: "closing" },
   ]);
   assert.deepEqual(projected.bay, {
-    tide_generation: 7,
-    tide_threshold: 20,
-    last_tide_at: "2026-08-15T12:00:00.000Z",
-    washed_at: "2026-08-15T12:01:00.000Z",
-    timings: { window_minutes: 60 },
     active_census_complete: false,
     active_stages: {
       arriving: 0,
@@ -1190,7 +1160,7 @@ test("public status filters a legacy cached body before it can be served", async
 
   try {
     await globalThis.caches.default.put(
-      new Request("https://clawsweeper.openclaw.ai/api/status-cache/v7/_/fresh"),
+      new Request("https://clawsweeper.openclaw.ai/api/status-cache/v8/_/fresh"),
       new Response(
         JSON.stringify({
           schema_version: 1,
@@ -1249,8 +1219,6 @@ test("public status filters a legacy cached body before it can be served", async
       { status: "queued", progress: { completed: 0, total: 1 }, stage: "arriving" },
     ]);
     assert.deepEqual(body.bay, {
-      terminal_count: 3,
-      terminal_buffer: [{ outcome: "success" }, { outcome: "failure" }, { outcome: "cancelled" }],
       active_census_complete: false,
       active_stages: {
         arriving: 0,
@@ -1272,9 +1240,9 @@ test("public status filters a legacy cached body before it can be served", async
       ),
     );
 
-    entries.delete("https://clawsweeper.openclaw.ai/api/status-cache/v7/_/fresh");
+    entries.delete("https://clawsweeper.openclaw.ai/api/status-cache/v8/_/fresh");
     await globalThis.caches.default.put(
-      new Request("https://clawsweeper.openclaw.ai/api/status-cache/v7/_/stale"),
+      new Request("https://clawsweeper.openclaw.ai/api/status-cache/v8/_/stale"),
       new Response(
         JSON.stringify({
           schema_version: 1,
@@ -1315,9 +1283,9 @@ test("public status filters a legacy cached body before it can be served", async
     );
     await Promise.all(pending);
 
-    entries.delete("https://clawsweeper.openclaw.ai/api/status-cache/v7/_/stale");
+    entries.delete("https://clawsweeper.openclaw.ai/api/status-cache/v8/_/stale");
     await globalThis.caches.default.put(
-      new Request("https://clawsweeper.openclaw.ai/api/status-cache/v7/_/fresh"),
+      new Request("https://clawsweeper.openclaw.ai/api/status-cache/v8/_/fresh"),
       new Response(
         JSON.stringify({
           schema_version: 1,
@@ -1341,9 +1309,9 @@ test("public status filters a legacy cached body before it can be served", async
       },
     });
 
-    entries.delete("https://clawsweeper.openclaw.ai/api/status-cache/v7/_/fresh");
+    entries.delete("https://clawsweeper.openclaw.ai/api/status-cache/v8/_/fresh");
     await globalThis.caches.default.put(
-      new Request("https://clawsweeper.openclaw.ai/api/status-cache/v7/_/fresh"),
+      new Request("https://clawsweeper.openclaw.ai/api/status-cache/v8/_/fresh"),
       new Response('{"schema_version":1,"generated_at":', {
         headers: { "x-private-marker": "synthetic-malformed-header" },
       }),
@@ -1391,7 +1359,7 @@ test("cold and durable-cache status preserve the dedicated publication contract"
       STATUS_STORE: {
         async get(key: string) {
           reads.push(key);
-          return cached && key === "snapshot:bay-scope:v1:_"
+          return cached && key === "snapshot:bay-scope:v2:_"
             ? JSON.stringify(publicationStatusFixture(events))
             : null;
         },
@@ -1421,7 +1389,7 @@ test("cold and durable-cache status preserve the dedicated publication contract"
       (await dedicated.json()).recent_durable_publication_events,
     );
     assert.equal(body.recent_durable_publication_events.direct.counts.accepted, 1);
-    assert.ok(reads.includes("snapshot:bay-scope:v1:_"));
+    assert.ok(reads.includes("snapshot:bay-scope:v2:_"));
     assert.equal(outbound.length === 0, cached, "durable snapshot reuse must skip collection");
   }
 });

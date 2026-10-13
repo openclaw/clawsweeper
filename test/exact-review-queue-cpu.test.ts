@@ -244,10 +244,6 @@ test(
       assert.equal((await h.queue.fetch(new Request("https://queue/stats"))).status, 200);
     });
     delete h.env.EXACT_REVIEW_STATS_CACHE_MS;
-    await measure("lifecycle-bay", async () => {
-      const r = await h.queue.fetch(new Request("https://queue/lifecycle-bay"));
-      assert.equal((await r.json()).durable_lifecycle_bay.collection.state, "complete");
-    });
     await measure("complete", async (i) => {
       const item = h.items[320 + i]!;
       const response = await h.queue.fetch(
@@ -336,11 +332,11 @@ test(
 );
 
 test(
-  "Bay and claimed-run CPU benchmark at 500 projections and 100 leases (opt in)",
+  "claimed-run CPU benchmark at 500 projections and 100 leases (opt in)",
   { skip: process.env.EXACT_REVIEW_CPU_BENCH !== "1" },
   async (t) => {
     t.mock.method(Date, "now", () => NOW);
-    const { queue, storage, items, env } = await fixture(400, {}, 100);
+    const { queue, storage, items } = await fixture(400, {}, 100);
     const samples: Record<string, unknown>[] = [];
     async function measure(route: string, request: () => Request) {
       const times: number[] = [];
@@ -356,10 +352,7 @@ test(
           const response = await queue.fetch(request());
           assert.equal(response.status, 200);
           const body = await response.json();
-          if (route.startsWith("lifecycle-bay")) {
-            assert.equal(body.durable_lifecycle_bay.collection.state, "complete");
-            assert.equal(body.durable_lifecycle_bay.inventory.lifecycle_records, 500);
-          } else assert.ok(body.runs.length > 0);
+          assert.ok(body.runs.length > 0);
           const cpu = process.cpuUsage(start);
           times.push((cpu.user + cpu.system) / 1000);
         }
@@ -374,13 +367,6 @@ test(
         sql_per_call: queries / times.length,
       });
     }
-    const bayRequest = () =>
-      new Request("https://queue/lifecycle-bay?public_repo=openclaw/openclaw");
-    env.EXACT_REVIEW_LIFECYCLE_BAY_CACHE_MS = "0";
-    await measure("lifecycle-bay-uncached", bayRequest);
-    env.EXACT_REVIEW_LIFECYCLE_BAY_CACHE_MS = "10000";
-    await queue.fetch(bayRequest());
-    await measure("lifecycle-bay-cached", bayRequest);
     await measure("claimed-runs-all", () =>
       post("/claimed-runs", { runs: [], include_all_claimed: true }),
     );
@@ -761,32 +747,6 @@ test("cold concurrent stats polls share one computation after invalidation", asy
   );
 });
 
-test("Bay projection cache observes revised and malformed durable rows", async (t) => {
-  t.mock.method(Date, "now", () => NOW);
-  const { queue, storage, lifecycle, items } = await fixture(3, {
-    EXACT_REVIEW_LIFECYCLE_BAY_CACHE_MS: "0",
-  });
-  const read = async () =>
-    (await (await queue.fetch(new Request("https://queue/lifecycle-bay"))).json())
-      .durable_lifecycle_bay;
-  const before = await read();
-  lifecycle.recordTerminalDisposition({
-    canonicalTargetKey: "openclaw/openclaw#1",
-    fenceKey: items[0]!.key,
-    revision: 1,
-    kind: "superseded",
-    observedAt: NOW,
-  });
-  const after = await read();
-  assert.equal(after.lanes.superseded, before.lanes.superseded + 1);
-  storage.run(
-    `UPDATE ${EXACT_REVIEW_LIFECYCLE_PROJECTION_TABLE} SET projection_json = ? WHERE canonical_target_key = ?`,
-    "{",
-    "openclaw/openclaw#1",
-  );
-  assert.equal((await read()).collection.state, "unknown");
-});
-
 test("concurrent renewal of an expired stats memo performs one queue scan", async (t) => {
   let now = NOW;
   t.mock.method(Date, "now", () => now);
@@ -804,187 +764,6 @@ test("concurrent renewal of an expired stats memo performs one queue scan", asyn
       .length,
     1,
   );
-});
-
-test("lifecycle Bay memo shares fresh polls, expires, and preserves headers and snapshot time", async (t) => {
-  let now = NOW;
-  t.mock.method(Date, "now", () => now);
-  const { queue, storage } = await fixture(3);
-  const exec = t.mock.method(storage.sql, "exec");
-  const read = () => queue.fetch(new Request("https://queue/lifecycle-bay"));
-  const responses = await Promise.all(Array.from({ length: 8 }, read));
-  const first = await responses[0]!.text();
-  assert.equal(responses[0]!.headers.get("cache-control"), "no-store");
-  assert.equal(responses[0]!.headers.get("content-type"), "application/json; charset=utf-8");
-  assert.equal(responses[0]!.headers.get("access-control-allow-origin"), "*");
-  for (const response of responses.slice(1)) assert.equal(await response.text(), first);
-  now += 29_999;
-  assert.equal(await (await read()).text(), first);
-  assert.equal(
-    exec.mock.calls.filter(({ arguments: [sql] }) =>
-      /SELECT projection_json, canonical_target_key, fence_key, revision/.test(sql),
-    ).length,
-    1,
-  );
-  now++;
-  const renewed = await Promise.all(Array.from({ length: 8 }, async () => (await read()).text()));
-  assert.notEqual(renewed[0], first);
-  assert.ok(renewed.every((body) => body === renewed[0]));
-  assert.equal(
-    exec.mock.calls.filter(({ arguments: [sql] }) =>
-      /SELECT projection_json, canonical_target_key, fence_key, revision/.test(sql),
-    ).length,
-    2,
-  );
-});
-
-test("lifecycle Bay memo separates repository scopes, including invalid and absent scopes", async (t) => {
-  t.mock.method(Date, "now", () => NOW);
-  const { queue, storage, lifecycle } = await fixture(3);
-  lifecycle.recordAdmission({
-    canonicalTargetKey: "openclaw/clawhub#1",
-    fenceKey: "hub-1",
-    revision: 1,
-    deliveryId: "hub-1",
-    sourceAction: "opened",
-    commandOriginated: false,
-    statusMarker: null,
-    statusCommentId: null,
-    observedAt: NOW,
-  });
-  const read = async (query = "") =>
-    (await (await queue.fetch(new Request(`https://queue/lifecycle-bay${query}`))).json())
-      .durable_lifecycle_bay;
-  const all = await read();
-  const scoped = await read("?public_repo=openclaw/openclaw");
-  assert.equal(all.inventory.lifecycle_records, scoped.inventory.lifecycle_records + 1);
-  assert.equal((await read("?public_repo=openclaw/clawhub")).inventory.lifecycle_records, 1);
-  assert.equal((await read("?public_repo=invalid")).inventory.lifecycle_records, 0);
-  assert.equal((await read("?public_repo=")).inventory.lifecycle_records, 0);
-  const exec = t.mock.method(storage.sql, "exec");
-  const combined = await read("?public_repo=openclaw/openclaw&public_repo=openclaw/clawhub");
-  const count = exec.mock.calls.length;
-  assert.deepEqual(
-    await read(
-      "?public_repo=OpenClaw/ClawHub&public_repo=openclaw/openclaw&public_repo=openclaw/clawhub",
-    ),
-    combined,
-  );
-  assert.equal(exec.mock.calls.length, count, "equivalent scopes perform no storage reads");
-  assert.deepEqual(await read(), all);
-  assert.equal(
-    (await read(`?${Array.from({ length: 33 }, () => "public_repo=openclaw/openclaw").join("&")}`))
-      .inventory.lifecycle_records,
-    0,
-  );
-});
-
-test("lifecycle Bay memo can be disabled and survives queue state writes", async (t) => {
-  t.mock.method(Date, "now", () => NOW);
-  const { queue, storage, env } = await fixture(3);
-  const exec = t.mock.method(storage.sql, "exec");
-  const read = () => queue.fetch(new Request("https://queue/lifecycle-bay"));
-  await read();
-  await read();
-  const state = internals(queue).readStateSync();
-  storage.transactionSync(() => internals(queue).writeStateSync(state));
-  await read();
-  env.EXACT_REVIEW_LIFECYCLE_BAY_CACHE_MS = "0";
-  await read();
-  await read();
-  env.EXACT_REVIEW_LIFECYCLE_BAY_CACHE_MS = "10000";
-  await read();
-  await read();
-  assert.equal(
-    exec.mock.calls.filter(({ arguments: [sql] }) =>
-      /SELECT projection_json, canonical_target_key, fence_key, revision/.test(sql),
-    ).length,
-    4,
-  );
-});
-
-test("lifecycle Bay single-flight survives writes during in-flight serialization", async (t) => {
-  t.mock.method(Date, "now", () => NOW);
-  const { queue, lifecycle, items } = await fixture(3);
-  const target = queue as unknown as {
-    computeLifecycleBayBody(repositories?: ReadonlySet<string>): string | Promise<string>;
-  };
-  const compute = target.computeLifecycleBayBody.bind(target);
-  let release!: () => void;
-  let entered!: () => void;
-  const gate = new Promise<void>((resolve) => {
-    release = resolve;
-  });
-  const started = new Promise<void>((resolve) => {
-    entered = resolve;
-  });
-  let calls = 0;
-  t.mock.method(target, "computeLifecycleBayBody", (repositories?: ReadonlySet<string>) => {
-    const body = compute(repositories);
-    if (++calls === 1) {
-      entered();
-      return gate.then(() => body);
-    }
-    return body;
-  });
-  const read = async () =>
-    (await (await queue.fetch(new Request("https://queue/lifecycle-bay"))).json())
-      .durable_lifecycle_bay;
-  const pending = read();
-  await started;
-  const waiter = read();
-  await new Promise<void>((resolve) => setImmediate(resolve));
-  assert.equal(calls, 1, "the second reader waits on the in-flight computation");
-  lifecycle.recordTerminalDisposition({
-    canonicalTargetKey: "openclaw/openclaw#1",
-    fenceKey: items[0]!.key,
-    revision: 1,
-    kind: "superseded",
-    observedAt: NOW,
-  });
-  const afterWrite = read();
-  release();
-  const old = await pending;
-  assert.deepEqual(await afterWrite, old);
-  assert.deepEqual(await waiter, old);
-  assert.deepEqual(await read(), old);
-  assert.equal(calls, 1);
-});
-
-test("lifecycle Bay serialization failures do not poison or evict a replacement memo", async (t) => {
-  t.mock.method(Date, "now", () => NOW);
-  const { queue, env } = await fixture(3);
-  const target = queue as unknown as { computeLifecycleBayBody(): string | Promise<string> };
-  const compute = target.computeLifecycleBayBody.bind(target);
-  let reject!: (reason: Error) => void;
-  let entered!: () => void;
-  const started = new Promise<void>((resolve) => {
-    entered = resolve;
-  });
-  const gate = new Promise<string>((_resolve, fail) => {
-    reject = fail;
-  });
-  let calls = 0;
-  t.mock.method(target, "computeLifecycleBayBody", () => {
-    const body = compute();
-    if (++calls === 1) {
-      entered();
-      return gate;
-    }
-    return body;
-  });
-  const read = async () => (await queue.fetch(new Request("https://queue/lifecycle-bay"))).text();
-  const pending = read();
-  const rejected = assert.rejects(pending, /serialization failed/);
-  await started;
-  env.EXACT_REVIEW_LIFECYCLE_BAY_CACHE_MS = "0";
-  await read();
-  env.EXACT_REVIEW_LIFECYCLE_BAY_CACHE_MS = "30000";
-  const fresh = await read();
-  reject(new Error("serialization failed"));
-  await rejected;
-  assert.equal(await read(), fresh);
-  assert.equal(calls, 3);
 });
 
 test("lean claimed-run reads equal full reads across mixed leases, duplicates, legacy claims, and limits", async (t) => {
@@ -1079,68 +858,6 @@ test("lean claimed-run reads equal full reads across mixed leases, duplicates, l
   );
   assert.equal(invalid.status, 400);
 });
-
-test(
-  "Bay TTL CPU benchmark at 20,000 projections with one state write per second (opt in)",
-  { skip: process.env.EXACT_REVIEW_CPU_BENCH !== "1" },
-  async (t) => {
-    let now = NOW;
-    t.mock.method(Date, "now", () => now);
-    const { queue, storage, lifecycle, env } = await fixture(3, {}, 0);
-    for (let n = 4; n <= 20_000; n++) {
-      lifecycle.recordAdmission({
-        canonicalTargetKey: `openclaw/openclaw#${n}`,
-        fenceKey: `fence:${n}`,
-        revision: 1,
-        deliveryId: `delivery:${n}`,
-        sourceAction: "opened",
-        commandOriginated: false,
-        statusMarker: null,
-        statusCommentId: null,
-        observedAt: NOW - n,
-      });
-    }
-    const state = internals(queue).readStateSync();
-    const samples = [];
-    for (const ttl of [0, 30_000]) {
-      env.EXACT_REVIEW_LIFECYCLE_BAY_CACHE_MS = String(ttl);
-      const times: number[] = [];
-      let scans = 0;
-      const original = storage.sql.exec;
-      storage.sql.exec = (sql, ...bindings) => {
-        if (/SELECT projection_json, canonical_target_key, fence_key, revision/.test(sql)) scans++;
-        return original(sql, ...bindings);
-      };
-      try {
-        for (let i = 0; i < 30; i++) {
-          storage.transactionSync(() => internals(queue).writeStateSync(state));
-          const start = process.cpuUsage();
-          const response = await queue.fetch(
-            new Request("https://queue/lifecycle-bay?public_repo=openclaw/openclaw"),
-          );
-          const body = await response.json();
-          assert.equal(body.durable_lifecycle_bay.inventory.lifecycle_records, 20_000);
-          const cpu = process.cpuUsage(start);
-          times.push((cpu.user + cpu.system) / 1000);
-          now += 1000;
-        }
-      } finally {
-        storage.sql.exec = original;
-      }
-      times.sort((a, b) => a - b);
-      assert.equal(scans, ttl ? 1 : 30);
-      samples.push({
-        ttl_ms: ttl,
-        calls: 30,
-        state_writes: 30,
-        scans,
-        median_cpu_ms: times[15],
-        total_cpu_ms: times.reduce((a, b) => a + b, 0),
-      });
-    }
-    console.log(JSON.stringify({ fixture: { lifecycle: 20_000 }, samples }));
-  },
-);
 
 // Inclusive method timings overlap; SQL counts include every request query but
 // exclude fixture restoration. CPU is process CPU on Node/SQLite, not edge CPU.

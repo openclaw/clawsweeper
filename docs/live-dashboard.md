@@ -16,16 +16,14 @@ page (also the Worker and hydration-client default), bounded by 2 MiB of source
 content and 4 MiB of serialized entries. Large-record pages stop early and resume
 from the last returned record; the existing first-record progress exception
 remains. See [canonical record export limits](limits.md#canonical-record-export).
-This changes hydration request volume only; OpenClaw Bay's observer projection
-and public data contract are unaffected.
 
 The live dashboard is observer-only. ClawSweeper still owns review, repair,
 apply, merge, comments, labels, and all GitHub mutations. The Cloudflare Worker
-reads GitHub workflow state, projects it into closed status and Bay views, and
+reads GitHub workflow state, projects it into closed status views, and
 optionally accepts signed status events from workflows. The one identity
 exception is a bounded reference sample containing canonical repository and
 issue or pull-request numbers from the explicit verified-public
-`PUBLIC_BAY_REPOS` allowlist. Bay and Overview use that same sample for cards
+`PUBLIC_BAY_REPOS` allowlist. Overview uses that sample for cards
 and search; clicking a card opens a local blade with the closed stage/source,
 canonical repository and issue/PR links, and, when available, canonical GitHub
 run/job links plus fixed action-step categories and states. Public responses
@@ -77,7 +75,7 @@ GitHub secret into a temporary Wrangler config as the Worker `INGEST_TOKEN`.
 The smoke test waits for the expected deployment revision and a successful
 exact-review queue response within the same default 180-second readiness budget. It then
 verifies the signed review-admission capability contract, queue schema,
-unsigned-request rejection, Bay policy, and assets. An exact-revision smoke run
+unsigned-request rejection, and Overview rendering. An exact-revision smoke run
 requires the existing `CLAWSWEEPER_WEBHOOK_SECRET`; it sends a signed empty JSON
 object without following redirects and validates scheduled pacing, replay, and
 manual publication policy. A valid disabled manual-publication policy passes.
@@ -86,8 +84,8 @@ signed check as skipped. A persistently unavailable queue still fails readiness.
 
 A status contract failure keeps its original error and nonzero smoke exit, with
 one bounded diagnostic summary: projection completeness, freshness, cache state,
-Bay tide classification, and validated numeric tide, diagnostic count, and fetch
-duration. It excludes response text, timestamps, and diagnostic error messages.
+validated numeric diagnostic count, and fetch duration. It excludes response
+text, timestamps, and diagnostic error messages.
 These are observed fields; an unavailable projection does not identify which
 upstream request or cache entry caused it. The smoke adds no status retry.
 
@@ -157,7 +155,7 @@ Workflow health uses bounded GitHub run/job polling exclusively. The retired
 workflow-source setting is no longer read. Workflow read-model reads, repairs,
 and missing-subscription warnings are not part of dashboard health, even when
 the shared webhook signing secret is configured. Snapshot and job-cache TTLs,
-pagination, freshness, genuine GitHub errors, and the public Bay contract are
+pagination, freshness, genuine GitHub errors, and the public status contract are
 unchanged.
 
 
@@ -205,14 +203,12 @@ Local preview: in `dashboard-site/`, install dependencies, run
 - bounded active-work counts and closed workflow, worker, status, stage, and
   outcome categories; arbitrary titles, targets, source links, keys, and job
   text are omitted
-- six aggregate Bay stages from arrival through repair, split into disjoint
+- six aggregate activity stages from arrival through repair, split into disjoint
   queued and live counts only when both producer censuses are complete, plus a
-  bounded verified-public repository/item/action reference sample used by Bay
-  and Overview cards, search, overflow lists, and client-side public-reference
+  bounded verified-public repository/item/action reference sample used by
+  Overview cards, search, overflow lists, and client-side public-reference
   blades; sampled queue and live references may additionally carry one
   validated queue-start or public action-start clock with its closed kind
-- durable lifecycle inventory and six closed lane counts plus at most 24
-  minimal cards for verified-public repository/item references
 - a budget-sized capacity rail plus aggregate counts for review, commit, assist,
   and other worker classes
 - queued and waiting run counts
@@ -247,30 +243,17 @@ Local preview: in `dashboard-site/`, install dependencies, run
 - exact-review queue backlog, retry-ready backlog, target-admissible backlog,
   fixed backoff and parked reason counts, handoff health, and pressure from the
   current durable queue snapshot
-- normal direct-review journeys in the Bay Kanban and one-hour timing metric by
-  default, with a presentation-only switch to include the retired automatic
-  proof/legacy-batch path for historical comparison. Modern inline proof stays
-  within normal end-to-end review timing; the legacy toggle is not a proof-used
-  filter. The chart has a rolling-hour UTC axis, minutes scale, and bucket-wide
-  hover/focus/tap detail; missing buckets remain gaps
-- collapsed retained lifecycle inventory below queue telemetry: latest recorded
-  state of all retained records, not live backlog, event totals or a day/week
-  view. Beach/time filters do not apply; records and target revisions are
-  distinct units, and at most 24 records are sampled across lanes
 
 The Worker fetches job details only for the bounded active-run set, limits that
 GitHub fanout to 12 concurrent requests, and caches each run's jobs for 60
 seconds. It separately samples up to 40 recent completed worker runs with
-twenty-way fanout and caches error/recovery telemetry for 120 seconds. That leaves
-enough distinct completed-item evidence to drive a 20-outcome tide despite
-repeated targets or excluded runs while still bounding telemetry pressure.
-This bounds
+twenty-way fanout and caches error/recovery telemetry for 120 seconds. This bounds
 telemetry pressure independently of the 128-worker fleet budget. Worker details
 paginate up to 300 jobs per workflow run so retained large matrix runs contribute to a
 complete internal census. Titles, job names, raw URLs, opaque target keys, and
 raw errors are removed before the status snapshot is persisted or returned.
 Only the allowlisted canonical repository/item reference tuple and a validated
-action descriptor are retained for the bounded Bay sample. The action
+action descriptor are retained for the bounded Overview sample. The action
 descriptor contains canonical repository/run/job identifiers, a canonical
 start time, and closed step kind/status/conclusion values; raw step names and
 URLs are discarded. If the census is incomplete, the public activity projection
@@ -278,11 +261,9 @@ fails closed instead of presenting partial counts as complete.
 
 Automatic issue-build lifecycle events are retained privately for seven days so
 completed and blocked work can be reconciled after the worker leaves the active
-Actions set. The public lifecycle and recent-publication routes revalidate that
-state into bounded inventory, lane, bucket, and outcome counts. Lifecycle may
-also return at most 24 minimal cards filtered to `PUBLIC_BAY_REPOS`; it never
-returns private repositories, revision identifiers, target keys, facts, titles,
-raw URLs, or failure detail.
+Actions set. The public recent-publication route revalidates that state into
+bounded outcome counts without returning private repositories, revision
+identifiers, target keys, facts, titles, raw URLs, or failure detail.
 
 Status responses use stale-while-revalidate delivery. After the 20-second fresh
 window expires, the Worker immediately returns the last good snapshot, marks it
@@ -454,7 +435,7 @@ Cache transport failures retain generated trace IDs and the existing
 `github_etag_cache_confirm` endpoint labels, under `github_etag_cache_*` log
 events. Each shard's binding-only `GET /stats` returns its trailing 24-hour
 `telemetry` counters; no public cache-stats route is added. The public
-`/api/exact-review-queue` payload and Bay's observer contract are unchanged.
+`/api/exact-review-queue` payload is unchanged.
 After deployment, compare queue canceled invocations and bare 5xx rates against
 the pre-deploy window, and confirm etag requests are served by `GithubEtagCache`.
 
@@ -531,8 +512,7 @@ hold: an organic webhook event such as `unlocked` or `synchronize`, an explicit
 command, or a manual review. The periodic terminal check removes closed and
 head-advanced targets, and the parked-review reconciler recovers a row whose
 source identity changed (for example an unlock or a `size: accepted-large`
-label). Command reviews and PRs without a pinned head are never held. Bay keeps
-the item's completed lifecycle card instead of showing the hold as active work.
+label). Command reviews and PRs without a pinned head are never held.
 
 `review_runaway_health` is the companion alert for any self-feeding loop the
 breaker does not stop, such as a command continuation. The queue records each
@@ -588,68 +568,32 @@ the public response uses an unavailable/unknown aggregate and a bounded
 
 The object memoizes its private stats response for 10 seconds by default
 (`EXACT_REVIEW_STATS_CACHE_MS`; set `0` to disable). Concurrent polls with the
-same Bay sample parameters share the computation and its original `generated_at`.
+same public sample parameters share the computation and its original `generated_at`.
 Queue mutations and auxiliary SQLite writes invalidate the memo; a missing or
 overdue alarm also bypasses it so polling still repairs the queue heartbeat.
 Only completed snapshots whose mutation generation and storage change counter
 remain unchanged are memoized; polls waiting on invalidated work recompute.
 This only bounds observation freshness: the public projection's fields and
-meaning, admission, publication fences, and Bay behavior are unchanged.
+meaning, admission, and publication fences are unchanged.
 
 The composed status response retains the dedicated closed queue projection
 through every cache and store read. Its parked-reason counts, including
 `source_incompatible` and the aggregate `unknown` bucket, must survive together
 with the parked total. Dropping a reason during a second generic sanitation pass
-makes a valid queue appear malformed on the next read and hides Bay's live cards
-and timing. The dedicated projector remains the privacy boundary; no private
+makes a valid queue appear malformed on the next read and hides Overview's
+public references. The dedicated projector remains the privacy boundary; no private
 queue fields or mutation controls are exposed.
-
-The object's lifecycle Bay response has a 30-second TTL-only memo
-(`EXACT_REVIEW_LIFECYCLE_BAY_CACHE_MS`; set `0` to disable). Production explicitly
-sets `EXACT_REVIEW_LIFECYCLE_BAY_CACHE_MS = "30000"`. Ordinary lifecycle, queue,
-and auxiliary writes do not invalidate it: this public, observer-only,
-closed-aggregate surface accepts staleness up to the TTL. Concurrent reads for
-the same normalized repository scope share one in-flight computation and its
-original `generated_at`. Only completed work enters the memo; disabling it
-resets pending work so an older computation cannot restore the cache. The stats
-memo retains its separate write-invalidation rules for admission diagnostics.
 
 Producer and publication fences have independent revision counters. For newly
 admitted protocol-v2 publications, the lifecycle projection keeps an immutable
-producer fence/revision/generation link in its existing JSON. Audit and Bay use
+producer fence/revision/generation link in its existing JSON. Audit uses
 that exact link to display publication completion on the corresponding producer
 journey after the queue item is removed. Missing or conflicting lineage fails
 closed; an older publication cannot complete a later producer revision. Physical
 receipts and terminal telemetry remain on the publication fence, so replay does
-not emit a second producer completion. The private link is not serialized by the
-public endpoint; Bay's public fields and observer-only controls remain unchanged.
+not emit a second producer completion. The private link is not serialized by
+public endpoints.
 
-The outer `/api/durable-lifecycle-bay` route caches the sanitized response for
-30 seconds at the edge, keyed by origin and verified-public repository scope.
-After expiry it serves a stale copy while coalescing one background refresh per
-scope per isolate, as the status route does. Both cache buckets are capped by
-the original snapshot's 60-second maximum age; neither layer renews
-`generated_at`. An unavailable or malformed background refresh leaves an
-existing complete stale snapshot untouched until that original age expires,
-then the route fails closed until a complete refresh replaces both buckets.
-Without a background execution context, an expired fresh entry is refreshed
-synchronously. Edge caches are local to each colo, so cross-colo misses can
-still reach the object; its TTL memo absorbs those reads. Bay's public field
-set, freshness contract, and observer-only boundary are unchanged.
-
-An uncached Bay build still scans every retained projection in the requested
-repositories (all repositories for an unscoped internal request). A derived index
-on the existing repository/target/fence/revision fields streams each repository
-in journey order without sorting retained projection JSON; the primary identity
-index serves unscoped reads. The older v2 index remains available for readers
-that explicitly select it during rollback. No stored record or authority fields
-change. The scan has no seven-day cutoff: seven-day telemetry retention and 30-day Bay event retention
-belong to separate telemetry tables. Each row's full `projection_json` passes
-through the existing parser and integrity validation, without a per-row
-parsed-object cache. This preserves malformed-data handling and avoids the
-extra SQL JSON validation, extraction, and serialization of the compact cursor.
-The remaining full-history scan is not a constant-size aggregate query; adding
-persisted counters requires a separate backfill and writer-compatibility change.
 
 For capacity displays, `/api/exact-review-queue` also exposes compatible
 `lanes.review` and `lanes.publication` objects. Each lane reports its own
@@ -993,7 +937,7 @@ is not completion proof. Check the exact original receipt, available matching
 queue cleanup evidence, and preservation of later commands. Do not force a
 driver dispatch. On timeout, redirect, malformed response, or error, stop and
 inspect the exact operation; never blindly retry or substitute a new operation
-ID. Bay remains observer-only and uses the unchanged lifecycle projections.
+ID.
 
 `POST /internal/exact-review/reconcile` backstop accepts at most 32 exact run IDs
 and intersects them with currently claimed leases. The Worker checks those IDs
@@ -1015,25 +959,24 @@ has drained naturally. The dashboard deployment smoke test must still observe
 HTTP 401 from an unsigned reconciliation request; HTTP 404 means the old Worker
 is serving that route.
 
-## Exhausted command review records in Bay
+## Exhausted command review records
 
-Repair & attention counts retained exception records alongside live repair
-activity, not running repair workers alone. Its
+The queue activity projection counts retained exception records alongside live
+repair activity, not running repair workers alone. Its
 public references may carry the bounded `queue_disposition` values
 `parked_exhausted`, `parked`, or `retry_scheduled`. `parked_exhausted` is reserved
 for exhausted review attempts; dispatch-rejected work uses neutral `parked`
-attention even after its recovery budget ends, because no review may have run. Both the server and browser
-sanitizers retain only these values, and only for queue references. Exhausted
-records show operator attention instead of an increasing queued-worker clock;
-the sampled header separates live references from queue/attention records.
+attention even after its recovery budget ends, because no review may have run.
+The public sanitizer retains only these values, and only for queue references.
+Exhausted records show operator attention instead of an increasing queued-worker clock.
 This remains an observer-only surface with the existing public repository
 allowlist and sampling/freshness limits.
 
 Terminal scanner holds retain a `scanner_refused` queue reason count, but do
-not contribute an active or waiting Bay review card. The failed review remains
+not contribute an active or waiting review card. The failed review remains
 in the existing terminal lifecycle projection. A fresh explicit retry or an
 intentional scanner-policy epoch change is required; ordinary source changes
-do not revive it. Bay exposes no release control.
+do not revive it. Overview exposes no release control.
 
 The queue's globally bounded parked-terminal check also observes exhausted
 command producers. An eligible still-open exhausted review may receive a
@@ -1061,8 +1004,8 @@ Closed failed commands retain a failure acknowledgement, not a fabricated
 successful review. Ordinary reconciliation now includes command exclusions
 in its bounded skip-reason accounting.
 
-The current stopped-review, source-fenced acknowledgement and Bay proof uses
-real local Worker/SQLite/HTTP and Chromium; see
+The stopped-review and source-fenced acknowledgement proof uses
+real local Worker/SQLite/HTTP; see
 `docs/proof/review-failure-attention/README.md`.
 
 Parked-command finalizers reserve status-write ownership while their receipt is
@@ -1070,9 +1013,6 @@ looked up, then re-fence immediately before the status PATCH. A successor may be
 recorded but cannot dispatch through that owned write window; ownership is
 released after a successful bounded PATCH or expires under the acknowledgement
 lease. The opted-in finalizer does not prune duplicate comments during lookup.
-When only the live-activity census is unavailable, Bay still retains verified
-queue dispositions from its bounded queue projection and labels the live count
-as unavailable rather than zero.
 
 When a parked-command target reopens after acknowledgement authorization, the
 queue atomically cancels the unobserved closure plan in its existing terminal
@@ -1087,7 +1027,7 @@ obligations parked: it is neither a verified receipt nor a missing/locked
 comment skip, and does not authorize generic deletion or finalizer dispatch.
 An already-planned parked-command driver is deferred with its original fence
 rather than superseded or discarded, so eligibility can recover safely. Such
-auxiliary drivers never replace their exhausted producer in the canonical Bay
+auxiliary drivers never replace their exhausted producer in the canonical
 queue projection; actual workflow activity remains a separate live overlay.
 Claimed parked-command writes also re-probe hosted/public eligibility before
 target credentials and after the target read. Revocation defers the original

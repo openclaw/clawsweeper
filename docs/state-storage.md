@@ -34,7 +34,7 @@ Publication lifecycle projections retain an immutable producer-lineage reference
 (fence, revision, and claim generation) from the admitted protocol-v2 publication
 in existing `projection_json`. Producer and publication revision counters are
 independent: the reference, never their numerical coincidence, connects the two
-journeys after queue-item deletion. Audit and Bay share that observational
+journeys after queue-item deletion. Audit uses that observational
 resolution; physical receipts and terminal telemetry remain on the publication
 fence. A missing or conflicting link cannot complete another producer revision.
 This approved JSON extension adds no SQL table or column, grants no publication
@@ -111,8 +111,8 @@ lease decision. Completion and terminal-run reconciliation use that saved
 authority for source-drift requeues, even if ingress has replaced the current
 decision. Recovery preserves the old target, fence, and revision's terminal
 fact; it does not manufacture router, acknowledgement, or review-result receipts.
-OpenClaw Bay needs no schema or UI change: its existing observer-only projection
-shows the requeue disposition without inventing review success or failure.
+The queue activity projection shows the requeue disposition without inventing
+review success or failure.
 
 Every review revision of an item comes from the durable per-item counter that
 re-review commands already used. A completed queue row is deleted, but its

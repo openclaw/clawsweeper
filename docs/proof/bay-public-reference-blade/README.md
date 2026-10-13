@@ -1,14 +1,13 @@
-# Bay public-reference blade proof
+# Overview public-reference blade proof
 
-This deterministic browser proof exercises the real Overview and OpenClaw Bay
+This deterministic browser proof exercises the real Overview
 HTML served by the local Wrangler Worker. A synthetic status response contains
 two verified public GitHub references plus marker-bearing private fields that
 must never render.
 
-The proof searches for and clicks a reference on each page, checks the local
-blade, verifies canonical repository and issue/PR links, verifies keyboard
-focus, refreshes an already-open Bay blade after a bounded stage transition,
-and confirms malformed deep links fail safely. It also proves that the browser
+The proof searches for and clicks a reference, checks the local
+blade, verifies canonical repository and issue/PR links and keyboard
+focus, and confirms malformed deep links fail safely. It also proves that the browser
 sends no mutations or direct GitHub API requests and records screenshots and a
 Playwright trace.
 
@@ -59,8 +58,8 @@ Run the broad Linux gate from the same exact tree with:
 
 - [`overview-blade.png`](overview-blade.png) shows the local reference blade on
   the Overview page.
-- [`bay-blade.png`](bay-blade.png) shows the same reference after its bounded
-  queue-to-live transition on OpenClaw Bay.
+- [`bay-blade.png`](bay-blade.png) is historical evidence from the retired
+  OpenClaw Bay page; the current runner does not reproduce it.
 
 The runnable proof also emits `proof-summary.json` and `trace.zip` under the
 ignored artifact directory. The PR body records the exact-head Crabbox receipt

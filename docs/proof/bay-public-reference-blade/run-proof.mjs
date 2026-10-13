@@ -250,10 +250,6 @@ await context.route("**/*", async (route) => {
     await route.fulfill({ status: 200, contentType: "application/json", body: "{}" });
     return;
   }
-  if (url.pathname === "/api/durable-lifecycle-bay") {
-    await route.fulfill({ status: 200, contentType: "application/json", body: "{}" });
-    return;
-  }
   if (url.pathname.startsWith("/api/")) {
     await route.fulfill({ status: 200, contentType: "application/json", body: "{}" });
     return;
@@ -335,71 +331,6 @@ try {
     !(await overviewDialog.isVisible()),
   );
   await overview.close();
-
-  referenceStage = "reviewing";
-  referenceSource = "queue";
-  const bay = await context.newPage();
-  watch(bay);
-  await bay.goto(`${origin}/bay`, { waitUntil: "networkidle" });
-  await bay.locator("#loading").waitFor({ state: "hidden" });
-  const bayCard = bay.locator('[data-item="queue:openclaw/openclaw#123"]');
-  await bayCard.waitFor({ state: "visible" });
-  await bay.locator("#finder-input").fill("openclaw/openclaw#123");
-  await bay
-    .locator("#finder")
-    .evaluate((form) =>
-      form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })),
-    );
-  assertProof(
-    "OpenClaw Bay search locates the verified public reference",
-    await bayCard.isVisible(),
-  );
-  await bayCard.click();
-  const bayDialog = bay.locator("#drawer");
-  await bayDialog.waitFor({ state: "visible" });
-  const bayItemHref = await bayDialog
-    .getByRole("link", { name: "Open issue or pull request" })
-    .getAttribute("href");
-  const bayRepoHref = await bayDialog
-    .getByRole("link", { name: "Open repository" })
-    .getAttribute("href");
-  assertProof(
-    "OpenClaw Bay blade contains only canonical public GitHub links",
-    bayItemHref === "https://github.com/openclaw/openclaw/issues/123" &&
-      bayRepoHref === "https://github.com/openclaw/openclaw",
-    { item_link: bayItemHref, repository_link: bayRepoHref },
-  );
-  assertProof(
-    "OpenClaw Bay blade excludes injected private fields",
-    !(await bay.locator("body").innerText()).includes(privateMarker),
-  );
-  referenceStage = "publishing";
-  referenceSource = "live";
-  const pollHookAvailable = await bay.evaluate(() => typeof window.__bladeProofPoll === "function");
-  assertProof("OpenClaw Bay exposes the deterministic status poll hook", pollHookAvailable);
-  await bay.evaluate(() => window.__bladeProofPoll());
-  await bay.waitForTimeout(250);
-  const refreshedBladeText = await bay.locator("#drawer-body").innerText();
-  const refreshedCardCount = await bay.locator('[data-item="live:openclaw/openclaw#123"]').count();
-  assertProof(
-    "An open OpenClaw Bay blade refreshes to the current bounded stage and source",
-    refreshedBladeText.includes("Publishing") && refreshedBladeText.includes("Bounded live sample"),
-    {
-      publishing_visible: refreshedBladeText.includes("Publishing"),
-      live_source_visible: refreshedBladeText.includes("Bounded live sample"),
-      refreshed_card_count: refreshedCardCount,
-    },
-  );
-  await bay.screenshot({ path: path.join(outputDir, "bay-blade.png"), fullPage: true });
-  await bay.evaluate(() => {
-    location.hash = "#item-%";
-  });
-  await bay.waitForTimeout(50);
-  assertProof(
-    "OpenClaw Bay ignores malformed item deep links without a page error",
-    !(await bayDialog.isVisible()),
-  );
-  await bay.close();
 } catch (error) {
   proofError = error;
 } finally {
@@ -426,7 +357,7 @@ assertProof("Browser proof has no uncaught page errors", pageErrors.length === 0
 });
 
 const artifacts = {};
-for (const file of ["overview-blade.png", "bay-blade.png", "trace.zip"]) {
+for (const file of ["overview-blade.png", "trace.zip"]) {
   const bytes = await readFile(path.join(outputDir, file));
   artifacts[file] = {
     bytes: bytes.length,
@@ -434,7 +365,7 @@ for (const file of ["overview-blade.png", "bay-blade.png", "trace.zip"]) {
   };
 }
 const summary = {
-  proof: "Bay public-reference blades",
+  proof: "Overview public-reference blade",
   source_sha: sourceSha,
   provider_contract: "Docker-backed Crabbox local-container",
   fixture: "synthetic verified public references with injected private fields",

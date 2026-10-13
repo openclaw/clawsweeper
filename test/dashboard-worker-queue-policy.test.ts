@@ -17,8 +17,6 @@ import {
   ExactReviewLifecycleProjectionStore,
   lifecycleState,
   ExactReviewLifecycleTelemetryStore,
-  LIVE_ACTIVITY_SOURCE_LIMIT,
-  liveActivityBaySnapshot,
   seededRandom,
   MemoryDurableStorage,
   MemoryDurableNamespace,
@@ -72,186 +70,6 @@ test("exact-review queue defaults to the reduced 32-worker ceiling", () => {
   );
 });
 
-test("live activity is bounded, redacted, expiring, and separate from lifecycle data", () => {
-  const now = 1_770_000_000_000;
-  const snapshot = liveActivityBaySnapshot(
-    {
-      generated_at: new Date(now).toISOString(),
-      diagnostics: { errors: [] },
-      workers: [
-        {
-          mode: "repair",
-          status: "in_progress",
-          run_id: "private-run-marker",
-          repository: "private-owner/private-project",
-          current_step: "private step marker",
-        },
-        { mode: "exact-review", status: "queued" },
-      ],
-      bay: { active_census_complete: true },
-      control_plane: {
-        publishers: { running: 1, waiting: 0 },
-        comment_routers: { running: 0, waiting: 1 },
-        reconcilers: { running: 1, waiting: 0 },
-      },
-    },
-    now,
-  );
-
-  assert.equal(snapshot.collection.state, "complete");
-  assert.equal(snapshot.activity?.total, 5);
-  assert.deepEqual(snapshot.activity?.by_kind, {
-    worker: 1,
-    repair: 1,
-    scheduler: 1,
-    publisher: 1,
-    reconciliation: 1,
-  });
-  assert.equal(snapshot.freshness.maximum_age_ms, 60_000);
-  assert.equal(Date.parse(snapshot.freshness.expires_at), now + 60_000);
-  assert.doesNotMatch(
-    JSON.stringify(snapshot),
-    /private-run-marker|private-owner|private step marker|current_step/i,
-  );
-  assert.equal("signals" in (snapshot.activity || {}), false);
-  assert.equal("label" in (snapshot.activity || {}), false);
-  assert.equal("lanes" in snapshot, false);
-  assert.equal("cards" in snapshot, false);
-
-  const fullCapacity = liveActivityBaySnapshot(
-    {
-      generated_at: new Date(now).toISOString(),
-      diagnostics: { errors: [] },
-      workers: Array.from({ length: LIVE_ACTIVITY_SOURCE_LIMIT }, () => ({
-        mode: "exact-review",
-        status: "in_progress",
-      })),
-      bay: { active_census_complete: true },
-      control_plane: {
-        publishers: { running: 0, waiting: 0 },
-        comment_routers: { running: 0, waiting: 0 },
-        reconcilers: { running: 0, waiting: 0 },
-      },
-    },
-    now,
-  );
-  assert.equal(fullCapacity.collection.state, "complete");
-  assert.equal(fullCapacity.activity?.total, LIVE_ACTIVITY_SOURCE_LIMIT);
-  assert.equal(fullCapacity.activity?.by_kind.worker, LIVE_ACTIVITY_SOURCE_LIMIT);
-});
-
-test("live activity fails closed for stale, mixed, unavailable, and over-bound sources", () => {
-  const now = 1_770_000_000_000;
-  const source = {
-    generated_at: new Date(now).toISOString(),
-    diagnostics: { errors: [] },
-    workers: [],
-    bay: { active_census_complete: true },
-    control_plane: {
-      publishers: { running: 0, waiting: 0 },
-      comment_routers: { running: 0, waiting: 0 },
-      reconcilers: { running: 0, waiting: 0 },
-    },
-  };
-  assert.equal(liveActivityBaySnapshot(source, now + 60_001).collection.state, "unknown");
-  for (const generated_at of [
-    "1171",
-    "Fri, 15 Aug 2026 12:00:00 GMT",
-    "https://invalid.example/private?timestamp=1",
-    "2100-01-01T00:00:00Z",
-  ]) {
-    const malformedTimestamp = liveActivityBaySnapshot({ ...source, generated_at }, now);
-    assert.deepEqual(malformedTimestamp.collection, { state: "unknown", reason: "malformed" });
-    assert.doesNotMatch(JSON.stringify(malformedTimestamp), /invalid\.example|private|1171/);
-  }
-  assert.equal(
-    liveActivityBaySnapshot({ ...source, diagnostics: { errors: ["GitHub unavailable"] } }, now)
-      .collection.state,
-    "unknown",
-  );
-  assert.equal(
-    liveActivityBaySnapshot(
-      { ...source, workers: Array.from({ length: LIVE_ACTIVITY_SOURCE_LIMIT + 1 }, () => ({})) },
-      now,
-    ).collection.state,
-    "unknown",
-  );
-  assert.equal(
-    liveActivityBaySnapshot(
-      {
-        ...source,
-        control_plane: { ...source.control_plane, reconcilers: { running: -1, waiting: 0 } },
-      },
-      now,
-    ).collection.state,
-    "unknown",
-  );
-  assert.equal(
-    liveActivityBaySnapshot({ ...source, bay: { active_census_complete: false } }, now).collection
-      .state,
-    "unknown",
-  );
-  assert.equal(
-    liveActivityBaySnapshot(
-      {
-        ...source,
-        workers: Array.from({ length: LIVE_ACTIVITY_SOURCE_LIMIT }, () => ({
-          mode: "exact-review",
-          status: "in_progress",
-        })),
-        bay: { active_census_complete: false },
-      },
-      now,
-    ).collection.state,
-    "unknown",
-  );
-  assert.equal(
-    liveActivityBaySnapshot(
-      {
-        ...source,
-        workers: [
-          {
-            mode: { nested_private_marker: "must-not-surface" },
-            status: "in_progress",
-          },
-        ],
-      },
-      now,
-    ).collection.state,
-    "unknown",
-  );
-  assert.equal(
-    liveActivityBaySnapshot(
-      {
-        ...source,
-        control_plane: {
-          ...source.control_plane,
-          publishers: { running: LIVE_ACTIVITY_SOURCE_LIMIT + 1, waiting: 0 },
-        },
-      },
-      now,
-    ).collection.state,
-    "unknown",
-  );
-  assert.doesNotMatch(
-    JSON.stringify(
-      liveActivityBaySnapshot(
-        {
-          ...source,
-          workers: [
-            {
-              mode: { nested_private_marker: "must-not-surface" },
-              status: "in_progress",
-            },
-          ],
-        },
-        now,
-      ),
-    ),
-    /nested_private_marker|must-not-surface/,
-  );
-});
-
 test("production bounds review demand and preserves canonical publication batches", () => {
   const wrangler = fs.readFileSync("dashboard/wrangler.toml", "utf8");
   assert.match(wrangler, /CLAWSWEEPER_ENABLE_CLAWHUB = "1"/);
@@ -269,7 +87,6 @@ test("production bounds review demand and preserves canonical publication batche
   assert.match(wrangler, /EXACT_REVIEW_TARGET_BURST = "24"/);
   assert.match(wrangler, /EXACT_REVIEW_HOT_INTAKE_RATE_PER_HOUR = "30"/);
   assert.match(wrangler, /EXACT_REVIEW_PENDING_SOFT_LIMIT = "600"/);
-  assert.match(wrangler, /EXACT_REVIEW_LIFECYCLE_BAY_CACHE_MS = "30000"/);
 });
 
 test("exact-review lifecycle projection keeps immutable per-revision facts and terminal distinctions", () => {

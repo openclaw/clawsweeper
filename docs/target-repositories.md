@@ -130,7 +130,7 @@ Dashboard targets are configured separately with `TARGET_REPOS` in
 does not enable any of those surfaces.
 
 `PUBLIC_BAY_REPOS` is a separate public-output allowlist for the minimal
-repository/item reference cards shown by OpenClaw Bay and Overview. Add a
+repository/item reference cards shown by Overview. Add a
 repository only after confirming that it is public and intended to be visible
 on the unauthenticated dashboard. The Worker treats an absent or malformed
 allowlist as empty. Membership does not authorize titles, URLs, queries,

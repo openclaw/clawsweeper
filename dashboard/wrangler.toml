@@ -55,7 +55,7 @@ CLAWSWEEPER_APP_CLIENT_ID = "Iv23liOECG0slfuhz093"
 CLAWSWEEPER_CRABFLEET_URL = "https://crabfleet.openclaw.ai"
 TARGET_REPOS = "openclaw/openclaw,openclaw/clawhub,openclaw/clawsweeper,openclaw/fs-safe"
 # Explicit public-only allowlist for canonical repository + issue/PR references
-# rendered in OpenClaw Bay. Repositories must be verified public before addition.
+# rendered in Overview. Repositories must be verified public before addition.
 PUBLIC_BAY_REPOS = "openclaw/openclaw,openclaw/clawhub,openclaw/clawsweeper,openclaw/fs-safe"
 APPLY_TARGET_REPOS = "openclaw/openclaw"
 APPLY_OPTIONAL_TARGET_REPOS = "openclaw/clawhub"
@@ -103,8 +103,6 @@ EXACT_REVIEW_SOURCE_DRIFT_REQUEUE_LIMIT = "3"
 # Queue health degrades with review_runaway when an item claims more than this
 # many full reviews in a trailing 24 hours.
 EXACT_REVIEW_RUNAWAY_REVIEWS_PER_DAY = "24"
-# Bay is observer-only; 30 seconds of staleness is acceptable.
-EXACT_REVIEW_LIFECYCLE_BAY_CACHE_MS = "30000"
 # Scheduled admission refill rate after bounded organic debits, not a total
 # execution or spend cap. The budget meters executed reviews: at ~30 GitHub
 # requests/review, a combined load near 220 executed reviews/hour would use

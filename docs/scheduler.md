@@ -44,7 +44,7 @@ the live head, base, draft state, and body identity before dispatch takes its
 lease snapshot. This state has no timed retry. Existing parked-item
 reconciliation recovers changed head, base, or body
 identity and removes closed targets; an explicit maintainer re-review can retry
-unchanged source. The failure remains visible in lifecycle and Bay status.
+unchanged source. The failure remains visible in lifecycle audit.
 Terminal input-scanner refusals instead retain the existing queue item as
 `scanner_refused`, for both issues and PRs. Automatic events, source changes,
 close/reopen, and failed-shard recovery cannot release this hold. It has no
@@ -67,9 +67,8 @@ remain supported, but a broad sweep is not an explicit retry of every hold.
 The hold applies to newly observed terminal refusals; previously deleted rows
 are not reconstructed. Deploy Worker enforcement before relying on updated
 producer routing. Already-running direct shards from older workflow revisions
-remain a rollout limitation. Bay uses the terminal failure lifecycle rather
-than displaying the retained hold as active review work; queue reason counts
-remain visible and the public surface remains observer-only.
+remain a rollout limitation. Queue reason counts remain visible and the public
+surface remains observer-only.
 
 Native
 blob-fetch transport failures, including the hydration deadline killing a Git
@@ -87,8 +86,6 @@ failed-shard recovery remains queued until publication settles or parks. Its
 request is preserved because it may refer to a newer source. Explicit re-reviews, source
 changes, and publication source-drift or artifact-retention recovery retain their
 normal admission paths.
-Bay continues to show the publication as the item's current work until that
-handoff releases the deferred recovery.
 
 ClawSweeper has three issue/PR scheduler paths:
 
@@ -241,8 +238,8 @@ Responses are cancelled before retry. An acknowledged write whose response
 cleanup fails is reported separately and is never replayed. Retry diagnostics
 include the attempt, status or transport category, and delay; upstream response
 bodies are not logged. Exhaustion remains a failed workflow. This improves
-completeness of the existing review-observability data used by OpenClaw Bay;
-its schema, observer-only UI, and mutation boundaries do not change.
+completeness of the existing review-observability data without changing its
+schema or mutation boundaries.
 
 Maintainer-authored and `maintainer`-labeled items require an explicit review
 request. Automatic intake, scheduled selection, claimed reviews, and hosted

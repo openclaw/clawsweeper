@@ -38,7 +38,7 @@ export default {
         // Pin this cache version to the inspected baseline; a version change fails the
         // harness's x-clawsweeper-cache assertion rather than silently proving another path.
         const scope = encodeURIComponent([...repositories].sort().join(","));
-        const cacheKey = new Request(new URL("/api/status-cache/v7/" + scope + "/fresh", url));
+        const cacheKey = new Request(new URL("/api/status-cache/v8/" + scope + "/fresh", url));
         await caches.default.put(
           cacheKey,
           new Response(await stored.text(), {

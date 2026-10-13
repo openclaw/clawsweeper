@@ -32,7 +32,6 @@
         "operator-configuration.md",
         "private-inference.md",
         "live-dashboard.md",
-        "openclaw-bay-demo.md",
         "openclaw-event-hooks.md",
         "state-storage.md",
         "action-ledger.md",

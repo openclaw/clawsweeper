@@ -35,7 +35,6 @@ import { legacyCommandCommentId } from "../src/repair/command-ack-convergence.ts
 import { commandAckMarker } from "../src/repair/markers.ts";
 import { directReReviewIntake } from "../src/repair/direct-re-review-admission.ts";
 import { isExactReviewCloseGuardLabel } from "../src/repair/exact-review-guard-labels.ts";
-import { EXACT_REVIEW_LIFECYCLE_BAY_TIDE_THRESHOLD } from "./exact-review-lifecycle-telemetry.ts";
 import { sha256Hex } from "./exact-review-direct-publication.ts";
 import { exactReviewSourceRevisionMaterial } from "./exact-review-source-revision.ts";
 import {
@@ -47,8 +46,6 @@ import {
   githubEtagCacheKey,
   githubEtagCacheRequestBody,
 } from "../src/github-etag-cache-contract.ts";
-import { inlineProofParticipation, publicInlineProofCohorts } from "./inline-proof-telemetry.ts";
-import { bayHtml } from "./bay-page.ts";
 import {
   dashboardHtml,
   issueTriagePageConfig,
@@ -56,7 +53,6 @@ import {
   triageHtml,
   type DashboardEnv,
 } from "./dashboard-pages.ts";
-import { liveActivityBaySnapshot } from "./live-activity.ts";
 import { summarizeDashboardHealth } from "./dashboard-health.ts";
 import {
   createGithubAppTokenFor,
@@ -1203,21 +1199,6 @@ export default {
       request.method === "POST"
     )
       return authenticatedExactReviewOperatorRequest(request, env, "/lifecycle-audit/inventory");
-    if (
-      url.pathname === "/internal/exact-review/telemetry-reconciliation" &&
-      request.method === "POST"
-    ) {
-      const scope = new URLSearchParams();
-      for (const repository of verifiedPublicBayRepositories(env)) {
-        scope.append("public_repo", repository);
-      }
-      const query = scope.size ? `?${scope.toString()}` : "";
-      return authenticatedExactReviewOperatorRequest(
-        request,
-        env,
-        `/telemetry-reconciliation${query}`,
-      );
-    }
     if (url.pathname === "/internal/exact-review/dead-letters/replay" && request.method === "POST")
       return authenticatedExactReviewQueueRequest(request, env, "/dead-letters/replay");
     if (
@@ -1371,12 +1352,6 @@ export default {
       return authenticatedExactReviewReconcile(request, env);
     if (url.pathname === "/api/exact-review-queue" && request.method === "GET")
       return publicExactReviewQueueJson(env);
-    if (url.pathname === "/api/durable-lifecycle-bay" && request.method === "GET")
-      return durableLifecycleBayJson(request, env, ctx);
-    if (url.pathname === "/api/live-activity-bay" && request.method === "GET")
-      return json({
-        live_activity_bay: await liveActivityBaySnapshotForRequest(request, env, ctx),
-      });
     if (url.pathname === "/api/recent-durable-publication-events" && request.method === "GET")
       return publicRecentDurablePublicationEventsJson(env, url.searchParams);
     if (url.pathname === "/api/exact-review-queue/item" && request.method === "GET")
@@ -1403,9 +1378,6 @@ export default {
     if (url.pathname === "/api/triage") return triageJson(request, env, ctx);
     if (url.pathname === "/api/pr-proof-triage") return prProofTriageJson(request, env, ctx);
     if (url.pathname === "/" || url.pathname === "/index.html") return html(dashboardHtml(env));
-    if (url.pathname === "/bay") return demoHtml(bayHtml());
-    if (url.pathname === "/bay-demo")
-      return Response.redirect(new URL("/bay", url.origin).toString(), 308);
     if (url.pathname === "/triage" || url.pathname === "/triage.html")
       return html(triageHtml(issueTriagePageConfig()));
     if (url.pathname === "/pr-proof-triage" || url.pathname === "/pr-proof-triage.html")
@@ -1886,7 +1858,6 @@ const PUBLIC_STATUS_TEXT_FIELDS = new Set([
   "stage",
   "state",
   "status",
-  "metrics_state",
   "terminal_outcome",
   "work_kind",
   "reasons",
@@ -1906,14 +1877,11 @@ const PUBLIC_STATUS_TIME_FIELDS = new Set([
   "oldest_leased_at",
   "next_attempt_at",
   "next_wake_at",
-  "last_tide_at",
-  "timing_coverage_started_at",
   "window_ended_at",
   "received_at",
   "since",
   "started_at",
   "updated_at",
-  "washed_at",
   "first_seen_at",
   "last_seen_at",
 ]);
@@ -1991,8 +1959,6 @@ const PUBLIC_STATUS_COUNT_FIELDS = new Set([
   "successful_attempts",
   "skipped",
   "skipped_changed_since_review",
-  "tide_generation",
-  "tide_threshold",
   "target_repository_count",
   "total",
   "unresolved_failures",
@@ -2032,7 +1998,6 @@ const PUBLIC_STATUS_COUNT_FIELDS = new Set([
   "scheduled_interval_minutes",
   "target_rate_per_hour",
   "max_concurrent",
-  "terminal_count",
   "total_count",
   "total_duration_ms",
   "ttl_seconds",
@@ -2114,17 +2079,13 @@ const PUBLIC_STATUS_CONTAINER_FIELDS = new Set([
   "steps",
   "timeline",
   "ci",
-  "timings",
   "history",
   "points",
   "overall",
-  "including_legacy_batch",
   "inline_proof",
   "requested",
   "not_requested",
   "unknown",
-  "terminal_buffer",
-  "recently_washed",
   "cluster_repair",
   "markers",
   "latest_runs",
@@ -2198,7 +2159,6 @@ const PUBLIC_STATUS_BOOLEAN_FIELDS = new Set([
   "public_projection_complete",
   "recovered",
   "telemetry_complete",
-  "timing_coverage_complete",
   "workflow_run_census_complete",
   "durable_server_observed",
   "legacy_batch_path",
@@ -2246,7 +2206,6 @@ const PUBLIC_BAY_ACTIVITY_REFERENCE_LIMIT = 124;
 const PUBLIC_BAY_ITEM_NUMBER_LIMIT = 1_000_000_000;
 const PUBLIC_BAY_REPOSITORY_PATTERN = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
 const PUBLIC_BAY_REFERENCE_SOURCES = new Set(["queue", "live"]);
-const PUBLIC_BAY_OUTCOMES = new Set(["success", "failure", "cancelled"]);
 const PUBLIC_BAY_ACTION_CONCLUSIONS = new Set([
   "success",
   "failure",
@@ -2592,61 +2551,6 @@ function publicBayReferences(
     references.push(reference);
   }
   return references;
-}
-
-function publicBayTerminalOutcome(value, allowedRepositories: ReadonlySet<string>) {
-  const source = objectValue(value);
-  const outcome = typeof source.outcome === "string" ? source.outcome : "";
-  if (!PUBLIC_BAY_OUTCOMES.has(outcome)) return null;
-  const explicitRepository = typeof source.repository === "string" ? source.repository.trim() : "";
-  const explicitNumber = source.item_number ?? source.number;
-  const journeyDuration = source.journey_duration_ms;
-  const legacyBatchPath = source.legacy_batch_path;
-  const itemKey = typeof source.item_key === "string" ? source.item_key.trim() : "";
-  const keyMatch = itemKey.match(/^([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)#(\d+)$/);
-  const repository = explicitRepository || keyMatch?.[1] || "";
-  const itemNumber = explicitNumber ?? (keyMatch ? Number(keyMatch[2]) : Number.NaN);
-  const explicitMatchesKey =
-    !keyMatch ||
-    (repository.toLowerCase() === keyMatch[1].toLowerCase() && itemNumber === Number(keyMatch[2]));
-  if (
-    explicitMatchesKey &&
-    PUBLIC_BAY_REPOSITORY_PATTERN.test(repository) &&
-    typeof itemNumber === "number" &&
-    Number.isSafeInteger(itemNumber) &&
-    itemNumber > 0 &&
-    itemNumber <= PUBLIC_BAY_ITEM_NUMBER_LIMIT &&
-    (legacyBatchPath === undefined || typeof legacyBatchPath === "boolean")
-  ) {
-    const canonicalRepository = repository.toLowerCase();
-    if (allowedRepositories.has(canonicalRepository)) {
-      if (
-        !Number.isSafeInteger(journeyDuration) ||
-        journeyDuration < 0 ||
-        journeyDuration > 24 * 60 * 60 * 1000
-      ) {
-        return { outcome };
-      }
-      const action = publicBayActionFromWorker(
-        { ...source, status: "completed", run_url: source.run_url ?? source.job_url },
-        allowedRepositories,
-      );
-      return {
-        repository: canonicalRepository,
-        item_number: itemNumber,
-        outcome,
-        journey_duration_ms: journeyDuration,
-        legacy_batch_path: legacyBatchPath === true,
-        ...(action ? { action } : {}),
-      };
-    }
-  }
-  return { outcome };
-}
-
-function publicBayTerminalOutcomes(value, limit, allowedRepositories: ReadonlySet<string>) {
-  if (!Array.isArray(value) || value.length > limit) return [];
-  return value.map((entry) => publicBayTerminalOutcome(entry, allowedRepositories)).filter(Boolean);
 }
 
 function publicBayActivity(value, allowedRepositories: ReadonlySet<string>) {
@@ -3231,9 +3135,6 @@ export function publicStatusProjection(
     Array.isArray(snapshot.fleet) ||
     !Array.isArray(snapshot.workers) ||
     !Array.isArray(snapshot.pipeline) ||
-    !snapshot.bay ||
-    typeof snapshot.bay !== "object" ||
-    Array.isArray(snapshot.bay) ||
     !snapshot.diagnostics ||
     typeof snapshot.diagnostics !== "object" ||
     Array.isArray(snapshot.diagnostics) ||
@@ -3247,35 +3148,7 @@ export function publicStatusProjection(
     const stage = publicWorkerBayStage(worker);
     return { ...objectValue(worker), ...(stage ? { stage } : {}) };
   });
-  const rawSourceBay = objectValue(source.bay);
-  const rawTimings = objectValue(rawSourceBay.timings);
-  const rawAllTimings = objectValue(rawTimings.including_legacy_batch);
-  const withInlineProof = (timing) => ({
-    ...timing,
-    ...(timing.inline_proof === undefined
-      ? {}
-      : {
-          inline_proof: publicInlineProofCohorts(
-            timing.inline_proof,
-            objectValue(timing.overall).samples,
-          ),
-        }),
-  });
-  const sourceBay = {
-    ...rawSourceBay,
-    ...(rawSourceBay.timings === undefined
-      ? {}
-      : {
-          timings: {
-            ...withInlineProof(rawTimings),
-            ...(rawTimings.including_legacy_batch === undefined
-              ? {}
-              : {
-                  including_legacy_batch: withInlineProof(rawAllTimings),
-                }),
-          },
-        }),
-  };
+  const sourceBay = objectValue(source.bay);
   const derivedActiveTargets = publicBayActiveTargets(
     sourceWorkers || [],
     sourceBay.active_census_complete === true,
@@ -3302,17 +3175,11 @@ export function publicStatusProjection(
   const projectionSource = {
     ...source,
     public_projection_complete: true,
-    ...(source.bay ? { bay: sourceBay } : {}),
     ...(projectedWorkers ? { workers: projectedWorkers } : {}),
-    ...(sourceWorkers || Object.prototype.hasOwnProperty.call(sourceBay, "active_stages")
-      ? {
-          bay: {
-            ...sourceBay,
-            active_census_complete: effectiveActiveCensusComplete,
-            active_stages: activeStages,
-          },
-        }
-      : {}),
+    bay: {
+      active_census_complete: effectiveActiveCensusComplete,
+      active_stages: activeStages,
+    },
     ...(hasExactReviewQueueObject
       ? {
           exact_review_queue: publicExactReviewQueueProjection(
@@ -3342,22 +3209,6 @@ export function publicStatusProjection(
     errors: Array.from({ length: Math.min(errorCount, 20) }, () => "telemetry_unavailable"),
     error_count: errorCount,
   };
-  const documentBay = objectValue(document.bay);
-  if (Array.isArray(sourceBay.terminal_buffer)) {
-    documentBay.terminal_buffer = publicBayTerminalOutcomes(
-      sourceBay.terminal_buffer,
-      100,
-      allowedRepositories,
-    );
-  }
-  if (Array.isArray(sourceBay.recently_washed)) {
-    documentBay.recently_washed = publicBayTerminalOutcomes(
-      sourceBay.recently_washed,
-      100,
-      allowedRepositories,
-    );
-  }
-  document.bay = documentBay;
   if (hasExactReviewQueueObject) {
     // The dedicated queue projector owns its closed fields. A second generic
     // allowlist can drop reason counts and make a cached valid queue malformed.
@@ -3592,7 +3443,7 @@ async function refreshStatusCaches(request, env, ctx?: DashboardContext) {
 
 function statusCacheRequest(request, bucket, publicBayScope) {
   const scope = publicBayScope ? encodeURIComponent(publicBayScope) : "_";
-  return new Request(new URL(`/api/status-cache/v7/${scope}/${bucket}`, request.url).toString(), {
+  return new Request(new URL(`/api/status-cache/v8/${scope}/${bucket}`, request.url).toString(), {
     method: "GET",
   });
 }
@@ -5715,427 +5566,6 @@ async function publicExactReviewQueueJson(env) {
   }
 }
 
-const DURABLE_LIFECYCLE_BAY_CACHE_SECONDS = 30;
-type DurableLifecycleBayRefresh = {
-  promise: Promise<Record<string, unknown>>;
-  state: { preserveStaleSuccess: boolean };
-};
-const durableLifecycleBayRefreshes = new Map<string, DurableLifecycleBayRefresh>();
-
-function durableLifecycleBayCacheKey(request: Request, env, bucket: "fresh" | "stale") {
-  const scope = publicBayRepositoryScope(verifiedPublicBayRepositories(env));
-  return new Request(
-    new URL(
-      `/api/durable-lifecycle-bay-cache/v1/${encodeURIComponent(scope) || "_"}/${bucket}`,
-      request.url,
-    ),
-  );
-}
-
-async function cachedDurableLifecycleBay(request: Request) {
-  try {
-    const cached = await caches.default.match(request);
-    if (cached?.ok) {
-      const body = await cached.json();
-      const snapshot = objectValue(body.durable_lifecycle_bay);
-      const generatedAt = publicQueueTimestamp(snapshot.generated_at);
-      const age = Date.now() - Date.parse(generatedAt || "");
-      // Only sanitized public responses enter this versioned cache. Both buckets
-      // remain bounded by the source snapshot's existing maximum age.
-      if (
-        generatedAt &&
-        objectValue(snapshot.freshness).maximum_age_ms === 60_000 &&
-        age >= -60_000 &&
-        age <= 60_000
-      )
-        return body;
-    }
-  } catch {
-    // Cache availability must not prevent a fresh lifecycle read.
-  }
-  return null;
-}
-
-async function durableLifecycleBayJson(request: Request, env, ctx?: DashboardContext) {
-  const freshKey = durableLifecycleBayCacheKey(request, env, "fresh");
-  const cached = await cachedDurableLifecycleBay(freshKey);
-  if (cached) return json(cached);
-  const staleKey = durableLifecycleBayCacheKey(request, env, "stale");
-  const stale = await cachedDurableLifecycleBay(staleKey);
-  if (stale && ctx?.waitUntil) {
-    const preserveStaleSuccess =
-      objectValue(objectValue(stale.durable_lifecycle_bay).collection).state === "complete";
-    ctx.waitUntil(
-      refreshDurableLifecycleBay(env, freshKey, staleKey, preserveStaleSuccess).catch(
-        () => undefined,
-      ),
-    );
-    return json(stale);
-  }
-  return json(await refreshDurableLifecycleBay(env, freshKey, staleKey));
-}
-
-function refreshDurableLifecycleBay(
-  env,
-  freshKey: Request,
-  staleKey: Request,
-  preserveStaleSuccess = false,
-) {
-  const key = freshKey.url;
-  const pending = durableLifecycleBayRefreshes.get(key);
-  if (pending) {
-    if (preserveStaleSuccess) pending.state.preserveStaleSuccess = true;
-    return pending.promise;
-  }
-  const state = { preserveStaleSuccess };
-  const promise = refreshDurableLifecycleBayCaches(env, freshKey, staleKey, state);
-  const refresh = { promise, state };
-  durableLifecycleBayRefreshes.set(key, refresh);
-  promise
-    .finally(() => {
-      if (durableLifecycleBayRefreshes.get(key) === refresh)
-        durableLifecycleBayRefreshes.delete(key);
-    })
-    .catch(() => undefined);
-  return promise;
-}
-
-async function refreshDurableLifecycleBayCaches(
-  env,
-  freshKey: Request,
-  staleKey: Request,
-  state: { preserveStaleSuccess: boolean },
-) {
-  const snapshot = await durableLifecycleBaySnapshot(env);
-  const body = { durable_lifecycle_bay: snapshot };
-  if (state.preserveStaleSuccess && objectValue(snapshot.collection).state !== "complete") {
-    return body;
-  }
-  const remainingSeconds = Math.floor(
-    (Date.parse(snapshot.generated_at) + 60_000 - Date.now()) / 1000,
-  );
-  if (remainingSeconds > 0) {
-    await Promise.allSettled(
-      [freshKey, staleKey].map(async (key) => {
-        const ttl =
-          key === freshKey
-            ? Math.min(DURABLE_LIFECYCLE_BAY_CACHE_SECONDS, remainingSeconds)
-            : remainingSeconds;
-        const cached = json(body);
-        cached.headers.set("cache-control", `public, max-age=${ttl}`);
-        await caches.default.put(key, cached);
-      }),
-    );
-  }
-  return body;
-}
-
-export async function durableLifecycleBaySnapshot(env, now = Date.now()) {
-  let response: Response;
-  let body: Record<string, unknown>;
-  const allowedRepositories = verifiedPublicBayRepositories(env);
-  const lifecycleQuery = new URLSearchParams();
-  for (const repository of [...allowedRepositories].sort()) {
-    lifecycleQuery.append("public_repo", repository);
-  }
-  if (allowedRepositories.size === 0) lifecycleQuery.append("public_repo", "");
-  try {
-    response = await exactReviewQueueRequest(env, `/lifecycle-bay?${lifecycleQuery.toString()}`);
-    body = objectValue(await response.json().catch(() => null));
-  } catch {
-    return unknownDurableLifecycleBay("unavailable", now);
-  }
-  const snapshot = objectValue(body.durable_lifecycle_bay) as Record<string, unknown>;
-  const checkedAt = Date.now();
-  if (!response.ok) return unknownDurableLifecycleBay("unavailable", now);
-  if (!validDurableLifecycleBaySnapshot(snapshot, checkedAt)) {
-    return unknownDurableLifecycleBay("malformed", checkedAt);
-  }
-  const collection = objectValue(snapshot.collection);
-  if (collection.state === "unknown") {
-    return unknownDurableLifecycleBay(String(collection.reason || "malformed"), checkedAt);
-  }
-  const generatedAt = publicQueueTimestamp(snapshot.generated_at);
-  if (!generatedAt || checkedAt - Date.parse(generatedAt) > 60_000) {
-    return unknownDurableLifecycleBay("stale", checkedAt);
-  }
-  return publicDurableLifecycleBaySnapshot(snapshot, allowedRepositories);
-}
-
-export async function liveActivityBaySnapshotForRequest(
-  request: Request,
-  env,
-  ctx,
-  now = Date.now(),
-) {
-  try {
-    const statusRequest = new Request(new URL("/api/status", request.url).toString());
-    const response = await statusJson(statusRequest, env, ctx);
-    return liveActivityBaySnapshot(await response.json(), now);
-  } catch {
-    return liveActivityBaySnapshot(null, now);
-  }
-}
-
-function unknownDurableLifecycleBay(reason, now = Date.now()) {
-  return {
-    version: 1,
-    source: "exact-review-lifecycle-projection-v1",
-    generated_at: new Date(now).toISOString(),
-    freshness: { maximum_age_ms: 60_000 },
-    collection: { state: "unknown", reason },
-    inventory: null,
-    lanes: null,
-    sample: null,
-  };
-}
-
-function validDurableLifecycleBaySnapshot(value, now = Date.now()) {
-  const snapshot = objectValue(value);
-  const generatedAt = publicQueueTimestamp(snapshot.generated_at);
-  if (
-    snapshot.version !== 1 ||
-    snapshot.source !== "exact-review-lifecycle-projection-v1" ||
-    !generatedAt ||
-    Date.parse(generatedAt) > now + 60_000 ||
-    !objectValue(snapshot.freshness) ||
-    Number(snapshot.freshness.maximum_age_ms) !== 60_000
-  ) {
-    return false;
-  }
-  const collection = objectValue(snapshot.collection);
-  if (collection.state === "unknown") {
-    return (
-      ["unavailable", "malformed", "mixed", "stale", "over_cap"].includes(
-        String(collection.reason),
-      ) &&
-      snapshot.inventory === null &&
-      snapshot.lanes === null &&
-      snapshot.sample === null
-    );
-  }
-  if (collection.state !== "complete") return false;
-  const inventory = objectValue(snapshot.inventory);
-  const lanes = objectValue(snapshot.lanes);
-  const sample = objectValue(snapshot.sample);
-  const inventoryKeys = ["lifecycle_records", "target_revisions", "unique_targets"];
-  const laneKeys = [
-    "pending",
-    "acknowledgement_pending",
-    "completed",
-    "superseded",
-    "requeued",
-    "terminal_attention",
-  ];
-  const lifecycleRecords = publicQueueCount(inventory.lifecycle_records, Number.MAX_SAFE_INTEGER);
-  const targetRevisions = publicQueueCount(inventory.target_revisions, Number.MAX_SAFE_INTEGER);
-  const uniqueTargets = publicQueueCount(inventory.unique_targets, Number.MAX_SAFE_INTEGER);
-  if (
-    !inventoryKeys.every(
-      (key) => publicQueueCount(inventory[key], Number.MAX_SAFE_INTEGER) !== null,
-    ) ||
-    lifecycleRecords === null ||
-    targetRevisions === null ||
-    uniqueTargets === null ||
-    uniqueTargets > targetRevisions ||
-    targetRevisions > lifecycleRecords ||
-    !laneKeys.every((key) => publicQueueCount(lanes[key], Number.MAX_SAFE_INTEGER) !== null) ||
-    laneKeys.reduce((sum, key) => sum + Number(lanes[key]), 0) !== lifecycleRecords ||
-    Number(sample.limit) !== 24 ||
-    !Number.isSafeInteger(sample.returned) ||
-    !Number.isSafeInteger(sample.omitted) ||
-    !Array.isArray(sample.cards) ||
-    sample.returned !== sample.cards.length ||
-    sample.cards.length > 24 ||
-    sample.omitted !== Math.max(0, lifecycleRecords - sample.cards.length)
-  ) {
-    return false;
-  }
-  return sample.cards.every(validDurableLifecycleBayCard);
-}
-
-function publicDurableLifecycleBaySnapshot(
-  value,
-  allowedRepositories: ReadonlySet<string> = new Set(),
-) {
-  const snapshot = objectValue(value);
-  const inventory = objectValue(snapshot.inventory);
-  const lanes = objectValue(snapshot.lanes);
-  const lifecycleRecords =
-    publicQueueCount(inventory.lifecycle_records, Number.MAX_SAFE_INTEGER) ?? 0;
-  const cards = Array.isArray(objectValue(snapshot.sample).cards)
-    ? objectValue(snapshot.sample).cards.flatMap((value) => {
-        const card = objectValue(value);
-        const target = objectValue(card.target);
-        const repository = String(target.repository || "")
-          .trim()
-          .toLowerCase();
-        const itemNumber = publicQueueCount(target.number, PUBLIC_BAY_ITEM_NUMBER_LIMIT);
-        const lane = String(card.lane || "");
-        const state = String(card.state || "");
-        const updatedAt = publicQueueTimestamp(card.updated_at);
-        if (
-          !allowedRepositories.has(repository) ||
-          itemNumber === null ||
-          itemNumber <= 0 ||
-          ![
-            "pending",
-            "acknowledgement_pending",
-            "completed",
-            "superseded",
-            "requeued",
-            "terminal_attention",
-          ].includes(lane) ||
-          ![
-            "pending",
-            "completed",
-            "acknowledgement_pending",
-            "acknowledgement_skipped",
-            "superseded",
-            "requeue",
-            "dead_letter",
-            "target_closed",
-            "target_missing",
-            "policy_noop",
-            "guarded_open",
-            "failed",
-          ].includes(state) ||
-          typeof card.current_revision !== "boolean" ||
-          !updatedAt
-        ) {
-          return [];
-        }
-        return [
-          {
-            repository,
-            item_number: itemNumber,
-            lane,
-            state,
-            current_revision: card.current_revision,
-            inline_proof: inlineProofParticipation(objectValue(card.facts).inline_proof),
-            updated_at: updatedAt,
-          },
-        ];
-      })
-    : [];
-  return {
-    version: 1,
-    source: "exact-review-lifecycle-projection-v1",
-    generated_at: publicQueueTimestamp(snapshot.generated_at),
-    freshness: { maximum_age_ms: 60_000 },
-    collection: { state: "complete" },
-    inventory: {
-      lifecycle_records: lifecycleRecords,
-      target_revisions: publicQueueCount(inventory.target_revisions, Number.MAX_SAFE_INTEGER) ?? 0,
-      unique_targets: publicQueueCount(inventory.unique_targets, Number.MAX_SAFE_INTEGER) ?? 0,
-    },
-    lanes: publicQueueCounts(
-      lanes,
-      [
-        "pending",
-        "acknowledgement_pending",
-        "completed",
-        "superseded",
-        "requeued",
-        "terminal_attention",
-      ],
-      Number.MAX_SAFE_INTEGER,
-    ),
-    sample: {
-      limit: 24,
-      returned: cards.length,
-      omitted: Math.max(0, lifecycleRecords - cards.length),
-      cards,
-    },
-  };
-}
-
-function validDurableLifecycleBayCard(value) {
-  const card = objectValue(value);
-  const target = objectValue(card.target);
-  const facts = objectValue(card.facts);
-  return (
-    /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(String(target.repository || "")) &&
-    Number.isSafeInteger(target.number) &&
-    Number(target.number) > 0 &&
-    target.url === `https://github.com/${target.repository}/issues/${target.number}` &&
-    Number.isSafeInteger(card.revision) &&
-    Number(card.revision) > 0 &&
-    [
-      "pending",
-      "completed",
-      "acknowledgement_pending",
-      "acknowledgement_skipped",
-      "superseded",
-      "requeue",
-      "dead_letter",
-      "target_closed",
-      "target_missing",
-      "policy_noop",
-      "guarded_open",
-      "failed",
-    ].includes(String(card.state)) &&
-    [
-      "pending",
-      "acknowledgement_pending",
-      "completed",
-      "superseded",
-      "requeued",
-      "terminal_attention",
-    ].includes(String(card.lane)) &&
-    (card.terminal_label === null ||
-      [
-        "review_completed_routed",
-        "superseded",
-        "requeue",
-        "acknowledgement_skipped",
-        "dead_letter",
-        "target_closed",
-        "target_missing",
-        "policy_noop",
-        "guarded_open",
-        "failure",
-      ].includes(String(card.terminal_label))) &&
-    Array.isArray(card.terminal_history) &&
-    card.terminal_history.every((entry) =>
-      [
-        "review_completed_routed",
-        "superseded",
-        "requeue",
-        "dead_letter",
-        "target_closed",
-        "target_missing",
-        "policy_noop",
-        "guarded_open",
-        "failure",
-      ].includes(String(entry)),
-    ) &&
-    typeof card.current_revision === "boolean" &&
-    facts.admission === "recorded" &&
-    Number.isSafeInteger(facts.claim_count) &&
-    Number(facts.claim_count) >= 0 &&
-    [null, "completed", "failed", "cancelled"].includes(facts.review_result) &&
-    typeof facts.github_effect_recorded === "boolean" &&
-    Array.isArray(facts.canonical_receipts) &&
-    facts.canonical_receipts.every((entry) =>
-      ["accepted", "deduped", "superseded"].includes(entry),
-    ) &&
-    [null, "durable", "not_required"].includes(facts.router_receipt) &&
-    [
-      "not_required",
-      "pending",
-      "observed",
-      "skipped_locked",
-      "skipped_missing_comment",
-      "unavailable",
-    ].includes(facts.acknowledgement) &&
-    publicQueueTimestamp(card.updated_at) !== null &&
-    Number.isSafeInteger(card.age_ms) &&
-    Number(card.age_ms) >= 0 &&
-    card.provenance === "exact-review-lifecycle-projection-v1"
-  );
-}
-
 async function publicRecentDurablePublicationEventsJson(env, params: URLSearchParams) {
   const requestedWindow = params.get("window");
   const window = requestedWindow === "6h" || requestedWindow === "7d" ? requestedWindow : "24h";
@@ -6253,176 +5683,6 @@ export async function exactReviewQueueStatusSnapshot(
     throw new Error(String(body.error || "exact-review queue status unavailable"));
   }
   return body;
-}
-
-async function exactReviewBayLifecycleMetricsSnapshot(env) {
-  if (!exactReviewQueueStub(env)) return null;
-  const allowedRepositories = verifiedPublicBayRepositories(env);
-  const query = new URLSearchParams();
-  for (const repository of [...allowedRepositories].sort()) query.append("public_repo", repository);
-  if (allowedRepositories.size === 0) query.append("public_repo", "");
-  const response = await exactReviewQueueRequest(env, `/bay-lifecycle-metrics?${query.toString()}`);
-  const body = objectValue(await response.json().catch(() => null));
-  if (!response.ok) return null;
-  const source = objectValue(body.bay_lifecycle_metrics);
-  const collection = objectValue(source.collection);
-  if (source.version !== 2 || collection.state !== "complete") return null;
-  const coverage = objectValue(source.coverage);
-  const timings = objectValue(source.timings);
-  const terminal = objectValue(source.terminal);
-  const startedAt = publicQueueTimestamp(coverage.started_at);
-  const timingComplete = coverage.timing_complete;
-  const sampleKind = String(timings.sample_kind || "");
-  const windowMinutes = publicQueueCount(timings.window_minutes, 24 * 60);
-  const sampleLimit = publicQueueCount(timings.sample_limit, 100_000);
-  const overall = objectValue(timings.overall);
-  const history = bayLifecycleTimingHistory(timings.history);
-  const includingLegacyBatch = objectValue(timings.including_legacy_batch);
-  const includingLegacyBatchOverall = objectValue(includingLegacyBatch.overall);
-  const includingLegacyBatchHistory = bayLifecycleTimingHistory(includingLegacyBatch.history);
-  const samples = publicQueueCount(overall.samples, 100_000);
-  const average =
-    overall.average_ms === null ? null : publicQueueCount(overall.average_ms, 24 * 60 * 60 * 1000);
-  const median =
-    overall.median_ms === null ? null : publicQueueCount(overall.median_ms, 24 * 60 * 60 * 1000);
-  const invalidTimingAggregate =
-    samples === null ||
-    (samples === 0 ? average !== null || median !== null : average === null || median === null);
-  const allSamples = publicQueueCount(includingLegacyBatchOverall.samples, 100_000);
-  const allAverage =
-    includingLegacyBatchOverall.average_ms === null
-      ? null
-      : publicQueueCount(includingLegacyBatchOverall.average_ms, 24 * 60 * 60 * 1000);
-  const allMedian =
-    includingLegacyBatchOverall.median_ms === null
-      ? null
-      : publicQueueCount(includingLegacyBatchOverall.median_ms, 24 * 60 * 60 * 1000);
-  const invalidAllTimingAggregate =
-    allSamples === null ||
-    (allSamples === 0
-      ? allAverage !== null || allMedian !== null
-      : allAverage === null || allMedian === null) ||
-    (samples !== null && allSamples < samples);
-  const terminalCount = publicQueueCount(
-    terminal.terminal_count,
-    EXACT_REVIEW_LIFECYCLE_BAY_TIDE_THRESHOLD,
-  );
-  const tideThreshold = publicQueueCount(terminal.tide_threshold, 100);
-  const tideGeneration = publicQueueCount(terminal.tide_generation, 1_000_000);
-  const lastTideAt =
-    terminal.last_tide_at === null ? null : publicQueueTimestamp(terminal.last_tide_at);
-  const terminalBuffer = bayLifecycleTerminalRows(terminal.terminal_buffer);
-  const recentlyWashed = bayLifecycleTerminalRows(terminal.recently_washed);
-  if (
-    !startedAt ||
-    typeof timingComplete !== "boolean" ||
-    sampleKind !== "completed_final_review_journeys" ||
-    windowMinutes !== 60 ||
-    sampleLimit === null ||
-    invalidTimingAggregate ||
-    invalidAllTimingAggregate ||
-    !history ||
-    !includingLegacyBatchHistory ||
-    terminalCount === null ||
-    tideThreshold !== EXACT_REVIEW_LIFECYCLE_BAY_TIDE_THRESHOLD ||
-    tideGeneration === null ||
-    (terminal.last_tide_at !== null && !lastTideAt) ||
-    !terminalBuffer ||
-    !recentlyWashed ||
-    terminalBuffer.length !== terminalCount
-  ) {
-    return null;
-  }
-  return {
-    timing_coverage_started_at: startedAt,
-    timing_coverage_complete: timingComplete,
-    metrics_state: timingComplete ? "complete" : "warming",
-    timings: {
-      window_ended_at: publicQueueTimestamp(timings.window_ended_at),
-      window_minutes: windowMinutes,
-      // `sample_kind` is a v1 public enum. Preserve its established spelling for
-      // strict clients, and expose end-to-end final-review provenance additively.
-      sample_kind: "completed_review_journeys",
-      source: "durable_exact_review_lifecycles",
-      completion_source: "verified_final_review_receipts",
-      sample_limit: sampleLimit,
-      overall: { average_ms: average, median_ms: median, samples },
-      inline_proof: publicInlineProofCohorts(timings.inline_proof, samples),
-      history,
-      including_legacy_batch: {
-        overall: { average_ms: allAverage, median_ms: allMedian, samples: allSamples },
-        inline_proof: publicInlineProofCohorts(includingLegacyBatch.inline_proof, allSamples),
-        history: includingLegacyBatchHistory,
-      },
-    },
-    terminal_count: terminalCount,
-    tide_threshold: tideThreshold,
-    tide_generation: tideGeneration,
-    last_tide_at: lastTideAt,
-    terminal_buffer: terminalBuffer,
-    recently_washed: recentlyWashed,
-  };
-}
-
-function bayLifecycleTerminalRows(value) {
-  if (!Array.isArray(value) || value.length > EXACT_REVIEW_LIFECYCLE_BAY_TIDE_THRESHOLD)
-    return null;
-  const rows = [];
-  for (const entry of value) {
-    const row = objectValue(entry);
-    const itemKey = String(row.item_key || "").toLowerCase();
-    const outcome = String(row.outcome || "");
-    const completedAt = publicQueueTimestamp(row.completed_at);
-    const journeyDuration = publicQueueCount(row.journey_duration_ms, 24 * 60 * 60 * 1000);
-    const legacyBatchPath = row.legacy_batch_path;
-    if (
-      !/^[a-z0-9_.-]+\/[a-z0-9_.-]+#[1-9]\d*$/.test(itemKey) ||
-      !["success", "failure", "cancelled"].includes(outcome) ||
-      !completedAt ||
-      journeyDuration === null ||
-      typeof legacyBatchPath !== "boolean"
-    ) {
-      return null;
-    }
-    rows.push({
-      item_key: itemKey,
-      outcome,
-      completed_at: completedAt,
-      journey_duration_ms: journeyDuration,
-      legacy_batch_path: legacyBatchPath,
-    });
-  }
-  return rows;
-}
-
-function bayLifecycleTimingHistory(value) {
-  const source = objectValue(value);
-  const points = source && Array.isArray(source.points) ? source.points : null;
-  if (!source || source.bucket_minutes !== 5 || !points || points.length > 12) return null;
-  const result = [];
-  let previousEndedAt = 0;
-  for (const point of points) {
-    const row = objectValue(point);
-    const endedAt = row && publicQueueTimestamp(row.ended_at);
-    const average = row && publicQueueCount(row.average_ms, 24 * 60 * 60 * 1000);
-    const median = row && publicQueueCount(row.median_ms, 24 * 60 * 60 * 1000);
-    const samples = row && publicQueueCount(row.samples, 100_000);
-    const endedAtMs = endedAt ? Date.parse(endedAt) : Number.NaN;
-    if (
-      !endedAt ||
-      !Number.isFinite(endedAtMs) ||
-      endedAtMs <= previousEndedAt ||
-      average === null ||
-      median === null ||
-      samples === null ||
-      samples < 1
-    ) {
-      return null;
-    }
-    previousEndedAt = endedAtMs;
-    result.push({ ended_at: endedAt, average_ms: average, median_ms: median, samples });
-  }
-  return { bucket_minutes: 5, points: result };
 }
 
 async function boundedCommandProofBody(
@@ -7498,27 +6758,15 @@ async function statusSnapshot(env) {
   const allowedRepositories = verifiedPublicBayRepositories(env);
   const publicBayScope = publicBayRepositoryScope(allowedRepositories);
   const scopedCached = await readCachedSnapshot(env, ttl, publicBayScope);
-  // A legacy cache entry without scope provenance can still describe a
-  // malformed document. Keep that fail-closed path, but never reuse it as a
-  // complete durable lifecycle snapshot.
+  // Unscoped legacy entries are only used to retain the fail-closed response
+  // for malformed documents; complete entries must have current scope provenance.
   const cached = scopedCached || (await readCachedSnapshot(env, ttl));
-  const cachedTimings = objectValue(cached?.bay?.timings);
-  const cachedIncludingLegacyBatch = objectValue(cachedTimings.including_legacy_batch);
   const cachedProjection = cached ? publicStatusProjection(cached, allowedRepositories) : null;
   // A malformed durable document should fail closed without triggering a
   // costly background collection. A complete legacy document, however, must
   // be rebuilt before it can be copied into the current cache generation.
   if (cachedProjection?.public_projection_complete === false) return cachedProjection;
-  if (
-    cachedTimings.sample_kind === "completed_review_journeys" &&
-    cachedTimings.source === "durable_exact_review_lifecycles" &&
-    cachedTimings.completion_source === "verified_final_review_receipts" &&
-    Object.prototype.hasOwnProperty.call(cachedIncludingLegacyBatch, "overall") &&
-    Object.prototype.hasOwnProperty.call(cachedIncludingLegacyBatch, "history") &&
-    scopedCached === cached
-  ) {
-    return cachedProjection;
-  }
+  if (scopedCached && scopedCached === cached) return cachedProjection;
 
   const github = createGithubJsonCache(env);
   const generatedAt = new Date().toISOString();
@@ -7619,36 +6867,6 @@ async function statusSnapshot(env) {
   errors.push(...activeJobs.errors);
   errors.push(...workerHealth.errors);
   statusCollections.get(env)?.check();
-  const authoritativeBay = await withTimeout(
-    exactReviewBayLifecycleMetricsSnapshot(env),
-    OPTIONAL_SECTION_TIMEOUT_MS,
-    "Bay lifecycle metrics",
-  ).catch((error) => {
-    errors.push(error.message);
-    return null;
-  });
-  const bay = authoritativeBay
-    ? { ...authoritativeBay, active_census_complete: activeJobs.complete }
-    : {
-        ...emptyBayTerminalState(generatedAt),
-        active_census_complete: activeJobs.complete,
-        metrics_state: "unavailable",
-        timing_coverage_complete: false,
-        timing_coverage_started_at: null,
-        timings: {
-          window_minutes: BAY_TIMING_WINDOW_MS / 60_000,
-          sample_kind: "completed_review_journeys",
-          source: "durable_exact_review_lifecycles",
-          completion_source: "verified_final_review_receipts",
-          sample_limit: 0,
-          overall: { average_ms: null, median_ms: null, samples: 0 },
-          history: { bucket_minutes: 5, points: [] },
-          including_legacy_batch: {
-            overall: { average_ms: null, median_ms: null, samples: 0 },
-            history: { bucket_minutes: 5, points: [] },
-          },
-        },
-      };
   const { recent_attempts: _recentAttempts, ...publicWorkerHealth } = workerHealth;
 
   const snapshot = {
@@ -7675,7 +6893,7 @@ async function statusSnapshot(env) {
     operational_health: operationalHealth,
     workers: activeJobs.workers,
     pipeline,
-    bay,
+    bay: { active_census_complete: activeJobs.complete },
     recent: {
       apply_health: applyHealth,
       closed_items: closed.items,
@@ -7695,23 +6913,15 @@ async function statusSnapshot(env) {
 
 async function attachExactReviewQueueStatus(snapshot, env) {
   const diagnostics = objectValue(snapshot.diagnostics);
-  const bay = objectValue(snapshot.bay);
   const activeTargets = publicBayActiveTargets(
     snapshot.workers,
-    bay.active_census_complete === true,
+    objectValue(snapshot.bay).active_census_complete === true,
     verifiedPublicBayRepositories(env),
   );
   const activeKeys = activeTargets.keys;
-  const bayPriorityKeys = [
-    ...(Array.isArray(bay.terminal_buffer) ? bay.terminal_buffer : []),
-    ...(Array.isArray(bay.recently_washed) ? bay.recently_washed : []),
-  ]
-    .map((item) => String(objectValue(item).item_key || ""))
-    .filter(Boolean);
   let recentDurablePublicationEvents = null;
   const exactReviewQueueRequest = withTimeout(
     exactReviewQueueStatusSnapshot(env, {
-      bayPriorityKeys,
       bayActiveKeys: activeKeys,
       bayActiveLegacyKeys: activeTargets.legacyKeys,
     }),
@@ -7764,7 +6974,7 @@ async function attachExactReviewQueueStatus(snapshot, env) {
   if (retainedPriorExactReviewQueue) {
     // The optional queue probe can fail while its direct endpoint and the review
     // pipeline remain healthy. Retain the last internally consistent, public-only
-    // queue document rather than caching a null projection that empties the Bay.
+    // queue document rather than caching a null projection that empties Overview.
     // Live activity is generation-coupled to the failed probe, so never preserve
     // a prior complete activity aggregate as current evidence.
     exactReviewQueue = {
@@ -9663,20 +8873,6 @@ function bayTerminalCandidates(attempts, closedItems, completedReviews = []) {
   );
 }
 
-function emptyBayTerminalState(generatedAt) {
-  return {
-    schema_version: 1,
-    tide_threshold: BAY_TIDE_THRESHOLD,
-    tide_generation: 0,
-    last_tide_at: null,
-    terminal_count: 0,
-    terminal_buffer: [],
-    washed_at: null,
-    recently_washed: [],
-    updated_at: generatedAt,
-  };
-}
-
 function ratePercent(numerator, denominator) {
   return denominator > 0 ? Math.round((numerator / denominator) * 1000) / 10 : 0;
 }
@@ -10769,7 +9965,7 @@ function emptyClosedStats(generatedAt) {
 }
 
 const STATUS_SNAPSHOT_KEY = "snapshot";
-const STATUS_SNAPSHOT_BAY_SCOPE_KEY_PREFIX = "snapshot:bay-scope:v1:";
+const STATUS_SNAPSHOT_BAY_SCOPE_KEY_PREFIX = "snapshot:bay-scope:v2:";
 
 function cachedStatusSnapshotKey(publicBayScope) {
   return `${STATUS_SNAPSHOT_BAY_SCOPE_KEY_PREFIX}${
@@ -10801,10 +9997,7 @@ export async function readCachedSnapshot(env, ttlSeconds, expectedBayScope?: str
     !snapshot ||
     typeof snapshot !== "object" ||
     Array.isArray(snapshot) ||
-    snapshot.schema_version !== 1 ||
-    !snapshot.bay ||
-    typeof snapshot.bay !== "object" ||
-    Array.isArray(snapshot.bay)
+    snapshot.schema_version !== 1
   ) {
     return null;
   }
@@ -11362,20 +10555,6 @@ function html(value) {
     headers: {
       "content-type": "text/html; charset=utf-8",
       "cache-control": "no-store",
-    },
-  });
-}
-
-function demoHtml(value) {
-  return new Response(value, {
-    headers: {
-      "content-type": "text/html; charset=utf-8",
-      "cache-control": "no-store",
-      "content-security-policy":
-        "default-src 'self'; img-src 'self' data:; connect-src 'self' https://*.openclaw.ai; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; object-src 'none'; base-uri 'none'; frame-ancestors https://team.openclaw.ai; form-action 'self'",
-      "permissions-policy": "camera=(), microphone=(), geolocation=(), payment=(), usb=()",
-      "referrer-policy": "no-referrer",
-      "x-content-type-options": "nosniff",
     },
   });
 }

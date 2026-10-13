@@ -6,7 +6,6 @@ import type { DurableStorage } from "./durable-storage.ts";
 
 export const EXACT_REVIEW_LIFECYCLE_PROJECTION_TABLE = "exact_review_lifecycle_projection_v1";
 export const EXACT_REVIEW_ACKNOWLEDGEMENT_ATTEMPT_LEASE_MS = 5 * 60 * 1000;
-export const EXACT_REVIEW_LIFECYCLE_BAY_SAMPLE_LIMIT = 24;
 export const EXACT_REVIEW_LIFECYCLE_BAY_TELEMETRY_RECOVERY_BATCH_LIMIT = 256;
 export const EXACT_REVIEW_LIFECYCLE_AUDIT_READ_LIMIT = 10_000;
 export const EXACT_REVIEW_LIFECYCLE_AUDIT_PAGE_MAX = 100;
@@ -72,28 +71,6 @@ export type DurableLifecycleBayUnknownReason =
   | "mixed"
   | "stale"
   | "over_cap";
-
-export type DurableLifecycleBaySnapshot = {
-  version: 1;
-  source: "exact-review-lifecycle-projection-v1";
-  generated_at: string;
-  freshness: { maximum_age_ms: number };
-  collection:
-    | { state: "complete" }
-    | { state: "unknown"; reason: DurableLifecycleBayUnknownReason };
-  inventory: {
-    lifecycle_records: number;
-    target_revisions: number;
-    unique_targets: number;
-  } | null;
-  lanes: Record<DurableLifecycleBayLane, number> | null;
-  sample: {
-    limit: number;
-    returned: number;
-    omitted: number;
-    cards: DurableLifecycleBayCard[];
-  } | null;
-};
 
 export type DurableLifecycleBayCard = {
   target: { repository: string; number: number; url: string };
@@ -986,166 +963,13 @@ export class ExactReviewLifecycleProjectionStore {
     return Number.isSafeInteger(revision) && revision >= 0 ? revision : 0;
   }
 
-  /**
-   * This reader is intentionally side-effect free. Its caller provisions the
-   * table and indexes through the Durable Object constructor barrier; this
-   * method does not ensure schema, normalize legacy rows, or write an index.
-   */
-  readBaySnapshot(
-    now = Date.now(),
-    allowedRepositories?: ReadonlySet<string>,
-  ): DurableLifecycleBaySnapshot {
-    const unknown = (reason: DurableLifecycleBayUnknownReason): DurableLifecycleBaySnapshot => ({
-      version: 1,
-      source: "exact-review-lifecycle-projection-v1",
-      generated_at: new Date(now).toISOString(),
-      freshness: { maximum_age_ms: 60_000 },
-      collection: { state: "unknown", reason },
-      inventory: null,
-      lanes: null,
-      sample: null,
-    });
-
-    const repositories = allowedRepositories
-      ? [
-          ...new Set([...allowedRepositories].map((repository) => repository.trim().toLowerCase())),
-        ].sort()
-      : null;
-    if (
-      repositories &&
-      (repositories.length > 32 ||
-        repositories.some((repository) => !/^[a-z0-9_.-]+\/[a-z0-9_.-]+$/.test(repository)))
-    ) {
-      return unknown("malformed");
-    }
-
-    try {
-      // Resolve one target's history at a time in the same snapshot as counts.
-      // Only that target and bounded lane samples survive each cursor step;
-      // audit uses the same journey resolver without a second revision rule.
-      return this.storage.transactionSync<DurableLifecycleBaySnapshot>(() => {
-        const inventory = { lifecycle_records: 0, target_revisions: 0, unique_targets: 0 };
-        const lanes = emptyDurableLifecycleBayLanes();
-        const cardsByLane = new Map<DurableLifecycleBayLane, DurableLifecycleBayCard[]>();
-        const laneOrder = Object.keys(lanes) as DurableLifecycleBayLane[];
-        for (const lane of laneOrder) cardsByLane.set(lane, []);
-        const addTarget = (projections: ExactReviewLifecycleProjection[]) => {
-          for (const card of lifecycleJourneyCards(projections, now)) {
-            lanes[card.lane] += 1;
-            const cards = cardsByLane.get(card.lane)!;
-            // Keep first-seen ties without sorting cards outside the bounded sample.
-            if (
-              cards.length === EXACT_REVIEW_LIFECYCLE_BAY_SAMPLE_LIMIT &&
-              compareAuditInventoryRecords(card, cards[cards.length - 1]!) >= 0
-            )
-              continue;
-            cards.push(card);
-            cards.sort(compareAuditInventoryRecords);
-            if (cards.length > EXACT_REVIEW_LIFECYCLE_BAY_SAMPLE_LIMIT) cards.pop();
-          }
-        };
-
-        for (const repository of repositories ?? [null]) {
-          const bindings = repository === null ? [] : [repository];
-          const source = `${EXACT_REVIEW_LIFECYCLE_PROJECTION_TABLE}
-            ${repository === null ? "" : "INDEXED BY exact_review_lifecycle_projection_bay_repository_journey WHERE LOWER(SUBSTR(canonical_target_key, 1, INSTR(canonical_target_key, '#') - 1)) = ?"}`;
-          const counts = Array.from(
-            this.storage.sql.exec(
-              `SELECT COUNT(*) AS lifecycle_records,
-                      COUNT(DISTINCT canonical_target_key || ':' || revision) AS target_revisions,
-                      COUNT(DISTINCT canonical_target_key) AS unique_targets
-                 FROM ${source}`,
-              ...bindings,
-            ),
-          )[0];
-          for (const key of ["lifecycle_records", "target_revisions", "unique_targets"] as const) {
-            const count = Number(counts?.[key]);
-            if (!Number.isSafeInteger(count) || count < 0) return unknown("mixed");
-            inventory[key] += count;
-          }
-
-          let target: ExactReviewLifecycleProjection[] = [];
-          for (const row of this.storage.sql.exec(
-            `SELECT projection_json, canonical_target_key, fence_key, revision
-               FROM ${source}
-              ORDER BY canonical_target_key ASC, fence_key ASC, revision ASC`,
-            ...bindings,
-          )) {
-            let projection: ExactReviewLifecycleProjection;
-            try {
-              projection = projectionFromRow(String(row.projection_json || ""));
-            } catch {
-              return unknown("malformed");
-            }
-            try {
-              if (
-                !validDurableLifecycleBayProjection(projection) ||
-                projection.canonicalTargetKey !== row.canonical_target_key ||
-                projection.fenceKey !== row.fence_key ||
-                projection.revision !== row.revision
-              ) {
-                return unknown("mixed");
-              }
-              if (
-                target.length &&
-                target[0]!.canonicalTargetKey !== projection.canonicalTargetKey
-              ) {
-                addTarget(target);
-                target = [];
-              }
-              target.push(projection);
-            } catch {
-              return unknown("mixed");
-            }
-          }
-          addTarget(target);
-        }
-
-        const sample: DurableLifecycleBayCard[] = [];
-        for (let index = 0; sample.length < EXACT_REVIEW_LIFECYCLE_BAY_SAMPLE_LIMIT; index += 1) {
-          let added = false;
-          for (const lane of laneOrder) {
-            const card = cardsByLane.get(lane)?.[index];
-            if (!card) continue;
-            sample.push(card);
-            added = true;
-            if (sample.length === EXACT_REVIEW_LIFECYCLE_BAY_SAMPLE_LIMIT) break;
-          }
-          if (!added) break;
-        }
-        return {
-          version: 1,
-          source: "exact-review-lifecycle-projection-v1",
-          generated_at: new Date(now).toISOString(),
-          freshness: { maximum_age_ms: 60_000 },
-          collection: { state: "complete" },
-          inventory,
-          lanes,
-          sample: {
-            limit: EXACT_REVIEW_LIFECYCLE_BAY_SAMPLE_LIMIT,
-            returned: sample.length,
-            omitted: Math.max(0, inventory.lifecycle_records - sample.length),
-            cards: sample,
-          },
-        };
-      });
-    } catch (error) {
-      return unknown(
-        error instanceof Error && /malformed JSON/i.test(error.message)
-          ? "malformed"
-          : "unavailable",
-      );
-    }
-  }
-
   createAuditInventorySnapshot(
     pageLimit: number,
     now = Date.now(),
   ): DurableLifecycleAuditInventory {
     if (!validAuditPageLimit(pageLimit)) return this.unknownAuditInventory("malformed", now);
     try {
-      // Unlike the public Bay reader, this authenticated snapshot operation may
-      // initialize its own durable schema so a cold DO has a known empty inventory.
+      // Initialize durable schema so a cold DO has a known empty inventory.
       this.ensureSchemaSync();
       this.ensureAuditSchemaSync();
       return this.storage.transactionSync(() => {
@@ -1624,17 +1448,6 @@ export function commandAcknowledgementState(
   }
   if (projection.terminalDisposition?.kind === "requeue") return "unavailable";
   return projection.terminalDisposition ? "pending" : "unavailable";
-}
-
-function emptyDurableLifecycleBayLanes(): Record<DurableLifecycleBayLane, number> {
-  return {
-    pending: 0,
-    acknowledgement_pending: 0,
-    completed: 0,
-    superseded: 0,
-    requeued: 0,
-    terminal_attention: 0,
-  };
 }
 
 function durableLifecycleBayLane(state: LifecycleState): DurableLifecycleBayLane {

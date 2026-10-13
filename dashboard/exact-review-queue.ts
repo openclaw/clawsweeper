@@ -133,10 +133,7 @@ import {
   type ExactReviewLifecycleProjection,
   type LifecycleTerminalDisposition,
 } from "./exact-review-lifecycle.ts";
-import {
-  ExactReviewLifecycleTelemetryStore,
-  unknownBaySnapshot,
-} from "./exact-review-lifecycle-telemetry.ts";
+import { ExactReviewLifecycleTelemetryStore } from "./exact-review-lifecycle-telemetry.ts";
 import { GithubEgressTelemetryStore } from "./github-egress-telemetry.ts";
 import { resolvePullRequestAcknowledgement } from "./pull-request-acknowledgement.ts";
 import {
@@ -968,7 +965,6 @@ export class ExactReviewQueue {
   private storage;
   private env;
   private ready: Promise<void> | null = null;
-  private lifecycleProjectionReady: Promise<void>;
   private migratedAt = 0;
   private legacyMirrorDisabled = false;
   private legacyMirrorWarningReported = false;
@@ -1004,9 +1000,6 @@ export class ExactReviewQueue {
     changes: number;
     generation: number;
   } | null = null;
-
-  private lifecycleBayCache: { key: string; expiresAt: number; body: string } | null = null;
-  private readonly lifecycleBayComputations = new Map<string, Promise<string>>();
 
   private invalidateReadCaches() {
     this.statsMutationGeneration++;
@@ -1054,29 +1047,24 @@ export class ExactReviewQueue {
       env.STATE_SNAPSHOTS,
     );
     this.githubWebhookReadModelStore = new GithubWebhookReadModelStore(this.storage);
-    // The public lifecycle reader remains side-effect free. Its bounded read
-    // schema and public Bay repository coverage scope are established
-    // in this constructor barrier; full queue initialization and migration
-    // stay deferred until an ordinary request.
+    // Establish lifecycle telemetry schemas and repository coverage before
+    // requests run; full queue initialization and migration remain deferred.
     if (typeof state.blockConcurrencyWhile === "function") {
-      this.lifecycleProjectionReady = Promise.resolve(
-        state.blockConcurrencyWhile(async () => {
-          try {
-            this.lifecycleProjectionStore.ensureSchemaSync();
-            this.lifecycleTelemetryStore.ensureSchemaSync();
-            this.lifecycleTelemetryStore.syncBayRepositoryScope(
-              exactReviewPublicBayRepositories(this.env),
-            );
-          } catch (error) {
-            rethrowQueueFailure(error, "initialize");
-          }
-        }),
-      );
+      state.blockConcurrencyWhile(async () => {
+        try {
+          this.lifecycleProjectionStore.ensureSchemaSync();
+          this.lifecycleTelemetryStore.ensureSchemaSync();
+          this.lifecycleTelemetryStore.syncBayRepositoryScope(
+            exactReviewPublicBayRepositories(this.env),
+          );
+        } catch (error) {
+          rethrowQueueFailure(error, "initialize");
+        }
+      });
     } else {
       this.ready = this.initializeStorage().catch((error) =>
         rethrowQueueFailure(error, "initialize"),
       );
-      this.lifecycleProjectionReady = this.ready;
     }
   }
 
@@ -1101,60 +1089,8 @@ export class ExactReviewQueue {
     hostedTargetMetadataToken: HostedTargetMetadataToken,
   ) {
     const url = new URL(request.url);
-    // This is deliberately the only route that may observe lifecycle rows
-    // before full queue initialization. Its constructor-managed schema barrier
-    // is already complete; the handler itself performs no schema creation,
-    // cleanup, queue reclamation, alarm scheduling, or GitHub work.
-    if (request.method === "GET" && url.pathname === "/lifecycle-bay") {
-      await this.lifecycleProjectionReady.catch(() => undefined);
-      return this.lifecycleBayResponse(url);
-    }
-    if (request.method === "GET" && url.pathname === "/bay-lifecycle-metrics") {
-      await this.lifecycleProjectionReady.catch(() => undefined);
-      const publicRepositories = url.searchParams
-        .getAll("public_repo")
-        .map((value) => value.trim().toLowerCase());
-      const validPublicRepositories =
-        publicRepositories.length <= 32 &&
-        publicRepositories.every((value) => /^[a-z0-9_.-]+\/[a-z0-9_.-]+$/.test(value));
-      const recoveryPending = this.bayTelemetryRecoveryPendingSync();
-      return json({
-        bay_lifecycle_metrics: recoveryPending
-          ? unknownBaySnapshot("unavailable")
-          : !url.searchParams.has("public_repo")
-            ? this.lifecycleTelemetryStore.baySnapshot()
-            : validPublicRepositories
-              ? this.lifecycleTelemetryStore.baySnapshot(Date.now(), new Set(publicRepositories))
-              : this.lifecycleTelemetryStore.baySnapshot(Date.now(), new Set()),
-      });
-    }
     if (request.method === "POST" && url.pathname === "/lifecycle-audit/inventory") {
       return this.readLifecycleAuditInventory(await request.json().catch(() => null));
-    }
-    if (request.method === "POST" && url.pathname === "/telemetry-reconciliation") {
-      await this.lifecycleProjectionReady.catch(() => undefined);
-      const publicRepositories = url.searchParams
-        .getAll("public_repo")
-        .map((value) => value.trim().toLowerCase());
-      const validPublicRepositories =
-        publicRepositories.length <= 32 &&
-        publicRepositories.every((value) => /^[a-z0-9_.-]+\/[a-z0-9_.-]+$/.test(value));
-      const publicRepositoryScope = validPublicRepositories ? new Set(publicRepositories) : null;
-      const recoveryPending = this.bayTelemetryRecoveryPendingSync();
-      return json({
-        exact_review_telemetry_reconciliation:
-          publicRepositoryScope && !recoveryPending
-            ? this.lifecycleTelemetryStore.reconcileBaySnapshot(Date.now(), publicRepositoryScope)
-            : {
-                version: 1,
-                source: "canonical-lifecycle-projection-v1",
-                generated_at: new Date().toISOString(),
-                scope: { repository_count: publicRepositoryScope?.size ?? 0 },
-                collection: { state: "unknown", reason: "unavailable" },
-                window: null,
-                comparison: null,
-              },
-      });
     }
     // Read-only size report (Cloudflare shows only the total stored bytes). It runs before
     // ensureReady and legacy cleanup, which can write, so measuring never changes the store.
@@ -4926,69 +4862,6 @@ export class ExactReviewQueue {
         this.storage.sql.exec("SELECT total_changes() AS changes") as Iterable<{ changes: number }>,
       )[0]?.changes,
     );
-  }
-
-  private computeLifecycleBayBody(repositories?: ReadonlySet<string>) {
-    return JSON.stringify(
-      {
-        durable_lifecycle_bay: this.lifecycleProjectionStore.readBaySnapshot(
-          Date.now(),
-          repositories,
-        ),
-      },
-      null,
-      2,
-    );
-  }
-
-  private async lifecycleBayResponse(url: URL) {
-    return cors(
-      new Response(await this.lifecycleBayBody(url), {
-        headers: {
-          "content-type": "application/json; charset=utf-8",
-          "cache-control": "no-store",
-        },
-      }),
-    );
-  }
-
-  private async lifecycleBayBody(url: URL): Promise<string> {
-    const publicRepositories = url.searchParams
-      .getAll("public_repo")
-      .map((value) => value.trim().toLowerCase());
-    const valid =
-      publicRepositories.length <= 32 &&
-      publicRepositories.every((value) => /^[a-z0-9_.-]+\/[a-z0-9_.-]+$/.test(value));
-    const repositories = !url.searchParams.has("public_repo")
-      ? undefined
-      : new Set(valid ? publicRepositories.sort() : []);
-    const configured = Number(this.env.EXACT_REVIEW_LIFECYCLE_BAY_CACHE_MS ?? 30_000);
-    const ttl = Number.isFinite(configured) && configured >= 0 ? configured : 30_000;
-    if (!ttl) {
-      this.lifecycleBayCache = null;
-      this.lifecycleBayComputations.clear();
-      return this.computeLifecycleBayBody(repositories);
-    }
-    const key = JSON.stringify(repositories ? [...repositories] : null);
-    const cached = this.lifecycleBayCache;
-    if (cached?.key === key && cached.expiresAt > Date.now()) return cached.body;
-    const pending = this.lifecycleBayComputations.get(key);
-    if (pending) return pending;
-
-    // Bay accepts TTL-bounded staleness across writes; stats still invalidate.
-    const startedAt = Date.now();
-    const computation = Promise.resolve().then(() => this.computeLifecycleBayBody(repositories));
-    this.lifecycleBayComputations.set(key, computation);
-    try {
-      const body = await computation;
-      // Disabling the memo resets in-flight work without letting it repopulate.
-      if (this.lifecycleBayComputations.get(key) === computation)
-        this.lifecycleBayCache = { key, expiresAt: startedAt + ttl, body };
-      return body;
-    } finally {
-      if (this.lifecycleBayComputations.get(key) === computation)
-        this.lifecycleBayComputations.delete(key);
-    }
   }
 
   private async statsResponse(url: URL) {

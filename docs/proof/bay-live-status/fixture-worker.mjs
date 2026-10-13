@@ -29,11 +29,7 @@ export default {
       queue.lanes.review.parked = scenario === "malformed" ? 3 : 2;
       queue.lanes.review.parked_reasons = { source_incompatible: 1, unknown: 1 };
       queue.manual_publication = { policy: "record_comment_only", enabled: false };
-      for (const row of [
-        ...queue.bay_projection.items,
-        ...queue.bay_projection.activity.items,
-        ...snapshot.bay.terminal_buffer,
-      ])
+      for (const row of [...queue.bay_projection.items, ...queue.bay_projection.activity.items])
         row.repository = repository;
       const receipt = await persist(JSON.stringify(snapshot));
       if (!receipt.ok) return receipt;
@@ -46,7 +42,7 @@ export default {
       if (!stored.ok) return new Response("Seed the proof fixture first", { status: 503 });
       // Pin the real cache key: schema changes must update this proof deliberately.
       const cacheKey = new Request(
-        new URL("/api/status-cache/v7/" + encodeURIComponent(repository) + "/fresh", url),
+        new URL("/api/status-cache/v8/" + encodeURIComponent(repository) + "/fresh", url),
       );
       await caches.default.put(
         cacheKey,

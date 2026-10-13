@@ -3,8 +3,6 @@
   "publicObserverRoutes": [
     { "path": "/api/health", "method": "ANY" },
     { "path": "/api/exact-review-queue", "method": "GET" },
-    { "path": "/api/durable-lifecycle-bay", "method": "GET" },
-    { "path": "/api/live-activity-bay", "method": "GET" },
     { "path": "/api/recent-durable-publication-events", "method": "GET" },
     { "path": "/api/exact-review-queue/item", "method": "GET" },
     { "path": "/api/exact-review-queue/reviews", "method": "GET" },

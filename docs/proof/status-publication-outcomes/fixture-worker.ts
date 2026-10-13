@@ -112,11 +112,11 @@ export default {
       lifetimeTtl = ttl;
       events = publicationEventsFixture(Date.now() - 1_000);
       for (const bucket of ["fresh", "stale"]) {
-        await caches.default.delete(new Request(`${url.origin}/api/status-cache/v7/_/${bucket}`));
+        await caches.default.delete(new Request(`${url.origin}/api/status-cache/v8/_/${bucket}`));
       }
       const seed = lifetimeSnapshot();
       await bindings.LOCAL_STATUS_STORE.get(store.idFromName("global")).fetch(
-        new Request("https://clawsweeper-status-store/snapshot%3Abay-scope%3Av1%3A_", {
+        new Request("https://clawsweeper-status-store/snapshot%3Abay-scope%3Av2%3A_", {
           method: "PUT",
           body: JSON.stringify({ value: JSON.stringify(seed) }),
         }),
@@ -162,17 +162,17 @@ export default {
         browserSnapshot = snapshot;
       }
       for (const bucket of ["fresh", "stale"]) {
-        await caches.default.delete(new Request(`${url.origin}/api/status-cache/v7/_/${bucket}`));
+        await caches.default.delete(new Request(`${url.origin}/api/status-cache/v8/_/${bucket}`));
       }
       if (mode === "fresh" || mode === "stale") {
         await caches.default.put(
-          new Request(`${url.origin}/api/status-cache/v7/_/${mode}`),
+          new Request(`${url.origin}/api/status-cache/v8/_/${mode}`),
           Response.json(snapshot, { headers: { "cache-control": "public, max-age=3600" } }),
         );
       }
       if (mode === "durable") {
         const response = await store.get(store.idFromName("global")).fetch(
-          new Request("https://clawsweeper-status-store/snapshot%3Abay-scope%3Av1%3A_", {
+          new Request("https://clawsweeper-status-store/snapshot%3Abay-scope%3Av2%3A_", {
             method: "PUT",
             body: JSON.stringify({ value: JSON.stringify(snapshot) }),
           }),
@@ -185,7 +185,7 @@ export default {
       let storedStatus = null;
       if (lifetimeMode) {
         const response = await bindings.LOCAL_STATUS_STORE.get(store.idFromName("global")).fetch(
-          new Request("https://clawsweeper-status-store/snapshot%3Abay-scope%3Av1%3A_"),
+          new Request("https://clawsweeper-status-store/snapshot%3Abay-scope%3Av2%3A_"),
         );
         if (response.ok) {
           const snapshot = await response.json();

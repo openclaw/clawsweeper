@@ -17,7 +17,7 @@ environment settings are authoritative for workflow variables and secrets.
 | Name                              | Responsibility                                                             |
 | --------------------------------- | -------------------------------------------------------------------------- |
 | `CLAWSWEEPER_REPO`                | Repository used by ClawSweeper-specific projections.                       |
-| `PUBLIC_BAY_REPOS`                | Verified-public repositories eligible for minimal Bay/Overview references. |
+| `PUBLIC_BAY_REPOS`                | Verified-public repositories eligible for minimal Overview references.     |
 | `WORKER_DETAIL_RUN_LIMIT`         | Maximum workflow-run detail set fetched for dashboard assembly.            |
 | `WORKER_JOB_FETCH_CONCURRENCY`    | Concurrency for workflow-job detail fetching.                              |
 | `WORKER_JOB_CACHE_TTL_SECONDS`    | Workflow-job cache lifetime.                                               |

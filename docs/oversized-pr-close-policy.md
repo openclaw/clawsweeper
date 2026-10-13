@@ -90,7 +90,7 @@ claims success. After closing, apply updates that same comment to the template
 below without replacing a newer canonical review. Normal freshness and
 durable-comment guards still apply. The existing writer posts the one
 policy comment and closes the PR; `archiveClosed` moves the report to
-`closed/` only after success. Bay's observer projection treats the pending
+`closed/` only after success. The observer projection treats the pending
 proposal and actual close exactly as other reasons; it gains no action controls.
 
 The public comment is:

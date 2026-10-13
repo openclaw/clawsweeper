@@ -29,7 +29,7 @@ cleanup() {
 trap cleanup EXIT
 
 for _ in $(seq 1 90); do
-  if curl --fail --silent "http://127.0.0.1:${port}/bay" >/dev/null 2>&1; then
+  if curl --fail --silent "http://127.0.0.1:${port}/" >/dev/null 2>&1; then
     break
   fi
   if ! kill -0 "$wrangler_pid" >/dev/null 2>&1; then
@@ -39,7 +39,7 @@ for _ in $(seq 1 90); do
   sleep 1
 done
 
-curl --fail --silent --show-error "http://127.0.0.1:${port}/bay" >/dev/null
+curl --fail --silent --show-error "http://127.0.0.1:${port}/" >/dev/null
 
 export PLAYWRIGHT_MODULE="file://${deps_dir}/node_modules/playwright/index.mjs"
 browser_executable="/ms-playwright/chromium-1223/chrome-linux64/chrome"
@@ -60,5 +60,4 @@ node docs/proof/bay-public-reference-blade/run-proof.mjs
 
 test -s "$output_dir/trace.zip"
 test -s "$output_dir/overview-blade.png"
-test -s "$output_dir/bay-blade.png"
 test -s "$output_dir/proof-summary.json"

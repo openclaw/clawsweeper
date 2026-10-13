@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { createHmac } from "node:crypto";
-import { mkdtempSync, readFileSync, rmSync, symlinkSync } from "node:fs";
+import { mkdtempSync, rmSync, symlinkSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -9,11 +9,7 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
-import {
-  containsDirectGitHubApiUrl,
-  isCanonicalLegacyBayRedirect,
-  waitForDashboardDeployment,
-} from "../scripts/dashboard-smoke.mjs";
+import { waitForDashboardDeployment } from "../scripts/dashboard-smoke.mjs";
 
 test("dashboard smoke executes through a symlink and reports unhealthy responses", async () => {
   const root = mkdtempSync(join(tmpdir(), "clawsweeper-smoke-symlink-"));
@@ -55,16 +51,6 @@ function completeStatus() {
     fleet: { active_workflow_runs: 1, active_codex_jobs: 1 },
     workers: [],
     pipeline: [],
-    bay: {
-      tide_threshold: 20,
-      terminal_buffer: [],
-      recently_washed: [],
-      timings: {
-        sample_kind: "completed_review_journeys",
-        source: "durable_exact_review_lifecycles",
-        completion_source: "verified_final_review_receipts",
-      },
-    },
     diagnostics: { errors: [], error_count: 0 },
   };
 }
@@ -112,20 +98,7 @@ async function runStatusSmoke(
       response.writeHead(401);
       response.end();
     } else if (request.url === "/") {
-      response.end('ClawSweeper Live System Overview <div id="worker-dialog"><a href="/bay">');
-    } else if (request.url === "/bay") {
-      response.setHeader("cache-control", "no-store");
-      response.setHeader(
-        "content-security-policy",
-        "connect-src 'self' https://*.openclaw.ai; frame-ancestors https://team.openclaw.ai;",
-      );
-      response.end('OpenClaw Bay · ClawSweeper <script>fetch("/api/status")</script>');
-    } else if (request.url === "/bay-demo?repo=openclaw%2Fopenclaw&q=proof") {
-      response.writeHead(308, { location: `http://${request.headers.host}/bay` });
-      response.end();
-    } else if (request.url?.startsWith("/bay-assets/")) {
-      response.setHeader("content-type", "image/webp");
-      response.end(Buffer.alloc(1_000));
+      response.end('ClawSweeper Live System Overview <div id="worker-dialog">');
     } else {
       response.writeHead(404);
       response.end();
@@ -165,107 +138,36 @@ async function runStatusSmoke(
   }
 }
 
-test("dashboard smoke diagnoses observed status contracts without weakening failures", async (t) => {
-  const unavailable = {
-    ...completeStatus(),
-    generated_at: "2020-01-01T00:00:00.000Z",
-    public_projection_complete: false,
-    freshness: { state: "unavailable", generated_at: null },
-    bay: {},
-    diagnostics: { errors: ["telemetry_unavailable"], error_count: 1 },
-  };
-  const cases = [
-    {
-      name: "unavailable miss",
-      status: unavailable,
-      cache: "miss",
-      projection: "unavailable",
-      freshness: "unavailable",
-      tide: "missing",
-      value: null,
-      count: 1,
-    },
-    {
-      name: "unavailable fresh cache",
-      status: unavailable,
-      cache: "fresh",
-      projection: "unavailable",
-      freshness: "unavailable",
-      tide: "missing",
-      value: null,
-      count: 1,
-    },
-    {
-      name: "complete tide mismatch",
-      status: { ...completeStatus(), bay: { tide_threshold: 19 } },
-      cache: "stale",
-      projection: "complete",
-      freshness: "fresh",
-      tide: "mismatch",
-      value: 19,
-      count: 0,
-    },
-  ];
-  for (const scenario of cases) {
-    await t.test(scenario.name, async () => {
-      const result = await runStatusSmoke(scenario.status, scenario.cache);
-      assert.equal(result.code, 1);
-      assert.equal(result.stdout, "");
-      const [diagnostic, error, trailing] = result.stderr.split("\n");
-      assert.equal(error, "status response is missing the bounded Bay tide contract");
-      assert.equal(trailing, "");
-      assert.ok(diagnostic.startsWith("status diagnostic: "));
-      const summary = JSON.parse(diagnostic.slice("status diagnostic: ".length));
-      assert.ok(Number.isSafeInteger(summary.status_fetch_ms) && summary.status_fetch_ms >= 0);
-      assert.deepEqual(summary, {
-        projection: scenario.projection,
-        freshness: scenario.freshness,
-        cache_state: scenario.cache,
-        tide: scenario.tide,
-        tide_threshold: scenario.value,
-        diagnostic_error_count: scenario.count,
-        status_fetch_ms: summary.status_fetch_ms,
-      });
-      assert.deepEqual(result.requests, ["GET /api/health", "GET /api/status"]);
-      assert.doesNotMatch(result.stderr, /2020|telemetry_unavailable/);
-    });
-  }
-});
-
-test("dashboard smoke never copies arbitrary status fields into failure diagnostics", async (t) => {
+test("dashboard smoke diagnoses observed status contracts without copying private fields", async () => {
   const marker = "private-marker-do-not-print";
-  for (const tide of [marker, null, -1, 1.5, 101, { nested: marker }]) {
-    await t.test(JSON.stringify(tide), async () => {
-      const result = await runStatusSmoke(
-        {
-          ...completeStatus(),
-          public_projection_complete: marker,
-          freshness: { state: marker, generated_at: marker },
-          generated_at: marker,
-          workers: [{ message: marker }],
-          pipeline: [{ message: marker }],
-          bay: { tide_threshold: tide, message: marker },
-          diagnostics: { errors: [marker], error_count: marker },
-          extra: marker,
-        },
-        marker,
-      );
-      assert.equal(result.code, 1);
-      assert.equal(result.stdout, "");
-      assert.doesNotMatch(result.stderr, new RegExp(marker));
-      const summary = JSON.parse(result.stderr.split("\n")[0].slice("status diagnostic: ".length));
-      assert.deepEqual(summary, {
-        projection: "invalid",
-        freshness: "invalid",
-        cache_state: "unknown",
-        tide: "invalid",
-        tide_threshold: null,
-        diagnostic_error_count: null,
-        status_fetch_ms: summary.status_fetch_ms,
-      });
-      assert.deepEqual(result.requests, ["GET /api/health", "GET /api/status"]);
-    });
-  }
+  const result = await runStatusSmoke(
+    {
+      ...completeStatus(),
+      workers: {},
+      public_projection_complete: false,
+      freshness: { state: "unavailable", generated_at: marker },
+      diagnostics: { errors: [marker], error_count: 1 },
+      extra: marker,
+    },
+    "stale",
+  );
+  assert.equal(result.code, 1);
+  assert.equal(result.stdout, "");
+  const [diagnostic, error, trailing] = result.stderr.split("\n");
+  assert.equal(error, "status response is missing worker details");
+  assert.equal(trailing, "");
+  assert.ok(diagnostic.startsWith("status diagnostic: "));
+  const summary = JSON.parse(diagnostic.slice("status diagnostic: ".length));
+  assert.ok(Number.isSafeInteger(summary.status_fetch_ms) && summary.status_fetch_ms >= 0);
+  assert.deepEqual(summary, {
+    projection: "unavailable",
+    freshness: "unavailable",
+    cache_state: "stale",
+    diagnostic_error_count: 1,
+    status_fetch_ms: summary.status_fetch_ms,
+  });
+  assert.deepEqual(result.requests, ["GET /api/health", "GET /api/status"]);
+  assert.doesNotMatch(result.stderr, new RegExp(marker));
 });
 
 test("dashboard smoke diagnoses earlier and later status assertions with their original errors", async () => {
@@ -274,14 +176,6 @@ test("dashboard smoke diagnoses earlier and later status assertions with their o
     [{ ...completeStatus(), fleet: {} }, "status response is missing fleet metrics"],
     [{ ...completeStatus(), workers: {} }, "status response is missing worker details"],
     [{ ...completeStatus(), pipeline: {} }, "status response is missing pipeline rows"],
-    [
-      { ...completeStatus(), bay: { tide_threshold: 20 } },
-      "status response is missing Bay terminal outcome arrays",
-    ],
-    [
-      { ...completeStatus(), bay: { ...completeStatus().bay, timings: {} } },
-      "status response is missing the durable Bay timing provenance",
-    ],
   ] as const) {
     const result = await runStatusSmoke(status);
     assert.equal(result.code, 1);
@@ -298,7 +192,7 @@ test("dashboard smoke diagnostics tolerate malformed roots and nested status fie
     1,
     "private-marker",
     false,
-    { bay: [], freshness: null, diagnostics: false },
+    { freshness: null, diagnostics: false },
   ]) {
     const result = await runStatusSmoke(status);
     assert.equal(result.code, 1);
@@ -310,8 +204,6 @@ test("dashboard smoke diagnostics tolerate malformed roots and nested status fie
       projection: "invalid",
       freshness: "invalid",
       cache_state: "miss",
-      tide: "missing",
-      tide_threshold: null,
       diagnostic_error_count: null,
       status_fetch_ms: summary.status_fetch_ms,
     });
@@ -324,23 +216,21 @@ test("dashboard smoke diagnostics tolerate malformed roots and nested status fie
 });
 
 test("dashboard smoke bounds numeric diagnostics without coercing values", async () => {
-  for (const [tide, count, expectedCount] of [
-    [0, 20, 20],
-    [100, 21, null],
-    [19, -1, null],
-    [19, 1.5, null],
+  for (const [count, expectedCount] of [
+    [20, 20],
+    [21, null],
+    [-1, null],
+    [1.5, null],
   ]) {
     const result = await runStatusSmoke({
       ...completeStatus(),
       freshness: { state: "stale" },
-      bay: { tide_threshold: tide },
+      workers: {},
       diagnostics: { error_count: count },
     });
     assert.equal(result.code, 1);
     const summary = JSON.parse(result.stderr.split("\n")[0].slice("status diagnostic: ".length));
     assert.equal(summary.freshness, "stale");
-    assert.equal(summary.tide, "mismatch");
-    assert.equal(summary.tide_threshold, tide);
     assert.equal(summary.diagnostic_error_count, expectedCount);
   }
 });
@@ -352,7 +242,6 @@ test("dashboard smoke preserves the complete valid CLI route and authorization c
   const output = JSON.parse(result.stdout);
   assert.equal(output.ok, true);
   assert.equal(output.exact_review_reconcile_status, 401);
-  assert.equal(output.bay.public, true);
   assert.deepEqual(output.review_admission, {
     state: "skipped",
     reason: "no_expected_deployment",
@@ -363,12 +252,6 @@ test("dashboard smoke preserves the complete valid CLI route and authorization c
     "GET /api/exact-review-queue",
     "POST /internal/exact-review/reconcile",
     "GET /",
-    "GET /bay",
-    "GET /bay-demo?repo=openclaw%2Fopenclaw&q=proof",
-    "GET /bay-assets/bay-background.webp",
-    "GET /bay-assets/bay-background-portrait.webp",
-    "GET /bay-assets/crustaceans-atlas.webp",
-    "GET /bay-assets/master-sweeper.webp",
   ]);
 });
 
@@ -396,7 +279,6 @@ test("deployment smoke verifies signed admission without enabling disabled manua
       manual_publication_enabled: enabled,
     });
     assert.equal(output.exact_review_reconcile_status, 401);
-    assert.equal(output.bay.public, true);
     assert.doesNotMatch(result.stdout, /private-response-marker|synthetic-deployment-secret/);
   }
 });
@@ -456,71 +338,6 @@ test("deployment smoke rejects invalid scheduled and manual capability contracts
     assert.equal(result.stdout, "");
     assert.doesNotMatch(result.stderr, /private-response-marker|synthetic-deployment-secret/);
   }
-});
-
-test("dashboard smoke detects only the exact GitHub API hostname", () => {
-  assert.equal(containsDirectGitHubApiUrl('fetch("https://api.github.com/repos/openclaw")'), true);
-  assert.equal(containsDirectGitHubApiUrl('fetch("https://API.GITHUB.COM./graphql")'), true);
-  assert.equal(containsDirectGitHubApiUrl('fetch("//api.github.com/repos/openclaw")'), true);
-  assert.equal(
-    containsDirectGitHubApiUrl('fetch("https:\\\/\\\/api.github.com/repos/openclaw")'),
-    true,
-  );
-  assert.equal(
-    containsDirectGitHubApiUrl('fetch("https://api.github.com.evil.example/repos/openclaw")'),
-    false,
-  );
-  assert.equal(
-    containsDirectGitHubApiUrl('fetch("//api.github.com.evil.example/repos/openclaw")'),
-    false,
-  );
-  assert.equal(
-    containsDirectGitHubApiUrl('fetch("https://evil-api.github.com/repos/openclaw")'),
-    false,
-  );
-  assert.equal(containsDirectGitHubApiUrl('fetch("https://github.com/openclaw")'), false);
-});
-
-test("dashboard smoke requires the bounded Bay journey timing contract", () => {
-  const source = readFileSync(new URL("../scripts/dashboard-smoke.mjs", import.meta.url), "utf8");
-
-  assert.match(source, /sample_kind !== "completed_review_journeys"/);
-  assert.match(source, /source !== "durable_exact_review_lifecycles"/);
-  assert.match(source, /completion_source !== "verified_final_review_receipts"/);
-  assert.doesNotMatch(source, /latest_completed_jobs/);
-});
-
-test("dashboard smoke requires Bay's public indexability and overview navigation", () => {
-  const source = readFileSync(new URL("../scripts/dashboard-smoke.mjs", import.meta.url), "utf8");
-
-  assert.match(source, /public Bay route is missing from the overview navigation/);
-  assert.match(source, /x-robots-tag"\) !== null/);
-  assert.match(source, /public Bay route has unexpected robots page metadata/);
-  assert.match(source, /public: true/);
-  assert.match(source, /indexable: true/);
-  assert.doesNotMatch(source, /unlisted: true/);
-});
-
-test("dashboard smoke requires the legacy Bay redirect to strip query data", () => {
-  const baseUrl = "https://clawsweeper.example";
-
-  assert.equal(
-    isCanonicalLegacyBayRedirect(
-      new Response(null, { status: 308, headers: { location: `${baseUrl}/bay` } }),
-      baseUrl,
-    ),
-    true,
-  );
-  assert.equal(
-    isCanonicalLegacyBayRedirect(
-      new Response(null, {
-        status: 308,
-        headers: { location: `${baseUrl}/bay?repo=public%2Frepository&q=proof` },
-      }),
-      baseUrl,
-    ),
-    false,
-  );
 });
 
 test("dashboard smoke waits for the exact deployed revision", async () => {

@@ -454,9 +454,14 @@ test("parked command cancellation invalidates the durable closure plan before a 
     assert.equal((await cancelled.json()).error, "parked_command_target_changed");
     assert.equal((await stateOf(h)).items[key].state, "parked");
     const inventory = await (
-      await h.queue.fetch(new Request("https://queue/lifecycle-bay?public_repo=openclaw%2Fgogcli"))
+      await h.queue.fetch(
+        new Request("https://queue/lifecycle-audit/inventory", {
+          method: "POST",
+          body: JSON.stringify({ page_size: 100 }),
+        }),
+      )
     ).json();
-    const cancelledCard = inventory.durable_lifecycle_bay.sample.cards.find(
+    const cancelledCard = inventory.exact_review_lifecycle_audit_inventory.page.records.find(
       (card) => card.target.number === number && card.revision === tuple.lease_revision,
     );
     assert.ok(cancelledCard);

@@ -18,8 +18,6 @@ branch, not a promise that every method will remain supported.
 | ---------------------------------------- | ------ | ---------------------------------------------------------------------------------------------------- |
 | `/api/health`                            | `ANY`  | Service liveness and deployed source marker from the Worker environment.                             |
 | `/api/exact-review-queue`                | `GET`  | Closed queue aggregates plus a bounded allowlisted public repository/item reference sample.          |
-| `/api/durable-lifecycle-bay`             | `GET`  | Lifecycle inventory, six closed lane counts, and a bounded verified-public item-card sample.         |
-| `/api/live-activity-bay`                 | `GET`  | Five closed live-activity kind counts; fails closed for an incomplete census.                        |
 | `/api/recent-durable-publication-events` | `GET`  | Closed outcome counts in a normalized `6h`, `24h`, or `7d` window.                                   |
 | `/api/exact-review-queue/item`           | `GET`  | Stable aggregate-only unavailable response; does not perform a per-item lookup.                      |
 | `/api/exact-review-queue/reviews`        | `GET`  | Stable empty aggregate-only envelope; ignores identifying query parameters.                          |
@@ -39,8 +37,7 @@ an ingest mutation rather than an observer route.
 
 For egress field interpretation, use
 [GitHub publication egress telemetry](github-egress-telemetry.md). For other
-fields, use [Live dashboard](live-dashboard.md). For the rendered lane model,
-use [OpenClaw Bay](openclaw-bay-demo.md).
+fields, use [Live dashboard](live-dashboard.md).
 
 Public observer routes are projections, not private-store serializers. Internal
 Durable Object state may retain item keys, repository selectors, workflow/job
@@ -68,7 +65,7 @@ separately authenticated operator surface, which does not currently exist.
 GraphQL enrichment failures, missing enrichment auth, and enrichment truncation
 therefore do not make valid counts incomplete. Label/Search source failures and
 Search budget exhaustion still contribute to `error_count` and keep `complete`
-false. OpenClaw Bay does not consume this route and needs no corresponding change.
+false.
 
 `/api/exact-review-queue` retains closed recovery-reason counts for
 `claim_timeout`, `execution_timeout`, `workflow_cancelled`, and
@@ -77,7 +74,7 @@ false. OpenClaw Bay does not consume this route and needs no corresponding chang
 `token_balance` (signed), `burst`, lane `target_rate_per_hour`, and the
 throttle pause timestamps (see [Automation limits](limits.md)). It omits the
 throttle source label, and it omits per-member, per-target, ownership, fingerprint,
-detail, raw timing, and internal-key records. Bay activity is producer-composed
+detail, raw timing, and internal-key records. Activity is producer-composed
 from a complete census so queue/live overlap is counted once; incomplete or
 legacy shapes cannot claim a complete activity aggregate. Its optional bounded
 reference sample contains canonical `repository`, positive `item_number`,
@@ -88,7 +85,7 @@ bounded ordered list of fixed step kinds and closed states. A reference may
 carry a separate timing descriptor containing only `kind=queue` with the
 validated queue creation time or `kind=run` with the validated public action
 start time. These clocks are elapsed queue/run context, not inferred visual
-lane-entry times. The same sample feeds Bay and Overview cards, search,
+lane-entry times. The same sample feeds Overview cards, search,
 overflow lists, and detail blades. Queue references may additionally carry
 `review_failure: { stage, reason }`: closed, allowlisted categories from the
 observed failure of that review identity. This is not raw diagnostic text or a
@@ -100,10 +97,7 @@ classification, independently of their current visual stage; absent evidence
 remains an unspecified live workflow. Queue and terminal references do not
 carry this live-only identity. Titles,
 raw step names, source URLs, queries, opaque keys, failure payloads, credentials,
-tokens, and non-allowlisted repositories are not projected. The lifecycle
-route applies the same allowlist to its bounded 24-card sample and retains only
-the item reference, closed lane/state, current-revision boolean, and canonical
-timestamp.
+tokens, and non-allowlisted repositories are not projected.
 
 The queue response also includes `review_failure_health`, a closed one-hour
 aggregate of failed review attempts. It reports retryable and terminal counts,

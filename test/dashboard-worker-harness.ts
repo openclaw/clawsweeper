@@ -44,7 +44,6 @@ import type {
   HostedTargetAdmission,
 } from "../dashboard/exact-review-queue.ts";
 import { ExactReviewLifecycleTelemetryStore } from "../dashboard/exact-review-lifecycle-telemetry.ts";
-import { LIVE_ACTIVITY_SOURCE_LIMIT, liveActivityBaySnapshot } from "../dashboard/live-activity.ts";
 import { captureCanonicalRecordBaseline } from "../dist/repair/canonical-record-baseline.js";
 import { publishMainWithStateAppend } from "../dist/repair/publish-main.js";
 
@@ -1203,8 +1202,6 @@ export {
   ExactReviewLifecycleProjectionStore,
   lifecycleState,
   ExactReviewLifecycleTelemetryStore,
-  LIVE_ACTIVITY_SOURCE_LIMIT,
-  liveActivityBaySnapshot,
   captureCanonicalRecordBaseline,
   publishMainWithStateAppend,
   seededRandom,

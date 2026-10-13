@@ -615,11 +615,6 @@ test("enqueue visibility rejection happens before queue, receipt, or lifecycle p
     assert.equal(sqlCount(storage, "exact_review_queue_deliveries"), 0);
     assert.equal(sqlCount(storage, "exact_review_queue_items"), 0);
     assert.equal(sqlCount(storage, "exact_review_lifecycle_projection_v1"), 0);
-    assert.equal(
-      new ExactReviewLifecycleProjectionStore(storage).readBaySnapshot().inventory
-        ?.lifecycle_records,
-      0,
-    );
   }
 });
 

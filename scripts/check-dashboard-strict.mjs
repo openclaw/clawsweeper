@@ -14,10 +14,6 @@ const tscPath = path.resolve("node_modules/typescript/bin/tsc");
 export const DASHBOARD_STRICT_BASELINE_FILES = Object.freeze([
   "dashboard/apply-observability.ts",
   "dashboard/bay-activity-kind.ts",
-  "dashboard/bay-inline-proof.ts",
-  "dashboard/bay-journey-interaction.ts",
-  "dashboard/bay-layout.ts",
-  "dashboard/bay-page.ts",
   "dashboard/bay-review-status.ts",
   "dashboard/dashboard-health.ts",
   "dashboard/dashboard-pages.ts",
@@ -45,7 +41,6 @@ export const DASHBOARD_STRICT_BASELINE_FILES = Object.freeze([
   "dashboard/github-etag-cache.ts",
   "dashboard/github-webhook-read-model.ts",
   "dashboard/inline-proof-telemetry.ts",
-  "dashboard/live-activity.ts",
   "dashboard/operational-health.ts",
   "dashboard/public-observability.ts",
   "dashboard/public-timestamp.ts",

@@ -3291,17 +3291,6 @@ test("dashboard reports worker health without treating worker jobs as lifecycle 
     assert.equal(status.health.unresolved_failures, 1);
     assert.equal(status.health.error_rate_percent, 50);
     assert.equal(status.health.recovery_rate_percent, 50);
-    assert.equal(status.bay.tide_threshold, 20);
-    assert.equal(status.bay.tide_generation, 0);
-    assert.equal(status.bay.metrics_state, "unavailable");
-    assert.equal(status.bay.terminal_count, 0);
-    assert.equal(status.bay.timings.lanes, undefined);
-    assert.deepEqual(status.bay.timings.overall, {
-      average_ms: null,
-      median_ms: null,
-      samples: 0,
-    });
-    assert.deepEqual(status.bay.terminal_buffer, []);
     assert.equal(status.health.recent_attempts, undefined);
     assert.equal(status.health.failures.length, 2);
     assert.equal(status.health.failures[0].recovered, false);
@@ -3369,7 +3358,6 @@ test("dashboard cold-cache status bounds a stalled forty-run worker-health refre
     assert.equal(response.status, 200);
     assert.equal(response.headers.get("x-clawsweeper-cache"), "miss");
     assert.equal(status.health.sampled_runs, 0);
-    assert.equal(status.bay.tide_threshold, 20);
     assert.equal(stalledJobRequests, 20, "only one bounded concurrency wave may start");
     assert.ok(elapsedMs < 1_000, `cold status exceeded its bounded test budget: ${elapsedMs}ms`);
   } finally {
@@ -3719,7 +3707,7 @@ test("dashboard stale refresh coalesces concurrent polling requests", async () =
     value: { default: cache },
   });
   await cache.put(
-    new Request("https://clawsweeper.openclaw.ai/api/status-cache/v7/_/stale"),
+    new Request("https://clawsweeper.openclaw.ai/api/status-cache/v8/_/stale"),
     jsonResponse({
       schema_version: 1,
       generated_at: "2026-06-13T18:00:00Z",
@@ -3826,7 +3814,7 @@ test("dashboard stale refresh coalesces concurrent polling requests", async () =
     releaseFetch();
     await Promise.all(waitUntilPromises);
     assert.equal(unfilteredRunRequests, refreshes);
-    assert.equal(queueReads, 3 * refreshes);
+    assert.equal(queueReads, 2 * refreshes);
 
     const refreshed = await worker.fetch(request, env);
     assert.equal(refreshed.headers.get("x-clawsweeper-cache"), "fresh");
@@ -3836,7 +3824,7 @@ test("dashboard stale refresh coalesces concurrent polling requests", async () =
     assert.equal(refreshedStatus.freshness.cache_state, "fresh");
     assert.equal(refreshedStatus.exact_review_queue.pending, 7);
     assert.equal(refreshedStatus.exact_review_queue.handoff_health.status, "healthy");
-    assert.equal(queueReads, 3 * refreshes);
+    assert.equal(queueReads, 2 * refreshes);
   } finally {
     globalThis.fetch = originalFetch;
     Object.defineProperty(globalThis, "caches", { configurable: true, value: originalCaches });
@@ -5682,7 +5670,7 @@ test("stalled final publication cannot suppress a later healthy snapshot", async
   const store = {
     async get(key: string) {
       assert.equal(this, store, "cloned status env must retain the binding object");
-      if (!key.startsWith("snapshot:bay-scope:v1:")) return null;
+      if (!key.startsWith("snapshot:bay-scope:v2:")) return null;
       return JSON.stringify({
         ...publicationStatusFixture(),
         fleet: { active_workflow_runs: 1, active_codex_jobs: count },
@@ -5690,7 +5678,7 @@ test("stalled final publication cannot suppress a later healthy snapshot", async
     },
     async put(key: string, body: string) {
       assert.equal(this, store);
-      assert.equal(key, "snapshot:bay-scope:v1:_");
+      assert.equal(key, "snapshot:bay-scope:v2:_");
       storeWrites += 1;
       if (storeWrites === 1) await gate.promise;
       published = JSON.parse(body);

@@ -54,7 +54,6 @@ function issueTriagePageConfig() {
     ],
     links: [
       { href: "/", label: "Live pipeline" },
-      { href: "/bay", label: "OpenClaw Bay" },
       { href: "/pr-proof-triage", label: "PR proof triage" },
     ],
     metrics: [
@@ -121,7 +120,6 @@ function prProofTriagePageConfig() {
     ],
     links: [
       { href: "/", label: "Live pipeline" },
-      { href: "/bay", label: "OpenClaw Bay" },
       { href: "/triage", label: "Issue triage" },
     ],
     metrics: [
@@ -1692,7 +1690,6 @@ a.pill:hover { color: var(--claw); text-decoration: none; }
   <header>
     <h1>ClawSweeper <span class="live-tag">Live</span></h1>
     <div class="top-links">
-      <a class="top-link" href="/bay">OpenClaw Bay</a>
       <a class="top-link" href="/triage">Issue triage</a>
       <a class="top-link" href="/pr-proof-triage">PR proof triage</a>
       <a class="top-link" href="${escapeHtml(crabfleetUrl)}">Live terminals</a>

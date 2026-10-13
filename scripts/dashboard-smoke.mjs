@@ -72,63 +72,6 @@ async function main() {
   if (!html.includes("ClawSweeper Live")) throw new Error("dashboard HTML title missing");
   if (!html.includes("System Overview")) throw new Error("dashboard system overview missing");
   if (!html.includes('id="worker-dialog"')) throw new Error("dashboard worker drill-down missing");
-  if (!html.includes('href="/bay"')) {
-    throw new Error("public Bay route is missing from the overview navigation");
-  }
-
-  const bayResponse = await fetch(`${baseUrl}/bay`);
-  if (!bayResponse.ok) throw new Error(`${baseUrl}/bay returned ${bayResponse.status}`);
-  if (bayResponse.headers.get("cache-control") !== "no-store") {
-    throw new Error("Bay HTML is not marked no-store");
-  }
-  if (bayResponse.headers.get("x-robots-tag") !== null) {
-    throw new Error("public Bay route has an unexpected robots response policy");
-  }
-  const bayCsp = bayResponse.headers.get("content-security-policy") || "";
-  if (
-    !bayCsp.includes("connect-src 'self' https://*.openclaw.ai") ||
-    !bayCsp.includes("frame-ancestors https://team.openclaw.ai;") ||
-    bayResponse.headers.get("x-frame-options") !== null
-  ) {
-    throw new Error("Bay is missing its expected content security policy");
-  }
-  const bayHtml = await bayResponse.text();
-  if (!bayHtml.includes("OpenClaw Bay · ClawSweeper")) {
-    throw new Error("Bay HTML title missing");
-  }
-  if (bayHtml.includes('<meta name="robots"')) {
-    throw new Error("public Bay route has unexpected robots page metadata");
-  }
-  if (!bayHtml.includes('fetch("/api/status"')) {
-    throw new Error("Bay does not use the shared status endpoint");
-  }
-  if (containsDirectGitHubApiUrl(bayHtml)) {
-    throw new Error("Bay contains a direct browser-to-GitHub request");
-  }
-
-  const legacyBay = await fetch(`${baseUrl}/bay-demo?repo=openclaw%2Fopenclaw&q=proof`, {
-    redirect: "manual",
-  });
-  if (!isCanonicalLegacyBayRedirect(legacyBay, baseUrl)) {
-    throw new Error("legacy Bay route did not strip its query in a permanent redirect");
-  }
-
-  const bayAssets = {};
-  for (const asset of [
-    "bay-background.webp",
-    "bay-background-portrait.webp",
-    "crustaceans-atlas.webp",
-    "master-sweeper.webp",
-  ]) {
-    const response = await fetch(`${baseUrl}/bay-assets/${asset}`);
-    if (!response.ok) throw new Error(`${baseUrl}/bay-assets/${asset} returned ${response.status}`);
-    if (response.headers.get("content-type") !== "image/webp") {
-      throw new Error(`${asset} did not return image/webp`);
-    }
-    const bytes = (await response.arrayBuffer()).byteLength;
-    if (bytes < 1_000) throw new Error(`${asset} is unexpectedly small`);
-    bayAssets[asset] = bytes;
-  }
 
   console.log(
     JSON.stringify(
@@ -146,13 +89,6 @@ async function main() {
         cache_state: cacheState,
         status_fetch_ms: statusFetchMs,
         diagnostic_errors: status.diagnostics?.errors || [],
-        bay: {
-          route: "/bay",
-          public: true,
-          indexable: true,
-          direct_github_requests: 0,
-          assets: bayAssets,
-        },
       },
       null,
       2,
@@ -209,35 +145,16 @@ function validateStatus(status) {
   }
   if (!Array.isArray(status.workers)) throw new Error("status response is missing worker details");
   if (!Array.isArray(status.pipeline)) throw new Error("status response is missing pipeline rows");
-  if (!status.bay || status.bay.tide_threshold !== 20) {
-    throw new Error("status response is missing the bounded Bay tide contract");
-  }
-  if (!Array.isArray(status.bay.terminal_buffer) || !Array.isArray(status.bay.recently_washed)) {
-    throw new Error("status response is missing Bay terminal outcome arrays");
-  }
-  if (
-    status.bay.timings?.sample_kind !== "completed_review_journeys" ||
-    status.bay.timings?.source !== "durable_exact_review_lifecycles" ||
-    status.bay.timings?.completion_source !== "verified_final_review_receipts"
-  ) {
-    throw new Error("status response is missing the durable Bay timing provenance");
-  }
 }
 
 function statusDiagnostic(status, cacheState, statusFetchMs) {
   const complete = status?.public_projection_complete;
   const freshness = status?.freshness?.state;
-  const tide = status?.bay?.tide_threshold;
-  // Match the bounded Bay metric and diagnostic counts; never copy response text.
-  const boundedTide = Number.isSafeInteger(tide) && tide >= 0 && tide <= 100;
   const errorCount = status?.diagnostics?.error_count;
   return {
     projection: complete === true ? "complete" : complete === false ? "unavailable" : "invalid",
     freshness: ["fresh", "stale", "unavailable"].includes(freshness) ? freshness : "invalid",
     cache_state: ["fresh", "stale", "miss"].includes(cacheState) ? cacheState : "unknown",
-    tide:
-      tide === 20 ? "valid" : tide === undefined ? "missing" : boundedTide ? "mismatch" : "invalid",
-    tide_threshold: boundedTide ? tide : null,
     diagnostic_error_count:
       Number.isSafeInteger(errorCount) && errorCount >= 0 && errorCount <= 20 ? errorCount : null,
     status_fetch_ms:
@@ -304,14 +221,6 @@ async function fetchText(url) {
   const response = await fetch(url);
   if (!response.ok) throw new Error(`${url} returned ${response.status}`);
   return response.text();
-}
-
-export function containsDirectGitHubApiUrl(html) {
-  return /(?:^|[^a-z0-9.-])api\.github\.com\.?(?=$|[^a-z0-9.-])/iu.test(html);
-}
-
-export function isCanonicalLegacyBayRedirect(response, baseUrl) {
-  return response.status === 308 && response.headers.get("location") === `${baseUrl}/bay`;
 }
 
 function positiveInteger(value, fallback) {

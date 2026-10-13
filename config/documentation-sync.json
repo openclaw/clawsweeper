@@ -16,14 +16,9 @@
         "EXACT_REVIEW_TARGET_RATE_PER_HOUR": "220",
         "EXACT_REVIEW_TARGET_BURST": "24",
         "EXACT_REVIEW_HOT_INTAKE_RATE_PER_HOUR": "30",
-        "EXACT_REVIEW_SCHEDULED_MAX_CONCURRENT": "32",
-        "EXACT_REVIEW_LIFECYCLE_BAY_CACHE_MS": "30000"
+        "EXACT_REVIEW_SCHEDULED_MAX_CONCURRENT": "32"
       },
       "claims": [
-        {
-          "document": "docs/live-dashboard.md",
-          "text": "`EXACT_REVIEW_LIFECYCLE_BAY_CACHE_MS = \"{{EXACT_REVIEW_LIFECYCLE_BAY_CACHE_MS}}\"`"
-        },
         {
           "document": "README.md",
           "text": "production overrides them with {{EXACT_REVIEW_PUBLICATION_MIN_CONCURRENT}}/{{EXACT_REVIEW_PUBLICATION_BASE_CONCURRENT}}/{{EXACT_REVIEW_PUBLICATION_MAX_CONCURRENT}} and enables direct publication plus up to {{EXACT_REVIEW_PUBLICATION_BATCH_MAX_CONCURRENT}} concurrent size-{{EXACT_REVIEW_PUBLICATION_BATCH_SIZE}}"

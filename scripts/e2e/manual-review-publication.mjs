@@ -1698,21 +1698,7 @@ exec '${process.execPath}' '${transport}' curl "\${args[@]}"
   assert.ok(
     coalescedJourney.every((entry) => entry.current_revision && entry.state === "completed"),
   );
-  const bayResponse = await fetch(`${baseUrl}/queue/api/durable-lifecycle-bay`);
-  assert.equal(bayResponse.status, 200);
-  const bay = (await bayResponse.json()).durable_lifecycle_bay;
-  assert.equal(bay.collection.state, "complete", JSON.stringify(bay));
-  for (const number of [71, 72, 76]) {
-    assert.ok(
-      bay.sample.cards.some(
-        (card) =>
-          card.item_number === number && card.current_revision && card.state === "completed",
-      ),
-      JSON.stringify(bay),
-    );
-  }
-  assert.doesNotMatch(JSON.stringify(bay), /producerLineage|fenceKey|claimGeneration|leaseOwner/);
-  observations.push({ scenario: "actual lifecycle and Bay projection", lifecycle, bay });
+  observations.push({ scenario: "actual lifecycle audit", lifecycle });
 
   await admit(75);
   const lostArtifact = await reviewedRecord(75);
@@ -2065,14 +2051,11 @@ exec '${process.execPath}' '${transport}' curl "\${args[@]}"
         requestReviewCounts: Object.fromEntries(requestReviewCounts),
         repeatedRequestRevision: repeated?.current.lease_revision,
         completedCurrentJourneys: observations
-          .find((entry) => entry.scenario === "actual lifecycle and Bay projection")
+          .find((entry) => entry.scenario === "actual lifecycle audit")
           ?.lifecycle.exact_review_lifecycle_audit_inventory.page.records.filter(
             (entry) => entry.current_revision && entry.state === "completed",
           )
           .map(({ target, revision }) => ({ number: target.number, revision })),
-        publicBayCompletedCards: observations
-          .find((entry) => entry.scenario === "actual lifecycle and Bay projection")
-          ?.bay.sample.cards.filter((card) => card.current_revision && card.state === "completed"),
         coalescedManualBranch: coalesced && {
           targetBranch: coalesced.targetBranch,
           sourceUpdatedAt: coalesced.sourceUpdatedAt,
