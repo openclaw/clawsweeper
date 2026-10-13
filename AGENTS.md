@@ -35,6 +35,11 @@ not split reports into issue/PR subtrees.
 ## Operating Model
 
 - Review lane is proposal-only. It never closes GitHub items.
+- Maintainer-authored items and items labeled `maintainer` require an explicit
+  `@clawsweeper review` request unless an existing automation opt-in label is set.
+  Finish the work and validation first; request review only when it is needed.
+  Agents must not request reviews automatically or repeat a queued/running request.
+  An explicit review request does not enable automatic review of later changes.
 - Apply lane mutates GitHub by syncing the durable Codex review comment and then
   closing only unchanged, high-confidence proposals.
 - Repository-specific rules live in `src/repository-profiles.ts`; ClawHub apply

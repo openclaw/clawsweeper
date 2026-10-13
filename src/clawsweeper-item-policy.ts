@@ -15,8 +15,15 @@ import type { ApplyKind, CloseReason, Item } from "./clawsweeper-types.js";
 import { asRecord } from "./value-coerce.js";
 import { isOlderThanDays, isOlderThanMs } from "./iso-time.js";
 import { isSecurityLabel } from "./repair/security-signals.js";
-
-const MAINTAINER_AUTHOR_ASSOCIATIONS = new Set(["OWNER", "MEMBER", "COLLABORATOR"]);
+import {
+  isMaintainerAuthorAssociation,
+  normalizeAuthorAssociation,
+  requiresMaintainerReviewRequest,
+} from "./maintainer-review-policy.js";
+export {
+  isMaintainerAuthorAssociation,
+  normalizeAuthorAssociation,
+} from "./maintainer-review-policy.js";
 
 // Owners and members can legitimately file coordinated issue batches; outside
 // collaborators still remain subject to bulk-filer policy.
@@ -37,14 +44,6 @@ export function labelNames(value: unknown): string[] {
       return typeof name === "string" ? name : null;
     })
     .filter((name): name is string => Boolean(name));
-}
-
-export function normalizeAuthorAssociation(value: unknown): string {
-  return typeof value === "string" && value.trim() ? value.trim().toUpperCase() : "NONE";
-}
-
-export function isMaintainerAuthorAssociation(value: unknown): boolean {
-  return MAINTAINER_AUTHOR_ASSOCIATIONS.has(normalizeAuthorAssociation(value));
 }
 
 export function isAutomationReportAuthor(author: string | undefined): boolean {
@@ -144,7 +143,10 @@ export function applyProtectedLabelReason(labels: readonly string[], closeReason
 }
 
 export function shouldPlanItem(item: Pick<Item, "authorAssociation" | "labels">): boolean {
-  return protectedLabels(item.labels).every((label) => label === "maintainer");
+  return (
+    !requiresMaintainerReviewRequest(item) &&
+    protectedLabels(item.labels).every((label) => label === "maintainer")
+  );
 }
 
 export function applyKindArg(value: string | boolean | string[] | undefined): ApplyKind {

@@ -4,6 +4,11 @@ import { classifyScheduledReviewNoop } from "../scheduled-review-noop.js";
 import { ghRetryKind } from "../github-retry.js";
 import { ghErrorText, ghTextWithRetry } from "./github-cli.js";
 import { issueSourceRevisionSha256 } from "./issue-source-guard.js";
+import {
+  isExplicitReviewRequest,
+  requiresMaintainerReviewRequest,
+} from "../maintainer-review-policy.js";
+import { verifiedMaintainerAuthorAssociation } from "../clawsweeper-item-policy.js";
 
 type Output = (values: Record<string, string>) => void;
 
@@ -104,6 +109,45 @@ export function exactReviewAdmission(output: Output): void {
   const open = issue.state === "open";
   const locked = issue.locked === true;
   const pullRequest = Boolean(issue.pull_request);
+  const author = (issue.user as { login?: unknown } | undefined)?.login;
+  if (
+    open &&
+    !locked &&
+    issue.author_association === "CONTRIBUTOR" &&
+    typeof author === "string" &&
+    /^[A-Za-z0-9-]+$/.test(author) &&
+    !isExplicitReviewRequest(decision)
+  ) {
+    try {
+      const permission = JSON.parse(read(`collaborators/${author}/permission`));
+      issue.author_association = verifiedMaintainerAuthorAssociation({
+        authorAssociation: issue.author_association,
+        repositoryPermission: permission.permission,
+      });
+    } catch {
+      // Installation tokens may redact membership. Keep the public association
+      // when repository permission metadata is unavailable.
+      console.error(
+        "::notice::Repository permission metadata unavailable; using the item's author association.",
+      );
+    }
+  }
+  if (
+    open &&
+    !locked &&
+    requiresMaintainerReviewRequest(issue) &&
+    !isExplicitReviewRequest(decision)
+  ) {
+    output({
+      ...terminal,
+      scheduled_semantic_noop: "true",
+      item_kind: pullRequest ? "pull_request" : "issue",
+    });
+    console.error(
+      `::notice::Skipping automatic review of ${repo}#${number}: maintainer review requires an explicit request.`,
+    );
+    return;
+  }
   const hasCommandContext = Boolean(decision.commandStatusMarker || decision.statusCommentId);
   let issueComments: unknown[] | undefined;
   if (open && !locked && !pullRequest && (hasCommandContext || decision.expectedSourceRevision)) {

@@ -1,5 +1,9 @@
 import { sha256 } from "./content-hash.js";
 import {
+  isExplicitReviewRequest,
+  requiresMaintainerReviewRequest,
+} from "./maintainer-review-policy.js";
+import {
   createOversizedPrFreshnessGuard,
   parseOversizedPrSourceSnapshot,
 } from "./clawsweeper-oversized-pr-freshness.js";
@@ -1026,6 +1030,12 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
         continue;
       }
       const { item, state } = liveItem;
+      if (state === "open" && exactEventPublication && process.env.EXACT_REVIEW_DECISION &&
+        requiresMaintainerReviewRequest(item) &&
+        !isExplicitReviewRequest(JSON.parse(process.env.EXACT_REVIEW_DECISION))) {
+        if (markApplySkipped("skipped_maintainer_authored", "maintainer review requires an explicit request", true)) break;
+        continue;
+      }
       if (
         state === "open" &&
         decision === "close" &&

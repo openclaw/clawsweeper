@@ -1,0 +1,1 @@
+- Make maintainer issues and PRs opt-in for ClawSweeper review, with one reminder to request a review only when needed after completing work and validation.

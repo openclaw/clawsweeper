@@ -2358,15 +2358,15 @@ test("audit classifies missing open records by actionable reason", () => {
   });
 
   assert.equal(expectedQueueLag.counts.missingOpen, 3);
-  assert.equal(expectedQueueLag.counts.missingEligibleOpen, 1);
-  assert.equal(expectedQueueLag.counts.missingMaintainerOpen, 0);
+  assert.equal(expectedQueueLag.counts.missingEligibleOpen, 0);
+  assert.equal(expectedQueueLag.counts.missingMaintainerOpen, 1);
   assert.equal(expectedQueueLag.counts.missingProtectedOpen, 1);
   assert.equal(expectedQueueLag.counts.missingRecentOpen, 1);
   assert.deepEqual(
     expectedQueueLag.findings.missingOpen.map((finding) => finding.missingReason),
-    ["eligible", "protected_label", "recently_created"],
+    ["maintainer_authored", "protected_label", "recently_created"],
   );
-  assert.equal(auditHasStrictFailures(expectedQueueLag), true);
+  assert.equal(auditHasStrictFailures(expectedQueueLag), false);
 });
 
 test("audit health section summarizes strict status and actionable findings", () => {

@@ -1,4 +1,5 @@
 import { publicTimestamp } from "./public-timestamp.ts";
+import { requiresMaintainerReviewRequest } from "../src/maintainer-review-policy.ts";
 import {
   publicBayActivityKind,
   normalizePublicBayActivityKind,
@@ -3899,6 +3900,25 @@ async function githubWebhook(request, env, ctx) {
   }
 
   if ("type" in decision && decision.type === "item") {
+    const source = objectValue(payload.pull_request || payload.issue);
+    if (requiresMaintainerReviewRequest(source)) {
+      if (
+        ["opened", "ready_for_review"].includes(decision.sourceAction) &&
+        source.draft !== true &&
+        source.locked !== true &&
+        source.state !== "closed"
+      ) {
+        await acknowledgePullRequestReceipt({ env, ctx, decision, maintainerOptIn: true }).catch(
+          () => {
+            console.warn("ClawSweeper maintainer opt-in reminder unavailable");
+          },
+        );
+      }
+      return json(
+        { ok: true, accepted: false, reason: "maintainer review requires an explicit request" },
+        202,
+      );
+    }
     const deliveryId = deliveryHeaders.deliveryId || "";
     let itemDecision: ExactReviewDecision & { installationId: number } = decision;
     itemDecision = await withItemContentRevision({
@@ -4630,7 +4650,7 @@ async function bindLivePullRequestHeadAuthority({
   const liveHeadSha = String(objectValue(objectValue(pull).head).sha || "")
     .trim()
     .toLowerCase();
-  return liveHeadSha === sourceHeadSha
+  return !requiresMaintainerReviewRequest(objectValue(pull)) && liveHeadSha === sourceHeadSha
     ? { ...decision, sourceHeadVerified: true, sourceAuthoritySeq: Number(sourceAuthoritySeq) }
     : null;
 }
@@ -7011,8 +7031,8 @@ async function enqueueExactReview({
   return body;
 }
 
-async function acknowledgePullRequestReceipt({ env, ctx, decision }) {
-  if (decision.itemKind !== "pull_request") return null;
+async function acknowledgePullRequestReceipt({ env, ctx, decision, maintainerOptIn = false }) {
+  if (decision.itemKind !== "pull_request" && !maintainerOptIn) return null;
   const credentials = githubAppCredentials(env);
   if (!credentials || !Number.isInteger(decision.installationId) || decision.installationId <= 0) {
     return null;
@@ -7040,6 +7060,7 @@ async function acknowledgePullRequestReceipt({ env, ctx, decision }) {
     targetRepo: decision.targetRepo,
     itemNumber: decision.itemNumber,
     sourceAction: decision.sourceAction,
+    maintainerOptIn,
   });
   if (acknowledgement.outcome === "lookup_limit") {
     console.warn("ClawSweeper pull request acknowledgement lookup limit reached");
@@ -7062,6 +7083,7 @@ async function acknowledgePullRequestReceipt({ env, ctx, decision }) {
           targetRepo: decision.targetRepo,
           itemNumber: decision.itemNumber,
           sourceAction: decision.sourceAction,
+          maintainerOptIn,
         });
       }
     };

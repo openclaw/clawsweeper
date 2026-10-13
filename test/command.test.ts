@@ -293,7 +293,8 @@ test("CSW-088 scheduled hot planning suppresses #117063, observes an in-flight u
   const ghPath = join(binDir, "gh.js");
   const number = 117063;
   const headSha = "0a3959fe0123456789abcdef0123456789abcdef";
-  const reviewedAt = new Date().toISOString();
+  // Whole-second reviews are deliberately treated as concurrent source activity.
+  const reviewedAt = new Date(Math.floor(Date.now() / 1_000) * 1_000 - 1).toISOString();
   const pull = {
     number,
     title: "CSW-088 scheduled hot review fixture",

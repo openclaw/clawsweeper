@@ -1,6 +1,7 @@
 import { stableJson } from "../src/stable-json.ts";
 import { CLAWSWEEPER_APP_BOT_LOGINS } from "../src/clawsweeper-bot-identity.ts";
 import { exactReviewSourceRevisionMaterial } from "./exact-review-source-revision.ts";
+import { requiresMaintainerReviewRequest } from "../src/maintainer-review-policy.ts";
 import {
   normalizePublicReviewFailure,
   reviewFailureExplanation,
@@ -14350,6 +14351,13 @@ export class ExactReviewQueue {
         continue;
       }
       try {
+        const liveHeadSha = await exactReviewSourceAuthorityLiveHead(this.env, current);
+        this.recordAuthorityGithubOutcomeSync(current.attempts > 0, "success", Date.now());
+        const reservedHeadSha = String(current.decision.sourceHeadSha || "").toLowerCase();
+        if (liveHeadSha !== reservedHeadSha) {
+          this.completeSourceAuthorityReservationSync(current, "mismatch");
+          continue;
+        }
         if (current.reviewAcknowledgementPending) {
           const acknowledgement = await exactReviewSourceAuthorityAcknowledgement(
             this.env,
@@ -14364,13 +14372,6 @@ export class ExactReviewQueue {
           );
           if (!recovered) continue;
           current = recovered;
-        }
-        const liveHeadSha = await exactReviewSourceAuthorityLiveHead(this.env, current);
-        this.recordAuthorityGithubOutcomeSync(current.attempts > 0, "success", Date.now());
-        const reservedHeadSha = String(current.decision.sourceHeadSha || "").toLowerCase();
-        if (liveHeadSha !== reservedHeadSha) {
-          this.completeSourceAuthorityReservationSync(current, "mismatch");
-          continue;
         }
         const verified = exactReviewSourceAuthorityReservationFrom(
           this.storage.kv.get(exactReviewSourceAuthorityReservationKey(current.deliveryId)),
@@ -17867,6 +17868,7 @@ async function exactReviewSourceAuthorityLiveHead(
     body: undefined,
     errorLabel: "live pull request head",
   });
+  if (requiresMaintainerReviewRequest(objectValue(pull))) return "";
   return String(objectValue(objectValue(pull).head).sha || "")
     .trim()
     .toLowerCase();

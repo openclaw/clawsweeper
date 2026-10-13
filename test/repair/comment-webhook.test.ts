@@ -561,6 +561,36 @@ test("comment webhook rejects non-author read-only re-review commands", () => {
   assert.match(result.reason, /not allowed/);
 });
 
+test("automatic item webhooks require maintainer opt-in without changing contributor admission", () => {
+  for (const event of ["issues", "pull_request"]) {
+    for (const [association, labels, accepted] of [
+      ["MEMBER", [], false],
+      ["COLLABORATOR", [], false],
+      ["OWNER", [], false],
+      ["CONTRIBUTOR", [{ name: "Maintainer" }], false],
+      ["MEMBER", [{ name: "clawsweeper:autofix" }], true],
+      ["MEMBER", [{ name: "clawsweeper:automerge" }], true],
+      ["CONTRIBUTOR", [], true],
+    ] as const) {
+      const result = classifyItemWebhook({
+        event,
+        payload: {
+          action: "opened",
+          repository: { full_name: "openclaw/fs-safe", default_branch: "main", private: false },
+          installation: { id: 123 },
+          sender: { login: "maintainer" },
+          [event === "issues" ? "issue" : "pull_request"]: {
+            number: 42,
+            author_association: association,
+            labels: [...labels],
+          },
+        },
+      });
+      assert.equal(result.accepted, accepted, `${event}: ${association} ${JSON.stringify(labels)}`);
+    }
+  }
+});
+
 test("webhook accepts eligible issue events for public OpenClaw repositories", () => {
   const result = classifyItemWebhook({
     event: "issues",

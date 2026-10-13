@@ -1,4 +1,5 @@
 import { CLAWSWEEPER_BOT_LOGINS } from "../src/clawsweeper-bot-identity.ts";
+import { MAINTAINER_REVIEW_REMINDER } from "../src/maintainer-review-policy.ts";
 
 type GitHubJsonRequest = (options: {
   path: string;
@@ -12,6 +13,7 @@ type PullRequestAcknowledgementOptions = {
   targetRepo: string;
   itemNumber: number;
   sourceAction: string;
+  maintainerOptIn?: boolean;
 };
 
 const MAX_PULL_REQUEST_ACKNOWLEDGEMENT_PAGES = 10;
@@ -31,6 +33,7 @@ export async function resolvePullRequestAcknowledgement(
   options: PullRequestAcknowledgementOptions,
 ): Promise<PullRequestAcknowledgementResolution> {
   const createsReceipt = ["opened", "ready_for_review"].includes(options.sourceAction);
+  if (options.maintainerOptIn && !createsReceipt) return { outcome: "resolved", commentId: null };
   try {
     return {
       outcome: "resolved",
@@ -48,11 +51,14 @@ export async function resolvePullRequestAcknowledgement(
 }
 
 export async function settlePullRequestAcknowledgement(options: PullRequestAcknowledgementOptions) {
-  await prunePullRequestAcknowledgements(options, 24 * 60 * 60 * 1000);
+  await prunePullRequestAcknowledgements(
+    options,
+    options.maintainerOptIn ? null : 24 * 60 * 60 * 1000,
+  );
 }
 
 async function createPullRequestAcknowledgementOnce(options: PullRequestAcknowledgementOptions) {
-  const key = `${options.targetRepo.toLowerCase()}:${options.itemNumber}:clawsweeper-pr-ack`;
+  const key = `${options.targetRepo.toLowerCase()}:${options.itemNumber}:${acknowledgementPrefix(options)}`;
   const pending = inFlightPullRequestAcknowledgements.get(key);
   if (pending) return pending;
   const next = createPullRequestAcknowledgement(options).finally(() => {
@@ -65,12 +71,16 @@ async function createPullRequestAcknowledgementOnce(options: PullRequestAcknowle
 async function createPullRequestAcknowledgement(options: PullRequestAcknowledgementOptions) {
   const existingId = await prunePullRequestAcknowledgements(options);
   if (existingId) return existingId;
-  const marker = pullRequestAcknowledgementMarker(options.itemNumber, options.sourceAction);
+  const marker = `<!-- ${acknowledgementPrefix(options)}${options.sourceAction} item=${options.itemNumber} -->`;
   const payload = objectValue(
     await options.githubJson({
       path: `/repos/${options.targetRepo}/issues/${options.itemNumber}/comments`,
       method: "POST",
-      body: { body: renderPullRequestAcknowledgement(marker) },
+      body: {
+        body: options.maintainerOptIn
+          ? `${marker}\n${MAINTAINER_REVIEW_REMINDER}`
+          : renderPullRequestAcknowledgement(marker),
+      },
       errorLabel: "ClawSweeper ack comment",
     }),
   );
@@ -129,7 +139,7 @@ async function listPullRequestAcknowledgements(
           .trim()
           .toLowerCase();
         return (
-          body.includes("clawsweeper-pr-ack:") &&
+          body.includes(acknowledgementPrefix(options)) &&
           body.includes(suffix) &&
           CLAWSWEEPER_BOT_LOGINS.has(login)
         );
@@ -170,8 +180,8 @@ function isStatusBearingAcknowledgement(comment: Record<string, unknown>) {
   );
 }
 
-function pullRequestAcknowledgementMarker(itemNumber: number, sourceAction: string) {
-  return `<!-- clawsweeper-pr-ack:${sourceAction} item=${itemNumber} -->`;
+function acknowledgementPrefix(options: PullRequestAcknowledgementOptions) {
+  return options.maintainerOptIn ? "clawsweeper-maintainer-opt-in:" : "clawsweeper-pr-ack:";
 }
 
 function renderPullRequestAcknowledgement(marker: string) {

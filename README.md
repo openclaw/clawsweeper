@@ -188,6 +188,14 @@ are intentionally stricter: they review issues and PRs, but apply may close only
 PRs where current `main` already implements the proposed change with
 source-backed evidence.
 
+Maintainer-authored issues and PRs, and items labeled `maintainer`, are excluded
+from automatic reviews and scheduled sweeps. One opening/ready reminder explains
+how to opt in. Only request `@clawsweeper review` when a review is needed and the
+work and validation are complete; agents must not request reviews automatically
+or repeat requests while one is queued or running. A one-off request does not
+opt future pushes into reviews. Existing `clawsweeper:autofix` and
+`clawsweeper:automerge` labels retain their explicit opt-in behavior.
+
 ## Maintainer Commands
 
 The canonical comment commands are:

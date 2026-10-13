@@ -21,6 +21,125 @@ import {
 
 const publicHostedTargetProbe = async () => "public" as const;
 
+test("maintainer item events stay out of the queue and share one opt-in reminder", async (t) => {
+  const { privateKey } = generateKeyPairSync("rsa", {
+    modulusLength: 2048,
+    privateKeyEncoding: { type: "pkcs8", format: "pem" },
+    publicKeyEncoding: { type: "spki", format: "pem" },
+  });
+  const comments = new Map<string, Array<{ id: number; body: string; user: { login: string } }>>();
+  const queued: unknown[] = [];
+  const pending: Promise<unknown>[] = [];
+  let posts = 0;
+  t.mock.method(globalThis, "fetch", async (input, init) => {
+    const url = new URL(String(input));
+    if (url.pathname === "/app/installations/123/access_tokens")
+      return jsonResponse({ token: "fixture-token" });
+    assert.match(url.pathname, /^\/repos\/openclaw\/fs-safe\/issues\/\d+\/comments$/);
+    const existing = comments.get(url.pathname) ?? [];
+    if (init?.method === "POST") {
+      posts += 1;
+      const comment = {
+        id: posts,
+        body: JSON.parse(String(init.body)).body,
+        user: { login: "clawsweeper[bot]" },
+      };
+      comments.set(url.pathname, [...existing, comment]);
+      return jsonResponse(comment);
+    }
+    assert.equal(
+      url.searchParams.has("since"),
+      false,
+      "reminders must search the complete history",
+    );
+    return jsonResponse(existing);
+  });
+  const env = {
+    CLAWSWEEPER_WEBHOOK_SECRET: "test-secret",
+    CLAWSWEEPER_APP_CLIENT_ID: "Iv23test",
+    CLAWSWEEPER_APP_PRIVATE_KEY: privateKey,
+    CLAWSWEEPER_FAST_ACK_SETTLE_DELAYS_MS: "0",
+    hostedPublicTargetProbe: publicHostedTargetProbe,
+    EXACT_REVIEW_QUEUE: new MemoryDurableNamespace({
+      async fetch(request: Request) {
+        if (new URL(request.url).pathname === "/enqueue") queued.push(await request.json());
+        return jsonResponse({ ok: true, queued: true });
+      },
+    }),
+  };
+  const send = (
+    event: string,
+    action: string,
+    item: Record<string, unknown>,
+    sender = "contributor",
+  ) =>
+    worker.fetch(
+      signedGithubWebhookRequest({
+        event,
+        secret: "test-secret",
+        payload: {
+          action,
+          repository: {
+            full_name: "openclaw/fs-safe",
+            default_branch: "main",
+            private: false,
+            archived: false,
+            fork: false,
+            has_issues: true,
+          },
+          installation: { id: 123 },
+          sender: { login: sender },
+          [event === "issues" ? "issue" : "pull_request"]: item,
+        },
+      }),
+      env,
+      { waitUntil: (promise: Promise<unknown>) => pending.push(promise) },
+    );
+  const issue = {
+    number: 42,
+    state: "open",
+    locked: false,
+    author_association: "MEMBER",
+    labels: [],
+  };
+  for (const response of await Promise.all([
+    send("issues", "opened", issue),
+    send("issues", "opened", issue),
+  ])) {
+    assert.deepEqual(await response.json(), {
+      ok: true,
+      accepted: false,
+      reason: "maintainer review requires an explicit request",
+    });
+  }
+  await send("issues", "edited", issue);
+  const pull = { ...issue, number: 43, draft: true, head: { sha: "a".repeat(40) } };
+  await send("pull_request", "opened", pull);
+  assert.equal(posts, 1, "draft PRs do not get a reminder");
+  await send("pull_request", "ready_for_review", { ...pull, draft: false });
+  await send("pull_request", "synchronize", { ...pull, draft: false });
+  await send("pull_request", "ready_for_review", { ...pull, draft: false });
+  await Promise.all(pending);
+  assert.equal(posts, 2);
+  assert.deepEqual(queued, []);
+  for (const [url, entries] of comments) {
+    assert.equal(entries.length, 1, url);
+    assert.match(entries[0]!.body, /If a review is required, finish the work and validation first/);
+    assert.match(entries[0]!.body, /`@clawsweeper review`/);
+    assert.match(entries[0]!.body, /agents should not request reviews automatically/);
+    assert.doesNotMatch(entries[0]!.body, /clawsweeper-pr-ack:|review in progress/);
+  }
+  // The item's author determines eligibility, even when a maintainer triggers it.
+  await send(
+    "issues",
+    "opened",
+    { ...issue, number: 44, author_association: "CONTRIBUTOR" },
+    "maintainer",
+  );
+  assert.equal(queued.length, 1);
+  assert.equal(posts, 2);
+});
+
 function sqlRowCount(storage: MemoryDurableStorage, table: string) {
   return Number(Array.from(storage.sql.exec(`SELECT COUNT(*) AS count FROM ${table}`))[0]?.count);
 }

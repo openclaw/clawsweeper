@@ -1086,6 +1086,35 @@ test("source authority synchronize recovery never creates a missing receipt", as
   });
 });
 
+test("source authority recovery drops maintainer reservations before acknowledgement", async () => {
+  const sourceHeadSha = "b".repeat(40);
+  let commentReads = 0;
+  const harness = createExactReviewAdmissionHarness(() => jsonResponse({ state: "open" }), {
+    hostedPublicTargetProbe: async () => "public",
+    targetAccessToken: () => jsonResponse({ token: "target-token" }),
+    targetPull: () =>
+      jsonResponse({ author_association: "MEMBER", labels: [], head: { sha: sourceHeadSha } }),
+    targetComments: () => {
+      commentReads += 1;
+      return jsonResponse([]);
+    },
+  });
+  await withExactReviewAdmissionHarness(harness, async () => {
+    const reservationKey = await reserveDueSourceAuthority(harness, {
+      deliveryId: "source-maintainer-skip",
+      itemNumber: 8_082,
+      sourceHeadSha,
+    });
+    await harness.queue.alarm();
+    const state = (await harness.storage.get("exact-review-queue")) as {
+      items: Record<string, unknown>;
+    };
+    assert.equal(state.items["openclaw/fs-safe#8082"], undefined);
+    assert.equal(harness.storage.rawHas(reservationKey), false);
+    assert.equal(commentReads, 0);
+  });
+});
+
 test("source authority acknowledgement errors remain deferred without enqueue", async () => {
   const sourceHeadSha = "b".repeat(40);
   let pullReads = 0;
@@ -1123,7 +1152,7 @@ test("source authority acknowledgement errors remain deferred without enqueue", 
     assert.equal(reservation.attempts, EXACT_REVIEW_SOURCE_AUTHORITY_RETRY_LIMIT);
     assert.ok(reservation.nextAttemptAt > 0);
     assert.equal(reservation.reviewAcknowledgementPending, true);
-    assert.equal(pullReads, 0);
+    assert.equal(pullReads, 1, "maintainer eligibility is checked before acknowledgement recovery");
     const state = (await harness.storage.get("exact-review-queue")) as {
       items: Record<string, unknown>;
     };
@@ -1306,7 +1335,7 @@ test("source authority acknowledgement recovery preserves concurrent receipt and
         };
         assert.equal(reservation.decision.sourceHeadSha, "e".repeat(40));
         assert.equal(reservation.reviewAcknowledgementPending, true);
-        assert.equal(pullReads, 0);
+        assert.equal(pullReads, 1);
         harness.storage.rawPut(reservationKey, { ...reservation, nextAttemptAt: 0 });
         await harness.queue.alarm();
         const afterStaleHead = (await harness.storage.get("exact-review-queue")) as {
@@ -1314,7 +1343,7 @@ test("source authority acknowledgement recovery preserves concurrent receipt and
         };
         assert.equal(afterStaleHead.items[`openclaw/fs-safe#${itemNumber}`], undefined);
         assert.equal(harness.storage.rawHas(reservationKey), false);
-        assert.equal(pullReads, 1);
+        assert.equal(pullReads, 2);
         assert.equal(sqlCount(harness.storage, "exact_review_queue_deliveries"), 1);
       }
     });

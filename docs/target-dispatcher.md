@@ -45,6 +45,13 @@ opened issues get stronger duplicate and adjacent-report context. Set repository
 variable `CLAWSWEEPER_RELATED_GITHUB_SEARCH=0` on `openclaw/clawsweeper` to turn
 that enrichment off without editing the target dispatcher.
 
+Maintainer-authored and `maintainer`-labeled items skip automatic review dispatch
+and the ordinary review acknowledgement. Existing `clawsweeper:autofix` and
+`clawsweeper:automerge` labels preserve their explicit opt-in. Maintainers get one
+reminder when an issue opens or a PR is ready: request `@clawsweeper review` only
+when needed, after the work and validation are complete. Edits and pushes do not
+repeat the reminder. Reminder comments cannot trigger the command router.
+
 Before enabling the workflow:
 
 1. Install the `clawsweeper` GitHub App on the target repository.
@@ -110,6 +117,7 @@ jobs:
       id-token: write
     if: ${{ needs.hosted-target-admission.outputs.outcome == 'public' && !(endsWith(github.actor, '[bot]') && (github.event.action == 'labeled' || github.event.action == 'unlabeled')) }}
     env:
+      MAINTAINER_REVIEW_REQUIRED: ${{ (contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.pull_request.author_association || github.event.issue.author_association) || (contains(github.event.pull_request.labels.*.name, 'maintainer') || contains(github.event.issue.labels.*.name, 'maintainer'))) && !(contains(github.event.pull_request.labels.*.name, 'clawsweeper:autofix') || contains(github.event.issue.labels.*.name, 'clawsweeper:autofix')) && !(contains(github.event.pull_request.labels.*.name, 'clawsweeper:automerge') || contains(github.event.issue.labels.*.name, 'clawsweeper:automerge')) }}
       HAS_CLAWSWEEPER_APP_PRIVATE_KEY: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY != '' }}
       CLAWSWEEPER_APP_CLIENT_ID: Iv23liOECG0slfuhz093
       SUPERSEDES_IN_PROGRESS: ${{ (github.event.action == 'edited' || github.event.action == 'synchronize' || github.event.action == 'ready_for_review') && 'true' || 'false' }}
@@ -136,6 +144,10 @@ jobs:
           COMMENT_BODY: ${{ github.event.comment.body }}
         run: |
           set -euo pipefail
+          if [[ "$COMMENT_BODY" == *"<!-- clawsweeper-maintainer-opt-in:"* ]]; then
+            echo "is_command=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           if grep -Eiq '(^|[[:space:]])@(clawsweeper|openclaw-clawsweeper)\b(\[bot\])?|(^|[[:space:]])/(clawsweeper|review|re-review|rerun([[:space:]]+|-)?review|status|explain|fix|build|implement|create([[:space:]]+|-)?pr|fix([[:space:]]+|-)?issue|autofix|auto([[:space:]]+|-)?fix|automerge|auto([[:space:]]+|-)?merge|approve|stop|autoclose)\b' <<< "$COMMENT_BODY"; then
             echo "is_command=true" >> "$GITHUB_OUTPUT"
           else
@@ -164,8 +176,14 @@ jobs:
         id: pr_ack_token
         if: >-
           ${{
-            github.event_name == 'pull_request_target' &&
-            env.HAS_CLAWSWEEPER_APP_PRIVATE_KEY == 'true'
+            env.HAS_CLAWSWEEPER_APP_PRIVATE_KEY == 'true' &&
+            (
+              (github.event_name == 'pull_request_target' && env.MAINTAINER_REVIEW_REQUIRED != 'true') ||
+              (env.MAINTAINER_REVIEW_REQUIRED == 'true' &&
+                (github.event_name == 'issues' || github.event_name == 'pull_request_target') &&
+                (github.event.action == 'opened' || github.event.action == 'ready_for_review') &&
+                github.event.pull_request.draft != true)
+            )
           }}
         continue-on-error: true
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
@@ -176,10 +194,52 @@ jobs:
           repositories: ${{ github.event.repository.name }}
           permission-issues: write
 
+      - name: Explain maintainer review opt-in
+        if: >-
+          ${{
+            env.MAINTAINER_REVIEW_REQUIRED == 'true' &&
+            (github.event_name == 'issues' || github.event_name == 'pull_request_target') &&
+            (github.event.action == 'opened' || github.event.action == 'ready_for_review') &&
+            github.event.pull_request.draft != true &&
+            github.event.issue.locked != true && github.event.pull_request.locked != true &&
+            env.HAS_CLAWSWEEPER_APP_PRIVATE_KEY == 'true'
+          }}
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ steps.pr_ack_token.outputs.token }}
+          TARGET_REPO: ${{ github.repository }}
+          ITEM_NUMBER: ${{ github.event.issue.number || github.event.pull_request.number }}
+          SOURCE_ACTION: ${{ github.event.action }}
+        run: |
+          set -euo pipefail
+          if [ -z "$GH_TOKEN" ]; then exit 0; fi
+          for ((page = 1; page <= 10; page++)); do
+            comments="$(gh api "repos/$TARGET_REPO/issues/$ITEM_NUMBER/comments?per_page=100&page=$page")"
+            jq -e 'type == "array"' <<< "$comments" >/dev/null
+            if jq -e --arg suffix " item=$ITEM_NUMBER -->" '
+              any(.[];
+                ((.user.login // "" | ascii_downcase) as $login |
+                  ["clawsweeper", "clawsweeper[bot]", "openclaw-clawsweeper[bot]"] | index($login)) and
+                ((.body // "") | contains("clawsweeper-maintainer-opt-in:")) and
+                ((.body // "") | contains($suffix)))' <<< "$comments" >/dev/null; then
+              exit 0
+            fi
+            if [ "$(jq length <<< "$comments")" -lt 100 ]; then
+              reminder="$(printf '%s\n' \
+                "<!-- clawsweeper-maintainer-opt-in:$SOURCE_ACTION item=$ITEM_NUMBER -->" \
+                'ClawSweeper reviews are opt-in for maintainers. If a review is required, finish the work and validation first, then comment `@clawsweeper review`. Please avoid repeated requests while a review is queued or running; agents should not request reviews automatically.')"
+              payload="$(jq -nc --arg body "$reminder" '{body:$body}')"
+              gh api "repos/$TARGET_REPO/issues/$ITEM_NUMBER/comments" --method POST --input - <<< "$payload"
+              exit 0
+            fi
+          done
+          echo "::notice::Maintainer reminder lookup reached its page limit; leaving comments untouched."
+
       - name: Acknowledge received pull request
         id: pr_acknowledgement
         if: >-
           ${{
+            env.MAINTAINER_REVIEW_REQUIRED != 'true' &&
             github.event_name == 'pull_request_target' &&
             env.HAS_CLAWSWEEPER_APP_PRIVATE_KEY == 'true'
           }}
@@ -265,7 +325,7 @@ jobs:
           echo "status_comment_id=$status_comment_id" >> "$GITHUB_OUTPUT"
 
       - name: Dispatch exact ClawSweeper review
-        if: ${{ github.event_name != 'issue_comment' }}
+        if: ${{ env.MAINTAINER_REVIEW_REQUIRED != 'true' && (github.event_name != 'issue_comment') }}
         env:
           GH_TOKEN: ${{ steps.token.outputs.token }}
           TARGET_REPO: ${{ github.repository }}

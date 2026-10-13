@@ -244,6 +244,15 @@ bodies are not logged. Exhaustion remains a failed workflow. This improves
 completeness of the existing review-observability data used by OpenClaw Bay;
 its schema, observer-only UI, and mutation boundaries do not change.
 
+Maintainer-authored and `maintainer`-labeled items require an explicit review
+request. Automatic intake, scheduled selection, claimed reviews, and hosted
+publication apply this policy; a source-drift retry does not inherit the
+original command's opt-in. Existing autofix/automerge labels remain opt-ins.
+The target dispatcher and direct webhook share a single reminder identity per
+item, posted only when opened or ready for review. Edits, pushes, and sweeps do
+not post reminders. Request reviews only when needed, after completing work and
+validation; agents must not automatically repeat requests.
+
 ## Workflow
 
 Explicit `workflow_dispatch` `item_number`/`item_numbers` selections in

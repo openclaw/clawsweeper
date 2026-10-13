@@ -181,6 +181,66 @@ function scenarios() {
       expected: { proceed: "true", scheduled_semantic_noop: "false" },
       ...extra,
     });
+    const requestedReview = {
+      sourceAction: "re_review",
+      sourceCommentVerified: true,
+      sourceCommentId: 123,
+      sourceCommentUpdatedAt: "2026-10-13T00:00:00Z",
+      commandBodyDigest: "a".repeat(64),
+      commandOrigin: "hosted_webhook",
+      targetBranch: "main",
+    };
+    const maintainer = { ...issue, author_association: "MEMBER" };
+    const skipped = { proceed: "false", scheduled_semantic_noop: "true" };
+    cases.push(
+      make("maintainer-event", "edited", {
+        issue: maintainer,
+        expected: skipped,
+        skipSourceRead: true,
+      }),
+      make("maintainer-scheduled", "scheduled_normal_backfill", {
+        issue: maintainer,
+        expected: skipped,
+        skipSourceRead: true,
+      }),
+      make("maintainer-label", "edited", {
+        issue: { ...issue, labels: [{ name: "Maintainer" }] },
+        expected: skipped,
+        skipSourceRead: true,
+      }),
+      make("maintainer-requested", "re_review", { issue: maintainer, decision: requestedReview }),
+      make("maintainer-stale-request", "source_drift_requeue", {
+        issue: maintainer,
+        decision: { ...requestedReview, sourceAction: "source_drift_requeue" },
+        expected: skipped,
+        skipSourceRead: true,
+      }),
+      make("maintainer-marker-only", "re_review", {
+        issue: maintainer,
+        decision: {
+          sourceAction: "re_review",
+          commandStatusMarker: "old-status",
+          targetBranch: "main",
+        },
+        expected: skipped,
+        skipSourceRead: true,
+      }),
+      make("maintainer-opt-in", "edited", {
+        issue: { ...maintainer, labels: [{ name: "clawsweeper:autofix" }] },
+      }),
+      make("maintainer-redacted", "edited", {
+        issue: { ...issue, author_association: "CONTRIBUTOR", user: { login: "maintainer" } },
+        repositoryPermission: "admin",
+        expected: skipped,
+        skipSourceRead: true,
+      }),
+      make("maintainer-oversized", "opened", {
+        issue: maintainer,
+        additions: 50001,
+        expected: skipped,
+        skipSourceRead: true,
+      }),
+    );
     for (const [name, action] of [
       ["normal", "scheduled_normal_backfill"],
       ["event", "edited"],
@@ -444,6 +504,7 @@ function ghAdapter(args) {
     [base]: "repo",
     [`${base}/issues/${config.number}`]: "issue",
     [`${base}/pulls/${config.number}`]: "head",
+    [`${base}/collaborators/maintainer/permission`]: "permission",
     [`${base}/issues/${config.number}/comments?per_page=100`]: "comments",
   };
   const kind = endpoints[endpoint];
@@ -514,23 +575,25 @@ function ghAdapter(args) {
       return;
     }
     body =
-      kind === "repo"
-        ? { default_branch: "trunk" }
-        : kind === "issue"
-          ? config.issue
-          : kind === "head"
-            ? {
-                ...config.issue,
-                ...(config.missingAdditions ? {} : { additions: config.additions ?? 1 }),
-                deletions: 0,
-                changed_files: 1,
-                head: { sha: config.head },
-              }
-            : Array.isArray(config.comments)
-              ? Array.from({ length: pages }, (_, i) =>
-                  config.comments.slice(i * 100, (i + 1) * 100),
-                )
-              : [config.comments];
+      kind === "permission"
+        ? { permission: config.repositoryPermission }
+        : kind === "repo"
+          ? { default_branch: "trunk" }
+          : kind === "issue"
+            ? config.issue
+            : kind === "head"
+              ? {
+                  ...config.issue,
+                  ...(config.missingAdditions ? {} : { additions: config.additions ?? 1 }),
+                  deletions: 0,
+                  changed_files: 1,
+                  head: { sha: config.head },
+                }
+              : Array.isArray(config.comments)
+                ? Array.from({ length: pages }, (_, i) =>
+                    config.comments.slice(i * 100, (i + 1) * 100),
+                  )
+                : [config.comments];
   }
   process.stdout.write(
     query === ".head.sha"
@@ -756,6 +819,7 @@ export function runReadScopeProof({
         ["comments", "classifier"].includes(event.kind),
       );
       const issueSourceRead =
+        !scenario.skipSourceRead &&
         after.outputs.item_kind === "issue" &&
         scenario.issue.state === "open" &&
         !scenario.issue.locked &&
@@ -784,8 +848,8 @@ export function runReadScopeProof({
       ) {
         assert.equal(
           after.trace.filter((event) => event.kind === "head").length,
-          1,
-          `${scenario.name}: PR size admission reads metadata exactly once`,
+          scenario.skipSourceRead ? 0 : 1,
+          `${scenario.name}: PR metadata is read only after maintainer eligibility`,
         );
       }
       if (before && scenario.baselineExpected) {

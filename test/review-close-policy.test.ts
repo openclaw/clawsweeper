@@ -184,14 +184,14 @@ test("unsponsored feature issue proposals emit source-bound trusted close marker
   assert.doesNotMatch(markers, /needs-human/);
 });
 
-test("protected labels are normalized and only maintainer-only items stay plannable", () => {
+test("protected labels and maintainer authorship exclude unsolicited planning", () => {
   assert.deepEqual(protectedLabels(["Security", "bug", "maintainer", "SECURITY"]), [
     "security",
     "maintainer",
   ]);
   assert.equal(isProtectedItem(item({ labels: ["release-blocker"] })), true);
-  assert.equal(shouldPlanItem(item({ authorAssociation: "MEMBER" })), true);
-  assert.equal(shouldPlanItem(item({ labels: ["maintainer"] })), true);
+  assert.equal(shouldPlanItem(item({ authorAssociation: "MEMBER" })), false);
+  assert.equal(shouldPlanItem(item({ labels: ["maintainer"] })), false);
   assert.equal(shouldPlanItem(item({ labels: ["maintainer", "security"] })), false);
   assert.equal(shouldPlanItem(item({ labels: ["beta-blocker"] })), false);
   assert.equal(shouldPlanItem(item({ labels: ["bug"] })), true);

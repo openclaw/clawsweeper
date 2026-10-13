@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { shouldPlanItem } from "../dist/clawsweeper-item-policy.js";
 import { createReviewPlanning } from "../dist/clawsweeper-review-planning.js";
 
 const repo = "openclaw/openclaw";
@@ -21,7 +22,18 @@ function listItem(number: number, locked: boolean, pullRequest = false) {
 }
 
 function planning(listings: string[][]) {
-  const page = [listItem(56312, true), listItem(56313, false), listItem(119055, true, true)];
+  const page = [
+    listItem(56312, true),
+    listItem(56313, false),
+    listItem(119055, true, true),
+    { ...listItem(56314, false), author_association: "MEMBER" },
+    { ...listItem(56315, false, true), labels: [" Maintainer "] },
+    {
+      ...listItem(56316, false, true),
+      author_association: "OWNER",
+      labels: ["clawsweeper:automerge"],
+    },
+  ];
   return createReviewPlanning({
     maxPlanShardCount: 8,
     targetRepo: () => repo,
@@ -37,7 +49,7 @@ function planning(listings: string[][]) {
     githubCount: () => null,
     itemSourceRevisionSha256: () => "",
     normalizeAuthorAssociation: (value: unknown) => String(value ?? "NONE"),
-    shouldPlanItem: () => true,
+    shouldPlanItem,
     failedReviewRetryStatePath: () => "",
     readFailedReviewRetryState: () => null,
     failedReviewRetryMarkdownWithState: (markdown: string) => markdown,
@@ -46,7 +58,7 @@ function planning(listings: string[][]) {
   } as never);
 }
 
-test("scheduled planning never offers open-but-locked conversations", () => {
+test("scheduled planning excludes locked and maintainer items unless opted in", () => {
   for (const hotIntake of [false, true]) {
     const listings: string[][] = [];
     const plan = planning(listings).planCandidates({
@@ -59,11 +71,13 @@ test("scheduled planning never offers open-but-locked conversations", () => {
       minimumActiveShards: 38,
     });
     assert.deepEqual(
-      plan.candidates.map((item: { number: number }) => item.number),
-      [56313],
+      plan.candidates
+        .map((item: { number: number }) => item.number)
+        .sort((a: number, b: number) => a - b),
+      [56313, 56316],
       `${hotIntake ? "hot" : "normal"} planning skips locked items`,
     );
-    assert.equal(plan.dueBacklog, 1);
+    assert.equal(plan.dueBacklog, 2);
     assert.ok(listings.length > 0);
     // The skip depends on the open-item projection carrying the lock bit.
     for (const args of listings) assert.match(String(args.at(-1)), /,locked\}$/);
@@ -78,7 +92,9 @@ test("scheduled planning never offers open-but-locked conversations", () => {
     reviewPolicy: "policy",
   });
   assert.deepEqual(
-    selected.candidates.map((item: { number: number }) => item.number),
-    [56313],
+    selected.candidates
+      .map((item: { number: number }) => item.number)
+      .sort((a: number, b: number) => a - b),
+    [56313, 56316],
   );
 });

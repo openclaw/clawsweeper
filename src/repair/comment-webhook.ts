@@ -34,6 +34,7 @@ import {
   isCommandAckStatusComment,
 } from "./command-ack-convergence.js";
 import { commandAckMarker } from "./markers.js";
+import { requiresMaintainerReviewRequest } from "../maintainer-review-policy.js";
 
 const DEFAULT_PORT = 8787;
 export const WEBHOOK_MAX_BODY_BYTES = 2 * 1024 * 1024;
@@ -369,6 +370,9 @@ export function classifyItemWebhook({ event, payload }: { event: string; payload
       return { accepted: false, reason: "unsupported action" };
     }
     const issue = asJsonObject(payload.issue);
+    if (requiresMaintainerReviewRequest(issue)) {
+      return { accepted: false, reason: "maintainer review requires an explicit request" };
+    }
     const itemNumber = Number(issue.number);
     if (!Number.isInteger(itemNumber) || itemNumber <= 0) {
       return { accepted: false, reason: "missing issue number" };
@@ -397,6 +401,9 @@ export function classifyItemWebhook({ event, payload }: { event: string; payload
       return { accepted: false, reason: "unsupported action" };
     }
     const pull = asJsonObject(payload.pull_request);
+    if (requiresMaintainerReviewRequest(pull)) {
+      return { accepted: false, reason: "maintainer review requires an explicit request" };
+    }
     const itemNumber = Number(pull.number);
     if (!Number.isInteger(itemNumber) || itemNumber <= 0) {
       return { accepted: false, reason: "missing pull request number" };
