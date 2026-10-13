@@ -18,6 +18,10 @@ crons = ["*/5 * * * *"]
 binding = "STATE_SNAPSHOTS"
 bucket_name = "clawsweeper-state-snapshots"
 
+[[analytics_engine_datasets]]
+binding = "REVIEW_USAGE"
+dataset = "clawsweeper_review_usage"
+
 [[durable_objects.bindings]]
 name = "STATUS_STORE"
 class_name = "StatusStore"

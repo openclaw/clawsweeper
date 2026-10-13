@@ -195,6 +195,149 @@ Local preview: in `dashboard-site/`, install dependencies, run
 `dashboard-site/scripts/build-data.ts` with `GITHUB_TOKEN`, `--records <records dir>` and
 `--state <state dir>`, then start the Astro dev server.
 
+## Review usage metrics
+
+`POST /internal/exact-review/review-usage` accepts schema-1 review-attempt
+summaries signed over the exact request body with `CLAWSWEEPER_WEBHOOK_SECRET`
+in `x-clawsweeper-exact-review-signature` (`sha256=<hex HMAC>`). The Worker
+validates the payload and writes one Analytics Engine point directly to
+`REVIEW_USAGE`, dataset `clawsweeper_review_usage`; it does not access either
+Durable Object. A valid write returns 202, malformed or invalid data returns
+400, invalid signatures return 401, and an absent dataset binding returns 503
+with `review_usage_unconfigured`. No model name, prompt, response, or raw error
+is stored. This private operator dataset adds no public API or browser
+integration.
+
+The payload contains `schema: 1`, `target_repo`, positive `item_number`,
+`item_kind` (`issue` or `pull_request`), decimal-string `run_id` from
+`GITHUB_RUN_ID`, positive numeric `run_attempt`, optional `trigger_lane`,
+`service_tier`, and `reasoning_effort`, `outcome` (`ok`, `failed`, or `timeout`),
+nonnegative integer `duration_ms`, and `usage`. Repository owner/name are
+bounded to 39/100 ASCII characters, optional labels to 64 ASCII letters,
+digits, underscores, dots, or hyphens, and run IDs to 32 digits. Unknown fields,
+including model names, are rejected. `usage` is either null or a complete
+object containing the nonnegative safe integer token counts listed below.
+Unavailable or incomplete usage remains null rather than being inferred.
+A measured zero remains distinct from missing usage.
+
+The source-to-ingest flow has two separate steps:
+
+1. The review runtime synchronously appends token-only review-attempt records to the JSONL
+   file named by `CLAWSWEEPER_REVIEW_USAGE_PATH`, configured in the workflow as
+   `${{ runner.temp }}/clawsweeper-review-usage.jsonl`. Records contain the bounded
+   metadata above and the five token counters below (or null usage), never turn
+   counts, prompts, responses, or model names. The append completes before a
+   failure or timeout can exit the review process. The review step receives neither
+   `CLAWSWEEPER_WEBHOOK_SECRET` nor `EXACT_REVIEW_QUEUE_URL`.
+2. Immediately after review, the trusted `Submit review usage` workflow step runs
+   with `if: always()` and `continue-on-error: true`. If the file exists,
+   `node dist/review-usage-submit.js "$CLAWSWEEPER_REVIEW_USAGE_PATH"` validates
+   its records and submits signed requests using `EXACT_REVIEW_QUEUE_URL` and
+   `CLAWSWEEPER_WEBHOOK_SECRET`, which are scoped to this trusted step. Collection
+   and submission are best effort and do not change the review result.
+
+Review output handling is unchanged. Usage comes from
+`$CODEX_HOME/sessions/YYYY/MM/DD/rollout-*.jsonl`: the last
+`event_msg` / `token_count` event's `info.total_token_usage` is cumulative per
+session, so only that total is used and separate session files are summed.
+Files must have modification times within the captured review-process start/end
+window. The hosted setup isolates `CODEX_HOME` by run ID/attempt, and each review
+process reviews items sequentially. The reader scans backward in 64 KiB chunks
+to find each session's latest token count. Missing homes/files, unreadable
+or changing files, malformed usage, and files larger than 64 MiB produce null
+usage rather than a partial sum. Ephemeral app-server proof sessions may not
+persist rollout files; those reviews report unavailable usage.
+
+`REVIEW_USAGE_LAYOUT` in [`dashboard/review-usage.ts`](../dashboard/review-usage.ts)
+is the canonical source of the ordered tuples used by the writer. Analytics
+Engine positions are one-based within each tuple:
+
+| Columns             | Ordered values                                                                                                                                                                                        |
+| ------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `index1`            | `target_repo`                                                                                                                                                                                         |
+| `blob1`–`blob8`     | `target_repo`, `item_kind`, `outcome`, `trigger_lane` (default empty), `service_tier` (default `standard`, including empty input), `reasoning_effort` (default empty), `run_id`, string `item_number` |
+| `double1`–`double7` | `input_tokens`, `cached_input_tokens`, `cache_write_input_tokens`, `output_tokens`, `reasoning_output_tokens`, `duration_ms`, `usage_present` (1 when available, otherwise 0)                         |
+
+Null usage writes zero into the five token columns but preserves duration and
+sets `double7` to 0. `input_tokens` includes cached reads and cache writes;
+`output_tokens` includes reasoning output. Neither subset should be counted
+twice. Run attempt is validated in the payload but is not a separate dataset
+column. Points represent review attempts, not unique issues or PRs; the route
+does not deduplicate repeated submissions.
+
+### Querying daily tokens and estimated cost
+
+Use the [Analytics Engine SQL API](https://developers.cloudflare.com/analytics/analytics-engine/sql-api/)
+with an operator token permitted to read account analytics:
+
+```bash
+curl "https://api.cloudflare.com/client/v4/accounts/91b59577e757131d68d55a471fe32aca/analytics_engine/sql" \
+  -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+  --data-binary @review-usage.sql
+```
+
+Save this query as `review-usage.sql`. Multiply sums by `_sample_interval` to
+account for Analytics Engine sampling. The estimate uses $2/M uncached input,
+$0.10/M cached input, $2.50/M cache writes, and $10/M output tokens:
+
+```sql
+SELECT
+  toStartOfInterval(timestamp, INTERVAL '1' DAY) AS day,
+  blob1 AS repo,
+  sum(_sample_interval) AS reviews,
+  sum(double7 * _sample_interval) AS reviews_with_usage,
+  sum(double1 * _sample_interval) AS input_tokens,
+  sum(double2 * _sample_interval) AS cached_input_tokens,
+  sum(double3 * _sample_interval) AS cache_write_input_tokens,
+  sum(double4 * _sample_interval) AS output_tokens,
+  sum(double5 * _sample_interval) AS reasoning_output_tokens,
+  sum(((double1 - double2 - double3) * 2
+       + double2 * 0.10 + double3 * 2.50 + double4 * 10)
+      * _sample_interval) / 1000000 AS estimated_usd
+FROM clawsweeper_review_usage
+WHERE timestamp >= NOW() - INTERVAL '30' DAY
+GROUP BY day, repo
+ORDER BY day, repo
+```
+
+This is a reference-price estimate, not an invoice: service-tier adjustments
+and the **greater-than-272K per-request surcharge are not included**. These are
+review sums, so they cannot determine whether an individual request crossed
+that threshold. Missing usage contributes no token cost; compare
+`reviews_with_usage` against `reviews` before interpreting totals.
+
+### Per-review duration and average tokens by lane/repository
+
+This includes failed and timed-out attempts in duration percentiles. Average
+tokens use only attempts with available usage. Groups without any available
+usage are omitted. The blank lane means no lane was provided, not an inferred
+workflow lane.
+
+```sql
+SELECT
+  blob1 AS repo,
+  blob4 AS lane,
+  sum(_sample_interval) AS reviews,
+  sum(double7 * _sample_interval) AS reviews_with_usage,
+  quantileExactWeighted(0.50)(double6, _sample_interval) AS duration_p50_ms,
+  quantileExactWeighted(0.95)(double6, _sample_interval) AS duration_p95_ms,
+  sum(double1 * _sample_interval)
+    / sum(double7 * _sample_interval) AS avg_input_tokens,
+  sum(double4 * _sample_interval)
+    / sum(double7 * _sample_interval) AS avg_output_tokens,
+  sum((double1 + double4) * _sample_interval)
+    / sum(double7 * _sample_interval) AS avg_total_tokens
+FROM clawsweeper_review_usage
+WHERE timestamp >= NOW() - INTERVAL '30' DAY
+GROUP BY repo, lane
+HAVING sum(double7 * _sample_interval) > 0
+ORDER BY repo, lane
+```
+
+See the [sampling guidance](https://developers.cloudflare.com/analytics/analytics-engine/sampling/)
+and [weighted aggregate functions](https://developers.cloudflare.com/analytics/analytics-engine/sql-reference/aggregate-functions/)
+for interpreting approximate aggregates.
+
 ## What It Shows
 
 - bounded active-work counts and closed workflow, worker, status, stage, and

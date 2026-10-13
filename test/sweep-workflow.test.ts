@@ -2552,7 +2552,12 @@ test("exact-review lease competition skips only known conflicts and gates both o
     assert.match(claimRun, /returned an invalid success payload/, jobName);
     assert.doesNotMatch(claimRun, /curl --fail/, jobName);
 
-    for (const step of steps.slice(1).filter((candidate) => candidate.if !== "${{ false }}")) {
+    // Telemetry submits a local file independently; it does not own a queue lease.
+    for (const step of steps
+      .slice(1)
+      .filter(
+        (candidate) => candidate.if !== "${{ false }}" && candidate.name !== "Submit review usage",
+      )) {
       assert.match(step.if ?? "", new RegExp(gate.replaceAll(".", "\\.")), step.name ?? step.uses);
     }
   }

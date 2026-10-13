@@ -1,6 +1,9 @@
 import { bayReviewStatusScript } from "./bay-review-status.ts";
+import type { ReviewUsageDataset } from "./review-usage.ts";
 
-export type DashboardEnv = Record<string, unknown>;
+export type DashboardEnv = Record<string, unknown> & {
+  REVIEW_USAGE?: ReviewUsageDataset;
+};
 
 const DEFAULT_CRABFLEET_URL = "https://crabfleet.openclaw.ai";
 

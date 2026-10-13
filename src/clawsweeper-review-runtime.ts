@@ -69,6 +69,7 @@ import {
 import { repositoryProfileFor, type RepositoryProfile } from "./repository-profiles.js";
 import { reviewProofCapabilityFromEnv } from "./review-proof-client.js";
 import { readBoundedReviewResult } from "./review-output-policy.js";
+import { appendReviewUsage } from "./review-usage.js";
 import { asRecord, nonBlankStringOrUndefined } from "./value-coerce.js";
 import { evidenceEntry } from "./clawsweeper-report-helpers.js";
 import {
@@ -1194,6 +1195,7 @@ ${extra}
             nonBlankStringOrUndefined(asRecord(pull.head).sha) ?? "",
           )
         : undefined;
+    const processStartedAt = Date.now();
     const result = runAgentProcess({
       scanSource,
       ...(options.promptFileBytes === 0 ? {} : { diagnosticPromptPath: promptPath }),
@@ -1235,6 +1237,27 @@ ${extra}
             },
           }
         : {}),
+    });
+    const processFinishedAt = Date.now();
+    // Complete the best-effort local handoff before failure can terminate the process.
+    appendReviewUsage({
+      record: {
+        target_repo: options.item.repo,
+        item_number: options.item.number,
+        item_kind: options.item.kind,
+        service_tier: options.serviceTier ?? "",
+        reasoning_effort: options.reasoningEffort ?? "",
+        outcome:
+          codexProcessErrorCode(result.error) === "ETIMEDOUT"
+            ? "timeout"
+            : result.status === 0 && existsSync(outputPath)
+              ? "ok"
+              : "failed",
+        duration_ms: processFinishedAt - processStartedAt,
+      },
+      codexHome: codexEnv.CODEX_HOME,
+      startedAt: processStartedAt,
+      finishedAt: processFinishedAt,
     });
     const dirtyAfter = openclawDirtyStatus(options.openclawDir);
     if (dirtyAfter) {

@@ -1,4 +1,6 @@
 import { publicTimestamp } from "./public-timestamp.ts";
+import { writeReviewUsage } from "./review-usage.ts";
+import { isReviewUsageRecord } from "../src/review-usage-contract.ts";
 import { requiresMaintainerReviewRequest } from "../src/maintainer-review-policy.ts";
 import {
   publicBayActivityKind,
@@ -1246,6 +1248,8 @@ export default {
       return authenticatedExactReviewQueueRequest(request, env, "/lifecycle/command-ack/observed");
     if (url.pathname === "/internal/exact-review/review-run-telemetry" && request.method === "POST")
       return authenticatedExactReviewQueueRequest(request, env, "/review-run-telemetry");
+    if (url.pathname === "/internal/exact-review/review-usage" && request.method === "POST")
+      return authenticatedReviewUsage(request, env);
     if (
       url.pathname === "/internal/exact-review/publication-batches/claim" &&
       request.method === "POST"
@@ -5816,6 +5820,26 @@ async function authenticatedExactReviewOperatorRequest(request, env, path: strin
       body,
     }),
   );
+}
+
+async function authenticatedReviewUsage(request: Request, env: DashboardEnv): Promise<Response> {
+  const secret = stringEnv(env.CLAWSWEEPER_WEBHOOK_SECRET);
+  if (!secret) return json({ error: "webhook_not_configured" }, 503);
+  const body = await request.text();
+  const signature = request.headers.get("x-clawsweeper-exact-review-signature") || "";
+  if (!(await verifyGithubWebhookSignature({ secret, signature, bodyText: body }))) {
+    return json({ error: "invalid_signature" }, 401);
+  }
+  let payload: unknown;
+  try {
+    payload = JSON.parse(body);
+  } catch {
+    return json({ error: "invalid_review_usage" }, 400);
+  }
+  if (!isReviewUsageRecord(payload)) return json({ error: "invalid_review_usage" }, 400);
+  if (!env.REVIEW_USAGE) return json({ error: "review_usage_unconfigured" }, 503);
+  writeReviewUsage(env.REVIEW_USAGE, payload);
+  return json({ ok: true }, 202);
 }
 
 async function authenticatedApplyObservability(request, env) {

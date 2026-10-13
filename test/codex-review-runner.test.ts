@@ -195,7 +195,7 @@ test("Codex failure logs distinguish provider throttling from content output fai
   );
 });
 
-test("runCodex accepts valid structured output after non-zero Codex exit", () => {
+test("runCodex writes credential-free usage synchronously", () => {
   const root = mkdtempSync(tmpPrefix);
   const openclawDir = join(root, "openclaw");
   const workDir = join(root, "codex-work");
@@ -203,11 +203,30 @@ test("runCodex accepts valid structured output after non-zero Codex exit", () =>
   mkdirSync(openclawDir, { recursive: true });
   mkdirSync(binDir, { recursive: true });
   initTrackedRepo(openclawDir);
+  const codexHome = join(root, "codex-home");
+  const sessions = join(codexHome, "sessions", "2026", "10", "13");
+  mkdirSync(sessions, { recursive: true });
+  const usage = {
+    input_tokens: 100,
+    cached_input_tokens: 20,
+    cache_write_input_tokens: 30,
+    output_tokens: 10,
+    reasoning_output_tokens: 5,
+  };
+  const rollout =
+    JSON.stringify({
+      type: "event_msg",
+      payload: {
+        type: "token_count",
+        info: { total_token_usage: usage },
+      },
+    }) + "\n";
   const codexPath = join(binDir, "codex");
   writeFileSync(
     codexPath,
     `#!/usr/bin/env node
 ${fakeCodexSandboxPass}
+require("node:fs").writeFileSync(${JSON.stringify(join(root, "codex-home", "sessions", "2026", "10", "13", "rollout-test.jsonl"))}, ${JSON.stringify(rollout)});
 ${fakeManagedDecision}
 process.stderr.write("wrote structured output before shutdown failure\\n");
 process.exit(1);
@@ -216,6 +235,15 @@ process.exit(1);
   chmodSync(codexPath, 0o755);
   const originalPath = process.env.PATH;
   const originalDecision = process.env.CODEX_DECISION_JSON;
+  const telemetryEnv = {
+    CODEX_HOME: codexHome,
+    CLAWSWEEPER_REVIEW_USAGE_PATH: join(root, "review-usage.jsonl"),
+    GITHUB_RUN_ID: "123",
+  };
+  const originalTelemetryEnv = Object.fromEntries(
+    Object.keys(telemetryEnv).map((key) => [key, process.env[key]]),
+  );
+  Object.assign(process.env, telemetryEnv);
   process.env.PATH = `${binDir}${delimiter}${process.env.PATH ?? ""}`;
   process.env.CODEX_DECISION_JSON = JSON.stringify(
     closeDecision({
@@ -244,6 +272,14 @@ process.exit(1);
       resultFileBytes: Buffer.byteLength(process.env.CODEX_DECISION_JSON!),
     });
 
+    const lines = readFileSync(telemetryEnv.CLAWSWEEPER_REVIEW_USAGE_PATH, "utf8")
+      .trim()
+      .split("\n");
+    assert.equal(lines.length, 1);
+    const record: Record<string, unknown> = JSON.parse(lines[0]!);
+    assert.equal(record.outcome, "failed");
+    assert.deepEqual(record.usage, usage);
+    assert.ok(!("model" in record));
     assert.equal(decision.decision, "keep_open");
     assert.equal(decision.summary, "Keep open for maintainer follow-up.");
     assert.equal(decision.localCheckoutAccess, "verified");
@@ -251,6 +287,10 @@ process.exit(1);
     assert.equal(readFileSync(promptPath, "utf8"), "Return a review decision.");
     assert.equal(statSync(promptPath).mode & 0o777, 0o600);
   } finally {
+    for (const [key, value] of Object.entries(originalTelemetryEnv)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
     if (originalPath === undefined) delete process.env.PATH;
     else process.env.PATH = originalPath;
     if (originalDecision === undefined) delete process.env.CODEX_DECISION_JSON;

@@ -823,6 +823,7 @@ jobs:
         if: ${{ steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.live-item.outputs.proceed == 'true' && steps.reserve-exact-review-lease.outputs.status == 'posted' && (steps.review-status-fence.outcome == 'skipped' || (steps.review-status-fence.outputs.authorized == 'true' && steps.release-review-status-fence.outputs.authorized == 'true')) }}
         continue-on-error: true
         env:
+          CLAWSWEEPER_REVIEW_USAGE_PATH: ${{ runner.temp }}/clawsweeper-review-usage.jsonl
           PR_ADMISSION_FILE: ${{ steps.live-item.outputs.pr_admission_file }}
           OVERSIZED_PR: ${{ steps.live-item.outputs.oversized }}
           # Review hydration is the largest read stream (~30 calls/review); it
@@ -1130,6 +1131,18 @@ jobs:
             fi
             echo "::notice::Exact review produced no artifact because the item closed during review."
             echo "terminal_during_review=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Submit review usage
+        if: always()
+        continue-on-error: true
+        env:
+          CLAWSWEEPER_REVIEW_USAGE_PATH: ${{ runner.temp }}/clawsweeper-review-usage.jsonl
+          EXACT_REVIEW_QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
+          CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
+        run: |
+          if [ -f "$CLAWSWEEPER_REVIEW_USAGE_PATH" ]; then
+            node dist/review-usage-submit.js "$CLAWSWEEPER_REVIEW_USAGE_PATH"
           fi
 
       - name: Finalize exact event action ledger
