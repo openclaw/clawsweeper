@@ -1,0 +1,1 @@
+- Check local Codex login status without a model request with `pnpm run codex:local:check -- --diagnostics`.

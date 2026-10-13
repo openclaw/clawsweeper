@@ -38,8 +38,12 @@ From the ClawSweeper checkout:
 corepack enable
 pnpm install
 pnpm run build:all
-pnpm run codex:local:check
+pnpm run codex:local:check -- --diagnostics
 ```
+
+The diagnostics mode checks the selected Codex binary and login status without
+a model request. It does not prove model access or review readiness. Omit
+`--diagnostics` for the existing model smoke test, which consumes model usage.
 
 If the Codex check says the CLI is not logged in, have the operator authenticate
 their own Codex CLI. Device auth is the simplest shareable setup:

@@ -816,9 +816,14 @@ usage is documented in
 
 ```bash
 codex login --device-auth -c 'service_tier="fast"'
-pnpm run codex:local:check
+pnpm run codex:local:check -- --diagnostics
 pnpm run review -- --local-only --target-repo owner/name --item-number 123
 ```
+
+`--diagnostics` checks the selected Codex binary and its login status without a
+model request. It does not prove model access or review readiness. Omit
+`--diagnostics` to also run the existing model smoke test, which consumes model
+usage.
 
 `review` is the single issue/PR review command. `--local-only` makes it an
 advisory local run: it skips the review-start placeholder comment, defaults the
