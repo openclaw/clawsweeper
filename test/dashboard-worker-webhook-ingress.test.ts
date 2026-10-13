@@ -744,10 +744,9 @@ test("matching bot lifecycle receipts persist only after hosted admission", asyn
       response: {
         ok: true,
         accepted: false,
-        reason: "recorded Bay journey completion",
+        reason: "recorded lifecycle acknowledgement",
       },
       lifecycle: "completed",
-      bayPersisted: true,
       finalizerRetained: false,
     },
     {
@@ -762,7 +761,6 @@ test("matching bot lifecycle receipts persist only after hosted admission", asyn
         reason: "recorded lifecycle acknowledgement",
       },
       lifecycle: "completed",
-      bayPersisted: false,
       finalizerRetained: false,
     },
     {
@@ -776,10 +774,9 @@ test("matching bot lifecycle receipts persist only after hosted admission", asyn
       response: {
         ok: true,
         accepted: false,
-        reason: "recorded Bay journey completion",
+        reason: "recorded lifecycle acknowledgement",
       },
       lifecycle: "completed",
-      bayPersisted: true,
       finalizerRetained: false,
     },
     {
@@ -794,7 +791,6 @@ test("matching bot lifecycle receipts persist only after hosted admission", asyn
         reason: "private target unsupported",
       },
       lifecycle: "acknowledgement_pending",
-      bayPersisted: false,
       finalizerRetained: false,
     },
     {
@@ -808,7 +804,6 @@ test("matching bot lifecycle receipts persist only after hosted admission", asyn
         retryable: true,
       },
       lifecycle: "acknowledgement_pending",
-      bayPersisted: false,
       finalizerRetained: true,
     },
   ] as const;
@@ -934,7 +929,6 @@ test("matching bot lifecycle receipts persist only after hosted admission", asyn
     const resultingLifecycle = lifecycleState(
       lifecycle.read(identity.canonicalTargetKey, identity.fenceKey, 1)!,
     );
-    const bayPersisted = (await statusStore.get("openclaw-bay:journey-state:v1")) !== null;
     const finalizerKey = `terminal-finalization:${identity.fenceKey}:${identity.revision}`;
     const queueState = storage.sql.readNormalizedQueue() as {
       items: Record<string, unknown>;
@@ -951,7 +945,6 @@ test("matching bot lifecycle receipts persist only after hosted admission", asyn
         visibility_probes: visibilityProbes,
         acknowledgement_requests: acknowledgementRequests,
         acknowledgement_persisted: resultingLifecycle === "completed",
-        bay_persisted: bayPersisted,
         finalizer_retained: finalizerRetained,
         lifecycle_state: resultingLifecycle,
       }),
@@ -961,7 +954,6 @@ test("matching bot lifecycle receipts persist only after hosted admission", asyn
     assert.equal(visibilityProbes, 2, entry.name);
     assert.equal(acknowledgementRequests, 1, entry.name);
     assert.equal(resultingLifecycle, entry.lifecycle, entry.name);
-    assert.equal(bayPersisted, entry.bayPersisted, entry.name);
     assert.equal(finalizerRetained, entry.finalizerRetained, entry.name);
   }
 });

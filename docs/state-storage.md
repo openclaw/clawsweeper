@@ -40,6 +40,13 @@ fence. A missing or conflicting link cannot complete another producer revision.
 This approved JSON extension adds no SQL table or column, grants no publication
 authority, and does not infer links for historical tupleless reports.
 
+The retired Bay telemetry tables and command-journey mapping retain their
+existing schema, but no longer receive writes or recovery/backfill work. The
+canonical lifecycle projection still owns admission, receipts, acknowledgements,
+and audit history; older projection JSON remains readable without its former
+Bay materialization markers. Direct and batch publication-outcome telemetry
+continues to back recent durable publication events.
+
 Report readers share one anchored leading-front-matter parser. A unique header
 value remains authoritative when report prose or a valid fenced example quotes
 the same key. Duplicate header keys and competing unfenced metadata blocks

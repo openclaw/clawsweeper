@@ -4265,7 +4265,7 @@ test("oldest publication aging deadline drives the alarm and then its owner clai
   }
 });
 
-test("Bay no-progress recovery backs off without duplicating an aged publication owner", async () => {
+test("an aged publication retains one owner through dispatch and heartbeat", async () => {
   const originalFetch = globalThis.fetch;
   const originalNow = Date.now;
   let now = 20_000_000;
@@ -4323,76 +4323,23 @@ test("Bay no-progress recovery backs off without duplicating an aged publication
       EXACT_REVIEW_PUBLICATION_BATCH_LEASE_MS: "600000",
       EXACT_REVIEW_DISPATCH_DEBOUNCE_MS: "0",
     };
-    let queue = new ExactReviewQueue({ storage }, env);
-    await queue.fetch(publicationRequest("bay-backoff-aged", 170, "1170", "aged/repo"));
-    const lifecycle = new ExactReviewLifecycleProjectionStore(storage);
-    const stalledIdentity = {
-      canonicalTargetKey: "openclaw/openclaw#9170",
-      fenceKey: "openclaw/openclaw#9170@exact:1",
-      revision: 1,
-    };
-    lifecycle.recordAdmission({
-      ...stalledIdentity,
-      deliveryId: "bay-backoff-stalled",
-      sourceAction: "opened",
-      commandOriginated: false,
-      statusMarker: null,
-      statusCommentId: null,
-      triggeredAt: now,
-      observedAt: now,
-    });
-    lifecycle.markBayTelemetryPending(stalledIdentity);
-    storage.run(
-      `UPDATE ${EXACT_REVIEW_LIFECYCLE_PROJECTION_TABLE}
-          SET projection_json = ?
-        WHERE canonical_target_key = ? AND fence_key = ? AND revision = ?`,
-      "{",
-      stalledIdentity.canonicalTargetKey,
-      stalledIdentity.fenceKey,
-      stalledIdentity.revision,
-    );
-
+    const queue = new ExactReviewQueue({ storage }, env);
+    await queue.fetch(publicationRequest("aged-publication", 170, "1170", "aged/repo"));
     now += 60_000;
     await queue.alarm();
     assert.equal(dispatches.length, 1);
-    const stalledRetryAt = now + 60_000;
-    assert.equal(storage.scheduledAlarm(), stalledRetryAt);
+    const nextWakeAt = storage.scheduledAlarm();
     now += 2_000;
     await storage.setAlarm(now);
     await queue.alarm();
     assert.equal(dispatches.length, 1);
-    assert.equal(storage.scheduledAlarm(), stalledRetryAt);
-    const trafficIdentity = {
-      canonicalTargetKey: "openclaw/openclaw#9180",
-      fenceKey: "openclaw/openclaw#9180@exact:1",
-      revision: 1,
-    };
-    lifecycle.recordAdmission({
-      ...trafficIdentity,
-      deliveryId: "bay-backoff-traffic",
-      sourceAction: "opened",
-      commandOriginated: false,
-      statusMarker: null,
-      statusCommentId: null,
-      triggeredAt: now,
-      observedAt: now,
-    });
-    const traffic = await queue.fetch(
-      batchRequest("/lifecycle/terminal-disposition", {
-        canonical_target_key: trafficIdentity.canonicalTargetKey,
-        fence_key: trafficIdentity.fenceKey,
-        revision: trafficIdentity.revision,
-        kind: "failure",
-      }),
-    );
-    assert.equal(traffic.status, 200);
-    assert.equal(storage.scheduledAlarm(), stalledRetryAt);
+    assert.equal(storage.scheduledAlarm(), nextWakeAt);
     const dispatch = dispatches[0]!;
     now += 10_000;
     const staleClaim = await (
       await queue.fetch(
         batchRequest("/publication-batches/claim", {
-          claim_id: "claim-bay-backoff-stale",
+          claim_id: "claim-aged-stale",
           lease_owner: "worker-stale",
           max_items: 1,
           dispatch_id: "publication-batch-dispatch:stale",
@@ -4406,7 +4353,7 @@ test("Bay no-progress recovery backs off without duplicating an aged publication
     const claim = await (
       await queue.fetch(
         batchRequest("/publication-batches/claim", {
-          claim_id: "claim-bay-backoff",
+          claim_id: "claim-aged",
           lease_owner: "worker-1",
           max_items: 1,
           dispatch_id: dispatch.inputs.dispatch_id,
@@ -4433,7 +4380,7 @@ test("Bay no-progress recovery backs off without duplicating an aged publication
     const competingClaim = await (
       await queue.fetch(
         batchRequest("/publication-batches/claim", {
-          claim_id: "claim-bay-backoff-competing",
+          claim_id: "claim-aged-competing",
           lease_owner: "worker-2",
           max_items: 1,
         }),
@@ -4442,110 +4389,11 @@ test("Bay no-progress recovery backs off without duplicating an aged publication
     assert.equal(competingClaim.claimed, false);
     assert.equal(competingClaim.batch, null);
 
-    now = stalledRetryAt;
+    now += 60_000;
     await queue.alarm();
     const stats = await (await queue.fetch(new Request("https://queue/stats"))).json();
     assert.equal(dispatches.length, 1);
     assert.equal(stats.lanes.publication.batches.active_items, 1);
-    assert.equal(storage.scheduledAlarm(), now + 60_000);
-
-    const progressingStorage = new TestStorage();
-    const progressingQueue = new ExactReviewQueue({ storage: progressingStorage }, {});
-    await progressingQueue.fetch(new Request("https://queue/stats"));
-    const progressingLifecycle = new ExactReviewLifecycleProjectionStore(progressingStorage);
-    for (let index = 0; index < 257; index += 1) {
-      const identity = {
-        canonicalTargetKey: `openclaw/openclaw#${9_500 + index}`,
-        fenceKey: `openclaw/openclaw#${9_500 + index}@exact:1`,
-        revision: 1,
-      };
-      progressingLifecycle.recordAdmission({
-        ...identity,
-        deliveryId: `bay-backoff-progress:${index}`,
-        sourceAction: "opened",
-        commandOriginated: false,
-        statusMarker: null,
-        statusCommentId: null,
-        triggeredAt: now,
-        observedAt: now,
-      });
-      progressingLifecycle.markBayTelemetryPending(identity);
-    }
-    progressingStorage.failSqlMatchingAfter(/INSERT INTO exact_review_lifecycle_projection_v1/, 1);
-    await progressingQueue.alarm();
-    assert.equal(progressingStorage.scheduledAlarm(), now + 1_000);
-
-    const clearedStorage = new TestStorage();
-    const clearedQueue = new ExactReviewQueue({ storage: clearedStorage }, {});
-    await clearedQueue.fetch(new Request("https://queue/stats"));
-    const clearedLifecycle = new ExactReviewLifecycleProjectionStore(clearedStorage);
-    const clearedIdentity = {
-      canonicalTargetKey: "openclaw/openclaw#9800",
-      fenceKey: "openclaw/openclaw#9800@exact:1",
-      revision: 1,
-    };
-    clearedLifecycle.recordAdmission({
-      ...clearedIdentity,
-      deliveryId: "bay-backoff-cleared",
-      sourceAction: "opened",
-      commandOriginated: false,
-      statusMarker: null,
-      statusCommentId: null,
-      triggeredAt: now,
-      observedAt: now,
-    });
-    clearedLifecycle.markBayTelemetryPending(clearedIdentity);
-    clearedStorage.run(
-      `UPDATE ${EXACT_REVIEW_LIFECYCLE_PROJECTION_TABLE}
-          SET projection_json = ?
-        WHERE canonical_target_key = ? AND fence_key = ? AND revision = ?`,
-      "{",
-      clearedIdentity.canonicalTargetKey,
-      clearedIdentity.fenceKey,
-      clearedIdentity.revision,
-    );
-    await clearedQueue.alarm();
-    assert.equal(clearedStorage.scheduledAlarm(), now + 60_000);
-    clearedStorage.run(
-      `DELETE FROM ${EXACT_REVIEW_LIFECYCLE_PROJECTION_TABLE}
-        WHERE canonical_target_key = ? AND fence_key = ? AND revision = ?`,
-      clearedIdentity.canonicalTargetKey,
-      clearedIdentity.fenceKey,
-      clearedIdentity.revision,
-    );
-    await clearedQueue.fetch(new Request("https://queue/stats"));
-    const laterIdentity = {
-      canonicalTargetKey: "openclaw/openclaw#9801",
-      fenceKey: "openclaw/openclaw#9801@exact:1",
-      revision: 1,
-    };
-    clearedLifecycle.recordAdmission({
-      ...laterIdentity,
-      deliveryId: "bay-backoff-later",
-      sourceAction: "opened",
-      commandOriginated: false,
-      statusMarker: null,
-      statusCommentId: null,
-      triggeredAt: now,
-      observedAt: now,
-    });
-    clearedLifecycle.markBayTelemetryPending(laterIdentity);
-    await clearedQueue.fetch(new Request("https://queue/stats"));
-    assert.equal(clearedStorage.scheduledAlarm(), now + 1_000);
-
-    if (process.env.CLAWSWEEPER_EVIDENCE_TRANSCRIPT === "1") {
-      console.log(
-        `BAY_RECOVERY_BACKOFF_PROOF=${JSON.stringify({
-          no_progress_alarm_delay_ms: 60_000,
-          dispatch_count: dispatches.length,
-          stale_claimed: staleClaim.claimed,
-          heartbeat_status: heartbeat.status,
-          active_items: stats.lanes.publication.batches.active_items,
-          progress_alarm_delay_ms: 1_000,
-          cleared_deadline_alarm_delay_ms: 1_000,
-        })}`,
-      );
-    }
   } finally {
     globalThis.fetch = originalFetch;
     Date.now = originalNow;

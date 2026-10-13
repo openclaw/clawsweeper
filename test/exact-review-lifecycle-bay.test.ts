@@ -4,15 +4,12 @@ import {
   ExactReviewLifecycleProjectionStore,
   type LifecycleProducerLineage,
 } from "../dashboard/exact-review-lifecycle.ts";
-import { ExactReviewLifecycleTelemetryStore } from "../dashboard/exact-review-lifecycle-telemetry.ts";
 import { TestStorage } from "./exact-review-test-storage.ts";
 
 function producerJourneyFixture() {
   const storage = new TestStorage();
   const lifecycle = new ExactReviewLifecycleProjectionStore(storage);
-  const telemetry = new ExactReviewLifecycleTelemetryStore(storage);
   lifecycle.ensureSchemaSync();
-  telemetry.ensureSchemaSync();
   const now = Date.now();
   const producer = {
     canonicalTargetKey: "openclaw/openclaw#71",
@@ -87,7 +84,6 @@ function producerJourneyFixture() {
   return {
     storage,
     lifecycle,
-    telemetry,
     now,
     producer,
     publication,
@@ -103,7 +99,7 @@ test("linked producer2/publication1 survives reconstruction and never completes 
   const f = producerJourneyFixture();
   f.lifecycle.recordAdmission(f.admission(f.publication, f.lineage));
   const producerBefore = f.lifecycle.read(f.producer.canonicalTargetKey, f.producer.fenceKey, 2);
-  assert.equal(f.telemetry.syncBayLifecycle(f.finish()), true);
+  f.finish();
   // These stores have no queue state: reconstruction reads only durable lifecycle facts.
   const reconstructed = new ExactReviewLifecycleProjectionStore(f.storage);
   const cards = f.cards(reconstructed);
@@ -131,29 +127,18 @@ test("linked producer2/publication1 survives reconstruction and never completes 
   );
 
   for (let replay = 0; replay < 3; replay++) {
-    const telemetry = new ExactReviewLifecycleTelemetryStore(f.storage);
-    assert.equal(telemetry.syncBayLifecycle(f.finish()), true);
-    assert.deepEqual(telemetry.reconcileBayLifecyclePending(), {
-      pending: false,
-      progressed: false,
-    });
-    assert.equal(telemetry.baySnapshot(f.now + 1_000).terminal!.terminal_count, 1);
+    f.finish();
   }
-  const events = Array.from(
-    f.storage.sql.exec(
-      "SELECT event_id, fence_key, revision FROM exact_review_lifecycle_bay_event_v2",
-    ),
-  );
-  assert.deepEqual(
-    events.map((event) => ({ ...event })),
-    [
-      {
-        event_id: `bay:v2:${f.publication.fenceKey}:1`,
-        fence_key: f.publication.fenceKey,
-        revision: 1,
-      },
-    ],
-  );
+  const lifecycleFacts = (entries: typeof cards) =>
+    entries.map((card) => ({
+      target: card.target,
+      revision: card.revision,
+      state: card.state,
+      current_revision: card.current_revision,
+      facts: card.facts,
+      terminal_history: card.terminal_history,
+    }));
+  assert.deepEqual(lifecycleFacts(f.cards(reconstructed)), lifecycleFacts(cards));
 
   reconstructed.recordAdmission(f.admission({ ...f.producer, revision: 3 }));
   f.reviewed({ ...f.producer, revision: 3 }); // Even identical delivery/run/generation is not lineage.
@@ -163,7 +148,35 @@ test("linked producer2/publication1 survives reconstruction and never completes 
     [[3, "pending"]],
   );
   assert.equal(later.find((card) => card.revision === 2)!.state, "completed");
-  assert.equal(f.telemetry.baySnapshot(f.now + 1_000).terminal!.terminal_count, 1);
+});
+
+test("historical lifecycle metadata preserves canonical facts and idempotent admission", () => {
+  const f = producerJourneyFixture();
+  const expected = f.lifecycle.read(f.producer.canonicalTargetKey, f.producer.fenceKey, 2)!;
+  for (const metadata of [
+    { bayTelemetryPending: true, bayTelemetryEventId: "historical-event" },
+    { bayTelemetryPending: "legacy", bayTelemetryEventId: { retired: true } },
+  ]) {
+    f.storage.run(
+      `UPDATE exact_review_lifecycle_projection_v1 SET projection_json = ?
+       WHERE canonical_target_key = ? AND fence_key = ? AND revision = ?`,
+      JSON.stringify({
+        ...expected,
+        ...metadata,
+        admission: { ...expected.admission, bayJourneyDeliveryId: { retired: true } },
+      }),
+      f.producer.canonicalTargetKey,
+      f.producer.fenceKey,
+      2,
+    );
+    const reconstructed = new ExactReviewLifecycleProjectionStore(f.storage);
+    assert.deepEqual(
+      reconstructed.read(f.producer.canonicalTargetKey, f.producer.fenceKey, 2),
+      expected,
+    );
+    assert.deepEqual(reconstructed.recordAdmission(f.admission()), expected);
+    assert.equal(f.cards(reconstructed).find((card) => card.revision === 2)!.state, "pending");
+  }
 });
 
 test("a linked publication with a missing producer is historical, not a current producer completion", () => {

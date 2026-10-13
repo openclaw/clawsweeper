@@ -6,7 +6,6 @@ import type { DurableStorage } from "./durable-storage.ts";
 
 export const EXACT_REVIEW_LIFECYCLE_PROJECTION_TABLE = "exact_review_lifecycle_projection_v1";
 export const EXACT_REVIEW_ACKNOWLEDGEMENT_ATTEMPT_LEASE_MS = 5 * 60 * 1000;
-export const EXACT_REVIEW_LIFECYCLE_BAY_TELEMETRY_RECOVERY_BATCH_LIMIT = 256;
 export const EXACT_REVIEW_LIFECYCLE_AUDIT_READ_LIMIT = 10_000;
 export const EXACT_REVIEW_LIFECYCLE_AUDIT_PAGE_MAX = 100;
 export const EXACT_REVIEW_LIFECYCLE_AUDIT_SNAPSHOT_TTL_MS = 5 * 60 * 1000;
@@ -158,7 +157,6 @@ export type ExactReviewLifecycleProjection = {
   admission: {
     deliveryId: string;
     sourceDeliveryId?: string;
-    bayJourneyDeliveryId?: string;
     sourceAction: string;
     commandOriginated: boolean;
     statusMarker: string | null;
@@ -211,18 +209,6 @@ export type ExactReviewLifecycleProjection = {
   terminalOperationIds: Array<{ operationId: string; kind: LifecycleTerminalDisposition }>;
   /** Current terminal outcome used to derive lifecycle and acknowledgement state. */
   terminalDisposition: { kind: LifecycleTerminalDisposition; observedAt: number } | null;
-  /**
-   * A terminal fact that has not yet been durably materialized into the Bay
-   * aggregate. This lives with the source projection so a telemetry-table
-   * outage cannot make the completion undiscoverable.
-   */
-  bayTelemetryPending: boolean;
-  /**
-   * The current terminal fact already reflected in Bay's compact aggregate.
-   * It keeps repeated finalizer delivery idempotent after the short timing
-   * window has expired and its row has been pruned from Bay telemetry.
-   */
-  bayTelemetryEventId?: string;
   updatedAt: number;
 };
 
@@ -236,7 +222,6 @@ type LifecycleAdmissionInput = ProjectionIdentity & {
   inlineProofTracked?: true;
   deliveryId: string;
   sourceDeliveryId?: string;
-  bayJourneyDeliveryId?: string;
   sourceAction: string;
   commandOriginated: boolean;
   statusMarker: string | null;
@@ -345,12 +330,6 @@ export class ExactReviewLifecycleProjectionStore {
     if (input.sourceDeliveryId !== undefined && !validText(input.sourceDeliveryId, 1, 200)) {
       throw new Error("invalid lifecycle source delivery identity");
     }
-    if (
-      input.bayJourneyDeliveryId !== undefined &&
-      !validText(input.bayJourneyDeliveryId, 1, 200)
-    ) {
-      throw new Error("invalid lifecycle Bay journey delivery identity");
-    }
     if (input.statusMarker !== null && !validText(input.statusMarker, 1, 300)) {
       throw new Error("invalid lifecycle status marker");
     }
@@ -369,7 +348,6 @@ export class ExactReviewLifecycleProjectionStore {
         !sameLifecycleProducerLineage(existing.producerLineage, input.producerLineage) ||
         admission.deliveryId !== input.deliveryId ||
         admission.sourceDeliveryId !== input.sourceDeliveryId ||
-        admission.bayJourneyDeliveryId !== input.bayJourneyDeliveryId ||
         admission.sourceAction !== input.sourceAction ||
         admission.commandOriginated !== input.commandOriginated ||
         admission.statusMarker !== input.statusMarker ||
@@ -391,7 +369,6 @@ export class ExactReviewLifecycleProjectionStore {
       admission: {
         deliveryId: input.deliveryId,
         ...(input.sourceDeliveryId ? { sourceDeliveryId: input.sourceDeliveryId } : {}),
-        ...(input.bayJourneyDeliveryId ? { bayJourneyDeliveryId: input.bayJourneyDeliveryId } : {}),
         sourceAction: input.sourceAction,
         commandOriginated: input.commandOriginated,
         statusMarker: input.statusMarker,
@@ -409,7 +386,6 @@ export class ExactReviewLifecycleProjectionStore {
       terminalDispositions: [],
       terminalOperationIds: [],
       terminalDisposition: null,
-      bayTelemetryPending: false,
       updatedAt: input.observedAt,
     };
     this.writeSync(projection);
@@ -643,7 +619,6 @@ export class ExactReviewLifecycleProjectionStore {
       if (input.operationId) {
         terminal.terminalOperationIds.push({ operationId: input.operationId, kind: input.kind });
       }
-      terminal.bayTelemetryPending = true;
       return false;
     });
   }
@@ -669,7 +644,6 @@ export class ExactReviewLifecycleProjectionStore {
         operationId: PARKED_COMMAND_CLOSURE_CANCEL_OPERATION,
         kind: "failure",
       });
-      projection.bayTelemetryPending = true;
       return false;
     });
   }
@@ -920,11 +894,6 @@ export class ExactReviewLifecycleProjectionStore {
           throw new Error("conflicting lifecycle acknowledgement receipt");
         }
         projection.acknowledgement.observed ??= observed;
-        // The final receipt is the only timing boundary for command journeys.
-        // Queue its Bay materialization in this same source transaction so a
-        // Durable Object restart cannot persist the receipt without its outbox
-        // marker.
-        projection.bayTelemetryPending = true;
         projection.updatedAt = input.observedAt;
         this.writeSync(projection);
         return {
@@ -1182,81 +1151,6 @@ export class ExactReviewLifecycleProjectionStore {
     };
   }
 
-  /**
-   * Replays terminal facts whose Bay aggregate write failed. The marker is
-   * stored on the lifecycle row itself, rather than only in the secondary
-   * telemetry tables, so it survives a temporary telemetry-schema outage.
-   * Callers must fail closed while a bounded replay has more work.
-   */
-  reconcileBayTelemetryPending(
-    materialize: (projection: ExactReviewLifecycleProjection) => boolean,
-  ) {
-    this.ensureSchemaSync();
-    let progressed = false;
-    const rows = Array.from(
-      this.storage.sql.exec(
-        `SELECT projection_json FROM ${EXACT_REVIEW_LIFECYCLE_PROJECTION_TABLE}
-          WHERE bay_telemetry_pending = 1
-          ORDER BY updated_at, canonical_target_key, fence_key, revision
-          LIMIT ?`,
-        EXACT_REVIEW_LIFECYCLE_BAY_TELEMETRY_RECOVERY_BATCH_LIMIT + 1,
-      ),
-    );
-    const more = rows.length > EXACT_REVIEW_LIFECYCLE_BAY_TELEMETRY_RECOVERY_BATCH_LIMIT;
-    for (const row of rows.slice(0, EXACT_REVIEW_LIFECYCLE_BAY_TELEMETRY_RECOVERY_BATCH_LIMIT)) {
-      try {
-        const projection = projectionFromRow(String(row.projection_json || ""));
-        // Materialization has its own Durable Object transaction. Keep this
-        // source transaction separate: a retry after its source-marker clear is
-        // interrupted is idempotent by lifecycle event id.
-        if (!projection.bayTelemetryPending || !materialize(projection)) {
-          return { pending: true, progressed };
-        }
-        this.markBayTelemetryMaterialized(projection);
-      } catch {
-        return { pending: true, progressed };
-      }
-      progressed = true;
-    }
-    return { pending: more, progressed };
-  }
-
-  markBayTelemetryPending(input: ProjectionIdentity) {
-    this.validateIdentity(input);
-    return this.mutate(input, (projection) => {
-      projection.bayTelemetryPending = true;
-      return projection;
-    });
-  }
-
-  markBayTelemetryMaterialized(input: ProjectionIdentity & { bayTelemetryEventId?: string }) {
-    this.validateIdentity(input);
-    if (input.bayTelemetryEventId !== undefined && !validText(input.bayTelemetryEventId, 1, 536)) {
-      throw new Error("invalid lifecycle Bay telemetry event identity");
-    }
-    return this.mutate(input, (projection) => {
-      if (input.bayTelemetryEventId === undefined) delete projection.bayTelemetryEventId;
-      else projection.bayTelemetryEventId = input.bayTelemetryEventId;
-      projection.bayTelemetryPending = false;
-      return projection;
-    });
-  }
-
-  hasBayTelemetryPending() {
-    try {
-      return (
-        Array.from(
-          this.storage.sql.exec(
-            `SELECT 1 AS pending FROM ${EXACT_REVIEW_LIFECYCLE_PROJECTION_TABLE}
-              WHERE bay_telemetry_pending = 1 LIMIT 1`,
-          ),
-        ).length > 0
-      );
-    } catch {
-      return true;
-    }
-  }
-
   private mutate<T>(
     input: ProjectionIdentity,
     apply: (projection: ExactReviewLifecycleProjection) => T,
@@ -1321,19 +1215,17 @@ export class ExactReviewLifecycleProjectionStore {
   private writeSync(projection: ExactReviewLifecycleProjection) {
     this.storage.sql.exec(
       `INSERT INTO ${EXACT_REVIEW_LIFECYCLE_PROJECTION_TABLE}
-         (canonical_target_key, revision, fence_key, projection_json, updated_at, bay_telemetry_pending)
-       VALUES (?, ?, ?, ?, ?, ?)
+         (canonical_target_key, revision, fence_key, projection_json, updated_at)
+       VALUES (?, ?, ?, ?, ?)
        ON CONFLICT(canonical_target_key, fence_key, revision) DO UPDATE SET
          fence_key = excluded.fence_key,
          projection_json = excluded.projection_json,
-         updated_at = excluded.updated_at,
-         bay_telemetry_pending = excluded.bay_telemetry_pending`,
+         updated_at = excluded.updated_at`,
       projection.canonicalTargetKey,
       projection.revision,
       projection.fenceKey,
       JSON.stringify(projection),
       projection.updatedAt,
-      Number(projection.bayTelemetryPending),
     );
   }
 
@@ -1774,15 +1666,9 @@ function validDurableLifecycleBayProjection(value: ExactReviewLifecycleProjectio
     !validFenceKey(value.fenceKey) ||
     !positiveInteger(value.revision) ||
     !finiteTimestamp(value.updatedAt) ||
-    typeof value.bayTelemetryPending !== "boolean" ||
-    // `bay:v2:` + a valid 512-character fence key + `:` + a safe-integer
-    // revision (up to 16 decimal digits).
-    (value.bayTelemetryEventId !== undefined && !validText(value.bayTelemetryEventId, 1, 536)) ||
     !validText(value.admission.deliveryId, 1, 300) ||
     (value.admission.sourceDeliveryId !== undefined &&
       !validText(value.admission.sourceDeliveryId, 1, 200)) ||
-    (value.admission.bayJourneyDeliveryId !== undefined &&
-      !validText(value.admission.bayJourneyDeliveryId, 1, 200)) ||
     !validText(value.admission.sourceAction, 1, 200) ||
     (value.admission.statusMarker !== null && !validText(value.admission.statusMarker, 1, 300)) ||
     (value.admission.statusCommentId !== null &&
@@ -1960,7 +1846,9 @@ function normalizeProjection(
   if (!validTerminalOperations(parsed.terminalOperationIds)) {
     throw new Error("invalid lifecycle projection row");
   }
-  parsed.bayTelemetryPending ??= false;
+  Reflect.deleteProperty(parsed, "bayTelemetryPending");
+  Reflect.deleteProperty(parsed, "bayTelemetryEventId");
+  Reflect.deleteProperty(parsed.admission, "bayJourneyDeliveryId");
   return parsed;
 }
 

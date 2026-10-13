@@ -31,7 +31,6 @@ still exclude workflow, item, and step titles, raw or source URLs, queries, raw
 failure keys and payloads, internal opaque keys, credentials, tokens, private
 or non-allowlisted repositories, and per-job diagnostic text.
 
-
 Queue transport failures keep the fixed public `exact_review_queue_unavailable`
 response. Server logs for `exact_review_queue_request_failed` retain only the
 Cloudflare `remote`, `retryable`, and `overloaded` boolean flags; exception text,
@@ -158,7 +157,6 @@ the shared webhook signing secret is configured. Snapshot and job-cache TTLs,
 pagination, freshness, genuine GitHub errors, and the public status contract are
 unchanged.
 
-
 ## Operator dashboard pages
 
 The operator dashboard (Overview, Throughput, Quality, Queue, Coverage,
@@ -196,7 +194,6 @@ The site shows no report bodies, author identities or free-text concerns.
 Local preview: in `dashboard-site/`, install dependencies, run
 `dashboard-site/scripts/build-data.ts` with `GITHUB_TOKEN`, `--records <records dir>` and
 `--state <state dir>`, then start the Astro dev server.
-
 
 ## What It Shows
 
@@ -286,6 +283,11 @@ Run-level observer writes validate and retain the first terminal tuple per run
 attempt without reading queue items or rescheduling work. Their existing 30-day
 retention cleanup runs on telemetry writes and queue status computation; actual
 queue and auxiliary work retain ownership of alarm scheduling.
+
+The removed Bay observer no longer materializes lifecycle events, tides, or
+StatusStore journey/terminal snapshots. Recent durable publication events still
+use direct and batch outcome telemetry, and Overview still uses the shared
+`bay_projection` queue sample. Neither read path requires Bay telemetry writes.
 
 - `/api/review-observability` returns the four closed review lanes and global
   health, completeness, run counts, item counts, and timestamps for a normalized
@@ -593,7 +595,6 @@ closed; an older publication cannot complete a later producer revision. Physical
 receipts and terminal telemetry remain on the publication fence, so replay does
 not emit a second producer completion. The private link is not serialized by
 public endpoints.
-
 
 For capacity displays, `/api/exact-review-queue` also exposes compatible
 `lanes.review` and `lanes.publication` objects. Each lane reports its own

@@ -37,7 +37,6 @@ export type ExactReviewCommandAdmission =
       accepted: true;
       deduped: boolean;
       commandVersionId: string;
-      bayJourneyDeliveryId?: string;
     }
   | {
       accepted: false;
@@ -109,11 +108,8 @@ export class ExactReviewCommandIntakeStore {
     return this.storage.transactionSync(() => {
       const receipt = firstRow(
         this.storage.sql.exec(
-          `SELECT receipt.outcome, receipt.detail, journey.bay_journey_delivery_id
-             FROM ${COMMAND_RECEIPT_TABLE} receipt
-             LEFT JOIN ${COMMAND_BAY_JOURNEY_TABLE} journey
-               ON journey.command_version_id = receipt.command_version_id
-            WHERE receipt.command_version_id = ?`,
+          `SELECT outcome, detail FROM ${COMMAND_RECEIPT_TABLE}
+            WHERE command_version_id = ?`,
           intake.commandVersionId,
         ),
       );
@@ -130,9 +126,6 @@ export class ExactReviewCommandIntakeStore {
           accepted: true,
           deduped: true,
           commandVersionId: intake.commandVersionId,
-          ...(typeof receipt.bay_journey_delivery_id === "string"
-            ? { bayJourneyDeliveryId: receipt.bay_journey_delivery_id }
-            : {}),
         };
       }
 
@@ -211,15 +204,6 @@ export class ExactReviewCommandIntakeStore {
         sourceCommentKey,
         now,
       );
-      if (intake.decision.bayJourneyDeliveryId) {
-        this.storage.sql.exec(
-          `INSERT INTO ${COMMAND_BAY_JOURNEY_TABLE}
-             (command_version_id, bay_journey_delivery_id)
-           VALUES (?, ?)`,
-          intake.commandVersionId,
-          intake.decision.bayJourneyDeliveryId,
-        );
-      }
       this.storage.sql.exec(
         `INSERT INTO ${COMMAND_INTAKE_TABLE}
            (command_version_id, source_comment_key, source_updated_at, record_json, next_attempt_at)
@@ -234,9 +218,6 @@ export class ExactReviewCommandIntakeStore {
         accepted: true,
         deduped: false,
         commandVersionId: intake.commandVersionId,
-        ...(intake.decision.bayJourneyDeliveryId
-          ? { bayJourneyDeliveryId: intake.decision.bayJourneyDeliveryId }
-          : {}),
       };
     });
   }
@@ -483,13 +464,21 @@ export class ExactReviewCommandIntakeStore {
 function parseRecord(value: unknown): ExactReviewCommandIntakeRecord | null {
   try {
     const parsed = JSON.parse(String(value || "")) as ExactReviewCommandIntakeRecord;
-    return validateDirectReReviewIntake(parsed.intake) &&
-      ["verify_pending", "enqueue_pending", "effects_pending"].includes(parsed.stage) &&
-      Number.isSafeInteger(parsed.attempts) &&
-      parsed.attempts >= 0 &&
-      Number.isFinite(parsed.nextAttemptAt)
-      ? parsed
-      : null;
+    const intake = validateDirectReReviewIntake(parsed.intake);
+    if (
+      !intake ||
+      !["verify_pending", "enqueue_pending", "effects_pending"].includes(parsed.stage) ||
+      !Number.isSafeInteger(parsed.attempts) ||
+      parsed.attempts < 0 ||
+      !Number.isFinite(parsed.nextAttemptAt)
+    ) {
+      return null;
+    }
+    parsed.intake = intake;
+    if (parsed.verifiedDecision) {
+      Reflect.deleteProperty(parsed.verifiedDecision, "bayJourneyDeliveryId");
+    }
+    return parsed;
   } catch {
     return null;
   }

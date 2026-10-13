@@ -927,7 +927,6 @@ test(
         "publicationHeadsSync",
         "freshPublicationItemKeysSync",
         "supersededPublicationItemKeysSync",
-        "syncBayLifecycle",
         "incrementQueueMetricsSync",
       ])
         instrument(h.queue, name);
@@ -1127,7 +1126,7 @@ test("retained alarm falls back to a fresh durable census after an await consume
   assert.equal(h.storage.scheduledAlarm(), NOW + 1_000);
 });
 
-test("receipt without a final timing boundary updates only its lifecycle row and never rebuilds tides", async (t) => {
+test("router receipt updates its canonical lifecycle row within a large queue", async (t) => {
   t.mock.method(Date, "now", () => NOW);
   const h = await fixture(300);
   const sql = t.mock.method(h.storage.sql, "exec");
@@ -1141,8 +1140,6 @@ test("receipt without a final timing boundary updates only its lifecycle row and
     }),
   );
   assert.equal(response.status, 200);
-  const queries = sql.mock.calls.map((call) => call.arguments[0]);
-  assert.equal(queries.filter((query) => /WITH lifecycle_events/.test(query)).length, 0);
   for (const call of sql.mock.calls.filter((call) =>
     /(?:INSERT INTO|UPDATE) exact_review_lifecycle_projection_v1/.test(call.arguments[0]),
   )) {

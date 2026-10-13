@@ -19,7 +19,6 @@ The global worker budget comes from `config/automation-limits.json`; see
 [Automation Limits](limits.md) for the derived lane limits and GitHub variable
 overrides.
 
-
 Exact-review completion sends `review_failure_reason` for every diagnostics
 manifest with `failure.stage: agent_input_scan` and `retryable: false`, using
 `failure.reason_code` verbatim. The accepted scanner reasons are
@@ -381,6 +380,11 @@ whose event was coalesced or skipped is normally reconciled within about
 cadence backstop, not a hard wall-clock guarantee during platform outages.
 OpenClaw Bay is unaffected: queue schemas, telemetry observations, and public
 observer data contracts do not change.
+
+The retired Bay telemetry materializer is not a queue wake source. Lifecycle
+receipt handlers persist their canonical facts without replaying Bay history,
+and alarms schedule only queue, batch, source-authority, command-intake, and
+credential-circuit work. Publication outcome telemetry remains independent.
 
 Queue-completion failures remain visible separately from Codex or content
 failures, using the logical generation result and typed deferral rather than

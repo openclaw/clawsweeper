@@ -396,7 +396,6 @@ test("alarm scheduling keeps a closed reason set and stable tie priority", async
       "source_authority",
       "command_intake",
       "credential_circuit",
-      "bay_recovery",
     ],
   );
 
@@ -421,7 +420,7 @@ test("alarm scheduling keeps a closed reason set and stable tie priority", async
       reason: "source_authority" | "command_intake",
     ) => Promise<void>;
     scheduleNext: (state: { deliveries: {}; items: {} }, now: number) => Promise<void>;
-    scheduledAlarmDecision: readonly [string, number, number, boolean | null, boolean] | null;
+    scheduledAlarmDecision: readonly [string, number, number] | null;
   };
   internals.batchStore.activeLeaseSnapshot = () => ({
     itemKeys: [],
@@ -435,7 +434,6 @@ test("alarm scheduling keeps a closed reason set and stable tie priority", async
   await storage.deleteAlarm();
   await internals.scheduleSourceAuthorityVerification(now + 5_000, "source_authority");
   assert.equal(internals.scheduledAlarmDecision?.[0], "source_authority");
-  assert.equal(internals.scheduledAlarmDecision?.[3], null);
   await storage.deleteAlarm();
   const intake = directReReviewIntake({
     targetRepo: "example/project",
@@ -479,23 +477,19 @@ test("alarm scheduling samples only the tenth invocation in each minute", async 
     alarmSampleWindowStartedAt: number;
     alarmSampleCount: number;
     alarmSampleLoggedAt: number;
-    scheduledAlarmDecision: readonly [string, number, number, boolean | null, boolean] | null;
+    scheduledAlarmDecision: readonly [string, number, number] | null;
   };
   const samples = () =>
     warnings.filter(([message]) => message === "exact_review_queue_alarm_schedule_sample");
-  const invoke = async (
-    reason: string,
-    bayPending: boolean | null,
-    bayBackoff: boolean,
-  ): Promise<void> => {
-    internals.scheduledAlarmDecision = [reason, now - 250, now - 1_250, bayPending, bayBackoff];
+  const invoke = async (reason: string): Promise<void> => {
+    internals.scheduledAlarmDecision = [reason, now - 250, now - 1_250];
     await queue.alarm();
   };
 
   try {
-    for (let count = 0; count < 9; count += 1) await invoke("queue", false, false);
+    for (let count = 0; count < 9; count += 1) await invoke("queue");
     assert.equal(samples().length, 0);
-    await invoke("queue", false, false);
+    await invoke("queue");
     assert.deepEqual(samples(), [
       [
         "exact_review_queue_alarm_schedule_sample",
@@ -505,31 +499,27 @@ test("alarm scheduling samples only the tenth invocation in each minute", async 
           scheduled_delay_ms: 1_000,
           alarm_lag_ms: 250,
           decision_age_ms: 1_250,
-          bay_pending: false,
-          bay_backoff: false,
         },
       ],
     ]);
-    await invoke("queue", false, false);
+    await invoke("queue");
     assert.equal(samples().length, 1);
 
     now += 60_000;
-    for (let count = 0; count < 9; count += 1) await invoke("bay_recovery", true, true);
+    for (let count = 0; count < 9; count += 1) await invoke("credential_circuit");
     assert.equal(samples().length, 1);
-    await invoke("bay_recovery", true, true);
+    await invoke("credential_circuit");
     assert.equal(samples().length, 2);
     assert.deepEqual(samples()[1]?.[1], {
       alarm_count: 10,
-      wake_reason: "bay_recovery",
+      wake_reason: "credential_circuit",
       scheduled_delay_ms: 1_000,
       alarm_lag_ms: 250,
       decision_age_ms: 1_250,
-      bay_pending: true,
-      bay_backoff: true,
     });
     now += 60_000;
     for (let count = 0; count < 10; count += 1) {
-      await invoke("source_authority", null, false);
+      await invoke("source_authority");
     }
     assert.deepEqual(samples()[2]?.[1], {
       alarm_count: 10,
@@ -537,8 +527,6 @@ test("alarm scheduling samples only the tenth invocation in each minute", async 
       scheduled_delay_ms: 1_000,
       alarm_lag_ms: 250,
       decision_age_ms: 1_250,
-      bay_pending: null,
-      bay_backoff: false,
     });
     assert.equal(fetches, 0);
     assert.equal(storage.rawHas("exact_review_queue_alarm_schedule_sample"), false);

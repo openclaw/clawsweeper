@@ -23,7 +23,6 @@ export type DirectReReviewDecision = {
   sourceAction: "re_review";
   supersedesInProgress: false;
   sourceDeliveryId: string;
-  bayJourneyDeliveryId?: string;
   sourceCommentId: number;
   sourceCommentUpdatedAt: string;
   commandBodyDigest: string;
@@ -94,7 +93,6 @@ export function directReReviewIntake(options: {
   proofAllowedScenarios?: InlineProofScenario[];
   statusCommentId?: number;
   candidateHeadSha?: string;
-  bayJourneyDeliveryId?: string;
 }): DirectReReviewIntake {
   const commandVersionId = reReviewCommandVersionIdentity({
     commentId: options.sourceCommentId,
@@ -119,7 +117,6 @@ export function directReReviewIntake(options: {
     sourceAction: "re_review",
     supersedesInProgress: false,
     sourceDeliveryId: commandVersionId,
-    ...(options.bayJourneyDeliveryId ? { bayJourneyDeliveryId: options.bayJourneyDeliveryId } : {}),
     sourceCommentId: options.sourceCommentId,
     sourceCommentUpdatedAt: options.sourceCommentUpdatedAt,
     commandBodyDigest: options.commandBodyDigest,
@@ -167,9 +164,6 @@ export function validateDirectReReviewIntake(value: unknown): DirectReReviewInta
         bodySha256: String(intake.commandBodyDigest),
       }) ||
     decision.sourceDeliveryId !== intake.commandVersionId ||
-    (decision.bayJourneyDeliveryId !== undefined &&
-      (typeof decision.bayJourneyDeliveryId !== "string" ||
-        !/^[A-Za-z0-9_.:-]{1,200}$/.test(decision.bayJourneyDeliveryId))) ||
     decision.sourceCommentId !== intake.sourceCommentId ||
     decision.sourceCommentUpdatedAt !== intake.sourceCommentUpdatedAt ||
     decision.commandBodyDigest !== intake.commandBodyDigest ||
@@ -212,7 +206,13 @@ export function validateDirectReReviewIntake(value: unknown): DirectReReviewInta
   ) {
     return null;
   }
-  return intake as DirectReReviewIntake;
+  if (!Object.hasOwn(decision, "bayJourneyDeliveryId")) return intake as DirectReReviewIntake;
+  const normalized = {
+    ...intake,
+    decision: { ...decision },
+  } as DirectReReviewIntake;
+  Reflect.deleteProperty(normalized.decision, "bayJourneyDeliveryId");
+  return normalized;
 }
 
 function directReReviewStatusMarker(itemNumber: number, commandVersionId: string) {

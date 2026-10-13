@@ -6,14 +6,12 @@ import {
   test,
   worker,
   ExactReviewQueue,
-  mergeBayJourneyState,
   ExactReviewPublicationBatchStore,
   ExactReviewDirectPublicationStore,
   validateDirectPublicationPlan,
   commandAcknowledgementState,
   ExactReviewLifecycleProjectionStore,
   lifecycleState,
-  ExactReviewLifecycleTelemetryStore,
   MemoryKv,
   MemoryDurableStorage,
   MemoryDurableNamespace,
@@ -279,11 +277,6 @@ test("publication admission retains producer lineage across provenance refresh, 
   assert.deepEqual(physicalPublication.producerLineage, link);
   assert.equal(physicalPublication.claims[0]!.runId, "9000");
   assert.equal(physicalPublication.claims[0]!.claimGeneration, generation);
-  assert.equal(
-    new ExactReviewLifecycleTelemetryStore(storage).baySnapshot(Date.now()).terminal!
-      .terminal_count,
-    1,
-  );
 });
 
 function restrictedPublicationFixture() {
@@ -660,7 +653,7 @@ for (const route of ["router-receipt", "terminal-disposition"] as const) {
       : scenario === "conflict"
         ? "rejects a conflicting terminal operation kind"
         : scenario === "derived-replay"
-          ? "reruns derived Bay and scheduling effects after a committed response failure"
+          ? "reruns scheduling after a committed response failure"
           : scenario === "rollback-requeue"
             ? "preserves a newer requeue after the original transaction rolls back"
             : requeue
@@ -823,10 +816,6 @@ for (const route of ["router-receipt", "terminal-disposition"] as const) {
         before,
       );
       if (scenario === "derived-replay") {
-        assert.equal(
-          storage.sql.queriesMatching(/INSERT INTO exact_review_lifecycle_bay_pending_v2/).length,
-          1,
-        );
         assert.equal(alarmAttempts, 2);
         assert.ok(await storage.getAlarm());
       }
@@ -2507,16 +2496,6 @@ for (const receipt of ["accepted", "deduped"] as const) {
       assert.deepEqual(f.projection()?.reviewResults, before?.reviewResults);
       assert.deepEqual(f.projection()?.routerReceipts, before?.routerReceipts);
       assert.deepEqual(f.projection()?.acknowledgement, before?.acknowledgement);
-      for (const table of [
-        "exact_review_lifecycle_bay_event_v2",
-        "exact_review_lifecycle_bay_pending_v2",
-        "exact_review_lifecycle_bay_tide_buffer_v2",
-      ]) {
-        assert.equal(
-          Array.from(f.storage.sql.exec(`SELECT COUNT(*) AS count FROM ${table}`))[0]?.count,
-          0,
-        );
-      }
       const repeated = await f.post("reconcile", { terminal_runs: [f.terminalRun] });
       assert.deepEqual(await repeated.json(), {
         ok: true,
@@ -5288,7 +5267,7 @@ test("Worker lifecycle acknowledgement preserves canonical GitHub repository cas
   assert.deepEqual(await response.json(), {
     ok: true,
     accepted: false,
-    reason: "recorded Bay journey completion",
+    reason: "recorded lifecycle acknowledgement",
   });
   assert.equal(
     lifecycleState(
@@ -5391,10 +5370,7 @@ test("Worker converges legacy and non-review acknowledgement receipts without we
       assert.deepEqual(await response.json(), {
         ok: true,
         accepted: false,
-        reason:
-          intent === "re_review"
-            ? "recorded Bay journey completion"
-            : "recorded lifecycle acknowledgement",
+        reason: "recorded lifecycle acknowledgement",
       });
       assert.equal(
         lifecycle.observeCommandAcknowledgement({
@@ -5510,7 +5486,7 @@ test("Worker binds legacy webhooks while preserving marker-only command addresse
       accepted: false,
       reason:
         mismatch === "marker-only" || mismatch === "id-only"
-          ? "recorded Bay journey completion"
+          ? "recorded lifecycle acknowledgement"
           : "unmatched lifecycle acknowledgement",
     });
     assert.equal(
@@ -5526,7 +5502,6 @@ test("signed terminal receipts bind legacy migration to its admitted status comm
   const storage = new MemoryDurableStorage();
   const queue = new ExactReviewQueue({ storage }, {});
   const lifecycle = new ExactReviewLifecycleProjectionStore(storage);
-  const statusStore = new MemoryKv();
   const now = Date.now();
   const canonicalTargetKey = "openclaw/openclaw#915";
   const statusMarker = "<!-- clawsweeper-command-status:915:re_review:migrated -->";
@@ -5567,31 +5542,10 @@ test("signed terminal receipts bind legacy migration to its admitted status comm
     statusCommentId: 9301,
     observedAt: now + 4,
   });
-  await statusStore.put(
-    "openclaw-bay:journey-state:v1",
-    JSON.stringify(
-      mergeBayJourneyState(
-        null,
-        [
-          {
-            repository: "openclaw/openclaw",
-            number: 915,
-            source_comment_id: 555,
-            source_delivery_id: "migrated-bay-delivery",
-            triggered_at: new Date(now).toISOString(),
-          },
-        ],
-        [],
-        new Date(now).toISOString(),
-      ),
-    ),
-  );
-
   const secret = "migrated-bay-secret";
   const env = {
     CLAWSWEEPER_WEBHOOK_SECRET: secret,
     EXACT_REVIEW_QUEUE: new MemoryDurableNamespace(queue),
-    STATUS_STORE: statusStore,
   };
   const sendReceipt = (admittedCommentId: number) => {
     const body = JSON.stringify({
@@ -5622,41 +5576,13 @@ test("signed terminal receipts bind legacy migration to its admitted status comm
   };
 
   assert.equal((await (await sendReceipt(9302)).json()).accepted, false);
-  const incomplete = JSON.parse((await statusStore.get("openclaw-bay:journey-state:v1"))!).journeys;
-  assert.equal(incomplete.length, 1);
-  assert.equal(incomplete[0].completed_at ?? null, null);
-
-  await statusStore.put(
-    "openclaw-bay:journey-state:v1",
-    JSON.stringify(
-      mergeBayJourneyState(
-        { schema_version: 1, journeys: incomplete },
-        [
-          {
-            repository: "openclaw/openclaw",
-            number: 915,
-            source_comment_id: 555,
-            source_delivery_id: "newer-edit",
-            triggered_at: new Date(now + 10).toISOString(),
-          },
-        ],
-        [],
-        new Date(now + 10).toISOString(),
-      ),
-    ),
+  assert.equal(
+    lifecycleState(lifecycle.read(canonicalTargetKey, identity.fenceKey, 1)!),
+    "acknowledgement_pending",
   );
-
   const response = await sendReceipt(9301);
 
   assert.equal((await response.json()).accepted, true);
-  const journeys = JSON.parse((await statusStore.get("openclaw-bay:journey-state:v1"))!).journeys;
-  const completed = journeys.find(
-    (journey) => journey.source_delivery_id === "migrated-bay-delivery",
-  );
-  const newer = journeys.find((journey) => journey.source_delivery_id === "newer-edit");
-  assert.equal(completed.completion_comment_id, 9302);
-  assert.equal(completed.completed_at, new Date(now + 5).toISOString());
-  assert.equal(newer.completed_at, null);
   assert.equal(
     lifecycleState(lifecycle.read(canonicalTargetKey, identity.fenceKey, 1)!),
     "completed",
@@ -5722,32 +5648,6 @@ test("signed migrated receipts cannot complete a newer same-marker lifecycle rev
     STATUS_STORE: statusStore,
     hostedPublicTargetProbe: async () => "public" as const,
   };
-  await statusStore.put(
-    "openclaw-bay:journey-state:v1",
-    JSON.stringify(
-      mergeBayJourneyState(
-        null,
-        [
-          {
-            repository: "openclaw/openclaw",
-            number: 917,
-            source_comment_id: 555,
-            source_delivery_id: "github-delivery:older",
-            triggered_at: new Date(now + 1).toISOString(),
-          },
-          {
-            repository: "openclaw/openclaw",
-            number: 917,
-            source_comment_id: 555,
-            source_delivery_id: "github-delivery:newer",
-            triggered_at: new Date(now + 2).toISOString(),
-          },
-        ],
-        [],
-        new Date(now).toISOString(),
-      ),
-    ),
-  );
   const payload = {
     canonical_target_key: target,
     fence_key: `${target}@exact:older`,
@@ -5831,12 +5731,6 @@ test("signed migrated receipts cannot complete a newer same-marker lifecycle rev
     lifecycleState(lifecycle.read(target, `${target}@exact:newer`, 2)!),
     "acknowledgement_pending",
   );
-  const journeys = JSON.parse((await statusStore.get("openclaw-bay:journey-state:v1"))!).journeys;
-  const older = journeys.find((journey) => journey.source_delivery_id === "github-delivery:older");
-  const newer = journeys.find((journey) => journey.source_delivery_id === "github-delivery:newer");
-  assert.equal(older.completed_at, payload.completed_at);
-  assert.equal(newer.completed_at, null);
-
   const malformed = await queue.fetch(
     new Request("https://clawsweeper-exact-review-queue/lifecycle/command-ack/observed", {
       method: "POST",

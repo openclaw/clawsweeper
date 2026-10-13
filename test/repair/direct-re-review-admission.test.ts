@@ -56,3 +56,14 @@ test("malformed proof scope cannot become an unrestricted admitted review", () =
     );
   }
 });
+
+test("historical command intake retains canonical identity despite retired journey metadata", () => {
+  const intake = directReReviewIntake(options);
+  for (const bayJourneyDeliveryId of ["historical-delivery", null, { legacy: true }]) {
+    const restored = validateDirectReReviewIntake({
+      ...intake,
+      decision: { ...intake.decision, bayJourneyDeliveryId },
+    });
+    assert.deepEqual(restored, intake);
+  }
+});

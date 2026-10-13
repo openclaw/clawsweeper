@@ -891,8 +891,8 @@ const EXACT_REVIEW_ALARM_SAMPLE_WINDOW_MS = 60_000;
 const EXACT_REVIEW_ALARM_SAMPLE_THRESHOLD = 10;
 type AlarmWakeReason =
   | `batch_${"lease" | "departure"}`
-  | `${"queue" | "source_authority" | "command_intake" | "credential_circuit" | "bay_recovery"}`;
-type AlarmScheduleDecision = readonly [AlarmWakeReason, number, number, boolean | null, boolean];
+  | `${"queue" | "source_authority" | "command_intake" | "credential_circuit"}`;
+type AlarmScheduleDecision = readonly [AlarmWakeReason, number, number];
 // A watchdog may keep a synchronous Git operation alive, but it cannot turn a
 // hung runner into a permanent queue owner. The Git fence blocks any in-flight
 // push that outlives this absolute coordinator horizon.
@@ -915,20 +915,6 @@ const RECORD_EXPORT_SECTIONS: readonly RecordSection[] = [
 
 export function exactReviewQueueCapacity(env) {
   return exactReviewQueueCapacityFromReadModel(env, DEFAULT_EXACT_REVIEW_ACTIONS_BUDGET);
-}
-
-function exactReviewPublicBayRepositories(env): Set<string> {
-  const repositories = String(env?.PUBLIC_BAY_REPOS || "")
-    .split(",")
-    .map((value) => value.trim().toLowerCase())
-    .filter(Boolean);
-  if (
-    repositories.length > 32 ||
-    repositories.some((repository) => !/^[a-z0-9_.-]+\/[a-z0-9_.-]+$/.test(repository))
-  ) {
-    return new Set();
-  }
-  return new Set(repositories);
 }
 
 function rethrowQueueFailure(
@@ -1044,9 +1030,6 @@ export class ExactReviewQueue {
     return this.reviewCoverageScanInFlight;
   }
 
-  // Back off a wedged Bay row without adding durable queue state. Any durable
-  // progress clears this single-slot deadline so the one-second drain resumes.
-  private bayTelemetryNoProgressDeadline: number | null = null;
   private alarmSampleWindowStartedAt = Number.NEGATIVE_INFINITY;
   private alarmSampleCount = 0;
   private alarmSampleLoggedAt = -1;
@@ -1083,16 +1066,13 @@ export class ExactReviewQueue {
       env.STATE_SNAPSHOTS,
     );
     this.githubWebhookReadModelStore = new GithubWebhookReadModelStore(this.storage);
-    // Establish lifecycle telemetry schemas and repository coverage before
-    // requests run; full queue initialization and migration remain deferred.
+    // Establish lifecycle schemas before requests run; full queue initialization
+    // and migration remain deferred.
     if (typeof state.blockConcurrencyWhile === "function") {
       state.blockConcurrencyWhile(async () => {
         try {
           this.lifecycleProjectionStore.ensureSchemaSync();
           this.lifecycleTelemetryStore.ensureSchemaSync();
-          this.lifecycleTelemetryStore.syncBayRepositoryScope(
-            exactReviewPublicBayRepositories(this.env),
-          );
         } catch (error) {
           rethrowQueueFailure(error, "initialize");
         }
@@ -1135,7 +1115,6 @@ export class ExactReviewQueue {
         ok: true,
         generated_at: new Date().toISOString(),
         storage: storageStats(this.storage.sql),
-        tide_source_scans: this.lifecycleTelemetryStore.tideSourceScanStats(),
       });
     }
 
@@ -1458,9 +1437,6 @@ export class ExactReviewQueue {
           accepted: admitted.accepted,
           ...(admitted.accepted ? { deduped: admitted.deduped } : { reason: admitted.reason }),
           command_version_id: admitted.commandVersionId,
-          ...(admitted.accepted && admitted.bayJourneyDeliveryId
-            ? { bay_journey_delivery_id: admitted.bayJourneyDeliveryId }
-            : {}),
         },
         202,
       );
@@ -1818,10 +1794,6 @@ export class ExactReviewQueue {
       const activeBatchItemKeys = incomingPublicationRevision
         ? new Set(this.batchStore.activeLeaseSnapshot(now).itemKeys)
         : new Set<string>();
-      // Command revisions write their terminal lifecycle source row while this
-      // enqueue transaction is open. Materialize its Bay aggregate only after
-      // that transaction commits: Durable Objects reject nested transactions.
-      let deferredBayLifecycle: ExactReviewLifecycleProjection | null = null;
       const accepted = this.storage.transactionSync(() => {
         this.pruneDeliveryReceiptsSync(now);
         this.pruneIngressReceiptsSync(now);
@@ -2428,13 +2400,12 @@ export class ExactReviewQueue {
               exactReviewDecisionHasCommandContext(current.decision) ||
               exactReviewDecisionHasCommandContext(nextDecision)
             ) {
-              const transition = this.transitionCommandRevision(state, current, nextDecision, now, {
+              this.transitionCommandRevision(state, current, nextDecision, now, {
                 allocatedRevision: nextRevision,
                 admissionDeliveryId: deliveryId,
                 retainPriorLifecycle:
                   queuesCommandFollowUp && current.revision === current.leaseRevision,
               });
-              deferredBayLifecycle = transition.terminal;
             } else {
               current.decision = nextDecision;
               current.revision = nextRevision;
@@ -2706,7 +2677,6 @@ export class ExactReviewQueue {
           scheduledDispositionJson,
         };
       });
-      if (deferredBayLifecycle) this.syncBayLifecycle(deferredBayLifecycle);
       if ("scannerRefused" in accepted) {
         return json({ ok: true, accepted: false, reason: "scanner_refused" }, 202);
       }
@@ -5376,29 +5346,24 @@ export class ExactReviewQueue {
         scheduled_delay_ms: decision ? Math.max(0, decision[1] - decision[2]) : null,
         alarm_lag_ms: decision ? Math.max(0, startedAt - decision[1]) : null,
         decision_age_ms: decision ? Math.max(0, startedAt - decision[2]) : null,
-        bay_pending: decision ? decision[3] : null,
-        bay_backoff: decision?.[4] ?? false,
       });
       this.alarmSampleLoggedAt = startedAt;
     }
     await this.storage.deleteAlarm();
     this.scheduledAlarmDecision = null;
-    this.reconcileBayTelemetryInternalSync(startedAt);
     await this.processBranchAuthorityReservations(startedAt, hostedTargetMetadataToken);
     await this.processSourceAuthorityReservations(startedAt, hostedTargetMetadataToken);
     await this.processCommandIntakes(startedAt, hostedTargetMetadataToken);
     const batchItemKeys = new Set<string>(this.batchStore.activeLeaseSnapshot(startedAt).itemKeys);
-    let terminalized: ExactReviewLifecycleProjection[] = [];
     let snapshot = this.storage.transactionSync(() => {
       this.pruneDeliveryReceiptsSync(startedAt);
       this.commandIntakeStore.pruneTerminalReceipts(startedAt);
       this.directPublicationStore.pruneTerminalSync(startedAt);
       const current = this.readStateSync();
       this.syncLegacyCompatibilitySync(current);
-      terminalized = this.pruneStalePublicationsSync(current, batchItemKeys, startedAt);
+      this.pruneStalePublicationsSync(current, batchItemKeys, startedAt);
       return current;
     });
-    for (const projection of terminalized) this.syncBayLifecycle(projection);
     let snapshotBatchOwnership = this.batchStore.activeLeaseSnapshot(startedAt);
     const reclaimedSnapshot = reclaimExpiredExactReviewLeases(
       snapshot,
@@ -7885,7 +7850,6 @@ export class ExactReviewQueue {
     );
     const hasCommand = exactReviewDecisionHasCommandContext;
     let changed = 0;
-    const terminalized: ExactReviewLifecycleProjection[] = [];
     for (const { item, revision } of stale) {
       if (changed >= limit) break;
       const current = state.items[item.key];
@@ -7921,15 +7885,13 @@ export class ExactReviewQueue {
           commandStatusMarker: evidence.admission.statusMarker ?? undefined,
           statusCommentId: evidence.admission.statusCommentId ?? undefined,
         });
-        terminalized.push(
-          this.recordLifecycleTerminalDispositionSync(
-            exactReviewTerminalFinalizationProjection(current, current.revision),
-            requeue ? "requeue" : "superseded",
-            now,
-            state,
-            undefined,
-            false,
-          ).projection,
+        this.recordLifecycleTerminalDispositionSync(
+          exactReviewTerminalFinalizationProjection(current, current.revision),
+          requeue ? "requeue" : "superseded",
+          now,
+          state,
+          undefined,
+          false,
         );
         if (requeue) delete state.items[current.key];
       } else {
@@ -7944,7 +7906,6 @@ export class ExactReviewQueue {
         publicationSuperseded: changed,
       });
     }
-    return terminalized;
   }
 
   private async reconcilePublicationCandidates(
@@ -9402,8 +9363,6 @@ export class ExactReviewQueue {
     // older or unrelated PR edit into the timing origin for @review/@re-review.
     // Scheduled review candidates preserve their source update time for review
     // policy, but their lifecycle begins only when this queue admits them.
-    // Otherwise an old backfill candidate can produce a valid completion whose
-    // duration is outside the bounded Bay metric domain.
     const sourceTriggeredAt = Date.parse(
       String(
         exactReviewScheduledLane(sourceDecision)
@@ -9449,9 +9408,6 @@ export class ExactReviewQueue {
       ...(sourceDecision.sourceDeliveryId
         ? { sourceDeliveryId: sourceDecision.sourceDeliveryId }
         : {}),
-      ...(sourceDecision.bayJourneyDeliveryId
-        ? { bayJourneyDeliveryId: sourceDecision.bayJourneyDeliveryId }
-        : {}),
       ...(Number.isFinite(sourceTriggeredAt) && sourceTriggeredAt <= now
         ? { triggeredAt: sourceTriggeredAt }
         : {}),
@@ -9472,7 +9428,6 @@ export class ExactReviewQueue {
       retainPriorLifecycle?: boolean;
     } = {},
   ) {
-    let terminal: ExactReviewLifecycleProjection | null = null;
     if (!options.newItem) {
       const prior = this.recordLifecycleAdmission(item, item.decision, now);
       if (prior && !options.retainPriorLifecycle) {
@@ -9480,7 +9435,7 @@ export class ExactReviewQueue {
           ? "requeue"
           : "superseded";
         const committedKind = prior.terminalDisposition?.kind;
-        terminal =
+        const terminal =
           committedKind && committedKind !== "requeue"
             ? prior
             : this.lifecycleProjectionStore.recordTerminalDispositionSync({
@@ -9512,7 +9467,6 @@ export class ExactReviewQueue {
     item.updatedAt = now;
     state.items[item.key] = item;
     this.recordLifecycleAdmission(item, decision, now, undefined, true);
-    return { item, terminal };
   }
 
   private recordLifecycleClaim(item: ExactReviewQueueItem, now: number) {
@@ -9604,12 +9558,11 @@ export class ExactReviewQueue {
       identity.revision,
     );
     if (!projection) return;
-    const terminal = this.lifecycleProjectionStore.recordTerminalDisposition({
+    this.lifecycleProjectionStore.recordTerminalDisposition({
       ...identity,
       kind: completionTerminalDisposition(projection, identity.kind) ?? identity.kind,
       observedAt: now,
     });
-    this.syncBayLifecycle(terminal);
   }
 
   private recordHostedTargetTerminal(item: ExactReviewQueueItem, now: number) {
@@ -9963,45 +9916,11 @@ export class ExactReviewQueue {
       observedAt: now,
     });
     if (accepted.outcome === "superseded") {
-      const terminal = this.lifecycleProjectionStore.recordTerminalDisposition({
+      this.lifecycleProjectionStore.recordTerminalDisposition({
         ...identity,
         kind: "superseded",
         observedAt: now,
       });
-      this.syncBayLifecycle(terminal);
-    }
-  }
-
-  private syncBayLifecycle(projection: ExactReviewLifecycleProjection) {
-    try {
-      if (!this.lifecycleTelemetryStore.syncBayLifecycle(projection)) return false;
-      return true;
-    } catch {
-      return false;
-    }
-  }
-
-  private bayTelemetryRecoveryPendingSync() {
-    return this.lifecycleTelemetryStore.hasBayLifecyclePending(true);
-  }
-
-  private reconcileBayTelemetryInternalSync(now = Date.now()) {
-    if (this.bayTelemetryNoProgressDeadline && now < this.bayTelemetryNoProgressDeadline)
-      return false;
-    let progressed = false;
-    try {
-      const source = this.lifecycleProjectionStore.reconcileBayTelemetryPending((projection) =>
-        this.lifecycleTelemetryStore.syncBayLifecycle(projection),
-      );
-      progressed = source.progressed;
-      const outbox = this.lifecycleTelemetryStore.reconcileBayLifecyclePending();
-      const pending = source.pending || outbox.pending;
-      this.bayTelemetryNoProgressDeadline =
-        pending && !(progressed || outbox.progressed) ? now + 60_000 : null;
-      return !pending;
-    } catch {
-      this.bayTelemetryNoProgressDeadline = progressed ? null : now + 60_000;
-      return false;
     }
   }
 
@@ -10120,7 +10039,6 @@ export class ExactReviewQueue {
         kind: disposition,
         observedAt: now,
       });
-      this.syncBayLifecycle(terminal);
       return terminal;
     }
     return reviewed;
@@ -10215,7 +10133,6 @@ export class ExactReviewQueue {
         if (driverChanged || receiptRemoved) this.writeStateSync(state);
         return { projection, duplicate: false };
       });
-      this.syncBayLifecycle(result.projection);
       await this.scheduleNext(state ?? this.readSchedulingStateSync(), now);
       return json({
         ok: true,
@@ -10507,7 +10424,7 @@ export class ExactReviewQueue {
     now: number,
   ) {
     const identity = exactReviewTerminalFinalizationProjection(item, item.revision);
-    const projection = this.storage.transactionSync(() => {
+    this.storage.transactionSync(() => {
       const existing = this.lifecycleProjectionStore.read(
         identity.canonicalTargetKey,
         identity.fenceKey,
@@ -10516,19 +10433,16 @@ export class ExactReviewQueue {
       // Retain already-observed history, but revoke an unobserved plan before
       // deleting its fenced driver. A later webhook cannot recreate an
       // unfenced driver from the old target_closed fact or accept its receipt.
-      const cancelled =
-        existing && !existing.acknowledgement.observed
-          ? this.lifecycleProjectionStore.cancelParkedCommandClosureSync({
-              ...identity,
-              observedAt: now,
-            }).projection
-          : null;
+      if (existing && !existing.acknowledgement.observed) {
+        this.lifecycleProjectionStore.cancelParkedCommandClosureSync({
+          ...identity,
+          observedAt: now,
+        });
+      }
       releaseParkedCommandWrite(state, item, now);
       delete state.items[item.key];
       this.writeStateSync(state);
-      return cancelled;
     });
-    if (projection) this.syncBayLifecycle(projection);
   }
 
   private async beginTerminalFinalizationAcknowledgement(value: unknown) {
@@ -10673,12 +10587,11 @@ export class ExactReviewQueue {
       return json({ ok: true, allowed: true, write_fenced: true });
     }
     try {
-      const terminal = this.lifecycleProjectionStore.recordTerminalDisposition({
+      this.lifecycleProjectionStore.recordTerminalDisposition({
         ...identity,
         kind: finalization.disposition,
         observedAt: now,
       });
-      this.syncBayLifecycle(terminal);
       const result = this.lifecycleProjectionStore.authorizeCommandAcknowledgement({
         ...identity,
         statusMarker,
@@ -10881,15 +10794,6 @@ export class ExactReviewQueue {
         ...(requireExactStatusComment ? { requireExactStatusComment: true } : {}),
         observedAt: recordedAt,
       });
-      // The final command-status receipt is the end-to-end Bay boundary. The
-      // routing terminal was recorded earlier and must not publish a duration
-      // until this correlated receipt has arrived.
-      if (result.accepted && result.projection) {
-        // observeCommandAcknowledgement persists the observed receipt and its
-        // outbox marker atomically. Materialization may then fail and replay
-        // safely, but it cannot lose this timing boundary between writes.
-        this.syncBayLifecycle(result.projection);
-      }
       if (result.accepted && result.projection) {
         const state = this.readStateSync();
         const drivers = Object.values(state.items).filter((item) => {
@@ -10919,10 +10823,6 @@ export class ExactReviewQueue {
         ...((fenceKey !== undefined || includeDeliveryIdentity === true) &&
         result.projection?.admission.sourceDeliveryId
           ? { source_delivery_id: result.projection.admission.sourceDeliveryId }
-          : {}),
-        ...((fenceKey !== undefined || includeDeliveryIdentity === true) &&
-        result.projection?.admission.bayJourneyDeliveryId
-          ? { bay_journey_delivery_id: result.projection.admission.bayJourneyDeliveryId }
           : {}),
       });
     } catch {
@@ -11023,7 +10923,6 @@ export class ExactReviewQueue {
           typeof operationId === "string" ? operationId : undefined,
         ),
       );
-      this.syncBayLifecycle(result.projection);
       await this.scheduleNext(this.readStateSync(), now);
       return json({
         ok: true,
@@ -11297,7 +11196,6 @@ export class ExactReviewQueue {
     this.stateWriterCoordinator.ensureSchemaSync();
     this.lifecycleProjectionStore.ensureSchemaSync();
     this.lifecycleTelemetryStore.ensureSchemaSync();
-    this.lifecycleTelemetryStore.syncBayRepositoryScope(exactReviewPublicBayRepositories(this.env));
     this.githubEgressTelemetryStore.ensureSchemaSync();
     this.artifactReceiptStore.ensureSchemaSync();
     this.githubWebhookReadModelStore.ensureSchemaSync();
@@ -14631,8 +14529,7 @@ export class ExactReviewQueue {
     next = Math.max(now + 1_000, next);
     if (scheduled === null || next < scheduled) {
       await this.storage.setAlarm(next);
-      const backoff = (this.bayTelemetryNoProgressDeadline ?? 0) > now;
-      this.scheduledAlarmDecision = [reason, next, now, null, backoff];
+      this.scheduledAlarmDecision = [reason, next, now];
     }
   }
 
@@ -14725,11 +14622,6 @@ export class ExactReviewQueue {
     const sourceAuthorityNext = await this.nextSourceAuthorityVerificationAt();
     const commandIntakeNext = this.commandIntakeStore.nextAttemptAt();
     const credentialCircuitNext = exactReviewGithubCircuitNextWakeAt(state, now);
-    const bayTelemetryRecoveryPending = this.bayTelemetryRecoveryPendingSync();
-    if (!bayTelemetryRecoveryPending) this.bayTelemetryNoProgressDeadline = null;
-    const bayTelemetryRecoveryNext = bayTelemetryRecoveryPending
-      ? Math.max(now + 1_000, this.bayTelemetryNoProgressDeadline ?? 0)
-      : null;
     const candidates: Array<readonly [AlarmWakeReason, number | null]> = [
       ["queue", queueNext],
       ["batch_lease", batchOwnership.nextLeaseExpiresAt],
@@ -14737,7 +14629,6 @@ export class ExactReviewQueue {
       ["source_authority", sourceAuthorityNext],
       ["command_intake", commandIntakeNext],
       ["credential_circuit", credentialCircuitNext],
-      ["bay_recovery", bayTelemetryRecoveryNext],
     ];
     const selected = candidates.reduce(
       (a, b) => (b[1] !== null && b[1] < (a?.[1] ?? Infinity) ? b : a),
@@ -14782,13 +14673,7 @@ export class ExactReviewQueue {
           new_alarm_at: next,
         });
       }
-      this.scheduledAlarmDecision = [
-        selected[0],
-        next,
-        schedulingNow,
-        bayTelemetryRecoveryPending,
-        (this.bayTelemetryNoProgressDeadline ?? 0) > now,
-      ];
+      this.scheduledAlarmDecision = [selected[0], next, schedulingNow];
       if (recoverStrandedAlarm && typeof this.state.waitUntil === "function") {
         // Alarm delivery may itself be unavailable. Use the same processor and
         // its admission checks, without holding the incoming request open.

@@ -52,7 +52,6 @@ export type ExactReviewBaseDecision = {
   sourceAuthoritySeq?: number;
   sourceUpdatedAt?: string;
   sourceDeliveryId?: string;
-  bayJourneyDeliveryId?: string;
   codexTimeoutMs?: number;
   mediaProofTimeoutMs?: number;
   commandStatusMarker?: string;
@@ -380,8 +379,6 @@ export function exactReviewBaseDecisionFrom(value: unknown): ExactReviewBaseDeci
     : undefined;
   const hasSourceDeliveryId = Object.hasOwn(decision, "sourceDeliveryId");
   const sourceDeliveryId = hasSourceDeliveryId ? decision.sourceDeliveryId : undefined;
-  const hasBayJourneyDeliveryId = Object.hasOwn(decision, "bayJourneyDeliveryId");
-  const bayJourneyDeliveryId = hasBayJourneyDeliveryId ? decision.bayJourneyDeliveryId : undefined;
   const hasCommandStatusMarker = Object.hasOwn(decision, "commandStatusMarker");
   const commandStatusMarker = hasCommandStatusMarker ? decision.commandStatusMarker : undefined;
   const hasStatusCommentId = Object.hasOwn(decision, "statusCommentId");
@@ -436,13 +433,6 @@ export function exactReviewBaseDecisionFrom(value: unknown): ExactReviewBaseDeci
   if (
     hasSourceDeliveryId &&
     (typeof sourceDeliveryId !== "string" || !/^[A-Za-z0-9_.:-]{1,200}$/.test(sourceDeliveryId))
-  ) {
-    return null;
-  }
-  if (
-    hasBayJourneyDeliveryId &&
-    (typeof bayJourneyDeliveryId !== "string" ||
-      !/^[A-Za-z0-9_.:-]{1,200}$/.test(bayJourneyDeliveryId))
   ) {
     return null;
   }
@@ -522,7 +512,6 @@ export function exactReviewBaseDecisionFrom(value: unknown): ExactReviewBaseDeci
     ...(sourceAuthoritySeq === undefined ? {} : { sourceAuthoritySeq }),
     ...(sourceUpdatedAt === undefined ? {} : { sourceUpdatedAt }),
     ...(typeof sourceDeliveryId === "string" ? { sourceDeliveryId } : {}),
-    ...(typeof bayJourneyDeliveryId === "string" ? { bayJourneyDeliveryId } : {}),
     ...(Number.isFinite(Number(decision.codexTimeoutMs))
       ? { codexTimeoutMs: Number(decision.codexTimeoutMs) }
       : {}),

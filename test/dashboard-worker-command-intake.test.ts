@@ -10,13 +10,13 @@ import {
 import { exactReviewSourceRevisionMaterial } from "../dashboard/exact-review-source-revision.ts";
 import {
   assert,
+  commandAcknowledgementState,
   ExactReviewQueue,
   ExactReviewLifecycleProjectionStore,
   MemoryKv,
   MemoryDurableNamespace,
   MemoryDurableStorage,
   test,
-  bayJourneyTimingSnapshot,
   worker,
 } from "./dashboard-worker-harness.ts";
 
@@ -399,7 +399,6 @@ test("durable command intake survives target throttling before queue admission",
     accepted: true,
     deduped: false,
     command_version_id: commandVersionId(),
-    bay_journey_delivery_id: "delivery-command-1",
   });
   assert.equal(fixture.acknowledgements.length, 0);
 
@@ -478,7 +477,7 @@ test("durable command intake survives target throttling before queue admission",
   assert.equal(fixture.acknowledgements.length, 1);
 });
 
-test("hosted durable command intake keeps the GitHub delivery identity for Bay journey completion", async (t) => {
+test("hosted durable command intake deduplicates redelivery and records canonical acknowledgement", async (t) => {
   const fixture = await startGithubLoopback();
   t.after(() => fixture.close());
   const storage = new MemoryDurableStorage();
@@ -542,12 +541,6 @@ test("hosted durable command intake keeps the GitHub delivery identity for Bay j
   assert.equal(redelivery.status, 202);
   const redeliveryResult = await redelivery.json();
   assert.equal(redeliveryResult.deduped, true);
-  assert.equal(redeliveryResult.bay_journey_delivery_id, commandDeliveryId);
-  const stateAfterRedelivery = JSON.parse(
-    (await statusStore.get("openclaw-bay:journey-state:v1")) || "{}",
-  );
-  assert.equal(stateAfterRedelivery.journeys.length, 1);
-  assert.equal(stateAfterRedelivery.journeys[0]?.source_delivery_id, commandDeliveryId);
   const intake = directReReviewIntake({
     targetRepo: "openclaw/openclaw",
     targetBranch: "main",
@@ -559,11 +552,10 @@ test("hosted durable command intake keeps the GitHub delivery identity for Bay j
     commandBodyDigest: createHash("sha256").update(COMMAND_BODY).digest("hex"),
     commandOrigin: "hosted_webhook",
     additionalPrompt: "",
-    bayJourneyDeliveryId: commandDeliveryId,
   });
   assert.equal(
-    commandIntakeRecord(storage, intake.commandVersionId)?.intake.decision.bayJourneyDeliveryId,
-    commandDeliveryId,
+    commandIntakeRecord(storage, intake.commandVersionId)?.intake.commandVersionId,
+    intake.commandVersionId,
   );
 
   fixture.sourceCommentUpdatedAt = commandAt;
@@ -584,7 +576,7 @@ test("hosted durable command intake keeps the GitHub delivery identity for Bay j
     identity.fenceKey,
     identity.revision,
   );
-  assert.equal(projection?.admission.bayJourneyDeliveryId, commandDeliveryId);
+  assert.equal(projection?.admission.sourceDeliveryId, intake.commandVersionId);
   const completionCommentId = 90_002;
   lifecycle.recordCanonicalReceipt({
     ...identity,
@@ -644,17 +636,7 @@ test("hosted durable command intake keeps the GitHub delivery identity for Bay j
     {},
   );
   assert.equal(acknowledgement.status, 200);
-  assert.equal((await acknowledgement.json()).bay_journey_delivery_id, commandDeliveryId);
-  const stateAfterAcknowledgement = JSON.parse(
-    (await statusStore.get("openclaw-bay:journey-state:v1")) || "{}",
-  );
-  assert.equal(stateAfterAcknowledgement.journeys.length, 1);
-  assert.equal(stateAfterAcknowledgement.journeys[0]?.source_delivery_id, commandDeliveryId);
-  assert.equal(
-    bayJourneyTimingSnapshot(stateAfterAcknowledgement.journeys, new Date().toISOString()).overall
-      .samples,
-    1,
-  );
+  assert.equal((await acknowledgement.json()).accepted, true);
 
   const completionBody = JSON.stringify({
     action: "edited",
@@ -695,17 +677,14 @@ test("hosted durable command intake keeps the GitHub delivery identity for Bay j
   assert.deepEqual(await completion.json(), {
     ok: true,
     accepted: false,
-    reason: "recorded Bay journey completion",
+    reason: "recorded lifecycle acknowledgement",
   });
 
-  const state = JSON.parse((await statusStore.get("openclaw-bay:journey-state:v1")) || "{}");
-  assert.equal(state.journeys.length, 1);
-  assert.equal(state.journeys[0]?.source_delivery_id, commandDeliveryId);
-  assert.ok(state.journeys[0]?.triggered_at);
-  assert.ok(state.journeys[0]?.completed_at);
   assert.equal(
-    bayJourneyTimingSnapshot(state.journeys, new Date().toISOString()).overall.samples,
-    1,
+    commandAcknowledgementState(
+      lifecycle.read(identity.canonicalTargetKey, identity.fenceKey, identity.revision)!,
+    ),
+    "observed",
   );
 });
 

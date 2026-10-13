@@ -613,64 +613,6 @@ test("dashboard durable status store persists, expires, and prepends events", as
     [{ id: "second" }, { id: "first" }],
   );
 
-  const bayStoreUrl = `https://clawsweeper-status-store/${encodeURIComponent(
-    "openclaw-bay:terminal-state:v1",
-  )}`;
-  for (const number of [501, 502]) {
-    const response = await store.fetch(
-      new Request(bayStoreUrl, {
-        method: "POST",
-        body: JSON.stringify({
-          attempts: [
-            {
-              run_id: number,
-              job_id: number,
-              repository: "openclaw/openclaw",
-              item_numbers: [number],
-              outcome: "success",
-              terminal_outcome: "success",
-              completed_at: `2026-07-11T12:00:${String(number - 500).padStart(2, "0")}Z`,
-            },
-          ],
-          closed_items: [],
-          generated_at: `2026-07-11T12:00:${String(number - 500).padStart(2, "0")}Z`,
-          ttl_seconds: 60,
-        }),
-      }),
-    );
-    assert.equal(response.status, 200);
-  }
-  const persistedBay = JSON.parse(await (await store.fetch(new Request(bayStoreUrl))).text());
-  const bayPutsBeforeReplay = storage.putCount("openclaw-bay:terminal-state:v1");
-  const replay = await store.fetch(
-    new Request(bayStoreUrl, {
-      method: "POST",
-      body: JSON.stringify({
-        attempts: [
-          {
-            run_id: 502,
-            job_id: 502,
-            repository: "openclaw/openclaw",
-            item_numbers: [502],
-            outcome: "success",
-            terminal_outcome: "success",
-            completed_at: "2026-07-11T12:00:02Z",
-          },
-        ],
-        closed_items: [],
-        generated_at: "2026-07-11T12:00:03Z",
-        ttl_seconds: 60,
-      }),
-    }),
-  );
-  assert.equal(replay.status, 200);
-  assert.equal(storage.putCount("openclaw-bay:terminal-state:v1"), bayPutsBeforeReplay);
-  assert.equal(JSON.parse(await replay.text()).updated_at, persistedBay.updated_at);
-  assert.deepEqual(
-    persistedBay.terminal_buffer.map((item: { number: number }) => item.number),
-    [501, 502],
-  );
-
   await store.fetch(
     new Request("https://clawsweeper-status-store/events", {
       method: "PUT",
