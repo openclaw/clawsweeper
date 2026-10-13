@@ -1,0 +1,1 @@
+- Fix the dashboard Worker deploy after the `/bay` removal: drop the unused `[assets]` block. Its directory held only Bay assets, so it no longer exists in a clean checkout and `wrangler deploy` failed.
