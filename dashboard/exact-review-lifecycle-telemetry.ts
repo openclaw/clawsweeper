@@ -190,6 +190,8 @@ type BayReconciliationAggregate = {
 export class ExactReviewLifecycleTelemetryStore {
   private readonly storage: DurableStorage;
   private schemaReady = false;
+  // Full-table tide source scans since this object instance started (not persisted).
+  private readonly tideSourceScans = { since: Date.now(), count: 0, lastAt: 0 };
 
   constructor(storage: DurableStorage) {
     this.storage = storage;
@@ -1817,7 +1819,7 @@ export class ExactReviewLifecycleTelemetryStore {
    * That keeps recovery convergent after the source table outgrows a sampled
    * public-read limit.
    */
-  private lifecycleTideProgressFromSourceSync(
+  private scanTideProgressFromSourceSync(
     scope: string,
     coverageStartedAt: number,
     replacement?: ExactReviewLifecycleProjection,
@@ -2009,6 +2011,33 @@ export class ExactReviewLifecycleTelemetryStore {
     if ((tideBoundary === 0) !== (lastTideAt === null))
       throw new Error("invalid Bay lifecycle tide boundary");
     return { baseCount: total, lastTideAt, recentlyWashed, terminalBuffer };
+  }
+
+  /**
+   * The source scan reads every lifecycle projection row, so its cost grows with the table.
+   * Count each run (per object instance, reset on restart) for the storage report. No timing:
+   * the Workers clock does not advance during synchronous work, so it would read about zero.
+   */
+  private lifecycleTideProgressFromSourceSync(
+    scope: string,
+    coverageStartedAt: number,
+    replacement?: ExactReviewLifecycleProjection,
+    identity?: readonly [string, string, number],
+    triggerCoverageStartedAt: number | null = coverageStartedAt,
+  ) {
+    this.tideSourceScans.count++;
+    this.tideSourceScans.lastAt = Date.now();
+    return this.scanTideProgressFromSourceSync(
+      scope,
+      coverageStartedAt,
+      replacement,
+      identity,
+      triggerCoverageStartedAt,
+    );
+  }
+
+  tideSourceScanStats() {
+    return { ...this.tideSourceScans };
   }
 
   private lifecycleProjectionTableExistsSync() {

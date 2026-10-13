@@ -145,6 +145,7 @@ import {
 import { recentDurablePublicationEvents } from "./recent-durable-publication-events.ts";
 import { sanitizedServerError } from "./error-safety.ts";
 import { GithubWebhookReadModelStore } from "./github-webhook-read-model.ts";
+import { storageStats } from "./storage-stats.ts";
 import {
   ExactReviewArtifactReceiptStore,
   exactReviewArtifactReceiptTuple,
@@ -3875,6 +3876,16 @@ export class ExactReviewQueue {
         digest: record.digest,
         revision: record.revision,
         updatedAt: new Date(record.updatedAt).toISOString(),
+      });
+    }
+
+    // Read-only size report: Cloudflare shows only the total stored bytes.
+    if (request.method === "POST" && url.pathname === "/storage/stats") {
+      return json({
+        ok: true,
+        generated_at: new Date().toISOString(),
+        storage: storageStats(this.storage.sql),
+        tide_source_scans: this.lifecycleTelemetryStore.tideSourceScanStats(),
       });
     }
 
