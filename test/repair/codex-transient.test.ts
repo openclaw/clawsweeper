@@ -43,12 +43,12 @@ test("Codex model capacity errors are retryable, not terminal", () => {
   assert.equal(isRetryableCodexErrorMessage(message), true);
   assert.equal(isTerminalCodexErrorMessage(message), false);
   assert.equal(isCodexContextLimitError(message), false);
-  assert.equal(
-    isRetryableCodexTransportError(
-      "review tree budget: required filesystem capacity is unavailable",
-    ),
-    false,
-  );
+  for (const unrelated of [
+    "review tree budget: required filesystem capacity is unavailable",
+    "Service is at capacity\nCodex execution failed.",
+  ]) {
+    assert.equal(isRetryableCodexTransportError(unrelated), false, unrelated);
+  }
 });
 
 test("Codex model access failures are terminal even when the stream disconnects", () => {

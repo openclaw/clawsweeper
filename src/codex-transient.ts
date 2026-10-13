@@ -2,9 +2,11 @@ const CODEX_MODEL_ACCESS_PREFIX = "the model ";
 const CODEX_MODEL_ACCESS_SUFFIX = " does not exist or you do not have access to it";
 const CODEX_HUMAN_RETRY_HINT_MAX_BYTES = 4096;
 
-// Provider rate limits and capacity errors, including "Selected model is at capacity".
+// Provider rate limits and capacity errors. Failed-review retry eligibility also
+// scans report text with item titles, so the capacity phrase stays the full
+// provider diagnostic rather than a bare "at capacity".
 export const CODEX_PROVIDER_CAPACITY_ERROR =
-  /rate limit reached|tokens per min|\bTPM\b|requests per min|\b429\b|temporarily unavailable|overloaded|\bat capacity\b|please try again in \d+(?:\.\d+)?(?:ms|s)/i;
+  /rate limit reached|tokens per min|\bTPM\b|requests per min|\b429\b|temporarily unavailable|overloaded|selected model is at capacity|please try again in \d+(?:\.\d+)?(?:ms|s)/i;
 
 export function isRetryableCodexTransportError(value: string | null | undefined): boolean {
   const message = value ?? "";
