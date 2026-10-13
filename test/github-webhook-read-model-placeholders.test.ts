@@ -98,7 +98,10 @@ test("placeholder discovery processes a lazy cursor and drains late selected com
   );
   assert.deepEqual(
     candidates.map((candidate) => candidate.comments.map((comment) => comment.id)),
-    [[3, 6, 8, 9], [4, 7]],
+    [
+      [3, 6, 8, 9],
+      [4, 7],
+    ],
   );
   assert.equal(candidates[0].comments[1].updated_at, "2026-10-13T09:59:00Z");
   assert.equal(itemReads.get(3), 1);
