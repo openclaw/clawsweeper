@@ -180,7 +180,10 @@ for (const scenario of [
         ? "decision.maintainerDecision must be empty when no decision is required"
         : "decision.evidence must be an array";
       const schema = JSON.parse(
-        readFileSync(new URL("../schema/clawsweeper-decision.schema.json", import.meta.url), "utf8"),
+        readFileSync(
+          new URL("../schema/clawsweeper-decision.schema.json", import.meta.url),
+          "utf8",
+        ),
       );
       const messages = [
         inactiveScenario ? invalidDecision : '{"decision":"keep_open"}',
