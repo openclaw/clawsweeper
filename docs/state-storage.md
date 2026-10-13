@@ -71,6 +71,10 @@ record shape and observer-only projection are unchanged.
 from R2. Exact and batch review publishers pass the reviewed item numbers to
 read only their open/closed reports, plans, and decision packets. Those focused
 reads do not depend on repository-wide snapshots or journal exports.
+Explicit ledger/assets hydration streams one R2 listing page into its staging
+tree at a time; descriptor memory does not grow with the entire prefix. It still
+downloads the complete requested trees and replaces local trees only after all
+pages and downloads succeed. This is not a retention or pruning operation.
 Jobs that need operational Git state receive a sparse checkout containing only
 the retained paths above. Canonical-only lanes set `hydrate-git-state: "false"`
 and never mint or use a state-repository token.

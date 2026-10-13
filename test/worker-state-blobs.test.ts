@@ -49,12 +49,14 @@ test("state blob endpoints reject unsigned requests and fail closed without a bu
   assert.equal(unavailable.status, 503);
   assert.equal((await unavailable.json()).error, "blob_store_unavailable");
   await assert.rejects(
-    listStateBlobs({
-      baseUrl,
-      webhookSecret: secret,
-      prefix: "ledger/v1/",
-      fetch: viaWorker(bucketless),
-    }),
+    Array.fromAsync(
+      listStateBlobs({
+        baseUrl,
+        webhookSecret: secret,
+        prefix: "ledger/v1/",
+        fetch: viaWorker(bucketless),
+      }),
+    ),
     (error: unknown) =>
       error instanceof WorkerBlobsUnavailableError && error.reason === "blob_store_unavailable",
   );
@@ -482,12 +484,14 @@ test("blob listing pages with cursors and validates prefixes", async () => {
   }
   await putBlob(env, assetPath, Buffer.from("asset"));
 
-  const listed = await listStateBlobs({ ...options, prefix: "ledger/v1/", pageLimit: 1 });
+  const listed = await Array.fromAsync(
+    listStateBlobs({ ...options, prefix: "ledger/v1/", pageLimit: 1 }),
+  );
   assert.deepEqual(
     listed.map((blob) => blob.path),
     paths,
   );
-  const assets = await listStateBlobs({ ...options, prefix: "assets" });
+  const assets = await Array.fromAsync(listStateBlobs({ ...options, prefix: "assets" }));
   assert.deepEqual(
     assets.map((blob) => blob.path),
     [assetPath],

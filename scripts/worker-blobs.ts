@@ -61,10 +61,9 @@ export async function statStateBlob(
   }
 }
 
-export async function listStateBlobs(
+export async function* listStateBlobs(
   options: BlobRequestOptions & { prefix: string; pageLimit?: number },
-): Promise<StateBlobDescriptor[]> {
-  const blobs: StateBlobDescriptor[] = [];
+): AsyncGenerator<StateBlobDescriptor> {
   let cursor: string | null = null;
   do {
     const page: { blobs: StateBlobDescriptor[]; nextCursor: string | null } = await blobPost(
@@ -77,7 +76,6 @@ export async function listStateBlobs(
       },
     );
     if (!Array.isArray(page.blobs)) throw new Error("Worker returned an invalid blob list page");
-    for (const blob of page.blobs) blobs.push(validateDescriptor(blob));
     if (page.nextCursor !== null && typeof page.nextCursor !== "string") {
       throw new Error("Worker returned an invalid blob list cursor");
     }
@@ -85,8 +83,10 @@ export async function listStateBlobs(
       throw new Error("Worker blob list cursor did not advance");
     }
     cursor = page.nextCursor;
+    // Consume one page before requesting another: immutable ledger prefixes can
+    // contain millions of objects, so a full-prefix descriptor array is unbounded.
+    for (const blob of page.blobs) yield validateDescriptor(blob);
   } while (cursor !== null);
-  return blobs.sort((left, right) => left.path.localeCompare(right.path));
 }
 
 export async function downloadStateBlob(
@@ -155,32 +155,21 @@ export async function materializeStateBlobs(
 ) {
   const trees = options.trees ?? STATE_BLOB_TREES;
   mkdirSync(options.worktreeRoot, { recursive: true });
-  const blobsByTree = new Map<string, StateBlobDescriptor[]>();
-  let total = 0;
-  for (const tree of trees) {
-    const blobs = await listStateBlobs({ ...options, prefix: `${tree}/` });
-    blobsByTree.set(tree, blobs);
-    total += blobs.length;
-  }
-  // An entirely empty store means the migration has not seeded R2 yet; refuse
-  // the cutover so the caller can fall back to git loudly.
-  if (total === 0) throw new WorkerBlobsUnavailableError("blobs_not_found");
-
   const cacheRoot = options.cacheRoot
     ? path.resolve(options.cacheRoot)
     : path.join(options.worktreeRoot, ".artifacts", "worker-blobs-cache");
   mkdirSync(cacheRoot, { recursive: true });
   const stagingRoot = mkdtempSync(path.join(options.worktreeRoot, ".worker-blobs-stage-"));
   const summary = {
-    blobs: total,
+    blobs: 0,
     bytes: 0,
     cacheHits: 0,
     downloads: 0,
-    trees: Object.fromEntries([...blobsByTree].map(([tree, blobs]) => [tree, blobs.length])),
+    trees: Object.fromEntries(trees.map((tree) => [tree, 0])),
   };
   try {
-    for (const [, blobs] of blobsByTree) {
-      for (const blob of blobs) {
+    for (const tree of Object.keys(summary.trees)) {
+      for await (const blob of listStateBlobs({ ...options, prefix: `${tree}/` })) {
         const destination = path.join(stagingRoot, ...blob.path.split("/"));
         const cached = blob.digest ? blobCachePath(cacheRoot, blob.digest) : null;
         if (cached && existsSync(cached)) {
@@ -202,9 +191,14 @@ export async function materializeStateBlobs(
             renameSync(temporary, cached);
           }
         }
+        summary.blobs += 1;
+        summary.trees[tree]! += 1;
         summary.bytes += blob.bytes;
       }
     }
+    // Keep the existing trees until every page and download succeeds. An empty
+    // store still refuses cutover rather than replacing local state with nothing.
+    if (summary.blobs === 0) throw new WorkerBlobsUnavailableError("blobs_not_found");
     for (const root of new Set(trees.map((tree) => tree.split("/")[0]!))) {
       const target = path.join(options.worktreeRoot, root);
       const staged = path.join(stagingRoot, root);
