@@ -17,26 +17,6 @@ export function compactText(value: unknown, maxLength: number) {
   return `${text.slice(0, headLength)}${marker}${text.slice(text.length - tailLength)}`;
 }
 
-export function compactCommentText(value: unknown, maxLength: number): string {
-  const text = String(value ?? "")
-    .replace(/\s+/g, " ")
-    .trim();
-  if (text.length <= maxLength) return text;
-  if (maxLength < 3) return text.slice(0, Math.max(0, maxLength));
-  return `${text.slice(0, maxLength - 3).trimEnd()}...`;
-}
-
-export function slug(value: unknown, fallback = "unknown", maxLength = 120) {
-  return (
-    String(value ?? "")
-      .toLowerCase()
-      .replace(/[^a-z0-9_.-]+/g, "-")
-      .replace(/^-+|-+$/g, "")
-      .slice(0, maxLength)
-      .replace(/-+$/g, "") || fallback
-  );
-}
-
 export function stripAnsi(text: string) {
   return String(text ?? "").replace(
     new RegExp(`${String.fromCharCode(27)}\\[[0-?]*[ -/]*[@-~]`, "g"),
