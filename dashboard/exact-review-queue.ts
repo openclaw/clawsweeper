@@ -1083,6 +1083,8 @@ export class ExactReviewQueue {
     try {
       return await this.handleFetch(request, hostedTargetMetadataToken);
     } catch (error) {
+      // A failed transaction may have rolled back the retention pass.
+      this.reviewRunTelemetryPrunedAt = null;
       rethrowQueueFailure(error, "fetch", request);
     } finally {
       // Mutators can yield to a dashboard poll while awaiting external work.
@@ -11164,6 +11166,17 @@ export class ExactReviewQueue {
         `ALTER TABLE ${EXACT_REVIEW_QUEUE_INGRESS_TABLE} ADD COLUMN admitted_at INTEGER`,
       );
     }
+    // Before admission state was explicit, direct-route receipts were the
+    // canonical durable ingress record. Preserve that completed-delivery
+    // meaning on the rolling schema upgrade and on a later re-upgrade after a
+    // rollback. Current code records an unadmitted direct receipt as zero, so
+    // NULL remains exclusive to the pre-admission-schema worker; legacy
+    // fallback receipts stay NULL until this queue admits them.
+    this.storage.sql.exec(
+      `UPDATE ${EXACT_REVIEW_QUEUE_INGRESS_TABLE}
+          SET admitted_at = received_at
+        WHERE route = 'direct_webhook' AND admitted_at IS NULL`,
+    );
     // Flow telemetry is independent of queue rollback compatibility. A
     // separate singleton keeps cumulative lane counters monotonic without
     // changing the normalized queue schema or its legacy shadow contract.
