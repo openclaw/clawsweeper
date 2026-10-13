@@ -18,6 +18,7 @@ import type { Args } from "./clawsweeper-args.js";
 import { stringArg } from "./clawsweeper-args.js";
 import { UserFacingCommandError } from "./command.js";
 import { CODEX_THREAD_STATE_MAX_BYTES } from "./codex-output-capture.js";
+import type { ReviewPreflight } from "./review-preflight.js";
 
 export type ReviewOutputRetention = "none" | "summary" | "debug";
 export type ReviewResultFormat = "text" | "json";
@@ -659,6 +660,7 @@ export function emitReviewOutput(
   selection: ReviewOutputSelection,
   status: "completed" | "failed",
   results: readonly ReviewOutputResult[],
+  preflight?: ReviewPreflight,
 ): void {
   if (selection.resultFormat === "json") {
     console.log(
@@ -670,6 +672,7 @@ export function emitReviewOutput(
           artifact_path: result.path,
           report: result.markdown,
         })),
+        ...(preflight === undefined ? {} : { preflight }),
       }),
     );
     return;

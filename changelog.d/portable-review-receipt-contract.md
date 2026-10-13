@@ -1,1 +1,1 @@
-- Document a versioned portable review-receipt schema and cross-language fixtures without changing current reviewers, outputs, or review admission.
+- Add opt-in local-range preflight summaries to JSON review output, preserving native reports and refusing export when the reviewed source changes.

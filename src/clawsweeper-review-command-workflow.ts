@@ -16,6 +16,8 @@ import { AgentInputScanError, agentInputScanFailureExitCode } from "./agent-inpu
 import { serializeReviewContext } from "./agent-input-scan-fixtures.js";
 import { reviewNetworkCapability } from "./agent-runner.js";
 import type { Args } from "./clawsweeper-args.js";
+import { boolArg, stringArg } from "./clawsweeper-args.js";
+import { localRangeReviewPreflight } from "./review-preflight.js";
 import {
   isBulkFilerExemptRepositoryPermission as isVerifiedMaintainerRepositoryPermission,
   isMaintainerAuthorAssociation,
@@ -210,6 +212,15 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
   } = dependencies;
 
   function reviewCommand(args: Args): void {
+    if (boolArg(args.help) && boolArg(args.preflight)) {
+      console.log(
+        "review --local-range --result-format json --preflight [--base <ref>] [--target-dir <path>] [--output-retention summary]",
+      );
+      console.log(
+        "Export an advisory PR-body block from the native review. No GitHub writes. Requires a clean committed range.",
+      );
+      return;
+    }
     const publicationPolicy = process.env.EXACT_REVIEW_DECISION
       ? decisionPublicationPolicy(JSON.parse(process.env.EXACT_REVIEW_DECISION))
       : undefined;
@@ -270,6 +281,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
     let commandError: unknown;
     let finalizationError: unknown;
     let reviewCompleted = false;
+    let preflightDecision: Decision | undefined;
     const writeOutputReport = (item: Item, reportPath: string, markdown: string): void => {
       const next = [...localOutputResults];
       if (localOnly) {
@@ -291,7 +303,19 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
     const emitLocalOutput = (status: "completed" | "failed"): void => {
       if (!localOnly || outputEmitted) return;
       if (!localReviewOutputHasPayload(status, localOutputResults.length)) return;
-      emitReviewOutput(outputSelection, status, localOutputResults);
+      const preflight =
+        boolArg(args.preflight) && localRangeData
+          ? localRangeReviewPreflight({
+              targetDir: openclawDir,
+              baseRef: stringArg(args.base, "") || "origin/main",
+              repo: localRangeData.item.repo,
+              base: localRangeData.baseSha,
+              head: localRangeData.headSha,
+              decision: preflightDecision,
+            })
+          : undefined;
+      emitReviewOutput(outputSelection, status, localOutputResults, preflight);
+      if (preflight?.block === null) process.exitCode = 1;
       outputEmitted = true;
     };
     const assertCurrentOutputBudget = (): void => {
@@ -1566,6 +1590,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
               : {}),
         }), bulkFilerDetection));
         writeOutputReport(item, reportPath, reportMarkdown);
+        if (localRangeData) preflightDecision = decision;
         if (codexFailure) {
           recordFailureDiagnostics(codexFailure.error, codexFailure.logKind);
         }

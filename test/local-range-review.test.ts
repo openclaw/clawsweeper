@@ -1042,7 +1042,7 @@ test("--local-range persists whole-range Git statistics beyond every display evi
   }
 });
 
-test("--local-range carries hosted-shaped review history across related local iterations", (t) => {
+test("--local-range preserves native history and exports current preflight summaries", (t) => {
   useFakeScanner(t);
   const dir = initRepo();
   const harness = mkdtempSync(join(tmpdir(), "lrr-history-"));
@@ -1079,6 +1079,9 @@ test("--local-range carries hosted-shaped review history across related local it
         CLI,
         "review",
         "--local-range",
+        "--preflight",
+        "--result-format",
+        "json",
         "--base",
         base,
         "--target-repo",
@@ -1108,6 +1111,16 @@ test("--local-range carries hosted-shaped review history across related local it
     } else {
       assert.equal(result.status, 0, `${result.stderr ?? ""}${result.stdout ?? ""}`);
     }
+    const output = JSON.parse(result.stdout);
+    assert.ok(output.reports[0].report);
+    assert.equal(output.reports[0].artifact_path, join(artifactDir, "0.md"));
+    assert.ok(output.preflight.block);
+    const preflight = JSON.parse(output.preflight.block.split("\n")[1]);
+    assert.equal(preflight.base, git(dir, "merge-base", base, "HEAD"));
+    assert.equal(preflight.head, git(dir, "rev-parse", "HEAD"));
+    assert.equal(preflight.completion, shouldFail ? "failed" : "complete");
+    if (!shouldFail) assert.match(preflight.summary, /1 reported finding/);
+    assert.match(preflight.summary, /not a clean verdict/);
   }
 
   try {

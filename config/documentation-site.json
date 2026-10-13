@@ -47,7 +47,7 @@
     {
       "path": "portable-review-receipt.md",
       "lifecycle": "proposed",
-      "banner": "This prospective producer contract does not enable receipt export, verification, or review enforcement."
+      "banner": "This candidate exports a local advisory summary; general attachment and hosted enforcement are not enabled."
     },
     {
       "path": "queue-service-split-runbook.md",

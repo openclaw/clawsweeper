@@ -856,7 +856,11 @@ temporarily exceed their requested limits, and arbitrary model-written files
 are not quota-controlled. Oversized managed media output is discarded.
 Existing or unrelated retained runs are
 never pruned automatically.
-`--result-format json` returns the same result as valid JSON.
+`--result-format json` returns the same result as valid JSON. For a committed-range
+review, add `--preflight` to generate a bounded advisory PR-body block in that
+JSON without another model call or GitHub write. See the
+[local preflight summary](docs/portable-review-receipt.md) for source checks and
+limitations; it does not grant a hosted-review exemption.
 
 ```bash
 pnpm run review -- --local-only \
