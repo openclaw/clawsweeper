@@ -32,6 +32,20 @@ const MAX_METRICS_PER_SUBMISSION = 128;
 const MAX_RATE_LIMITS_PER_SUBMISSION = 16;
 const MAX_RATE_LIMIT_INTEGER = 10_000_000_000;
 const MAX_CREDENTIAL_CIRCUIT_MS = 2 * 60 * 60 * 1000;
+const MAINTENANCE_INTERVAL_MS = 5 * 60 * 1000;
+const OLDEST_ROLLUPS_SQL = `
+  SELECT rowid, bucket_kind, bucket_start FROM (
+    SELECT rowid, bucket_kind, bucket_start FROM ${ROLLUP_TABLE}
+     WHERE bucket_kind = 'five_minute'
+     ORDER BY bucket_start ASC, rowid ASC LIMIT ?
+  )
+  UNION ALL
+  SELECT rowid, bucket_kind, bucket_start FROM (
+    SELECT rowid, bucket_kind, bucket_start FROM ${ROLLUP_TABLE}
+     WHERE bucket_kind = 'hour'
+     ORDER BY bucket_start ASC, rowid ASC LIMIT ?
+  )
+  ORDER BY bucket_start ASC, rowid ASC LIMIT ?`;
 
 export type GithubEgressCredentialCircuitObservation = {
   scope: "repository_actions";
@@ -61,20 +75,6 @@ function publicTimestamp(value: unknown): string | null {
   return timestamp === null ? null : new Date(timestamp).toISOString();
 }
 
-function evictionWatermark(
-  rows: Array<Record<string, unknown>>,
-  bucketKind: string,
-): number | null {
-  const row = rows.find((candidate) => String(candidate.bucket_kind || "") === bucketKind);
-  return finiteTimestamp(row?.bucket_start);
-}
-
-function evictionCount(rows: Array<Record<string, unknown>>, bucketKind: string): number {
-  const row = rows.find((candidate) => String(candidate.bucket_kind || "") === bucketKind);
-  const count = Number(row?.count || 0);
-  return Number.isSafeInteger(count) && count > 0 ? count : 0;
-}
-
 function rollupWindowComplete(
   diagnostics: Record<string, unknown>,
   bucketKind: "five_minute" | "hour",
@@ -100,10 +100,24 @@ function rateLimitWindowComplete(
   return watermark !== null && watermark < windowStart;
 }
 
+type EgressCompleteness = {
+  byUnit: Record<
+    "invocation" | "wire_attempt" | "member" | "broker_lookup" | "conditional_response",
+    number
+  >;
+  result: { complete: number; incomplete: number; observed: boolean; telemetry_complete: boolean };
+};
+
 export class GithubEgressTelemetryStore {
   private readonly storage: DurableStorage;
   private readonly maxRollupRows: number;
   private readonly maxRateLimitRows: number;
+  private lastMaintenanceAt: number | null = null;
+  private rowCounts: { rollup: number; rateLimit: number } | null = null;
+  private summaryCache: {
+    bucketStart: number;
+    completeness: EgressCompleteness;
+  } | null = null;
 
   constructor(
     storage: DurableStorage,
@@ -311,42 +325,45 @@ export class GithubEgressTelemetryStore {
       return { ok: false as const, error: "invalid_github_egress_telemetry" };
     }
     const credentialCircuits = githubEgressCredentialCircuitObservations(submission, now);
-    return this.storage.transactionSync(() => {
-      const existing = Array.from(
-        this.storage.sql.exec(
-          `SELECT credential_circuits_json
+    try {
+      return this.storage.transactionSync(() => {
+        const existing = Array.from(
+          this.storage.sql.exec(
+            `SELECT credential_circuits_json
              FROM ${RECEIPT_TABLE} WHERE receipt_id = ? LIMIT 1`,
-          submission.receiptId,
-        ),
-      ) as Array<Record<string, unknown>>;
-      if (existing.length) {
-        this.storage.sql.exec(
-          `UPDATE ${DIAGNOSTICS_TABLE}
+            submission.receiptId,
+          ),
+        ) as Array<Record<string, unknown>>;
+        if (existing.length) {
+          this.storage.sql.exec(
+            `UPDATE ${DIAGNOSTICS_TABLE}
               SET deduped_submissions = deduped_submissions + 1,
                   last_observed_at = ?
             WHERE singleton_id = 1`,
-          now,
-        );
-        return {
-          ok: true as const,
-          accepted: false,
-          deduped: true,
-          receiptId: submission.receiptId,
-          credentialCircuits: storedGithubEgressCredentialCircuitObservations(
-            existing[0]?.credential_circuits_json,
-          ),
-        };
-      }
-      this.pruneSync(now);
-      let incomplete = 0;
-      for (const metric of submission.metrics) {
-        this.upsertMetric("five_minute", metric.bucketStart, metric);
-        this.upsertMetric("hour", Math.floor(metric.bucketStart / 3_600_000) * 3_600_000, metric);
-        if (!metric.telemetryComplete) incomplete += metric.count;
-      }
-      for (const [index, observation] of submission.rateLimitObservations.entries()) {
-        this.storage.sql.exec(
-          `INSERT OR IGNORE INTO ${RATE_LIMIT_TABLE} (
+            now,
+          );
+          return {
+            ok: true as const,
+            accepted: false,
+            deduped: true,
+            receiptId: submission.receiptId,
+            credentialCircuits: storedGithubEgressCredentialCircuitObservations(
+              existing[0]?.credential_circuits_json,
+            ),
+          };
+        }
+        this.maintainSync(now);
+        this.ensureRowCounts();
+        this.summaryCache = null;
+        let incomplete = 0;
+        for (const metric of submission.metrics) {
+          this.upsertMetric("five_minute", metric.bucketStart, metric);
+          this.upsertMetric("hour", Math.floor(metric.bucketStart / 3_600_000) * 3_600_000, metric);
+          if (!metric.telemetryComplete) incomplete += metric.count;
+        }
+        for (const [index, observation] of submission.rateLimitObservations.entries()) {
+          this.storage.sql.exec(
+            `INSERT OR IGNORE INTO ${RATE_LIMIT_TABLE} (
              event_id, observed_at, deployment_revision, config_revision,
              pool_class, pool_identity, stage, source_action, operation, method,
              route_template, page_bucket, status, retry_after_present,
@@ -355,72 +372,86 @@ export class GithubEgressTelemetryStore {
              resource_present, resource, reset_authority_candidate,
              telemetry_complete
            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-          `${submission.receiptId}:${index}`,
-          observation.observedAt,
-          observation.deploymentRevision,
-          observation.configRevision,
-          observation.poolClass,
-          observation.poolIdentity,
-          observation.stage,
-          observation.sourceAction,
-          observation.operation,
-          observation.method,
-          observation.routeTemplate,
-          observation.pageBucket,
-          observation.status,
-          observation.headers.retryAfterPresent ? 1 : 0,
-          observation.headers.retryAfterSeconds,
-          observation.headers.limitPresent ? 1 : 0,
-          observation.headers.limit,
-          observation.headers.remainingPresent ? 1 : 0,
-          observation.headers.remaining,
-          observation.headers.usedPresent ? 1 : 0,
-          observation.headers.used,
-          observation.headers.resetPresent ? 1 : 0,
-          observation.headers.resetEpochSeconds,
-          observation.headers.resourcePresent ? 1 : 0,
-          observation.headers.resource,
-          observation.resetAuthorityCandidate,
-          observation.telemetryComplete ? 1 : 0,
-        );
-        if (!observation.telemetryComplete) incomplete += 1;
-      }
-      this.storage.sql.exec(
-        `INSERT INTO ${RECEIPT_TABLE} (
+            `${submission.receiptId}:${index}`,
+            observation.observedAt,
+            observation.deploymentRevision,
+            observation.configRevision,
+            observation.poolClass,
+            observation.poolIdentity,
+            observation.stage,
+            observation.sourceAction,
+            observation.operation,
+            observation.method,
+            observation.routeTemplate,
+            observation.pageBucket,
+            observation.status,
+            observation.headers.retryAfterPresent ? 1 : 0,
+            observation.headers.retryAfterSeconds,
+            observation.headers.limitPresent ? 1 : 0,
+            observation.headers.limit,
+            observation.headers.remainingPresent ? 1 : 0,
+            observation.headers.remaining,
+            observation.headers.usedPresent ? 1 : 0,
+            observation.headers.used,
+            observation.headers.resetPresent ? 1 : 0,
+            observation.headers.resetEpochSeconds,
+            observation.headers.resourcePresent ? 1 : 0,
+            observation.headers.resource,
+            observation.resetAuthorityCandidate,
+            observation.telemetryComplete ? 1 : 0,
+          );
+          if (this.rowCounts) this.rowCounts.rateLimit += this.changedRows();
+          if (!observation.telemetryComplete) incomplete += 1;
+        }
+        this.storage.sql.exec(
+          `INSERT INTO ${RECEIPT_TABLE} (
            receipt_id, observed_at, credential_circuits_json
          ) VALUES (?, ?, ?)`,
-        submission.receiptId,
-        now,
-        JSON.stringify(credentialCircuits),
-      );
-      this.enforceCapsSync(now);
-      this.storage.sql.exec(
-        `UPDATE ${DIAGNOSTICS_TABLE}
+          submission.receiptId,
+          now,
+          JSON.stringify(credentialCircuits),
+        );
+        this.enforceCapsSync(now);
+        this.storage.sql.exec(
+          `UPDATE ${DIAGNOSTICS_TABLE}
             SET accepted_submissions = accepted_submissions + 1,
                 accepted_metrics = accepted_metrics + ?,
                 accepted_rate_limits = accepted_rate_limits + ?,
                 incomplete_count = incomplete_count + ?,
                 last_observed_at = ?
           WHERE singleton_id = 1`,
-        submission.metrics.reduce((total, metric) => total + metric.count, 0),
-        submission.rateLimitObservations.length,
-        incomplete,
-        now,
-      );
-      return {
-        ok: true as const,
-        accepted: true,
-        deduped: false,
-        receiptId: submission.receiptId,
-        credentialCircuits,
-      };
-    });
+          submission.metrics.reduce((total, metric) => total + metric.count, 0),
+          submission.rateLimitObservations.length,
+          incomplete,
+          now,
+        );
+        return {
+          ok: true as const,
+          accepted: true,
+          deduped: false,
+          receiptId: submission.receiptId,
+          credentialCircuits,
+        };
+      });
+    } catch (error) {
+      this.rowCounts = null;
+      this.lastMaintenanceAt = null;
+      this.summaryCache = null;
+      throw error;
+    }
   }
 
   publicSummary(now = Date.now()) {
+    this.maintainSync(now);
     const windowStart = now - 6 * 60 * 60 * 1000;
     const bucketStart = alignedBucketStart("five_minute", windowStart);
-    const completeness = this.completenessSince("five_minute", bucketStart);
+    if (this.summaryCache?.bucketStart !== bucketStart) {
+      this.summaryCache = {
+        bucketStart,
+        completeness: this.completenessSince("five_minute", bucketStart),
+      };
+    }
+    const completeness = this.summaryCache.completeness;
     const diagnostics = this.diagnostics();
     return {
       version: 2,
@@ -502,6 +533,7 @@ export class GithubEgressTelemetryStore {
     const boundedHours =
       hours === 0.25 || hours === 1 || hours === 6 || hours === 24 || hours === 168 ? hours : null;
     if (!boundedHours) return null;
+    this.maintainSync(now);
     const bucketKind = boundedHours <= 6 ? "five_minute" : "hour";
     const windowStart = now - boundedHours * 60 * 60 * 1000;
     const bucketStart = alignedBucketStart(bucketKind, windowStart);
@@ -688,7 +720,7 @@ export class GithubEgressTelemetryStore {
     bucketStart: number,
     metric: NonNullable<ReturnType<typeof githubEgressMetric>>,
   ) {
-    this.storage.sql.exec(
+    const rows = this.storage.sql.exec(
       `INSERT INTO ${ROLLUP_TABLE} (
          bucket_kind, bucket_start, deployment_revision, config_revision,
          pool_class, pool_identity, stage, source_action, operation, method,
@@ -696,7 +728,8 @@ export class GithubEgressTelemetryStore {
          latency_bucket, claim_generation_bucket, first_repeat, attempted,
          telemetry_complete, count
        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-       ON CONFLICT DO UPDATE SET count = count + excluded.count`,
+       ON CONFLICT DO UPDATE SET count = count + excluded.count
+       RETURNING count`,
       bucketKind,
       bucketStart,
       metric.deploymentRevision,
@@ -719,6 +752,37 @@ export class GithubEgressTelemetryStore {
       metric.telemetryComplete ? 1 : 0,
       metric.count,
     );
+    for (const row of rows) {
+      if (this.rowCounts && Number(row.count) === metric.count) this.rowCounts.rollup += 1;
+    }
+  }
+
+  private changedRows() {
+    return Number(Array.from(this.storage.sql.exec("SELECT changes() AS count"))[0]?.count || 0);
+  }
+
+  private ensureRowCounts() {
+    if (!this.rowCounts) {
+      this.rowCounts = {
+        rollup: Number(
+          Array.from(this.storage.sql.exec(`SELECT COUNT(*) AS count FROM ${ROLLUP_TABLE}`))[0]
+            ?.count || 0,
+        ),
+        rateLimit: Number(
+          Array.from(this.storage.sql.exec(`SELECT COUNT(*) AS count FROM ${RATE_LIMIT_TABLE}`))[0]
+            ?.count || 0,
+        ),
+      };
+    }
+    return this.rowCounts;
+  }
+
+  private maintainSync(now: number) {
+    if (this.lastMaintenanceAt !== null && now - this.lastMaintenanceAt < MAINTENANCE_INTERVAL_MS)
+      return;
+    this.pruneSync(now);
+    this.lastMaintenanceAt = now;
+    this.summaryCache = null;
   }
 
   private pruneSync(now: number) {
@@ -729,10 +793,12 @@ export class GithubEgressTelemetryStore {
       now - FIVE_MINUTE_RETENTION_MS,
       now - HOURLY_RETENTION_MS,
     );
+    if (this.rowCounts) this.rowCounts.rollup -= this.changedRows();
     this.storage.sql.exec(
       `DELETE FROM ${RATE_LIMIT_TABLE} WHERE observed_at < ?`,
       now - RATE_LIMIT_RETENTION_MS,
     );
+    if (this.rowCounts) this.rowCounts.rateLimit -= this.changedRows();
     this.storage.sql.exec(
       `DELETE FROM ${RECEIPT_TABLE} WHERE observed_at < ?`,
       now - RECEIPT_RETENTION_MS,
@@ -740,35 +806,33 @@ export class GithubEgressTelemetryStore {
   }
 
   private enforceCapsSync(now: number) {
-    const rollupRows = Array.from(
-      this.storage.sql.exec(`SELECT COUNT(*) AS count FROM ${ROLLUP_TABLE}`),
-    ) as Array<Record<string, unknown>>;
-    const rollupCount = Number(rollupRows[0]?.count || 0);
-    const rollupOverflow = Math.max(0, rollupCount - this.maxRollupRows);
+    const rowCounts = this.ensureRowCounts();
+    const rollupOverflow = Math.max(0, rowCounts.rollup - this.maxRollupRows);
     if (rollupOverflow) {
-      const evicted = Array.from(
-        this.storage.sql.exec(
-          `SELECT bucket_kind, MAX(bucket_start) AS bucket_start, COUNT(*) AS count
-             FROM (
-               SELECT bucket_kind, bucket_start FROM ${ROLLUP_TABLE}
-                ORDER BY bucket_start ASC, rowid ASC LIMIT ?
-             )
-            GROUP BY bucket_kind`,
-          rollupOverflow,
-        ),
-      ) as Array<Record<string, unknown>>;
-      const fiveMinuteWatermark = evictionWatermark(evicted, "five_minute");
-      const hourWatermark = evictionWatermark(evicted, "hour");
-      const fiveMinuteCount = evictionCount(evicted, "five_minute");
-      const hourCount = evictionCount(evicted, "hour");
-      this.storage.sql.exec(
+      const evicted = this.storage.sql.exec(
         `DELETE FROM ${ROLLUP_TABLE}
           WHERE rowid IN (
-            SELECT rowid FROM ${ROLLUP_TABLE}
-             ORDER BY bucket_start ASC, rowid ASC LIMIT ?
-          )`,
+            SELECT rowid FROM (${OLDEST_ROLLUPS_SQL})
+          ) RETURNING bucket_kind, bucket_start`,
+        rollupOverflow,
+        rollupOverflow,
         rollupOverflow,
       );
+      let fiveMinuteWatermark: number | null = null;
+      let hourWatermark: number | null = null;
+      let fiveMinuteCount = 0;
+      let hourCount = 0;
+      for (const row of evicted) {
+        const bucketStart = Number(row.bucket_start);
+        if (row.bucket_kind === "five_minute") {
+          fiveMinuteCount += 1;
+          fiveMinuteWatermark = Math.max(fiveMinuteWatermark ?? bucketStart, bucketStart);
+        } else {
+          hourCount += 1;
+          hourWatermark = Math.max(hourWatermark ?? bucketStart, bucketStart);
+        }
+      }
+      rowCounts.rollup -= rollupOverflow;
       this.storage.sql.exec(
         `UPDATE ${DIAGNOSTICS_TABLE}
             SET evicted_rollup_rows = evicted_rollup_rows + ?,
@@ -797,31 +861,22 @@ export class GithubEgressTelemetryStore {
         hourWatermark,
       );
     }
-    const rateRows = Array.from(
-      this.storage.sql.exec(`SELECT COUNT(*) AS count FROM ${RATE_LIMIT_TABLE}`),
-    ) as Array<Record<string, unknown>>;
-    const rateCount = Number(rateRows[0]?.count || 0);
-    const rateOverflow = Math.max(0, rateCount - this.maxRateLimitRows);
+    const rateOverflow = Math.max(0, rowCounts.rateLimit - this.maxRateLimitRows);
     if (rateOverflow) {
-      const evicted = Array.from(
-        this.storage.sql.exec(
-          `SELECT MAX(observed_at) AS observed_at
-             FROM (
-               SELECT observed_at FROM ${RATE_LIMIT_TABLE}
-                ORDER BY observed_at ASC, event_id ASC LIMIT ?
-             )`,
-          rateOverflow,
-        ),
-      )[0] as Record<string, unknown> | undefined;
-      const rateLimitWatermark = finiteTimestamp(evicted?.observed_at);
-      this.storage.sql.exec(
+      const evicted = this.storage.sql.exec(
         `DELETE FROM ${RATE_LIMIT_TABLE}
           WHERE event_id IN (
             SELECT event_id FROM ${RATE_LIMIT_TABLE}
              ORDER BY observed_at ASC, event_id ASC LIMIT ?
-          )`,
+          ) RETURNING observed_at`,
         rateOverflow,
       );
+      let rateLimitWatermark: number | null = null;
+      for (const row of evicted) {
+        const observedAt = Number(row.observed_at);
+        rateLimitWatermark = Math.max(rateLimitWatermark ?? observedAt, observedAt);
+      }
+      rowCounts.rateLimit -= rateOverflow;
       this.storage.sql.exec(
         `UPDATE ${DIAGNOSTICS_TABLE}
             SET evicted_rate_limit_rows = evicted_rate_limit_rows + ?,

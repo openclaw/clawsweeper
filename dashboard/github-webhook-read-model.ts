@@ -1190,15 +1190,32 @@ export class GithubWebhookReadModelStore {
     number: number,
     limit: number,
   ): void {
+    const boundary = firstRow(
+      this.storage.sql.exec(
+        `SELECT source_updated_at, ${idColumn} AS id FROM ${table}
+          WHERE repository = ? AND number = ?
+          ORDER BY source_updated_at DESC, ${idColumn} DESC LIMIT 1 OFFSET ?`,
+        repository,
+        number,
+        limit,
+      ),
+    );
+    if (!boundary) return;
+    // Activity kinds may share an ID: retain every row whose ID is in the top set,
+    // even when another row with that ID is older than the overflow boundary.
     this.storage.sql.exec(
       `DELETE FROM ${table}
-        WHERE repository = ? AND number = ? AND ${idColumn} NOT IN (
-          SELECT ${idColumn} FROM ${table}
-           WHERE repository = ? AND number = ?
-           ORDER BY source_updated_at DESC, ${idColumn} DESC LIMIT ?
-        )`,
+        WHERE repository = ? AND number = ?
+          AND (source_updated_at, ${idColumn}) <= (?, ?)
+          AND ${idColumn} NOT IN (
+            SELECT ${idColumn} FROM ${table}
+             WHERE repository = ? AND number = ?
+             ORDER BY source_updated_at DESC, ${idColumn} DESC LIMIT ?
+          )`,
       repository,
       number,
+      boundary.source_updated_at,
+      boundary.id,
       repository,
       number,
       limit,
@@ -1213,6 +1230,18 @@ export class GithubWebhookReadModelStore {
        )`,
       now - 30 * 24 * 60 * 60_000,
     );
+    // The repository-leading index cannot supply global timestamp order. Avoid
+    // sorting at all unless this bounded probe finds an actual overflow.
+    if (
+      !firstRow(
+        this.storage.sql.exec(
+          `SELECT rowid FROM github_webhook_read_model_workflows_v1 LIMIT 1 OFFSET ?`,
+          GITHUB_WEBHOOK_READ_MODEL_MAX_WORKFLOW_OBJECTS,
+        ),
+      )
+    ) {
+      return;
+    }
     this.storage.sql.exec(
       `DELETE FROM github_webhook_read_model_workflows_v1 WHERE rowid IN (
          SELECT rowid FROM github_webhook_read_model_workflows_v1

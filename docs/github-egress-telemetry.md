@@ -379,6 +379,14 @@ cumulative diagnostics. The highest timestamp actually evicted for each rollup
 kind and for sanitized rate-limit detail marks only overlapping public windows
 incomplete.
 
+Retention sweeps run at most once every five minutes per Durable Object
+incarnation, shared by uploads and observability reads. Row caps are still
+enforced within each accepted upload. Counts are cached in memory and rebuilt
+after restart or a failed upload transaction; cap deletions return their own
+eviction evidence rather than scanning it a second time. The six-hour summary
+reuses its aggregate until an upload, retention sweep, or window boundary
+invalidates it.
+
 The 15-minute view does not raise or bypass either source cap. A collector must
 preserve `rows_truncated`, `rate_limit_rows_truncated`, and `query_complete` and
 record a gap if even the smaller view exceeds a bound. A rate-limit truncation

@@ -398,7 +398,7 @@ test("receipt expiry and watermark writes roll back together after a later prune
     if (query.startsWith(`DELETE FROM ${receiptTable} `)) pruned = result.rowsWritten;
     return result;
   });
-  storage.failNextSql(/DELETE FROM github_webhook_read_model_workflows_v1/);
+  storage.failNextSql(/SELECT rowid FROM github_webhook_read_model_workflows_v1/);
   assert.throws(() => store.ingest(receiptDelivery("retry", now), now), /injected SQL failure/);
   assert.equal(pruned, 256, "failure occurs after receipt pruning");
   assert.deepEqual(readModelState(storage), before);
@@ -473,6 +473,121 @@ function readModelState(storage: MemoryDurableStorage) {
       ),
     ].map(({ name }) => [name, [...storage.sql.exec(`SELECT * FROM ${name} ORDER BY rowid`)]]),
   );
+}
+
+for (const kind of ["comment", "review"] as const) {
+  for (const count of [499, 500, 501, 620]) {
+    test(`${kind} pruning preserves retained IDs across the limit (${count})`, () => {
+      const storage = new MemoryDurableStorage();
+      const store = new GithubWebhookReadModelStore(storage);
+      store.ensureSchemaSync();
+      const table = `github_webhook_read_model_${kind === "comment" ? "comments" : "activity"}_v1`;
+      const idColumn = kind === "comment" ? "comment_id" : "activity_id";
+      const now = Date.parse("2026-08-26T12:00:00Z");
+      storage.transactionSync(() => {
+        for (let id = 1; id <= count; id += 1) {
+          storage.sql.exec(
+            `INSERT INTO ${table} VALUES (?, 77, ${kind === "review" ? "'review'," : ""} ?, ?, ?, '{}', 'seed', 1, ?)`,
+            repository.full_name,
+            id,
+            now - Math.floor((count - id) / 3),
+            id % 2,
+            now,
+          );
+        }
+        if (kind === "review") {
+          // A retained ID also protects an older row of the other activity kind.
+          storage.sql.exec(
+            `INSERT INTO ${table} VALUES (?, 77, 'review_comment', ?, ?, 1, '{}', 'seed', 1, ?)`,
+            repository.full_name,
+            count,
+            now - 10_000,
+            now,
+          );
+        }
+        storage.sql.exec(
+          `INSERT INTO ${table} VALUES ('other/repo', 77, ${kind === "review" ? "'review'," : ""} 1, ?, 0, '{}', 'seed', 1, ?)`,
+          now - 20_000,
+          now,
+        );
+        storage.sql.exec(
+          `INSERT INTO ${table} VALUES (?, 78, ${kind === "review" ? "'review'," : ""} 1, ?, 0, '{}', 'seed', 1, ?)`,
+          repository.full_name,
+          now - 20_000,
+          now,
+        );
+      });
+      const expected = [
+        ...storage.sql.exec(
+          `SELECT * FROM ${table}
+            WHERE repository <> ? OR number <> 77 OR ${idColumn} IN (
+              SELECT ${idColumn} FROM ${table} WHERE repository = ? AND number = 77
+               ORDER BY source_updated_at DESC, ${idColumn} DESC LIMIT 500
+            ) ORDER BY rowid`,
+          repository.full_name,
+          repository.full_name,
+        ),
+      ];
+      store.repair(
+        {
+          repository: repository.full_name,
+          repair_kind: "comments",
+          objects: [
+            {
+              kind,
+              repository: repository.full_name,
+              number: 77,
+              id: count,
+              sourceUpdatedAt: new Date(now - 30_000).toISOString(),
+              tombstone: false,
+              snapshot: {},
+            },
+          ],
+        },
+        now,
+      );
+      assert.deepEqual([...storage.sql.exec(`SELECT * FROM ${table} ORDER BY rowid`)], expected);
+    });
+  }
+}
+
+for (const count of [0, 1000, 1001, 1200]) {
+  for (const tied of [false, true]) {
+    test(`global workflow pruning preserves original order (${count}, tied=${tied})`, () => {
+      const storage = new MemoryDurableStorage();
+      const store = new GithubWebhookReadModelStore(storage);
+      store.ensureSchemaSync();
+      const table = "github_webhook_read_model_workflows_v1";
+      const now = Date.parse("2026-08-26T12:00:00Z");
+      storage.transactionSync(() => {
+        for (let id = 1; id <= count; id += 1) {
+          storage.sql.exec(
+            `INSERT INTO ${table} VALUES (?, ?, ?, NULL, ?, '{}', 'seed', 1, ?)`,
+            id % 2 ? repository.full_name : "other/repo",
+            id % 3 ? "workflow_run" : "check_run",
+            id,
+            tied ? now : now - (id % 17),
+            now,
+          );
+        }
+      });
+      const removed = new Set(
+        [
+          ...storage.sql.exec(
+            `SELECT rowid FROM ${table} ORDER BY source_updated_at DESC LIMIT -1 OFFSET 1000`,
+          ),
+        ].map((row) => row.rowid),
+      );
+      const expected = [...storage.sql.exec(`SELECT rowid, * FROM ${table} ORDER BY rowid`)].filter(
+        (row) => !removed.has(row.rowid),
+      );
+      store.ingest(receiptDelivery(`workflow-prune-${count}-${tied}`, now), now);
+      assert.deepEqual(
+        [...storage.sql.exec(`SELECT rowid, * FROM ${table} ORDER BY rowid`)],
+        expected,
+      );
+    });
+  }
 }
 
 test("comment-count gaps force a repair poll and a complete repair heals the collection", async () => {
