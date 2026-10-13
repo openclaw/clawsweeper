@@ -526,6 +526,36 @@ test("publication batches atomically select ready items without duplicate active
   assert.equal(batches.fetch("batch-1", "wrong-worker", 1_500), null);
 });
 
+test("publication batch startup migrations write only rows that change", () => {
+  const storage = new TestStorage();
+  const batches = new ExactReviewPublicationBatchStore(storage);
+  batches.ensureSchemaSync();
+  batches.claim({
+    batchId: "batch-1",
+    leaseOwner: "worker-1",
+    leaseExpiresAt: 2_000,
+    now: 1_000,
+    maxItems: 2,
+    candidates,
+  });
+  const changes = () =>
+    Number([...storage.sql.exec("SELECT total_changes() AS n")][0]?.n ?? Number.NaN);
+  // An undersized pre-column cap and a missing fencing generation still get backfilled once.
+  storage.run(
+    "UPDATE exact_review_publication_batches SET configured_batch_size = 1 WHERE batch_id = ?",
+    "batch-1",
+  );
+  storage.run("DELETE FROM exact_review_publication_batch_generations");
+  const beforeBackfill = changes();
+  batches.ensureSchemaSync();
+  assert.equal(changes() - beforeBackfill, 3);
+  assert.equal(batches.fetch("batch-1", "worker-1", 1_500)?.configuredBatchSize, 2);
+  // Every later Durable Object start must not rewrite unchanged rows.
+  const beforeRestart = changes();
+  batches.ensureSchemaSync();
+  assert.equal(changes() - beforeRestart, 0);
+});
+
 test("publication batch store replays the exact lease for the same identity", () => {
   const storage = new TestStorage();
   const batches = new ExactReviewPublicationBatchStore(storage);

@@ -392,7 +392,6 @@ export class ExactReviewDirectPublicationStore {
          PRIMARY KEY (repo_slug, section, record_id, chunk_index)
        ) STRICT`,
     );
-    this.seedExportIndexFromCanonicalSync();
   }
 
   accept(plan: CanonicalDirectPublicationPlan, now: number): DirectPublicationAcceptResult {
@@ -1262,39 +1261,6 @@ export class ExactReviewDirectPublicationStore {
       throw new Error(`invalid canonical tuple revision for ${repoSlug}/${itemId}`);
     }
     return current + 1;
-  }
-
-  private seedExportIndexFromCanonicalSync() {
-    const rows = Array.from(
-      this.storage.sql.exec(
-        `SELECT repo_slug, section, item_id, digest, deleted, revision, updated_at
-           FROM ${EXACT_REVIEW_CANONICAL_RECORD_TABLE}
-          WHERE NOT EXISTS (
-            SELECT 1 FROM ${EXACT_REVIEW_RECORD_EXPORT_INDEX_TABLE} export
-             WHERE export.repo_slug = ${EXACT_REVIEW_CANONICAL_RECORD_TABLE}.repo_slug
-               AND export.section = ${EXACT_REVIEW_CANONICAL_RECORD_TABLE}.section
-               AND export.record_id = CAST(${EXACT_REVIEW_CANONICAL_RECORD_TABLE}.item_id AS TEXT)
-          )
-          ORDER BY repo_slug, section, item_id`,
-      ),
-    );
-    for (const row of rows) {
-      const storeRevision = this.nextExportRevisionSync();
-      this.storage.sql.exec(
-        `INSERT INTO ${EXACT_REVIEW_RECORD_EXPORT_INDEX_TABLE}
-           (repo_slug, section, record_id, digest, deleted, revision, store_revision,
-            source, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, 'canonical', ?)`,
-        String(row.repo_slug),
-        String(row.section),
-        String(row.item_id),
-        row.digest === null ? null : String(row.digest),
-        Number(row.deleted),
-        Number(row.revision),
-        storeRevision,
-        Number(row.updated_at),
-      );
-    }
   }
 
   private nextExportRevisionSync() {

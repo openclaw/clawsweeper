@@ -190,13 +190,18 @@ export class ExactReviewPublicationBatchStore {
     );
     // Pre-column leases cannot recover their original configured cap. Use their
     // durable membership count as the smallest safe telemetry denominator.
+    // These run on every Durable Object start, so they only write rows that change:
+    // rewriting every row each start made cold restarts stall the queue.
     this.storage.sql.exec(
       `UPDATE ${EXACT_REVIEW_PUBLICATION_BATCH_TABLE}
-          SET configured_batch_size = MAX(
-            configured_batch_size,
-            (SELECT COUNT(*) FROM ${EXACT_REVIEW_PUBLICATION_BATCH_ITEM_TABLE}
-              WHERE batch_id = ${EXACT_REVIEW_PUBLICATION_BATCH_TABLE}.batch_id)
-          )`,
+          SET configured_batch_size = (
+            SELECT COUNT(*) FROM ${EXACT_REVIEW_PUBLICATION_BATCH_ITEM_TABLE}
+             WHERE batch_id = ${EXACT_REVIEW_PUBLICATION_BATCH_TABLE}.batch_id
+          )
+        WHERE configured_batch_size < (
+          SELECT COUNT(*) FROM ${EXACT_REVIEW_PUBLICATION_BATCH_ITEM_TABLE}
+           WHERE batch_id = ${EXACT_REVIEW_PUBLICATION_BATCH_TABLE}.batch_id
+        )`,
     );
     this.storage.sql.exec(
       `INSERT INTO ${EXACT_REVIEW_PUBLICATION_BATCH_GENERATION_TABLE}
@@ -204,10 +209,8 @@ export class ExactReviewPublicationBatchStore {
        SELECT item_key, MAX(claim_generation)
          FROM ${EXACT_REVIEW_PUBLICATION_BATCH_ITEM_TABLE}
         GROUP BY item_key
-       ON CONFLICT (item_key) DO UPDATE SET claim_generation = MAX(
-         claim_generation,
-         excluded.claim_generation
-       )`,
+       ON CONFLICT (item_key) DO UPDATE SET claim_generation = excluded.claim_generation
+        WHERE excluded.claim_generation > claim_generation`,
     );
   }
 
