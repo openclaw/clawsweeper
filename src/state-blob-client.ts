@@ -1,5 +1,5 @@
 import { createHmac } from "node:crypto";
-import { sha256 } from "./content-hash.js";
+import { sha256 } from "./content-hash.ts";
 
 const SINGLE_PUT_MAX_BYTES = 24 * 1024 * 1024;
 

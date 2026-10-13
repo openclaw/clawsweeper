@@ -1,0 +1,1 @@
+- Preserve action-ledger transaction boundaries when publishing to R2 and hydrating state: validate complete publication manifests, publish completion last, recover missing committed members, and report omitted unfinished imports without replacing the previous ledger on validation failure.

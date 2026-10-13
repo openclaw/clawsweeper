@@ -1,6 +1,23 @@
+import {
+  ACTION_EVENT_IMPORT_BINDING_MAX_BYTES,
+  ACTION_EVENT_SHARD_IMPORT_LIMITS,
+  ACTION_EVENT_SHARD_IMPORT_MAX_PUBLISH_PATHS,
+  actionEventShardImportBindings,
+  importedActionEventIdentityBinding,
+  importedActionEventIdentityBindingRelativePath,
+  importedShardReplayEquivalent,
+  readImportedActionEventShards,
+  validateExpectedActionEventPaths,
+  type ImportedActionEventShard,
+  type ImportedActionEventIdentityBinding,
+} from "./action-ledger-import.ts";
+export {
+  ACTION_EVENT_SHARD_IMPORT_LIMITS,
+  ACTION_EVENT_SHARD_IMPORT_MAX_PUBLISH_PATHS,
+} from "./action-ledger-import.ts";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
-import { sha256 } from "./content-hash.js";
+import { sha256 } from "./content-hash.ts";
 
 import {
   isNotFoundError,
@@ -16,17 +33,13 @@ import {
   tryAcquireUtf8FileLockNoFollow,
   writeUtf8FileCreateOnlyNoFollow,
   type SafeReadRoot,
-} from "./action-ledger-files.js";
+} from "./action-ledger-files.ts";
 import {
   ACTION_LEDGER_CANONICAL_JSON_LIMITS,
   ACTION_EVENT_REASON_CODES,
-  ACTION_EVENT_SHARD_FILE_LIMITS,
   ACTION_EVENT_STATUSES,
   ACTION_EVENT_TYPES,
-  actionEventShardsReplayEquivalent,
   actionAttemptId,
-  actionEventShardImportBindingRelativePaths,
-  actionEventShardRelativePath,
   actionEventSpoolRelativePath,
   actionEventKey,
   actionIdempotencyKey,
@@ -37,10 +50,8 @@ import {
   isActionEventPhaseType,
   isActionEventReasonCode,
   isActionEventStatus,
-  parseActionEventShardContent,
   readAllSpooledActionEvents,
   sortActionEventsCausally,
-  splitActionEventShardEvents,
   strictUtcCalendarDate,
   validateActionEvent,
   writeActionEvent,
@@ -55,11 +66,10 @@ import {
   type ActionEventProducer,
   type ActionEventPhaseType,
   type ActionEventReasonCode,
-  type ActionEventShardIdentity,
   type ActionEventStatus,
   type ActionEventSubject,
-} from "./action-ledger.js";
-import { normalizeRepo } from "./repository-profiles.js";
+} from "./action-ledger.ts";
+import { normalizeRepo } from "./repository-identity.ts";
 
 const DEFAULT_EVENT_OUTPUT_DIR = path.join(".clawsweeper-repair", "action-ledger-state");
 const DEFAULT_CRABFLEET_BASE_URL = "https://crabfleet.openclaw.ai";
@@ -67,9 +77,7 @@ const DEFAULT_CRABFLEET_TIMEOUT_MS = 10_000;
 const MAX_CRABFLEET_TIMEOUT_MS = 60_000;
 const DEFAULT_CRABFLEET_FLUSH_TIMEOUT_MS = 10_000;
 const MAX_CRABFLEET_FLUSH_TIMEOUT_MS = 60_000;
-const ACTION_EVENT_SHARD_PATH_PATTERN =
-  /^ledger\/v1\/events\/\d{4}\/\d{2}\/\d{2}\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\.jsonl$/;
-const ACTION_EVENT_IMPORT_BINDING_MAX_BYTES = 1024 * 1024;
+
 const ACTION_EVENT_FINALIZATION_MAX_BYTES = 1024 * 1024;
 const ACTION_EVENT_PARTITION_MARKER_MAX_BYTES = 64;
 const ACTION_EVENT_PRODUCER_LOCK_MAX_BYTES = 1024;
@@ -92,22 +100,6 @@ export const CRABFLEET_PROJECTION_LIMITS = {
   defaultFlushTimeoutMs: DEFAULT_CRABFLEET_FLUSH_TIMEOUT_MS,
   maxFlushTimeoutMs: MAX_CRABFLEET_FLUSH_TIMEOUT_MS,
 } as const;
-
-export const ACTION_EVENT_SHARD_IMPORT_LIMITS = {
-  maxDepth: 6,
-  maxEntriesPerDirectory: 512,
-  maxDirectories: 512,
-  maxFiles: 256,
-  maxFileBytes: ACTION_EVENT_SHARD_FILE_LIMITS.maxBytes,
-  maxFileLines: 2_048,
-  maxFileEvents: ACTION_EVENT_SHARD_FILE_LIMITS.maxEvents,
-  maxTotalBytes: 16 * 1024 * 1024,
-  maxTotalEvents: 256 * ACTION_EVENT_SHARD_FILE_LIMITS.maxEvents,
-  maxCausalBindings: 256 * ACTION_EVENT_SHARD_FILE_LIMITS.maxEvents,
-} as const;
-
-export const ACTION_EVENT_SHARD_IMPORT_MAX_PUBLISH_PATHS =
-  ACTION_EVENT_SHARD_IMPORT_LIMITS.maxTotalEvents + ACTION_EVENT_SHARD_IMPORT_LIMITS.maxFiles * 4;
 
 export type WorkflowActionEventInput = {
   scope: string;
@@ -279,30 +271,6 @@ type ExpectedActionEventProducerIdentity = {
 
 export type ExpectedActionEventProducer = ExpectedActionEventProducerIdentity &
   ({ runAttempt: number; maxRunAttempt?: never } | { runAttempt?: never; maxRunAttempt: number });
-
-type ImportedActionEventShard = {
-  relativePath: string;
-  content: string;
-  events: ActionEvent[];
-  identity: ActionEventShardIdentity;
-  shardIndex: number | undefined;
-  shardCount: number | undefined;
-};
-
-type ActionEventShardImportBinding = {
-  relativePath: string;
-  content: string;
-  label: string;
-  kind: "reservation" | "completion";
-};
-
-type ImportedActionEventIdentityBinding = {
-  schema: "clawsweeper.action-ledger-import-event";
-  schema_version: 1;
-  event_id: string;
-  semantic_sha256: string;
-  parent_event_id: string | null;
-};
 
 type CrabFleetProjectionRequest = {
   event: ActionEvent;
@@ -1247,105 +1215,6 @@ function prepareActionEventShardImportBindings(
   };
 }
 
-function actionEventShardImportBindings(
-  shards: readonly ImportedActionEventShard[],
-): ActionEventShardImportBinding[] {
-  const producerRuns = new Map<string, ActionEventShardImportBinding>();
-  const eventIdentities = new Map<string, ActionEventShardImportBinding>();
-  const shardSets = new Map<string, ImportedActionEventShard[]>();
-  for (const shard of shards) {
-    const { partitionDate, ...producerIdentity } = shard.identity;
-    const producerKey = actionLedgerJson(producerIdentity);
-    const producerDigest = sha256(producerKey);
-    const producerContent = `${actionLedgerJson({
-      schema: "clawsweeper.action-ledger-import-producer-run",
-      schema_version: 1,
-      producer: producerIdentity,
-      partition_date: partitionDate,
-    })}\n`;
-    const existingProducer = producerRuns.get(producerKey);
-    if (existingProducer && existingProducer.content !== producerContent) {
-      throw new Error("action event shard batch splits one producer run across partition dates");
-    }
-    producerRuns.set(producerKey, {
-      relativePath: path.join(
-        "ledger",
-        "v1",
-        "import-bindings",
-        "producer-runs",
-        `${producerDigest}.json`,
-      ),
-      content: producerContent,
-      label: "action event shard import producer partition binding",
-      kind: "reservation",
-    });
-
-    for (const event of shard.events) {
-      const content = `${actionLedgerJson(importedActionEventIdentityBinding(event))}\n`;
-      const existingEvent = eventIdentities.get(event.event_id);
-      if (existingEvent && existingEvent.content !== content) {
-        throw new Error(`action event shard import event identity conflict: ${event.event_id}`);
-      }
-      eventIdentities.set(event.event_id, {
-        relativePath: importedActionEventIdentityBindingRelativePath(event.event_id),
-        content,
-        label: "action event shard import event identity binding",
-        kind: "reservation",
-      });
-    }
-
-    const shardSetKey = actionLedgerJson(shard.identity);
-    const group = shardSets.get(shardSetKey) ?? [];
-    group.push(shard);
-    shardSets.set(shardSetKey, group);
-  }
-
-  const bindings = [...producerRuns.values(), ...eventIdentities.values()];
-  for (const group of shardSets.values()) {
-    const ordered = [...group].sort((left, right) =>
-      left.relativePath < right.relativePath ? -1 : left.relativePath > right.relativePath ? 1 : 0,
-    );
-    const bindingPaths = actionEventShardImportBindingRelativePaths(ordered[0]!.identity);
-    const reservation = {
-      schema: "clawsweeper.action-ledger-import-shard-set",
-      schema_version: 1,
-      producer: ordered[0]!.identity,
-      shards: ordered.map((shard) => ({
-        path: shard.relativePath,
-        replay_sha256: sha256(
-          `${shard.events.map((event) => actionEventReplayJson(event)).join("\n")}\n`,
-        ),
-      })),
-    };
-    const reservationContent = `${actionLedgerJson(reservation)}\n`;
-    bindings.push({
-      relativePath: bindingPaths.reservation,
-      content: reservationContent,
-      label: "action event shard import producer shard-set binding",
-      kind: "reservation",
-    });
-    bindings.push({
-      relativePath: bindingPaths.completion,
-      content: `${actionLedgerJson({
-        schema: "clawsweeper.action-ledger-import-shard-set-completion",
-        schema_version: 1,
-        producer: ordered[0]!.identity,
-        reservation_sha256: sha256(reservationContent),
-      })}\n`,
-      label: "action event shard import producer shard-set completion binding",
-      kind: "completion",
-    });
-  }
-  return bindings.sort((left, right) => {
-    if (left.kind !== right.kind) return left.kind === "reservation" ? -1 : 1;
-    return left.relativePath < right.relativePath
-      ? -1
-      : left.relativePath > right.relativePath
-        ? 1
-        : 0;
-  });
-}
-
 function publishActionEventShardImportBinding(
   binding: ReturnType<typeof prepareActionEventShardImportBindings>["reservations"][number],
 ): void {
@@ -1406,22 +1275,6 @@ function validateImportedActionEventHistory(
   }
 }
 
-function importedActionEventIdentityBinding(
-  event: ActionEvent,
-): ImportedActionEventIdentityBinding {
-  return {
-    schema: "clawsweeper.action-ledger-import-event",
-    schema_version: 1,
-    event_id: event.event_id,
-    semantic_sha256: event.semantic_sha256,
-    parent_event_id: event.parent_event_id,
-  };
-}
-
-function importedActionEventIdentityBindingRelativePath(eventId: string): string {
-  return path.join("ledger", "v1", "import-bindings", "events", `${eventId}.json`);
-}
-
 function readImportedActionEventIdentityBinding(
   destination: SafeReadRoot,
   eventId: string,
@@ -1465,258 +1318,6 @@ function readImportedActionEventIdentityBinding(
     throw new Error(`invalid action event shard import event identity binding: ${eventId}`);
   }
   return value as ImportedActionEventIdentityBinding;
-}
-
-function readImportedActionEventShards(
-  source: SafeReadRoot,
-  relativePaths: readonly string[],
-  options: { requireManifestPaths?: boolean } = {},
-): ImportedActionEventShard[] {
-  let totalBytes = 0;
-  const contents = relativePaths.map((relativePath) => {
-    if (!ACTION_EVENT_SHARD_PATH_PATTERN.test(relativePath)) {
-      throw new Error(`invalid action event shard path: ${relativePath}`);
-    }
-    const target = prepareSafeReadTarget(source, relativePath, "action event shard import source");
-    let content: string;
-    try {
-      content = readUtf8FileNoFollow(target, ACTION_EVENT_SHARD_IMPORT_LIMITS.maxFileBytes);
-    } catch (error) {
-      if (options.requireManifestPaths && isNotFoundError(error)) {
-        throw new Error(`action event shard manifest path is missing: ${relativePath}`, {
-          cause: error,
-        });
-      }
-      throw error;
-    }
-    const bytes = Buffer.byteLength(content, "utf8");
-    totalBytes += bytes;
-    if (totalBytes > ACTION_EVENT_SHARD_IMPORT_LIMITS.maxTotalBytes) {
-      throw new Error(
-        `action event shard import exceeds ${ACTION_EVENT_SHARD_IMPORT_LIMITS.maxTotalBytes} total byte limit`,
-      );
-    }
-    assertImportedShardLineLimit(relativePath, content);
-    if (!content.endsWith("\n")) {
-      throw new Error(`action event shard must end with a newline: ${relativePath}`);
-    }
-    return { relativePath, content };
-  });
-
-  let totalEvents = 0;
-  const parsed = contents.map(({ relativePath, content }) => {
-    const events = parseActionEventShardContent(content, relativePath);
-    assertImportedShardEventLimit(relativePath, events);
-    totalEvents += events.length;
-    if (totalEvents > ACTION_EVENT_SHARD_IMPORT_LIMITS.maxTotalEvents) {
-      throw new Error(
-        `action event shard import exceeds ${ACTION_EVENT_SHARD_IMPORT_LIMITS.maxTotalEvents} total event limit`,
-      );
-    }
-    return { relativePath, content, events };
-  });
-  const validated = parsed.map((shard) => ({
-    ...shard,
-    ...validateCanonicalImportedShard(shard.relativePath, shard.events, shard.content),
-  }));
-  validateCanonicalImportedShardBatch(validated);
-  return validated;
-}
-
-function validateExpectedActionEventPaths(paths: readonly string[]): string[] {
-  if (paths.length === 0) {
-    throw new Error("action event shard manifest is empty");
-  }
-  if (paths.length > ACTION_EVENT_SHARD_IMPORT_LIMITS.maxFiles) {
-    throw new Error(
-      `action event shard manifest exceeds ${ACTION_EVENT_SHARD_IMPORT_LIMITS.maxFiles} event paths`,
-    );
-  }
-  const canonical = [...new Set(paths)].sort();
-  if (
-    canonical.length !== paths.length ||
-    canonical.some((value, index) => value !== paths[index])
-  ) {
-    throw new Error("action event shard manifest paths must be sorted and unique");
-  }
-  for (const relativePath of canonical) {
-    if (!ACTION_EVENT_SHARD_PATH_PATTERN.test(relativePath)) {
-      throw new Error(`invalid action event shard manifest path: ${relativePath}`);
-    }
-  }
-  return canonical;
-}
-
-function importedShardReplayEquivalent(
-  content: string,
-  candidate: ImportedActionEventShard,
-  filePath: string,
-): boolean {
-  assertImportedShardLineLimit(candidate.relativePath, content);
-  const parsed = parseActionEventShardContent(content, filePath);
-  assertImportedShardEventLimit(candidate.relativePath, parsed);
-  validateCanonicalImportedShard(candidate.relativePath, parsed, content);
-  return actionEventShardsReplayEquivalent(parsed, candidate.events);
-}
-
-function assertImportedShardLineLimit(relativePath: string, content: string): void {
-  let lineCount = content.length === 0 ? 0 : content.endsWith("\n") ? 0 : 1;
-  for (let index = 0; index < content.length; index += 1) {
-    if (content.charCodeAt(index) === 10) lineCount += 1;
-  }
-  if (lineCount > ACTION_EVENT_SHARD_IMPORT_LIMITS.maxFileLines) {
-    throw new Error(
-      `action event shard exceeds ${ACTION_EVENT_SHARD_IMPORT_LIMITS.maxFileLines} line limit: ${relativePath}`,
-    );
-  }
-}
-
-function assertImportedShardEventLimit(relativePath: string, events: readonly ActionEvent[]): void {
-  if (events.length > ACTION_EVENT_SHARD_IMPORT_LIMITS.maxFileEvents) {
-    throw new Error(
-      `action event shard exceeds ${ACTION_EVENT_SHARD_IMPORT_LIMITS.maxFileEvents} event limit: ${relativePath}`,
-    );
-  }
-}
-
-function validateCanonicalImportedShard(
-  relativePath: string,
-  events: readonly ActionEvent[],
-  content: string,
-): Pick<ImportedActionEventShard, "identity" | "shardIndex" | "shardCount"> {
-  const match =
-    /^ledger\/v1\/events\/(\d{4})\/(\d{2})\/(\d{2})\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\.jsonl$/.exec(
-      relativePath,
-    );
-  const first = events[0];
-  if (!match || !first) {
-    throw new Error(`action event shard is empty or has an invalid path: ${relativePath}`);
-  }
-  const seen = new Set<string>();
-  const firstProducer = actionLedgerJson(first.producer);
-  for (const event of events) {
-    if (seen.has(event.event_id)) {
-      throw new Error(`action event shard contains duplicate events: ${relativePath}`);
-    }
-    seen.add(event.event_id);
-    if (actionLedgerJson(event.producer) !== firstProducer) {
-      throw new Error(`action event shard mixes producer identities: ${relativePath}`);
-    }
-  }
-  const sorted = sortActionEventsCausally(events);
-  const canonicalContent = `${sorted.map((event) => actionLedgerJson(event)).join("\n")}\n`;
-  if (content !== canonicalContent) {
-    throw new Error(`action event shard content is not canonical: ${relativePath}`);
-  }
-  const identity = {
-    repository: first.producer.repository,
-    sha: first.producer.sha,
-    producer: first.producer.component,
-    workflow: first.producer.workflow,
-    job: first.producer.job,
-    runId: first.producer.run_id,
-    runAttempt: first.producer.run_attempt,
-    partitionDate: `${match[1]}-${match[2]}-${match[3]}`,
-  };
-  const { shardIndex, shardCount } = importedShardPart(relativePath);
-  const expectedPath = actionEventShardRelativePath(
-    identity,
-    sorted,
-    shardIndex,
-    shardCount,
-  ).replaceAll(path.sep, "/");
-  if (expectedPath !== relativePath) {
-    throw new Error(
-      `action event shard path does not match canonical identity: ${relativePath} != ${expectedPath}`,
-    );
-  }
-  return { identity, shardIndex, shardCount };
-}
-
-function validateCanonicalImportedShardBatch(shards: readonly ImportedActionEventShard[]): void {
-  const allEvents = shards.flatMap((shard) => shard.events);
-  const seen = new Set<string>();
-  for (const event of allEvents) {
-    if (seen.has(event.event_id)) {
-      throw new Error(`action event shard batch contains duplicate event: ${event.event_id}`);
-    }
-    seen.add(event.event_id);
-  }
-  sortActionEventsCausally(allEvents);
-
-  const producerPartitions = new Map<string, string>();
-  for (const shard of shards) {
-    const { partitionDate, ...producerIdentity } = shard.identity;
-    const key = actionLedgerJson(producerIdentity);
-    const existing = producerPartitions.get(key);
-    if (existing !== undefined && existing !== partitionDate) {
-      throw new Error("action event shard batch splits one producer run across partition dates");
-    }
-    producerPartitions.set(key, partitionDate);
-  }
-
-  const groups = new Map<string, ImportedActionEventShard[]>();
-  for (const shard of shards) {
-    const key = actionLedgerJson(shard.identity);
-    const group = groups.get(key) ?? [];
-    group.push(shard);
-    groups.set(key, group);
-  }
-  for (const group of groups.values()) validateCanonicalImportedShardGroup(group);
-}
-
-function validateCanonicalImportedShardGroup(group: readonly ImportedActionEventShard[]): void {
-  const numbered = group.filter((shard) => shard.shardIndex !== undefined);
-  if (numbered.length === 0) {
-    if (group.length !== 1) {
-      throw new Error("action event shard batch contains repeated unnumbered producer shards");
-    }
-    return;
-  }
-  if (numbered.length !== group.length) {
-    throw new Error("action event shard batch mixes numbered and unnumbered producer shards");
-  }
-
-  const shardCount = numbered[0]!.shardCount!;
-  if (numbered.some((shard) => shard.shardCount !== shardCount) || numbered.length !== shardCount) {
-    throw new Error("action event shard batch is incomplete");
-  }
-  const ordered = [...group].sort((left, right) => left.shardIndex! - right.shardIndex!);
-  for (let index = 0; index < ordered.length; index += 1) {
-    if (ordered[index]!.shardIndex !== index + 1) {
-      throw new Error("action event shard batch is incomplete");
-    }
-  }
-  const events = sortActionEventsCausally(ordered.flatMap((shard) => shard.events));
-  const packed = splitActionEventShardEvents(events);
-  if (packed.length !== ordered.length) {
-    throw new Error("action event shard batch is not deterministically packed");
-  }
-  const identity = ordered[0]!.identity;
-  for (let index = 0; index < packed.length; index += 1) {
-    const eventsForPart = packed[index]!;
-    const shard = ordered[index]!;
-    const expectedPath = actionEventShardRelativePath(
-      identity,
-      eventsForPart,
-      index + 1,
-      shardCount,
-    ).replaceAll(path.sep, "/");
-    const expectedContent = `${eventsForPart.map((event) => actionLedgerJson(event)).join("\n")}\n`;
-    if (shard.relativePath !== expectedPath || shard.content !== expectedContent) {
-      throw new Error("action event shard batch is not deterministically packed");
-    }
-  }
-}
-
-function importedShardPart(relativePath: string): {
-  shardIndex: number | undefined;
-  shardCount: number | undefined;
-} {
-  const match = /-part-(\d{6})-of-(\d{6})\.jsonl$/.exec(relativePath);
-  return match
-    ? { shardIndex: Number(match[1]), shardCount: Number(match[2]) }
-    : { shardIndex: undefined, shardCount: undefined };
 }
 
 function queueCrabFleetEvent(
