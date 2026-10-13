@@ -70,5 +70,9 @@ test("queue storage stats are served only to signed internal requests", async ()
     storage: { tables: { table: string; rows: number }[] };
   };
   assert.equal(body.ok, true);
-  assert.ok(body.storage.tables.some((table) => table.table === "exact_review_queue_items"));
+  // The report lists exactly the tables the store holds, with their row counts.
+  assert.deepEqual(
+    body.storage.tables.map((table) => [table.table, table.rows]),
+    storageStats(storage.sql).tables.map((table) => [table.table, table.rows]),
+  );
 });

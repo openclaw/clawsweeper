@@ -1155,6 +1155,17 @@ export class ExactReviewQueue {
               },
       });
     }
+    // Read-only size report (Cloudflare shows only the total stored bytes). It runs before
+    // ensureReady and legacy cleanup, which can write, so measuring never changes the store.
+    if (request.method === "POST" && url.pathname === "/storage/stats") {
+      return json({
+        ok: true,
+        generated_at: new Date().toISOString(),
+        storage: storageStats(this.storage.sql),
+        tide_source_scans: this.lifecycleTelemetryStore.tideSourceScanStats(),
+      });
+    }
+
     await this.ensureReady();
     this.cleanupLegacyCompatibilitySync();
     if (request.method === "POST" && url.pathname === "/admission-capabilities") {
@@ -3876,16 +3887,6 @@ export class ExactReviewQueue {
         digest: record.digest,
         revision: record.revision,
         updatedAt: new Date(record.updatedAt).toISOString(),
-      });
-    }
-
-    // Read-only size report: Cloudflare shows only the total stored bytes.
-    if (request.method === "POST" && url.pathname === "/storage/stats") {
-      return json({
-        ok: true,
-        generated_at: new Date().toISOString(),
-        storage: storageStats(this.storage.sql),
-        tide_source_scans: this.lifecycleTelemetryStore.tideSourceScanStats(),
       });
     }
 
