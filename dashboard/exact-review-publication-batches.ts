@@ -180,6 +180,13 @@ export class ExactReviewPublicationBatchStore {
       `CREATE INDEX IF NOT EXISTS exact_review_publication_batches_cleanup
          ON ${EXACT_REVIEW_PUBLICATION_BATCH_TABLE} (state, completed_at, batch_id)`,
     );
+    // Publication stats count reclaimed memberships; a partial index keeps that count
+    // proportional to the reclaimed rows instead of scanning every membership.
+    this.storage.sql.exec(
+      `CREATE INDEX IF NOT EXISTS exact_review_publication_batch_items_lease_expired
+         ON ${EXACT_REVIEW_PUBLICATION_BATCH_ITEM_TABLE} (batch_id)
+       WHERE terminal_outcome = 'lease_expired'`,
+    );
     // Cleanup may delete batch receipts, but fencing must outlive those receipts so
     // delayed completions can never match a later lease after an ID is reused.
     this.storage.sql.exec(

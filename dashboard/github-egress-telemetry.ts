@@ -165,6 +165,12 @@ export class GithubEgressTelemetryStore {
       `CREATE INDEX IF NOT EXISTS exact_review_github_egress_rollups_window_v2
          ON ${ROLLUP_TABLE} (bucket_kind, bucket_start, pool_class, operation)`,
     );
+    // Cap eviction takes the oldest rows per bucket kind in (bucket_start, rowid) order;
+    // the window index above sorts rowid ties within a timestamp, this one does not.
+    this.storage.sql.exec(
+      `CREATE INDEX IF NOT EXISTS exact_review_github_egress_rollups_age_v2
+         ON ${ROLLUP_TABLE} (bucket_kind, bucket_start)`,
+    );
     this.storage.sql.exec(
       `CREATE TABLE IF NOT EXISTS ${RATE_LIMIT_TABLE} (
          event_id TEXT PRIMARY KEY,
