@@ -2,10 +2,17 @@ const CODEX_MODEL_ACCESS_PREFIX = "the model ";
 const CODEX_MODEL_ACCESS_SUFFIX = " does not exist or you do not have access to it";
 const CODEX_HUMAN_RETRY_HINT_MAX_BYTES = 4096;
 
+// Provider rate limits and capacity errors, including "Selected model is at capacity".
+export const CODEX_PROVIDER_CAPACITY_ERROR =
+  /rate limit reached|tokens per min|\bTPM\b|requests per min|\b429\b|temporarily unavailable|overloaded|\bat capacity\b|please try again in \d+(?:\.\d+)?(?:ms|s)/i;
+
 export function isRetryableCodexTransportError(value: string | null | undefined): boolean {
   const message = value ?? "";
-  return /write_stdin failed: stdin is closed|stdin is closed for this session|rate limit reached|tokens per min|\bTPM\b|requests per min|\b429\b|temporarily unavailable|overloaded|stream disconnected|reconnecting|please try again in \d+(?:\.\d+)?(?:ms|s)/i.test(
-    message,
+  return (
+    CODEX_PROVIDER_CAPACITY_ERROR.test(message) ||
+    /write_stdin failed: stdin is closed|stdin is closed for this session|stream disconnected|reconnecting/i.test(
+      message,
+    )
   );
 }
 

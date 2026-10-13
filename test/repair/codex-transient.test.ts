@@ -36,6 +36,21 @@ test("Codex TPM rate-limit errors are retryable transport failures", () => {
   assert.equal(isCodexContextLimitError(message), false);
 });
 
+test("Codex model capacity errors are retryable, not terminal", () => {
+  const message =
+    "Codex final output did not end with its newline frame.\nERROR: Selected model is at capacity. Please try a different model.";
+  assert.equal(isRetryableCodexTransportError(message), true);
+  assert.equal(isRetryableCodexErrorMessage(message), true);
+  assert.equal(isTerminalCodexErrorMessage(message), false);
+  assert.equal(isCodexContextLimitError(message), false);
+  assert.equal(
+    isRetryableCodexTransportError(
+      "review tree budget: required filesystem capacity is unavailable",
+    ),
+    false,
+  );
+});
+
 test("Codex model access failures are terminal even when the stream disconnects", () => {
   const message =
     "ERROR: stream disconnected before completion: The model secret-model-for-test does not exist or you do not have access to it.";
