@@ -720,6 +720,16 @@ export class StatusStore {
     this.storage = state.storage;
     this.state = state;
     this.env = env;
+    const removeRetiredBayState = () =>
+      Promise.all([
+        this.storage.delete("openclaw-bay:terminal-state:v1"),
+        this.storage.delete("openclaw-bay:journey-state:v1"),
+      ]);
+    if (typeof state.blockConcurrencyWhile === "function") {
+      state.blockConcurrencyWhile(removeRetiredBayState);
+    } else {
+      void removeRetiredBayState();
+    }
   }
 
   async fetch(request: Request) {

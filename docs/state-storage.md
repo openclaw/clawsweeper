@@ -40,12 +40,20 @@ fence. A missing or conflicting link cannot complete another producer revision.
 This approved JSON extension adds no SQL table or column, grants no publication
 authority, and does not infer links for historical tupleless reports.
 
-The retired Bay telemetry tables and command-journey mapping retain their
-existing schema, but no longer receive writes or recovery/backfill work. The
-canonical lifecycle projection still owns admission, receipts, acknowledgements,
-and audit history; older projection JSON remains readable without its former
-Bay materialization markers. Direct and batch publication-outcome telemetry
-continues to back recent durable publication events.
+On startup the queue removes the retired Bay telemetry tables, command-journey
+mapping, and pending-telemetry index. Repository projection indexes remain in
+place to preserve existing query ordering. StatusStore deletes its two retired
+Bay history keys. The existing `bay_telemetry_pending`
+column stays inert: dropping it would rewrite all retained lifecycle rows on
+replicated storage while blocking startup. Its default still covers inserts;
+no application reads or updates it. These idempotent schema operations replace
+request-time pruning of the dead command mapping; no historical JSON backfill,
+table rewrite, or database vacuum runs. The lifecycle audit still uses the
+`exact_review_lifecycle_projection_bay` ordering index. Canonical lifecycle
+projections continue to own admission, receipts, acknowledgements, and audit
+history; older projection JSON remains readable without its former Bay and
+inline-proof markers. Direct and batch publication-outcome telemetry continues
+to back recent durable publication events.
 
 Report readers share one anchored leading-front-matter parser. A unique header
 value remains authoritative when report prose or a valid fenced example quotes

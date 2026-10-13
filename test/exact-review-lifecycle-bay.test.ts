@@ -6,6 +6,57 @@ import {
 } from "../dashboard/exact-review-lifecycle.ts";
 import { TestStorage } from "./exact-review-test-storage.ts";
 import { MemoryDurableStorage } from "./dashboard-worker-harness.ts";
+import { ExactReviewLifecycleTelemetryStore } from "../dashboard/exact-review-lifecycle-telemetry.ts";
+
+test("retired Bay storage is removed without changing durable lifecycle facts on restart", () => {
+  const f = producerJourneyFixture();
+  const before = f.lifecycle.read(f.producer.canonicalTargetKey, f.producer.fenceKey, 2);
+  f.storage.exec(`
+    ALTER TABLE exact_review_lifecycle_projection_v1 ADD COLUMN bay_telemetry_pending INTEGER NOT NULL DEFAULT 0;
+    CREATE INDEX exact_review_lifecycle_projection_bay_telemetry_pending
+      ON exact_review_lifecycle_projection_v1 (bay_telemetry_pending);
+  `);
+  const retiredTables = [
+    "exact_review_lifecycle_bay_event_v2",
+    "exact_review_lifecycle_bay_meta_v2",
+    "exact_review_lifecycle_bay_scope_v2",
+    "exact_review_lifecycle_bay_tide_buffer_v2",
+    "exact_review_lifecycle_bay_pending_v2",
+    "exact_review_command_bay_journeys",
+  ];
+  for (const table of retiredTables) {
+    f.storage.exec(
+      `CREATE TABLE ${table} (legacy_value TEXT); INSERT INTO ${table} VALUES ('old')`,
+    );
+  }
+  for (let restart = 0; restart < 2; restart++) {
+    const lifecycle = new ExactReviewLifecycleProjectionStore(f.storage);
+    const version = f.storage.scalar("SELECT schema_version AS value FROM pragma_schema_version");
+    lifecycle.ensureSchemaSync();
+    new ExactReviewLifecycleTelemetryStore(f.storage).ensureSchemaSync();
+    assert.deepEqual(lifecycle.read(f.producer.canonicalTargetKey, f.producer.fenceKey, 2), before);
+    assert.equal(lifecycle.maxRevision(f.producer.canonicalTargetKey), 2);
+    assert.equal(f.cards(lifecycle).length, 2);
+    for (const table of retiredTables) {
+      assert.equal(
+        f.storage.scalar(`SELECT COUNT(*) AS value FROM sqlite_master WHERE name = '${table}'`),
+        0,
+      );
+    }
+    assert.equal(
+      f.storage.scalar(
+        "SELECT COUNT(*) AS value FROM pragma_table_info('exact_review_lifecycle_projection_v1') WHERE name = 'bay_telemetry_pending'",
+      ),
+      1,
+    );
+    if (restart === 1) {
+      assert.equal(
+        f.storage.scalar("SELECT schema_version AS value FROM pragma_schema_version"),
+        version,
+      );
+    }
+  }
+});
 
 function producerJourneyFixture() {
   const storage = new TestStorage();

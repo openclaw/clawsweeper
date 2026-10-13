@@ -125,7 +125,6 @@ test("signed command intake rejects nonpublic visibility before storing command 
       "exact_review_command_intakes",
       "exact_review_command_receipts",
       "exact_review_command_watermarks",
-      "exact_review_command_bay_journeys",
       "exact_review_item_revisions",
     ]) {
       assert.equal(

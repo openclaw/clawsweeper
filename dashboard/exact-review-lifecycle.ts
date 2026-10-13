@@ -240,23 +240,9 @@ export class ExactReviewLifecycleProjectionStore {
          fence_key TEXT NOT NULL,
          projection_json TEXT NOT NULL,
          updated_at INTEGER NOT NULL,
-         bay_telemetry_pending INTEGER NOT NULL DEFAULT 0 CHECK (bay_telemetry_pending IN (0, 1)),
          PRIMARY KEY (canonical_target_key, fence_key, revision)
        ) STRICT`,
     );
-    try {
-      Array.from(
-        this.storage.sql.exec(
-          `SELECT bay_telemetry_pending FROM ${EXACT_REVIEW_LIFECYCLE_PROJECTION_TABLE} LIMIT 1`,
-        ),
-      );
-    } catch {
-      this.storage.sql.exec(
-        `ALTER TABLE ${EXACT_REVIEW_LIFECYCLE_PROJECTION_TABLE}
-           ADD COLUMN bay_telemetry_pending INTEGER NOT NULL DEFAULT 0
-           CHECK (bay_telemetry_pending IN (0, 1))`,
-      );
-    }
     // The timing reader rejects competing children with an exact indexed lookup.
     // A partial index preserves fail-closed reads of malformed legacy JSON.
     this.storage.sql.exec(
@@ -302,9 +288,7 @@ export class ExactReviewLifecycleProjectionStore {
          )`,
     );
     this.storage.sql.exec(
-      `CREATE INDEX IF NOT EXISTS exact_review_lifecycle_projection_bay_telemetry_pending
-         ON ${EXACT_REVIEW_LIFECYCLE_PROJECTION_TABLE}
-         (bay_telemetry_pending, updated_at, canonical_target_key, fence_key, revision)`,
+      "DROP INDEX IF EXISTS exact_review_lifecycle_projection_bay_telemetry_pending",
     );
     this.schemaReady = true;
   }
