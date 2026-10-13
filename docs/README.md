@@ -59,6 +59,8 @@ everything else requires human comparison with current main.
   boundaries
 - [Issue review advisory labels](work-lane.md) — active; structured review labels
 - [Review cache](review-cache.md) — active; reusable review-state contract
+- [Portable review receipt](portable-review-receipt.md) — proposed producer
+  contract; native outcomes, input identity, and unknown accounting
 - [GitHub webhook read model](github-webhook-read-model.md) — active; signed
   ingress, App subscriptions, snapshot freshness, and safety boundary
 

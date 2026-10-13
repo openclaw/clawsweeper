@@ -1,0 +1,95 @@
+{
+  "description": "Synthetic current native status shape and prospective receipt; not a model run.",
+  "native": {
+    "status": {
+      "schema_version": 1,
+      "status": "filtered",
+      "exit_code": 0,
+      "engine": "codex",
+      "report_produced": true,
+      "reason": null,
+      "reviewer_exit_code": null,
+      "timed_out": false,
+      "usage": {
+        "complete": false,
+        "attempts": 2,
+        "reported_attempts": 1,
+        "unknown_attempts": 1,
+        "partial_attempts": 0,
+        "tokens": {
+          "input_tokens": 100,
+          "cached_input_tokens": 20,
+          "output_tokens": 10,
+          "reasoning_output_tokens": 3
+        }
+      }
+    }
+  },
+  "receipt": {
+    "schema_version": 1,
+    "producer": {
+      "tool": "autoreview",
+      "version": null,
+      "revision": null
+    },
+    "input": {
+      "repository": "github.com/example/contribution-fork",
+      "target_repository": "github.com/example/project",
+      "object_format": "sha1",
+      "comparison": "merge-base-range",
+      "base": {
+        "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "tree": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      },
+      "head": {
+        "commit": "cccccccccccccccccccccccccccccccccccccccc",
+        "tree": "dddddddddddddddddddddddddddddddddddddddd"
+      },
+      "worktree": "clean",
+      "stages": ["committed"],
+      "source_manifest_sha256": "e919c46eefc275cbf860b95b429af3de98ff32a6ce49cafc16168ce4cb44217a",
+      "context_sha256": null,
+      "policy_sha256": null,
+      "instructions_sha256": null,
+      "review_config_sha256": null,
+      "coverage_notes": [
+        "Synthetic fixture. Same selected source; review context and policy are not asserted equivalent."
+      ]
+    },
+    "execution": {
+      "completion": "complete",
+      "harness": "codex",
+      "model": null,
+      "expected_passes": 1,
+      "completed_passes": 1,
+      "harness_version": null
+    },
+    "result": {
+      "namespace": "autoreview.report.v1",
+      "native_status": "filtered",
+      "report_sha256": null,
+      "threshold": "P0",
+      "findings": {
+        "accepted": null,
+        "filtered": null,
+        "rejected": null
+      }
+    },
+    "usage": {
+      "namespace": "autoreview.status.v1",
+      "scope": "process-attempts",
+      "complete": false,
+      "attempts": 2,
+      "reported_attempts": 1,
+      "unknown_attempts": 1,
+      "partial_attempts": 0,
+      "tokens": {
+        "input_tokens": 100,
+        "cached_input_tokens": 20,
+        "output_tokens": 10,
+        "reasoning_output_tokens": 3,
+        "cache_write_input_tokens": null
+      }
+    }
+  }
+}

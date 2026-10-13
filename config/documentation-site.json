@@ -45,6 +45,11 @@
   ],
   "noncanonical": [
     {
+      "path": "portable-review-receipt.md",
+      "lifecycle": "proposed",
+      "banner": "This prospective producer contract does not enable receipt export, verification, or review enforcement."
+    },
+    {
       "path": "queue-service-split-runbook.md",
       "lifecycle": "proposed",
       "banner": "This is an unapproved proposal, not current operator guidance."

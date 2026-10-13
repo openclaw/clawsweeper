@@ -1,0 +1,1 @@
+- Document a versioned portable review-receipt schema and cross-language fixtures without changing current reviewers, outputs, or review admission.
