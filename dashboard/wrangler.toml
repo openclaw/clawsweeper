@@ -4,6 +4,13 @@ account_id = "91b59577e757131d68d55a471fe32aca"
 compatibility_date = "2026-05-11"
 workers_dev = true
 
+# Workers Logs: every invocation (Worker and its Durable Objects) with console output and
+# exceptions, kept 7 days and queryable with `cf logs query` or the dashboard. Without stored
+# logs, the queue's intermittent 20-second stalls could not be traced to a request or exception.
+[observability]
+enabled = true
+head_sampling_rate = 1
+
 [triggers]
 crons = ["*/5 * * * *"]
 
