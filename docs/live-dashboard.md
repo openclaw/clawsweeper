@@ -574,6 +574,11 @@ expandable “Work execution needs attention” alert. This live diagnostic reus
 the status snapshot's Actions reads; the history cron no longer stores queue
 pressure or oldest-run values.
 
+Active-run collection reads up to three pages of 100 runs for each active status.
+A full final page with additional runs, a failed page, or inconsistent pagination
+keeps operational telemetry unknown. A complete 100-run page does not itself
+make telemetry unavailable.
+
 Queued runs older than 1440 minutes are reported separately as zombies and do
 not contribute to `queued_over_threshold` or `oldest_queued_minutes`; they
 therefore do not make an otherwise healthy snapshot degraded. The API exposes

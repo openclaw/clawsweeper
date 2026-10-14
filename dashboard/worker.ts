@@ -366,6 +366,7 @@ declare global {
   }
 }
 const ACTIVE_RUN_STATUS_FILTERS = ["in_progress", "queued", "waiting", "requested", "pending"];
+const ACTIVE_RUN_PAGE_LIMIT = 3;
 const TERMINAL_BAD_CONCLUSIONS = new Set(["failure", "timed_out", "action_required"]);
 const EVENT_LIMIT = 200;
 const EVENT_STORE_TTL_SECONDS = 7 * 24 * 60 * 60;
@@ -8189,17 +8190,42 @@ async function activeWorkflowRunCandidates(
 ) {
   const pages = await Promise.all(
     ACTIVE_RUN_STATUS_FILTERS.map(async (status) => {
-      const runs = await github(`/repos/${repo}/actions/runs?status=${status}&per_page=100`).catch(
-        (error) => {
+      const workflowRuns = [];
+      let expectedTotalCount: number | null = null;
+      let complete = false;
+      // Include the oldest runs without allowing a large backlog to make the
+      // status refresh unbounded. An unfinished census must remain unknown.
+      for (let page = 1; page <= ACTIVE_RUN_PAGE_LIMIT; page += 1) {
+        const runs = await github(
+          `/repos/${repo}/actions/runs?status=${status}&per_page=100${page > 1 ? `&page=${page}` : ""}`,
+        ).catch((error) => {
           errors.push(`workflow runs ${status}: ${error.message}`);
-          return null;
-        },
-      );
-      const workflowRuns = Array.isArray(runs?.workflow_runs) ? runs.workflow_runs : [];
-      // Sampling stays at five cheap status queries. A full page may omit the
-      // oldest (and therefore least healthy) runs, so fail closed instead of
-      // spending an unbounded number of follow-up requests.
-      if (workflowRuns.length >= 100) errors.push(`workflow runs ${status}: page may be truncated`);
+          return undefined;
+        });
+        if (runs === undefined) return workflowRuns;
+        if (!Array.isArray(runs?.workflow_runs) || runs.workflow_runs.length > 100) break;
+        const totalCount = runs.total_count;
+        if (totalCount !== undefined) {
+          if (
+            !Number.isSafeInteger(totalCount) ||
+            totalCount < 0 ||
+            (expectedTotalCount !== null && totalCount !== expectedTotalCount)
+          )
+            break;
+          expectedTotalCount = totalCount;
+        }
+        workflowRuns.push(...runs.workflow_runs);
+        if (uniqueWorkflowRuns(workflowRuns).length !== workflowRuns.length) break;
+        if (expectedTotalCount !== null && workflowRuns.length >= expectedTotalCount) {
+          complete = workflowRuns.length === expectedTotalCount;
+          break;
+        }
+        if (runs.workflow_runs.length < 100) {
+          complete = expectedTotalCount === null;
+          break;
+        }
+      }
+      if (!complete) errors.push(`workflow runs ${status}: census incomplete`);
       return workflowRuns;
     }),
   );

@@ -2460,6 +2460,81 @@ test("dashboard counts active runs that are older than the latest unfiltered pag
   }
 });
 
+test("dashboard bounds active-run pagination without hiding incomplete telemetry", async () => {
+  const originalFetch = globalThis.fetch;
+  const originalCaches = globalThis.caches;
+  Object.defineProperty(globalThis, "caches", {
+    configurable: true,
+    value: { default: { match: async () => undefined, put: async () => undefined } },
+  });
+  try {
+    for (const scenario of [
+      { total: 100, pages: 1, observed: 100, complete: true },
+      { total: 167, pages: 2, observed: 167, complete: true },
+      { total: 300, pages: 3, observed: 300, complete: true },
+      { total: 301, pages: 3, observed: 300, complete: false },
+      { total: 167, pages: 2, observed: 100, complete: false, failPage: 2 },
+      { total: 167, pages: 2, observed: 100, complete: false, drift: true },
+      { total: 167, pages: 2, observed: 100, complete: false, short: true },
+      { total: 167, pages: 2, observed: 167, complete: false, duplicate: true },
+    ]) {
+      const requestedPages: number[] = [];
+      globalThis.fetch = async (input) => {
+        const url = new URL(String(input));
+        if (url.pathname === "/repos/openclaw/clawsweeper/actions/runs") {
+          if (url.searchParams.get("status") !== "queued")
+            return jsonResponse({ workflow_runs: [] });
+          const page = Number(url.searchParams.get("page") || 1);
+          requestedPages.push(page);
+          if (page === scenario.failPage) return new Response("unavailable", { status: 503 });
+          const count =
+            scenario.short && page === 2 ? 0 : Math.min(100, scenario.total - (page - 1) * 100);
+          return jsonResponse({
+            total_count: scenario.drift && page === 2 ? scenario.total + 1 : scenario.total,
+            workflow_runs: Array.from({ length: count }, (_, index) => ({
+              id: (scenario.duplicate ? 0 : (page - 1) * 100) + index + 1,
+              name: "ClawSweeper Commit Review",
+              status: "queued",
+              created_at: isoAgo(7 * 24 * 60 * 60_000),
+              updated_at: isoAgo(7 * 24 * 60 * 60_000),
+            })),
+          });
+        }
+        if (url.pathname === "/search/issues") return jsonResponse({ items: [] });
+        throw new Error(`unexpected fetch ${url}`);
+      };
+      const response = await worker.fetch(
+        new Request("https://clawsweeper.openclaw.ai/api/status"),
+        {
+          CLAWSWEEPER_REPO: "openclaw/clawsweeper",
+          TARGET_REPOS: "openclaw/openclaw",
+          CACHE_TTL_SECONDS: "0",
+        },
+        { waitUntil: () => undefined },
+      );
+      const status = await response.json();
+      assert.equal(response.status, 200);
+      assert.equal(
+        status.operational_health.telemetry_complete,
+        scenario.complete,
+        JSON.stringify(scenario),
+      );
+      assert.equal(status.operational_health.status, scenario.complete ? "healthy" : "unknown");
+      assert.equal(
+        status.operational_health.zombie_queued_runs,
+        scenario.duplicate ? 100 : scenario.observed,
+      );
+      assert.deepEqual(
+        requestedPages,
+        Array.from({ length: scenario.pages }, (_, index) => index + 1),
+      );
+    }
+  } finally {
+    globalThis.fetch = originalFetch;
+    Object.defineProperty(globalThis, "caches", { configurable: true, value: originalCaches });
+  }
+});
+
 test("dashboard surfaces stale queue ghosts as zombies without active cards", async () => {
   const originalFetch = globalThis.fetch;
   const originalCaches = globalThis.caches;
