@@ -1,6 +1,7 @@
 import { stableJson } from "../src/stable-json.ts";
 import { CLAWSWEEPER_APP_BOT_LOGINS } from "../src/clawsweeper-bot-identity.ts";
 import { exactReviewSourceRevisionMaterial } from "./exact-review-source-revision.ts";
+import { requiresVerifiedMaintainerReviewRequest } from "./maintainer-author.ts";
 import {
   hasReviewAutomationOptIn,
   requiresMaintainerReviewRequest,
@@ -5973,6 +5974,24 @@ export class ExactReviewQueue {
       if (candidate.state.state === "terminal" && !exactReviewQueueHasCommandContext(item)) {
         delete checkedState.items[item.key];
         terminalCompleted += 1;
+        continue;
+      }
+      if (
+        item.state === "pending" &&
+        candidate.state.state === "open" &&
+        candidate.state.maintainerRequestRequired &&
+        !item.terminalFinalization &&
+        exactReviewHoldApplies("maintainer_request_required", item.decision)
+      ) {
+        // The runner admission check would skip this review. Park it with the
+        // same hold that skip records, without starting a runner; organic
+        // input and commands release it through ordinary admission.
+        item.state = "parked";
+        item.parkedReason = "maintainer_request_required";
+        item.parkedRecoveryAt = undefined;
+        item.parkedTerminalCheckedAt = checkedAt;
+        item.backoffReason = undefined;
+        item.updatedAt = checkedAt;
         continue;
       }
       if (
@@ -18538,7 +18557,24 @@ async function exactReviewTargetItemState(
     });
     const state = String(item.state || "").trim();
     if (state === "open") {
-      if (!readPullHead) return { state: "open" };
+      const maintainer =
+        isAutomaticReview(decision) &&
+        (await requiresVerifiedMaintainerReviewRequest(
+          decision.targetRepo,
+          objectValue(item),
+          (author) =>
+            githubTokenJson({
+              env,
+              token,
+              path: `/repos/${decision.targetRepo}/collaborators/${author}/permission`,
+              method: "GET",
+              body: undefined,
+              errorLabel: "author repository permission",
+            }),
+        ))
+          ? { maintainerRequestRequired: true }
+          : {};
+      if (!readPullHead) return { state: "open", ...maintainer };
       const headSha = String(objectValue(objectValue(item).head).sha || "")
         .trim()
         .toLowerCase();
@@ -18560,6 +18596,7 @@ async function exactReviewTargetItemState(
         return {
           state: "open",
           headSha,
+          ...maintainer,
           ...(automatic
             ? {
                 prReview: {
@@ -18584,7 +18621,7 @@ async function exactReviewTargetItemState(
           },
         };
       }
-      return { state: "open", headSha };
+      return { state: "open", headSha, ...maintainer };
     }
     if (state === "closed") return { state: "terminal" };
     throw new Error("live review item state response missing state");
@@ -18607,13 +18644,18 @@ async function exactReviewTargetItemState(
   }
 }
 
-function isAutomaticPullRequestReview(decision: ExactReviewDecision): boolean {
+// Work the runner admission check treats as automatic: no command, explicit
+// manual request or publication.
+function isAutomaticReview(decision: ExactReviewDecision): boolean {
   return (
-    decision.itemKind === "pull_request" &&
     !decision.publication &&
     decision.sourceAction !== MANUAL_REVIEW_SOURCE_ACTION &&
     !exactReviewDecisionHasCommandContext(decision)
   );
+}
+
+function isAutomaticPullRequestReview(decision: ExactReviewDecision): boolean {
+  return decision.itemKind === "pull_request" && isAutomaticReview(decision);
 }
 
 function initialPullRequestQuietMs(env): number {

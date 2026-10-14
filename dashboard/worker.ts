@@ -1,12 +1,8 @@
 import { publicTimestamp } from "./public-timestamp.ts";
 import { writeReviewUsage } from "./review-usage.ts";
 import { isReviewUsageRecord } from "../src/review-usage-contract.ts";
-import {
-  hasReviewAutomationOptIn,
-  normalizeAuthorAssociation,
-  requiresMaintainerReviewRequest,
-  verifiedMaintainerAuthorAssociation,
-} from "../src/maintainer-review-policy.ts";
+import { requiresMaintainerReviewRequest } from "../src/maintainer-review-policy.ts";
+import { requiresVerifiedMaintainerReviewRequest } from "./maintainer-author.ts";
 import {
   publicBayActivityKind,
   normalizePublicBayActivityKind,
@@ -3676,12 +3672,18 @@ async function githubWebhook(request, env, ctx) {
   }
 
   if ("type" in decision && decision.type === "item") {
-    const source = await withVerifiedAuthorAssociation(
-      env,
-      decision,
-      objectValue(payload.pull_request || payload.issue),
-    );
-    if (requiresMaintainerReviewRequest(source)) {
+    const source = objectValue(payload.pull_request || payload.issue);
+    if (
+      await requiresVerifiedMaintainerReviewRequest(decision.targetRepo, source, async (author) =>
+        githubTokenJson({
+          env,
+          token: stringEnv(env.GITHUB_TOKEN) || (await authorPermissionToken(env, decision)),
+          path: `/repos/${decision.targetRepo}/collaborators/${author}/permission`,
+          body: undefined,
+          errorLabel: "author repository permission",
+        }),
+      )
+    ) {
       if (
         ["opened", "ready_for_review"].includes(decision.sourceAction) &&
         source.draft !== true &&
@@ -4282,62 +4284,6 @@ function classifyGithubItemWebhook({
   }
 
   return { accepted: false, reason: "unsupported event" };
-}
-
-// Repository permission by `owner/repo|login`. One hour per isolate, so repeat
-// events from one author cost one GitHub read.
-const AUTHOR_PERMISSION_CACHE_TTL_MS = 60 * 60 * 1000;
-const AUTHOR_PERMISSION_CACHE_MAX = 2_000;
-const authorPermissionCache = new Map<string, { permission: string; expiresAtMs: number }>();
-
-// The App sees a private org member as CONTRIBUTOR. The runner admission check
-// (src/repair/exact-review-admission.ts) reads repository permission and then
-// skips the review, so read it here and stop the run before it is dispatched.
-// A failed read keeps the payload association; the runner check still applies.
-async function withVerifiedAuthorAssociation(
-  env: DashboardEnv,
-  decision: ExactReviewDecision & { installationId: number },
-  source: Record<string, unknown>,
-): Promise<Record<string, unknown>> {
-  if (
-    normalizeAuthorAssociation(source.author_association) !== "CONTRIBUTOR" ||
-    hasReviewAutomationOptIn(source)
-  ) {
-    return source;
-  }
-  const author = objectValue(source.user).login;
-  if (typeof author !== "string" || !/^[A-Za-z0-9-]+$/.test(author)) return source;
-  const key = `${decision.targetRepo}|${author.toLowerCase()}`;
-  const now = Date.now();
-  let permission = authorPermissionCache.get(key);
-  if (!permission || permission.expiresAtMs <= now) {
-    try {
-      const token = stringEnv(env.GITHUB_TOKEN) || (await authorPermissionToken(env, decision));
-      const response = await githubTokenJson({
-        env,
-        token,
-        path: `/repos/${decision.targetRepo}/collaborators/${author}/permission`,
-        body: undefined,
-        errorLabel: "author repository permission",
-      });
-      permission = {
-        permission: String(objectValue(response).permission || ""),
-        expiresAtMs: now + AUTHOR_PERMISSION_CACHE_TTL_MS,
-      };
-    } catch {
-      console.warn("ClawSweeper author repository permission unavailable");
-      return source;
-    }
-    if (authorPermissionCache.size >= AUTHOR_PERMISSION_CACHE_MAX) authorPermissionCache.clear();
-    authorPermissionCache.set(key, permission);
-  }
-  return {
-    ...source,
-    author_association: verifiedMaintainerAuthorAssociation({
-      authorAssociation: source.author_association,
-      repositoryPermission: permission.permission,
-    }),
-  };
 }
 
 async function authorPermissionToken(

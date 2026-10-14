@@ -258,6 +258,57 @@ for (const kind of ["issue", "pull_request"] as const) {
   });
 }
 
+test("automatic work by a private org member is held before dispatch", async () => {
+  // GitHub shows a private org member to the App as CONTRIBUTOR; repository
+  // permission decides, as in the runner admission check.
+  const authors: Record<number, string> = { 172600: "private-member", 172601: "outside-author" };
+  const permissionReads: string[] = [];
+  const h = createExactReviewAdmissionHarness(
+    (_targetRepo, itemNumber) =>
+      jsonResponse({
+        state: "open",
+        title: "A PR",
+        body: "",
+        locked: false,
+        labels: [],
+        draft: false,
+        author_association: "CONTRIBUTOR",
+        user: { login: authors[itemNumber] },
+        head: { sha: headA },
+        base: { sha: headB },
+        updated_at: "2026-10-14T22:37:43Z",
+      }),
+    {
+      maxConcurrent: "2",
+      targetPermission: (_targetRepo, author) => {
+        permissionReads.push(author);
+        return jsonResponse({ permission: author === "private-member" ? "admin" : "read" });
+      },
+    },
+  );
+  await withExactReviewAdmissionHarness(h, async () => {
+    await enqueue(h, "member-opened", pullDecision(172600, "opened"));
+    await enqueue(h, "outside-opened", pullDecision(172601, "opened"));
+    await h.queue.alarm();
+    assert.deepEqual(
+      h.dispatched.map((payload) => payload.client_payload.item_number),
+      [172601],
+    );
+    const held = (await queueState(h)).items[`${repo}#172600`]!;
+    assert.equal(held.state, "parked");
+    assert.equal(held.parkedReason, "maintainer_request_required");
+    const repeat = await enqueue(
+      h,
+      "member-scheduled",
+      pullDecision(172600, "scheduled_hot_intake"),
+    );
+    assert.equal(repeat.dedupe_reason, "maintainer_request_required");
+    await h.queue.alarm();
+    assert.equal(h.dispatched.length, 1);
+    assert.deepEqual(permissionReads.sort(), ["outside-author", "private-member"]);
+  });
+});
+
 test("new organic input releases a maintainer hold and is not lost during completion", async () => {
   const live = { head: headA, labels: [] as string[] };
   const h = pullHarness(live);

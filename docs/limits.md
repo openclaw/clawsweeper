@@ -362,6 +362,16 @@ for `source_drift_loop`. The Worker must recognize a hold reason before a
 workflow sends it; deploy the Worker first when adding a reason. Older workflows
 that omit the field keep the previous behavior.
 
+The queue also applies the maintainer-request hold before dispatch, so the
+common case starts no runner. The live item check that runs before every
+dispatch evaluates the same rule for automatic work (no command, manual request
+or publication). GitHub shows a private org member to the App as `CONTRIBUTOR`,
+so for a `CONTRIBUTOR` author the queue and the webhook gate read the author's
+repository permission (admin or maintain counts as a maintainer, as in the
+runner admission check), cached per author for one hour. A held item parks under
+`maintainer_request_required` exactly as after a skipped run. A failed
+permission read dispatches as before, and the runner check still applies.
+
 The same queue keeps a trailing 24-hour history of claimed review runs per item
 (`exact_review_queue_review_generations`, keyed by item, run ID, and attempt;
 publication and finalizer-only claims are excluded). An item with more than
