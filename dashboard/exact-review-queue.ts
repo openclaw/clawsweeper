@@ -1686,6 +1686,7 @@ export class ExactReviewQueue {
             dedupe_scope: "scheduled_queue_item",
             dedupe_reason: "review_request_required",
           };
+          this.insertDeliveryReceiptSync(deliveryId, now, authenticatedBodyFingerprint);
           return {
             replayed: true as const,
             disposition,
@@ -1739,14 +1740,7 @@ export class ExactReviewQueue {
             }
           }
         }
-        this.storage.sql.exec(
-          `INSERT INTO ${EXACT_REVIEW_QUEUE_DELIVERY_TABLE}
-             (delivery_id, received_at, authenticated_body_fingerprint)
-           VALUES (?, ?, ?)`,
-          deliveryId,
-          now,
-          authenticatedBodyFingerprint,
-        );
+        this.insertDeliveryReceiptSync(deliveryId, now, authenticatedBodyFingerprint);
         const counterpartIngress = ingress
           ? this.recordIngressSync(ingress, decision.targetBranch, now)
           : null;
@@ -13935,6 +13929,21 @@ export class ExactReviewQueue {
       maxRowid: Math.max(previous?.maxRowid ?? 0, Number(row.max_rowid)),
     };
     return this.deliveryReceiptCount.count;
+  }
+
+  private insertDeliveryReceiptSync(
+    deliveryId: string,
+    receivedAt: number,
+    authenticatedBodyFingerprint: string | null,
+  ) {
+    this.storage.sql.exec(
+      `INSERT INTO ${EXACT_REVIEW_QUEUE_DELIVERY_TABLE}
+         (delivery_id, received_at, authenticated_body_fingerprint)
+       VALUES (?, ?, ?)`,
+      deliveryId,
+      receivedAt,
+      authenticatedBodyFingerprint,
+    );
   }
 
   private recordScheduledDispositionSync(

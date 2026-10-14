@@ -14,7 +14,10 @@ import {
   MemoryDurableStorage,
   withExactReviewAdmissionHarness,
 } from "./dashboard-worker-harness.ts";
-import type { ExactReviewQueueState } from "../dashboard/exact-review-queue.ts";
+import {
+  EXACT_REVIEW_AUTHENTICATED_BODY_FINGERPRINT_HEADER,
+  type ExactReviewQueueState,
+} from "../dashboard/exact-review-queue.ts";
 import { createReviewPlanningInventory } from "../dist/clawsweeper-review-planning-inventory.js";
 import type { ExistingReview, Item } from "../src/clawsweeper-types.ts";
 
@@ -280,8 +283,10 @@ test("completed PR rejects webhook and scheduled repeats durably but allows expl
     });
     await withExactReviewAdmissionHarness(h, async () => {
       await publish(h.storage, 1, report());
-      const request = () =>
-        buildExactReviewQueueRequest(
+      // Signed scheduled intake stores its disposition on the delivery receipt
+      // so a lost response replays the same answer.
+      const request = () => {
+        const queued = buildExactReviewQueueRequest(
           `repeat-${action}`,
           42,
           action === "opt-in" ? "synchronize" : action,
@@ -289,6 +294,9 @@ test("completed PR rejects webhook and scheduled repeats durably but allows expl
           repo,
           action === "manual_explicit_review" ? { publicationPolicy: "record_comment_only" } : {},
         );
+        queued.headers.set(EXACT_REVIEW_AUTHENTICATED_BODY_FINGERPRINT_HEADER, "f".repeat(64));
+        return queued;
+      };
       const response = await h.queue.fetch(request());
       assert.equal(response.status, 202);
       const body = (await response.json()) as { dedupe_reason?: string };
@@ -296,7 +304,14 @@ test("completed PR rejects webhook and scheduled repeats durably but allows expl
         assert.equal(body.dedupe_reason, undefined);
       } else {
         assert.equal(body.dedupe_reason, "review_request_required");
-        assert.equal((await (await h.queue.fetch(request())).json()).deduped, true);
+        const replay = (await (await h.queue.fetch(request())).json()) as {
+          deduped?: boolean;
+          dedupe_reason?: string;
+        };
+        assert.equal(replay.deduped, true);
+        if (action.startsWith("scheduled_")) {
+          assert.equal(replay.dedupe_reason, "review_request_required");
+        }
         assert.equal(h.dispatched.length, 0);
       }
     });
