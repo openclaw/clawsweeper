@@ -672,6 +672,26 @@ test("a deferred requeue hands the open request to a pending review queued for n
   });
 });
 
+test("a deferred requeue naming another producer leaves the pending review untouched", async () => {
+  const h = harness({ EXACT_REVIEW_DISPATCH_DEBOUNCE_MS: "90000" });
+  await withExactReviewAdmissionHarness(h, async () => {
+    const number = 97651;
+    const deferred = await deferredPublication(h, verifiedRequest(number, 6150293501));
+    await enqueue(h, "organic-edit", organicEdit(number));
+    await claimPublication(h, deferred.publicationKey);
+    const queued = structuredClone((await queueState(h)).items[deferred.key]!);
+
+    // Only the producer that still holds its own publication may hand over its request.
+    const forgedProducer = deferred.requeueDeliveryId.replace(/:(\d+):(\d+)$/, ":999999:$2");
+    assert.notEqual(forgedProducer, deferred.requeueDeliveryId);
+    await enqueue(h, forgedProducer, sourceDriftRequeue(deferred.claimed));
+    const untouched = (await queueState(h)).items[deferred.key]!;
+    // Still the debounced organic review, without the request.
+    assert.deepEqual(untouched, queued);
+    assert.equal(isExplicitReviewRequest(untouched.decision), false);
+  });
+});
+
 test("a deferred requeue leaves other queued reviews untouched and answers the request", async (t) => {
   const scenarios: Array<{
     name: string;
