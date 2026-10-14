@@ -31,6 +31,7 @@
         "operator-configuration.md",
         "private-inference.md",
         "live-dashboard.md",
+        "agent-performance-metrics.md",
         "openclaw-event-hooks.md",
         "state-storage.md",
         "action-ledger.md",
@@ -43,11 +44,6 @@
     }
   ],
   "noncanonical": [
-    {
-      "path": "agent-performance-metrics.md",
-      "lifecycle": "proposed",
-      "banner": "Outcome measurement is proposed; only the explicitly identified dashboard signals are implemented."
-    },
     {
       "path": "portable-review-receipt.md",
       "lifecycle": "proposed",
