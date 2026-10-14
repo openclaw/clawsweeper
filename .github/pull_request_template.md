@@ -46,14 +46,6 @@ in the diff or optional <details>; include technical detail only when it explain
 behavior or a material tradeoff. Do not hide risks or required actions in <details>.
 -->
 
-## OpenClaw Bay Impact
-
-<!--
-For lifecycle/review-publication, queue/workflow, status/telemetry, or dashboard
-data-contract changes, name the affected Bay surface and its proof. Otherwise,
-state why Bay is unaffected. See AGENTS.md.
--->
-
 ## Documentation Impact
 
 <!--
