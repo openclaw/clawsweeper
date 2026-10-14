@@ -18572,7 +18572,7 @@ async function exactReviewTargetItemState(
               errorLabel: "author repository permission",
             }),
         ))
-          ? { maintainerRequestRequired: true }
+          ? { maintainerRequestRequired: true as const }
           : {};
       if (!readPullHead) return { state: "open", ...maintainer };
       const headSha = String(objectValue(objectValue(item).head).sha || "")
