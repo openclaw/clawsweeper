@@ -1,0 +1,1 @@
+- Answer explicit review requests whose deferred publication drifted while another review was already queued for the item: a pending review without a request of its own now takes over the still-current request, and when no queued review can carry it (active, parked, or answering another request) the request ends as superseded instead of staying at "Review in progress".

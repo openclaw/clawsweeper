@@ -176,6 +176,7 @@ import {
   exactReviewDecisionAtLiveHead,
   exactReviewDecisionCanSupersedeReview,
   exactReviewDecisionHasCommandContext,
+  exactReviewDecisionWithCommand,
   exactReviewDecisionWithoutCommand,
   exactReviewCommandObligationSurvives,
   exactReviewCommandVersionIsOlder,
@@ -2077,6 +2078,49 @@ export class ExactReviewQueue {
             this.writeStateSync(state);
             return { deduped: true as const, reviewHold, key, state };
           }
+          // A held deferred publication's requeue finds a review already queued
+          // for newer source. A pending review without a request of its own takes
+          // over the still-current request, so that review answers it. Active,
+          // parked, and command-bearing items stay untouched; the publication's
+          // requeue then ends the request as superseded (see /complete).
+          if (
+            ignoredRecovery &&
+            verifiedSourceDriftRequeue &&
+            current.state === "pending" &&
+            !current.terminalFinalization &&
+            !exactReviewQueueIsPublication(current) &&
+            !isLowPriorityExactReviewDecision(current.decision) &&
+            !decisionPublicationPolicy(current.decision) &&
+            !exactReviewDecisionHasCommandContext(current.decision) &&
+            this.continuesHeldCommandPublicationSync(state, decision, activeBatchItemKeys, now)
+          ) {
+            this.transitionCommandRevision(
+              state,
+              current,
+              exactReviewDecisionWithCommand(current.decision, decision),
+              now,
+              {
+                allocatedRevision: this.nextExactReviewCommandRevisionSync(
+                  key,
+                  current.revision + 1,
+                ),
+                admissionDeliveryId: `${HELD_PUBLICATION_REQUEUE_DELIVERY_PREFIX}${deliveryId}`,
+              },
+            );
+            resetExactReviewAdmittedRetryState(current, this.env);
+            Object.assign(
+              current,
+              exactReviewQueueDebouncedAttempt(
+                state,
+                current.decision,
+                now,
+                current.createdAt,
+                this.env,
+                false,
+                this.isActiveReviewItemSync(key, current.decision, now),
+              ),
+            );
+          }
           // A recovery is only a one-shot repair of a failed shard. It may create a queue item,
           // but must never supersede an existing pending, dispatching, or leased decision: doing
           // so can leave either ordinary work or another recovery as a stale follow-up revision.
@@ -2307,20 +2351,8 @@ export class ExactReviewQueue {
                   : exactReviewQueueEnqueueAttempt(state, now),
               );
             }
-            if (mergeable) {
-              if (!preserveReviewRetryBudget) {
-                current.state = "pending";
-                current.parkedReason = undefined;
-                current.parkedRecoveryAttempts = 0;
-                clearExactReviewDispatchFailure(current);
-                current.attempts = 0;
-                current.publicationFailureAttempts = 0;
-                current.reviewFailureAttempts = 0;
-                current.reviewRetryPolicyEpoch = exactReviewRetryPolicyEpoch(this.env);
-                current.firstFailureAt = undefined;
-                current.lastFailureReason = undefined;
-                clearExactReviewReviewRecovery(current);
-              }
+            if (mergeable && !preserveReviewRetryBudget) {
+              resetExactReviewAdmittedRetryState(current, this.env);
             }
             advanceExactReviewSourceAuthorityWatermark(current, decision);
             if (followUpLeaseDecision && Number.isSafeInteger(followUpLeaseRevision)) {
@@ -3361,6 +3393,7 @@ export class ExactReviewQueue {
             ? Number(item.publicationFailureAttempts || 0)
             : Number(item.publicationFailureAttempts || 0) + 1
           : 0;
+      const leasedPublicationDecision = item.leaseDecision ?? item.decision;
       const completionResult = directLifecycleRequeue
         ? item.revision > leaseRevision
           ? finishExactReviewPublicationQueueItem({
@@ -3441,7 +3474,15 @@ export class ExactReviewQueue {
           )
         : null;
       const completionLifecycleTerminal =
-        "commandSuperseded" in completionResult && completionResult.commandSuperseded
+        ("commandSuperseded" in completionResult && completionResult.commandSuperseded) ||
+        (lifecycleTerminal === "requeue" &&
+          publicationItem &&
+          !directLifecycleRequeue &&
+          (publicationCompletion?.kind === "published" ||
+            publicationCompletion?.kind === "superseded") &&
+          !completionResult.requeued &&
+          !completionResult.parked &&
+          this.deferredRequeueLeavesCommandSync(leasedPublicationDecision))
           ? "superseded"
           : lifecycleTerminal;
       const terminalDisposition = exactReviewLifecycleCompletionDisposition({
@@ -9474,6 +9515,29 @@ export class ExactReviewQueue {
     });
   }
 
+  // A deferred publisher records `requeue` after enqueueing its source-drift
+  // requeue, handing the request to that requeue's review. The handoff stands
+  // only if a review at the item admitted the same request after this
+  // producer's revision. Otherwise no successor carries the request (the queued
+  // review was active, held, or answers another request), so it ends as
+  // superseded. A direct receipt's successor is created by the queue after its
+  // lifecycle record, so that requeue is never redirected.
+  private deferredRequeueLeavesCommandSync(decision: ExactReviewDecision) {
+    const publication = decision.publication;
+    const revision = exactReviewPublicationRevision(decision);
+    return Boolean(
+      publication &&
+      revision &&
+      !publication.directLifecycle &&
+      exactReviewDecisionHasCommandContext(publication.producerDecision) &&
+      !this.lifecycleProjectionStore.sameCommandAdmittedAfter(
+        publication.itemKey,
+        revision.sourceRevision,
+        exactReviewQueueCommandStatusAddress(decision),
+      ),
+    );
+  }
+
   private transitionCommandRevision(
     state: ExactReviewQueueState,
     item: ExactReviewQueueItem,
@@ -10973,15 +11037,19 @@ export class ExactReviewQueue {
     }
     try {
       const now = Date.now();
-      const result = this.storage.transactionSync(() =>
-        this.recordLifecycleTerminalDispositionSync(
+      const operation = typeof operationId === "string" ? operationId : undefined;
+      const result = this.storage.transactionSync(() => {
+        const state = this.readStateSync();
+        return this.recordLifecycleTerminalDispositionSync(
           identity,
-          kind,
+          kind === "requeue" && this.recordedRequeueLeavesCommandSync(state, identity, operation)
+            ? "superseded"
+            : kind,
           now,
-          undefined,
-          typeof operationId === "string" ? operationId : undefined,
-        ),
-      );
+          state,
+          operation,
+        );
+      });
       await this.scheduleNext(this.readStateSync(), now);
       return json({
         ok: true,
@@ -10996,6 +11064,29 @@ export class ExactReviewQueue {
       }
       return json({ error: "invalid_lifecycle_terminal_disposition" }, 409);
     }
+  }
+
+  // The batch publisher records its deferred requeue handoff as a post-effect.
+  // A retry of the same operation keeps the answer its first record got.
+  private recordedRequeueLeavesCommandSync(
+    state: ExactReviewQueueState,
+    identity: ExactReviewLifecycleProjectionIdentity,
+    operationId: string | undefined,
+  ) {
+    const recorded = operationId
+      ? this.lifecycleProjectionStore
+          .read(identity.canonicalTargetKey, identity.fenceKey, identity.revision)
+          ?.terminalOperationIds.find((entry) => entry.operationId === operationId)
+      : undefined;
+    if (recorded) return recorded.kind === "superseded";
+    const item = state.items[identity.fenceKey];
+    return Boolean(
+      item &&
+      item.revision === identity.revision &&
+      !item.terminalFinalization &&
+      exactReviewQueueIsPublication(item) &&
+      this.deferredRequeueLeavesCommandSync(item.leaseDecision ?? item.decision),
+    );
   }
 
   private recordLifecycleTerminalDispositionSync(
@@ -16342,6 +16433,21 @@ function removeRetiredDecisionFields(decision: ExactReviewDecision | undefined):
   if (decision.publication) {
     Reflect.deleteProperty(decision.publication.producerDecision, "proofAllowedScenarios");
   }
+}
+
+/** Newly admitted work on a pending item starts with a fresh retry budget. */
+function resetExactReviewAdmittedRetryState(item: ExactReviewQueueItem, env) {
+  item.state = "pending";
+  item.parkedReason = undefined;
+  item.parkedRecoveryAttempts = 0;
+  clearExactReviewDispatchFailure(item);
+  item.attempts = 0;
+  item.publicationFailureAttempts = 0;
+  item.reviewFailureAttempts = 0;
+  item.reviewRetryPolicyEpoch = exactReviewRetryPolicyEpoch(env);
+  item.firstFailureAt = undefined;
+  item.lastFailureReason = undefined;
+  clearExactReviewReviewRecovery(item);
 }
 
 function clearExactReviewLease(item: ExactReviewQueueItem) {

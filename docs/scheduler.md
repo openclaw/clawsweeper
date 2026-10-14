@@ -276,7 +276,14 @@ its publisher requeues the claimed decision instead; the queue keeps the
 verification only while that publisher still holds its own publication of the
 request (named by the requeue's `publisher-source-drift:<run>:<attempt>`
 delivery id), that publication is the item's newest, and no other command
-reached the item after the request's review. Any other source-drift requeue keeps the command
+reached the item after the request's review. If a review without a request of
+its own is already pending for the item, that review takes over the
+still-current request and keeps its newer source. An active, parked, or
+request-bearing queued review stays untouched. The publisher's lifecycle
+`requeue` then stands only when a review at the item admitted the same request
+after the request's review; otherwise the queue records the request as
+superseded, so its status still gets a terminal answer. Any other source-drift
+requeue keeps the command
 status but not the verification: the queue enforces this whenever it loads an
 item, so a requeue that found no queued item, including one persisted before
 this rule, cannot let a finished or replaced request authorize another review.
