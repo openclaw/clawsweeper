@@ -1,0 +1,1 @@
+- Stop an exact-review target checkout when its git fetch, clone, or the checkout after a failed tip-blob fetch stalls, instead of holding the review slot until the job limit.

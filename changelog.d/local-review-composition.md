@@ -1,0 +1,1 @@
+- Extract the full committed-range review engine behind a lazy source-checkout entrypoint, preserving native reports and history while keeping hosted orchestration outside local review.

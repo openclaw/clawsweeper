@@ -77,6 +77,7 @@ export type ExactReviewLaneHistorySample = {
   pending: number;
   enqueued_total?: number;
   completed_total?: number;
+  published_total?: number;
   shed_total?: number;
 };
 
@@ -416,6 +417,7 @@ function queueLaneHistorySample(value: unknown, includeShed: boolean) {
     lane.enqueued_total,
     lane.completed_total,
     includeShed ? lane.shed_since_reset : undefined,
+    includeShed ? undefined : lane.published_total,
   );
 }
 
@@ -426,6 +428,7 @@ function storedLaneHistorySample(value: unknown, includeShed: boolean) {
     lane.enqueued_total,
     lane.completed_total,
     includeShed ? lane.shed_total : undefined,
+    includeShed ? undefined : lane.published_total,
   );
 }
 
@@ -434,18 +437,27 @@ function laneHistorySample(
   enqueuedValue: unknown,
   completedValue: unknown,
   shedValue: unknown,
+  publishedValue: unknown,
 ): ExactReviewLaneHistorySample | null {
   const pending = nonNegativeInteger(pendingValue);
   const enqueuedTotal = optionalNonNegativeInteger(enqueuedValue, HEALTH_HISTORY_MAX_TOTAL);
   const completedTotal = optionalNonNegativeInteger(completedValue, HEALTH_HISTORY_MAX_TOTAL);
   const shedTotal = optionalNonNegativeInteger(shedValue);
-  if (pending === null || enqueuedTotal === null || completedTotal === null || shedTotal === null) {
+  const publishedTotal = optionalNonNegativeInteger(publishedValue, HEALTH_HISTORY_MAX_TOTAL);
+  if (
+    pending === null ||
+    enqueuedTotal === null ||
+    completedTotal === null ||
+    shedTotal === null ||
+    publishedTotal === null
+  ) {
     return null;
   }
   return {
     pending,
     ...(enqueuedTotal === undefined ? {} : { enqueued_total: enqueuedTotal }),
     ...(completedTotal === undefined ? {} : { completed_total: completedTotal }),
+    ...(publishedTotal === undefined ? {} : { published_total: publishedTotal }),
     ...(shedTotal === undefined ? {} : { shed_total: shedTotal }),
   };
 }

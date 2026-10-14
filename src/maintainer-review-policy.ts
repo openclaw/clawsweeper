@@ -14,8 +14,8 @@ type ReviewItem = {
   labels?: unknown;
 };
 
-export function requiresMaintainerReviewRequest(item: ReviewItem): boolean {
-  const labels = new Set(
+function reviewLabels(item: Pick<ReviewItem, "labels">): Set<string> {
+  return new Set(
     (Array.isArray(item.labels) ? item.labels : []).map((label: unknown) => {
       const name =
         typeof label === "string"
@@ -26,7 +26,16 @@ export function requiresMaintainerReviewRequest(item: ReviewItem): boolean {
       return typeof name === "string" ? name.trim().toLowerCase() : "";
     }),
   );
-  if (labels.has("clawsweeper:autofix") || labels.has("clawsweeper:automerge")) return false;
+}
+
+export function hasReviewAutomationOptIn(item: Pick<ReviewItem, "labels">): boolean {
+  const labels = reviewLabels(item);
+  return labels.has("clawsweeper:autofix") || labels.has("clawsweeper:automerge");
+}
+
+export function requiresMaintainerReviewRequest(item: ReviewItem): boolean {
+  if (hasReviewAutomationOptIn(item)) return false;
+  const labels = reviewLabels(item);
   return (
     labels.has("maintainer") ||
     isMaintainerAuthorAssociation(item.authorAssociation ?? item.author_association)
@@ -40,15 +49,23 @@ export function isExplicitReviewRequest(decision: {
   sourceCommentUpdatedAt?: unknown;
   commandBodyDigest?: unknown;
   commandOrigin?: unknown;
+  commandStatusMarker?: unknown;
+  statusCommentId?: unknown;
   publicationPolicy?: unknown;
 }): boolean {
   if (decision.sourceAction === "manual_explicit_review") {
     return decision.publicationPolicy === "record_comment_only";
   }
-  // Command fields survive source-drift retries; only the verified request itself
-  // opts in. A subsequent push or scheduled pass needs a new request.
+  // Source-drift requeues copy the claimed decision. The queue keeps the
+  // request's verification only when it requeues the request's own generation
+  // in place, which also keeps the command status open; a requeue that finds no
+  // queued item loses it. Such a verified retry continues that one request.
+  // A later push or scheduled pass needs a new request.
+  const continuesRequest =
+    decision.sourceAction === "source_drift_requeue" &&
+    Boolean(decision.commandStatusMarker || decision.statusCommentId);
   return (
-    decision.sourceAction === "re_review" &&
+    (decision.sourceAction === "re_review" || continuesRequest) &&
     decision.sourceCommentVerified === true &&
     Number.isSafeInteger(decision.sourceCommentId) &&
     Number(decision.sourceCommentId) > 0 &&

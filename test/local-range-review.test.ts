@@ -39,7 +39,15 @@ const buildLocalRangeReviewForTest = createLocalRangeReviewer({
   reviewCommentContentRevision,
 });
 
-const CLI = fileURLToPath(new URL("../dist/clawsweeper.js", import.meta.url));
+// Run the same native parity cases against either entrypoint.
+const CLI = fileURLToPath(
+  new URL(
+    process.env.CLAWSWEEPER_TEST_LOCAL_ENTRY === "1"
+      ? "../dist/clawsweeper-local.js"
+      : "../dist/clawsweeper.js",
+    import.meta.url,
+  ),
+);
 
 function git(cwd: string, ...args: string[]): string {
   return execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
@@ -871,6 +879,85 @@ process.stdout.write(fs.readFileSync(process.env.LOCAL_REVIEW_DECISION, "utf8") 
   }
   return fakeCodex;
 }
+
+test("local range provenance runs inside the native GitHub command scope", (t) => {
+  useFakeScanner(t);
+  const dir = initRepo();
+  const harness = mkdtempSync(join(tmpdir(), "lrr-provenance-"));
+  try {
+    // Boundary commits are intentionally excluded from provenance lookups.
+    git(dir, "commit", "--allow-empty", "-qm", "initial");
+    writeFileSync(join(dir, "feature.txt"), "before\n");
+    git(dir, "add", ".");
+    git(dir, "commit", "-qm", "base");
+    git(dir, "branch", "base-ref");
+    writeFileSync(join(dir, "feature.txt"), "after\n");
+    git(dir, "commit", "-qam", "change existing line");
+    const decision = join(harness, "decision.json");
+    const marker = join(harness, "gh-calls.jsonl");
+    writeFileSync(decision, JSON.stringify(changelogReviewDecision()));
+    const ghScript = join(harness, "gh.mjs");
+    writeFileSync(
+      ghScript,
+      `import { appendFileSync } from "node:fs";
+appendFileSync(${JSON.stringify(marker)}, JSON.stringify(process.argv.slice(2)) + "\\n");
+console.log(process.argv.includes("rate_limit") ? '{"resources":{"core":{"remaining":5000}}}' : '[]');
+`,
+    );
+    const gh = join(harness, process.platform === "win32" ? "gh.cmd" : "gh");
+    writeFileSync(
+      gh,
+      process.platform === "win32"
+        ? `@echo off\r\n"${process.execPath}" "${ghScript}" %*\r\n`
+        : `#!/bin/sh\nexec "${process.execPath}" "${ghScript}" "$@"\n`,
+      { mode: 0o755 },
+    );
+    const localCLI = fileURLToPath(new URL("../dist/clawsweeper-local.js", import.meta.url));
+    const result = spawnSync(
+      process.execPath,
+      [
+        localCLI,
+        "review",
+        "--local-range",
+        "--base",
+        "base-ref",
+        "--target-repo",
+        "openclaw/clawsweeper",
+        "--target-dir",
+        dir,
+        "--result-format",
+        "json",
+      ],
+      {
+        encoding: "utf8",
+        timeout: 60_000,
+        env: {
+          ...process.env,
+          PATH: `${harness}${delimiter}${process.env.PATH ?? ""}`,
+          NODE_OPTIONS: [
+            process.env.NODE_OPTIONS,
+            `--import=${new URL("./local-entry-import-guard.mjs", import.meta.url).href}`,
+          ]
+            .filter(Boolean)
+            .join(" "),
+          CODEX_BIN: writeLocalReviewCodex(harness),
+          LOCAL_REVIEW_DECISION: decision,
+          LOCAL_REVIEW_CAPTURE: join(harness, "capture.json"),
+          CLAWSWEEPER_CODEX_REVIEW_ATTEMPTS: "1",
+        },
+      },
+    );
+    assert.ifError(result.error);
+    assert.equal(result.status, 0, result.stderr);
+    assert.ok(existsSync(marker), "the changed base line must reach the real ghJson callback");
+    assert.match(readFileSync(marker, "utf8"), /commits\/[^/]+\/pulls/);
+    assert.doesNotMatch(result.stdout + result.stderr, /GitHub operations require withGitHubRun/);
+    assert.equal(git(dir, "status", "--porcelain"), "");
+  } finally {
+    rmSync(harness, { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
 
 test("--local-range persists whole-range Git statistics beyond every display evidence cap", (t) => {
   useFakeScanner(t);

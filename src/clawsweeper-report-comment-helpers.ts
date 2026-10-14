@@ -65,7 +65,7 @@ import { frontMatterValue } from "./report-front-matter.js";
 import { agentsPolicyStatusLine, collapsedDetailsBlock } from "./clawsweeper-report-helpers.js";
 import { markdownLink, repoUrlFor } from "./clawsweeper-links.js";
 import type { RepositoryProfile } from "./repository-profiles.js";
-import { formatReviewFreshnessTimestamp } from "./clawsweeper-status-context.js";
+import { formatReviewFreshnessTimestamp } from "./clawsweeper-status-presentation.js";
 import { markdownRepository } from "./clawsweeper-repository-paths.js";
 import { pullHeadShaFromReport } from "./clawsweeper-record-metadata.js";
 

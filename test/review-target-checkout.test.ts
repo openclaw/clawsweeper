@@ -277,6 +277,42 @@ test("failed local materialization falls back to a clean clone and skips the cac
   assertCheckoutAt(fixture, fallback.checkout, head);
 });
 
+test("a stalled tip-blob fetch keeps the following checkout under the deadline", (t) => {
+  const fixture = createFixture(t);
+  assert.equal(runCheckout(fixture, "warm").status, 0);
+  commit(fixture.remote, "dir/new.txt", "new\n", "third");
+  const bin = join(fixture.root, "bin");
+  mkdirSync(bin, { recursive: true });
+  writeFileSync(
+    join(bin, "git"),
+    `#!/usr/bin/env bash
+for arg in "$@"; do
+  if [[ "$arg" == "--stdin" ]]; then exit 1; fi
+  if [[ "$arg" == "checkout" ]]; then
+    sleep 30
+    exit 1
+  fi
+done
+exec "$REAL_GIT" "$@"
+`,
+  );
+  chmodSync(join(bin, "git"), 0o755);
+  const started = Date.now();
+  const result = runCheckout(fixture, "target", {
+    env: {
+      PATH: `${bin}:${process.env.PATH}`,
+      REAL_GIT: realGit,
+      CLAWSWEEPER_REVIEW_TARGET_CHECKOUT_TIMEOUT_MS: "2000",
+    },
+  });
+  const elapsed = Date.now() - started;
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stderr ?? "", /timed out after 2s/);
+  assert.match(result.stdout, /missing branch-tip blobs/);
+  assert.match(result.stdout, /mode=fallback /);
+  assert.ok(elapsed < 15_000, `elapsed ${elapsed}`);
+});
+
 test("rejects option-shaped or traversal branch names before running Git", (t) => {
   const fixture = createFixture(t);
   for (const branch of ["--upload-pack=touch", "main..other", "main branch"]) {
@@ -285,4 +321,36 @@ test("rejects option-shaped or traversal branch names before running Git", (t) =
     assert.match(result.stderr, /Unsafe target branch/);
     assert.equal(existsSync(fixture.cache), false);
   }
+});
+
+test("a stalled network clone stops at the checkout deadline", (t) => {
+  const fixture = createFixture(t);
+  const bin = join(fixture.root, "bin");
+  mkdirSync(bin, { recursive: true });
+  writeFileSync(
+    join(bin, "git"),
+    `#!/usr/bin/env bash
+for arg in "$@"; do
+  if [[ "$arg" == "clone" || "$arg" == "fetch" ]]; then
+    sleep 30
+    exit 1
+  fi
+done
+exec "$REAL_GIT" "$@"
+`,
+  );
+  chmodSync(join(bin, "git"), 0o755);
+  const started = Date.now();
+  const result = runCheckout(fixture, "target", {
+    env: {
+      PATH: `${bin}:${process.env.PATH}`,
+      REAL_GIT: realGit,
+      CLAWSWEEPER_REVIEW_TARGET_CHECKOUT_TIMEOUT_MS: "2000",
+    },
+  });
+  const elapsed = Date.now() - started;
+  assert.equal(result.status, 124, result.stderr);
+  assert.match(result.stderr ?? "", /timed out after 2s/);
+  assert.ok(elapsed < 15_000, `elapsed ${elapsed}`);
+  assert.equal(existsSync(fixture.cache), false);
 });

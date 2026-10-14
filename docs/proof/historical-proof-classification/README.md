@@ -16,7 +16,7 @@
 - Status: historical repair proof recipe; not an execution runbook
 - Owner: ClawSweeper review and publication maintainers
 - Baseline: `f72ea010c1d7fd134b1bd0826b3a707778c312bc`
-- Current contract: [Live proof](../../live-proof.md#retired-post-review-proof).
+- Contract at the time: [Live proof](https://github.com/openclaw/clawsweeper/blob/f6ad0bf56/docs/live-proof.md#retired-post-review-proof).
 
 The observations below describe the historical classification repair, not the
 current runtime. There is no runnable receipt-republication recipe in this

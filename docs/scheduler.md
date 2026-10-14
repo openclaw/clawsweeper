@@ -107,6 +107,18 @@ content caches. Changed PR content goes to Codex, including source comments
 and formatting. See [Review Cache](review-cache.md) for admission, freshness,
 and runtime packaging rules.
 
+Ordinary PRs receive one automatic completed review after ten quiet minutes of
+stable head, title, body, and draft state. Pushes and edits after that answer need
+an explicit `@clawsweeper re-review`; the queue rejects hot/normal offers for them,
+and queue admission, dispatch, and claim enforce the same durable completion
+fact. Failed and stale-source attempts may finish the first answer. Explicit
+requests and autofix/automerge opt-ins retain their existing automation. See
+[automation limits](limits.md) for quiet-window and persistence details.
+
+Planners can still offer candidates from report cadence: a complete-looking
+report may never have been published. The queue owns the lifetime fact and
+rejects answered candidates before starting a review workflow.
+
 ### Control-plane workflow retries
 
 Shell calls to the control plane in `review-plan.yml`, `sweep.yml`,
@@ -243,10 +255,35 @@ bodies are not logged. Exhaustion remains a failed workflow. This improves
 completeness of the existing review-observability data without changing its
 schema or mutation boundaries.
 
+Run telemetry retains its 30-day window; physical cleanup runs at most once
+per five minutes per queue instance rather than scanning the history on every
+write or dashboard poll. Delivery receipt counts stay exact while reusing the
+previous count and reading only newly appended rowids; deletion discards that
+count before rowids can be reused. Terminal command receipts retain their
+existing cutoff and use the outcome/time index. State-writer acquire retries
+still refresh queued ticket liveness, but do not rewrite timestamps already
+set by admission or lease acquisition.
+
 Maintainer-authored and `maintainer`-labeled items require an explicit review
 request. Automatic intake, scheduled selection, claimed reviews, and hosted
-publication apply this policy; a source-drift retry does not inherit the
-original command's opt-in. Existing autofix/automerge labels remain opt-ins.
+publication apply this policy. A verified request stays open while the queue
+finishes answering it: when the item changes before the request's review
+fully applies, including a close check that drifts after the durable review
+comment synced, the queue requeues that generation in place instead of
+finalizing the command, keeping the command status and verification, and the
+retry continues the same request. When the review's publication was deferred,
+its publisher requeues the claimed decision instead; the queue keeps the
+verification only while that publisher still holds its own publication of the
+request (named by the requeue's `publisher-source-drift:<run>:<attempt>`
+delivery id), that publication is the item's newest, and no other command
+reached the item after the request's review. Any other source-drift requeue keeps the command
+status but not the verification: the queue enforces this whenever it loads an
+item, so a requeue that found no queued item, including one persisted before
+this rule, cannot let a finished or replaced request authorize another review.
+Both continuation prefixes are queue-owned: `/enqueue` rejects a caller delivery
+id that uses either one as `reserved_delivery_id`. A push after the request is
+answered and a scheduled pass also need a new request. Existing
+autofix/automerge labels remain opt-ins.
 The target dispatcher and direct webhook share a single reminder identity per
 item, posted only when opened or ready for review. Edits, pushes, and sweeps do
 not post reminders. Request reviews only when needed, after completing work and
@@ -316,7 +353,10 @@ on every warm fetch, so deleted or moved tags cannot survive in the checkout.
 A non-fast-forward branch update rebuilds the cache so its old history cannot
 retain tags outside the current branch. A failed or partial restore is discarded,
 a failed cache fetch rebuilds the cache, and a failed local clone falls back to a clean clone without
-saving. The pinned Codex source cache is keyed by the Codex version pinned in the
+saving. Each network clone or fetch stops after `CLAWSWEEPER_REVIEW_TARGET_CHECKOUT_TIMEOUT_MS`
+(default 30 minutes, at most 120) and its git process group is killed. Local clones from the cache
+are not under that deadline. Git's `http.lowSpeedLimit` stays at its default so a quiet tip-blob
+negotiation is not aborted before the deadline. The pinned Codex source cache is keyed by the Codex version pinned in the
 target checkout and is saved once per version.
 
 The receiver workflow is `.github/workflows/sweep.yml`.

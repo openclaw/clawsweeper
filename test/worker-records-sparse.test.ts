@@ -20,7 +20,11 @@ test("record hydration imports from the existing scripts-and-src sparse checkout
       "-e",
       "const { hydrateState } = await import('./scripts/hydrate-state.ts'); if (typeof hydrateState !== 'function') process.exit(1);",
     ],
-    { cwd: root, encoding: "utf8" },
+    {
+      cwd: root,
+      encoding: "utf8",
+      env: { ...process.env, CLAWSWEEPER_TARGET_REPO: "example/sparse-target" },
+    },
   );
   assert.equal(result.status, 0, result.stderr);
 });

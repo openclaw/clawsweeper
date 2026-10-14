@@ -98,7 +98,7 @@ async function runStatusSmoke(
       response.writeHead(401);
       response.end();
     } else if (request.url === "/") {
-      response.end('ClawSweeper Live System Overview <div id="worker-dialog">');
+      response.end('<title>Overview · ClawSweeper</title><a href="/queue/">Queue</a>');
     } else {
       response.writeHead(404);
       response.end();

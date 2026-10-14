@@ -1803,7 +1803,17 @@ function activeItemQueueHarness(env: Record<string, string> = {}) {
       return jsonResponse({ state: "open" });
     }
     if (/^\/repos\/openclaw\/openclaw\/pulls\/\d+$/.test(url.pathname)) {
-      return jsonResponse({ state: "open", head: { sha: live.headSha } });
+      return jsonResponse({
+        state: "open",
+        head: { sha: live.headSha },
+        base: { sha: "b".repeat(40) },
+        title: "Active-item fixture",
+        body: "",
+        locked: false,
+        labels: [],
+        draft: false,
+        updated_at: new Date(Date.now()).toISOString(),
+      });
     }
     if (url.pathname === "/repos/openclaw/clawsweeper/dispatches") {
       dispatched.push(JSON.parse(String(init?.body)));
@@ -1818,6 +1828,7 @@ function activeItemQueueHarness(env: Record<string, string> = {}) {
       CLAWSWEEPER_APP_PRIVATE_KEY: privateKey,
       EXACT_REVIEW_DISPATCH_DEBOUNCE_MS: "90000",
       EXACT_REVIEW_DISPATCH_DEBOUNCE_MAX_MS: "180000",
+      EXACT_REVIEW_INITIAL_PR_QUIET_MS: "0",
       ...env,
     },
   );

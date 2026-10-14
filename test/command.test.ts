@@ -285,7 +285,7 @@ test("local exact review history is keyed by repository and item", () => {
   assert.notEqual(first, otherRepo);
 });
 
-test("CSW-088 scheduled hot planning suppresses #117063, observes an in-flight update, and leaves explicit re-review eligible", () => {
+test("CSW-088 hot planning offers source activity to durable admission while explicit re-review remains eligible", () => {
   const root = mkdtempSync(join(tmpdir(), "cmd-csw-088-"));
   const binDir = join(root, "bin");
   const itemsDir = join(root, "items");

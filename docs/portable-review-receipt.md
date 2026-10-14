@@ -97,7 +97,7 @@ appending new separator blank lines also changes content. An attachment client
 must not trim or rewrite the rest of the body.
 
 This does not change raw event/admission identity, updated-at scheduling,
-concurrency cancellation, proof-execution race fences, or raw stored bodies.
+concurrency cancellation, or raw stored bodies.
 Metadata edits can still enqueue work, run CI, or invalidate those raw guards.
 Older stored semantic hashes can miss once when this reader is rolled out; no
 compatibility fallback accepts their old identity. Independently deployed

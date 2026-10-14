@@ -40,12 +40,20 @@ fence. A missing or conflicting link cannot complete another producer revision.
 This approved JSON extension adds no SQL table or column, grants no publication
 authority, and does not infer links for historical tupleless reports.
 
-The retired Bay telemetry tables and command-journey mapping retain their
-existing schema, but no longer receive writes or recovery/backfill work. The
-canonical lifecycle projection still owns admission, receipts, acknowledgements,
-and audit history; older projection JSON remains readable without its former
-Bay materialization markers. Direct and batch publication-outcome telemetry
-continues to back recent durable publication events.
+On startup the queue removes the retired Bay telemetry tables, command-journey
+mapping, and pending-telemetry index. Repository projection indexes remain in
+place to preserve existing query ordering. StatusStore deletes its two retired
+Bay history keys. The existing `bay_telemetry_pending`
+column stays inert: dropping it would rewrite all retained lifecycle rows on
+replicated storage while blocking startup. Its default still covers inserts;
+no application reads or updates it. These idempotent schema operations replace
+request-time pruning of the dead command mapping; no historical JSON backfill,
+table rewrite, or database vacuum runs. The lifecycle audit still uses the
+`exact_review_lifecycle_projection_bay` ordering index. Canonical lifecycle
+projections continue to own admission, receipts, acknowledgements, and audit
+history; older projection JSON remains readable without its former Bay and
+inline-proof markers. Direct and batch publication-outcome telemetry continues
+to back recent durable publication events.
 
 Report readers share one anchored leading-front-matter parser. A unique header
 value remains authoritative when report prose or a valid fenced example quotes
@@ -80,8 +88,23 @@ read only their open/closed reports, plans, and decision packets. Those focused
 reads do not depend on repository-wide snapshots or journal exports.
 Explicit ledger/assets hydration streams one R2 listing page into its staging
 tree at a time; descriptor memory does not grow with the entire prefix. It still
-downloads the complete requested trees and replaces local trees only after all
-pages and downloads succeed. This is not a retention or pruning operation.
+downloads the complete requested trees. Before replacing the local view, it
+checks each completed action-ledger import against its existing reservation and
+fetches any payload or binding missed by listing pagination. A malformed or
+incomplete committed import fails before replacement. Direct legacy shards with
+neither transaction marker remain readable.
+
+An import with a valid reservation and an authoritative missing completion is
+unfinished. Hydration excludes its currently staged payloads, retains its
+bindings and all remote objects, and reports bounded producer examples and
+omitted counts. A later hydration can include it after publication completes.
+`blobs` and `bytes` count acquired objects (listed plus `closureBlobs`);
+`trees` counts the initial listings. `materializedBlobs` and
+`materializedBytes` exclude the reported omitted payloads. This is not a
+retention or pruning operation, and it does not promise a snapshot across R2
+listing pages. Local tree replacement remains the existing remove-then-rename
+operation; custom subtree selection also retains its existing top-level
+replacement behavior.
 Jobs that need operational Git state receive a sparse checkout containing only
 the retained paths above. Canonical-only lanes set `hydrate-git-state: "false"`
 and never mint or use a state-repository token.
@@ -156,6 +179,23 @@ retention convention, cap the store at 2,048 entries and each JSON body at 512
 KiB, and evict least-recently validated entries when full. The durable body is
 returned only by the post-304 confirmation operation; a lookup alone returns
 only its ETag and digest.
+
+Ordinary webhook item, comment, and review payloads become eligible for retirement
+after 30 minutes of family inactivity. Bounded passes preserve active collections,
+unresolved placeholders, ordering metadata, and real deletion tombstones.
+Retired reads require authoritative repair before reuse.
+See [the webhook read model](github-webhook-read-model.md#stored-schema-and-bounds)
+for deployment approval, rebuild behavior, and the remaining metadata growth.
+
+Canonical non-commit publication removes its replaced backfill body and chunks
+inside the same transaction as the canonical record and export pointer. An idle
+alarm also sweeps the historical backfill rowid range captured on first startup,
+at most 64 raw candidates per pass. Its durable cursor advances past ineligible
+rows and stops at that fixed upper bound. Deletion requires an exact record ID
+and agreement between the canonical record and canonical export pointer on
+revision, deletion state, and digest. Commits, live backfill exports, and missing
+or mismatched owners remain. Progress counts logical payload bytes; SQLite's
+physical database size can stay unchanged while freed pages become reusable.
 
 Git-backed reports, dashboard status, and post-dispatch cursors are best-effort
 after their productive side effect or canonical publication succeeds. Git

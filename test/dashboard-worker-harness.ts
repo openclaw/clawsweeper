@@ -89,6 +89,14 @@ function withHostedTargetAdmissionDefaults<Env extends Record<string, unknown>>(
       value: "0",
     });
   }
+  if (!Object.hasOwn(prepared, "EXACT_REVIEW_INITIAL_PR_QUIET_MS")) {
+    Object.defineProperty(prepared, "EXACT_REVIEW_INITIAL_PR_QUIET_MS", {
+      configurable: true,
+      enumerable: true,
+      writable: true,
+      value: "0",
+    });
+  }
   return prepared;
 }
 
@@ -830,6 +838,7 @@ function createExactReviewAdmissionHarness(
       targetRepo: string,
     ) => Promise<HostedPublicTargetProbe | HostedTargetAdmission>;
     env?: Record<string, string>;
+    rawPullResponse?: boolean;
   } = {},
 ) {
   const originalFetch = globalThis.fetch;
@@ -895,11 +904,24 @@ function createExactReviewAdmissionHarness(
     }
     const targetPull = url.pathname.match(/^\/repos\/([^/]+\/[^/]+)\/pulls\/(\d+)$/);
     if (targetPull) {
-      return (
-        options.targetPull?.(targetPull[1]) ??
+      const response = await (options.targetPull?.(targetPull[1]) ??
         options.targetItem?.(targetPull[1]) ??
-        liveItem(targetPull[1], Number(targetPull[2]), "pull_request")
-      );
+        liveItem(targetPull[1], Number(targetPull[2]), "pull_request"));
+      if (options.rawPullResponse || !response.ok) return response;
+      // Most queue tests only specify the fields under test. Supply the rest
+      // of GitHub's PR shape; malformed-response tests opt out explicitly.
+      return jsonResponse({
+        state: "open",
+        title: "Pull request",
+        body: "",
+        locked: false,
+        labels: [],
+        head: { sha: "a".repeat(40) },
+        base: { sha: "b".repeat(40) },
+        draft: false,
+        updated_at: "2026-09-24T00:00:00Z",
+        ...(await response.json()),
+      });
     }
     const targetComments = url.pathname.match(/^\/repos\/([^/]+\/[^/]+)\/issues\/(\d+)\/comments$/);
     if (targetComments && options.targetComments) {

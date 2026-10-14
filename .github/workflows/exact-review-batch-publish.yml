@@ -221,19 +221,12 @@ jobs:
             if [ "$receipt_outcome" = "superseded" ]; then
               lifecycle_terminal="superseded"
             elif jq -e '.disposition.requeueLatestExpected == true' "$outcome_path" >/dev/null; then
-              delivery_id="publisher-source-drift:$(jq -r '.itemKey' <<<"$item"):$(jq -r '.revision' <<<"$item")"
-              producer_decision="$(jq -c '.decision.publication.producerDecision' <<<"$item")"
-              payload="$(jq -cn \
-                --arg delivery_id "$delivery_id" \
-                --arg source_action "$source_action" \
-                --argjson decision "$producer_decision" \
-                '{
-                  delivery_id: $delivery_id,
-                  decision: ($decision + {
-                    sourceAction: (if $source_action == "failed_review_shard_recovery" or $source_action == "command_proof_result" then $source_action else "source_drift_requeue" end),
-                    supersedesInProgress: true
-                  })
-                }')"
+              # The direct publisher builds the same body, so both paths requeue
+              # one producer generation under one delivery id.
+              payload="$(CLAIM_DECISION="$(jq -c '.decision.publication.producerDecision' <<<"$item")" \
+                PRODUCER_RUN_ID="$(jq -r '.decision.publication.producerRunId' <<<"$item")" \
+                PRODUCER_RUN_ATTEMPT="$(jq -r '.decision.publication.producerRunAttempt' <<<"$item")" \
+                node src/repair/exact-review-queue-request.ts enqueue source-drift)"
               post_effect_payload="${outcome_path}.post-effect.json"
               printf '%s' "$payload" > "$post_effect_payload"
               response="$(pnpm run --silent repair:exact-review-batch post-effect --route enqueue --payload "$post_effect_payload")"

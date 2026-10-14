@@ -4,6 +4,7 @@
  * `ledger/v1` tree and the mutable `assets` tree. Reuses the signed-request
  * retry machinery from worker-records.ts.
  */
+import { verifyHydratedActionEventImports } from "../src/action-ledger-import.ts";
 import { createHash } from "node:crypto";
 import {
   closeSync,
@@ -13,6 +14,7 @@ import {
   mkdtempSync,
   openSync,
   renameSync,
+  realpathSync,
   rmSync,
   writeFileSync,
   writeSync,
@@ -159,12 +161,21 @@ export async function materializeStateBlobs(
     ? path.resolve(options.cacheRoot)
     : path.join(options.worktreeRoot, ".artifacts", "worker-blobs-cache");
   mkdirSync(cacheRoot, { recursive: true });
-  const stagingRoot = mkdtempSync(path.join(options.worktreeRoot, ".worker-blobs-stage-"));
+  const stagingRoot = realpathSync(
+    mkdtempSync(path.join(options.worktreeRoot, ".worker-blobs-stage-")),
+  );
   const summary = {
     blobs: 0,
     bytes: 0,
     cacheHits: 0,
     downloads: 0,
+    omittedProducers: 0,
+    omittedPayloads: 0,
+    omittedBytes: 0,
+    closureBlobs: 0,
+    materializedBlobs: 0,
+    materializedBytes: 0,
+    omittedProducerExamples: [] as string[],
     trees: Object.fromEntries(trees.map((tree) => [tree, 0])),
   };
   try {
@@ -199,6 +210,28 @@ export async function materializeStateBlobs(
     // Keep the existing trees until every page and download succeeds. An empty
     // store still refuses cutover rather than replacing local state with nothing.
     if (summary.blobs === 0) throw new WorkerBlobsUnavailableError("blobs_not_found");
+    const omissions = await verifyHydratedActionEventImports(stagingRoot, async (blobPath) => {
+      const blob = await statStateBlob({ ...options, blobPath });
+      if (!blob) return false;
+      await downloadStateBlob({
+        ...options,
+        blobPath,
+        destination: path.join(stagingRoot, blobPath),
+        expected: blob,
+      });
+      summary.downloads += 1;
+      summary.closureBlobs += 1;
+      summary.blobs += 1;
+      summary.bytes += blob.bytes;
+      return true;
+    });
+    Object.assign(summary, omissions);
+    summary.materializedBlobs = summary.blobs - summary.omittedPayloads;
+    summary.materializedBytes = summary.bytes - summary.omittedBytes;
+    if (omissions.omittedProducers > 0)
+      console.warn(
+        `[action-ledger] omitted ${omissions.omittedPayloads} uncommitted payloads from ${omissions.omittedProducers} producers; retained remote objects and bindings (${omissions.omittedProducerExamples.join(", ")}). Retry hydration after publication completes.`,
+      );
     for (const root of new Set(trees.map((tree) => tree.split("/")[0]!))) {
       const target = path.join(options.worktreeRoot, root);
       const staged = path.join(stagingRoot, root);

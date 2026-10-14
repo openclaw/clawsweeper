@@ -1,24 +1,12 @@
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
-import type {
-  Action,
-  CloseReason,
-  Decision,
-  GitInfo,
-  Item,
-  ItemKind,
-  ReviewRuntime,
-} from "./clawsweeper-types.js";
+import type { CloseReason, Item, ItemKind } from "./clawsweeper-types.js";
 import { ghJson, ghObservedMutationCommand } from "./clawsweeper-github-execution.js";
-import {
-  hasUsableCloseComment,
-  isImplementationCloseReason,
-  validateCloseDecision,
-} from "./clawsweeper-close-decision.js";
-import { isMaintainerAuthored, isVerifiedFixedCloseReason } from "./clawsweeper-item-policy.js";
+import { isImplementationCloseReason } from "./clawsweeper-close-decision.js";
+
 import { ROOT } from "./clawsweeper-repository-paths.js";
-import { targetProfile, targetRepo } from "./repository-profiles.js";
-import { normalizeComment } from "./clawsweeper-report-comment-helpers.js";
+import { targetRepo } from "./repository-profiles.js";
+
 import { asRecord } from "./value-coerce.js";
 
 export function pullRequestHeadSha(number: number): string {
@@ -67,33 +55,4 @@ export function closeItem(options: { number: number; kind: ItemKind; reason: Clo
   }
 }
 
-export function reviewActionForDecision(options: {
-  item: Item;
-  decision: Decision;
-  git: GitInfo;
-  runtime?: Pick<ReviewRuntime, "model" | "reasoningEffort">;
-}): Action {
-  if (options.decision.decision !== "close") return { actionTaken: "kept_open", closeComment: "" };
-  if (
-    isMaintainerAuthored(options.item) &&
-    options.decision.closeReason !== "oversized_pull_request" &&
-    !isVerifiedFixedCloseReason(options.decision.closeReason)
-  ) {
-    return { actionTaken: "skipped_maintainer_authored", closeComment: "" };
-  }
-  const validation = validateCloseDecision(options.item, options.decision, {
-    requireCloseComment: false,
-  });
-  if (!validation.ok) return { actionTaken: validation.actionTaken, closeComment: "" };
-  const closeComment = normalizeComment(
-    options.decision,
-    options.git,
-    options.runtime,
-    options.item,
-    targetProfile(),
-  );
-  if (!hasUsableCloseComment(closeComment)) {
-    return { actionTaken: "skipped_invalid_decision", closeComment: "" };
-  }
-  return { actionTaken: "proposed_close", closeComment };
-}
+export { reviewActionForDecision } from "./clawsweeper-review-action.js";

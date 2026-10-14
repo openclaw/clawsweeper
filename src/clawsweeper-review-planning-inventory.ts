@@ -80,6 +80,8 @@ export function createReviewPlanningInventory(dependencies: ReviewPlanningDepend
     reviewIndex?: ExistingReviewIndex,
     coverageTrackedItemIds?: ReadonlySet<number>,
   ): DueCandidate | null {
+    // Only the durable queue knows whether an answer was actually completed.
+    // Keep nominations from stale reports so scheduled recovery remains reachable.
     const review = indexedExistingReview(item, itemsDir, reviewIndex);
     const coverageTracked = coverageTrackedItemIds
       ? coverageTrackedItemIds.has(item.number)

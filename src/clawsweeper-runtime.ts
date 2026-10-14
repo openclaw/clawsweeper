@@ -1,12 +1,19 @@
 #!/usr/bin/env node
+import {
+  REVIEW_ITEM_PROMPT_PATHS,
+  CLAWSWEEPER_DECISION_SCHEMA_PATH,
+  PR_CLOSE_COVERAGE_PROOF_PROMPT_PATH,
+} from "./clawsweeper-repository-paths.js";
+import { run, ensureDir } from "./clawsweeper-review-io.js";
+import { reviewPolicyHash as sharedReviewPolicyHash } from "./clawsweeper-review-policy-hash.js";
 import { sha256 } from "./content-hash.js";
-import { existsSync, mkdirSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { flushWorkflowActionEvents } from "./action-ledger-runtime.js";
 import { parseArgs, stringArg, type Args } from "./clawsweeper-args.js";
 import { dispatchCommand, type CommandHandler } from "./clawsweeper-command-dispatch.js";
 import { reviewDecisionParser } from "./clawsweeper-decision-parser.js";
-import { runText, SWEEPER_COMMAND_MAX_BUFFER_BYTES } from "./command.js";
+
 import { AUTOMATION_LIMITS } from "./limits.js";
 import { reviewPullChecksDigestParts } from "./review-checks-digest.js";
 import {
@@ -107,11 +114,7 @@ import * as repositoryPaths from "./clawsweeper-repository-paths.js";
 import { createLocalRangeReviewer } from "./clawsweeper-local-review.js";
 import { createPlanCommand } from "./clawsweeper-plan-command.js";
 import { CLAWSWEEPER_BOT_AUTHORS } from "./clawsweeper-review-comments.js";
-import {
-  EVENT_GUARDED_OPEN_ACTIONS,
-  FRESH_DAYS,
-  REVIEW_POLICY_VERSION,
-} from "./clawsweeper-policy.js";
+import { EVENT_GUARDED_OPEN_ACTIONS } from "./clawsweeper-policy.js";
 import { createRegressionProvenanceVerifier } from "./clawsweeper-regression-provenance.js";
 import {
   applyAuthorPrBudgetStateToReport,
@@ -183,10 +186,10 @@ import {
 } from "./clawsweeper-review-comment-identity.js";
 import { reviewAutomationMarkersFromReport } from "./clawsweeper-review-comment-automation.js";
 export { reviewAutomationMarkersFromReport };
+import { displayTitle } from "./clawsweeper-status-presentation.js";
 import {
   currentClosingPullRequestReferenceFromIssueTimeline,
   createStatusContext,
-  displayTitle,
   linkedIssueNumbersForImplementationProvenance,
   linkedIssueNumbersForPullRequestBody,
 } from "./clawsweeper-status-context.js";
@@ -265,14 +268,6 @@ const DEFAULT_PLAN_BATCH_SIZE = 3;
 const DEFAULT_PLAN_SHARD_COUNT = AUTOMATION_LIMITS.review_shards.normal_default;
 const MAX_PLAN_SHARD_COUNT = AUTOMATION_LIMITS.review_shards.hard_cap;
 
-const REVIEW_ITEM_PROMPT_PATHS = {
-  core: join(ROOT, "prompts", "review-item.md"),
-  issue: join(ROOT, "prompts", "review-item-issue.md"),
-  pull_request: join(ROOT, "prompts", "review-item-pr.md"),
-  closeReasons: join(ROOT, "prompts", "review-close-reasons.md"),
-};
-const CLAWSWEEPER_DECISION_SCHEMA_PATH = join(ROOT, "schema", "clawsweeper-decision.schema.json");
-const PR_CLOSE_COVERAGE_PROOF_PROMPT_PATH = join(ROOT, "prompts", "pr-close-coverage-proof.md");
 const PR_CLOSE_COVERAGE_PROOF_SCHEMA_PATH = join(
   ROOT,
   "schema",
@@ -300,51 +295,10 @@ const sweepStatus = createSweepStatus({
 });
 const { defaultClosedDir, defaultItemsDir } = repositoryPaths;
 
-type RunOptions = { cwd?: string; env?: NodeJS.ProcessEnv };
-
-function runTextOptions(options: RunOptions) {
-  return {
-    cwd: options.cwd ?? ROOT,
-    env: options.env,
-    maxBuffer: SWEEPER_COMMAND_MAX_BUFFER_BYTES,
-    stdio: ["ignore", "pipe", "pipe"] as ["ignore", "pipe", "pipe"],
-    trim: "both" as const,
-  };
-}
-
-function run(
-  command: string,
-  args: string[],
-  options: RunOptions & { timeoutMs?: number | undefined } = {},
-): string {
-  return runText(command, args, { ...runTextOptions(options), timeoutMs: options.timeoutMs });
-}
-
 export { isExactEventSourceRevisionChange };
 
 function reviewPolicyHash(options: { model?: string; sandboxMode?: string }): string {
-  const policyTargetRepo = targetRepo();
-  return sha256(
-    stableJson({
-      version: REVIEW_POLICY_VERSION,
-      freshDays: FRESH_DAYS,
-      // Model changes roll through normal review cadence. Keep this sentinel
-      // stable; bump REVIEW_POLICY_VERSION to invalidate stored reviews.
-      model: "model-excluded-2026-07",
-      reasoningEffort: "per-item-author-profile-v1",
-      itemExecutionProfile: "maintainer-high-fast-otherwise-medium-standard-v1",
-      sandboxMode: options.sandboxMode ?? "read-only",
-      // Keep the historical hash value so service tier changes do not invalidate reviews.
-      serviceTier: "",
-      targetRepo: policyTargetRepo,
-      ...(policyTargetRepo.toLowerCase() === "openclaw/openclaw"
-        ? { openclawCodexSourceProvisioning: "v1" }
-        : {}),
-      repositoryProfile: targetProfile(),
-      prompts: reviewPromptTemplates(),
-      schema: reviewDecisionSchemaText(),
-    }),
-  ).slice(0, 16);
+  return sharedReviewPolicyHash(options, reviewRuntime);
 }
 
 const { defaultRootCauseCluster } = reviewDecisionParser;
@@ -406,10 +360,6 @@ export {
   openClosingPullRequestApplyReason,
   sameAuthorCounterpartApplyReason,
 } from "./clawsweeper-context-hydration.js";
-
-function ensureDir(path: string): void {
-  mkdirSync(path, { recursive: true });
-}
 
 const reviewPlanning = createReviewPlanning({
   maxPlanShardCount: MAX_PLAN_SHARD_COUNT,

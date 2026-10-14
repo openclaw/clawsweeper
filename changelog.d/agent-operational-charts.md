@@ -1,0 +1,1 @@
+- Replace agent outcome placeholders with operational charts and preserve actual publication delivery history independently of other queue counters.

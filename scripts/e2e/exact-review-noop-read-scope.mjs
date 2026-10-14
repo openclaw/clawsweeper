@@ -215,6 +215,21 @@ function scenarios() {
         expected: skipped,
         skipSourceRead: true,
       }),
+      // A requeue of an unpublished request still carries its command status.
+      make("maintainer-request-continuation", "source_drift_requeue", {
+        issue: maintainer,
+        decision: {
+          ...requestedReview,
+          sourceAction: "source_drift_requeue",
+          supersedesInProgress: true,
+          commandStatusMarker: "<!-- clawsweeper-command-status:41:re_review:test -->",
+        },
+        expected: {
+          proceed: "true",
+          scheduled_semantic_noop: "false",
+          live_head_sha: kind === "pull_request" ? sha : undefined,
+        },
+      }),
       make("maintainer-marker-only", "re_review", {
         issue: maintainer,
         decision: {

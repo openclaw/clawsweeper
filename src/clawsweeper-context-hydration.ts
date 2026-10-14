@@ -5,9 +5,9 @@ import { ghJson, ghJsonEach, ghJsonOnce } from "./clawsweeper-github-execution.j
 import { githubCount } from "./clawsweeper-github-context.js";
 import { targetRepo } from "./repository-profiles.js";
 import { fetchIssueReviewComments } from "./clawsweeper-review-comment-state.js";
-import { isSafeGitBranchName } from "./clawsweeper-review-runtime.js";
+import { isSafeGitBranchName } from "./clawsweeper-review-core.js";
 import { ReviewSourcePreparationError } from "./review-source-preparation.js";
-import { validationRecoveryRequired } from "./repair/validation-recovery.js";
+import { validationRecoveryRequired } from "./validation-recovery.js";
 import { BULK_FILED_LABEL } from "./repair/exact-review-guard-labels.js";
 import {
   BULK_FILER_SEARCH_TIMEOUT_MS,

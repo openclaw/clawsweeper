@@ -51,6 +51,43 @@ import {
   mergePendingExactReviewDecision,
 } from "../dashboard/exact-review-decision.ts";
 
+test("legacy proof fields are ignored by decision and persisted queue parsing", async () => {
+  for (const proofAllowedScenarios of [null, "invalid", [], ["retired-scenario"]]) {
+    const item = leasedExactReviewQueueItem(70, "700");
+    const decision = { ...item.decision, proofAllowedScenarios };
+    const normalized = exactReviewDecisionFrom(decision);
+    assert.ok(normalized);
+    const storage = new MemoryDurableStorage();
+    await storage.put("exact-review-queue", {
+      deliveries: {},
+      items: {
+        [item.key]: {
+          ...item,
+          decision,
+          leaseDecision: decision,
+          reviewProofRequests: { obsolete: true },
+        },
+      },
+    });
+    const queue = new ExactReviewQueue({ storage }, {});
+    const response = await queue.fetch(
+      new Request("https://queue.invalid/heartbeat", {
+        method: "POST",
+        body: JSON.stringify({
+          item_key: item.key,
+          lease_id: item.leaseId,
+          lease_revision: item.leaseRevision,
+          claim_generation: item.claimGeneration,
+          run_id: item.claimedRunId,
+          run_attempt: item.claimedRunAttempt,
+          phase: "review",
+        }),
+      }),
+    );
+    assert.equal(response.status, 200);
+  }
+});
+
 test("manual queue policy cannot be widened by coalescing or ambiguous decision fields", async () => {
   const decision = {
     targetRepo: "openclaw/gogcli",
@@ -396,6 +433,8 @@ test("alarm scheduling keeps a closed reason set and stable tie priority", async
       "source_authority",
       "command_intake",
       "credential_circuit",
+      "payload_maintenance",
+      "backfill_shadow_cleanup",
     ],
   );
 
@@ -415,7 +454,7 @@ test("alarm scheduling keeps a closed reason set and stable tie priority", async
       };
     };
     nextSourceAuthorityVerificationAt: () => Promise<number | null>;
-    scheduleSourceAuthorityVerification: (
+    armAuxiliaryWake: (
       nextAttemptAt: number,
       reason: "source_authority" | "command_intake",
     ) => Promise<void>;
@@ -432,7 +471,7 @@ test("alarm scheduling keeps a closed reason set and stable tie priority", async
   await internals.scheduleNext({ deliveries: {}, items: {} }, now);
   assert.equal(internals.scheduledAlarmDecision?.[0], "batch_lease");
   await storage.deleteAlarm();
-  await internals.scheduleSourceAuthorityVerification(now + 5_000, "source_authority");
+  await internals.armAuxiliaryWake(now + 5_000, "source_authority");
   assert.equal(internals.scheduledAlarmDecision?.[0], "source_authority");
   await storage.deleteAlarm();
   const intake = directReReviewIntake({
@@ -4120,86 +4159,27 @@ test("exact-review queue dispatches an item that remains open", async () => {
   });
 });
 
-test("exact-review queue supersedes a stale open pull-request head before dispatch", async () => {
-  const staleHeadSha = "a".repeat(40);
+test("automatic PR dispatch adopts the live head when its webhook was missed", async () => {
   const currentHeadSha = "b".repeat(40);
   const harness = createExactReviewAdmissionHarness(() => jsonResponse({ state: "open" }), {
     targetPull: () => jsonResponse({ state: "open", head: { sha: currentHeadSha } }),
   });
   await withExactReviewAdmissionHarness(harness, async () => {
-    assert.equal(
-      (
-        await harness.queue.fetch(
-          buildExactReviewQueueRequest(
-            "stale-pr-head",
-            597,
-            "synchronize",
-            "pull_request",
-            undefined,
-            {
-              sourceHeadSha: staleHeadSha,
-            },
-          ),
-        )
-      ).status,
-      202,
+    await harness.queue.fetch(
+      buildExactReviewQueueRequest("stale-pr-head", 597, "synchronize", "pull_request", undefined, {
+        sourceHeadSha: "a".repeat(40),
+      }),
     );
-
     await harness.queue.alarm();
-
-    assert.equal(harness.dispatched.length, 0);
+    assert.equal(harness.dispatched.length, 1);
     const state = (await harness.storage.get("exact-review-queue")) as {
-      items: Record<string, unknown>;
+      items: Record<string, { leaseDecision?: { sourceHeadSha?: string } }>;
     };
-    assert.equal(state.items["openclaw/gogcli#597"], undefined);
+    assert.equal(state.items["openclaw/gogcli#597"]?.leaseDecision?.sourceHeadSha, currentHeadSha);
     const audit = Array.from(
-      harness.storage.sql.exec(
-        `SELECT audit_id, item_key, prior_revision, next_revision, source_action, reason_code
-           FROM exact_review_queue_supersessions`,
-      ),
-    ).map((row) => ({ ...row }));
-    assert.equal(audit.length, 1);
-    assert.match(String(audit[0]?.audit_id), /^[0-9a-f-]{36}$/);
-    assert.deepEqual(
-      { ...audit[0], audit_id: undefined },
-      {
-        audit_id: undefined,
-        item_key: "openclaw/gogcli#597",
-        prior_revision: 1,
-        next_revision: 2,
-        source_action: "synchronize",
-        reason_code: "live_head_advanced",
-      },
+      harness.storage.sql.exec("SELECT audit_id FROM exact_review_queue_supersessions"),
     );
-    assert.equal(
-      (
-        await harness.queue.fetch(
-          buildExactReviewQueueRequest(
-            "stale-pr-head-again",
-            597,
-            "synchronize",
-            "pull_request",
-            undefined,
-            { sourceHeadSha: "c".repeat(40) },
-          ),
-        )
-      ).status,
-      202,
-    );
-    await harness.queue.alarm();
-    const repeatedAudit = Array.from(
-      harness.storage.sql.exec(
-        `SELECT audit_id FROM exact_review_queue_supersessions ORDER BY superseded_at, audit_id`,
-      ),
-    ).map((row) => String(row.audit_id));
-    assert.equal(harness.dispatched.length, 0);
-    assert.equal(repeatedAudit.length, 2);
-    assert.equal(new Set(repeatedAudit).size, 2);
-    const stats = await (
-      await harness.queue.fetch(new Request("https://clawsweeper-exact-review-queue/stats"))
-    ).json();
-    assert.equal(stats.lanes.review.completed_total, 2);
-    assert.equal(stats.lanes.review.superseded_total, 2);
+    assert.equal(audit.length, 0);
   });
 });
 
@@ -5474,6 +5454,70 @@ test("exact-review re-upgrade distinguishes a refreshed rollback receipt", async
   );
 });
 
+test("receipt counts remain exact across inserts, expiry, rowid reuse, and rollback", async () => {
+  const storage = new MemoryDurableStorage();
+  const queue = new ExactReviewQueue({ storage }, {});
+  await queue.fetch(
+    new Request("https://queue.invalid/admission-capabilities", { method: "POST" }),
+  );
+  const internals = queue as unknown as {
+    deliveryReceiptCountSync(): number;
+    pruneDeliveryReceiptsSync(now: number): void;
+  };
+  const now = Date.now();
+  const insert = (id: string, receivedAt: number) =>
+    storage.sql.exec(
+      "INSERT INTO exact_review_queue_deliveries (delivery_id, received_at) VALUES (?, ?)",
+      id,
+      receivedAt,
+    );
+  insert("retained", now);
+  assert.equal(internals.deliveryReceiptCountSync(), 1);
+  insert("expired", now - 8 * 24 * 60 * 60 * 1000);
+  assert.equal(internals.deliveryReceiptCountSync(), 2);
+  assert.throws(() =>
+    storage.transactionSync(() => {
+      internals.pruneDeliveryReceiptsSync(now);
+      throw new Error("rollback");
+    }),
+  );
+  assert.equal(internals.deliveryReceiptCountSync(), 2);
+  internals.pruneDeliveryReceiptsSync(now);
+  assert.equal(internals.deliveryReceiptCountSync(), 1);
+  insert("reused-rowid", now);
+  assert.equal(internals.deliveryReceiptCountSync(), 2);
+  assert.equal(internals.deliveryReceiptCountSync(), 2);
+});
+
+test("run telemetry retention preserves the boundary and eventually prunes between requests", async () => {
+  const storage = new MemoryDurableStorage();
+  const queue = new ExactReviewQueue({ storage }, {});
+  await queue.fetch(
+    new Request("https://queue.invalid/admission-capabilities", { method: "POST" }),
+  );
+  const internals = queue as unknown as { pruneReviewRunTelemetrySync(now: number): void };
+  const now = Date.now();
+  const cutoff = now - 30 * 24 * 60 * 60 * 1000;
+  for (const [id, completedAt] of [
+    ["expired", cutoff],
+    ["retained", cutoff + 1],
+  ] as const) {
+    storage.sql.exec(
+      `INSERT INTO exact_review_run_telemetry
+       (run_id, run_attempt, workflow_outcome, trigger_lane, trigger_origin, completed_at, record_json)
+       VALUES (?, 1, 'success', 'review', 'test', ?, '{}')`,
+      id,
+      completedAt,
+    );
+  }
+  internals.pruneReviewRunTelemetrySync(now);
+  assert.equal(sqlCount(storage, "exact_review_run_telemetry"), 1);
+  internals.pruneReviewRunTelemetrySync(now + 1);
+  assert.equal(sqlCount(storage, "exact_review_run_telemetry"), 1);
+  internals.pruneReviewRunTelemetrySync(now + 5 * 60 * 1000);
+  assert.equal(sqlCount(storage, "exact_review_run_telemetry"), 0);
+});
+
 test("exact-review receipt pruning removes its translated shadow atomically", async () => {
   const storage = new MemoryDurableStorage();
   const queue = new ExactReviewQueue({ storage }, {});
@@ -6668,7 +6712,17 @@ test("exact-review review retries park at the attempt ceiling and recover after 
     if (/^\/repos\/openclaw\/(?:clawsweeper|gogcli|openclaw)\/issues\/\d+$/.test(url.pathname))
       return jsonResponse({ state: "open" });
     if (/^\/repos\/openclaw\/openclaw\/pulls\/\d+$/.test(url.pathname)) {
-      return jsonResponse({ state: "open", head: { sha: liveHeadSha } });
+      return jsonResponse({
+        state: "open",
+        head: { sha: liveHeadSha },
+        base: { sha: "b".repeat(40) },
+        title: "Retry fixture",
+        body: "",
+        draft: false,
+        locked: false,
+        labels: [],
+        updated_at: "2026-09-24T00:00:00Z",
+      });
     }
     if (url.pathname === "/app/installations/999/access_tokens") {
       return jsonResponse({ token: "dispatch-token" });
@@ -6689,6 +6743,7 @@ test("exact-review review retries park at the attempt ceiling and recover after 
         CLAWSWEEPER_APP_PRIVATE_KEY: privateKey,
         EXACT_REVIEW_DISPATCH_DEBOUNCE_MS: "0",
         EXACT_REVIEW_RETRY_POLICY_EPOCH: "2",
+        EXACT_REVIEW_INITIAL_PR_QUIET_MS: "0",
       },
     );
     assert.equal(

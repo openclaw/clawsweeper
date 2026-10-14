@@ -38,8 +38,12 @@ From the ClawSweeper checkout:
 corepack enable
 pnpm install
 pnpm run build:all
-pnpm run codex:local:check
+pnpm run codex:local:check -- --diagnostics
 ```
+
+The diagnostics mode checks the selected Codex binary and login status without
+a model request. It does not prove model access or review readiness. Omit
+`--diagnostics` for the existing model smoke test, which consumes model usage.
 
 If the Codex check says the CLI is not logged in, have the operator authenticate
 their own Codex CLI. Device auth is the simplest shareable setup:
@@ -80,6 +84,12 @@ By default, an exact local PR review manages its own target checkout under
 By default, `--local-range` reviews the clean checkout where the command was
 invoked. It does not manage or switch that checkout. Pass `--target-dir` when
 the branch to review is elsewhere.
+
+In a built source checkout, `node dist/clawsweeper-local.js review` is the
+local-only entrypoint for the same full committed-range engine. Its `--help`
+and `--version` paths do not load the review engine or invoke Codex. It does not
+provide diagnostics yet; `codex:local:check` remains the existing model smoke
+test. This entrypoint does not publish hosted action-ledger or cache metadata.
 
 Pass `--target-dir` when the operator wants to review an existing checkout or
 an issue.

@@ -146,8 +146,7 @@ without a TypeScript change. It is intentionally narrow:
 - denied repositories are rejected
 - scheduled fanout is public-only unless a private state publication path exists
 - auto-close policy comes from that owner fallback
-- `live_test` configuration and its post-review executor are retired; inline
-  review proof uses the current lease-scoped proof capabilities instead
+- `live_test` configuration and its post-review executor are retired
 - generic `openclaw/*` issues can auto-close only for
   `implemented_on_main`; PRs can auto-close for `implemented_on_main` or
   age-gated `mostly_implemented_on_main`

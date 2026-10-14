@@ -1,5 +1,6 @@
 import { readFileSync, statSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
+import { actionEventPublicationPaths } from "./action-ledger-import.js";
 import { isActionEventPublishPath } from "./action-ledger-paths.js";
 import {
   ACTION_EVENT_SHARD_IMPORT_MAX_PUBLISH_PATHS,
@@ -128,7 +129,7 @@ export async function publishActionEventPathsCommand(args: Args): Promise<void> 
   const webhookSecret = process.env.CLAWSWEEPER_WEBHOOK_SECRET ?? "";
   let uploaded = 0;
   let unchanged = 0;
-  for (const path of paths) {
+  for (const path of actionEventPublicationPaths(ROOT, paths)) {
     const result = await publishStateBlob({
       baseUrl,
       webhookSecret,

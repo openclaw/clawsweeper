@@ -1,0 +1,74 @@
+{
+  "seed_release": {
+    "ref": "bc3ae1d960157d3bbd751af0bfd794c2f2e1aba9",
+    "note": "origin/main, the deployed release"
+  },
+  "verified_with": {
+    "pr_1981_head_131383c7": {
+      "loaded_items": [
+        "openclaw/openclaw#97701@publish:880000:1",
+        "openclaw/openclaw#97702",
+        "openclaw/openclaw#97702@publish:880002:1",
+        "openclaw/openclaw#97704"
+      ],
+      "held_publication_requeue": {
+        "status": 202,
+        "admission_delivery_id": "publisher-source-drift:880000:1",
+        "source_comment_verified": null
+      },
+      "refresh_with_newer_request": {
+        "status": 200,
+        "terminal_finalization": false,
+        "queued_source_action": "artifact_retention_recovery",
+        "queued_marker_is_newer": false,
+        "refreshed_lifecycle": "requeue"
+      },
+      "claimed_explicit": {
+        "held_continuation": false,
+        "newer_request": false,
+        "queued_request": true
+      },
+      "organic_successor_of_finalizer": {
+        "status": 202,
+        "successor_source_action": "edited",
+        "successor_command_marker": "<!-- clawsweeper-command-status:790:re_review:command-1 -->",
+        "successor_verified": true,
+        "driver_marker_kept": true
+      },
+      "stats_status": 200
+    },
+    "branch": {
+      "loaded_items": [
+        "openclaw/openclaw#97701@publish:880000:1",
+        "openclaw/openclaw#97702",
+        "openclaw/openclaw#97702@publish:880002:1",
+        "openclaw/openclaw#97704"
+      ],
+      "held_publication_requeue": {
+        "status": 202,
+        "admission_delivery_id": "held-publication-requeue:publisher-source-drift:880000:1",
+        "source_comment_verified": true
+      },
+      "refresh_with_newer_request": {
+        "status": 200,
+        "terminal_finalization": true,
+        "queued_source_action": "re_review",
+        "queued_marker_is_newer": true,
+        "refreshed_lifecycle": "superseded"
+      },
+      "claimed_explicit": {
+        "held_continuation": true,
+        "newer_request": true,
+        "queued_request": true
+      },
+      "organic_successor_of_finalizer": {
+        "status": 202,
+        "successor_source_action": "edited",
+        "successor_command_marker": null,
+        "successor_verified": null,
+        "driver_marker_kept": true
+      },
+      "stats_status": 200
+    }
+  }
+}

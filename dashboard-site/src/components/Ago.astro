@@ -1,0 +1,12 @@
+---
+// A time shown relative to when the page is read, not when it was built. The build writes the
+// absolute time; the layout script rewrites it as "N min ago" in the browser and keeps it current.
+import { stamp } from '../lib/format';
+
+interface Props {
+  at: string;
+  prefix?: string;
+}
+const { at, prefix = '' } = Astro.props;
+---
+<time datetime={at} data-ago data-prefix={prefix} data-tip={stamp(at)}>{prefix}{stamp(at)}</time>

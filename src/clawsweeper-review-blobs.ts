@@ -19,7 +19,7 @@ import {
   type ReviewCommitAcquisitionDiagnostic,
 } from "./review-source-preparation.js";
 import { resolveSpawnCommand } from "./command.js";
-import { runGitAcquisitionResult } from "./repair/command-runner.js";
+import { runGitAcquisitionResult } from "./git-acquisition.js";
 
 const MAX_GIT_OUTPUT_BYTES = 4 * 1024 * 1024;
 const MAX_REVIEW_TREE_LIST_BYTES = 64 * 1024 * 1024;

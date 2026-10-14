@@ -29,7 +29,7 @@ import { runText } from "../dist/command.js";
 import { ReviewGitError } from "../dist/clawsweeper-review-blobs.js";
 import { createReviewRuntime } from "../dist/clawsweeper-review-runtime.js";
 import { createReviewCommandWorkflow } from "../dist/clawsweeper-review-command-workflow.js";
-import { ValidationRecoveryRequiredError } from "../dist/repair/validation-recovery.js";
+import { ValidationRecoveryRequiredError } from "../dist/validation-recovery.js";
 
 test("body-file keeps its authoritative precedence over compact hosted context", () => {
   const dir = mkdtempSync(join(tmpdir(), "clawsweeper-body-override-"));

@@ -180,6 +180,13 @@ export class ExactReviewPublicationBatchStore {
       `CREATE INDEX IF NOT EXISTS exact_review_publication_batches_cleanup
          ON ${EXACT_REVIEW_PUBLICATION_BATCH_TABLE} (state, completed_at, batch_id)`,
     );
+    // Publication stats count reclaimed memberships; a partial index keeps that count
+    // proportional to the reclaimed rows instead of scanning every membership.
+    this.storage.sql.exec(
+      `CREATE INDEX IF NOT EXISTS exact_review_publication_batch_items_lease_expired
+         ON ${EXACT_REVIEW_PUBLICATION_BATCH_ITEM_TABLE} (batch_id)
+       WHERE terminal_outcome = 'lease_expired'`,
+    );
     // Cleanup may delete batch receipts, but fencing must outlive those receipts so
     // delayed completions can never match a later lease after an ID is reused.
     this.storage.sql.exec(
@@ -190,13 +197,18 @@ export class ExactReviewPublicationBatchStore {
     );
     // Pre-column leases cannot recover their original configured cap. Use their
     // durable membership count as the smallest safe telemetry denominator.
+    // These run on every Durable Object start, so they only write rows that change:
+    // rewriting every row each start made cold restarts stall the queue.
     this.storage.sql.exec(
       `UPDATE ${EXACT_REVIEW_PUBLICATION_BATCH_TABLE}
-          SET configured_batch_size = MAX(
-            configured_batch_size,
-            (SELECT COUNT(*) FROM ${EXACT_REVIEW_PUBLICATION_BATCH_ITEM_TABLE}
-              WHERE batch_id = ${EXACT_REVIEW_PUBLICATION_BATCH_TABLE}.batch_id)
-          )`,
+          SET configured_batch_size = (
+            SELECT COUNT(*) FROM ${EXACT_REVIEW_PUBLICATION_BATCH_ITEM_TABLE}
+             WHERE batch_id = ${EXACT_REVIEW_PUBLICATION_BATCH_TABLE}.batch_id
+          )
+        WHERE configured_batch_size < (
+          SELECT COUNT(*) FROM ${EXACT_REVIEW_PUBLICATION_BATCH_ITEM_TABLE}
+           WHERE batch_id = ${EXACT_REVIEW_PUBLICATION_BATCH_TABLE}.batch_id
+        )`,
     );
     this.storage.sql.exec(
       `INSERT INTO ${EXACT_REVIEW_PUBLICATION_BATCH_GENERATION_TABLE}
@@ -204,10 +216,8 @@ export class ExactReviewPublicationBatchStore {
        SELECT item_key, MAX(claim_generation)
          FROM ${EXACT_REVIEW_PUBLICATION_BATCH_ITEM_TABLE}
         GROUP BY item_key
-       ON CONFLICT (item_key) DO UPDATE SET claim_generation = MAX(
-         claim_generation,
-         excluded.claim_generation
-       )`,
+       ON CONFLICT (item_key) DO UPDATE SET claim_generation = excluded.claim_generation
+        WHERE excluded.claim_generation > claim_generation`,
     );
   }
 
@@ -440,8 +450,12 @@ export class ExactReviewPublicationBatchStore {
       );
       const historicalBatchIds = Array.from(
         this.storage.sql.exec(
-          `SELECT batch_id FROM ${EXACT_REVIEW_PUBLICATION_BATCH_TABLE}
-            WHERE state <> 'leased' ORDER BY completed_at DESC, batch_id DESC LIMIT ?`,
+          `SELECT batch_id, completed_at FROM ${EXACT_REVIEW_PUBLICATION_BATCH_TABLE}
+            WHERE state = 'completed'
+           UNION ALL
+           SELECT batch_id, completed_at FROM ${EXACT_REVIEW_PUBLICATION_BATCH_TABLE}
+            WHERE state = 'expired'
+           ORDER BY completed_at DESC, batch_id DESC LIMIT ?`,
           Math.max(1, Math.min(100, limit)),
         ),
         (row) => String(row.batch_id),
@@ -540,11 +554,17 @@ export class ExactReviewPublicationBatchStore {
       const completedTtlMs = options.completedTtlMs ?? DEFAULT_COMPLETED_BATCH_TTL_MS;
       const cleanupLimit = options.cleanupLimit ?? DEFAULT_CLEANUP_LIMIT;
       const cutoff = now - completedTtlMs;
+      // Merge the two ordered index ranges, rather than sorting terminal history
+      // across both states before applying the cleanup limit.
       const cleanupIds = Array.from(
         this.storage.sql.exec(
-          `SELECT batch_id FROM ${EXACT_REVIEW_PUBLICATION_BATCH_TABLE}
-            WHERE state IN ('completed', 'expired') AND completed_at <= ?
-            ORDER BY completed_at, batch_id LIMIT ?`,
+          `SELECT batch_id, completed_at FROM ${EXACT_REVIEW_PUBLICATION_BATCH_TABLE}
+            WHERE state = 'completed' AND completed_at <= ?
+           UNION ALL
+           SELECT batch_id, completed_at FROM ${EXACT_REVIEW_PUBLICATION_BATCH_TABLE}
+            WHERE state = 'expired' AND completed_at <= ?
+           ORDER BY completed_at, batch_id LIMIT ?`,
+          cutoff,
           cutoff,
           cleanupLimit,
         ),

@@ -75,7 +75,7 @@ test("Bay retains exhausted, recoverable and unscheduled parked dispositions wit
   assert.equal(hidden.exact_review_queue.bay_projection.activity.items, undefined);
 });
 
-test("dispatch recovery exhaustion stays neutral queue attention without claiming a review ran", async () => {
+test("dispatch recovery exhaustion stays a neutral parked disposition", () => {
   const item = unclaimedExactReviewQueueItem(990097, "990097");
   item.state = "parked";
   item.parkedReason = "dispatch_rejected";
@@ -85,12 +85,4 @@ test("dispatch recovery exhaustion stays neutral queue attention without claimin
     queueCensus({ items: Object.fromEntries([item].map((item) => [item.key, item])) }),
   );
   assert.equal(projection.items[0]?.queue_disposition, "parked");
-  const { bayReviewStatusScript } = await import("../dashboard/bay-review-status.ts");
-  const { runInNewContext } = await import("node:vm");
-  const status = runInNewContext(bayReviewStatusScript + ";bayReviewStatus")({
-    ...projection.items[0],
-    source: "queue",
-  });
-  assert.equal(status.type, "Stopped queue work");
-  assert.doesNotMatch(JSON.stringify(status), /Stopped review|Review stopped|Retries exhausted/);
 });

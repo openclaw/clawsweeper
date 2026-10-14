@@ -1,5 +1,6 @@
 import { EXACT_REVIEW_DIRECT_PUBLICATION_MAX_FILE_BYTES } from "../src/exact-review-publication-limits.ts";
 import { sqlColumnNames, type DurableStorage } from "./durable-storage.ts";
+import { isCompletedPullRequestReview } from "../src/pr-review-policy.ts";
 import {
   manualPublicationOwnerFrom,
   type ManualPublicationOwner,
@@ -15,6 +16,7 @@ export const EXACT_REVIEW_RECORD_BACKFILL_TABLE = "exact_review_record_backfill"
 export const EXACT_REVIEW_RECORD_BACKFILL_CHUNK_TABLE = "exact_review_record_backfill_chunks";
 export const EXACT_REVIEW_RECORD_EXPORT_META_TABLE = "exact_review_record_export_meta";
 export const CANONICAL_RECORD_TUPLE_RECEIPT_TABLE = "canonical_record_tuple_receipts";
+const PR_REVIEW_ANSWER_TABLE = "exact_review_pull_request_answers";
 export const EXACT_REVIEW_DIRECT_PUBLICATION_MAX_POST_BYTES = 4 * 1024 * 1024;
 export const EXACT_REVIEW_DIRECT_PUBLICATION_MAX_FILES = 4;
 export const EXACT_REVIEW_CANONICAL_INLINE_BYTES = Math.floor(1.5 * 1024 * 1024);
@@ -30,6 +32,7 @@ export const REVIEW_COVERAGE_SCAN_PAGE_ROWS = 2_000;
 export const REVIEW_COVERAGE_SCAN_MAX_AGE_MS = 15 * 60 * 1000;
 
 const DIRECT_PUBLICATION_TERMINAL_PRUNE_LIMIT = 256;
+const BACKFILL_SHADOW_PRUNE_LIMIT = 64;
 const MAX_PATH_BYTES = 1024;
 const RECORD_SECTIONS = new Set<RecordSection>([
   "items",
@@ -211,6 +214,15 @@ export class ExactReviewDirectPublicationStore {
   }
 
   ensureSchemaSync() {
+    // This lifetime fact survives report replacement, archive moves and queue
+    // cleanup. The existing completion history is only a one-hour churn counter.
+    this.storage.sql.exec(
+      `CREATE TABLE IF NOT EXISTS ${PR_REVIEW_ANSWER_TABLE} (
+         repo_slug TEXT NOT NULL, item_id INTEGER NOT NULL,
+         answered INTEGER NOT NULL CHECK (answered IN (0, 1)),
+         PRIMARY KEY (repo_slug, item_id)
+       ) STRICT`,
+    );
     this.storage.sql.exec(
       `CREATE TABLE IF NOT EXISTS ${EXACT_REVIEW_DIRECT_PUBLICATION_TABLE} (
          item_key TEXT NOT NULL,
@@ -245,11 +257,19 @@ export class ExactReviewDirectPublicationStore {
         `ALTER TABLE ${EXACT_REVIEW_DIRECT_PUBLICATION_TABLE}
            ADD COLUMN canonical_target_key TEXT NOT NULL DEFAULT ''`,
       );
+      this.storage.sql.exec(
+        `UPDATE ${EXACT_REVIEW_DIRECT_PUBLICATION_TABLE}
+            SET canonical_target_key = item_key`,
+      );
     }
     if (!directPublicationColumns.has("fence_key")) {
       this.storage.sql.exec(
         `ALTER TABLE ${EXACT_REVIEW_DIRECT_PUBLICATION_TABLE}
            ADD COLUMN fence_key TEXT NOT NULL DEFAULT ''`,
+      );
+      this.storage.sql.exec(
+        `UPDATE ${EXACT_REVIEW_DIRECT_PUBLICATION_TABLE}
+            SET fence_key = item_key`,
       );
     }
     if (!directPublicationColumns.has("lifecycle_json")) {
@@ -258,19 +278,6 @@ export class ExactReviewDirectPublicationStore {
            ADD COLUMN lifecycle_json TEXT NOT NULL DEFAULT '{}'`,
       );
     }
-    // Every pre-envelope receipt used its sole item key for both roles. Keep
-    // those completed receipts dedupe-compatible while all new writes preserve
-    // the explicit dual identity below.
-    this.storage.sql.exec(
-      `UPDATE ${EXACT_REVIEW_DIRECT_PUBLICATION_TABLE}
-          SET canonical_target_key = item_key
-        WHERE canonical_target_key = ''`,
-    );
-    this.storage.sql.exec(
-      `UPDATE ${EXACT_REVIEW_DIRECT_PUBLICATION_TABLE}
-          SET fence_key = item_key
-        WHERE fence_key = ''`,
-    );
     this.storage.sql.exec(
       `CREATE INDEX IF NOT EXISTS exact_review_direct_publication_target_revision
          ON ${EXACT_REVIEW_DIRECT_PUBLICATION_TABLE} (canonical_target_key, revision)`,
@@ -392,7 +399,6 @@ export class ExactReviewDirectPublicationStore {
          PRIMARY KEY (repo_slug, section, record_id, chunk_index)
        ) STRICT`,
     );
-    this.seedExportIndexFromCanonicalSync();
   }
 
   accept(plan: CanonicalDirectPublicationPlan, now: number): DirectPublicationAcceptResult {
@@ -425,7 +431,7 @@ export class ExactReviewDirectPublicationStore {
       const newer = Array.from(
         this.storage.sql.exec(
           `SELECT revision FROM ${EXACT_REVIEW_DIRECT_PUBLICATION_TABLE}
-            WHERE fence_key = ? AND revision > ?
+            WHERE item_key = ? AND revision > ?
             ORDER BY revision DESC LIMIT 1`,
           plan.fenceKey,
           plan.revision,
@@ -452,8 +458,26 @@ export class ExactReviewDirectPublicationStore {
         ),
       );
 
-      for (const operation of canonicalOperations)
+      for (const operation of canonicalOperations) {
         this.writeCanonicalOperationSync(operation, plan, now, canonicalRevision);
+        // Only review publication can establish completion. Reconciliation moves
+        // preserve the existing fact even when their report looks complete.
+        if (
+          (operation.section === "items" || operation.section === "closed") &&
+          operation.content !== null &&
+          isCompletedPullRequestReview(operation.content)
+        ) {
+          // A stale-source requeue can carry a complete-looking report. Remember
+          // that it did not answer the PR, so lazy import cannot promote it later.
+          this.storage.sql.exec(
+            `INSERT INTO ${PR_REVIEW_ANSWER_TABLE} (repo_slug, item_id, answered) VALUES (?, ?, ?)
+             ON CONFLICT (repo_slug, item_id) DO UPDATE SET answered = MAX(answered, excluded.answered)`,
+            operation.repoSlug,
+            operation.itemId,
+            Number(plan.lifecycle?.kind !== "requeue"),
+          );
+        }
+      }
       const row = directPublicationRowFromPlan({
         plan,
         operations: storedOperations,
@@ -853,11 +877,24 @@ export class ExactReviewDirectPublicationStore {
     // repository's latest store revision. Tombstoned rows still count: a slug
     // whose records were all deleted still exists in the store and hydration
     // must learn about it to materialize the deletions.
+    // Seek to the next repository and its highest revision instead of grouping
+    // every record. The recursive rows contain only repository names.
     return Array.from(
       this.storage.sql.exec(
-        `SELECT repo_slug, MAX(store_revision) AS revision
-           FROM ${EXACT_REVIEW_RECORD_EXPORT_INDEX_TABLE}
-          GROUP BY repo_slug
+        `WITH RECURSIVE repositories(repo_slug) AS (
+           SELECT MIN(repo_slug) FROM ${EXACT_REVIEW_RECORD_EXPORT_INDEX_TABLE}
+           UNION ALL
+           SELECT (SELECT MIN(repo_slug) FROM ${EXACT_REVIEW_RECORD_EXPORT_INDEX_TABLE}
+                    WHERE repo_slug > repositories.repo_slug)
+             FROM repositories
+            WHERE repo_slug IS NOT NULL
+         )
+         SELECT repo_slug,
+                (SELECT MAX(store_revision)
+                   FROM ${EXACT_REVIEW_RECORD_EXPORT_INDEX_TABLE}
+                  WHERE repo_slug = repositories.repo_slug) AS revision
+           FROM repositories
+          WHERE repo_slug IS NOT NULL
           ORDER BY repo_slug`,
       ),
       (row) => ({ repoSlug: String(row.repo_slug), revision: Number(row.revision) }),
@@ -876,13 +913,27 @@ export class ExactReviewDirectPublicationStore {
   }): { records: RecordExportEntry[]; nextCursor: number | null; watermark: number } {
     // Snapshot builders use the first page's revision as their replay boundary.
     const watermark = this.currentExportRevisionSync();
-    const placeholders = options.sections.map(() => "?").join(", ");
-    // The preflight joins source metadata before reconstruction. It must not
-    // scan more candidates than the reconstruction bound can ever consume.
+    const sections = [...new Set(options.sections)];
+    const placeholders = sections.map(() => "?").join(", ");
     const rowLimit = Math.min(options.limit, options.maxRecords);
+    if (!sections.length) return { records: [], nextCursor: null, watermark };
+    // Read a bounded range from each section, then merge before joining source
+    // metadata. A single IN query otherwise sorts every matching revision.
+    const sectionPages = sections
+      .map(
+        () => `SELECT * FROM (
+          SELECT * FROM ${EXACT_REVIEW_RECORD_EXPORT_INDEX_TABLE}
+            INDEXED BY exact_review_record_export_by_repo_section_revision
+           WHERE repo_slug = ? AND section = ? AND store_revision > ?
+           ORDER BY store_revision LIMIT ?
+        )`,
+      )
+      .join(" UNION ALL ");
     const rows = Array.from(
       this.storage.sql.exec(
-        `SELECT export.repo_slug, export.section, export.record_id, export.digest,
+        `WITH candidates AS (${sectionPages}),
+         page AS (SELECT * FROM candidates ORDER BY store_revision LIMIT ?)
+         SELECT export.repo_slug, export.section, export.record_id, export.digest,
                 export.deleted, export.revision, export.store_revision, export.source,
                 export.updated_at,
                 CASE
@@ -891,7 +942,7 @@ export class ExactReviewDirectPublicationStore {
                     THEN CAST(canonical.byte_length AS TEXT)
                   ELSE CAST(backfill.byte_length AS TEXT)
                 END AS source_byte_length
-           FROM ${EXACT_REVIEW_RECORD_EXPORT_INDEX_TABLE} export
+           FROM page export
            LEFT JOIN ${EXACT_REVIEW_CANONICAL_RECORD_TABLE} canonical
              ON export.deleted = 0
             AND export.source = 'canonical'
@@ -905,16 +956,13 @@ export class ExactReviewDirectPublicationStore {
             AND backfill.repo_slug = export.repo_slug
             AND backfill.section = export.section
             AND backfill.record_id = export.record_id
-          WHERE export.repo_slug = ?
-            AND export.section IN (${placeholders})
-            AND export.store_revision > ?
-            AND export.store_revision > ?
-          ORDER BY export.store_revision
-          LIMIT ?`,
-        options.repoSlug,
-        ...options.sections,
-        options.sinceRevision,
-        options.cursor,
+          ORDER BY export.store_revision`,
+        ...sections.flatMap((section) => [
+          options.repoSlug,
+          section,
+          Math.max(options.sinceRevision, options.cursor),
+          rowLimit,
+        ]),
         rowLimit,
       ),
     );
@@ -950,15 +998,14 @@ export class ExactReviewDirectPublicationStore {
             this.storage.sql.exec(
               `SELECT 1
                  FROM ${EXACT_REVIEW_RECORD_EXPORT_INDEX_TABLE} export
+                   INDEXED BY exact_review_record_export_by_repo_section_revision
                 WHERE export.repo_slug = ?
                   AND export.section IN (${placeholders})
                   AND export.store_revision > ?
-                  AND export.store_revision > ?
                 LIMIT 1`,
               options.repoSlug,
-              ...options.sections,
-              options.sinceRevision,
-              lastRevision,
+              ...sections,
+              Math.max(options.sinceRevision, lastRevision),
             ),
           ).length > 0
         : false;
@@ -1037,10 +1084,13 @@ export class ExactReviewDirectPublicationStore {
     repoSlug: string,
     watermark = Number.MAX_SAFE_INTEGER,
   ): RecordSnapshotIdentity[] {
+    // Bound by revision before sorting; the primary key's natural section/id
+    // order otherwise tempts SQLite to read the whole repository.
     return Array.from(
       this.storage.sql.exec(
         `SELECT section, record_id
            FROM ${EXACT_REVIEW_RECORD_EXPORT_INDEX_TABLE}
+             INDEXED BY exact_review_record_export_by_repo_revision
           WHERE repo_slug = ? AND deleted = 0 AND store_revision <= ?
           ORDER BY section, record_id`,
         repoSlug,
@@ -1066,6 +1116,59 @@ export class ExactReviewDirectPublicationStore {
       ),
     )[0];
     return row ? this.recordExportEntrySync(row) : null;
+  }
+
+  hasCompletedPullRequestReview(repoSlug: string, itemId: number): boolean {
+    repoSlug = repoSlug.toLowerCase();
+    const row = Array.from(
+      this.storage.sql.exec(
+        `SELECT answered FROM ${PR_REVIEW_ANSWER_TABLE} WHERE repo_slug = ? AND item_id = ?`,
+        repoSlug,
+        itemId,
+      ),
+    )[0];
+    if (row) return Number(row.answered) === 1;
+    // Seed upgraded stores lazily from either canonical or imported records,
+    // before a later failed review can overwrite the prior completed answer.
+    let staleSource = false;
+    const answered = (["items", "closed"] as const).some((section) => {
+      const record = this.readExportRecord(repoSlug, section, String(itemId));
+      if (
+        record?.content == null ||
+        record.deleted ||
+        !isCompletedPullRequestReview(record.content)
+      )
+        return false;
+      const [publication] = this.storage.sql.exec(
+        `SELECT publication.lifecycle_json
+           FROM ${EXACT_REVIEW_CANONICAL_RECORD_TABLE} AS record
+           JOIN ${EXACT_REVIEW_DIRECT_PUBLICATION_TABLE} AS publication
+             ON publication.canonical_target_key = record.item_key
+            AND publication.commit_sha = 'do-revision:' || record.revision
+            AND publication.state = 'published'
+          WHERE record.repo_slug = ? AND record.section = ? AND record.item_id = ?
+          LIMIT 1`,
+        repoSlug,
+        section,
+        itemId,
+      );
+      const lifecycle = storedDirectPublicationLifecycle(publication?.lifecycle_json);
+      if (lifecycle?.kind === "requeue") {
+        staleSource = true;
+        return false;
+      }
+      // Old pruning discarded receipts without recording stale-source outcomes.
+      // Missing provenance cannot permanently consume the first valid answer.
+      return lifecycle !== null;
+    });
+    if (answered || staleSource)
+      this.storage.sql.exec(
+        `INSERT INTO ${PR_REVIEW_ANSWER_TABLE} (repo_slug, item_id, answered) VALUES (?, ?, ?)`,
+        repoSlug,
+        itemId,
+        Number(answered),
+      );
+    return answered;
   }
 
   count(): number {
@@ -1105,6 +1208,25 @@ export class ExactReviewDirectPublicationStore {
   }
 
   pruneTerminalSync(now: number) {
+    // Seed both completed and stale-source outcomes before pruning old receipts.
+    // Otherwise an upgrade can lose the only proof that a PR was answered.
+    const publishedRecords = Array.from(
+      this.storage.sql.exec(
+        `SELECT DISTINCT canonical_target_key
+         FROM ${EXACT_REVIEW_DIRECT_PUBLICATION_TABLE}
+        WHERE state = 'published' AND rowid IN (
+            SELECT rowid FROM ${EXACT_REVIEW_DIRECT_PUBLICATION_TABLE}
+             WHERE state IN ('published', 'superseded', 'failed') AND updated_at <= ?
+             ORDER BY updated_at, item_key, revision
+             LIMIT ${DIRECT_PUBLICATION_TERMINAL_PRUNE_LIMIT}
+          )`,
+        now - EXACT_REVIEW_DIRECT_PUBLICATION_RETENTION_MS,
+      ),
+    );
+    for (const record of publishedRecords) {
+      const [repo, itemId] = String(record.canonical_target_key).split("#");
+      this.hasCompletedPullRequestReview(repo!.replaceAll("/", "-"), Number(itemId));
+    }
     return Array.from(
       this.storage.sql.exec(
         `DELETE FROM ${EXACT_REVIEW_DIRECT_PUBLICATION_TABLE}
@@ -1118,6 +1240,87 @@ export class ExactReviewDirectPublicationStore {
         now - EXACT_REVIEW_DIRECT_PUBLICATION_RETENTION_MS,
       ),
     ).length;
+  }
+
+  backfillShadowUpperRowidSync(): number {
+    const [row] = this.storage.sql.exec(
+      `SELECT COALESCE(MAX(rowid), 0) AS upper_rowid FROM ${EXACT_REVIEW_RECORD_BACKFILL_TABLE}`,
+    );
+    return Number(row?.upper_rowid ?? 0);
+  }
+
+  pruneBackfillShadowsSync(afterRowid: number, upperRowid: number) {
+    // Limit raw identities before joining owners: commits and unresolved rows
+    // must advance the finite sweep without turning a pass into a full scan.
+    const rows = Array.from(
+      this.storage.sql.exec(
+        `SELECT candidate.*, export.source, export.revision AS export_revision,
+                export.digest AS export_digest, export.deleted AS export_deleted,
+                CAST(canonical.item_id AS TEXT) AS canonical_id, canonical.revision AS canonical_revision,
+                canonical.digest AS canonical_digest, canonical.deleted AS canonical_deleted
+           FROM (
+             SELECT rowid AS candidate_rowid, repo_slug, section, record_id, byte_length
+               FROM ${EXACT_REVIEW_RECORD_BACKFILL_TABLE}
+              WHERE rowid > ? AND rowid <= ? ORDER BY rowid LIMIT ${BACKFILL_SHADOW_PRUNE_LIMIT}
+           ) candidate
+           LEFT JOIN ${EXACT_REVIEW_RECORD_EXPORT_INDEX_TABLE} export
+             ON export.repo_slug = candidate.repo_slug AND export.section = candidate.section
+            AND export.record_id = candidate.record_id
+           LEFT JOIN ${EXACT_REVIEW_CANONICAL_RECORD_TABLE} canonical
+             ON canonical.repo_slug = candidate.repo_slug AND canonical.section = candidate.section
+            AND canonical.item_id = CAST(candidate.record_id AS INTEGER)
+          ORDER BY candidate.candidate_rowid`,
+        afterRowid,
+        upperRowid,
+      ),
+    );
+    let retired = 0;
+    let retiredBytes = 0;
+    for (const row of rows) {
+      // Commit bodies intentionally live in backfill even with a canonical
+      // export pointer. Numeric aliases must not inherit another row's owner.
+      if (
+        row.section === "commits" ||
+        row.record_id !== row.canonical_id ||
+        row.source !== "canonical" ||
+        row.canonical_revision !== row.export_revision ||
+        row.canonical_deleted !== row.export_deleted ||
+        row.canonical_digest !== row.export_digest
+      )
+        continue;
+      this.deleteBackfillShadowSync(
+        String(row.repo_slug),
+        String(row.section),
+        String(row.record_id),
+      );
+      retired += 1;
+      retiredBytes += Number(row.byte_length);
+    }
+    const nextRowid = Number(rows.at(-1)?.candidate_rowid ?? upperRowid);
+    return {
+      scanned: rows.length,
+      retired,
+      retiredBytes,
+      afterRowid: nextRowid,
+      complete: rows.length < BACKFILL_SHADOW_PRUNE_LIMIT || nextRowid === upperRowid,
+    };
+  }
+
+  private deleteBackfillShadowSync(repoSlug: string, section: string, id: string) {
+    this.storage.sql.exec(
+      `DELETE FROM ${EXACT_REVIEW_RECORD_BACKFILL_CHUNK_TABLE}
+        WHERE repo_slug = ? AND section = ? AND record_id = ?`,
+      repoSlug,
+      section,
+      id,
+    );
+    this.storage.sql.exec(
+      `DELETE FROM ${EXACT_REVIEW_RECORD_BACKFILL_TABLE}
+        WHERE repo_slug = ? AND section = ? AND record_id = ?`,
+      repoSlug,
+      section,
+      id,
+    );
   }
 
   private readSync(itemKey: string, revision: number) {
@@ -1171,6 +1374,9 @@ export class ExactReviewDirectPublicationStore {
     now: number,
     revision = plan.revision,
   ) {
+    if (operation.section === "items" || operation.section === "closed") {
+      this.hasCompletedPullRequestReview(operation.repoSlug, operation.itemId);
+    }
     this.storage.sql.exec(
       `DELETE FROM ${EXACT_REVIEW_CANONICAL_RECORD_CHUNK_TABLE}
         WHERE repo_slug = ? AND section = ? AND item_id = ?`,
@@ -1245,6 +1451,9 @@ export class ExactReviewDirectPublicationStore {
       storeRevision,
       now,
     );
+    // The export now selects this canonical version, including tombstones.
+    // Remove its unreachable import only after both writes, in the same commit.
+    this.deleteBackfillShadowSync(operation.repoSlug, operation.section, String(operation.itemId));
   }
 
   private nextTupleRevisionSync(repoSlug: string, itemId: number): number {
@@ -1252,7 +1461,8 @@ export class ExactReviewDirectPublicationStore {
       this.storage.sql.exec(
         `SELECT COALESCE(MAX(revision), 0) AS revision
            FROM ${EXACT_REVIEW_CANONICAL_RECORD_TABLE}
-          WHERE repo_slug = ? AND item_id = ?`,
+          WHERE repo_slug = ? AND section IN ('items', 'closed', 'plans', 'decision-packets')
+            AND item_id = ?`,
         repoSlug,
         itemId,
       ),
@@ -1262,39 +1472,6 @@ export class ExactReviewDirectPublicationStore {
       throw new Error(`invalid canonical tuple revision for ${repoSlug}/${itemId}`);
     }
     return current + 1;
-  }
-
-  private seedExportIndexFromCanonicalSync() {
-    const rows = Array.from(
-      this.storage.sql.exec(
-        `SELECT repo_slug, section, item_id, digest, deleted, revision, updated_at
-           FROM ${EXACT_REVIEW_CANONICAL_RECORD_TABLE}
-          WHERE NOT EXISTS (
-            SELECT 1 FROM ${EXACT_REVIEW_RECORD_EXPORT_INDEX_TABLE} export
-             WHERE export.repo_slug = ${EXACT_REVIEW_CANONICAL_RECORD_TABLE}.repo_slug
-               AND export.section = ${EXACT_REVIEW_CANONICAL_RECORD_TABLE}.section
-               AND export.record_id = CAST(${EXACT_REVIEW_CANONICAL_RECORD_TABLE}.item_id AS TEXT)
-          )
-          ORDER BY repo_slug, section, item_id`,
-      ),
-    );
-    for (const row of rows) {
-      const storeRevision = this.nextExportRevisionSync();
-      this.storage.sql.exec(
-        `INSERT INTO ${EXACT_REVIEW_RECORD_EXPORT_INDEX_TABLE}
-           (repo_slug, section, record_id, digest, deleted, revision, store_revision,
-            source, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, 'canonical', ?)`,
-        String(row.repo_slug),
-        String(row.section),
-        String(row.item_id),
-        row.digest === null ? null : String(row.digest),
-        Number(row.deleted),
-        Number(row.revision),
-        storeRevision,
-        Number(row.updated_at),
-      );
-    }
   }
 
   private nextExportRevisionSync() {

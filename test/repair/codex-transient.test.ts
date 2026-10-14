@@ -36,6 +36,21 @@ test("Codex TPM rate-limit errors are retryable transport failures", () => {
   assert.equal(isCodexContextLimitError(message), false);
 });
 
+test("Codex model capacity errors are retryable, not terminal", () => {
+  const message =
+    "Codex final output did not end with its newline frame.\nERROR: Selected model is at capacity. Please try a different model.";
+  assert.equal(isRetryableCodexTransportError(message), true);
+  assert.equal(isRetryableCodexErrorMessage(message), true);
+  assert.equal(isTerminalCodexErrorMessage(message), false);
+  assert.equal(isCodexContextLimitError(message), false);
+  for (const unrelated of [
+    "review tree budget: required filesystem capacity is unavailable",
+    "Service is at capacity\nCodex execution failed.",
+  ]) {
+    assert.equal(isRetryableCodexTransportError(unrelated), false, unrelated);
+  }
+});
+
 test("Codex model access failures are terminal even when the stream disconnects", () => {
   const message =
     "ERROR: stream disconnected before completion: The model secret-model-for-test does not exist or you do not have access to it.";
@@ -54,35 +69,6 @@ test("Codex JSONL model access errors are trusted terminal failures", () => {
   assert.equal(codexJsonlFailureDetail(jsonl), message);
   assert.equal(isTerminalCodexErrorMessage(message), true);
   assert.equal(isRetryableCodexErrorMessage(message), false);
-});
-
-test("Codex app-server failed turns are trusted like JSONL turn failures", () => {
-  const message = "The model secret-model-for-test does not exist or you do not have access to it.";
-  const turnCompleted = (turn: Record<string, unknown>) =>
-    JSON.stringify({ method: "turn/completed", params: { threadId: "t", turn } });
-  const agentText = JSON.stringify({
-    method: "item/completed",
-    params: {
-      item: { type: "agentMessage", text: JSON.stringify({ type: "error", message: "x" }) },
-    },
-  });
-
-  assert.equal(
-    codexJsonlFailureDetail(
-      [agentText, turnCompleted({ id: "turn", status: "failed", error: { message } })].join("\n"),
-    ),
-    message,
-  );
-  assert.equal(
-    codexJsonlFailureDetail(turnCompleted({ id: "turn", status: "interrupted", error: null })),
-    "",
-  );
-  assert.equal(
-    codexJsonlFailureDetail(
-      turnCompleted({ id: "turn", status: "completed", error: { message: "ignored" } }),
-    ),
-    "",
-  );
 });
 
 test("Codex human failures accept only a terminal error before a native usage trailer", () => {

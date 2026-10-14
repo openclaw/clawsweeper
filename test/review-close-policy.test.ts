@@ -19,7 +19,7 @@ import {
   shouldPlanItem,
   validateCloseDecision,
 } from "../dist/clawsweeper.js";
-import { createStatusContext } from "../dist/clawsweeper-status-context.js";
+import { createFixedPullRequestContext } from "../dist/clawsweeper-fixed-pull-request.js";
 import { parseCoAuthors } from "../dist/commit-sweeper.js";
 import { repositoryProfileFor } from "../dist/repository-profiles.js";
 import {
@@ -31,7 +31,7 @@ import {
   withReviewRecord,
 } from "./helpers.ts";
 
-const { fixedPullRequestFromCommitPulls } = createStatusContext();
+const { fixedPullRequestFromCommitPulls } = createFixedPullRequestContext();
 
 function renderedCloseReasons(prompt: string): string[] {
   const section = prompt.slice(

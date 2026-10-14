@@ -64,7 +64,7 @@ import {
   runtimeReviewText,
 } from "./clawsweeper-report-context.js";
 import { prSurfaceFilesFromContext } from "./clawsweeper-orchestration-foundation.js";
-import { fixedInText, formatTimestamp } from "./clawsweeper-status-context.js";
+import { fixedInText, formatTimestamp } from "./clawsweeper-status-presentation.js";
 
 export function localCheckoutAccessForDecision(
   decision: Pick<Decision, "localCheckoutAccess">,

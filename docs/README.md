@@ -21,7 +21,7 @@ manual.
 | Set up a development checkout                       | [Contributing](../CONTRIBUTING.md)            | [Local run](../README.md#local-run)                 |
 | Understand review and scheduling                    | [Scheduler](scheduler.md)                     | [Automation limits](limits.md)                      |
 | Add or operate a target repository                  | [Target repositories](target-repositories.md) | [Target dispatcher](target-dispatcher.md)           |
-| Inspect production without mutation                 | [Live dashboard](live-dashboard.md)           | [Public observer API](public-api.md)               |
+| Inspect production without mutation                 | [Live dashboard](live-dashboard.md)           | [Public observer API](public-api.md)                |
 | Inspect observer routes and configuration ownership | [Public observer API](public-api.md)          | [Operator configuration](operator-configuration.md) |
 | Prepare proof for a change                          | [Contributing](../CONTRIBUTING.md)            | [Agent instructions](../AGENTS.md)                  |
 | Review a local committed range                      | [Local branch review](commit-sweeper.md)      | `pnpm local-review -- --base origin/main`           |
@@ -63,6 +63,8 @@ everything else requires human comparison with current main.
   local-range export; bounded advisory PR-body handoff and review-content reader
 - [GitHub webhook read model](github-webhook-read-model.md) — active; signed
   ingress, App subscriptions, snapshot freshness, and safety boundary
+- [Review authority contract](review-authority.md) — proposed integration;
+  inert role classifier and API evidence requirements
 
 ## Configuration and repository onboarding
 
@@ -88,6 +90,7 @@ everything else requires human comparison with current main.
 
 - [Live dashboard](live-dashboard.md) — active; Worker status and operational
   telemetry
+- [Agent performance metrics](agent-performance-metrics.md) — execution timing, repeated work, chart ownership and observation limits
 - [GitHub publication egress telemetry](github-egress-telemetry.md) — active;
   wire denominator, credential attribution, completeness, and retention
 - [Triage dashboard](triage-dashboard.md) — active; cached issue triage
@@ -104,8 +107,6 @@ everything else requires human comparison with current main.
 - [PR review comments](pr-review-comments.md) — active; review-thread handling
 - [Related issue discovery](related-issue-discovery.md) — active; duplicate and
   adjacent-report context
-- [Live proof](live-proof.md) — active inline review proof; retired post-review
-  attachments are ignored without rewriting historical records
 
 `docs/proof/**` contains inspectable artifacts for specific changes. Those
 files support their recorded claim but do not override current runbooks.

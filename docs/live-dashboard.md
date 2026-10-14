@@ -159,15 +159,17 @@ unchanged.
 
 ## Operator dashboard pages
 
-The operator dashboard (Overview, Throughput, Quality, Queue, Coverage,
-Repositories) is a static Astro site in `dashboard-site/`. The `Dashboard site`
+The operator dashboard at `/` (Overview, Agent performance, Throughput, Review assessments, Queue, Operations,
+Coverage, Repositories) is a static Astro site in `dashboard-site/`. The `Dashboard site`
 workflow (`.github/workflows/dashboard-site.yml`) rebuilds it every 15 minutes
 and publishes it to the Cloudflare Pages project `clawsweeper-dashboard`
-(`https://clawsweeper-dashboard.pages.dev`). A data refresh never redeploys
-this Worker, so webhooks, the queue Durable Object and `/api/*` are not
-restarted by it.
+(`https://clawsweeper-dashboard.pages.dev`). This Worker serves those page
+paths and their assets from Pages for GET and HEAD (`dashboard/dashboard-site.ts`;
+override the origin with `DASHBOARD_SITE_ORIGIN`). A data refresh never
+redeploys this Worker, so webhooks, the queue Durable Object and `/api/*` are
+not restarted by it.
 
-Each build reads three sources:
+Each build reads four sources:
 
 - the corpus aggregate (totals, decisions, quality, closes, per-repository
   counts), cached in the workflow state. It is rebuilt only when the workflow is
@@ -184,11 +186,56 @@ Each build reads three sources:
   (a full export on 2026-10-12 failed 26 review runs in 14 minutes), so run it at
   a quiet hour. Until the first such run, scheduled builds skip with a notice;
 - the public `/api/exact-review-queue` and `/api/review-coverage` responses;
+- the public 7-day `/api/health-history` samples and the 24-hour and 7-day
+  `/api/apply-observability` summaries, for the Operations page. Samples are
+  reduced to hourly points (counter growth between consecutive 5-minute samples;
+  a counter reset or a sample gap leaves that step out) and to handoff incidents
+  (degraded or stalled runs of 10 minutes or more; shorter runs count as blips;
+  an idle or healthy sample ends a run). The healthy share counts only observed
+  samples, and a value the APIs do not report shows as unavailable, never as
+  zero. The apply figures cover only the scheduled close sweep
+  (`apply-existing`), not closes made right after a review;
 - GitHub Actions run history for this repository, kept as per-hour buckets in
   the workflow cache. Each run rereads from three hours before its last
   refresh, so a late or failed build leaves no gap; a missing cache
   bootstraps two days with the ClawSweeper app token, and the window then
-  grows to 30 days.
+  grows to 30 days. A manual run with `backfill_days` fills older days of sweep
+  history: success/failure counts from the API's per-conclusion totals, and
+  review-run durations from a sample of about 600 runs per day (the newest 100 in each
+  4-hour slice). About 20 requests per day, on this repository's
+  `GITHUB_TOKEN`, never the app token, whose rate limit production reviews
+  share.
+
+Open pages check for a newer build every five minutes and when the tab becomes
+visible, and reload when one is published. The header shows both the build time
+and the review-corpus time. A page warns when its build is more than an hour old
+(the refresh has stopped) or when the corpus is more than a day old (it updates
+only with `refresh_corpus`). Unknown paths return the site's 404 page with
+status 404. Pull requests that touch `dashboard-site/` build the site from
+`dashboard-site/fixtures/dashboard.json`, without secrets or publishing.
+
+Metric labels distinguish latest-record snapshots from event history. Items refreshed
+count each item once on its latest review date; re-review moves that date and does
+not preserve historical daily throughput. Maintainer-authored items describes the
+item author, not who performed a review. Activity deltas are neutral. Model time
+and creation-to-latest-review age show sample counts across the stored corpus;
+neither measures first response or end-to-end service latency. Sweep run success
+shows its numerator, denominator and recorded days in the requested seven-day
+window; period comparison requires all seven days in both windows. Execution
+success does not establish decision correctness.
+
+Each detailed chart has one page owner. Agent performance owns execution timing,
+failed attempts by stage and repeated-claim investigation. Its run-time chart shows
+daily p50 and p90 together in duration units; these are run timings, separate from
+the model-only latest-review snapshot. Operations owns review flow, publication
+backlog, actual deliveries and batch handoff. Throughput owns volume and workflow
+activity; Coverage owns freshness. Overview keeps compact summaries and links.
+
+Publication pending excludes superseded revisions retained for command
+acknowledgements; those records do not establish failed delivery. Repeated-claim
+alerts count recorded claims, which may end before model execution. The bounded
+public target sample links to GitHub for revision and trigger investigation; it is
+not a ranking or proof of wasted execution.
 
 The site shows no report bodies, author identities or free-text concerns.
 Local preview: in `dashboard-site/`, install dependencies, run
@@ -245,8 +292,7 @@ window. The hosted setup isolates `CODEX_HOME` by run ID/attempt, and each revie
 process reviews items sequentially. The reader scans backward in 64 KiB chunks
 to find each session's latest token count. Missing homes/files, unreadable
 or changing files, malformed usage, and files larger than 64 MiB produce null
-usage rather than a partial sum. Ephemeral app-server proof sessions may not
-persist rollout files; those reviews report unavailable usage.
+usage rather than a partial sum.
 
 `REVIEW_USAGE_LAYOUT` in [`dashboard/review-usage.ts`](../dashboard/review-usage.ts)
 is the canonical source of the ordered tuples used by the writer. Analytics
@@ -338,7 +384,7 @@ See the [sampling guidance](https://developers.cloudflare.com/analytics/analytic
 and [weighted aggregate functions](https://developers.cloudflare.com/analytics/analytics-engine/sql-reference/aggregate-functions/)
 for interpreting approximate aggregates.
 
-## What It Shows
+## What the status API shows
 
 - bounded active-work counts and closed workflow, worker, status, stage, and
   outcome categories; arbitrary titles, targets, source links, keys, and job
@@ -1184,3 +1230,9 @@ stays parked with its exhausted attempt/recovery budgets; no review is restarted
 If a status writer retries after a token or write failure, it releases only its
 exact recorded successor coordination deferral before clearing the lease. A
 concurrently changed successor revision, reason, or deadline is not overwritten.
+
+Attention lists from a complete corpus refresh sort by reviewer-assigned priority
+(P0 through P3), then oldest review, with unranked items last. These are historical
+flags, not verified unresolved work. Cached corpora built before priority collection
+retain newest-first ordering until the next `refresh_corpus` run; discarded older
+rows cannot be reconstructed by sorting the cache.

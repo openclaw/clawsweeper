@@ -1,0 +1,1 @@
+- Add two small indexes to the exact-review queue: a partial index on reclaimed publication batch memberships (the stats count no longer scans every membership; 2.7 ms → 0.13 ms at 88k rows) and an age index on GitHub egress rollups (cap eviction no longer sorts rowid ties; 1.6 ms → 0.02 ms in the single-timestamp worst case). Each builds once at startup in about 5–11 ms.

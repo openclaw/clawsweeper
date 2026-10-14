@@ -20,7 +20,7 @@ import {
   writeExactReviewFailureDiagnostics,
 } from "./clawsweeper-review-failure-diagnostics.js";
 import { ReviewSourcePreparationError } from "./review-source-preparation.js";
-import { validationRecoveryRequired } from "./repair/validation-recovery.js";
+import { validationRecoveryRequired } from "./validation-recovery.js";
 import {
   createTransientReviewOutput,
   createReviewOutputBudget,
@@ -42,10 +42,26 @@ export function isExplicitReviewDispatch(args: Args, hasExplicitItemSelection: b
   return !plannedAutomaticReview && hasExplicitItemSelection;
 }
 
-export function prepareReviewCommand(
-  args: Args,
-  dependencies: CreateReviewCommandWorkflowDependencies,
-) {
+export type PrepareReviewDependencies = Pick<
+  CreateReviewCommandWorkflowDependencies,
+  | "buildLocalRangeReview"
+  | "DEFAULT_PLAN_BATCH_SIZE"
+  | "defaultItemsDir"
+  | "defaultLocalRangeArtifactDir"
+  | "defaultLocalRangeHistoryPath"
+  | "defaultReviewArtifactDir"
+  | "ensureDir"
+  | "localExactReviewItem"
+  | "repoFromArgs"
+  | "reviewCodexForcedLoginMethod"
+  | "reviewPolicyHash"
+  | "suppliedReviewStartLeaseFromArgs"
+  | "targetRepo"
+  | "codexReviewFailureRetryable"
+> &
+  Partial<Pick<CreateReviewCommandWorkflowDependencies, "gitInfo" | "resolveReviewCheckout">>;
+
+export function prepareReviewCommand(args: Args, dependencies: PrepareReviewDependencies) {
   const {
     buildLocalRangeReview,
     DEFAULT_PLAN_BATCH_SIZE,
@@ -63,6 +79,14 @@ export function prepareReviewCommand(
     suppliedReviewStartLeaseFromArgs,
     targetRepo,
   } = dependencies;
+
+  function requireHostedCheckout() {
+    if (!resolveReviewCheckout)
+      throw new UserFacingCommandError(
+        "Hosted checkout preparation is unavailable in local-range review.",
+      );
+    return resolveReviewCheckout;
+  }
 
   const profile = repoFromArgs(args);
   const localRange = boolArg(args.local_range);
@@ -142,17 +166,24 @@ export function prepareReviewCommand(
     const metadataOnly = prAdmissionInput?.admission.admitted === false;
     const checkout = metadataOnly
       ? { openclawDir: checkoutArtifactDir, gitTargetBranch: undefined }
-      : resolveReviewCheckout({
-          args,
-          artifactDir: checkoutArtifactDir,
-          humanLocalReview,
-          itemNumber,
-          itemNumbers,
-          localRange,
-          localOnly,
-          profile,
-          verbose,
-        });
+      : localRange
+        ? {
+            openclawDir: resolve(
+              stringArg(args.target_dir, stringArg(args.openclaw_dir, process.cwd())),
+            ),
+            gitTargetBranch: undefined,
+          }
+        : requireHostedCheckout()({
+            args,
+            artifactDir: checkoutArtifactDir,
+            humanLocalReview,
+            itemNumber,
+            itemNumbers,
+            localRange,
+            localOnly,
+            profile,
+            verbose,
+          });
     const openclawDir = checkout.openclawDir;
     const artifactDir =
       transientOutput?.path ??
@@ -275,11 +306,16 @@ export function prepareReviewCommand(
         `${targetRepo()}#${exactItemNumber}`.toLowerCase()
         ? ({ repo: targetRepo(), itemKind, itemNumber: exactItemNumber } as const)
         : null;
-    const loadReviewGitInfo = (): GitInfo =>
-      gitInfo(openclawDir, {
+    const loadReviewGitInfo = (): GitInfo => {
+      if (!gitInfo)
+        throw new UserFacingCommandError(
+          "Hosted Git metadata is unavailable in local-range review.",
+        );
+      return gitInfo(openclawDir, {
         ...(checkout.gitTargetBranch ? { targetBranch: checkout.gitTargetBranch } : {}),
         ...(exactReviewIdentity ? { classifyFetchFailure: true } : {}),
       });
+    };
     let git: GitInfo;
     try {
       git = metadataOnly

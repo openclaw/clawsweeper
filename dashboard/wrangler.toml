@@ -84,6 +84,8 @@ EXACT_REVIEW_HEARTBEAT_GRACE_MS = "1200000"
 EXACT_REVIEW_WORKFLOW_PAUSED_RETRY_MS = "60000"
 EXACT_REVIEW_DISPATCH_DEBOUNCE_MS = "90000"
 EXACT_REVIEW_DISPATCH_DEBOUNCE_MAX_MS = "180000"
+# Automatic PRs observe their live head/body before this uncapped quiet window.
+EXACT_REVIEW_INITIAL_PR_QUIET_MS = "600000"
 # An item that already completed 2 full reviews in the last hour is under active
 # churn (repeated pushes/edits). Its next organic revision coalesces for 10
 # minutes from the latest event, capped at 15 minutes from the first pending

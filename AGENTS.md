@@ -35,11 +35,19 @@ not split reports into issue/PR subtrees.
 ## Operating Model
 
 - Review lane is proposal-only. It never closes GitHub items.
+- Ordinary PRs receive one automatic completed review after ten quiet minutes.
+  Later pushes, edits, reopen events, and scheduled passes require a new explicit
+  review request. Failed or stale-source attempts can finish the first review;
+  `clawsweeper:autofix` and `clawsweeper:automerge` retain their opted-in automation.
 - Maintainer-authored items and items labeled `maintainer` require an explicit
   `@clawsweeper review` request unless an existing automation opt-in label is set.
   Finish the work and validation first; request review only when it is needed.
   Agents must not request reviews automatically or repeat a queued/running request.
-  An explicit review request does not enable automatic review of later changes.
+  An explicit review request stays open while the queue requeues its own review
+  after source drift, in place or from the publisher still holding the request's
+  publication; that retry continues the request. A finished or replaced
+  request, later changes after the answer, and scheduled passes need a new
+  request.
 - Apply lane mutates GitHub by syncing the durable Codex review comment and then
   closing only unchanged, high-confidence proposals.
 - Repository-specific rules live in `src/repository-profiles.ts`; ClawHub apply
@@ -111,15 +119,11 @@ not split reports into issue/PR subtrees.
   artifact, and limits. Use the narrowest meaningful proof first and broaden
   it for shared or higher-risk behavior. Docs-only changes normally need
   `git diff --check` and relevant link or command sanity instead.
-- For lifecycle/review publication, queue/workflow, status/telemetry, or
-  dashboard data-contract changes, state in the PR or handoff whether
-  OpenClaw Bay is affected. If it is, update Bay and its proof; otherwise
-  record why no Bay change is needed. OpenClaw Bay is a public, indexable,
-  observer-only surface: it may display status and provide view-only navigation
-  to verified-public GitHub repository, item, workflow-run, and job pages. Those
-  canonical GET links are references, not action controls. Bay must never call
-  GitHub from the browser or trigger or offer queue, workflow, GitHub, DLQ,
-  recovery, deploy, rollback, or other mutation controls.
+- The public dashboard is observer-only: it may display status and provide
+  view-only navigation to verified-public GitHub repository, item, workflow-run,
+  and job pages. Those canonical GET links are references, not action controls.
+  It never calls GitHub from the browser and never triggers or offers queue,
+  workflow, GitHub, DLQ, recovery, deploy, rollback, or other mutation controls.
 - A ClawSweeper result that requires proof or identifies an accepted/actionable
   finding remains PR-owner work, not a handoff. Before a manually requested
   review or re-review, put current proof and the finding disposition or evidence
@@ -131,7 +135,7 @@ not split reports into issue/PR subtrees.
 - Before merge or automerge, the latest ClawSweeper review must apply to the
   current PR head and review-content body. The canonical preflight reader excludes
   one valid advisory annotation only; human text, proof, and all outside whitespace
-  remain review content. Raw event and proof-execution guards can still invalidate
+  remain review content. Raw event and concurrency guards can still invalidate
   after a metadata edit. Resolve every accepted finding. Apply each
   applicable `Rank-up moves:` item, or explicitly justify the exception in the
   PR body; Rank-up moves remain optional and do not by themselves block merge.

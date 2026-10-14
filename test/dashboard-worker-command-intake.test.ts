@@ -1,7 +1,10 @@
 import { createHash, createHmac, generateKeyPairSync } from "node:crypto";
 import http from "node:http";
 
-import { ExactReviewCommandIntakeStore } from "../dashboard/exact-review-command-intake.ts";
+import {
+  EXACT_REVIEW_COMMAND_RECEIPT_RETENTION_MS,
+  ExactReviewCommandIntakeStore,
+} from "../dashboard/exact-review-command-intake.ts";
 import { convergeCommandAcknowledgement } from "../dashboard/exact-review-queue.ts";
 import {
   directReReviewIntake,
@@ -87,6 +90,49 @@ test("command intake migrations, watermarks, receipts, and revisions stay idempo
   );
 });
 
+test("command receipt pruning keeps pending and newer terminal receipts at the retention boundary", () => {
+  const storage = new MemoryDurableStorage();
+  const store = new ExactReviewCommandIntakeStore(storage);
+  store.ensureSchemaSync();
+  const now = Date.parse("2026-08-12T16:30:00Z");
+  const cutoff = now - EXACT_REVIEW_COMMAND_RECEIPT_RETENTION_MS;
+  for (const outcome of ["pending", "completed", "rejected", "superseded"]) {
+    for (const offset of [-1, 0, 1]) {
+      storage.sql.exec(
+        `INSERT INTO exact_review_command_receipts
+           (command_version_id, source_comment_key, outcome, observed_at)
+         VALUES (?, ?, ?, ?)`,
+        `${outcome}:${offset}`,
+        "openclaw/openclaw:9001",
+        outcome,
+        cutoff + offset,
+      );
+    }
+  }
+
+  store.pruneTerminalReceipts(now);
+  assert.deepEqual(
+    Array.from(
+      storage.sql.exec(
+        "SELECT command_version_id FROM exact_review_command_receipts ORDER BY command_version_id",
+      ),
+      (row) => row.command_version_id,
+    ),
+    ["completed:1", "pending:-1", "pending:0", "pending:1", "rejected:1", "superseded:1"],
+  );
+  // Repeated pruning does not defer cleanup of a newly expired receipt.
+  store.pruneTerminalReceipts(now + 1);
+  assert.deepEqual(
+    Array.from(
+      storage.sql.exec(
+        "SELECT command_version_id FROM exact_review_command_receipts ORDER BY command_version_id",
+      ),
+      (row) => row.command_version_id,
+    ),
+    ["pending:-1", "pending:0", "pending:1"],
+  );
+});
+
 test("signed command intake rejects nonpublic visibility before storing command content", async () => {
   for (const outcome of ["terminal", "retryable"] as const) {
     const storage = new MemoryDurableStorage();
@@ -125,7 +171,6 @@ test("signed command intake rejects nonpublic visibility before storing command 
       "exact_review_command_intakes",
       "exact_review_command_receipts",
       "exact_review_command_watermarks",
-      "exact_review_command_bay_journeys",
       "exact_review_item_revisions",
     ]) {
       assert.equal(

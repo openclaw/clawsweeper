@@ -42,7 +42,7 @@ import { createReviewRuntime } from "../dist/clawsweeper-review-runtime.js";
 import { runText } from "../dist/command.js";
 import { readReviewGit, reviewMergeBase } from "../dist/pr-review-evidence.js";
 import { ReviewSourcePreparationError } from "../dist/review-source-preparation.js";
-import { validationRecoveryRequired } from "../dist/repair/validation-recovery.js";
+import { validationRecoveryRequired } from "../dist/validation-recovery.js";
 import { withMockGh } from "./helpers.ts";
 
 const { withGitHubRun } = gitHubRuntime;

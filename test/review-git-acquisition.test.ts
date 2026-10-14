@@ -15,7 +15,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import test from "node:test";
-import { runGitAcquisitionResult } from "../dist/repair/command-runner.js";
+import { runGitAcquisitionResult } from "../dist/git-acquisition.js";
 import { forceTerminateProcessTree } from "../dist/repair/contained-command-worker.js";
 
 const maxBuffer = 1024 * 1024;
@@ -315,7 +315,7 @@ test("relative acquisition cwd is resolved once before both spawn levels", () =>
           "--input-type=module",
           "-e",
           `
-import { runGitAcquisitionResult } from ${JSON.stringify(new URL("../dist/repair/command-runner.js", import.meta.url).href)};
+import { runGitAcquisitionResult } from ${JSON.stringify(new URL("../dist/git-acquisition.js", import.meta.url).href)};
 const result = runGitAcquisitionResult(["fetch"], {
   cwd: "target", maxBuffer: 1048576, timeoutMs: 3000,
   env: { ...process.env, GIT_BIN: process.execPath,

@@ -554,6 +554,43 @@ test("failed review retry eligibility treats Codex rate limits as infrastructure
   assert.equal(isInfrastructureFailedReview(markdown), true);
 });
 
+test("failed review retry matches only the provider model-capacity diagnostic", () => {
+  const retryOptions = {
+    liveState: "open",
+    liveHeadSha: "abc123def456",
+    now: Date.parse("2026-06-05T20:00:00Z"),
+    maxAttempts: 2,
+    cooldownMs: 45 * 60 * 1000,
+  };
+  const capacity = failedReviewReport().replace(
+    "Codex worker timed out after 600000ms with ETIMEDOUT.",
+    "Codex final output did not end with its newline frame. ERROR: Selected model is at capacity. Please try a different model.",
+  );
+  assert.equal(isInfrastructureFailedReview(capacity), true);
+  assert.equal(
+    failedReviewRetryEligibility({ markdown: capacity, ...retryOptions }).action,
+    "planned_failed_review_retry",
+  );
+
+  // Reports carry the item title in front matter and in the heading; even the full
+  // provider diagnostic as a title must not make a permanent failure retryable.
+  for (const title of ["Selected model is at capacity", "Service is at capacity"]) {
+    const titled = failedReviewReport({ title })
+      .replace("Render work plans", title)
+      .replace("Codex review failed: timeout.", "Codex review failed: codex execution failed.")
+      .replace("- **failure reason:** timeout", "- **failure reason:** codex execution failed")
+      .replace("Codex worker timed out after 600000ms with ETIMEDOUT.", "Codex execution failed.");
+    assert.match(titled, new RegExp(`^title: .*${title}`, "m"));
+    assert.match(titled, new RegExp(`^# .*${title}`, "m"));
+    assert.equal(isInfrastructureFailedReview(titled), false, title);
+    assert.equal(
+      failedReviewRetryEligibility({ markdown: titled, ...retryOptions }).action,
+      "skipped_non_infrastructure_failure",
+      title,
+    );
+  }
+});
+
 test("failed review retry eligibility treats checkout inspection failures as infrastructure", () => {
   const markdown = failedReviewReport({ review_checkout_inspection_failed: true })
     .replace("Codex review failed: timeout.", "Codex review failed: codex execution failed.")

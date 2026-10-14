@@ -181,6 +181,13 @@ test("Codex failure logs distinguish provider throttling from content output fai
     }),
     "provider_throttle",
   );
+  assert.equal(
+    codexFailureLogKindForTest(
+      1,
+      "Codex review failed for #42: Codex final output did not end with its newline frame.\nERROR: Selected model is at capacity. Please try a different model.",
+    ),
+    "provider_throttle",
+  );
   assert.equal(codexFailureLogKindForTest(1, "Codex wrote invalid JSON"), "content_or_output");
   assert.equal(codexFailureLogKindForTest(null, "Codex review timed out."), "timeout");
   // Captured model output is evidence only. It does not change the log kind.
@@ -1624,14 +1631,22 @@ process.exit(1);
   });
 }
 
-for (const [kind, failure] of [
+for (const [label, kind, failure, message] of [
   [
     "capacity",
+    "capacity",
     "stream disconnected: Rate limit reached for secret-model-for-test (for limit test) on tokens per min (TPM). Please try again in 1ms.",
+    /Rate limit reached/,
   ],
-  ["network", "stream disconnected before completion: fetch failed"],
+  [
+    "model capacity",
+    "capacity",
+    "Selected model is at capacity. Please try a different model.",
+    /at capacity/,
+  ],
+  ["network", "network", "stream disconnected before completion: fetch failed", /fetch failed/],
 ] as const)
-  test(`runCodex leaves exhausted ${kind} failures with native trailers to the durable queue`, () => {
+  test(`runCodex leaves exhausted ${label} failures with native trailers to the durable queue`, () => {
     const root = mkdtempSync(tmpPrefix);
     const openclawDir = join(root, "openclaw");
     const workDir = join(root, "codex-work");
@@ -1703,7 +1718,7 @@ ${fakeManagedDecision}
           }),
         (error: Error & { retryable?: boolean }) => {
           assert.equal(error.retryable, true);
-          assert.match(error.message, kind === "capacity" ? /Rate limit reached/ : /fetch failed/);
+          assert.match(error.message, message);
           assert.doesNotMatch(error.message, /contributor-quoted-model/);
           const decision = reportedReviewFailure(error);
           assert.match(decision.summary, new RegExp(`transport failure \\(${kind}\\)`));

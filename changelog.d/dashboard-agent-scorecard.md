@@ -1,0 +1,1 @@
+- Add an agent performance view through the public dashboard Worker that separates repeated claims, pending publications and retained acknowledgements from verified outcomes, and identifies missing quality, human-effort, latency and cost evidence.

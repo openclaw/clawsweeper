@@ -1,4 +1,6 @@
-import { existsSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { runLocalRangeReview } from "./clawsweeper-local-command.js";
+import { runPreparedReviewItem, writePreparedReviewReport } from "./clawsweeper-review-item.js";
+import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { oversizedPrSourceSnapshot } from "./clawsweeper-oversized-pr-freshness.js";
 import { reportReviewDecision } from "./report-review-decision.js";
 import {
@@ -14,32 +16,30 @@ import {
 import { ACTION_EVENT_REASON_CODES, ACTION_EVENT_STATUSES } from "./action-ledger.js";
 import { AgentInputScanError, agentInputScanFailureExitCode } from "./agent-input-scan.js";
 import { serializeReviewContext } from "./agent-input-scan-fixtures.js";
-import { reviewNetworkCapability } from "./agent-runner.js";
+
 import type { Args } from "./clawsweeper-args.js";
-import { boolArg, stringArg } from "./clawsweeper-args.js";
-import { localRangeReviewPreflight } from "./review-preflight.js";
+import { boolArg } from "./clawsweeper-args.js";
+
 import {
   isBulkFilerExemptRepositoryPermission as isVerifiedMaintainerRepositoryPermission,
   isMaintainerAuthorAssociation,
   labelNames,
   verifiedMaintainerAuthorAssociation,
 } from "./clawsweeper-item-policy.js";
-import { mediaProofRuntimeHints, prepareMediaProofArtifacts } from "./clawsweeper-media-proof.js";
+import { prepareMediaProofArtifacts } from "./clawsweeper-media-proof.js";
 import type {
   AcquiredReviewStartLease,
   BulkFilerCountCache,
   BulkFilerRepositoryPermissionCache,
-  Decision,
   FileModeSnapshot,
   Item,
   ItemContext,
-  PreparedMediaProof,
   ReviewActionLedger,
 } from "./clawsweeper-types.js";
 import { PUBLIC_CODEX_MODEL } from "./codex-env.js";
 import { codexItemProfile } from "./codex-item-profile.js";
 import { UserFacingCommandError } from "./command.js";
-import { LOCAL_REVIEW_WEB_SEARCH_CONFIG } from "./commit-sweeper.js";
+
 import { isReviewedPrActivityCursor } from "./review-activity-cursor.js";
 import { previousClawSweeperReviewDigest } from "./clawsweeper-review-comments.js";
 import {
@@ -61,27 +61,24 @@ import { reviewContentCacheHit } from "./scheduler-policy.js";
 import type { CreateReviewCommandWorkflowDependencies } from "./clawsweeper-review-command-dependencies.js";
 import { prepareReviewCommand } from "./clawsweeper-review-preparation.js";
 import { parsePrHydrationSnapshot } from "./pr-hydration-snapshot.js";
-import { createCommitPullResolver, pullRequestProvenanceEvidence } from "./pr-review-provenance.js";
-import { pullRequestHistoryCoverage } from "./pr-review-history.js";
+import { createCommitPullResolver } from "./pr-review-provenance.js";
+
 import { ReviewSourcePreparationError } from "./review-source-preparation.js";
-import { validationRecoveryRequired } from "./repair/validation-recovery.js";
+import { validationRecoveryRequired } from "./validation-recovery.js";
 import {
-  assertActiveReviewOutputBudget,
   assertReviewOutputFilePeak,
-  assertReviewReportsBudget,
-  assertTransientReviewOutputBudget,
   configureReviewOutputItems,
+  createReviewOutputWriter,
+  finalizeReviewCommandOutput,
   emitReviewOutput,
-  finalizeSummaryReviewOutput,
   pruneReviewOutputItem,
   produceReviewOutput,
   reviewOutputMediaLimits,
   writeReviewOutput,
-  type ReviewOutputResult,
 } from "./review-output-policy.js";
 import { asRecord, nonBlankStringOrUndefined } from "./value-coerce.js";
 import { frontMatterValue, replaceFrontMatterValue } from "./report-front-matter.js";
-import { reviewStatusForDecision } from "./clawsweeper-report-document.js";
+
 import type { CodexFailureLogKind } from "./clawsweeper-review-runtime.js";
 
 function reviewStartLeaseCommentUpdatedAt(
@@ -150,14 +147,9 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
   const {
     actionLedgerFailureDisposition,
     actionLedgerItemKey,
-    attachFixedPullRequest,
-    verifyRegressionProvenance,
     authorIssueCountInBulkFilerWindow,
-    buildReviewPrompt,
-    reviewEnvironment,
     bulkFilerPolicyInvalidatesCachedReview,
     bulkFilerRepositoryPermission,
-    codexReviewFailure,
     codexReviewFailureRetryable,
     collectItemContext,
     commentId,
@@ -185,7 +177,6 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
     itemSnapshotHash,
     liveClawSweeperReviewDigest,
     localExactReviewHistoryPath,
-    localRangeHistoryApplies,
     makeTreeReadOnly,
     materializePullRequestReviewTree,
     markdownFor,
@@ -203,7 +194,6 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
     reviewMutationRunner,
     reviewStructuralPullStateFromContext,
     runReviewCheckoutInspection,
-    runCodex,
     selectCandidates,
     startReviewActionLedger,
     startReviewActionLedgerItem,
@@ -219,6 +209,21 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
       console.log(
         "Export an advisory PR-body block from the native review. No GitHub writes. Requires a clean committed range.",
       );
+      return;
+    }
+    if (boolArg(args.local_range)) {
+      const resolveProvenancePull = createCommitPullResolver((repo, sha, deadlineAt) =>
+        dependencies.ghJson(
+          [
+            "api",
+            `repos/${repo}/commits/${sha}/pulls`,
+            "-H",
+            "Accept: application/vnd.github+json",
+          ],
+          { deadlineAt },
+        ),
+      );
+      runLocalRangeReview(args, { ...dependencies, resolveProvenancePull });
       return;
     }
     const publicationPolicy = process.env.EXACT_REVIEW_DECISION
@@ -239,7 +244,6 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
     const preparation = prepareReviewCommand(args, dependencies);
     const {
       prAdmissionInput,
-      localRange,
       localOnly,
       itemNumber,
       itemNumbers,
@@ -256,8 +260,6 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
       timeoutMs,
       expectedSourceRevision,
       allowClosed,
-      localRangeData,
-      localReviewHistoryPath,
       coordinationHeldPath,
       shardIndex,
       shardCount,
@@ -276,54 +278,20 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
       retainedReviewOutput,
       cleanupReviewOutput,
     } = preparation;
-    const localOutputResults: ReviewOutputResult[] = [];
+    const {
+      results: localOutputResults,
+      writeReport: writeOutputReport,
+      assertBudget: assertCurrentOutputBudget,
+    } = createReviewOutputWriter(preparation);
     let outputEmitted = false;
     let commandError: unknown;
     let finalizationError: unknown;
     let reviewCompleted = false;
-    let preflightDecision: Decision | undefined;
-    const writeOutputReport = (item: Item, reportPath: string, markdown: string): void => {
-      const next = [...localOutputResults];
-      if (localOnly) {
-        const result = {
-          itemNumber: item.number,
-          path: outputSelection.retention === "none" ? null : reportPath,
-          markdown,
-        };
-        const prior = next.findIndex((candidate) => candidate.itemNumber === item.number);
-        if (prior >= 0) next[prior] = result;
-        else next.push(result);
-        // None-mode files are pruned, but the stdout collection remains live.
-        // Reject the prospective report before writing it or exposing it in JSON.
-        assertReviewReportsBudget(next, outputSelection.retention);
-      }
-      writeReviewOutput(outputBudget, reportPath, markdown, "report");
-      if (localOnly) localOutputResults.splice(0, localOutputResults.length, ...next);
-    };
     const emitLocalOutput = (status: "completed" | "failed"): void => {
       if (!localOnly || outputEmitted) return;
       if (!localReviewOutputHasPayload(status, localOutputResults.length)) return;
-      const preflight =
-        boolArg(args.preflight) && localRangeData
-          ? localRangeReviewPreflight({
-              targetDir: openclawDir,
-              baseRef: stringArg(args.base, "") || "origin/main",
-              repo: localRangeData.item.repo,
-              base: localRangeData.baseSha,
-              head: localRangeData.headSha,
-              decision: preflightDecision,
-            })
-          : undefined;
-      emitReviewOutput(outputSelection, status, localOutputResults, preflight);
-      if (preflight?.block === null) process.exitCode = 1;
+      emitReviewOutput(outputSelection, status, localOutputResults);
       outputEmitted = true;
-    };
-    const assertCurrentOutputBudget = (): void => {
-      if (outputSelection.retention === "none") {
-        assertTransientReviewOutputBudget(artifactDir);
-      } else if (retainedReviewOutput) {
-        assertActiveReviewOutputBudget(retainedReviewOutput);
-      }
     };
     let { git } = preparation;
     const readonlyModeSnapshots: FileModeSnapshot[] = [];
@@ -399,11 +367,9 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
         console.error("");
         console.error("Loading review item");
       }
-      const { candidates, scannedPages } = localRangeData
-        ? { candidates: [localRangeData.item], scannedPages: 0 }
-        : prAdmissionInput
-          ? { candidates: [prAdmissionInput.item], scannedPages: 0 }
-          : selectCandidates(selectionOptions);
+      const { candidates, scannedPages } = prAdmissionInput
+        ? { candidates: [prAdmissionInput.item], scannedPages: 0 }
+        : selectCandidates(selectionOptions);
       const itemOutputBudget = configureReviewOutputItems(
         outputBudget,
         Math.max(1, candidates.length),
@@ -595,7 +561,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
         startReviewActionLedgerItem(reviewLedger, item);
         dependencies.activeReviewMutationRunner = reviewMutationRunner(reviewLedger, item);
         const pullObservedAt = prAdmissionInput ? prAdmissionInput.observedAt : new Date().toISOString();
-        const pullRequestPayload = item.kind === "pull_request" && !localRangeData
+        const pullRequestPayload = item.kind === "pull_request"
           ? prAdmissionInput?.pull ?? asRecord(dependencies.ghJson(["api", `repos/${item.repo}/pulls/${item.number}`]))
           : undefined;
         if (pullRequestPayload) {
@@ -670,11 +636,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
             `[review] ${new Date().toISOString()} shard=${shardIndex}/${shardCount} start #${item.number} (${completed + 1}/${candidates.length})`,
           );
         }
-        const itemLocalReviewHistoryPath = localRangeData
-          ? outputSelection.retention === "debug"
-            ? localReviewHistoryPath
-            : null
-          : localOnly && outputSelection.retention === "debug"
+        const itemLocalReviewHistoryPath = localOnly && outputSelection.retention === "debug"
             ? localExactReviewHistoryPath(artifactDir, item.repo, item.number)
             : null;
         let previousLocalReviewCommentBody =
@@ -684,7 +646,6 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
         if (
           !previousLocalReviewCommentBody &&
           localOnly &&
-          !localRangeData &&
           existsSync(join(artifactDir, reportFileName(item.repo, item.number)))
         ) {
           const bootstrapReport = readFileSync(
@@ -697,7 +658,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
             renderReviewCommentFromReport,
           );
         }
-        const existingPriorReview = localRangeData ? null : existingReview(item, itemsDir);
+        const existingPriorReview = existingReview(item, itemsDir);
         const lastFullReviewBulkFilerState = frontMatterValue(
           existingPriorReview?.markdown ?? "",
           "last_full_review_bulk_filer_detected",
@@ -791,7 +752,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
         let structuralRecord: ReviewStructuralRecord | null = null;
         let preHydrationStructuralRecord: ReviewStructuralRecord | null = null;
         let hydratedStructuralAnchor: ReviewStructuralRecord | null = null;
-        if (!localRangeData) {
+        {
           structuralCacheChecks += 1;
           const structuralProbeDecision = reviewStructuralCacheProbeDecision({
             review: cacheEligibleReview,
@@ -1096,10 +1057,8 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
           if (!acquiredReviewLease) continue;
         }
         const contextStartedAt = Date.now();
-        if (!localRangeData) hydrationRuns += 1;
-        const context = localRangeData
-          ? localRangeData.context
-          : collectItemContext(item, {
+        hydrationRuns += 1;
+        const context = collectItemContext(item, {
               pullRequestPayload,
               fullTimelineForRelations: true,
               reviewCacheDigest: true,
@@ -1114,7 +1073,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
         diagnosticSourceSha = item.kind === "pull_request"
           ? pullHeadShaFromContext(context) ?? undefined
           : context.sourceRevision ?? diagnosticSourceSha;
-        if (!localRangeData && item.kind === "pull_request") {
+        if (item.kind === "pull_request") {
           const headSha = pullHeadShaFromContext(context);
           if (!headSha || !preparePullRequestReviewTree(headSha)) {
             throw new ReviewSourcePreparationError(
@@ -1130,14 +1089,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
           const hasCompletedLocalReview =
             previousLocalReview.completedReviewCycles > 0 &&
             /^[0-9a-f]{40}$/iu.test(previousLocalReview.reviewedSha ?? "");
-          const appliesToRange =
-            !localRangeData ||
-            localRangeHistoryApplies(
-              openclawDir,
-              previousLocalReview?.reviewedSha ?? null,
-              localRangeData.headSha,
-            );
-          if (hasCompletedLocalReview && appliesToRange) {
+          if (hasCompletedLocalReview) {
             context.previousClawSweeperReview = previousLocalReview;
           } else {
             previousLocalReviewCommentBody = "";
@@ -1185,7 +1137,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
           acquiredReviewLease = claim.lease;
           acquiredReviewLeases.push({ itemNumber: item.number, lease: claim.lease });
         }
-        if (!localRangeData && contextItemUpdatedAt && preHydrationStructuralRecord) {
+        if (contextItemUpdatedAt && preHydrationStructuralRecord) {
           structuralCacheRevalidations += 1;
           const structuralRevalidationStartedAt = Date.now();
           try {
@@ -1304,7 +1256,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
           acquiredReviewLease = acquireReviewStartLease(() => context.sourceRevision ?? "");
           if (!acquiredReviewLease) continue;
         }
-        if (!localRangeData && item.kind === "issue" && acquiredReviewLease) {
+        if (item.kind === "issue" && acquiredReviewLease) {
           try {
             const revalidatedPreviousReview = extractLatestClawSweeperReview(
               fetchIssueReviewComments(item.number),
@@ -1350,7 +1302,6 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
           context.previousClawSweeperReview,
         );
         const previousReviewIdentityChanged =
-          !localRangeData &&
           (!expectedPreviousReviewDigest ||
             !currentPreviousReviewDigest ||
             expectedPreviousReviewDigest !== currentPreviousReviewDigest);
@@ -1436,188 +1387,35 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
           pruneItemOutput(reportPath);
           continue;
         }
-        // --local-range is a pre-PR LOCAL code review — it has no telegram-visible-proof to
-        // capture, and prepareMediaProofArtifacts would host-side download media URLs and transcode
-        // videos in the synthetic body (commit message / --body-file). Skip it entirely for
-        // local-range: no host download or transcode of body-supplied URLs.
-        const preparedMediaProof: PreparedMediaProof = localRangeData
-          ? { manifestPath: null, summaryPath: null, artifacts: [] }
-          : prepareMediaProofArtifacts(
-              context,
-              proofScratchDir,
-              undefined,
-              reviewOutputMediaLimits(outputBudget, proofScratchDir),
-              writeOutputMetadata,
-            );
-        const reviewEnv = reviewEnvironment(sandboxMode, localOnly);
-        // The review sandbox cannot fetch old blobs: make the changed files'
-        // history local first, so host blame and the reviewer both read it.
-        const historyCoverage =
-          item.kind === "pull_request"
-            ? pullRequestHistoryCoverage({ targetDir: reviewOpenclawDir, context, mainSha: git.mainSha })
-            : undefined;
-        if (historyCoverage) {
-          console.error(
-            `[review] ${new Date().toISOString()} shard=${shardIndex}/${shardCount} history-prefetch=${historyCoverage.status} #${item.number} paths=${historyCoverage.changedPaths} renames=${historyCoverage.renames.length} blobs=${historyCoverage.blobs} fetched=${historyCoverage.fetched} truncated=${historyCoverage.truncated.length} ms=${historyCoverage.elapsedMs}`,
-          );
-        }
-        // Host-side blame and GitHub reads, recorded as evidence before review.
-        const provenanceEvidence =
-          item.kind === "pull_request"
-            ? pullRequestProvenanceEvidence({
-                targetDir: reviewOpenclawDir,
-                repo: item.repo,
-                context,
-                resolvePull: resolveProvenancePull,
-              })
-            : undefined;
-        const prompt = buildReviewPrompt(
-          item,
-          context,
-          git,
-          additionalPrompt,
-          {
-            ...mediaProofRuntimeHints(proofScratchDir, preparedMediaProof),
-            targetDir: reviewOpenclawDir,
-            ...reviewNetworkCapability(sandboxMode, reviewEnv),
-            ...(provenanceEvidence ? { provenanceEvidence } : {}),
-            ...(historyCoverage ? { historyCoverage } : {}),
-          },
+        const preparedMediaProof = prepareMediaProofArtifacts(
+          context, proofScratchDir, undefined,
+          reviewOutputMediaLimits(outputBudget, proofScratchDir), writeOutputMetadata,
         );
-        diagnosticPrompt = prompt.text;
-        const snapshotHash = itemSnapshotHash(item, context);
-        let decision: Decision;
-        let codexElapsedMs = 0;
-        let codexFailure: { error: unknown; logKind: CodexFailureLogKind } | null = null;
-        let codexFailureRetryable = false;
-        let codexFailureDisposition: ReturnType<typeof actionLedgerFailureDisposition> | null =
-          null;
-        const codexStartedAt = Date.now();
-        try {
-          if (humanLocalReview) {
-            console.error("");
-            console.error("Running Codex review");
-            console.error(`  timeout: ${displayDurationMs(timeoutMs)}`);
-            if (outputSelection.retention === "none") {
-              console.error("  retained output: none");
-            } else {
-              console.error(
-                `  stdout: ${displayPath(join(codexWorkDir, `${item.number}.1.codex.stdout.log`))}`,
-              );
-              console.error(
-                `  stderr: ${displayPath(join(codexWorkDir, `${item.number}.1.codex.stderr.log`))}`,
-              );
-            }
-          }
-          decision = produceReviewOutput(outputBudget, {
-            paths: [
-              "prompt.md", "json", "1.codex.stdout.log", "1.codex.stderr.log", "review-thread.json",
-            ].map((suffix) => join(codexWorkDir, `${item.number}.${suffix}`)),
-            maxBytes: itemOutputBudget.promptFileBytes + itemOutputBudget.resultFileBytes +
-              itemOutputBudget.streamFileBytes * 2 + itemOutputBudget.threadStateBytes,
-            maxFiles: 5,
-          }, () => runCodex({
-            item,
-            context,
-            git,
-            model,
-            openclawDir: reviewOpenclawDir,
-            reviewTreeRoot: reviewTreesDir,
-            reasoningEffort: itemCodexProfile.reasoningEffort,
-            sandboxMode,
-            serviceTier: itemCodexProfile.serviceTier,
-            forcedLoginMethod,
-            preserveCodexAuth: localOnly,
-            timeoutMs,
-            workDir: codexWorkDir,
-            additionalPrompt,
-            proofScratchDir,
-            prompt: prompt.text,
-            reviewEnv,
-            promptFileBytes: itemOutputBudget.promptFileBytes,
-            resultFileBytes: itemOutputBudget.resultFileBytes,
-            streamFileBytes: itemOutputBudget.streamFileBytes,
-            quietLogs: humanLocalReview,
-            ...(localRange ? { extraCodexConfig: [LOCAL_REVIEW_WEB_SEARCH_CONFIG] } : {}),
-          }));
-        } catch (error) {
-          if (error instanceof AgentInputScanError) throw error;
-          codexFailures += 1;
-          codexFailureRetryable = codexReviewFailureRetryable(error);
-          codexFailureDisposition = actionLedgerFailureDisposition(error);
-          const failure = codexReviewFailure(error);
-          decision = failure.decision;
-          codexFailure = { error, logKind: failure.logKind };
-        } finally {
-          codexElapsedMs = Date.now() - codexStartedAt;
-        }
-        decision = attachFixedPullRequest(
-          decision,
-          item,
-          context,
-          existingPriorReview?.markdown,
-        );
-        decision = verifyRegressionProvenance(decision, item, context, reviewOpenclawDir, git);
-        const runtime = {
-          model: PUBLIC_CODEX_MODEL,
-          reasoningEffort: itemCodexProfile.reasoningEffort,
-          sandboxMode,
-          serviceTier: itemCodexProfile.serviceTier,
-          ...prompt.telemetry,
-          contextElapsedMs,
-          codexElapsedMs,
-        };
-        const action = reviewActionForDecision({ item, decision, git, runtime });
+        const { decision, runtime, codexFailure, codexFailureRetryable, snapshotHash } = runPreparedReviewItem({
+          item, context, git, model, sandboxMode, localOnly, localRange: false,
+          reviewOpenclawDir, reviewTreesDir, additionalPrompt, proofScratchDir,
+          preparedMediaProof, resolveProvenancePull, shardIndex, shardCount, timeoutMs,
+          humanLocalReview, outputSelection, outputBudget, itemOutputBudget, codexWorkDir,
+          forcedLoginMethod, itemCodexProfile, existingPriorReview, contextElapsedMs,
+          onPrompt: (prompt) => { diagnosticPrompt = prompt; },
+        }, dependencies);
+        const codexElapsedMs = runtime.codexElapsedMs;
+        const codexFailureDisposition = codexFailure
+          ? actionLedgerFailureDisposition(codexFailure.error)
+          : null;
+        if (codexFailure) codexFailures += 1;
         structuralRecord = refreshStructuralRecordForVerdict();
-        const reportPath = join(artifactDir, reportFileName(item.repo, item.number));
-        const reportMarkdown = hostReport(updateBulkFilerDetectedFrontMatter(markdownFor({
-            item,
-            context,
-            decision,
-            git,
-            action,
-            reviewMode: "propose",
-            snapshotHash,
-            contentDigest,
-            reviewPolicy,
-            runtime,
-            structuralRecord,
-            ...(acquiredReviewLease
-              ? {
-                  reviewLeaseOwner: acquiredReviewLease.owner,
-                  reviewLeaseCommentId: acquiredReviewLease.commentId,
-                }
-              : {}),
-        }), bulkFilerDetection));
-        writeOutputReport(item, reportPath, reportMarkdown);
-        if (localRangeData) preflightDecision = decision;
-        if (codexFailure) {
-          recordFailureDiagnostics(codexFailure.error, codexFailure.logKind);
-        }
-        if (itemLocalReviewHistoryPath) {
-          const nextLocalReviewCommentBody =
-            reviewStatusForDecision(decision) === "complete"
-              ? renderReviewCommentFromReport(
-                  reportMarkdown,
-                  "none",
-                  previousLocalReviewCommentBody
-                    ? { previousReviewCommentBody: previousLocalReviewCommentBody }
-                    : undefined,
-                )
-              : previousLocalReviewCommentBody;
-          if (nextLocalReviewCommentBody) {
-            if (localRangeData) {
-              // Cross-run history belongs to the checkout, not this output run.
-              // Keep that owner/path while bounding the generated replacement.
-              if (Buffer.byteLength(nextLocalReviewCommentBody) > itemOutputBudget.metadataBytes) {
-                throw new UserFacingCommandError("Local review history exceeded its byte limit.");
-              }
-              writeFileSync(itemLocalReviewHistoryPath, nextLocalReviewCommentBody, "utf8");
-            } else {
-              writeOutputMetadata(itemLocalReviewHistoryPath, nextLocalReviewCommentBody);
-            }
-          }
-        }
+        const { action, reportPath } = writePreparedReviewReport({
+          item, context, decision, git, runtime, artifactDir, snapshotHash, contentDigest,
+          reviewPolicy, structuralRecord, acquiredReviewLease,
+          itemLocalReviewHistoryPath, previousLocalReviewCommentBody,
+          localRange: false, metadataBytes: itemOutputBudget.metadataBytes,
+          writeOutputReport, writeOutputMetadata,
+          onReport: () => {
+            if (codexFailure) recordFailureDiagnostics(codexFailure.error, codexFailure.logKind);
+          },
+          transformReport: (markdown) => hostReport(updateBulkFilerDetectedFrontMatter(markdown, bulkFilerDetection)),
+        }, dependencies);
         recordReviewLogPublication({
           ledger: reviewLedger,
           item,
@@ -1825,37 +1623,14 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
       }
       throw error;
     } finally {
-      try {
-        restoreTreeModes(readonlyModeSnapshots);
-        if (outputSelection.retention === "summary") {
-          finalizeSummaryReviewOutput(
-            retainedReviewOutput!,
-            localOutputResults.flatMap((result) => (result.path ? [result.path] : [])),
-          );
-        }
-      } catch (error) {
-        if (commandError === undefined) finalizationError = error;
-        else
-          console.error(
-            `[review] summary output cleanup failed after command failure: ${
-              error instanceof Error ? error.message : String(error)
-            }`,
-          );
-      } finally {
-        try {
-          cleanupReviewOutput(commandError);
-        } catch (error) {
-          if (commandError === undefined && finalizationError === undefined) {
-            finalizationError = error;
-          } else {
-            console.error(
-              `[review] private output cleanup failed after an earlier failure: ${
-                error instanceof Error ? error.message : String(error)
-              }`,
-            );
-          }
-        }
-      }
+      finalizationError = finalizeReviewCommandOutput({
+        restoreTreeModes: () => restoreTreeModes(readonlyModeSnapshots),
+        outputSelection,
+        retainedReviewOutput,
+        results: localOutputResults,
+        cleanupReviewOutput,
+        commandError,
+      });
     }
     if (finalizationError !== undefined) throw finalizationError;
     if (reviewCompleted) emitLocalOutput("completed");

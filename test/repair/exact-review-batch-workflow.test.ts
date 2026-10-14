@@ -9,6 +9,7 @@ import {
   readFileSync,
   rmSync,
   symlinkSync,
+  writeFileSync,
 } from "node:fs";
 import { runInNewContext } from "node:vm";
 import { tmpdir } from "node:os";
@@ -683,7 +684,7 @@ test("batch workflow signs queue ownership, isolates item failures, and commits 
   assert.doesNotMatch(source, /lifecycle\/command-ack\/attempt/);
   assert.doesNotMatch(source, /repair:update-command-status/);
   assert.match(source, /post-effect --route enqueue --payload/);
-  assert.match(source, /source_drift_requeue/);
+  assert.match(source, /exact-review-queue-request\.ts enqueue source-drift\)/);
   assert.match(source, /state-receipt\.json/);
   assert.match(source, /receipt_outcome/);
   assert.match(source, /"permanent_failure"/);
@@ -761,6 +762,97 @@ test("legacy batch proof reviews use the normal verdict router; failure recovery
       assert.doesNotMatch(result.stdout, /router_called/);
       assert.match(result.stdout, /outcome=not_required/);
     }
+  }
+});
+
+test("batch and direct publishers requeue one producer generation under one delivery id", () => {
+  const run =
+    workflow.jobs.publish!.steps.find(
+      (step) => step.name === "Finalize healthy members under a fenced heartbeat",
+    )?.run ?? "";
+  const start = run.indexOf('if [ "$receipt_outcome" = "superseded" ]; then');
+  const end = run.indexOf(
+    'if [ -n "$lifecycle_router_outcome" ] || [ -n "$lifecycle_terminal" ]; then',
+    start,
+  );
+  assert.ok(start >= 0 && end > start);
+  const producerDecision = {
+    targetRepo: "openclaw/openclaw",
+    targetBranch: "main",
+    itemNumber: 710,
+    itemKind: "issue",
+    sourceEvent: "issues",
+    sourceAction: "re_review",
+    supersedesInProgress: false,
+    commandStatusMarker: "<!-- clawsweeper-command-status:710:re_review:command-1 -->",
+    sourceCommentId: 1,
+    sourceCommentUpdatedAt: "2026-10-13T16:32:00Z",
+    commandBodyDigest: "a".repeat(64),
+    commandOrigin: "hosted_webhook",
+    sourceCommentVerified: true,
+  };
+  const member = {
+    itemKey: "openclaw/openclaw#710@publish:7100:1",
+    revision: 3,
+    claimGeneration: 2,
+    decision: {
+      ...producerDecision,
+      sourceAction: "exact_review_artifact_publish",
+      publication: { producerRunId: "7100", producerRunAttempt: 1, producerDecision },
+    },
+  };
+  const root = mkdtempSync(join(tmpdir(), "batch-source-drift-"));
+  try {
+    const outcomePath = join(root, "outcome.json");
+    const capture = join(root, "payload.json");
+    writeFileSync(outcomePath, JSON.stringify({ disposition: { requeueLatestExpected: true } }));
+    const batch = spawnSync(
+      "bash",
+      [
+        "-c",
+        [
+          "set -euo pipefail",
+          'item="$MEMBER"; outcome_path="$OUTCOME_PATH"; outcome_kind=eligible',
+          'receipt_outcome=accepted; source_action=re_review; publication_policy=""',
+          "lifecycle_router_outcome=; lifecycle_terminal=",
+          'pnpm() { cp "$8" "$CAPTURE"; printf \'{"ok":true,"queued":true}\'; }',
+          run.slice(start, end),
+          'printf "%s" "$lifecycle_terminal"',
+        ].join("\n"),
+      ],
+      {
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          MEMBER: JSON.stringify(member),
+          OUTCOME_PATH: outcomePath,
+          CAPTURE: capture,
+        },
+      },
+    );
+    assert.equal(batch.status, 0, batch.stderr);
+    assert.equal(batch.stdout, "requeue");
+    // The direct publisher's "Queue fresh review after source drift" body.
+    const direct = spawnSync(
+      "node",
+      ["src/repair/exact-review-queue-request.ts", "enqueue", "source-drift"],
+      {
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          CLAIM_DECISION: JSON.stringify(producerDecision),
+          PRODUCER_RUN_ID: "7100",
+          PRODUCER_RUN_ATTEMPT: "1",
+        },
+      },
+    );
+    assert.equal(direct.status, 0, direct.stderr);
+    const body = JSON.parse(readFileSync(capture, "utf8"));
+    assert.deepEqual(body, JSON.parse(direct.stdout));
+    assert.equal(body.delivery_id, "publisher-source-drift:7100:1");
+    assert.equal(body.decision.sourceAction, "source_drift_requeue");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
   }
 });
 
