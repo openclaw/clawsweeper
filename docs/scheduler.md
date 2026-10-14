@@ -254,11 +254,16 @@ set by admission or lease acquisition.
 
 Maintainer-authored and `maintainer`-labeled items require an explicit review
 request. Automatic intake, scheduled selection, claimed reviews, and hosted
-publication apply this policy. A verified request stays open until its review
-publishes: when the item changes during that review, the source-drift retry
-still carries the request's command status and continues the same request.
-A retry without that status, a push after the review publishes, and a
-scheduled pass need a new request. Existing autofix/automerge labels remain opt-ins.
+publication apply this policy. A verified request stays open while the queue
+finishes answering it: when the item changes before the request's review
+applies, the queue requeues that generation in place, keeping the command status
+and verification, and the retry continues the same request. A source-drift
+requeue that finds no queued item keeps the command status but not the
+verification, so a finished or replaced request cannot authorize another
+review. The batch publisher's requeue of a deferred publication arrives that
+way today, so a maintainer item there needs a new request. A push after the
+request is answered and a scheduled pass also need a new request. Existing
+autofix/automerge labels remain opt-ins.
 The target dispatcher and direct webhook share a single reminder identity per
 item, posted only when opened or ready for review. Edits, pushes, and sweeps do
 not post reminders. Request reviews only when needed, after completing work and

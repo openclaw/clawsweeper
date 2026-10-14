@@ -39,9 +39,10 @@ not split reports into issue/PR subtrees.
   `@clawsweeper review` request unless an existing automation opt-in label is set.
   Finish the work and validation first; request review only when it is needed.
   Agents must not request reviews automatically or repeat a queued/running request.
-  An explicit review request stays open until its review publishes: a
-  source-drift retry that still carries the request's command status continues
-  that request. Once the review publishes, later changes need a new request.
+  An explicit review request stays open while the queue requeues its own review
+  in place after source drift; that retry continues the request. A finished or
+  replaced request, later changes after the answer, and scheduled passes need a
+  new request.
 - Apply lane mutates GitHub by syncing the durable Codex review comment and then
   closing only unchanged, high-confidence proposals.
 - Repository-specific rules live in `src/repository-profiles.ts`; ClawHub apply

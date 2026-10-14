@@ -10,6 +10,7 @@ import {
 } from "../dashboard/exact-review-review-loop.ts";
 import { summarizeDashboardHealth } from "../dashboard/dashboard-health.ts";
 import { publicExactReviewQueueProjection } from "../dashboard/worker.ts";
+import { isExplicitReviewRequest } from "../src/maintainer-review-policy.ts";
 import {
   createExactReviewAdmissionHarness,
   jsonResponse,
@@ -410,6 +411,56 @@ test("command-context source-drift requeues are never counted or parked", async 
     const item = (await queueState(h)).items[`${repo}#${number}`]!;
     assert.equal(item.state, "pending");
     assert.equal(loopRow(h, number)?.consecutive, 5, "command continuations do not count");
+  });
+});
+
+function verifiedRequest(number: number, commentId: number) {
+  return decision(number, "re_review", {
+    commandStatusMarker: `<!-- clawsweeper-command-status:${number}:re_review:command-${commentId} -->`,
+    sourceCommentId: commentId,
+    sourceCommentUpdatedAt: "2026-10-13T16:32:00Z",
+    commandBodyDigest: "a".repeat(64),
+    commandOrigin: "hosted_webhook",
+    sourceCommentVerified: true,
+  });
+}
+
+test("a source-drift requeue of a finished request keeps its status but not its authority", async () => {
+  const h = harness();
+  await withExactReviewAdmissionHarness(h, async () => {
+    const number = 97621;
+    await enqueue(h, "request", verifiedRequest(number, 6150293296));
+    const claimed = await reviewOnce(h, number);
+    assert.equal(isExplicitReviewRequest(claimed), true);
+
+    // A publisher requeue or replay arriving after the request's generation finished.
+    await enqueue(h, "late-source-drift", sourceDriftRequeue(claimed));
+    const item = (await queueState(h)).items[`${repo}#${number}`]!;
+    assert.equal(item.decision.commandStatusMarker, claimed.commandStatusMarker);
+    assert.equal(item.decision.sourceCommentVerified, undefined);
+    assert.equal(isExplicitReviewRequest(item.decision), false);
+    assert.equal(isExplicitReviewRequest(await reviewOnce(h, number)), false);
+  });
+});
+
+test("a source-drift requeue of a replaced request leaves the newer request queued", async () => {
+  const h = harness();
+  await withExactReviewAdmissionHarness(h, async () => {
+    const number = 97622;
+    await enqueue(h, "first-request", verifiedRequest(number, 1001));
+    const first = await reviewOnce(h, number);
+    const newer = {
+      ...verifiedRequest(number, 1002),
+      sourceCommentUpdatedAt: "2026-10-13T16:40:00Z",
+    };
+    await enqueue(h, "newer-request", newer);
+
+    const admitted = await enqueue(h, "stale-source-drift", sourceDriftRequeue(first));
+    assert.equal(admitted.queued, true);
+    const item = (await queueState(h)).items[`${repo}#${number}`]!;
+    assert.equal(item.decision.sourceAction, "re_review");
+    assert.equal(item.decision.commandStatusMarker, newer.commandStatusMarker);
+    assert.equal(item.decision.sourceCommentId, 1002);
   });
 });
 

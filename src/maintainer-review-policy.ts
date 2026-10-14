@@ -47,10 +47,11 @@ export function isExplicitReviewRequest(decision: {
   if (decision.sourceAction === "manual_explicit_review") {
     return decision.publicationPolicy === "record_comment_only";
   }
-  // Source-drift requeues copy the claimed decision, and only an unpublished
-  // review requeues. While the request's status obligation is still attached,
-  // the retry continues that one request; the queue's loop breaker treats it
-  // the same way. Without it, a later push or scheduled pass needs a new request.
+  // Source-drift requeues copy the claimed decision. The queue keeps the
+  // request's verification only when it requeues the request's own generation
+  // in place, which also keeps the command status open; a requeue that finds no
+  // queued item loses it. Such a verified retry continues that one request.
+  // A later push or scheduled pass needs a new request.
   const continuesRequest =
     decision.sourceAction === "source_drift_requeue" &&
     Boolean(decision.commandStatusMarker || decision.statusCommentId);

@@ -2235,6 +2235,13 @@ export class ExactReviewQueue {
             ingressAdmitted = true;
           }
         } else {
+          // Only the fenced in-place lifecycle requeue continues an explicit
+          // request. A source-drift requeue that finds no queued item may carry
+          // a finished or replaced request, so it keeps the command status but
+          // not the request's verification.
+          if (decision.sourceAction === EXACT_REVIEW_SOURCE_DRIFT_REQUEUE_SOURCE_ACTION) {
+            delete decision.sourceCommentVerified;
+          }
           const sourceDriftRequeueLimit = exactReviewSourceDriftRequeueLimit(this.env);
           const sourceDriftLoop =
             loopKey && sourceDriftRequeueLimit > 0 && exactReviewSourceDriftLoopCounted(decision)

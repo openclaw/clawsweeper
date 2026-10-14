@@ -26,6 +26,7 @@ import {
   type ExactReviewQueueItem,
 } from "./dashboard-worker-harness.ts";
 import { ExactReviewReviewLoopStore } from "../dashboard/exact-review-review-loop.ts";
+import { isExplicitReviewRequest } from "../src/maintainer-review-policy.ts";
 
 test("early policy no-op workflow completion finishes the queue and Bay lifecycle without publication", async () => {
   const storage = new MemoryDurableStorage();
@@ -2327,6 +2328,31 @@ test("active pull request supersession preserves the command without its publica
     error: "lease_superseded",
     superseded_by_revision: 5,
   });
+});
+
+test("direct lifecycle requeue continues an unpublished explicit request", async (t) => {
+  const direct = await savedDirectRequeueFixture("accepted", true, {
+    itemKind: "pull_request",
+    sourceEvent: "pull_request",
+    sourceAction: "re_review",
+    sourceHeadSha: "a".repeat(40),
+    sourceBaseSha: "c".repeat(40),
+    sourceCommentId: 200,
+    sourceCommentUpdatedAt: "2026-09-04T10:00:00Z",
+    commandBodyDigest: "e".repeat(64),
+    commandOrigin: "comment_router",
+    sourceCommentVerified: true,
+    commandStatusMarker: "<!-- clawsweeper-command-status:705:re_review:" + "d".repeat(64) + " -->",
+  });
+  t.after(() => direct.storage.sql.close());
+  assert.deepEqual(await (await direct.post("complete", direct.complete)).json(), {
+    ok: true,
+    requeued: true,
+  });
+  const successor = (await direct.readState()).items[direct.leased.key]!;
+  assert.equal(successor.decision.sourceAction, "source_drift_requeue");
+  assert.equal(successor.decision.sourceCommentVerified, true);
+  assert.equal(isExplicitReviewRequest(successor.decision), true);
 });
 
 test("all exact-review recovery paths preserve the complete producer context", async (t) => {
