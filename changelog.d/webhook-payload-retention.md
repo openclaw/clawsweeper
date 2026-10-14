@@ -1,0 +1,1 @@
+- Retire webhook item, comment, and review payloads after 30 days in bounded batches, preserving source ordering and deletion tombstones while requiring authoritative repair before reuse.

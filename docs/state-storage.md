@@ -165,6 +165,12 @@ KiB, and evict least-recently validated entries when full. The durable body is
 returned only by the post-304 confirmation operation; a lookup alone returns
 only its ETag and digest.
 
+Webhook item, comment, and review payloads have a separate 30-day retention
+policy. Bounded passes retire JSON while preserving ordering metadata and real
+deletion tombstones. Retired reads require authoritative repair before reuse.
+See [the webhook read model](github-webhook-read-model.md#stored-schema-and-bounds)
+for deployment approval, rebuild behavior, and the remaining metadata growth.
+
 Git-backed reports, dashboard status, and post-dispatch cursors are best-effort
 after their productive side effect or canonical publication succeeds. Git
 publication remains mandatory where it is still the durability fence before a

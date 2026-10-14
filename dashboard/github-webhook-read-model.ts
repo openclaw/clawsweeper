@@ -1,4 +1,5 @@
 import { stableJson } from "../src/stable-json.ts";
+import { sqlColumnNames } from "./durable-storage.ts";
 
 export const GITHUB_WEBHOOK_READ_MODEL_ITEM_TTL_MS = 15 * 60_000;
 export const GITHUB_WEBHOOK_READ_MODEL_COMMENT_TTL_MS = 30 * 60_000;
@@ -9,6 +10,15 @@ export const GITHUB_WEBHOOK_READ_MODEL_MAX_ITEM_COMMENTS = 500;
 export const GITHUB_WEBHOOK_READ_MODEL_MAX_ITEM_ACTIVITY = 500;
 export const GITHUB_WEBHOOK_READ_MODEL_MAX_WORKFLOW_OBJECTS = 1_000;
 export const GITHUB_WEBHOOK_READ_MODEL_MAX_COMMENT_BODY_BYTES = 64 * 1_024;
+export const GITHUB_WEBHOOK_READ_MODEL_PAYLOAD_RETENTION_MS = 30 * 24 * 60 * 60_000;
+export const GITHUB_WEBHOOK_READ_MODEL_PAYLOAD_PRUNE_LIMIT = 64;
+
+const PAYLOAD_TABLES = [
+  "github_webhook_read_model_items_v1",
+  "github_webhook_read_model_comments_v1",
+  "github_webhook_read_model_activity_v1",
+] as const;
+const REVIEW_PLACEHOLDER_MARKER = "ClawSweeper status: review started.";
 
 type JsonRecord = Record<string, unknown>;
 type SqlRow = Record<string, unknown>;
@@ -384,6 +394,22 @@ export class GithubWebhookReadModelStore {
          PRIMARY KEY (repository, coverage_kind, run_id)
        ) STRICT`,
     );
+    for (const table of PAYLOAD_TABLES) {
+      const columns = sqlColumnNames(this.storage, table);
+      for (const column of ["payload_pruned", "payload_protected"]) {
+        if (!columns.has(column)) {
+          this.storage.sql.exec(
+            `ALTER TABLE ${table} ADD COLUMN ${column} INTEGER NOT NULL DEFAULT 0
+               CHECK (${column} IN (0, 1))`,
+          );
+        }
+      }
+      this.storage.sql.exec(
+        `CREATE INDEX IF NOT EXISTS ${table}_payload_retention
+           ON ${table} (received_at) WHERE payload_pruned = 0 AND payload_protected = 0
+             ${table.endsWith("items_v1") ? "" : "AND tombstone = 0"}`,
+      );
+    }
   }
 
   ingest(
@@ -604,6 +630,7 @@ export class GithubWebhookReadModelStore {
         this.upsertWorkflowCoverageSync(repository, "run_jobs_v2", runId, now, watermark);
       }
       for (const number of completeCommentItems) {
+        this.recheckItemProtectionSync(repository, number);
         const liveIds = new Set(
           objects
             .filter(
@@ -625,7 +652,7 @@ export class GithubWebhookReadModelStore {
           if (liveIds.has(id)) continue;
           this.storage.sql.exec(
             `UPDATE github_webhook_read_model_comments_v1
-                SET source_updated_at = ?, tombstone = 1, snapshot_json = ?,
+                SET source_updated_at = ?, tombstone = 1, snapshot_json = ?, payload_pruned = 0, payload_protected = 0,
                     delivery_id = ?, watermark = ?, received_at = ?
               WHERE repository = ? AND number = ? AND comment_id = ?`,
             now,
@@ -650,7 +677,7 @@ export class GithubWebhookReadModelStore {
           watermark,
         );
       }
-      for (const object of objects) this.upsertObjectSync(object, deliveryId, watermark, now);
+      for (const object of objects) this.upsertObjectSync(object, deliveryId, watermark, now, true);
       this.storage.sql.exec(
         `INSERT INTO github_webhook_read_model_repairs_v1
          (repository, repair_kind, repaired_at, watermark) VALUES (?, ?, ?, ?)
@@ -673,7 +700,7 @@ export class GithubWebhookReadModelStore {
     if (!repository || !number) throw new Error("invalid_github_webhook_read_model_item_request");
     const row = firstRow(
       this.storage.sql.exec(
-        `SELECT item_kind, snapshot_json, source_updated_at, delivery_id, watermark, received_at
+        `SELECT item_kind, snapshot_json, source_updated_at, delivery_id, watermark, received_at, payload_pruned
            FROM github_webhook_read_model_items_v1 WHERE repository = ? AND number = ?`,
         repository,
         number,
@@ -687,13 +714,14 @@ export class GithubWebhookReadModelStore {
       ok: true,
       watermark: this.watermarkSync(),
       class_state: classState,
-      hit: Boolean(row),
+      hit: Boolean(row) && !row?.payload_pruned,
       usable:
         Boolean(row) &&
+        !row?.payload_pruned &&
         classState.available &&
         !freshness(row, GITHUB_WEBHOOK_READ_MODEL_ITEM_TTL_MS, now).stale,
       freshness: freshness(row, GITHUB_WEBHOOK_READ_MODEL_ITEM_TTL_MS, now),
-      ...(row
+      ...(row && !row.payload_pruned
         ? {
             delivery_id: String(row.delivery_id),
             object_watermark: Number(row.watermark),
@@ -711,7 +739,7 @@ export class GithubWebhookReadModelStore {
       throw new Error("invalid_github_webhook_read_model_comments_request");
     const rows = Array.from(
       this.storage.sql.exec(
-        `SELECT snapshot_json, tombstone, source_updated_at, delivery_id, watermark, received_at
+        `SELECT snapshot_json, tombstone, source_updated_at, delivery_id, watermark, received_at, payload_pruned
            FROM github_webhook_read_model_comments_v1
           WHERE repository = ? AND number = ?
           ORDER BY comment_id ASC`,
@@ -739,7 +767,7 @@ export class GithubWebhookReadModelStore {
     const classState = this.classState("issue_comments", now);
     const commentFreshness = freshness(freshnessRow, GITHUB_WEBHOOK_READ_MODEL_COMMENT_TTL_MS, now);
     const comments = rows
-      .filter((row) => Number(row.tombstone) === 0)
+      .filter((row) => Number(row.tombstone) === 0 && !row.payload_pruned)
       .map((row) => parseJsonRecord(String(row.snapshot_json)));
     const tombstones = rows
       .filter((row) => Number(row.tombstone) === 1)
@@ -747,7 +775,7 @@ export class GithubWebhookReadModelStore {
       .filter((id) => Number.isSafeInteger(id) && id > 0);
     const itemRow = firstRow(
       this.storage.sql.exec(
-        `SELECT snapshot_json FROM github_webhook_read_model_items_v1
+        `SELECT snapshot_json, payload_pruned FROM github_webhook_read_model_items_v1
           WHERE repository = ? AND number = ?`,
         repository,
         number,
@@ -769,6 +797,8 @@ export class GithubWebhookReadModelStore {
       hit: rows.length > 0 || Boolean(collection),
       usable:
         (rows.length > 0 || Boolean(collection)) &&
+        !rows.some((row) => row.payload_pruned) &&
+        !itemRow?.payload_pruned &&
         classState.available &&
         !commentFreshness.stale &&
         !gapDetected,
@@ -789,7 +819,7 @@ export class GithubWebhookReadModelStore {
       throw new Error("invalid_github_webhook_read_model_activity_request");
     const rows = Array.from(
       this.storage.sql.exec(
-        `SELECT activity_kind, snapshot_json, tombstone, source_updated_at, received_at
+        `SELECT activity_kind, snapshot_json, tombstone, source_updated_at, received_at, payload_pruned
            FROM github_webhook_read_model_activity_v1
           WHERE repository = ? AND number = ?
           ORDER BY activity_kind ASC, activity_id ASC`,
@@ -805,17 +835,25 @@ export class GithubWebhookReadModelStore {
     const commentsClassState = this.classState("pull_request_review_comments", now);
     const activityFreshness = freshness(latest, GITHUB_WEBHOOK_READ_MODEL_COMMENT_TTL_MS, now);
     const reviews = rows
-      .filter((row) => row.activity_kind === "review" && Number(row.tombstone) === 0)
+      .filter(
+        (row) =>
+          row.activity_kind === "review" && Number(row.tombstone) === 0 && !row.payload_pruned,
+      )
       .map((row) => parseJsonRecord(String(row.snapshot_json)));
     const reviewComments = rows
-      .filter((row) => row.activity_kind === "review_comment" && Number(row.tombstone) === 0)
+      .filter(
+        (row) =>
+          row.activity_kind === "review_comment" &&
+          Number(row.tombstone) === 0 &&
+          !row.payload_pruned,
+      )
       .map((row) => parseJsonRecord(String(row.snapshot_json)));
     const tombstones = rows
       .filter((row) => Number(row.tombstone) === 1)
       .map((row) => parseJsonRecord(String(row.snapshot_json)));
     const itemRow = firstRow(
       this.storage.sql.exec(
-        `SELECT snapshot_json FROM github_webhook_read_model_items_v1
+        `SELECT snapshot_json, payload_pruned FROM github_webhook_read_model_items_v1
           WHERE repository = ? AND number = ?`,
         repository,
         number,
@@ -840,6 +878,8 @@ export class GithubWebhookReadModelStore {
       hit: rows.length > 0,
       usable:
         rows.length > 0 &&
+        !rows.some((row) => row.payload_pruned) &&
+        !itemRow?.payload_pruned &&
         reviewsClassState.available &&
         commentsClassState.available &&
         !activityFreshness.stale &&
@@ -950,19 +990,28 @@ export class GithubWebhookReadModelStore {
     );
     const comments = Array.from(
       this.storage.sql.exec(
-        `SELECT c.number, c.snapshot_json, c.source_updated_at, i.item_kind, i.snapshot_json AS item_json
+        `SELECT c.number, c.snapshot_json, c.source_updated_at, i.number AS item_number,
+                i.item_kind, i.snapshot_json AS item_json, i.payload_pruned AS item_pruned
            FROM github_webhook_read_model_comments_v1 c
-           JOIN github_webhook_read_model_items_v1 i
+           LEFT JOIN github_webhook_read_model_items_v1 i
              ON i.repository = c.repository AND i.number = c.number
           WHERE c.repository = ? AND c.tombstone = 0
+            AND c.payload_pruned = 0
           ORDER BY c.source_updated_at ASC, c.comment_id ASC`,
         repository,
       ),
     );
     const byNumber = new Map<number, { item: JsonRecord; comments: JsonRecord[] }>();
+    let gapDetected = false;
     for (const row of comments) {
       const comment = parseJsonRecord(String(row.snapshot_json));
-      if (!String(comment.body || "").includes("ClawSweeper status: review started.")) continue;
+      if (!String(comment.body || "").includes(REVIEW_PLACEHOLDER_MARKER)) continue;
+      // A new placeholder can arrive after its parent was retired. A partial
+      // census must not hide that gap and suppress the live recovery path.
+      if (!row.item_number || row.item_pruned) {
+        gapDetected = true;
+        continue;
+      }
       const item = itemSnapshotWithKind(parseJsonRecord(String(row.item_json)), row.item_kind);
       if (state !== "all" && String(item.state || "").toLowerCase() !== state) continue;
       const number = Number(row.number);
@@ -975,7 +1024,8 @@ export class GithubWebhookReadModelStore {
       ok: true,
       watermark: this.watermarkSync(),
       class_state: classState,
-      usable: classState.available && Boolean(repair) && !repairFreshness.stale,
+      usable: classState.available && Boolean(repair) && !repairFreshness.stale && !gapDetected,
+      gap_detected: gapDetected,
       freshness: repairFreshness,
       candidates: [...byNumber.entries()].slice(0, limit).map(([number, entry]) => ({
         number,
@@ -1018,6 +1068,7 @@ export class GithubWebhookReadModelStore {
     deliveryId: string,
     watermark: number,
     receivedAt: number,
+    confirmed = false,
   ): void {
     const sourceUpdatedAt = timestampMs(object.sourceUpdatedAt);
     if (sourceUpdatedAt === null) return;
@@ -1025,42 +1076,52 @@ export class GithubWebhookReadModelStore {
     if (object.kind === "item") {
       const previous = firstRow(
         this.storage.sql.exec(
-          `SELECT source_updated_at, snapshot_json FROM github_webhook_read_model_items_v1
+          `SELECT source_updated_at, snapshot_json, payload_pruned FROM github_webhook_read_model_items_v1
             WHERE repository = ? AND number = ?`,
           object.repository,
           object.number,
         ),
       );
-      if (previous && Number(previous.source_updated_at) >= sourceUpdatedAt) return;
+      if (previous && Number(previous.source_updated_at) > sourceUpdatedAt) return;
+      if (previous && Number(previous.source_updated_at) === sourceUpdatedAt && !confirmed) return;
       const mergedSnapshot = previous
         ? { ...parseJsonRecord(String(previous.snapshot_json)), ...object.snapshot }
         : object.snapshot;
+      // A newer webhook may contain only part of an item. Once retired, only an
+      // authoritative repair can restore the full snapshot and its count guards.
+      const remainsPruned = Boolean(previous?.payload_pruned) && !confirmed;
       this.storage.sql.exec(
         `INSERT INTO github_webhook_read_model_items_v1
-         (repository, number, item_kind, source_updated_at, snapshot_json, delivery_id, watermark, received_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+         (repository, number, item_kind, source_updated_at, snapshot_json, delivery_id, watermark, received_at, payload_pruned)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT (repository, number) DO UPDATE SET
            item_kind = excluded.item_kind,
            source_updated_at = excluded.source_updated_at,
            snapshot_json = excluded.snapshot_json,
+           payload_pruned = excluded.payload_pruned,
+           payload_protected = 0,
            delivery_id = excluded.delivery_id,
            watermark = excluded.watermark,
            received_at = excluded.received_at
-         WHERE excluded.source_updated_at > github_webhook_read_model_items_v1.source_updated_at`,
+         WHERE excluded.source_updated_at >= github_webhook_read_model_items_v1.source_updated_at`,
         object.repository,
         object.number,
         object.itemKind,
         sourceUpdatedAt,
-        JSON.stringify(itemSnapshotWithKind(mergedSnapshot, object.itemKind)),
+        remainsPruned
+          ? "{}"
+          : JSON.stringify(itemSnapshotWithKind(mergedSnapshot, object.itemKind)),
         deliveryId,
         watermark,
         receivedAt,
+        remainsPruned ? 1 : 0,
       );
       return;
     }
     if (object.kind === "comment") {
-      this.storage.sql.exec(
-        `INSERT INTO github_webhook_read_model_comments_v1
+      const accepted = firstRow(
+        this.storage.sql.exec(
+          `INSERT INTO github_webhook_read_model_comments_v1
          (repository, number, comment_id, source_updated_at, tombstone, snapshot_json,
           delivery_id, watermark, received_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -1068,20 +1129,28 @@ export class GithubWebhookReadModelStore {
            source_updated_at = excluded.source_updated_at,
            tombstone = excluded.tombstone,
            snapshot_json = excluded.snapshot_json,
+           payload_pruned = 0,
+           payload_protected = 0,
            delivery_id = excluded.delivery_id,
            watermark = excluded.watermark,
            received_at = excluded.received_at
-         WHERE excluded.source_updated_at > github_webhook_read_model_comments_v1.source_updated_at`,
-        object.repository,
-        object.number,
-        object.id,
-        sourceUpdatedAt,
-        object.tombstone ? 1 : 0,
-        snapshotJson,
-        deliveryId,
-        watermark,
-        receivedAt,
+         WHERE excluded.source_updated_at > github_webhook_read_model_comments_v1.source_updated_at
+            OR (? AND excluded.source_updated_at = github_webhook_read_model_comments_v1.source_updated_at
+                AND github_webhook_read_model_comments_v1.tombstone = 0)
+         RETURNING comment_id`,
+          object.repository,
+          object.number,
+          object.id,
+          sourceUpdatedAt,
+          object.tombstone ? 1 : 0,
+          snapshotJson,
+          deliveryId,
+          watermark,
+          receivedAt,
+          confirmed ? 1 : 0,
+        ),
       );
+      if (accepted) this.recheckItemProtectionSync(object.repository, object.number);
       this.pruneItemRowsSync(
         "github_webhook_read_model_comments_v1",
         "comment_id",
@@ -1101,10 +1170,13 @@ export class GithubWebhookReadModelStore {
            source_updated_at = excluded.source_updated_at,
            tombstone = excluded.tombstone,
            snapshot_json = excluded.snapshot_json,
+           payload_pruned = 0,
            delivery_id = excluded.delivery_id,
            watermark = excluded.watermark,
            received_at = excluded.received_at
-         WHERE excluded.source_updated_at > github_webhook_read_model_activity_v1.source_updated_at`,
+         WHERE excluded.source_updated_at > github_webhook_read_model_activity_v1.source_updated_at
+            OR (? AND excluded.source_updated_at = github_webhook_read_model_activity_v1.source_updated_at
+                AND github_webhook_read_model_activity_v1.tombstone = 0)`,
         object.repository,
         object.number,
         object.kind,
@@ -1115,6 +1187,7 @@ export class GithubWebhookReadModelStore {
         deliveryId,
         watermark,
         receivedAt,
+        confirmed ? 1 : 0,
       );
       this.pruneItemRowsSync(
         "github_webhook_read_model_activity_v1",
@@ -1222,7 +1295,82 @@ export class GithubWebhookReadModelStore {
     );
   }
 
+  prunePayloadsSync(now: number): number {
+    let pruned = 0;
+    let scanned = 0;
+    // Retain ordering facts and real tombstones: an old unseen delivery must not
+    // resurrect a deleted comment or replace a newer, retired payload.
+    for (const table of PAYLOAD_TABLES) {
+      // Classify at most one bounded candidate batch. Remember protected rows so
+      // an expired placeholder prefix cannot be rescanned on every invocation.
+      const protectedExpression = table.endsWith("items_v1")
+        ? `EXISTS (
+             SELECT 1 FROM github_webhook_read_model_comments_v1 c
+              WHERE c.repository = ${table}.repository AND c.number = ${table}.number
+                AND c.tombstone = 0 AND instr(c.snapshot_json, ?) > 0
+           )`
+        : table.endsWith("comments_v1")
+          ? "instr(snapshot_json, ?) > 0"
+          : "0";
+      const rows = Array.from(
+        this.storage.sql.exec(
+          `SELECT rowid, repository, number, ${protectedExpression} AS protected
+             FROM ${table}
+            WHERE payload_pruned = 0 AND payload_protected = 0 AND received_at < ?
+              ${table.endsWith("items_v1") ? "" : "AND tombstone = 0"}
+            ORDER BY received_at LIMIT ?`,
+          ...(protectedExpression === "0" ? [] : [REVIEW_PLACEHOLDER_MARKER]),
+          now - GITHUB_WEBHOOK_READ_MODEL_PAYLOAD_RETENTION_MS,
+          GITHUB_WEBHOOK_READ_MODEL_PAYLOAD_PRUNE_LIMIT - scanned,
+        ),
+      );
+      for (const row of rows) {
+        scanned += 1;
+        if (row.protected) {
+          // Recovery's bounded repair is not a full census. Preserve unresolved
+          // placeholder bodies and their parent item snapshots until they change.
+          this.storage.sql.exec(
+            `UPDATE ${table} SET payload_protected = 1 WHERE rowid = ?`,
+            row.rowid,
+          );
+          continue;
+        }
+        this.storage.sql.exec(
+          `UPDATE ${table} SET snapshot_json = '{}', payload_pruned = 1 WHERE rowid = ?`,
+          row.rowid,
+        );
+        // A census claiming completeness cannot survive removal of its inputs.
+        this.storage.sql.exec(
+          `DELETE FROM github_webhook_read_model_repairs_v1
+            WHERE repository = ? AND repair_kind = 'placeholders'`,
+          row.repository,
+        );
+        this.storage.sql.exec(
+          `DELETE FROM github_webhook_read_model_collections_v1
+            WHERE repository = ? AND number = ? AND collection_kind = 'comments'`,
+          row.repository,
+          row.number,
+        );
+        pruned += 1;
+      }
+      if (scanned === GITHUB_WEBHOOK_READ_MODEL_PAYLOAD_PRUNE_LIMIT) break;
+    }
+    return pruned;
+  }
+
+  private recheckItemProtectionSync(repository: string, number: number): void {
+    // Comment replacement, deletion, or a complete repair can remove the last
+    // placeholder. Reconsider its parent once, without scanning all history.
+    this.storage.sql.exec(
+      `UPDATE github_webhook_read_model_items_v1 SET payload_protected = 0
+        WHERE repository = ? AND number = ? AND payload_protected = 1`,
+      repository,
+      number,
+    );
+  }
+
   private pruneSync(now: number): void {
+    this.prunePayloadsSync(now);
     this.storage.sql.exec(
       `DELETE FROM github_webhook_read_model_deliveries_v1 WHERE delivery_id IN (
          SELECT delivery_id FROM github_webhook_read_model_deliveries_v1

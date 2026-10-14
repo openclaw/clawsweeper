@@ -46,6 +46,37 @@ The Durable Object assigns one monotonic repository-wide watermark to every uniq
 - Workflow runs, jobs, check runs, and check suites; at most 1,000 current/recent objects.
 - Delivery GUID receipts retained for 30 days.
 
+Item, comment, and review payloads expire 30 days after their last accepted
+observation or authoritative repair. Each ingest, repair, or queue alarm examines
+at most 64 payload candidates. Indexed selection excludes payloads already retired and
+preserves actual deletion tombstones. It also preserves unresolved placeholder
+comments and their parent item snapshots because recovery still needs them.
+The first pass marks these protected rows so later passes skip them.
+Accepted comment changes or complete repairs make the parent eligible for reconsideration.
+Retirement replaces only the JSON payload
+with an empty object. It retains the row identity, source timestamp, delivery
+GUID, and watermark to reject delayed older events.
+
+Retired payloads make the affected read unusable. Retirement also invalidates
+comment completeness and the repository's placeholder census in the same
+transaction. A fresh fragment cannot make a partially retired collection usable.
+An authoritative repair can restore a payload with the same source timestamp.
+An ordinary webhook with that timestamp cannot replace it or renew its lifetime.
+Newer partial webhooks cannot make a retired item usable before authoritative repair.
+A placeholder with a missing or retired parent makes discovery unusable until repair.
+
+The schema initializer adds retirement and protection markers and a partial retention index to
+each of the three existing tables. Existing rows retain their payloads during
+initialization. Retention begins on subsequent ingest, repair, and alarm passes.
+Deploying this change therefore enables destructive payload retirement. Obtain
+the production operator's approval before deployment. Redeploying old code does
+not recover retired payloads and does not support their marker semantics.
+
+This bounds payload age, not the number of ordering rows or total database size.
+Canonical reports, lifecycle history, queue ownership, and R2 objects are outside
+this retention policy. Measure production eligibility and storage separately.
+The local Worker proof is in [webhook payload retention](proof/webhook-payload-retention/README.md).
+
 Receipt cleanup uses a single-column `received_at` index, added idempotently by
 the store initializer for both new and existing databases. Each accepted unique
 delivery and repair still prunes at most 256 receipts strictly older than the
