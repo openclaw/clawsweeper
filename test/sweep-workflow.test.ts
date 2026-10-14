@@ -36,6 +36,33 @@ import { scheduledReviewSemanticSourceRevision } from "../dist/scheduled-review-
 import { MAX_MEDIA_PROOF_TIMEOUT_MS } from "../dist/media-proof-budget.js";
 import { runExactReviewDirectPublicationFromEnv } from "../dist/repair/exact-review-direct-publication.js";
 
+test("review completion forwards admission holds and preserves locked and oversized holds", () => {
+  const workflow = YAML.parse(readText(".github/workflows/sweep.yml"));
+  const completions = Object.values(workflow.jobs).flatMap((job: any) =>
+    (job.steps ?? []).filter((step: any) => step.env?.REVIEW_HOLD),
+  );
+  assert.equal(completions.length, 1);
+  const expression = completions[0].env.REVIEW_HOLD.slice(3, -2).replace(
+    /steps\.([\w-]+)/g,
+    (_: string, id: string) => `steps[${JSON.stringify(id)}]`,
+  );
+  const evaluate = new Function("steps", `return (${expression})`);
+  for (const [live, locked, oversized, expected] of [
+    ["maintainer_request_required", "", "", "maintainer_request_required"],
+    ["", "skipped_locked_conversation", "", "locked_conversation"],
+    ["", "", "true", "oversized_pull_request"],
+    ["", "", "", ""],
+  ]) {
+    assert.equal(
+      evaluate({
+        "live-item": { outputs: { review_hold: live, guarded_open_action: locked, oversized } },
+        "review-exact-event-item": { outcome: "success", outputs: {} },
+      }),
+      expected,
+    );
+  }
+});
+
 test("review workflow emits terminal reasons for non-retryable scanner manifests", () => {
   const workflow = YAML.parse(readText(".github/workflows/sweep.yml"));
   const producers = Object.values(workflow.jobs).flatMap((job: any) =>

@@ -141,6 +141,7 @@ export function exactReviewAdmission(output: Output): void {
     output({
       ...terminal,
       scheduled_semantic_noop: "true",
+      review_hold: "maintainer_request_required",
       item_kind: pullRequest ? "pull_request" : "issue",
     });
     console.error(

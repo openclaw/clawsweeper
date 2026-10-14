@@ -1766,7 +1766,7 @@ jobs:
           DIRECT_LIFECYCLE_OUTCOME: ${{ steps.finalize-direct-exact-review-lifecycle.outcome }}
           DIRECT_LIFECYCLE_REQUEUE: ${{ steps.exact-review-generation-result.outputs.direct_lifecycle_requeue }}
           # Deterministic no-ops the queue holds until the target changes.
-          REVIEW_HOLD: ${{ (steps.live-item.outputs.guarded_open_action == 'skipped_locked_conversation' && 'locked_conversation') || (steps.live-item.outputs.oversized == 'true' && steps.review-exact-event-item.outcome == 'success' && steps.review-exact-event-item.outputs.superseded != 'true' && 'oversized_pull_request') || '' }}
+          REVIEW_HOLD: ${{ steps.live-item.outputs.review_hold || (steps.live-item.outputs.guarded_open_action == 'skipped_locked_conversation' && 'locked_conversation') || (steps.live-item.outputs.oversized == 'true' && steps.review-exact-event-item.outcome == 'success' && steps.review-exact-event-item.outputs.superseded != 'true' && 'oversized_pull_request') || '' }}
         run: |
           set -euo pipefail
           # After a failed or skipped checkout, use the copies that the bootstrap
