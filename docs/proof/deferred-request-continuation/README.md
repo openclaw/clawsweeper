@@ -17,7 +17,9 @@ persisted by the deployed release.
     through the real apply owner.
   - A requeue after the publication finished, after the publisher lease was
     lost, after a newer request was answered, or after a newer publication was
-    admitted reaches the apply owner without authority and makes no write.
+    admitted reaches the apply owner without authority and makes no write. So
+    does an older producer's requeue while a newer publication of the same
+    request is held: the requeue's delivery id binds it to its own producer.
   - Rows persisted by the deployed release load unchanged and take the new
     paths after the upgrade.
 - **Surfaces:**
@@ -32,8 +34,10 @@ persisted by the deployed release.
     `deferredContinuationClaim`: a verified request is reviewed, the review
     enqueues its publication, a publisher run claims it, then (per scenario)
     nothing happens, the publication completes, the clock passes the lease, a
-    newer request reusing the status comment is answered, or a newer review
-    generation's publication is admitted. The publisher then sends the exact
+    newer request reusing the status comment is answered, a newer review
+    generation's publication is admitted, or a second generation of the same
+    request holds its own publication when the older producer's requeue arrives
+    (and then answers the request). The publisher then sends the exact
     body of `enqueue source-drift`, and the requeued item's claim returns the
     decision under test.
   - [`upgrade.mjs`](upgrade.mjs): `origin/main` persists a held command
@@ -72,6 +76,7 @@ persisted by the deployed release.
 | Publisher lease lost | `skipped_maintainer_authored` | none |
 | Newer request answered (same status comment, new marker) | `skipped_maintainer_authored` | none |
 | Newer publication admitted | `skipped_maintainer_authored` | none |
+| Older producer's late requeue while a newer publication of the same request is held; that publication then answers | `skipped_maintainer_authored` | none |
 
 ## Upgrade from the deployed release
 

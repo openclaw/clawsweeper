@@ -2269,7 +2269,13 @@ export class ExactReviewQueue {
           // queue-owned delivery prefix, so the load-time rule keeps it.
           const continuesHeldRequest =
             verifiedSourceDriftRequeue &&
-            this.continuesHeldCommandPublicationSync(state, decision, activeBatchItemKeys, now);
+            this.continuesHeldCommandPublicationSync(
+              state,
+              decision,
+              deliveryId,
+              activeBatchItemKeys,
+              now,
+            );
           const sourceDriftRequeueLimit = exactReviewSourceDriftRequeueLimit(this.env);
           const sourceDriftLoop =
             loopKey && sourceDriftRequeueLimit > 0 && exactReviewSourceDriftLoopCounted(decision)
@@ -9228,46 +9234,51 @@ export class ExactReviewQueue {
   }
 
   // The deferred publisher requeues its claimed producer decision while it
-  // still holds that publication. The request stays open only if this is its
-  // newest publication and no other command reached the item since.
+  // still holds that publication. Its delivery id names the producer, so only
+  // that producer's own publication can continue the request, and only while
+  // it is the item's newest and no other command reached the item since.
   private continuesHeldCommandPublicationSync(
     state: ExactReviewQueueState,
     decision: ExactReviewDecision,
+    deliveryId: string,
     batchItemKeys: ReadonlySet<string>,
     now: number,
   ) {
+    const producer = /^publisher-source-drift:(\d+):([1-9]\d*)$/.exec(deliveryId);
+    if (!producer) return false;
     const key = exactReviewItemKey(decision);
-    const command = {
-      statusMarker: decision.commandStatusMarker ?? null,
-      statusCommentId: decision.statusCommentId ?? null,
-    };
-    return Object.values(state.items).some((item) => {
-      const publication = item.decision.publication;
-      const revision = exactReviewPublicationRevision(item.decision);
-      const held =
-        batchItemKeys.has(item.key) ||
-        (item.state === "leased" &&
-          isLiveExactReviewLease(
-            item,
-            now,
-            exactReviewPublicationDispatchLeaseMs(this.env),
-            exactReviewHeartbeatGraceMs(this.env),
-          ));
-      return (
-        held &&
-        exactReviewQueueIsPublication(item) &&
-        !item.terminalFinalization &&
-        publication?.itemKey === key &&
-        revision !== null &&
-        exactReviewSameVerifiedCommand(publication.producerDecision, decision) &&
-        revision.sourceRevision >= this.publicationHeadRevisionSync(revision.targetKey) &&
-        !this.lifecycleProjectionStore.otherCommandAdmittedAfter(
-          key,
-          revision.sourceRevision,
-          command,
-        )
-      );
-    });
+    const item = state.items[`${key}@publish:${producer[1]}:${producer[2]}`];
+    const publication = item?.decision.publication;
+    const revision = item ? exactReviewPublicationRevision(item.decision) : null;
+    if (
+      !item ||
+      !exactReviewQueueIsPublication(item) ||
+      item.terminalFinalization ||
+      publication?.itemKey !== key ||
+      publication.producerRunId !== producer[1] ||
+      publication.producerRunAttempt !== Number(producer[2]) ||
+      revision === null
+    ) {
+      return false;
+    }
+    const held =
+      batchItemKeys.has(item.key) ||
+      (item.state === "leased" &&
+        isLiveExactReviewLease(
+          item,
+          now,
+          exactReviewPublicationDispatchLeaseMs(this.env),
+          exactReviewHeartbeatGraceMs(this.env),
+        ));
+    return (
+      held &&
+      exactReviewSameVerifiedCommand(publication.producerDecision, decision) &&
+      revision.sourceRevision >= this.publicationHeadRevisionSync(revision.targetKey) &&
+      !this.lifecycleProjectionStore.otherCommandAdmittedAfter(key, revision.sourceRevision, {
+        statusMarker: decision.commandStatusMarker ?? null,
+        statusCommentId: decision.statusCommentId ?? null,
+      })
+    );
   }
 
   private transitionCommandRevision(

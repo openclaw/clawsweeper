@@ -163,8 +163,9 @@ export async function claimPublication(h: Harness, publicationKey: string) {
 }
 
 /**
- * What happens between the publisher's claim and its source-drift requeue.
- * Only "open" leaves the request unanswered and its publication held.
+ * What happens between the publisher's claim and its source-drift requeue. A
+ * scenario may return a step that runs after the requeue. Only "open" leaves
+ * the request unanswered and its own publication held.
  */
 export const DEFERRED_CONTINUATION_SCENARIOS = {
   open: async () => {},
@@ -195,7 +196,41 @@ export const DEFERRED_CONTINUATION_SCENARIOS = {
     const newer = await deferredPublication(h, decision(number, "edited"));
     assert.ok((await queueState(h)).items[newer.publicationKey]);
   },
-} satisfies Record<string, (h: Harness, number: number, publisher: object) => Promise<void>>;
+  "older-producer-borrows-newer-publication": async (
+    h: Harness,
+    number: number,
+    publisher: object,
+  ) => {
+    // A second generation of the same request defers its own publication; the
+    // older one ends superseded, so only the newer publication is held when the
+    // older producer's requeue arrives.
+    const newer = await deferredPublication(h, {
+      ...verifiedRequest(number, 6150293300),
+      statusCommentId: 7000 + number,
+    });
+    const superseded = await post(h, "/complete", {
+      ...publisher,
+      outcome: "success",
+      completion_kind: "superseded",
+      reason_code: "remote_newer_tuple",
+    });
+    assert.equal(superseded.status, 200, JSON.stringify(superseded.body));
+    const newerPublisher = await claimPublication(h, newer.publicationKey);
+    // The newer publication then answers the request before the continuation runs.
+    return async () => {
+      const published = await post(h, "/complete", {
+        ...newerPublisher,
+        outcome: "success",
+        completion_kind: "published",
+        reason_code: "publication_applied",
+      });
+      assert.equal(published.status, 200, JSON.stringify(published.body));
+    };
+  },
+} satisfies Record<
+  string,
+  (h: Harness, number: number, publisher: object) => Promise<void | (() => Promise<void>)>
+>;
 export type DeferredContinuationScenario = keyof typeof DEFERRED_CONTINUATION_SCENARIOS;
 
 /**
@@ -217,10 +252,11 @@ export async function deferredContinuationClaim(
         statusCommentId: 7000 + number,
       });
       const publisher = await claimPublication(h, deferred.publicationKey);
-      await DEFERRED_CONTINUATION_SCENARIOS[scenario](h, number, publisher);
+      const afterRequeue = await DEFERRED_CONTINUATION_SCENARIOS[scenario](h, number, publisher);
       await enqueue(h, deferred.requeueDeliveryId, sourceDriftRequeue(deferred.claimed));
       const stored = (await queueState(h)).items[deferred.key];
       assert.ok(stored, `${scenario}: the requeue admitted a review`);
+      if (afterRequeue) await afterRequeue();
       return {
         requested: deferred.claimed,
         stored,

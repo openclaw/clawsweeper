@@ -261,9 +261,10 @@ comment synced, the queue requeues that generation in place instead of
 finalizing the command, keeping the command status and verification, and the
 retry continues the same request. When the review's publication was deferred,
 its publisher requeues the claimed decision instead; the queue keeps the
-verification only while that publisher still holds the request's publication,
-that publication is the item's newest, and no other command reached the item
-after the request's review. Any other source-drift requeue keeps the command
+verification only while that publisher still holds its own publication of the
+request (named by the requeue's `publisher-source-drift:<run>:<attempt>`
+delivery id), that publication is the item's newest, and no other command
+reached the item after the request's review. Any other source-drift requeue keeps the command
 status but not the verification: the queue enforces this whenever it loads an
 item, so a requeue that found no queued item, including one persisted before
 this rule, cannot let a finished or replaced request authorize another review.

@@ -41,6 +41,13 @@
         "skipped_maintainer_authored"
       ],
       "mutations": []
+    },
+    {
+      "scenario": "exact-close-held-older-producer-borrows-newer-publication",
+      "actions": [
+        "skipped_maintainer_authored"
+      ],
+      "mutations": []
     }
   ]
 }
