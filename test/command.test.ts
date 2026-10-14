@@ -285,7 +285,7 @@ test("local exact review history is keyed by repository and item", () => {
   assert.notEqual(first, otherRepo);
 });
 
-test("CSW-088 completed PR stays out of hot planning after source activity while explicit re-review remains eligible", () => {
+test("CSW-088 hot planning offers source activity to durable admission while explicit re-review remains eligible", () => {
   const root = mkdtempSync(join(tmpdir(), "cmd-csw-088-"));
   const binDir = join(root, "bin");
   const itemsDir = join(root, "items");
@@ -487,7 +487,7 @@ process.exit(1);
     assert.equal(raced.status, 0, raced.stderr);
     assert.deepEqual(
       JSON.parse(raced.stdout).candidates.map((candidate: { number: number }) => candidate.number),
-      [],
+      [number],
     );
 
     const commentRaced = spawnSync(
@@ -523,7 +523,7 @@ process.exit(1);
       JSON.parse(commentRaced.stdout).candidates.map(
         (candidate: { number: number }) => candidate.number,
       ),
-      [],
+      [number],
     );
 
     const activityRaced = spawnSync(
@@ -559,7 +559,7 @@ process.exit(1);
       JSON.parse(activityRaced.stdout).candidates.map(
         (candidate: { number: number }) => candidate.number,
       ),
-      [],
+      [number],
     );
 
     const explicit = spawnSync(

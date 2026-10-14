@@ -1,9 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import {
-  isCompletedPullRequestReview,
-  requiresPullRequestReReviewRequest,
-} from "../src/pr-review-policy.ts";
+import { isCompletedPullRequestReview } from "../src/pr-review-policy.ts";
 import {
   ExactReviewDirectPublicationStore,
   validateDirectPublicationPlan,
@@ -56,7 +53,7 @@ async function publish(
   return store;
 }
 
-test("only a completed PR answer consumes the automatic review; opt-ins remain eligible", () => {
+test("only a verified completed PR answer consumes the automatic review", () => {
   assert.equal(isCompletedPullRequestReview(report()), true);
   assert.equal(isCompletedPullRequestReview(report("failed")), false);
   assert.equal(isCompletedPullRequestReview(report("complete", "issue")), false);
@@ -68,26 +65,9 @@ test("only a completed PR answer consumes the automatic review; opt-ins remain e
     isCompletedPullRequestReview(report().replace("2030-01-01T00:00:00Z", "unknown")),
     false,
   );
-  assert.equal(
-    requiresPullRequestReReviewRequest({ kind: "pull_request" }, { reviewStatus: "complete" }),
-    true,
-  );
-  for (const label of ["clawsweeper:autofix", " ClawSweeper:Automerge "]) {
-    assert.equal(
-      requiresPullRequestReReviewRequest(
-        { kind: "pull_request", labels: [label] },
-        { reviewStatus: "complete" },
-      ),
-      false,
-    );
-  }
-  assert.equal(
-    requiresPullRequestReReviewRequest({ kind: "issue" }, { reviewStatus: "complete" }),
-    false,
-  );
 });
 
-test("scheduler excludes answered PRs from cadence and backfill despite source or policy changes", () => {
+test("scheduler offers changed complete-looking reports so the durable queue can decide eligibility", () => {
   const inventory = createReviewPlanningInventory({ targetRepo: () => repo } as never);
   const item = {
     repo,
@@ -102,7 +82,10 @@ test("scheduler excludes answered PRs from cadence and backfill despite source o
     reviewPolicy: "old-policy",
   } as ExistingReview;
   const index = { byKey: new Map([[key, review]]) };
-  assert.equal(inventory.dueCandidate(item, "/nonexistent", start, "new-policy", index), null);
+  assert.equal(
+    inventory.dueCandidate(item, "/nonexistent", start, "new-policy", index)?.item.number,
+    42,
+  );
   assert.equal(
     inventory.reviewBackfillCandidate(item, "/nonexistent", start, "new-policy", 0, index),
     null,

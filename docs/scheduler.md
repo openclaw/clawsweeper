@@ -109,11 +109,15 @@ and runtime packaging rules.
 
 Ordinary PRs receive one automatic completed review after ten quiet minutes of
 stable head, title, body, and draft state. Pushes and edits after that answer need
-an explicit `@clawsweeper re-review`; scheduled hot/normal planning excludes them,
+an explicit `@clawsweeper re-review`; the queue rejects hot/normal offers for them,
 and queue admission, dispatch, and claim enforce the same durable completion
 fact. Failed and stale-source attempts may finish the first answer. Explicit
 requests and autofix/automerge opt-ins retain their existing automation. See
 [automation limits](limits.md) for quiet-window and persistence details.
+
+Planners can still offer candidates from report cadence: a complete-looking
+report may never have been published. The queue owns the lifetime fact and
+rejects answered candidates before starting a review workflow.
 
 ### Control-plane workflow retries
 

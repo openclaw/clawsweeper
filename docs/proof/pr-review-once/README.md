@@ -32,7 +32,7 @@ No dependencies were installed in the shared checkout or managed worktree.
 ## Observed results
 
 The checked-in [result.json](result.json) records a passing run and SHA-256
-identities for all nine changed production source files and the legacy fixture.
+identities for all nine policy source files and the legacy fixture.
 
 - Minute 0: enqueue succeeds; alarm holds the initial review until minute 10.
 - Minute 10: an intervening body edit extends the hold to minute 20.
