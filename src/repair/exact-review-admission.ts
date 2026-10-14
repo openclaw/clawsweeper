@@ -7,8 +7,8 @@ import { issueSourceRevisionSha256 } from "./issue-source-guard.js";
 import {
   isExplicitReviewRequest,
   requiresMaintainerReviewRequest,
+  verifiedMaintainerAuthorAssociation,
 } from "../maintainer-review-policy.js";
-import { verifiedMaintainerAuthorAssociation } from "../clawsweeper-item-policy.js";
 
 type Output = (values: Record<string, string>) => void;
 

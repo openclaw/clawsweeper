@@ -20,12 +20,11 @@ import { serializeReviewContext } from "./agent-input-scan-fixtures.js";
 import type { Args } from "./clawsweeper-args.js";
 import { boolArg } from "./clawsweeper-args.js";
 
+import { isMaintainerAuthorAssociation, labelNames } from "./clawsweeper-item-policy.js";
 import {
-  isBulkFilerExemptRepositoryPermission as isVerifiedMaintainerRepositoryPermission,
-  isMaintainerAuthorAssociation,
-  labelNames,
+  isMaintainerRepositoryPermission,
   verifiedMaintainerAuthorAssociation,
-} from "./clawsweeper-item-policy.js";
+} from "./maintainer-review-policy.js";
 import { prepareMediaProofArtifacts } from "./clawsweeper-media-proof.js";
 import type {
   AcquiredReviewStartLease,
@@ -135,7 +134,7 @@ export function restoreVerifiedMaintainerAuthorAssociation(
   } catch {
     return false;
   }
-  if (!isVerifiedMaintainerRepositoryPermission(permission)) return false;
+  if (!isMaintainerRepositoryPermission(permission)) return false;
   item.authorAssociation = verifiedMaintainerAuthorAssociation({
     authorAssociation: item.authorAssociation,
     repositoryPermission: permission,

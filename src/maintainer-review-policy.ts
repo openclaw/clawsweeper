@@ -8,6 +8,30 @@ export function isMaintainerAuthorAssociation(value: unknown): boolean {
   return MAINTAINER_AUTHOR_ASSOCIATIONS.has(normalizeAuthorAssociation(value));
 }
 
+// GitHub shows a private org member to the App as CONTRIBUTOR. Repository
+// permission is not hidden, so admin or maintain permission marks a maintainer.
+const MAINTAINER_REPOSITORY_PERMISSIONS = new Set(["admin", "maintain"]);
+
+export function isMaintainerRepositoryPermission(value: unknown): boolean {
+  return (
+    typeof value === "string" && MAINTAINER_REPOSITORY_PERMISSIONS.has(value.trim().toLowerCase())
+  );
+}
+
+export function verifiedMaintainerAuthorAssociation(options: {
+  authorAssociation: unknown;
+  repositoryPermission: unknown;
+}): string {
+  const association = normalizeAuthorAssociation(options.authorAssociation);
+  if (
+    !isMaintainerAuthorAssociation(association) &&
+    isMaintainerRepositoryPermission(options.repositoryPermission)
+  ) {
+    return "MEMBER";
+  }
+  return association;
+}
+
 type ReviewItem = {
   authorAssociation?: unknown;
   author_association?: unknown;

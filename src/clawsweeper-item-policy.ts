@@ -17,6 +17,7 @@ import { isOlderThanDays, isOlderThanMs } from "./iso-time.js";
 import { isSecurityLabel } from "./repair/security-signals.js";
 import {
   isMaintainerAuthorAssociation,
+  isMaintainerRepositoryPermission,
   normalizeAuthorAssociation,
   requiresMaintainerReviewRequest,
 } from "./maintainer-review-policy.js";
@@ -28,10 +29,6 @@ export {
 // Owners and members can legitimately file coordinated issue batches; outside
 // collaborators still remain subject to bulk-filer policy.
 const BULK_FILER_EXEMPT_AUTHOR_ASSOCIATIONS = new Set(["OWNER", "MEMBER"]);
-
-// Installation tokens can redact membership to CONTRIBUTOR, so independently
-// readable admin/maintain permissions provide the narrow fallback.
-const BULK_FILER_EXEMPT_REPOSITORY_PERMISSIONS = new Set(["admin", "maintain"]);
 
 const WRITE_ACCESS_REPOSITORY_PERMISSIONS = new Set(["admin", "maintain", "write"]);
 
@@ -62,30 +59,13 @@ export function isBulkFilerExemptAuthorAssociation(value: unknown): boolean {
 }
 
 export function isBulkFilerExemptRepositoryPermission(value: unknown): boolean {
-  return (
-    typeof value === "string" &&
-    BULK_FILER_EXEMPT_REPOSITORY_PERMISSIONS.has(value.trim().toLowerCase())
-  );
+  return isMaintainerRepositoryPermission(value);
 }
 
 export function isWriteAccessRepositoryPermission(value: unknown): boolean {
   return (
     typeof value === "string" && WRITE_ACCESS_REPOSITORY_PERMISSIONS.has(value.trim().toLowerCase())
   );
-}
-
-export function verifiedMaintainerAuthorAssociation(options: {
-  authorAssociation: unknown;
-  repositoryPermission: unknown;
-}): string {
-  const association = normalizeAuthorAssociation(options.authorAssociation);
-  if (
-    !isMaintainerAuthorAssociation(association) &&
-    isBulkFilerExemptRepositoryPermission(options.repositoryPermission)
-  ) {
-    return "MEMBER";
-  }
-  return association;
 }
 
 export function isMaintainerAuthored(item: Pick<Item, "authorAssociation">): boolean {

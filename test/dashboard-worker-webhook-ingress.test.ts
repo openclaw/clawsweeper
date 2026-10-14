@@ -31,10 +31,18 @@ test("maintainer item events stay out of the queue and share one opt-in reminder
   const queued: unknown[] = [];
   const pending: Promise<unknown>[] = [];
   let posts = 0;
+  const permissionReads: string[] = [];
   t.mock.method(globalThis, "fetch", async (input, init) => {
     const url = new URL(String(input));
     if (url.pathname === "/app/installations/123/access_tokens")
       return jsonResponse({ token: "fixture-token" });
+    const permission = url.pathname.match(
+      /^\/repos\/openclaw\/fs-safe\/collaborators\/([^/]+)\/permission$/,
+    );
+    if (permission) {
+      permissionReads.push(permission[1]!);
+      return jsonResponse({ permission: permission[1] === "private-member" ? "admin" : "read" });
+    }
     assert.match(url.pathname, /^\/repos\/openclaw\/fs-safe\/issues\/\d+\/comments$/);
     const existing = comments.get(url.pathname) ?? [];
     if (init?.method === "POST") {
@@ -137,6 +145,32 @@ test("maintainer item events stay out of the queue and share one opt-in reminder
     "maintainer",
   );
   assert.equal(queued.length, 1);
+  assert.equal(posts, 2);
+  // GitHub shows a private org member to the App as CONTRIBUTOR; repository
+  // permission decides, and one read serves the author's later events.
+  const privateMemberPull = {
+    ...pull,
+    number: 45,
+    draft: false,
+    author_association: "CONTRIBUTOR",
+    user: { login: "private-member" },
+  };
+  for (const action of ["synchronize", "edited"]) {
+    assert.deepEqual(await (await send("pull_request", action, privateMemberPull)).json(), {
+      ok: true,
+      accepted: false,
+      reason: "maintainer review requires an explicit request",
+    });
+  }
+  await send("issues", "opened", {
+    ...issue,
+    number: 46,
+    author_association: "CONTRIBUTOR",
+    user: { login: "outside-author" },
+  });
+  await Promise.all(pending);
+  assert.deepEqual(permissionReads, ["private-member", "outside-author"]);
+  assert.equal(queued.length, 2);
   assert.equal(posts, 2);
 });
 
