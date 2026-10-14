@@ -2,6 +2,7 @@
 // Controlled workflow execution only: every gh/curl call is intercepted locally.
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
+import { Console } from "node:console";
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
@@ -409,5 +410,12 @@ process.stdout.write(args.includes('--jq') ? (pr ? 'pull_request' : 'issue') : J
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  console.log(JSON.stringify(await proveApplyDriftRefresh(), null, 2));
+  const originalConsole = globalThis.console;
+  // Keep in-process Worker diagnostics separate from the CLI's JSON result.
+  globalThis.console = new Console({ stdout: process.stderr, stderr: process.stderr });
+  try {
+    process.stdout.write(`${JSON.stringify(await proveApplyDriftRefresh(), null, 2)}\n`);
+  } finally {
+    globalThis.console = originalConsole;
+  }
 }

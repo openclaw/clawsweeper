@@ -3091,10 +3091,16 @@ test("explicit pull request commands queue behind a dispatching authoritative re
   assert.deepEqual(await storage.get("exact-review-queue"), afterCommand);
 });
 
-test("explicit pull request commands survive an active authoritative lease completion", async () => {
+test("explicit pull request commands survive an active authoritative lease completion", async (t) => {
+  const starts: Array<Record<string, unknown>> = [];
+  t.mock.method(console, "info", (_message: string, fact: Record<string, unknown>) => {
+    if (fact.event === "committed_start_acknowledgement") starts.push(fact);
+  });
   const storage = new MemoryDurableStorage();
   const currentHeadSha = "c".repeat(40);
   const item = leasedExactReviewQueueItem(760, "7600");
+  item.reviewBudgetChargeGeneration = 1;
+  item.admissionDeliveryId = "original-delivery-leased-760";
   item.decision = {
     ...item.decision,
     itemKind: "pull_request",
@@ -3160,6 +3166,19 @@ test("explicit pull request commands survive an active authoritative lease compl
   assert.equal(redelivery.status, 202);
   assert.equal((await redelivery.json()).deduped, true);
   assert.deepEqual(await storage.get("exact-review-queue"), afterCommand);
+
+  const started = await startReviewGeneration(queue, item, "7600", 1, {
+    source_head_sha: currentHeadSha,
+  });
+  assert.equal(started.status, 200);
+  assert.equal(starts.length, 1);
+  assert.equal(starts[0].revision, 1);
+  assert.equal(
+    starts[0].delivery_hash,
+    null,
+    "the old lease must not acquire the successor delivery",
+  );
+  assert.equal(starts[0].source_class, "organic", "the fact describes the original lease decision");
 
   const completion = await queue.fetch(
     new Request("https://clawsweeper-exact-review-queue/complete", {
@@ -4255,6 +4274,91 @@ test("generation start charges only the live lease's current claim generation", 
   assert.equal((await startReviewGeneration(queue, preRollout, "9852")).status, 200);
   assert.equal(await balance(), 5, "a lease charged at claim before rollout is not charged again");
 });
+
+test("committed start observations exclude replays, stale leases and non-review work", async (t) => {
+  const events: Array<Record<string, unknown>> = [];
+  t.mock.method(console, "info", (_message: string, fact: Record<string, unknown>) =>
+    events.push(fact),
+  );
+  const item = unclaimedExactReviewQueueItem(853);
+  const publication = {
+    ...leasedExactReviewPublicationItem(854, "98540"),
+    reviewBudgetChargeGeneration: 1,
+  };
+  const finalizer = {
+    ...leasedExactReviewQueueItem(855, "98550"),
+    reviewBudgetChargeGeneration: 1,
+    terminalFinalization: {
+      disposition: "review_completed_routed",
+      statusState: "Complete",
+      statusDetail: "done",
+    },
+  };
+  const storage = new MemoryDurableStorage();
+  await storage.put("exact-review-queue", {
+    deliveries: {},
+    items: { [item.key]: item, [publication.key]: publication, [finalizer.key]: finalizer },
+  });
+  const queue = new ExactReviewQueue({ storage }, {});
+  assert.equal((await claimReviewLease(queue, item, "98530")).status, 200);
+  assert.equal(events.length, 0, "claim is not a start acknowledgement");
+  assert.equal((await startReviewGeneration(queue, item, "98539")).status, 409);
+  assert.equal(
+    (await startReviewGeneration(queue, item, "98530", 1, { phase: "finalizing" })).status,
+    400,
+  );
+  assert.equal((await startReviewGeneration(queue, item, "98530")).status, 200);
+  assert.equal((await startReviewGeneration(queue, item, "98530")).status, 200);
+  assert.equal((await startReviewGeneration(queue, publication, "98540")).status, 200);
+  assert.equal((await startReviewGeneration(queue, finalizer, "98550")).status, 200);
+  const starts = events.filter((event) => event.event === "committed_start_acknowledgement");
+  assert.equal(starts.length, 1);
+  assert.equal(starts[0].revision, 1);
+  assert.equal(starts[0].claim_generation, 1);
+  assert.equal(starts[0].run_attempt, 1);
+  assert.match(String(starts[0].lease_hash), /^[a-f0-9]{64}$/);
+});
+
+for (const failure of ["write", "schedule", "observer"] as const) {
+  test(`committed start observation preserves ${failure} failure semantics`, async (t) => {
+    const events: unknown[] = [];
+    t.mock.method(console, "info", (...values: unknown[]) => {
+      events.push(values);
+    });
+    const item = unclaimedExactReviewQueueItem(856);
+    const storage = new MemoryDurableStorage();
+    await storage.put("exact-review-queue", { deliveries: {}, items: { [item.key]: item } });
+    const queue = new ExactReviewQueue({ storage }, {});
+    assert.equal((await claimReviewLease(queue, item, "98560")).status, 200);
+    if (failure === "write") storage.failNextSql(/INSERT INTO exact_review_queue_items/);
+    if (failure === "schedule")
+      t.mock.method(
+        queue as unknown as { scheduleNext: () => Promise<void> },
+        "scheduleNext",
+        async () => {
+          throw new Error("schedule failed");
+        },
+      );
+    if (failure === "observer")
+      t.mock.method(console, "info", () => {
+        throw new Error("observer failed");
+      });
+    if (failure === "observer") {
+      assert.equal((await startReviewGeneration(queue, item, "98560")).status, 200);
+    } else {
+      await assert.rejects(
+        startReviewGeneration(queue, item, "98560"),
+        failure === "write" ? /injected SQL failure/ : /schedule failed/,
+      );
+    }
+    assert.equal(events.length, 0);
+    const state = await storage.get("exact-review-queue");
+    assert.equal(
+      state.items[item.key].reviewBudgetChargeGeneration,
+      failure === "write" ? 1 : undefined,
+    );
+  });
+}
 
 test("an explicit hot-intake rate leaves the scheduled remainder to normal backfill", async () => {
   const wrangler = fs.readFileSync("dashboard/wrangler.toml", "utf8");

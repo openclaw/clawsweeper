@@ -2232,7 +2232,11 @@ async function savedDirectRequeueFixture(
   return { storage, queue, leased, post, readState, projection, counters, complete, terminalRun };
 }
 
-test("direct lifecycle requeues count toward and trip the source-drift loop breaker", async () => {
+test("direct lifecycle requeues count toward and trip the source-drift loop breaker", async (t) => {
+  const parks: Array<Record<string, unknown>> = [];
+  t.mock.method(console, "warn", (message: string, details: Record<string, unknown>) => {
+    if (message === "exact-review source-drift loop parked") parks.push(details);
+  });
   for (const priorGenerations of [2, 3]) {
     const { storage, queue, leased, readState, complete } = await savedDirectRequeueFixture();
     const loops = new ExactReviewReviewLoopStore(storage);
@@ -2250,12 +2254,16 @@ test("direct lifecycle requeues count toward and trip the source-drift loop brea
     assert.equal(successor.revision, 5);
     assert.equal(successor.decision.sourceAction, "source_drift_requeue");
     if (priorGenerations < 3) {
+      assert.equal(parks.length, 0);
       assert.equal(successor.state, "pending", "below the limit the successor is reviewed");
       assert.equal(loops.sourceDriftLoopSync(leased.key, Date.now())?.consecutive, 3);
       continue;
     }
     assert.equal(successor.state, "parked", "at the limit the successor spends no review");
     assert.equal(successor.parkedReason, "source_drift_loop");
+    assert.equal(parks.length, 1);
+    assert.match(String(parks[0].target_hash), /^[a-f0-9]{64}$/);
+    assert.equal(parks[0].configured_limit, 3);
     assert.equal(loops.sourceDriftLoopSync(leased.key, Date.now())?.consecutive, 3);
 
     const organic = await queue.fetch(
@@ -2274,6 +2282,30 @@ test("direct lifecycle requeues count toward and trip the source-drift loop brea
     assert.equal(released.parkedReason, undefined);
     assert.equal(loops.sourceDriftLoopSync(leased.key, Date.now()), null);
   }
+});
+
+test("reconciled source-drift parks emit only after a successful state write", async (t) => {
+  const parks: Array<Record<string, unknown>> = [];
+  t.mock.method(console, "warn", (message: string, details: Record<string, unknown>) => {
+    if (message === "exact-review source-drift loop parked") parks.push(details);
+  });
+  const f = await savedDirectRequeueFixture();
+  const loops = new ExactReviewReviewLoopStore(f.storage);
+  for (let generation = 0; generation < 3; generation += 1) {
+    loops.recordSourceDriftGenerationSync(f.leased.key, Date.now());
+  }
+  const before = structuredClone(await f.readState());
+  f.storage.failNextSql(/INSERT INTO exact_review_queue_items/);
+  const failed = await f.post("reconcile", { terminal_runs: [f.terminalRun] });
+  assert.equal(failed.status, 500);
+  assert.deepEqual(await failed.json(), { error: "exact_review_queue_unavailable" });
+  assert.deepEqual(await f.readState(), before);
+  assert.equal(parks.length, 0);
+  const response = await f.post("reconcile", { terminal_runs: [f.terminalRun] });
+  assert.equal(response.status, 200);
+  assert.equal((await f.readState()).items[f.leased.key]?.parkedReason, "source_drift_loop");
+  assert.equal(parks.length, 1);
+  assert.match(String(parks[0].target_hash), /^[a-f0-9]{64}$/);
 });
 
 test("active pull request supersession preserves the command without its publication receipt", async () => {

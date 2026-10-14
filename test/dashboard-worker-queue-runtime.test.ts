@@ -398,9 +398,115 @@ function consoleCallBlocks(source: string) {
   return blocks;
 }
 
+test("queue observations follow committed enqueue dispositions without exposing source identities", async (t) => {
+  const storage = new MemoryDurableStorage();
+  let inTransaction = false;
+  const transact = storage.transactionSync.bind(storage);
+  t.mock.method(storage, "transactionSync", (callback: () => unknown) => {
+    inTransaction = true;
+    try {
+      return transact(callback);
+    } finally {
+      inTransaction = false;
+    }
+  });
+  const events: Array<Record<string, unknown>> = [];
+  t.mock.method(console, "info", (_message: string, fact: Record<string, unknown>) => {
+    assert.equal(inTransaction, false);
+    events.push(fact);
+  });
+  const queue = new ExactReviewQueue({ storage }, { EXACT_REVIEW_PENDING_SOFT_LIMIT: "1" });
+  const request = (id: string, number: number) => {
+    const value = buildExactReviewQueueRequest(
+      id,
+      number,
+      "scheduled_hot_intake",
+      "issue",
+      "privacy-sentinel/observations",
+    );
+    value.headers.set("x-clawsweeper-exact-review-body-sha256", "a".repeat(64));
+    return value;
+  };
+  const first = await queue.fetch(request("private-first-delivery", 440001));
+  assert.equal((await first.json()).queued, true);
+  const replay = await queue.fetch(request("private-first-delivery", 440001));
+  assert.equal((await replay.json()).queued, true);
+  const shed = await queue.fetch(request("private-second-delivery", 440002));
+  assert.equal((await shed.json()).shed, true);
+  const conflicting = request("private-first-delivery", 440001);
+  conflicting.headers.set("x-clawsweeper-exact-review-body-sha256", "b".repeat(64));
+  assert.equal((await queue.fetch(conflicting)).status, 409);
+  assert.deepEqual(
+    events.map((event) => event.disposition),
+    ["queued", "replayed", "shed", "conflict"],
+  );
+  assert.equal(
+    events[0].target_hash,
+    createHash("sha256").update("privacy-sentinel/observations#440001").digest("hex"),
+  );
+  assert.equal(events[0].delivery_hash, events[1].delivery_hash);
+  assert.equal(events[0].source_class, "schedule");
+  assertConsoleCallsExclude(
+    events.map((event) => [event]),
+    ["privacy-sentinel", "private-first-delivery", "private-second-delivery"],
+  );
+
+  const unknown = new ExactReviewQueue({ storage: new MemoryDurableStorage() }, {});
+  await unknown.fetch(
+    buildExactReviewQueueRequest("private-unknown", 440003, "untrusted-action-body"),
+  );
+  assert.equal(events.at(-1)?.source_class, "unknown");
+  assert.equal(
+    (
+      await (
+        await unknown.fetch(
+          buildExactReviewQueueRequest("private-unknown", 440003, "untrusted-action-body"),
+        )
+      ).json()
+    ).deduped,
+    true,
+  );
+  assert.equal(events.at(-1)?.disposition, "deduped");
+  assertConsoleCallsExclude(
+    events.map((event) => [event]),
+    ["untrusted-action-body"],
+  );
+});
+
+test("queue observation failure cannot alter enqueue or report a rolled-back write", async (t) => {
+  const events: unknown[] = [];
+  t.mock.method(console, "info", (...values: unknown[]) => events.push(values));
+  const storage = new MemoryDurableStorage();
+  const queue = new ExactReviewQueue({ storage }, {});
+  await queue.fetch(new Request("https://queue.invalid/stats"));
+  storage.failNextSql(/INSERT INTO exact_review_queue_items/);
+  await assert.rejects(
+    queue.fetch(buildExactReviewQueueRequest("rolled-back", 440004, "opened")),
+    /injected SQL failure/,
+  );
+  assert.equal(events.length, 0);
+  t.mock.method(console, "info", () => {
+    throw new Error("observer unavailable");
+  });
+  assert.equal(
+    (await queue.fetch(buildExactReviewQueueRequest("logging-failed", 440004, "opened"))).status,
+    202,
+  );
+  t.mock.method(crypto.subtle, "digest", () => {
+    throw new Error("digest unavailable");
+  });
+  assert.equal(
+    (await queue.fetch(buildExactReviewQueueRequest("hashing-failed", 440005, "opened"))).status,
+    202,
+  );
+  const state = await storage.get("exact-review-queue");
+  assert.equal(Object.keys(state.items).length, 2);
+});
+
 test("ordinary queue and state-blob logs reject unbounded diagnostic arguments", () => {
   for (const relativePath of [
     "../dashboard/exact-review-queue.ts",
+    "../dashboard/exact-review-queue-observability.ts",
     "../dashboard/state-blobs.ts",
   ]) {
     const source = fs.readFileSync(new URL(relativePath, import.meta.url), "utf8");

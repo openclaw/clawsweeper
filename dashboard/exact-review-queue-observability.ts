@@ -1,3 +1,79 @@
+import { sha256Hex } from "./exact-review-direct-publication.ts";
+import {
+  exactReviewDecisionHasCommandContext,
+  isLowPriorityExactReviewDecision,
+  type ExactReviewDecision,
+} from "./exact-review-decision.ts";
+import { EXACT_REVIEW_ORGANIC_SOURCE_ACTIONS } from "./exact-review-review-loop.ts";
+import { exactReviewScheduledLane } from "./exact-review-queue-shared.ts";
+import { MANUAL_REVIEW_SOURCE_ACTION } from "../src/manual-publication-policy.ts";
+
+// These facts are advisory logs, never queue admission or lifetime accounting.
+// Only call after the owning transition and response preparation have succeeded.
+export async function observeExactReviewQueueFact(
+  decision: ExactReviewDecision,
+  fact: {
+    event: "enqueue_disposition" | "committed_start_acknowledgement" | "source_drift_loop_parked";
+    disposition?: "queued" | "deduped" | "replayed" | "shed" | "rejected" | "conflict";
+    deliveryId?: string;
+    leaseId?: string;
+    runId?: string;
+    revision?: number;
+    claimGeneration?: number;
+    runAttempt?: number;
+    consecutive?: number;
+    configuredLimit?: number;
+  },
+) {
+  try {
+    const opaque = (value: string | undefined) =>
+      value && value.length <= 1024 ? sha256Hex(new TextEncoder().encode(value)) : null;
+    const count = (value: number | undefined) =>
+      Number.isSafeInteger(value) && Number(value) >= 0 ? value : null;
+    const details = {
+      event: fact.event,
+      disposition: fact.disposition ?? null,
+      revision: count(fact.revision),
+      claim_generation: count(fact.claimGeneration),
+      run_attempt: count(fact.runAttempt),
+      source_class: exactReviewScheduledLane(decision)
+        ? "schedule"
+        : exactReviewDecisionHasCommandContext(decision)
+          ? "command"
+          : decision.sourceAction === MANUAL_REVIEW_SOURCE_ACTION
+            ? "manual"
+            : EXACT_REVIEW_ORGANIC_SOURCE_ACTIONS.has(decision.sourceAction)
+              ? "organic"
+              : isLowPriorityExactReviewDecision(decision)
+                ? "recovery"
+                : "unknown",
+      lane: decision.publication ? "publication" : "review",
+      consecutive: count(fact.consecutive),
+      configured_limit: count(fact.configuredLimit),
+    };
+    const [targetHash, deliveryHash, leaseHash, runHash] = await Promise.all([
+      opaque(`${decision.targetRepo.toLowerCase()}#${decision.itemNumber}`),
+      opaque(fact.deliveryId),
+      opaque(fact.leaseId),
+      opaque(fact.runId),
+    ]);
+    const entry = {
+      ...details,
+      target_hash: targetHash,
+      delivery_hash: deliveryHash,
+      lease_hash: leaseHash,
+      run_hash: runHash,
+    };
+    if (fact.event === "source_drift_loop_parked") {
+      console.warn("exact-review source-drift loop parked", entry);
+    } else {
+      console.info("exact_review_queue_fact", entry);
+    }
+  } catch {
+    // Hashing or logging must never fail a committed queue operation.
+  }
+}
+
 export const EXACT_REVIEW_QUEUE_TRACE_HEADER = "x-clawsweeper-exact-review-trace";
 
 const TRACE_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;

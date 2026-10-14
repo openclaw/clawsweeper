@@ -135,7 +135,11 @@ async function driveToParked(
   return claimed;
 }
 
-test("automatic source-drift requeues park after the limit until organic input", async () => {
+test("automatic source-drift requeues park after the limit until organic input", async (t) => {
+  const parks: Array<Record<string, unknown>> = [];
+  t.mock.method(console, "warn", (message: string, details: Record<string, unknown>) => {
+    if (message === "exact-review source-drift loop parked") parks.push(details);
+  });
   const h = harness();
   await withExactReviewAdmissionHarness(h, async () => {
     const number = 97616;
@@ -144,6 +148,12 @@ test("automatic source-drift requeues park after the limit until organic input",
     const parked = (await queueState(h)).items[key]!;
     assert.equal(parked.state, "parked");
     assert.equal(parked.parkedReason, "source_drift_loop");
+    assert.equal(parks.length, 1);
+    assert.equal(parks[0].event, "source_drift_loop_parked");
+    assert.equal(parks[0].consecutive, 3);
+    assert.match(String(parks[0].target_hash), /^[a-f0-9]{64}$/);
+    assert.match(String(parks[0].delivery_hash), /^[a-f0-9]{64}$/);
+    assert.ok(!JSON.stringify(parks).includes(repo));
     const dispatches = h.dispatched.length;
     await h.queue.alarm();
     assert.equal(h.dispatched.length, dispatches, "a parked loop spends no review");

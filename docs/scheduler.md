@@ -153,6 +153,23 @@ environment, validates it, and prints the JSON body for `control_plane_curl`.
 `--generation-start` only with `--phase review`, as the queue requires. An
 invalid tuple stops the step before any request.
 
+The queue emits best-effort structured Workers Logs after committed enqueue
+outcomes and newly acknowledged review starts. `enqueue_disposition` records
+queued, deduped, replayed, shed, rejected or conflicting intake; validation
+failures before the transaction are excluded. `committed_start_acknowledgement`
+follows the first accepted generation-start heartbeat's state write, alarm
+scheduling and response preparation. Replayed heartbeats, publication work and
+terminal finalizers do not produce another review-start fact. This acknowledges
+the queue transition, not model execution or receipt by the caller.
+
+These facts and the existing source-drift park warnings contain bounded counts,
+finite trigger classes and SHA-256 hashes for target, delivery, lease and run
+joins. They omit raw identifiers, URLs, bodies and actor data. Hashes permit
+correlation; they are not anonymization. Logging/hash failures do not change
+queue outcomes. Logs may be sampled or lost and have finite retention: they
+cannot establish a lifetime review allowance, enforce cadence or prove a
+complete review history. No admission policy or durable accounting changes.
+
 After checkout, the direct lifecycle step in `event-review-apply` and the
 receipt steps in `event-review-publish` build their lifecycle bodies with
 `exact-review-queue-request.js lifecycle <router-receipt|canonical-receipt|terminal-disposition>`.
