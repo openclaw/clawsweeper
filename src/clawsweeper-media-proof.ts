@@ -65,12 +65,7 @@ export function isGitHubMediaAttachmentUrl(url: URL): boolean {
 }
 
 function proofMediaUrlsFromContext(context: ItemContext): string[] {
-  const {
-    pullCommitsRevision: __,
-    prHydrationSnapshot: ___,
-    pullFiles: ____,
-    ...proofContext
-  } = context;
+  const { pullCommitsRevision: __, pullFilesRaw: ___, pullFiles: ____, ...proofContext } = context;
   // PR patches and supplemental body excerpts are reviewer text, never host download inputs.
   const text = JSON.stringify(proofContext, (key, value) =>
     key === "bodyCoverage" ? undefined : value,

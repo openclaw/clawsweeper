@@ -206,6 +206,9 @@ test("idle alarms checkpoint raw candidates, resume once, and stop despite ineli
   assert.ok(completed.completedAt);
   assert.equal(completed.scanned, 128);
   assert.equal(completed.afterRowid, initial.upperRowid);
+  // The independent finite hydration-field sweep may still have cache-free
+  // canonical identities to classify after backfill retirement finishes.
+  for (let pass = 0; pass < 40 && (await storage.getAlarm()) !== null; pass++) await queue.alarm();
   assert.equal(await storage.getAlarm(), null);
   queue = new ExactReviewQueue({ storage }, {});
   await queue.fetch(request());

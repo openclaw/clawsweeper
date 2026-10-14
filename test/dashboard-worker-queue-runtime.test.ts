@@ -435,6 +435,7 @@ test("alarm scheduling keeps a closed reason set and stable tie priority", async
       "credential_circuit",
       "payload_maintenance",
       "backfill_shadow_cleanup",
+      "hydration_cache_cleanup",
     ],
   );
 

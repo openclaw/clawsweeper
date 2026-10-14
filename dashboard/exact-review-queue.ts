@@ -897,6 +897,7 @@ const DEFAULT_STATE_WRITER_COORDINATOR_QUEUED_STALE_MS = 2 * 60_000;
 const EXACT_REVIEW_ALARM_SAMPLE_WINDOW_MS = 60_000;
 const EXACT_REVIEW_ALARM_SAMPLE_THRESHOLD = 10;
 const BACKFILL_SHADOW_CLEANUP_KEY = "record-backfill-shadow-cleanup:v1";
+const HYDRATION_CACHE_CLEANUP_KEY = "record-hydration-cache-cleanup:v1";
 type BackfillShadowCleanup = {
   upperRowid: number;
   afterRowid: number;
@@ -906,9 +907,17 @@ type BackfillShadowCleanup = {
   startedAt: number;
   completedAt: number | null;
 };
+type HydrationCacheCleanup = BackfillShadowCleanup & {
+  conflicts: number;
+  passConflicts: number;
+  unresolved: number;
+  deferredAfterRowid: number | null;
+  passes: number;
+  blockedAt: number | null;
+};
 type AlarmWakeReason =
   | `batch_${"lease" | "departure"}`
-  | `${"queue" | "source_authority" | "command_intake" | "credential_circuit" | "payload_maintenance" | "backfill_shadow_cleanup"}`;
+  | `${"queue" | "source_authority" | "command_intake" | "credential_circuit" | "payload_maintenance" | "backfill_shadow_cleanup" | "hydration_cache_cleanup"}`;
 type AlarmScheduleDecision = readonly [AlarmWakeReason, number, number];
 // A watchdog may keep a synchronous Git operation alive, but it cannot turn a
 // hung runner into a permanent queue owner. The Git fence blocks any in-flight
@@ -1136,6 +1145,8 @@ export class ExactReviewQueue {
         ok: true,
         generated_at: new Date().toISOString(),
         storage: storageStats(this.storage.sql),
+        // Committed logical bytes removed, not an estimate of remaining size.
+        hydrationCacheCleanup: this.storage.kv.get(HYDRATION_CACHE_CLEANUP_KEY) ?? null,
       });
     }
 
@@ -5286,6 +5297,14 @@ export class ExactReviewQueue {
     await this.processBranchAuthorityReservations(startedAt, hostedTargetMetadataToken);
     await this.processSourceAuthorityReservations(startedAt, hostedTargetMetadataToken);
     await this.processCommandIntakes(startedAt, hostedTargetMetadataToken);
+    const hydrationCleanup = this.hydrationCacheCleanup();
+    const hydrationPass =
+      hydrationCleanup?.completedAt === null && hydrationCleanup.blockedAt === null
+        ? await this.directPublicationStore.prepareHydrationCleanup(
+            hydrationCleanup.afterRowid,
+            hydrationCleanup.upperRowid,
+          )
+        : null;
     const batchItemKeys = new Set<string>(this.batchStore.activeLeaseSnapshot(startedAt).itemKeys);
     const maintenance = this.storage.transactionSync(() => {
       this.pruneDeliveryReceiptsSync(startedAt);
@@ -5293,10 +5312,38 @@ export class ExactReviewQueue {
       this.directPublicationStore.pruneTerminalSync(startedAt);
       const payloads = this.githubWebhookReadModelStore.prunePayloadsSync(startedAt);
       const backfillShadows = this.pruneBackfillShadowsSync(startedAt);
+      let hydrationCache: HydrationCacheCleanup | null = null;
+      if (hydrationPass && hydrationCleanup) {
+        const pass = this.directPublicationStore.retireHydrationCacheSync(
+          hydrationPass,
+          hydrationCleanup.afterRowid,
+          startedAt,
+        );
+        const deferredAfterRowid = hydrationCleanup.deferredAfterRowid ?? pass.deferredAfterRowid;
+        const passes = hydrationCleanup.passes + Number(pass.complete);
+        const passConflicts = hydrationCleanup.passConflicts + pass.conflicts;
+        const unresolved = pass.complete && deferredAfterRowid !== null;
+        const next: HydrationCacheCleanup = {
+          ...hydrationCleanup,
+          afterRowid: unresolved ? deferredAfterRowid : pass.afterRowid,
+          scanned: hydrationCleanup.scanned + pass.scanned,
+          retired: hydrationCleanup.retired + pass.retired,
+          retiredBytes: hydrationCleanup.retiredBytes + pass.retiredBytes,
+          completedAt: pass.complete && !unresolved ? startedAt : null,
+          conflicts: hydrationCleanup.conflicts + pass.conflicts,
+          passConflicts: pass.complete ? 0 : passConflicts,
+          unresolved: pass.complete ? passConflicts : hydrationCleanup.unresolved,
+          deferredAfterRowid: pass.complete ? null : deferredAfterRowid,
+          passes,
+          blockedAt: unresolved && passes >= 3 ? startedAt : null,
+        };
+        this.storage.kv.put(HYDRATION_CACHE_CLEANUP_KEY, next);
+        hydrationCache = next;
+      }
       const current = this.readStateSync();
       this.syncLegacyCompatibilitySync(current);
       this.pruneStalePublicationsSync(current, batchItemKeys, startedAt);
-      return { current, payloads, backfillShadows };
+      return { current, payloads, backfillShadows, hydrationCache };
     });
     let snapshot = maintenance.current;
     if (maintenance.payloads.scanned > 0) {
@@ -5309,6 +5356,8 @@ export class ExactReviewQueue {
     if (maintenance.backfillShadows) {
       console.log("record_backfill_shadow_cleanup", maintenance.backfillShadows);
     }
+    if (maintenance.hydrationCache)
+      console.log("record_hydration_cache_cleanup", maintenance.hydrationCache);
     let snapshotBatchOwnership = this.batchStore.activeLeaseSnapshot(startedAt);
     const reclaimedSnapshot = reclaimExpiredExactReviewLeases(
       snapshot,
@@ -11347,6 +11396,25 @@ export class ExactReviewQueue {
           completedAt: upperRowid === 0 ? now : null,
         } satisfies BackfillShadowCleanup);
       }
+      if (this.storage.kv.get(HYDRATION_CACHE_CLEANUP_KEY) === undefined) {
+        const upperRowid = this.directPublicationStore.hydrationCleanupUpperRowidSync();
+        const now = Date.now();
+        this.storage.kv.put(HYDRATION_CACHE_CLEANUP_KEY, {
+          upperRowid,
+          afterRowid: 0,
+          scanned: 0,
+          retired: 0,
+          retiredBytes: 0,
+          conflicts: 0,
+          passConflicts: 0,
+          unresolved: 0,
+          deferredAfterRowid: null,
+          passes: 0,
+          blockedAt: null,
+          startedAt: now,
+          completedAt: upperRowid === 0 ? now : null,
+        } satisfies HydrationCacheCleanup);
+      }
     });
     await this.scheduleStorageMaintenance();
   }
@@ -14646,6 +14714,7 @@ export class ExactReviewQueue {
       | "source_authority"
       | "command_intake"
       | "payload_maintenance"
+      | "hydration_cache_cleanup"
       | "backfill_shadow_cleanup" = "source_authority",
   ) {
     const scheduled = await this.storage.getAlarm();
@@ -14670,6 +14739,29 @@ export class ExactReviewQueue {
     if (cleanup?.completedAt === null) {
       await this.armAuxiliaryWake(Date.now(), "backfill_shadow_cleanup");
     }
+    if (this.hydrationCacheCleanupPending())
+      await this.armAuxiliaryWake(Date.now(), "hydration_cache_cleanup");
+  }
+
+  private hydrationCacheCleanup(): HydrationCacheCleanup | undefined {
+    const cleanup = this.storage.kv.get(HYDRATION_CACHE_CLEANUP_KEY) as
+      | HydrationCacheCleanup
+      | undefined;
+    if (
+      cleanup &&
+      (!Number.isSafeInteger(cleanup.upperRowid) ||
+        !Number.isSafeInteger(cleanup.afterRowid) ||
+        cleanup.afterRowid < 0 ||
+        cleanup.afterRowid > cleanup.upperRowid)
+    ) {
+      throw new Error("invalid hydration cache cleanup cursor");
+    }
+    return cleanup;
+  }
+
+  private hydrationCacheCleanupPending() {
+    const cleanup = this.hydrationCacheCleanup();
+    return cleanup?.completedAt === null && cleanup.blockedAt === null;
   }
 
   private backfillShadowCleanup(): BackfillShadowCleanup | undefined {
@@ -14807,6 +14899,7 @@ export class ExactReviewQueue {
       ["credential_circuit", credentialCircuitNext],
       ["payload_maintenance", this.githubWebhookReadModelStore.nextPayloadMaintenanceAtSync()],
       ["backfill_shadow_cleanup", this.backfillShadowCleanup()?.completedAt === null ? now : null],
+      ["hydration_cache_cleanup", this.hydrationCacheCleanupPending() ? now : null],
     ];
     const selected = candidates.reduce(
       (a, b) => (b[1] !== null && b[1] < (a?.[1] ?? Infinity) ? b : a),

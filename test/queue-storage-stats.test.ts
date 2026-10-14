@@ -56,6 +56,14 @@ test("queue storage stats are served only to signed internal requests", async ()
     EXACT_REVIEW_QUEUE: new MemoryDurableNamespace(queue),
   };
   const path = "/internal/exact-review/storage-stats";
+  const cleanup = {
+    retired: 2,
+    retiredBytes: 42,
+    completedAt: 123,
+    unresolved: 0,
+    blockedAt: null,
+  };
+  storage.kv.put("record-hydration-cache-cleanup:v1", cleanup);
 
   const unsigned = await worker.fetch(
     stateAppendQueueRequest(path, {}, "https://clawsweeper.openclaw.ai"),
@@ -68,8 +76,10 @@ test("queue storage stats are served only to signed internal requests", async ()
   const body = (await signed.json()) as {
     ok: boolean;
     storage: { tables: { table: string; rows: number }[] };
+    hydrationCacheCleanup: typeof cleanup;
   };
   assert.equal(body.ok, true);
+  assert.deepEqual(body.hydrationCacheCleanup, cleanup);
   // The report lists exactly the tables the store holds, with their row counts.
   assert.deepEqual(
     body.storage.tables.map((table) => [table.table, table.rows]),

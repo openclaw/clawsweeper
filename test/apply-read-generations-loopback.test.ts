@@ -15,9 +15,4 @@ test("apply read-generation loopback proof preserves mutation barriers", () => {
   });
   assert.equal(result.concurrent_head_blocked, true);
   assert.equal(result.concurrent_comment_blocked, true);
-  assert.deepEqual(result.validated_snapshot_list_reads, {
-    files: 0,
-    commits: 0,
-    inline_comments: 0,
-  });
 });

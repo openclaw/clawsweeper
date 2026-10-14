@@ -12,7 +12,6 @@ import {
 } from "./commit-sweeper.js";
 import type { Args } from "./clawsweeper-args.js";
 import type { CreateReviewCommandWorkflowDependencies } from "./clawsweeper-review-command-dependencies.js";
-import { parsePrCommentActivityRevisionMap } from "./pr-hydration-snapshot.js";
 import {
   EXACT_REVIEW_FAILURE_DIAGNOSTICS_MAX_BYTES,
   EXACT_REVIEW_FAILURE_DIAGNOSTICS_MAX_FILES,
@@ -128,9 +127,6 @@ export function prepareReviewCommand(args: Args, dependencies: PrepareReviewDepe
     const itemNumbers = hasItemNumbersInput
       ? itemNumbersArg(args.item_numbers, undefined)
       : undefined;
-    const prCommentActivityRevisions = parsePrCommentActivityRevisionMap(
-      stringArg(args.pr_comment_activity_revisions, ""),
-    );
     if (localRange && (itemNumber !== undefined || itemNumbers !== undefined)) {
       throw new UserFacingCommandError(
         "--item-number / --item-numbers cannot be combined with --local-range (local-range reviews " +
@@ -368,7 +364,6 @@ export function prepareReviewCommand(args: Args, dependencies: PrepareReviewDepe
       localOnly,
       itemNumber,
       itemNumbers,
-      prCommentActivityRevisions,
       humanLocalReview,
       openclawDir,
       artifactDir,
