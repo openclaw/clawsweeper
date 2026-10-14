@@ -4,7 +4,7 @@
 const DEFAULT_DASHBOARD_SITE_ORIGIN = "https://clawsweeper-dashboard.pages.dev";
 
 const PAGE_PATH =
-  /^\/(?:index\.html|(?:throughput|quality|queue|operations|coverage|repos)(?:\/.*)?|_astro\/.+|favicon\.png|clawsweeper\.png)?$/;
+  /^\/(?:index\.html|(?:agent|throughput|quality|queue|operations|coverage|repos)(?:\/.*)?|_astro\/.+|favicon\.png|clawsweeper\.png)?$/;
 
 export function isDashboardSitePath(pathname: string): boolean {
   return PAGE_PATH.test(pathname);
