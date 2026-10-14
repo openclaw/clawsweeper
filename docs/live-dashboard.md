@@ -691,19 +691,22 @@ or `recover-fresh` these rows through the signed parked-review routes, and the
 periodic terminal check still removes closed or head-advanced targets. The lane
 breakdown counts them under `parked_reasons.source_drift_loop`.
 
-Review items parked as `locked_conversation` or `oversized_pull_request` are
-holds for deterministic no-ops, not failures. A review run for an open but
+Review items parked as `locked_conversation`, `oversized_pull_request`, or
+`maintainer_request_required` are holds for deterministic no-ops, not failures.
+A review run for an open but
 locked conversation completes without Codex, and a run for a PR above the size
-limit takes the metadata-only size path; neither writes anything the scheduled
-planners can see, so without the hold the same unchanged item is offered and
-claimed again every tick. The queue keeps the completed row parked instead,
+limit takes the metadata-only size path. Maintainer items without an explicit
+request or automation opt-in also skip review. None writes a completed review
+the scheduled planners can see, so without the hold the same unchanged item is
+offered and claimed again every tick. The queue keeps the completed row parked instead,
 scheduled offers dedupe against it with that reason, and automatic recoveries
 dedupe with `dedupe_scope: review_hold`. Any other admitted input releases the
 hold: an organic webhook event such as `unlocked` or `synchronize`, an explicit
 command, or a manual review. The periodic terminal check removes closed and
 head-advanced targets, and the parked-review reconciler recovers a row whose
 source identity changed (for example an unlock or a `size: accepted-large`
-label). Command reviews and PRs without a pinned head are never held.
+label). Command reviews are never held; oversized PR holds also require a
+pinned head.
 
 `review_runaway_health` is the companion alert for any self-feeding loop the
 breaker does not stop, such as a command continuation. The queue records each

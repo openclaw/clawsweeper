@@ -111,13 +111,14 @@ export function exactReviewScheduledOfferReleasesSourceDriftLoop(
 }
 
 /**
- * Deterministic automatic outcomes that cannot change until the target does: a
- * locked conversation completes as a guarded no-op, and an oversized PR head
- * always takes the metadata-only size policy. Nothing durable records either
- * outcome, so the completed row stays parked under this reason and scheduled
- * offers dedupe against it instead of claiming another run.
+ * Keep deterministic no-ops parked: no completed review exists to suppress
+ * scheduled offers. Organic changes and explicit requests release the hold.
  */
-export const EXACT_REVIEW_HOLD_REASONS = ["locked_conversation", "oversized_pull_request"] as const;
+export const EXACT_REVIEW_HOLD_REASONS = [
+  "locked_conversation",
+  "oversized_pull_request",
+  "maintainer_request_required",
+] as const;
 export type ExactReviewHoldReason = (typeof EXACT_REVIEW_HOLD_REASONS)[number];
 
 export function exactReviewHoldReason(value: unknown): ExactReviewHoldReason | null {
@@ -134,7 +135,7 @@ export function exactReviewHoldApplies(
   decision: ExactReviewDecision,
 ): boolean {
   if (decision.publication || exactReviewDecisionHasCommandContext(decision)) return false;
-  if (reason === "locked_conversation") return true;
+  if (reason !== "oversized_pull_request") return true;
   return (
     decision.itemKind === "pull_request" &&
     /^[0-9a-f]{40}$/.test(String(decision.sourceHeadSha || ""))

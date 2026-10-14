@@ -191,7 +191,11 @@ function scenarios() {
       targetBranch: "main",
     };
     const maintainer = { ...issue, author_association: "MEMBER" };
-    const skipped = { proceed: "false", scheduled_semantic_noop: "true" };
+    const skipped = {
+      proceed: "false",
+      scheduled_semantic_noop: "true",
+      review_hold: "maintainer_request_required",
+    };
     cases.push(
       make("maintainer-event", "edited", {
         issue: maintainer,
@@ -242,6 +246,9 @@ function scenarios() {
       }),
       make("maintainer-opt-in", "edited", {
         issue: { ...maintainer, labels: [{ name: "clawsweeper:autofix" }] },
+      }),
+      make("maintainer-automerge", "edited", {
+        issue: { ...maintainer, labels: [{ name: "clawsweeper:automerge" }] },
       }),
       make("maintainer-redacted", "edited", {
         issue: { ...issue, author_association: "CONTRIBUTOR", user: { login: "maintainer" } },
@@ -821,6 +828,11 @@ export function runReadScopeProof({
             )
           : undefined;
       const after = execute(candidate, scenario);
+      assert.equal(
+        after.outputs.review_hold,
+        scenario.expected.review_hold,
+        `${scenario.name}: review hold`,
+      );
       if (scenario.credentials)
         assert.deepEqual(
           after.trace
