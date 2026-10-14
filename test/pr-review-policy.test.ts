@@ -148,6 +148,19 @@ test("pre-upgrade missing provenance and unverified reports do not consume the f
   assert.equal(store.hasCompletedPullRequestReview("openclaw-gogcli", 42), true);
 });
 
+test("first post-upgrade pruning records a valid legacy answer before deleting its receipt", async () => {
+  const storage = new MemoryDurableStorage();
+  await publish(storage, 1, report());
+  storage.sql.exec("DELETE FROM exact_review_pull_request_answers");
+  const upgraded = new ExactReviewDirectPublicationStore(storage);
+  upgraded.ensureSchemaSync();
+  upgraded.pruneTerminalSync(Date.now() + 8 * 24 * 60 * minute);
+  assert.equal(upgraded.list().length, 0);
+  assert.equal(upgraded.hasCompletedPullRequestReview("openclaw-gogcli", 42), true);
+  await publish(storage, 2, report("failed"));
+  assert.equal(upgraded.hasCompletedPullRequestReview("openclaw-gogcli", 42), true);
+});
+
 function pull() {
   return {
     state: "open",

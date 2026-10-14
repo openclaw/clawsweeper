@@ -82,6 +82,7 @@ export class ProofQueue extends ExactReviewQueue {
     if (input.op === 'tick') await super.alarm();
     else if (input.op === 'publish') this.directPublicationStore.accept(
       await validateDirectPublicationPlan(input.data), now);
+    else if (input.op === 'prune') this.directPublicationStore.pruneTerminalSync(now);
     else if (input.op === 'legacy-publish') {
       this.storage.sql.exec('DROP TABLE exact_review_pull_request_answers');
       const legacy = new LegacyPublicationStore(this.storage);
@@ -249,7 +250,13 @@ try {
     result = await call(name, "enqueue", t0, enqueue(name));
     assert.equal(result.body.queued, true);
   }
-  for (const name of ["legacy-stale", "legacy-valid", "legacy-pruned-valid", "legacy-unverified"]) {
+  for (const name of [
+    "legacy-stale",
+    "legacy-valid",
+    "legacy-pruned-valid",
+    "legacy-unverified",
+    "legacy-prune-on-upgrade",
+  ]) {
     const plan = publication("complete", name === "legacy-stale" ? "requeue" : "router");
     if (name === "legacy-unverified") {
       const operation = plan.operations[0];
@@ -266,9 +273,17 @@ try {
   }
   await mf.dispose();
   mf = start();
-  for (const name of ["legacy-stale", "legacy-valid", "legacy-pruned-valid", "legacy-unverified"]) {
+  await call("legacy-prune-on-upgrade", "prune", t0 + 8 * 24 * 60 * minute);
+  for (const name of [
+    "legacy-stale",
+    "legacy-valid",
+    "legacy-pruned-valid",
+    "legacy-unverified",
+    "legacy-prune-on-upgrade",
+  ]) {
     result = await call(name, "enqueue", t0 + 8 * 24 * 60 * minute, enqueue(name));
-    if (name === "legacy-valid") assert.equal(result.body.dedupe_reason, "review_request_required");
+    if (name === "legacy-valid" || name === "legacy-prune-on-upgrade")
+      assert.equal(result.body.dedupe_reason, "review_request_required");
     else assert.equal(result.body.queued, true, name);
   }
   result = await call(

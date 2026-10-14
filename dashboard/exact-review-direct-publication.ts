@@ -1189,14 +1189,13 @@ export class ExactReviewDirectPublicationStore {
   }
 
   pruneTerminalSync(now: number) {
-    // On upgrade, preserve stale-source provenance before its old receipt is
-    // pruned. Otherwise the surviving report looks like a completed answer.
-    const staleRecords = Array.from(
+    // Seed both completed and stale-source outcomes before pruning old receipts.
+    // Otherwise an upgrade can lose the only proof that a PR was answered.
+    const publishedRecords = Array.from(
       this.storage.sql.exec(
         `SELECT DISTINCT canonical_target_key
          FROM ${EXACT_REVIEW_DIRECT_PUBLICATION_TABLE}
-        WHERE state = 'published' AND json_extract(lifecycle_json, '$.kind') = 'requeue'
-          AND rowid IN (
+        WHERE state = 'published' AND rowid IN (
             SELECT rowid FROM ${EXACT_REVIEW_DIRECT_PUBLICATION_TABLE}
              WHERE state IN ('published', 'superseded', 'failed') AND updated_at <= ?
              ORDER BY updated_at, item_key, revision
@@ -1205,7 +1204,7 @@ export class ExactReviewDirectPublicationStore {
         now - EXACT_REVIEW_DIRECT_PUBLICATION_RETENTION_MS,
       ),
     );
-    for (const record of staleRecords) {
+    for (const record of publishedRecords) {
       const [repo, itemId] = String(record.canonical_target_key).split("#");
       this.hasCompletedPullRequestReview(repo!.replaceAll("/", "-"), Number(itemId));
     }

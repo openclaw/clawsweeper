@@ -44,6 +44,7 @@ identities for all nine policy source files and the legacy fixture.
 - The previous implementation writes and prunes legacy records. After a fresh
   Worker opens that database, unverified and already-pruned reports remain
   eligible. A verified report with retained completion provenance stays answered.
+  Pruning first after upgrade also records that answer before deleting its receipt.
 - An explicit request and an autofix opt-in each dispatch successfully.
 - Removing the autofix label after dispatch rejects the delayed automatic claim.
 
