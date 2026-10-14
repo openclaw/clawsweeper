@@ -15,8 +15,8 @@ import test from "node:test";
 
 import { WorkerBlobsUnavailableError, materializeStateBlobs } from "../scripts/worker-blobs.ts";
 
-const firstPath = "ledger/v1/events/first.jsonl";
-const secondPath = "ledger/v1/import-bindings/events/second.json";
+const firstPath = "assets/first.jsonl";
+const secondPath = "assets/second.json";
 const content = Buffer.from("synthetic ledger event\n");
 const digest = createHash("sha256").update(content).digest("hex");
 
@@ -26,7 +26,7 @@ test("blob hydration stages each page before listing the next and reuses its dig
   const fetch: typeof globalThis.fetch = async (input, init) => {
     const request = JSON.parse(String(init?.body));
     if (String(input).endsWith("/list")) {
-      if (request.prefix === "assets/") return Response.json({ blobs: [], nextCursor: null });
+      if (request.prefix === "ledger/v1/") return Response.json({ blobs: [], nextCursor: null });
       if (request.cursor) {
         assert.equal(request.cursor, "second-page");
         assert.equal(readFileSync(stagedPath(root, firstPath), "utf8"), content.toString());
@@ -50,7 +50,7 @@ test("blob hydration stages each page before listing the next and reuses its dig
     assert.equal(first.bytes, content.byteLength * 2);
     assert.equal(first.downloads, 1);
     assert.equal(first.cacheHits, 1);
-    assert.deepEqual(first.trees, { "ledger/v1": 2, assets: 0 });
+    assert.deepEqual(first.trees, { "ledger/v1": 0, assets: 2 });
     assert.equal(readFileSync(path.join(root, firstPath), "utf8"), content.toString());
     assert.equal(readFileSync(path.join(root, secondPath), "utf8"), content.toString());
 

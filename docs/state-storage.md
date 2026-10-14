@@ -88,8 +88,23 @@ read only their open/closed reports, plans, and decision packets. Those focused
 reads do not depend on repository-wide snapshots or journal exports.
 Explicit ledger/assets hydration streams one R2 listing page into its staging
 tree at a time; descriptor memory does not grow with the entire prefix. It still
-downloads the complete requested trees and replaces local trees only after all
-pages and downloads succeed. This is not a retention or pruning operation.
+downloads the complete requested trees. Before replacing the local view, it
+checks each completed action-ledger import against its existing reservation and
+fetches any payload or binding missed by listing pagination. A malformed or
+incomplete committed import fails before replacement. Direct legacy shards with
+neither transaction marker remain readable.
+
+An import with a valid reservation and an authoritative missing completion is
+unfinished. Hydration excludes its currently staged payloads, retains its
+bindings and all remote objects, and reports bounded producer examples and
+omitted counts. A later hydration can include it after publication completes.
+`blobs` and `bytes` count acquired objects (listed plus `closureBlobs`);
+`trees` counts the initial listings. `materializedBlobs` and
+`materializedBytes` exclude the reported omitted payloads. This is not a
+retention or pruning operation, and it does not promise a snapshot across R2
+listing pages. Local tree replacement remains the existing remove-then-rename
+operation; custom subtree selection also retains its existing top-level
+replacement behavior.
 Jobs that need operational Git state receive a sparse checkout containing only
 the retained paths above. Canonical-only lanes set `hydrate-git-state: "false"`
 and never mint or use a state-repository token.

@@ -988,21 +988,21 @@ export class GithubWebhookReadModelStore {
       GITHUB_WEBHOOK_READ_MODEL_PLACEHOLDER_REPAIR_TTL_MS,
       now,
     );
-    const comments = Array.from(
-      this.storage.sql.exec(
-        `SELECT c.number, c.snapshot_json, c.source_updated_at, i.number AS item_number,
-                i.item_kind, i.snapshot_json AS item_json, i.payload_pruned AS item_pruned
+    const comments = this.storage.sql.exec(
+      `SELECT c.number, c.snapshot_json, c.source_updated_at, i.number AS item_number,
+              i.item_kind, i.snapshot_json AS item_json, i.payload_pruned AS item_pruned
            FROM github_webhook_read_model_comments_v1 c
            LEFT JOIN github_webhook_read_model_items_v1 i
              ON i.repository = c.repository AND i.number = c.number
           WHERE c.repository = ? AND c.tombstone = 0
             AND c.payload_pruned = 0
           ORDER BY c.source_updated_at ASC, c.comment_id ASC`,
-        repository,
-      ),
+      repository,
     );
     const byNumber = new Map<number, { item: JsonRecord; comments: JsonRecord[] }>();
     let gapDetected = false;
+    // Keep only selected groups, but drain the cursor: later comments can change
+    // the selected placeholder or expose a retired parent that requires repair.
     for (const row of comments) {
       const comment = parseJsonRecord(String(row.snapshot_json));
       if (!String(comment.body || "").includes(REVIEW_PLACEHOLDER_MARKER)) continue;
@@ -1012,12 +1012,16 @@ export class GithubWebhookReadModelStore {
         gapDetected = true;
         continue;
       }
+      const number = Number(row.number);
+      const entry = byNumber.get(number);
+      if (entry) {
+        entry.comments.push(comment);
+        continue;
+      }
+      if (byNumber.size >= limit) continue;
       const item = itemSnapshotWithKind(parseJsonRecord(String(row.item_json)), row.item_kind);
       if (state !== "all" && String(item.state || "").toLowerCase() !== state) continue;
-      const number = Number(row.number);
-      const entry = byNumber.get(number) ?? { item, comments: [] };
-      entry.comments.push(comment);
-      byNumber.set(number, entry);
+      byNumber.set(number, { item, comments: [comment] });
     }
     const classState = this.classState("issue_comments", now);
     return {
@@ -1027,7 +1031,7 @@ export class GithubWebhookReadModelStore {
       usable: classState.available && Boolean(repair) && !repairFreshness.stale && !gapDetected,
       gap_detected: gapDetected,
       freshness: repairFreshness,
-      candidates: [...byNumber.entries()].slice(0, limit).map(([number, entry]) => ({
+      candidates: [...byNumber.entries()].map(([number, entry]) => ({
         number,
         item: entry.item,
         comments: entry.comments,

@@ -1,7 +1,7 @@
 import { constants as bufferConstants, isUtf8 } from "node:buffer";
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { sha256 } from "./content-hash.js";
+import { sha256 } from "./content-hash.ts";
 import fs from "node:fs";
 import path from "node:path";
 
