@@ -194,6 +194,34 @@ export const DEFERRED_CONTINUATION_SCENARIOS = {
     });
     await reviewOnce(h, number);
   },
+  "newer-command-answered-under-other-casing": async (h: Harness, number: number) => {
+    // The same item reached under another repository casing is the same item.
+    const casedKey = `OpenClaw/OpenClaw#${number}`;
+    await enqueue(h, "newer-request-other-casing", {
+      ...verifiedRequest(number, 6150293398),
+      targetRepo: "OpenClaw/OpenClaw",
+      statusCommentId: 7000 + number,
+      sourceCommentUpdatedAt: "2026-10-13T16:50:00Z",
+    });
+    await h.queue.alarm();
+    const review = (await queueState(h)).items[casedKey];
+    assert.ok(review?.leaseId, "the newer request under another casing was dispatched");
+    const tuple = {
+      item_key: casedKey,
+      lease_id: review.leaseId,
+      lease_revision: review.leaseRevision,
+      run_id: String(runCounter++),
+      run_attempt: 1,
+    };
+    const claim = await post(h, "/claim", tuple);
+    assert.equal(claim.status, 200, JSON.stringify(claim.body));
+    const complete = await post(h, "/complete", {
+      ...tuple,
+      claim_generation: claim.body.claim_generation,
+      outcome: "success",
+    });
+    assert.equal(complete.status, 200, JSON.stringify(complete.body));
+  },
   "newer-publication": async (h: Harness, number: number) => {
     // A later review generation's publication waits behind the held one.
     const newer = await deferredPublication(h, decision(number, "edited"));

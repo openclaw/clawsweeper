@@ -892,14 +892,21 @@ export class ExactReviewLifecycleProjectionStore {
     return this.readSync(canonicalTargetKey, fenceKey, revision);
   }
 
-  /** Whether a different command was admitted at this fence after `revision`. */
+  /**
+   * Whether a different command was admitted at this review fence after
+   * `revision`, under any repository casing. Every casing of an item shares one
+   * revision counter, and the repository index keeps this to one repository.
+   */
   otherCommandAdmittedAfter(fenceKey: string, revision: number, command: CommandStatusAddress) {
     if (!validFenceKey(fenceKey) || !positiveInteger(revision)) return true;
+    const fence = fenceKey.toLowerCase();
     return Array.from(
       this.storage.sql.exec(
         `SELECT projection_json FROM ${EXACT_REVIEW_LIFECYCLE_PROJECTION_TABLE}
-          WHERE fence_key = ? AND revision > ?`,
-        fenceKey,
+          WHERE LOWER(SUBSTR(canonical_target_key, 1, INSTR(canonical_target_key, '#') - 1)) = ?
+            AND LOWER(fence_key) = ? AND revision > ?`,
+        fence.slice(0, fence.indexOf("#")),
+        fence,
         revision,
       ),
     ).some((row) => {
