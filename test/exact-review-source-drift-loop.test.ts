@@ -590,6 +590,23 @@ function organicEdit(number: number) {
   return decision(number, "edited", { sourceUpdatedAt: "2026-10-13T16:45:00Z" });
 }
 
+/** Queue an organic review and claim its lease, as its review run would. */
+async function claimOrganicReview(h: Harness, number: number) {
+  await enqueue(h, "organic-edit", organicEdit(number));
+  await h.queue.alarm();
+  const active = (await queueState(h)).items[`${repo}#${number}`]!;
+  const tuple = {
+    item_key: active.key,
+    lease_id: active.leaseId,
+    lease_revision: active.leaseRevision,
+    run_id: String(8_000_000 + number),
+    run_attempt: 1,
+  };
+  const claim = await post(h, "/claim", tuple);
+  assert.equal(claim.status, 200, JSON.stringify(claim.body));
+  return { ...tuple, claim_generation: claim.body.claim_generation };
+}
+
 test("a deferred requeue hands the open request to a pending review queued for newer source", async () => {
   // The production debounce keeps the organic review pending.
   const h = harness({ EXACT_REVIEW_DISPATCH_DEBOUNCE_MS: "90000" });
@@ -666,37 +683,16 @@ test("a deferred requeue leaves other queued reviews untouched and answers the r
       name: "active review",
       env: { EXACT_REVIEW_DISPATCH_DEBOUNCE_MS: "0" },
       queue: async (h, number) => {
-        await enqueue(h, "organic-edit", organicEdit(number));
-        await h.queue.alarm();
-        const active = (await queueState(h)).items[`${repo}#${number}`]!;
-        const claim = await post(h, "/claim", {
-          item_key: active.key,
-          lease_id: active.leaseId,
-          lease_revision: active.leaseRevision,
-          run_id: String(runCounter++),
-          run_attempt: 1,
-        });
-        assert.equal(claim.status, 200, JSON.stringify(claim.body));
+        await claimOrganicReview(h, number);
       },
     },
     {
       name: "held review",
       env: { EXACT_REVIEW_DISPATCH_DEBOUNCE_MS: "0" },
       queue: async (h, number) => {
-        await enqueue(h, "organic-edit", organicEdit(number));
-        await h.queue.alarm();
-        const active = (await queueState(h)).items[`${repo}#${number}`]!;
-        const tuple = {
-          item_key: active.key,
-          lease_id: active.leaseId,
-          lease_revision: active.leaseRevision,
-          run_id: String(runCounter++),
-          run_attempt: 1,
-        };
-        const claim = await post(h, "/claim", tuple);
+        const tuple = await claimOrganicReview(h, number);
         const held = await post(h, "/complete", {
           ...tuple,
-          claim_generation: claim.body.claim_generation,
           outcome: "success",
           review_hold: "locked_conversation",
         });
