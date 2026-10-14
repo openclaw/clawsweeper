@@ -257,10 +257,11 @@ request. Automatic intake, scheduled selection, claimed reviews, and hosted
 publication apply this policy. A verified request stays open while the queue
 finishes answering it: when the item changes before the request's review
 applies, the queue requeues that generation in place, keeping the command status
-and verification, and the retry continues the same request. A source-drift
-requeue that finds no queued item keeps the command status but not the
-verification, so a finished or replaced request cannot authorize another
-review. The batch publisher's requeue of a deferred publication arrives that
+and verification, and the retry continues the same request. Any other
+source-drift requeue keeps the command status but not the verification: the
+queue enforces this whenever it loads an item, so a requeue that found no queued
+item, including one persisted before this rule, cannot let a finished or
+replaced request authorize another review. The batch publisher's requeue of a deferred publication arrives that
 way today, so a maintainer item there needs a new request. A push after the
 request is answered and a scheduled pass also need a new request. Existing
 autofix/automerge labels remain opt-ins.

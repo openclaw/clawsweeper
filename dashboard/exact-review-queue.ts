@@ -829,6 +829,7 @@ const EXACT_REVIEW_SOURCE_AUTHORITY_RETRY_BASE_MS = 15_000;
 const EXACT_REVIEW_SOURCE_AUTHORITY_RETRY_MAX_MS = 15 * 60_000;
 const EXACT_REVIEW_QUEUE_META_TABLE = "exact_review_queue_meta";
 const EXACT_REVIEW_QUEUE_ITEM_TABLE = "exact_review_queue_items";
+const DIRECT_LIFECYCLE_REQUEUE_DELIVERY_PREFIX = "direct-lifecycle-requeue:";
 const EXACT_REVIEW_QUEUE_DELIVERY_TABLE = "exact_review_queue_deliveries";
 export const EXACT_REVIEW_AUTHENTICATED_BODY_FINGERPRINT_HEADER =
   "x-clawsweeper-exact-review-body-sha256";
@@ -2235,13 +2236,6 @@ export class ExactReviewQueue {
             ingressAdmitted = true;
           }
         } else {
-          // Only the fenced in-place lifecycle requeue continues an explicit
-          // request. A source-drift requeue that finds no queued item may carry
-          // a finished or replaced request, so it keeps the command status but
-          // not the request's verification.
-          if (decision.sourceAction === EXACT_REVIEW_SOURCE_DRIFT_REQUEUE_SOURCE_ACTION) {
-            delete decision.sourceCommentVerified;
-          }
           const sourceDriftRequeueLimit = exactReviewSourceDriftRequeueLimit(this.env);
           const sourceDriftLoop =
             loopKey && sourceDriftRequeueLimit > 0 && exactReviewSourceDriftLoopCounted(decision)
@@ -2377,6 +2371,7 @@ export class ExactReviewQueue {
               ? { sourceAuthorityWatermark: exactReviewSourceAuthorityWatermark(decision)! }
               : {}),
           };
+          removeOrphanedRequestVerification(state.items[key]);
           this.recordLifecycleAdmission(state.items[key], decision, now);
           ingressAdmitted = true;
         }
@@ -10789,7 +10784,7 @@ export class ExactReviewQueue {
     // item receives fresh admission and claim facts when it is dispatched.
     clearExactReviewLease(item);
     item.decision = decision;
-    item.admissionDeliveryId = `direct-lifecycle-requeue:${item.key}:${completedRevision}`;
+    item.admissionDeliveryId = `${DIRECT_LIFECYCLE_REQUEUE_DELIVERY_PREFIX}${item.key}:${completedRevision}`;
     item.ingressFingerprint = undefined;
     item.state = "pending";
     item.revision = exactReviewDecisionHasCommandContext(decision)
@@ -15937,7 +15932,23 @@ function normalizeExactReviewQueueItem(item: ExactReviewQueueItem): ExactReviewQ
   Reflect.deleteProperty(item, "reviewProofRequests");
   removeRetiredDecisionFields(item.decision);
   removeRetiredDecisionFields(item.leaseDecision);
+  removeOrphanedRequestVerification(item);
   return item;
+}
+
+/**
+ * Only the in-place lifecycle requeue continues an explicit request. Any other
+ * source-drift requeue, including a row persisted before this rule, may copy a
+ * finished or replaced request, so it keeps the command status but not the
+ * request's verification.
+ */
+function removeOrphanedRequestVerification(item: ExactReviewQueueItem): void {
+  if (item.admissionDeliveryId?.startsWith(DIRECT_LIFECYCLE_REQUEUE_DELIVERY_PREFIX)) return;
+  for (const decision of [item.decision, item.leaseDecision]) {
+    if (decision?.sourceAction === EXACT_REVIEW_SOURCE_DRIFT_REQUEUE_SOURCE_ACTION) {
+      Reflect.deleteProperty(decision, "sourceCommentVerified");
+    }
+  }
 }
 
 function removeRetiredDecisionFields(decision: ExactReviewDecision | undefined): void {

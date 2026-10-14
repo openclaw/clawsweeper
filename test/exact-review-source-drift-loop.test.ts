@@ -464,6 +464,35 @@ test("a source-drift requeue of a replaced request leaves the newer request queu
   });
 });
 
+test("a verified requeue persisted by the previous release keeps authority only in place", async () => {
+  for (const inPlace of [false, true]) {
+    const h = harness();
+    await withExactReviewAdmissionHarness(h, async () => {
+      const number = inPlace ? 97624 : 97623;
+      const key = `${repo}#${number}`;
+      await enqueue(h, "request", verifiedRequest(number, 3001));
+      const claimed = await reviewOnce(h, number);
+      await enqueue(h, `publisher-source-drift:${number}:1`, sourceDriftRequeue(claimed));
+      // Restore the row as the previous release stored it: verification intact.
+      const [row] = Array.from(
+        h.storage.sql.exec(
+          "SELECT item_json FROM exact_review_queue_items WHERE item_key = ?",
+          key,
+        ) as Iterable<{ item_json: string }>,
+      );
+      const stored = JSON.parse(row!.item_json);
+      stored.decision.sourceCommentVerified = true;
+      if (inPlace) stored.admissionDeliveryId = `direct-lifecycle-requeue:${key}:1`;
+      h.storage.sql.exec(
+        "UPDATE exact_review_queue_items SET item_json = ? WHERE item_key = ?",
+        JSON.stringify(stored),
+        key,
+      );
+      assert.equal(isExplicitReviewRequest(await reviewOnce(h, number)), inPlace);
+    });
+  }
+});
+
 test("a zero limit disables the breaker", async () => {
   assert.equal(exactReviewSourceDriftRequeueLimit({}), 3);
   assert.equal(
