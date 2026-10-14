@@ -12372,6 +12372,7 @@ export class ExactReviewQueue {
 
   private reviewAdmissionCapabilities() {
     return {
+      deployment_sha: String(this.env.CLAWSWEEPER_DEPLOY_SHA || "").trim() || null,
       scheduled_feed: {
         target_rate_per_hour: exactReviewScheduledRatePerHour(this.env, "global"),
         enqueue_replay: "scheduled_disposition_v1",

@@ -51,6 +51,28 @@ import {
   mergePendingExactReviewDecision,
 } from "../dashboard/exact-review-decision.ts";
 
+test("signed admission reports the queue revision independently from the outer Worker", async () => {
+  const secret = "synthetic-deployment-secret";
+  for (const queueRevision of [undefined, "previous-sha", "expected-sha"]) {
+    const queue = new ExactReviewQueue(
+      { storage: new MemoryDurableStorage() },
+      { CLAWSWEEPER_DEPLOY_SHA: queueRevision },
+    );
+    const response = await worker.fetch(
+      signedStateAppendRequest("/internal/exact-review/admission-capabilities", {}, secret),
+      {
+        CLAWSWEEPER_DEPLOY_SHA: "expected-sha",
+        CLAWSWEEPER_WEBHOOK_SECRET: secret,
+        EXACT_REVIEW_QUEUE: new MemoryDurableNamespace(queue),
+      },
+    );
+    assert.equal(response.status, 200);
+    const capability = await response.json();
+    assert.equal(capability.deployment_sha, queueRevision ?? null);
+    assert.equal(capability.scheduled_feed.enqueue_replay, "scheduled_disposition_v1");
+  }
+});
+
 test("legacy proof fields are ignored by decision and persisted queue parsing", async () => {
   for (const proofAllowedScenarios of [null, "invalid", [], ["retired-scenario"]]) {
     const item = leasedExactReviewQueueItem(70, "700");

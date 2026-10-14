@@ -101,42 +101,63 @@ async function verifyReviewAdmission(secret) {
   // Verify the producer contract before a Worker-first rollout can enable new producers.
   // Redirects must never forward the signed request to another endpoint.
   const body = "{}";
-  let response;
-  try {
-    response = await fetch(`${baseUrl}/internal/exact-review/admission-capabilities`, {
-      method: "POST",
-      redirect: "error",
-      signal: AbortSignal.timeout(20_000),
-      headers: {
-        "content-type": "application/json",
-        "x-clawsweeper-exact-review-signature": `sha256=${createHmac("sha256", secret).update(body).digest("hex")}`,
-      },
-      body,
-    });
-  } catch (error) {
-    throw new Error("review admission capability request failed", { cause: error });
+  const deadline = Date.now() + deploymentReadyTimeoutMs;
+  const timeoutMessage = `review queue deployment ${expectedDeploySha} was not ready within ${deploymentReadyTimeoutMs}ms`;
+  while (true) {
+    if (Date.now() >= deadline) throw new Error(timeoutMessage);
+    let response;
+    try {
+      response = await fetch(`${baseUrl}/internal/exact-review/admission-capabilities`, {
+        method: "POST",
+        redirect: "error",
+        signal: AbortSignal.timeout(Math.min(20_000, Math.max(1, deadline - Date.now()))),
+        headers: {
+          "content-type": "application/json",
+          "x-clawsweeper-exact-review-signature": `sha256=${createHmac("sha256", secret).update(body).digest("hex")}`,
+        },
+        body,
+      });
+    } catch (error) {
+      throw new Error(
+        Date.now() >= deadline ? timeoutMessage : "review admission capability request failed",
+        { cause: error },
+      );
+    }
+    if (!response.ok) {
+      await response.body?.cancel().catch(() => {});
+      throw new Error(`review admission capabilities returned HTTP ${response.status}`);
+    }
+    const capability = await response.json().catch(() => null);
+    const feed = capability?.scheduled_feed;
+    const manual = capability?.manual_publication;
+    if (
+      !Number.isSafeInteger(feed?.target_rate_per_hour) ||
+      feed.target_rate_per_hour <= 0 ||
+      feed.enqueue_replay !== "scheduled_disposition_v1" ||
+      manual?.policy !== "record_comment_only" ||
+      typeof manual.enabled !== "boolean"
+    ) {
+      throw new Error("review admission capability contract is invalid");
+    }
+    // A healthy outer Worker can still call the previous Durable Object version.
+    // Its own deployment identity must match before new producer contracts go live.
+    if (capability.deployment_sha !== expectedDeploySha) {
+      const remainingMs = deadline - Date.now();
+      if (remainingMs <= 0) {
+        throw new Error(timeoutMessage);
+      }
+      await new Promise((resolve) =>
+        setTimeout(resolve, Math.min(deploymentReadyIntervalMs, remainingMs)),
+      );
+      continue;
+    }
+    return {
+      state: "verified",
+      deployment_sha: capability.deployment_sha,
+      target_rate_per_hour: feed.target_rate_per_hour,
+      manual_publication_enabled: manual.enabled,
+    };
   }
-  if (!response.ok) {
-    await response.body?.cancel().catch(() => {});
-    throw new Error(`review admission capabilities returned HTTP ${response.status}`);
-  }
-  const capability = await response.json().catch(() => null);
-  const feed = capability?.scheduled_feed;
-  const manual = capability?.manual_publication;
-  if (
-    !Number.isSafeInteger(feed?.target_rate_per_hour) ||
-    feed.target_rate_per_hour <= 0 ||
-    feed.enqueue_replay !== "scheduled_disposition_v1" ||
-    manual?.policy !== "record_comment_only" ||
-    typeof manual.enabled !== "boolean"
-  ) {
-    throw new Error("review admission capability contract is invalid");
-  }
-  return {
-    state: "verified",
-    target_rate_per_hour: feed.target_rate_per_hour,
-    manual_publication_enabled: manual.enabled,
-  };
 }
 
 function validateStatus(status) {
