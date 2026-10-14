@@ -68,7 +68,7 @@ writeFileSync(
   entry,
   `
 import { ExactReviewQueue } from ${JSON.stringify(path.join(root, "dashboard/exact-review-queue.ts"))};
-import { validateDirectPublicationPlan } from ${JSON.stringify(path.join(root, "dashboard/exact-review-direct-publication.ts"))};
+import { validateDirectPublicationPlan, validateCanonicalRecordTupleMutation } from ${JSON.stringify(path.join(root, "dashboard/exact-review-direct-publication.ts"))};
 import { ExactReviewDirectPublicationStore as LegacyPublicationStore } from 'proof:legacy-publication';
 let now = ${t0}; Date.now = () => now;
 export class ProofQueue extends ExactReviewQueue {
@@ -82,6 +82,16 @@ export class ProofQueue extends ExactReviewQueue {
     if (input.op === 'tick') await super.alarm();
     else if (input.op === 'publish') this.directPublicationStore.accept(
       await validateDirectPublicationPlan(input.data), now);
+    else if (input.op === 'reconcile') this.directPublicationStore.acceptCanonicalTupleMutation(
+      await validateCanonicalRecordTupleMutation({
+        deliveryId: 'reconcile-' + input.data.section,
+        key: 'openclaw-gogcli/42',
+        operations: ['items', 'closed', 'plans', 'decision-packets'].map(section => ({
+          path: 'records/openclaw-gogcli/' + section + '/42.' + (section === 'decision-packets' ? 'json' : 'md'),
+          expectedDigest: this.directPublicationStore.readCanonical('openclaw-gogcli', section, 42)?.digest ?? null,
+          ...(section === input.data.section ? {contentBase64: input.data.contentBase64} : {}),
+        })),
+      }), now);
     else if (input.op === 'prune') this.directPublicationStore.pruneTerminalSync(now);
     else if (input.op === 'legacy-publish') {
       this.storage.sql.exec('DROP TABLE exact_review_pull_request_answers');
@@ -249,6 +259,22 @@ try {
     await call(name, "publish", t0, publication(status, lifecycle));
     result = await call(name, "enqueue", t0, enqueue(name));
     assert.equal(result.body.queued, true);
+  }
+  for (const lifecycle of ["router", "requeue"]) {
+    const name = "reconcile-" + lifecycle;
+    const plan = publication("complete", lifecycle);
+    await call(name, "publish", t0, plan);
+    for (const section of ["closed", "items"]) {
+      let content = Buffer.from(plan.operations[0].contentBase64, "base64").toString();
+      if (section === "items") content = content.replace("complete", "stale_reopened");
+      await call(name, "reconcile", t0 + minute, {
+        section,
+        contentBase64: Buffer.from(content).toString("base64"),
+      });
+    }
+    result = await call(name, "enqueue", t0 + minute, enqueue(name, "reopened"));
+    if (lifecycle === "requeue") assert.equal(result.body.queued, true);
+    else assert.equal(result.body.dedupe_reason, "review_request_required");
   }
   for (const name of [
     "legacy-stale",

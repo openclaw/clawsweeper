@@ -41,6 +41,8 @@ identities for all nine policy source files and the legacy fixture.
 - After a fresh workerd instance opens the same SQLite store, synchronize,
   hot-intake, and normal-backfill events produce no additional dispatch.
 - Failed and stale-source reports leave first-review admission available.
+- Canonical archive/reopen mutations preserve completion provenance: a stale-source
+  report remains eligible, while a completed answer still suppresses automatic work.
 - The previous implementation writes and prunes legacy records. After a fresh
   Worker opens that database, unverified and already-pruned reports remain
   eligible. A verified report with retained completion provenance stays answered.

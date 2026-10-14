@@ -457,8 +457,26 @@ export class ExactReviewDirectPublicationStore {
         ),
       );
 
-      for (const operation of canonicalOperations)
+      for (const operation of canonicalOperations) {
         this.writeCanonicalOperationSync(operation, plan, now, canonicalRevision);
+        // Only review publication can establish completion. Reconciliation moves
+        // preserve the existing fact even when their report looks complete.
+        if (
+          (operation.section === "items" || operation.section === "closed") &&
+          operation.content !== null &&
+          isCompletedPullRequestReview(operation.content)
+        ) {
+          // A stale-source requeue can carry a complete-looking report. Remember
+          // that it did not answer the PR, so lazy import cannot promote it later.
+          this.storage.sql.exec(
+            `INSERT INTO ${PR_REVIEW_ANSWER_TABLE} (repo_slug, item_id, answered) VALUES (?, ?, ?)
+             ON CONFLICT (repo_slug, item_id) DO UPDATE SET answered = MAX(answered, excluded.answered)`,
+            operation.repoSlug,
+            operation.itemId,
+            Number(plan.lifecycle?.kind !== "requeue"),
+          );
+        }
+      }
       const row = directPublicationRowFromPlan({
         plan,
         operations: storedOperations,
@@ -1276,17 +1294,6 @@ export class ExactReviewDirectPublicationStore {
   ) {
     if (operation.section === "items" || operation.section === "closed") {
       this.hasCompletedPullRequestReview(operation.repoSlug, operation.itemId);
-      if (operation.content !== null && isCompletedPullRequestReview(operation.content)) {
-        // A stale-source requeue can carry a complete-looking report. Remember
-        // that it did not answer the PR, so lazy import cannot promote it later.
-        this.storage.sql.exec(
-          `INSERT INTO ${PR_REVIEW_ANSWER_TABLE} (repo_slug, item_id, answered) VALUES (?, ?, ?)
-           ON CONFLICT (repo_slug, item_id) DO UPDATE SET answered = MAX(answered, excluded.answered)`,
-          operation.repoSlug,
-          operation.itemId,
-          Number(plan.lifecycle?.kind !== "requeue"),
-        );
-      }
     }
     this.storage.sql.exec(
       `DELETE FROM ${EXACT_REVIEW_CANONICAL_RECORD_CHUNK_TABLE}

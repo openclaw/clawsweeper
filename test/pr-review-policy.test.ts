@@ -3,6 +3,7 @@ import test from "node:test";
 import { isCompletedPullRequestReview } from "../src/pr-review-policy.ts";
 import {
   ExactReviewDirectPublicationStore,
+  validateCanonicalRecordTupleMutation,
   validateDirectPublicationPlan,
   type DirectPublicationLifecycleKind,
 } from "../dashboard/exact-review-direct-publication.ts";
@@ -112,6 +113,36 @@ test("stale-source completion and failed attempts leave the first answer availab
   assert.equal(store.hasCompletedPullRequestReview("openclaw-gogcli", 42), false);
   store = await publish(storage, 3, report());
   assert.equal(store.hasCompletedPullRequestReview("openclaw-gogcli", 42), true);
+});
+
+test("archive and reopen preserve completion provenance, including legacy records", async () => {
+  for (const lifecycle of ["router", "requeue"] as const) {
+    for (const legacy of [false, true]) {
+      const storage = new MemoryDurableStorage();
+      const store = await publish(storage, 1, report(), lifecycle);
+      if (legacy) storage.sql.exec("DELETE FROM exact_review_pull_request_answers");
+      for (const section of ["closed", "items"] as const) {
+        const content =
+          section === "closed" ? report() : report().replace("complete", "stale_reopened");
+        const mutation = await validateCanonicalRecordTupleMutation({
+          deliveryId: `reconcile-${section}`,
+          key: "openclaw-gogcli/42",
+          operations: (["items", "closed", "plans", "decision-packets"] as const).map((part) => ({
+            path: `records/openclaw-gogcli/${part}/42.${part === "decision-packets" ? "json" : "md"}`,
+            expectedDigest: store.readCanonical("openclaw-gogcli", part, 42)?.digest ?? null,
+            ...(part === section ? { contentBase64: Buffer.from(content).toString("base64") } : {}),
+          })),
+        });
+        store.acceptCanonicalTupleMutation(mutation, Date.now());
+        assert.equal(
+          store.hasCompletedPullRequestReview("openclaw-gogcli", 42),
+          lifecycle === "router",
+        );
+      }
+      await publish(storage, 4, report());
+      assert.equal(store.hasCompletedPullRequestReview("openclaw-gogcli", 42), true);
+    }
+  }
 });
 
 test("legacy stale-source reports stay unanswered when their publication receipt is pruned", async () => {
