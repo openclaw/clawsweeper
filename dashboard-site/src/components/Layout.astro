@@ -6,15 +6,16 @@ import { stamp } from '../lib/format';
 
 interface Props {
   title: string;
-  section: 'overview' | 'throughput' | 'quality' | 'queue' | 'operations' | 'coverage' | 'repos';
+  section: 'overview' | 'agent' | 'throughput' | 'quality' | 'queue' | 'operations' | 'coverage' | 'repos';
   crumb?: string;
 }
 const { title, section, crumb } = Astro.props;
 
 const nav: { id: Props['section']; label: string; href: string; icon: IconName }[] = [
   { id: 'overview', label: 'Overview', href: '/', icon: 'overview' },
+  { id: 'agent', label: 'Agent performance', href: '/agent/', icon: 'throughput' },
   { id: 'throughput', label: 'Throughput', href: '/throughput/', icon: 'throughput' },
-  { id: 'quality', label: 'Quality', href: '/quality/', icon: 'quality' },
+  { id: 'quality', label: 'Assessments', href: '/quality/', icon: 'quality' },
   { id: 'queue', label: 'Queue', href: '/queue/', icon: 'queue' },
   { id: 'operations', label: 'Operations', href: '/operations/', icon: 'operations' },
   { id: 'coverage', label: 'Coverage', href: '/coverage/', icon: 'coverage' },

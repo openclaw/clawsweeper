@@ -224,7 +224,7 @@ export const live = {
   parked: (reviewLane.parked + publicationLane.parked) as number,
   capacity: reviewLane.capacity as number,
   active: reviewLane.active as number,
-  oldestPendingSeconds: reviewLane.oldest_pending_age_seconds as number | null,
+  oldestPendingSeconds: (reviewLane.oldest_pending_age_seconds ?? null) as number | null,
   parkedReasons: entries({ ...reviewLane.parked_reasons }, ["unknown"]),
   publicationParked: entries({ ...publicationLane.parked_reasons }, ["unknown"]),
   backoffReasons: entries({ ...reviewLane.backoff_reasons }),

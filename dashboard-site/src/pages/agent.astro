@@ -1,0 +1,46 @@
+---
+import Layout from '../components/Layout.astro';
+import Kpi from '../components/Kpi.astro';
+import { asOf, cover, coverText, live } from '../lib/data';
+import { outcomeMeasures } from '../lib/agent-metrics';
+import { duration, int, stamp } from '../lib/format';
+
+const count = (value: unknown) => typeof value === 'number' && Number.isFinite(value) ? int(value) : 'Unavailable';
+const runaway = live.runaway && live.runaway.status !== 'unknown' ? live.runaway : null;
+---
+<Layout title="Agent performance" section="agent">
+  <h1 class="text-[22px] font-semibold tracking-tight">Agent performance</h1>
+  <p class="mt-1 max-w-3xl text-[13px] text-fg-muted">Optimize for correct, useful outcomes with less human effort, delay and cost. More reviews, higher confidence and more closes do not establish success.</p>
+
+  <h2 class="mt-7 text-[16px] font-semibold">Operational signals available now</h2>
+  <p class="mt-1 text-[13px] text-fg-muted">Use these to investigate friction. They do not measure correctness or work saved.</p>
+  <div class="mt-3 grid grid-cols-2 gap-3 xl:grid-cols-4">
+    <Kpi label="Repeat-review alerts" value={count(runaway?.runaway_items)}
+      sub={runaway ? `>${runaway.threshold_reviews_per_day} reviews in ${runaway.window_hours}h` : 'Telemetry unavailable'}
+      tip={`Items exceeding the source's repeat-review threshold. Some repeated reviews are legitimate; inspect before treating them as waste. Snapshot ${stamp(asOf.queue)}.`} />
+    <Kpi label="Publication parked" value={count(live.publication?.parked)} sub="Review results held before publication"
+      tip={`Parked publication-lane work needs investigation; a completed review is not proof of delivery. Snapshot ${stamp(asOf.queue)}.`} />
+    <Kpi label="Oldest pending review" value={live.oldestPendingSeconds === null ? (live.pending === 0 ? 'None waiting' : 'Unavailable') : duration(live.oldestPendingSeconds)} sub={`${int(live.pending)} waiting`}
+      tip={`Age of the oldest currently pending item, not end-to-end latency or a percentile. Snapshot ${stamp(asOf.queue)}.`} />
+    <Kpi label="Recent-review coverage" value={cover.percent === null ? 'Unavailable' : coverText}
+      sub={`${int(cover.reviewed)} / ${int(cover.reviewable)} reviewable items`}
+      tip={`Source-defined reviewable items with a review in the last ${cover.windowDays} days. This is freshness coverage, not due-work completion or correctness. Snapshot ${stamp(asOf.coverage)}.`} />
+  </div>
+  <p class="mt-3 text-[13px] text-fg-muted">Investigate <a class="underline" href="/queue/">queue and publication holds</a>, <a class="underline" href="/operations/">execution health</a>, and <a class="underline" href="/coverage/">coverage gaps</a>.</p>
+
+  <h2 class="mt-8 text-[16px] font-semibold">Outcome evidence still needed</h2>
+  <p class="mt-1 text-[13px] text-fg-muted">Not collected means unknown. These measures cannot be reconstructed from confidence, PR grades, merge counts or workflow success.</p>
+  <div class="mt-3 grid gap-3 lg:grid-cols-2">
+    {outcomeMeasures.map(metric => (
+      <section class="card p-4">
+        <div class="flex flex-wrap items-start justify-between gap-2">
+          <h3 class="text-[14px] font-semibold">{metric.name}</h3>
+          <span class="tag shrink-0">Not collected</span>
+        </div>
+        <p class="mt-2 text-[13px]">{metric.behavior}</p>
+        <p class="mt-2 text-[12px] text-fg-muted">Evidence required: {metric.evidence}</p>
+      </section>
+    ))}
+  </div>
+  <p class="mt-5 max-w-3xl text-[13px] text-fg-muted">DORA deployment metrics require deployment and incident events. This page measures maintenance-agent operations and does not calculate a DORA score or rank agents across different workloads.</p>
+</Layout>

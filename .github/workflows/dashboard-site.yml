@@ -61,7 +61,7 @@ jobs:
           mkdir -p src/data
           cp fixtures/dashboard.json src/data/dashboard.json
           pnpm run build
-          for page in index.html operations/index.html queue/index.html throughput/index.html quality/index.html coverage/index.html repos/index.html 404.html; do
+          for page in index.html agent/index.html operations/index.html queue/index.html throughput/index.html quality/index.html coverage/index.html repos/index.html 404.html; do
             test -s "dist/$page" || { echo "::error::missing dist/$page"; exit 1; }
           done
 

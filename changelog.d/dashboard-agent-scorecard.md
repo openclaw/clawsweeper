@@ -1,0 +1,1 @@
+- Add an agent performance view that highlights operational friction, separates reviewer assessments from verified quality, and explicitly identifies missing outcome, human-effort, latency and cost evidence.

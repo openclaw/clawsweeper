@@ -9,7 +9,7 @@ import { attentionPriorityOrdered, distributions, entries, lists, recommendedClo
 import { int, pct } from '../lib/format';
 
 const d = distributions;
-const share = (value: number) => pct(value / Math.max(totals.typed, 1));
+const share = (value: number) => totals.typed > 0 ? pct(value / totals.typed) : 'Unavailable';
 const ordered = (record: Record<string, number>, keys: string[], names: Record<string, string> = {}) =>
   keys.filter(key => record[key]).map(key => ({ key, value: record[key], name: names[key] ?? key }));
 
@@ -17,14 +17,16 @@ const ratings = ordered(d.ratings, ['S', 'A', 'B', 'C', 'D', 'F', 'NA'], { NA: '
 const findings = ordered(d.findings, ['P0', 'P1', 'P2', 'P3'], { P0: 'P0 · critical', P1: 'P1 · high', P2: 'P2 · medium', P3: 'P3 · low' });
 const findingTotal = findings.reduce((total, row) => total + row.value, 0);
 ---
-<Layout title="Review quality" section="quality">
-  <h1 class="text-[22px] font-semibold tracking-tight">Review quality</h1>
-  <p class="mt-1 text-[13px] text-fg-muted">What the latest stored review says about each of {int(totals.typed)} typed records.</p>
+<Layout title="Review assessments" section="quality">
+  <h1 class="text-[22px] font-semibold tracking-tight">Review assessments</h1>
+  <p class="mt-1 text-[13px] text-fg-muted">Reviewer-reported judgments across {int(totals.typed)} typed records. These are not independent measures of review accuracy.</p>
+
+  <p class="mt-2 text-[13px] text-fg-muted"><a href="/agent/" class="underline">Agent performance</a> separates operational signals from the outcome evidence still needed.</p>
 
   <div class="mt-6 grid grid-cols-2 gap-3 md:grid-cols-4">
-    <Kpi label="Close recommended" value={pct((d.decisions.close ?? 0) / totals.typed)} sub={`${int(d.decisions.close ?? 0)} items`}
+    <Kpi label="Close recommended" value={share(d.decisions.close ?? 0)} sub={`${int(d.decisions.close ?? 0)} items`}
       tip="Share of typed records whose latest review recommends closing. A recommendation, not an executed close." />
-    <Kpi label="High confidence" value={pct((d.confidence.high ?? 0) / totals.typed)} sub={`${int(d.confidence.low ?? 0)} low`}
+    <Kpi label="Reported high confidence" value={share(d.confidence.high ?? 0)} sub={`${int(d.confidence.low ?? 0)} low`}
       tip="Share of typed records where the reviewer reported high confidence." />
     <Kpi label="Security attention" value={int(d.security.needs_attention ?? 0)} sub={`${share(d.security.needs_attention ?? 0)} of records`}
       tip="Latest reviews that marked a security concern as needing attention." />
@@ -59,7 +61,7 @@ const findingTotal = findings.reduce((total, row) => total + row.value, 0);
     <Card title="PR rating" tip="Overall rating the reviewer gave a pull request. Issues are not rated.">
       <BarList rows={ratings} />
     </Card>
-    <Card title="Proof" tip="Whether a PR shows real proof that its change works.">
+    <Card title="Proof" tip="Reviewer assessment of the proof shown by a PR; not independent verification.">
       <BarList rows={entries(d.proof)} />
     </Card>
     <Card title="Findings by severity" tip="Findings across all latest reviews. One review can hold several.">

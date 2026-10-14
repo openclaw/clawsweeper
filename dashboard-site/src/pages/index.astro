@@ -29,6 +29,8 @@ const success7 = kpis.runSuccess7d;
     </a>
   </div>
 
+  <p class="mt-4 text-[13px] text-fg-muted"><a href="/agent/" class="underline">Agent performance</a>: inspect repeat-review alerts, publication holds and coverage gaps, plus the evidence still needed to measure useful outcomes.</p>
+
   <div class="mt-6 grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6">
     <Kpi neutral label="Items refreshed · 7d" value={int(kpis.reviews7d.current)} delta={kpis.reviews7d.delta} spark={series.reviews(14).map(point => point.value)}
       tip="Items whose latest stored review landed in the last 7 complete days. Re-reviews of the same item count once. Delta compares with the prior 7 days." />

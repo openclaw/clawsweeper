@@ -44,6 +44,11 @@
   ],
   "noncanonical": [
     {
+      "path": "agent-performance-metrics.md",
+      "lifecycle": "proposed",
+      "banner": "Outcome measurement is proposed; only the explicitly identified dashboard signals are implemented."
+    },
+    {
       "path": "portable-review-receipt.md",
       "lifecycle": "proposed",
       "banner": "This candidate exports a local advisory summary; general attachment and hosted enforcement are not enabled."
