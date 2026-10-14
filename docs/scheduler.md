@@ -281,7 +281,10 @@ status but not the verification: the queue enforces this whenever it loads an
 item, so a requeue that found no queued item, including one persisted before
 this rule, cannot let a finished or replaced request authorize another review.
 Both continuation prefixes are queue-owned: `/enqueue` rejects a caller delivery
-id that uses either one as `reserved_delivery_id`. A push after the request is
+id that uses either one as `reserved_delivery_id`. When a retry that still
+carries a request is skipped because it lacks that verification, its review job
+answers the request's status as "Waiting" with a request to re-review, so the
+status never stays "Review in progress". A push after the request is
 answered and a scheduled pass also need a new request. Existing
 autofix/automerge labels remain opt-ins.
 The target dispatcher and direct webhook share a single reminder identity per

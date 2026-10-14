@@ -63,6 +63,87 @@ test("review completion forwards admission holds and preserves locked and oversi
   }
 });
 
+test("a maintainer admission skip that carries a command answers its status", () => {
+  const workflow = YAML.parse(readText(".github/workflows/sweep.yml"));
+  const steps = workflow.jobs["event-review-apply"].steps;
+  const token = steps.find((entry: any) => entry.id === "target-write-token");
+  const gate = new Function(
+    "steps",
+    `return (${token.if
+      .slice(3, -2)
+      .replace(/steps\.([\w-]+)/g, (_: string, id: string) => `steps[${JSON.stringify(id)}]`)})`,
+  );
+  const tokenFor = (noop: string, hold: string, command: string, retry = "false") =>
+    gate({
+      "claim-exact-review-queue": { outputs: { claimed: "true" } },
+      "live-item": {
+        outcome: "success",
+        outputs: { scheduled_semantic_noop: noop, review_hold: hold, admission_retry: retry },
+      },
+      target: { outputs: { has_command_context: command } },
+    });
+  assert.equal(tokenFor("false", "", "true"), true, "a review that proceeds");
+  assert.equal(tokenFor("true", "maintainer_request_required", "true"), true, "skipped request");
+  assert.equal(tokenFor("true", "maintainer_request_required", "false"), false, "no command");
+  assert.equal(tokenFor("true", "", "true"), false, "other semantic no-op");
+  assert.equal(tokenFor("true", "locked_conversation", "true"), false, "other hold");
+  assert.equal(tokenFor("false", "", "true", "true"), false, "admission retry");
+
+  const mark = steps.find((entry: any) => entry.name === "Mark unsuccessful re-review");
+  const root = mkdtempSync(`${tmpPrefix}skipped-request-status-`);
+  try {
+    const bin = join(root, "bin");
+    mkdirSync(join(root, "scripts"), { recursive: true });
+    mkdirSync(bin);
+    writeFileSync(
+      join(root, "scripts/control-plane-curl.sh"),
+      "control_plane_curl() { printf 200; }\n",
+    );
+    writeFileSync(join(bin, "node"), "#!/bin/sh\necho '{}'\n");
+    writeFileSync(join(bin, "pnpm"), '#!/bin/sh\nprintf \'%s\\n\' "$@" > "$STATUS_LOG"\n');
+    chmodSync(join(bin, "node"), 0o700);
+    chmodSync(join(bin, "pnpm"), 0o700);
+    const statusFor = (reviewHold: string) => {
+      const log = join(root, `status-${reviewHold || "none"}`);
+      execFileSync("bash", ["-c", mark.run], {
+        cwd: root,
+        env: {
+          ...process.env,
+          PATH: `${bin}${delimiter}${process.env.PATH}`,
+          STATUS_LOG: log,
+          QUEUE_URL: "https://queue.invalid",
+          TARGET_REPO: "openclaw/clawsweeper",
+          ITEM_NUMBER: "1969",
+          COMMAND_STATUS_MARKER: "<!-- clawsweeper-command-status:1969:re_review:fixture -->",
+          STATUS_COMMENT_ID: "",
+          RUN_URL: "https://github.com/openclaw/clawsweeper/actions/runs/4242",
+          REVIEW_OUTCOME: "skipped",
+          REVIEW_SUPERSEDED: "false",
+          RESERVATION_STATUS: "",
+          RETRY_AT: "",
+          REVIEW_FAILURE_REASON: "",
+          ADMISSION_REVIEW_HOLD: reviewHold,
+        },
+      });
+      const args = readText(log).split("\n");
+      return {
+        state: args[args.indexOf("--state") + 1],
+        detail: args[args.indexOf("--detail") + 1],
+        args,
+      };
+    };
+    const skipped = statusFor("maintainer_request_required");
+    assert.equal(skipped.state, "Waiting");
+    assert.match(skipped.detail, /did not review this retry/);
+    assert.match(skipped.detail, /@clawsweeper re-review/);
+    assert.ok(skipped.args.includes("--refuse-terminal-state"));
+    assert.ok(skipped.args.includes("--require-queue-authority-fence"));
+    assert.equal(statusFor("").state, "Failed", "other failures keep their answer");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("review workflow emits terminal reasons for non-retryable scanner manifests", () => {
   const workflow = YAML.parse(readText(".github/workflows/sweep.yml"));
   const producers = Object.values(workflow.jobs).flatMap((job: any) =>

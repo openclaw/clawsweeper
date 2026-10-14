@@ -340,7 +340,10 @@ jobs:
           pnpm run --silent workflow -- exact-review-admission >> "$GITHUB_OUTPUT"
 
       - name: Create target write token
-        if: ${{ steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.live-item.outcome == 'success' && steps.live-item.outputs.scheduled_semantic_noop != 'true' && steps.live-item.outputs.admission_retry != 'true' }}
+        # A maintainer admission skip that still carries a command needs the token
+        # only to answer that command's status; every other consumer is gated on
+        # proceed or on the review having run.
+        if: ${{ steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.live-item.outcome == 'success' && steps.live-item.outputs.admission_retry != 'true' && (steps.live-item.outputs.scheduled_semantic_noop != 'true' || (steps.live-item.outputs.review_hold == 'maintainer_request_required' && steps.target.outputs.has_command_context == 'true')) }}
         id: target-write-token
         continue-on-error: true
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
@@ -1545,6 +1548,7 @@ jobs:
           RESERVATION_STATUS: ${{ steps.reserve-exact-review-lease.outputs.status }}
           RETRY_AT: ${{ steps.reserve-exact-review-lease.outputs.retry_at || steps.review-exact-event-item.outputs.retry_at }}
           REVIEW_FAILURE_REASON: ${{ steps.review-exact-event-item.outputs.failure_reason || '' }}
+          ADMISSION_REVIEW_HOLD: ${{ steps.live-item.outputs.review_hold || '' }}
           QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
           EXACT_REVIEW_ITEM_KEY: ${{ steps.claim-exact-review-queue.outputs.item_key }}
           EXACT_REVIEW_LEASE_ID: ${{ steps.claim-exact-review-queue.outputs.lease_id }}
@@ -1572,7 +1576,11 @@ jobs:
           fi
           state="Failed"
           detail="The exact review did not produce a publishable artifact. The durable queue will determine whether this revision can retry or has exhausted its retry budget."
-          if [ "$REVIEW_FAILURE_REASON" = "incomplete_source" ]; then
+          if [ "$ADMISSION_REVIEW_HOLD" = "maintainer_request_required" ]; then
+            # Not terminal, so a later continuation of the same request still runs.
+            state="Waiting"
+            detail="ClawSweeper did not review this retry: maintainer reviews need an explicit request, and this retry could not show that it continues one. Comment @clawsweeper re-review to request a fresh review."
+          elif [ "$REVIEW_FAILURE_REASON" = "incomplete_source" ]; then
             detail="The exact review could not verify the complete source. Automatic review is on hold until a fresh explicit re-review or intentional scanner-policy update."
           elif [ "$REVIEW_FAILURE_REASON" = "findings" ]; then
             detail="The input scanner refused the reviewed source. Automatic review is on hold until a fresh explicit re-review or intentional scanner-policy update."
