@@ -256,8 +256,10 @@ Maintainer-authored and `maintainer`-labeled items require an explicit review
 request. Automatic intake, scheduled selection, claimed reviews, and hosted
 publication apply this policy. A verified request stays open while the queue
 finishes answering it: when the item changes before the request's review
-applies, the queue requeues that generation in place, keeping the command status
-and verification, and the retry continues the same request. Any other
+fully applies, including a close check that drifts after the durable review
+comment synced, the queue requeues that generation in place instead of
+finalizing the command, keeping the command status and verification, and the
+retry continues the same request. Any other
 source-drift requeue keeps the command status but not the verification: the
 queue enforces this whenever it loads an item, so a requeue that found no queued
 item, including one persisted before this rule, cannot let a finished or
