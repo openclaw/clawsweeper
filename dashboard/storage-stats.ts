@@ -2,7 +2,8 @@
 //
 // Cloudflare reports only the total stored bytes. This reads, for each table, its row count and
 // the average size of a small sample of rows, so the estimate costs one COUNT(*) and two bounded
-// samples per table instead of reading every row's content. Index pages are not counted.
+// samples per table instead of reading every row's content. This estimates content bytes,
+// not physical allocation: record headers, index pages, and unused space are not counted.
 
 // Rows sampled from each end of a table (oldest and newest by rowid): old and new rows of a
 // growing table can differ in size.
@@ -35,8 +36,10 @@ function tableStats(sql: SqlStorage, table: string): StorageTableStats {
     quoteIdentifier(String(row.name)),
   );
   const rows = Number(Array.from(sql.exec(`SELECT COUNT(*) AS rows FROM ${quoted}`))[0]?.rows ?? 0);
-  // length() of a number is its text length; close enough for an estimate of stored bytes.
-  const rowBytes = columns.map((column) => `COALESCE(length(${column}), 0)`).join(" + ") || "0";
+  // BLOB length counts encoded bytes, including text after NUL; TEXT length counts code points
+  // only up to NUL. Numbers still use their text representation, an intentional approximation.
+  const rowBytes =
+    columns.map((column) => `COALESCE(length(CAST(${column} AS BLOB)), 0)`).join(" + ") || "0";
   const sample = (order: string) =>
     Array.from(
       sql.exec(

@@ -16,6 +16,53 @@ const sqlOver = (database: DatabaseSync) => ({
     database.prepare(query).all(...(bindings as never[])) as Record<string, unknown>[],
 });
 
+test("storage stats count encoded content bytes without treating them as physical allocation", () => {
+  const database = new DatabaseSync(":memory:");
+  try {
+    database.exec(`CREATE TABLE mixed (
+      text TEXT, payload BLOB, whole INTEGER, fraction REAL, absent TEXT
+    ) STRICT`);
+    database.exec(`CREATE TABLE compact (
+      text TEXT PRIMARY KEY, payload BLOB, whole INTEGER, fraction REAL, absent TEXT
+    ) WITHOUT ROWID`);
+    for (const table of ["mixed", "compact"]) {
+      database
+        .prepare(`INSERT INTO ${table} VALUES (?, ?, ?, ?, ?)`)
+        .run("é🦊\0尾", new Uint8Array([0, 255, 65]), -1234, 1.25, null);
+    }
+    const allocatedBytes = () =>
+      Number(database.prepare("PRAGMA page_count").get()!.page_count) *
+      Number(database.prepare("PRAGMA page_size").get()!.page_size);
+    const before = allocatedBytes();
+    const stats = storageStats({ ...sqlOver(database), databaseSize: before });
+
+    // 10 encoded text bytes + 3 BLOB bytes + 5 integer characters + 4 real characters.
+    // NULL contributes zero; neither the NUL nor the three-byte character after it is lost.
+    assert.deepEqual(
+      stats.tables.map(({ table, rows, sampledRows, averageRowBytes, estimatedBytes }) => ({
+        table,
+        rows,
+        sampledRows,
+        averageRowBytes,
+        estimatedBytes,
+      })),
+      ["compact", "mixed"].map((table) => ({
+        table,
+        rows: 1,
+        sampledRows: 1,
+        averageRowBytes: 22,
+        estimatedBytes: 22,
+      })),
+    );
+    assert.equal(stats.estimatedTableBytes, 44);
+    assert.equal(stats.databaseBytes, before);
+    assert.ok(stats.databaseBytes > stats.estimatedTableBytes);
+    assert.equal(allocatedBytes(), before);
+  } finally {
+    database.close();
+  }
+});
+
 test("storage stats rank tables by estimated size from counts and a sample of both ends", () => {
   const database = new DatabaseSync(":memory:");
   database.exec(`CREATE TABLE growing (id INTEGER PRIMARY KEY, body TEXT NOT NULL) STRICT`);
