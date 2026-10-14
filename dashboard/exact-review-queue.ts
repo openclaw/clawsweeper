@@ -1,7 +1,11 @@
 import { stableJson } from "../src/stable-json.ts";
 import { CLAWSWEEPER_APP_BOT_LOGINS } from "../src/clawsweeper-bot-identity.ts";
 import { exactReviewSourceRevisionMaterial } from "./exact-review-source-revision.ts";
-import { requiresMaintainerReviewRequest } from "../src/maintainer-review-policy.ts";
+import {
+  hasReviewAutomationOptIn,
+  requiresMaintainerReviewRequest,
+} from "../src/maintainer-review-policy.ts";
+import { INITIAL_PR_REVIEW_QUIET_MS } from "../src/pr-review-policy.ts";
 import {
   normalizePublicReviewFailure,
   reviewFailureExplanation,
@@ -365,6 +369,7 @@ export type ExactReviewQueueItem = {
   createdAt: number;
   updatedAt: number;
   nextAttemptAt: number;
+  prReviewObservation?: { signature: string; quietUntil: number; automationOptIn: boolean };
   backoffReason?: ExactReviewBackoffReason;
   attempts: number;
   leaseId?: string;
@@ -778,6 +783,7 @@ type ExactReviewScheduledDisposition =
         | "source_incompatible"
         | "scanner_refused"
         | "source_drift_loop"
+        | "review_request_required"
         | ExactReviewHoldReason;
     }
   | {
@@ -1566,6 +1572,18 @@ export class ExactReviewQueue {
 
       const now = Date.now();
       const semanticEdited = await exactReviewEditedSemanticInput(decision);
+      let automaticPrOptIn: boolean | undefined;
+      if (
+        isAutomaticPullRequestReview(decision) &&
+        this.directPublicationStore.hasCompletedPullRequestReview(
+          decision.targetRepo.replaceAll("/", "-"),
+          decision.itemNumber,
+        )
+      ) {
+        const token = await exactReviewTargetReadToken(this.env, decision.targetRepo);
+        const live = await exactReviewTargetItemState(token, decision, this.env);
+        automaticPrOptIn = live.state === "open" && live.prReview?.automationOptIn === true;
+      }
       const incomingPublicationRevision = exactReviewPublicationRevision(decision);
       const verifiedSourceDriftRequeue =
         decision.sourceAction === EXACT_REVIEW_SOURCE_DRIFT_REQUEUE_SOURCE_ACTION &&
@@ -1619,6 +1637,43 @@ export class ExactReviewQueue {
           };
         }
         let intakeState: ExactReviewQueueState | undefined;
+        const requestedReview = isAutomaticPullRequestReview(decision)
+          ? (intakeState = this.readStateSync()).items[exactReviewItemKey(decision)]
+          : undefined;
+        const continuesRequestedReview =
+          requestedReview &&
+          !exactReviewQueueIsPublication(requestedReview) &&
+          !requestedReview.terminalFinalization &&
+          exactReviewQueueHasCommandContext(requestedReview);
+        if (
+          isAutomaticPullRequestReview(decision) &&
+          !continuesRequestedReview &&
+          automaticPrOptIn !== true &&
+          this.directPublicationStore.hasCompletedPullRequestReview(
+            decision.targetRepo.replaceAll("/", "-"),
+            decision.itemNumber,
+          )
+        ) {
+          // Reject before revision allocation or supersession: a later push
+          // must not replace the completed answer's publication/finalizer.
+          const disposition: ExactReviewScheduledDisposition = {
+            ok: true,
+            deduped: true,
+            item_key: exactReviewItemKey(decision),
+            dedupe_scope: "scheduled_queue_item",
+            dedupe_reason: "review_request_required",
+          };
+          return {
+            replayed: true as const,
+            disposition,
+            dispositionJson:
+              this.recordScheduledDispositionSync(
+                deliveryId,
+                authenticatedBodyFingerprint,
+                disposition,
+              ) ?? JSON.stringify(disposition),
+          };
+        }
         if (decision.publication) {
           const publication = decision.publication;
           const state = (intakeState ??= this.readStateSync());
@@ -2180,6 +2235,18 @@ export class ExactReviewQueue {
                 : mergeable || queuesCommandFollowUp
                   ? mergePendingExactReviewDecision(followUpMergeBase, decision)
                   : decision;
+            if (
+              current.prReviewObservation &&
+              isAutomaticPullRequestReview(nextDecision) &&
+              (current.decision.sourceHeadSha !== nextDecision.sourceHeadSha ||
+                (decision.sourceAction === "edited" &&
+                  current.decision.sourceContentRevision !== nextDecision.sourceContentRevision) ||
+                current.decision.sourceIsDraft !== nextDecision.sourceIsDraft)
+            ) {
+              // A push and revert between live probes still restart the quiet
+              // period; sampling only the final head would lose that activity.
+              delete current.prReviewObservation;
+            }
             // A source-drift loop park is not a retry budget: any admitted
             // non-recovery input releases it to pending.
             const preserveReviewRetryBudget =
@@ -2661,6 +2728,22 @@ export class ExactReviewQueue {
         return hostedTargetProbeResponse(admission);
       }
       if (admission.outcome === "retryable") return hostedTargetProbeResponse(admission);
+
+      // Publication may finish after dispatch but before this workflow claims.
+      // Only that published answer consumes the automatic review opportunity.
+      if (this.automaticPullRequestAlreadyAnswered(item)) {
+        // A command can arrive while the old automatic workflow is starting.
+        // Reject that lease without discarding the newer requested review.
+        const requestedFollowUp =
+          item.revision > Number(item.leaseRevision || 0) &&
+          (exactReviewDecisionHasCommandContext(item.decision) ||
+            item.decision.sourceAction === MANUAL_REVIEW_SOURCE_ACTION);
+        finishExactReviewQueueItem(state, item, now, "success", 0, requestedFollowUp);
+        this.writeStateSync(state);
+        this.incrementQueueMetricsSync({ reviewCompleted: 1 });
+        await this.scheduleNext(state, now);
+        return json({ error: "lease_not_active", reason: "review_request_required" }, 409);
+      }
 
       // Deploys can observe a pre-snapshot lease. Recover it only when no newer
       // enqueue has replaced the decision that was dispatched for this revision.
@@ -5758,6 +5841,60 @@ export class ExactReviewQueue {
         terminalCompleted += 1;
         continue;
       }
+      if (
+        item.state === "pending" &&
+        candidate.state.state === "open" &&
+        candidate.state.prReview &&
+        isAutomaticPullRequestReview(item.decision)
+      ) {
+        const observed = candidate.state.prReview;
+        if (
+          !observed.automationOptIn &&
+          this.directPublicationStore.hasCompletedPullRequestReview(
+            item.decision.targetRepo.replaceAll("/", "-"),
+            item.decision.itemNumber,
+          )
+        ) {
+          delete checkedState.items[item.key];
+          terminalCompleted += 1;
+          continue;
+        }
+        const prior = item.prReviewObservation;
+        const quietUntil =
+          prior?.signature === observed.signature
+            ? prior.quietUntil
+            : checkedAt + initialPullRequestQuietMs(this.env);
+        item.prReviewObservation = {
+          signature: observed.signature,
+          quietUntil,
+          automationOptIn: observed.automationOptIn,
+        };
+        if (!observed.automationOptIn) {
+          // Refresh the whole source tuple from this live observation. A lost
+          // webhook must extend the quiet window, not delete the only review.
+          item.decision = { ...item.decision, ...candidate.state.sourceIdentity };
+          if (
+            Date.parse(item.decision.sourceUpdatedAt || "") >=
+              Date.parse(item.sourceAuthorityWatermark?.updatedAt || "") ||
+            !item.sourceAuthorityWatermark?.updatedAt
+          ) {
+            advanceExactReviewSourceAuthorityWatermark(item, item.decision);
+          }
+          if (observed.draft) {
+            // Ready-for-review intake starts a new quiet window. A draft has
+            // no review obligation, so do not retain a polling queue entry.
+            delete checkedState.items[item.key];
+            terminalCompleted += 1;
+            continue;
+          }
+          if (quietUntil > checkedAt) {
+            item.nextAttemptAt = quietUntil;
+            item.backoffReason = "dispatch_debounce";
+            item.updatedAt = checkedAt;
+            continue;
+          }
+        }
+      }
       if (exactReviewQueueHasStaleLiveHead(item, candidate.state)) {
         const audit: ExactReviewSupersessionAudit = {
           auditId: crypto.randomUUID(),
@@ -5931,7 +6068,13 @@ export class ExactReviewQueue {
     }
     const dispatchable = admission.flatMap((candidate) => {
       const item = checkedState.items[candidate.key];
-      if (!item || item.revision !== candidate.revision || item.state !== "pending") return [];
+      if (
+        !item ||
+        item.revision !== candidate.revision ||
+        item.state !== "pending" ||
+        item.nextAttemptAt > checkedAt
+      )
+        return [];
       if (exactReviewQueueIsPublication(item)) {
         // A committed finalizer holds no review/publication work, but it still
         // requires the same current public admission before target credentials.
@@ -13429,6 +13572,17 @@ export class ExactReviewQueue {
     return Number(row?.completed || 0) >= threshold;
   }
 
+  private automaticPullRequestAlreadyAnswered(item: ExactReviewQueueItem): boolean {
+    return (
+      isAutomaticPullRequestReview(item.leaseDecision ?? item.decision) &&
+      item.prReviewObservation?.automationOptIn !== true &&
+      this.directPublicationStore.hasCompletedPullRequestReview(
+        item.decision.targetRepo.replaceAll("/", "-"),
+        item.decision.itemNumber,
+      )
+    );
+  }
+
   /**
    * Best-effort: the history only lengthens a later organic debounce, so a
    * failed write must never block or roll back the review completion itself.
@@ -17439,6 +17593,7 @@ function exactReviewScheduledDispositionFromJson(
       body.dedupe_reason === "item_already_pending_or_active" ||
       body.dedupe_reason === "source_incompatible" ||
       body.dedupe_reason === "scanner_refused" ||
+      body.dedupe_reason === "review_request_required" ||
       body.dedupe_reason === "source_drift_loop"
         ? body.dedupe_reason
         : exactReviewHoldReason(body.dedupe_reason);
@@ -18064,8 +18219,9 @@ async function exactReviewTargetItemState(
       Boolean(exactReviewScheduledLane(decision)) &&
       !decision.publication &&
       !exactReviewDecisionHasCommandContext(decision);
+    const automatic = isAutomaticPullRequestReview(decision);
     const readPullHead =
-      isPullRequest && (/^[0-9a-f]{40}$/.test(queuedHeadSha) || bindScheduledSource);
+      isPullRequest && (/^[0-9a-f]{40}$/.test(queuedHeadSha) || bindScheduledSource || automatic);
     const item = await githubTokenJson({
       env,
       token,
@@ -18083,7 +18239,7 @@ async function exactReviewTargetItemState(
       if (!/^[0-9a-f]{40}$/.test(headSha)) {
         throw new Error("live pull request response missing head SHA");
       }
-      if (bindScheduledSource) {
+      if (bindScheduledSource || automatic) {
         const baseSha = String(objectValue(item.base).sha || "").toLowerCase();
         const material = exactReviewSourceRevisionMaterial(item);
         const updatedAt = String(item.updated_at || "");
@@ -18093,11 +18249,24 @@ async function exactReviewTargetItemState(
           !material ||
           !Number.isFinite(Date.parse(updatedAt))
         ) {
-          throw new Error("live scheduled pull request source identity is incomplete");
+          throw new Error("live pull request source identity is incomplete");
         }
         return {
           state: "open",
           headSha,
+          ...(automatic
+            ? {
+                prReview: {
+                  signature: await sha256Hex(
+                    new TextEncoder().encode(
+                      JSON.stringify([headSha, item.title, item.body, item.draft]),
+                    ),
+                  ),
+                  draft: item.draft,
+                  automationOptIn: hasReviewAutomationOptIn(item),
+                },
+              }
+            : {}),
           sourceIdentity: {
             sourceHeadSha: headSha,
             sourceHeadVerified: true,
@@ -18131,6 +18300,25 @@ async function exactReviewTargetItemState(
     }
     throw error;
   }
+}
+
+function isAutomaticPullRequestReview(decision: ExactReviewDecision): boolean {
+  return (
+    decision.itemKind === "pull_request" &&
+    !decision.publication &&
+    decision.sourceAction !== MANUAL_REVIEW_SOURCE_ACTION &&
+    !exactReviewDecisionHasCommandContext(decision)
+  );
+}
+
+function initialPullRequestQuietMs(env): number {
+  return Math.max(
+    0,
+    Math.min(
+      60 * 60_000,
+      numberFrom(env.EXACT_REVIEW_INITIAL_PR_QUIET_MS, INITIAL_PR_REVIEW_QUIET_MS),
+    ),
+  );
 }
 
 export async function exactReviewActionsReadToken(env) {

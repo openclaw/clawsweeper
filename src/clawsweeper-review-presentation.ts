@@ -112,12 +112,17 @@ export function reviewFindingLocation(
 }
 
 function realBehaviorProofReReviewGuidance(): string {
-  return "After adding proof, update the PR body; ClawSweeper should re-review automatically. If it does not, the PR author or someone with repository write access can comment `@clawsweeper re-review`.";
+  return "After adding proof, update the PR body, then request a new review with `@clawsweeper re-review`. The PR author or someone with repository write access can request it.";
 }
 
 function realBehaviorProofBlockerSummary(summary: string, fallback: string): string {
-  const body = sentence(summary) || fallback;
-  if (/\b(?:@clawsweeper re-review|re-review automatically|update the PR body)\b/i.test(body)) {
+  // Stored proof summaries may still contain the retired automatic-review promise.
+  const body =
+    sentence(summary).replace(
+      /ClawSweeper should re-review automatically/gi,
+      "request a new review with `@clawsweeper re-review`",
+    ) || fallback;
+  if (/@clawsweeper re-review/i.test(body)) {
     return body;
   }
   return `${body} ${realBehaviorProofReReviewGuidance()}`;

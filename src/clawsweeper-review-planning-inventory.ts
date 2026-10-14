@@ -34,6 +34,7 @@ import {
 } from "./github-webhook-read-model-client.js";
 import { asRecord as jsonRecord } from "./value-coerce.js";
 import { indexedExistingReview } from "./clawsweeper-record-metadata.js";
+import { requiresPullRequestReReviewRequest } from "./pr-review-policy.js";
 
 export {
   PR_ACTIVITY_REVISION_CONNECTION_LIMIT,
@@ -81,6 +82,7 @@ export function createReviewPlanningInventory(dependencies: ReviewPlanningDepend
     coverageTrackedItemIds?: ReadonlySet<number>,
   ): DueCandidate | null {
     const review = indexedExistingReview(item, itemsDir, reviewIndex);
+    if (requiresPullRequestReReviewRequest(item, review)) return null;
     const coverageTracked = coverageTrackedItemIds
       ? coverageTrackedItemIds.has(item.number)
       : review !== null;
@@ -104,6 +106,7 @@ export function createReviewPlanningInventory(dependencies: ReviewPlanningDepend
     reviewIndex?: ExistingReviewIndex,
   ): DueCandidate | null {
     const review = indexedExistingReview(item, itemsDir, reviewIndex);
+    if (requiresPullRequestReReviewRequest(item, review)) return null;
     if (!review || hasReviewPolicyMismatch(review, reviewPolicy)) return null;
     const reviewedAt = reviewedAtMs(review);
     if (reviewedAt === null) return null;

@@ -1,5 +1,6 @@
 import { EXACT_REVIEW_DIRECT_PUBLICATION_MAX_FILE_BYTES } from "../src/exact-review-publication-limits.ts";
 import { sqlColumnNames, type DurableStorage } from "./durable-storage.ts";
+import { isCompletedPullRequestReview } from "../src/pr-review-policy.ts";
 import {
   manualPublicationOwnerFrom,
   type ManualPublicationOwner,
@@ -15,6 +16,7 @@ export const EXACT_REVIEW_RECORD_BACKFILL_TABLE = "exact_review_record_backfill"
 export const EXACT_REVIEW_RECORD_BACKFILL_CHUNK_TABLE = "exact_review_record_backfill_chunks";
 export const EXACT_REVIEW_RECORD_EXPORT_META_TABLE = "exact_review_record_export_meta";
 export const CANONICAL_RECORD_TUPLE_RECEIPT_TABLE = "canonical_record_tuple_receipts";
+const PR_REVIEW_ANSWER_TABLE = "exact_review_pull_request_answers";
 export const EXACT_REVIEW_DIRECT_PUBLICATION_MAX_POST_BYTES = 4 * 1024 * 1024;
 export const EXACT_REVIEW_DIRECT_PUBLICATION_MAX_FILES = 4;
 export const EXACT_REVIEW_CANONICAL_INLINE_BYTES = Math.floor(1.5 * 1024 * 1024);
@@ -211,6 +213,15 @@ export class ExactReviewDirectPublicationStore {
   }
 
   ensureSchemaSync() {
+    // This lifetime fact survives report replacement, archive moves and queue
+    // cleanup. The existing completion history is only a one-hour churn counter.
+    this.storage.sql.exec(
+      `CREATE TABLE IF NOT EXISTS ${PR_REVIEW_ANSWER_TABLE} (
+         repo_slug TEXT NOT NULL, item_id INTEGER NOT NULL,
+         answered INTEGER NOT NULL CHECK (answered IN (0, 1)),
+         PRIMARY KEY (repo_slug, item_id)
+       ) STRICT`,
+    );
     this.storage.sql.exec(
       `CREATE TABLE IF NOT EXISTS ${EXACT_REVIEW_DIRECT_PUBLICATION_TABLE} (
          item_key TEXT NOT NULL,
@@ -1088,6 +1099,56 @@ export class ExactReviewDirectPublicationStore {
     return row ? this.recordExportEntrySync(row) : null;
   }
 
+  hasCompletedPullRequestReview(repoSlug: string, itemId: number): boolean {
+    repoSlug = repoSlug.toLowerCase();
+    const row = Array.from(
+      this.storage.sql.exec(
+        `SELECT answered FROM ${PR_REVIEW_ANSWER_TABLE} WHERE repo_slug = ? AND item_id = ?`,
+        repoSlug,
+        itemId,
+      ),
+    )[0];
+    if (row) return Number(row.answered) === 1;
+    // Seed upgraded stores lazily from either canonical or imported records,
+    // before a later failed review can overwrite the prior completed answer.
+    let staleSource = false;
+    const answered = (["items", "closed"] as const).some((section) => {
+      const record = this.readExportRecord(repoSlug, section, String(itemId));
+      if (
+        record?.content == null ||
+        record.deleted ||
+        !isCompletedPullRequestReview(record.content)
+      )
+        return false;
+      const [publication] = this.storage.sql.exec(
+        `SELECT publication.lifecycle_json
+           FROM ${EXACT_REVIEW_CANONICAL_RECORD_TABLE} AS record
+           JOIN ${EXACT_REVIEW_DIRECT_PUBLICATION_TABLE} AS publication
+             ON publication.canonical_target_key = record.item_key
+            AND publication.commit_sha = 'do-revision:' || record.revision
+            AND publication.state = 'published'
+          WHERE record.repo_slug = ? AND record.section = ? AND record.item_id = ?
+          LIMIT 1`,
+        repoSlug,
+        section,
+        itemId,
+      );
+      if (storedDirectPublicationLifecycle(publication?.lifecycle_json)?.kind === "requeue") {
+        staleSource = true;
+        return false;
+      }
+      return true;
+    });
+    if (answered || staleSource)
+      this.storage.sql.exec(
+        `INSERT INTO ${PR_REVIEW_ANSWER_TABLE} (repo_slug, item_id, answered) VALUES (?, ?, ?)`,
+        repoSlug,
+        itemId,
+        Number(answered),
+      );
+    return answered;
+  }
+
   count(): number {
     const row = Array.from(
       this.storage.sql.exec(
@@ -1125,6 +1186,26 @@ export class ExactReviewDirectPublicationStore {
   }
 
   pruneTerminalSync(now: number) {
+    // On upgrade, preserve stale-source provenance before its old receipt is
+    // pruned. Otherwise the surviving report looks like a completed answer.
+    const staleRecords = Array.from(
+      this.storage.sql.exec(
+        `SELECT DISTINCT canonical_target_key
+         FROM ${EXACT_REVIEW_DIRECT_PUBLICATION_TABLE}
+        WHERE state = 'published' AND json_extract(lifecycle_json, '$.kind') = 'requeue'
+          AND rowid IN (
+            SELECT rowid FROM ${EXACT_REVIEW_DIRECT_PUBLICATION_TABLE}
+             WHERE state IN ('published', 'superseded', 'failed') AND updated_at <= ?
+             ORDER BY updated_at, item_key, revision
+             LIMIT ${DIRECT_PUBLICATION_TERMINAL_PRUNE_LIMIT}
+          )`,
+        now - EXACT_REVIEW_DIRECT_PUBLICATION_RETENTION_MS,
+      ),
+    );
+    for (const record of staleRecords) {
+      const [repo, itemId] = String(record.canonical_target_key).split("#");
+      this.hasCompletedPullRequestReview(repo!.replaceAll("/", "-"), Number(itemId));
+    }
     return Array.from(
       this.storage.sql.exec(
         `DELETE FROM ${EXACT_REVIEW_DIRECT_PUBLICATION_TABLE}
@@ -1191,6 +1272,20 @@ export class ExactReviewDirectPublicationStore {
     now: number,
     revision = plan.revision,
   ) {
+    if (operation.section === "items" || operation.section === "closed") {
+      this.hasCompletedPullRequestReview(operation.repoSlug, operation.itemId);
+      if (operation.content !== null && isCompletedPullRequestReview(operation.content)) {
+        // A stale-source requeue can carry a complete-looking report. Remember
+        // that it did not answer the PR, so lazy import cannot promote it later.
+        this.storage.sql.exec(
+          `INSERT INTO ${PR_REVIEW_ANSWER_TABLE} (repo_slug, item_id, answered) VALUES (?, ?, ?)
+           ON CONFLICT (repo_slug, item_id) DO UPDATE SET answered = MAX(answered, excluded.answered)`,
+          operation.repoSlug,
+          operation.itemId,
+          Number(plan.lifecycle?.kind !== "requeue"),
+        );
+      }
+    }
     this.storage.sql.exec(
       `DELETE FROM ${EXACT_REVIEW_CANONICAL_RECORD_CHUNK_TABLE}
         WHERE repo_slug = ? AND section = ? AND item_id = ?`,

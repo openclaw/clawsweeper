@@ -1,0 +1,174 @@
+{
+  "verdict": "PASS",
+  "runtime": "workerd + SQLite",
+  "trace": [
+    {
+      "name": "quiet",
+      "op": "enqueue",
+      "minute": 0,
+      "status": 202,
+      "dispatches": 0,
+      "state": "pending",
+      "nextAttemptAt": 1893456000000
+    },
+    {
+      "name": "quiet",
+      "op": "tick",
+      "minute": 0,
+      "status": 200,
+      "dispatches": 0,
+      "state": "pending",
+      "nextAttemptAt": 1893456600000
+    },
+    {
+      "name": "quiet",
+      "op": "tick",
+      "minute": 10,
+      "status": 200,
+      "dispatches": 0,
+      "state": "pending",
+      "nextAttemptAt": 1893457200000
+    },
+    {
+      "name": "quiet",
+      "op": "tick",
+      "minute": 20,
+      "status": 200,
+      "dispatches": 1,
+      "state": "dispatching",
+      "nextAttemptAt": 1893457200000
+    },
+    {
+      "name": "quiet",
+      "op": "publish",
+      "minute": 20.016666666666666,
+      "status": 200,
+      "dispatches": 1,
+      "state": "dispatching",
+      "nextAttemptAt": 1893457200000
+    },
+    {
+      "name": "quiet",
+      "op": "claim",
+      "minute": 20.016666666666666,
+      "status": 409,
+      "dispatches": 1
+    },
+    {
+      "name": "quiet",
+      "op": "enqueue",
+      "minute": 60,
+      "status": 202,
+      "dispatches": 1,
+      "reason": "review_request_required"
+    },
+    {
+      "name": "quiet",
+      "op": "enqueue",
+      "minute": 60,
+      "status": 202,
+      "dispatches": 1,
+      "reason": "review_request_required"
+    },
+    {
+      "name": "quiet",
+      "op": "enqueue",
+      "minute": 60,
+      "status": 202,
+      "dispatches": 1,
+      "reason": "review_request_required"
+    },
+    {
+      "name": "failed",
+      "op": "publish",
+      "minute": 0,
+      "status": 200,
+      "dispatches": 1
+    },
+    {
+      "name": "failed",
+      "op": "enqueue",
+      "minute": 0,
+      "status": 202,
+      "dispatches": 1,
+      "state": "pending",
+      "nextAttemptAt": 1893456000000
+    },
+    {
+      "name": "stale",
+      "op": "publish",
+      "minute": 0,
+      "status": 200,
+      "dispatches": 1
+    },
+    {
+      "name": "stale",
+      "op": "legacy-prune",
+      "minute": 11520,
+      "status": 200,
+      "dispatches": 1
+    },
+    {
+      "name": "stale",
+      "op": "enqueue",
+      "minute": 11520,
+      "status": 202,
+      "dispatches": 1,
+      "state": "pending",
+      "nextAttemptAt": 1894147200000
+    },
+    {
+      "name": "quiet",
+      "op": "enqueue",
+      "minute": 61,
+      "status": 202,
+      "dispatches": 1,
+      "state": "pending",
+      "nextAttemptAt": 1893459660000
+    },
+    {
+      "name": "quiet",
+      "op": "tick",
+      "minute": 61,
+      "status": 200,
+      "dispatches": 2,
+      "state": "dispatching",
+      "nextAttemptAt": 1893459660000
+    },
+    {
+      "name": "optin",
+      "op": "publish",
+      "minute": 0,
+      "status": 200,
+      "dispatches": 2
+    },
+    {
+      "name": "optin",
+      "op": "enqueue",
+      "minute": 0,
+      "status": 202,
+      "dispatches": 2,
+      "state": "pending",
+      "nextAttemptAt": 1893456000000
+    },
+    {
+      "name": "optin",
+      "op": "tick",
+      "minute": 0,
+      "status": 200,
+      "dispatches": 3,
+      "state": "dispatching",
+      "nextAttemptAt": 1893456000000
+    }
+  ],
+  "source_sha256": {
+    "dashboard/exact-review-queue.ts": "ff7b55cfb0b1134252520341ea3355901029b2bf16c2c16b6891837e6d8c3660",
+    "dashboard/exact-review-decision.ts": "adf330e582bc4c522a96f55754be07f25ab8050b55c5cc08583204bb5968c721",
+    "dashboard/exact-review-direct-publication.ts": "4dd9be09922ccc1cab21474d284c8f51068f69bcb1c270415cdb7da60b2b96ae",
+    "src/pr-review-policy.ts": "094901dca432296430d716018eb1bcfc5c4c25321c918fbd6be7a4f8e6c177f5",
+    "src/maintainer-review-policy.ts": "364493273e09b9338e51791b8f563ba50db7603e823a75c02e89b2b8877baede",
+    "src/clawsweeper-review-planning-inventory.ts": "9e74deb0b41cafce6be67187de9cb0a1e2aaf241d3cc170f6a647fa73602f41a",
+    "src/clawsweeper-review-presentation.ts": "7862dbd594442a1f0e5a8ddf151b29803704b1e48ff96a5b7ee049c67f228bb0"
+  },
+  "limits": "GitHub HTTP fixture; no live GitHub/model calls or production mutations."
+}

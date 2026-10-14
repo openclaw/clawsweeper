@@ -107,6 +107,14 @@ content caches. Changed PR content goes to Codex, including source comments
 and formatting. See [Review Cache](review-cache.md) for admission, freshness,
 and runtime packaging rules.
 
+Ordinary PRs receive one automatic completed review after ten quiet minutes of
+stable head, title, body, and draft state. Pushes and edits after that answer need
+an explicit `@clawsweeper re-review`; scheduled hot/normal planning excludes them,
+and queue admission, dispatch, and claim enforce the same durable completion
+fact. Failed and stale-source attempts may finish the first answer. Explicit
+requests and autofix/automerge opt-ins retain their existing automation. See
+[automation limits](limits.md) for quiet-window and persistence details.
+
 ### Control-plane workflow retries
 
 Shell calls to the control plane in `review-plan.yml`, `sweep.yml`,

@@ -14,8 +14,8 @@ type ReviewItem = {
   labels?: unknown;
 };
 
-export function requiresMaintainerReviewRequest(item: ReviewItem): boolean {
-  const labels = new Set(
+function reviewLabels(item: Pick<ReviewItem, "labels">): Set<string> {
+  return new Set(
     (Array.isArray(item.labels) ? item.labels : []).map((label: unknown) => {
       const name =
         typeof label === "string"
@@ -26,7 +26,16 @@ export function requiresMaintainerReviewRequest(item: ReviewItem): boolean {
       return typeof name === "string" ? name.trim().toLowerCase() : "";
     }),
   );
-  if (labels.has("clawsweeper:autofix") || labels.has("clawsweeper:automerge")) return false;
+}
+
+export function hasReviewAutomationOptIn(item: Pick<ReviewItem, "labels">): boolean {
+  const labels = reviewLabels(item);
+  return labels.has("clawsweeper:autofix") || labels.has("clawsweeper:automerge");
+}
+
+export function requiresMaintainerReviewRequest(item: ReviewItem): boolean {
+  if (hasReviewAutomationOptIn(item)) return false;
+  const labels = reviewLabels(item);
   return (
     labels.has("maintainer") ||
     isMaintainerAuthorAssociation(item.authorAssociation ?? item.author_association)
