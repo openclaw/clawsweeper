@@ -110,7 +110,7 @@ export async function deferredPublication(h: Harness, request: Record<string, un
   const claim = await post(h, "/claim", tuple);
   assert.equal(claim.status, 200, JSON.stringify(claim.body));
   const claimed = claim.body.decision as Record<string, unknown>;
-  await enqueue(h, `publisher:${producerRunId}:1`, {
+  const publicationDecision = {
     ...claimed,
     sourceAction: "exact_review_artifact_publish",
     supersedesInProgress: false,
@@ -129,7 +129,8 @@ export async function deferredPublication(h: Harness, request: Record<string, un
       liveGuardedOpen: false,
       producerDecision: claimed,
     },
-  });
+  };
+  await enqueue(h, `publisher:${producerRunId}:1`, publicationDecision);
   const complete = await post(h, "/complete", {
     ...tuple,
     claim_generation: claim.body.claim_generation,
@@ -139,6 +140,8 @@ export async function deferredPublication(h: Harness, request: Record<string, un
   return {
     claimed,
     key,
+    producerRunId,
+    publicationDecision,
     publicationKey: `${key}@publish:${producerRunId}:1`,
     // sweep.yml "Queue fresh review after source drift" and the batch publisher.
     requeueDeliveryId: `publisher-source-drift:${producerRunId}:1`,

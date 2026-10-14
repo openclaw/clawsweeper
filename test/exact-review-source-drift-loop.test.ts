@@ -518,6 +518,39 @@ test("a deferred publisher's source-drift requeue continues the open request", a
   });
 });
 
+test("a deferred continuation follows a publication refreshed under its retained key", async () => {
+  const h = harness();
+  await withExactReviewAdmissionHarness(h, async () => {
+    const number = 97650;
+    const deferred = await deferredPublication(h, verifiedRequest(number, 6150293310));
+    // A rerun of the same review generation delivers its artifact again. Same-
+    // lineage deduplication keeps the queue key and refreshes its producer.
+    const { publication } = deferred.publicationDecision;
+    const rerun = await enqueue(h, `publisher:${deferred.producerRunId}:2`, {
+      ...deferred.publicationDecision,
+      publication: {
+        ...publication,
+        artifactName: `exact-review-${deferred.producerRunId}-2`,
+        producerRunAttempt: 2,
+      },
+    });
+    assert.equal(rerun.semantic_deduped, true, JSON.stringify(rerun));
+    const retained = (await queueState(h)).items[deferred.publicationKey]!;
+    assert.equal(retained.decision.publication?.producerRunAttempt, 2);
+    await claimPublication(h, deferred.publicationKey);
+
+    // The publisher names the refreshed producer it claimed.
+    await enqueue(
+      h,
+      `publisher-source-drift:${deferred.producerRunId}:2`,
+      sourceDriftRequeue(deferred.claimed),
+    );
+    const item = (await queueState(h)).items[deferred.key]!;
+    assert.equal(item.decision.sourceCommentVerified, true);
+    assert.equal(isExplicitReviewRequest(await reviewOnce(h, number)), true);
+  });
+});
+
 test("a deferred source-drift requeue loses authority once the request is answered or replaced", async () => {
   const revoked = (
     Object.keys(DEFERRED_CONTINUATION_SCENARIOS) as DeferredContinuationScenario[]

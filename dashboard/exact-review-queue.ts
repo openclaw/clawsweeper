@@ -9236,7 +9236,9 @@ export class ExactReviewQueue {
   // The deferred publisher requeues its claimed producer decision while it
   // still holds that publication. Its delivery id names the producer, so only
   // that producer's own publication can continue the request, and only while
-  // it is the item's newest and no other command reached the item since.
+  // it is the item's newest and no other command reached the item since. Match
+  // the producer metadata, not the queue key: same-lineage deduplication keeps
+  // a retained key while refreshing its producer.
   private continuesHeldCommandPublicationSync(
     state: ExactReviewQueueState,
     decision: ExactReviewDecision,
@@ -9247,38 +9249,38 @@ export class ExactReviewQueue {
     const producer = /^publisher-source-drift:(\d+):([1-9]\d*)$/.exec(deliveryId);
     if (!producer) return false;
     const key = exactReviewItemKey(decision);
-    const item = state.items[`${key}@publish:${producer[1]}:${producer[2]}`];
-    const publication = item?.decision.publication;
-    const revision = item ? exactReviewPublicationRevision(item.decision) : null;
-    if (
-      !item ||
-      !exactReviewQueueIsPublication(item) ||
-      item.terminalFinalization ||
-      publication?.itemKey !== key ||
-      publication.producerRunId !== producer[1] ||
-      publication.producerRunAttempt !== Number(producer[2]) ||
-      revision === null
-    ) {
-      return false;
-    }
-    const held =
-      batchItemKeys.has(item.key) ||
-      (item.state === "leased" &&
-        isLiveExactReviewLease(
-          item,
-          now,
-          exactReviewPublicationDispatchLeaseMs(this.env),
-          exactReviewHeartbeatGraceMs(this.env),
-        ));
-    return (
-      held &&
-      exactReviewSameVerifiedCommand(publication.producerDecision, decision) &&
-      revision.sourceRevision >= this.publicationHeadRevisionSync(revision.targetKey) &&
-      !this.lifecycleProjectionStore.otherCommandAdmittedAfter(key, revision.sourceRevision, {
-        statusMarker: decision.commandStatusMarker ?? null,
-        statusCommentId: decision.statusCommentId ?? null,
-      })
-    );
+    return Object.values(state.items).some((item) => {
+      const publication = item.decision.publication;
+      const revision = exactReviewPublicationRevision(item.decision);
+      if (
+        !exactReviewQueueIsPublication(item) ||
+        item.terminalFinalization ||
+        publication?.itemKey !== key ||
+        publication.producerRunId !== producer[1] ||
+        publication.producerRunAttempt !== Number(producer[2]) ||
+        revision === null
+      ) {
+        return false;
+      }
+      const held =
+        batchItemKeys.has(item.key) ||
+        (item.state === "leased" &&
+          isLiveExactReviewLease(
+            item,
+            now,
+            exactReviewPublicationDispatchLeaseMs(this.env),
+            exactReviewHeartbeatGraceMs(this.env),
+          ));
+      return (
+        held &&
+        exactReviewSameVerifiedCommand(publication.producerDecision, decision) &&
+        revision.sourceRevision >= this.publicationHeadRevisionSync(revision.targetKey) &&
+        !this.lifecycleProjectionStore.otherCommandAdmittedAfter(key, revision.sourceRevision, {
+          statusMarker: decision.commandStatusMarker ?? null,
+          statusCommentId: decision.statusCommentId ?? null,
+        })
+      );
+    });
   }
 
   private transitionCommandRevision(
