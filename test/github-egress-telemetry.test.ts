@@ -989,6 +989,15 @@ test("legacy eviction diagnostics migrate conservatively across restart", () => 
     new Date(recentFiveMinuteBoundary).toISOString(),
     "an older retained hourly row cannot mask a five-minute legacy boundary",
   );
+  const changes = () =>
+    Number([...storage.sql.exec("SELECT total_changes() AS n")][0]?.n ?? Number.NaN);
+  const beforeSettledStart = changes();
+  new GithubEgressTelemetryStore(storage).ensureSchemaSync();
+  assert.equal(
+    changes() - beforeSettledStart,
+    0,
+    "a migrated row is not rewritten on later starts",
+  );
 
   storage.sql.exec("DELETE FROM exact_review_github_egress_rollups_v2");
   storage.sql.exec("DELETE FROM exact_review_github_rate_limits_v2");

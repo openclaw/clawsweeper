@@ -314,7 +314,17 @@ export class GithubEgressTelemetryStore {
                 THEN (SELECT MIN(observed_at) FROM ${RATE_LIMIT_TABLE})
                 ELSE last_rate_limit_evicted_observed_at
               END
-        WHERE singleton_id = 1`,
+        WHERE singleton_id = 1
+          -- Write only when a legacy row still needs this one-time backfill.
+          AND (
+            (evicted_rollup_rows > 0
+              AND evicted_five_minute_rollup_rows = 0
+              AND evicted_hour_rollup_rows = 0)
+            OR (evicted_rollup_rows > 0
+              AND (last_five_minute_evicted_bucket_start IS NULL
+                OR last_hour_evicted_bucket_start IS NULL))
+            OR (evicted_rate_limit_rows > 0 AND last_rate_limit_evicted_observed_at IS NULL)
+          )`,
     );
   }
 
