@@ -212,7 +212,7 @@ draft state, then wait for `EXACT_REVIEW_INITIAL_PR_QUIET_MS` (ten minutes).
 Meaningful changes restart that quiet window, including changes discovered
 without a webhook. Comments and label-only activity do not extend it. There is
 no maximum-wait shortcut: a continuously changing PR waits until it settles.
-Draft PRs leave the review queue; ready-for-review intake starts a new window.
+Draft-state changes restart the window; existing draft and oversized-PR gates remain in force.
 Explicit review requests and autofix/automerge opt-ins bypass this initial hold.
 
 Once a PR has a completed canonical review, ordinary webhooks and scheduled

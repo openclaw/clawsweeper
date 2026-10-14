@@ -275,7 +275,7 @@ test("an organic synchronize releases an oversized hold immediately", async () =
   });
 });
 
-test("holds never retain command work, unpinned PRs, or input that arrived during the lease", async () => {
+test("holds retain live-bound PRs but not command work or input that arrived during the lease", async () => {
   const live = { locked: true, updatedAt: "2026-09-09T02:17:31Z" };
   const h = lockedIssueHarness(live);
   await withExactReviewAdmissionHarness(h, async () => {
@@ -300,7 +300,9 @@ test("holds never retain command work, unpinned PRs, or input that arrived durin
     await enqueue(h, "unpinned", pullDecision(unpinned, "opened"));
     const unpinnedCompletion = await completeHeld(h, unpinned, "oversized_pull_request");
     assert.equal(unpinnedCompletion.status, 200, JSON.stringify(unpinnedCompletion.body));
-    assert.equal((await queueState(h)).items[`${repo}#${unpinned}`], undefined);
+    const bound = (await queueState(h)).items[`${repo}#${unpinned}`]!;
+    assert.equal(bound.decision.sourceHeadSha, headA);
+    assert.equal(bound.parkedReason, "oversized_pull_request");
 
     const raced = 84599;
     await enqueue(h, "raced", decision(raced, "scheduled_normal_backfill"));

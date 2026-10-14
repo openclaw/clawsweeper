@@ -5880,13 +5880,6 @@ export class ExactReviewQueue {
           ) {
             advanceExactReviewSourceAuthorityWatermark(item, item.decision);
           }
-          if (observed.draft) {
-            // Ready-for-review intake starts a new quiet window. A draft has
-            // no review obligation, so do not retain a polling queue entry.
-            delete checkedState.items[item.key];
-            terminalCompleted += 1;
-            continue;
-          }
           if (quietUntil > checkedAt) {
             item.nextAttemptAt = quietUntil;
             item.backoffReason = "dispatch_debounce";
@@ -18262,7 +18255,6 @@ async function exactReviewTargetItemState(
                       JSON.stringify([headSha, item.title, item.body, item.draft]),
                     ),
                   ),
-                  draft: item.draft,
                   automationOptIn: hasReviewAutomationOptIn(item),
                 },
               }

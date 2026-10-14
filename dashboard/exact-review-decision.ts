@@ -121,7 +121,7 @@ export type ExactReviewTargetItemState =
   | {
       state: "open";
       headSha?: string;
-      prReview?: { signature: string; draft: boolean; automationOptIn: boolean };
+      prReview?: { signature: string; automationOptIn: boolean };
       sourceIdentity?: Pick<
         ExactReviewDecision,
         | "sourceHeadSha"
