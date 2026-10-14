@@ -23,7 +23,9 @@ import {
 } from "./helpers.ts";
 import {
   DEFERRED_CONTINUATION_SCENARIOS,
+  PENDING_TRANSFER_SCENARIOS,
   deferredContinuationClaim,
+  pendingTransferClaim,
   type DeferredContinuationScenario,
 } from "./exact-review-deferred-publication-fixture.ts";
 
@@ -137,6 +139,16 @@ for (const scenario of heldScenarios) {
 const revokedHeldScenarios = heldScenarios
   .filter((scenario) => scenario !== "open")
   .map((scenario) => `exact-close-held-${scenario}`);
+// The same requeue meeting an organic review already pending for the item: the
+// review takes over a current request, and stays organic for every other case.
+for (const scenario of PENDING_TRANSFER_SCENARIOS) {
+  exactDecisions[`exact-close-pending-${scenario}`] = (
+    await pendingTransferClaim(scenario, pull.number)
+  ).claimed;
+}
+const revokedPendingScenarios = PENDING_TRANSFER_SCENARIOS.filter(
+  (scenario) => scenario !== "open",
+).map((scenario) => `exact-close-pending-${scenario}`);
 
 for (const scenario of [
   "disabled",
@@ -149,6 +161,7 @@ for (const scenario of [
   "exact-close-request-continuation",
   "exact-close-finished-request",
   ...heldScenarios.map((scenario) => `exact-close-held-${scenario}`),
+  ...PENDING_TRANSFER_SCENARIOS.map((scenario) => `exact-close-pending-${scenario}`),
   "durable-missing-lease",
   "durable-reserved-lease",
   "under-limit",
@@ -353,6 +366,7 @@ for (const scenario of [
           scenario === "exact-close" ||
           scenario === "exact-close-request-continuation" ||
           scenario === "exact-close-held-open" ||
+          scenario === "exact-close-pending-open" ||
           scenario === "notice-error" ||
           scenario === "durable-reserved-lease"
         ) {
@@ -404,7 +418,8 @@ for (const scenario of [
           } else assert.equal(mutations, "");
           if (
             scenario === "exact-close-finished-request" ||
-            revokedHeldScenarios.includes(scenario)
+            revokedHeldScenarios.includes(scenario) ||
+            revokedPendingScenarios.includes(scenario)
           ) {
             assert.deepEqual(
               result.map((entry: any) => entry.action),
