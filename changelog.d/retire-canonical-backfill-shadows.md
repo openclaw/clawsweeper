@@ -1,0 +1,1 @@
+- Retire unreachable non-commit backfill payloads after canonical publication, and drain historical shadows in bounded, restartable idle maintenance while preserving live imports and commits.

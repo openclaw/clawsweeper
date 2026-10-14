@@ -30,6 +30,7 @@ export const REVIEW_COVERAGE_SCAN_PAGE_ROWS = 2_000;
 export const REVIEW_COVERAGE_SCAN_MAX_AGE_MS = 15 * 60 * 1000;
 
 const DIRECT_PUBLICATION_TERMINAL_PRUNE_LIMIT = 256;
+const BACKFILL_SHADOW_PRUNE_LIMIT = 64;
 const MAX_PATH_BYTES = 1024;
 const RECORD_SECTIONS = new Set<RecordSection>([
   "items",
@@ -1140,6 +1141,87 @@ export class ExactReviewDirectPublicationStore {
     ).length;
   }
 
+  backfillShadowUpperRowidSync(): number {
+    const [row] = this.storage.sql.exec(
+      `SELECT COALESCE(MAX(rowid), 0) AS upper_rowid FROM ${EXACT_REVIEW_RECORD_BACKFILL_TABLE}`,
+    );
+    return Number(row?.upper_rowid ?? 0);
+  }
+
+  pruneBackfillShadowsSync(afterRowid: number, upperRowid: number) {
+    // Limit raw identities before joining owners: commits and unresolved rows
+    // must advance the finite sweep without turning a pass into a full scan.
+    const rows = Array.from(
+      this.storage.sql.exec(
+        `SELECT candidate.*, export.source, export.revision AS export_revision,
+                export.digest AS export_digest, export.deleted AS export_deleted,
+                CAST(canonical.item_id AS TEXT) AS canonical_id, canonical.revision AS canonical_revision,
+                canonical.digest AS canonical_digest, canonical.deleted AS canonical_deleted
+           FROM (
+             SELECT rowid AS candidate_rowid, repo_slug, section, record_id, byte_length
+               FROM ${EXACT_REVIEW_RECORD_BACKFILL_TABLE}
+              WHERE rowid > ? AND rowid <= ? ORDER BY rowid LIMIT ${BACKFILL_SHADOW_PRUNE_LIMIT}
+           ) candidate
+           LEFT JOIN ${EXACT_REVIEW_RECORD_EXPORT_INDEX_TABLE} export
+             ON export.repo_slug = candidate.repo_slug AND export.section = candidate.section
+            AND export.record_id = candidate.record_id
+           LEFT JOIN ${EXACT_REVIEW_CANONICAL_RECORD_TABLE} canonical
+             ON canonical.repo_slug = candidate.repo_slug AND canonical.section = candidate.section
+            AND canonical.item_id = CAST(candidate.record_id AS INTEGER)
+          ORDER BY candidate.candidate_rowid`,
+        afterRowid,
+        upperRowid,
+      ),
+    );
+    let retired = 0;
+    let retiredBytes = 0;
+    for (const row of rows) {
+      // Commit bodies intentionally live in backfill even with a canonical
+      // export pointer. Numeric aliases must not inherit another row's owner.
+      if (
+        row.section === "commits" ||
+        row.record_id !== row.canonical_id ||
+        row.source !== "canonical" ||
+        row.canonical_revision !== row.export_revision ||
+        row.canonical_deleted !== row.export_deleted ||
+        row.canonical_digest !== row.export_digest
+      )
+        continue;
+      this.deleteBackfillShadowSync(
+        String(row.repo_slug),
+        String(row.section),
+        String(row.record_id),
+      );
+      retired += 1;
+      retiredBytes += Number(row.byte_length);
+    }
+    const nextRowid = Number(rows.at(-1)?.candidate_rowid ?? upperRowid);
+    return {
+      scanned: rows.length,
+      retired,
+      retiredBytes,
+      afterRowid: nextRowid,
+      complete: rows.length < BACKFILL_SHADOW_PRUNE_LIMIT || nextRowid === upperRowid,
+    };
+  }
+
+  private deleteBackfillShadowSync(repoSlug: string, section: string, id: string) {
+    this.storage.sql.exec(
+      `DELETE FROM ${EXACT_REVIEW_RECORD_BACKFILL_CHUNK_TABLE}
+        WHERE repo_slug = ? AND section = ? AND record_id = ?`,
+      repoSlug,
+      section,
+      id,
+    );
+    this.storage.sql.exec(
+      `DELETE FROM ${EXACT_REVIEW_RECORD_BACKFILL_TABLE}
+        WHERE repo_slug = ? AND section = ? AND record_id = ?`,
+      repoSlug,
+      section,
+      id,
+    );
+  }
+
   private readSync(itemKey: string, revision: number) {
     const row = Array.from(
       this.storage.sql.exec(
@@ -1265,6 +1347,9 @@ export class ExactReviewDirectPublicationStore {
       storeRevision,
       now,
     );
+    // The export now selects this canonical version, including tombstones.
+    // Remove its unreachable import only after both writes, in the same commit.
+    this.deleteBackfillShadowSync(operation.repoSlug, operation.section, String(operation.itemId));
   }
 
   private nextTupleRevisionSync(repoSlug: string, itemId: number): number {

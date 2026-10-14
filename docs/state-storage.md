@@ -187,6 +187,16 @@ Retired reads require authoritative repair before reuse.
 See [the webhook read model](github-webhook-read-model.md#stored-schema-and-bounds)
 for deployment approval, rebuild behavior, and the remaining metadata growth.
 
+Canonical non-commit publication removes its replaced backfill body and chunks
+inside the same transaction as the canonical record and export pointer. An idle
+alarm also sweeps the historical backfill rowid range captured on first startup,
+at most 64 raw candidates per pass. Its durable cursor advances past ineligible
+rows and stops at that fixed upper bound. Deletion requires an exact record ID
+and agreement between the canonical record and canonical export pointer on
+revision, deletion state, and digest. Commits, live backfill exports, and missing
+or mismatched owners remain. Progress counts logical payload bytes; SQLite's
+physical database size can stay unchanged while freed pages become reusable.
+
 Git-backed reports, dashboard status, and post-dispatch cursors are best-effort
 after their productive side effect or canonical publication succeeds. Git
 publication remains mandatory where it is still the durability fence before a

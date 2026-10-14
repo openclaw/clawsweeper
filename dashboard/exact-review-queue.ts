@@ -890,9 +890,19 @@ const DEFAULT_STATE_WRITER_COORDINATOR_LEASE_MS = 2 * 60_000;
 const DEFAULT_STATE_WRITER_COORDINATOR_QUEUED_STALE_MS = 2 * 60_000;
 const EXACT_REVIEW_ALARM_SAMPLE_WINDOW_MS = 60_000;
 const EXACT_REVIEW_ALARM_SAMPLE_THRESHOLD = 10;
+const BACKFILL_SHADOW_CLEANUP_KEY = "record-backfill-shadow-cleanup:v1";
+type BackfillShadowCleanup = {
+  upperRowid: number;
+  afterRowid: number;
+  scanned: number;
+  retired: number;
+  retiredBytes: number;
+  startedAt: number;
+  completedAt: number | null;
+};
 type AlarmWakeReason =
   | `batch_${"lease" | "departure"}`
-  | `${"queue" | "source_authority" | "command_intake" | "credential_circuit" | "payload_maintenance"}`;
+  | `${"queue" | "source_authority" | "command_intake" | "credential_circuit" | "payload_maintenance" | "backfill_shadow_cleanup"}`;
 type AlarmScheduleDecision = readonly [AlarmWakeReason, number, number];
 // A watchdog may keep a synchronous Git operation alive, but it cannot turn a
 // hung runner into a permanent queue owner. The Git fence blocks any in-flight
@@ -4342,7 +4352,7 @@ export class ExactReviewQueue {
       } catch {
         return json({ error: "invalid_github_webhook_read_model_delivery" }, 400);
       }
-      await this.schedulePayloadMaintenance();
+      await this.scheduleStorageMaintenance();
       return json(result, 202);
     }
 
@@ -4413,7 +4423,7 @@ export class ExactReviewQueue {
       } catch {
         return json({ error: "invalid_github_webhook_read_model_repair" }, 400);
       }
-      await this.schedulePayloadMaintenance();
+      await this.scheduleStorageMaintenance();
       return json(result, 202);
     }
 
@@ -5168,10 +5178,11 @@ export class ExactReviewQueue {
       this.commandIntakeStore.pruneTerminalReceipts(startedAt);
       this.directPublicationStore.pruneTerminalSync(startedAt);
       const payloads = this.githubWebhookReadModelStore.prunePayloadsSync(startedAt);
+      const backfillShadows = this.pruneBackfillShadowsSync(startedAt);
       const current = this.readStateSync();
       this.syncLegacyCompatibilitySync(current);
       this.pruneStalePublicationsSync(current, batchItemKeys, startedAt);
-      return { current, payloads };
+      return { current, payloads, backfillShadows };
     });
     let snapshot = maintenance.current;
     if (maintenance.payloads.scanned > 0) {
@@ -5180,6 +5191,9 @@ export class ExactReviewQueue {
         ...maintenance.payloads,
         next_due_at: this.githubWebhookReadModelStore.nextPayloadMaintenanceAtSync(),
       });
+    }
+    if (maintenance.backfillShadows) {
+      console.log("record_backfill_shadow_cleanup", maintenance.backfillShadows);
     }
     let snapshotBatchOwnership = this.batchStore.activeLeaseSnapshot(startedAt);
     const reclaimedSnapshot = reclaimExpiredExactReviewLeases(
@@ -11153,8 +11167,21 @@ export class ExactReviewQueue {
     }
     this.storage.transactionSync(() => {
       this.backfillPublicationHeadsSync(this.readStateSync(), Date.now());
+      if (this.storage.kv.get(BACKFILL_SHADOW_CLEANUP_KEY) === undefined) {
+        const upperRowid = this.directPublicationStore.backfillShadowUpperRowidSync();
+        const now = Date.now();
+        this.storage.kv.put(BACKFILL_SHADOW_CLEANUP_KEY, {
+          upperRowid,
+          afterRowid: 0,
+          scanned: 0,
+          retired: 0,
+          retiredBytes: 0,
+          startedAt: now,
+          completedAt: upperRowid === 0 ? now : null,
+        } satisfies BackfillShadowCleanup);
+      }
     });
-    await this.schedulePayloadMaintenance();
+    await this.scheduleStorageMaintenance();
   }
 
   private ensureStorageSchemaSync() {
@@ -14438,7 +14465,11 @@ export class ExactReviewQueue {
 
   private async armAuxiliaryWake(
     next: number,
-    reason: "source_authority" | "command_intake" | "payload_maintenance" = "source_authority",
+    reason:
+      | "source_authority"
+      | "command_intake"
+      | "payload_maintenance"
+      | "backfill_shadow_cleanup" = "source_authority",
   ) {
     const scheduled = await this.storage.getAlarm();
     const now = Date.now();
@@ -14453,11 +14484,52 @@ export class ExactReviewQueue {
     }
   }
 
-  private async schedulePayloadMaintenance() {
+  private async scheduleStorageMaintenance() {
     // The indexed deadlines survive object restarts and keep an otherwise idle
     // queue alive until every eligible payload has been classified.
     const next = this.githubWebhookReadModelStore.nextPayloadMaintenanceAtSync();
     if (next !== null) await this.armAuxiliaryWake(next, "payload_maintenance");
+    const cleanup = this.backfillShadowCleanup();
+    if (cleanup?.completedAt === null) {
+      await this.armAuxiliaryWake(Date.now(), "backfill_shadow_cleanup");
+    }
+  }
+
+  private backfillShadowCleanup(): BackfillShadowCleanup | undefined {
+    const cleanup = this.storage.kv.get(BACKFILL_SHADOW_CLEANUP_KEY) as
+      | BackfillShadowCleanup
+      | undefined;
+    if (
+      cleanup !== undefined &&
+      (!Number.isSafeInteger(cleanup.upperRowid) ||
+        !Number.isSafeInteger(cleanup.afterRowid) ||
+        cleanup.afterRowid < 0 ||
+        cleanup.afterRowid > cleanup.upperRowid)
+    ) {
+      throw new Error("invalid backfill shadow cleanup cursor");
+    }
+    return cleanup;
+  }
+
+  private pruneBackfillShadowsSync(now: number) {
+    const current = this.backfillShadowCleanup();
+    if (!current || current.completedAt !== null) return null;
+    const pass = this.directPublicationStore.pruneBackfillShadowsSync(
+      current.afterRowid,
+      current.upperRowid,
+    );
+    // KV and SQL share the surrounding transaction: failure must roll back
+    // both the deleted shadows and the finite cursor, including an empty tail.
+    const next: BackfillShadowCleanup = {
+      ...current,
+      afterRowid: pass.afterRowid,
+      scanned: current.scanned + pass.scanned,
+      retired: current.retired + pass.retired,
+      retiredBytes: current.retiredBytes + pass.retiredBytes,
+      completedAt: pass.complete ? now : null,
+    };
+    this.storage.kv.put(BACKFILL_SHADOW_CLEANUP_KEY, next);
+    return { at: now, ...pass, totals: next };
   }
 
   private scheduleNext(state: ExactReviewQueueState, now: number, forceScan = false) {
@@ -14557,6 +14629,7 @@ export class ExactReviewQueue {
       ["command_intake", commandIntakeNext],
       ["credential_circuit", credentialCircuitNext],
       ["payload_maintenance", this.githubWebhookReadModelStore.nextPayloadMaintenanceAtSync()],
+      ["backfill_shadow_cleanup", this.backfillShadowCleanup()?.completedAt === null ? now : null],
     ];
     const selected = candidates.reduce(
       (a, b) => (b[1] !== null && b[1] < (a?.[1] ?? Infinity) ? b : a),
