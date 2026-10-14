@@ -29,10 +29,11 @@ const perDay = (points: { value: number }[]) => points.reduce((total, point) => 
       tip="Time from item creation to its latest stored review. Re-reviews reset it, so it overstates first-review latency for older items." />
   </div>
 
-  <TabCard title="Reviews per day" name="reviews" tabs={['30d', '90d', '140d']} class="mt-3" tip="Each item counts once, on the day of its latest stored review.">
-    <div class="panel"><TimeChart points={series.reviews(30)} noun="reviews" height={240} /></div>
-    <div class="panel"><TimeChart points={series.reviews(90)} noun="reviews" height={240} /></div>
-    <div class="panel"><TimeChart points={series.reviews(140)} noun="reviews" height={240} /></div>
+  <TabCard title="Reviews per day" name="reviews" tabs={['30d', '90d', '140d', 'Maintainer share']} class="mt-3" tip="Each item counts once, on the day of its latest stored review. The dashed line is the part authored by maintainers (owner, member or collaborator, or labelled maintainer). Maintainer share: that part as a percentage of each day's reviews, last 90 days.">
+    <div class="panel"><TimeChart points={series.reviews(30)} noun="reviews" height={240} overlay={{ points: series.maintainerReviews(30), label: 'By maintainers', noun: 'by maintainers' }} /></div>
+    <div class="panel"><TimeChart points={series.reviews(90)} noun="reviews" height={240} overlay={{ points: series.maintainerReviews(90), label: 'By maintainers', noun: 'by maintainers' }} /></div>
+    <div class="panel"><TimeChart points={series.reviews(140)} noun="reviews" height={240} overlay={{ points: series.maintainerReviews(140), label: 'By maintainers', noun: 'by maintainers' }} /></div>
+    <div class="panel"><TimeChart points={series.maintainerShare(90)} kind="bar" unit="percent" noun="by maintainers" color="var(--warn)" height={240} /></div>
   </TabCard>
 
   <div class="mt-3 grid gap-3 xl:grid-cols-2">

@@ -1,0 +1,1 @@
+- Show the maintainer-authored share of daily reviews on the dashboard: a dashed "By maintainers" line on the Overview daily activity and Throughput reviews charts, and a "Maintainer share" tab on Throughput. Maintainer means owner, member or collaborator, or the `maintainer` label. Days from corpus caches built before this change show no data until the next `refresh_corpus` run.
