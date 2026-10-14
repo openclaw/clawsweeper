@@ -21,6 +21,11 @@ import {
   withApplyTestWorkspace,
   withMockGh,
 } from "./helpers.ts";
+import {
+  DEFERRED_CONTINUATION_SCENARIOS,
+  deferredContinuationClaim,
+  type DeferredContinuationScenario,
+} from "./exact-review-deferred-publication-fixture.ts";
 
 const size = {
   additions: 45791,
@@ -118,6 +123,20 @@ const exactDecisions: Record<string, unknown> = {
   "exact-close-request-continuation": requestContinuation,
   "exact-close-finished-request": finishedRequestRequeue,
 };
+// The decision the real queue hands the review job after a deferred publisher's
+// source-drift requeue: open while the request's publication is held, and the
+// stripped copies once it was answered, replaced, or its lease was lost.
+const heldScenarios = Object.keys(
+  DEFERRED_CONTINUATION_SCENARIOS,
+) as DeferredContinuationScenario[];
+for (const scenario of heldScenarios) {
+  exactDecisions[`exact-close-held-${scenario}`] = (
+    await deferredContinuationClaim(scenario, pull.number)
+  ).claimed;
+}
+const revokedHeldScenarios = heldScenarios
+  .filter((scenario) => scenario !== "open")
+  .map((scenario) => `exact-close-held-${scenario}`);
 
 for (const scenario of [
   "disabled",
@@ -129,6 +148,7 @@ for (const scenario of [
   "exact-close",
   "exact-close-request-continuation",
   "exact-close-finished-request",
+  ...heldScenarios.map((scenario) => `exact-close-held-${scenario}`),
   "durable-missing-lease",
   "durable-reserved-lease",
   "under-limit",
@@ -332,6 +352,7 @@ for (const scenario of [
           scenario === "close" ||
           scenario === "exact-close" ||
           scenario === "exact-close-request-continuation" ||
+          scenario === "exact-close-held-open" ||
           scenario === "notice-error" ||
           scenario === "durable-reserved-lease"
         ) {
@@ -381,7 +402,10 @@ for (const scenario of [
             assert.match(currentComment.body, /ClawSweeper proposes closing this pull request/);
             assert.doesNotMatch(currentComment.body, /ClawSweeper closed this pull request/);
           } else assert.equal(mutations, "");
-          if (scenario === "exact-close-finished-request") {
+          if (
+            scenario === "exact-close-finished-request" ||
+            revokedHeldScenarios.includes(scenario)
+          ) {
             assert.deepEqual(
               result.map((entry: any) => entry.action),
               ["skipped_maintainer_authored"],
