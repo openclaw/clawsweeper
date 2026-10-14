@@ -9,7 +9,6 @@
   "files": [
     "dashboard/apply-observability.ts",
     "dashboard/bay-activity-kind.ts",
-    "dashboard/bay-review-status.ts",
     "dashboard/dashboard-health.ts",
     "dashboard/dashboard-pages.ts",
     "dashboard/durable-storage.ts",

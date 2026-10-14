@@ -36,7 +36,7 @@ const success7 = kpis.runSuccess7d;
       sub={`+${int(kpis.closedElsewhere7d.current)} closed by others`}
       tip="Items ClawSweeper closed in the last 7 complete days. Delta compares with the prior 7 days. PRs that were merged and items that a maintainer or another bot closed are counted apart." />
     <Kpi label="Sweep success · 7d" value={pct(success7.current)} delta={success7.current !== null && success7.previous ? (success7.current - success7.previous) / success7.previous : null}
-      spark={runs.days.slice(-14).map(day => (day.total ? day.success / day.total : 0))} tip="Successful sweep runs ÷ all sweep runs, last 7 complete days. Cancelled runs count as not successful." />
+      spark={runs.days.slice(-14).map(day => (day.total ? day.success / day.total : null))} tip="Successful sweep runs ÷ all sweep runs, last 7 complete days. Cancelled runs count as not successful." />
     <Kpi label="Coverage" value={coverText} sub={`${int(cover.reviewed)} of ${int(cover.reviewable)}`}
       tip={`Reviewable open items with a review in the last ${cover.windowDays} days.\nSnapshot ${stamp(asOf.coverage)}`} />
     <Kpi label="Review queue" value={int(live.pending)} sub={live.oldestPendingSeconds ? `oldest ${duration(live.oldestPendingSeconds)}` : 'nothing waiting'}

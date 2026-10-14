@@ -1,4 +1,5 @@
 import raw from '../data/dashboard.json';
+import type { Operations, OperationsHour } from '../../scripts/operations.ts';
 import { duration, label } from './format';
 
 // The build snapshot (scripts/build-data.ts). Typed loosely at the edge; every page reads
@@ -97,15 +98,17 @@ export const series = {
 };
 
 const sweep = actions.workflows.find((workflow: Json) => workflow.id === 'sweep');
-const runDays: { date: string; total: number; failure: number; success: number; cancelled: number; p50: number; p90: number }[] =
-  sweep.days.map((day: Json) => ({
+// reviewP50/reviewP90: exact review runs only (recorded, or a ~300-run daily sample for older
+// days); null when a day has neither. The all-runs median shifts whenever jobs move between files.
+const runDays: { date: string; total: number; failure: number; success: number; cancelled: number; reviewP50: number | null; reviewP90: number | null }[] =
+  (sweep?.days ?? []).map((day: Json) => ({
     date: day.date,
     total: day.count,
     failure: (day.conclusions.failure ?? 0) + (day.conclusions.startup_failure ?? 0),
     success: day.conclusions.success ?? 0,
     cancelled: day.conclusions.cancelled ?? 0,
-    p50: day.durationSeconds.p50,
-    p90: day.durationSeconds.p90,
+    reviewP50: day.reviewSeconds?.p50 ?? null,
+    reviewP90: day.reviewSeconds?.p90 ?? null,
   }));
 const completeRunDays = runDays.slice(0, -1);
 
@@ -131,7 +134,7 @@ export const kpis = {
 
 export const runs = {
   days: completeRunDays,
-  failureRate: completeRunDays.map(day => ({ date: day.date, value: day.total ? day.failure / day.total : 0 })),
+  failureRate: completeRunDays.map(day => ({ date: day.date, value: day.total ? day.failure / day.total : null })),
   workflows: actions.workflows.map((workflow: Json) => {
     const outcomes = workflow.conclusionCounts as Record<string, number>;
     const finished = sum(Object.values(outcomes));
@@ -265,3 +268,61 @@ function entries(record: Record<string, number>, drop: string[] = []) {
 }
 
 export { entries };
+
+// Operations: 7 days of hourly queue history and apply outcomes (scripts/operations.ts).
+const operations = snapshot.operations as Operations;
+const opsHours = operations.hours;
+// The current hour is still filling; rates and medians use complete hours only.
+const completeHours = opsHours.slice(0, -1);
+const known = (values: (number | null)[]) => values.filter((value): value is number => value !== null);
+const median = (values: number[]) => {
+  if (!values.length) return null;
+  const sorted = [...values].sort((a, b) => a - b);
+  return sorted[Math.floor((sorted.length - 1) / 2)];
+};
+const hourly = (pick: (hour: OperationsHour) => number | null) => opsHours.map(hour => ({ date: hour.hour, value: pick(hour) }));
+const majorIncidents = operations.incidents.filter(incident => incident.minutes >= 10);
+const { observed: handoffObserved, unhealthy: handoffUnhealthy } = operations.handoffSamples;
+const offered = sum(known(completeHours.map(hour => hour.shed))) + sum(known(completeHours.map(hour => hour.enqueued)));
+const failureKinds = [...new Set([...Object.keys(operations.apply.day.failures), ...Object.keys(operations.apply.week.failures)])];
+
+export const ops = {
+  asOf: operations.generatedAt,
+  windowStart: operations.windowStart,
+  reviewsPerHour: {
+    day: median(known(completeHours.slice(-24).map(hour => hour.completed))),
+    week: median(known(completeHours.map(hour => hour.completed))),
+  },
+  shed: {
+    // observed: at least one hour with known counter growth; a measured zero is still a value.
+    observed: completeHours.some(hour => hour.shed !== null),
+    week: sum(known(completeHours.map(hour => hour.shed))),
+    share: offered ? sum(known(completeHours.map(hour => hour.shed))) / offered : null,
+  },
+  handoff: {
+    // Share of observed 5-minute samples; unobserved time is unknown, not healthy.
+    healthyShare: handoffObserved ? 1 - handoffUnhealthy / handoffObserved : null,
+    observedShare: handoffObserved / (7 * 24 * 12),
+    observed: handoffObserved,
+    incidents: majorIncidents,
+    blips: operations.incidents.length - majorIncidents.length,
+    strip: opsHours.map(hour => ({ hour: hour.hour, status: hour.handoff })),
+  },
+  series: {
+    completed: hourly(hour => hour.completed),
+    shed: hourly(hour => hour.shed),
+    reviewPending: hourly(hour => hour.reviewPending),
+    publicationPending: hourly(hour => hour.publicationPending),
+    leased: hourly(hour => hour.leased),
+  },
+  apply: {
+    applied: operations.apply.day.applied,
+    closed: operations.apply.day.closed,
+    // null: not reported for that window (unknown), shown as "–", never as zero.
+    failures: failureKinds
+      .map(kind => ({ kind, day: operations.apply.day.failures[kind] ?? null, week: operations.apply.week.failures[kind] ?? null }))
+      .sort((a, b) => (b.week ?? -1) - (a.week ?? -1) || (b.day ?? -1) - (a.day ?? -1)),
+    lastFailure: operations.apply.lastFailure,
+  },
+  coverage: operations.coverage,
+};

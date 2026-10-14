@@ -4,8 +4,9 @@ import Kpi from '../components/Kpi.astro';
 import Card from '../components/Card.astro';
 import BarList from '../components/BarList.astro';
 import Clear from '../components/Clear.astro';
+import Ago from '../components/Ago.astro';
 import { asOf, entries, healthChecks, live } from '../lib/data';
-import { ago, duration, int, label, pct, short, stamp } from '../lib/format';
+import { duration, int, label, pct, short, stamp } from '../lib/format';
 
 const review = live.review;
 const publication = live.publication;
@@ -34,7 +35,7 @@ const feedLanes = Object.entries((live.feed?.lanes ?? {}) as Record<string, { ta
       <h1 class="text-[22px] font-semibold tracking-tight">Queue</h1>
       <p class="mt-1 text-[13px] text-fg-muted">Live state of the review and publication lanes.</p>
     </div>
-    <span class="pill bg-bg-muted text-fg-muted" data-tip={stamp(asOf.queue)}>Snapshot {ago(asOf.queue, asOf.build)}</span>
+    <span class="pill bg-bg-muted text-fg-muted" data-tip={stamp(asOf.queue)}><Ago at={asOf.queue} prefix="Snapshot " /></span>
   </div>
 
   <div class="mt-6 grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-5">

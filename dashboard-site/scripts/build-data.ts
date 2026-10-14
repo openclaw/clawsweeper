@@ -3,22 +3,26 @@
 //   node scripts/build-data.ts --records <hydrated records dir> --state <state dir>
 //
 // Inputs: canonical records hydrated from the Worker (R2 snapshots), the public Worker
-// APIs for live queue and coverage, and an incremental GitHub Actions history kept in the
+// APIs for live queue, coverage, 7-day queue health history and apply outcomes, and an
+// incremental GitHub Actions history kept in the
 // state directory between runs. Tokens: GITHUB_TOKEN for incremental reads and repository
 // visibility; BOOTSTRAP_GITHUB_TOKEN (optional, higher rate limit) when no history exists yet.
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { parseArgs } from 'node:util';
 import { setTimeout as sleep } from 'node:timers/promises';
-import { loadActionsState, refreshActions, saveActionsState, summarizeActions } from './actions.ts';
+import { backfillSweepCounts, loadActionsState, refreshActions, saveActionsState, summarizeActions } from './actions.ts';
 import { aggregateRecords, combineCorpus, type CorpusCache, type Visibility } from './records.ts';
+import { summarizeOperations } from './operations.ts';
 
 const ORIGIN = 'https://clawsweeper.openclaw.ai';
 const site = new URL('../', import.meta.url).pathname;
 
-const { values } = parseArgs({ options: { records: { type: 'string' }, state: { type: 'string' } } });
-if (!values.state) throw new Error('usage: build-data.ts --state <dir> [--records <hydrated records dir>]');
+const { values } = parseArgs({ options: { records: { type: 'string' }, state: { type: 'string' }, 'backfill-days': { type: 'string', default: '0' } } });
+if (!values.state) throw new Error('usage: build-data.ts --state <dir> [--records <hydrated records dir>] [--backfill-days <0-30>]');
 const stateDir = values.state;
+const backfillDays = Number(values['backfill-days']);
+if (!Number.isInteger(backfillDays) || backfillDays < 0 || backfillDays > 30) throw new Error('--backfill-days must be a whole number from 0 to 30');
 await mkdir(stateDir, { recursive: true });
 
 const token = process.env.GITHUB_TOKEN;
@@ -32,12 +36,19 @@ async function readJson<T>(path: string, fallback: T): Promise<T> {
   }
 }
 
-// The public APIs are served by the production Worker; a short outage must not fail the build.
+// The public APIs are served by the production Worker; a short outage or a dropped connection
+// (a socket can close mid-body) must not fail the build.
 async function publicApi(path: string) {
   for (let attempt = 1; ; attempt++) {
-    const response = await fetch(`${ORIGIN}${path}`, { headers: { Accept: 'application/json' } });
-    if (response.ok) return response.json();
-    if (attempt >= 4) throw new Error(`${path}: HTTP ${response.status}`);
+    let failure: string;
+    try {
+      const response = await fetch(`${ORIGIN}${path}`, { headers: { Accept: 'application/json' } });
+      if (response.ok) return await response.json();
+      failure = `HTTP ${response.status}`;
+    } catch (error) {
+      failure = error instanceof Error ? error.message : String(error);
+    }
+    if (attempt >= 4) throw new Error(`${path}: ${failure}`);
     await sleep(attempt * 15_000);
   }
 }
@@ -93,14 +104,24 @@ const corpus = combineCorpus(cache, repo => publicNames.has(repo.toLowerCase()))
 const actionsPath = join(stateDir, 'actions.json');
 const previous = await loadActionsState(actionsPath);
 const actionsState = await refreshActions(previous, previous ? token : (process.env.BOOTSTRAP_GITHUB_TOKEN ?? token));
+// Count-only sweep history for older days uses this repository's GITHUB_TOKEN, never the app
+// token: the app's rate limit is shared with production reviews.
+if (backfillDays > 0) console.log(JSON.stringify({ sweepBackfill: await backfillSweepCounts(actionsState, token, backfillDays) }));
 await saveActionsState(actionsPath, actionsState);
 
-const [queue, coverage] = await Promise.all([publicApi('/api/exact-review-queue'), publicApi('/api/review-coverage')]);
+const [queue, coverage, history, applyDay, applyWeek] = await Promise.all([
+  publicApi('/api/exact-review-queue'),
+  publicApi('/api/review-coverage'),
+  publicApi('/api/health-history?range=7d'),
+  publicApi('/api/apply-observability?range=24h'),
+  publicApi('/api/apply-observability?range=7d'),
+]);
 
 const dashboard = {
   generatedAt: new Date().toISOString(),
   queue,
   coverage,
+  operations: summarizeOperations(history, applyDay, applyWeek),
   actions: summarizeActions(actionsState),
   corpus,
 };

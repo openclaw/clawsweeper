@@ -1,0 +1,119 @@
+---
+import Layout from '../components/Layout.astro';
+import Kpi from '../components/Kpi.astro';
+import Card from '../components/Card.astro';
+import TabCard from '../components/TabCard.astro';
+import TimeChart from '../components/TimeChart.astro';
+import StatusStrip from '../components/StatusStrip.astro';
+import Clear from '../components/Clear.astro';
+import Ago from '../components/Ago.astro';
+import { ops } from '../lib/data';
+import { int, label, pct, stamp } from '../lib/format';
+
+const failureHelp: Record<string, string> = {
+  safe_close_blocked: 'A close stopped by a safety check before it reached GitHub.',
+  safe_close_failure: 'A close that failed after the safety checks passed.',
+  state_publication: 'A result that could not be written to the state store.',
+  action_ledger: 'An apply step that could not record its action receipt.',
+  state_lease_timeout: 'An apply that gave up waiting for the state lease.',
+  state_lease_contention: 'An apply that found the state lease held by another run.',
+};
+const handoffHealthy = ops.handoff.incidents.length === 0;
+const lasted = (minutes: number) => (minutes < 60 ? `${minutes} min` : `${Math.floor(minutes / 60)} h ${String(minutes % 60).padStart(2, '0')} min`);
+const count = (value: number | null) => (value === null ? '–' : int(value));
+const safetyBlocks = ops.apply.failures.find(row => row.kind === 'safe_close_blocked')?.week ?? null;
+const failuresReported = ops.apply.failures.some(row => row.day !== null || row.week !== null);
+// The all-clear needs every count reported as zero; one unknown count keeps the table visible.
+const failuresAllZero = ops.apply.failures.length > 0 && ops.apply.failures.every(row => row.day === 0 && row.week === 0);
+---
+<Layout title="Operations" section="operations">
+  <div class="flex flex-wrap items-end justify-between gap-3">
+    <div>
+      <h1 class="text-[22px] font-semibold tracking-tight">Operations</h1>
+      <p class="mt-1 text-[13px] text-fg-muted">The last 7 days of the review queue and the apply step, hour by hour.</p>
+    </div>
+    <span class="pill bg-bg-muted text-fg-muted" data-tip={`Queue history ${stamp(ops.windowStart)} to ${stamp(ops.asOf)}\n${ops.coverage.percent === null ? 'Sample coverage unknown' : `${ops.coverage.percent}% of 5-minute samples collected`}`}>
+      <Ago at={ops.asOf} prefix="Through " />
+    </span>
+  </div>
+
+  <div class="mt-6 grid grid-cols-2 gap-3 xl:grid-cols-4">
+    <Kpi label="Reviews per hour" value={ops.reviewsPerHour.day === null ? '–' : int(ops.reviewsPerHour.day)}
+      sub={ops.reviewsPerHour.week === null ? undefined : `7-day median ${int(ops.reviewsPerHour.week)}`}
+      spark={ops.series.completed.slice(-72).map(point => point.value)}
+      tip="Median reviews completed per hour over the last 24 complete hours. The line shows the last 3 days." />
+    <Kpi label="Shed · 7d" value={ops.shed.observed ? int(ops.shed.week) : '–'} sub={!ops.shed.observed ? 'no queue history' : ops.shed.share === null ? 'no offers in 7 days' : `${pct(ops.shed.share, 0)} of all review offers`}
+      tip="Scheduled reviews the queue declined, almost always because the scheduled feed was over its hourly rate (see Queue for the reasons). Not a failure: the item is offered again on a later pass." />
+    <Kpi label="Handoff healthy · 7d" value={pct(ops.handoff.healthyShare, 1)}
+      sub={ops.handoff.healthyShare === null
+        ? 'no handoff history'
+        : `${ops.handoff.incidents.length} ${ops.handoff.incidents.length === 1 ? 'incident' : 'incidents'} · ${ops.handoff.blips} short ${ops.handoff.blips === 1 ? 'blip' : 'blips'}${ops.handoff.observedShare < 0.95 ? ` · ${pct(ops.handoff.observedShare, 0)} observed` : ''}`}
+      tip="Share of the observed 5-minute samples in which dispatched reviews were claimed on time (idle counts as fine). Unobserved time is left out, not counted as healthy. Incidents last 10 minutes or more; blips are a single sample." />
+    <Kpi label="Close safety blocks · 7d" value={count(safetyBlocks)}
+      sub={ops.apply.lastFailure ? `last failure ${stamp(ops.apply.lastFailure.at)}` : safetyBlocks === null ? 'not reported' : undefined}
+      tip="Closes in the scheduled close sweep that a safety check stopped before they reached GitHub. A rise means stored close proposals no longer fit the item's current state." />
+  </div>
+
+  <TabCard title="Review flow" name="flow" tabs={['Completed', 'Shed', 'Waiting', 'Leased']} class="mt-3" tip="Hourly, last 7 days. Waiting and Leased show the highest count in each hour. The strip below shows the worst handoff state in each hour.">
+    <div class="panel"><TimeChart points={ops.series.completed} kind="bar" hourly noun="reviews completed" height={220} /></div>
+    <div class="panel"><TimeChart points={ops.series.shed} kind="bar" hourly noun="offers shed" color="var(--fg-faint)" height={220} /></div>
+    <div class="panel"><TimeChart points={ops.series.reviewPending} hourly noun="pending at peak" color="var(--warn)" height={220} /></div>
+    <div class="panel"><TimeChart points={ops.series.leased} hourly noun="leased at peak" color="var(--ok)" height={220} /></div>
+    <div class="mt-3"><StatusStrip cells={ops.handoff.strip} /></div>
+  </TabCard>
+
+  <div class="mt-3 grid gap-3 xl:grid-cols-5">
+    <Card title="Handoff incidents" flush class="xl:col-span-3" tip="Runs of 10 minutes or more in which dispatched reviews were not claimed on time. Stalled is worse than degraded.">
+      {ops.handoff.observed === 0 ? (
+        <div class="px-4 pb-4"><Clear text="No handoff history for this window." /></div>
+      ) : handoffHealthy ? (
+        <div class="px-4 pb-4"><Clear text={`No incidents in 7 days${ops.handoff.blips ? `; ${ops.handoff.blips} single-sample blips` : ''}.`} /></div>
+      ) : (
+        <div class="overflow-x-auto">
+          <table class="table">
+            <thead><tr><th>Started</th><th class="r">Lasted</th><th>Worst state</th></tr></thead>
+            <tbody>
+              {ops.handoff.incidents.map(incident => (
+                <tr>
+                  <td class="num">{stamp(incident.start)}</td>
+                  <td class="r num">{lasted(incident.minutes)}</td>
+                  <td><span class:list={['pill', incident.worst === 'stalled' ? 'bg-bad-soft text-bad' : 'bg-warn-soft text-warn']}>{label(incident.worst)}</span></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {ops.handoff.blips > 0 && <p class="border-t border-line px-4 py-3 text-[12px] text-fg-muted">Plus {ops.handoff.blips} single-sample {ops.handoff.blips === 1 ? 'blip' : 'blips'} of 5 minutes.</p>}
+        </div>
+      )}
+    </Card>
+
+    <Card title="Close sweep" flush class="xl:col-span-2" tip="The scheduled close sweep (Apply close proposals) re-checks stored close proposals and closes those still valid. Most closes happen right after a review instead; Overview counts those.">
+      <div class="grid grid-cols-2 gap-px border-y border-line bg-line">
+        <div class="bg-bg px-4 py-3" data-tip="Stored reports the close sweep checked in the last 24 hours."><div class="eyebrow">Checked · 24h</div><div class="num mt-0.5 text-lg font-semibold">{ops.apply.applied === null ? '–' : int(ops.apply.applied)}</div></div>
+        <div class="bg-bg px-4 py-3" data-tip="Items the close sweep closed in the last 24 hours. Closes made right after a review are not counted here."><div class="eyebrow">Closed by sweep · 24h</div><div class="num mt-0.5 text-lg font-semibold">{ops.apply.closed === null ? '–' : int(ops.apply.closed)}</div></div>
+      </div>
+      {!failuresReported ? (
+        <div class="px-4 py-4"><Clear text="Failure counts not reported for this window." /></div>
+      ) : failuresAllZero ? (
+        <div class="px-4 py-4"><Clear text="No close-sweep failures in 7 days." /></div>
+      ) : (
+        <table class="table">
+          <thead><tr><th>Failure</th><th class="r">24h</th><th class="r">7d</th></tr></thead>
+          <tbody>
+            {ops.apply.failures.map(row => (
+              <tr>
+                <td><span data-tip={failureHelp[row.kind] ?? label(row.kind)}>{label(row.kind)}</span></td>
+                <td class:list={['r num', (row.day ?? 0) > 0 && 'text-warn']} data-tip={row.day === null ? 'Not reported for the last 24 hours' : undefined}>{count(row.day)}</td>
+                <td class="r num" data-tip={row.week === null ? 'Not reported for the last 7 days' : undefined}>{count(row.week)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </Card>
+  </div>
+
+  <Card title="Publication backlog" class="mt-3" tip="Finished reviews waiting to be written back to GitHub, highest count in each hour.">
+    <TimeChart points={ops.series.publicationPending} hourly noun="waiting at peak" color="var(--accent)" height={160} />
+  </Card>
+</Layout>

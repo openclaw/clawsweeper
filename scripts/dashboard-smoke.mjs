@@ -68,10 +68,11 @@ async function main() {
     );
   }
 
+  // The overview is the static dashboard-site build, served from Cloudflare Pages by this Worker.
   const html = await fetchText(`${baseUrl}/`);
-  if (!html.includes("ClawSweeper Live")) throw new Error("dashboard HTML title missing");
-  if (!html.includes("System Overview")) throw new Error("dashboard system overview missing");
-  if (!html.includes('id="worker-dialog"')) throw new Error("dashboard worker drill-down missing");
+  if (!html.includes("<title>Overview · ClawSweeper</title>"))
+    throw new Error("dashboard overview title missing");
+  if (!html.includes('href="/queue/"')) throw new Error("dashboard queue page link missing");
 
   console.log(
     JSON.stringify(

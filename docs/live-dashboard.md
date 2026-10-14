@@ -159,15 +159,17 @@ unchanged.
 
 ## Operator dashboard pages
 
-The operator dashboard (Overview, Throughput, Quality, Queue, Coverage,
-Repositories) is a static Astro site in `dashboard-site/`. The `Dashboard site`
+The operator dashboard at `/` (Overview, Throughput, Quality, Queue, Operations,
+Coverage, Repositories) is a static Astro site in `dashboard-site/`. The `Dashboard site`
 workflow (`.github/workflows/dashboard-site.yml`) rebuilds it every 15 minutes
 and publishes it to the Cloudflare Pages project `clawsweeper-dashboard`
-(`https://clawsweeper-dashboard.pages.dev`). A data refresh never redeploys
-this Worker, so webhooks, the queue Durable Object and `/api/*` are not
-restarted by it.
+(`https://clawsweeper-dashboard.pages.dev`). This Worker serves those page
+paths and their assets from Pages for GET and HEAD (`dashboard/dashboard-site.ts`;
+override the origin with `DASHBOARD_SITE_ORIGIN`). A data refresh never
+redeploys this Worker, so webhooks, the queue Durable Object and `/api/*` are
+not restarted by it.
 
-Each build reads three sources:
+Each build reads four sources:
 
 - the corpus aggregate (totals, decisions, quality, closes, per-repository
   counts), cached in the workflow state. It is rebuilt only when the workflow is
@@ -184,11 +186,33 @@ Each build reads three sources:
   (a full export on 2026-10-12 failed 26 review runs in 14 minutes), so run it at
   a quiet hour. Until the first such run, scheduled builds skip with a notice;
 - the public `/api/exact-review-queue` and `/api/review-coverage` responses;
+- the public 7-day `/api/health-history` samples and the 24-hour and 7-day
+  `/api/apply-observability` summaries, for the Operations page. Samples are
+  reduced to hourly points (counter growth between consecutive 5-minute samples;
+  a counter reset or a sample gap leaves that step out) and to handoff incidents
+  (degraded or stalled runs of 10 minutes or more; shorter runs count as blips;
+  an idle or healthy sample ends a run). The healthy share counts only observed
+  samples, and a value the APIs do not report shows as unavailable, never as
+  zero. The apply figures cover only the scheduled close sweep
+  (`apply-existing`), not closes made right after a review;
 - GitHub Actions run history for this repository, kept as per-hour buckets in
   the workflow cache. Each run rereads from three hours before its last
   refresh, so a late or failed build leaves no gap; a missing cache
   bootstraps two days with the ClawSweeper app token, and the window then
-  grows to 30 days.
+  grows to 30 days. A manual run with `backfill_days` fills older days of sweep
+  history: success/failure counts from the API's per-conclusion totals, and
+  review-run durations from a sample of about 600 runs per day (the newest 100 in each
+  4-hour slice). About 20 requests per day, on this repository's
+  `GITHUB_TOKEN`, never the app token, whose rate limit production reviews
+  share.
+
+Open pages check for a newer build every five minutes and when the tab becomes
+visible, and reload when one is published. The header shows both the build time
+and the review-corpus time. A page warns when its build is more than an hour old
+(the refresh has stopped) or when the corpus is more than a day old (it updates
+only with `refresh_corpus`). Unknown paths return the site's 404 page with
+status 404. Pull requests that touch `dashboard-site/` build the site from
+`dashboard-site/fixtures/dashboard.json`, without secrets or publishing.
 
 The site shows no report bodies, author identities or free-text concerns.
 Local preview: in `dashboard-site/`, install dependencies, run
@@ -337,7 +361,7 @@ See the [sampling guidance](https://developers.cloudflare.com/analytics/analytic
 and [weighted aggregate functions](https://developers.cloudflare.com/analytics/analytics-engine/sql-reference/aggregate-functions/)
 for interpreting approximate aggregates.
 
-## What It Shows
+## What the status API shows
 
 - bounded active-work counts and closed workflow, worker, status, stage, and
   outcome categories; arbitrary titles, targets, source links, keys, and job

@@ -21,19 +21,16 @@ export function duration(seconds: number | null) {
   return `${Math.round(hours / 24)}d`;
 }
 
-export function ago(iso: string, now: string) {
-  const seconds = (Date.parse(now) - Date.parse(iso)) / 1000;
-  if (seconds < 60) return 'just now';
-  if (seconds < 3600) return `${Math.round(seconds / 60)}m ago`;
-  if (seconds < 86_400) return `${Math.round(seconds / 3600)}h ago`;
-  const days = Math.round(seconds / 86_400);
-  return days < 60 ? `${days}d ago` : `${Math.round(days / 30)}mo ago`;
-}
-
 const dayFormat = new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' });
 const stampFormat = new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'UTC' });
 export const day = (iso: string) => dayFormat.format(new Date(`${iso.slice(0, 10)}T00:00:00Z`));
 export const stamp = (iso: string) => `${stampFormat.format(new Date(iso))} UTC`;
+// An hourly bucket, e.g. "Oct 12, 06:00–07:00 UTC".
+export const hour = (iso: string) => {
+  const start = stamp(iso).replace(' UTC', '');
+  const end = String((new Date(iso).getUTCHours() + 1) % 24).padStart(2, '0');
+  return `${start}–${end}:00 UTC`;
+};
 
 // snake_case enum values from the review schema, as short sentence-case labels.
 const labels: Record<string, string> = {

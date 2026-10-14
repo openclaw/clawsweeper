@@ -1,7 +1,8 @@
 ---
 import Icon from './Icon.astro';
-import { ago, label } from '../lib/format';
-import { asOf, type Item } from '../lib/data';
+import Ago from './Ago.astro';
+import { label } from '../lib/format';
+import type { Item } from '../lib/data';
 
 interface Props {
   items: Item[];
@@ -35,7 +36,7 @@ const metaText = (item: Item) =>
             </a>
           </td>
           {meta !== 'age' && <td class="hidden whitespace-nowrap text-fg-muted sm:table-cell">{metaText(item)}</td>}
-          <td class="r num whitespace-nowrap text-fg-muted">{ago(item.reviewedAt, asOf.corpus)}</td>
+          <td class="r num whitespace-nowrap text-fg-muted">{item.reviewedAt ? <Ago at={item.reviewedAt} /> : '–'}</td>
         </tr>
       ))}
     </tbody>

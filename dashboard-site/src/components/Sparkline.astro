@@ -2,12 +2,13 @@
 import { areaPath, linePath, niceMax } from '../lib/chart';
 
 interface Props {
-  values: number[];
+  // null: no observation; the line breaks there.
+  values: (number | null)[];
   color?: string;
   height?: number;
 }
 const { values, color = 'var(--accent)', height = 36 } = Astro.props;
-const { top } = niceMax(Math.max(...values, 0), 1);
+const { top } = niceMax(Math.max(...values.map(value => value ?? 0), 0), 1);
 const id = `s${Math.random().toString(36).slice(2, 8)}`;
 ---
 <svg class="block w-full" style={`height:${height}px`} viewBox="0 0 1000 100" preserveAspectRatio="none" aria-hidden="true">

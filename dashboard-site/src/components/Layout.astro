@@ -2,11 +2,11 @@
 import '../styles/global.css';
 import Icon, { type IconName } from './Icon.astro';
 import { asOf, repos, status } from '../lib/data';
-import { ago, stamp } from '../lib/format';
+import { stamp } from '../lib/format';
 
 interface Props {
   title: string;
-  section: 'overview' | 'throughput' | 'quality' | 'queue' | 'coverage' | 'repos';
+  section: 'overview' | 'throughput' | 'quality' | 'queue' | 'operations' | 'coverage' | 'repos';
   crumb?: string;
 }
 const { title, section, crumb } = Astro.props;
@@ -16,6 +16,7 @@ const nav: { id: Props['section']; label: string; href: string; icon: IconName }
   { id: 'throughput', label: 'Throughput', href: '/throughput/', icon: 'throughput' },
   { id: 'quality', label: 'Quality', href: '/quality/', icon: 'quality' },
   { id: 'queue', label: 'Queue', href: '/queue/', icon: 'queue' },
+  { id: 'operations', label: 'Operations', href: '/operations/', icon: 'operations' },
   { id: 'coverage', label: 'Coverage', href: '/coverage/', icon: 'coverage' },
   { id: 'repos', label: 'Repositories', href: '/repos/', icon: 'repos' },
 ];
@@ -32,10 +33,23 @@ const jump = repos.map(repo => ({ r: repo.repo, s: repo.slug, n: repo.records })
     <meta name="theme-color" content="#0b101c" />
     <title>{title} · ClawSweeper</title>
     <script is:inline>
+      // Shared with the Worker's triage pages: clawsweeper-theme = system | light | dark.
       try {
-        const saved = localStorage.getItem('cs-theme');
-        const dark = saved ? saved === 'dark' : matchMedia('(prefers-color-scheme: dark)').matches;
-        document.documentElement.classList.toggle('dark', dark);
+        // The first Pages build saved its choice as cs-theme; carry it over once if no shared choice exists.
+        const legacy = localStorage.getItem('cs-theme');
+        if (legacy !== null) {
+          if (localStorage.getItem('clawsweeper-theme') === null && (legacy === 'light' || legacy === 'dark'))
+            localStorage.setItem('clawsweeper-theme', legacy);
+          localStorage.removeItem('cs-theme');
+        }
+        const query = matchMedia('(prefers-color-scheme: dark)');
+        const apply = () => {
+          const choice = localStorage.getItem('clawsweeper-theme');
+          const dark = choice === 'dark' || (choice !== 'light' && query.matches);
+          document.documentElement.classList.toggle('dark', dark);
+        };
+        apply();
+        query.addEventListener('change', apply);
       } catch {}
     </script>
   </head>
@@ -67,6 +81,10 @@ const jump = repos.map(repo => ({ r: repo.repo, s: repo.slug, n: repo.records })
               {item.label}
             </a>
           ))}
+          <a href="https://crabfleet.openclaw.ai" rel="noreferrer" class="mt-2 flex h-8 items-center gap-2.5 rounded-md px-2.5 text-[13px] font-medium text-fg-muted transition-colors hover:bg-bg-muted/60 hover:text-fg" data-tip="Live terminals of running reviews, on CrabFleet">
+            <Icon name="external" size={15} />
+            Live terminals
+          </a>
         </nav>
         <div class="mt-auto border-t border-line p-4 text-[12px] text-fg-muted">
           <a href="/queue/" class="flex items-center gap-2">
@@ -92,8 +110,8 @@ const jump = repos.map(repo => ({ r: repo.repo, s: repo.slug, n: repo.records })
             )}
           </div>
           <div class="ml-auto flex items-center gap-2">
-            <span class="hidden text-[12px] text-fg-muted sm:inline" data-tip={`Review corpus ${stamp(asOf.corpus)}\nQueue ${stamp(asOf.queue)}\nWorkflow runs through ${stamp(asOf.actions)}`}>
-              Data as of {stamp(asOf.corpus)}
+            <span class="hidden text-[12px] text-fg-muted sm:inline" data-tip={`Built ${stamp(asOf.build)}\nQueue ${stamp(asOf.queue)}\nWorkflow runs through ${stamp(asOf.actions)}\nReview totals, quality and closes ${stamp(asOf.corpus)}: refreshed by hand with refresh_corpus`}>
+              Updated {stamp(asOf.build)} · review totals {stamp(asOf.corpus)}
             </span>
             <button data-theme class="grid size-8 place-items-center rounded-md text-fg-muted transition-colors hover:bg-bg-muted hover:text-fg" aria-label="Toggle theme">
               <Icon name="moon" size={15} class="dark:hidden" />
@@ -110,6 +128,8 @@ const jump = repos.map(repo => ({ r: repo.repo, s: repo.slug, n: repo.records })
 
         <main class="relative mx-auto w-full max-w-[1280px] px-4 pb-16 pt-6 md:px-8 md:pt-8">
           <div class="tiles" aria-hidden="true"></div>
+          <!-- Warns when the build is over an hour old (the 15-minute refresh stopped) or the hand-refreshed review corpus is over a day old. -->
+          <p id="stale" hidden data-built={asOf.build} data-corpus={asOf.corpus} role="status" class="relative mb-4 rounded-lg border border-warn/40 bg-warn-soft px-3 py-2 text-[13px] text-warn"></p>
           <div class="relative"><slot /></div>
         </main>
       </div>
@@ -120,7 +140,7 @@ const jump = repos.map(repo => ({ r: repo.repo, s: repo.slug, n: repo.records })
     <dialog id="cmd" class="m-auto mt-[12vh] w-[min(560px,92vw)] rounded-xl border border-line bg-bg p-0 text-fg shadow-2xl backdrop:bg-black/30 backdrop:backdrop-blur-[2px]">
       <div class="flex items-center gap-2 border-b border-line px-3">
         <Icon name="search" size={15} class="text-fg-muted" />
-        <input id="cmd-q" class="h-11 flex-1 bg-transparent text-[14px] outline-none placeholder:text-fg-faint" placeholder="Search 145 repositories…" autocomplete="off" />
+        <input id="cmd-q" class="h-11 flex-1 bg-transparent text-[14px] outline-none placeholder:text-fg-faint" placeholder={`Search ${repos.length} repositories…`} autocomplete="off" />
         <kbd class="rounded border border-line px-1 font-mono text-[11px] text-fg-faint">esc</kbd>
       </div>
       <ul id="cmd-list" class="max-h-[340px] overflow-y-auto p-1.5"></ul>
@@ -131,8 +151,49 @@ const jump = repos.map(repo => ({ r: repo.repo, s: repo.slug, n: repo.records })
       document.querySelector('[data-theme]').addEventListener('click', () => {
         const dark = !root.classList.contains('dark');
         root.classList.toggle('dark', dark);
-        try { localStorage.setItem('cs-theme', dark ? 'dark' : 'light'); } catch {}
+        try { localStorage.setItem('clawsweeper-theme', dark ? 'dark' : 'light'); } catch {}
       });
+
+      const stale = document.getElementById('stale');
+      const age = hours => (hours < 48 ? `${Math.floor(hours)} hours` : `${Math.floor(hours / 24)} days`);
+      const showStale = () => {
+        const build = (Date.now() - Date.parse(stale.dataset.built)) / 3_600_000;
+        const corpus = (Date.now() - Date.parse(stale.dataset.corpus)) / 3_600_000;
+        const notes = [];
+        if (build > 1) notes.push(`This snapshot is ${age(build)} old. The dashboard normally rebuilds every 15 minutes, so its refresh has stopped.`);
+        // Review totals, quality and closes come from the corpus, which refreshes only by hand.
+        if (corpus > 24) notes.push(`Review totals, quality and closes are ${age(corpus)} old; they update only when the dashboard workflow runs with refresh_corpus.`);
+        stale.textContent = notes.join(' ');
+        stale.hidden = notes.length === 0;
+      };
+      // Open tabs pick up each new snapshot: check the Overview (it exists in every build, unlike a
+      // repository page) every 5 minutes and when the tab becomes visible, and reload on a newer build.
+      const checkForNewSnapshot = async () => {
+        showStale();
+        if (document.hidden || document.getElementById('cmd').open) return;
+        try {
+          const response = await fetch('/', { cache: 'no-store' });
+          if (!response.ok) return;
+          const built = (await response.text()).match(/data-built="([^"]+)"/)?.[1];
+          if (built && Date.parse(built) > Date.parse(stale.dataset.built)) location.reload();
+        } catch {}
+      };
+      showStale();
+      setInterval(checkForNewSnapshot, 300_000);
+      document.addEventListener('visibilitychange', () => { if (!document.hidden) checkForNewSnapshot(); });
+
+      // <Ago>: the build writes absolute times; show them relative to now, every minute.
+      const relative = iso => {
+        const seconds = (Date.now() - Date.parse(iso)) / 1000;
+        if (seconds < 60) return 'just now';
+        if (seconds < 3600) return `${Math.round(seconds / 60)}m ago`;
+        if (seconds < 86_400) return `${Math.round(seconds / 3600)}h ago`;
+        const days = Math.round(seconds / 86_400);
+        return days < 60 ? `${days}d ago` : `${Math.round(days / 30)}mo ago`;
+      };
+      const showAgo = () => document.querySelectorAll('time[data-ago]').forEach(node => { node.textContent = `${node.dataset.prefix}${relative(node.getAttribute('datetime'))}`; });
+      showAgo();
+      setInterval(showAgo, 60_000);
 
       const tip = document.getElementById('tip');
       let owner = null;

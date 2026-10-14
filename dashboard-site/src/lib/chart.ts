@@ -15,15 +15,41 @@ export function ticks(top: number, step: number) {
   return values;
 }
 
-export function linePath(values: number[], top: number) {
+// null marks a missing observation: the line breaks there instead of dropping to zero.
+export function linePath(values: (number | null)[], top: number) {
   if (!values.length) return '';
   const dx = values.length > 1 ? 1000 / (values.length - 1) : 0;
-  return values.map((value, index) => `${index ? 'L' : 'M'}${(index * dx).toFixed(2)},${(100 - (value / top) * 100).toFixed(2)}`).join('');
+  let path = '';
+  let drawing = false;
+  values.forEach((value, index) => {
+    if (value === null) {
+      drawing = false;
+      return;
+    }
+    path += `${drawing ? 'L' : 'M'}${(index * dx).toFixed(2)},${(100 - (value / top) * 100).toFixed(2)}`;
+    drawing = true;
+  });
+  return path;
 }
 
-export function areaPath(values: number[], top: number) {
-  const line = linePath(values, top);
-  return line ? `${line}L1000,100L0,100Z` : '';
+// One filled region per run of observed values; gaps stay empty.
+export function areaPath(values: (number | null)[], top: number) {
+  const dx = values.length > 1 ? 1000 / (values.length - 1) : 0;
+  let path = '';
+  let start = -1;
+  const closeRun = (end: number) => {
+    if (start < 0) return;
+    const run = values.slice(start, end + 1);
+    path += run.map((value, offset) => `${offset ? 'L' : 'M'}${((start + offset) * dx).toFixed(2)},${(100 - ((value ?? 0) / top) * 100).toFixed(2)}`).join('');
+    path += `L${(end * dx).toFixed(2)},100L${(start * dx).toFixed(2)},100Z`;
+    start = -1;
+  };
+  values.forEach((value, index) => {
+    if (value === null) closeRun(index - 1);
+    else if (start < 0) start = index;
+  });
+  closeRun(values.length - 1);
+  return path;
 }
 
 // Indices for evenly spaced x-axis labels, always including the first and last point.

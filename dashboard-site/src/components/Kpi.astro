@@ -10,7 +10,7 @@ interface Props {
   delta?: number | null;
   invert?: boolean;
   sub?: string;
-  spark?: number[];
+  spark?: (number | null)[];
 }
 const { label, value, tip, delta, invert = false, sub, spark } = Astro.props;
 const change = delta === undefined ? null : formatDelta(delta);

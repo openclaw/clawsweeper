@@ -14,9 +14,20 @@ on:
           Durable Object and slows reviews while it runs). Use at a quiet hour.
         type: boolean
         default: false
-  # Branches have no cached corpus (caches flow from main only), so only main builds.
+      backfill_days:
+        description: >-
+          Fill sweep counts and sampled run durations for this many past days (up to 30), about
+          20 requests per day with this repository's token. 0 keeps the normal incremental refresh.
+        type: number
+        default: 0
+  # Branches have no cached corpus (caches flow from main only), so only main publishes.
   push:
     branches: [main]
+    paths:
+      - "dashboard-site/**"
+      - ".github/workflows/dashboard-site.yml"
+  # Pull requests only build the site from a committed fixture snapshot; no secrets, no publish.
+  pull_request:
     paths:
       - "dashboard-site/**"
       - ".github/workflows/dashboard-site.yml"
@@ -30,9 +41,34 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  publish:
+  build-check:
+    if: ${{ github.event_name == 'pull_request' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: ./.github/actions/setup-pnpm
+        with:
+          working-directory: dashboard-site
+
+      - name: Build the site from the fixture snapshot
+        working-directory: dashboard-site
+        run: |
+          set -euo pipefail
+          mkdir -p src/data
+          cp fixtures/dashboard.json src/data/dashboard.json
+          pnpm run build
+          for page in index.html operations/index.html queue/index.html throughput/index.html quality/index.html coverage/index.html repos/index.html 404.html; do
+            test -s "dist/$page" || { echo "::error::missing dist/$page"; exit 1; }
+          done
+
+  publish:
+    if: ${{ github.event_name != 'pull_request' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
     env:
       CLAWSWEEPER_APP_CLIENT_ID: Iv23liOECG0slfuhz093
       CLOUDFLARE_ACCOUNT_ID: 91b59577e757131d68d55a471fe32aca
@@ -94,7 +130,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
           BOOTSTRAP_GITHUB_TOKEN: ${{ steps.bootstrap.outputs.token }}
-        run: node scripts/build-data.ts --state ../.dashboard-state ${{ inputs.refresh_corpus == true && '--records ../records' || '' }}
+        run: node scripts/build-data.ts --state ../.dashboard-state ${{ inputs.refresh_corpus == true && '--records ../records' || '' }} --backfill-days "${{ inputs.backfill_days || 0 }}"
 
       - name: Save dashboard state
         if: ${{ always() && hashFiles('.dashboard-state/actions.json') != '' }}

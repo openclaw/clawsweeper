@@ -2689,7 +2689,6 @@ test("public triage pages expose aggregate counts without identity controls", as
     new Request("https://clawsweeper.openclaw.ai/pr-proof-triage"),
     {},
   );
-  const overviewPage = await worker.fetch(new Request("https://clawsweeper.openclaw.ai/"), {});
   const issueHtml = await issuePage.text();
   const proofHtml = await proofPage.text();
   for (const html of [issueHtml, proofHtml]) {
@@ -2721,7 +2720,6 @@ test("public triage pages expose aggregate counts without identity controls", as
   assert.match(issueHtml, /Queueable fixes without a no-new-fix-pr blocker/);
   assert.match(proofHtml, /Needs proof review/);
   assert.match(proofHtml, /Proof is requested but not yet marked sufficient or overridden/);
-  assert.doesNotMatch(await overviewPage.text(), /href="\/bay"/);
 });
 
 async function renderPublicTriageApplication(

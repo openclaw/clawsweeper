@@ -47,13 +47,13 @@ const perDay = (points: { value: number }[]) => points.reduce((total, point) => 
     <Card title="Sweep failure rate" tip="Failed + startup-failure runs ÷ all sweep runs, per day.">
       <TimeChart points={runs.failureRate.slice(-30)} kind="bar" unit="percent" noun="failed" color="var(--bad)" height={200} />
     </Card>
-    <TabCard title="Sweep run duration" name="duration" tabs={['p50', 'p90']} tip="Wall-clock seconds per sweep run, per day.">
-      <div class="panel"><TimeChart points={last30.map(day => ({ date: day.date, value: day.p50 }))} noun="seconds" height={200} /></div>
-      <div class="panel"><TimeChart points={last30.map(day => ({ date: day.date, value: day.p90 }))} noun="seconds" color="var(--warn)" height={200} /></div>
+    <TabCard title="Review run duration" name="duration" tabs={['p50', 'p90']} tip="Wall-clock time of each exact review run (Review exact item), per day. Other sweep jobs are left out: they are short and move between workflow files. Days before the hourly history use a sample of about 300 reviews.">
+      <div class="panel"><TimeChart points={last30.map(day => ({ date: day.date, value: day.reviewP50 }))} noun="seconds" height={200} /></div>
+      <div class="panel"><TimeChart points={last30.map(day => ({ date: day.date, value: day.reviewP90 }))} noun="seconds" color="var(--warn)" height={200} /></div>
     </TabCard>
   </div>
 
-  <Card title="Workflows" flush class="mt-3" tip="GitHub Actions archive, per workflow, over the days each one ran.">
+  <Card title="Workflows" flush class="mt-3" tip="GitHub Actions archive, per workflow, over the days each one ran. For sweep, days before the hourly history add counts and a duration sample.">
     <div class="overflow-x-auto">
       <table class="table">
         <thead><tr><th>Workflow</th><th class="r">Runs</th><th class="r">Success</th><th class="r">Failed</th><th class="r">Cancelled</th><th class="r">p50</th><th class="r">p90</th><th class="r">Days</th></tr></thead>

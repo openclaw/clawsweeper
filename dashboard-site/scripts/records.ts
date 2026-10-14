@@ -4,6 +4,7 @@
 import { createReadStream } from 'node:fs';
 import { readdir } from 'node:fs/promises';
 import { createInterface } from 'node:readline';
+import { isRecord } from './guards.ts';
 
 const DAY_MS = 86_400_000;
 const LIST_LIMIT = 500;
@@ -52,12 +53,10 @@ type ReviewDecision = {
   reviewFindings?: { priority?: number }[];
 };
 
-const isObject = (value: unknown): value is Record<string, unknown> =>
-  typeof value === 'object' && value !== null && !Array.isArray(value);
 // Version-1 review_record front matter; anything else counts as missing typed evidence.
 // Stored records are trusted ClawSweeper output, so the guard checks the version only.
 const typedDecision = (record: unknown): ReviewDecision | null =>
-  isObject(record) && record.version === 1 && isObject(record.decision) ? (record.decision as ReviewDecision) : null;
+  isRecord(record) && record.version === 1 && isRecord(record.decision) ? (record.decision as ReviewDecision) : null;
 
 const bump = (counts: Counts, key: unknown) => {
   if (typeof key === 'string' && key && key !== 'unknown') counts[key] = (counts[key] ?? 0) + 1;
