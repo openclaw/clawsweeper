@@ -101,6 +101,24 @@ test("oversized PR predicate boundaries, missing metadata, exemptions and thresh
   );
 });
 
+// The verified request a maintainer comment admits, as the queue's in-place
+// source-drift requeue carries it, and as a requeue that found no queued request.
+const requestContinuation = {
+  sourceAction: "source_drift_requeue",
+  supersedesInProgress: true,
+  commandStatusMarker: `<!-- clawsweeper-command-status:${pull.number}:re_review:command-1 -->`,
+  sourceCommentId: 1,
+  sourceCommentUpdatedAt: "2026-05-01T00:00:00Z",
+  commandBodyDigest: "a".repeat(64),
+  commandOrigin: "hosted_webhook",
+  sourceCommentVerified: true,
+};
+const { sourceCommentVerified: _verified, ...finishedRequestRequeue } = requestContinuation;
+const exactDecisions: Record<string, unknown> = {
+  "exact-close-request-continuation": requestContinuation,
+  "exact-close-finished-request": finishedRequestRequeue,
+};
+
 for (const scenario of [
   "disabled",
   "comments-only",
@@ -109,6 +127,8 @@ for (const scenario of [
   "dry-run",
   "close",
   "exact-close",
+  "exact-close-request-continuation",
+  "exact-close-finished-request",
   "durable-missing-lease",
   "durable-reserved-lease",
   "under-limit",
@@ -152,6 +172,7 @@ for (const scenario of [
       const calls = join(workspace.root, "calls.log");
       const commandLog = join(workspace.root, "commands.log");
       const previousGate = process.env.CLAWSWEEPER_OVERSIZED_PR_CLOSE_ENABLED;
+      const previousDecision = process.env.EXACT_REVIEW_DECISION;
       process.env.CLAWSWEEPER_OVERSIZED_PR_CLOSE_ENABLED =
         scenario === "disabled" || scenario === "missing-metadata" ? "false" : "true";
       try {
@@ -243,6 +264,9 @@ for (const scenario of [
           closeCommandLogPath: calls,
           closeCommandError: scenario === "close-error" ? "synthetic close rejection" : "",
         });
+        if (exactDecisions[scenario]) {
+          process.env.EXACT_REVIEW_DECISION = JSON.stringify(exactDecisions[scenario]);
+        }
         withMockGh(workspace.root, mock, () => {
           const apply = () =>
             runOpenClawApplyDecisionsForTest({
@@ -259,7 +283,7 @@ for (const scenario of [
                 String(pull.number),
                 "--min-age-minutes",
                 "0",
-                ...(scenario === "exact-close" ? ["--exact-event-publication"] : []),
+                ...(scenario.startsWith("exact-close") ? ["--exact-event-publication"] : []),
               ],
             });
           if (scenario === "close-error") assert.throws(apply);
@@ -307,6 +331,7 @@ for (const scenario of [
         if (
           scenario === "close" ||
           scenario === "exact-close" ||
+          scenario === "exact-close-request-continuation" ||
           scenario === "notice-error" ||
           scenario === "durable-reserved-lease"
         ) {
@@ -356,11 +381,19 @@ for (const scenario of [
             assert.match(currentComment.body, /ClawSweeper proposes closing this pull request/);
             assert.doesNotMatch(currentComment.body, /ClawSweeper closed this pull request/);
           } else assert.equal(mutations, "");
+          if (scenario === "exact-close-finished-request") {
+            assert.deepEqual(
+              result.map((entry: any) => entry.action),
+              ["skipped_maintainer_authored"],
+            );
+          }
           assert.match(readFileSync(report, "utf8"), /decision: close/);
         }
       } finally {
         if (previousGate === undefined) delete process.env.CLAWSWEEPER_OVERSIZED_PR_CLOSE_ENABLED;
         else process.env.CLAWSWEEPER_OVERSIZED_PR_CLOSE_ENABLED = previousGate;
+        if (previousDecision === undefined) delete process.env.EXACT_REVIEW_DECISION;
+        else process.env.EXACT_REVIEW_DECISION = previousDecision;
       }
     });
   });

@@ -56,6 +56,7 @@ import {
   codexHumanRetryHint,
   codexJsonlFailureDetail,
   codexTerminalErrorDetail,
+  CODEX_PROVIDER_CAPACITY_ERROR,
   isRetryableCodexErrorMessage,
   isRetryableCodexTransportError,
   isTerminalCodexErrorMessage,
@@ -67,7 +68,6 @@ import {
   prepareOpenClawCodexSourceForReview,
 } from "./openclaw-codex-source.js";
 import { repositoryProfileFor, type RepositoryProfile } from "./repository-profiles.js";
-import { reviewProofCapabilityFromEnv } from "./review-proof-client.js";
 import { readBoundedReviewResult } from "./review-output-policy.js";
 import { appendReviewUsage } from "./review-usage.js";
 import { asRecord, nonBlankStringOrUndefined } from "./value-coerce.js";
@@ -683,11 +683,7 @@ ${extra}
       detail,
       isRetryableCodexTransportError(retryHint) ? retryHint : "",
     ]) {
-      if (
-        /rate limit reached|tokens per min|\bTPM\b|requests per min|\b429\b|temporarily unavailable|overloaded|please try again in \d+(?:ms|s)/i.test(
-          transientDetail,
-        )
-      ) {
+      if (CODEX_PROVIDER_CAPACITY_ERROR.test(transientDetail)) {
         return "retryable codex transport failure (capacity)";
       }
       if (
@@ -1188,13 +1184,6 @@ ${extra}
         retryable: false,
       });
     }
-    const reviewProof =
-      options.item.kind === "pull_request"
-        ? reviewProofCapabilityFromEnv(
-            options.item.repo,
-            nonBlankStringOrUndefined(asRecord(pull.head).sha) ?? "",
-          )
-        : undefined;
     const processStartedAt = Date.now();
     const result = runAgentProcess({
       scanSource,
@@ -1229,14 +1218,6 @@ ${extra}
       decisionRepair: {
         item: { repo: options.item.repo, number: options.item.number, kind: options.item.kind },
       },
-      ...(reviewProof
-        ? {
-            appServer: {
-              statePath: join(options.workDir, `${options.item.number}.review-thread.json`),
-              reviewProof,
-            },
-          }
-        : {}),
     });
     const processFinishedAt = Date.now();
     // Complete the best-effort local handoff before failure can terminate the process.
@@ -1322,7 +1303,7 @@ ${extra}
       );
       failureDetail = `${failureDetail}\nThe decision repair turn ran after the first final message failed validation: ${result.decisionRepairError}`;
     }
-    const plainNative = agentRunner(codexEnv) === "codex" && !reviewProof;
+    const plainNative = agentRunner(codexEnv) === "codex";
     const nativeFailureEligible =
       plainNative &&
       !hasOutput &&

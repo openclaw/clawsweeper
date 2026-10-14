@@ -1,0 +1,1 @@
+- Remove retired Bay tables, indexes, and StatusStore history keys at startup instead of repeatedly pruning dead command journeys (1.45 million rows read across 137 production statements); intentionally retain the inert pending-telemetry column to avoid rewriting 435,000 lifecycle rows on replicated storage during startup.

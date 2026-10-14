@@ -36,8 +36,6 @@ At a high level ClawSweeper:
 - reviews open issues and pull requests on a schedule and on exact GitHub events
 - writes one durable markdown report per item in generated state
 - syncs one marker-backed public review comment per issue or PR, edited in place
-- can request relevant Web UI or Telegram proof within an eligible OpenClaw PR
-  review and evaluate results in that same turn; see [live proof](docs/live-proof.md)
 - closes only unchanged, high-confidence, policy-allowed proposals
 - routes maintainer commands `@clawsweeper review`, `@clawsweeper re-review`,
   `@clawsweeper explain`, and `@clawsweeper stop`
@@ -48,7 +46,6 @@ At a high level ClawSweeper:
 - publishes canonical review records to the Cloudflare Worker, action ledgers
   and assets to R2, and the remaining operational state to
   `openclaw/clawsweeper-state`
-
 
 The [oversized PR close lane](docs/oversized-pr-close-policy.md) proposes closing
 pull requests above 50,000 changed lines before hydration, scanning, or model
@@ -193,7 +190,9 @@ from automatic reviews and scheduled sweeps. One opening/ready reminder explains
 how to opt in. Only request `@clawsweeper review` when a review is needed and the
 work and validation are complete; agents must not request reviews automatically
 or repeat requests while one is queued or running. A one-off request does not
-opt future pushes into reviews. Existing `clawsweeper:autofix` and
+opt future pushes into reviews, but it stays open until it is answered: if the
+item changes while it is reviewed, ClawSweeper re-reviews and still answers that
+request. Existing `clawsweeper:autofix` and
 `clawsweeper:automerge` labels retain their explicit opt-in behavior.
 
 ## Maintainer Commands
@@ -218,7 +217,6 @@ acknowledging them. Exact item work is coalesced and leased by the Worker, so a
 webhook burst does not create capacity-waiting Actions runners. Repair, autofix,
 automerge, issue implementation, fix-ci, and address-review commands are retired.
 
-
 ## Dashboard
 
 Live dashboard and generated state: https://github.com/openclaw/clawsweeper-state
@@ -240,7 +238,6 @@ requests that are blocked on real behavior proof labels, including missing
 proof, supplied-but-not-sufficient proof, mock-only proof, and proof label
 mismatches. See
 [`docs/pr-proof-triage-dashboard.md`](docs/pr-proof-triage-dashboard.md).
-
 
 The default-off unconfirmed product-direction policy can propose closure for a
 strictly bounded class of technically correct, well-proven external feature PRs
@@ -816,9 +813,14 @@ usage is documented in
 
 ```bash
 codex login --device-auth -c 'service_tier="fast"'
-pnpm run codex:local:check
+pnpm run codex:local:check -- --diagnostics
 pnpm run review -- --local-only --target-repo owner/name --item-number 123
 ```
+
+`--diagnostics` checks the selected Codex binary and its login status without a
+model request. It does not prove model access or review readiness. Omit
+`--diagnostics` to also run the existing model smoke test, which consumes model
+usage.
 
 `review` is the single issue/PR review command. `--local-only` makes it an
 advisory local run: it skips the review-start placeholder comment, defaults the
@@ -856,7 +858,11 @@ temporarily exceed their requested limits, and arbitrary model-written files
 are not quota-controlled. Oversized managed media output is discarded.
 Existing or unrelated retained runs are
 never pruned automatically.
-`--result-format json` returns the same result as valid JSON.
+`--result-format json` returns the same result as valid JSON. For a committed-range
+review, add `--preflight` to generate a bounded advisory PR-body block in that
+JSON without another model call or GitHub write. See the
+[local preflight summary](docs/portable-review-receipt.md) for source checks and
+limitations; it does not grant a hosted-review exemption.
 
 ```bash
 pnpm run review -- --local-only \
@@ -1083,7 +1089,6 @@ Required `clawsweeper` app permissions:
 - Checks: read/write on target repositories, for structural cache state and
   commit Check Run publication.
 - Commit statuses: read on target repositories, for structural cache state.
-
 
 ClawSweeper no longer falls back to PAT-based write tokens. If the GitHub App
 installation does not grant the requested permission set, the workflow fails at

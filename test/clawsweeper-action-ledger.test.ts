@@ -3,6 +3,7 @@ import { execFile, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
   cpSync,
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -17,6 +18,9 @@ import { dirname, join, relative, resolve } from "node:path";
 import test, { after, type TestContext } from "node:test";
 import { promisify } from "node:util";
 import { parse as parseYaml } from "yaml";
+import worker from "../dashboard/worker.ts";
+import { materializeStateBlobs } from "../scripts/worker-blobs.ts";
+import { LedgerBucket, ledgerImportFixture } from "./action-ledger-import-fixture.ts";
 
 import {
   actionLedgerFailureDisposition,
@@ -49,6 +53,7 @@ import {
   ACTION_EVENT_TYPES,
   actionIdempotencyKey,
   readAllSpooledActionEvents,
+  readActionEventShardAt,
   type ActionEvent,
 } from "../dist/action-ledger.js";
 import { createApplyActionLedger } from "../dist/clawsweeper-apply-ledger.js";
@@ -347,26 +352,57 @@ test("action event publication validates manifests before sending canonical file
   for (const entry of CLI_INPUTS.filter((input) => input !== "dist")) {
     symlinkSync(resolve(entry), join(root, entry));
   }
-  const paths = [
-    "ledger/v1/events/2026/07/12/openclaw-clawsweeper/review/run-part-1-of-1.jsonl",
-    `ledger/v1/import-bindings/completed-shard-sets/${"a".repeat(64)}.json`,
-    `ledger/v1/import-bindings/events/${"b".repeat(64)}.json`,
-    `ledger/v1/import-bindings/producer-runs/${"c".repeat(64)}.json`,
-    `ledger/v1/import-bindings/shard-sets/${"d".repeat(64)}.json`,
-  ].sort();
-  for (const path of paths) {
-    mkdirSync(dirname(join(root, path)), { recursive: true });
-    writeFileSync(join(root, path), JSON.stringify({ path }));
+  const fixture = ledgerImportFixture(root);
+  const paths = fixture.paths;
+  for (const [relativePath, content] of fixture.blobs) {
+    mkdirSync(dirname(join(root, relativePath)), { recursive: true });
+    writeFileSync(join(root, relativePath), content);
   }
+  const publicationOrder = [
+    ...fixture.reservationPaths,
+    ...fixture.eventPaths,
+    ...fixture.completionPaths,
+  ];
   const received: Array<{ path: string; contentBase64: string; digest: string }> = [];
   const requests: Array<{ method: string | undefined; url: string | undefined }> = [];
+  const bucket = new LedgerBucket();
+  bucket.seed(publicationOrder[0]!, fixture.blobs.get(publicationOrder[0]!)!);
+  let failedPath: string | undefined;
+  let failAfterWrite = false;
   const server = createServer(async (request, response) => {
     const chunks: Buffer[] = [];
     for await (const chunk of request) chunks.push(Buffer.from(chunk));
-    received.push(JSON.parse(Buffer.concat(chunks).toString("utf8")));
-    requests.push({ method: request.method, url: request.url });
-    response.writeHead(200, { "content-type": "application/json" });
-    response.end(JSON.stringify({ unchanged: received.length === 1 }));
+    const body = Buffer.concat(chunks).toString("utf8");
+    const payload = JSON.parse(body);
+    if (request.url === "/internal/state/blobs/put") {
+      received.push(payload);
+      requests.push({ method: request.method, url: request.url });
+      if (failedPath !== undefined && payload.path === failedPath && !failAfterWrite) {
+        response.writeHead(409, { "content-type": "application/json" });
+        response.end(JSON.stringify({ error: "synthetic_publication_interruption" }));
+        return;
+      }
+    }
+    const result = await worker.fetch(
+      new Request(`https://worker.example${request.url}`, {
+        method: request.method,
+        headers: request.headers as Record<string, string>,
+        body,
+      }),
+      { CLAWSWEEPER_WEBHOOK_SECRET: "synthetic-publication-test", STATE_SNAPSHOTS: bucket },
+    );
+    if (
+      request.url === "/internal/state/blobs/put" &&
+      failedPath !== undefined &&
+      payload.path === failedPath &&
+      failAfterWrite
+    ) {
+      response.writeHead(409, { "content-type": "application/json" });
+      response.end(JSON.stringify({ error: "synthetic_response_loss" }));
+      return;
+    }
+    response.writeHead(result.status, Object.fromEntries(result.headers));
+    response.end(await result.text());
   });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   t.after(() => new Promise<void>((resolve) => server.close(() => resolve())));
@@ -398,6 +434,18 @@ test("action event publication validates manifests before sending canonical file
     await assert.rejects(promisify(execFile)(process.execPath, command, options), error);
     assert.deepEqual(received, []);
   }
+  for (const missing of [
+    fixture.eventPaths[0]!,
+    fixture.reservationPaths[0]!,
+    fixture.completionPaths[0]!,
+  ]) {
+    writeFileSync(manifest, `${paths.filter((entry) => entry !== missing).join("\n")}\n`);
+    await assert.rejects(
+      promisify(execFile)(process.execPath, command, options),
+      /complete import transaction|manifest is empty/,
+    );
+    assert.deepEqual(received, []);
+  }
   writeFileSync(manifest, `${paths.join("\n")}\n`);
   const { stdout } = await promisify(execFile)(process.execPath, command, options);
   assert.deepEqual(JSON.parse(stdout), {
@@ -408,13 +456,55 @@ test("action event publication validates manifests before sending canonical file
   });
   assert.deepEqual(
     received.map(({ path }) => path),
-    paths,
+    publicationOrder,
   );
   for (const [index, payload] of received.entries()) {
-    const content = readFileSync(join(root, paths[index]!));
+    const content = readFileSync(join(root, publicationOrder[index]!));
     assert.equal(payload.contentBase64, content.toString("base64"));
     assert.equal(payload.digest, createHash("sha256").update(content).digest("hex"));
     assert.deepEqual(requests[index], { method: "POST", url: "/internal/state/blobs/put" });
+  }
+  const initial = await materializeStateBlobs({
+    baseUrl: options.env.QUEUE_URL,
+    webhookSecret: options.env.CLAWSWEEPER_WEBHOOK_SECRET,
+    worktreeRoot: join(root, "initial-hydration"),
+  });
+  assert.equal(initial.omittedProducers, 0);
+  for (const [phase, failAfter] of [
+    ["payload", false],
+    ["completion", false],
+    ["completion", true],
+  ] as const) {
+    const next = ledgerImportFixture(root, phase === "payload" ? 2 : failAfter ? 4 : 3);
+    for (const [relativePath, content] of next.blobs) {
+      mkdirSync(dirname(join(root, relativePath)), { recursive: true });
+      writeFileSync(join(root, relativePath), content);
+    }
+    failedPath = phase === "payload" ? next.eventPaths[0]! : next.completionPaths[0]!;
+    failAfterWrite = failAfter;
+    writeFileSync(manifest, `${next.paths.join("\n")}\n`);
+    await assert.rejects(
+      promisify(execFile)(process.execPath, command, options),
+      /synthetic_publication_interruption|synthetic_response_loss/,
+    );
+    failedPath = undefined;
+    const hydrated = join(root, `hydrated-${phase}-${failAfter}`);
+    const summary = await materializeStateBlobs({
+      baseUrl: options.env.QUEUE_URL,
+      webhookSecret: options.env.CLAWSWEEPER_WEBHOOK_SECRET,
+      worktreeRoot: hydrated,
+    });
+    assert.equal(existsSync(join(hydrated, next.eventPaths[0]!)), failAfter);
+    assert.equal(summary.omittedProducers, phase === "completion" && !failAfter ? 1 : 0);
+    const resumed = await promisify(execFile)(process.execPath, command, options);
+    assert.equal(JSON.parse(resumed.stdout).path_count, next.paths.length);
+    const replay = await materializeStateBlobs({
+      baseUrl: options.env.QUEUE_URL,
+      webhookSecret: options.env.CLAWSWEEPER_WEBHOOK_SECRET,
+      worktreeRoot: hydrated,
+    });
+    assert.equal(replay.omittedProducers, 0);
+    assert.equal(readActionEventShardAt(hydrated, next.eventPaths[0]!).length, 1);
   }
 });
 

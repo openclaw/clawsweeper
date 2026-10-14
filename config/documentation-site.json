@@ -9,7 +9,6 @@
       "name": "Review and policy",
       "pages": [
         "commit-sweeper.md",
-        "live-proof.md",
         "review-cache.md",
         "pr-review-comments.md",
         "pr-proof-triage-dashboard.md",
@@ -32,6 +31,7 @@
         "operator-configuration.md",
         "private-inference.md",
         "live-dashboard.md",
+        "agent-performance-metrics.md",
         "openclaw-event-hooks.md",
         "state-storage.md",
         "action-ledger.md",
@@ -48,6 +48,11 @@
       "path": "review-authority.md",
       "lifecycle": "proposed",
       "banner": "The role classifier is inert. This integration contract does not change current admission or command authority."
+    },
+    {
+      "path": "portable-review-receipt.md",
+      "lifecycle": "proposed",
+      "banner": "This candidate exports a local advisory summary; general attachment and hosted enforcement are not enabled."
     },
     {
       "path": "queue-service-split-runbook.md",

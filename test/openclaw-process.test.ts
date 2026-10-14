@@ -447,14 +447,14 @@ test("OpenClaw invalid JSON fails closed with a bounded stderr tail", () => {
   }
 });
 
-test("OpenClaw runner writes the normalized last message and notes ignored steering", (t) => {
+test("OpenClaw runner writes the normalized last message", (t) => {
   useFakeScanner(t);
   const root = mkdtempSync(join(tmpdir(), "clawsweeper-openclaw-test-"));
   const binary = fakeOpenclaw(root);
   const outputPath = join(root, "last-message.txt");
   try {
     const result = runAgentProcess({
-      label: "steerable-openclaw",
+      label: "managed-output-openclaw",
       scanSource: { kind: "prompt" },
       prompt: "prompt",
       model: "internal",
@@ -465,16 +465,14 @@ test("OpenClaw runner writes the normalized last message and notes ignored steer
         CLAWSWEEPER_RUNNER: "openclaw",
         CLAWSWEEPER_OPENCLAW_MODEL: "openai/test",
         CLAWSWEEPER_OPENCLAW_BIN: binary,
-        OPENCLAW_TEST_RECORD: join(root, "steerable.json"),
+        OPENCLAW_TEST_RECORD: join(root, "managed-output.json"),
       },
       timeoutMs: 10_000,
       codexExtraArgs: ["--output-last-message", outputPath, "--json", "-"],
       outputLastMessageBytes: 4,
-      appServer: { statePath: join(root, "thread.json") },
     });
     assert.equal(result.status, 0, result.stderr);
     assert.equal(readFileSync(outputPath, "utf8"), "done");
-    assert.equal(result.stderr.match(/CLAWSWEEPER_STEERABLE_CODEX is Codex-specific/g)?.length, 1);
 
     const oversizedPath = join(root, "oversized-last-message.txt");
     const oversized = runAgentProcess({

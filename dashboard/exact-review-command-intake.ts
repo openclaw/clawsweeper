@@ -8,7 +8,6 @@ import { exactReviewBaseDecisionFrom } from "./exact-review-decision.ts";
 const COMMAND_INTAKE_TABLE = "exact_review_command_intakes";
 const COMMAND_WATERMARK_TABLE = "exact_review_command_watermarks";
 const COMMAND_RECEIPT_TABLE = "exact_review_command_receipts";
-const COMMAND_BAY_JOURNEY_TABLE = "exact_review_command_bay_journeys";
 const ITEM_REVISION_TABLE = "exact_review_item_revisions";
 const COMMAND_INTAKE_LIMIT = 16;
 const COMMAND_RETRY_BASE_MS = 15_000;
@@ -85,12 +84,6 @@ export class ExactReviewCommandIntakeStore {
     this.storage.sql.exec(
       `CREATE INDEX IF NOT EXISTS exact_review_command_receipts_terminal_observed
          ON ${COMMAND_RECEIPT_TABLE} (outcome, observed_at, command_version_id)`,
-    );
-    this.storage.sql.exec(
-      `CREATE TABLE IF NOT EXISTS ${COMMAND_BAY_JOURNEY_TABLE} (
-         command_version_id TEXT PRIMARY KEY,
-         bay_journey_delivery_id TEXT NOT NULL
-       ) STRICT`,
     );
     this.storage.sql.exec(
       `CREATE TABLE IF NOT EXISTS ${ITEM_REVISION_TABLE} (
@@ -404,12 +397,8 @@ export class ExactReviewCommandIntakeStore {
   pruneTerminalReceipts(now: number) {
     this.storage.sql.exec(
       `DELETE FROM ${COMMAND_RECEIPT_TABLE}
-        WHERE outcome != 'pending' AND observed_at <= ?`,
+        WHERE outcome IN ('completed', 'rejected', 'superseded') AND observed_at <= ?`,
       now - EXACT_REVIEW_COMMAND_RECEIPT_RETENTION_MS,
-    );
-    this.storage.sql.exec(
-      `DELETE FROM ${COMMAND_BAY_JOURNEY_TABLE}
-        WHERE command_version_id NOT IN (SELECT command_version_id FROM ${COMMAND_RECEIPT_TABLE})`,
     );
   }
 

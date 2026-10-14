@@ -1,22 +1,38 @@
 ---
 import { areaPath, labelIndices, linePath, niceMax, ticks } from '../lib/chart';
-import { day, int, pct, short } from '../lib/format';
+import { day, hour, int, pct, short } from '../lib/format';
 
 interface Props {
-  points: { date: string; value: number }[];
+  // value null: no data for that point (telemetry gap); drawn at zero, labelled "No data".
+  points: { date: string; value: number | null }[];
   kind?: 'area' | 'bar';
   unit?: 'count' | 'percent';
   noun?: string;
   height?: number;
   color?: string;
+  // Hourly points: tooltips show the hour; axis labels stay on days.
+  hourly?: boolean;
+  // A second series drawn as a line over an area chart (same dates and unit as points),
+  // e.g. the part of the total that maintainers authored. Its value shows in each tooltip.
+  overlay?: { points: { date: string; value: number | null }[]; label: string; noun: string; color?: string };
 }
-const { points, kind = 'area', unit = 'count', noun = '', height = 220, color = 'var(--accent)' } = Astro.props;
+const { points, kind = 'area', unit = 'count', noun = '', height = 220, color = 'var(--accent)', hourly = false, overlay } = Astro.props;
+const overlayColor = overlay?.color ?? 'var(--warn)';
+const overlayValues = overlay?.points.map(point => point.value) ?? [];
 const values = points.map(point => point.value);
-const { top, step } = niceMax(Math.max(...values, 0));
+const { top, step } = niceMax(Math.max(...values.map(value => value ?? 0), 0));
 const yTicks = ticks(top, step);
 const fmtAxis = (value: number) => (unit === 'percent' ? pct(value, value < 0.1 ? 1 : 0) : short(value));
-const fmtValue = (value: number) => (unit === 'percent' ? pct(value, 2) : `${int(value)}${noun ? ` ${noun}` : ''}`);
+const fmtValue = (value: number | null) => (value === null ? 'No data' : unit === 'percent' ? pct(value, 2) : `${int(value)}${noun ? ` ${noun}` : ''}`);
 const xLabels = labelIndices(points.length, 6);
+const tip = (index: number) => {
+  const point = points[index];
+  const head = `${hourly ? hour(point.date) : day(point.date)}\n${fmtValue(point.value)}`;
+  if (!overlay) return head;
+  const part = overlayValues[index] ?? null;
+  const share = part !== null && point.value ? ` (${pct(part / point.value, 0)})` : '';
+  return `${head}\n${part === null ? 'No data' : `${int(part)} ${overlay.noun}${share}`}`;
+};
 const id = `g${Math.random().toString(36).slice(2, 8)}`;
 const barWidth = points.length ? 1000 / points.length : 0;
 ---
@@ -41,19 +57,22 @@ const barWidth = points.length ? 1000 / points.length : 0;
       {yTicks.map(value => (
         <line x1="0" x2="1000" y1={100 - (value / top) * 100} y2={100 - (value / top) * 100} stroke="var(--border)" stroke-dasharray={value === 0 ? undefined : '3 3'} vector-effect="non-scaling-stroke" />
       ))}
+      {/* A missing observation is a shaded column, never a zero. */}
+      {values.map((value, index) => value === null && <rect x={index * barWidth} width={barWidth} y="0" height="100" fill="var(--border)" opacity="0.45" />)}
       {kind === 'area' ? (
         <>
           <path d={areaPath(values, top)} fill={`url(#${id})`} />
           <path d={linePath(values, top)} fill="none" stroke={color} stroke-width="1.75" vector-effect="non-scaling-stroke" stroke-linejoin="round" />
+          {overlay && <path d={linePath(overlayValues, top)} fill="none" stroke={overlayColor} stroke-width="1.75" stroke-dasharray="4 3" vector-effect="non-scaling-stroke" stroke-linejoin="round" />}
         </>
       ) : (
-        values.map((value, index) => (
+        values.map((value, index) => value !== null && (
           <rect x={index * barWidth + barWidth * 0.18} width={barWidth * 0.64} y={100 - (value / top) * 100} height={(value / top) * 100} fill={`url(#${id}b)`} />
         ))
       )}
     </svg>
     <div class="absolute inset-0 grid" style={`grid-template-columns:repeat(${points.length},minmax(0,1fr))`}>
-      {points.map(point => <div class="hit" data-tip={`${day(point.date)}\n${fmtValue(point.value)}`}></div>)}
+      {points.map((_, index) => <div class="hit" data-tip={tip(index)}></div>)}
     </div>
   </div>
   <div></div>
@@ -65,4 +84,13 @@ const barWidth = points.length ? 1000 / points.length : 0;
       >{day(points[index].date)}</span>
     ))}
   </div>
+  {overlay && (
+    <>
+      <div></div>
+      <div class="mt-2 flex gap-4 text-[11px] text-fg-muted">
+        <span class="inline-flex items-center gap-1.5"><span class="inline-block h-0.5 w-3" style={`background:${color}`}></span>All {noun}</span>
+        <span class="inline-flex items-center gap-1.5"><span class="inline-block h-0 w-3 border-t-2 border-dashed" style={`border-color:${overlayColor}`}></span>{overlay.label}</span>
+      </div>
+    </>
+  )}
 </div>

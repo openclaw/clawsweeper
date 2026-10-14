@@ -1,0 +1,9 @@
+---
+// Cloudflare Pages serves this with status 404 for any unknown path; without it, Pages
+// would answer every unknown path with the Overview and status 200.
+import Layout from '../components/Layout.astro';
+---
+<Layout title="Not found" section="overview" crumb="Not found">
+  <h1 class="text-[22px] font-semibold tracking-tight">Page not found</h1>
+  <p class="mt-2 text-[13px] text-fg-muted">This dashboard has no page at this address. <a href="/" class="text-fg underline">Go to the Overview</a>.</p>
+</Layout>

@@ -243,10 +243,31 @@ bodies are not logged. Exhaustion remains a failed workflow. This improves
 completeness of the existing review-observability data without changing its
 schema or mutation boundaries.
 
+Run telemetry retains its 30-day window; physical cleanup runs at most once
+per five minutes per queue instance rather than scanning the history on every
+write or dashboard poll. Delivery receipt counts stay exact while reusing the
+previous count and reading only newly appended rowids; deletion discards that
+count before rowids can be reused. Terminal command receipts retain their
+existing cutoff and use the outcome/time index. State-writer acquire retries
+still refresh queued ticket liveness, but do not rewrite timestamps already
+set by admission or lease acquisition.
+
 Maintainer-authored and `maintainer`-labeled items require an explicit review
 request. Automatic intake, scheduled selection, claimed reviews, and hosted
-publication apply this policy; a source-drift retry does not inherit the
-original command's opt-in. Existing autofix/automerge labels remain opt-ins.
+publication apply this policy. A verified request stays open while the queue
+finishes answering it: when the item changes before the request's review
+fully applies, including a close check that drifts after the durable review
+comment synced, the queue requeues that generation in place instead of
+finalizing the command, keeping the command status and verification, and the
+retry continues the same request. Any other
+source-drift requeue keeps the command status but not the verification: the
+queue enforces this whenever it loads an item, so a requeue that found no queued
+item, including one persisted before this rule, cannot let a finished or
+replaced request authorize another review. The in-place prefix is queue-owned:
+`/enqueue` rejects a caller delivery id that uses it as `reserved_delivery_id`. The batch publisher's requeue of a deferred publication arrives that
+way today, so a maintainer item there needs a new request. A push after the
+request is answered and a scheduled pass also need a new request. Existing
+autofix/automerge labels remain opt-ins.
 The target dispatcher and direct webhook share a single reminder identity per
 item, posted only when opened or ready for review. Edits, pushes, and sweeps do
 not post reminders. Request reviews only when needed, after completing work and
@@ -316,7 +337,10 @@ on every warm fetch, so deleted or moved tags cannot survive in the checkout.
 A non-fast-forward branch update rebuilds the cache so its old history cannot
 retain tags outside the current branch. A failed or partial restore is discarded,
 a failed cache fetch rebuilds the cache, and a failed local clone falls back to a clean clone without
-saving. The pinned Codex source cache is keyed by the Codex version pinned in the
+saving. Each network clone or fetch stops after `CLAWSWEEPER_REVIEW_TARGET_CHECKOUT_TIMEOUT_MS`
+(default 30 minutes, at most 120) and its git process group is killed. Local clones from the cache
+are not under that deadline. Git's `http.lowSpeedLimit` stays at its default so a quiet tip-blob
+negotiation is not aborted before the deadline. The pinned Codex source cache is keyed by the Codex version pinned in the
 target checkout and is saved once per version.
 
 The receiver workflow is `.github/workflows/sweep.yml`.

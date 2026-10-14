@@ -21,6 +21,6 @@ production behavior. It is not evidence of current hosted availability.
 - Current inline proof, the hosted app-server worker and ordinary review/apply
   publication remain separate supported paths.
 
-See [Live proof](../../live-proof.md) for current admission, evidence and deadline
+See the historical [Live proof](https://github.com/openclaw/clawsweeper/blob/f6ad0bf56/docs/live-proof.md) for admission, evidence and deadline
 rules. Current regression coverage lives in `test/live-proof-report.test.ts`,
 `test/sweep-workflow.test.ts`, and the active hosted review scan smoke harness.

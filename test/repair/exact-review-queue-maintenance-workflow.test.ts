@@ -11,6 +11,7 @@ import {
   statSync,
   writeFileSync,
 } from "node:fs";
+import { createServer as createHttpServer } from "node:http";
 import { createServer } from "node:https";
 import { tmpdir } from "node:os";
 import { delimiter, isAbsolute, join } from "node:path";
@@ -74,6 +75,119 @@ test("queue maintenance is explicit, bounded, and non-cancelling", () => {
   assert.match(run, /--max-items "\$MAX_ITEMS"/);
   assert.match(run, /args\+=\(--apply\)/);
   assert.match(run, /--passes "\$PASSES"/);
+});
+
+test("storage stats workflow accepts current payloads and rejects failures", async (t) => {
+  const job = workflow.jobs["storage-stats"]!;
+  assert.equal(job.if, "${{ inputs.mode == 'storage-stats' }}");
+  const step = job.steps.find((candidate) => candidate.name === "Report queue storage by table")!;
+  const current = {
+    ok: true,
+    generated_at: "2026-01-02T03:04:05.678Z",
+    storage: {
+      databaseBytes: 4096,
+      estimatedTableBytes: 60,
+      tables: [
+        {
+          table: "synthetic_records",
+          rows: 2,
+          sampledRows: 2,
+          averageRowBytes: 30,
+          estimatedBytes: 60,
+        },
+      ],
+    },
+  };
+  const cases: {
+    name: string;
+    body?: unknown;
+    raw?: string;
+    status?: number;
+    expectedSummary?: string;
+  }[] = [
+    {
+      name: "current response without retired telemetry",
+      body: current,
+      expectedSummary: "| synthetic_records | 2 | 30 | 60 |",
+    },
+    {
+      name: "unknown database size and empty tables",
+      body: { ...current, storage: { databaseBytes: null, estimatedTableBytes: 0, tables: [] } },
+      expectedSummary: "database: unknown bytes",
+    },
+    { name: "failed diagnostics", body: { ...current, ok: false } },
+    { name: "missing storage", body: { ok: true, generated_at: current.generated_at } },
+    { name: "missing generation time", body: { ok: true, storage: current.storage } },
+    {
+      name: "unusable table rows",
+      body: { ...current, storage: { ...current.storage, tables: [{}] } },
+    },
+    { name: "malformed JSON", raw: "{" },
+    { name: "HTTP failure", body: { error: "synthetic_failure" }, status: 503 },
+  ];
+  for (const scenario of cases) {
+    await t.test(scenario.name, async (t) => {
+      const directory = mkdtempSync(join(tmpdir(), "clawsweeper-storage-summary-"));
+      t.after(() => rmSync(directory, { recursive: true, force: true }));
+      const summaryPath = join(directory, "summary.md");
+      writeFileSync(summaryPath, "");
+      const responseBody = scenario.raw ?? JSON.stringify(scenario.body);
+      assert.equal(typeof responseBody, "string");
+      const requests: { method?: string; path?: string; body: string; signature?: string }[] = [];
+      const secret = "synthetic-storage-secret";
+      const server = createHttpServer(async (request, response) => {
+        let body = "";
+        for await (const chunk of request) body += chunk;
+        requests.push({
+          method: request.method,
+          path: request.url,
+          body,
+          signature: request.headers["x-clawsweeper-exact-review-signature"] as string | undefined,
+        });
+        response.writeHead(scenario.status ?? 200, { "content-type": "application/json" });
+        response.end(responseBody);
+      });
+      await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+      t.after(() => new Promise<void>((resolve) => server.close(() => resolve())));
+      const endpoint = `http://127.0.0.1:${(server.address() as import("node:net").AddressInfo).port}`;
+      let exitCode = 0;
+      try {
+        await promisify(execFile)("bash", ["-c", step.run!], {
+          cwd: directory,
+          timeout: 10_000,
+          env: {
+            PATH: process.env.PATH,
+            CLAWSWEEPER_WEBHOOK_SECRET: secret,
+            EXACT_REVIEW_QUEUE_URL: endpoint,
+            GITHUB_STEP_SUMMARY: summaryPath,
+          },
+        });
+      } catch (error) {
+        assert.equal(typeof (error as { code: unknown }).code, "number");
+        exitCode = (error as { code: number }).code;
+      }
+      assert.deepEqual(requests, [
+        {
+          method: "POST",
+          path: "/internal/exact-review/storage-stats",
+          body: "{}",
+          signature: `sha256=${createHmac("sha256", secret).update("{}").digest("hex")}`,
+        },
+      ]);
+      assert.equal(readFileSync(join(directory, "stats.json"), "utf8"), responseBody);
+      const summary = readFileSync(summaryPath, "utf8");
+      if (scenario.expectedSummary) {
+        assert.equal(exitCode, 0);
+        assert.match(summary, /Generated: 2026-01-02T03:04:05\.678Z/);
+        assert.match(summary, /sampled column lengths; indexes and SQLite overhead are excluded/);
+        assert.doesNotMatch(summary, /tide source scans/);
+        assert.ok(summary.includes(scenario.expectedSummary));
+      } else {
+        assert.notEqual(exitCode, 0);
+        assert.equal(summary, "");
+      }
+    });
+  }
 });
 
 test("retirement workflow executes isolated preview and apply argument routes", async (t) => {

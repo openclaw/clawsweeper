@@ -3772,18 +3772,3 @@ test("dashboard shares in-flight GitHub App installation token across parallel r
     Object.defineProperty(globalThis, "caches", { configurable: true, value: originalCaches });
   }
 });
-
-test("dashboard html preserves client compactText regex escapes", async () => {
-  const response = await worker.fetch(new Request("https://example.test/"));
-  const body = await response.text();
-  const match = body.match(/function compactText\(value\) \{[\s\S]*?\n\}/);
-  assert.ok(match, "compactText function should render in dashboard html");
-  const compactText = new Function(`${match[0]}; return compactText;`)() as (
-    value: unknown,
-  ) => string;
-
-  assert.equal(
-    compactText("1234567890abcdef1234567890abcdef\n\t repeated   spaces"),
-    "1234567890 repeated spaces",
-  );
-});

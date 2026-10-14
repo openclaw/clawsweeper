@@ -1,3 +1,5 @@
+import { normalizeRepo, slugForRepo } from "./repository-identity.js";
+export { normalizeRepo, slugForRepo } from "./repository-identity.js";
 import { asRecord, requireRecord as record } from "./value-coerce.js";
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -158,10 +160,6 @@ export function repositoryProfileForSlug(slug: string): RepositoryProfile | unde
   return REPOSITORY_PROFILES.find((candidate) => candidate.slug === slug);
 }
 
-export function normalizeRepo(targetRepo: string): string {
-  return targetRepo.trim().toLowerCase();
-}
-
 export function isAutoCloseAllowed(
   profile: RepositoryProfile,
   kind: RepositoryItemKind,
@@ -258,10 +256,6 @@ function fallbackDescription(): string {
       return `${fallback.owner}/*${denied}`;
     })
     .join(", ");
-}
-
-export function slugForRepo(targetRepo: string): string {
-  return targetRepo.replace(/[^A-Za-z0-9_.-]+/g, "-");
 }
 
 function readTargetRepositoryConfig(

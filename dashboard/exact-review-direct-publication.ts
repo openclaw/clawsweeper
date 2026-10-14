@@ -245,11 +245,19 @@ export class ExactReviewDirectPublicationStore {
         `ALTER TABLE ${EXACT_REVIEW_DIRECT_PUBLICATION_TABLE}
            ADD COLUMN canonical_target_key TEXT NOT NULL DEFAULT ''`,
       );
+      this.storage.sql.exec(
+        `UPDATE ${EXACT_REVIEW_DIRECT_PUBLICATION_TABLE}
+            SET canonical_target_key = item_key`,
+      );
     }
     if (!directPublicationColumns.has("fence_key")) {
       this.storage.sql.exec(
         `ALTER TABLE ${EXACT_REVIEW_DIRECT_PUBLICATION_TABLE}
            ADD COLUMN fence_key TEXT NOT NULL DEFAULT ''`,
+      );
+      this.storage.sql.exec(
+        `UPDATE ${EXACT_REVIEW_DIRECT_PUBLICATION_TABLE}
+            SET fence_key = item_key`,
       );
     }
     if (!directPublicationColumns.has("lifecycle_json")) {
@@ -258,19 +266,6 @@ export class ExactReviewDirectPublicationStore {
            ADD COLUMN lifecycle_json TEXT NOT NULL DEFAULT '{}'`,
       );
     }
-    // Every pre-envelope receipt used its sole item key for both roles. Keep
-    // those completed receipts dedupe-compatible while all new writes preserve
-    // the explicit dual identity below.
-    this.storage.sql.exec(
-      `UPDATE ${EXACT_REVIEW_DIRECT_PUBLICATION_TABLE}
-          SET canonical_target_key = item_key
-        WHERE canonical_target_key = ''`,
-    );
-    this.storage.sql.exec(
-      `UPDATE ${EXACT_REVIEW_DIRECT_PUBLICATION_TABLE}
-          SET fence_key = item_key
-        WHERE fence_key = ''`,
-    );
     this.storage.sql.exec(
       `CREATE INDEX IF NOT EXISTS exact_review_direct_publication_target_revision
          ON ${EXACT_REVIEW_DIRECT_PUBLICATION_TABLE} (canonical_target_key, revision)`,
@@ -392,7 +387,6 @@ export class ExactReviewDirectPublicationStore {
          PRIMARY KEY (repo_slug, section, record_id, chunk_index)
        ) STRICT`,
     );
-    this.seedExportIndexFromCanonicalSync();
   }
 
   accept(plan: CanonicalDirectPublicationPlan, now: number): DirectPublicationAcceptResult {
@@ -425,7 +419,7 @@ export class ExactReviewDirectPublicationStore {
       const newer = Array.from(
         this.storage.sql.exec(
           `SELECT revision FROM ${EXACT_REVIEW_DIRECT_PUBLICATION_TABLE}
-            WHERE fence_key = ? AND revision > ?
+            WHERE item_key = ? AND revision > ?
             ORDER BY revision DESC LIMIT 1`,
           plan.fenceKey,
           plan.revision,
@@ -853,11 +847,24 @@ export class ExactReviewDirectPublicationStore {
     // repository's latest store revision. Tombstoned rows still count: a slug
     // whose records were all deleted still exists in the store and hydration
     // must learn about it to materialize the deletions.
+    // Seek to the next repository and its highest revision instead of grouping
+    // every record. The recursive rows contain only repository names.
     return Array.from(
       this.storage.sql.exec(
-        `SELECT repo_slug, MAX(store_revision) AS revision
-           FROM ${EXACT_REVIEW_RECORD_EXPORT_INDEX_TABLE}
-          GROUP BY repo_slug
+        `WITH RECURSIVE repositories(repo_slug) AS (
+           SELECT MIN(repo_slug) FROM ${EXACT_REVIEW_RECORD_EXPORT_INDEX_TABLE}
+           UNION ALL
+           SELECT (SELECT MIN(repo_slug) FROM ${EXACT_REVIEW_RECORD_EXPORT_INDEX_TABLE}
+                    WHERE repo_slug > repositories.repo_slug)
+             FROM repositories
+            WHERE repo_slug IS NOT NULL
+         )
+         SELECT repo_slug,
+                (SELECT MAX(store_revision)
+                   FROM ${EXACT_REVIEW_RECORD_EXPORT_INDEX_TABLE}
+                  WHERE repo_slug = repositories.repo_slug) AS revision
+           FROM repositories
+          WHERE repo_slug IS NOT NULL
           ORDER BY repo_slug`,
       ),
       (row) => ({ repoSlug: String(row.repo_slug), revision: Number(row.revision) }),
@@ -876,13 +883,27 @@ export class ExactReviewDirectPublicationStore {
   }): { records: RecordExportEntry[]; nextCursor: number | null; watermark: number } {
     // Snapshot builders use the first page's revision as their replay boundary.
     const watermark = this.currentExportRevisionSync();
-    const placeholders = options.sections.map(() => "?").join(", ");
-    // The preflight joins source metadata before reconstruction. It must not
-    // scan more candidates than the reconstruction bound can ever consume.
+    const sections = [...new Set(options.sections)];
+    const placeholders = sections.map(() => "?").join(", ");
     const rowLimit = Math.min(options.limit, options.maxRecords);
+    if (!sections.length) return { records: [], nextCursor: null, watermark };
+    // Read a bounded range from each section, then merge before joining source
+    // metadata. A single IN query otherwise sorts every matching revision.
+    const sectionPages = sections
+      .map(
+        () => `SELECT * FROM (
+          SELECT * FROM ${EXACT_REVIEW_RECORD_EXPORT_INDEX_TABLE}
+            INDEXED BY exact_review_record_export_by_repo_section_revision
+           WHERE repo_slug = ? AND section = ? AND store_revision > ?
+           ORDER BY store_revision LIMIT ?
+        )`,
+      )
+      .join(" UNION ALL ");
     const rows = Array.from(
       this.storage.sql.exec(
-        `SELECT export.repo_slug, export.section, export.record_id, export.digest,
+        `WITH candidates AS (${sectionPages}),
+         page AS (SELECT * FROM candidates ORDER BY store_revision LIMIT ?)
+         SELECT export.repo_slug, export.section, export.record_id, export.digest,
                 export.deleted, export.revision, export.store_revision, export.source,
                 export.updated_at,
                 CASE
@@ -891,7 +912,7 @@ export class ExactReviewDirectPublicationStore {
                     THEN CAST(canonical.byte_length AS TEXT)
                   ELSE CAST(backfill.byte_length AS TEXT)
                 END AS source_byte_length
-           FROM ${EXACT_REVIEW_RECORD_EXPORT_INDEX_TABLE} export
+           FROM page export
            LEFT JOIN ${EXACT_REVIEW_CANONICAL_RECORD_TABLE} canonical
              ON export.deleted = 0
             AND export.source = 'canonical'
@@ -905,16 +926,13 @@ export class ExactReviewDirectPublicationStore {
             AND backfill.repo_slug = export.repo_slug
             AND backfill.section = export.section
             AND backfill.record_id = export.record_id
-          WHERE export.repo_slug = ?
-            AND export.section IN (${placeholders})
-            AND export.store_revision > ?
-            AND export.store_revision > ?
-          ORDER BY export.store_revision
-          LIMIT ?`,
-        options.repoSlug,
-        ...options.sections,
-        options.sinceRevision,
-        options.cursor,
+          ORDER BY export.store_revision`,
+        ...sections.flatMap((section) => [
+          options.repoSlug,
+          section,
+          Math.max(options.sinceRevision, options.cursor),
+          rowLimit,
+        ]),
         rowLimit,
       ),
     );
@@ -950,15 +968,14 @@ export class ExactReviewDirectPublicationStore {
             this.storage.sql.exec(
               `SELECT 1
                  FROM ${EXACT_REVIEW_RECORD_EXPORT_INDEX_TABLE} export
+                   INDEXED BY exact_review_record_export_by_repo_section_revision
                 WHERE export.repo_slug = ?
                   AND export.section IN (${placeholders})
                   AND export.store_revision > ?
-                  AND export.store_revision > ?
                 LIMIT 1`,
               options.repoSlug,
-              ...options.sections,
-              options.sinceRevision,
-              lastRevision,
+              ...sections,
+              Math.max(options.sinceRevision, lastRevision),
             ),
           ).length > 0
         : false;
@@ -1037,10 +1054,13 @@ export class ExactReviewDirectPublicationStore {
     repoSlug: string,
     watermark = Number.MAX_SAFE_INTEGER,
   ): RecordSnapshotIdentity[] {
+    // Bound by revision before sorting; the primary key's natural section/id
+    // order otherwise tempts SQLite to read the whole repository.
     return Array.from(
       this.storage.sql.exec(
         `SELECT section, record_id
            FROM ${EXACT_REVIEW_RECORD_EXPORT_INDEX_TABLE}
+             INDEXED BY exact_review_record_export_by_repo_revision
           WHERE repo_slug = ? AND deleted = 0 AND store_revision <= ?
           ORDER BY section, record_id`,
         repoSlug,
@@ -1252,7 +1272,8 @@ export class ExactReviewDirectPublicationStore {
       this.storage.sql.exec(
         `SELECT COALESCE(MAX(revision), 0) AS revision
            FROM ${EXACT_REVIEW_CANONICAL_RECORD_TABLE}
-          WHERE repo_slug = ? AND item_id = ?`,
+          WHERE repo_slug = ? AND section IN ('items', 'closed', 'plans', 'decision-packets')
+            AND item_id = ?`,
         repoSlug,
         itemId,
       ),
@@ -1262,39 +1283,6 @@ export class ExactReviewDirectPublicationStore {
       throw new Error(`invalid canonical tuple revision for ${repoSlug}/${itemId}`);
     }
     return current + 1;
-  }
-
-  private seedExportIndexFromCanonicalSync() {
-    const rows = Array.from(
-      this.storage.sql.exec(
-        `SELECT repo_slug, section, item_id, digest, deleted, revision, updated_at
-           FROM ${EXACT_REVIEW_CANONICAL_RECORD_TABLE}
-          WHERE NOT EXISTS (
-            SELECT 1 FROM ${EXACT_REVIEW_RECORD_EXPORT_INDEX_TABLE} export
-             WHERE export.repo_slug = ${EXACT_REVIEW_CANONICAL_RECORD_TABLE}.repo_slug
-               AND export.section = ${EXACT_REVIEW_CANONICAL_RECORD_TABLE}.section
-               AND export.record_id = CAST(${EXACT_REVIEW_CANONICAL_RECORD_TABLE}.item_id AS TEXT)
-          )
-          ORDER BY repo_slug, section, item_id`,
-      ),
-    );
-    for (const row of rows) {
-      const storeRevision = this.nextExportRevisionSync();
-      this.storage.sql.exec(
-        `INSERT INTO ${EXACT_REVIEW_RECORD_EXPORT_INDEX_TABLE}
-           (repo_slug, section, record_id, digest, deleted, revision, store_revision,
-            source, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, 'canonical', ?)`,
-        String(row.repo_slug),
-        String(row.section),
-        String(row.item_id),
-        row.digest === null ? null : String(row.digest),
-        Number(row.deleted),
-        Number(row.revision),
-        storeRevision,
-        Number(row.updated_at),
-      );
-    }
   }
 
   private nextExportRevisionSync() {

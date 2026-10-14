@@ -12,7 +12,7 @@ import { join } from "node:path";
 import { isRecord } from "./value-coerce.js";
 import type { ReviewUsageRecord } from "./review-usage-contract.js";
 
-type ReviewTokenUsage = NonNullable<ReviewUsageRecord["usage"]>;
+export type ReviewTokenUsage = NonNullable<ReviewUsageRecord["usage"]>;
 const TOKEN_FIELDS = [
   "input_tokens",
   "cached_input_tokens",
@@ -27,7 +27,7 @@ function tokenCount(value: unknown): value is number {
   return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
 }
 
-function tokenUsage(value: unknown): ReviewTokenUsage | null {
+export function parseReviewTokenUsage(value: unknown): ReviewTokenUsage | null {
   if (!isRecord(value)) return null;
   const {
     input_tokens,
@@ -87,7 +87,9 @@ function lastRolloutUsage(file: number, size: number): ReviewTokenUsage | null {
       event.payload.info == null
     )
       return undefined;
-    return isRecord(event.payload.info) ? tokenUsage(event.payload.info.total_token_usage) : null;
+    return isRecord(event.payload.info)
+      ? parseReviewTokenUsage(event.payload.info.total_token_usage)
+      : null;
   };
   while (position > 0) {
     const length = Math.min(buffer.length, position);
@@ -148,14 +150,25 @@ export function readReviewRolloutUsage(options: {
       } finally {
         closeSync(file);
       }
-      if (!total) total = latest;
-      else for (const field of TOKEN_FIELDS) total[field] += latest[field];
+      total = total ? sumReviewTokenUsage([total, latest]) : latest;
     }
     return total && Object.values(total).every(tokenCount) ? total : null;
   } catch {
     // Missing, unreadable, or incomplete files cannot yield a trustworthy sum.
     return null;
   }
+}
+
+export function sumReviewTokenUsage(usages: readonly ReviewTokenUsage[]): ReviewTokenUsage {
+  const total: ReviewTokenUsage = {
+    input_tokens: 0,
+    cached_input_tokens: 0,
+    cache_write_input_tokens: 0,
+    output_tokens: 0,
+    reasoning_output_tokens: 0,
+  };
+  for (const usage of usages) for (const field of TOKEN_FIELDS) total[field] += usage[field];
+  return total;
 }
 
 /** Complete the local handoff before callers can terminate the review process. */

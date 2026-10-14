@@ -17,15 +17,6 @@ import {
   terminalReviewFailureReason,
   type TerminalReviewFailureReason as ExactReviewFailureReason,
 } from "../src/exact-review-failure-reason.ts";
-import { REVIEW_PROOF_RESULT_MAX_BYTES } from "../src/review-proof-limits.ts";
-import {
-  parseReviewProofLease,
-  parseReviewProofRequest,
-  reviewProofOwnersMatch,
-  reviewProofRequestId,
-  REVIEW_PROOF_LIFETIME_MS,
-  type ReviewProofRecord,
-} from "./review-proof-requests.ts";
 import {
   assertReportPublicationPolicy,
   decisionPublicationPolicy,
@@ -183,7 +174,6 @@ import {
   exactReviewCommandObligationSurvives,
   exactReviewCommandVersionIsOlder,
   exactReviewDecisionFrom,
-  exactReviewProofAllowedScenarios,
   exactReviewDecisionWithoutSourceAuthority,
   exactReviewEditedSemanticInput,
   exactReviewIngressCanPromoteFallback,
@@ -360,8 +350,6 @@ type PublicationSuccessorWitness = {
 );
 export type ExactReviewQueueItem = {
   key: string;
-  /** Bounded evidence for this original review; never a follow-up review admission. */
-  reviewProofRequests?: ReviewProofRecord[];
   decision: ExactReviewDecision;
   admissionDeliveryId?: string;
   ingressFingerprint?: string;
@@ -841,6 +829,7 @@ const EXACT_REVIEW_SOURCE_AUTHORITY_RETRY_BASE_MS = 15_000;
 const EXACT_REVIEW_SOURCE_AUTHORITY_RETRY_MAX_MS = 15 * 60_000;
 const EXACT_REVIEW_QUEUE_META_TABLE = "exact_review_queue_meta";
 const EXACT_REVIEW_QUEUE_ITEM_TABLE = "exact_review_queue_items";
+const DIRECT_LIFECYCLE_REQUEUE_DELIVERY_PREFIX = "direct-lifecycle-requeue:";
 const EXACT_REVIEW_QUEUE_DELIVERY_TABLE = "exact_review_queue_deliveries";
 export const EXACT_REVIEW_AUTHENTICATED_BODY_FINGERPRINT_HEADER =
   "x-clawsweeper-exact-review-body-sha256";
@@ -975,6 +964,8 @@ export class ExactReviewQueue {
     itemKey,
     minimumRevision,
   ) => this.nextExactReviewItemRevisionSync(itemKey, minimumRevision);
+  private deliveryReceiptCount: { count: number; maxRowid: number } | null = null;
+  private reviewRunTelemetryPrunedAt: number | null = null;
   private readonly baselines = new WeakMap<ExactReviewQueueState, ExactReviewQueueBaseline>();
   private statsCache: {
     key: string;
@@ -1093,6 +1084,8 @@ export class ExactReviewQueue {
     try {
       return await this.handleFetch(request, hostedTargetMetadataToken);
     } catch (error) {
+      // A failed transaction may have rolled back the retention pass.
+      this.reviewRunTelemetryPrunedAt = null;
       rethrowQueueFailure(error, "fetch", request);
     } finally {
       // Mutators can yield to a dashboard poll while awaiting external work.
@@ -1122,240 +1115,6 @@ export class ExactReviewQueue {
     this.cleanupLegacyCompatibilitySync();
     if (request.method === "POST" && url.pathname === "/admission-capabilities") {
       return json(this.reviewAdmissionCapabilities());
-    }
-    if (
-      request.method === "POST" &&
-      (url.pathname === "/review-proof/producer-record" || url.pathname === "/review-proof/redeem")
-    ) {
-      // Internal DO operations only. The Worker verifies Actions OIDC before redeem.
-      const body = objectValue(await request.json().catch(() => null));
-      if (!/^[0-9a-f]{64}$/.test(String(body.requestId || "")))
-        return json({ error: "invalid_review_proof_request" }, 400);
-      const now = Date.now();
-      const state = this.readStateSync();
-      const item = Object.values(state.items).find((entry) =>
-        entry.reviewProofRequests?.some((record) => record.requestId === body.requestId),
-      );
-      const record = item?.reviewProofRequests?.find((entry) => entry.requestId === body.requestId);
-      const owner = record?.owner;
-      if (
-        !item ||
-        !record ||
-        !owner ||
-        !record.producer ||
-        record.expiresAt <= now ||
-        record.state === "completed" ||
-        record.state === "inconclusive" ||
-        item.state !== "leased" ||
-        item.leasePhase !== "review" ||
-        item.leaseId !== owner.leaseId ||
-        item.leaseRevision !== owner.leaseRevision ||
-        item.claimGeneration !== owner.claimGeneration ||
-        item.claimedRunId !== owner.runId ||
-        item.claimedRunAttempt !== owner.runAttempt ||
-        item.leaseDecision?.sourceHeadSha !== owner.sourceHeadSha ||
-        !exactReviewProofAllowedScenarios(item.leaseDecision).some(
-          (scenario) => scenario === record.scenario,
-        ) ||
-        !isLiveExactReviewLease(
-          item,
-          now,
-          exactReviewPublicationDispatchLeaseMs(this.env),
-          exactReviewHeartbeatGraceMs(this.env),
-        ) ||
-        (item.revision > owner.leaseRevision &&
-          exactReviewInputIdentityChanged(item.leaseDecision, item.decision))
-      )
-        return json({ error: "review_proof_not_active" }, 409);
-      if (url.pathname === "/review-proof/redeem") {
-        if (
-          !/^[1-9][0-9]{0,19}$/.test(String(body.runId || "")) ||
-          !Number.isSafeInteger(body.runAttempt) ||
-          body.runAttempt !== 1 ||
-          body.planSha256 !== record.planSha256 ||
-          (record.runId && record.runId !== body.runId) ||
-          (record.producerRedemption &&
-            (record.producerRedemption.runId !== body.runId ||
-              record.producerRedemption.runAttempt !== body.runAttempt))
-        )
-          return json({ error: "review_proof_redemption_conflict" }, 409);
-        record.runId = String(body.runId);
-        record.producerRedemption = {
-          runId: String(body.runId),
-          runAttempt: Number(body.runAttempt),
-        };
-        await this.writeState(state);
-      }
-      return json({ ok: true, record });
-    }
-    if (
-      request.method === "POST" &&
-      (url.pathname === "/review-proof" || url.pathname === "/review-proof/update")
-    ) {
-      const body = objectValue(await request.json().catch(() => null));
-      const capabilities = url.pathname === "/review-proof" && body.operation === "capabilities";
-      if (capabilities && Object.keys(body).some((key) => key !== "lease" && key !== "operation"))
-        return json({ error: "invalid_review_proof_request" }, 400);
-      const proof =
-        url.pathname === "/review-proof" && !capabilities
-          ? await parseReviewProofRequest(body)
-          : null;
-      const owner = proof?.lease ?? parseReviewProofLease(body.lease);
-      if (!owner || (url.pathname === "/review-proof" && !capabilities && !proof))
-        return json({ error: "invalid_review_proof_request" }, 400);
-      // All asynchronous normalization precedes the state read and durable write.
-      const requestId = proof ? await reviewProofRequestId(proof) : String(body.requestId || "");
-      const now = Date.now();
-      const state = this.readStateSync();
-      const item = state.items[owner.itemKey];
-      const decision = item?.leaseDecision;
-      if (
-        !item ||
-        item.state !== "leased" ||
-        item.leasePhase !== "review" ||
-        item.leaseId !== owner.leaseId ||
-        item.leaseRevision !== owner.leaseRevision ||
-        item.claimedRunId !== owner.runId ||
-        item.claimedRunAttempt !== owner.runAttempt ||
-        item.claimGeneration !== owner.claimGeneration ||
-        decision?.sourceHeadSha !== owner.sourceHeadSha ||
-        decision.itemKind !== "pull_request" ||
-        decision.targetRepo !== "openclaw/openclaw" ||
-        !isLiveExactReviewLease(
-          item,
-          now,
-          exactReviewPublicationDispatchLeaseMs(this.env),
-          exactReviewHeartbeatGraceMs(this.env),
-        ) ||
-        (item.revision > owner.leaseRevision &&
-          exactReviewInputIdentityChanged(decision, item.decision))
-      )
-        return json({ error: "lease_not_active" }, 409);
-      const allowedScenarios = exactReviewProofAllowedScenarios(decision);
-      if (capabilities) return json({ ok: true, allowedScenarios });
-      if (proof && !allowedScenarios.some((scenario) => scenario === proof.scenario))
-        return json({ error: "review_proof_scenario_not_allowed" }, 403);
-      const records = item.reviewProofRequests ?? [];
-      // A new owner never inherits evidence or an execution budget from a stale owner.
-      if (records.some((record) => !reviewProofOwnersMatch(record.owner, owner)))
-        return json({ error: "review_proof_owner_changed" }, 409);
-      let record = records.find((entry) => entry.requestId === requestId);
-      if (record && !allowedScenarios.some((scenario) => scenario === record.scenario))
-        return json({ error: "review_proof_scenario_not_allowed" }, 403);
-      for (const entry of records) {
-        if (
-          entry.expiresAt <= now &&
-          entry.state !== "completed" &&
-          entry.state !== "inconclusive"
-        ) {
-          entry.state = "inconclusive";
-          entry.reason = "proof_deadline_expired";
-        }
-      }
-      if (url.pathname === "/review-proof/update") {
-        if (!record) return json({ error: "review_proof_not_found" }, 404);
-        if (body.operation === "confirm_completed") {
-          if (record.state !== "completed" || record.expiresAt <= now)
-            return json({ error: "review_proof_not_deliverable" }, 409);
-          return json({ ok: true, record });
-        }
-        if (record.state === "completed" || record.state === "inconclusive") {
-          await this.writeState(state);
-          return json({ error: "review_proof_already_terminal", record }, 409);
-        }
-        if (body.operation === "prepared") {
-          const producer = objectValue(body.producer);
-          if (
-            !producer ||
-            producer.workflowRef !== "main" ||
-            !/^[0-9a-f]{40}$/.test(String(producer.workflowSha || "")) ||
-            producer.workflowSha !== producer.harnessSha ||
-            typeof producer.repositoryId !== "string" ||
-            !/^[1-9][0-9]{0,19}$/.test(String(producer.repositoryId || "")) ||
-            !/^[0-9a-f]{64}$/.test(String(producer.bodySha256 || "")) ||
-            !/^[0-9a-f]{40}$/.test(String(producer.baseSha || "")) ||
-            typeof producer.targetBranch !== "string" ||
-            producer.targetBranch.length > 200 ||
-            ![
-              ".github/workflows/mantis-web-ui-chat-proof.yml",
-              ".github/workflows/mantis-telegram-bot-e2e-proof.yml",
-            ].includes(String(producer.workflowPath))
-          )
-            return json({ error: "invalid_review_proof_producer" }, 400);
-          if (record.producer && stableJson(record.producer) !== stableJson(producer))
-            return json({ error: "review_proof_producer_changed" }, 409);
-          record.producer = producer as ReviewProofRecord["producer"];
-        } else if (
-          body.state === "pending" &&
-          /^[1-9][0-9]{0,19}$/.test(String(body.runId || ""))
-        ) {
-          if (record.runId && record.runId !== body.runId)
-            return json({ error: "review_proof_run_changed" }, 409);
-          record.runId = String(body.runId);
-          record.state = "pending";
-        } else if (
-          body.state === "completed" &&
-          body.result &&
-          typeof body.result === "object" &&
-          !Array.isArray(body.result) &&
-          new TextEncoder().encode(JSON.stringify(body.result)).length <=
-            REVIEW_PROOF_RESULT_MAX_BYTES
-        ) {
-          record.state = "completed";
-          record.result = body.result as Record<string, unknown>;
-        } else if (
-          body.state === "inconclusive" &&
-          typeof body.reason === "string" &&
-          /^[a-z0-9_]{1,120}$/.test(body.reason)
-        ) {
-          record.state = "inconclusive";
-          record.reason = body.reason;
-        } else return json({ error: "invalid_review_proof_update" }, 400);
-        await this.writeState(state);
-        return json({ ok: true, record });
-      }
-      let dispatch = false;
-      if (!record) {
-        if (proof!.operation === "poll") return json({ error: "review_proof_not_found" }, 404);
-        if (records.length >= 3) return json({ error: "review_proof_budget_exhausted" }, 409);
-        const expiresAt = records[0]?.expiresAt ?? now + REVIEW_PROOF_LIFETIME_MS;
-        if (expiresAt <= now) return json({ error: "review_proof_budget_expired" }, 409);
-        record = {
-          requestId,
-          owner,
-          scenario: proof!.scenario,
-          proofPlan: proof!.proofPlan,
-          planSha256: proof!.planSha256,
-          createdAt: now,
-          expiresAt,
-          state: "dispatch_claimed",
-        };
-        records.push(record);
-        item.reviewProofRequests = records;
-        dispatch = true;
-      }
-      this.storage.transactionSync(() => {
-        // Persist only participation, atomically with the accepted request. The
-        // immutable lease revision, not a newer pending head, owns this fact.
-        this.lifecycleProjectionStore.recordInlineProofRequestSync({
-          canonicalTargetKey: `${decision.targetRepo}#${decision.itemNumber}`,
-          fenceKey: owner.itemKey,
-          revision: owner.leaseRevision,
-          observedAt: now,
-        });
-        this.writeStateSync(state);
-      });
-      return json({
-        ok: true,
-        dispatch,
-        record,
-        target: {
-          repository: decision.targetRepo,
-          pullRequest: decision.itemNumber,
-          headSha: decision.sourceHeadSha,
-          targetBranch: decision.targetBranch,
-        },
-      });
     }
     if (request.method === "POST" && url.pathname === "/github-egress-telemetry") {
       const now = Date.now();
@@ -1742,7 +1501,12 @@ export class ExactReviewQueue {
       const decision = exactReviewDecisionFrom(body.decision);
       const ingress = body.ingress === undefined ? undefined : exactReviewIngressFrom(body.ingress);
       if (!deliveryId) return json({ error: "missing_delivery_id" }, 400);
-      if (deliveryId.startsWith(EXACT_REVIEW_QUEUE_LEGACY_GENERATION_PREFIX)) {
+      // The in-place requeue prefix is queue-owned provenance for continuing an
+      // explicit request; a caller's delivery id can never carry it.
+      if (
+        deliveryId.startsWith(EXACT_REVIEW_QUEUE_LEGACY_GENERATION_PREFIX) ||
+        deliveryId.startsWith(DIRECT_LIFECYCLE_REQUEUE_DELIVERY_PREFIX)
+      ) {
         return json({ error: "reserved_delivery_id" }, 400);
       }
       if (!decision) return json({ error: "invalid_exact_review_item" }, 400);
@@ -1798,12 +1562,16 @@ export class ExactReviewQueue {
         this.pruneDeliveryReceiptsSync(now);
         this.pruneIngressReceiptsSync(now);
         this.pruneEditedSemanticInputsSync(now);
-        this.storage.sql.exec(
-          `DELETE FROM ${EXACT_REVIEW_QUEUE_DELIVERY_TABLE}
-            WHERE delivery_id = ? AND received_at <= ?`,
-          deliveryId,
-          now - EXACT_REVIEW_QUEUE_DELIVERY_TTL_MS,
+        const expiredReceipt = Array.from(
+          this.storage.sql.exec(
+            `DELETE FROM ${EXACT_REVIEW_QUEUE_DELIVERY_TABLE}
+              WHERE delivery_id = ? AND received_at <= ?
+              RETURNING delivery_id`,
+            deliveryId,
+            now - EXACT_REVIEW_QUEUE_DELIVERY_TTL_MS,
+          ),
         );
+        if (expiredReceipt.length) this.deliveryReceiptCount = null;
         const existingReceipt = Array.from(
           this.storage.sql.exec(
             `SELECT authenticated_body_fingerprint, scheduled_disposition_json
@@ -1834,9 +1602,10 @@ export class ExactReviewQueue {
             dispositionJson: storedDispositionJson,
           };
         }
+        let intakeState: ExactReviewQueueState | undefined;
         if (decision.publication) {
           const publication = decision.publication;
-          const state = this.readStateSync();
+          const state = (intakeState ??= this.readStateSync());
           const producer = state.items[publication.itemKey];
           const retained = Object.values(state.items).find((item) => {
             const other = item.decision.publication;
@@ -1889,7 +1658,7 @@ export class ExactReviewQueue {
           : null;
 
         if (semanticEdited && this.isDuplicateEditedSemanticInputSync(semanticEdited, now)) {
-          const state = this.readStateSync();
+          const state = (intakeState ??= this.readStateSync());
           const current =
             state.items[semanticEdited.queueKey] ??
             Object.values(state.items).find(
@@ -1916,7 +1685,7 @@ export class ExactReviewQueue {
           };
         }
 
-        const state = this.readStateSync();
+        const state = intakeState ?? this.readStateSync();
         // A delayed or lost alarm must not let an expired one-shot recovery
         // suppress the next failed shard's recovery delivery.
         reclaimExpiredExactReviewLeases(
@@ -2246,6 +2015,7 @@ export class ExactReviewQueue {
             if (
               exactReviewCommandVersionIsOlder(current.leaseDecision || current.decision, decision)
             ) {
+              this.deliveryReceiptCount = null;
               this.storage.sql.exec(
                 `DELETE FROM ${EXACT_REVIEW_QUEUE_DELIVERY_TABLE} WHERE delivery_id = ?`,
                 deliveryId,
@@ -2311,6 +2081,7 @@ export class ExactReviewQueue {
               exactReviewDecisionCanSupersedeReview(current, decision);
             if (attemptsReviewSupersession && !sourceAuthorityIsNewer) {
               if (decision.sourceCommentId) {
+                this.deliveryReceiptCount = null;
                 this.storage.sql.exec(
                   `DELETE FROM ${EXACT_REVIEW_QUEUE_DELIVERY_TABLE} WHERE delivery_id = ?`,
                   deliveryId,
@@ -2605,7 +2376,8 @@ export class ExactReviewQueue {
               ? { sourceAuthorityWatermark: exactReviewSourceAuthorityWatermark(decision)! }
               : {}),
           };
-          this.recordLifecycleAdmission(state.items[key], decision, now, undefined, true);
+          removeOrphanedRequestVerification(state.items[key]);
+          this.recordLifecycleAdmission(state.items[key], decision, now);
           ingressAdmitted = true;
         }
         if (
@@ -2624,13 +2396,7 @@ export class ExactReviewQueue {
           }
         }
         if (ingressAdmitted && state.items[key]) {
-          this.recordLifecycleAdmission(
-            state.items[key],
-            state.items[key].decision,
-            now,
-            undefined,
-            true,
-          );
+          this.recordLifecycleAdmission(state.items[key], state.items[key].decision, now);
         }
         if (incomingPublicationRevision && state.items[key]) {
           this.updatePublicationSuccessorWitnesses(
@@ -3673,7 +3439,7 @@ export class ExactReviewQueue {
       const runId = String(body.run_id || "").trim();
       const runAttempt = exactReviewRunAttempt(body.run_attempt);
       const now = Date.now();
-      const item = this.readStateSync().items[itemKey];
+      const item = this.readItemSync(itemKey);
       const valid =
         progress &&
         item &&
@@ -4570,7 +4336,7 @@ export class ExactReviewQueue {
       ) {
         return json({ error: "invalid_lease_read_tuple" }, 400);
       }
-      const item = this.readStateSync().items[itemKey];
+      const item = this.readItemSync(itemKey);
       const now = Date.now();
       if (
         !item ||
@@ -5196,6 +4962,7 @@ export class ExactReviewQueue {
       manual_publication: this.reviewAdmissionCapabilities().manual_publication,
       scheduled_feed: { ...stats.scheduled_feed, ...this.scheduledReviewFeedStatusSync(now) },
       reservation_claim_observability: reservationClaimObservability,
+      publication_handoff: reservationClaimObservability.summary,
       state_writer: { ...stateWriter, coordinator: stateWriterCoordinator },
       storage_schema_version: EXACT_REVIEW_QUEUE_STORAGE_SCHEMA_VERSION,
       legacy_rollback_available:
@@ -5359,6 +5126,7 @@ export class ExactReviewQueue {
       this.pruneDeliveryReceiptsSync(startedAt);
       this.commandIntakeStore.pruneTerminalReceipts(startedAt);
       this.directPublicationStore.pruneTerminalSync(startedAt);
+      this.githubWebhookReadModelStore.prunePayloadsSync(startedAt);
       const current = this.readStateSync();
       this.syncLegacyCompatibilitySync(current);
       this.pruneStalePublicationsSync(current, batchItemKeys, startedAt);
@@ -6652,6 +6420,7 @@ export class ExactReviewQueue {
           skipped += 1;
           continue;
         }
+        normalizeExactReviewQueueItem(item);
         clearExactReviewLease(item);
         item.state = "pending";
         item.parkedReason = undefined;
@@ -7511,10 +7280,19 @@ export class ExactReviewQueue {
   }
 
   private pruneReviewRunTelemetrySync(now: number) {
+    // Retention is housekeeping, not an admission or idempotency check.
+    if (
+      this.reviewRunTelemetryPrunedAt !== null &&
+      now >= this.reviewRunTelemetryPrunedAt &&
+      now - this.reviewRunTelemetryPrunedAt < 5 * 60 * 1000
+    ) {
+      return;
+    }
     this.storage.sql.exec(
       `DELETE FROM ${EXACT_REVIEW_RUN_TELEMETRY_TABLE} WHERE completed_at <= ?`,
       now - REVIEW_RUN_TELEMETRY_RETENTION_MS,
     );
+    this.reviewRunTelemetryPrunedAt = now;
   }
 
   private async supersedePublicationCandidates(value: unknown) {
@@ -9354,7 +9132,6 @@ export class ExactReviewQueue {
     decision: ExactReviewDecision,
     now: number,
     revision = item.revision,
-    trackInlineProof = false,
   ) {
     const sourceDecision = decision.publication?.producerDecision ?? decision;
     const canonicalTargetKey = `${sourceDecision.targetRepo}#${sourceDecision.itemNumber}`;
@@ -9392,7 +9169,6 @@ export class ExactReviewQueue {
       return existing;
     }
     return this.lifecycleProjectionStore.recordAdmissionSync({
-      ...(trackInlineProof && !decision.publication ? { inlineProofTracked: true as const } : {}),
       canonicalTargetKey,
       fenceKey: item.key,
       revision,
@@ -9466,7 +9242,7 @@ export class ExactReviewQueue {
     item.decision = decision;
     item.updatedAt = now;
     state.items[item.key] = item;
-    this.recordLifecycleAdmission(item, decision, now, undefined, true);
+    this.recordLifecycleAdmission(item, decision, now);
   }
 
   private recordLifecycleClaim(item: ExactReviewQueueItem, now: number) {
@@ -11015,7 +10791,7 @@ export class ExactReviewQueue {
     // item receives fresh admission and claim facts when it is dispatched.
     clearExactReviewLease(item);
     item.decision = decision;
-    item.admissionDeliveryId = `direct-lifecycle-requeue:${item.key}:${completedRevision}`;
+    item.admissionDeliveryId = `${DIRECT_LIFECYCLE_REQUEUE_DELIVERY_PREFIX}${item.key}:${completedRevision}`;
     item.ingressFingerprint = undefined;
     item.state = "pending";
     item.revision = exactReviewDecisionHasCommandContext(decision)
@@ -11984,7 +11760,7 @@ export class ExactReviewQueue {
   private normalizeLegacyState(legacy: LegacyExactReviewQueueState): ExactReviewQueueState {
     const items = Object.fromEntries(
       Object.entries(legacy.items && typeof legacy.items === "object" ? legacy.items : {}).map(
-        ([itemKey, item]) => [itemKey, { ...item, key: itemKey }],
+        ([itemKey, item]) => [itemKey, normalizeExactReviewQueueItem({ ...item, key: itemKey })],
       ),
     ) as Record<string, ExactReviewQueueItem>;
     return {
@@ -12051,6 +11827,7 @@ export class ExactReviewQueue {
       if (!item || typeof item !== "object" || item.key !== row.item_key) {
         throw new Error(`invalid exact-review queue item for ${row.item_key}`);
       }
+      normalizeExactReviewQueueItem(item);
       items[row.item_key] = item;
     }
     const state: ExactReviewQueueState = {
@@ -12060,6 +11837,38 @@ export class ExactReviewQueue {
     };
     this.schedulingStates.add(state);
     return state;
+  }
+
+  private targetAppCircuitRetryAtSync(targetRepo: string, now: number): number {
+    const meta = this.readStorageMetaSync();
+    if (!meta || Number(meta.schema_version) !== EXACT_REVIEW_QUEUE_STORAGE_SCHEMA_VERSION) {
+      throw new Error("exact-review queue storage is not initialized");
+    }
+    const dispatcher = meta.dispatcher_json
+      ? (JSON.parse(meta.dispatcher_json) as ExactReviewQueueState["dispatcher"])
+      : undefined;
+    return exactReviewGithubTargetAppCircuitRetryAt({ items: {}, dispatcher }, targetRepo, now);
+  }
+
+  private readItemSync(itemKey: string): ExactReviewQueueItem | undefined {
+    const row = Array.from(
+      this.storage.sql.exec(
+        `SELECT item_json FROM ${EXACT_REVIEW_QUEUE_ITEM_TABLE} WHERE item_key = ?`,
+        itemKey,
+      ) as Iterable<{ item_json: string }>,
+    )[0];
+    if (!row) return undefined;
+    let item: ExactReviewQueueItem;
+    try {
+      item = JSON.parse(row.item_json) as ExactReviewQueueItem;
+    } catch {
+      throw new Error(`invalid exact-review queue item JSON for ${itemKey}`);
+    }
+    if (!item || typeof item !== "object" || item.key !== itemKey) {
+      throw new Error(`invalid exact-review queue item for ${itemKey}`);
+    }
+    normalizeExactReviewQueueItem(item);
+    return item;
   }
 
   private readStateSync(): ExactReviewQueueState {
@@ -12086,6 +11895,7 @@ export class ExactReviewQueue {
         if (!item || typeof item !== "object" || item.key !== row.item_key) {
           throw new Error(`invalid exact-review queue item for ${row.item_key}`);
         }
+        normalizeExactReviewQueueItem(item);
         loaded = true;
         unreadItems.delete(row.item_key);
         return item;
@@ -13444,6 +13254,7 @@ export class ExactReviewQueue {
           cutoff,
         ),
       );
+      if (deleted.length) this.deliveryReceiptCount = null;
       if (deleted.length < EXACT_REVIEW_QUEUE_DELIVERY_PRUNE_BATCH) break;
     }
   }
@@ -13637,12 +13448,21 @@ export class ExactReviewQueue {
   }
 
   private deliveryReceiptCountSync() {
+    // Rowids advance for inserts while existing receipts remain. After any
+    // deletion the cache is discarded, so rowid reuse cannot hide a receipt.
+    const previous = this.deliveryReceiptCount;
     const row = Array.from(
       this.storage.sql.exec(
-        `SELECT COUNT(*) AS receipt_count FROM ${EXACT_REVIEW_QUEUE_DELIVERY_TABLE}`,
+        `SELECT COUNT(*) AS receipt_count, COALESCE(MAX(rowid), 0) AS max_rowid
+           FROM ${EXACT_REVIEW_QUEUE_DELIVERY_TABLE} WHERE rowid > ?`,
+        previous?.maxRowid ?? 0,
       ),
-    )[0] as { receipt_count?: number } | undefined;
-    return Number(row?.receipt_count || 0);
+    )[0] as { receipt_count: number; max_rowid: number };
+    this.deliveryReceiptCount = {
+      count: (previous?.count ?? 0) + Number(row.receipt_count),
+      maxRowid: Math.max(previous?.maxRowid ?? 0, Number(row.max_rowid)),
+    };
+    return this.deliveryReceiptCount.count;
   }
 
   private recordScheduledDispositionSync(
@@ -13818,8 +13638,7 @@ export class ExactReviewQueue {
         }
         continue;
       }
-      const circuitRetryAt = exactReviewGithubTargetAppCircuitRetryAt(
-        this.readStateSync(),
+      const circuitRetryAt = this.targetAppCircuitRetryAtSync(
         record.intake.decision.targetRepo,
         observedAt,
       );
@@ -14139,8 +13958,7 @@ export class ExactReviewQueue {
         this.deferSourceAuthorityReservationSync(current, observedAt, admission.retryAt, false);
         continue;
       }
-      const circuitRetryAt = exactReviewGithubTargetAppCircuitRetryAt(
-        this.readStateSync(),
+      const circuitRetryAt = this.targetAppCircuitRetryAtSync(
         current.decision.targetRepo,
         observedAt,
       );
@@ -14260,8 +14078,7 @@ export class ExactReviewQueue {
         this.deferBranchAuthorityReservationSync(current, observedAt, admission.retryAt, false);
         continue;
       }
-      const circuitRetryAt = exactReviewGithubTargetAppCircuitRetryAt(
-        this.readStateSync(),
+      const circuitRetryAt = this.targetAppCircuitRetryAtSync(
         current.decision.targetRepo,
         observedAt,
       );
@@ -15875,8 +15692,6 @@ function exactReviewInputIdentityChanged(
     exactReviewFailureSourceFingerprint(priorDecision) !==
       exactReviewFailureSourceFingerprint(nextDecision) ||
     (priorDecision.additionalPrompt ?? null) !== (nextDecision.additionalPrompt ?? null) ||
-    stableJson(exactReviewProofAllowedScenarios(priorDecision)) !==
-      stableJson(exactReviewProofAllowedScenarios(nextDecision)) ||
     commandIdentity(priorDecision) !== commandIdentity(nextDecision)
   );
 }
@@ -16120,8 +15935,38 @@ function exactReviewRetryKind(value): ExactReviewRetryKind | null {
   return normalized === "coordination" || normalized === "throttle" ? normalized : null;
 }
 
+function normalizeExactReviewQueueItem(item: ExactReviewQueueItem): ExactReviewQueueItem {
+  Reflect.deleteProperty(item, "reviewProofRequests");
+  removeRetiredDecisionFields(item.decision);
+  removeRetiredDecisionFields(item.leaseDecision);
+  removeOrphanedRequestVerification(item);
+  return item;
+}
+
+/**
+ * Only the in-place lifecycle requeue continues an explicit request. Any other
+ * source-drift requeue, including a row persisted before this rule, may copy a
+ * finished or replaced request, so it keeps the command status but not the
+ * request's verification.
+ */
+function removeOrphanedRequestVerification(item: ExactReviewQueueItem): void {
+  if (item.admissionDeliveryId?.startsWith(DIRECT_LIFECYCLE_REQUEUE_DELIVERY_PREFIX)) return;
+  for (const decision of [item.decision, item.leaseDecision]) {
+    if (decision?.sourceAction === EXACT_REVIEW_SOURCE_DRIFT_REQUEUE_SOURCE_ACTION) {
+      Reflect.deleteProperty(decision, "sourceCommentVerified");
+    }
+  }
+}
+
+function removeRetiredDecisionFields(decision: ExactReviewDecision | undefined): void {
+  if (!decision) return;
+  Reflect.deleteProperty(decision, "proofAllowedScenarios");
+  if (decision.publication) {
+    Reflect.deleteProperty(decision.publication.producerDecision, "proofAllowedScenarios");
+  }
+}
+
 function clearExactReviewLease(item: ExactReviewQueueItem) {
-  item.reviewProofRequests = undefined;
   item.leaseId = undefined;
   item.leaseRevision = undefined;
   item.leaseDecision = undefined;
@@ -18901,8 +18746,11 @@ function exactReviewReservationClaimObservability({
   legacyStateRepoBatchEnabled,
   maxConcurrentBatches,
 }) {
-  const reservationToClaimDelays = batches.flatMap((batch) =>
-    batch.dispatchedAt === null ? [] : [Math.max(0, batch.createdAt - batch.dispatchedAt)],
+  const timedBatches = batches.filter(
+    (batch) => batch.dispatchedAt !== null && batch.dispatchedAt <= batch.createdAt,
+  );
+  const reservationToClaimDelays = timedBatches.map(
+    (batch) => batch.createdAt - batch.dispatchedAt,
   );
   const alerts = [];
   const activeBatches = batches.filter((batch) => batch.state === "leased");
@@ -18932,6 +18780,23 @@ function exactReviewReservationClaimObservability({
   const dispatchedBatch = dispatchId
     ? batches.find((batch) => batch.dispatchId === dispatchId)
     : undefined;
+  // Failed dispatches release the reservation. Keep their recorded failure
+  // visible even after the pending deadline has been cleared.
+  const dispatchState = dispatchedBatch
+    ? "claimed"
+    : !dispatchAt
+      ? "idle"
+      : dispatcher?.publicationBatchDispatchSucceeded === false
+        ? "dispatch_failed"
+        : !dispatchPendingUntil
+          ? "idle"
+          : dispatchPendingUntil <= now
+            ? "reservation_expired"
+            : dispatcher?.publicationBatchDispatchSucceeded === true
+              ? "awaiting_claim"
+              : "dispatching";
+  const claimTimes = timedBatches.map((batch) => batch.createdAt);
+  const delayBuckets = exactReviewReservationClaimDelayBuckets(reservationToClaimDelays);
   if (
     dispatchAt &&
     dispatchPendingUntil > now &&
@@ -18997,6 +18862,22 @@ function exactReviewReservationClaimObservability({
   return {
     schema_version: 1,
     generated_at: new Date(now).toISOString(),
+    // Only observed dispatch→claim spans belong in the aggregate. A missing
+    // dispatch timestamp is not zero delay, and this bounded sample is not a
+    // time-window percentile or eligibility-to-claim measurement.
+    summary: {
+      observed_at: new Date(now).toISOString(),
+      sample_count: reservationToClaimDelays.length,
+      retained_batches: batches.length,
+      first_claim_at: claimTimes.length ? new Date(Math.min(...claimTimes)).toISOString() : null,
+      last_claim_at: claimTimes.length ? new Date(Math.max(...claimTimes)).toISOString() : null,
+      dispatch_state: dispatchState,
+      dispatch_wait_seconds:
+        dispatchState === "awaiting_claim"
+          ? Math.max(0, Math.floor((now - dispatchAt) / 1000))
+          : null,
+      delay_buckets: delayBuckets.buckets,
+    },
     // Direct publication never enters a publication batch unless it falls back.
     // Keep its canonical Durable Object path distinct from the batch-only
     // timestamps below so dashboards do not infer state-writer latency for a
@@ -19021,7 +18902,7 @@ function exactReviewReservationClaimObservability({
       max_concurrent_batches: maxConcurrentBatches,
       available_batches: Math.max(0, maxConcurrentBatches - activeBatches.length),
     },
-    delay_buckets: exactReviewReservationClaimDelayBuckets(reservationToClaimDelays),
+    delay_buckets: delayBuckets,
     alerts,
     batches: batches.map((batch) => ({
       batch_id: batch.batchId,

@@ -68,12 +68,27 @@ jobs:
             -H "x-clawsweeper-exact-review-signature: $signature" \
             --data "$body" "$EXACT_REVIEW_QUEUE_URL/internal/exact-review/storage-stats" > stats.json
           jq . stats.json
+          jq -e '
+            .ok == true and
+            (.generated_at | type == "string" and length > 0) and
+            (.storage | type == "object" and has("databaseBytes")) and
+            (.storage.databaseBytes | . == null or (type == "number" and . >= 0)) and
+            (.storage.estimatedTableBytes | type == "number" and . >= 0) and
+            (.storage.tables | type == "array" and all(.[];
+              (.table | type == "string" and length > 0) and
+              (.rows | type == "number" and . >= 0) and
+              (.averageRowBytes | type == "number" and . >= 0) and
+              (.estimatedBytes | type == "number" and . >= 0)
+            ))
+          ' stats.json >/dev/null
           {
             echo "### Queue storage by table"
             echo
-            jq -r '"Database: \(.storage.databaseBytes // "unknown") bytes · estimated table content: \(.storage.estimatedTableBytes) bytes · tide source scans since \(.tide_source_scans.since / 1000 | floor | todate): \(.tide_source_scans.count)"' stats.json
+            jq -r '"Generated: \(.generated_at) · database: \(.storage.databaseBytes // "unknown") bytes · estimated table content: \(.storage.estimatedTableBytes) bytes"' stats.json
             echo
-            echo "| Table | Rows | Avg row bytes | Estimated bytes |"
+            echo "Content estimates use sampled column lengths; indexes and SQLite overhead are excluded."
+            echo
+            echo "| Table | Rows | Estimated avg row bytes | Estimated content bytes |"
             echo "|---|---:|---:|---:|"
             jq -r '.storage.tables[] | "| \(.table) | \(.rows) | \(.averageRowBytes) | \(.estimatedBytes) |"' stats.json
           } >> "$GITHUB_STEP_SUMMARY"

@@ -291,6 +291,8 @@ test("review observer write is signed while aggregate telemetry remains read-onl
 
 for (const hasAlarm of [false, true]) {
   test(`passive run telemetry avoids queue reads and preserves alarm=${hasAlarm}`, async (t) => {
+    let now = Date.now();
+    t.mock.method(Date, "now", () => now);
     const storage = new MemoryDurableStorage();
     t.after(() => storage.sql.close());
     const queue = new ExactReviewQueue({ storage }, {});
@@ -346,6 +348,13 @@ for (const hasAlarm of [false, true]) {
       completed_at: new Date(Date.now() - 31 * 86_400_000).toISOString(),
     };
     assert.equal((await post(expired)).status, 200);
+    assert.equal((await post(record)).status, 200);
+    assert.equal(
+      Array.from(storage.sql.exec("SELECT run_id FROM exact_review_run_telemetry")).length,
+      2,
+      "retention is deferred until the five-minute maintenance cadence",
+    );
+    now += 5 * 60_000;
     storage.sql.failNext(
       /INSERT OR IGNORE INTO exact_review_run_telemetry/,
       new Error("synthetic telemetry store failure"),

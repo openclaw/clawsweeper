@@ -5,7 +5,7 @@ publication, or apply state.
 
 1. Intake normalizes events and review commands into exact review requests.
 2. The durable queue chooses priority and worker capacity.
-3. Codex owns read-only review and in-turn proof assessment.
+3. Codex owns read-only review.
 4. Deterministic code owns authorization, repository boundaries, capacity,
    source-freshness checks, and apply mutations.
 5. Comments, records, ledgers, and dashboards are projections, not independent
@@ -15,19 +15,15 @@ publication, or apply state.
 
 Each review starts one Codex process. Codex owns request and stream recovery;
 ClawSweeper preserves the final error classification and lets the durable queue
-own any fresh review attempt. The app-server worker reports a failed turn with
-the turn's own error (`Codex turn failed: <message>`) and an interrupted turn as
-`Codex turn interrupted.`; failure diagnostics read an app-server turn error from
-its `turn/completed` notification ahead of captured stderr, as they read native
-`turn.failed` events.
+own any fresh review attempt. Failure diagnostics read native `turn.failed`
+events ahead of captured stderr.
 
 On POSIX, the shared Codex spawn helper kills remaining group members when the
 direct child exits naturally, including descendants holding output pipes open.
 Requested termination retains the existing graceful interval and worker-owned
 final cleanup, including asynchronous errors after the leader exits. Result
 capture still waits for stdio to close. Repeated signals do not interrupt
-escalation, and the app-server worker also finishes group cleanup after
-completed or failed turns before it exits.
+escalation.
 
 The shared OpenClaw source setup script bounds only its network Codex tag fetch.
 Its default deadline is two minutes; the first present setting among

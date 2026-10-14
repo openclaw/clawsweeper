@@ -433,6 +433,63 @@ test("expired active and abandoned queue-head writers recover without accepting 
   assert.equal(coordinator.stats(2_102, QUEUED_STALE_MS).recovered, 2);
 });
 
+test("queued polling and admission refresh timestamps without extending an acquired lease", () => {
+  const { coordinator, storage } = fixture();
+  const active = writer("active", "Sweep", "status");
+  const queued = writer("queued", "Repair result", "publish");
+  const activeLease = acquire(coordinator, active, 1_000);
+  assert.equal(acquire(coordinator, queued, 1_100).state, "queued");
+  assert.equal(acquire(coordinator, queued, 1_600).state, "queued");
+  assert.equal(acquire(coordinator, queued, 1_600).state, "queued");
+  const lastSeen = () =>
+    storage.scalar(
+      `SELECT last_seen_at AS value FROM state_writer_tickets WHERE ticket_id = '${queued.ticketId}'`,
+    );
+  assert.equal(lastSeen(), 1_600);
+  assert.equal(
+    coordinator.release(
+      active.ticketId,
+      active.owner,
+      required(activeLease.leaseToken),
+      1_700,
+      QUEUED_STALE_MS,
+    ),
+    true,
+  );
+  const lease = acquire(coordinator, queued, 1_750);
+  assert.equal(lease.state, "leased");
+  assert.equal(lastSeen(), 1_750);
+  assert.deepEqual(acquire(coordinator, queued, 1_800), lease);
+  assert.equal(lastSeen(), 1_750);
+  const renewed = coordinator.heartbeat(
+    queued.ticketId,
+    queued.owner,
+    required(lease.leaseToken),
+    1_900,
+    LEASE_MS,
+    QUEUED_STALE_MS,
+  );
+  assert.equal(renewed?.leaseExpiresAt, 2_900);
+  assert.equal(lastSeen(), 1_900);
+});
+
+test("queued polls preserve the inclusive stale expiration boundary", () => {
+  const { coordinator } = fixture();
+  coordinator.acquire(
+    writer("active", "Sweep", "status"),
+    1_000,
+    10_000,
+    QUEUED_STALE_MS,
+    MAXIMUM_LEASE_AGE_MS,
+  );
+  const queued = writer("queued", "Repair result", "publish");
+  assert.equal(acquire(coordinator, queued, 1_100).state, "queued");
+  assert.equal(acquire(coordinator, queued, 1_600).state, "queued");
+  assert.equal(coordinator.stats(2_599, QUEUED_STALE_MS).queued, 1);
+  // Reclamation precedes polling, so a poll exactly at expiry cannot revive it.
+  assert.equal(acquire(coordinator, queued, 2_600).state, "expired");
+});
+
 test("a durable ticket rejects every metadata mutation and release remains idempotent", () => {
   const { coordinator } = fixture();
   const input = writer("identity", "Sweep", "status");

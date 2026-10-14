@@ -228,5 +228,5 @@ jobs:
       - name: Verify native Windows launcher
         run: >
           node --test --test-name-pattern
-          "escaped Windows launchers|extensionless Windows node shebang shims|CODEX_BIN and preserves argv|timeout errors|app-server mode"
+          "escaped Windows launchers|extensionless Windows node shebang shims|CODEX_BIN and preserves argv|timeout errors"
           test/codex-process.test.ts

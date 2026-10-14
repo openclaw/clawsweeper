@@ -51,6 +51,43 @@ import {
   mergePendingExactReviewDecision,
 } from "../dashboard/exact-review-decision.ts";
 
+test("legacy proof fields are ignored by decision and persisted queue parsing", async () => {
+  for (const proofAllowedScenarios of [null, "invalid", [], ["retired-scenario"]]) {
+    const item = leasedExactReviewQueueItem(70, "700");
+    const decision = { ...item.decision, proofAllowedScenarios };
+    const normalized = exactReviewDecisionFrom(decision);
+    assert.ok(normalized);
+    const storage = new MemoryDurableStorage();
+    await storage.put("exact-review-queue", {
+      deliveries: {},
+      items: {
+        [item.key]: {
+          ...item,
+          decision,
+          leaseDecision: decision,
+          reviewProofRequests: { obsolete: true },
+        },
+      },
+    });
+    const queue = new ExactReviewQueue({ storage }, {});
+    const response = await queue.fetch(
+      new Request("https://queue.invalid/heartbeat", {
+        method: "POST",
+        body: JSON.stringify({
+          item_key: item.key,
+          lease_id: item.leaseId,
+          lease_revision: item.leaseRevision,
+          claim_generation: item.claimGeneration,
+          run_id: item.claimedRunId,
+          run_attempt: item.claimedRunAttempt,
+          phase: "review",
+        }),
+      }),
+    );
+    assert.equal(response.status, 200);
+  }
+});
+
 test("manual queue policy cannot be widened by coalescing or ambiguous decision fields", async () => {
   const decision = {
     targetRepo: "openclaw/gogcli",
@@ -5472,6 +5509,70 @@ test("exact-review re-upgrade distinguishes a refreshed rollback receipt", async
     ).json(),
     { ok: true, deduped: true, item_key: "openclaw/gogcli#634" },
   );
+});
+
+test("receipt counts remain exact across inserts, expiry, rowid reuse, and rollback", async () => {
+  const storage = new MemoryDurableStorage();
+  const queue = new ExactReviewQueue({ storage }, {});
+  await queue.fetch(
+    new Request("https://queue.invalid/admission-capabilities", { method: "POST" }),
+  );
+  const internals = queue as unknown as {
+    deliveryReceiptCountSync(): number;
+    pruneDeliveryReceiptsSync(now: number): void;
+  };
+  const now = Date.now();
+  const insert = (id: string, receivedAt: number) =>
+    storage.sql.exec(
+      "INSERT INTO exact_review_queue_deliveries (delivery_id, received_at) VALUES (?, ?)",
+      id,
+      receivedAt,
+    );
+  insert("retained", now);
+  assert.equal(internals.deliveryReceiptCountSync(), 1);
+  insert("expired", now - 8 * 24 * 60 * 60 * 1000);
+  assert.equal(internals.deliveryReceiptCountSync(), 2);
+  assert.throws(() =>
+    storage.transactionSync(() => {
+      internals.pruneDeliveryReceiptsSync(now);
+      throw new Error("rollback");
+    }),
+  );
+  assert.equal(internals.deliveryReceiptCountSync(), 2);
+  internals.pruneDeliveryReceiptsSync(now);
+  assert.equal(internals.deliveryReceiptCountSync(), 1);
+  insert("reused-rowid", now);
+  assert.equal(internals.deliveryReceiptCountSync(), 2);
+  assert.equal(internals.deliveryReceiptCountSync(), 2);
+});
+
+test("run telemetry retention preserves the boundary and eventually prunes between requests", async () => {
+  const storage = new MemoryDurableStorage();
+  const queue = new ExactReviewQueue({ storage }, {});
+  await queue.fetch(
+    new Request("https://queue.invalid/admission-capabilities", { method: "POST" }),
+  );
+  const internals = queue as unknown as { pruneReviewRunTelemetrySync(now: number): void };
+  const now = Date.now();
+  const cutoff = now - 30 * 24 * 60 * 60 * 1000;
+  for (const [id, completedAt] of [
+    ["expired", cutoff],
+    ["retained", cutoff + 1],
+  ] as const) {
+    storage.sql.exec(
+      `INSERT INTO exact_review_run_telemetry
+       (run_id, run_attempt, workflow_outcome, trigger_lane, trigger_origin, completed_at, record_json)
+       VALUES (?, 1, 'success', 'review', 'test', ?, '{}')`,
+      id,
+      completedAt,
+    );
+  }
+  internals.pruneReviewRunTelemetrySync(now);
+  assert.equal(sqlCount(storage, "exact_review_run_telemetry"), 1);
+  internals.pruneReviewRunTelemetrySync(now + 1);
+  assert.equal(sqlCount(storage, "exact_review_run_telemetry"), 1);
+  internals.pruneReviewRunTelemetrySync(now + 5 * 60 * 1000);
+  assert.equal(sqlCount(storage, "exact_review_run_telemetry"), 0);
 });
 
 test("exact-review receipt pruning removes its translated shadow atomically", async () => {

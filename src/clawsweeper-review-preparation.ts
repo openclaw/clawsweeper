@@ -66,6 +66,14 @@ export function prepareReviewCommand(
   const profile = repoFromArgs(args);
   const localRange = boolArg(args.local_range);
   const localOnly = boolArg(args.local_only) || localRange;
+  if (
+    boolArg(args.preflight) &&
+    (!localRange || stringArg(args.result_format, "text") !== "json")
+  ) {
+    throw new UserFacingCommandError(
+      "--preflight requires --local-range and --result-format json.",
+    );
+  }
   const outputSelection = reviewOutputSelection(args, {
     destinationFlag: "artifact_dir",
     hostedEvidenceRequired: !localOnly,

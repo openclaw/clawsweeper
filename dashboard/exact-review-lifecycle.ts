@@ -1,7 +1,3 @@
-import {
-  inlineProofParticipation,
-  type InlineProofParticipation,
-} from "./inline-proof-telemetry.ts";
 import type { DurableStorage } from "./durable-storage.ts";
 
 export const EXACT_REVIEW_LIFECYCLE_PROJECTION_TABLE = "exact_review_lifecycle_projection_v1";
@@ -81,7 +77,6 @@ export type DurableLifecycleBayCard = {
   current_revision: boolean;
   facts: {
     admission: "recorded";
-    inline_proof?: InlineProofParticipation;
     claim_count: number;
     review_result: "completed" | "failed" | "cancelled" | null;
     github_effect_recorded: boolean;
@@ -147,8 +142,6 @@ export type LifecycleProducerLineage = {
 
 export type ExactReviewLifecycleProjection = {
   version: 1;
-  /** Accepted request participation, not execution or evidence. Absent on historical rows. */
-  inlineProof?: "requested" | "not_requested";
   canonicalTargetKey: string;
   fenceKey: string;
   revision: number;
@@ -219,7 +212,6 @@ type ProjectionIdentity = {
 };
 type LifecycleAdmissionInput = ProjectionIdentity & {
   producerLineage?: LifecycleProducerLineage;
-  inlineProofTracked?: true;
   deliveryId: string;
   sourceDeliveryId?: string;
   sourceAction: string;
@@ -248,23 +240,9 @@ export class ExactReviewLifecycleProjectionStore {
          fence_key TEXT NOT NULL,
          projection_json TEXT NOT NULL,
          updated_at INTEGER NOT NULL,
-         bay_telemetry_pending INTEGER NOT NULL DEFAULT 0 CHECK (bay_telemetry_pending IN (0, 1)),
          PRIMARY KEY (canonical_target_key, fence_key, revision)
        ) STRICT`,
     );
-    try {
-      Array.from(
-        this.storage.sql.exec(
-          `SELECT bay_telemetry_pending FROM ${EXACT_REVIEW_LIFECYCLE_PROJECTION_TABLE} LIMIT 1`,
-        ),
-      );
-    } catch {
-      this.storage.sql.exec(
-        `ALTER TABLE ${EXACT_REVIEW_LIFECYCLE_PROJECTION_TABLE}
-           ADD COLUMN bay_telemetry_pending INTEGER NOT NULL DEFAULT 0
-           CHECK (bay_telemetry_pending IN (0, 1))`,
-      );
-    }
     // The timing reader rejects competing children with an exact indexed lookup.
     // A partial index preserves fail-closed reads of malformed legacy JSON.
     this.storage.sql.exec(
@@ -310,9 +288,7 @@ export class ExactReviewLifecycleProjectionStore {
          )`,
     );
     this.storage.sql.exec(
-      `CREATE INDEX IF NOT EXISTS exact_review_lifecycle_projection_bay_telemetry_pending
-         ON ${EXACT_REVIEW_LIFECYCLE_PROJECTION_TABLE}
-         (bay_telemetry_pending, updated_at, canonical_target_key, fence_key, revision)`,
+      "DROP INDEX IF EXISTS exact_review_lifecycle_projection_bay_telemetry_pending",
     );
     this.schemaReady = true;
   }
@@ -361,7 +337,6 @@ export class ExactReviewLifecycleProjectionStore {
     }
     const projection: ExactReviewLifecycleProjection = {
       version: 1,
-      ...(input.inlineProofTracked ? { inlineProof: "not_requested" as const } : {}),
       canonicalTargetKey: input.canonicalTargetKey,
       fenceKey: input.fenceKey,
       revision: input.revision,
@@ -390,24 +365,6 @@ export class ExactReviewLifecycleProjectionStore {
     };
     this.writeSync(projection);
     return projection;
-  }
-
-  recordInlineProofRequestSync(input: ProjectionIdentity & { observedAt: number }) {
-    this.validateIdentity(input);
-    const existing = this.read(input.canonicalTargetKey, input.fenceKey, input.revision);
-    if (existing) {
-      this.assertIdentity(existing, input);
-      if (existing.inlineProof === "requested") return existing;
-    }
-    return this.mutateSync<ExactReviewLifecycleProjection | null>(
-      input,
-      (projection) => {
-        projection.inlineProof = "requested";
-        return projection;
-      },
-      true,
-      () => null,
-    );
   }
 
   recordClaim(
@@ -1466,7 +1423,6 @@ function durableLifecycleBayCard(
       state !== "requeue",
     facts: {
       admission: "recorded",
-      inline_proof: inlineProofParticipation(projection.inlineProof),
       claim_count: projection.claims.length,
       review_result: latestReviewResult?.outcome ?? null,
       github_effect_recorded: result.githubEffect !== null,
@@ -1540,7 +1496,6 @@ function auditRecordFromRow(value: string): DurableLifecycleBayCard {
     current_revision: parsed.current_revision,
     facts: {
       admission: "recorded",
-      inline_proof: inlineProofParticipation(parsed.facts.inline_proof),
       claim_count: parsed.facts.claim_count,
       review_result: parsed.facts.review_result,
       github_effect_recorded: parsed.facts.github_effect_recorded,
@@ -1846,6 +1801,7 @@ function normalizeProjection(
   if (!validTerminalOperations(parsed.terminalOperationIds)) {
     throw new Error("invalid lifecycle projection row");
   }
+  Reflect.deleteProperty(parsed, "inlineProof");
   Reflect.deleteProperty(parsed, "bayTelemetryPending");
   Reflect.deleteProperty(parsed, "bayTelemetryEventId");
   Reflect.deleteProperty(parsed.admission, "bayJourneyDeliveryId");

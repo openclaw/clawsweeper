@@ -25,10 +25,6 @@ import {
   reReviewContextFromClawSweeperComment,
 } from "../src/repair/comment-command-text.ts";
 import {
-  authenticateReviewProofProducerToken,
-  reviewProofProducerMatches,
-} from "./review-proof-producer-auth.ts";
-import {
   authenticateTargetDispatchToken,
   TARGET_DISPATCH_MAX_BODY_BYTES,
   targetDispatchQueueIntake,
@@ -49,12 +45,12 @@ import {
   githubEtagCacheRequestBody,
 } from "../src/github-etag-cache-contract.ts";
 import {
-  dashboardHtml,
   issueTriagePageConfig,
   prProofTriagePageConfig,
   triageHtml,
   type DashboardEnv,
 } from "./dashboard-pages.ts";
+import { dashboardSiteResponse, isDashboardSitePath } from "./dashboard-site.ts";
 import { summarizeDashboardHealth } from "./dashboard-health.ts";
 import {
   createGithubAppTokenFor,
@@ -724,6 +720,16 @@ export class StatusStore {
     this.storage = state.storage;
     this.state = state;
     this.env = env;
+    const removeRetiredBayState = () =>
+      Promise.all([
+        this.storage.delete("openclaw-bay:terminal-state:v1"),
+        this.storage.delete("openclaw-bay:journey-state:v1"),
+      ]);
+    if (typeof state.blockConcurrencyWhile === "function") {
+      state.blockConcurrencyWhile(removeRetiredBayState);
+    } else {
+      void removeRetiredBayState();
+    }
   }
 
   async fetch(request: Request) {
@@ -998,10 +1004,6 @@ export default {
       return githubWebhook(request, env, ctx);
     if (url.pathname === "/github/target-dispatch" && request.method === "POST")
       return githubTargetDispatch(request, env);
-    if (url.pathname === "/internal/exact-review/proof" && request.method === "POST")
-      return reviewProofRequest(request, env);
-    if (url.pathname === "/internal/exact-review/proof/producer" && request.method === "POST")
-      return reviewProofProducerRequest(request, env);
     if (url.pathname === "/internal/exact-review/command-intake" && request.method === "POST")
       return authenticatedHostedTargetQueueRequest(request, env, "/command-intake");
     if (
@@ -1306,7 +1308,11 @@ export default {
     if (url.pathname === "/api/status") return statusJson(request, env, ctx);
     if (url.pathname === "/api/triage") return triageJson(request, env, ctx);
     if (url.pathname === "/api/pr-proof-triage") return prProofTriageJson(request, env, ctx);
-    if (url.pathname === "/" || url.pathname === "/index.html") return html(dashboardHtml(env));
+    if (
+      (request.method === "GET" || request.method === "HEAD") &&
+      isDashboardSitePath(url.pathname)
+    )
+      return dashboardSiteResponse(request, env);
     if (url.pathname === "/triage" || url.pathname === "/triage.html")
       return html(triageHtml(issueTriagePageConfig()));
     if (url.pathname === "/pr-proof-triage" || url.pathname === "/pr-proof-triage.html")
@@ -2011,10 +2017,6 @@ const PUBLIC_STATUS_CONTAINER_FIELDS = new Set([
   "history",
   "points",
   "overall",
-  "inline_proof",
-  "requested",
-  "not_requested",
-  "unknown",
   "cluster_repair",
   "markers",
   "latest_runs",
@@ -4658,158 +4660,6 @@ async function exactReviewQueueRequest(env, path, request?: Request) {
   }
 }
 
-async function reviewProofQueue(env, path: string, body: unknown) {
-  return exactReviewQueueRequest(
-    env,
-    path,
-    new Request("https://queue" + path, { method: "POST", body: JSON.stringify(body) }),
-  );
-}
-
-async function reviewProofRequest(request: Request, env) {
-  const text = await boundedCommandProofBody(request);
-  if (text === null) return json({ error: "invalid_review_proof_request" }, 413);
-  const body = parseJsonObject(text);
-  if (!body || !["request", "poll", "capabilities"].includes(body.operation))
-    return json({ error: "invalid_review_proof_request" }, 400);
-  const admission = await reviewProofQueue(env, "/review-proof", body);
-  if (!admission.ok) return admission;
-  const admitted = (await admission.json()) as any;
-  if (body.operation === "capabilities") return json(admitted);
-  const update = async (patch) => {
-    const response = await reviewProofQueue(env, "/review-proof/update", {
-      ...patch,
-      lease: body.lease,
-      requestId: admitted.record.requestId,
-    });
-    return response.json();
-  };
-  try {
-    const credentials = githubAppCredentials(env);
-    if (!credentials) throw new Error("github_app_not_configured");
-    const appJwt = await signGithubAppJwt(credentials.issuer, credentials.privateKey);
-    // Never broaden the general read-only dashboard token or return this token to the reviewer.
-    const token = await createGithubAppTokenFor({
-      env,
-      appJwt,
-      installationId: await githubAppInstallationId(appJwt, "openclaw/openclaw", env),
-      label: "review-proof",
-      repositories: ["openclaw"],
-      permissions: { actions: "write", contents: "read", pull_requests: "read" },
-    });
-    const { executeReviewProof } = await import("./review-proof-execution.ts");
-    const result = await executeReviewProof({
-      record: admitted.record,
-      target: admitted.target,
-      dispatch: admitted.dispatch === true,
-      github: (path, value) =>
-        githubTokenJson({
-          env,
-          token,
-          path: "/" + path,
-          method: value === undefined ? "GET" : "POST",
-          body: value,
-          errorLabel: "Proof GitHub",
-          apiVersion: "2026-03-10",
-        }),
-      artifact: (id) => reviewProofArtifact(env, token, id),
-      update,
-    });
-    return json({
-      ...result,
-      requestId: admitted.record.requestId,
-      planSha256: admitted.record.planSha256,
-      expiresAt: admitted.record.expiresAt,
-    });
-  } catch {
-    await update({ state: "inconclusive", reason: "proof_execution_unavailable" });
-    return json({ state: "inconclusive", reason: "proof_execution_unavailable" });
-  }
-}
-
-async function reviewProofProducerRequest(request: Request, env) {
-  const text = await boundedCommandProofBody(request);
-  const body = text === null ? null : parseJsonObject(text);
-  if (
-    !body ||
-    !/^[0-9a-f]{64}$/.test(body.requestId || "") ||
-    !/^[1-9][0-9]{0,19}$/.test(body.runId || "") ||
-    body.runAttempt !== 1
-  )
-    return json({ error: "invalid_producer_request" }, 400);
-  const identity = await authenticateReviewProofProducerToken(bearerToken(request));
-  if (!identity || identity.runId !== body.runId || identity.runAttempt !== body.runAttempt)
-    return json({ error: "producer_not_authorized" }, 403);
-  const response = await reviewProofQueue(env, "/review-proof/producer-record", body);
-  if (!response.ok) return json({ error: "proof_not_active" }, 409);
-  const { record } = (await response.json()) as any;
-  if (
-    body.planSha256 !== record.planSha256 ||
-    !reviewProofProducerMatches(identity, {
-      ...record.producer,
-      runId: body.runId,
-      runAttempt: body.runAttempt,
-    })
-  )
-    return json({ error: "producer_not_authorized" }, 403);
-  // OIDC pins the workflow/run; this final durable check also fences owner loss during verification.
-  const redeemed = await reviewProofQueue(env, "/review-proof/redeem", body);
-  if (!redeemed.ok) return json({ error: "proof_not_active" }, 409);
-  return json({ ok: true, expiresAt: record.expiresAt });
-}
-
-async function reviewProofArtifact(env, token: string, id: string): Promise<Uint8Array> {
-  if (!/^[1-9][0-9]{0,19}$/.test(id)) throw new Error("invalid_artifact_id");
-  let response = await fetch(
-    githubApiUrl(env, `/repos/openclaw/openclaw/actions/artifacts/${id}/zip`),
-    {
-      headers: {
-        Authorization: `Bearer ${token}`,
-        Accept: "application/vnd.github+json",
-        "User-Agent": "clawsweeper-review-proof",
-      },
-      redirect: "manual",
-      signal: AbortSignal.timeout(20_000),
-    },
-  );
-  if (response.status === 302) {
-    const target = new URL(response.headers.get("location") || "");
-    await response.body?.cancel();
-    if (
-      target.protocol !== "https:" ||
-      target.username ||
-      target.password ||
-      ![".blob.core.windows.net", ".actions.githubusercontent.com"].some((suffix) =>
-        target.hostname.endsWith(suffix),
-      )
-    )
-      throw new Error("invalid_artifact_redirect");
-    response = await fetch(target, { redirect: "error", signal: AbortSignal.timeout(30_000) });
-  }
-  if (!response.ok) throw new Error("artifact_unavailable");
-  const reader = response.body?.getReader();
-  if (!reader) throw new Error("artifact_unavailable");
-  const chunks: Uint8Array[] = [];
-  let total = 0;
-  for (;;) {
-    const chunk = await reader.read();
-    if (chunk.done) break;
-    total += chunk.value.length;
-    if (total > 16 * 1024 * 1024) {
-      await reader.cancel();
-      throw new Error("artifact_too_large");
-    }
-    chunks.push(chunk.value);
-  }
-  const bytes = new Uint8Array(total);
-  let offset = 0;
-  for (const chunk of chunks) {
-    bytes.set(chunk, offset);
-    offset += chunk.length;
-  }
-  return bytes;
-}
-
 const PUBLIC_QUEUE_COUNT_LIMIT = 1_000_000;
 const PUBLIC_SCHEDULED_FEED_RATE_LIMIT = 2_000;
 const PUBLIC_QUEUE_TOTAL_LIMIT = 1_000_000_000_000;
@@ -4855,6 +4705,63 @@ function publicQueueCount(value, maximum = PUBLIC_QUEUE_COUNT_LIMIT) {
 function publicQueueTimestamp(value) {
   if (value === null || value === undefined) return null;
   return publicTimestamp(value);
+}
+
+function publicPublicationHandoff(value) {
+  const source = objectValue(value);
+  const observedAt = publicQueueTimestamp(source.observed_at);
+  const samples = publicQueueCount(source.sample_count);
+  const retained = publicQueueCount(source.retained_batches);
+  const states = [
+    "idle",
+    "dispatching",
+    "awaiting_claim",
+    "claimed",
+    "dispatch_failed",
+    "reservation_expired",
+  ];
+  const ids = ["under_1m", "1m_to_5m", "5m_to_10m", "over_10m"];
+  if (
+    !observedAt ||
+    samples === null ||
+    retained === null ||
+    samples > retained ||
+    !states.includes(source.dispatch_state) ||
+    !Array.isArray(source.delay_buckets) ||
+    source.delay_buckets.length !== ids.length
+  )
+    return null;
+  const buckets = source.delay_buckets.map((entry, index) => {
+    const bucket = objectValue(entry);
+    return bucket.id === ids[index] && publicQueueCount(bucket.count) !== null
+      ? { id: ids[index], count: publicQueueCount(bucket.count)! }
+      : null;
+  });
+  if (
+    buckets.some((bucket) => bucket === null) ||
+    buckets.reduce((sum, bucket) => sum + (bucket?.count ?? 0), 0) !== samples
+  )
+    return null;
+  const first = publicQueueTimestamp(source.first_claim_at);
+  const last = publicQueueTimestamp(source.last_claim_at);
+  const wait =
+    source.dispatch_wait_seconds === null ? null : publicQueueCount(source.dispatch_wait_seconds);
+  if (
+    (samples > 0 && (!first || !last || first > last || last > observedAt)) ||
+    (samples === 0 && (first !== null || last !== null)) ||
+    (source.dispatch_state === "awaiting_claim" ? wait === null : wait !== null)
+  )
+    return null;
+  return {
+    observed_at: observedAt,
+    sample_count: samples,
+    retained_batches: retained,
+    first_claim_at: first,
+    last_claim_at: last,
+    dispatch_state: source.dispatch_state,
+    dispatch_wait_seconds: wait,
+    delay_buckets: buckets,
+  };
 }
 
 // Scheduled admission balances carry organic debt down to -burst, so they may be negative.
@@ -5332,6 +5239,7 @@ export function publicExactReviewQueueProjection(
       source.review_runaway_health,
       allowedRepositories,
     ),
+    publication_handoff: publicPublicationHandoff(source.publication_handoff),
     manual_publication:
       objectValue(source.manual_publication).policy === "record_comment_only"
         ? {
@@ -5497,9 +5405,9 @@ export async function exactReviewQueueStatusSnapshot(
   return body;
 }
 
-async function boundedCommandProofBody(
+async function boundedTargetDispatchBody(
   request: Request,
-  maxBytes = 128 * 1024,
+  maxBytes: number,
 ): Promise<string | null> {
   if (!request.body) return "";
   const reader = request.body.getReader();
@@ -5598,7 +5506,7 @@ async function authenticatedHostedTargetQueueRequest(request, env, path: string)
 // spending one ClawSweeper Actions relay run per `repository_dispatch`. Any
 // non-2xx answer makes the dispatcher fall back to that unchanged relay.
 async function githubTargetDispatch(request: Request, env) {
-  const text = await boundedCommandProofBody(request, TARGET_DISPATCH_MAX_BODY_BYTES);
+  const text = await boundedTargetDispatchBody(request, TARGET_DISPATCH_MAX_BODY_BYTES);
   if (text === null) return json({ error: "target_dispatch_too_large_or_invalid" }, 413);
   const identity = await authenticateTargetDispatchToken(bearerToken(request));
   if (!identity) return json({ error: "target_dispatch_not_authorized" }, 401);

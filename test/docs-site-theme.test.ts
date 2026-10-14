@@ -81,3 +81,16 @@ test("docs site keeps non-current evidence out of canonical discovery", () => {
   assert.match(historical, /Historical-only after S7b/);
   assert.match(proof, /does not override current documentation/);
 });
+
+test("agent operational metrics publish as an active canonical reference", () => {
+  const html = readSite("agent-performance-metrics.html");
+  assert.match(html, /Agent operational metrics/);
+  assert.doesNotMatch(html, /<meta name="robots" content="noindex, follow">/);
+  assert.doesNotMatch(html, /<aside class="lifecycle-banner"/);
+  assert.match(
+    html,
+    /class="nav-link active"[^>]*href="agent-performance-metrics.html"|href="agent-performance-metrics.html"[^>]*class="nav-link active"/,
+  );
+  assert.match(readSite("sitemap.xml"), /agent-performance-metrics\.html/);
+  assert.match(readSite("llms.txt"), /agent-performance-metrics\.html/);
+});

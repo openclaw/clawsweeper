@@ -402,8 +402,7 @@ change the model's tiers.
 
 Historical post-review verification receipts and recording attachments are
 ignored. They do not alter the recorded proof assessment, readiness, automation
-markers, or rendered comments. Existing stored reports are not rewritten;
-current inline proof returns observations to the original review instead.
+markers, or rendered comments. Existing stored reports are not rewritten.
 
 For OpenClaw PRs, stored-data warnings flag possible persistence changes in
 production source or documented storage contracts, not setup in test, fixture,
@@ -818,8 +817,8 @@ limits the impact.
 
 Review setup opts in with `review-network: "true"`; review commands select
 `--codex-sandbox clawsweeper-review`, translated to Codex configuration
-`default_permissions="clawsweeper-review"`. Neither exec nor the app-server
-thread/turn path overrides that profile with a legacy sandbox policy. Setup
+`default_permissions="clawsweeper-review"`. Exec does not override that profile
+with a legacy sandbox policy. Setup
 fails before publication if allowed HTTPS fails, unlisted HTTPS is not rejected
 by the proxy, or a checkout write succeeds. Non-review callers and offline local
 reviews keep their existing sandbox settings.

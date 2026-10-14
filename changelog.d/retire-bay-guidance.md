@@ -1,0 +1,1 @@
+- Retire the leftover OpenClaw Bay guidance: the AGENTS.md rule becomes a public-dashboard rule with the same observer-only boundary, and the PR template drops its Bay Impact section.

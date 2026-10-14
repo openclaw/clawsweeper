@@ -2,10 +2,19 @@ const CODEX_MODEL_ACCESS_PREFIX = "the model ";
 const CODEX_MODEL_ACCESS_SUFFIX = " does not exist or you do not have access to it";
 const CODEX_HUMAN_RETRY_HINT_MAX_BYTES = 4096;
 
+// Provider rate limits and capacity errors. Failed-review retry eligibility also
+// scans report text with item titles, so the capacity phrase stays the full
+// provider diagnostic rather than a bare "at capacity".
+export const CODEX_PROVIDER_CAPACITY_ERROR =
+  /rate limit reached|tokens per min|\bTPM\b|requests per min|\b429\b|temporarily unavailable|overloaded|selected model is at capacity|please try again in \d+(?:\.\d+)?(?:ms|s)/i;
+
 export function isRetryableCodexTransportError(value: string | null | undefined): boolean {
   const message = value ?? "";
-  return /write_stdin failed: stdin is closed|stdin is closed for this session|rate limit reached|tokens per min|\bTPM\b|requests per min|\b429\b|temporarily unavailable|overloaded|stream disconnected|reconnecting|please try again in \d+(?:\.\d+)?(?:ms|s)/i.test(
-    message,
+  return (
+    CODEX_PROVIDER_CAPACITY_ERROR.test(message) ||
+    /write_stdin failed: stdin is closed|stdin is closed for this session|stream disconnected|reconnecting/i.test(
+      message,
+    )
   );
 }
 
@@ -46,11 +55,6 @@ export function codexJsonlFailureDetail(value: string | null | undefined): strin
     }
     if (event?.type === "turn.failed" && typeof event.error?.message === "string") {
       messages.push(event.error.message);
-    }
-    // App-server JSON-RPC carries the same turn failure on turn/completed.
-    const turn = event?.method === "turn/completed" ? event.params?.turn : undefined;
-    if (turn?.status !== "completed" && typeof turn?.error?.message === "string") {
-      messages.push(turn.error.message);
     }
   }
   return messages.at(-1) ?? "";

@@ -18,7 +18,7 @@ const upgradeFiles = [
   "docs/plugins/codex-harness.md",
   "docs/plugins/codex-native-plugins.md",
   "extensions/codex/package.json",
-  "extensions/codex/src/app-server/version.ts",
+  "extensions/codex/src/version.ts",
 ];
 
 function git(cwd: string, ...args: string[]): string {

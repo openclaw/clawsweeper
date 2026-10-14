@@ -1,0 +1,22 @@
+---
+// One cell per hour: the worst handoff state seen in that hour. Aligns with an hourly TimeChart above it.
+import { hour, label } from '../lib/format';
+
+interface Props {
+  cells: { hour: string; status: 'idle' | 'healthy' | 'degraded' | 'stalled' | null }[];
+}
+const { cells } = Astro.props;
+const color = { idle: 'var(--ok)', healthy: 'var(--ok)', degraded: 'var(--warn)', stalled: 'var(--bad)' } as const;
+---
+<div class="grid grid-cols-[auto_1fr] gap-x-3">
+  <span class="w-9 text-right text-[11px] leading-3 text-fg-faint">Handoff</span>
+  <div class="grid h-3 overflow-hidden rounded-sm" style={`grid-template-columns:repeat(${cells.length},minmax(0,1fr))`}>
+    {cells.map(cell => (
+      <div
+        class="hit h-full"
+        style={`background:${cell.status ? color[cell.status] : 'var(--border)'};opacity:${cell.status === 'healthy' || cell.status === 'idle' ? 0.35 : 1}`}
+        data-tip={`${hour(cell.hour)}\n${cell.status ? label(cell.status) : 'No data'}`}
+      ></div>
+    ))}
+  </div>
+</div>

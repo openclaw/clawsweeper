@@ -1,0 +1,16 @@
+name = "webhook-payload-retention-proof"
+main = "worker.ts"
+compatibility_date = "2026-05-11"
+compatibility_flags = ["nodejs_compat"]
+
+[[durable_objects.bindings]]
+name = "READ_MODEL"
+class_name = "PayloadRetentionProof"
+
+[[durable_objects.bindings]]
+name = "EXACT_REVIEW_QUEUE"
+class_name = "ExactReviewQueue"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["PayloadRetentionProof", "ExactReviewQueue"]

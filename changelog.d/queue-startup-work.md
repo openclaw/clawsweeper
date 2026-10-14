@@ -1,0 +1,1 @@
+- Stop the exact-review queue from rewriting thousands of rows on every Durable Object start. Two publication-batch backfills now write only rows that change, and the finished export-index seed (a full scan of all canonical records) is removed. A temporary storage meter showed one start writing 7,520 rows and reading 957k, which matches the 40–46 s queue freezes on cold restarts.

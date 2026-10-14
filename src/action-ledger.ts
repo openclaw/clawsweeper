@@ -1,4 +1,4 @@
-import { sha256 } from "./content-hash.js";
+import { sha256 } from "./content-hash.ts";
 import { isIP } from "node:net";
 import path from "node:path";
 
@@ -13,8 +13,8 @@ import {
   writeUtf8FileCreateOnlyNoFollow,
   type SafeWriteTarget,
   type SafeReadRoot,
-} from "./action-ledger-files.js";
-import { normalizeRepo, slugForRepo } from "./repository-profiles.js";
+} from "./action-ledger-files.ts";
+import { normalizeRepo, slugForRepo } from "./repository-identity.ts";
 
 export const ACTION_EVENT_SCHEMA = "clawsweeper.state-ledger-event.v1";
 
@@ -806,9 +806,17 @@ export function actionEventShardRelativePath(
   shardCount?: number,
 ): string {
   assertRawActionEventShardInput(events, ACTION_EVENT_SHARD_FILE_LIMITS.maxEvents);
-  const normalizedIdentity = normalizeShardIdentity(identity);
   const normalizedEvents = normalizeShardEvents(events);
   if (normalizedEvents.length === 0) throw new Error("action event shard requires events");
+  return actionEventShardIdentityRelativePath(identity, shardIndex, shardCount);
+}
+
+function actionEventShardIdentityRelativePath(
+  identity: ActionEventShardIdentity,
+  shardIndex?: number,
+  shardCount?: number,
+): string {
+  const normalizedIdentity = normalizeShardIdentity(identity);
   if ((shardIndex === undefined) !== (shardCount === undefined)) {
     throw new Error("action event shard index and count must be provided together");
   }
@@ -837,7 +845,7 @@ export function actionEventShardRelativePath(
       : `${filenameBase}-part-${String(normalizedShardIndex).padStart(6, "0")}-of-${String(
           normalizedShardCount,
         ).padStart(6, "0")}`;
-  return path.join(
+  return path.posix.join(
     "ledger",
     "v1",
     "events",
@@ -856,8 +864,8 @@ export function actionEventShardImportBindingRelativePaths(identity: ActionEvent
 } {
   const digest = sha256(actionLedgerJson(normalizeShardIdentity(identity)));
   return {
-    reservation: path.join("ledger", "v1", "import-bindings", "shard-sets", `${digest}.json`),
-    completion: path.join(
+    reservation: path.posix.join("ledger", "v1", "import-bindings", "shard-sets", `${digest}.json`),
+    completion: path.posix.join(
       "ledger",
       "v1",
       "import-bindings",
@@ -1093,11 +1101,12 @@ function readOptionalImportBinding(root: SafeReadRoot, relativePath: string): st
   return readUtf8FileIfExistsNoFollow(target, ACTION_LEDGER_CANONICAL_JSON_LIMITS.maxBytes);
 }
 
-function parseActionEventShardImportReservation(
+export function parseActionEventShardImportReservation(
   content: string,
-  identity: ReturnType<typeof normalizeShardIdentity>,
+  identity: ActionEventShardIdentity | null,
   source: string,
 ): {
+  identity: ActionEventShardIdentity;
   shards: Array<{ path: string; replay_sha256: string }>;
 } {
   let value: unknown;
@@ -1112,6 +1121,7 @@ function parseActionEventShardImportReservation(
     producer?: unknown;
     shards?: unknown;
   };
+  identity = normalizeShardIdentity(identity ?? (reservation.producer as ActionEventShardIdentity));
   const shards = Array.isArray(reservation.shards)
     ? reservation.shards.map((entry) => {
         const shard = entry as { path?: unknown; replay_sha256?: unknown };
@@ -1143,10 +1153,26 @@ function parseActionEventShardImportReservation(
   ) {
     throw new Error(`invalid action event shard import transaction: ${source}`);
   }
-  return { shards };
+  // A reservation can only name its own complete, ordered producer part set.
+  // Hydration uses these paths for closure reads and staged exclusion.
+  for (const [index, shard] of shards.entries()) {
+    const part = /-part-(\d{6})-of-(\d{6})\.jsonl$/.exec(shard.path);
+    if (
+      (!part && shards.length !== 1) ||
+      (part && (Number(part[1]) !== index + 1 || Number(part[2]) !== shards.length)) ||
+      shard.path !==
+        actionEventShardIdentityRelativePath(
+          identity,
+          part ? index + 1 : undefined,
+          part ? shards.length : undefined,
+        ).replaceAll(path.sep, "/")
+    )
+      throw new Error(`invalid action event shard import transaction: ${source}`);
+  }
+  return { identity, shards };
 }
 
-function parseActionEventShardImportCompletion(
+export function parseActionEventShardImportCompletion(
   content: string,
   identity: ReturnType<typeof normalizeShardIdentity>,
   reservationSha256: string,
