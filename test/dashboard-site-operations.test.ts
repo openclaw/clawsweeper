@@ -93,3 +93,57 @@ test("legacy publication counts, long gaps and future samples cannot invent deli
     0,
   );
 });
+
+test("shed shares pair counter intervals before hourly reduction", () => {
+  const reset = [
+    sample(0, { enqueued_total: 100, shed_total: 4 }, {}),
+    sample(5, { enqueued_total: 2, shed_total: 6 }, {}),
+  ];
+  const unmatched = summarizeOperations({ samples: reset }, {}, {}, now);
+  assert.equal(unmatched.hours.at(-2)?.shed, 2);
+  assert.equal(unmatched.reviewOffers, null);
+
+  const mixed = summarizeOperations(
+    { samples: [...reset, sample(10, { enqueued_total: 4, shed_total: 8 }, {})] },
+    {},
+    {},
+    now,
+  );
+  assert.equal(mixed.hours.at(-2)?.shed, 4);
+  assert.equal(mixed.hours.at(-2)?.enqueued, 2);
+  assert.deepEqual(mixed.reviewOffers, { accepted: 2, shed: 2 });
+});
+
+test("paired offers distinguish measured zero, missing counters and the current hour", () => {
+  const zero = [
+    sample(0, { enqueued_total: 1, shed_total: 2 }, {}),
+    sample(5, { enqueued_total: 1, shed_total: 2 }, {}),
+  ];
+  assert.deepEqual(summarizeOperations({ samples: zero }, {}, {}, now).reviewOffers, {
+    accepted: 0,
+    shed: 0,
+  });
+  assert.equal(
+    summarizeOperations(
+      { samples: [sample(0, { shed_total: 2 }, {}), sample(5, { shed_total: 3 }, {})] },
+      {},
+      {},
+      now,
+    ).reviewOffers,
+    null,
+  );
+  assert.equal(
+    summarizeOperations(
+      {
+        samples: [
+          sample(60, { enqueued_total: 1, shed_total: 2 }, {}),
+          sample(65, { enqueued_total: 2, shed_total: 3 }, {}),
+        ],
+      },
+      {},
+      {},
+      now + 10 * 60_000,
+    ).reviewOffers,
+    null,
+  );
+});

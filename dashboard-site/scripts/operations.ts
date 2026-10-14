@@ -39,6 +39,7 @@ export type Operations = {
   generatedAt: string;
   windowStart: string;
   hours: OperationsHour[];
+  reviewOffers: { accepted: number; shed: number } | null;
   incidents: Incident[];
   coverage: { percent: number | null; failedSlots: number | null; missingSlots: number | null };
   // Usable samples in the window, and how many of them were unhealthy.
@@ -95,6 +96,7 @@ export function summarizeOperations(history: unknown, applyDay: unknown, applyWe
   type Flow = 'completed' | 'enqueued' | 'shed' | 'published';
   type Bucket = Record<Flow, number | null> & { reviewPending: number; publicationPending: number; leased: number | null; handoff: Handoff | null };
   const buckets = new Map<number, Bucket>();
+  let reviewOffers: Operations['reviewOffers'] = null;
   let previous: Sample | null = null;
   for (const sample of samples) {
     const time = Date.parse(sample.at);
@@ -118,6 +120,13 @@ export function summarizeOperations(history: unknown, applyDay: unknown, applyWe
       for (const key of Object.keys(steps) as Flow[]) {
         const step = steps[key];
         if (step !== null) bucket[key] = (bucket[key] ?? 0) + step;
+      }
+      // Ratios need the same observed intervals on both sides. Independent
+      // hourly totals can otherwise turn a missing denominator into 100% shed.
+      if (hour < endHour && steps.enqueued !== null && steps.shed !== null) {
+        reviewOffers ??= { accepted: 0, shed: 0 };
+        reviewOffers.accepted += steps.enqueued;
+        reviewOffers.shed += steps.shed;
       }
     }
     bucket.reviewPending = Math.max(bucket.reviewPending, review.pending);
@@ -182,6 +191,7 @@ export function summarizeOperations(history: unknown, applyDay: unknown, applyWe
     generatedAt: new Date(now).toISOString(),
     windowStart: new Date(startHour).toISOString(),
     hours,
+    reviewOffers,
     incidents: incidents.reverse(),
     coverage: { percent: num(coverage.coverage_percent), failedSlots: num(coverage.failed_slots), missingSlots: num(coverage.missing_slots) },
     handoffSamples,

@@ -394,9 +394,8 @@ const hourly = (pick: (hour: OperationsHour) => number | null) =>
   opsHours.map((hour) => ({ date: hour.hour, value: pick(hour) }));
 const majorIncidents = operations.incidents.filter((incident) => incident.minutes >= 10);
 const { observed: handoffObserved, unhealthy: handoffUnhealthy } = operations.handoffSamples;
-const offered =
-  sum(known(completeHours.map((hour) => hour.shed))) +
-  sum(known(completeHours.map((hour) => hour.enqueued)));
+const reviewOffers = operations.reviewOffers;
+const offered = reviewOffers ? reviewOffers.accepted + reviewOffers.shed : null;
 const failureKinds = [
   ...new Set([
     ...Object.keys(operations.apply.day.failures),
@@ -415,7 +414,8 @@ export const ops = {
     // observed: at least one hour with known counter growth; a measured zero is still a value.
     observed: completeHours.some((hour) => hour.shed !== null),
     week: sum(known(completeHours.map((hour) => hour.shed))),
-    share: offered ? sum(known(completeHours.map((hour) => hour.shed))) / offered : null,
+    offers: offered,
+    share: offered ? reviewOffers!.shed / offered : null,
   },
   handoff: {
     // Share of observed 5-minute samples; unobserved time is unknown, not healthy.

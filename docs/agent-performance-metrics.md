@@ -38,6 +38,11 @@ another counter's observations. An hour with some valid intervals can still be
 partial; counts are observed totals, not extrapolated rates. The current hour is
 still filling and is excluded from the 24-hour headline.
 
+The Operations shed percentage uses only intervals where accepted and shed
+offer deltas are both observed, excluding the current hour. Its paired sample
+can differ from either independent count. Without paired observations, the
+percentage is unavailable; a measured zero-offer sample is shown separately.
+
 Missing observations remain gaps, never zeros. Collection coverage and source
 timestamps stay visible. Publication delivery history begins when
 `published_total` is first collected; older completion counters cannot backfill

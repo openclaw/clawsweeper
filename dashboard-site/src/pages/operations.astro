@@ -42,8 +42,8 @@ const failuresAllZero = ops.apply.failures.length > 0 && ops.apply.failures.ever
       sub={ops.reviewsPerHour.week === null ? undefined : `7-day median ${int(ops.reviewsPerHour.week)}`}
       spark={ops.series.completed.slice(-72).map(point => point.value)}
       tip="Median reviews completed per hour over the last 24 complete hours. The line shows the last 3 days." />
-    <Kpi label="Shed · 7d" value={ops.shed.observed ? int(ops.shed.week) : '–'} sub={!ops.shed.observed ? 'no queue history' : ops.shed.share === null ? 'no offers in 7 days' : `${pct(ops.shed.share, 0)} of all review offers`}
-      tip="Scheduled reviews the queue declined, almost always because the scheduled feed was over its hourly rate (see Queue for the reasons). Not a failure: the item is offered again on a later pass." />
+    <Kpi label="Shed · 7d" value={ops.shed.observed ? int(ops.shed.week) : '–'} sub={!ops.shed.observed ? 'no queue history' : ops.shed.share === null ? (ops.shed.offers === 0 ? 'no observed offers' : 'offer share unavailable') : `${pct(ops.shed.share, 0)} of observed review offers`}
+      tip="Scheduled reviews the queue declined, almost always because the scheduled feed was over its hourly rate (see Queue for reasons). The percentage uses only intervals where accepted and shed offer counts are both observed. The item is offered again on a later pass." />
     <Kpi label="Handoff healthy · 7d" value={pct(ops.handoff.healthyShare, 1)}
       sub={ops.handoff.healthyShare === null
         ? 'no handoff history'
