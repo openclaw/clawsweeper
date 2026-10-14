@@ -4962,6 +4962,7 @@ export class ExactReviewQueue {
       manual_publication: this.reviewAdmissionCapabilities().manual_publication,
       scheduled_feed: { ...stats.scheduled_feed, ...this.scheduledReviewFeedStatusSync(now) },
       reservation_claim_observability: reservationClaimObservability,
+      publication_handoff: reservationClaimObservability.summary,
       state_writer: { ...stateWriter, coordinator: stateWriterCoordinator },
       storage_schema_version: EXACT_REVIEW_QUEUE_STORAGE_SCHEMA_VERSION,
       legacy_rollback_available:
@@ -18744,8 +18745,11 @@ function exactReviewReservationClaimObservability({
   legacyStateRepoBatchEnabled,
   maxConcurrentBatches,
 }) {
-  const reservationToClaimDelays = batches.flatMap((batch) =>
-    batch.dispatchedAt === null ? [] : [Math.max(0, batch.createdAt - batch.dispatchedAt)],
+  const timedBatches = batches.filter(
+    (batch) => batch.dispatchedAt !== null && batch.dispatchedAt <= batch.createdAt,
+  );
+  const reservationToClaimDelays = timedBatches.map(
+    (batch) => batch.createdAt - batch.dispatchedAt,
   );
   const alerts = [];
   const activeBatches = batches.filter((batch) => batch.state === "leased");
@@ -18775,6 +18779,23 @@ function exactReviewReservationClaimObservability({
   const dispatchedBatch = dispatchId
     ? batches.find((batch) => batch.dispatchId === dispatchId)
     : undefined;
+  // Failed dispatches release the reservation. Keep their recorded failure
+  // visible even after the pending deadline has been cleared.
+  const dispatchState = dispatchedBatch
+    ? "claimed"
+    : !dispatchAt
+      ? "idle"
+      : dispatcher?.publicationBatchDispatchSucceeded === false
+        ? "dispatch_failed"
+        : !dispatchPendingUntil
+          ? "idle"
+          : dispatchPendingUntil <= now
+            ? "reservation_expired"
+            : dispatcher?.publicationBatchDispatchSucceeded === true
+              ? "awaiting_claim"
+              : "dispatching";
+  const claimTimes = timedBatches.map((batch) => batch.createdAt);
+  const delayBuckets = exactReviewReservationClaimDelayBuckets(reservationToClaimDelays);
   if (
     dispatchAt &&
     dispatchPendingUntil > now &&
@@ -18840,6 +18861,22 @@ function exactReviewReservationClaimObservability({
   return {
     schema_version: 1,
     generated_at: new Date(now).toISOString(),
+    // Only observed dispatch→claim spans belong in the aggregate. A missing
+    // dispatch timestamp is not zero delay, and this bounded sample is not a
+    // time-window percentile or eligibility-to-claim measurement.
+    summary: {
+      observed_at: new Date(now).toISOString(),
+      sample_count: reservationToClaimDelays.length,
+      retained_batches: batches.length,
+      first_claim_at: claimTimes.length ? new Date(Math.min(...claimTimes)).toISOString() : null,
+      last_claim_at: claimTimes.length ? new Date(Math.max(...claimTimes)).toISOString() : null,
+      dispatch_state: dispatchState,
+      dispatch_wait_seconds:
+        dispatchState === "awaiting_claim"
+          ? Math.max(0, Math.floor((now - dispatchAt) / 1000))
+          : null,
+      delay_buckets: delayBuckets.buckets,
+    },
     // Direct publication never enters a publication batch unless it falls back.
     // Keep its canonical Durable Object path distinct from the batch-only
     // timestamps below so dashboards do not infer state-writer latency for a
@@ -18864,7 +18901,7 @@ function exactReviewReservationClaimObservability({
       max_concurrent_batches: maxConcurrentBatches,
       available_batches: Math.max(0, maxConcurrentBatches - activeBatches.length),
     },
-    delay_buckets: exactReviewReservationClaimDelayBuckets(reservationToClaimDelays),
+    delay_buckets: delayBuckets,
     alerts,
     batches: batches.map((batch) => ({
       batch_id: batch.batchId,

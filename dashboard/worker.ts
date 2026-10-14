@@ -4707,6 +4707,63 @@ function publicQueueTimestamp(value) {
   return publicTimestamp(value);
 }
 
+function publicPublicationHandoff(value) {
+  const source = objectValue(value);
+  const observedAt = publicQueueTimestamp(source.observed_at);
+  const samples = publicQueueCount(source.sample_count);
+  const retained = publicQueueCount(source.retained_batches);
+  const states = [
+    "idle",
+    "dispatching",
+    "awaiting_claim",
+    "claimed",
+    "dispatch_failed",
+    "reservation_expired",
+  ];
+  const ids = ["under_1m", "1m_to_5m", "5m_to_10m", "over_10m"];
+  if (
+    !observedAt ||
+    samples === null ||
+    retained === null ||
+    samples > retained ||
+    !states.includes(source.dispatch_state) ||
+    !Array.isArray(source.delay_buckets) ||
+    source.delay_buckets.length !== ids.length
+  )
+    return null;
+  const buckets = source.delay_buckets.map((entry, index) => {
+    const bucket = objectValue(entry);
+    return bucket.id === ids[index] && publicQueueCount(bucket.count) !== null
+      ? { id: ids[index], count: publicQueueCount(bucket.count)! }
+      : null;
+  });
+  if (
+    buckets.some((bucket) => bucket === null) ||
+    buckets.reduce((sum, bucket) => sum + (bucket?.count ?? 0), 0) !== samples
+  )
+    return null;
+  const first = publicQueueTimestamp(source.first_claim_at);
+  const last = publicQueueTimestamp(source.last_claim_at);
+  const wait =
+    source.dispatch_wait_seconds === null ? null : publicQueueCount(source.dispatch_wait_seconds);
+  if (
+    (samples > 0 && (!first || !last || first > last || last > observedAt)) ||
+    (samples === 0 && (first !== null || last !== null)) ||
+    (source.dispatch_state === "awaiting_claim" ? wait === null : wait !== null)
+  )
+    return null;
+  return {
+    observed_at: observedAt,
+    sample_count: samples,
+    retained_batches: retained,
+    first_claim_at: first,
+    last_claim_at: last,
+    dispatch_state: source.dispatch_state,
+    dispatch_wait_seconds: wait,
+    delay_buckets: buckets,
+  };
+}
+
 // Scheduled admission balances carry organic debt down to -burst, so they may be negative.
 function publicSignedQueueCount(value, maximum = PUBLIC_SCHEDULED_FEED_RATE_LIMIT) {
   return Number.isSafeInteger(value) && Math.abs(Number(value)) <= maximum ? Number(value) : null;
@@ -5182,6 +5239,7 @@ export function publicExactReviewQueueProjection(
       source.review_runaway_health,
       allowedRepositories,
     ),
+    publication_handoff: publicPublicationHandoff(source.publication_handoff),
     manual_publication:
       objectValue(source.manual_publication).policy === "record_comment_only"
         ? {

@@ -3213,6 +3213,7 @@ test("rollout dispatches one full batch workflow without admitting legacy publis
   });
   const dispatches: unknown[] = [];
   const regularDispatches: unknown[] = [];
+  let failBatchDispatch = false;
   let signalBatchDispatch!: () => void;
   let releaseBatchDispatch!: () => void;
   const batchDispatchStarted = new Promise<void>((resolve) => {
@@ -3262,6 +3263,7 @@ test("rollout dispatches one full batch workflow without admitting legacy publis
     ) {
       assert.equal(new Headers(init?.headers).get("authorization"), "Bearer test-token");
       dispatches.push(JSON.parse(String(init?.body)));
+      if (failBatchDispatch) return new Response("dispatch rejected", { status: 422 });
       signalBatchDispatch();
       await batchDispatchRelease;
       return new Response(null, { status: 204 });
@@ -3308,6 +3310,8 @@ test("rollout dispatches one full batch workflow without admitting legacy publis
     assert.match(String(dispatch?.inputs.dispatch_id), /^publication-batch-dispatch:/);
     assert.equal(dispatch?.inputs.dispatched_at, "1970-01-01T01:56:40.000Z");
     const dispatchedStats = await (await queue.fetch(new Request("https://queue/stats"))).json();
+    assert.equal(dispatchedStats.publication_handoff.dispatch_state, "dispatching");
+    assert.equal(dispatchedStats.publication_handoff.dispatch_wait_seconds, null);
     assert.equal(
       dispatchedStats.lanes.publication.batches.dispatch_pending_until,
       "1970-01-01T01:57:40.000Z",
@@ -3388,6 +3392,12 @@ test("rollout dispatches one full batch workflow without admitting legacy publis
     assert.match(secondDispatch.inputs.dispatch_id, /^publication-batch-dispatch:/);
     assert.equal(secondDispatch.inputs.dispatched_at, "1970-01-01T02:14:20.000Z");
     assert.equal(partialStorage.scheduledAlarm(), 8_660_000);
+    now += 15_000;
+    const waitingStats = await (
+      await partialQueue.fetch(new Request("https://queue/stats"))
+    ).json();
+    assert.equal(waitingStats.publication_handoff.dispatch_state, "awaiting_claim");
+    assert.equal(waitingStats.publication_handoff.dispatch_wait_seconds, 15);
 
     const multiOwnerStorage = new TestStorage();
     const multiOwnerQueue = new ExactReviewQueue(
@@ -3406,6 +3416,25 @@ test("rollout dispatches one full batch workflow without admitting legacy publis
     await multiOwnerQueue.fetch(publicationRequest("delivery-owner-b2", 117, "1016", "bbb/repo"));
     await multiOwnerQueue.alarm();
     assert.equal(dispatches.length, 3);
+
+    failBatchDispatch = true;
+    const failedQueue = new ExactReviewQueue(
+      { storage: new TestStorage() },
+      {
+        CLAWSWEEPER_APP_CLIENT_ID: "Iv23test",
+        CLAWSWEEPER_APP_PRIVATE_KEY: privateKey,
+        EXACT_REVIEW_PUBLICATION_BATCHING_ENABLED: "1",
+        EXACT_REVIEW_PUBLICATION_BATCH_SIZE: "2",
+      },
+    );
+    await failedQueue.fetch(publicationRequest("delivery-failed-1", 118, "1017"));
+    await failedQueue.fetch(publicationRequest("delivery-failed-2", 119, "1018"));
+    await failedQueue.alarm();
+    const failedStats = await (await failedQueue.fetch(new Request("https://queue/stats"))).json();
+    assert.equal(failedStats.lanes.publication.batches.last_dispatch_succeeded, false);
+    assert.equal(failedStats.lanes.publication.batches.dispatch_pending_until, null);
+    assert.equal(failedStats.publication_handoff.dispatch_state, "dispatch_failed");
+    assert.equal(failedStats.publication_handoff.dispatch_wait_seconds, null);
   } finally {
     Date.now = originalNow;
     globalThis.fetch = originalFetch;
@@ -3824,6 +3853,12 @@ test("reservation-to-claim observability traces one batch without exposing lease
   assert.equal(batch.items[0].reservation_to_claim_ms, 1_000);
   assert.equal(batch.items[0].enqueue_to_claim_ms, 2_000);
   assert.equal(observability.delay_buckets.metric, "reservation_to_claim_ms");
+  assert.equal(stats.publication_handoff.dispatch_state, "idle");
+  assert.equal(stats.publication_handoff.sample_count, 1);
+  assert.equal(stats.publication_handoff.retained_batches, 1);
+  assert.equal(stats.publication_handoff.delay_buckets[0].count, 1);
+  assert.equal(stats.publication_handoff.first_claim_at, batch.claimed_at);
+  assert.equal(stats.publication_handoff.dispatch_wait_seconds, null);
   assert.ok(
     observability.alerts.some((alert: { kind: string }) => alert.kind === "github_throttle"),
   );

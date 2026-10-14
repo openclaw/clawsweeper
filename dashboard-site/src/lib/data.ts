@@ -217,6 +217,7 @@ export const live = {
   runaway: object(queue.review_runaway_health),
   feed: object(queue.scheduled_feed),
   pressure: object(queue.pressure),
+  publicationHandoff: object(queue.publication_handoff),
   review: reviewLane as Json,
   publication: publicationLane as Json,
   pending: reviewLane.pending as number,
@@ -427,6 +428,7 @@ export const ops = {
   },
   series: {
     completed: hourly((hour) => hour.completed),
+    published: hourly((hour) => hour.published),
     shed: hourly((hour) => hour.shed),
     reviewPending: hourly((hour) => hour.reviewPending),
     publicationPending: hourly((hour) => hour.publicationPending),

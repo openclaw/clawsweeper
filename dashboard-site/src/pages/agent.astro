@@ -1,49 +1,71 @@
 ---
 import Layout from '../components/Layout.astro';
 import Kpi from '../components/Kpi.astro';
-import { asOf, cover, coverText, live } from '../lib/data';
-import { outcomeMeasures } from '../lib/agent-metrics';
-import { duration, int, stamp } from '../lib/format';
+import Card from '../components/Card.astro';
+import TabCard from '../components/TabCard.astro';
+import TimeChart from '../components/TimeChart.astro';
+import StatusStrip from '../components/StatusStrip.astro';
+import BarList from '../components/BarList.astro';
+import { asOf, cover, coverText, kpis, live, ops } from '../lib/data';
+import { duration, int, pct, stamp } from '../lib/format';
 
-const count = (value: unknown) => typeof value === 'number' && Number.isFinite(value) ? int(value) : 'Unavailable';
+const count = (value: unknown) => typeof value === 'number' && Number.isFinite(value) ? int(value) : '–';
 const runaway = live.runaway && live.runaway.status !== 'unknown' ? live.runaway : null;
-const publicationHolds = live.publication?.parked_reasons;
+const completed = ops.series.completed.slice(0, -1).slice(-24).filter(point => point.value !== null);
+const deliveriesObserved = ops.series.published.some(point => point.value !== null);
+const handoff = live.publicationHandoff;
+const delayLabels: Record<string, string> = { under_1m: 'Up to 1 min', '1m_to_5m': '1–5 min', '5m_to_10m': '5–10 min', over_10m: 'Over 10 min' };
+const dispatchLabels: Record<string, string> = { idle: 'No pending dispatch', dispatching: 'Dispatch in progress', awaiting_claim: 'Waiting for claim', claimed: 'Last dispatch claimed', dispatch_failed: 'Dispatch failed', reservation_expired: 'Reservation expired' };
 ---
 <Layout title="Agent performance" section="agent">
   <h1 class="text-[22px] font-semibold tracking-tight">Agent performance</h1>
-  <p class="mt-1 max-w-3xl text-[13px] text-fg-muted">Optimize for correct, useful outcomes with less human effort, delay and cost. More reviews, higher confidence and more closes do not establish success.</p>
+  <p class="mt-1 text-[13px] text-fg-muted">Review activity, waiting work and execution health.</p>
 
-  <h2 class="mt-7 text-[16px] font-semibold">Operational signals available now</h2>
-  <p class="mt-1 text-[13px] text-fg-muted">Use these to investigate friction. They do not measure correctness or work saved.</p>
-  <div class="mt-3 grid grid-cols-2 gap-3 xl:grid-cols-4">
-    <Kpi label="Repeated-claim alerts" value={count(runaway?.runaway_items)}
-      sub={runaway ? `>${runaway.threshold_reviews_per_day} claims in ${runaway.window_hours}h` : 'Telemetry unavailable'}
-      tip={`Targets exceeding the source's recorded review-claim threshold. A claim can end before model execution. Source revisions and triggers are not recorded here, so repetition alone does not establish wasted work. Snapshot ${stamp(asOf.queue)}.`} />
+  <div class="mt-6 grid grid-cols-2 gap-3 xl:grid-cols-4">
+    <Kpi label="Review completions · 24h" value={completed.length ? int(completed.reduce((total, point) => total + point.value!, 0)) : '–'}
+      sub={`${completed.length} of 24 hours with data`} spark={ops.series.completed.slice(-72).map(point => point.value)}
+      tip="Observed review-lane counter growth in the last 24 complete hours. Missing intervals and counter resets are excluded; partially observed hours can undercount. Includes terminal non-review dispositions." />
+    <Kpi label="Model time · p50" value={duration(kpis.reviewTime.p50)} sub={`p90 ${duration(kpis.reviewTime.p90)} · n=${int(kpis.reviewTime.count)}`}
+      tip={`Model execution in latest stored review records. Excludes queue and publication wait. Corpus ${stamp(asOf.corpus)}.`} />
     <Kpi label="Publication pending" value={count(live.publication?.pending)}
-      sub={`${count(live.publication?.ready)} ready · ${count(live.publication?.backoff)} in backoff`}
-      tip={`Publication work waiting, including retry backoff. Superseded revisions retained for acknowledgements are excluded from this demand. A completed review is not proof of delivery. Snapshot ${stamp(asOf.queue)}.`} />
-    <Kpi label="Oldest pending review" value={live.oldestPendingSeconds === null ? (live.pending === 0 ? 'None waiting' : 'Unavailable') : duration(live.oldestPendingSeconds)} sub={`${int(live.pending)} waiting`}
-      tip={`Age of the oldest currently pending item, not end-to-end latency or a percentile. Snapshot ${stamp(asOf.queue)}.`} />
-    <Kpi label="Recent-review coverage" value={cover.percent === null ? 'Unavailable' : coverText}
-      sub={`${int(cover.reviewed)} / ${int(cover.reviewable)} reviewable items`}
-      tip={`Source-defined reviewable items with a review in the last ${cover.windowDays} days. This is freshness coverage, not due-work completion or correctness. Snapshot ${stamp(asOf.coverage)}.`} />
+      sub={`${count(live.publication?.ready)} timer-ready · ${count(live.publication?.backoff)} in backoff`}
+      tip={`Waiting publication work. Timer-ready does not establish admission eligibility. Retained superseded acknowledgements are excluded. Snapshot ${stamp(asOf.queue)}.`} />
+    <Kpi label="Repeated-claim alerts" value={count(runaway?.runaway_items)}
+      sub={runaway ? `>${runaway.threshold_reviews_per_day} claims in ${runaway.window_hours}h` : undefined}
+      tip={`Targets above the review-claim threshold. Claims may end before model execution; revisions and triggers are not attributed. Snapshot ${stamp(asOf.queue)}.`} />
   </div>
-  <p class="mt-3 text-[13px] text-fg-muted">Superseded publication holds: <strong>{count(publicationHolds ? publicationHolds.stale_revision ?? 0 : null)}</strong>. These retain command acknowledgements and are excluded from pending and ready work; they are not evidence of failed delivery.</p>
-  <p class="mt-3 text-[13px] text-fg-muted">Investigate <a class="underline" href="/queue/">queue and publication holds</a>, <a class="underline" href="/operations/">execution health</a>, and <a class="underline" href="/coverage/">coverage gaps</a>.</p>
 
-  <h2 class="mt-8 text-[16px] font-semibold">Outcome evidence still needed</h2>
-  <p class="mt-1 text-[13px] text-fg-muted">Not collected means unknown. These measures cannot be reconstructed from confidence, PR grades, merge counts or workflow success.</p>
-  <div class="mt-3 grid gap-3 lg:grid-cols-2">
-    {outcomeMeasures.map(metric => (
-      <section class="card p-4">
-        <div class="flex flex-wrap items-start justify-between gap-2">
-          <h3 class="text-[14px] font-semibold">{metric.name}</h3>
-          <span class="tag shrink-0">Not collected</span>
-        </div>
-        <p class="mt-2 text-[13px]">{metric.behavior}</p>
-        <p class="mt-2 text-[12px] text-fg-muted">Evidence required: {metric.evidence}</p>
-      </section>
-    ))}
+  <div class="mt-3 grid gap-3 xl:grid-cols-2">
+    <Card title="Review completions · 7d" tip="Observed review-lane counter growth per hour, including terminal non-review dispositions. Gaps and resets are excluded; partially observed hours can undercount. Current hour is still filling.">
+      <TimeChart points={ops.series.completed} kind="bar" hourly noun="completions observed" height={210} />
+      <div class="mt-4"><StatusStrip cells={ops.handoff.strip} /></div>
+      <p class="mt-2 text-[11px] text-fg-muted">Handoff healthy or idle: {pct(ops.handoff.healthyShare, 1)} of observed samples</p>
+    </Card>
+    <TabCard title="Waiting work · 7d" name="agent-waiting" tabs={['Review', 'Publication']} tip="Highest pending count observed in each hour. Superseded publication acknowledgements are excluded. Shaded columns mean missing observations.">
+      <div class="panel"><TimeChart points={ops.series.reviewPending} hourly noun="pending at peak" color="var(--warn)" height={210} /></div>
+      <div class="panel"><TimeChart points={ops.series.publicationPending} hourly noun="pending at peak" height={210} /></div>
+    </TabCard>
+    {handoff && <Card title="Publication handoff" tip="Workflow dispatch to durable batch claim. Includes active batches and up to 50 recent retained terminal batches; it is not a fixed time window. Missing dispatch timestamps are excluded. This measures batch handoff, not total queue wait or admission eligibility.">
+      <div class="mb-4 flex flex-wrap items-baseline justify-between gap-2">
+        <span class="text-[13px] font-medium">{dispatchLabels[handoff.dispatch_state]}{handoff.dispatch_wait_seconds !== null ? ` · ${duration(handoff.dispatch_wait_seconds)}` : ''}</span>
+        <span class="num text-[12px] text-fg-muted">{int(handoff.sample_count)} / {int(handoff.retained_batches)} batches timed</span>
+      </div>
+      {handoff.sample_count > 0 && <BarList rows={handoff.delay_buckets.map((bucket: { id: string; count: number }) => ({ key: bucket.id, name: delayLabels[bucket.id], value: bucket.count }))} />}
+      {handoff.sample_count > 0 && <p class="mt-3 text-[11px] text-fg-muted">Claims {stamp(handoff.first_claim_at)} – {stamp(handoff.last_claim_at)}</p>}
+    </Card>}
+    {deliveriesObserved && <Card title="Publication deliveries · 7d" tip="Observed published_total growth per hour: actual publications, excluding superseded and deduplicated completions. History starts when the counter is first collected; earlier periods remain gaps. Current hour is still filling.">
+      <TimeChart points={ops.series.published} kind="bar" hourly noun="publications observed" color="var(--ok)" height={200} />
+    </Card>}
+    <Card title="Recent-review coverage" tip={`Reviewable items with a review in the last ${cover.windowDays} days. Snapshot ${stamp(asOf.coverage)}.`}>
+      <div class="num text-[32px] font-semibold leading-none">{cover.percent === null ? '–' : coverText}</div>
+      <p class="mt-2 text-[12px] text-fg-muted">{int(cover.reviewed)} / {int(cover.reviewable)} reviewable items · last {cover.windowDays} days</p>
+      <div class="mt-6 flex h-7 overflow-hidden rounded-md" role="img" aria-label={`Recent-review coverage ${coverText}`}>
+        {cover.segments.map(segment => <div style={`width:${cover.reviewable ? segment.value / cover.reviewable * 100 : 0}%;background:${segment.color}`} data-tip={`${segment.label}: ${int(segment.value)}`}></div>)}
+      </div>
+      <div class="mt-4 flex flex-wrap gap-x-4 gap-y-2 text-[12px] text-fg-muted">
+        {cover.segments.map(segment => <span class="inline-flex items-center gap-1.5"><span class="h-2 w-2 rounded-sm" style={`background:${segment.color}`}></span>{segment.label} <span class="num">{int(segment.value)}</span></span>)}
+      </div>
+    </Card>
   </div>
-  <p class="mt-5 max-w-3xl text-[13px] text-fg-muted">DORA deployment metrics require deployment and incident events. This page measures maintenance-agent operations and does not calculate a DORA score or rank agents across different workloads.</p>
+  <p class="mt-4 text-[11px] text-fg-muted">History built {stamp(ops.asOf)} · {ops.coverage.percent === null ? 'sample coverage unavailable' : `${ops.coverage.percent.toFixed(1)}% of 5-minute samples collected`} · <a class="underline" href="/queue/">Queue details</a> · <a class="underline" href="/throughput/">Run timings</a></p>
 </Layout>
