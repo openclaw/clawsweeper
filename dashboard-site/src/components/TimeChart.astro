@@ -1,5 +1,5 @@
 ---
-import { areaPath, labelIndices, linePath, niceMax, ticks } from '../lib/chart';
+import { areaPath, isolatedPoints, labelIndices, linePath, niceMax, ticks } from '../lib/chart';
 import { day, duration, hour, int, pct, short } from '../lib/format';
 
 interface Props {
@@ -36,6 +36,8 @@ const tip = (index: number) => {
 };
 const id = `g${Math.random().toString(36).slice(2, 8)}`;
 const barWidth = points.length ? 1000 / points.length : 0;
+const markers = [{ values, color }, ...(overlay ? [{ values: overlayValues, color: overlayColor }] : [])]
+  .flatMap(series => isolatedPoints(series.values).map(point => ({ ...point, color: series.color })));
 ---
 <div class="grid grid-cols-[auto_1fr] gap-x-3">
   <div class="relative w-9" style={`height:${height}px`}>
@@ -72,6 +74,7 @@ const barWidth = points.length ? 1000 / points.length : 0;
         ))
       )}
     </svg>
+    {kind === 'area' && markers.map(point => <span aria-hidden="true" data-isolated-point class="pointer-events-none absolute h-1.5 w-1.5 -translate-x-1/2 -translate-y-1/2 rounded-full" style={`left:${point.index / Math.max(1, points.length - 1) * 100}%;top:${100 - point.value / top * 100}%;background:${point.color}`}></span>)}
     <div class="absolute inset-0 grid" style={`grid-template-columns:repeat(${points.length},minmax(0,1fr))`}>
       {points.map((_, index) => <div class="hit" data-tip={tip(index)}></div>)}
     </div>

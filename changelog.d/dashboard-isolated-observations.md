@@ -1,0 +1,1 @@
+- Show isolated chart observations as points so sparse timing history stays visible without joining across missing data.

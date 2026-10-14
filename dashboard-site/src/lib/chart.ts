@@ -32,6 +32,13 @@ export function linePath(values: (number | null)[], top: number) {
   return path;
 }
 
+// A line has no visible segment when both neighboring observations are missing.
+export function isolatedPoints(values: (number | null)[]) {
+  return values.flatMap((value, index) => value !== null &&
+    (values[index - 1] ?? null) === null && (values[index + 1] ?? null) === null
+    ? [{ index, value }] : []);
+}
+
 // One filled region per run of observed values; gaps stay empty.
 export function areaPath(values: (number | null)[], top: number) {
   const dx = values.length > 1 ? 1000 / (values.length - 1) : 0;
