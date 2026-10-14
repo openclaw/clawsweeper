@@ -36,6 +36,13 @@
       "mutations": []
     },
     {
+      "scenario": "exact-close-held-newer-command-answered-under-other-casing",
+      "actions": [
+        "skipped_maintainer_authored"
+      ],
+      "mutations": []
+    },
+    {
       "scenario": "exact-close-held-newer-publication",
       "actions": [
         "skipped_maintainer_authored"

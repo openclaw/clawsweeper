@@ -34,7 +34,8 @@ persisted by the deployed release.
     `deferredContinuationClaim`: a verified request is reviewed, the review
     enqueues its publication, a publisher run claims it, then (per scenario)
     nothing happens, the publication completes, the clock passes the lease, a
-    newer request reusing the status comment is answered, a newer review
+    newer request reusing the status comment is answered (also under another
+    repository casing), a newer review
     generation's publication is admitted, or a second generation of the same
     request holds its own publication when the older producer's requeue arrives
     (and then answers the request). The publisher then sends the exact
@@ -75,6 +76,7 @@ persisted by the deployed release.
 | Publication finished | `skipped_maintainer_authored` | none |
 | Publisher lease lost | `skipped_maintainer_authored` | none |
 | Newer request answered (same status comment, new marker) | `skipped_maintainer_authored` | none |
+| Newer request answered under another repository casing (`OpenClaw/OpenClaw`) | `skipped_maintainer_authored` | none |
 | Newer publication admitted | `skipped_maintainer_authored` | none |
 | Older producer's late requeue while a newer publication of the same request is held; that publication then answers | `skipped_maintainer_authored` | none |
 
