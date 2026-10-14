@@ -180,9 +180,10 @@ KiB, and evict least-recently validated entries when full. The durable body is
 returned only by the post-304 confirmation operation; a lookup alone returns
 only its ETag and digest.
 
-Webhook item, comment, and review payloads have a separate 30-day retention
-policy. Bounded passes retire JSON while preserving ordering metadata and real
-deletion tombstones. Retired reads require authoritative repair before reuse.
+Ordinary webhook item, comment, and review payloads become eligible for retirement
+after 30 minutes of family inactivity. Bounded passes preserve active collections,
+unresolved placeholders, ordering metadata, and real deletion tombstones.
+Retired reads require authoritative repair before reuse.
 See [the webhook read model](github-webhook-read-model.md#stored-schema-and-bounds)
 for deployment approval, rebuild behavior, and the remaining metadata growth.
 

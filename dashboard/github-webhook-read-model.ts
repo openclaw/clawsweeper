@@ -10,7 +10,10 @@ export const GITHUB_WEBHOOK_READ_MODEL_MAX_ITEM_COMMENTS = 500;
 export const GITHUB_WEBHOOK_READ_MODEL_MAX_ITEM_ACTIVITY = 500;
 export const GITHUB_WEBHOOK_READ_MODEL_MAX_WORKFLOW_OBJECTS = 1_000;
 export const GITHUB_WEBHOOK_READ_MODEL_MAX_COMMENT_BODY_BYTES = 64 * 1_024;
-export const GITHUB_WEBHOOK_READ_MODEL_PAYLOAD_RETENTION_MS = 30 * 24 * 60 * 60_000;
+// Retain a whole active family for the longest ordinary reader TTL. Older
+// members can still belong to a fresh, complete comment or review collection.
+export const GITHUB_WEBHOOK_READ_MODEL_PAYLOAD_RETENTION_MS =
+  GITHUB_WEBHOOK_READ_MODEL_COMMENT_TTL_MS;
 export const GITHUB_WEBHOOK_READ_MODEL_PAYLOAD_PRUNE_LIMIT = 64;
 
 const PAYLOAD_TABLES = [
@@ -394,19 +397,26 @@ export class GithubWebhookReadModelStore {
          PRIMARY KEY (repository, coverage_kind, run_id)
        ) STRICT`,
     );
+    if (!sqlColumnNames(this.storage, "github_webhook_read_model_collections_v1").has("complete")) {
+      // Older receipts can describe a capped result. Only a new complete repair
+      // can certify that all returned comments still fit in storage.
+      this.storage.sql.exec(
+        `ALTER TABLE github_webhook_read_model_collections_v1 ADD COLUMN complete INTEGER NOT NULL DEFAULT 0 CHECK (complete IN (0, 1))`,
+      );
+    }
     for (const table of PAYLOAD_TABLES) {
       const columns = sqlColumnNames(this.storage, table);
-      for (const column of ["payload_pruned", "payload_protected"]) {
+      for (const column of ["payload_pruned", "payload_retire_at"]) {
         if (!columns.has(column)) {
           this.storage.sql.exec(
             `ALTER TABLE ${table} ADD COLUMN ${column} INTEGER NOT NULL DEFAULT 0
-               CHECK (${column} IN (0, 1))`,
+               CHECK (${column === "payload_pruned" ? `${column} IN (0, 1)` : `${column} >= -1`})`,
           );
         }
       }
       this.storage.sql.exec(
         `CREATE INDEX IF NOT EXISTS ${table}_payload_retention
-           ON ${table} (received_at) WHERE payload_pruned = 0 AND payload_protected = 0
+           ON ${table} (payload_retire_at) WHERE payload_pruned = 0 AND payload_retire_at >= 0
              ${table.endsWith("items_v1") ? "" : "AND tombstone = 0"}`,
       );
     }
@@ -652,7 +662,7 @@ export class GithubWebhookReadModelStore {
           if (liveIds.has(id)) continue;
           this.storage.sql.exec(
             `UPDATE github_webhook_read_model_comments_v1
-                SET source_updated_at = ?, tombstone = 1, snapshot_json = ?, payload_pruned = 0, payload_protected = 0,
+                SET source_updated_at = ?, tombstone = 1, snapshot_json = ?, payload_pruned = 0, payload_retire_at = 0,
                     delivery_id = ?, watermark = ?, received_at = ?
               WHERE repository = ? AND number = ? AND comment_id = ?`,
             now,
@@ -667,10 +677,10 @@ export class GithubWebhookReadModelStore {
         }
         this.storage.sql.exec(
           `INSERT INTO github_webhook_read_model_collections_v1
-           (repository, number, collection_kind, repaired_at, watermark)
-           VALUES (?, ?, 'comments', ?, ?)
+           (repository, number, collection_kind, repaired_at, watermark, complete)
+           VALUES (?, ?, 'comments', ?, ?, 1)
            ON CONFLICT (repository, number, collection_kind) DO UPDATE SET
-             repaired_at = excluded.repaired_at, watermark = excluded.watermark`,
+             repaired_at = excluded.repaired_at, watermark = excluded.watermark, complete = 1`,
           repository,
           number,
           now,
@@ -749,7 +759,7 @@ export class GithubWebhookReadModelStore {
     );
     const collection = firstRow(
       this.storage.sql.exec(
-        `SELECT repaired_at, watermark FROM github_webhook_read_model_collections_v1
+        `SELECT repaired_at, watermark, complete FROM github_webhook_read_model_collections_v1
           WHERE repository = ? AND number = ? AND collection_kind = 'comments'`,
         repository,
         number,
@@ -760,10 +770,9 @@ export class GithubWebhookReadModelStore {
       undefined,
     );
     const freshnessRow =
-      latest ??
-      (collection
+      collection && (!latest || Number(collection.repaired_at) > Number(latest.received_at))
         ? { received_at: collection.repaired_at, source_updated_at: collection.repaired_at }
-        : undefined);
+        : latest;
     const classState = this.classState("issue_comments", now);
     const commentFreshness = freshness(freshnessRow, GITHUB_WEBHOOK_READ_MODEL_COMMENT_TTL_MS, now);
     const comments = rows
@@ -775,21 +784,27 @@ export class GithubWebhookReadModelStore {
       .filter((id) => Number.isSafeInteger(id) && id > 0);
     const itemRow = firstRow(
       this.storage.sql.exec(
-        `SELECT snapshot_json, payload_pruned FROM github_webhook_read_model_items_v1
+        `SELECT snapshot_json, payload_pruned, watermark FROM github_webhook_read_model_items_v1
           WHERE repository = ? AND number = ?`,
         repository,
         number,
       ),
     );
-    const expectedCommentCountValue = itemRow
-      ? parseJsonRecord(String(itemRow.snapshot_json)).comments
-      : undefined;
+    const collectionCoversParent =
+      Boolean(collection) && Number(collection?.watermark) > Number(itemRow?.watermark ?? 0);
+    const expectedCommentCountValue =
+      itemRow && !collectionCoversParent
+        ? parseJsonRecord(String(itemRow.snapshot_json)).comments
+        : undefined;
     const expectedCommentCount =
       typeof expectedCommentCountValue === "number" ? expectedCommentCountValue : Number.NaN;
     const gapDetected =
       Number.isSafeInteger(expectedCommentCount) &&
       expectedCommentCount >= 0 &&
       expectedCommentCount !== comments.length;
+    // A complete comment repair owns its collection even without an item body.
+    // A later partial item observation can reveal a gap, so it fences that proof.
+    const parentCovered = !itemRow?.payload_pruned || collectionCoversParent;
     return {
       ok: true,
       watermark: this.watermarkSync(),
@@ -798,7 +813,8 @@ export class GithubWebhookReadModelStore {
       usable:
         (rows.length > 0 || Boolean(collection)) &&
         !rows.some((row) => row.payload_pruned) &&
-        !itemRow?.payload_pruned &&
+        (!collection || Number(collection.complete) === 1) &&
+        parentCovered &&
         classState.available &&
         !commentFreshness.stale &&
         !gapDetected,
@@ -1096,14 +1112,14 @@ export class GithubWebhookReadModelStore {
       const remainsPruned = Boolean(previous?.payload_pruned) && !confirmed;
       this.storage.sql.exec(
         `INSERT INTO github_webhook_read_model_items_v1
-         (repository, number, item_kind, source_updated_at, snapshot_json, delivery_id, watermark, received_at, payload_pruned)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+         (repository, number, item_kind, source_updated_at, snapshot_json, delivery_id, watermark, received_at, payload_pruned, payload_retire_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT (repository, number) DO UPDATE SET
            item_kind = excluded.item_kind,
            source_updated_at = excluded.source_updated_at,
            snapshot_json = excluded.snapshot_json,
            payload_pruned = excluded.payload_pruned,
-           payload_protected = 0,
+           payload_retire_at = excluded.payload_retire_at,
            delivery_id = excluded.delivery_id,
            watermark = excluded.watermark,
            received_at = excluded.received_at
@@ -1119,6 +1135,7 @@ export class GithubWebhookReadModelStore {
         watermark,
         receivedAt,
         remainsPruned ? 1 : 0,
+        receivedAt + GITHUB_WEBHOOK_READ_MODEL_PAYLOAD_RETENTION_MS,
       );
       return;
     }
@@ -1127,14 +1144,14 @@ export class GithubWebhookReadModelStore {
         this.storage.sql.exec(
           `INSERT INTO github_webhook_read_model_comments_v1
          (repository, number, comment_id, source_updated_at, tombstone, snapshot_json,
-          delivery_id, watermark, received_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+          delivery_id, watermark, received_at, payload_retire_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT (repository, number, comment_id) DO UPDATE SET
            source_updated_at = excluded.source_updated_at,
            tombstone = excluded.tombstone,
            snapshot_json = excluded.snapshot_json,
            payload_pruned = 0,
-           payload_protected = 0,
+           payload_retire_at = excluded.payload_retire_at,
            delivery_id = excluded.delivery_id,
            watermark = excluded.watermark,
            received_at = excluded.received_at
@@ -1151,6 +1168,7 @@ export class GithubWebhookReadModelStore {
           deliveryId,
           watermark,
           receivedAt,
+          receivedAt + GITHUB_WEBHOOK_READ_MODEL_PAYLOAD_RETENTION_MS,
           confirmed ? 1 : 0,
         ),
       );
@@ -1168,13 +1186,14 @@ export class GithubWebhookReadModelStore {
       this.storage.sql.exec(
         `INSERT INTO github_webhook_read_model_activity_v1
          (repository, number, activity_kind, activity_id, source_updated_at, tombstone,
-          snapshot_json, delivery_id, watermark, received_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          snapshot_json, delivery_id, watermark, received_at, payload_retire_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT (repository, number, activity_kind, activity_id) DO UPDATE SET
            source_updated_at = excluded.source_updated_at,
            tombstone = excluded.tombstone,
            snapshot_json = excluded.snapshot_json,
            payload_pruned = 0,
+           payload_retire_at = excluded.payload_retire_at,
            delivery_id = excluded.delivery_id,
            watermark = excluded.watermark,
            received_at = excluded.received_at
@@ -1191,6 +1210,7 @@ export class GithubWebhookReadModelStore {
         deliveryId,
         watermark,
         receivedAt,
+        receivedAt + GITHUB_WEBHOOK_READ_MODEL_PAYLOAD_RETENTION_MS,
         confirmed ? 1 : 0,
       );
       this.pruneItemRowsSync(
@@ -1278,6 +1298,18 @@ export class GithubWebhookReadModelStore {
       ),
     );
     if (!boundary) return;
+    if (table === "github_webhook_read_model_comments_v1") {
+      // A full upstream census is not a complete cache once its row cap drops
+      // members. Preserve that fact until another complete repair replaces it.
+      this.storage.sql.exec(
+        `INSERT INTO github_webhook_read_model_collections_v1
+         (repository, number, collection_kind, repaired_at, watermark, complete)
+         VALUES (?, ?, 'comments', 0, 0, 0)
+         ON CONFLICT (repository, number, collection_kind) DO UPDATE SET complete = 0`,
+        repository,
+        number,
+      );
+    }
     // Activity kinds may share an ID: retain every row whose ID is in the top set,
     // even when another row with that ID is older than the overflow boundary.
     this.storage.sql.exec(
@@ -1302,6 +1334,7 @@ export class GithubWebhookReadModelStore {
   prunePayloadsSync(now: number): number {
     let pruned = 0;
     let scanned = 0;
+    const familyDeadlines = new Map<string, number>();
     // Retain ordering facts and real tombstones: an old unseen delivery must not
     // resurrect a deleted comment or replace a newer, retired payload.
     for (const table of PAYLOAD_TABLES) {
@@ -1320,11 +1353,11 @@ export class GithubWebhookReadModelStore {
         this.storage.sql.exec(
           `SELECT rowid, repository, number, ${protectedExpression} AS protected
              FROM ${table}
-            WHERE payload_pruned = 0 AND payload_protected = 0 AND received_at < ?
+            WHERE payload_pruned = 0 AND payload_retire_at >= 0 AND payload_retire_at < ?
               ${table.endsWith("items_v1") ? "" : "AND tombstone = 0"}
-            ORDER BY received_at LIMIT ?`,
+            ORDER BY payload_retire_at LIMIT ?`,
           ...(protectedExpression === "0" ? [] : [REVIEW_PLACEHOLDER_MARKER]),
-          now - GITHUB_WEBHOOK_READ_MODEL_PAYLOAD_RETENTION_MS,
+          now,
           GITHUB_WEBHOOK_READ_MODEL_PAYLOAD_PRUNE_LIMIT - scanned,
         ),
       );
@@ -1334,7 +1367,44 @@ export class GithubWebhookReadModelStore {
           // Recovery's bounded repair is not a full census. Preserve unresolved
           // placeholder bodies and their parent item snapshots until they change.
           this.storage.sql.exec(
-            `UPDATE ${table} SET payload_protected = 1 WHERE rowid = ?`,
+            `UPDATE ${table} SET payload_retire_at = -1 WHERE rowid = ?`,
+            row.rowid,
+          );
+          continue;
+        }
+        const familyKey = `${row.repository}#${row.number}`;
+        let deadline = familyDeadlines.get(familyKey);
+        if (deadline === undefined) {
+          const latest = firstRow(
+            this.storage.sql.exec(
+              `SELECT MAX(received_at) AS received_at FROM (
+                 SELECT received_at FROM github_webhook_read_model_items_v1 WHERE repository = ? AND number = ?
+                 UNION ALL
+                 SELECT received_at FROM github_webhook_read_model_comments_v1 WHERE repository = ? AND number = ?
+                 UNION ALL
+                 SELECT received_at FROM github_webhook_read_model_activity_v1 WHERE repository = ? AND number = ?
+                 UNION ALL
+                 SELECT repaired_at FROM github_webhook_read_model_collections_v1 WHERE repository = ? AND number = ?
+               )`,
+              row.repository,
+              row.number,
+              row.repository,
+              row.number,
+              row.repository,
+              row.number,
+              row.repository,
+              row.number,
+            ),
+          );
+          deadline = Number(latest?.received_at) + GITHUB_WEBHOOK_READ_MODEL_PAYLOAD_RETENTION_MS;
+          familyDeadlines.set(familyKey, deadline);
+        }
+        if (deadline >= now) {
+          // Persist deferral so a hot prefix cannot consume every bounded pass.
+          // Each lookup is scoped to one item and its capped child collections.
+          this.storage.sql.exec(
+            `UPDATE ${table} SET payload_retire_at = ? WHERE rowid = ?`,
+            deadline,
             row.rowid,
           );
           continue;
@@ -1343,14 +1413,10 @@ export class GithubWebhookReadModelStore {
           `UPDATE ${table} SET snapshot_json = '{}', payload_pruned = 1 WHERE rowid = ?`,
           row.rowid,
         );
-        // A census claiming completeness cannot survive removal of its inputs.
+        // Only ordinary payloads retire; protected placeholder candidates and
+        // their parents survive, so their repository census remains valid.
         this.storage.sql.exec(
-          `DELETE FROM github_webhook_read_model_repairs_v1
-            WHERE repository = ? AND repair_kind = 'placeholders'`,
-          row.repository,
-        );
-        this.storage.sql.exec(
-          `DELETE FROM github_webhook_read_model_collections_v1
+          `UPDATE github_webhook_read_model_collections_v1 SET complete = 0
             WHERE repository = ? AND number = ? AND collection_kind = 'comments'`,
           row.repository,
           row.number,
@@ -1366,8 +1432,8 @@ export class GithubWebhookReadModelStore {
     // Comment replacement, deletion, or a complete repair can remove the last
     // placeholder. Reconsider its parent once, without scanning all history.
     this.storage.sql.exec(
-      `UPDATE github_webhook_read_model_items_v1 SET payload_protected = 0
-        WHERE repository = ? AND number = ? AND payload_protected = 1`,
+      `UPDATE github_webhook_read_model_items_v1 SET payload_retire_at = 0
+        WHERE repository = ? AND number = ? AND payload_retire_at = -1`,
       repository,
       number,
     );

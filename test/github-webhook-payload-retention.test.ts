@@ -5,6 +5,7 @@ import {
   GithubWebhookReadModelStore,
   GITHUB_WEBHOOK_READ_MODEL_PAYLOAD_PRUNE_LIMIT,
   GITHUB_WEBHOOK_READ_MODEL_PAYLOAD_RETENTION_MS,
+  GITHUB_WEBHOOK_READ_MODEL_COMMENT_TTL_MS,
   type GithubWebhookReadModelObject,
 } from "../dashboard/github-webhook-read-model.ts";
 import { TestStorage } from "./exact-review-test-storage.ts";
@@ -89,7 +90,7 @@ test("payload expiry upgrades existing rows idempotently and uses bounded partia
   for (const table of [items, comments, activity]) {
     storage.sql.exec(`DROP INDEX ${table}_payload_retention`);
     storage.sql.exec(`ALTER TABLE ${table} DROP COLUMN payload_pruned`);
-    storage.sql.exec(`ALTER TABLE ${table} DROP COLUMN payload_protected`);
+    storage.sql.exec(`ALTER TABLE ${table} DROP COLUMN payload_retire_at`);
   }
   store.ensureSchemaSync();
   store.ensureSchemaSync();
@@ -106,8 +107,8 @@ test("payload expiry upgrades existing rows idempotently and uses bounded partia
           ? "instr(snapshot_json, 'ClawSweeper status: review started.') > 0"
           : "0";
     const selector = `SELECT rowid, ${protectedExpression} AS protected FROM ${table}
-      WHERE payload_pruned = 0 AND payload_protected = 0 AND received_at < ?
-      ${table === items ? "" : "AND tombstone = 0"} ORDER BY received_at LIMIT ?`;
+      WHERE payload_pruned = 0 AND payload_retire_at >= 0 AND payload_retire_at < ?
+      ${table === items ? "" : "AND tombstone = 0"} ORDER BY payload_retire_at LIMIT ?`;
     const plan = [...storage.sql.exec(`EXPLAIN QUERY PLAN ${selector}`, now, 64)]
       .map((row) => row.detail)
       .join("\n");
@@ -118,12 +119,13 @@ test("payload expiry upgrades existing rows idempotently and uses bounded partia
 
 test("payload retirement drains bounded batches, retains cutoff/fresh rows, and survives restart", () => {
   const { storage, store } = fixture();
-  repair(
+  observe(
     store,
+    "old-batch",
     Array.from({ length: 70 }, (_, index) => item(index + 1)),
     old,
   );
-  repair(store, [item(100)], now - GITHUB_WEBHOOK_READ_MODEL_PAYLOAD_RETENTION_MS);
+  observe(store, "cutoff", [item(100)], now - GITHUB_WEBHOOK_READ_MODEL_PAYLOAD_RETENTION_MS);
   assert.equal(prune(storage, store), GITHUB_WEBHOOK_READ_MODEL_PAYLOAD_PRUNE_LIMIT);
   assert.equal(
     storage.scalar(`SELECT COUNT(*) AS value FROM ${items} WHERE payload_pruned = 1`),
@@ -198,7 +200,7 @@ test("equal-source live confirmation retains useful payloads without accepting e
   );
 });
 
-test("retirement invalidates placeholder completeness atomically and rolls back on failure", async () => {
+test("ordinary retirement preserves placeholder census and rolls back collection changes on failure", async () => {
   const { storage, store } = fixture();
   observe(
     store,
@@ -217,12 +219,15 @@ test("retirement invalidates placeholder completeness atomically and rolls back 
   );
   store.repair({ repository, repair_kind: "placeholders", objects: [] }, now - 1);
   assert.equal((await store.readPlaceholders({ repository, state: "open" }, now)).usable, true);
-  storage.failNextSqlMatching(/DELETE FROM github_webhook_read_model_repairs_v1/);
+  const before = await store.readPlaceholders({ repository, state: "open" }, now);
+  storage.failNextSqlMatching(/UPDATE github_webhook_read_model_collections_v1 SET complete/);
   assert.throws(() => prune(storage, store), /injected/);
   assert.equal(storage.scalar(`SELECT SUM(payload_pruned) AS value FROM ${items}`), 0);
   assert.equal((await store.readPlaceholders({ repository, state: "open" }, now)).usable, true);
   assert.equal(prune(storage, store), 2);
-  assert.equal((await store.readPlaceholders({ repository, state: "open" }, now)).usable, false);
+  const after = await store.readPlaceholders({ repository, state: "open" }, now);
+  assert.equal(after.usable, true);
+  assert.deepEqual(after.candidates, before.candidates);
   store.repair(
     {
       repository,
@@ -269,7 +274,7 @@ test("pruned review activity cannot become a usable partial collection", async (
 });
 
 test("retiring an item cannot erase completeness guards for fresh comment and activity fragments", async () => {
-  const { store } = fixture();
+  const { storage, store } = fixture();
   const source = item(1);
   observe(
     store,
@@ -277,6 +282,7 @@ test("retiring an item cannot erase completeness guards for fresh comment and ac
     [{ ...source, snapshot: { ...source.snapshot, comments: 2, review_comments: 2 } }],
     old,
   );
+  prune(storage, store);
   const current = { ...comment(1), sourceUpdatedAt: new Date(now).toISOString() };
   observe(store, "fresh-fragments", [current, { ...current, kind: "review_comment" }], now);
   assert.equal((await store.readItem({ repository, number: 1 }, now)).hit, false);
@@ -325,7 +331,7 @@ test("protected prefixes are classified once in bounded batches and reconsidered
   );
   assert.equal(prune(storage, store), 0);
   assert.equal(
-    storage.scalar(`SELECT COUNT(*) AS value FROM ${items} WHERE payload_protected = 1`),
+    storage.scalar(`SELECT COUNT(*) AS value FROM ${items} WHERE payload_retire_at = -1`),
     64,
   );
   assert.equal(prune(storage, store), 28);
@@ -334,12 +340,12 @@ test("protected prefixes are classified once in bounded batches and reconsidered
   assert.equal(prune(storage, store), 0);
   for (const table of [items, comments]) {
     assert.equal(
-      storage.scalar(`SELECT COUNT(*) AS value FROM ${table} WHERE payload_protected = 1`),
+      storage.scalar(`SELECT COUNT(*) AS value FROM ${table} WHERE payload_retire_at = -1`),
       100,
     );
     assert.equal(
       storage.scalar(
-        `SELECT COUNT(*) AS value FROM ${table} WHERE payload_pruned = 0 AND payload_protected = 0`,
+        `SELECT COUNT(*) AS value FROM ${table} WHERE payload_pruned = 0 AND payload_retire_at = 0`,
       ),
       0,
     );
@@ -356,15 +362,198 @@ test("protected prefixes are classified once in bounded batches and reconsidered
     ],
     now,
   );
-  assert.equal((await store.readItem({ repository, number: 1 }, now)).hit, false);
+  assert.equal((await store.readItem({ repository, number: 1 }, now)).hit, true);
   assert.equal(
-    storage.scalar(`SELECT payload_protected AS value FROM ${comments} WHERE comment_id = 1`),
+    storage.scalar(`SELECT payload_retire_at AS value FROM ${comments} WHERE comment_id = 1`),
+    now + GITHUB_WEBHOOK_READ_MODEL_PAYLOAD_RETENTION_MS,
+  );
+  assert.equal(
+    storage.scalar(`SELECT payload_retire_at AS value FROM ${items} WHERE number = 1`),
+    now + GITHUB_WEBHOOK_READ_MODEL_PAYLOAD_RETENTION_MS,
+  );
+});
+
+test("ordinary payloads expire after a whole family is idle for the longest reader TTL", async () => {
+  assert.equal(
+    GITHUB_WEBHOOK_READ_MODEL_PAYLOAD_RETENTION_MS,
+    GITHUB_WEBHOOK_READ_MODEL_COMMENT_TTL_MS,
+  );
+  const { storage, store } = fixture();
+  const historical = now - 50 * 60 * 60_000;
+  observe(
+    store,
+    "historical",
+    [
+      { ...item(1), snapshot: { comments: 2, review_comments: 1 } },
+      comment(1),
+      { ...comment(1), kind: "review_comment" },
+    ],
+    historical,
+  );
+  observe(store, "current", [{ ...comment(2), sourceUpdatedAt: new Date(now).toISOString() }], now);
+  assert.equal(prune(storage, store), 0);
+  assert.equal((await store.readComments({ repository, number: 1 }, now)).usable, true);
+  assert.equal(
+    ((await store.readComments({ repository, number: 1 }, now)).comments as unknown[]).length,
+    2,
+  );
+  assert.equal(storage.scalar(`SELECT SUM(payload_pruned) AS value FROM ${items}`), 0);
+  const boundary = now + GITHUB_WEBHOOK_READ_MODEL_PAYLOAD_RETENTION_MS;
+  assert.equal(
+    storage.transactionSync(() => store.prunePayloadsSync(boundary)),
     0,
   );
   assert.equal(
-    storage.scalar(`SELECT payload_protected AS value FROM ${items} WHERE number = 1`),
-    0,
+    storage.transactionSync(() => store.prunePayloadsSync(boundary + 1)),
+    4,
   );
+  assert.equal((await store.readComments({ repository, number: 1 }, boundary + 1)).usable, false);
+});
+
+test("hot prefixes are deferred once so cold families still drain in bounded passes", () => {
+  const { storage, store } = fixture();
+  observe(
+    store,
+    "old-families",
+    Array.from({ length: 135 }, (_, index) => item(index + 1)),
+    old,
+  );
+  observe(
+    store,
+    "active-families",
+    Array.from({ length: 65 }, (_, index) => ({
+      ...comment(index + 1),
+      number: index + 1,
+      sourceUpdatedAt: new Date(now).toISOString(),
+    })),
+    now,
+  );
+  // Ingest already deferred the first 64 candidates without hiding cold rows.
+  assert.equal(prune(storage, store), 63);
+  assert.equal(prune(storage, store), 7);
+  assert.equal(prune(storage, store), 0);
+  assert.equal(
+    storage.scalar(`SELECT COUNT(*) AS value FROM ${items} WHERE payload_pruned = 1`),
+    70,
+  );
+});
+
+test("complete comment repair supersedes an older parent, including after payload retirement", async () => {
+  for (const retired of [false, true]) {
+    const { storage, store } = fixture();
+    observe(store, "old", [{ ...item(1), snapshot: { comments: 1 } }, comment(1)], old);
+    if (retired) prune(storage, store);
+    const objects = [comment(1), comment(2)];
+    for (let pass = 0; pass < 2; pass += 1) {
+      store.repair(
+        { repository, repair_kind: "comments", objects, complete_comment_items: [1] },
+        now,
+      );
+      const result = await store.readComments({ repository, number: 1 }, now);
+      assert.equal(result.usable, true);
+      assert.equal((result.comments as unknown[]).length, 2);
+    }
+    observe(
+      store,
+      "new-parent",
+      [{ ...item(1), sourceUpdatedAt: new Date(now).toISOString(), snapshot: { comments: 3 } }],
+      now,
+    );
+    assert.equal((await store.readComments({ repository, number: 1 }, now)).usable, false);
+    store.repair(
+      { repository, repair_kind: "comments", objects, complete_comment_items: [1] },
+      now,
+    );
+    assert.equal((await store.readComments({ repository, number: 1 }, now)).usable, true);
+  }
+});
+
+test("fresh empty comment census owns freshness and retains an idle parent until it expires", async () => {
+  const { storage, store } = fixture();
+  observe(store, "old", [item(1), comment(1, true)], old);
+  store.repair(
+    { repository, repair_kind: "comments", objects: [], complete_comment_items: [1] },
+    now,
+  );
+  assert.equal(prune(storage, store), 0);
+  const result = await store.readComments({ repository, number: 1 }, now);
+  assert.equal(result.usable, true);
+  assert.deepEqual(result.comments, []);
+  assert.deepEqual(result.tombstones, [1]);
+});
+
+test("a complete upstream census cannot certify a truncated cache", async () => {
+  const { store } = fixture();
+  observe(store, "parent", [{ ...item(1), snapshot: { comments: 501 } }], old);
+  const full = Array.from({ length: 501 }, (_, index) => comment(index + 1));
+  repair(store, full, now);
+  assert.equal((await store.readComments({ repository, number: 1 }, now)).usable, false);
+  repair(store, full.slice(1), now);
+  assert.equal((await store.readComments({ repository, number: 1 }, now)).usable, true);
+  observe(
+    store,
+    "overflow",
+    [{ ...comment(502), sourceUpdatedAt: new Date(now).toISOString() }],
+    now,
+  );
+  assert.equal((await store.readComments({ repository, number: 1 }, now)).usable, false);
+});
+
+test("legacy completeness receipts require fresh proof after upgrade", async () => {
+  const { storage, store } = fixture();
+  observe(store, "parent", [{ ...item(1), snapshot: { comments: 501 } }], old);
+  const full = Array.from({ length: 501 }, (_, index) => comment(index + 1));
+  repair(store, full, now);
+  storage.sql.exec("ALTER TABLE github_webhook_read_model_collections_v1 DROP COLUMN complete");
+  store.ensureSchemaSync();
+  store.ensureSchemaSync();
+  assert.equal((await store.readComments({ repository, number: 1 }, now)).usable, false);
+  repair(store, full.slice(1), now);
+  assert.equal((await store.readComments({ repository, number: 1 }, now)).usable, true);
+});
+
+test("bounded retirement and partial restoration cannot erase truncation evidence", async () => {
+  const { storage, store } = fixture();
+  observe(
+    store,
+    "prefix",
+    Array.from({ length: 63 }, (_, index) => item(index + 2)),
+    old,
+  );
+  const full = Array.from({ length: 501 }, (_, index) => comment(index + 1));
+  repair(store, full, old);
+  assert.equal(prune(storage, store), 64);
+  assert.equal(storage.scalar(`SELECT SUM(payload_pruned) AS value FROM ${comments}`), 1);
+  store.repair({ repository, repair_kind: "comments", objects: [comment(2)] }, now);
+  assert.equal(storage.scalar(`SELECT SUM(payload_pruned) AS value FROM ${comments}`), 0);
+  assert.equal((await store.readComments({ repository, number: 1 }, now)).usable, false);
+  repair(store, full.slice(1), now);
+  assert.equal((await store.readComments({ repository, number: 1 }, now)).usable, true);
+});
+
+test("unresolved placeholders survive beyond the live discovery lookback", async () => {
+  const { storage, store } = fixture();
+  const historical = now - 90 * 24 * 60 * 60_000;
+  observe(
+    store,
+    "unresolved",
+    [
+      item(1),
+      {
+        ...comment(1),
+        snapshot: {
+          id: 1,
+          body: "ClawSweeper status: review started.",
+        },
+      },
+    ].map((object) => ({ ...object, sourceUpdatedAt: new Date(historical).toISOString() })),
+    historical,
+  );
+  store.repair({ repository, repair_kind: "placeholders", objects: [] }, now);
+  assert.equal(prune(storage, store), 0);
+  const result = await store.readPlaceholders({ repository, state: "open" }, now);
+  assert.equal(result.usable, true);
+  assert.equal((result.candidates as unknown[]).length, 1);
 });
 
 test("placeholder discovery exposes missing and retired parent gaps through partial repairs", async () => {

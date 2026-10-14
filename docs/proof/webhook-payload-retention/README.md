@@ -20,6 +20,8 @@ The fixture stores 71 item payloads, ordinary and placeholder comments, and a de
 It retires 64 payloads, restarts Workerd, and drains the remaining seven payloads.
 It checks that ordering rows, the tombstone, the receipt, and the unresolved placeholder survive.
 It then repairs unchanged source content and checks the original placeholder result.
+An active family with 101 comments verifies that old members survive a fresh
+observation. The fixture reports native SQLite rows read during its bounded pass.
 The runner prints measured JSON payload bytes, SQLite database bytes, and assertions as JSON on stdout.
 
 This proves the storage component on real local SQLite through Worker HTTP calls.

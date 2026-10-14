@@ -11,7 +11,23 @@ const repository = "example/project";
 
 export class PayloadRetentionProof extends DurableObject {
   async fetch(request: Request) {
-    const store = new GithubWebhookReadModelStore(this.ctx.storage);
+    const storage = this.ctx.storage;
+    let rowsRead = 0;
+    const store = new GithubWebhookReadModelStore({
+      transactionSync: (callback) => storage.transactionSync(callback),
+      sql: {
+        exec(query, ...bindings) {
+          const cursor = storage.sql.exec(query, ...bindings);
+          return (function* () {
+            try {
+              yield* cursor;
+            } finally {
+              rowsRead += cursor.rowsRead;
+            }
+          })();
+        },
+      },
+    });
     store.ensureSchemaSync();
     const { now } = (await request.json()) as { now: number };
     const sourceUpdatedAt = new Date(
@@ -35,6 +51,50 @@ export class PayloadRetentionProof extends DurableObject {
       snapshot: { id: 1, body: "ordinary comment" },
     };
     const route = new URL(request.url).pathname;
+    if (route === "/hot") {
+      const historical = now - 50 * 60 * 60_000;
+      store.ingest(
+        {
+          version: 1,
+          deliveryId: "hot-old",
+          event: "issue_comment",
+          action: "created",
+          receivedAt: new Date(historical).toISOString(),
+          eventClasses: ["issues", "issue_comments"],
+          objects: [
+            item(1),
+            ...Array.from({ length: 100 }, (_, index) => ({
+              ...comment,
+              id: index + 1,
+              sourceUpdatedAt: new Date(historical).toISOString(),
+            })),
+          ],
+        },
+        historical,
+      );
+      store.ingest(
+        {
+          version: 1,
+          deliveryId: "hot-new",
+          event: "issue_comment",
+          action: "created",
+          receivedAt: new Date(now).toISOString(),
+          eventClasses: ["issue_comments"],
+          objects: [{ ...comment, id: 101, sourceUpdatedAt: new Date(now).toISOString() }],
+        },
+        now,
+      );
+      rowsRead = 0;
+      const pruned = storage.transactionSync(() => store.prunePayloadsSync(now));
+      const pruneRowsRead = rowsRead;
+      const value = await store.readComments({ repository, number: 1 }, now);
+      return Response.json({
+        pruned,
+        pruneRowsRead,
+        usable: value.usable,
+        comments: (value.comments as unknown[]).length,
+      });
+    }
     if (route === "/seed") {
       store.ingest(
         {
@@ -106,6 +166,12 @@ export default {
     if (request.headers.get("x-proof-nonce") !== env.PROOF_NONCE)
       return new Response("forbidden", { status: 403 });
     if (new URL(request.url).pathname === "/ready") return Response.json({ ready: true });
-    return env.READ_MODEL.get(env.READ_MODEL.idFromName("fixture")).fetch(request);
+    try {
+      return await env.READ_MODEL.get(
+        env.READ_MODEL.idFromName(new URL(request.url).pathname === "/hot" ? "hot" : "fixture"),
+      ).fetch(request);
+    } catch (error) {
+      return Response.json({ error: String(error) }, { status: 500 });
+    }
   },
 };

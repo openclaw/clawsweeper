@@ -1,1 +1,1 @@
-- Retire webhook item, comment, and review payloads after 30 days in bounded batches, preserving source ordering and deletion tombstones while requiring authoritative repair before reuse.
+- Retire ordinary webhook payloads after 30 minutes of item-family inactivity in bounded batches, preserving active collections, unresolved placeholders, source ordering, and deletion tombstones while allowing complete comment repair to restore cache usability.

@@ -120,13 +120,19 @@ try {
   assert.equal(retired.item.usable, false);
   assert.equal(retired.comments.usable, false);
   assert.deepEqual(retired.comments.tombstones, [2]);
-  assert.equal(retired.placeholders.usable, false);
+  assert.equal(retired.placeholders.usable, true);
+  assert.deepEqual(retired.placeholders.candidates, before.placeholders.candidates);
   const repaired = await send("/repair");
   assert.equal(repaired.item.usable, true);
   assert.equal(repaired.comments.usable, true);
   assert.deepEqual(repaired.comments.tombstones, [2]);
   assert.equal(repaired.placeholders.usable, true);
   assert.deepEqual(repaired.placeholders.candidates, before.placeholders.candidates);
+  const hot = await send("/hot");
+  assert.equal(hot.pruned, 0);
+  assert.equal(hot.usable, true);
+  assert.equal(hot.comments, 101);
+  assert.ok(hot.pruneRowsRead > 0 && hot.pruneRowsRead < 5_000);
   console.log(
     JSON.stringify({
       ok: true,
@@ -139,6 +145,7 @@ try {
       passes: [64, 7, 0],
       restart: true,
       rebuildEquivalent: true,
+      hotFamily: hot,
       liveCloudflare: false,
       limits:
         "synthetic local storage only; no production size, billed storage, or full queue proof",
