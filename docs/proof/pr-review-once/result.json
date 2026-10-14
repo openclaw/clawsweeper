@@ -1,6 +1,7 @@
 {
   "verdict": "PASS",
   "runtime": "workerd + SQLite",
+  "legacy_publication_sha256": "ea565e890769b41ee03fdf726b86d76553433c8f5851b7554119a20cbbdab4b8",
   "trace": [
     {
       "name": "quiet",
@@ -103,13 +104,69 @@
     },
     {
       "name": "stale",
-      "op": "legacy-prune",
-      "minute": 11520,
+      "op": "enqueue",
+      "minute": 0,
+      "status": 202,
+      "dispatches": 1,
+      "state": "pending",
+      "nextAttemptAt": 1893456000000
+    },
+    {
+      "name": "legacy-stale",
+      "op": "legacy-publish",
+      "minute": 0,
       "status": 200,
       "dispatches": 1
     },
     {
-      "name": "stale",
+      "name": "legacy-valid",
+      "op": "legacy-publish",
+      "minute": 0,
+      "status": 200,
+      "dispatches": 1
+    },
+    {
+      "name": "legacy-pruned-valid",
+      "op": "legacy-publish",
+      "minute": 0,
+      "status": 200,
+      "dispatches": 1
+    },
+    {
+      "name": "legacy-unverified",
+      "op": "legacy-publish",
+      "minute": 0,
+      "status": 200,
+      "dispatches": 1
+    },
+    {
+      "name": "legacy-stale",
+      "op": "enqueue",
+      "minute": 11520,
+      "status": 202,
+      "dispatches": 1,
+      "state": "pending",
+      "nextAttemptAt": 1894147200000
+    },
+    {
+      "name": "legacy-valid",
+      "op": "enqueue",
+      "minute": 11520,
+      "status": 202,
+      "dispatches": 1,
+      "reason": "review_request_required"
+    },
+    {
+      "name": "legacy-pruned-valid",
+      "op": "enqueue",
+      "minute": 11520,
+      "status": 202,
+      "dispatches": 1,
+      "state": "pending",
+      "nextAttemptAt": 1894147200000
+    },
+    {
+      "name": "legacy-unverified",
       "op": "enqueue",
       "minute": 11520,
       "status": 202,
@@ -159,13 +216,31 @@
       "dispatches": 3,
       "state": "dispatching",
       "nextAttemptAt": 1893456000000
+    },
+    {
+      "name": "optin",
+      "op": "inspect",
+      "minute": 0,
+      "status": 200,
+      "dispatches": 3,
+      "state": "dispatching",
+      "nextAttemptAt": 1893456000000
+    },
+    {
+      "name": "optin",
+      "op": "claim",
+      "minute": 1,
+      "status": 409,
+      "dispatches": 3
     }
   ],
   "source_sha256": {
-    "dashboard/exact-review-queue.ts": "121cc2fe97e30fa5c4a67937da3a054d854c0cfe2dd341a2124aef1a7f708156",
+    "dashboard/exact-review-queue.ts": "fd15ddd49a188f6a4aff7f1b44cffa08fa0496a7d7279470689b775deca93c5e",
     "dashboard/exact-review-decision.ts": "75379031be42b4064216cdc01a0c58708f36d6ad6e4fff822d0289e5ce5723ce",
-    "dashboard/exact-review-direct-publication.ts": "4dd9be09922ccc1cab21474d284c8f51068f69bcb1c270415cdb7da60b2b96ae",
-    "src/pr-review-policy.ts": "094901dca432296430d716018eb1bcfc5c4c25321c918fbd6be7a4f8e6c177f5",
+    "dashboard/exact-review-direct-publication.ts": "894bb2b5868bc7f89b3b44f185f18fb0f5ef11a7143278ecd7811cbd96885140",
+    "src/pr-review-policy.ts": "9dafb21dca80b204b25e22d5488cb51d9c1b749118808abd4af48325c050bd00",
+    "src/review-completion.ts": "420a2babc84e344a5f0eceb258279818aa2e649cb2cef625ea2fe724ec4d3f16",
+    "src/clawsweeper-record-metadata.ts": "2d6cdc01b48abe2cc2dfa3621b73dd11286d6e058b5c34ced414a05c69a99e66",
     "src/maintainer-review-policy.ts": "364493273e09b9338e51791b8f563ba50db7603e823a75c02e89b2b8877baede",
     "src/clawsweeper-review-planning-inventory.ts": "9e74deb0b41cafce6be67187de9cb0a1e2aaf241d3cc170f6a647fa73602f41a",
     "src/clawsweeper-review-presentation.ts": "7862dbd594442a1f0e5a8ddf151b29803704b1e48ff96a5b7ee049c67f228bb0"

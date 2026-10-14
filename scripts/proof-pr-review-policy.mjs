@@ -1,6 +1,6 @@
 // Runs the production queue in workerd + SQLite. GitHub is a local HTTP fixture;
 // the clock advances explicitly, so no real reviews, writes or ten-minute sleeps.
-// Usage: node scripts/proof-pr-review-policy.mjs TOOL_PREFIX FRESH_OUTPUT_DIR
+// Usage: node scripts/proof-pr-review-policy.mjs TOOL_PREFIX FRESH_OUTPUT_DIR LEGACY_PUBLICATION_SOURCE
 import assert from "node:assert/strict";
 import { createHash, generateKeyPairSync } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -8,8 +8,12 @@ import http from "node:http";
 import { createRequire } from "node:module";
 import path from "node:path";
 
-const [toolPrefix, output] = process.argv.slice(2);
-assert.ok(toolPrefix && output, "expected TOOL_PREFIX FRESH_OUTPUT_DIR");
+const [toolPrefix, output, legacySource] = process.argv.slice(2);
+assert.ok(
+  toolPrefix && output && legacySource,
+  "expected TOOL_PREFIX FRESH_OUTPUT_DIR LEGACY_PUBLICATION_SOURCE",
+);
+const legacyPublication = readFileSync(legacySource, "utf8");
 const out = path.resolve(output);
 mkdirSync(out);
 const require = createRequire(path.resolve(toolPrefix, "package.json"));
@@ -65,6 +69,7 @@ writeFileSync(
   `
 import { ExactReviewQueue } from ${JSON.stringify(path.join(root, "dashboard/exact-review-queue.ts"))};
 import { validateDirectPublicationPlan } from ${JSON.stringify(path.join(root, "dashboard/exact-review-direct-publication.ts"))};
+import { ExactReviewDirectPublicationStore as LegacyPublicationStore } from 'proof:legacy-publication';
 let now = ${t0}; Date.now = () => now;
 export class ProofQueue extends ExactReviewQueue {
   constructor(ctx, env) { super(ctx, {...env, hostedTargetPredicate: () => true,
@@ -77,9 +82,12 @@ export class ProofQueue extends ExactReviewQueue {
     if (input.op === 'tick') await super.alarm();
     else if (input.op === 'publish') this.directPublicationStore.accept(
       await validateDirectPublicationPlan(input.data), now);
-    else if (input.op === 'legacy-prune') {
-      this.storage.sql.exec('DELETE FROM exact_review_pull_request_answers');
-      this.directPublicationStore.pruneTerminalSync(now);
+    else if (input.op === 'legacy-publish') {
+      this.storage.sql.exec('DROP TABLE exact_review_pull_request_answers');
+      const legacy = new LegacyPublicationStore(this.storage);
+      legacy.ensureSchemaSync();
+      legacy.accept(await validateDirectPublicationPlan(input.data.plan), now);
+      if (input.data.prune) legacy.pruneTerminalSync(now + 8 * 24 * 60 * 60_000);
     }
     else if (input.op !== 'inspect') response = await super.fetch(new Request(
       'https://queue/' + input.op, {method:'POST',body:JSON.stringify(input.data)}));
@@ -99,6 +107,22 @@ const bundle = await build({
   platform: "browser",
   target: "es2022",
   external: ["node:*", "cloudflare:*"],
+  plugins: [
+    {
+      name: "legacy-publication-fixture",
+      setup(build) {
+        build.onResolve({ filter: /^proof:legacy-publication$/ }, () => ({
+          path: "legacy-publication",
+          namespace: "proof",
+        }));
+        build.onLoad({ filter: /.*/, namespace: "proof" }, () => ({
+          contents: legacyPublication,
+          loader: "ts",
+          resolveDir: path.join(root, "dashboard"),
+        }));
+      },
+    },
+  ],
 });
 const start = () =>
   new Miniflare({
@@ -165,7 +189,7 @@ const enqueue = (delivery, action = "opened", overrides = {}) => ({
   },
 });
 const publication = (status, lifecycle = "router", revision = 1) => {
-  const content = `---\ntype: pull_request\nreview_status: ${status}\nreviewed_at: 2030-01-01T00:00:00Z\n---\nFixture review.\n`;
+  const content = `---\ntype: pull_request\nreview_status: ${status}\nreviewed_at: 2030-01-01T00:00:00Z\nlocal_checkout_access: verified\nlocal_checkout_access_source: runner_preflight_v1\n---\nFixture review.\n`;
   return {
     canonicalTargetKey: key,
     fenceKey: key,
@@ -222,10 +246,30 @@ try {
     ["stale", "complete", "requeue"],
   ]) {
     await call(name, "publish", t0, publication(status, lifecycle));
-    const admissionTime = name === "stale" ? t0 + 8 * 24 * 60 * minute : t0;
-    if (name === "stale") await call(name, "legacy-prune", admissionTime);
-    result = await call(name, "enqueue", admissionTime, enqueue(name));
+    result = await call(name, "enqueue", t0, enqueue(name));
     assert.equal(result.body.queued, true);
+  }
+  for (const name of ["legacy-stale", "legacy-valid", "legacy-pruned-valid", "legacy-unverified"]) {
+    const plan = publication("complete", name === "legacy-stale" ? "requeue" : "router");
+    if (name === "legacy-unverified") {
+      const operation = plan.operations[0];
+      const content = Buffer.from(operation.contentBase64, "base64")
+        .toString()
+        .replace("runner_preflight_v1", "unknown");
+      operation.contentBase64 = Buffer.from(content).toString("base64");
+      operation.bytes = plan.totalBytes = Buffer.byteLength(content);
+    }
+    await call(name, "legacy-publish", t0, {
+      plan,
+      prune: name === "legacy-stale" || name === "legacy-pruned-valid",
+    });
+  }
+  await mf.dispose();
+  mf = start();
+  for (const name of ["legacy-stale", "legacy-valid", "legacy-pruned-valid", "legacy-unverified"]) {
+    result = await call(name, "enqueue", t0 + 8 * 24 * 60 * minute, enqueue(name));
+    if (name === "legacy-valid") assert.equal(result.body.dedupe_reason, "review_request_required");
+    else assert.equal(result.body.queued, true, name);
   }
   result = await call(
     "quiet",
@@ -242,11 +286,25 @@ try {
   assert.equal(result.body.queued, true);
   await call("optin", "tick", t0);
   assert.equal(dispatches.length, 3);
+  result = await call("optin", "inspect", t0);
+  const optedInLease = result.items[key];
+  live.labels = [];
+  result = await call("optin", "claim", t0 + minute, {
+    item_key: key,
+    lease_id: optedInLease.leaseId,
+    lease_revision: optedInLease.leaseRevision,
+    run_id: "421",
+    run_attempt: 1,
+  });
+  assert.equal(result.status, 409);
+  assert.equal(result.body.reason, "review_request_required");
   const sources = [
     "dashboard/exact-review-queue.ts",
     "dashboard/exact-review-decision.ts",
     "dashboard/exact-review-direct-publication.ts",
     "src/pr-review-policy.ts",
+    "src/review-completion.ts",
+    "src/clawsweeper-record-metadata.ts",
     "src/maintainer-review-policy.ts",
     "src/clawsweeper-review-planning-inventory.ts",
     "src/clawsweeper-review-presentation.ts",
@@ -254,6 +312,7 @@ try {
   const summary = {
     verdict: "PASS",
     runtime: "workerd + SQLite",
+    legacy_publication_sha256: createHash("sha256").update(legacyPublication).digest("hex"),
     trace,
     source_sha256: Object.fromEntries(
       sources.map((file) => [file, createHash("sha256").update(readFileSync(file)).digest("hex")]),

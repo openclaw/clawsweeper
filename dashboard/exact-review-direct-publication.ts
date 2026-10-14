@@ -1133,11 +1133,14 @@ export class ExactReviewDirectPublicationStore {
         section,
         itemId,
       );
-      if (storedDirectPublicationLifecycle(publication?.lifecycle_json)?.kind === "requeue") {
+      const lifecycle = storedDirectPublicationLifecycle(publication?.lifecycle_json);
+      if (lifecycle?.kind === "requeue") {
         staleSource = true;
         return false;
       }
-      return true;
+      // Old pruning discarded receipts without recording stale-source outcomes.
+      // Missing provenance cannot permanently consume the first valid answer.
+      return lifecycle !== null;
     });
     if (answered || staleSource)
       this.storage.sql.exec(

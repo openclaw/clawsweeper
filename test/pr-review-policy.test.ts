@@ -25,7 +25,7 @@ const key = `${repo}#42`;
 const start = Date.parse("2030-01-01T00:00:00Z");
 const minute = 60_000;
 const report = (status = "complete", kind = "pull_request") =>
-  `---\ntype: ${kind}\nreview_status: ${status}\nreviewed_at: 2030-01-01T00:00:00Z\n---\nReview.\n`;
+  `---\ntype: ${kind}\nreview_status: ${status}\nreviewed_at: 2030-01-01T00:00:00Z\nlocal_checkout_access: verified\nlocal_checkout_access_source: runner_preflight_v1\n---\nReview.\n`;
 
 async function publish(
   storage: MemoryDurableStorage,
@@ -60,6 +60,10 @@ test("only a completed PR answer consumes the automatic review; opt-ins remain e
   assert.equal(isCompletedPullRequestReview(report()), true);
   assert.equal(isCompletedPullRequestReview(report("failed")), false);
   assert.equal(isCompletedPullRequestReview(report("complete", "issue")), false);
+  assert.equal(
+    isCompletedPullRequestReview(report().replace("runner_preflight_v1", "unknown")),
+    false,
+  );
   assert.equal(
     isCompletedPullRequestReview(report().replace("2030-01-01T00:00:00Z", "unknown")),
     false,
@@ -139,6 +143,26 @@ test("legacy stale-source reports stay unanswered when their publication receipt
     await publish(storage, 2, report());
     assert.equal(store.hasCompletedPullRequestReview("openclaw-gogcli", 42), true);
   }
+});
+
+test("pre-upgrade missing provenance and unverified reports do not consume the first answer", async () => {
+  for (const lifecycle of ["router", "requeue"] as const) {
+    const storage = new MemoryDurableStorage();
+    await publish(storage, 1, report(), lifecycle);
+    // State left by the old seven-day pruning implementation, before the
+    // completion table existed. Do not run the candidate's preserving hook.
+    storage.sql.exec("DELETE FROM exact_review_pull_request_answers");
+    storage.sql.exec("DELETE FROM exact_review_direct_publication_plans");
+    const restarted = new ExactReviewDirectPublicationStore(storage);
+    restarted.ensureSchemaSync();
+    assert.equal(restarted.hasCompletedPullRequestReview("openclaw-gogcli", 42), false);
+  }
+  const storage = new MemoryDurableStorage();
+  const store = await publish(storage, 1, report().replace("runner_preflight_v1", "unknown"));
+  storage.sql.exec("DELETE FROM exact_review_pull_request_answers");
+  assert.equal(store.hasCompletedPullRequestReview("openclaw-gogcli", 42), false);
+  await publish(storage, 2, report());
+  assert.equal(store.hasCompletedPullRequestReview("openclaw-gogcli", 42), true);
 });
 
 function pull() {
@@ -327,4 +351,103 @@ test("rejecting an answered automatic lease preserves a newer explicit request",
       200,
     );
   });
+});
+
+test("answered claims require a live automation opt-in and preserve commands during the read", async () => {
+  for (const scenario of [
+    "enabled",
+    "removed",
+    "webhook",
+    "command",
+    "unavailable",
+    "expired",
+  ] as const) {
+    const live = pull();
+    live.labels = ["clawsweeper:autofix"];
+    let claimRead = false;
+    let readStarted!: () => void;
+    let releaseRead!: () => void;
+    const started = new Promise<void>((resolve) => {
+      readStarted = resolve;
+    });
+    const released = new Promise<void>((resolve) => {
+      releaseRead = resolve;
+    });
+    const h = createExactReviewAdmissionHarness(async () => {
+      if (claimRead) {
+        readStarted();
+        if (scenario === "command" || scenario === "expired") await released;
+        if (scenario === "unavailable") return new Response("Unavailable", { status: 503 });
+      }
+      return jsonResponse(live);
+    });
+    await withExactReviewAdmissionHarness(h, async () => {
+      await publish(h.storage, 1, report());
+      await h.queue.fetch(
+        buildExactReviewQueueRequest(`opt-${scenario}`, 42, "opened", "pull_request", repo),
+      );
+      await h.queue.alarm();
+      const state = async () =>
+        (await h.storage.get("exact-review-queue")) as ExactReviewQueueState;
+      const old = (await state()).items[key];
+      assert.equal(old.state, "dispatching");
+      if (scenario !== "enabled") live.labels = [];
+      if (scenario === "webhook") {
+        const response = await h.queue.fetch(
+          buildExactReviewQueueRequest("removed-label", 42, "labeled", "pull_request", repo),
+        );
+        assert.equal((await response.json()).dedupe_reason, "review_request_required");
+      }
+      claimRead = true;
+      const pending = h.queue.fetch(
+        new Request("https://queue/claim", {
+          method: "POST",
+          body: JSON.stringify({
+            item_key: key,
+            lease_id: old.leaseId,
+            lease_revision: old.leaseRevision,
+            run_id: "200",
+            run_attempt: 1,
+          }),
+        }),
+      );
+      if (scenario === "command") {
+        await started;
+        await h.queue.fetch(
+          buildExactReviewQueueRequest("during-read", 42, "re_review", "pull_request", repo, {
+            commandStatusMarker: "<!-- clawsweeper-command-status:42:re_review:during-read -->",
+            statusCommentId: 9002,
+          }),
+        );
+        releaseRead();
+      }
+      const realNow = Date.now;
+      if (scenario === "expired") {
+        await started;
+        const expiredAt = realNow() + 2 * 60 * minute;
+        Date.now = () => expiredAt;
+        releaseRead();
+      }
+      let response: Response;
+      try {
+        response = await pending;
+      } finally {
+        Date.now = realNow;
+      }
+      assert.equal(
+        response.status,
+        scenario === "enabled" ? 200 : scenario === "unavailable" ? 503 : 409,
+        scenario,
+      );
+      const item = (await state()).items[key];
+      if (scenario === "enabled") assert.equal(item.state, "leased");
+      else if (scenario === "unavailable" || scenario === "expired") {
+        assert.equal(item.state, "dispatching");
+        assert.equal(item.leaseId, old.leaseId);
+      } else if (scenario === "command") {
+        assert.equal(item.state, "pending");
+        assert.equal(item.decision.statusCommentId, 9002);
+      } else assert.equal(item, undefined);
+    });
+  }
 });

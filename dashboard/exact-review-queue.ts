@@ -2732,17 +2732,48 @@ export class ExactReviewQueue {
       // Publication may finish after dispatch but before this workflow claims.
       // Only that published answer consumes the automatic review opportunity.
       if (this.automaticPullRequestAlreadyAnswered(item)) {
-        // A command can arrive while the old automatic workflow is starting.
-        // Reject that lease without discarding the newer requested review.
-        const requestedFollowUp =
-          item.revision > Number(item.leaseRevision || 0) &&
-          (exactReviewDecisionHasCommandContext(item.decision) ||
-            item.decision.sourceAction === MANUAL_REVIEW_SOURCE_ACTION);
-        finishExactReviewQueueItem(state, item, now, "success", 0, requestedFollowUp);
-        this.writeStateSync(state);
-        this.incrementQueueMetricsSync({ reviewCompleted: 1 });
-        await this.scheduleNext(state, now);
-        return json({ error: "lease_not_active", reason: "review_request_required" }, 409);
+        let live: Exclude<ExactReviewTargetItemState, { state: "unavailable" }>;
+        try {
+          const decision = item.leaseDecision ?? item.decision;
+          const token = await exactReviewTargetReadToken(this.env, decision.targetRepo);
+          live = await exactReviewTargetItemState(token, decision, this.env);
+        } catch {
+          return json({ error: "review_eligibility_unavailable", retryable: true }, 503);
+        }
+        // Labels can be removed after dispatch. Refresh authorization, then
+        // re-read the lease so an in-flight fetch cannot overwrite newer work.
+        now = Date.now();
+        state = this.readStateSync();
+        item = tupleClaim ? state.items[itemKey] : exactReviewItemForLease(state, leaseId);
+        if (
+          !item ||
+          item.leaseId !== leaseId ||
+          (tupleClaim && item.leaseRevision !== leaseRevision) ||
+          !isLiveExactReviewLease(
+            item,
+            now,
+            exactReviewPublicationDispatchLeaseMs(this.env),
+            exactReviewHeartbeatGraceMs(this.env),
+          )
+        ) {
+          return json({ error: "lease_not_active" }, 409);
+        }
+        if (item.claimedRunId && item.claimedRunId !== runId) {
+          return json({ error: "lease_already_claimed" }, 409);
+        }
+        if (live.state !== "open" || live.prReview?.automationOptIn !== true) {
+          // A command can arrive while the old automatic workflow is starting.
+          // Reject that lease without discarding the newer requested review.
+          const requestedFollowUp =
+            item.revision > Number(item.leaseRevision || 0) &&
+            (exactReviewDecisionHasCommandContext(item.decision) ||
+              item.decision.sourceAction === MANUAL_REVIEW_SOURCE_ACTION);
+          finishExactReviewQueueItem(state, item, now, "success", 0, requestedFollowUp);
+          this.writeStateSync(state);
+          this.incrementQueueMetricsSync({ reviewCompleted: 1 });
+          await this.scheduleNext(state, now);
+          return json({ error: "lease_not_active", reason: "review_request_required" }, 409);
+        }
       }
 
       // Deploys can observe a pre-snapshot lease. Recover it only when no newer
@@ -13568,7 +13599,6 @@ export class ExactReviewQueue {
   private automaticPullRequestAlreadyAnswered(item: ExactReviewQueueItem): boolean {
     return (
       isAutomaticPullRequestReview(item.leaseDecision ?? item.decision) &&
-      item.prReviewObservation?.automationOptIn !== true &&
       this.directPublicationStore.hasCompletedPullRequestReview(
         item.decision.targetRepo.replaceAll("/", "-"),
         item.decision.itemNumber,
