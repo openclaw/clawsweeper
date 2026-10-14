@@ -42,7 +42,7 @@ const feedLanes = Object.entries((live.feed?.lanes ?? {}) as Record<string, { ta
     <Kpi label="Slots busy" value={`${review.active}/${review.capacity}`} sub={pct(review.active / review.capacity, 0)} tip="Review slots running a review now." />
     <Kpi label="Pending" value={int(review.pending)} sub={review.oldest_pending_age_seconds ? `oldest ${duration(review.oldest_pending_age_seconds)}` : 'nothing waiting'} tip="Review items waiting for a slot." />
     <Kpi label="Backoff" value={int(review.backoff)} sub={review.oldest_backoff_age_seconds ? `oldest ${duration(review.oldest_backoff_age_seconds)}` : 'none'} tip="Items waiting out a retry or debounce delay." />
-    <Kpi label="Parked" value={int(review.parked + publication.parked)} sub={`${int(review.parked)} review · ${int(publication.parked)} publish`} tip="Items held back until a person or a new revision clears them." />
+    <Kpi label="Parked / retained" value={int(review.parked + publication.parked)} sub={`${int(review.parked)} review · ${int(publication.parked)} publish`} tip="Held records, including superseded publication revisions retained for command acknowledgements. These are excluded from pending demand; the total does not establish failed delivery or work requiring manual release." />
     <Kpi label="Completed" value={short(review.completed_total)} sub={`of ${short(review.enqueued_total)} enqueued`} tip="Lifetime review lane counters since the queue was created." />
   </div>
 
@@ -83,7 +83,7 @@ const feedLanes = Object.entries((live.feed?.lanes ?? {}) as Record<string, { ta
     <Card title="Parked · review" tip="Why review items are parked.">
       {live.parkedReasons.length ? <BarList rows={live.parkedReasons} /> : <Clear text="Nothing parked." />}
     </Card>
-    <Card title="Parked · publication" tip="Why publication items are parked.">
+    <Card title="Parked · publication" tip="Held publication records by reason. Stale revision means a superseded revision retained for its command acknowledgement, not claimable publication demand.">
       {live.publicationParked.length ? <BarList rows={live.publicationParked} /> : <Clear text="Nothing parked." />}
     </Card>
     <Card title="Backoff" tip="Why review items wait before their next attempt.">

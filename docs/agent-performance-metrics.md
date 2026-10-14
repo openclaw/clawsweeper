@@ -28,14 +28,14 @@ metrics or substitute review completion for production delivery.
 
 ## Headline measures
 
-| Measure | Proposed calculation and population | Behavior to optimize |
-| --- | --- | --- |
-| Verified useful outcomes | Count accepted, independently correct outcomes with a linked downstream result; also report eligible episode count and unresolved count | Finish useful work, not merely produce reports |
-| Time to useful outcome | p50/p90 from first eligibility to accepted useful outcome; show completed sample size plus unresolved count and age | Reduce end-to-end delay without dropping difficult work |
-| Material decision error rate | Material errors / independently adjudicated episodes, with audit sample size, inconclusive count and sampling policy | Avoid harmful decisions and missed defects |
-| Human minutes per useful outcome | All measured review, correction and escalation minutes in the cohort / verified useful outcomes | Save effort without moving it to contributors |
-| Total cost per useful outcome | All model, retry, tool and compute cost in the cohort / verified useful outcomes | Reduce total resource use while preserving quality |
-| Correct abstention and escalation | Report warranted escalations / adjudicated escalations and missed necessary escalations / adjudicated non-escalated decisions separately | Escalate when authority or evidence is insufficient |
+| Measure                           | Proposed calculation and population                                                                                                      | Behavior to optimize                                    |
+| --------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------- |
+| Verified useful outcomes          | Count accepted, independently correct outcomes with a linked downstream result; also report eligible episode count and unresolved count  | Finish useful work, not merely produce reports          |
+| Time to useful outcome            | p50/p90 from first eligibility to accepted useful outcome; show completed sample size plus unresolved count and age                      | Reduce end-to-end delay without dropping difficult work |
+| Material decision error rate      | Material errors / independently adjudicated episodes, with audit sample size, inconclusive count and sampling policy                     | Avoid harmful decisions and missed defects              |
+| Human minutes per useful outcome  | All measured review, correction and escalation minutes in the cohort / verified useful outcomes                                          | Save effort without moving it to contributors           |
+| Total cost per useful outcome     | All model, retry, tool and compute cost in the cohort / verified useful outcomes                                                         | Reduce total resource use while preserving quality      |
+| Correct abstention and escalation | Report warranted escalations / adjudicated escalations and missed necessary escalations / adjudicated non-escalated decisions separately | Escalate when authority or evidence is insufficient     |
 
 Zero verified outcomes makes a cost/effort ratio undefined, not zero. Partial cost
 or effort coverage must be explicit; do not extrapolate it into a total. Human
@@ -51,10 +51,13 @@ and show how the outcome changed. Do not erase the earlier result on rereview.
 
 ## Operational signals available now
 
-- Repeat-review alerts: items above the queue's stated threshold/window. Inspect
-  source revisions and causes before classifying repetition as waste.
-- Publication parked: held publication-lane work. A review result is not delivered
-  merely because its model execution completed.
+- Repeated-claim alerts: targets above the queue's recorded review-claim
+  threshold/window. A claim can end before model execution. The current history
+  does not record source revisions or triggers, so repetition does not establish waste.
+- Publication pending: work waiting for publication, split into ready and backoff.
+  Show superseded revisions retained for command acknowledgements separately;
+  these are excluded from pending demand and do not establish failed delivery.
+  A review result is not delivered merely because its model execution completed.
 - Oldest pending review: a live queue-age maximum, not eligibility-to-outcome p90.
 - Recent-review coverage: reviewed-recent / source-defined reviewable items.
   This is freshness coverage, not on-time completion of due work.

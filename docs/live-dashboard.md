@@ -159,7 +159,7 @@ unchanged.
 
 ## Operator dashboard pages
 
-The operator dashboard at `/` (Overview, Throughput, Quality, Queue, Operations,
+The operator dashboard at `/` (Overview, Agent performance, Throughput, Review assessments, Queue, Operations,
 Coverage, Repositories) is a static Astro site in `dashboard-site/`. The `Dashboard site`
 workflow (`.github/workflows/dashboard-site.yml`) rebuilds it every 15 minutes
 and publishes it to the Cloudflare Pages project `clawsweeper-dashboard`
@@ -223,6 +223,12 @@ neither measures first response or end-to-end service latency. Sweep run success
 shows its numerator, denominator and recorded days in the requested seven-day
 window; period comparison requires all seven days in both windows. Execution
 success does not establish decision correctness.
+
+Agent performance separates pending publications (ready and backoff) from
+superseded revisions retained for command acknowledgements. Retained stale revisions
+are excluded from pending demand and do not establish failed delivery. Repeated-claim
+alerts count recorded review claims, which may end before model execution; their
+history does not establish the source revisions, triggers or completed-review count.
 
 The site shows no report bodies, author identities or free-text concerns.
 Local preview: in `dashboard-site/`, install dependencies, run

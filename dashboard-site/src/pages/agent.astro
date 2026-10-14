@@ -7,6 +7,7 @@ import { duration, int, stamp } from '../lib/format';
 
 const count = (value: unknown) => typeof value === 'number' && Number.isFinite(value) ? int(value) : 'Unavailable';
 const runaway = live.runaway && live.runaway.status !== 'unknown' ? live.runaway : null;
+const publicationHolds = live.publication?.parked_reasons;
 ---
 <Layout title="Agent performance" section="agent">
   <h1 class="text-[22px] font-semibold tracking-tight">Agent performance</h1>
@@ -15,17 +16,19 @@ const runaway = live.runaway && live.runaway.status !== 'unknown' ? live.runaway
   <h2 class="mt-7 text-[16px] font-semibold">Operational signals available now</h2>
   <p class="mt-1 text-[13px] text-fg-muted">Use these to investigate friction. They do not measure correctness or work saved.</p>
   <div class="mt-3 grid grid-cols-2 gap-3 xl:grid-cols-4">
-    <Kpi label="Repeat-review alerts" value={count(runaway?.runaway_items)}
-      sub={runaway ? `>${runaway.threshold_reviews_per_day} reviews in ${runaway.window_hours}h` : 'Telemetry unavailable'}
-      tip={`Items exceeding the source's repeat-review threshold. Some repeated reviews are legitimate; inspect before treating them as waste. Snapshot ${stamp(asOf.queue)}.`} />
-    <Kpi label="Publication parked" value={count(live.publication?.parked)} sub="Review results held before publication"
-      tip={`Parked publication-lane work needs investigation; a completed review is not proof of delivery. Snapshot ${stamp(asOf.queue)}.`} />
+    <Kpi label="Repeated-claim alerts" value={count(runaway?.runaway_items)}
+      sub={runaway ? `>${runaway.threshold_reviews_per_day} claims in ${runaway.window_hours}h` : 'Telemetry unavailable'}
+      tip={`Targets exceeding the source's recorded review-claim threshold. A claim can end before model execution. Source revisions and triggers are not recorded here, so repetition alone does not establish wasted work. Snapshot ${stamp(asOf.queue)}.`} />
+    <Kpi label="Publication pending" value={count(live.publication?.pending)}
+      sub={`${count(live.publication?.ready)} ready · ${count(live.publication?.backoff)} in backoff`}
+      tip={`Publication work waiting, including retry backoff. Superseded revisions retained for acknowledgements are excluded from this demand. A completed review is not proof of delivery. Snapshot ${stamp(asOf.queue)}.`} />
     <Kpi label="Oldest pending review" value={live.oldestPendingSeconds === null ? (live.pending === 0 ? 'None waiting' : 'Unavailable') : duration(live.oldestPendingSeconds)} sub={`${int(live.pending)} waiting`}
       tip={`Age of the oldest currently pending item, not end-to-end latency or a percentile. Snapshot ${stamp(asOf.queue)}.`} />
     <Kpi label="Recent-review coverage" value={cover.percent === null ? 'Unavailable' : coverText}
       sub={`${int(cover.reviewed)} / ${int(cover.reviewable)} reviewable items`}
       tip={`Source-defined reviewable items with a review in the last ${cover.windowDays} days. This is freshness coverage, not due-work completion or correctness. Snapshot ${stamp(asOf.coverage)}.`} />
   </div>
+  <p class="mt-3 text-[13px] text-fg-muted">Superseded publication holds: <strong>{count(publicationHolds ? publicationHolds.stale_revision ?? 0 : null)}</strong>. These retain command acknowledgements and are excluded from pending and ready work; they are not evidence of failed delivery.</p>
   <p class="mt-3 text-[13px] text-fg-muted">Investigate <a class="underline" href="/queue/">queue and publication holds</a>, <a class="underline" href="/operations/">execution health</a>, and <a class="underline" href="/coverage/">coverage gaps</a>.</p>
 
   <h2 class="mt-8 text-[16px] font-semibold">Outcome evidence still needed</h2>
