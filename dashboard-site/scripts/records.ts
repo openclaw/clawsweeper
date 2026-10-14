@@ -5,6 +5,7 @@ import { createReadStream } from "node:fs";
 import { readdir } from "node:fs/promises";
 import { createInterface } from "node:readline";
 import { isRecord } from "./guards.ts";
+import { compareAttention, reviewerPriority } from "./attention.ts";
 import { isMaintainerAuthorAssociation } from "../../src/maintainer-review-policy.ts";
 
 const DAY_MS = 86_400_000;
@@ -27,6 +28,7 @@ type Row = {
   proof: string | null;
   security: string | null;
   maintainerKind: string | null;
+  triagePriority?: string | null;
 };
 type RepoStats = {
   repo: string;
@@ -44,6 +46,7 @@ type RepoStats = {
 // The typed review record fields this aggregate reads. Every field is optional because
 // records come from storage written by many code versions.
 type ReviewDecision = {
+  triagePriority?: string;
   decision?: string;
   closeReason?: string;
   confidence?: string;
@@ -155,6 +158,7 @@ export type RepoCorpus = {
 };
 export type CorpusCache = {
   version: 2;
+  attentionOrder?: "reviewer-priority-age-v1";
   generatedAt: string;
   excludedRepositories: number;
   repositories: RepoCorpus[];
@@ -175,8 +179,8 @@ const newestReviewFirst = (a: Row, b: Row) =>
   String(b.reviewedAt ?? "").localeCompare(String(a.reviewedAt ?? ""));
 const oldestReviewFirst = (a: Row, b: Row) => -newestReviewFirst(a, b);
 const LIST_ORDER: Record<ListName, (a: Row, b: Row) => number> = {
-  maintainer: newestReviewFirst,
-  security: newestReviewFirst,
+  maintainer: compareAttention,
+  security: compareAttention,
   stale: oldestReviewFirst,
 };
 const newestCloseFirst = (a: CloseRow, b: CloseRow) => b.closedAt.localeCompare(a.closedAt);
@@ -290,6 +294,7 @@ export async function aggregateRecords(
           closeReason: decision?.closeReason ?? null,
           proof: decision?.realBehaviorProof?.status ?? null,
           security: decision?.securityReview?.status ?? null,
+          triagePriority: reviewerPriority(decision?.triagePriority),
           maintainerKind: decision?.maintainerDecision?.required
             ? decision.maintainerDecision.kind
             : null,
@@ -373,6 +378,7 @@ export async function aggregateRecords(
   }
   return {
     version: 2,
+    attentionOrder: "reviewer-priority-age-v1",
     generatedAt: new Date(nowMs).toISOString(),
     excludedRepositories,
     repositories,
@@ -381,6 +387,11 @@ export async function aggregateRecords(
 
 // The published corpus: every aggregate is recomputed from the kept repositories only.
 export function combineCorpus(cache: CorpusCache, isKept: (repo: string) => boolean) {
+  // Legacy caches retained the newest 500 rows, so they cannot reconstruct the
+  // oldest/highest-priority backlog. Change order only after a complete refresh.
+  const listOrder = cache.attentionOrder
+    ? LIST_ORDER
+    : { ...LIST_ORDER, maintainer: newestReviewFirst, security: newestReviewFirst };
   const kept = cache.repositories.filter((part) => isKept(part.stats.repo));
   const totals = {
     records: 0,
@@ -436,13 +447,14 @@ export function combineCorpus(cache: CorpusCache, isKept: (repo: string) => bool
     Object.entries(record).sort(([a], [b]) => a.localeCompare(b));
   return {
     generatedAt: cache.generatedAt,
+    attentionOrder: cache.attentionOrder ?? null,
     totals,
     distributions,
     days: byDate(days).map(([day, count]) => ({ date: day, ...count })),
     repos: kept.map((part) => part.stats).sort((a, b) => b.open - a.open),
     lists: {
-      maintainer: top(lists.maintainer, LIST_ORDER.maintainer),
-      security: top(lists.security, LIST_ORDER.security),
+      maintainer: top(lists.maintainer, listOrder.maintainer),
+      security: top(lists.security, listOrder.security),
       stale: top(lists.stale, LIST_ORDER.stale),
     },
     timings: { codexMs: quantiles(codexMs), createdToReviewHours: quantiles(createdToReviewHours) },

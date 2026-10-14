@@ -2,7 +2,7 @@
 import Icon from './Icon.astro';
 import Ago from './Ago.astro';
 import { label } from '../lib/format';
-import type { Item } from '../lib/data';
+import { attentionPriorityOrdered, type Item } from '../lib/data';
 
 interface Props {
   items: Item[];
@@ -30,6 +30,7 @@ const metaText = (item: Item) =>
           <td class="max-w-0 w-full">
             <a href={item.url} target="_blank" rel="noreferrer" class="group flex min-w-0 items-center gap-2">
               <span class="tag shrink-0">{label(item.kind)}</span>
+              {attentionPriorityOrdered && (meta === 'maintainer' || meta === 'security') && <span class="tag shrink-0" data-tip="Priority assigned by the reviewer; not independently verified.">{item.triagePriority ?? 'Unranked'}</span>}
               <span class="num shrink-0 text-fg-muted">{showRepo ? `${item.repo.split('/')[1]}#${item.number}` : `#${item.number}`}</span>
               <span class="truncate group-hover:underline group-hover:decoration-line-strong group-hover:underline-offset-4">{item.title}</span>
               <Icon name="external" size={12} class="shrink-0 text-fg-faint opacity-0 transition-opacity group-hover:opacity-100" />

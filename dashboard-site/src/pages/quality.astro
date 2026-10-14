@@ -5,7 +5,7 @@ import Card from '../components/Card.astro';
 import BarList from '../components/BarList.astro';
 import SegmentBar from '../components/SegmentBar.astro';
 import ItemTable from '../components/ItemTable.astro';
-import { distributions, entries, lists, recommendedCloseReasons, totals } from '../lib/data';
+import { attentionPriorityOrdered, distributions, entries, lists, recommendedCloseReasons, totals } from '../lib/data';
 import { int, pct } from '../lib/format';
 
 const d = distributions;
@@ -78,12 +78,12 @@ const findingTotal = findings.reduce((total, row) => total + row.value, 0);
 
   <div class="mt-3 grid gap-3 xl:grid-cols-2">
     <div id="maintainer" class="scroll-mt-20">
-      <Card title="Needs a maintainer" flush tip="Latest reviews that flagged a maintainer decision, newest first.">
+      <Card title="Needs a maintainer" flush tip={attentionPriorityOrdered ? "Historical review flags, reviewer priority first then oldest review. Some may already be settled." : "Historical review flags, newest first. A corpus refresh enables priority ordering; some flags may already be settled."}>
         <ItemTable items={lists.maintainer} meta="maintainer" limit={20} />
       </Card>
     </div>
     <div id="security" class="scroll-mt-20">
-      <Card title="Security attention" flush tip="Latest reviews that marked security as needing attention, newest first.">
+      <Card title="Security attention" flush tip={attentionPriorityOrdered ? "Historical security flags, reviewer priority first then oldest review. Some may already be settled." : "Historical security flags, newest first. A corpus refresh enables priority ordering; some flags may already be settled."}>
         <ItemTable items={lists.security} meta="security" limit={20} />
       </Card>
     </div>

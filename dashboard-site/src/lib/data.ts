@@ -21,6 +21,7 @@ export interface Item {
   proof: string;
   security: string;
   maintainerKind: string | null;
+  triagePriority?: string | null;
 }
 
 export interface Repo {
@@ -357,6 +358,8 @@ export const closeReasons = entries({ ...corpus.recordedCloses.byReason });
 export const closedElsewhereTotal = corpus.closedElsewhere.total as number;
 export const recommendedCloseReasons = entries({ ...distributions.closeReasons }, ["none"]);
 export const repos: Repo[] = [...corpus.repos].sort((a: Repo, b: Repo) => b.records - a.records);
+
+export const attentionPriorityOrdered = corpus.attentionOrder === "reviewer-priority-age-v1";
 
 export const lists = {
   stale: corpus.lists.stale as Item[],

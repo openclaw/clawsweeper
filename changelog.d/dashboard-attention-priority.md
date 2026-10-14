@@ -1,0 +1,1 @@
+- Prioritize refreshed dashboard attention lists by reviewer priority and age, show the assigned priority, and preserve legacy cache ordering until a full corpus refresh.

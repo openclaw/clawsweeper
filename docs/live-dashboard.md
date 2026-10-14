@@ -1217,3 +1217,9 @@ stays parked with its exhausted attempt/recovery budgets; no review is restarted
 If a status writer retries after a token or write failure, it releases only its
 exact recorded successor coordination deferral before clearing the lease. A
 concurrently changed successor revision, reason, or deadline is not overwritten.
+
+Attention lists from a complete corpus refresh sort by reviewer-assigned priority
+(P0 through P3), then oldest review, with unranked items last. These are historical
+flags, not verified unresolved work. Cached corpora built before priority collection
+retain newest-first ordering until the next `refresh_corpus` run; discarded older
+rows cannot be reconstructed by sorting the cache.
