@@ -72,9 +72,11 @@ Workers Scripts edit permission before enabling the workflow as the production
 deploy path. The deploy workflow injects the `CLAWSWEEPER_STATUS_INGEST_TOKEN`
 GitHub secret into a temporary Wrangler config as the Worker `INGEST_TOKEN`.
 The smoke test waits for the expected deployment revision and a successful
-exact-review queue response within the same default 180-second readiness budget.
-It then waits up to another 180 seconds for the signed review-admission
+exact-review queue response within the same default 600-second readiness budget.
+It then waits up to another 600 seconds for the signed review-admission
 response to report that same deployment revision from the Durable Object itself.
+The queue Durable Object can keep serving the previous version for several
+minutes after a deploy.
 A healthy outer Worker or a successful response from an older queue is not
 deployment readiness. The smoke also verifies the capability contract, queue schema,
 unsigned-request rejection, and Overview rendering. An exact-revision smoke run

@@ -6,9 +6,12 @@ import { realpathSync } from "node:fs";
 const cliUrl = process.argv.find((arg, index) => index > 1 && arg !== "--");
 const baseUrl = cliUrl || process.env.CLAWSWEEPER_STATUS_URL || "http://127.0.0.1:8787";
 const expectedDeploySha = String(process.env.CLAWSWEEPER_EXPECTED_DEPLOY_SHA || "").trim();
+// The queue Durable Object can keep serving the previous version for minutes
+// after a deploy (4 min 45 s observed on 2026-10-14), so wait up to 10 minutes.
+const DEFAULT_DEPLOY_READY_TIMEOUT_MS = 600_000;
 const deploymentReadyTimeoutMs = positiveInteger(
   process.env.CLAWSWEEPER_DEPLOY_READY_TIMEOUT_MS,
-  180_000,
+  DEFAULT_DEPLOY_READY_TIMEOUT_MS,
 );
 const deploymentReadyIntervalMs = positiveInteger(
   process.env.CLAWSWEEPER_DEPLOY_READY_INTERVAL_MS,
@@ -187,7 +190,7 @@ function statusDiagnostic(status, cacheState, statusFetchMs) {
 export async function waitForDashboardDeployment({
   baseUrl,
   expectedSha,
-  timeoutMs = 180_000,
+  timeoutMs = DEFAULT_DEPLOY_READY_TIMEOUT_MS,
   intervalMs = 5_000,
   fetchImpl = fetch,
   sleep = (delayMs) => new Promise((resolve) => setTimeout(resolve, delayMs)),
