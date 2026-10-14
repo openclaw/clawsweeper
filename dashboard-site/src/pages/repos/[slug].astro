@@ -35,8 +35,8 @@ const fresh = repo.open ? (repo.open - repo.staleOpen) / repo.open : null;
   <div class="mt-6 grid grid-cols-2 gap-3 md:grid-cols-5">
     <Kpi label="Open" value={int(repo.open)} sub={`${int(repo.archived)} archived`} tip="Items open on GitHub at the corpus snapshot." />
     <Kpi label="Stale open" value={int(repo.staleOpen)} sub={fresh === null ? 'no open items' : `${pct(fresh, 0)} fresh`} tip="Open items last reviewed over seven days ago." />
-    <Kpi label="Reviews · 7d" value={int(repo.reviewed7d)} tip="Items whose latest stored review landed in the last 7 days." />
-    <Kpi label="Reviews · 30d" value={int(repo.reviewed30d)} tip="Items whose latest stored review landed in the last 30 days." />
+    <Kpi label="Items refreshed · 7d" value={int(repo.reviewed7d)} tip="Items whose latest stored review landed in the last 7 days." />
+    <Kpi label="Items refreshed · 30d" value={int(repo.reviewed30d)} tip="Items whose latest stored review landed in the last 30 days." />
     <Kpi label="Untyped" value={int(repo.missingTyped)} sub={`${int(repo.typed)} typed`} tip="Records without a version-1 typed review. They get a fresh review when next due." />
   </div>
 

@@ -9,12 +9,13 @@ interface Props {
   tip?: string;
   delta?: number | null;
   invert?: boolean;
+  neutral?: boolean;
   sub?: string;
   spark?: (number | null)[];
 }
-const { label, value, tip, delta, invert = false, sub, spark } = Astro.props;
+const { label, value, tip, delta, invert = false, neutral = false, sub, spark } = Astro.props;
 const change = delta === undefined ? null : formatDelta(delta);
-const good = change && change.sign !== 0 ? (change.sign > 0) !== invert : null;
+const good = !neutral && change && change.sign !== 0 ? (change.sign > 0) !== invert : null;
 ---
 <div class="card flex flex-col p-4">
   <div class="flex items-center gap-1.5 text-[13px] text-fg-muted">

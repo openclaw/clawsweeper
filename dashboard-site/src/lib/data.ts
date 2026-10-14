@@ -1,6 +1,7 @@
 import raw from "../data/dashboard.json";
 import type { Operations, OperationsHour } from "../../scripts/operations.ts";
 import { duration, label } from "./format";
+import { summarizeRunWindow } from "./run-window.ts";
 
 // The build snapshot (scripts/build-data.ts). Typed loosely at the edge; every page reads
 // through the view helpers below so presentation never learns the raw shapes.
@@ -147,15 +148,10 @@ const runDays: {
   reviewP50: day.reviewSeconds?.p50 ?? null,
   reviewP90: day.reviewSeconds?.p90 ?? null,
 }));
-const completeRunDays = runDays.slice(0, -1);
+const completeRunDays = runDays.filter((day) => day.date < asOf.actions.slice(0, 10));
 
-function runRate(days: number, offset = 0) {
-  const slice = lastDays(completeRunDays, days, offset);
-  if (offset && slice.length < days) return null;
-  const total = sum(slice.map((day) => day.total));
-  const success = sum(slice.map((day) => day.success));
-  return total ? success / total : null;
-}
+const currentRunWindow = summarizeRunWindow(runDays, asOf.actions, 7);
+const previousRunWindow = summarizeRunWindow(runDays, asOf.actions, 7, 7);
 
 export const kpis = {
   reviews7d: periodDelta(reviewDays, 7),
@@ -163,13 +159,22 @@ export const kpis = {
   closes7d: periodDelta(closeDays, 7),
   closes30d: periodDelta(closeDays, 30),
   closedElsewhere7d: periodDelta(elsewhereDays, 7),
-  runSuccess7d: { current: runRate(7), previous: runRate(7, 7) },
+  runSuccess7d: {
+    ...currentRunWindow,
+    current: currentRunWindow.rate,
+    previous:
+      currentRunWindow.recordedDays === 7 && previousRunWindow.recordedDays === 7
+        ? previousRunWindow.rate
+        : null,
+  },
   // Seconds; null when the corpus has no samples.
   reviewTime: {
+    count: corpus.timings.codexMs.count as number,
     p50: scaled(corpus.timings.codexMs.p50, 1 / 1000),
     p90: scaled(corpus.timings.codexMs.p90, 1 / 1000),
   },
-  firstReview: {
+  latestReviewAge: {
+    count: corpus.timings.createdToReviewHours.count as number,
     p50: scaled(corpus.timings.createdToReviewHours.p50, 3600),
     p90: scaled(corpus.timings.createdToReviewHours.p90, 3600),
   },

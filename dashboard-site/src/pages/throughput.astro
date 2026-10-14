@@ -17,23 +17,23 @@ const perDay = (points: { value: number }[]) => points.reduce((total, point) => 
   <p class="mt-1 text-[13px] text-fg-muted">How much ClawSweeper reviews and closes, and how its sweep runs behave.</p>
 
   <div class="mt-6 grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-5">
-    <Kpi label="Reviews · 30d" value={int(kpis.reviews30d.current)} delta={kpis.reviews30d.delta} sub={`${int(perDay(series.reviews(30)))} per day`}
+    <Kpi neutral label="Items refreshed · 30d" value={int(kpis.reviews30d.current)} delta={kpis.reviews30d.delta} sub={`${int(perDay(series.reviews(30)))} per day`}
       tip="Items whose latest stored review landed in the last 30 complete days. Delta compares with the prior 30 days." />
-    <Kpi label="Closes · 30d" value={int(kpis.closes30d.current)} delta={kpis.closes30d.delta} sub={`${int(perDay(series.closes(30)))} per day`}
+    <Kpi neutral label="Closes · 30d" value={int(kpis.closes30d.current)} delta={kpis.closes30d.delta} sub={`${int(perDay(series.closes(30)))} per day`}
       tip="Items ClawSweeper closed in the last 30 complete days. Delta compares with the prior 30 days. Merged PRs and items closed by others are not counted." />
     <Kpi label={`Sweep runs · ${last30.length}d`} value={short(runs30)} sub={`${int(failed30)} failed · ${pct(failed30 / Math.max(runs30, 1))}`}
       tip="All sweep workflow runs in the last complete days the dashboard has recorded (up to 30; history grows from the first build)." />
-    <Kpi label="Review time · p50" value={duration(kpis.reviewTime.p50)} sub={`p90 ${duration(kpis.reviewTime.p90)}`}
-      tip="Codex time per review, from stored review records. Excludes queue wait." />
-    <Kpi label="Created → review · p50" value={duration(kpis.firstReview.p50)} sub={`p90 ${duration(kpis.firstReview.p90)}`}
+    <Kpi label="Model time · p50" value={duration(kpis.reviewTime.p50)} sub={`p90 ${duration(kpis.reviewTime.p90)} · n=${int(kpis.reviewTime.count)}`}
+      tip="Model execution time in latest stored review records, across the corpus. Excludes queue and publication wait; not end-to-end latency." />
+    <Kpi label="Creation → latest review" value={duration(kpis.latestReviewAge.p50)} sub={`p90 ${duration(kpis.latestReviewAge.p90)} · n=${int(kpis.latestReviewAge.count)}`}
       tip="Time from item creation to its latest stored review. Re-reviews reset it, so it overstates first-review latency for older items." />
   </div>
 
-  <TabCard title="Reviews per day" name="reviews" tabs={['30d', '90d', '140d', 'Maintainer share']} class="mt-3" tip="Each item counts once, on the day of its latest stored review. The dashed line is the part authored by maintainers (owner, member or collaborator, or labelled maintainer). Maintainer share: that part as a percentage of each day's reviews, last 90 days.">
-    <div class="panel"><TimeChart points={series.reviews(30)} noun="reviews" height={240} overlay={{ points: series.maintainerReviews(30), label: 'By maintainers', noun: 'by maintainers' }} /></div>
-    <div class="panel"><TimeChart points={series.reviews(90)} noun="reviews" height={240} overlay={{ points: series.maintainerReviews(90), label: 'By maintainers', noun: 'by maintainers' }} /></div>
-    <div class="panel"><TimeChart points={series.reviews(140)} noun="reviews" height={240} overlay={{ points: series.maintainerReviews(140), label: 'By maintainers', noun: 'by maintainers' }} /></div>
-    <div class="panel"><TimeChart points={series.maintainerShare(90)} kind="bar" unit="percent" noun="by maintainers" color="var(--warn)" height={240} /></div>
+  <TabCard title="Latest-review dates" name="reviews" tabs={['30d', '90d', '140d', 'Maintainer share']} class="mt-3" tip="Each item counts once, on the day of its latest stored review. Re-reviewing an item moves its date; this is not immutable review-event history. The dashed line is the part authored by maintainers (owner, member or collaborator, or labelled maintainer). Maintainer share: that part as a percentage of each day's reviews, last 90 days.">
+    <div class="panel"><TimeChart points={series.reviews(30)} noun="reviews" height={240} overlay={{ points: series.maintainerReviews(30), label: 'Maintainer-authored items', noun: 'maintainer-authored items' }} /></div>
+    <div class="panel"><TimeChart points={series.reviews(90)} noun="reviews" height={240} overlay={{ points: series.maintainerReviews(90), label: 'Maintainer-authored items', noun: 'maintainer-authored items' }} /></div>
+    <div class="panel"><TimeChart points={series.reviews(140)} noun="reviews" height={240} overlay={{ points: series.maintainerReviews(140), label: 'Maintainer-authored items', noun: 'maintainer-authored items' }} /></div>
+    <div class="panel"><TimeChart points={series.maintainerShare(90)} kind="bar" unit="percent" noun="maintainer-authored items" color="var(--warn)" height={240} /></div>
   </TabCard>
 
   <div class="mt-3 grid gap-3 xl:grid-cols-2">

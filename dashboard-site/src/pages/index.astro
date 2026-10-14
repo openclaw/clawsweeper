@@ -30,24 +30,24 @@ const success7 = kpis.runSuccess7d;
   </div>
 
   <div class="mt-6 grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6">
-    <Kpi label="Reviews · 7d" value={int(kpis.reviews7d.current)} delta={kpis.reviews7d.delta} spark={series.reviews(14).map(point => point.value)}
+    <Kpi neutral label="Items refreshed · 7d" value={int(kpis.reviews7d.current)} delta={kpis.reviews7d.delta} spark={series.reviews(14).map(point => point.value)}
       tip="Items whose latest stored review landed in the last 7 complete days. Re-reviews of the same item count once. Delta compares with the prior 7 days." />
-    <Kpi label="Closes · 7d" value={int(kpis.closes7d.current)} delta={kpis.closes7d.delta} spark={series.closes(14).map(point => point.value)}
+    <Kpi neutral label="Closes · 7d" value={int(kpis.closes7d.current)} delta={kpis.closes7d.delta} spark={series.closes(14).map(point => point.value)}
       sub={`+${int(kpis.closedElsewhere7d.current)} closed by others`}
       tip="Items ClawSweeper closed in the last 7 complete days. Delta compares with the prior 7 days. PRs that were merged and items that a maintainer or another bot closed are counted apart." />
-    <Kpi label="Sweep success · 7d" value={pct(success7.current)} delta={success7.current !== null && success7.previous ? (success7.current - success7.previous) / success7.previous : null}
-      spark={runs.days.slice(-14).map(day => (day.total ? day.success / day.total : null))} tip="Successful sweep runs ÷ all sweep runs, last 7 complete days. Cancelled runs count as not successful." />
+    <Kpi label="Sweep run success" value={pct(success7.current)} sub={`${int(success7.success)}/${int(success7.total)} runs · ${success7.recordedDays}/7 days recorded`} delta={success7.current !== null && success7.previous ? (success7.current - success7.previous) / success7.previous : null}
+      spark={runs.days.slice(-14).map(day => (day.total ? day.success / day.total : null))} tip="Successful workflow runs divided by all recorded sweep runs in the last 7 complete UTC days. Missing days are not assumed healthy. Cancelled runs count as not successful. This measures execution, not review correctness." />
     <Kpi label="Coverage" value={coverText} sub={`${int(cover.reviewed)} of ${int(cover.reviewable)}`}
       tip={`Reviewable open items with a review in the last ${cover.windowDays} days.\nSnapshot ${stamp(asOf.coverage)}`} />
     <Kpi label="Review queue" value={int(live.pending)} sub={live.oldestPendingSeconds ? `oldest ${duration(live.oldestPendingSeconds)}` : 'nothing waiting'}
       tip={`Items waiting for a review slot. ${live.active} of ${live.capacity} slots busy.\nSnapshot ${stamp(asOf.queue)}`} />
-    <Kpi label="Review time · p50" value={duration(kpis.reviewTime.p50)} sub={`p90 ${duration(kpis.reviewTime.p90)}`}
-      tip="Codex time per review, from stored review records. Excludes queue wait." />
+    <Kpi label="Model time · p50" value={duration(kpis.reviewTime.p50)} sub={`p90 ${duration(kpis.reviewTime.p90)} · n=${int(kpis.reviewTime.count)}`}
+      tip="Model execution time in latest stored review records, across the corpus. Excludes queue and publication wait; not end-to-end latency." />
   </div>
 
   <div class="mt-3 grid gap-3 xl:grid-cols-3">
-    <TabCard title="Daily activity" name="activity" tabs={['Reviews', 'Closes', 'Closed by others']} class="xl:col-span-2" tip="Last 30 complete days. Reviews count each item on the day of its latest stored review; the dashed line is the part authored by maintainers (owner, member or collaborator, or labelled maintainer). Closes are ClawSweeper's own; closed by others means merged, or closed by a maintainer or another bot, after ClawSweeper reviewed it.">
-      <div class="panel"><TimeChart points={reviews30} noun="reviews" overlay={{ points: series.maintainerReviews(30), label: 'By maintainers', noun: 'by maintainers' }} /></div>
+    <TabCard title="Latest-record activity" name="activity" tabs={['Items refreshed', 'Closes', 'Closed by others']} class="xl:col-span-2" tip="Last 30 complete days. Items count on the date of their latest stored review, which moves when reviewed again; the dashed line is the part authored by maintainers (owner, member or collaborator, or labelled maintainer). Closes are ClawSweeper's own; closed by others means merged, or closed by a maintainer or another bot, after ClawSweeper reviewed it.">
+      <div class="panel"><TimeChart points={reviews30} noun="reviews" overlay={{ points: series.maintainerReviews(30), label: 'Maintainer-authored items', noun: 'maintainer-authored items' }} /></div>
       <div class="panel"><TimeChart points={closes30} kind="bar" noun="closes" color="var(--close)" /></div>
       <div class="panel"><TimeChart points={series.closedElsewhere(30)} kind="bar" noun="merged or closed by others" color="var(--ok)" /></div>
     </TabCard>

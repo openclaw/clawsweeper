@@ -214,6 +214,16 @@ only with `refresh_corpus`). Unknown paths return the site's 404 page with
 status 404. Pull requests that touch `dashboard-site/` build the site from
 `dashboard-site/fixtures/dashboard.json`, without secrets or publishing.
 
+Metric labels distinguish latest-record snapshots from event history. Items refreshed
+count each item once on its latest review date; re-review moves that date and does
+not preserve historical daily throughput. Maintainer-authored items describes the
+item author, not who performed a review. Activity deltas are neutral. Model time
+and creation-to-latest-review age show sample counts across the stored corpus;
+neither measures first response or end-to-end service latency. Sweep run success
+shows its numerator, denominator and recorded days in the requested seven-day
+window; period comparison requires all seven days in both windows. Execution
+success does not establish decision correctness.
+
 The site shows no report bodies, author identities or free-text concerns.
 Local preview: in `dashboard-site/`, install dependencies, run
 `dashboard-site/scripts/build-data.ts` with `GITHUB_TOKEN`, `--records <records dir>` and
