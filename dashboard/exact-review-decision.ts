@@ -772,6 +772,23 @@ export function mergePendingExactReviewDecision(
   return merged;
 }
 
+/** The decision without the fields that belong to one command request. */
+export function exactReviewDecisionWithoutCommand(decision: ExactReviewDecision) {
+  const {
+    commandStatusMarker: _commandStatusMarker,
+    statusCommentId: _statusCommentId,
+    sourceDeliveryId: _sourceDeliveryId,
+    sourceCommentId: _sourceCommentId,
+    sourceCommentUpdatedAt: _sourceCommentUpdatedAt,
+    sourceCommentVerified: _sourceCommentVerified,
+    commandBodyDigest: _commandBodyDigest,
+    commandOrigin: _commandOrigin,
+    additionalPrompt: _additionalPrompt,
+    ...rest
+  } = decision;
+  return rest;
+}
+
 export function exactReviewDecisionHasCommandContext(
   decision: Pick<ExactReviewDecision, "commandStatusMarker" | "statusCommentId">,
 ) {
@@ -787,6 +804,27 @@ export function exactReviewCommandObligationSurvives(
   return (
     (current.commandStatusMarker ?? null) === (incoming.commandStatusMarker ?? null) &&
     (current.statusCommentId ?? null) === (incoming.statusCommentId ?? null)
+  );
+}
+
+/** Whether `incoming` repeats the verified command request that `held` carries. */
+export function exactReviewSameVerifiedCommand(
+  held: ExactReviewBaseDecision,
+  incoming: ExactReviewBaseDecision,
+) {
+  return (
+    held.sourceCommentVerified === true &&
+    exactReviewDecisionHasCommandContext(held) &&
+    (
+      [
+        "commandStatusMarker",
+        "statusCommentId",
+        "sourceCommentId",
+        "sourceCommentUpdatedAt",
+        "commandBodyDigest",
+        "commandOrigin",
+      ] as const
+    ).every((field) => held[field] === incoming[field])
   );
 }
 
@@ -955,6 +993,17 @@ export function isImmediateExactReviewDecision(
 
 export function isLowPriorityExactReviewDecision(decision: ExactReviewDecision) {
   return EXACT_REVIEW_LOW_PRIORITY_SOURCE_ACTIONS.has(decision.sourceAction);
+}
+
+/**
+ * Backpressure and a GitHub throttle may shed recovery work. A recovery that
+ * still carries command context continues that command, whose status needs a
+ * terminal answer, so it is admitted like the command itself.
+ */
+export function isSheddableExactReviewRecovery(decision: ExactReviewDecision) {
+  return (
+    isLowPriorityExactReviewDecision(decision) && !exactReviewDecisionHasCommandContext(decision)
+  );
 }
 
 export function exactReviewQueueIsPublication(item: Pick<ExactReviewQueueItem, "decision">) {

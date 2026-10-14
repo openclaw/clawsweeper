@@ -40,9 +40,10 @@ not split reports into issue/PR subtrees.
   Finish the work and validation first; request review only when it is needed.
   Agents must not request reviews automatically or repeat a queued/running request.
   An explicit review request stays open while the queue requeues its own review
-  in place after source drift; that retry continues the request. A finished or
-  replaced request, later changes after the answer, and scheduled passes need a
-  new request.
+  after source drift, in place or from the publisher still holding the request's
+  publication; that retry continues the request. A finished or replaced
+  request, later changes after the answer, and scheduled passes need a new
+  request.
 - Apply lane mutates GitHub by syncing the durable Codex review comment and then
   closing only unchanged, high-confidence proposals.
 - Repository-specific rules live in `src/repository-profiles.ts`; ClawHub apply

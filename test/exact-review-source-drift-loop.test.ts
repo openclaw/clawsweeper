@@ -414,6 +414,51 @@ test("command-context source-drift requeues are never counted or parked", async 
   });
 });
 
+test("command-context source-drift requeues are never shed", async () => {
+  const continuation = (number: number) =>
+    decision(number, "source_drift_requeue", {
+      supersedesInProgress: true,
+      commandStatusMarker: marker(number),
+      statusCommentId: number,
+    });
+  const plain = (number: number) =>
+    decision(number, "source_drift_requeue", { supersedesInProgress: true });
+
+  const backpressure = harness({ EXACT_REVIEW_PENDING_SOFT_LIMIT: "1" });
+  await withExactReviewAdmissionHarness(backpressure, async () => {
+    await enqueue(backpressure, "fills-soft-limit", decision(97630, "opened"));
+    assert.deepEqual(await enqueue(backpressure, "plain-backpressure", plain(97631)), {
+      ok: true,
+      shed: true,
+      reason: "backpressure",
+    });
+    const admitted = await enqueue(backpressure, "command-backpressure", continuation(97632));
+    assert.equal(admitted.queued, true, JSON.stringify(admitted));
+    assert.equal((await queueState(backpressure)).items[`${repo}#97632`]?.state, "pending");
+  });
+
+  // A GitHub throttle window holds plain recovery, not a command continuation.
+  const throttled = harness();
+  await withExactReviewAdmissionHarness(throttled, async () => {
+    const now = Date.now();
+    throttled.storage.kv.put("exact-review-scheduled-feed:v1:global", {
+      tokens: 0,
+      updatedAt: now,
+      throttleObservedAt: now,
+      throttleUntil: now + 60 * 60_000,
+      throttleSource: "review_run",
+    });
+    assert.deepEqual(await enqueue(throttled, "plain-throttle", plain(97633)), {
+      ok: true,
+      shed: true,
+      reason: "scheduled_rate",
+    });
+    const admitted = await enqueue(throttled, "command-throttle", continuation(97634));
+    assert.equal(admitted.queued, true, JSON.stringify(admitted));
+    assert.equal((await queueState(throttled)).items[`${repo}#97634`]?.state, "pending");
+  });
+});
+
 function verifiedRequest(number: number, commentId: number) {
   return decision(number, "re_review", {
     commandStatusMarker: `<!-- clawsweeper-command-status:${number}:re_review:command-${commentId} -->`,
@@ -506,6 +551,175 @@ test("a verified requeue persisted by the previous release keeps authority only 
       );
       assert.equal(isExplicitReviewRequest(await reviewOnce(h, number)), inPlace);
     });
+  }
+});
+
+/** A review generation that hands its verdict to a deferred publication. */
+async function deferredPublication(h: Harness, request: Record<string, unknown>) {
+  const number = Number(request.itemNumber);
+  const key = `${repo}#${number}`;
+  await enqueue(h, `request-${number}-${runCounter++}`, request);
+  await h.queue.alarm();
+  const review = (await queueState(h)).items[key]!;
+  const producerRunId = String(runCounter++);
+  const tuple = {
+    item_key: key,
+    lease_id: review.leaseId,
+    lease_revision: review.leaseRevision,
+    run_id: producerRunId,
+    run_attempt: 1,
+  };
+  const claim = await post(h, "/claim", tuple);
+  assert.equal(claim.status, 200, JSON.stringify(claim.body));
+  const claimed = claim.body.decision as Record<string, unknown>;
+  await enqueue(h, `publisher:${producerRunId}:1`, {
+    ...claimed,
+    sourceAction: "exact_review_artifact_publish",
+    supersedesInProgress: false,
+    publication: {
+      artifactName: `exact-review-${producerRunId}-1`,
+      producerRunId,
+      producerRunAttempt: 1,
+      sourceSha: "a".repeat(40),
+      itemKey: key,
+      protocolVersion: 2,
+      leaseRevision: review.leaseRevision,
+      claimGeneration: claim.body.claim_generation,
+      liveProceeded: true,
+      liveTerminalNoop: false,
+      liveTerminalMissing: false,
+      liveGuardedOpen: false,
+      producerDecision: claimed,
+    },
+  });
+  const complete = await post(h, "/complete", {
+    ...tuple,
+    claim_generation: claim.body.claim_generation,
+    outcome: "success",
+  });
+  assert.equal(complete.status, 200, JSON.stringify(complete.body));
+  return {
+    claimed,
+    key,
+    publicationKey: `${key}@publish:${producerRunId}:1`,
+    // sweep.yml "Queue fresh review after source drift" and the batch publisher.
+    requeueDeliveryId: `publisher-source-drift:${producerRunId}:1`,
+  };
+}
+
+/** A publisher run claims the deferred publication and holds its lease. */
+async function claimPublication(h: Harness, publicationKey: string) {
+  await h.queue.alarm();
+  const publication = (await queueState(h)).items[publicationKey];
+  assert.ok(publication?.leaseId, "the deferred publication was dispatched");
+  const publisher = {
+    item_key: publicationKey,
+    lease_id: publication.leaseId,
+    lease_revision: publication.leaseRevision,
+    run_id: String(runCounter++),
+    run_attempt: 1,
+  };
+  const claim = await post(h, "/claim", publisher);
+  assert.equal(claim.status, 200, JSON.stringify(claim.body));
+  return { ...publisher, claim_generation: claim.body.claim_generation };
+}
+
+test("a deferred publisher's source-drift requeue continues the open request", async () => {
+  const h = harness();
+  await withExactReviewAdmissionHarness(h, async () => {
+    const deferred = await deferredPublication(h, verifiedRequest(97640, 6150293297));
+    assert.equal(isExplicitReviewRequest(deferred.claimed), true);
+    await claimPublication(h, deferred.publicationKey);
+
+    // Callers cannot claim the queue-owned continuation prefixes.
+    for (const forged of ["held-publication-requeue:x", "direct-lifecycle-requeue:x"]) {
+      const response = await post(h, "/enqueue", {
+        delivery_id: forged,
+        decision: sourceDriftRequeue(deferred.claimed),
+      });
+      assert.deepEqual(response, { status: 400, body: { error: "reserved_delivery_id" } });
+    }
+
+    await enqueue(h, deferred.requeueDeliveryId, sourceDriftRequeue(deferred.claimed));
+    const item = (await queueState(h)).items[deferred.key]!;
+    assert.equal(item.decision.sourceAction, "source_drift_requeue");
+    assert.equal(item.decision.sourceCommentVerified, true);
+    assert.equal(
+      item.admissionDeliveryId,
+      `held-publication-requeue:${deferred.requeueDeliveryId}`,
+    );
+    // The review job receives this decision as CLAIM_DECISION, after the
+    // load-time rule has run.
+    assert.equal(isExplicitReviewRequest(await reviewOnce(h, 97640)), true);
+  });
+});
+
+test("a deferred source-drift requeue loses authority once the request is answered or replaced", async (t) => {
+  const scenarios: Array<
+    [string, (h: Harness, number: number, publisher: Record<string, unknown>) => Promise<void>]
+  > = [
+    [
+      "publication finished",
+      async (h, _number, publisher) => {
+        const published = await post(h, "/complete", {
+          ...publisher,
+          outcome: "success",
+          completion_kind: "published",
+          reason_code: "publication_applied",
+        });
+        assert.equal(published.status, 200, JSON.stringify(published.body));
+      },
+    ],
+    [
+      "publication lease lost",
+      async () => {
+        const later = Date.now() + 6 * 60 * 60_000;
+        t.mock.method(Date, "now", () => later);
+      },
+    ],
+    [
+      "newer command answered",
+      async (h, number) => {
+        // The newer request reuses the status comment under its own marker.
+        await enqueue(h, "newer-request", {
+          ...verifiedRequest(number, 6150293399),
+          statusCommentId: 7000 + number,
+          sourceCommentUpdatedAt: "2026-10-13T16:50:00Z",
+        });
+        await reviewOnce(h, number);
+      },
+    ],
+    [
+      "newer publication",
+      async (h, number) => {
+        // A later review generation's publication waits behind the held one.
+        const newer = await deferredPublication(h, decision(number, "edited"));
+        assert.ok((await queueState(h)).items[newer.publicationKey]);
+      },
+    ],
+  ];
+  for (const [index, [scenario, answer]] of scenarios.entries()) {
+    const h = harness({ EXACT_REVIEW_DISPATCH_DEBOUNCE_MS: "0" });
+    await withExactReviewAdmissionHarness(h, async () => {
+      const number = 97641 + index;
+      const deferred = await deferredPublication(h, {
+        ...verifiedRequest(number, 6150293300),
+        statusCommentId: 7000 + number,
+      });
+      await answer(h, number, await claimPublication(h, deferred.publicationKey));
+
+      await enqueue(h, deferred.requeueDeliveryId, sourceDriftRequeue(deferred.claimed));
+      const item = (await queueState(h)).items[deferred.key];
+      assert.ok(item, scenario);
+      assert.equal(
+        item.decision.commandStatusMarker,
+        deferred.claimed.commandStatusMarker,
+        scenario,
+      );
+      assert.equal(item.decision.sourceCommentVerified, undefined, scenario);
+      assert.equal(isExplicitReviewRequest(item.decision), false, scenario);
+    });
+    t.mock.restoreAll();
   }
 });
 

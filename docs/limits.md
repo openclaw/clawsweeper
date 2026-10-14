@@ -259,7 +259,9 @@ When pending depth reaches
 `EXACT_REVIEW_PENDING_SOFT_LIMIT` (600 by default), new recovery and scheduled
 feed work is shed; this threshold counts review work only, so publication
 backlog cannot consume review admission capacity. Existing items, webhook
-events, commands, and publications remain admitted. The queue reports shed
+events, commands, and publications remain admitted, and so does recovery or
+source-drift work that still carries a command's context, which also passes
+a GitHub throttle window. The queue reports shed
 counts under `lanes.review.shed_reasons_since_reset` and the rolling flow by
 `backpressure` versus `scheduled_rate`; pre-migration totals remain
 `unattributed`. Executed reviews debit a durable 220-review/hour
@@ -298,7 +300,9 @@ deletes the queue item. Once an item has used
 next source-drift requeue is not admitted: the item is parked with reason
 `source_drift_loop`, and later automatic requeues are deduped against it with
 `dedupe_scope: source_drift_loop`. The publisher still receives a successful
-dedupe, so the parked item is the only new state. A direct-publication
+dedupe, so the parked item is the only new state. The direct and batch
+publishers both send that requeue as `publisher-source-drift:<producer run
+id>:<attempt>`, so one review generation is requeued at most once. A direct-publication
 completion that owes a lifecycle requeue (`direct_lifecycle_requeue`) creates the
 same automatic generation without `/enqueue`, so it counts and parks the same
 way: below the limit its successor revision is pending; at the limit the

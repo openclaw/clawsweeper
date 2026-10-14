@@ -2486,6 +2486,136 @@ test("all exact-review recovery paths preserve the complete producer context", a
   }
 });
 
+for (const queued of [
+  "newer command",
+  "same command",
+  "same command with its status comment",
+] as const) {
+  test(`a publication refresh keeps a queued ${queued} intact`, async (t) => {
+    const producerMarker =
+      "<!-- clawsweeper-command-status:705:re_review:" + "d".repeat(64) + " -->";
+    const producerDecision: ExactReviewQueueItem["decision"] = {
+      targetRepo: "openclaw/openclaw",
+      targetBranch: "main",
+      itemNumber: 705,
+      itemKind: "issue",
+      sourceEvent: "issues",
+      sourceAction: "re_review",
+      supersedesInProgress: false,
+      sourceCommentId: 200,
+      sourceCommentUpdatedAt: "2026-09-04T10:00:00Z",
+      commandBodyDigest: "e".repeat(64),
+      commandOrigin: "comment_router",
+      sourceCommentVerified: true,
+      commandStatusMarker: producerMarker,
+    };
+    const pendingDecision: ExactReviewQueueItem["decision"] =
+      queued === "newer command"
+        ? {
+            ...producerDecision,
+            sourceCommentId: 300,
+            sourceCommentUpdatedAt: "2026-09-04T11:00:00Z",
+            commandBodyDigest: "f".repeat(64),
+            commandStatusMarker:
+              "<!-- clawsweeper-command-status:705:re_review:" + "a".repeat(64) + " -->",
+            statusCommentId: 7051,
+          }
+        : queued === "same command"
+          ? { ...producerDecision }
+          : // The queued revision of the same request learned its status comment.
+            { ...producerDecision, statusCommentId: 7052 };
+    const storage = new MemoryDurableStorage();
+    t.after(() => storage.sql.close());
+    const item = leasedExactReviewPublicationItem(705, "7050") as ExactReviewQueueItem;
+    item.decision.publication!.producerDecision = { ...producerDecision };
+    Object.assign(item.decision, {
+      commandStatusMarker: producerMarker,
+      sourceCommentId: 200,
+    });
+    item.leaseDecision = { ...item.decision };
+    const now = Date.now();
+    const pending = {
+      key: "openclaw/openclaw#705",
+      decision: pendingDecision,
+      state: "pending",
+      revision: 3,
+      createdAt: now,
+      updatedAt: now,
+      nextAttemptAt: now + 60_000,
+      attempts: 0,
+    } as ExactReviewQueueItem;
+    await storage.put("exact-review-queue", {
+      deliveries: {},
+      items: { [item.key]: item, [pending.key]: pending },
+    });
+    const lifecycle = new ExactReviewLifecycleProjectionStore(storage);
+    const identity = {
+      canonicalTargetKey: "openclaw/openclaw#705",
+      fenceKey: item.key,
+      revision: item.leaseRevision!,
+    };
+    lifecycle.recordAdmission({
+      ...identity,
+      deliveryId: "fixture-refreshed-publication",
+      sourceAction: "re_review",
+      commandOriginated: true,
+      statusMarker: producerMarker,
+      statusCommentId: null,
+      observedAt: now,
+    });
+    lifecycle.recordClaim({
+      ...identity,
+      claimGeneration: item.claimGeneration!,
+      runId: item.claimedRunId!,
+      runAttempt: item.claimedRunAttempt!,
+      observedAt: now,
+    });
+    const queue = publicPublicationQueue(storage);
+    const completion = await queue.fetch(
+      new Request("https://queue/complete", {
+        method: "POST",
+        body: JSON.stringify({
+          lease_id: item.leaseId,
+          item_key: item.key,
+          lease_revision: item.leaseRevision,
+          claim_generation: item.claimGeneration,
+          run_id: item.claimedRunId,
+          run_attempt: item.claimedRunAttempt,
+          outcome: "success",
+          completion_kind: "refresh_required",
+          reason_code: "invalid_artifact",
+        }),
+      }),
+    );
+    const superseded = queued === "newer command";
+    assert.deepEqual(
+      await completion.json(),
+      superseded
+        ? { ok: true, requeued: false, terminal_finalization: true }
+        : { ok: true, requeued: false },
+    );
+    const state = (await storage.get("exact-review-queue")) as {
+      items: Record<string, ExactReviewQueueItem>;
+    };
+    assert.equal(state.items[item.key], undefined);
+    // The queued request keeps its own command, source action, and revision.
+    assert.deepEqual(state.items[pending.key]?.decision, pendingDecision);
+    assert.equal(state.items[pending.key]?.revision, 3);
+    assert.equal(
+      lifecycle.read(identity.canonicalTargetKey, identity.fenceKey, identity.revision)
+        ?.terminalDisposition?.kind,
+      superseded ? "superseded" : "requeue",
+    );
+    const driver = state.items[`terminal-finalization:${item.key}:${identity.revision}`];
+    if (superseded) {
+      assert.equal(driver?.terminalFinalization?.disposition, "superseded");
+      assert.equal(driver?.decision.commandStatusMarker, producerMarker);
+    } else {
+      assert.equal(driver, undefined);
+    }
+  });
+}
+
 for (const receipt of ["accepted", "deduped"] as const) {
   for (const delivered of [false, true]) {
     test(`saved direct requeue ${receipt}: ${delivered ? "delivered completion" : "lost callback"}`, async () => {
@@ -3720,7 +3850,7 @@ test("fallback canonical routing materializes an acknowledgement driver after le
   assert.equal((await attempted.json()).allowed, true);
 });
 
-test("a successor splits a pending terminal finalizer before command merge", async () => {
+async function pendingTerminalFinalizerFixture() {
   const storage = new MemoryDurableStorage();
   const finalizer = leasedExactReviewQueueItem(790, "7900");
   finalizer.revision = 4;
@@ -3731,6 +3861,12 @@ test("a successor splits a pending terminal finalizer before command merge", asy
     sourceAction: "re_review",
     commandStatusMarker: oldMarker,
     statusCommentId: 7900,
+    sourceCommentId: 7899,
+    sourceCommentUpdatedAt: "2026-01-31T00:00:00Z",
+    commandBodyDigest: "c".repeat(64),
+    commandOrigin: "hosted_webhook" as const,
+    sourceCommentVerified: true,
+    additionalPrompt: "Check the finalized request only.",
   };
   const publication = exactReviewPublicationOverrides(
     790,
@@ -3804,6 +3940,11 @@ test("a successor splits a pending terminal finalizer before command merge", asy
     observedAt: 1_700_000_000_003,
   });
 
+  return { storage, lifecycle, finalizer, oldMarker, identity };
+}
+
+test("a successor splits a pending terminal finalizer before command merge", async () => {
+  const { storage, finalizer, oldMarker, identity } = await pendingTerminalFinalizerFixture();
   const queue = new ExactReviewQueue({ storage }, {});
   const successorMarker =
     "<!-- clawsweeper-command-status:790:re_review:0123456789abcdef0123456789abcdef01234567 -->";
@@ -3834,6 +3975,54 @@ test("a successor splits a pending terminal finalizer before command merge", asy
   assert.equal(state.items[driverKey]?.state, "pending");
   assert.equal(state.items[driverKey]?.decision.commandStatusMarker, oldMarker);
   assert.deepEqual(state.items[driverKey]?.terminalFinalization?.projection, identity);
+});
+
+test("an organic successor of a pending terminal finalizer does not inherit its command", async () => {
+  const { storage, lifecycle, finalizer, oldMarker, identity } =
+    await pendingTerminalFinalizerFixture();
+  const queue = new ExactReviewQueue({ storage }, {});
+  const response = await queue.fetch(
+    buildExactReviewQueueRequest(
+      "pending-terminal-finalizer-organic-790",
+      790,
+      "edited",
+      "issue",
+      "openclaw/openclaw",
+      { sourceUpdatedAt: "2026-02-01T00:00:00Z" },
+    ),
+  );
+  assert.equal(response.status, 202);
+  assert.equal((await response.json()).queued, true);
+
+  const state = storage.sql.readNormalizedQueue() as {
+    items: Record<string, ExactReviewQueueItem>;
+  };
+  const successor = state.items[finalizer.key]!;
+  assert.equal(successor.state, "pending");
+  assert.equal(successor.revision, 5);
+  assert.equal(successor.terminalFinalization, undefined);
+  assert.equal(successor.decision.sourceAction, "edited");
+  assert.equal(successor.decision.publication, undefined);
+  for (const field of [
+    "commandStatusMarker",
+    "statusCommentId",
+    "sourceDeliveryId",
+    "sourceCommentId",
+    "sourceCommentUpdatedAt",
+    "sourceCommentVerified",
+    "commandBodyDigest",
+    "commandOrigin",
+    "additionalPrompt",
+  ] as const) {
+    assert.equal(successor.decision[field], undefined, field);
+  }
+  assert.equal(
+    lifecycle.read(identity.canonicalTargetKey, finalizer.key, 5)?.admission.commandOriginated,
+    false,
+  );
+  const driver = state.items[`terminal-finalization:${finalizer.key}:4`];
+  assert.equal(driver?.decision.commandStatusMarker, oldMarker);
+  assert.deepEqual(driver?.terminalFinalization?.projection, identity);
 });
 
 test("terminal acknowledgement dispatch rejection remains a durable fenced retry", async () => {

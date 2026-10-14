@@ -222,6 +222,23 @@ type LifecycleAdmissionInput = ProjectionIdentity & {
   observedAt: number;
 };
 
+type CommandStatusAddress = { statusMarker: string | null; statusCommentId: number | null };
+
+/**
+ * Whether two status addresses name the same command. A later request may reuse
+ * the status comment under a new marker, so any conflicting part is another
+ * command; an address that gained its other part later still matches.
+ */
+export function sameCommandStatusAddress(left: CommandStatusAddress, right: CommandStatusAddress) {
+  const conflicts = <T>(a: T | null, b: T | null) => a !== null && b !== null && a !== b;
+  return (
+    !conflicts(left.statusMarker, right.statusMarker) &&
+    !conflicts(left.statusCommentId, right.statusCommentId) &&
+    ((left.statusMarker !== null && left.statusMarker === right.statusMarker) ||
+      (left.statusCommentId !== null && left.statusCommentId === right.statusCommentId))
+  );
+}
+
 export class ExactReviewLifecycleProjectionStore {
   private readonly storage: DurableStorage;
   private schemaReady = false;
@@ -873,6 +890,27 @@ export class ExactReviewLifecycleProjectionStore {
       return null;
     }
     return this.readSync(canonicalTargetKey, fenceKey, revision);
+  }
+
+  /** Whether a different command was admitted at this fence after `revision`. */
+  otherCommandAdmittedAfter(fenceKey: string, revision: number, command: CommandStatusAddress) {
+    if (!validFenceKey(fenceKey) || !positiveInteger(revision)) return true;
+    return Array.from(
+      this.storage.sql.exec(
+        `SELECT projection_json FROM ${EXACT_REVIEW_LIFECYCLE_PROJECTION_TABLE}
+          WHERE fence_key = ? AND revision > ?`,
+        fenceKey,
+        revision,
+      ),
+    ).some((row) => {
+      let admission: ExactReviewLifecycleProjection["admission"];
+      try {
+        ({ admission } = projectionFromRow(String(row.projection_json || "")));
+      } catch {
+        return true;
+      }
+      return admission.commandOriginated && !sameCommandStatusAddress(admission, command);
+    });
   }
 
   maxRevision(canonicalTargetKey: string) {

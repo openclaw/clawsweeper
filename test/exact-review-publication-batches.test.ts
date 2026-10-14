@@ -5245,6 +5245,95 @@ test("batch completion refreshes deterministic invalid artifacts", async () => {
   assert.equal(state.items["openclaw/openclaw#127"].decision.publication, undefined);
 });
 
+test("batch refresh supersedes an older command instead of overwriting a queued newer one", async () => {
+  const storage = new TestStorage();
+  const queue = new ExactReviewQueue(
+    { storage },
+    { EXACT_REVIEW_PUBLICATION_BATCHING_ENABLED: "1" },
+  );
+  const command = (commentId: number) => ({
+    targetRepo: "openclaw/openclaw",
+    targetBranch: "main",
+    itemNumber: 128,
+    itemKind: "issue",
+    sourceEvent: "issues",
+    sourceAction: "re_review",
+    supersedesInProgress: false,
+    sourceCommentId: commentId,
+    sourceCommentUpdatedAt: new Date(Date.parse("2026-09-04T10:00:00Z") + commentId).toISOString(),
+    commandBodyDigest: String(commentId % 10).repeat(64),
+    commandOrigin: "hosted_webhook",
+    sourceCommentVerified: true,
+    commandStatusMarker: `<!-- clawsweeper-command-status:128:re_review:command-${commentId} -->`,
+  });
+  const older = command(1);
+  const published = JSON.parse(await publicationRequest("older-command", 128, "1028").text());
+  published.decision = {
+    ...published.decision,
+    ...older,
+    sourceAction: "exact_review_artifact_publish",
+    publication: { ...published.decision.publication, producerDecision: older },
+  };
+  await queue.fetch(
+    new Request("https://queue/enqueue", { method: "POST", body: JSON.stringify(published) }),
+  );
+  const claim = await (
+    await queue.fetch(
+      batchRequest("/publication-batches/claim", {
+        claim_id: "claim-older-command",
+        lease_owner: "worker-1",
+        max_items: 1,
+      }),
+    )
+  ).json();
+  const member = claim.batch.items[0];
+  const newer = command(2);
+  await queue.fetch(
+    new Request("https://queue/enqueue", {
+      method: "POST",
+      body: JSON.stringify({ delivery_id: "newer-command", decision: newer }),
+    }),
+  );
+
+  const completion = await (
+    await queue.fetch(
+      batchRequest("/publication-batches/complete", {
+        batch_id: claim.batch.batch_id,
+        lease_owner: "worker-1",
+        items: [
+          {
+            item_key: member.item_key,
+            revision: member.revision,
+            claim_generation: member.claim_generation,
+            terminal_outcome: "refresh_required",
+            reason_code: "invalid_artifact",
+          },
+        ],
+      }),
+    )
+  ).json();
+
+  assert.equal(completion.accepted, 1, JSON.stringify(completion));
+  const state = (await storage.get("exact-review-queue")) as {
+    items: Record<string, Record<string, any>>;
+  };
+  assert.deepEqual(state.items["openclaw/openclaw#128"]?.decision, newer);
+  // The older command's publication stays only as its terminal acknowledgement.
+  assert.equal(state.items[member.item_key]?.terminalFinalization?.disposition, "superseded");
+  assert.equal(
+    state.items[member.item_key]?.decision.publication.producerDecision.commandStatusMarker,
+    older.commandStatusMarker,
+  );
+  assert.equal(
+    new ExactReviewLifecycleProjectionStore(storage).read(
+      "openclaw/openclaw#128",
+      member.item_key,
+      member.revision,
+    )?.terminalDisposition?.kind,
+    "superseded",
+  );
+});
+
 test("credential circuits persist, preserve healthy owners, and defer unattempted members without retry charge", async (t) => {
   let now = Date.parse("2026-08-10T14:00:00.000Z");
   t.mock.method(Date, "now", () => now);
