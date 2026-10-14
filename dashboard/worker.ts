@@ -1749,6 +1749,7 @@ const PUBLIC_STATUS_TEXT_VALUES = new Set([
   "claim_stalled",
   "dispatcher_blocked",
   "dispatcher_paused",
+  "dispatcher_retry_due",
   "claim_delayed",
   "handoff_current",
   "handoff_unknown",
@@ -5135,6 +5136,7 @@ function publicExactReviewHandoff(value) {
       "claim_stalled",
       "dispatcher_blocked",
       "dispatcher_paused",
+      "dispatcher_retry_due",
       "claim_delayed",
       "handoff_current",
     ].includes(reason)

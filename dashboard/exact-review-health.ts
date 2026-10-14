@@ -1,3 +1,5 @@
+import { exactReviewDispatcherRetryAt } from "./exact-review-queue-shared.ts";
+
 export type ExactReviewPhase = "pending" | "dispatching" | "leased";
 export type ExactReviewReviewRecoveryReason =
   | "claim_timeout"
@@ -18,6 +20,7 @@ export type ExactReviewHealthItem = {
 
 export type ExactReviewHealthDispatcher = {
   state?: "active" | "paused" | "blocked" | "unknown";
+  retryAt?: number;
 };
 
 export type ExactReviewPhaseSummary = {
@@ -41,7 +44,8 @@ export type ExactReviewHandoffHealth = {
     | "claim_delayed"
     | "claim_stalled"
     | "dispatcher_paused"
-    | "dispatcher_blocked";
+    | "dispatcher_blocked"
+    | "dispatcher_retry_due";
   message: string;
   observed_at: string;
   warning_after_seconds: number;
@@ -95,6 +99,7 @@ export function projectExactReviewHandoff({
   phaseCensus,
   recoveryReasons,
   dispatcher,
+  dispatchablePending = false,
   now,
   capacity,
   dispatchLeaseMs,
@@ -104,6 +109,7 @@ export function projectExactReviewHandoff({
   phaseCensus: Record<ExactReviewPhase, ExactReviewHandoffPhaseCensus>;
   recoveryReasons: Record<ExactReviewReviewRecoveryReason, number>;
   dispatcher?: ExactReviewHealthDispatcher | undefined;
+  dispatchablePending?: boolean;
   now: number;
   capacity: number;
   dispatchLeaseMs: number;
@@ -164,15 +170,30 @@ export function projectExactReviewHandoff({
       ...common,
     };
   }
-  if (dispatcher?.state === "blocked" && phases.pending.count > 0) {
+  const dispatcherInactive = dispatcher?.state === "blocked" || dispatcher?.state === "paused";
+  // Expiry allows another attempt; it does not prove recovery. Keep a due
+  // retry visible only while canonical admission has work it could dispatch.
+  const retryExpired =
+    Number.isFinite(dispatcher?.retryAt) &&
+    Number(dispatcher?.retryAt) > 0 &&
+    exactReviewDispatcherRetryAt(dispatcher, now) === null;
+  if (dispatcherInactive && retryExpired && dispatchablePending) {
     return {
-      status: "stalled",
-      reason: "dispatcher_blocked",
-      message: "The dispatcher cannot verify workflow availability while reviews are pending.",
+      status: "degraded",
+      reason: "dispatcher_retry_due",
+      message: "The dispatcher is due to retry while eligible reviews are waiting.",
       ...common,
     };
   }
-  if (dispatcher?.state === "paused" && phases.pending.count > 0) {
+  if (dispatcher?.state === "blocked" && !retryExpired && phases.pending.count > 0) {
+    return {
+      status: "stalled",
+      reason: "dispatcher_blocked",
+      message: "The dispatcher is backing off after a failed attempt while reviews are pending.",
+      ...common,
+    };
+  }
+  if (dispatcher?.state === "paused" && !retryExpired && phases.pending.count > 0) {
     return {
       status: "degraded",
       reason: "dispatcher_paused",

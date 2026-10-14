@@ -753,8 +753,12 @@ left by a rollback cannot override that newer lease, and a wholly unknown legacy
 age stays non-alarming. A claim is degraded after one third of the dispatch
 lease (bounded to 30-120 seconds) and stalled after two thirds (bounded to
 31-300 seconds), so operators see the failure before the lease expires and
-requeues. A blocked dispatcher with pending work is stalled; an intentionally
-paused dispatcher is degraded. `/api/status` includes this snapshot and the live
+requeues. During its retry delay, a blocked dispatcher with pending work is
+stalled and a paused dispatcher is degraded. After the deadline, eligible work
+shows degraded `dispatcher_retry_due` until a successful preflight records
+recovery. If capacity, target cooldowns, review throttling, or debounce prevents
+admission, the expired block does not override current handoff health. Missing
+retry deadlines retain the warning. `/api/status` includes this snapshot and the live
 dashboard renders the three phases, oldest age, available exact-review slots,
 and the current classification without changing queue capacity or storage
 schema. Fleet snapshots may use the longer stale fallback during a GitHub API
