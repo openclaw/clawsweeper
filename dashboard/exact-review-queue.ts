@@ -1501,7 +1501,12 @@ export class ExactReviewQueue {
       const decision = exactReviewDecisionFrom(body.decision);
       const ingress = body.ingress === undefined ? undefined : exactReviewIngressFrom(body.ingress);
       if (!deliveryId) return json({ error: "missing_delivery_id" }, 400);
-      if (deliveryId.startsWith(EXACT_REVIEW_QUEUE_LEGACY_GENERATION_PREFIX)) {
+      // The in-place requeue prefix is queue-owned provenance for continuing an
+      // explicit request; a caller's delivery id can never carry it.
+      if (
+        deliveryId.startsWith(EXACT_REVIEW_QUEUE_LEGACY_GENERATION_PREFIX) ||
+        deliveryId.startsWith(DIRECT_LIFECYCLE_REQUEUE_DELIVERY_PREFIX)
+      ) {
         return json({ error: "reserved_delivery_id" }, 400);
       }
       if (!decision) return json({ error: "invalid_exact_review_item" }, 400);

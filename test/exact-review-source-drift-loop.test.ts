@@ -443,6 +443,22 @@ test("a source-drift requeue of a finished request keeps its status but not its 
   });
 });
 
+test("a caller cannot claim the queue-owned in-place requeue provenance", async () => {
+  const h = harness();
+  await withExactReviewAdmissionHarness(h, async () => {
+    const number = 97625;
+    await enqueue(h, "request", verifiedRequest(number, 4001));
+    const claimed = await reviewOnce(h, number);
+
+    const forged = await post(h, "/enqueue", {
+      delivery_id: `direct-lifecycle-requeue:${repo}#${number}:1`,
+      decision: sourceDriftRequeue(claimed),
+    });
+    assert.deepEqual(forged, { status: 400, body: { error: "reserved_delivery_id" } });
+    assert.equal((await queueState(h)).items[`${repo}#${number}`], undefined);
+  });
+});
+
 test("a source-drift requeue of a replaced request leaves the newer request queued", async () => {
   const h = harness();
   await withExactReviewAdmissionHarness(h, async () => {
