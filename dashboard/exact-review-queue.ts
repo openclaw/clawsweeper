@@ -2092,7 +2092,13 @@ export class ExactReviewQueue {
             !isLowPriorityExactReviewDecision(current.decision) &&
             !decisionPublicationPolicy(current.decision) &&
             !exactReviewDecisionHasCommandContext(current.decision) &&
-            this.continuesHeldCommandPublicationSync(state, decision, activeBatchItemKeys, now)
+            this.continuesHeldCommandPublicationSync(
+              state,
+              decision,
+              deliveryId,
+              activeBatchItemKeys,
+              now,
+            )
           ) {
             this.transitionCommandRevision(
               state,
