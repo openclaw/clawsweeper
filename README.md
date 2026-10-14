@@ -190,7 +190,9 @@ from automatic reviews and scheduled sweeps. One opening/ready reminder explains
 how to opt in. Only request `@clawsweeper review` when a review is needed and the
 work and validation are complete; agents must not request reviews automatically
 or repeat requests while one is queued or running. A one-off request does not
-opt future pushes into reviews. Existing `clawsweeper:autofix` and
+opt future pushes into reviews, but it stays open until its review publishes: if
+the item changes while it is reviewed, the fresh review still answers that
+request. Existing `clawsweeper:autofix` and
 `clawsweeper:automerge` labels retain their explicit opt-in behavior.
 
 ## Maintainer Commands

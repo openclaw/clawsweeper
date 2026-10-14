@@ -254,8 +254,11 @@ set by admission or lease acquisition.
 
 Maintainer-authored and `maintainer`-labeled items require an explicit review
 request. Automatic intake, scheduled selection, claimed reviews, and hosted
-publication apply this policy; a source-drift retry does not inherit the
-original command's opt-in. Existing autofix/automerge labels remain opt-ins.
+publication apply this policy. A verified request stays open until its review
+publishes: when the item changes during that review, the source-drift retry
+still carries the request's command status and continues the same request.
+A retry without that status, a push after the review publishes, and a
+scheduled pass need a new request. Existing autofix/automerge labels remain opt-ins.
 The target dispatcher and direct webhook share a single reminder identity per
 item, posted only when opened or ready for review. Edits, pushes, and sweeps do
 not post reminders. Request reviews only when needed, after completing work and

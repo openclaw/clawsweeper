@@ -76,64 +76,100 @@ test("event apply proof marks only live deterministic remain-open guards", () =>
   }
 });
 
-test("hosted publication drops automatic maintainer results before comment or label writes", () => {
-  const prior = process.env.EXACT_REVIEW_DECISION;
-  process.env.EXACT_REVIEW_DECISION = JSON.stringify({ sourceAction: "edited" });
-  try {
-    withApplyTestWorkspace(tmpPrefix, ({ root, itemsDir, closedDir, plansDir, reportPath }) => {
-      writeFileSync(
-        join(itemsDir, "321.md"),
-        implementedCloseReport({
-          repository: "openclaw/openclaw",
-          number: 321,
-          type: "pull_request",
-          author: "maintainer",
-          author_association: "MEMBER",
-          pull_head_sha: "head-sha",
-        }),
-      );
-      const mutations = join(root, "mutations.log");
-      withMockGh(
-        root,
-        promotionGhMock({
-          number: 321,
-          authorAssociation: "MEMBER",
-          comment: "",
-          labels: [],
-          commentWriteLogPath: mutations,
-          closeCommandLogPath: mutations,
-          itemUpdatedAtAfterLabelSyncLogPath: mutations,
-        }),
-        () =>
-          runApplyDecisionsForTest({
-            targetRepo: "openclaw/openclaw",
-            itemsDir,
-            closedDir,
-            plansDir,
-            reportPath,
-            extraArgs: [
-              "--item-numbers",
-              "321",
-              "--exact-event-publication",
-              "--event-apply-proof",
-            ],
+const verifiedReReview = {
+  sourceAction: "re_review",
+  sourceCommentVerified: true,
+  sourceCommentId: 123,
+  sourceCommentUpdatedAt: "2026-10-13T00:00:00Z",
+  commandBodyDigest: "a".repeat(64),
+  commandOrigin: "hosted_webhook",
+};
+
+for (const [name, decision, explicit] of [
+  ["an automatic event", { sourceAction: "edited" }, false],
+  [
+    "a source-drift requeue without the request's status",
+    { ...verifiedReReview, sourceAction: "source_drift_requeue" },
+    false,
+  ],
+  // The queue requeues an unpublished review with the claimed command fields.
+  [
+    "a requeued explicit request",
+    {
+      ...verifiedReReview,
+      sourceAction: "source_drift_requeue",
+      supersedesInProgress: true,
+      commandStatusMarker: "<!-- clawsweeper-command-status:321:re_review:test -->",
+    },
+    true,
+  ],
+] as const) {
+  test(`hosted publication gates maintainer results from ${name}`, () => {
+    const prior = process.env.EXACT_REVIEW_DECISION;
+    process.env.EXACT_REVIEW_DECISION = JSON.stringify(decision);
+    try {
+      withApplyTestWorkspace(tmpPrefix, ({ root, itemsDir, closedDir, plansDir, reportPath }) => {
+        writeFileSync(
+          join(itemsDir, "321.md"),
+          implementedCloseReport({
+            repository: "openclaw/openclaw",
+            number: 321,
+            type: "pull_request",
+            author: "maintainer",
+            author_association: "MEMBER",
+            pull_head_sha: "head-sha",
           }),
-      );
-      assert.deepEqual(JSON.parse(readText(reportPath)), [
-        {
-          number: 321,
-          action: "skipped_maintainer_authored",
-          reason: "maintainer review requires an explicit request",
-          guardedOpenStateVerified: true,
-        },
-      ]);
-      assert.equal(existsSync(mutations), false);
-    });
-  } finally {
-    if (prior === undefined) delete process.env.EXACT_REVIEW_DECISION;
-    else process.env.EXACT_REVIEW_DECISION = prior;
-  }
-});
+        );
+        const mutations = join(root, "mutations.log");
+        withMockGh(
+          root,
+          promotionGhMock({
+            number: 321,
+            authorAssociation: "MEMBER",
+            comment: "",
+            labels: [],
+            commentWriteLogPath: mutations,
+            closeCommandLogPath: mutations,
+            itemUpdatedAtAfterLabelSyncLogPath: mutations,
+          }),
+          () =>
+            runApplyDecisionsForTest({
+              targetRepo: "openclaw/openclaw",
+              itemsDir,
+              closedDir,
+              plansDir,
+              reportPath,
+              extraArgs: [
+                "--item-numbers",
+                "321",
+                "--exact-event-publication",
+                "--event-apply-proof",
+              ],
+            }),
+        );
+        assert.deepEqual(JSON.parse(readText(reportPath)), [
+          explicit
+            ? // Past the maintainer gate, this tupleless fixture stops at review-comment sync.
+              {
+                number: 321,
+                action: "skipped_stale_review_comment_sync",
+                reason: "local report has no durable lease identity",
+              }
+            : {
+                number: 321,
+                action: "skipped_maintainer_authored",
+                reason: "maintainer review requires an explicit request",
+                guardedOpenStateVerified: true,
+              },
+        ]);
+        assert.equal(existsSync(mutations), false);
+      });
+    } finally {
+      if (prior === undefined) delete process.env.EXACT_REVIEW_DECISION;
+      else process.env.EXACT_REVIEW_DECISION = prior;
+    }
+  });
+}
 
 test("apply-decisions defers canonical reconciliation conflicts before live mutation", () => {
   const root = mkdtempSync(tmpPrefix);
