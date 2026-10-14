@@ -1,13 +1,80 @@
 import { DurableObject } from "cloudflare:workers";
-import {
-  GithubWebhookReadModelStore,
-  GITHUB_WEBHOOK_READ_MODEL_PAYLOAD_RETENTION_MS,
-} from "../../../dashboard/github-webhook-read-model.ts";
+import { GithubWebhookReadModelStore } from "../../../dashboard/github-webhook-read-model.ts";
+import { ExactReviewQueue as ProductionQueue } from "../../../dashboard/exact-review-queue.ts";
 
+let outbound = 0;
 globalThis.fetch = async () => {
+  outbound += 1;
   throw new Error("proof forbids outbound requests");
 };
 const repository = "example/project";
+// The same wrapper also bundles against the pre-retention source revision.
+const GITHUB_WEBHOOK_READ_MODEL_PAYLOAD_RETENTION_MS = 30 * 60_000;
+let proofNow = Date.parse("2030-01-01T00:00:00Z");
+Date.now = () => proofNow;
+
+// Keep the actual queue owner and HTTP entrypoints across both persisted builds.
+// Only wall-clock alarm delivery and read-only inspection belong to the fixture.
+export class ExactReviewQueue {
+  private queue;
+  constructor(
+    private state,
+    env,
+  ) {
+    this.queue = new ProductionQueue(state, {
+      ...env,
+      hostedTargetPredicate: () => true,
+      hostedPublicTargetProbe: async () => "public",
+    });
+  }
+  async alarm() {
+    await this.state.storage.deleteAlarm();
+  }
+  async fetch(request: Request) {
+    proofNow = Number(request.headers.get("x-proof-now"));
+    const route = new URL(request.url).pathname;
+    if (route.startsWith("/__proof/")) await request.arrayBuffer();
+    if (route === "/__proof/alarm") {
+      await this.queue.alarm();
+      return Response.json({ ok: true, outbound });
+    }
+    if (route === "/__proof/snapshot") {
+      const sql = this.state.storage.sql;
+      const rows = (query: string) => Array.from(sql.exec(query));
+      const names = new Set(
+        rows("SELECT name FROM sqlite_master WHERE type = 'table'").map((r: any) => r.name),
+      );
+      const tableRows = (table: string) =>
+        names.has(table) ? rows(`SELECT * FROM ${table} ORDER BY rowid`) : [];
+      const payloadTables = ["items", "comments", "activity"].map(
+        (kind) => `github_webhook_read_model_${kind}_v1`,
+      );
+      return Response.json({
+        outbound,
+        databaseBytes: sql.databaseSize,
+        columns: Object.fromEntries(
+          payloadTables.map((table) => [
+            table,
+            rows(`PRAGMA table_info(${table})`).map((r: any) => r.name),
+          ]),
+        ),
+        payloads: Object.fromEntries(payloadTables.map((table) => [table, tableRows(table)])),
+        collections: tableRows("github_webhook_read_model_collections_v1"),
+        protected: Object.fromEntries(
+          [
+            "exact_review_queue_items",
+            "exact_review_queue_deliveries",
+            "exact_review_canonical_records",
+            "exact_review_record_export_index",
+            "canonical_record_tuple_receipts",
+            "exact_review_lifecycle_projection_v1",
+          ].map((table) => [table, tableRows(table)]),
+        ),
+      });
+    }
+    return this.queue.fetch(request);
+  }
+}
 
 export class PayloadRetentionProof extends DurableObject {
   async fetch(request: Request) {
@@ -162,11 +229,26 @@ export class PayloadRetentionProof extends DurableObject {
 }
 
 export default {
-  async fetch(request: Request, env: { READ_MODEL: DurableObjectNamespace; PROOF_NONCE: string }) {
+  async fetch(
+    request: Request,
+    env: {
+      READ_MODEL: DurableObjectNamespace;
+      EXACT_REVIEW_QUEUE: DurableObjectNamespace;
+      PROOF_NONCE: string;
+    },
+  ) {
     if (request.headers.get("x-proof-nonce") !== env.PROOF_NONCE)
       return new Response("forbidden", { status: 403 });
     if (new URL(request.url).pathname === "/ready") return Response.json({ ready: true });
     try {
+      if (new URL(request.url).pathname.startsWith("/queue/")) {
+        const url = new URL(request.url);
+        url.pathname = url.pathname.slice("/queue".length);
+        const body = await request.arrayBuffer();
+        return await env.EXACT_REVIEW_QUEUE.get(env.EXACT_REVIEW_QUEUE.idFromName("global")).fetch(
+          new Request(url, { method: request.method, headers: request.headers, body }),
+        );
+      }
       return await env.READ_MODEL.get(
         env.READ_MODEL.idFromName(new URL(request.url).pathname === "/hot" ? "hot" : "fixture"),
       ).fetch(request);
