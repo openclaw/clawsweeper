@@ -558,6 +558,7 @@ test("hosted pull request reservation rechecks visibility before durable authori
       const storage = new MemoryDurableStorage();
       let visibilityProbes = 0;
       let sourceAuthorityCalls = 0;
+      let maintenanceWake: number | null = null;
       let targetCredentialCalls = 0;
       const hostedPublicTargetProbe = async () => {
         visibilityProbes += 1;
@@ -602,11 +603,15 @@ test("hosted pull request reservation rechecks visibility before durable authori
           CLAWSWEEPER_WEBHOOK_SECRET: "test-secret",
           hostedPublicTargetProbe,
           EXACT_REVIEW_QUEUE: new MemoryDurableNamespace({
-            fetch: (request: Request) => {
+            fetch: async (request: Request) => {
               if (new URL(request.url).pathname === "/source-authority") {
                 sourceAuthorityCalls += 1;
               }
-              return queue.fetch(request);
+              const result = await queue.fetch(request);
+              if (new URL(request.url).pathname === "/github-read-model/ingest") {
+                maintenanceWake = await storage.getAlarm();
+              }
+              return result;
             },
           }),
         },
@@ -629,7 +634,17 @@ test("hosted pull request reservation rechecks visibility before durable authori
         false,
       );
       assert.equal(storage.rawHas("exact-review-source-authority-sequence:v1"), false);
-      assert.equal(await storage.getAlarm(), null);
+      // Public read-model ingress already owns a future maintenance wake.
+      // Rejected authority must leave that wake and all canonical state alone.
+      assert.ok(maintenanceWake !== null && maintenanceWake > Date.now());
+      assert.deepEqual(
+        Array.from(
+          storage.sql.exec("SELECT payload_retire_at FROM github_webhook_read_model_items_v1"),
+          (row) => Number(row.payload_retire_at),
+        ),
+        [maintenanceWake],
+      );
+      assert.equal(await storage.getAlarm(), maintenanceWake);
       assert.equal(sqlRowCount(storage, "exact_review_queue_deliveries"), 0);
       assert.equal(sqlRowCount(storage, "exact_review_queue_items"), 0);
     }

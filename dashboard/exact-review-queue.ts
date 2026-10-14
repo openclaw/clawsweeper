@@ -880,7 +880,7 @@ const EXACT_REVIEW_ALARM_SAMPLE_WINDOW_MS = 60_000;
 const EXACT_REVIEW_ALARM_SAMPLE_THRESHOLD = 10;
 type AlarmWakeReason =
   | `batch_${"lease" | "departure"}`
-  | `${"queue" | "source_authority" | "command_intake" | "credential_circuit"}`;
+  | `${"queue" | "source_authority" | "command_intake" | "credential_circuit" | "payload_maintenance"}`;
 type AlarmScheduleDecision = readonly [AlarmWakeReason, number, number];
 // A watchdog may keep a synchronous Git operation alive, but it cannot turn a
 // hung runner into a permanent queue owner. The Git fence blocks any in-flight
@@ -1189,7 +1189,7 @@ export class ExactReviewQueue {
       const now = Date.now();
       const admitted = this.commandIntakeStore.admit(value, now);
       if (!admitted) return json({ error: "invalid_command_intake" }, 400);
-      if (admitted.accepted) await this.scheduleSourceAuthorityVerification(now, "command_intake");
+      if (admitted.accepted) await this.armAuxiliaryWake(now, "command_intake");
       return json(
         {
           ok: true,
@@ -1270,7 +1270,7 @@ export class ExactReviewQueue {
           return { deduped: false as const, reservation: created };
         });
         if (reserved.deduped) return json({ ok: true, deduped: true });
-        await this.scheduleSourceAuthorityVerification(reserved.reservation.nextAttemptAt);
+        await this.armAuxiliaryWake(reserved.reservation.nextAttemptAt);
         return json({ ok: true, branch_authority_pending: true }, 202);
       } catch {
         return json({ error: "branch_authority_unavailable" }, 409);
@@ -1354,7 +1354,7 @@ export class ExactReviewQueue {
           return { deduped: false as const, reservation: created };
         });
         if (reserved.deduped) return json({ ok: true, deduped: true });
-        await this.scheduleSourceAuthorityVerification(reserved.reservation.nextAttemptAt);
+        await this.armAuxiliaryWake(reserved.reservation.nextAttemptAt);
         return json({
           ok: true,
           source_authority_seq: reserved.reservation.sourceAuthoritySeq,
@@ -1435,7 +1435,7 @@ export class ExactReviewQueue {
       if (!updated) {
         return json({ error: "source_authority_review_acknowledgement_conflict" }, 409);
       }
-      await this.scheduleSourceAuthorityVerification(now);
+      await this.armAuxiliaryWake(now);
       return json({ ok: true, ...(commentId > 0 ? { comment_id: commentId } : {}) });
     }
     if (request.method === "POST" && url.pathname === "/state-writer/acquire") {
@@ -4295,14 +4295,14 @@ export class ExactReviewQueue {
     }
 
     if (request.method === "POST" && url.pathname === "/github-read-model/ingest") {
+      let result;
       try {
-        return json(
-          this.githubWebhookReadModelStore.ingest(await request.json().catch(() => null)),
-          202,
-        );
+        result = this.githubWebhookReadModelStore.ingest(await request.json().catch(() => null));
       } catch {
         return json({ error: "invalid_github_webhook_read_model_delivery" }, 400);
       }
+      await this.schedulePayloadMaintenance();
+      return json(result, 202);
     }
 
     if (request.method === "POST" && url.pathname === "/github-read-model/lease-item") {
@@ -4366,14 +4366,14 @@ export class ExactReviewQueue {
     }
 
     if (request.method === "POST" && url.pathname === "/github-read-model/repair") {
+      let result;
       try {
-        return json(
-          this.githubWebhookReadModelStore.repair(await request.json().catch(() => null)),
-          202,
-        );
+        result = this.githubWebhookReadModelStore.repair(await request.json().catch(() => null));
       } catch {
         return json({ error: "invalid_github_webhook_read_model_repair" }, 400);
       }
+      await this.schedulePayloadMaintenance();
+      return json(result, 202);
     }
 
     if (request.method === "POST" && url.pathname === "/github-read-model/item") {
@@ -5121,16 +5121,24 @@ export class ExactReviewQueue {
     await this.processSourceAuthorityReservations(startedAt, hostedTargetMetadataToken);
     await this.processCommandIntakes(startedAt, hostedTargetMetadataToken);
     const batchItemKeys = new Set<string>(this.batchStore.activeLeaseSnapshot(startedAt).itemKeys);
-    let snapshot = this.storage.transactionSync(() => {
+    const maintenance = this.storage.transactionSync(() => {
       this.pruneDeliveryReceiptsSync(startedAt);
       this.commandIntakeStore.pruneTerminalReceipts(startedAt);
       this.directPublicationStore.pruneTerminalSync(startedAt);
-      this.githubWebhookReadModelStore.prunePayloadsSync(startedAt);
+      const payloads = this.githubWebhookReadModelStore.prunePayloadsSync(startedAt);
       const current = this.readStateSync();
       this.syncLegacyCompatibilitySync(current);
       this.pruneStalePublicationsSync(current, batchItemKeys, startedAt);
-      return current;
+      return { current, payloads };
     });
+    let snapshot = maintenance.current;
+    if (maintenance.payloads.scanned > 0) {
+      console.log("github_read_model_payload_maintenance", {
+        at: startedAt,
+        ...maintenance.payloads,
+        next_due_at: this.githubWebhookReadModelStore.nextPayloadMaintenanceAtSync(),
+      });
+    }
     let snapshotBatchOwnership = this.batchStore.activeLeaseSnapshot(startedAt);
     const reclaimedSnapshot = reclaimExpiredExactReviewLeases(
       snapshot,
@@ -11051,6 +11059,7 @@ export class ExactReviewQueue {
     this.storage.transactionSync(() => {
       this.backfillPublicationHeadsSync(this.readStateSync(), Date.now());
     });
+    await this.schedulePayloadMaintenance();
   }
 
   private ensureStorageSchemaSync() {
@@ -14332,9 +14341,9 @@ export class ExactReviewQueue {
     );
   }
 
-  private async scheduleSourceAuthorityVerification(
+  private async armAuxiliaryWake(
     next: number,
-    reason: "source_authority" | "command_intake" = "source_authority",
+    reason: "source_authority" | "command_intake" | "payload_maintenance" = "source_authority",
   ) {
     const scheduled = await this.storage.getAlarm();
     const now = Date.now();
@@ -14347,6 +14356,13 @@ export class ExactReviewQueue {
       await this.storage.setAlarm(next);
       this.scheduledAlarmDecision = [reason, next, now];
     }
+  }
+
+  private async schedulePayloadMaintenance() {
+    // The indexed deadlines survive object restarts and keep an otherwise idle
+    // queue alive until every eligible payload has been classified.
+    const next = this.githubWebhookReadModelStore.nextPayloadMaintenanceAtSync();
+    if (next !== null) await this.armAuxiliaryWake(next, "payload_maintenance");
   }
 
   private scheduleNext(state: ExactReviewQueueState, now: number, forceScan = false) {
@@ -14445,6 +14461,7 @@ export class ExactReviewQueue {
       ["source_authority", sourceAuthorityNext],
       ["command_intake", commandIntakeNext],
       ["credential_circuit", credentialCircuitNext],
+      ["payload_maintenance", this.githubWebhookReadModelStore.nextPayloadMaintenanceAtSync()],
     ];
     const selected = candidates.reduce(
       (a, b) => (b[1] !== null && b[1] < (a?.[1] ?? Infinity) ? b : a),

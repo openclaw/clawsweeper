@@ -11,6 +11,10 @@ class_name = "PayloadRetentionProof"
 name = "EXACT_REVIEW_QUEUE"
 class_name = "ExactReviewQueue"
 
+[[durable_objects.bindings]]
+name = "MAINTENANCE"
+class_name = "AutomaticMaintenanceProof"
+
 [[migrations]]
 tag = "v1"
-new_sqlite_classes = ["PayloadRetentionProof", "ExactReviewQueue"]
+new_sqlite_classes = ["PayloadRetentionProof", "ExactReviewQueue", "AutomaticMaintenanceProof"]

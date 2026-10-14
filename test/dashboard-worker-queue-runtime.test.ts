@@ -433,6 +433,7 @@ test("alarm scheduling keeps a closed reason set and stable tie priority", async
       "source_authority",
       "command_intake",
       "credential_circuit",
+      "payload_maintenance",
     ],
   );
 
@@ -452,7 +453,7 @@ test("alarm scheduling keeps a closed reason set and stable tie priority", async
       };
     };
     nextSourceAuthorityVerificationAt: () => Promise<number | null>;
-    scheduleSourceAuthorityVerification: (
+    armAuxiliaryWake: (
       nextAttemptAt: number,
       reason: "source_authority" | "command_intake",
     ) => Promise<void>;
@@ -469,7 +470,7 @@ test("alarm scheduling keeps a closed reason set and stable tie priority", async
   await internals.scheduleNext({ deliveries: {}, items: {} }, now);
   assert.equal(internals.scheduledAlarmDecision?.[0], "batch_lease");
   await storage.deleteAlarm();
-  await internals.scheduleSourceAuthorityVerification(now + 5_000, "source_authority");
+  await internals.armAuxiliaryWake(now + 5_000, "source_authority");
   assert.equal(internals.scheduledAlarmDecision?.[0], "source_authority");
   await storage.deleteAlarm();
   const intake = directReReviewIntake({

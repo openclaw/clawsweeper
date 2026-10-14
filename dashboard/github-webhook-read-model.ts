@@ -1331,9 +1331,27 @@ export class GithubWebhookReadModelStore {
     );
   }
 
-  prunePayloadsSync(now: number): number {
-    let pruned = 0;
-    let scanned = 0;
+  nextPayloadMaintenanceAtSync(): number | null {
+    let next: number | null = null;
+    for (const table of PAYLOAD_TABLES) {
+      const row = firstRow(
+        this.storage.sql.exec(
+          `SELECT MIN(payload_retire_at) AS next_at FROM ${table}
+            WHERE payload_pruned = 0 AND payload_retire_at >= 0
+              ${table.endsWith("items_v1") ? "" : "AND tombstone = 0"}`,
+        ),
+      );
+      // MIN over an empty eligible index is NULL, not a due timestamp.
+      if (row?.next_at !== null && row?.next_at !== undefined) {
+        const deadline = Number(row.next_at);
+        next = next === null ? deadline : Math.min(next, deadline);
+      }
+    }
+    return next;
+  }
+
+  prunePayloadsSync(now: number) {
+    const result = { scanned: 0, retired: 0, retired_bytes: 0, deferred: 0, protected: 0 };
     const familyDeadlines = new Map<string, number>();
     // Retain ordering facts and real tombstones: an old unseen delivery must not
     // resurrect a deleted comment or replace a newer, retired payload.
@@ -1351,18 +1369,19 @@ export class GithubWebhookReadModelStore {
           : "0";
       const rows = Array.from(
         this.storage.sql.exec(
-          `SELECT rowid, repository, number, ${protectedExpression} AS protected
+          `SELECT rowid, repository, number, ${protectedExpression} AS protected,
+                  length(CAST(snapshot_json AS BLOB)) AS payload_bytes
              FROM ${table}
             WHERE payload_pruned = 0 AND payload_retire_at >= 0 AND payload_retire_at < ?
               ${table.endsWith("items_v1") ? "" : "AND tombstone = 0"}
             ORDER BY payload_retire_at LIMIT ?`,
           ...(protectedExpression === "0" ? [] : [REVIEW_PLACEHOLDER_MARKER]),
           now,
-          GITHUB_WEBHOOK_READ_MODEL_PAYLOAD_PRUNE_LIMIT - scanned,
+          GITHUB_WEBHOOK_READ_MODEL_PAYLOAD_PRUNE_LIMIT - result.scanned,
         ),
       );
       for (const row of rows) {
-        scanned += 1;
+        result.scanned += 1;
         if (row.protected) {
           // Recovery's bounded repair is not a full census. Preserve unresolved
           // placeholder bodies and their parent item snapshots until they change.
@@ -1370,6 +1389,7 @@ export class GithubWebhookReadModelStore {
             `UPDATE ${table} SET payload_retire_at = -1 WHERE rowid = ?`,
             row.rowid,
           );
+          result.protected += 1;
           continue;
         }
         const familyKey = `${row.repository}#${row.number}`;
@@ -1407,6 +1427,7 @@ export class GithubWebhookReadModelStore {
             deadline,
             row.rowid,
           );
+          result.deferred += 1;
           continue;
         }
         this.storage.sql.exec(
@@ -1421,11 +1442,12 @@ export class GithubWebhookReadModelStore {
           row.repository,
           row.number,
         );
-        pruned += 1;
+        result.retired += 1;
+        result.retired_bytes += Math.max(0, Number(row.payload_bytes) - 2);
       }
-      if (scanned === GITHUB_WEBHOOK_READ_MODEL_PAYLOAD_PRUNE_LIMIT) break;
+      if (result.scanned === GITHUB_WEBHOOK_READ_MODEL_PAYLOAD_PRUNE_LIMIT) break;
     }
-    return pruned;
+    return result;
   }
 
   private recheckItemProtectionSync(repository: string, number: number): void {
@@ -1440,7 +1462,8 @@ export class GithubWebhookReadModelStore {
   }
 
   private pruneSync(now: number): void {
-    this.prunePayloadsSync(now);
+    // Payload maintenance belongs to the queue alarm, not webhook request
+    // transactions. Accepted writes arm its persisted deadline after commit.
     this.storage.sql.exec(
       `DELETE FROM github_webhook_read_model_deliveries_v1 WHERE delivery_id IN (
          SELECT delivery_id FROM github_webhook_read_model_deliveries_v1

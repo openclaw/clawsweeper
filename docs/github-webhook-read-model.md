@@ -52,7 +52,8 @@ matches the longest ordinary reader TTL. Keep older members of an active family:
 the newest comment can make the whole collection fresh, including older bodies
 and the parent's count guards. Placeholder recovery has a separate six-hour
 census TTL and explicit protection below; it does not require ordinary payloads.
-Each ingest, repair, or queue alarm examines at most 64 payload candidates.
+Each queue alarm examines at most 64 payload candidates. Ingest and repair only
+arm the next maintenance wake after committing; they do not classify old families.
 Indexed deadlines exclude payloads already retired and
 preserve actual deletion tombstones. Retention also preserves unresolved placeholder
 comments and their parent item snapshots because recovery still needs them.
@@ -82,13 +83,20 @@ unconfirmed because older repairs could already have exceeded the cap.
 The schema initializer adds a retirement marker, deadline, and partial retention index to
 each of the three existing tables. Existing rows retain their payloads during
 initialization. It also adds a completeness flag to comment receipts.
-Retention begins on subsequent ingest, repair, and alarm passes.
+Initialization and successful ingress or repair arm the earliest indexed
+payload deadline. The alarm scheduler preserves earlier queue work and keeps
+maintenance alive when the queue is otherwise empty. An overdue backlog schedules
+another pass no sooner than one second later; future deadlines wake without
+new traffic, including after an object restart. Each committed pass logs
+`github_read_model_payload_maintenance` with scanned, retired, deferred, protected,
+logical JSON bytes removed, and the next eligible deadline. Byte counts exclude
+SQLite page/index overhead and do not establish physical storage reclamation.
 Deploying this change therefore enables destructive payload retirement. Obtain
 the production operator's approval before deployment. Redeploying old code does
 not recover retired payloads and does not support their marker semantics.
 
-This is eligibility, not an exact deletion deadline: passes need ingest, repair,
-or queue alarms, and each pass is bounded. It does not bound active family age,
+This is eligibility, not an exact deletion deadline: alarm delivery can be delayed,
+and each pass is bounded. It does not bound active family age,
 the number of ordering rows, or total database size.
 Canonical reports, lifecycle history, queue ownership, and R2 objects are outside
 this retention policy. Measure production eligibility and storage separately.

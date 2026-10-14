@@ -44,8 +44,23 @@ probes. Automatic dispatch alarms are disabled; explicit alarms run before the
 pending review's debounce deadline. Every outbound request fails and is counted;
 the scenario requires zero outbound requests.
 
+The maintenance scenario separately boots the deployed retention revision
+`5a55fa9e8866abb28f54d4eeb5e04b7ddeb63f44`, seeds persisted storage, then restarts
+the same objects under the candidate. It uses real wall-clock alarm delivery.
+A small idle queue drains all three payload tables, retains hot families and
+placeholders, restarts partway through the backlog, and wakes for a future
+deadline without new ingress. A separate populated object contains 64 families
+with 500 comments and 500 reviews each. The proof compares an ordinary unique
+delivery's native SQL work before and after the upgrade, then observes several
+bounded automatic passes and concurrent unique ingress and queue requests.
+Actual enqueue, claim, and completion routes run; only the external workflow
+dispatch transition is seeded by the fixture. SQL instrumentation uses separate
+async contexts for alarms and requests and includes work done before cursor
+iteration. The populated backlog is deliberately not drained in full.
+
 This proves the storage component and persisted queue upgrade on real local
 Workerd SQLite. It does not measure production eligibility, initializer headroom,
-billed storage, or a full production queue workload. No Cloudflare account, R2
+billed storage, or a full production queue workload. Reported JSON-byte reduction
+does not establish physical storage reclamation. No Cloudflare account, R2
 object, or production namespace is accessed. Downgrade after retirement remains
 unsupported; this fixture does not attempt it.

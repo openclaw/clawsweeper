@@ -133,10 +133,10 @@ async function start(config = candidateConfig) {
   throw new Error(`local Worker startup timed out: ${diagnostics}`);
 }
 
-async function upgradeProof() {
+function archivedFixture(revision, name) {
   const archive = execFileSync(
     "git",
-    ["archive", "--format=tar", baseline, "dashboard", "src", "config", "package.json"],
+    ["archive", "--format=tar", revision, "dashboard", "src", "config", "package.json"],
     { maxBuffer: 64 * 1024 * 1024 },
   );
   const entries = execFileSync("tar", ["-tvf", "-"], { input: archive, encoding: "utf8" })
@@ -146,13 +146,18 @@ async function upgradeProof() {
     entries.every((entry) => ["-", "d"].includes(entry[0])),
     "baseline archive contains only files/directories",
   );
-  const baselineRoot = path.join(root, "baseline");
+  const baselineRoot = path.join(root, name);
   mkdirSync(baselineRoot);
   execFileSync("tar", ["-xf", "-", "-C", baselineRoot], { input: archive });
   const fixtureRoot = path.join(baselineRoot, proofPath);
   mkdirSync(fixtureRoot, { recursive: true });
   for (const file of ["worker.ts", "wrangler.toml"])
     copyFileSync(path.join(proofPath, file), path.join(fixtureRoot, file));
+  return { archive, config: path.join(fixtureRoot, "wrangler.toml") };
+}
+
+async function upgradeProof() {
+  const { archive, config } = archivedFixture(baseline, "baseline");
   const stamp = Date.parse("2030-01-01T00:00:00Z");
   const historical = stamp - 31 * 60_000;
   let clock = historical;
@@ -237,7 +242,7 @@ async function upgradeProof() {
     },
   };
   await stop();
-  await start(path.join(fixtureRoot, "wrangler.toml"));
+  await start(config);
   await call(
     "/github-read-model/ingest",
     delivery("upgrade-old", [
@@ -390,6 +395,232 @@ async function send(route) {
   return response.json();
 }
 
+async function automaticMaintenanceProof() {
+  const metrics = [];
+  const call = async (object, route, body = {}, clock = null) => {
+    const response = await fetch(`${baseUrl}/maintenance/${object}${route}`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-proof-nonce": nonce,
+        ...(clock === null ? {} : { "x-proof-now": String(clock) }),
+      },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(60_000),
+    });
+    const raw = await response.text();
+    let value;
+    try {
+      value = JSON.parse(raw);
+    } catch {
+      throw new Error(`${object}${route}: ${response.status} ${raw.slice(0, 200)}`);
+    }
+    assert.ok(response.ok, `${route}: ${response.status} ${JSON.stringify(value)}`);
+    if (response.headers.has("x-proof-rows-read")) {
+      metrics.push({
+        object,
+        route,
+        rowsRead: Number(response.headers.get("x-proof-rows-read")),
+        elapsedMs: Number(response.headers.get("x-proof-elapsed-ms")),
+      });
+    }
+    return value;
+  };
+  await stop();
+  const deployed = "5a55fa9e8866abb28f54d4eeb5e04b7ddeb63f44";
+  const deployedFixture = archivedFixture(deployed, "deployed");
+  await start(deployedFixture.config);
+  const item = (number, at, body = "x".repeat(8192)) => ({
+    kind: "item",
+    repository: "example/project",
+    number,
+    itemKind: "issue",
+    sourceUpdatedAt: new Date(at).toISOString(),
+    snapshot: { number, body },
+  });
+  const comment = (number, id, at, body = "ordinary comment") => ({
+    kind: "comment",
+    repository: "example/project",
+    number,
+    id,
+    tombstone: false,
+    sourceUpdatedAt: new Date(at).toISOString(),
+    snapshot: { id, body },
+  });
+  const envelope = (id, objects, at) => ({
+    version: 1,
+    deliveryId: id,
+    event: "issue_comment",
+    action: "created",
+    receivedAt: new Date(at).toISOString(),
+    eventClasses: ["issues", "issue_comments", "pull_request_reviews"],
+    objects,
+  });
+  const waitFor = async (object, predicate) => {
+    for (let attempt = 0; attempt < 80; attempt++) {
+      const value = await call(object, "/__proof/inspect");
+      if (predicate(value)) return value;
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+    throw new Error(`automatic maintenance did not reach expected state: ${object}`);
+  };
+  const old = Date.now() - 31 * 60_000;
+  const objects = [
+    ...Array.from({ length: 130 }, (_, i) => item(i + 1, old)),
+    comment(1, 1, old),
+    { ...comment(1, 2, old), kind: "review" },
+    item(900, old),
+    comment(900, 900, old, "ClawSweeper status: review started."),
+    item(901, old),
+    comment(901, 901, old),
+  ];
+  const seed = envelope("automatic-seed", objects, old);
+  await call("idle", "/github-read-model/ingest", seed, old);
+  await call(
+    "idle",
+    "/github-read-model/ingest",
+    envelope("hot", [comment(901, 902, Date.now())], Date.now()),
+    old,
+  );
+  const before = await call("idle", "/__proof/inspect", {}, old);
+  assert.equal(before.passes.length, 0);
+  assert.equal(
+    Object.values(before.tables).reduce((n, table) => n + table.retired, 0),
+    0,
+  );
+  let last;
+  for (let family = 1; family <= 64; family++) {
+    last = envelope(
+      `populated-${family}`,
+      [
+        item(family, old),
+        ...Array.from({ length: 500 }, (_, id) => comment(family, id + 1, old, "y".repeat(512))),
+        ...Array.from({ length: 500 }, (_, id) => ({
+          ...comment(family, id + 1, old),
+          kind: "review",
+        })),
+      ],
+      old,
+    );
+    await call("populated", "/github-read-model/ingest", last, old);
+  }
+  const populatedBefore = await call("populated", "/__proof/inspect", {}, old);
+  assert.equal(populatedBefore.tables.comments.rows, 32_000);
+  assert.equal(populatedBefore.tables.activity.rows, 32_000);
+  assert.equal(populatedBefore.passes.length, 0);
+  await call("populated", "/github-read-model/ingest", envelope("deployed-probe", [], Date.now()));
+  const deployedProbe = metrics.at(-1);
+  const populatedAfterProbe = await call("populated", "/__proof/inspect");
+  assert.equal(populatedAfterProbe.tables.items.retired, 64);
+  assert.equal(populatedAfterProbe.outbound, 0);
+  await stop();
+  await start();
+  await call("idle", "/__proof/enable");
+  assert.equal((await call("idle", "/github-read-model/ingest", seed)).deduped, true);
+  const interrupted = await waitFor("idle", (value) => value.passes.length >= 1);
+  assert.ok(Object.values(interrupted.tables).reduce((n, table) => n + table.retired, 0) < 132);
+  await stop();
+  await start();
+  const drained = await waitFor(
+    "idle",
+    (value) => Object.values(value.tables).reduce((n, table) => n + table.retired, 0) === 132,
+  );
+  assert.equal(drained.outbound, 0);
+  assert.ok(drained.passes.every((pass) => pass.scanned <= 64));
+  assert.equal(drained.tables.items.retired, 130);
+  assert.equal(drained.tables.comments.retired, 1);
+  assert.equal(drained.tables.activity.retired, 1);
+  assert.ok(drained.tables.items.bytes < before.tables.items.bytes / 20);
+  assert.ok(drained.nextAlarm > Date.now(), "hot family retains its future wake");
+  const futureAt = Date.now() - 30 * 60_000 + 2_000;
+  await call(
+    "future",
+    "/github-read-model/ingest",
+    envelope("future", [item(1, futureAt)], futureAt),
+  );
+  await call("future", "/__proof/enable");
+  await call("future", "/github-read-model/ingest", envelope("future", [], futureAt));
+  const futureBefore = await call("future", "/__proof/inspect");
+  assert.equal(futureBefore.tables.items.retired, 0);
+  const future = await waitFor("future", (value) => value.tables.items.retired === 1);
+  assert.equal(future.nextAlarm, null);
+
+  // A populated first pass must traverse capped child families. Record native
+  // work and live request latency, rather than equating 64 candidates with 64 reads.
+  await call("populated", "/github-read-model/ingest", envelope("candidate-probe", [], Date.now()));
+  const candidateProbe = metrics.at(-1);
+  const afterCandidateProbe = await call("populated", "/__proof/inspect");
+  assert.equal(afterCandidateProbe.tables.comments.retired, 0);
+  assert.equal(afterCandidateProbe.tables.activity.retired, 0);
+  assert.ok(candidateProbe.rowsRead < deployedProbe.rowsRead / 10);
+  const enqueued = await call("populated", "/enqueue", {
+    delivery_id: "maintenance-review",
+    decision: {
+      targetRepo: "example/project",
+      targetBranch: "main",
+      itemNumber: 999,
+      itemKind: "issue",
+      sourceEvent: "issues",
+      sourceAction: "opened",
+    },
+  });
+  assert.equal(enqueued.queued, true);
+  const lease = await call("populated", "/__proof/dispatch-fixture", {
+    item_key: enqueued.item_key,
+  });
+  await call("populated", "/__proof/enable");
+  await call("populated", "/github-read-model/ingest", last);
+  const claim = await call("populated", "/claim", { ...lease, run_id: "9001", run_attempt: 1 });
+  assert.equal(claim.claimed, true);
+  const concurrentStart = Date.now();
+  let concurrentRequests = 0;
+  while (Date.now() - concurrentStart < 3_000) {
+    await Promise.all([
+      call("populated", "/admission-capabilities"),
+      call(
+        "populated",
+        "/github-read-model/ingest",
+        envelope(`concurrent-${concurrentRequests}`, [], Date.now()),
+      ),
+    ]);
+    concurrentRequests += 2;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  const completed = await call("populated", "/complete", {
+    ...lease,
+    claim_generation: claim.claim_generation,
+    run_id: "9001",
+    run_attempt: 1,
+    outcome: "success",
+  });
+  assert.equal(completed.ok, true);
+  const populated = await waitFor("populated", (value) => value.passes.length >= 2);
+  assert.ok(populated.passes.every((pass) => pass.scanned <= 64));
+  assert.ok(populated.passes.every((pass) => pass.retired_bytes > 0));
+  assert.equal(populated.outbound, 0);
+  return {
+    deployedBaseline: deployed,
+    deployedArchiveSha256: createHash("sha256").update(deployedFixture.archive).digest("hex"),
+    automaticAlarmDelivery: true,
+    restartContinuesMaintenance: true,
+    futureDeadlineWakesWithoutIngress: true,
+    idleBefore: before.tables,
+    idleAfter: drained.tables,
+    idlePasses: drained.passes,
+    futurePasses: future.passes,
+    populatedBefore: populatedBefore.tables,
+    deployedProbe,
+    candidateProbe,
+    queueClaimAndComplete: true,
+    simulatedExternalDispatchOnly: true,
+    concurrentSuccessfulRequests: concurrentRequests,
+    populatedPasses: populated.passes,
+    requestMetrics: metrics.filter((metric) => metric.object === "populated").slice(-70),
+    populatedBacklogFullyDrained: false,
+    outboundRequests: 0,
+  };
+}
+
 let report;
 let failure;
 try {
@@ -424,6 +655,7 @@ try {
   assert.equal(hot.comments, 101);
   assert.ok(hot.pruneRowsRead > 0 && hot.pruneRowsRead < 5_000);
   const upgrade = await upgradeProof();
+  const automatic = await automaticMaintenanceProof();
   report = {
     ok: true,
     runtime: "local Workerd SQLite Durable Object",
@@ -437,6 +669,7 @@ try {
     rebuildEquivalent: true,
     hotFamily: hot,
     persistedQueueUpgrade: upgrade,
+    automaticMaintenance: automatic,
     liveCloudflare: false,
     limits:
       "synthetic local storage and controlled queue entrypoints; no production size, billed storage, dispatch, or full queue workload proof",

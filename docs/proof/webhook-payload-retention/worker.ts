@@ -1,4 +1,5 @@
 import { DurableObject } from "cloudflare:workers";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { GithubWebhookReadModelStore } from "../../../dashboard/github-webhook-read-model.ts";
 import { ExactReviewQueue as ProductionQueue } from "../../../dashboard/exact-review-queue.ts";
 
@@ -10,8 +11,10 @@ globalThis.fetch = async () => {
 const repository = "example/project";
 // The same wrapper also bundles against the pre-retention source revision.
 const GITHUB_WEBHOOK_READ_MODEL_PAYLOAD_RETENTION_MS = 30 * 60_000;
-let proofNow = Date.parse("2030-01-01T00:00:00Z");
-Date.now = () => proofNow;
+const wallNow = Date.now;
+const sqlMetrics = new AsyncLocalStorage<{ rowsRead: number }>();
+let proofNow: number | null = null;
+Date.now = () => proofNow ?? wallNow();
 
 // Keep the actual queue owner and HTTP entrypoints across both persisted builds.
 // Only wall-clock alarm delivery and read-only inspection belong to the fixture.
@@ -73,6 +76,146 @@ export class ExactReviewQueue {
       });
     }
     return this.queue.fetch(request);
+  }
+}
+
+// This object delivers real wall-clock alarms. Instrumentation observes native
+// SQL work and the real store result; it never drives a maintenance pass.
+export class AutomaticMaintenanceProof extends DurableObject {
+  private queue;
+  private summary;
+
+  constructor(ctx, env) {
+    super(ctx, env);
+    const sql = {
+      exec: (query, ...bindings) => {
+        const cursor = ctx.storage.sql.exec(query, ...bindings);
+        const metrics = sqlMetrics.getStore();
+        const initial = cursor.rowsRead;
+        if (metrics) metrics.rowsRead += initial;
+        return (function* () {
+          try {
+            yield* cursor;
+          } finally {
+            if (metrics) metrics.rowsRead += cursor.rowsRead - initial;
+          }
+        })();
+      },
+    };
+    const storage = new Proxy(ctx.storage, {
+      get(target, key) {
+        if (key === "sql") return sql;
+        const value = Reflect.get(target, key, target);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+    const state = new Proxy(ctx, {
+      get(target, key) {
+        if (key === "storage") return storage;
+        const value = Reflect.get(target, key, target);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+    this.queue = new ProductionQueue(state, {
+      ...env,
+      hostedTargetPredicate: () => true,
+      hostedPublicTargetProbe: async () => "public",
+    });
+    const store = (this.queue as any).githubWebhookReadModelStore;
+    const prune = store.prunePayloadsSync.bind(store);
+    store.prunePayloadsSync = (now) => {
+      this.summary = prune(now);
+      return this.summary;
+    };
+  }
+
+  async alarm() {
+    if (!this.ctx.storage.kv.get("proof_automatic")) {
+      await this.ctx.storage.deleteAlarm();
+      return;
+    }
+    proofNow = null;
+    this.summary = null;
+    const started = wallNow();
+    const metrics = { rowsRead: 0 };
+    await sqlMetrics.run(metrics, () => this.queue.alarm());
+    const pass = {
+      at: started,
+      elapsedMs: wallNow() - started,
+      nativeRowsRead: metrics.rowsRead,
+      ...this.summary,
+      nextAlarm: await this.ctx.storage.getAlarm(),
+    };
+    const passes = (this.ctx.storage.kv.get("proof_passes") as any[]) ?? [];
+    this.ctx.storage.kv.put("proof_passes", [...passes, pass].slice(-32));
+  }
+
+  async fetch(request: Request) {
+    proofNow = request.headers.has("x-proof-now")
+      ? Number(request.headers.get("x-proof-now"))
+      : null;
+    const route = new URL(request.url).pathname;
+    if (route.startsWith("/__proof/") && route !== "/__proof/dispatch-fixture") {
+      await request.arrayBuffer();
+    }
+    if (route === "/__proof/enable") {
+      this.ctx.storage.kv.put("proof_automatic", true);
+      return Response.json({ ok: true });
+    }
+    if (route === "/__proof/dispatch-fixture") {
+      const { item_key } = (await request.json()) as { item_key: string };
+      const sql = this.ctx.storage.sql;
+      const row = Array.from(
+        sql.exec("SELECT item_json FROM exact_review_queue_items WHERE item_key = ?", item_key),
+      )[0];
+      if (!row) return Response.json({ error: "missing_enqueued_item" }, { status: 404 });
+      const item = JSON.parse(String(row.item_json));
+      // Simulate only the external workflow dispatch boundary. Claim and
+      // completion still execute the real queue's persisted lease protocol.
+      Object.assign(item, {
+        state: "dispatching",
+        leaseId: "proof-lease",
+        leaseRevision: item.revision,
+        leaseDecision: item.decision,
+        leaseExpiresAt: wallNow() + 60 * 60_000,
+      });
+      sql.exec(
+        "UPDATE exact_review_queue_items SET item_json = ? WHERE item_key = ?",
+        JSON.stringify(item),
+        item_key,
+      );
+      return Response.json({
+        item_key,
+        lease_id: item.leaseId,
+        lease_revision: item.leaseRevision,
+      });
+    }
+    if (route === "/__proof/inspect") {
+      const tables = ["items", "comments", "activity"].map((kind) => {
+        const table = `github_webhook_read_model_${kind}_v1`;
+        return [
+          kind,
+          Array.from(
+            this.ctx.storage.sql.exec(`SELECT COUNT(*) AS rows,
+          SUM(payload_pruned) AS retired, SUM(length(CAST(snapshot_json AS BLOB))) AS bytes
+          FROM ${table}`),
+          )[0],
+        ];
+      });
+      return Response.json({
+        outbound,
+        tables: Object.fromEntries(tables),
+        passes: this.ctx.storage.kv.get("proof_passes") ?? [],
+        nextAlarm: await this.ctx.storage.getAlarm(),
+      });
+    }
+    const started = wallNow();
+    const metrics = { rowsRead: 0 };
+    const response = await sqlMetrics.run(metrics, () => this.queue.fetch(request));
+    const headers = new Headers(response.headers);
+    headers.set("x-proof-rows-read", String(metrics.rowsRead));
+    headers.set("x-proof-elapsed-ms", String(wallNow() - started));
+    return new Response(response.body, { status: response.status, headers });
   }
 }
 
@@ -152,7 +295,7 @@ export class PayloadRetentionProof extends DurableObject {
         now,
       );
       rowsRead = 0;
-      const pruned = storage.transactionSync(() => store.prunePayloadsSync(now));
+      const pruned = storage.transactionSync(() => store.prunePayloadsSync(now).retired);
       const pruneRowsRead = rowsRead;
       const value = await store.readComments({ repository, number: 1 }, now);
       return Response.json({
@@ -189,7 +332,7 @@ export class PayloadRetentionProof extends DurableObject {
       store.repair({ repository, repair_kind: "placeholders", objects: [] }, now - 1);
     }
     if (route === "/prune") {
-      const pruned = this.ctx.storage.transactionSync(() => store.prunePayloadsSync(now));
+      const pruned = this.ctx.storage.transactionSync(() => store.prunePayloadsSync(now).retired);
       return Response.json({ pruned });
     }
     if (route === "/repair") {
@@ -234,6 +377,7 @@ export default {
     env: {
       READ_MODEL: DurableObjectNamespace;
       EXACT_REVIEW_QUEUE: DurableObjectNamespace;
+      MAINTENANCE: DurableObjectNamespace;
       PROOF_NONCE: string;
     },
   ) {
@@ -241,6 +385,15 @@ export default {
       return new Response("forbidden", { status: 403 });
     if (new URL(request.url).pathname === "/ready") return Response.json({ ready: true });
     try {
+      const maintenance = new URL(request.url).pathname.match(/^\/maintenance\/([^/]+)(\/.*)$/);
+      if (maintenance) {
+        const url = new URL(request.url);
+        url.pathname = maintenance[2];
+        const body = await request.arrayBuffer();
+        return await env.MAINTENANCE.get(env.MAINTENANCE.idFromName(maintenance[1])).fetch(
+          new Request(url, { method: request.method, headers: request.headers, body }),
+        );
+      }
       if (new URL(request.url).pathname.startsWith("/queue/")) {
         const url = new URL(request.url);
         url.pathname = url.pathname.slice("/queue".length);

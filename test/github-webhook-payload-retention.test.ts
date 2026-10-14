@@ -81,7 +81,7 @@ function observe(
 }
 
 function prune(storage: TestStorage, store: GithubWebhookReadModelStore) {
-  return storage.transactionSync(() => store.prunePayloadsSync(now));
+  return storage.transactionSync(() => store.prunePayloadsSync(now).retired);
 }
 
 test("payload expiry upgrades existing rows idempotently and uses bounded partial indexes", () => {
@@ -114,7 +114,31 @@ test("payload expiry upgrades existing rows idempotently and uses bounded partia
       .join("\n");
     assert.match(plan, new RegExp(`USING (?:COVERING )?INDEX ${table}_payload_retention`));
     assert.doesNotMatch(plan, /USE TEMP B-TREE/);
+    const deadlinePlan = [
+      ...storage.sql.exec(`EXPLAIN QUERY PLAN
+      SELECT MIN(payload_retire_at) FROM ${table}
+       WHERE payload_pruned = 0 AND payload_retire_at >= 0
+         ${table === items ? "" : "AND tombstone = 0"}`),
+    ]
+      .map((row) => row.detail)
+      .join("\n");
+    assert.match(deadlinePlan, new RegExp(`USING (?:COVERING )?INDEX ${table}_payload_retention`));
   }
+});
+
+test("maintenance deadlines survive restart and exclude tombstones, protected and retired rows", () => {
+  const { storage, store } = fixture();
+  assert.equal(store.nextPayloadMaintenanceAtSync(), null);
+  observe(store, "deadlines", [item(1), comment(1), comment(2, true)], old);
+  storage.sql.exec(`UPDATE ${items} SET payload_retire_at = -1`);
+  storage.sql.exec(`UPDATE ${comments} SET payload_retire_at = 50 WHERE comment_id = 1`);
+  storage.sql.exec(`UPDATE ${comments} SET payload_retire_at = 0 WHERE tombstone = 1`);
+  assert.equal(store.nextPayloadMaintenanceAtSync(), 50);
+  const restarted = new GithubWebhookReadModelStore(storage);
+  restarted.ensureSchemaSync();
+  assert.equal(restarted.nextPayloadMaintenanceAtSync(), 50);
+  storage.sql.exec(`UPDATE ${comments} SET payload_pruned = 1 WHERE comment_id = 1`);
+  assert.equal(restarted.nextPayloadMaintenanceAtSync(), null);
 });
 
 test("payload retirement drains bounded batches, retains cutoff/fresh rows, and survives restart", () => {
@@ -369,6 +393,11 @@ test("protected prefixes are classified once in bounded batches and reconsidered
   );
   assert.equal(
     storage.scalar(`SELECT payload_retire_at AS value FROM ${items} WHERE number = 1`),
+    0,
+  );
+  assert.equal(prune(storage, store), 0);
+  assert.equal(
+    storage.scalar(`SELECT payload_retire_at AS value FROM ${items} WHERE number = 1`),
     now + GITHUB_WEBHOOK_READ_MODEL_PAYLOAD_RETENTION_MS,
   );
 });
@@ -400,11 +429,11 @@ test("ordinary payloads expire after a whole family is idle for the longest read
   assert.equal(storage.scalar(`SELECT SUM(payload_pruned) AS value FROM ${items}`), 0);
   const boundary = now + GITHUB_WEBHOOK_READ_MODEL_PAYLOAD_RETENTION_MS;
   assert.equal(
-    storage.transactionSync(() => store.prunePayloadsSync(boundary)),
+    storage.transactionSync(() => store.prunePayloadsSync(boundary).retired),
     0,
   );
   assert.equal(
-    storage.transactionSync(() => store.prunePayloadsSync(boundary + 1)),
+    storage.transactionSync(() => store.prunePayloadsSync(boundary + 1).retired),
     4,
   );
   assert.equal((await store.readComments({ repository, number: 1 }, boundary + 1)).usable, false);
@@ -428,7 +457,17 @@ test("hot prefixes are deferred once so cold families still drain in bounded pas
     })),
     now,
   );
-  // Ingest already deferred the first 64 candidates without hiding cold rows.
+  // Ingress never scans payload families. The first alarm defers the hot prefix.
+  assert.deepEqual(
+    storage.transactionSync(() => store.prunePayloadsSync(now)),
+    {
+      scanned: 64,
+      retired: 0,
+      retired_bytes: 0,
+      deferred: 64,
+      protected: 0,
+    },
+  );
   assert.equal(prune(storage, store), 63);
   assert.equal(prune(storage, store), 7);
   assert.equal(prune(storage, store), 0);
