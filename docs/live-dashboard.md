@@ -224,11 +224,18 @@ shows its numerator, denominator and recorded days in the requested seven-day
 window; period comparison requires all seven days in both windows. Execution
 success does not establish decision correctness.
 
-Agent performance separates pending publications (ready and backoff) from
-superseded revisions retained for command acknowledgements. Retained stale revisions
-are excluded from pending demand and do not establish failed delivery. Repeated-claim
-alerts count recorded review claims, which may end before model execution; their
-history does not establish the source revisions, triggers or completed-review count.
+Each detailed chart has one page owner. Agent performance owns execution timing,
+failed attempts by stage and repeated-claim investigation. Its run-time chart shows
+daily p50 and p90 together in duration units; these are run timings, separate from
+the model-only latest-review snapshot. Operations owns review flow, publication
+backlog, actual deliveries and batch handoff. Throughput owns volume and workflow
+activity; Coverage owns freshness. Overview keeps compact summaries and links.
+
+Publication pending excludes superseded revisions retained for command
+acknowledgements; those records do not establish failed delivery. Repeated-claim
+alerts count recorded claims, which may end before model execution. The bounded
+public target sample links to GitHub for revision and trigger investigation; it is
+not a ranking or proof of wasted execution.
 
 The site shows no report bodies, author identities or free-text concerns.
 Local preview: in `dashboard-site/`, install dependencies, run

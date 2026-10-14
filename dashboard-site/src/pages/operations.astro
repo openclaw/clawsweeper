@@ -7,8 +7,9 @@ import TimeChart from '../components/TimeChart.astro';
 import StatusStrip from '../components/StatusStrip.astro';
 import Clear from '../components/Clear.astro';
 import Ago from '../components/Ago.astro';
-import { ops } from '../lib/data';
-import { int, label, pct, stamp } from '../lib/format';
+import BarList from '../components/BarList.astro';
+import { live, ops } from '../lib/data';
+import { duration, int, label, pct, stamp } from '../lib/format';
 
 const failureHelp: Record<string, string> = {
   safe_close_blocked: 'A close stopped by a safety check before it reached GitHub.',
@@ -25,12 +26,16 @@ const safetyBlocks = ops.apply.failures.find(row => row.kind === 'safe_close_blo
 const failuresReported = ops.apply.failures.some(row => row.day !== null || row.week !== null);
 // The all-clear needs every count reported as zero; one unknown count keeps the table visible.
 const failuresAllZero = ops.apply.failures.length > 0 && ops.apply.failures.every(row => row.day === 0 && row.week === 0);
+const deliveriesObserved = ops.series.published.some(point => point.value !== null);
+const handoff = live.publicationHandoff;
+const delayLabels: Record<string, string> = { under_1m: 'Up to 1 min', '1m_to_5m': '1–5 min', '5m_to_10m': '5–10 min', over_10m: 'Over 10 min' };
+const dispatchLabels: Record<string, string> = { idle: 'No pending dispatch', dispatching: 'Dispatch in progress', awaiting_claim: 'Waiting for claim', claimed: 'Last dispatch claimed', dispatch_failed: 'Dispatch failed', reservation_expired: 'Reservation expired' };
 ---
 <Layout title="Operations" section="operations">
   <div class="flex flex-wrap items-end justify-between gap-3">
     <div>
       <h1 class="text-[22px] font-semibold tracking-tight">Operations</h1>
-      <p class="mt-1 text-[13px] text-fg-muted">The last 7 days of the review queue and the apply step, hour by hour.</p>
+      <p class="mt-1 text-[13px] text-fg-muted">Review flow, publication and close operations, hour by hour. <a class="underline" href="/agent/">Execution speed and failures → Agent performance</a></p>
     </div>
     <span class="pill bg-bg-muted text-fg-muted" data-tip={`Queue history ${stamp(ops.windowStart)} to ${stamp(ops.asOf)}\n${ops.coverage.percent === null ? 'Sample coverage unknown' : `${ops.coverage.percent}% of 5-minute samples collected`}`}>
       <Ago at={ops.asOf} prefix="Through " />
@@ -113,7 +118,23 @@ const failuresAllZero = ops.apply.failures.length > 0 && ops.apply.failures.ever
     </Card>
   </div>
 
-  <Card title="Publication backlog" class="mt-3" tip="Finished reviews waiting to be written back to GitHub, highest count in each hour.">
-    <TimeChart points={ops.series.publicationPending} hourly noun="waiting at peak" color="var(--accent)" height={160} />
-  </Card>
+  <div class="mt-3 grid gap-3 xl:grid-cols-2">
+    <Card title="Publication backlog" tip="Finished reviews waiting to be written back to GitHub, highest count in each hour.">
+      <p class="mb-4 text-[13px] text-fg-muted">A growing backlog means finished work is waiting to reach GitHub. Check <a class="underline" href="/queue/">publication backoff</a> if it persists.</p>
+      <TimeChart points={ops.series.publicationPending} hourly noun="waiting at peak" color="var(--accent)" height={180} />
+    </Card>
+    {deliveriesObserved && <Card title="Publication deliveries · 7d" tip="Observed published_total growth per hour: actual publications, excluding superseded and deduplicated completions. History starts when the counter is first collected; earlier periods remain gaps. Current hour is still filling.">
+      <p class="mb-4 text-[13px] text-fg-muted">Results written to GitHub. Gaps are unobserved periods, not zero deliveries.</p>
+      <TimeChart points={ops.series.published} kind="bar" hourly noun="publications observed" color="var(--ok)" height={180} />
+    </Card>}
+    {handoff && <Card title="Publication handoff" tip="Workflow dispatch to durable batch claim. Includes active batches and up to 50 recent retained terminal batches; it is not a fixed time window. Missing dispatch timestamps are excluded. This measures batch handoff, not total queue wait or admission eligibility.">
+      <div class="mb-4 flex flex-wrap items-baseline justify-between gap-2">
+        <span class="text-[13px] font-medium">{dispatchLabels[handoff.dispatch_state]}{handoff.dispatch_wait_seconds !== null ? ` · ${duration(handoff.dispatch_wait_seconds)}` : ''}</span>
+        <span class="num text-[12px] text-fg-muted">{int(handoff.sample_count)} / {int(handoff.retained_batches)} batches timed</span>
+      </div>
+      {handoff.sample_count > 0 && <BarList rows={handoff.delay_buckets.map((bucket: { id: string; count: number }) => ({ key: bucket.id, name: delayLabels[bucket.id], value: bucket.count }))} />}
+      <p class="mt-3 text-[13px] text-fg-muted">Long delays here locate a batch startup bottleneck. Direct publication is outside this sample.</p>
+      {handoff.sample_count > 0 && <p class="mt-2 text-[11px] text-fg-muted">Claims {stamp(handoff.first_claim_at)} – {stamp(handoff.last_claim_at)}</p>}
+    </Card>}
+  </div>
 </Layout>

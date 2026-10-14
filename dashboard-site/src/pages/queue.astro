@@ -24,7 +24,6 @@ const health = [
     tip: 'Backlog ready for a slot right now, against capacity.',
   },
 ];
-const failureStages = entries({ ...live.failures?.by_stage });
 const recoveries = entries({ ...live.handoff?.recovery_reasons });
 const shed = entries({ ...review.shed_reasons_since_reset });
 const feedLanes = Object.entries((live.feed?.lanes ?? {}) as Record<string, { target_rate_per_hour: number; burst: number; token_balance: number }>);
@@ -91,10 +90,8 @@ const feedLanes = Object.entries((live.feed?.lanes ?? {}) as Record<string, { ta
     </Card>
   </div>
 
-  <div class="mt-3 grid gap-3 lg:grid-cols-3">
-    <Card title="Failures by stage" tip={live.failures ? `Failed review attempts in the last ${live.failures.window_minutes}m, by the stage that failed.` : 'Failure telemetry unavailable.'}>
-      {failureStages.length ? <BarList rows={failureStages} /> : <Clear text="No failures in the window." />}
-    </Card>
+  <p class="mt-4 text-[13px] text-fg-muted"><a class="underline" href="/agent/">Failed attempts and repeated claims → Agent performance</a></p>
+  <div class="mt-3 grid gap-3 lg:grid-cols-2">
     <Card title="Handoff recoveries" tip="Times the queue reclaimed stuck work, by cause.">
       {recoveries.length ? <BarList rows={recoveries} /> : <Clear text="No recoveries needed." />}
     </Card>

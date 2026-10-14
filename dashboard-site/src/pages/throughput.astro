@@ -14,17 +14,15 @@ const perDay = (points: { value: number }[]) => points.reduce((total, point) => 
 ---
 <Layout title="Throughput" section="throughput">
   <h1 class="text-[22px] font-semibold tracking-tight">Throughput</h1>
-  <p class="mt-1 text-[13px] text-fg-muted">How much ClawSweeper reviews and closes, and how its sweep runs behave.</p>
+  <p class="mt-1 text-[13px] text-fg-muted">Review and close volume, plus sweep workflow activity. <a class="underline" href="/agent/">Execution speed and failures → Agent performance</a></p>
 
-  <div class="mt-6 grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-5">
+  <div class="mt-6 grid grid-cols-2 gap-3 xl:grid-cols-4">
     <Kpi neutral label="Items refreshed · 30d" value={int(kpis.reviews30d.current)} delta={kpis.reviews30d.delta} sub={`${int(perDay(series.reviews(30)))} per day`}
       tip="Items whose latest stored review landed in the last 30 complete days. Delta compares with the prior 30 days." />
     <Kpi neutral label="Closes · 30d" value={int(kpis.closes30d.current)} delta={kpis.closes30d.delta} sub={`${int(perDay(series.closes(30)))} per day`}
       tip="Items ClawSweeper closed in the last 30 complete days. Delta compares with the prior 30 days. Merged PRs and items closed by others are not counted." />
     <Kpi label={`Sweep runs · ${last30.length}d`} value={short(runs30)} sub={`${int(failed30)} failed · ${pct(failed30 / Math.max(runs30, 1))}`}
       tip="All sweep workflow runs in the last complete days the dashboard has recorded (up to 30; history grows from the first build)." />
-    <Kpi label="Model time · p50" value={duration(kpis.reviewTime.p50)} sub={`p90 ${duration(kpis.reviewTime.p90)} · n=${int(kpis.reviewTime.count)}`}
-      tip="Model execution time in latest stored review records, across the corpus. Excludes queue and publication wait; not end-to-end latency." />
     <Kpi label="Creation → latest review" value={duration(kpis.latestReviewAge.p50)} sub={`p90 ${duration(kpis.latestReviewAge.p90)} · n=${int(kpis.latestReviewAge.count)}`}
       tip="Time from item creation to its latest stored review. Re-reviews reset it, so it overstates first-review latency for older items." />
   </div>
@@ -48,10 +46,6 @@ const perDay = (points: { value: number }[]) => points.reduce((total, point) => 
     <Card title="Sweep failure rate" tip="Failed + startup-failure runs ÷ all sweep runs, per day.">
       <TimeChart points={runs.failureRate.slice(-30)} kind="bar" unit="percent" noun="failed" color="var(--bad)" height={200} />
     </Card>
-    <TabCard title="Review run duration" name="duration" tabs={['p50', 'p90']} tip="Wall-clock time of each exact review run (Review exact item), per day. Other sweep jobs are left out: they are short and move between workflow files. Days before the hourly history use a sample of about 300 reviews.">
-      <div class="panel"><TimeChart points={last30.map(day => ({ date: day.date, value: day.reviewP50 }))} noun="seconds" height={200} /></div>
-      <div class="panel"><TimeChart points={last30.map(day => ({ date: day.date, value: day.reviewP90 }))} noun="seconds" color="var(--warn)" height={200} /></div>
-    </TabCard>
   </div>
 
   <Card title="Workflows" flush class="mt-3" tip="GitHub Actions archive, per workflow, over the days each one ran. For sweep, days before the hourly history add counts and a duration sample.">

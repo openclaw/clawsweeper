@@ -1,12 +1,13 @@
 ---
 import { areaPath, labelIndices, linePath, niceMax, ticks } from '../lib/chart';
-import { day, hour, int, pct, short } from '../lib/format';
+import { day, duration, hour, int, pct, short } from '../lib/format';
 
 interface Props {
-  // value null: no data for that point (telemetry gap); drawn at zero, labelled "No data".
+  // Null observations break the line and shade the column; never draw them as zero.
   points: { date: string; value: number | null }[];
   kind?: 'area' | 'bar';
-  unit?: 'count' | 'percent';
+  unit?: 'count' | 'percent' | 'seconds';
+  label?: string;
   noun?: string;
   height?: number;
   color?: string;
@@ -16,22 +17,22 @@ interface Props {
   // e.g. the part of the total that maintainers authored. Its value shows in each tooltip.
   overlay?: { points: { date: string; value: number | null }[]; label: string; noun: string; color?: string };
 }
-const { points, kind = 'area', unit = 'count', noun = '', height = 220, color = 'var(--accent)', hourly = false, overlay } = Astro.props;
+const { points, kind = 'area', unit = 'count', noun = '', label, height = 220, color = 'var(--accent)', hourly = false, overlay } = Astro.props;
 const overlayColor = overlay?.color ?? 'var(--warn)';
 const overlayValues = overlay?.points.map(point => point.value) ?? [];
 const values = points.map(point => point.value);
-const { top, step } = niceMax(Math.max(...values.map(value => value ?? 0), 0));
+const { top, step } = niceMax(Math.max(...values.map(value => value ?? 0), ...overlayValues.map(value => value ?? 0), 0));
 const yTicks = ticks(top, step);
-const fmtAxis = (value: number) => (unit === 'percent' ? pct(value, value < 0.1 ? 1 : 0) : short(value));
-const fmtValue = (value: number | null) => (value === null ? 'No data' : unit === 'percent' ? pct(value, 2) : `${int(value)}${noun ? ` ${noun}` : ''}`);
+const fmtAxis = (value: number) => (unit === 'seconds' ? duration(value) : unit === 'percent' ? pct(value, value < 0.1 ? 1 : 0) : short(value));
+const fmtValue = (value: number | null) => (value === null ? 'No data' : unit === 'seconds' ? duration(value) : unit === 'percent' ? pct(value, 2) : `${int(value)}${noun ? ` ${noun}` : ''}`);
 const xLabels = labelIndices(points.length, 6);
 const tip = (index: number) => {
   const point = points[index];
-  const head = `${hourly ? hour(point.date) : day(point.date)}\n${fmtValue(point.value)}`;
+  const head = `${hourly ? hour(point.date) : day(point.date)}\n${label ? `${label}: ` : ''}${fmtValue(point.value)}`;
   if (!overlay) return head;
   const part = overlayValues[index] ?? null;
-  const share = part !== null && point.value ? ` (${pct(part / point.value, 0)})` : '';
-  return `${head}\n${part === null ? 'No data' : `${int(part)} ${overlay.noun}${share}`}`;
+  const share = unit !== 'seconds' && part !== null && point.value ? ` (${pct(part / point.value, 0)})` : '';
+  return `${head}\n${part === null ? 'No data' : unit === 'seconds' ? `${overlay.label}: ${duration(part)}` : `${int(part)} ${overlay.noun}${share}`}`;
 };
 const id = `g${Math.random().toString(36).slice(2, 8)}`;
 const barWidth = points.length ? 1000 / points.length : 0;
@@ -39,7 +40,7 @@ const barWidth = points.length ? 1000 / points.length : 0;
 <div class="grid grid-cols-[auto_1fr] gap-x-3">
   <div class="relative w-9" style={`height:${height}px`}>
     {yTicks.map(value => (
-      <span class="num absolute right-0 -translate-y-1/2 text-[11px] text-fg-faint" style={`top:${100 - (value / top) * 100}%`}>{fmtAxis(value)}</span>
+      <span class="num absolute right-0 -translate-y-1/2 whitespace-nowrap text-[11px] text-fg-faint" style={`top:${100 - (value / top) * 100}%`}>{fmtAxis(value)}</span>
     ))}
   </div>
   <div class="relative" style={`height:${height}px`}>
@@ -88,7 +89,7 @@ const barWidth = points.length ? 1000 / points.length : 0;
     <>
       <div></div>
       <div class="mt-2 flex gap-4 text-[11px] text-fg-muted">
-        <span class="inline-flex items-center gap-1.5"><span class="inline-block h-0.5 w-3" style={`background:${color}`}></span>All {noun}</span>
+        <span class="inline-flex items-center gap-1.5"><span class="inline-block h-0.5 w-3" style={`background:${color}`}></span>{label ?? `All ${noun}`}</span>
         <span class="inline-flex items-center gap-1.5"><span class="inline-block h-0 w-3 border-t-2 border-dashed" style={`border-color:${overlayColor}`}></span>{overlay.label}</span>
       </div>
     </>

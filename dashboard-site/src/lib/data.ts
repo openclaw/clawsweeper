@@ -1,7 +1,7 @@
 import raw from "../data/dashboard.json";
 import type { Operations, OperationsHour } from "../../scripts/operations.ts";
 import { duration, label } from "./format";
-import { summarizeRunWindow } from "./run-window.ts";
+import { reviewTimingWindow, summarizeRunWindow } from "./run-window.ts";
 
 // The build snapshot (scripts/build-data.ts). Typed loosely at the edge; every page reads
 // through the view helpers below so presentation never learns the raw shapes.
@@ -183,6 +183,7 @@ export const kpis = {
 
 export const runs = {
   days: completeRunDays,
+  timings: reviewTimingWindow(runDays, asOf.actions, 30),
   failureRate: completeRunDays.map((day) => ({
     date: day.date,
     value: day.total ? day.failure / day.total : null,

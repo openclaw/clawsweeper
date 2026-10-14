@@ -90,7 +90,7 @@ everything else requires human comparison with current main.
 
 - [Live dashboard](live-dashboard.md) — active; Worker status and operational
   telemetry
-- [Agent performance metrics](agent-performance-metrics.md) — operational charts, publication handoff timing and observation limits
+- [Agent performance metrics](agent-performance-metrics.md) — execution timing, repeated work, chart ownership and observation limits
 - [GitHub publication egress telemetry](github-egress-telemetry.md) — active;
   wire denominator, credential attribution, completeness, and retention
 - [Triage dashboard](triage-dashboard.md) — active; cached issue triage

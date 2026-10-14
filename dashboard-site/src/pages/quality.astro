@@ -21,7 +21,7 @@ const findingTotal = findings.reduce((total, row) => total + row.value, 0);
   <h1 class="text-[22px] font-semibold tracking-tight">Review assessments</h1>
   <p class="mt-1 text-[13px] text-fg-muted">Reviewer-reported judgments across {int(totals.typed)} typed records. These are not independent measures of review accuracy.</p>
 
-  <p class="mt-2 text-[13px] text-fg-muted"><a href="/agent/" class="underline">Agent performance</a> separates operational signals from the outcome evidence still needed.</p>
+  <p class="mt-2 text-[13px] text-fg-muted"><a href="/agent/" class="underline">Agent performance</a> shows execution speed, failed attempts and repeated claims.</p>
 
   <div class="mt-6 grid grid-cols-2 gap-3 md:grid-cols-4">
     <Kpi label="Close recommended" value={share(d.decisions.close ?? 0)} sub={`${int(d.decisions.close ?? 0)} items`}

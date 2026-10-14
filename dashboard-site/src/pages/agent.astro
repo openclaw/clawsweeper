@@ -2,70 +2,61 @@
 import Layout from '../components/Layout.astro';
 import Kpi from '../components/Kpi.astro';
 import Card from '../components/Card.astro';
-import TabCard from '../components/TabCard.astro';
 import TimeChart from '../components/TimeChart.astro';
-import StatusStrip from '../components/StatusStrip.astro';
 import BarList from '../components/BarList.astro';
-import { asOf, cover, coverText, kpis, live, ops } from '../lib/data';
-import { duration, int, pct, stamp } from '../lib/format';
+import Clear from '../components/Clear.astro';
+import { asOf, entries, kpis, live, runs } from '../lib/data';
+import { duration, int, stamp } from '../lib/format';
 
-const count = (value: unknown) => typeof value === 'number' && Number.isFinite(value) ? int(value) : '–';
+const failures = live.failures && live.failures.status !== 'unknown' ? live.failures : null;
 const runaway = live.runaway && live.runaway.status !== 'unknown' ? live.runaway : null;
-const completed = ops.series.completed.slice(0, -1).slice(-24).filter(point => point.value !== null);
-const deliveriesObserved = ops.series.published.some(point => point.value !== null);
-const handoff = live.publicationHandoff;
-const delayLabels: Record<string, string> = { under_1m: 'Up to 1 min', '1m_to_5m': '1–5 min', '5m_to_10m': '5–10 min', over_10m: 'Over 10 min' };
-const dispatchLabels: Record<string, string> = { idle: 'No pending dispatch', dispatching: 'Dispatch in progress', awaiting_claim: 'Waiting for claim', claimed: 'Last dispatch claimed', dispatch_failed: 'Dispatch failed', reservation_expired: 'Reservation expired' };
+const failureStages = entries({ ...failures?.by_stage });
+const targets: string[] = runaway?.sample_item_keys ?? [];
+const timingDays = runs.timings;
+const timingObserved = timingDays.filter(day => day.reviewP50 !== null || day.reviewP90 !== null).length;
 ---
 <Layout title="Agent performance" section="agent">
   <h1 class="text-[22px] font-semibold tracking-tight">Agent performance</h1>
-  <p class="mt-1 text-[13px] text-fg-muted">Review activity, waiting work and execution health.</p>
+  <p class="mt-1 text-[13px] text-fg-muted">How long execution takes, where attempts fail, and which items repeat.</p>
 
-  <div class="mt-6 grid grid-cols-2 gap-3 xl:grid-cols-4">
-    <Kpi label="Review completions · 24h" value={completed.length ? int(completed.reduce((total, point) => total + point.value!, 0)) : '–'}
-      sub={`${completed.length} of 24 hours with data`} spark={ops.series.completed.slice(-72).map(point => point.value)}
-      tip="Observed review-lane counter growth in the last 24 complete hours. Missing intervals and counter resets are excluded; partially observed hours can undercount. Includes terminal non-review dispositions." />
+  <div class="mt-6 grid gap-3 sm:grid-cols-3">
     <Kpi label="Model time · p50" value={duration(kpis.reviewTime.p50)} sub={`p90 ${duration(kpis.reviewTime.p90)} · n=${int(kpis.reviewTime.count)}`}
-      tip={`Model execution in latest stored review records. Excludes queue and publication wait. Corpus ${stamp(asOf.corpus)}.`} />
-    <Kpi label="Publication pending" value={count(live.publication?.pending)}
-      sub={`${count(live.publication?.ready)} timer-ready · ${count(live.publication?.backoff)} in backoff`}
-      tip={`Waiting publication work. Timer-ready does not establish admission eligibility. Retained superseded acknowledgements are excluded. Snapshot ${stamp(asOf.queue)}.`} />
-    <Kpi label="Repeated-claim alerts" value={count(runaway?.runaway_items)}
-      sub={runaway ? `>${runaway.threshold_reviews_per_day} claims in ${runaway.window_hours}h` : undefined}
-      tip={`Targets above the review-claim threshold. Claims may end before model execution; revisions and triggers are not attributed. Snapshot ${stamp(asOf.queue)}.`} />
+      tip={`Model execution in each item's latest stored review. Excludes queue and publication wait. Corpus ${stamp(asOf.corpus)}.`} />
+    <Kpi label={failures ? `Failed attempts · ${failures.window_minutes}m` : 'Failed attempts'} value={failures ? int(failures.attempts) : '–'}
+      sub={failures ? `${int(failures.terminal_attempts)} terminal · ${int(failures.retryable_attempts)} retryable` : 'Telemetry unavailable'}
+      tip="Counts failed attempts, not distinct reviews or a failure rate. One target may fail more than once. Terminal attempts will not retry on their own." />
+    <Kpi label={runaway ? `Repeated claims · ${runaway.window_hours}h` : 'Repeated claims'} value={runaway ? int(runaway.runaway_items) : '–'}
+      sub={runaway ? `items with >${runaway.threshold_reviews_per_day} claims` : 'Telemetry unavailable'}
+      tip="Targets above the review-claim threshold. A claim may end before model execution; revisions and triggers are not attributed." />
   </div>
 
-  <div class="mt-3 grid gap-3 xl:grid-cols-2">
-    <Card title="Review completions · 7d" tip="Observed review-lane counter growth per hour, including terminal non-review dispositions. Gaps and resets are excluded; partially observed hours can undercount. Current hour is still filling.">
-      <TimeChart points={ops.series.completed} kind="bar" hourly noun="completions observed" height={210} />
-      <div class="mt-4"><StatusStrip cells={ops.handoff.strip} /></div>
-      <p class="mt-2 text-[11px] text-fg-muted">Handoff healthy or idle: {pct(ops.handoff.healthyShare, 1)} of observed samples</p>
+  <Card title="Review run time · 30d" class="mt-3" tip="Daily p50 and p90 wall-clock duration of exact review runs. Includes run setup and finalization, but not time waiting before the run. Older days can use sampled runs; gaps mean no timing observations.">
+    <p class="mb-5 text-[13px] text-fg-muted">Lower is faster. If p90 rises while p50 stays flat, investigate the slower runs.</p>
+    {timingObserved ? <TimeChart points={timingDays.map(day => ({ date: day.date, value: day.reviewP50 }))} unit="seconds" label="p50 · typical run" height={230}
+      overlay={{ points: timingDays.map(day => ({ date: day.date, value: day.reviewP90 })), label: 'p90 · slower runs', noun: 'p90' }} />
+      : <p class="text-[13px] text-fg-muted">No review-run timing samples in this window.</p>}
+    <p class="mt-3 text-[11px] text-fg-muted">{timingObserved} of {timingDays.length} complete days with timings · Actions through {stamp(asOf.actions)}. Model-only time above uses a separate latest-review snapshot.</p>
+  </Card>
+
+  <div class="mt-3 grid gap-3 lg:grid-cols-2">
+    <Card title="Where attempts fail" tip="Recorded failed review attempts by stage in the current rolling window. These counts do not include successful attempts.">
+      {failureStages.length ? <BarList rows={failureStages} /> : failures ? <Clear text="No failed attempts in this window." /> : <p class="text-[13px] text-fg-muted">Failure telemetry unavailable.</p>}
+      <p class="mt-4 text-[13px] text-fg-muted">Start with the largest stage, then check <a class="underline" href="/queue/">retry and backoff reasons</a>.</p>
+      {failures && <p class="mt-2 text-[11px] text-fg-muted">{int(failures.affected_targets)} affected targets · last {failures.window_minutes} minutes · snapshot {stamp(asOf.queue)}</p>}
     </Card>
-    <TabCard title="Waiting work · 7d" name="agent-waiting" tabs={['Review', 'Publication']} tip="Highest pending count observed in each hour. Superseded publication acknowledgements are excluded. Shaded columns mean missing observations.">
-      <div class="panel"><TimeChart points={ops.series.reviewPending} hourly noun="pending at peak" color="var(--warn)" height={210} /></div>
-      <div class="panel"><TimeChart points={ops.series.publicationPending} hourly noun="pending at peak" height={210} /></div>
-    </TabCard>
-    {handoff && <Card title="Publication handoff" tip="Workflow dispatch to durable batch claim. Includes active batches and up to 50 recent retained terminal batches; it is not a fixed time window. Missing dispatch timestamps are excluded. This measures batch handoff, not total queue wait or admission eligibility.">
-      <div class="mb-4 flex flex-wrap items-baseline justify-between gap-2">
-        <span class="text-[13px] font-medium">{dispatchLabels[handoff.dispatch_state]}{handoff.dispatch_wait_seconds !== null ? ` · ${duration(handoff.dispatch_wait_seconds)}` : ''}</span>
-        <span class="num text-[12px] text-fg-muted">{int(handoff.sample_count)} / {int(handoff.retained_batches)} batches timed</span>
-      </div>
-      {handoff.sample_count > 0 && <BarList rows={handoff.delay_buckets.map((bucket: { id: string; count: number }) => ({ key: bucket.id, name: delayLabels[bucket.id], value: bucket.count }))} />}
-      {handoff.sample_count > 0 && <p class="mt-3 text-[11px] text-fg-muted">Claims {stamp(handoff.first_claim_at)} – {stamp(handoff.last_claim_at)}</p>}
-    </Card>}
-    {deliveriesObserved && <Card title="Publication deliveries · 7d" tip="Observed published_total growth per hour: actual publications, excluding superseded and deduplicated completions. History starts when the counter is first collected; earlier periods remain gaps. Current hour is still filling.">
-      <TimeChart points={ops.series.published} kind="bar" hourly noun="publications observed" color="var(--ok)" height={200} />
-    </Card>}
-    <Card title="Recent-review coverage" tip={`Reviewable items with a review in the last ${cover.windowDays} days. Snapshot ${stamp(asOf.coverage)}.`}>
-      <div class="num text-[32px] font-semibold leading-none">{cover.percent === null ? '–' : coverText}</div>
-      <p class="mt-2 text-[12px] text-fg-muted">{int(cover.reviewed)} / {int(cover.reviewable)} reviewable items · last {cover.windowDays} days</p>
-      <div class="mt-6 flex h-7 overflow-hidden rounded-md" role="img" aria-label={`Recent-review coverage ${coverText}`}>
-        {cover.segments.map(segment => <div style={`width:${cover.reviewable ? segment.value / cover.reviewable * 100 : 0}%;background:${segment.color}`} data-tip={`${segment.label}: ${int(segment.value)}`}></div>)}
-      </div>
-      <div class="mt-4 flex flex-wrap gap-x-4 gap-y-2 text-[12px] text-fg-muted">
-        {cover.segments.map(segment => <span class="inline-flex items-center gap-1.5"><span class="h-2 w-2 rounded-sm" style={`background:${segment.color}`}></span>{segment.label} <span class="num">{int(segment.value)}</span></span>)}
-      </div>
+    <Card title="Repeatedly claimed items" tip="A bounded sample of public targets over the claim threshold, not a ranking of the most repeated items.">
+      {targets.length ? <ul class="divide-y divide-line">{targets.map(key => {
+        const [repo, number] = key.split('#');
+        return <li class="py-2"><a class="break-all text-[13px] underline" href={`https://github.com/${repo}/issues/${number}`}>{key}</a></li>;
+      })}</ul> : runaway?.runaway_items === 0 ? <Clear text="No items over the claim threshold." /> : <p class="text-[13px] text-fg-muted">{runaway ? 'No public sample targets in this snapshot.' : 'Claim telemetry unavailable.'}</p>}
+      <p class="mt-4 text-[13px] text-fg-muted">Compare revisions and triggers on these items. Repeated claims alone do not prove wasted execution.</p>
+      {runaway && <p class="mt-2 text-[11px] text-fg-muted">Showing {targets.length} of {int(runaway.runaway_items)} flagged items · snapshot {stamp(asOf.queue)}</p>}
     </Card>
   </div>
-  <p class="mt-4 text-[11px] text-fg-muted">History built {stamp(ops.asOf)} · {ops.coverage.percent === null ? 'sample coverage unavailable' : `${ops.coverage.percent.toFixed(1)}% of 5-minute samples collected`} · <a class="underline" href="/queue/">Queue details</a> · <a class="underline" href="/throughput/">Run timings</a></p>
+
+  <nav aria-label="Related metrics" class="mt-5 flex flex-wrap gap-x-6 gap-y-2 text-[13px] text-fg-muted">
+    <a class="underline" href="/operations/">Flow, waiting and publication → Operations</a>
+    <a class="underline" href="/throughput/">Review and close volume → Throughput</a>
+    <a class="underline" href="/coverage/">Review freshness → Coverage</a>
+  </nav>
 </Layout>
