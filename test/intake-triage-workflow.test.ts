@@ -302,3 +302,36 @@ test("interruption finalization preserves completed intake and accepted write re
   await runIntakeWorkflow(f.options);
   assert.equal(interruptOpenWorkflowActionEvents(f.root), 0);
 });
+
+test("publication and release failures retain both causes and the unknown receipt", async (t) => {
+  const f = fixture(t);
+  f.unknownWrite();
+  f.options.fence = (phase) =>
+    phase !== "review" || !f.live.labels.includes("clawsweeper:intake:bug");
+  await assert.rejects(runIntakeWorkflow(f.options), (error) => {
+    assert.ok(error instanceof AggregateError);
+    assert.ok(error.errors.some((cause) => cause.message === "transport failed after dispatch"));
+    assert.ok(
+      error.errors.some((cause) => /source or queue ownership changed/.test(cause.message)),
+    );
+    return true;
+  });
+  assert.ok(
+    readAllSpooledActionEvents(f.root).some(
+      (event) => event.attributes?.completion_reason === "mutation_outcome_unknown",
+    ),
+  );
+});
+
+test("release ownership loss is surfaced after an accepted publication", async (t) => {
+  const f = fixture(t);
+  f.options.fence = (phase) =>
+    phase !== "review" || !f.live.labels.includes("clawsweeper:intake:bug");
+  await assert.rejects(runIntakeWorkflow(f.options), /source or queue ownership changed/);
+  assert.ok(f.live.labels.includes("clawsweeper:intake:bug"));
+  assert.ok(
+    readAllSpooledActionEvents(f.root).some(
+      (event) => event.attributes?.completion_reason === "mutation_accepted",
+    ),
+  );
+});

@@ -832,7 +832,7 @@ jobs:
       # so a killed write cannot be frozen as a retryable intent by a later review.
       - name: Recover interrupted intake receipts
         id: recover-intake-receipts
-        if: ${{ always() && (steps.intake-triage.outcome == 'failure' || steps.intake-triage.outcome == 'cancelled') }}
+        if: ${{ always() && steps.claim-exact-review-queue.outputs.claimed == 'true' && (steps.intake-triage.outcome == 'failure' || steps.intake-triage.outcome == 'cancelled') }}
         continue-on-error: true
         timeout-minutes: 2
         env:

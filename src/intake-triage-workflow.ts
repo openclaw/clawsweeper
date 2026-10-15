@@ -241,6 +241,11 @@ export async function runIntakeWorkflow(
       lastEventId: null,
       uncertainMutationObserved: false,
     };
+    const release = () => {
+      mutations.discardIssueLabelMutationBatch(options.number);
+      if (held && !fence("review")) throw new IntakeGuardError();
+    };
+    let publication: { outcome: string; labels: string[] };
     try {
       const published = withMutationReceiptRunner(
         ({ identity, idempotencyIdentity, operation, knownNoMutation }) => {
@@ -289,14 +294,22 @@ export async function runIntakeWorkflow(
           ? "preliminary_labels"
           : "no_label_change",
       });
-      return {
+      publication = {
         outcome: published.itemMutationPublished ? "published" : "unchanged",
         labels: wanted,
       };
-    } finally {
-      mutations.discardIssueLabelMutationBatch(options.number);
-      if (held && !fence("review")) throw new IntakeGuardError();
+    } catch (error) {
+      try {
+        release();
+      } catch (releaseError) {
+        // A lost release fence must not erase an uncertain write's original error.
+        // oxlint-disable-next-line preserve-caught-error -- AggregateError retains both failures.
+        throw new AggregateError([error, releaseError], "Intake publication and release failed");
+      }
+      throw error;
     }
+    release();
+    return publication;
   });
 }
 
