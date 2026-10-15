@@ -1192,6 +1192,7 @@ jobs:
         env:
           REVIEW_EXIT_CODE: ${{ steps.review-exact-event-item.outputs.exit_code || '' }}
           REVIEW_OUTCOME: ${{ steps.review-exact-event-item.outcome || 'not_started' }}
+          INTAKE_RECOVERY_OUTCOME: ${{ steps.recover-intake-receipts.outcome || 'not_started' }}
           REVIEW_SUPERSEDED: ${{ steps.review-exact-event-item.outputs.superseded == 'true' || steps.review-status-fence.outputs.superseded == 'true' || steps.release-review-status-fence.outputs.superseded == 'true' }}
         run: |
           args=()
@@ -1199,7 +1200,7 @@ jobs:
             args=(--interrupt-open-attempts --reason cancelled)
           elif [ "$REVIEW_EXIT_CODE" = "124" ] || [ "$REVIEW_EXIT_CODE" = "137" ]; then
             args=(--interrupt-open-attempts --reason timeout)
-          elif [ "$REVIEW_OUTCOME" != "success" ]; then
+          elif [ "$REVIEW_OUTCOME" != "success" ] || [ "$INTAKE_RECOVERY_OUTCOME" = "failure" ] || [ "$INTAKE_RECOVERY_OUTCOME" = "cancelled" ]; then
             args=(--interrupt-open-attempts --reason workflow_failed)
           fi
           pnpm run --silent finalize-action-events -- "${args[@]}"

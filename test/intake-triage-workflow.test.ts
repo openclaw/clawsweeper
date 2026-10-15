@@ -13,6 +13,7 @@ import { readAllSpooledActionEvents } from "../dist/action-ledger.js";
 import {
   flushWorkflowActionEvents,
   interruptOpenWorkflowActionEvents,
+  recordWorkflowActionEvent,
   startWorkflowMutationAttempt,
 } from "../dist/action-ledger-runtime.js";
 import { INTAKE_POLICY, intakeRequest } from "../dist/intake-triage-contract.js";
@@ -295,6 +296,60 @@ test("interrupted intake mutation recovers before a later review seals the produ
   mkdirSync(outputRoot);
   await flushWorkflowActionEvents(f.root, { outputRoot, projectionFlushTimeoutMs: 1 });
   assert.equal(interruptOpenWorkflowActionEvents(f.root), 0);
+});
+
+test("unrecovered intake writes remain recoverable after a successful review flush", async (t) => {
+  const f = fixture(t);
+  const attempt = startWorkflowMutationAttempt(
+    f.root,
+    {
+      index: 0,
+      mutationAttemptCount: 0,
+      startEventId: null,
+      lastEventId: null,
+      uncertainMutationObserved: false,
+    },
+    "intake-label-write",
+    {
+      phase: "workflow.attempt",
+      operation: "intake-triage",
+      operationIdentity: { item: "openclaw/openclaw#42", generation: 1 },
+      component: "intake-triage",
+      subject: { repository: "openclaw/openclaw", kind: "issue", number: 42 },
+      slot: "label-intent",
+      phaseSeq: 1,
+      idempotencyIdentity: "intake-label-write",
+    },
+  );
+  assert.ok(attempt.eventId);
+  // Failed early recovery leaves the intent open. A completed later review must
+  // not seal it before the always-run finalizer gets another recovery attempt.
+  recordWorkflowActionEvent(f.root, {
+    scope: "review",
+    identity: "finished-review",
+    type: "review.item",
+    component: "review",
+    subject: { repository: "openclaw/openclaw", kind: "issue", number: 42 },
+    action: { name: "review.item", status: "completed", retryable: false, mutation: false },
+  });
+  const outputRoot = join(f.root, "shards");
+  mkdirSync(outputRoot);
+  await assert.rejects(
+    flushWorkflowActionEvents(f.root, { outputRoot, projectionFlushTimeoutMs: 1 }),
+    /unresolved mutation attempt/,
+  );
+  assert.equal(interruptOpenWorkflowActionEvents(f.root, { reasonCode: "workflow_failed" }), 1);
+  const terminal = readAllSpooledActionEvents(f.root).find(
+    (event) => event.parent_event_id === attempt.eventId,
+  );
+  assert.ok(terminal);
+  assert.equal(terminal.action.retryable, false);
+  assert.equal(terminal.action.mutation, true);
+  assert.equal(terminal.attributes?.completion_reason, "mutation_outcome_unknown");
+  assert.ok(
+    (await flushWorkflowActionEvents(f.root, { outputRoot, projectionFlushTimeoutMs: 1 })).length >
+      0,
+  );
 });
 
 test("interruption finalization preserves completed intake and accepted write receipts", async (t) => {

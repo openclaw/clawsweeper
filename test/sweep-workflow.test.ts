@@ -6764,3 +6764,38 @@ test("interrupted intake receipts recover before review can seal the producer", 
     assert.equal(result.stdout.trim(), outcome === "cancelled" ? "cancelled" : "workflow_failed");
   }
 });
+
+test("late intake recovery retries after an early recovery failure and successful review", () => {
+  const steps = YAML.parse(readText(".github/workflows/sweep.yml")).jobs["event-review-apply"]
+    .steps;
+  const finalize = steps.find(
+    (step: { name?: string }) => step.name === "Finalize exact event action ledger",
+  );
+  assert.equal(
+    finalize.env.INTAKE_RECOVERY_OUTCOME,
+    "${{ steps.recover-intake-receipts.outcome || 'not_started' }}",
+  );
+  const script = finalize.run.replace(
+    'pnpm run --silent finalize-action-events -- "${args[@]}"',
+    'printf "%s\\n" "${args[*]}"',
+  );
+  for (const outcome of ["failure", "cancelled", "success", "skipped", "not_started"]) {
+    const result = spawnSync("bash", ["-c", script], {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        REVIEW_SUPERSEDED: "false",
+        REVIEW_OUTCOME: "success",
+        REVIEW_EXIT_CODE: "0",
+        INTAKE_RECOVERY_OUTCOME: outcome,
+      },
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(
+      result.stdout.trim(),
+      ["failure", "cancelled"].includes(outcome)
+        ? "--interrupt-open-attempts --reason workflow_failed"
+        : "",
+    );
+  }
+});
