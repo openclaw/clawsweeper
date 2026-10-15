@@ -43,7 +43,9 @@ export async function callIntakeApi(
   options: IntakeApiOptions,
   backend: IntakeResult["backend"],
   payload: Record<string, unknown>,
-  parse: (body: Record<string, unknown>) => Pick<IntakeResult, "answers" | "outcome">,
+  parse: (
+    body: Record<string, unknown>,
+  ) => Pick<IntakeResult, "answers" | "outcome" | "decisionProbabilities">,
 ): Promise<IntakeResult> {
   const started = Date.now();
   const result = (
@@ -128,7 +130,12 @@ export async function callIntakeApi(
     }
     if (!isRecord(decoded)) return result("invalid");
     const parsed = parse(decoded);
-    return result(parsed.outcome, parsed.answers, intakeUsage(decoded.usage));
+    return {
+      ...result(parsed.outcome, parsed.answers, intakeUsage(decoded.usage)),
+      ...(parsed.decisionProbabilities
+        ? { decisionProbabilities: parsed.decisionProbabilities }
+        : {}),
+    };
   } catch {
     // Do not include server bodies, prompts, keys, or private model names in errors.
     return result(signal.aborted ? "timeout" : "unavailable");

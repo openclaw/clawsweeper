@@ -78,6 +78,7 @@ export interface IntakeResult {
   outcome: "classified" | "unavailable" | "refused" | "invalid" | "timeout";
   answers: IntakeAnswers | null;
   usage: IntakeUsage;
+  decisionProbabilities?: Record<IntakeQuestion, Record<string, number>>;
   durationMs: number;
 }
 

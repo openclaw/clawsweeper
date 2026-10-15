@@ -2,7 +2,7 @@
 
 - Status: active classifier contract; workflow publication is a separate integration
 - Owner: ClawSweeper maintainers
-- Source of truth: `src/intake-triage-contract.ts`, `src/intake-triage-api.ts`
+- Source of truth: `src/intake-triage-contract.ts`, `src/intake-triage-api.ts`, `src/intake-triage-decisions.ts`
 - Last verified: based on `66bc4576148f0659d1d3f91bc9d323c3e77516a2`
 - Update when: questions, input limits, backends, or provisional labels change
 
@@ -11,7 +11,7 @@ bounded questions: request category, whether trigger steps are supplied, and
 whether version and environment are supplied. It does not establish that a bug
 exists or that a patch is correct.
 
-The ordinary Responses adapter works without the Decisions API. Optional adapters must
+The ordinary Responses adapter works without the Decisions API. Both adapters
 use the same packet and rubric. A caller must record request intent before a
 billable request and record returned usage separately from full-review usage.
 Missing credentials, timeouts, refusals and malformed output produce no labels.
@@ -31,3 +31,14 @@ publication. Intake must not satisfy review requests or populate review caches.
 
 Adding a cheap call before a full review adds spend. Cost savings require moving
 an existing metadata task to intake, not counting both calls as a saving.
+
+The optional Decisions adapter calls `POST /v1/decisions` with `gpt-6-luna` and
+three choice questions. It validates names, choices, complete distributions,
+finite probabilities, and refusals. Native choice distributions are retained
+separately; Responses does not invent matching confidence values. No probability
+threshold is presented as calibrated without labeled production examples.
+
+See the [official Decisions contract](https://developers.openai.com/api/docs/guides/decisions).
+Decisions failures abstain. They do not automatically spend on Responses or
+resubmit scanner-refused content. The ordinary Responses adapter remains an
+independent path for deployments without Decisions access.
