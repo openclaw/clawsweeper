@@ -189,8 +189,9 @@ Each build reads four sources:
   close time (`current_item_closed_at`), which apply writes only when it
   archives an item that someone else closed. The record export runs
   inside the exact-review queue Durable Object and slows reviews while it runs
-  (a full export on 2026-10-12 failed 26 review runs in 14 minutes), so run it at
-  a quiet hour. Until the first such run, scheduled builds skip with a notice;
+  (a full export on 2026-10-12 failed 26 review runs in 14 minutes; after the
+  queue fixes, the 2026-10-14 and 2026-10-15 refreshes saw 1 failure in 100 review
+  runs), so the schedule uses the quietest hours. Until the first such run, scheduled builds skip with a notice;
 - the public `/api/exact-review-queue` and `/api/review-coverage` responses;
 - the public 7-day `/api/health-history` samples and the 24-hour and 7-day
   `/api/apply-observability` summaries, for the Operations page. Samples are
