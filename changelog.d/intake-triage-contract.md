@@ -1,0 +1,1 @@
+- Add bounded, submission-only intake classification through ordinary structured model responses, separate from full review and its labels.
