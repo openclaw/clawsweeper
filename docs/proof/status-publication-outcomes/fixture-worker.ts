@@ -14,6 +14,7 @@ let blockedRequests = 0;
 let storeReads = 0;
 let browserSnapshot = null;
 let statusOffline = false;
+let cacheOwner = "durable";
 let lifetimeMode = false;
 let stallKind = "";
 let stallGeneration = 0;
@@ -183,7 +184,18 @@ export default {
       return Response.json({ released: true });
     }
     if (url.pathname === "/__proof/seed" && request.method === "POST") {
-      const { mode, kind, now, offline = false } = await request.json();
+      const {
+        mode,
+        kind,
+        now,
+        offline = false,
+        cache_owner = "durable",
+        historical_cache = false,
+      } = await request.json();
+      // The recorded September baseline uses v7 edge and v1 scoped store keys.
+      const edgeVersion = historical_cache ? "v7" : "v8";
+      const snapshotVersion = historical_cache ? "v1" : "v2";
+      cacheOwner = cache_owner;
       generation += 1;
       blockedRequests = 0;
       storeReads = 0;
@@ -201,7 +213,11 @@ export default {
         kind === "idle",
       );
       if (kind === "captured") events = structuredClone(capturedEvents);
-      const snapshot = publicationStatusFixture(events);
+      const snapshot = {
+        ...publicationStatusFixture(events),
+        public_projection_complete: true,
+      };
+      if (mode === "stale") snapshot.generated_at = new Date(Date.now() - 61_000).toISOString();
       snapshot.fleet = { active_codex_jobs: 17 };
       snapshot.recent_durable_publication_events = {
         ...events,
@@ -216,20 +232,25 @@ export default {
         browserSnapshot = snapshot;
       }
       for (const bucket of ["fresh", "stale"]) {
-        await caches.default.delete(new Request(`${url.origin}/api/status-cache/v8/_/${bucket}`));
+        await caches.default.delete(
+          new Request(`${url.origin}/api/status-cache/${edgeVersion}/_/${bucket}`),
+        );
       }
       if (mode === "fresh" || mode === "stale") {
         await caches.default.put(
-          new Request(`${url.origin}/api/status-cache/v8/_/${mode}`),
+          new Request(`${url.origin}/api/status-cache/${edgeVersion}/_/${mode}`),
           Response.json(snapshot, { headers: { "cache-control": "public, max-age=3600" } }),
         );
       }
-      if (mode === "durable") {
+      if (cacheOwner === "durable" && ["durable", "fresh", "stale"].includes(mode)) {
         const response = await store.get(store.idFromName("global")).fetch(
-          new Request("https://clawsweeper-status-store/snapshot%3Abay-scope%3Av2%3A_", {
-            method: "PUT",
-            body: JSON.stringify({ value: JSON.stringify(snapshot) }),
-          }),
+          new Request(
+            `https://clawsweeper-status-store/${encodeURIComponent(`snapshot:bay-scope:${snapshotVersion}:_`)}`,
+            {
+              method: "PUT",
+              body: JSON.stringify({ value: JSON.stringify(snapshot) }),
+            },
+          ),
         );
         if (!response.ok) throw new Error("local StatusStore seed failed");
       }
@@ -274,7 +295,7 @@ export default {
       return Response.json(browserSnapshot, { headers: { "x-clawsweeper-cache": "fresh" } });
     const env = {
       ...(lifetimeMode ? { CACHE_TTL_SECONDS: String(lifetimeTtl) } : {}),
-      STATUS_STORE: store,
+      STATUS_STORE: cacheOwner === "durable" ? store : undefined,
       EXACT_REVIEW_QUEUE: {
         idFromName: (name) => name,
         get: () => ({

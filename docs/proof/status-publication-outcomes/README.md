@@ -43,7 +43,8 @@ recorded in the receipt, avoiding a new package download for each preview.
 
 ## Automated harness coverage
 
-- Worker: 18 paired scenarios, 36 runs. The baseline loses counts and window
+- Worker: 28 paired scenarios, 56 runs, including both durable and optional
+  edge cache owners. The baseline loses counts and window
   metadata; the candidate matches the dedicated typed endpoint. Lossy edge
   cache values become null. Durable reuse skips external collection.
 - Browser: 22 paired scenarios, 44 runs, across desktop and mobile. Corrected
@@ -96,14 +97,13 @@ Publication counts remain intact on recovery. The Dashboard must show
 "Status freshness unavailable" on the unavailable response and restore its
 timestamp caption on recovery.
 
-A separate candidate case holds the first final StatusStore PUT while a newer
-healthy response publishes to the same real SQLite binding. Releasing the old
-PUT may replace the durable body; its original timestamp must remain intact.
-The receipt labels the direct stored-body freshness calculation as a
-complementary canonical-function check and separately records the next actual
-HTTP status response. A unit test covers late Cache API replacement through
-the normal status response and stale classification. Publication remains
-best-effort; the cache has no cross-isolate monotonic ordering guarantee.
+A separate candidate case runs the snapshot publication ordering proof below.
+It holds the first final StatusStore PUT while a newer healthy response publishes
+to the same real SQLite binding. Releasing the old PUT must retain the newer
+body and its original timestamp. The receipt records the stored body and actual
+HTTP responses with old fresh/stale edge bodies. Unit tests also cover the
+optional edge-only path. Publication remains best-effort; the ordering guarantee
+applies to the durable owner and subsequent cached reads.
 The local runtime does not reproduce the hosted platform's 30-second
 post-response cancellation limit.
 
@@ -144,3 +144,11 @@ bodies. Equal timestamps retain the first accepted body; another scope remains
 independent. The receipt is `publication-order-summary.json` in the existing
 artifact directory. This proof does not attribute production telemetry failures,
 order overlapping HTTP responses, or cover regional clock skew.
+
+Use `--cache-paths` with the same baseline to verify all 18 existing cold,
+durable, fresh, and stale publication scenarios against both cache owners,
+without requiring the older publication-loss regression or browser automation.
+Ten additional warm cases exercise the optional edge owner with no durable
+binding: 28 paired scenarios, 56 runs in total. Warm durable fixtures seed both
+cache owners. The candidate serves a fresh durable
+snapshot directly; the baseline warms its edge cache from that body.
