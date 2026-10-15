@@ -125,3 +125,22 @@ their Git blob and file digests, and the candidate source/proof manifest.
 The runner verifies archive bytes and members, baseline file bytes, and
 candidate file bytes before execution; it verifies candidate bytes again
 before emitting the receipt. It creates no Git history in the isolated box.
+
+## Snapshot publication ordering
+
+Owner: dashboard status publication. Source: `StatusStore` and `statusJson` in
+`dashboard/worker.ts`. Baseline: `c9248c60fcfb060e332193bf6fed926758c5f5f7`.
+Verified scope: delayed arrivals, equal timestamps, independent scopes, and old
+edge bodies. Update when the publication fence or cached-read owner changes.
+
+```sh
+node docs/proof/status-publication-outcomes/run-proof.mjs c9248c60fcfb060e332193bf6fed926758c5f5f7 --publication-order
+```
+
+The existing preview fixture delays A before the real SQLite-backed owner,
+accepts newer B, then releases A. The baseline rolls back to A; the candidate
+retains B. Actual `/api/status` reads retain B even with older fresh/stale edge
+bodies. Equal timestamps retain the first accepted body; another scope remains
+independent. The receipt is `publication-order-summary.json` in the existing
+artifact directory. This proof does not attribute production telemetry failures,
+order overlapping HTTP responses, or cover regional clock skew.

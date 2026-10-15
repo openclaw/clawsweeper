@@ -787,6 +787,28 @@ export class StatusStore {
     if (request.method === "PUT") {
       const stored = (await request.json()) as StoredValue;
       if (typeof stored?.value !== "string") return new Response("invalid value", { status: 400 });
+      if (key.startsWith("snapshot:bay-scope:v2:")) {
+        const now = Date.now();
+        const incomingAt = statusPublicationTime(stored.value, now);
+        if (incomingAt === null) return new Response("invalid snapshot", { status: 400 });
+        // Collection completion releases its isolate before publication finishes.
+        // Fence delayed arrivals at the shared SQLite owner, without holding network work.
+        const accepted = this.storage.transactionSync(() => {
+          const current = this.storage.kv.get(key) as StoredValue | undefined;
+          const currentAt =
+            current && (!current.expires_at || current.expires_at > now)
+              ? statusPublicationTime(current.value, now)
+              : null;
+          if (currentAt !== null && incomingAt <= currentAt) return false;
+          this.storage.kv.put(key, stored);
+          return true;
+        });
+        if (accepted && stored.expires_at) await this.scheduleCleanup(stored.expires_at);
+        return new Response(null, {
+          status: 204,
+          headers: { "X-ClawSweeper-Snapshot": accepted ? "accepted" : "retained" },
+        });
+      }
       await this.storage.put(key, stored);
       if (stored.expires_at) await this.scheduleCleanup(stored.expires_at);
       return new Response(null, { status: 204 });
@@ -1339,19 +1361,38 @@ async function statusJson(request, env, ctx) {
   try {
     const cache = caches.default;
     const publicBayScope = publicBayRepositoryScope(verifiedPublicBayRepositories(env));
-    const cached = await statusOperation(env, "cache", () =>
-      cache.match(statusCacheRequest(request, "fresh", publicBayScope)),
-    );
-    if (cached) {
-      return await statusOperation(env, "cache", () => cachedStatusResponse(cached, "fresh", env));
-    }
-    const stale = await statusOperation(env, "cache", () =>
-      cache.match(statusCacheRequest(request, "stale", publicBayScope)),
-    );
-    if (stale) {
-      staleResponse = await statusOperation(env, "cache", () =>
-        cachedStatusResponse(stale, "stale", env),
+    if (isDurableStatusStore(env.STATUS_STORE)) {
+      const ttl = numberFrom(env.CACHE_TTL_SECONDS, 60);
+      const staleTtl = numberFrom(env.STALE_CACHE_TTL_SECONDS, STALE_CACHE_TTL_SECONDS);
+      const stored = await readCachedSnapshot(env, Math.max(ttl, staleTtl), publicBayScope);
+      if (stored) {
+        const state =
+          Date.now() - Date.parse(stored.generated_at) <= ttl * 1000 ? "fresh" : "stale";
+        const response = statusSnapshotResponse(
+          publicStatusProjection(stored, verifiedPublicBayRepositories(env)),
+          state,
+          env,
+        );
+        if (state === "fresh") return response;
+        staleResponse = response;
+      }
+    } else {
+      const cached = await statusOperation(env, "cache", () =>
+        cache.match(statusCacheRequest(request, "fresh", publicBayScope)),
       );
+      if (cached) {
+        return await statusOperation(env, "cache", () =>
+          cachedStatusResponse(cached, "fresh", env),
+        );
+      }
+      const stale = await statusOperation(env, "cache", () =>
+        cache.match(statusCacheRequest(request, "stale", publicBayScope)),
+      );
+      if (stale) {
+        staleResponse = await statusOperation(env, "cache", () =>
+          cachedStatusResponse(stale, "stale", env),
+        );
+      }
     }
     if (staleResponse && ctx?.waitUntil) {
       refreshStatus(request, env, ctx, collection.deadline).catch(() => undefined);
@@ -3351,27 +3392,31 @@ async function refreshStatusCaches(request, env, ctx?: DashboardContext) {
   // Final publication is best-effort and only uses a terminal, usable body.
   // Request cancellation must not leave process-global state blocking later writes.
   if (!looksEmpty) {
-    const writes = [
-      caches.default.put(
-        statusCacheRequest(request, "fresh", publicBayScope),
-        new Response(body, {
-          headers: {
-            "content-type": "application/json; charset=utf-8",
-            "cache-control": `public, max-age=${ttl}`,
-          },
-        }),
-      ),
-      caches.default.put(
-        statusCacheRequest(request, "stale", publicBayScope),
-        new Response(body, {
-          headers: {
-            "content-type": "application/json; charset=utf-8",
-            "cache-control": `public, max-age=${staleTtl}`,
-          },
-        }),
-      ),
-    ];
-    if (env.STATUS_STORE) {
+    // Edge caches cannot conditionally replace a body. A durable binding owns
+    // both publication and reads, so an old edge PUT cannot bypass its fence.
+    const writes = isDurableStatusStore(env.STATUS_STORE)
+      ? [writeCachedStatusSnapshot(env.STATUS_STORE, body, publicBayScope)]
+      : [
+          caches.default.put(
+            statusCacheRequest(request, "fresh", publicBayScope),
+            new Response(body, {
+              headers: {
+                "content-type": "application/json; charset=utf-8",
+                "cache-control": `public, max-age=${ttl}`,
+              },
+            }),
+          ),
+          caches.default.put(
+            statusCacheRequest(request, "stale", publicBayScope),
+            new Response(body, {
+              headers: {
+                "content-type": "application/json; charset=utf-8",
+                "cache-control": `public, max-age=${staleTtl}`,
+              },
+            }),
+          ),
+        ];
+    if (env.STATUS_STORE && !isDurableStatusStore(env.STATUS_STORE)) {
       writes.push(writeCachedStatusSnapshot(env.STATUS_STORE, body, publicBayScope));
     }
     const persistence = Promise.allSettled(writes);
@@ -8859,6 +8904,21 @@ function cachedStatusSnapshotKey(publicBayScope) {
   return `${STATUS_SNAPSHOT_BAY_SCOPE_KEY_PREFIX}${
     publicBayScope ? encodeURIComponent(publicBayScope) : "_"
   }`;
+}
+
+function statusPublicationTime(body: string, now: number): number | null {
+  try {
+    const snapshot = JSON.parse(body);
+    const at = Date.parse(snapshot?.generated_at);
+    return snapshot?.schema_version === 1 &&
+      snapshot.public_projection_complete === true &&
+      Number.isFinite(at) &&
+      at <= now + 60_000
+      ? at
+      : null;
+  } catch {
+    return null;
+  }
 }
 
 async function writeCachedStatusSnapshot(store, body, publicBayScope) {

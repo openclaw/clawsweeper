@@ -459,9 +459,14 @@ identifiers, target keys, facts, titles, raw URLs, or failure detail.
 Status responses use stale-while-revalidate delivery. After the configured fresh
 window expires (60 seconds in production), the Worker immediately returns the last
 good snapshot, marks it with `X-ClawSweeper-Cache: stale`, and coalesces one background refresh per
-isolate. The Worker applies the public status projector before writing fresh or
-stale edge-cache bodies and the `StatusStore` snapshot, then applies it again on
-every cache/store read. Legacy cache bodies are reprojected, nested or unexpected
+isolate. With the production Durable Object binding, `StatusStore` owns both
+cached reads and publication. It atomically retains the snapshot with the newer
+collection timestamp; delayed older writes and equal-timestamp replays cannot
+replace it. Reads retain the original age. Existing edge bodies are bypassed,
+so an older edge write cannot undo the durable fence. This adds one Durable
+Object read per cached status request. Deployments without that binding retain
+the edge-cache path. The Worker applies the public status projector before
+publication and again on every cache/store read. Legacy cache bodies are reprojected, nested or unexpected
 fields are dropped, and stale, future-dated, or malformed store documents are
 rejected. Diagnostics retain a bounded error count and the fixed
 `telemetry_unavailable` category, never upstream exception or API error text.

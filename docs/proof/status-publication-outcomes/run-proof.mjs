@@ -24,6 +24,7 @@ const option = (name) => {
 };
 const base = process.argv[2];
 const lifetime = process.argv.includes("--lifetime");
+const publicationOrder = process.argv.includes("--publication-order");
 const serveBrowser = process.argv.includes("--serve-browser");
 const workerOnly = serveBrowser || process.argv.includes("--worker-only");
 assert.ok(
@@ -168,6 +169,12 @@ try {
     ["candidate", root],
   ]) {
     const preview = await startWorker(label, source);
+    if (publicationOrder) {
+      const { provePublicationOrder } = await import("./publication-order-proof.mjs");
+      results.push(await provePublicationOrder(preview.origin, label));
+      await stopWorker(preview);
+      continue;
+    }
     if (lifetime) {
       const { proveLifetime } = await import("./lifetime-proof.mjs");
       results.push(await proveLifetime(preview.origin, label, artifacts));
@@ -233,7 +240,11 @@ try {
   }
   if (capsule) await verifyFiles(root, capsule.candidate_files);
   const summary = {
-    schema: lifetime ? "status-refresh-lifetime-proof/v1" : "status-publication-outcomes-proof/v1",
+    schema: publicationOrder
+      ? "status-publication-order-proof/v1"
+      : lifetime
+        ? "status-refresh-lifetime-proof/v1"
+        : "status-publication-outcomes-proof/v1",
     base,
     candidate_head: head,
     candidate_dirty: dirty,
@@ -265,19 +276,31 @@ try {
     production_mutations: 0,
     worker_outbound_network: "denied by fixture",
     browser_proof: browserResults,
-    limits: lifetime
+    limits: publicationOrder
       ? [
-          "Synthetic held binding and body; the production stalled dependency remains unknown.",
-          "Both served clients use the real Worker route and their ordinary timers.",
+          "Synthetic delayed binding writes and edge bodies; real SQLite owner and HTTP status route.",
+          "Does not attribute production staleness, order overlapping HTTP responses, or cover regional clock skew.",
         ]
-      : [
-          "Synthetic inputs; no production state or timing claim.",
-          "Corrected-input browser cases isolate browser ingestion using a fixture status route.",
-          "Worker-route browser cases fetch the real Worker status route; cached reload uses a controlled HTTP 503.",
-        ],
+      : lifetime
+        ? [
+            "Synthetic held binding and body; the production stalled dependency remains unknown.",
+            "Both served clients use the real Worker route and their ordinary timers.",
+          ]
+        : [
+            "Synthetic inputs; no production state or timing claim.",
+            "Corrected-input browser cases isolate browser ingestion using a fixture status route.",
+            "Worker-route browser cases fetch the real Worker status route; cached reload uses a controlled HTTP 503.",
+          ],
   };
   await writeFile(
-    path.join(artifacts, lifetime ? "lifetime-summary.json" : "worker-summary.json"),
+    path.join(
+      artifacts,
+      publicationOrder
+        ? "publication-order-summary.json"
+        : lifetime
+          ? "lifetime-summary.json"
+          : "worker-summary.json",
+    ),
     JSON.stringify(summary, null, 2) + "\n",
   );
   console.log(
