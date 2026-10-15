@@ -12,7 +12,10 @@ import { join } from "node:path";
 import { isRecord } from "./value-coerce.js";
 import type { ReviewUsageRecord } from "./review-usage-contract.js";
 
-export type ReviewTokenUsage = NonNullable<ReviewUsageRecord["usage"]>;
+export type ReviewTokenUsage = NonNullable<ReviewUsageRecord["usage"]> & {
+  // Keep collection strict until the nullable receiver is deployed and qualified.
+  cache_write_input_tokens: number;
+};
 const TOKEN_FIELDS = [
   "input_tokens",
   "cached_input_tokens",

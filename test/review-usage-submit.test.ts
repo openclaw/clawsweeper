@@ -10,6 +10,8 @@ import test, { type TestContext } from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { submitReviewUsageFile } from "../dist/review-usage-submit.js";
+import worker from "../dashboard/worker.ts";
+import type { ReviewUsageDataPoint } from "../dashboard/review-usage.ts";
 
 const RECORD = {
   schema: 1,
@@ -247,4 +249,67 @@ test("CLI always exits zero for missing configuration, files, and invalid destin
         result.stderr === "[review-usage] best-effort telemetry unavailable\n",
     );
   }
+});
+
+test("compiled submission reaches the authenticated receiver for full, partial, and missing usage", async (t) => {
+  const records = [
+    RECORD,
+    { ...RECORD, usage: { ...RECORD.usage, cache_write_input_tokens: null } },
+    { ...RECORD, usage: null },
+    { ...RECORD, usage: { ...RECORD.usage, cache_write_input_tokens: 0 } },
+  ];
+  const path = fixture(t, records.map((record) => JSON.stringify(record)).join("\n") + "\n");
+  const points: ReviewUsageDataPoint[] = [];
+  const statuses: number[] = [];
+  const server = createServer(async (request, response) => {
+    let body = "";
+    for await (const chunk of request) body += String(chunk);
+    const result = await worker.fetch(
+      new Request(`http://127.0.0.1${request.url}`, {
+        method: request.method,
+        headers: request.headers as Record<string, string>,
+        body,
+      }),
+      {
+        CLAWSWEEPER_WEBHOOK_SECRET: ENV.CLAWSWEEPER_WEBHOOK_SECRET,
+        REVIEW_USAGE: { writeDataPoint: (point) => points.push(point) },
+        get EXACT_REVIEW_QUEUE() {
+          throw new Error("Usage ingestion must not access queue state");
+        },
+      },
+    );
+    statuses.push(result.status);
+    response.writeHead(result.status).end(await result.text());
+  });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  t.after(() => promisify(server.close.bind(server))());
+  const address = server.address();
+  assert.ok(address && typeof address !== "string");
+  const baseUrl = `http://127.0.0.1:${address.port}`;
+  const rejected = await fetch(`${baseUrl}/internal/exact-review/review-usage`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(records[1]),
+  });
+  assert.equal(rejected.status, 401);
+  await rejected.body?.cancel();
+  assert.deepEqual(points, []);
+  const cli = fileURLToPath(new URL("../dist/review-usage-submit.js", import.meta.url));
+  const result = await promisify(execFile)(process.execPath, [cli, path], {
+    env: { ...process.env, ...ENV, EXACT_REVIEW_QUEUE_URL: baseUrl },
+    timeout: 10000,
+  });
+  assert.equal(result.stdout, "");
+  assert.equal(result.stderr, "");
+  assert.deepEqual(statuses, [401, 202, 202, 202, 202]);
+  assert.deepEqual(
+    points.map((point) => point.doubles),
+    [
+      [1000, 200, 50, 100, 30, 12500, 1, 1],
+      [1000, 200, 0, 100, 30, 12500, 0, 1],
+      [0, 0, 0, 0, 0, 12500, 0, 0],
+      [1000, 200, 0, 100, 30, 12500, 1, 1],
+    ],
+  );
 });

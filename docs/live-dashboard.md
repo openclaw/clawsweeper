@@ -267,17 +267,21 @@ The payload contains `schema: 1`, `target_repo`, positive `item_number`,
 nonnegative integer `duration_ms`, and `usage`. Repository owner/name are
 bounded to 39/100 ASCII characters, optional labels to 64 ASCII letters,
 digits, underscores, dots, or hyphens, and run IDs to 32 digits. Unknown fields,
-including model names, are rejected. `usage` is either null or a complete
-object containing the nonnegative safe integer token counts listed below.
-Unavailable or incomplete usage remains null rather than being inferred.
-A measured zero remains distinct from missing usage.
+including model names, are rejected. `usage` is either null or an object with
+four required nonnegative safe integer counters: `input_tokens`,
+`cached_input_tokens`, `output_tokens`, and `reasoning_output_tokens`.
+`cache_write_input_tokens` is a nonnegative safe integer or null. The receiver
+accepts unknown cache writes without treating them as a measured zero. The
+current collector remains strict: a missing or invalid counter makes its
+whole usage null. For rollouts that omit cache writes, preserving their four
+measured counters requires the separate producer rollout below.
 
 The source-to-ingest flow has two separate steps:
 
 1. The review runtime synchronously appends token-only review-attempt records to the JSONL
    file named by `CLAWSWEEPER_REVIEW_USAGE_PATH`, configured in the workflow as
    `${{ runner.temp }}/clawsweeper-review-usage.jsonl`. Records contain the bounded
-   metadata above and the five token counters below (or null usage), never turn
+   metadata above and the five counter fields below (or null usage), never turn
    counts, prompts, responses, or model names. The append completes before a
    failure or timeout can exit the review process. The review step receives neither
    `CLAWSWEEPER_WEBHOOK_SECRET` nor `EXACT_REVIEW_QUEUE_URL`.
@@ -297,7 +301,24 @@ window. The hosted setup isolates `CODEX_HOME` by run ID/attempt, and each revie
 process reviews items sequentially. The reader scans backward in 64 KiB chunks
 to find each session's latest token count. Missing homes/files, unreadable
 or changing files, malformed usage, and files larger than 64 MiB produce null
-usage rather than a partial sum.
+usage rather than a partial sum. Receiver compatibility does not change that
+collection behavior or begin sending nullable cache writes.
+
+Roll out the shared validator, Worker writer, and updated queries before the
+separate producer change starts sending nullable cache writes. Qualify the
+deployed receiver with legacy, nullable, and missing-usage records and verify
+their persisted columns and the weighted queries; HTTP acceptance alone is
+not persistence proof. The schema remains 1 and older five-number payloads
+remain valid. Roll back the producer before the receiver,
+and drain pending nullable handoffs before reverting receiver support. Keep the
+updated mask-aware queries for the lifetime of already-written partial rows;
+producer rollback does not remove those rows. A legacy query must explicitly
+restrict its input to `double7 = 1`. Existing complete rows have `double7 = 1`
+but no `double8`; queries must recognize either presence flag when selecting
+measured core usage. This is a source rollout order, not a deployment performed
+by this change. Keep the current maintainer-dispatch hold and raw admission
+guards unchanged throughout the rollout. Do not enable the producer until
+receiver and query qualification is complete.
 
 `REVIEW_USAGE_LAYOUT` in [`dashboard/review-usage.ts`](../dashboard/review-usage.ts)
 is the canonical source of the ordered tuples used by the writer. Analytics
@@ -307,10 +328,13 @@ Engine positions are one-based within each tuple:
 | ------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `index1`            | `target_repo`                                                                                                                                                                                         |
 | `blob1`–`blob8`     | `target_repo`, `item_kind`, `outcome`, `trigger_lane` (default empty), `service_tier` (default `standard`, including empty input), `reasoning_effort` (default empty), `run_id`, string `item_number` |
-| `double1`–`double7` | `input_tokens`, `cached_input_tokens`, `cache_write_input_tokens`, `output_tokens`, `reasoning_output_tokens`, `duration_ms`, `usage_present` (1 when available, otherwise 0)                         |
+| `double1`–`double8` | `input_tokens`, `cached_input_tokens`, `cache_write_input_tokens`, `output_tokens`, `reasoning_output_tokens`, `duration_ms`, `usage_present`, `core_usage_present` |
 
-Null usage writes zero into the five token columns but preserves duration and
-sets `double7` to 0. `input_tokens` includes cached reads and cache writes;
+`double7` is 1 only when all five counters are known. `double8` is 1 when the
+four core counters are known, including when cache writes are unknown. Unknown
+cache writes use zero in the numeric column with `double7 = 0, double8 = 1`;
+that stored zero is not a measured zero. Null usage zeros the token columns and
+both presence flags but preserves duration. `input_tokens` includes cached reads and cache writes;
 `output_tokens` includes reasoning output. Neither subset should be counted
 twice. Run attempt is validated in the payload but is not a separate dataset
 column. Points represent review attempts, not unique issues or PRs; the route
@@ -336,15 +360,17 @@ SELECT
   toStartOfInterval(timestamp, INTERVAL '1' DAY) AS day,
   blob1 AS repo,
   sum(_sample_interval) AS reviews,
-  sum(double7 * _sample_interval) AS reviews_with_usage,
+  sum(double7 * _sample_interval) AS reviews_with_full_usage,
+  sum(if(double7 = 0 AND double8 = 1, _sample_interval, 0)) AS reviews_with_partial_usage,
+  sum(if(double7 = 0 AND double8 = 0, _sample_interval, 0)) AS reviews_without_usage,
   sum(double1 * _sample_interval) AS input_tokens,
   sum(double2 * _sample_interval) AS cached_input_tokens,
-  sum(double3 * _sample_interval) AS cache_write_input_tokens,
+  sum(double3 * _sample_interval) AS known_cache_write_input_tokens,
   sum(double4 * _sample_interval) AS output_tokens,
   sum(double5 * _sample_interval) AS reasoning_output_tokens,
   sum(((double1 - double2 - double3) * 2
        + double2 * 0.10 + double3 * 2.50 + double4 * 10)
-      * _sample_interval) / 1000000 AS estimated_usd
+      * double7 * _sample_interval) / 1000000 AS full_usage_estimated_usd
 FROM clawsweeper_review_usage
 WHERE timestamp >= NOW() - INTERVAL '30' DAY
 GROUP BY day, repo
@@ -354,14 +380,17 @@ ORDER BY day, repo
 This is a reference-price estimate, not an invoice: service-tier adjustments
 and the **greater-than-272K per-request surcharge are not included**. These are
 review sums, so they cannot determine whether an individual request crossed
-that threshold. Missing usage contributes no token cost; compare
-`reviews_with_usage` against `reviews` before interpreting totals.
+that threshold. Cost covers only the full-usage cohort; partial and missing
+attempts have unknown cost and are not estimated as free. Core token sums
+include both full and partial usage. Known cache writes cover only full usage.
+Compare the weighted cohort counts before interpreting totals.
 
 ### Per-review duration and average tokens by lane/repository
 
 This includes failed and timed-out attempts in duration percentiles. Average
-tokens use only attempts with available usage. Groups without any available
-usage are omitted. The blank lane means no lane was provided, not an inferred
+tokens use attempts with measured core usage, including older complete rows.
+Groups without measured core usage are omitted. Duration percentiles still
+cover all attempts in those groups. The blank lane means no lane was provided, not an inferred
 workflow lane.
 
 ```sql
@@ -369,19 +398,19 @@ SELECT
   blob1 AS repo,
   blob4 AS lane,
   sum(_sample_interval) AS reviews,
-  sum(double7 * _sample_interval) AS reviews_with_usage,
+  sum(if(double7 = 1 OR double8 = 1, _sample_interval, 0)) AS reviews_with_core_usage,
   quantileExactWeighted(0.50)(double6, _sample_interval) AS duration_p50_ms,
   quantileExactWeighted(0.95)(double6, _sample_interval) AS duration_p95_ms,
   sum(double1 * _sample_interval)
-    / sum(double7 * _sample_interval) AS avg_input_tokens,
+    / sum(if(double7 = 1 OR double8 = 1, _sample_interval, 0)) AS avg_input_tokens,
   sum(double4 * _sample_interval)
-    / sum(double7 * _sample_interval) AS avg_output_tokens,
+    / sum(if(double7 = 1 OR double8 = 1, _sample_interval, 0)) AS avg_output_tokens,
   sum((double1 + double4) * _sample_interval)
-    / sum(double7 * _sample_interval) AS avg_total_tokens
+    / sum(if(double7 = 1 OR double8 = 1, _sample_interval, 0)) AS avg_total_tokens
 FROM clawsweeper_review_usage
 WHERE timestamp >= NOW() - INTERVAL '30' DAY
 GROUP BY repo, lane
-HAVING sum(double7 * _sample_interval) > 0
+HAVING sum(if(double7 = 1 OR double8 = 1, _sample_interval, 0)) > 0
 ORDER BY repo, lane
 ```
 
