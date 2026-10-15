@@ -1,8 +1,8 @@
 # Intake triage
 
-- Status: active classifier contract; workflow publication is a separate integration
+- Status: active opt-in intake workflow
 - Owner: ClawSweeper maintainers
-- Source of truth: `src/intake-triage-contract.ts`, `src/intake-triage-api.ts`, `src/intake-triage-decisions.ts`
+- Source of truth: `src/intake-triage-contract.ts`, `src/intake-triage-api.ts`, `src/intake-triage-decisions.ts`, `src/intake-triage-workflow.ts`, `.github/workflows/sweep.yml`
 - Last verified: based on `66bc4576148f0659d1d3f91bc9d323c3e77516a2`
 - Update when: questions, input limits, backends, or provisional labels change
 
@@ -42,3 +42,32 @@ See the [official Decisions contract](https://developers.openai.com/api/docs/gui
 Decisions failures abstain. They do not automatically spend on Responses or
 resubmit scanner-refused content. The ordinary Responses adapter remains an
 independent path for deployments without Decisions access.
+
+## Hosted enablement and lifecycle
+
+Set the repository secret `CLAWSWEEPER_INTAKE_OPENAI_API_KEY` to a credential for
+the public OpenAI API. The default backend is `responses`; set the repository
+variable `CLAWSWEEPER_INTAKE_BACKEND=decisions` to opt into Decisions. An absent
+secret disables intake without a model or GitHub request. This dedicated secret
+avoids reusing a private workload-router credential at a different API origin.
+The existing full-review provider, model and authentication remain independent.
+
+For admitted exact reviews, intake runs after the review-in-progress reservation
+and before source hydration. Its preliminary labels remain visible while full
+review runs. This is a bounded serial intake phase, not a second background
+writer. Oversized metadata-only reviews skip it. A failed optional phase does
+not block full review.
+
+The publisher checks the queue lease/generation and unchanged item snapshot
+before each label-definition or item write. Only the six known intake labels
+can change; all other labels stay owned by their existing publishers. Request
+intent, usage and mutation receipts use a distinct intake operation in the
+existing action ledger. Interrupted writes are finalized as unknown outcomes,
+even when the later full review succeeds. They never complete a review request
+or its cache.
+
+Enabled intake invalidates the earlier PR-admission handoff even after an
+uncertain write or process failure, so source review hydrates current labels
+and timestamps. Only a current complete review removes preliminary labels,
+through the existing guarded label batch. Failed, stale and incomplete reviews
+leave them explicitly preliminary. There is no automatic cross-backend retry.

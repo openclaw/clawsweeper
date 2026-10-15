@@ -43,3 +43,11 @@ here.
 page. It does not require every repository workflow secret or dashboard setting
 to be duplicated here. [Automation limits](limits.md) remains canonical for
 capacity and timing values.
+
+## Optional submission triage
+
+`CLAWSWEEPER_INTAKE_OPENAI_API_KEY` is an optional repository secret for the
+public OpenAI API, consumed only by the exact-review intake step. Without it,
+full review runs normally and preliminary intake is disabled. The repository
+variable `CLAWSWEEPER_INTAKE_BACKEND` selects `responses` (default) or `decisions`.
+See [intake triage](intake-triage.md) for scope, budgets and label lifecycle.

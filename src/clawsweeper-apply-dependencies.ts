@@ -314,6 +314,7 @@ export interface CreateApplyDecisionWorkflowDependencies {
   }) => boolean;
   removeCurrentCursorTraceItem: (examinedItemNumbers: number[], currentNumber: number) => void;
   removeIssueLabel: (number: number, label: string, onMutation?: () => void) => void;
+  syncIntakeLabels: import("./clawsweeper-label-mutations.js").LabelMutations["syncIntakeLabels"];
   renderReviewCommentFromReport: (
     markdown: string,
     reason: CloseReason,

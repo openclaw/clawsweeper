@@ -511,9 +511,12 @@ export async function flushWorkflowActionEvents(
   return [...paths].sort();
 }
 
+// Optional workflow phases use the same interruption owner as review/apply.
+// Otherwise a killed preliminary write can retain a retryable intent forever.
 function workflowActionEventIsRecoverableStart(event: ActionEvent): boolean {
   return (
-    (event.event_type === ACTION_EVENT_TYPES.reviewBatch ||
+    (event.event_type === ACTION_EVENT_TYPES.workflowAttempt ||
+      event.event_type === ACTION_EVENT_TYPES.reviewBatch ||
       event.event_type === ACTION_EVENT_TYPES.reviewItem ||
       event.event_type === ACTION_EVENT_TYPES.reviewRetry ||
       event.event_type === ACTION_EVENT_TYPES.applyBatch ||
