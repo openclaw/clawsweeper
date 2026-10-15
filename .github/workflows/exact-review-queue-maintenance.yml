@@ -24,6 +24,16 @@ on:
         required: true
         type: number
         default: 1
+      storage_table:
+        description: "Storage stats only: optional exact logical-content census for one table"
+        type: string
+      storage_cursor:
+        description: "Storage census only: nextCursor JSON from an incomplete prior range"
+        type: string
+      storage_max_pages:
+        description: "Storage census only: bounded pages (1..1000, 128 rows each, 240 seconds total)"
+        type: number
+        default: 100
       producer_run_id:
         description: "Retirement only: exact producer run ID"
         type: string
@@ -57,6 +67,7 @@ jobs:
     steps:
       # Read-only: one signed request; the queue counts rows and samples row sizes per table.
       - name: Report queue storage by table
+        if: ${{ inputs.storage_table == '' }}
         env:
           CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
         run: |
@@ -94,6 +105,23 @@ jobs:
             echo "|---|---:|---:|---:|"
             jq -r '.storage.tables[] | "| \(.table) | \(.rows) | \(.averageRowBytes) | \(.estimatedBytes) |"' stats.json
           } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/checkout@v7
+        if: ${{ inputs.storage_table != '' }}
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          sparse-checkout: scripts/queue-storage-census.mjs
+          sparse-checkout-cone-mode: false
+
+      - name: Measure bounded table content
+        if: ${{ inputs.storage_table != '' }}
+        env:
+          CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
+          STORAGE_CENSUS_TABLE: ${{ inputs.storage_table }}
+          STORAGE_CENSUS_CURSOR: ${{ inputs.storage_cursor }}
+          STORAGE_CENSUS_MAX_PAGES: ${{ inputs.storage_max_pages }}
+        run: node scripts/queue-storage-census.mjs
 
   reconcile:
     if: ${{ inputs.mode == 'reconcile' || inputs.mode == '' }}

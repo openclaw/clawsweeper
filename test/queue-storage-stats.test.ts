@@ -85,4 +85,21 @@ test("queue storage stats are served only to signed internal requests", async ()
     body.storage.tables.map((table) => [table.table, table.rows]),
     storageStats(storage.sql).tables.map((table) => [table.table, table.rows]),
   );
+
+  storage.sql.exec("CREATE TABLE census_test (body TEXT, n INTEGER)");
+  storage.sql.exec("INSERT INTO census_test VALUES (?, ?)", "雪🦊\0", 123);
+  const census = await worker.fetch(
+    signedStateAppendRequest(path, { census: { table: "census_test" } }, secret),
+    env,
+  );
+  assert.equal(census.status, 200);
+  const page = (await census.json()).census;
+  assert.deepEqual(page.columns, { body: 8, n: 0 });
+  assert.equal(page.scannedRows, 1);
+  assert.equal(page.complete, true);
+  const invalid = await worker.fetch(
+    signedStateAppendRequest(path, { census: { table: "__cf_kv" } }, secret),
+    env,
+  );
+  assert.equal(invalid.status, 400);
 });
