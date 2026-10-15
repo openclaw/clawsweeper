@@ -1,5 +1,4 @@
 import {
-  hasReviewAutomationOptIn,
   normalizeAuthorAssociation,
   predatesMaintainerAutomaticFirstReview,
   requiresMaintainerReviewRequest,
@@ -25,7 +24,6 @@ export async function requiresVerifiedMaintainerReviewRequest(
   if (requiresMaintainerReviewRequest(item)) return true;
   if (
     normalizeAuthorAssociation(item.author_association) !== "CONTRIBUTOR" ||
-    hasReviewAutomationOptIn(item) ||
     !predatesMaintainerAutomaticFirstReview(item)
   ) {
     return false;

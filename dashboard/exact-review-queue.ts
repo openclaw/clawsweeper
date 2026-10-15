@@ -2,10 +2,7 @@ import { stableJson } from "../src/stable-json.ts";
 import { CLAWSWEEPER_APP_BOT_LOGINS } from "../src/clawsweeper-bot-identity.ts";
 import { exactReviewSourceRevisionMaterial } from "./exact-review-source-revision.ts";
 import { requiresVerifiedMaintainerReviewRequest } from "./maintainer-author.ts";
-import {
-  hasReviewAutomationOptIn,
-  requiresMaintainerReviewRequest,
-} from "../src/maintainer-review-policy.ts";
+import { requiresMaintainerReviewRequest } from "../src/maintainer-review-policy.ts";
 import { INITIAL_PR_REVIEW_QUIET_MS } from "../src/pr-review-policy.ts";
 import {
   normalizePublicReviewFailure,
@@ -372,7 +369,7 @@ export type ExactReviewQueueItem = {
   createdAt: number;
   updatedAt: number;
   nextAttemptAt: number;
-  prReviewObservation?: { signature: string; quietUntil: number; automationOptIn: boolean };
+  prReviewObservation?: { signature: string; quietUntil: number };
   backoffReason?: ExactReviewBackoffReason;
   attempts: number;
   leaseId?: string;
@@ -1596,18 +1593,6 @@ export class ExactReviewQueue {
 
       const now = Date.now();
       const semanticEdited = await exactReviewEditedSemanticInput(decision);
-      let automaticPrOptIn: boolean | undefined;
-      if (
-        isAutomaticPullRequestReview(decision) &&
-        this.directPublicationStore.hasCompletedPullRequestReview(
-          decision.targetRepo.replaceAll("/", "-"),
-          decision.itemNumber,
-        )
-      ) {
-        const token = await exactReviewTargetReadToken(this.env, decision.targetRepo);
-        const live = await exactReviewTargetItemState(token, decision, this.env);
-        automaticPrOptIn = live.state === "open" && live.prReview?.automationOptIn === true;
-      }
       const incomingPublicationRevision = exactReviewPublicationRevision(decision);
       const verifiedSourceDriftRequeue =
         decision.sourceAction === EXACT_REVIEW_SOURCE_DRIFT_REQUEUE_SOURCE_ACTION &&
@@ -1672,7 +1657,6 @@ export class ExactReviewQueue {
         if (
           isAutomaticPullRequestReview(decision) &&
           !continuesRequestedReview &&
-          automaticPrOptIn !== true &&
           this.directPublicationStore.hasCompletedPullRequestReview(
             decision.targetRepo.replaceAll("/", "-"),
             decision.itemNumber,
@@ -2787,48 +2771,17 @@ export class ExactReviewQueue {
       // Publication may finish after dispatch but before this workflow claims.
       // Only that published answer consumes the automatic review opportunity.
       if (this.automaticPullRequestAlreadyAnswered(item)) {
-        let live: Exclude<ExactReviewTargetItemState, { state: "unavailable" }>;
-        try {
-          const decision = item.leaseDecision ?? item.decision;
-          const token = await exactReviewTargetReadToken(this.env, decision.targetRepo);
-          live = await exactReviewTargetItemState(token, decision, this.env);
-        } catch {
-          return json({ error: "review_eligibility_unavailable", retryable: true }, 503);
-        }
-        // Labels can be removed after dispatch. Refresh authorization, then
-        // re-read the lease so an in-flight fetch cannot overwrite newer work.
-        now = Date.now();
-        state = this.readStateSync();
-        item = tupleClaim ? state.items[itemKey] : exactReviewItemForLease(state, leaseId);
-        if (
-          !item ||
-          item.leaseId !== leaseId ||
-          (tupleClaim && item.leaseRevision !== leaseRevision) ||
-          !isLiveExactReviewLease(
-            item,
-            now,
-            exactReviewPublicationDispatchLeaseMs(this.env),
-            exactReviewHeartbeatGraceMs(this.env),
-          )
-        ) {
-          return json({ error: "lease_not_active" }, 409);
-        }
-        if (item.claimedRunId && item.claimedRunId !== runId) {
-          return json({ error: "lease_already_claimed" }, 409);
-        }
-        if (live.state !== "open" || live.prReview?.automationOptIn !== true) {
-          // A command can arrive while the old automatic workflow is starting.
-          // Reject that lease without discarding the newer requested review.
-          const requestedFollowUp =
-            item.revision > Number(item.leaseRevision || 0) &&
-            (exactReviewDecisionHasCommandContext(item.decision) ||
-              item.decision.sourceAction === MANUAL_REVIEW_SOURCE_ACTION);
-          finishExactReviewQueueItem(state, item, now, "success", 0, requestedFollowUp);
-          this.writeStateSync(state);
-          this.incrementQueueMetricsSync({ reviewCompleted: 1 });
-          await this.scheduleNext(state, now);
-          return json({ error: "lease_not_active", reason: "review_request_required" }, 409);
-        }
+        // A command can arrive while the old automatic workflow is starting.
+        // Reject that lease without discarding the newer requested review.
+        const requestedFollowUp =
+          item.revision > Number(item.leaseRevision || 0) &&
+          (exactReviewDecisionHasCommandContext(item.decision) ||
+            item.decision.sourceAction === MANUAL_REVIEW_SOURCE_ACTION);
+        finishExactReviewQueueItem(state, item, now, "success", 0, requestedFollowUp);
+        this.writeStateSync(state);
+        this.incrementQueueMetricsSync({ reviewCompleted: 1 });
+        await this.scheduleNext(state, now);
+        return json({ error: "lease_not_active", reason: "review_request_required" }, 409);
       }
 
       // Deploys can observe a pre-snapshot lease. Recover it only when no newer
@@ -6002,7 +5955,6 @@ export class ExactReviewQueue {
       ) {
         const observed = candidate.state.prReview;
         if (
-          !observed.automationOptIn &&
           this.directPublicationStore.hasCompletedPullRequestReview(
             item.decision.targetRepo.replaceAll("/", "-"),
             item.decision.itemNumber,
@@ -6017,28 +5969,22 @@ export class ExactReviewQueue {
           prior?.signature === observed.signature
             ? prior.quietUntil
             : checkedAt + initialPullRequestQuietMs(this.env);
-        item.prReviewObservation = {
-          signature: observed.signature,
-          quietUntil,
-          automationOptIn: observed.automationOptIn,
-        };
-        if (!observed.automationOptIn) {
-          // Refresh the whole source tuple from this live observation. A lost
-          // webhook must extend the quiet window, not delete the only review.
-          item.decision = { ...item.decision, ...candidate.state.sourceIdentity };
-          if (
-            Date.parse(item.decision.sourceUpdatedAt || "") >=
-              Date.parse(item.sourceAuthorityWatermark?.updatedAt || "") ||
-            !item.sourceAuthorityWatermark?.updatedAt
-          ) {
-            advanceExactReviewSourceAuthorityWatermark(item, item.decision);
-          }
-          if (quietUntil > checkedAt) {
-            item.nextAttemptAt = quietUntil;
-            item.backoffReason = "dispatch_debounce";
-            item.updatedAt = checkedAt;
-            continue;
-          }
+        item.prReviewObservation = { signature: observed.signature, quietUntil };
+        // Refresh the whole source tuple from this live observation. A lost
+        // webhook must extend the quiet window, not delete the only review.
+        item.decision = { ...item.decision, ...candidate.state.sourceIdentity };
+        if (
+          Date.parse(item.decision.sourceUpdatedAt || "") >=
+            Date.parse(item.sourceAuthorityWatermark?.updatedAt || "") ||
+          !item.sourceAuthorityWatermark?.updatedAt
+        ) {
+          advanceExactReviewSourceAuthorityWatermark(item, item.decision);
+        }
+        if (quietUntil > checkedAt) {
+          item.nextAttemptAt = quietUntil;
+          item.backoffReason = "dispatch_debounce";
+          item.updatedAt = checkedAt;
+          continue;
         }
       }
       if (exactReviewQueueHasStaleLiveHead(item, candidate.state)) {
@@ -18605,7 +18551,6 @@ async function exactReviewTargetItemState(
                       JSON.stringify([headSha, item.title, item.body, item.draft]),
                     ),
                   ),
-                  automationOptIn: hasReviewAutomationOptIn(item),
                 },
               }
             : {}),

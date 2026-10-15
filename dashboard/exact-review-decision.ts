@@ -121,7 +121,7 @@ export type ExactReviewTargetItemState =
   | {
       state: "open";
       headSha?: string;
-      prReview?: { signature: string; automationOptIn: boolean };
+      prReview?: { signature: string };
       // Automatic work whose author must request a review (maintainer policy).
       maintainerRequestRequired?: true;
       sourceIdentity?: Pick<

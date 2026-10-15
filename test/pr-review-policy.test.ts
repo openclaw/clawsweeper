@@ -209,75 +209,79 @@ function pull() {
   };
 }
 
-test("initial PR waits ten quiet minutes, coalesces pushes and lost-webhook drift, ignores comments", async () => {
-  const live = pull();
-  const h = createExactReviewAdmissionHarness(() => jsonResponse(live), {
-    env: { EXACT_REVIEW_INITIAL_PR_QUIET_MS: String(10 * minute) },
-  });
-  const realNow = Date.now;
-  let now = start;
-  Date.now = () => now;
-  await withExactReviewAdmissionHarness(h, async () => {
-    try {
-      const state = async () =>
-        (await h.storage.get("exact-review-queue")) as ExactReviewQueueState;
-      const enqueue = async (id: string, head = live.head.sha) => {
-        const response = await h.queue.fetch(
-          buildExactReviewQueueRequest(
-            id,
-            42,
-            id === "open" ? "opened" : "synchronize",
-            "pull_request",
-            repo,
-            {
-              sourceHeadSha: head,
-              sourceHeadVerified: true,
-              sourceAuthoritySeq: now - start + 1,
-              sourceUpdatedAt: new Date(now).toISOString(),
-            },
-          ),
-        );
-        assert.equal(response.status, 202);
-      };
-      await enqueue("open");
-      await h.queue.alarm();
-      assert.equal(h.dispatched.length, 0);
-      assert.equal((await state()).items[key].nextAttemptAt, start + 10 * minute);
-      now += 8 * minute;
-      await enqueue("push-b", "c".repeat(40));
-      now += minute;
-      await enqueue("revert-a");
-      await h.queue.alarm();
-      assert.equal(h.dispatched.length, 0);
-      assert.equal((await state()).items[key].nextAttemptAt, now + 10 * minute);
-      now += 10 * minute;
-      live.body = "Changed without a webhook";
-      live.updated_at = new Date(now).toISOString();
-      await h.queue.alarm();
-      assert.equal(h.dispatched.length, 0);
-      assert.equal((await state()).items[key].nextAttemptAt, now + 10 * minute);
-      // A comment updates GitHub's broad timestamp but must not restart quiet.
-      now += 10 * minute;
-      live.updated_at = new Date(now).toISOString();
-      await h.queue.alarm();
-      assert.equal(h.dispatched.length, 1);
-      assert.equal((await state()).items[key].leaseDecision?.sourceHeadSha, live.head.sha);
-    } finally {
-      Date.now = realNow;
-    }
-  });
+test("initial PRs, including automation-labeled PRs, wait ten quiet minutes and coalesce source changes", async () => {
+  for (const labels of [[], ["clawsweeper:autofix"], ["clawsweeper:automerge"]]) {
+    const live = pull();
+    live.labels = labels;
+    const h = createExactReviewAdmissionHarness(() => jsonResponse(live), {
+      env: { EXACT_REVIEW_INITIAL_PR_QUIET_MS: String(10 * minute) },
+    });
+    const realNow = Date.now;
+    let now = start;
+    Date.now = () => now;
+    await withExactReviewAdmissionHarness(h, async () => {
+      try {
+        const state = async () =>
+          (await h.storage.get("exact-review-queue")) as ExactReviewQueueState;
+        const enqueue = async (id: string, head = live.head.sha) => {
+          const response = await h.queue.fetch(
+            buildExactReviewQueueRequest(
+              id,
+              42,
+              id === "open" ? "opened" : "synchronize",
+              "pull_request",
+              repo,
+              {
+                sourceHeadSha: head,
+                sourceHeadVerified: true,
+                sourceAuthoritySeq: now - start + 1,
+                sourceUpdatedAt: new Date(now).toISOString(),
+              },
+            ),
+          );
+          assert.equal(response.status, 202);
+        };
+        await enqueue("open");
+        await h.queue.alarm();
+        assert.equal(h.dispatched.length, 0);
+        assert.equal((await state()).items[key].nextAttemptAt, start + 10 * minute);
+        now += 8 * minute;
+        await enqueue("push-b", "c".repeat(40));
+        now += minute;
+        await enqueue("revert-a");
+        await h.queue.alarm();
+        assert.equal(h.dispatched.length, 0);
+        assert.equal((await state()).items[key].nextAttemptAt, now + 10 * minute);
+        now += 10 * minute;
+        live.body = "Changed without a webhook";
+        live.updated_at = new Date(now).toISOString();
+        await h.queue.alarm();
+        assert.equal(h.dispatched.length, 0);
+        assert.equal((await state()).items[key].nextAttemptAt, now + 10 * minute);
+        // A comment updates GitHub's broad timestamp but must not restart quiet.
+        now += 10 * minute;
+        live.updated_at = new Date(now).toISOString();
+        await h.queue.alarm();
+        assert.equal(h.dispatched.length, 1);
+        assert.equal((await state()).items[key].leaseDecision?.sourceHeadSha, live.head.sha);
+      } finally {
+        Date.now = realNow;
+      }
+    });
+  }
 });
 
-test("completed PR rejects webhook and scheduled repeats durably but allows explicit and opted-in work", async () => {
+test("completed PR rejects webhook and scheduled repeats, even with automation labels, but allows explicit work", async () => {
   for (const action of [
     "synchronize",
     "scheduled_hot_intake",
     "scheduled_normal_backfill",
     "manual_explicit_review",
-    "opt-in",
+    "clawsweeper:autofix",
+    "clawsweeper:automerge",
   ]) {
     const live = pull();
-    if (action === "opt-in") live.labels = ["clawsweeper:autofix"];
+    if (action.startsWith("clawsweeper:")) live.labels = [action];
     const h = createExactReviewAdmissionHarness(() => jsonResponse(live), {
       env: { EXACT_REVIEW_MANUAL_PUBLICATION_ENABLED: "1" },
     });
@@ -289,7 +293,7 @@ test("completed PR rejects webhook and scheduled repeats durably but allows expl
         const queued = buildExactReviewQueueRequest(
           `repeat-${action}`,
           42,
-          action === "opt-in" ? "synchronize" : action,
+          action.startsWith("clawsweeper:") ? "synchronize" : action,
           "pull_request",
           repo,
           action === "manual_explicit_review" ? { publicationPolicy: "record_comment_only" } : {},
@@ -300,7 +304,7 @@ test("completed PR rejects webhook and scheduled repeats durably but allows expl
       const response = await h.queue.fetch(request());
       assert.equal(response.status, 202);
       const body = (await response.json()) as { dedupe_reason?: string };
-      if (action === "manual_explicit_review" || action === "opt-in") {
+      if (action === "manual_explicit_review") {
         assert.equal(body.dedupe_reason, undefined);
       } else {
         assert.equal(body.dedupe_reason, "review_request_required");
@@ -393,103 +397,4 @@ test("rejecting an answered automatic lease preserves a newer explicit request",
       200,
     );
   });
-});
-
-test("answered claims require a live automation opt-in and preserve commands during the read", async () => {
-  for (const scenario of [
-    "enabled",
-    "removed",
-    "webhook",
-    "command",
-    "unavailable",
-    "expired",
-  ] as const) {
-    const live = pull();
-    live.labels = ["clawsweeper:autofix"];
-    let claimRead = false;
-    let readStarted!: () => void;
-    let releaseRead!: () => void;
-    const started = new Promise<void>((resolve) => {
-      readStarted = resolve;
-    });
-    const released = new Promise<void>((resolve) => {
-      releaseRead = resolve;
-    });
-    const h = createExactReviewAdmissionHarness(async () => {
-      if (claimRead) {
-        readStarted();
-        if (scenario === "command" || scenario === "expired") await released;
-        if (scenario === "unavailable") return new Response("Unavailable", { status: 503 });
-      }
-      return jsonResponse(live);
-    });
-    await withExactReviewAdmissionHarness(h, async () => {
-      await publish(h.storage, 1, report());
-      await h.queue.fetch(
-        buildExactReviewQueueRequest(`opt-${scenario}`, 42, "opened", "pull_request", repo),
-      );
-      await h.queue.alarm();
-      const state = async () =>
-        (await h.storage.get("exact-review-queue")) as ExactReviewQueueState;
-      const old = (await state()).items[key];
-      assert.equal(old.state, "dispatching");
-      if (scenario !== "enabled") live.labels = [];
-      if (scenario === "webhook") {
-        const response = await h.queue.fetch(
-          buildExactReviewQueueRequest("removed-label", 42, "labeled", "pull_request", repo),
-        );
-        assert.equal((await response.json()).dedupe_reason, "review_request_required");
-      }
-      claimRead = true;
-      const pending = h.queue.fetch(
-        new Request("https://queue/claim", {
-          method: "POST",
-          body: JSON.stringify({
-            item_key: key,
-            lease_id: old.leaseId,
-            lease_revision: old.leaseRevision,
-            run_id: "200",
-            run_attempt: 1,
-          }),
-        }),
-      );
-      if (scenario === "command") {
-        await started;
-        await h.queue.fetch(
-          buildExactReviewQueueRequest("during-read", 42, "re_review", "pull_request", repo, {
-            commandStatusMarker: "<!-- clawsweeper-command-status:42:re_review:during-read -->",
-            statusCommentId: 9002,
-          }),
-        );
-        releaseRead();
-      }
-      const realNow = Date.now;
-      if (scenario === "expired") {
-        await started;
-        const expiredAt = realNow() + 2 * 60 * minute;
-        Date.now = () => expiredAt;
-        releaseRead();
-      }
-      let response: Response;
-      try {
-        response = await pending;
-      } finally {
-        Date.now = realNow;
-      }
-      assert.equal(
-        response.status,
-        scenario === "enabled" ? 200 : scenario === "unavailable" ? 503 : 409,
-        scenario,
-      );
-      const item = (await state()).items[key];
-      if (scenario === "enabled") assert.equal(item.state, "leased");
-      else if (scenario === "unavailable" || scenario === "expired") {
-        assert.equal(item.state, "dispatching");
-        assert.equal(item.leaseId, old.leaseId);
-      } else if (scenario === "command") {
-        assert.equal(item.state, "pending");
-        assert.equal(item.decision.statusCommentId, 9002);
-      } else assert.equal(item, undefined);
-    });
-  }
 });

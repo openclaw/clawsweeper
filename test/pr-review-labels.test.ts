@@ -556,7 +556,7 @@ test("recorded proof reconciles public proof statuses independently of historica
       labels: ["clawsweeper:automerge", "status: 📣 needs proof"],
       stale: "status: 📣 needs proof",
       expected: "status: 📣 needs proof",
-      resolvedExpected: "status: 🚀 automerge armed",
+      resolvedExpected: "status: 👀 ready for maintainer look",
     },
     {
       labels: ["status: needs maintainer proof decision", "status: 👀 ready for maintainer look"],

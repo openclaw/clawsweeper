@@ -421,7 +421,7 @@
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["title", "body", "category", "recommended", "automergeInstruction"],
+        "required": ["title", "body", "category", "recommended"],
         "properties": {
           "title": {
             "type": "string"
@@ -436,10 +436,6 @@
           "recommended": {
             "type": "boolean",
             "description": "At most one, for a clear best path."
-          },
-          "automergeInstruction": {
-            "type": "string",
-            "description": "Automerge special-instructions payload, no @clawsweeper command; only for a recommended fix_before_merge."
           }
         }
       },

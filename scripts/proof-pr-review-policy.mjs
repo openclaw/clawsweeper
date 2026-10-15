@@ -321,24 +321,14 @@ try {
   assert.equal(result.body.queued, true);
   await call("quiet", "tick", t0 + 61 * minute);
   assert.equal(dispatches.length, 2);
+  // The retired automation labels do not reopen a completed PR to automatic review.
   live.labels = ["clawsweeper:autofix"];
   await call("optin", "publish", t0, publication("complete"));
   result = await call("optin", "enqueue", t0, enqueue("optin"));
-  assert.equal(result.body.queued, true);
+  assert.equal(result.body.dedupe_reason, "review_request_required");
   await call("optin", "tick", t0);
-  assert.equal(dispatches.length, 3);
-  result = await call("optin", "inspect", t0);
-  const optedInLease = result.items[key];
+  assert.equal(dispatches.length, 2);
   live.labels = [];
-  result = await call("optin", "claim", t0 + minute, {
-    item_key: key,
-    lease_id: optedInLease.leaseId,
-    lease_revision: optedInLease.leaseRevision,
-    run_id: "421",
-    run_attempt: 1,
-  });
-  assert.equal(result.status, 409);
-  assert.equal(result.body.reason, "review_request_required");
   const sources = [
     "dashboard/exact-review-queue.ts",
     "dashboard/exact-review-decision.ts",

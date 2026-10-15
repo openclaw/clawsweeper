@@ -244,11 +244,16 @@ function scenarios() {
         expected: skipped,
         skipSourceRead: true,
       }),
-      make("maintainer-opt-in", "edited", {
+      // The retired automation labels no longer exempt a maintainer item.
+      make("maintainer-retired-autofix-label", "edited", {
         issue: { ...maintainer, labels: [{ name: "clawsweeper:autofix" }] },
+        expected: skipped,
+        skipSourceRead: true,
       }),
-      make("maintainer-automerge", "edited", {
+      make("maintainer-retired-automerge-label", "edited", {
         issue: { ...maintainer, labels: [{ name: "clawsweeper:automerge" }] },
+        expected: skipped,
+        skipSourceRead: true,
       }),
       make("maintainer-redacted", "edited", {
         issue: { ...issue, author_association: "CONTRIBUTOR", user: { login: "maintainer" } },

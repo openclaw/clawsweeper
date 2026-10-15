@@ -112,7 +112,7 @@ stable head, title, body, and draft state. Pushes and edits after that answer ne
 an explicit `@clawsweeper re-review`; the queue rejects hot/normal offers for them,
 and queue admission, dispatch, and claim enforce the same durable completion
 fact. Failed and stale-source attempts may finish the first answer. Explicit
-requests and autofix/automerge opt-ins retain their existing automation. See
+requests retain their existing automation. See
 [automation limits](limits.md) for quiet-window and persistence details.
 
 Planners can still offer candidates from report cadence: a complete-looking
@@ -294,8 +294,7 @@ id that uses either one as `reserved_delivery_id`. When a retry that still
 carries a request is skipped because it lacks that verification, its review job
 answers the request's status as "Waiting" with a request to re-review, so the
 status never stays "Review in progress". A push after the request is
-answered and a scheduled pass also need a new request. Existing
-autofix/automerge labels remain opt-ins.
+answered and a scheduled pass also need a new request.
 The target dispatcher and direct webhook share a single reminder identity per
 item, posted only when opened or ready for review. Edits, pushes, and sweeps do
 not post reminders. Request reviews only when needed, after completing work and

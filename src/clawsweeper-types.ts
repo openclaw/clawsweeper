@@ -545,7 +545,6 @@ export interface MergeRiskOption {
   body: string;
   category: MergeRiskOptionCategory;
   recommended: boolean;
-  automergeInstruction: string;
 }
 
 export interface LabelJustification {

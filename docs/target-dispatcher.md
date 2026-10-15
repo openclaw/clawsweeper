@@ -46,8 +46,7 @@ variable `CLAWSWEEPER_RELATED_GITHUB_SEARCH=0` on `openclaw/clawsweeper` to turn
 that enrichment off without editing the target dispatcher.
 
 Maintainer-authored and `maintainer`-labeled items skip automatic review dispatch
-and the ordinary review acknowledgement in this workflow. Existing `clawsweeper:autofix` and
-`clawsweeper:automerge` labels preserve their explicit opt-in. Maintainers get one
+and the ordinary review acknowledgement in this workflow. Maintainers get one
 reminder when an issue opens or a PR is ready: request `@clawsweeper review` only
 when needed, after the work and validation are complete. Edits and pushes do not
 repeat the reminder. Reminder comments cannot trigger the command router.
@@ -120,7 +119,7 @@ jobs:
       id-token: write
     if: ${{ needs.hosted-target-admission.outputs.outcome == 'public' && !(endsWith(github.actor, '[bot]') && (github.event.action == 'labeled' || github.event.action == 'unlabeled')) }}
     env:
-      MAINTAINER_REVIEW_REQUIRED: ${{ (contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.pull_request.author_association || github.event.issue.author_association) || (contains(github.event.pull_request.labels.*.name, 'maintainer') || contains(github.event.issue.labels.*.name, 'maintainer'))) && !(contains(github.event.pull_request.labels.*.name, 'clawsweeper:autofix') || contains(github.event.issue.labels.*.name, 'clawsweeper:autofix')) && !(contains(github.event.pull_request.labels.*.name, 'clawsweeper:automerge') || contains(github.event.issue.labels.*.name, 'clawsweeper:automerge')) }}
+      MAINTAINER_REVIEW_REQUIRED: ${{ contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.pull_request.author_association || github.event.issue.author_association) || contains(github.event.pull_request.labels.*.name, 'maintainer') || contains(github.event.issue.labels.*.name, 'maintainer') }}
       HAS_CLAWSWEEPER_APP_PRIVATE_KEY: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY != '' }}
       CLAWSWEEPER_APP_CLIENT_ID: Iv23liOECG0slfuhz093
       SUPERSEDES_IN_PROGRESS: ${{ (github.event.action == 'edited' || github.event.action == 'synchronize' || github.event.action == 'ready_for_review') && 'true' || 'false' }}

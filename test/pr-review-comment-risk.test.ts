@@ -687,22 +687,18 @@ test("pull request keep-open review comments retain merge-risk options without r
         body: "Keep fallback behavior as the default and add a strict config option for the fail-closed behavior.",
         category: "fix_before_merge",
         recommended: true,
-        automergeInstruction:
-          "Keep fallback behavior as the default and add a strict config option for the fail-closed behavior.",
       },
       {
         title: "Make the breaking change explicit",
         body: "Keep fail-closed behavior only if docs, tests, and release notes warn existing fallback users.",
         category: "fix_before_merge",
         recommended: false,
-        automergeInstruction: "",
       },
       {
         title: "Do not merge as-is",
         body: "Pause or close this PR if maintainers do not want to take this compatibility risk.",
         category: "pause_or_close",
         recommended: false,
-        automergeInstruction: "",
       },
     ],
   });
@@ -731,14 +727,12 @@ test("pull request keep-open review comments can recommend accepting intentional
         body: "Merge only if maintainers agree the security hardening is worth the compatibility break.",
         category: "accept_risk",
         recommended: true,
-        automergeInstruction: "",
       },
       {
         title: "Add migration guidance before merge",
         body: "Document the rejected request shape and add release-note guidance for affected integrations.",
         category: "fix_before_merge",
         recommended: false,
-        automergeInstruction: "",
       },
     ],
   });
@@ -756,14 +750,12 @@ test("pull request keep-open review comments do not force a recommendation for u
         body: "Decide whether resumed sessions should migrate, fail fast, or continue using the old ownership model.",
         category: "pause_or_close",
         recommended: false,
-        automergeInstruction: "",
       },
       {
         title: "Add migration proof before merge",
         body: "Add tests or manual validation covering sessions created before this change.",
         category: "fix_before_merge",
         recommended: false,
-        automergeInstruction: "",
       },
     ],
   });
@@ -782,15 +774,12 @@ test("pull request keep-open review comments allow multiple fix-before-merge opt
         body: "Track whether the user message was already sent before retrying provider fallback.",
         category: "fix_before_merge",
         recommended: true,
-        automergeInstruction:
-          "Track whether the user message was already sent before retrying provider fallback.",
       },
       {
         title: "Disable fallback after partial sends",
         body: "Fail fast once delivery starts instead of retrying through another provider.",
         category: "fix_before_merge",
         recommended: false,
-        automergeInstruction: "",
       },
     ],
   });
@@ -809,14 +798,12 @@ test("pull request keep-open review comments include pause or close when risk ma
         body: "Show that artifacts upload on success, failure, and skipped-review paths.",
         category: "fix_before_merge",
         recommended: false,
-        automergeInstruction: "",
       },
       {
         title: "Pause or close",
         body: "Close this PR if maintainers decide the proof-capture regression risk outweighs the workflow cleanup.",
         category: "pause_or_close",
         recommended: false,
-        automergeInstruction: "",
       },
     ],
   });

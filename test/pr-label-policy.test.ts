@@ -95,7 +95,6 @@ function prStatusLabels(
     beforeMergeItems?: readonly PublicBeforeMergeItem["state"][];
     securityStatus?: "cleared" | "needs_attention";
     mergeRiskOptions?: readonly Pick<MergeRiskOption, "category" | "recommended">[];
-    hasAutomergeLabel?: boolean;
     hasRecentReReviewRequest?: boolean;
     hasRecentAuthorActivity?: boolean;
     reviewedAt?: string;
@@ -122,7 +121,6 @@ function prStatusLabels(
       beforeMergeItems: (options.beforeMergeItems ?? []).map((state) => ({ state })),
       securityReview: { status: options.securityStatus ?? "cleared" },
       mergeRiskOptions: options.mergeRiskOptions ?? [],
-      hasAutomergeLabel: options.hasAutomergeLabel ?? labels.includes("clawsweeper:automerge"),
       hasRepairLoopPauseLabel: hasRepairLoopPauseLabel(labels),
       hasRecentReReviewRequest:
         options.hasRecentReReviewRequest ??
@@ -452,11 +450,7 @@ test("historical receipt failures do not alter the recorded proof owner", () => 
         const context = `${receiptStatus}: contributor action=${needsContributorAction}, failed review=${reviewFailed}`;
         assert.equal(
           prStatusLabelKindFromReport(report, noActivity, ["clawsweeper:automerge"]),
-          needsContributorAction && !reviewFailed
-            ? "needs_proof"
-            : reviewFailed
-              ? null
-              : "automerge_armed",
+          needsContributorAction && !reviewFailed ? "needs_proof" : null,
           context,
         );
       }

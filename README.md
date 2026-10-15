@@ -195,8 +195,8 @@ work and validation are complete; agents must not request reviews automatically
 or repeat requests while one is queued or running. A one-off request does not
 opt future pushes into reviews, but it stays open until it is answered: if the
 item changes while it is reviewed, ClawSweeper re-reviews and still answers that
-request. Existing `clawsweeper:autofix` and
-`clawsweeper:automerge` labels retain their explicit opt-in behavior.
+request. The retired `clawsweeper:autofix` and `clawsweeper:automerge` labels no
+longer change review admission; they still protect an item from close proposals.
 
 ## Maintainer Commands
 

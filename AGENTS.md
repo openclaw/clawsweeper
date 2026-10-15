@@ -37,12 +37,13 @@ not split reports into issue/PR subtrees.
 - Review lane is proposal-only. It never closes GitHub items.
 - Ordinary PRs receive one automatic completed review after ten quiet minutes.
   Later pushes, edits, reopen events, and scheduled passes require a new explicit
-  review request. Failed or stale-source attempts can finish the first review;
-  `clawsweeper:autofix` and `clawsweeper:automerge` retain their opted-in automation.
+  review request. Failed or stale-source attempts can finish the first review.
+  `clawsweeper:autofix` and `clawsweeper:automerge` no longer change review
+  admission; they only keep their close protection.
 - Maintainer-authored items and items labeled `maintainer` created from
   2026-10-15 12:00 UTC are reviewed like everyone else's: a PR gets its one
   automatic review. Older maintainer items need an explicit `@clawsweeper review`
-  request unless an existing automation opt-in label is set.
+  request.
   Finish the work and validation first; request review only when it is needed.
   Agents must not request reviews automatically or repeat a queued/running request.
   An explicit review request stays open while the queue requeues its own review

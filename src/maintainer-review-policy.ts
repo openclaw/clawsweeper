@@ -74,13 +74,8 @@ function reviewLabels(item: Pick<ReviewItem, "labels">): Set<string> {
   );
 }
 
-export function hasReviewAutomationOptIn(item: Pick<ReviewItem, "labels">): boolean {
-  const labels = reviewLabels(item);
-  return labels.has("clawsweeper:autofix") || labels.has("clawsweeper:automerge");
-}
-
 export function requiresMaintainerReviewRequest(item: ReviewItem): boolean {
-  if (hasReviewAutomationOptIn(item) || !predatesMaintainerAutomaticFirstReview(item)) {
+  if (!predatesMaintainerAutomaticFirstReview(item)) {
     return false;
   }
   const labels = reviewLabels(item);
