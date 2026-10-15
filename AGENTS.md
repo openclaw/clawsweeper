@@ -39,8 +39,10 @@ not split reports into issue/PR subtrees.
   Later pushes, edits, reopen events, and scheduled passes require a new explicit
   review request. Failed or stale-source attempts can finish the first review;
   `clawsweeper:autofix` and `clawsweeper:automerge` retain their opted-in automation.
-- Maintainer-authored items and items labeled `maintainer` require an explicit
-  `@clawsweeper review` request unless an existing automation opt-in label is set.
+- Maintainer-authored items and items labeled `maintainer` created from
+  2026-10-15 03:00 UTC are reviewed like everyone else's: a PR gets its one
+  automatic review. Older maintainer items need an explicit `@clawsweeper review`
+  request unless an existing automation opt-in label is set.
   Finish the work and validation first; request review only when it is needed.
   Agents must not request reviews automatically or repeat a queued/running request.
   An explicit review request stays open while the queue requeues its own review

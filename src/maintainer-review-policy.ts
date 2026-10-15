@@ -36,7 +36,26 @@ type ReviewItem = {
   authorAssociation?: unknown;
   author_association?: unknown;
   labels?: unknown;
+  createdAt?: unknown;
+  created_at?: unknown;
 };
+
+// Maintainer items created from this moment are admitted like everyone else's:
+// a PR gets one automatic review and later reviews need a request (#1997); an
+// issue follows the ordinary issue cadence. Older maintainer items keep the
+// request-only rule, so the change starts no backlog of first reviews. An
+// unknown creation time keeps the request-only rule.
+export const MAINTAINER_AUTOMATIC_FIRST_REVIEW_FROM = "2026-10-15T03:00:00Z";
+const MAINTAINER_AUTOMATIC_FIRST_REVIEW_FROM_MS = Date.parse(
+  MAINTAINER_AUTOMATIC_FIRST_REVIEW_FROM,
+);
+
+export function predatesMaintainerAutomaticFirstReview(
+  item: Pick<ReviewItem, "createdAt" | "created_at">,
+): boolean {
+  const createdAt = Date.parse(String(item.createdAt ?? item.created_at ?? ""));
+  return !(createdAt >= MAINTAINER_AUTOMATIC_FIRST_REVIEW_FROM_MS);
+}
 
 function reviewLabels(item: Pick<ReviewItem, "labels">): Set<string> {
   return new Set(
@@ -58,7 +77,9 @@ export function hasReviewAutomationOptIn(item: Pick<ReviewItem, "labels">): bool
 }
 
 export function requiresMaintainerReviewRequest(item: ReviewItem): boolean {
-  if (hasReviewAutomationOptIn(item)) return false;
+  if (hasReviewAutomationOptIn(item) || !predatesMaintainerAutomaticFirstReview(item)) {
+    return false;
+  }
   const labels = reviewLabels(item);
   return (
     labels.has("maintainer") ||

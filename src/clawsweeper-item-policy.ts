@@ -122,7 +122,9 @@ export function applyProtectedLabelReason(labels: readonly string[], closeReason
   return `protected label: ${applyBlockingProtectedLabels(labels, closeReason).join(", ")}`;
 }
 
-export function shouldPlanItem(item: Pick<Item, "authorAssociation" | "labels">): boolean {
+export function shouldPlanItem(
+  item: Pick<Item, "authorAssociation" | "createdAt" | "labels">,
+): boolean {
   return (
     !requiresMaintainerReviewRequest(item) &&
     protectedLabels(item.labels).every((label) => label === "maintainer")

@@ -88,7 +88,8 @@ current head, title, body, and draft state. Further changes restart that window.
 After a completed review, pushes and edits do not start another review: finish
 the fixes and request `@clawsweeper re-review`. Failed or stale-source attempts
 continue through the queue, and explicit autofix/automerge opt-ins keep their
-automation. Maintainer-authored PRs still require an explicit initial request.
+automation. This includes maintainer-authored PRs opened from 2026-10-15 03:00
+UTC; older maintainer PRs still require an explicit initial request.
 
 Treat a ClawSweeper or maintainer result as the next-step checklist for the PR,
 not as a handoff.
