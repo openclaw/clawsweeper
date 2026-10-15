@@ -583,10 +583,17 @@ export function markdownFor(options: {
     { decision: options.decision },
     options.item,
   );
+  // Coverage scans read a bounded prefix. Keep its scalar facts ahead of
+  // variable labels, evidence and the large typed review record.
   const markdown = `---
 number: ${options.item.number}
 repository: ${options.item.repo}
 type: ${options.item.kind}
+reviewed_at: ${reviewedAt}
+pull_head_sha: ${pullHeadShaFromContext(options.context) ?? "unknown"}
+review_status: ${reviewStatusForDecision(options.decision)}
+local_checkout_access: ${localCheckoutAccessForDecision(options.decision)}
+local_checkout_access_source: ${localCheckoutAccessSourceForDecision(options.decision)}
 title: ${JSON.stringify(options.item.title)}
 url: ${options.item.url}
 state_at_review: open
@@ -596,11 +603,9 @@ author: ${options.item.author}
 author_association: ${options.item.authorAssociation}
 labels: ${JSON.stringify(options.item.labels)}
 bulk_filer_detected: ${options.context.bulkFiler?.detected === true}
-reviewed_at: ${reviewedAt}
 review_lease_owner: ${options.reviewLeaseOwner ?? "unknown"}
 review_lease_comment_id: ${options.reviewLeaseCommentId ?? "unknown"}
 main_sha: ${options.git.mainSha}
-pull_head_sha: ${pullHeadShaFromContext(options.context) ?? "unknown"}
 reviewed_pull_state_digest: ${
     reviewedPullStateDigest
       ? (reviewStructuralPullStateDigest(reviewedPullStateDigest) ?? "unknown")
@@ -648,11 +653,8 @@ review_additional_prompt_chars: ${reviewTelemetryNumber(options.runtime.addition
 review_context_elapsed_ms: ${reviewTelemetryNumber(options.runtime.contextElapsedMs)}
 review_codex_elapsed_ms: ${reviewTelemetryNumber(options.runtime.codexElapsedMs)}
 review_mode: ${options.reviewMode}
-review_status: ${reviewStatusForDecision(options.decision)}
 review_terminal_failure: ${options.decision.codexTerminalFailure === true}
 review_checkout_inspection_failed: ${options.decision.checkoutInspectionFailed === true}
-local_checkout_access: ${localCheckoutAccessForDecision(options.decision)}
-local_checkout_access_source: ${localCheckoutAccessSourceForDecision(options.decision)}
 item_snapshot_hash: ${options.snapshotHash}
 review_content_digest: ${options.contentDigest}
 last_full_review_at: ${reviewedAt}

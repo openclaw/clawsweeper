@@ -707,14 +707,31 @@ dispatched first, so one large repository can fill otherwise-idle capacity
 without permanently consuming smaller repositories' scheduled-feed budget.
 
 Worker hydration also records the exact item identities present in the modern
-canonical tuple store. Normal fanout and each target planner use those identities
-for the same `untracked_open` boundary as the coverage endpoint. A hydrated
+canonical tuple store. Each target planner uses those identities to select
+never-reviewed items; cross-repository fanout volume still uses a count estimate.
+The coverage endpoint independently joins the current live-open census. A hydrated
 legacy backfill report remains review context, but it does not count as coverage
 or yield a planner slot to a canonical re-review until a modern tuple exists.
 
-The six-hour audit fanout also writes a GitHub Actions summary with canonical
-open-item reports reviewed in the trailing seven days versus batched live open
-issue and PR totals across the complete dynamic inventory.
+The signed coverage inventory includes every live-open issue and PR identity,
+kind, current labels, update timestamp, and PR head from bounded, stable-order
+GitHub pagination. Coverage joins those identities to canonical records; closed
+records contribute only to record drift, and live protected labels determine
+exclusions. It retains the completed-review seven-day window and invalidates
+mismatched PR heads. Generic item update timestamps do not prove source drift:
+automation can change them, and issue semantic source freshness is not measured
+by this inventory.
+
+`coverage_status` is `complete` only for a complete census less than twelve hours
+old. Missing, count-only, incomplete, oversized, and stale inventories return
+`unknown` with a null percentage; their numeric backlog placeholders must not
+be presented as observed zero backlog. Pagination is bounded to 20,000 items
+and a 1.9 MB signed snapshot. Changing totals, duplicate identities, incomplete
+labels, and API failures invalidate that census. GitHub pagination is not an
+atomic repository snapshot; its observation time bounds this metric.
+
+The six-hour audit fanout also writes a GitHub Actions summary using this same
+live-open identity join and trailing seven-day review window.
 
 Exact event review also starts Codex before generated-state hydration. The
 single-item review only needs the target repository and live GitHub item state;

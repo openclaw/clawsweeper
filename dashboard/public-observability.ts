@@ -300,13 +300,26 @@ export function publicReviewCoverageProjection(value: unknown) {
   const reviewable = totals.reviewable_records ?? 0;
   const reviewed = totals.reviewed_recent ?? 0;
   const expectedCoverage = reviewable ? Math.round((reviewed / reviewable) * 1000) / 10 : null;
-  if (reviewed > reviewable || coveragePercent !== expectedCoverage) return null;
+  if (
+    source.coverage_status !== undefined &&
+    !member(["complete", "unknown"], source.coverage_status)
+  )
+    return null;
+  const coverageStatus = source.coverage_status === "complete" ? "complete" : "unknown";
+  if (
+    reviewed > reviewable ||
+    (coverageStatus === "complete"
+      ? coveragePercent !== expectedCoverage || source.inventory_status !== "current"
+      : coveragePercent !== null)
+  )
+    return null;
   return {
     ok: true,
     generated_at: generatedAt,
     window_days: windowDays,
     inventory_generated_at: inventoryGeneratedAt,
     inventory_status: source.inventory_status,
+    coverage_status: coverageStatus,
     totals: { ...totals, coverage_percent: coveragePercent },
   };
 }

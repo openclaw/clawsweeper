@@ -33,6 +33,7 @@ import {
   putFanoutCursor,
   renderFleetReviewCoverage,
   reviewCoverageInventorySnapshot,
+  loadReviewCoverageInventory,
   reviewPlanningRepositories,
   repositoriesWithOpenItems,
   selectRepositories,
@@ -404,11 +405,11 @@ test("target fanout summarizes trailing weekly coverage from canonical open reco
     mkdirSync(bItems, { recursive: true });
     writeFileSync(
       join(aItems, "1.md"),
-      "---\nreview_status: complete\nreviewed_at: 2026-07-28T12:00:00Z\n---\n",
+      "---\ntype: issue\nlocal_checkout_access: verified\nlocal_checkout_access_source: runner_preflight_v1\nreview_status: complete\nreviewed_at: 2026-07-28T12:00:00Z\n---\n",
     );
     writeFileSync(
       join(aItems, "2.md"),
-      "---\nreview_status: complete\nreviewed_at: 2026-07-20T12:00:00Z\n---\n",
+      "---\ntype: issue\nlocal_checkout_access: verified\nlocal_checkout_access_source: runner_preflight_v1\nreview_status: complete\nreviewed_at: 2026-07-20T12:00:00Z\n---\n",
     );
     writeFileSync(
       join(bItems, "3.md"),
@@ -423,6 +424,41 @@ test("target fanout summarizes trailing weekly coverage from canonical open reco
       windowDays: 7,
       recordsRoot: root,
       now,
+      inventory: {
+        generated_at: new Date(now).toISOString(),
+        repositories: [
+          {
+            repo: "openclaw/a",
+            repo_slug: "openclaw-a",
+            open_issues: 2,
+            open_pull_requests: 1,
+            complete: true,
+            items: [1, 2, 4].map((number) => ({
+              number,
+              kind: number === 4 ? ("pull_request" as const) : ("issue" as const),
+              updated_at: new Date(now).toISOString(),
+              labels: [],
+              ...(number === 4 ? { head_sha: "a".repeat(40) } : {}),
+            })),
+          },
+          {
+            repo: "steipete/b",
+            repo_slug: "steipete-b",
+            open_issues: 0,
+            open_pull_requests: 1,
+            complete: true,
+            items: [
+              {
+                number: 3,
+                kind: "pull_request",
+                updated_at: new Date(now).toISOString(),
+                head_sha: "a".repeat(40),
+                labels: [],
+              },
+            ],
+          },
+        ],
+      },
     });
 
     assert.deepEqual(coverage, {
@@ -436,6 +472,7 @@ test("target fanout summarizes trailing weekly coverage from canonical open reco
       scannedOpenRecords: 1,
       remainingOpenItems: 3,
       coveragePercent: 25,
+      coverageStatus: "complete",
       requiredItemsPerHourWithHeadroom: (4 / 168) * 1.3,
     });
     assert.match(renderFleetReviewCoverage(coverage), /Items scanned in trailing 7 days \| 1/);
@@ -474,6 +511,70 @@ test("target fanout coverage ignores review metadata inside a fenced report samp
     assert.equal(coverage.scannedOpenRecords, 0);
   } finally {
     rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("target fanout collects a complete paginated live-open census", () => {
+  const repository = { targetRepo: "sample/repo", defaultBranch: "main", visibility: "PUBLIC" };
+  const queries: string[] = [];
+  const node = (number: number) => ({
+    number,
+    updatedAt: "2026-10-15T00:00:00Z",
+    labels: { nodes: [], pageInfo: { hasNextPage: false } },
+  });
+  const result = loadReviewCoverageInventory(
+    [repository],
+    new Map([["sample/repo", { issues: 2, pullRequests: 0 }]]),
+    0,
+    (query) => {
+      queries.push(query);
+      const connection = query.includes("pullRequests(") ? "pullRequests" : "issues";
+      const second = query.includes('after:"page2"');
+      return {
+        data: {
+          repository: {
+            [connection]: {
+              totalCount: connection === "issues" ? 2 : 0,
+              nodes: connection === "pullRequests" ? [] : [node(second ? 2 : 1)],
+              pageInfo: { hasNextPage: connection === "issues" && !second, endCursor: "page2" },
+            },
+          },
+        },
+      };
+    },
+  );
+  assert.equal(queries.length, 2);
+  assert.equal(result.repositories[0]!.complete, true);
+  assert.deepEqual(
+    result.repositories[0]!.items!.map((item) => item.number),
+    [1, 2],
+  );
+});
+
+test("target fanout marks a changing or truncated census unknown", () => {
+  const repository = { targetRepo: "sample/repo", defaultBranch: "main", visibility: "PUBLIC" };
+  for (const page of [
+    { totalCount: 2, nodes: [], pageInfo: { hasNextPage: false } },
+    {
+      totalCount: 1,
+      nodes: [
+        {
+          number: 1,
+          updatedAt: "2026-10-15T00:00:00Z",
+          labels: { nodes: [], pageInfo: { hasNextPage: true } },
+        },
+      ],
+      pageInfo: { hasNextPage: false },
+    },
+  ]) {
+    const result = loadReviewCoverageInventory(
+      [repository],
+      new Map([["sample/repo", { issues: 1, pullRequests: 0 }]]),
+      0,
+      () => ({ data: { repository: { issues: page } } }),
+    );
+    assert.equal(result.repositories[0]!.complete, false);
+    assert.deepEqual(result.repositories[0]!.items, []);
   }
 });
 

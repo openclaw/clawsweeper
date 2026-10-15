@@ -37,6 +37,10 @@ import type {
   ReviewCoverageFleetCounts,
   ReviewCoverageScanCursor,
 } from "../dashboard/exact-review-direct-publication.ts";
+import { markdownFor } from "../dist/clawsweeper-report-document.js";
+import { parseDecision } from "../dist/clawsweeper.js";
+import { closeDecision, item as reviewItem } from "./helpers.ts";
+import { reviewCoverageRecord, REVIEW_COVERAGE_RECORD_FIELDS } from "../src/review-coverage.ts";
 import type { HostedPublicTargetProbe } from "../dashboard/exact-review-queue.ts";
 import { AGENT_INPUT_SCAN_FAILURE_REASONS } from "../src/exact-review-failure-reason.ts";
 import {
@@ -9064,12 +9068,79 @@ test("fallback tuple publication normalizes mixed-case keys onto existing lowerc
   assert.deepEqual(await rejected.json(), { error: "invalid_canonical_record_tuple" });
 });
 
+test("review coverage scans real writer headers beyond the bounded prefix", () => {
+  const target = reviewItem({
+    kind: "pull_request",
+    title: "Production source change ".repeat(10),
+    labels: Array.from({ length: 40 }, (_, index) => `label-${index}-${"x".repeat(80)}`),
+  });
+  const markdown = markdownFor({
+    item: target,
+    decision: {
+      ...parseDecision(
+        closeDecision({
+          summary: "Verified source and regression evidence. ".repeat(200),
+          evidence: [
+            {
+              repo: target.repo,
+              label: "Source proof",
+              detail: "Verified caller and callee evidence. ".repeat(80),
+              file: "src/example.ts",
+              line: 12,
+              command: null,
+              sha: null,
+            },
+          ],
+        }),
+        target,
+      ),
+      localCheckoutAccess: "verified",
+    },
+    context: {
+      issue: {},
+      comments: [],
+      timeline: [],
+      pullRequest: { head: { sha: "a".repeat(40) } },
+    },
+    git: { mainSha: "b".repeat(40), latestRelease: null, releaseStateComplete: true },
+    action: { actionTaken: "proposed_close" },
+    reviewMode: "propose",
+    snapshotHash: "synthetic-snapshot",
+    contentDigest: "synthetic-content",
+    reviewPolicy: "synthetic-policy",
+    runtime: { model: "Codex", reasoningEffort: "high" },
+  } as Parameters<typeof markdownFor>[0]);
+  assert.ok(markdown.indexOf("\n---", 3) > 4096);
+  const prefix = markdown.slice(0, 4096);
+  for (const field of REVIEW_COVERAGE_RECORD_FIELDS)
+    assert.match(prefix, new RegExp(`^${field}: .+\\n`, "m"));
+  const storage = new MemoryDurableStorage();
+  const store = new ExactReviewDirectPublicationStore(storage);
+  store.ensureSchemaSync();
+  storage.sql.exec(
+    `INSERT INTO exact_review_canonical_records
+    (repo_slug, section, item_id, content, digest, byte_length, revision, item_key, claim_generation, updated_at)
+    VALUES ('openclaw-openclaw', 'items', 123, ?, ?, ?, 1, 'openclaw/openclaw#123', 1, ?)`,
+    markdown,
+    "a".repeat(64),
+    Buffer.byteLength(markdown),
+    Date.now(),
+  );
+  const fleets = new Map<string, ReviewCoverageFleetCounts>();
+  store.reviewCoverageScanPageSync(fleets, null, 10, Date.now());
+  assert.deepEqual(
+    fleets.get("openclaw-openclaw")?.records?.get(123),
+    reviewCoverageRecord(markdown),
+  );
+  assert.equal(fleets.get("openclaw-openclaw")?.records?.get(123)?.status, "complete");
+});
+
 test("review coverage summarizes canonical item records per fleet", async () => {
   const storage = new MemoryDurableStorage();
   const queue = new ExactReviewQueue({ storage }, {});
   const now = Date.now();
   const itemRecord = (repo: string | null, number: number, frontMatter: string) =>
-    `---\n${repo ? `repo: ${repo}\n` : ""}number: ${number}\n${frontMatter}---\n\nreview body\n`;
+    `---\n${repo ? `repo: ${repo}\n` : ""}number: ${number}\ntype: issue\nlocal_checkout_access: verified\nlocal_checkout_access_source: runner_preflight_v1\n${frontMatter}---\n\nreview body\n`;
   const publish = async (slug: string, number: number, content: string) => {
     const response = await queue.fetch(
       stateAppendQueueRequest("/records/tuples", {
@@ -9141,12 +9212,31 @@ test("review coverage summarizes canonical item records per fleet", async () => 
             repo_slug: "openclaw-openclaw",
             open_issues: 5,
             open_pull_requests: 2,
+            complete: true,
+            items: [1, 2, 3, 4, 5, 6, 7].map((number) => ({
+              number,
+              kind: number <= 5 ? "issue" : "pull_request",
+              updated_at: fresh,
+              ...(number > 5 ? { head_sha: "a".repeat(40) } : {}),
+              labels: number === 5 ? ["security"] : [],
+            })),
           },
           {
             repo: "other/repo",
             repo_slug: "other-repo",
             open_issues: 1,
             open_pull_requests: 1,
+            complete: true,
+            items: [
+              { number: 9, kind: "issue", updated_at: fresh, labels: [] },
+              {
+                number: 11,
+                kind: "pull_request",
+                updated_at: fresh,
+                head_sha: "a".repeat(40),
+                labels: [],
+              },
+            ],
           },
         ],
       }),
@@ -9166,6 +9256,7 @@ test("review coverage summarizes canonical item records per fleet", async () => 
   assert.equal(payload.ok, true);
   assert.equal(payload.window_days, 7);
   assert.equal(payload.inventory_status, "current");
+  assert.equal(payload.coverage_status, "complete");
   assert.equal(payload.fleets.length, 3);
   const [openclaw, other, unmanaged] = payload.fleets;
   assert.equal(openclaw.repo, "openclaw/openclaw");

@@ -22,10 +22,19 @@ import {
   type HostedTargetPolicy,
 } from "../hosted-target-admission.js";
 import { fetchExactReviewQueuePressure } from "../queue-pressure.js";
-import { frontMatterValue } from "../report-front-matter.js";
+import {
+  REVIEW_COVERAGE_INVENTORY_MAX_BYTES,
+  REVIEW_COVERAGE_INVENTORY_MAX_ITEMS,
+  reviewCoverageRecord,
+  reviewCoverageRecordState,
+  type ReviewCoverageOpenItem,
+  type ReviewCoverageInventorySnapshot,
+} from "../review-coverage.js";
+export type { ReviewCoverageInventorySnapshot } from "../review-coverage.js";
 import { coverageTrackedCountsFromManifest } from "../review-coverage-manifest.js";
 import { githubCommandTimeoutMs } from "./github-cli.js";
 import { parseArgs, repoRoot } from "./lib.js";
+import { CLOSE_PROTECTED_LABEL_NAMES } from "./exact-review-guard-labels.js";
 
 export type FanoutMode = "hot-intake" | "normal-review" | "audit";
 
@@ -70,18 +79,9 @@ export interface FleetReviewCoverage {
   openTotal: number;
   scannedOpenRecords: number;
   remainingOpenItems: number;
-  coveragePercent: number;
+  coveragePercent: number | null;
+  coverageStatus: "complete" | "unknown";
   requiredItemsPerHourWithHeadroom: number;
-}
-
-export interface ReviewCoverageInventorySnapshot {
-  generated_at: string;
-  repositories: Array<{
-    repo: string;
-    repo_slug: string;
-    open_issues: number;
-    open_pull_requests: number;
-  }>;
 }
 
 export interface ReviewPlanningRepository extends SelectedRepository {
@@ -145,7 +145,14 @@ export async function runTargetFanout(argv: string[]): Promise<void> {
     const windowDays = positiveNumber(stringArg(args["window-days"], "7"), "window-days");
     const openCounts = loadRepositoryOpenCounts(repositories);
     const now = Date.now();
-    const coverage = summarizeFleetReviewCoverage({ repositories, openCounts, windowDays, now });
+    const snapshot = loadReviewCoverageInventory(repositories, openCounts, now);
+    const coverage = summarizeFleetReviewCoverage({
+      repositories,
+      openCounts,
+      windowDays,
+      now,
+      inventory: snapshot,
+    });
     const publishUrl = stringArg(args["publish-url"], "");
     if (publishUrl) {
       try {
@@ -155,7 +162,7 @@ export async function runTargetFanout(argv: string[]): Promise<void> {
             process.env.CLAWSWEEPER_WEBHOOK_SECRET,
             "CLAWSWEEPER_WEBHOOK_SECRET",
           ),
-          snapshot: reviewCoverageInventorySnapshot(repositories, openCounts, now),
+          snapshot,
         });
       } catch (error) {
         console.error(
@@ -189,7 +196,7 @@ export async function runTargetFanout(argv: string[]): Promise<void> {
               process.env.CLAWSWEEPER_WEBHOOK_SECRET,
               "CLAWSWEEPER_WEBHOOK_SECRET",
             ),
-            snapshot: reviewCoverageInventorySnapshot(repositories, openCounts, now),
+            snapshot: loadReviewCoverageInventory(repositories, openCounts, now),
           });
         } catch (error) {
           console.error(
@@ -979,14 +986,23 @@ export function summarizeFleetReviewCoverage(options: {
   windowDays: number;
   recordsRoot?: string;
   now?: number;
+  inventory?: ReviewCoverageInventorySnapshot;
 }): FleetReviewCoverage {
   const now = options.now ?? Date.now();
-  const cutoff = now - options.windowDays * 24 * 60 * 60 * 1000;
+  const windowMs = options.windowDays * 24 * 60 * 60 * 1000;
+  const inventory = options.inventory;
+  const complete =
+    !!inventory &&
+    now - Date.parse(inventory.generated_at) <= 12 * 60 * 60 * 1000 &&
+    Date.parse(inventory.generated_at) <= now &&
+    inventory.repositories.every((entry) => entry.complete === true && entry.items !== undefined);
+  const inventoryByRepo = new Map(inventory?.repositories.map((entry) => [entry.repo, entry]));
   const recordsRoot = options.recordsRoot ?? join(repoRoot(), "records");
   let openIssues = 0;
   let openPullRequests = 0;
   let scannedOpenRecords = 0;
   let repositoriesWithOpenItems = 0;
+  let reviewable = 0;
   for (const repository of options.repositories) {
     const counts = options.openCounts.get(repository.targetRepo) ?? {
       issues: 0,
@@ -998,25 +1014,20 @@ export function summarizeFleetReviewCoverage(options: {
     if (openTotal > 0) repositoriesWithOpenItems += 1;
     const repoSlug = repository.targetRepo.toLowerCase().replace("/", "-");
     const itemsDir = join(recordsRoot, repoSlug, "items");
-    let freshRecords = 0;
-    if (existsSync(itemsDir)) {
-      for (const entry of readdirSync(itemsDir, { withFileTypes: true })) {
-        if (!entry.isFile() || !entry.name.endsWith(".md")) continue;
-        const markdown = readFileSync(join(itemsDir, entry.name), "utf8");
-        if (frontMatterValue(markdown, "review_status") !== "complete") continue;
-        const reviewedAt = Date.parse(frontMatterValue(markdown, "reviewed_at") ?? "");
-        if (Number.isFinite(reviewedAt) && reviewedAt >= cutoff && reviewedAt <= now) {
-          freshRecords += 1;
-        }
-      }
+    if (!complete) continue;
+    for (const item of inventoryByRepo.get(repository.targetRepo)?.items ?? []) {
+      if (item.labels.some((label) => coverageExcludedLabels.has(label.toLowerCase()))) continue;
+      reviewable += 1;
+      const path = join(itemsDir, `${item.number}.md`);
+      if (!existsSync(path)) continue;
+      const record = reviewCoverageRecord(readFileSync(path, "utf8"));
+      if (reviewCoverageRecordState(record, item, now, windowMs) === "reviewed_recent")
+        scannedOpenRecords += 1;
     }
-    // Canonical items are reconciled against live open state on scheduled audits.
-    // Cap each repository at its live total so delayed external-close reconciliation
-    // cannot make the fleet summary exceed 100%.
-    scannedOpenRecords += Math.min(freshRecords, openTotal);
   }
   const openTotal = openIssues + openPullRequests;
-  const coveragePercent = openTotal > 0 ? (scannedOpenRecords / openTotal) * 100 : 100;
+  const coveragePercent =
+    complete && reviewable > 0 ? (scannedOpenRecords / reviewable) * 100 : null;
   return {
     generatedAt: new Date(now).toISOString(),
     windowDays: options.windowDays,
@@ -1026,11 +1037,126 @@ export function summarizeFleetReviewCoverage(options: {
     openPullRequests,
     openTotal,
     scannedOpenRecords,
-    remainingOpenItems: Math.max(0, openTotal - scannedOpenRecords),
+    remainingOpenItems: complete ? Math.max(0, reviewable - scannedOpenRecords) : 0,
+    coverageStatus: complete ? "complete" : "unknown",
     coveragePercent,
     requiredItemsPerHourWithHeadroom:
       openTotal > 0 ? (openTotal / (options.windowDays * 24)) * 1.3 : 0,
   };
+}
+
+const coverageExcludedLabels = new Set<string>(
+  CLOSE_PROTECTED_LABEL_NAMES.filter((label) => label !== "maintainer"),
+);
+
+// A complete census is an explicit witness: bounded pagination, stable counts,
+// unique identities and complete labels. Failure publishes UNKNOWN, never a partial denominator.
+export function loadReviewCoverageInventory(
+  repositories: readonly SelectedRepository[],
+  openCounts: ReadonlyMap<string, RepositoryOpenCounts>,
+  now = Date.now(),
+  query: (query: string) => unknown = (query) =>
+    JSON.parse(runGh(["api", "graphql", "-f", `query=${query}`], publicInventoryEnv())),
+): ReviewCoverageInventorySnapshot {
+  const snapshot = reviewCoverageInventorySnapshot(repositories, openCounts, now);
+  let itemCount = 0;
+  let inventoryBytes = Buffer.byteLength(JSON.stringify(snapshot));
+  for (const entry of snapshot.repositories) {
+    const [owner, name] = entry.repo.split("/");
+    const items: ReviewCoverageOpenItem[] = [];
+    const numbers = new Set<number>();
+    let complete = true;
+    try {
+      for (const [connection, kind, expected] of [
+        ["issues", "issue", entry.open_issues],
+        ["pullRequests", "pull_request", entry.open_pull_requests],
+      ] as const) {
+        if (expected === 0) continue;
+        let cursor: string | null = null;
+        let received = 0;
+        do {
+          if (itemCount >= REVIEW_COVERAGE_INVENTORY_MAX_ITEMS)
+            throw new Error("coverage inventory item limit");
+          const response = record(
+            query(
+              `query FleetCoverageItems { repository(owner:${JSON.stringify(owner)},name:${JSON.stringify(name)}) { ${connection}(states:OPEN,orderBy:{field:CREATED_AT,direction:ASC},first:100,after:${JSON.stringify(cursor)}) { totalCount pageInfo { hasNextPage endCursor } nodes { number updatedAt ${kind === "pull_request" ? "headRefOid" : ""} labels(first:100) { nodes { name } pageInfo { hasNextPage } } } } } }`,
+            ),
+            "coverage response",
+          );
+          if (response.errors) throw new Error("coverage GraphQL errors");
+          const repository = record(
+            record(response.data, "coverage data").repository,
+            "coverage repository",
+          );
+          const page = record(repository[connection], "coverage page");
+          if (page.totalCount !== expected || !Array.isArray(page.nodes))
+            throw new Error("coverage inventory changed");
+          for (const value of page.nodes) {
+            const node = record(value, "coverage item");
+            const labels = record(node.labels, "coverage labels");
+            if (
+              !Number.isSafeInteger(node.number) ||
+              Number(node.number) < 1 ||
+              numbers.has(Number(node.number)) ||
+              typeof node.updatedAt !== "string" ||
+              !Number.isFinite(Date.parse(node.updatedAt)) ||
+              !Array.isArray(labels.nodes) ||
+              record(labels.pageInfo, "label page").hasNextPage !== false ||
+              (kind === "pull_request" &&
+                (typeof node.headRefOid !== "string" || !/^[a-f0-9]{40,64}$/.test(node.headRefOid)))
+            )
+              throw new Error("incomplete coverage identity");
+            numbers.add(Number(node.number));
+            const item: ReviewCoverageOpenItem = {
+              number: Number(node.number),
+              kind,
+              updated_at: node.updatedAt,
+              labels: labels.nodes.map((value) => {
+                const label = record(value, "label").name;
+                if (typeof label !== "string" || label.length > 100)
+                  throw new Error("invalid label");
+                return label;
+              }),
+              ...(kind === "pull_request" ? { head_sha: node.headRefOid as string } : {}),
+            };
+            inventoryBytes += Buffer.byteLength(JSON.stringify(item)) + 1;
+            if (inventoryBytes > REVIEW_COVERAGE_INVENTORY_MAX_BYTES)
+              throw new Error("coverage inventory byte limit");
+            items.push(item);
+            received += 1;
+            itemCount += 1;
+            if (itemCount > REVIEW_COVERAGE_INVENTORY_MAX_ITEMS)
+              throw new Error("coverage inventory item limit");
+          }
+          const pageInfo = record(page.pageInfo, "coverage page info");
+          if (pageInfo.hasNextPage === false) cursor = null;
+          else if (
+            pageInfo.hasNextPage === true &&
+            typeof pageInfo.endCursor === "string" &&
+            pageInfo.endCursor !== cursor &&
+            page.nodes.length > 0
+          )
+            cursor = pageInfo.endCursor;
+          else throw new Error("invalid coverage pagination");
+        } while (cursor !== null);
+        if (received !== expected) throw new Error("incomplete coverage census");
+      }
+    } catch (error) {
+      complete = false;
+      console.error(
+        `[target-fanout] WARNING: coverage census incomplete for ${entry.repo}: ${errorMessage(error)}`,
+      );
+    }
+    entry.complete = complete;
+    entry.items = complete ? items : [];
+  }
+  if (Buffer.byteLength(JSON.stringify(snapshot)) > REVIEW_COVERAGE_INVENTORY_MAX_BYTES) {
+    for (const entry of snapshot.repositories) {
+      entry.complete = false;
+      entry.items = [];
+    }
+  }
+  return snapshot;
 }
 
 export function reviewCoverageInventorySnapshot(
@@ -1098,7 +1224,7 @@ export async function publishReviewCoverageInventory(options: {
 export function renderFleetReviewCoverage(coverage: FleetReviewCoverage): string {
   return `## Weekly review coverage
 
-Generated ${coverage.generatedAt}. Canonical open-item records are compared with batched live GitHub totals; repository counts are capped at the live open total while external-close reconciliation catches up.
+Generated ${coverage.generatedAt}. Canonical review records are joined to the complete live-open GitHub census by identity. Coverage is unknown when that census is incomplete or stale.
 
 | Metric | Value |
 | --- | ---: |
@@ -1107,9 +1233,9 @@ Generated ${coverage.generatedAt}. Canonical open-item records are compared with
 | Open issues | ${coverage.openIssues} |
 | Open pull requests | ${coverage.openPullRequests} |
 | Open items total | ${coverage.openTotal} |
-| Items scanned in trailing ${coverage.windowDays} days | ${coverage.scannedOpenRecords} |
-| Remaining outside trailing window | ${coverage.remainingOpenItems} |
-| Trailing coverage | ${coverage.coveragePercent.toFixed(1)}% |
+| Items scanned in trailing ${coverage.windowDays} days | ${coverage.coverageStatus === "complete" ? coverage.scannedOpenRecords : "UNKNOWN"} |
+| Remaining outside trailing window | ${coverage.coverageStatus === "complete" ? coverage.remainingOpenItems : "UNKNOWN"} |
+| Trailing coverage | ${coverage.coveragePercent === null ? "UNKNOWN" : `${coverage.coveragePercent.toFixed(1)}%`} |
 | Required items/hour with 30% headroom | ${coverage.requiredItemsPerHourWithHeadroom.toFixed(1)} |
 
 `;

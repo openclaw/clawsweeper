@@ -1,0 +1,1 @@
+- Compute review coverage by joining canonical records to a complete live-open item census; report unknown coverage when inventory is incomplete or stale.
