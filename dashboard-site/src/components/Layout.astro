@@ -162,8 +162,8 @@ const jump = repos.map(repo => ({ r: repo.repo, s: repo.slug, n: repo.records })
         const corpus = (Date.now() - Date.parse(stale.dataset.corpus)) / 3_600_000;
         const notes = [];
         if (build > 1) notes.push(`This snapshot is ${age(build)} old. The dashboard normally rebuilds every 15 minutes, so its refresh has stopped.`);
-        // Review totals, quality and closes come from the corpus, which refreshes only by hand.
-        if (corpus > 24) notes.push(`Review totals, quality and closes are ${age(corpus)} old; they update only when the dashboard workflow runs with refresh_corpus.`);
+        // Review totals, quality and closes come from the corpus, refreshed at 00:07 and 12:07 UTC.
+        if (corpus > 14) notes.push(`Review totals, quality and closes are ${age(corpus)} old. They normally refresh twice a day (00:07 and 12:07 UTC), so that refresh has stopped.`);
         stale.textContent = notes.join(' ');
         stale.hidden = notes.length === 0;
       };

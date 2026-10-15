@@ -177,8 +177,9 @@ not restarted by it.
 Each build reads four sources:
 
 - the corpus aggregate (totals, decisions, quality, closes, per-repository
-  counts), cached in the workflow state. It is rebuilt only when the workflow is
-  started by hand with `refresh_corpus`: that run hydrates every canonical
+  counts), cached in the workflow state. It is rebuilt twice a day by a
+  scheduled run at 00:07 and 12:07 UTC (the quietest review hours) and when the
+  workflow is started by hand with `refresh_corpus`: that run hydrates every canonical
   record read-only with `scripts/hydrate-state.ts`, reads front matter only and
   keeps repositories that GitHub reports as public. The cache keeps each
   repository's contribution apart, so every build checks visibility again,
