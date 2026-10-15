@@ -197,9 +197,12 @@ test("target dispatcher acknowledges non-draft PR receipts before review dispatc
     const token = namedStep(steps, "Create target PR acknowledgement token");
     const acknowledgement = namedStep(steps, "Acknowledge received pull request");
     const expectedGate =
-      "${{ env.MAINTAINER_REVIEW_REQUIRED != 'true' && github.event_name == 'pull_request_target' && env.HAS_CLAWSWEEPER_APP_PRIVATE_KEY == 'true' }}";
+      "${{ github.event_name == 'pull_request_target' && env.HAS_CLAWSWEEPER_APP_PRIVATE_KEY == 'true' }}";
 
-    assert.match(normalizeWhitespace(token.if), /MAINTAINER_REVIEW_REQUIRED/);
+    assert.equal(
+      normalizeWhitespace(token.if),
+      "${{ env.HAS_CLAWSWEEPER_APP_PRIVATE_KEY == 'true' && github.event_name == 'pull_request_target' }}",
+    );
     assert.equal(normalizeWhitespace(acknowledgement.if), expectedGate);
     assert.equal(token["continue-on-error"], true);
     assert.equal(acknowledgement["continue-on-error"], true);
@@ -293,72 +296,23 @@ if (args.includes("POST")) {
   }
 });
 
-test("maintainer reminder reuses full-history bot comments and cannot route itself as a command", () => {
-  const steps = dispatchSteps(liveWorkflow);
-  const run = namedStep(steps, "Explain maintainer review opt-in").run!;
-  const prefilter = namedStep(steps, "Pre-filter ClawSweeper comment").run!;
-  const root = mkdtempSync(path.join(tmpdir(), "target-dispatch-maintainer-"));
-  const posts = path.join(root, "posts");
+test("an old maintainer reminder comment cannot route itself as a command", () => {
+  const prefilter = namedStep(dispatchSteps(liveWorkflow), "Pre-filter ClawSweeper comment").run!;
+  const root = mkdtempSync(path.join(tmpdir(), "target-dispatch-reminder-"));
   const output = path.join(root, "output");
-  writeFileSync(
-    path.join(root, "gh"),
-    `#!${process.execPath}
-const fs = require("node:fs");
-const args = process.argv.slice(2);
-if (process.env.GH_TOKEN !== "ack-token") process.exit(9);
-if (args.includes("POST")) {
-  fs.appendFileSync(process.env.POSTS, fs.readFileSync(0, "utf8"));
-  console.log('{"id":900}');
-} else {
-  const url = new URL(args[1], "https://fixture.invalid/");
-  if (url.searchParams.has("since")) process.exit(10);
-  const page = Number(url.searchParams.get("page"));
-  console.log(JSON.stringify(JSON.parse(process.env.COMMENT_PAGES)[page - 1] ?? []));
-}
-`,
-    { mode: 0o755 },
-  );
-  const marker = "<!-- clawsweeper-maintainer-opt-in:opened item=42 -->";
-  const botComment = { body: marker, user: { login: "openclaw-clawsweeper[bot]" } };
-  const page = Array.from({ length: 100 }, () => ({
-    body: "discussion",
-    user: { login: "contributor" },
-  }));
+  // Reminders posted before maintainer first reviews became automatic mention the command.
+  const body = [
+    "<!-- clawsweeper-maintainer-opt-in:opened item=42 -->",
+    "ClawSweeper reviews are opt-in for maintainers. If a review is required, finish the work and validation first, then comment `@clawsweeper review`.",
+  ].join("\n");
   try {
-    for (const [pages, shouldPost] of [
-      [[], true],
-      [[page, [botComment]], false],
-      [[[{ ...botComment, user: { login: "contributor" } }]], true],
-      [Array.from({ length: 10 }, () => page), false],
-    ] as const) {
-      writeFileSync(posts, "");
-      const result = spawnSync("bash", ["-e", "-c", run], {
-        encoding: "utf8",
-        env: {
-          PATH: `${root}:${process.env.PATH}`,
-          POSTS: posts,
-          GH_TOKEN: "ack-token",
-          TARGET_REPO: "openclaw/example",
-          ITEM_NUMBER: "42",
-          SOURCE_ACTION: "ready_for_review",
-          COMMENT_PAGES: JSON.stringify(pages),
-        },
-      });
-      assert.equal(result.status, 0, result.stderr);
-      const payload = readFileSync(posts, "utf8");
-      assert.equal(Boolean(payload), shouldPost);
-      if (!payload) continue;
-      const body = JSON.parse(payload).body;
-      assert.match(body, /If a review is required, finish the work and validation first/);
-      assert.match(body, /`@clawsweeper review`/);
-      writeFileSync(output, "");
-      const filtered = spawnSync("bash", ["-e", "-c", prefilter], {
-        encoding: "utf8",
-        env: { PATH: process.env.PATH, COMMENT_BODY: body, GITHUB_OUTPUT: output },
-      });
-      assert.equal(filtered.status, 0, filtered.stderr);
-      assert.equal(readFileSync(output, "utf8"), "is_command=false\n");
-    }
+    writeFileSync(output, "");
+    const filtered = spawnSync("bash", ["-e", "-c", prefilter], {
+      encoding: "utf8",
+      env: { PATH: process.env.PATH, COMMENT_BODY: body, GITHUB_OUTPUT: output },
+    });
+    assert.equal(filtered.status, 0, filtered.stderr);
+    assert.equal(readFileSync(output, "utf8"), "is_command=false\n");
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

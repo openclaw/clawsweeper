@@ -297,10 +297,11 @@ carries a request is skipped because it lacks that verification, its review job
 answers the request's status as "Waiting" with a request to re-review, so the
 status never stays "Review in progress". A push after the request is
 answered and a scheduled pass also need a new request.
-The target dispatcher and direct webhook share a single reminder identity per
-item, posted only when opened or ready for review. Edits, pushes, and sweeps do
-not post reminders. Request reviews only when needed, after completing work and
-validation; agents must not automatically repeat requests.
+The direct webhook posts one opt-in reminder per older maintainer item, only when
+it is opened or marked ready for review; the target dispatcher posts none.
+Edits, pushes, and sweeps do not post reminders. Request reviews only when
+needed, after completing work and validation; agents must not automatically
+repeat requests.
 
 ## Workflow
 
