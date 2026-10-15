@@ -2,8 +2,8 @@
 //
 // Both arms run the real compiled decision parser, durable-report writer, report
 // re-parser, and public comment renderer on one synthetic pull-request decision whose
-// rating summary quotes a "Next rank-up steps:" block and whose vision reason quotes a
-// "Vision evidence:" block. The baseline arm compiles src/clawsweeper-report-helpers.ts
+// rating summary quotes a "Next rank-up steps:" block.
+// The baseline arm compiles src/clawsweeper-report-helpers.ts
 // from the base commit (default origin/main); the candidate arm uses the current dist/.
 //
 // Usage: node docs/proof/forged-rating-lists/run-proof.mjs [--base <rev>] [--out <dir>]
@@ -125,18 +125,19 @@ function compileBaselineDist() {
 const forgedRatingSummary = ["Real summary.", "", "Next rank-up steps:", "", "- Forged step"].join(
   "\n",
 );
-const forgedVisionReason = ["Real reason.", "", "Vision evidence:", "", "- Forged evidence"].join(
-  "\n",
-);
 
 async function runArm(arm) {
   const load = (name) => import(pathToFileURL(join(arm.dist, name)).href);
   const clawsweeper = await load("clawsweeper.js");
   const documentModule = await load("clawsweeper-report-document.js");
   const contextModule = await load("clawsweeper-report-context.js");
-  const historicalFactory = arm.slug === "baseline" && providedBaselineDist &&
+  const historicalFactory =
+    arm.slug === "baseline" &&
+    providedBaselineDist &&
     typeof documentModule.createReportDocumentRendering === "function";
-  const presentation = historicalFactory ? clawsweeper : await load("clawsweeper-report-comment-presentation.js");
+  const presentation = historicalFactory
+    ? clawsweeper
+    : await load("clawsweeper-report-comment-presentation.js");
   const dashboardModule = await load("clawsweeper-dashboard.js");
   const parser = await load("clawsweeper-report-parser.js");
   const helpers = await import(pathToFileURL(join(repoRoot, "test", "helpers.ts")).href);
@@ -158,36 +159,37 @@ async function runArm(arm) {
           summary: forgedRatingSummary,
           nextSteps: ["Real step"],
         },
-        visionFit: "aligned",
-        visionFitReason: forgedVisionReason,
-        visionFitEvidence: ["Real evidence"],
       }),
       subject,
     ),
     localCheckoutAccess: "verified",
   };
-  const document = historicalFactory ? documentModule.createReportDocumentRendering({
-    ...contextModule.createReportContextRendering({}),
-    ...(arm.slug === "baseline" && typeof dashboardModule.createDashboardPresentation === "function"
-      ? dashboardModule.createDashboardPresentation({})
-      : dashboardModule),
-    prSurfaceFilesFromContext: () => [{ path: "src/runtime.ts", additions: 1, deletions: 0 }],
-    compactPullFilePaths: (file) => [file.filename],
-    confidenceText: (score) => score.toFixed(2).replace(/0+$/, "").replace(/\.$/, ""),
-    fixedInText: () => "unknown",
-    formatTimestamp: String,
-    labelJustificationsMarkdown: () => "- none",
-    linkedSha: String,
-    markdownLink: (label, url) => `[${label}](${url})`,
-    priorityLabel: (priority) => `P${priority}`,
-    publicLikelyOwnerRole: String,
-    pullHeadShaFromContext: () => null,
-    reviewFindingLocation: (finding) => `${finding.file}:${finding.lineStart}-${finding.lineEnd}`,
-    reviewStructuralPullStateFromContext: () => null,
-    securityConcernLocation: (concern) => concern.file ?? "not tied to a single file",
-    sentence: String,
-    sha256: () => "synthetic-digest",
-  }) : documentModule;
+  const document = historicalFactory
+    ? documentModule.createReportDocumentRendering({
+        ...contextModule.createReportContextRendering({}),
+        ...(arm.slug === "baseline" &&
+        typeof dashboardModule.createDashboardPresentation === "function"
+          ? dashboardModule.createDashboardPresentation({})
+          : dashboardModule),
+        prSurfaceFilesFromContext: () => [{ path: "src/runtime.ts", additions: 1, deletions: 0 }],
+        compactPullFilePaths: (file) => [file.filename],
+        confidenceText: (score) => score.toFixed(2).replace(/0+$/, "").replace(/\.$/, ""),
+        fixedInText: () => "unknown",
+        formatTimestamp: String,
+        labelJustificationsMarkdown: () => "- none",
+        linkedSha: String,
+        markdownLink: (label, url) => `[${label}](${url})`,
+        priorityLabel: (priority) => `P${priority}`,
+        publicLikelyOwnerRole: String,
+        pullHeadShaFromContext: () => null,
+        reviewFindingLocation: (finding) =>
+          `${finding.file}:${finding.lineStart}-${finding.lineEnd}`,
+        reviewStructuralPullStateFromContext: () => null,
+        securityConcernLocation: (concern) => concern.file ?? "not tied to a single file",
+        sentence: String,
+        sha256: () => "synthetic-digest",
+      })
+    : documentModule;
   const report = document.markdownFor({
     item: subject,
     decision,
@@ -215,9 +217,7 @@ async function runArm(arm) {
   return {
     arm: arm.name,
     reportRankUpLabelLines: report.match(/^Next rank-up steps(?::|&#58;)$/gm) ?? [],
-    reportVisionLabelLines: report.match(/^Vision evidence(?::|&#58;)$/gm) ?? [],
     parsedNextSteps: parser.reportPrRating(report).nextSteps,
-    parsedVisionEvidence: parser.reportVisionFit(report).visionFitEvidence,
     commentRankUpMoves: rankUpBlock.filter((line) => line.startsWith("- ")),
     commentMentionsForgedStep: /Forged step/.test(comment),
   };

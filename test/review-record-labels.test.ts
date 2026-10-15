@@ -80,10 +80,6 @@ const recordedPullRequestDecision = {
   mergeRiskLabels: [],
   maturityLabels: [],
   labelJustifications: [{ label: "P2", reason: "The review record selects P2." }],
-  telegramVisibleProof: {
-    status: "needed",
-    summary: "Show the reply in a real Telegram chat.",
-  },
 };
 
 test("PR review comment label details come from the review record", () => {
@@ -94,10 +90,6 @@ test("PR review comment label details come from the review record", () => {
   const labelDetails = detailsBody(renderReviewCommentFromReport(typed, "none"), "Label changes");
   assert.match(labelDetails, /- add `P2`: The review record selects P2\./);
   assert.match(labelDetails, /- `P2`: The review record selects P2\./);
-  assert.match(
-    labelDetails,
-    /- add `proof: telegram-e2e`: .*Show the reply in a real Telegram chat\./,
-  );
   assert.doesNotMatch(labelDetails, /`P1`|impact:message-loss/);
 });
 
@@ -165,11 +157,28 @@ function syncedPullRequestLabels(report: string): string[] {
   ).labels;
 }
 
-test("apply PR label sync reads the Telegram proof label from the review record", () => {
+test("apply PR label sync reads proof status from the review record", () => {
   const report = pullRequestReport();
   assert.throws(() => syncedPullRequestLabels(report), ReviewRecordFormatError);
-  const typed = syncedPullRequestLabels(withReviewRecord(report, recordedPullRequestDecision));
-  assert.ok(typed.includes("proof: telegram-e2e"));
+  const recordedProof = {
+    evidenceKind: "terminal",
+    needsContributorAction: false,
+    summary: "The saved review assessed the real flow.",
+  };
+  const sufficient = syncedPullRequestLabels(
+    withReviewRecord(report, {
+      ...recordedPullRequestDecision,
+      realBehaviorProof: { ...recordedProof, status: "sufficient" },
+    }),
+  );
+  assert.ok(sufficient.includes(PROOF_SUFFICIENT_LABEL));
+  const missing = syncedPullRequestLabels(
+    withReviewRecord(report, {
+      ...recordedPullRequestDecision,
+      realBehaviorProof: { ...recordedProof, status: "missing" },
+    }),
+  );
+  assert.ok(!missing.includes(PROOF_SUFFICIENT_LABEL));
 });
 
 const readyDecision = {

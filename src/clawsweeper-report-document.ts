@@ -170,22 +170,6 @@ function renderMaintainerDecisionReportSection(decision: Decision): string {
   ].join("\n");
 }
 
-function renderVisionFitReportSection(decision: Decision): string {
-  return [
-    `Status: ${decision.visionFit}`,
-    "",
-    `Implementation complexity: ${decision.implementationComplexity}`,
-    "",
-    `Auto implementation candidate: ${decision.autoImplementationCandidate}`,
-    "",
-    `Reason: ${sentence(decision.visionFitReason)}`,
-    "",
-    "Vision evidence:",
-    "",
-    markdownList(decision.visionFitEvidence),
-  ].join("\n");
-}
-
 function renderReviewFindingsReportSection(decision: Decision): string {
   const lines = [
     `Overall correctness: ${decision.overallCorrectness}`,
@@ -350,14 +334,6 @@ export function renderPrRatingAssessmentReportSection(
 
 function renderPrRatingReportSection(decision: Decision): string {
   return renderPrRatingAssessmentReportSection(decision.prRating, decision.realBehaviorProof);
-}
-
-function renderTelegramVisibleProofReportSection(decision: Decision): string {
-  return [
-    `Status: ${decision.telegramVisibleProof.status}`,
-    "",
-    `Summary: ${sentence(decision.telegramVisibleProof.summary)}`,
-  ].join("\n");
 }
 
 function renderFeatureShowcaseReportSection(decision: Decision): string {
@@ -551,7 +527,6 @@ export function markdownFor(options: {
   const reproductionAssessment =
     options.decision.reproductionAssessment.trim() || "_Not provided._";
   const solutionAssessment = options.decision.solutionAssessment.trim() || "_Not provided._";
-  const visionFit = renderVisionFitReportSection(options.decision);
   const rootCauseCluster = renderRootCauseClusterReportSection(options.decision);
   // Product, provenance, and testing reviews judge pull requests only.
   const pullRequestReviewSections =
@@ -570,7 +545,6 @@ export function markdownFor(options: {
   const securityReview = renderSecurityReviewReportSection(options.decision);
   const realBehaviorProof = renderRealBehaviorProofReportSection(options.decision);
   const prRating = renderPrRatingReportSection(options.decision);
-  const telegramVisibleProof = renderTelegramVisibleProofReportSection(options.decision);
   const featureShowcase = renderFeatureShowcaseReportSection(options.decision);
   const agentsPolicyStatus = renderAgentsPolicyStatusReportSection(options.decision);
   const workCandidateSection = renderWorkCandidateReportSection(options.decision);
@@ -717,8 +691,6 @@ reproduction_confidence: ${options.decision.reproductionConfidence}
 requires_new_feature: ${options.decision.requiresNewFeature}
 requires_new_config_option: ${options.decision.requiresNewConfigOption}
 requires_product_decision: ${options.decision.requiresProductDecision}
-vision_fit: ${options.decision.visionFit}
-vision_fit_evidence: ${jsonFrontMatterValue(options.decision.visionFitEvidence)}
 implementation_complexity: ${options.decision.implementationComplexity}
 auto_implementation_candidate: ${options.decision.autoImplementationCandidate}
 real_behavior_proof_status: ${options.decision.realBehaviorProof.status}
@@ -727,7 +699,6 @@ real_behavior_proof_needs_contributor_action: ${options.decision.realBehaviorPro
 ${options.decision.realBehaviorProof.dataModelCompatibility ? `real_behavior_proof_data_model_compatibility: ${options.decision.realBehaviorProof.dataModelCompatibility}\n` : ""}pr_rating_overall: ${options.decision.prRating.overallTier}
 pr_rating_proof: ${options.decision.prRating.proofTier}
 pr_rating_patch: ${options.decision.prRating.patchTier}
-telegram_visible_proof_status: ${options.decision.telegramVisibleProof.status}
 feature_showcase_status: ${options.decision.featureShowcase.status}
 agents_policy_status: ${options.decision.agentsPolicyStatus.status}
 product_kind: ${options.decision.productReview.kind}
@@ -819,10 +790,6 @@ ${reproductionAssessment}
 
 ${solutionAssessment}
 
-## ${REVIEW_SECTIONS.visionFit}
-
-${visionFit}
-
 ## ${REVIEW_SECTIONS.rootCauseCluster}
 
 ${rootCauseCluster}
@@ -842,10 +809,6 @@ ${realBehaviorProof}
 ## ${REVIEW_SECTIONS.prRating}
 
 ${prRating}
-
-## ${REVIEW_SECTIONS.telegramVisibleProof}
-
-${telegramVisibleProof}
 
 ## ${REVIEW_SECTIONS.featureShowcase}
 

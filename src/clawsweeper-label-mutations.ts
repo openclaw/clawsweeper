@@ -19,9 +19,6 @@ import {
   PROOF_SUFFICIENT_LABEL,
   PROOF_SUFFICIENT_LABEL_COLOR,
   PROOF_SUFFICIENT_LABEL_DESCRIPTION,
-  TELEGRAM_VISIBLE_PROOF_LABEL,
-  TELEGRAM_VISIBLE_PROOF_LABEL_COLOR,
-  TELEGRAM_VISIBLE_PROOF_LABEL_DESCRIPTION,
   type MergeRiskLabelName,
 } from "./clawsweeper-policy.js";
 import { compareCodeUnits } from "./stable-json.js";
@@ -473,16 +470,6 @@ export function createLabelMutationOperations({ ghJson, ghObservedMutationComman
     const definition = prStatusLabelForKind(kind);
     ensureLabelDefinition(definition, onMutation);
   }
-  function ensureTelegramVisibleProofLabel(onMutation?: () => void): void {
-    ensureLabelDefinition(
-      {
-        name: TELEGRAM_VISIBLE_PROOF_LABEL,
-        color: TELEGRAM_VISIBLE_PROOF_LABEL_COLOR,
-        description: TELEGRAM_VISIBLE_PROOF_LABEL_DESCRIPTION,
-      },
-      onMutation,
-    );
-  }
   function ensureIdeaArchiveLabel(onMutation?: () => void): void {
     ensureLabelDefinition(
       {
@@ -571,7 +558,6 @@ export function createLabelMutationOperations({ ghJson, ghObservedMutationComman
     ensurePrRatingLabel,
     ensureFeatureShowcaseLabel,
     ensurePrStatusLabel,
-    ensureTelegramVisibleProofLabel,
     ensureIdeaArchiveLabel,
     tryAddOptionalLabel,
     ensureRealBehaviorProofSufficientLabel,

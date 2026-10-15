@@ -146,10 +146,8 @@ export type PrStatusLabelKind =
   | "waiting_on_author"
   | "ready_for_maintainer_look";
 export type FeatureShowcaseStatus = "showcase" | "none";
-export type TelegramVisibleProofStatus = "needed" | "not_needed";
-export type VisionFitStatus = "aligned" | "rejected" | "unclear" | "not_applicable";
 export type ImplementationComplexity = "small" | "medium" | "large" | "unclear" | "not_applicable";
-export type AutoImplementationCandidate = "none" | "strict_bug" | "vision_fit";
+export type AutoImplementationCandidate = "none" | "strict_bug";
 export type RootCauseRelationship =
   | "canonical"
   | "duplicate"
@@ -445,11 +443,6 @@ export interface TestingReview {
   missingE2e: string;
 }
 
-export interface TelegramVisibleProof {
-  status: TelegramVisibleProofStatus;
-  summary: string;
-}
-
 export interface FeatureShowcase {
   status: FeatureShowcaseStatus;
   reason: string;
@@ -605,9 +598,6 @@ export interface Decision {
   requiresProductDecision: boolean;
   reproductionAssessment: string;
   solutionAssessment: string;
-  visionFit: VisionFitStatus;
-  visionFitReason: string;
-  visionFitEvidence: string[];
   implementationComplexity: ImplementationComplexity;
   autoImplementationCandidate: AutoImplementationCandidate;
   rootCauseCluster: RootCauseClusterAssessment;
@@ -619,7 +609,6 @@ export interface Decision {
   securityReview: SecurityReview;
   realBehaviorProof: RealBehaviorProof;
   prRating: PrRating;
-  telegramVisibleProof: TelegramVisibleProof;
   featureShowcase: FeatureShowcase;
   overallCorrectness: OverallCorrectness;
   overallConfidenceScore: number;

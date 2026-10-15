@@ -12,8 +12,6 @@ import {
   PROOF_MEDIA_LABELS,
   PROOF_SUFFICIENT_LABEL,
   PROOF_SUFFICIENT_LABEL_DESCRIPTION,
-  TELEGRAM_VISIBLE_PROOF_LABEL,
-  TELEGRAM_VISIBLE_PROOF_LABEL_DESCRIPTION,
 } from "./clawsweeper-policy.js";
 import { nextPrRatingLabels, ratingLabelForTier, themedRatingName } from "./clawsweeper-rating.js";
 import type {
@@ -43,7 +41,6 @@ import {
   nextPriorityLabels,
   nextRealBehaviorProofMediaLabels,
   nextRealBehaviorProofSufficientLabels,
-  nextTelegramVisibleProofLabels,
 } from "./clawsweeper-label-selection.js";
 import { prStatusLabelKindFromReportLabels, sentence } from "./clawsweeper-review-presentation.js";
 
@@ -58,7 +55,6 @@ export function isClawSweeperOwnedLabel(label: string): boolean {
     label === FEATURE_SHOWCASE_LABEL ||
     label === PROOF_SUFFICIENT_LABEL ||
     PROOF_MEDIA_LABEL_NAMES.has(label) ||
-    label === TELEGRAM_VISIBLE_PROOF_LABEL ||
     isIssueAdvisoryLabel(label)
   );
 }
@@ -130,7 +126,6 @@ function desiredClawSweeperLabelsFromPublicReport(
       labels,
       options.prStatusKind ?? prStatusLabelKindFromReportLabels(markdown),
     );
-    labels = nextTelegramVisibleProofLabels(labels, decision.telegramVisibleProof);
   } else {
     const issueOptions: { hasOpenLinkedPullRequest?: boolean } = {};
     if (options.hasOpenLinkedPullRequest !== undefined) {
@@ -228,12 +223,6 @@ function labelTransitionReason(
     return action === "add" && mediaLabel
       ? mediaLabel.description
       : `Current real behavior proof evidence kind is ${realBehaviorProof.evidenceKind}.`;
-  }
-  if (label === TELEGRAM_VISIBLE_PROOF_LABEL) {
-    const proof = decision.telegramVisibleProof;
-    return action === "add"
-      ? `${TELEGRAM_VISIBLE_PROOF_LABEL_DESCRIPTION} ${sentence(proof.summary)}`
-      : `Current Telegram visible-proof status is ${proof.status}.`;
   }
   if (isIssueAdvisoryLabel(label)) {
     return isPullRequest
@@ -340,13 +329,6 @@ export function labelJustificationsFromPublicReport(
       (label) => label.evidenceKind === realBehaviorProof.evidenceKind,
     );
     if (proofMediaLabel) add(proofMediaLabel.name, proofMediaLabel.description);
-    const telegramProof = decision.telegramVisibleProof;
-    if (telegramProof.status === "needed") {
-      add(
-        TELEGRAM_VISIBLE_PROOF_LABEL,
-        `${TELEGRAM_VISIBLE_PROOF_LABEL_DESCRIPTION} ${sentence(telegramProof.summary)}`,
-      );
-    }
   }
   return [...byLabel.values()];
 }

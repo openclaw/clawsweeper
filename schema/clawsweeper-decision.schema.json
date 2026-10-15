@@ -31,9 +31,6 @@
     "requiresProductDecision",
     "reproductionAssessment",
     "solutionAssessment",
-    "visionFit",
-    "visionFitReason",
-    "visionFitEvidence",
     "implementationComplexity",
     "autoImplementationCandidate",
     "rootCauseCluster",
@@ -45,7 +42,6 @@
     "securityReview",
     "realBehaviorProof",
     "prRating",
-    "telegramVisibleProof",
     "featureShowcase",
     "overallCorrectness",
     "overallConfidenceScore",
@@ -546,20 +542,6 @@
       "type": "string",
       "description": "Public answer to: Is this the best way to solve the issue? With rationale or a safer alternative."
     },
-    "visionFit": {
-      "type": "string",
-      "enum": ["aligned", "rejected", "unclear", "not_applicable"],
-      "description": "Issue fit with VISION.md; rejected when it places the work elsewhere or later."
-    },
-    "visionFitReason": {
-      "type": "string"
-    },
-    "visionFitEvidence": {
-      "type": "array",
-      "items": {
-        "type": "string"
-      }
-    },
     "implementationComplexity": {
       "type": "string",
       "enum": ["small", "medium", "large", "unclear", "not_applicable"],
@@ -567,7 +549,7 @@
     },
     "autoImplementationCandidate": {
       "type": "string",
-      "enum": ["none", "strict_bug", "vision_fit"]
+      "enum": ["none", "strict_bug"]
     },
     "rootCauseCluster": {
       "type": "object",
@@ -945,21 +927,6 @@
             "type": "string"
           },
           "description": "Zero to three rank-up moves."
-        }
-      }
-    },
-    "telegramVisibleProof": {
-      "type": "object",
-      "additionalProperties": false,
-      "description": "Whether the PR changes Telegram-visible behavior to show with telegram-e2e-userbot.",
-      "required": ["status", "summary"],
-      "properties": {
-        "status": {
-          "type": "string",
-          "enum": ["needed", "not_needed"]
-        },
-        "summary": {
-          "type": "string"
         }
       }
     },
