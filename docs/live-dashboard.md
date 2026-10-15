@@ -216,8 +216,8 @@ Each build reads four sources:
 Open pages check for a newer build every five minutes and when the tab becomes
 visible, and reload when one is published. The header shows both the build time
 and the review-corpus time. A page warns when its build is more than an hour old
-(the refresh has stopped) or when the corpus is more than a day old (it updates
-only with `refresh_corpus`). Unknown paths return the site's 404 page with
+(the 15-minute rebuild has stopped) or when the corpus is more than 14 hours old
+(a scheduled 00:07 or 12:07 UTC refresh was missed). Unknown paths return the site's 404 page with
 status 404. Pull requests that touch `dashboard-site/` build the site from
 `dashboard-site/fixtures/dashboard.json`, without secrets or publishing.
 
