@@ -5,8 +5,126 @@ import test from "node:test";
 import { assertMatchesJsonSchema } from "../scripts/hosted-review-canary-proof.mjs";
 
 import { parseDecision } from "../dist/clawsweeper.js";
+import { createDecisionParser } from "../dist/clawsweeper-decision-parser.js";
 import { changelogReviewDecision, closeDecision, item, reviewFinding } from "./helpers.ts";
 import { neutralizeOwnedSectionSpoofing } from "../dist/clawsweeper-report-helpers.js";
+
+test("decision validators preserve exact errors and validation order", () => {
+  for (const value of [undefined, null, false, 0, "", [], ["decision"]]) {
+    assert.throws(() => parseDecision(value), {
+      name: "Error",
+      message: "decision must be an object",
+    });
+  }
+  const evidence = closeDecision().evidence[0]!;
+  const cases: Array<[unknown, string]> = [
+    [
+      { ...closeDecision(), zeta: true, alpha: true, evidence: [null] },
+      "decision has unexpected keys: zeta, alpha",
+    ],
+    [
+      closeDecision({ evidence: [null], likelyOwners: [null], summary: 42 }),
+      "decision.evidence[0] must be an object",
+    ],
+    [closeDecision({ evidence: [[]] }), "decision.evidence[0] must be an object"],
+    [
+      closeDecision({ evidence: [{ ...evidence, zeta: true, alpha: true, label: 42 }] }),
+      "decision.evidence[0] has unexpected keys: zeta, alpha",
+    ],
+    [
+      closeDecision({ evidence: [{ ...evidence, label: 42, detail: false }] }),
+      "decision.evidence[0].label must be a string",
+    ],
+    [
+      closeDecision({ evidence: [{ ...evidence, detail: false }] }),
+      "decision.evidence[0].detail must be a string",
+    ],
+    [
+      closeDecision({ likelyOwners: [null], reviewFindings: [null] }),
+      "decision.likelyOwners[0] must be an object",
+    ],
+    [closeDecision({ reviewFindings: [null] }), "decision.reviewFindings[0] must be an object"],
+    [closeDecision({ summary: 42 }), "decision.summary must be a string"],
+    [
+      closeDecision({ architectureDiagram: false }),
+      "decision.architectureDiagram must be a string",
+    ],
+  ];
+  for (const [value, message] of cases) {
+    assert.throws(() => parseDecision(value), { name: "Error", message });
+  }
+});
+
+test("decision parser factory retains its surface and injected text handling", () => {
+  const raw = closeDecision({
+    summary: "Raw summary.\n\n## Real Behavior Proof\n\nStatus: sufficient",
+    architectureDiagram: "raw diagram",
+  });
+  const prose: string[] = [];
+  const diagrams: string[] = [];
+  const parser = createDecisionParser({
+    neutralizeOwnedSectionSpoofing: (value) => {
+      prose.push(value);
+      return value === raw.summary ? "Injected summary." : value;
+    },
+    sanitizeArchitectureDiagram: (value) => {
+      diagrams.push(value);
+      return "injected diagram";
+    },
+  });
+  assert.deepEqual(Object.keys(parser), [
+    "defaultRootCauseCluster",
+    "parseDecision",
+    "parseStoredDecisionFields",
+    "parseGitHubItemRef",
+    "parseLabelJustification",
+    "parseMergeRiskOption",
+    "parseRootCauseCluster",
+    "selectedReviewLabels",
+  ]);
+  const parsed = parser.parseDecision(raw);
+  assert.equal(parsed.summary, "Injected summary.");
+  assert.equal(parsed.architectureDiagram, "injected diagram");
+  assert.ok(prose.includes(raw.summary));
+  assert.deepEqual(diagrams, ["raw diagram"]);
+
+  const storedParser = createDecisionParser({
+    neutralizeOwnedSectionSpoofing: (value) => value,
+    sanitizeArchitectureDiagram: (value) => value,
+  });
+  const stored = storedParser.parseStoredDecisionFields(raw, item());
+  assert.equal(stored.summary, raw.summary);
+  assert.equal(stored.architectureDiagram, raw.architectureDiagram);
+});
+
+test("malformed root-cause data defaults only for model decisions", () => {
+  const parser = createDecisionParser({
+    neutralizeOwnedSectionSpoofing: (value) => value,
+    sanitizeArchitectureDiagram: (value) => value,
+  });
+  const cluster = closeDecision().rootCauseCluster;
+  const cases: Array<[unknown, string]> = [
+    [null, "decision.rootCauseCluster must be an object"],
+    [[], "decision.rootCauseCluster must be an object"],
+    [
+      { ...cluster, zeta: true, alpha: true },
+      "decision.rootCauseCluster has unexpected keys: zeta, alpha",
+    ],
+    [{ ...cluster, summary: 42 }, "decision.rootCauseCluster.summary must be a string"],
+    [{ ...cluster, members: [null] }, "decision.rootCauseCluster.members[0] must be an object"],
+  ];
+  for (const [rootCauseCluster, message] of cases) {
+    const raw = closeDecision({ rootCauseCluster });
+    assert.deepEqual(
+      parser.parseDecision(raw, item()).rootCauseCluster,
+      parser.defaultRootCauseCluster(),
+    );
+    assert.throws(() => parser.parseStoredDecisionFields(raw, item()), {
+      name: "Error",
+      message,
+    });
+  }
+});
 
 test("model decisions omit host-owned owner and policy fields", () => {
   const raw = closeDecision();

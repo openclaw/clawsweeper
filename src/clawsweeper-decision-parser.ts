@@ -93,6 +93,7 @@ import { normalizePrRating } from "./clawsweeper-rating.js";
 import { parseNextStep } from "./clawsweeper-next-step.js";
 import { parseMaintainerDecision } from "./decision-packets.js";
 import { normalizeRepo } from "./repository-profiles.js";
+import { rejectUnexpectedKeys, requireRecord, requireString } from "./value-coerce.js";
 import {
   agentsPolicyStatusLine,
   neutralizeOwnedSectionSpoofing,
@@ -108,26 +109,6 @@ export function createDecisionParser({
   neutralizeOwnedSectionSpoofing,
   sanitizeArchitectureDiagram,
 }: DecisionParserDependencies) {
-  function requireRecord(value: unknown, path: string): Record<string, unknown> {
-    if (!value || typeof value !== "object" || Array.isArray(value))
-      throw new Error(`${path} must be an object`);
-    return value as Record<string, unknown>;
-  }
-
-  function rejectUnexpectedKeys(
-    record: Record<string, unknown>,
-    allowedKeys: Set<string>,
-    path: string,
-  ): void {
-    const unexpected = Object.keys(record).filter((key) => !allowedKeys.has(key));
-    if (unexpected.length) throw new Error(`${path} has unexpected keys: ${unexpected.join(", ")}`);
-  }
-
-  function requireString(value: unknown, path: string): string {
-    if (typeof value !== "string") throw new Error(`${path} must be a string`);
-    return value;
-  }
-
   function requireNullableString(value: unknown, path: string): string | null {
     if (value === null || typeof value === "string") return value;
     throw new Error(`${path} must be a string or null`);
