@@ -84,13 +84,14 @@ jobs:
           working-directory: dashboard-site
 
       # State between runs: Actions history (per-hour buckets), repository visibility and the
-      # last corpus aggregate.
+      # last corpus aggregate. Cache keys are immutable, so the key includes the attempt: a
+      # rerun must save its own state, not lose it to the failed attempt's key.
       - name: Restore dashboard state
         id: state
         uses: actions/cache/restore@v6
         with:
           path: .dashboard-state
-          key: dashboard-state-${{ github.run_id }}
+          key: dashboard-state-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: dashboard-state-
 
       # Only on request: a full record export loads the production queue Durable Object.
@@ -137,7 +138,7 @@ jobs:
         uses: actions/cache/save@v6
         with:
           path: .dashboard-state
-          key: dashboard-state-${{ github.run_id }}
+          key: dashboard-state-${{ github.run_id }}-${{ github.run_attempt }}
 
       - name: Build site
         if: ${{ steps.corpus.outputs.ready == 'true' }}
