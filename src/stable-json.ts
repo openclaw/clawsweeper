@@ -31,7 +31,13 @@ export function stableJson(value: unknown): string {
 }
 
 export function sortStable(value: unknown): unknown {
-  return sortStableWith(value, compareCodeUnits);
+  if (Array.isArray(value)) return value.map((item) => sortStable(item));
+  if (!value || typeof value !== "object") return value;
+  return Object.fromEntries(
+    Object.entries(value)
+      .sort(([left], [right]) => compareCodeUnits(left, right))
+      .map(([key, item]) => [key, sortStable(item)]),
+  );
 }
 
 export function stableJsonCodeUnit(value: unknown): string {
@@ -41,17 +47,4 @@ export function stableJsonCodeUnit(value: unknown): string {
 /** Total order over UTF-16 code units; never returns 0 for distinct strings. */
 export function compareCodeUnits(left: string, right: string): number {
   return left < right ? -1 : left > right ? 1 : 0;
-}
-
-function sortStableWith(
-  value: unknown,
-  compareKeys: (left: string, right: string) => number,
-): unknown {
-  if (Array.isArray(value)) return value.map((item) => sortStableWith(item, compareKeys));
-  if (!value || typeof value !== "object") return value;
-  return Object.fromEntries(
-    Object.entries(value)
-      .sort(([left], [right]) => compareKeys(left, right))
-      .map(([key, item]) => [key, sortStableWith(item, compareKeys)]),
-  );
 }
