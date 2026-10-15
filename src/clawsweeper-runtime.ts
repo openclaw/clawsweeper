@@ -387,7 +387,6 @@ const {
   exactLocalReviewNoCandidateError,
   fetchItem,
   fetchOpenItemNumbers,
-  fetchPlannedPrActivityRevisions,
   planCandidates,
   selectCandidates,
 } = reviewPlanning;
@@ -592,7 +591,6 @@ const planCommand = createPlanCommand({
   defaultBatchSize: DEFAULT_PLAN_BATCH_SIZE,
   defaultItemsDir,
   defaultShardCount: DEFAULT_PLAN_SHARD_COUNT,
-  fetchPlannedPrActivityRevisions,
   planCandidates,
   repoFromArgs,
   reviewPolicyHash,

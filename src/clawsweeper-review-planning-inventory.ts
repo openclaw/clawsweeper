@@ -17,12 +17,6 @@ import {
 } from "./scheduler-policy.js";
 import type { ReviewPlanningDependencies } from "./clawsweeper-review-planning-dependencies.js";
 import {
-  prCommentActivityRevision,
-  prCommentActivityRevisionQuery,
-  PR_ACTIVITY_REVISION_CONNECTION_LIMIT,
-  PR_ACTIVITY_REVISION_QUERY_PAGE_SIZE,
-} from "./pr-comment-activity-revision.js";
-import {
   generationReadKey,
   type LiveReadGeneration,
   type LiveReadOptions,
@@ -32,20 +26,7 @@ import {
   githubReadModelRequestSync,
   usableGithubReadModelResponse,
 } from "./github-webhook-read-model-client.js";
-import { asRecord as jsonRecord } from "./value-coerce.js";
 import { indexedExistingReview } from "./clawsweeper-record-metadata.js";
-
-export {
-  PR_ACTIVITY_REVISION_CONNECTION_LIMIT,
-  PR_ACTIVITY_REVISION_QUERY_PAGE_SIZE,
-} from "./pr-comment-activity-revision.js";
-
-export interface PlannedPrActivityRevisions {
-  revisions: Record<string, string | null>;
-  requestCount: number;
-  pageSize: number;
-  connectionLimit: number;
-}
 
 export function isFresh(
   review: { reviewedAt: string | undefined; reviewStatus: string | undefined } | null,
@@ -290,74 +271,6 @@ export function createReviewPlanningInventory(dependencies: ReviewPlanningDepend
     };
   }
 
-  function fetchPlannedPrActivityRevisions(
-    items: readonly Pick<Item, "kind" | "number">[],
-  ): PlannedPrActivityRevisions {
-    const numbers = [
-      ...new Set(
-        items
-          .filter((item) => item.kind === "pull_request")
-          .map((item) => item.number)
-          .filter((number) => Number.isSafeInteger(number) && number > 0),
-      ),
-    ].sort((left, right) => left - right);
-    const revisions: Record<string, string | null> = Object.fromEntries(
-      numbers.map((number) => [String(number), null]),
-    );
-    if (numbers.length === 0) {
-      return {
-        revisions,
-        requestCount: 0,
-        pageSize: PR_ACTIVITY_REVISION_QUERY_PAGE_SIZE,
-        connectionLimit: PR_ACTIVITY_REVISION_CONNECTION_LIMIT,
-      };
-    }
-    const [owner, name] = targetRepo().split("/");
-    if (!validGraphQlName(owner) || !validGraphQlName(name)) {
-      console.error(
-        `[plan] unable to validate PR comment activity revisions for invalid repo ${targetRepo()}; hydration cache validation will fail closed`,
-      );
-      return {
-        revisions,
-        requestCount: 0,
-        pageSize: PR_ACTIVITY_REVISION_QUERY_PAGE_SIZE,
-        connectionLimit: PR_ACTIVITY_REVISION_CONNECTION_LIMIT,
-      };
-    }
-
-    let requestCount = 0;
-    for (let offset = 0; offset < numbers.length; offset += PR_ACTIVITY_REVISION_QUERY_PAGE_SIZE) {
-      const page = numbers.slice(offset, offset + PR_ACTIVITY_REVISION_QUERY_PAGE_SIZE);
-      requestCount += 1;
-      try {
-        const response = ghJson<unknown>([
-          "api",
-          "graphql",
-          "-f",
-          `query=${prCommentActivityRevisionQuery(owner, name, page)}`,
-        ]);
-        const root = jsonRecord(response);
-        if (Array.isArray(root.errors) && root.errors.length > 0) {
-          throw new Error("GitHub GraphQL returned errors");
-        }
-        const repository = jsonRecord(jsonRecord(root.data).repository);
-        for (const number of page) {
-          revisions[String(number)] = prCommentActivityRevision(repository[`pr_${number}`]);
-        }
-      } catch (error) {
-        console.error(
-          `[plan] unable to validate PR comment activity revisions for ${targetRepo()} items ${page[0]}-${page.at(-1)}; hydration cache validation will fail closed: ${error instanceof Error ? error.message : String(error)}`,
-        );
-      }
-    }
-    return {
-      revisions,
-      requestCount,
-      pageSize: PR_ACTIVITY_REVISION_QUERY_PAGE_SIZE,
-      connectionLimit: PR_ACTIVITY_REVISION_CONNECTION_LIMIT,
-    };
-  }
-
   return {
     isFresh,
     isCurrentForCadence,
@@ -369,10 +282,5 @@ export function createReviewPlanningInventory(dependencies: ReviewPlanningDepend
     fetchOpenItemNumbers,
     fetchItem,
     fetchOpenItemCounts,
-    fetchPlannedPrActivityRevisions,
   };
-}
-
-function validGraphQlName(value: string | undefined): value is string {
-  return typeof value === "string" && /^[A-Za-z0-9_.-]+$/.test(value);
 }

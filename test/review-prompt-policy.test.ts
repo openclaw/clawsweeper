@@ -824,16 +824,14 @@ test("media proof URL discovery includes screenshots and videos", () => {
   ]);
 });
 
-test("media proof URL discovery excludes persistence-only hydration snapshots", () => {
+test("media proof URL discovery excludes raw current-run PR patches", () => {
   const context = {
     issue: {},
     comments: [],
     timeline: [],
-    prHydrationSnapshot: {
-      completeReviewComments: [
-        { body: "https://github.com/user/repo/releases/download/proof/private-cache-only.png" },
-      ],
-    },
+    pullFilesRaw: [
+      { patch: "https://github.com/user/repo/releases/download/proof/private-cache-only.png" },
+    ],
   };
 
   assert.deepEqual(proofMediaUrlsFromContextForTest(context), []);

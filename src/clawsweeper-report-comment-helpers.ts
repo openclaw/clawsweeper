@@ -813,14 +813,12 @@ function mergeRiskFallbackOptionsLines(bestSolutionLine: string, nextStepLine: s
       body: instruction,
       category: "fix_before_merge",
       recommended: false,
-      automergeInstruction: "",
     },
     {
       title: "Pause or close",
       body: "Do not merge this PR until maintainers decide whether the risk is worth taking.",
       category: "pause_or_close",
       recommended: false,
-      automergeInstruction: "",
     },
   ]);
 }

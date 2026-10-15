@@ -3,12 +3,6 @@ import type { ContextHydration, Item, ItemContext } from "./clawsweeper-types.js
 import { completeActivityContextSymbol } from "./clawsweeper-types.js";
 import { stableJson } from "./stable-json.js";
 import { compactPrimaryBody } from "./clawsweeper-primary-body.js";
-import { fetchPrCommentActivityRevision } from "./pr-comment-activity-revision.js";
-import {
-  hydratePrLists,
-  type PrHydrationSnapshot,
-  type PrHydrationResult,
-} from "./pr-hydration-snapshot.js";
 import {
   generationReadKey,
   type LiveReadGeneration,
@@ -69,9 +63,6 @@ export function createItemContext(relatedContext: ItemContextRelations) {
       fullTimelineForRelations?: boolean;
       reviewCacheDigest?: boolean;
       reviewCacheGitDir?: string;
-      prHydrationSnapshot?: PrHydrationSnapshot | null;
-      prCommentActivityRevision?: string | null;
-      requireFullyValidatedPrHydrationSnapshot?: boolean;
       liveReadGeneration?: LiveReadGeneration;
       bypassGenerationCache?: boolean;
     } = {},
@@ -235,73 +226,24 @@ export function createItemContext(relatedContext: ItemContextRelations) {
         options.pullRequestPayload ??
         readJson<unknown>(["api", `repos/${targetRepo()}/pulls/${item.number}`]);
       const pullRecord = asRecord(pullRequest);
-      const pullUpdatedAt = nonBlankStringOrUndefined(pullRecord.updated_at);
-      const pullHeadSha = nonBlankStringOrUndefined(asRecord(pullRecord.head).sha);
-      const pullChangedFileCount = nonnegativeCount(pullRecord.changed_files);
-      const pullCommitCount = nonnegativeCount(pullRecord.commits);
-      const pullReviewCommentCount = nonnegativeCount(pullRecord.review_comments);
       const reviewCommentsPath = `repos/${targetRepo()}/pulls/${item.number}/comments`;
       let allReviewComments: unknown[] | undefined;
       const readCompleteReviewComments = () =>
         (allReviewComments ??= readPaged<unknown>(reviewCommentsPath));
-      // Both hydration paths need the complete thread as well as its prompt window.
+      // The prompt window and review digest share one complete thread read.
       const readReviewCommentsWindow = () =>
         ghPagedContextWindow<unknown>(reviewCommentsPath, pullRecord.review_comments, 40, {
           page: (_path, page) => readCompleteReviewComments().slice((page - 1) * 100, page * 100),
           paged: readCompleteReviewComments,
         });
-      const hydration =
-        pullUpdatedAt &&
-        pullHeadSha &&
-        pullChangedFileCount !== null &&
-        pullCommitCount !== null &&
-        pullReviewCommentCount !== null
-          ? hydratePrLists({
-              repo: targetRepo(),
-              number: item.number,
-              pullUpdatedAt,
-              headSha: pullHeadSha,
-              changedFileCount: pullChangedFileCount,
-              commitCount: pullCommitCount,
-              reviewCommentCount: pullReviewCommentCount,
-              commentActivityRevision: options.prCommentActivityRevision ?? null,
-              prior: options.prHydrationSnapshot ?? null,
-              ...(options.requireFullyValidatedPrHydrationSnapshot
-                ? { requireFullyValidatedSnapshot: true }
-                : {}),
-              revalidateCommentActivityRevision: () =>
-                fetchPrCommentActivityRevision({
-                  repo: targetRepo(),
-                  number: item.number,
-                  ghJson: <T>(args: string[]) => readJson<T>(args, { bypassGenerationCache: true }),
-                }),
-              fetchFiles: () =>
-                readContextWindow<unknown>(
-                  `repos/${targetRepo()}/pulls/${item.number}/files`,
-                  pullRecord.changed_files,
-                  80,
-                ),
-              fetchCommits: () =>
-                readContextWindow<unknown>(
-                  `repos/${targetRepo()}/pulls/${item.number}/commits`,
-                  pullRecord.commits,
-                  80,
-                ),
-              fetchReviewComments: readReviewCommentsWindow,
-              fetchCompleteReviewComments: readCompleteReviewComments,
-              fetchReviewCommentsSince: (since) =>
-                readPaged<unknown>(
-                  `repos/${targetRepo()}/pulls/${item.number}/comments?since=${encodeURIComponent(since)}`,
-                ),
-            })
-          : legacyPrHydration({
-              pullRecord,
-              itemNumber: item.number,
-              targetRepo: targetRepo(),
-              ghPagedContextWindow: readContextWindow,
-              readReviewCommentsWindow,
-              readCompleteReviewComments,
-            });
+      const hydration = hydratePullRequest({
+        pullRecord,
+        itemNumber: item.number,
+        targetRepo: targetRepo(),
+        ghPagedContextWindow: readContextWindow,
+        readReviewCommentsWindow,
+        readCompleteReviewComments,
+      });
       const pullFilesWindow = hydration.files;
       const pullFiles = pullFilesWindow.items;
       const pullCommitsWindow = hydration.commits;
@@ -323,7 +265,10 @@ export function createItemContext(relatedContext: ItemContextRelations) {
           : filterReviewContextComments(fullPullReviewComments, item.number);
       completePullReviewCommentsHydrated =
         fullPullReviewComments.length >= pullReviewCommentsWindow.total;
-      if (hydration.snapshot) context.prHydrationSnapshot = hydration.snapshot;
+      // Preflight needs raw patches, but they must never enter persisted reports or prompts.
+      if (Buffer.byteLength(JSON.stringify(pullFiles), "utf8") <= 1024 * 1024) {
+        context.pullFilesRaw = pullFiles;
+      }
       context.pullRequest = {
         ...asRecord(compactPullRequest(pullRequest)),
         ...compactPrimaryBody(pullRecord.body),
@@ -475,12 +420,7 @@ export function createItemContext(relatedContext: ItemContextRelations) {
   return { collectItemContext };
 }
 
-function nonnegativeCount(value: unknown): number | null {
-  const count = typeof value === "number" ? value : Number(value);
-  return Number.isSafeInteger(count) && count >= 0 ? count : null;
-}
-
-function legacyPrHydration(options: {
+function hydratePullRequest(options: {
   pullRecord: Record<string, unknown>;
   itemNumber: number;
   targetRepo: string;
@@ -491,7 +431,7 @@ function legacyPrHydration(options: {
     totalCount: unknown,
     promptLimit: number,
   ) => ContextHydration<T>;
-}): PrHydrationResult {
+}) {
   const files = options.ghPagedContextWindow<unknown>(
     `repos/${options.targetRepo}/pulls/${options.itemNumber}/files`,
     options.pullRecord.changed_files,
@@ -511,11 +451,5 @@ function legacyPrHydration(options: {
     commits,
     reviewComments,
     completeReviewComments,
-    snapshot: null,
-    commitsReused: false,
-    reviewCommentsReused: false,
-    reviewCommentsIncremental: false,
-    reviewCommentsFullFallback: false,
-    filesReused: false,
   };
 }

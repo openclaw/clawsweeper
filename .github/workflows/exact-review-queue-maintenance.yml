@@ -88,6 +88,8 @@ jobs:
             echo
             echo "Content estimates use sampled column lengths; indexes and SQLite overhead are excluded."
             echo
+            jq -r 'if .hydrationCacheCleanup then .hydrationCacheCleanup | "Hydration cache cleanup: \(.retired) report fields and \(.retiredBytes) logical bytes removed (committed counters, not remaining size); completedAt=\(.completedAt), unresolved encounters=\(.unresolved), blockedAt=\(.blockedAt)." else "Hydration cache cleanup: not initialized." end' stats.json
+            echo
             echo "| Table | Rows | Estimated avg row bytes | Estimated content bytes |"
             echo "|---|---:|---:|---:|"
             jq -r '.storage.tables[] | "| \(.table) | \(.rows) | \(.averageRowBytes) | \(.estimatedBytes) |"' stats.json

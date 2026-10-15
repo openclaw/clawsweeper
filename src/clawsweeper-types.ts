@@ -9,7 +9,6 @@ import type {
   reviewHistoryForReviewer,
 } from "./review-history.js";
 import type { ReviewStructuralRecord } from "./review-structural-cache.js";
-import type { PrHydrationSnapshot } from "./pr-hydration-snapshot.js";
 import type { ReviewHistoryCoverage } from "./pr-review-history.js";
 import type { ProvenanceEvidence } from "./pr-review-provenance.js";
 import type { SchedulerDueCandidate } from "./scheduler-policy.js";
@@ -546,7 +545,6 @@ export interface MergeRiskOption {
   body: string;
   category: MergeRiskOptionCategory;
   recommended: boolean;
-  automergeInstruction: string;
 }
 
 export interface LabelJustification {
@@ -688,7 +686,7 @@ export interface ItemContext {
   pullReviewComments?: unknown[];
   pullReviewCommentsRevision?: string;
   pullReviewActivityCursor?: string;
-  prHydrationSnapshot?: PrHydrationSnapshot;
+  pullFilesRaw?: unknown[];
   pullChecks?: unknown;
   bulkFiler?: BulkFilerReviewContext;
   counts?: {

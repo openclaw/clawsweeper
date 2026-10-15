@@ -1,0 +1,16 @@
+name = "hydration-cache-cleanup-proof"
+main = "worker.ts"
+compatibility_date = "2026-05-11"
+compatibility_flags = ["nodejs_compat"]
+
+[[durable_objects.bindings]]
+name = "EXACT_REVIEW_QUEUE"
+class_name = "ExactReviewQueue"
+
+[[r2_buckets]]
+binding = "STATE_SNAPSHOTS"
+bucket_name = "hydration-cache-proof-local"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["ExactReviewQueue"]

@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { isExplicitReviewRequest } from "../src/maintainer-review-policy.ts";
+import {
+  isExplicitReviewRequest,
+  MAINTAINER_AUTOMATIC_FIRST_REVIEW_FROM,
+  requiresMaintainerReviewRequest,
+} from "../src/maintainer-review-policy.ts";
 
 // The verified command fields of openclaw/clawsweeper#1969's re-review request.
 const request = {
@@ -33,4 +37,32 @@ test("a source-drift requeue without the request's status or verification stays 
   for (const sourceAction of ["synchronize", "edited", "scheduled_normal_backfill"]) {
     assert.equal(isExplicitReviewRequest({ ...request, sourceAction }), false, sourceAction);
   }
+});
+
+test("maintainer items created from the cutover are admitted like everyone else's", () => {
+  const cutover = Date.parse(MAINTAINER_AUTOMATIC_FIRST_REVIEW_FROM);
+  const before = new Date(cutover - 1).toISOString();
+  const member = { author_association: "MEMBER", labels: [] };
+  const labelled = { author_association: "CONTRIBUTOR", labels: [{ name: "maintainer" }] };
+  for (const item of [member, labelled]) {
+    assert.equal(requiresMaintainerReviewRequest({ ...item, created_at: before }), true);
+    assert.equal(
+      requiresMaintainerReviewRequest({
+        ...item,
+        created_at: MAINTAINER_AUTOMATIC_FIRST_REVIEW_FROM,
+      }),
+      false,
+    );
+    // An unknown creation time keeps the request-only rule.
+    assert.equal(requiresMaintainerReviewRequest(item), true);
+  }
+  // Planner items carry camelCase fields.
+  assert.equal(
+    requiresMaintainerReviewRequest({
+      authorAssociation: "OWNER",
+      labels: [],
+      createdAt: "2026-10-16T00:00:00Z",
+    }),
+    false,
+  );
 });

@@ -873,6 +873,11 @@ console.log(JSON.stringify(args.includes("--slurp") ? [value] : value));
       assert.equal(context.counts?.pullFilesHydrated, 80);
       assert.equal(context.counts?.pullFilesTruncated, true);
       assert.equal(context.pullFiles?.length, 81, "80 files plus the explicit omission marker");
+      assert.equal(
+        context.pullFilesRaw?.length,
+        80,
+        "preflight retains only the bounded raw window",
+      );
       const sourceTrace = readFileSync(trace, "utf8");
       assert.ok(
         sourceTrace.length > priorTraceLength,

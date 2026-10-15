@@ -132,11 +132,7 @@ for (const kind of ["issue", "pull_request"] as const) {
     const body = longProofBody();
     const { target, context } = hydratePrimaryBody(body, kind, { closingBodies: [body] });
     context.pullCommitsRevision = "PERSISTENCE_ONLY_COMMIT_SENTINEL";
-    if (context.prHydrationSnapshot) {
-      context.prHydrationSnapshot.completeReviewComments = [
-        { body: "PERSISTENCE_ONLY_COMMENT_SENTINEL" },
-      ];
-    }
+    context.pullFilesRaw = [{ patch: "RUN_LOCAL_PATCH_SENTINEL" }];
     const prompt = reviewPromptForTest(target, context, git);
     const jsonText = prompt.split("## GitHub Context\n")[1]?.match(/```json\n([\s\S]*?)\n```/)?.[1];
     assert.ok(jsonText);
@@ -163,7 +159,10 @@ for (const kind of ["issue", "pull_request"] as const) {
       assert.ok(rendered.closingPullRequests[0].body.endsWith("[truncated 48641 chars]"));
     }
     assert.doesNotMatch(prompt, new RegExp(scriptSentinel));
-    assert.doesNotMatch(prompt, /PERSISTENCE_ONLY_|prHydrationSnapshot|pullCommitsRevision/);
+    assert.doesNotMatch(
+      prompt,
+      /PERSISTENCE_ONLY_|RUN_LOCAL_PATCH_SENTINEL|pullFilesRaw|pullCommitsRevision/,
+    );
     const introduction =
       prompt.match(
         /\n\n## PR Introduction Evidence\n[\s\S]*?\n```\n\n## Provenance Evidence\n[\s\S]*?\n```\n/,
@@ -631,33 +630,32 @@ test("review prompt includes compact previous review state without raw durable r
   assert.doesNotMatch(prompt, /How this review workflow works/);
 });
 
-test("review prompt excludes persistence-only PR hydration snapshots", () => {
+test("current-run raw PR patches are bounded without truncating compact review context", () => {
+  const small = [{ filename: "src/a.ts", patch: "+current patch" }];
+  const { context } = hydratePrimaryBody("Current PR", "pull_request", { pullFiles: small });
+  assert.deepEqual(context.pullFilesRaw, small);
+  const large = [{ filename: "src/a.ts", patch: "+".repeat(1024 * 1024) }];
+  const oversized = hydratePrimaryBody("Current PR", "pull_request", { pullFiles: large }).context;
+  assert.equal(oversized.pullFilesRaw, undefined);
+  assert.equal(oversized.pullFiles?.length, 1);
+  assert.equal(oversized.counts?.pullFiles, 1);
+});
+
+test("review prompt excludes raw current-run PR patches", () => {
   const context = {
     issue: { number: 123, title: "Sample PR" },
     comments: [],
     timeline: [],
     pullReviewComments: [{ id: 1, body: "COMPACT_REVIEW_COMMENT_REMAINS_VISIBLE" }],
-    prHydrationSnapshot: {
-      version: 1 as const,
-      repo: "openclaw/clawsweeper",
-      number: 123,
-      pullUpdatedAt: "2026-08-13T00:00:00Z",
-      headSha: "a".repeat(40),
-      commitCount: 1,
-      reviewCommentCount: 1,
-      hydratedAt: "2026-08-13T00:00:00Z",
-      commits: { items: [], total: 0, hydrated: 0, truncated: false },
-      reviewComments: { items: [], total: 0, hydrated: 0, truncated: false },
-      completeReviewComments: [{ id: 1, body: "PERSISTED_FULL_COMMENT_MUST_STAY_PRIVATE" }],
-    },
+    pullFilesRaw: [{ patch: "RUN_LOCAL_FULL_PATCH_MUST_STAY_PRIVATE" }],
     counts: { comments: 0, timeline: 0, pullReviewComments: 1 },
   };
 
   const prompt = reviewPromptForTest(item({ kind: "pull_request", number: 123 }), context, git);
 
   assert.match(prompt, /COMPACT_REVIEW_COMMENT_REMAINS_VISIBLE/);
-  assert.doesNotMatch(prompt, /prHydrationSnapshot/);
-  assert.doesNotMatch(prompt, /PERSISTED_FULL_COMMENT_MUST_STAY_PRIVATE/);
+  assert.doesNotMatch(prompt, /pullFilesRaw/);
+  assert.doesNotMatch(prompt, /RUN_LOCAL_FULL_PATCH_MUST_STAY_PRIVATE/);
 });
 
 test("review prompt points at linked-item bodies only when the reviewer can read GitHub", () => {

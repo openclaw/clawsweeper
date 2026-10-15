@@ -28,10 +28,6 @@ import {
   reviewStructuralPullStateDigest,
   type ReviewStructuralRecord,
 } from "./review-structural-cache.js";
-import {
-  fitPrHydrationSnapshotToPublicationLimit,
-  serializePrHydrationSnapshot,
-} from "./pr-hydration-snapshot.js";
 import { parseNextStep } from "./clawsweeper-next-step.js";
 import { replaceFrontMatterValue } from "./report-front-matter.js";
 import { reviewRecordFrontMatterLine } from "./review-record.js";
@@ -605,7 +601,6 @@ review_lease_owner: ${options.reviewLeaseOwner ?? "unknown"}
 review_lease_comment_id: ${options.reviewLeaseCommentId ?? "unknown"}
 main_sha: ${options.git.mainSha}
 pull_head_sha: ${pullHeadShaFromContext(options.context) ?? "unknown"}
-pr_hydration_snapshot: ${serializePrHydrationSnapshot(options.context.prHydrationSnapshot)}
 reviewed_pull_state_digest: ${
     reviewedPullStateDigest
       ? (reviewStructuralPullStateDigest(reviewedPullStateDigest) ?? "unknown")
@@ -928,5 +923,5 @@ ${renderReviewContextBudget(options.context)}
 - context collection ms: ${reviewTelemetryNumber(options.runtime.contextElapsedMs)}
 - Codex review ms: ${reviewTelemetryNumber(options.runtime.codexElapsedMs)}
   `;
-  return fitPrHydrationSnapshotToPublicationLimit(markdown);
+  return markdown;
 }

@@ -820,6 +820,7 @@ function createExactReviewAdmissionHarness(
     targetRepository?: (targetRepo: string, init?: RequestInit) => Response | Promise<Response>;
     targetItem?: (targetRepo: string) => Response | Promise<Response>;
     targetPull?: (targetRepo: string) => Response | Promise<Response>;
+    targetPermission?: (targetRepo: string, author: string) => Response | Promise<Response>;
     targetComments?: (
       targetRepo: string,
       itemNumber: number,
@@ -922,6 +923,12 @@ function createExactReviewAdmissionHarness(
         updated_at: "2026-09-24T00:00:00Z",
         ...(await response.json()),
       });
+    }
+    const targetPermission = url.pathname.match(
+      /^\/repos\/([^/]+\/[^/]+)\/collaborators\/([^/]+)\/permission$/,
+    );
+    if (targetPermission && options.targetPermission) {
+      return options.targetPermission(targetPermission[1]!, targetPermission[2]!);
     }
     const targetComments = url.pathname.match(/^\/repos\/([^/]+\/[^/]+)\/issues\/(\d+)\/comments$/);
     if (targetComments && options.targetComments) {

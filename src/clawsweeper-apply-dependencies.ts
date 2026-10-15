@@ -42,7 +42,6 @@ import type {
 import { type PrCloseCoverageProofRuntime } from "./pr-close-coverage-proof.js";
 import { type RepositoryProfile } from "./repository-profiles.js";
 import type { LiveReadGeneration, LiveReadOptions } from "./live-read-generation.js";
-import type { PrHydrationSnapshot } from "./pr-hydration-snapshot.js";
 
 export interface CreateApplyDecisionWorkflowDependencies {
   abandonedPrApplyBlockReasonSafe: (
@@ -111,9 +110,6 @@ export interface CreateApplyDecisionWorkflowDependencies {
       fullTimelineForRelations?: boolean;
       reviewCacheDigest?: boolean;
       reviewCacheGitDir?: string;
-      prHydrationSnapshot?: PrHydrationSnapshot | null;
-      prCommentActivityRevision?: string | null;
-      requireFullyValidatedPrHydrationSnapshot?: boolean;
       liveReadGeneration?: LiveReadGeneration;
       bypassGenerationCache?: boolean;
     },

@@ -53,8 +53,8 @@ function checksOutline(value: unknown): unknown {
 export function reviewPromptContext(
   context: ItemContext,
   options: { agentCanReadGitHub: boolean },
-): Omit<ItemContext, "pullCommitsRevision" | "prHydrationSnapshot"> {
-  const { pullCommitsRevision: _, prHydrationSnapshot: __, ...view } = context;
+): Omit<ItemContext, "pullCommitsRevision" | "pullFilesRaw"> {
+  const { pullCommitsRevision: _, pullFilesRaw: __, ...view } = context;
   const pullRequest = asRecord(context.pullRequest);
   // `body` is only a prefix for long bodies; compare full-source identities, not prefixes.
   const pullBodySha256 = context.pullRequest ? primaryBodySourceSha256(pullRequest) : null;

@@ -1,6 +1,7 @@
 import { EXACT_REVIEW_DIRECT_PUBLICATION_MAX_FILE_BYTES } from "../src/exact-review-publication-limits.ts";
 import { sqlColumnNames, type DurableStorage } from "./durable-storage.ts";
 import { isCompletedPullRequestReview } from "../src/pr-review-policy.ts";
+import { reportWithoutHydrationCache } from "../src/report-hydration-cache.ts";
 import {
   manualPublicationOwnerFrom,
   type ManualPublicationOwner,
@@ -33,6 +34,8 @@ export const REVIEW_COVERAGE_SCAN_MAX_AGE_MS = 15 * 60 * 1000;
 
 const DIRECT_PUBLICATION_TERMINAL_PRUNE_LIMIT = 256;
 const BACKFILL_SHADOW_PRUNE_LIMIT = 64;
+const HYDRATION_CLEANUP_MAX_TUPLES = 4;
+const HYDRATION_CLEANUP_MAX_BYTES = 8 * 1024 * 1024;
 const MAX_PATH_BYTES = 1024;
 const RECORD_SECTIONS = new Set<RecordSection>([
   "items",
@@ -93,6 +96,9 @@ export type CanonicalDirectPublicationOperation = DirectPublicationOperation & {
   itemId: number;
   content: string | null;
   digest: string | null;
+  // Keep authenticated input intact for retry receipts; only the stored view
+  // drops retired cache data, including payloads from older running publishers.
+  storedContent?: { content: string; digest: string; bytes: number };
 };
 
 export type CanonicalDirectPublicationPlan = Omit<DirectPublicationPlan, "operations"> & {
@@ -187,6 +193,22 @@ export type CanonicalCommitRecordInput = {
 export type RecordSnapshotIdentity = {
   section: RecordSection;
   id: string;
+};
+
+export type HydrationCleanupPass = {
+  steps: Array<{
+    rowid: number;
+    unresolved?: boolean;
+    tuple?: {
+      repoSlug: string;
+      itemId: number;
+      rows: Record<string, unknown>[];
+      exports: Record<string, unknown>[];
+      operations: CanonicalDirectPublicationOperation[];
+    };
+  }>;
+  complete: boolean;
+  upperRowid: number;
 };
 
 export class CanonicalRecordTupleConflictError extends Error {
@@ -600,18 +622,25 @@ export class ExactReviewDirectPublicationStore {
       ),
     );
     if (chunks.length !== metadata.chunkCount) {
-      throw new Error(`canonical record chunk count mismatch: ${repoSlug}/${section}/${itemId}`);
+      throw new RecordExportConsistencyError(
+        `canonical record chunk count mismatch: ${repoSlug}/${section}/${itemId}`,
+      );
     }
-    const byteParts = chunks.map((row) => base64Bytes(String(row.content_base64)));
-    const combined = new Uint8Array(byteParts.reduce((sum, part) => sum + part.byteLength, 0));
-    let offset = 0;
-    for (const part of byteParts) {
-      combined.set(part, offset);
-      offset += part.byteLength;
-    }
-    const content = new TextDecoder("utf-8", { fatal: true }).decode(combined);
-    if (new TextEncoder().encode(content).byteLength !== metadata.byteLength) {
-      throw new Error(`canonical record byte count mismatch: ${repoSlug}/${section}/${itemId}`);
+    let content: string;
+    try {
+      const byteParts = chunks.map((row) => base64Bytes(String(row.content_base64)));
+      const combined = new Uint8Array(byteParts.reduce((sum, part) => sum + part.byteLength, 0));
+      let offset = 0;
+      for (const part of byteParts) {
+        combined.set(part, offset);
+        offset += part.byteLength;
+      }
+      content = new TextDecoder("utf-8", { fatal: true }).decode(combined);
+      if (new TextEncoder().encode(content).byteLength !== metadata.byteLength) {
+        throw new Error(`canonical record byte count mismatch: ${repoSlug}/${section}/${itemId}`);
+      }
+    } catch (cause) {
+      throw new RecordExportConsistencyError("canonical record content is malformed", { cause });
     }
     return { ...metadata, content };
   }
@@ -1249,6 +1278,249 @@ export class ExactReviewDirectPublicationStore {
     return Number(row?.upper_rowid ?? 0);
   }
 
+  hydrationCleanupUpperRowidSync(): number {
+    const [row] = this.storage.sql.exec(
+      `SELECT COALESCE(MAX(rowid), 0) AS upper_rowid FROM ${EXACT_REVIEW_CANONICAL_RECORD_TABLE}`,
+    );
+    return Number(row?.upper_rowid ?? 0);
+  }
+
+  async prepareHydrationCleanup(
+    afterRowid: number,
+    upperRowid: number,
+  ): Promise<HydrationCleanupPass> {
+    // Seek raw identities first. Neither cache-free records nor active prefixes
+    // can turn one alarm into a scan of the entire store.
+    const candidates = Array.from(
+      this.storage.sql.exec(
+        `SELECT rowid, repo_slug, section, CAST(item_id AS TEXT) AS item_id FROM ${EXACT_REVIEW_CANONICAL_RECORD_TABLE}
+        WHERE rowid > ? AND rowid <= ? ORDER BY rowid LIMIT 64`,
+        afterRowid,
+        upperRowid,
+      ),
+    );
+    const steps: HydrationCleanupPass["steps"] = [];
+    const seen = new Set<string>();
+    let sourceBytes = 0;
+    candidates: for (const candidate of candidates) {
+      const repoSlug = String(candidate.repo_slug);
+      const itemId = Number(candidate.item_id);
+      if (!Number.isSafeInteger(itemId) || itemId < 1 || String(itemId) !== candidate.item_id) {
+        steps.push({ rowid: Number(candidate.rowid), unresolved: true });
+        continue;
+      }
+      const key = `${repoSlug}/${itemId}`;
+      if (["items", "closed"].includes(String(candidate.section)) && !seen.has(key)) {
+        const rows = this.hydrationTupleRowsSync(repoSlug, itemId);
+        const primaries = rows.filter(
+          (row) => ["items", "closed"].includes(String(row.section)) && Number(row.deleted) === 0,
+        );
+        const bytes = primaries.reduce((sum, row) => sum + Number(row.byte_length), 0);
+        // Valid tuple files are capped at 2 MiB each, below the 8 MiB pass
+        // budget. Preserve malformed legacy metadata without stranding the scan.
+        if (
+          primaries.some(
+            (row) =>
+              !Number.isSafeInteger(Number(row.byte_length)) ||
+              Number(row.byte_length) < 0 ||
+              Number(row.byte_length) > EXACT_REVIEW_DIRECT_PUBLICATION_MAX_FILE_BYTES,
+          )
+        ) {
+          seen.add(key);
+          steps.push({ rowid: Number(candidate.rowid), unresolved: true });
+          continue;
+        }
+        if (
+          seen.size >= HYDRATION_CLEANUP_MAX_TUPLES ||
+          sourceBytes + bytes > HYDRATION_CLEANUP_MAX_BYTES
+        )
+          break;
+        seen.add(key);
+        sourceBytes += bytes;
+        const operations: CanonicalDirectPublicationOperation[] = [];
+        for (const row of primaries) {
+          const section = String(row.section) as ExactReviewTupleRecordSection;
+          let record: CanonicalRecord | null;
+          try {
+            record = this.readCanonicalContentSync(repoSlug, section, itemId);
+          } catch (error) {
+            if (!(error instanceof RecordExportConsistencyError)) throw error;
+            steps.push({ rowid: Number(candidate.rowid), unresolved: true });
+            continue candidates;
+          }
+          if (record?.content == null) {
+            steps.push({ rowid: Number(candidate.rowid), unresolved: true });
+            continue candidates;
+          }
+          const originalBytes = new TextEncoder().encode(record.content);
+          if (originalBytes.byteLength !== Number(row.byte_length)) {
+            steps.push({ rowid: Number(candidate.rowid), unresolved: true });
+            continue candidates;
+          }
+          const operation = await prepareStoredReport({
+            path: `records/${repoSlug}/${section}/${itemId}.md`,
+            mode: "100644",
+            deleted: false,
+            repoSlug,
+            section,
+            itemId,
+            content: record.content,
+            digest: record.digest,
+            bytes: originalBytes.byteLength,
+          });
+          if (operation.storedContent) {
+            if ((await sha256Hex(originalBytes)) !== row.digest) {
+              steps.push({ rowid: Number(candidate.rowid), unresolved: true });
+              continue candidates;
+            }
+            operations.push(operation);
+          }
+        }
+        if (operations.length) {
+          steps.push({
+            rowid: Number(candidate.rowid),
+            tuple: {
+              repoSlug,
+              itemId,
+              rows,
+              exports: this.hydrationTupleExportsSync(repoSlug, itemId),
+              operations,
+            },
+          });
+          continue;
+        }
+      }
+      steps.push({ rowid: Number(candidate.rowid) });
+    }
+    return {
+      steps,
+      upperRowid,
+      complete: steps.length === candidates.length && candidates.length < 64,
+    };
+  }
+
+  retireHydrationCacheSync(pass: HydrationCleanupPass, afterRowid: number, now: number) {
+    let scanned = 0;
+    let retired = 0;
+    let retiredBytes = 0;
+    let deferredAfterRowid: number | null = null;
+    let conflicts = 0;
+    for (const step of pass.steps) {
+      if (step.unresolved) {
+        deferredAfterRowid ??= afterRowid;
+        conflicts += 1;
+        afterRowid = step.rowid;
+        scanned += 1;
+        continue;
+      }
+      const tuple = step.tuple;
+      if (tuple) {
+        const { repoSlug, itemId, rows, exports, operations } = tuple;
+        // Compare revisions and export sequences, not just bytes: a same-byte
+        // publication during hashing still owns a newer authoritative tuple.
+        if (
+          JSON.stringify(rows) !== JSON.stringify(this.hydrationTupleRowsSync(repoSlug, itemId)) ||
+          JSON.stringify(exports) !==
+            JSON.stringify(this.hydrationTupleExportsSync(repoSlug, itemId)) ||
+          rows.some(
+            (row) =>
+              !exports.some(
+                (entry) =>
+                  entry.section === row.section &&
+                  entry.source === "canonical" &&
+                  entry.revision === row.revision &&
+                  entry.digest === row.digest &&
+                  entry.deleted === row.deleted,
+              ),
+          ) ||
+          exports.length !== rows.length
+        ) {
+          deferredAfterRowid ??= afterRowid;
+          conflicts += 1;
+          afterRowid = step.rowid;
+          scanned += 1;
+          continue;
+        }
+        this.hasCompletedPullRequestReview(repoSlug, itemId);
+        const revision = this.nextTupleRevisionSync(repoSlug, itemId);
+        for (const row of rows) {
+          const operation = operations.find((operation) => operation.section === row.section);
+          if (operation) {
+            // Maintenance preserves the producer's identity; it is not a new
+            // authenticated publication and must not synthesize a receipt.
+            this.writeCanonicalOperationSync(
+              operation,
+              {
+                canonicalTargetKey: String(row.item_key),
+                identity: { claimGeneration: Number(row.claim_generation) },
+              },
+              now,
+              revision,
+            );
+            retiredBytes += operation.bytes - operation.storedContent!.bytes;
+          } else {
+            this.storage.sql.exec(
+              `UPDATE ${EXACT_REVIEW_CANONICAL_RECORD_TABLE} SET revision = ?, updated_at = ?
+              WHERE repo_slug = ? AND section = ? AND item_id = ?`,
+              revision,
+              now,
+              repoSlug,
+              String(row.section),
+              itemId,
+            );
+            this.storage.sql.exec(
+              `UPDATE ${EXACT_REVIEW_RECORD_EXPORT_INDEX_TABLE}
+              SET revision = ?, store_revision = ?, updated_at = ?
+              WHERE repo_slug = ? AND section = ? AND record_id = ?`,
+              revision,
+              this.nextExportRevisionSync(),
+              now,
+              repoSlug,
+              String(row.section),
+              String(itemId),
+            );
+          }
+        }
+        retired += operations.length;
+      }
+      afterRowid = step.rowid;
+      scanned += 1;
+    }
+    return {
+      afterRowid: pass.complete ? pass.upperRowid : afterRowid,
+      scanned,
+      retired,
+      retiredBytes,
+      complete: pass.complete || afterRowid === pass.upperRowid,
+      deferredAfterRowid,
+      conflicts,
+    };
+  }
+
+  private hydrationTupleRowsSync(repoSlug: string, itemId: number) {
+    return Array.from(
+      this.storage.sql.exec(
+        `SELECT rowid, section, digest, byte_length, chunk_count, deleted, revision, item_key, claim_generation, updated_at
+         FROM ${EXACT_REVIEW_CANONICAL_RECORD_TABLE} WHERE repo_slug = ? AND item_id = ?
+          AND section IN ('items', 'closed', 'plans', 'decision-packets') ORDER BY section`,
+        repoSlug,
+        itemId,
+      ),
+    );
+  }
+
+  private hydrationTupleExportsSync(repoSlug: string, itemId: number) {
+    return Array.from(
+      this.storage.sql.exec(
+        `SELECT section, digest, deleted, revision, store_revision, source, updated_at
+         FROM ${EXACT_REVIEW_RECORD_EXPORT_INDEX_TABLE} WHERE repo_slug = ? AND record_id = ?
+          AND section IN ('items', 'closed', 'plans', 'decision-packets') ORDER BY section`,
+        repoSlug,
+        String(itemId),
+      ),
+    );
+  }
+
   pruneBackfillShadowsSync(afterRowid: number, upperRowid: number) {
     // Limit raw identities before joining owners: commits and unresolved rows
     // must advance the finite sweep without turning a pass into a full scan.
@@ -1370,13 +1642,14 @@ export class ExactReviewDirectPublicationStore {
 
   private writeCanonicalOperationSync(
     operation: CanonicalDirectPublicationOperation,
-    plan: CanonicalDirectPublicationPlan,
+    plan: { canonicalTargetKey: string; identity: { claimGeneration: number } },
     now: number,
-    revision = plan.revision,
+    revision: number,
   ) {
     if (operation.section === "items" || operation.section === "closed") {
       this.hasCompletedPullRequestReview(operation.repoSlug, operation.itemId);
     }
+    if (operation.storedContent) operation = { ...operation, ...operation.storedContent };
     this.storage.sql.exec(
       `DELETE FROM ${EXACT_REVIEW_CANONICAL_RECORD_CHUNK_TABLE}
         WHERE repo_slug = ? AND section = ? AND item_id = ?`,
@@ -1948,7 +2221,7 @@ export async function validateCanonicalRecordTupleMutation(
     key,
     repoSlug,
     itemId,
-    operations,
+    operations: await Promise.all(operations.map(prepareStoredReport)),
     expectedDigests,
     fingerprint: await sha256Hex(new TextEncoder().encode(canonicalFingerprint)),
   };
@@ -2124,9 +2397,23 @@ export async function validateDirectPublicationPlan(
       revision: plan.revision,
       claimGeneration: identity.claimGeneration,
     },
-    operations,
+    operations: await Promise.all(operations.map(prepareStoredReport)),
     totalBytes,
     ...(lifecycle ? { lifecycle } : {}),
+  };
+}
+
+async function prepareStoredReport(
+  operation: CanonicalDirectPublicationOperation,
+): Promise<CanonicalDirectPublicationOperation> {
+  if (operation.content === null || !["items", "closed"].includes(operation.section))
+    return operation;
+  const content = reportWithoutHydrationCache(operation.content);
+  if (content === operation.content) return operation;
+  const bytes = new TextEncoder().encode(content);
+  return {
+    ...operation,
+    storedContent: { content, digest: await sha256Hex(bytes), bytes: bytes.byteLength },
   };
 }
 

@@ -1,4 +1,5 @@
 import { Buffer } from "node:buffer";
+import { reportWithoutHydrationCache } from "../report-hydration-cache.js";
 import {
   manualPublicationOwnerFrom,
   type ManualPublicationOwner,
@@ -72,7 +73,10 @@ export function prepareStateMutationPlan(options: {
     if (paths.has(path)) throw new Error(`A state mutation plan repeats path ${path}`);
     paths.add(path);
     if ("delete" in operation) return { path, deleted: true, mode: "100644", bytes: 0 };
-    const content = Buffer.from(operation.content);
+    const rawContent = Buffer.from(operation.content);
+    const content = /^records\/[^/]+\/(items|closed)\/[0-9]+\.md$/.test(path)
+      ? Buffer.from(reportWithoutHydrationCache(rawContent.toString("utf8")))
+      : rawContent;
     if (content.byteLength > EXACT_REVIEW_BUNDLE_MAX_FILE_BYTES) {
       throw new Error(`State mutation content exceeds the per-file limit: ${path}`);
     }

@@ -1,0 +1,1 @@
+- Maintainer-authored and `maintainer`-labeled items created from 2026-10-15 12:00 UTC are reviewed like everyone else's: a PR gets one automatic review and later reviews need `@clawsweeper review`; an issue follows the ordinary issue cadence. Older maintainer items keep the request-only rule, so the change starts no backlog of reviews.

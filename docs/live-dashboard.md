@@ -72,8 +72,13 @@ Workers Scripts edit permission before enabling the workflow as the production
 deploy path. The deploy workflow injects the `CLAWSWEEPER_STATUS_INGEST_TOKEN`
 GitHub secret into a temporary Wrangler config as the Worker `INGEST_TOKEN`.
 The smoke test waits for the expected deployment revision and a successful
-exact-review queue response within the same default 180-second readiness budget. It then
-verifies the signed review-admission capability contract, queue schema,
+exact-review queue response within the same default 600-second readiness budget.
+It then waits up to another 600 seconds for the signed review-admission
+response to report that same deployment revision from the Durable Object itself.
+The queue Durable Object can keep serving the previous version for several
+minutes after a deploy.
+A healthy outer Worker or a successful response from an older queue is not
+deployment readiness. The smoke also verifies the capability contract, queue schema,
 unsigned-request rejection, and Overview rendering. An exact-revision smoke run
 requires the existing `CLAWSWEEPER_WEBHOOK_SECRET`; it sends a signed empty JSON
 object without following redirects and validates scheduled pacing, replay, and
@@ -451,9 +456,9 @@ Actions set. The public recent-publication route revalidates that state into
 bounded outcome counts without returning private repositories, revision
 identifiers, target keys, facts, titles, raw URLs, or failure detail.
 
-Status responses use stale-while-revalidate delivery. After the 20-second fresh
-window expires, the Worker immediately returns the last good snapshot, marks it
-with `X-ClawSweeper-Cache: stale`, and coalesces one background refresh per
+Status responses use stale-while-revalidate delivery. After the configured fresh
+window expires (60 seconds in production), the Worker immediately returns the last
+good snapshot, marks it with `X-ClawSweeper-Cache: stale`, and coalesces one background refresh per
 isolate. The Worker applies the public status projector before writing fresh or
 stale edge-cache bodies and the `StatusStore` snapshot, then applies it again on
 every cache/store read. Legacy cache bodies are reprojected, nested or unexpected
@@ -568,6 +573,16 @@ in-progress run at least 150 minutes old, or incomplete Actions telemetry opens 
 expandable “Work execution needs attention” alert. This live diagnostic reuses
 the status snapshot's Actions reads; the history cron no longer stores queue
 pressure or oldest-run values.
+
+Active-run collection reads up to three pages of 100 runs for each active status.
+When counts or rows change during a census, it discards that attempt and reads
+the affected status again once, bypassing the refresh-local memoized pages.
+The ceiling is 30 page reads across five statuses, including fresh rebuilds.
+A full final page with additional runs, a failed page, or a second inconsistent
+census keeps operational telemetry unknown. A complete 100-run page does not
+itself make telemetry unavailable. The advisory ETag cache has a one-second deadline
+per operation; a stalled lookup, confirmation, or write falls back to the
+authoritative GitHub response without consuming the entire refresh deadline.
 
 Queued runs older than 1440 minutes are reported separately as zombies and do
 not contribute to `queued_over_threshold` or `oldest_queued_minutes`; they
@@ -750,8 +765,12 @@ left by a rollback cannot override that newer lease, and a wholly unknown legacy
 age stays non-alarming. A claim is degraded after one third of the dispatch
 lease (bounded to 30-120 seconds) and stalled after two thirds (bounded to
 31-300 seconds), so operators see the failure before the lease expires and
-requeues. A blocked dispatcher with pending work is stalled; an intentionally
-paused dispatcher is degraded. `/api/status` includes this snapshot and the live
+requeues. During its retry delay, a blocked dispatcher with pending work is
+stalled and a paused dispatcher is degraded. After the deadline, eligible work
+shows degraded `dispatcher_retry_due` until a successful preflight records
+recovery. If capacity, target cooldowns, review throttling, or debounce prevents
+admission, the expired block does not override current handoff health. Missing
+retry deadlines retain the warning. `/api/status` includes this snapshot and the live
 dashboard renders the three phases, oldest age, available exact-review slots,
 and the current classification without changing queue capacity or storage
 schema. Fleet snapshots may use the longer stale fallback during a GitHub API

@@ -183,6 +183,8 @@ export const PR_RATING_LABELS = [
 }[];
 export const PR_RATING_LABEL_NAMES = new Set<string>(PR_RATING_LABELS.map((label) => label.name));
 export const PR_STATUS_LABELS = [
+  // Retired lane: never selected. Kept so status sync recognizes the label still
+  // on older PRs and replaces it with the current status.
   {
     kind: "automerge_armed",
     name: "status: 🚀 automerge armed",
@@ -890,13 +892,7 @@ export const AGENTS_POLICY_STATUS_SCHEMA_KEYS = new Set([
   "status",
   "summary",
 ]);
-export const MERGE_RISK_OPTION_SCHEMA_KEYS = new Set([
-  "title",
-  "body",
-  "category",
-  "recommended",
-  "automergeInstruction",
-]);
+export const MERGE_RISK_OPTION_SCHEMA_KEYS = new Set(["title", "body", "category", "recommended"]);
 export const REVIEW_METRIC_SCHEMA_KEYS = new Set(["label", "value", "reason"]);
 export const LABEL_JUSTIFICATION_SCHEMA_KEYS = new Set(["label", "reason"]);
 export const SECURITY_CONCERN_SCHEMA_KEYS = new Set([

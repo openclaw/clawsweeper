@@ -247,6 +247,58 @@ Reason: ${duplicateRisk}
   assert.equal(comment.split(duplicateRisk).length - 1, 1);
 });
 
+for (const fixture of [
+  {
+    name: "preserves distinct multiline risk",
+    risk: "The cache owner can drift.\n  Concurrent readers may see stale routing.",
+    workReason: "Reproduce the routing behavior.",
+    bestSolution: "Keep the current ownership model.",
+    retained: true,
+  },
+  {
+    name: "suppresses risk repeated in the next step",
+    risk: "Reproduce the routing behavior.",
+    workReason: "Reproduce the routing behavior.",
+    bestSolution: "Keep the current ownership model.",
+    retained: false,
+  },
+  {
+    name: "suppresses risk contained in the best solution after text normalization",
+    risk: "cache OWNER can drift",
+    workReason: "Reproduce the routing behavior.",
+    bestSolution: "Confirm whether **Cache owner** can drift before choosing a fix.",
+    retained: false,
+  },
+]) {
+  test(`issue keep-open review ${fixture.name}`, () => {
+    const comment = renderReviewCommentFromReport(
+      reportFrontMatter(
+        {
+          type: "issue",
+          number: "74268",
+          reviewed_at: "2026-10-15T00:00:00Z",
+        },
+        {
+          risks: [fixture.risk],
+          workReason: fixture.workReason,
+          bestSolution: fixture.bestSolution,
+        },
+      ),
+      "none",
+    );
+    if (fixture.retained) {
+      assert.ok(comment.includes(`Remaining risk / open question:\n\n- ${fixture.risk}`));
+    } else {
+      assert.doesNotMatch(comment, /Remaining risk \/ open question:/);
+    }
+    assert.match(
+      comment,
+      /<!-- clawsweeper-review-version item=74268 reviewed_at=2026-10-15T00:00:00\.000Z sha=na /,
+    );
+    assert.doesNotMatch(comment, /<!-- clawsweeper-(?:review-state|verdict|action):/);
+  });
+}
+
 test("every pull request merge risk is a blocked item without an inferred priority", () => {
   const risks = [
     "Blocked workflow actions could cause a data loss outage.",
@@ -687,22 +739,18 @@ test("pull request keep-open review comments retain merge-risk options without r
         body: "Keep fallback behavior as the default and add a strict config option for the fail-closed behavior.",
         category: "fix_before_merge",
         recommended: true,
-        automergeInstruction:
-          "Keep fallback behavior as the default and add a strict config option for the fail-closed behavior.",
       },
       {
         title: "Make the breaking change explicit",
         body: "Keep fail-closed behavior only if docs, tests, and release notes warn existing fallback users.",
         category: "fix_before_merge",
         recommended: false,
-        automergeInstruction: "",
       },
       {
         title: "Do not merge as-is",
         body: "Pause or close this PR if maintainers do not want to take this compatibility risk.",
         category: "pause_or_close",
         recommended: false,
-        automergeInstruction: "",
       },
     ],
   });
@@ -720,6 +768,27 @@ test("pull request keep-open review comments retain merge-risk options without r
   assert.doesNotMatch(comment, /Remaining risk \/ open question:/);
 });
 
+test("pull request keep-open review comments retain both fallback options for empty options", () => {
+  const risk = "Existing readers may see stale routing after the ownership change.";
+  const bestSolution = "Preserve the current ownership model until the risk is resolved.";
+  const comment = mergeRiskReviewComment({ risk, options: [], bestSolution });
+  const beforeMerge = comment.split("## Before merge\n\n")[1]?.split("\n## ")[0] ?? "";
+
+  assert.ok(beforeMerge.includes(`- [ ] **Resolve merge risk** - ${risk}`));
+  assert.ok(
+    comment.includes(
+      `**Maintainer options:**\n1. **Decide the mitigation before merge**  \n   ${bestSolution}\n2. **Pause or close**  \n   Do not merge this PR until maintainers decide whether the risk is worth taking.`,
+    ),
+  );
+  assert.doesNotMatch(comment, /Remaining risk \/ open question:|3\. \*\*/);
+  assert.match(comment, /<!-- clawsweeper-review-state:blocked item=83400 /);
+  assert.match(comment, /<!-- clawsweeper-verdict:needs-human item=83400 /);
+  assert.match(
+    comment,
+    /<!-- clawsweeper-review-version item=83400 reviewed_at=2026-05-01T00:00:00\.000Z sha=abc123def456abc123def456abc123def456abcd /,
+  );
+});
+
 test("pull request keep-open review comments can recommend accepting intentional risk without a copy block", () => {
   const comment = mergeRiskReviewComment({
     risk: "This hardening intentionally rejects requests that older integrations currently pass.",
@@ -731,14 +800,12 @@ test("pull request keep-open review comments can recommend accepting intentional
         body: "Merge only if maintainers agree the security hardening is worth the compatibility break.",
         category: "accept_risk",
         recommended: true,
-        automergeInstruction: "",
       },
       {
         title: "Add migration guidance before merge",
         body: "Document the rejected request shape and add release-note guidance for affected integrations.",
         category: "fix_before_merge",
         recommended: false,
-        automergeInstruction: "",
       },
     ],
   });
@@ -756,14 +823,12 @@ test("pull request keep-open review comments do not force a recommendation for u
         body: "Decide whether resumed sessions should migrate, fail fast, or continue using the old ownership model.",
         category: "pause_or_close",
         recommended: false,
-        automergeInstruction: "",
       },
       {
         title: "Add migration proof before merge",
         body: "Add tests or manual validation covering sessions created before this change.",
         category: "fix_before_merge",
         recommended: false,
-        automergeInstruction: "",
       },
     ],
   });
@@ -782,15 +847,12 @@ test("pull request keep-open review comments allow multiple fix-before-merge opt
         body: "Track whether the user message was already sent before retrying provider fallback.",
         category: "fix_before_merge",
         recommended: true,
-        automergeInstruction:
-          "Track whether the user message was already sent before retrying provider fallback.",
       },
       {
         title: "Disable fallback after partial sends",
         body: "Fail fast once delivery starts instead of retrying through another provider.",
         category: "fix_before_merge",
         recommended: false,
-        automergeInstruction: "",
       },
     ],
   });
@@ -809,14 +871,12 @@ test("pull request keep-open review comments include pause or close when risk ma
         body: "Show that artifacts upload on success, failure, and skipped-review paths.",
         category: "fix_before_merge",
         recommended: false,
-        automergeInstruction: "",
       },
       {
         title: "Pause or close",
         body: "Close this PR if maintainers decide the proof-capture regression risk outweighs the workflow cleanup.",
         category: "pause_or_close",
         recommended: false,
-        automergeInstruction: "",
       },
     ],
   });
