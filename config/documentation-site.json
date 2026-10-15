@@ -46,6 +46,11 @@
   ],
   "noncanonical": [
     {
+      "path": "canonical-body-tiering.md",
+      "lifecycle": "proposed",
+      "banner": "This is an unapproved storage design. It grants no schema, deployment, migration, or deletion authority."
+    },
+    {
       "path": "review-authority.md",
       "lifecycle": "proposed",
       "banner": "The role classifier is inert. This integration contract does not change current admission or command authority."
