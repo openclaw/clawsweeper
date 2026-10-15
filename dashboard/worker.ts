@@ -149,7 +149,10 @@ export {
 const ACTIVE_RUN_STATUSES = new Set(["queued", "in_progress", "waiting", "requested", "pending"]);
 const QUEUED_RUN_STATUSES = new Set(["queued", "waiting", "requested", "pending"]);
 type DashboardContext = { waitUntil?: (promise: Promise<unknown>) => void };
-type GithubJsonReader = (path: string) => ReturnType<typeof githubJson>;
+type GithubJsonReader = (
+  path: string,
+  options?: { fresh: boolean },
+) => ReturnType<typeof githubJson>;
 type StoredValue = {
   value: string;
   expires_at?: number;
@@ -363,6 +366,7 @@ declare global {
 }
 const ACTIVE_RUN_STATUS_FILTERS = ["in_progress", "queued", "waiting", "requested", "pending"];
 const ACTIVE_RUN_PAGE_LIMIT = 3;
+const GITHUB_ETAG_CACHE_TIMEOUT_MS = 1_000;
 const TERMINAL_BAD_CONCLUSIONS = new Set(["failure", "timed_out", "action_required"]);
 const EVENT_LIMIT = 200;
 const EVENT_STORE_TTL_SECONDS = 7 * 24 * 60 * 60;
@@ -5471,7 +5475,7 @@ async function boundedTargetDispatchBody(
   }
 }
 
-async function githubEtagCacheRequest(env, path: string, body: string) {
+async function githubEtagCacheRequest(env, path: string, body: string, signal?: AbortSignal) {
   const namespace: DurableObjectNamespace | undefined = env.GITHUB_ETAG_CACHE;
   if (!namespace) return json({ error: "github_etag_cache_not_configured" }, 503);
   try {
@@ -5484,7 +5488,7 @@ async function githubEtagCacheRequest(env, path: string, body: string) {
         method: "POST",
         headers: { "content-type": "application/json" },
         body,
-        signal: statusRequestSignal(env),
+        signal: statusRequestSignal(env, signal),
       }),
       "github_etag_cache",
     );
@@ -8136,43 +8140,54 @@ async function activeWorkflowRunCandidates(
 ) {
   const pages = await Promise.all(
     ACTIVE_RUN_STATUS_FILTERS.map(async (status) => {
-      const workflowRuns = [];
-      let expectedTotalCount: number | null = null;
-      let complete = false;
-      // Include the oldest runs without allowing a large backlog to make the
-      // status refresh unbounded. An unfinished census must remain unknown.
-      for (let page = 1; page <= ACTIVE_RUN_PAGE_LIMIT; page += 1) {
-        const runs = await github(
-          `/repos/${repo}/actions/runs?status=${status}&per_page=100${page > 1 ? `&page=${page}` : ""}`,
-        ).catch((error) => {
-          errors.push(`workflow runs ${status}: ${error.message}`);
-          return undefined;
-        });
-        if (runs === undefined) return workflowRuns;
-        if (!Array.isArray(runs?.workflow_runs) || runs.workflow_runs.length > 100) break;
-        const totalCount = runs.total_count;
-        if (totalCount !== undefined) {
-          if (
-            !Number.isSafeInteger(totalCount) ||
-            totalCount < 0 ||
-            (expectedTotalCount !== null && totalCount !== expectedTotalCount)
-          )
+      for (let attempt = 0; ; attempt += 1) {
+        const workflowRuns = [];
+        let expectedTotalCount: number | null = null;
+        let complete = false;
+        let changedDuringRead = false;
+        // Include the oldest runs without allowing a large backlog to make the
+        // status refresh unbounded. An unfinished census must remain unknown.
+        for (let page = 1; page <= ACTIVE_RUN_PAGE_LIMIT; page += 1) {
+          const runs = await github(
+            `/repos/${repo}/actions/runs?status=${status}&per_page=100${page > 1 ? `&page=${page}` : ""}`,
+            { fresh: attempt > 0 },
+          ).catch((error) => {
+            errors.push(`workflow runs ${status}: ${error.message}`);
+            return undefined;
+          });
+          if (runs === undefined) return workflowRuns;
+          if (!Array.isArray(runs?.workflow_runs) || runs.workflow_runs.length > 100) break;
+          const totalCount = runs.total_count;
+          if (totalCount !== undefined) {
+            if (!Number.isSafeInteger(totalCount) || totalCount < 0) break;
+            if (expectedTotalCount !== null && totalCount !== expectedTotalCount) {
+              changedDuringRead = true;
+              break;
+            }
+            expectedTotalCount = totalCount;
+          }
+          workflowRuns.push(...runs.workflow_runs);
+          if (uniqueWorkflowRuns(workflowRuns).length !== workflowRuns.length) {
+            changedDuringRead = true;
             break;
-          expectedTotalCount = totalCount;
+          }
+          if (expectedTotalCount !== null && workflowRuns.length >= expectedTotalCount) {
+            complete = workflowRuns.length === expectedTotalCount;
+            changedDuringRead = !complete;
+            break;
+          }
+          if (runs.workflow_runs.length < 100) {
+            complete = expectedTotalCount === null;
+            changedDuringRead = !complete;
+            break;
+          }
         }
-        workflowRuns.push(...runs.workflow_runs);
-        if (uniqueWorkflowRuns(workflowRuns).length !== workflowRuns.length) break;
-        if (expectedTotalCount !== null && workflowRuns.length >= expectedTotalCount) {
-          complete = workflowRuns.length === expectedTotalCount;
-          break;
-        }
-        if (runs.workflow_runs.length < 100) {
-          complete = expectedTotalCount === null;
-          break;
-        }
+        // Actions can change between pages, or even between its count and rows.
+        // Rebuild that census once from fresh reads; never combine generations.
+        if (changedDuringRead && attempt === 0) continue;
+        if (!complete) errors.push(`workflow runs ${status}: census incomplete`);
+        return workflowRuns;
       }
-      if (!complete) errors.push(`workflow runs ${status}: census incomplete`);
-      return workflowRuns;
     }),
   );
   return uniqueWorkflowRuns(pages.flat());
@@ -9003,11 +9018,11 @@ function statusStoreRequest(key, method = "GET") {
 
 function createGithubJsonCache(env): GithubJsonReader {
   const cache = new Map<string, ReturnType<typeof githubJson>>();
-  return (path: string) => {
+  return (path: string, options) => {
     statusCollections.get(env)?.check();
     const key = String(path);
     let request = cache.get(key);
-    if (!request) {
+    if (!request || options?.fresh) {
       request = statusOperation(env, "github", () => githubJson(env, key));
       cache.set(key, request);
     }
@@ -9088,16 +9103,28 @@ function githubJsonResponse(env, path, token: string, ifNoneMatch: string) {
 }
 
 async function githubEtagCachePost(env, operation: "lookup" | "store" | "confirm", body) {
-  return statusOperation(env, "github", async () => {
-    const response = await githubEtagCacheRequest(
-      env,
-      `/github-etag-cache/${operation}`,
-      JSON.stringify(body),
+  const controller = new AbortController();
+  try {
+    // This cache is advisory. Its own request/body deadline must leave time
+    // for the authoritative GitHub read and the rest of the status snapshot.
+    return await withTimeout(
+      statusOperation(env, "github", async () => {
+        const response = await githubEtagCacheRequest(
+          env,
+          `/github-etag-cache/${operation}`,
+          JSON.stringify(body),
+          controller.signal,
+        );
+        const result = objectValue(await response.json().catch(() => null));
+        if (!response.ok) throw new Error(String(result.error || "GitHub ETag cache unavailable"));
+        return result;
+      }),
+      GITHUB_ETAG_CACHE_TIMEOUT_MS,
+      "GitHub ETag cache",
     );
-    const result = objectValue(await response.json().catch(() => null));
-    if (!response.ok) throw new Error(String(result.error || "GitHub ETag cache unavailable"));
-    return result;
-  });
+  } finally {
+    controller.abort();
+  }
 }
 
 function parseGithubJsonBody(body: string, path: string) {

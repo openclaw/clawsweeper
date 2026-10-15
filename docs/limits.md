@@ -213,9 +213,7 @@ Meaningful changes restart that quiet window, including changes discovered
 without a webhook. Comments and label-only activity do not extend it. There is
 no maximum-wait shortcut: a continuously changing PR waits until it settles.
 Draft-state changes restart the window; existing draft and oversized-PR gates remain in force.
-Explicit review requests and autofix/automerge opt-ins bypass this initial hold.
-Automation opt-ins are checked again when a previously answered PR claims work;
-removing the label before claim revokes that automatic review.
+Explicit review requests bypass this initial hold.
 
 Once a PR has a completed canonical review, ordinary webhooks and scheduled
 hot/normal passes cannot review it again. Request `@clawsweeper re-review` after
@@ -224,8 +222,7 @@ that fact across restarts, report replacement, archive moves, and queue cleanup;
 existing verified canonical reports with retained completion provenance seed it
 on first use. Reports whose old receipts were already pruned remain eligible
 for one fresh answer. Unverified attempts and stale-source requeues do not
-consume the first answer. Opted-in autofix/automerge
-PRs retain their repeated automation. Issues keep their existing cadence.
+consume the first answer. Issues keep their existing cadence.
 
 Fresh webhook work waits for `EXACT_REVIEW_DISPATCH_DEBOUNCE_MS` (90 seconds by
 default) so rapid edits and pushes coalesce before dispatch. Repeated pending

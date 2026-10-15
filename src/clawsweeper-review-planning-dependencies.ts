@@ -13,7 +13,7 @@ export interface ReviewPlanningDependencies {
   githubCount: (value: unknown) => number | null;
   itemSourceRevisionSha256: (issue: unknown, comments?: unknown[]) => string;
   normalizeAuthorAssociation: (value: unknown) => string;
-  shouldPlanItem: (item: Pick<Item, "authorAssociation" | "labels">) => boolean;
+  shouldPlanItem: (item: Pick<Item, "authorAssociation" | "createdAt" | "labels">) => boolean;
   failedReviewRetryStatePath: (stateDir: string, number: number) => string;
   readFailedReviewRetryState: (statePath: string) => FailedReviewRetryState | null;
   failedReviewRetryMarkdownWithState: (

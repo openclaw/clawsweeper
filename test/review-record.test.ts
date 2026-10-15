@@ -225,6 +225,36 @@ test("a review record that changed outside its writer is rejected", () => {
   }
 });
 
+test("records stored with the retired automergeInstruction still read back", () => {
+  const decision: Decision = {
+    ...modelDecision(),
+    mergeRiskOptions: [
+      {
+        title: "Add delivery-state tests",
+        body: "Cover the retry path before merge.",
+        category: "fix_before_merge",
+        recommended: true,
+      },
+    ],
+  };
+  const markdown = report(decision);
+  const stored = storedRecord(markdown);
+  const legacy = withStoredRecord(markdown, {
+    ...stored,
+    decision: {
+      ...stored.decision,
+      mergeRiskOptions: decision.mergeRiskOptions.map((option) => ({
+        ...option,
+        automergeInstruction: "Merge after the delivery-state tests pass.",
+      })),
+    },
+  });
+  assert.deepEqual(
+    requireReviewRecord(legacy).decision.mergeRiskOptions,
+    decision.mergeRiskOptions,
+  );
+});
+
 test("decision updates change the stored record and keep its origin", () => {
   const markdown = report(modelDecision());
   const backfilled = withStoredRecord(markdown, { ...storedRecord(markdown), origin: "backfill" });

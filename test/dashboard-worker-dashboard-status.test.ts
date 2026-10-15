@@ -2469,14 +2469,14 @@ test("dashboard bounds active-run pagination without hiding incomplete telemetry
   });
   try {
     for (const scenario of [
-      { total: 100, pages: 1, observed: 100, complete: true },
-      { total: 167, pages: 2, observed: 167, complete: true },
-      { total: 300, pages: 3, observed: 300, complete: true },
-      { total: 301, pages: 3, observed: 300, complete: false },
-      { total: 167, pages: 2, observed: 100, complete: false, failPage: 2 },
-      { total: 167, pages: 2, observed: 100, complete: false, drift: true },
-      { total: 167, pages: 2, observed: 100, complete: false, short: true },
-      { total: 167, pages: 2, observed: 167, complete: false, duplicate: true },
+      { total: 100, pages: [1], observed: 100, complete: true },
+      { total: 167, pages: [1, 2], observed: 167, complete: true },
+      { total: 300, pages: [1, 2, 3], observed: 300, complete: true },
+      { total: 301, pages: [1, 2, 3], observed: 300, complete: false },
+      { total: 167, pages: [1, 2], observed: 100, complete: false, failPage: 2 },
+      { total: 167, pages: [1, 2, 1, 2], observed: 100, complete: false, drift: true },
+      { total: 167, pages: [1, 2, 1, 2], observed: 100, complete: false, short: true },
+      { total: 167, pages: [1, 2, 1, 2], observed: 167, complete: false, duplicate: true },
     ]) {
       const requestedPages: number[] = [];
       globalThis.fetch = async (input) => {
@@ -2524,10 +2524,60 @@ test("dashboard bounds active-run pagination without hiding incomplete telemetry
         status.operational_health.zombie_queued_runs,
         scenario.duplicate ? 100 : scenario.observed,
       );
-      assert.deepEqual(
-        requestedPages,
-        Array.from({ length: scenario.pages }, (_, index) => index + 1),
+      assert.deepEqual(requestedPages, scenario.pages);
+    }
+  } finally {
+    globalThis.fetch = originalFetch;
+    Object.defineProperty(globalThis, "caches", { configurable: true, value: originalCaches });
+  }
+});
+
+test("dashboard rebuilds inconsistent active censuses without replaying memoized pages", async () => {
+  const originalFetch = globalThis.fetch;
+  const originalCaches = globalThis.caches;
+  Object.defineProperty(globalThis, "caches", {
+    configurable: true,
+    value: { default: { match: async () => undefined, put: async () => undefined } },
+  });
+  try {
+    for (const singlePage of [true, false]) {
+      const requests = new Map<string, number[]>();
+      let attempt = 0;
+      globalThis.fetch = async (input) => {
+        const url = new URL(String(input));
+        if (url.pathname === "/repos/openclaw/clawsweeper/actions/runs") {
+          const status = url.searchParams.get("status") || "recent";
+          const page = Number(url.searchParams.get("page") || 1);
+          requests.set(status, [...(requests.get(status) || []), page]);
+          if (status !== "queued") return jsonResponse({ total_count: 0, workflow_runs: [] });
+          if (page === 1) attempt += 1;
+          const total = singlePage ? 13 : attempt === 1 && page === 1 ? 166 : 167;
+          const count = singlePage ? (attempt === 1 ? 12 : 13) : page === 1 ? 100 : 67;
+          return jsonResponse({
+            total_count: total,
+            workflow_runs: Array.from({ length: count }, (_, index) => ({
+              id: attempt * 1_000 + (page - 1) * 100 + index,
+              name: "ClawSweeper Commit Review",
+              status: "queued",
+              created_at: isoAgo(7 * 24 * 60 * 60_000),
+              updated_at: isoAgo(7 * 24 * 60 * 60_000),
+            })),
+          });
+        }
+        if (url.pathname === "/search/issues") return jsonResponse({ items: [] });
+        throw new Error(`unexpected fetch ${url}`);
+      };
+      const response = await worker.fetch(
+        new Request("https://clawsweeper.openclaw.ai/api/status"),
+        { CLAWSWEEPER_REPO: "openclaw/clawsweeper", CACHE_TTL_SECONDS: "0" },
+        { waitUntil: () => undefined },
       );
+      const status = await response.json();
+      assert.equal(status.operational_health.telemetry_complete, true);
+      assert.equal(status.operational_health.zombie_queued_runs, singlePage ? 13 : 167);
+      assert.equal(status.diagnostics.error_count, 0);
+      assert.deepEqual(requests.get("queued"), singlePage ? [1, 1] : [1, 2, 1, 2]);
+      assert.deepEqual(requests.get("in_progress"), [1], "consistent statuses are not rebuilt");
     }
   } finally {
     globalThis.fetch = originalFetch;

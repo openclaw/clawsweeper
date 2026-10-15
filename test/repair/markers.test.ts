@@ -2,9 +2,6 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
-  automergeRequestedByAttributes,
-  automergeRequestedByMarker,
-  automergeStatusMarkerFromBody,
   commandAckCommentIds,
   commandAckMarker,
   commandAckMarkerFromBody,
@@ -13,7 +10,6 @@ import {
   commandStatusMarker,
   commandStatusMarkerFromBody,
   commandStatusMarkerPrefix,
-  hasAutomergeCommandStatusMarker,
   hasCommandAckMarker,
   hasCommandStatusMarker,
   itemCommandStatusMarkerPrefix,
@@ -73,31 +69,4 @@ test("marker parsers keep each caller's case rule", () => {
     hasCommandAckMarker("<!-- CLAWSWEEPER-COMMAND-ACK:1 -->", { ignoreCase: true }),
     true,
   );
-  assert.equal(hasAutomergeCommandStatusMarker(commandStatusMarker(9, "automerge", "na")), true);
-  assert.equal(hasAutomergeCommandStatusMarker(commandStatusMarker(9, "autofix", "na")), false);
-});
-
-test("automerge status marker round-trips and stays scoped to its item", () => {
-  const marker = commandStatusMarker(75183, "clawsweeper_auto_repair", "abc123");
-  assert.equal(automergeStatusMarkerFromBody(`${marker}\nStatus.`, 75183), marker);
-  // The marker of another item does not match, even when its intent does.
-  assert.equal(automergeStatusMarkerFromBody(marker, 75184), null);
-  const selfHeal = commandStatusMarker(75183, "clawsweeper_self_rebase", "abc123");
-  assert.equal(automergeStatusMarkerFromBody(selfHeal, 75183), null);
-  assert.equal(
-    automergeStatusMarkerFromBody(selfHeal, 75183, ["clawsweeper_self_rebase"]),
-    selfHeal,
-  );
-});
-
-test("automerge-requested-by marker round-trips and escapes its attributes", () => {
-  assert.equal(
-    automergeRequestedByMarker('maintainer"<x>', 42),
-    '<!-- clawsweeper-automerge-requested-by login="maintainer&quot;&lt;x&gt;" id="42" -->',
-  );
-  const marker = automergeRequestedByMarker("vincentkoc", 123);
-  assert.deepEqual(automergeRequestedByAttributes(`Body\n${marker}`), {
-    login: "vincentkoc",
-    id: "123",
-  });
 });

@@ -69,7 +69,6 @@ import {
   publicReviewScoresBlock,
   publicReviewTextDiffers,
   publicReviewTextIsSame,
-  publicRiskBullets,
   publicSecurityReviewLine,
   reviewFindingDetailedLine,
   reviewFindingSummaryLine,
@@ -405,7 +404,7 @@ function renderKeepOpenCommentFromReport(
   }
   if (
     !isReportNoneList(risks) &&
-    !mergeRiskLine &&
+    !isPullRequest &&
     publicReviewTextDiffers(risks, nextStepLine) &&
     (!bestSolutionLine || publicReviewTextDiffers(risks, bestSolutionLine))
   ) {
@@ -413,7 +412,7 @@ function renderKeepOpenCommentFromReport(
       ...(reviewDetails.length ? [""] : []),
       "Remaining risk / open question:",
       "",
-      isPullRequest ? publicRiskBullets(risks) : risks,
+      risks,
     );
   }
   const reviewLine = closeReviewLineFromReport(markdown, profile);

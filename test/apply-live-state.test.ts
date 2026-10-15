@@ -85,12 +85,16 @@ const verifiedReReview = {
   commandOrigin: "hosted_webhook",
 };
 
-for (const [name, decision, explicit] of [
-  ["an automatic event", { sourceAction: "edited" }, false],
+// The mock's default item creation time predates MAINTAINER_AUTOMATIC_FIRST_REVIEW_FROM.
+for (const [name, decision, explicit, itemCreatedAt] of [
+  ["an automatic event", { sourceAction: "edited" }, false, undefined],
+  // A maintainer item created after the cutover gets the ordinary automatic review.
+  ["an automatic event on a new item", { sourceAction: "edited" }, true, "2026-10-16T00:00:00Z"],
   [
     "a source-drift requeue without the request's status",
     { ...verifiedReReview, sourceAction: "source_drift_requeue" },
     false,
+    undefined,
   ],
   // The queue requeues an unpublished review with the claimed command fields.
   [
@@ -102,6 +106,7 @@ for (const [name, decision, explicit] of [
       commandStatusMarker: "<!-- clawsweeper-command-status:321:re_review:test -->",
     },
     true,
+    undefined,
   ],
 ] as const) {
   test(`hosted publication gates maintainer results from ${name}`, () => {
@@ -126,6 +131,7 @@ for (const [name, decision, explicit] of [
           promotionGhMock({
             number: 321,
             authorAssociation: "MEMBER",
+            itemCreatedAt,
             comment: "",
             labels: [],
             commentWriteLogPath: mutations,

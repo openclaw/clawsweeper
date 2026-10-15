@@ -815,6 +815,69 @@ test("dashboard health reads send If-None-Match and replay only after durable co
   }
 });
 
+test("dashboard source reads survive a stalled advisory ETag cache", async (t) => {
+  const originalFetch = globalThis.fetch;
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  try {
+    for (const stalled of ["lookup", "confirm", "store", "body"]) {
+      const requests: Array<string | null> = [];
+      const cacheSignals: AbortSignal[] = [];
+      let cacheStarted: () => void;
+      const started = new Promise<void>((resolve) => {
+        cacheStarted = resolve;
+      });
+      const env = {
+        GITHUB_TOKEN: "dashboard-token",
+        CLAWSWEEPER_WEBHOOK_SECRET: webhookSecret,
+        GITHUB_ETAG_CACHE: new MemoryDurableNamespace({
+          async fetch(request: Request) {
+            const operation = new URL(request.url).pathname.split("/").at(-1);
+            if (operation === stalled || (stalled === "body" && operation === "lookup")) {
+              cacheSignals.push(request.signal);
+              cacheStarted();
+              if (stalled === "body") return new Response(new ReadableStream());
+              return new Promise<Response>((_resolve, reject) => {
+                request.signal.addEventListener("abort", () => reject(request.signal.reason), {
+                  once: true,
+                });
+              });
+            }
+            if (operation === "lookup")
+              return Response.json({
+                hit: stalled === "confirm",
+                entry: { etag: '"cached"', bodyDigest: "0".repeat(64) },
+              });
+            return Response.json({ ok: true });
+          },
+        }),
+      };
+      globalThis.fetch = async (_input, init) => {
+        const etag = new Headers(init?.headers).get("if-none-match");
+        requests.push(etag);
+        return etag
+          ? new Response(null, { status: 304 })
+          : Response.json({ workflow_runs: [{ id: 42 }] }, { headers: { etag: '"new"' } });
+      };
+      const pending = githubJsonForTest(
+        env,
+        "/repos/openclaw/clawsweeper/actions/runs?per_page=100",
+      );
+      await started;
+      t.mock.timers.tick(1_001);
+      const result = await pending;
+      assert.equal(result.workflow_runs[0].id, 42, stalled);
+      assert.ok(
+        cacheSignals.every((signal) => signal.aborted),
+        stalled,
+      );
+      assert.deepEqual(requests, stalled === "confirm" ? ['"cached"', null] : [null]);
+    }
+  } finally {
+    globalThis.fetch = originalFetch;
+    t.mock.timers.reset();
+  }
+});
+
 function requiredKey(
   credentialPool: "repository_actions" | "target_app",
   route: string,

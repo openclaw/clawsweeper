@@ -239,10 +239,6 @@ export function createDecisionParser({
       body: requireReportText(record.body, `${path}.body`).trim(),
       category: requireEnum(record.category, MERGE_RISK_OPTION_CATEGORIES, `${path}.category`),
       recommended: requireBoolean(record.recommended, `${path}.recommended`),
-      automergeInstruction: requireReportText(
-        record.automergeInstruction,
-        `${path}.automergeInstruction`,
-      ).trim(),
     };
   }
 
@@ -265,16 +261,6 @@ export function createDecisionParser({
         throw new Error(`decision.mergeRiskOptions[${index}].title must not be empty`);
       if (!option.body)
         throw new Error(`decision.mergeRiskOptions[${index}].body must not be empty`);
-      if (option.automergeInstruction && option.category !== "fix_before_merge") {
-        throw new Error(
-          `decision.mergeRiskOptions[${index}].automergeInstruction requires fix_before_merge category`,
-        );
-      }
-      if (option.automergeInstruction && !option.recommended) {
-        throw new Error(
-          `decision.mergeRiskOptions[${index}].automergeInstruction requires a recommended option`,
-        );
-      }
     }
     return options;
   }

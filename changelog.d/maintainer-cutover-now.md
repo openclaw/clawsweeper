@@ -1,0 +1,1 @@
+- Give maintainer-authored items created from 2026-10-15 03:50 UTC (when the first-review rule deployed) their automatic first review instead of waiting for 12:00 UTC, and release a `maintainer_request_required` hold at the periodic parked-item check once the live item no longer requires a request, so items held in the meantime get reviewed.

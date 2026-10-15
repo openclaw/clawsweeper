@@ -1,6 +1,6 @@
 import {
-  hasReviewAutomationOptIn,
   normalizeAuthorAssociation,
+  predatesMaintainerAutomaticFirstReview,
   requiresMaintainerReviewRequest,
   verifiedMaintainerAuthorAssociation,
 } from "../src/maintainer-review-policy.ts";
@@ -24,7 +24,7 @@ export async function requiresVerifiedMaintainerReviewRequest(
   if (requiresMaintainerReviewRequest(item)) return true;
   if (
     normalizeAuthorAssociation(item.author_association) !== "CONTRIBUTOR" ||
-    hasReviewAutomationOptIn(item)
+    !predatesMaintainerAutomaticFirstReview(item)
   ) {
     return false;
   }

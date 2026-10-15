@@ -452,7 +452,6 @@ test("pause or close recommendations require the recorded review", () => {
     title: "Use the canonical PR",
     body: "Close this superseded branch.",
     recommended: true,
-    automergeInstruction: "",
   };
   const riskLabel = MERGE_RISK_LABELS[0].name;
   const typed = withReviewRecord(legacy, {

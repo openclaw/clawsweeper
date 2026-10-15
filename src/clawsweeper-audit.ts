@@ -25,7 +25,7 @@ interface AuditDependencies {
   profileAuditEnd: (profile: RepositoryProfile) => string;
   profileAuditStart: (profile: RepositoryProfile) => string;
   repoUrlFor: (repo: string) => string;
-  shouldPlanItem: (item: Pick<Item, "authorAssociation" | "labels">) => boolean;
+  shouldPlanItem: (item: Pick<Item, "authorAssociation" | "createdAt" | "labels">) => boolean;
   targetProfile: () => RepositoryProfile;
   targetRepo: () => string;
 }

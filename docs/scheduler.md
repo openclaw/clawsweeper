@@ -112,7 +112,7 @@ stable head, title, body, and draft state. Pushes and edits after that answer ne
 an explicit `@clawsweeper re-review`; the queue rejects hot/normal offers for them,
 and queue admission, dispatch, and claim enforce the same durable completion
 fact. Failed and stale-source attempts may finish the first answer. Explicit
-requests and autofix/automerge opt-ins retain their existing automation. See
+requests retain their existing automation. See
 [automation limits](limits.md) for quiet-window and persistence details.
 
 Planners can still offer candidates from report cadence: a complete-looking
@@ -264,9 +264,13 @@ existing cutoff and use the outcome/time index. State-writer acquire retries
 still refresh queued ticket liveness, but do not rewrite timestamps already
 set by admission or lease acquisition.
 
-Maintainer-authored and `maintainer`-labeled items require an explicit review
-request. Automatic intake, scheduled selection, claimed reviews, and hosted
-publication apply this policy. A verified request stays open while the queue
+Maintainer-authored and `maintainer`-labeled items created before 2026-10-15
+03:50 UTC (`MAINTAINER_AUTOMATIC_FIRST_REVIEW_FROM`) require an explicit review
+request; newer ones are admitted like everyone else's. Automatic intake,
+scheduled selection, claimed reviews, and hosted publication apply this policy,
+and an unknown creation time keeps the request rule. The periodic parked-item
+check releases a `maintainer_request_required` hold once the live item no
+longer requires a request. A verified request stays open while the queue
 finishes answering it: when the item changes before the request's review
 fully applies, including a close check that drifts after the durable review
 comment synced, the queue requeues that generation in place instead of
@@ -292,12 +296,12 @@ id that uses either one as `reserved_delivery_id`. When a retry that still
 carries a request is skipped because it lacks that verification, its review job
 answers the request's status as "Waiting" with a request to re-review, so the
 status never stays "Review in progress". A push after the request is
-answered and a scheduled pass also need a new request. Existing
-autofix/automerge labels remain opt-ins.
-The target dispatcher and direct webhook share a single reminder identity per
-item, posted only when opened or ready for review. Edits, pushes, and sweeps do
-not post reminders. Request reviews only when needed, after completing work and
-validation; agents must not automatically repeat requests.
+answered and a scheduled pass also need a new request.
+The direct webhook posts one opt-in reminder per older maintainer item, only when
+it is opened or marked ready for review; the target dispatcher posts none.
+Edits, pushes, and sweeps do not post reminders. Request reviews only when
+needed, after completing work and validation; agents must not automatically
+repeat requests.
 
 ## Workflow
 

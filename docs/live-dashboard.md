@@ -316,9 +316,9 @@ producer rollback does not remove those rows. A legacy query must explicitly
 restrict its input to `double7 = 1`. Existing complete rows have `double7 = 1`
 but no `double8`; queries must recognize either presence flag when selecting
 measured core usage. This is a source rollout order, not a deployment performed
-by this change. Keep the current maintainer-dispatch hold and raw admission
-guards unchanged throughout the rollout. Do not enable the producer until
-receiver and query qualification is complete.
+by this change. Preserve the selected base revision’s review-admission policy
+and raw admission guards throughout the rollout. Do not enable the producer
+until receiver and query qualification is complete.
 
 `REVIEW_USAGE_LAYOUT` in [`dashboard/review-usage.ts`](../dashboard/review-usage.ts)
 is the canonical source of the ordered tuples used by the writer. Analytics
@@ -485,9 +485,9 @@ Actions set. The public recent-publication route revalidates that state into
 bounded outcome counts without returning private repositories, revision
 identifiers, target keys, facts, titles, raw URLs, or failure detail.
 
-Status responses use stale-while-revalidate delivery. After the 20-second fresh
-window expires, the Worker immediately returns the last good snapshot, marks it
-with `X-ClawSweeper-Cache: stale`, and coalesces one background refresh per
+Status responses use stale-while-revalidate delivery. After the configured fresh
+window expires (60 seconds in production), the Worker immediately returns the last
+good snapshot, marks it with `X-ClawSweeper-Cache: stale`, and coalesces one background refresh per
 isolate. The Worker applies the public status projector before writing fresh or
 stale edge-cache bodies and the `StatusStore` snapshot, then applies it again on
 every cache/store read. Legacy cache bodies are reprojected, nested or unexpected
@@ -604,9 +604,14 @@ the status snapshot's Actions reads; the history cron no longer stores queue
 pressure or oldest-run values.
 
 Active-run collection reads up to three pages of 100 runs for each active status.
-A full final page with additional runs, a failed page, or inconsistent pagination
-keeps operational telemetry unknown. A complete 100-run page does not itself
-make telemetry unavailable.
+When counts or rows change during a census, it discards that attempt and reads
+the affected status again once, bypassing the refresh-local memoized pages.
+The ceiling is 30 page reads across five statuses, including fresh rebuilds.
+A full final page with additional runs, a failed page, or a second inconsistent
+census keeps operational telemetry unknown. A complete 100-run page does not
+itself make telemetry unavailable. The advisory ETag cache has a one-second deadline
+per operation; a stalled lookup, confirmation, or write falls back to the
+authoritative GitHub response without consuming the entire refresh deadline.
 
 Queued runs older than 1440 minutes are reported separately as zombies and do
 not contribute to `queued_over_threshold` or `oldest_queued_minutes`; they

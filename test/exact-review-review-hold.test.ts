@@ -309,6 +309,54 @@ test("automatic work by a private org member is held before dispatch", async () 
   });
 });
 
+test("a maintainer hold is released once the live item no longer requires a request", async () => {
+  const live = { created_at: "2026-10-01T00:00:00Z" };
+  const h = createExactReviewAdmissionHarness(() =>
+    jsonResponse({
+      state: "open",
+      title: "A PR",
+      body: "",
+      locked: false,
+      labels: [],
+      draft: false,
+      author_association: "MEMBER",
+      user: { login: "member" },
+      created_at: live.created_at,
+      head: { sha: headA },
+      base: { sha: headB },
+      updated_at: "2026-10-15T04:52:26Z",
+    }),
+  );
+  const realNow = Date.now;
+  let now = Date.parse("2026-10-15T05:00:00Z");
+  Date.now = () => now;
+  try {
+    await withExactReviewAdmissionHarness(h, async () => {
+      const key = `${repo}#172813`;
+      await enqueue(h, "member-ready", pullDecision(172813, "ready_for_review"));
+      await h.queue.alarm();
+      assert.equal((await queueState(h)).items[key]!.parkedReason, "maintainer_request_required");
+      // The periodic parked check keeps a hold that still applies.
+      now += 6 * 60_000;
+      await h.queue.alarm();
+      assert.equal((await queueState(h)).items[key]!.state, "parked");
+      assert.equal(h.dispatched.length, 0);
+      // A rule change (here, the item counts as created after the cutover) releases it.
+      live.created_at = "2026-10-15T04:52:06Z";
+      now += 6 * 60_000;
+      await h.queue.alarm();
+      assert.equal((await queueState(h)).items[key]!.state, "pending");
+      await h.queue.alarm();
+      assert.deepEqual(
+        h.dispatched.map((payload) => payload.client_payload.item_number),
+        [172813],
+      );
+    });
+  } finally {
+    Date.now = realNow;
+  }
+});
+
 test("new organic input releases a maintainer hold and is not lost during completion", async () => {
   const live = { head: headA, labels: [] as string[] };
   const h = pullHarness(live);

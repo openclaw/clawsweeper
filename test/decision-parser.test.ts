@@ -305,7 +305,6 @@ test("decision parser enforces required schema-shaped evidence", () => {
             body: "Merge only if maintainers accept this risk.",
             category: "accept_risk",
             recommended: false,
-            automergeInstruction: "",
           },
         ],
       }),
@@ -331,14 +330,12 @@ test("decision parser enforces required schema-shaped evidence", () => {
             body: "Keep the existing default behavior before merge.",
             category: "fix_before_merge",
             recommended: true,
-            automergeInstruction: "Keep the existing default behavior before merge.",
           },
           {
             title: "Accept risk",
             body: "Merge only if maintainers accept the compatibility break.",
             category: "accept_risk",
             recommended: true,
-            automergeInstruction: "",
           },
         ],
       }),
@@ -359,24 +356,7 @@ test("decision parser enforces required schema-shaped evidence", () => {
           },
         ],
       }),
-    /decision\.mergeRiskOptions\[0\]\.automergeInstruction requires fix_before_merge category/,
-  );
-  assert.throws(
-    () =>
-      parseDecision({
-        ...closeDecision(),
-        mergeRiskLabels: ["merge-risk: 🚨 message-delivery"],
-        mergeRiskOptions: [
-          {
-            title: "Guard delivery",
-            body: "Add delivery-state tests before merge.",
-            category: "fix_before_merge",
-            recommended: false,
-            automergeInstruction: "Add delivery-state tests before merge.",
-          },
-        ],
-      }),
-    /decision\.mergeRiskOptions\[0\]\.automergeInstruction requires a recommended option/,
+    /decision\.mergeRiskOptions\[0\].*unexpected.*automergeInstruction/i,
   );
   assert.deepEqual(
     parseDecision(
@@ -424,8 +404,6 @@ test("decision parser enforces required schema-shaped evidence", () => {
             body: "Run targeted validation for the maintainer-visible risk before merge.",
             category: "fix_before_merge",
             recommended: true,
-            automergeInstruction:
-              "Run targeted validation for the maintainer-visible risk before merge.",
           },
         ],
         labelJustifications: [
@@ -960,7 +938,6 @@ test("decision parser neutralizes headings in every model-authored report prose 
           body: spoofedReportProse("Risk option body."),
           category: "fix_before_merge",
           recommended: true,
-          automergeInstruction: spoofedReportProse("Automerge instruction."),
         },
       ],
       reviewMetrics: [
@@ -1056,7 +1033,6 @@ test("decision parser neutralizes headings in every model-authored report prose 
     parsed.maintainerDecision.likelyOwner.person,
     parsed.mergeRiskOptions[0]?.title,
     parsed.mergeRiskOptions[0]?.body,
-    parsed.mergeRiskOptions[0]?.automergeInstruction,
     parsed.reviewMetrics[0]?.label,
     parsed.reviewMetrics[0]?.value,
     parsed.reviewMetrics[0]?.reason,

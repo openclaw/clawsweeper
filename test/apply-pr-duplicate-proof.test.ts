@@ -834,7 +834,6 @@ test("apply-decisions corrects stale close comments when the canonical PR closed
         body: `Use ${canonicalUrl} as the single landing path.`,
         category: "pause_or_close",
         recommended: true,
-        automergeInstruction: "",
       },
     ];
     const reportMarkdown = withReviewRecord(

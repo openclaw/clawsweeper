@@ -1041,20 +1041,17 @@ function listCandidateComments() {
       recentComments: [...commentIds]
         .map((commentId) => fetchIssueComment(commentId))
         .filter((comment) => comment !== null),
-      durableComments: [],
       maxComments,
     });
   }
   if (itemNumbers.size > 0) {
     return selectCommentsForRouting({
       recentComments: [...itemNumbers].flatMap((number) => issueCommentsFor(number)),
-      durableComments: [],
       maxComments,
     });
   }
   return selectCommentsForRouting({
     recentComments: listRecentComments(),
-    durableComments: [],
     maxComments,
   });
 }

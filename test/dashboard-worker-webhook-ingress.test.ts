@@ -168,9 +168,17 @@ test("maintainer item events stay out of the queue and share one opt-in reminder
     author_association: "CONTRIBUTOR",
     user: { login: "outside-author" },
   });
+  // A maintainer item created from the cutover is queued like any other, with no
+  // permission read and no opt-in reminder.
+  await send("issues", "opened", {
+    ...issue,
+    number: 47,
+    author_association: "MEMBER",
+    created_at: "2026-10-16T00:00:00Z",
+  });
   await Promise.all(pending);
   assert.deepEqual(permissionReads, ["private-member", "outside-author"]);
-  assert.equal(queued.length, 2);
+  assert.equal(queued.length, 3);
   assert.equal(posts, 2);
 });
 

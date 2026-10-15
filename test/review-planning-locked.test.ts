@@ -58,7 +58,7 @@ function planning(listings: string[][]) {
   } as never);
 }
 
-test("scheduled planning excludes locked and maintainer items unless opted in", () => {
+test("scheduled planning excludes locked and maintainer items regardless of automation labels", () => {
   for (const hotIntake of [false, true]) {
     const listings: string[][] = [];
     const plan = planning(listings).planCandidates({
@@ -74,10 +74,10 @@ test("scheduled planning excludes locked and maintainer items unless opted in", 
       plan.candidates
         .map((item: { number: number }) => item.number)
         .sort((a: number, b: number) => a - b),
-      [56313, 56316],
+      [56313],
       `${hotIntake ? "hot" : "normal"} planning skips locked items`,
     );
-    assert.equal(plan.dueBacklog, 2);
+    assert.equal(plan.dueBacklog, 1);
     assert.ok(listings.length > 0);
     // The skip depends on the open-item projection carrying the lock bit.
     for (const args of listings) assert.match(String(args.at(-1)), /,locked\}$/);
@@ -95,6 +95,6 @@ test("scheduled planning excludes locked and maintainer items unless opted in", 
     selected.candidates
       .map((item: { number: number }) => item.number)
       .sort((a: number, b: number) => a - b),
-    [56313, 56316],
+    [56313],
   );
 });
