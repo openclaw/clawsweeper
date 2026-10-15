@@ -26,6 +26,8 @@ type Args = {
   recordsUrl?: string;
   recordsRepoSlugs?: string[];
   recordsItemNumbers?: number[];
+  maxExportPages?: number;
+  maxExportBytes?: number;
   hydrateRecords?: boolean;
   hydrateStateBlobs?: boolean;
   hydrateGitState?: boolean;
@@ -87,6 +89,8 @@ export async function hydrateState(
           webhookSecret,
           repoSlugs,
           cacheRoot: env.CLAWSWEEPER_RECORDS_CACHE_DIR,
+          ...(args.maxExportPages === undefined ? {} : { maxExportPages: args.maxExportPages }),
+          ...(args.maxExportBytes === undefined ? {} : { maxExportBytes: args.maxExportBytes }),
           fetch: fetchImpl,
         })
       : await materializeWorkerItems({
@@ -156,6 +160,8 @@ function parseArgs(argv: string[]): Args {
         "--records-url",
         "--records-item-number",
         "--records-repo-slugs",
+        "--max-export-pages",
+        "--max-export-bytes",
       ].includes(arg)
     ) {
       normalized.push(`${arg}=${requiredCliValue(argv, ++index, arg)}`);
@@ -178,9 +184,18 @@ function parseArgs(argv: string[]): Args {
       "skip-git-state": { type: "boolean" },
       "records-item-number": { type: "string" },
       "records-repo-slugs": { type: "string" },
+      "max-export-pages": { type: "string" },
+      "max-export-bytes": { type: "string" },
     },
   });
   const itemNumber = values["records-item-number"];
+  const exportLimit = (name: "max-export-pages" | "max-export-bytes") => {
+    const value = values[name];
+    if (value === undefined) return undefined;
+    if (!/^[1-9]\d*$/.test(value) || !Number.isSafeInteger(Number(value)))
+      throw new Error(`--${name} requires a positive safe integer`);
+    return Number(value);
+  };
   const itemNumbers = itemNumber?.split(",").map((value) => {
     if (!/^\d+$/.test(value) || !Number.isSafeInteger(Number(value)) || Number(value) < 1) {
       throw new Error("--records-item-number requires positive safe integers separated by commas");
@@ -195,6 +210,8 @@ function parseArgs(argv: string[]): Args {
     hydrateStateBlobs: values["skip-state-blobs"] ? false : undefined,
     hydrateGitState: values["skip-git-state"] ? false : undefined,
     recordsItemNumbers: itemNumbers,
+    maxExportPages: exportLimit("max-export-pages"),
+    maxExportBytes: exportLimit("max-export-bytes"),
     ...(values["records-repo-slugs"] === undefined
       ? {}
       : { recordsRepoSlugs: parseRepoSlugs(values["records-repo-slugs"]) ?? [] }),

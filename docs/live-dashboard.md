@@ -850,6 +850,21 @@ for a selected repository; scheduled and manual snapshots share a concurrency
 group so snapshot runs do not overlap. Full record hydration replays changes
 since the latest snapshot.
 
+The static dashboard rebuilds every fifteen minutes and refreshes its public
+corpus aggregate when it is at least six hours old. A missing, invalid, or
+future-dated aggregate also requires hydration; manual `refresh_corpus` forces
+it immediately. Only the public aggregate is cached between builds. Hydration
+or aggregation failure stops the build before deployment, leaving the previous
+site deployed rather than publishing an old aggregate under a new build time.
+Snapshot downloads pass only committed range metadata through the review queue;
+the outer Worker streams the archive bytes directly from R2. Dashboard hydration
+shares a 50-request, 100 MiB delta-export budget across all repositories, even
+when snapshots exist. Repeated IDs and retry responses consume that budget.
+If it is exhausted, refresh the named repository's canonical snapshot with
+`node scripts/worker-records.ts snapshot-upload --repo-slug <slug>` and retry
+the dashboard build. Ordinary hydration and snapshot production keep their
+existing defaults.
+
 The workflow runs `node scripts/worker-records.ts snapshot-upload --repo-slug
 <slug>`: it hydrates the latest snapshot plus export delta into a temporary tree,
 streams the same ustar/gzip layout to disk on the runner, then uploads and

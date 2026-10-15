@@ -114,8 +114,7 @@ import {
 import {
   ExactReviewRecordSnapshotStore,
   RECORD_SNAPSHOT_DOWNLOAD_MAX_BYTES,
-  SnapshotRegistrationError,
-  SnapshotStoreUnavailableError,
+  snapshotFailure,
   type RecordSnapshot,
 } from "./record-snapshots.ts";
 import {
@@ -3939,27 +3938,18 @@ export class ExactReviewQueue {
       }
     }
 
-    if (request.method === "POST" && url.pathname === "/records/snapshots/chunk") {
+    if (request.method === "POST" && url.pathname === "/records/snapshots/range") {
       const body = objectValue(await request.json().catch(() => null));
       const repoSlug = validateRepoSlug(body.repoSlug);
       if (!repoSlug) return json({ error: "invalid_snapshot_repository" }, 400);
       try {
-        const result = await this.recordSnapshotStore.readRange(
+        const result = this.recordSnapshotStore.resolveRange(
           repoSlug,
           Number(body.revisionWatermark),
           Number(body.offset),
           Number(body.length),
         );
-        return new Response(result.object.body, {
-          status: 206,
-          headers: {
-            "accept-ranges": "bytes",
-            "content-length": String(result.length),
-            "content-range": `bytes ${Number(body.offset)}-${Number(body.offset) + result.length - 1}/${result.snapshot.bytes}`,
-            "content-type": "application/gzip",
-            "x-clawsweeper-snapshot-revision": String(result.snapshot.revisionWatermark),
-          },
-        });
+        return json(result);
       } catch (error) {
         return snapshotErrorResponse(error);
       }
@@ -19826,32 +19816,8 @@ function snapshotJson(snapshot: RecordSnapshot) {
 }
 
 function snapshotErrorResponse(error: unknown) {
-  if (error instanceof SnapshotRegistrationError) {
-    return json({ error: error.message, snapshotStoreAvailable: true }, error.status);
-  }
-  if (error instanceof SnapshotStoreUnavailableError) {
-    console.error("snapshot_store_unavailable");
-    return json(
-      {
-        error: "snapshot_store_unavailable",
-        snapshotStoreAvailable: false,
-        detail: "STATE_SNAPSHOTS is not available",
-      },
-      503,
-    );
-  }
-  if (error instanceof RangeError) {
-    const notFound = error.message === "snapshot not found";
-    return json(
-      {
-        error: notFound ? "snapshot_not_found" : "invalid_snapshot_range",
-        snapshotStoreAvailable: true,
-      },
-      notFound ? 404 : 400,
-    );
-  }
-  console.error("snapshot_request_failed");
-  return json({ error: "snapshot_request_failed", snapshotStoreAvailable: true }, 500);
+  const { body, status } = snapshotFailure(error);
+  return json(body, status);
 }
 
 function jsonText(value: string, status = 200) {

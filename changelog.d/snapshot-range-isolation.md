@@ -1,0 +1,1 @@
+- Stream canonical record snapshots directly from R2 through the outer Worker, keeping download bytes outside the review queue Durable Object, and automatically refresh the dashboard corpus after six hours while preserving the deployed site on refresh failures.

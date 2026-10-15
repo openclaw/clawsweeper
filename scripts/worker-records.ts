@@ -154,7 +154,20 @@ type SignedRequestOptions = {
 
 type SignedPostOptions = Omit<SignedRequestOptions, "method"> & {
   validateResponse?: (value: unknown) => boolean;
+  readResponseBody?: (response: Response) => Promise<string>;
+  beforeRequest?: () => void;
 };
+
+type ExportBudget = { pages: number; bytes: number; maxPages?: number; maxBytes?: number };
+
+class WorkerRecordExportBudgetError extends Error {
+  constructor(repoSlug: string, unit: "pages" | "bytes", maximum: number) {
+    super(
+      `Canonical record export budget of ${maximum} ${unit} exhausted at ${repoSlug}; refresh its snapshot with node scripts/worker-records.ts snapshot-upload --repo-slug ${repoSlug} before retrying`,
+    );
+    this.name = "WorkerRecordExportBudgetError";
+  }
+}
 
 // Cold hydration (no stored snapshot yet) replays the full journal from
 // revision 0, so it must stay a small-repo affordance: a slug whose record set
@@ -188,6 +201,7 @@ type ExportWorkerRecordsOptions = {
   sinceRevision?: number;
   limit?: number;
   maxRecords?: number;
+  budget?: ExportBudget;
   fetch?: typeof globalThis.fetch;
 };
 
@@ -235,6 +249,38 @@ async function visitWorkerRecords(
         limit: options.limit ?? 200,
       },
       fetch: options.fetch,
+      ...(!options.budget ||
+      (options.budget.maxPages === undefined && options.budget.maxBytes === undefined)
+        ? {}
+        : {
+            beforeRequest: () => {
+              if (
+                options.budget!.maxBytes !== undefined &&
+                options.budget!.bytes >= options.budget!.maxBytes
+              )
+                throw new WorkerRecordExportBudgetError(
+                  options.repoSlug,
+                  "bytes",
+                  options.budget!.maxBytes,
+                );
+              if (
+                options.budget!.maxPages !== undefined &&
+                options.budget!.pages >= options.budget!.maxPages
+              )
+                throw new WorkerRecordExportBudgetError(
+                  options.repoSlug,
+                  "pages",
+                  options.budget!.maxPages!,
+                );
+              options.budget!.pages++;
+            },
+          }),
+      ...(options.budget?.maxBytes === undefined
+        ? {}
+        : {
+            readResponseBody: (response: Response) =>
+              readExportBody(response, options.budget!, options.repoSlug),
+          }),
       validateResponse: (value) => {
         const page = value as Partial<ExportPage> | null;
         if (
@@ -308,6 +354,8 @@ type MaterializeWorkerRecordsOptions = {
   webhookSecret: string;
   repoSlugs: readonly string[];
   cacheRoot?: string;
+  maxExportPages?: number;
+  maxExportBytes?: number;
   fetch?: typeof globalThis.fetch;
   log?: (line: string) => void;
 };
@@ -324,6 +372,17 @@ async function materializeRecords(
   // Both paths retain the same staging, watermark and snapshot/delta lifecycle.
   const coldRecordLimit =
     purpose === "snapshot" ? SNAPSHOT_MAX_IDENTITIES : COLD_HYDRATION_MAX_RECORDS;
+  const budget: ExportBudget = { pages: 0, bytes: 0 };
+  for (const [field, maximum] of [
+    ["maxPages", options.maxExportPages],
+    ["maxBytes", options.maxExportBytes],
+  ] as const) {
+    if (maximum !== undefined) {
+      if (!Number.isSafeInteger(maximum) || maximum < 1)
+        throw new Error(`${field} must be a positive safe integer`);
+      budget[field] = maximum;
+    }
+  }
   const log = options.log ?? ((line: string) => console.error(line));
   mkdirSync(options.worktreeRoot, { recursive: true });
   const recordsRoot = path.join(options.worktreeRoot, "records");
@@ -393,6 +452,7 @@ async function materializeRecords(
             repoSlug,
             sinceRevision: storedSnapshot?.revisionWatermark ?? 0,
             ...(storedSnapshot ? {} : { maxRecords: coldRecordLimit }),
+            budget,
             fetch: options.fetch,
           },
           (record) => applyWorkerRecord(stagedRepoRoot, record),
@@ -1139,6 +1199,33 @@ function signedWorkerRecordReadPost<T>(options: SignedPostOptions): Promise<T> {
   );
 }
 
+// The budget spans repositories and retries, including repeated record IDs.
+// Cancel as soon as it is exceeded; retaining a snapshot never exempts deltas.
+async function readExportBody(response: Response, budget: ExportBudget, repoSlug: string) {
+  if (!response.body) return "";
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let text = "";
+  try {
+    while (true) {
+      const chunk = await reader.read();
+      if (chunk.done) break;
+      budget.bytes += chunk.value.byteLength;
+      if (budget.maxBytes !== undefined && budget.bytes > budget.maxBytes) {
+        await reader.cancel();
+        throw new WorkerRecordExportBudgetError(repoSlug, "bytes", budget.maxBytes);
+      }
+      text += decoder.decode(chunk.value, { stream: true });
+    }
+    return text + decoder.decode();
+  } catch (error) {
+    if (error instanceof WorkerRecordExportBudgetError) throw error;
+    return "";
+  } finally {
+    reader.releaseLock();
+  }
+}
+
 function recordReadDiagnostic(
   options: { path: string; body?: unknown },
   attempt: number,
@@ -1201,6 +1288,7 @@ async function signedPostWithRetryMode<T>(
 ): Promise<T> {
   const startedAt = Date.now();
   for (let attempt = 1; ; attempt += 1) {
+    options.beforeRequest?.();
     let response: Response;
     try {
       response = unifiedAttemptBudget
@@ -1223,7 +1311,9 @@ async function signedPostWithRetryMode<T>(
     }
     // Read the body exactly once; a Response body is a one-shot stream and a
     // later clone() of a consumed response throws, masking the real failure.
-    const bodyText = await response.text().catch(() => "");
+    const bodyText = options.readResponseBody
+      ? await options.readResponseBody(response)
+      : await response.text().catch(() => "");
     if (!response.ok) {
       if (unifiedAttemptBudget) {
         recordReadDiagnostic(

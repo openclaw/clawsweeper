@@ -5,6 +5,13 @@ for review records, R2 is canonical for immutable action ledgers and published
 assets, and the `state` branch of `openclaw/clawsweeper-state` retains only the
 operational paths that have not migrated yet.
 
+Snapshot downloads authenticate at the outer Worker. The review queue resolves
+the requested repository, revision, and bounded byte range against its committed
+snapshot descriptor, then returns metadata only. The outer Worker streams the
+exact R2 object range. A descriptor or object removed by retention still fails
+closed; downloads never select another snapshot or stream archive bytes through
+the queue object.
+
 Record paths use the repository profile's lowercase slug: the owner/repository
 separator becomes a hyphen, while dots, underscores, and existing hyphens remain
 literal. For example, `OpenClaw/Some.Repo_Debug` uses

@@ -7,13 +7,40 @@ globalThis.fetch = async () => { throw new Error("proof forbids outbound fetch")
 export class ExactReviewQueue {
   constructor(state, env) {
     this.state = state;
+    this.ranges = [];
+    const bucket = env.STATE_SNAPSHOTS;
+    this.bucket = bucket;
+    this.deleteAfterRange = false;
     this.queue = new ProductionQueue(state, {
       ...env, hostedTargetPredicate: () => true, hostedPublicTargetProbe: async () => "public",
+      STATE_SNAPSHOTS: {
+        createMultipartUpload: bucket.createMultipartUpload.bind(bucket),
+        head: bucket.head.bind(bucket),
+        delete: bucket.delete.bind(bucket),
+        get: () => { throw new Error("snapshot payload entered the queue object"); },
+      },
     });
   }
   async alarm() { await this.state.storage.deleteAlarm(); }
   async fetch(request) {
-    if (new URL(request.url).pathname !== "/__proof/seed") return this.queue.fetch(request);
+    const pathname = new URL(request.url).pathname;
+    if (pathname === "/__proof/ranges") return Response.json(this.ranges);
+    if (pathname === "/__proof/arm-delete") {
+      this.deleteAfterRange = true;
+      return Response.json({ armed: true });
+    }
+    if (pathname === "/records/snapshots/chunk") throw new Error("retired queue chunk route used");
+    if (pathname === "/records/snapshots/range") {
+      const response = await this.queue.fetch(request);
+      this.ranges.push({ status: response.status, bytes: (await response.clone().text()).length });
+      if (this.deleteAfterRange && response.ok) {
+        this.deleteAfterRange = false;
+        const { snapshot } = await response.clone().json();
+        await this.bucket.delete(snapshot.objectKey);
+      }
+      return response;
+    }
+    if (pathname !== "/__proof/seed") return this.queue.fetch(request);
     await this.queue.fetch(new Request("https://queue/records/export", {
       method: "POST", body: JSON.stringify({ repoSlug: "fixture-repo" }),
     }));
@@ -37,10 +64,16 @@ export class ExactReviewQueue {
 }
 
 export default {
-  fetch(request, env, context) {
+  async fetch(request, env, context) {
     if (new URL(request.url).pathname === "/__proof/ready") return Response.json({ nonce: env.PROOF_NONCE });
-    if (new URL(request.url).pathname === "/__proof/seed")
+    if (["/__proof/seed", "/__proof/ranges", "/__proof/arm-delete"].includes(new URL(request.url).pathname))
       return env.EXACT_REVIEW_QUEUE.get(env.EXACT_REVIEW_QUEUE.idFromName("global")).fetch(request);
-    return application.fetch(request, env, context);
+    const response = await application.fetch(request, env, context);
+    if (new URL(request.url).pathname.endsWith("/snapshots/latest") && response.ok) {
+      const value = await response.json();
+      if (value.snapshot) value.snapshot.access.maxChunkBytes = 1024;
+      return Response.json(value);
+    }
+    return response;
   },
 };

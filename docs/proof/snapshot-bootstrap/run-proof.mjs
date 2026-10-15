@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { createHash, randomUUID } from "node:crypto";
+import { createHash, createHmac, randomUUID } from "node:crypto";
 import { spawn, execFileSync } from "node:child_process";
 import { once } from "node:events";
 import { createServer } from "node:http";
@@ -86,10 +86,21 @@ try {
   assert.equal(snapshot.revisionWatermark, rows.length);
   const hydrated = await materializeWorkerRecords(options);
   for (const row of rows) assert.deepEqual(readFileSync(path.join(hydrated.recordsRoot, "fixture-repo", "items", `${row.id}.md`)), Buffer.from(row.content));
+  const ranges = await (await fetch(baseUrl + "/__proof/ranges")).json();
+  assert.ok(ranges.length > 1, "hydration authorizes multiple snapshot chunks in the queue");
+  assert.ok(ranges.every((range) => range.status === 200 && range.bytes < 1024), "queue responses contain bounded descriptor metadata only");
+  assert.equal((await fetch(baseUrl + "/__proof/arm-delete", { method: "POST" })).status, 200);
+  const rangeBody = JSON.stringify({ repoSlug: "fixture-repo", revisionWatermark: snapshot.revisionWatermark, offset: 0, length: 1024 });
+  const deleted = await fetch(baseUrl + "/internal/state/records/snapshots/chunk", { method: "POST", body: rangeBody,
+    headers: { "x-clawsweeper-exact-review-signature": `sha256=${createHmac("sha256", secret).update(rangeBody).digest("hex")}` } });
+  assert.equal(deleted.status, 503);
+  assert.equal((await deleted.json()).error, "snapshot_store_unavailable");
   console.log(JSON.stringify({ source: execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim(),
     sourceDigest: createHash("sha256").update(readFileSync("scripts/worker-records.ts")).digest("hex"),
     runtime: "workerd local SQLite/R2", node: process.version, records: rows.length,
     coldReader: "refused", snapshotCli: "registered", hydratedBytes: "exact", revisionWatermark: snapshot.revisionWatermark,
+    snapshotPayloadOwner: "outer Worker", queueRangeCalls: ranges.length, queueRangeMaxBytes: Math.max(...ranges.map((range) => range.bytes)),
+    prunedAfterAuthorization: "503 snapshot_store_unavailable",
     limit: "controlled loopback fixture; no production Cloudflare throughput claim" }));
 } finally {
   await cleanup();

@@ -1762,10 +1762,27 @@ test("record snapshots authenticate, stream multipart R2 objects, serve ranges, 
 
   const storage = new MemoryDurableStorage();
   const bucket = new MemoryR2Bucket();
-  const queue = new ExactReviewQueue({ storage }, { STATE_SNAPSHOTS: bucket });
+  const queue = new ExactReviewQueue(
+    { storage },
+    {
+      STATE_SNAPSHOTS: {
+        createMultipartUpload: bucket.createMultipartUpload.bind(bucket),
+        head: bucket.head.bind(bucket),
+        get: async () => assert.fail("snapshot bytes must bypass the queue object"),
+        delete: bucket.delete.bind(bucket),
+      },
+    },
+  );
+  const queuePaths: string[] = [];
   const env = {
     CLAWSWEEPER_WEBHOOK_SECRET: secret,
-    EXACT_REVIEW_QUEUE: new MemoryDurableNamespace(queue),
+    STATE_SNAPSHOTS: bucket,
+    EXACT_REVIEW_QUEUE: new MemoryDurableNamespace({
+      fetch(request: Request) {
+        queuePaths.push(new URL(request.url).pathname);
+        return queue.fetch(request);
+      },
+    }),
   };
   const records = [
     { sha: "d".repeat(40), content: "snapshot commit one\n" },
@@ -1833,6 +1850,56 @@ test("record snapshots authenticate, stream multipart R2 objects, serve ranges, 
   assert.match(tar.toString("utf8"), new RegExp(`commits/${"d".repeat(40)}\\.md`));
   assert.match(tar.toString("utf8"), /snapshot commit one/);
   assert.match(tar.toString("utf8"), new RegExp(`commits/${"e".repeat(40)}\\.md`));
+
+  const chunkPath = "/internal/state/records/snapshots/chunk";
+  const readChunk = (overrides = {}, readEnv: Record<string, unknown> = env) =>
+    worker.fetch(
+      signedStateAppendRequest(chunkPath, { ...chunkBody, ...overrides }, secret),
+      readEnv,
+    );
+  assert.equal(queuePaths.at(-1), "/records/snapshots/range");
+  assert.ok(!queuePaths.includes("/records/snapshots/chunk"));
+
+  const queueReads = queuePaths.length;
+  const unsignedChunk = await worker.fetch(
+    stateAppendQueueRequest(chunkPath, chunkBody, "https://clawsweeper.openclaw.ai"),
+    env,
+  );
+  assert.equal(unsignedChunk.status, 401);
+  assert.equal(queuePaths.length, queueReads);
+
+  const tail = await readChunk({ offset: 3, length: latestSnapshot.bytes });
+  assert.equal(tail.status, 206);
+  assert.equal(tail.headers.get("content-length"), String(latestSnapshot.bytes - 3));
+  assert.equal(
+    tail.headers.get("content-range"),
+    `bytes 3-${latestSnapshot.bytes - 1}/${latestSnapshot.bytes}`,
+  );
+  assert.equal(
+    tail.headers.get("x-clawsweeper-snapshot-revision"),
+    String(latestSnapshot.revisionWatermark),
+  );
+  for (const invalid of [
+    { offset: -1 },
+    { offset: 0.5 },
+    { offset: latestSnapshot.bytes },
+    { length: 0 },
+    { length: 33 * 1024 * 1024 },
+  ]) {
+    const response = await readChunk(invalid);
+    assert.equal(response.status, 400);
+    assert.equal((await response.json()).error, "invalid_snapshot_range");
+  }
+  const missing = await readChunk({ revisionWatermark: latestSnapshot.revisionWatermark + 1 });
+  assert.equal(missing.status, 404);
+  assert.equal((await missing.json()).error, "snapshot_not_found");
+  const missingBinding = await readChunk({}, { ...env, STATE_SNAPSHOTS: undefined });
+  assert.equal(missingBinding.status, 503);
+  assert.equal((await missingBinding.json()).error, "snapshot_store_unavailable");
+  await bucket.delete(latestSnapshot.objectKey);
+  const pruned = await readChunk();
+  assert.equal(pruned.status, 503);
+  assert.equal((await pruned.json()).error, "snapshot_store_unavailable");
 });
 
 test("exact-review queue counts only work that successfully leaves each lane", async () => {

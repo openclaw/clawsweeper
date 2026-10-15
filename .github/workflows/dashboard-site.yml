@@ -10,8 +10,8 @@ on:
     inputs:
       refresh_corpus:
         description: >-
-          Re-read every canonical record (heavy: the export runs inside the exact-review queue
-          Durable Object and slows reviews while it runs). Use at a quiet hour.
+          Refresh the canonical snapshot-and-delta corpus now. Scheduled builds refresh it
+          automatically after six hours.
         type: boolean
         default: false
       backfill_days:
@@ -94,29 +94,23 @@ jobs:
           key: dashboard-state-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: dashboard-state-
 
-      # Only on request: a full record export loads the production queue Durable Object.
+      - name: Select corpus refresh
+        id: corpus-refresh
+        run: node dashboard-site/scripts/corpus-refresh.ts .dashboard-state/corpus.json '${{ inputs.refresh_corpus == true }}' >> "$GITHUB_OUTPUT"
+
+      # Snapshot bytes stream from R2 through the outer Worker; the queue serves
+      # committed range metadata and only the changes since each snapshot.
       - name: Hydrate canonical records read-only
-        if: ${{ inputs.refresh_corpus == true }}
+        if: ${{ steps.corpus-refresh.outputs.refresh == 'true' }}
         env:
           CLAWSWEEPER_RECORDS_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
           CLAWSWEEPER_RECORDS_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
-        run: node scripts/hydrate-state.ts --skip-git-state --skip-state-blobs
-
-      # Until the first refresh_corpus run there is nothing to show: skip quietly, do not fail.
-      - name: Check corpus
-        id: corpus
-        run: |
-          if [ "${{ inputs.refresh_corpus == true }}" = "true" ] || [ -f .dashboard-state/corpus.json ]; then
-            echo "ready=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "::notice::No cached corpus yet; run this workflow once with refresh_corpus at a quiet hour."
-            echo "ready=false" >> "$GITHUB_OUTPUT"
-          fi
+        run: node scripts/hydrate-state.ts --skip-git-state --skip-state-blobs --max-export-pages 50 --max-export-bytes 104857600
 
       # Only a missing history needs the app's higher rate limit, for the 2-day bootstrap.
       - name: Create bootstrap token
         id: bootstrap
-        if: ${{ steps.corpus.outputs.ready == 'true' && steps.state.outputs.cache-matched-key == '' }}
+        if: ${{ steps.state.outputs.cache-matched-key == '' }}
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
           client-id: ${{ env.CLAWSWEEPER_APP_CLIENT_ID }}
@@ -126,12 +120,11 @@ jobs:
           permission-actions: read
 
       - name: Build dashboard data
-        if: ${{ steps.corpus.outputs.ready == 'true' }}
         working-directory: dashboard-site
         env:
           GITHUB_TOKEN: ${{ github.token }}
           BOOTSTRAP_GITHUB_TOKEN: ${{ steps.bootstrap.outputs.token }}
-        run: node scripts/build-data.ts --state ../.dashboard-state ${{ inputs.refresh_corpus == true && '--records ../records' || '' }} --backfill-days "${{ inputs.backfill_days || 0 }}"
+        run: node scripts/build-data.ts --state ../.dashboard-state ${{ steps.corpus-refresh.outputs.refresh == 'true' && '--records ../records' || '' }} --backfill-days "${{ inputs.backfill_days || 0 }}"
 
       - name: Save dashboard state
         if: ${{ always() && hashFiles('.dashboard-state/actions.json') != '' }}
@@ -141,12 +134,10 @@ jobs:
           key: dashboard-state-${{ github.run_id }}-${{ github.run_attempt }}
 
       - name: Build site
-        if: ${{ steps.corpus.outputs.ready == 'true' }}
         working-directory: dashboard-site
         run: pnpm run build
 
       - name: Publish to Cloudflare Pages
-        if: ${{ steps.corpus.outputs.ready == 'true' }}
         working-directory: dashboard-site
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.OPENCLAW_CLOUDFLARE_PAGES_API_TOKEN }}

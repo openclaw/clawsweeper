@@ -53,8 +53,8 @@ async function publicApi(path: string) {
   }
 }
 
-// Records are read only when a run was asked to refresh the corpus: the export runs inside
-// the exact-review queue Durable Object, so every other build reuses the cached aggregate.
+// The workflow refreshes this aggregate when it is six hours old using canonical
+// R2 snapshots plus journal deltas; intervening builds reuse the public-only cache.
 const corpusPath = join(stateDir, 'corpus.json');
 let cache: CorpusCache;
 if (values.records) {
@@ -65,7 +65,7 @@ if (values.records) {
   await writeFile(corpusPath, JSON.stringify(cache));
 } else {
   const cached = await readJson<CorpusCache | null>(corpusPath, null);
-  if (cached?.version !== 2) throw new Error('no cached corpus: run the workflow once with refresh_corpus');
+  if (cached?.version !== 2) throw new Error('no cached corpus: the canonical corpus refresh must succeed before publishing');
   cache = cached;
 }
 

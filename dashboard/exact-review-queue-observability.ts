@@ -56,7 +56,7 @@ const EXACT_REVIEW_QUEUE_ENDPOINTS = new Map<string, string>([
   ["/records/export", "records_export"],
   ["/records/list", "records_list"],
   ["/records/slugs", "records_slugs"],
-  ["/records/snapshots/chunk", "records_snapshots_chunk"],
+  ["/records/snapshots/range", "records_snapshots_range"],
   ["/records/snapshots/latest", "records_snapshots_latest"],
   ["/records/snapshots/trigger", "records_snapshots_trigger"],
   ["/records/tuples", "records_tuples"],

@@ -57,6 +57,12 @@ export type RecordSnapshot = {
   createdAt: number;
 };
 
+export type RecordSnapshotRange = {
+  snapshot: RecordSnapshot;
+  offset: number;
+  length: number;
+};
+
 export class SnapshotStoreUnavailableError extends Error {
   constructor(message = "snapshot store unavailable", options?: ErrorOptions) {
     super(message, options);
@@ -263,13 +269,13 @@ export class ExactReviewRecordSnapshotStore {
     return snapshot;
   }
 
-  async readRange(
+  resolveRange(
     repoSlug: string,
     revisionWatermark: number,
     offset: number,
     length: number,
-  ): Promise<{ snapshot: RecordSnapshot; object: SnapshotR2Object; length: number }> {
-    const bucket = this.requireBucket();
+  ): RecordSnapshotRange {
+    this.requireBucket();
     if (
       !Number.isSafeInteger(revisionWatermark) ||
       revisionWatermark < 0 ||
@@ -284,16 +290,7 @@ export class ExactReviewRecordSnapshotStore {
     const snapshot = this.findSync(repoSlug, revisionWatermark);
     if (!snapshot) throw new RangeError("snapshot not found");
     if (offset >= snapshot.bytes) throw new RangeError("snapshot range starts past end");
-    const boundedLength = Math.min(length, snapshot.bytes - offset);
-    try {
-      const object = await bucket.get(snapshot.objectKey, {
-        range: { offset, length: boundedLength },
-      });
-      if (!object) throw new Error(`snapshot object is missing: ${snapshot.objectKey}`);
-      return { snapshot, object, length: boundedLength };
-    } catch (error) {
-      throw unavailable(error);
-    }
+    return { snapshot, offset, length: Math.min(length, snapshot.bytes - offset) };
   }
 
   private requireBucket() {
@@ -376,6 +373,64 @@ export class ExactReviewRecordSnapshotStore {
       ...rows.map((row) => Number(row.snapshot_id)),
     );
   }
+}
+
+// Only the queue's committed descriptor authorizes a key and range. The outer
+// Worker streams R2 bytes so downloads never occupy the review queue object.
+export async function readRecordSnapshotRange(bucketBinding: unknown, range: RecordSnapshotRange) {
+  const bucket = bucketBinding as Pick<SnapshotR2Bucket, "get"> | undefined;
+  if (!bucket?.get) throw new SnapshotStoreUnavailableError();
+  const { snapshot, offset, length } = range;
+  try {
+    const object = await bucket.get(snapshot.objectKey, { range: { offset, length } });
+    // Pruning can remove the object after authorization. Preserve the existing
+    // unavailable result instead of serving another snapshot under this revision.
+    if (!object) throw new Error(`snapshot object is missing: ${snapshot.objectKey}`);
+    return new Response(object.body, {
+      status: 206,
+      headers: {
+        "accept-ranges": "bytes",
+        "content-length": String(length),
+        "content-range": `bytes ${offset}-${offset + length - 1}/${snapshot.bytes}`,
+        "content-type": "application/gzip",
+        "x-clawsweeper-snapshot-revision": String(snapshot.revisionWatermark),
+      },
+    });
+  } catch (error) {
+    throw unavailable(error);
+  }
+}
+
+export function snapshotFailure(error: unknown): {
+  body: Record<string, unknown>;
+  status: number;
+} {
+  if (error instanceof SnapshotRegistrationError) {
+    return { body: { error: error.message, snapshotStoreAvailable: true }, status: error.status };
+  }
+  if (error instanceof SnapshotStoreUnavailableError) {
+    console.error("snapshot_store_unavailable");
+    return {
+      body: {
+        error: "snapshot_store_unavailable",
+        snapshotStoreAvailable: false,
+        detail: "STATE_SNAPSHOTS is not available",
+      },
+      status: 503,
+    };
+  }
+  if (error instanceof RangeError) {
+    const notFound = error.message === "snapshot not found";
+    return {
+      body: {
+        error: notFound ? "snapshot_not_found" : "invalid_snapshot_range",
+        snapshotStoreAvailable: true,
+      },
+      status: notFound ? 404 : 400,
+    };
+  }
+  console.error("snapshot_request_failed");
+  return { body: { error: "snapshot_request_failed", snapshotStoreAvailable: true }, status: 500 };
 }
 
 function snapshotBucket(value: unknown): SnapshotR2Bucket | null {
