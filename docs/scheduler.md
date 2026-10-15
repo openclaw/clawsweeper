@@ -265,10 +265,12 @@ still refresh queued ticket liveness, but do not rewrite timestamps already
 set by admission or lease acquisition.
 
 Maintainer-authored and `maintainer`-labeled items created before 2026-10-15
-12:00 UTC (`MAINTAINER_AUTOMATIC_FIRST_REVIEW_FROM`) require an explicit review
+03:50 UTC (`MAINTAINER_AUTOMATIC_FIRST_REVIEW_FROM`) require an explicit review
 request; newer ones are admitted like everyone else's. Automatic intake,
 scheduled selection, claimed reviews, and hosted publication apply this policy,
-and an unknown creation time keeps the request rule. A verified request stays open while the queue
+and an unknown creation time keeps the request rule. The periodic parked-item
+check releases a `maintainer_request_required` hold once the live item no
+longer requires a request. A verified request stays open while the queue
 finishes answering it: when the item changes before the request's review
 fully applies, including a close check that drifts after the durable review
 comment synced, the queue requeues that generation in place instead of

@@ -44,10 +44,10 @@ type ReviewItem = {
 // a PR gets one automatic review and later reviews need a request (#1997); an
 // issue follows the ordinary issue cadence. Older maintainer items keep the
 // request-only rule, so the change starts no backlog of first reviews. An
-// unknown creation time keeps the request-only rule. The moment is after this
-// rule deployed, so no item it admits was parked by the previous request-only
-// runtime.
-export const MAINTAINER_AUTOMATIC_FIRST_REVIEW_FROM = "2026-10-15T12:00:00Z";
+// unknown creation time keeps the request-only rule. The moment is when this
+// rule first deployed (#2016). The queue releases a maintainer hold once its
+// live check no longer requires a request, so items parked meanwhile recover.
+export const MAINTAINER_AUTOMATIC_FIRST_REVIEW_FROM = "2026-10-15T03:50:00Z";
 const MAINTAINER_AUTOMATIC_FIRST_REVIEW_FROM_MS = Date.parse(
   MAINTAINER_AUTOMATIC_FIRST_REVIEW_FROM,
 );

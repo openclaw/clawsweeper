@@ -51,7 +51,7 @@ reminder when an issue opens or a PR is ready: request `@clawsweeper review` onl
 when needed, after the work and validation are complete. Edits and pushes do not
 repeat the reminder. Reminder comments cannot trigger the command router.
 The hosted App webhook and queue apply the newer rule: maintainer items created
-from 2026-10-15 12:00 UTC get the ordinary first review even though this
+from 2026-10-15 03:50 UTC get the ordinary first review even though this
 workflow does not dispatch them.
 
 Before enabling the workflow:

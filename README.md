@@ -186,7 +186,7 @@ PRs where current `main` already implements the proposed change with
 source-backed evidence.
 
 Maintainer-authored issues and PRs, and items labeled `maintainer`, created from
-2026-10-15 12:00 UTC are reviewed like everyone else's: a PR gets one automatic
+2026-10-15 03:50 UTC are reviewed like everyone else's: a PR gets one automatic
 review and later reviews need a request; an issue follows the ordinary issue
 cadence. Older maintainer items stay excluded from automatic reviews and
 scheduled sweeps, and got one opening/ready reminder explaining how to opt in.

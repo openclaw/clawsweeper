@@ -41,7 +41,7 @@ not split reports into issue/PR subtrees.
   `clawsweeper:autofix` and `clawsweeper:automerge` no longer change review
   admission; they only keep their close protection.
 - Maintainer-authored items and items labeled `maintainer` created from
-  2026-10-15 12:00 UTC are reviewed like everyone else's: a PR gets its one
+  2026-10-15 03:50 UTC are reviewed like everyone else's: a PR gets its one
   automatic review. Older maintainer items need an explicit `@clawsweeper review`
   request.
   Finish the work and validation first; request review only when it is needed.

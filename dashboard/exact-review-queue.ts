@@ -5948,6 +5948,32 @@ export class ExactReviewQueue {
         continue;
       }
       if (
+        item.state === "parked" &&
+        item.parkedReason === "maintainer_request_required" &&
+        candidate.state.state === "open" &&
+        !candidate.state.maintainerRequestRequired
+      ) {
+        // The hold outlived its rule (for example, the item was created after
+        // the maintainer first-review cutover). Release it as organic input
+        // would; the dispatch check above parks it again if the rule applies.
+        item.state = "pending";
+        item.parkedReason = undefined;
+        item.parkedRecoveryAt = undefined;
+        item.parkedTerminalCheckedAt = checkedAt;
+        item.updatedAt = checkedAt;
+        Object.assign(
+          item,
+          exactReviewQueueDebouncedAttempt(
+            checkedState,
+            item.decision,
+            checkedAt,
+            checkedAt,
+            this.env,
+          ),
+        );
+        continue;
+      }
+      if (
         item.state === "pending" &&
         candidate.state.state === "open" &&
         candidate.state.prReview &&

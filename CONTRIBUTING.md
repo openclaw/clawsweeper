@@ -87,7 +87,7 @@ The first automatic PR review waits for ten quiet minutes after observing the
 current head, title, body, and draft state. Further changes restart that window.
 After a completed review, pushes and edits do not start another review: finish
 the fixes and request `@clawsweeper re-review`. Failed or stale-source attempts
-continue through the queue. This includes maintainer-authored PRs opened from 2026-10-15 12:00
+continue through the queue. This includes maintainer-authored PRs opened from 2026-10-15 03:50
 UTC; older maintainer PRs still require an explicit initial request.
 
 Treat a ClawSweeper or maintainer result as the next-step checklist for the PR,
