@@ -67,9 +67,30 @@ export async function callIntakeApi(
     cwd: options.cwd,
     prompt: body,
     source: { kind: "prompt" },
+    // JSON escaping can hide detector word boundaries in author text.
+    additionalBytes: [
+      Buffer.from(options.request.packet.title),
+      Buffer.from(options.request.packet.body),
+    ],
     timeoutMs: INTAKE_TIMEOUT_MS,
   });
-  await options.recordAttempt({ digest: options.request.digest, backend });
+  const recordBudget = INTAKE_TIMEOUT_MS - (Date.now() - started);
+  if (recordBudget <= 0) return result("timeout");
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    // A stalled durable write must not hold intake open or authorize late spend.
+    const recorded = await Promise.race([
+      new Promise<false>((resolve) => {
+        timer = setTimeout(() => resolve(false), recordBudget);
+      }),
+      Promise.resolve(options.recordAttempt({ digest: options.request.digest, backend })).then(
+        () => true,
+      ),
+    ]);
+    if (!recorded) return result("timeout");
+  } finally {
+    clearTimeout(timer);
+  }
   const remaining = INTAKE_TIMEOUT_MS - (Date.now() - started);
   if (remaining <= 0) return result("timeout");
   const signal = AbortSignal.timeout(remaining);

@@ -9,7 +9,7 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
-import { waitForDashboardDeployment } from "../scripts/dashboard-smoke.mjs";
+import { verifyReviewAdmission, waitForDashboardDeployment } from "../scripts/dashboard-smoke.mjs";
 
 test("dashboard smoke executes through a symlink and reports unhealthy responses", async () => {
   const root = mkdtempSync(join(tmpdir(), "clawsweeper-smoke-symlink-"));
@@ -305,17 +305,48 @@ test("deployment smoke waits for the Durable Object revision after Worker readin
 
 test("deployment smoke fails if a healthy queue keeps serving another revision", async () => {
   for (const deployment_sha of [null, "previous-sha", "private-response-marker"]) {
-    const result = await runStatusSmoke(completeStatus(), "miss", {
-      deploy: true,
-      capability: { ...admissionCapability(), deployment_sha },
-      readinessTimeoutMs: 100,
-    });
-    assert.equal(result.code, 1);
-    assert.match(result.stderr, /review queue deployment expected-sha was not ready within 100ms/);
-    assert.doesNotMatch(result.stderr, /private-response-marker|synthetic-deployment-secret/);
-    assert.equal(result.stdout, "");
-    assert.ok(result.signedRequests.length > 1);
-    assert.ok(!result.requests.includes("GET /api/status"));
+    let timestamp = 0;
+    let signedRequests = 0;
+    const secret = "synthetic-deployment-secret";
+    await assert.rejects(
+      verifyReviewAdmission({
+        baseUrl: "https://clawsweeper.example",
+        secret,
+        expectedSha: "expected-sha",
+        timeoutMs: 100,
+        intervalMs: 10,
+        now: () => timestamp,
+        sleep: async (delayMs) => {
+          timestamp += delayMs;
+        },
+        fetchImpl: async (url, init) => {
+          assert.equal(
+            String(url),
+            "https://clawsweeper.example/internal/exact-review/admission-capabilities",
+          );
+          assert.equal(init?.method, "POST");
+          assert.equal(init?.redirect, "error");
+          assert.equal(init?.body, "{}");
+          assert.equal(
+            new Headers(init?.headers).get("x-clawsweeper-exact-review-signature"),
+            `sha256=${createHmac("sha256", secret).update("{}").digest("hex")}`,
+          );
+          signedRequests += 1;
+          return Response.json({ ...admissionCapability(), deployment_sha });
+        },
+      }),
+      (error) => {
+        assert.ok(error instanceof Error);
+        assert.equal(
+          error.message,
+          "review queue deployment expected-sha was not ready within 100ms",
+        );
+        assert.doesNotMatch(error.message, /private-response-marker|synthetic-deployment-secret/);
+        return true;
+      },
+    );
+    assert.equal(timestamp, 100);
+    assert.equal(signedRequests, 10);
   }
 });
 

@@ -5,6 +5,7 @@ import {
   intakeLabels,
   parseIntakeAnswers,
   INTAKE_POLICY,
+  INTAKE_TIMEOUT_MS,
 } from "../dist/intake-triage-contract.js";
 import { runResponsesIntake } from "../dist/intake-triage-api.js";
 import { useFakeScanner } from "./agent-input-scan-helpers.ts";
@@ -186,3 +187,74 @@ test("scanner refusal prevents both ledger recording and provider dispatch", asy
   );
   assert.equal(touched, false);
 });
+
+test("raw submission boundaries are scanned alongside the exact outgoing payload", async (t) => {
+  useFakeScanner(
+    t,
+    `
+const serialized = inputs.find(input => input.name === 'prompt').bytes.toString();
+assert.equal(JSON.parse(serialized).input, JSON.stringify({repository:'openclaw/openclaw',number:42,kind:'issue',title:'Crash',body:'Details\\nfixture-secret-marker'}));
+assert.ok(inputs.some(input => /\\bfixture-secret-marker\\b/.test(input.bytes.toString())));
+assert.ok(inputs.some(input => input.bytes.toString() === 'Crash'));
+`,
+  );
+  let touched = false;
+  const result = await runResponsesIntake({
+    cwd: process.cwd(),
+    apiKey: "synthetic-key",
+    request: intakeRequest({
+      repository: "openclaw/openclaw",
+      number: 42,
+      kind: "issue",
+      title: "Crash",
+      body: "Details\nfixture-secret-marker",
+    }),
+    recordAttempt: () => {
+      touched = true;
+    },
+    fetch: async () => {
+      touched = true;
+      return Response.json({});
+    },
+  });
+  assert.equal(result.outcome, "invalid");
+  assert.equal(touched, true);
+});
+
+test(
+  "the intake deadline bounds intent recording and never dispatches after expiry",
+  { timeout: 5_000 },
+  async (t) => {
+    useFakeScanner(t);
+    t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: 0 });
+    let finishRecording!: () => void;
+    const recording = new Promise<void>((resolve) => {
+      finishRecording = resolve;
+    });
+    let called = false;
+    const pending = runResponsesIntake({
+      cwd: process.cwd(),
+      apiKey: "synthetic-key",
+      request: intakeRequest({
+        repository: "openclaw/openclaw",
+        number: 42,
+        kind: "issue",
+        title: "Crash",
+        body: "",
+      }),
+      recordAttempt: () => {
+        t.mock.timers.tick(5_000);
+        return recording;
+      },
+      fetch: async () => {
+        called = true;
+        return Response.json({});
+      },
+    });
+    t.mock.timers.tick(INTAKE_TIMEOUT_MS - 5_000);
+    assert.equal((await pending).outcome, "timeout");
+    finishRecording();
+    await Promise.resolve();
+    assert.equal(called, false);
+  },
+);
