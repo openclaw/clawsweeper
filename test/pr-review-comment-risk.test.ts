@@ -247,6 +247,58 @@ Reason: ${duplicateRisk}
   assert.equal(comment.split(duplicateRisk).length - 1, 1);
 });
 
+for (const fixture of [
+  {
+    name: "preserves distinct multiline risk",
+    risk: "The cache owner can drift.\n  Concurrent readers may see stale routing.",
+    workReason: "Reproduce the routing behavior.",
+    bestSolution: "Keep the current ownership model.",
+    retained: true,
+  },
+  {
+    name: "suppresses risk repeated in the next step",
+    risk: "Reproduce the routing behavior.",
+    workReason: "Reproduce the routing behavior.",
+    bestSolution: "Keep the current ownership model.",
+    retained: false,
+  },
+  {
+    name: "suppresses risk contained in the best solution after text normalization",
+    risk: "cache OWNER can drift",
+    workReason: "Reproduce the routing behavior.",
+    bestSolution: "Confirm whether **Cache owner** can drift before choosing a fix.",
+    retained: false,
+  },
+]) {
+  test(`issue keep-open review ${fixture.name}`, () => {
+    const comment = renderReviewCommentFromReport(
+      reportFrontMatter(
+        {
+          type: "issue",
+          number: "74268",
+          reviewed_at: "2026-10-15T00:00:00Z",
+        },
+        {
+          risks: [fixture.risk],
+          workReason: fixture.workReason,
+          bestSolution: fixture.bestSolution,
+        },
+      ),
+      "none",
+    );
+    if (fixture.retained) {
+      assert.ok(comment.includes(`Remaining risk / open question:\n\n- ${fixture.risk}`));
+    } else {
+      assert.doesNotMatch(comment, /Remaining risk \/ open question:/);
+    }
+    assert.match(
+      comment,
+      /<!-- clawsweeper-review-version item=74268 reviewed_at=2026-10-15T00:00:00\.000Z sha=na /,
+    );
+    assert.doesNotMatch(comment, /<!-- clawsweeper-(?:review-state|verdict|action):/);
+  });
+}
+
 test("every pull request merge risk is a blocked item without an inferred priority", () => {
   const risks = [
     "Blocked workflow actions could cause a data loss outage.",
@@ -718,6 +770,27 @@ test("pull request keep-open review comments retain merge-risk options without r
   assert.match(comment, /3\. \*\*Do not merge as-is\*\*/);
   assert.doesNotMatch(comment, /Copy recommended|@clawsweeper (?:automerge|autofix)/);
   assert.doesNotMatch(comment, /Remaining risk \/ open question:/);
+});
+
+test("pull request keep-open review comments retain both fallback options for empty options", () => {
+  const risk = "Existing readers may see stale routing after the ownership change.";
+  const bestSolution = "Preserve the current ownership model until the risk is resolved.";
+  const comment = mergeRiskReviewComment({ risk, options: [], bestSolution });
+  const beforeMerge = comment.split("## Before merge\n\n")[1]?.split("\n## ")[0] ?? "";
+
+  assert.ok(beforeMerge.includes(`- [ ] **Resolve merge risk** - ${risk}`));
+  assert.ok(
+    comment.includes(
+      `**Maintainer options:**\n1. **Decide the mitigation before merge**  \n   ${bestSolution}\n2. **Pause or close**  \n   Do not merge this PR until maintainers decide whether the risk is worth taking.`,
+    ),
+  );
+  assert.doesNotMatch(comment, /Remaining risk \/ open question:|3\. \*\*/);
+  assert.match(comment, /<!-- clawsweeper-review-state:blocked item=83400 /);
+  assert.match(comment, /<!-- clawsweeper-verdict:needs-human item=83400 /);
+  assert.match(
+    comment,
+    /<!-- clawsweeper-review-version item=83400 reviewed_at=2026-05-01T00:00:00\.000Z sha=abc123def456abc123def456abc123def456abcd /,
+  );
 });
 
 test("pull request keep-open review comments can recommend accepting intentional risk without a copy block", () => {
