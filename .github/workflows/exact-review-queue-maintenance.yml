@@ -7,7 +7,8 @@ on:
         description: "Maintain queue storage or run a bounded review-usage operator operation"
         required: true
         type: choice
-        options: [reconcile, retire-closed-publication, storage-stats, operator-read, canary, read-back]
+        options:
+          [reconcile, retire-closed-publication, storage-stats, operator-read, canary, read-back]
         default: reconcile
       execute:
         description: "Apply one bounded pass (false runs a dry-run)"

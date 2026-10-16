@@ -639,10 +639,15 @@ test("maintenance CLI signs one HTTPS dry run, redacts identities, and refuses r
   assert.equal(redirectedCalls, 0);
 });
 
-
 test("usage workflow keeps read credentials separate from one authorized canary attempt", () => {
-  assert.deepEqual((workflow.on.workflow_dispatch.inputs.mode as {options: string[]}).options,
-    ["reconcile", "retire-closed-publication", "storage-stats", "operator-read", "canary", "read-back"]);
+  assert.deepEqual((workflow.on.workflow_dispatch.inputs.mode as { options: string[] }).options, [
+    "reconcile",
+    "retire-closed-publication",
+    "storage-stats",
+    "operator-read",
+    "canary",
+    "read-back",
+  ]);
   const read = workflow.jobs["usage-read"]!;
   const write = workflow.jobs["usage-canary"]!;
   const after = workflow.jobs["usage-read-after"]!;
@@ -655,15 +660,24 @@ test("usage workflow keeps read credentials separate from one authorized canary 
   }
   for (const job of [read, after]) {
     const step = job.steps.find((step) => step.run === "node scripts/review-usage-operator.mjs")!;
-    assert.equal(step.env?.CLOUDFLARE_API_TOKEN, "${{ secrets.OPENCLAW_CLOUDFLARE_WORKERS_API_TOKEN }}");
+    assert.equal(
+      step.env?.CLOUDFLARE_API_TOKEN,
+      "${{ secrets.OPENCLAW_CLOUDFLARE_WORKERS_API_TOKEN }}",
+    );
     assert.equal(step.env?.CLAWSWEEPER_WEBHOOK_SECRET, undefined);
   }
   const submit = write.steps.find((step) => step.run === "node scripts/review-usage-operator.mjs")!;
   assert.equal(submit.env?.CLOUDFLARE_API_TOKEN, undefined);
   assert.equal(submit.env?.CLAWSWEEPER_WEBHOOK_SECRET, "${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}");
   assert.equal(submit.env?.USAGE_GUARD_SOURCE_SHA, "${{ needs.usage-read.outputs.source_sha }}");
-  assert.equal(submit.env?.USAGE_GUARD_DEPLOY_SHA, "${{ needs.usage-read.outputs.deployment_sha }}");
-  assert.match(write.if!, /inputs.execute && inputs.authorize_usage_canary && github.run_attempt == 1/);
+  assert.equal(
+    submit.env?.USAGE_GUARD_DEPLOY_SHA,
+    "${{ needs.usage-read.outputs.deployment_sha }}",
+  );
+  assert.match(
+    write.if!,
+    /inputs.execute && inputs.authorize_usage_canary && github.run_attempt == 1/,
+  );
   assert.match(after.if!, /always\(\)/);
   assert.match(after.if!, /needs.usage-canary.result == 'failure'/);
 });
