@@ -173,8 +173,8 @@ test("apply does not close an item after it loses its mutation lease during clos
         postProofCoveringPrFreshnessBlock: () => null,
         postProofFreshnessBlock: () => null,
         currentSameAuthorPairBlockReason: () => null,
-        currentObsoleteFixPrBlockReason: () => null,
-        currentStaleVersionBugBlockReason: () => null,
+        currentObsoleteFixPrBlock: () => null,
+        currentStaleVersionBugBlock: () => null,
         currentAuthorPrBudgetApplyGate: () => ({ block: null }),
         setCloseMutationPolicyGuard: () => undefined,
         currentApplyMutationLeaseBlockReason: () =>

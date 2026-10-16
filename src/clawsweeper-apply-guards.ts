@@ -60,18 +60,18 @@ export function createApplyGuards(gh: GuardReads) {
   return {
     abandonedPrApplyBlockReasonSafe: proof.abandonedPrApplyBlockReasonSafe,
     authorPrBudgetApplyGateSafe: capacity.authorPrBudgetApplyGateSafe,
-    issueRecentHumanCommentBlockReasonSafe: activity.issueRecentHumanCommentBlockReasonSafe,
+    issueRecentHumanCommentBlockSafe: activity.issueRecentHumanCommentBlockSafe,
     lowSignalUnmergeablePrApplyBlockReasonSafe: policy.lowSignalUnmergeablePrApplyBlockReasonSafe,
-    obsoleteFixPrApplyBlockReasonSafe: capacity.obsoleteFixPrApplyBlockReasonSafe,
+    obsoleteFixPrApplyBlockSafe: capacity.obsoleteFixPrApplyBlockSafe,
     pullRequestHeadActivity: activity.pullRequestHeadActivity,
     resetGuardReadCache,
     setGuardReadGeneration,
-    staleVersionBugApplyBlockReasonSafe: policy.staleVersionBugApplyBlockReasonSafe,
+    staleVersionBugApplyBlockSafe: policy.staleVersionBugApplyBlockSafe,
     stalledUnprovenPrApplyBlockReasonSafe: proof.stalledUnprovenPrApplyBlockReasonSafe,
     stalledUnprovenProofRequestBlockReason: proof.stalledUnprovenProofRequestBlockReason,
     unconfirmedProductDirectionApplyBlockReasonSafe:
       policy.unconfirmedProductDirectionApplyBlockReasonSafe,
-    unsponsoredFeatureApplyBlockReasonSafe: policy.unsponsoredFeatureApplyBlockReasonSafe,
+    unsponsoredFeatureApplyBlockSafe: policy.unsponsoredFeatureApplyBlockSafe,
     withGuardReadOptions,
   };
 }

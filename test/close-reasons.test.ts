@@ -31,7 +31,7 @@ import {
   unconfirmedProductDirectionCloseEnabled,
   unsponsoredFeatureCloseEnabled,
 } from "../dist/policy-flags.js";
-import { issueRecentHumanCommentBlockReasonFromComments } from "../dist/clawsweeper-apply-guard-activity.js";
+import { issueRecentHumanCommentBlockFromComments } from "../dist/clawsweeper-apply-guard-activity.js";
 import {
   abandonedPrAgeSkipReason,
   stalledUnprovenPrAgeSkipReason,
@@ -481,15 +481,15 @@ test("obsolescence apply policies are default-off and age-gated", () => {
 test("issue inactivity ignores bot-only and old comment history", () => {
   const now = Date.parse("2026-07-11T00:00:00Z");
   assert.match(
-    issueRecentHumanCommentBlockReasonFromComments(
+    issueRecentHumanCommentBlockFromComments(
       [{ created_at: "2026-07-01T00:00:00Z", user: { type: "User" } }],
       60,
       now,
-    ) ?? "",
+    )?.reason ?? "",
     /non-bot comment within the last 60 days/,
   );
   assert.equal(
-    issueRecentHumanCommentBlockReasonFromComments(
+    issueRecentHumanCommentBlockFromComments(
       [
         { created_at: "2026-07-10T00:00:00Z", user: { type: "Bot" } },
         { created_at: "2026-01-01T00:00:00Z", user: { type: "User" } },

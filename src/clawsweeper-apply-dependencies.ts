@@ -1,6 +1,7 @@
 import { type Args } from "./clawsweeper-args.js";
 import type { MergeRiskLabelName } from "./clawsweeper-policy.js";
 import type {
+  ApplyCloseGuardBlock,
   AcquiredReviewStartLease,
   ActionTaken,
   ApplyActionLedger,
@@ -204,7 +205,7 @@ export interface CreateApplyDecisionWorkflowDependencies {
   isBulkFilerExemptAuthorAssociation: (value: unknown) => boolean;
   isExactEventSourceRevisionChange: (itemKind: Item["kind"], reason: string) => boolean;
   isMaintainerAuthorAssociation: (value: unknown) => boolean;
-  issueRecentHumanCommentBlockReasonSafe: (number: number, days: number) => string | null;
+  issueRecentHumanCommentBlockSafe: (number: number, days: number) => ApplyCloseGuardBlock | null;
   issueReviewComment: (
     number: number,
     fallbackBodies?: readonly string[],
@@ -236,10 +237,10 @@ export interface CreateApplyDecisionWorkflowDependencies {
   mutationErrorMessage: (error: unknown) => string;
   normalizeAuthorAssociation: (value: unknown) => string;
   normalizeLabelName: (label: string) => string;
-  obsoleteFixPrApplyBlockReasonSafe: (
+  obsoleteFixPrApplyBlockSafe: (
     number: number,
     item: Pick<Item, "createdAt">,
-  ) => string | null;
+  ) => ApplyCloseGuardBlock | null;
   openClosingPullRequestApplyReason: (
     pullRequests: readonly unknown[],
     canPairClose?: (number: number, repo?: string) => boolean,
@@ -382,10 +383,10 @@ export interface CreateApplyDecisionWorkflowDependencies {
     existingReviewComment: Record<string, unknown> | undefined,
     number: number,
   ) => boolean;
-  staleVersionBugApplyBlockReasonSafe: (
+  staleVersionBugApplyBlockSafe: (
     number: number,
     item: Pick<Item, "createdAt">,
-  ) => string | null;
+  ) => ApplyCloseGuardBlock | null;
   stalledUnprovenPrApplyBlockReasonSafe: (
     number: number,
     item: Pick<Item, "createdAt" | "labels">,
@@ -520,10 +521,10 @@ export interface CreateApplyDecisionWorkflowDependencies {
     reviewedUpdatedAt: string | undefined,
     reviewedAt: string | undefined,
   ) => string | null;
-  unsponsoredFeatureApplyBlockReasonSafe: (
+  unsponsoredFeatureApplyBlockSafe: (
     number: number,
     item: Pick<Item, "createdAt">,
-  ) => string | null;
+  ) => ApplyCloseGuardBlock | null;
   updateReviewCommentMetadata: (
     markdown: string,
     comment: Record<string, unknown> | undefined,

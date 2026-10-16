@@ -963,6 +963,12 @@ export interface PlanSelectionTelemetry {
 
 export type DueCandidate = SchedulerDueCandidate<Item, ExistingReview>;
 
+export interface ApplyCloseGuardBlock {
+  reason: string;
+  /** A live predicate positively established an intentional non-close outcome. */
+  closePolicyHoldVerified?: true;
+}
+
 export interface ApplyResult {
   repo?: string;
   number: number;
@@ -974,6 +980,7 @@ export interface ApplyResult {
   terminalMissingVerified?: boolean;
   terminalStateVerified?: boolean;
   guardedOpenStateVerified?: boolean;
+  closePolicyHoldVerified?: boolean;
   activeReviewLeaseVerified?: boolean;
   activeReviewLeaseExpiresAt?: string;
   terminalPolicyNoopVerified?: boolean;
@@ -1357,6 +1364,7 @@ export interface CanonicalPullRequestCommentSyncBlock {
 }
 
 export interface PrCloseCoverageProofGateBlock {
+  closePolicyHoldVerified?: true;
   actionTaken: ActionTaken;
   reason: string;
 }

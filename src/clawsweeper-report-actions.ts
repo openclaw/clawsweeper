@@ -1,5 +1,5 @@
-import { writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import type { CloseReason, Item, ItemKind } from "./clawsweeper-types.js";
 import { ghJson, ghObservedMutationCommand } from "./clawsweeper-github-execution.js";
 import { isImplementationCloseReason } from "./clawsweeper-close-decision.js";
@@ -36,6 +36,7 @@ export function closeItem(options: { number: number; kind: ItemKind; reason: Clo
   } else {
     const reason = isImplementationCloseReason(options.reason) ? "completed" : "not_planned";
     const closePayloadFile = join(ROOT, ".artifacts", `close-${options.number}.json`);
+    mkdirSync(dirname(closePayloadFile), { recursive: true });
     writeFileSync(
       closePayloadFile,
       JSON.stringify({ state: "closed", state_reason: reason }),

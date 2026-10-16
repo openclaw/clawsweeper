@@ -7,6 +7,9 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 
 import { dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 const source = process.cwd();
+const holdProof = process.env.PROOF_CLOSE_POLICY_HOLD === "1";
+const targetRepo = holdProof ? "openclaw/openclaw" : "openclaw/clawsweeper";
+const publisherProof = holdProof || process.env.PROOF_ACTIVE_LEASE_DEFERRAL === "1";
 const deferralProof = process.env.PROOF_ACTIVE_LEASE_DEFERRAL === "1";
 assert.equal(
   process.argv.length,
@@ -65,9 +68,11 @@ const identity = {
   ).trim(),
   candidateOwnerSourceSha256: hash(
     readFileSync(
-      deferralProof
-        ? "src/repair/publish-event-result.ts"
-        : "src/clawsweeper-review-comment-state.ts",
+      holdProof
+        ? "src/clawsweeper-apply-decision-workflow.ts"
+        : deferralProof
+          ? "src/repair/publish-event-result.ts"
+          : "src/clawsweeper-review-comment-state.ts",
     ),
   ),
   baselineDistSha256: compiledIdentity(baseline),
@@ -85,7 +90,7 @@ const { nextPrRatingLabels } = await import(
 const { nextPrStatusLabels, prStatusLabelKindFromReport } = await import(
   pathToFileURL(join(source, "dist/clawsweeper-label-policy.js"))
 );
-const { createReviewedPrActivityCursorV2 } = await import(
+const { createReviewedPrActivityCursorV2, reviewedPrActivityCursorV2Query } = await import(
   pathToFileURL(join(source, "dist/review-activity-cursor.js"))
 );
 const emptyActivityCursor = createReviewedPrActivityCursorV2({
@@ -98,19 +103,29 @@ const replayNow = Date.now();
 const candidateBoundaryReads = {};
 const deferralStepOutputs = {};
 for (const kind of ["issue", "pull_request"]) {
-  for (const [variant, dist, newerLive] of deferralProof
+  for (const [variant, dist, newerLive] of holdProof
     ? [
         ["baseline", baseline, false],
         ["candidate", candidate, false],
+        ["missing-evidence", candidate, false],
+        ["read-failure", candidate, false],
+        ["changed-source", candidate, false],
+        ["incomplete-receipt", candidate, false],
+        ...(kind === "pull_request" ? [["changed-during-apply", candidate, false]] : []),
       ]
-    : [
-        ["baseline", baseline, false],
-        ["candidate", candidate, false],
-        ["newer-live-control", candidate, true],
-        ["no-original-lease", candidate, false],
-        ["expired-original-lease", candidate, false],
-        ["lease-replaced-at-boundary", candidate, false],
-      ]) {
+    : deferralProof
+      ? [
+          ["baseline", baseline, false],
+          ["candidate", candidate, false],
+        ]
+      : [
+          ["baseline", baseline, false],
+          ["candidate", candidate, false],
+          ["newer-live-control", candidate, true],
+          ["no-original-lease", candidate, false],
+          ["expired-original-lease", candidate, false],
+          ["lease-replaced-at-boundary", candidate, false],
+        ]) {
     const name = kind + "-" + variant;
     const root = join(out, name);
     mkdirSync(join(root, "items"), { recursive: true });
@@ -121,9 +136,11 @@ for (const kind of ["issue", "pull_request"]) {
     const number = kind === "issue" ? 103599 : 171791;
     const issue = {
       number,
-      title: "Reused command lease publication replay",
+      title: holdProof
+        ? "Verified close-policy hold replay"
+        : "Reused command lease publication replay",
       body: "Stable reviewed source.",
-      html_url: "https://github.com/openclaw/clawsweeper/issues/" + number,
+      html_url: "https://github.com/" + targetRepo + "/issues/" + number,
       created_at: "2026-04-01T00:00:00Z",
       updated_at: reportAt,
       closed_at: null,
@@ -136,7 +153,7 @@ for (const kind of ["issue", "pull_request"]) {
       comments: 2,
       pull_request:
         kind === "pull_request"
-          ? { url: "https://api.github.com/repos/openclaw/clawsweeper/pulls/" + number }
+          ? { url: "https://api.github.com/repos/" + targetRepo + "/pulls/" + number }
           : null,
     };
     // Keep labels already synchronized so this replay isolates comment publication.
@@ -151,12 +168,26 @@ for (const kind of ["issue", "pull_request"]) {
             prStatusLabelKindFromReport(labelReport, { comments: [], timeline: [] }, []),
           );
     issue.labels = labelNames.map((name) => ({ name }));
-    const revision = itemSourceRevisionSha256(issue, []),
+    const humanComment = {
+      id: 6161755397,
+      created_at: new Date(now - 600000).toISOString(),
+      updated_at: new Date(now - 600000).toISOString(),
+      author_association: "NONE",
+      user: { login: "reporter", type: "User" },
+      body: "This remains relevant.",
+    };
+    if (holdProof && kind === "issue" && variant === "missing-evidence")
+      humanComment.created_at = "invalid";
+    if (holdProof && kind === "issue") issue.comments = 3;
+    const revision = itemSourceRevisionSha256(
+        issue,
+        holdProof && kind === "issue" ? [humanComment] : [],
+      ),
       head = "a".repeat(40);
     const owner = "github-run-current-1",
       leaseId = 6178075898;
     const fields = {
-      repository: "openclaw/clawsweeper",
+      repository: targetRepo,
       number,
       type: kind,
       title: issue.title,
@@ -169,6 +200,18 @@ for (const kind of ["issue", "pull_request"]) {
       review_lease_comment_id: String(leaseId),
       pull_head_sha: kind === "pull_request" ? head : "unknown",
       labels: JSON.stringify(labelNames),
+      ...(holdProof
+        ? {
+            decision: "close",
+            action_taken: "proposed_close",
+            close_reason: kind === "issue" ? "stale_insufficient_info" : "obsolete_fix_pr",
+            confidence: "high",
+            item_created_at: issue.created_at,
+            work_candidate: "none",
+            work_status: "none",
+            ...(variant === "incomplete-receipt" ? {} : { review_timeline_revision: hash("[]") }),
+          }
+        : {}),
     };
     const report = workPlanCandidateReport(fields);
     const durable = reportWithSyncedReviewComment(
@@ -208,6 +251,9 @@ for (const kind of ["issue", "pull_request"]) {
         body: lease,
       },
     ];
+    if (holdProof && kind === "issue") comments.push(humanComment);
+    if (holdProof && variant === "changed-source")
+      issue.body = "Edited after the reviewed snapshot.";
     if (variant === "no-original-lease") comments.splice(1, 1);
     let commentReads = 0;
     const pull = {
@@ -220,7 +266,7 @@ for (const kind of ["issue", "pull_request"]) {
           clone_url: "https://github.com/contributor/example.git",
         },
       },
-      base: { sha: "b".repeat(40), ref: "main", repo: { full_name: "openclaw/clawsweeper" } },
+      base: { sha: "b".repeat(40), ref: "main", repo: { full_name: targetRepo } },
       draft: false,
       mergeable: true,
       merged: false,
@@ -245,8 +291,33 @@ for (const kind of ["issue", "pull_request"]) {
         });
         res.end(JSON.stringify(value));
       };
-      const prefix = "/repos/openclaw/clawsweeper";
+      const prefix = "/repos/" + targetRepo;
       if (req.method === "POST" && path.endsWith("graphql")) {
+        const payload = JSON.parse(text);
+        const normalizeQuery = (value) => String(value).replace(/[\s,]+/g, "");
+        // Match the CLI's IssueByNumber read and the runtime's exact activity read.
+        // Unknown operations must fail this peer rather than masquerade as reads.
+        const issueQuery = `query IssueByNumber($owner: String!, $repo: String!, $number: Int!) {
+          repository(owner: $owner, name: $repo) { hasIssuesEnabled
+            issue: issueOrPullRequest(number: $number) { __typename
+              ...on Issue { closedByPullRequestsReferences(first: 100) {
+                nodes { id number url repository { id name owner { id login } } }
+                pageInfo { hasNextPage endCursor }
+              } id }
+              ...on PullRequest { id }
+            }
+          }
+        }`;
+        const activityQuery = reviewedPrActivityCursorV2Query(...targetRepo.split("/"), [number]);
+        if (
+          ![issueQuery, activityQuery].some(
+            (query) => normalizeQuery(query) === normalizeQuery(payload.query),
+          )
+        ) {
+          entry.forbidden = { query: payload.query };
+          return send({ message: "unexpected GraphQL operation" }, 422);
+        }
+
         const empty = {
           totalCount: 0,
           pageInfo: { hasNextPage: false, endCursor: null },
@@ -269,12 +340,32 @@ for (const kind of ["issue", "pull_request"]) {
       }
       if (req.method === "GET" && path === prefix + "/issues/" + number) return send(issue);
       if (req.method === "GET" && path === prefix + "/pulls/" + number) return send(pull);
+      if (holdProof && req.method === "GET" && path === prefix + "/commits/" + head) {
+        if (variant === "changed-during-apply") {
+          issue.body += "\nEdited after context capture while checking close policy.";
+          pull.body = issue.body;
+          entry.sourceEditedDuringPolicy = true;
+        }
+        return variant === "read-failure"
+          ? send({ message: "upstream unavailable" }, 503)
+          : send({
+              commit: {
+                committer: {
+                  date: variant === "missing-evidence" ? "" : new Date(now - 600000).toISOString(),
+                },
+              },
+            });
+      }
+      if (holdProof && req.method === "GET" && path === prefix + "/actions/runs")
+        return send({ total_count: 0, workflow_runs: [] });
       if (req.method === "GET" && path === prefix + "/commits/" + head + "/status")
         return send({ state: "pending", statuses: [], total_count: 0 });
       if (req.method === "GET" && path === prefix + "/commits/" + head + "/check-runs")
         return send({ total_count: 0, check_runs: [] });
       if (req.method === "GET" && path === prefix + "/issues/" + number + "/comments") {
         commentReads++;
+        if (holdProof && kind === "issue" && variant === "read-failure" && commentReads > 2)
+          return send({ message: "upstream unavailable" }, 503);
         // The issue source-digest read follows the lease snapshot; PR head reads
         // do not list comments. Replace before the final lease-election snapshot.
         if (
@@ -333,18 +424,23 @@ for (const kind of ["issue", "pull_request"]) {
       CLAWSWEEPER_ACTION_LEDGER_ROOT: join(root, "events"),
       CLAWSWEEPER_ACTION_LEDGER_OUTPUT_ROOT: join(root, "event-output"),
       CLAWSWEEPER_ACTION_LEDGER_PARTITION_DATE: reportAt.slice(0, 10),
-      GITHUB_REPOSITORY: "openclaw/clawsweeper",
+      GITHUB_REPOSITORY: targetRepo,
       GITHUB_SHA: identity.baseCommit,
       GITHUB_WORKFLOW: "reused-review-lease-proof",
       GITHUB_JOB: name,
       GITHUB_RUN_ID: "42",
       GITHUB_RUN_ATTEMPT: "1",
       CLAWSWEEPER_GH_RETRY_ATTEMPTS: "1",
-      ...(deferralProof
+      ...(publisherProof
         ? {
-            TARGET_REPO: "openclaw/clawsweeper",
+            TARGET_REPO: targetRepo,
             ITEM_NUMBER: String(number),
-            REVIEW_ONLY: "true",
+            REVIEW_ONLY: holdProof ? "false" : "true",
+            CLAWSWEEPER_OBSOLETE_FIX_PR_CLOSE_ENABLED: "true",
+            CLOSE_REASONS: "stale_insufficient_info,obsolete_fix_pr",
+            EXACT_REVIEW_BATCH_ITEM_KEY: "proof-member",
+            EXACT_REVIEW_BATCH_REVISION: "1",
+            EXACT_REVIEW_BATCH_CLAIM_GENERATION: "1",
             EXACT_EVENT_PUBLICATION: "true",
             CLAWSWEEPER_CODE_ROOT: dirname(dist),
             EXACT_REVIEW_WORK_ROOT: root,
@@ -356,20 +452,20 @@ for (const kind of ["issue", "pull_request"]) {
     };
     execFileSync("gh", ["config", "set", "http_unix_socket", socket], { env });
     await new Promise((done, reject) => {
-      const probe = spawn("gh", ["api", "repos/openclaw/clawsweeper/issues/" + number], {
+      const probe = spawn("gh", ["api", "repos/" + targetRepo + "/issues/" + number], {
         env,
         stdio: "ignore",
       });
       probe.once("error", reject);
       probe.once("exit", (code) => (code === 0 ? done() : reject(new Error("gh probe failed"))));
     });
-    const args = deferralProof
+    const args = publisherProof
       ? [join(dist, "repair/publish-event-result.js")]
       : [
           join(dist, "clawsweeper.js"),
           "apply-decisions",
           "--target-repo",
-          "openclaw/clawsweeper",
+          targetRepo,
           "--items-dir",
           join(root, "items"),
           "--closed-dir",
@@ -411,15 +507,18 @@ for (const kind of ["issue", "pull_request"]) {
     writeFileSync(join(root, "trace.json"), JSON.stringify(trace, null, 2));
     const actions = JSON.parse(
       readFileSync(
-        join(root, deferralProof ? ".artifacts/event-apply-report.json" : "apply-report.json"),
+        join(root, publisherProof ? ".artifacts/event-apply-report.json" : "apply-report.json"),
         "utf8",
       ),
     );
     const batchOutcome =
-      deferralProof && existsSync(join(root, "batch.json"))
+      publisherProof && existsSync(join(root, "batch.json"))
         ? JSON.parse(readFileSync(join(root, "batch.json"), "utf8"))
         : null;
-    const stepOutputs = deferralProof ? readFileSync(join(root, "github-output"), "utf8") : null;
+    const stepOutputs =
+      publisherProof && existsSync(join(root, "github-output"))
+        ? readFileSync(join(root, "github-output"), "utf8")
+        : "";
     const patches = trace.filter(
       (entry) => entry.method === "PATCH" && entry.path.endsWith("/issues/comments/6161755396"),
     );
@@ -436,7 +535,7 @@ for (const kind of ["issue", "pull_request"]) {
       reportSha256: hash(report),
       resultingDurableBodySha256: hash(resultingBody ?? ""),
       forbidden: trace.filter((entry) => entry.forbidden),
-      ...(deferralProof ? { batchOutcome, stepOutputsSha256: hash(stepOutputs) } : {}),
+      ...(publisherProof ? { batchOutcome, stepOutputsSha256: hash(stepOutputs) } : {}),
     };
     results.push(result);
     writeFileSync(
@@ -452,9 +551,45 @@ for (const kind of ["issue", "pull_request"]) {
         2,
       ),
     );
-    assert.equal(code, 0, stderr + stdout);
+    if (!holdProof) assert.equal(code, 0, stderr + stdout);
     assert.deepEqual(result.forbidden, []);
-    if (deferralProof) {
+    if (holdProof) {
+      assert.equal(patches.length, 0);
+      assert.ok(
+        trace.every(
+          (entry) =>
+            entry.method === "GET" || (entry.method === "POST" && entry.path.endsWith("graphql")),
+        ),
+        JSON.stringify(trace),
+      );
+      if (variant === "candidate") {
+        assert.equal(code, 0, stderr + stdout);
+        assert.equal(actions[0]?.action, "kept_open");
+        assert.equal(actions[0]?.guardedOpenStateVerified, true);
+        assert.equal(actions[0]?.closePolicyHoldVerified, true);
+        assert.equal(batchOutcome?.kind, "eligible");
+        assert.equal(batchOutcome?.disposition.guardedOpenAction, "kept_open");
+        assert.equal(batchOutcome?.disposition.routableSyncExpected, false);
+      } else if (variant === "changed-source" || variant === "changed-during-apply") {
+        assert.equal(code, 0, stderr + stdout);
+        assert.equal(actions[0]?.action, "skipped_changed_since_review");
+        assert.equal(actions[0]?.closePolicyHoldVerified, undefined);
+        assert.equal(batchOutcome?.disposition.requeueLatestExpected, true);
+        if (variant === "changed-during-apply")
+          assert.ok(trace.some((entry) => entry.sourceEditedDuringPolicy));
+      } else {
+        assert.notEqual(code, 0);
+        assert.equal(actions.length, 1);
+        assert.equal(actions[0]?.number, number);
+        assert.equal(actions[0]?.action, "kept_open");
+        assert.equal(actions[0]?.closePolicyHoldVerified, undefined);
+        assert.equal(actions[0]?.guardedOpenStateVerified, undefined);
+        assert.equal(batchOutcome?.kind, "permanent_failure");
+        assert.equal(batchOutcome?.reasonCode, "unknown_failure");
+        assert.ok(stepOutputs.includes("completion_kind=permanent_failure\n"));
+        assert.ok(stepOutputs.includes("reason_code=unknown_failure\n"));
+      }
+    } else if (deferralProof) {
       const retryAt = new Date(now + 1800000).toISOString();
       assert.equal(actions[0]?.action, "kept_open");
       assert.equal(actions[0]?.activeReviewLeaseVerified, true);
@@ -492,9 +627,9 @@ for (const kind of ["issue", "pull_request"]) {
         JSON.stringify(result),
       );
     } else assert.equal(actions[0]?.action, expected, JSON.stringify(result));
-    if (!deferralProof)
+    if (!publisherProof)
       assert.equal(patches.length, variant === "candidate" ? 1 : 0, JSON.stringify(result));
-    if (!deferralProof && variant === "candidate") {
+    if (!publisherProof && variant === "candidate") {
       assert.match(resultingBody, /lease_owner=github-run-current-1/);
       assert.ok(resultingBody.includes("reviewed_at=" + reportAt));
     }

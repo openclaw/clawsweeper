@@ -10,9 +10,15 @@ import {
 } from "./policy-flags.js";
 import { repositoryManagedPullRequestCloseReason } from "./repository-profiles.js";
 import { STALE_INSUFFICIENT_INFO_MIN_INACTIVE_DAYS } from "./clawsweeper-policy.js";
-import type { ApplyKind, AuthorPrBudgetApplyGate, CloseReason, Item } from "./clawsweeper-types.js";
+import type {
+  ApplyCloseGuardBlock,
+  ApplyKind,
+  AuthorPrBudgetApplyGate,
+  CloseReason,
+  Item,
+} from "./clawsweeper-types.js";
 import { frontMatterValue } from "./report-front-matter.js";
-import { issueRecentHumanCommentBlockReasonFromComments } from "./clawsweeper-apply-guard-activity.js";
+import { issueRecentHumanCommentBlockFromComments } from "./clawsweeper-apply-guard-activity.js";
 
 type ApplyClosePolicyDependencies = Pick<
   CreateApplyDecisionWorkflowDependencies,
@@ -20,10 +26,10 @@ type ApplyClosePolicyDependencies = Pick<
   | "applyAuthorPrBudgetStateToReport"
   | "closeReasonEnabled"
   | "ghJson"
-  | "issueRecentHumanCommentBlockReasonSafe"
+  | "issueRecentHumanCommentBlockSafe"
   | "stalledUnprovenPrApplyBlockReasonSafe"
   | "unconfirmedProductDirectionApplyBlockReasonSafe"
-  | "unsponsoredFeatureApplyBlockReasonSafe"
+  | "unsponsoredFeatureApplyBlockSafe"
 >;
 
 interface ApplyClosePolicyOptions {
@@ -32,8 +38,8 @@ interface ApplyClosePolicyOptions {
   closeReason: CloseReason | undefined;
   comments?: readonly unknown[];
   currentAuthorPrBudgetApplyGate: () => AuthorPrBudgetApplyGate;
-  currentObsoleteFixPrBlockReason: () => string | null;
-  currentStaleVersionBugBlockReason: () => string | null;
+  currentObsoleteFixPrBlock: () => ApplyCloseGuardBlock | null;
+  currentStaleVersionBugBlock: () => ApplyCloseGuardBlock | null;
   isCloseProposal: boolean;
   item: Item;
   markdown: string;
@@ -52,9 +58,17 @@ export function evaluateApplyCloseReasonPolicy(
   dependencies: ApplyClosePolicyDependencies,
   options: ApplyCloseReasonPolicyOptions,
 ) {
-  const blocked = (reason: string, preserveOriginalAction = false) => ({
+  const blocked = (
+    reason: string,
+    preserveOriginalAction = false,
+    closePolicyHoldVerified?: true,
+  ) => ({
     authorPrBudgetGate: undefined,
-    block: { reason, preserveOriginalAction },
+    block: {
+      reason,
+      preserveOriginalAction,
+      ...(closePolicyHoldVerified ? { closePolicyHoldVerified } : {}),
+    },
   });
   const allowed = (authorPrBudgetGate?: AuthorPrBudgetApplyGate) => ({
     authorPrBudgetGate,
@@ -94,32 +108,29 @@ export function evaluateApplyCloseReasonPolicy(
         if (!unsponsoredFeatureCloseEnabled()) {
           return blocked("unsponsored feature-request apply policy is disabled", true);
         }
-        const reason = dependencies.unsponsoredFeatureApplyBlockReasonSafe(
-          options.number,
-          options.item,
-        );
-        return reason ? blocked(reason) : allowed();
+        const block = dependencies.unsponsoredFeatureApplyBlockSafe(options.number, options.item);
+        return block ? blocked(block.reason, false, block.closePolicyHoldVerified) : allowed();
       }
       case "stale_version_bug": {
-        const reason = options.currentStaleVersionBugBlockReason();
-        return reason ? blocked(reason) : allowed();
+        const block = options.currentStaleVersionBugBlock();
+        return block ? blocked(block.reason, false, block.closePolicyHoldVerified) : allowed();
       }
       case "obsolete_fix_pr": {
-        const reason = options.currentObsoleteFixPrBlockReason();
-        return reason ? blocked(reason) : allowed();
+        const block = options.currentObsoleteFixPrBlock();
+        return block ? blocked(block.reason, false, block.closePolicyHoldVerified) : allowed();
       }
       case "stale_insufficient_info": {
-        const reason =
+        const block =
           options.comments === undefined
-            ? dependencies.issueRecentHumanCommentBlockReasonSafe(
+            ? dependencies.issueRecentHumanCommentBlockSafe(
                 options.number,
                 STALE_INSUFFICIENT_INFO_MIN_INACTIVE_DAYS,
               )
-            : issueRecentHumanCommentBlockReasonFromComments(
+            : issueRecentHumanCommentBlockFromComments(
                 options.comments,
                 STALE_INSUFFICIENT_INFO_MIN_INACTIVE_DAYS,
               );
-        return reason ? blocked(reason) : allowed();
+        return block ? blocked(block.reason, false, block.closePolicyHoldVerified) : allowed();
       }
       default:
         return allowed();
@@ -159,7 +170,7 @@ export function evaluateApplyClosePolicy(
   dependencies: ApplyClosePolicyDependencies,
   options: ApplyClosePolicyOptions,
 ): {
-  block: { reason: string; preserveOriginalAction: boolean } | null;
+  block: (ApplyCloseGuardBlock & { preserveOriginalAction: boolean }) | null;
   markdown: string;
 } {
   const {
@@ -200,7 +211,7 @@ export function liveApplyCloseReasonPolicyBlock(
   dependencies: ApplyClosePolicyDependencies &
     Pick<CreateApplyDecisionWorkflowDependencies, "resetGuardReadCache" | "withGuardReadOptions">,
   options: Omit<ApplyCloseReasonPolicyOptions, "phase">,
-): { reason: string; preserveOriginalAction: boolean } | null {
+): (ApplyCloseGuardBlock & { preserveOriginalAction: boolean }) | null {
   dependencies.resetGuardReadCache();
   return dependencies.withGuardReadOptions({ bypassGenerationCache: true }, () => {
     for (const phase of ["before-canonical", "after-canonical"] as const) {

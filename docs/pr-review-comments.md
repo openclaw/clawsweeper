@@ -114,6 +114,13 @@ A publication blocked by a verified active review lease records
 and, for batched publication, its member result. The batch completer schedules
 the retry no earlier than that deadline instead of treating it as an unknown failure.
 
+A verified recent issue comment or current-head PR activity can intentionally block
+a close before comment publication. Its policy owner emits a typed hold receipt;
+publication accepts it as guarded open only with the matching open record and
+complete reviewed source/activity receipt. This reports no delivered review and
+no close. Failed reads, missing dates, incomplete receipts and arbitrary
+`kept_open` results remain unproven; changed source requires a fresh review.
+
 Interactive re-review commands have a separate durable intake marker. The
 ExactReviewQueue records the exact source-comment version before creating or
 editing its acknowledgement, then converges on one status comment containing

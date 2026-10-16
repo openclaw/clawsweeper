@@ -36,7 +36,7 @@ test("apply guard reads share a paged endpoint across guard functions", () => {
     },
   });
 
-  guards.issueRecentHumanCommentBlockReasonSafe(42, 30);
+  guards.issueRecentHumanCommentBlockSafe(42, 30);
   guards.stalledUnprovenProofRequestBlockReason(42);
 
   assert.equal(
@@ -67,8 +67,8 @@ test("apply guard reads share a JSON endpoint across guard functions", () => {
   const item = { createdAt: "2025-01-01T00:00:00Z" };
 
   withClosePoliciesEnabled(() => {
-    guards.unsponsoredFeatureApplyBlockReasonSafe(42, item);
-    guards.staleVersionBugApplyBlockReasonSafe(42, item);
+    guards.unsponsoredFeatureApplyBlockSafe(42, item);
+    guards.staleVersionBugApplyBlockSafe(42, item);
   });
 
   assert.equal(
@@ -89,13 +89,13 @@ test("apply guard read cache resets between items", () => {
     },
   });
 
-  guards.issueRecentHumanCommentBlockReasonSafe(1, 30);
-  guards.issueRecentHumanCommentBlockReasonSafe(1, 30);
+  guards.issueRecentHumanCommentBlockSafe(1, 30);
+  guards.issueRecentHumanCommentBlockSafe(1, 30);
   assert.equal(calls.length, 1);
 
   guards.resetGuardReadCache();
-  guards.issueRecentHumanCommentBlockReasonSafe(1, 30);
-  guards.issueRecentHumanCommentBlockReasonSafe(2, 30);
+  guards.issueRecentHumanCommentBlockSafe(1, 30);
+  guards.issueRecentHumanCommentBlockSafe(2, 30);
 
   assert.deepEqual(calls, [
     "repos/openclaw/openclaw/issues/1/comments",
@@ -152,16 +152,16 @@ test("apply guards follow generation invalidation and explicit bypass", () => {
   const generation = new LiveReadGeneration();
   guards.setGuardReadGeneration(generation);
 
-  guards.issueRecentHumanCommentBlockReasonSafe(42, 30);
-  guards.issueRecentHumanCommentBlockReasonSafe(42, 30);
+  guards.issueRecentHumanCommentBlockSafe(42, 30);
+  guards.issueRecentHumanCommentBlockSafe(42, 30);
   assert.equal(calls, 1);
 
   generation.invalidate();
-  guards.issueRecentHumanCommentBlockReasonSafe(42, 30);
+  guards.issueRecentHumanCommentBlockSafe(42, 30);
   assert.equal(calls, 2);
 
   guards.withGuardReadOptions({ bypassGenerationCache: true }, () =>
-    guards.issueRecentHumanCommentBlockReasonSafe(42, 30),
+    guards.issueRecentHumanCommentBlockSafe(42, 30),
   );
   assert.equal(calls, 3);
 });
