@@ -347,6 +347,8 @@ SELECT
       * _sample_interval) / 1000000 AS estimated_usd
 FROM clawsweeper_review_usage
 WHERE timestamp >= NOW() - INTERVAL '30' DAY
+  AND blob1 != 'openclaw/__review_usage_canary__'
+  AND blob4 != 'operator-canary'
 GROUP BY day, repo
 ORDER BY day, repo
 ```
@@ -380,6 +382,8 @@ SELECT
     / sum(double7 * _sample_interval) AS avg_total_tokens
 FROM clawsweeper_review_usage
 WHERE timestamp >= NOW() - INTERVAL '30' DAY
+  AND blob1 != 'openclaw/__review_usage_canary__'
+  AND blob4 != 'operator-canary'
 GROUP BY repo, lane
 HAVING sum(double7 * _sample_interval) > 0
 ORDER BY repo, lane
@@ -388,6 +392,138 @@ ORDER BY repo, lane
 See the [sampling guidance](https://developers.cloudflare.com/analytics/analytics-engine/sampling/)
 and [weighted aggregate functions](https://developers.cloudflare.com/analytics/analytics-engine/sql-reference/aggregate-functions/)
 for interpreting approximate aggregates.
+
+### Bounded private operator workflow
+
+- Status: active operator interface; live permission and deployed-receiver qualification remain separate gates.
+- Owner: ClawSweeper maintainers.
+- Source: [maintenance workflow](../.github/workflows/exact-review-queue-maintenance.yml),
+  [operator helper](../scripts/review-usage-operator.mjs), and its focused CLI tests.
+- Verified base: `104113c2b611525c4103a3e3fb6900cfaea72a8f`. Update this contract when the workflow inputs, fixed resources,
+  request limits, credential reference, Analytics layout, or receiver contract changes.
+
+The existing maintenance workflow has three private usage modes. They do not
+change existing queue/storage modes, review policy, or the one-time PR 2002
+checkpoint. The public dashboard remains observer-only. This consumer does not
+match any push path in the dashboard deployment workflow; merging only these
+operator files does not deploy the Worker.
+
+Use only a reviewed consumer landed on canonical main. Each job checks out its
+immutable workflow event SHA with persisted Git credentials disabled. Record
+that **source SHA** separately from the **deployed Worker source SHA** and
+**version UUID**. A squash changes commit identity: rebind the reviewed source
+tree to the landed commit, and obtain exact-head checks before dispatch. The
+consumer verifies Worker source through the approved version's
+`resources.bindings` and current settings' `bindings`; the latest deployment
+must contain exactly that version at 100%. These are point-in-time guards,
+not a deployment lock. Coordinate against concurrent deployments; any drift
+before or after the operation fails qualification.
+
+Only read jobs receive `OPENCLAW_CLOUDFLARE_WORKERS_API_TOKEN` as
+`CLOUDFLARE_API_TOKEN`, the existing Foundation credential reference used for
+this Worker/account. No general-token fallback exists. This reference does not
+establish effective permissions: version content/bindings access and Account
+Analytics Read are independently required. Missing credentials, HTTP 401/403,
+Analytics denial, unexpected shapes, redirects and limits stop with a redacted
+error. Do not request additional access or switch credentials automatically.
+Read jobs receive no HMAC secret. The canary job receives only the existing
+`CLAWSWEEPER_WEBHOOK_SECRET` and native read-job identity outputs.
+
+All requests use the fixed account, `clawsweeper-status` Worker,
+`clawsweeper_review_usage` dataset and canonical usage route. There is no
+production URL, SQL, resource, credential or command override. Each request has
+a 30-second deadline and rejects redirects. Streaming response limits are
+256 KiB for metadata and 64 KiB for Analytics/ingestion; each invocation runs
+at most three fixed SELECTs with `LIMIT 8 FORMAT JSON`. Metadata guards run
+before and after SELECTs. Only approved identity and numeric result fields are
+printed; plaintext bindings, API errors and credential values never appear.
+UInt64 decimal strings are normalized only within JavaScript's safe numeric range.
+
+The modes are:
+
+- `operator-read`: metadata guards plus fixed weighted cohort, duration and
+  historical-full-row SELECTs over the last 30 days. It performs no ingestion.
+- `canary`: a read guard job runs first. Both `execute=true` and
+  `authorize_usage_canary=true` are required for the separate write job;
+  workflow run attempt must be 1. Exactly four fixed schema-1 records cover
+  null usage, unknown cache writes, measured zero and legacy five-number usage.
+  Each uses duration 100 ms, the workflow run ID and run attempt 1. The write
+  job signs the exact body and requires HTTP 202 plus `ok: true`.
+  Another isolated read job rechecks the deployment after success or failure.
+- `read-back`: a separately approved original canary run ID selects the four
+  records within the last day. Weighted counts, all five counters, both
+  masks and each record’s 100 ms duration must match; missing, duplicate, sampled or corrupted evidence fails.
+  The same aggregate SELECT checks full/partial/missing/core cohorts, full-mask
+  reference cost and input/output/total averages over measured core usage.
+  Actual curried `quantileExactWeighted` SQL executes, plus a 30-day
+  historical query restricted to `double7 = 1 AND double8 = 0`. No writes occur.
+
+Before **any** canary, both global queries above and the helper's global
+SELECTs exclude repository `openclaw/__review_usage_canary__` **and** lane
+`operator-canary`. The predicates exclude a row when either identity matches;
+reserving a repository alone would contaminate other aggregations. Focused
+SQLite predicate proof verifies both documented queries with ordinary,
+repository-only, lane-only and combined synthetic identities. These synthetic
+records do not represent GitHub items and trigger no reviews or model runs.
+
+The fixed payloads use input/cached/cache-write/output/reasoning counts of
+null usage; 100/20/unknown/30/10; 0/0/0/0/0; and 100/20/5/30/10.
+Expected weighted counts are 4 attempts, 2 full, 1 partial, 1 missing and 3
+with core usage. Input/output totals are 200/60; core averages are 200/3
+input, 20 output and 260/3 total tokens. Full-only reference cost is
+$0.0004645 at the prices above, not a billing claim. These 100 ms fixtures
+do not use earlier illustrative payload quantities. Per-item duration checks
+reject a corrupted duration even if both aggregate percentiles remain 100.
+
+No write retry or idempotency assumption exists. A failure reports attempted
+and acknowledged counts, then stops. A timed-out request may already have
+written. Preserve the original run ID and inspect it through read-back; do not
+rerun the canary job or create replacement writes. HTTP 202 establishes only
+acceptance. A successful read-back establishes bounded persistence, masks,
+counters and SQL execution. Constant-duration canaries do **not** establish
+nontrivial weighted-quantile or sampling correctness. An empty historical
+cohort establishes query execution only, not observed historical compatibility.
+
+#### Staged dispatch packet
+
+These are future operator commands, subject to exact-head review and explicit
+stage authorization. No workflow dispatch, receiver merge/deploy or canary is
+a side effect of preparing this PR.
+
+1. Verify the reviewed consumer's landed source/tree, canonical main SHA and
+   exact-head checks. This PR's files do not trigger Worker deployment. Leave
+   receiver PR 2011 separate; its future merge matches `dashboard/**` and can
+   automatically deploy the entire Worker. Rebind its squash tree/source and
+   qualify that whole deployment before selecting its expected SHA/version.
+2. After the trusted consumer lands and its named credential route is verified,
+   authorize a read-only dispatch with the approved current deployment identity:
+
+   ```bash
+   ghx workflow run exact-review-queue-maintenance.yml --repo openclaw/clawsweeper --ref main -f mode=operator-read -f usage_deploy_sha=APPROVED_DEPLOY_SHA -f usage_version_id=APPROVED_VERSION_UUID
+   ```
+
+3. Inspect the run's immutable workflow source SHA, approved deployment identity,
+   before/after guards, numeric outputs and terminal conclusion. Permission
+   failure is a stop, not authorization to try a different credential.
+4. Only after separately authorized receiver deployment and source/deployment
+   qualification, approve one post-receiver canary run:
+
+   ```bash
+   ghx workflow run exact-review-queue-maintenance.yml --repo openclaw/clawsweeper --ref main -f mode=canary -f execute=true -f authorize_usage_canary=true -f usage_deploy_sha=APPROVED_RECEIVER_DEPLOY_SHA -f usage_version_id=APPROVED_RECEIVER_VERSION_UUID
+   ```
+
+5. Keep the original run ID even after partial failure. Authorize read-back
+   once that data is queryable; this consumer has no polling or automatic retry:
+
+   ```bash
+   ghx workflow run exact-review-queue-maintenance.yml --repo openclaw/clawsweeper --ref main -f mode=read-back -f usage_deploy_sha=APPROVED_RECEIVER_DEPLOY_SHA -f usage_version_id=APPROVED_RECEIVER_VERSION_UUID -f usage_canary_run_id=APPROVED_ORIGINAL_RUN_ID
+   ```
+
+Nullable writes require the receiver capability from
+[PR 2011](https://github.com/openclaw/clawsweeper/pull/2011), independently
+qualified on its actual deployed identity. Stop/drain nullable production
+before any receiver downgrade. Keep mask-aware queries while partial rows
+remain retained; legacy-only consumers must explicitly filter `double7 = 1`.
 
 ## What the status API shows
 
