@@ -255,6 +255,24 @@ test("records stored with the retired automergeInstruction still read back", () 
   );
 });
 
+test("records stored with retired Telegram and vision fields still read back", () => {
+  const decision = { ...modelDecision(), autoImplementationCandidate: "none" as const };
+  const markdown = report(decision);
+  const stored = storedRecord(markdown);
+  const legacy = withStoredRecord(markdown, {
+    ...stored,
+    decision: {
+      ...stored.decision,
+      telegramVisibleProof: { status: "needed", summary: "Exercise Telegram replies." },
+      visionFit: "aligned",
+      visionFitReason: "Matches the product direction.",
+      visionFitEvidence: ["VISION.md"],
+      autoImplementationCandidate: "vision_fit",
+    },
+  });
+  assert.deepEqual(requireReviewRecord(legacy).decision, decision);
+});
+
 test("decision updates change the stored record and keep its origin", () => {
   const markdown = report(modelDecision());
   const backfilled = withStoredRecord(markdown, { ...storedRecord(markdown), origin: "backfill" });

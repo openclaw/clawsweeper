@@ -862,22 +862,6 @@ test("review prompt requires source evidence for stable maturity", () => {
   assert.match(prompt, /existing-behavior\s+contract or primary owner remains ambiguous/);
 });
 
-test("review prompt classifies Telegram visible proof candidates", () => {
-  const prompt = reviewPrompt("pull_request");
-
-  assert.match(prompt, /telegramVisibleProof/);
-  assert.match(prompt, /telegram-e2e-userbot/);
-  assert.match(prompt, /whether or not the repository/);
-  assert.match(prompt, /exercise the exact changed behavior/);
-  assert.match(prompt, /extend its harness or recipes/);
-  assert.match(prompt, /message formatting/);
-  assert.match(prompt, /retry\/network reliability only/);
-  assert.match(prompt, /shared retry\/ordering work/);
-  assert.match(prompt, /A label, title, consumer, or example does not make internal/);
-  assert.match(prompt, /`telegramVisibleProof\.status: "not_needed"`/);
-  assert.match(prompt, /proof: telegram-e2e/);
-});
-
 test("pull request comments ignore retired live verification and recording attachments", () => {
   const headSha = "a".repeat(40);
   const planOnly = withReviewRecord(

@@ -108,11 +108,6 @@ function prProofTriagePageConfig() {
         description: "Open pull requests whose proof needs a stronger real-behavior signal.",
       },
       {
-        id: "telegram-proof",
-        title: "Telegram proof",
-        description: "Open pull requests awaiting the closed Telegram proof category.",
-      },
-      {
         id: "sufficient-with-need-label",
         title: "Sufficient plus needs label",
         description: "Open pull requests with sufficient proof and a remaining needs-proof state.",

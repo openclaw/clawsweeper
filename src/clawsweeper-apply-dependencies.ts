@@ -36,7 +36,6 @@ import type {
   ReviewStartStatusCommentResult,
   SecurityReview,
   StalePullRequestReviewHead,
-  TelegramVisibleProof,
   TriagePriority,
 } from "./clawsweeper-types.js";
 import { type PrCloseCoverageProofRuntime } from "./pr-close-coverage-proof.js";
@@ -314,6 +313,7 @@ export interface CreateApplyDecisionWorkflowDependencies {
   }) => boolean;
   removeCurrentCursorTraceItem: (examinedItemNumbers: number[], currentNumber: number) => void;
   removeIssueLabel: (number: number, label: string, onMutation?: () => void) => void;
+  syncIntakeLabels: import("./clawsweeper-label-mutations.js").LabelMutations["syncIntakeLabels"];
   renderReviewCommentFromReport: (
     markdown: string,
     reason: CloseReason,
@@ -497,13 +497,6 @@ export interface CreateApplyDecisionWorkflowDependencies {
   syncStalePullRequestReviewLabels: (options: {
     number: number;
     labels: readonly string[];
-    dryRun: boolean;
-    onMutation?: () => void;
-  }) => { labels: string[]; changed: boolean };
-  syncTelegramVisibleProofLabel: (options: {
-    number: number;
-    labels: readonly string[];
-    proof: Pick<TelegramVisibleProof, "status">;
     dryRun: boolean;
     onMutation?: () => void;
   }) => { labels: string[]; changed: boolean };

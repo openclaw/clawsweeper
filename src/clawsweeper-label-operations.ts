@@ -3,7 +3,6 @@ import {
   FEATURE_SHOWCASE_LABEL,
   GOOD_FIRST_ISSUE_LABEL,
   IMPACT_LABEL_NAMES,
-  LEGACY_TELEGRAM_VISIBLE_PROOF_LABEL,
   MATURITY_LABEL_NAMES,
   MERGE_RISK_LABEL_NAMES,
   NO_STALE_LABEL,
@@ -14,7 +13,6 @@ import {
   PR_RATING_LABEL_NAMES,
   PR_STATUS_LABEL_NAMES,
   STALE_LABEL,
-  TELEGRAM_VISIBLE_PROOF_LABEL,
   type MergeRiskLabelName,
 } from "./clawsweeper-policy.js";
 import type {
@@ -27,7 +25,6 @@ import type {
   PrStatusLabelKind,
   RealBehaviorProof,
   SecurityReview,
-  TelegramVisibleProof,
   TriagePriority,
 } from "./clawsweeper-types.js";
 import { BULK_FILED_LABEL } from "./repair/exact-review-guard-labels.js";
@@ -47,7 +44,6 @@ import {
   nextPriorityLabels,
   nextRealBehaviorProofMediaLabels,
   nextRealBehaviorProofSufficientLabels,
-  nextTelegramVisibleProofLabels,
 } from "./clawsweeper-label-selection.js";
 import { missingLabelError, type LabelMutations } from "./clawsweeper-label-mutations.js";
 
@@ -64,7 +60,6 @@ export function createLabelSyncOperations(mutations: LabelMutations) {
     ensurePrRatingLabel,
     ensureFeatureShowcaseLabel,
     ensurePrStatusLabel,
-    ensureTelegramVisibleProofLabel,
     tryAddOptionalLabel,
     ensureRealBehaviorProofSufficientLabel,
     ensureRealBehaviorProofMediaLabel,
@@ -287,41 +282,6 @@ export function createLabelSyncOperations(mutations: LabelMutations) {
     }
     return { labels: syncedLabels, changed: labelsToRemove.length > 0 || added };
   }
-  function syncTelegramVisibleProofLabel(options: {
-    number: number;
-    labels: readonly string[];
-    proof: Pick<TelegramVisibleProof, "status">;
-    dryRun: boolean;
-    onMutation?: () => void;
-  }): { labels: string[]; changed: boolean } {
-    const nextLabels = nextTelegramVisibleProofLabels(options.labels, options.proof);
-    const hadLabel = options.labels.includes(TELEGRAM_VISIBLE_PROOF_LABEL);
-    const hadLegacyLabel = options.labels.includes(LEGACY_TELEGRAM_VISIBLE_PROOF_LABEL);
-    const wantsLabel = nextLabels.includes(TELEGRAM_VISIBLE_PROOF_LABEL);
-    const changed = hadLegacyLabel || hadLabel !== wantsLabel;
-    if (!changed) return { labels: nextLabels, changed };
-    if (options.dryRun) return { labels: nextLabels, changed };
-    if (wantsLabel && !hadLabel) {
-      ensureTelegramVisibleProofLabel(options.onMutation);
-      if (
-        !tryAddOptionalLabel({
-          number: options.number,
-          label: TELEGRAM_VISIBLE_PROOF_LABEL,
-          currentLabels: options.labels,
-          onMutation: options.onMutation,
-        })
-      ) {
-        return { labels: [...options.labels], changed: false };
-      }
-    }
-    if (!wantsLabel && hadLabel) {
-      removeIssueLabel(options.number, TELEGRAM_VISIBLE_PROOF_LABEL, options.onMutation);
-    }
-    if (hadLegacyLabel) {
-      removeIssueLabel(options.number, LEGACY_TELEGRAM_VISIBLE_PROOF_LABEL, options.onMutation);
-    }
-    return { labels: nextLabels, changed };
-  }
   function syncFeatureShowcaseLabel(options: {
     number: number;
     labels: readonly string[];
@@ -529,7 +489,6 @@ export function createLabelSyncOperations(mutations: LabelMutations) {
     syncMaturityLabels,
     syncMergeRiskLabels,
     syncIssueAdvisoryLabels,
-    syncTelegramVisibleProofLabel,
     syncFeatureShowcaseLabel,
     syncPrRatingLabel,
     syncPrStatusLabel,

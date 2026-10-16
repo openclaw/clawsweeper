@@ -14,6 +14,7 @@ let blockedRequests = 0;
 let storeReads = 0;
 let browserSnapshot = null;
 let statusOffline = false;
+let cacheOwner = "durable";
 let lifetimeMode = false;
 let stallKind = "";
 let stallGeneration = 0;
@@ -34,6 +35,7 @@ let snapshotReads = 0;
 let snapshotWrites = 0;
 let lifetimeResponses = 0;
 let snapshotPublications = 0;
+let snapshotSettled = 0;
 let lifetimeWorkers = 17;
 let lifetimeTtl = 3600;
 
@@ -41,6 +43,7 @@ function lifetimeSnapshot() {
   const snapshot = statusFixture("empty", Date.parse(events.captured_at));
   return {
     ...snapshot,
+    public_projection_complete: true,
     fleet: {
       ...snapshot.fleet,
       active_workflow_runs: 1,
@@ -94,6 +97,58 @@ export default {
         },
       }),
     };
+    if (url.pathname === "/__proof/publication-order" && request.method === "POST") {
+      const { action, at, count, held = false, scope = "_", ttl = 3600 } = await request.json();
+      if (action === "reset") {
+        releaseStall();
+        generation += 1;
+        lifetimeMode = true;
+        lifetimeTtl = ttl;
+        snapshotWrites = snapshotPublications = snapshotSettled = 0;
+        for (const bucket of ["fresh", "stale"])
+          await caches.default.delete(new Request(`${url.origin}/api/status-cache/v8/_/${bucket}`));
+        return Response.json({ reset: true });
+      }
+      const snapshot = {
+        ...publicationStatusFixture(publicationEventsFixture(at)),
+        public_projection_complete: true,
+      };
+      snapshot.fleet = { ...snapshot.fleet, active_workflow_runs: 1, active_codex_jobs: count };
+      if (action === "edge") {
+        for (const bucket of ["fresh", "stale"])
+          await caches.default.put(
+            new Request(`${url.origin}/api/status-cache/v8/_/${bucket}`),
+            Response.json(snapshot, { headers: { "cache-control": "public, max-age=3600" } }),
+          );
+        return Response.json({ seeded: true });
+      }
+      if (action === "ttl") {
+        lifetimeTtl = ttl;
+        return Response.json({ updated: true });
+      }
+      if (action !== "write") return new Response(null, { status: 400 });
+      const publish = async () => {
+        snapshotWrites += 1;
+        if (held) await holdRead();
+        const response = await bindings.LOCAL_STATUS_STORE.get(store.idFromName("global")).fetch(
+          new Request(
+            `https://clawsweeper-status-store/${encodeURIComponent(`snapshot:bay-scope:v2:${scope}`)}`,
+            {
+              method: "PUT",
+              body: JSON.stringify({ value: JSON.stringify(snapshot) }),
+            },
+          ),
+        );
+        if (!response.ok) throw new Error("proof snapshot write failed");
+        snapshotSettled += 1;
+        if (response.headers.get("X-ClawSweeper-Snapshot") !== "retained")
+          snapshotPublications += 1;
+        return Response.json({ disposition: response.headers.get("X-ClawSweeper-Snapshot") });
+      };
+      if (!held) return publish();
+      ctx.waitUntil(publish());
+      return Response.json({ held: true });
+    }
     if (url.pathname === "/__proof/ready") return Response.json({ ready: true });
     if (url.pathname === "/__proof/lifetime" && request.method === "POST") {
       const { stall = "", count = 17, ttl = 3600, advance = false } = await request.json();
@@ -129,7 +184,18 @@ export default {
       return Response.json({ released: true });
     }
     if (url.pathname === "/__proof/seed" && request.method === "POST") {
-      const { mode, kind, now, offline = false } = await request.json();
+      const {
+        mode,
+        kind,
+        now,
+        offline = false,
+        cache_owner = "durable",
+        historical_cache = false,
+      } = await request.json();
+      // The recorded September baseline uses v7 edge and v1 scoped store keys.
+      const edgeVersion = historical_cache ? "v7" : "v8";
+      const snapshotVersion = historical_cache ? "v1" : "v2";
+      cacheOwner = cache_owner;
       generation += 1;
       blockedRequests = 0;
       storeReads = 0;
@@ -147,7 +213,11 @@ export default {
         kind === "idle",
       );
       if (kind === "captured") events = structuredClone(capturedEvents);
-      const snapshot = publicationStatusFixture(events);
+      const snapshot = {
+        ...publicationStatusFixture(events),
+        public_projection_complete: true,
+      };
+      if (mode === "stale") snapshot.generated_at = new Date(Date.now() - 61_000).toISOString();
       snapshot.fleet = { active_codex_jobs: 17 };
       snapshot.recent_durable_publication_events = {
         ...events,
@@ -162,20 +232,25 @@ export default {
         browserSnapshot = snapshot;
       }
       for (const bucket of ["fresh", "stale"]) {
-        await caches.default.delete(new Request(`${url.origin}/api/status-cache/v8/_/${bucket}`));
+        await caches.default.delete(
+          new Request(`${url.origin}/api/status-cache/${edgeVersion}/_/${bucket}`),
+        );
       }
       if (mode === "fresh" || mode === "stale") {
         await caches.default.put(
-          new Request(`${url.origin}/api/status-cache/v8/_/${mode}`),
+          new Request(`${url.origin}/api/status-cache/${edgeVersion}/_/${mode}`),
           Response.json(snapshot, { headers: { "cache-control": "public, max-age=3600" } }),
         );
       }
-      if (mode === "durable") {
+      if (cacheOwner === "durable" && ["durable", "fresh", "stale"].includes(mode)) {
         const response = await store.get(store.idFromName("global")).fetch(
-          new Request("https://clawsweeper-status-store/snapshot%3Abay-scope%3Av2%3A_", {
-            method: "PUT",
-            body: JSON.stringify({ value: JSON.stringify(snapshot) }),
-          }),
+          new Request(
+            `https://clawsweeper-status-store/${encodeURIComponent(`snapshot:bay-scope:${snapshotVersion}:_`)}`,
+            {
+              method: "PUT",
+              body: JSON.stringify({ value: JSON.stringify(snapshot) }),
+            },
+          ),
         );
         if (!response.ok) throw new Error("local StatusStore seed failed");
       }
@@ -203,6 +278,7 @@ export default {
         snapshot_reads: snapshotReads,
         snapshot_writes: snapshotWrites,
         snapshot_publications: snapshotPublications,
+        snapshot_settled: snapshotSettled,
         stored_status: storedStatus,
         status_responses: lifetimeResponses,
       });
@@ -219,7 +295,7 @@ export default {
       return Response.json(browserSnapshot, { headers: { "x-clawsweeper-cache": "fresh" } });
     const env = {
       ...(lifetimeMode ? { CACHE_TTL_SECONDS: String(lifetimeTtl) } : {}),
-      STATUS_STORE: store,
+      STATUS_STORE: cacheOwner === "durable" ? store : undefined,
       EXACT_REVIEW_QUEUE: {
         idFromName: (name) => name,
         get: () => ({

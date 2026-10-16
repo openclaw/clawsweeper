@@ -34,9 +34,9 @@ async function main() {
   if (health.ok !== true) throw new Error("health endpoint did not return ok");
   const reviewAdmission = expectedDeploySha
     ? await verifyReviewAdmission({
+        secret: webhookSecret,
         baseUrl,
         expectedSha: expectedDeploySha,
-        secret: webhookSecret,
         timeoutMs: deploymentReadyTimeoutMs,
         intervalMs: deploymentReadyIntervalMs,
       })
@@ -107,9 +107,9 @@ async function main() {
 }
 
 export async function verifyReviewAdmission({
+  secret,
   baseUrl,
   expectedSha,
-  secret,
   timeoutMs = DEFAULT_DEPLOY_READY_TIMEOUT_MS,
   intervalMs = 5_000,
   fetchImpl = fetch,

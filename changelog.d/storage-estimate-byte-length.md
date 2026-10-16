@@ -1,0 +1,1 @@
+- Count encoded text bytes, including embedded NUL characters, in per-table storage estimates so non-ASCII content is not underreported.

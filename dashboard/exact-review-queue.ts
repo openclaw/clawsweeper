@@ -140,7 +140,7 @@ import {
 import { recentDurablePublicationEvents } from "./recent-durable-publication-events.ts";
 import { sanitizedServerError } from "./error-safety.ts";
 import { GithubWebhookReadModelStore } from "./github-webhook-read-model.ts";
-import { storageStats } from "./storage-stats.ts";
+import { storageContentPage, storageStats } from "./storage-stats.ts";
 import {
   ExactReviewArtifactReceiptStore,
   exactReviewArtifactReceiptTuple,
@@ -1138,9 +1138,28 @@ export class ExactReviewQueue {
     if (request.method === "POST" && url.pathname === "/lifecycle-audit/inventory") {
       return this.readLifecycleAuditInventory(await request.json().catch(() => null));
     }
-    // Read-only size report (Cloudflare shows only the total stored bytes). It runs before
-    // ensureReady and legacy cleanup, which can write, so measuring never changes the store.
+    // The report handler performs no writes and bypasses ensureReady/legacy cleanup.
+    // Cloudflare reports only the total stored bytes; table content is measured separately.
     if (request.method === "POST" && url.pathname === "/storage/stats") {
+      const body = objectValue(await request.json().catch(() => null));
+      if (body.census !== undefined) {
+        try {
+          return json({
+            ok: true,
+            generated_at: new Date().toISOString(),
+            databaseBytes: this.storage.sql.databaseSize ?? null,
+            census: storageContentPage(this.storage.sql, body.census),
+          });
+        } catch (error) {
+          const code = error instanceof Error ? error.message : "";
+          if (
+            code.startsWith("invalid_storage_census_") ||
+            code === "storage_census_requires_rowid"
+          )
+            return json({ error: code }, 400);
+          throw error;
+        }
+      }
       return json({
         ok: true,
         generated_at: new Date().toISOString(),
@@ -5307,6 +5326,8 @@ export class ExactReviewQueue {
       this.commandIntakeStore.pruneTerminalReceipts(startedAt);
       this.directPublicationStore.pruneTerminalSync(startedAt);
       const payloads = this.githubWebhookReadModelStore.prunePayloadsSync(startedAt);
+      const workflowCoverage =
+        this.githubWebhookReadModelStore.pruneWorkflowCoverageSync(startedAt);
       const backfillShadows = this.pruneBackfillShadowsSync(startedAt);
       let hydrationCache: HydrationCacheCleanup | null = null;
       if (hydrationPass && hydrationCleanup) {
@@ -5339,14 +5360,19 @@ export class ExactReviewQueue {
       const current = this.readStateSync();
       this.syncLegacyCompatibilitySync(current);
       this.pruneStalePublicationsSync(current, batchItemKeys, startedAt);
-      return { current, payloads, backfillShadows, hydrationCache };
+      return { current, payloads, workflowCoverage, backfillShadows, hydrationCache };
     });
     let snapshot = maintenance.current;
+    if (maintenance.workflowCoverage > 0) {
+      console.log("github_read_model_workflow_coverage_maintenance", {
+        retired: maintenance.workflowCoverage,
+      });
+    }
     if (maintenance.payloads.scanned > 0) {
       console.log("github_read_model_payload_maintenance", {
         at: startedAt,
         ...maintenance.payloads,
-        next_due_at: this.githubWebhookReadModelStore.nextPayloadMaintenanceAtSync(),
+        next_due_at: this.githubWebhookReadModelStore.nextMaintenanceAtSync(),
       });
     }
     if (maintenance.backfillShadows) {
@@ -14830,7 +14856,7 @@ export class ExactReviewQueue {
   private async scheduleStorageMaintenance() {
     // The indexed deadlines survive object restarts and keep an otherwise idle
     // queue alive until every eligible payload has been classified.
-    const next = this.githubWebhookReadModelStore.nextPayloadMaintenanceAtSync();
+    const next = this.githubWebhookReadModelStore.nextMaintenanceAtSync();
     if (next !== null) await this.armAuxiliaryWake(next, "payload_maintenance");
     const cleanup = this.backfillShadowCleanup();
     if (cleanup?.completedAt === null) {
@@ -14994,7 +15020,7 @@ export class ExactReviewQueue {
       ["source_authority", sourceAuthorityNext],
       ["command_intake", commandIntakeNext],
       ["credential_circuit", credentialCircuitNext],
-      ["payload_maintenance", this.githubWebhookReadModelStore.nextPayloadMaintenanceAtSync()],
+      ["payload_maintenance", this.githubWebhookReadModelStore.nextMaintenanceAtSync()],
       ["backfill_shadow_cleanup", this.backfillShadowCleanup()?.completedAt === null ? now : null],
       ["hydration_cache_cleanup", this.hydrationCacheCleanupPending() ? now : null],
     ];

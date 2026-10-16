@@ -59,6 +59,7 @@ everything else requires human comparison with current main.
   boundaries
 - [Issue review advisory labels](work-lane.md) — active; structured review labels
 - [Review cache](review-cache.md) — active; reusable review-state contract
+- [Intake triage](intake-triage.md) — active; bounded preliminary classification
 - [Local review preflight summary](portable-review-receipt.md) — proposed
   local-range export; bounded advisory PR-body handoff
 - [GitHub webhook read model](github-webhook-read-model.md) — active; signed

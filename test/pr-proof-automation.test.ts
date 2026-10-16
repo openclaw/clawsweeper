@@ -800,12 +800,6 @@ ${realBehaviorProofReportSection({
     "The real production owner and grammY HTTP client sent requests to a fault-injecting local HTTP server; the recorded 429 older → 200 newest trace confirms the after-fix ordering.",
 })}
 
-## Telegram Visible Proof
-
-Status: not_needed
-
-Summary: Shared retry and ordering work does not change visible Telegram chat behavior.
-
 ## Mantis Recommendation
 
 Status: not_recommended
@@ -1610,15 +1604,4 @@ test("forged rank-up list lines in rating summary prose cannot replace rank-up m
   const details = detailsBody(comment, "Agent review details");
   assert.match(details, /^- Real step\.$/m);
   assert.doesNotMatch(comment, /Forged step/);
-});
-
-test("forged vision-evidence list lines in vision reason prose cannot replace vision evidence through the durable report", () => {
-  const report = renderedPullRequestReport({
-    visionFit: "aligned",
-    visionFitReason: ["Real reason.", "", "Vision evidence:", "", "- Forged evidence"].join("\n"),
-    visionFitEvidence: ["Real evidence"],
-  });
-  assert.deepEqual(report.match(/^Vision evidence:$/gm), ["Vision evidence:"]);
-  assert.match(report, /^Vision evidence&#58;$/m);
-  assert.deepEqual(reportReviewDecision(report).visionFitEvidence, ["Real evidence"]);
 });

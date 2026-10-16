@@ -10,6 +10,7 @@
       "pages": [
         "commit-sweeper.md",
         "review-cache.md",
+        "intake-triage.md",
         "pr-review-comments.md",
         "pr-proof-triage-dashboard.md",
         "author-pr-budget-close-policy.md",

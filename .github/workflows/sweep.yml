@@ -804,6 +804,44 @@ jobs:
           fi
           exit 1
 
+      # Preliminary labels stay visible while the source review runs. This short
+      # phase joins before hydration; no label writer races the final publisher.
+      - name: Classify submission and publish preliminary labels
+        id: intake-triage
+        if: ${{ steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.live-item.outputs.proceed == 'true' && steps.live-item.outputs.oversized != 'true' && steps.reserve-exact-review-lease.outputs.status == 'posted' && (steps.review-status-fence.outcome == 'skipped' || (steps.review-status-fence.outputs.authorized == 'true' && steps.release-review-status-fence.outputs.authorized == 'true')) }}
+        continue-on-error: true
+        timeout-minutes: 2
+        env:
+          GH_TOKEN: ${{ steps.target-write-token.outputs.token }}
+          TARGET_REPO: ${{ steps.target.outputs.target_repo }}
+          ITEM_NUMBER: ${{ steps.target.outputs.item_number }}
+          EXACT_REVIEW_ITEM_KIND: ${{ steps.live-item.outputs.item_kind }}
+          # This optional credential must target the public OpenAI API, rather
+          # than inheriting the source-review workload router credential.
+          OPENAI_API_KEY: ${{ secrets.CLAWSWEEPER_INTAKE_OPENAI_API_KEY }}
+          CLAWSWEEPER_INTAKE_BACKEND: ${{ vars.CLAWSWEEPER_INTAKE_BACKEND || 'responses' }}
+          EXACT_REVIEW_ITEM_KEY: ${{ steps.claim-exact-review-queue.outputs.item_key }}
+          EXACT_REVIEW_LEASE_ID: ${{ steps.claim-exact-review-queue.outputs.lease_id }}
+          EXACT_REVIEW_LEASE_REVISION: ${{ steps.claim-exact-review-queue.outputs.lease_revision }}
+          EXACT_REVIEW_CLAIM_GENERATION: ${{ steps.claim-exact-review-queue.outputs.claim_generation }}
+          EXACT_REVIEW_SOURCE_HEAD_SHA: ${{ fromJSON(steps.claim-exact-review-queue.outputs.decision).sourceHeadSha || '' }}
+          QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
+        run: node dist/intake-triage-workflow.js
+
+      # The review command seals every ledger producer. Recover intake first,
+      # so a killed write cannot be frozen as a retryable intent by a later review.
+      - name: Recover interrupted intake receipts
+        id: recover-intake-receipts
+        if: ${{ always() && steps.claim-exact-review-queue.outputs.claimed == 'true' && (steps.intake-triage.outcome == 'failure' || steps.intake-triage.outcome == 'cancelled') }}
+        continue-on-error: true
+        timeout-minutes: 2
+        env:
+          INTAKE_OUTCOME: ${{ steps.intake-triage.outcome }}
+        run: |
+          reason=workflow_failed
+          if [ "$INTAKE_OUTCOME" = "cancelled" ]; then reason=cancelled; fi
+          pnpm run --silent finalize-action-events -- --interrupt-open-attempts --reason "$reason"
+
       # The review reads its prior canonical record from records/<slug>/items.
       # Without it, the structural and content review caches can never reuse an
       # unchanged verdict. Hydration failure keeps the full-review fallback.
@@ -827,7 +865,7 @@ jobs:
         continue-on-error: true
         env:
           CLAWSWEEPER_REVIEW_USAGE_PATH: ${{ runner.temp }}/clawsweeper-review-usage.jsonl
-          PR_ADMISSION_FILE: ${{ steps.live-item.outputs.pr_admission_file }}
+          PR_ADMISSION_FILE: ${{ (steps.intake-triage.outcome == 'skipped' || steps.intake-triage.outputs.admission_unchanged == 'true') && steps.live-item.outputs.pr_admission_file || '' }}
           OVERSIZED_PR: ${{ steps.live-item.outputs.oversized }}
           # Review hydration is the largest read stream (~30 calls/review); it
           # stays on the App installation bucket so the per-repo Actions pool
@@ -1154,6 +1192,7 @@ jobs:
         env:
           REVIEW_EXIT_CODE: ${{ steps.review-exact-event-item.outputs.exit_code || '' }}
           REVIEW_OUTCOME: ${{ steps.review-exact-event-item.outcome || 'not_started' }}
+          INTAKE_RECOVERY_OUTCOME: ${{ steps.recover-intake-receipts.outcome || 'not_started' }}
           REVIEW_SUPERSEDED: ${{ steps.review-exact-event-item.outputs.superseded == 'true' || steps.review-status-fence.outputs.superseded == 'true' || steps.release-review-status-fence.outputs.superseded == 'true' }}
         run: |
           args=()
@@ -1161,7 +1200,7 @@ jobs:
             args=(--interrupt-open-attempts --reason cancelled)
           elif [ "$REVIEW_EXIT_CODE" = "124" ] || [ "$REVIEW_EXIT_CODE" = "137" ]; then
             args=(--interrupt-open-attempts --reason timeout)
-          elif [ "$REVIEW_OUTCOME" != "success" ]; then
+          elif [ "$REVIEW_OUTCOME" != "success" ] || [ "$INTAKE_RECOVERY_OUTCOME" = "failure" ] || [ "$INTAKE_RECOVERY_OUTCOME" = "cancelled" ]; then
             args=(--interrupt-open-attempts --reason workflow_failed)
           fi
           pnpm run --silent finalize-action-events -- "${args[@]}"

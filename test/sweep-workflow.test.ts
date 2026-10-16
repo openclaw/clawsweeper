@@ -6702,3 +6702,100 @@ test("exact review step carries the scoped lease tuple but not the shared webhoo
   }
   assert.equal(review?.env?.CLAWSWEEPER_WEBHOOK_SECRET, undefined);
 });
+
+test("intake joins before hydration and invalidates admission on enabled or failed attempts", () => {
+  const workflow = YAML.parse(readText(".github/workflows/sweep.yml"));
+  const steps = workflow.jobs["event-review-apply"].steps as any[];
+  const intake = steps.find((step) => step.id === "intake-triage");
+  const review = steps.find((step) => step.id === "review-exact-event-item");
+  const prior = steps.find((step) => step.id === "prior-record-setup-state");
+  assert.ok(steps.indexOf(intake) < steps.indexOf(prior));
+  assert.ok(steps.indexOf(prior) < steps.indexOf(review));
+  assert.equal(intake["continue-on-error"], true);
+  assert.equal(intake["timeout-minutes"], 2);
+  assert.match(intake.if, /oversized != 'true'/);
+  assert.match(intake.env.OPENAI_API_KEY, /secrets\.CLAWSWEEPER_INTAKE_OPENAI_API_KEY/);
+  assert.equal(review.env.OPENAI_API_KEY, undefined);
+  const expression = review.env.PR_ADMISSION_FILE.slice(3, -2).replace(
+    /steps\.([\w-]+)/g,
+    (_: string, id: string) => `steps[${JSON.stringify(id)}]`,
+  );
+  const evaluate = new Function("steps", `return (${expression})`);
+  for (const [outcome, unchanged, expected] of [
+    ["skipped", "", "admission.json"],
+    ["success", "true", "admission.json"],
+    ["success", "false", ""],
+    ["failure", "", ""],
+    ["cancelled", "", ""],
+  ]) {
+    assert.equal(
+      evaluate({
+        "intake-triage": { outcome, outputs: { admission_unchanged: unchanged } },
+        "live-item": { outputs: { pr_admission_file: "admission.json" } },
+      }),
+      expected,
+    );
+  }
+});
+
+test("interrupted intake receipts recover before review can seal the producer", () => {
+  const steps = YAML.parse(readText(".github/workflows/sweep.yml")).jobs["event-review-apply"]
+    .steps;
+  const index = steps.findIndex((step: { id?: string }) => step.id === "intake-triage");
+  const recover = steps[index + 1];
+  assert.equal(recover.id, "recover-intake-receipts");
+  assert.ok(
+    index + 1 < steps.findIndex((step: { id?: string }) => step.id === "review-exact-event-item"),
+  );
+  assert.match(recover.if, /always\(\)/);
+  assert.match(recover.if, /outcome == 'failure'/);
+  assert.match(recover.if, /outcome == 'cancelled'/);
+  assert.match(recover.env.INTAKE_OUTCOME, /steps.intake-triage.outcome/);
+  const script = recover.run.replace(
+    'pnpm run --silent finalize-action-events -- --interrupt-open-attempts --reason "$reason"',
+    'printf "%s\\n" "$reason"',
+  );
+  for (const outcome of ["failure", "cancelled"]) {
+    const result = spawnSync("bash", ["-c", script], {
+      encoding: "utf8",
+      env: { ...process.env, INTAKE_OUTCOME: outcome },
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout.trim(), outcome === "cancelled" ? "cancelled" : "workflow_failed");
+  }
+});
+
+test("late intake recovery retries after an early recovery failure and successful review", () => {
+  const steps = YAML.parse(readText(".github/workflows/sweep.yml")).jobs["event-review-apply"]
+    .steps;
+  const finalize = steps.find(
+    (step: { name?: string }) => step.name === "Finalize exact event action ledger",
+  );
+  assert.equal(
+    finalize.env.INTAKE_RECOVERY_OUTCOME,
+    "${{ steps.recover-intake-receipts.outcome || 'not_started' }}",
+  );
+  const script = finalize.run.replace(
+    'pnpm run --silent finalize-action-events -- "${args[@]}"',
+    'printf "%s\\n" "${args[*]}"',
+  );
+  for (const outcome of ["failure", "cancelled", "success", "skipped", "not_started"]) {
+    const result = spawnSync("bash", ["-c", script], {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        REVIEW_SUPERSEDED: "false",
+        REVIEW_OUTCOME: "success",
+        REVIEW_EXIT_CODE: "0",
+        INTAKE_RECOVERY_OUTCOME: outcome,
+      },
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(
+      result.stdout.trim(),
+      ["failure", "cancelled"].includes(outcome)
+        ? "--interrupt-open-attempts --reason workflow_failed"
+        : "",
+    );
+  }
+});

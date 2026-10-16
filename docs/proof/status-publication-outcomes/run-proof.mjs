@@ -24,8 +24,10 @@ const option = (name) => {
 };
 const base = process.argv[2];
 const lifetime = process.argv.includes("--lifetime");
+const publicationOrder = process.argv.includes("--publication-order");
+const cachePaths = process.argv.includes("--cache-paths");
 const serveBrowser = process.argv.includes("--serve-browser");
-const workerOnly = serveBrowser || process.argv.includes("--worker-only");
+const workerOnly = serveBrowser || cachePaths || process.argv.includes("--worker-only");
 assert.ok(
   !lifetime || !workerOnly,
   "--lifetime cannot combine with --worker-only or --serve-browser",
@@ -39,10 +41,6 @@ const proofPath = "docs/proof/status-publication-outcomes";
 const artifacts = path.join(root, ".artifacts/status-publication-outcomes");
 const prepareCapsule = option("--prepare-capsule");
 if (prepareCapsule) {
-  const archive = execFileSync("git", ["archive", "--format=tar.gz", base, ...sourcePaths], {
-    maxBuffer: 16_000_000,
-  });
-  assert.ok(archive.length < 4_000_000, "proof capsule archive budget");
   const baseFiles = git(["ls-tree", "-r", base, "--", ...sourcePaths])
     .trim()
     .split("\n")
@@ -55,6 +53,13 @@ if (prepareCapsule) {
       );
       return { file, blob, sha256: "" };
     });
+  // Historical baselines may predate fixture helpers copied from the candidate.
+  const archive = execFileSync(
+    "git",
+    ["archive", "--format=tar.gz", base, ...baseFiles.map(({ file }) => file)],
+    { maxBuffer: 16_000_000 },
+  );
+  assert.ok(archive.length < 4_000_000, "proof capsule archive budget");
   const blobs = execFileSync("git", ["cat-file", "--batch"], {
     input: baseFiles.map(({ blob }) => blob).join("\n") + "\n",
     maxBuffer: 16_000_000,
@@ -97,8 +102,8 @@ if (prepareCapsule) {
     candidate_head: git(["rev-parse", "HEAD"]).trim(),
     candidate_head_tree: git(["rev-parse", "HEAD^{tree}"]).trim(),
     candidate_dirty: git(["status", "--porcelain"]).trim() !== "",
-    candidate_patch_sha256: sha256(git(["diff", "--binary", base])),
-    dashboard_patch_sha256: sha256(git(["diff", "--binary", base, "--", "dashboard"])),
+    candidate_patch_sha256: await gitDigest(["diff", "--binary", base]),
+    dashboard_patch_sha256: await gitDigest(["diff", "--binary", base, "--", "dashboard"]),
     source_tree_sha256: sha256(JSON.stringify(candidateFiles)),
     archive_sha256: sha256(archive),
     base_files: baseFiles,
@@ -133,7 +138,8 @@ const now = Date.now() - 1_000;
 const head = capsule?.candidate_head ?? git(["rev-parse", "HEAD"]).trim();
 const dirty = capsule?.candidate_dirty ?? git(["status", "--porcelain"]).trim() !== "";
 const patchSha256 =
-  capsule?.dashboard_patch_sha256 ?? sha256(git(["diff", "--binary", base, "--", "dashboard"]));
+  capsule?.dashboard_patch_sha256 ??
+  (await gitDigest(["diff", "--binary", base, "--", "dashboard"]));
 await mkdir(artifacts, { recursive: true });
 
 try {
@@ -168,6 +174,12 @@ try {
     ["candidate", root],
   ]) {
     const preview = await startWorker(label, source);
+    if (publicationOrder) {
+      const { provePublicationOrder } = await import("./publication-order-proof.mjs");
+      results.push(await provePublicationOrder(preview.origin, label));
+      await stopWorker(preview);
+      continue;
+    }
     if (lifetime) {
       const { proveLifetime } = await import("./lifetime-proof.mjs");
       results.push(await proveLifetime(preview.origin, label, artifacts));
@@ -175,52 +187,68 @@ try {
       continue;
     }
     for (const mode of ["cold", "durable", "fresh", "stale"]) {
-      for (const kind of ["observed", "idle", "mixed", "unknown", "lossy"]) {
-        if (kind === "lossy" && (mode === "cold" || mode === "durable")) continue;
-        await json(preview.origin, "/__proof/seed", {
-          method: "POST",
-          body: JSON.stringify({ mode, kind, now: Date.now() - 1_000 }),
-        });
-        const dedicated = await json(preview.origin, "/api/recent-durable-publication-events");
-        const response = await fetch(`${preview.origin}/api/status`);
-        assert.equal(response.status, 200);
-        const status = await response.json();
-        const nested = status.recent_durable_publication_events;
-        const expected = kind === "lossy" ? null : dedicated.recent_durable_publication_events;
-        const observations = await json(preview.origin, "/__proof/observations");
-        assert.equal(
-          response.headers.get("x-clawsweeper-cache"),
-          mode === "fresh" || mode === "stale" ? mode : "miss",
-        );
-        assert.equal(JSON.stringify(status).includes("withheld-publication-identity"), false);
-        if (mode === "durable") {
-          assert.equal(status.fleet.active_codex_jobs, 17);
-          assert.ok(observations.store_reads > 0);
-          assert.equal(observations.blocked_requests, 0);
-        }
-        if (label === "candidate") {
-          assert.deepEqual(nested, expected, `${mode}/${kind}: typed publication parity`);
-        } else {
-          assert.notDeepEqual(nested, expected, `${mode}/${kind}: baseline must reproduce loss`);
-          if (kind !== "lossy") {
-            assert.deepEqual(nested.direct.counts, {});
-            assert.equal(nested.captured_at, undefined);
+      for (const cacheOwner of mode === "fresh" || mode === "stale"
+        ? ["durable", "edge"]
+        : ["durable"]) {
+        for (const kind of ["observed", "idle", "mixed", "unknown", "lossy"]) {
+          if (kind === "lossy" && (mode === "cold" || mode === "durable")) continue;
+          await json(preview.origin, "/__proof/seed", {
+            method: "POST",
+            body: JSON.stringify({
+              mode,
+              kind,
+              cache_owner: cacheOwner,
+              now: Date.now() - 1_000,
+              historical_cache:
+                label === "base" && base === "49446cd30622e642efceb80e1c0347b2602a0117",
+            }),
+          });
+          const dedicated = await json(preview.origin, "/api/recent-durable-publication-events");
+          const response = await fetch(`${preview.origin}/api/status`);
+          assert.equal(response.status, 200);
+          const status = await response.json();
+          const nested = status.recent_durable_publication_events;
+          const expected = kind === "lossy" ? null : dedicated.recent_durable_publication_events;
+          const observations = await json(preview.origin, "/__proof/observations");
+          assert.equal(
+            response.headers.get("x-clawsweeper-cache"),
+            mode === "fresh" || mode === "stale"
+              ? mode
+              : label === "candidate" && mode === "durable"
+                ? "fresh"
+                : "miss",
+          );
+          assert.equal(JSON.stringify(status).includes("withheld-publication-identity"), false);
+          if (mode === "durable") {
+            assert.equal(status.fleet.active_codex_jobs, 17);
+            assert.ok(observations.store_reads > 0);
+            assert.equal(observations.blocked_requests, 0);
           }
+          if (label === "candidate" || cachePaths) {
+            assert.deepEqual(nested, expected, `${mode}/${kind}: typed publication parity`);
+          } else {
+            assert.notDeepEqual(nested, expected, `${mode}/${kind}: baseline must reproduce loss`);
+            if (kind !== "lossy") {
+              assert.deepEqual(nested.direct.counts, {});
+              assert.equal(nested.captured_at, undefined);
+            }
+          }
+          results.push({
+            revision: label,
+            mode,
+            cache_owner: cacheOwner,
+            kind,
+            cache: response.headers.get("x-clawsweeper-cache"),
+            nested_sha256: sha256(JSON.stringify(nested)),
+            direct_accepted: nested?.direct?.counts?.accepted ?? null,
+            batch_retryable: nested?.batch?.counts?.retryable ?? null,
+            window: nested?.window?.id ?? null,
+            captured_at: nested?.captured_at ?? null,
+            projection_is_null: nested === null,
+            collection_state: nested?.collection?.state ?? null,
+            ...observations,
+          });
         }
-        results.push({
-          revision: label,
-          mode,
-          kind,
-          cache: response.headers.get("x-clawsweeper-cache"),
-          nested_sha256: sha256(JSON.stringify(nested)),
-          direct_accepted: nested?.direct?.counts?.accepted ?? null,
-          batch_retryable: nested?.batch?.counts?.retryable ?? null,
-          window: nested?.window?.id ?? null,
-          captured_at: nested?.captured_at ?? null,
-          projection_is_null: nested === null,
-          collection_state: nested?.collection?.state ?? null,
-          ...observations,
-        });
       }
     }
     if (workerOnly) {
@@ -233,7 +261,11 @@ try {
   }
   if (capsule) await verifyFiles(root, capsule.candidate_files);
   const summary = {
-    schema: lifetime ? "status-refresh-lifetime-proof/v1" : "status-publication-outcomes-proof/v1",
+    schema: publicationOrder
+      ? "status-publication-order-proof/v1"
+      : lifetime
+        ? "status-refresh-lifetime-proof/v1"
+        : "status-publication-outcomes-proof/v1",
     base,
     candidate_head: head,
     candidate_dirty: dirty,
@@ -265,19 +297,31 @@ try {
     production_mutations: 0,
     worker_outbound_network: "denied by fixture",
     browser_proof: browserResults,
-    limits: lifetime
+    limits: publicationOrder
       ? [
-          "Synthetic held binding and body; the production stalled dependency remains unknown.",
-          "Both served clients use the real Worker route and their ordinary timers.",
+          "Synthetic delayed binding writes and edge bodies; real SQLite owner and HTTP status route.",
+          "Does not attribute production staleness, order overlapping HTTP responses, or cover regional clock skew.",
         ]
-      : [
-          "Synthetic inputs; no production state or timing claim.",
-          "Corrected-input browser cases isolate browser ingestion using a fixture status route.",
-          "Worker-route browser cases fetch the real Worker status route; cached reload uses a controlled HTTP 503.",
-        ],
+      : lifetime
+        ? [
+            "Synthetic held binding and body; the production stalled dependency remains unknown.",
+            "Both served clients use the real Worker route and their ordinary timers.",
+          ]
+        : [
+            "Synthetic inputs; no production state or timing claim.",
+            "Corrected-input browser cases isolate browser ingestion using a fixture status route.",
+            "Worker-route browser cases fetch the real Worker status route; cached reload uses a controlled HTTP 503.",
+          ],
   };
   await writeFile(
-    path.join(artifacts, lifetime ? "lifetime-summary.json" : "worker-summary.json"),
+    path.join(
+      artifacts,
+      publicationOrder
+        ? "publication-order-summary.json"
+        : lifetime
+          ? "lifetime-summary.json"
+          : "worker-summary.json",
+    ),
     JSON.stringify(summary, null, 2) + "\n",
   );
   console.log(
@@ -334,6 +378,26 @@ async function verifyFiles(directory, files) {
 }
 function git(args) {
   return execFileSync("git", args, { cwd: root, encoding: "utf8" });
+}
+async function gitDigest(args) {
+  const hash = createHash("sha256");
+  const child = spawn("git", args, { cwd: root, stdio: ["ignore", "pipe", "pipe"] });
+  let error = "";
+  child.stderr.on("data", (chunk) => {
+    error = (error + chunk).slice(-4_000);
+  });
+  const completed = new Promise((resolve, reject) => {
+    child.once("error", reject);
+    child.once("close", resolve);
+  });
+  const [code] = await Promise.all([
+    completed,
+    (async () => {
+      for await (const chunk of child.stdout) hash.update(chunk);
+    })(),
+  ]);
+  assert.equal(code, 0, error || "git digest failed");
+  return hash.digest("hex");
 }
 function sha256(value) {
   return createHash("sha256").update(value).digest("hex");

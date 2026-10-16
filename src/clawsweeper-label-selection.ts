@@ -4,7 +4,6 @@ import {
   IMPACT_LABEL_NAMES,
   ISSUE_ADVISORY_LABELS,
   ISSUE_ADVISORY_LABEL_NAMES,
-  LEGACY_TELEGRAM_VISIBLE_PROOF_LABEL,
   MATURITY_LABELS,
   MATURITY_LABEL_NAMES,
   MERGE_RISK_LABELS,
@@ -17,7 +16,6 @@ import {
   PROOF_SUFFICIENT_LABEL,
   QUEUEABLE_FIX_LABEL,
   STALE_LABEL,
-  TELEGRAM_VISIBLE_PROOF_LABEL,
   type MergeRiskLabelName,
 } from "./clawsweeper-policy.js";
 import type {
@@ -25,7 +23,6 @@ import type {
   IssueAdvisoryLabelState,
   MaturityLabelName,
   RealBehaviorProof,
-  TelegramVisibleProof,
   TriagePriority,
 } from "./clawsweeper-types.js";
 import {
@@ -69,17 +66,6 @@ export function nextRealBehaviorProofMediaLabels(
   const nextLabels = labels.filter((label) => !PROOF_MEDIA_LABEL_NAMES.has(label));
   const mediaLabel = PROOF_MEDIA_LABELS.find((label) => label.evidenceKind === proof.evidenceKind);
   if (mediaLabel) nextLabels.push(mediaLabel.name);
-  return nextLabels;
-}
-export function nextTelegramVisibleProofLabels(
-  labels: readonly string[],
-  proof: Pick<TelegramVisibleProof, "status">,
-): string[] {
-  const nextLabels = labels.filter(
-    (label) =>
-      label !== TELEGRAM_VISIBLE_PROOF_LABEL && label !== LEGACY_TELEGRAM_VISIBLE_PROOF_LABEL,
-  );
-  if (proof.status === "needed") nextLabels.push(TELEGRAM_VISIBLE_PROOF_LABEL);
   return nextLabels;
 }
 export type PriorityLabelSpec = (typeof PRIORITY_LABELS)[number];
