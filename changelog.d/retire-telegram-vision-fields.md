@@ -1,0 +1,1 @@
+- Remove retired Telegram proof and vision-fit review output while preserving stored review records and existing proof labels.

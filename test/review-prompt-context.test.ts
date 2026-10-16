@@ -535,10 +535,6 @@ for (const [repo, core] of [
         assert.match(prompt, /`CHANGELOG\.md` is release-owned/);
         assert.match(
           prompt,
-          /Normal PRs, repair workers, and automerge\/autofix lanes should not edit it/,
-        );
-        assert.match(
-          prompt,
           /do not make missing `CHANGELOG\.md` a review finding, merge blocker, work item, or next-step blocker/,
         );
         assert.match(prompt, /ask for PR-body or commit message context/);

@@ -18,7 +18,6 @@ import {
   nextMaturityLabels,
   nextMergeRiskLabels,
   nextPriorityLabels,
-  nextTelegramVisibleProofLabels,
 } from "../dist/clawsweeper-label-selection.js";
 import {
   IMPACT_LABELS,
@@ -606,57 +605,6 @@ test("ClawSweeper PR status label scheme exposes workflow states", () => {
       },
     ],
   );
-});
-
-test("ClawSweeper Telegram proof judgement controls the E2E proof label", () => {
-  assert.deepEqual(nextTelegramVisibleProofLabels(["channel: telegram"], { status: "needed" }), [
-    "channel: telegram",
-    "proof: telegram-e2e",
-  ]);
-  assert.deepEqual(
-    nextTelegramVisibleProofLabels(["channel: telegram", "proof: telegram-e2e"], {
-      status: "not_needed",
-    }),
-    ["channel: telegram"],
-  );
-  assert.deepEqual(
-    nextTelegramVisibleProofLabels(["channel: telegram", "mantis: telegram-visible-proof"], {
-      status: "needed",
-    }),
-    ["channel: telegram", "proof: telegram-e2e"],
-  );
-  assert.deepEqual(
-    nextTelegramVisibleProofLabels(["channel: telegram", "mantis: telegram-visible-proof"], {
-      status: "not_needed",
-    }),
-    ["channel: telegram"],
-  );
-});
-
-test("ClawSweeper replaces the legacy Telegram proof label during synchronization", () => {
-  const commands: string[][] = [];
-  const labels = recordingLabelSync(commands);
-
-  labels.syncTelegramVisibleProofLabel({
-    number: 42,
-    labels: ["channel: telegram", "mantis: telegram-visible-proof"],
-    proof: { status: "needed" },
-    dryRun: false,
-  });
-
-  assert.deepEqual(commands, [
-    [
-      "label",
-      "create",
-      "proof: telegram-e2e",
-      "--color",
-      "57606A",
-      "--description",
-      "This PR needs Telegram Test Server proof with the repository E2E skill.",
-    ],
-    ["issue", "edit", "42", "--add-label", "proof: telegram-e2e"],
-    ["issue", "edit", "42", "--remove-label", "mantis: telegram-visible-proof"],
-  ]);
 });
 
 test("ClawSweeper priority label scheme exposes P0 through P3 labels", () => {

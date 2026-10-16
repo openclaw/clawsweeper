@@ -61,6 +61,10 @@ test("queue maintenance is explicit, bounded, and non-cancelling", () => {
     "canonical_action",
     "expected_deployment_sha",
     "canonical_attestation_json",
+    "usage_deploy_sha",
+    "usage_version_id",
+    "usage_canary_run_id",
+    "authorize_usage_canary",
   ]);
   assert.deepEqual(workflow.on.workflow_dispatch.inputs.max_items, {
     description: "Maximum reconciliation candidates to inspect",
@@ -726,4 +730,48 @@ test("maintenance CLI signs one HTTPS dry run, redacts identities, and refuses r
     },
   );
   assert.equal(canonicalCalls, 3);
+});
+
+test("usage workflow keeps read credentials separate from one authorized canary attempt", () => {
+  assert.deepEqual((workflow.on.workflow_dispatch.inputs.mode as { options: string[] }).options, [
+    "reconcile",
+    "retire-closed-publication",
+    "storage-stats",
+    "canonical-bodies",
+    "operator-read",
+    "canary",
+    "read-back",
+  ]);
+  const read = workflow.jobs["usage-read"]!;
+  const write = workflow.jobs["usage-canary"]!;
+  const after = workflow.jobs["usage-read-after"]!;
+  for (const job of [read, write, after]) {
+    assert.match(job.if!, /github.repository == 'openclaw\/clawsweeper'/);
+    assert.match(job.if!, /github.ref == 'refs\/heads\/main'/);
+    assert.equal(job.steps[0]?.with?.ref, "${{ github.sha }}");
+    assert.equal(job.steps[0]?.with?.["persist-credentials"], false);
+    for (const step of job.steps) assert.doesNotMatch(step.run ?? "", /\$\{\{/);
+  }
+  for (const job of [read, after]) {
+    const step = job.steps.find((step) => step.run === "node scripts/review-usage-operator.mjs")!;
+    assert.equal(
+      step.env?.CLOUDFLARE_API_TOKEN,
+      "${{ secrets.OPENCLAW_CLOUDFLARE_WORKERS_API_TOKEN }}",
+    );
+    assert.equal(step.env?.CLAWSWEEPER_WEBHOOK_SECRET, undefined);
+  }
+  const submit = write.steps.find((step) => step.run === "node scripts/review-usage-operator.mjs")!;
+  assert.equal(submit.env?.CLOUDFLARE_API_TOKEN, undefined);
+  assert.equal(submit.env?.CLAWSWEEPER_WEBHOOK_SECRET, "${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}");
+  assert.equal(submit.env?.USAGE_GUARD_SOURCE_SHA, "${{ needs.usage-read.outputs.source_sha }}");
+  assert.equal(
+    submit.env?.USAGE_GUARD_DEPLOY_SHA,
+    "${{ needs.usage-read.outputs.deployment_sha }}",
+  );
+  assert.match(
+    write.if!,
+    /inputs.execute && inputs.authorize_usage_canary && github.run_attempt == 1/,
+  );
+  assert.match(after.if!, /always\(\)/);
+  assert.match(after.if!, /needs.usage-canary.result == 'failure'/);
 });

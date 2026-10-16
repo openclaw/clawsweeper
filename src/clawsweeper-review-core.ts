@@ -531,9 +531,6 @@ ${extra}
         "Unclear. The review failed before ClawSweeper could establish a reproduction path.",
       solutionAssessment:
         "Unclear. Retry the review first so ClawSweeper can evaluate the actual issue and fix direction.",
-      visionFit: "not_applicable",
-      visionFitReason: "Vision-fit assessment did not run because the Codex review failed.",
-      visionFitEvidence: [],
       implementationComplexity: "not_applicable",
       autoImplementationCandidate: "none",
       rootCauseCluster: defaultRootCauseCluster(),
@@ -575,10 +572,6 @@ ${extra}
         overallTier: "NA",
         summary: "PR readiness rating was not assessed because the Codex review failed.",
         nextSteps: [],
-      },
-      telegramVisibleProof: {
-        status: "not_needed",
-        summary: "Telegram visible proof was not assessed because the Codex review failed.",
       },
       featureShowcase: {
         status: "none",

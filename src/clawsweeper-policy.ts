@@ -37,10 +37,8 @@ import type {
   RootCauseRelationship,
   SecurityConcernSeverity,
   SecurityReviewStatus,
-  TelegramVisibleProofStatus,
   TestingProofPath,
   TriagePriority,
-  VisionFitStatus,
   WorkCandidateKind,
 } from "./clawsweeper-types.js";
 
@@ -235,11 +233,6 @@ export const PR_STATUS_LABELS = [
   description: string;
 }[];
 export const PR_STATUS_LABEL_NAMES = new Set<string>(PR_STATUS_LABELS.map((label) => label.name));
-export const LEGACY_TELEGRAM_VISIBLE_PROOF_LABEL = "mantis: telegram-visible-proof";
-export const TELEGRAM_VISIBLE_PROOF_LABEL = "proof: telegram-e2e";
-export const TELEGRAM_VISIBLE_PROOF_LABEL_COLOR = "57606A";
-export const TELEGRAM_VISIBLE_PROOF_LABEL_DESCRIPTION =
-  "This PR needs Telegram Test Server proof with the repository E2E skill.";
 export const PRIORITY_LABELS = [
   {
     priority: 0,
@@ -565,12 +558,6 @@ export const WORK_CANDIDATES = new Set<WorkCandidateKind>([
   "manual_review",
   "queue_fix_pr",
 ]);
-export const VISION_FIT_STATUSES = new Set<VisionFitStatus>([
-  "aligned",
-  "rejected",
-  "unclear",
-  "not_applicable",
-]);
 export const IMPLEMENTATION_COMPLEXITIES = new Set<ImplementationComplexity>([
   "small",
   "medium",
@@ -581,7 +568,6 @@ export const IMPLEMENTATION_COMPLEXITIES = new Set<ImplementationComplexity>([
 export const AUTO_IMPLEMENTATION_CANDIDATES = new Set<AutoImplementationCandidate>([
   "none",
   "strict_bug",
-  "vision_fit",
 ]);
 export const TRIAGE_PRIORITIES = new Set<TriagePriority>(["P0", "P1", "P2", "P3", "none"]);
 export const ITEM_CATEGORIES = new Set<ItemCategory>([
@@ -684,10 +670,6 @@ export const REAL_BEHAVIOR_PROOF_EVIDENCE_KINDS = new Set<RealBehaviorProofEvide
 ]);
 // Proof statuses that leave a stalled pull request unproven.
 export const STALLED_UNPROVEN_PROOF_STATUSES = new Set(["missing", "mock_only", "insufficient"]);
-export const TELEGRAM_VISIBLE_PROOF_STATUSES = new Set<TelegramVisibleProofStatus>([
-  "needed",
-  "not_needed",
-]);
 export const PRODUCT_REVIEW_KINDS = new Set<ProductReviewKind>([
   "bug_fix",
   "preference",
@@ -785,9 +767,6 @@ export const DECISION_SCHEMA_KEYS = new Set([
   "requiresProductDecision",
   "reproductionAssessment",
   "solutionAssessment",
-  "visionFit",
-  "visionFitReason",
-  "visionFitEvidence",
   "implementationComplexity",
   "autoImplementationCandidate",
   "rootCauseCluster",
@@ -799,7 +778,6 @@ export const DECISION_SCHEMA_KEYS = new Set([
   "securityReview",
   "realBehaviorProof",
   "prRating",
-  "telegramVisibleProof",
   "featureShowcase",
   "overallCorrectness",
   "overallConfidenceScore",
@@ -859,7 +837,6 @@ export const PR_RATING_SCHEMA_KEYS = new Set([
   "summary",
   "nextSteps",
 ]);
-export const TELEGRAM_VISIBLE_PROOF_SCHEMA_KEYS = new Set(["status", "summary"]);
 export const CHANGE_EXAMPLE_SCHEMA_KEYS = new Set(["scenario", "before", "after"]);
 export const PRODUCT_REVIEW_SCHEMA_KEYS = new Set([
   "kind",
@@ -932,7 +909,6 @@ export const REVIEW_SECTIONS = {
   maintainerDecision: "Maintainer Decision",
   reproductionAssessment: "Reproduction Assessment",
   solutionAssessment: "Solution Assessment",
-  visionFit: "Vision Fit",
   rootCauseCluster: "Root-Cause Cluster",
   productReview: "Product Review",
   provenance: "Provenance",
@@ -941,7 +917,6 @@ export const REVIEW_SECTIONS = {
   securityReview: "Security Review",
   realBehaviorProof: "Real Behavior Proof",
   prRating: "PR Rating",
-  telegramVisibleProof: "Telegram Visible Proof",
   featureShowcase: "Feature Showcase",
   agentsPolicyStatus: "AGENTS.md Policy Status",
   workCandidate: "Work Candidate",

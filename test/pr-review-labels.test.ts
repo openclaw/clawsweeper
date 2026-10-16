@@ -1075,9 +1075,6 @@ Full review comments:
     comment,
     /- remove `proof: 🎥 video`: Current real behavior proof evidence kind is none\./,
   );
-  assert.match(
-    comment,
-    /- remove `proof: telegram-e2e`: Current Telegram visible-proof status is not_needed\./,
-  );
+  assert.doesNotMatch(comment, /remove `proof: telegram-e2e`/);
   assert.doesNotMatch(comment, /remove `status: 📣 needs proof`/);
 });

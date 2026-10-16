@@ -173,9 +173,6 @@ export function oversizedPullRequestDecision(
     requiresProductDecision: false,
     reproductionAssessment: unassessed,
     solutionAssessment: unassessed,
-    visionFit: "not_applicable",
-    visionFitReason: unassessed,
-    visionFitEvidence: [],
     implementationComplexity: "not_applicable",
     autoImplementationCandidate: "none",
     rootCauseCluster: {
@@ -220,7 +217,6 @@ export function oversizedPullRequestDecision(
       summary: unassessed,
       nextSteps: [],
     },
-    telegramVisibleProof: { status: "not_needed", summary: unassessed },
     featureShowcase: { status: "none", reason: unassessed },
     overallCorrectness: "not a patch",
     overallConfidenceScore: 0,

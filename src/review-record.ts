@@ -235,28 +235,36 @@ function parseFixedPullRequest(value: unknown): FixedPullRequest | null {
   };
 }
 
-// Records written before the automerge lane was retired carry
-// mergeRiskOptions[].automergeInstruction. It has no reader, so drop it before
-// the fixed-point check instead of rejecting those records.
-function withoutRetiredMergeRiskFields(stored: Record<string, unknown>): Record<string, unknown> {
-  if (!Array.isArray(stored.mergeRiskOptions)) return stored;
-  return {
-    ...stored,
-    mergeRiskOptions: stored.mergeRiskOptions.map((option: unknown) => {
+// Drop retired output fields before the fixed-point check. This compatibility
+// step applies only to stored records, not new model output.
+function withoutRetiredDecisionFields(stored: Record<string, unknown>): Record<string, unknown> {
+  const {
+    telegramVisibleProof: _telegramVisibleProof,
+    visionFit: _visionFit,
+    visionFitReason: _visionFitReason,
+    visionFitEvidence: _visionFitEvidence,
+    ...current
+  } = stored;
+  if (current.autoImplementationCandidate === "vision_fit") {
+    current.autoImplementationCandidate = "none";
+  }
+  if (Array.isArray(current.mergeRiskOptions)) {
+    current.mergeRiskOptions = current.mergeRiskOptions.map((option: unknown) => {
       if (!option || typeof option !== "object" || !("automergeInstruction" in option)) {
         return option;
       }
       const { automergeInstruction: _retired, ...rest } = option;
       return rest;
-    }),
-  };
+    });
+  }
+  return current;
 }
 
 // The model schema fields use the review parser. The runner-owned fields use their
 // own readers. The stored value must be a fixed point: if parsing changes anything
 // (an unknown key, a default, a normalized value), the record is invalid.
 function parseStoredDecision(value: unknown, subject: ReviewRecordSubject): Decision {
-  const stored = withoutRetiredMergeRiskFields(storedObject(value, "decision"));
+  const stored = withoutRetiredDecisionFields(storedObject(value, "decision"));
   const {
     oversizedPullRequest,
     oversizedPullRequestSource,

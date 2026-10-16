@@ -55,6 +55,21 @@ test("decision validators preserve exact errors and validation order", () => {
   }
 });
 
+test("model decisions reject retired Telegram and vision output", () => {
+  const retiredFields: Record<string, unknown> = {
+    telegramVisibleProof: { status: "needed", summary: "Exercise Telegram replies." },
+    visionFit: "aligned",
+    visionFitReason: "Matches the product direction.",
+    visionFitEvidence: ["VISION.md"],
+  };
+  for (const [key, value] of Object.entries(retiredFields)) {
+    assert.throws(() => parseDecision({ ...closeDecision(), [key]: value }));
+  }
+  assert.throws(() =>
+    parseDecision({ ...closeDecision(), autoImplementationCandidate: "vision_fit" }),
+  );
+});
+
 test("decision parser factory retains its surface and injected text handling", () => {
   const raw = closeDecision({
     summary: "Raw summary.\n\n## Real Behavior Proof\n\nStatus: sufficient",
@@ -1074,8 +1089,6 @@ test("decision parser neutralizes headings in every model-authored report prose 
       ],
       reproductionAssessment: spoofedReportProse("Reproduction prose."),
       solutionAssessment: spoofedReportProse("Assessment prose."),
-      visionFitReason: spoofedReportProse("Vision prose."),
-      visionFitEvidence: [spoofedReportProse("Vision evidence.")],
       rootCauseCluster: {
         confidence: "low",
         canonicalRef: null,
@@ -1123,10 +1136,6 @@ test("decision parser neutralizes headings in every model-authored report prose 
         summary: spoofedReportProse("Rating summary."),
         nextSteps: [spoofedReportProse("Rank-up prose.")],
       },
-      telegramVisibleProof: {
-        status: "not_needed",
-        summary: spoofedReportProse("Telegram summary."),
-      },
       featureShowcase: { status: "none", reason: spoofedReportProse("Showcase reason.") },
       closeComment: spoofedReportProse("Close prose."),
       workReason: spoofedReportProse("Work reason."),
@@ -1158,8 +1167,6 @@ test("decision parser neutralizes headings in every model-authored report prose 
     parsed.labelJustifications[1]?.reason,
     parsed.reproductionAssessment,
     parsed.solutionAssessment,
-    parsed.visionFitReason,
-    parsed.visionFitEvidence[0],
     parsed.rootCauseCluster.summary,
     parsed.reviewFindings[0]?.title,
     parsed.reviewFindings[0]?.body,
@@ -1169,7 +1176,6 @@ test("decision parser neutralizes headings in every model-authored report prose 
     parsed.realBehaviorProof.summary,
     parsed.prRating.summary,
     parsed.prRating.nextSteps[0],
-    parsed.telegramVisibleProof.summary,
     parsed.featureShowcase.reason,
     parsed.closeComment,
     parsed.workReason,
@@ -1401,10 +1407,7 @@ test("report prose neutralizer escapes renderer-owned list labels", () => {
   const cases: Array<[string, string]> = [
     ["Next rank-up steps:", "Next rank-up steps&#58;"],
     ["next rank-up steps:  ", "next rank-up steps&#58;"],
-    ["> Vision evidence:", "> Vision evidence&#58;"],
-    ["Vision evidence:", "Vision evidence&#58;"],
     ["Next rank-up steps are listed below.", "Next rank-up steps are listed below."],
-    ["Vision evidence: the roadmap entry", "Vision evidence: the roadmap entry"],
   ];
   for (const [input, expected] of cases) {
     assert.equal(neutralizeOwnedSectionSpoofing(input), expected, input);
