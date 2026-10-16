@@ -298,6 +298,126 @@ test("ledger keys are create-only while asset keys may overwrite", async () => {
   assert.equal((await mismatchedStart.json()).error, "artifact_blob_key_digest_mismatch");
 });
 
+test("concurrent immutable single-shot uploads preserve the first committed bytes", async () => {
+  const bucket = new FakeR2Bucket();
+  const env = { CLAWSWEEPER_WEBHOOK_SECRET: secret, STATE_SNAPSHOTS: bucket };
+  const contents = [Buffer.from("first writer\n"), Buffer.from("other writer\n")];
+  raceInitialHeads(bucket, ledgerPath);
+  const responses = await Promise.all(
+    contents.map((content) =>
+      worker.fetch(
+        signedBlobRequest("put", {
+          path: ledgerPath,
+          digest: sha256(content),
+          contentBase64: content.toString("base64"),
+        }),
+        env,
+      ),
+    ),
+  );
+  assert.deepEqual(responses.map((response) => response.status).sort(), [201, 409]);
+  const winner = contents[responses.findIndex((response) => response.status === 201)]!;
+  const conflict = await responses.find((response) => response.status === 409)!.json();
+  assert.equal(conflict.error, "ledger_blob_immutable_conflict");
+  assert.equal(conflict.existingBytes, winner.byteLength);
+  assert.equal(conflict.existingDigest, sha256(winner));
+  assert.deepEqual(bucket.objects.get(ledgerPath), {
+    bytes: new Uint8Array(winner),
+    customMetadata: { sha256: sha256(winner), verified: "server" },
+  });
+});
+
+test("concurrent identical ledger and artifact uploads return an unchanged replay", async (t) => {
+  for (const blobPath of [ledgerPath, artifactPath]) {
+    await t.test(blobPath.startsWith("ledger/") ? "ledger" : "artifact", async () => {
+      const bucket = new FakeR2Bucket();
+      const env = { CLAWSWEEPER_WEBHOOK_SECRET: secret, STATE_SNAPSHOTS: bucket };
+      const content = artifactContent;
+      raceInitialHeads(bucket, blobPath);
+      const responses = await Promise.all(
+        [0, 1].map(() =>
+          worker.fetch(
+            signedBlobRequest("put", {
+              path: blobPath,
+              digest: sha256(content),
+              contentBase64: content.toString("base64"),
+            }),
+            env,
+          ),
+        ),
+      );
+      assert.deepEqual(responses.map((response) => response.status).sort(), [200, 201]);
+      const replay = await responses.find((response) => response.status === 200)!.json();
+      assert.equal(replay.unchanged, true);
+      assert.deepEqual(bucket.objects.get(blobPath), {
+        bytes: new Uint8Array(content),
+        customMetadata: { sha256: sha256(content), verified: "server" },
+      });
+    });
+  }
+});
+
+test("a lost conditional PUT classifies the winning size and fails closed without a winner", async (t) => {
+  for (const result of ["different-size", "missing", "unavailable"] as const) {
+    await t.test(result, async () => {
+      const bucket = new FakeR2Bucket();
+      const env = { CLAWSWEEPER_WEBHOOK_SECRET: secret, STATE_SNAPSHOTS: bucket };
+      const content = Buffer.from("same digest metadata\n");
+      let puts = 0;
+      bucket.put = async () => {
+        puts += 1;
+        if (result === "different-size") {
+          bucket.objects.set(ledgerPath, {
+            bytes: new Uint8Array(content.byteLength + 1),
+            customMetadata: { sha256: sha256(content) },
+          });
+        }
+        if (result === "unavailable")
+          bucket.head = async () => {
+            throw new Error("synthetic R2 failure");
+          };
+        return null;
+      };
+      const errors: unknown[][] = [];
+      t.mock.method(console, "error", (...values: unknown[]) => {
+        errors.push(values);
+      });
+      const response = await worker.fetch(
+        signedBlobRequest("put", {
+          path: ledgerPath,
+          digest: sha256(content),
+          contentBase64: content.toString("base64"),
+        }),
+        env,
+      );
+      assert.equal(response.status, result === "different-size" ? 409 : 503);
+      assert.equal(
+        (await response.json()).error,
+        result === "different-size" ? "ledger_blob_immutable_conflict" : "blob_store_unavailable",
+      );
+      assert.equal(puts, 1, "a failed condition never retries an unconditional write");
+      assert.deepEqual(errors, result === "unavailable" ? [["state_blob_request_failed"]] : []);
+    });
+  }
+});
+
+function raceInitialHeads(bucket: FakeR2Bucket, blobPath: string) {
+  const original = bucket.head.bind(bucket);
+  let heads = 0;
+  let release!: () => void;
+  const barrier = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  bucket.head = async (key: string) => {
+    const object = await original(key);
+    if (key === blobPath && ++heads <= 2) {
+      if (heads === 2) release();
+      await barrier;
+    }
+    return object;
+  };
+}
+
 test("multipart uploads stream fixed-size parts and enforce immutability at completion", async () => {
   const bucket = new FakeR2Bucket();
   const env = { CLAWSWEEPER_WEBHOOK_SECRET: secret, STATE_SNAPSHOTS: bucket };
@@ -588,11 +708,17 @@ class FakeR2Bucket {
     return { ...describe(key, object), body };
   }
 
-  async put(key: string, value: Uint8Array, options?: { customMetadata?: Record<string, string> }) {
+  async put(
+    key: string,
+    value: Uint8Array,
+    options?: { customMetadata?: Record<string, string>; onlyIf?: Headers },
+  ) {
+    if (options?.onlyIf?.get("If-None-Match") === "*" && this.objects.has(key)) return null;
     this.objects.set(key, {
       bytes: new Uint8Array(value).slice(),
       customMetadata: options?.customMetadata ?? {},
     });
+    return describe(key, this.objects.get(key)!);
   }
 
   async list(options?: { prefix?: string; cursor?: string; limit?: number }) {
