@@ -541,9 +541,6 @@ function renderKeepOpenCommentFromReport(
   if (freshness) lines.push("", freshness);
   const publicBody = neutralizeReviewControlMarkers(lines.join("\n"));
   if (!reviewHistoryBlock) return publicBody;
-  // Issues keep the pre-redesign trailing history block; only PRs moved it into the
-  // collapsed details slot.
-  if (!isPullRequest) return `${publicBody.trimEnd()}\n\n${reviewHistoryBlock}\n`;
   // The slot is always the renderer-appended last occurrence; report text earlier in
   // the body could mention the sentinel, and a plain replace would expand $-sequences.
   const slotIndex = publicBody.lastIndexOf(REVIEW_HISTORY_RENDER_SLOT);
