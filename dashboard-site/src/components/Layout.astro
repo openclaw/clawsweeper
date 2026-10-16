@@ -111,7 +111,7 @@ const jump = repos.map(repo => ({ r: repo.repo, s: repo.slug, n: repo.records })
             )}
           </div>
           <div class="ml-auto flex items-center gap-2">
-            <span class="hidden text-[12px] text-fg-muted sm:inline" data-tip={`Built ${stamp(asOf.build)}\nQueue ${stamp(asOf.queue)}\nWorkflow runs through ${stamp(asOf.actions)}\nReview totals, quality and closes ${stamp(asOf.corpus)}: refreshed at 00:07 and 12:07 UTC`}>
+            <span class="hidden text-[12px] text-fg-muted sm:inline" data-tip={`Built ${stamp(asOf.build)}\nQueue ${stamp(asOf.queue)}\nWorkflow runs through ${stamp(asOf.actions)}\nReview totals, quality and closes ${stamp(asOf.corpus)}: refreshed twice a day, near 00:00 and 12:00 UTC`}>
               Updated {stamp(asOf.build)} · review totals {stamp(asOf.corpus)}
             </span>
             <button data-theme class="grid size-8 place-items-center rounded-md text-fg-muted transition-colors hover:bg-bg-muted hover:text-fg" aria-label="Toggle theme">
@@ -162,8 +162,8 @@ const jump = repos.map(repo => ({ r: repo.repo, s: repo.slug, n: repo.records })
         const corpus = (Date.now() - Date.parse(stale.dataset.corpus)) / 3_600_000;
         const notes = [];
         if (build > 1) notes.push(`This snapshot is ${age(build)} old. The dashboard normally rebuilds every 15 minutes, so its refresh has stopped.`);
-        // Review totals, quality and closes come from the corpus, refreshed at 00:07 and 12:07 UTC.
-        if (corpus > 14) notes.push(`Review totals, quality and closes are ${age(corpus)} old. They normally refresh twice a day (00:07 and 12:07 UTC), so that refresh has stopped.`);
+        // Review totals, quality and closes come from the corpus, refreshed near 00:00 and 12:00 UTC.
+        if (corpus > 14) notes.push(`Review totals, quality and closes are ${age(corpus)} old. They normally refresh twice a day (near 00:00 and 12:00 UTC), so that refresh has stopped.`);
         stale.textContent = notes.join(' ');
         stale.hidden = notes.length === 0;
       };

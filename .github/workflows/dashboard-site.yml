@@ -3,12 +3,11 @@ name: Dashboard site
 # Static operator dashboard (dashboard-site/), rebuilt every 15 minutes and published to
 # Cloudflare Pages. The clawsweeper.openclaw.ai Worker serves its pages from there; webhooks,
 # the queue and /api/* stay on the Worker and are never redeployed by this workflow.
-# Review totals, quality and closes come from the corpus aggregate, refreshed twice a day at the
-# quietest review hours (00:07 and 12:07 UTC) and on request.
+# Review totals, quality and closes come from the corpus aggregate, refreshed twice a day in the
+# quietest review hours (00:00 and 12:00 UTC) and on request.
 on:
   schedule:
     - cron: "*/15 * * * *"
-    - cron: "7 0,12 * * *"
   workflow_dispatch:
     inputs:
       refresh_corpus:
@@ -76,8 +75,6 @@ jobs:
       CLAWSWEEPER_APP_CLIENT_ID: Iv23liOECG0slfuhz093
       CLOUDFLARE_ACCOUNT_ID: 91b59577e757131d68d55a471fe32aca
       PAGES_PROJECT: clawsweeper-dashboard
-      # The twice-daily cron and a manual refresh_corpus run rebuild the corpus aggregate.
-      REFRESH_CORPUS: ${{ (github.event_name == 'schedule' && github.event.schedule == '7 0,12 * * *') || inputs.refresh_corpus == true }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -99,9 +96,34 @@ jobs:
           key: dashboard-state-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: dashboard-state-
 
+      # GitHub delays and drops scheduled runs, so the refresh follows the corpus age, not one
+      # cron line: any scheduled run in the 00 or 12 UTC hour refreshes a corpus over 11 hours
+      # old, and a corpus over 13 hours old refreshes at once (the dashboard warns at 14 hours).
+      # A missing corpus waits for a manual refresh_corpus run at a quiet hour.
+      - name: Decide corpus refresh
+        id: refresh
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REQUESTED: ${{ inputs.refresh_corpus == true }}
+        run: |
+          set -euo pipefail
+          refresh=false
+          if [ "$REQUESTED" = "true" ]; then
+            refresh=true
+          elif [ "$EVENT_NAME" = "schedule" ] && [ -f .dashboard-state/corpus.json ]; then
+            built="$(jq -r '.generatedAt' .dashboard-state/corpus.json)"
+            age_hours=$(( ($(date -u +%s) - $(date -u -d "$built" +%s)) / 3600 ))
+            hour="$(date -u +%H)"
+            if [ "$age_hours" -ge 13 ] || { [ "$age_hours" -ge 11 ] && { [ "$hour" = "00" ] || [ "$hour" = "12" ]; }; }; then
+              refresh=true
+            fi
+            echo "Corpus built $built (${age_hours}h old); refresh=$refresh"
+          fi
+          echo "corpus=$refresh" >> "$GITHUB_OUTPUT"
+
       # Twice a day and on request: a full record export loads the production queue Durable Object.
       - name: Hydrate canonical records read-only
-        if: ${{ env.REFRESH_CORPUS == 'true' }}
+        if: ${{ steps.refresh.outputs.corpus == 'true' }}
         env:
           CLAWSWEEPER_RECORDS_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
           CLAWSWEEPER_RECORDS_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
@@ -110,6 +132,8 @@ jobs:
       # Until the first refresh_corpus run there is nothing to show: skip quietly, do not fail.
       - name: Check corpus
         id: corpus
+        env:
+          REFRESH_CORPUS: ${{ steps.refresh.outputs.corpus }}
         run: |
           if [ "$REFRESH_CORPUS" = "true" ] || [ -f .dashboard-state/corpus.json ]; then
             echo "ready=true" >> "$GITHUB_OUTPUT"
@@ -136,7 +160,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
           BOOTSTRAP_GITHUB_TOKEN: ${{ steps.bootstrap.outputs.token }}
-        run: node scripts/build-data.ts --state ../.dashboard-state ${{ env.REFRESH_CORPUS == 'true' && '--records ../records' || '' }} --backfill-days "${{ inputs.backfill_days || 0 }}"
+        run: node scripts/build-data.ts --state ../.dashboard-state ${{ steps.refresh.outputs.corpus == 'true' && '--records ../records' || '' }} --backfill-days "${{ inputs.backfill_days || 0 }}"
 
       - name: Save dashboard state
         if: ${{ always() && hashFiles('.dashboard-state/actions.json') != '' }}

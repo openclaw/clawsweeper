@@ -177,9 +177,11 @@ not restarted by it.
 Each build reads four sources:
 
 - the corpus aggregate (totals, decisions, quality, closes, per-repository
-  counts), cached in the workflow state. It is rebuilt twice a day by a
-  scheduled run at 00:07 and 12:07 UTC (the quietest review hours) and when the
-  workflow is started by hand with `refresh_corpus`: that run hydrates every canonical
+  counts), cached in the workflow state. It is rebuilt twice a day by the first
+  scheduled build in the 00 or 12 UTC hour (the quietest review hours) that finds
+  the corpus over 11 hours old, by any scheduled build that finds it over 13 hours
+  old (GitHub delays and drops scheduled runs), and when the workflow is started
+  by hand with `refresh_corpus`: that run hydrates every canonical
   record read-only with `scripts/hydrate-state.ts`, reads front matter only and
   keeps repositories that GitHub reports as public. The cache keeps each
   repository's contribution apart, so every build checks visibility again,
@@ -217,7 +219,7 @@ Open pages check for a newer build every five minutes and when the tab becomes
 visible, and reload when one is published. The header shows both the build time
 and the review-corpus time. A page warns when its build is more than an hour old
 (the 15-minute rebuild has stopped) or when the corpus is more than 14 hours old
-(a scheduled 00:07 or 12:07 UTC refresh was missed). Unknown paths return the site's 404 page with
+(the scheduled refresh has stopped). Unknown paths return the site's 404 page with
 status 404. Pull requests that touch `dashboard-site/` build the site from
 `dashboard-site/fixtures/dashboard.json`, without secrets or publishing.
 
