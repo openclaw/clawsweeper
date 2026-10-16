@@ -3,8 +3,8 @@
 - Status: active by default with native OpenAI authentication
 - Owner: ClawSweeper maintainers
 - Source of truth: `src/intake-triage-contract.ts`, `src/intake-triage-api.ts`, `src/intake-triage-decisions.ts`, `src/intake-triage-workflow.ts`, `.github/workflows/sweep.yml`
-- Last verified: configuration and admission behavior checked against `983558446396c3f44ad7f24e22582c5a2906c58d` and focused intake tests
-- Update when: credentials, model defaults, questions, input limits, backends, or provisional labels change
+- Last verified: 2026-10-16; configuration, admission, and workflow ordering covered by the focused intake and sweep-workflow tests
+- Update when: credentials, model defaults, questions, input limits, backends, provisional labels, or workflow ordering change
 
 Intake classifies the author's submission before source review. It answers three
 bounded questions: request category, whether trigger steps are supplied, and
@@ -62,10 +62,13 @@ Decisions access. The model must be supported by the selected API. Unsupported
 models abstain without an automatic cross-backend retry.
 
 For admitted exact reviews, intake runs after the review-in-progress reservation
-and before source hydration. Its preliminary labels remain visible while full
-review runs. This is a bounded serial intake phase, not a second background
+and trusted scanner setup, before target-source checkout and review hydration.
+Held or superseded reservations skip runner and target-source preparation.
+Its preliminary labels remain visible during target-source preparation and the
+full review. This is a bounded serial intake phase, not a second background
 writer. Oversized metadata-only reviews skip it. A failed optional phase does
-not block full review.
+not block full review. The automatic acknowledgement changes to reviewing only
+after source preparation succeeds.
 
 The publisher checks the queue lease/generation and unchanged item snapshot
 before each label-definition or item write. Only the six known intake labels

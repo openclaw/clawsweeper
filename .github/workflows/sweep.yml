@@ -500,106 +500,8 @@ jobs:
           }
           react "eyes"
 
-      # openclaw/openclaw moves ~460 commits and ~7.8k tip blobs a day, and blobs
-      # fetched by id are the slow part, so the cache is refreshed hourly: the
-      # first run of each UTC hour saves a new entry built on the newest one from
-      # the same UTC day (each day starts from a clean clone), and the prune step
-      # below keeps only the two newest entries.
-      - name: Resolve target repository cache key
-        id: target-git-cache-key
-        if: ${{ steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.live-item.outputs.proceed == 'true' && steps.live-item.outputs.oversized != 'true' && steps.mark-re-review-command-in-progress.outputs.terminal_state != 'true' && steps.mark-re-review-command-in-progress.outputs.queue_superseded != 'true' && (steps.command-status-fence.outcome == 'skipped' || steps.command-status-fence.outputs.authorized == 'true') }}
-        env:
-          TARGET_SLUG: ${{ steps.target.outputs.target_slug }}
-          TARGET_BRANCH: ${{ steps.live-item.outputs.target_branch }}
-        run: |
-          set -euo pipefail
-          prefix="${TARGET_SLUG}-review-target-git-v1-${RUNNER_OS}-${TARGET_BRANCH}-"
-          stamp="$(date -u +%Y%m%d-%H)"
-          {
-            echo "prefix=${prefix}"
-            echo "day_prefix=${prefix}${stamp%-*}-"
-            echo "key=${prefix}${stamp}"
-          } >> "$GITHUB_OUTPUT"
-
-      - uses: actions/cache/restore@v6
-        id: target-git-cache
-        if: ${{ steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.live-item.outputs.proceed == 'true' && steps.live-item.outputs.oversized != 'true' && steps.mark-re-review-command-in-progress.outputs.terminal_state != 'true' && steps.mark-re-review-command-in-progress.outputs.queue_superseded != 'true' && (steps.command-status-fence.outcome == 'skipped' || steps.command-status-fence.outputs.authorized == 'true') }}
-        with:
-          path: ${{ steps.target.outputs.target_checkout_dir }}-cache.git
-          key: ${{ steps.target-git-cache-key.outputs.key }}
-          restore-keys: ${{ steps.target-git-cache-key.outputs.day_prefix }}
-
-      - name: Check out target repository
-        id: target-checkout
-        if: ${{ steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.live-item.outputs.proceed == 'true' && steps.live-item.outputs.oversized != 'true' && steps.mark-re-review-command-in-progress.outputs.terminal_state != 'true' && steps.mark-re-review-command-in-progress.outputs.queue_superseded != 'true' && (steps.command-status-fence.outcome == 'skipped' || steps.command-status-fence.outputs.authorized == 'true') }}
-        env:
-          TARGET_REPO: ${{ steps.target.outputs.target_repo }}
-          TARGET_BRANCH: ${{ steps.live-item.outputs.target_branch }}
-          CHECKOUT_DIR: ${{ steps.target.outputs.target_checkout_dir }}
-          CACHE_MATCHED_KEY: ${{ steps.target-git-cache.outputs.cache-matched-key }}
-        run: |
-          set -euo pipefail
-          cache_dir="${CHECKOUT_DIR}-cache.git"
-          # A failed restore can leave a partial directory behind; never trust it.
-          if [ -z "$CACHE_MATCHED_KEY" ]; then
-            rm -rf -- "$cache_dir"
-          fi
-          bash scripts/review-target-checkout.sh "https://github.com/${TARGET_REPO}.git" "$cache_dir" "$CHECKOUT_DIR" "$TARGET_BRANCH"
-
-      # Saved before any review input touches the workspace, and only when this
-      # hour's entry is missing and the cache holds every branch-tip blob.
-      - name: Save target repository cache
-        id: target-git-cache-save
-        if: ${{ steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.target-checkout.outputs.cache_ready == 'true' && steps.target-git-cache.outputs.cache-hit != 'true' }}
-        continue-on-error: true
-        uses: actions/cache/save@v6
-        with:
-          path: ${{ steps.target.outputs.target_checkout_dir }}-cache.git
-          key: ${{ steps.target-git-cache-key.outputs.key }}
-
-      # Keep the entry just saved and its predecessor (which in-flight runs may
-      # still be restoring); older hourly entries are never restored again.
-      - name: Prune superseded target repository caches
-        if: ${{ steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.target-git-cache-save.outcome == 'success' }}
-        continue-on-error: true
-        env:
-          GH_TOKEN: ${{ github.token }}
-          CACHE_PREFIX: ${{ steps.target-git-cache-key.outputs.prefix }}
-        run: |
-          set -euo pipefail
-          # The key filter is a prefix match, so drop other branches that share it.
-          gh api --method GET "repos/${GITHUB_REPOSITORY}/actions/caches" \
-            -f key="$CACHE_PREFIX" -f sort=created_at -f direction=desc -F per_page=100 |
-            jq -r --arg prefix "$CACHE_PREFIX" '
-              [.actions_caches[]
-                | select((.key | startswith($prefix)) and (.key | ltrimstr($prefix) | test("^[0-9]{8}-[0-9]{2}$")))
-              ][2:][].id' |
-            while read -r cache_id; do
-              # Concurrent first-of-the-hour runs prune the same entries.
-              gh api --method DELETE "repos/${GITHUB_REPOSITORY}/actions/caches/${cache_id}" > /dev/null ||
-                echo "::notice::Target cache entry ${cache_id} was not deleted; another run may have pruned it."
-            done
-
-      - uses: ./.github/actions/setup-openclaw-codex-source
-        if: ${{ steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.live-item.outputs.proceed == 'true' && steps.live-item.outputs.oversized != 'true' && steps.mark-re-review-command-in-progress.outputs.terminal_state != 'true' && steps.mark-re-review-command-in-progress.outputs.queue_superseded != 'true' && (steps.command-status-fence.outcome == 'skipped' || steps.command-status-fence.outputs.authorized == 'true') }}
-        with:
-          target-repo: ${{ steps.target.outputs.target_repo }}
-          target-dir: ${{ steps.target.outputs.target_checkout_dir }}
-
-      - uses: ./.github/actions/setup-codex
-        if: ${{ env.CLAWSWEEPER_RUNNER != 'openclaw' && steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.live-item.outputs.proceed == 'true' && steps.live-item.outputs.oversized != 'true' && steps.mark-re-review-command-in-progress.outputs.terminal_state != 'true' && steps.mark-re-review-command-in-progress.outputs.queue_superseded != 'true' && (steps.command-status-fence.outcome == 'skipped' || steps.command-status-fence.outputs.authorized == 'true') }}
-        env:
-          OPENAI_API_KEY: ${{ vars.CLAWSWEEPER_CODEX_AUTH_MODE != 'clawrouter' && secrets.OPENAI_API_KEY || '' }}
-          CLAWSWEEPER_INTERNAL_MODEL: ${{ vars.CLAWSWEEPER_CODEX_AUTH_MODE != 'clawrouter' && secrets.CLAWSWEEPER_MODEL || '' }}
-          CLAWSWEEPER_CLAWROUTER_CONFIG: ${{ secrets.CLAWSWEEPER_CLAWROUTER_CONFIG }}
-        with:
-          auth-mode: ${{ vars.CLAWSWEEPER_CODEX_AUTH_MODE || 'proxy' }}
-          login-status: "true"
-          review-network: "true"
-
-      - uses: ./.github/actions/setup-openclaw
-        if: ${{ steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.live-item.outputs.proceed == 'true' && steps.live-item.outputs.oversized != 'true' && steps.mark-re-review-command-in-progress.outputs.terminal_state != 'true' && steps.mark-re-review-command-in-progress.outputs.queue_superseded != 'true' && (steps.command-status-fence.outcome == 'skipped' || steps.command-status-fence.outputs.authorized == 'true') }}
-
+      # Reservation needs metadata only. Defer checkout and runner preparation
+      # until ownership is confirmed so held/superseded work does not provision.
       - name: Reserve exact review lease
         id: reserve-exact-review-lease
         if: ${{ steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.live-item.outputs.proceed == 'true' && steps.mark-re-review-command-in-progress.outputs.terminal_state != 'true' && steps.mark-re-review-command-in-progress.outputs.queue_superseded != 'true' && (steps.command-status-fence.outcome == 'skipped' || steps.command-status-fence.outputs.authorized == 'true') }}
@@ -726,6 +628,150 @@ jobs:
             echo "::notice::Another exact-head review is already active; retry deferred until $RETRY_AT."
           fi
 
+      # Runner setup installs the trusted scanner used by intake. Keep it ahead
+      # of intake so scanner bootstrap does not consume the inference deadline.
+      - uses: ./.github/actions/setup-codex
+        if: ${{ env.CLAWSWEEPER_RUNNER != 'openclaw' && steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.live-item.outputs.proceed == 'true' && steps.live-item.outputs.oversized != 'true' && steps.reserve-exact-review-lease.outputs.status == 'posted' }}
+        env:
+          OPENAI_API_KEY: ${{ vars.CLAWSWEEPER_CODEX_AUTH_MODE != 'clawrouter' && secrets.OPENAI_API_KEY || '' }}
+          CLAWSWEEPER_INTERNAL_MODEL: ${{ vars.CLAWSWEEPER_CODEX_AUTH_MODE != 'clawrouter' && secrets.CLAWSWEEPER_MODEL || '' }}
+          CLAWSWEEPER_CLAWROUTER_CONFIG: ${{ secrets.CLAWSWEEPER_CLAWROUTER_CONFIG }}
+        with:
+          auth-mode: ${{ vars.CLAWSWEEPER_CODEX_AUTH_MODE || 'proxy' }}
+          login-status: "true"
+          review-network: "true"
+
+      - uses: ./.github/actions/setup-openclaw
+        if: ${{ steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.live-item.outputs.proceed == 'true' && steps.live-item.outputs.oversized != 'true' && steps.reserve-exact-review-lease.outputs.status == 'posted' }}
+
+      # Preliminary labels stay visible while the source review runs. This short
+      # phase joins before hydration; no label writer races the final publisher.
+      - name: Classify submission and publish preliminary labels
+        id: intake-triage
+        if: ${{ steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.live-item.outputs.proceed == 'true' && steps.live-item.outputs.oversized != 'true' && steps.reserve-exact-review-lease.outputs.status == 'posted' }}
+        continue-on-error: true
+        timeout-minutes: 2
+        env:
+          GH_TOKEN: ${{ steps.target-write-token.outputs.token }}
+          TARGET_REPO: ${{ steps.target.outputs.target_repo }}
+          ITEM_NUMBER: ${{ steps.target.outputs.item_number }}
+          EXACT_REVIEW_ITEM_KIND: ${{ steps.live-item.outputs.item_kind }}
+          # Reuse native OpenAI auth; private Codex routes keep upstream keys withheld.
+          OPENAI_API_KEY: ${{ (vars.CLAWSWEEPER_RUNNER == 'openclaw' || vars.CLAWSWEEPER_CODEX_AUTH_MODE != 'clawrouter') && secrets.OPENAI_API_KEY || '' }}
+          CLAWSWEEPER_INTAKE_BACKEND: ${{ vars.CLAWSWEEPER_INTAKE_BACKEND }}
+          CLAWSWEEPER_DECISION_MODEL: ${{ vars.CLAWSWEEPER_DECISION_MODEL }}
+          EXACT_REVIEW_ITEM_KEY: ${{ steps.claim-exact-review-queue.outputs.item_key }}
+          EXACT_REVIEW_LEASE_ID: ${{ steps.claim-exact-review-queue.outputs.lease_id }}
+          EXACT_REVIEW_LEASE_REVISION: ${{ steps.claim-exact-review-queue.outputs.lease_revision }}
+          EXACT_REVIEW_CLAIM_GENERATION: ${{ steps.claim-exact-review-queue.outputs.claim_generation }}
+          EXACT_REVIEW_SOURCE_HEAD_SHA: ${{ fromJSON(steps.claim-exact-review-queue.outputs.decision).sourceHeadSha || '' }}
+          QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
+        run: node dist/intake-triage-workflow.js
+
+      # The review command seals every ledger producer. Recover intake first,
+      # so a killed write cannot be frozen as a retryable intent by a later review.
+      - name: Recover interrupted intake receipts
+        id: recover-intake-receipts
+        if: ${{ always() && steps.claim-exact-review-queue.outputs.claimed == 'true' && (steps.intake-triage.outcome == 'failure' || steps.intake-triage.outcome == 'cancelled') }}
+        continue-on-error: true
+        timeout-minutes: 2
+        env:
+          INTAKE_OUTCOME: ${{ steps.intake-triage.outcome }}
+        run: |
+          reason=workflow_failed
+          if [ "$INTAKE_OUTCOME" = "cancelled" ]; then reason=cancelled; fi
+          pnpm run --silent finalize-action-events -- --interrupt-open-attempts --reason "$reason"
+
+      # Source preparation is not an intake dependency. Publish preliminary
+      # labels first, including when a cold target checkout takes a long time.
+      # openclaw/openclaw moves ~460 commits and ~7.8k tip blobs a day, and blobs
+      # fetched by id are the slow part, so the cache is refreshed hourly: the
+      # first run of each UTC hour saves a new entry built on the newest one from
+      # the same UTC day (each day starts from a clean clone), and the prune step
+      # below keeps only the two newest entries.
+      - name: Resolve target repository cache key
+        id: target-git-cache-key
+        if: ${{ steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.live-item.outputs.proceed == 'true' && steps.live-item.outputs.oversized != 'true' && steps.reserve-exact-review-lease.outputs.status == 'posted' }}
+        env:
+          TARGET_SLUG: ${{ steps.target.outputs.target_slug }}
+          TARGET_BRANCH: ${{ steps.live-item.outputs.target_branch }}
+        run: |
+          set -euo pipefail
+          prefix="${TARGET_SLUG}-review-target-git-v1-${RUNNER_OS}-${TARGET_BRANCH}-"
+          stamp="$(date -u +%Y%m%d-%H)"
+          {
+            echo "prefix=${prefix}"
+            echo "day_prefix=${prefix}${stamp%-*}-"
+            echo "key=${prefix}${stamp}"
+          } >> "$GITHUB_OUTPUT"
+
+      - uses: actions/cache/restore@v6
+        id: target-git-cache
+        if: ${{ steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.live-item.outputs.proceed == 'true' && steps.live-item.outputs.oversized != 'true' && steps.reserve-exact-review-lease.outputs.status == 'posted' }}
+        with:
+          path: ${{ steps.target.outputs.target_checkout_dir }}-cache.git
+          key: ${{ steps.target-git-cache-key.outputs.key }}
+          restore-keys: ${{ steps.target-git-cache-key.outputs.day_prefix }}
+
+      - name: Check out target repository
+        id: target-checkout
+        if: ${{ steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.live-item.outputs.proceed == 'true' && steps.live-item.outputs.oversized != 'true' && steps.reserve-exact-review-lease.outputs.status == 'posted' }}
+        env:
+          TARGET_REPO: ${{ steps.target.outputs.target_repo }}
+          TARGET_BRANCH: ${{ steps.live-item.outputs.target_branch }}
+          CHECKOUT_DIR: ${{ steps.target.outputs.target_checkout_dir }}
+          CACHE_MATCHED_KEY: ${{ steps.target-git-cache.outputs.cache-matched-key }}
+        run: |
+          set -euo pipefail
+          cache_dir="${CHECKOUT_DIR}-cache.git"
+          # A failed restore can leave a partial directory behind; never trust it.
+          if [ -z "$CACHE_MATCHED_KEY" ]; then
+            rm -rf -- "$cache_dir"
+          fi
+          bash scripts/review-target-checkout.sh "https://github.com/${TARGET_REPO}.git" "$cache_dir" "$CHECKOUT_DIR" "$TARGET_BRANCH"
+
+      # Saved before any review input touches the workspace, and only when this
+      # hour's entry is missing and the cache holds every branch-tip blob.
+      - name: Save target repository cache
+        id: target-git-cache-save
+        if: ${{ steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.target-checkout.outputs.cache_ready == 'true' && steps.target-git-cache.outputs.cache-hit != 'true' }}
+        continue-on-error: true
+        uses: actions/cache/save@v6
+        with:
+          path: ${{ steps.target.outputs.target_checkout_dir }}-cache.git
+          key: ${{ steps.target-git-cache-key.outputs.key }}
+
+      # Keep the entry just saved and its predecessor (which in-flight runs may
+      # still be restoring); older hourly entries are never restored again.
+      - name: Prune superseded target repository caches
+        if: ${{ steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.target-git-cache-save.outcome == 'success' }}
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CACHE_PREFIX: ${{ steps.target-git-cache-key.outputs.prefix }}
+        run: |
+          set -euo pipefail
+          # The key filter is a prefix match, so drop other branches that share it.
+          gh api --method GET "repos/${GITHUB_REPOSITORY}/actions/caches" \
+            -f key="$CACHE_PREFIX" -f sort=created_at -f direction=desc -F per_page=100 |
+            jq -r --arg prefix "$CACHE_PREFIX" '
+              [.actions_caches[]
+                | select((.key | startswith($prefix)) and (.key | ltrimstr($prefix) | test("^[0-9]{8}-[0-9]{2}$")))
+              ][2:][].id' |
+            while read -r cache_id; do
+              # Concurrent first-of-the-hour runs prune the same entries.
+              gh api --method DELETE "repos/${GITHUB_REPOSITORY}/actions/caches/${cache_id}" > /dev/null ||
+                echo "::notice::Target cache entry ${cache_id} was not deleted; another run may have pruned it."
+            done
+
+      - uses: ./.github/actions/setup-openclaw-codex-source
+        if: ${{ steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.live-item.outputs.proceed == 'true' && steps.live-item.outputs.oversized != 'true' && steps.reserve-exact-review-lease.outputs.status == 'posted' }}
+        with:
+          target-repo: ${{ steps.target.outputs.target_repo }}
+          target-dir: ${{ steps.target.outputs.target_checkout_dir }}
+
+      # Mark the full review active only after preparation succeeds. Failed
+      # setup must not leave the automatic acknowledgement claiming review is running.
       - name: Fence automatic review in progress
         id: review-status-fence
         if: ${{ steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.live-item.outputs.proceed == 'true' && steps.reserve-exact-review-lease.outputs.status == 'posted' && steps.target.outputs.has_command_context != 'true' && steps.automatic-review-status.outputs.status_comment_id != '' }}
@@ -803,44 +849,6 @@ jobs:
             exit 0
           fi
           exit 1
-
-      # Preliminary labels stay visible while the source review runs. This short
-      # phase joins before hydration; no label writer races the final publisher.
-      - name: Classify submission and publish preliminary labels
-        id: intake-triage
-        if: ${{ steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.live-item.outputs.proceed == 'true' && steps.live-item.outputs.oversized != 'true' && steps.reserve-exact-review-lease.outputs.status == 'posted' && (steps.review-status-fence.outcome == 'skipped' || (steps.review-status-fence.outputs.authorized == 'true' && steps.release-review-status-fence.outputs.authorized == 'true')) }}
-        continue-on-error: true
-        timeout-minutes: 2
-        env:
-          GH_TOKEN: ${{ steps.target-write-token.outputs.token }}
-          TARGET_REPO: ${{ steps.target.outputs.target_repo }}
-          ITEM_NUMBER: ${{ steps.target.outputs.item_number }}
-          EXACT_REVIEW_ITEM_KIND: ${{ steps.live-item.outputs.item_kind }}
-          # Reuse native OpenAI auth; private Codex routes keep upstream keys withheld.
-          OPENAI_API_KEY: ${{ (vars.CLAWSWEEPER_RUNNER == 'openclaw' || vars.CLAWSWEEPER_CODEX_AUTH_MODE != 'clawrouter') && secrets.OPENAI_API_KEY || '' }}
-          CLAWSWEEPER_INTAKE_BACKEND: ${{ vars.CLAWSWEEPER_INTAKE_BACKEND }}
-          CLAWSWEEPER_DECISION_MODEL: ${{ vars.CLAWSWEEPER_DECISION_MODEL }}
-          EXACT_REVIEW_ITEM_KEY: ${{ steps.claim-exact-review-queue.outputs.item_key }}
-          EXACT_REVIEW_LEASE_ID: ${{ steps.claim-exact-review-queue.outputs.lease_id }}
-          EXACT_REVIEW_LEASE_REVISION: ${{ steps.claim-exact-review-queue.outputs.lease_revision }}
-          EXACT_REVIEW_CLAIM_GENERATION: ${{ steps.claim-exact-review-queue.outputs.claim_generation }}
-          EXACT_REVIEW_SOURCE_HEAD_SHA: ${{ fromJSON(steps.claim-exact-review-queue.outputs.decision).sourceHeadSha || '' }}
-          QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
-        run: node dist/intake-triage-workflow.js
-
-      # The review command seals every ledger producer. Recover intake first,
-      # so a killed write cannot be frozen as a retryable intent by a later review.
-      - name: Recover interrupted intake receipts
-        id: recover-intake-receipts
-        if: ${{ always() && steps.claim-exact-review-queue.outputs.claimed == 'true' && (steps.intake-triage.outcome == 'failure' || steps.intake-triage.outcome == 'cancelled') }}
-        continue-on-error: true
-        timeout-minutes: 2
-        env:
-          INTAKE_OUTCOME: ${{ steps.intake-triage.outcome }}
-        run: |
-          reason=workflow_failed
-          if [ "$INTAKE_OUTCOME" = "cancelled" ]; then reason=cancelled; fi
-          pnpm run --silent finalize-action-events -- --interrupt-open-attempts --reason "$reason"
 
       # The review reads its prior canonical record from records/<slug>/items.
       # Without it, the structural and content review caches can never reuse an

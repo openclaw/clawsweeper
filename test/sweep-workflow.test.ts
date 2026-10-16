@@ -697,18 +697,35 @@ test("exact event review builds the admission predicate before signals and targe
       index((step) => step.name === "React to target item review start", "reaction"),
     ],
     [
-      "target checkout",
-      index((step) => step.name === "Check out target repository", "target checkout"),
+      "review lease reservation",
+      index((step) => step.name === "Reserve exact review lease", "lease"),
     ],
     ["Codex setup", index((step) => step.uses === "./.github/actions/setup-codex", "Codex setup")],
     [
       "OpenClaw setup",
       index((step) => step.uses === "./.github/actions/setup-openclaw", "OpenClaw setup"),
     ],
+    ["preliminary labels", index((step) => step.id === "intake-triage", "intake")],
     [
-      "review lease reservation",
-      index((step) => step.name === "Reserve exact review lease", "lease"),
+      "intake receipt recovery",
+      index((step) => step.id === "recover-intake-receipts", "intake recovery"),
     ],
+    [
+      "target checkout",
+      index((step) => step.name === "Check out target repository", "target checkout"),
+    ],
+    [
+      "pinned Codex source",
+      index(
+        (step) => step.uses === "./.github/actions/setup-openclaw-codex-source",
+        "Codex source",
+      ),
+    ],
+    [
+      "automatic review status",
+      index((step) => step.name === "Mark automatic review in progress", "review status"),
+    ],
+    ["source review", index((step) => step.id === "review-exact-event-item", "review")],
   ] as const;
   for (let position = 1; position < ordered.length; position += 1) {
     assert.ok(
@@ -717,7 +734,60 @@ test("exact event review builds the admission predicate before signals and targe
     );
   }
   assert.equal(steps[ordered[2][1]]!["continue-on-error"], true);
-  assert.equal(steps[ordered[8][1]]!.id, "reserve-exact-review-lease");
+  assert.equal(steps[ordered[5][1]]!.id, "reserve-exact-review-lease");
+});
+
+test("exact review provisions only for admitted items with a posted reservation", () => {
+  const workflow = YAML.parse(readText(".github/workflows/sweep.yml"));
+  const steps = workflow.jobs["event-review-apply"].steps;
+  const provisioning = steps.filter(
+    (step: any) =>
+      ["target-git-cache-key", "target-git-cache", "target-checkout"].includes(step.id) ||
+      [
+        "./.github/actions/setup-codex",
+        "./.github/actions/setup-openclaw",
+        "./.github/actions/setup-openclaw-codex-source",
+      ].includes(step.uses),
+  );
+  assert.equal(provisioning.length, 6);
+  for (const runner of ["codex", "openclaw"]) {
+    for (const reservation of ["posted", "held", "superseded", ""]) {
+      for (const admission of ["admitted", "unclaimed", "not-proceeding"]) {
+        for (const oversized of [false, true]) {
+          const values: Record<string, string> = {
+            "claim-exact-review-queue.claimed": String(admission !== "unclaimed"),
+            "live-item.proceed": String(admission !== "not-proceeding"),
+            "live-item.oversized": String(oversized),
+            "reserve-exact-review-lease.status": reservation,
+          };
+          for (const step of provisioning) {
+            const expression = step.if
+              .replace(/^\s*\$\{\{\s*|\s*\}\}\s*$/g, "")
+              .replace("env.CLAWSWEEPER_RUNNER", JSON.stringify(runner))
+              .replace(
+                /steps\.([\w-]+)\.(outputs\.([\w_]+)|outcome)/g,
+                (_: string, id: string, access: string, output?: string) =>
+                  JSON.stringify(values[`${id}.${output ?? access}`] ?? ""),
+              );
+            assert.equal(
+              Function(`return (${expression})`)(),
+              reservation === "posted" &&
+                admission === "admitted" &&
+                !oversized &&
+                (step.uses !== "./.github/actions/setup-codex" || runner === "codex"),
+              JSON.stringify({
+                step: step.id ?? step.uses,
+                runner,
+                reservation,
+                admission,
+                oversized,
+              }),
+            );
+          }
+        }
+      }
+    }
+  }
 });
 
 test("OpenClaw review jobs provision the pinned sibling Codex source before review", () => {
