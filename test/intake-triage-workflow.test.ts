@@ -130,28 +130,35 @@ function fixture(t: TestContext) {
   };
 }
 
-test("disabled intake has no model, GitHub or queue dependency", async () => {
-  const outcomes: boolean[] = [];
-  const result = await runIntakeWorkflow({
-    repository: "openclaw/openclaw",
-    number: 42,
-    kind: "issue",
-    backend: "responses",
-    apiKey: "",
-    admissionUnchanged: (value) => outcomes.push(value),
-    readSnapshot: () => {
-      throw Error("must not read");
-    },
-    infer: async () => {
-      throw Error("must not infer");
-    },
-    fence: () => {
-      throw Error("must not fence");
-    },
+for (const [name, apiKey, model] of [
+  ["missing key", "", undefined],
+  ["blank key", "  ", undefined],
+  ["model off", "synthetic-key", "off"],
+] as const) {
+  test("disabled intake (" + name + ") has no model, GitHub or queue dependency", async () => {
+    const outcomes: boolean[] = [];
+    const result = await runIntakeWorkflow({
+      repository: "openclaw/openclaw",
+      number: 42,
+      kind: "issue",
+      backend: "responses",
+      apiKey,
+      model,
+      admissionUnchanged: (value) => outcomes.push(value),
+      readSnapshot: () => {
+        throw Error("must not read");
+      },
+      infer: async () => {
+        throw Error("must not infer");
+      },
+      fence: () => {
+        throw Error("must not fence");
+      },
+    });
+    assert.equal(result.outcome, "disabled");
+    assert.deepEqual(outcomes, [true]);
   });
-  assert.equal(result.outcome, "disabled");
-  assert.deepEqual(outcomes, [true]);
-});
+}
 
 test("preliminary publication records intent and usage without completing a review", async (t) => {
   const f = fixture(t);
@@ -171,6 +178,34 @@ test("preliminary publication records intent and usage without completing a revi
   assert.ok(events.some((event) => event.attributes?.completion_reason === "mutation_accepted"));
   assert.ok(!JSON.stringify(events).includes(f.live.body));
 });
+
+for (const backend of ["decisions", "responses"] as const) {
+  for (const override of [undefined, "  ", "  fixture-decision-model  "]) {
+    test(
+      backend +
+        " intake records and forwards its resolved model (" +
+        (override === undefined ? "unset" : override.trim() || "blank") +
+        ")",
+      async (t) => {
+        const f = fixture(t);
+        const infer = f.options.infer!;
+        const expected = override?.trim() || "gpt-6-luna";
+        const result = await runIntakeWorkflow({
+          ...f.options,
+          backend,
+          model: override,
+          infer: async (options) => {
+            assert.equal(options.model, expected);
+            return { ...(await infer(options)), backend };
+          },
+        });
+        assert.equal(result.outcome, "published");
+        const intent = readAllSpooledActionEvents(f.root).find((event) => event.attributes?.model);
+        assert.equal(intent?.attributes?.model, expected);
+      },
+    );
+  }
+}
 
 for (const edit of ["body", "labels", "head", "locked"] as const) {
   test(`intake rejects ${edit} drift while inference is running`, async (t) => {

@@ -44,10 +44,18 @@ page. It does not require every repository workflow secret or dashboard setting
 to be duplicated here. [Automation limits](limits.md) remains canonical for
 capacity and timing values.
 
-## Optional submission triage
+## Submission triage
 
-`CLAWSWEEPER_INTAKE_OPENAI_API_KEY` is an optional repository secret for the
-public OpenAI API, consumed only by the exact-review intake step. Without it,
-full review runs normally and preliminary intake is disabled. The repository
-variable `CLAWSWEEPER_INTAKE_BACKEND` selects `responses` (default) or `decisions`.
-See [intake triage](intake-triage.md) for scope, budgets and label lifecycle.
+Preliminary intake reuses the existing repository secret `OPENAI_API_KEY` and
+is enabled by default in native OpenAI modes. The separate OpenClaw runner can
+also use that key. Private ClawRouter Codex routes keep upstream keys withheld;
+intake never forwards their private workload credentials. Without a native key,
+full review runs normally and preliminary intake is disabled.
+
+The default backend is `decisions`, using `gpt-6-luna`. Set the repository
+variable `CLAWSWEEPER_DECISION_MODEL` to override the intake model, or to `off`
+to disable intake. Unset and blank values use the default. Set
+`CLAWSWEEPER_INTAKE_BACKEND=responses` for deployments without Decisions access;
+the selected model must be supported by that API. There is no automatic retry
+on another backend. See [intake triage](intake-triage.md) for scope, budgets and
+label lifecycle.

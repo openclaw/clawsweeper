@@ -6714,7 +6714,30 @@ test("intake joins before hydration and invalidates admission on enabled or fail
   assert.equal(intake["continue-on-error"], true);
   assert.equal(intake["timeout-minutes"], 2);
   assert.match(intake.if, /oversized != 'true'/);
-  assert.match(intake.env.OPENAI_API_KEY, /secrets\.CLAWSWEEPER_INTAKE_OPENAI_API_KEY/);
+  const credential = new Function(
+    "vars",
+    "secrets",
+    "return (" + intake.env.OPENAI_API_KEY.slice(3, -2) + ")",
+  );
+  const nativeKey = { OPENAI_API_KEY: "synthetic-native-openai-key" };
+  for (const vars of [
+    {},
+    { CLAWSWEEPER_CODEX_AUTH_MODE: "proxy" },
+    { CLAWSWEEPER_CODEX_AUTH_MODE: "login" },
+  ]) {
+    assert.equal(credential(vars, nativeKey), nativeKey.OPENAI_API_KEY);
+  }
+  assert.equal(credential({}, {}), "");
+  assert.equal(credential({ CLAWSWEEPER_CODEX_AUTH_MODE: "clawrouter" }, nativeKey), "");
+  assert.equal(
+    credential(
+      { CLAWSWEEPER_RUNNER: "openclaw", CLAWSWEEPER_CODEX_AUTH_MODE: "clawrouter" },
+      nativeKey,
+    ),
+    nativeKey.OPENAI_API_KEY,
+  );
+  assert.equal(intake.env.CLAWSWEEPER_INTAKE_BACKEND, "${{ vars.CLAWSWEEPER_INTAKE_BACKEND }}");
+  assert.equal(intake.env.CLAWSWEEPER_DECISION_MODEL, "${{ vars.CLAWSWEEPER_DECISION_MODEL }}");
   assert.equal(review.env.OPENAI_API_KEY, undefined);
   const expression = review.env.PR_ADMISSION_FILE.slice(3, -2).replace(
     /steps\.([\w-]+)/g,

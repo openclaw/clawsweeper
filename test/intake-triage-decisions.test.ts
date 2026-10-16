@@ -27,32 +27,39 @@ function fixture() {
   };
 }
 
-test("Decisions uses the shared bounded questions and preserves native distributions", async (t) => {
-  useFakeScanner(t);
-  let recorded = false;
-  const result = await runDecisionsIntake({
-    cwd: process.cwd(),
-    apiKey: "synthetic-key",
-    request,
-    recordAttempt: () => {
-      recorded = true;
+for (const model of [undefined, "fixture-decision-model"]) {
+  test(
+    "Decisions model " + (model || "default") + " preserves questions and distributions",
+    async (t) => {
+      useFakeScanner(t);
+      let recorded = false;
+      const result = await runDecisionsIntake({
+        cwd: process.cwd(),
+        apiKey: "synthetic-key",
+        request,
+        model,
+        recordAttempt: () => {
+          recorded = true;
+        },
+        fetch: async (url, options) => {
+          assert.equal(recorded, true);
+          assert.equal(String(url), "https://api.openai.com/v1/decisions");
+          const payload = JSON.parse(String(options?.body));
+          assert.equal(payload.model, model ?? "gpt-6-luna");
+          assert.equal(payload.input, request.input);
+          assert.equal(payload.questions.length, 3);
+          assert.equal(payload.tools, undefined);
+          assert.equal(payload.questions[0].type, "choice");
+          return Response.json(fixture());
+        },
+      });
+      assert.equal(result.outcome, "classified");
+      assert.equal(result.answers?.category, "bug");
+      assert.equal(result.decisionProbabilities?.category.bug, 1);
+      assert.deepEqual(result.usage, { inputTokens: 100, outputTokens: 0 });
     },
-    fetch: async (url, options) => {
-      assert.equal(recorded, true);
-      assert.equal(String(url), "https://api.openai.com/v1/decisions");
-      const payload = JSON.parse(String(options?.body));
-      assert.equal(payload.input, request.input);
-      assert.equal(payload.questions.length, 3);
-      assert.equal(payload.tools, undefined);
-      assert.equal(payload.questions[0].type, "choice");
-      return Response.json(fixture());
-    },
-  });
-  assert.equal(result.outcome, "classified");
-  assert.equal(result.answers?.category, "bug");
-  assert.equal(result.decisionProbabilities?.category.bug, 1);
-  assert.deepEqual(result.usage, { inputTokens: 100, outputTokens: 0 });
-});
+  );
+}
 
 test("Decisions refuses partial, duplicated, invented and malformed native answers", async (t) => {
   useFakeScanner(t);

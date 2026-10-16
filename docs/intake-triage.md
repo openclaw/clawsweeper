@@ -1,10 +1,10 @@
 # Intake triage
 
-- Status: active opt-in intake workflow
+- Status: active by default with native OpenAI authentication
 - Owner: ClawSweeper maintainers
 - Source of truth: `src/intake-triage-contract.ts`, `src/intake-triage-api.ts`, `src/intake-triage-decisions.ts`, `src/intake-triage-workflow.ts`, `.github/workflows/sweep.yml`
-- Last verified: based on `66bc4576148f0659d1d3f91bc9d323c3e77516a2`
-- Update when: questions, input limits, backends, or provisional labels change
+- Last verified: configuration and admission behavior checked against `983558446396c3f44ad7f24e22582c5a2906c58d` and focused intake tests
+- Update when: credentials, model defaults, questions, input limits, backends, or provisional labels change
 
 Intake classifies the author's submission before source review. It answers three
 bounded questions: request category, whether trigger steps are supplied, and
@@ -21,8 +21,8 @@ The packet includes only repository, item number, kind, title and body. It is
 limited to 12 KB; oversized submissions abstain rather than silently truncate.
 No source checkout, comments, tools or full-review prompt is sent. Each request
 has a 20-second deadline, a 32 KB response limit, and no application retry.
-The Responses adapter uses `gpt-6-luna` unless its caller explicitly selects a
-model, with strict structured output and response storage disabled.
+Both adapters default to `gpt-6-luna`. Responses uses strict structured output
+and disables response storage.
 
 Labels in the finite `clawsweeper:intake:*` family are preliminary. They never
 set priority, impact, reproduction proof, good-first-issue eligibility, maturity,
@@ -32,7 +32,7 @@ publication. Intake must not satisfy review requests or populate review caches.
 Adding a cheap call before a full review adds spend. Cost savings require moving
 an existing metadata task to intake, not counting both calls as a saving.
 
-The optional Decisions adapter calls `POST /v1/decisions` with `gpt-6-luna` and
+The default Decisions adapter calls `POST /v1/decisions` with the selected model and
 three choice questions. It validates names, choices, complete distributions,
 finite probabilities, and refusals. Native choice distributions are retained
 separately; Responses does not invent matching confidence values. No probability
@@ -45,12 +45,21 @@ independent path for deployments without Decisions access.
 
 ## Hosted enablement and lifecycle
 
-Set the repository secret `CLAWSWEEPER_INTAKE_OPENAI_API_KEY` to a credential for
-the public OpenAI API. The default backend is `responses`; set the repository
-variable `CLAWSWEEPER_INTAKE_BACKEND=decisions` to opt into Decisions. An absent
-secret disables intake without a model or GitHub request. This dedicated secret
-avoids reusing a private workload-router credential at a different API origin.
-The existing full-review provider, model and authentication remain independent.
+Intake uses the existing repository secret `OPENAI_API_KEY` and is enabled by
+default in native OpenAI modes. The separate OpenClaw runner can use the same
+key. Private ClawRouter Codex routes keep upstream keys withheld; their workload
+credential is never forwarded to the public OpenAI API. An absent native key
+disables intake without model, GitHub, queue or ledger work.
+
+The default backend is `decisions` and the default model is `gpt-6-luna`. Set
+the repository variable `CLAWSWEEPER_DECISION_MODEL` to override the model, or
+to `off` to disable intake. Unset and blank values use the default. This model
+is independent of the full-review model; the selected value is sent to the
+provider and recorded in the paid inference intent.
+
+Set `CLAWSWEEPER_INTAKE_BACKEND=responses` to use ordinary Responses without
+Decisions access. The model must be supported by the selected API. Unsupported
+models abstain without an automatic cross-backend retry.
 
 For admitted exact reviews, intake runs after the review-in-progress reservation
 and before source hydration. Its preliminary labels remain visible while full

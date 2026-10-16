@@ -24,6 +24,7 @@ import {
   intakeLabels,
   parseIntakeAnswers,
   INTAKE_POLICY,
+  INTAKE_DEFAULT_MODEL,
   type IntakePacket,
   type IntakeResult,
 } from "./intake-triage-contract.js";
@@ -44,6 +45,7 @@ export interface IntakeWorkflowOptions {
   kind: IntakePacket["kind"];
   apiKey: string;
   backend: "responses" | "decisions";
+  model?: string;
   root?: string;
   readSnapshot?: () => IntakeSnapshot;
   fence?: (phase: "status" | "review") => boolean;
@@ -118,8 +120,10 @@ export async function runIntakeWorkflow(
 ): Promise<{ outcome: string; labels: string[] }> {
   // Bypass the old admission handoff before any possible item write. The next
   // review must hydrate post-intake labels and timestamps, including uncertain writes.
-  options.admissionUnchanged?.(!options.apiKey.trim());
-  if (!options.apiKey.trim()) return { outcome: "disabled", labels: [] };
+  const model = options.model?.trim() || INTAKE_DEFAULT_MODEL;
+  const disabled = !options.apiKey.trim() || model === "off";
+  options.admissionUnchanged?.(disabled);
+  if (disabled) return { outcome: "disabled", labels: [] };
   return withGitHubRun(async () => {
     const env = process.env;
     const root = options.root ?? repoRoot();
@@ -195,12 +199,13 @@ export async function runIntakeWorkflow(
       cwd: root,
       request,
       apiKey: options.apiKey,
+      model,
       recordAttempt: () => {
         // Scanning can outlive the original lease or submission. Fence the paid
         // request after scanning, immediately before its durable intent and dispatch.
         if (!fence("review") || snapshotIdentity(read()) !== snapshotIdentity(snapshot))
           throw new IntakeGuardError();
-        record("started", "inference-intent", { model: "gpt-6-luna" });
+        record("started", "inference-intent", { model });
       },
     });
     record(result.outcome === "classified" ? "classified" : "skipped", "inference-result", {
@@ -316,7 +321,7 @@ export async function runIntakeWorkflow(
 export async function intakeWorkflowMain(): Promise<void> {
   const repository = process.env.TARGET_REPO ?? "";
   const number = Number(process.env.ITEM_NUMBER);
-  const backend = process.env.CLAWSWEEPER_INTAKE_BACKEND || "responses";
+  const backend = process.env.CLAWSWEEPER_INTAKE_BACKEND || "decisions";
   const kind = process.env.EXACT_REVIEW_ITEM_KIND;
   if (
     !/^[\w.-]+\/[\w.-]+$/.test(repository) ||
@@ -332,6 +337,7 @@ export async function intakeWorkflowMain(): Promise<void> {
     kind: kind as IntakePacket["kind"],
     backend: backend as "responses" | "decisions",
     apiKey: process.env.OPENAI_API_KEY ?? "",
+    model: process.env.CLAWSWEEPER_DECISION_MODEL,
     admissionUnchanged: (value) => {
       if (process.env.GITHUB_OUTPUT)
         appendFileSync(process.env.GITHUB_OUTPUT, `admission_unchanged=${value}\n`);

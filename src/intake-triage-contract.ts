@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { isRecord } from "./value-coerce.js";
 
 export const INTAKE_POLICY = "intake-v1";
+export const INTAKE_DEFAULT_MODEL = "gpt-6-luna";
 export const INTAKE_MAX_INPUT_BYTES = 12_000;
 export const INTAKE_MAX_RESPONSE_BYTES = 32_000;
 export const INTAKE_TIMEOUT_MS = 20_000;

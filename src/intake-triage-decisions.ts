@@ -1,5 +1,6 @@
 import { callIntakeApi, type IntakeApiOptions } from "./intake-triage-api.js";
 import {
+  INTAKE_DEFAULT_MODEL,
   INTAKE_QUESTIONS,
   parseIntakeAnswers,
   type IntakeResult,
@@ -12,7 +13,7 @@ export function runDecisionsIntake(options: IntakeApiOptions): Promise<IntakeRes
     options,
     "decisions",
     {
-      model: "gpt-6-luna",
+      model: options.model ?? INTAKE_DEFAULT_MODEL,
       input: options.request.input,
       questions: INTAKE_QUESTIONS.map((question) => ({
         ...question,

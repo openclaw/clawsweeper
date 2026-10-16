@@ -46,6 +46,7 @@ test("ordinary Responses works without Decisions and records intent before sendi
     cwd: process.cwd(),
     apiKey: "synthetic-key",
     request,
+    model: "fixture-responses-model",
     recordAttempt: async () => {
       await Promise.resolve();
       calls.push("intent");
@@ -53,7 +54,9 @@ test("ordinary Responses works without Decisions and records intent before sendi
     fetch: async (url, init) => {
       calls.push(String(url));
       assert.equal(init?.redirect, "error");
-      assert.equal(JSON.parse(String(init?.body)).tools, undefined);
+      const payload = JSON.parse(String(init?.body));
+      assert.equal(payload.tools, undefined);
+      assert.equal(payload.model, "fixture-responses-model");
       return Response.json({
         status: "completed",
         output: [

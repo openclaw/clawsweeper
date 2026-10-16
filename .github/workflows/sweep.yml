@@ -816,10 +816,10 @@ jobs:
           TARGET_REPO: ${{ steps.target.outputs.target_repo }}
           ITEM_NUMBER: ${{ steps.target.outputs.item_number }}
           EXACT_REVIEW_ITEM_KIND: ${{ steps.live-item.outputs.item_kind }}
-          # This optional credential must target the public OpenAI API, rather
-          # than inheriting the source-review workload router credential.
-          OPENAI_API_KEY: ${{ secrets.CLAWSWEEPER_INTAKE_OPENAI_API_KEY }}
-          CLAWSWEEPER_INTAKE_BACKEND: ${{ vars.CLAWSWEEPER_INTAKE_BACKEND || 'responses' }}
+          # Reuse native OpenAI auth; private Codex routes keep upstream keys withheld.
+          OPENAI_API_KEY: ${{ (vars.CLAWSWEEPER_RUNNER == 'openclaw' || vars.CLAWSWEEPER_CODEX_AUTH_MODE != 'clawrouter') && secrets.OPENAI_API_KEY || '' }}
+          CLAWSWEEPER_INTAKE_BACKEND: ${{ vars.CLAWSWEEPER_INTAKE_BACKEND }}
+          CLAWSWEEPER_DECISION_MODEL: ${{ vars.CLAWSWEEPER_DECISION_MODEL }}
           EXACT_REVIEW_ITEM_KEY: ${{ steps.claim-exact-review-queue.outputs.item_key }}
           EXACT_REVIEW_LEASE_ID: ${{ steps.claim-exact-review-queue.outputs.lease_id }}
           EXACT_REVIEW_LEASE_REVISION: ${{ steps.claim-exact-review-queue.outputs.lease_revision }}
