@@ -337,7 +337,7 @@ export async function intakeWorkflowMain(): Promise<void> {
     kind: kind as IntakePacket["kind"],
     backend: backend as "responses" | "decisions",
     apiKey: process.env.OPENAI_API_KEY ?? "",
-    model: process.env.CLAWSWEEPER_DECISION_MODEL,
+    model: process.env.CLAWSWEEPER_DECISION_MODEL ?? "",
     admissionUnchanged: (value) => {
       if (process.env.GITHUB_OUTPUT)
         appendFileSync(process.env.GITHUB_OUTPUT, `admission_unchanged=${value}\n`);
