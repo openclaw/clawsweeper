@@ -4693,3 +4693,52 @@ test("parked review inventory and mutations require the operator signature", asy
     );
   }
 });
+
+test("publication telemetry adds nullable reasons to old SQLite tables and preserves the first observation", () => {
+  const storage = new MemoryDurableStorage();
+  storage.sql.exec(`CREATE TABLE exact_review_lifecycle_telemetry_batch_v1 (
+    event_id TEXT PRIMARY KEY, batch_id TEXT NOT NULL, canonical_target_key TEXT NOT NULL,
+    fence_key TEXT NOT NULL, revision INTEGER NOT NULL, claim_generation INTEGER NOT NULL,
+    outcome TEXT NOT NULL, observed_at INTEGER NOT NULL
+  ) STRICT`);
+  const now = Date.now();
+  storage.sql.exec(
+    `INSERT INTO exact_review_lifecycle_telemetry_batch_v1 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    "old",
+    "old",
+    "openclaw/openclaw#1",
+    "old-fence",
+    1,
+    1,
+    "permanent",
+    now,
+  );
+  const store = new ExactReviewLifecycleTelemetryStore(storage);
+  store.ensureSchemaSync();
+  const event = {
+    batchId: "batch",
+    canonicalTargetKey: "openclaw/openclaw#1",
+    fenceKey: "fence",
+    revision: 1,
+    claimGeneration: 1,
+    outcome: "permanent" as const,
+    observedAt: now,
+  };
+  store.recordBatchOutcome({ ...event, reasonCode: "invalid_artifact" });
+  store.recordBatchOutcome({ ...event, reasonCode: "unknown_failure" });
+  assert.throws(
+    () => store.recordBatchOutcome({ ...event, reasonCode: "github_rate_limit" }),
+    /invalid batch telemetry reason/,
+  );
+  const restarted = new ExactReviewLifecycleTelemetryStore(storage);
+  restarted.ensureSchemaSync();
+  assert.deepEqual(
+    Array.from(
+      storage.sql.exec(
+        "SELECT reason_code FROM exact_review_lifecycle_telemetry_batch_v1 ORDER BY event_id",
+      ),
+    ).map((row) => ({ ...row })),
+    [{ reason_code: "invalid_artifact" }, { reason_code: null }],
+  );
+  storage.sql.close();
+});

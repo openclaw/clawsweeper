@@ -1,4 +1,9 @@
 import { CanonicalBodyUnavailableError } from "./canonical-bodies.ts";
+import {
+  EXACT_REVIEW_PUBLICATION_REASONS,
+  exactReviewPublicationReasonCode,
+  type ExactReviewPublicationReasonCode,
+} from "./exact-review-publication-reasons.ts";
 import { stableJson } from "../src/stable-json.ts";
 import { CLAWSWEEPER_APP_BOT_LOGINS } from "../src/clawsweeper-bot-identity.ts";
 import { exactReviewSourceRevisionMaterial } from "./exact-review-source-revision.ts";
@@ -453,26 +458,6 @@ export type ExactReviewPublicationCompletionKind =
   | "retryable_failure"
   | "refresh_required"
   | "permanent_failure";
-type ExactReviewPublicationReasonCode =
-  | "publication_applied"
-  | "remote_newer_tuple"
-  | "remote_closed"
-  | "live_terminal"
-  | "github_rate_limit"
-  | "github_transient"
-  | "state_contention"
-  | "review_lease_active"
-  | "workflow_cancelled"
-  | "artifact_unavailable"
-  | "artifact_expired"
-  | "close_coverage_retry"
-  | "close_coverage_deferred"
-  | "invalid_artifact"
-  | "missing_record_tuple"
-  | "tuple_protocol_invalid"
-  | "policy_invariant"
-  | "unknown_failure"
-  | "retry_exhausted";
 type ExactReviewPublicationCompletion = {
   kind: ExactReviewPublicationCompletionKind;
   reasonCode: ExactReviewPublicationReasonCode;
@@ -9200,6 +9185,7 @@ export class ExactReviewQueue {
       revision: number;
       claimGeneration: number;
       outcome: "superseded" | "retryable" | "permanent";
+      reasonCode?: ExactReviewPublicationReasonCode;
     }> = [];
     let batch = this.batchStore.complete(
       batchId,
@@ -9260,6 +9246,7 @@ export class ExactReviewQueue {
                 revision: completion.revision,
                 claimGeneration: completion.claimGeneration,
                 outcome: "superseded",
+                reasonCode: requested.publicationCompletion?.reasonCode,
               });
             }
             lifecycleTerminals.push({
@@ -9354,6 +9341,7 @@ export class ExactReviewQueue {
                 revision: completion.revision,
                 claimGeneration: completion.claimGeneration,
                 outcome: telemetryOutcome,
+                reasonCode: requested.publicationCompletion.reasonCode,
               });
             }
             const lifecycleTerminal = result.deadLetter
@@ -10226,7 +10214,17 @@ export class ExactReviewQueue {
     revision,
     claimGeneration,
     outcome,
+    reasonCode,
     observedAt,
+  }: {
+    batchId: string;
+    canonicalTargetKey: string;
+    fenceKey: string;
+    revision: number;
+    claimGeneration: number;
+    outcome: "superseded" | "retryable" | "permanent";
+    reasonCode?: ExactReviewPublicationReasonCode;
+    observedAt: number;
   }) {
     try {
       this.lifecycleTelemetryStore.recordBatchOutcome({
@@ -10236,6 +10234,7 @@ export class ExactReviewQueue {
         revision,
         claimGeneration,
         outcome,
+        reasonCode,
         observedAt,
       });
     } catch {
@@ -10272,6 +10271,7 @@ export class ExactReviewQueue {
       ...identity,
       claimGeneration,
       outcome,
+      reasonCode: completion.reasonCode,
       observedAt,
     });
   }
@@ -15421,33 +15421,6 @@ function exactReviewLifecycleTelemetryPublicationOutcome(
   return completion.kind === "permanent_failure" ? "permanent" : null;
 }
 
-function exactReviewPublicationReasonCode(value): ExactReviewPublicationReasonCode | null {
-  const normalized = String(value || "");
-  return [
-    "publication_applied",
-    "remote_newer_tuple",
-    "remote_closed",
-    "live_terminal",
-    "github_rate_limit",
-    "github_transient",
-    "state_contention",
-    "review_lease_active",
-    "workflow_cancelled",
-    "artifact_unavailable",
-    "artifact_expired",
-    "close_coverage_retry",
-    "close_coverage_deferred",
-    "invalid_artifact",
-    "missing_record_tuple",
-    "tuple_protocol_invalid",
-    "policy_invariant",
-    "unknown_failure",
-    "retry_exhausted",
-  ].includes(normalized)
-    ? (normalized as ExactReviewPublicationReasonCode)
-    : null;
-}
-
 function exactReviewPublicationCompletion(
   kindValue,
   reasonValue,
@@ -15457,40 +15430,7 @@ function exactReviewPublicationCompletion(
   const kind = exactReviewPublicationCompletionKind(kindValue);
   const reasonCode = exactReviewPublicationReasonCode(reasonValue);
   if (!kind || !reasonCode) return null;
-  const allowedReasons: Record<
-    ExactReviewPublicationCompletionKind,
-    ReadonlySet<ExactReviewPublicationReasonCode>
-  > = {
-    published: new Set(["publication_applied"]),
-    superseded: new Set(["remote_newer_tuple", "remote_closed", "live_terminal"]),
-    retryable_failure: new Set([
-      "github_rate_limit",
-      "github_transient",
-      "state_contention",
-      "review_lease_active",
-      "workflow_cancelled",
-      "artifact_unavailable",
-      "unknown_failure",
-    ]),
-    // Accept the pre-deployment tuple while an old publisher can still finish.
-    // New publishers use deferred/close_coverage_deferred instead.
-    refresh_required: new Set([
-      "artifact_unavailable",
-      "artifact_expired",
-      "close_coverage_retry",
-      "invalid_artifact",
-    ]),
-    deferred: new Set(["close_coverage_deferred"]),
-    permanent_failure: new Set([
-      "invalid_artifact",
-      "missing_record_tuple",
-      "tuple_protocol_invalid",
-      "policy_invariant",
-      "unknown_failure",
-      "retry_exhausted",
-    ]),
-  };
-  if (!allowedReasons[kind].has(reasonCode)) return null;
+  if (!EXACT_REVIEW_PUBLICATION_REASONS[kind].has(reasonCode)) return null;
   const errorFingerprint = String(errorFingerprintValue || "").trim();
   if (errorFingerprint && !/^[A-Za-z0-9:._-]{1,200}$/.test(errorFingerprint)) return null;
   const poolClass =

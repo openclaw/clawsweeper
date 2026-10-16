@@ -1,3 +1,4 @@
+import { ExactReviewQueue } from "../../../dashboard/exact-review-queue.ts";
 import worker, { publicStatusFreshness, StatusStore } from "../../../dashboard/worker.ts";
 import capturedEvents from "./observed-publication-events.json";
 import { statusFixture } from "../bay-readable-layout/fixtures.mjs";
@@ -63,6 +64,30 @@ export default {
   async fetch(request, bindings, ctx) {
     const url = new URL(request.url);
     if (url.hostname !== "127.0.0.1") return new Response(null, { status: 403 });
+    if (url.pathname.startsWith("/__proof/reasons/")) {
+      const queue = bindings.LOCAL_REASON_QUEUE.get(
+        bindings.LOCAL_REASON_QUEUE.idFromName("proof"),
+      );
+      const route = url.pathname.slice("/__proof/reasons/".length);
+      if (route === "events") {
+        return worker.fetch(
+          new Request("http://127.0.0.1/api/recent-durable-publication-events"),
+          {
+            EXACT_REVIEW_QUEUE: { idFromName: () => "proof", get: () => queue },
+          },
+          ctx,
+        );
+      }
+      const body =
+        request.method === "GET" || request.method === "HEAD" ? null : await request.arrayBuffer();
+      return queue.fetch(
+        new Request(`https://queue/${route}`, {
+          method: request.method,
+          headers: request.headers,
+          body,
+        }),
+      );
+    }
     const store = {
       idFromName: (name) => bindings.LOCAL_STATUS_STORE.idFromName(`${generation}:${name}`),
       get: (id) => ({
@@ -325,3 +350,100 @@ export default {
     return response;
   },
 };
+
+// This isolated binding seeds old SQLite and synthetic leases, then invokes the
+// production queue. No production bindings, credentials or outbound fetch exist.
+export class PublicationReasonQueue {
+  constructor(ctx) {
+    this.ctx = ctx;
+  }
+  async fetch(request) {
+    if (new URL(request.url).pathname === "/seed") {
+      const now = Date.now();
+      const items = Object.fromEntries(
+        [9101, 9102, 9103].map((number) => {
+          const run = String(number * 10);
+          const target = `openclaw/openclaw#${number}`;
+          const producer = {
+            targetRepo: "openclaw/openclaw",
+            targetBranch: "main",
+            itemNumber: number,
+            itemKind: "issue",
+            sourceEvent: "issues",
+            sourceAction: "opened",
+            supersedesInProgress: false,
+          };
+          const decision = {
+            ...producer,
+            sourceAction: "exact_review_artifact_publish",
+            publication: {
+              artifactName: `exact-review-${run}-1`,
+              producerRunId: run,
+              producerRunAttempt: 1,
+              sourceSha: "a".repeat(40),
+              itemKey: target,
+              protocolVersion: 2,
+              leaseRevision: 1,
+              claimGeneration: 1,
+              liveProceeded: true,
+              liveTerminalNoop: false,
+              liveTerminalMissing: false,
+              liveGuardedOpen: false,
+              producerDecision: producer,
+            },
+          };
+          const item = {
+            key: `${target}@publish:${run}:1`,
+            decision,
+            leaseDecision: decision,
+            state: number === 9103 ? "pending" : "leased",
+            revision: 1,
+            createdAt: now - 60_000,
+            updatedAt: now - 60_000,
+            nextAttemptAt: now - 60_000,
+            attempts: 0,
+            leaseId: `lease-${number}`,
+            leaseRevision: 1,
+            leaseExpiresAt: now + 3_600_000,
+            claimedRunId: run,
+            claimedRunAttempt: 1,
+            claimGeneration: 1,
+            claimProtocolVersion: 2,
+          };
+          return [item.key, item];
+        }),
+      );
+      await this.ctx.storage.put("exact-review-queue", { deliveries: {}, items });
+      this.ctx.storage.sql.exec(`CREATE TABLE exact_review_lifecycle_telemetry_batch_v1 (
+        event_id TEXT PRIMARY KEY, batch_id TEXT NOT NULL, canonical_target_key TEXT NOT NULL,
+        fence_key TEXT NOT NULL, revision INTEGER NOT NULL, claim_generation INTEGER NOT NULL,
+        outcome TEXT NOT NULL, observed_at INTEGER NOT NULL
+      ) STRICT`);
+      this.ctx.storage.sql.exec(
+        `INSERT INTO exact_review_lifecycle_telemetry_batch_v1 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        "old-event",
+        "old-batch",
+        "openclaw/openclaw#9100",
+        "private-fence",
+        1,
+        1,
+        "permanent",
+        now,
+      );
+      return Response.json({ seeded: true });
+    }
+    return this.queue().fetch(request);
+  }
+  alarm() {
+    return this.queue().alarm();
+  }
+  queue() {
+    return new ExactReviewQueue(this.ctx, {
+      // Admission is fixture-owned so synthetic public leases need no network.
+      hostedTargetPredicate: (repo) => repo === "openclaw/openclaw",
+      hostedPublicTargetProbe: async () => "public",
+      EXACT_REVIEW_PUBLICATION_BATCHING_ENABLED: "1",
+      EXACT_REVIEW_PUBLICATION_BATCH_SIZE: "1",
+    });
+  }
+}

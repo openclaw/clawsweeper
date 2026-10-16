@@ -53,7 +53,11 @@ table rewrite, or database vacuum runs. The lifecycle audit still uses the
 projections continue to own admission, receipts, acknowledgements, and audit
 history; older projection JSON remains readable without its former Bay and
 inline-proof markers. Direct and batch publication-outcome telemetry continues
-to back recent durable publication events.
+to back recent durable publication events. The batch telemetry table also retains
+nullable `reason_code` metadata from validated batch and non-batch completions.
+An idempotent additive column ensure preserves old rows and explicit-column
+writers; replay keeps the first event and its reason. Missing historical reasons
+are not reconstructed from current queue or dead-letter state.
 
 Report readers share one anchored leading-front-matter parser. A unique header
 value remains authoritative when report prose or a valid fenced example quotes

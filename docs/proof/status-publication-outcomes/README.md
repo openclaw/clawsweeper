@@ -1,7 +1,7 @@
 # Publication Status Proof
 
 Status: active validation recipe. Owner: dashboard status and presentation.
-Source: `dashboard/worker.ts`, `dashboard/dashboard-pages.ts`, and the unchanged
+Source: `dashboard/worker.ts`, `dashboard/dashboard-pages.ts`, and the
 publication validator in `dashboard/public-observability.ts`.
 Baseline: `49446cd30622e642efceb80e1c0347b2602a0117`.
 Last verified: September 11, 2026. Exact candidate identity and dirty-patch digest
@@ -152,3 +152,25 @@ Ten additional warm cases exercise the optional edge owner with no durable
 binding: 28 paired scenarios, 56 runs in total. Warm durable fixtures seed both
 cache owners. The candidate serves a fresh durable
 snapshot directly; the baseline warms its edge cache from that body.
+
+
+## Publication failure reasons
+
+Owner: publication telemetry. Source: `ExactReviewLifecycleTelemetryStore`, queue
+completion and the dedicated public publication aggregate. Baseline:
+`76085db0243085d4bcbddc36001ab47ed28ba357`. Update when completion reason codes,
+telemetry schema or the public projection changes. Status: active proof recipe.
+Last verified: 2026-10-16 against the baseline above; the source capsule records
+and verifies the candidate source bytes.
+
+```sh
+node docs/proof/status-publication-outcomes/run-proof.mjs 76085db0243085d4bcbddc36001ab47ed28ba357 --publication-reasons
+```
+
+The isolated Workerd preview seeds an old SQLite table, completes real batch
+and non-batch queue leases, replays both completion routes and restarts the
+preview against the same SQLite files. The candidate retains reasons and an
+explicit unrecorded count for old rows; the baseline loses the reasons. The
+public response contains only the closed aggregate vocabulary. The receipt is
+`publication-reasons-summary.json`. This does not certify browser rendering,
+composed-cache behavior or a cause for production publication failures.
