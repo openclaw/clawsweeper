@@ -3,10 +3,11 @@ import assert from "node:assert/strict";
 import { spawn, execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { createServer } from "node:http";
-import { mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 const source = process.cwd();
+const deferralProof = process.env.PROOF_ACTIVE_LEASE_DEFERRAL === "1";
 assert.equal(
   process.argv.length,
   5,
@@ -62,7 +63,13 @@ const identity = {
     ["scripts/e2e/manual-review-publication.mjs", "source-id"],
     { encoding: "utf8" },
   ).trim(),
-  candidateOwnerSourceSha256: hash(readFileSync("src/clawsweeper-review-comment-state.ts")),
+  candidateOwnerSourceSha256: hash(
+    readFileSync(
+      deferralProof
+        ? "src/repair/publish-event-result.ts"
+        : "src/clawsweeper-review-comment-state.ts",
+    ),
+  ),
   baselineDistSha256: compiledIdentity(baseline),
   candidateDistSha256: compiledIdentity(candidate),
 };
@@ -89,15 +96,21 @@ const emptyActivityCursor = createReviewedPrActivityCursorV2({
 const results = [];
 const replayNow = Date.now();
 const candidateBoundaryReads = {};
+const deferralStepOutputs = {};
 for (const kind of ["issue", "pull_request"]) {
-  for (const [variant, dist, newerLive] of [
-    ["baseline", baseline, false],
-    ["candidate", candidate, false],
-    ["newer-live-control", candidate, true],
-    ["no-original-lease", candidate, false],
-    ["expired-original-lease", candidate, false],
-    ["lease-replaced-at-boundary", candidate, false],
-  ]) {
+  for (const [variant, dist, newerLive] of deferralProof
+    ? [
+        ["baseline", baseline, false],
+        ["candidate", candidate, false],
+      ]
+    : [
+        ["baseline", baseline, false],
+        ["candidate", candidate, false],
+        ["newer-live-control", candidate, true],
+        ["no-original-lease", candidate, false],
+        ["expired-original-lease", candidate, false],
+        ["lease-replaced-at-boundary", candidate, false],
+      ]) {
     const name = kind + "-" + variant;
     const root = join(out, name);
     mkdirSync(join(root, "items"), { recursive: true });
@@ -175,7 +188,7 @@ for (const kind of ["issue", "pull_request"]) {
       leaseExpiresAt: new Date(
         now + (variant === "expired-original-lease" ? -60000 : 1800000),
       ).toISOString(),
-      leaseOwner: owner,
+      leaseOwner: deferralProof ? "github-run-active-review-1" : owner,
     });
     const comments = [
       {
@@ -327,6 +340,19 @@ for (const kind of ["issue", "pull_request"]) {
       GITHUB_RUN_ID: "42",
       GITHUB_RUN_ATTEMPT: "1",
       CLAWSWEEPER_GH_RETRY_ATTEMPTS: "1",
+      ...(deferralProof
+        ? {
+            TARGET_REPO: "openclaw/clawsweeper",
+            ITEM_NUMBER: String(number),
+            REVIEW_ONLY: "true",
+            EXACT_EVENT_PUBLICATION: "true",
+            CLAWSWEEPER_CODE_ROOT: dirname(dist),
+            EXACT_REVIEW_WORK_ROOT: root,
+            EXACT_REVIEW_PUBLICATION_ARTIFACT_DIR: join(root, "items"),
+            EXACT_REVIEW_BATCH_MUTATION_OUTPUT: join(root, "batch.json"),
+            GITHUB_OUTPUT: join(root, "github-output"),
+          }
+        : {}),
     };
     execFileSync("gh", ["config", "set", "http_unix_socket", socket], { env });
     await new Promise((done, reject) => {
@@ -337,32 +363,34 @@ for (const kind of ["issue", "pull_request"]) {
       probe.once("error", reject);
       probe.once("exit", (code) => (code === 0 ? done() : reject(new Error("gh probe failed"))));
     });
-    const args = [
-      join(dist, "clawsweeper.js"),
-      "apply-decisions",
-      "--target-repo",
-      "openclaw/clawsweeper",
-      "--items-dir",
-      join(root, "items"),
-      "--closed-dir",
-      join(root, "closed"),
-      "--plans-dir",
-      join(root, "plans"),
-      "--report-path",
-      join(root, "apply-report.json"),
-      "--item-numbers",
-      String(number),
-      "--limit",
-      "1",
-      "--processed-limit",
-      "1",
-      "--close-delay-ms",
-      "0",
-      "--sync-comments-only",
-      "--skip-dashboard",
-      "--event-apply-proof",
-      "--exact-event-publication",
-    ];
+    const args = deferralProof
+      ? [join(dist, "repair/publish-event-result.js")]
+      : [
+          join(dist, "clawsweeper.js"),
+          "apply-decisions",
+          "--target-repo",
+          "openclaw/clawsweeper",
+          "--items-dir",
+          join(root, "items"),
+          "--closed-dir",
+          join(root, "closed"),
+          "--plans-dir",
+          join(root, "plans"),
+          "--report-path",
+          join(root, "apply-report.json"),
+          "--item-numbers",
+          String(number),
+          "--limit",
+          "1",
+          "--processed-limit",
+          "1",
+          "--close-delay-ms",
+          "0",
+          "--sync-comments-only",
+          "--skip-dashboard",
+          "--event-apply-proof",
+          "--exact-event-publication",
+        ];
     let stdout = "",
       stderr = "";
     const code = await new Promise((done, reject) => {
@@ -381,7 +409,17 @@ for (const kind of ["issue", "pull_request"]) {
     writeFileSync(join(root, "stdout.txt"), stdout);
     writeFileSync(join(root, "stderr.txt"), stderr);
     writeFileSync(join(root, "trace.json"), JSON.stringify(trace, null, 2));
-    const actions = JSON.parse(readFileSync(join(root, "apply-report.json"), "utf8"));
+    const actions = JSON.parse(
+      readFileSync(
+        join(root, deferralProof ? ".artifacts/event-apply-report.json" : "apply-report.json"),
+        "utf8",
+      ),
+    );
+    const batchOutcome =
+      deferralProof && existsSync(join(root, "batch.json"))
+        ? JSON.parse(readFileSync(join(root, "batch.json"), "utf8"))
+        : null;
+    const stepOutputs = deferralProof ? readFileSync(join(root, "github-output"), "utf8") : null;
     const patches = trace.filter(
       (entry) => entry.method === "PATCH" && entry.path.endsWith("/issues/comments/6161755396"),
     );
@@ -398,6 +436,7 @@ for (const kind of ["issue", "pull_request"]) {
       reportSha256: hash(report),
       resultingDurableBodySha256: hash(resultingBody ?? ""),
       forbidden: trace.filter((entry) => entry.forbidden),
+      ...(deferralProof ? { batchOutcome, stepOutputsSha256: hash(stepOutputs) } : {}),
     };
     results.push(result);
     writeFileSync(
@@ -415,7 +454,31 @@ for (const kind of ["issue", "pull_request"]) {
     );
     assert.equal(code, 0, stderr + stdout);
     assert.deepEqual(result.forbidden, []);
-    if (variant === "lease-replaced-at-boundary") {
+    if (deferralProof) {
+      const retryAt = new Date(now + 1800000).toISOString();
+      assert.equal(actions[0]?.action, "kept_open");
+      assert.equal(actions[0]?.activeReviewLeaseVerified, true);
+      assert.equal(patches.length, 0);
+      assert.ok(
+        trace.every(
+          (entry) =>
+            entry.method === "GET" || (entry.method === "POST" && entry.path.endsWith("graphql")),
+        ),
+      );
+      assert.ok(stepOutputs.includes("reason_code=review_lease_active\n"));
+      assert.ok(stepOutputs.includes("retry_at=" + retryAt + "\n"));
+      if (variant === "baseline") {
+        assert.equal(batchOutcome, null);
+        deferralStepOutputs[kind] = stepOutputs;
+      } else {
+        assert.deepEqual(batchOutcome, {
+          kind: "retryable_failure",
+          reasonCode: "review_lease_active",
+          retryAt,
+        });
+        assert.equal(stepOutputs, deferralStepOutputs[kind]);
+      }
+    } else if (variant === "lease-replaced-at-boundary") {
       assert.ok(
         trace.some((entry) => entry.leaseReplacedAtRead),
         "replacement must be observed by a live comment read",
@@ -429,8 +492,9 @@ for (const kind of ["issue", "pull_request"]) {
         JSON.stringify(result),
       );
     } else assert.equal(actions[0]?.action, expected, JSON.stringify(result));
-    assert.equal(patches.length, variant === "candidate" ? 1 : 0, JSON.stringify(result));
-    if (variant === "candidate") {
+    if (!deferralProof)
+      assert.equal(patches.length, variant === "candidate" ? 1 : 0, JSON.stringify(result));
+    if (!deferralProof && variant === "candidate") {
       assert.match(resultingBody, /lease_owner=github-run-current-1/);
       assert.ok(resultingBody.includes("reviewed_at=" + reportAt));
     }

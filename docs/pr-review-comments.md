@@ -109,6 +109,11 @@ owner, comment ID, and revision. Missing or expired leases and ambiguous review
 timestamps remain blocked; acquiring a new mutation lease does not establish
 that the original report is newer.
 
+A publication blocked by a verified active review lease records
+`review_lease_active` and the normalized lease deadline in both its step outputs
+and, for batched publication, its member result. The batch completer schedules
+the retry no earlier than that deadline instead of treating it as an unknown failure.
+
 Interactive re-review commands have a separate durable intake marker. The
 ExactReviewQueue records the exact source-comment version before creating or
 editing its acknowledgement, then converges on one status comment containing
