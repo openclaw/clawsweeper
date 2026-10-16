@@ -1070,6 +1070,11 @@ export default {
         url.pathname.slice("/internal/state".length),
         canonicalRecordPath[1] === "items",
       );
+    if (
+      url.pathname === "/internal/exact-review/canonical-bodies/maintenance" &&
+      request.method === "POST"
+    )
+      return authenticatedExactReviewQueueRequest(request, env, "/canonical-bodies/maintenance");
     if (url.pathname === "/internal/exact-review/storage-stats" && request.method === "POST")
       return authenticatedExactReviewQueueRequest(request, env, "/storage/stats");
     if (url.pathname === "/internal/state/records/slugs" && request.method === "POST")

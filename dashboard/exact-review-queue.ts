@@ -1,3 +1,4 @@
+import { CanonicalBodyUnavailableError } from "./canonical-bodies.ts";
 import { stableJson } from "../src/stable-json.ts";
 import { CLAWSWEEPER_APP_BOT_LOGINS } from "../src/clawsweeper-bot-identity.ts";
 import { exactReviewSourceRevisionMaterial } from "./exact-review-source-revision.ts";
@@ -1076,7 +1077,10 @@ export class ExactReviewQueue {
     this.env = env;
     this.random = random;
     this.batchStore = new ExactReviewPublicationBatchStore(this.storage);
-    this.directPublicationStore = new ExactReviewDirectPublicationStore(this.storage);
+    this.directPublicationStore = new ExactReviewDirectPublicationStore(
+      this.storage,
+      env.STATE_SNAPSHOTS,
+    );
     this.recordSnapshotStore = new ExactReviewRecordSnapshotStore(
       this.storage,
       this.directPublicationStore,
@@ -1171,6 +1175,34 @@ export class ExactReviewQueue {
 
     await this.ensureReady();
     this.cleanupLegacyCompatibilitySync();
+    if (request.method === "POST" && url.pathname === "/canonical-bodies/maintenance") {
+      const body = objectValue(await request.json().catch(() => null));
+      const deploymentSha = String(this.env.CLAWSWEEPER_DEPLOY_SHA || "");
+      if (body.expectedDeploymentSha !== deploymentSha || !/^[a-f0-9]{40}$/.test(deploymentSha))
+        return json({ error: "canonical_tiering_deployment_mismatch" }, 409);
+      const preview = await this.directPublicationStore.tieringPreview(
+        deploymentSha,
+        body.attestation,
+      );
+      if (body.action === "preview") return json({ ok: true, ...preview });
+      if (body.execute !== true || body.reviewedPreviewSha256 !== preview.sha256)
+        return json({ error: "canonical_tiering_reviewed_preview_required" }, 409);
+      if (body.action === "activate")
+        return json({
+          ok: true,
+          checkpoint: this.directPublicationStore.activateTieringSync(preview, Date.now()),
+        });
+      if (body.action === "migrate") {
+        const pass = await this.directPublicationStore.prepareTieringPass(preview.progress);
+        if (String(this.env.CLAWSWEEPER_DEPLOY_SHA || "") !== deploymentSha)
+          return json({ error: "canonical_tiering_deployment_mismatch" }, 409);
+        return json({
+          ok: true,
+          checkpoint: this.directPublicationStore.commitTieringPassSync(pass, Date.now()),
+        });
+      }
+      return json({ error: "invalid_canonical_tiering_action" }, 400);
+    }
     if (request.method === "POST" && url.pathname === "/admission-capabilities") {
       return json(this.reviewAdmissionCapabilities());
     }
@@ -3764,7 +3796,11 @@ export class ExactReviewQueue {
       if (!repoSlug || !section || !Number.isSafeInteger(itemId)) {
         return json({ error: "invalid_canonical_record_identity" }, 400);
       }
-      const record = this.directPublicationStore.readCanonical(repoSlug, section, itemId);
+      const record = await this.directPublicationStore.readCanonicalAsync(
+        repoSlug,
+        section,
+        itemId,
+      );
       if (!record || record.deleted) {
         return json(
           {
@@ -3856,7 +3892,7 @@ export class ExactReviewQueue {
       ) {
         return json({ error: "invalid_canonical_record_export" }, 400);
       }
-      const exported = this.directPublicationStore.exportRecords({
+      const exported = await this.directPublicationStore.exportRecords({
         repoSlug,
         sections: sections as RecordSection[],
         sinceRevision,
@@ -4053,9 +4089,24 @@ export class ExactReviewQueue {
       }
       try {
         const validated = await validateCanonicalRecordTupleMutation(mutation);
+        let now = Date.now(),
+          prepared: ReadonlySet<string> = new Set();
+        if (this.directPublicationStore.tupleMutationNeedsBodiesSync(validated, now)) {
+          prepared = await this.directPublicationStore.prepareCanonicalWrites(validated.operations);
+          if (
+            this.directPublicationStore.storageFormatSync() === 2 &&
+            !prepared.size &&
+            validated.operations.some((op) => op.content !== null)
+          )
+            prepared = await this.directPublicationStore.prepareCanonicalWrites(
+              validated.operations,
+            );
+          now = Date.now();
+        }
         const accepted = this.directPublicationStore.acceptCanonicalTupleMutation(
           validated,
-          Date.now(),
+          now,
+          prepared,
         );
         return json(
           {
@@ -4068,6 +4119,7 @@ export class ExactReviewQueue {
         );
       } catch (error) {
         if (error instanceof CanonicalRecordTupleConflictError) {
+          await this.directPublicationStore.hydrateTupleConflict(error);
           console.warn("canonical_record_tuple_conflict");
           return json(
             {
@@ -4077,6 +4129,11 @@ export class ExactReviewQueue {
             409,
           );
         }
+        if (
+          error instanceof CanonicalBodyUnavailableError ||
+          error instanceof RecordExportConsistencyError
+        )
+          throw error;
         console.warn("canonical_record_tuple_rejected");
         return json({ error: "invalid_canonical_record_tuple" }, 400);
       }
@@ -4207,6 +4264,36 @@ export class ExactReviewQueue {
           return directPublicationSupersededResponse(validated);
         }
         if (admission.outcome === "retryable") return hostedTargetProbeResponse(admission);
+        let prepared: ReadonlySet<string> = new Set();
+        if (this.directPublicationStore.publicationNeedsBodiesSync(validated, now)) {
+          prepared = await this.directPublicationStore.prepareCanonicalWrites(validated.operations);
+          if (
+            this.directPublicationStore.storageFormatSync() === 2 &&
+            !prepared.size &&
+            validated.operations.some((op) => op.content !== null)
+          )
+            prepared = await this.directPublicationStore.prepareCanonicalWrites(
+              validated.operations,
+            );
+          // R2 may yield to cancellation, lease replacement, newer source, or
+          // another publisher. Receipts grant no renewed publication authority.
+          now = Date.now();
+          ownership = this.directPublicationFenceSnapshot(validated, deferredBatchCompletion, now);
+          ({ state, owned, existing, batchOwned, validFence, staleBatchFence } = ownership);
+          if (staleBatchFence) return directPublicationSupersededResponse(validated);
+          if (!validFence && (ownership.requiresOwner || !existing)) {
+            if (!deferredBatchCompletion)
+              this.recordLifecycleTelemetryDirect({
+                validated,
+                outcome: "fallback",
+                observedAt: now,
+              });
+            return json(
+              { error: "direct_publication_fence_not_owned", fallback_required: true },
+              409,
+            );
+          }
+        }
         const authorityDecision = owned?.leaseDecision ?? owned?.decision;
         if (authorityDecision) {
           const policy = decisionPublicationPolicy(authorityDecision);
@@ -4252,7 +4339,7 @@ export class ExactReviewQueue {
                 row: existing,
                 supersededRevisions: [],
               }
-            : this.directPublicationStore.accept(validated, now);
+            : this.directPublicationStore.accept(validated, now, prepared);
         this.recordLifecycleDirectPublication({
           validated,
           owned,
@@ -4348,6 +4435,11 @@ export class ExactReviewQueue {
           202,
         );
       } catch (error) {
+        if (
+          error instanceof CanonicalBodyUnavailableError ||
+          error instanceof RecordExportConsistencyError
+        )
+          throw error;
         const detail = directPublicationRejectionDetail(error);
         console.warn("direct_publication_plan_rejected");
         return json(
@@ -5155,7 +5247,7 @@ export class ExactReviewQueue {
       reservation_claim_observability: reservationClaimObservability,
       publication_handoff: reservationClaimObservability.summary,
       state_writer: { ...stateWriter, coordinator: stateWriterCoordinator },
-      storage_schema_version: EXACT_REVIEW_QUEUE_STORAGE_SCHEMA_VERSION,
+      storage_schema_version: Number(this.readStorageMetaSync()?.schema_version),
       legacy_rollback_available:
         !this.legacyMirrorDisabled && now < this.migratedAt + EXACT_REVIEW_QUEUE_LEGACY_ROLLBACK_MS,
     };
@@ -11470,7 +11562,7 @@ export class ExactReviewQueue {
       });
       meta = this.readStorageMetaSync();
     }
-    if (!meta || Number(meta.schema_version) !== EXACT_REVIEW_QUEUE_STORAGE_SCHEMA_VERSION) {
+    if (!meta || ![1, 2].includes(Number(meta.schema_version))) {
       throw new Error(`unsupported exact-review queue storage schema ${meta?.schema_version}`);
     }
     if (!Number.isSafeInteger(meta.storage_generation) || meta.storage_generation < 1) {
@@ -12285,7 +12377,7 @@ export class ExactReviewQueue {
 
   private readSchedulingStateSync(): ExactReviewQueueState {
     const meta = this.readStorageMetaSync();
-    if (!meta || Number(meta.schema_version) !== EXACT_REVIEW_QUEUE_STORAGE_SCHEMA_VERSION) {
+    if (!meta || ![1, 2].includes(Number(meta.schema_version))) {
       throw new Error("exact-review queue storage is not initialized");
     }
     const items: Record<string, ExactReviewQueueItem> = {};
@@ -12313,7 +12405,7 @@ export class ExactReviewQueue {
 
   private targetAppCircuitRetryAtSync(targetRepo: string, now: number): number {
     const meta = this.readStorageMetaSync();
-    if (!meta || Number(meta.schema_version) !== EXACT_REVIEW_QUEUE_STORAGE_SCHEMA_VERSION) {
+    if (!meta || ![1, 2].includes(Number(meta.schema_version))) {
       throw new Error("exact-review queue storage is not initialized");
     }
     const dispatcher = meta.dispatcher_json
@@ -12345,7 +12437,7 @@ export class ExactReviewQueue {
 
   private readStateSync(): ExactReviewQueueState {
     const meta = this.readStorageMetaSync();
-    if (!meta || Number(meta.schema_version) !== EXACT_REVIEW_QUEUE_STORAGE_SCHEMA_VERSION) {
+    if (!meta || ![1, 2].includes(Number(meta.schema_version))) {
       throw new Error("exact-review queue storage is not initialized");
     }
 

@@ -13,10 +13,10 @@ Keep canonical identity and ordering in SQLite. Store exact canonical bodies in
 an immutable namespace within the existing R2 bucket. Preserve every logical
 record, tombstone, digest, tuple revision, export revision, and publication receipt.
 
-This proposal requests acceptance of a storage representation and schema transition.
-It grants no deployment, migration, deletion, or R2 expiration authority.
-Implement the schema change only after explicit owner acceptance.
-Prepare and prove the exact implementation before requesting production approval.
+The owner accepted local implementation of this representation and schema transition
+on 2026-10-16. This document still grants no production deployment, activation,
+migration, deletion, or R2 expiration authority. The candidate must pass native
+proof and independent review before a separate production execution packet is approved.
 
 ## Evidence and scope
 
@@ -55,14 +55,14 @@ Use one metadata-only canonical table in the same Durable Object database.
 The proposed name is `exact_review_canonical_records_v2`.
 Keep these authoritative facts there:
 
-| Fact | Purpose |
-| --- | --- |
-| Repository, section, item ID | Canonical identity |
-| Digest and byte length | Exact body identity and read budgets |
-| Deleted flag | Durable tombstone, distinct from unavailable storage |
-| Tuple revision and updated time | Existing logical version |
-| Canonical target and claim generation | Producer provenance |
-| Typed coverage fields | Repository, review status, reviewed time, and exclusion fact |
+| Fact                                  | Purpose                                                      |
+| ------------------------------------- | ------------------------------------------------------------ |
+| Repository, section, item ID          | Canonical identity                                           |
+| Digest and byte length                | Exact body identity and read budgets                         |
+| Deleted flag                          | Durable tombstone, distinct from unavailable storage         |
+| Tuple revision and updated time       | Existing logical version                                     |
+| Canonical target and claim generation | Producer provenance                                          |
+| Typed coverage fields                 | Repository, review status, reviewed time, and exclusion fact |
 
 A live row requires a verified body descriptor. A tombstone has no body descriptor,
 no digest, and zero bytes. Keep the export index and both publication receipt
@@ -77,8 +77,9 @@ Missing provenance must not manufacture a completed review.
 The proposed queue storage schema transition is version 1 to version 2.
 Version 2 records that canonical bodies can live outside the old SQL tables.
 The supported build must understand both versions before activation.
-The current build rejects a different queue schema version.
-Do not advance its constant or persisted version before explicit acceptance.
+The frozen baseline rejects a different queue schema version. The candidate
+supports versions 1 and 2 while initialization still persists version 1. Deployment
+and startup never activate tiering; the native maintenance owner does that explicitly.
 
 ## Body ownership and writes
 
@@ -120,16 +121,16 @@ Separate synchronous metadata selection from asynchronous body resolution.
 Capture each immutable descriptor with its digest and logical version before
 awaiting R2. Never attach a newer body to older export metadata.
 
-| Surface | Required behavior |
-| --- | --- |
-| Point reads | Preserve exact content and metadata. Absent identities and real tombstones retain record-not-found behavior. |
-| Tuple compare-and-swap | Compare authoritative digests through metadata inside the synchronous transaction. |
-| Tuple conflict response | Capture a coherent four-section tuple, then hydrate its exact bodies outside the transaction. |
-| Export | Preserve source-byte, record-count, response-size, cursor, and first-record progress limits. |
-| Snapshots | Resolve bodies asynchronously through the same owner. Preserve existing watermark semantics. |
-| Admission | Read the durable answered fact synchronously without R2. |
-| Coverage | Read typed SQLite facts without one R2 request per record. |
-| Cleanup planning | Use the same body reader. Preserve completed checkpoints. |
+| Surface                 | Required behavior                                                                                            |
+| ----------------------- | ------------------------------------------------------------------------------------------------------------ |
+| Point reads             | Preserve exact content and metadata. Absent identities and real tombstones retain record-not-found behavior. |
+| Tuple compare-and-swap  | Compare authoritative digests through metadata inside the synchronous transaction.                           |
+| Tuple conflict response | Capture a coherent four-section tuple, then hydrate its exact bodies outside the transaction.                |
+| Export                  | Preserve source-byte, record-count, response-size, cursor, and first-record progress limits.                 |
+| Snapshots               | Resolve bodies asynchronously through the same owner. Preserve existing watermark semantics.                 |
+| Admission               | Read the durable answered fact synchronously without R2.                                                     |
+| Coverage                | Read typed SQLite facts without one R2 request per record.                                                   |
+| Cleanup planning        | Use the same body reader. Preserve completed checkpoints.                                                    |
 
 Missing or corrupt external bodies return a visible infrastructure failure.
 They must not become a tombstone, an incomplete conflict response, or an invalid-input 400.
@@ -222,21 +223,21 @@ Use a real Workerd Durable Object and controlled R2 binding with synthetic data.
 Extend the existing [native workflow-storage fixture](proof/workflow-storage/README.md)
 or another qualified fixture. Unit mocks alone cannot establish the storage contract.
 
-| Scenario | Observable result |
-| --- | --- |
-| Inline, chunked, empty, Unicode, and maximum-size bodies | Identical bytes and digests through point reads and export |
-| Snapshot plus delta hydration | Identical materialized records and original cursor semantics |
-| Overwrite or deletion during a pending R2 read | Each response binds one captured body's bytes to its own metadata |
-| Lease expiry, cancellation, or batch replacement during upload | No unauthorized tuple, receipt, export, or lifecycle success |
-| Successful commit with lost response | Existing direct and batch retry behavior remains correct |
-| Tuple conflict with external bodies | Four complete sections, coherent revision, valid packet references, and verified digests |
-| Completed, failed, requeue, and reconciliation reports | Existing answered facts and first-review admission remain correct |
-| Coverage before and after detachment | Equal fresh, stale, failed, expired, excluded, and pending counts |
-| Upload failure, corrupt object, and failed comparison | Original rows remain authoritative with visible failure |
-| Restart before and after SQL commit | Idempotent progress without duplicate logical revisions |
-| Migration at representative volume | Measured CPU, memory, IO, temporary SQL growth, and bounded passes |
-| Version 2 rollback floor and old build | Supported build reads all records. Cold and warm unsupported writers cannot commit across activation. |
-| Unrelated stores and protected metadata | Queue, leases, imports, commits, receipts, and tombstones retain their contracts |
+| Scenario                                                       | Observable result                                                                                     |
+| -------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
+| Inline, chunked, empty, Unicode, and maximum-size bodies       | Identical bytes and digests through point reads and export                                            |
+| Snapshot plus delta hydration                                  | Identical materialized records and original cursor semantics                                          |
+| Overwrite or deletion during a pending R2 read                 | Each response binds one captured body's bytes to its own metadata                                     |
+| Lease expiry, cancellation, or batch replacement during upload | No unauthorized tuple, receipt, export, or lifecycle success                                          |
+| Successful commit with lost response                           | Existing direct and batch retry behavior remains correct                                              |
+| Tuple conflict with external bodies                            | Four complete sections, coherent revision, valid packet references, and verified digests              |
+| Completed, failed, requeue, and reconciliation reports         | Existing answered facts and first-review admission remain correct                                     |
+| Coverage before and after detachment                           | Equal fresh, stale, failed, expired, excluded, and pending counts                                     |
+| Upload failure, corrupt object, and failed comparison          | Original rows remain authoritative with visible failure                                               |
+| Restart before and after SQL commit                            | Idempotent progress without duplicate logical revisions                                               |
+| Migration at representative volume                             | Measured CPU, memory, IO, temporary SQL growth, and bounded passes                                    |
+| Version 2 rollback floor and old build                         | Supported build reads all records. Cold and warm unsupported writers cannot commit across activation. |
+| Unrelated stores and protected metadata                        | Queue, leases, imports, commits, receipts, and tombstones retain their contracts                      |
 
 Publish commands, exact head, runtime identity, observations, and limits in the
 code PR's real-behavior proof. Run repository checks and required reviews.
@@ -256,3 +257,46 @@ This design does not use a public CDN cache as its authoritative body reader.
 
 These contracts were fetched from official documentation on 2026-10-16.
 They establish feasibility, not executed migration or deployment proof.
+
+## Candidate maintenance owner
+
+The signed native exact-review maintenance route owns preview, activation, and
+migration. The maintenance workflow adds an explicit `canonical-bodies` mode;
+its default reconciliation mode and preview/execute gate remain unchanged.
+The public dashboard has no action control.
+
+The stable preview packet binds the executing deployment SHA, the same qualified
+build as rollback floor, its format 1+2 proof reference, operator identity, the
+actual named bucket policy, namespace, scope, and fixed pass caps. The lifecycle
+policy is canonicalized and hashed. The CLI reads the named bucket’s current
+lifecycle rules and refuses a mismatch or any enabled deletion rule overlapping
+the body prefix. No lifecycle rule is changed. Native R2 bindings cannot inspect
+bucket policy, so the signed packet also records the reviewed operator attestation.
+
+Live counts, export revisions, activation’s captured upper row identity, and
+progress are observations outside that stable approval identity. SQLite persists
+the approved packet and hash. Every later pass must name the same packet and
+compare its separate captured checkpoint before commit. Ordinary publication and
+migration progress do not require replacement approval packets.
+
+An explicit migrate invocation runs at most 100,000 bounded passes or 50 minutes,
+whichever comes first, stopping on completion or a full sweep with unresolved
+sources. The workflow allows 60 minutes for that operation. A later invocation
+resumes the persisted cursor using the same approved plan; startup and alarms
+never schedule it. This makes large stores operable without one workflow dispatch
+per four tuples. Throughput from the synthetic fixture is not a production estimate.
+
+Cloudflare restarts Durable Objects on deployment. Requests from the old deployment
+may finish only while avoiding storage; an old-instance storage access is stopped
+to preserve global uniqueness. Matching the executing DO deployment to the reviewed
+SHA excludes unsupported old writers under that platform contract. Capable requests
+already awaiting work in the current instance still recheck the durable format at
+every canonical write boundary. See the official
+[Durable Object lifecycle contract](https://developers.cloudflare.com/durable-objects/concepts/durable-object-lifecycle/).
+
+The controlled [native proof fixture](proof/canonical-body-tiering/README.md) pins
+its persisted baseline to the inspected revision above. Related work remains outside
+this frozen candidate: [coverage identity matching](https://github.com/openclaw/clawsweeper/pull/2018)
+and [snapshot download isolation](https://github.com/openclaw/clawsweeper/pull/2017).
+Before landing on a newer base, reconcile those owner changes and repeat affected
+proof. In particular, new coverage facts must be projected before body detachment.

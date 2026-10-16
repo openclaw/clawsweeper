@@ -4,13 +4,13 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: "Reconcile lineages, retire one verified closed publication, or report storage by table (read-only)"
+        description: "Reconcile, retire closed publication, report storage, or explicitly tier canonical bodies"
         required: true
         type: choice
-        options: [reconcile, retire-closed-publication, storage-stats]
+        options: [reconcile, retire-closed-publication, storage-stats, canonical-bodies]
         default: reconcile
       execute:
-        description: "Apply one bounded pass (false runs a dry-run)"
+        description: "Apply bounded maintenance (false runs a dry-run)"
         required: true
         type: boolean
         default: false
@@ -47,7 +47,19 @@ on:
         description: "Retirement only: approved publication queue revision"
         type: string
       reviewed_plan_sha256:
-        description: "Retirement execute requires the reviewed preview plan SHA256"
+        description: "Execute requires the reviewed preview plan SHA256"
+        type: string
+
+      canonical_action:
+        description: "Canonical bodies only: preview, activation, or bounded resumable migration"
+        type: choice
+        options: [preview, activate, migrate]
+        default: preview
+      expected_deployment_sha:
+        description: "Canonical bodies: exact deployed capable Worker SHA"
+        type: string
+      canonical_attestation_json:
+        description: "Canonical bodies: reviewed operator attestation with actual lifecycle rules and rollback proof"
         type: string
 
 concurrency:
@@ -200,3 +212,39 @@ jobs:
             --apply \
             --reviewed-plan-sha256 "$REVIEWED_PLAN_SHA256" \
             --plan-file "$RUNNER_TEMP/closed-publication-retirement.json"
+
+  canonical-bodies:
+    if: ${{ inputs.mode == 'canonical-bodies' && github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          filter: blob:none
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: ./.github/actions/setup-pnpm
+        with:
+          build-script: build:repair
+      - name: Preview or execute explicit canonical body maintenance
+        env:
+          CLOUDFLARE_ACCOUNT_ID: 91b59577e757131d68d55a471fe32aca
+          CLOUDFLARE_API_TOKEN: ${{ secrets.OPENCLAW_CLOUDFLARE_WORKERS_API_TOKEN || secrets.OPENCLAW_CLOUDFLARE_API_TOKEN }}
+          CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
+          EXACT_REVIEW_QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
+          CANONICAL_ACTION: ${{ inputs.canonical_action }}
+          EXECUTE: ${{ inputs.execute }}
+          EXPECTED_DEPLOYMENT_SHA: ${{ inputs.expected_deployment_sha }}
+          CANONICAL_ATTESTATION_JSON: ${{ inputs.canonical_attestation_json }}
+          REVIEWED_PLAN_SHA256: ${{ inputs.reviewed_plan_sha256 }}
+        run: |
+          set -euo pipefail
+          printf '%s' "$CANONICAL_ATTESTATION_JSON" > "$RUNNER_TEMP/canonical-attestation.json"
+          args=()
+          if [[ "$EXECUTE" == "true" ]]; then args+=(--apply); fi
+          pnpm run --silent repair:exact-review-queue-maintenance canonical-bodies \
+            --action "$CANONICAL_ACTION" "${args[@]}" \
+            --expected-deployment-sha "$EXPECTED_DEPLOYMENT_SHA" \
+            --attestation-file "$RUNNER_TEMP/canonical-attestation.json" \
+            --reviewed-plan-sha256 "$REVIEWED_PLAN_SHA256"
