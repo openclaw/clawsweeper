@@ -7,6 +7,28 @@ import {
 } from "../dashboard/operational-health.ts";
 
 const now = Date.parse("2026-10-14T08:00:00Z");
+
+test("apply freshness and measured result coverage remain independent in Operations", () => {
+  const value = {
+    telemetry_complete: true,
+    totals: { applied: null, closed: null },
+    result_coverage: {
+      totals: {
+        completed_lifecycle_events: 4,
+        fields: {
+          applied: { measured_events: 3, missing_events: 1 },
+          closed: { measured_events: 2, missing_events: 2 },
+        },
+      },
+    },
+  };
+  const result = summarizeOperations({}, value, {}, now);
+  assert.equal(result.apply.day.observationsCurrent, true);
+  assert.equal(result.apply.day.applied, null);
+  assert.deepEqual(result.apply.day.resultCoverage, { completed: 4, applied: 3, closed: 2 });
+  assert.equal(result.apply.week.resultCoverage, null);
+  assert.equal(result.apply.week.observationsCurrent, null);
+});
 function sample(
   minute: number,
   review: Record<string, number>,

@@ -39,6 +39,12 @@ For egress field interpretation, use
 [GitHub publication egress telemetry](github-egress-telemetry.md). For other
 fields, use [Live dashboard](live-dashboard.md).
 
+Apply observations expose bounded `result_coverage` for the 15-minute,
+60-minute, and selected-range totals. Each window contains the completed apply
+lifecycle count and measured/missing event counts for the seven fixed result
+fields. Observation freshness (`telemetry_complete`) and result measurement
+coverage are independent; unknown result totals remain null.
+
 Public observer routes are projections, not private-store serializers. Internal
 Durable Object state may retain item keys, repository selectors, workflow/job
 metadata, failure details, run links, revision digests, and sampled records for

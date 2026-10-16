@@ -170,10 +170,12 @@ export function summarizeApplyObservability(options: {
   // Keep those records for health/failure visibility, but do not let their
   // intentionally null result counts erase measured completed throughput.
   const completedLifecycleEvents = events.filter(isCompletedApplyResultEvent);
-  const window = (ms: number) =>
-    aggregate(
-      completedLifecycleEvents.filter((event) => Date.parse(event.occurred_at) >= now - ms),
-    );
+  const last15Minutes = completedLifecycleEvents.filter(
+    (event) => Date.parse(event.occurred_at) >= now - 15 * 60_000,
+  );
+  const last60Minutes = completedLifecycleEvents.filter(
+    (event) => Date.parse(event.occurred_at) >= now - 60 * 60_000,
+  );
   const aggregateRange = aggregate(completedLifecycleEvents);
   const failures = events.flatMap((event) =>
     event.failures.map((failure) => ({ ...failure, repo: event.repo, run_url: event.run_url })),
@@ -184,6 +186,7 @@ export function summarizeApplyObservability(options: {
     range: options.range,
     repo: options.repo ?? "all",
     generated_at: new Date(now).toISOString(),
+    // This is observation freshness, not completeness of each result ledger.
     telemetry_complete: telemetryComplete,
     event_count: events.length,
     repositories: observedRepositories.map((repo) => ({
@@ -191,9 +194,14 @@ export function summarizeApplyObservability(options: {
       observed_at: latestByRepository.get(repo)?.occurred_at ?? null,
     })),
     queue: aggregateQueue(current),
-    last_15_minutes: window(15 * 60_000),
-    last_60_minutes: window(60 * 60_000),
+    last_15_minutes: aggregate(last15Minutes),
+    last_60_minutes: aggregate(last60Minutes),
     totals: aggregateRange,
+    result_coverage: {
+      last_15_minutes: resultCoverage(last15Minutes),
+      last_60_minutes: resultCoverage(last60Minutes),
+      totals: resultCoverage(completedLifecycleEvents),
+    },
     retry_amplification: retryAmplification(aggregateRange),
     lease: aggregateLease(current),
     failures: {
@@ -316,6 +324,31 @@ function aggregate(events: readonly ApplyObservabilityEvent[]) {
     retried: sum("retried"),
     dead_lettered: sum("dead_lettered"),
     net_drain: arrivals === null || applied === null ? null : applied - arrivals,
+  };
+}
+
+function resultCoverage(events: readonly ApplyObservabilityEvent[]) {
+  const measured = (field: keyof ApplyObservabilityEvent["results"] | "arrivals" | "net_drain") => {
+    const measuredEvents = events.filter((event) =>
+      field === "net_drain"
+        ? event.arrivals !== null && event.results.applied !== null
+        : field === "arrivals"
+          ? event.arrivals !== null
+          : event.results[field] !== null,
+    ).length;
+    return { measured_events: measuredEvents, missing_events: events.length - measuredEvents };
+  };
+  return {
+    completed_lifecycle_events: events.length,
+    fields: {
+      arrivals: measured("arrivals"),
+      applied: measured("applied"),
+      closed: measured("closed"),
+      superseded: measured("superseded"),
+      retried: measured("retried"),
+      dead_lettered: measured("dead_lettered"),
+      net_drain: measured("net_drain"),
+    },
   };
 }
 

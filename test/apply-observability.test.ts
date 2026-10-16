@@ -141,6 +141,74 @@ test("proof-only failures retain their alert without blanking completed apply th
   assert.equal(summary.failures.last_failure_kind, "workflow_failure");
 });
 
+test("result coverage distinguishes fresh observations from incomplete completed ledgers", () => {
+  const missingResults = {
+    applied: null,
+    closed: null,
+    superseded: null,
+    retried: null,
+    dead_lettered: null,
+  };
+  const events = [
+    event(),
+    event({
+      run_id: "2",
+      occurred_at: "2026-07-21T10:00:00Z",
+      started_at: "2026-07-21T09:00:00Z",
+      arrivals: null,
+      results: missingResults,
+    }),
+    event({ run_id: "3", outcome: "in_progress", arrivals: null, results: missingResults }),
+    event({
+      run_id: "4",
+      lifecycle_started: false,
+      outcome: "failure",
+      arrivals: null,
+      results: missingResults,
+    }),
+  ].map((value) => normalizeApplyObservabilityEvent(value, NOW)!);
+  const summary = summarizeApplyObservability({ events, range: "24h", repo: null, now: NOW });
+  assert.equal(summary.telemetry_complete, true);
+  assert.equal(summary.event_count, 4);
+  assert.equal(summary.totals.applied, null);
+  assert.equal(summary.last_60_minutes.applied, 8);
+  assert.equal(summary.result_coverage.totals.completed_lifecycle_events, 2);
+  for (const field of Object.values(summary.result_coverage.totals.fields)) {
+    assert.deepEqual(field, { measured_events: 1, missing_events: 1 });
+  }
+  assert.equal(summary.result_coverage.last_60_minutes.completed_lifecycle_events, 1);
+  assert.deepEqual(summary.result_coverage.last_60_minutes.fields.applied, {
+    measured_events: 1,
+    missing_events: 0,
+  });
+  const empty = summarizeApplyObservability({ events: [], range: "24h", repo: null, now: NOW });
+  assert.equal(empty.totals.applied, null);
+  assert.deepEqual(empty.result_coverage.totals.fields.applied, {
+    measured_events: 0,
+    missing_events: 0,
+  });
+});
+
+test("derived result coverage requires both inputs in the same completed event", () => {
+  const events = [
+    event({ arrivals: null }),
+    event({ results: { applied: null, closed: 0, superseded: 0, retried: 0, dead_lettered: 0 } }),
+  ].map((value) => normalizeApplyObservabilityEvent(value, NOW)!);
+  const summary = summarizeApplyObservability({ events, range: "24h", repo: null, now: NOW });
+  assert.deepEqual(summary.result_coverage.totals.fields.arrivals, {
+    measured_events: 1,
+    missing_events: 1,
+  });
+  assert.deepEqual(summary.result_coverage.totals.fields.applied, {
+    measured_events: 1,
+    missing_events: 1,
+  });
+  assert.deepEqual(summary.result_coverage.totals.fields.net_drain, {
+    measured_events: 0,
+    missing_events: 2,
+  });
+});
+
 test("apply observability rejects malformed producer payloads", () => {
   assert.equal(normalizeApplyObservabilityEvent(event({ repo: "not-a-repo" }), NOW), null);
   assert.equal(

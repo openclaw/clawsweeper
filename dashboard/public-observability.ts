@@ -323,6 +323,41 @@ function publicApplyAggregate(value: unknown): Record<string, number | null> | n
   return { ...result, net_drain: expectedNetDrain };
 }
 
+function publicApplyResultCoverage(
+  value: unknown,
+  aggregate: Record<string, number | null>,
+  maximum: number,
+) {
+  const source = objectValue(value);
+  const fields = objectValue(source?.fields);
+  const completed = count(source?.completed_lifecycle_events, maximum);
+  if (!fields || completed === null) return null;
+  const result: Record<string, { measured_events: number; missing_events: number }> = {};
+  for (const field of [...APPLY_RESULT_FIELDS, "net_drain"]) {
+    const coverage: { measured_events: number; missing_events: number } | null = countObject(
+      fields[field],
+      ["measured_events", "missing_events"],
+      completed,
+    );
+    if (
+      !coverage ||
+      coverage.measured_events + coverage.missing_events !== completed ||
+      (aggregate[field] !== null) !== (completed > 0 && coverage.missing_events === 0)
+    )
+      return null;
+    result[field] = coverage;
+  }
+  const arrivals = result.arrivals!.measured_events;
+  const applied = result.applied!.measured_events;
+  const netDrain = result.net_drain!.measured_events;
+  if (
+    netDrain > Math.min(arrivals, applied) ||
+    netDrain < Math.max(0, arrivals + applied - completed)
+  )
+    return null;
+  return { completed_lifecycle_events: completed, fields: result };
+}
+
 export function publicApplyObservabilityProjection(value: unknown) {
   const source = objectValue(value);
   if (!source) return null;
@@ -362,6 +397,31 @@ export function publicApplyObservabilityProjection(value: unknown) {
   ) {
     return null;
   }
+  const coverageSource = objectValue(source.result_coverage);
+  if (!coverageSource) return null;
+  const resultCoverage = {
+    last_15_minutes: publicApplyResultCoverage(
+      coverageSource.last_15_minutes,
+      last15Minutes,
+      eventCount,
+    ),
+    last_60_minutes: publicApplyResultCoverage(
+      coverageSource.last_60_minutes,
+      last60Minutes,
+      eventCount,
+    ),
+    totals: publicApplyResultCoverage(coverageSource.totals, totals, eventCount),
+  };
+  if (
+    !resultCoverage.last_15_minutes ||
+    !resultCoverage.last_60_minutes ||
+    !resultCoverage.totals ||
+    resultCoverage.last_15_minutes.completed_lifecycle_events >
+      resultCoverage.last_60_minutes.completed_lifecycle_events ||
+    resultCoverage.last_60_minutes.completed_lifecycle_events >
+      resultCoverage.totals.completed_lifecycle_events
+  )
+    return null;
   const failures: Record<string, unknown> = {};
   for (const field of APPLY_FAILURE_COUNT_FIELDS) {
     const parsed = nullableCount(failuresSource[field]);
@@ -389,6 +449,7 @@ export function publicApplyObservabilityProjection(value: unknown) {
     last_15_minutes: last15Minutes,
     last_60_minutes: last60Minutes,
     totals,
+    result_coverage: resultCoverage,
     retry_amplification: expectedRetryAmplification,
     lease,
     failures,

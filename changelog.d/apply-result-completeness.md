@@ -1,0 +1,1 @@
+- Distinguish fresh apply observations from per-field result coverage, retain unknown totals, and show measured close-sweep coverage in Operations.

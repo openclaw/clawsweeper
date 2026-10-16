@@ -34,7 +34,13 @@ export type OperationsHour = {
 };
 export type Incident = { start: string; end: string; minutes: number; worst: 'degraded' | 'stalled' };
 // null: the API did not establish the value (no observation), which is not the same as zero.
-type ApplyWindow = { applied: number | null; closed: number | null; failures: Record<string, number | null> };
+type ApplyWindow = {
+  applied: number | null;
+  closed: number | null;
+  observationsCurrent: boolean | null;
+  resultCoverage: { completed: number; applied: number; closed: number } | null;
+  failures: Record<string, number | null>;
+};
 export type Operations = {
   generatedAt: string;
   windowStart: string;
@@ -80,9 +86,16 @@ const growth = (current: number | undefined, previous: number | undefined) =>
 function applyWindow(value: unknown): ApplyWindow {
   const totals = isRecord(value) && isRecord(value.totals) ? value.totals : {};
   const failures = isRecord(value) && isRecord(value.failures) ? value.failures : {};
+  const coverage = isRecord(value) && isRecord(value.result_coverage) && isRecord(value.result_coverage.totals) ? value.result_coverage.totals : {};
+  const fields = isRecord(coverage.fields) ? coverage.fields : {};
+  const completed = num(coverage.completed_lifecycle_events);
+  const applied = isRecord(fields.applied) ? num(fields.applied.measured_events) : null;
+  const closed = isRecord(fields.closed) ? num(fields.closed.measured_events) : null;
   return {
     applied: num(totals.applied),
     closed: num(totals.closed),
+    observationsCurrent: isRecord(value) && typeof value.telemetry_complete === 'boolean' ? value.telemetry_complete : null,
+    resultCoverage: completed !== null && applied !== null && closed !== null ? { completed, applied, closed } : null,
     failures: Object.fromEntries(Object.entries(failures).flatMap(([kind, count]) => (kind.startsWith('last_') ? [] : [[kind, num(count)]]))),
   };
 }

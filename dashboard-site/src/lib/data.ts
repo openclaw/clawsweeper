@@ -438,6 +438,8 @@ export const ops = {
   apply: {
     applied: operations.apply.day.applied,
     closed: operations.apply.day.closed,
+    observationsCurrent: operations.apply.day.observationsCurrent,
+    resultCoverage: operations.apply.day.resultCoverage,
     // null: not reported for that window (unknown), shown as "–", never as zero.
     failures: failureKinds
       .map((kind) => ({

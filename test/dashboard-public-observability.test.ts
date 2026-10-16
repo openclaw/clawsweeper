@@ -157,6 +157,17 @@ function applyAggregate(arrivals: number) {
   };
 }
 
+function applyCoverage(completed: number) {
+  return {
+    completed_lifecycle_events: completed,
+    fields: Object.fromEntries(
+      ["arrivals", "applied", "closed", "superseded", "retried", "dead_lettered", "net_drain"].map(
+        (field) => [field, { measured_events: completed, missing_events: 0 }],
+      ),
+    ),
+  };
+}
+
 function applyObservabilityFixture() {
   return {
     schema_version: 1,
@@ -185,6 +196,11 @@ function applyObservabilityFixture() {
     last_15_minutes: applyAggregate(1),
     last_60_minutes: applyAggregate(2),
     totals: applyAggregate(3),
+    result_coverage: {
+      last_15_minutes: applyCoverage(1),
+      last_60_minutes: applyCoverage(2),
+      totals: applyCoverage(3),
+    },
     retry_amplification: 0.25,
     lease: { wait_ms: 30, hold_ms: 100 },
     failures: {
@@ -229,6 +245,14 @@ test("apply observability omits repository inventory and failure links", () => {
   const unknownDerived = applyObservabilityFixture();
   unknownDerived.last_15_minutes.arrivals = null as never;
   unknownDerived.last_15_minutes.net_drain = null as never;
+  unknownDerived.result_coverage.last_15_minutes.fields.arrivals = {
+    measured_events: 0,
+    missing_events: 1,
+  };
+  unknownDerived.result_coverage.last_15_minutes.fields.net_drain = {
+    measured_events: 0,
+    missing_events: 1,
+  };
   unknownDerived.totals.arrivals = 0;
   unknownDerived.totals.applied = 0;
   unknownDerived.totals.net_drain = 0;
@@ -237,6 +261,41 @@ test("apply observability omits repository inventory and failure links", () => {
   assert.ok(unknownProjection);
   assert.equal(unknownProjection.last_15_minutes.net_drain, null);
   assert.equal(unknownProjection.retry_amplification, null);
+});
+
+test("apply result coverage is bounded, strips unknown fields and rejects invented completeness", () => {
+  const input = applyObservabilityFixture();
+  const projected = publicApplyObservabilityProjection(input)!;
+  assert.deepEqual(projected.result_coverage.totals, applyCoverage(3));
+  const privateField = applyObservabilityFixture();
+  privateField.result_coverage.totals.fields[PRIVATE_MARKERS.item] = {
+    measured_events: 1,
+    missing_events: 0,
+  };
+  assertPrivateMarkersAbsent(publicApplyObservabilityProjection(privateField));
+  for (const change of [
+    { measured_events: 2, missing_events: 0 },
+    { measured_events: 2, missing_events: 1 },
+    { measured_events: 4, missing_events: -1 },
+  ]) {
+    const inconsistent = applyObservabilityFixture();
+    inconsistent.result_coverage.totals.fields.applied = change;
+    assert.equal(publicApplyObservabilityProjection(inconsistent), null);
+  }
+  const tooMany = applyObservabilityFixture();
+  tooMany.result_coverage.totals = applyCoverage(5);
+  assert.equal(publicApplyObservabilityProjection(tooMany), null);
+  const impossiblePair = applyObservabilityFixture();
+  for (const field of ["arrivals", "applied", "net_drain"]) {
+    impossiblePair.totals[field] = null as never;
+    impossiblePair.result_coverage.totals.fields[field] = { measured_events: 1, missing_events: 2 };
+  }
+  impossiblePair.result_coverage.totals.fields.net_drain = {
+    measured_events: 2,
+    missing_events: 1,
+  };
+  impossiblePair.retry_amplification = null as never;
+  assert.equal(publicApplyObservabilityProjection(impossiblePair), null);
 });
 
 function githubRollup(overrides: Record<string, unknown> = {}) {

@@ -665,6 +665,19 @@ use direct and batch outcome telemetry, and Overview still uses the shared
 - `/api/apply-observability` returns global queue, result, retry, lease, and
   closed failure-category counts for a normalized range. It omits repository
   inventories, run links, and failure messages.
+  `telemetry_complete` means each required repository has a current observation;
+  it does not mean every result field was measured. `result_coverage` reports
+  `completed_lifecycle_events` and per-field `measured_events` / `missing_events`
+  for `last_15_minutes`, `last_60_minutes`, and `totals`. The fields are arrivals,
+  applied, closed, superseded, retried, dead-lettered, and net drain. Running
+  applies and proof-only failures before apply started do not enter this result
+  denominator. A completed apply without a result ledger does. No completed
+  events means zero measured and missing events, with unknown totals. Any missing
+  field keeps its aggregate null; net drain requires arrivals and applied in the
+  same event. This describes retained observations, not a census of all workflow
+  runs. Operations displays observation freshness separately from measured
+  applied/closed result coverage. Applied counts close plus comment-sync
+  operations, so an item can contribute twice; it is not a count of reports checked.
 - `/api/exact-review-queue/item` does not perform a public per-item lookup, and
   `/api/exact-review-queue/reviews` returns a stable empty aggregate envelope.
 
