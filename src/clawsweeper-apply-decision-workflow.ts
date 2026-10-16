@@ -1196,6 +1196,7 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
       let canonicalBoundStaleReviewReason: (
         sourceMarkdown: string,
         comment: Record<string, unknown> | undefined,
+        liveLease?: AcquiredReviewStartLease | null,
       ) => string | null;
       const {
         acquireApplyMutationLease,
@@ -1531,7 +1532,7 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
         if (recordActiveReviewLeaseSkip(earlyLeaseState.lease.expiresAt)) break;
         continue;
       }
-      const earlyStaleReason = refreshedReviewStaleReason(existingReviewComment);
+      const earlyStaleReason = refreshedReviewStaleReason(existingReviewComment, earlyLeaseState.currentLease);
       if (state === "open" && earlyStaleReason) {
         if (recordRefreshedReviewStaleReason(earlyStaleReason, existingReviewComment)) break;
         continue;
@@ -1621,6 +1622,7 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
       const staleReviewCommentReason = canonicalBoundStaleReviewReason(
         markdown,
         existingReviewComment,
+        earlyLeaseState.currentLease,
       );
       if (state === "open" && staleReviewCommentReason) {
         if (staleCanonicalCommentSyncPending) {
@@ -1717,7 +1719,7 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
           if (recordReviewLeaseSkip(lateLeaseState.blockReason)) break;
           continue;
         }
-        const lateStaleReason = refreshedReviewStaleReason(lateLeaseState.comment);
+        const lateStaleReason = refreshedReviewStaleReason(lateLeaseState.comment, lateLeaseState.currentLease);
         if (lateStaleReason) {
           if (recordRefreshedReviewStaleReason(lateStaleReason, lateLeaseState.comment)) break;
           continue;
@@ -2270,6 +2272,7 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
             const latestStaleSyncReason = canonicalBoundStaleReviewReason(
               markdown,
               existingReviewComment,
+              latestLeaseState.currentLease,
             );
             if (latestStaleSyncReason) {
               markdown = replaceFrontMatterValue(

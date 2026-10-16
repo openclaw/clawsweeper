@@ -102,6 +102,13 @@ the same authorized run reuses its own active lease instead of posting another
 status comment. Exhausted service failures remain failures for normal queue
 recovery, not successful supersession. Other workers' leases remain protected.
 
+A queued command can reuse its acknowledgement ID under a later review owner.
+For the same reviewed revision, a later report may replace the older durable
+review only while a freshly elected status lease matches the report's original
+owner, comment ID, and revision. Missing or expired leases and ambiguous review
+timestamps remain blocked; acquiring a new mutation lease does not establish
+that the original report is newer.
+
 Interactive re-review commands have a separate durable intake marker. The
 ExactReviewQueue records the exact source-comment version before creating or
 editing its acknowledgement, then converges on one status comment containing

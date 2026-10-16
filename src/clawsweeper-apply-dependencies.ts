@@ -375,6 +375,7 @@ export interface CreateApplyDecisionWorkflowDependencies {
     existingReviewComment: Record<string, unknown> | undefined,
     number: number,
     context?: ItemContext,
+    liveLease?: AcquiredReviewStartLease | null,
   ) => string | null;
   newerDurableReviewTupleVerified: (
     markdown: string,

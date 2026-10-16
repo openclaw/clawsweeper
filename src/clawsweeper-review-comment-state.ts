@@ -9,6 +9,7 @@ import {
   REVIEW_START_STATUS_MARKER_PREFIX,
 } from "./clawsweeper-policy.js";
 import type {
+  AcquiredReviewStartLease,
   CloseReason,
   ItemContext,
   ReviewStartStatusCommentOptions,
@@ -673,6 +674,7 @@ export function staleReviewCommentSyncReason(
   existingReviewComment: Record<string, unknown> | undefined,
   number: number,
   context?: ItemContext,
+  liveLease?: AcquiredReviewStartLease | null,
 ): string | null {
   // Comment updated_at can move for command/status edits; only review markers prove verdict freshness.
   const liveVersion = durableReviewVersion(existingReviewComment, number);
@@ -715,6 +717,23 @@ export function staleReviewCommentSyncReason(
   ) {
     if (!Number.isInteger(reportLeaseCommentIdNumber) || reportLeaseCommentIdNumber <= 0) {
       return `live durable review tuple has lease comment ${liveLeaseCommentId}, but the local report has no durable lease identity`;
+    }
+    // Queued commands reuse status comments across owners. Equal ids and clocks
+    // cannot prove ordering alone: only the freshly elected original report lease
+    // may replace the older review; a newly acquired mutation lease cannot qualify.
+    if (
+      liveLeaseCommentId === reportLeaseCommentIdNumber &&
+      validReviewLeaseIdentity(liveVersion?.leaseOwner, liveVersion?.leaseCommentId) &&
+      validReviewLeaseIdentity(reportLeaseOwner, reportLeaseCommentId) &&
+      liveVersion?.leaseOwner !== reportLeaseOwner &&
+      liveLease &&
+      liveLease.owner === reportLeaseOwner &&
+      liveLease.commentId === reportLeaseCommentIdNumber &&
+      liveLease.headSha === reportRevision &&
+      reportReviewedAtMs !== null &&
+      reportReviewedAtMs > liveReviewedAtMs
+    ) {
+      return null;
     }
     if (liveLeaseCommentId >= reportLeaseCommentIdNumber) {
       return `live durable review tuple is newer than the local report: comment lease=${liveLeaseCommentId}, report lease=${reportLeaseCommentIdNumber}`;
