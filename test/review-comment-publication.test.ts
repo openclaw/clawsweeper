@@ -15,7 +15,13 @@ import {
 } from "../dist/clawsweeper-review-comment-automation.js";
 import { freshExactHeadReviewStartLease } from "../dist/repair/comment-router/admission.js";
 import { manualPublicationOwnerFromEnv } from "../dist/manual-publication-authority.js";
-import { reviewReportFrontMatter, withMockGh, withReviewRecord, item } from "./helpers.ts";
+import {
+  reviewReportFrontMatter,
+  withMockGh,
+  withReviewRecord,
+  item,
+  mockCommandBinEnv,
+} from "./helpers.ts";
 import { ReviewRecordFormatError } from "../dist/review-record.js";
 import { repositoryProfileFor, withTargetProfile } from "../dist/repository-profiles.js";
 import { withGitHubRun } from "../dist/clawsweeper-github-runtime.js";
@@ -58,6 +64,7 @@ interface GitHubFixtureState {
   preserveComments?: boolean;
   updatedAt?: string;
   nextId?: number;
+  sanitize?: boolean;
 }
 
 function withPublicationFixture(
@@ -78,6 +85,19 @@ const { readFileSync, writeFileSync } = require("node:fs");
 const file = ${JSON.stringify(path)};
 const state = JSON.parse(readFileSync(file, "utf8"));
 const args = process.argv.slice(2);
+const rawRead = args.includes("--url");
+if (rawRead) {
+  state.reads++;
+  const url = new URL(args[args.indexOf("--url") + 1]);
+  const parts = url.pathname.split("/");
+  const id = parts.at(-2) === "comments" ? parts.at(-1) : undefined;
+  console.log("HTTP/1.1 200 OK\\r\\nContent-Type: application/json\\r\\n\\r\\n" + JSON.stringify(id ? state.comments.find(comment => comment.id === Number(id)) ?? null : state.comments));
+  writeFileSync(file, JSON.stringify(state));
+  process.exit(0);
+}
+const slash = String.fromCharCode(92);
+const output = value => console.log(JSON.stringify(value, (_key, value) =>
+  state.sanitize && typeof value === "string" ? value.replaceAll(slash + "u001b", slash + "^[") : value));
 if (args.includes("--input")) {
   state.calls.push(args);
   state.payloads.push(args[args.indexOf("--input") + 1]);
@@ -87,18 +107,34 @@ if (args.includes("--input")) {
   const previous = state.comments.find(comment => comment.id === id);
   const comment = { ...previous, id, user: { login: "clawsweeper[bot]" }, body, updated_at: state.updatedAt ?? "2026-08-08T00:01:00Z" };
   if (!state.preserveComments) state.comments = [...state.comments.filter(entry => entry.id !== id), comment];
-  if (state.response !== "empty") console.log(JSON.stringify(state.response ?? comment));
+  if (state.response !== "empty") output(state.response ?? comment);
 } else {
   if (args[0] !== "api" || !args[1].includes("/comments")) throw new Error("unexpected gh args: " + JSON.stringify(args));
   state.reads++;
-  console.log(JSON.stringify([state.comments]));
+  output([state.comments]);
 }
 writeFileSync(file, JSON.stringify(state));
 `;
   try {
-    withTargetProfile(repositoryProfileFor("openclaw/openclaw"), () =>
-      withGitHubRun(() => withMockGh(root, script, () => run({ read, update }))),
-    );
+    const previous = {
+      CURL_BIN: process.env.CURL_BIN,
+      CURL_BIN_ARGS: process.env.CURL_BIN_ARGS,
+      GH_TOKEN: process.env.GH_TOKEN,
+    };
+    const curlPath = join(root, "curl.js");
+    writeFileSync(curlPath, script);
+    Object.assign(process.env, mockCommandBinEnv("curl", curlPath));
+    process.env.GH_TOKEN ??= "fixture-only";
+    try {
+      withTargetProfile(repositoryProfileFor("openclaw/openclaw"), () =>
+        withGitHubRun(() => withMockGh(root, script, () => run({ read, update }))),
+      );
+    } finally {
+      for (const [key, value] of Object.entries(previous)) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    }
   } finally {
     for (const payload of read().payloads) {
       rmSync(payload, { force: true });
@@ -114,6 +150,18 @@ const previousReview = () =>
     reviewedAt: "2026-08-07T16:00:00Z",
     updatedAt: "2026-08-07T16:01:00Z",
   });
+
+test("literal escape examples recover exact publication bytes through lossless readback", () => {
+  const selected = previousReview();
+  const body = markedReviewBody(String.raw`Codex review: keep the example \u001b intact.`);
+  withPublicationFixture([], (fixture) => {
+    fixture.update({ sanitize: true });
+    assert.equal(publication.upsertReviewComment(itemNumber, body, selected).body, body);
+    assert.equal(fixture.read().calls.length, 1);
+    assert.equal(fixture.read().reads, 1);
+    assert.equal(fixture.read().comments[0]!.body, body);
+  });
+});
 
 test("manual publication owner metadata requires actual producer or batch claim identifiers", () => {
   const run = { GITHUB_RUN_ID: "1074", GITHUB_RUN_ATTEMPT: "2" };

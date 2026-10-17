@@ -1062,6 +1062,12 @@ publish those records, and synchronize the selected durable review comments in
 the same job. Exact issue/PR reviews likewise synchronize their selected comments
 before completing. Neither path dispatches a second broad comment scan.
 
+Review publication requires the exact comment ID, a trusted author, and the
+complete intended body. If the write response cannot verify those facts, a
+fresh byte-preserving read verifies the target. This avoids the GitHub CLI's
+display sanitization of literal Unicode escape examples. Receipt reads bypass
+the ETag cache and retain the existing credential, retry, and deadline guards.
+
 Automatic apply may close up to 40 items per run. Long apply runs commit
 checkpoints every 40 fresh closes and dispatch a
 continuation with a fresh GitHub App token after any checkpoint that closes at

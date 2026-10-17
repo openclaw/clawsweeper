@@ -55,13 +55,14 @@ export function ghWithRetry(
   const deadlineAt = options.deadlineAt;
   const request = (onDispatch?: () => void) => {
     const result =
-      activeEnv || deadlineAt !== undefined
+      activeEnv || deadlineAt !== undefined || options.losslessJson
         ? ghWithPreparedTimeout(
             args,
             githubCommandTimeoutMs(undefined, deadlineAt),
             activeEnv,
             deadlineAt,
             onDispatch,
+            options.losslessJson,
           )
         : gh(args);
     if (deadlineAt !== undefined) {

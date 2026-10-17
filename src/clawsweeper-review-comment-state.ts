@@ -29,6 +29,7 @@ import {
 import { neutralizeReviewControlMarkers } from "./review-history.js";
 import { targetRepo } from "./repository-profiles.js";
 import { ghPaged } from "./clawsweeper-github-context.js";
+import { ghJson } from "./clawsweeper-github-execution.js";
 import { reviewCommentBodyDigest } from "./clawsweeper-source-revision.js";
 import { parseGitHubItemRef } from "./clawsweeper-decision-parser.js";
 import { asRecord } from "./value-coerce.js";
@@ -403,16 +404,31 @@ export function issueReviewCommentWithBody(
   expectedId?: number,
 ): Record<string, unknown> | undefined {
   if (!body.trim()) return undefined;
-  const comments = ghPaged<unknown>(`repos/${targetRepo()}/issues/${number}/comments`).map(
-    asRecord,
-  );
+  // gh sanitizes even literal Unicode escapes inside JSON. A receipt needs
+  // original bytes; PATCH already knows the identity, so avoid a full list read.
+  if (expectedId !== undefined) {
+    const comment = asRecord(
+      ghJson<unknown>(["api", `repos/${targetRepo()}/issues/comments/${expectedId}`], {
+        losslessJson: true,
+      }),
+    );
+    return isReviewPublicationReceipt(comment, body, expectedId) ? comment : undefined;
+  }
+  const comments: Record<string, unknown>[] = [];
+  for (let page = 1; ; page += 1) {
+    const entries = ghJson<unknown>(
+      ["api", `repos/${targetRepo()}/issues/${number}/comments?per_page=100&page=${page}`],
+      { losslessJson: true },
+    );
+    if (!Array.isArray(entries)) throw new Error("invalid review comment list response");
+    comments.push(...entries.map(asRecord));
+    if (entries.length < 100) break;
+  }
   const trustedExactComments = comments.filter((candidate) =>
-    isReviewPublicationReceipt(candidate, body, expectedId),
+    isReviewPublicationReceipt(candidate, body),
   );
-  // PATCH recovery is identity-bound; POST recovery elects the newest trusted exact comment.
-  return expectedId === undefined
-    ? newestReviewComment(number, trustedExactComments)
-    : trustedExactComments.find((candidate) => commentId(candidate) === expectedId);
+  // POST recovery elects the newest trusted exact comment.
+  return newestReviewComment(number, trustedExactComments);
 }
 
 export function isReviewPublicationReceipt(

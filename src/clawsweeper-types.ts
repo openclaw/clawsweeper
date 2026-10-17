@@ -1123,6 +1123,8 @@ export interface GitHubRuntimeBudget {
 
 export type GitHubDeadlineOptions = {
   deadlineAt?: number | undefined;
+  /** Preserve response strings for byte-exact receipt verification. GET-only. */
+  losslessJson?: boolean | undefined;
 };
 
 export type GitHubRequestReservation = {
