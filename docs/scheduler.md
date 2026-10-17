@@ -138,6 +138,12 @@ probe. Existing typed batch clients retain their separate lease-aware retry
 policy. Fence and reservation failures are attributed to the existing
 `queue_completion_failure` infrastructure category, including a review that
 never starts because its status fence is unavailable.
+An unrecovered bundle, publication, or lifecycle handoff failure is attributed
+to `publication_failure`, even when review generation succeeded. The failure
+annotation includes the publication queue and direct lifecycle outcomes;
+`codex_or_content_failure` remains specific to review generation. A recovered
+publication attempt does not override a later queue-completion failure. These
+annotations do not change the durable queue's retry or recovery authority.
 
 Signed shell requests use `control_plane_signed_post <url> <body> [curl options...]`
 from the same helper. Shell steps compute the
