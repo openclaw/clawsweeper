@@ -286,6 +286,32 @@ resumes the persisted cursor using the same approved plan; startup and alarms
 never schedule it. This makes large stores operable without one workflow dispatch
 per four tuples. Throughput from the synthetic fixture is not a production estimate.
 
+The same manual maintenance workflow offers `canonical-records-verify` for a
+bounded before/after read check. It requires `execute=true`, the reviewed plan
+hash, expected Worker deployment SHA, repository slug, and a `baseline` or
+`recheck` phase. Recheck takes the baseline JSON emitted by the first run.
+The workflow source SHA is separate from the Worker SHA; changing this operator
+does not require redeploying the Worker.
+
+Each phase verifies the Worker and signed Durable Object identity before and
+after reading one export page per canonical section, at most 32 records each,
+and at most 128 exact point reads. Limits are 136 logical requests, 408 transport
+attempts, 30 seconds per attempt, 10 minutes per phase, and 16 MiB per response.
+Only record identities, revisions, hashes, byte lengths, and coverage counts
+leave the process. The existing signing secret stays in the dedicated workflow
+step; no Cloudflare API token is needed.
+
+Exports can include backfill rows outside the canonical point reader. A baseline
+bare 404 is recorded as `export-only` coverage, not proof of a canonical record.
+A later bare 404 for a previously verified canonical record fails the check.
+An explicit newer canonical tombstone is valid even when its updated export
+entry has moved beyond the sampled first page. Concurrent revision changes are
+reported separately. This sample does not prove full-corpus equality.
+
+These body-read routes run existing Worker initialization and legacy cleanup.
+They do not activate tiering, but they are not globally write-free diagnostics
+and belong inside the separately approved production procedure.
+
 Cloudflare restarts Durable Objects on deployment. Requests from the old deployment
 may finish only while avoiding storage; an old-instance storage access is stopped
 to preserve global uniqueness. Matching the executing DO deployment to the reviewed

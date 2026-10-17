@@ -13,6 +13,7 @@ on:
             retire-closed-publication,
             storage-stats,
             canonical-bodies,
+            canonical-records-verify,
             operator-read,
             canary,
             read-back,
@@ -69,6 +70,17 @@ on:
         type: string
       canonical_attestation_json:
         description: "Canonical bodies: reviewed operator attestation with actual lifecycle rules and rollback proof"
+        type: string
+      canonical_verification_phase:
+        description: "Record verification only: baseline before migration or recheck afterward"
+        type: choice
+        options: [baseline, recheck]
+        default: baseline
+      canonical_verification_repo_slug:
+        description: "Record verification only: exact repository slug"
+        type: string
+      canonical_verification_baseline_json:
+        description: "Record verification recheck only: metadata JSON from the baseline run"
         type: string
 
       usage_deploy_sha:
@@ -235,6 +247,33 @@ jobs:
             --apply \
             --reviewed-plan-sha256 "$REVIEWED_PLAN_SHA256" \
             --plan-file "$RUNNER_TEMP/closed-publication-retirement.json"
+
+  canonical-records-verify:
+    if: >-
+      github.repository == 'openclaw/clawsweeper' && github.ref == 'refs/heads/main' &&
+      inputs.mode == 'canonical-records-verify'
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+      # Body reads also run existing initialization/legacy cleanup; execute is required.
+      - name: Verify bounded canonical record sample
+        env:
+          CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
+          EXACT_REVIEW_QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
+          EXPECTED_DEPLOYMENT_SHA: ${{ inputs.expected_deployment_sha }}
+          REVIEWED_PLAN_SHA256: ${{ inputs.reviewed_plan_sha256 }}
+          VERIFICATION_EXECUTE: ${{ inputs.execute }}
+          VERIFICATION_PHASE: ${{ inputs.canonical_verification_phase }}
+          VERIFICATION_REPO_SLUG: ${{ inputs.canonical_verification_repo_slug }}
+          VERIFICATION_BASELINE: ${{ inputs.canonical_verification_baseline_json }}
+        run: node scripts/canonical-record-verification.ts
 
   canonical-bodies:
     if: ${{ inputs.mode == 'canonical-bodies' && github.ref == 'refs/heads/main' }}

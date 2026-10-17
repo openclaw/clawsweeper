@@ -61,6 +61,9 @@ test("queue maintenance is explicit, bounded, and non-cancelling", () => {
     "canonical_action",
     "expected_deployment_sha",
     "canonical_attestation_json",
+    "canonical_verification_phase",
+    "canonical_verification_repo_slug",
+    "canonical_verification_baseline_json",
     "usage_deploy_sha",
     "usage_version_id",
     "usage_canary_run_id",
@@ -85,6 +88,27 @@ test("queue maintenance is explicit, bounded, and non-cancelling", () => {
   assert.match(run, /--max-items "\$MAX_ITEMS"/);
   assert.match(run, /args\+=\(--apply\)/);
   assert.match(run, /--passes "\$PASSES"/);
+});
+
+test("canonical verification is isolated to explicit main-branch dispatch without Cloudflare credentials", () => {
+  const job = workflow.jobs["canonical-records-verify"]!;
+  assert.match(job.if!, /github.repository == 'openclaw\/clawsweeper'/);
+  assert.match(job.if!, /github.ref == 'refs\/heads\/main'/);
+  assert.match(job.if!, /inputs.mode == 'canonical-records-verify'/);
+  assert.equal(job.env, undefined);
+  assert.equal(job.steps[0]?.with?.ref, "${{ github.sha }}");
+  assert.equal(job.steps[0]?.with?.["persist-credentials"], false);
+  const step = job.steps.at(-1)!;
+  assert.equal(step.run, "node scripts/canonical-record-verification.ts");
+  assert.equal(step.env?.CLAWSWEEPER_WEBHOOK_SECRET, "${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}");
+  assert.equal(step.env?.VERIFICATION_EXECUTE, "${{ inputs.execute }}");
+  assert.equal(
+    step.env?.VERIFICATION_BASELINE,
+    "${{ inputs.canonical_verification_baseline_json }}",
+  );
+  assert.equal(step.env?.EXPECTED_DEPLOYMENT_SHA, "${{ inputs.expected_deployment_sha }}");
+  assert.equal(step.env?.CLOUDFLARE_API_TOKEN, undefined);
+  assert.ok(job.steps.every((entry) => !entry.run?.includes("${{")));
 });
 
 test("storage stats workflow accepts current payloads and rejects failures", async (t) => {
