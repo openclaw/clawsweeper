@@ -496,6 +496,10 @@ strictly newer durable review tuple for the same revision. The verified result
 travels as structured apply evidence; reason text is diagnostic only. Ambiguous
 or mixed results cannot terminalize the artifact, and legacy tupleless artifacts
 retain the existing fresh-review path.
+When command owners reuse a lease comment, equal ids require distinct known
+owners, an unambiguous complete durable identity, matching head and source
+revision, and a strictly later review time. Supersession retires the older
+artifact; it does not certify current source freshness or request another review.
 
 Legacy protocol-v1 review leases without lifecycle admission rows complete without
 writing lifecycle facts. Once a completion commits its queue transition, alarm

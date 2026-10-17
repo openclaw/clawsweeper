@@ -22,6 +22,7 @@ type Scenario = {
 function tuple(kind: "issue" | "pull_request", scenario: Scenario = {}) {
   const revision = "a".repeat(kind === "issue" ? 64 : 40);
   const liveRevision = scenario.liveRevision ?? revision;
+  const sourceRevision = kind === "issue" ? revision : "d".repeat(64);
   const leaseId = scenario.leaseId ?? "9100";
   const report = [
     "---",
@@ -31,7 +32,7 @@ function tuple(kind: "issue" | "pull_request", scenario: Scenario = {}) {
     `review_lease_owner: ${scenario.reportOwner ?? "current-owner"}`,
     `review_lease_comment_id: ${leaseId}`,
     `pull_head_sha: ${kind === "pull_request" ? revision : "unknown"}`,
-    `item_source_revision: ${revision}`,
+    `item_source_revision: ${sourceRevision}`,
     "---",
   ].join("\n");
   const comment = {
@@ -39,7 +40,10 @@ function tuple(kind: "issue" | "pull_request", scenario: Scenario = {}) {
     updated_at: scenario.liveAt ?? earlier,
     body: [
       "Codex review: previous review.",
-      `<!-- clawsweeper-review-version item=42 reviewed_at=${scenario.liveAt ?? earlier} sha=${kind === "pull_request" ? liveRevision : "na"} source_revision=${liveRevision} lease_owner=${scenario.liveOwner ?? "previous-owner"} lease_comment_id=${leaseId} v=1 -->`,
+      ...(kind === "pull_request"
+        ? [`<!-- clawsweeper-review-state:blocked item=42 sha=${liveRevision} v=1 -->`]
+        : []),
+      `<!-- clawsweeper-review-version item=42 reviewed_at=${scenario.liveAt ?? earlier} sha=${kind === "pull_request" ? liveRevision : "na"} source_revision=${sourceRevision} lease_owner=${scenario.liveOwner ?? "previous-owner"} lease_comment_id=${leaseId} v=1 -->`,
       "<!-- clawsweeper-review item=42 -->",
     ].join("\n"),
   };
@@ -66,7 +70,6 @@ for (const kind of ["issue", "pull_request"] as const) {
   });
 
   for (const [name, scenario] of [
-    ["older report", { reportAt: earlier, liveAt: later }],
     ["equal timestamps", { reportAt: earlier, liveAt: earlier }],
     ["unknown report owner", { reportOwner: "unknown" }],
     ["unknown durable owner", { liveOwner: "unknown" }],
@@ -86,11 +89,68 @@ for (const kind of ["issue", "pull_request"] as const) {
       assert.equal(newerDurableReviewTupleVerified(report, comment, 42), false);
     });
   }
+
+  test(`${kind}: a complete later review supersedes an old report with the reused lease`, () => {
+    const { report, comment, context, lease } = tuple(kind, { reportAt: earlier, liveAt: later });
+    assert.match(
+      staleReviewCommentSyncReason(report, comment, 42, context, lease) ?? "",
+      /live durable review tuple/,
+    );
+    assert.equal(newerDurableReviewTupleVerified(report, comment, 42), true);
+  });
+
+  test(`${kind}: later review time cannot repair an invalid report identity`, () => {
+    for (const scenario of [
+      { reportOwner: "unknown" },
+      { liveOwner: "unknown" },
+      { leaseId: "9007199254740992" },
+      { reportAt: "unknown" },
+    ]) {
+      const { report, comment } = tuple(kind, { reportAt: earlier, liveAt: later, ...scenario });
+      assert.equal(newerDurableReviewTupleVerified(report, comment, 42), false);
+    }
+  });
+
+  test(`${kind}: a greater lease id still supersedes with a skewed review clock`, () => {
+    const { report, comment } = tuple(kind);
+    comment.body = comment.body.replace("lease_comment_id=9100", "lease_comment_id=9200");
+    assert.equal(newerDurableReviewTupleVerified(report, comment, 42), true);
+  });
+
+  for (const [name, change] of [
+    ["same owner", (body: string) => body.replace("previous-owner", "current-owner")],
+    ["missing source", (body: string) => body.replace(/ source_revision=\S+/, "")],
+    [
+      "different source",
+      (body: string) => body.replace(/source_revision=\S+/, "source_revision=" + "e".repeat(64)),
+    ],
+    [
+      "duplicate version",
+      (body: string) => body.replace(/(<!-- clawsweeper-review-version[^\n]+\n)/, "$1$1"),
+    ],
+    ["invalid timestamp", (body: string) => body.replace(later, "invalid")],
+    ...(kind === "pull_request"
+      ? [
+          [
+            "inconsistent state",
+            (body: string) => body.replace("sha=" + "a".repeat(40), "sha=" + "b".repeat(40)),
+          ] as const,
+        ]
+      : []),
+  ] as const) {
+    test(`${kind}: reused-lease supersession rejects ${name}`, () => {
+      const { report, comment } = tuple(kind, { reportAt: earlier, liveAt: later });
+      comment.body = change(comment.body);
+      assert.equal(newerDurableReviewTupleVerified(report, comment, 42), false);
+    });
+  }
 }
 
 test("a reused PR lease cannot bypass a changed reviewed head", () => {
   const { report, comment, context, lease } = tuple("pull_request", {
     liveRevision: "b".repeat(40),
+    reportAt: earlier,
+    liveAt: later,
   });
   assert.match(
     staleReviewCommentSyncReason(report, comment, 42, context, lease) ?? "",

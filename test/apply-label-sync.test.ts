@@ -1419,7 +1419,7 @@ if (args[0] === "api" && new RegExp("/issues/${number}/comments(?:\\\\?|$)").tes
 
 for (const scenario of [
   { name: "verified newer", lease: "9200", owner: "new-review-owner", verified: true },
-  { name: "equal lease", lease: "9100", owner: "new-review-owner", verified: false },
+  { name: "equal lease", lease: "9100", owner: "new-review-owner", verified: true },
   { name: "unknown owner", lease: "9200", owner: "unknown", verified: false },
   { name: "unsafe lease", lease: "9007199254740992", owner: "new-review-owner", verified: false },
 ]) {

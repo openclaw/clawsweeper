@@ -10,7 +10,8 @@ const source = process.cwd();
 const productHoldProof = process.env.PROOF_PRODUCT_DIRECTION_HOLD === "1";
 const holdProof = productHoldProof || process.env.PROOF_CLOSE_POLICY_HOLD === "1";
 const targetRepo = holdProof ? "openclaw/openclaw" : "openclaw/clawsweeper";
-const publisherProof = holdProof || process.env.PROOF_ACTIVE_LEASE_DEFERRAL === "1";
+const staleProof = process.env.PROOF_STALE_REVIEW_PUBLICATION === "1";
+const publisherProof = staleProof || holdProof || process.env.PROOF_ACTIVE_LEASE_DEFERRAL === "1";
 const deferralProof = process.env.PROOF_ACTIVE_LEASE_DEFERRAL === "1";
 assert.equal(
   process.argv.length,
@@ -120,26 +121,43 @@ for (const kind of productHoldProof ? ["pull_request"] : ["issue", "pull_request
             ]
           : []),
       ]
-    : deferralProof
+    : staleProof
       ? [
-          ["baseline", baseline, false],
-          ["candidate", candidate, false],
+          ["baseline", baseline, true],
+          ["candidate", candidate, true],
+          ["equal-time", candidate, true],
+          ["older-live", candidate, false],
+          ["unknown-owner", candidate, true],
+          ["missing-source", candidate, true],
+          ["different-source", candidate, true],
+          ["duplicate-version", candidate, true],
+          ...(kind === "pull_request" ? [["inconsistent-state", candidate, true]] : []),
+          ["read-failure", candidate, true],
+          ["changed-source", candidate, true],
         ]
-      : [
-          ["baseline", baseline, false],
-          ["candidate", candidate, false],
-          ["newer-live-control", candidate, true],
-          ["no-original-lease", candidate, false],
-          ["expired-original-lease", candidate, false],
-          ["lease-replaced-at-boundary", candidate, false],
-        ]) {
+      : deferralProof
+        ? [
+            ["baseline", baseline, false],
+            ["candidate", candidate, false],
+          ]
+        : [
+            ["baseline", baseline, false],
+            ["candidate", candidate, false],
+            ["newer-live-control", candidate, true],
+            ["no-original-lease", candidate, false],
+            ["expired-original-lease", candidate, false],
+            ["lease-replaced-at-boundary", candidate, false],
+          ]) {
     const name = kind + "-" + variant;
     const root = join(out, name);
     mkdirSync(join(root, "items"), { recursive: true });
     mkdirSync(join(root, "plans"), { recursive: true });
     const now = replayNow,
       reportAt = new Date(now - 300000).toISOString();
-    const liveAt = new Date(now - (newerLive ? 120000 : 600000)).toISOString();
+    const liveAt =
+      variant === "equal-time"
+        ? reportAt
+        : new Date(now - (newerLive ? 120000 : 600000)).toISOString();
     const number = kind === "issue" ? 103599 : 171791;
     const issue = {
       number,
@@ -255,7 +273,7 @@ for (const kind of productHoldProof ? ["pull_request"] : ["issue", "pull_request
         : {}),
     };
     const report = proofReport(fields);
-    const durable = reportWithSyncedReviewComment(
+    let durable = reportWithSyncedReviewComment(
       proofReport({
         ...fields,
         reviewed_at: liveAt,
@@ -263,6 +281,19 @@ for (const kind of productHoldProof ? ["pull_request"] : ["issue", "pull_request
       }),
       number,
     ).comment;
+    if (staleProof) {
+      if (variant === "unknown-owner")
+        durable = durable.replaceAll("github-run-previous-1", "unknown");
+      if (variant === "missing-source") durable = durable.replace(/ source_revision=\S+/g, "");
+      if (variant === "different-source") durable = durable.replaceAll(revision, "e".repeat(64));
+      if (variant === "duplicate-version")
+        durable = durable.replace(/(<!-- clawsweeper-review-version[^\n]+\n)/, "$1$1");
+      if (variant === "inconsistent-state")
+        durable = durable.replace(
+          /(<!-- clawsweeper-review-state:[^\n]+ sha=)[^\s]+/,
+          "$1" + "c".repeat(40),
+        );
+    }
     const lease = renderReviewStartStatusComment({
       number,
       kind,
@@ -292,8 +323,9 @@ for (const kind of productHoldProof ? ["pull_request"] : ["issue", "pull_request
         body: lease,
       },
     ];
+    if (staleProof) comments.splice(1, 1);
     if (holdProof && kind === "issue") comments.push(humanComment);
-    if (holdProof && variant === "changed-source")
+    if ((holdProof || staleProof) && variant === "changed-source")
       issue.body = "Edited after the reviewed snapshot.";
     if (variant === "no-original-lease") comments.splice(1, 1);
     let commentReads = 0;
@@ -425,6 +457,8 @@ for (const kind of productHoldProof ? ["pull_request"] : ["issue", "pull_request
         return send({ total_count: 0, check_runs: [] });
       if (req.method === "GET" && path === prefix + "/issues/" + number + "/comments") {
         commentReads++;
+        if (staleProof && variant === "read-failure")
+          return send({ message: "upstream unavailable" }, 503);
         if (holdProof && kind === "issue" && variant === "read-failure" && commentReads > 2)
           return send({ message: "upstream unavailable" }, 503);
         // The issue source-digest read follows the lease snapshot; PR head reads
@@ -614,9 +648,47 @@ for (const kind of productHoldProof ? ["pull_request"] : ["issue", "pull_request
         2,
       ),
     );
-    if (!holdProof) assert.equal(code, 0, stderr + stdout);
+    if (!holdProof && !staleProof) assert.equal(code, 0, stderr + stdout);
     assert.deepEqual(result.forbidden, []);
-    if (holdProof) {
+    if (staleProof) {
+      assert.equal(patches.length, 0);
+      assert.ok(
+        trace.every(
+          (entry) =>
+            entry.method === "GET" || (entry.method === "POST" && entry.path.endsWith("graphql")),
+        ),
+      );
+      // PR leases bind the head. A later body edit does not undo the completed
+      // successor or authorize this obsolete artifact to request another review.
+      if (variant === "candidate" || (variant === "changed-source" && kind === "pull_request")) {
+        assert.equal(code, 0, stderr + stdout);
+        assert.equal(actions.length, 1);
+        assert.equal(actions[0]?.action, "skipped_stale_review_comment_sync");
+        assert.equal(actions[0]?.newerReviewTupleVerified, true);
+        assert.deepEqual(batchOutcome, {
+          kind: "superseded",
+          disposition: { requeueLatestExpected: false },
+        });
+        assert.ok(stepOutputs.includes("completion_kind=superseded\n"));
+        assert.ok(stepOutputs.includes("reason_code=remote_newer_tuple\n"));
+      } else if (variant === "read-failure") {
+        assert.notEqual(code, 0);
+        assert.deepEqual(actions, []);
+        assert.equal(batchOutcome?.kind, "retryable_failure");
+        assert.equal(batchOutcome?.reasonCode, "github_transient");
+      } else if (variant === "changed-source") {
+        assert.equal(code, 0, stderr + stdout);
+        assert.equal(actions[0]?.action, "skipped_changed_since_review");
+        assert.equal(batchOutcome?.disposition.requeueLatestExpected, true);
+      } else {
+        assert.notEqual(code, 0);
+        assert.equal(actions.length, 1);
+        assert.equal(actions[0]?.action, "skipped_stale_review_comment_sync");
+        assert.equal(actions[0]?.newerReviewTupleVerified, undefined);
+        assert.equal(batchOutcome?.kind, "permanent_failure");
+        assert.equal(batchOutcome?.reasonCode, "unknown_failure");
+      }
+    } else if (holdProof) {
       assert.equal(patches.length, 0);
       assert.ok(
         trace.every(
