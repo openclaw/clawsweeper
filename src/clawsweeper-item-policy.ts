@@ -11,12 +11,13 @@ import {
   UNCONFIRMED_PRODUCT_DIRECTION_MIN_INACTIVE_DAYS,
   UNSPONSORED_FEATURE_MIN_AGE_DAYS,
 } from "./clawsweeper-policy.js";
-import type { ApplyKind, CloseReason, Item } from "./clawsweeper-types.js";
+import type { ApplyCloseGuardBlock, ApplyKind, CloseReason, Item } from "./clawsweeper-types.js";
 import { asRecord } from "./value-coerce.js";
 import { isOlderThanDays, isOlderThanMs } from "./iso-time.js";
 import { isSecurityLabel } from "./repair/security-signals.js";
 import {
   isMaintainerAuthorAssociation,
+  isMaintainerRepositoryPermission,
   normalizeAuthorAssociation,
   requiresMaintainerReviewRequest,
 } from "./maintainer-review-policy.js";
@@ -28,10 +29,6 @@ export {
 // Owners and members can legitimately file coordinated issue batches; outside
 // collaborators still remain subject to bulk-filer policy.
 const BULK_FILER_EXEMPT_AUTHOR_ASSOCIATIONS = new Set(["OWNER", "MEMBER"]);
-
-// Installation tokens can redact membership to CONTRIBUTOR, so independently
-// readable admin/maintain permissions provide the narrow fallback.
-const BULK_FILER_EXEMPT_REPOSITORY_PERMISSIONS = new Set(["admin", "maintain"]);
 
 const WRITE_ACCESS_REPOSITORY_PERMISSIONS = new Set(["admin", "maintain", "write"]);
 
@@ -62,30 +59,13 @@ export function isBulkFilerExemptAuthorAssociation(value: unknown): boolean {
 }
 
 export function isBulkFilerExemptRepositoryPermission(value: unknown): boolean {
-  return (
-    typeof value === "string" &&
-    BULK_FILER_EXEMPT_REPOSITORY_PERMISSIONS.has(value.trim().toLowerCase())
-  );
+  return isMaintainerRepositoryPermission(value);
 }
 
 export function isWriteAccessRepositoryPermission(value: unknown): boolean {
   return (
     typeof value === "string" && WRITE_ACCESS_REPOSITORY_PERMISSIONS.has(value.trim().toLowerCase())
   );
-}
-
-export function verifiedMaintainerAuthorAssociation(options: {
-  authorAssociation: unknown;
-  repositoryPermission: unknown;
-}): string {
-  const association = normalizeAuthorAssociation(options.authorAssociation);
-  if (
-    !isMaintainerAuthorAssociation(association) &&
-    isBulkFilerExemptRepositoryPermission(options.repositoryPermission)
-  ) {
-    return "MEMBER";
-  }
-  return association;
 }
 
 export function isMaintainerAuthored(item: Pick<Item, "authorAssociation">): boolean {
@@ -142,7 +122,9 @@ export function applyProtectedLabelReason(labels: readonly string[], closeReason
   return `protected label: ${applyBlockingProtectedLabels(labels, closeReason).join(", ")}`;
 }
 
-export function shouldPlanItem(item: Pick<Item, "authorAssociation" | "labels">): boolean {
+export function shouldPlanItem(
+  item: Pick<Item, "authorAssociation" | "createdAt" | "labels">,
+): boolean {
   return (
     !requiresMaintainerReviewRequest(item) &&
     protectedLabels(item.labels).every((label) => label === "maintainer")
@@ -206,14 +188,20 @@ export function closeReasonApplyAgeSkipReason(
   return null;
 }
 
-export function unconfirmedProductDirectionAgeSkipReason(
+export function unconfirmedProductDirectionAgeBlock(
   item: Pick<Item, "createdAt">,
   reviewedUpdatedAt: string | undefined,
   reviewedAt: string | undefined,
   now = Date.now(),
-): string | null {
+): ApplyCloseGuardBlock | null {
+  const createdAtMs = Date.parse(item.createdAt);
   if (!isOlderThanDays(item.createdAt, UNCONFIRMED_PRODUCT_DIRECTION_MIN_AGE_DAYS, now)) {
-    return `unconfirmed_product_direction requires PR older than ${UNCONFIRMED_PRODUCT_DIRECTION_MIN_AGE_DAYS} days`;
+    return {
+      reason: `unconfirmed_product_direction requires PR older than ${UNCONFIRMED_PRODUCT_DIRECTION_MIN_AGE_DAYS} days`,
+      ...(Number.isFinite(createdAtMs) && createdAtMs <= now
+        ? { closePolicyHoldVerified: true as const }
+        : {}),
+    };
   }
   const sourceUpdatedAtMs = Date.parse(reviewedUpdatedAt ?? "");
   const reviewedAtMs = Date.parse(reviewedAt ?? "");
@@ -222,7 +210,17 @@ export function unconfirmedProductDirectionAgeSkipReason(
     !Number.isFinite(reviewedAtMs) ||
     reviewedAtMs - sourceUpdatedAtMs <= UNCONFIRMED_PRODUCT_DIRECTION_MIN_INACTIVE_DAYS * DAY_MS
   ) {
-    return `unconfirmed_product_direction requires ${UNCONFIRMED_PRODUCT_DIRECTION_MIN_INACTIVE_DAYS} days without source activity before review`;
+    return {
+      reason: `unconfirmed_product_direction requires ${UNCONFIRMED_PRODUCT_DIRECTION_MIN_INACTIVE_DAYS} days without source activity before review`,
+      // Missing or contradictory dates are evidence gaps, not confirmed activity.
+      ...(Number.isFinite(sourceUpdatedAtMs) &&
+      Number.isFinite(reviewedAtMs) &&
+      createdAtMs <= sourceUpdatedAtMs &&
+      sourceUpdatedAtMs <= reviewedAtMs &&
+      reviewedAtMs <= now
+        ? { closePolicyHoldVerified: true as const }
+        : {}),
+    };
   }
   return null;
 }

@@ -107,6 +107,18 @@ content caches. Changed PR content goes to Codex, including source comments
 and formatting. See [Review Cache](review-cache.md) for admission, freshness,
 and runtime packaging rules.
 
+Ordinary PRs receive one automatic completed review after ten quiet minutes of
+stable head, title, body, and draft state. Pushes and edits after that answer need
+an explicit `@clawsweeper re-review`; the queue rejects hot/normal offers for them,
+and queue admission, dispatch, and claim enforce the same durable completion
+fact. Failed and stale-source attempts may finish the first answer. Explicit
+requests retain their existing automation. See
+[automation limits](limits.md) for quiet-window and persistence details.
+
+Planners can still offer candidates from report cadence: a complete-looking
+report may never have been published. The queue owns the lifetime fact and
+rejects answered candidates before starting a review workflow.
+
 ### Control-plane workflow retries
 
 Shell calls to the control plane in `review-plan.yml`, `sweep.yml`,
@@ -252,9 +264,13 @@ existing cutoff and use the outcome/time index. State-writer acquire retries
 still refresh queued ticket liveness, but do not rewrite timestamps already
 set by admission or lease acquisition.
 
-Maintainer-authored and `maintainer`-labeled items require an explicit review
-request. Automatic intake, scheduled selection, claimed reviews, and hosted
-publication apply this policy. A verified request stays open while the queue
+Maintainer-authored and `maintainer`-labeled items created before 2026-10-15
+03:50 UTC (`MAINTAINER_AUTOMATIC_FIRST_REVIEW_FROM`) require an explicit review
+request; newer ones are admitted like everyone else's. Automatic intake,
+scheduled selection, claimed reviews, and hosted publication apply this policy,
+and an unknown creation time keeps the request rule. The periodic parked-item
+check releases a `maintainer_request_required` hold once the live item no
+longer requires a request. A verified request stays open while the queue
 finishes answering it: when the item changes before the request's review
 fully applies, including a close check that drifts after the durable review
 comment synced, the queue requeues that generation in place instead of
@@ -264,18 +280,28 @@ its publisher requeues the claimed decision instead; the queue keeps the
 verification only while that publisher still holds its own publication of the
 request (named by the requeue's `publisher-source-drift:<run>:<attempt>`
 delivery id), that publication is the item's newest, and no other command
-reached the item after the request's review. Any other source-drift requeue keeps the command
+reached the item after the request's review. If a review without a request of
+its own is already pending for the item, that review takes over the
+still-current request and keeps its newer source. An active, parked, or
+request-bearing queued review stays untouched. The publisher's lifecycle
+`requeue` then stands only when a review at the item admitted the same request
+after the request's review; otherwise the queue records the request as
+superseded, so its status still gets a terminal answer. Any other source-drift
+requeue keeps the command
 status but not the verification: the queue enforces this whenever it loads an
 item, so a requeue that found no queued item, including one persisted before
 this rule, cannot let a finished or replaced request authorize another review.
 Both continuation prefixes are queue-owned: `/enqueue` rejects a caller delivery
-id that uses either one as `reserved_delivery_id`. A push after the request is
-answered and a scheduled pass also need a new request. Existing
-autofix/automerge labels remain opt-ins.
-The target dispatcher and direct webhook share a single reminder identity per
-item, posted only when opened or ready for review. Edits, pushes, and sweeps do
-not post reminders. Request reviews only when needed, after completing work and
-validation; agents must not automatically repeat requests.
+id that uses either one as `reserved_delivery_id`. When a retry that still
+carries a request is skipped because it lacks that verification, its review job
+answers the request's status as "Waiting" with a request to re-review, so the
+status never stays "Review in progress". A push after the request is
+answered and a scheduled pass also need a new request.
+The direct webhook posts one opt-in reminder per older maintainer item, only when
+it is opened or marked ready for review; the target dispatcher posts none.
+Edits, pushes, and sweeps do not post reminders. Request reviews only when
+needed, after completing work and validation; agents must not automatically
+repeat requests.
 
 ## Workflow
 
@@ -470,6 +496,10 @@ strictly newer durable review tuple for the same revision. The verified result
 travels as structured apply evidence; reason text is diagnostic only. Ambiguous
 or mixed results cannot terminalize the artifact, and legacy tupleless artifacts
 retain the existing fresh-review path.
+When command owners reuse a lease comment, equal ids require distinct known
+owners, an unambiguous complete durable identity, matching head and source
+revision, and a strictly later review time. Supersession retires the older
+artifact; it does not certify current source freshness or request another review.
 
 Legacy protocol-v1 review leases without lifecycle admission rows complete without
 writing lifecycle facts. Once a completion commits its queue transition, alarm

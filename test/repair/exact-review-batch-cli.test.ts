@@ -760,8 +760,13 @@ globalThis.fetch = async (url, init) => {
   }
 });
 
-for (const command of ["complete", "release"] as const) {
-  test(`batch ${command} preserves a target-app circuit on a fallback completion`, () => {
+for (const [command, activeLease] of [
+  ["complete", false],
+  ["release", false],
+  ["complete", true],
+  ["release", true],
+] as const) {
+  test(`batch ${command} preserves ${activeLease ? "a verified active lease deadline" : "a target-app circuit on a fallback completion"}`, () => {
     const root = mkdtempSync(join(tmpdir(), `clawsweeper-batch-cli-${command}-scope-`));
     try {
       const member = batchMember(`openclaw/openclaw#814@publish:8140:1`, 814);
@@ -771,6 +776,12 @@ for (const command of ["complete", "release"] as const) {
       const observationsPath = join(root, "github-rate-limits.jsonl");
       const preloadPath = join(root, "fetch-preload.cjs");
       const retryAt = new Date(Date.now() + 60_000).toISOString();
+      const outcomePath = join(root, "member-outcome.json");
+      if (activeLease)
+        writeFileSync(
+          outcomePath,
+          JSON.stringify({ kind: "retryable_failure", reasonCode: "review_lease_active", retryAt }),
+        );
       writeFileSync(
         manifestPath,
         JSON.stringify({
@@ -779,7 +790,7 @@ for (const command of ["complete", "release"] as const) {
           leaseExpiresAt: new Date(Date.now() + 120_000).toISOString(),
           configuredBatchSize: 1,
           batchWaitMs: 0,
-          items: [{ ...member, outcomePath: join(root, "missing-outcome.json") }],
+          items: [{ ...member, outcomePath }],
         }),
       );
       writeFileSync(
@@ -843,10 +854,9 @@ globalThis.fetch = async (url, init) => {
           revision: member.revision,
           claim_generation: member.claimGeneration,
           terminal_outcome: "retryable_failure",
-          reason_code: "github_rate_limit",
-          pool_class: "target_app",
+          reason_code: activeLease ? "review_lease_active" : "github_rate_limit",
           retry_at: retryAt,
-          attempted: false,
+          ...(!activeLease ? { pool_class: "target_app", attempted: false } : {}),
         },
       ]);
     } finally {

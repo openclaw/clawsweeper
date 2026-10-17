@@ -20,12 +20,11 @@ import { serializeReviewContext } from "./agent-input-scan-fixtures.js";
 import type { Args } from "./clawsweeper-args.js";
 import { boolArg } from "./clawsweeper-args.js";
 
+import { isMaintainerAuthorAssociation, labelNames } from "./clawsweeper-item-policy.js";
 import {
-  isBulkFilerExemptRepositoryPermission as isVerifiedMaintainerRepositoryPermission,
-  isMaintainerAuthorAssociation,
-  labelNames,
+  isMaintainerRepositoryPermission,
   verifiedMaintainerAuthorAssociation,
-} from "./clawsweeper-item-policy.js";
+} from "./maintainer-review-policy.js";
 import { prepareMediaProofArtifacts } from "./clawsweeper-media-proof.js";
 import type {
   AcquiredReviewStartLease,
@@ -60,7 +59,7 @@ import {
 import { reviewContentCacheHit } from "./scheduler-policy.js";
 import type { CreateReviewCommandWorkflowDependencies } from "./clawsweeper-review-command-dependencies.js";
 import { prepareReviewCommand } from "./clawsweeper-review-preparation.js";
-import { parsePrHydrationSnapshot } from "./pr-hydration-snapshot.js";
+import { reportWithoutHydrationCache } from "./report-hydration-cache.js";
 import { createCommitPullResolver } from "./pr-review-provenance.js";
 
 import { ReviewSourcePreparationError } from "./review-source-preparation.js";
@@ -135,7 +134,7 @@ export function restoreVerifiedMaintainerAuthorAssociation(
   } catch {
     return false;
   }
-  if (!isVerifiedMaintainerRepositoryPermission(permission)) return false;
+  if (!isMaintainerRepositoryPermission(permission)) return false;
   item.authorAssociation = verifiedMaintainerAuthorAssociation({
     authorAssociation: item.authorAssociation,
     repositoryPermission: permission,
@@ -231,8 +230,12 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
       : undefined;
     const hostReport = (markdown: string): string =>
       publicationPolicy
-        ? replaceFrontMatterValue(markdown, "publication_policy", publicationPolicy)
-        : markdown;
+        ? replaceFrontMatterValue(
+            reportWithoutHydrationCache(markdown),
+            "publication_policy",
+            publicationPolicy,
+          )
+        : reportWithoutHydrationCache(markdown);
     // One cache per review run: items often share introducing commits. The provenance
     // deadline bounds each lookup, including retries.
     const resolveProvenancePull = createCommitPullResolver((repo, sha, deadlineAt) =>
@@ -247,7 +250,6 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
       localOnly,
       itemNumber,
       itemNumbers,
-      prCommentActivityRevisions,
       humanLocalReview,
       openclawDir,
       artifactDir,
@@ -531,9 +533,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
                 item.kind === "pull_request"
                   ? [
                       ...(context?.pullFiles ?? []),
-                      ...(context?.prHydrationSnapshot?.version === 3
-                        ? context.prHydrationSnapshot.files.items
-                        : []),
+                      ...(context?.pullFilesRaw ?? []),
                     ]
                   : [],
               ),
@@ -1063,12 +1063,6 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
               fullTimelineForRelations: true,
               reviewCacheDigest: true,
               reviewCacheGitDir: openclawDir,
-              prHydrationSnapshot: existingPriorReview
-                ? parsePrHydrationSnapshot(
-                    frontMatterValue(existingPriorReview.markdown, "pr_hydration_snapshot"),
-                  )
-                : null,
-              prCommentActivityRevision: prCommentActivityRevisions.get(item.number) ?? null,
             });
         diagnosticSourceSha = item.kind === "pull_request"
           ? pullHeadShaFromContext(context) ?? undefined

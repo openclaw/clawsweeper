@@ -8,7 +8,11 @@ import {
   exactReviewQueueUsesLegacyBatchPath,
   isLowPriorityExactReviewDecision,
 } from "./exact-review-decision.ts";
-import { exactReviewScheduledLane, numberFrom } from "./exact-review-queue-shared.ts";
+import {
+  exactReviewDispatcherRetryAt,
+  exactReviewScheduledLane,
+  numberFrom,
+} from "./exact-review-queue-shared.ts";
 import { exactReviewHoldReason } from "./exact-review-review-loop.ts";
 import type {
   ExactReviewDispatchFailureDetail,
@@ -483,9 +487,7 @@ function buildExactReviewQueueCensus(
     activeTargetCounts: new Map(),
     activeTargetWakeAt: new Map(),
     activeWithoutLeaseOrExpired: false,
-    dispatcherAdmissionPaused:
-      (state.dispatcher?.state === "paused" || state.dispatcher?.state === "blocked") &&
-      Number(state.dispatcher?.retryAt || 0) > now,
+    dispatcherAdmissionPaused: exactReviewDispatcherRetryAt(state.dispatcher, now) !== null,
     pendingReviews: [],
     pendingPublications: [],
     readyReviews: [],
@@ -972,11 +974,7 @@ export function exactReviewQueueAdmittedItems(
   freshPublicationReserve = 0,
   scheduledCapacity = Number.POSITIVE_INFINITY,
 ) {
-  const dispatcherRetryAt = Number(state.dispatcher?.retryAt || 0);
-  if (
-    (state.dispatcher?.state === "paused" || state.dispatcher?.state === "blocked") &&
-    dispatcherRetryAt > now
-  ) {
+  if (exactReviewDispatcherRetryAt(state.dispatcher, now) !== null) {
     return [];
   }
   const census = buildExactReviewQueueCensus(Object.values(state.items), {
@@ -1112,16 +1110,6 @@ export function exactReviewQueueStats(
     staleRevisionItemKeys,
   });
   const safeNow = finiteExactReviewTimestamp(now, Date.now());
-  const handoffHealth = projectExactReviewHandoff({
-    itemCount: census.handoffItemCount,
-    phaseCensus: census.handoffPhases,
-    recoveryReasons: census.reviewRecoveryReasons,
-    dispatcher: state.dispatcher,
-    now: safeNow,
-    capacity,
-    dispatchLeaseMs,
-    shedSinceReset: exactReviewShedSinceReset(state),
-  });
   const targetStats = [...census.targets.values()]
     .map((target) => ({
       target_repo: target.target_repo,
@@ -1182,6 +1170,20 @@ export function exactReviewQueueStats(
   for (const item of admissibleItems) {
     if (!exactReviewQueueIsPublication(item)) reviewAdmissiblePending += 1;
   }
+  const handoffHealth = projectExactReviewHandoff({
+    itemCount: census.handoffItemCount,
+    phaseCensus: census.handoffPhases,
+    recoveryReasons: census.reviewRecoveryReasons,
+    dispatcher: state.dispatcher,
+    dispatchablePending:
+      reviewAdmissiblePending > 0 &&
+      census.activeReviews < capacity &&
+      Number(state.dispatcher?.reviewAdmissionNextAt || 0) <= now,
+    now: safeNow,
+    capacity,
+    dispatchLeaseMs,
+    shedSinceReset: exactReviewShedSinceReset(state),
+  });
   const pressure = summarizeExactReviewPressure({
     pending: lanes.review.pending,
     readyPending: lanes.review.ready,
@@ -1346,12 +1348,8 @@ export function exactReviewQueueBackoffReason(
     return "publication_retry";
   }
   if (item.reviewFailureAttempts || item.attempts) return "retry_backoff";
-  const retryAt = Number(state.dispatcher?.retryAt || 0);
-  if (
-    (state.dispatcher?.state === "paused" || state.dispatcher?.state === "blocked") &&
-    retryAt > now &&
-    item.nextAttemptAt >= retryAt
-  ) {
+  const retryAt = exactReviewDispatcherRetryAt(state.dispatcher, now);
+  if (retryAt !== null && item.nextAttemptAt >= retryAt) {
     return "dispatcher_backoff";
   }
   return "dispatch_debounce";

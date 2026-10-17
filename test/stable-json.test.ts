@@ -1,7 +1,64 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { compareCodeUnits, stableJson, stableJsonCodeUnit } from "../dist/stable-json.js";
+import {
+  compareCodeUnits,
+  sortStable,
+  stableJson,
+  stableJsonCodeUnit,
+} from "../dist/stable-json.js";
+
+test("sortStable preserves sparse holes and explicit undefined array entries", () => {
+  const input: unknown[] = [];
+  input.length = 4;
+  input[1] = { z: 1, a: 2 };
+  input[3] = undefined;
+  const sorted = sortStable(input) as unknown[];
+  assert.notEqual(sorted, input);
+  assert.equal(sorted.length, 4);
+  assert.equal(0 in sorted, false);
+  assert.equal(2 in sorted, false);
+  assert.equal(3 in sorted, true);
+  assert.deepEqual(sorted[1], { a: 2, z: 1 });
+  assert.deepEqual(Object.keys(sorted[1] as object), ["a", "z"]);
+  assert.notEqual(sorted[1], input[1]);
+  assert.equal(stableJson(input), '[null,{"a":2,"z":1},null,null]');
+});
+
+test("sortStable retains an own __proto__ key without changing the prototype", () => {
+  const input = JSON.parse('{"z":1,"__proto__":{"z":2,"a":3},"a":4}');
+  const sorted = sortStable(input) as Record<string, unknown>;
+  assert.equal(Object.getPrototypeOf(sorted), Object.prototype);
+  assert.equal(Object.hasOwn(sorted, "__proto__"), true);
+  assert.deepEqual(Object.keys(sorted), ["__proto__", "a", "z"]);
+  assert.deepEqual(Object.keys(sorted.__proto__ as object), ["a", "z"]);
+  assert.deepEqual(sorted.__proto__, { a: 3, z: 2 });
+  assert.equal(stableJson(input), '{"__proto__":{"a":3,"z":2},"a":4,"z":1}');
+});
+
+test("sortStable preserves numeric index ordering separately from string key ordering", () => {
+  const input = { "10": "ten", "2": "two", b: 1, "01": "leading", a: 2 };
+  const sorted = sortStable(input) as object;
+  assert.deepEqual(Object.keys(sorted), ["2", "10", "01", "a", "b"]);
+  assert.equal(stableJson(input), '{"2":"two","10":"ten","01":"leading","a":2,"b":1}');
+});
+
+test("sortStable orders supplementary characters by UTF-16 units, not code points", () => {
+  const supplementary = "\u{10000}";
+  const privateUse = "\ue000";
+  const input = {
+    [privateUse]: { [privateUse]: 1, [supplementary]: 2 },
+    [supplementary]: 3,
+  };
+  const sorted = sortStable(input) as Record<string, unknown>;
+  assert.equal(compareCodeUnits(supplementary, privateUse), -1);
+  assert.deepEqual(Object.keys(sorted), [supplementary, privateUse]);
+  assert.deepEqual(Object.keys(sorted[privateUse] as object), [supplementary, privateUse]);
+  assert.equal(
+    stableJson(input),
+    `{"${supplementary}":3,"${privateUse}":{"${supplementary}":2,"${privateUse}":1}}`,
+  );
+});
 
 test("code-unit stable JSON canonicalizes nested object keys without locale state", () => {
   assert.equal(

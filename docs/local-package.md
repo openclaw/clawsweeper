@@ -3,7 +3,7 @@
 - Status: active development and qualification guide; no package release
 - Owner: ClawSweeper local-runtime maintainers
 - Source of truth: `scripts/stage-local-package.mjs` and `src/clawsweeper-local.ts`
-- Last verified: P10b integration candidate based on `adf080a6318b96e9665cc46de87f97641f3cfa23`
+- Last verified: integration candidate based on `7bcab824b1493fbb2eda8aa71835d36759095410`
 - Update when: the local entrypoint, imports, workers, assets, or package format changes
 
 The private package candidate contains the full committed-range reviewer. It
@@ -22,8 +22,9 @@ The staging command prints the files, sizes, and SHA-256 hashes. It follows the
 compiled ESM imports and the three explicit worker entrypoints, then adds the
 review prompts, decision schema, configuration, and scanner setup script.
 Missing or unresolved imports fail staging. The generated manifest is private
-and has no install hooks or development dependencies. The source service
-package remains private and unchanged in scope.
+and has no install hooks or development dependencies. It declares the production
+dependencies reached by those imports; npm installs their dependency closure.
+The source service package remains private and unchanged in scope.
 
 Install the resulting tarball into a disposable directory to qualify it:
 
@@ -51,7 +52,9 @@ with an explanatory message. The source checkout's `codex:local:check` command
 is a model smoke test, not a free diagnostic.
 
 Candidate qualification covers isolated installation and deterministic review
-fixtures. The committed-range suite expects 18 tests; Windows intentionally
+fixtures. It seeds a fresh npm cache, preserves the install manifest and lock,
+and performs a clean offline installation before checking declared imports.
+The committed-range suite expects 18 tests; Windows intentionally
 skips three POSIX or filesystem-specific cases. It does not establish a
 published release, global install, live provider access, or support across every
 platform. Keep the original target, reports, and operator authentication separate

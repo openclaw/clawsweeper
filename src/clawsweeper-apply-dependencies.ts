@@ -1,6 +1,7 @@
 import { type Args } from "./clawsweeper-args.js";
 import type { MergeRiskLabelName } from "./clawsweeper-policy.js";
 import type {
+  ApplyCloseGuardBlock,
   AcquiredReviewStartLease,
   ActionTaken,
   ApplyActionLedger,
@@ -36,13 +37,11 @@ import type {
   ReviewStartStatusCommentResult,
   SecurityReview,
   StalePullRequestReviewHead,
-  TelegramVisibleProof,
   TriagePriority,
 } from "./clawsweeper-types.js";
 import { type PrCloseCoverageProofRuntime } from "./pr-close-coverage-proof.js";
 import { type RepositoryProfile } from "./repository-profiles.js";
 import type { LiveReadGeneration, LiveReadOptions } from "./live-read-generation.js";
-import type { PrHydrationSnapshot } from "./pr-hydration-snapshot.js";
 
 export interface CreateApplyDecisionWorkflowDependencies {
   abandonedPrApplyBlockReasonSafe: (
@@ -111,9 +110,6 @@ export interface CreateApplyDecisionWorkflowDependencies {
       fullTimelineForRelations?: boolean;
       reviewCacheDigest?: boolean;
       reviewCacheGitDir?: string;
-      prHydrationSnapshot?: PrHydrationSnapshot | null;
-      prCommentActivityRevision?: string | null;
-      requireFullyValidatedPrHydrationSnapshot?: boolean;
       liveReadGeneration?: LiveReadGeneration;
       bypassGenerationCache?: boolean;
     },
@@ -209,7 +205,7 @@ export interface CreateApplyDecisionWorkflowDependencies {
   isBulkFilerExemptAuthorAssociation: (value: unknown) => boolean;
   isExactEventSourceRevisionChange: (itemKind: Item["kind"], reason: string) => boolean;
   isMaintainerAuthorAssociation: (value: unknown) => boolean;
-  issueRecentHumanCommentBlockReasonSafe: (number: number, days: number) => string | null;
+  issueRecentHumanCommentBlockSafe: (number: number, days: number) => ApplyCloseGuardBlock | null;
   issueReviewComment: (
     number: number,
     fallbackBodies?: readonly string[],
@@ -241,10 +237,10 @@ export interface CreateApplyDecisionWorkflowDependencies {
   mutationErrorMessage: (error: unknown) => string;
   normalizeAuthorAssociation: (value: unknown) => string;
   normalizeLabelName: (label: string) => string;
-  obsoleteFixPrApplyBlockReasonSafe: (
+  obsoleteFixPrApplyBlockSafe: (
     number: number,
     item: Pick<Item, "createdAt">,
-  ) => string | null;
+  ) => ApplyCloseGuardBlock | null;
   openClosingPullRequestApplyReason: (
     pullRequests: readonly unknown[],
     canPairClose?: (number: number, repo?: string) => boolean,
@@ -318,6 +314,7 @@ export interface CreateApplyDecisionWorkflowDependencies {
   }) => boolean;
   removeCurrentCursorTraceItem: (examinedItemNumbers: number[], currentNumber: number) => void;
   removeIssueLabel: (number: number, label: string, onMutation?: () => void) => void;
+  syncIntakeLabels: import("./clawsweeper-label-mutations.js").LabelMutations["syncIntakeLabels"];
   renderReviewCommentFromReport: (
     markdown: string,
     reason: CloseReason,
@@ -379,16 +376,17 @@ export interface CreateApplyDecisionWorkflowDependencies {
     existingReviewComment: Record<string, unknown> | undefined,
     number: number,
     context?: ItemContext,
+    liveLease?: AcquiredReviewStartLease | null,
   ) => string | null;
   newerDurableReviewTupleVerified: (
     markdown: string,
     existingReviewComment: Record<string, unknown> | undefined,
     number: number,
   ) => boolean;
-  staleVersionBugApplyBlockReasonSafe: (
+  staleVersionBugApplyBlockSafe: (
     number: number,
     item: Pick<Item, "createdAt">,
-  ) => string | null;
+  ) => ApplyCloseGuardBlock | null;
   stalledUnprovenPrApplyBlockReasonSafe: (
     number: number,
     item: Pick<Item, "createdAt" | "labels">,
@@ -504,13 +502,6 @@ export interface CreateApplyDecisionWorkflowDependencies {
     dryRun: boolean;
     onMutation?: () => void;
   }) => { labels: string[]; changed: boolean };
-  syncTelegramVisibleProofLabel: (options: {
-    number: number;
-    labels: readonly string[];
-    proof: Pick<TelegramVisibleProof, "status">;
-    dryRun: boolean;
-    onMutation?: () => void;
-  }) => { labels: string[]; changed: boolean };
   syncWorkPlanFromReport: (options: {
     markdown: string;
     reportPath: string;
@@ -524,16 +515,16 @@ export interface CreateApplyDecisionWorkflowDependencies {
     requestedTimeoutMs: number,
     nowMs: number,
   ) => number | null;
-  unconfirmedProductDirectionApplyBlockReasonSafe: (
+  unconfirmedProductDirectionApplyBlockSafe: (
     number: number,
     item: Pick<Item, "createdAt" | "labels">,
     reviewedUpdatedAt: string | undefined,
     reviewedAt: string | undefined,
-  ) => string | null;
-  unsponsoredFeatureApplyBlockReasonSafe: (
+  ) => ApplyCloseGuardBlock | null;
+  unsponsoredFeatureApplyBlockSafe: (
     number: number,
     item: Pick<Item, "createdAt">,
-  ) => string | null;
+  ) => ApplyCloseGuardBlock | null;
   updateReviewCommentMetadata: (
     markdown: string,
     comment: Record<string, unknown> | undefined,

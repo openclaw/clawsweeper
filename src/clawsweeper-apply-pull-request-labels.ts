@@ -17,7 +17,6 @@ type ApplyPullRequestLabelDependencies = Pick<
   | "syncRealBehaviorProofMediaLabels"
   | "syncRealBehaviorProofSufficientLabel"
   | "syncStalePullRequestReviewLabels"
-  | "syncTelegramVisibleProofLabel"
 >;
 
 interface ApplyPullRequestLabelOptions {
@@ -47,7 +46,6 @@ export function syncApplyPullRequestLabels(
     syncRealBehaviorProofMediaLabels,
     syncRealBehaviorProofSufficientLabel,
     syncStalePullRequestReviewLabels,
-    syncTelegramVisibleProofLabel,
   } = dependencies;
   const {
     currentItemContext,
@@ -116,16 +114,6 @@ export function syncApplyPullRequestLabels(
   currentPrStatusKind = prStatusLabelKindFromReport(markdown, currentItemContext(), labels);
   applyLabels(
     syncPrStatusLabel({ number, labels, statusKind: currentPrStatusKind, dryRun, onMutation }),
-  );
-
-  applyLabels(
-    syncTelegramVisibleProofLabel({
-      number,
-      labels,
-      proof: decision.telegramVisibleProof,
-      dryRun,
-      onMutation,
-    }),
   );
 
   return { changed, currentPrStatusKind, labels, markdown };

@@ -1,5 +1,8 @@
 # Per-PR hydration watermark proof
 
+Historical proof for the retired persistent hydration cache. Its scripts target
+the recorded implementation head; current reviews fetch fresh inputs.
+
 The signed Crabbox receipt proves the review-side hydration snapshot and activity-revision validation
 at the implementation head recorded in its command, using Docker-backed Crabbox `local-container`.
 

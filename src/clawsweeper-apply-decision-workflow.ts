@@ -98,7 +98,6 @@ import {
 import { isAutoCloseAllowed, repositoryProfileFor } from "./repository-profiles.js";
 import { stableJson } from "./stable-json.js";
 import { LiveReadGeneration, type GenerationBoundValue } from "./live-read-generation.js";
-import { parsePrHydrationSnapshot } from "./pr-hydration-snapshot.js";
 import { asRecord, login } from "./value-coerce.js";
 import {
   frontMatterStringArray,
@@ -884,8 +883,28 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
         actionTaken: ActionTaken,
         reason: string,
         liveGuardVerified = false,
-        publicationProof: Pick<ApplyResult, "commentMutationOccurred" | "guardedOpenStateVerified" | "oversizedClosePolicyDeferred"> = {},
+        publicationProof: Pick<ApplyResult, "commentMutationOccurred" | "guardedOpenStateVerified" | "oversizedClosePolicyDeferred" | "closePolicyHoldVerified"> = {},
       ): boolean => {
+        const { closePolicyHoldVerified, ...otherPublicationProof } = publicationProof;
+        let policyHoldVerified = false;
+        if (emitEventApplyProof && !dryRun && closePolicyHoldVerified) {
+          const activityBlock = currentReviewActivityBlock();
+          if (activityBlock) return recordReviewLeaseSkip(activityBlock);
+          const refreshed = fetchApplyItem(number, { bypassGenerationCache: true });
+          const context = collectApplyItemContext(refreshed.item, {
+            fullTimelineForRelations: true,
+            reviewCacheDigest: true,
+            bypassGenerationCache: true,
+          });
+          currentContext = liveReadGeneration.bind(context);
+          const contextState = asRecord(context.issue).state;
+          policyHoldVerified = refreshed.state === "open" && contextState === "open" && completeReviewActivityReceiptMatches(context);
+          // Re-read source at the receipt boundary: an unchanged head/cursor does not
+          // prove that a PR body stayed equal while the policy was being evaluated.
+          if (refreshed.state !== "open" || (typeof contextState === "string" && contextState !== "open") || (!policyHoldVerified && reviewHasCompleteActivityIdentity && context[completeActivityContextSymbol])) {
+            return markApplySkipped("skipped_changed_since_review", "reviewed source or activity changed before close-policy hold");
+          }
+        }
         markApplyChecked();
         results.push({
           number,
@@ -896,7 +915,12 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
             liveGuardVerified,
           }),
           ...eventApplyDispositionProof(actionTaken),
-          ...publicationProof,
+          ...otherPublicationProof,
+          // Only the policy owner can positively prove a no-mutation hold.
+          // Failed reads and incomplete evidence never acquire this receipt.
+          ...(policyHoldVerified
+            ? { guardedOpenStateVerified: true, closePolicyHoldVerified: true }
+            : {}),
         });
         processedCount += 1;
         maybeLogProgress(`skipped #${number}: ${reason}`);
@@ -906,7 +930,7 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
         actionTaken: ActionTaken,
         reason: string,
         liveGuardVerified = false,
-        publicationProof: Pick<ApplyResult, "commentMutationOccurred" | "guardedOpenStateVerified" | "oversizedClosePolicyDeferred"> = {},
+        publicationProof: Pick<ApplyResult, "commentMutationOccurred" | "guardedOpenStateVerified" | "oversizedClosePolicyDeferred" | "closePolicyHoldVerified"> = {},
       ): boolean => {
         markdown = replaceFrontMatterValue(markdown, "action_taken", actionTaken);
         return recordApplySkipped(actionTaken, reason, liveGuardVerified, publicationProof);
@@ -1057,9 +1081,6 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
       const previousLabels = [...item.labels];
       const reportLabelsBeforeApply = frontMatterStringArray(markdown, "labels");
       const markdownBeforeApplyDecisionMutations = markdown;
-      const persistedPrHydrationSnapshot = parsePrHydrationSnapshot(
-        frontMatterValue(markdownBeforeApplyDecisionMutations, "pr_hydration_snapshot"),
-      );
       let currentContext: GenerationBoundValue<ItemContext> | undefined;
       let currentClosingPullRequests: unknown[] | undefined;
       let clawSweeperLabelsChanged = false;
@@ -1093,10 +1114,6 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
           collectApplyItemContext(item, {
             fullTimelineForRelations: true,
             reviewCacheDigest: true,
-            prHydrationSnapshot: persistedPrHydrationSnapshot,
-            prCommentActivityRevision:
-              persistedPrHydrationSnapshot?.commentActivityRevision ?? null,
-            requireFullyValidatedPrHydrationSnapshot: true,
           }),
         );
         return liveReadGeneration.value(currentContext);
@@ -1204,6 +1221,7 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
       let canonicalBoundStaleReviewReason: (
         sourceMarkdown: string,
         comment: Record<string, unknown> | undefined,
+        liveLease?: AcquiredReviewStartLease | null,
       ) => string | null;
       const {
         acquireApplyMutationLease,
@@ -1328,10 +1346,6 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
         const receiptContext = collectApplyItemContext(automationItem, {
           fullTimelineForRelations: true,
           reviewCacheDigest: true,
-          prHydrationSnapshot: persistedPrHydrationSnapshot,
-          prCommentActivityRevision:
-            persistedPrHydrationSnapshot?.commentActivityRevision ?? null,
-          requireFullyValidatedPrHydrationSnapshot: true,
         });
         const allowsPostReviewAutomationActivity =
           options?.postReviewActivityStartedAtMs !== undefined;
@@ -1406,12 +1420,12 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
       const {
         coverageProofState,
         currentAuthorPrBudgetApplyGate,
-        candidateObsoleteFixPrBlockReason,
+        candidateObsoleteFixPrBlock,
         currentPrCloseCoverageProofGateBlock,
-        candidateStaleVersionBugBlockReason,
+        candidateStaleVersionBugBlock,
       } = candidateGuards;
-      const currentObsoleteFixPrBlockReason = () => dependencies.obsoleteFixPrApplyBlockReasonSafe(number, item);
-      const currentStaleVersionBugBlockReason = () => dependencies.staleVersionBugApplyBlockReasonSafe(number, item);
+      const currentObsoleteFixPrBlock = () => dependencies.obsoleteFixPrApplyBlockSafe(number, item);
+      const currentStaleVersionBugBlock = () => dependencies.staleVersionBugApplyBlockSafe(number, item);
       const recordRuntimeBudgetYield = (reason: string): void => {
         discardIssueLabelBatch();
         if (clawSweeperLabelsChanged && !dryRun && !issueLabelBatchActive) {
@@ -1438,9 +1452,9 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
           processedCount,
           storedUpdatedAt,
         }),
-        currentObsoleteFixPrBlockReason,
+        currentObsoleteFixPrBlock,
         currentPrCloseCoverageProofGateBlock,
-        currentStaleVersionBugBlockReason,
+        currentStaleVersionBugBlock,
         fileEntries,
         isRetryableSkippedClose,
         item,
@@ -1543,7 +1557,7 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
         if (recordActiveReviewLeaseSkip(earlyLeaseState.lease.expiresAt)) break;
         continue;
       }
-      const earlyStaleReason = refreshedReviewStaleReason(existingReviewComment);
+      const earlyStaleReason = refreshedReviewStaleReason(existingReviewComment, earlyLeaseState.currentLease);
       if (state === "open" && earlyStaleReason) {
         if (recordRefreshedReviewStaleReason(earlyStaleReason, existingReviewComment)) break;
         continue;
@@ -1577,8 +1591,8 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
           applyKind,
           closeReason,
           currentAuthorPrBudgetApplyGate,
-          currentObsoleteFixPrBlockReason: candidateObsoleteFixPrBlockReason,
-          currentStaleVersionBugBlockReason: candidateStaleVersionBugBlockReason,
+          currentObsoleteFixPrBlock: candidateObsoleteFixPrBlock,
+          currentStaleVersionBugBlock: candidateStaleVersionBugBlock,
           isCloseProposal,
           item,
           markdown,
@@ -1588,12 +1602,15 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
           storedUpdatedAt,
           syncCommentsOnly,
         });
+      const recordClosePolicyBlock = (block: NonNullable<ReturnType<typeof applyClosePolicy>["block"]>): boolean => {
+        return block.preserveOriginalAction
+          ? recordApplySkipped("kept_open", block.reason, false, { closePolicyHoldVerified: block.closePolicyHoldVerified === true })
+          : markApplySkipped("kept_open", block.reason, false, { closePolicyHoldVerified: block.closePolicyHoldVerified === true });
+      };
       const earlyClosePolicy = applyClosePolicy("before-canonical");
       markdown = earlyClosePolicy.markdown;
       if (earlyClosePolicy.block) {
-        const stopped = earlyClosePolicy.block.preserveOriginalAction
-          ? recordApplySkipped("kept_open", earlyClosePolicy.block.reason)
-          : markApplySkipped("kept_open", earlyClosePolicy.block.reason);
+        const stopped = recordClosePolicyBlock(earlyClosePolicy.block);
         if (stopped) break;
         continue;
       }
@@ -1603,9 +1620,7 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
       const lateClosePolicy = applyClosePolicy("after-canonical");
       markdown = lateClosePolicy.markdown;
       if (lateClosePolicy.block) {
-        const stopped = lateClosePolicy.block.preserveOriginalAction
-          ? recordApplySkipped("kept_open", lateClosePolicy.block.reason)
-          : markApplySkipped("kept_open", lateClosePolicy.block.reason);
+        const stopped = recordClosePolicyBlock(lateClosePolicy.block);
         if (stopped) break;
         continue;
       }
@@ -1633,6 +1648,7 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
       const staleReviewCommentReason = canonicalBoundStaleReviewReason(
         markdown,
         existingReviewComment,
+        earlyLeaseState.currentLease,
       );
       if (state === "open" && staleReviewCommentReason) {
         if (staleCanonicalCommentSyncPending) {
@@ -1729,7 +1745,7 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
           if (recordReviewLeaseSkip(lateLeaseState.blockReason)) break;
           continue;
         }
-        const lateStaleReason = refreshedReviewStaleReason(lateLeaseState.comment);
+        const lateStaleReason = refreshedReviewStaleReason(lateLeaseState.comment, lateLeaseState.currentLease);
         if (lateStaleReason) {
           if (recordRefreshedReviewStaleReason(lateStaleReason, lateLeaseState.comment)) break;
           continue;
@@ -2282,6 +2298,7 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
             const latestStaleSyncReason = canonicalBoundStaleReviewReason(
               markdown,
               existingReviewComment,
+              latestLeaseState.currentLease,
             );
             if (latestStaleSyncReason) {
               markdown = replaceFrontMatterValue(
@@ -2715,18 +2732,18 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
         closedDir,
         currentApplyMutationLeaseBlockReason: currentApplyMutationBoundaryBlockReason,
         currentAuthorPrBudgetApplyGate: () => currentAuthorPrBudgetApplyGate(true),
-        currentObsoleteFixPrBlockReason,
+        currentObsoleteFixPrBlock,
         currentSameAuthorPairBlockReason,
         setCloseMutationPolicyGuard: (guard) => {
           currentCloseMutationPolicyGuard = (mutationNumber) => {
             const block = guard(mutationNumber);
             if (!block) return null;
-            recordApplyMutationGuardReason = () => markApplySkipped(block.actionTaken, block.reason);
+            recordApplyMutationGuardReason = () => markApplySkipped(block.actionTaken, block.reason, false, { closePolicyHoldVerified: block.closePolicyHoldVerified === true });
             return block.reason;
           };
         },
         currentPrCloseCoverageProofGateBlock,
-        currentStaleVersionBugBlockReason,
+        currentStaleVersionBugBlock,
         currentDurableReviewCommentUpdatedAt: () =>
           durableReviewCommentUpdatedAt(markdown, number, appliedCloseReason),
         deferPairedIssueForThisRun: (pairedNumber) => {

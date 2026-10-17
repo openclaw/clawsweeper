@@ -2008,6 +2008,18 @@ test("non-batch publication completions record durable terminal outcomes without
     ).map((row) => row.outcome),
     ["permanent", "retryable", "superseded"],
   );
+  assert.deepEqual(
+    Array.from(
+      storage.sql.exec(
+        "SELECT outcome, reason_code FROM exact_review_lifecycle_telemetry_batch_v1 ORDER BY outcome",
+      ),
+    ).map((row) => ({ ...row })),
+    [
+      { outcome: "permanent", reason_code: "invalid_artifact" },
+      { outcome: "retryable", reason_code: "github_transient" },
+      { outcome: "superseded", reason_code: "remote_newer_tuple" },
+    ],
+  );
 });
 
 test("direct lifecycle requeue becomes a fresh fenced source-drift revision", async () => {

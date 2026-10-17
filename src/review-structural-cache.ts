@@ -1,3 +1,4 @@
+import { reviewBodyWithoutPreflight } from "./review-preflight-body.js";
 import { asRecord, stringOrUndefined } from "./value-coerce.js";
 import { sha256 } from "./content-hash.js";
 import { escapeRegExp } from "./clawsweeper-markdown.js";
@@ -604,7 +605,10 @@ export function reviewStructuralRecordFromGraphql(
   const title = stringOrUndefined(node.title);
   const author = stringOrUndefined(asRecord(node.author).login);
   const authorAssociation = stringOrUndefined(node.authorAssociation);
-  const body = node.body;
+  const body =
+    options.kind === "pull_request" && typeof node.body === "string"
+      ? reviewBodyWithoutPreflight(node.body)
+      : node.body;
   const state = stringOrUndefined(node.state);
   const updatedAt = stringOrUndefined(node.updatedAt);
   if (

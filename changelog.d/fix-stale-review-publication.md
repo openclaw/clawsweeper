@@ -1,0 +1,1 @@
+- Complete stale publication retries as superseded when a newer review of the same source reused the command lease, while rejecting ambiguous or incomplete review identities.

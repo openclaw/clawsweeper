@@ -1,3 +1,4 @@
+import { reviewBodyWithoutPreflight } from "../review-preflight-body.js";
 import { isGitHubMediaAttachmentUrl, VIDEO_PROOF_EXTENSIONS } from "../clawsweeper-media-proof.js";
 import { trimTrailingUrlPunctuation } from "../clawsweeper-text.js";
 import { MAX_MEDIA_PROOF_URLS, MEDIA_PROOF_TIMEOUT_MS } from "../media-proof-budget.js";
@@ -32,7 +33,7 @@ export function adaptiveReviewBudgetForPullRequest(pull: LooseRecord): AdaptiveR
         )
       : nonNegativeInteger(pull.additions) + nonNegativeInteger(pull.deletions);
   const mediaProofCount = videoProofUrlsFromText(
-    [String(pull.title ?? ""), String(pull.body ?? "")].join("\n"),
+    [String(pull.title ?? ""), reviewBodyWithoutPreflight(String(pull.body ?? ""))].join("\n"),
   ).length;
   const fileBonusMs = clamp(
     (changedFiles - PR_SIZE_BASELINE_FILES) * PR_SIZE_FILE_STEP_MS,

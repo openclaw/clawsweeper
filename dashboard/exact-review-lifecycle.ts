@@ -898,6 +898,26 @@ export class ExactReviewLifecycleProjectionStore {
    * revision counter, and the repository index keeps this to one repository.
    */
   otherCommandAdmittedAfter(fenceKey: string, revision: number, command: CommandStatusAddress) {
+    return this.commandAdmittedAfter(
+      fenceKey,
+      revision,
+      (admission) => !sameCommandStatusAddress(admission, command),
+    );
+  }
+
+  /** Whether this command was admitted again at this fence after `revision`. */
+  sameCommandAdmittedAfter(fenceKey: string, revision: number, command: CommandStatusAddress) {
+    return this.commandAdmittedAfter(fenceKey, revision, (admission) =>
+      sameCommandStatusAddress(admission, command),
+    );
+  }
+
+  /** Unreadable input counts as a match, so callers keep their prior outcome. */
+  private commandAdmittedAfter(
+    fenceKey: string,
+    revision: number,
+    matches: (admission: CommandStatusAddress) => boolean,
+  ) {
     if (!validFenceKey(fenceKey) || !positiveInteger(revision)) return true;
     const fence = fenceKey.toLowerCase();
     return Array.from(
@@ -916,7 +936,7 @@ export class ExactReviewLifecycleProjectionStore {
       } catch {
         return true;
       }
-      return admission.commandOriginated && !sameCommandStatusAddress(admission, command);
+      return admission.commandOriginated && matches(admission);
     });
   }
 

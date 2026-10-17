@@ -1,3 +1,4 @@
+import { reviewBodyWithoutPreflight } from "./review-preflight-body.js";
 import { sha256 } from "./content-hash.js";
 import { stableJson } from "./stable-json.js";
 import { primaryBodySourceSha256 } from "./clawsweeper-primary-body.js";
@@ -33,11 +34,18 @@ export function itemSnapshotHash(item: Item, context: ItemContext): string {
   return sha256(stableJson({ item: snapshotItem, context }));
 }
 
-export function itemSourceRevisionSha256(issue: unknown, comments: unknown[] = []): string {
+export function itemSourceRevisionSha256(
+  issue: unknown,
+  comments: unknown[] = [],
+  kind?: Item["kind"],
+): string {
   const source = asRecord(issue);
   const snapshot = {
     title: sourceRevisionScalar(source.title),
-    body: sourceRevisionScalar(source.body),
+    body:
+      kind === "pull_request" || (kind === undefined && source.pull_request)
+        ? reviewBodyWithoutPreflight(sourceRevisionScalar(source.body))
+        : sourceRevisionScalar(source.body),
     labels: revisionLabels(source.labels),
     comments: comments
       .map(asRecord)
@@ -60,10 +68,14 @@ export function itemSourceRevisionSha256(issue: unknown, comments: unknown[] = [
 export function hydratedReviewStructuralItemStateDigest(
   issue: unknown,
   comments: readonly unknown[],
+  kind?: Item["kind"],
 ): string | undefined {
   const source = asRecord(issue);
   const title = sourceRevisionScalar(source.title);
-  const body = sourceRevisionScalar(source.body);
+  const body =
+    kind === "pull_request" || (kind === undefined && source.pull_request)
+      ? reviewBodyWithoutPreflight(sourceRevisionScalar(source.body))
+      : sourceRevisionScalar(source.body);
   const author = login(source.user);
   const authorAssociation = normalizeAuthorAssociation(
     nonBlankStringOrUndefined(source.author_association),

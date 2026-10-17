@@ -306,7 +306,6 @@ test("accepted labeled risk survives decision and report parsing without reopeni
           body: "Exercise the second workflow before deciding whether to accept its impact.",
           category: "fix_before_merge",
           recommended: true,
-          automergeInstruction: "",
         },
       ],
     },

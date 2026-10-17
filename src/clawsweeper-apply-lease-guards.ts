@@ -24,6 +24,7 @@ type ApplyLeaseGuardDependencies = Pick<
   canonicalBoundStaleReviewReason: (
     markdown: string,
     comment: Record<string, unknown> | undefined,
+    liveLease?: AcquiredReviewStartLease | null,
   ) => string | null;
   closeDelayMs: number;
   currentReviewActivityBlock: () => string | null;
@@ -98,6 +99,10 @@ export function createApplyLeaseGuards({
     // live lease remains preserved and blocks the older artifact.
     return {
       comment: reviewComment,
+      currentLease:
+        lease?.owner && lease.commentId !== null
+          ? { owner: lease.owner, commentId: lease.commentId, headSha }
+          : null,
       leaseComments,
       headSha,
       lease,
@@ -145,6 +150,7 @@ export function createApplyLeaseGuards({
           leaseComments: refreshed.leaseComments,
           headSha: headAfter,
           lease: null,
+          currentLease: null,
           preserve: false,
           blockReason: `${item.kind === "pull_request" ? "PR head" : "issue source revision"} changed since context capture or during the apply-time review lease check; next apply will retry`,
         };
@@ -156,6 +162,7 @@ export function createApplyLeaseGuards({
           leaseComments: refreshed.leaseComments,
           headSha: headAfter,
           lease: null,
+          currentLease: null,
           preserve: false,
           blockReason: `live issue source revision ${headAfter} differs from reviewed revision ${reportReviewRevision}`,
         };
@@ -181,6 +188,7 @@ export function createApplyLeaseGuards({
         leaseComments: [],
         headSha: "",
         lease: null,
+        currentLease: null,
         preserve: false,
         blockReason: `apply-time review lease check failed; next apply will retry: ${detail}`,
       };
@@ -231,6 +239,7 @@ export function createApplyLeaseGuards({
       return canonicalBoundStaleReviewReason(
         markdownBeforeApplyDecisionMutations,
         refreshed.reviewComment,
+        lease,
       );
     } catch (error) {
       if (error instanceof GitHubRuntimeBudgetError || error instanceof GitHubRateLimitError)

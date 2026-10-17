@@ -5,7 +5,12 @@ import {
   PR_AUTO_CLOSE_EXEMPT_LABELS,
   STALLED_UNPROVEN_PROOF_STATUSES,
 } from "./clawsweeper-policy.js";
-import type { CloseReason, Item, PullRequestLiveActivity } from "./clawsweeper-types.js";
+import type {
+  ApplyCloseGuardBlock,
+  CloseReason,
+  Item,
+  PullRequestLiveActivity,
+} from "./clawsweeper-types.js";
 import { isMaintainerAuthorAssociation, normalizeLabelName } from "./clawsweeper-item-policy.js";
 import { quoteGitHubSearchTerm } from "./clawsweeper-related-context.js";
 import { asRecord, login, nonBlankStringOrUndefined } from "./value-coerce.js";
@@ -136,17 +141,22 @@ export function lowSignalUnmergeablePrAuthorActivityBlockReason(options: {
   return null;
 }
 
-export function issueRecentHumanCommentBlockReasonFromComments(
+export function issueRecentHumanCommentBlockFromComments(
   comments: readonly unknown[],
   days: number,
   now = Date.now(),
-): string | null {
+): ApplyCloseGuardBlock | null {
   for (const comment of comments) {
     const record = asRecord(comment);
     if (asRecord(record.user).type === "Bot") continue;
     const createdAt = typeof record.created_at === "string" ? record.created_at : "";
     if (!isOlderThanDays(createdAt, days, now)) {
-      return `issue has a non-bot comment within the last ${days} days`;
+      return {
+        reason: `issue has a non-bot comment within the last ${days} days`,
+        ...(Number.isFinite(Date.parse(createdAt)) && asRecord(record.user).type === "User"
+          ? { closePolicyHoldVerified: true as const }
+          : {}),
+      };
     }
   }
   return null;
@@ -238,19 +248,24 @@ export type PullRequestHeadActivityReader = (
 ) => Pick<PullRequestLiveActivity, "headSha" | "headActivityAtMs">;
 
 export function createApplyGuardActivity({ ghJson, ghPaged, targetRepo }: GuardReads) {
-  function issueRecentHumanCommentBlockReason(number: number, days: number): string | null {
-    return issueRecentHumanCommentBlockReasonFromComments(
+  function issueRecentHumanCommentBlock(number: number, days: number): ApplyCloseGuardBlock | null {
+    return issueRecentHumanCommentBlockFromComments(
       ghPaged<unknown>(`repos/${targetRepo()}/issues/${number}/comments`),
       days,
     );
   }
-  function issueRecentHumanCommentBlockReasonSafe(number: number, days: number): string | null {
+  function issueRecentHumanCommentBlockSafe(
+    number: number,
+    days: number,
+  ): ApplyCloseGuardBlock | null {
     try {
-      return issueRecentHumanCommentBlockReason(number, days);
+      return issueRecentHumanCommentBlock(number, days);
     } catch (error) {
-      return `issue comment activity check failed: ${
-        error instanceof Error ? error.message : String(error)
-      }`;
+      return {
+        reason: `issue comment activity check failed: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      };
     }
   }
   function pullRequestHumanEngagementBlockReason(
@@ -469,8 +484,8 @@ export function createApplyGuardActivity({ ghJson, ghPaged, targetRepo }: GuardR
   }
 
   return {
-    issueRecentHumanCommentBlockReason,
-    issueRecentHumanCommentBlockReasonSafe,
+    issueRecentHumanCommentBlock,
+    issueRecentHumanCommentBlockSafe,
     pullRequestHumanEngagementBlockReason,
     pullRequestHeadActivity,
     pullRequestLiveActivity,

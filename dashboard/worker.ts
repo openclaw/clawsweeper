@@ -2,6 +2,7 @@ import { publicTimestamp } from "./public-timestamp.ts";
 import { writeReviewUsage } from "./review-usage.ts";
 import { isReviewUsageRecord } from "../src/review-usage-contract.ts";
 import { requiresMaintainerReviewRequest } from "../src/maintainer-review-policy.ts";
+import { requiresVerifiedMaintainerReviewRequest } from "./maintainer-author.ts";
 import {
   publicBayActivityKind,
   normalizePublicBayActivityKind,
@@ -148,7 +149,10 @@ export {
 const ACTIVE_RUN_STATUSES = new Set(["queued", "in_progress", "waiting", "requested", "pending"]);
 const QUEUED_RUN_STATUSES = new Set(["queued", "waiting", "requested", "pending"]);
 type DashboardContext = { waitUntil?: (promise: Promise<unknown>) => void };
-type GithubJsonReader = (path: string) => ReturnType<typeof githubJson>;
+type GithubJsonReader = (
+  path: string,
+  options?: { fresh: boolean },
+) => ReturnType<typeof githubJson>;
 type StoredValue = {
   value: string;
   expires_at?: number;
@@ -361,6 +365,8 @@ declare global {
   }
 }
 const ACTIVE_RUN_STATUS_FILTERS = ["in_progress", "queued", "waiting", "requested", "pending"];
+const ACTIVE_RUN_PAGE_LIMIT = 3;
+const GITHUB_ETAG_CACHE_TIMEOUT_MS = 1_000;
 const TERMINAL_BAD_CONCLUSIONS = new Set(["failure", "timed_out", "action_required"]);
 const EVENT_LIMIT = 200;
 const EVENT_STORE_TTL_SECONDS = 7 * 24 * 60 * 60;
@@ -515,8 +521,6 @@ const PR_PROOF_LABEL_NAMES = [
   "triage: mock-only-proof",
   "proof: sufficient",
   "proof: override",
-  "mantis: telegram-visible-proof",
-  "proof: telegram-e2e",
 ];
 const TRIAGE_VIEWS = [
   {
@@ -604,13 +608,6 @@ const PR_PROOF_VIEWS = [
     title: "Mock-only proof",
     description: "Proof appears to rely only on tests, mocks, snapshots, lint, typecheck, or CI.",
     allLabels: ["triage: mock-only-proof"],
-    itemLimit: 100,
-  },
-  {
-    id: "telegram-proof",
-    title: "Telegram proof",
-    description: "PRs that need Telegram Test Server proof with the repository E2E skill.",
-    anyLabels: ["mantis: telegram-visible-proof", "proof: telegram-e2e"],
     itemLimit: 100,
   },
   {
@@ -781,6 +778,28 @@ export class StatusStore {
     if (request.method === "PUT") {
       const stored = (await request.json()) as StoredValue;
       if (typeof stored?.value !== "string") return new Response("invalid value", { status: 400 });
+      if (key.startsWith("snapshot:bay-scope:v2:")) {
+        const now = Date.now();
+        const incomingAt = statusPublicationTime(stored.value, now);
+        if (incomingAt === null) return new Response("invalid snapshot", { status: 400 });
+        // Collection completion releases its isolate before publication finishes.
+        // Fence delayed arrivals at the shared SQLite owner, without holding network work.
+        const accepted = this.storage.transactionSync(() => {
+          const current = this.storage.kv.get(key) as StoredValue | undefined;
+          const currentAt =
+            current && (!current.expires_at || current.expires_at > now)
+              ? statusPublicationTime(current.value, now)
+              : null;
+          if (currentAt !== null && incomingAt <= currentAt) return false;
+          this.storage.kv.put(key, stored);
+          return true;
+        });
+        if (accepted && stored.expires_at) await this.scheduleCleanup(stored.expires_at);
+        return new Response(null, {
+          status: 204,
+          headers: { "X-ClawSweeper-Snapshot": accepted ? "accepted" : "retained" },
+        });
+      }
       await this.storage.put(key, stored);
       if (stored.expires_at) await this.scheduleCleanup(stored.expires_at);
       return new Response(null, { status: 204 });
@@ -1042,6 +1061,11 @@ export default {
         url.pathname.slice("/internal/state".length),
         canonicalRecordPath[1] === "items",
       );
+    if (
+      url.pathname === "/internal/exact-review/canonical-bodies/maintenance" &&
+      request.method === "POST"
+    )
+      return authenticatedExactReviewQueueRequest(request, env, "/canonical-bodies/maintenance");
     if (url.pathname === "/internal/exact-review/storage-stats" && request.method === "POST")
       return authenticatedExactReviewQueueRequest(request, env, "/storage/stats");
     if (url.pathname === "/internal/state/records/slugs" && request.method === "POST")
@@ -1333,19 +1357,38 @@ async function statusJson(request, env, ctx) {
   try {
     const cache = caches.default;
     const publicBayScope = publicBayRepositoryScope(verifiedPublicBayRepositories(env));
-    const cached = await statusOperation(env, "cache", () =>
-      cache.match(statusCacheRequest(request, "fresh", publicBayScope)),
-    );
-    if (cached) {
-      return await statusOperation(env, "cache", () => cachedStatusResponse(cached, "fresh", env));
-    }
-    const stale = await statusOperation(env, "cache", () =>
-      cache.match(statusCacheRequest(request, "stale", publicBayScope)),
-    );
-    if (stale) {
-      staleResponse = await statusOperation(env, "cache", () =>
-        cachedStatusResponse(stale, "stale", env),
+    if (isDurableStatusStore(env.STATUS_STORE)) {
+      const ttl = numberFrom(env.CACHE_TTL_SECONDS, 60);
+      const staleTtl = numberFrom(env.STALE_CACHE_TTL_SECONDS, STALE_CACHE_TTL_SECONDS);
+      const stored = await readCachedSnapshot(env, Math.max(ttl, staleTtl), publicBayScope);
+      if (stored) {
+        const state =
+          Date.now() - Date.parse(stored.generated_at) <= ttl * 1000 ? "fresh" : "stale";
+        const response = statusSnapshotResponse(
+          publicStatusProjection(stored, verifiedPublicBayRepositories(env)),
+          state,
+          env,
+        );
+        if (state === "fresh") return response;
+        staleResponse = response;
+      }
+    } else {
+      const cached = await statusOperation(env, "cache", () =>
+        cache.match(statusCacheRequest(request, "fresh", publicBayScope)),
       );
+      if (cached) {
+        return await statusOperation(env, "cache", () =>
+          cachedStatusResponse(cached, "fresh", env),
+        );
+      }
+      const stale = await statusOperation(env, "cache", () =>
+        cache.match(statusCacheRequest(request, "stale", publicBayScope)),
+      );
+      if (stale) {
+        staleResponse = await statusOperation(env, "cache", () =>
+          cachedStatusResponse(stale, "stale", env),
+        );
+      }
     }
     if (staleResponse && ctx?.waitUntil) {
       refreshStatus(request, env, ctx, collection.deadline).catch(() => undefined);
@@ -1744,6 +1787,7 @@ const PUBLIC_STATUS_TEXT_VALUES = new Set([
   "claim_stalled",
   "dispatcher_blocked",
   "dispatcher_paused",
+  "dispatcher_retry_due",
   "claim_delayed",
   "handoff_current",
   "handoff_unknown",
@@ -1974,6 +2018,7 @@ const PUBLIC_STATUS_COUNT_FIELDS = new Set([
   "source_drift_loop",
   "locked_conversation",
   "oversized_pull_request",
+  "maintainer_request_required",
   "claim_timeout",
   "execution_timeout",
   "workflow_cancelled",
@@ -3343,27 +3388,31 @@ async function refreshStatusCaches(request, env, ctx?: DashboardContext) {
   // Final publication is best-effort and only uses a terminal, usable body.
   // Request cancellation must not leave process-global state blocking later writes.
   if (!looksEmpty) {
-    const writes = [
-      caches.default.put(
-        statusCacheRequest(request, "fresh", publicBayScope),
-        new Response(body, {
-          headers: {
-            "content-type": "application/json; charset=utf-8",
-            "cache-control": `public, max-age=${ttl}`,
-          },
-        }),
-      ),
-      caches.default.put(
-        statusCacheRequest(request, "stale", publicBayScope),
-        new Response(body, {
-          headers: {
-            "content-type": "application/json; charset=utf-8",
-            "cache-control": `public, max-age=${staleTtl}`,
-          },
-        }),
-      ),
-    ];
-    if (env.STATUS_STORE) {
+    // Edge caches cannot conditionally replace a body. A durable binding owns
+    // both publication and reads, so an old edge PUT cannot bypass its fence.
+    const writes = isDurableStatusStore(env.STATUS_STORE)
+      ? [writeCachedStatusSnapshot(env.STATUS_STORE, body, publicBayScope)]
+      : [
+          caches.default.put(
+            statusCacheRequest(request, "fresh", publicBayScope),
+            new Response(body, {
+              headers: {
+                "content-type": "application/json; charset=utf-8",
+                "cache-control": `public, max-age=${ttl}`,
+              },
+            }),
+          ),
+          caches.default.put(
+            statusCacheRequest(request, "stale", publicBayScope),
+            new Response(body, {
+              headers: {
+                "content-type": "application/json; charset=utf-8",
+                "cache-control": `public, max-age=${staleTtl}`,
+              },
+            }),
+          ),
+        ];
+    if (env.STATUS_STORE && !isDurableStatusStore(env.STATUS_STORE)) {
       writes.push(writeCachedStatusSnapshot(env.STATUS_STORE, body, publicBayScope));
     }
     const persistence = Promise.allSettled(writes);
@@ -3669,7 +3718,17 @@ async function githubWebhook(request, env, ctx) {
 
   if ("type" in decision && decision.type === "item") {
     const source = objectValue(payload.pull_request || payload.issue);
-    if (requiresMaintainerReviewRequest(source)) {
+    if (
+      await requiresVerifiedMaintainerReviewRequest(decision.targetRepo, source, async (author) =>
+        githubTokenJson({
+          env,
+          token: stringEnv(env.GITHUB_TOKEN) || (await authorPermissionToken(env, decision)),
+          path: `/repos/${decision.targetRepo}/collaborators/${author}/permission`,
+          body: undefined,
+          errorLabel: "author repository permission",
+        }),
+      )
+    ) {
       if (
         ["opened", "ready_for_review"].includes(decision.sourceAction) &&
         source.draft !== true &&
@@ -4272,6 +4331,25 @@ function classifyGithubItemWebhook({
   return { accepted: false, reason: "unsupported event" };
 }
 
+async function authorPermissionToken(
+  env: DashboardEnv,
+  decision: ExactReviewDecision & { installationId: number },
+): Promise<string> {
+  const credentials = githubAppCredentials(env);
+  if (!credentials || !Number.isInteger(decision.installationId) || decision.installationId <= 0) {
+    throw new Error("GitHub App credentials are required to read author permission");
+  }
+  const appJwt = await signGithubAppJwt(credentials.issuer, credentials.privateKey);
+  return createGithubAppTokenFor({
+    env,
+    appJwt,
+    installationId: decision.installationId,
+    label: decision.targetRepo,
+    repositories: [repoName(decision.targetRepo)],
+    permissions: { metadata: "read" },
+  });
+}
+
 async function bindLivePullRequestHeadAuthority({
   env,
   decision,
@@ -4683,6 +4761,7 @@ const PUBLIC_QUEUE_PARKED_REASONS = [
   "source_drift_loop",
   "locked_conversation",
   "oversized_pull_request",
+  "maintainer_request_required",
   "unknown",
 ] as const;
 const PUBLIC_QUEUE_SHED_REASONS = ["backpressure", "scheduled_rate", "unattributed"] as const;
@@ -5049,6 +5128,7 @@ function publicExactReviewHandoff(value) {
       "claim_stalled",
       "dispatcher_blocked",
       "dispatcher_paused",
+      "dispatcher_retry_due",
       "claim_delayed",
       "handoff_current",
     ].includes(reason)
@@ -5436,7 +5516,7 @@ async function boundedTargetDispatchBody(
   }
 }
 
-async function githubEtagCacheRequest(env, path: string, body: string) {
+async function githubEtagCacheRequest(env, path: string, body: string, signal?: AbortSignal) {
   const namespace: DurableObjectNamespace | undefined = env.GITHUB_ETAG_CACHE;
   if (!namespace) return json({ error: "github_etag_cache_not_configured" }, 503);
   try {
@@ -5449,7 +5529,7 @@ async function githubEtagCacheRequest(env, path: string, body: string) {
         method: "POST",
         headers: { "content-type": "application/json" },
         body,
-        signal: statusRequestSignal(env),
+        signal: statusRequestSignal(env, signal),
       }),
       "github_etag_cache",
     );
@@ -7330,9 +7410,6 @@ function proofStateFromLabels(labels) {
   if (has("proof: sufficient")) return "Sufficient";
   if (has("triage: mock-only-proof")) return "Mock-only proof";
   if (has("triage: needs-real-behavior-proof")) return "Needs proof";
-  if (has("mantis: telegram-visible-proof") || has("proof: telegram-e2e")) {
-    return "Telegram proof";
-  }
   return "";
 }
 
@@ -8101,18 +8178,54 @@ async function activeWorkflowRunCandidates(
 ) {
   const pages = await Promise.all(
     ACTIVE_RUN_STATUS_FILTERS.map(async (status) => {
-      const runs = await github(`/repos/${repo}/actions/runs?status=${status}&per_page=100`).catch(
-        (error) => {
-          errors.push(`workflow runs ${status}: ${error.message}`);
-          return null;
-        },
-      );
-      const workflowRuns = Array.isArray(runs?.workflow_runs) ? runs.workflow_runs : [];
-      // Sampling stays at five cheap status queries. A full page may omit the
-      // oldest (and therefore least healthy) runs, so fail closed instead of
-      // spending an unbounded number of follow-up requests.
-      if (workflowRuns.length >= 100) errors.push(`workflow runs ${status}: page may be truncated`);
-      return workflowRuns;
+      for (let attempt = 0; ; attempt += 1) {
+        const workflowRuns = [];
+        let expectedTotalCount: number | null = null;
+        let complete = false;
+        let changedDuringRead = false;
+        // Include the oldest runs without allowing a large backlog to make the
+        // status refresh unbounded. An unfinished census must remain unknown.
+        for (let page = 1; page <= ACTIVE_RUN_PAGE_LIMIT; page += 1) {
+          const runs = await github(
+            `/repos/${repo}/actions/runs?status=${status}&per_page=100${page > 1 ? `&page=${page}` : ""}`,
+            { fresh: attempt > 0 },
+          ).catch((error) => {
+            errors.push(`workflow runs ${status}: ${error.message}`);
+            return undefined;
+          });
+          if (runs === undefined) return workflowRuns;
+          if (!Array.isArray(runs?.workflow_runs) || runs.workflow_runs.length > 100) break;
+          const totalCount = runs.total_count;
+          if (totalCount !== undefined) {
+            if (!Number.isSafeInteger(totalCount) || totalCount < 0) break;
+            if (expectedTotalCount !== null && totalCount !== expectedTotalCount) {
+              changedDuringRead = true;
+              break;
+            }
+            expectedTotalCount = totalCount;
+          }
+          workflowRuns.push(...runs.workflow_runs);
+          if (uniqueWorkflowRuns(workflowRuns).length !== workflowRuns.length) {
+            changedDuringRead = true;
+            break;
+          }
+          if (expectedTotalCount !== null && workflowRuns.length >= expectedTotalCount) {
+            complete = workflowRuns.length === expectedTotalCount;
+            changedDuringRead = !complete;
+            break;
+          }
+          if (runs.workflow_runs.length < 100) {
+            complete = expectedTotalCount === null;
+            changedDuringRead = !complete;
+            break;
+          }
+        }
+        // Actions can change between pages, or even between its count and rows.
+        // Rebuild that census once from fresh reads; never combine generations.
+        if (changedDuringRead && attempt === 0) continue;
+        if (!complete) errors.push(`workflow runs ${status}: census incomplete`);
+        return workflowRuns;
+      }
     }),
   );
   return uniqueWorkflowRuns(pages.flat());
@@ -8786,6 +8899,21 @@ function cachedStatusSnapshotKey(publicBayScope) {
   }`;
 }
 
+function statusPublicationTime(body: string, now: number): number | null {
+  try {
+    const snapshot = JSON.parse(body);
+    const at = Date.parse(snapshot?.generated_at);
+    return snapshot?.schema_version === 1 &&
+      snapshot.public_projection_complete === true &&
+      Number.isFinite(at) &&
+      at <= now + 60_000
+      ? at
+      : null;
+  } catch {
+    return null;
+  }
+}
+
 async function writeCachedStatusSnapshot(store, body, publicBayScope) {
   await writeStatusStoreText(store, cachedStatusSnapshotKey(publicBayScope), body);
 }
@@ -8943,11 +9071,11 @@ function statusStoreRequest(key, method = "GET") {
 
 function createGithubJsonCache(env): GithubJsonReader {
   const cache = new Map<string, ReturnType<typeof githubJson>>();
-  return (path: string) => {
+  return (path: string, options) => {
     statusCollections.get(env)?.check();
     const key = String(path);
     let request = cache.get(key);
-    if (!request) {
+    if (!request || options?.fresh) {
       request = statusOperation(env, "github", () => githubJson(env, key));
       cache.set(key, request);
     }
@@ -9028,16 +9156,28 @@ function githubJsonResponse(env, path, token: string, ifNoneMatch: string) {
 }
 
 async function githubEtagCachePost(env, operation: "lookup" | "store" | "confirm", body) {
-  return statusOperation(env, "github", async () => {
-    const response = await githubEtagCacheRequest(
-      env,
-      `/github-etag-cache/${operation}`,
-      JSON.stringify(body),
+  const controller = new AbortController();
+  try {
+    // This cache is advisory. Its own request/body deadline must leave time
+    // for the authoritative GitHub read and the rest of the status snapshot.
+    return await withTimeout(
+      statusOperation(env, "github", async () => {
+        const response = await githubEtagCacheRequest(
+          env,
+          `/github-etag-cache/${operation}`,
+          JSON.stringify(body),
+          controller.signal,
+        );
+        const result = objectValue(await response.json().catch(() => null));
+        if (!response.ok) throw new Error(String(result.error || "GitHub ETag cache unavailable"));
+        return result;
+      }),
+      GITHUB_ETAG_CACHE_TIMEOUT_MS,
+      "GitHub ETag cache",
     );
-    const result = objectValue(await response.json().catch(() => null));
-    if (!response.ok) throw new Error(String(result.error || "GitHub ETag cache unavailable"));
-    return result;
-  });
+  } finally {
+    controller.abort();
+  }
 }
 
 function parseGithubJsonBody(body: string, path: string) {

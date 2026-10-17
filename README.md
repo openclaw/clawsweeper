@@ -185,15 +185,18 @@ are intentionally stricter: they review issues and PRs, but apply may close only
 PRs where current `main` already implements the proposed change with
 source-backed evidence.
 
-Maintainer-authored issues and PRs, and items labeled `maintainer`, are excluded
-from automatic reviews and scheduled sweeps. One opening/ready reminder explains
-how to opt in. Only request `@clawsweeper review` when a review is needed and the
+Maintainer-authored issues and PRs, and items labeled `maintainer`, created from
+2026-10-15 03:50 UTC are reviewed like everyone else's: a PR gets one automatic
+review and later reviews need a request; an issue follows the ordinary issue
+cadence. Older maintainer items stay excluded from automatic reviews and
+scheduled sweeps, and got one opening/ready reminder explaining how to opt in.
+Only request `@clawsweeper review` when a review is needed and the
 work and validation are complete; agents must not request reviews automatically
 or repeat requests while one is queued or running. A one-off request does not
 opt future pushes into reviews, but it stays open until it is answered: if the
 item changes while it is reviewed, ClawSweeper re-reviews and still answers that
-request. Existing `clawsweeper:autofix` and
-`clawsweeper:automerge` labels retain their explicit opt-in behavior.
+request. The retired `clawsweeper:autofix` and `clawsweeper:automerge` labels no
+longer change review admission; they still protect an item from close proposals.
 
 ## Maintainer Commands
 

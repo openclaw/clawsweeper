@@ -194,25 +194,25 @@ test("record export merges section pages with both revision bounds and tombstone
     maxSourceBytes: 100_000,
     maxRecords: 1,
   };
-  const first = store.exportRecords(options);
+  const first = await store.exportRecords(options);
   assert.deepEqual(
     first.records.map((row) => [row.section, row.id, row.deleted]),
     [["closed", "1", true]],
   );
   assert.equal(first.nextCursor, 2);
-  const second = store.exportRecords({ ...options, cursor: first.nextCursor! });
+  const second = await store.exportRecords({ ...options, cursor: first.nextCursor! });
   assert.deepEqual(
     second.records.map((row) => [row.section, row.id, row.deleted]),
     [["items", "2", false]],
   );
   assert.equal(second.nextCursor, 4);
-  const last = store.exportRecords({ ...options, cursor: second.nextCursor! });
+  const last = await store.exportRecords({ ...options, cursor: second.nextCursor! });
   assert.deepEqual(
     last.records.map((row) => [row.section, row.id, row.deleted]),
     [["closed", "2", true]],
   );
   assert.equal(last.nextCursor, null);
-  assert.deepEqual(store.exportRecords({ ...options, sections: [] }).records, []);
+  assert.deepEqual((await store.exportRecords({ ...options, sections: [] })).records, []);
   assert.equal(store.snapshotRecordCount("a-repo", 3), 1);
   assert.deepEqual(store.snapshotRecordIdentities("a-repo", 3), [{ section: "items", id: "1" }]);
   assert.equal(store.snapshotRecordCount("a-repo", 6), 2);
@@ -3570,37 +3570,53 @@ test("batch rollout wakes a retryable publication at its next eligibility time",
   assert.equal(storage.scheduledAlarm(), 9_030_000);
 });
 
-test("batch protocol routes require the shared internal signature", async () => {
+test("batch and canonical maintenance routes require the shared internal signature and forward exact payloads", async () => {
   const secret = "test-secret";
-  const body = JSON.stringify({ claim_id: "claim-authenticated", lease_owner: "worker-1" });
-  let forwardedPath = "";
-  const env = {
-    CLAWSWEEPER_WEBHOOK_SECRET: secret,
-    EXACT_REVIEW_QUEUE: {
-      idFromName: () => "global",
-      get: () => ({
-        fetch: async (request: Request) => {
-          forwardedPath = new URL(request.url).pathname;
-          return new Response(JSON.stringify({ ok: true }));
-        },
+  for (const [path, payload] of [
+    ["/publication-batches/claim", { claim_id: "claim-authenticated", lease_owner: "worker-1" }],
+    [
+      "/canonical-bodies/maintenance",
+      {
+        action: "migrate",
+        execute: true,
+        expectedDeploymentSha: "e".repeat(40),
+        reviewedPreviewSha256: "f".repeat(64),
+      },
+    ],
+  ] as const) {
+    const body = JSON.stringify(payload);
+    let forwardedPath = "",
+      forwardedBody = "";
+    const env = {
+      CLAWSWEEPER_WEBHOOK_SECRET: secret,
+      EXACT_REVIEW_QUEUE: {
+        idFromName: () => "global",
+        get: () => ({
+          fetch: async (request: Request) => {
+            forwardedPath = new URL(request.url).pathname;
+            forwardedBody = await request.text();
+            return new Response(JSON.stringify({ ok: true }));
+          },
+        }),
+      },
+    };
+    const url = "https://clawsweeper.openclaw.ai/internal/exact-review" + path;
+    const unauthorized = await worker.fetch(new Request(url, { method: "POST", body }), env);
+    assert.equal(unauthorized.status, 401);
+    assert.equal(forwardedPath, "");
+    const signature = "sha256=" + createHmac("sha256", secret).update(body).digest("hex");
+    const authorized = await worker.fetch(
+      new Request(url, {
+        method: "POST",
+        headers: { "x-clawsweeper-exact-review-signature": signature },
+        body,
       }),
-    },
-  };
-  const url = "https://clawsweeper.openclaw.ai/internal/exact-review/publication-batches/claim";
-  const unauthorized = await worker.fetch(new Request(url, { method: "POST", body }), env);
-  assert.equal(unauthorized.status, 401);
-
-  const signature = `sha256=${createHmac("sha256", secret).update(body).digest("hex")}`;
-  const authorized = await worker.fetch(
-    new Request(url, {
-      method: "POST",
-      headers: { "x-clawsweeper-exact-review-signature": signature },
-      body,
-    }),
-    env,
-  );
-  assert.equal(authorized.status, 200);
-  assert.equal(forwardedPath, "/publication-batches/claim");
+      env,
+    );
+    assert.equal(authorized.status, 200);
+    assert.equal(forwardedPath, path);
+    assert.equal(forwardedBody, body);
+  }
 });
 
 test("batch claims reject partial dispatch metadata", async () => {

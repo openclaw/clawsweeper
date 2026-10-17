@@ -3,9 +3,9 @@ import {
   STALE_VERSION_BUG_MIN_INACTIVE_DAYS,
   UNSPONSORED_FEATURE_MIN_INACTIVE_DAYS,
 } from "./clawsweeper-policy.js";
-import type { GitHubUser, Item } from "./clawsweeper-types.js";
+import type { ApplyCloseGuardBlock, GitHubUser, Item } from "./clawsweeper-types.js";
 import {
-  issueRecentHumanCommentBlockReasonFromComments,
+  issueRecentHumanCommentBlockFromComments,
   lowSignalUnmergeablePrAuthorActivityBlockReason,
   lowSignalUnmergeablePrConflictBlockReason,
   maintainerAssociatedEntries,
@@ -18,7 +18,7 @@ import {
   normalizeLabelName,
   protectedLabels,
   staleVersionBugAgeSkipReason,
-  unconfirmedProductDirectionAgeSkipReason,
+  unconfirmedProductDirectionAgeBlock,
   unsponsoredFeatureAgeSkipReason,
 } from "./clawsweeper-item-policy.js";
 import {
@@ -99,83 +99,83 @@ export function createApplyGuardPolicy(
       }`;
     }
   }
-  function unconfirmedProductDirectionApplyBlockReason(
+  function unconfirmedProductDirectionApplyBlock(
     number: number,
     item: Pick<Item, "createdAt" | "labels">,
     reviewedUpdatedAt: string | undefined,
     reviewedAt: string | undefined,
-  ): string | null {
+  ): ApplyCloseGuardBlock | null {
     if (!unconfirmedProductDirectionCloseEnabled()) {
-      return "unconfirmed product-direction apply policy is disabled";
+      return { reason: "unconfirmed product-direction apply policy is disabled" };
     }
-    const ageBlock = unconfirmedProductDirectionAgeSkipReason(item, reviewedUpdatedAt, reviewedAt);
+    const ageBlock = unconfirmedProductDirectionAgeBlock(item, reviewedUpdatedAt, reviewedAt);
     if (ageBlock) return ageBlock;
     const exemptLabel = item.labels
       .map(normalizeLabelName)
       .find((label) => PR_AUTO_CLOSE_EXEMPT_LABELS.has(label));
-    if (exemptLabel) return `${exemptLabel} exempts this PR from product-direction auto-close`;
+    if (exemptLabel)
+      return { reason: `${exemptLabel} exempts this PR from product-direction auto-close` };
 
     const issue = ghJson<{ assignees?: unknown[] }>([
       "api",
       `repos/${targetRepo()}/issues/${number}`,
     ]);
-    if ((issue.assignees ?? []).length > 0) return "assigned PR has active human signal";
+    if ((issue.assignees ?? []).length > 0)
+      return { reason: "assigned PR has active human signal" };
 
     const pull = ghJson<{ requested_reviewers?: unknown[]; requested_teams?: unknown[] }>([
       "api",
       `repos/${targetRepo()}/pulls/${number}`,
     ]);
     if ((pull.requested_reviewers ?? []).length > 0 || (pull.requested_teams ?? []).length > 0) {
-      return "requested reviewers or teams indicate active review signal";
+      return { reason: "requested reviewers or teams indicate active review signal" };
     }
 
     const maintainerComments = maintainerAssociatedEntries(
       ghPaged<unknown>(`repos/${targetRepo()}/issues/${number}/comments`),
     );
     if (maintainerComments.length > 0)
-      return "maintainer issue comment calibrates product direction";
+      return { reason: "maintainer issue comment calibrates product direction" };
 
     const maintainerReviews = maintainerAssociatedEntries(
       ghPaged<unknown>(`repos/${targetRepo()}/pulls/${number}/reviews`),
     );
-    if (maintainerReviews.length > 0) return "maintainer PR review calibrates product direction";
+    if (maintainerReviews.length > 0)
+      return { reason: "maintainer PR review calibrates product direction" };
 
     const maintainerInlineComments = maintainerAssociatedEntries(
       ghPaged<unknown>(`repos/${targetRepo()}/pulls/${number}/comments`),
     );
     if (maintainerInlineComments.length > 0) {
-      return "maintainer inline review comment calibrates product direction";
+      return { reason: "maintainer inline review comment calibrates product direction" };
     }
     return null;
   }
-  function unconfirmedProductDirectionApplyBlockReasonSafe(
+  function unconfirmedProductDirectionApplyBlockSafe(
     number: number,
     item: Pick<Item, "createdAt" | "labels">,
     reviewedUpdatedAt: string | undefined,
     reviewedAt: string | undefined,
-  ): string | null {
+  ): ApplyCloseGuardBlock | null {
     try {
-      return unconfirmedProductDirectionApplyBlockReason(
-        number,
-        item,
-        reviewedUpdatedAt,
-        reviewedAt,
-      );
+      return unconfirmedProductDirectionApplyBlock(number, item, reviewedUpdatedAt, reviewedAt);
     } catch (error) {
-      return `product-direction calibration check failed: ${
-        error instanceof Error ? error.message : String(error)
-      }`;
+      return {
+        reason: `product-direction calibration check failed: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      };
     }
   }
-  function unsponsoredFeatureApplyBlockReason(
+  function unsponsoredFeatureApplyBlock(
     number: number,
     item: Pick<Item, "createdAt">,
-  ): string | null {
+  ): ApplyCloseGuardBlock | null {
     if (!unsponsoredFeatureCloseEnabled()) {
-      return "unsponsored feature-request apply policy is disabled";
+      return { reason: "unsponsored feature-request apply policy is disabled" };
     }
     const ageBlock = unsponsoredFeatureAgeSkipReason(item);
-    if (ageBlock) return ageBlock;
+    if (ageBlock) return { reason: ageBlock };
 
     const issue = ghJson<{
       assignees?: unknown[];
@@ -184,51 +184,55 @@ export function createApplyGuardPolicy(
       reactions?: unknown;
       state?: string;
     }>(["api", `repos/${targetRepo()}/issues/${number}`]);
-    if (issue.state !== "open") return "live issue is not open";
+    if (issue.state !== "open") return { reason: "live issue is not open" };
     if (protectedLabels(labelNames(issue.labels)).length > 0) {
-      return "security-labeled issue requires human triage";
+      return { reason: "security-labeled issue requires human triage" };
     }
-    if ((issue.assignees ?? []).length > 0) return "assigned issue has maintainer engagement";
-    if (issue.milestone) return "milestoned issue has maintainer engagement";
+    if ((issue.assignees ?? []).length > 0)
+      return { reason: "assigned issue has maintainer engagement" };
+    if (issue.milestone) return { reason: "milestoned issue has maintainer engagement" };
     if (positiveReactionCount(issue.reactions) >= positiveReactionThreshold()) {
-      return "issue has enough positive reactions for maintainer consideration";
+      return { reason: "issue has enough positive reactions for maintainer consideration" };
     }
     const totalReactions = asRecord(issue.reactions).total_count;
     if (typeof totalReactions === "number" && totalReactions >= 20) {
-      return "issue has strong community traction (20 or more reactions)";
+      return { reason: "issue has strong community traction (20 or more reactions)" };
     }
     if (labelNames(issue.labels).map(normalizeLabelName).includes("clawsweeper:linked-pr-open")) {
-      return "clawsweeper:linked-pr-open blocks unsponsored feature auto-close";
+      return { reason: "clawsweeper:linked-pr-open blocks unsponsored feature auto-close" };
     }
 
     const comments = ghPaged<unknown>(`repos/${targetRepo()}/issues/${number}/comments`);
     if (maintainerAssociatedEntries(comments).length > 0) {
-      return "maintainer issue comment confirms engagement";
+      return { reason: "maintainer issue comment confirms engagement" };
     }
-    return issueRecentHumanCommentBlockReasonFromComments(
+    return issueRecentHumanCommentBlockFromComments(
       comments,
       UNSPONSORED_FEATURE_MIN_INACTIVE_DAYS,
     );
   }
-  function unsponsoredFeatureApplyBlockReasonSafe(
+  function unsponsoredFeatureApplyBlockSafe(
     number: number,
     item: Pick<Item, "createdAt">,
-  ): string | null {
+  ): ApplyCloseGuardBlock | null {
     try {
-      return unsponsoredFeatureApplyBlockReason(number, item);
+      return unsponsoredFeatureApplyBlock(number, item);
     } catch (error) {
-      return `unsponsored feature-request liveness check failed: ${
-        error instanceof Error ? error.message : String(error)
-      }`;
+      return {
+        reason: `unsponsored feature-request liveness check failed: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      };
     }
   }
-  function staleVersionBugApplyBlockReason(
+  function staleVersionBugApplyBlock(
     number: number,
     item: Pick<Item, "createdAt">,
-  ): string | null {
-    if (!staleVersionBugCloseEnabled()) return "stale-version bug apply policy is disabled";
+  ): ApplyCloseGuardBlock | null {
+    if (!staleVersionBugCloseEnabled())
+      return { reason: "stale-version bug apply policy is disabled" };
     const ageBlock = staleVersionBugAgeSkipReason(item);
-    if (ageBlock) return ageBlock;
+    if (ageBlock) return { reason: ageBlock };
 
     const issue = ghJson<{
       assignees?: unknown[];
@@ -238,61 +242,61 @@ export function createApplyGuardPolicy(
       reactions?: unknown;
       state?: string;
     }>(["api", `repos/${targetRepo()}/issues/${number}`]);
-    if (issue.state !== "open") return "live issue is not open";
+    if (issue.state !== "open") return { reason: "live issue is not open" };
     // Stored records can carry stale timestamps; the age floor must hold live.
     if (!Number.isFinite(Date.parse(issue.created_at ?? ""))) {
-      return "live issue creation date is unavailable";
+      return { reason: "live issue creation date is unavailable" };
     }
     const liveAgeBlock = staleVersionBugAgeSkipReason({ createdAt: issue.created_at ?? "" });
-    if (liveAgeBlock) return liveAgeBlock;
+    if (liveAgeBlock) return { reason: liveAgeBlock };
     const labels = labelNames(issue.labels).map(normalizeLabelName);
     const protectedLabel =
       protectedLabels(labelNames(issue.labels))[0] ??
       prAutoCloseExemptLabel(labelNames(issue.labels));
-    if (protectedLabel) return `protected label: ${protectedLabel}`;
-    if ((issue.assignees ?? []).length > 0) return "assigned issue has maintainer engagement";
-    if (issue.milestone) return "milestoned issue has maintainer engagement";
+    if (protectedLabel) return { reason: `protected label: ${protectedLabel}` };
+    if ((issue.assignees ?? []).length > 0)
+      return { reason: "assigned issue has maintainer engagement" };
+    if (issue.milestone) return { reason: "milestoned issue has maintainer engagement" };
     const totalReactions = asRecord(issue.reactions).total_count;
     if (!Number.isInteger(totalReactions) || Number(totalReactions) < 0) {
-      return "live issue reaction count is unavailable";
+      return { reason: "live issue reaction count is unavailable" };
     }
     if (Number(totalReactions) >= 20)
-      return "issue has strong community traction (20 or more reactions)";
+      return { reason: "issue has strong community traction (20 or more reactions)" };
     if (labels.includes("clawsweeper:linked-pr-open")) {
-      return "clawsweeper:linked-pr-open blocks stale-version bug auto-close";
+      return { reason: "clawsweeper:linked-pr-open blocks stale-version bug auto-close" };
     }
 
     const comments = ghPaged<unknown>(`repos/${targetRepo()}/issues/${number}/comments`);
     if (maintainerAssociatedEntries(comments).length > 0) {
-      return "maintainer issue comment confirms engagement";
+      return { reason: "maintainer issue comment confirms engagement" };
     }
-    return issueRecentHumanCommentBlockReasonFromComments(
-      comments,
-      STALE_VERSION_BUG_MIN_INACTIVE_DAYS,
-    );
+    return issueRecentHumanCommentBlockFromComments(comments, STALE_VERSION_BUG_MIN_INACTIVE_DAYS);
   }
-  function staleVersionBugApplyBlockReasonSafe(
+  function staleVersionBugApplyBlockSafe(
     number: number,
     item: Pick<Item, "createdAt">,
-  ): string | null {
+  ): ApplyCloseGuardBlock | null {
     try {
-      return staleVersionBugApplyBlockReason(number, item);
+      return staleVersionBugApplyBlock(number, item);
     } catch (error) {
-      return `stale-version bug liveness check failed: ${
-        error instanceof Error ? error.message : String(error)
-      }`;
+      return {
+        reason: `stale-version bug liveness check failed: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      };
     }
   }
 
   return {
     lowSignalUnmergeablePrApplyBlockReason,
     lowSignalUnmergeablePrApplyBlockReasonSafe,
-    unconfirmedProductDirectionApplyBlockReason,
-    unconfirmedProductDirectionApplyBlockReasonSafe,
-    unsponsoredFeatureApplyBlockReason,
-    unsponsoredFeatureApplyBlockReasonSafe,
-    staleVersionBugApplyBlockReason,
-    staleVersionBugApplyBlockReasonSafe,
+    unconfirmedProductDirectionApplyBlock,
+    unconfirmedProductDirectionApplyBlockSafe,
+    unsponsoredFeatureApplyBlock,
+    unsponsoredFeatureApplyBlockSafe,
+    staleVersionBugApplyBlock,
+    staleVersionBugApplyBlockSafe,
   };
 }
 

@@ -338,6 +338,14 @@ async function publishEventResult(options: EventOptions): Promise<void> {
     return;
   }
   if (activeReviewLeaseRetryAt !== null) {
+    // Batch completion reads its member receipt, not the child step outputs.
+    // Preserve the verified lease deadline so it cannot become an unknown retry.
+    if (options.batchMutationOutput)
+      writeBatchMutationResult(options.batchMutationOutput, {
+        kind: "retryable_failure",
+        reasonCode: "review_lease_active",
+        retryAt: activeReviewLeaseRetryAt,
+      });
     console.log(
       `Deferring ${options.targetRepo}#${options.itemNumber}: active review lease remains active until ${activeReviewLeaseRetryAt}`,
     );

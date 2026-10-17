@@ -299,3 +299,60 @@ export async function deferredContinuationClaim(
     Date.now = realNow;
   }
 }
+
+/**
+ * The deferred publisher's requeue meets an organic review already pending for
+ * the item (#1989): the request can only be carried by that review. Each
+ * scenario of DEFERRED_CONTINUATION_SCENARIOS runs between the publisher's claim
+ * and the requeue; "wrong-producer" sends the requeue under another producer's
+ * delivery id. Returns the stored item after the requeue and the decision the
+ * item's next review job claims.
+ */
+export const PENDING_TRANSFER_SCENARIOS = [
+  // "newer-publication" needs the pending organic review to run as its own
+  // generation first; the held-publication scenarios cover it.
+  ...(Object.keys(DEFERRED_CONTINUATION_SCENARIOS) as DeferredContinuationScenario[]).filter(
+    (scenario) => scenario !== "newer-publication",
+  ),
+  "wrong-producer",
+] as const;
+export type PendingTransferScenario =
+  | Exclude<DeferredContinuationScenario, "newer-publication">
+  | "wrong-producer";
+
+export async function pendingTransferClaim(scenario: PendingTransferScenario, number: number) {
+  const realNow = Date.now;
+  // The production debounce keeps the organic review pending until the requeue.
+  const h = harness({ EXACT_REVIEW_DISPATCH_DEBOUNCE_MS: "90000" });
+  try {
+    return await withExactReviewAdmissionHarness(h, async () => {
+      const deferred = await deferredPublication(h, {
+        ...verifiedRequest(number, 6150293300),
+        statusCommentId: 7000 + number,
+      });
+      await enqueue(
+        h,
+        `organic-edit-${number}`,
+        decision(number, "edited", { sourceUpdatedAt: "2026-10-13T16:45:00Z" }),
+      );
+      const publisher = await claimPublication(h, deferred.publicationKey);
+      const afterRequeue =
+        scenario === "wrong-producer"
+          ? undefined
+          : await DEFERRED_CONTINUATION_SCENARIOS[scenario](h, number, publisher);
+      const deliveryId =
+        scenario === "wrong-producer"
+          ? deferred.requeueDeliveryId.replace(/:(\d+):(\d+)$/, ":999999:$2")
+          : deferred.requeueDeliveryId;
+      await enqueue(h, deliveryId, sourceDriftRequeue(deferred.claimed));
+      const stored = structuredClone((await queueState(h)).items[deferred.key]);
+      if (afterRequeue) await afterRequeue();
+      // An untouched organic review waits out its debounce before it is claimed.
+      const now = Date.now;
+      Date.now = () => now() + 120_000;
+      return { requested: deferred.claimed, stored, claimed: await reviewOnce(h, number) };
+    });
+  } finally {
+    Date.now = realNow;
+  }
+}

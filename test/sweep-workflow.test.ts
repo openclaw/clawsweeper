@@ -36,6 +36,114 @@ import { scheduledReviewSemanticSourceRevision } from "../dist/scheduled-review-
 import { MAX_MEDIA_PROOF_TIMEOUT_MS } from "../dist/media-proof-budget.js";
 import { runExactReviewDirectPublicationFromEnv } from "../dist/repair/exact-review-direct-publication.js";
 
+test("review completion forwards admission holds and preserves locked and oversized holds", () => {
+  const workflow = YAML.parse(readText(".github/workflows/sweep.yml"));
+  const completions = Object.values(workflow.jobs).flatMap((job: any) =>
+    (job.steps ?? []).filter((step: any) => step.env?.REVIEW_HOLD),
+  );
+  assert.equal(completions.length, 1);
+  const expression = completions[0].env.REVIEW_HOLD.slice(3, -2).replace(
+    /steps\.([\w-]+)/g,
+    (_: string, id: string) => `steps[${JSON.stringify(id)}]`,
+  );
+  const evaluate = new Function("steps", `return (${expression})`);
+  for (const [live, locked, oversized, expected] of [
+    ["maintainer_request_required", "", "", "maintainer_request_required"],
+    ["", "skipped_locked_conversation", "", "locked_conversation"],
+    ["", "", "true", "oversized_pull_request"],
+    ["", "", "", ""],
+  ]) {
+    assert.equal(
+      evaluate({
+        "live-item": { outputs: { review_hold: live, guarded_open_action: locked, oversized } },
+        "review-exact-event-item": { outcome: "success", outputs: {} },
+      }),
+      expected,
+    );
+  }
+});
+
+test("a maintainer admission skip that carries a command answers its status", () => {
+  const workflow = YAML.parse(readText(".github/workflows/sweep.yml"));
+  const steps = workflow.jobs["event-review-apply"].steps;
+  const token = steps.find((entry: any) => entry.id === "target-write-token");
+  const gate = new Function(
+    "steps",
+    `return (${token.if
+      .slice(3, -2)
+      .replace(/steps\.([\w-]+)/g, (_: string, id: string) => `steps[${JSON.stringify(id)}]`)})`,
+  );
+  const tokenFor = (noop: string, hold: string, command: string, retry = "false") =>
+    gate({
+      "claim-exact-review-queue": { outputs: { claimed: "true" } },
+      "live-item": {
+        outcome: "success",
+        outputs: { scheduled_semantic_noop: noop, review_hold: hold, admission_retry: retry },
+      },
+      target: { outputs: { has_command_context: command } },
+    });
+  assert.equal(tokenFor("false", "", "true"), true, "a review that proceeds");
+  assert.equal(tokenFor("true", "maintainer_request_required", "true"), true, "skipped request");
+  assert.equal(tokenFor("true", "maintainer_request_required", "false"), false, "no command");
+  assert.equal(tokenFor("true", "", "true"), false, "other semantic no-op");
+  assert.equal(tokenFor("true", "locked_conversation", "true"), false, "other hold");
+  assert.equal(tokenFor("false", "", "true", "true"), false, "admission retry");
+
+  const mark = steps.find((entry: any) => entry.name === "Mark unsuccessful re-review");
+  const root = mkdtempSync(`${tmpPrefix}skipped-request-status-`);
+  try {
+    const bin = join(root, "bin");
+    mkdirSync(join(root, "scripts"), { recursive: true });
+    mkdirSync(bin);
+    writeFileSync(
+      join(root, "scripts/control-plane-curl.sh"),
+      "control_plane_curl() { printf 200; }\n",
+    );
+    writeFileSync(join(bin, "node"), "#!/bin/sh\necho '{}'\n");
+    writeFileSync(join(bin, "pnpm"), '#!/bin/sh\nprintf \'%s\\n\' "$@" > "$STATUS_LOG"\n');
+    chmodSync(join(bin, "node"), 0o700);
+    chmodSync(join(bin, "pnpm"), 0o700);
+    const statusFor = (reviewHold: string) => {
+      const log = join(root, `status-${reviewHold || "none"}`);
+      execFileSync("bash", ["-c", mark.run], {
+        cwd: root,
+        env: {
+          ...process.env,
+          PATH: `${bin}${delimiter}${process.env.PATH}`,
+          STATUS_LOG: log,
+          QUEUE_URL: "https://queue.invalid",
+          TARGET_REPO: "openclaw/clawsweeper",
+          ITEM_NUMBER: "1969",
+          COMMAND_STATUS_MARKER: "<!-- clawsweeper-command-status:1969:re_review:fixture -->",
+          STATUS_COMMENT_ID: "",
+          RUN_URL: "https://github.com/openclaw/clawsweeper/actions/runs/4242",
+          REVIEW_OUTCOME: "skipped",
+          REVIEW_SUPERSEDED: "false",
+          RESERVATION_STATUS: "",
+          RETRY_AT: "",
+          REVIEW_FAILURE_REASON: "",
+          ADMISSION_REVIEW_HOLD: reviewHold,
+        },
+      });
+      const args = readText(log).split("\n");
+      return {
+        state: args[args.indexOf("--state") + 1],
+        detail: args[args.indexOf("--detail") + 1],
+        args,
+      };
+    };
+    const skipped = statusFor("maintainer_request_required");
+    assert.equal(skipped.state, "Waiting");
+    assert.match(skipped.detail, /did not review this retry/);
+    assert.match(skipped.detail, /@clawsweeper re-review/);
+    assert.ok(skipped.args.includes("--refuse-terminal-state"));
+    assert.ok(skipped.args.includes("--require-queue-authority-fence"));
+    assert.equal(statusFor("").state, "Failed", "other failures keep their answer");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("review workflow emits terminal reasons for non-retryable scanner manifests", () => {
   const workflow = YAML.parse(readText(".github/workflows/sweep.yml"));
   const producers = Object.values(workflow.jobs).flatMap((job: any) =>
@@ -589,18 +697,35 @@ test("exact event review builds the admission predicate before signals and targe
       index((step) => step.name === "React to target item review start", "reaction"),
     ],
     [
-      "target checkout",
-      index((step) => step.name === "Check out target repository", "target checkout"),
+      "review lease reservation",
+      index((step) => step.name === "Reserve exact review lease", "lease"),
     ],
     ["Codex setup", index((step) => step.uses === "./.github/actions/setup-codex", "Codex setup")],
     [
       "OpenClaw setup",
       index((step) => step.uses === "./.github/actions/setup-openclaw", "OpenClaw setup"),
     ],
+    ["preliminary labels", index((step) => step.id === "intake-triage", "intake")],
     [
-      "review lease reservation",
-      index((step) => step.name === "Reserve exact review lease", "lease"),
+      "intake receipt recovery",
+      index((step) => step.id === "recover-intake-receipts", "intake recovery"),
     ],
+    [
+      "target checkout",
+      index((step) => step.name === "Check out target repository", "target checkout"),
+    ],
+    [
+      "pinned Codex source",
+      index(
+        (step) => step.uses === "./.github/actions/setup-openclaw-codex-source",
+        "Codex source",
+      ),
+    ],
+    [
+      "automatic review status",
+      index((step) => step.name === "Mark automatic review in progress", "review status"),
+    ],
+    ["source review", index((step) => step.id === "review-exact-event-item", "review")],
   ] as const;
   for (let position = 1; position < ordered.length; position += 1) {
     assert.ok(
@@ -609,7 +734,60 @@ test("exact event review builds the admission predicate before signals and targe
     );
   }
   assert.equal(steps[ordered[2][1]]!["continue-on-error"], true);
-  assert.equal(steps[ordered[8][1]]!.id, "reserve-exact-review-lease");
+  assert.equal(steps[ordered[5][1]]!.id, "reserve-exact-review-lease");
+});
+
+test("exact review provisions only for admitted items with a posted reservation", () => {
+  const workflow = YAML.parse(readText(".github/workflows/sweep.yml"));
+  const steps = workflow.jobs["event-review-apply"].steps;
+  const provisioning = steps.filter(
+    (step: any) =>
+      ["target-git-cache-key", "target-git-cache", "target-checkout"].includes(step.id) ||
+      [
+        "./.github/actions/setup-codex",
+        "./.github/actions/setup-openclaw",
+        "./.github/actions/setup-openclaw-codex-source",
+      ].includes(step.uses),
+  );
+  assert.equal(provisioning.length, 6);
+  for (const runner of ["codex", "openclaw"]) {
+    for (const reservation of ["posted", "held", "superseded", ""]) {
+      for (const admission of ["admitted", "unclaimed", "not-proceeding"]) {
+        for (const oversized of [false, true]) {
+          const values: Record<string, string> = {
+            "claim-exact-review-queue.claimed": String(admission !== "unclaimed"),
+            "live-item.proceed": String(admission !== "not-proceeding"),
+            "live-item.oversized": String(oversized),
+            "reserve-exact-review-lease.status": reservation,
+          };
+          for (const step of provisioning) {
+            const expression = step.if
+              .replace(/^\s*\$\{\{\s*|\s*\}\}\s*$/g, "")
+              .replace("env.CLAWSWEEPER_RUNNER", JSON.stringify(runner))
+              .replace(
+                /steps\.([\w-]+)\.(outputs\.([\w_]+)|outcome)/g,
+                (_: string, id: string, access: string, output?: string) =>
+                  JSON.stringify(values[`${id}.${output ?? access}`] ?? ""),
+              );
+            assert.equal(
+              Function(`return (${expression})`)(),
+              reservation === "posted" &&
+                admission === "admitted" &&
+                !oversized &&
+                (step.uses !== "./.github/actions/setup-codex" || runner === "codex"),
+              JSON.stringify({
+                step: step.id ?? step.uses,
+                runner,
+                reservation,
+                admission,
+                oversized,
+              }),
+            );
+          }
+        }
+      }
+    }
+  }
 });
 
 test("OpenClaw review jobs provision the pinned sibling Codex source before review", () => {
@@ -6593,4 +6771,124 @@ test("exact review step carries the scoped lease tuple but not the shared webhoo
     assert.ok(review?.env?.[name], name);
   }
   assert.equal(review?.env?.CLAWSWEEPER_WEBHOOK_SECRET, undefined);
+});
+
+test("intake joins before hydration and invalidates admission on enabled or failed attempts", () => {
+  const workflow = YAML.parse(readText(".github/workflows/sweep.yml"));
+  const steps = workflow.jobs["event-review-apply"].steps as any[];
+  const intake = steps.find((step) => step.id === "intake-triage");
+  const review = steps.find((step) => step.id === "review-exact-event-item");
+  const prior = steps.find((step) => step.id === "prior-record-setup-state");
+  assert.ok(steps.indexOf(intake) < steps.indexOf(prior));
+  assert.ok(steps.indexOf(prior) < steps.indexOf(review));
+  assert.equal(intake["continue-on-error"], true);
+  assert.equal(intake["timeout-minutes"], 2);
+  assert.match(intake.if, /oversized != 'true'/);
+  const credential = new Function(
+    "vars",
+    "secrets",
+    "return (" + intake.env.OPENAI_API_KEY.slice(3, -2) + ")",
+  );
+  const nativeKey = { OPENAI_API_KEY: "synthetic-native-openai-key" };
+  for (const vars of [
+    {},
+    { CLAWSWEEPER_CODEX_AUTH_MODE: "proxy" },
+    { CLAWSWEEPER_CODEX_AUTH_MODE: "login" },
+  ]) {
+    assert.equal(credential(vars, nativeKey), nativeKey.OPENAI_API_KEY);
+  }
+  assert.equal(credential({}, {}), "");
+  assert.equal(credential({ CLAWSWEEPER_CODEX_AUTH_MODE: "clawrouter" }, nativeKey), "");
+  assert.equal(
+    credential(
+      { CLAWSWEEPER_RUNNER: "openclaw", CLAWSWEEPER_CODEX_AUTH_MODE: "clawrouter" },
+      nativeKey,
+    ),
+    nativeKey.OPENAI_API_KEY,
+  );
+  assert.equal(intake.env.CLAWSWEEPER_INTAKE_BACKEND, "${{ vars.CLAWSWEEPER_INTAKE_BACKEND }}");
+  assert.equal(intake.env.CLAWSWEEPER_DECISION_MODEL, "${{ vars.CLAWSWEEPER_DECISION_MODEL }}");
+  assert.equal(review.env.OPENAI_API_KEY, undefined);
+  const expression = review.env.PR_ADMISSION_FILE.slice(3, -2).replace(
+    /steps\.([\w-]+)/g,
+    (_: string, id: string) => `steps[${JSON.stringify(id)}]`,
+  );
+  const evaluate = new Function("steps", `return (${expression})`);
+  for (const [outcome, unchanged, expected] of [
+    ["skipped", "", "admission.json"],
+    ["success", "true", "admission.json"],
+    ["success", "false", ""],
+    ["failure", "", ""],
+    ["cancelled", "", ""],
+  ]) {
+    assert.equal(
+      evaluate({
+        "intake-triage": { outcome, outputs: { admission_unchanged: unchanged } },
+        "live-item": { outputs: { pr_admission_file: "admission.json" } },
+      }),
+      expected,
+    );
+  }
+});
+
+test("interrupted intake receipts recover before review can seal the producer", () => {
+  const steps = YAML.parse(readText(".github/workflows/sweep.yml")).jobs["event-review-apply"]
+    .steps;
+  const index = steps.findIndex((step: { id?: string }) => step.id === "intake-triage");
+  const recover = steps[index + 1];
+  assert.equal(recover.id, "recover-intake-receipts");
+  assert.ok(
+    index + 1 < steps.findIndex((step: { id?: string }) => step.id === "review-exact-event-item"),
+  );
+  assert.match(recover.if, /always\(\)/);
+  assert.match(recover.if, /outcome == 'failure'/);
+  assert.match(recover.if, /outcome == 'cancelled'/);
+  assert.match(recover.env.INTAKE_OUTCOME, /steps.intake-triage.outcome/);
+  const script = recover.run.replace(
+    'pnpm run --silent finalize-action-events -- --interrupt-open-attempts --reason "$reason"',
+    'printf "%s\\n" "$reason"',
+  );
+  for (const outcome of ["failure", "cancelled"]) {
+    const result = spawnSync("bash", ["-c", script], {
+      encoding: "utf8",
+      env: { ...process.env, INTAKE_OUTCOME: outcome },
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout.trim(), outcome === "cancelled" ? "cancelled" : "workflow_failed");
+  }
+});
+
+test("late intake recovery retries after an early recovery failure and successful review", () => {
+  const steps = YAML.parse(readText(".github/workflows/sweep.yml")).jobs["event-review-apply"]
+    .steps;
+  const finalize = steps.find(
+    (step: { name?: string }) => step.name === "Finalize exact event action ledger",
+  );
+  assert.equal(
+    finalize.env.INTAKE_RECOVERY_OUTCOME,
+    "${{ steps.recover-intake-receipts.outcome || 'not_started' }}",
+  );
+  const script = finalize.run.replace(
+    'pnpm run --silent finalize-action-events -- "${args[@]}"',
+    'printf "%s\\n" "${args[*]}"',
+  );
+  for (const outcome of ["failure", "cancelled", "success", "skipped", "not_started"]) {
+    const result = spawnSync("bash", ["-c", script], {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        REVIEW_SUPERSEDED: "false",
+        REVIEW_OUTCOME: "success",
+        REVIEW_EXIT_CODE: "0",
+        INTAKE_RECOVERY_OUTCOME: outcome,
+      },
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(
+      result.stdout.trim(),
+      ["failure", "cancelled"].includes(outcome)
+        ? "--interrupt-open-attempts --reason workflow_failed"
+        : "",
+    );
+  }
 });

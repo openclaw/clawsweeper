@@ -269,15 +269,13 @@ export function sortCommentsForRouting(comments: LooseRecord[]) {
 
 export function selectCommentsForRouting({
   recentComments,
-  durableComments,
   maxComments,
 }: {
   recentComments: LooseRecord[];
-  durableComments: LooseRecord[];
   maxComments: number;
 }) {
   const cappedRecent = sortCommentsForRouting(recentComments).slice(0, Math.max(0, maxComments));
-  return sortCommentsForRouting(uniqueCommentsById([...cappedRecent, ...durableComments]));
+  return sortCommentsForRouting(uniqueCommentsById(cappedRecent));
 }
 
 export const SUPERSEDED_RE_REVIEW_REASON = "newer re-review command supersedes this request";

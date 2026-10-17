@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { sha256 } from "../content-hash.js";
+import { reportWithoutHydrationCache } from "../report-hydration-cache.js";
 import { requiredCliValue } from "../clawsweeper-args.js";
 import {
   appendFileSync,
@@ -269,7 +270,11 @@ function planCanonicalRecordTuples(
       validateRecordTuple(tuple, "canonical publication tuple");
       const operations = RECORD_TUPLE_SECTIONS.map((section) => {
         const path = tuplePathForSection(paths, section);
-        const content = localContent(path);
+        const rawContent = localContent(path);
+        const content =
+          rawContent !== null && (section === "items" || section === "closed")
+            ? reportWithoutHydrationCache(rawContent)
+            : rawContent;
         const expected = stateContent(path);
         return {
           path,
@@ -483,18 +488,26 @@ async function recoverNonReconcilePublicationConflict(
   if (!repoSlug || !itemNumber) throw error;
   const paths = recordTuplePaths({ repository: repoSlug, number: itemNumber });
   const target = tupleFromMutation(options.mutation, paths);
+  const baseline = tupleFromRoot(options.stateRoot, paths);
+  const comparableContent = (tuple: RecordTupleContents, path: string) => {
+    const content = tupleContentForPath(tuple, path);
+    return content !== null && (path === paths.item || path === paths.closed)
+      ? reportWithoutHydrationCache(content)
+      : content;
+  };
   const baselineDigests = new Map(
-    options.mutation.operations.map((operation) => [operation.path, operation.expectedDigest]),
+    options.mutation.operations.map((operation) => [
+      operation.path,
+      contentDigest(comparableContent(baseline, operation.path)),
+    ]),
   );
   // Sections this publication changed: the mutation's content differs from the
   // state-baseline digest the mutation asserted for that section.
   const changedPaths = RECORD_TUPLE_SECTIONS.map((section) =>
     tuplePathForSection(paths, section),
-  ).filter(
-    (path) => contentDigest(tupleContentForPath(target, path)) !== baselineDigests.get(path),
-  );
+  ).filter((path) => contentDigest(comparableContent(target, path)) !== baselineDigests.get(path));
   const conflictingPaths = changedPaths.filter(
-    (path) => tupleContentForPath(current.tuple, path) !== tupleContentForPath(target, path),
+    (path) => comparableContent(current.tuple, path) !== comparableContent(target, path),
   );
   if (conflictingPaths.length === 0) {
     syncTupleToRoot(options.root, current.tuple);
@@ -509,8 +522,7 @@ async function recoverNonReconcilePublicationConflict(
   // weaken those fences to compensate here.
   if (
     conflictingPaths.some(
-      (path) =>
-        contentDigest(tupleContentForPath(current.tuple, path)) !== baselineDigests.get(path),
+      (path) => contentDigest(comparableContent(current.tuple, path)) !== baselineDigests.get(path),
     )
   ) {
     syncTupleToRoot(options.root, current.tuple);
@@ -655,9 +667,13 @@ function rebaseReconciliationMove(options: {
   target: RecordTupleContents;
   current: RecordTupleContents;
 }): RecordTupleContents {
-  const baselinePrimary = options.baseline.item ?? options.baseline.closed;
-  const targetPrimary = options.target.item ?? options.target.closed;
-  const currentPrimary = options.current.item ?? options.current.closed;
+  const primary = (tuple: RecordTupleContents) => {
+    const content = tuple.item ?? tuple.closed;
+    return content === null ? null : reportWithoutHydrationCache(content);
+  };
+  const baselinePrimary = primary(options.baseline);
+  const targetPrimary = primary(options.target);
+  const currentPrimary = primary(options.current);
   const targetLocation = tupleLocation(options.target);
   if (!baselinePrimary || !targetPrimary || !currentPrimary || !targetLocation) {
     throw new Error(`Cannot rebase non-move reconciliation for ${options.target.paths.key}`);

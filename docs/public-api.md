@@ -39,6 +39,14 @@ For egress field interpretation, use
 [GitHub publication egress telemetry](github-egress-telemetry.md). For other
 fields, use [Live dashboard](live-dashboard.md).
 
+The publication endpoint's `batch.reason_counts` groups the same retained events
+by outcome (`superseded`, `retryable`, `permanent`) and validated reason code.
+Each outcome includes `unrecorded` for historical or synthesized events without
+a recorded reason. Its reason counts sum to that outcome's count. A null
+breakdown means the breakdown is unavailable; existing outcome totals remain
+valid. These are publication outcome events, not unique reviews or unresolved
+targets. Free-text errors and fingerprints are never public reason labels.
+
 Public observer routes are projections, not private-store serializers. Internal
 Durable Object state may retain item keys, repository selectors, workflow/job
 metadata, failure details, run links, revision digests, and sampled records for

@@ -511,9 +511,12 @@ export async function flushWorkflowActionEvents(
   return [...paths].sort();
 }
 
+// Optional workflow phases use the same interruption owner as review/apply.
+// Otherwise a killed preliminary write can retain a retryable intent forever.
 function workflowActionEventIsRecoverableStart(event: ActionEvent): boolean {
   return (
-    (event.event_type === ACTION_EVENT_TYPES.reviewBatch ||
+    (event.event_type === ACTION_EVENT_TYPES.workflowAttempt ||
+      event.event_type === ACTION_EVENT_TYPES.reviewBatch ||
       event.event_type === ACTION_EVENT_TYPES.reviewItem ||
       event.event_type === ACTION_EVENT_TYPES.reviewRetry ||
       event.event_type === ACTION_EVENT_TYPES.applyBatch ||
@@ -576,6 +579,19 @@ function workflowActionEventClosesLifecycle(start: ActionEvent, event: ActionEve
     event.event_type === ACTION_EVENT_TYPES.applyAction &&
     event.action.status === ACTION_EVENT_STATUSES.executed &&
     !workflowActionEventIsUncertainMutationStart(start)
+  );
+}
+
+function workflowActionLifecycleIsClosed(
+  start: ActionEvent,
+  events: readonly ActionEvent[],
+): boolean {
+  const key = workflowActionLifecycleKey(start);
+  return events.some(
+    (event) =>
+      event.event_id !== start.event_id &&
+      workflowActionLifecycleKey(event) === key &&
+      workflowActionEventClosesLifecycle(start, event),
   );
 }
 
@@ -686,15 +702,9 @@ export function interruptOpenWorkflowActionEvents(
           .filter(workflowActionEventIsMutationOutcome)
           .sort(compareWorkflowActionPhases)
           .at(-1);
-        const openUncertainMutationStarts = uncertainMutationStarts.filter((event) => {
-          const eventLifecycleKey = workflowActionLifecycleKey(event);
-          return !current.some(
-            (candidate) =>
-              candidate.event_id !== event.event_id &&
-              workflowActionLifecycleKey(candidate) === eventLifecycleKey &&
-              workflowActionEventClosesLifecycle(event, candidate),
-          );
-        });
+        const openUncertainMutationStarts = uncertainMutationStarts.filter(
+          (event) => !workflowActionLifecycleIsClosed(event, current),
+        );
         const openUncertainMutation =
           workflowActionEventIsUncertainMutationStart(start) ||
           openUncertainMutationStarts.length > 0;
@@ -869,6 +879,20 @@ function finalizeWorkflowActionEventSpool(
       const ordered = sortActionEventsCausally(group);
       const first = ordered[0];
       if (!first) continue;
+      // A later command can flush another producer after its recovery failed.
+      // Keep uncertain writes unsealed so the finalizer can still record their outcome.
+      if (
+        group.some(
+          (event) =>
+            workflowActionEventIsRecoverableStart(event) &&
+            workflowActionEventIsUncertainMutationStart(event) &&
+            !workflowActionLifecycleIsClosed(event, group),
+        )
+      ) {
+        throw new Error(
+          "Cannot finalize an unresolved mutation attempt; run finalize-action-events --interrupt-open-attempts first",
+        );
+      }
       const partitionDate = readWorkflowPartitionDate(safeRoot, first.producer);
       reserveWorkflowProducerFinalization(safeRoot, first.producer, partitionDate, ordered);
       const results = writeActionEventShards(

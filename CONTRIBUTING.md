@@ -83,6 +83,13 @@ evidence.
 
 ## Review Conversations Are Author-Owned
 
+The first automatic PR review waits for ten quiet minutes after observing the
+current head, title, body, and draft state. Further changes restart that window.
+After a completed review, pushes and edits do not start another review: finish
+the fixes and request `@clawsweeper re-review`. Failed or stale-source attempts
+continue through the queue. This includes maintainer-authored PRs opened from 2026-10-15 03:50
+UTC; older maintainer PRs still require an explicit initial request.
+
 Treat a ClawSweeper or maintainer result as the next-step checklist for the PR,
 not as a handoff.
 
@@ -93,9 +100,12 @@ not as a handoff.
    optional moves are not blockers by themselves.
 3. Put the updated proof and each finding's disposition or supporting evidence
    in the main PR body. Do not leave required proof only in a comment.
-4. If the branch head or PR body changed after the latest durable review, treat
+4. If the branch head or review-content body changed after the latest durable review, treat
    that review and any affected proof as stale. Rerun the affected proof and
    wait until the next review applies to the current head and body.
+   The canonical preflight reader excludes one valid advisory annotation from
+   review content; human text, proof, and outside whitespace remain material.
+   Metadata edits can still trigger raw event or concurrency guards.
 5. Request `@clawsweeper re-review` only after the branch, body, proof, and
    relevant checks are current. PR authors and users with repository write
    access may use `@clawsweeper re-review` or `@clawsweeper re-run`; plain

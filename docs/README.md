@@ -56,12 +56,15 @@ everything else requires human comparison with current main.
   execution behavior
 - [State storage](state-storage.md) — active; Worker, R2, and Git-backed state
   ownership
+- [Canonical body tiering](canonical-body-tiering.md) — proposed; preserve records
+  while moving exact bodies from SQLite to the existing R2 bucket
 - [Action ledger](action-ledger.md) — active; mutation receipts and replay
   boundaries
 - [Issue review advisory labels](work-lane.md) — active; structured review labels
 - [Review cache](review-cache.md) — active; reusable review-state contract
+- [Intake triage](intake-triage.md) — active; bounded preliminary classification
 - [Local review preflight summary](portable-review-receipt.md) — proposed
-  local-range export; bounded advisory PR-body handoff
+  local-range export; bounded advisory PR-body handoff and review-content reader
 - [GitHub webhook read model](github-webhook-read-model.md) — active; signed
   ingress, App subscriptions, snapshot freshness, and safety boundary
 - [Review authority contract](review-authority.md) — proposed integration;
