@@ -158,7 +158,10 @@ export async function verifyCanonicalRecords(options: Options) {
       (base.protocol === "https:" || (base.protocol === "http:" && base.hostname === "127.0.0.1")),
     "invalid Worker origin",
   );
-  requireThat(/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(options.repoSlug), "invalid repository slug");
+  requireThat(
+    /^[A-Za-z0-9][A-Za-z0-9_.-]{0,199}$/.test(options.repoSlug),
+    "invalid repository slug",
+  );
   requireThat(
     /^[a-f0-9]{40}$/.test(options.deploymentSha) &&
       /^[a-f0-9]{40}$/.test(options.operatorSha) &&

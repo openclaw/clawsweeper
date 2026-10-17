@@ -42,6 +42,7 @@ function fixture(
     exportId?: string;
     count?: number;
     complete?: boolean;
+    repoSlug?: string;
   } = {},
 ) {
   const calls: string[] = [];
@@ -62,7 +63,7 @@ function fixture(
     if (endpoint.endsWith("/export")) {
       const request = JSON.parse(String(init?.body));
       assert.deepEqual(request, {
-        repoSlug: options.repoSlug,
+        repoSlug: configuration.repoSlug ?? options.repoSlug,
         sections: [request.sections[0]],
         sinceRevision: 0,
         cursor: 0,
@@ -76,7 +77,7 @@ function fixture(
       };
       return Response.json(
         {
-          repoSlug: options.repoSlug,
+          repoSlug: configuration.repoSlug ?? options.repoSlug,
           sections: request.sections,
           revision: 1,
           records: configuration.emptyExport
@@ -143,6 +144,23 @@ test("full sample stays within 136 logical reads and round-trips bounded metadat
     verifyCanonicalRecords({ ...options, fetch: fixture({ count: 33 }).fetch }),
     /invalid export page/,
   );
+});
+
+test("canonical repository slugs preserve case, dots and underscores", async () => {
+  for (const repoSlug of ["OpenClaw-example.repo", "openclaw-example_repo"]) {
+    const baseline = await verifyCanonicalRecords({
+      ...options,
+      repoSlug,
+      fetch: fixture({ repoSlug }).fetch,
+    });
+    const result = await verifyCanonicalRecords({
+      ...options,
+      repoSlug,
+      fetch: fixture({ repoSlug }).fetch,
+      baselineJson: JSON.stringify(baseline),
+    });
+    assert.equal(result.canonicalVerified, 4);
+  }
 });
 
 test("same-revision corruption, regressed revisions and missing records fail", async () => {
