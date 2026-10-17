@@ -19,10 +19,14 @@ export function canonicalBodyLifecycleRules(value: unknown): string {
       typeof rule !== "object" ||
       typeof rule.enabled !== "boolean" ||
       !rule.conditions ||
-      typeof rule.conditions.prefix !== "string"
+      typeof rule.conditions !== "object" ||
+      Array.isArray(rule.conditions) ||
+      (rule.conditions.prefix !== undefined && typeof rule.conditions.prefix !== "string")
     )
       throw new Error("invalid bucket lifecycle rule");
-    const prefix = rule.conditions.prefix;
+    // R2 omits the prefix for bucket-wide rules, including its default multipart
+    // abort rule. Treat omission as all keys without changing the reviewed JSON.
+    const prefix = rule.conditions.prefix ?? "";
     if (
       rule.enabled &&
       rule.deleteObjectsTransition &&

@@ -1,0 +1,1 @@
+- Accept bucket-wide R2 multipart-abort rules during canonical body migration preflight while continuing to reject rules that expire canonical records.
