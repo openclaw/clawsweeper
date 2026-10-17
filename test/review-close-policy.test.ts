@@ -99,7 +99,7 @@ test("external desktop-product bugs close without inventing upstream maintainer 
   );
 });
 
-test("close-first triage keeps actionable upstream work and invites better reports", () => {
+test("close-first issue triage keeps actionable upstream work and invites better reports", () => {
   for (const closeReason of ["not_actionable_in_repo", "incoherent", "cannot_reproduce"] as const) {
     const decision = closeDecision({
       closeReason,

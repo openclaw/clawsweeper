@@ -9,9 +9,10 @@ export function reviewPolicyHash(
   {
     reviewPromptTemplates,
     reviewDecisionSchemaText,
+    reviewProcedureTemplate,
   }: Pick<
     ReturnType<typeof createReviewCoreRuntime>,
-    "reviewPromptTemplates" | "reviewDecisionSchemaText"
+    "reviewPromptTemplates" | "reviewDecisionSchemaText" | "reviewProcedureTemplate"
   >,
 ): string {
   const policyTargetRepo = targetRepo();
@@ -33,6 +34,10 @@ export function reviewPolicyHash(
         : {}),
       repositoryProfile: targetProfile(),
       prompts: reviewPromptTemplates(),
+      procedures: {
+        issue: reviewProcedureTemplate("issue"),
+        pullRequest: reviewProcedureTemplate("pull_request"),
+      },
       schema: reviewDecisionSchemaText(),
     }),
   ).slice(0, 16);
