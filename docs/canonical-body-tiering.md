@@ -301,6 +301,12 @@ Only record identities, revisions, hashes, byte lengths, and coverage counts
 leave the process. The existing signing secret stays in the dedicated workflow
 step; no Cloudflare API token is needed.
 
+Failures emit a fixed diagnostic category and recovery action, never raw error
+text or response bodies. Correct invalid inputs using the saved baseline;
+deployment or operator identity drift requires a newly reviewed execution plan.
+Record mismatches stop migration for investigation. Request or read-limit
+failures preserve the baseline and checkpoint for reviewed recovery.
+
 Exports can include backfill rows outside the canonical point reader. A baseline
 bare 404 is recorded as `export-only` coverage, not proof of a canonical record.
 A later bare 404 for a previously verified canonical record fails the check.

@@ -38,8 +38,34 @@ type Options = {
   attemptMs?: number;
 };
 
-function requireThat(value: unknown, message: string): asserts value {
-  if (!value) throw new Error(message);
+const RECOVERY = {
+  invalid_input:
+    "Correct the workflow inputs and use the exact saved baseline; do not repeat migration.",
+  plan_mismatch:
+    "Stop and obtain a newly reviewed execution plan; preserve the baseline and migration checkpoint.",
+  record_mismatch:
+    "Stop migration and investigate record preservation; preserve the baseline and migration checkpoint.",
+  read_limit:
+    "Stop and review the bounded read plan; preserve the baseline and migration checkpoint.",
+  request_failed:
+    "Stop and check service access, availability and response validity; preserve the baseline and migration checkpoint.",
+} as const;
+type FailureCategory = keyof typeof RECOVERY;
+
+class VerificationError extends Error {
+  readonly category: FailureCategory;
+  constructor(message: string, category: FailureCategory) {
+    super(message);
+    this.category = category;
+  }
+}
+
+function requireThat(
+  value: unknown,
+  message: string,
+  category: FailureCategory = "record_mismatch",
+): asserts value {
+  if (!value) throw new VerificationError(message, category);
 }
 
 function object(value: unknown): Record<string, unknown> {
@@ -114,14 +140,16 @@ function parseBaseline(json: string, options: Options): Baseline {
   const envelope = object(JSON.parse(json));
   const input = object(envelope.baseline);
   requireThat(
-    input.version === 1 &&
-      input.repoSlug === options.repoSlug &&
+    input.version === 1 && Array.isArray(input.records) && input.records.length <= 128,
+    "invalid baseline",
+  );
+  requireThat(
+    input.repoSlug === options.repoSlug &&
       input.deploymentSha === options.deploymentSha &&
       input.operatorSha === options.operatorSha &&
-      input.planSha256 === options.planSha256 &&
-      Array.isArray(input.records) &&
-      input.records.length <= 128,
+      input.planSha256 === options.planSha256,
     "baseline identity mismatch",
+    "plan_mismatch",
   );
   const seen = new Set<string>();
   const records = input.records.map((value: unknown) => {
@@ -150,17 +178,24 @@ function parseBaseline(json: string, options: Options): Baseline {
 }
 
 export async function verifyCanonicalRecords(options: Options) {
-  const base = new URL(options.baseUrl);
+  let base: URL;
+  try {
+    base = new URL(options.baseUrl);
+  } catch {
+    throw new VerificationError("invalid Worker origin", "invalid_input");
+  }
   requireThat(
     base.origin === options.baseUrl &&
       !base.username &&
       !base.password &&
       (base.protocol === "https:" || (base.protocol === "http:" && base.hostname === "127.0.0.1")),
     "invalid Worker origin",
+    "invalid_input",
   );
   requireThat(
     /^[A-Za-z0-9][A-Za-z0-9_.-]{0,199}$/.test(options.repoSlug),
     "invalid repository slug",
+    "invalid_input",
   );
   requireThat(
     /^[a-f0-9]{40}$/.test(options.deploymentSha) &&
@@ -168,17 +203,31 @@ export async function verifyCanonicalRecords(options: Options) {
       /^[a-f0-9]{64}$/.test(options.planSha256) &&
       options.webhookSecret,
     "missing verification identity",
+    "invalid_input",
   );
-  const prior = options.baselineJson ? parseBaseline(options.baselineJson, options) : undefined;
+  let prior: Baseline | undefined;
+  try {
+    prior = options.baselineJson ? parseBaseline(options.baselineJson, options) : undefined;
+  } catch (error) {
+    if (error instanceof VerificationError && error.category === "plan_mismatch") throw error;
+    throw new VerificationError(
+      error instanceof VerificationError ? error.message : "invalid baseline",
+      "invalid_input",
+    );
+  }
   const deadline = Date.now() + PHASE_MS;
   const attemptMs = Math.min(options.attemptMs ?? ATTEMPT_MS, ATTEMPT_MS);
-  requireThat(attemptMs > 0, "invalid request deadline");
+  requireThat(attemptMs > 0, "invalid request deadline", "invalid_input");
   let attempts = 0;
   let logicalRequests = 0;
   // signedRequest owns the three-attempt policy. Buffer here so its timeout
   // includes streamed bodies, and neither redirects nor error bodies leak data.
   const boundedFetch: typeof globalThis.fetch = async (input, init) => {
-    requireThat(++attempts <= 408 && Date.now() < deadline, "verification request budget exceeded");
+    requireThat(
+      ++attempts <= 408 && Date.now() < deadline,
+      "verification request budget exceeded",
+      "read_limit",
+    );
     const controller = new AbortController();
     const aborted = new Promise<never>((_resolve, reject) => {
       controller.signal.addEventListener(
@@ -206,7 +255,7 @@ export async function verifyCanonicalRecords(options: Options) {
         const next = await Promise.race([reader.read(), aborted]);
         if (next.done) break;
         bytes += next.value.byteLength;
-        requireThat(bytes <= RESPONSE_BYTES, "response exceeds 16 MiB");
+        requireThat(bytes <= RESPONSE_BYTES, "response exceeds 16 MiB", "read_limit");
         chunks.push(next.value);
       }
       requireThat(!controller.signal.aborted, "request deadline exceeded");
@@ -221,6 +270,7 @@ export async function verifyCanonicalRecords(options: Options) {
     requireThat(
       ++logicalRequests <= 136 && Date.now() < deadline,
       "verification request budget exceeded",
+      "read_limit",
     );
     const response =
       endpoint === "/api/health"
@@ -233,7 +283,11 @@ export async function verifyCanonicalRecords(options: Options) {
             body,
             fetch: boundedFetch,
           });
-    requireThat(response.ok || response.status === 404, `verification HTTP ${response.status}`);
+    requireThat(
+      response.ok || response.status === 404,
+      `verification HTTP ${response.status}`,
+      "request_failed",
+    );
     return { status: response.status, value: object(await response.json()) };
   }
   async function identity() {
@@ -247,6 +301,7 @@ export async function verifyCanonicalRecords(options: Options) {
           value.deployment_sha === options.deploymentSha &&
           (endpoint !== "/api/health" || value.ok === true),
         "deployment identity mismatch",
+        "plan_mismatch",
       );
     }
   }
@@ -361,12 +416,18 @@ async function main() {
   requireThat(
     env.VERIFICATION_EXECUTE === "true",
     "execute is required: reads run existing Worker initialization and legacy cleanup",
+    "invalid_input",
   );
   const phase = env.VERIFICATION_PHASE;
-  requireThat(phase === "baseline" || phase === "recheck", "invalid verification phase");
+  requireThat(
+    phase === "baseline" || phase === "recheck",
+    "invalid verification phase",
+    "invalid_input",
+  );
   requireThat(
     phase === "baseline" ? !env.VERIFICATION_BASELINE : !!env.VERIFICATION_BASELINE,
     "baseline does not match phase",
+    "invalid_input",
   );
   const result = await verifyCanonicalRecords({
     baseUrl: env.EXACT_REVIEW_QUEUE_URL ?? "https://clawsweeper.openclaw.ai",
@@ -385,9 +446,13 @@ async function main() {
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
-  main().catch(() => {
+  main().catch((error: unknown) => {
+    // Only local categories and fixed recovery text are printable. Transport
+    // errors can contain response bodies, URLs or credentials.
+    const category = error instanceof VerificationError ? error.category : "request_failed";
     process.stderr.write(
-      "[canonical-record-verification] FAILED: verification stopped; no activation requested\n",
+      `[canonical-record-verification] ${category}: ${RECOVERY[category]} No activation requested.\n` +
+        "[canonical-record-verification] FAILED (exit 1)\n",
     );
     process.exitCode = 1;
   });

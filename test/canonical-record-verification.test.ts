@@ -338,9 +338,10 @@ test("redirects, failed retries, stalled bodies and oversized streams are bounde
   );
 });
 
-test("CLI exercises real loopback HTTP and emits metadata only before and after migration", async (t) => {
+test("CLI exercises real loopback HTTP with metadata output and safe failure recovery", async (t) => {
   let requests = 0;
   let generation = 1;
+  let failure: "deployment" | "missing" | "http" | "json" | "oversized" | undefined;
   const server = createServer(async (request, response) => {
     requests++;
     let body = "";
@@ -352,9 +353,21 @@ test("CLI exercises real loopback HTTP and emits metadata only before and after 
         `sha256=${createHmac("sha256", secret).update(body).digest("hex")}`,
       );
     }
+    if ((failure === "http" && endpoint !== "/api/health") || failure === "json") {
+      response.writeHead(failure === "http" ? 503 : 200);
+      response.end(`private body ${secret}`);
+      return;
+    }
+    if (failure === "oversized") {
+      response.end(Buffer.alloc(16 * 1024 * 1024 + 1));
+      return;
+    }
     let value: unknown;
     if (endpoint === "/api/health" || endpoint.endsWith("admission-capabilities")) {
-      value = { ok: true, deployment_sha: deploymentSha };
+      value = {
+        ok: true,
+        deployment_sha: failure === "deployment" ? "d".repeat(40) : deploymentSha,
+      };
     } else if (endpoint.endsWith("/export")) {
       const section = JSON.parse(body).sections[0];
       assert.ok(sections.includes(section));
@@ -366,13 +379,19 @@ test("CLI exercises real loopback HTTP and emits metadata only before and after 
           { section, id: "1", storeRevision: generation, ...record("private body 🦊", generation) },
         ],
       };
-    } else value = record("private body 🦊", generation);
-    response.writeHead(200, { "content-type": "application/json" });
+    } else
+      value =
+        failure === "missing"
+          ? { error: "record_not_found", detail: secret }
+          : record("private body 🦊", generation);
+    response.writeHead(failure === "missing" && endpoint.includes("/items/") ? 404 : 200, {
+      "content-type": "application/json",
+    });
     response.end(JSON.stringify(value));
   });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   t.after(() => new Promise<void>((resolve) => server.close(() => resolve())));
-  const run = async (baseline?: string) =>
+  const run = async (baseline?: string, env: Record<string, string> = {}) =>
     promisify(execFile)(process.execPath, ["scripts/canonical-record-verification.ts"], {
       timeout: 10_000,
       env: {
@@ -386,6 +405,7 @@ test("CLI exercises real loopback HTTP and emits metadata only before and after 
         VERIFICATION_PHASE: baseline ? "recheck" : "baseline",
         VERIFICATION_REPO_SLUG: options.repoSlug,
         ...(baseline ? { VERIFICATION_BASELINE: baseline } : {}),
+        ...env,
       },
     });
   const before = await run();
@@ -398,4 +418,39 @@ test("CLI exercises real loopback HTTP and emits metadata only before and after 
   assert.equal(requests, 24);
   assert.ok(!`${before.stdout}${after.stdout}`.includes("private body"));
   assert.ok(!`${before.stdout}${after.stdout}`.includes(secret));
+
+  const expectFailure = async (baseline: string, category: string, action: RegExp, env = {}) => {
+    await assert.rejects(run(baseline, env), (error: unknown) => {
+      const result = error as { code: number; stdout: string; stderr: string };
+      assert.equal(result.code, 1);
+      assert.equal(result.stdout, "");
+      assert.match(result.stderr, new RegExp(`\\] ${category}:`));
+      assert.match(result.stderr, action);
+      assert.match(result.stderr, /FAILED \(exit 1\)\n$/);
+      assert.ok(!result.stderr.includes("private body"));
+      assert.ok(!result.stderr.includes(secret));
+      return true;
+    });
+  };
+  const tampered = JSON.parse(after.stdout);
+  tampered.sha256 = "0".repeat(64);
+  await expectFailure(JSON.stringify(tampered), "invalid_input", /exact saved baseline/);
+  await expectFailure(after.stdout, "plan_mismatch", /newly reviewed execution plan/, {
+    GITHUB_SHA: "e".repeat(40),
+  });
+  assert.equal(requests, 24); // Invalid inputs must fail before any authenticated read.
+  failure = "deployment";
+  await expectFailure(after.stdout, "plan_mismatch", /newly reviewed execution plan/);
+  failure = "missing";
+  await expectFailure(after.stdout, "record_mismatch", /investigate record preservation/);
+  for (const mode of ["http", "json"] as const) {
+    failure = mode;
+    await expectFailure(
+      after.stdout,
+      "request_failed",
+      /check service access, availability and response validity/,
+    );
+  }
+  failure = "oversized";
+  await expectFailure(after.stdout, "read_limit", /review the bounded read plan/);
 });
