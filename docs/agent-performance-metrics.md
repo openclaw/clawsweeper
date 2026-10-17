@@ -18,10 +18,10 @@ changes queue admission, retries or publication behavior.
 | Page | Reader question | Detailed charts |
 | --- | --- | --- |
 | Agent performance | Where should execution be investigated? | Review-run p50/p90, failed attempts by stage, repeated-claim target sample |
-| Operations | Is work moving through the system? | Review flow, handoff incidents, publication backlog/deliveries/batch handoff, close sweep |
-| Throughput | How much work is recorded? | Latest-review dates, closes, workflow volume and failure rate |
+| Operations | Is work moving through the system? | Queue resolutions, handoff incidents, publication backlog/deliveries/batch handoff, close sweep |
+| Throughput | How much work is recorded? | Latest-review dates, closes, workflow volume, conclusions and failure rate |
 | Queue | What is waiting or held now? | Current lanes, backoff/parked reasons, capacity and recoveries |
-| Coverage | Which items need a fresh review? | Reviewable backlog, stale repositories and items |
+| Coverage | Which open items have a current review? | Identity-matched coverage, inventory drift, invalidated and expired reviews, old stored reviews |
 
 Overview keeps compact summaries. It does not replace the detailed page owners.
 
@@ -65,9 +65,31 @@ can differ from either independent count. Without paired observations, the
 percentage is unavailable; a measured zero-offer sample is shown separately.
 
 Missing observations remain gaps, never zeros. Source timestamps stay visible.
+The Operations resolution chart measures growth of the review queue's
+`completed_total`. Queue paths can resolve without producing a completed review,
+so this is not a successful-review or delivery count.
 Operations publication delivery history begins when
 `published_total` is first collected; older completion counters cannot backfill
 it. The delivery chart appears once actual delivery observations exist.
+
+Throughput lists raw workflow conclusion counts, including skipped, cancelled,
+timed-out and uncommon conclusions. Those counts plus runs without a recorded
+conclusion equal the total runs. A missing conclusion does not prove a run is
+still active. An excess conclusion count is shown as an archive mismatch.
+The daily sweep failure rate includes `failure`, `startup_failure` and
+`timed_out`; it divides by all recorded runs, including skipped and cancelled.
+
+Coverage matches the live open-item census to canonical review records by
+identity. Coverage and backlog values appear only when `coverage_status` is
+`complete`; missing, stale, count-only or incomplete inventory stays unknown,
+even if a legacy payload contains numeric counts. An empty complete inventory
+has no coverage percentage. Inventory status, timestamp, records outside the
+open inventory, exclusions and unschedulable records remain separate diagnostics.
+Invalidated reviews have a stored `stale_*` status. Expired reviews are completed
+reviews older than the review window. The separate corpus table counts stored
+open records and old review dates; missing dates are not old reviews, and the
+7-day and 30-day review columns also include archived records. Subtracting old
+reviews from open records would not establish fresh-review coverage.
 
 ## Publication handoff scope
 

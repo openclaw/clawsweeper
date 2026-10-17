@@ -1,7 +1,7 @@
 import raw from "../data/dashboard.json";
 import type { Operations, OperationsHour } from "../../scripts/operations.ts";
 import { duration, label } from "./format";
-import { reviewTimingWindow, summarizeRunWindow } from "./run-window.ts";
+import { reviewTimingWindow, summarizeRunWindow, summarizeWorkflowOutcomes } from "./run-window.ts";
 
 // The build snapshot (scripts/build-data.ts). Typed loosely at the edge; every page reads
 // through the view helpers below so presentation never learns the raw shapes.
@@ -143,7 +143,7 @@ const runDays: {
 }[] = (sweep?.days ?? []).map((day: Json) => ({
   date: day.date,
   total: day.count,
-  failure: (day.conclusions.failure ?? 0) + (day.conclusions.startup_failure ?? 0),
+  failure: summarizeWorkflowOutcomes(day.count, day.conclusions).failed,
   success: day.conclusions.success ?? 0,
   cancelled: day.conclusions.cancelled ?? 0,
   reviewP50: day.reviewSeconds?.p50 ?? null,
@@ -189,16 +189,11 @@ export const runs = {
     value: day.total ? day.failure / day.total : null,
   })),
   workflows: actions.workflows.map((workflow: Json) => {
-    const outcomes = workflow.conclusionCounts as Record<string, number>;
-    const finished = sum(Object.values(outcomes));
-    const failed = (outcomes.failure ?? 0) + (outcomes.startup_failure ?? 0);
     return {
       id: workflow.id as string,
       file: workflow.file as string,
       runs: workflow.totalRuns as number,
-      success: finished ? (outcomes.success ?? 0) / finished : null,
-      failed,
-      cancelled: outcomes.cancelled ?? 0,
+      ...summarizeWorkflowOutcomes(workflow.totalRuns, workflow.conclusionCounts),
       p50: workflow.durationSeconds.p50 as number,
       p90: workflow.durationSeconds.p90 as number,
       days: workflow.days.length as number,
@@ -319,9 +314,13 @@ export const status = (() => {
 // The coverage projection splits reviewable items into disjoint parts:
 // reviewed_recent + stale + failed + expired + unreviewed_records + untracked_open.
 const coverageTotals = coverage.totals;
+// Counts in older snapshots do not establish a complete open-item identity census.
+// Only the coverage owner can qualify the ratios and backlog classifications.
+const coverageKnown = coverage.coverage_status === "complete";
 export const cover = {
+  known: coverageKnown,
   percent:
-    typeof coverageTotals.coverage_percent === "number"
+    coverageKnown && typeof coverageTotals.coverage_percent === "number"
       ? (coverageTotals.coverage_percent as number)
       : null,
   reviewable: coverageTotals.reviewable_records as number,
@@ -329,13 +328,20 @@ export const cover = {
   stale: coverageTotals.stale as number,
   pending: coverageTotals.pending as number,
   windowDays: coverage.window_days as number,
+  inventoryStatus: (coverage.inventory_status ?? "unknown") as string,
+  inventoryAt: (coverage.inventory_generated_at ?? null) as string | null,
+  open: coverageTotals.open_records as number,
+  tracked: coverageTotals.tracked_records as number,
+  drift: coverageTotals.record_drift as number,
+  excluded: coverageTotals.excluded as number,
+  unschedulable: coverageTotals.unschedulable_records as number,
   segments: [
     {
       label: "Reviewed recently",
       value: coverageTotals.reviewed_recent as number,
       color: "var(--ok)",
     },
-    { label: "Stale", value: coverageTotals.stale as number, color: "var(--warn)" },
+    { label: "Invalidated", value: coverageTotals.stale as number, color: "var(--warn)" },
     { label: "Expired", value: coverageTotals.expired as number, color: "var(--accent)" },
     { label: "Failed", value: coverageTotals.failed as number, color: "var(--bad)" },
     {
@@ -345,7 +351,11 @@ export const cover = {
     },
   ],
 };
-export const coverText = cover.percent === null ? "–" : `${cover.percent.toFixed(1)}%`;
+export const coverText = !cover.known
+  ? "Unknown"
+  : cover.percent === null
+    ? "–"
+    : `${cover.percent.toFixed(1)}%`;
 
 export const totals = corpus.totals as {
   records: number;

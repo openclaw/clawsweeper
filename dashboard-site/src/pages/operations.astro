@@ -43,10 +43,10 @@ const dispatchLabels: Record<string, string> = { idle: 'No pending dispatch', di
   </div>
 
   <div class="mt-6 grid grid-cols-2 gap-3 xl:grid-cols-4">
-    <Kpi label="Reviews per hour" value={ops.reviewsPerHour.day === null ? '–' : int(ops.reviewsPerHour.day)}
+    <Kpi label="Queue resolutions per hour" value={ops.reviewsPerHour.day === null ? '–' : int(ops.reviewsPerHour.day)}
       sub={ops.reviewsPerHour.week === null ? undefined : `7-day median ${int(ops.reviewsPerHour.week)}`}
       spark={ops.series.completed.slice(-72).map(point => point.value)}
-      tip="Median reviews completed per hour over the last 24 complete hours. The line shows the last 3 days." />
+      tip="Median observed growth of the review queue's completed_total per hour over the last 24 complete hours. Resolutions include queue paths that do not produce a completed review. The line shows the last 3 days." />
     <Kpi label="Shed · 7d" value={ops.shed.observed ? int(ops.shed.week) : '–'} sub={!ops.shed.observed ? 'no queue history' : ops.shed.share === null ? (ops.shed.offers === 0 ? 'no observed offers' : 'offer share unavailable') : `${pct(ops.shed.share, 0)} of observed review offers`}
       tip="Scheduled reviews the queue declined, almost always because the scheduled feed was over its hourly rate (see Queue for reasons). The percentage uses only intervals where accepted and shed offer counts are both observed. The item is offered again on a later pass." />
     <Kpi label="Handoff healthy · 7d" value={pct(ops.handoff.healthyShare, 1)}
@@ -59,8 +59,8 @@ const dispatchLabels: Record<string, string> = { idle: 'No pending dispatch', di
       tip="Closes in the scheduled close sweep that a safety check stopped before they reached GitHub. A rise means stored close proposals no longer fit the item's current state." />
   </div>
 
-  <TabCard title="Review flow" name="flow" tabs={['Completed', 'Shed', 'Waiting', 'Leased']} class="mt-3" tip="Hourly, last 7 days. Waiting and Leased show the highest count in each hour. The strip below shows the worst handoff state in each hour.">
-    <div class="panel"><TimeChart points={ops.series.completed} kind="bar" hourly noun="reviews completed" height={220} /></div>
+  <TabCard title="Review queue flow" name="flow" tabs={['Resolved', 'Shed', 'Waiting', 'Leased']} class="mt-3" tip="Hourly, last 7 days. Resolved counts queue completed_total growth, not successful review delivery. Waiting and Leased show the highest count in each hour. The strip below shows the worst handoff state in each hour.">
+    <div class="panel"><TimeChart points={ops.series.completed} kind="bar" hourly noun="queue entries resolved" height={220} /></div>
     <div class="panel"><TimeChart points={ops.series.shed} kind="bar" hourly noun="offers shed" color="var(--fg-faint)" height={220} /></div>
     <div class="panel"><TimeChart points={ops.series.reviewPending} hourly noun="pending at peak" color="var(--warn)" height={220} /></div>
     <div class="panel"><TimeChart points={ops.series.leased} hourly noun="leased at peak" color="var(--ok)" height={220} /></div>

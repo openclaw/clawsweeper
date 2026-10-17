@@ -1,6 +1,23 @@
 type RunDay = { date: string; total: number; success: number };
 type TimingDay = { date: string; reviewP50: number | null; reviewP90: number | null };
 
+export function summarizeWorkflowOutcomes(total: number, conclusions: Record<string, number>) {
+  const outcomes = Object.entries(conclusions)
+    .filter(([, count]) => count > 0)
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([status, count]) => ({ status, count }));
+  const concluded = outcomes.reduce((sum, outcome) => sum + outcome.count, 0);
+  return {
+    outcomes,
+    failed:
+      (conclusions.failure ?? 0) + (conclusions.startup_failure ?? 0) + (conclusions.timed_out ?? 0),
+    // A cached run can lack its eventual conclusion. Do not call that a failure
+    // or assume it is still running; expose the unmatched count separately.
+    unconcluded: Math.max(0, total - concluded),
+    excessConclusions: Math.max(0, concluded - total),
+  };
+}
+
 // Keep missing calendar days on the axis so a sparse archive cannot join
 // observations across a gap or pull older samples into the requested window.
 export function reviewTimingWindow(days: TimingDay[], asOf: string, length: number): TimingDay[] {
