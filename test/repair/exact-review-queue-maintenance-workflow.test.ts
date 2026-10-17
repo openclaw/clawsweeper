@@ -762,6 +762,7 @@ test("usage workflow keeps read credentials separate from one authorized canary 
     "retire-closed-publication",
     "storage-stats",
     "canonical-bodies",
+    "canonical-records-verify",
     "operator-read",
     "canary",
     "read-back",
