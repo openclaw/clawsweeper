@@ -158,11 +158,19 @@ export function shouldReviewItem(
 }
 
 export const REVIEW_CACHE_MAX_AGE_DAYS = 14;
+// Issue reviews read the target branch, so every target commit changes the exact
+// content digest even when the issue itself is untouched. Busy target branches move
+// several times a day, and each move would buy a full review of every hourly activity
+// item. Target-only drift therefore reuses the prior verdict for the same daily window
+// in which an untouched recent issue is reviewed.
+export const ISSUE_TARGET_DRIFT_REUSE_MS = DAILY_REVIEW_DAYS * DAY_MS;
 
 export function reviewContentCacheHit(options: {
   review: SchedulerExistingReview | null;
   reviewPolicy: string | undefined;
   contentDigest: string;
+  // Current issue content digested against the target SHA of the prior full review.
+  targetDriftContentDigest?: string | null | undefined;
   now?: number;
   explicitDispatch: boolean;
   maintainerRequest: boolean;
@@ -173,11 +181,17 @@ export function reviewContentCacheHit(options: {
   if (review.decision !== "keep_open") return false;
   if (review.lastFullReviewDecision !== "keep_open") return false;
   if (hasReviewPolicyMismatch(review, options.reviewPolicy)) return false;
-  if (!review.contentDigest || review.contentDigest !== options.contentDigest) return false;
+  if (!review.contentDigest) return false;
   const lastFullReviewAt = parseIsoMs(review.lastFullReviewAt);
   if (lastFullReviewAt === null) return false;
   const now = options.now ?? Date.now();
-  return now - lastFullReviewAt < REVIEW_CACHE_MAX_AGE_DAYS * DAY_MS;
+  if (review.contentDigest === options.contentDigest) {
+    return now - lastFullReviewAt < REVIEW_CACHE_MAX_AGE_DAYS * DAY_MS;
+  }
+  return (
+    review.contentDigest === options.targetDriftContentDigest &&
+    now - lastFullReviewAt < ISSUE_TARGET_DRIFT_REUSE_MS
+  );
 }
 
 export function reviewPriority(

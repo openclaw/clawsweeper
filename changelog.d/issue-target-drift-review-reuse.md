@@ -1,0 +1,1 @@
+- Reuse an unchanged keep-open issue verdict for up to one day when only the target branch moved since its last full review, so busy target branches no longer buy a full re-review and fresh labels on every hourly pass of an untouched issue.

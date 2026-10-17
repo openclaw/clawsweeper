@@ -540,6 +540,46 @@ test("cache misses past the staleness ceiling", () => {
   );
 });
 
+test("issue verdict survives target-only drift within one day of the full review", () => {
+  const issue = item({ kind: "issue", number: 300 });
+  const target = (mainSha: string) => ({
+    mainSha,
+    releaseStateComplete: true,
+    latestRelease: null,
+  });
+  const reviewed = itemContentDigest(issue, issueContext(), target("a".repeat(40)));
+  const current = itemContentDigest(issue, issueContext(), target("b".repeat(40)));
+  const commented = itemContentDigest(
+    issue,
+    issueContext({ sourceRevision: "source-rev-2" }),
+    target("a".repeat(40)),
+  );
+  assert.notEqual(reviewed, current);
+  const drift = (lastFullReviewAgeMs: number, targetDriftContentDigest: string | null) =>
+    cacheHit({
+      review: freshReview({
+        contentDigest: reviewed,
+        lastFullReviewAt: new Date(NOW - lastFullReviewAgeMs).toISOString(),
+      }),
+      contentDigest: current,
+      targetDriftContentDigest,
+    });
+
+  assert.equal(drift(DAY_MS - 1, reviewed), true);
+  assert.equal(drift(DAY_MS, reviewed), false);
+  assert.equal(drift(DAY_MS - 1, commented), false);
+  assert.equal(drift(DAY_MS - 1, null), false);
+  assert.equal(
+    cacheHit({
+      review: freshReview({ contentDigest: reviewed }),
+      contentDigest: current,
+      targetDriftContentDigest: reviewed,
+      explicitDispatch: true,
+    }),
+    false,
+  );
+});
+
 test("cache misses on an explicit re-review dispatch", () => {
   assert.equal(cacheHit({ explicitDispatch: true }), false);
 });

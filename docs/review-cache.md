@@ -65,6 +65,14 @@ When the structural stage misses, the exact content digest
 may still reuse an unchanged keep-open verdict after the full context is
 proven.
 
+Issue digests include the target branch head. When an issue digest differs
+only because the target branch moved, the current content is digested again
+against the target SHA recorded by the last full review. If that matches, the
+verdict is reused for up to one day after the last full review. The carried
+report keeps that reviewed SHA, digest and structural anchor, so neither the
+window nor the structural stage can extend the reuse. Any change to the issue,
+its relations, comments or the latest release still misses.
+
 No cache stage can promote a report to close.
 
 Every reused review passes the host-owned scan preflight before checkout

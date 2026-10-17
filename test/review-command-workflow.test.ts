@@ -22,7 +22,10 @@ import { readAllSpooledActionEvents } from "../dist/action-ledger.js";
 import { closeDecision, reviewFinding, withMockGh, withReviewRecord } from "./helpers.ts";
 import { AgentInputScanError, agentInputScanFailureExitCode } from "../dist/agent-input-scan.js";
 import { prepareOpenClawCodexSourceForReview } from "../dist/openclaw-codex-source.js";
-import { reviewStatusForDecision } from "../dist/clawsweeper-report-document.js";
+import {
+  reviewStatusForDecision,
+  updateReviewStructuralFrontMatter,
+} from "../dist/clawsweeper-report-document.js";
 import { previousClawSweeperReviewFromComment } from "../dist/clawsweeper-review-comments.js";
 import { hydratePullRequestReviewSource } from "../dist/clawsweeper-context-hydration.js";
 import { withGitHubRun } from "../dist/clawsweeper-github-runtime.js";
@@ -47,6 +50,7 @@ import {
   suppliedReviewStartLeaseFromArgs,
 } from "../dist/clawsweeper-review-lease.js";
 import { PUBLIC_CODEX_MODEL } from "../dist/codex-env.js";
+import { itemContentDigest } from "../dist/clawsweeper-source-revision.js";
 import {
   createReviewStructuralRecord,
   type ReviewStructuralSnapshot,
@@ -60,6 +64,8 @@ const LEASE_COMMENT_ID = 456;
 const PRIOR_ACTIVITY_AT = "2026-08-07T10:00:00Z";
 const RESERVED_AT = "2026-08-07T10:05:00Z";
 const HELD_LEASE_EXPIRES_AT = "2026-08-07T11:00:00Z";
+const CURRENT_TARGET_SHA = "a".repeat(40);
+const REVIEWED_TARGET_SHA = "b".repeat(40);
 
 function digest(value: string): string {
   return createHash("sha256").update(value).digest("hex");
@@ -201,6 +207,8 @@ const scheduledScenarios = [
   "changed-pr-partial-json-generic",
   "content-clean",
   "content-held",
+  "content-target-drift",
+  "content-target-drift-expired",
   "fresh-refusal",
 ];
 
@@ -249,6 +257,9 @@ function testScheduledCacheScenario(
     const contentPath = scenario.startsWith("content-");
     const hydrated = fresh || contentPath || cacheRecovery || publicationCacheMiss;
     const heldElsewhere = scenario === "content-held";
+    // Only the target branch moved since the last full issue review.
+    const targetDrift = scenario.startsWith("content-target-drift");
+    const targetDriftExpired = scenario === "content-target-drift-expired";
     if (refuseScan && !earlyScanRefusal) useFakeScanner(t, "process.exit(183);");
     const root = realpathSync(mkdtempSync(join(tmpdir(), "clawsweeper-scheduled-cache-")));
     const artifactDir = join(root, "artifacts");
@@ -440,7 +451,7 @@ else {
         ? "unusable-cursor"
         : `v2:0:${digest("activity")}`;
     const priorMarkdown = withReviewRecord(
-      `---\nrepository: ${REPO}\nnumber: ${ITEM_NUMBER}\ntype: ${item.kind}\n${publicationCase?.cachedPolicy ?? ""}decision: keep_open\nreview_status: complete\nreview_activity_cursor: ${activityCursor}\n---\nCached review\n${oversized}`,
+      `---\nrepository: ${REPO}\nnumber: ${ITEM_NUMBER}\ntype: ${item.kind}\n${targetDrift ? `main_sha: ${REVIEWED_TARGET_SHA}\nreview_structural_target_head_sha: ${REVIEWED_TARGET_SHA}\n` : ""}${publicationCase?.cachedPolicy ?? ""}decision: keep_open\nreview_status: complete\nreview_activity_cursor: ${activityCursor}\n---\nCached review\n${oversized}`,
       {
         decision: "keep_open",
         closeReason: "none",
@@ -582,8 +593,18 @@ process.exitCode = 1;
         reviewPolicy: POLICY,
         reviewModel: PUBLIC_CODEX_MODEL,
         itemSourceRevision: priorRecord.sourceRevision,
-        contentDigest: fresh ? digest("old-content") : digest("content"),
-        lastFullReviewAt: new Date(Date.now() - 60_000).toISOString(),
+        contentDigest: fresh
+          ? digest("old-content")
+          : targetDrift
+            ? itemContentDigest(item, context, {
+                mainSha: REVIEWED_TARGET_SHA,
+                releaseStateComplete: true,
+                latestRelease: null,
+              })
+            : digest("content"),
+        lastFullReviewAt: new Date(
+          Date.now() - (targetDriftExpired ? 25 * 60 * 60_000 : 60_000),
+        ).toISOString(),
         lastFullReviewDecision: "keep_open",
         structuralRecord: (fresh || contentPath) && !cacheRecovery ? null : priorRecord,
       }),
@@ -620,7 +641,7 @@ process.exitCode = 1;
         ];
       },
       gitInfo: () => ({
-        mainSha: "a".repeat(40),
+        mainSha: CURRENT_TARGET_SHA,
         releaseStateComplete: true,
         latestRelease: null,
       }),
@@ -637,7 +658,9 @@ process.exitCode = 1;
       isSuppliedReviewStartLease,
       reviewLeaseStillMatchesContext,
       liveClawSweeperReviewDigest: () => digest("previous"),
-      itemContentDigest: () => (changedPr ? digest("different-content") : digest("content")),
+      itemContentDigest: targetDrift
+        ? itemContentDigest
+        : () => (changedPr ? digest("different-content") : digest("content")),
       extractLatestClawSweeperReview: () => context.previousClawSweeperReview,
       extractClawSweeperReviewCommentBody: (body: string) =>
         previousClawSweeperReviewFromComment(
@@ -817,7 +840,7 @@ process.exitCode = 1;
           throw new Error("generic second-item failure");
         }
         assert.ok(
-          isPullRequest || publicationCacheMiss,
+          isPullRequest || publicationCacheMiss || targetDriftExpired,
           "compatible unchanged input must use the cache",
         );
         return closeDecision({
@@ -866,7 +889,9 @@ process.exitCode = 1;
       suppliedReviewStartLeaseFromArgs,
       targetRepo: () => REPO,
       updateBulkFilerDetectedFrontMatter: (markdown: string) => markdown,
-      updateReviewStructuralFrontMatter: (markdown: string) => markdown,
+      updateReviewStructuralFrontMatter: targetDrift
+        ? updateReviewStructuralFrontMatter
+        : (markdown: string) => markdown,
     } as never;
 
     try {
@@ -1231,6 +1256,20 @@ process.exitCode = 1;
         assert.match(report, /Cached review/);
       }
 
+      if (targetDriftExpired) {
+        assert.equal(hydrationCalls, 1);
+        assert.equal(generationCalls, 1);
+        assert.equal(cachedCompletions, 0);
+        assert.match(
+          readFileSync(join(artifactDir, `${ITEM_NUMBER}.md`), "utf8"),
+          /Fresh Codex review/,
+        );
+        const metrics = JSON.parse(
+          readFileSync(join(artifactDir, "review-cache-metrics.json"), "utf8"),
+        );
+        assert.equal(metrics.content_cache_hits, 0);
+        return;
+      }
       if (isPullRequest) {
         assert.equal(hydrationCalls, 1);
         assert.equal(generationCalls, 1);
@@ -1291,6 +1330,15 @@ process.exitCode = 1;
       assert.equal(existsSync(carriedReportPath), true);
       const carriedReport = readFileSync(carriedReportPath, "utf8");
       assert.match(carriedReport, /^local_checkout_access: verified$/m);
+      if (targetDrift) {
+        // The carried verdict still names the target commit that was actually reviewed,
+        // and its structural anchor cannot let the 14-day structural stage reuse it.
+        assert.match(carriedReport, new RegExp(`^main_sha: ${REVIEWED_TARGET_SHA}$`, "m"));
+        assert.match(
+          carriedReport,
+          new RegExp(`^review_structural_target_head_sha: ${REVIEWED_TARGET_SHA}$`, "m"),
+        );
+      }
       assert.match(carriedReport, /^local_checkout_access_source: runner_preflight_v1$/m);
       assert.match(carriedReport, new RegExp(`^review_lease_owner: ${LEASE_OWNER}$`, "m"));
       assert.match(

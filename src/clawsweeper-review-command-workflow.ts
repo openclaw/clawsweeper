@@ -1307,10 +1307,23 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
           (item.kind === "pull_request" && !completePullChecksContext(context.pullChecks))
             ? null
             : cacheEligibleReview;
+        // A carried report keeps the target SHA and digest of its last full review, so
+        // target-only drift is measured against that review, not the latest carry.
+        const reviewedTargetSha =
+          item.kind === "issue" && contentCacheReview
+            ? frontMatterValue(contentCacheReview.markdown, "main_sha")
+            : undefined;
+        const targetDriftContentDigest =
+          reviewedTargetSha &&
+          /^[0-9a-f]{40}$/.test(reviewedTargetSha) &&
+          reviewedTargetSha !== git.mainSha
+            ? itemContentDigest(item, context, { ...git, mainSha: reviewedTargetSha })
+            : null;
         const contentCacheHit = reviewContentCacheHit({
             review: contentCacheReview,
             reviewPolicy,
             contentDigest,
+            targetDriftContentDigest,
             now: Date.now(),
             explicitDispatch,
             maintainerRequest,
@@ -1322,7 +1335,11 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
             context,
           )
         ) {
-          structuralRecord = refreshStructuralRecordForVerdict();
+          // A target-drift carry was not reviewed against the current target. Keep the
+          // prior structural anchor, which names the reviewed target, so the 14-day
+          // structural stage cannot extend the one-day drift window.
+          const targetDriftCarry = contentCacheReview!.contentDigest !== contentDigest;
+          structuralRecord = targetDriftCarry ? null : refreshStructuralRecordForVerdict();
           const reportPath = join(artifactDir, reportFileName(item.repo, item.number));
           let carried = priorReview!.markdown;
           carried = replaceFrontMatterValue(carried, "reviewed_at", new Date().toISOString());
