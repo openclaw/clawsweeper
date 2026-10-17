@@ -26,6 +26,7 @@ type ApplyReportLabelDependencies = Pick<
   | "syncMaturityLabels"
   | "syncMergeRiskLabels"
   | "syncPriorityLabel"
+  | "syncIntakeLabels"
 >;
 
 interface ApplyReportLabelOptions {
@@ -75,6 +76,7 @@ export function syncApplyReportLabels(
     syncMaturityLabels,
     syncMergeRiskLabels,
     syncPriorityLabel,
+    syncIntakeLabels,
   } = dependencies;
   const {
     bulkFilerRepositoryPermissionCache,
@@ -163,6 +165,11 @@ export function syncApplyReportLabels(
         markdown = replaceFrontMatterValue(markdown, "labels", JSON.stringify(item.labels));
         setMarkdown(markdown);
       };
+      // Preliminary labels expire only when the canonical complete report owns
+      // publication; stale or incomplete reviews must leave them preliminary.
+      applyResult(
+        syncIntakeLabels({ number, labels: item.labels, wanted: [], dryRun, onMutation }),
+      );
       applyResult(
         syncPriorityLabel({
           number,

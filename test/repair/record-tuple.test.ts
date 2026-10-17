@@ -4,6 +4,7 @@ import test from "node:test";
 
 import {
   recordTuplePaths,
+  chooseRecordTupleWinner,
   validateRecordTuple,
   type RecordTupleContents,
 } from "../../src/repair/record-tuple.ts";
@@ -41,4 +42,13 @@ test("record tuple validation still rejects a genuinely different repository", (
     () => validateRecordTuple(mixedCaseTuple("steipete/Other")),
     /decision packet belongs to another subject/,
   );
+});
+
+test("retired hydration bytes do not create reconciliation conflicts", () => {
+  const base = mixedCaseTuple();
+  const cached = {
+    ...base,
+    item: base.item!.replace("---\n", "---\npr_hydration_snapshot: cached input\n"),
+  };
+  assert.equal(chooseRecordTupleWinner({ base: cached, local: cached, remote: base }), "equal");
 });

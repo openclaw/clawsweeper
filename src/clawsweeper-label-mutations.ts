@@ -1,3 +1,4 @@
+import { INTAKE_LABELS } from "./intake-triage-contract.js";
 import { IDEA_ARCHIVE_LABEL } from "./clawsweeper-policy.js";
 import { ratingLabelForTier } from "./clawsweeper-rating.js";
 import {
@@ -19,9 +20,6 @@ import {
   PROOF_SUFFICIENT_LABEL,
   PROOF_SUFFICIENT_LABEL_COLOR,
   PROOF_SUFFICIENT_LABEL_DESCRIPTION,
-  TELEGRAM_VISIBLE_PROOF_LABEL,
-  TELEGRAM_VISIBLE_PROOF_LABEL_COLOR,
-  TELEGRAM_VISIBLE_PROOF_LABEL_DESCRIPTION,
   type MergeRiskLabelName,
 } from "./clawsweeper-policy.js";
 import { compareCodeUnits } from "./stable-json.js";
@@ -473,16 +471,6 @@ export function createLabelMutationOperations({ ghJson, ghObservedMutationComman
     const definition = prStatusLabelForKind(kind);
     ensureLabelDefinition(definition, onMutation);
   }
-  function ensureTelegramVisibleProofLabel(onMutation?: () => void): void {
-    ensureLabelDefinition(
-      {
-        name: TELEGRAM_VISIBLE_PROOF_LABEL,
-        color: TELEGRAM_VISIBLE_PROOF_LABEL_COLOR,
-        description: TELEGRAM_VISIBLE_PROOF_LABEL_DESCRIPTION,
-      },
-      onMutation,
-    );
-  }
   function ensureIdeaArchiveLabel(onMutation?: () => void): void {
     ensureLabelDefinition(
       {
@@ -556,7 +544,53 @@ export function createLabelMutationOperations({ ghJson, ghObservedMutationComman
     }
   }
 
+  function syncIntakeLabels(options: {
+    number: number;
+    labels: readonly string[];
+    wanted: readonly string[];
+    dryRun: boolean;
+    onMutation?: (() => void) | undefined;
+  }): { labels: string[]; changed: boolean } {
+    const family = new Set<string>(INTAKE_LABELS);
+    if (options.wanted.some((label) => !family.has(label))) throw new Error("Invalid intake label");
+    const wanted = new Set(options.wanted);
+    let labels = [...options.labels];
+    let changed = false;
+    for (const label of options.labels) {
+      if (!family.has(label.toLowerCase()) || wanted.has(label.toLowerCase())) continue;
+      if (!options.dryRun) removeIssueLabel(options.number, label, options.onMutation);
+      labels = labels.filter((value) => value !== label);
+      changed = true;
+    }
+    for (const label of wanted) {
+      if (labels.some((value) => value.toLowerCase() === label) || labels.length >= 100) continue;
+      if (!options.dryRun) {
+        ensureLabelDefinition(
+          {
+            name: label,
+            color: "c5def5",
+            description: "Preliminary submission classification; full source review pending.",
+          },
+          options.onMutation,
+        );
+        if (
+          !tryAddOptionalLabel({
+            number: options.number,
+            label,
+            currentLabels: labels,
+            onMutation: options.onMutation,
+          })
+        )
+          continue;
+      }
+      labels.push(label);
+      changed = true;
+    }
+    return { labels, changed };
+  }
+
   return {
+    syncIntakeLabels,
     beginIssueLabelMutationBatch,
     discardIssueLabelMutationBatch,
     flushIssueLabelMutationBatch,
@@ -571,7 +605,6 @@ export function createLabelMutationOperations({ ghJson, ghObservedMutationComman
     ensurePrRatingLabel,
     ensureFeatureShowcaseLabel,
     ensurePrStatusLabel,
-    ensureTelegramVisibleProofLabel,
     ensureIdeaArchiveLabel,
     tryAddOptionalLabel,
     ensureRealBehaviorProofSufficientLabel,

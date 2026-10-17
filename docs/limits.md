@@ -213,9 +213,7 @@ Meaningful changes restart that quiet window, including changes discovered
 without a webhook. Comments and label-only activity do not extend it. There is
 no maximum-wait shortcut: a continuously changing PR waits until it settles.
 Draft-state changes restart the window; existing draft and oversized-PR gates remain in force.
-Explicit review requests and autofix/automerge opt-ins bypass this initial hold.
-Automation opt-ins are checked again when a previously answered PR claims work;
-removing the label before claim revokes that automatic review.
+Explicit review requests bypass this initial hold.
 
 Once a PR has a completed canonical review, ordinary webhooks and scheduled
 hot/normal passes cannot review it again. Request `@clawsweeper re-review` after
@@ -224,8 +222,7 @@ that fact across restarts, report replacement, archive moves, and queue cleanup;
 existing verified canonical reports with retained completion provenance seed it
 on first use. Reports whose old receipts were already pruned remain eligible
 for one fresh answer. Unverified attempts and stale-source requeues do not
-consume the first answer. Opted-in autofix/automerge
-PRs retain their repeated automation. Issues keep their existing cadence.
+consume the first answer. Issues keep their existing cadence.
 
 Fresh webhook work waits for `EXACT_REVIEW_DISPATCH_DEBOUNCE_MS` (90 seconds by
 default) so rapid edits and pushes coalesce before dispatch. Repeated pending
@@ -348,8 +345,9 @@ it as absent before the limit check, and parking never refreshes an expired row.
 
 Deterministic no-op holds stop the other observed self-feeding shape without a
 counter. When a review run completes successfully on the guarded locked-conversation
-path or on the oversized PR path, sweep.yml sends `review_hold`
-(`locked_conversation` or `oversized_pull_request`) with the lease completion.
+path, the oversized PR path, or the maintainer-request guard, sweep.yml sends
+`review_hold` (`locked_conversation`, `oversized_pull_request`, or
+`maintainer_request_required`) with the lease completion.
 Without command context, without input that arrived during the lease, and (for
 oversized PRs) with a pinned head, the queue keeps the row parked under that
 reason instead of deleting it. Scheduled offers then dedupe with that
@@ -357,9 +355,19 @@ reason instead of deleting it. Scheduled offers then dedupe with that
 and neither claims a run, so neither debits the scheduled budget nor counts
 toward `review_runaway_health`. Organic events, commands, manual reviews, the
 parked terminal check, and parked-review fresh recovery release it exactly as
-for `source_drift_loop`. Older Workers ignore the field, and older workflows do
-not send it, so either deploy order keeps the previous behavior until both sides
-are current.
+for `source_drift_loop`. The Worker must recognize a hold reason before a
+workflow sends it; deploy the Worker first when adding a reason. Older workflows
+that omit the field keep the previous behavior.
+
+The queue also applies the maintainer-request hold before dispatch, so the
+common case starts no runner. The live item check that runs before every
+dispatch evaluates the same rule for automatic work (no command, manual request
+or publication). GitHub shows a private org member to the App as `CONTRIBUTOR`,
+so for a `CONTRIBUTOR` author the queue and the webhook gate read the author's
+repository permission (admin or maintain counts as a maintainer, as in the
+runner admission check), cached per author for one hour. A held item parks under
+`maintainer_request_required` exactly as after a skipped run. A failed
+permission read dispatches as before, and the runner check still applies.
 
 The same queue keeps a trailing 24-hour history of claimed review runs per item
 (`exact_review_queue_review_generations`, keyed by item, run ID, and attempt;

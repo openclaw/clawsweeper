@@ -121,7 +121,9 @@ export type ExactReviewTargetItemState =
   | {
       state: "open";
       headSha?: string;
-      prReview?: { signature: string; automationOptIn: boolean };
+      prReview?: { signature: string };
+      // Automatic work whose author must request a review (maintainer policy).
+      maintainerRequestRequired?: true;
       sourceIdentity?: Pick<
         ExactReviewDecision,
         | "sourceHeadSha"
@@ -773,21 +775,44 @@ export function mergePendingExactReviewDecision(
   return merged;
 }
 
+/** The fields that belong to one command request. */
+const EXACT_REVIEW_COMMAND_FIELDS = [
+  "commandStatusMarker",
+  "statusCommentId",
+  "sourceDeliveryId",
+  "sourceCommentId",
+  "sourceCommentUpdatedAt",
+  "sourceCommentVerified",
+  "commandBodyDigest",
+  "commandOrigin",
+  "additionalPrompt",
+] as const;
+
 /** The decision without the fields that belong to one command request. */
 export function exactReviewDecisionWithoutCommand(decision: ExactReviewDecision) {
-  const {
-    commandStatusMarker: _commandStatusMarker,
-    statusCommentId: _statusCommentId,
-    sourceDeliveryId: _sourceDeliveryId,
-    sourceCommentId: _sourceCommentId,
-    sourceCommentUpdatedAt: _sourceCommentUpdatedAt,
-    sourceCommentVerified: _sourceCommentVerified,
-    commandBodyDigest: _commandBodyDigest,
-    commandOrigin: _commandOrigin,
-    additionalPrompt: _additionalPrompt,
-    ...rest
-  } = decision;
+  const rest = { ...decision };
+  for (const field of EXACT_REVIEW_COMMAND_FIELDS) delete rest[field];
   return rest;
+}
+
+/**
+ * A queued review that takes over the command request `command` carries. The
+ * queued source stays; only the request's fields and source action move, and a
+ * failed-review retry's source pin is dropped because it belongs to that retry.
+ */
+export function exactReviewDecisionWithCommand(
+  queued: ExactReviewDecision,
+  command: ExactReviewDecision,
+): ExactReviewDecision {
+  const { expectedSourceRevision: _expectedSourceRevision, ...source } =
+    exactReviewDecisionWithoutCommand(queued);
+  const request = Object.fromEntries(
+    EXACT_REVIEW_COMMAND_FIELDS.filter((field) => command[field] !== undefined).map((field) => [
+      field,
+      command[field],
+    ]),
+  );
+  return { ...source, ...request, sourceAction: command.sourceAction };
 }
 
 export function exactReviewDecisionHasCommandContext(

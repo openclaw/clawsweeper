@@ -561,15 +561,15 @@ test("comment webhook rejects non-author read-only re-review commands", () => {
   assert.match(result.reason, /not allowed/);
 });
 
-test("automatic item webhooks require maintainer opt-in without changing contributor admission", () => {
+test("automatic maintainer item webhooks require a review request regardless of automation labels", () => {
   for (const event of ["issues", "pull_request"]) {
     for (const [association, labels, accepted] of [
       ["MEMBER", [], false],
       ["COLLABORATOR", [], false],
       ["OWNER", [], false],
       ["CONTRIBUTOR", [{ name: "Maintainer" }], false],
-      ["MEMBER", [{ name: "clawsweeper:autofix" }], true],
-      ["MEMBER", [{ name: "clawsweeper:automerge" }], true],
+      ["MEMBER", [{ name: "clawsweeper:autofix" }], false],
+      ["MEMBER", [{ name: "clawsweeper:automerge" }], false],
       ["CONTRIBUTOR", [], true],
     ] as const) {
       const result = classifyItemWebhook({

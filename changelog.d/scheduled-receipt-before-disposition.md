@@ -1,0 +1,1 @@
+- Fix HTTP 500 on scheduled review intake for pull requests that already have a completed review. The queue now stores the delivery receipt before it records the `review_request_required` answer, so the answer is saved and replayed instead of failing every retry (about 40% of review-plan runs failed since #1997).

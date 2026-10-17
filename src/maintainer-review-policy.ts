@@ -8,11 +8,57 @@ export function isMaintainerAuthorAssociation(value: unknown): boolean {
   return MAINTAINER_AUTHOR_ASSOCIATIONS.has(normalizeAuthorAssociation(value));
 }
 
+// GitHub shows a private org member to the App as CONTRIBUTOR. Repository
+// permission is not hidden, so admin or maintain permission marks a maintainer.
+const MAINTAINER_REPOSITORY_PERMISSIONS = new Set(["admin", "maintain"]);
+
+export function isMaintainerRepositoryPermission(value: unknown): boolean {
+  return (
+    typeof value === "string" && MAINTAINER_REPOSITORY_PERMISSIONS.has(value.trim().toLowerCase())
+  );
+}
+
+export function verifiedMaintainerAuthorAssociation(options: {
+  authorAssociation: unknown;
+  repositoryPermission: unknown;
+}): string {
+  const association = normalizeAuthorAssociation(options.authorAssociation);
+  if (
+    !isMaintainerAuthorAssociation(association) &&
+    isMaintainerRepositoryPermission(options.repositoryPermission)
+  ) {
+    return "MEMBER";
+  }
+  return association;
+}
+
 type ReviewItem = {
   authorAssociation?: unknown;
   author_association?: unknown;
   labels?: unknown;
+  createdAt?: unknown;
+  created_at?: unknown;
 };
+
+// Maintainer items created from this moment are admitted like everyone else's:
+// a PR gets one automatic review and later reviews need a request (#1997); an
+// issue follows the ordinary issue cadence. Older maintainer items keep the
+// request-only rule, so the change starts no backlog of first reviews. An
+// unknown creation time keeps the request-only rule. The moment is when this
+// rule first deployed (#2016). The queue releases a maintainer hold once its
+// live check no longer requires a request, so items parked meanwhile recover.
+export const MAINTAINER_AUTOMATIC_FIRST_REVIEW_FROM = "2026-10-15T03:50:00Z";
+const MAINTAINER_AUTOMATIC_FIRST_REVIEW_FROM_MS = Date.parse(
+  MAINTAINER_AUTOMATIC_FIRST_REVIEW_FROM,
+);
+
+export function predatesMaintainerAutomaticFirstReview(
+  item: Pick<ReviewItem, "createdAt" | "created_at">,
+): boolean {
+  const value = item.createdAt ?? item.created_at;
+  const createdAt = typeof value === "string" ? Date.parse(value) : Number.NaN;
+  return !(createdAt >= MAINTAINER_AUTOMATIC_FIRST_REVIEW_FROM_MS);
+}
 
 function reviewLabels(item: Pick<ReviewItem, "labels">): Set<string> {
   return new Set(
@@ -28,13 +74,10 @@ function reviewLabels(item: Pick<ReviewItem, "labels">): Set<string> {
   );
 }
 
-export function hasReviewAutomationOptIn(item: Pick<ReviewItem, "labels">): boolean {
-  const labels = reviewLabels(item);
-  return labels.has("clawsweeper:autofix") || labels.has("clawsweeper:automerge");
-}
-
 export function requiresMaintainerReviewRequest(item: ReviewItem): boolean {
-  if (hasReviewAutomationOptIn(item)) return false;
+  if (!predatesMaintainerAutomaticFirstReview(item)) {
+    return false;
+  }
   const labels = reviewLabels(item);
   return (
     labels.has("maintainer") ||

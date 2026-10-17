@@ -266,12 +266,6 @@ export function likelyOwnerLines(
     });
 }
 
-export function publicRiskBullets(text: string): string {
-  return reportRiskEntries(text)
-    .map((entry) => `- ${sentence(entry)}`)
-    .join("\n");
-}
-
 export function confidenceText(score: number): string {
   return score.toFixed(2).replace(/0+$/, "").replace(/\.$/, "");
 }

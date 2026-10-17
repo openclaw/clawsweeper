@@ -50,12 +50,9 @@ import {
   SECURITY_CONCERN_SEVERITIES,
   SECURITY_REVIEW_SCHEMA_KEYS,
   SECURITY_REVIEW_STATUSES,
-  TELEGRAM_VISIBLE_PROOF_SCHEMA_KEYS,
-  TELEGRAM_VISIBLE_PROOF_STATUSES,
   TESTING_PROOF_PATHS,
   TESTING_REVIEW_SCHEMA_KEYS,
   TRIAGE_PRIORITIES,
-  VISION_FIT_STATUSES,
   WORK_CANDIDATES,
   type MergeRiskLabelName,
 } from "./clawsweeper-policy.js";
@@ -86,13 +83,13 @@ import type {
   RootCauseRelationship,
   SecurityConcern,
   SecurityReview,
-  TelegramVisibleProof,
   TestingReview,
 } from "./clawsweeper-types.js";
 import { normalizePrRating } from "./clawsweeper-rating.js";
 import { parseNextStep } from "./clawsweeper-next-step.js";
 import { parseMaintainerDecision } from "./decision-packets.js";
 import { normalizeRepo } from "./repository-profiles.js";
+import { rejectUnexpectedKeys, requireRecord, requireString } from "./value-coerce.js";
 import {
   agentsPolicyStatusLine,
   neutralizeOwnedSectionSpoofing,
@@ -108,26 +105,6 @@ export function createDecisionParser({
   neutralizeOwnedSectionSpoofing,
   sanitizeArchitectureDiagram,
 }: DecisionParserDependencies) {
-  function requireRecord(value: unknown, path: string): Record<string, unknown> {
-    if (!value || typeof value !== "object" || Array.isArray(value))
-      throw new Error(`${path} must be an object`);
-    return value as Record<string, unknown>;
-  }
-
-  function rejectUnexpectedKeys(
-    record: Record<string, unknown>,
-    allowedKeys: Set<string>,
-    path: string,
-  ): void {
-    const unexpected = Object.keys(record).filter((key) => !allowedKeys.has(key));
-    if (unexpected.length) throw new Error(`${path} has unexpected keys: ${unexpected.join(", ")}`);
-  }
-
-  function requireString(value: unknown, path: string): string {
-    if (typeof value !== "string") throw new Error(`${path} must be a string`);
-    return value;
-  }
-
   function requireNullableString(value: unknown, path: string): string | null {
     if (value === null || typeof value === "string") return value;
     throw new Error(`${path} must be a string or null`);
@@ -239,10 +216,6 @@ export function createDecisionParser({
       body: requireReportText(record.body, `${path}.body`).trim(),
       category: requireEnum(record.category, MERGE_RISK_OPTION_CATEGORIES, `${path}.category`),
       recommended: requireBoolean(record.recommended, `${path}.recommended`),
-      automergeInstruction: requireReportText(
-        record.automergeInstruction,
-        `${path}.automergeInstruction`,
-      ).trim(),
     };
   }
 
@@ -265,16 +238,6 @@ export function createDecisionParser({
         throw new Error(`decision.mergeRiskOptions[${index}].title must not be empty`);
       if (!option.body)
         throw new Error(`decision.mergeRiskOptions[${index}].body must not be empty`);
-      if (option.automergeInstruction && option.category !== "fix_before_merge") {
-        throw new Error(
-          `decision.mergeRiskOptions[${index}].automergeInstruction requires fix_before_merge category`,
-        );
-      }
-      if (option.automergeInstruction && !option.recommended) {
-        throw new Error(
-          `decision.mergeRiskOptions[${index}].automergeInstruction requires a recommended option`,
-        );
-      }
     }
     return options;
   }
@@ -615,15 +578,6 @@ export function createDecisionParser({
         };
       }),
       missingE2e: requireReportLine(record.missingE2e, `${path}.missingE2e`),
-    };
-  }
-
-  function parseTelegramVisibleProof(value: unknown, path: string): TelegramVisibleProof {
-    const record = requireRecord(value, path);
-    rejectUnexpectedKeys(record, TELEGRAM_VISIBLE_PROOF_SCHEMA_KEYS, path);
-    return {
-      status: requireEnum(record.status, TELEGRAM_VISIBLE_PROOF_STATUSES, `${path}.status`),
-      summary: requireReportText(record.summary, `${path}.summary`),
     };
   }
 
@@ -993,12 +947,6 @@ export function createDecisionParser({
         record.solutionAssessment,
         "decision.solutionAssessment",
       ),
-      visionFit: requireEnum(record.visionFit, VISION_FIT_STATUSES, "decision.visionFit"),
-      visionFitReason: requireReportText(record.visionFitReason, "decision.visionFitReason"),
-      visionFitEvidence: requireReportTextArray(
-        record.visionFitEvidence,
-        "decision.visionFitEvidence",
-      ),
       implementationComplexity: requireEnum(
         record.implementationComplexity,
         IMPLEMENTATION_COMPLEXITIES,
@@ -1032,10 +980,6 @@ export function createDecisionParser({
         "decision.realBehaviorProof",
       ),
       prRating: parsePrRating(record.prRating, "decision.prRating"),
-      telegramVisibleProof: parseTelegramVisibleProof(
-        record.telegramVisibleProof,
-        "decision.telegramVisibleProof",
-      ),
       featureShowcase: parseFeatureShowcase(record.featureShowcase, "decision.featureShowcase"),
       overallCorrectness: requireEnum(
         record.overallCorrectness,

@@ -191,7 +191,11 @@ function scenarios() {
       targetBranch: "main",
     };
     const maintainer = { ...issue, author_association: "MEMBER" };
-    const skipped = { proceed: "false", scheduled_semantic_noop: "true" };
+    const skipped = {
+      proceed: "false",
+      scheduled_semantic_noop: "true",
+      review_hold: "maintainer_request_required",
+    };
     cases.push(
       make("maintainer-event", "edited", {
         issue: maintainer,
@@ -240,8 +244,16 @@ function scenarios() {
         expected: skipped,
         skipSourceRead: true,
       }),
-      make("maintainer-opt-in", "edited", {
+      // The retired automation labels no longer exempt a maintainer item.
+      make("maintainer-retired-autofix-label", "edited", {
         issue: { ...maintainer, labels: [{ name: "clawsweeper:autofix" }] },
+        expected: skipped,
+        skipSourceRead: true,
+      }),
+      make("maintainer-retired-automerge-label", "edited", {
+        issue: { ...maintainer, labels: [{ name: "clawsweeper:automerge" }] },
+        expected: skipped,
+        skipSourceRead: true,
       }),
       make("maintainer-redacted", "edited", {
         issue: { ...issue, author_association: "CONTRIBUTOR", user: { login: "maintainer" } },
@@ -821,6 +833,11 @@ export function runReadScopeProof({
             )
           : undefined;
       const after = execute(candidate, scenario);
+      assert.equal(
+        after.outputs.review_hold,
+        scenario.expected.review_hold,
+        `${scenario.name}: review hold`,
+      );
       if (scenario.credentials)
         assert.deepEqual(
           after.trace

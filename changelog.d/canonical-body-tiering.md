@@ -1,0 +1,1 @@
+- Add explicitly activated canonical body tiering with verified immutable R2 bodies, bounded lossless migration, and preserved review admission and export metadata.

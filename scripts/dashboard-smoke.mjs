@@ -6,9 +6,12 @@ import { realpathSync } from "node:fs";
 const cliUrl = process.argv.find((arg, index) => index > 1 && arg !== "--");
 const baseUrl = cliUrl || process.env.CLAWSWEEPER_STATUS_URL || "http://127.0.0.1:8787";
 const expectedDeploySha = String(process.env.CLAWSWEEPER_EXPECTED_DEPLOY_SHA || "").trim();
+// The queue Durable Object can keep serving the previous version for minutes
+// after a deploy (4 min 45 s observed on 2026-10-14), so wait up to 10 minutes.
+const DEFAULT_DEPLOY_READY_TIMEOUT_MS = 600_000;
 const deploymentReadyTimeoutMs = positiveInteger(
   process.env.CLAWSWEEPER_DEPLOY_READY_TIMEOUT_MS,
-  180_000,
+  DEFAULT_DEPLOY_READY_TIMEOUT_MS,
 );
 const deploymentReadyIntervalMs = positiveInteger(
   process.env.CLAWSWEEPER_DEPLOY_READY_INTERVAL_MS,
@@ -30,7 +33,13 @@ async function main() {
     : await fetchJson(`${baseUrl}/api/health`);
   if (health.ok !== true) throw new Error("health endpoint did not return ok");
   const reviewAdmission = expectedDeploySha
-    ? await verifyReviewAdmission(webhookSecret)
+    ? await verifyReviewAdmission({
+        secret: webhookSecret,
+        baseUrl,
+        expectedSha: expectedDeploySha,
+        timeoutMs: deploymentReadyTimeoutMs,
+        intervalMs: deploymentReadyIntervalMs,
+      })
     : { state: "skipped", reason: "no_expected_deployment" };
 
   const statusStartedAt = Date.now();
@@ -97,46 +106,74 @@ async function main() {
   );
 }
 
-async function verifyReviewAdmission(secret) {
+export async function verifyReviewAdmission({
+  secret,
+  baseUrl,
+  expectedSha,
+  timeoutMs = DEFAULT_DEPLOY_READY_TIMEOUT_MS,
+  intervalMs = 5_000,
+  fetchImpl = fetch,
+  sleep = (delayMs) => new Promise((resolve) => setTimeout(resolve, delayMs)),
+  now = Date.now,
+}) {
   // Verify the producer contract before a Worker-first rollout can enable new producers.
   // Redirects must never forward the signed request to another endpoint.
   const body = "{}";
-  let response;
-  try {
-    response = await fetch(`${baseUrl}/internal/exact-review/admission-capabilities`, {
-      method: "POST",
-      redirect: "error",
-      signal: AbortSignal.timeout(20_000),
-      headers: {
-        "content-type": "application/json",
-        "x-clawsweeper-exact-review-signature": `sha256=${createHmac("sha256", secret).update(body).digest("hex")}`,
-      },
-      body,
-    });
-  } catch (error) {
-    throw new Error("review admission capability request failed", { cause: error });
+  const deadline = now() + timeoutMs;
+  const timeoutMessage = `review queue deployment ${expectedSha} was not ready within ${timeoutMs}ms`;
+  while (true) {
+    if (now() >= deadline) throw new Error(timeoutMessage);
+    let response;
+    try {
+      response = await fetchImpl(`${baseUrl}/internal/exact-review/admission-capabilities`, {
+        method: "POST",
+        redirect: "error",
+        signal: AbortSignal.timeout(Math.min(20_000, Math.max(1, deadline - now()))),
+        headers: {
+          "content-type": "application/json",
+          "x-clawsweeper-exact-review-signature": `sha256=${createHmac("sha256", secret).update(body).digest("hex")}`,
+        },
+        body,
+      });
+    } catch (error) {
+      throw new Error(
+        now() >= deadline ? timeoutMessage : "review admission capability request failed",
+        { cause: error },
+      );
+    }
+    if (!response.ok) {
+      await response.body?.cancel().catch(() => {});
+      throw new Error(`review admission capabilities returned HTTP ${response.status}`);
+    }
+    const capability = await response.json().catch(() => null);
+    const feed = capability?.scheduled_feed;
+    const manual = capability?.manual_publication;
+    if (
+      !Number.isSafeInteger(feed?.target_rate_per_hour) ||
+      feed.target_rate_per_hour <= 0 ||
+      feed.enqueue_replay !== "scheduled_disposition_v1" ||
+      manual?.policy !== "record_comment_only" ||
+      typeof manual.enabled !== "boolean"
+    ) {
+      throw new Error("review admission capability contract is invalid");
+    }
+    // A healthy outer Worker can still call the previous Durable Object version.
+    // Its own deployment identity must match before new producer contracts go live.
+    if (capability.deployment_sha !== expectedSha) {
+      const remainingMs = deadline - now();
+      if (remainingMs <= 0) {
+        throw new Error(timeoutMessage);
+      }
+      await sleep(Math.min(intervalMs, remainingMs));
+      continue;
+    }
+    return {
+      state: "verified",
+      deployment_sha: capability.deployment_sha,
+      target_rate_per_hour: feed.target_rate_per_hour,
+      manual_publication_enabled: manual.enabled,
+    };
   }
-  if (!response.ok) {
-    await response.body?.cancel().catch(() => {});
-    throw new Error(`review admission capabilities returned HTTP ${response.status}`);
-  }
-  const capability = await response.json().catch(() => null);
-  const feed = capability?.scheduled_feed;
-  const manual = capability?.manual_publication;
-  if (
-    !Number.isSafeInteger(feed?.target_rate_per_hour) ||
-    feed.target_rate_per_hour <= 0 ||
-    feed.enqueue_replay !== "scheduled_disposition_v1" ||
-    manual?.policy !== "record_comment_only" ||
-    typeof manual.enabled !== "boolean"
-  ) {
-    throw new Error("review admission capability contract is invalid");
-  }
-  return {
-    state: "verified",
-    target_rate_per_hour: feed.target_rate_per_hour,
-    manual_publication_enabled: manual.enabled,
-  };
 }
 
 function validateStatus(status) {
@@ -166,7 +203,7 @@ function statusDiagnostic(status, cacheState, statusFetchMs) {
 export async function waitForDashboardDeployment({
   baseUrl,
   expectedSha,
-  timeoutMs = 180_000,
+  timeoutMs = DEFAULT_DEPLOY_READY_TIMEOUT_MS,
   intervalMs = 5_000,
   fetchImpl = fetch,
   sleep = (delayMs) => new Promise((resolve) => setTimeout(resolve, delayMs)),

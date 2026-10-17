@@ -128,17 +128,17 @@ test("payload expiry upgrades existing rows idempotently and uses bounded partia
 
 test("maintenance deadlines survive restart and exclude tombstones, protected and retired rows", () => {
   const { storage, store } = fixture();
-  assert.equal(store.nextPayloadMaintenanceAtSync(), null);
+  assert.equal(store.nextMaintenanceAtSync(), null);
   observe(store, "deadlines", [item(1), comment(1), comment(2, true)], old);
   storage.sql.exec(`UPDATE ${items} SET payload_retire_at = -1`);
   storage.sql.exec(`UPDATE ${comments} SET payload_retire_at = 50 WHERE comment_id = 1`);
   storage.sql.exec(`UPDATE ${comments} SET payload_retire_at = 0 WHERE tombstone = 1`);
-  assert.equal(store.nextPayloadMaintenanceAtSync(), 50);
+  assert.equal(store.nextMaintenanceAtSync(), 50);
   const restarted = new GithubWebhookReadModelStore(storage);
   restarted.ensureSchemaSync();
-  assert.equal(restarted.nextPayloadMaintenanceAtSync(), 50);
+  assert.equal(restarted.nextMaintenanceAtSync(), 50);
   storage.sql.exec(`UPDATE ${comments} SET payload_pruned = 1 WHERE comment_id = 1`);
-  assert.equal(restarted.nextPayloadMaintenanceAtSync(), null);
+  assert.equal(restarted.nextMaintenanceAtSync(), null);
 });
 
 test("payload retirement drains bounded batches, retains cutoff/fresh rows, and survives restart", () => {

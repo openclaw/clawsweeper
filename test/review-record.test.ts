@@ -225,6 +225,54 @@ test("a review record that changed outside its writer is rejected", () => {
   }
 });
 
+test("records stored with the retired automergeInstruction still read back", () => {
+  const decision: Decision = {
+    ...modelDecision(),
+    mergeRiskOptions: [
+      {
+        title: "Add delivery-state tests",
+        body: "Cover the retry path before merge.",
+        category: "fix_before_merge",
+        recommended: true,
+      },
+    ],
+  };
+  const markdown = report(decision);
+  const stored = storedRecord(markdown);
+  const legacy = withStoredRecord(markdown, {
+    ...stored,
+    decision: {
+      ...stored.decision,
+      mergeRiskOptions: decision.mergeRiskOptions.map((option) => ({
+        ...option,
+        automergeInstruction: "Merge after the delivery-state tests pass.",
+      })),
+    },
+  });
+  assert.deepEqual(
+    requireReviewRecord(legacy).decision.mergeRiskOptions,
+    decision.mergeRiskOptions,
+  );
+});
+
+test("records stored with retired Telegram and vision fields still read back", () => {
+  const decision = { ...modelDecision(), autoImplementationCandidate: "none" as const };
+  const markdown = report(decision);
+  const stored = storedRecord(markdown);
+  const legacy = withStoredRecord(markdown, {
+    ...stored,
+    decision: {
+      ...stored.decision,
+      telegramVisibleProof: { status: "needed", summary: "Exercise Telegram replies." },
+      visionFit: "aligned",
+      visionFitReason: "Matches the product direction.",
+      visionFitEvidence: ["VISION.md"],
+      autoImplementationCandidate: "vision_fit",
+    },
+  });
+  assert.deepEqual(requireReviewRecord(legacy).decision, decision);
+});
+
 test("decision updates change the stored record and keep its origin", () => {
   const markdown = report(modelDecision());
   const backfilled = withStoredRecord(markdown, { ...storedRecord(markdown), origin: "backfill" });

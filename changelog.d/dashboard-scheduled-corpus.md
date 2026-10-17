@@ -1,0 +1,1 @@
+- Refresh the dashboard corpus (review totals, quality and closes) twice a day at 00:07 and 12:07 UTC instead of only by hand, so the Overview no longer shows a stale-totals warning. The warning now appears only when a scheduled refresh has been missed (older than 14 hours).

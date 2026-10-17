@@ -46,6 +46,13 @@ The Durable Object assigns one monotonic repository-wide watermark to every uniq
 - Workflow runs, jobs, check runs, and check suites; at most 1,000 current/recent objects.
 - Delivery GUID receipts retained for 30 days.
 
+Workflow-job coverage expires at the same five-minute boundary as its reader.
+The queue alarm deletes at most 256 expired `run_jobs` or `run_jobs_v2` receipts
+per pass, including historical receipts. The timestamp index also supplies the
+next wake, so an idle queue drains without new webhooks. Initialization builds
+this partial index once on existing history; that cost is separate from the
+bounded alarm passes. Run-census receipts and unknown coverage kinds remain.
+
 Item, comment, and review payloads become eligible after their issue/PR family
 has no accepted observation or complete comment repair for 30 minutes. This
 matches the longest ordinary reader TTL. Keep older members of an active family:

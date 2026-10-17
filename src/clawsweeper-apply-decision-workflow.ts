@@ -98,7 +98,6 @@ import {
 import { isAutoCloseAllowed, repositoryProfileFor } from "./repository-profiles.js";
 import { stableJson } from "./stable-json.js";
 import { LiveReadGeneration, type GenerationBoundValue } from "./live-read-generation.js";
-import { parsePrHydrationSnapshot } from "./pr-hydration-snapshot.js";
 import { asRecord, login } from "./value-coerce.js";
 import {
   frontMatterStringArray,
@@ -1057,9 +1056,6 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
       const previousLabels = [...item.labels];
       const reportLabelsBeforeApply = frontMatterStringArray(markdown, "labels");
       const markdownBeforeApplyDecisionMutations = markdown;
-      const persistedPrHydrationSnapshot = parsePrHydrationSnapshot(
-        frontMatterValue(markdownBeforeApplyDecisionMutations, "pr_hydration_snapshot"),
-      );
       let currentContext: GenerationBoundValue<ItemContext> | undefined;
       let currentClosingPullRequests: unknown[] | undefined;
       let clawSweeperLabelsChanged = false;
@@ -1093,10 +1089,6 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
           collectApplyItemContext(item, {
             fullTimelineForRelations: true,
             reviewCacheDigest: true,
-            prHydrationSnapshot: persistedPrHydrationSnapshot,
-            prCommentActivityRevision:
-              persistedPrHydrationSnapshot?.commentActivityRevision ?? null,
-            requireFullyValidatedPrHydrationSnapshot: true,
           }),
         );
         return liveReadGeneration.value(currentContext);
@@ -1328,10 +1320,6 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
         const receiptContext = collectApplyItemContext(automationItem, {
           fullTimelineForRelations: true,
           reviewCacheDigest: true,
-          prHydrationSnapshot: persistedPrHydrationSnapshot,
-          prCommentActivityRevision:
-            persistedPrHydrationSnapshot?.commentActivityRevision ?? null,
-          requireFullyValidatedPrHydrationSnapshot: true,
         });
         const allowsPostReviewAutomationActivity =
           options?.postReviewActivityStartedAtMs !== undefined;

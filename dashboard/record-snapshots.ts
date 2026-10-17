@@ -488,7 +488,7 @@ async function* tarChunks(
   stats: { fileCount: number; uncompressedBytes: number },
 ) {
   for (const identity of identities) {
-    const record = records.readExportRecord(repoSlug, identity.section, identity.id);
+    const record = await records.readExportRecordAsync(repoSlug, identity.section, identity.id);
     if (!record || record.deleted || record.content === null) continue;
     const content = encoder.encode(record.content);
     const relativePath = `${identity.section}/${identity.id}${recordExtension(identity.section)}`;

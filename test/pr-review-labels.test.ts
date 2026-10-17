@@ -556,7 +556,7 @@ test("recorded proof reconciles public proof statuses independently of historica
       labels: ["clawsweeper:automerge", "status: 📣 needs proof"],
       stale: "status: 📣 needs proof",
       expected: "status: 📣 needs proof",
-      resolvedExpected: "status: 🚀 automerge armed",
+      resolvedExpected: "status: 👀 ready for maintainer look",
     },
     {
       labels: ["status: needs maintainer proof decision", "status: 👀 ready for maintainer look"],
@@ -1075,9 +1075,6 @@ Full review comments:
     comment,
     /- remove `proof: 🎥 video`: Current real behavior proof evidence kind is none\./,
   );
-  assert.match(
-    comment,
-    /- remove `proof: telegram-e2e`: Current Telegram visible-proof status is not_needed\./,
-  );
+  assert.doesNotMatch(comment, /remove `proof: telegram-e2e`/);
   assert.doesNotMatch(comment, /remove `status: 📣 needs proof`/);
 });

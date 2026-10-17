@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import test from "node:test";
 import {
   EXACT_REVIEW_REVIEW_GENERATION_TABLE,
@@ -8,6 +9,7 @@ import {
   exactReviewSourceDriftRequeueLimit,
 } from "../dashboard/exact-review-review-loop.ts";
 import { summarizeDashboardHealth } from "../dashboard/dashboard-health.ts";
+import { ExactReviewLifecycleProjectionStore } from "../dashboard/exact-review-lifecycle.ts";
 import { publicExactReviewQueueProjection } from "../dashboard/worker.ts";
 import { isExplicitReviewRequest } from "../src/maintainer-review-policy.ts";
 import {
@@ -561,6 +563,331 @@ test("a deferred source-drift requeue loses authority once the request is answer
     assert.equal(stored.decision.sourceCommentVerified, undefined, scenario);
     assert.equal(claimed.commandStatusMarker, requested.commandStatusMarker, scenario);
     assert.equal(isExplicitReviewRequest(claimed), false, scenario);
+  }
+});
+
+/** sweep.yml's publication completion after it queued the source-drift requeue. */
+function requeueCompletion(publisher: Record<string, unknown>) {
+  return {
+    ...publisher,
+    outcome: "success",
+    completion_kind: "superseded",
+    reason_code: "live_terminal",
+    lifecycle_terminal_disposition: "requeue",
+  };
+}
+
+function lifecycleAt(h: Harness, number: number, fenceKey: string, revision: number) {
+  return new ExactReviewLifecycleProjectionStore(h.storage).read(
+    `${repo}#${number}`,
+    fenceKey,
+    revision,
+  );
+}
+
+/** An organic event after the request's review finished, so its item has no request. */
+function organicEdit(number: number) {
+  return decision(number, "edited", { sourceUpdatedAt: "2026-10-13T16:45:00Z" });
+}
+
+/** Queue an organic review and claim its lease, as its review run would. */
+async function claimOrganicReview(h: Harness, number: number) {
+  await enqueue(h, "organic-edit", organicEdit(number));
+  await h.queue.alarm();
+  const active = (await queueState(h)).items[`${repo}#${number}`]!;
+  const tuple = {
+    item_key: active.key,
+    lease_id: active.leaseId,
+    lease_revision: active.leaseRevision,
+    run_id: String(8_000_000 + number),
+    run_attempt: 1,
+  };
+  const claim = await post(h, "/claim", tuple);
+  assert.equal(claim.status, 200, JSON.stringify(claim.body));
+  return { ...tuple, claim_generation: claim.body.claim_generation };
+}
+
+test("a deferred requeue hands the open request to a pending review queued for newer source", async () => {
+  // The production debounce keeps the organic review pending.
+  const h = harness({ EXACT_REVIEW_DISPATCH_DEBOUNCE_MS: "90000" });
+  await withExactReviewAdmissionHarness(h, async () => {
+    const number = 97650;
+    const deferred = await deferredPublication(h, {
+      ...verifiedRequest(number, 6150293500),
+      statusCommentId: 7650,
+    });
+    await enqueue(h, "organic-edit", organicEdit(number));
+    const publisher = await claimPublication(h, deferred.publicationKey);
+    const queued = (await queueState(h)).items[deferred.key]!;
+    assert.equal(queued.state, "pending");
+    assert.equal(queued.decision.commandStatusMarker, undefined);
+
+    const requeued = await enqueue(
+      h,
+      deferred.requeueDeliveryId,
+      sourceDriftRequeue(deferred.claimed),
+    );
+    assert.equal(requeued.queued, true, JSON.stringify(requeued));
+    const carried = (await queueState(h)).items[deferred.key]!;
+    assert.equal(carried.state, "pending");
+    assert.ok(carried.revision > queued.revision);
+    assert.equal(
+      carried.admissionDeliveryId,
+      `held-publication-requeue:${deferred.requeueDeliveryId}`,
+    );
+    // The queued review keeps its newer source and takes over the request.
+    assert.equal(carried.decision.sourceUpdatedAt, "2026-10-13T16:45:00Z");
+    assert.equal(carried.decision.sourceAction, "source_drift_requeue");
+    for (const field of [
+      "commandStatusMarker",
+      "statusCommentId",
+      "sourceCommentId",
+      "sourceCommentUpdatedAt",
+      "commandBodyDigest",
+      "commandOrigin",
+      "sourceCommentVerified",
+    ]) {
+      assert.equal(carried.decision[field], deferred.claimed[field], field);
+    }
+    assert.equal(carried.nextAttemptAt <= Date.now(), true, "a request is not debounced");
+    const admission = lifecycleAt(h, number, deferred.key, carried.revision)?.admission;
+    assert.equal(admission?.commandOriginated, true);
+    assert.equal(admission?.statusMarker, deferred.claimed.commandStatusMarker);
+
+    // The publication's requeue stands: the queued review owns the request now.
+    const completed = await post(h, "/complete", requeueCompletion(publisher));
+    assert.deepEqual(completed, { status: 200, body: { ok: true, requeued: false } });
+    assert.equal(
+      lifecycleAt(h, number, deferred.publicationKey, publisher.lease_revision as number)
+        ?.terminalDisposition?.kind,
+      "requeue",
+    );
+    const keys = Object.keys((await queueState(h)).items);
+    assert.deepEqual(keys, [deferred.key]);
+
+    const claimed = await reviewOnce(h, number);
+    assert.equal(isExplicitReviewRequest(claimed), true);
+    assert.equal(claimed.commandStatusMarker, deferred.claimed.commandStatusMarker);
+    assert.equal(claimed.sourceUpdatedAt, "2026-10-13T16:45:00Z");
+  });
+});
+
+test("a deferred requeue naming another producer leaves the pending review untouched", async () => {
+  const h = harness({ EXACT_REVIEW_DISPATCH_DEBOUNCE_MS: "90000" });
+  await withExactReviewAdmissionHarness(h, async () => {
+    const number = 97651;
+    const deferred = await deferredPublication(h, verifiedRequest(number, 6150293501));
+    await enqueue(h, "organic-edit", organicEdit(number));
+    await claimPublication(h, deferred.publicationKey);
+    const queued = structuredClone((await queueState(h)).items[deferred.key]!);
+
+    // Only the producer that still holds its own publication may hand over its request.
+    const forgedProducer = deferred.requeueDeliveryId.replace(/:(\d+):(\d+)$/, ":999999:$2");
+    assert.notEqual(forgedProducer, deferred.requeueDeliveryId);
+    await enqueue(h, forgedProducer, sourceDriftRequeue(deferred.claimed));
+    const untouched = (await queueState(h)).items[deferred.key]!;
+    // Still the debounced organic review, without the request.
+    assert.deepEqual(untouched, queued);
+    assert.equal(isExplicitReviewRequest(untouched.decision), false);
+  });
+});
+
+test("a deferred requeue leaves other queued reviews untouched and answers the request", async (t) => {
+  const scenarios: Array<{
+    name: string;
+    env?: Record<string, string>;
+    // Runs after the publisher holds the publication.
+    queue: (h: Harness, number: number) => Promise<void>;
+  }> = [
+    {
+      name: "active review",
+      env: { EXACT_REVIEW_DISPATCH_DEBOUNCE_MS: "0" },
+      queue: async (h, number) => {
+        await claimOrganicReview(h, number);
+      },
+    },
+    {
+      name: "held review",
+      env: { EXACT_REVIEW_DISPATCH_DEBOUNCE_MS: "0" },
+      queue: async (h, number) => {
+        const tuple = await claimOrganicReview(h, number);
+        const held = await post(h, "/complete", {
+          ...tuple,
+          outcome: "success",
+          review_hold: "locked_conversation",
+        });
+        assert.equal(held.body.review_hold, "locked_conversation", JSON.stringify(held.body));
+      },
+    },
+    {
+      name: "different request",
+      queue: async (h, number) => {
+        await enqueue(h, "newer-request", {
+          ...verifiedRequest(number, 6150293599),
+          statusCommentId: 8000 + number,
+          sourceCommentUpdatedAt: "2026-10-13T16:50:00Z",
+        });
+      },
+    },
+    {
+      name: "answered request",
+      env: { EXACT_REVIEW_DISPATCH_DEBOUNCE_MS: "90000" },
+      queue: async (h, number) => {
+        // A newer request was answered; a later organic review waits pending.
+        await enqueue(h, "newer-request", {
+          ...verifiedRequest(number, 6150293599),
+          statusCommentId: 8000 + number,
+          sourceCommentUpdatedAt: "2026-10-13T16:50:00Z",
+        });
+        await reviewOnce(h, number);
+        await enqueue(h, "organic-edit", organicEdit(number));
+        assert.equal((await queueState(h)).items[`${repo}#${number}`]?.state, "pending");
+      },
+    },
+  ];
+  for (const [index, scenario] of scenarios.entries()) {
+    await t.test(scenario.name, async () => {
+      const h = harness(scenario.env);
+      await withExactReviewAdmissionHarness(h, async () => {
+        const number = 97660 + index;
+        const deferred = await deferredPublication(h, {
+          ...verifiedRequest(number, 6150293501),
+          statusCommentId: 7000 + number,
+        });
+        const publisher = await claimPublication(h, deferred.publicationKey);
+        await scenario.queue(h, number);
+        const before = structuredClone((await queueState(h)).items[deferred.key]);
+        assert.ok(before);
+
+        await enqueue(h, deferred.requeueDeliveryId, sourceDriftRequeue(deferred.claimed));
+        assert.deepEqual((await queueState(h)).items[deferred.key], before);
+
+        const completed = await post(h, "/complete", requeueCompletion(publisher));
+        assert.deepEqual(completed, {
+          status: 200,
+          body: { ok: true, requeued: false, terminal_finalization: true },
+        });
+        const revision = publisher.lease_revision as number;
+        assert.equal(
+          lifecycleAt(h, number, deferred.publicationKey, revision)?.terminalDisposition?.kind,
+          "superseded",
+        );
+        const state = await queueState(h);
+        const driver = state.items[`terminal-finalization:${deferred.publicationKey}:${revision}`];
+        assert.equal(driver?.terminalFinalization?.disposition, "superseded");
+        assert.equal(driver?.decision.commandStatusMarker, deferred.claimed.commandStatusMarker);
+        assert.equal(driver?.decision.statusCommentId, deferred.claimed.statusCommentId);
+        // The queued review is still exactly what it was.
+        const after = structuredClone(state.items[deferred.key]);
+        assert.deepEqual(
+          { decision: after?.decision, revision: after?.revision, state: after?.state },
+          { decision: before.decision, revision: before.revision, state: before.state },
+        );
+      });
+    });
+  }
+});
+
+test("a deferred requeue keeps the handoff when the same request is already queued", async () => {
+  const h = harness();
+  await withExactReviewAdmissionHarness(h, async () => {
+    const number = 97670;
+    const request = { ...verifiedRequest(number, 6150293502), statusCommentId: 7670 };
+    const deferred = await deferredPublication(h, request);
+    const publisher = await claimPublication(h, deferred.publicationKey);
+    // A redelivery of the same request queued its own review.
+    await enqueue(h, "same-request-redelivery", request);
+    const before = structuredClone((await queueState(h)).items[deferred.key]);
+
+    await enqueue(h, deferred.requeueDeliveryId, sourceDriftRequeue(deferred.claimed));
+    assert.deepEqual((await queueState(h)).items[deferred.key], before);
+    const completed = await post(h, "/complete", requeueCompletion(publisher));
+    assert.deepEqual(completed, { status: 200, body: { ok: true, requeued: false } });
+    assert.equal(
+      lifecycleAt(h, number, deferred.publicationKey, publisher.lease_revision as number)
+        ?.terminalDisposition?.kind,
+      "requeue",
+    );
+  });
+});
+
+test("the batch publisher's requeue post-effect answers a request no review carries", async () => {
+  for (const carried of [true, false]) {
+    const h = harness({
+      EXACT_REVIEW_PUBLICATION_BATCHING_ENABLED: "1",
+      EXACT_REVIEW_DISPATCH_DEBOUNCE_MS: carried ? "90000" : "0",
+    });
+    await withExactReviewAdmissionHarness(h, async () => {
+      const number = carried ? 97680 : 97681;
+      const deferred = await deferredPublication(h, {
+        ...verifiedRequest(number, 6150293503),
+        statusCommentId: 7000 + number,
+      });
+      const claim = await post(h, "/publication-batches/claim", {
+        claim_id: `claim-${number}`,
+        lease_owner: "batch-worker",
+        max_items: 1,
+      });
+      const member = claim.body.batch?.items?.[0];
+      assert.equal(member?.item_key, deferred.publicationKey, JSON.stringify(claim.body));
+      await enqueue(h, "organic-edit", organicEdit(number));
+      if (!carried) await h.queue.alarm();
+      assert.equal(
+        (await queueState(h)).items[deferred.key]?.state,
+        carried ? "pending" : "dispatching",
+      );
+
+      await enqueue(h, deferred.requeueDeliveryId, sourceDriftRequeue(deferred.claimed));
+      assert.equal(
+        (await queueState(h)).items[deferred.key]?.decision.commandStatusMarker,
+        carried ? deferred.claimed.commandStatusMarker : undefined,
+      );
+      // exact-review-batch-publish.yml "Finalize healthy members" post-effect body.
+      const postEffect = {
+        canonical_target_key: `${repo}#${number}`,
+        fence_key: member.item_key,
+        revision: member.revision,
+        kind: "requeue",
+        // The batch CLI suffixes a hash of the fence key.
+        operation_id: `terminal-batch:7200:1:${createHash("sha256")
+          .update(member.item_key)
+          .digest("hex")
+          .slice(0, 24)}`,
+      };
+      const expected = carried ? "requeue" : "superseded";
+      for (const attempt of [1, 2]) {
+        const recorded = await post(h, "/lifecycle/terminal-disposition", postEffect);
+        assert.equal(recorded.status, 200, `attempt ${attempt}: ${JSON.stringify(recorded.body)}`);
+        assert.equal(recorded.body.lifecycle_state, expected, `attempt ${attempt}`);
+      }
+      const completed = await post(h, "/publication-batches/complete", {
+        batch_id: claim.body.batch.batch_id,
+        lease_owner: "batch-worker",
+        items: [
+          {
+            item_key: member.item_key,
+            revision: member.revision,
+            claim_generation: member.claim_generation,
+            terminal_outcome: "published",
+          },
+        ],
+      });
+      assert.equal(completed.status, 200, JSON.stringify(completed.body));
+      assert.equal(
+        lifecycleAt(h, number, member.item_key, member.revision)?.terminalDisposition?.kind,
+        expected,
+      );
+      const finalizers = Object.values((await queueState(h)).items).filter(
+        (item) => item.terminalFinalization,
+      );
+      assert.deepEqual(
+        finalizers.map((item) => [
+          item.terminalFinalization?.disposition,
+          item.decision.commandStatusMarker,
+        ]),
+        carried ? [] : [["superseded", deferred.claimed.commandStatusMarker]],
+      );
+    });
   }
 });
 
