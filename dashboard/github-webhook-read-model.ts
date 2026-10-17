@@ -15,6 +15,7 @@ export const GITHUB_WEBHOOK_READ_MODEL_MAX_COMMENT_BODY_BYTES = 64 * 1_024;
 export const GITHUB_WEBHOOK_READ_MODEL_PAYLOAD_RETENTION_MS =
   GITHUB_WEBHOOK_READ_MODEL_COMMENT_TTL_MS;
 export const GITHUB_WEBHOOK_READ_MODEL_PAYLOAD_PRUNE_LIMIT = 64;
+export const GITHUB_WEBHOOK_READ_MODEL_COVERAGE_PRUNE_LIMIT = 256;
 
 const PAYLOAD_TABLES = [
   "github_webhook_read_model_items_v1",
@@ -396,6 +397,11 @@ export class GithubWebhookReadModelStore {
          watermark INTEGER NOT NULL,
          PRIMARY KEY (repository, coverage_kind, run_id)
        ) STRICT`,
+    );
+    this.storage.sql.exec(
+      `CREATE INDEX IF NOT EXISTS github_webhook_read_model_workflow_coverage_expiry_v1
+         ON github_webhook_read_model_workflow_coverage_v1 (repaired_at)
+         WHERE coverage_kind IN ('run_jobs', 'run_jobs_v2')`,
     );
     if (!sqlColumnNames(this.storage, "github_webhook_read_model_collections_v1").has("complete")) {
       // Older receipts can describe a capped result. Only a new complete repair
@@ -1331,8 +1337,17 @@ export class GithubWebhookReadModelStore {
     );
   }
 
-  nextPayloadMaintenanceAtSync(): number | null {
-    let next: number | null = null;
+  nextMaintenanceAtSync(): number | null {
+    const coverage = firstRow(
+      this.storage.sql.exec(
+        `SELECT MIN(repaired_at) AS repaired_at FROM github_webhook_read_model_workflow_coverage_v1
+        WHERE coverage_kind IN ('run_jobs', 'run_jobs_v2')`,
+      ),
+    );
+    let next: number | null =
+      coverage?.repaired_at == null
+        ? null
+        : Number(coverage.repaired_at) + GITHUB_WEBHOOK_READ_MODEL_WORKFLOW_TTL_MS;
     for (const table of PAYLOAD_TABLES) {
       const row = firstRow(
         this.storage.sql.exec(
@@ -1348,6 +1363,22 @@ export class GithubWebhookReadModelStore {
       }
     }
     return next;
+  }
+
+  pruneWorkflowCoverageSync(now: number): number {
+    // Job completeness is usable only within the reader's five-minute window.
+    // Keep run_census: even stale, it distinguishes a known census from a miss.
+    return Array.from(
+      this.storage.sql.exec(
+        `DELETE FROM github_webhook_read_model_workflow_coverage_v1 WHERE rowid IN (
+         SELECT rowid FROM github_webhook_read_model_workflow_coverage_v1
+          WHERE coverage_kind IN ('run_jobs', 'run_jobs_v2') AND repaired_at <= ?
+          ORDER BY repaired_at LIMIT ?
+       ) RETURNING rowid`,
+        now - GITHUB_WEBHOOK_READ_MODEL_WORKFLOW_TTL_MS,
+        GITHUB_WEBHOOK_READ_MODEL_COVERAGE_PRUNE_LIMIT,
+      ),
+    ).length;
   }
 
   prunePayloadsSync(now: number) {

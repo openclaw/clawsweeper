@@ -1150,37 +1150,91 @@ test("sortCommentsForRouting prioritizes edited durable review comments", () => 
   );
 });
 
-test("selectCommentsForRouting keeps durable review comments beyond the recent cap", () => {
+test("selectCommentsForRouting caps newest-first comments with descending ID ties", () => {
   const selected = selectCommentsForRouting({
-    maxComments: 1,
+    maxComments: 2,
     recentComments: [
       {
         id: 2,
-        body: "@clawsweeper status",
+        updated_at: "invalid",
         created_at: "2026-04-30T03:40:00Z",
-        updated_at: "2026-04-30T03:40:00Z",
       },
       {
         id: 3,
-        body: "@clawsweeper rebase",
-        created_at: "2026-04-30T03:39:00Z",
-        updated_at: "2026-04-30T03:39:00Z",
+        updated_at: "2026-04-30T03:41:00Z",
       },
-    ],
-    durableComments: [
       {
-        id: 1,
-        body: "<!-- clawsweeper-verdict:pass item=74742 sha=abc confidence=high live_verification=absent -->",
-        created_at: "2026-04-30T02:00:00Z",
-        updated_at: "2026-04-30T03:45:00Z",
+        id: 4,
+        updated_at: "2026-04-30T03:41:00Z",
       },
     ],
   });
 
   assert.deepEqual(
     selected.map((comment) => comment.id),
-    [1, 2],
+    [4, 3],
   );
+});
+
+test("selectCommentsForRouting applies the cap before deduplicating", () => {
+  const newest = { id: 2, updated_at: "2026-04-30T03:42:00Z" };
+  const recentComments = [
+    { id: 1, updated_at: "2026-04-30T03:40:00Z" },
+    newest,
+    { id: 2, updated_at: "2026-04-30T03:41:00Z" },
+  ];
+
+  assert.deepEqual(selectCommentsForRouting({ recentComments, maxComments: 2 }), [newest]);
+  assert.deepEqual(selectCommentsForRouting({ recentComments, maxComments: 0 }), []);
+  assert.deepEqual(selectCommentsForRouting({ recentComments, maxComments: -1 }), []);
+});
+
+test("selectCommentsForRouting uses nullish URL fallbacks and retains unidentified comments", () => {
+  const html = { id: null, html_url: "https://github.com/example/repo/issues/1#issuecomment-1" };
+  const url = {
+    id: null,
+    html_url: null,
+    url: "https://api.github.com/repos/example/repo/issues/comments/2",
+  };
+  const unidentified = [{ body: "first" }, { body: "second" }];
+  const recentComments = [
+    html,
+    { html_url: html.html_url },
+    url,
+    { url: url.url },
+    ...unidentified,
+  ].map((comment, index) => ({
+    ...comment,
+    updated_at: `2026-04-30T03:4${9 - index}:00Z`,
+  }));
+
+  assert.deepEqual(selectCommentsForRouting({ recentComments, maxComments: 6 }), [
+    recentComments[0],
+    recentComments[2],
+    recentComments[4],
+    recentComments[5],
+  ]);
+});
+
+test("selectCommentsForRouting preserves non-nullish malformed ID identity semantics", () => {
+  const recentComments = [
+    { id: 0 },
+    { id: "0" },
+    { id: "invalid" },
+    { id: "invalid" },
+    { id: "", html_url: "https://github.com/example/repo/issues/1#issuecomment-1" },
+    { id: "", html_url: "https://github.com/example/repo/issues/1#issuecomment-1" },
+  ].map((comment, index) => ({
+    ...comment,
+    updated_at: `2026-04-30T03:4${9 - index}:00Z`,
+  }));
+
+  assert.deepEqual(selectCommentsForRouting({ recentComments, maxComments: 6 }), [
+    recentComments[0],
+    recentComments[2],
+    recentComments[4],
+    recentComments[5],
+  ]);
 });
 
 test("summarizeChecks ignores cancelled default non-gating checks", () => {

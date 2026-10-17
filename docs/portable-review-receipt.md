@@ -2,7 +2,7 @@
 
 - Status: proposed; available in this candidate, not deployed enforcement
 - Owner: ClawSweeper maintainers
-- Source: `src/review-preflight.ts`, `src/clawsweeper-review-command-workflow.ts`
+- Source: `src/review-preflight.ts`, `src/review-preflight-contract.ts`, `src/review-preflight-body.ts`
 - Update when: local output, source checks, block format, or hosted body handling changes
 
 ## Generate a summary
@@ -51,7 +51,7 @@ Native `complete` does not mean no findings, complete coverage, or approval;
 separate native partial status and does not invent one.
 
 The entire block is limited to 4 KiB after JSON/HTML escaping, including markers.
-The escaped summary is limited to 512 UTF-8 bytes. `<`, `>`, and `&` are escaped
+The decoded summary is limited to 512 UTF-8 bytes. `<`, `>`, and `&` are escaped
 inside JSON so content cannot terminate the comment. Only the fixed fields above
 are emitted. No report hash, source manifest, model, usage, role, or signature is
 included. The detailed native report stays local under its existing retention
@@ -69,16 +69,46 @@ conflicts, but GitHub body edits are not an atomic compare-and-swap operation.
 Never write to a fork target; an existing PR from a fork into the canonical
 upstream is attached only at that upstream PR. Private results stay private.
 
-This candidate does **not** change hosted body normalization. Attaching a block
-currently changes the body consumed by hosted prompts and digests. It does not
-establish hosted reuse or guarantee that no review is triggered. The initial
-handoff demonstration is limited to an existing maintainer-authored draft with
-no automation opt-in, with its live admission state checked separately.
+## Review-content normalization
+
+The reader removes exactly one valid v1 annotation from PR review content before
+body compaction, prompt construction, and semantic source and structural hashes.
+It does not normalize issue bodies or comments. The complete raw body is checked
+before compaction, so a second marker outside a displayed excerpt still prevents
+exclusion. Bodies above 131,072 UTF-16 code units remain unchanged.
+
+The reader accepts bounded descriptive tool names and versions, completion
+`complete`, `partial`, or `failed`, and an optional lowercase SHA-256 report hash.
+The local ClawSweeper producer still emits only its native completion states and
+does not add a report hash. The reader does not fetch or verify a report. A hash
+without its exact report bytes cannot verify those bytes or prove execution.
+
+Unknown versions or fields, duplicate JSON keys (including escaped aliases),
+invalid field types, malformed strings, oversized blocks, and multiple or nested
+markers leave the entire body unchanged. The annotation must occupy a top-level
+CommonMark HTML-comment block. Fenced, quoted, indented, inline, and enclosing
+HTML-block examples remain review content. This is Markdown token recognition,
+not browser-DOM validation: blank-line-separated Markdown inside `<details>` can
+contain an eligible annotation.
+
+Only the comment's exact interval is removed. All surrounding text and whitespace
+remain material. Replacing a valid block in place preserves semantic content;
+appending new separator blank lines also changes content. An attachment client
+must not trim or rewrite the rest of the body.
+
+This does not change raw event/admission identity, updated-at scheduling,
+concurrency cancellation, or raw stored bodies.
+Metadata edits can still enqueue work, run CI, or invalidate those raw guards.
+Older stored semantic hashes can miss once when this reader is rolled out; no
+compatibility fallback accepts their old identity. Independently deployed
+components must use the same reader before claiming matching semantic hashes.
+This candidate is not a deployment, a hosted-reuse guarantee, or a zero-cost edit
+guarantee.
 
 A future consumer may compare repository, current resolved diff base, and head
 and report source-match, stale, or unknown. That is source identity only: body,
 instructions, configuration, model, policy, and review quality are not certified.
 A contributor can edit this block; it grants no trusted execution claim, role,
 review exemption, or permission to bypass hosted review. General attachment,
-shared hosted normalization, second-engine export, and enforcement are separate
-work, not enabled by this candidate.
+second-engine export, source comparison, scheduling suppression, and enforcement
+remain separate work.

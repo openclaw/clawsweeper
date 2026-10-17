@@ -13,7 +13,7 @@ const { title, section, crumb } = Astro.props;
 
 const nav: { id: Props['section']; label: string; href: string; icon: IconName }[] = [
   { id: 'overview', label: 'Overview', href: '/', icon: 'overview' },
-  { id: 'agent', label: 'Agent performance', href: '/agent/', icon: 'throughput' },
+  { id: 'agent', label: 'Agent performance', href: '/agent/', icon: 'agent' },
   { id: 'throughput', label: 'Throughput', href: '/throughput/', icon: 'throughput' },
   { id: 'quality', label: 'Assessments', href: '/quality/', icon: 'quality' },
   { id: 'queue', label: 'Queue', href: '/queue/', icon: 'queue' },
@@ -111,7 +111,7 @@ const jump = repos.map(repo => ({ r: repo.repo, s: repo.slug, n: repo.records })
             )}
           </div>
           <div class="ml-auto flex items-center gap-2">
-            <span class="hidden text-[12px] text-fg-muted sm:inline" data-tip={`Built ${stamp(asOf.build)}\nQueue ${stamp(asOf.queue)}\nWorkflow runs through ${stamp(asOf.actions)}\nReview totals, quality and closes ${stamp(asOf.corpus)}: refreshed by hand with refresh_corpus`}>
+            <span class="hidden text-[12px] text-fg-muted sm:inline" data-tip={`Built ${stamp(asOf.build)}\nQueue ${stamp(asOf.queue)}\nWorkflow runs through ${stamp(asOf.actions)}\nReview totals, quality and closes ${stamp(asOf.corpus)}: refreshed twice a day, near 00:00 and 12:00 UTC`}>
               Updated {stamp(asOf.build)} · review totals {stamp(asOf.corpus)}
             </span>
             <button data-theme class="grid size-8 place-items-center rounded-md text-fg-muted transition-colors hover:bg-bg-muted hover:text-fg" aria-label="Toggle theme">
@@ -129,7 +129,7 @@ const jump = repos.map(repo => ({ r: repo.repo, s: repo.slug, n: repo.records })
 
         <main class="relative mx-auto w-full max-w-[1280px] px-4 pb-16 pt-6 md:px-8 md:pt-8">
           <div class="tiles" aria-hidden="true"></div>
-          <!-- Warns when the build is over an hour old (the 15-minute refresh stopped) or the hand-refreshed review corpus is over a day old. -->
+          <!-- Warns when the build is over an hour old (the 15-minute refresh stopped) or the review corpus is over 14 hours old (a scheduled refresh was missed). -->
           <p id="stale" hidden data-built={asOf.build} data-corpus={asOf.corpus} role="status" class="relative mb-4 rounded-lg border border-warn/40 bg-warn-soft px-3 py-2 text-[13px] text-warn"></p>
           <div class="relative"><slot /></div>
         </main>
@@ -162,8 +162,8 @@ const jump = repos.map(repo => ({ r: repo.repo, s: repo.slug, n: repo.records })
         const corpus = (Date.now() - Date.parse(stale.dataset.corpus)) / 3_600_000;
         const notes = [];
         if (build > 1) notes.push(`This snapshot is ${age(build)} old. The dashboard normally rebuilds every 15 minutes, so its refresh has stopped.`);
-        // Review totals, quality and closes come from the corpus, which refreshes only by hand.
-        if (corpus > 24) notes.push(`Review totals, quality and closes are ${age(corpus)} old; they update only when the dashboard workflow runs with refresh_corpus.`);
+        // Review totals, quality and closes come from the corpus, refreshed near 00:00 and 12:00 UTC.
+        if (corpus > 14) notes.push(`Review totals, quality and closes are ${age(corpus)} old. They normally refresh twice a day (near 00:00 and 12:00 UTC), so that refresh has stopped.`);
         stale.textContent = notes.join(' ');
         stale.hidden = notes.length === 0;
       };

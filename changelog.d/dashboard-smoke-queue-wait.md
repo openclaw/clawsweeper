@@ -1,0 +1,1 @@
+- Wait up to 10 minutes (was 3) for the queue Durable Object to report the new deployment in the dashboard deploy smoke test. On 2026-10-14 it kept serving the previous version for 4 min 45 s, so a good deploy was marked failed.

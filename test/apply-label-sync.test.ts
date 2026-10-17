@@ -755,7 +755,7 @@ test("exact event source drift includes a revision change while its apply lease 
   );
 });
 
-function assertCompletedIssueLeaseAccepted(extraArgs: string[]): void {
+function assertCompletedIssueLeaseAccepted(extraArgs: string[], reusedLease = false): void {
   const root = mkdtempSync(tmpPrefix);
   try {
     const { itemsDir, closedDir, plansDir, reportPath } = createApplyDirectories(root);
@@ -806,6 +806,15 @@ function assertCompletedIssueLeaseAccepted(extraArgs: string[]): void {
       leaseExpiresAt,
       leaseOwner,
     });
+    const durableComment = reusedLease
+      ? reportWithSyncedReviewComment(
+          closeReport
+            .replace(`review_lease_owner: ${leaseOwner}`, "review_lease_owner: previous-owner")
+            .replace(`reviewed_at: ${reviewedAt}`, "reviewed_at: 2026-04-30T00:00:00Z"),
+          number,
+          "implemented_on_main",
+        ).comment
+      : synced.comment;
     const comments = [
       {
         id: 9000 + number,
@@ -813,7 +822,7 @@ function assertCompletedIssueLeaseAccepted(extraArgs: string[]): void {
         created_at: reviewedAt,
         updated_at: reviewedAt,
         user: { login: "clawsweeper[bot]" },
-        body: synced.comment,
+        body: durableComment,
       },
       {
         id: leaseCommentId,
@@ -890,6 +899,14 @@ test("exact publication consumes its matching completed issue review lease", () 
 
 test("exact issue apply accepts its report-owned lease update after stable source proof", () => {
   assertCompletedIssueLeaseAccepted([]);
+});
+
+test("exact publication accepts a later issue review that reuses a command lease id", () => {
+  assertCompletedIssueLeaseAccepted(["--exact-event-publication"], true);
+});
+
+test("issue apply accepts a later owner of the same command lease id", () => {
+  assertCompletedIssueLeaseAccepted([], true);
 });
 
 test("exact publication rechecks after batched labels and again before close", () => {
@@ -1402,7 +1419,7 @@ if (args[0] === "api" && new RegExp("/issues/${number}/comments(?:\\\\?|$)").tes
 
 for (const scenario of [
   { name: "verified newer", lease: "9200", owner: "new-review-owner", verified: true },
-  { name: "equal lease", lease: "9100", owner: "new-review-owner", verified: false },
+  { name: "equal lease", lease: "9100", owner: "new-review-owner", verified: true },
   { name: "unknown owner", lease: "9200", owner: "unknown", verified: false },
   { name: "unsafe lease", lease: "9007199254740992", owner: "new-review-owner", verified: false },
 ]) {
@@ -3173,7 +3190,6 @@ test("apply-decisions keeps a listed security owner acceptance out of ready and 
             body: "A maintainer may accept this bounded security tradeoff before merge.",
             category: "accept_risk",
             recommended: true,
-            automergeInstruction: "",
           },
         ]),
       }),
@@ -3191,7 +3207,6 @@ test("apply-decisions keeps a listed security owner acceptance out of ready and 
             body: "A maintainer may accept this bounded security tradeoff before merge.",
             category: "accept_risk",
             recommended: true,
-            automergeInstruction: "",
           },
         ],
         overallConfidenceScore: 0.95,

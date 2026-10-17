@@ -10,10 +10,6 @@ export function currentProjectRepo() {
   );
 }
 
-export function githubActionsRunUrl(runId: string) {
-  return `https://github.com/${currentProjectRepo()}/actions/runs/${runId}`;
-}
-
 function repoFromOriginRemote() {
   try {
     const remote = runGit(["config", "--get", "remote.origin.url"], { cwd: repoRoot() }).trim();

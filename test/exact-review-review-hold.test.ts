@@ -97,14 +97,14 @@ function lockedIssueHarness(live: { locked: boolean; updatedAt: string }) {
   );
 }
 
-function pullHarness(live: { head: string }) {
+function pullHarness(live: { head: string; labels?: string[] }) {
   return createExactReviewAdmissionHarness(() =>
     jsonResponse({
       state: "open",
       title: "Oversized PR",
       body: "",
       locked: false,
-      labels: [],
+      labels: live.labels ?? [],
       draft: true,
       head: { sha: live.head },
       base: { sha: "c".repeat(40) },
@@ -195,6 +195,210 @@ test("a locked issue's guarded no-op holds until an organic unlock", async () =>
   });
 });
 
+for (const kind of ["issue", "pull_request"] as const) {
+  test(`a skipped maintainer ${kind} holds through scheduled and recovery offers`, async () => {
+    const h = pullHarness({ head: headA });
+    await withExactReviewAdmissionHarness(h, async () => {
+      const number = 171259;
+      const key = `${repo}#${number}`;
+      const makeDecision = kind === "issue" ? decision : pullDecision;
+      await enqueue(h, "initial", makeDecision(number, "scheduled_hot_intake"));
+      const tuple = await claimOnce(h, number);
+      const completed = await post(h, "/complete", {
+        ...tuple,
+        outcome: "success",
+        lifecycle_terminal_disposition: "policy_noop",
+        review_hold: "maintainer_request_required",
+      });
+      assert.equal(completed.status, 200, JSON.stringify(completed.body));
+      assert.equal(completed.body.review_hold, "maintainer_request_required");
+      assert.equal((await queueState(h)).items[key]!.state, "parked");
+      for (const lane of [
+        "scheduled_hot_intake",
+        "scheduled_normal_backfill",
+        "failed_review_shard_recovery",
+      ]) {
+        const repeat = await enqueue(h, lane, makeDecision(number, lane));
+        assert.equal(repeat.deduped, true);
+        assert.equal(repeat.dedupe_reason, "maintainer_request_required");
+        await h.queue.alarm();
+      }
+      assert.equal(h.dispatched.length, 1, "no additional run is dispatched");
+      const snapshot = await stats(h);
+      const projected = publicExactReviewQueueProjection(snapshot, new Set([repo]));
+      assert.equal(projected.lanes.review.parked_reasons.maintainer_request_required, 1);
+      assert.equal(projected.lanes.review.parked_reasons.unknown, 0);
+      const bay = exactReviewQueueBayProjectionFromStats(
+        queueCensus({ items: (await queueState(h)).items }),
+      );
+      assert.equal(bay.total, 0, "a skipped review is not active work");
+
+      const requested = await enqueue(
+        h,
+        "requested",
+        makeDecision(number, "re_review", {
+          commandStatusMarker: `<!-- clawsweeper-command-status:${number}:re_review:token -->`,
+        }),
+      );
+      assert.equal(requested.queued, true);
+      const requestTuple = await claimOnce(h, number);
+      const commandCompletion = await post(h, "/complete", {
+        ...requestTuple,
+        outcome: "success",
+        review_hold: "maintainer_request_required",
+      });
+      assert.equal(commandCompletion.status, 200);
+      assert.equal(
+        commandCompletion.body.review_hold,
+        undefined,
+        "command work cannot inherit the hold",
+      );
+      assert.equal(h.dispatched.length, 2);
+    });
+  });
+}
+
+test("automatic work by a private org member is held before dispatch", async () => {
+  // GitHub shows a private org member to the App as CONTRIBUTOR; repository
+  // permission decides, as in the runner admission check.
+  const authors: Record<number, string> = { 172600: "private-member", 172601: "outside-author" };
+  const permissionReads: string[] = [];
+  const h = createExactReviewAdmissionHarness(
+    (_targetRepo, itemNumber) =>
+      jsonResponse({
+        state: "open",
+        title: "A PR",
+        body: "",
+        locked: false,
+        labels: [],
+        draft: false,
+        author_association: "CONTRIBUTOR",
+        user: { login: authors[itemNumber] },
+        head: { sha: headA },
+        base: { sha: headB },
+        updated_at: "2026-10-14T22:37:43Z",
+      }),
+    {
+      maxConcurrent: "2",
+      targetPermission: (_targetRepo, author) => {
+        permissionReads.push(author);
+        return jsonResponse({ permission: author === "private-member" ? "admin" : "read" });
+      },
+    },
+  );
+  await withExactReviewAdmissionHarness(h, async () => {
+    await enqueue(h, "member-opened", pullDecision(172600, "opened"));
+    await enqueue(h, "outside-opened", pullDecision(172601, "opened"));
+    await h.queue.alarm();
+    assert.deepEqual(
+      h.dispatched.map((payload) => payload.client_payload.item_number),
+      [172601],
+    );
+    const held = (await queueState(h)).items[`${repo}#172600`]!;
+    assert.equal(held.state, "parked");
+    assert.equal(held.parkedReason, "maintainer_request_required");
+    const repeat = await enqueue(
+      h,
+      "member-scheduled",
+      pullDecision(172600, "scheduled_hot_intake"),
+    );
+    assert.equal(repeat.dedupe_reason, "maintainer_request_required");
+    await h.queue.alarm();
+    assert.equal(h.dispatched.length, 1);
+    assert.deepEqual(permissionReads.sort(), ["outside-author", "private-member"]);
+  });
+});
+
+test("a maintainer hold is released once the live item no longer requires a request", async () => {
+  const live = { created_at: "2026-10-01T00:00:00Z" };
+  const h = createExactReviewAdmissionHarness(() =>
+    jsonResponse({
+      state: "open",
+      title: "A PR",
+      body: "",
+      locked: false,
+      labels: [],
+      draft: false,
+      author_association: "MEMBER",
+      user: { login: "member" },
+      created_at: live.created_at,
+      head: { sha: headA },
+      base: { sha: headB },
+      updated_at: "2026-10-15T04:52:26Z",
+    }),
+  );
+  const realNow = Date.now;
+  let now = Date.parse("2026-10-15T05:00:00Z");
+  Date.now = () => now;
+  try {
+    await withExactReviewAdmissionHarness(h, async () => {
+      const key = `${repo}#172813`;
+      await enqueue(h, "member-ready", pullDecision(172813, "ready_for_review"));
+      await h.queue.alarm();
+      assert.equal((await queueState(h)).items[key]!.parkedReason, "maintainer_request_required");
+      // The periodic parked check keeps a hold that still applies.
+      now += 6 * 60_000;
+      await h.queue.alarm();
+      assert.equal((await queueState(h)).items[key]!.state, "parked");
+      assert.equal(h.dispatched.length, 0);
+      // A rule change (here, the item counts as created after the cutover) releases it.
+      live.created_at = "2026-10-15T04:52:06Z";
+      now += 6 * 60_000;
+      await h.queue.alarm();
+      assert.equal((await queueState(h)).items[key]!.state, "pending");
+      await h.queue.alarm();
+      assert.deepEqual(
+        h.dispatched.map((payload) => payload.client_payload.item_number),
+        [172813],
+      );
+    });
+  } finally {
+    Date.now = realNow;
+  }
+});
+
+test("new organic input releases a maintainer hold and is not lost during completion", async () => {
+  const live = { head: headA, labels: [] as string[] };
+  const h = pullHarness(live);
+  await withExactReviewAdmissionHarness(h, async () => {
+    const number = 171204;
+    const key = `${repo}#${number}`;
+    await enqueue(h, "initial", pullDecision(number, "scheduled_hot_intake"));
+    await completeHeld(h, number, "maintainer_request_required");
+    live.labels = ["clawsweeper:autofix"];
+    const source = {
+      sourceHeadSha: headA,
+      sourceHeadVerified: true,
+      sourceAuthoritySeq: 2,
+      sourceUpdatedAt: "2030-01-01T00:00:00Z",
+    };
+    const optedIn = await enqueue(
+      h,
+      "opted-in",
+      pullDecision(number, "labeled", { ...source, supersedesInProgress: true }),
+    );
+    assert.equal(optedIn.queued, true);
+    assert.equal((await queueState(h)).items[key]!.parkedReason, undefined);
+    const tuple = await claimOnce(h, number);
+    await enqueue(
+      h,
+      "edited",
+      pullDecision(number, "edited", {
+        ...source,
+        sourceAuthoritySeq: 3,
+        sourceUpdatedAt: "2030-01-01T00:01:00Z",
+      }),
+    );
+    const completed = await post(h, "/complete", {
+      ...tuple,
+      outcome: "success",
+      review_hold: "maintainer_request_required",
+    });
+    assert.equal(completed.status, 200);
+    assert.notEqual((await queueState(h)).items[key]?.parkedReason, "maintainer_request_required");
+  });
+});
+
 test("an oversized PR holds on its head until a push or reconciliation releases it", async () => {
   const live = { head: headA };
   const h = pullHarness(live);
@@ -275,7 +479,7 @@ test("an organic synchronize releases an oversized hold immediately", async () =
   });
 });
 
-test("holds never retain command work, unpinned PRs, or input that arrived during the lease", async () => {
+test("holds retain live-bound PRs but not command work or input that arrived during the lease", async () => {
   const live = { locked: true, updatedAt: "2026-09-09T02:17:31Z" };
   const h = lockedIssueHarness(live);
   await withExactReviewAdmissionHarness(h, async () => {
@@ -300,7 +504,9 @@ test("holds never retain command work, unpinned PRs, or input that arrived durin
     await enqueue(h, "unpinned", pullDecision(unpinned, "opened"));
     const unpinnedCompletion = await completeHeld(h, unpinned, "oversized_pull_request");
     assert.equal(unpinnedCompletion.status, 200, JSON.stringify(unpinnedCompletion.body));
-    assert.equal((await queueState(h)).items[`${repo}#${unpinned}`], undefined);
+    const bound = (await queueState(h)).items[`${repo}#${unpinned}`]!;
+    assert.equal(bound.decision.sourceHeadSha, headA);
+    assert.equal(bound.parkedReason, "oversized_pull_request");
 
     const raced = 84599;
     await enqueue(h, "raced", decision(raced, "scheduled_normal_backfill"));

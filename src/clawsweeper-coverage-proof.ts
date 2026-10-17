@@ -1,3 +1,4 @@
+import { reviewBodyWithoutPreflight } from "./review-preflight-body.js";
 import { sha256 } from "./content-hash.js";
 import { PR_CLOSE_COVERAGE_PROOF_SECTION, REVIEW_SECTIONS } from "./clawsweeper-policy.js";
 import type {
@@ -232,7 +233,9 @@ function coveringPrCloseCoveragePullRequestView(
     state: nonBlankStringOrUndefined(pull.state)?.toLowerCase() ?? "",
     mergedAt: nonBlankStringOrUndefined(pull.merged_at) ?? null,
     body: compactPrCloseCoverageProofText(
-      nonBlankStringOrUndefined(pull.body) ?? nonBlankStringOrUndefined(issue.body) ?? "",
+      reviewBodyWithoutPreflight(
+        nonBlankStringOrUndefined(pull.body) ?? nonBlankStringOrUndefined(issue.body) ?? "",
+      ),
     ),
     updatedAt:
       nonBlankStringOrUndefined(pull.updated_at) ??

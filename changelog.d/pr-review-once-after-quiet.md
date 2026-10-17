@@ -1,0 +1,1 @@
+- Wait ten quiet minutes before the first automatic PR review, then require an explicit re-review request after a completed answer; preserve unfinished retries and autofix/automerge opt-ins.

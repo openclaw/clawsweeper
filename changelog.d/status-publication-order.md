@@ -1,0 +1,1 @@
+- Keep newer dashboard snapshots when an older refresh finishes publishing late.

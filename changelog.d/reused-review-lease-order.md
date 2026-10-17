@@ -1,0 +1,1 @@
+- Fix publication of a newer review when a queued command reuses an earlier status-comment lease ID. Keep ambiguous ownership and unverified supersession blocked.

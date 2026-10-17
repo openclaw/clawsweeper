@@ -113,7 +113,7 @@ export function createReviewPlanningHotIntake(
       }
       return {
         headSha,
-        sourceRevision: itemSourceRevisionSha256(pull, comments),
+        sourceRevision: itemSourceRevisionSha256(pull, comments, "pull_request"),
         pullStateDigest,
         reviewActivityCursor,
         itemUpdatedAt,

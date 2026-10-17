@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import {
+  copyFileSync,
   lstatSync,
   mkdirSync,
   mkdtempSync,
@@ -16,7 +17,7 @@ import { join, relative, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import test from "node:test";
 import { resolveSpawnCommand } from "../dist/command.js";
-import { stageLocalPackage } from "../scripts/stage-local-package.mjs";
+import { collectLocalModules, stageLocalPackage } from "../scripts/stage-local-package.mjs";
 
 const sourceRoot = realpathSync(fileURLToPath(new URL("../", import.meta.url)));
 
@@ -46,6 +47,7 @@ test(
     const root = realpathSync(mkdtempSync(join(tmpdir(), "local-package-install-")));
     t.after(() => rmSync(root, { recursive: true, force: true }));
     const stage = join(root, "stage");
+    const seed = join(root, "seed");
     const prefix = join(root, "install");
     const cwd = join(root, "target with spaces 雪");
     mkdirSync(cwd);
@@ -93,10 +95,19 @@ test(
     assert.equal(metadata.private, true);
     assert.equal(metadata.scripts, undefined);
     assert.equal(metadata.devDependencies, undefined);
-    assert.equal(
-      metadata.dependencies,
-      undefined,
-      "the current local runtime uses only Node builtins",
+    const sourceMetadata = JSON.parse(readFileSync(join(sourceRoot, "package.json"), "utf8"));
+    const { packages: runtimeDependencies } = await collectLocalModules(sourceRoot, [
+      "dist/clawsweeper-local.js",
+      "dist/codex-process-worker.js",
+      "dist/openclaw-process-worker.js",
+      "dist/git-acquisition-worker.js",
+      "scripts/setup-review-tools.mjs",
+    ]);
+    assert.deepEqual(
+      metadata.dependencies ?? {},
+      Object.fromEntries(
+        [...runtimeDependencies].sort().map((name) => [name, sourceMetadata.dependencies[name]]),
+      ),
     );
     assert.equal(metadata.bin["clawsweeper-review"], "dist/clawsweeper-local.js");
     assert.ok(staged.some(({ path }) => path === "dist/repair/contained-command-worker.js"));
@@ -115,20 +126,96 @@ test(
     run(npm, [
       "install",
       "--prefix",
+      seed,
+      "--ignore-scripts",
+      "--omit=dev",
+      "--no-audit",
+      "--no-fund",
+      tarball,
+    ]);
+    // Seed the isolated cache online, then prove a clean lock-driven offline
+    // install. Keeping the original manifest/lock prevents cache warmth from
+    // silently changing which package or transitive versions are exercised.
+    mkdirSync(prefix);
+    const installInputs = ["package.json", "package-lock.json"].map((name) => {
+      copyFileSync(join(seed, name), join(prefix, name));
+      return { name, bytes: readFileSync(join(prefix, name)) };
+    });
+    rmSync(join(seed, "node_modules"), { recursive: true });
+    run(npm, [
+      "ci",
+      "--prefix",
       prefix,
       "--ignore-scripts",
       "--omit=dev",
       "--offline",
       "--no-audit",
       "--no-fund",
-      tarball,
     ]);
+    for (const { name, bytes } of installInputs)
+      assert.deepEqual(readFileSync(join(prefix, name)), bytes);
     const installed = join(prefix, "node_modules", "@openclaw", "clawsweeper");
     assert.deepEqual(tree(installed), staged);
-    assert.deepEqual(
-      readdirSync(join(prefix, "node_modules")).filter((name) => !name.startsWith(".")),
-      ["@openclaw"],
+    const installedPackages = new Map<
+      string,
+      { root: string; dependencies: Record<string, string>; declared: string[] }
+    >();
+    type NpmNode = {
+      name: string;
+      version: string;
+      path: string;
+      problems?: unknown[];
+      missing?: boolean;
+      invalid?: boolean | string;
+      extraneous?: boolean;
+      dependencies?: Record<string, NpmNode>;
+    };
+    function verifyDependencies(node: NpmNode, isRoot = false): void {
+      assert.deepEqual(node.problems ?? [], []);
+      assert.ok(!node.missing && !node.invalid && !node.extraneous);
+      assert.ok(lstatSync(node.path).isDirectory());
+      assert.equal(
+        realpathSync(node.path),
+        node.path,
+        "installed package root must not be a symlink",
+      );
+      assert.ok(
+        isRoot ? node.path === prefix : node.path.startsWith(join(prefix, "node_modules") + sep),
+      );
+      const packageJson = JSON.parse(readFileSync(join(node.path, "package.json"), "utf8"));
+      if (!isRoot) {
+        assert.equal(node.name, packageJson.name);
+        assert.equal(node.version, packageJson.version);
+      }
+      const dependencies = node.dependencies ?? {};
+      const declared = Object.keys(packageJson.dependencies ?? {}).sort();
+      const entry = installedPackages.get(node.path) ?? {
+        root: node.path,
+        dependencies: {},
+        declared,
+      };
+      // npm's logical tree can omit children at a repeated physical node. Merge
+      // each visible parent edge, then check completeness after traversing it.
+      assert.deepEqual(entry.declared, declared);
+      for (const [name, child] of Object.entries(dependencies)) {
+        assert.equal(name, child.name);
+        assert.ok(!entry.dependencies[name] || entry.dependencies[name] === child.path);
+        entry.dependencies[name] = child.path;
+      }
+      if (!isRoot) installedPackages.set(node.path, entry);
+      else assert.deepEqual(Object.keys(dependencies).sort(), declared);
+      for (const child of Object.values(dependencies)) verifyDependencies(child);
+    }
+    verifyDependencies(
+      JSON.parse(run(npm, ["ls", "--prefix", prefix, "--all", "--long", "--json"])),
+      true,
     );
+    for (const entry of installedPackages.values())
+      assert.deepEqual(Object.keys(entry.dependencies).sort(), entry.declared);
+    const dependencyTrees = [...installedPackages.keys()].map((path) => ({
+      path,
+      files: tree(path),
+    }));
     const bin = join(
       prefix,
       "node_modules",
@@ -137,7 +224,8 @@ test(
     );
 
     // Only installed processes activate this hook. The parity suite's one
-    // explicit test preload is allowed; product imports stay inside the package.
+    // explicit test preload is allowed; product imports follow verified package
+    // roots and each importing package's declared dependency edges.
     const guard = join(root, "installed-only.mjs");
     writeFileSync(
       guard,
@@ -145,10 +233,19 @@ test(
 import { realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 if (process.argv[1] && realpathSync(process.argv[1]).startsWith(${JSON.stringify(installed + sep)})) {
+  const packages = ${JSON.stringify([...installedPackages.values()].sort((a, b) => b.root.length - a.root.length))};
+  const owner = url => {
+    const path = realpathSync(fileURLToPath(url));
+    return packages.find(pkg => path.startsWith(pkg.root + ${JSON.stringify(sep)}));
+  };
   registerHooks({ resolve(specifier, context, nextResolve) {
     const result = nextResolve(specifier, context);
-    if (result.url.startsWith("file:") && result.url !== ${JSON.stringify(new URL("./local-entry-import-guard.mjs", import.meta.url).href)} && !fileURLToPath(result.url).startsWith(${JSON.stringify(installed + sep)})) {
-      throw new Error("Installed reviewer imported outside its package");
+    if (result.url.startsWith("node:") || result.url === ${JSON.stringify(new URL("./local-entry-import-guard.mjs", import.meta.url).href)}) return result;
+    const target = result.url.startsWith("file:") ? owner(result.url) : undefined;
+    const parent = context.parentURL?.startsWith("file:") ? owner(context.parentURL) : undefined;
+    const name = specifier.startsWith("@") ? specifier.split("/").slice(0, 2).join("/") : specifier.split("/")[0];
+    if (!target || (parent && parent.root !== target.root && parent.dependencies[name] !== target.root) || (!parent && target.root !== ${JSON.stringify(installed)})) {
+      throw new Error("Installed reviewer imported outside its declared dependency closure");
     }
     return result;
   } });
@@ -156,6 +253,33 @@ if (process.argv[1] && realpathSync(process.argv[1]).startsWith(${JSON.stringify
 `,
     );
     const installedEnv = { ...env, NODE_OPTIONS: `--import=${pathToFileURL(guard).href}` };
+    const probe = join(installed, "package-boundary-probe.mjs");
+    const transitive = [...installedPackages.keys()].find(
+      (path) =>
+        path !== installed &&
+        !Object.values(installedPackages.get(installed)!.dependencies).includes(path),
+    );
+    assert.ok(transitive, "exercise an undeclared hoisted transitive dependency");
+    const transitiveName = JSON.parse(readFileSync(join(transitive, "package.json"), "utf8")).name;
+    try {
+      writeFileSync(probe, "await import(process.argv[2]);\n");
+      for (const specifier of [
+        pathToFileURL(join(sourceRoot, "dist/clawsweeper-local.js")).href,
+        pathToFileURL(join(stage, "dist/clawsweeper-local.js")).href,
+        transitiveName,
+      ]) {
+        const result = spawnSync(process.execPath, [probe, specifier], {
+          env: installedEnv,
+          encoding: "utf8",
+          timeout: 10_000,
+        });
+        assert.ifError(result.error);
+        assert.equal(result.status, 1);
+        assert.match(result.stderr, /outside its declared dependency closure/);
+      }
+    } finally {
+      rmSync(probe);
+    }
     run("git", ["init", "-q", cwd]);
     const targetBefore = tree(cwd);
     for (const flag of ["--help", "--version"]) {
@@ -209,6 +333,8 @@ if (process.argv[1] && realpathSync(process.argv[1]).startsWith(${JSON.stringify
       assert.match(parity, new RegExp(`^# ${label} ${expected}$`, "m"));
     }
     assert.deepEqual(tree(installed), staged, "review must not change the installed package");
+    for (const { path, files } of dependencyTrees)
+      assert.deepEqual(tree(path), files, "review must not change installed runtime dependencies");
     assert.deepEqual(tree(stage), staged, "review must not change staged inputs");
     assert.deepEqual(tree(cwd), targetBefore);
     for (const { source, bytes } of sourceBefore)
@@ -223,6 +349,10 @@ if (process.argv[1] && realpathSync(process.argv[1]).startsWith(${JSON.stringify
         tarballBytes: packed.size,
         tarballSha256: tarballHash,
         parity: parity.match(/# tests \d+/)?.[0],
+        npmVersion: run(npm, ["--version"]).trim(),
+        runtimePackages: [...installedPackages.keys()].map((path) =>
+          relative(join(prefix, "node_modules"), path).replaceAll("\\", "/"),
+        ),
       }),
     );
   },

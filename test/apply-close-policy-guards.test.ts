@@ -76,7 +76,7 @@ function counterpartAdmission(
         duplicateCanonicalPullRequestBlockReason: () => null,
         fetchItem: () => ({ item: { ...counterpartItem, locked: liveLocked }, state: liveState }),
         isMaintainerAuthorAssociation: () => false,
-        issueRecentHumanCommentBlockReasonSafe: () => {
+        issueRecentHumanCommentBlockSafe: () => {
           throw new Error("counterpart policy must reuse the complete comment read");
         },
         issueReviewCommentState: () => {
@@ -95,8 +95,10 @@ function counterpartAdmission(
         reviewCommentBodyDigest: () => "digest",
         reviewCommentHashMatches: () => true,
         sameAuthorCounterpartApplyReason: () => null,
-        staleVersionBugApplyBlockReasonSafe: () =>
-          closeReason === "stale_version_bug" ? "stale-version bug apply policy is disabled" : null,
+        staleVersionBugApplyBlockSafe: () =>
+          closeReason === "stale_version_bug"
+            ? { reason: "stale-version bug apply policy is disabled" }
+            : null,
         validateCloseDecision: () => ({ ok: true }),
       } as never,
       {
@@ -171,7 +173,7 @@ test("terminal reason policy bypasses an unchanged live-read generation", () => 
       "policy",
       () => {
         reads++;
-        return liveReason;
+        return liveReason ? { reason: liveReason } : null;
       },
       options,
     );
@@ -191,7 +193,7 @@ test("terminal reason policy bypasses an unchanged live-read generation", () => 
   } as never;
   const policy = {
     closeReason: "stale_version_bug",
-    currentStaleVersionBugBlockReason: readReason,
+    currentStaleVersionBugBlock: readReason,
     item: currentItem,
     markdown: "",
     number: 321,

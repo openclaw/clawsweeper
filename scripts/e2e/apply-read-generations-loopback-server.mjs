@@ -65,28 +65,6 @@ const server = http.createServer((request, response) => {
   if (url.pathname === "/comments") return json(response, 200, state.comments);
   if (url.pathname === "/timeline") return json(response, 200, []);
   if (url.pathname === "/reviews") return json(response, 200, []);
-  if (url.pathname === "/files") {
-    return json(response, 200, [
-      {
-        filename: "src/example.ts",
-        previous_filename: null,
-        status: "modified",
-        additions: 1,
-        deletions: 1,
-        changes: 2,
-        patch: "@@ -1 +1 @@\n-old\n+new",
-      },
-    ]);
-  }
-  if (url.pathname === "/commits") {
-    return json(response, 200, [
-      {
-        sha: "b".repeat(40),
-        author: { login: "contributor" },
-        commit: { message: "proof", author: { name: "Contributor" } },
-      },
-    ]);
-  }
   if (url.pathname === "/inline-comments") {
     return json(response, 200, [
       {
@@ -104,9 +82,6 @@ const server = http.createServer((request, response) => {
         commit_id: reviewedHead,
       },
     ]);
-  }
-  if (url.pathname === "/activity") {
-    return json(response, 200, { revision: `sha256:${"1".repeat(64)}` });
   }
   return json(response, 404, { error: "not found" });
 });

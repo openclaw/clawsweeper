@@ -466,15 +466,6 @@ export function oldExactReviewQueueStats(
     (item): item is ExactReviewQueueItem & { state: "pending" | "dispatching" | "leased" } =>
       item.state !== "parked" && !exactReviewQueueIsPublication(item),
   );
-  const handoffHealth = summarizeExactReviewHandoff({
-    items: handoffItems,
-    dispatcher: state.dispatcher,
-    shedSinceReset: exactReviewShedSinceReset(state),
-    now,
-    capacity,
-    dispatchLeaseMs,
-    executionLeaseMs,
-  });
   const targets = new Map<
     string,
     {
@@ -561,6 +552,19 @@ export function oldExactReviewQueueStats(
   const reviewAdmissiblePending = admissibleItems.filter(
     (item) => !exactReviewQueueIsPublication(item),
   ).length;
+  const handoffHealth = summarizeExactReviewHandoff({
+    items: handoffItems,
+    dispatcher: state.dispatcher,
+    dispatchablePending:
+      reviewAdmissiblePending > 0 &&
+      oldExactReviewQueueActiveReviewCount(state) < capacity &&
+      Number(state.dispatcher?.reviewAdmissionNextAt || 0) <= now,
+    shedSinceReset: exactReviewShedSinceReset(state),
+    now,
+    capacity,
+    dispatchLeaseMs,
+    executionLeaseMs,
+  });
   const pressure = summarizeExactReviewPressure({
     pending: lanes.review.pending,
     readyPending: lanes.review.ready,
@@ -616,6 +620,7 @@ export function oldExactReviewQueueStats(
 export function summarizeExactReviewHandoff({
   items,
   dispatcher,
+  dispatchablePending,
   now = Date.now(),
   capacity,
   dispatchLeaseMs,
@@ -624,6 +629,7 @@ export function summarizeExactReviewHandoff({
 }: {
   items: ExactReviewHealthItem[];
   dispatcher?: ExactReviewHealthDispatcher;
+  dispatchablePending?: boolean;
   now?: number;
   capacity: number;
   dispatchLeaseMs: number;
@@ -672,6 +678,7 @@ export function summarizeExactReviewHandoff({
     phaseCensus: phaseValues,
     recoveryReasons,
     dispatcher,
+    dispatchablePending,
     now: safeNow,
     capacity,
     dispatchLeaseMs: safeLeaseMs,

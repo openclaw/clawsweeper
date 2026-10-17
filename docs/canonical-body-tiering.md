@@ -1,0 +1,302 @@
+# Canonical record bodies in R2
+
+- Status: proposed architecture, not an execution runbook
+- Owner: ClawSweeper storage and queue maintainers
+- Source of truth: [canonical record owner](../dashboard/exact-review-direct-publication.ts),
+  [queue owner](../dashboard/exact-review-queue.ts), and
+  [snapshot owner](../dashboard/record-snapshots.ts)
+- Inspected revision: `291ab8a0090a8f76c08e4d0e39ea4cf1fdcbe0c0`
+- Update when: maintainers accept the representation, implementation changes,
+  proof completes, or the deployment and rollback floor change
+
+Keep canonical identity and ordering in SQLite. Store exact canonical bodies in
+an immutable namespace within the existing R2 bucket. Preserve every logical
+record, tombstone, digest, tuple revision, export revision, and publication receipt.
+
+The owner accepted local implementation of this representation and schema transition
+on 2026-10-16. This document still grants no production deployment, activation,
+migration, deletion, or R2 expiration authority. The candidate must pass native
+proof and independent review before a separate production execution packet is approved.
+
+## Evidence and scope
+
+The completed census observed 3,400,515,871 bytes in canonical `content`.
+The table contained 419,448 rows, including tombstones.
+The separate storage report observed 8,130,392,064 occupied database bytes at
+2026-10-15T15:47:52.196Z. These are historical observations, not current usage.
+See the [completed storage report](https://github.com/openclaw/clawsweeper/actions/runs/38763467677).
+
+Column bytes exclude indexes, numeric values, and page overhead.
+They do not predict the occupied-byte reduction after migration.
+The existing census also does not measure canonical chunks separately.
+Refresh decision-relevant counts and capacity before approving production execution.
+
+Canonical records hold each item's current tuple, not every review generation.
+Reports contain decisions, evidence, and provenance that GitHub cannot reconstruct.
+Plans and referenced decision packets also have supported readers and integrity contracts.
+Age does not establish disposal authority for these records.
+The [existing storage contract](state-storage.md) retains them after receipt expiry.
+
+This proposal covers the four canonical sections: `items`, `closed`, `plans`,
+and `decision-packets`. It preserves all deletion tombstones.
+Commit reports and live imported records remain with the backfill owner.
+Webhook snapshots, lifecycle projections, ledgers, and artifact retention remain
+outside this migration. Their measured size does not authorize their deletion.
+Completed hydration and backfill cleanup must not restart.
+
+## Representation decision
+
+The existing live-row CHECK requires inline content or real SQLite chunks.
+An external body cannot satisfy it honestly.
+Empty content, fabricated chunk counts, and locator text disguised as content
+would let older readers silently return invalid records.
+
+Use one metadata-only canonical table in the same Durable Object database.
+The proposed name is `exact_review_canonical_records_v2`.
+Keep these authoritative facts there:
+
+| Fact                                  | Purpose                                                      |
+| ------------------------------------- | ------------------------------------------------------------ |
+| Repository, section, item ID          | Canonical identity                                           |
+| Digest and byte length                | Exact body identity and read budgets                         |
+| Deleted flag                          | Durable tombstone, distinct from unavailable storage         |
+| Tuple revision and updated time       | Existing logical version                                     |
+| Canonical target and claim generation | Producer provenance                                          |
+| Typed coverage fields                 | Repository, review status, reviewed time, and exclusion fact |
+
+A live row requires a verified body descriptor. A tombstone has no body descriptor,
+no digest, and zero bytes. Keep the export index and both publication receipt
+families with their existing owners.
+
+Keep coverage facts bounded. Do not copy the entire report header or embedded
+review JSON. Derive coverage through the existing bounded parser before detachment.
+Seed the existing durable answered fact while the original body and provenance
+remain available. Preserve false outcomes for stale-source requeues.
+Missing provenance must not manufacture a completed review.
+
+The proposed queue storage schema transition is version 1 to version 2.
+Version 2 records that canonical bodies can live outside the old SQL tables.
+The supported build must understand both versions before activation.
+The frozen baseline rejects a different queue schema version. The candidate
+supports versions 1 and 2 while initialization still persists version 1. Deployment
+and startup never activate tiering; the native maintenance owner does that explicitly.
+
+## Body ownership and writes
+
+Reuse `STATE_SNAPSHOTS`, already bound in
+[the Worker configuration](../dashboard/wrangler.toml).
+Use `records/bodies/v1/sha256/<digest>` for immutable exact UTF-8 bytes.
+Derive the key from the digest rather than storing a duplicate locator.
+Keep this namespace separate from snapshots, ledgers, assets, and artifact caches.
+Verify the actual bucket lifecycle rules cannot expire this namespace before activation.
+Do not expose it through the generic state-blob mutation API.
+
+1. Validate authenticated operations and normalize stored report bytes through the existing owner.
+2. Compute the stored body's SHA-256 digest and byte length.
+3. Upload with create-only semantics and the SHA-256 integrity option.
+4. Read the resulting object and verify its exact bytes, length, and digest.
+5. Recheck all publication authority after the final R2 await.
+6. Commit metadata, tuple changes, export changes, and receipts synchronously.
+
+A pre-existing object needs the same verification before reuse.
+An R2 key alone, object size, ETag, or snapshot identity list is insufficient proof.
+Receipt fingerprints retain the original authenticated bytes.
+The external descriptor identifies normalized stored bytes, which can differ.
+Preserve the direct-retry and deferred-batch receipt rules separately.
+
+Recheck lease expiry, batch membership, generation, fence, source admission,
+superseding publications, and existing receipts immediately before commit.
+An upload grants no publication authority.
+Failed authority checks or failed SQL commits can leave an unreferenced object.
+They must never leave a committed descriptor pointing at an incomplete upload.
+
+Do not add a second durable body cache, new database, runtime configuration switch,
+or general storage framework. R2 failures prevent body-dependent success.
+There is no fallback to stale Git records or expired artifact archives.
+
+## Readers and transaction boundaries
+
+Keep existing HTTP envelopes and runner contracts unchanged.
+Separate synchronous metadata selection from asynchronous body resolution.
+Capture each immutable descriptor with its digest and logical version before
+awaiting R2. Never attach a newer body to older export metadata.
+
+| Surface                 | Required behavior                                                                                            |
+| ----------------------- | ------------------------------------------------------------------------------------------------------------ |
+| Point reads             | Preserve exact content and metadata. Absent identities and real tombstones retain record-not-found behavior. |
+| Tuple compare-and-swap  | Compare authoritative digests through metadata inside the synchronous transaction.                           |
+| Tuple conflict response | Capture a coherent four-section tuple, then hydrate its exact bodies outside the transaction.                |
+| Export                  | Preserve source-byte, record-count, response-size, cursor, and first-record progress limits.                 |
+| Snapshots               | Resolve bodies asynchronously through the same owner. Preserve existing watermark semantics.                 |
+| Admission               | Read the durable answered fact synchronously without R2.                                                     |
+| Coverage                | Read typed SQLite facts without one R2 request per record.                                                   |
+| Cleanup planning        | Use the same body reader. Preserve completed checkpoints.                                                    |
+
+Missing or corrupt external bodies return a visible infrastructure failure.
+They must not become a tombstone, an incomplete conflict response, or an invalid-input 400.
+The client must retain its previous materialized records when hydration fails.
+
+Snapshots remain derived consumers. Their two-snapshot retention and identity
+checks cannot authorize removal of canonical bodies.
+A snapshot scan is not a frozen archive of every body version.
+
+## Migration with bounded temporary storage
+
+Do not rebuild a second table containing all inline bodies.
+The observed body total plus occupied database bytes exceeds the published
+10 GB limit. A full copy could exhaust capacity before deleting the original.
+See [Cloudflare's storage limits](https://developers.cloudflare.com/durable-objects/platform/limits/).
+
+Prepare a build that supports both schema versions and both record representations.
+While persisted schema remains version 1, keep normal publication behavior.
+Production deployment requires its own explicit approval.
+No startup path may activate historical detachment.
+Verify every live writer uses the capable build before activation.
+The current version 1 build does not recheck schema at every write boundary.
+
+After the reviewed migration receives production approval, activate version 2
+through the existing authenticated maintenance owner.
+Atomically capture the old table's upper row identity and switch future writes
+to the version 2 owner. Recheck the persisted version at every commit boundary.
+A cached initialization check alone cannot fence a request already in progress.
+Keep one durable migration checkpoint in the existing SQLite-backed storage.
+Do not create filesystem sidecars.
+
+Each proposed pass inspects at most 64 raw identities and prepares at most four
+tuples, with at most 8 MiB of source bodies. These are proposed caps requiring
+real Workerd proof before they become an execution contract.
+The existing per-file maximum still applies.
+Process R2 writes sequentially so buffers and outstanding requests stay bounded.
+
+For each selected tuple:
+
+1. Capture every section's authoritative metadata and export pointer.
+2. Reconstruct and verify each live source body.
+3. Prepare verified immutable objects and typed SQLite facts outside the transaction.
+4. Reread every captured section and export pointer inside one synchronous transaction.
+5. Require exact agreement on revision, digest, deletion state, producer, and export sequence.
+6. Insert version 2 metadata and delete only the matching old rows and chunks atomically.
+7. Commit checkpoint progress with the row changes.
+
+Physical relocation must not change tuple revision, export revision, updated time,
+producer identity, or any accepted receipt. Retry unchanged uploads safely.
+A changed tuple loses the comparison and keeps its current authoritative state.
+Persist unresolved progress rather than reporting completion.
+Stop detachment on integrity failures or an unavailable bucket.
+The queue continues using supported readers for records already migrated.
+
+During migration, one explicit owner resolves version 2 rows first and unmigrated
+version 1 rows second. This is a temporary migration boundary, not permanent compatibility.
+New writers must never recreate version 1 bodies after activation.
+Complete only after all old identities resolve and both old canonical tables are empty.
+Then remove the old tables and migration reader through the reviewed closeout.
+
+R2 bodies remain durable after replacement or tombstoning in this initial scope.
+No R2 deletion, expiration, orphan sweep, or bucket lifecycle change is included.
+Unreferenced objects and version accumulation require a named reference-owned
+reclamation follow-up before declaring the storage lifecycle complete.
+This trades SQL capacity pressure for R2 storage and request usage.
+Measure that usage and present its budget before production approval.
+
+## Rollback and approvals
+
+The rollback floor is a verified build that supports version 2 reads and writes.
+After activation, redeploying the current version 1 build is not a safe rollback.
+Returning to that build requires verified rehydration and enough database capacity.
+It needs a separate approved plan. A code rollback cannot restore removed SQL bodies.
+
+There are two different decisions:
+
+1. Accept this representation and the version 1 to version 2 schema transition before implementation.
+2. Approve the proved, exact production plan before any deployment or destructive activation.
+
+The original storage handoff requires three confirmations for each unchanged
+destructive production plan. Earlier approvals covered completed cleanup only.
+This proposal does not consume or count as any of those confirmations.
+The production packet must identify exact deployment and rollback SHAs, resource
+identity, current capacity, row predicates, batch limits, and stop conditions.
+It must also include reconstruction proof, protected-data checks, and expected usage.
+
+## Required proof before a code PR
+
+Use a real Workerd Durable Object and controlled R2 binding with synthetic data.
+Extend the existing [native workflow-storage fixture](proof/workflow-storage/README.md)
+or another qualified fixture. Unit mocks alone cannot establish the storage contract.
+
+| Scenario                                                       | Observable result                                                                                     |
+| -------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
+| Inline, chunked, empty, Unicode, and maximum-size bodies       | Identical bytes and digests through point reads and export                                            |
+| Snapshot plus delta hydration                                  | Identical materialized records and original cursor semantics                                          |
+| Overwrite or deletion during a pending R2 read                 | Each response binds one captured body's bytes to its own metadata                                     |
+| Lease expiry, cancellation, or batch replacement during upload | No unauthorized tuple, receipt, export, or lifecycle success                                          |
+| Successful commit with lost response                           | Existing direct and batch retry behavior remains correct                                              |
+| Tuple conflict with external bodies                            | Four complete sections, coherent revision, valid packet references, and verified digests              |
+| Completed, failed, requeue, and reconciliation reports         | Existing answered facts and first-review admission remain correct                                     |
+| Coverage before and after detachment                           | Equal fresh, stale, failed, expired, excluded, and pending counts                                     |
+| Upload failure, corrupt object, and failed comparison          | Original rows remain authoritative with visible failure                                               |
+| Restart before and after SQL commit                            | Idempotent progress without duplicate logical revisions                                               |
+| Migration at representative volume                             | Measured CPU, memory, IO, temporary SQL growth, and bounded passes                                    |
+| Version 2 rollback floor and old build                         | Supported build reads all records. Cold and warm unsupported writers cannot commit across activation. |
+| Unrelated stores and protected metadata                        | Queue, leases, imports, commits, receipts, and tombstones retain their contracts                      |
+
+Publish commands, exact head, runtime identity, observations, and limits in the
+code PR's real-behavior proof. Run repository checks and required reviews.
+No proof listed here has been executed for this proposed representation.
+
+## Dependency contracts checked
+
+The official R2 Workers API supports conditional writes and a SHA-256 integrity option.
+A failed write precondition returns null. Verify a reused object rather than treating
+that result as successful publication.
+R2 reads after a successful write are strongly consistent through the binding.
+This design does not use a public CDN cache as its authoritative body reader.
+
+- [R2 Workers API](https://developers.cloudflare.com/r2/api/workers/workers-api-reference/)
+- [R2 consistency](https://developers.cloudflare.com/r2/reference/consistency/)
+- [Durable Object SQLite API](https://developers.cloudflare.com/durable-objects/api/sqlite-storage-api/)
+
+These contracts were fetched from official documentation on 2026-10-16.
+They establish feasibility, not executed migration or deployment proof.
+
+## Candidate maintenance owner
+
+The signed native exact-review maintenance route owns preview, activation, and
+migration. The maintenance workflow adds an explicit `canonical-bodies` mode;
+its default reconciliation mode and preview/execute gate remain unchanged.
+The public dashboard has no action control.
+
+The stable preview packet binds the executing deployment SHA, the same qualified
+build as rollback floor, its format 1+2 proof reference, operator identity, the
+actual named bucket policy, namespace, scope, and fixed pass caps. The lifecycle
+policy is canonicalized and hashed. The CLI reads the named bucket’s current
+lifecycle rules and refuses a mismatch or any enabled deletion rule overlapping
+the body prefix. No lifecycle rule is changed. Native R2 bindings cannot inspect
+bucket policy, so the signed packet also records the reviewed operator attestation.
+
+Live counts, export revisions, activation’s captured upper row identity, and
+progress are observations outside that stable approval identity. SQLite persists
+the approved packet and hash. Every later pass must name the same packet and
+compare its separate captured checkpoint before commit. Ordinary publication and
+migration progress do not require replacement approval packets.
+
+An explicit migrate invocation runs at most 100,000 bounded passes or 50 minutes,
+whichever comes first, stopping on completion or a full sweep with unresolved
+sources. The workflow allows 60 minutes for that operation. A later invocation
+resumes the persisted cursor using the same approved plan; startup and alarms
+never schedule it. This makes large stores operable without one workflow dispatch
+per four tuples. Throughput from the synthetic fixture is not a production estimate.
+
+Cloudflare restarts Durable Objects on deployment. Requests from the old deployment
+may finish only while avoiding storage; an old-instance storage access is stopped
+to preserve global uniqueness. Matching the executing DO deployment to the reviewed
+SHA excludes unsupported old writers under that platform contract. Capable requests
+already awaiting work in the current instance still recheck the durable format at
+every canonical write boundary. See the official
+[Durable Object lifecycle contract](https://developers.cloudflare.com/durable-objects/concepts/durable-object-lifecycle/).
+
+The controlled [native proof fixture](proof/canonical-body-tiering/README.md) pins
+its persisted baseline to the inspected revision above. Related work remains outside
+this frozen candidate: [coverage identity matching](https://github.com/openclaw/clawsweeper/pull/2018)
+and [snapshot download isolation](https://github.com/openclaw/clawsweeper/pull/2017).
+Before landing on a newer base, reconcile those owner changes and repeat affected
+proof. In particular, new coverage facts must be projected before body detachment.

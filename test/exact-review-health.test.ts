@@ -7,6 +7,8 @@ import {
   summarizeExactReviewPressure,
 } from "../dashboard/exact-review-health.ts";
 import { summarizeExactReviewHandoff } from "./fixtures/exact-review-read-model-old.ts";
+import { exactReviewQueueStats } from "../dashboard/exact-review-read-model.ts";
+import type { ExactReviewQueueState } from "../dashboard/exact-review-queue.ts";
 
 const NOW = Date.parse("2026-07-13T02:00:00.000Z");
 const DISPATCH_LEASE_MS = 10 * 60_000;
@@ -163,8 +165,106 @@ test("exact-review handoff health surfaces paused and blocked dispatchers with p
   assert.equal(blocked.status, "stalled");
   assert.equal(blocked.reason, "dispatcher_blocked");
   const blockedMessage =
-    "The dispatcher cannot verify workflow availability while reviews are pending.";
+    "The dispatcher is backing off after a failed attempt while reviews are pending.";
   assert.equal(blocked.message, blockedMessage);
+});
+
+test("expired dispatcher backoff distinguishes a due retry from ineligible work", () => {
+  const key = "openclaw/openclaw#1";
+  const state: ExactReviewQueueState = {
+    items: {
+      [key]: {
+        key,
+        state: "pending",
+        createdAt: NOW - 60_000,
+        updatedAt: NOW - 60_000,
+        nextAttemptAt: NOW,
+        decision: { targetRepo: "openclaw/openclaw", itemNumber: 1 },
+      },
+    },
+    dispatcher: { state: "blocked", checkedAt: NOW - 60_000, retryAt: NOW },
+  };
+  const health = (capacity = 4, targetCapacity = 4, scheduledCapacity = 4) =>
+    exactReviewQueueStats(
+      state,
+      NOW,
+      capacity,
+      targetCapacity,
+      4,
+      DISPATCH_LEASE_MS,
+      EXECUTION_LEASE_MS,
+      15 * 60_000,
+      20 * 60_000,
+      new Set(),
+      null,
+      scheduledCapacity,
+    ).handoff_health;
+
+  assert.equal(health().reason, "dispatcher_retry_due");
+  assert.equal(health().status, "degraded");
+  assert.equal(state.dispatcher?.state, "blocked");
+
+  state.items[key]!.nextAttemptAt = NOW + 60_000;
+  assert.equal(health().reason, "handoff_current");
+  state.items[key]!.nextAttemptAt = NOW;
+  assert.equal(health(0).reason, "handoff_current");
+  assert.equal(health(4, 0).reason, "handoff_current");
+  state.dispatcher!.githubCredentialCircuits = {
+    openclaw: {
+      poolKey: "target_app:openclaw",
+      scope: "target_app",
+      targetOwner: "openclaw",
+      observedAt: NOW - 1_000,
+      retryAt: NOW + 60_000,
+      provenance: "fallback",
+      authoritative: false,
+    },
+  };
+  assert.equal(health().reason, "handoff_current");
+  delete state.dispatcher!.githubCredentialCircuits;
+
+  state.items[key]!.decision.sourceAction = "scheduled_hot_intake";
+  assert.equal(health(4, 4, 0).reason, "handoff_current");
+  state.items[key]!.decision.sourceAction = "manual";
+  state.dispatcher!.reviewAdmissionNextAt = NOW + 1;
+  assert.equal(health().reason, "handoff_current");
+  delete state.dispatcher!.reviewAdmissionNextAt;
+
+  state.dispatcher!.retryAt = NOW + 1;
+  assert.equal(health().reason, "dispatcher_blocked");
+  state.dispatcher!.state = "paused";
+  assert.equal(health().reason, "dispatcher_paused");
+  state.dispatcher!.retryAt = NOW - 1;
+  assert.equal(health().reason, "dispatcher_retry_due");
+  state.dispatcher!.state = "active";
+  assert.equal(health().reason, "handoff_current");
+});
+
+test("unknown dispatcher deadlines retain warnings and actual claim stalls take precedence", () => {
+  for (const retryAt of [undefined, Number.NaN]) {
+    assert.equal(
+      summarize({
+        dispatcher: { state: "blocked", retryAt },
+        items: [{ state: "pending", createdAt: NOW, updatedAt: NOW }],
+      }).reason,
+      "dispatcher_blocked",
+    );
+  }
+  assert.equal(
+    summarize({
+      dispatcher: { state: "blocked", retryAt: NOW },
+      dispatchablePending: true,
+      items: [
+        {
+          state: "dispatching",
+          createdAt: NOW - 300_000,
+          updatedAt: NOW - 300_000,
+          dispatchedAt: NOW - 300_000,
+        },
+      ],
+    }).reason,
+    "claim_stalled",
+  );
 });
 
 test("exact-review handoff health derives legacy dispatch age from its active lease", () => {

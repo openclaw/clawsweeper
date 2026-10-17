@@ -1,0 +1,1 @@
+- The target dispatcher template no longer posts the maintainer opt-in reminder or skips maintainer events; the queue applies the first-review rule for maintainer items (openclaw/openclaw#172830 made the same change in OpenClaw's copy).

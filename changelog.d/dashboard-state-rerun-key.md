@@ -1,0 +1,1 @@
+- Keep the dashboard state when a dashboard-site build is rerun. The state cache key now includes the run attempt; before, a rerun could not save (cache keys are immutable), so the 30-day Actions backfill from a rerun was lost and the Agent performance run-time chart showed 1 of 30 days. The Agent performance page also gets its own sidebar icon.

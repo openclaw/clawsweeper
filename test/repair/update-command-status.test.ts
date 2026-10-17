@@ -93,11 +93,16 @@ test("exact review queue fence allows the owner and rejects supersession", async
     GITHUB_RUN_ID: "4242",
     GITHUB_RUN_ATTEMPT: "3",
   };
-  assert.equal(await exactReviewQueueAuthorityFence(env, execute), true);
+  assert.equal(exactReviewQueueAuthorityFence(env, execute), true);
+  assert.equal(exactReviewQueueAuthorityFence(env, execute, "review"), true);
+  const payload = JSON.parse(fs.readFileSync(invocation!.args[4]!, "utf8"));
+  assert.equal(payload.phase, "review");
+  assert.equal(payload.claim_generation, 2);
+  assert.equal(payload.source_head_sha, "a".repeat(40));
   assert.equal(invocation?.file, "bash");
   assert.match(invocation?.args.join(" ") ?? "", /control-plane-curl\.sh/);
   responseStatus = 409;
-  assert.equal(await exactReviewQueueAuthorityFence(env, execute), false);
+  assert.equal(exactReviewQueueAuthorityFence(env, execute), false);
 });
 
 test("terminal receipt verification is opt-in", () => {

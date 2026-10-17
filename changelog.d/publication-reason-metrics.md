@@ -1,0 +1,1 @@
+- Preserve publication failure reasons in durable telemetry and expose aggregate reason counts without publishing target identities or error details.

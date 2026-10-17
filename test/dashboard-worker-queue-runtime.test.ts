@@ -51,6 +51,28 @@ import {
   mergePendingExactReviewDecision,
 } from "../dashboard/exact-review-decision.ts";
 
+test("signed admission reports the queue revision independently from the outer Worker", async () => {
+  const secret = "synthetic-deployment-secret";
+  for (const queueRevision of [undefined, "previous-sha", "expected-sha"]) {
+    const queue = new ExactReviewQueue(
+      { storage: new MemoryDurableStorage() },
+      { CLAWSWEEPER_DEPLOY_SHA: queueRevision },
+    );
+    const response = await worker.fetch(
+      signedStateAppendRequest("/internal/exact-review/admission-capabilities", {}, secret),
+      {
+        CLAWSWEEPER_DEPLOY_SHA: "expected-sha",
+        CLAWSWEEPER_WEBHOOK_SECRET: secret,
+        EXACT_REVIEW_QUEUE: new MemoryDurableNamespace(queue),
+      },
+    );
+    assert.equal(response.status, 200);
+    const capability = await response.json();
+    assert.equal(capability.deployment_sha, queueRevision ?? null);
+    assert.equal(capability.scheduled_feed.enqueue_replay, "scheduled_disposition_v1");
+  }
+});
+
 test("legacy proof fields are ignored by decision and persisted queue parsing", async () => {
   for (const proofAllowedScenarios of [null, "invalid", [], ["retired-scenario"]]) {
     const item = leasedExactReviewQueueItem(70, "700");
@@ -434,6 +456,8 @@ test("alarm scheduling keeps a closed reason set and stable tie priority", async
       "command_intake",
       "credential_circuit",
       "payload_maintenance",
+      "backfill_shadow_cleanup",
+      "hydration_cache_cleanup",
     ],
   );
 
@@ -4158,86 +4182,27 @@ test("exact-review queue dispatches an item that remains open", async () => {
   });
 });
 
-test("exact-review queue supersedes a stale open pull-request head before dispatch", async () => {
-  const staleHeadSha = "a".repeat(40);
+test("automatic PR dispatch adopts the live head when its webhook was missed", async () => {
   const currentHeadSha = "b".repeat(40);
   const harness = createExactReviewAdmissionHarness(() => jsonResponse({ state: "open" }), {
     targetPull: () => jsonResponse({ state: "open", head: { sha: currentHeadSha } }),
   });
   await withExactReviewAdmissionHarness(harness, async () => {
-    assert.equal(
-      (
-        await harness.queue.fetch(
-          buildExactReviewQueueRequest(
-            "stale-pr-head",
-            597,
-            "synchronize",
-            "pull_request",
-            undefined,
-            {
-              sourceHeadSha: staleHeadSha,
-            },
-          ),
-        )
-      ).status,
-      202,
+    await harness.queue.fetch(
+      buildExactReviewQueueRequest("stale-pr-head", 597, "synchronize", "pull_request", undefined, {
+        sourceHeadSha: "a".repeat(40),
+      }),
     );
-
     await harness.queue.alarm();
-
-    assert.equal(harness.dispatched.length, 0);
+    assert.equal(harness.dispatched.length, 1);
     const state = (await harness.storage.get("exact-review-queue")) as {
-      items: Record<string, unknown>;
+      items: Record<string, { leaseDecision?: { sourceHeadSha?: string } }>;
     };
-    assert.equal(state.items["openclaw/gogcli#597"], undefined);
+    assert.equal(state.items["openclaw/gogcli#597"]?.leaseDecision?.sourceHeadSha, currentHeadSha);
     const audit = Array.from(
-      harness.storage.sql.exec(
-        `SELECT audit_id, item_key, prior_revision, next_revision, source_action, reason_code
-           FROM exact_review_queue_supersessions`,
-      ),
-    ).map((row) => ({ ...row }));
-    assert.equal(audit.length, 1);
-    assert.match(String(audit[0]?.audit_id), /^[0-9a-f-]{36}$/);
-    assert.deepEqual(
-      { ...audit[0], audit_id: undefined },
-      {
-        audit_id: undefined,
-        item_key: "openclaw/gogcli#597",
-        prior_revision: 1,
-        next_revision: 2,
-        source_action: "synchronize",
-        reason_code: "live_head_advanced",
-      },
+      harness.storage.sql.exec("SELECT audit_id FROM exact_review_queue_supersessions"),
     );
-    assert.equal(
-      (
-        await harness.queue.fetch(
-          buildExactReviewQueueRequest(
-            "stale-pr-head-again",
-            597,
-            "synchronize",
-            "pull_request",
-            undefined,
-            { sourceHeadSha: "c".repeat(40) },
-          ),
-        )
-      ).status,
-      202,
-    );
-    await harness.queue.alarm();
-    const repeatedAudit = Array.from(
-      harness.storage.sql.exec(
-        `SELECT audit_id FROM exact_review_queue_supersessions ORDER BY superseded_at, audit_id`,
-      ),
-    ).map((row) => String(row.audit_id));
-    assert.equal(harness.dispatched.length, 0);
-    assert.equal(repeatedAudit.length, 2);
-    assert.equal(new Set(repeatedAudit).size, 2);
-    const stats = await (
-      await harness.queue.fetch(new Request("https://clawsweeper-exact-review-queue/stats"))
-    ).json();
-    assert.equal(stats.lanes.review.completed_total, 2);
-    assert.equal(stats.lanes.review.superseded_total, 2);
+    assert.equal(audit.length, 0);
   });
 });
 
@@ -6770,7 +6735,17 @@ test("exact-review review retries park at the attempt ceiling and recover after 
     if (/^\/repos\/openclaw\/(?:clawsweeper|gogcli|openclaw)\/issues\/\d+$/.test(url.pathname))
       return jsonResponse({ state: "open" });
     if (/^\/repos\/openclaw\/openclaw\/pulls\/\d+$/.test(url.pathname)) {
-      return jsonResponse({ state: "open", head: { sha: liveHeadSha } });
+      return jsonResponse({
+        state: "open",
+        head: { sha: liveHeadSha },
+        base: { sha: "b".repeat(40) },
+        title: "Retry fixture",
+        body: "",
+        draft: false,
+        locked: false,
+        labels: [],
+        updated_at: "2026-09-24T00:00:00Z",
+      });
     }
     if (url.pathname === "/app/installations/999/access_tokens") {
       return jsonResponse({ token: "dispatch-token" });
@@ -6791,6 +6766,7 @@ test("exact-review review retries park at the attempt ceiling and recover after 
         CLAWSWEEPER_APP_PRIVATE_KEY: privateKey,
         EXACT_REVIEW_DISPATCH_DEBOUNCE_MS: "0",
         EXACT_REVIEW_RETRY_POLICY_EPOCH: "2",
+        EXACT_REVIEW_INITIAL_PR_QUIET_MS: "0",
       },
     );
     assert.equal(

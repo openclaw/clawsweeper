@@ -10,6 +10,7 @@ export type EventApplyAction = {
   terminalMissingVerified: boolean;
   terminalStateVerified: boolean;
   guardedOpenStateVerified: boolean;
+  closePolicyHoldVerified?: boolean;
   activeReviewLeaseVerified: boolean;
   activeReviewLeaseExpiresAt: string;
   terminalPolicyNoopVerified: boolean;
@@ -189,7 +190,9 @@ export function exactEventApplyProof(
       snapshotActionTaken === soleExactAction &&
       soleExactResult?.guardedOpenStateVerified === true &&
       (GUARDED_OPEN_ACTIONS.has(soleExactAction) ||
-        (soleExactAction === "kept_open" && soleExactResult.commentMutationOccurred))
+        (soleExactAction === "kept_open" &&
+          (soleExactResult.commentMutationOccurred ||
+            soleExactResult.closePolicyHoldVerified === true)))
         ? soleExactAction
         : null,
     activeReviewLeaseRetryAt,
@@ -249,6 +252,7 @@ export function eventApplyAction(value: LooseRecord): EventApplyAction {
     terminalMissingVerified: value.terminalMissingVerified === true,
     terminalStateVerified: value.terminalStateVerified === true,
     guardedOpenStateVerified: value.guardedOpenStateVerified === true,
+    closePolicyHoldVerified: value.closePolicyHoldVerified === true,
     activeReviewLeaseVerified: value.activeReviewLeaseVerified === true,
     activeReviewLeaseExpiresAt:
       typeof value.activeReviewLeaseExpiresAt === "string" ? value.activeReviewLeaseExpiresAt : "",

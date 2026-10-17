@@ -1230,7 +1230,6 @@ test("apply-decisions promotes recommended pause-or-close PRs", () => {
             body: "Current-main prompt work already covers the useful guidance.",
             category: "pause_or_close",
             recommended: true,
-            automergeInstruction: "",
           },
         ]),
       }),

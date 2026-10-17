@@ -3,7 +3,7 @@
 - Status: active development and qualification guide; no package release
 - Owner: ClawSweeper local-runtime maintainers
 - Source of truth: `scripts/stage-local-package.mjs` and `src/clawsweeper-local.ts`
-- Last verified: P10b integration candidate based on `adf080a6318b96e9665cc46de87f97641f3cfa23`
+- Last verified: platform integration candidate based on `fb06a964d837740bef1b8db0ad89d8083d92e9a7`
 - Update when: the local entrypoint, imports, workers, assets, package format, or qualification matrix changes
 
 The private package candidate contains the full committed-range reviewer. It
@@ -22,8 +22,9 @@ The staging command prints the files, sizes, and SHA-256 hashes. It follows the
 compiled ESM imports and the three explicit worker entrypoints, then adds the
 review prompts, decision schema, configuration, and scanner setup script.
 Missing or unresolved imports fail staging. The generated manifest is private
-and has no install hooks or development dependencies. The source service
-package remains private and unchanged in scope.
+and has no install hooks or development dependencies. It declares the production
+dependencies reached by those imports; npm installs their dependency closure.
+The source service package remains private and unchanged in scope.
 
 Install the resulting tarball into a disposable directory to qualify it:
 
@@ -49,6 +50,9 @@ That command runs a real model review. `--help` and `--version` do not.
 Provider-free diagnostics remain deferred; `--diagnostics` currently fails
 with an explanatory message. The source checkout's `codex:local:check` command
 is a model smoke test, not a free diagnostic.
+
+The harness seeds a fresh npm cache, preserves the install manifest and lock,
+and performs a clean offline installation before checking declared imports.
 
 CI runs the installed-package harness on Linux, Windows, and macOS with Node
 24. Each run builds and packs the candidate, installs it outside the checkout,

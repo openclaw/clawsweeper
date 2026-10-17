@@ -23,6 +23,7 @@ import {
 } from "../dist/clawsweeper-review-preparation.js";
 import { reviewPromptForTest } from "../dist/clawsweeper.js";
 import { repositoryProfileFor } from "../dist/repository-profiles.js";
+import { serializeReviewPreflightPayload } from "../dist/review-preflight-contract.js";
 import { hydratePrimaryBody, longProofBody } from "./primary-body-fixture.ts";
 import { git } from "./helpers.ts";
 import { runText } from "../dist/command.js";
@@ -31,13 +32,22 @@ import { createReviewRuntime } from "../dist/clawsweeper-review-runtime.js";
 import { createReviewCommandWorkflow } from "../dist/clawsweeper-review-command-workflow.js";
 import { ValidationRecoveryRequiredError } from "../dist/validation-recovery.js";
 
-test("body-file keeps its authoritative precedence over compact hosted context", () => {
+test("body-file removes advisory preflight and keeps authoritative body bytes over hosted context", () => {
   const dir = mkdtempSync(join(tmpdir(), "clawsweeper-body-override-"));
   let prepared: ReturnType<typeof prepareReviewCommand> | undefined;
   try {
     const bodyFile = join(dir, "body.md");
-    const provided = "Provided override\n" + "x".repeat(12001) + "\nOVERRIDE_TAIL";
-    writeFileSync(bodyFile, provided);
+    const provided = "Provided override\r\n\r\n" + "x".repeat(12001) + "\r\nOVERRIDE_TAIL";
+    const annotation = serializeReviewPreflightPayload({
+      v: 1,
+      repo: "openclaw/clawsweeper",
+      base: "a".repeat(40),
+      head: "b".repeat(40),
+      tool: { name: "clawsweeper", version: "1.0.0" },
+      completion: "complete",
+      summary: "Advisory metadata must not become authoritative review content.",
+    });
+    writeFileSync(bodyFile, provided.replace("\r\n\r\n", `\r\n${annotation}\r\n`));
     const { target, context } = hydratePrimaryBody(longProofBody(), "pull_request");
     prepared = prepareReviewCommand(
       parseArgs(["--body-file", bodyFile, "--artifact-dir", dir, "--output-retention", "debug"]),
@@ -58,6 +68,8 @@ test("body-file keeps its authoritative precedence over compact hosted context",
     );
     const prompt = reviewPromptForTest(target, context, git, prepared.additionalPrompt);
     assert.ok(prompt.includes(provided));
+    assert.ok(!prepared.additionalPrompt.includes(annotation));
+    assert.ok(!prepared.additionalPrompt.includes("Advisory metadata must not become"));
     assert.ok(prompt.indexOf("AUTHORITATIVE PR BODY") > prompt.indexOf("## GitHub Context"));
     assert.match(prepared.additionalPrompt, /Do NOT fetch, prefer, or assume any other version/);
   } finally {

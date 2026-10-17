@@ -1,6 +1,7 @@
 import { renderReviewCommentFromReport } from "../dist/clawsweeper-report-comment-presentation.js";
 import { reviewActionForDecision } from "../dist/clawsweeper-report-actions.js";
 import assert from "node:assert/strict";
+import { serializeReviewPreflightPayload } from "../dist/review-preflight-contract.js";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import { parse } from "yaml";
@@ -18,7 +19,7 @@ import {
   shouldPlanItem,
   validateCloseDecision,
 } from "../dist/clawsweeper.js";
-import { createStatusContext } from "../dist/clawsweeper-status-context.js";
+import { createFixedPullRequestContext } from "../dist/clawsweeper-fixed-pull-request.js";
 import { parseCoAuthors } from "../dist/commit-sweeper.js";
 import { repositoryProfileFor } from "../dist/repository-profiles.js";
 import {
@@ -30,7 +31,7 @@ import {
   withReviewRecord,
 } from "./helpers.ts";
 
-const { fixedPullRequestFromCommitPulls } = createStatusContext();
+const { fixedPullRequestFromCommitPulls } = createFixedPullRequestContext();
 
 function renderedCloseReasons(prompt: string): string[] {
   const section = prompt.slice(
@@ -706,6 +707,40 @@ test("commit PR lookup accepts an exact closing reference in the fixed commit me
       123,
       "Fixes openclaw/openclaw#123",
     )?.number,
+    456,
+  );
+});
+
+test("commit PR lookup excludes preflight summary directives but retains body and commit directives", () => {
+  const block = serializeReviewPreflightPayload({
+    v: 1,
+    repo: "openclaw/openclaw",
+    base: "a".repeat(40),
+    head: "b".repeat(40),
+    tool: { name: "autoreview", version: "1" },
+    completion: "complete",
+    summary: "Fixes #123",
+  });
+  const pull = {
+    number: 456,
+    html_url: "https://github.com/openclaw/openclaw/pull/456",
+    title: "fix: source behavior",
+    merged_at: "2026-04-28T12:00:00Z",
+    merge_commit_sha: "fedcba9876543210",
+    body: block,
+    base: { ref: "main" },
+  };
+  assert.equal(fixedPullRequestFromCommitPulls([pull], "GitHub commit PR lookup", 123), null);
+  assert.equal(
+    fixedPullRequestFromCommitPulls(
+      [{ ...pull, body: `Fixes #123\n\n${block}` }],
+      "GitHub commit PR lookup",
+      123,
+    )?.number,
+    456,
+  );
+  assert.equal(
+    fixedPullRequestFromCommitPulls([pull], "GitHub commit PR lookup", 123, "Fixes #123")?.number,
     456,
   );
 });

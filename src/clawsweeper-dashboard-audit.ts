@@ -117,7 +117,7 @@ interface CreateDashboardAuditDependencies {
   reportEntriesForDir: (dir: string, itemNumbers?: ReadonlySet<number>) => ReportEntry[];
   repoUrlFor: (repo: string, path?: string) => string;
   ROOT: string;
-  shouldPlanItem: (item: Pick<Item, "authorAssociation" | "labels">) => boolean;
+  shouldPlanItem: (item: Pick<Item, "authorAssociation" | "createdAt" | "labels">) => boolean;
   sweepStatusRelativePath: (profile?: RepositoryProfile) => string;
   syncWorkPlanFromReport: (options: {
     markdown: string;

@@ -1,0 +1,1 @@
+- Answer a maintainer's command status when ClawSweeper skips a retry of that request for lacking request authority: the review job now sets "Waiting" with a re-review hint instead of leaving "Review in progress" forever.

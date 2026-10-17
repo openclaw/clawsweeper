@@ -45,6 +45,8 @@ import { isAutoCloseAllowed, repositoryProfileFor } from "./repository-profiles.
 import { isOlderThanDays, parseIsoMs } from "./iso-time.js";
 import { reportReviewDecision } from "./report-review-decision.js";
 import { ReviewRecordFormatError } from "./review-record.js";
+import { effectiveReviewStatus } from "./review-completion.js";
+export { effectiveReviewStatus, hasVerifiedLocalCheckoutAccess } from "./review-completion.js";
 import {
   REVIEW_STRUCTURAL_CACHE_VERSION,
   validReviewStructuralRecord,
@@ -398,25 +400,6 @@ export function indexedExistingReview(
     reviewIndex?.byKey.get(existingReviewKey(item.repo, item.number)) ??
     existingReview(item, itemsDir)
   );
-}
-
-function inferReviewStatus(markdown: string): string {
-  return markdown.includes("Codex review failed") ? "failed" : "complete";
-}
-
-export function hasVerifiedLocalCheckoutAccess(markdown: string): boolean {
-  return (
-    frontMatterValue(markdown, "local_checkout_access") === "verified" &&
-    frontMatterValue(markdown, "local_checkout_access_source") === "runner_preflight_v1"
-  );
-}
-
-export function effectiveReviewStatus(markdown: string): string {
-  const status = frontMatterValue(markdown, "review_status") ?? inferReviewStatus(markdown);
-  if (status === "complete") {
-    if (!hasVerifiedLocalCheckoutAccess(markdown)) return "stale_local_checkout_unverified";
-  }
-  return status;
 }
 
 export function failedReviewRetryRevisionForReport(

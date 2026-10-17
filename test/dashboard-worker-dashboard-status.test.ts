@@ -5,6 +5,7 @@ import {
   worker,
   workflowJobsForRunSnapshot,
   ExactReviewQueue,
+  StatusStore,
   MemoryKv,
   MemoryCache,
   MemoryDurableStorage,
@@ -36,7 +37,6 @@ const PROOF_TRIAGE_VIEW_IDS = [
   "missing-proof",
   "sufficient-proof",
   "mock-only-proof",
-  "telegram-proof",
   "sufficient-with-need-label",
 ];
 
@@ -2460,6 +2460,131 @@ test("dashboard counts active runs that are older than the latest unfiltered pag
   }
 });
 
+test("dashboard bounds active-run pagination without hiding incomplete telemetry", async () => {
+  const originalFetch = globalThis.fetch;
+  const originalCaches = globalThis.caches;
+  Object.defineProperty(globalThis, "caches", {
+    configurable: true,
+    value: { default: { match: async () => undefined, put: async () => undefined } },
+  });
+  try {
+    for (const scenario of [
+      { total: 100, pages: [1], observed: 100, complete: true },
+      { total: 167, pages: [1, 2], observed: 167, complete: true },
+      { total: 300, pages: [1, 2, 3], observed: 300, complete: true },
+      { total: 301, pages: [1, 2, 3], observed: 300, complete: false },
+      { total: 167, pages: [1, 2], observed: 100, complete: false, failPage: 2 },
+      { total: 167, pages: [1, 2, 1, 2], observed: 100, complete: false, drift: true },
+      { total: 167, pages: [1, 2, 1, 2], observed: 100, complete: false, short: true },
+      { total: 167, pages: [1, 2, 1, 2], observed: 167, complete: false, duplicate: true },
+    ]) {
+      const requestedPages: number[] = [];
+      globalThis.fetch = async (input) => {
+        const url = new URL(String(input));
+        if (url.pathname === "/repos/openclaw/clawsweeper/actions/runs") {
+          if (url.searchParams.get("status") !== "queued")
+            return jsonResponse({ workflow_runs: [] });
+          const page = Number(url.searchParams.get("page") || 1);
+          requestedPages.push(page);
+          if (page === scenario.failPage) return new Response("unavailable", { status: 503 });
+          const count =
+            scenario.short && page === 2 ? 0 : Math.min(100, scenario.total - (page - 1) * 100);
+          return jsonResponse({
+            total_count: scenario.drift && page === 2 ? scenario.total + 1 : scenario.total,
+            workflow_runs: Array.from({ length: count }, (_, index) => ({
+              id: (scenario.duplicate ? 0 : (page - 1) * 100) + index + 1,
+              name: "ClawSweeper Commit Review",
+              status: "queued",
+              created_at: isoAgo(7 * 24 * 60 * 60_000),
+              updated_at: isoAgo(7 * 24 * 60 * 60_000),
+            })),
+          });
+        }
+        if (url.pathname === "/search/issues") return jsonResponse({ items: [] });
+        throw new Error(`unexpected fetch ${url}`);
+      };
+      const response = await worker.fetch(
+        new Request("https://clawsweeper.openclaw.ai/api/status"),
+        {
+          CLAWSWEEPER_REPO: "openclaw/clawsweeper",
+          TARGET_REPOS: "openclaw/openclaw",
+          CACHE_TTL_SECONDS: "0",
+        },
+        { waitUntil: () => undefined },
+      );
+      const status = await response.json();
+      assert.equal(response.status, 200);
+      assert.equal(
+        status.operational_health.telemetry_complete,
+        scenario.complete,
+        JSON.stringify(scenario),
+      );
+      assert.equal(status.operational_health.status, scenario.complete ? "healthy" : "unknown");
+      assert.equal(
+        status.operational_health.zombie_queued_runs,
+        scenario.duplicate ? 100 : scenario.observed,
+      );
+      assert.deepEqual(requestedPages, scenario.pages);
+    }
+  } finally {
+    globalThis.fetch = originalFetch;
+    Object.defineProperty(globalThis, "caches", { configurable: true, value: originalCaches });
+  }
+});
+
+test("dashboard rebuilds inconsistent active censuses without replaying memoized pages", async () => {
+  const originalFetch = globalThis.fetch;
+  const originalCaches = globalThis.caches;
+  Object.defineProperty(globalThis, "caches", {
+    configurable: true,
+    value: { default: { match: async () => undefined, put: async () => undefined } },
+  });
+  try {
+    for (const singlePage of [true, false]) {
+      const requests = new Map<string, number[]>();
+      let attempt = 0;
+      globalThis.fetch = async (input) => {
+        const url = new URL(String(input));
+        if (url.pathname === "/repos/openclaw/clawsweeper/actions/runs") {
+          const status = url.searchParams.get("status") || "recent";
+          const page = Number(url.searchParams.get("page") || 1);
+          requests.set(status, [...(requests.get(status) || []), page]);
+          if (status !== "queued") return jsonResponse({ total_count: 0, workflow_runs: [] });
+          if (page === 1) attempt += 1;
+          const total = singlePage ? 13 : attempt === 1 && page === 1 ? 166 : 167;
+          const count = singlePage ? (attempt === 1 ? 12 : 13) : page === 1 ? 100 : 67;
+          return jsonResponse({
+            total_count: total,
+            workflow_runs: Array.from({ length: count }, (_, index) => ({
+              id: attempt * 1_000 + (page - 1) * 100 + index,
+              name: "ClawSweeper Commit Review",
+              status: "queued",
+              created_at: isoAgo(7 * 24 * 60 * 60_000),
+              updated_at: isoAgo(7 * 24 * 60 * 60_000),
+            })),
+          });
+        }
+        if (url.pathname === "/search/issues") return jsonResponse({ items: [] });
+        throw new Error(`unexpected fetch ${url}`);
+      };
+      const response = await worker.fetch(
+        new Request("https://clawsweeper.openclaw.ai/api/status"),
+        { CLAWSWEEPER_REPO: "openclaw/clawsweeper", CACHE_TTL_SECONDS: "0" },
+        { waitUntil: () => undefined },
+      );
+      const status = await response.json();
+      assert.equal(status.operational_health.telemetry_complete, true);
+      assert.equal(status.operational_health.zombie_queued_runs, singlePage ? 13 : 167);
+      assert.equal(status.diagnostics.error_count, 0);
+      assert.deepEqual(requests.get("queued"), singlePage ? [1, 1] : [1, 2, 1, 2]);
+      assert.deepEqual(requests.get("in_progress"), [1], "consistent statuses are not rebuilt");
+    }
+  } finally {
+    globalThis.fetch = originalFetch;
+    Object.defineProperty(globalThis, "caches", { configurable: true, value: originalCaches });
+  }
+});
+
 test("dashboard surfaces stale queue ghosts as zombies without active cards", async () => {
   const originalFetch = globalThis.fetch;
   const originalCaches = globalThis.caches;
@@ -3401,57 +3526,6 @@ test("triage writes and reprojects aggregate-only fresh cache bodies", async () 
   }
 });
 
-test("PR proof triage keeps legacy Telegram labels visible during migration", async () => {
-  const originalFetch = globalThis.fetch;
-  const originalCaches = globalThis.caches;
-  const queries: string[] = [];
-  Object.defineProperty(globalThis, "caches", {
-    configurable: true,
-    value: { default: new MemoryCache() },
-  });
-  globalThis.fetch = async (input) => {
-    const url = new URL(String(input));
-    if (url.pathname.endsWith("/labels")) {
-      return jsonResponse([
-        { name: "mantis: telegram-visible-proof", color: "57606A" },
-        { name: "proof: telegram-e2e", color: "57606A" },
-      ]);
-    }
-    if (url.pathname === "/search/issues") {
-      const query = url.searchParams.get("q") ?? "";
-      queries.push(query);
-      return jsonResponse({
-        total_count:
-          query.includes("mantis: telegram-visible-proof") && query.includes("proof: telegram-e2e")
-            ? 1
-            : 0,
-        items: [],
-      });
-    }
-    throw new Error(`unexpected synthetic request: ${url.pathname}`);
-  };
-
-  try {
-    const response = await worker.fetch(
-      new Request("https://clawsweeper.openclaw.ai/api/pr-proof-triage"),
-      { TARGET_REPOS: "synthetic/target", TRIAGE_CACHE_TTL_SECONDS: "0" },
-      { waitUntil: () => undefined },
-    );
-    const snapshot = await response.json();
-    assert.equal(response.status, 200);
-    assert.equal(snapshot.counts["telegram-proof"], 1);
-    assert.ok(
-      queries.some(
-        (query) =>
-          query.includes("mantis: telegram-visible-proof") && query.includes("proof: telegram-e2e"),
-      ),
-    );
-  } finally {
-    globalThis.fetch = originalFetch;
-    Object.defineProperty(globalThis, "caches", { configurable: true, value: originalCaches });
-  }
-});
-
 test("triage routes reproject raw legacy fresh caches", async () => {
   const originalFetch = globalThis.fetch;
   const originalCaches = globalThis.caches;
@@ -3763,42 +3837,36 @@ test("cold status deadline releases its owner and stops additional job waves and
   }
 });
 
-test("stalled final publication cannot suppress a later healthy snapshot", async (context) => {
+test("delayed durable publication cannot replace a newer snapshot or restore old edge bodies", async (context) => {
   const originalFetch = globalThis.fetch;
   const originalCaches = globalThis.caches;
   const gate = statusGate<void>();
-  let count = 17;
-  let storeWrites = 0;
-  let cacheWrites = 0;
-  let published: any = null;
-  let serveCache = false;
-  const memoryCache = new MemoryCache();
   const pending: Promise<unknown>[] = [];
-  const store = {
-    async get(key: string) {
-      assert.equal(this, store, "cloned status env must retain the binding object");
-      if (!key.startsWith("snapshot:bay-scope:v2:")) return null;
-      return JSON.stringify({
-        ...publicationStatusFixture(),
-        fleet: { active_workflow_runs: 1, active_codex_jobs: count },
-      });
+  const storage = new MemoryDurableStorage();
+  const owner = new StatusStore({ storage });
+  let count = 17;
+  let writes = 0;
+  let collecting = true;
+  let reads = 0;
+  const store = new MemoryDurableNamespace({
+    async fetch(input: Request, init) {
+      const key = decodeURIComponent(new URL(input.url).pathname.slice(1));
+      if (key.startsWith("snapshot:bay-scope:v2:")) {
+        if (input.method === "GET" && collecting) {
+          reads += 1;
+          // Force the response cache miss, then provide a complete collection fixture.
+          if (reads % 2 === 1) return new Response(null, { status: 404 });
+          return jsonResponse({
+            ...publicationStatusFixture(),
+            fleet: { active_workflow_runs: 1, active_codex_jobs: count },
+          });
+        }
+        if (input.method === "PUT" && ++writes === 1) await gate.promise;
+      }
+      return owner.fetch(init ? new Request(input, init) : input);
     },
-    async put(key: string, body: string) {
-      assert.equal(this, store);
-      assert.equal(key, "snapshot:bay-scope:v2:_");
-      storeWrites += 1;
-      if (storeWrites === 1) await gate.promise;
-      published = JSON.parse(body);
-    },
-  };
-  const cache = {
-    match: async (request: Request) => (serveCache ? memoryCache.match(request) : undefined),
-    async put(request: Request, response: Response) {
-      cacheWrites += 1;
-      if (cacheWrites <= 2) await gate.promise;
-      await memoryCache.put(request, response);
-    },
-  };
+  });
+  const cache = new MemoryCache();
   Object.defineProperty(globalThis, "caches", { configurable: true, value: { default: cache } });
   globalThis.fetch = async () => {
     throw new Error("durable reuse must not call GitHub");
@@ -3810,32 +3878,34 @@ test("stalled final publication cannot suppress a later healthy snapshot", async
     const request = new Request("https://clawsweeper.openclaw.ai/api/status");
     const first = await (await worker.fetch(request, env, ctx)).json();
     assert.equal(first.fleet.active_codex_jobs, 17);
-    assert.equal(storeWrites, 1);
-    assert.equal(cacheWrites, 2);
+    assert.equal(writes, 1);
     context.mock.timers.tick(STATUS_REFRESH_TIMEOUT_MS + 60_000);
     count = 18;
     const second = await (await worker.fetch(request, { ...env }, ctx)).json();
     assert.equal(second.fleet.active_codex_jobs, 18);
     await statusTurn();
-    assert.equal(storeWrites, 2, "a pending write must not suppress later publication");
-    assert.equal(cacheWrites, 4);
-    assert.equal(published.fleet.active_codex_jobs, 18);
-    serveCache = true;
-    assert.equal(
-      (await (await worker.fetch(request, env, ctx)).json()).fleet.active_codex_jobs,
-      18,
-    );
+    assert.equal(writes, 2, "a held arrival must not suppress later publication");
+    collecting = false;
     gate.release();
     await Promise.all(pending);
-    assert.equal(
-      published.fleet.active_codex_jobs,
-      17,
-      "accepted final write survives collection close",
-    );
-    const late = await (await worker.fetch(request, env, ctx)).json();
-    assert.equal(late.fleet.active_codex_jobs, 17);
-    assert.equal(late.generated_at, first.generated_at);
-    assert.equal(late.freshness.state, "stale", "late complete writes retain their actual age");
+    const stored = JSON.parse((await storage.get("snapshot:bay-scope:v2:_")).value);
+    assert.equal(stored.fleet.active_codex_jobs, 18);
+    assert.equal(stored.generated_at, second.generated_at);
+    for (const bucket of ["fresh", "stale"]) {
+      await cache.put(
+        new Request(`https://clawsweeper.openclaw.ai/api/status-cache/v8/_/${bucket}`),
+        jsonResponse(first),
+      );
+    }
+    const latest = await (await worker.fetch(request, env, ctx)).json();
+    assert.equal(latest.fleet.active_codex_jobs, 18);
+    assert.equal(latest.generated_at, second.generated_at);
+    assert.equal(latest.freshness.state, "fresh");
+    context.mock.timers.tick(61_000);
+    const stale = await (await worker.fetch(request, env, ctx)).json();
+    assert.equal(stale.fleet.active_codex_jobs, 18);
+    assert.equal(stale.generated_at, second.generated_at);
+    assert.equal(stale.freshness.state, "stale");
   } finally {
     gate.release();
     await Promise.allSettled(pending);
@@ -3843,6 +3913,54 @@ test("stalled final publication cannot suppress a later healthy snapshot", async
     globalThis.fetch = originalFetch;
     Object.defineProperty(globalThis, "caches", { configurable: true, value: originalCaches });
   }
+});
+
+test("snapshot publication fence handles ties, poisoned incumbents and independent scopes", async () => {
+  const storage = new MemoryDurableStorage();
+  const owner = new StatusStore({ storage });
+  const now = Date.now();
+  const body = (at, count) =>
+    JSON.stringify({
+      ...publicationStatusFixture(),
+      public_projection_complete: true,
+      generated_at: new Date(at).toISOString(),
+      fleet: { active_workflow_runs: 1, active_codex_jobs: count },
+    });
+  const put = (key, value) =>
+    owner.fetch(
+      new Request(`https://clawsweeper-status-store/${encodeURIComponent(key)}`, {
+        method: "PUT",
+        body: JSON.stringify({ value }),
+      }),
+    );
+  const key = "snapshot:bay-scope:v2:_";
+  assert.equal((await put(key, body(now, 18))).headers.get("X-ClawSweeper-Snapshot"), "accepted");
+  assert.equal((await put(key, body(now, 17))).headers.get("X-ClawSweeper-Snapshot"), "retained");
+  assert.equal(
+    (await put(key, body(now - 1000, 16))).headers.get("X-ClawSweeper-Snapshot"),
+    "retained",
+  );
+  assert.equal(JSON.parse((await storage.get(key)).value).fleet.active_codex_jobs, 18);
+  for (const incumbent of [
+    { value: "bad json" },
+    { value: body(now + 120_000, 99) },
+    { value: body(now + 10_000, 99), expires_at: now - 1 },
+    {
+      value: JSON.stringify({
+        schema_version: 2,
+        generated_at: new Date(now + 1000).toISOString(),
+      }),
+    },
+  ]) {
+    await storage.put(key, incumbent);
+    assert.equal((await put(key, body(now, 18))).headers.get("X-ClawSweeper-Snapshot"), "accepted");
+  }
+  assert.equal((await put(key, "bad json")).status, 400);
+  assert.equal((await put("snapshot:bay-scope:v2:another", body(now - 1000, 7))).status, 204);
+  assert.equal(JSON.parse((await storage.get(key)).value).fleet.active_codex_jobs, 18);
+  assert.equal((await put("ci:openclaw/openclaw#1", "first")).status, 204);
+  assert.equal((await put("ci:openclaw/openclaw#1", "second")).status, 204);
+  assert.equal((await storage.get("ci:openclaw/openclaw#1")).value, "second");
 });
 
 test("status timeout does not cancel shared GitHub App token acquisition", async (context) => {
