@@ -11,7 +11,7 @@ import {
   UNCONFIRMED_PRODUCT_DIRECTION_MIN_INACTIVE_DAYS,
   UNSPONSORED_FEATURE_MIN_AGE_DAYS,
 } from "./clawsweeper-policy.js";
-import type { ApplyKind, CloseReason, Item } from "./clawsweeper-types.js";
+import type { ApplyCloseGuardBlock, ApplyKind, CloseReason, Item } from "./clawsweeper-types.js";
 import { asRecord } from "./value-coerce.js";
 import { isOlderThanDays, isOlderThanMs } from "./iso-time.js";
 import { isSecurityLabel } from "./repair/security-signals.js";
@@ -188,14 +188,20 @@ export function closeReasonApplyAgeSkipReason(
   return null;
 }
 
-export function unconfirmedProductDirectionAgeSkipReason(
+export function unconfirmedProductDirectionAgeBlock(
   item: Pick<Item, "createdAt">,
   reviewedUpdatedAt: string | undefined,
   reviewedAt: string | undefined,
   now = Date.now(),
-): string | null {
+): ApplyCloseGuardBlock | null {
+  const createdAtMs = Date.parse(item.createdAt);
   if (!isOlderThanDays(item.createdAt, UNCONFIRMED_PRODUCT_DIRECTION_MIN_AGE_DAYS, now)) {
-    return `unconfirmed_product_direction requires PR older than ${UNCONFIRMED_PRODUCT_DIRECTION_MIN_AGE_DAYS} days`;
+    return {
+      reason: `unconfirmed_product_direction requires PR older than ${UNCONFIRMED_PRODUCT_DIRECTION_MIN_AGE_DAYS} days`,
+      ...(Number.isFinite(createdAtMs) && createdAtMs <= now
+        ? { closePolicyHoldVerified: true as const }
+        : {}),
+    };
   }
   const sourceUpdatedAtMs = Date.parse(reviewedUpdatedAt ?? "");
   const reviewedAtMs = Date.parse(reviewedAt ?? "");
@@ -204,7 +210,17 @@ export function unconfirmedProductDirectionAgeSkipReason(
     !Number.isFinite(reviewedAtMs) ||
     reviewedAtMs - sourceUpdatedAtMs <= UNCONFIRMED_PRODUCT_DIRECTION_MIN_INACTIVE_DAYS * DAY_MS
   ) {
-    return `unconfirmed_product_direction requires ${UNCONFIRMED_PRODUCT_DIRECTION_MIN_INACTIVE_DAYS} days without source activity before review`;
+    return {
+      reason: `unconfirmed_product_direction requires ${UNCONFIRMED_PRODUCT_DIRECTION_MIN_INACTIVE_DAYS} days without source activity before review`,
+      // Missing or contradictory dates are evidence gaps, not confirmed activity.
+      ...(Number.isFinite(sourceUpdatedAtMs) &&
+      Number.isFinite(reviewedAtMs) &&
+      createdAtMs <= sourceUpdatedAtMs &&
+      sourceUpdatedAtMs <= reviewedAtMs &&
+      reviewedAtMs <= now
+        ? { closePolicyHoldVerified: true as const }
+        : {}),
+    };
   }
   return null;
 }

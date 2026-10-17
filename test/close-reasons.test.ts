@@ -19,7 +19,7 @@ import {
   stalledUnprovenProofRequestBlockReason,
   staleVersionBugAgeSkipReason,
   staleVersionBugDecisionBlockReason,
-  unconfirmedProductDirectionAgeSkipReason,
+  unconfirmedProductDirectionAgeBlock,
   unsponsoredFeatureAgeSkipReason,
   unsponsoredFeatureDecisionBlockReason,
   validateCloseDecision,
@@ -212,7 +212,7 @@ test("unconfirmed product direction apply policy is default-off and age-gated", 
   );
   const now = Date.parse("2026-06-15T12:00:00Z");
   assert.equal(
-    unconfirmedProductDirectionAgeSkipReason(
+    unconfirmedProductDirectionAgeBlock(
       item({ createdAt: "2026-06-01T11:59:59Z" }),
       "2026-06-01T00:00:00Z",
       "2026-06-08T00:00:01Z",
@@ -221,21 +221,21 @@ test("unconfirmed product direction apply policy is default-off and age-gated", 
     null,
   );
   assert.match(
-    unconfirmedProductDirectionAgeSkipReason(
+    unconfirmedProductDirectionAgeBlock(
       item({ createdAt: "2026-06-10T00:00:00Z" }),
       "2026-06-01T00:00:00Z",
       "2026-06-10T00:00:00Z",
       now,
-    ) ?? "",
+    )?.reason ?? "",
     /older than 14 days/,
   );
   assert.match(
-    unconfirmedProductDirectionAgeSkipReason(
+    unconfirmedProductDirectionAgeBlock(
       item({ createdAt: "2026-05-01T00:00:00Z" }),
       "2026-06-07T00:00:00Z",
       "2026-06-14T00:00:00Z",
       now,
-    ) ?? "",
+    )?.reason ?? "",
     /7 days without source activity/,
   );
 });

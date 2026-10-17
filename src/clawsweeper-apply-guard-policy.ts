@@ -18,7 +18,7 @@ import {
   normalizeLabelName,
   protectedLabels,
   staleVersionBugAgeSkipReason,
-  unconfirmedProductDirectionAgeSkipReason,
+  unconfirmedProductDirectionAgeBlock,
   unsponsoredFeatureAgeSkipReason,
 } from "./clawsweeper-item-policy.js";
 import {
@@ -99,72 +99,72 @@ export function createApplyGuardPolicy(
       }`;
     }
   }
-  function unconfirmedProductDirectionApplyBlockReason(
+  function unconfirmedProductDirectionApplyBlock(
     number: number,
     item: Pick<Item, "createdAt" | "labels">,
     reviewedUpdatedAt: string | undefined,
     reviewedAt: string | undefined,
-  ): string | null {
+  ): ApplyCloseGuardBlock | null {
     if (!unconfirmedProductDirectionCloseEnabled()) {
-      return "unconfirmed product-direction apply policy is disabled";
+      return { reason: "unconfirmed product-direction apply policy is disabled" };
     }
-    const ageBlock = unconfirmedProductDirectionAgeSkipReason(item, reviewedUpdatedAt, reviewedAt);
+    const ageBlock = unconfirmedProductDirectionAgeBlock(item, reviewedUpdatedAt, reviewedAt);
     if (ageBlock) return ageBlock;
     const exemptLabel = item.labels
       .map(normalizeLabelName)
       .find((label) => PR_AUTO_CLOSE_EXEMPT_LABELS.has(label));
-    if (exemptLabel) return `${exemptLabel} exempts this PR from product-direction auto-close`;
+    if (exemptLabel)
+      return { reason: `${exemptLabel} exempts this PR from product-direction auto-close` };
 
     const issue = ghJson<{ assignees?: unknown[] }>([
       "api",
       `repos/${targetRepo()}/issues/${number}`,
     ]);
-    if ((issue.assignees ?? []).length > 0) return "assigned PR has active human signal";
+    if ((issue.assignees ?? []).length > 0)
+      return { reason: "assigned PR has active human signal" };
 
     const pull = ghJson<{ requested_reviewers?: unknown[]; requested_teams?: unknown[] }>([
       "api",
       `repos/${targetRepo()}/pulls/${number}`,
     ]);
     if ((pull.requested_reviewers ?? []).length > 0 || (pull.requested_teams ?? []).length > 0) {
-      return "requested reviewers or teams indicate active review signal";
+      return { reason: "requested reviewers or teams indicate active review signal" };
     }
 
     const maintainerComments = maintainerAssociatedEntries(
       ghPaged<unknown>(`repos/${targetRepo()}/issues/${number}/comments`),
     );
     if (maintainerComments.length > 0)
-      return "maintainer issue comment calibrates product direction";
+      return { reason: "maintainer issue comment calibrates product direction" };
 
     const maintainerReviews = maintainerAssociatedEntries(
       ghPaged<unknown>(`repos/${targetRepo()}/pulls/${number}/reviews`),
     );
-    if (maintainerReviews.length > 0) return "maintainer PR review calibrates product direction";
+    if (maintainerReviews.length > 0)
+      return { reason: "maintainer PR review calibrates product direction" };
 
     const maintainerInlineComments = maintainerAssociatedEntries(
       ghPaged<unknown>(`repos/${targetRepo()}/pulls/${number}/comments`),
     );
     if (maintainerInlineComments.length > 0) {
-      return "maintainer inline review comment calibrates product direction";
+      return { reason: "maintainer inline review comment calibrates product direction" };
     }
     return null;
   }
-  function unconfirmedProductDirectionApplyBlockReasonSafe(
+  function unconfirmedProductDirectionApplyBlockSafe(
     number: number,
     item: Pick<Item, "createdAt" | "labels">,
     reviewedUpdatedAt: string | undefined,
     reviewedAt: string | undefined,
-  ): string | null {
+  ): ApplyCloseGuardBlock | null {
     try {
-      return unconfirmedProductDirectionApplyBlockReason(
-        number,
-        item,
-        reviewedUpdatedAt,
-        reviewedAt,
-      );
+      return unconfirmedProductDirectionApplyBlock(number, item, reviewedUpdatedAt, reviewedAt);
     } catch (error) {
-      return `product-direction calibration check failed: ${
-        error instanceof Error ? error.message : String(error)
-      }`;
+      return {
+        reason: `product-direction calibration check failed: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      };
     }
   }
   function unsponsoredFeatureApplyBlock(
@@ -291,8 +291,8 @@ export function createApplyGuardPolicy(
   return {
     lowSignalUnmergeablePrApplyBlockReason,
     lowSignalUnmergeablePrApplyBlockReasonSafe,
-    unconfirmedProductDirectionApplyBlockReason,
-    unconfirmedProductDirectionApplyBlockReasonSafe,
+    unconfirmedProductDirectionApplyBlock,
+    unconfirmedProductDirectionApplyBlockSafe,
     unsponsoredFeatureApplyBlock,
     unsponsoredFeatureApplyBlockSafe,
     staleVersionBugApplyBlock,

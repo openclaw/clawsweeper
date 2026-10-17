@@ -515,12 +515,12 @@ export interface CreateApplyDecisionWorkflowDependencies {
     requestedTimeoutMs: number,
     nowMs: number,
   ) => number | null;
-  unconfirmedProductDirectionApplyBlockReasonSafe: (
+  unconfirmedProductDirectionApplyBlockSafe: (
     number: number,
     item: Pick<Item, "createdAt" | "labels">,
     reviewedUpdatedAt: string | undefined,
     reviewedAt: string | undefined,
-  ) => string | null;
+  ) => ApplyCloseGuardBlock | null;
   unsponsoredFeatureApplyBlockSafe: (
     number: number,
     item: Pick<Item, "createdAt">,

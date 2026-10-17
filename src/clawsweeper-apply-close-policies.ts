@@ -28,7 +28,7 @@ type ApplyClosePolicyDependencies = Pick<
   | "ghJson"
   | "issueRecentHumanCommentBlockSafe"
   | "stalledUnprovenPrApplyBlockReasonSafe"
-  | "unconfirmedProductDirectionApplyBlockReasonSafe"
+  | "unconfirmedProductDirectionApplyBlockSafe"
   | "unsponsoredFeatureApplyBlockSafe"
 >;
 
@@ -142,13 +142,13 @@ export function evaluateApplyCloseReasonPolicy(
       if (!unconfirmedProductDirectionCloseEnabled()) {
         return blocked("unconfirmed product-direction apply policy is disabled", true);
       }
-      const reason = dependencies.unconfirmedProductDirectionApplyBlockReasonSafe(
+      const block = dependencies.unconfirmedProductDirectionApplyBlockSafe(
         options.number,
         options.item,
         options.storedUpdatedAt,
         frontMatterValue(options.markdown, "reviewed_at"),
       );
-      return reason ? blocked(reason) : allowed();
+      return block ? blocked(block.reason, false, block.closePolicyHoldVerified) : allowed();
     }
     case "stalled_unproven_pr": {
       const reason = dependencies.stalledUnprovenPrApplyBlockReasonSafe(

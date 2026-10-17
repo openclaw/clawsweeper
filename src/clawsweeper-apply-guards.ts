@@ -69,8 +69,7 @@ export function createApplyGuards(gh: GuardReads) {
     staleVersionBugApplyBlockSafe: policy.staleVersionBugApplyBlockSafe,
     stalledUnprovenPrApplyBlockReasonSafe: proof.stalledUnprovenPrApplyBlockReasonSafe,
     stalledUnprovenProofRequestBlockReason: proof.stalledUnprovenProofRequestBlockReason,
-    unconfirmedProductDirectionApplyBlockReasonSafe:
-      policy.unconfirmedProductDirectionApplyBlockReasonSafe,
+    unconfirmedProductDirectionApplyBlockSafe: policy.unconfirmedProductDirectionApplyBlockSafe,
     unsponsoredFeatureApplyBlockSafe: policy.unsponsoredFeatureApplyBlockSafe,
     withGuardReadOptions,
   };

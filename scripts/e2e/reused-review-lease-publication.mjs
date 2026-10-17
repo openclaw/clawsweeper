@@ -7,7 +7,8 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 
 import { dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 const source = process.cwd();
-const holdProof = process.env.PROOF_CLOSE_POLICY_HOLD === "1";
+const productHoldProof = process.env.PROOF_PRODUCT_DIRECTION_HOLD === "1";
+const holdProof = productHoldProof || process.env.PROOF_CLOSE_POLICY_HOLD === "1";
 const targetRepo = holdProof ? "openclaw/openclaw" : "openclaw/clawsweeper";
 const publisherProof = holdProof || process.env.PROOF_ACTIVE_LEASE_DEFERRAL === "1";
 const deferralProof = process.env.PROOF_ACTIVE_LEASE_DEFERRAL === "1";
@@ -102,7 +103,7 @@ const results = [];
 const replayNow = Date.now();
 const candidateBoundaryReads = {};
 const deferralStepOutputs = {};
-for (const kind of ["issue", "pull_request"]) {
+for (const kind of productHoldProof ? ["pull_request"] : ["issue", "pull_request"]) {
   for (const [variant, dist, newerLive] of holdProof
     ? [
         ["baseline", baseline, false],
@@ -112,6 +113,12 @@ for (const kind of ["issue", "pull_request"]) {
         ["changed-source", candidate, false],
         ["incomplete-receipt", candidate, false],
         ...(kind === "pull_request" ? [["changed-during-apply", candidate, false]] : []),
+        ...(productHoldProof
+          ? [
+              ["young-pr", candidate, false],
+              ["disabled-policy", candidate, false],
+            ]
+          : []),
       ]
     : deferralProof
       ? [
@@ -158,7 +165,37 @@ for (const kind of ["issue", "pull_request"]) {
     };
     // Keep labels already synchronized so this replay isolates comment publication.
     // Label writes remain forbidden by the HTTP peer below.
-    const labelReport = workPlanCandidateReport({ type: kind, reviewed_at: reportAt });
+    const proofReport = (fields) =>
+      workPlanCandidateReport(
+        fields,
+        productHoldProof
+          ? {
+              itemCategory: "feature",
+              requiresProductDecision: true,
+              requiresNewFeature: true,
+              overallCorrectness: "patch is correct",
+              reviewFindings: [],
+              securityReview: { status: "cleared", summary: "No security concerns.", concerns: [] },
+              realBehaviorProof: {
+                status: "sufficient",
+                evidenceKind: "terminal",
+                needsContributorAction: false,
+                summary: "Controlled runtime proof.",
+              },
+              prRating: {
+                overallTier: "B",
+                proofTier: "A",
+                patchTier: "B",
+                summary: "Ready for product decision.",
+                nextSteps: [],
+              },
+            }
+          : {},
+      );
+    if (productHoldProof && variant === "missing-evidence") issue.created_at = "invalid";
+    if (productHoldProof && variant === "young-pr")
+      issue.created_at = new Date(now - 10 * 86400000).toISOString();
+    const labelReport = proofReport({ type: kind, reviewed_at: reportAt });
     const labelDecision = reportReviewDecision(labelReport);
     const labelNames =
       kind === "issue"
@@ -204,7 +241,11 @@ for (const kind of ["issue", "pull_request"]) {
         ? {
             decision: "close",
             action_taken: "proposed_close",
-            close_reason: kind === "issue" ? "stale_insufficient_info" : "obsolete_fix_pr",
+            close_reason: productHoldProof
+              ? "unconfirmed_product_direction"
+              : kind === "issue"
+                ? "stale_insufficient_info"
+                : "obsolete_fix_pr",
             confidence: "high",
             item_created_at: issue.created_at,
             work_candidate: "none",
@@ -213,9 +254,9 @@ for (const kind of ["issue", "pull_request"]) {
           }
         : {}),
     };
-    const report = workPlanCandidateReport(fields);
+    const report = proofReport(fields);
     const durable = reportWithSyncedReviewComment(
-      workPlanCandidateReport({
+      proofReport({
         ...fields,
         reviewed_at: liveAt,
         review_lease_owner: "github-run-previous-1",
@@ -256,6 +297,8 @@ for (const kind of ["issue", "pull_request"]) {
       issue.body = "Edited after the reviewed snapshot.";
     if (variant === "no-original-lease") comments.splice(1, 1);
     let commentReads = 0;
+    let issueReads = 0;
+    let activityReads = 0;
     const pull = {
       ...issue,
       head: {
@@ -309,6 +352,7 @@ for (const kind of ["issue", "pull_request"]) {
           }
         }`;
         const activityQuery = reviewedPrActivityCursorV2Query(...targetRepo.split("/"), [number]);
+        const isActivityQuery = normalizeQuery(payload.query) === normalizeQuery(activityQuery);
         if (
           ![issueQuery, activityQuery].some(
             (query) => normalizeQuery(query) === normalizeQuery(payload.query),
@@ -328,6 +372,17 @@ for (const kind of ["issue", "pull_request"]) {
           reviewThreads: empty,
           closedByPullRequestsReferences: { nodes: [] },
         };
+        if (productHoldProof && isActivityQuery) {
+          entry.activityReadOrdinal = ++activityReads;
+          if (variant === "changed-during-apply" && activityReads === 2) {
+            // Initial context is captured before this final lease check. Its
+            // following source re-read must observe the edited body.
+            assert.equal(issueReads, 2);
+            issue.body += "\nEdited after context capture while checking close policy.";
+            pull.body = issue.body;
+            entry.sourceEditedDuringPolicy = true;
+          }
+        }
         return send({
           data: {
             repository: {
@@ -338,7 +393,13 @@ for (const kind of ["issue", "pull_request"]) {
           },
         });
       }
-      if (req.method === "GET" && path === prefix + "/issues/" + number) return send(issue);
+      if (req.method === "GET" && path === prefix + "/issues/" + number) {
+        issueReads++;
+        if (productHoldProof && issueReads > 2 && variant === "read-failure")
+          return send({ message: "upstream unavailable" }, 503);
+        if (productHoldProof) entry.sourceBodySha256 = hash(issue.body);
+        return send(issue);
+      }
       if (req.method === "GET" && path === prefix + "/pulls/" + number) return send(pull);
       if (holdProof && req.method === "GET" && path === prefix + "/commits/" + head) {
         if (variant === "changed-during-apply") {
@@ -428,7 +489,7 @@ for (const kind of ["issue", "pull_request"]) {
       GITHUB_SHA: identity.baseCommit,
       GITHUB_WORKFLOW: "reused-review-lease-proof",
       GITHUB_JOB: name,
-      GITHUB_RUN_ID: "42",
+      GITHUB_RUN_ID: String(replayNow),
       GITHUB_RUN_ATTEMPT: "1",
       CLAWSWEEPER_GH_RETRY_ATTEMPTS: "1",
       ...(publisherProof
@@ -437,7 +498,9 @@ for (const kind of ["issue", "pull_request"]) {
             ITEM_NUMBER: String(number),
             REVIEW_ONLY: holdProof ? "false" : "true",
             CLAWSWEEPER_OBSOLETE_FIX_PR_CLOSE_ENABLED: "true",
-            CLOSE_REASONS: "stale_insufficient_info,obsolete_fix_pr",
+            CLAWSWEEPER_UNCONFIRMED_PRODUCT_DIRECTION_CLOSE_ENABLED:
+              variant === "disabled-policy" ? "false" : "true",
+            CLOSE_REASONS: "stale_insufficient_info,obsolete_fix_pr,unconfirmed_product_direction",
             EXACT_REVIEW_BATCH_ITEM_KEY: "proof-member",
             EXACT_REVIEW_BATCH_REVISION: "1",
             EXACT_REVIEW_BATCH_CLAIM_GENERATION: "1",
@@ -505,12 +568,12 @@ for (const kind of ["issue", "pull_request"]) {
     writeFileSync(join(root, "stdout.txt"), stdout);
     writeFileSync(join(root, "stderr.txt"), stderr);
     writeFileSync(join(root, "trace.json"), JSON.stringify(trace, null, 2));
-    const actions = JSON.parse(
-      readFileSync(
-        join(root, publisherProof ? ".artifacts/event-apply-report.json" : "apply-report.json"),
-        "utf8",
-      ),
+    const applyReportPath = join(
+      root,
+      publisherProof ? ".artifacts/event-apply-report.json" : "apply-report.json",
     );
+    assert.ok(existsSync(applyReportPath), stderr + stdout);
+    const actions = JSON.parse(readFileSync(applyReportPath, "utf8"));
     const batchOutcome =
       publisherProof && existsSync(join(root, "batch.json"))
         ? JSON.parse(readFileSync(join(root, "batch.json"), "utf8"))
@@ -562,7 +625,7 @@ for (const kind of ["issue", "pull_request"]) {
         ),
         JSON.stringify(trace),
       );
-      if (variant === "candidate") {
+      if (variant === "candidate" || variant === "young-pr") {
         assert.equal(code, 0, stderr + stdout);
         assert.equal(actions[0]?.action, "kept_open");
         assert.equal(actions[0]?.guardedOpenStateVerified, true);
@@ -575,8 +638,30 @@ for (const kind of ["issue", "pull_request"]) {
         assert.equal(actions[0]?.action, "skipped_changed_since_review");
         assert.equal(actions[0]?.closePolicyHoldVerified, undefined);
         assert.equal(batchOutcome?.disposition.requeueLatestExpected, true);
-        if (variant === "changed-during-apply")
-          assert.ok(trace.some((entry) => entry.sourceEditedDuringPolicy));
+        if (variant === "changed-during-apply") {
+          const mutationIndex = trace.findIndex((entry) => entry.sourceEditedDuringPolicy);
+          assert.ok(mutationIndex >= 0);
+          if (productHoldProof) {
+            assert.ok(mutationIndex > trace.findIndex((entry) => entry.activityReadOrdinal === 1));
+            const snapshots = trace.filter((entry) => entry.sourceBodySha256);
+            assert.equal(snapshots[0].sourceBodySha256, snapshots[1].sourceBodySha256);
+            assert.ok(
+              trace
+                .slice(mutationIndex + 1)
+                .some(
+                  (entry) =>
+                    entry.sourceBodySha256 &&
+                    entry.sourceBodySha256 !== snapshots[0].sourceBodySha256,
+                ),
+            );
+          }
+        }
+      } else if (productHoldProof && variant === "read-failure") {
+        assert.notEqual(code, 0);
+        assert.deepEqual(actions, []);
+        assert.equal(batchOutcome?.kind, "retryable_failure");
+        assert.equal(batchOutcome?.reasonCode, "github_transient");
+        assert.ok(stepOutputs.includes("reason_code=github_transient\n"));
       } else {
         assert.notEqual(code, 0);
         assert.equal(actions.length, 1);

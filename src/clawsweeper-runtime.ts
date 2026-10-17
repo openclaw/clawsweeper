@@ -213,7 +213,7 @@ export {
   protectedLabels,
   shouldPlanItem,
   staleVersionBugAgeSkipReason,
-  unconfirmedProductDirectionAgeSkipReason,
+  unconfirmedProductDirectionAgeBlock,
   unsponsoredFeatureAgeSkipReason,
 } from "./clawsweeper-item-policy.js";
 export type {

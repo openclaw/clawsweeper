@@ -47,7 +47,7 @@ type ApplyCloseExecutionDependencies = Pick<
   | "applyAuthorPrBudgetStateToReport"
   | "resetGuardReadCache"
   | "withGuardReadOptions"
-  | "unconfirmedProductDirectionApplyBlockReasonSafe"
+  | "unconfirmedProductDirectionApplyBlockSafe"
   | "addIssueLabel"
   | "applyPrCloseCoverageProofReportSection"
   | "closeItem"

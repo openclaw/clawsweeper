@@ -127,7 +127,7 @@ test("apply policy guards share canonical full-object reads", () => {
   const item = { createdAt: "2025-01-01T00:00:00Z", labels: [] };
 
   withClosePoliciesEnabled(() => {
-    guards.unconfirmedProductDirectionApplyBlockReasonSafe(
+    guards.unconfirmedProductDirectionApplyBlockSafe(
       42,
       item,
       "2025-01-01T00:00:00Z",
