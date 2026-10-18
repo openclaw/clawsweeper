@@ -1,5 +1,6 @@
 import { createHash, createHmac, generateKeyPairSync, sign } from "node:crypto";
 import http from "node:http";
+import { keylessCommentRouter } from "./helpers/keyless-comment-router.ts";
 
 import {
   EXACT_REVIEW_COMMAND_RECEIPT_RETENTION_MS,
@@ -893,6 +894,12 @@ async function startGithubLoopback() {
     sourceCommentUpdatedAt: COMMAND_UPDATED_AT,
     sourceCommentBody: COMMAND_BODY,
     sourceAssociation: "CONTRIBUTOR",
+    sourceAuthor: "contributor",
+    repositoryPermission: "write",
+    permissionReads: 0,
+    isPullRequest: true,
+    labels: [] as string[],
+    labelWrites: [] as string[],
     defaultBranch: "main",
     dispatches: [] as Record<string, unknown>[],
     failAcknowledgement: false,
@@ -917,12 +924,54 @@ async function startGithubLoopback() {
         ...commandWebhookPayload().comment,
         body: state.sourceCommentBody,
         author_association: state.sourceAssociation,
+        user: { login: state.sourceAuthor },
         updated_at: state.sourceCommentUpdatedAt,
         issue_url: `https://api.github.com/repos/openclaw/openclaw/issues/${ITEM_NUMBER}`,
       });
     }
     if (url.pathname === `/repos/openclaw/openclaw/issues/${ITEM_NUMBER}`) {
-      return sendJson(response, 200, commandWebhookPayload().issue);
+      const { pull_request, ...issue } = commandWebhookPayload().issue;
+      return sendJson(response, 200, {
+        ...issue,
+        title: "Controlled command item",
+        body: "Controlled command body",
+        labels: state.labels.map((name) => ({ name })),
+        ...(state.isPullRequest ? { pull_request } : {}),
+      });
+    }
+    if (
+      url.pathname === `/repos/openclaw/openclaw/collaborators/${state.sourceAuthor}/permission`
+    ) {
+      state.permissionReads += 1;
+      return sendJson(response, 200, { permission: state.repositoryPermission });
+    }
+    if (url.pathname === "/user") {
+      return sendJson(response, 200, { login: "clawsweeper[bot]" });
+    }
+    if (url.pathname === "/repos/openclaw/openclaw/labels" && request.method === "POST") {
+      return sendJson(response, 201, { name: body.name });
+    }
+    const labelPath = `/repos/openclaw/openclaw/issues/${ITEM_NUMBER}/labels`;
+    if (url.pathname === labelPath && request.method === "POST") {
+      for (const label of body.labels as string[]) {
+        state.labelWrites.push(`add:${label}`);
+        if (!state.labels.includes(label)) state.labels.push(label);
+      }
+      return sendJson(
+        response,
+        200,
+        state.labels.map((name) => ({ name })),
+      );
+    }
+    if (url.pathname.startsWith(`${labelPath}/`) && request.method === "DELETE") {
+      const label = decodeURIComponent(url.pathname.slice(labelPath.length + 1));
+      state.labelWrites.push(`remove:${label}`);
+      state.labels = state.labels.filter((name) => name !== label);
+      return sendJson(
+        response,
+        200,
+        state.labels.map((name) => ({ name })),
+      );
     }
     if (url.pathname === `/repos/openclaw/openclaw/pulls/${ITEM_NUMBER}`) {
       return sendJson(response, 200, {
@@ -1249,6 +1298,78 @@ test("keyless OIDC comment intake uses live authority and coalesces with the App
     (fixture.dispatches[1]!.client_payload as Record<string, unknown>).status_comment_id,
     null,
   );
+
+  // Follow the OIDC-produced payload through the actual asynchronous router.
+  fixture.failAcknowledgement = false;
+  fixture.sourceCommentBody = "@clawsweeper stop";
+  fixture.sourceAuthor = "collaborator";
+  fixture.sourceAssociation = "COLLABORATOR";
+  fixture.isPullRequest = false;
+  fixture.labels = ["clawsweeper:autofix", "clawsweeper:automerge"];
+  const allowedRouter = keylessCommentRouter(fixture.origin);
+  t.after(() => allowedRouter.close());
+  assert.equal((await post()).status, 202);
+  const stopPayload = fixture.dispatches.at(-1)!.client_payload as Record<string, unknown>;
+  const allowed = await allowedRouter.run(stopPayload);
+  assert.equal(allowed.commands[0].status, "executed");
+  assert.equal(allowed.commands[0].author_repository_permission, "write");
+  assert.deepEqual(fixture.labels, ["clawsweeper:human-review"]);
+  assert.deepEqual(fixture.labelWrites, [
+    "remove:clawsweeper:automerge",
+    "remove:clawsweeper:autofix",
+    "add:clawsweeper:human-review",
+  ]);
+  const writesAfterAllowed = fixture.labelWrites.length;
+  const appStopBody = JSON.stringify({
+    ...commandWebhookPayload(),
+    issue: { number: ITEM_NUMBER, state: "open", user: { login: "contributor" } },
+    comment: {
+      ...commandWebhookPayload().comment,
+      body: fixture.sourceCommentBody,
+      user: { login: fixture.sourceAuthor },
+      author_association: fixture.sourceAssociation,
+    },
+  });
+  const appStop = await worker.fetch(
+    new Request("https://clawsweeper.openclaw.ai/github/webhook", {
+      method: "POST",
+      headers: {
+        "x-github-event": "issue_comment",
+        "x-github-delivery": "keyless-stop-app-duplicate",
+        "x-hub-signature-256":
+          "sha256=" +
+          createHmac("sha256", env.CLAWSWEEPER_WEBHOOK_SECRET).update(appStopBody).digest("hex"),
+      },
+      body: appStopBody,
+    }),
+    bindings,
+    ctx,
+  );
+  assert.equal(appStop.status, 202);
+  const appStopPayload = fixture.dispatches.at(-1)!.client_payload as Record<string, unknown>;
+  assert.equal(appStopPayload.comment_body_sha256, stopPayload.comment_body_sha256);
+  await allowedRouter.run(appStopPayload);
+  assert.equal(fixture.labelWrites.length, writesAfterAllowed, "App-route replay is coalesced");
+
+  const revokedRouter = keylessCommentRouter(fixture.origin);
+  t.after(() => revokedRouter.close());
+  fixture.labels = ["clawsweeper:autofix", "clawsweeper:automerge"];
+  fixture.sourceCommentUpdatedAt = "2026-08-12T16:26:26Z";
+  assert.equal((await post()).status, 202);
+  const delayedPayload = fixture.dispatches.at(-1)!.client_payload as Record<string, unknown>;
+  // Worker accepted the collaborator; revoke before the queued job starts.
+  fixture.repositoryPermission = "read";
+  const permissionReadsBefore = fixture.permissionReads;
+  for (const attempt of ["delayed delivery", "retry"]) {
+    const revoked = await revokedRouter.run(delayedPayload);
+    assert.equal(revoked.commands[0].status, "ignored", attempt);
+    assert.equal(revoked.commands[0].author_repository_permission, "read", attempt);
+    assert.equal(revoked.commands[0].maintainer_authorized, false, attempt);
+    assert.equal(revoked.commands[0].author_readonly_authorized, false, attempt);
+    assert.equal(fixture.labelWrites.length, writesAfterAllowed, attempt);
+    assert.deepEqual(fixture.labels, ["clawsweeper:autofix", "clawsweeper:automerge"], attempt);
+  }
+  assert.equal(fixture.permissionReads - permissionReadsBefore, 2);
   await Promise.all(pending);
   console.log(
     JSON.stringify({
@@ -1261,6 +1382,9 @@ test("keyless OIDC comment intake uses live authority and coalesces with the App
       reviewReactions: 1,
       authority: "live GitHub comment",
       schemaChanges: false,
+      routerAllowedStop: "labels removed and human-review added",
+      routerAllowedReplay: "coalesced",
+      routerRevokedNonAuthor: "delayed delivery and retry ignored; zero label writes",
     }),
   );
 });
