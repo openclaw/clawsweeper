@@ -1,4 +1,5 @@
 import { join } from "node:path";
+import { applyHiddenPayloadSecurityReview } from "./repair/security-signals.js";
 import { writeFileSync } from "node:fs";
 import { UserFacingCommandError } from "./command.js";
 import { reviewStatusForDecision } from "./clawsweeper-report-document.js";
@@ -206,6 +207,7 @@ export function runPreparedReviewItem(
   }
   decision = attachFixedPullRequest(decision, item, context, existingPriorReview?.markdown);
   decision = verifyRegressionProvenance(decision, item, context, reviewOpenclawDir, git);
+  decision = applyHiddenPayloadSecurityReview(decision, context.securityReview);
   const runtime = {
     model: PUBLIC_CODEX_MODEL,
     reasoningEffort: itemCodexProfile.reasoningEffort,

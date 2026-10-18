@@ -656,6 +656,7 @@ export interface CompleteActivityContext {
 }
 
 export interface ItemContext {
+  securityReview?: SecurityReview;
   [completeActivityContextSymbol]?: CompleteActivityContext;
   issue: unknown;
   comments: unknown[];

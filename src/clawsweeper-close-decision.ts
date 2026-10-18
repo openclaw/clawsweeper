@@ -252,6 +252,16 @@ export function validateCloseDecision(
       reason: "not a close decision",
     };
   }
+  if (
+    decision.securityReview.status === "needs_attention" ||
+    decision.securityReview.concerns.length > 0
+  ) {
+    return {
+      ok: false,
+      actionTaken: "kept_open",
+      reason: "security review requires human moderation before automatic close",
+    };
+  }
   if (applyBlockingProtectedLabels(item.labels, decision.closeReason).length > 0) {
     return {
       ok: false,

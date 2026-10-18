@@ -41,6 +41,15 @@ guidance.
 policies; being a non-core target does not grant contributors or workers
 permission to edit release-owned files.
 
+All profiles share the hidden-payload security guard in
+`src/repair/security-signals.ts`. It checks the raw item body and discussion
+before prompt compaction, inspecting rendered HTML comments for remote shell
+substitution, download-to-shell pipelines, or encoded environment dumps. Visible
+fenced and inline code examples are excluded. A signal becomes a typed security
+review requiring human moderation, P1 (or an existing P0), and `impact:security`;
+it blocks every automatic close reason. Apply also checks current source before
+closing, including paired closes and older proposals without a recorded signal.
+
 OpenClaw’s generated locale PRs are publisher-owned. Automatic apply and repair
 close paths leave PRs open when live GitHub metadata identifies
 `openclaw-mantis[bot]` as author, both head and base repositories as

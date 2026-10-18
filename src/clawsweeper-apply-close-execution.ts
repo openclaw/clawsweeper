@@ -1,4 +1,6 @@
 import { sha256 } from "./content-hash.js";
+import { hiddenPayloadSecurityReview } from "./repair/security-signals.js";
+import { ghPaged } from "./clawsweeper-github-context.js";
 import {
   oversizedPullRequestLiveBlockReason,
   parseOversizedPullRequestEvidence,
@@ -469,7 +471,18 @@ export function executeApplyClose(
     const reason = lowSignalUnmergeablePrApplyBlockReasonSafe(number, staleMinAgeDays);
     if (reason) return skip("skipped_low_signal_live_guard", reason, true);
   }
-  const currentTerminalCloseBlock = (checkPair = true): PrCloseCoverageProofGateBlock | null => {
+  const currentTerminalCloseBlock = (
+    checkPair = true,
+    mutationNumber = number,
+  ): PrCloseCoverageProofGateBlock | null => {
+    const source = asRecord(ghJson(["api", `repos/${repo}/issues/${mutationNumber}`]));
+    const comments = fetchIssueReviewComments(mutationNumber);
+    if (source.pull_request)
+      comments.push(
+        ...ghPaged<Record<string, unknown>>(`repos/${repo}/pulls/${mutationNumber}/comments`),
+      );
+    const security = hiddenPayloadSecurityReview(source.body, comments);
+    if (security) return { actionTaken: "kept_open", reason: security.summary };
     const policy = liveApplyCloseReasonPolicyBlock(dependencies, {
       closeReason,
       currentAuthorPrBudgetApplyGate,
@@ -498,7 +511,7 @@ export function executeApplyClose(
   // Paired implementation closes already have dedicated issue source/lease guards.
   // Recheck parent policy for both mutations; pair admission is needed for the parent.
   setCloseMutationPolicyGuard((mutationNumber) =>
-    currentTerminalCloseBlock(mutationNumber === number),
+    currentTerminalCloseBlock(mutationNumber === number, mutationNumber),
   );
   const initialTerminalBlock = currentTerminalCloseBlock();
   if (initialTerminalBlock)
