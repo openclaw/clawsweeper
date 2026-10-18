@@ -1,3 +1,4 @@
+import { publicationDecision } from "./publication-dlp.js";
 import { isDeepStrictEqual } from "node:util";
 import { createDecisionParser } from "./clawsweeper-decision-parser.js";
 import { parseOversizedPrSourceSnapshot } from "./clawsweeper-oversized-pr-freshness.js";
@@ -325,5 +326,5 @@ function parseStoredDecision(value: unknown, subject: ReviewRecordSubject): Deci
   if (changed.length > 0) {
     throw new ReviewRecordFormatError(`decision.${changed.join(", decision.")} is not canonical`);
   }
-  return decision;
+  return publicationDecision(decision);
 }

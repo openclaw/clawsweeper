@@ -54,6 +54,15 @@ function runLocalReview(
   args: string[],
   env: NodeJS.ProcessEnv = {},
 ): { status: number | null; out: string; stdout: string; stderr: string } {
+  if (env.CODEX_BIN && env.LOCAL_REVIEW_PROOF_CAPTURE) {
+    writeFileSync(
+      `${env.CODEX_BIN}.fixture.json`,
+      JSON.stringify({
+        capture: env.LOCAL_REVIEW_PROOF_CAPTURE,
+        exitStatus: env.LOCAL_REVIEW_EXIT_STATUS ?? "0",
+      }),
+    );
+  }
   const result = spawnSync(process.execPath, [CLI, "local-review", "--target-dir", dir, ...args], {
     cwd: dir,
     encoding: "utf8",
@@ -100,7 +109,7 @@ const tokens = [
   "COMMIT_SWEEPER_TARGET_GH_TOKEN",
   "CLAWSWEEPER_PROOF_INSPECTION_TOKEN",
 ];
-fs.writeFileSync(process.env.LOCAL_REVIEW_PROOF_CAPTURE, JSON.stringify({
+fs.writeFileSync(JSON.parse(fs.readFileSync(__filename + ".fixture.json", "utf8")).capture, JSON.stringify({
   args,
   leakedTokens: tokens.filter((name) => Boolean(process.env[name])),
   ghConfigDir: process.env.GH_CONFIG_DIR,
@@ -203,9 +212,9 @@ test(
         `#!/usr/bin/env node
 const fs = require("node:fs");
 const args = process.argv.slice(2);
-fs.writeFileSync(process.env.LOCAL_REVIEW_PROOF_CAPTURE, process.env.GH_CONFIG_DIR);
+fs.writeFileSync(JSON.parse(fs.readFileSync(__filename + ".fixture.json", "utf8")).capture, process.env.GH_CONFIG_DIR);
 process.stdout.write("---\\nresult: success\\n---\\n\\nTransient local review completed.\\n\\n");
-process.exitCode = Number(process.env.LOCAL_REVIEW_EXIT_STATUS || "0");
+process.exitCode = Number(JSON.parse(fs.readFileSync(__filename + ".fixture.json", "utf8")).exitStatus);
 `,
       );
       chmodSync(fakeCodex, 0o755);
@@ -426,3 +435,53 @@ test("local-review disables web search and forbids network lookups in its prompt
   assert.match(prompt, /do not .*network request/i);
   assert.match(prompt, /only the local checkout and git history/i);
 });
+
+test(
+  "local commit review redacts both retained report and stdout",
+  { skip: process.platform === "win32" },
+  (t) => {
+    const dir = initRepo();
+    const harness = mkdtempSync(join(tmpdir(), "lr-dlp-"));
+    useFakeScanner(t);
+    try {
+      git(dir, "branch", "local-base");
+      git(dir, "commit", "-q", "--allow-empty", "-m", "test: review publication");
+      const fakeCodex = join(harness, "codex");
+      const token = "synthetic-commit-review-capability";
+      writeFileSync(
+        fakeCodex,
+        `#!${process.execPath}\nrequire('node:fs').readFileSync(0);\nprocess.stdout.write(${JSON.stringify(`---\nresult: success\n---\nEvidence ${token} and ghs_${"x".repeat(36)}\n`)});\n`,
+        { mode: 0o755 },
+      );
+      const result = runLocalReview(
+        dir,
+        [
+          "--target-repo",
+          "openclaw/clawsweeper",
+          "--base",
+          "local-base",
+          "--result-format",
+          "json",
+          "--output-retention",
+          "summary",
+          "--report-dir",
+          join(harness, "reports"),
+        ],
+        { CODEX_BIN: fakeCodex, SOME_NEW_SECRET: token },
+      );
+      assert.equal(result.status, 0, result.out);
+      assert.ok(!result.stdout.includes(token));
+      assert.ok(!result.stdout.includes(`ghs_${"x".repeat(36)}`));
+      assert.ok(result.stdout.includes("[redacted credential]"));
+      const envelope = JSON.parse(result.stdout);
+      const reportPath = envelope.reports?.[0]?.artifact_path;
+      assert.ok(reportPath, result.stdout);
+      const report = readFileSync(reportPath, "utf8");
+      assert.ok(!report.includes(token));
+      assert.ok(report.includes("[redacted credential]"));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+      rmSync(harness, { recursive: true, force: true });
+    }
+  },
+);

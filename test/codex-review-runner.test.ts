@@ -11,7 +11,7 @@ import {
   symlinkSync,
   writeFileSync,
 } from "node:fs";
-import { delimiter, dirname, join } from "node:path";
+import { delimiter, dirname, join, sep } from "node:path";
 import test from "node:test";
 import { pathToFileURL } from "node:url";
 import { TRUFFLEHOG_VERSION } from "../dist/review-tool-bootstrap.js";
@@ -41,6 +41,36 @@ function runBoundedCodexForTest(
     resultFileBytes?: number;
   },
 ) {
+  // These are test-fixture inputs, not model capabilities. Put them beside
+  // each fake executable so both checkout inspection and model execution still
+  // exercise the real deny-by-default environment builder.
+  const root = dirname(options.openclawDir);
+  const binaries = [
+    options.reviewEnv?.CODEX_BIN ?? process.env.CODEX_BIN,
+    process.env.CLAWSWEEPER_OPENCLAW_BIN,
+    ...(process.env.PATH ?? "").split(delimiter).map((dir) => join(dir, "codex")),
+  ];
+  const fixtureNames = [
+    "CODEX_DECISION_JSON",
+    "CODEX_ARGS_PATH",
+    "CODEX_INVOCATIONS_PATH",
+    "CODEX_ATTEMPTS_PATH",
+    "OPENCLAW_TEST_INVOCATIONS_PATH",
+  ];
+  for (const binary of new Set(binaries)) {
+    if (!binary?.startsWith(root + sep) || !existsSync(binary)) continue;
+    const fixturePath = `${binary}.fixtures.json`;
+    writeFileSync(
+      fixturePath,
+      JSON.stringify(Object.fromEntries(fixtureNames.map((key) => [key, process.env[key]]))),
+    );
+    const source = readFileSync(binary, "utf8").replace(
+      /process\.env\.(CODEX_(?:DECISION_JSON|ARGS_PATH|INVOCATIONS_PATH|ATTEMPTS_PATH)|OPENCLAW_TEST_INVOCATIONS_PATH)/g,
+      (_, key: string) =>
+        `JSON.parse(require("node:fs").readFileSync(${JSON.stringify(fixturePath)}, "utf8")).${key}`,
+    );
+    writeFileSync(binary, source);
+  }
   return runCodexForTest({
     ...options,
     resultFileBytes: options.resultFileBytes ?? reviewResultBytes,

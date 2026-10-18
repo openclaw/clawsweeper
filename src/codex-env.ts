@@ -1,3 +1,7 @@
+import {
+  registerOpenclawProviderCapabilities,
+  registerPublicationCapability,
+} from "./publication-dlp.js";
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -70,32 +74,103 @@ export function redactInternalCodexModel(
   );
 }
 
+// Only runtime/tool controls cross the model boundary. Job-level additions stay private.
+const CODEX_ENV_ALLOWLIST = new Set([
+  "PATH",
+  "HOME",
+  "USER",
+  "SHELL",
+  "CODEX_HOME",
+  "CODEX_BIN",
+  "CODEX_BIN_ARGS",
+  "TMPDIR",
+  "TMP",
+  "TEMP",
+  "LANG",
+  "TZ",
+  "TERM",
+  "NODE_OPTIONS",
+  "NODE_EXTRA_CA_CERTS",
+  "CI",
+  "GITHUB_ACTIONS",
+  "GITHUB_WORKSPACE",
+  "RUNNER_TEMP",
+  "RUNNER_OS",
+  "HTTP_PROXY",
+  "HTTPS_PROXY",
+  "ALL_PROXY",
+  "NO_PROXY",
+  "http_proxy",
+  "https_proxy",
+  "all_proxy",
+  "no_proxy",
+  "SSL_CERT_FILE",
+  "SSL_CERT_DIR",
+  // Windows command resolution and the local Codex Desktop fallback.
+  "SystemRoot",
+  "SYSTEMROOT",
+  "COMSPEC",
+  "PATHEXT",
+  "USERPROFILE",
+  "LOCALAPPDATA",
+  "APPDATA",
+  // Read-only Git discovery and isolation; never numbered/config-parameter overrides.
+  "GIT_CONFIG_GLOBAL",
+  "GIT_CONFIG_SYSTEM",
+  "GIT_CONFIG_NOSYSTEM",
+  "GIT_CEILING_DIRECTORIES",
+  "GIT_DISCOVERY_ACROSS_FILESYSTEM",
+  "GIT_NO_LAZY_FETCH",
+  "GIT_TERMINAL_PROMPT",
+  "GH_CONFIG_DIR",
+  "CLAWSWEEPER_RUNNER",
+  "CLAWSWEEPER_REVIEW_TOOLS_DIR",
+  "CLAWSWEEPER_PROOF_SCRATCH_DIR",
+]);
+
+const OPENCLAW_ENV_ALLOWLIST = new Set([
+  "CLAWSWEEPER_OPENCLAW_MODEL",
+  "CLAWSWEEPER_OPENCLAW_BIN",
+  "CLAWSWEEPER_OPENCLAW_PROVIDERS_JSON",
+  "CLAWSWEEPER_OPENCLAW_OPENAI_KEY",
+  "OPENAI_API_KEY",
+  "ANTHROPIC_API_KEY",
+  "GEMINI_API_KEY",
+  "GOOGLE_API_KEY",
+  "OPENROUTER_API_KEY",
+  "XAI_API_KEY",
+  "GROQ_API_KEY",
+  "MINIMAX_API_KEY",
+  "KIMI_API_KEY",
+  "KIMICODE_API_KEY",
+  "MOONSHOT_API_KEY",
+  "CEREBRAS_API_KEY",
+  "ZAI_API_KEY",
+  "DEEPSEEK_API_KEY",
+  "MISTRAL_API_KEY",
+]);
+
 export function codexEnv(options: CodexEnvOptions = {}): NodeJS.ProcessEnv {
-  const env = { ...process.env };
+  const env: NodeJS.ProcessEnv = {};
+  const openclaw = process.env.CLAWSWEEPER_RUNNER === "openclaw";
+  if (openclaw)
+    registerOpenclawProviderCapabilities(process.env.CLAWSWEEPER_OPENCLAW_PROVIDERS_JSON);
+  for (const [key, value] of Object.entries(process.env)) {
+    if (
+      CODEX_ENV_ALLOWLIST.has(key) ||
+      /^LC_[A-Z_]+$/.test(key) ||
+      (openclaw && OPENCLAW_ENV_ALLOWLIST.has(key)) ||
+      (options.preserveCodexAuth &&
+        ["OPENAI_API_KEY", "CODEX_API_KEY", "CODEX_ACCESS_TOKEN"].includes(key))
+    ) {
+      env[key] = value;
+    }
+  }
   const ghToken = options.ghToken?.trim();
-  delete env.GH_TOKEN;
-  delete env.GITHUB_TOKEN;
-  delete env.REPO_TOKEN;
-  delete env.COMMIT_SWEEPER_TARGET_GH_TOKEN;
-  delete env.CLAWSWEEPER_PROOF_INSPECTION_TOKEN;
-  delete env.CLAWSWEEPER_APP_ID;
-  delete env.CLAWSWEEPER_APP_PRIVATE_KEY;
-  delete env.CLAWSWEEPER_CRABFLEET_AGENT_TOKEN;
-  delete env.CLAWSWEEPER_CRABFLEET_SERVICE_TOKEN;
-  delete env.CLAWSWEEPER_CRABFLEET_RUNNER_PTY_URL;
-  delete env.CLAWSWEEPER_CRABFLEET_WORK_STATE_URL;
-  for (const key of Object.keys(env)) {
-    // Keep trusted preparation's process-local Git overrides out of model subprocesses.
-    if (/^GIT_CONFIG_(COUNT|PARAMETERS|(KEY|VALUE)_\d+)$/i.test(key)) delete env[key];
-    if (/^CLAWSWEEPER_.*GH_TOKEN$/.test(key)) delete env[key];
+  if (ghToken) {
+    env.GH_TOKEN = ghToken;
+    registerPublicationCapability(ghToken);
   }
-  if (!options.preserveCodexAuth) {
-    if (env.CLAWSWEEPER_RUNNER !== "openclaw") delete env.OPENAI_API_KEY;
-    delete env.CODEX_API_KEY;
-    delete env.CODEX_ACCESS_TOKEN;
-  }
-  delete env.CLAWSWEEPER_INTERNAL_MODEL;
-  if (ghToken) env.GH_TOKEN = ghToken;
   env.GIT_OPTIONAL_LOCKS = "0";
   return env;
 }

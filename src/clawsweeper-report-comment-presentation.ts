@@ -1,3 +1,4 @@
+import { redactPublication } from "./publication-dlp.js";
 import type {
   CloseReason,
   ProductFixScope,
@@ -552,7 +553,7 @@ function renderKeepOpenCommentFromReport(
   );
 }
 
-export function renderReviewCommentFromReport(
+function renderReviewComment(
   markdown: string,
   reason: CloseReason,
   options: ReviewCommentRenderOptions = {},
@@ -612,4 +613,12 @@ export function renderReviewCommentFromReport(
   return [body.trimEnd(), markers, reviewVersionMarkerFromReport(markdown)]
     .filter(Boolean)
     .join("\n\n");
+}
+
+export function renderReviewCommentFromReport(
+  markdown: string,
+  reason: CloseReason,
+  options: ReviewCommentRenderOptions = {},
+): string {
+  return redactPublication(renderReviewComment(markdown, reason, options)).value;
 }

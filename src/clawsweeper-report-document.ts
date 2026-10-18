@@ -1,3 +1,8 @@
+import {
+  blockCredentialPublication,
+  credentialPublicationBlocked,
+  redactPublication,
+} from "./publication-dlp.js";
 import { sha256 } from "./content-hash.js";
 import { parseOversizedPullRequestEvidence } from "./clawsweeper-oversized-pr-policy.js";
 import { closeReasonText } from "./clawsweeper-close-reasons.js";
@@ -78,6 +83,7 @@ export function reviewStatusForDecision(
   decision: Pick<Decision, "localCheckoutAccess" | "summary"> &
     Partial<Pick<Decision, "closeReason" | "oversizedPullRequest">>,
 ): "complete" | "failed" {
+  if (credentialPublicationBlocked(decision)) return "failed";
   if (
     decision.closeReason === "oversized_pull_request" &&
     parseOversizedPullRequestEvidence(decision.oversizedPullRequest)
@@ -448,7 +454,7 @@ export function updateReviewStructuralFrontMatter(
   return replaceFrontMatterValue(next, "review_structural_cache_hit", cacheHit ? "true" : "false");
 }
 
-export function markdownFor(options: {
+function renderReviewDocument(options: {
   item: Item;
   context: ItemContext;
   decision: Decision;
@@ -887,4 +893,24 @@ ${renderReviewContextBudget(options.context)}
 - Codex review ms: ${reviewTelemetryNumber(options.runtime.codexElapsedMs)}
   `;
   return markdown;
+}
+
+export function markdownFor(options: Parameters<typeof renderReviewDocument>[0]): string {
+  const safe = redactPublication(options);
+  const prepare = (redactions: number) => {
+    const decision = blockCredentialPublication(safe.value.decision, redactions);
+    return {
+      ...safe.value,
+      decision,
+      action: credentialPublicationBlocked(decision)
+        ? { actionTaken: "kept_open" as const, closeComment: "" }
+        : safe.value.action,
+    };
+  };
+  const rendered = redactPublication(renderReviewDocument(prepare(safe.redactions)));
+  if (!rendered.redactions) return rendered.value;
+  // Formatting can assemble a credential across field boundaries. Persist the
+  // failure receipt before the last scan, including when only rendering matched.
+  return redactPublication(renderReviewDocument(prepare(safe.redactions + rendered.redactions)))
+    .value;
 }

@@ -110,3 +110,70 @@ test(`${builder.name} strips case variants and unused numbered override keys`, (
     process.env = original;
   }
 });
+
+test("codexEnv admits only known runtime variables and an explicit read token", () => {
+  const original = process.env;
+  try {
+    process.env = {
+      PATH: "/bin",
+      HOME: "/synthetic/home",
+      CODEX_HOME: "/synthetic/codex",
+      SOME_NEW_SECRET: "synthetic-secret",
+      SOME_NEW_VARIABLE: "unknown",
+      GH_TOKEN: "ambient",
+      GITHUB_TOKEN: "ambient",
+      CLAWSWEEPER_NEW_TOKEN: "unknown",
+    };
+    assert.deepEqual(codexEnv({ ghToken: "explicit-read" }), {
+      PATH: "/bin",
+      HOME: "/synthetic/home",
+      CODEX_HOME: "/synthetic/codex",
+      GH_TOKEN: "explicit-read",
+      GIT_OPTIONAL_LOCKS: "0",
+    });
+  } finally {
+    process.env = original;
+  }
+});
+
+test("Codex auth is opt-in and OpenClaw receives only its supported provider credentials", () => {
+  const original = process.env;
+  try {
+    process.env = {
+      OPENAI_API_KEY: "fake-openai",
+      CODEX_API_KEY: "fake-codex",
+      CODEX_ACCESS_TOKEN: "fake-access",
+      ANTHROPIC_API_KEY: "fake-anthropic",
+      UNRELATED_API_KEY: "fake-unrelated",
+      CLAWSWEEPER_OPENCLAW_MODEL: "provider/model",
+      CLAWSWEEPER_OPENCLAW_OPENAI_KEY: "fake-fallback",
+      CLAWSWEEPER_OPENCLAW_PROVIDERS_JSON: "{}",
+      CLAWSWEEPER_OPENCLAW_BIN: "/fake/openclaw",
+      CLAWSWEEPER_INTERNAL_MODEL: "private-model",
+      CLAWSWEEPER_RUNNER: "codex",
+    };
+    const normal = codexEnv();
+    assert.equal(normal.OPENAI_API_KEY, undefined);
+    assert.equal(normal.ANTHROPIC_API_KEY, undefined);
+    assert.equal(normal.CLAWSWEEPER_OPENCLAW_MODEL, undefined);
+    const local = codexEnv({ preserveCodexAuth: true });
+    assert.equal(local.OPENAI_API_KEY, "fake-openai");
+    assert.equal(local.CODEX_API_KEY, "fake-codex");
+    assert.equal(local.CODEX_ACCESS_TOKEN, "fake-access");
+    process.env.CLAWSWEEPER_RUNNER = "openclaw";
+    const openclaw = codexEnv();
+    assert.equal(openclaw.ANTHROPIC_API_KEY, "fake-anthropic");
+    assert.equal(openclaw.OPENAI_API_KEY, "fake-openai");
+    assert.equal(openclaw.CLAWSWEEPER_OPENCLAW_OPENAI_KEY, "fake-fallback");
+    assert.equal(openclaw.CLAWSWEEPER_OPENCLAW_PROVIDERS_JSON, "{}");
+    assert.equal(openclaw.CLAWSWEEPER_OPENCLAW_BIN, "/fake/openclaw");
+    for (const env of [normal, local, openclaw]) {
+      assert.equal(env.UNRELATED_API_KEY, undefined);
+      assert.equal(env.CLAWSWEEPER_INTERNAL_MODEL, undefined);
+    }
+    assert.equal(openclaw.CODEX_API_KEY, undefined);
+    assert.equal(openclaw.CODEX_ACCESS_TOKEN, undefined);
+  } finally {
+    process.env = original;
+  }
+});

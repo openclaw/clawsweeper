@@ -479,3 +479,22 @@ test("assist generation never holds a write token and the publisher never runs a
     if (step.env?.GH_TOKEN) assert.ok(position > writeToken, step.name);
   }
 });
+
+test("assist generation and publication redact capabilities without changing request identity", () => {
+  const original = process.env;
+  const token = "synthetic-assist-capability";
+  try {
+    process.env = { GH_TOKEN: token };
+    const unsafe = artifact();
+    unsafe.output.answer = `Answer ${token} and ghs_${"a".repeat(36)}`;
+    const safe = parseAssistArtifact(JSON.stringify(unsafe), {
+      runId: "987654321",
+      runAttempt: 2,
+      request,
+    });
+    assert.equal(safe.output.answer, "Answer [redacted credential] and [redacted credential]");
+    assert.equal(safe.idempotency_key, unsafe.idempotency_key);
+  } finally {
+    process.env = original;
+  }
+});

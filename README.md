@@ -756,6 +756,19 @@ publication, and queue lifecycle.
   runner: OpenClaw uses gateway network execution without the Codex proxy or
   filesystem sandbox, strips GitHub tokens through its final child environment
   allowlist, and must keep the checkout read-only by instruction.
+- Reviewer environments are constructed from an explicit allowlist in
+  [`src/codex-env.ts`](src/codex-env.ts): OS/locale/temp paths, CI metadata,
+  proxy/CA settings, read-only Git isolation controls, and the reviewer tool
+  paths. The target read token is admitted only through an explicit `GH_TOKEN`
+  override. OpenClaw retains its supported provider keys; local-only Codex
+  review retains its explicit authentication preservation behavior. Unknown
+  job-level variables and secrets are dropped.
+- [`src/publication-dlp.ts`](src/publication-dlp.ts) redacts exact runtime
+  capability values and known GitHub, OpenAI, private-key, and AWS credential
+  shapes before report/comment publication. Redactions emit a value-free JSON
+  counter. A review with a redaction is failed, retained as a keep-open decision,
+  and blocked from close/apply even after reload. This is a literal-value and
+  credential-shape boundary, not a detector for encoded or fragmented secrets.
 - Reviews fail if Codex leaves tracked or untracked changes behind.
 - Snapshot changes block apply unless the only change is the bot’s own review
   comment.

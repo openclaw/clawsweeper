@@ -1,0 +1,1 @@
+- Redact runtime credentials from review, assist, and local commit-review output, block compromised reviews from closing items, and allowlist reviewer environment variables.

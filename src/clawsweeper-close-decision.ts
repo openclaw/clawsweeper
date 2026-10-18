@@ -1,3 +1,4 @@
+import { credentialPublicationBlocked } from "./publication-dlp.js";
 import {
   parseOversizedPullRequestEvidence,
   ACCEPTED_LARGE_LABEL,
@@ -243,6 +244,13 @@ export function validateCloseDecision(
   decision: Decision,
   options: { requireCloseComment?: boolean } = {},
 ): { ok: true } | { ok: false; actionTaken: ActionTaken; reason: string } {
+  if (credentialPublicationBlocked(decision)) {
+    return {
+      ok: false,
+      actionTaken: "skipped_invalid_decision",
+      reason: "review attempted to publish a credential; fresh review required",
+    };
+  }
   const requireCloseComment = options.requireCloseComment !== false;
   const profile = repositoryProfileFor(item.repo);
   if (decision.decision !== "close") {

@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { redactPublication, registerPublicationCapability } from "./publication-dlp.js";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { homedir, tmpdir } from "node:os";
@@ -365,6 +366,7 @@ export function dirtyWorktree(targetDir: string): string {
 // committed-range review paths so neither can leak a token to the engine it spawns.
 export function scrubGitHubCredentialEnv(): void {
   for (const tokenVar of LOCAL_REVIEW_SCRUBBED_TOKEN_ENV) {
+    registerPublicationCapability(process.env[tokenVar]);
     delete process.env[tokenVar];
   }
 }
@@ -472,35 +474,37 @@ function localReviewCommand(args: Args): void {
       `[local-review] repo=${targetRepo} profile=${profileSlug} base=${baseBranch} range=${baseSha.slice(0, 8)}..${headSha.slice(0, 8)}`,
     );
 
-    const markdown = ensureCommitReportTimestamps(
-      produceReviewOutput(
-        outputBudget,
-        {
-          paths: [join(runDir, `${headSha}.md`)],
-          maxBytes: itemOutputBudget.resultFileBytes,
-          maxFiles: 1,
-        },
-        () =>
-          runCodex({
-            targetDir,
-            targetRepo,
-            sha: headSha,
-            baseSha,
-            metadata,
-            model: argString(args, "codex_model", DEFAULT_CODEX_MODEL),
-            reasoningEffort: argString(args, "codex_reasoning_effort", DEFAULT_REASONING_EFFORT),
-            sandboxMode: argString(args, "codex_sandbox", "read-only"),
-            serviceTier: argString(args, "codex_service_tier", DEFAULT_SERVICE_TIER),
-            timeoutMs: argNumber(args, "codex_timeout_ms", 1_800_000),
-            workDir: runDir,
-            additionalPrompt,
-            extraCodexConfig: [LOCAL_REVIEW_WEB_SEARCH_CONFIG],
-            resultFileBytes: itemOutputBudget.resultFileBytes,
-            streamFileBytes: itemOutputBudget.streamFileBytes,
-          }),
+    const markdown = redactPublication(
+      ensureCommitReportTimestamps(
+        produceReviewOutput(
+          outputBudget,
+          {
+            paths: [join(runDir, `${headSha}.md`)],
+            maxBytes: itemOutputBudget.resultFileBytes,
+            maxFiles: 1,
+          },
+          () =>
+            runCodex({
+              targetDir,
+              targetRepo,
+              sha: headSha,
+              baseSha,
+              metadata,
+              model: argString(args, "codex_model", DEFAULT_CODEX_MODEL),
+              reasoningEffort: argString(args, "codex_reasoning_effort", DEFAULT_REASONING_EFFORT),
+              sandboxMode: argString(args, "codex_sandbox", "read-only"),
+              serviceTier: argString(args, "codex_service_tier", DEFAULT_SERVICE_TIER),
+              timeoutMs: argNumber(args, "codex_timeout_ms", 1_800_000),
+              workDir: runDir,
+              additionalPrompt,
+              extraCodexConfig: [LOCAL_REVIEW_WEB_SEARCH_CONFIG],
+              resultFileBytes: itemOutputBudget.resultFileBytes,
+              streamFileBytes: itemOutputBudget.streamFileBytes,
+            }),
+        ),
+        metadata,
       ),
-      metadata,
-    );
+    ).value;
 
     const outputPath = join(runDir, "local-review.md");
     const report = markdown.endsWith("\n") ? markdown : `${markdown}\n`;
