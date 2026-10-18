@@ -12,7 +12,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
@@ -453,32 +453,43 @@ test(
         `#!${process.execPath}\nrequire('node:fs').readFileSync(0);\nprocess.stdout.write(${JSON.stringify(`---\nresult: success\n---\nEvidence ${token} and ghs_${"x".repeat(36)}\n`)});\n`,
         { mode: 0o755 },
       );
-      const result = runLocalReview(
-        dir,
-        [
-          "--target-repo",
-          "openclaw/clawsweeper",
-          "--base",
-          "local-base",
-          "--result-format",
-          "json",
-          "--output-retention",
-          "summary",
-          "--report-dir",
-          join(harness, "reports"),
-        ],
-        { CODEX_BIN: fakeCodex, SOME_NEW_SECRET: token },
-      );
-      assert.equal(result.status, 0, result.out);
-      assert.ok(!result.stdout.includes(token));
-      assert.ok(!result.stdout.includes(`ghs_${"x".repeat(36)}`));
-      assert.ok(result.stdout.includes("[redacted credential]"));
-      const envelope = JSON.parse(result.stdout);
-      const reportPath = envelope.reports?.[0]?.artifact_path;
-      assert.ok(reportPath, result.stdout);
-      const report = readFileSync(reportPath, "utf8");
-      assert.ok(!report.includes(token));
-      assert.ok(report.includes("[redacted credential]"));
+      for (const retention of ["summary", "debug"]) {
+        const result = runLocalReview(
+          dir,
+          [
+            "--target-repo",
+            "openclaw/clawsweeper",
+            "--base",
+            "local-base",
+            "--result-format",
+            "json",
+            "--output-retention",
+            retention,
+            "--report-dir",
+            join(harness, retention),
+          ],
+          { CODEX_BIN: fakeCodex, SOME_NEW_SECRET: token },
+        );
+        assert.equal(result.status, 0, result.out);
+        assert.ok(!result.stdout.includes(token));
+        assert.ok(!result.stdout.includes(`ghs_${"x".repeat(36)}`));
+        assert.ok(result.stdout.includes("[redacted credential]"));
+        const envelope = JSON.parse(result.stdout);
+        const reportPath = envelope.reports?.[0]?.artifact_path;
+        assert.ok(reportPath, result.stdout);
+        const report = readFileSync(reportPath, "utf8");
+        assert.ok(!report.includes(token));
+        assert.ok(report.includes("[redacted credential]"));
+        const markdownFiles = readdirSync(dirname(reportPath)).filter((name) =>
+          name.endsWith(".md"),
+        );
+        if (retention === "debug") assert.equal(markdownFiles.length, 2);
+        for (const name of markdownFiles) {
+          const content = readFileSync(join(dirname(reportPath), name), "utf8");
+          assert.ok(!content.includes(token), `${retention}: ${name}`);
+          assert.ok(!content.includes(`ghs_${"x".repeat(36)}`), `${retention}: ${name}`);
+        }
+      }
     } finally {
       rmSync(dir, { recursive: true, force: true });
       rmSync(harness, { recursive: true, force: true });

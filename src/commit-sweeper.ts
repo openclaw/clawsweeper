@@ -508,6 +508,8 @@ function localReviewCommand(args: Args): void {
 
     const outputPath = join(runDir, "local-review.md");
     const report = markdown.endsWith("\n") ? markdown : `${markdown}\n`;
+    // Debug retention keeps the producer artifact alongside the final report.
+    writeReviewOutput(outputBudget, join(runDir, `${headSha}.md`), report, "report");
     writeReviewOutput(outputBudget, outputPath, report, "report");
     if (outputSelection.retention === "summary") {
       finalizeSummaryReviewOutput(retainedReviewOutput!, [outputPath]);
