@@ -1085,7 +1085,7 @@ case "\${2:-}" in
     printf 'trunk\\n'
     ;;
   repos/openclaw/openclaw/issues/42)
-    printf '{"state":"closed","locked":false}\\n'
+    printf '{"number":42,"html_url":"https://github.com/openclaw/openclaw/issues/42","state":"closed","locked":false}\\n'
     ;;
   *)
     exit 1
@@ -1146,6 +1146,7 @@ test("scheduled claim-time no-op completes before target checkout with zero GitH
     const logPath = join(temporary, "gh.log");
     const issue = {
       number: 41,
+      html_url: "https://github.com/openclaw/libterminal/issues/41",
       title: "Unchanged issue",
       body: "Original body",
       state: "open",
@@ -1877,7 +1878,7 @@ test("exact event review publishes directly with a queue-bounded canonical fallb
   assert.doesNotMatch(replayDirect.run ?? "", /lifecycle\/command-ack/);
 
   const publish = step(publisher, "Publish event result and apply safe close");
-  assert.match(publish.run ?? "", /live_state=.*gh api/);
+  assert.match(publish.run ?? "", /live_item=.*workflow -- exact-review-live-item/);
   assert.match(publish.run ?? "", /LIVE_TERMINAL_NOOP.*LIVE_TERMINAL_MISSING/);
   assert.match(publish.run ?? "", /LIVE_GUARDED_OPEN/);
   assert.match(publish.run ?? "", /live_locked=.*jq -r '\.locked == true'/);

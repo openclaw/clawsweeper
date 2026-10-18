@@ -1139,6 +1139,7 @@ test("GitHub throttles abort apply lease checks and preserve durable lease owner
       const startedAt = new Date(Date.now() - 120_000).toISOString();
       const issue = {
         number: 321,
+        html_url: "https://github.com/openclaw/clawsweeper/issues/321",
         title: "Keep the lease under GitHub throttling",
         created_at: "2026-05-01T00:00:00Z",
         updated_at: reviewedAt,

@@ -770,7 +770,7 @@ function assertCompletedIssueLeaseAccepted(extraArgs: string[], reusedLease = fa
       number,
       title: `Incident issue ${number}`,
       body: "The reviewed issue source remains unchanged.",
-      html_url: `https://github.com/openclaw/openclaw/issues/${number}`,
+      html_url: `https://github.com/openclaw/clawsweeper/issues/${number}`,
       created_at: "2026-04-01T00:00:00Z",
       updated_at: leaseUpdatedAt,
       closed_at: null,
@@ -819,7 +819,7 @@ function assertCompletedIssueLeaseAccepted(extraArgs: string[], reusedLease = fa
     const comments = [
       {
         id: 9000 + number,
-        html_url: `https://github.com/openclaw/openclaw/issues/${number}#issuecomment-${9000 + number}`,
+        html_url: `https://github.com/openclaw/clawsweeper/issues/${number}#issuecomment-${9000 + number}`,
         created_at: reviewedAt,
         updated_at: reviewedAt,
         user: { login: "clawsweeper[bot]" },
@@ -827,7 +827,7 @@ function assertCompletedIssueLeaseAccepted(extraArgs: string[], reusedLease = fa
       },
       {
         id: leaseCommentId,
-        html_url: `https://github.com/openclaw/openclaw/issues/${number}#issuecomment-${leaseCommentId}`,
+        html_url: `https://github.com/openclaw/clawsweeper/issues/${number}#issuecomment-${leaseCommentId}`,
         created_at: leaseUpdatedAt,
         updated_at: leaseUpdatedAt,
         user: { login: "clawsweeper[bot]" },
@@ -4852,7 +4852,7 @@ if (args[0] === "api" && args[1] === "-i" && /\\/issues\\/322\\/timeline(?:\\?|$
   console.log(JSON.stringify([[
     {
       id: 9322,
-      html_url: "https://github.com/openclaw/clawsweeper/pull/322#issuecomment-9322",
+      html_url: "https://github.com/openclaw/openclaw/pull/322#issuecomment-9322",
       created_at: "2026-05-01T01:00:00Z",
       updated_at: "2026-05-01T01:00:00Z",
       author_association: "NONE",
@@ -4861,7 +4861,7 @@ if (args[0] === "api" && args[1] === "-i" && /\\/issues\\/322\\/timeline(?:\\?|$
     },
     {
       id: 9323,
-      html_url: "https://github.com/openclaw/clawsweeper/pull/322#issuecomment-9323",
+      html_url: "https://github.com/openclaw/openclaw/pull/322#issuecomment-9323",
       created_at: "2026-05-01T01:30:00Z",
       updated_at: "2026-05-01T01:30:00Z",
       author_association: "MEMBER",
@@ -4875,7 +4875,7 @@ if (args[0] === "api" && args[1] === "-i" && /\\/issues\\/322\\/timeline(?:\\?|$
   console.log(JSON.stringify({
     number: 322,
     title: "Add provider clamp",
-    html_url: "https://github.com/openclaw/clawsweeper/pull/322",
+    html_url: "https://github.com/openclaw/openclaw/pull/322",
     created_at: "2026-05-01T00:00:00Z",
     updated_at: "2026-05-01T00:00:00Z",
     closed_at: null,
@@ -4887,20 +4887,20 @@ if (args[0] === "api" && args[1] === "-i" && /\\/issues\\/322\\/timeline(?:\\?|$
     labels: [],
     assignees: [],
     comments: 2,
-    pull_request: { url: "https://api.github.com/repos/openclaw/clawsweeper/pulls/322" }
+    pull_request: { url: "https://api.github.com/repos/openclaw/openclaw/pulls/322" }
   }));
 } else if (args[0] === "api" && /\\/pulls\\/322$/.test(path)) {
   console.log(JSON.stringify({
     number: 322,
-    html_url: "https://github.com/openclaw/clawsweeper/pull/322",
+    html_url: "https://github.com/openclaw/openclaw/pull/322",
     state: "open",
     changed_files: 4,
     commits: 1,
     review_comments: 0,
     requested_reviewers: [],
     requested_teams: [],
-    head: { sha: "head-sha", ref: "branch", repo: { full_name: "fork/clawsweeper" } },
-    base: { sha: "base-sha", ref: "main", repo: { full_name: "openclaw/clawsweeper" } },
+    head: { sha: "head-sha", ref: "branch", repo: { full_name: "fork/openclaw" } },
+    base: { sha: "base-sha", ref: "main", repo: { full_name: "openclaw/openclaw" } },
     user: { login: "reporter" }
   }));
 } else if (args[0] === "api" && /\\/pulls\\/322\\/reviews(?:\\?|$)/.test(path)) {

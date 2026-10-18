@@ -115,7 +115,7 @@ test("scoped publication archives an item closed after hydration without changin
   const ghMock = `
 const args = process.argv.slice(2);
 if (args[0] === "api" && args[1]?.endsWith("/issues/2")) {
-  process.stdout.write(JSON.stringify({number:2,state:"closed",closed_at:"2026-08-02T00:00:00Z"}));
+  process.stdout.write(JSON.stringify({number:2,html_url:"https://github.com/openclaw/openclaw/issues/2",state:"closed",closed_at:"2026-08-02T00:00:00Z"}));
 } else {
   process.stderr.write("unexpected gh args: " + JSON.stringify(args) + "\\n");
   process.exit(1);
