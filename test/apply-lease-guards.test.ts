@@ -133,6 +133,8 @@ test("apply does not close an item after it loses its mutation lease during clos
     executeApplyClose(
       strict("dependency", {
         closeReasonEnabled: () => true,
+        ghJson: () => ({ body: "Please help with this issue." }),
+        fetchIssueReviewComments: () => [],
         implementedOnMainPullRequestProvenanceApplyBlock: () => null,
         validateCloseDecision: () => ({ ok: true }),
         closeReasonApplyAgeSkipReason: () => null,
