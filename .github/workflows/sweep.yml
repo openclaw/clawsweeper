@@ -453,7 +453,7 @@ jobs:
             return 1
           }
           status_comment_id="$CLAIMED_STATUS_COMMENT_ID"
-          if ! printf '%s' "$status_comment_id" | grep -Eq '^[1-9][0-9]*$'; then
+          if [[ ! "$status_comment_id" =~ ^[1-9][0-9]*$ ]]; then
             comments="$(list_ack_comments)"
             bot_logins="$(node src/workflow-bot-comments.ts bot-logins)"
             status_comment_id="$(jq -r \
@@ -470,7 +470,7 @@ jobs:
               )] | sort_by(.updated_at // .created_at, .id) | last) //
               ($matches | sort_by(.created_at, .id) | first) | .id // empty' <<< "$comments")"
           fi
-          if printf '%s' "$status_comment_id" | grep -Eq '^[1-9][0-9]*$'; then
+          if [[ "$status_comment_id" =~ ^[1-9][0-9]*$ ]]; then
             echo "status_comment_id=$status_comment_id" >> "$GITHUB_OUTPUT"
           fi
 
@@ -3180,7 +3180,7 @@ jobs:
               *) target_repo="openclaw/openclaw" ;;
             esac
           fi
-          if ! printf '%s' "$target_repo" | grep -Eq '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$'; then
+          if [[ ! "$target_repo" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
             echo "Invalid target repository: $target_repo" >&2
             exit 1
           fi

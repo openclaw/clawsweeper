@@ -164,7 +164,13 @@ jobs:
               ;;
             esac
           fi
-          if ! printf '%s' "$target_branch" | grep -Eq '^[A-Za-z0-9_.\/-]+$'; then
+          # Whole-string matches: grep validates per line, so an embedded newline
+          # would pass and then forge extra GITHUB_OUTPUT entries below.
+          if [[ ! "$target_repo" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
+            echo "Invalid target_repo: $target_repo" >&2
+            exit 1
+          fi
+          if [[ ! "$target_branch" =~ ^[A-Za-z0-9_./-]+$ ]]; then
             echo "Invalid target_branch: $target_branch" >&2
             exit 1
           fi
@@ -390,8 +396,8 @@ jobs:
             target_branch="$(gh api "repos/$target_repo" --jq '.default_branch // empty')"
           fi
           if [ -z "$target_branch" ] ||
-            ! printf '%s' "$target_branch" | grep -Eq '^[A-Za-z0-9_.\/-]+$' ||
-            printf '%s' "$target_branch" | grep -Eq '^[0-9]+$' ||
+            [[ ! "$target_branch" =~ ^[A-Za-z0-9_./-]+$ ]] ||
+            [[ "$target_branch" =~ ^[0-9]+$ ]] ||
             [[ "$target_branch" == *".."* ]]; then
             echo "Invalid default branch for scheduled target $target_repo: $target_branch" >&2
             exit 1

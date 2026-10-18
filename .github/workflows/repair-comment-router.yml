@@ -120,7 +120,7 @@ jobs:
         run: |
           set -euo pipefail
           target_repo="${TARGET_REPO:-openclaw/openclaw}"
-          if ! printf '%s' "$target_repo" | grep -Eq '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$'; then
+          if [[ ! "$target_repo" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
             echo "::error::Invalid target_repo: expected owner/repository." >&2
             exit 1
           fi

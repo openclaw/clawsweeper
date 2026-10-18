@@ -153,10 +153,17 @@ cat "$PROOF_ROOT/pull.json"
     media_proof_timeout_ms: "0",
     media_preprocessing_reserve_seconds: String(MAX_MEDIA_PROOF_TIMEOUT_MS / 1000),
   };
-  const shell = step.run.replace(/\$\{\{ steps.target.outputs.(\w+) \}\}/g, (_, key) => {
-    assert.ok(Object.hasOwn(replacements, key), key);
-    return replacements[key];
-  });
+  // Untrusted values reach the script only through step env; resolve those
+  // `steps.target.outputs.*` expressions and blank every other env entry.
+  const stepEnv = Object.fromEntries(
+    Object.entries(step.env).map(([key, value]) => {
+      const output = /^\$\{\{ steps\.target\.outputs\.(\w+) \}\}$/.exec(String(value))?.[1];
+      if (!output) return [key, ""];
+      assert.ok(Object.hasOwn(replacements, output), output);
+      return [key, replacements[output]];
+    }),
+  );
+  const shell = step.run;
   assert.ok(!shell.includes("${{"));
   const log = openSync(join(cwd, "shell.log"), "w");
   let child;
@@ -166,7 +173,7 @@ cat "$PROOF_ROOT/pull.json"
       detached: true,
       stdio: ["ignore", log, log],
       env: {
-        ...Object.fromEntries(Object.keys(step.env).map((key) => [key, ""])),
+        ...stepEnv,
         PATH: join(cwd, "bin") + ":" + process.env.PATH,
         HOME: cwd,
         TMPDIR: cwd,
