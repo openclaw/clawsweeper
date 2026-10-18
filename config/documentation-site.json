@@ -30,6 +30,7 @@
         "github-egress-telemetry.md",
         "github-webhook-read-model.md",
         "operator-configuration.md",
+        "input-scan-diagnostics.md",
         "private-inference.md",
         "live-dashboard.md",
         "agent-performance-metrics.md",

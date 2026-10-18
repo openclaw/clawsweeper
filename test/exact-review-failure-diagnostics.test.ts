@@ -433,3 +433,32 @@ test("pinned acquisition diagnostics preserve phase and completeness without ref
     undefined,
   );
 });
+
+test("diagnostic provenance binds the producing Actions run and attempt without untrusted values", () => {
+  const root = mkdtempSync(join(tmpdir(), "clawsweeper-provenance-"));
+  try {
+    const env = {
+      GITHUB_REPOSITORY: "openclaw/clawsweeper",
+      GITHUB_RUN_ID: "123",
+      GITHUB_RUN_ATTEMPT: "2",
+    };
+    const output = write(join(root, "valid"), new AgentInputScanError("findings"), env);
+    assert.deepEqual(JSON.parse(readFileSync(join(output, "manifest.json"), "utf8")).run, {
+      repository: "openclaw/clawsweeper",
+      id: "123",
+      attempt: "2",
+    });
+    for (const [index, invalid] of [
+      { ...env, GITHUB_REPOSITORY: "owner/repo\n" },
+      { ...env, GITHUB_RUN_ID: "123\n" },
+      { ...env, GITHUB_RUN_ATTEMPT: "0" },
+      { ...env, GITHUB_RUN_ID: "9".repeat(100) },
+      {},
+    ].entries()) {
+      const dir = write(join(root, String(index)), new AgentInputScanError("findings"), invalid);
+      assert.equal(JSON.parse(readFileSync(join(dir, "manifest.json"), "utf8")).run, undefined);
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});

@@ -6893,3 +6893,24 @@ test("late intake recovery retries after an early recovery failure and successfu
     );
   }
 });
+
+test("input-scan failure summary follows upload and publishes only an identity-checked pointer", () => {
+  const workflow = YAML.parse(readText(".github/workflows/sweep.yml"));
+  const steps = workflow.jobs["event-review-apply"].steps;
+  const index = steps.findIndex((s: any) => s.name === "Link input-scan refusal diagnostics");
+  const summary = steps[index];
+  assert.ok(
+    index > steps.findIndex((s: any) => s.id === "upload-exact-review-failure-diagnostics"),
+  );
+  assert.equal(summary["continue-on-error"], true);
+  assert.match(summary.if, /failure_stage == 'agent_input_scan'/);
+  assert.match(summary.run, /inspect-input-scan-diagnostic\.mjs --summary/);
+  assert.match(summary.run, /diagnostics unavailable/);
+  assert.match(
+    summary.env.DIAGNOSTIC_ARTIFACT_URL,
+    /upload-exact-review-failure-diagnostics.outputs.artifact-url/,
+  );
+  assert.match(summary.env.DIAGNOSTIC_SHA, /sourceHeadSha/);
+  assert.match(summary.env.DIAGNOSTIC_SHA, /expectedSourceRevision/);
+  assert.doesNotMatch(summary.run, /cat |jq |--inspect|gh /);
+});
