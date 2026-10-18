@@ -25,24 +25,20 @@ export function hiddenPayloadSecurityReview(
     for (const token of html) {
       for (const match of token.content.matchAll(/<!--[\s\S]*?(?:-->|$)/g)) {
         const hidden = match[0];
-        // curl/wget default to HTTP, so a bare host or IPv4 target is still a download.
-        const download =
-          /\b(?:curl|wget)\b/i.test(hidden) &&
-          /https?:\/\/|\b(?:\d{1,3}\.){3}\d{1,3}\b|\b[\w-]+(?:\.[\w-]+)*\.[a-z]{2,}(?::\d+)?\//i.test(
-            hidden,
-          );
+        // Hidden comments rarely mention download tools at all, so a download tool plus any
+        // execution signal anywhere in the comment is enough; no URL or pipe shape required.
+        // This only surfaces items for moderation; workflows never execute this text.
+        const download = /\b(?:curl|wget)\b/i.test(hidden);
         const substitution =
           /(?:[$<]\(|`)\s*(?:\/[\w./-]+\/)?(?:curl|wget|env|printenv|base64)\b/i.test(hidden);
-        // Interpreters may be wrapped or pathed: `| sudo -E /bin/bash`, `| /usr/bin/env -S bash`.
-        const shellPipe =
-          /\|\s*(?:sudo(?:\s+-\w+(?:\s+[\w-]+)?)*\s+)?(?:\/[\w./-]+\/)?(?:env(?:\s+-\w+)*\s+)?(?:(?:ba|da|z|k)?sh)\b/i.test(
+        // Interpreters as a command word, wrapped or pathed: `| sudo -E /bin/bash`, `; sh /tmp/x`.
+        const shellExecution =
+          /(?:^|[\s|;&(])(?:sudo(?:\s+-\w+(?:\s+[\w-]+)?)*\s+)?(?:\/[\w./-]+\/)?(?:env(?:\s+-\w+)*\s+)?(?:ba|da|z|k)?sh(?=\s|$|[;&|)])/im.test(
             hidden,
-          );
+          ) || /\bchmod\s+(?:[+ugoa]*x|[0-7]{3,4})\b/i.test(hidden);
         const environment = /\b(?:env|printenv)\b|\/proc\/(?:self|\d+)\/environ/i.test(hidden);
         const encodedEnvironment = environment && /\bbase64\b/i.test(hidden);
-        // Detection only surfaces items for moderation; workflows never execute this text.
-        // Deliberately heuristic: we cover common loader spellings, not every shell grammar.
-        if (!(download && (substitution || shellPipe)) && !encodedEnvironment) continue;
+        if (!(download && (substitution || shellExecution)) && !encodedEnvironment) continue;
         return {
           status: "needs_attention",
           summary: PAYLOAD_SUMMARY,
