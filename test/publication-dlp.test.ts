@@ -159,3 +159,24 @@ test("Codex operational sandbox flags are not credentials", async () => {
     process.env = original;
   }
 });
+
+test("authenticated proxy capabilities are redacted and block review publication", () => {
+  const original = process.env;
+  const proxy = "http://proxy-user:synthetic%2Dproxy-password@proxy.example:8080";
+  try {
+    process.env = { https_proxy: proxy, HTTP_PROXY: "http://public.proxy.example:8080" };
+    const markdown = report(
+      `Proxy ${proxy}; decoded synthetic-proxy-password; encoded synthetic%2Dproxy-password`,
+    );
+    assert.ok(!markdown.includes(proxy));
+    assert.ok(!markdown.includes("synthetic-proxy-password"));
+    assert.ok(!markdown.includes("synthetic%2Dproxy-password"));
+    assert.match(markdown, /^review_status: failed$/m);
+    assert.equal(isApplyCloseCandidateReport(markdown), false);
+    assert.ok(
+      report("Use http://public.proxy.example:8080").includes("http://public.proxy.example:8080"),
+    );
+  } finally {
+    process.env = original;
+  }
+});

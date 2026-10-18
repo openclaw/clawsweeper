@@ -54,6 +54,25 @@ function credentialPattern(): RegExp {
   registerOpenclawProviderCapabilities(process.env.CLAWSWEEPER_OPENCLAW_PROVIDERS_JSON);
   const values = new Set(explicitCapabilities);
   for (const [name, value] of Object.entries(process.env)) {
+    if (value && /^(?:https?|all)_proxy$/i.test(name)) {
+      try {
+        const proxy = new URL(value);
+        if (proxy.username || proxy.password) {
+          values.add(value);
+          for (const component of [proxy.username, proxy.password]) {
+            if (!component) continue;
+            values.add(component);
+            try {
+              values.add(decodeURIComponent(component));
+            } catch {
+              // Malformed escapes still have their literal value protected.
+            }
+          }
+        }
+      } catch {
+        // Invalid proxy URLs cannot supply parsed authentication components.
+      }
+    }
     if (
       value &&
       !CODEX_NON_CAPABILITIES.has(name) &&
