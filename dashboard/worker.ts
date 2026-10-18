@@ -9250,17 +9250,16 @@ function githubReadScope(env, path: string) {
     return { repos: [match[1]], permissions: { [permission]: "read" } };
   }
   const query = new URL(path, "https://api.github.com").searchParams.get("q") || "";
-  const repositories = [
-    ...query.matchAll(/(?:^|\s)repo:([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)(?=\s|$)/g),
-  ].map((match) => match[1]);
-  const itemKind = /(?:^|\s)is:(pr|issue)(?=\s|$)/.exec(query)?.[1];
+  // Search builders put scope first; quoted label text must not widen it.
+  const repository = /^repo:([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)(?=\s|$)/.exec(query)?.[1];
+  const itemKind = /^repo:\S+\s+is:(pr|issue)(?=\s|$)/.exec(query)?.[1];
   const permissions =
     itemKind === "pr"
       ? { pull_requests: "read" }
       : itemKind === "issue"
         ? { issues: "read" }
         : { issues: "read", pull_requests: "read" };
-  return { repos: repositories.length ? repositories : triageTargetRepos(env), permissions };
+  return { repos: repository ? [repository] : triageTargetRepos(env), permissions };
 }
 
 async function githubAuthToken(env, scope) {

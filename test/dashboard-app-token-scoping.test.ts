@@ -47,6 +47,10 @@ test("dashboard token mints bind repository and permission sets and reuse only i
   );
   await githubJsonForTest(env, "/search/issues?q=repo:openclaw/proof-only%20is:pr");
   await githubJsonForTest(env, "/search/issues?q=repo:openclaw/alpha%20is:issue");
+  await githubJsonForTest(
+    env,
+    "/search/issues?q=repo:openclaw/alpha%20is:issue%20label:%22triage:%20repo:openclaw/extra%20is:pr%20%22",
+  );
   assert.deepEqual(mints, [
     { repositories: ["alpha"], permissions: { issues: "read" } },
     { repositories: ["beta"], permissions: { issues: "read" } },
@@ -68,6 +72,7 @@ test("dashboard token mints bind repository and permission sets and reuse only i
     "Bearer fixture-7",
     "Bearer fixture-7",
     "Bearer fixture-8",
+    "Bearer fixture-1",
     "Bearer fixture-1",
   ]);
 });
