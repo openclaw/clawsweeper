@@ -148,13 +148,26 @@ test("raw model credentials are detected before Markdown normalization", async (
   }
 });
 
-test("Codex operational sandbox flags are not credentials", async () => {
+test("Codex operational launcher settings are not credentials", async () => {
   const { redactPublication } = await import("../dist/publication-dlp.js");
   const original = process.env;
   try {
-    process.env = { CODEX_SANDBOX_NETWORK_DISABLED: "1", CODEX_SANDBOX: "seatbelt" };
-    const safe = redactPublication("Test 123 under seatbelt.");
-    assert.deepEqual(safe, { value: "Test 123 under seatbelt.", redactions: 0 });
+    process.env = {
+      CODEX_SANDBOX_NETWORK_DISABLED: "1",
+      CODEX_SANDBOX: "seatbelt",
+      CODEX_BIN: "codex",
+      CODEX_BIN_ARGS: "exec",
+      CODEX_HOME: "/home/reviewer/.codex",
+    };
+    const text = "Test 123 under seatbelt: codex exec in /home/reviewer/.codex.";
+    const safe = redactPublication(text);
+    assert.deepEqual(safe, { value: text, redactions: 0 });
+    process.env.CODEX_ACCESS_TOKEN = "synthetic-codex-auth-capability";
+    process.env.CODEX_UNKNOWN_CAPABILITY = "synthetic-future-codex-capability";
+    assert.deepEqual(
+      redactPublication("synthetic-codex-auth-capability synthetic-future-codex-capability"),
+      { value: "[redacted credential] [redacted credential]", redactions: 2 },
+    );
   } finally {
     process.env = original;
   }

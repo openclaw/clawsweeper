@@ -1,9 +1,12 @@
 import type { Decision } from "./clawsweeper-types.js";
 
 const REDACTED = "[redacted credential]";
-// These Codex launcher flags/version strings carry no authority. Treating "1" as
-// a credential would corrupt every report number in local Codex sessions.
+// These Codex launcher settings carry no authentication authority. Matching
+// "codex" or "1" would falsely compromise ordinary local review output.
 const CODEX_NON_CAPABILITIES = new Set([
+  "CODEX_BIN",
+  "CODEX_BIN_ARGS",
+  "CODEX_HOME",
   "CODEX_CI",
   "CODEX_SANDBOX_NETWORK_DISABLED",
   "CODEX_SANDBOX",
