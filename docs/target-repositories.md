@@ -161,12 +161,12 @@ workflow and GitHub App installation.
 1. Install the ClawSweeper GitHub App on the target repository.
 2. Add or merge the target dispatcher from
    [`docs/target-dispatcher.md`](target-dispatcher.md).
-3. Ensure the target repo can read the org or repo
-   `CLAWSWEEPER_APP_PRIVATE_KEY` secret.
+3. Verify the App receives Issues, Pull requests, and Issue comments webhooks.
+   The target workflow uses OIDC and needs no ClawSweeper secret.
 4. Open, edit, or comment on a target issue/PR and confirm a dispatcher run
    appears in the target repo.
-5. Confirm the receiver run appears in
-   `https://github.com/openclaw/clawsweeper/actions`.
+5. Confirm direct Worker intake succeeds and the queued review appears in
+   `https://github.com/openclaw/clawsweeper/actions`; no relay run is expected.
 6. Confirm the target item gets one durable ClawSweeper review comment.
 
 Add a `config/target-repositories.json` entry when a repository needs explicit
@@ -193,6 +193,6 @@ Batch rollout should use target fanout:
   close policy
 
 If a target dispatch reaches ClawSweeper but receiver token creation fails, the
-App is usually not installed on that target repo. If the target workflow skips
-before dispatch, the target repo usually cannot access
-`CLAWSWEEPER_APP_PRIVATE_KEY`.
+App is usually not installed on that target repo. If the target workflow warns before intake, check its OIDC permission,
+canonical workflow filename, and default-branch ref. The independent App webhook
+route remains enabled; see [failure semantics](target-dispatcher.md#failure-semantics-and-legacy-receivers).

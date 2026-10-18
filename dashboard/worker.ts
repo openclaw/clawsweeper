@@ -29,6 +29,8 @@ import {
   authenticateTargetDispatchToken,
   TARGET_DISPATCH_MAX_BODY_BYTES,
   targetDispatchQueueIntake,
+  targetDispatchCommentIntake,
+  type TargetDispatchIdentity,
 } from "./target-dispatch-ingress.ts";
 import { legacyCommandCommentId } from "../src/repair/command-ack-convergence.ts";
 import { commandAckMarker } from "../src/repair/markers.ts";
@@ -1022,7 +1024,7 @@ export default {
     if (url.pathname === "/github/webhook" && request.method === "POST")
       return githubWebhook(request, env, ctx);
     if (url.pathname === "/github/target-dispatch" && request.method === "POST")
-      return githubTargetDispatch(request, env);
+      return githubTargetDispatch(request, env, ctx);
     if (url.pathname === "/internal/exact-review/command-intake" && request.method === "POST")
       return authenticatedHostedTargetQueueRequest(request, env, "/command-intake");
     if (
@@ -3859,7 +3861,17 @@ async function githubWebhook(request, env, ctx) {
     return json({ ok: true, ...queued }, 202);
   }
 
-  const commentDecision = decision;
+  return handleGithubCommentCommand(env, ctx, decision, payload, deliveryHeaders.deliveryId);
+}
+
+// Shared by signed App webhooks and OIDC intake after its live GitHub hydration.
+async function handleGithubCommentCommand(
+  env,
+  ctx,
+  commentDecision: GithubWebhookIssueCommentClassification,
+  payload: GithubWebhookPayload,
+  sourceDeliveryId?: string | null,
+) {
   if (
     commentDecision.itemState === "open" &&
     typeof commentDecision.commentBody === "string" &&
@@ -3921,13 +3933,18 @@ async function githubWebhook(request, env, ctx) {
       pull_requests: "write",
     },
   });
-  const statusCommentId = await createFastAckCommentOnce({
-    env,
-    token: targetToken,
-    repo: commentDecision.targetRepo,
-    itemNumber: commentDecision.itemNumber,
-    sourceCommentId: commentDecision.commentId,
-  });
+  const statusCommentId = commentDecision.maintainerAuthorized
+    ? await createFastAckCommentOnce({
+        env,
+        token: targetToken,
+        repo: commentDecision.targetRepo,
+        itemNumber: commentDecision.itemNumber,
+        sourceCommentId: commentDecision.commentId,
+      }).catch(() => {
+        console.warn("ClawSweeper queued command acknowledgement unavailable");
+        return null;
+      })
+    : null;
   await addIssueCommentReaction({
     env,
     token: targetToken,
@@ -3949,7 +3966,7 @@ async function githubWebhook(request, env, ctx) {
           ? payload.comment?.updated_at || payload.comment?.created_at
           : payload.comment?.created_at || payload.comment?.updated_at,
       )
-        ? (deliveryHeaders.deliveryId ?? undefined)
+        ? (sourceDeliveryId ?? undefined)
         : undefined,
   });
   settleFastAckComments({
@@ -5584,15 +5601,102 @@ async function authenticatedHostedTargetQueueRequest(request, env, path: string)
 
 // Target dispatchers enqueue here with their workflow's OIDC identity instead of
 // spending one ClawSweeper Actions relay run per `repository_dispatch`. Any
-// non-2xx answer makes the dispatcher fall back to that unchanged relay.
-async function githubTargetDispatch(request: Request, env) {
+// non-2xx answer leaves delivery to the independent App webhook route.
+async function githubTargetDispatch(request: Request, env, ctx) {
   const text = await boundedTargetDispatchBody(request, TARGET_DISPATCH_MAX_BODY_BYTES);
   if (text === null) return json({ error: "target_dispatch_too_large_or_invalid" }, 413);
   const identity = await authenticateTargetDispatchToken(bearerToken(request));
   if (!identity) return json({ error: "target_dispatch_not_authorized" }, 401);
-  const intake = targetDispatchQueueIntake(parseJsonObject(text), identity);
+  const payload = parseJsonObject(text);
+  if (identity.eventName === "issue_comment" || payload?.source_event === "issue_comment") {
+    return githubTargetCommentDispatch(payload, identity, env, ctx);
+  }
+  const intake = targetDispatchQueueIntake(payload, identity);
   if ("error" in intake) return json({ error: intake.error }, intake.status);
   return hostedTargetQueueRequest(env, "/enqueue", JSON.stringify(intake.body));
+}
+
+async function githubTargetCommentDispatch(payload, identity: TargetDispatchIdentity, env, ctx) {
+  const intake = targetDispatchCommentIntake(payload, identity);
+  if (!intake.ok) return json({ error: intake.error }, intake.status);
+  const eligibility = await workerHostedTargetEligibility(env, intake.targetRepo);
+  if (eligibility.outcome !== "eligible") {
+    if (eligibility.outcome === "terminal")
+      return hostedTargetProbeResponse({ outcome: "terminal" });
+    return hostedTargetProbeResponse({ outcome: "retryable" });
+  }
+  const admission = await workerHostedTargetVisibilityAdmission(env, intake.targetRepo);
+  if (admission.outcome !== "public") return hostedTargetProbeResponse(admission);
+  const credentials = githubAppCredentials(env);
+  if (!credentials) return json({ error: "github_app_not_configured" }, 503);
+  try {
+    const appJwt = await signGithubAppJwt(credentials.issuer, credentials.privateKey);
+    const installationId = await githubAppInstallationId(appJwt, intake.targetRepo, env);
+    const token = await createGithubAppTokenFor({
+      env,
+      appJwt,
+      installationId,
+      label: intake.targetRepo,
+      repositories: [repoName(intake.targetRepo)],
+      permissions: { issues: "read", pull_requests: "read" },
+    });
+    const repository = await githubTokenJson({
+      env,
+      token,
+      path: `/repos/${intake.targetRepo}`,
+      body: undefined,
+      errorLabel: "target dispatch repository",
+    });
+    if (
+      String(repository.full_name || "").toLowerCase() !== intake.targetRepo.toLowerCase() ||
+      !repository.default_branch ||
+      identity.ref !== `refs/heads/${repository.default_branch}` ||
+      repository.private !== false
+    )
+      return json({ error: "target_dispatch_identity_mismatch" }, 403);
+    const comment = await githubTokenJson({
+      env,
+      token,
+      path: `/repos/${intake.targetRepo}/issues/comments/${intake.commentId}`,
+      body: undefined,
+      errorLabel: "target dispatch live comment",
+    });
+    if (
+      comment.id !== intake.commentId ||
+      String(comment.issue_url || "").toLowerCase() !==
+        `https://api.github.com/repos/${intake.targetRepo}/issues/${intake.itemNumber}`.toLowerCase() ||
+      typeof comment.body !== "string" ||
+      !exactWebhookTimestamp(comment.updated_at)
+    )
+      return json({ error: "target_dispatch_comment_mismatch" }, 403);
+    const issue = await githubTokenJson({
+      env,
+      token,
+      path: `/repos/${intake.targetRepo}/issues/${intake.itemNumber}`,
+      body: undefined,
+      errorLabel: "target dispatch live item",
+    });
+    if (issue.number !== intake.itemNumber)
+      return json({ error: "target_dispatch_comment_mismatch" }, 403);
+    const livePayload = {
+      action: intake.sourceAction,
+      repository,
+      issue,
+      comment,
+      installation: { id: installationId },
+    };
+    const decision = classifyGithubIssueCommentWebhook({
+      event: "issue_comment",
+      payload: livePayload,
+      hostedTargetEligible: true,
+    });
+    if (!decision.accepted || decision.type !== "issue_comment") {
+      return json({ ok: true, accepted: false, reason: "not an authorized command" }, 202);
+    }
+    return await handleGithubCommentCommand(env, ctx, decision, livePayload);
+  } catch {
+    return json({ error: "target_dispatch_comment_unavailable" }, 503);
+  }
 }
 
 async function hostedTargetQueueRequest(env, path: string, body: string) {

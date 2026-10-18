@@ -263,7 +263,8 @@ You ingest ClawSweeper events and general GitHub activity.
 
 Exact issue and PR review events do not use this path: the target dispatcher
 enqueues them directly into the exact-review queue with its GitHub Actions OIDC
-identity and sends `repository_dispatch` only as a fallback, so they cost no
+identity; the keyless template warns on failure and relies on the independent
+App webhook instead of sending `repository_dispatch`, so successful intakes cost no
 ClawSweeper Actions run. See
 [target-dispatcher.md](target-dispatcher.md#direct-queue-intake). General
 activity has no queue consumer, so it stays on `repository_dispatch`.

@@ -61,7 +61,7 @@ mutation is rechecked against live target state immediately before it happens.
 ### Issue and PR Reviews
 
 Scheduled runs scan open issues and pull requests, while target repositories can
-forward exact issue/PR events with `repository_dispatch` for low-latency
+forward exact issue/PR events through keyless OIDC Worker intake for low-latency
 one-item reviews. Each review writes
 `records/<repo-slug>/items/<number>.md` with the decision, evidence, proposed
 maintainer-facing comment, runtime metadata, and GitHub snapshot hash.
@@ -272,8 +272,8 @@ scheduling, capacity, and monitoring behavior is documented in
 
 - hot/new and recently active items are checked hourly, with a 5-minute intake
   schedule for the newest queue edge
-- target repositories can forward issue and PR events with
-  `repository_dispatch`; those exact item runs use a dedicated single job to
+- target repositories can forward issue and PR events through OIDC Worker intake;
+  the queue leases a dedicated executor to
   review one item, sync the durable comment, and apply only safe close
   proposals for that same item
 - pull requests and issues younger than 30 days are checked daily once they
@@ -1020,10 +1020,11 @@ lane-specific exceptions.
 
 Target repositories can opt into event-level latency by installing the
 dispatcher workflow in [docs/target-dispatcher.md](docs/target-dispatcher.md).
-The dispatcher sends `repository_dispatch` events to this repository with the
-target repo and exact item number; ClawSweeper then runs one event job that
+The keyless dispatcher sends the target repo and exact item number to the Worker
+using GitHub Actions OIDC; ClawSweeper then leases one event executor that
 reviews, comments, and checks immediate safe apply instead of waiting for the
-next hot-intake cron or bulk publish lane.
+next hot-intake cron or bulk publish lane. The independent App webhook remains
+enabled; legacy `repository_dispatch` receivers remain during migration.
 
 ## Checks
 

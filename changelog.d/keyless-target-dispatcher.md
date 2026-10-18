@@ -1,0 +1,1 @@
+- Make target dispatchers OIDC-only, with Worker-owned live comment authorization and acknowledgements, while retaining legacy receivers during migration.
