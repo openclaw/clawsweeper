@@ -187,6 +187,19 @@ export async function githubAppJson(
   return JSON.parse(text);
 }
 
+export function githubAppTokenRequest(repositories: string[], permissions: Record<string, string>) {
+  const names = [...new Set(repositories.map((repo) => repo.trim().toLowerCase()))].sort();
+  if (!names.length || names.some((name) => !/^[a-z0-9_.-]+$/.test(name))) {
+    throw new Error("GitHub App token requires explicit repository names");
+  }
+  return {
+    repositories: names,
+    permissions: Object.fromEntries(
+      Object.entries(permissions).sort(([a], [b]) => a.localeCompare(b)),
+    ),
+  };
+}
+
 export async function createGithubAppTokenFor({
   env = {},
   appJwt,
@@ -199,7 +212,7 @@ export async function createGithubAppTokenFor({
   appJwt: string;
   installationId: string | number;
   label: string;
-  repositories?: string[];
+  repositories: string[];
   permissions: Record<string, string>;
 }) {
   const payload = await githubAppJson(
@@ -207,10 +220,7 @@ export async function createGithubAppTokenFor({
     appJwt,
     {
       method: "POST",
-      body: JSON.stringify({
-        ...(repositories ? { repositories: repositories.filter(Boolean) } : {}),
-        permissions,
-      }),
+      body: JSON.stringify(githubAppTokenRequest(repositories, permissions)),
       errorLabel: `GitHub App token for ${label}`,
     },
     env,

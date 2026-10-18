@@ -3782,16 +3782,18 @@ test("dashboard shares in-flight GitHub App installation token across parallel r
     privateKeyEncoding: { type: "pkcs8", format: "pem" },
     publicKeyEncoding: { type: "spki", format: "pem" },
   });
-  let tokenRequests = 0;
+  const tokenScopes = new Set<string>();
   let badBearer = "";
   globalThis.fetch = async (input, init) => {
     const url = new URL(String(input));
     const authorization = String(new Headers(init?.headers).get("authorization") || "");
-    if (url.pathname === "/repos/openclaw/openclaw/installation") {
+    if (url.pathname.endsWith("/installation")) {
       return jsonResponse({ id: 12345 });
     }
     if (url.pathname === "/app/installations/12345/access_tokens") {
-      tokenRequests += 1;
+      const scope = JSON.stringify(JSON.parse(String(init?.body)));
+      assert.equal(tokenScopes.has(scope), false, "parallel reads share only identical scopes");
+      tokenScopes.add(scope);
       await new Promise((resolve) => setTimeout(resolve, 5));
       return jsonResponse({
         token: "installation-token",
@@ -3822,7 +3824,7 @@ test("dashboard shares in-flight GitHub App installation token across parallel r
       },
     );
     assert.equal(response.status, 200);
-    assert.equal(tokenRequests, 1);
+    assert.equal(tokenScopes.size, 3);
     assert.equal(badBearer, "");
   } finally {
     globalThis.fetch = originalFetch;

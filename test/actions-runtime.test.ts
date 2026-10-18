@@ -54,3 +54,52 @@ test("cache actions use one runtime generation everywhere", () => {
     ["actions/cache@v6", "actions/cache/restore@v6", "actions/cache/save@v6"].sort(),
   );
 });
+
+test("App mint actions name repositories and stay within the minimal permission ceiling", async () => {
+  const { default: YAML } = await import("yaml");
+  const maximum = {
+    metadata: "read",
+    actions: "write",
+    checks: "read",
+    contents: "write",
+    issues: "write",
+    "pull-requests": "write",
+    statuses: "read",
+  };
+  const inventoryExceptions = new Set([
+    "openclaw-inventory-token",
+    "steipete-inventory-token",
+    "openclaw-coverage-token",
+    "steipete-coverage-token",
+  ]);
+  for (const path of referenceFiles(".github").filter((path) => /\.ya?ml$/.test(path))) {
+    const workflow = YAML.parse(readFileSync(path, "utf8"));
+    for (const job of Object.values(workflow.jobs || { composite: workflow.runs })) {
+      for (const step of (job as { steps?: any[] } | undefined)?.steps || []) {
+        if (!step.uses?.startsWith("actions/create-github-app-token@")) continue;
+        const inputs = step.with;
+        const permissions = Object.entries(inputs).filter(([key]) => key.startsWith("permission-"));
+        assert.ok(permissions.length, path);
+        if (path === ".github/workflows/target-fanout.yml" && inventoryExceptions.has(step.id)) {
+          assert.deepEqual(permissions, [["permission-metadata", "read"]]);
+          inventoryExceptions.delete(step.id);
+        } else assert.ok(inputs.repositories, `${path}:${step.id} must name its repositories`);
+        for (const [key, value] of permissions) {
+          const permission = key.slice("permission-".length);
+          assert.ok(Object.hasOwn(maximum, permission), `${path}: unexpected ${key}`);
+          if (path.endsWith("create-state-token/action.yml")) {
+            assert.equal(value, `\${{ inputs.${permission}-permission }}`);
+            assert.ok(
+              ["read", "write"].includes(workflow.inputs[`${permission}-permission`].default),
+            );
+          } else
+            assert.ok(
+              value === "read" || value === maximum[permission],
+              `${path}: excessive ${key}`,
+            );
+        }
+      }
+    }
+  }
+  assert.equal(inventoryExceptions.size, 0);
+});

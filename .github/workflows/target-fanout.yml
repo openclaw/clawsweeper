@@ -104,6 +104,7 @@ jobs:
           client-id: ${{ env.CLAWSWEEPER_APP_CLIENT_ID }}
           private-key: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
           owner: openclaw
+          # Inventory discovery needs the installation's as-yet-unknown repository set.
           permission-metadata: read
 
       - name: Create steipete inventory token
@@ -114,6 +115,7 @@ jobs:
           client-id: ${{ env.CLAWSWEEPER_APP_CLIENT_ID }}
           private-key: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
           owner: steipete
+          # Inventory discovery needs the installation's as-yet-unknown repository set.
           permission-metadata: read
 
       - name: Create hosted target metadata token
@@ -160,6 +162,7 @@ jobs:
           client-id: ${{ env.CLAWSWEEPER_APP_CLIENT_ID }}
           private-key: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
           owner: openclaw
+          # Inventory discovery needs the installation's as-yet-unknown repository set.
           permission-metadata: read
 
       - name: Refresh steipete coverage inventory token
@@ -171,6 +174,7 @@ jobs:
           client-id: ${{ env.CLAWSWEEPER_APP_CLIENT_ID }}
           private-key: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
           owner: steipete
+          # Inventory discovery needs the installation's as-yet-unknown repository set.
           permission-metadata: read
 
       - name: Summarize trailing weekly review coverage
