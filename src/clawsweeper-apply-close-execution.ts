@@ -419,7 +419,7 @@ export function executeApplyClose(
     closeReason,
     { requireCloseComment: !isRetryableSkippedClose },
   );
-  if (!currentReportValidation.ok && currentReportValidation.actionTaken !== "kept_open") {
+  if (!currentReportValidation.ok) {
     return skip(
       currentReportValidation.actionTaken,
       currentReportValidation.reason,
