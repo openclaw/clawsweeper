@@ -262,10 +262,10 @@ export function createItemContext(relatedContext: ItemContextRelations) {
       const pullCommits = pullCommitsWindow.items;
       const pullReviewCommentsWindow = hydration.reviewComments;
       pullReviewComments = pullReviewCommentsWindow.items;
-      const pullSecurity = hiddenPayloadSecurityReview(
-        pullRecord.body,
-        allReviewComments ?? pullReviewComments,
-      );
+      const pullSecurity = hiddenPayloadSecurityReview(pullRecord.body, [
+        ...(allReviewComments ?? pullReviewComments),
+        ...readPaged<unknown>(`repos/${targetRepo()}/pulls/${item.number}/reviews`),
+      ]);
       if (pullSecurity && !context.securityReview) context.securityReview = pullSecurity;
       filteredPullReviewComments = filterReviewContextComments(pullReviewComments, item.number);
       const fullPullReviewComments =

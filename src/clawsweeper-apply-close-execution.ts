@@ -480,6 +480,7 @@ export function executeApplyClose(
     if (source.pull_request)
       comments.push(
         ...ghPaged<Record<string, unknown>>(`repos/${repo}/pulls/${mutationNumber}/comments`),
+        ...ghPaged<Record<string, unknown>>(`repos/${repo}/pulls/${mutationNumber}/reviews`),
       );
     const security = hiddenPayloadSecurityReview(source.body, comments);
     if (security) return { actionTaken: "kept_open", reason: security.summary };

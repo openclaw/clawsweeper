@@ -91,25 +91,27 @@ console.log(JSON.stringify(args.includes("--slurp") ? [value] : value));
   assert.doesNotMatch(JSON.stringify(context.comments), /203\.0\.113/);
 });
 
-githubTest("inline PR comments use the same security channel", (t) => {
-  installGhFixture(
-    t,
-    `
+for (const surface of ["comments", "reviews"]) {
+  githubTest(`PR ${surface} use the same security channel`, (t) => {
+    installGhFixture(
+      t,
+      `
 const path = args.find(arg => arg.startsWith("repos/")) || "";
-const value = path.includes("/pulls/") && path.includes("/comments") ? [{ body: ${JSON.stringify(hiddenComment)} }]
-  : ["/comments", "/files", "/commits", "/timeline"].some(suffix => path.includes(suffix)) ? []
+const value = path.includes("/pulls/") && path.includes("/${surface}") ? [{ body: ${JSON.stringify(hiddenComment)} }]
+  : ["/comments", "/reviews", "/files", "/commits", "/timeline"].some(suffix => path.includes(suffix)) ? []
   : path.includes("/pulls/") ? { body: "ordinary", changed_files: 0, commits: 0, review_comments: 1 }
   : { body: "ordinary", comments: 0 };
 if (args.includes("-i") || args.includes("--include")) process.stdout.write("HTTP/2 200 OK\\n\\n");
 console.log(JSON.stringify(args.includes("--slurp") ? [value] : value));
 `,
-  );
-  const context = createItemContext({
-    relatedItemsContext: () => [],
-    referencingMergedPullRequestsForIssue: () => [],
-  }).collectItemContext(item({ kind: "pull_request" }));
-  assert.equal(context.securityReview?.status, "needs_attention");
-});
+    );
+    const context = createItemContext({
+      relatedItemsContext: () => [],
+      referencingMergedPullRequestsForIssue: () => [],
+    }).collectItemContext(item({ kind: "pull_request" }));
+    assert.equal(context.securityReview?.status, "needs_attention");
+  });
+}
 
 for (const [name, body, expected] of [
   ["hidden substitution", hiddenComment, true],
